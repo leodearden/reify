@@ -506,7 +506,7 @@ fn where_guard_determined_activates() {
     let values = eval_source(
         r#"
         structure S {
-            param a : Length = 10
+            param a : Length = 10mm
             where determined(a) {
                 let x = a * 2
             }

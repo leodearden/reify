@@ -17,6 +17,7 @@ pub(crate) mod pre_pass;
 pub(crate) mod priv_redundant_lint;
 pub(crate) mod reserved_name_lint;
 pub(crate) mod shadow_lint;
+pub(crate) mod sketch_unsupported;
 pub(crate) mod specialization_scope_check;
 pub(crate) mod traits_phase;
 pub(crate) mod units_phase;

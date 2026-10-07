@@ -28,7 +28,10 @@
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 
+use reify_compute_contract::StructuredComputeDetail;
 use serde::{Deserialize, Serialize};
+
+mod diagnostics_wire;
 
 /// Compute the canonical engine-version hash for a set of contributor byte slices.
 ///
@@ -138,16 +141,52 @@ pub fn write_sidecar(path: &Path) -> io::Result<()> {
 ///
 /// **Wire-format contract:** `ENTRY_FORMAT_VERSION` covers the `bincode 1.3`
 /// fixint-LE encoding of [`CacheEntryHeader`] (4+32+32+8+8+8 = 92 bytes)
-/// AND the `zstd 0.13` compressed body that follows it. Any change to either
+/// AND the body that follows it: the bincode `PersistedDiagnosticsBlock`
+/// prefix of [`WithDiagnostics`] and the `zstd 0.13` compressed value. Any change to either
 /// encoder that produces different bytes on disk — including a minor version
 /// bump within the `=1.3` or `0.13` pins — MUST be accompanied by a bump of
 /// this constant in the same commit. Pinned by
-/// `cache_entry_header_bincode_encoding_matches_pinned_hex_literal` and
-/// `entry_format_version_const_is_one`.
+/// `cache_entry_header_bincode_encoding_matches_pinned_hex_literal`,
+/// `with_diagnostics_prefix_encoding_matches_pinned_bytes` and
+/// `entry_format_version_const_matches_history`.
 ///
 /// Starting at 1 follows the Reify convention that 0 means "uninitialised /
 /// unknown", matching `ELASTIC_RESULT_FORMAT_VERSION`.
-pub const ENTRY_FORMAT_VERSION: u32 = 1;
+///
+/// # Version history
+///
+/// - **1** — header followed directly by the [`PersistentlyCacheable`] body.
+/// - **2** (task 7245) — the body is preceded by a length-framed diagnostics
+///   block, so a warm serve can replay the diagnostics the cold solve emitted
+///   (see [`WithDiagnostics`]). The block is a prefix rather than a tail, which
+///   makes v1 entries unreadable by construction. That is handled, not worked
+///   around: [`write_entry`] stamps this const into every header and
+///   [`read_entry`] calls [`CacheEntryHeader::verify_format_version`] BEFORE
+///   decoding the body, so every v1 entry reads as a clean miss and is
+///   cold-recomputed once. Note that [`ENGINE_VERSION_HASH`] would NOT have
+///   invalidated these entries on its own — its contributor set covers the
+///   solver sources, not this module.
+/// - **3** (task 7245 review fix) — `PersistedDiagnostic`, the element type
+///   inside that block, is itself reshaped: `code` is now the stable serde
+///   variant NAME rather than bincode's positional variant index, and `labels`
+///   and `candidates` are carried. Same migration mechanism as v1 → v2, and it
+///   is what stops a v2-era entry in a developer or CI cache dir from being
+///   mis-decoded under the v3 reader — an empty v2 diagnostics block is
+///   byte-identical to an empty v3 one, so without the stamp those entries
+///   would be served by a reader whose element shape has changed. Pinned by
+///   `every_prior_envelope_stamp_reads_as_clean_miss`.
+/// - **4** (task 7245 second review fix) — `labels` is REMOVED from
+///   `PersistedDiagnostic` again, this time for a correctness reason rather
+///   than the audit-of-producers premise that v3 rightly rejected: a label
+///   carries absolute byte offsets into a source text that this cache's key
+///   does not identify. See `PersistedDiagnostic`'s "Why `labels` are not
+///   carried". Same migration mechanism as the two bumps above.
+/// - **5** (task 7345) — the diagnostics block also carries the
+///   structured-detail overlay list after the diagnostics list, so a warm serve
+///   replays it too (see `PersistedDiagnosticsBlock`). Same migration
+///   mechanism; a v4 block is additionally too short to decode under v5, but
+///   the stamp, not that accident, is the guard.
+pub const ENTRY_FORMAT_VERSION: u32 = 5;
 
 /// Fixed byte length of a bincode-1.3 fixint-LE encoded [`CacheEntryHeader`].
 ///
@@ -294,9 +333,8 @@ impl CacheEntryHeader {
 }
 
 /// Canonical engine-version hash for FEA persistent-cache keys. Baked at
-/// build time by `build.rs` over the contributor source files listed in
-/// `CONTRIBUTORS_RELATIVE` (reify-solver-elastic, reify-kernel-gmsh, stdlib
-/// FEA helpers, per-purpose tolerance impls in this crate) plus the resolved
+/// build time by `build.rs` over the sources classified `Hashed` in
+/// `engine_hash_algo::WORKSPACE_CRATE_COVERAGE` plus the resolved
 /// `(name, version)` pins of reify-eval's build+normal (dev-excluded)
 /// dependency closure — the crate names in `engine_hash_closure.txt`
 /// intersected with the workspace `Cargo.lock` (task 5272; narrowed from the
@@ -721,6 +759,153 @@ impl PersistentlyCacheable for BucklingResultCache {
 
     fn solve_time_ms(&self) -> u64 {
         self.solve_time_ms
+    }
+}
+
+// ── Diagnostics envelope (task 7245) ─────────────────────────────────────────
+
+/// Upper bound on the encoded diagnostics block, enforced on both sides by
+/// [`check_diagnostics_block_len`].
+///
+/// On read it is the same discipline as [`check_f64_vec_len`] on the slab
+/// lengths: a corrupt or tampered length frame must be rejected as
+/// `InvalidData` (which `read_entry` turns into a clean miss) rather than
+/// driving an unbounded allocation. On write it refuses a block the reader
+/// would reject, before any byte is written, so such an entry is never
+/// published as a perpetual miss. Diagnostics are a handful of short strings,
+/// but the structured-detail list can carry element-id lists at 8 bytes per
+/// id, so the block size is data dependent; 1 MiB still holds ~130k ids.
+const MAX_DIAGNOSTICS_BLOCK_BYTES: u64 = 1 << 20;
+
+/// Reject a diagnostics block longer than [`MAX_DIAGNOSTICS_BLOCK_BYTES`].
+fn check_diagnostics_block_len(len: u64) -> io::Result<()> {
+    if len > MAX_DIAGNOSTICS_BLOCK_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "diagnostics block length {len} exceeds MAX_DIAGNOSTICS_BLOCK_BYTES \
+                 ({MAX_DIAGNOSTICS_BLOCK_BYTES})"
+            ),
+        ));
+    }
+    Ok(())
+}
+
+/// A persistable value paired with the diagnostics and structured detail its
+/// solve emitted.
+///
+/// # Why an envelope rather than a field on each record type
+///
+/// Diagnostics are an orthogonal dimension to the per-target value payload.
+/// One envelope generic over `V: PersistentlyCacheable` gives a single codec
+/// (SPOT) that covers `ElasticResult`, `BucklingResultCache`,
+/// `ShellExtractionResult` and any future persistable target by construction,
+/// instead of three copies of the same encode/decode. On the elastic side a
+/// per-record field is also blocked outright: `elastic_result_from_value` is
+/// pinned by a hash-identity contract, so diagnostics must not enter the
+/// `Value` — and that bridge has no diagnostics to populate a field with
+/// anyway, since they arrive separately from the trampoline.
+///
+/// This mirrors the in-memory cache's own stance (#5062): diagnostics are entry
+/// METADATA, explicitly not part of the result hash. Structured detail is the
+/// typed half of the same metadata and rides the same block.
+///
+/// # Wire layout — the prefix is load-bearing
+///
+/// ```text
+/// [u64 LE block length][bincode PersistedDiagnosticsBlock][V's body]
+///
+/// PersistedDiagnosticsBlock =
+///     [Vec<PersistedDiagnostic>][Vec<PersistedStructuredDetail>]
+/// ```
+///
+/// The diagnostics block is written BEFORE `V`'s body, never appended after
+/// it. `ElasticResult`'s body ends with a CONDITIONAL probe-byte tail:
+/// reify-compute-contract's `read_aposteriori_tail` does a greedy
+/// `r.read(&mut probe)` and treats `probe_n == 0` as "no tail".
+/// For the very common entry with `aposteriori: None` AND a non-empty
+/// diagnostics list, a suffix would have that read swallow the block's first
+/// byte and decode it as an aposteriori discriminant — a silent wrong-data
+/// path, the worst failure mode for a cache. A prefix is fully self-delimiting
+/// and cannot interact with any `V`'s internal greedy tails.
+///
+/// A prefix is not backward-readable, so introducing this envelope bumped
+/// [`ENTRY_FORMAT_VERSION`] (see its version history): `verify_format_version`
+/// runs BEFORE the body decode, so every pre-envelope entry becomes a clean
+/// miss and a one-time cold recompute.
+#[derive(Debug, Clone)]
+pub struct WithDiagnostics<V> {
+    /// Diagnostics emitted by the solve that produced `value`, replayed on a
+    /// warm serve without their source labels (see
+    /// `diagnostics_wire::PersistedDiagnostic`).
+    pub diagnostics: Vec<reify_core::Diagnostic>,
+    /// Structured-detail overlays emitted by the same solve, replayed on a
+    /// warm serve exactly as the cold solve emitted them.
+    pub structured_detail: Vec<StructuredComputeDetail>,
+    /// The persisted result payload.
+    pub value: V,
+}
+
+impl<V> WithDiagnostics<V> {
+    /// Replace the payload, keeping the solve's diagnostics and structured
+    /// detail unchanged.
+    pub fn map_value<U>(self, f: impl FnOnce(V) -> U) -> WithDiagnostics<U> {
+        WithDiagnostics {
+            diagnostics: self.diagnostics,
+            structured_detail: self.structured_detail,
+            value: f(self.value),
+        }
+    }
+
+    /// Encode the prefix block.
+    ///
+    /// Single source of truth for the block bytes, shared by
+    /// [`PersistentlyCacheable::serialize_to_writer`] and
+    /// [`PersistentlyCacheable::uncompressed_byte_size`] so the header's
+    /// declared size and the bytes actually written can never drift apart.
+    fn encode_diagnostics_block(&self) -> Vec<u8> {
+        diagnostics_wire::encode_block(&self.diagnostics, &self.structured_detail)
+    }
+}
+
+impl<V: PersistentlyCacheable> PersistentlyCacheable for WithDiagnostics<V> {
+    /// Tracks the wrapped type's body format. The on-the-wire stale-entry guard
+    /// is [`ENTRY_FORMAT_VERSION`] in the entry header, which is what actually
+    /// rejects pre-envelope entries; this const is not written to disk today.
+    const FORMAT_VERSION: u32 = V::FORMAT_VERSION;
+
+    fn serialize_to_writer(&self, w: &mut impl Write) -> io::Result<()> {
+        let block = self.encode_diagnostics_block();
+        check_diagnostics_block_len(block.len() as u64)?;
+        w.write_all(&(block.len() as u64).to_le_bytes())?;
+        w.write_all(&block)?;
+        self.value.serialize_to_writer(w)
+    }
+
+    fn deserialize_from_reader(r: &mut impl Read) -> io::Result<Self> {
+        let mut len_frame = [0u8; 8];
+        r.read_exact(&mut len_frame)?;
+        let block_len = u64::from_le_bytes(len_frame);
+        check_diagnostics_block_len(block_len)?;
+        let mut block = vec![0u8; block_len as usize];
+        r.read_exact(&mut block)?;
+        let (diagnostics, structured_detail) = diagnostics_wire::decode_block(&block)?;
+        let value = V::deserialize_from_reader(r)?;
+        Ok(Self {
+            diagnostics,
+            structured_detail,
+            value,
+        })
+    }
+
+    fn uncompressed_byte_size(&self) -> u64 {
+        // The block is stored uncompressed, so it counts verbatim alongside its
+        // 8-byte length frame; only `V`'s body passes through zstd.
+        8 + self.encode_diagnostics_block().len() as u64 + self.value.uncompressed_byte_size()
+    }
+
+    fn solve_time_ms(&self) -> u64 {
+        self.value.solve_time_ms()
     }
 }
 
@@ -1782,9 +1967,31 @@ pub(crate) fn forward_mtime(path: &std::path::Path, secs_in_future: u64) {
     }
 }
 
+/// One overlay of every `FeaDiagnosticDetail` variant, so a round trip
+/// covers each wire-mirror arm.
+///
+/// Exposed `pub(crate)` so every persistence test that must cover all variants
+/// shares ONE list: a new variant is added here once.
+#[cfg(test)]
+pub(crate) fn all_fea_structured_detail() -> Vec<StructuredComputeDetail> {
+    use reify_solver_elastic::{DofDirection, ElementId, FeaDiagnosticDetail};
+    vec![
+        StructuredComputeDetail::Fea(FeaDiagnosticDetail::Unconstrained {
+            rigid_body_modes: DofDirection::all_rigid_body_modes().into(),
+        }),
+        StructuredComputeDetail::Fea(FeaDiagnosticDetail::ProblemElements {
+            ids: vec![ElementId(3), ElementId(5)],
+        }),
+        StructuredComputeDetail::Fea(FeaDiagnosticDetail::UnresolvedSelector {
+            selector_path: "top".into(),
+        }),
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use reify_solver_elastic::{DofDirection, ElementId, FeaDiagnosticDetail};
 
     // ── ENGINE_VERSION_HASH const tests ──────────────────────────────────────
 
@@ -2585,10 +2792,11 @@ version = "9.9.9"
     }
 
     /// Narrowing guard (task 5272): the workspace `Cargo.lock` must NOT appear
-    /// in `CONTRIBUTORS_RELATIVE`. Its contribution to `ENGINE_VERSION_HASH` is
+    /// among the contributor paths. Its contribution to `ENGINE_VERSION_HASH` is
     /// now narrowed to only the resolved (name, version) pins of reify-eval's
-    /// build+normal (exclude-dev) closure — hashed by `build.rs` from the static
-    /// `engine_hash_closure.txt` manifest via `cargo_lock_closure_parts`, NOT by
+    /// build+normal (exclude-dev) closure — hashed by `engine_version_hash_for`
+    /// from the static `engine_hash_closure.txt` manifest via
+    /// `cargo_lock_closure_parts`, NOT by
     /// a whole-file walk. This pins that the narrowing is not reverted: a
     /// re-added `"../../Cargo.lock"` entry would restore whole-lockfile
     /// invalidation (any unrelated dep bump anywhere in the 716-package
@@ -2599,14 +2807,14 @@ version = "9.9.9"
     /// closure by `tests/infra/test_engine_hash_closure.sh`. PRD:
     /// `docs/prds/merge-gate-compile-cost.md` §3 W4 / §5 C4.
     #[test]
-    fn contributors_relative_excludes_workspace_cargo_lock_now_narrowed_to_closure() {
+    fn contributor_paths_exclude_workspace_cargo_lock_now_narrowed_to_closure() {
         assert!(
-            !crate::engine_hash_algo::CONTRIBUTORS_RELATIVE.contains(&"../../Cargo.lock"),
-            "CONTRIBUTORS_RELATIVE must NOT contain \"../../Cargo.lock\" — the \
+            !crate::engine_hash_algo::contributor_paths().any(|p| p == "../../Cargo.lock"),
+            "contributor_paths() must NOT yield \"../../Cargo.lock\" — the \
              Cargo.lock contribution is narrowed to reify-eval's closure pins \
-             (task 5272; hashed by build.rs from engine_hash_closure.txt). \
+             (task 5272; hashed from engine_hash_closure.txt). \
              Actual list: {:#?}",
-            crate::engine_hash_algo::CONTRIBUTORS_RELATIVE
+            crate::engine_hash_algo::contributor_paths().collect::<Vec<_>>()
         );
     }
 
@@ -2897,15 +3105,131 @@ version = "9.9.9"
     }
 
     #[test]
-    fn entry_format_version_const_is_one() {
-        // Pins the start-at-1 convention (0 = uninitialised / unknown).
+    fn entry_format_version_const_matches_history() {
         // An intentional on-disk-layout bump must touch this assertion — that
         // is the point: it forces a deliberate acknowledgement that cached bytes
         // from the previous version are now incompatible. Mirrors the
         // `elastic_result_format_version_is_one` pattern for body-format
         // versioning; these two consts are intentionally distinct namespaces
         // (entry-header layout vs. body encoding).
-        assert_eq!(ENTRY_FORMAT_VERSION, 1);
+        //
+        // What each bump changed is recorded once, in the version history on
+        // `ENTRY_FORMAT_VERSION` itself; extend it there with the bump.
+        assert_eq!(ENTRY_FORMAT_VERSION, 5);
+    }
+
+    #[test]
+    fn read_entry_rejects_pre_envelope_v1_entry_as_a_clean_miss() {
+        // The migration contract for the v1 → v2 bump: a cache written before
+        // the diagnostics envelope existed degrades to a cold recompute. Never
+        // an `Err` (which would surface as an infrastructure failure), and never
+        // a garbage decode — `verify_format_version` runs BEFORE the body decode
+        // precisely so a stale layout cannot reach the decoder.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+        let eng = "abcdef0123456789abcdef0123456789";
+        let inp = "0011223344556677001122334455667b";
+
+        // The fixture's staleness is the whole premise. Written as a literal 1
+        // (never `ENTRY_FORMAT_VERSION`) so this test keeps its meaning across
+        // any future bump.
+        assert_ne!(
+            1, ENTRY_FORMAT_VERSION,
+            "this fixture only models a STALE entry while ENTRY_FORMAT_VERSION \
+             differs from 1; the envelope bump is what makes v1 entries stale"
+        );
+
+        // Hand-write the pre-envelope layout: a v1 header followed by a BARE
+        // `ElasticResult` body with no diagnostics prefix.
+        std::fs::create_dir_all(shard_dir(root, eng, inp)).unwrap();
+        let legacy = make_sample_result();
+        let header = CacheEntryHeader {
+            format_version: 1,
+            engine_version_hash: cache_key_to_ascii_32(eng).unwrap(),
+            input_hash: cache_key_to_ascii_32(inp).unwrap(),
+            solve_time_ms: legacy.solve_time_ms(),
+            byte_size: legacy.uncompressed_byte_size(),
+            written_at: 0,
+        };
+        let mut f = std::fs::File::create(entry_bin_path(root, eng, inp)).unwrap();
+        header.write_to(&mut f).unwrap();
+        legacy.serialize_to_writer(&mut f).unwrap();
+        drop(f);
+        write_sidecar(&entry_meta_path(root, eng, inp)).unwrap();
+
+        let got = read_entry::<WithDiagnostics<ElasticResult>>(root, eng, inp)
+            .expect("a stale entry must be a miss, never an Err");
+        assert!(
+            got.is_none(),
+            "a v1 entry must read as a clean miss so the caller cold-recomputes"
+        );
+    }
+
+    #[test]
+    fn every_prior_envelope_stamp_reads_as_clean_miss() {
+        // The migration contract for every bump since the envelope existed: an
+        // entry stamped with any earlier envelope version is a clean miss, and
+        // it is the STAMP that rejects it — not an accidental body-decode
+        // failure. The body bytes below are produced by the CURRENT encoder, so
+        // they decode cleanly under the current reader; only the header stamp
+        // differs. That is exactly the entry a reader would silently serve if
+        // `verify_format_version` did not run before the body decode (e.g. an
+        // empty v2 diagnostics block was byte-identical to an empty v3 one).
+        // The pre-envelope v1 layout has its own test above.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+        let eng = "abcdef0123456789abcdef0123456789";
+
+        let entry = WithDiagnostics {
+            diagnostics: vec![],
+            structured_detail: vec![],
+            value: make_sample_result(),
+        };
+        let mut body: Vec<u8> = Vec::new();
+        entry
+            .serialize_to_writer(&mut body)
+            .expect("serialize_to_writer into a Vec must not fail");
+
+        let write_with_stamp = |stamp: u32, inp: &str| {
+            std::fs::create_dir_all(shard_dir(root, eng, inp)).unwrap();
+            let header = CacheEntryHeader {
+                format_version: stamp,
+                engine_version_hash: cache_key_to_ascii_32(eng).unwrap(),
+                input_hash: cache_key_to_ascii_32(inp).unwrap(),
+                solve_time_ms: entry.solve_time_ms(),
+                byte_size: entry.uncompressed_byte_size(),
+                written_at: 0,
+            };
+            let mut f = std::fs::File::create(entry_bin_path(root, eng, inp)).unwrap();
+            header.write_to(&mut f).unwrap();
+            f.write_all(&body).unwrap();
+            drop(f);
+            write_sidecar(&entry_meta_path(root, eng, inp)).unwrap();
+        };
+
+        for stale in 2..ENTRY_FORMAT_VERSION {
+            let inp = format!("00112233445566770011223344556{stale:03x}");
+            write_with_stamp(stale, &inp);
+            let got = read_entry::<WithDiagnostics<ElasticResult>>(root, eng, &inp)
+                .expect("a stale entry must be a miss, never an Err");
+            assert!(
+                got.is_none(),
+                "a v{stale} entry must read as a clean miss so the caller cold-recomputes"
+            );
+        }
+
+        // Non-vacuity: the identical body under the CURRENT stamp must be a
+        // HIT. Without this, a malformed fixture would fail its body decode —
+        // which `read_entry` also turns into `Ok(None)` — and every assertion
+        // above would pass for entirely the wrong reason.
+        let fresh_inp = "0011223344556677001122334455fffe";
+        write_with_stamp(ENTRY_FORMAT_VERSION, fresh_inp);
+        assert!(
+            read_entry::<WithDiagnostics<ElasticResult>>(root, eng, fresh_inp)
+                .expect("a current-format entry must not Err")
+                .is_some(),
+            "the fixture body must be decodable, or the misses above prove nothing"
+        );
     }
 
     #[test]
@@ -4244,8 +4568,6 @@ version = "9.9.9"
     /// Fails RED before the `tracing::info!` site is added in step-2.
     #[test]
     fn evict_over_cap_emits_info_summary_with_expected_fields() {
-        reify_test_support::prime_tracing_callsite_cache();
-
         let tmp = tempfile::TempDir::new().unwrap();
         let root = tmp.path();
         let eng = "dddddddddddddddddddddddddddddd00";
@@ -4352,7 +4674,6 @@ version = "9.9.9"
     /// Fails RED before the `tracing::debug!` site is added in step-4.
     #[test]
     fn evict_over_cap_debug_count_equals_evicted_count() {
-        reify_test_support::prime_tracing_callsite_cache();
         use reify_test_support::CountingSubscriberBuilder;
         use std::sync::atomic::Ordering;
 
@@ -4421,7 +4742,6 @@ version = "9.9.9"
     /// only.
     #[test]
     fn evict_over_cap_silent_on_under_cap_and_absent_subdir() {
-        reify_test_support::prime_tracing_callsite_cache();
         use reify_test_support::CountingSubscriberBuilder;
         use std::sync::atomic::Ordering;
 
@@ -5090,6 +5410,454 @@ version = "9.9.9"
             <BucklingResultCache as PersistentlyCacheable>::FORMAT_VERSION,
             1,
             "BucklingResultCache FORMAT_VERSION must be 1"
+        );
+    }
+
+    // ── WithDiagnostics<V> envelope tests (task 7245) ─────────────────────────
+
+    /// The canonical too-thick warning, shaped exactly as the solver emits it
+    /// (`Diagnostic::warning(..).with_code(..)`, no labels, no candidates) —
+    /// see elastic_static.rs's `FailurePolicy::TetFallbackWithWarning` arm.
+    fn shell_too_thick_warning() -> reify_core::Diagnostic {
+        reify_core::Diagnostic::warning(
+            "shell candidate too thick for shell elements; falling back to tet mesh",
+        )
+        .with_code(reify_core::DiagnosticCode::ShellTooThick)
+    }
+
+    /// `make_sample_result` with the task-#4942 aposteriori tail PRESENT, so the
+    /// round-trip covers a body whose full tail chain is written.
+    fn sample_result_with_aposteriori() -> ElasticResult {
+        let mut er = make_sample_result();
+        er.aposteriori = Some(AposterioriEstimate {
+            convergence_status: reify_solver_elastic::ConvergenceStatus::Converged {
+                final_indicator: 1.5e-3,
+            },
+            error_indicator: Some(vec![0.1, 0.2, 0.3]),
+            global_relative_energy_error: Some(1.5e-3),
+        });
+        er
+    }
+
+    #[test]
+    fn with_diagnostics_round_trips_structured_detail_of_every_fea_variant() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+        let eng = "abcdef0123456789abcdef0123456789";
+        let inp = "0011223344556677001122334455aaa1";
+
+        let original = WithDiagnostics {
+            diagnostics: vec![shell_too_thick_warning()],
+            structured_detail: all_fea_structured_detail(),
+            value: sample_result_with_aposteriori(),
+        };
+        write_entry(root, eng, inp, &original).unwrap();
+        let read_back = read_entry::<WithDiagnostics<ElasticResult>>(root, eng, inp)
+            .unwrap()
+            .expect("entry must be a hit");
+
+        assert_eq!(
+            read_back.structured_detail, original.structured_detail,
+            "every structured-detail overlay must be replayed exactly as written"
+        );
+        assert_eq!(
+            read_back.diagnostics[0].code,
+            Some(reify_core::DiagnosticCode::ShellTooThick),
+            "the diagnostics list must survive alongside the structured detail"
+        );
+        assert_eq!(read_back.value, original.value);
+    }
+
+    #[test]
+    fn with_diagnostics_structured_detail_prefix_survives_absent_aposteriori_tail() {
+        // The #7245 prefix-ordering regression for the structured-detail list:
+        // with the conditional tail ABSENT, any metadata byte placed after V's
+        // body would be read as an aposteriori discriminant.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+        let eng = "abcdef0123456789abcdef0123456789";
+        let inp = "0011223344556677001122334455aaa2";
+
+        let value = make_sample_result();
+        assert!(
+            value.aposteriori.is_none(),
+            "this test is only meaningful when the conditional tail is ABSENT"
+        );
+        let original = WithDiagnostics {
+            diagnostics: vec![],
+            structured_detail: all_fea_structured_detail(),
+            value,
+        };
+        write_entry(root, eng, inp, &original).unwrap();
+        let read_back = read_entry::<WithDiagnostics<ElasticResult>>(root, eng, inp)
+            .unwrap()
+            .expect("entry must be a hit, not a decode failure");
+
+        assert!(
+            read_back.value.aposteriori.is_none(),
+            "structured detail must not leak into the aposteriori tail; got {:?}",
+            read_back.value.aposteriori
+        );
+        assert_eq!(read_back.value, original.value);
+        assert_eq!(read_back.structured_detail, original.structured_detail);
+    }
+
+    #[test]
+    fn with_diagnostics_refuses_to_write_a_block_over_the_read_bound() {
+        // An element-id list scales with the mesh, so the block size is data
+        // dependent. A block the reader would reject must never be published:
+        // it would be a perpetual miss that still costs a write and disk.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+        let eng = "abcdef0123456789abcdef0123456789";
+        let inp = "0011223344556677001122334455aaa3";
+
+        let oversized = WithDiagnostics {
+            diagnostics: vec![],
+            structured_detail: vec![StructuredComputeDetail::Fea(
+                FeaDiagnosticDetail::ProblemElements {
+                    ids: (0..(MAX_DIAGNOSTICS_BLOCK_BYTES as usize / 8 + 1))
+                        .map(ElementId)
+                        .collect(),
+                },
+            )],
+            value: make_sample_result(),
+        };
+        assert!(
+            write_entry(root, eng, inp, &oversized).is_err(),
+            "a block over MAX_DIAGNOSTICS_BLOCK_BYTES must be refused on write"
+        );
+        assert!(
+            !entry_bin_path(root, eng, inp).exists(),
+            "a refused write must not publish a .bin"
+        );
+        assert!(
+            read_entry::<WithDiagnostics<ElasticResult>>(root, eng, inp)
+                .unwrap()
+                .is_none(),
+            "a refused write must leave a clean miss"
+        );
+    }
+
+    #[test]
+    fn structured_detail_rejects_an_unknown_dof_direction_byte() {
+        // Hand-encoded block: an empty diagnostics list, then one
+        // Fea(Unconstrained) overlay carrying a single rigid-body-mode byte.
+        let entry_with_mode_byte = |mode: u8| -> Vec<u8> {
+            let mut block: Vec<u8> = Vec::new();
+            block.extend_from_slice(&0u64.to_le_bytes()); // diagnostics: []
+            block.extend_from_slice(&1u64.to_le_bytes()); // one overlay
+            block.extend_from_slice(&0u32.to_le_bytes()); // Fea
+            block.extend_from_slice(&0u32.to_le_bytes()); // Unconstrained
+            block.extend_from_slice(&1u64.to_le_bytes()); // one mode
+            block.push(mode);
+            let mut bytes = (block.len() as u64).to_le_bytes().to_vec();
+            bytes.extend_from_slice(&block);
+            make_sample_result()
+                .serialize_to_writer(&mut bytes)
+                .expect("serialize_to_writer into a Vec must not fail");
+            bytes
+        };
+
+        // Non-vacuity: the same bytes with the last valid code decode cleanly.
+        let valid = WithDiagnostics::<ElasticResult>::deserialize_from_reader(
+            &mut entry_with_mode_byte(5).as_slice(),
+        )
+        .expect("a well-formed block must decode");
+        assert_eq!(
+            valid.structured_detail,
+            vec![StructuredComputeDetail::Fea(
+                FeaDiagnosticDetail::Unconstrained {
+                    rigid_body_modes: vec![DofDirection::RotationZ],
+                }
+            )]
+        );
+
+        let err = WithDiagnostics::<ElasticResult>::deserialize_from_reader(
+            &mut entry_with_mode_byte(6).as_slice(),
+        )
+        .expect_err("an unknown DofDirection byte must not decode");
+        assert_eq!(
+            err.kind(),
+            io::ErrorKind::InvalidData,
+            "expected InvalidData (never a silently wrong direction), got {err:?}"
+        );
+        assert!(
+            err.to_string().contains('6'),
+            "the rejection must name the offending byte, got: {err}"
+        );
+    }
+
+    #[test]
+    fn with_diagnostics_round_trips_value_and_diagnostics() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+        let eng = "abcdef0123456789abcdef0123456789";
+        let inp = "0011223344556677001122334455667f";
+
+        let original = WithDiagnostics {
+            diagnostics: vec![shell_too_thick_warning()],
+            structured_detail: vec![],
+            value: sample_result_with_aposteriori(),
+        };
+        write_entry(root, eng, inp, &original).unwrap();
+        let read_back = read_entry::<WithDiagnostics<ElasticResult>>(root, eng, inp)
+            .unwrap()
+            .expect("entry must be a hit");
+
+        assert_eq!(
+            read_back.value.max_von_mises, original.value.max_von_mises,
+            "max_von_mises must round-trip"
+        );
+        assert_eq!(
+            read_back.value, original.value,
+            "the whole ElasticResult record must round-trip unchanged — the \
+             diagnostics prefix must not perturb the body encoding"
+        );
+        assert_eq!(read_back.diagnostics.len(), 1, "one diagnostic was written");
+        assert_eq!(read_back.diagnostics[0].severity, reify_core::Severity::Warning);
+        assert_eq!(
+            read_back.diagnostics[0].code,
+            Some(reify_core::DiagnosticCode::ShellTooThick),
+            "the replayed diagnostic must keep its code"
+        );
+        assert_eq!(
+            read_back.diagnostics[0].message, original.diagnostics[0].message,
+            "the replayed diagnostic must keep its message verbatim"
+        );
+    }
+
+    #[test]
+    fn with_diagnostics_round_trips_empty_diagnostics_as_empty() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+        let eng = "abcdef0123456789abcdef0123456789";
+        let inp = "0011223344556677001122334455667e";
+
+        let original = WithDiagnostics {
+            diagnostics: Vec::new(),
+            structured_detail: vec![],
+            value: make_sample_result(),
+        };
+        write_entry(root, eng, inp, &original).unwrap();
+        let read_back = read_entry::<WithDiagnostics<ElasticResult>>(root, eng, inp)
+            .unwrap()
+            .expect("entry must be a hit");
+
+        assert!(
+            read_back.diagnostics.is_empty(),
+            "an empty diagnostics list must round-trip empty, got {:?}",
+            read_back.diagnostics
+        );
+        assert_eq!(read_back.value, original.value);
+    }
+
+    #[test]
+    fn with_diagnostics_prefix_survives_absent_aposteriori_tail() {
+        // THE prefix-ordering regression; see `WithDiagnostics`'s wire layout.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+        let eng = "abcdef0123456789abcdef0123456789";
+        let inp = "0011223344556677001122334455667d";
+
+        let value = make_sample_result();
+        assert!(
+            value.aposteriori.is_none(),
+            "this test is only meaningful when the conditional tail is ABSENT"
+        );
+        let original = WithDiagnostics {
+            diagnostics: vec![
+                shell_too_thick_warning(),
+                reify_core::Diagnostic::info("adaptive refinement converged"),
+            ],
+            structured_detail: vec![],
+            value,
+        };
+        write_entry(root, eng, inp, &original).unwrap();
+        let read_back = read_entry::<WithDiagnostics<ElasticResult>>(root, eng, inp)
+            .unwrap()
+            .expect("entry must be a hit, not a decode failure");
+
+        assert!(
+            read_back.value.aposteriori.is_none(),
+            "a suffix layout would have decoded the diagnostics block's first \
+             byte as an aposteriori discriminant; got {:?}",
+            read_back.value.aposteriori
+        );
+        assert_eq!(read_back.value, original.value);
+        assert_eq!(read_back.diagnostics.len(), 2);
+        assert_eq!(
+            read_back.diagnostics[0].code,
+            Some(reify_core::DiagnosticCode::ShellTooThick)
+        );
+        assert_eq!(read_back.diagnostics[1].severity, reify_core::Severity::Info);
+    }
+
+    #[test]
+    fn with_diagnostics_header_byte_size_matches_uncompressed_body() {
+        // Forwarding pin: `solve_time_ms` passes through to `V`, and
+        // `uncompressed_byte_size` accounts for the diagnostics prefix so
+        // `CacheEntryHeader.byte_size` stays the true uncompressed body length —
+        // the invariant held by
+        // `write_entry_populates_byte_size_field_with_actually_uncompressed_body_byte_count`
+        // for the bare-`V` case.
+        use std::fs::File;
+        use std::io::Read as _;
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+        let eng = "deadbeef00112233deadbeef00112233";
+        let inp = "cafebabe44556677cafebabe4455667c";
+
+        let original = WithDiagnostics {
+            diagnostics: vec![shell_too_thick_warning()],
+            structured_detail: vec![],
+            value: make_sample_result(),
+        };
+        write_entry(root, eng, inp, &original).unwrap();
+
+        let mut f = File::open(entry_bin_path(root, eng, inp)).unwrap();
+        let header = CacheEntryHeader::read_from(&mut f).unwrap();
+
+        assert_eq!(
+            header.solve_time_ms,
+            original.value.solve_time_ms,
+            "solve_time_ms must be forwarded to V — it is the cost term in \
+             cost-weighted LRU eviction"
+        );
+
+        // Body layout: [u64 LE block length][diagnostics block][zstd frame of V].
+        let mut body: Vec<u8> = Vec::new();
+        f.read_to_end(&mut body).unwrap();
+        let block_len =
+            u64::from_le_bytes(body[..8].try_into().expect("8-byte length frame")) as usize;
+        let mut decompressed: Vec<u8> = Vec::new();
+        zstd::Decoder::new(&body[8 + block_len..])
+            .unwrap()
+            .read_to_end(&mut decompressed)
+            .unwrap();
+
+        assert_eq!(
+            header.byte_size,
+            (8 + block_len + decompressed.len()) as u64,
+            "byte_size must be the uncompressed body byte count: the 8-byte \
+             length frame plus the diagnostics block plus the decompressed V body"
+        );
+    }
+
+    #[test]
+    fn with_diagnostics_prefix_encoding_matches_pinned_bytes() {
+        // The prefix is on-disk layout, pinned like the header in
+        // `cache_entry_header_bincode_encoding_matches_pinned_hex_literal`.
+        let entry = WithDiagnostics {
+            diagnostics: vec![
+                reify_core::Diagnostic::warning("m")
+                    .with_code(reify_core::DiagnosticCode::ShellTooThick)
+                    .with_candidates(["c"]),
+            ],
+            structured_detail: vec![
+                StructuredComputeDetail::Fea(FeaDiagnosticDetail::Unconstrained {
+                    rigid_body_modes: DofDirection::all_rigid_body_modes().into(),
+                }),
+                StructuredComputeDetail::Fea(FeaDiagnosticDetail::ProblemElements {
+                    ids: vec![ElementId(3)],
+                }),
+                StructuredComputeDetail::Fea(FeaDiagnosticDetail::UnresolvedSelector {
+                    selector_path: "top".into(),
+                }),
+            ],
+            value: make_sample_result(),
+        };
+        let mut encoded: Vec<u8> = Vec::new();
+        entry
+            .serialize_to_writer(&mut encoded)
+            .expect("serialize_to_writer into a Vec must not fail");
+
+        // bincode 1.3 fixint-LE: u64 lengths, a u8 `Option` tag, u32 enum
+        // variant tags, fields in declaration order.
+        #[rustfmt::skip]
+        let expected: [u8; 138] = [
+            // block length frame = 130 (u64): 57 diagnostics + 73 structured
+            0x82, 0, 0, 0, 0, 0, 0, 0,
+            // Vec<PersistedDiagnostic> length = 1 (u64)
+            0x01, 0, 0, 0, 0, 0, 0, 0,
+            // severity = Warning
+            0x01,
+            // message = "m" (u64 length, UTF-8)
+            0x01, 0, 0, 0, 0, 0, 0, 0, b'm',
+            // code = Some("ShellTooThick") (tag, u64 length, UTF-8)
+            0x01, 0x0D, 0, 0, 0, 0, 0, 0, 0,
+            b'S', b'h', b'e', b'l', b'l', b'T', b'o', b'o', b'T', b'h', b'i', b'c', b'k',
+            // candidates = ["c"] (u64 count, then one u64-length string)
+            0x01, 0, 0, 0, 0, 0, 0, 0, 0x01, 0, 0, 0, 0, 0, 0, 0, b'c',
+            // Vec<PersistedStructuredDetail> length = 3 (u64)
+            0x03, 0, 0, 0, 0, 0, 0, 0,
+            // Fea (u32 tag 0) / Unconstrained (u32 tag 0), modes = [0..=5]
+            0, 0, 0, 0, 0, 0, 0, 0,
+            0x06, 0, 0, 0, 0, 0, 0, 0, 0, 1, 2, 3, 4, 5,
+            // Fea (u32 tag 0) / ProblemElements (u32 tag 1), element_ids = [3]
+            0, 0, 0, 0, 0x01, 0, 0, 0,
+            0x01, 0, 0, 0, 0, 0, 0, 0, 0x03, 0, 0, 0, 0, 0, 0, 0,
+            // Fea (u32 tag 0) / UnresolvedSelector (u32 tag 2), selector_path = "top"
+            0, 0, 0, 0, 0x02, 0, 0, 0,
+            0x03, 0, 0, 0, 0, 0, 0, 0, b't', b'o', b'p',
+        ];
+        assert_eq!(
+            &encoded[..expected.len()],
+            &expected[..],
+            "the diagnostics prefix encoding has drifted from the pinned bytes; \
+             if intentional, bump ENTRY_FORMAT_VERSION in the SAME commit and \
+             update this literal"
+        );
+    }
+
+    #[test]
+    fn with_diagnostics_round_trip_drops_labels_and_keeps_candidates() {
+        // Both halves turn on one question — is the field meaningful without
+        // the source text the key does not identify? See
+        // `diagnostics_wire::PersistedDiagnostic`.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+        let eng = "abcdef0123456789abcdef0123456789";
+        let inp = "0011223344556677001122334455667c";
+
+        let rich = reify_core::Diagnostic::warning("decorated")
+            .with_code(reify_core::DiagnosticCode::ShellTooThick)
+            .with_label(reify_core::DiagnosticLabel::new(
+                reify_core::SourceSpan::new(3, 9),
+                "here",
+            ))
+            .with_candidates(vec!["foo::Bar".to_string()]);
+        assert!(!rich.labels.is_empty() && !rich.candidates.is_empty());
+
+        write_entry(
+            root,
+            eng,
+            inp,
+            &WithDiagnostics {
+                diagnostics: vec![rich],
+                structured_detail: vec![],
+                value: make_sample_result(),
+            },
+        )
+        .unwrap();
+        let read_back = read_entry::<WithDiagnostics<ElasticResult>>(root, eng, inp)
+            .unwrap()
+            .expect("entry must be a hit");
+
+        let got = &read_back.diagnostics[0];
+        assert_eq!(got.message, "decorated");
+        assert_eq!(got.code, Some(reify_core::DiagnosticCode::ShellTooThick));
+        assert!(
+            got.labels.is_empty(),
+            "a warm serve must replay the diagnostic UNANCHORED — a persisted \
+             span is only meaningful against source this key does not identify, \
+             got {got:?}"
+        );
+        assert_eq!(
+            got.candidates,
+            vec!["foo::Bar".to_string()],
+            "candidates must survive"
         );
     }
 }

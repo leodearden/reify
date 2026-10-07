@@ -20,9 +20,26 @@ module dcr_load_ctor_dimension_silent
 //     silently (INV-SF-3);
 //   * `reify eval` EXIT 0.
 //
-// This file must EVAL CLEAN (exit 0) today. After γ3 the bare spellings must
-// exit 1 with `ArgDimensionMismatch`, and TractionLoad/BodyForce reaching a
-// solver must exit 1 with `FeaLoadKindUnsupported`.
+// At decompose this file EVALUATED CLEAN (exit 0), and the plan was for γ3 to
+// make the bare spellings exit 1 with a coded Error, and TractionLoad/BodyForce
+// reaching a solver exit 1 with `FeaLoadKindUnsupported`. Since δ (#5306) the
+// file exits 1 BEFORE any γ leaf lands, on the ctor-conformance chokepoint
+// recorded below. That exit 1 is NOT γ1's, γ2's or γ3's signal.
+//
+// POST-δ RE-MEASUREMENT (2026-09-25, main 12a9da343d; #5306 flipped
+// CTOR_FIELD_CONFORMANCE_SEVERITY to Error):
+//   `reify check` EXIT 1 / `reify eval` EXIT 1, two Errors:
+//   * ArgTypeMismatch, PointLoad.force on `dimensioned_point`:
+//     Scalar[m·kg·s^-2] at a field still declared `Real`;
+//   * ArgTypeMismatch, TractionLoad.traction on `traction`:
+//     Scalar[kg·m^-1·s^-2] at a field still declared `Real`.
+//   The bare spellings raise nothing. CHOKEPOINT: compile-time struct-ctor field
+//   conformance, so eval stops at compile. Machine pin: the gate-resident
+//   `ctor_conformance_corpus_residual_entries_are_all_live` (reify-compiler,
+//   harness_ctor_conformance_survey/disposition.rs).
+//   How γ1 (#6922), γ2 (#6941) and γ3 (#5802) read their signals instead, and
+//   this file's predicted post-γ2 diagnostic set:
+//   docs/notes/ctor-conformance-flip-leaf-signals.md.
 
 structure def DcrLoadCtorDimensionSilent {
     let dimensioned_point = PointLoad(point: "tip", force: 5000N)

@@ -30,14 +30,14 @@
 // (`all_examples_parse_and_compile_with_stdlib`) auto-discovers this file and
 // requires it to compile with ZERO Error-severity diagnostics.  The dedicated
 // regression test at
-//   crates/reify-compiler/tests/robustness_examples_tests.rs
+//   crates/reify-compiler/tests/harness_diagnostics_robustness/robustness_examples_tests.rs
 // pins the same compile-clean contract plus the ZVDShaper / input_shape source
 // pins.
 // ─────────────────────────────────────────────────────────────────────────────
 structure def ZvdRobustness {
     // ZVD impulse shaper: suppress 10 Hz resonance with 5 % critical damping.
     // ZVD's robustness guarantee depends explicitly on ζ, so damping_ratio is a
-    // required param. target_frequency > 0Hz (ctor constraint, trajectory.ri:688).
+    // required param. target_frequency > 0Hz (ctor constraint, `ZVDShaper`, trajectory.ri).
     let shaper = ZVDShaper(target_frequency: 10Hz, damping_ratio: 0.05)
 
     // Two-waypoint linear ramp over [0 s, 1 s], one joint (scalar Real).

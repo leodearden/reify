@@ -372,8 +372,9 @@ fn check_strict_indeterminate_exits_failure_naming_constraint() {
         "stderr should contain 'Strict check failed' (strict detail goes to stderr), got stderr: {stderr}\nstdout: {stdout}"
     );
     assert!(
-        stderr.contains("Bracket#constraint[1]"),
-        "stderr should name 'Bracket#constraint[1]', got stderr: {stderr}\nstdout: {stdout}"
+        stderr.contains("Bracket#constraint[1]: undefined inputs: Bracket.tolerance"),
+        "stderr should name 'Bracket#constraint[1]' with its recorded reason, got \
+         stderr: {stderr}\nstdout: {stdout}"
     );
     assert!(
         !stdout.contains("No constraints violated"),
@@ -479,6 +480,57 @@ fn check_strict_purpose_indeterminate_exits_failure() {
 
 // ── end task 4488 θ step-7 ───────────────────────────────────────────────────
 
+// ── task 5418 DIC δ: the recorded indeterminate reason is rendered ────────────
+
+/// B9: the strict detail and the per-constraint line both name the reason the
+/// checker recorded for the inert connect — never the old guessed header.
+#[test]
+fn check_strict_inert_connect_renders_the_recorded_reason() {
+    let (status, stdout, stderr) = common::run_with_args(&[
+        "check",
+        "--strict",
+        &common::fixture_path("dic_inert_connect.ri"),
+    ]);
+
+    assert!(
+        !status.success(),
+        "reify check --strict must fail on an indeterminate constraint.\nstdout: \
+         {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("frame_align_a_b: operator undefined for these operand kinds"),
+        "the strict detail must name the recorded reason, got stderr: {stderr}"
+    );
+    assert!(
+        !stderr.contains("inputs undefined (e.g."),
+        "the guessed reason must be gone, got stderr: {stderr}"
+    );
+    assert!(
+        stdout.contains("INDETERMINATE frame_align_a_b: operator undefined for these operand kinds"),
+        "the per-constraint line must name the recorded reason, got stdout: {stdout}"
+    );
+    assert!(
+        stdout.contains("OK connect_compat_a_b"),
+        "the satisfied connect constraint is reported unchanged, got stdout: {stdout}"
+    );
+}
+
+/// R4: without `--strict` the inert connect keeps today's green exit and summary.
+#[test]
+fn check_inert_connect_without_strict_is_unchanged() {
+    let (status, stdout, stderr) =
+        common::run_with_args(&["check", &common::fixture_path("dic_inert_connect.ri")]);
+
+    assert!(
+        status.success(),
+        "reify check (no --strict) must exit 0.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stdout.contains("No constraints violated (1 indeterminate)."),
+        "the legacy summary must be unchanged, got: {stdout}"
+    );
+}
+
 // --- B10 LEAF: W_UNDERDETERMINED on `reify check` (task κ #4019, PRD §3.6/§10.2) ---
 
 /// `reify check` on a fixture with one unconstrained `auto` param emits
@@ -576,6 +628,1192 @@ fn check_appearance_violated_exits_failure() {
     assert!(
         stdout.contains("Some constraints violated"),
         "stdout should contain 'Some constraints violated', got: {stdout}"
+    );
+}
+
+#[test]
+fn check_geometry_module_resolves_geometry_query_constraints() {
+    // Task 5748 / PRD docs/prds/v0_6/check-diagnostic-truthfulness.md leaf β, D1.
+    //
+    // `reify check` used to route a geometry-bearing module through the
+    // lightweight `Engine::new(None) + check()` path whenever it carried none of
+    // {geometric Conforms, RepresentationWithin, DFMRule}.  Geometry-query value
+    // cells (`centroid`, `moment_of_inertia`, …) are populated only by
+    // `run_post_processes`/`post_process_geometry_queries` on the
+    // `with_registered_kernel + build()` path, so they stayed `undef` and every
+    // constraint reading one degraded to INDETERMINATE.
+    //
+    // Measured pre-change baseline for this fixture:
+    //     stdout: "  OK BoltFlange#constraint[0]"
+    //             "  INDETERMINATE BoltFlange#constraint[1]"
+    //             "  OK BoltFlange#constraint[2]" / "[3]"
+    //             "No constraints violated (1 indeterminate)."
+    //     stderr: "error: `centroid` could not be resolved: …"
+    //             "error: `moment_of_inertia` could not be resolved: …"
+    //             "warning: constraint BoltFlange#constraint[1] indeterminate: \
+    //                       undefined inputs: BoltFlange.moi_principal"
+    //     exit 0
+    //
+    // `reify eval` on the same fixture (already geometry-routed via
+    // `module_has_geometry`, main.rs cmd_eval) resolves both cells — so D1's
+    // routing change is exactly what flips constraint[1] INDETERMINATE → OK.
+    let (status, stdout, stderr) =
+        common::run_subcommand("check", &common::example_path("m5_geometry_flange.ri"));
+
+    assert!(
+        status.success(),
+        "reify check should exit 0 for m5_geometry_flange.ri.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        // Kernel-DEPENDENT below this line, unlike the exit-code assertion
+        // above: resolving `centroid`/`moment_of_inertia` needs the realization
+        // loop to actually produce a solid, which a stub build cannot do.  The
+        // cells stay `undef`, constraint[1] degrades to INDETERMINATE, and the
+        // command still exits 0 (indeterminate is not a failure — see
+        // `check_indeterminate_constraint_exits_success`), so only the content
+        // assertions have to be skipped.  Same C1 convention as the three
+        // sibling task-5748 tests in this file.
+        eprintln!(
+            "skipping geometry-query resolution assertions: OCCT unavailable \
+             (cfg(has_occt) not set — stub-mode build)"
+        );
+        return;
+    }
+
+    assert!(
+        stdout.contains("OK BoltFlange#constraint[1]"),
+        "constraint[1] reads a geometry-query cell (moment_of_inertia); with geometry routing it \
+         must resolve to OK.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        !stdout.contains("INDETERMINATE BoltFlange#constraint[1]"),
+        "constraint[1] must no longer be INDETERMINATE.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        !stderr.contains("`centroid` could not be resolved"),
+        "the centroid geometry query must resolve on the build() path.\nstderr: {stderr}"
+    );
+    assert!(
+        !stderr.contains("`moment_of_inertia` could not be resolved"),
+        "the moment_of_inertia geometry query must resolve on the build() path.\nstderr: {stderr}"
+    );
+    assert!(
+        !stderr.contains("indeterminate: undefined inputs: BoltFlange.moi_principal"),
+        "moi_principal derives from a now-resolvable geometry query, so its constraint must no \
+         longer report undefined inputs.\nstderr: {stderr}"
+    );
+}
+
+/// Task 5403 (γ) / PRD `eradicate-silent-undef.md` Leg B, INV-SF-2 — the
+/// concrete regression this gate exists for, folded in from observation
+/// esc-6584-2.
+///
+/// MEASURED pre-change baseline for `fixtures/cyclic_let_scalar.ri`:
+///     stderr: "warning: W_MODULE_DECL_MISSING: …"
+///             "error: circular let-binding dependency in template P: [a, b]"
+///     stdout: "All constraints satisfied."
+///     exit 0
+///
+/// An `error:` line and "All constraints satisfied." in the same run, exiting
+/// 0 — silent undef, exactly what INV-SF-2 forbids.
+///
+/// Three assertions, each load-bearing for a different reason:
+///
+/// 1. `!status.success()` is the RED half — this is the one assertion in the
+///    task that genuinely failed before the gate existed.
+/// 2. the `circular let-binding` stderr assertion guards against the test
+///    passing for the WRONG reason. Without it, a future change that stopped
+///    the fixture reaching the eval phase at all (see the dimensional variant,
+///    which fails at COMPILE time under the #6584 bug) would leave this test
+///    green while proving nothing about the gate.
+/// 3. the stdout assertion pins that the gate escalates the exit code AFTER
+///    `finish_check` and does NOT rewrite the summary. That stdout/exit pair
+///    looks contradictory in isolation and is deliberate: it is exactly how
+///    the two ad-hoc escalations this task deletes (GdtIllegalModifier and
+///    the now-deleted `has_dfm_rule && dfm_has_error_diagnostic`) already
+///    behaved, so `check`'s
+///    stdout stays byte-identical across the change.
+///
+/// Deliberately NOT OCCT-gated: the fixture declares no geometry, so it takes
+/// the lightweight `Engine::new(None) + check()` arm and asserts identically
+/// in a stub-mode build.
+#[test]
+fn check_exits_nonzero_on_eval_phase_circular_let_binding() {
+    let (status, stdout, stderr) =
+        common::run_subcommand("check", &common::fixture_path("cyclic_let_scalar.ri"));
+
+    assert!(
+        !status.success(),
+        "an eval-phase Severity::Error must move the exit code (INV-SF-2); \
+         measured baseline before #5403 was exit 0.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("circular let-binding dependency in template P: [a, b]"),
+        "the cycle Error must still be REPORTED — if it is missing, this test is \
+         green for the wrong reason and proves nothing about the gate.\n\
+         stderr: {stderr}"
+    );
+    assert!(
+        stdout.contains("All constraints satisfied."),
+        "stdout stays byte-identical: the gate runs AFTER `finish_check` and \
+         escalates only the exit code.\nstdout: {stdout}"
+    );
+}
+
+/// Task 5403 (γ) — DUAL-REGIME forward lock on the DIMENSIONAL cyclic let.
+///
+/// NOT this task's RED proof, and it must not be mistaken for one. Read both
+/// regimes before editing:
+///
+/// - TODAY (MEASURED on this base): exit 1 comes from the compile-diagnostics
+///   early return in `cmd_check`, not from the INV-SF-2 gate at all. The #6584
+///   forward-reference bug manufactures `error: dimension mismatch in
+///   addition: Real vs Scalar[m]` for `let a = b + 5mm`, and `cmd_check`
+///   returns before it ever evaluates. So this assertion holds with or without
+///   the INV-SF-2 gate.
+/// - AFTER #6584 lands: that spurious compile error disappears, the file
+///   compiles, and the eval-phase `circular let-binding dependency in template
+///   P: [a, b]` Error is what keeps the exit non-zero — through THIS task's
+///   gate.
+///
+/// The lock's value is that the exit code is non-zero under BOTH regimes, so
+/// #6584 cannot silently turn this file into another silent-undef exit 0 on
+/// its way past the type bug.
+///
+/// Only the exit code is asserted, deliberately: the MESSAGE legitimately
+/// differs between the two regimes, and pinning either one would make this
+/// test fail for a reason that is not a defect. The regime-free proof of γ's
+/// gate is `check_exits_nonzero_on_eval_phase_circular_let_binding` above, on
+/// the dimensionless fixture.
+///
+/// Do NOT "fix" the fixture to make one regime win — `cyclic_let_dimensional.ri`
+/// is byte-identical to the copy on the unmerged `task/6584` branch precisely
+/// so the two add/adds merge cleanly.
+#[test]
+fn check_exits_nonzero_on_dimensional_circular_let_binding() {
+    let (status, stdout, stderr) =
+        common::run_subcommand("check", &common::fixture_path("cyclic_let_dimensional.ri"));
+
+    assert!(
+        !status.success(),
+        "a dimensional circular let must exit non-zero under BOTH regimes — via \
+         the compile-phase gate while the #6584 forward-reference bug stands, \
+         and via #5403's Severity::Error gate once it is fixed.\n\
+         stdout: {stdout}\nstderr: {stderr}"
+    );
+}
+
+/// PRD `eradicate-silent-undef.md` §8 boundary row 5: `reify check` on the
+/// #5386 repro — a non-`pub` structure used from a sibling module — exits 1,
+/// regardless of whether #5386's compile-time fix has landed.
+///
+/// Today the reference is caught only at EVAL time (`sub-component "j"
+/// references unknown structure "InternalJig"`, printed beside "All
+/// constraints satisfied."), so it is the Severity::Error gate that moves the
+/// exit code.  #5386 / #5523 will replace that message with a
+/// visibility-specific COMPILE error and drop the summary line, so this test
+/// deliberately asserts neither the message wording nor stdout — only the
+/// exit status and that the diagnostic names the structure.
+#[test]
+fn check_exits_nonzero_on_cross_file_private_structure_reference() {
+    let dir = tempfile::tempdir().expect("failed to create temp dir");
+    // Each file stem must match its `module` declaration, or `check` reports
+    // E_MODULE_PATH_MISMATCH and we would be measuring that instead.
+    std::fs::write(
+        dir.path().join("parts.ri"),
+        "module parts\n\nstructure def InternalJig {\n    param w : Length = 10mm\n}\n",
+    )
+    .expect("failed to write parts.ri");
+    let entry = dir.path().join("entry.ri");
+    std::fs::write(
+        &entry,
+        "module entry\n\nimport parts\n\nstructure def Top {\n    sub j = InternalJig()\n}\n",
+    )
+    .expect("failed to write entry.ri");
+
+    let entry_str = entry.to_str().expect("temp path is UTF-8");
+    let (status, stdout, stderr) = common::run_with_args_in(dir.path(), &["check", entry_str]);
+
+    assert!(
+        !status.success(),
+        "a private structure referenced from a sibling module must exit \
+         non-zero under `check`.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("InternalJig"),
+        "the gating diagnostic must name the unreachable structure, or this \
+         test could pass for an unrelated reason.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+}
+
+/// INV-SF-2's gate reads the MERGED diagnostic set — what `report_eval_output`
+/// showed the user — not check()'s own list: the end-to-end pin.
+///
+/// A part that does not fit its envelope, checked with
+/// `fits_build_volume(…, DFMSeverity.Error)`, yields `E_DFM_BUILD_VOLUME` from
+/// the post-geometry harvest only: the realization's list carries it and
+/// check()'s own list does not. MEASURED: pointing `cmd_check`'s gate at
+/// `result.diagnostics` instead of `merged_diagnostics` turns this run into
+/// exit 0 with the same `error:` line on stderr.
+#[test]
+fn check_exits_nonzero_on_a_realization_only_build_volume_error() {
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        // Without a kernel `bounding_box` is Undef, so the harvest cannot
+        // produce the does-not-fit Error this test is about.
+        eprintln!(
+            "skipping realization-only gate assertions: OCCT unavailable \
+             (cfg(has_occt) not set — stub-mode build)"
+        );
+        return;
+    }
+
+    let dir = tempfile::tempdir().expect("failed to create temp dir");
+    // The stem must match the `module` declaration, or `check` reports
+    // E_MODULE_PATH_MISMATCH and we would be measuring that instead.
+    let path = dir.path().join("oversized_build_volume.ri");
+    std::fs::write(
+        &path,
+        r#"module oversized_build_volume
+
+import std.process
+
+structure def OversizedBuildVolume {
+    param part     : Solid = box(250mm, 250mm, 250mm)
+    param envelope : Solid = box(10mm, 10mm, 10mm)
+
+    let fits = fits_build_volume(
+        bounding_box(part),
+        bounding_box(envelope),
+        DFMSeverity.Error
+    )
+}
+"#,
+    )
+    .expect("failed to write temp module");
+
+    let (status, stdout, stderr) =
+        common::run_with_args(&["check", path.to_str().expect("temp path is UTF-8")]);
+
+    assert!(
+        stderr.contains("error: E_DFM_BUILD_VOLUME"),
+        "the harvest Error must reach `check`'s stderr through the merged set \
+         (D2); without it this test proves nothing about the gate.\n\
+         stdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        !status.success(),
+        "a realization-only Severity::Error must move `check`'s exit code — the \
+         gate must read the merged set, not check()'s own list.\n\
+         stdout: {stdout}\nstderr: {stderr}"
+    );
+}
+
+/// KNOWN GAP, pinned so #5404 has a target to flip — characterization, not
+/// endorsement.
+///
+/// `CHECK_ERROR_EXIT_ALLOWLIST` entry #2 was seeded for an `auto` param awaiting
+/// a solver, but its code-less substring `is unresolved (Undef)` matches the one
+/// wording `geometry_ops.rs::unresolved_arg_message` gives EVERY Undef geometry
+/// argument. So a genuine design error — here a `box` width that divides by a
+/// zero param — prints `error:` lines beside "All constraints satisfied." and
+/// exits 0, the shape INV-SF-2 forbids, while `reify eval` on the same file
+/// exits 1.
+///
+/// When #5404 narrows entry #2, THIS TEST MUST FAIL: flip the `check` exit
+/// assertion to `!status.success()` and drop the known-gap framing.
+#[test]
+fn check_excuses_every_code_less_undef_geometry_argument() {
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        // Whether the realization loop that produces the Undef-argument error
+        // is reached under a stub build is not measured; follow the C1
+        // convention of the sibling tests and skip rather than guess.
+        eprintln!(
+            "skipping Undef-argument allowlist assertions: OCCT unavailable \
+             (cfg(has_occt) not set — stub-mode build)"
+        );
+        return;
+    }
+
+    let dir = tempfile::tempdir().expect("failed to create temp dir");
+    // The stem must match the `module` declaration, or `check` reports
+    // E_MODULE_PATH_MISMATCH and we would be measuring that instead.
+    let path = dir.path().join("undef_box_width.ri");
+    std::fs::write(
+        &path,
+        r#"module undef_box_width
+
+structure def UndefBoxWidth {
+    param n : Int = 0
+    let w = 10mm / n
+    let body = box(w, 1mm, 1mm)
+}
+"#,
+    )
+    .expect("failed to write temp module");
+    let path = path.to_str().expect("temp path is UTF-8");
+
+    let (status, stdout, stderr) = common::run_with_args(&["check", path]);
+    assert!(
+        stderr.contains("argument 'width' for box is unresolved (Undef)")
+            && stdout.contains("All constraints satisfied."),
+        "precondition: the Undef-argument Error is reported beside a green \
+         summary; without it this test pins nothing.\n\
+         stdout: {stdout}\nstderr: {stderr}"
+    );
+    // TODO(#5404): flip to `!status.success()` once entry #2 stops excusing
+    // non-`auto` Undef arguments.
+    assert!(
+        status.success(),
+        "KNOWN GAP: entry #2's substring excuses this genuine design error. If \
+         this now exits non-zero, #5404 narrowed entry #2 — flip this assertion.\n\
+         stdout: {stdout}\nstderr: {stderr}"
+    );
+
+    let (eval_status, eval_stdout, eval_stderr) = common::run_with_args(&["eval", path]);
+    assert!(
+        !eval_status.success(),
+        "`reify eval` rejects the same file, which is what makes the `check` \
+         exit 0 above a gap rather than a posture.\n\
+         stdout: {eval_stdout}\nstderr: {eval_stderr}"
+    );
+}
+
+/// Task 5748 / PRD `check-diagnostic-truthfulness.md` leaf β, D2.
+///
+/// `cmd_check`'s kernel-backed arm calls `build()` for its handle-population
+/// side effect and used to throw the `BuildResult` away (`let _ = …`).  That
+/// silently swallowed every realization-only diagnostic — `compile_geometry_op`
+/// gating errors and kernel-dispatch failures that `check()` alone never
+/// produces — so a module whose geometry cannot compile AT ALL still reported
+/// "All constraints satisfied." under `check`.
+///
+/// Measured pre-change baseline for `fixtures/mirror_bare_origin.ri`:
+///     stdout: "  OK MirrorBareOrigin#constraint[0]" / "All constraints satisfied."
+///     stderr: EMPTY
+///     exit 0
+///
+/// WHY THE FIXTURE MOVED (task 5662).  It used to carry the 7-arg scalar form
+/// `mirror(arm, 0, 0, 0, 1, 0, 0)`, which now short-circuits `cmd_check` before
+/// `build()` and would have destroyed every assertion below, including the dedup
+/// pin this test exists for.  It moved to the decoded-value form
+/// `mirror(arm, plane_yz(0))` and is still deliberately BARE — only the route
+/// changed, not the mistake.  The argument for why that route is the durable one
+/// is stated once, on the `mirror` / `circular_pattern` arms of
+/// `builtin_arg_slots` in `crates/reify-compiler/src/builtin_signatures.rs`.
+/// The exit-gate half is pinned by
+/// `check_rejects_bare_scalar_mirror_origin_before_reaching_build` below.
+///
+/// Baseline RE-MEASURED at task 5746 (units-length ε, R11), which moved the
+/// SPEAKER without touching this test's subject.  `plane_yz(0)` is now rejected
+/// at the PRODUCER, so `mirror` never receives a Plane at all and the ox/oy/oz
+/// consumer-side triple is no longer reached on this route.  `reify check` on the
+/// fixture is unchanged in SHAPE — exit 0, both stdout lines above — and `reify
+/// eval` on the same file now reports, on stderr:
+///     error: plane_yz: offset argument expects Length, got Int; …      [ONCE]
+///     error: failed to compile geometry operation: mirror: expected a
+///            Plane value, got undef                                    [TWICE]
+///     error: failed to compile geometry operation: unresolvable GeomRef::Step(1) …
+///     exit 1
+///
+/// The internal duplication — the whole reason for the dedup pin — SURVIVES that
+/// move, which is what lets the needle be re-anchored rather than weakened: the
+/// `expected a Plane value, got undef` line is the compile-gate diagnostic the
+/// `missing or non-Length argument 'ox'` line used to be, emitted from the same
+/// place, and `reify eval` / `reify build` were both measured printing it twice
+/// while `reify check` prints it once.
+///
+/// The `matches(...).count() == 1` assertion is the load-bearing one: it pins
+/// D2's ACCUMULATING dedup. `build()` emits that error twice for a single call
+/// site, so a merge that deduped only against `check()`'s original list (which
+/// is empty here) would print it twice on `check`'s stderr.
+///
+/// Task 5403 (γ) — POST-GATE. Leaf β collected these diagnostics into the
+/// reported set but deliberately left the exit code alone; γ makes any
+/// `Severity::Error` in that MERGED set exit non-zero unless
+/// `CHECK_ERROR_EXIT_ALLOWLIST` excuses it. Nothing excuses
+/// `mirror_bare_origin.ri`'s `mirror: ox argument expects Length` /
+/// `failed to compile geometry operation: …` errors — they are genuine design
+/// errors, and `reify eval` on the same file has always exited 1 — so the
+/// status assertion below is now `!status.success()`. The collection
+/// assertions are untouched: γ moves the exit code, never the output.
+#[test]
+fn check_surfaces_geometry_compile_error_from_discarded_build() {
+    let (status, stdout, stderr) =
+        common::run_subcommand("check", &common::fixture_path("mirror_bare_origin.ri"));
+
+    // Mode-independent, and deliberately ABOVE the OCCT early-return so it
+    // also runs in stub mode: the gate is a pure function of the merged
+    // diagnostic list and needs no kernel.
+    assert!(
+        !status.success(),
+        "γ (#5403) gates `check` on any non-allowlisted Severity::Error in the \
+         merged set, and this fixture's geometry-compile errors are not \
+         allowlisted.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        // The `compile_geometry_op` argument validation that produces these
+        // diagnostics is itself kernel-independent
+        // (`geometry_ops::required_length_arg`'s `LengthArg::Invalid` arm —
+        // no `OCCT_AVAILABLE` guard anywhere on it), but whether the
+        // realization loop is reached at all under a stub build is NOT measured
+        // here, so follow the C1 convention used by
+        // `cli_dfm_overhang.rs::check_dfm_plus_repr_within_combined_arm` and
+        // skip the content assertions rather than guess.
+        eprintln!(
+            "skipping build-diagnostic merge assertions: OCCT unavailable \
+             (cfg(has_occt) not set — stub-mode build)"
+        );
+        return;
+    }
+
+    let needle = "failed to compile geometry operation: mirror: expected a Plane value, got undef";
+    assert!(
+        stderr.contains(needle),
+        "the geometry-compile error `build()` produces must reach `check`'s stderr \
+         (D2: every build()-only diagnostic appears at least once).\nstderr: {stderr}"
+    );
+    let occurrences = stderr.matches(needle).count();
+    assert_eq!(
+        occurrences,
+        1,
+        "D2's dedup accumulates: `build()` emits this error TWICE for one call site, \
+         so it must collapse to exactly one line on `check`'s stderr — got {occurrences}.\n\
+         stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("plane_yz: offset argument expects Length, got Int"),
+        "the companion units rejection `build()` produces must reach `check`'s \
+         stderr too — after ε it is the PRODUCER's, since `mirror` never receives \
+         a Plane.\nstderr: {stderr}"
+    );
+}
+
+/// Task 5662 — the CLI-seam LOCK on this task's headline user-visible change:
+/// `reify check` on a bare 7-arg scalar `mirror` origin now EXITS 1, where it
+/// exited 0 before.
+///
+/// This is emergent behaviour, owned by no single layer: task 5662 added the
+/// ox/oy/oz LENGTH slots in `crates/reify-compiler/src/builtin_signatures.rs`,
+/// and `cmd_check` turns any compile `Severity::Error` into `ExitCode::FAILURE`
+/// with a short-circuit BEFORE constraint checking and before `build()`.  The
+/// compiler-side tests pin the DIAGNOSTIC; nothing pinned the EXIT GATE, yet the
+/// short-circuit is precisely why the sibling test's fixture had to move to the
+/// decoded-value route (see the `mirror` arm of `builtin_signatures.rs`).  A
+/// regression in that short-circuit would silently invalidate that retarget
+/// while every compiler-side test stayed green — hence this test.
+///
+/// A temp module rather than a `tests/fixtures/` file on purpose: this source is
+/// deliberately UNCOMPILABLE, and every fixture in that directory is fair game
+/// for the corpus walkers under `crates/**/*.ri`.
+///
+/// Baseline MEASURED at task 5662 against a binary built from this branch, on
+/// the source below:
+///     stdout: EMPTY — no verdict line at all
+///     stderr: error: mirror: ox argument expects Length, got Int; pass a
+///                    dimensioned length such as `5mm`
+///             error: mirror: oy … (same)
+///             error: mirror: oz … (same)
+///     exit 1
+/// Note what is ABSENT: `failed to compile geometry operation: …`.  Compilation
+/// aborts on the slot errors, so realization is never reached on this route —
+/// that diagnostic survives only on the decoded-value route the sibling test
+/// above exercises.
+///
+/// NOT an exit-gate flip: this asserts FAILURE on a COMPILE `Severity::Error`,
+/// which `cmd_check` has always produced.  The sibling decoded-value tests above
+/// assert FAILURE through the INV-SF-2 `Severity::Error` gate, but that exit is
+/// carried by the `plane_yz` rejection, which check()'s own list also holds;
+/// the gate's reading of the MERGED set is pinned by
+/// `check_exits_nonzero_on_a_realization_only_build_volume_error`.
+#[test]
+fn check_rejects_bare_scalar_mirror_origin_before_reaching_build() {
+    let dir = tempfile::tempdir().expect("failed to create temp dir");
+    // The stem must match the `module` declaration, or `check` reports
+    // E_MODULE_PATH_MISMATCH and we would be measuring that instead.
+    let path = dir.path().join("mirror_bare_scalar_origin.ri");
+    std::fs::write(
+        &path,
+        r#"module mirror_bare_scalar_origin
+
+structure def MirrorBareScalarOrigin {
+    param arm_len   : Length = 40mm
+    param arm_width : Length = 8mm
+
+    let arm = box(arm_len, arm_width, arm_width)
+
+    // WRONG on purpose — bare-Int origin triple (should be `0mm, 0mm, 0mm`).
+    // The normal `1, 0, 0` is correctly bare: it is a dimensionless direction.
+    let reflected = mirror(arm, 0, 0, 0, 1, 0, 0)
+
+    param geometry : Solid = union(arm, reflected)
+
+    constraint arm_len > arm_width
+}
+"#,
+    )
+    .expect("failed to write temp module");
+
+    let (status, stdout, stderr) =
+        common::run_with_args(&["check", path.to_str().expect("temp path is UTF-8")]);
+
+    assert!(
+        !status.success(),
+        "a compile-layer ArgTypeMismatch must make `reify check` exit non-zero — \
+         this is the short-circuit that forced the decoded-value retarget of \
+         `mirror_bare_origin.ri`.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+
+    for component in ["ox", "oy", "oz"] {
+        let needle = format!("mirror: {component} argument expects Length, got Int");
+        assert!(
+            stderr.contains(&needle),
+            "every component of the origin triple gets its own diagnostic; \
+             `{needle}` is missing.\nstderr: {stderr}"
+        );
+    }
+
+    assert!(
+        !stdout.contains("All constraints satisfied"),
+        "the short-circuit happens BEFORE constraint checking, so no verdict line \
+         may be printed — a green verdict beside these errors is the exact \
+         falsehood this gate closes.\nstdout: {stdout}"
+    );
+}
+
+/// Task 5748 / PRD `check-diagnostic-truthfulness.md` leaf β, D2 — regression LOCK.
+///
+/// Green before AND after the D2 wiring.  D2 merges `build()`'s DIAGNOSTICS
+/// into the reported set; it must never let `build()`'s stale
+/// `constraint_results` reach the verdict lines.  `build_with_geometry_output`
+/// calls `self.check(module)` internally as its first step, BEFORE
+/// `realization_handles` / `achieved_repr_tol` are populated, so substituting
+/// its copy would silently degrade RepresentationWithin / DFM verdicts.
+///
+/// `fixtures/dfm_with_repr_within.ri` is the right lock because it carries BOTH
+/// a DFMRule and a RepresentationWithin, so it already exercises the full
+/// `build()` → `tessellate_realizations()` → authoritative `check()` sequence
+/// that D2 threads a second value through.
+///
+/// Measured pre-change baseline:
+///     stdout: "  OK SphereCheck#constraint[0]" / "All constraints satisfied."
+///     stderr: "warning: constraint expression has type Sphere, expected Bool"
+///             "warning: W_MODULE_DECL_MISSING: …"
+///             "warning: W_DFM_OVERHANG: face dips below the build plane — …"
+///     exit 0
+///
+/// # The contradiction lock (review fix)
+///
+/// Note what is NOT in that baseline: any line claiming
+/// `SphereCheck#constraint[0]` is indeterminate.  `check()` resolved that
+/// constraint to `Satisfied`, so `check()` cannot have emitted a
+/// `ConstraintIndeterminate` for it; and at the base commit `build()`'s result
+/// was discarded wholesale, so build's own copy of that claim had no route to
+/// stderr.  D2 opened one — and D2's merge is ONE-DIRECTIONAL by construction:
+/// build()'s internal task-4229 retain (in
+/// `engine_build::build_with_geometry_output`) drops only
+/// the warnings BUILD itself upgraded, and `merge_post_build_verdicts`
+/// (main.rs) retains only over check()'s OWN list, for the entries IT upgraded.
+/// Nothing in either pass knows about the later, authoritative `check()`, which
+/// is why the CLI-side `drop_falsified_indeterminate_diagnostics` filter is
+/// required: stdout reporting `OK SphereCheck#constraint[0]` +
+/// `All constraints satisfied.` while stderr calls that same constraint
+/// indeterminate is a self-contradiction, and truthfulness is the whole point
+/// of PRD `check-diagnostic-truthfulness.md`.
+#[test]
+fn check_constraint_results_come_from_authoritative_check_not_build() {
+    let (status, stdout, stderr) =
+        common::run_subcommand("check", &common::fixture_path("dfm_with_repr_within.ri"));
+
+    assert!(
+        status.success(),
+        "DFM Warning + Satisfied RepresentationWithin stays exit 0.\n\
+         stdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        !stdout.contains("VIOLATED"),
+        "RepresentationWithin must stay Satisfied — a stale build() verdict would \
+         degrade it.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        !stdout.contains("INDETERMINATE"),
+        "the verdict must stay definite — build()'s copy is computed before \
+         achieved_repr_tol is populated and would read Indeterminate.\n\
+         stdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stdout.contains("OK SphereCheck#constraint[0]"),
+        "the authoritative check() verdict line must be unchanged from the \
+         pre-change baseline.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stdout.contains("All constraints satisfied."),
+        "the summary line must be unchanged from the pre-change baseline.\n\
+         stdout: {stdout}\nstderr: {stderr}"
+    );
+
+    // The contradiction lock.  Deliberately placed BEFORE the OCCT_AVAILABLE
+    // early-return: the leak reproduces regardless of whether the DFM rule
+    // actually fired, so gating it on the kernel would hide the defect in
+    // stub-mode builds.
+    assert!(
+        !stderr.contains("SphereCheck#constraint[0] indeterminate"),
+        "stdout reports `OK SphereCheck#constraint[0]` and `All constraints satisfied.`, \
+         so a stderr line calling that same constraint indeterminate is a \
+         self-contradiction — and it is absent from this test's own recorded \
+         pre-change baseline.  build()'s stale claim must be dropped against the \
+         AUTHORITATIVE verdict list before the D2 merge.\n\
+         stdout: {stdout}\nstderr: {stderr}"
+    );
+
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!(
+            "skipping DFM double-print assertion: OCCT unavailable \
+             (cfg(has_occt) not set — stub-mode build)"
+        );
+        return;
+    }
+
+    // The other half of D2: "no diagnostic that would appear in check()'s own
+    // diagnostics today is ever printed twice".  W_DFM_OVERHANG is produced by
+    // `measure_dfm_rules`, which runs inside the authoritative check() AND
+    // inside build()'s own internal check() — so it is present in BOTH lists
+    // and is exactly the entry a naive concatenation would double.
+    let dfm_count = stderr.matches("W_DFM_OVERHANG").count();
+    assert_eq!(
+        dfm_count,
+        1,
+        "W_DFM_OVERHANG appears in both check()'s and build()'s diagnostics; the \
+         structural-equality merge must collapse it to one line — got {dfm_count}.\n\
+         stderr: {stderr}"
+    );
+}
+
+/// Task 5748 / PRD `check-diagnostic-truthfulness.md` leaf β, D1 item 2 + D2 —
+/// the `--purpose` twin of `check_surfaces_geometry_compile_error_from_discarded_build`.
+///
+/// Sub-path (c) takes an unconditional `Engine::new(checker, None).eval(...)`
+/// branch, so a geometry-bearing module under `--purpose` realizes nothing: the
+/// `compile_geometry_op` diagnostic is never even PRODUCED, let alone reported.
+/// D1 item 2 gives this branch the same `module_has_geometry` build()-vs-eval()
+/// choice `cmd_eval` already has.
+///
+/// Measured pre-change baseline for `fixtures/mirror_bare_origin_purpose.ri`:
+///     stdout: "  OK purpose:mfg_ready@MirrorBareOriginPurpose#constraint[0]"
+///             "All constraints satisfied."
+///     stderr: EMPTY
+///     exit 0
+///
+/// WHY THE FIXTURE MOVED (task 5662): identical to its non-purpose twin — see
+/// `check_surfaces_geometry_compile_error_from_discarded_build`, and through it
+/// the `mirror` arm of `builtin_arg_slots` in
+/// `crates/reify-compiler/src/builtin_signatures.rs`.
+///
+/// Baseline RE-MEASURED at task 5746 (units-length ε, R11) on `reify check
+/// --purpose mfg_ready=MirrorBareOriginPurpose`: exit 0, both stdout lines above
+/// unchanged, and on stderr the PRODUCER's single `plane_yz: offset argument
+/// expects Length, got Int` plus `failed to compile geometry operation: mirror:
+/// expected a Plane value, got undef` exactly ONCE.  ε moved the speaker, not the
+/// dedup: `reify build` on the same fixture was measured emitting that compile
+/// error TWICE, so the pin below keeps its bite on this branch too.
+///
+/// The stdout assertions are the load-bearing half of D1 item 2: they prove the
+/// purpose activation + `check_constraints_with_values` path is unaffected by
+/// swapping `EvalResult` for `BuildResult` as the `.values` source (PRD
+/// Contract, `--purpose` branch: that call is agnostic to which result type
+/// produced `.values`).
+#[test]
+fn check_purpose_surfaces_geometry_compile_error() {
+    let (status, stdout, stderr) = common::run_with_args(&[
+        "check",
+        "--purpose",
+        "mfg_ready=MirrorBareOriginPurpose",
+        &common::fixture_path("mirror_bare_origin_purpose.ri"),
+    ]);
+
+    // POST-γ (#5403): the identical `check_gating_error` gate now runs on this
+    // path too, over the same already-merged, already-reported `diagnostics`
+    // list. This fixture's `mirror: ox argument expects Length` /
+    // `failed to compile geometry operation: …` errors are not allowlisted, so
+    // the exit code moves. Above the OCCT early-return on purpose: the gate is
+    // a pure function of the diagnostic list and needs no kernel.
+    assert!(
+        !status.success(),
+        "γ (#5403) gates the --purpose path identically to the no-purpose one; \
+         this fixture's geometry-compile errors are not allowlisted.\n\
+         stdout: {stdout}\nstderr: {stderr}"
+    );
+
+    // The purpose path itself must be untouched by the build()-vs-eval() swap.
+    assert!(
+        stdout.contains("purpose:mfg_ready@"),
+        "the purpose-injected constraint id prefix must still be reported — \
+         check_constraints_with_values is agnostic to which result produced .values.\n\
+         stdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stdout.contains("All constraints satisfied."),
+        "the purpose constraint (subject.width > 0mm, default 80mm) stays satisfied.\n\
+         stdout: {stdout}\nstderr: {stderr}"
+    );
+
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!(
+            "skipping --purpose build-diagnostic assertions: OCCT unavailable \
+             (cfg(has_occt) not set — stub-mode build)"
+        );
+        return;
+    }
+
+    let needle = "failed to compile geometry operation: mirror: expected a Plane value, got undef";
+    assert!(
+        stderr.contains(needle),
+        "with geometry routing, the --purpose branch realizes geometry and must \
+         report the compile error it produces.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    let occurrences = stderr.matches(needle).count();
+    assert_eq!(
+        occurrences,
+        1,
+        "D2's dedup applies on this branch too: build() emits this error TWICE for \
+         one call site, so it must collapse to exactly one line — got {occurrences}.\n\
+         stderr: {stderr}"
+    );
+}
+
+/// Task 5748 / PRD `check-diagnostic-truthfulness.md` leaf β — the `--purpose`
+/// twin of the contradiction lock in
+/// `check_constraint_results_come_from_authoritative_check_not_build`.
+///
+/// SELF-MAINTAINING encoding of the invariant rather than a hard-coded needle:
+/// every definite verdict line `check` prints on stdout (`  OK <id>` /
+/// `  VIOLATED <id>`) is read back out and its subject is required to be absent
+/// from stderr's indeterminacy claims.  Whatever constraints the fixture grows,
+/// the invariant travels with it.  The `<id>` token is exactly the right needle
+/// because `report_constraint_results` prints `constraint_display_label(entry)`
+/// — the same label-preferring string the checker embeds in
+/// `constraint {…} indeterminate: …`
+/// (`reify_constraints::SimpleConstraintChecker::check`).
+///
+/// STATED HONESTLY: unlike its sub-path (b) sibling this is expected GREEN both
+/// before and after the fix — a regression LOCK, not a RED.  Two targeted probes
+/// while planning failed to reproduce the leak on sub-path (c), and the plan
+/// records that rather than asserting a defect it did not measure.  The
+/// mechanism explaining the asymmetry: here `build()`'s internal task-4229
+/// recheck and the CLI's `check_constraints_with_values(&values)` run against
+/// the SAME post-realization value map (and build's own retain already dropped
+/// what it upgraded), so the two lists normally agree — whereas on sub-path (b)
+/// `engine_constraints::Engine::check` opens with a fresh `self.eval(module)`
+/// and is a genuinely independent, stronger
+/// authority.  A residual divergence path does exist on (c) (the UnifiedDag
+/// auto-constraint `declined` set, inside
+/// `engine_build::build_with_geometry_output`'s
+/// `engine_fixpoint::BuildScheduler::UnifiedDag` arm), so the symmetric filter
+/// ships as defence-in-depth and this test is what stops the two sub-paths
+/// drifting.
+#[test]
+fn check_purpose_does_not_contradict_definite_verdicts() {
+    let (status, stdout, stderr) = common::run_with_args(&[
+        "check",
+        "--purpose",
+        "mfg_ready=MirrorBareOriginPurpose",
+        &common::fixture_path("mirror_bare_origin_purpose.ri"),
+    ]);
+
+    // POST-γ (#5403): same flip as the sibling test above. Orthogonal to what
+    // this lock actually measures — the self-contradiction check below reads
+    // stdout against stderr and is indifferent to the exit code — but asserted
+    // rather than dropped, so a one-sided regression on either path is loud.
+    assert!(
+        !status.success(),
+        "γ (#5403) gates the --purpose path on this fixture's non-allowlisted \
+         geometry-compile errors.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+
+    let definite: Vec<&str> = stdout
+        .lines()
+        .filter_map(|line| {
+            let t = line.trim();
+            t.strip_prefix("OK ")
+                .or_else(|| t.strip_prefix("VIOLATED "))
+        })
+        .map(str::trim)
+        .collect();
+    assert!(
+        !definite.is_empty(),
+        "the fixture must report at least one definite verdict, else this lock \
+         is vacuous.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+
+    for id in &definite {
+        let claim = format!("constraint {id} indeterminate");
+        assert!(
+            !stderr.contains(&claim),
+            "stdout reports a DEFINITE verdict for `{id}`, so a stderr line \
+             claiming it is indeterminate is a self-contradiction — sub-path (c) \
+             must filter build()'s stale claims against the authoritative \
+             `check_constraints_with_values` verdicts exactly as sub-path (b) \
+             does.\nstdout: {stdout}\nstderr: {stderr}"
+        );
+    }
+}
+
+/// Task 5403 (γ) — the two `cmd_check` paths must gate IDENTICALLY.
+///
+/// This closes a PRE-EXISTING asymmetry that #5748 recorded but deliberately
+/// did not fix: before γ, the `--purpose` path carried only the
+/// `GdtIllegalModifier` escalation, with no counterpart to the no-purpose
+/// path's `has_dfm_rule && dfm_has_error_diagnostic(...)` gate. Its comment
+/// said leaf γ "closes it incidentally when it replaces both ad-hoc predicates
+/// with a single general `Severity::Error` gate over the merged set". It does
+/// — and this test is what stops the two paths drifting apart again, since
+/// nothing else compares them directly.
+///
+/// `mirror_bare_origin_purpose.ri` is the right fixture: it carries
+/// non-allowlisted geometry-compile Errors, and both paths reach them (the
+/// no-purpose path through `realize_for_check`, the `--purpose` path through
+/// D1 item 2's `module_has_geometry` build routing).
+///
+/// Asserting `status.code()` EQUALITY, not just "both non-zero", so a future
+/// one-sided change — one path exiting 1 and the other 2, say — is loud rather
+/// than silently tolerated.
+///
+/// Not OCCT-gated: the gate reads the merged diagnostic list and needs no
+/// kernel, and both paths are compared under whatever mode the build is in, so
+/// stub mode compares stub against stub.
+#[test]
+fn check_purpose_gate_matches_the_no_purpose_gate() {
+    let fixture = common::fixture_path("mirror_bare_origin_purpose.ri");
+
+    let (plain_status, plain_stdout, plain_stderr) = common::run_subcommand("check", &fixture);
+    let (purpose_status, purpose_stdout, purpose_stderr) = common::run_with_args(&[
+        "check",
+        "--purpose",
+        "mfg_ready=MirrorBareOriginPurpose",
+        &fixture,
+    ]);
+
+    assert!(
+        !plain_status.success(),
+        "no-purpose path must gate on the non-allowlisted geometry-compile \
+         errors.\nstdout: {plain_stdout}\nstderr: {plain_stderr}"
+    );
+    assert!(
+        !purpose_status.success(),
+        "--purpose path must gate on the SAME errors — this is the asymmetry \
+         #5748 recorded and γ closes.\nstdout: {purpose_stdout}\nstderr: {purpose_stderr}"
+    );
+    assert_eq!(
+        plain_status.code(),
+        purpose_status.code(),
+        "both paths run the identical `check_gating_error` gate over their own \
+         already-reported diagnostic list, so their exit codes must agree \
+         exactly.\nno-purpose stderr: {plain_stderr}\n--purpose stderr: {purpose_stderr}"
+    );
+}
+
+/// esc-5748-6 regression lock: `reify check` must not print EXPORT-ONLY errors.
+///
+/// D2 merges the realization's diagnostics into `check`'s reported set. While
+/// `cmd_check` obtained those via `engine.build(...)`, the merge also picked up
+/// the trailing Phase-B PRODUCT EXPORT walk's diagnostics — `"all realized
+/// bodies are aux; no product geometry to export"`, `"export error: …"`,
+/// `"compound assembly error: …"` (reify-eval `engine_build.rs`). Those were
+/// invisible before this task only because the whole `BuildResult` was
+/// discarded.
+///
+/// `reify check` writes no artifact, so "cannot export" is not a fact about the
+/// design — it is a FALSE error, and precisely the class of untruthful output
+/// PRD `check-diagnostic-truthfulness.md` exists to remove.
+///
+/// It is also a false EXIT: `check_gating_error` exits non-zero on any
+/// non-allowlisted `Severity::Error` in exactly this merged set, and no
+/// allowlist entry covers the export-walk messages (nor should one — they are
+/// output `check` must never produce at all). So the `realize_for_check`
+/// choice below is what keeps THIS TEST's `status.success()` assertion true:
+/// were `cmd_check` to go back to `Engine::build`, the leaked export error
+/// would make `reify check` exit 1 on a perfectly valid design.
+///
+/// Fix: `cmd_check` calls `Engine::realize_for_check` (realization with the
+/// Phase-B export disabled) instead of `Engine::build`. Both `cmd_check`
+/// sub-paths use it — the kernel-backed arm and the `--purpose` arm.
+///
+/// Measured on `fixtures/aux_only_geometry.ri` (geometry-bearing, but every
+/// realized body is `aux`, so the export walk finds zero product bodies):
+///   - `reify build <f> -o out.step` → `error: all realized bodies are aux; no
+///     product geometry to export`, exit 1. CORRECT: build was asked to write.
+///   - `reify check <f>` BEFORE the fix → that same `error:` line on stderr,
+///     printed directly alongside "All constraints satisfied.", exit 0.
+///   - `reify check <f>` AFTER the fix → stdout "  OK AuxOnly#constraint[0]" /
+///     "All constraints satisfied.", no export error, exit 0.
+#[test]
+fn check_does_not_surface_export_only_diagnostics() {
+    let (status, stdout, stderr) =
+        common::run_subcommand("check", &common::fixture_path("aux_only_geometry.ri"));
+
+    assert!(
+        status.success(),
+        "the aux-only fixture's constraints are trivially satisfied — `check` \
+         must exit 0.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        // Whether the realization loop (and hence the export walk that would
+        // leak these lines) is reached at all under a stub build is not
+        // measured here; follow the same C1 convention as the sibling tests
+        // above and skip the content assertions rather than guess.
+        eprintln!(
+            "skipping export-only-diagnostic assertions: OCCT unavailable \
+             (cfg(has_occt) not set — stub-mode build)"
+        );
+        return;
+    }
+
+    // The load-bearing assertion. This exact line is what `build -o` prints for
+    // this fixture, so its absence here is the whole contract.
+    assert!(
+        !stderr.contains("no product geometry to export"),
+        "`reify check` writes no artifact, so an export-only diagnostic is a \
+         FALSE error — `cmd_check` must realize via `realize_for_check` (Phase-B \
+         export disabled), never `build()`. Under the INV-SF-2 gate this leak is \
+         also a false EXIT 1, so the `status.success()` assertion above fails \
+         with it.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+
+    // The other two export-only producers on the same walk.
+    for leaked in ["export error:", "compound assembly error:"] {
+        assert!(
+            !stderr.contains(leaked),
+            "`{leaked}` is emitted only by the Phase-B product-export walk, \
+             which `reify check` must never run.\nstdout: {stdout}\nstderr: {stderr}"
+        );
+    }
+
+    // Guard against the test passing for the wrong reason: if the fixture ever
+    // stops being geometry-bearing, `check` would take the lightweight arm and
+    // the assertions above would hold vacuously.
+    assert!(
+        stdout.contains("AuxOnly#constraint[0]"),
+        "fixture must still report its constraint, else this lock is \
+         vacuous.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+}
+
+/// Task 5748 / PRD `check-diagnostic-truthfulness.md` leaf β, D1 — the
+/// EXIT-CODE leg of the routing change.
+///
+/// D1's most user-visible consequence is not a printed line.  Routing a
+/// geometry-bearing module through the realization lets
+/// `merge_post_build_verdicts` upgrade a constraint from `Indeterminate` to
+/// `Violated`, and that verdict flows through `report_constraint_results` →
+/// `finish_check` into the process exit code: a `reify check` that exited 0
+/// now exits 1.  Nothing pinned that direction end to end.  The sibling D1
+/// test (`check_geometry_module_resolves_geometry_query_constraints`) uses a
+/// fixture that resolves to Satisfied, so it asserts `status.success()` and
+/// covers only Indeterminate → OK; `merge_post_build_verdicts_tests::
+/// adopts_a_definite_violated_verdict` stops at the `satisfaction` field and
+/// never reaches the CLI's exit mapping.
+///
+/// `fixtures/geometry_query_violated.ri` is a `: Rigid` body whose only
+/// explicit constraint reads the geometry-derived `mass` cell
+/// (`volume(geometry) * material.density`, stdlib `Physical`) and is FALSE
+/// once that cell resolves: a 100 mm steel cube masses 7.85 kg against a
+/// `mass < 1kg` bound.
+///
+/// Mechanism, not a re-measured baseline for this fixture: before D1 a module
+/// carrying none of {geometric Conforms, RepresentationWithin, DFMRule} took
+/// the lightweight `Engine::new(None) + check()` path, where nothing runs
+/// `run_post_processes`/`post_process_geometry_queries`, so `mass` stayed
+/// `undef` and the constraint degraded to INDETERMINATE at exit 0 — the same
+/// degradation the sibling test measured for the flange's `moi_principal`.
+///
+/// A future refactor that drops the upgrade, or narrows it to `Satisfied`,
+/// fails HERE rather than silently returning `reify check` to reporting a
+/// constraint it cannot evaluate as if it were fine.
+#[test]
+fn check_geometry_module_upgrades_indeterminate_to_violated_and_exits_failure() {
+    let (status, stdout, stderr) = common::run_subcommand(
+        "check",
+        &common::fixture_path("geometry_query_violated.ri"),
+    );
+
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        // Kernel-DEPENDENT in BOTH directions here, unlike the sibling D1 test
+        // whose fixture exits 0 either way: resolving `mass` needs the
+        // realization loop to produce a solid, which a stub build cannot do, so
+        // the constraint stays INDETERMINATE and `check` exits 0 (C1 — a
+        // missing kernel degrades to indeterminate, never to a false
+        // violation).  Same C1 convention as the sibling task-5748 tests: skip
+        // the content assertions rather than guess at the stub-mode wording.
+        assert!(
+            stdout.contains("OverweightBlock#constraint[2]"),
+            "the fixture must still report its mass constraint, else this lock \
+             is vacuous.\nstdout: {stdout}\nstderr: {stderr}"
+        );
+        eprintln!(
+            "skipping verdict-upgrade assertions: OCCT unavailable \
+             (cfg(has_occt) not set — stub-mode build)"
+        );
+        return;
+    }
+
+    assert!(
+        !status.success(),
+        "the mass constraint is FALSE once the geometry query resolves, so \
+         `reify check` must exit non-zero — this is D1's exit-code \
+         consequence.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stdout.contains("VIOLATED OverweightBlock#constraint[2]"),
+        "the upgraded verdict must be REPORTED as violated, not merely counted \
+         in the exit code.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        !stdout.contains("INDETERMINATE OverweightBlock#constraint[2]"),
+        "the constraint must no longer degrade to INDETERMINATE.\nstdout: \
+         {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stdout.contains("Some constraints violated"),
+        "the summary line must agree with the per-constraint verdict.\nstdout: \
+         {stdout}\nstderr: {stderr}"
+    );
+    // The other half of D2's no-self-contradiction property, on the direction
+    // that moves the exit code: stdout says VIOLATED, so no surviving stderr
+    // line may still claim the same constraint is indeterminate.
+    assert!(
+        !stderr.contains("OverweightBlock#constraint[2] indeterminate"),
+        "stdout reports VIOLATED, so a surviving `… indeterminate` line for the \
+         same constraint would be a self-contradiction \
+         (`drop_falsified_indeterminate_diagnostics`).\nstderr: {stderr}"
+    );
+}
+
+/// Task 5311 / PRD `docs/prds/v0_6/check-diagnostic-truthfulness.md` leaf α —
+/// the CLI-seam LOCK on this task's headline user-visible change: `reify check`
+/// no longer prints an `error:`-prefixed line while exiting 0.
+///
+/// The engine emits the missing-trampoline fallback diagnostic at the two SOFT
+/// emission sites (`engine_eval.rs::evaluate_params_and_lets_unified` and
+/// `::evaluate_let_bindings`) with `Severity::Warning` when — and only when —
+/// the engine's compute registry is entirely EMPTY, and `Severity::Error`
+/// otherwise. `cmd_check` registers no compute trampolines at all, so its
+/// registry is empty and the diagnostic renders as `warning:`. `reify eval` and
+/// `reify build` both call `register_compute_trampolines`, whose production
+/// bundle registers 19 targets, so their registries are non-empty and the same
+/// diagnostic keeps rendering as `error:` — and keeps gating their exit codes.
+/// That contrast is the whole point of this test, so all three subcommands run
+/// against ONE byte-identical fixture.
+///
+/// The `@optimized` target is deliberately `test::never_registered_probe`: it is
+/// outside `register_production_compute_fns`'s 19-target bundle, and outside
+/// every `test::`-namespaced target registered anywhere else in the workspace,
+/// so `register_compute_fn`'s duplicate-target panic can never collide with it.
+/// An inline temp module rather than a tracked `.ri` fixture, for the same
+/// reason `check_rejects_bare_scalar_mirror_origin_before_reaching_build` above
+/// uses one: nothing else in the corpus needs this source.
+///
+/// CONTROL, measured at task 5311 against a binary built from this branch: the
+/// byte-identical fixture with the `@optimized` fn and its call removed
+/// (`let result = input`) exits 0 with EMPTY stderr on check, eval AND build.
+/// That is what makes the eval/build assertions below attributable to THIS
+/// diagnostic rather than to "the design produced no output files" — without
+/// the control, a non-zero exit here would prove nothing about severity.
+///
+/// FUTURE UPDATE — #6693 (`docs/prds/v0_6/solver-driver-parity.md` leaf δ) wires
+/// `SolverRegistry::production()` and the compute trampolines into `cmd_check`
+/// UNCONDITIONALLY. Post-#6693 `cmd_check`'s registry is non-empty, so the
+/// severity predicate correctly yields `error:` under `check` too and leg (a)
+/// below legitimately inverts. Whoever lands #6693 must update leg (a)
+/// deliberately — exactly as #6693 already plans to invert
+/// `check_fea_violated_constraint_is_not_gated` in `cli_build_fea.rs`.
+#[test]
+fn check_downgrades_unregistered_trampoline_fallback_to_warning_while_eval_and_build_keep_erroring()
+{
+    // Spelled ONCE and reused by every leg, so the test itself cannot drift the
+    // wording between the `check` leg and the `eval`/`build` legs. The engine
+    // single-sources the same stem via `engine_compute.rs`'s
+    // `NO_TRAMPOLINE_STEM`; changing this string means changing that one.
+    const DIAGNOSTIC_BODY: &str = "@optimized target \"test::never_registered_probe\": \
+                                   no registered compute trampoline \
+                                   (falling back to body-inlining)";
+
+    let dir = tempfile::tempdir().expect("failed to create temp dir");
+    // The stem must match the `module` declaration, or `check` reports
+    // E_MODULE_PATH_MISMATCH and we would be measuring that instead.
+    let path = dir.path().join("trampoline_severity_probe.ri");
+    std::fs::write(
+        &path,
+        r#"module trampoline_severity_probe
+
+@optimized("test::never_registered_probe")
+fn never_registered_probe(x: Int) -> Int { x }
+
+structure def TrampolineSeverityProbe {
+    param input: Int = 42
+    let result = never_registered_probe(input)
+    constraint result > 0
+}
+"#,
+    )
+    .expect("failed to write temp module");
+
+    let path_str = path.to_str().expect("temp path is UTF-8");
+    let warning_line = format!("warning: {DIAGNOSTIC_BODY}");
+    let error_line = format!("error: {DIAGNOSTIC_BODY}");
+
+    // ── (a) `check`: empty compute registry ⇒ Warning, and still exit 0. ──────
+    let (status, stdout, stderr) = common::run_with_args_in(dir.path(), &["check", path_str]);
+    assert!(
+        status.success(),
+        "`reify check` must still exit 0 here — the fallback diagnostic is a \
+         Warning under check, and a Warning never moves #5403's \
+         Severity::Error exit gate.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stderr.contains(&warning_line),
+        "`cmd_check` registers no compute trampolines, so its registry is empty \
+         and the SOFT-site diagnostic must render as `{warning_line}`.\n\
+         stderr: {stderr}"
+    );
+    // Asserted explicitly, not merely implied by the `contains` above: a
+    // contains-only assertion would pass if BOTH the warning AND the old error
+    // line were printed, and the loud/silent mismatch this task closes (INV-4)
+    // is precisely the surviving `error:` line beside an exit code of 0.
+    assert!(
+        !stderr.contains("error: @optimized target \"test::never_registered_probe\""),
+        "no `error:`-prefixed form of this diagnostic may survive under \
+         `check` — an `error:` line printed alongside exit 0 is the exact \
+         falsehood this task closes.\nstderr: {stderr}"
+    );
+
+    // ── (b) `eval`: production bundle registered ⇒ Error, and it still gates. ─
+    let (status, stdout, stderr) = common::run_with_args_in(dir.path(), &["eval", path_str]);
+    assert!(
+        !status.success(),
+        "`reify eval` registers the production compute bundle, so its registry \
+         is non-empty, the diagnostic stays `Severity::Error`, and it must keep \
+         gating the exit code.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stderr.contains(&error_line),
+        "`reify eval` must keep printing `{error_line}` — the downgrade is \
+         conditioned on an EMPTY registry and must not leak into eval.\n\
+         stderr: {stderr}"
+    );
+
+    // ── (c) `build`: same, on the other gating subcommand. ───────────────────
+    let (status, stdout, stderr) = common::run_with_args_in(dir.path(), &["build", path_str]);
+    assert!(
+        !status.success(),
+        "`reify build` registers the production compute bundle too, so the \
+         diagnostic stays `Severity::Error` and keeps gating.\n\
+         stdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stderr.contains(&error_line),
+        "`reify build` must keep printing `{error_line}`.\nstderr: {stderr}"
     );
 }
 

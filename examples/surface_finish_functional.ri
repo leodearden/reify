@@ -10,7 +10,7 @@ module surface_finish_functional
 // which was registry-free).
 //
 // Auto-discovered and verified by
-// crates/reify-compiler/tests/examples_smoke.rs::all_examples_parse_and_compile_with_stdlib.
+// crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs::all_examples_parse_and_compile_with_stdlib.
 //
 // PRD reference: docs/prds/v0_6/surface-finish-functional.md §1.1 / boundary B1.
 

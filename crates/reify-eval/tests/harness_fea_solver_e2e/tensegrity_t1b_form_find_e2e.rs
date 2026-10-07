@@ -18,23 +18,13 @@
 
 use reify_core::{DimensionVector, Severity, ValueCellId};
 use reify_eval::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
-use reify_ir::{OpaqueState, PersistentMap, StructureInstanceData, StructureTypeId, Value};
+use reify_ir::{OpaqueState, PersistentMap, Value};
+use reify_test_support::tensegrity_fixtures::{
+    canonical_triplex_tensegrity, triplex_group_ids, triplex_seeds,
+};
 use reify_test_support::{compile_source_with_stdlib, make_simple_engine};
 
-// ── canonical triplex geometry ────────────────────────────────────────────────
-
-/// A Length-typed coordinate Scalar (SI metres).
-fn length(m: f64) -> Value {
-    Value::Scalar {
-        si_value: m,
-        dimension: DimensionVector::LENGTH,
-    }
-}
-
-/// A 3-component `Value::Point` node.
-fn node(x: f64, y: f64, z: f64) -> Value {
-    Value::Point(vec![length(x), length(y), length(z)])
-}
+// ── value extractors ─────────────────────────────────────────────────────────
 
 /// Extract an f64 from a Length Scalar (or bare Real) coordinate component.
 fn coord(v: &Value) -> f64 {
@@ -52,85 +42,6 @@ fn force_val(v: &Value) -> f64 {
         Value::Real(r) => *r,
         other => panic!("expected a Scalar/Real force, got {other:?}"),
     }
-}
-
-/// The canonical symmetric triplex prism (circumradius R=1, height=1, twist=30°).
-/// Node order: top 0,1,2 at z=1 (azimuth 120°·i); bottom 3,4,5 at z=0 (azimuth 120°·i+30°).
-/// These are the exact coordinates of `canonical_prism()` in the kernel test.
-fn canonical_prism_nodes() -> Vec<Value> {
-    use std::f64::consts::PI;
-    let deg = PI / 180.0;
-    let top = |i: usize| {
-        let a = 120.0 * (i as f64) * deg;
-        node(a.cos(), a.sin(), 1.0)
-    };
-    let bot = |i: usize| {
-        let a = (120.0 * (i as f64) + 30.0) * deg;
-        node(a.cos(), a.sin(), 0.0)
-    };
-    vec![top(0), top(1), top(2), bot(0), bot(1), bot(2)]
-}
-
-/// Build the triplex Tensegrity Value with the kernel topology:
-///   struts:  [[0,4],[1,5],[2,3]]
-///   cables:  [[0,1],[1,2],[2,0],[3,4],[4,5],[5,3],[0,3],[1,4],[2,5]]
-fn triplex_tensegrity() -> Value {
-    let nodes = Value::List(canonical_prism_nodes());
-    let struts = Value::List(vec![
-        Value::List(vec![Value::Int(0), Value::Int(4)]),
-        Value::List(vec![Value::Int(1), Value::Int(5)]),
-        Value::List(vec![Value::Int(2), Value::Int(3)]),
-    ]);
-    let cables = Value::List(vec![
-        // top
-        Value::List(vec![Value::Int(0), Value::Int(1)]),
-        Value::List(vec![Value::Int(1), Value::Int(2)]),
-        Value::List(vec![Value::Int(2), Value::Int(0)]),
-        // bottom
-        Value::List(vec![Value::Int(3), Value::Int(4)]),
-        Value::List(vec![Value::Int(4), Value::Int(5)]),
-        Value::List(vec![Value::Int(5), Value::Int(3)]),
-        // vertical
-        Value::List(vec![Value::Int(0), Value::Int(3)]),
-        Value::List(vec![Value::Int(1), Value::Int(4)]),
-        Value::List(vec![Value::Int(2), Value::Int(5)]),
-    ]);
-    let fields: PersistentMap<String, Value> = [
-        ("nodes".to_string(), nodes),
-        ("struts".to_string(), struts),
-        ("cables".to_string(), cables),
-    ]
-    .into_iter()
-    .collect();
-    Value::StructureInstance(Box::new(StructureInstanceData {
-        type_id: StructureTypeId(0),
-        type_name: "Tensegrity".to_string(),
-        version: 1,
-        fields,
-    }))
-}
-
-/// Struts-then-cables group_ids: struts→0, six horizontals→1, verticals→2.
-fn triplex_group_ids() -> Value {
-    Value::List(vec![
-        Value::Int(0),
-        Value::Int(0),
-        Value::Int(0), // struts
-        Value::Int(1),
-        Value::Int(1),
-        Value::Int(1), // top horizontals
-        Value::Int(1),
-        Value::Int(1),
-        Value::Int(1), // bottom horizontals
-        Value::Int(2),
-        Value::Int(2),
-        Value::Int(2), // verticals
-    ])
-}
-
-/// Seed ratios: struts compressive (−1), horizontals/verticals tensile (+1).
-fn triplex_seeds() -> Value {
-    Value::List(vec![Value::Real(-1.0), Value::Real(1.0), Value::Real(1.0)])
 }
 
 /// Invoke `solve_form_find_free_trampoline` with the standard no-realization /
@@ -250,7 +161,7 @@ fn assert_triplex_form_find_result(fields: &PersistentMap<String, Value>) {
 #[test]
 fn trampoline_happy_path_solves_triplex_prism() {
     let value_inputs = vec![
-        triplex_tensegrity(),
+        canonical_triplex_tensegrity(None),
         triplex_group_ids(),
         triplex_seeds(),
         Value::Int(1), // reference_group
@@ -310,9 +221,9 @@ fn trampoline_all_positive_seeds_is_failed_infeasible() {
     ]);
 
     // Build a Tensegrity where every member is tagged as a cable (positive seeds).
-    // We reuse triplex_tensegrity() but pass all-cable group ids + positive seeds.
+    // We reuse canonical_triplex_tensegrity() but pass all-cable group ids + positive seeds.
     let value_inputs = vec![
-        triplex_tensegrity(),
+        canonical_triplex_tensegrity(None),
         all_cable_group_ids,
         all_positive_seeds,
         Value::Int(1), // reference_group
@@ -334,7 +245,7 @@ fn trampoline_all_positive_seeds_is_failed_infeasible() {
 #[test]
 fn trampoline_short_value_inputs_is_failed() {
     let value_inputs = vec![
-        triplex_tensegrity(),
+        canonical_triplex_tensegrity(None),
         triplex_group_ids(),
         // seed_ratios and reference_group omitted → only 2 inputs
     ];
@@ -379,7 +290,7 @@ fn trampoline_cable_group_negative_seed_is_sign_violation() {
     ]);
 
     let value_inputs = vec![
-        triplex_tensegrity(),
+        canonical_triplex_tensegrity(None),
         triplex_group_ids(), // struts→0, horizontals→1, verticals→2
         sign_violating_seeds,
         Value::Int(1), // reference_group
@@ -435,7 +346,7 @@ fn trampoline_out_of_range_group_id_is_dimension_mismatch() {
     ]);
 
     let value_inputs = vec![
-        triplex_tensegrity(),
+        canonical_triplex_tensegrity(None),
         bad_group_ids,
         triplex_seeds(), // only 3 groups: 0, 1, 2
         Value::Int(1),   // reference_group
@@ -543,4 +454,56 @@ fn e2e_t_prism_lowers_to_compute_node_and_solves() {
     // Delegate nodes / member_forces / force_densities checks to the shared
     // canonical-prism assertion helper (same contract as the trampoline-unit test).
     assert_triplex_form_find_result(fields);
+}
+
+// ── task #6120: dimensionless gate on seed_ratios ─────────────────────────────
+
+/// (#6120-e) `seed_ratios` are nullity-invariant RELATIVE ratios (the stdlib
+/// `form_find_free` doc: "Overall scaling of q is nullity-invariant, so only
+/// relative ratios matter"), so a DIMENSIONED `Scalar` seed is a category error
+/// and must be rejected with a located wrong-unit diagnostic — not silently
+/// stripped to its SI magnitude and used as the ratio.
+#[test]
+fn free_trampoline_dimensioned_seed_ratio_is_failed_wrong_unit() {
+    let seeds_with_unit = Value::List(vec![
+        Value::Real(-1.0),
+        Value::Real(1.0),
+        Value::Scalar {
+            si_value: 1.0,
+            dimension: DimensionVector::FORCE_DENSITY,
+        }, // ← dimensioned: must not be accepted
+    ]);
+    let value_inputs = vec![
+        canonical_triplex_tensegrity(None),
+        triplex_group_ids(),
+        seeds_with_unit,
+        Value::Int(1), // reference_group
+    ];
+
+    match call_form_find_free(&value_inputs) {
+        ComputeOutcome::Failed { diagnostics, .. } => {
+            let joined = diagnostics
+                .iter()
+                .map(|d| d.message.as_str())
+                .collect::<Vec<_>>()
+                .join(" | ");
+            assert!(
+                joined.contains("E_FormFindInfeasible"),
+                "expected an E_FormFindInfeasible diagnostic, got: {joined}"
+            );
+            assert!(
+                joined.contains("wrong unit"),
+                "expected the diagnostic to name the wrong unit, got: {joined}"
+            );
+            assert!(
+                joined.contains("seed_ratios[2]"),
+                "expected the diagnostic to locate the offending entry as \
+                 seed_ratios[2], got: {joined}"
+            );
+        }
+        other => panic!(
+            "a dimensioned seed_ratios entry must be rejected, not silently \
+             stripped; got {other:?}"
+        ),
+    }
 }

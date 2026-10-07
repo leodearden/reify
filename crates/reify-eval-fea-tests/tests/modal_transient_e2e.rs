@@ -6,10 +6,10 @@
 //!   step-9/10  — trampoline registration + seam pin (always-run)
 //!   step-17/18 — cantilever step-response decay-envelope e2e (release-gated)
 
-use reify_core::{Severity, ValueCellId};
+use reify_core::{DimensionVector, Severity, ValueCellId};
 use reify_eval::ComputeFn;
 use reify_ir::Value;
-use reify_test_support::{make_simple_engine, parse_and_compile_with_stdlib};
+use reify_test_support::{assert_dimensioned, make_simple_engine, parse_and_compile_with_stdlib};
 
 // ── step-9: RED — trampoline registration + seam pin ──────────────────────────
 //
@@ -60,7 +60,7 @@ fn register_compute_fns_installs_transient_trampolines() {
 //
 // Drives examples/modal/transient_step_response.ri end-to-end through the
 // transient pipeline (modal_analysis → transient_response → displacement_at) and
-// checks four observable signals (PRD §1 / §5.2 / §9.1):
+// checks five observable signals (PRD §1 / §5.2 / §9.1):
 //   (a) no Error-severity diagnostics after parse + eval
 //   (b) ComputeNodes with target == "modal::transient_response" AND
 //       "modal::displacement_at" are present in the graph
@@ -70,6 +70,11 @@ fn register_compute_fns_installs_transient_trampolines() {
 //       ζ₁ and ω₁ = 2π·f₁ are read from the result's OWN fundamental mode — a
 //       self-referential check, so absolute frequency accuracy is irrelevant and
 //       the fixture can run at the lighter ElementOrder.P1 (plan design-dec-3/4).
+//   (e) the damping coefficients the solve was actually fed are DIMENSIONED at
+//       the value layer — `opts.damping.alpha` is a Value::Scalar carrying
+//       FREQUENCY and exactly 0.0 SI, `.beta` one carrying TIME and exactly
+//       0.0003 SI (task #6093; see the block's own comment for why this is
+//       destructured rather than read through `read_real`).
 //
 // The decay constant is measured from the sequence of *swings* between
 // consecutive local extrema of the tip series: |u(eₖ) − u(eₖ₊₁)| decays as
@@ -323,5 +328,62 @@ fn e2e_cantilever_step_response_decay_matches_modal_damping() {
         sigma_measured,
         sigma_theory,
         rel_err * 100.0
+    );
+
+    // (e) task #6093 — the damping coefficients this solve was ACTUALLY fed
+    //     are dimensioned at the value layer, with bit-identical SI
+    //     magnitudes: `RayleighDamping.alpha` / `.beta` migrated from bare
+    //     `0.0` / `0.0003` to `0.0Hz` / `0.0003s`. Exact equality, because
+    //     these are literal-derived (both unit factors are 1.0), not
+    //     solver-derived. The σ_measured check just above is the end-to-end
+    //     half of the same claim.
+    //
+    //     Not redundant with the compile-side gates: those judge the ctor ARG
+    //     against the declared slot, whereas this reads what the evaluated
+    //     cell actually carries after the trampoline has been fed.
+    //
+    //     PROFILE REACH: this assertion rides the test's
+    //     `#[cfg_attr(debug_assertions, ignore)]` heavy-solve gate, so it runs
+    //     only under release (and the merge gate's `--profile both`). The
+    //     debug-runnable companion is
+    //     `modal_options_validation_tests::corpus_rayleigh_ctor_args_lower_to_dimensioned_literals`,
+    //     which compiles the same `.ri` file and inspects the lowered ctor
+    //     literals without an eigensolve. The other four migrated corpus sites
+    //     are guarded at the compile layer by
+    //     `examples_smoke::no_example_emits_ctor_field_conformance_diagnostics`,
+    //     which gates at ANY severity — reverting one to a bare literal is
+    //     rejected there (measured; see esc-6093-7).
+    //
+    let opts_cell = ValueCellId::new("CantileverStepResponse", "opts");
+    let opts_val = eval_result
+        .values
+        .get(&opts_cell)
+        .unwrap_or_else(|| panic!("cell CantileverStepResponse.opts not found in eval result"));
+    let damping_val = struct_field(opts_val, "damping").unwrap_or_else(|| {
+        panic!("ModalOptions.damping field not found on opts value: {opts_val:?}")
+    });
+    let alpha_val = struct_field(damping_val, "alpha").unwrap_or_else(|| {
+        panic!("RayleighDamping.alpha field not found on damping value: {damping_val:?}")
+    });
+    let beta_val = struct_field(damping_val, "beta").unwrap_or_else(|| {
+        panic!("RayleighDamping.beta field not found on damping value: {damping_val:?}")
+    });
+
+    // Asserted through the shared `assert_dimensioned`, deliberately NOT through
+    // `read_real` above: that helper folds Real/Int/Scalar into one f64 and is
+    // blind to the property under test — task #6093 retyped
+    // `RayleighDamping.alpha`/`beta` to Frequency/Time, and a fold would pass
+    // identically either side of that migration.
+    assert_dimensioned(
+        alpha_val,
+        0.0,
+        DimensionVector::FREQUENCY,
+        "RayleighDamping.alpha (transient_step_response.ri)",
+    );
+    assert_dimensioned(
+        beta_val,
+        0.0003,
+        DimensionVector::TIME,
+        "RayleighDamping.beta (transient_step_response.ri)",
     );
 }

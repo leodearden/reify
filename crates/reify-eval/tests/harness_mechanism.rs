@@ -19,7 +19,14 @@ mod mechanism_builder_smoke;
 mod mechanism_duplicate_solid_diag_e2e;
 #[path = "harness_mechanism/mechanism_interference_smoke.rs"]
 mod mechanism_interference_smoke;
+#[path = "harness_mechanism/mechanism_modal_damping_e2e.rs"]
+mod mechanism_modal_damping_e2e;
+#[path = "harness_mechanism/mechanism_modal_lumped_fields_e2e.rs"]
+mod mechanism_modal_lumped_fields_e2e;
 #[path = "harness_mechanism/mechanism_nondriving_joint_diag_e2e.rs"]
 mod mechanism_nondriving_joint_diag_e2e;
 #[path = "harness_mechanism/revolute_trajectory_limits_e2e.rs"]
 mod revolute_trajectory_limits_e2e;
+
+#[path = "common/numeric_cell.rs"]
+mod numeric_cell;

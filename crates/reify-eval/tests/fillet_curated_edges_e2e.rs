@@ -34,7 +34,7 @@ use reify_ir::{
     GeometryHandle, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery,
     KernelAttributeHook, Mesh, QueryError, SampledField, TessError, Value,
 };
-use reify_test_support::{compile_source, errors_only};
+use reify_test_support::{compile_source, compile_source_with_stdlib, errors_only};
 
 #[test]
 fn fillet_curated_edges_3205_e2e() {
@@ -173,6 +173,163 @@ fn fillet_curated_edges_3205_e2e() {
         v_all_si < v_cur_si - EPSILON,
         "all-edges fillet must remove more material than curated (v_all < v_cur - ε): \
          v_all={v_all_si:.15e}, v_cur={v_cur_si:.15e}"
+    );
+}
+
+/// step-7 (task 5208): PRODUCTION-BUILD integration e2e over the committed
+/// designer example `examples/topology_selectors/bottom_deck_selectors.ri` —
+/// the whole 7-curated-fillet program, not an isolated scenario.
+///
+/// The example composes all three previously-unreachable shapes at once:
+/// three blank-box lets filleted via `edges_parallel_to` on the same let, one
+/// curated fillet over a doubly-nested `difference` result, and a four-stage
+/// chain of curated fillets each referencing the prior stage. Every selector is
+/// written INLINE, which is the authoring form that was unreachable before
+/// step-2 (and the reason `fillet_curated_edges_3205_e2e` above passed while
+/// the production pipeline did not — it binds its selector to a `let`).
+///
+/// Assertions:
+///   (a) NO `Severity::Error` diagnostic across the whole program;
+///   (b) all 7 curated fillets dispatch with a RESOLVED (non-empty) edge list —
+///       an empty list is the all-edges back-compat path, i.e. a silently
+///       degraded selector, so a degraded build cannot satisfy this;
+///   (c) the DIRECTIONAL volume invariant `v_filleted < v_blank` on the same
+///       `EPSILON = 1e-10 m³` basis as `fillet_curated_edges_3205_e2e`, taking
+///       the outermost blank (`outer_blank`, the largest recorded Box) as the
+///       un-filleted reference. Material removal is the whole point of a
+///       fillet, so a build that "succeeds" without shrinking the body has not
+///       actually applied one.
+///
+/// GREEN ON ARRIVAL, not RED-first (esc-5208-2): step-2's inline-selector
+/// hydration already closed every seam this example exercises. Verified to be a
+/// genuine discriminator rather than assumed — with only the two src files
+/// reverted to the pre-fix parent `838f4ab8d4`, `reify eval` on this same file
+/// exits 1 with 6 geometry-op errors, and after the fix exits 0 reporting
+/// `mass = 1.5142278520072925 kg`.
+#[test]
+fn bottom_deck_selectors_example_builds_clean_e2e() {
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!("skipping bottom_deck_selectors_example_builds_clean_e2e: OCCT not available");
+        return;
+    }
+
+    // Resolved from CARGO_MANIFEST_DIR (crates/reify-eval) so the test is
+    // independent of the process CWD.
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../examples/topology_selectors/bottom_deck_selectors.ri");
+    let source = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("failed to read {}: {e}", path.display()));
+
+    // `compile_source_with_stdlib` (not the bare `compile_source` the 3205 e2e
+    // above uses): the example declares a `Material(... youngs_modulus: 2.1GPa)`
+    // and conforms to `Physical`, both of which need the stdlib prelude.
+    let compiled = compile_source_with_stdlib(&source);
+    assert!(
+        errors_only(&compiled).is_empty(),
+        "the committed example must compile with no errors, got: {:#?}",
+        errors_only(&compiled)
+    );
+
+    let recording_kernel =
+        RecordingKernel::new(Box::new(reify_kernel_occt::OcctKernelHandle::spawn()));
+    let ops_ref = recording_kernel.ops_ref();
+    let op_handles_ref = recording_kernel.op_handles_ref();
+    let volumes_ref = recording_kernel.volumes_ref();
+
+    let mut engine = Engine::new(
+        Box::new(SimpleConstraintChecker),
+        Some(Box::new(recording_kernel)),
+    );
+    engine.set_build_scheduler(BuildScheduler::UnifiedDag);
+    let result = engine.build(&compiled, ExportFormat::Step);
+
+    // ── (a) no build/realization-time geometry-op errors ──
+    let errors: Vec<String> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == reify_core::Severity::Error)
+        .map(|d| d.message.clone())
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "the committed curated-fillet example must build with NO Severity::Error \
+         geometry-op diagnostic; errors={errors:#?}"
+    );
+
+    let ops = ops_ref.lock().unwrap();
+    let op_handles = op_handles_ref.lock().unwrap();
+    let volumes = volumes_ref.lock().unwrap();
+
+    // ── (b) all 7 curated fillets resolved to a non-empty edge subset ──
+    let curated: Vec<(usize, usize)> = ops
+        .iter()
+        .enumerate()
+        .filter_map(|(i, op)| match op {
+            GeometryOp::Fillet { edges, .. } if !edges.is_empty() => Some((i, edges.len())),
+            _ => None,
+        })
+        .collect();
+    // Counted by DISTINCT (target, radius), not by raw dispatch count. The build
+    // re-dispatches the three blank-box `edges_parallel_to` fillets a second time
+    // (each of `outer`/`recess_cut`/`main_cut` is both its own named realization
+    // AND an operand of the `difference` chain, and the RealizationCache only
+    // probes for an entity's TERMINAL realization), so 7 authored fillets record
+    // 10 ops. That duplication is an orthogonal efficiency property; pinning the
+    // raw count here would make this test fail on any future de-duplication that
+    // is otherwise a pure improvement.
+    let distinct: std::collections::BTreeSet<String> = ops
+        .iter()
+        .filter_map(|op| match op {
+            GeometryOp::Fillet {
+                target,
+                edges,
+                radius,
+            } if !edges.is_empty() => Some(format!("{target:?}|{radius:?}")),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        distinct.len(),
+        7,
+        "all 7 curated fillets in the example must dispatch with a RESOLVED \
+         (non-empty) edge list; distinct (target, radius) pairs seen: {:?}; \
+         (index, edge_count) of every curated dispatch: {:?}",
+        distinct,
+        curated,
+    );
+
+    // ── (c) directional volume invariant: filleted body < un-filleted blank ──
+    // The largest recorded Box is `outer_blank`, the envelope every later op
+    // cuts or rounds down from; the last curated fillet's result is the final
+    // `geometry` body. Both volumes come from the RecordingKernel's immediate
+    // post-execute query (same basis as fillet_curated_edges_3205_e2e, which
+    // documents why the `volume(...)` DSL cell is not used for Modify results).
+    const EPSILON: f64 = 1e-10; // 0.1 mm³ in m³
+    let v_blank = ops
+        .iter()
+        .enumerate()
+        .filter(|(_, op)| matches!(op, GeometryOp::Box { .. }))
+        .filter_map(|(i, _)| volumes.get(&op_handles[i]).copied())
+        .fold(f64::NEG_INFINITY, f64::max);
+    assert!(
+        v_blank.is_finite() && v_blank > 0.0,
+        "the un-filleted blank envelope must have a cached finite positive volume, got {v_blank}"
+    );
+
+    let final_handle = op_handles[curated.last().expect("7 curated fillets asserted above").0];
+    let v_filleted = *volumes.get(&final_handle).unwrap_or_else(|| {
+        panic!(
+            "final curated-fillet body must have a cached volume; cached volumes: {volumes:?}"
+        )
+    });
+    assert!(
+        v_filleted.is_finite() && v_filleted > 0.0,
+        "the final filleted body must have a finite, positive volume, got {v_filleted}"
+    );
+    assert!(
+        v_filleted < v_blank - EPSILON,
+        "filleting + hollowing must REMOVE material from the blank envelope: \
+         v_filleted={v_filleted:.15e} must be < v_blank={v_blank:.15e} (EPSILON={EPSILON:e})"
     );
 }
 

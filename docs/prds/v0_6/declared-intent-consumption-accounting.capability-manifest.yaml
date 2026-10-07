@@ -101,15 +101,17 @@ tasks:
     rendering'
   capabilities:
   - name: reason-strings-already-recorded
-    binding: capability→producer (substrate) — classify_undef reify-constraints/src/lib.rs:68-102
-      distinguishes "undefined inputs" vs "operator undefined for these operand kinds";
-      GD&T free-text reason engine_constraints.rs:2100
+    binding: capability→producer (substrate) — the reason clauses ("undefined inputs"
+      vs "operator undefined for these operand kinds") are rendered by the Display
+      impl of IndeterminateReason in crates/reify-ir/src/indeterminate.rs, the single
+      production renderer, populated by the typed classify_undef in
+      reify-constraints/src/lib.rs (esc-5418-9 option B)
     verdict: PASS
     delivered_check:
       kind: grep
       pattern: operator undefined for these operand kinds
       paths:
-      - crates/reify-constraints/src
+      - crates/reify-ir/src
       expect: present
   - name: carrier-gap-real
     binding: 'signal premise — ConstraintCheckEntry reify-eval/src/lib.rs:1140-1144

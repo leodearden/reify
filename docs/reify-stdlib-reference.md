@@ -83,6 +83,9 @@ std
     query        // interferes(), interferes_with(), min_clearance()
   result
     mod.ri         // Result<T,E>, unwrap_or, is_ok, is_err, or_else, map_err, ok_or
+  fea              // StressInvariants — result of stress_invariants()
+  solver
+    elastic        // ElementOrder, ElasticOptions, ElasticResult, solve_elastic_static (§16)
 ```
 
 ---
@@ -251,6 +254,15 @@ fn ELEMENTARY_CHARGE()         -> Charge             -- 1.602176634e-19 C       
 
 Reify has no top-level `const`; dimensionful values carry their dimension via the zero-arg function's return type, while dimensionless math constants (`pi`, `tau`, `e`) are bare compiler builtins.
 
+**Pressure-power aliases.** `units.ri` declares two more `pub type` aliases in its physical-constants alias block, alongside the constants' return-type aliases. They name powers of pressure that have no standard named quantity, so the names are positional: the digit is the exponent. Both are usable from user code.
+
+```
+pub type Pressure2 = Pressure * Pressure     // Pa²  — StressInvariants.i2 (§15)
+pub type Pressure3 = Pressure2 * Pressure    // Pa³  — StressInvariants.i3 (§15)
+```
+
+`Pressure3` chains through `Pressure2` because a type-alias right-hand side admits neither `^` nor parentheses (the same grammar limit that makes `StefanBoltzmannDim` spell T⁴ as four repeated factors).
+
 ---
 
 ## 3. `std.geometry`
@@ -278,29 +290,40 @@ let transform3_identity : Transform<3>
 fn project(point: Point3<Length>, to: Frame<3>) -> Point3<Length>
 fn project(vector: Vector3<Length>, to: Frame<3>) -> Vector3<Length>
 
-enum EulerConvention { XYZ, XZY, YXZ, YZX, ZXY, ZYX }
+enum EulerConvention { XYZ, XZY, YXZ, YZX, ZXY, ZYX,   // Tait-Bryan
+                       XYX, XZX, YXY, YZY, ZXZ, ZYZ }  // proper / classic Euler
 ```
 
 **Implementation status (2026-07, `docs/prds/geometry-transforms-frames-projection.md`):** `project` (both the point and vector overloads), `orient_look_at`, and the qualified-enum-value path for `EulerConvention` are implemented by this PRD.
 
-**Bare vs. qualified `EulerConvention`:** `orient_euler`/`orient_to_euler` accept the convention argument either as a lowercase string (`"xyz"`) or as a qualified enum value (`EulerConvention.XYZ`) — a **bare** unqualified variant (`XYZ` alone) is not resolved and evaluates to `Undef`. The string path is case-sensitive: `"XYZ"` (uppercase) also evaluates to `Undef`.
+**What a convention names:** the three angles rotate about the named **body** axes, in the named order, composed intrinsically as `q = q_a · q_b · q_c`. The twelve conventions fall into two families that differ in where they break. **Tait-Bryan** (three distinct axes, e.g. `XYZ`) is singular where the middle angle reaches ±90°; **proper/classic Euler** (first axis repeated as third, e.g. `ZXZ`) is singular where the middle angle reaches 0 or π. So the choice is not cosmetic: it places the gimbal-lock locus somewhere different, and the right convention is the one whose singularity your mechanism never visits.
+
+**Qualified `EulerConvention` values only:** the convention argument must be a qualified enum value (`EulerConvention.XYZ`). A **bare** unqualified variant (`XYZ` alone) is not resolved and evaluates to `Undef`. A `String` is no longer accepted in any spelling — the lowercase-string path (`"xyz"`) and its case-sensitivity trap were removed in task #6082, and a String convention now raises a compile-time `ArgTypeMismatch` rather than silently evaluating to `Undef`.
+
+**Argument-order asymmetry, deliberate:** `orient_euler` takes its convention FIRST, `orient_to_euler` takes it LAST. `orient_euler` is a *constructor* whose convention is a mode selector for the three angles that follow, matching `R_xyz(a, b, c)` notation. `orient_to_euler` is a *decomposer*, so it is subject-first like its siblings `orient_log(q)` / `orient_to_axis_angle(q)` / `orient_inverse(q)`. Please do not "fix" the asymmetry by aligning them.
 
 #### SO(3) and SE(3) operations (v0.2)
 
 Added to support the closed-chain kinematic loop-closure solver — see
 [`v0_2/kinematic-constraints.md`](prds/v0_2/kinematic-constraints.md). All
 operations validate inputs and return `Undef` on shape mismatch, wrong
-argument count, dimensional mismatch, or non-finite components.
+argument count, dimensional mismatch, or non-finite components. Two of them —
+`orient_exp` and `transform_exp` — additionally emit an **error** diagnostic
+naming the offending dimension when the *rotation vector* they are handed
+carries the wrong dimension, so `reify eval` exits non-zero rather than leaving
+a bare `Undef` behind; see *Rotation-vector dimension convention* below. Every
+other failure mode, on those two builtins and on all the others, stays a silent
+`Undef`.
 
 ```
 // SO(3) — quaternion algebra on Orientation<3>
 fn orient_compose(a: Orientation<3>, b: Orientation<3>) -> Orientation<3>
 fn orient_inverse(q: Orientation<3>) -> Orientation<3>
-fn orient_log(q: Orientation<3>) -> Vector3<Dimensionless>           // axis * angle (rotation vector)
-fn orient_exp(rot_vec: Vector3<Dimensionless>) -> Orientation<3>     // inverse of orient_log
+fn orient_log(q: Orientation<3>) -> Vector3<Angle>                   // axis * angle (rotation vector)
+fn orient_exp(rot_vec: Vector3<Angle>) -> Orientation<3>             // inverse of orient_log
 fn orient_slerp(a: Orientation<3>, b: Orientation<3>, t: Real) -> Orientation<3>
 fn orient_to_axis_angle(q: Orientation<3>) -> Map { axis: Vector3<Dimensionless>, angle: Angle }
-fn orient_to_euler(convention: EulerConvention, q: Orientation<3>) -> List<Angle>  // 3 elements
+fn orient_to_euler(q: Orientation<3>, convention: EulerConvention) -> List<Angle>  // 3 elements
 
 // SE(3) — rigid-body transforms on Transform<3>
 fn transform_compose(a: Transform<3>, b: Transform<3>) -> Transform<3>   // bit-equal to a * b
@@ -316,42 +339,164 @@ the `Orientation * Orientation` and `Transform * Transform` operators
 respectively, and produce bit-identical results to the operator path.
 
 **Twist representation.** SE(3) twists are encoded as a `Map` keyed by
-`"angular"` (a `Vector3<Dimensionless>` holding `axis * angle` in radians) and
+`"angular"` (a `Vector3<Angle>` holding `axis * angle`, i.e. radians) and
 `"linear"` (a `Vector3<Length>` holding the translational component):
 
 ```
-type Twist = Map { angular: Vector3<Dimensionless>, linear: Vector3<Length> }
+type Twist = Map { angular: Vector3<Angle>, linear: Vector3<Length> }
 ```
 
 A `Map` shape (rather than a 6-component `Vector`) is required because
 `Vector` enforces a single shared dimension across components; a twist mixes
-dimensionless rotation and `Length` translation. The same `Map` shape is
-returned by `joint_jacobian` (§13.1) so that solver code can compose twists
-and Jacobian columns uniformly.
+`Angle` rotation and `Length` translation. `joint_jacobian` (§13.1) does
+**not** return a `Twist`: its columns are partial derivatives of pose with
+respect to a joint coordinate (dpose/dq), not spatial velocities (dpose/dt), and
+they have their own type, `JacobianColumn`. The two happen to share the
+`angular`/`linear` key names; they are not interchangeable, and a Jacobian column
+must not be fed to `transform_exp`.
 
-**Linear-component dimension convention.** `transform_log` preserves the
-input `Transform`'s translation dimension on `linear` verbatim, and
-`transform_exp` accepts `linear` with the same polymorphic policy:
+The two halves are governed by two **monomorphic** conventions, documented below
+as siblings: `angular` is `Vector3<Angle>` and `linear` is `Vector3<Length>`.
+Neither is a polymorphism table — each admits exactly one dimension and rejects
+every other with an `Error` diagnostic and a non-zero `reify eval` exit.
 
-| `linear` dimension | accepted? | notes                                   |
-|--------------------|-----------|-----------------------------------------|
-| `Length`           | ✓         | canonical — matches the `Twist` type    |
-| `Dimensionless`    | ✓         | unit-less twists / numerical work       |
-| `Angle`, `Mass`, … | ✗         | rejected as `Undef`                     |
+**Rotation-vector dimension convention (`angular`).** A rotation vector is
+`axis * angle` — a dimensionless unit axis scaled by an angle — so it carries
+`Angle`:
 
-The pair `transform_log` ↔ `transform_exp` round-trips exactly under both
-policies, so a `Transform` whose translation is `Dimensionless` will round-trip
-through a `Dimensionless` linear, and likewise for `Length`. `joint_jacobian`
-always emits `Dimensionless` on both `angular` and `linear` because joint
-parameters are unit-less in the joint's local frame.
+| `angular` dimension      | accepted? | notes                                                                       |
+|--------------------------|-----------|------------------------------------------------------------------------------|
+| `Angle`                  | ✓         | canonical — matches the `Twist` type (SI unit: `rad`)                        |
+| `Dimensionless`          | ✗         | rejected as `Undef`, with a dimension `Error` naming the offending dimension |
+| `Length`, `Mass`, …      | ✗         | same rejection + `Error`                                                     |
+
+Rejection is uniform: every non-`Angle` dimension takes the same branch.
+
+This governs `orient_log` / `orient_exp` and the `angular` half of
+`transform_log` / `transform_exp` alike: `orient_log` and `transform_log`
+*emit* `Angle`-dimensioned components, and `orient_exp` and `transform_exp`
+*accept* only those, so both ends of each seam gate identically and
+`exp(log(x)) == x` stays well-typed. Identity and pure-rotation transforms are
+unaffected: their rotation vector is an `Angle` zero.
+
+> **RULING #6080** (Leo, 2026-08-17): a rotation vector carries `Angle` and only
+> `Angle` — `orient_log` / `orient_exp` and a twist's `angular` half alike.
+> Grounds: `log(q)` is `axis * angle`, so its magnitude *is* an angle in radians;
+> that is what makes d/dt of one an angular velocity rather than a frequency, and
+> what makes `orient_log(q)` agree with `orient_to_axis_angle(q).angle * .axis`,
+> the sibling it previously contradicted.
+>
+> `Dimensionless` is rejected on purpose, and NOT tolerated for back-compat. It is
+> a **specific** dimension — the zero exponent vector — not a wildcard, so
+> admitting it as a tolerant alias would re-open the hole decision D11 of
+> `docs/prds/v0_6/units-length-gate-completion.md` closed for this family: the
+> same grounds on which #6126 narrowed the sibling `linear` half. Reify already
+> spells a bare radian as `1.5708rad` / `90deg`.
+>
+> The "transcendentals need dimensionless arguments" objection does not apply:
+> reify's own trig already accepts an `Angle` argument (`sin(90deg) ==
+> sin(1.5707963267948966) == 1`), which establishes that `Angle` is acceptable —
+> not that `Dimensionless` must remain so.
+>
+> The rejection is a `Severity::Error`, so `reify eval` exits 1 — the same
+> severity the `linear` half reports at, so one fault class does not report two
+> ways across one builtin family. The diagnostic carries an
+> `E_RotationVectorDimension` token in its message text and
+> `reify_core::DiagnosticCode::DimensionedArgRejected` as its code — the
+> reused, pre-existing runtime dimension-rejection code, the same one the
+> `linear` half carries. No `DiagnosticCode::ArgDimensionMismatch` is minted:
+> under BINDING ruling A7 (Leo, 2026-08-30, esc-5791-3) one rejection *reason*
+> gets one code, and this seam shares that reason with `bbox` and with
+> `reify_eval::geometry_ops`' `arg_acceptance`-backed chokepoints. See
+> `docs/prds/v0_6/dimension-checked-readers.md` §6 decision 1's RECONCILIATION
+> block.
+
+**Migration.** `Dimensionless` rotation vectors used to be the accepted
+spelling, so this is a breaking change. Dimension **every** component of the
+rotation vector, not just the non-zero ones — `vec3(0rad, 0rad, 1.5708rad)`, or
+`vec3(0deg, 0deg, 90deg)`. Because the rejection is an error diagnostic that
+names the offending dimension (rather than a silent `Undef`), an unmigrated call
+site fails loudly and self-describes the fix.
+
+Migrate a **whole** vector at a time: a partial migration is the one case that
+does *not* fail loudly. `vec3(0, 0, 1.5708rad)` mixes `Dimensionless` and
+`Angle` components, and a mixed-dimension `vec3` collapses to `undef` at its own
+construction site — *before* `orient_exp` / `transform_exp` is ever called. The
+rotation-vector diagnostic classifies that builtin's argument, so it never sees
+the offending vector and cannot fire; the call fails the old silent way (a bare
+`undef` plus an `OpContractViolation` note, `reify eval` exit 0). Diagnosing a
+mixed-dimension container at its construction site is a separate, general
+concern and is tracked as follow-up work.
+
+**Linear-component dimension convention.** The sibling of the convention above,
+with the same shape on the other half of the twist: `transform_log` requires the
+input `Transform`'s translation to be `Vector3<Length>` and emits `linear` as
+`Vector3<Length>`; `transform_exp` requires `linear` to be `Vector3<Length>`:
+
+| `linear` dimension       | accepted? | notes                                                                            |
+|--------------------------|-----------|----------------------------------------------------------------------------------|
+| `Length`                 | ✓         | canonical — matches the `Twist` type                                             |
+| `Dimensionless`          | ✗         | rejected as `Undef`, with a dimension `Error` naming the offending dimension      |
+| `Angle`, `Mass`, …       | ✗         | same rejection + `Error`                                                          |
+
+Rejection is uniform: every non-`Length` dimension takes the same branch.
+
+There is now ONE policy — `Length` — and both ends of the seam gate identically,
+so `transform_log` ↔ `transform_exp` round-trips exactly on `Length` and both
+ends reject in lockstep otherwise. Identity and pure-rotation transforms are
+unaffected: `transform3_identity` builds `Length` zeros.
+
+> **RULING #6126** (Leo, 2026-08-07): a twist's `linear` half is
+> `Vector3<Length>`, and mirrored, a `Transform`'s translation crossing this seam
+> carries `Length` and only `Length`. Grounds: decision D11 of
+> `docs/prds/v0_6/units-length-gate-completion.md` — after the `Real` →
+> `Scalar{Dimensionless}` unification, "also admits `Dimensionless`" means "also
+> admits bare numbers". This closes the last `Length | Dimensionless` disjunction
+> **on this seam**, which is the whole of the ruling's scope.
+>
+> **Severity amendment** (Leo, 2026-08-19, via esc-6080-6): the rejection is a
+> `Severity::Error`, so `reify eval` exits 1. A wrong dimension is a
+> design-correctness fault rather than a degradation to tolerate, and the sibling
+> angular half of the same builtin family reports its equivalent fault at the same
+> severity (#6080, above — now landed) — so one fault class does not report two
+> ways across one seam. The diagnostic carries
+> `reify_core::DiagnosticCode::DimensionedArgRejected` — the reused, pre-existing
+> runtime dimension-rejection code, attached by task 5791 under BINDING ruling A7
+> (Leo, 2026-08-30, esc-5791-3). No `DiagnosticCode::ArgDimensionMismatch` is
+> minted: one rejection *reason* gets one code, and this seam shares that reason
+> with `bbox` and with `reify_eval::geometry_ops`' `arg_acceptance`-backed
+> chokepoints. See `docs/prds/v0_6/dimension-checked-readers.md` §6 decision 1's
+> RECONCILIATION block.
+
+**Scope: this seam only.** The gate above is *not* evidence that the transform
+family is uniformly `Length`-only. `transform3`'s signature above declares
+`translation: Vector3<Length>`, but the evaluator applies no dimension check to
+it — only a 3-component `Vector` shape check — and `transform_compose`
+propagates whatever dimension it is handed. So
+`transform3(orient_identity(), vec3(1.0, 2.0, 3.0))` still constructs and
+composes without complaint; the rejection surfaces only downstream, at
+`transform_log` or at the two consumers RULING #6089 gates: `transform_inverse`
+and `affine_from_transform` reject a non-`Length` translation with a
+`DimensionedArgRejected` Error naming `t.translation`. The constructor and
+compose narrowing is owned by #7625, and #5747 (R12/R8) narrows the affine and
+pose-decode readers.
+
+By CONTRAST, `joint_jacobian` (§13.1) shares the `Map { angular, linear }` shape
+but its columns are ∂pose/∂q, **not** twists — a revolute column's linear part is
+m/rad — so they are governed by NEITHER convention above, angular or linear. The
+shared shape lets solver code destructure both uniformly; it is not a type match,
+and nothing feeds a Jacobian column to `transform_exp`. They keep emitting
+`Dimensionless` on both halves because joint parameters are unit-less in the
+joint's local frame. Giving those columns their own structure, and correcting
+§13.1's `joint_jacobian -> Twist` rows accordingly, is tracked by `#6102`.
 
 ### 3.2 `std.geometry.primitive`
 
 **Note on the signatures below:** these describe the target `std.geometry` stdlib
 API — the structured/typed argument forms designers should expect. The
-compiler's current lowering for a few of these constructors (`polygon`,
-`line_segment`, `arc`, `interp`, `bezier`, `nurbs`) accepts only flat positional
-coordinate arguments rather than the structured types shown; each is annotated
+compiler's current lowering for a few of these constructors (`half_space`,
+`extrude_infinite`, `polygon`, `line_segment`, `arc`, `interp`, `bezier`, `nurbs`) accepts only flat
+positional coordinate arguments rather than the structured types shown; each is annotated
 below with a `// current compiler form:` comment giving the form that compiles
 today.
 
@@ -374,12 +519,23 @@ fn torus(major_radius: Length, minor_radius: Length) -> Solid
 fn wedge(width: Length, depth: Length, height: Length, top_width: Length) -> Solid
 fn rounded_box(width: Length, depth: Length, height: Length, corner_r: Length) -> Solid
 
-// Planned — not yet implemented; see tracking task 3465 / PRD docs/prds/geometry-primitive-constructors.md
-// fn half_space(plane: Plane) -> Solid     // Unbounded -- Solid no longer implies Bounded
+fn half_space(plane: Plane) -> Solid     // Unbounded — Bounded = false
+// current compiler form: half_space(px, py, pz, nx, ny, nz) — a point ON the
+// boundary plane (px, py, pz: Length, so `mm` literals) and the OUTWARD normal
+// toward the retained material (nx, ny, nz: a dimensionless direction). Being
+// unbounded, it must be intersected with a finite solid before export or a
+// mass-property query, e.g.
+// intersection(half_space(0mm, 0mm, 0mm, 0, 0, 1), box(40mm, 40mm, 40mm))
+// Worked example: examples/half_space.ri.
 
-// Planned — not yet implemented (Bounded=false producer, tracked by task 3466);
-// see PRD docs/prds/geometry-primitive-constructors.md §"Out of scope"
-// fn extrude_infinite(profile: Surface, direction: Vector3<Length>) -> Solid
+fn extrude_infinite(profile: Surface, axis: Vector3<Dimensionless>, direction: String) -> Solid     // Unbounded — Bounded = false
+// current compiler form: extrude_infinite(profile, dx, dy, dz, direction) — the
+// sweep axis (dx, dy, dz: a dimensionless direction, so bare literals) and a
+// trailing `direction` STRING choosing which way the profile is swept to
+// infinity: "positive", "negative" or "both". Being unbounded, it must be
+// intersected with a finite solid before export or a mass-property query, e.g.
+// intersection(extrude_infinite(circle(5mm), 0, 0, 1, "positive"), box(20mm, 20mm, 10mm))
+// Worked example: examples/extrude_infinite.ri.
 ```
 
 **Anchoring & orientation.** Three distinct anchor conventions coexist across the solids above —
@@ -398,9 +554,11 @@ convention changes:
 | `cylinder` | base at z=0, axis +Z, x/y centred | top face at `z = height`; NOT centred on z |
 | `cylinder_centered` | z-centred at origin, axis +Z, x/y centred | `cylinder` + `translate(z=-height/2)`, composed for you |
 | `cone` | base at z=0, axis +Z, x/y centred | bottom radius at z=0, top radius at z=height |
+| `tube` | base at z=0, axis +Z, x/y centred | outer `cylinder` minus inner `cylinder` (§3.3), so it inherits `cylinder`'s anchor |
 | `wedge` | min-corner at origin, +X/+Y/+Z octant | the one primitive anchored at a corner |
 | `rounded_box` | centred at origin, all 3 axes | same anchor as `box`; the 4 vertical (plan-view) edges are rounded to `corner_r` |
 | `rounded_rect` (2D) | planar XY at z=0, centred at origin | same anchor as `rectangle`; all 4 corners rounded to `corner_r` |
+| `polygon` (2D) | planar XY at z=0; positioned by its explicit vertices | not auto-centred, unlike the other 2D shapes |
 
 `cylinder`/`cone` sit base-first on the origin along +Z; `box`/`sphere`/`torus` are centred;
 `wedge` sits corner-first in the +octant. Prefer `cylinder_centered`/`box_centered` over a manual
@@ -457,10 +615,48 @@ fn nurbs<N: Nat>(control_points: List<Point<N,Length>>, weights: List<Real>, kno
 // weights and knots are the `Int`/`Real` above and stay dimensionless. Knot
 // count is n_points + degree + 1. e.g.
 // nurbs(1, 2, 0mm, 0mm, 0mm, 10mm, 0mm, 0mm, 1, 1, 0, 0, 1, 1)
-
-// Planned — not yet implemented; standalone feature; see PRD docs/prds/geometry-primitive-constructors.md
-// fn nurbs_surface(/* NURBS surface parameters */) -> Surface
 ```
+
+**Free-form & implicit surfaces:**
+
+```
+fn nurbs_surface(control_points: List<List<Point3<Length>>>, weights: List<List<Real>>,
+                 u_knots: List<Real>, v_knots: List<Real>, u_degree: Int, v_degree: Int) -> Surface
+// The six arguments differ in SHAPE: control_points is a NESTED (u-major × v)
+// grid of point3(...) and weights a matching nested grid of reals, but
+// u_knots/v_knots are FLAT clamped knot vectors and the degrees are plain
+// integers. A bilinear patch (degree 1 × 1):
+// nurbs_surface([[point3(0mm,0mm,0mm),point3(0mm,10mm,0mm)],[point3(10mm,0mm,0mm),point3(10mm,10mm,5mm)]],
+//               [[1.0,1.0],[1.0,1.0]], [0,0,1,1], [0,0,1,1], 1, 1)
+fn isosurface(grid: Geometry) -> Solid
+fn isosurface(grid: Geometry, iso: Length) -> Solid
+fn isosurface(grid: Geometry, iso: Length, adaptive: Bool) -> Solid
+// Marching cubes over a Voxel-repr grid; a BRep or Mesh operand is voxelized
+// first. Omitted, iso resolves to 0.0 and adaptive to false at evaluation. The
+// iso:/adaptive: labels are the recommended spelling but bind POSITIONALLY
+// (2nd argument → iso, 3rd → adaptive), so adaptive cannot be passed without iso.
+```
+
+A NURBS patch is neither Closed nor Planar, so it is not a valid profile for
+`extrude`/`revolve`/`sweep`/`loft`. `isosurface`'s result is a `Solid` (Bounded,
+Watertight, Connected), not a bare mesh handle.
+
+**GD&T tolerance zones:**
+
+```
+fn zone_slab(face: Surface, width: Length) -> Solid
+fn zone_cylinder(axis: Curve, width: Length) -> Solid
+fn zone_annulus(axis: Curve, nominal_radius: Length, width: Length, length: Length) -> Solid
+fn zone_profile(solid: Solid, width: Length) -> Solid
+```
+
+Each builds a tolerance zone as a real `Solid` centred on its input (`±width/2`).
+`zone_slab` takes a face or 2D profile, not a solid; `zone_profile` is its
+solid-input sibling. `zone_cylinder`'s `width` is the zone DIAMETER, and its
+extent is the axis wire's own length. `zone_annulus`' `length` is accepted and
+validated but unused: the axis wire sets its extent too. Worked example of all
+four: `examples/tolerancing/gdt_zones.ri`. The GD&T tolerance traits are
+§7.2's.
 
 ### 3.3 `std.geometry.compound`
 
@@ -521,13 +717,15 @@ fn loft(profiles: List<Surface>) -> Solid
 fn loft_guided(profiles: List<Surface>, guides: List<Curve>) -> Solid
 ```
 
+The unbounded (Bounded = false) variant `extrude_infinite` is documented in §3.2, beside `half_space`, the other unbounded producer.
+
 ### 3.7 `std.geometry.transform`
 
 ```
-fn translate<G: Transformable>(geometry: G, displacement: Vector3<Length>) -> G
-fn rotate<G: Transformable>(geometry: G, axis: Vector3<Dimensionless>, angle: Angle) -> G
+fn translate<G: Transformable>(geometry: G, displacement: Vector3<Length>) -> G  // not implemented — see note below
+fn rotate<G: Transformable>(geometry: G, axis: Vector3<Dimensionless>, angle: Angle) -> G  // not implemented — see note below
 fn rotate<G: Transformable>(geometry: G, orientation: Orientation<3>) -> G
-fn rotate_around<G: Transformable>(geometry: G, point: Point3<Length>, axis: Vector3<Dimensionless>, angle: Angle) -> G
+fn rotate_around<G: Transformable>(geometry: G, point: Point3<Length>, axis: Vector3<Dimensionless>, angle: Angle) -> G  // not implemented — see note below
 fn scale<G: Transformable>(geometry: G, factor: Real) -> G              // Uniform
 fn scale<G: Transformable>(geometry: G, factors: Vector3<Real>) -> G    // Per-axis (non-rigid)
 fn apply_transform<G: Transformable>(geometry: G, transform: Transform<3>) -> G
@@ -537,15 +735,17 @@ Note: `scale` is non-rigid -- does not compose with `Transform<3>`.
 
 **Implementation status (2026-07, `docs/prds/geometry-transforms-frames-projection.md`):** `apply_transform`, `rotate(geometry, orientation: Orientation<3>)`, and `scale(geometry, factors: Vector3<Real>)` are implemented by this PRD.
 
+**Not implemented — vector-argument forms (2026-10):** three signatures above take their displacement, axis and point as `Vector3`/`Point3` values — `translate(geometry, displacement)`, `rotate(geometry, axis, angle)` and `rotate_around(geometry, point, axis, angle)` — and a call written in those forms is rejected by the compiler's arity check. The shipped forms take scalar components: `translate(geometry, dx, dy, dz)`, `rotate(geometry, ax, ay, az, angle)` (alongside the orientation form) and `rotate_around(geometry, px, py, pz, ax, ay, az, angle)`. The accepted arities are owned by `compile_transform_op` in `crates/reify-compiler/src/geometry_transform.rs`; the agent-facing `stdlib` language-reference chunk (`crates/reify-mcp/src/tools/chunks/stdlib.md`) documents the shipped forms.
+
 **LSP completion scope:** `apply_transform` is exposed as a named completion in the editor's completion catalog (`crates/reify-lsp/src/completion.rs`); `rotate` and `scale` are not. This mirrors the catalog's pre-existing convention of listing geometry constructors and generic single-purpose helpers by name while omitting multi-argument geometry-operation verbs (`translate`, `union`, `extrude`, etc.) — a completion-catalog scoping choice, not an implementation gap.
 
 ### 3.8 `std.geometry.pattern`
 
 ```
 fn mirror<G: Transformable>(geometry: G, plane: Plane) -> G
-fn linear_pattern<G: Transformable>(geometry: G, direction: Vector3<Length>, count: Int, spacing: Length) -> List<G>
+fn linear_pattern<G: Transformable>(geometry: G, direction: Vector3<Dimensionless>, count: Int, spacing: Length) -> List<G>
 fn circular_pattern<G: Transformable>(geometry: G, axis: Axis, count: Int, angle: Angle) -> List<G>
-fn linear_pattern_2d<G: Transformable>(geometry: G, dir1: Vector3<Length>, count1: Int, spacing1: Length, dir2: Vector3<Length>, count2: Int, spacing2: Length) -> List<G>
+fn linear_pattern_2d<G: Transformable>(geometry: G, dir1: Vector3<Dimensionless>, count1: Int, spacing1: Length, dir2: Vector3<Dimensionless>, count2: Int, spacing2: Length) -> List<G>
 fn arbitrary_pattern<G: Transformable>(geometry: G, transforms: List<Transform<3>>) -> List<G>
 ```
 
@@ -835,9 +1035,9 @@ enum Directionality { In, Out, Bidi }
 
 structure def Frame3 {
     param origin : Vector3<Length>
-    param x_axis : Vector3<Length>
-    param y_axis : Vector3<Length>
-    param z_axis : Vector3<Length>
+    param x_axis : Vector3<Dimensionless>
+    param y_axis : Vector3<Dimensionless>
+    param z_axis : Vector3<Dimensionless>
 }
 
 trait LocatedPort : Port {
@@ -1127,16 +1327,38 @@ string), anything under `examples/**`, or anything inside a `tests/` tree or a
 rather than reading them. Re-running the sweep therefore yields many hits for both
 properties below; none of them is a reader.
 
-| Property | Declared at | Production readers | Owner |
+| Property | Declared at | Production readers | Ruling |
 |---|---|---|---|
-| `shear_modulus` | `materials_mechanical.ri:100` | none repo-wide | #5801 |
-| `thermal_expansion` | `materials_thermal.ri:41` | none repo-wide | #5801 |
+| `shear_modulus` | `materials_mechanical.ri:100` | none repo-wide | **kept, deliberately inert** — ratified #5801; retirement rejected |
+| `thermal_expansion` | `materials_thermal.ri:41` | none repo-wide | **kept, deliberately inert** — ratified #5801; retirement rejected |
+
+Both rows record a CLOSED decision (#5801), not an open tracking cite. This
+subsection is the single home for that ruling and its rationale; each declaration
+site carries only a pointer back here.
+
+- **No consumer is landed.** Nothing consumes either value: there is no thermal
+  solver to read `thermal_expansion`, and no orthotropic-shear path that would read
+  `shear_modulus` on its own. Building either is out of scope for
+  `docs/prds/v0_6/dimension-checked-readers.md` §10.
+- **Neither is retired.** `thermal_expansion` is a *required* member of
+  `ThermallyCharacterized`, so deleting it would break every conformer and drop the
+  trait contract shown above. `shear_modulus` is optional (`= undef`), so keeping
+  it inert costs conformers nothing, and the conformers that do supply it keep a
+  real datasheet value.
+- **Neither is an INV-SF-5 placeholder.** Each is fully typed, dimensioned and
+  *data-carrying*. That is a runtime claim, so it is pinned in code rather than
+  only here: `crates/reify-eval/tests/stdlib_prelude_tests.rs` asserts that
+  `shear_modulus` reaches eval in SI (`eval_with_prelude_trait_conformance`), and
+  that all three required `ThermallyCharacterized` scalars do
+  (`eval_carries_thermally_characterized_scalars_in_si`). With no reader to notice
+  a value going missing, that suite is what goes red if one stops arriving, so the
+  ruling must then be revisited rather than quietly becoming false.
 
 **`thermal_conductivity` is deliberately absent from that table.** The name is
 declared at two independent sites, and they differ:
 
-- `ThermallyConductive.thermal_conductivity` (`structural_physical.ri:148`) is
-  **not** declared-only — `structural_physical.ri:150` carries
+- `ThermallyConductive.thermal_conductivity` (`structural_physical.ri:157`) is
+  **not** declared-only — `structural_physical.ri:159` carries
   `constraint thermal_conductivity > 0W/(m*K)`, a live DSL reader. For this site
   the zero-reader claim holds only when scoped to **Rust/host** readers.
 - `ThermallyCharacterized.thermal_conductivity` (`materials_thermal.ri:39`) is a
@@ -1147,9 +1369,21 @@ declared at two independent sites, and they differ:
 The second site is nonetheless **not** registered above. The ratified ruling in
 **#5801** names both declaration sites and treats `thermal_conductivity` as one
 property that it explicitly does not own, so adding a row against #5801 would
-assign it an ownership it declines. Splitting the two sites — and deciding whether
-the trait-scoped one needs its own owner — is #5801's call, not this reference's;
-it is recorded here so the distinction is not silently lost.
+assign it an ownership it declines.
+
+#5801 has since answered the split question this reference left to it: **no
+separate owner is needed, because the ruling is trait-scoped.** Inertness at
+`ThermallyCharacterized` follows from what the trait *is* — a material-datasheet
+characterization surface with no thermal solver behind it — and not from any one
+param. The measurement behind that: the trait's **entire** required scalar triple
+is reader-free — `thermal_conductivity` (`:39`), `specific_heat` (`:40`) and
+`thermal_expansion` (`:41`) — where `specific_heat`'s only non-declaration hit
+repo-wide is a test fn name below the `#[cfg(test)]` boundary in
+`crates/reify-core/src/dimension.rs`. Registering one of the three while leaving
+two unmentioned is what made this table look arbitrary and invited re-filing; a
+trait-scoped ruling removes that without minting a speculative new owner, and
+without the ownership #5801 declines. The distinction between the two
+`thermal_conductivity` sites stays recorded above so it is not silently lost.
 
 This supersedes correction 2 of `docs/prds/v0_6/dimension-checked-readers.md` §2.4
 and the matching §10 out-of-scope entry, both of which listed `thermal_conductivity`
@@ -1291,6 +1525,9 @@ constraint def Conforms {
     // Handles MMC/LMC/RFS material condition expansion
 }
 ```
+
+A tolerance zone as a real `Solid` — `zone_slab`, `zone_cylinder`, `zone_annulus`,
+`zone_profile` — is built by §3.2's GD&T tolerance-zone constructors.
 
 ### 7.3 `std.tolerancing.surface`
 
@@ -1557,16 +1794,18 @@ enum PointCloudFormat { PLY, PCD, XYZ, LAS }
 
 ```
 trait Analysis {
+    // yield_strength deliberately stays `Real`: it belongs to task 5807, not to
+    // RULING Q7 posture 2 (#6165), which scoped itself to AnalysisResult.
     param yield_strength : Real        // material yield strength for safety-factor (Pa; Real placeholder)
     constraint yield_strength > 0
 }
 
 trait AnalysisResult {
-    param von_mises_stress    : Real
-    param principal_stress_1  : Real
-    param principal_stress_2  : Real
-    param principal_stress_3  : Real
-    param max_shear_stress    : Real
+    param von_mises_stress    : Stress
+    param principal_stress_1  : Stress
+    param principal_stress_2  : Stress
+    param principal_stress_3  : Stress
+    param max_shear_stress    : Stress
     param safety_factor_value : Real
     constraint von_mises_stress >= 0
     constraint max_shear_stress >= 0
@@ -1574,22 +1813,50 @@ trait AnalysisResult {
 }
 ```
 
-`AnalysisResult` is a **structural contract**: each param uses `Real` as a
-dimension-agnostic placeholder (the runtime stress builtins below produce
-correctly-dimensioned values, e.g. `Scalar<Pressure>` for the stresses and a
-dimensionless `Real` for `safety_factor_value`), and the trait does **not**
-participate in dimension checking — it will not reject dimensioned conforming
-values. (The v0.1 doc's `mesh_resolution`/`convergence_target` on `Analysis`
+`AnalysisResult` **participates in dimension checking**. Its five stress params
+— `von_mises_stress`, `principal_stress_1/2/3`, `max_shear_stress` — are
+dimension-checked `Scalar<Pressure>`, spelled via the `Stress` alias documented
+above; they were tightened from `Real` by RULING Q7 posture 2 (task #6165) so
+that a trait member's declared type matches the `Scalar<Pressure>` the producing
+builtins under "Stress post-processing" below already yield. `safety_factor_value`
+stays `Real` because it is genuinely dimensionless. The user-visible consequence:
+a conformer that declares any of the five stress params `: Real` is **rejected at
+compile time** (`TypeMismatchForTraitMember`, one diagnostic per member) — declare
+them `: Stress` (equivalently `: Pressure`) with Pa-valued defaults. The bare `0`
+in the positivity constraints above is correct as written: a syntactic zero
+comparison operand is coerced to its sibling operand's dimension, so do **not**
+spell it `0Pa`. `Analysis.yield_strength` deliberately remains `Real`, pending
+task 5807. (The v0.1 doc's `mesh_resolution`/`convergence_target` on `Analysis`
 and `source`/`mesh` on `AnalysisResult` were never shipped — task 341.)
 
 **Stress post-processing (`std.analysis.stress`):**
 
 ```
+// Pointwise — a concrete 3×3 stress tensor (e.g. 100MPa * outer(e1, e1))
+fn von_mises(stress: Tensor<2, 3, Pressure>) -> Pressure
+fn principal_stresses(stress: Tensor<2, 3, Pressure>) -> List<Pressure>
+fn safety_factor(stress: Tensor<2, 3, Pressure>, yield_strength: Pressure) -> Real
+fn max_shear(stress: Tensor<2, 3, Pressure>) -> Pressure
+
+// Field-lifted — the same reduction at every sample point (e.g. ElasticResult.stress, §16)
 fn von_mises(stress: Field<Point3<Length>, Tensor<2, 3, Pressure>>) -> Field<Point3<Length>, Scalar<Pressure>>
-fn principal_stresses(stress: Field<Point3<Length>, Tensor<2, 3, Pressure>>) -> List<Field<Point3<Length>, Scalar<Pressure>>>
+fn principal_stresses(stress: Field<Point3<Length>, Tensor<2, 3, Pressure>>) -> Field<Point3<Length>, List<Scalar<Pressure>>>
 fn safety_factor(stress: Field<Point3<Length>, Tensor<2, 3, Pressure>>, yield_strength: Pressure) -> Field<Point3<Length>, Scalar<Dimensionless>>
 fn max_shear(stress: Field<Point3<Length>, Tensor<2, 3, Pressure>>) -> Field<Point3<Length>, Scalar<Pressure>>
 ```
+
+The argument's shape picks the form: a `Field` argument takes the field-lifted
+path, a concrete tensor the pointwise one. The pointwise form is the one PRD
+v0_3/structural-analysis-fea.md task 5 specifies, ruled by #2884:
+`von_mises(stress: Tensor<2,3,Pressure>) -> Pressure`. Each field-lifted form is
+that reduction applied at every sample point. `principal_stresses` yields the
+three principal stresses in ascending order — over a field, every sample is
+that three-element list. The tensor argument is not dimension-checked today, so
+`von_mises`, `max_shear` and `principal_stresses` carry the tensor's own
+quantity: a dimensionless tensor yields `Real` (the same rule §15 states for
+`stress_invariants`).
+
+`stress_invariants`, the fifth stress-tensor reduction, is documented with its result structure in §15 (`std.fea`). Unlike the four above, it takes a concrete 3×3 tensor only and has no `Field` form.
 
 ---
 
@@ -1631,6 +1898,73 @@ fn divergence<N: Nat, Q: Dimension>(field: Field<Point<N,Length>, Vector<N,Q>>) 
 fn curl<Q: Dimension>(field: Field<Point3<Length>, Vector3<Q>>) -> Field<Point3<Length>, Vector3<Q/Length>>
 fn laplacian<N: Nat, Q: Dimension>(field: Field<Point<N,Length>, Scalar<Q>>) -> Field<Point<N,Length>, Scalar<Q/Length^2>>
 ```
+
+**`ElasticResult` derivative channels.** Distinct from the operators above:
+these are *result channels* populated by `solve_elastic_static`, not operators
+you apply. They are documented here so the operator `curl` and the result
+channel `curl` sit adjacent and cannot be confused. The full `ElasticResult`
+declaration, and which channels each solve route fills, is in §16.3.
+
+```
+ElasticResult.curl         : Field<Point3<Length>, Vector3<Real>>    // ∇×u
+ElasticResult.rotation     : Field<Point3<Length>, Vector3<Angle>>   // ∇×u / 2
+ElasticResult.shear_angles : Field<Point3<Length>, Vector3<Angle>>   // (γ_yz, γ_zx, γ_xy)
+```
+
+(`stdlib/solver_elastic.ri` spells curl's quantity `Dimensionless`; `Real` is
+the dimension-position synonym for it, so the two declarations are the same
+type.)
+
+`curl` is **dimensionless by decision, not by default** (ruling task #6164).
+∇×u is Length/Length, so the derivative algebra stays quotient-pure, and
+`result.curl` is type-identical to `curl(result.displacement)` — the operator
+row above. An angle is an arc measure, and ANGLE is introduced only at named
+primitives that assert one (`asin`, `orient_log`), never by differentiation.
+
+`rotation` is that named primitive here: the infinitesimal rotation vector
+ω = ∇×u / 2, and the designated crossing where the radian enters explicitly.
+The two channels are exactly related by `curl = 2 * rotation`, componentwise
+and bit-exactly. `rotation` is valid as an angle only in the small-deformation
+regime (‖∇u‖ ≪ 1); the exact finite-rotation extraction is the polar
+decomposition F = RU of the deformation gradient, which is future work — hence
+a new channel rather than a retype of `curl`.
+
+Both are populated on the tet/solid path and are `undef` on the shell path
+(honest absence, as for `divergence` / `gradient`).
+
+Having `rotation` carry a real ANGLE unlocks three things that
+`Vector3<Real>` cannot express:
+
+- `rotational_stiffness * rotation` reduces to a **torque** — N·m/rad² × rad
+  = N·m/rad — instead of collapsing to a dimensionless product;
+- `deg` / `rad` literals become usable in assertions and constraints against
+  the channel — worked example: `examples/differential_field_ops.ri` carries
+  `constraint rot_probe > 0.001deg` / `constraint rot_probe < 0.5deg`, gated
+  in CI by `differential_field_ops_e2e`. One limitation: the comparison is
+  against an ANGLE **scalar** (there, `magnitude` of a sampled
+  `Vector3<Angle>`), because no in-language Vector3 component access exists
+  yet — a per-component `deg` comparison is still out of reach;
+- a future `d/dt` of `rotation` yields **angular velocity** (rad/s) rather
+  than a bare frequency (1/s).
+
+`shear_angles` (task #6183) is the second named crossing, built the same way
+from `gradient`. Its components are the Voigt-order **engineering** shear
+strains (γ_yz, γ_zx, γ_xy), with γ_ij = ∂u_i/∂x_j + ∂u_j/∂x_i = 2·ε_ij — the
+doubled symmetric off-diagonals of `gradient`, read as angles (× η = 1 rad).
+`gradient` itself stays `Tensor<2,3,Real>`: a tensor has one quantity slot, so
+an angle reading of it is extracted by a named channel, never by retyping it.
+The same small-deformation proviso applies (‖∇u‖ ≪ 1). It is populated on the
+tet/solid path and `undef` on the shell path.
+
+Worked example: `examples/differential_field_ops.ri` carries
+`constraint shear_probe < shear_allowable`, where `shear_probe` is `magnitude`
+of the sampled `Vector3<Angle>`, gated in CI by `differential_field_ops_e2e`.
+Bounding the magnitude is conservative, since ‖γ‖₂ ≥ max_i |γ_i|.
+Per-component `deg` comparisons stay in the Rust harness until in-language
+Vector3 component access exists.
+
+See `docs/prds/v0_6/differential-field-operators.md` for the decision table
+and the full channel specification.
 
 ---
 
@@ -1754,11 +2088,11 @@ structure def Fixed : Joint {}  // 0-DOF rigid sub-assembly grouping; no motion 
 
 This hierarchy is enforced via nominal conformance, not merely declared: `bind`/`sweep`/`dim` (§13.3–§13.4) carry a `DrivingJoint` bound checked at both the runtime (L1) and compile-time (L2) layers and reject `Coupling`/`Fixed` arguments with `error[E_MECHANISM_NONDRIVING_JOINT]`.
 
-`JointBinding` (the `bind()` return type, §13.3) and `Twist` (the `joint_jacobian` return type, below) are likewise declared marker structures — `bind(joint, value)` and `joint_jacobian(joint)` return typed `JointBinding`/`Twist` values rather than bare `Map`s, even though neither structure yet declares member fields (field layout is a follow-on, not part of this reconciliation).
+`JointBinding` (the `bind()` return type, §13.3) and `JacobianColumn` (the `joint_jacobian` return type, below) are likewise declared structures — `bind(joint, value)` and `joint_jacobian(joint)` return typed `JointBinding`/`JacobianColumn` values rather than bare `Map`s. `JointBinding` is still a field-less marker (its field layout is a follow-on, not part of this reconciliation); `JacobianColumn` does declare its members, `angular` and `linear`, so a column's parts are readable from user code.
 
 The parametric spelling `Coupling<P>` and the projected associated type `P::MotionValue` above are the stdlib's own internal nominal-generic declarations, which the compiler resolves and enforces today. Writing a *user*-authored generic function or structure parameterized over an arbitrary joint kind (`fn foo<J: DrivingJoint>(j: J) -> ...` in user code) requires general user-defined generics, a separate, broader language feature that has not shipped — tracked by the generics PRD (tasks 4232/4235); `Coupling<P>` should be read as a forward-reference to that surface, not as evidence it already exists for user code. At runtime every joint kind, `Coupling<P>` included, is still represented as an untyped `Value::Map` — the nominal types above are compile-time-only tags.
 
-`Axis` (the `revolute()` parameter type and the `joint_axis(Revolute)` return type below) is a placeholder name owned by the geometry-transforms cluster, not by `std.mechanism`: at runtime it is a plain `Vector3<Length>`-shaped value today, and its promotion to a distinct nominal type is tracked there.
+`Axis` (the `revolute()` parameter type and the `joint_axis(Revolute)` return type below) is a placeholder name owned by the geometry-transforms cluster, not by `std.mechanism`: at runtime it is a plain `Vector3<Dimensionless>`-shaped value today (a unit direction — the joint constructors reject a dimensioned axis), and its promotion to a distinct nominal type is tracked there.
 
 **Constructors:**
 
@@ -1769,7 +2103,7 @@ fn couple<P: DrivingJoint + HasMotion>(other: P, ratio: Real, offset: P::MotionV
 fn fixed() -> Fixed
 ```
 
-`Prismatic` models 1-DOF translation along a fixed axis with motion-range bounds. `Revolute` models 1-DOF rotation about a fixed axis with angle-range bounds. `Coupling` derives its motion variable from another joint: `value = ratio * other.value + offset`. A negative ratio produces the counter-mass direction reversal shown in the worked examples (§13.6). `Fixed` (`fixed()`) is a 0-DOF rigid joint used to attach an immovable body — such as a stationary dock or parked tool — to `world` or to another body without introducing a motion variable; see the dock-pickup example in §13.6.
+`Prismatic` models 1-DOF translation along a fixed axis with motion-range bounds. `Revolute` models 1-DOF rotation about a fixed axis with angle-range bounds. `Coupling` derives its motion variable from another joint: `value = ratio * other.value + offset`. It re-drives that joint's whole geometry at the derived value — the parent's axis *and* its mount (the optional pivot third argument of `prismatic`/`revolute`, a `point3` or `frame3`) — so `transform_at(couple(p, r, o), v)` equals `transform_at(p, r * v + o)`: a lead-screw follower on a corner-pivoted lift travels at that corner, not at the world origin. The coupling captures its parent by value when it is built, so only a mount the parent already carries at that point is inherited: a `relate`-solved mount (a `sub … at auto` placement), which the engine writes into the parent joint's cell after evaluation, does not reach a coupling of that joint (task #7194). A negative ratio produces the counter-mass direction reversal shown in the worked examples (§13.6). `Fixed` (`fixed()`) is a 0-DOF rigid joint used to attach an immovable body — such as a stationary dock or parked tool — to `world` or to another body without introducing a motion variable; see the dock-pickup example in §13.6.
 
 **`joint_axis`, `joint_range`, `joint_ratio`, and `joint_offset` accessors:**
 
@@ -1785,20 +2119,25 @@ fn transform_at(j: Revolute, v: Angle) -> Transform<3>
 fn transform_at(j: Coupling<P>, v: P::MotionValue) -> Transform<3>
 ```
 
-These are the registered builtin names (`crates/reify-stdlib/src/joints.rs:676,693,705,719`). Earlier drafts of this section used bare `axis`/`range`/`ratio`/`offset`, which return `Undef` — those names are not registered. No bare aliases are provided: Reify's builtin namespace is flat and global, so an unqualified `axis`/`range` would collide across unrelated stdlib modules; the `joint_`-prefixed spelling is the collision-safe, self-documenting form and is the only one that ships.
+These are the registered builtin names (the `"joint_axis"`, `"joint_range"`, `"joint_ratio"`, and `"joint_offset"` arms of `eval_joints` in `crates/reify-stdlib/src/joints.rs`). Earlier drafts of this section used bare `axis`/`range`/`ratio`/`offset`, which return `Undef` — those names are not registered. No bare aliases are provided: Reify's builtin namespace is flat and global, so an unqualified `axis`/`range` would collide across unrelated stdlib modules; the `joint_`-prefixed spelling is the collision-safe, self-documenting form and is the only one that ships.
 
-**Jacobian.** `joint_jacobian` is a live builtin (`crates/reify-stdlib/src/joints.rs:733`, delegating to
-`joint_jacobian_value` at `:776`) that returns the analytic SE(3) twist column
+**Jacobian.** `joint_jacobian` is a live builtin (the `"joint_jacobian"` arm of `eval_joints` in
+`crates/reify-stdlib/src/joints.rs`, delegating to `joint_jacobian_value`) that returns the analytic Jacobian column
 for a single joint, used by the closed-chain loop-closure solver — see
 [`v0_2/kinematic-constraints.md`](prds/v0_2/kinematic-constraints.md). The
-returned `Twist` shape (`Map { angular, linear }`) is the same one used by
-`transform_log` / `transform_exp` (§3.1), so solver code can compose joint
-Jacobian columns and twists uniformly.
+returned type is `JacobianColumn`: the partial derivative of pose with respect
+to the joint's own coordinate, dpose/dq, whose `angular`/`linear` components
+carry per-joint-kind *rates* — for a revolute joint `linear` is m/rad, for a
+prismatic joint `angular` is rad/m. That is why a column is deliberately **not**
+a `Twist` (§3.1), which is a spatial velocity, dpose/dt, and why a column must
+not be fed to `transform_exp`. The two types share the `angular`/`linear` key
+names and nothing else; multiplying a column by a joint rate is the consumer's
+job.
 
 ```
-fn joint_jacobian(j: Prismatic) -> Twist          // angular = 0,        linear  = unit(axis)
-fn joint_jacobian(j: Revolute)  -> Twist          // angular = unit(axis), linear = 0
-fn joint_jacobian(j: Coupling<P>) -> Twist        // ratio * joint_jacobian(parent)
+fn joint_jacobian(j: Prismatic) -> JacobianColumn    // angular = 0,        linear  = unit(axis)
+fn joint_jacobian(j: Revolute)  -> JacobianColumn    // angular = unit(axis), linear = 0
+fn joint_jacobian(j: Coupling<P>) -> JacobianColumn  // ratio * joint_jacobian(parent)
 ```
 
 The axis is unit-normalized in the return value (matching `transform_at`'s
@@ -1832,7 +2171,7 @@ fn body(m: Mechanism, solid: Solid, at: Joint, parent: Joint = world(), pose: Tr
 fn body_id_of(m: Mechanism, solid: Solid) -> BodyId
 ```
 
-`at` is the joint that positions the body; `parent` is the upstream joint (default `world()` for bodies attached to the ground frame). `pose` is an additional static offset applied after the joint's own transform. `BodyId` is a stable, opaque identifier used later by snapshot accessors and query functions (see §13.3 and §13.5). To recover the `BodyId` of a particular `solid` after building, call `body_id_of(m, solid)` against the final `Mechanism` (it returns the id assigned when that `solid` was added, or raises if the solid is not in the mechanism). The builder is immutable: each `.body()` call returns a fresh `Mechanism` value. Each `solid` value must be unique within a given `Mechanism` (by referential identity); inserting the same `solid` value twice raises `error[E_MECHANISM_DUPLICATE_SOLID]` at build time, keeping `body_id_of` unambiguous even when two bodies have identical geometry — use distinct constructor calls to create distinct solids before passing them to `.body()`.
+`at` is the joint that positions the body; `parent` is the upstream joint (default `world()` for bodies attached to the ground frame). `pose` is an additional static offset applied after the joint's own transform. On a **closing** `body()` call whose `at` already carries a *different* recorded `parent`, `pose` has a different, single meaning: that closing edge is a **rigid 0-DOF tie from `parent` to `at` whose transform is `pose`**. The closure enforces `T_tree(at) == T(parent) ∘ pose`, and the closing body's own `world_transform` is that same frame — the pose is consumed by the tie and is **not** additionally applied on top of `at`. That is what makes a rigid platform carried by several joints at *different* pivots expressible; without it the closure would demand that the two pivots coincide. A loop closed the **other** way — an edge whose `parent` already reaches `at` by walking upward, including the self-loop `at == parent` — records its closure but leaves `pose` **out** of the residual, and its body keeps the ordinary `T(at) ∘ pose` placement. Such a closure is not solver-feedable anyway (its recorded pair carries the closing joint on both sides, so one joint would have to hold two independent values), so there is nothing for the tie to constrain — a rigid multi-pivot offset belongs on a closing edge of the first kind. A closing edge whose `parent` is `world()` is rejected at build time with `error = "world_parented_closure"`: such a closure has no joint on the closing side, so the loop-closure solver has no free variable to satisfy it — parent the closing edge to a joint on the other branch of the loop instead. That rejection currently surfaces only as the `error` key on the `Mechanism` value and the resulting `undef` in `snapshot()` and every cell downstream of it; unlike `error[E_MECHANISM_DUPLICATE_SOLID]` it has no typed diagnostic yet, so nothing names the cause in a `reify check` report (#7354). (A plain **open** edge parented to `world()` is the ordinary ground-frame attachment and is unaffected.) `BodyId` is a stable, opaque identifier used later by snapshot accessors and query functions (see §13.3 and §13.5). To recover the `BodyId` of a particular `solid` after building, call `body_id_of(m, solid)` against the final `Mechanism` (it returns the id assigned when that `solid` was added, or raises if the solid is not in the mechanism). The builder is immutable: each `.body()` call returns a fresh `Mechanism` value. Each `solid` value must be unique within a given `Mechanism` (by referential identity); inserting the same `solid` value twice raises `error[E_MECHANISM_DUPLICATE_SOLID]` at build time, keeping `body_id_of` unambiguous even when two bodies have identical geometry — use distinct constructor calls to create distinct solids before passing them to `.body()`.
 
 **Closed chains (reserved diagnostic, not emitted).** `mechanism()` builds a directed graph of bodies connected through joints. An earlier draft of this section documented closed chains — bodies reachable via two distinct joint paths — as a build-time error:
 
@@ -1844,7 +2183,7 @@ error[E_KINEMATIC_CLOSED_CHAIN]: body is reachable via two distinct joint paths
   | path 2: world -> joint_c -> body
 ```
 
-That rejection was retired by task 2671: closed chains are valid v0.2 mechanisms. Each closing edge is instead recorded as a loop-closure constraint on the `Mechanism` value and construction proceeds normally — see [`v0_2/kinematic-constraints.md`](prds/v0_2/kinematic-constraints.md) for the loop-closure solver. `E_KINEMATIC_CLOSED_CHAIN` remains declared in the diagnostics registry, reserved for a possible future opt-in strict mode, but no path on main emits it today.
+That rejection was retired by task 2671: closed chains are valid v0.2 mechanisms. Each closing edge is instead recorded as a loop-closure constraint on the `Mechanism` value and construction proceeds normally (with the single exception noted above: a closing edge parented to `world()` is rejected, because it leaves the solver no free variable on the closing side) — see [`v0_2/kinematic-constraints.md`](prds/v0_2/kinematic-constraints.md) for the loop-closure solver. `E_KINEMATIC_CLOSED_CHAIN` remains declared in the diagnostics registry, reserved for a possible future opt-in strict mode, but no path on main emits it today.
 
 ### 13.3 `std.mechanism.snapshot`
 
@@ -1985,3 +2324,228 @@ Recovery is driven by the subject (first argument): an `Ok` yields its carried v
 | `map_err(r, f)` | `r` unchanged (`f` not applied) | `Err { error: f(e) }` | `undef` |
 
 `ok_or(o, err)` is the `Option` → `Result` bridge: `some(x) -> Ok { value: x }`, `none -> Err { error: err }`, `undef -> undef`.
+
+---
+
+## 15. `std.fea` — stress-invariant result structure
+
+`std.fea` (`crates/reify-compiler/stdlib/fea.ri`) declares the named structure the `stress_invariants` builtin returns.
+
+```
+structure def StressInvariants {
+    param i1 : Pressure     // I1 = tr(σ)                                                 (Pa)
+    param i2 : Pressure2    // I2 = (tr(σ)² − tr(σ²)) / 2  — sum of principal 2×2 minors  (Pa²)
+    param i3 : Pressure3    // I3 = det(σ)                                                (Pa³)
+}
+
+fn stress_invariants(stress: Tensor<2, 3, Pressure>) -> StressInvariants
+```
+
+The fields hold the three classical scalar invariants of a symmetric 3×3 Cauchy stress tensor. They are unchanged by a rotation of the coordinate frame. Expanded, I2 = σxx·σyy + σyy·σzz + σzz·σxx − σxy² − σyz² − σzx². Each field carries the matching power of the tensor's dimension (Pressure, Pressure², Pressure³; see §2.4 for the `Pressure2`/`Pressure3` aliases).
+
+The fields are dimension-checked: `inv.i1` passes where a `Pressure` is demanded, `inv.i2` where a `Pressure2` is demanded, and `inv.i3` where a `Pressure3` is demanded.
+
+`stress_invariants` takes exactly one argument, a concrete 3×3 tensor such as `matrix([[...]])` of Pa values. The tensor must be symmetric: asymmetric input is a precondition violation, asserted in debug builds; release builds read only the upper triangle. Any other argument evaluates to `undef`: a non-tensor, a non-3×3 matrix, or a `Field`. The result type stays `StressInvariants` even for a `Field` argument, because evaluation has no `Field` form for this reduction (contrast the reductions in §10). A dimensionless input tensor yields plain `Real` values in all three fields.
+
+Worked example — the `INVARIANT_POWERS_FIXTURE` in `crates/reify-eval/tests/harness_fea_solver_e2e/fea_stress_reductions_smoke.rs`, whose values are asserted there:
+
+```
+let stress = matrix([[2.0e6Pa, 0.0Pa,   0.0Pa],
+                     [0.0Pa,   3.0e6Pa, 0.0Pa],
+                     [0.0Pa,   0.0Pa,   5.0e6Pa]])
+
+let inv = stress_invariants(stress)
+// inv.i1 = 10 MPa   (1.0e7 Pa)    — I1 = 2 + 3 + 5
+// inv.i2 = 31 MPa²  (3.1e13 Pa²)  — I2 = 2·3 + 3·5 + 2·5
+// inv.i3 = 30 MPa³  (3.0e19 Pa³)  — I3 = 2·3·5
+```
+
+---
+
+## 16. `std.solver.elastic` — linear-elastic static FEA
+
+`std.solver.elastic` (`crates/reify-compiler/stdlib/solver_elastic.ri`) declares the option and result types of the linear-elastic static solver and its entry point, `solve_elastic_static`. The types it consumes come from other modules, not covered in this section — read their source files: the material traits `ConstitutiveLaw` and `ElasticMaterial` from `std.materials.fea` (`crates/reify-compiler/stdlib/materials_fea.ri`), the orthotropic, transverse-isotropic and anisotropic materials from `std.constitutive` (`crates/reify-compiler/stdlib/constitutive.ri`), and the `Load` / `Support` marker traits of its load and support lists from `std.fea.types` (`crates/reify-compiler/stdlib/fea_types.ri`). The shapes, defaults and constraints of the declarations below are pinned by `crates/reify-compiler/tests/harness_geometry_solver/solver_elastic_tests.rs`.
+
+### 16.1 Option and status enums
+
+```
+enum ElementOrder { P1, P2 }          // linear (4-node) or quadratic (10-node) tetrahedra
+enum ShellForce { Off, Auto, On }     // shell routing: never / classify by shell_threshold / always
+enum BudgetReason { TargetMissed, MaxIterations, MaxDofs, Stalled }
+enum ConvergenceStatus {
+    Converged { final_indicator: Real },    // final global relative energy-norm error
+    NotConverged { reason: BudgetReason }   // adaptive loop stopped short of target_accuracy
+}
+enum QoIDescriptor {}                 // empty stub — accepted and ignored
+```
+
+`BudgetReason` names what stopped the adaptive refinement loop: its budget ran out with the error estimate still above `target_accuracy` (`TargetMissed`), it hit the `max_refinement_iterations` cap (`MaxIterations`), the next refinement would exceed `max_dofs` (`MaxDofs`), or the error estimate stopped improving (`Stalled`). `QoIDescriptor` reserves a type for future goal-oriented error estimation; it has no variants yet.
+
+### 16.2 `ElasticOptions`
+
+```
+// Every param and constraint declaration in this fence — name, type and default —
+// matches solver_elastic.ri; comments here are editorial. Which knobs the solver
+// reads today is stated in the table below, not in these comments.
+structure def ElasticOptions {
+    param element_order : ElementOrder = ElementOrder.P1
+    param mesh_size : Option<Length> = none
+    param max_iter : Int = 1000
+    param cg_tolerance : Real = 0.000001         // = 1e-6, dimensionless
+    param threads : Option<Int> = none
+    param shell_threshold : Real = 0.2           // dimensionless
+    param shell_voxel_size : Option<Length> = none
+    param shell_branch_prune_ratio : Real = 1.0  // dimensionless
+    param shell_force : ShellForce = ShellForce.Auto
+    param force_tet : Bool = false
+    param require_hex_wedge : Bool = false
+    param deterministic : Bool = false
+    param target_accuracy : Real = 0.05          // dimensionless
+    param max_refinement_iterations : Int = 5
+    param max_dofs : Int = 5000000
+    param target_quantity_of_interest : Option<QoIDescriptor> = none
+    param adaptive : Bool = false
+
+    constraint max_iter > 0
+    constraint cg_tolerance > 0
+    constraint cg_tolerance < 1
+    constraint shell_threshold > 0
+    constraint shell_threshold < 1
+    constraint shell_branch_prune_ratio > 0
+    constraint !(force_tet && require_hex_wedge)
+    constraint target_accuracy > 0
+    constraint target_accuracy < 1
+    constraint max_refinement_iterations >= 0
+    constraint max_dofs > 0
+}
+```
+
+Every param has a default, so a bare `ElasticOptions()` is the standard setup; override knobs by name, e.g. `ElasticOptions(adaptive: true, target_accuracy: 0.02)`. The constraints cover every knob, including the ones `solve_elastic_static` does not read today:
+
+| Knob | Meaning | Read by `solve_elastic_static` today? |
+|---|---|---|
+| `element_order` | P1 or P2 tetrahedra | **No** — the static solve always assembles P1. `BucklingOptions` and `ModalOptions` declare their own `element_order`, which those solvers honour. |
+| `mesh_size` | target mesh edge length; `none` = solver's choice | **No** |
+| `max_iter` | conjugate-gradient (CG) iteration cap | **No** — the static solve uses its own fixed CG tolerance and iteration cap |
+| `cg_tolerance` | CG relative-residual convergence threshold | **No** — see `max_iter` |
+| `threads` | worker-thread count; `none` = host CPU count | **Yes**; small problems run single-threaded whatever the value |
+| `shell_threshold` | thickness/extent ratio below which `Auto` picks the shell route | **Yes**, on the box-dimension overloads; the `body : Solid` overload always solves as a solid |
+| `shell_voxel_size` | voxel size for medial-axis extraction; `none` = solver's choice | **No** — any value is discarded |
+| `shell_branch_prune_ratio` | medial-axis branch-pruning threshold | **No effect on the result** — read only by the shell route's medial-axis extraction step, which today runs on a stand-in slab rather than the body |
+| `shell_force` | shell routing: `Off` solid, `Auto` classify by `shell_threshold`, `On` shell | **Yes**, as `shell_threshold` |
+| `force_tet` | disable hex/wedge promotion | **No** — the static solve meshes tetrahedra only |
+| `require_hex_wedge` | make a fall-back to tetrahedra an error | **No** — see `force_tet` |
+| `deterministic` | single-threaded, fixed-order reductions: bit-identical results across runs and machines | **Yes** |
+| `target_accuracy` | relative energy-norm error target of the adaptive loop | **Yes**, with `adaptive: true`; a non-default value without it draws a warning |
+| `max_refinement_iterations` | refinement-iteration cap; `0` = coarse pass only | **Yes**, as `target_accuracy` |
+| `max_dofs` | degrees-of-freedom cap on a refined mesh | **Yes**, as `target_accuracy` |
+| `target_quantity_of_interest` | goal-oriented error-estimation hook | **No**, by design — `QoIDescriptor` is an empty stub |
+| `adaptive` | opt into a-posteriori adaptive refinement | **Yes**, on the solid route with an isotropic material; any other material draws a warning and gets a single solve. The shell route ignores it. |
+
+The declarations depart from PRD `docs/prds/v0_3/structural-analysis-fea.md` in two ways. The PRD's `Integer` (e.g. `iterations : Integer`) is spelled `Int`, Reify's builtin name. And the PRD's defaults for `mesh_size` (an automatic size) and `threads` (`num_cpus::get()`, every hardware thread) cannot be written as `.ri` defaults, so both ship as `Option<T> = none`, meaning "no preference": the solver picks the value (for `threads`, the host CPU count).
+
+### 16.3 `ElasticResult` and `ShellStress`
+
+```
+// Every param and constraint declaration in this fence — name, type and default —
+// matches solver_elastic.ri; comments here are editorial.
+structure def ElasticResult {
+    param displacement : Field<Point3<Length>, Vector3<Length>>
+    param stress : Field<Point3<Length>, Tensor<2, 3, Pressure>>
+    param divergence : Field<Point3<Length>, Real>                  // tr(ε), volumetric strain
+    param gradient : Field<Point3<Length>, Tensor<2, 3, Real>>      // ∇u
+    param curl : Field<Point3<Length>, Vector3<Dimensionless>>      // ∇×u
+    param rotation : Field<Point3<Length>, Vector3<Angle>>          // ∇×u / 2
+    param shear_angles : Field<Point3<Length>, Vector3<Angle>>      // (γ_yz, γ_zx, γ_xy)
+    param frame : Field<Point3<Length>, Matrix<3, 3, Real>>
+    param shell_channels : ShellStress
+    param max_von_mises : Pressure
+    param converged : Bool
+    param iterations : Int
+    param error_indicator : Option<Field<Point3<Length>, Pressure>> = none
+    param global_relative_energy_error : Option<Real> = none
+    param convergence_status : ConvergenceStatus = Converged { final_indicator: 0.0 }
+
+    constraint iterations >= 0
+    constraint max_von_mises >= 0
+}
+
+structure def ShellStress {
+    param top : Field<Point3<Length>, Tensor<2, 3, Pressure>>
+    param mid : Field<Point3<Length>, Tensor<2, 3, Pressure>>
+    param bottom : Field<Point3<Length>, Tensor<2, 3, Pressure>>
+}
+```
+
+`solve_elastic_static` builds the result; constructing one yourself is not meaningful. Which fields it fills depends on the route the solve took (§16.2's `shell_force`):
+
+| Field | Solid (tetrahedral) result | Shell result |
+|---|---|---|
+| `displacement` | sampled field | `undef` |
+| `stress` | sampled field | mid-surface stress |
+| `divergence`, `gradient`, `curl`, `rotation`, `shear_angles` | sampled fields | `undef` |
+| `frame` | `undef` | `undef` |
+| `shell_channels` | `undef` | `ShellStress`; `mid` equals `stress` |
+| `max_von_mises`, `converged`, `iterations` | set | set |
+| `error_indicator`, `global_relative_energy_error`, `convergence_status` | the adaptive loop's values when it ran (§16.2's `adaptive`), else the defaults | the defaults |
+
+`max_von_mises` is the peak von Mises stress over the mesh's elements — on a shell result, over the top, mid and bottom layers. It is not the same number as `max(von_mises(result.stress))` (§10): `stress` is resampled from the element values onto a sample grid, and on a solid result that field reduction is never higher, so `max_von_mises` is the more conservative yield check. `converged` and `iterations` report the conjugate-gradient solve against the solver's own iteration cap, not `ElasticOptions.max_iter` (§16.2), so `iterations` can exceed `max_iter`. The defaults of the three a-posteriori fields — `none`, `none` and `Converged { final_indicator: 0.0 }` — are what a single-shot, non-adaptive solve reports. For what the derivative channels mean — why `curl` is dimensionless and `rotation` / `shear_angles` carry `Angle` — see §11's "`ElasticResult` derivative channels".
+
+### 16.4 `solve_elastic_static`
+
+```
+@optimized("solver::elastic_static")
+pub fn solve_elastic_static(
+    material  : ConstitutiveLaw,
+    length    : Length,
+    width     : Length,
+    height    : Length,
+    loads     : List<Load>,
+    supports  : List<Support>,
+    options   : ElasticOptions = ElasticOptions()
+) -> ElasticResult
+
+@optimized("solver::elastic_static")
+pub fn solve_elastic_static(
+    material  : Field<Point3<Length>, AnisotropicMaterial>,
+    length    : Length,
+    width     : Length,
+    height    : Length,
+    loads     : List<Load>,
+    supports  : List<Support>
+) -> ElasticResult
+
+@optimized("solver::elastic_static")
+pub fn solve_elastic_static(
+    material  : ConstitutiveLaw,
+    body      : Solid,
+    loads     : List<Load>,
+    supports  : List<Support>,
+    options   : ElasticOptions = ElasticOptions()
+) -> ElasticResult
+
+pub structure def FEAMaterialInput {
+    param material : ElasticMaterial
+}
+```
+
+All three overloads dispatch to the same solver; their `.ri` bodies are fallbacks that never run.
+
+- **Homogeneous box** (first overload): solves a `length` × `width` × `height` box of one material. `material` accepts any `ConstitutiveLaw` conformer directly — an `ElasticMaterial` such as `Steel_AISI_1045()`, or an `OrthotropicMaterial` / `TransverseIsotropicMaterial`. `options` may be omitted.
+- **Heterogeneous box** (second overload): the same box, with a spatially varying `Field<Point3<Length>, AnisotropicMaterial>` such as `as_printed_material` produces. It has no `options` parameter, so every knob takes its default.
+- **Body** (third overload): realizes `body` to a tetrahedral mesh and solves on that mesh, always as a solid — the shell route is box-only. `options` may be omitted.
+
+`loads` and `supports` take list literals of conformers, e.g. `[PointLoad(...)]` and `[FixedSupport(...)]`. The conformers — `PointLoad`, `PressureLoad`, `TractionLoad`, `BodyForce` and `Gravity` for loads, `FixedSupport` and `PinnedSupport` for supports — are declared in `crates/reify-compiler/stdlib/fea_multi_case.ri`. `docs/stdlib/multi-load-fea.md` shows them in use and covers solving several load cases at once.
+
+`FEAMaterialInput` wraps a material — `FEAMaterialInput(material: mat)` — so that its `.material` is typed `ElasticMaterial`. It was introduced so a concrete material could reach `solve_buckling`'s `material : ElasticMaterial` parameter, and the buckling examples still use it that way. Neither solver needs it today: `solve_elastic_static` and `solve_buckling` both accept a conformer such as `Steel_AISI_1045()` directly, and the wrapped and direct forms give the same result.
+
+Worked example — `examples/fea_cantilever_smoke.ri`, built by `crates/reify-cli/tests/harness_cli/cli_build_fea.rs`, solves a clamped steel cantilever under a tip load:
+
+```
+let material = Steel_AISI_1045()
+let tip_load = PointLoad(point: "tip", force: 1000.0)
+let mount = FixedSupport(target: "root")
+let result = solve_elastic_static(
+    material, length, width, height, [tip_load], [mount], ElasticOptions()
+)
+```

@@ -14,6 +14,7 @@
 #   plan_is_narrowing_axis_line — narrowing-axis line classification (#6391)
 #   plan_narrowing_axis_match / plan_offaxis_match / plan_narrowing_axis_count
 #                         — dump-level axis predicates (#6391)
+#   plan_strip_comments   — fork-free comment stripper (#6247)
 
 set -euo pipefail
 
@@ -123,6 +124,30 @@ assert "plan_capture_complete: empty string returns non-zero" \
 # (d) Empty-PLAN dump (both markers present, but no actual commands) returns 0.
 # Completeness is structural — independent of whether commands exist.
 assert "plan_capture_complete: docs-only (no commands) dump still returns 0" \
+    plan_capture_complete "$_EMPTY_PLAN_DUMP"
+
+# THE MARKER PAIR IS NOT ENOUGH ON ITS OWN. Both markers sit in the plan HEADER:
+# in a real merge-role plan they land on lines 1 and 11 of 39, and every line the
+# T-series asserts on — the release pre-builds, the nextest passes — comes after
+# them. A capture truncated anywhere past the commands marker therefore carries
+# both markers and is certified complete, so capture_print_plan returns without
+# retrying and the missing line surfaces as a spurious assertion FAIL instead.
+# Cases (e)/(f) pin the boundary that closes that class without closing the
+# legitimate docs-only case: at least one line must follow the commands marker.
+_MARKER_ONLY_DUMP="# verify.sh plan — action=all profile=debug scope=staged include_infra=1 nextest=cargo-nextest role=task
+# narrowing — NARROW_ACTIVE=0 affected=ALL
+# --- commands (executed in order; '&&' semantics — stop on first failure) ---"
+
+# (e) Both markers present but NOTHING after the commands marker returns non-zero.
+assert "plan_capture_complete: markers present with nothing after the commands marker returns non-zero" \
+    refute plan_capture_complete "$_MARKER_ONLY_DUMP"
+
+# (f) Regression pin for (e)'s fix, stated adjacent to it: the docs-only dump is
+# NOT the truncation in (e) — verify.sh:3663 unconditionally emits either real
+# command lines or the comment "# (no commands — nothing to verify for this
+# action/scope)" after the marker, so a COMMENT line after the marker is a
+# complete plan. A fix that demanded a non-comment command line would red this.
+assert "plan_capture_complete: a comment-only line after the commands marker still returns 0" \
     plan_capture_complete "$_EMPTY_PLAN_DUMP"
 
 # ---------------------------------------------------------------------------
@@ -241,6 +266,68 @@ assert "capture_print_plan (c): returns 0 on first complete dump" \
 _cnt_c=$(cat "$_COUNTER_FILE")
 assert "capture_print_plan (c): no superfluous retries (counter == 1)" \
     test "$_cnt_c" = "1"
+
+# THE KILLED-MID-WRITE CLASS. Structural markers certify what the child WROTE;
+# they say nothing about whether it finished. A producer SIGKILLed after the
+# header has emitted both markers, so a marker-only oracle accepts its partial
+# output as a whole plan. The child's exit status is the sound oracle for this:
+# command substitution reads to EOF, so a producer that exited 0 necessarily
+# wrote its whole plan, and truncation requires the producer to die — which is
+# exactly what a non-zero rc reports.
+#
+# Fixture: emits a MARKER-COMPLETE dump every time, then exits 137 (SIGKILL).
+_fake_emit_complete_but_killed() {
+    local cnt
+    cnt=$(cat "$_COUNTER_FILE" 2>/dev/null || echo 0)
+    cnt=$((cnt + 1))
+    printf '%s' "$cnt" > "$_COUNTER_FILE"
+    printf '%s\n' "# verify.sh plan — action=all profile=debug scope=staged include_infra=1 nextest=cargo-nextest role=task"
+    printf '%s\n' "# narrowing — NARROW_ACTIVE=0 affected=ALL"
+    printf '%s\n' "# --- commands (executed in order; '&&' semantics — stop on first failure) ---"
+    printf '%s\n' "cargo clippy --workspace"
+    return 137
+}
+
+# (d) A marker-complete dump from a child that DIED is an incomplete capture:
+#     retry, then return non-zero on exhaustion.
+printf '0' > "$_COUNTER_FILE"
+_OUT_D=""
+assert "capture_print_plan (d): marker-complete dump from a non-zero-exit child returns non-zero" \
+    refute capture_print_plan _OUT_D 3 _fake_emit_complete_but_killed
+
+_cnt_d=$(cat "$_COUNTER_FILE")
+assert "capture_print_plan (d): a dead child is RETRIED to max_attempts (counter == 3)" \
+    test "$_cnt_d" = "3"
+
+assert "capture_print_plan (d): OUT is still assigned on exhaustion (caller's assertion stays the failure surface)" \
+    test -n "$_OUT_D"
+
+# Fixture: complete dump AND an explicit clean exit — the healthy producer.
+_fake_emit_complete_and_exits_zero() {
+    local cnt
+    cnt=$(cat "$_COUNTER_FILE" 2>/dev/null || echo 0)
+    cnt=$((cnt + 1))
+    printf '%s' "$cnt" > "$_COUNTER_FILE"
+    printf '%s\n' "# verify.sh plan — action=all profile=debug scope=staged include_infra=1 nextest=cargo-nextest role=task"
+    printf '%s\n' "# narrowing — NARROW_ACTIVE=0 affected=ALL"
+    printf '%s\n' "# --- commands (executed in order; '&&' semantics — stop on first failure) ---"
+    printf '%s\n' "cargo clippy --workspace"
+    return 0
+}
+
+# (e) Companion to (d): the rc check must not degrade into "always retry" — a
+#     complete dump from a child that exited 0 is accepted on the FIRST attempt.
+printf '0' > "$_COUNTER_FILE"
+_OUT_E=""
+assert "capture_print_plan (e): complete dump from a zero-exit child returns 0" \
+    capture_print_plan _OUT_E 3 _fake_emit_complete_and_exits_zero
+
+_cnt_e=$(cat "$_COUNTER_FILE")
+assert "capture_print_plan (e): accepted on the first attempt (counter == 1)" \
+    test "$_cnt_e" = "1"
+
+assert "capture_print_plan (e): OUT holds the complete dump" \
+    plan_capture_complete "$_OUT_E"
 
 # ---------------------------------------------------------------------------
 # Section 5: plan_count_noncomment_lines — fork-free non-comment line counter
@@ -462,5 +549,133 @@ assert "plan_narrowing_axis_count (i): empty dump -> 0" \
 # (j) Comment-only dump -> 0.
 assert "plan_narrowing_axis_count (j): comment-only dump -> 0" \
     test "$(plan_narrowing_axis_count "$_AXIS_COMMENTS_ONLY")" = "0"
+
+# ---------------------------------------------------------------------------
+# Section 9: plan_strip_comments — fork-free comment stripper (#6247)
+#
+# WHY THIS EXISTS: the occt suite's --print-plan captures ran
+# `verify.sh --print-plan | grep -v '^#'` in a single shot, and that post-filter
+# strips BOTH structural markers plan_capture_complete looks for
+# (`# verify.sh plan`, `# --- commands`).  A truncated capture therefore could
+# not be DETECTED — it just read as "pattern absent" and fired a misleading
+# assertion failure.  The two operations only compose one way round: certify
+# completeness on the RAW dump first, THEN reduce to command lines.  This helper
+# is the second half, kept fork-free for the same esc-4574-42 reason as the rest
+# of the lib (plan_capture_lib.sh:8-14).
+#
+# Comment stripping is load-bearing for the migration, not cosmetic: several occt
+# assertions (test_occt_flock_gate.sh:131,148,296,299,302) assert a pattern is
+# ABSENT, and a retained comment line could satisfy the pattern and flip them.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- plan_strip_comments: fork-free comment stripping ---"
+
+# (a) Mixed dump -> only the non-comment, non-empty lines survive, in order.
+_STRIP_MIXED="# verify.sh plan — action=all profile=debug scope=all
+# --- commands (executed in order) ---
+cargo clippy --workspace --all-targets
+./scripts/check-manifold-deps.sh
+# trailing comment"
+assert "plan_strip_comments (a): mixed dump keeps only command lines, in order" \
+    test "$(plan_strip_comments "$_STRIP_MIXED")" = "cargo clippy --workspace --all-targets
+./scripts/check-manifold-deps.sh"
+
+# (b) Comment-only dump -> empty.
+_STRIP_ALLCOMMENT="# verify.sh plan — action=all
+# scope decision — RUN_RUST=1
+# --- commands ---"
+assert "plan_strip_comments (b): comment-only dump -> empty" \
+    test "$(plan_strip_comments "$_STRIP_ALLCOMMENT")" = ""
+
+# (c) Empty dump -> empty.
+assert "plan_strip_comments (c): empty dump -> empty" \
+    test "$(plan_strip_comments "")" = ""
+
+# (d) A '#' that is not in column 1 does NOT make the line a comment. Real
+# --print-plan command lines carry inline '#' (shell comments inside a quoted
+# `bash -c`, fragment identifiers in paths), and dropping them would silently
+# shrink the plan a caller is asserting over.
+_STRIP_INLINE_HASH="# --- commands ---
+timeout 45m bash -c 'echo \"#not-a-comment\" && cargo check'"
+assert "plan_strip_comments (d): '#' outside column 1 keeps the line" \
+    test "$(plan_strip_comments "$_STRIP_INLINE_HASH")" = "timeout 45m bash -c 'echo \"#not-a-comment\" && cargo check'"
+
+# (e) EQUIVALENCE CONTROL — the case that actually licenses the migration.
+# On a REAL captured dump the fork-free stripper must be byte-identical to the
+# `grep -v '^#'` post-filter the occt call sites use today, so replacing them
+# cannot change what their absence assertions see.
+_REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+_real_print_plan() { ( cd "$_REPO_ROOT" && bash scripts/verify.sh lint --print-plan 2>/dev/null ); }
+_REAL_DUMP=""
+capture_print_plan _REAL_DUMP 3 _real_print_plan || true
+
+assert "plan_strip_comments (e0): the real --print-plan capture is complete (precondition)" \
+    plan_capture_complete "$_REAL_DUMP"
+
+# `|| true` for the same reason capture_print_plan documents: a failing capture
+# must leave the ASSERTIONS below as the visible failure surface, not abort the
+# suite under `set -e` and hide every case after this point.
+_STRIP_FORKFREE="$(plan_strip_comments "$_REAL_DUMP")" || true
+_STRIP_VIA_GREP="$(printf '%s\n' "$_REAL_DUMP" | grep -v '^#')" || true
+assert "plan_strip_comments (e): real dump -> byte-identical to the grep -v '^#' post-filter" \
+    test "$_STRIP_FORKFREE" = "$_STRIP_VIA_GREP"
+
+# (e2) Non-vacuity for (e): the real dump really does carry both comment and
+# command lines, so (e) is not comparing two empty strings.
+assert "plan_strip_comments (e2): the real dump has command lines left after stripping" \
+    test "$(plan_count_noncomment_lines "$_REAL_DUMP")" -gt 0
+assert "plan_strip_comments (e3): stripping the real dump removed something" \
+    refute test "$_STRIP_FORKFREE" = "$_REAL_DUMP"
+
+# (f) FORK-FREEDOM. The lib's whole rationale is that a pipe forks a subshell
+# and a filter which, under concurrent load, can fail with EINTR even when the
+# content matches (esc-4574-42). What LICENSES the migration is the behavioural
+# equivalence control (e) above; (f1) and (f2) keep a future "simplification"
+# back to `| grep` from silently reintroducing the fork that (e) alone would
+# still accept, since a forking implementation can be byte-identical in output.
+#
+# (f1) is BEHAVIOURAL, not a scan of the rendered source: each external filter
+# is shadowed by a marker-writing function, so a real call is recorded however
+# it is spelled, while a body that merely mentions `grep` in a local name or a
+# comment records nothing. A source-text scan gets both of those backwards.
+# The shadows live inside a subshell so they cannot leak into later cases --
+# `_body_has` below itself runs `grep`.
+_STRIP_FILTER_CALLS="$(mktemp)"
+(
+    grep() { printf 'grep\n' >> "$_STRIP_FILTER_CALLS"; }
+    sed()  { printf 'sed\n'  >> "$_STRIP_FILTER_CALLS"; }
+    awk()  { printf 'awk\n'  >> "$_STRIP_FILTER_CALLS"; }
+    plan_strip_comments "$_STRIP_MIXED" >/dev/null
+)
+assert "plan_strip_comments (f1): invokes no external filter (grep/sed/awk shadowed and never called)" \
+    test ! -s "$_STRIP_FILTER_CALLS"
+
+# NON-VACUITY for (f1): the shadows really do fire when something calls them,
+# so the empty marker above is evidence of absence rather than of a probe that
+# never worked.
+#
+# The shadow DRAINS stdin before returning. It is the read end of the pipeline
+# below, and a reader that returns without reading closes the pipe under a
+# `printf` that may still be mid-write — which kills it with SIGPIPE (141) and,
+# under this file's `set -euo pipefail`, aborts the whole suite with no FAIL
+# line to name the case. That is a race on write timing, so it fires only under
+# load: reproduced once in two runs at load 117, and it reddened task 5417's
+# merge gate on 2026-09-17. Same pipefail+SIGPIPE class as the `| grep -q`
+# sites task #7115 sweeps, reached through a non-`-q` spelling.
+(
+    grep() { while IFS= read -r _; do :; done; printf 'grep\n' >> "$_STRIP_FILTER_CALLS"; }
+    printf '%s\n' "$_STRIP_MIXED" | grep -v '^#' >/dev/null
+)
+assert "plan_strip_comments (f1n): the filter shadows DO record a real call (f1 is not vacuous)" \
+    test -s "$_STRIP_FILTER_CALLS"
+rm -f "$_STRIP_FILTER_CALLS"
+
+# (f2) The one STRUCTURAL check worth keeping: a command substitution is a
+# subshell by definition, so its absence is exactly the property (f1) cannot
+# observe (a `$( ... )` that forks but calls no external filter).
+_body_has() { declare -f "$1" | grep -qF -- "$2"; }
+
+assert "plan_strip_comments (f2): body contains no command substitution" \
+    refute _body_has plan_strip_comments '$('
 
 test_summary

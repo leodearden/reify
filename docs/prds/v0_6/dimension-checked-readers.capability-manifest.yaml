@@ -21,20 +21,24 @@ tasks:
       paths:
       - crates/reify-ir/src/value.rs
       expect: present
-  - name: relocation-is-not-verbatim-13-self-paths
+  - name: relocation-landed-with-self-paths-rewritten
     binding: 'FALSIFIES PRD §3 Leg A / §6 decision 8 / §5 seam row, all of which say
-      "verbatim". crates/reify-eval/src/arg_acceptance.rs carries 13 fully-qualified
-      `reify_ir::Value` CODE paths (:117 :119 :120 :134 :136 :137 :146 :147 :148 plus
-      tests :159 :173 :188 :209) plus one doc mention (:21); workspace is edition
-      2024 and crates/reify-ir/src/ has NO `extern crate self as reify_ir`. RESOLVED
-      by amendment A1 in the task text: rewrite the paths to `crate::` or add the
-      self-alias. Not a substrate absence.'
+      "verbatim". At decompose (pre-relocation; #5791 moved the module to
+      crates/reify-ir/src/arg_acceptance.rs), crates/reify-eval/src/arg_acceptance.rs
+      carried 13 fully-qualified `reify_ir::Value` CODE paths (:117 :119 :120 :134
+      :136 :137 :146 :147 :148 plus tests :159 :173 :188 :209) plus one doc mention
+      (:21); workspace is edition 2024 and crates/reify-ir/src/ has NO
+      `extern crate self as reify_ir`.
+      RESOLVED by amendment A1 in the task text: rewrite the paths to `crate::` or add
+      the self-alias. Not a substrate absence. The delivered_check below asserts the
+      post-relocation state, the self-paths rewritten to `crate::` (mirrors task 5791
+      metadata.delivered_checks, corrected pre-merge 2026-09-14).'
     verdict: PASS
     delivered_check:
       kind: grep
-      pattern: reify_ir::Value
+      pattern: crate::value::Value
       paths:
-      - crates/reify-eval/src/arg_acceptance.rs
+      - crates/reify-ir/src/arg_acceptance.rs
       expect: present
   - name: accept-arg-has-no-Option-arm-but-the-gated-fields-are-Option
     binding: 'UNLISTED PREMISE found at decompose. arg_acceptance.rs:117-130 matches
@@ -155,7 +159,12 @@ tasks:
       5139325.408614099 kg·m^-1·s^-2, iterations 719 (0.33 s); `PointLoad(force: 1000N)`
       -> max_von_mises **0**, iterations **0** (0.18 s). Same scene, EXIT 0 both times,
       zero Error diagnostics. Committed fixtures tests/prd-gate/fixtures/dcr_solver_load_dropped_{bare,dimensioned}.ri.
-      No kernel required — both solvers synthesize their own mesh.'
+      No kernel required — both solvers synthesize their own mesh. AMENDMENT 2026-09-29
+      (Leo, esc-7372-3 follow-on): since #5306 the dimensioned fixture exits 1 at compile
+      (ArgTypeMismatch against the still-Real PointLoad.force), so γ1 reads B1 below
+      the compiler (a hand-built 1000 N FORCE Scalar gives max_von_mises 5139325.408614099
+      with iterations > 0), and the end-to-end .ri check on the dimensioned fixture
+      moves to γ2 (#6941).'
     verdict: PASS
     delivered_check:
       kind: grep
@@ -247,7 +256,7 @@ tasks:
       reason: the hazard is a property of ctor lowering owned by PRD 4; PRD 5's mitigation
         is the completeness assertion, checked by the leaf's own signal.
   - name: two-tests-assert-on-literal-source-text
-    binding: grep:crates/reify-compiler/tests/multi_load_bracket_example_tests.rs:217/:222
+    binding: grep:crates/reify-compiler/tests/harness_diagnostics_robustness/multi_load_bracket_example_tests.rs:217/:222
       — `src.contains("PointLoad(")`. A textual codemod that reflows those call sites
       breaks them; named in the task text so the implementer checks them explicitly.
     verdict: PASS
@@ -255,7 +264,7 @@ tasks:
       kind: grep
       pattern: PointLoad\(
       paths:
-      - crates/reify-compiler/tests/multi_load_bracket_example_tests.rs
+      - crates/reify-compiler/tests/harness_diagnostics_robustness/multi_load_bracket_example_tests.rs
       expect: present
 - label: γ3
   task_id: 5802
@@ -755,8 +764,9 @@ tasks:
       PRINTS `error: E_StackupDimMismatch: …` and EXITS 0 with "All constraints satisfied.",
       while `reify eval` on the same file exits 1. That is the INV-SF-2 outlier PRD
       2 owns via task 5403. A real `add_dependency` edge μ -> 5403 is wired so the
-      chunk''s guidance is TRUE when written; the two new codes must never enter PRD
-      2''s CHECK_ERROR_EXIT_ALLOWLIST.'
+      chunk''s guidance is TRUE when written; the new FeaLoadKindUnsupported and the
+      reused DimensionedArgRejected must never enter PRD 2''s
+      CHECK_ERROR_EXIT_ALLOWLIST.'
     verdict: PASS
     delivered_check:
       kind: manual
@@ -768,7 +778,7 @@ tasks:
   capabilities:
   - name: corpus-and-index-exist-and-are-compile-gated
     binding: grep — examples/best_practices/ holds 6 exemplars + INDEX.md, auto-compile-gated
-      by crates/reify-compiler/tests/examples_smoke.rs; `.claude/skills/reify-design/SKILL.md:22`
+      by crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs; `.claude/skills/reify-design/SKILL.md:22`
       instructs authors to grep that index before probing the language. The idiom
       shape to imitate is examples/best_practices/negation.ri.
     verdict: PASS
@@ -874,7 +884,11 @@ tasks:
     binding: 'PROBE (D3 prover, PASS): the committed paired fixtures give max_von_mises
       5139325.408614099 Pa / 719 iterations (bare) vs 0 / 0 (dimensioned) at 0.33
       s and 0.18 s. π asserts APPLICATION of the load, not the presence of a warning.
-      Neither ElasticResult nor BucklingResult needs unfreezing.'
+      Neither ElasticResult nor BucklingResult needs unfreezing. AMENDMENT 2026-09-29
+      (Leo, esc-7372-3 follow-on): the dimensioned fixture compiles only after γ2 retypes
+      PointLoad.force (#5306 makes it a compile-time ArgTypeMismatch until then); B2
+      is asserted at the reader on a hand-built bare value, never on a .ri exit code.
+      delivered_check unchanged.'
     verdict: PASS
     delivered_check:
       kind: grep

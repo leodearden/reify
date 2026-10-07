@@ -28,7 +28,7 @@
 
 - **State:** WIRED
 - **Failure mode:** N/A
-- **Evidence:** `crates/reify-compiler/stdlib/fea_multi_case.ri:247-254`; task 3004 done; tests at `crates/reify-compiler/tests/multi_load_case_stdlib_tests.rs`
+- **Evidence:** `crates/reify-compiler/stdlib/fea_multi_case.ri:247-254`; task 3004 done; tests at `crates/reify-compiler/tests/harness_diagnostics_robustness/multi_load_case_stdlib_tests.rs`
 - **Note:** Type-resolves cleanly with `cases : Map<String, ElasticResult>`; structurally guaranteed key-uniqueness via `BTreeMap`.
 
 ### M-003: `LoadCase` / `MultiCaseResult` runtime constructor evaluation (e.g. `LoadCase{name: ..., loads: [...], supports: [...]}`)

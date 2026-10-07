@@ -52,6 +52,12 @@ const REGISTRY_FREE_TYPE_ID: StructureTypeId = StructureTypeId(u32::MAX);
 
 /// Extract an `f64` from a numeric value cell (`Int` / `Real` / dimensioned
 /// `Scalar`). Mirrors `dynamics_ops::cell_f64`; non-numeric cells yield `None`.
+///
+/// **This is where the dimension is ERASED.** The `Value::Scalar` arm takes
+/// `si_value` and DISCARDS the `DimensionVector` outright, so every `f64` this
+/// function returns is an undimensioned SI magnitude and the caller carries the
+/// dimensional meaning implicitly. See [`compliance_cell_f64`] for the full
+/// declaration of that contract and why it is not gated here (#6184).
 fn cell_f64(v: &Value) -> Option<f64> {
     match v {
         Value::Int(n) => Some(*n as f64),
@@ -97,7 +103,62 @@ fn cell_mass_f64(v: &Value) -> Option<f64> {
 /// for the dimension-stripping step, accepting `Int` and `Real` as well as
 /// `Scalar`. Used by `joint_compliance` to read `spring_rate`, `damping`,
 /// and `neutral` from a flexure joint Map in either the bare-Scalar shape
-/// that `make_flexure_joint` emits today or an Option-wrapped future shape.
+/// that `make_flexure_joint` emits today or an Option-wrapped future shape —
+/// and by the RNEA link loop to read the joint coordinate `q` itself (both
+/// call sites are enumerated under "Dimension erasure" below).
+///
+/// # Dimension erasure — a declared, deliberate one (INV-AD-4; #6184)
+///
+/// This reader takes the SI-coherent magnitude and DISCARDS the
+/// `DimensionVector` (the erasure itself happens in [`cell_f64`]). Every value
+/// it returns is an undimensioned SI `f64`, and each caller carries the
+/// dimensional meaning implicitly. There are TWO callers, not one, and they
+/// erase different things:
+///
+/// 1. `joint_compliance` reads the flexure-joint Map — `spring_rate`,
+///    `damping`, `neutral`. Their dimensions are whatever the joint's own
+///    generalized coordinate implies.
+/// 2. The RNEA link-building loop in `snapshot_inverse_dynamics` reads the
+///    per-body generalized coordinate `q` ITSELF out of `positions`, and hands
+///    the bare `f64` straight to `joint_compliance` as its `position` argument.
+///    That site erases the COORDINATE's own dimension — an ANGLE for a revolute
+///    joint, a LENGTH for a prismatic one.
+///
+/// Site 2 is the one an audit of the erasure surface most needs to find, and it
+/// is what makes that surface more than just the spring/damping constants:
+/// `spring_rate` (possibly `ROTATIONAL_STIFFNESS`, carrying rad⁻²), `neutral`
+/// (an ANGLE) and `q` (the same ANGLE) are erased as a COHERENT SET, not as
+/// three unrelated scalars. The spring term `−k·(q − neutral)` is only
+/// meaningful because all three agree, and after this reader nothing in the
+/// types records that they do.
+///
+/// The ANGULAR cases are why this site is declared here rather than left
+/// implicit: for a ROTATIONAL PRB flexure joint, `spring_rate` may be
+/// `ROTATIONAL_STIFFNESS` (N·m/rad², i.e. carrying rad⁻²) and `neutral` is an
+/// ANGLE (this module's own tests use `neutral = π/12` with `position = π/6`).
+/// Under rad = 1 SI coherence the erased `f64` is NUMERICALLY CORRECT — the
+/// defect INV-AD-4 names is that nothing DECLARED it.
+///
+/// ## Contrast: the house declared-bridge pattern
+///
+/// The guarded sibling is `spring_rate_for_lumped_dof` in
+/// `crates/reify-eval/src/modal_ops.rs`, whose `StiffnessSkipKind` enum REFUSES
+/// `ROTATIONAL_STIFFNESS` outright (and refuses any other unexpected dimension
+/// rather than silently propagating an upstream labelling bug).
+///
+/// The two differ for a real reason, not by oversight: that model's eigenvalue
+/// is `λ = k / m_body`, which is only valid for ONE dimension, so it MUST gate —
+/// `k_θ / m` is dimensionally wrong and the correct eigenvalue there is
+/// `k_θ / I_body`. This reader instead hands each value on in whatever
+/// generalized coordinate the joint already declares, so a gate would need that
+/// coordinate's dimension threaded in at BOTH call sites above — and site 2 is
+/// the harder half, because `positions` carries a bare per-body value with no
+/// joint-type context at that point, so the joint's DECLARED coordinate
+/// dimension would have to be plumbed through to reach it. That is exactly the
+/// dimension-checked-readers work PRD 5 owns (see the PRD-5 reader-gating
+/// bookmark in `docs/prds/v0_6/angle-dimension-completion.md`). Adding a guard
+/// here today would be a behaviour change, which this declarations-only leaf
+/// deliberately does not make.
 fn compliance_cell_f64(v: &Value) -> Option<f64> {
     match v {
         Value::Option(Some(inner)) => compliance_cell_f64(inner),
@@ -2080,6 +2141,170 @@ mod tests {
         );
     }
 
+    /// **Regression PIN, not a bug fix.** An ERRORED
+    /// mechanism must not produce dynamics results on the CLOSED-CHAIN
+    /// routing arm either.
+    ///
+    /// Why this needed checking. `snapshot_inverse_dynamics` (the open-chain
+    /// arm) carries an explicit `map_get(mech, "error").is_some() → None`
+    /// guard; `closed_chain_inverse_dynamics` carries none. And an errored
+    /// mechanism CAN reach that arm, because it can carry a NON-EMPTY
+    /// `loop_closures` list: `append_body` records a valid loop closure
+    /// first, a LATER `body()` call errors, and both
+    /// `make_duplicate_solid_error` and `make_world_parented_closure_error`
+    /// preserve the mechanism's fields verbatim. `inverse_dynamics_sample`
+    /// then reads `loop_closures` non-empty, sets `is_closed`, and routes
+    /// there.
+    ///
+    /// MEASURED RESULT: it is already rejected, and no new guard was added.
+    /// The rejection happens EARLIER, at the shared `snapshot_for_sample`
+    /// seam that both arms pass through: it calls `eval_builtin("snapshot",
+    /// …)`, whose errored-mechanism guard is generic over the `error` key
+    /// (not specific to `duplicate_solid`), so the snapshot is `Undef` and
+    /// `snapshot_for_sample` returns None before the `is_closed` dispatch is
+    /// reached. That single seam is what makes the missing guard on the
+    /// closed-chain arm harmless — which is precisely why it is worth
+    /// pinning: if `snapshot_for_sample` ever grows tolerance for errored
+    /// mechanisms, the closed-chain arm has nothing else standing between it
+    /// and a plausible-looking torque vector computed from a mechanism the
+    /// builder rejected.
+    ///
+    /// The fixture builds the reaching shape: a parent-conflict loop closure
+    /// on `j_b`, then a world-parented closing edge on `j_c` that errors
+    /// (`error = "world_parented_closure"`) while keeping
+    /// the recorded closure. Measured on that mechanism:
+    /// `loop_closures.len() == 1`, `bodies.len() == 4`, `error` present —
+    /// all three asserted below so the pin cannot go vacuous by the fixture
+    /// silently ceasing to be errored or closed-chain-shaped.
+    ///
+    /// A POSITIVE CONTROL runs the same `sample` against `m4`, the fixture
+    /// minus its errored call, and asserts `Some(forces)` of length 3. `None`
+    /// on its own is a weak signal — it is also what a values/bodies length
+    /// mismatch, a malformed sample, an FK failure, or any `?` short-circuit
+    /// on the path returns — so the control is what attributes the rejection
+    /// to the `error` key rather than to an incidental shape failure.
+    #[test]
+    fn closed_chain_inverse_dynamics_rejects_errored_mechanism() {
+        let axis_x = Value::Vector(vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)]);
+        let axis_y = Value::Vector(vec![Value::Real(0.0), Value::Real(1.0), Value::Real(0.0)]);
+        let axis_z = Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)]);
+        let range_0_1m = || Value::Range {
+            lower: Some(Box::new(Value::length(0.0))),
+            upper: Some(Box::new(Value::length(1.0))),
+            lower_inclusive: true,
+            upper_inclusive: true,
+        };
+        let mp = |m: f64| {
+            eval_dynamics("point_mass", &[Value::Real(m)]).expect("point_mass is recognised")
+        };
+
+        let j_a = crate::eval_builtin("prismatic", &[axis_x, range_0_1m()]);
+        let j_b = crate::eval_builtin("prismatic", &[axis_y, range_0_1m()]);
+        let j_c = crate::eval_builtin("prismatic", &[axis_z, range_0_1m()]);
+        let world = crate::eval_builtin("world", &[]);
+
+        let m0 = crate::eval_builtin("mechanism", &[]);
+        let m1 = crate::eval_builtin("body", &[m0, mp(1.0), j_a.clone(), world.clone()]);
+        let m2 = crate::eval_builtin("body", &[m1, mp(2.0), j_b.clone(), world.clone()]);
+        // Parent conflict on j_b (already → world) ⇒ one recorded loop closure.
+        let m3 = crate::eval_builtin("body", &[m2, mp(3.0), j_b, j_a.clone()]);
+        // Open edge registering j_c → j_a, so the next call is a real closing edge.
+        let m4 = crate::eval_builtin("body", &[m3, mp(4.0), j_c.clone(), j_a]);
+        // World-parented CLOSING edge ⇒ error Map that still carries the
+        // loop_closures list recorded above.
+        let errored = crate::eval_builtin("body", &[m4.clone(), mp(5.0), j_c, world]);
+
+        // Preconditions: the fixture really is errored AND closed-chain-shaped.
+        let em = match &errored {
+            Value::Map(m) => m,
+            other => panic!("expected Mechanism Map, got {other:?}"),
+        };
+        assert_eq!(
+            em.get(&Value::String("error".to_string())),
+            Some(&Value::String("world_parented_closure".to_string())),
+            "fixture precondition: the mechanism must be errored"
+        );
+        match em.get(&Value::String("loop_closures".to_string())) {
+            Some(Value::List(lc)) => assert_eq!(
+                lc.len(),
+                1,
+                "fixture precondition: the errored mechanism must still carry the \
+                 previously-recorded loop closure (that is what routes it to the \
+                 closed-chain path)"
+            ),
+            other => panic!("expected loop_closures List, got {other:?}"),
+        }
+        let n_bodies = match em.get(&Value::String("bodies".to_string())) {
+            Some(Value::List(b)) => b.len(),
+            other => panic!("expected bodies List, got {other:?}"),
+        };
+        assert_eq!(n_bodies, 4, "fixture precondition: 4 recorded bodies");
+
+        // One `values` entry per body; vels/accels one entry per DOF.
+        let sample = mint_instance(
+            "TrajectorySample",
+            vec![
+                (
+                    "t".to_string(),
+                    Value::Scalar {
+                        si_value: 0.0,
+                        dimension: DimensionVector::TIME,
+                    },
+                ),
+                (
+                    "values".to_string(),
+                    Value::List(vec![
+                        Value::length(0.1),
+                        Value::length(0.2),
+                        Value::length(0.2),
+                        Value::length(0.3),
+                    ]),
+                ),
+                (
+                    "vels".to_string(),
+                    Value::List(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(0.0)]),
+                ),
+                (
+                    "accels".to_string(),
+                    Value::List(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(0.0)]),
+                ),
+            ],
+        );
+
+        // POSITIVE CONTROL, evaluated FIRST so the negative assertion below is
+        // attributable. `m4` is this fixture minus the one errored call: same
+        // 4 bodies, same single loop closure, same `sample` — the ONLY
+        // difference is the absent `error` key. Without this, `.is_none()`
+        // would also be satisfied by a values/bodies length mismatch, a
+        // malformed TrajectorySample, an FK failure, or any `?` short-circuit
+        // inside sample_fields / snapshot_for_sample /
+        // closed_chain_inverse_dynamics, and the pin could go vacuous while
+        // staying green.
+        let ok = inverse_dynamics_sample(&m4, &sample).expect(
+            "positive control: the SAME sample on the SAME mechanism minus the errored \
+             closing call must produce forces — if this fails, the negative assertion \
+             below proves nothing about the error key",
+        );
+        assert_eq!(
+            ok.len(),
+            3,
+            "positive control: one JointForce per spanning-tree DOF \
+             (n_tree = bodies − loop_closures = 4 − 1 = 3), got {}",
+            ok.len()
+        );
+
+        assert!(
+            inverse_dynamics_sample(&errored, &sample).is_none(),
+            "inverse_dynamics_sample must return None for an ERRORED mechanism, even when its \
+             loop_closures list is non-empty — a plausible-looking torque vector computed from a \
+             mechanism the builder rejected is the silent-wrong-answer class this pin guards. \
+             The positive control above isolates the `error` key as the cause. \
+             Today the rejection comes from the shared snapshot_for_sample seam; if that seam \
+             stops rejecting errored mechanisms, closed_chain_inverse_dynamics needs the same \
+             explicit error guard snapshot_inverse_dynamics already has"
+        );
+    }
+
     // ── Suggestion 3: ramp_profile edge branches ──────────────────────────────
 
     /// Zero-displacement move (`from == to`) must emit exactly one rest sample
@@ -2424,8 +2649,10 @@ mod tests {
         // ── 2-prismatic closed-chain mechanism ────────────────────────────────
         // Spanning tree (joint_parents): m1@j_a (parent=world), m2@j_b (parent=world).
         // Closing edge: body(m2, mp_c, j_b, j_a) adds m3 to bodies and appends a
-        // loop_closure record {path_a=[world,j_b], path_b=[world,j_a,j_b],
-        // closing_joint=j_b}.
+        // loop_closure record {path_a=[world,j_b], path_b=[world,j_a],
+        // closing_joint=j_b} — path_b terminates at the closing edge's parent,
+        // and the closing joint is composed on path_a alone.  Same shape as
+        // examples/dynamics/closed_2prismatic_idyn.ri.
         //
         // j_a on +x (range 0–1m), j_b on +x (range 0–2m): different ranges make
         // them structurally distinct Maps so Value::Eq in loop_residual_jacobian_by_joint
@@ -2591,6 +2818,256 @@ mod tests {
             Value::Undef,
             "closed mechanism must return Undef from inverse_dynamics_at_snapshot_lower \
              (snapshot discards spanning-tree q, no closed-chain routing at snapshot entry)"
+        );
+    }
+
+    /// The pose link's SECOND consumer: closed-chain `inverse_dynamics`.
+    ///
+    /// A 5-arg closing call records its `pose` as a synthetic
+    /// `{ kind: "fixed", origin: pose }` link on `path_b` (task 7186). Snapshot
+    /// tests cover that link; this path consumes the same
+    /// `extract_loop_closure_chains` output and hands `chain_b` to
+    /// `loop_residual_jacobian_by_joint`, where `chain_b` may now be LONGER
+    /// than the free-variable count and may carry a non-joint Map. Every other
+    /// closed-chain dynamics fixture in tree closes with the 4-arg
+    /// (identity-pose) form, so that combination was previously inferred rather
+    /// than exercised.
+    ///
+    /// Fixture — `j_a` prismatic +x and `j_b` prismatic +z, both parented to
+    /// world, closed by a third body that re-parents `j_b` onto `j_a` carrying
+    /// a pose of `translate(0, 0, 0.5 m)`:
+    ///
+    ///     path_a = [world, j_b]                  T_a = translate(0, 0, q_b)
+    ///     path_b = [world, j_a, fixed(pose)]     T_b = translate(q_a, 0, 0.5)
+    ///
+    /// At `q_a = 0, q_b = 0.5` the closure is EXACTLY satisfied, and the pose is
+    /// what satisfies it — a pose link dropped anywhere on this path surfaces as
+    /// a 0.5 m residual rather than as a silently different answer.
+    ///
+    /// The workless-constraint identity is checked against a τ_open measured on
+    /// the same two spanning-tree bodies with the closing call dropped. That
+    /// comparison is valid because the closing body is not a spanning-tree link
+    /// (`n_tree = bodies − loop_closures`), so it contributes no RNEA link and
+    /// the two mechanisms share their open-chain dynamics exactly.
+    #[test]
+    fn closed_chain_inverse_dynamics_threads_a_posed_closing_edge() {
+        use crate::eval_builtin;
+        use crate::loop_closure::{
+            extract_loop_closure_chains, loop_residual_jacobian_by_joint, loop_residual_twist,
+        };
+
+        let unit = |x: f64, y: f64, z: f64| {
+            Value::Vector(vec![Value::Real(x), Value::Real(y), Value::Real(z)])
+        };
+        let len_range = |up: f64| Value::Range {
+            lower: Some(Box::new(Value::length(0.0))),
+            upper: Some(Box::new(Value::length(up))),
+            lower_inclusive: true,
+            upper_inclusive: true,
+        };
+        let j_a = eval_builtin("prismatic", &[unit(1.0, 0.0, 0.0), len_range(1.0)]);
+        let j_b = eval_builtin("prismatic", &[unit(0.0, 0.0, 1.0), len_range(2.0)]);
+
+        let mp_a = mass_properties_fixture(
+            1.0,
+            [0.0, 0.0, 0.0],
+            [[0.1, 0.0, 0.0], [0.0, 0.1, 0.0], [0.0, 0.0, 0.1]],
+        );
+        let mp_b = mass_properties_fixture(
+            2.0,
+            [0.0, 0.0, 0.0],
+            [[0.2, 0.0, 0.0], [0.0, 0.2, 0.0], [0.0, 0.0, 0.2]],
+        );
+        let mp_c = mass_properties_fixture(
+            0.5,
+            [0.0, 0.0, 0.0],
+            [[0.05, 0.0, 0.0], [0.0, 0.05, 0.0], [0.0, 0.0, 0.05]],
+        );
+
+        let pose_half_z = Value::Transform {
+            rotation: Box::new(Value::Orientation {
+                w: 1.0,
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            }),
+            translation: Box::new(Value::Vector(vec![
+                Value::length(0.0),
+                Value::length(0.0),
+                Value::length(0.5),
+            ])),
+        };
+
+        let open_mech = {
+            let m = eval_builtin("mechanism", &[]);
+            let m = eval_builtin("body", &[m, mp_a.clone(), j_a.clone()]);
+            eval_builtin("body", &[m, mp_b.clone(), j_b.clone()])
+        };
+        // 5-arg closing call: re-parents j_b onto j_a through a rigid tie.
+        let mech = eval_builtin(
+            "body",
+            &[
+                open_mech.clone(),
+                mp_c,
+                j_b.clone(),
+                j_a.clone(),
+                pose_half_z,
+            ],
+        );
+
+        let record = match &mech {
+            Value::Map(m) => match m.get(&Value::String("loop_closures".to_string())) {
+                Some(Value::List(l)) if l.len() == 1 => l[0].clone(),
+                other => panic!("expected exactly one loop_closure record, got {other:?}"),
+            },
+            other => panic!("body() must yield a Mechanism Map, got {other:?}"),
+        };
+
+        // (a) The pose link reaches chain_b and never becomes a free variable.
+        // Bind only j_b here, so `free_b` is non-empty and the exclusion is a
+        // real discrimination rather than a vacuous one.
+        let b_only = vec![eval_builtin("bind", &[j_b.clone(), Value::length(0.5)])];
+        let (_, _, chain_b_probe, _, free_b_probe) =
+            extract_loop_closure_chains(&record, &b_only)
+                .expect("a 5-arg closing record must yield chains");
+        assert_eq!(
+            chain_b_probe.len(),
+            2,
+            "chain_b = [j_a, fixed(pose)] — the closing edge's parent plus the rigid tie"
+        );
+        match &chain_b_probe[1] {
+            Value::Map(m) => assert_eq!(
+                m.get(&Value::String("kind".to_string())),
+                Some(&Value::String("fixed".to_string())),
+                "the tail of chain_b is the synthetic 0-DOF pose link"
+            ),
+            other => panic!("chain_b tail must be a joint-shaped Map, got {other:?}"),
+        }
+        assert_eq!(
+            free_b_probe,
+            vec![0usize],
+            "the unbound j_a is free; the 0-DOF pose link at index 1 is not"
+        );
+
+        // (b) The pose enters the residual: at q_a = 0, q_b = 0.5 the tie closes
+        // the loop exactly.
+        let bindings = vec![
+            eval_builtin("bind", &[j_a.clone(), Value::length(0.0)]),
+            eval_builtin("bind", &[j_b.clone(), Value::length(0.5)]),
+        ];
+        let (chain_a, vals_a, chain_b, vals_b, free_b) =
+            extract_loop_closure_chains(&record, &bindings)
+                .expect("a 5-arg closing record must yield chains");
+        assert!(free_b.is_empty(), "both joints are bound at the sampled configuration");
+        let twist = loop_residual_twist(&chain_a, &vals_a, &chain_b, &vals_b)
+            .expect("residual must resolve over a chain carrying a 0-DOF link");
+        for (i, c) in twist.iter().enumerate() {
+            assert!(
+                c.abs() < 1e-12,
+                "residual[{i}] = {c:.3e}: the pose link must close the loop exactly \
+                 (0.5 m off means the tie never reached the residual)"
+            );
+        }
+
+        // (c) Constraint-Jacobian width is the spanning-tree DOF count, NOT
+        // chain_b.len(): the pose link contributes a transform, never a column.
+        let n = 2usize;
+        let ordered_joints = [j_a.clone(), j_b.clone()];
+        let raw_cols = loop_residual_jacobian_by_joint(
+            &chain_a,
+            &vals_a,
+            &chain_b,
+            &vals_b,
+            &ordered_joints,
+            1e-7,
+        )
+        .expect("FD Jacobian must resolve with a 0-DOF link in chain_b");
+        assert_eq!(
+            raw_cols.len(),
+            n,
+            "one column per spanning-tree DOF, even though chain_b holds {} entries",
+            chain_b.len()
+        );
+
+        // (d) End-to-end: the closed path returns finite torques.
+        let sample = |values: Vec<Value>| {
+            mint_instance(
+                "TrajectorySample",
+                vec![
+                    (
+                        "t".to_string(),
+                        Value::Scalar {
+                            si_value: 0.0,
+                            dimension: DimensionVector::TIME,
+                        },
+                    ),
+                    ("values".to_string(), Value::List(values)),
+                    (
+                        "vels".to_string(),
+                        Value::List(vec![Value::Real(0.0), Value::Real(0.0)]),
+                    ),
+                    (
+                        "accels".to_string(),
+                        Value::List(vec![Value::Real(0.0), Value::Real(0.0)]),
+                    ),
+                ],
+            )
+        };
+        let traj = |values: Vec<Value>| {
+            mint_instance(
+                "MotionTrajectory",
+                vec![
+                    ("mechanism".to_string(), Value::Real(0.0)),
+                    ("samples".to_string(), Value::List(vec![sample(values)])),
+                ],
+            )
+        };
+        let torques = |m: &Value, values: Vec<Value>| -> Vec<f64> {
+            let result = eval_dynamics("inverse_dynamics_lower", &[m.clone(), traj(values)])
+                .expect("inverse_dynamics_lower must be a recognised dynamics intrinsic");
+            let per_sample = match &result {
+                Value::List(s) => s.clone(),
+                other => panic!("inverse_dynamics_lower must return a finite List, got {other:?}"),
+            };
+            assert_eq!(per_sample.len(), 1, "one force list per trajectory sample");
+            match &per_sample[0] {
+                Value::List(f) => f
+                    .iter()
+                    .map(|jf| num(field(field(jf, "JointForce", "value"), "ScalarForce", "magnitude")))
+                    .collect(),
+                other => panic!("sample 0: expected a List<JointForce>, got {other:?}"),
+            }
+        };
+
+        let tau_closed = torques(
+            &mech,
+            vec![Value::length(0.0), Value::length(0.5), Value::length(0.5)],
+        );
+        let tau_open = torques(&open_mech, vec![Value::length(0.0), Value::length(0.5)]);
+        assert_eq!(tau_closed.len(), 2, "two spanning-tree joints ⇒ two JointForce entries");
+        assert_eq!(tau_open.len(), 2, "the open mechanism has the same two joints");
+        for (i, t) in tau_closed.iter().enumerate() {
+            assert!(t.is_finite(), "tau_closed[{i}] must be finite, got {t}");
+        }
+
+        // (e) Workless constraints: the reduced constraint row is [1, 0] (the
+        // v_z row is absorbed by the closing +z prismatic — see
+        // `closed_chain::tests::reduce_constraint_rank_on_builder_produced_closed_chain`),
+        // so q̇ = [0, 1] lies in its null space and τ·q̇ must equal τ_open·q̇:
+        // λ does no work along it. Non-vacuous — j_b carries its 2 kg link
+        // against gravity, so the shared value is ≈ 19.62 N, not 0.
+        assert!(
+            tau_open[1].abs() > 1.0,
+            "the +z prismatic must carry a real gravity load for this identity to \
+             discriminate, got {}",
+            tau_open[1]
+        );
+        assert!(
+            (tau_closed[1] - tau_open[1]).abs() < 1e-9,
+            "virtual work along the null-space direction q̇ = [0, 1]: τ_closed[1] = {}, \
+             τ_open[1] = {} — constraint forces must do no work along it",
+            tau_closed[1],
+            tau_open[1]
         );
     }
 

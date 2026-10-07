@@ -18,45 +18,103 @@
 #      shared index (dark-factory parity).
 #
 # Exits 0 on success (all assertions pass).
-# Exits 1 on first failed assertion (with a descriptive error message).
+# Exits 1 on a failed assertion or an underivable default identity.
+# Exits 2 on CLI misuse.
 #
-# Run before activation to confirm RED; run after activation to confirm GREEN:
-#   bash scripts/smoke-jcodemunch-serve.sh
+# There is no persistent serve unit to activate against any more; bring one up
+# for the duration of the run with the lifecycle wrapper:
+#   bash scripts/with-jcodemunch-serve.sh --port 8901 -- \
+#       bash scripts/smoke-jcodemunch-serve.sh
 #
 # Prerequisites: curl, jq
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 usage() {
     cat <<'USAGE'
-Usage: scripts/smoke-jcodemunch-serve.sh [-h|--help]
+Usage: scripts/smoke-jcodemunch-serve.sh [--repo <id>] [-h|--help]
 
 Activation smoke test for the jcodemunch query-serve (L-SERVE).
 Asserts:
   1. MCP handshake at http://127.0.0.1:8901/mcp returns JSON-RPC body
      and a server-assigned Mcp-Session-Id header.
-  2. get_changed_symbols for reify returns NON-EMPTY symbol data.
+  2. get_changed_symbols for the queried repo returns NON-EMPTY symbol data.
   3. jcodemunch-watcher.service is active concurrently with assertion 2.
-Exits 0 on success, 1 on failure.
+
+Options:
+  --repo <id>   Index identity to query (default: derived — what
+                scripts/jcodemunch-index-reify.sh --print-repo-id prints for
+                the canonical checkout).
+
+Exits 0 on success, 1 on a failed assertion or an underivable default
+identity, 2 on CLI misuse.
 USAGE
 }
 
-if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
-    usage
-    exit 0
-fi
+cli_error() { echo "$(basename "$0"): $*" >&2; exit 2; }
+
+# derive_default_repo_id — the identity the indexer maintains for the canonical
+# checkout. Only stdout is captured, so the indexer's own warnings reach the
+# operator verbatim.
+derive_default_repo_id() {
+    local id rc=0
+    id="$(bash "$SCRIPT_DIR/jcodemunch-index-reify.sh" --print-repo-id)" || rc=$?
+    if [[ "$rc" -ne 0 || -z "$id" ]]; then
+        echo "smoke-jcodemunch-serve: cannot derive the default index identity (scripts/jcodemunch-index-reify.sh --print-repo-id exited $rc; its diagnostics are above) — pass --repo <id> to name one explicitly" >&2
+        exit 1
+    fi
+    printf '%s\n' "$id"
+}
+
+REPO_ID_ARG=""
+while [[ $# -gt 0 ]]; do
+    # Normalise --repo=X into --repo X, so the value is validated in one place.
+    if [[ "$1" == --repo=* ]]; then set -- --repo "${1#--repo=}" "${@:2}"; fi
+    case "$1" in
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        --repo)
+            # A valueless --repo must NOT fall back to the default: that would
+            # silently ignore the operator's stated intent to name an identity.
+            [[ $# -ge 2 && -n "$2" ]] || cli_error "--repo requires an index identity"
+            REPO_ID_ARG="$2"
+            shift 2
+            ;;
+        *)
+            cli_error "unexpected argument: $1"
+            ;;
+    esac
+done
 
 SERVE_URL="http://127.0.0.1:8901/mcp"
 MCP_TIMEOUT=15
+# The QUERY budget is deliberately an order of magnitude above the handshake's,
+# and must not be collapsed back into it.  The retired long-lived serve unit
+# (deliberately unnamed here: it no longer ships) kept an in-process cache warm
+# ACROSS smoke runs, so a query came back in 3-7 s and could safely share
+# MCP_TIMEOUT.  scripts/with-jcodemunch-serve.sh spawns a FRESH serve per
+# invocation and this script issues exactly ONE query per serve, so that single
+# query is now ALWAYS the cold one: measured 34-100 s across four observations
+# on two hosts.  The larger number costs a dead port nothing, because it is only
+# ever paid by a serve that already ACCEPTED the connection — a refused
+# connection fails instantly at the handshake below, which keeps MCP_TIMEOUT.
+QUERY_TIMEOUT="${SMOKE_QUERY_TIMEOUT:-180}"
 WATCHER_SERVICE="jcodemunch-watcher"
 
-# Resolved during L-SERVE spike (task 4102, step-4) against the running serve.
-# Repo identifier: the leodearden/reify index in ~/.code-index (schema v16).
-# Source root used by the index for git ops: /home/leo/src/reify-analysis-spec-coverage
-# (or /home/leo/src/reify once the watcher re-indexes the canonical checkout).
-# Commit range: 3 commits ending at the index HEAD 27b212c (Merge task/3773 into main).
-# Both commits exist in the canonical /home/leo/src/reify git history.
-REPO_ID="leodearden/reify"
+# REPO_ID defaults to whatever scripts/jcodemunch-index-reify.sh --print-repo-id
+# resolves: the canonical checkout's per-path identity, which that script indexes
+# and a scripts/with-jcodemunch-serve.sh serve answers for. --repo overrides it.
+# get_changed_symbols diffs the git blobs between the two SHAs under the index's
+# source_root, so the range depends on git history, not on the index HEAD.
+if [[ -n "$REPO_ID_ARG" ]]; then
+    REPO_ID="$REPO_ID_ARG"
+else
+    REPO_ID="$(derive_default_repo_id)" || exit 1
+fi
 SINCE_SHA="00f56f1a20be3a66a0797663506280be4db9ccf3"
 UNTIL_SHA="27b212c61cfe86bf57055d769921805e34d8b467"
 
@@ -79,10 +137,11 @@ http_code=$(curl -s \
     -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"smoke-jcodemunch","version":"0.1"}}}' \
     2>/dev/null) || {
     echo "FAIL [1]: curl to $SERVE_URL failed (connection refused or timeout)." >&2
-    echo "       Start the serve first:" >&2
-    echo "         uvx --python 3.12 --from 'jcodemunch-mcp @ git+https://github.com/jgravelle/jcodemunch-mcp.git@v1.108.27' jcodemunch-mcp serve --transport streamable-http --host 127.0.0.1 --port 8901 --watcher=false" >&2
-    echo "       Or enable the systemd unit:" >&2
-    echo "         systemctl --user enable --now jcodemunch-serve.service" >&2
+    echo "       There is no persistent serve unit any more.  The wrapper spawns" >&2
+    echo "       one for the duration of a command and tears it down on exit:" >&2
+    echo "         bash scripts/with-jcodemunch-serve.sh --port 8901 -- \\" >&2
+    echo "             bash scripts/smoke-jcodemunch-serve.sh" >&2
+    echo "       The wrapper owns the pinned jcodemunch version — do not pin one here." >&2
     echo "       See: docs/architecture-audit/jcodemunch-serve-activation.md" >&2
     exit 1
 }
@@ -139,14 +198,20 @@ http_code2=$(curl -s \
     -o "$SMOKE_TMPDIR/query_body.txt" \
     -D "$SMOKE_TMPDIR/query_headers.txt" \
     -w "%{http_code}" \
-    --max-time "$MCP_TIMEOUT" \
+    --max-time "$QUERY_TIMEOUT" \
     -X POST "$SERVE_URL" \
     -H "Content-Type: application/json" \
     -H "Accept: application/json, text/event-stream" \
     -H "mcp-session-id: $SESSION_ID" \
     -d "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"get_changed_symbols\",\"arguments\":{\"repo\":\"$REPO_ID\",\"since_sha\":\"$SINCE_SHA\",\"until_sha\":\"$UNTIL_SHA\"}}}" \
     2>/dev/null) || {
-    echo "FAIL [2]: curl to $SERVE_URL tools/call failed." >&2
+    echo "FAIL [2]: curl to $SERVE_URL tools/call failed (${QUERY_TIMEOUT}s budget)." >&2
+    echo "       The handshake above already succeeded, so the serve is up and" >&2
+    echo "       this is most likely the budget running out.  Every serve the" >&2
+    echo "       wrapper spawns is cold, and a cold query has measured 34-100 s." >&2
+    echo "       Buy more time for one run without editing this file:" >&2
+    echo "         SMOKE_QUERY_TIMEOUT=360 bash scripts/with-jcodemunch-serve.sh --port 8901 \\" >&2
+    echo "             -- bash scripts/smoke-jcodemunch-serve.sh" >&2
     exit 1
 }
 
@@ -204,6 +269,10 @@ elif [[ -s "$result_text_file" ]]; then
         echo "FAIL [2]: get_changed_symbols returned empty symbol data." >&2
         echo "       Full response (first 400 chars): $(head -c 400 "$query_json" 2>/dev/null)" >&2
         echo "       Verify REPO_ID='$REPO_ID', SINCE_SHA='$SINCE_SHA', UNTIL_SHA='$UNTIL_SHA'" >&2
+        echo "       An empty result here is most often an IDENTITY mismatch, not a data" >&2
+        echo "       gap: REPO_ID was derived (or given via --repo) and must name an index" >&2
+        echo "       the serve holds, i.e. scripts/jcodemunch-index-reify.sh must have" >&2
+        echo "       indexed it." >&2
         exit 1
     fi
 else

@@ -134,7 +134,7 @@ fn supports_auto_kind(&self, ty: &Type) -> bool { matches!(ty, Type::Scalar { ..
 | B7 | producer (γ) | zero-component consumption diagnosed | `dic_min_unconstrained` | Error names the objective + unconsumed auto `a`; `a`'s undef note unchanged; baseline: objective never mentioned |
 | B8 | back-compat (γ) | governing objectives quiet | every existing objective fixture | no new diagnostics (O1); vacuous-bound instantiation quiet (O2) |
 | B9 | producer (δ) | recorded reason rendered | `dic_inert_connect` under `--strict` | strict detail shows "operator undefined for these operand kinds …" (the recorded reason); the generic "inputs undefined (e.g. …)" guess is gone |
-| B10 | consumer (ε) | inert connect refused at compile time | `dic_inert_connect` | `reify check` emits the generation-refusal Error naming the `@face` operands; `connect_compat_a_b` still reported OK; baseline: green + INDETERMINATE |
+| B10 | consumer (ε) | inert connect refused at compile time | `dic_inert_connect` | `reify check` emits the generation-refusal Error naming the `@face` operands and exits non-zero; `connect_compat` unaffected, asserted at the compiler surface (`connect_compat_a_b` generated, no `frame_align_a_b`) and the engine surface (`Engine::check` → Satisfied) — not co-printed by `reify check`, which stops on any compile Error before evaluation (explicit won't-fix, esc-5419-3, 2026-10-02); baseline: green + INDETERMINATE |
 | B11 | consumer (ζ) | ledger accounts all classes | mixed fixture (satisfied + violated + transient-indeterminate + relate block) | summary shows per-class counts with reason breakdown; relate + objective rows present; transient-only stays non-strict green |
 | B12 | consumer (ζ) | inert fails check natively | any fixture with a proven-inert constraint (pre-ε-sweep shape) | `check_fails` true without `--strict`; exit-code behavior itself deferred to the sibling severity-gate PRD |
 
@@ -189,7 +189,7 @@ Bare-B+H-light shape; Greek labels, task IDs at decompose. **Test-layout note (d
 
 - **ε — Inert-constraint detection: compile-time generation refusal + eval backstop + example sweep.**
   Modules: `crates/reify-compiler/src/connect.rs` (refuse generating provably-unverifiable `frame_align` with a coded Error), `crates/reify-eval` (backstop `Structural` classification), `crates/reify-core` (code), `examples/` + `crates/reify-compiler/stdlib` (sweep + repair shapes the new error rejects).
-  **LEAF signal:** B10 — `reify check dic_inert_connect.ri` emits the generation-refusal Error while `connect_compat` still reports OK (baseline green-with-INDETERMINATE probe-verified); the repo's own examples/stdlib check clean post-sweep.
+  **LEAF signal:** B10 — `reify check dic_inert_connect.ri` emits the generation-refusal Error and exits non-zero, while `connect_compat` is asserted unaffected at the compiler and engine surfaces (baseline green-with-INDETERMINATE probe-verified); the repo's own examples/stdlib check clean post-sweep. The literal CLI co-print of `OK connect_compat_a_b` is an explicit won't-fix (esc-5419-3): `reify check` returns on any compile Error before evaluating constraints, and decision 5 makes the refusal a compile Error.
   Prereqs: δ (reason taxonomy carrier). `grammar_confirmed=true`.
 
 - **ζ — `reify check` consumption ledger (integration gate).**

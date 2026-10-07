@@ -6,8 +6,9 @@
 
 use std::sync::Arc;
 
+use reify_lsp::blocking_work::BlockingWorkPlacement;
 use reify_lsp::bridge::InProcessLsp;
-use reify_lsp::server::NotificationSink;
+use reify_lsp::server::{NoOpSink, NotificationSink};
 
 /// Tauri-side wrapper around the in-process LSP server.
 ///
@@ -27,6 +28,18 @@ use reify_lsp::server::NotificationSink;
 /// has no `workspace_root` and these handlers fall back to single-file behavior
 /// (cross-module symbols remain refused). No per-method dispatch arm is required
 /// for cross-file: the substrate rides entirely on the forwarded `rootUri`.
+///
+/// # Where blocking work runs
+///
+/// Every `lsp_request` is dispatched on a large-stack lane
+/// ([`lsp_request_on_worker`]), so the thread polling `handle_request` IS the
+/// stack the parser and compiler need. The bridge therefore builds its server
+/// with [`BlockingWorkPlacement::CallingThread`], giving `definition`,
+/// `prepareRename`, `rename` and `references` the lane's stack too, instead of
+/// a ~2 MiB blocking-pool thread. The one cost: in the degraded no-lane arm
+/// (`dispatch_async(None, ..)` awaits in place), those four now run inline on a
+/// Tauri tokio worker and occupy it for the request — as `didOpen` /
+/// `didChange`'s compile always has there.
 pub struct LspBridge {
     lsp: InProcessLsp,
 }
@@ -34,15 +47,13 @@ pub struct LspBridge {
 impl LspBridge {
     /// Create a new LSP bridge with a fresh in-process LSP server.
     pub fn new() -> Self {
-        Self {
-            lsp: InProcessLsp::new(),
-        }
+        Self::with_sink(Arc::new(NoOpSink))
     }
 
     /// Create a new LSP bridge with a custom notification sink.
     pub fn with_sink(sink: Arc<dyn NotificationSink>) -> Self {
         Self {
-            lsp: InProcessLsp::with_sink(sink),
+            lsp: InProcessLsp::with_sink_and_placement(sink, BlockingWorkPlacement::CallingThread),
         }
     }
 
@@ -87,39 +98,22 @@ pub async fn lsp_request_impl(
 /// recursive compile. A tokio worker gives that the default ~2 MiB stack; the
 /// lane gives it [`crate::large_stack::COMPILE_STACK_SIZE`] (256 MiB), amortised
 /// over one thread for the process lifetime rather than a fresh 256 MiB mapping
-/// per keystroke.
+/// per keystroke. That covers every `handle_request` arm, the four blocking-work
+/// arms included (see [`LspBridge`]'s "Where blocking work runs").
 ///
 /// # What this hands the lane, and what the lane does with it
 ///
 /// A FUTURE, not a closure. The lane thread has no ambient runtime, so the
-/// future does need a driver — [`tokio::runtime::Handle::block_on`], because
-/// four of `InProcessLsp::handle_request`'s arms call
-/// [`tokio::task::spawn_blocking`], whose first statement is `Handle::current()`
-/// — but choosing that driver is [`crate::large_stack::dispatch_async`]'s job,
-/// not this function's. Pre-baking the `block_on` here would break the lane's
+/// future does need a driver, but choosing it is
+/// [`crate::large_stack::dispatch_async`]'s job, not this function's.
+/// Pre-baking a [`tokio::runtime::Handle::block_on`] here would break the lane's
 /// degraded arms, which run in the submitting async frame where `block_on`
 /// panics "Cannot start a runtime from within a runtime"; see
 /// [`crate::large_stack::dispatch_async`]'s degradation policy.
 ///
-/// # What this does NOT cover
-///
-/// Those same four arms hop to `spawn_blocking`, so their compiler work executes
-/// on tokio's BLOCKING POOL, whose threads take the std ~2 MiB default (nothing
-/// under `gui/src-tauri` sets `thread_stack_size`). Putting `handle_request` on
-/// a 256 MiB thread gives the big stack only to that thread's OWN frames, so
-/// those four are unaffected by this routing. The arms it does cover are the
-/// other ten — `initialize`, `initialized`, `didOpen`, `didChange`, `didClose`,
-/// `completion`, `hover`, `documentSymbol`, `documentHighlight`, `shutdown` —
-/// which are precisely the keystroke/cursor-frequency ones. Closing the four
-/// needs a change in `crates/reify-lsp/src/server.rs`, which would also regress
-/// the stdio `reify lsp` CLI server (it relies on `spawn_blocking` to keep its
-/// 2-worker runtime responsive); tracked as task #6195 rather than overclaimed
-/// here.
-///
 /// # What this COSTS: the request is no longer DROP-CANCELLABLE
 ///
-/// Stated alongside the coverage limit above because it is a behaviour change
-/// this routing INTRODUCES, not merely one it fails to fix.
+/// Stated because it is a behaviour change this routing INTRODUCES.
 ///
 /// Before task 5772 the body ran inside the Tauri command's own future, so a
 /// frontend `invoke` that was abandoned — window closed, pane navigated away,
@@ -352,5 +346,123 @@ mod tests {
             uris.iter().any(|u| u.ends_with("main.ri")),
             "references must span main.ri, got {uris:?}"
         );
+    }
+
+    /// Task 7118: the versioned wire shape, asserted on the JSON that actually
+    /// crosses the bridge rather than on Rust types.
+    ///
+    /// A client declaring `workspace.workspaceEdit.documentChanges` gets a bare
+    /// `documentChanges` ARRAY (`DocumentChanges` is `#[serde(untagged)]`) whose
+    /// entries carry `textDocument.version` — a number for the open buffer, JSON
+    /// `null` for the closed on-disk file — and NO `changes` key, so the client
+    /// cannot silently read an unversioned copy of the same edit.
+    #[tokio::test]
+    async fn lsp_request_impl_versioned_rename_stamps_open_and_closed_versions() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let parts_source = "structure Hole {\n    param diameter: Length = 10mm\n}";
+        std::fs::write(dir.path().join("parts.ri"), parts_source).expect("write parts.ri");
+
+        let root_uri = tower_lsp::lsp_types::Url::from_file_path(dir.path())
+            .expect("root uri")
+            .to_string();
+        let main_uri = tower_lsp::lsp_types::Url::from_file_path(dir.path().join("main.ri"))
+            .expect("main uri")
+            .to_string();
+
+        let bridge = LspBridge::new();
+
+        lsp_request_impl(
+            &bridge,
+            "initialize",
+            json!({
+                "rootUri": root_uri,
+                "capabilities": { "workspace": { "workspaceEdit": { "documentChanges": true } } }
+            })
+            .to_string(),
+        )
+        .await
+        .expect("initialize");
+        lsp_request_impl(&bridge, "initialized", "{}".to_string())
+            .await
+            .expect("initialized");
+
+        // main.ri is OPEN at version 1; parts.ri stays CLOSED on disk.
+        let main_source = "import parts.Hole\nstructure Assembly {\n    sub hole = Hole()\n}";
+        lsp_request_impl(
+            &bridge,
+            "textDocument/didOpen",
+            json!({
+                "textDocument": {
+                    "uri": main_uri.clone(),
+                    "languageId": "reify",
+                    "version": 1,
+                    "text": main_source
+                }
+            })
+            .to_string(),
+        )
+        .await
+        .expect("didOpen");
+
+        let rename_resp = lsp_request_impl(
+            &bridge,
+            "textDocument/rename",
+            json!({
+                "textDocument": { "uri": main_uri.clone() },
+                "position": { "line": 2, "character": 15 },
+                "newName": "Bore"
+            })
+            .to_string(),
+        )
+        .await
+        .expect("rename");
+
+        let edit: serde_json::Value =
+            serde_json::from_str(&rename_resp).expect("rename response is JSON");
+        assert!(
+            edit.get("changes").is_none_or(|c| c.is_null()),
+            "a documentChanges-capable client must not also receive changes, got {edit}"
+        );
+        let doc_changes = edit
+            .get("documentChanges")
+            .and_then(|d| d.as_array())
+            .expect("documentChanges is a bare JSON array (untagged enum)");
+
+        let version_of = |suffix: &str| -> &serde_json::Value {
+            doc_changes
+                .iter()
+                .find(|entry| {
+                    entry
+                        .pointer("/textDocument/uri")
+                        .and_then(|u| u.as_str())
+                        .is_some_and(|u| u.ends_with(suffix))
+                })
+                .unwrap_or_else(|| panic!("documentChanges must include {suffix}, got {edit}"))
+                .pointer("/textDocument/version")
+                .expect("each entry carries textDocument.version")
+        };
+        assert_eq!(
+            version_of("main.ri").as_i64(),
+            Some(1),
+            "the OPEN main.ri carries its numeric server-side version"
+        );
+        assert!(
+            version_of("parts.ri").is_null(),
+            "the CLOSED parts.ri is null-versioned — content on disk is master"
+        );
+
+        for entry in doc_changes {
+            for e in entry
+                .get("edits")
+                .and_then(|e| e.as_array())
+                .expect("each entry carries an edits array")
+            {
+                assert_eq!(
+                    e.get("newText").and_then(|t| t.as_str()),
+                    Some("Bore"),
+                    "every TextEdit writes the new name Bore"
+                );
+            }
+        }
     }
 }

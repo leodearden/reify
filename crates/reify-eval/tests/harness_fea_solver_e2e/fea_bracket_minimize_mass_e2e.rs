@@ -20,8 +20,7 @@
 //! `fea_design_loop_support` submodule — the real `DimensionalSolver` plus real
 //! FEA trampolines via the SINGLE bundler `register_production_compute_fns`
 //! (INV-FEA-1) rather than hand-rolled legs. They were a verbatim copy of the
-//! producer's until that module was extracted; the producer's own inline copy
-//! still awaits migration (see `fea_design_loop_support`'s doc).
+//! producer's until that module was extracted.
 //!
 //! # THE LOAD-BEARING ASSERTION, and its RED/GREEN mechanic
 //!

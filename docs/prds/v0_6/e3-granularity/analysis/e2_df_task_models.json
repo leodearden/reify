@@ -1,0 +1,8032 @@
+{
+"4578": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-22T11:43:07.273Z"
+},
+"2474": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-19T11:41:11.574Z"
+},
+"4095": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-18T09:11:53.002Z"
+},
+"3609": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-04T00:08:02.357Z"
+},
+"3301": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-07-31T20:24:12.382Z"
+},
+"2886": {
+"models": [
+"claude-opus-4-8",
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-22T19:29:57.659Z"
+},
+"2539": {
+"models": [
+"claude-opus-4-8",
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-19T18:43:37.681Z"
+},
+"3415": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-01T03:02:00.057Z"
+},
+"3283": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-07-31T20:24:13.161Z"
+},
+"4110": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-20T05:17:42.452Z"
+},
+"3379": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-01T18:58:23.964Z"
+},
+"3943": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-17T07:09:08.399Z"
+},
+"3353": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-01T17:31:24.281Z"
+},
+"4203": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-20T07:04:29.633Z"
+},
+"2849": {
+"models": [
+"claude-opus-4-8",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-20T09:08:42.188Z"
+},
+"3562": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-03T21:33:45.751Z"
+},
+"2836": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-20T13:47:44.159Z"
+},
+"3854": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-08T18:52:01.469Z"
+},
+"2984": {
+"models": [
+"claude-opus-4-8",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-23T11:06:41.649Z"
+},
+"3204": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-08T15:13:52.363Z"
+},
+"4102": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-16T00:08:50.689Z"
+},
+"2913": {
+"models": [
+"claude-opus-4-8",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-23T10:47:53.670Z"
+},
+"3732": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-05T20:57:40.504Z"
+},
+"3629": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-05T13:05:23.747Z"
+},
+"3098": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-31T12:10:37.810Z"
+},
+"3458": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-05T15:44:41.544Z"
+},
+"3641": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-05T13:40:08.230Z"
+},
+"3481": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-05T10:01:38.108Z"
+},
+"3278": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-30T15:24:50.642Z"
+},
+"3464": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-02T04:04:48.444Z"
+},
+"4064": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-17T13:29:35.546Z"
+},
+"3571": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-20T02:51:40.503Z"
+},
+"3957": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-17T02:28:51.092Z"
+},
+"4742": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-27T03:46:14.490Z"
+},
+"3865": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-08T18:58:20.797Z"
+},
+"3006": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-24T07:15:43.827Z"
+},
+"3862": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-08T17:35:30.843Z"
+},
+"4421": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-20T01:13:56.429Z"
+},
+"3754": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-06T08:59:09.817Z"
+},
+"3622": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-05T12:11:44.546Z"
+},
+"2872": {
+"models": [
+"claude-opus-4-8",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-21T10:22:29.953Z"
+},
+"4109": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-19T03:14:23.530Z"
+},
+"2790": {
+"models": [
+"claude-opus-4-8",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-24T01:57:38.312Z"
+},
+"3715": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-06T17:40:02.110Z"
+},
+"2859": {
+"models": [
+"claude-opus-4-8",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-21T03:18:03.570Z"
+},
+"4607": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-22T12:02:48.156Z"
+},
+"3429": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-07T04:56:00.106Z"
+},
+"3875": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-08T05:18:41.389Z"
+},
+"4764": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-26T15:33:14.603Z"
+},
+"3828": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-08T10:56:33.092Z"
+},
+"3122": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-07-31T05:01:58.217Z"
+},
+"3913": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-16T18:12:03.199Z"
+},
+"3135": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-20T09:48:06.131Z"
+},
+"3735": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-05T21:32:01.261Z"
+},
+"3044": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-19T06:43:12.166Z"
+},
+"4202": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-20T06:52:10.802Z"
+},
+"2700": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-18T17:14:12.403Z"
+},
+"3596": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-03T14:07:59.437Z"
+},
+"2980": {
+"models": [
+"claude-opus-4-8",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-23T09:57:38.794Z"
+},
+"2906": {
+"models": [
+"claude-opus-4-8",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-23T01:51:11.815Z"
+},
+"4360": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-17T11:39:59.795Z"
+},
+"3995": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-17T18:10:39.928Z"
+},
+"3064": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-31T08:34:49.043Z"
+},
+"4012": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-21T17:42:58.615Z"
+},
+"2826": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-19T20:41:36.213Z"
+},
+"3014": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-23T22:55:16.513Z"
+},
+"3111": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-28T16:37:34.767Z"
+},
+"3413": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-02T23:18:52.722Z"
+},
+"2801": {
+"models": [
+"claude-opus-4-8",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-19T08:36:45.434Z"
+},
+"3657": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-06T22:04:43.400Z"
+},
+"3437": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-01T17:39:07.756Z"
+},
+"3658": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-07T07:49:25.030Z"
+},
+"4193": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-16T00:15:42.041Z"
+},
+"3871": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-09T14:28:48.723Z"
+},
+"2923": {
+"models": [
+"claude-opus-4-8",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-22T13:08:00.779Z"
+},
+"2498": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-20T12:57:42.373Z"
+},
+"3797": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-06T16:30:42.039Z"
+},
+"3236": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-29T23:18:49.670Z"
+},
+"3029": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-24T09:49:28.809Z"
+},
+"3133": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-11T10:01:25.282Z"
+},
+"3666": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-05T15:16:01.980Z"
+},
+"3618": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-05T10:01:38.076Z"
+},
+"3838": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-07T05:15:25.135Z"
+},
+"2823": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-19T20:18:17.457Z"
+},
+"3950": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-17T01:13:13.440Z"
+},
+"4043": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-17T09:40:55.737Z"
+},
+"4073": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-15T12:35:12.034Z"
+},
+"4088": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-12T13:00:41.326Z"
+},
+"2883": {
+"models": [
+"claude-opus-4-8",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-22T10:53:40.171Z"
+},
+"4788": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-27T13:07:19.667Z"
+},
+"2765": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-18T18:47:35.495Z"
+},
+"3918": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-09T04:19:21.185Z"
+},
+"3773": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-16T21:45:19.355Z"
+},
+"3074": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-30T06:48:13.273Z"
+},
+"3793": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-08T05:18:55.423Z"
+},
+"4227": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-19T02:50:05.383Z"
+},
+"3317": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-21T21:40:48.035Z"
+},
+"4641": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-23T11:33:43.645Z"
+},
+"3032": {
+"models": [
+"claude-opus-4-8",
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-24T12:47:46.706Z"
+},
+"3182": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-07-31T03:57:25.838Z"
+},
+"3374": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-01T01:25:00.477Z"
+},
+"3727": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-06T04:43:43.924Z"
+},
+"3046": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-03T07:15:54.171Z"
+},
+"2865": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-21T04:29:44.858Z"
+},
+"2558": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-18T17:14:14.853Z"
+},
+"3713": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-05T21:15:37.410Z"
+},
+"3852": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-07T16:41:46.972Z"
+},
+"2989": {
+"models": [
+"claude-opus-4-8",
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-23T11:07:23.759Z"
+},
+"2822": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-19T20:17:53.859Z"
+},
+"3698": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-07T02:47:04.890Z"
+},
+"4087": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-15T12:39:12.301Z"
+},
+"2857": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-20T17:45:03.680Z"
+},
+"2763": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-19T21:20:16.815Z"
+},
+"3924": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-17T00:44:21.770Z"
+},
+"3621": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-19T00:06:15.040Z"
+},
+"3678": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-05T15:26:07.682Z"
+},
+"3528": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-02T16:52:09.558Z"
+},
+"4329": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-16T23:45:45.400Z"
+},
+"2505": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-20T13:03:23.877Z"
+},
+"3476": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-01T20:36:51.299Z"
+},
+"3435": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-03T05:03:59.178Z"
+},
+"3433": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-03T04:42:26.867Z"
+},
+"df_task_18": {
+"models": [
+"claude-haiku-4-5-20251001",
+"claude-opus-4-8",
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-20T02:04:11.243Z"
+},
+"4172": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-20T05:57:26.987Z"
+},
+"4560": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-22T10:42:35.954Z"
+},
+"2868": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-21T10:01:58.903Z"
+},
+"4754": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-26T07:51:45.090Z"
+},
+"3219": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-30T16:45:52.140Z"
+},
+"3329": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-31T20:36:33.803Z"
+},
+"2851": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-20T10:47:49.825Z"
+},
+"2929": {
+"models": [
+"claude-opus-4-8",
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-24T13:32:23.484Z"
+},
+"2850": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-20T21:30:13.218Z"
+},
+"3603": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-03T20:42:47.381Z"
+},
+"3496": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-02T21:49:37.519Z"
+},
+"4738": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-27T03:34:47.071Z"
+},
+"2752": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-18T17:14:07.878Z"
+},
+"3857": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-08T00:21:25.414Z"
+},
+"3925": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-17T21:05:02.734Z"
+},
+"3883": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-08T22:30:31.706Z"
+},
+"df_task_13": {
+"models": [
+"claude-haiku-4-5-20251001",
+"claude-opus-4-8",
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-19T23:39:50.943Z"
+},
+"3139": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-07-30T16:22:28.929Z"
+},
+"3895": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-09T04:55:04.972Z"
+},
+"2856": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-20T17:02:47.389Z"
+},
+"4071": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-19T20:06:29.236Z"
+},
+"4185": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-16T18:23:42.517Z"
+},
+"3414": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-05T15:37:06.605Z"
+},
+"4273": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-16T06:30:59.089Z"
+},
+"4128": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-18T17:37:27.953Z"
+},
+"3991": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-17T16:28:22.193Z"
+},
+"4154": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-15T17:53:51.447Z"
+},
+"3281": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-31T09:38:24.573Z"
+},
+"3549": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-18T10:28:37.233Z"
+},
+"2933": {
+"models": [
+"claude-opus-4-8",
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-22T14:06:14.585Z"
+},
+"3102": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-07-30T16:16:35.605Z"
+},
+"3268": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-30T13:53:59.280Z"
+},
+"3815": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-16T12:13:33.943Z"
+},
+"4029": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-17T08:48:30.764Z"
+},
+"4574": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-22T11:33:49.442Z"
+},
+"3218": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-30T16:40:26.049Z"
+},
+"3027": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-24T09:49:10.305Z"
+},
+"4659": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-24T06:23:21.136Z"
+},
+"3299": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-31T19:00:41.601Z"
+},
+"4123": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-15T13:17:17.918Z"
+},
+"2540": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-19T09:17:06.818Z"
+},
+"2946": {
+"models": [
+"claude-opus-4-8",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-22T15:50:25.127Z"
+},
+"3436": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-01T22:06:27.023Z"
+},
+"3866": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-08T00:55:10.307Z"
+},
+"2833": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-19T21:57:00.571Z"
+},
+"4213": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-19T17:20:14.580Z"
+},
+"3021": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-30T16:44:04.601Z"
+},
+"3248": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-31T08:43:29.018Z"
+},
+"3959": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-11T14:27:46.071Z"
+},
+"3829": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-08T18:35:17.679Z"
+},
+"4077": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-17T13:37:05.602Z"
+},
+"3357": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-01T23:58:26.028Z"
+},
+"4707": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-26T07:51:44.689Z"
+},
+"3116": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-31T05:15:35.177Z"
+},
+"3567": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-05T10:01:40.179Z"
+},
+"3410": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-02T03:54:42.269Z"
+},
+"3430": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-01T05:24:55.674Z"
+},
+"4230": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-20T08:06:32.833Z"
+},
+"3978": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-11T14:27:46.433Z"
+},
+"3923": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-17T02:17:40.317Z"
+},
+"3701": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-16T08:33:30.645Z"
+},
+"2995": {
+"models": [
+"claude-opus-4-8",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-23T13:16:00.896Z"
+},
+"2931": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-22T13:28:52.516Z"
+},
+"3789": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-22T00:13:53.099Z"
+},
+"3916": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-17T00:39:21.677Z"
+},
+"3279": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-07-31T09:23:52.965Z"
+},
+"4751": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-27T04:14:11.888Z"
+},
+"3396": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-01T02:48:30.654Z"
+},
+"2828": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-19T21:04:19.737Z"
+},
+"3068": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-30T09:22:39.253Z"
+},
+"2876": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-21T22:28:02.762Z"
+},
+"4142": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-15T13:33:02.178Z"
+},
+"4016": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-17T07:46:08.603Z"
+},
+"2479": {
+"models": [
+"claude-opus-4-8",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-19T18:43:32.318Z"
+},
+"3141": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-29T15:47:59.035Z"
+},
+"4168": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-15T19:04:53.568Z"
+},
+"4539": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-20T16:33:49.095Z"
+},
+"3352": {
+"models": [
+"claude-haiku-4-5-20251001",
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-31T23:38:44.984Z"
+},
+"2543": {
+"models": [
+"claude-opus-4-8",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-20T21:30:12.308Z"
+},
+"2806": {
+"models": [
+"claude-opus-4-8",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-19T13:24:57.435Z"
+},
+"4148": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-15T15:59:04.030Z"
+},
+"3623": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-05T10:20:51.180Z"
+},
+"3331": {
+"models": [
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-31T23:36:40.572Z"
+},
+"3516": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-02T13:37:45.503Z"
+},
+"3798": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-08T10:59:30.017Z"
+},
+"3988": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-11T10:56:36.355Z"
+},
+"3664": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-07T00:56:00.655Z"
+},
+"2795": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-20T04:48:57.329Z"
+},
+"3591": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-03T11:01:39.720Z"
+},
+"2805": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-19T10:11:57.618Z"
+},
+"3419": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-02T14:02:42.307Z"
+},
+"4014": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-17T07:15:03.700Z"
+},
+"4216": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-16T18:38:17.065Z"
+},
+"3472": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-17T06:41:25.855Z"
+},
+"3703": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-16T09:28:29.809Z"
+},
+"4538": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-20T20:59:41.269Z"
+},
+"3110": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-28T14:48:41.839Z"
+},
+"3335": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-07-31T00:42:13.217Z"
+},
+"2846": {
+"models": [
+"claude-opus-4-8",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-20T07:56:59.833Z"
+},
+"3818": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-06T22:26:29.437Z"
+},
+"3387": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-01T02:01:26.342Z"
+},
+"4320": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-21T18:52:27.245Z"
+},
+"3616": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-06T18:29:25.963Z"
+},
+"4295": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-18T16:18:15.491Z"
+},
+"3912": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-09T08:04:14.132Z"
+},
+"3332": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-31T11:32:58.385Z"
+},
+"3445": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-01T10:34:47.781Z"
+},
+"3667": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-08T20:20:29.484Z"
+},
+"3977": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-15T18:41:29.743Z"
+},
+"3226": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-07-29T19:44:51.415Z"
+},
+"3115": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-30T16:20:15.912Z"
+},
+"3860": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-07T19:44:30.578Z"
+},
+"2803": {
+"models": [
+"claude-opus-4-8",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-19T12:05:44.294Z"
+},
+"3165": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-08T05:18:44.056Z"
+},
+"2759": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-19T14:11:04.890Z"
+},
+"4363": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-17T11:52:25.219Z"
+},
+"4156": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-15T18:48:09.995Z"
+},
+"3354": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-07-31T04:56:50.314Z"
+},
+"2542": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-20T18:57:16.016Z"
+},
+"4454": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-19T17:47:35.139Z"
+},
+"2621": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-21T11:48:55.309Z"
+},
+"3604": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-04T00:19:02.886Z"
+},
+"2897": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-23T04:46:05.689Z"
+},
+"3632": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-05T13:26:39.632Z"
+},
+"3751": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-06T08:48:28.958Z"
+},
+"3336": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-01T06:34:56.698Z"
+},
+"2977": {
+"models": [
+"claude-opus-4-8",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-23T13:44:33.646Z"
+},
+"3525": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-09T03:26:38.984Z"
+},
+"3180": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-07-30T16:26:37.734Z"
+},
+"2910": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-23T07:26:27.891Z"
+},
+"3956": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-11T14:27:37.724Z"
+},
+"3055": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-28T14:38:05.889Z"
+},
+"4299": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-18T16:29:39.167Z"
+},
+"3112": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-28T16:40:34.404Z"
+},
+"4184": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-15T22:32:49.769Z"
+},
+"2729": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-18T17:14:17.481Z"
+},
+"4177": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-16T03:45:00.800Z"
+},
+"3223": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-07-31T08:57:28.033Z"
+},
+"3338": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-31T02:15:25.016Z"
+},
+"2928": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-24T03:06:52.472Z"
+},
+"3605": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-04T00:00:39.353Z"
+},
+"4474": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-20T03:02:52.135Z"
+},
+"3581": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-08T16:21:39.511Z"
+},
+"2970": {
+"models": [
+"claude-opus-4-8",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-23T02:03:56.713Z"
+},
+"4221": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-15T09:19:09.459Z"
+},
+"3061": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-28T14:38:58.279Z"
+},
+"3095": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-30T16:01:34.675Z"
+},
+"2870": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-21T10:04:36.829Z"
+},
+"3057": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-28T21:41:02.483Z"
+},
+"3692": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-10T01:35:22.216Z"
+},
+"4661": {
+"models": [
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-23T22:27:44.115Z"
+},
+"2773": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-18T21:06:23.243Z"
+},
+"3067": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-29T23:41:16.177Z"
+},
+"3639": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-09T03:22:14.846Z"
+},
+"3456": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-02T03:18:45.080Z"
+},
+"4702": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-24T22:10:18.045Z"
+},
+"4696": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-24T16:04:53.627Z"
+},
+"2907": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-22T11:25:30.882Z"
+},
+"2471": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-19T01:17:23.923Z"
+},
+"3513": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-06T14:42:39.761Z"
+},
+"4059": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-15T12:12:38.623Z"
+},
+"3340": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-07-31T21:38:01.414Z"
+},
+"4647": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-23T15:19:16.903Z"
+},
+"2838": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-19T23:36:28.888Z"
+},
+"2952": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-22T16:57:34.324Z"
+},
+"3227": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-31T09:07:32.217Z"
+},
+"3705": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-08T10:56:31.916Z"
+},
+"3901": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-09T05:00:20.279Z"
+},
+"3520": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-02T13:23:36.060Z"
+},
+"3462": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-02T14:14:35.762Z"
+},
+"4100": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-12T18:09:09.307Z"
+},
+"3691": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-11T12:27:14.269Z"
+},
+"3221": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-07-29T18:17:41.186Z"
+},
+"3312": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-01T01:24:59.929Z"
+},
+"4579": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-21T13:40:28.837Z"
+},
+"2640": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-20T22:02:39.517Z"
+},
+"2917": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-22T11:29:50.748Z"
+},
+"4079": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-17T13:00:43.346Z"
+},
+"4532": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-20T20:08:44.457Z"
+},
+"3210": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-30T17:46:44.573Z"
+},
+"3079": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-08T05:18:37.793Z"
+},
+"3540": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-26T10:09:51.177Z"
+},
+"3651": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-05T14:02:00.870Z"
+},
+"3611": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-04T00:16:03.020Z"
+},
+"4589": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-21T16:55:37.116Z"
+},
+"3400": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-01T08:04:37.999Z"
+},
+"3775": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-11T12:58:25.548Z"
+},
+"3020": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-24T02:07:17.567Z"
+},
+"4458": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-19T22:53:00.111Z"
+},
+"3885": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-08T22:34:57.237Z"
+},
+"3661": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-05T15:07:31.861Z"
+},
+"2979": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-30T15:40:46.063Z"
+},
+"2821": {
+"models": [
+"claude-opus-4-8",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-19T20:16:21.350Z"
+},
+"3028": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-24T09:49:42.186Z"
+},
+"3537": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-15T08:34:41.539Z"
+},
+"2718": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-18T21:54:50.041Z"
+},
+"3931": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-17T20:23:46.559Z"
+},
+"3003": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-28T14:36:50.628Z"
+},
+"3042": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-30T15:52:47.138Z"
+},
+"3694": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-05T18:49:10.263Z"
+},
+"2785": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-19T03:12:13.727Z"
+},
+"3441": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-01T08:56:37.281Z"
+},
+"3237": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-31T09:11:49.083Z"
+},
+"3062": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-30T15:45:52.284Z"
+},
+"3163": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-28T21:51:08.831Z"
+},
+"2863": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-30T15:37:29.224Z"
+},
+"4085": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-12T13:00:49.048Z"
+},
+"3471": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-16T08:55:11.245Z"
+},
+"3348": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-31T22:42:24.007Z"
+},
+"3782": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-08T10:56:37.379Z"
+},
+"4006": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-11T11:20:21.013Z"
+},
+"3561": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-02T23:03:41.030Z"
+},
+"3132": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-28T16:33:56.307Z"
+},
+"2717": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-18T18:53:35.542Z"
+},
+"3220": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-07-31T05:06:39.500Z"
+},
+"3050": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-30T07:05:03.064Z"
+},
+"2771": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-18T21:07:17.492Z"
+},
+"4008": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-12T10:06:54.736Z"
+},
+"4194": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-18T17:04:20.843Z"
+},
+"2475": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-19T12:54:57.102Z"
+},
+"3770": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-06T12:29:26.451Z"
+},
+"4041": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-17T08:54:53.353Z"
+},
+"3314": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-07-30T23:54:59.433Z"
+},
+"4590": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-22T11:53:15.403Z"
+},
+"3872": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-18T23:47:51.747Z"
+},
+"3045": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-01T17:26:29.521Z"
+},
+"2974": {
+"models": [
+"claude-opus-4-8",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-23T06:53:37.922Z"
+},
+"3521": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-02T13:40:01.082Z"
+},
+"4505": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-20T18:52:40.599Z"
+},
+"3148": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-28T18:04:15.035Z"
+},
+"3004": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-23T17:05:30.115Z"
+},
+"2787": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-19T04:41:35.044Z"
+},
+"2730": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-18T17:29:28.123Z"
+},
+"3382": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-01T03:09:06.624Z"
+},
+"3904": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-16T15:30:19.303Z"
+},
+"4116": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-12T13:22:24.591Z"
+},
+"3544": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-12T10:06:43.334Z"
+},
+"3416": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-03T09:21:40.836Z"
+},
+"2934": {
+"models": [
+"claude-opus-4-8",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-22T14:07:00.289Z"
+},
+"4717": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-27T03:01:51.177Z"
+},
+"3250": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-09T09:53:46.791Z"
+},
+"3473": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-06T23:07:31.039Z"
+},
+"3976": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-15T10:35:00.203Z"
+},
+"4040": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-19T20:51:20.019Z"
+},
+"3902": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-09T05:05:17.855Z"
+},
+"3203": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-19T07:48:47.572Z"
+},
+"3693": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-11T12:40:43.109Z"
+},
+"3380": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-07-31T13:33:58.541Z"
+},
+"4023": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-17T16:20:39.422Z"
+},
+"3804": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-10T10:59:34.367Z"
+},
+"2820": {
+"models": [
+"claude-opus-4-8",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-20T12:58:26.099Z"
+},
+"3535": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-10T16:22:25.544Z"
+},
+"4144": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-15T14:20:48.600Z"
+},
+"2708": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-18T20:48:05.054Z"
+},
+"3869": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-16T17:28:57.820Z"
+},
+"4160": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-19T18:16:50.013Z"
+},
+"3474": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-02T17:19:12.926Z"
+},
+"2781": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-18T23:08:40.546Z"
+},
+"4718": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-24T18:01:19.050Z"
+},
+"3896": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-09T03:34:36.595Z"
+},
+"3394": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-07-31T20:24:15.839Z"
+},
+"3484": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-05T15:07:43.061Z"
+},
+"2754": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-19T01:09:16.738Z"
+},
+"3076": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-07-31T08:36:54.932Z"
+},
+"3341": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-31T01:50:35.239Z"
+},
+"4459": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-19T19:56:48.332Z"
+},
+"2967": {
+"models": [
+"claude-opus-4-8",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-23T00:48:21.424Z"
+},
+"3589": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-03T10:47:04.091Z"
+},
+"3697": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-05T21:31:58.935Z"
+},
+"3366": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-01T09:05:42.798Z"
+},
+"3009": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-23T20:22:13.644Z"
+},
+"3194": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-29T13:30:06.981Z"
+},
+"3381": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-01T01:59:35.281Z"
+},
+"2477": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-19T14:28:08.707Z"
+},
+"2991": {
+"models": [
+"claude-opus-4-8",
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-23T11:14:22.046Z"
+},
+"4537": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-20T17:22:38.997Z"
+},
+"4126": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-15T13:28:24.641Z"
+},
+"4215": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-21T18:41:41.186Z"
+},
+"3475": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-12T10:06:53.892Z"
+},
+"3109": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-28T14:46:52.055Z"
+},
+"3817": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-08T10:56:32.950Z"
+},
+"3023": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-24T17:41:07.143Z"
+},
+"2738": {
+"models": [
+"claude-opus-4-8",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-18T23:35:08.415Z"
+},
+"3305": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-30T20:45:53.804Z"
+},
+"3808": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-17T20:45:29.874Z"
+},
+"4524": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-21T14:45:17.496Z"
+},
+"3687": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-07T01:39:52.649Z"
+},
+"2786": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-19T05:43:47.504Z"
+},
+"2852": {
+"models": [
+"claude-opus-4-8",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-20T10:59:39.256Z"
+},
+"3483": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-02T04:11:54.132Z"
+},
+"3489": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-05T15:07:34.495Z"
+},
+"2965": {
+"models": [
+"claude-opus-4-8",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-22T21:28:33.911Z"
+},
+"3171": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-10T11:41:54.674Z"
+},
+"3842": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-17T10:08:45.398Z"
+},
+"4340": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-17T11:05:19.189Z"
+},
+"3402": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-01T03:37:59.017Z"
+},
+"3643": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-05T13:51:23.987Z"
+},
+"3696": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-27T05:39:15.237Z"
+},
+"2472": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-19T05:04:16.556Z"
+},
+"4660": {
+"models": [
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-24T06:32:23.170Z"
+},
+"4170": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-20T05:36:07.765Z"
+},
+"3514": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-03T09:58:25.278Z"
+},
+"3966": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-20T21:10:33.490Z"
+},
+"2812": {
+"models": [
+"claude-opus-4-8",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-19T13:49:58.257Z"
+},
+"3084": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-16T03:56:33.781Z"
+},
+"2996": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-23T14:08:28.547Z"
+},
+"3263": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-07-30T13:36:23.781Z"
+},
+"4512": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-20T15:49:19.938Z"
+},
+"2901": {
+"models": [
+"claude-opus-4-8",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-22T12:46:56.406Z"
+},
+"4736": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-25T23:33:31.730Z"
+},
+"4274": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-16T06:41:38.789Z"
+},
+"3031": {
+"models": [
+"claude-opus-4-8",
+"claude-opus-5"
+],
+"first_ts": "2026-07-24T12:47:25.592Z"
+},
+"3465": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-19T01:08:50.223Z"
+},
+"3743": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-08T10:56:24.196Z"
+},
+"3202": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-11T11:31:05.700Z"
+},
+"2373": {
+"models": [
+"claude-opus-4-8",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-21T10:04:42.086Z"
+},
+"3451": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-01T20:05:42.577Z"
+},
+"2470": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-18T19:16:54.324Z"
+},
+"4143": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-20T05:26:18.531Z"
+},
+"3999": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-19T12:48:49.198Z"
+},
+"3088": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-28T21:43:34.447Z"
+},
+"3700": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-08T10:56:34.820Z"
+},
+"3597": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-03T16:59:27.270Z"
+},
+"3975": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-19T19:47:39.172Z"
+},
+"3557": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-03T10:44:02.471Z"
+},
+"3928": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-16T10:58:40.059Z"
+},
+"4062": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-12T13:00:38.598Z"
+},
+"2889": {
+"models": [
+"claude-opus-4-8",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-22T10:53:59.722Z"
+},
+"4668": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-27T01:43:19.288Z"
+},
+"3252": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-07-31T12:52:46.009Z"
+},
+"3198": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-01T17:06:04.528Z"
+},
+"2861": {
+"models": [
+"claude-opus-4-8",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-20T16:04:17.079Z"
+},
+"4024": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-12T13:00:29.719Z"
+},
+"3502": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-02T23:52:32.708Z"
+},
+"3081": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-28T14:39:48.199Z"
+},
+"3508": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-07T08:15:42.776Z"
+},
+"3295": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-31T11:22:23.218Z"
+},
+"3298": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-07-31T18:15:21.046Z"
+},
+"3506": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-02T16:13:30.552Z"
+},
+"3602": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-03T18:45:46.161Z"
+},
+"2951": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-22T16:56:24.748Z"
+},
+"3197": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-01T22:13:16.745Z"
+},
+"3269": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-05T12:11:45.428Z"
+},
+"3325": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-31T08:52:06.870Z"
+},
+"3162": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-07-31T13:43:03.484Z"
+},
+"3271": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-10T10:38:34.092Z"
+},
+"3610": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-04T00:13:26.170Z"
+},
+"2767": {
+"models": [
+"claude-opus-4-8",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-18T19:07:22.995Z"
+},
+"2832": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-20T03:47:21.690Z"
+},
+"3000": {
+"models": [
+"claude-opus-4-8",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-23T15:10:36.959Z"
+},
+"3726": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-08T05:18:17.834Z"
+},
+"2845": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-20T06:10:17.589Z"
+},
+"2770": {
+"models": [
+"claude-opus-4-8",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-18T21:06:18.206Z"
+},
+"4714": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-25T01:57:50.420Z"
+},
+"3910": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-09T06:01:20.530Z"
+},
+"3154": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-07-28T21:46:50.164Z"
+},
+"2783": {
+"models": [
+"claude-opus-4-8",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-19T01:46:40.427Z"
+},
+"4650": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-23T11:43:59.713Z"
+},
+"3024": {
+"models": [
+"claude-opus-4-8",
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-24T07:44:44.869Z"
+},
+"2524": {
+"models": [
+"claude-opus-4-8",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-18T21:11:16.538Z"
+},
+"2800": {
+"models": [
+"claude-opus-4-8",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-19T08:23:03.027Z"
+},
+"4550": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-22T09:42:13.219Z"
+},
+"4289": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-16T13:00:31.500Z"
+},
+"4758": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-26T15:22:40.161Z"
+},
+"2847": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-20T07:58:19.526Z"
+},
+"2701": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-19T04:31:31.030Z"
+},
+"3763": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-08T00:21:21.464Z"
+},
+"2874": {
+"models": [
+"claude-opus-4-8",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-21T18:29:06.437Z"
+},
+"3310": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-07-30T20:13:32.523Z"
+},
+"4726": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-24T23:06:33.051Z"
+},
+"3642": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-06T08:51:42.660Z"
+},
+"3401": {
+"models": [
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-01T08:06:15.979Z"
+},
+"3786": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-07T20:46:07.812Z"
+},
+"3627": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-05T13:24:09.437Z"
+},
+"4058": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-19T01:01:16.386Z"
+},
+"4135": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-19T05:27:45.765Z"
+},
+"3466": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-02T04:07:04.701Z"
+},
+"2473": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-19T08:47:58.906Z"
+},
+"4098": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-12T18:05:25.653Z"
+},
+"4381": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-18T08:39:16.170Z"
+},
+"3655": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-05T14:05:00.545Z"
+},
+"3455": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-02T03:16:08.584Z"
+},
+"2777": {
+"models": [
+"claude-opus-4-8",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-19T21:22:27.790Z"
+},
+"3384": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-01T19:09:01.936Z"
+},
+"2779": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-18T22:30:11.026Z"
+},
+"4121": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-12T10:26:19.696Z"
+},
+"4559": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-21T20:05:36.713Z"
+},
+"4555": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-21T00:11:49.608Z"
+},
+"2878": {
+"models": [
+"claude-opus-4-8",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-22T03:00:26.850Z"
+},
+"3530": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-03T21:58:36.476Z"
+},
+"2961": {
+"models": [
+"claude-opus-4-8",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-22T19:30:07.901Z"
+},
+"3308": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-31T11:22:35.330Z"
+},
+"3186": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-24T19:30:46.995Z"
+},
+"3686": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-06T11:23:15.836Z"
+},
+"3606": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-04T00:02:49.073Z"
+},
+"4174": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-20T06:17:46.645Z"
+},
+"4242": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-16T01:05:03.348Z"
+},
+"3209": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-08T10:56:32.721Z"
+},
+"3073": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-30T06:47:14.993Z"
+},
+"3033": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-30T10:10:49.467Z"
+},
+"3362": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-31T23:48:35.481Z"
+},
+"4219": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-20T07:47:20.393Z"
+},
+"2798": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-19T15:02:09.889Z"
+},
+"3270": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-31T00:07:05.755Z"
+},
+"3586": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-08T17:39:55.420Z"
+},
+"2523": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-20T16:09:29.960Z"
+},
+"3121": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-05T12:11:44.189Z"
+},
+"3137": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-23T20:26:21.742Z"
+},
+"3680": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-05T21:10:30.549Z"
+},
+"3532": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-03T06:09:51.517Z"
+},
+"3349": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-07-31T02:58:52.387Z"
+},
+"4471": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-20T03:51:09.319Z"
+},
+"4054": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-17T12:18:59.773Z"
+},
+"3952": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-17T02:23:33.890Z"
+},
+"3170": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-28T21:33:04.004Z"
+},
+"3444": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-01T10:28:36.171Z"
+},
+"3601": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-05T10:01:37.019Z"
+},
+"4511": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-20T15:37:42.593Z"
+},
+"3649": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-12T10:06:50.492Z"
+},
+"3324": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-31T00:35:32.654Z"
+},
+"3779": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-06T15:15:18.958Z"
+},
+"2818": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-19T14:11:39.997Z"
+},
+"2893": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-22T10:57:10.963Z"
+},
+"3983": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-10T16:40:44.425Z"
+},
+"4240": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-20T08:54:29.968Z"
+},
+"2545": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-22T10:32:35.192Z"
+},
+"4457": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-19T22:36:09.125Z"
+},
+"4711": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-24T17:37:39.594Z"
+},
+"2962": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-22T22:31:55.785Z"
+},
+"3572": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-05T10:01:39.168Z"
+},
+"4081": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-17T13:43:27.534Z"
+},
+"3228": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-05T14:11:33.699Z"
+},
+"4027": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-16T01:50:55.243Z"
+},
+"4067": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-12T13:00:38.943Z"
+},
+"4122": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-17T11:18:06.625Z"
+},
+"2789": {
+"models": [
+"claude-opus-4-8",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-20T23:46:54.794Z"
+},
+"3762": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-06T09:17:57.851Z"
+},
+"3043": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-29T20:33:02.405Z"
+},
+"3891": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-09T00:10:06.067Z"
+},
+"3565": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-05T10:01:38.012Z"
+},
+"3982": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-11T14:27:50.224Z"
+},
+"3812": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-18T23:30:37.734Z"
+},
+"3188": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-26T19:01:25.729Z"
+},
+"2922": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-22T12:51:49.165Z"
+},
+"3803": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-17T06:47:59.146Z"
+},
+"3355": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-07-31T04:33:53.877Z"
+},
+"3117": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-30T01:26:48.989Z"
+},
+"3538": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-24T10:46:08.684Z"
+},
+"3731": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-08T15:42:42.184Z"
+},
+"2837": {
+"models": [
+"claude-opus-4-8",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-20T16:50:52.784Z"
+},
+"3238": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-31T09:17:07.799Z"
+},
+"3490": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-08T05:18:36.093Z"
+},
+"3748": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-06T03:56:12.660Z"
+},
+"4004": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-11T10:52:23.448Z"
+},
+"3449": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-01T19:24:21.459Z"
+},
+"3467": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-01T18:33:47.040Z"
+},
+"3443": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-01T10:05:37.513Z"
+},
+"3232": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-07-31T16:31:58.616Z"
+},
+"4106": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-15T17:07:55.513Z"
+},
+"3090": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-07-28T14:42:18.449Z"
+},
+"3583": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-16T19:45:39.134Z"
+},
+"3799": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-09T18:43:46.569Z"
+},
+"3306": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-30T20:34:46.564Z"
+},
+"2882": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-22T09:54:32.704Z"
+},
+"3376": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-03T02:24:35.177Z"
+},
+"3503": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-03T05:55:14.490Z"
+},
+"3138": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-08T16:12:56.792Z"
+},
+"3368": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-19T19:39:27.088Z"
+},
+"4456": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-20T10:49:13.810Z"
+},
+"2834": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-20T00:03:23.242Z"
+},
+"df_task_12": {
+"models": [
+"claude-haiku-4-5-20251001",
+"claude-opus-4-8",
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-19T21:06:53.209Z"
+},
+"2793": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-19T07:49:42.999Z"
+},
+"3558": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-06T09:25:34.433Z"
+},
+"3707": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-09T18:39:07.537Z"
+},
+"4234": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-20T08:26:41.037Z"
+},
+"4613": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-22T12:22:39.200Z"
+},
+"3921": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-09T08:09:04.098Z"
+},
+"3813": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-18T23:38:42.281Z"
+},
+"2988": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-24T07:43:20.705Z"
+},
+"4186": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-19T03:35:16.750Z"
+},
+"4042": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-17T09:17:23.760Z"
+},
+"3671": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-19T23:02:05.122Z"
+},
+"3291": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-31T16:28:55.908Z"
+},
+"3670": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-17T12:12:50.433Z"
+},
+"3276": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-16T14:45:22.911Z"
+},
+"2775": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-19T21:20:30.399Z"
+},
+"4080": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-12T10:18:11.687Z"
+},
+"3447": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-01T17:06:02.109Z"
+},
+"3297": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-31T11:22:26.299Z"
+},
+"3767": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-06T11:11:03.136Z"
+},
+"3776": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-08T10:56:25.010Z"
+},
+"3260": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-07-30T11:49:41.130Z"
+},
+"3922": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-22T23:42:35.230Z"
+},
+"3717": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-05T21:21:46.022Z"
+},
+"3631": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-05T13:15:43.145Z"
+},
+"3280": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-30T15:32:36.352Z"
+},
+"3293": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-01T05:32:06.264Z"
+},
+"3113": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-07-28T16:38:04.066Z"
+},
+"3350": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-31T03:48:46.315Z"
+},
+"3780": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-16T15:24:35.603Z"
+},
+"3497": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-02T06:06:54.931Z"
+},
+"3709": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-10T10:46:58.357Z"
+},
+"3574": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-03T10:24:27.868Z"
+},
+"2908": {
+"models": [
+"claude-opus-4-8",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-22T11:25:40.712Z"
+},
+"4158": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-19T07:38:05.214Z"
+},
+"3309": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-31T00:03:40.926Z"
+},
+"4453": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-19T17:37:29.151Z"
+},
+"3884": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-09T08:04:19.196Z"
+},
+"3431": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-01T08:48:40.713Z"
+},
+"3648": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-08T05:18:26.570Z"
+},
+"4373": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-22T03:00:32.033Z"
+},
+"4173": {
+"models": [
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-20T06:08:34.651Z"
+},
+"4566": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-20T20:36:01.339Z"
+},
+"2825": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-19T20:28:50.733Z"
+},
+"4065": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-15T12:23:57.749Z"
+},
+"4528": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-21T17:31:33.527Z"
+},
+"3973": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-17T03:14:13.016Z"
+},
+"4026": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-12T13:00:51.299Z"
+},
+"2879": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-22T06:15:15.051Z"
+},
+"3175": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-31T04:44:28.486Z"
+},
+"2944": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-22T15:13:00.845Z"
+},
+"4568": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-22T11:13:13.924Z"
+},
+"3836": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-07T06:24:39.664Z"
+},
+"3272": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-01T13:02:28.291Z"
+},
+"4165": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-19T18:31:49.026Z"
+},
+"3142": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-07-31T13:25:33.989Z"
+},
+"3915": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-09T03:42:49.530Z"
+},
+"2810": {
+"models": [
+"claude-opus-4-8",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-19T11:13:05.177Z"
+},
+"2830": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-19T21:04:25.884Z"
+},
+"2936": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-22T19:30:22.877Z"
+},
+"3129": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-10T08:44:34.007Z"
+},
+"3607": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-04T00:05:04.345Z"
+},
+"3563": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-03T10:17:42.640Z"
+},
+"3262": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-02T13:25:59.304Z"
+},
+"3370": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-01T07:58:59.340Z"
+},
+"3485": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-02T20:24:49.121Z"
+},
+"2942": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-22T14:51:22.875Z"
+},
+"4086": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-15T22:59:21.514Z"
+},
+"3477": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-01T22:06:32.355Z"
+},
+"3894": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-09T03:09:42.483Z"
+},
+"3824": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-19T16:08:35.201Z"
+},
+"3652": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-05T12:11:44.303Z"
+},
+"3864": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-17T13:16:08.306Z"
+},
+"3868": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-19T10:12:17.030Z"
+},
+"2990": {
+"models": [
+"claude-opus-4-8",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-23T11:09:03.550Z"
+},
+"3614": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-04T00:33:17.249Z"
+},
+"3393": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-01T02:23:10.806Z"
+},
+"3495": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-02T20:51:00.217Z"
+},
+"3225": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-02T03:26:41.506Z"
+},
+"3679": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-05T15:19:52.651Z"
+},
+"3499": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-08T17:04:43.737Z"
+},
+"3442": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-02T21:27:26.947Z"
+},
+"2487": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-20T09:53:33.440Z"
+},
+"3256": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-31T18:44:59.287Z"
+},
+"4233": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-20T08:17:08.726Z"
+},
+"4757": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-26T15:02:28.015Z"
+},
+"3315": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-18T23:56:44.686Z"
+},
+"3307": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-31T20:24:15.360Z"
+},
+"3598": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-03T18:39:06.662Z"
+},
+"4565": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-27T03:12:23.168Z"
+},
+"4541": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-20T17:48:20.243Z"
+},
+"2894": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-22T11:04:47.131Z"
+},
+"3241": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-08T05:18:36.574Z"
+},
+"3367": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-07-31T20:54:47.966Z"
+},
+"3371": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-01T05:27:42.607Z"
+},
+"2817": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-19T14:10:37.316Z"
+},
+"4083": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-19T02:16:29.379Z"
+},
+"3909": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-16T16:14:00.277Z"
+},
+"2835": {
+"models": [
+"claude-opus-4-8",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-20T07:24:34.379Z"
+},
+"2981": {
+"models": [
+"claude-opus-4-8",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-23T10:14:54.358Z"
+},
+"4218": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-20T07:37:33.418Z"
+},
+"4776": {
+"models": [
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-27T05:02:10.741Z"
+},
+"3143": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-28T16:39:23.611Z"
+},
+"3747": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-08T10:56:25.468Z"
+},
+"3879": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-18T21:19:58.392Z"
+},
+"3094": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-30T18:52:01.202Z"
+},
+"3858": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-18T17:30:26.476Z"
+},
+"2994": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-23T11:52:26.228Z"
+},
+"2898": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-23T09:33:00.808Z"
+},
+"3344": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-31T02:52:54.680Z"
+},
+"4030": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-12T13:00:37.459Z"
+},
+"3334": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-31T00:37:37.057Z"
+},
+"3017": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-24T00:30:06.218Z"
+},
+"3539": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-25T14:50:12.269Z"
+},
+"2788": {
+"models": [
+"claude-opus-4-8",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-19T06:55:58.101Z"
+},
+"3811": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-08T10:56:24.476Z"
+},
+"4495": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-20T11:12:18.858Z"
+},
+"3859": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-08T00:29:37.136Z"
+},
+"3302": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-30T20:08:35.619Z"
+},
+"2927": {
+"models": [
+"claude-opus-4-8",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-23T07:45:52.934Z"
+},
+"3273": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-07-30T14:14:30.523Z"
+},
+"3989": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-10T16:47:01.505Z"
+},
+"3619": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-17T15:53:24.571Z"
+},
+"2466": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-18T17:29:39.049Z"
+},
+"3500": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-02T03:21:22.795Z"
+},
+"3146": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-30T19:05:49.339Z"
+},
+"3408": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-01T07:00:58.435Z"
+},
+"2753": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-18T20:16:52.487Z"
+},
+"3498": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-02T23:50:26.710Z"
+},
+"3304": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-30T20:23:34.779Z"
+},
+"4115": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-17T13:09:11.519Z"
+},
+"4196": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-19T02:28:16.636Z"
+},
+"3326": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-06T17:04:37.023Z"
+},
+"3007": {
+"models": [
+"claude-opus-4-8",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-23T19:32:07.209Z"
+},
+"3533": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-02T18:26:34.717Z"
+},
+"2478": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-19T16:29:50.437Z"
+},
+"3022": {
+"models": [
+"claude-opus-4-8",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-24T07:02:34.618Z"
+},
+"2909": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-22T20:43:02.889Z"
+},
+"4084": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-17T14:12:15.304Z"
+},
+"3569": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-06T23:24:44.873Z"
+},
+"3454": {
+"models": [
+"claude-haiku-4-5-20251001",
+"claude-opus-5"
+],
+"first_ts": "2026-08-01T18:31:36.945Z"
+},
+"3867": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-08T19:52:33.746Z"
+},
+"3294": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-01T13:02:27.335Z"
+},
+"4149": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-15T16:17:37.002Z"
+},
+"4729": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-27T03:23:11.084Z"
+},
+"3947": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-17T00:57:00.156Z"
+},
+"4056": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-20T05:06:55.607Z"
+},
+"2945": {
+"models": [
+"claude-opus-4-8",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-24T03:28:41.407Z"
+},
+"2873": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-21T17:15:17.440Z"
+},
+"3531": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-02T19:23:40.775Z"
+},
+"2815": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-19T19:06:47.564Z"
+},
+"3647": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-19T13:15:05.631Z"
+},
+"3114": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-07-30T18:56:45.790Z"
+},
+"3118": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-28T16:38:39.911Z"
+},
+"2899": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-23T06:47:29.261Z"
+},
+"4236": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-20T08:38:54.540Z"
+},
+"2757": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-19T08:13:23.793Z"
+},
+"4372": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-17T18:52:58.637Z"
+},
+"4010": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-17T04:11:35.912Z"
+},
+"4343": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-17T04:36:39.598Z"
+},
+"2858": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-21T02:37:31.625Z"
+},
+"3876": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-08T05:18:32.242Z"
+},
+"3478": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-05T10:01:39.561Z"
+},
+"3998": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-19T12:34:17.972Z"
+},
+"3359": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-31T05:47:01.036Z"
+},
+"2855": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-20T16:04:07.164Z"
+},
+"3949": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-17T03:52:00.004Z"
+},
+"3805": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-08T05:18:23.580Z"
+},
+"2997": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-23T13:31:44.502Z"
+},
+"3650": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-05T12:11:44.463Z"
+},
+"4181": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-15T19:52:46.455Z"
+},
+"4050": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-16T01:55:31.378Z"
+},
+"3656": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-08T05:18:32.135Z"
+},
+"3526": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-03T20:29:36.598Z"
+},
+"2885": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-22T10:53:48.878Z"
+},
+"4513": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-20T15:59:34.646Z"
+},
+"4162": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-16T02:51:53.780Z"
+},
+"4060": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-17T12:45:37.957Z"
+},
+"3018": {
+"models": [
+"claude-opus-4-8",
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-24T00:30:33.366Z"
+},
+"2860": {
+"models": [
+"claude-opus-4-8",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-21T03:18:06.968Z"
+},
+"4748": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-27T03:59:47.507Z"
+},
+"2926": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-22T13:24:11.373Z"
+},
+"2829": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-19T23:21:55.117Z"
+},
+"4182": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-17T02:34:28.691Z"
+},
+"3486": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-02T04:14:07.681Z"
+},
+"4759": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-27T04:37:25.300Z"
+},
+"3452": {
+"models": [
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-01T20:51:25.150Z"
+},
+"3994": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-11T11:10:56.162Z"
+},
+"3630": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-05T13:10:29.980Z"
+},
+"3013": {
+"models": [
+"claude-opus-4-8",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-23T21:25:51.160Z"
+},
+"3054": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-30T18:03:41.929Z"
+},
+"2774": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-19T14:11:14.135Z"
+},
+"3724": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-05T21:31:58.741Z"
+},
+"4510": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-20T15:27:32.777Z"
+},
+"2731": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-18T17:29:36.746Z"
+},
+"3716": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-06T08:38:20.674Z"
+},
+"2768": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-18T21:06:05.607Z"
+},
+"3628": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-05T12:11:45.442Z"
+},
+"2911": {
+"models": [
+"claude-opus-4-8",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-23T10:22:00.084Z"
+},
+"3807": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-06T17:56:58.264Z"
+},
+"4013": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-17T02:09:35.090Z"
+},
+"3987": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-11T10:41:37.538Z"
+},
+"3778": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-17T17:03:37.412Z"
+},
+"3638": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-05T13:34:12.924Z"
+},
+"2959": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-22T19:08:09.288Z"
+},
+"2924": {
+"models": [
+"claude-opus-4-8",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-22T13:23:52.606Z"
+},
+"3480": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-02T14:25:58.461Z"
+},
+"4705": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-27T02:36:01.316Z"
+},
+"3390": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-07T07:30:39.997Z"
+},
+"4132": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-19T15:43:55.744Z"
+},
+"4159": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-15T22:23:18.687Z"
+},
+"2280": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-21T09:13:26.018Z"
+},
+"3935": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-16T04:12:23.169Z"
+},
+"3058": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-07-31T03:01:45.090Z"
+},
+"4358": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-17T11:32:21.491Z"
+},
+"3878": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-17T20:39:15.640Z"
+},
+"3034": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-31T20:56:02.191Z"
+},
+"3460": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-01T17:06:05.122Z"
+},
+"3423": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-01T04:11:01.562Z"
+},
+"3056": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-09T01:00:48.664Z"
+},
+"3047": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-19T07:07:59.686Z"
+},
+"3551": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-03T16:14:20.696Z"
+},
+"4712": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-27T02:51:49.803Z"
+},
+"3578": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-19T22:09:49.763Z"
+},
+"2813": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-19T13:52:25.094Z"
+},
+"2891": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-22T10:54:02.700Z"
+},
+"2903": {
+"models": [
+"claude-opus-4-8",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-22T11:25:18.031Z"
+},
+"3690": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-19T22:18:42.891Z"
+},
+"4492": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-20T09:54:46.653Z"
+},
+"3103": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-31T09:27:50.243Z"
+},
+"3313": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-07-31T00:33:26.413Z"
+},
+"3576": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-03T09:07:35.406Z"
+},
+"4025": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-15T16:57:22.200Z"
+},
+"3412": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-02T03:56:51.767Z"
+},
+"3646": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-06T17:36:10.874Z"
+},
+"3222": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-31T13:46:53.307Z"
+},
+"3953": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-20T04:52:57.736Z"
+},
+"4090": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-12T15:20:39.243Z"
+},
+"3082": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-28T14:41:04.893Z"
+},
+"4061": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-17T13:22:30.652Z"
+},
+"3522": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-11T11:50:52.974Z"
+},
+"2869": {
+"models": [
+"claude-opus-4-8",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-21T10:02:17.458Z"
+},
+"3010": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-07-30T16:57:40.411Z"
+},
+"3457": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-01T20:54:09.559Z"
+},
+"4521": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-20T19:14:45.214Z"
+},
+"3372": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-09T01:13:48.685Z"
+},
+"4180": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-15T10:51:50.501Z"
+},
+"3258": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-31T18:49:21.563Z"
+},
+"2939": {
+"models": [
+"claude-opus-4-8",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-22T14:34:25.532Z"
+},
+"2853": {
+"models": [
+"claude-opus-4-8",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-20T12:57:18.907Z"
+},
+"2871": {
+"models": [
+"claude-opus-4-8",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-21T10:47:29.385Z"
+},
+"3172": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-10T12:00:18.610Z"
+},
+"4097": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-12T18:05:28.224Z"
+},
+"3534": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-08T01:08:59.050Z"
+},
+"4057": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-17T12:39:10.987Z"
+},
+"3942": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-18T11:35:19.615Z"
+},
+"3247": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-30T16:47:22.835Z"
+},
+"2963": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-22T20:10:23.559Z"
+},
+"3259": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-20T10:11:52.326Z"
+},
+"3706": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-06T10:45:50.294Z"
+},
+"3292": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-01T17:23:50.020Z"
+},
+"3494": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-02T03:11:41.466Z"
+},
+"3677": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-15T07:59:18.392Z"
+},
+"3787": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-19T23:10:46.476Z"
+},
+"3802": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-08T19:54:59.016Z"
+},
+"3964": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-17T03:03:26.708Z"
+},
+"2905": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-22T15:52:21.247Z"
+},
+"2772": {
+"models": [
+"claude-opus-4-8",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-19T09:21:17.073Z"
+},
+"2975": {
+"models": [
+"claude-opus-4-8",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-23T08:37:50.486Z"
+},
+"3624": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-05T12:11:46.892Z"
+},
+"2887": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-24T01:29:01.295Z"
+},
+"3881": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-08T20:13:36.934Z"
+},
+"2764": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-20T03:09:59.893Z"
+},
+"3199": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-01T17:09:38.874Z"
+},
+"4503": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-20T11:27:03.552Z"
+},
+"2476": {
+"models": [
+"claude-opus-4-8",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-20T00:59:03.640Z"
+},
+"3847": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-08T18:43:29.345Z"
+},
+"3536": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-05T20:23:01.160Z"
+},
+"3153": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-30T19:26:24.455Z"
+},
+"3395": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-07-31T20:24:19.404Z"
+},
+"4612": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-22T12:12:38.887Z"
+},
+"3552": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-03T07:50:47.858Z"
+},
+"4545": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-22T09:31:25.643Z"
+},
+"3851": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-07T19:40:04.364Z"
+},
+"4214": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-16T18:03:26.515Z"
+},
+"3755": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-06T09:03:50.636Z"
+},
+"3446": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-01T10:17:34.293Z"
+},
+"4107": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-16T04:40:04.378Z"
+},
+"3099": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-30T16:09:27.747Z"
+},
+"3405": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-01T04:38:50.675Z"
+},
+"3695": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-12T10:06:41.910Z"
+},
+"2782": {
+"models": [
+"claude-opus-4-8",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-19T00:18:05.134Z"
+},
+"2971": {
+"models": [
+"claude-opus-4-8",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-23T07:26:19.366Z"
+},
+"4146": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-15T15:34:59.840Z"
+},
+"3339": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-31T20:39:27.906Z"
+},
+"3096": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-07-31T04:16:49.719Z"
+},
+"3303": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-01T01:40:26.206Z"
+},
+"3409": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-01T08:18:37.699Z"
+},
+"4091": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-12T13:06:23.061Z"
+},
+"4361": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-17T11:46:41.902Z"
+},
+"2769": {
+"models": [
+"claude-opus-4-8",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-18T21:06:14.982Z"
+},
+"3785": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-06T16:57:02.173Z"
+},
+"2925": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-23T05:39:49.889Z"
+},
+"3806": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-06T17:53:20.390Z"
+},
+"3519": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-02T22:28:00.413Z"
+},
+"3510": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-03T00:02:26.221Z"
+},
+"4386": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-18T11:50:51.182Z"
+},
+"3599": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-03T18:41:22.203Z"
+},
+"2778": {
+"models": [
+"claude-opus-4-8",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-18T21:38:50.925Z"
+},
+"3123": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-01T07:37:38.737Z"
+},
+"2480": {
+"models": [
+"claude-opus-4-8",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-19T20:01:34.053Z"
+},
+"3285": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-07-30T17:04:00.123Z"
+},
+"4104": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-16T02:01:14.744Z"
+},
+"3450": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-03T05:17:26.002Z"
+},
+"3037": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-08T05:18:44.670Z"
+},
+"3290": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-02T19:54:21.063Z"
+},
+"3207": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-29T15:01:30.351Z"
+},
+"3781": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-16T15:13:40.622Z"
+},
+"3333": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-01T01:24:59.749Z"
+},
+"3282": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-07-30T17:00:44.793Z"
+},
+"3590": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-03T10:50:46.954Z"
+},
+"4145": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-15T14:35:30.687Z"
+},
+"3215": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-30T16:34:50.704Z"
+},
+"2978": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-23T09:00:04.778Z"
+},
+"4217": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-20T07:28:09.338Z"
+},
+"3594": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-12T10:06:25.396Z"
+},
+"3560": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-06T06:41:35.067Z"
+},
+"3613": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-16T08:10:32.799Z"
+},
+"4674": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-24T09:40:46.690Z"
+},
+"3492": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-02T21:59:19.399Z"
+},
+"2884": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-22T11:15:08.966Z"
+},
+"3406": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-01T05:40:26.730Z"
+},
+"2469": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-18T17:55:23.611Z"
+},
+"3461": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-02T08:10:09.631Z"
+},
+"3550": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-19T15:55:25.348Z"
+},
+"4557": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-22T10:21:39.729Z"
+},
+"3831": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-08T18:38:46.207Z"
+},
+"3870": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-08T19:58:26.139Z"
+},
+"4003": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-11T11:15:39.209Z"
+},
+"4412": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-18T18:21:52.809Z"
+},
+"3839": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-08T00:21:15.542Z"
+},
+"4066": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-16T11:43:18.776Z"
+},
+"2895": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-22T14:42:42.284Z"
+},
+"3580": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-09T03:09:39.239Z"
+},
+"2840": {
+"models": [
+"claude-opus-4-8",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-20T03:24:08.877Z"
+},
+"3745": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-08T10:56:31.734Z"
+},
+"4527": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-21T14:33:55.165Z"
+},
+"3470": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-03T05:42:57.154Z"
+},
+"4499": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-20T18:41:56.505Z"
+},
+"2877": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-21T22:48:17.543Z"
+},
+"2796": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-19T07:53:11.684Z"
+},
+"3579": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-09T08:53:10.363Z"
+},
+"3087": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-07-30T18:40:27.006Z"
+},
+"4583": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-21T15:38:37.838Z"
+},
+"2824": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-19T20:19:07.665Z"
+},
+"3615": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-08T17:31:19.754Z"
+},
+"3547": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-05T18:22:49.711Z"
+},
+"4055": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-17T12:32:37.073Z"
+},
+"2802": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-19T10:10:34.411Z"
+},
+"2957": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-22T17:29:55.521Z"
+},
+"3426": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-01T08:44:38.236Z"
+},
+"3224": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-31T16:17:36.204Z"
+},
+"3178": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-29T10:11:10.983Z"
+},
+"2553": {
+"models": [
+"claude-opus-4-8",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-20T17:36:23.994Z"
+},
+"3318": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-31T20:27:46.581Z"
+},
+"2881": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-22T09:41:45.993Z"
+},
+"2921": {
+"models": [
+"claude-opus-4-8",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-22T12:46:49.090Z"
+},
+"4001": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-11T14:27:44.295Z"
+},
+"4130": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-21T21:54:01.594Z"
+},
+"4448": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-19T13:01:36.364Z"
+},
+"3184": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-30T07:45:06.524Z"
+},
+"3997": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-11T11:06:09.867Z"
+},
+"4167": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-17T02:03:06.150Z"
+},
+"2941": {
+"models": [
+"claude-opus-4-8",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-22T19:40:44.542Z"
+},
+"2854": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-20T14:06:56.737Z"
+},
+"3049": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-16T03:50:08.204Z"
+},
+"3903": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-16T13:56:08.150Z"
+},
+"3823": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-09T21:17:46.128Z"
+},
+"3746": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-09T00:27:47.857Z"
+},
+"4374": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-19T08:39:56.171Z"
+},
+"3187": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-26T18:50:23.773Z"
+},
+"3681": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-08T05:18:39.417Z"
+},
+"3275": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-08T10:56:27.319Z"
+},
+"3640": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-05T13:37:11.041Z"
+},
+"3683": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-08T05:25:43.637Z"
+},
+"3386": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-01T05:34:54.515Z"
+},
+"3512": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-02T13:21:13.689Z"
+},
+"4124": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-23T12:54:19.840Z"
+},
+"2493": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-20T11:51:48.784Z"
+},
+"3849": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-07T16:11:35.170Z"
+},
+"4075": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-15T22:38:36.588Z"
+},
+"2807": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-19T08:58:17.604Z"
+},
+"2964": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-09T08:34:17.223Z"
+},
+"3788": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-09T17:29:19.018Z"
+},
+"4293": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-16T19:54:37.933Z"
+},
+"4136": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-19T06:53:30.954Z"
+},
+"3769": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-16T11:09:05.074Z"
+},
+"4028": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-19T00:24:43.945Z"
+},
+"3075": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-07-30T16:32:36.450Z"
+},
+"3002": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-23T16:20:25.762Z"
+},
+"2488": {
+"models": [
+"claude-opus-4-8",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-23T04:17:11.521Z"
+},
+"4615": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-22T12:34:26.337Z"
+},
+"3287": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-08T05:18:36.284Z"
+},
+"4229": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-20T07:57:05.529Z"
+},
+"3507": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-02T17:22:53.036Z"
+},
+"3554": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-03T07:59:12.767Z"
+},
+"2949": {
+"models": [
+"claude-opus-4-8",
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-22T16:07:36.576Z"
+},
+"2681": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-20T23:07:54.877Z"
+},
+"3548": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-05T23:37:56.784Z"
+},
+"3051": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-11T11:25:39.175Z"
+},
+"4190": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-16T00:02:48.999Z"
+},
+"3070": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-30T15:50:14.435Z"
+},
+"2966": {
+"models": [
+"claude-opus-4-8",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-22T21:58:50.443Z"
+},
+"4105": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-16T19:38:33.847Z"
+},
+"4092": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-19T06:15:44.126Z"
+},
+"3890": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-19T18:07:30.043Z"
+},
+"3585": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-07T03:20:26.562Z"
+},
+"3001": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-23T16:13:15.263Z"
+},
+"3577": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-03T08:52:04.910Z"
+},
+"3106": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-31T09:05:22.835Z"
+},
+"3185": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-21T23:14:43.949Z"
+},
+"3582": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-04T01:25:19.800Z"
+},
+"3491": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-02T04:26:15.128Z"
+},
+"4275": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-16T06:51:40.243Z"
+},
+"3937": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-16T04:27:57.827Z"
+},
+"3254": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-15T22:13:29.528Z"
+},
+"2760": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-19T16:59:47.822Z"
+},
+"3816": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-06T22:17:37.479Z"
+},
+"3173": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-28T21:53:53.504Z"
+},
+"3684": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-07T01:05:47.881Z"
+},
+"3529": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-02T17:07:18.399Z"
+},
+"2750": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-19T01:17:07.886Z"
+},
+"3072": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-28T16:36:56.287Z"
+},
+"3612": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-04T00:22:36.828Z"
+},
+"4199": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-15T09:12:54.513Z"
+},
+"3206": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-09T14:52:09.540Z"
+},
+"3556": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-03T18:36:59.199Z"
+},
+"3019": {
+"models": [
+"claude-opus-4-8",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-24T01:45:04.767Z"
+},
+"3201": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-02T13:02:57.404Z"
+},
+"4370": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-17T16:40:17.569Z"
+},
+"3392": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-01T02:20:03.317Z"
+},
+"4187": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-15T23:10:27.409Z"
+},
+"3311": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-07-31T13:38:21.801Z"
+},
+"4306": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-18T17:09:51.287Z"
+},
+"4248": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-17T19:28:18.430Z"
+},
+"3420": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-02T23:26:48.794Z"
+},
+"2947": {
+"models": [
+"claude-opus-4-8",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-22T15:56:42.285Z"
+},
+"2920": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-22T12:46:42.263Z"
+},
+"3575": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-03T16:10:33.519Z"
+},
+"3608": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-04T00:10:42.575Z"
+},
+"2937": {
+"models": [
+"claude-opus-4-8",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-22T14:33:50.449Z"
+},
+"3264": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-07-30T16:55:51.652Z"
+},
+"4015": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-11T11:45:15.391Z"
+},
+"3300": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-08T05:18:35.779Z"
+},
+"4183": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-15T20:20:35.090Z"
+},
+"3984": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-11T10:46:50.762Z"
+},
+"4580": {
+"models": [
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-24T05:18:39.694Z"
+},
+"3967": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-16T02:07:48.651Z"
+},
+"3702": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-08T10:56:23.710Z"
+},
+"3487": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-12T10:06:38.360Z"
+},
+"3127": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-18T16:01:30.039Z"
+},
+"3196": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-01T17:52:26.879Z"
+},
+"3089": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-07-30T15:58:45.181Z"
+},
+"3066": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-31T05:38:19.280Z"
+},
+"3822": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-08T00:21:17.979Z"
+},
+"3363": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-01T07:56:33.445Z"
+},
+"3439": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-02T04:02:13.410Z"
+},
+"4430": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-18T22:35:36.600Z"
+},
+"3364": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-05T10:01:39.292Z"
+},
+"2983": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-23T10:59:33.800Z"
+},
+"3783": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-15T11:01:17.793Z"
+},
+"2819": {
+"models": [
+"claude-opus-4-8",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-19T14:11:50.529Z"
+},
+"3134": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-20T09:13:19.654Z"
+},
+"3689": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-10T01:30:48.253Z"
+},
+"3832": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-07T04:02:42.367Z"
+},
+"3164": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-28T21:52:38.489Z"
+},
+"3183": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-30T00:57:43.947Z"
+},
+"2896": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-22T14:53:45.077Z"
+},
+"3195": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-30T07:26:33.473Z"
+},
+"3120": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-28T21:44:38.698Z"
+},
+"3126": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-31T04:51:09.841Z"
+},
+"3515": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-12T10:06:52.609Z"
+},
+"3448": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-02T12:08:25.315Z"
+},
+"3898": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-12T15:20:39.604Z"
+},
+"3267": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-07-30T16:59:08.787Z"
+},
+"3980": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-11T11:35:35.086Z"
+},
+"3736": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-08T17:53:00.796Z"
+},
+"4046": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-15T12:07:25.330Z"
+},
+"4514": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-20T19:04:39.249Z"
+},
+"3527": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-02T19:10:32.812Z"
+},
+"4035": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-15T08:55:06.968Z"
+},
+"3030": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-24T12:46:54.258Z"
+},
+"3130": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-07-28T16:33:06.284Z"
+},
+"3251": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-08T05:18:28.206Z"
+},
+"3083": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-28T14:42:01.461Z"
+},
+"2794": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-19T07:52:55.435Z"
+},
+"4244": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-20T09:04:48.425Z"
+},
+"3208": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-30T12:37:54.646Z"
+},
+"3105": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-31T05:04:08.741Z"
+},
+"2792": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-19T07:44:44.894Z"
+},
+"df_task_2430_adv_plan": {
+"models": [
+"claude-haiku-4-5-20251001",
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-27T18:14:27.348Z"
+},
+"2751": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-18T17:17:14.092Z"
+},
+"3404": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-01T08:10:44.795Z"
+},
+"3517": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-03T22:53:20.197Z"
+},
+"3568": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-03T04:47:07.235Z"
+},
+"2780": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-18T22:57:06.248Z"
+},
+"4562": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-22T11:03:09.782Z"
+},
+"2935": {
+"models": [
+"claude-opus-4-8",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-22T14:08:51.635Z"
+},
+"4653": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-23T11:54:23.749Z"
+},
+"3424": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-02T10:29:17.580Z"
+},
+"2766": {
+"models": [
+"claude-opus-4-8",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-18T17:29:43.485Z"
+},
+"4198": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-16T00:25:48.293Z"
+},
+"3434": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-01T17:05:58.736Z"
+},
+"3738": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-08T17:57:09.785Z"
+},
+"4169": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-12T13:00:39.830Z"
+},
+"2784": {
+"models": [
+"claude-opus-4-8",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-19T03:00:21.145Z"
+},
+"3523": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-17T16:48:58.964Z"
+},
+"4296": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-20T18:29:51.184Z"
+},
+"3428": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-01T04:25:26.473Z"
+},
+"3644": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-05T20:51:06.198Z"
+},
+"3906": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-09T05:28:49.425Z"
+},
+"3886": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-17T00:24:10.546Z"
+},
+"3147": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-30T19:17:40.039Z"
+},
+"4089": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-15T12:49:37.837Z"
+},
+"2940": {
+"models": [
+"claude-opus-4-8",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-22T18:09:59.820Z"
+},
+"4525": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-20T19:27:35.126Z"
+},
+"3744": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-16T10:48:37.258Z"
+},
+"3059": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-30T17:36:31.884Z"
+},
+"3764": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-06T10:21:55.203Z"
+},
+"4125": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-15T13:22:33.205Z"
+},
+"3668": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-12T10:06:51.778Z"
+},
+"3026": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-24T08:04:02.842Z"
+},
+"4789": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-27T13:19:52.454Z"
+},
+"3453": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-01T18:24:20.657Z"
+},
+"3960": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-19T14:16:37.773Z"
+},
+"3407": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-01T05:50:06.594Z"
+},
+"2732": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-17T06:23:15.658Z"
+},
+"3682": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-16T08:16:19.881Z"
+},
+"3688": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-05T18:36:13.690Z"
+},
+"2762": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-19T18:42:34.457Z"
+},
+"3216": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-01T01:38:25.492Z"
+},
+"3397": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-02T03:45:49.654Z"
+},
+"4189": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-17T13:49:04.553Z"
+},
+"3214": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-30T16:36:30.078Z"
+},
+"3757": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-08T10:56:34.427Z"
+},
+"3343": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-31T21:47:10.479Z"
+},
+"3897": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-09T01:29:50.570Z"
+},
+"2875": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-21T19:17:32.917Z"
+},
+"3119": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-30T04:32:22.289Z"
+},
+"3041": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-29T23:20:57.879Z"
+},
+"2953": {
+"models": [
+"claude-opus-4-8",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-22T16:59:34.310Z"
+},
+"2880": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-22T09:41:21.347Z"
+},
+"4188": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-16T15:01:20.117Z"
+},
+"3765": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-11T10:36:26.771Z"
+},
+"4192": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-16T00:20:47.182Z"
+},
+"3025": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-24T07:48:45.606Z"
+},
+"3559": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-08T00:38:43.563Z"
+},
+"4573": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-22T11:22:51.011Z"
+},
+"3347": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-31T22:40:28.483Z"
+},
+"4166": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-19T21:40:35.723Z"
+},
+"3672": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-25T06:17:05.753Z"
+},
+"4096": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-12T15:30:40.549Z"
+},
+"4099": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-15T13:10:50.110Z"
+},
+"3861": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-07T20:31:19.587Z"
+},
+"3653": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-06T18:38:07.219Z"
+},
+"4127": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-16T07:25:27.811Z"
+},
+"2954": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-22T17:00:54.934Z"
+},
+"3286": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-07-30T17:08:29.302Z"
+},
+"3179": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-07-30T16:24:34.413Z"
+},
+"3403": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-08T05:18:24.551Z"
+},
+"3377": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-01T01:57:47.382Z"
+},
+"3086": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-30T15:55:07.048Z"
+},
+"3927": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-11T14:27:40.294Z"
+},
+"4171": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-20T05:46:59.793Z"
+},
+"2831": {
+"models": [
+"claude-opus-4-8",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-19T21:37:06.988Z"
+},
+"3369": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-01T03:11:16.422Z"
+},
+"3065": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-08T05:18:25.946Z"
+},
+"4462": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-20T01:46:03.283Z"
+},
+"2811": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-19T13:32:40.012Z"
+},
+"4112": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-16T13:13:38.403Z"
+},
+"3753": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-08T10:56:31.435Z"
+},
+"3955": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-11T14:27:40.316Z"
+},
+"3645": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-05T21:05:28.753Z"
+},
+"4133": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-16T03:19:59.644Z"
+},
+"3108": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-28T14:43:36.635Z"
+},
+"3929": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-09T08:04:15.341Z"
+},
+"2804": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-19T12:15:56.654Z"
+},
+"2797": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-19T07:53:22.401Z"
+},
+"3319": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-07-30T23:59:08.374Z"
+},
+"3038": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-06T18:01:03.419Z"
+},
+"3243": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-02T13:10:49.390Z"
+},
+"3900": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-16T13:38:29.529Z"
+},
+"4022": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-15T11:51:32.084Z"
+},
+"4536": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-20T16:43:16.714Z"
+},
+"2972": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-23T08:04:52.120Z"
+},
+"4212": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-16T04:34:46.081Z"
+},
+"4200": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-20T06:27:58.077Z"
+},
+"3911": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-16T17:51:43.181Z"
+},
+"2986": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-23T11:07:06.151Z"
+},
+"3351": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-07-31T22:54:18.881Z"
+},
+"3843": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-08T00:21:13.822Z"
+},
+"2998": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-28T14:36:21.203Z"
+},
+"3592": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-08T05:18:36.145Z"
+},
+"4722": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-24T22:38:28.434Z"
+},
+"3337": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-31T01:59:39.392Z"
+},
+"3060": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-29T21:20:18.373Z"
+},
+"2758": {
+"models": [
+"claude-opus-4-8"
+],
+"first_ts": "2026-07-19T12:09:00.486Z"
+},
+"3388": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-01T02:18:29.672Z"
+},
+"2904": {
+"models": [
+"claude-opus-4-8",
+"claude-sonnet-5"
+],
+"first_ts": "2026-07-22T11:30:43.395Z"
+},
+"4204": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-20T07:16:55.212Z"
+},
+"4760": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-26T15:46:56.580Z"
+},
+"3962": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-18T16:56:10.947Z"
+},
+"4201": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-20T06:40:15.392Z"
+},
+"3091": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-07-30T18:47:50.359Z"
+},
+"3212": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-25T22:45:14.188Z"
+},
+"4676": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-25T04:09:33.460Z"
+},
+"3543": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-03T21:02:29.259Z"
+},
+"3128": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-25T23:13:57.325Z"
+},
+"2930": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-19T05:59:53.792Z"
+},
+"3951": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-17T01:40:24.434Z"
+},
+"4556": {
+"models": [
+"claude-opus-5"
+],
+"first_ts": "2026-08-22T09:57:09.363Z"
+},
+"3830": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-08T00:21:11.000Z"
+},
+"3425": {
+"models": [
+"claude-opus-5",
+"claude-sonnet-5"
+],
+"first_ts": "2026-08-02T03:58:50.066Z"
+}
+}

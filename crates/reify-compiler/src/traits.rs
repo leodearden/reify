@@ -1,5 +1,7 @@
 use super::*;
 
+use crate::fn_return_check::require_bodyless_return_annotation;
+
 /// Resolve a trait-member type annotation (`param x : T` or `let x : T = ...`).
 ///
 /// Control flow:
@@ -68,9 +70,22 @@ fn resolve_trait_member_type_annotation(
     ) {
         Some(t) => t,
         None => {
+            // `enum_defs` is this site's PRIVATE enum namespace — no
+            // `EnumNameScope` is installed around trait-member resolution, so
+            // the ambient set the deferred alias arm in
+            // `resolve_type_expr_with_aliases_kinded` consults is empty here.
+            // `type AL = Zq` therefore arrives still spelled `AL`, and looking
+            // `AL` up in `enum_defs` misses the enum-ness of its body. Hop the
+            // unresolved-alias chain to the name the body ultimately spells
+            // (task 6259).
+            //
+            // Strictly additive: this fallback runs only after
+            // `resolve_type_expr_with_aliases` above already returned `None`, so
+            // it cannot perturb the direct spelling.
             if let reify_ast::TypeExprKind::Named { name, type_args } = &type_expr.kind
                 && let Some(t) = resolve_enum_type_with_args(
-                    name,
+                    &unresolved_alias_body_name(name, alias_registry)
+                        .unwrap_or_else(|| name.clone()),
                     type_args,
                     enum_defs,
                     empty_params,
@@ -105,7 +120,8 @@ fn resolve_trait_member_type_annotation(
 /// [`resolve_trait_member_type_annotation`] path the rest of `compile_trait`
 /// uses (so unresolved/DimensionalOp/IntegerLiteral annotations produce the
 /// same diagnostics). A missing return type defaults to `Type::dimensionless_scalar()`, matching
-/// `compile_function`'s convention. Added by task 3939 δ.
+/// `compile_function`'s convention; a bodyless one is reported by
+/// `require_bodyless_return_annotation`. Added by task 3939 δ.
 #[allow(clippy::too_many_arguments)]
 fn assoc_fn_sig(
     fn_def: &reify_ast::FnDef,
@@ -277,6 +293,7 @@ pub(crate) fn compile_trait(
                     diagnostics,
                 );
                 if fn_def.body.is_none() {
+                    require_bodyless_return_annotation(fn_def, &trait_decl.name, diagnostics);
                     required_members.push(TraitRequirement {
                         name: fn_def.name.clone(),
                         kind: RequirementKind::Fn(sig),
@@ -544,6 +561,11 @@ pub(crate) fn compile_purpose(
             // `relate { }` is not a purpose-body member (δ scope: structures and
             // subs only); no-op here (task 4384).
             reify_ast::MemberDecl::Relate(_) => {}
+            // `sketch { }` is not a purpose-body member either
+            // (constrained-2d-sketch scope: structures and subs only); no-op
+            // here, with the user-facing wording supplied by
+            // `unsupported_purpose_member_info` below (task α 5506).
+            reify_ast::MemberDecl::Sketch(_) => {}
             reify_ast::MemberDecl::Constraint(constraint) => {
                 // Desugar determinacy intrinsics before compiling (task-4197 α).
                 // If the constraint is AllParamsDetermined(X) or AllGeometryDetermined(X)
@@ -974,6 +996,10 @@ fn unsupported_purpose_member_info(m: &reify_ast::MemberDecl) -> (String, Source
         MemberDecl::Relate(r) => (
             "relate blocks in purpose bodies are not supported".to_string(),
             r.span,
+        ),
+        MemberDecl::Sketch(s) => (
+            "sketch blocks in purpose bodies are not supported".to_string(),
+            s.span,
         ),
         MemberDecl::Param(p) => (
             "param declarations in purpose bodies are not supported".to_string(),

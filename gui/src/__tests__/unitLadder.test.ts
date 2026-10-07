@@ -57,7 +57,7 @@ describe('convertToUnit', () => {
 describe('ladderForDimension', () => {
   const map = {
     Volume: [
-      { label: 'mm³', si_scale: 1e-9, is_default: true },
+      { label: 'mm^3', si_scale: 1e-9, is_default: true },
       { label: 'L', si_scale: 1e-3, is_default: false },
     ],
   };

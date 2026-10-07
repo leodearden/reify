@@ -1,8 +1,9 @@
 // Reify crate-layer rules for jcodemunch get_layer_violations.
 //
-// Schema: upstream jcodemunch v1.108.27 get_layer_violations.py
+// Schema: upstream jcodemunch get_layer_violations.py
 // (on-disk: ~/.cache/uv/.../jcodemunch_mcp/tools/get_layer_violations.py;
-//  deployed ref: deploy/systemd/jcodemunch-serve.service).
+//  deployed ref: scripts/with-jcodemunch-serve.sh, which owns both the pinned
+//  jcodemunch version and the serve lifecycle — no version is restated here).
 //
 // Layer assignment: path-prefix, first-match-wins. A file not matched by any
 // prefix is unassigned and skipped by the upstream tool — no violation fires.

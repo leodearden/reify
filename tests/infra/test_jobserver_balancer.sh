@@ -1945,6 +1945,7 @@ wait "$_BALANCER_PID" 2>/dev/null || true
 _BALANCER_PID=""
 
 # Brief grace window for the kernel to finish the reap before asserting.
+# holder-sleep:allow — kernel-reap grace, not a holder handshake.
 sleep 0.2
 
 assert "Block 19b: merge FIFO still present after SIGKILL (crash leaves evidence)" \

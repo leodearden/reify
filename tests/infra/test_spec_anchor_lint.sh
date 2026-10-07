@@ -85,27 +85,24 @@ source "$SCRIPT_DIR/test_helpers.sh"
 
 SPEC_REL="docs/reify-language-spec.md"
 TOMB_REL="docs/reify-language-spec.tombstones"
-# NOTE_REL is spelled as a separate variable, and joined below, for the same
-# reason SPEC_REL/TOMB_REL are — but here it is load-bearing rather than
-# stylistic. tests/infra/test_verify_pipeline_guard.sh's ANTI-DRIFT sweep
-# derives "the set of doc-sync docs" by grepping tests/infra/*.sh for the
-# INLINE literal `$REPO_ROOT/docs/[some-doc].md` form (written here with the
-# bracket the sweep's own character class excludes, so this comment does not
-# enrol itself), and asserts every path it finds
-# is registered in scripts/doc-sync-paths.txt (i.e. routes to the full gate).
-# Writing the join inline would enrol this note in that set by textual
-# coincidence: this file is not a doc-sync check, and the note is deliberately
-# NOT a doc-sync doc — its coupling to this suite is registered surgically, as
-# a scripts/verify-pipeline-infra-tests.txt row keyed on the note's path, which
-# SELECTS this test at task scope instead of routing the whole diff to the full
-# --scope all gate. Do not "tidy" this back into one line without first
-# resolving which of the two registries the note belongs in (escalated as an
-# observation by this task; scripts/doc-sync-paths.txt is not in its scope).
-NOTE_REL="docs/notes/spec-anchor-contract.md"
 SPEC="$REPO_ROOT/$SPEC_REL"
 TOMBSTONES="$REPO_ROOT/$TOMB_REL"
 LINT="$REPO_ROOT/scripts/spec-anchor-lint.sh"
-NOTE="$REPO_ROOT/$NOTE_REL"
+# NOTE is spelled INLINE on purpose (task 6857 re-inlined what esc-6758-2 had
+# split into a NOTE_REL variable + join to dodge a sweep false positive). The
+# note is registered SURGICALLY — a scripts/verify-pipeline-infra-tests.txt row
+# keyed on its path, which SELECTS this test at task scope — and is deliberately
+# NOT in scripts/doc-sync-paths.txt, because a prose note must not route every
+# edit of itself to the full --scope all gate. The inline spelling is safe
+# because tests/infra/test_verify_pipeline_guard.sh's ANTI-DRIFT sweep, which
+# enrols any `$REPO_ROOT/docs/[a-doc].md` literal it finds in tests/infra/*.sh
+# (spelled here with the bracket the sweep's own character class excludes, so
+# this comment does not enrol itself), now asserts REGISTERED-IN-EITHER-REGISTRY
+# via `verify-pipeline-guard.sh is-registered` rather than requires-full-gate.
+# So: keep it inline. Splitting a path to escape the sweep is the erosion task
+# 6857 exists to stop — if the sweep ever reds on a path here, register it in
+# one of the two registries instead.
+NOTE="$REPO_ROOT/docs/notes/spec-anchor-contract.md"
 TS_CONSUMER="$REPO_ROOT/tree-sitter-reify/tests/spec_purpose_example_grammar.rs"
 
 # Did ANY scenario actually execute?  Consulted after test_summary; a run that

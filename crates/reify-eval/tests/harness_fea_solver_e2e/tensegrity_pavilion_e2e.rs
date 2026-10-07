@@ -42,13 +42,13 @@ use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-use reify_core::{ComputeNodeId, DimensionVector, Severity, ValueCellId, VersionId};
+use reify_core::{ComputeNodeId, Severity, ValueCellId, VersionId};
 use reify_eval::cache::{CachedResult, NodeCache, NodeId};
 use reify_eval::deps::DependencyTrace;
 use reify_eval::{CancellationHandle, ComputeFn, ComputeOutcome, DispatchError, RealizationReadHandle};
 use reify_ir::{DeterminacyState, Freshness, OpaqueState, PersistentMap, StructureInstanceData,
                StructureTypeId, Value};
-use reify_test_support::{collect_errors, compile_source_with_stdlib, make_simple_engine};
+use reify_test_support::{collect_errors, compile_source_with_stdlib, make_simple_engine, point3};
 
 // ── pavilion source ───────────────────────────────────────────────────────────
 
@@ -63,16 +63,8 @@ fn pavilion_source() -> &'static str {
 
 // ── value-construction helpers ────────────────────────────────────────────────
 
-fn length(m: f64) -> Value {
-    Value::Scalar { si_value: m, dimension: DimensionVector::LENGTH }
-}
-
 fn real(r: f64) -> Value {
     Value::Real(r)
-}
-
-fn node(x: f64, y: f64, z: f64) -> Value {
-    Value::Point(vec![length(x), length(y), length(z)])
 }
 
 fn idx(i: i64) -> Value {
@@ -96,12 +88,12 @@ fn triple(a: i64, b: i64, c: i64) -> Value {
 /// the full eval pipeline.
 fn prism_with_membrane_tensegrity() -> Value {
     let nodes = Value::List(vec![
-        node(1.0, 0.0, 1.0),          // 0: top A
-        node(-0.5, 0.866, 1.0),       // 1: top B
-        node(-0.5, -0.866, 1.0),      // 2: top C
-        node(0.866, 0.5, -1.0),       // 3: bot A'
-        node(-0.866, 0.5, -1.0),      // 4: bot B'
-        node(0.0, -1.0, -1.0),        // 5: bot C'
+        point3(1.0, 0.0, 1.0),     // 0: top A
+        point3(-0.5, 0.866, 1.0),  // 1: top B
+        point3(-0.5, -0.866, 1.0), // 2: top C
+        point3(0.866, 0.5, -1.0),  // 3: bot A'
+        point3(-0.866, 0.5, -1.0), // 4: bot B'
+        point3(0.0, -1.0, -1.0),   // 5: bot C'
     ]);
     let struts = Value::List(vec![pair(0, 4), pair(1, 5), pair(2, 3)]);
     let cables = Value::List(vec![
@@ -874,80 +866,6 @@ fn pavilion_membrane_load_e2e_all_fields_populated() {
     }
 }
 
-// ── (f) CLI dual-result smoke ─────────────────────────────────────────────────
-
-/// Resolve the prebuilt `reify` binary: profile-local first, then debug fallback.
-/// Mirrors `resolve_reify_bin` in `tensegrity_t1a_form_find.rs`.
-fn resolve_reify_bin_pavilion() -> std::path::PathBuf {
-    let test_bin = std::env::current_exe().expect("current_exe");
-    let profile_dir = test_bin
-        .parent()
-        .and_then(|p| p.parent())
-        .expect("test binary lives in target/<profile>/deps");
-    let profile_local = profile_dir.join("reify");
-    if profile_local.exists() {
-        profile_local
-    } else {
-        profile_dir
-            .parent()
-            .map(|target_dir| target_dir.join("debug").join("reify"))
-            .filter(|p| p.exists())
-            .unwrap_or(profile_local)
-    }
-}
-
-/// (f) CLI dual-result smoke: `reify eval examples/tensegrity_pavilion.ri` exits
-/// 0 and stdout contains BOTH `FormFindResult { converged: true,` (the δ signal)
-/// AND `MembraneLoadResult {` (the η signal) — the user-observable θ proof that
-/// the pavilion form-finds AND carries load.
-///
-/// RED until step-6 adds `membrane_load(...)` to the pavilion (which adds the
-/// `MembraneLoadResult` to the CLI output).
-#[test]
-fn pavilion_cli_prints_both_form_find_and_load_results() {
-    let manifest = env!("CARGO_MANIFEST_DIR"); // .../crates/reify-eval
-    let workspace_root = std::path::Path::new(manifest)
-        .ancestors()
-        .nth(2)
-        .expect("workspace root two levels above crates/reify-eval")
-        .to_path_buf();
-    let example = workspace_root.join("examples/tensegrity_pavilion.ri");
-    let reify_bin = resolve_reify_bin_pavilion();
-
-    let output = std::process::Command::new(&reify_bin)
-        .current_dir(&workspace_root)
-        .arg("eval")
-        .arg(&example)
-        .output()
-        .unwrap_or_else(|e| {
-            panic!(
-                "failed to spawn pre-built reify binary at {}: {e}; \
-                 build with `cargo build --bin reify` first.",
-                reify_bin.display()
-            )
-        });
-
-    assert!(
-        output.status.success(),
-        "`reify eval examples/tensegrity_pavilion.ri` exited non-zero.\n\
-         stdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
-
-    let stdout = String::from_utf8(output.stdout).expect("stdout must be valid UTF-8");
-
-    // θ signal (δ half): the pavilion form-finds to convergence.
-    assert!(
-        stdout.contains("FormFindResult { converged: true,"),
-        "expected `FormFindResult {{ converged: true, … }}` in `reify eval` stdout; \
-         got:\n{stdout}"
-    );
-
-    // θ signal (η half): the pavilion carries load (MembraneLoadResult present).
-    assert!(
-        stdout.contains("MembraneLoadResult {"),
-        "expected `MembraneLoadResult {{…}}` in `reify eval` stdout — the θ load signal; \
-         got:\n{stdout}"
-    );
-}
+// (f) The CLI dual-result smoke (pavilion_cli_prints_both_form_find_and_load_results)
+// now lives in crates/reify-cli/tests/harness_cli/cli_tensegrity_e2e.rs, where
+// cargo guarantees a freshly built `reify` binary (#5718).

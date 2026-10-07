@@ -25,6 +25,8 @@ mod let_annotation_type_mismatch_tests;
 mod let_scope_tests;
 #[path = "harness_langcore/let_type_disambiguation_tests.rs"]
 mod let_type_disambiguation_tests;
+#[path = "harness_langcore/member_continuation_hard_error_tests.rs"]
+mod member_continuation_hard_error_tests;
 #[path = "harness_langcore/parametric_alias_def_site_validation_tests.rs"]
 mod parametric_alias_def_site_validation_tests;
 #[path = "harness_langcore/parametric_field_resolution_tests.rs"]
@@ -33,12 +35,16 @@ mod parametric_field_resolution_tests;
 mod parametric_tensor_resolution_tests;
 #[path = "harness_langcore/parametric_vector_point_resolution_tests.rs"]
 mod parametric_vector_point_resolution_tests;
+#[path = "harness_langcore/prelude_sub_member_typing_tests.rs"]
+mod prelude_sub_member_typing_tests;
 #[path = "harness_langcore/priv_import_boundary_tests.rs"]
 mod priv_import_boundary_tests;
 #[path = "harness_langcore/priv_member_visibility_tests.rs"]
 mod priv_member_visibility_tests;
 #[path = "harness_langcore/priv_redundant_tests.rs"]
 mod priv_redundant_tests;
+#[path = "harness_langcore/sketch_member_unsupported_tests.rs"]
+mod sketch_member_unsupported_tests;
 #[path = "harness_langcore/spec_param_override_compile_tests.rs"]
 mod spec_param_override_compile_tests;
 #[path = "harness_langcore/specialization_scope_e2e_tests.rs"]

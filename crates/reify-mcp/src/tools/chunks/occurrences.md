@@ -4,7 +4,7 @@ Occurrences represent processes or transformations that act on structures. They 
 
 ## Syntax
 
-```
+```reify-fragment
 occurrence def Welding : Joining {
     param method : WeldMethod
     param filler : Material = auto
@@ -40,7 +40,7 @@ occurrence def Welding : Joining {
 
 ## Use in Manufacturing Chains
 
-```
+```reify-fragment
 occurrence def Machining : Subtractive {
     port blank : in StructurePort
     port finished : out StructurePort

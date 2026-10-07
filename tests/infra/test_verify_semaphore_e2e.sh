@@ -143,7 +143,7 @@ trap cleanup EXIT
 #                 releases (@@SEMAPHORE_RELEASE@@) — so the slot is held for
 #                 the stub sleep duration.  This is the serialization signal.
 #   npm         — instant exit 0: neutralizes the GUI node lane
-#                 (`npm ci && npm run typecheck && npm test`) without any
+#                 (`npm ci && npm run typecheck && ../scripts/gui-vitest-run.sh`) without any
 #                 network/install/build activity.
 #   tree-sitter — satisfies tree-sitter-generate.sh's `command -v` guard.
 #                 The suite-start ensure_tree_sitter_ready call (task 5144 F1,
@@ -505,6 +505,11 @@ STUB_TREESITTER
 # REIFY_PSI_GATE_DISABLE=1: skip the ./scripts/verify.sh psi-gate subprocess
 # (CPU-pressure wait) — safe and correct in a hermetic test harness with no
 # real compute load.
+#
+# REIFY_TS_FRESHNESS_TARGET_DIR: a per-run throwaway target tree, so the
+# tree-sitter freshness guard's ensure/check leaves are clean no-ops under a
+# stubbed cargo and never read or mutate the lane's real ./target (see the
+# rationale at the export below).
 apply_hermetic_env() {
     local stubdir="$1"
     local lock_base="$2"
@@ -523,6 +528,36 @@ apply_hermetic_env() {
     # CPU-pressure admission noise with no real compute load in a stubbed hermetic
     # harness; disabling it is safe and correct here.
     export REIFY_COMPILE_GATE_DISABLE=1
+    # Redirect the tree-sitter freshness guard (task 5629) at a throwaway,
+    # per-run target tree instead of this lane's real ./target.
+    #
+    # WHY: verify.sh runs ./scripts/tree-sitter-freshness.sh `ensure` before the
+    # cargo wave and `check` after it, and `check`'s post-condition is "every
+    # archive rebuilt inside this run's window matches the sources on disk".
+    # Here cargo is STUBBED, so nothing is ever compiled and the real target/'s
+    # archives keep whatever provenance the last genuine build left behind — a
+    # post-condition asserted against archives this run never touched.  In a lane
+    # whose archive is legitimately stale (or merely unattested) that is an
+    # unconditional RED with no relation to the semaphore behaviour under test.
+    #
+    # Pointing the knob at an empty per-run dir makes BOTH leaves clean no-ops
+    # ("no built archive under <dir>; nothing to force/check", exit 0).  It also
+    # keeps `ensure`'s repair path from bumping mtimes on the worktree's tracked
+    # tree-sitter sources — in a CoW-seeded warm lane those mtimes are exactly
+    # the signal that mechanism reads.  Both halves are pinned by
+    # test_freshness_target_dir_override_is_a_clean_noop and
+    # test_semaphore_e2e_harness_isolates_the_freshness_guard in
+    # tests/infra/test_tree_sitter_pipeline.sh.
+    #
+    # Harness-side, not gate-side: verify.sh cannot distinguish a stubbed cargo
+    # from a real one, so any relaxation inside the guard would weaken the real
+    # merge gate — precisely the post-condition that closes this defect class.
+    # Mirrors how this helper already neutralizes the PSI and compile gates.
+    #
+    # Derived from $stubdir (which every call site places inside its own
+    # `mktemp -d`), so the path is per-run and is reclaimed by _TMPDIRS cleanup.
+    # The guard mkdir -p's it on demand; this helper stays exports-only.
+    export REIFY_TS_FRESHNESS_TARGET_DIR="$stubdir.ts-freshness-target"
     export REIFY_TEST_SEMAPHORE_CONCURRENCY=1
     export REIFY_TEST_SEMAPHORE_LOCK="$lock_base"
     export REIFY_TEST_SEMAPHORE_WAIT="$wait"
@@ -1957,10 +1992,13 @@ run_background_verify_check_no_bypass() {
     H_ERR="$_tmpdir/background_err.txt"
     touch "$H_ERR"
 
+    H_LEDGER="$_tmpdir/sweep-ledger.jsonl"
+
     H_RC=0
     (
         apply_hermetic_env "$_stubdir" "$_lock" 30
         export REIFY_SLOT_EVENT_LOG="$_eventlog"
+        export REIFY_BACKGROUND_SWEEP_LEDGER="$H_LEDGER"
         REIFY_INFRA_SUITE_ACTIVE=1 DF_VERIFY_ROLE=background bash "$REPO_ROOT/scripts/verify.sh" test --scope all
     ) 2>"$H_ERR" || H_RC=$?
 }
@@ -1981,6 +2019,7 @@ echo "--- Section H: background non-exemption (execute mode, task 5210) ---"
 H_RC=0
 H_ERR=""
 H_EVENTLOG=""
+H_LEDGER=""
 if [ "$_TS_READY" = "1" ]; then
     run_background_verify_check_no_bypass
     assert "background-role verify.sh test succeeds with a free slot (exit 0, got ${H_RC})" \
@@ -1997,6 +2036,11 @@ if [ "$_TS_READY" = "1" ]; then
     # --- Section H structural assertion (S-technique): merge-bypass marker ABSENT ---
     assert "Section H structural: stderr LACKS the merge-bypass marker (background is non-exempt, contrast Section B)" \
         bash -c '! grep -qF "lib_test_semaphore.sh: bypass (role=merge)" "$1"' _ "$H_ERR"
+    # --- Section H ledger isolation (task 7423): the completed background run's
+    # verdict record lands in the scratch ledger, never the main checkout's.
+    H_LEDGER_COUNT=$(wc -l < "$H_LEDGER" 2>/dev/null | tr -d ' ')
+    assert "Section H ledger isolation: background verdict went to the scratch ledger (records=${H_LEDGER_COUNT:-0}, want 1)" \
+        test "${H_LEDGER_COUNT:-0}" -eq 1
 else
     assert "Section H SKIPPED: tree-sitter artifacts not ready — cannot run execute-mode e2e sections (see readiness diagnostic above)" \
         false

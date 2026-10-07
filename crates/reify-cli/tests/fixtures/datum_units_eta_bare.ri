@@ -1,0 +1,22 @@
+// datum_units_eta_bare.ri — CLI eval fixture: every BARE construction-datum
+// POSITION operand is rejected (units-length η, task 6591). Read by
+// `eval_bare_datum_constructors_exit_nonzero_with_units_errors` and
+// `eval_bare_frame_at_gate_fires_but_its_diagnostic_is_not_reachable` in
+// crates/reify-cli/tests/harness_cli/cli_eval_datum_units.rs, whose docs carry
+// the rationale for every row below.
+//
+// Lives in tests/fixtures/ (NOT examples/) since it intentionally fails, and
+// declares its module explicitly so no W_MODULE_DECL_MISSING warning re-supplies
+// anchor substrings for free (the trap task 6155 documented).
+
+module datum_units_eta_bare
+
+structure def DatumUnitsEtaBare {
+    let bp = frame3(point3(0, 0, 0), orient_identity()).xy_plane
+
+    let a = axis_through(point3(0, 0, 0), point3(0, 0, 1))
+    let p = plane_through(point3(0, 0, 0), point3(1, 0, 0), point3(0, 1, 0))
+    let f = frame_at(point3(0, 0, 0), self.x, self.z)
+    let o = offset(plane_xy(5mm), 2.0)
+    let m = midplane(bp, bp)
+}

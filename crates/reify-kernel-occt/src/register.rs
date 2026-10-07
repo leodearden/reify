@@ -123,6 +123,7 @@ pub fn occt_capability_descriptor() -> CapabilityDescriptor {
         (ModifyOffsetCurve, ReprKind::BRep),
         (ModifyZoneSlab, ReprKind::BRep),
         (ModifyOffsetSolid, ReprKind::BRep),
+        (ModifyOffsetSurface, ReprKind::BRep),
         // Transform ×5
         (TransformTranslate, ReprKind::BRep),
         (TransformRotate, ReprKind::BRep),

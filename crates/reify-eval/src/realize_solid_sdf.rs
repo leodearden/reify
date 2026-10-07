@@ -11,6 +11,14 @@
 // subject is already realized; γ runs the same recipe β's executor runs
 // (`execute_realization_ops` Voxelize stage) directly.
 
+/// Chordal tolerance handed to the source kernel's `tessellate` for the
+/// BRep→Mesh stage of the recipe, in the model's own units (SI metres).
+///
+/// A fixed value, independent of the caller's [`reify_ir::VoxelResolution`] —
+/// see the "Known limitation" section on [`crate::Engine::realize_solid_sdf_at`]
+/// for why it cannot be derived here and what closing that needs.
+const TESSELLATION_CHORD_TOLERANCE: f64 = 0.0001;
+
 impl crate::Engine {
     /// Turn an already-realized BRep solid into a CPU-resident queryable SDF.
     ///
@@ -24,19 +32,96 @@ impl crate::Engine {
     /// The subject is already realized; γ runs the same recipe β's executor runs
     /// (`execute_realization_ops` Voxelize stage) directly.
     ///
-    /// Degradation paths → `None`:
+    /// Resolution policy: [`reify_ir::VoxelResolution::HonestFloor`] — the
+    /// bounding-box-derived default the recipe has always used. A caller that
+    /// knows its thinnest feature should use [`Self::realize_solid_sdf_at`]
+    /// with [`reify_ir::VoxelResolution::MinFeature`] instead (task 6560); at
+    /// the honest floor a 1 mm feature in a 100 mm part is entirely sub-voxel.
+    /// That feature is passed as a model-space length in the mesh's own units —
+    /// see [`reify_ir::VoxelResolution`]'s "Units".
+    ///
+    /// Degradation paths → `None`: see [`Self::realize_solid_sdf_at`], of which
+    /// this is the `HonestFloor` special case. There is exactly one body, so
+    /// the two entry points cannot drift.
+    pub(crate) fn realize_solid_sdf(
+        &mut self,
+        subject: reify_ir::value::GeometryHandleRef,
+    ) -> Option<reify_ir::SampledField> {
+        self.realize_solid_sdf_at(subject, reify_ir::VoxelResolution::HonestFloor)
+    }
+
+    /// Turn an already-realized BRep solid into a CPU-resident queryable SDF at
+    /// a caller-requested [`reify_ir::VoxelResolution`] (task 6560 — the
+    /// v0.4-shells `BRep→Voxel` resolution seam).
+    ///
+    /// This is the sole implementation; [`Self::realize_solid_sdf`] is its
+    /// [`reify_ir::VoxelResolution::HonestFloor`] special case.
+    ///
+    /// PRD §4 D1 — post-build direct recipe: γ does NOT re-enter the dispatcher
+    /// BFS / realization loop and does NOT modify `demanded_reprs_for_template`.
+    /// The subject is already realized; γ runs the same recipe β's executor runs
+    /// (`execute_realization_ops` Voxelize stage) directly. The resolution is
+    /// threaded through THIS direct recipe rather than through that executor
+    /// stage because the executor keys its intermediate cache with `NO_OPTIONS`;
+    /// making it options-carrying is the ESC-3433-117 aliasing hazard and needs
+    /// its own cache-key work.
+    ///
+    /// Degradation paths → `None` (PRD §4 D5 — the caller ζ maps `None` →
+    /// self-describing `Undef` + diagnostic + `Indeterminate`, never a
+    /// fabricated number):
     ///  1. `subject.realization_ref` absent from `realization_handles` AND
     ///     `subject.kernel_handle == GeometryHandleId::INVALID` (resolution fails).
     ///  2. No `default_kernel_name` configured (no source kernel to tessellate).
     ///  3. No kernel registered under `openvdb_kernel_name()` — absent in stub
     ///     builds where the `cfg(any(has_openvdb, feature="stub_register"))` gate
     ///     on `inventory::submit!` is not satisfied.  This is the D5 mechanism.
-    ///  4. `tessellate`, `ingest_mesh`, or `densify_grid_to_sampled` returns
-    ///     `Err` (chain failure).
-    #[allow(dead_code)] // consumed by δ=4424, ε=4425, ζ=4426 (future tasks)
-    pub(crate) fn realize_solid_sdf(
+    ///  4. `tessellate`, `ingest_mesh_at_resolution`, or
+    ///     `densify_grid_to_sampled` returns `Err` (chain failure).
+    ///  5. `resolution` is invalid (non-finite / non-positive), coarser than the
+    ///     body's thinnest bounding-box extent, or implies a grid beyond the
+    ///     kernel's dense-grid budget — the kernel rejects it and the `Err`
+    ///     degrades here exactly like any other chain failure.
+    ///
+    /// Paths 1-4 are ENVIRONMENT failures, where an anonymous `None` is the
+    /// honest answer. Path 5 is a CALLER failure — the request itself could not
+    /// be served — so it is logged at `warn` (target
+    /// `reify_eval::realize_solid_sdf`) before being dropped, keeping a rejected
+    /// request distinguishable from a build with no OpenVDB in it. The two are
+    /// separated by the REQUEST, which is all this layer can see: a
+    /// [`reify_ir::VoxelResolution::HonestFloor`] ingest carries no caller
+    /// choice to blame, so its `Err` degrades silently like paths 1-4, while a
+    /// request-driven ingest logs the error it actually got without presuming
+    /// which of the two it was.
+    ///
+    /// # Known limitation — the tessellation tolerance is not derived from `resolution`
+    ///
+    /// The BRep→Mesh stage uses a fixed [`TESSELLATION_CHORD_TOLERANCE`],
+    /// independent of `resolution`, and the voxel grid can only resolve detail
+    /// the mesh already carries. At the shells working point in real model
+    /// space (a 0.1 m part, `MinFeature(0.001)` ⇒ h = 2.5e-4 m) that tolerance
+    /// is already ≈ 40 % of a voxel, and a finer request resolves tessellation
+    /// FACETS rather than geometry — silently, since nothing errors.
+    ///
+    /// Deriving it here is not possible as the crates are layered: it needs the
+    /// voxel size the request resolves to, and that mapping is KERNEL policy
+    /// (`MeshToVoxelOptions::for_resolution`). `reify-eval` cannot name
+    /// `reify-kernel-openvdb` — the adapter → eval dependency direction is
+    /// deliberately inverted (see that crate's `Cargo.toml` dev-dep rationale)
+    /// — so duplicating the policy here would be a SPOT violation across a
+    /// crate boundary. Closing it needs a kernel-side seam reporting that voxel
+    /// size; filed as a follow-up of task 6560, "Derive the BRep→Mesh chord
+    /// tolerance from the VoxelResolution request".
+    // The resolution-carrying entry point is reached today only through
+    // `realize_solid_sdf`'s `HonestFloor` delegation; reify-shell-extract T1
+    // (structural-analysis-shells.md, "Decomposition plan" → the
+    // voxel-medial mid-surface extraction task) is the consumer that will
+    // request a thickness-scale resolution. Deliberately NOT `#[allow(dead_code)]`:
+    // the lint cannot fire while `realize_solid_sdf` has callers, and the
+    // attribute would silently absorb the signal if they ever went away.
+    pub(crate) fn realize_solid_sdf_at(
         &mut self,
         subject: reify_ir::value::GeometryHandleRef,
+        resolution: reify_ir::VoxelResolution,
     ) -> Option<reify_ir::SampledField> {
         // ── 1. Resolve the BRep handle ──────────────────────────────────────
         // Prefer the realization_handles table (set by post_process_geometry_handle_cells
@@ -71,21 +156,43 @@ impl crate::Engine {
             target: "reify_eval::realize_solid_sdf",
             demanded = ?reify_ir::ReprKind::Voxel,
             ?brep_id,
-            "realize_solid_sdf: demanding Voxel realization of subject solid"
+            ?resolution,
+            "realize_solid_sdf_at: demanding Voxel realization of subject solid"
         );
 
-        // Tessellate BRep→Mesh
+        // Tessellate BRep→Mesh. The tolerance does not track `resolution` — see
+        // this method's "Known limitation".
         let mesh = self
             .geometry_kernels
             .get(&source)?
-            .tessellate(brep_id, 0.0001)
+            .tessellate(brep_id, TESSELLATION_CHORD_TOLERANCE)
             .ok()?;
 
-        // Ingest Mesh→Voxel
+        // Ingest Mesh→Voxel at the requested resolution.
+        //
+        // A request-driven resolution is a caller CHOICE, so an `Err` under one
+        // is worth a diagnostic: it may be the request itself that could not be
+        // served (malformed, too coarse, over budget), and the kernel's message
+        // names the offending value. Under `HonestFloor` there is no caller
+        // choice to report — the only possible causes are the same environment
+        // failures the guards above degrade anonymously for — so that arm stays
+        // quiet rather than blaming a resolution nobody asked for. The message
+        // names the error and stops there; this layer cannot tell a rejected
+        // request from a raw FFI failure and must not claim to.
         let voxel = self
             .geometry_kernels
             .get_mut(openvdb_name)?
-            .ingest_mesh(&mesh)
+            .ingest_mesh_at_resolution(&mesh, resolution)
+            .inspect_err(|e| {
+                if !matches!(resolution, reify_ir::VoxelResolution::HonestFloor) {
+                    tracing::warn!(
+                        target: "reify_eval::realize_solid_sdf",
+                        ?resolution,
+                        error = %e,
+                        "ingest_mesh_at_resolution failed for the requested resolution"
+                    );
+                }
+            })
             .ok()?;
 
         // Densify Voxel→SampledField
@@ -106,7 +213,9 @@ mod tests {
     use reify_core::RealizationNodeId;
     use reify_ir::GeometryHandleId;
     use reify_ir::value::GeometryHandleRef;
-    use reify_test_support::mocks::{MockConstraintChecker, MockGeometryKernel};
+    use reify_test_support::mocks::{
+        FailingMockGeometryKernel, MockConstraintChecker, MockGeometryKernel,
+    };
 
     use crate::Engine;
 
@@ -446,6 +555,324 @@ mod tests {
         assert!(
             engine.realize_solid_sdf(subject).is_none(),
             "cfg(not(has_openvdb)) realize_solid_sdf must return None — no fabricated field"
+        );
+    }
+
+    // ── task 6560 step-9 RED: resolution threading through the direct recipe ──
+    //
+    // Every test below references `engine.realize_solid_sdf_at(subject, …)`,
+    // which does NOT exist yet — they compile-fail (RED) until step-10 adds it.
+
+    /// Shared recorder for the `VoxelResolution` values a kernel is handed.
+    ///
+    /// `Arc<Mutex<…>>` rather than a plain field because the kernel is moved
+    /// into `engine.geometry_kernels` as a `Box<dyn GeometryKernel>` and cannot
+    /// be borrowed back out afterwards. Mirrors the `Arc<Mutex<Vec<f64>>>`
+    /// tessellate-tolerance recorder on `MockGeometryKernel`
+    /// (`reify_test_support::mocks::MockGeometryKernel::tessellate_tolerances_ref`).
+    type ResolutionLog = std::sync::Arc<std::sync::Mutex<Vec<reify_ir::VoxelResolution>>>;
+
+    /// Mock openvdb-slot kernel that records every `VoxelResolution` it is
+    /// handed and (optionally) fails the ingest.
+    ///
+    /// Every method the recipe must NOT call returns `Err` (or is
+    /// `unreachable!()`), so a regression that reaches for the wrong entry
+    /// point fails loudly rather than silently passing. In particular
+    /// [`reify_ir::GeometryKernel::ingest_mesh`] is overridden to `Err` —
+    /// if `realize_solid_sdf_at` ever calls the resolution-less entry point,
+    /// the log stays empty and the forwarding assertions fail.
+    struct RecordingVoxelizerKernel {
+        log: ResolutionLog,
+        fail_ingest: bool,
+    }
+
+    impl reify_ir::GeometryKernel for RecordingVoxelizerKernel {
+        fn execute(
+            &mut self,
+            _op: &reify_ir::GeometryOp,
+        ) -> Result<reify_ir::GeometryHandle, reify_ir::GeometryError> {
+            unreachable!() // ptodo:allow exhaustiveness/stub arm - not tracked debt
+        }
+        fn query(
+            &self,
+            _q: &reify_ir::GeometryQuery,
+        ) -> Result<reify_ir::Value, reify_ir::QueryError> {
+            unreachable!() // ptodo:allow exhaustiveness/stub arm - not tracked debt
+        }
+        fn export(
+            &self,
+            _handle: reify_ir::GeometryHandleId,
+            _format: reify_ir::ExportFormat,
+            _writer: &mut dyn std::io::Write,
+        ) -> Result<(), reify_ir::ExportError> {
+            unreachable!() // ptodo:allow exhaustiveness/stub arm - not tracked debt
+        }
+        fn tessellate(
+            &self,
+            _handle: reify_ir::GeometryHandleId,
+            _tolerance: f64,
+        ) -> Result<reify_ir::Mesh, reify_ir::TessError> {
+            unreachable!() // ptodo:allow exhaustiveness/stub arm - not tracked debt
+        }
+        fn ingest_mesh(
+            &mut self,
+            _mesh: &reify_ir::Mesh,
+        ) -> Result<reify_ir::GeometryHandle, reify_ir::GeometryError> {
+            Err(reify_ir::GeometryError::OperationFailed(
+                "realize_solid_sdf must route through ingest_mesh_at_resolution".into(),
+            ))
+        }
+        fn ingest_mesh_at_resolution(
+            &mut self,
+            _mesh: &reify_ir::Mesh,
+            resolution: reify_ir::VoxelResolution,
+        ) -> Result<reify_ir::GeometryHandle, reify_ir::GeometryError> {
+            self.log.lock().unwrap().push(resolution);
+            if self.fail_ingest {
+                return Err(reify_ir::GeometryError::OperationFailed(
+                    "synthetic ingest failure".into(),
+                ));
+            }
+            Ok(reify_ir::GeometryHandle {
+                id: reify_ir::GeometryHandleId(42),
+                repr: None,
+            })
+        }
+        // densify_grid_to_sampled: inherits the default → Err, so the recipe
+        // still degrades to None. These tests assert on the RECORDED
+        // resolution, which is captured before that point.
+    }
+
+    /// Build an engine wired with `source` under `"occt"` and `voxelizer`
+    /// under `openvdb_kernel_name()`, plus a resolvable subject.
+    fn engine_with(
+        source: Box<dyn reify_ir::GeometryKernel>,
+        voxelizer: Box<dyn reify_ir::GeometryKernel>,
+        tag: &str,
+    ) -> (Engine, GeometryHandleRef) {
+        let mut engine = make_engine();
+        engine.geometry_kernels.insert("occt".to_string(), source);
+        engine.default_kernel_name = Some("occt".to_string());
+        engine.geometry_kernels.insert(
+            crate::kernel_registry::openvdb_kernel_name().to_string(),
+            voxelizer,
+        );
+
+        let r0 = RealizationNodeId::new(tag, 0);
+        engine
+            .realization_handles
+            .insert(r0.clone(), GeometryHandleId(1));
+        let subject = GeometryHandleRef {
+            realization_ref: r0,
+            upstream_values_hash: [0u8; 32],
+            kernel_handle: Some(GeometryHandleId(1)),
+        };
+        (engine, subject)
+    }
+
+    /// **Forwarding.** `realize_solid_sdf_at` must hand the requested
+    /// resolution to the voxelizer verbatim, exactly once.
+    #[test]
+    fn realize_solid_sdf_at_forwards_the_requested_resolution() {
+        let log: ResolutionLog = Default::default();
+        let (mut engine, subject) = engine_with(
+            Box::new(TessellatingBoxKernel),
+            Box::new(RecordingVoxelizerKernel {
+                log: log.clone(),
+                fail_ingest: false,
+            }),
+            "gamma-forward-resolution",
+        );
+
+        // The overall result is None (the mock's densify inherits the default
+        // Err); what this test pins is the resolution that reached the kernel.
+        let _ = engine.realize_solid_sdf_at(subject, reify_ir::VoxelResolution::MinFeature(1.0));
+
+        assert_eq!(
+            log.lock().unwrap().as_slice(),
+            &[reify_ir::VoxelResolution::MinFeature(1.0)],
+            "realize_solid_sdf_at must call ingest_mesh_at_resolution exactly once \
+             with the requested resolution"
+        );
+    }
+
+    /// **Behaviour preservation.** The existing `realize_solid_sdf` entry point
+    /// must forward `HonestFloor`, so every production caller of it keeps the
+    /// grid it has always got.
+    #[test]
+    fn realize_solid_sdf_forwards_honest_floor() {
+        let log: ResolutionLog = Default::default();
+        let (mut engine, subject) = engine_with(
+            Box::new(TessellatingBoxKernel),
+            Box::new(RecordingVoxelizerKernel {
+                log: log.clone(),
+                fail_ingest: false,
+            }),
+            "gamma-honest-floor-default",
+        );
+
+        let _ = engine.realize_solid_sdf(subject);
+
+        assert_eq!(
+            log.lock().unwrap().as_slice(),
+            &[reify_ir::VoxelResolution::HonestFloor],
+            "realize_solid_sdf must delegate with VoxelResolution::HonestFloor"
+        );
+    }
+
+    /// Degradation path 1 under `_at`: unresolvable `realization_ref` AND
+    /// `GeometryHandleId::INVALID` → `None`, no panic.
+    #[test]
+    fn realize_solid_sdf_at_unresolvable_subject_returns_none() {
+        let log: ResolutionLog = Default::default();
+        let (mut engine, _) = engine_with(
+            Box::new(TessellatingBoxKernel),
+            Box::new(RecordingVoxelizerKernel {
+                log: log.clone(),
+                fail_ingest: false,
+            }),
+            "gamma-at-unresolvable-seed",
+        );
+        let subject = GeometryHandleRef {
+            realization_ref: RealizationNodeId::new("absent-solid-at", 99),
+            upstream_values_hash: [0u8; 32],
+            kernel_handle: Some(GeometryHandleId::INVALID),
+        };
+
+        assert!(
+            engine
+                .realize_solid_sdf_at(subject, reify_ir::VoxelResolution::MinFeature(1.0))
+                .is_none(),
+            "an unresolvable subject must degrade to None"
+        );
+        assert!(
+            log.lock().unwrap().is_empty(),
+            "the voxelizer must not be reached when the subject cannot be resolved"
+        );
+    }
+
+    /// Degradation path 2 under `_at`: no `default_kernel_name` → `None`.
+    #[test]
+    fn realize_solid_sdf_at_no_default_kernel_returns_none() {
+        let (mut engine, subject) = engine_with(
+            Box::new(TessellatingBoxKernel),
+            Box::new(RecordingVoxelizerKernel {
+                log: Default::default(),
+                fail_ingest: false,
+            }),
+            "gamma-at-no-source",
+        );
+        engine.default_kernel_name = None;
+
+        assert!(
+            engine
+                .realize_solid_sdf_at(subject, reify_ir::VoxelResolution::MinFeature(1.0))
+                .is_none(),
+            "no default_kernel_name must degrade to None"
+        );
+    }
+
+    /// Degradation path 3 under `_at`: no OpenVDB kernel registered → `None`.
+    #[test]
+    fn realize_solid_sdf_at_no_openvdb_kernel_returns_none() {
+        let (mut engine, subject) = engine_with(
+            Box::new(TessellatingBoxKernel),
+            Box::new(RecordingVoxelizerKernel {
+                log: Default::default(),
+                fail_ingest: false,
+            }),
+            "gamma-at-no-openvdb",
+        );
+        engine
+            .geometry_kernels
+            .remove(crate::kernel_registry::openvdb_kernel_name());
+
+        assert!(
+            engine
+                .realize_solid_sdf_at(subject, reify_ir::VoxelResolution::MinFeature(1.0))
+                .is_none(),
+            "a missing openvdb kernel must degrade to None"
+        );
+    }
+
+    /// Degradation path 4 under `_at`: `tessellate` returns `Err` → `None`.
+    ///
+    /// The source kernel is `reify_test_support::mocks::FailingMockGeometryKernel`,
+    /// whose `tessellate` already returns `Err(TessError::TessellationFailed(_))`
+    /// — the shared utility for exactly this shape, so no local clone of it.
+    #[test]
+    fn realize_solid_sdf_at_tessellate_err_returns_none() {
+        let log: ResolutionLog = Default::default();
+        let (mut engine, subject) = engine_with(
+            Box::new(FailingMockGeometryKernel),
+            Box::new(RecordingVoxelizerKernel {
+                log: log.clone(),
+                fail_ingest: false,
+            }),
+            "gamma-at-tess-err",
+        );
+
+        assert!(
+            engine
+                .realize_solid_sdf_at(subject, reify_ir::VoxelResolution::MinFeature(1.0))
+                .is_none(),
+            "a tessellate Err must degrade to None"
+        );
+        assert!(
+            log.lock().unwrap().is_empty(),
+            "the voxelizer must not be reached when tessellation fails"
+        );
+    }
+
+    /// Degradation path 5 under `_at`: `ingest_mesh_at_resolution` returns
+    /// `Err` → `None`, no panic and no fabricated field.
+    #[test]
+    fn realize_solid_sdf_at_ingest_err_returns_none() {
+        let log: ResolutionLog = Default::default();
+        let (mut engine, subject) = engine_with(
+            Box::new(TessellatingBoxKernel),
+            Box::new(RecordingVoxelizerKernel {
+                log: log.clone(),
+                fail_ingest: true,
+            }),
+            "gamma-at-ingest-err",
+        );
+
+        assert!(
+            engine
+                .realize_solid_sdf_at(subject, reify_ir::VoxelResolution::MinFeature(1.0))
+                .is_none(),
+            "an ingest Err must degrade to None"
+        );
+        assert_eq!(
+            log.lock().unwrap().len(),
+            1,
+            "the failing ingest must have been attempted exactly once"
+        );
+    }
+
+    /// An over-budget resolution must propagate as `None` — the guard's
+    /// rejection is a degradation, not a panic (PRD §4 D5).
+    ///
+    /// Uses the REAL OpenVDB kernel so the budget guard is the one that
+    /// actually fires: on the 2 mm box at h = 0.001 the implied dense grid is
+    /// ≈ 4004³ ≈ 6.4e10 voxels, far beyond the 256M budget.
+    #[cfg(has_openvdb)]
+    #[test]
+    fn realize_solid_sdf_at_over_budget_resolution_returns_none() {
+        use reify_kernel_openvdb::kernel_real::OpenVdbKernel;
+
+        let (mut engine, subject) = engine_with(
+            Box::new(TessellatingBoxKernel),
+            Box::new(OpenVdbKernel::new()),
+            "gamma-at-over-budget",
+        );
+
+        assert!(
+            engine
+                .realize_solid_sdf_at(subject, reify_ir::VoxelResolution::TargetVoxelSize(0.001))
+                .is_none(),
+            "an over-budget resolution must degrade to None, not panic"
         );
     }
 }

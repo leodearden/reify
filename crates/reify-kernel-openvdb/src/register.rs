@@ -19,7 +19,7 @@
 //! OpenVDB operates on Voxel (volumetric grid) representations. It does NOT
 //! tessellate B-rep (OCCT's territory), perform mesh Booleans (Manifold's
 //! territory), or evaluate SDFs (Fidget's territory). The descriptor declares
-//! five entries:
+//! six entries:
 //! - `(BooleanUnion, Voxel)`
 //! - `(BooleanDifference, Voxel)`
 //! - `(BooleanIntersection, Voxel)`
@@ -27,11 +27,28 @@
 //! - `(Convert { from: Voxel }, Mesh)` — Voxel→Mesh via `volumeToMesh` /
 //!   marching cubes (task ι); executable primitive:
 //!   `realize_mesh_from_voxel_with_options` / `tessellate`.
+//! - `(Surface, Mesh)` — isosurface terminal anchor (task 5033); a thin
+//!   same-kernel finalize over the mesh the `Convert{Voxel→Mesh}` stage
+//!   already produced, not a second computation.
 //!
 //! Deliberately excluded from the v0.3 descriptor:
 //! - Voxel primitives: deferred to avoid routing `field def` evaluations
 //!   through the stub kernel on every primitive build.
-//! - BRep→Voxel direct sampling: deferred to a separate follow-up.
+//!
+//! # BRep→Voxel (task 6560)
+//!
+//! BRep→Voxel is served by the two-stage chain
+//! `BRep --occt--> Mesh --openvdb--> Voxel`, which the dispatcher plans over
+//! the existing `(Convert { from: Mesh }, Voxel)` entry above; the resolution
+//! of the openvdb stage is chosen by the caller through
+//! [`GeometryKernel::ingest_mesh_at_resolution`]
+//! rather than being fixed at `MeshToVoxelOptions::honest_floor`.
+//!
+//! A direct `(Convert { from: BRep }, Voxel)` entry is deliberately NOT
+//! declared. OpenVDB cannot read a B-rep handle, and this descriptor is a
+//! feasibility table: claiming a BRep source would let the dispatcher plan a
+//! single stage no primitive in this crate can execute. The honest shape is
+//! the Mesh-sourced entry plus the two-stage chain.
 //!
 //! # `cfg(any(has_openvdb, feature = "stub_register"))` gate on `inventory::submit!`
 //!
@@ -99,11 +116,13 @@ pub const OPENVDB_KERNEL_VERSION: &str = "13.0.0";
 
 /// Construct the OpenVDB [`CapabilityDescriptor`].
 ///
-/// Enumerates the five operations OpenVDB supports: the three Voxel-Boolean
-/// operations (`BooleanUnion`, `BooleanDifference`, `BooleanIntersection`) plus
-/// `Convert{from:Mesh}→Voxel` (Mesh→Voxel via `meshToVolume`, added in task η)
-/// and `Convert{from:Voxel}→Mesh` (Voxel→Mesh via marching cubes /
-/// `volumeToMesh`, added in task ι).
+/// Enumerates the six operations OpenVDB supports: the three Voxel-Boolean
+/// operations (`BooleanUnion`, `BooleanDifference`, `BooleanIntersection`),
+/// `Convert{from:Mesh}→Voxel` (Mesh→Voxel via `meshToVolume`, added in task η),
+/// `Convert{from:Voxel}→Mesh` (Voxel→Mesh via marching cubes /
+/// `volumeToMesh`, added in task ι), and `(Surface, Mesh)` (isosurface terminal
+/// anchor, added in task 5033 — detailed under "Planning vs execution
+/// contract" below).
 /// Called by the `KernelRegistration::descriptor` function pointer at engine
 /// startup (once per `collect_registry()` call, not per geometry op).
 ///

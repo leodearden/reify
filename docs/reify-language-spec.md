@@ -843,7 +843,7 @@ pub trait Rigid : Physical {
 | Member kind       | Description |
 |-------------------|-------------|
 | Parameters        | Required named parameters with types |
-| Ports             | Required interaction points |
+| Ports *(deferred)* | Required interaction points. **Not implemented:** a `port` line in a trait body is not a trait member today. Trait-required ports are deferred to the generic-assemblies programme; see [generic-assemblies-interface-traits.md](prds/v0_6/generic-assemblies-interface-traits.md) (tracker #7882). Ports *typed by* a trait (`port x : RotaryPort` in a structure) are unaffected. |
 | Sub-structure slots | Required contained sub-structures satisfying a trait |
 | Associated types  | Type-level members that implementing types must bind |
 | Constraints       | Logical requirements on relationships between members |
@@ -892,8 +892,8 @@ fn area(surface: Surface) -> Scalar<Area> { ... }
 fn area(solid: Solid) -> Scalar<Area> { ... }
 
 // Valid: same name, different arity
-fn rotate<G: Transformable>(geometry: G, axis: Vector3<Dimensionless>, angle: Angle) -> G { ... }
-fn rotate<G: Transformable>(geometry: G, orientation: Orientation<3>) -> G { ... }
+fn align<G: Transformable>(geometry: G, axis: Vector3<Dimensionless>, angle: Angle) -> G { ... }
+fn align<G: Transformable>(geometry: G, orientation: Orientation<3>) -> G { ... }
 ```
 
 ### 4.3 Function Declarations (`fn`)
@@ -1059,6 +1059,26 @@ aux sub jig : Jig at tool_frame
 
 **`aux` modifier (v0.6).** Prefixing `aux` marks the sub-entity as structure-local (construction) geometry. An `aux sub` is still realized, tessellated, and shipped to the GUI (hidden-by-default, toggleable) but is excluded from product surfacing, STEP export, FEA mesh generation, and mass-property accumulation. Use `aux` to mark boolean-input operands so they do not appear both standalone and inside a composed result (see §8.3 for the boolean-composition idiom and §15 for the grammar production).
 
+**Derived sub (v0.6).** A sub-entity may be *derived* from a sibling sub rather than instantiated, in one of two surface forms:
+
+```
+sub unit_b = mirror of unit_a across plane_yz { z = 55mm  keep capstan }
+sub rail_l = image of rail_r under c2_z      { span_bu = default  exclude web.hub }
+```
+
+The *prototype* (`unit_a`, `rail_r`) is a bare identifier naming a **sibling sub** of the same structure -- not a dotted path, and not a structure name. `mirror of ... across <plane>` reflects the prototype across a plane; `image of ... under <transform>` maps it through an arbitrary transform.
+
+The block is **required** (an empty `{ }` is legal -- the derivation alone is a complete specification). Its items are:
+
+- **parameter overrides** -- `z = 55mm`, and `<param> = default` to *reset* an inherited value back to the prototype's declared default. Overrides accept the same values a specialization body does, including `auto` and `auto(free)`, and each may carry a `where` guard.
+- **`keep <path>`** -- retain the named feature of the prototype unreflected. This is the explicit **chirality break**: the default policy is reflect-all (always geometrically correct; achiral children come out identical), and `keep` opts a feature out of it. The default compensation `M_c` is the derivation plane conjugated into the child's local frame through the child origin.
+- **`exclude <path>`** -- omit the named feature from the derived copy. Paths are dotted (`web.hub`).
+- local **`let`** and **`constraint`** members.
+
+Placement of a derived sub is *derived* from its prototype, so an `at` clause on a derived sub is a **compile error** (`E_DERIVED_SUB_EXPLICIT_AT`), not a parse error -- the grammar accepts it so the compiler can reject it with a good message, the same division of labour `at` on a collection-form sub already uses.
+
+**Reserved, with no v0.6 meaning:** `keep <path> using <plane>` parses (a CATIA-style declared equivalence plane) but carries no semantics; `symmetry` is reserved as a future contextual keyword; and `xs[<element>]` element addressing inside a disposition path is reserved. None of the three is implemented. See [docs/prds/v0_6/assembly-derivation-toolbox.md](docs/prds/v0_6/assembly-derivation-toolbox.md) and §15 for the grammar production.
+
 #### `let` -- Computed Bindings
 
 ```
@@ -1122,6 +1142,107 @@ Semantics:
 - Accessible via `entity.meta.key_name`.
 
 `meta` blocks can appear in any entity body and at the module level.
+
+### 4.9 Constructor Argument Conformance
+
+Every argument of a structure construction is checked at compile time against the declared type of the `param` it binds to. Positional arguments are checked exactly like named ones. Every user path (`reify check`, eval, the GUI, the LSP) compiles first, so the check runs on all of them. The covered construction forms are:
+
+- `T(field: v)` and `T(v1, v2)` in any expression position: a `let`, a `constraint`, a `forall` body, a free `fn` body, or a nested argument;
+- `sub x = T(...)`;
+- `sub x : T { field = v }`.
+
+Parameter defaults obey the same rule (`param label : String = 42` is an error). A non-conforming argument is an Error, so `reify check` exits non-zero. Evaluation does not re-check: compilation is the single enforcement point.
+
+```reify
+structure def Clamp {
+    param face : FaceSelector = undef
+    param preload : Force = 0N
+    param label : Option<String> = none
+}
+
+structure def Fixture {
+    let body = box(100mm, 50mm, 5mm)
+
+    let ok    = Clamp(face: face(body, "z_max"), preload: 2kN)   // legal
+    let named = Clamp(face: face(body, "z_max"), label: "A")     // legal: implicit-Some
+    let bad1  = Clamp(face: edges(body))       // error: selector kind 'EdgeSelector', requires 'FaceSelector'
+    let bad2  = Clamp(face: "z_max")           // error: a String is not a selector
+    let bad3  = Clamp(face: face(body, "z_max"), preload: 5)   // error: pass a dimensioned Force literal
+}
+```
+
+**Legality.**
+
+| Field declares | Argument supplies | Verdict |
+|---|---|---|
+| `T` | a value of `T` | legal |
+| `Real` (dimensionless scalar) | `Int` | legal |
+| dimensioned scalar, e.g. `Length` | a quantity of the same dimension (`5mm`) | legal |
+| dimensioned scalar | a bare `Int`/`Real`, or a quantity of another dimension | illegal; the message adds a hint such as "pass a dimensioned Length literal such as `1m`" |
+| `VectorN<Q>` | a vector of arity `N`, or a rank-1 tensor | legal. A dimensionless vector is accepted at any `Q` (`vec3(1, 2, 3)` at `Vector3<Length>`); a dimensioned vector must match `Q` (`vec3(1kg, 2kg, 3kg)` at `Vector3<Length>` is illegal) |
+| `VectorN<Q>` | another arity, or a non-vector | illegal |
+| `PointN<Q>` | a point | same arity and quantity rule as `VectorN<Q>`: a `point2(...)` at `Point3<Length>` is illegal |
+| `Matrix<M, N, Q>` / `Tensor<R, N, Q>` | a matrix, a tensor, a vector, a scalar, or a numeric nested list literal (`[[1, 0], [0, 1]]`) | legal; element counts are not checked |
+| `Field<D, C>` | a field value or a lambda | legal; anything else is illegal |
+| enum `E` | a value of `E` (generic arguments are not compared) | legal |
+| enum `E` | a value of another enum, or a non-enum | illegal |
+| `Selector` (kind-agnostic, §8.12) | a `FaceSelector`, `EdgeSelector`, `VertexSelector` or `BodySelector` | legal (one-way) |
+| `FaceSelector` (or any single-kind selector) | a selector of another kind, or a kind-agnostic `Selector` value | illegal |
+| selector-typed (bare or inside `Option`) | a pose: a `Frame`, `Transform3` or `Point` value such as `frame3(...)` | illegal, with the pose hint |
+| selector-typed (bare or inside `Option`) | a `String` (the legacy `"x_max"` form) | illegal; write `face(body, "x_max")` instead |
+| `Option<T>` | `none` | legal |
+| `Option<T>` | a bare argument that is legal for `T` | legal: the implicit-Some rule. An illegal bare argument is reported against `T` |
+| `List<T>` / `Set<T>` / `Map<K, V>` | a collection of the same kind | checked element by element |
+| `List<T>` / `Set<T>` / `Map<K, V>` | an empty `[]` | legal: its element type is unresolved and skipped. Typed enforcement belongs to [the expected-type pushdown stub](prds/expected-type-pushdown-return-field.md) |
+| `List<T>` / `Set<T>` / `Map<K, V>` | a non-collection value | illegal (wrapper shape) |
+| `List<Geometry>` | a single selector such as `face(body, "y_max")` | **illegal at construction sites** today, though legal as a `fn` argument (see Known limitations) |
+| `List<Tr>` / `Set<Tr>` / `Option<Tr>`, `Tr` a trait | a structure conforming to `Tr`, directly or through refinement | legal |
+| `List<Tr>` / `Set<Tr>` / `Option<Tr>`, `Tr` a trait | a non-conforming structure | illegal |
+| bare trait `Tr` | anything | **not checked** in expression-position constructors (`let`, `fn` body, ...), a deliberate escape hatch; **checked** in both `sub` forms |
+| structure `S` | another structure, or a primitive | illegal |
+| `String` / `Int` / `Bool` | any type not compatible with it | illegal |
+| any field | an argument whose type is unknown at compile time: the result of an earlier error, an unresolved generic `T`, a geometry value, or a trait-typed value | **skipped**, never rejected. The collection-shape check still applies: such a value at a `List`/`Set`/`Map` field is illegal |
+
+The bare-trait row in practice:
+
+```reify
+trait Law { param stiffness : Pressure }
+structure def Linear : Law { param stiffness : Pressure = 200GPa }
+structure def Rubber { param shore : Real = 60 }
+structure def Mount { param law : Law = undef }
+
+structure def Assembly {
+    let loose = Mount(law: Rubber())   // not checked: bare trait field, expression position
+    sub tight = Mount(law: Rubber())   // error: type 'Rubber' does not conform to trait 'Law' required by param 'law'
+    sub fine  = Mount(law: Linear())   // legal
+}
+```
+
+**Diagnostics.** All are Error severity.
+
+| LSP code | Mnemonic | Raised when | Message shape |
+|---|---|---|---|
+| `ArgTypeMismatch` | `E_ARG_TYPE_MISMATCH` | a concrete type mismatch | `argument 'f' has type 'A' but param 'f' requires type 'B'`. A selector field reads `requires selector type 'B'`; a pose adds `; a coordinate pose is not a region target; select a face/edge/vertex instead`; a dimensioned scalar adds the literal hint; a vector whose quantity alone disagrees reads `argument 'f' has quantity 'A' but param 'f' requires quantity 'B' (...)` |
+| `SelectorKindMismatch` | `E_SELECTOR_KIND_MISMATCH` | a wrong-kind selector | `argument 'f' has selector kind 'EdgeSelector' but param 'f' requires selector kind 'FaceSelector'` |
+| `TypeNotConformingToTrait` | — | trait non-conformance, or a collection-shape mismatch | `type 'X' does not conform to trait 'Tr' required by param 'f'`, or `type 'X' does not match wrapper shape required by param 'f' (expected 'List<T>')` |
+| `TypeNotConformingToStructureRef` | — | a structure-typed field given another type | `argument 'f' has type 'A' but param 'f' requires structure type 'S'` |
+| `TypeNotConformingToVector` | — | a vector field given another arity or a non-vector | `argument 'f' has type 'A' but param 'f' requires vector type 'B'` |
+| `CtorUnknownField` | `E_CTOR_UNKNOWN_FIELD` | a named argument that matches no `param` | `E_CTOR_UNKNOWN_FIELD: unknown named argument 'labl' in call to 'K'; 'K' has no parameter with that name` |
+| `CtorArity` | `E_CTOR_ARITY` | more positional arguments than `param`s (one per call) | `E_CTOR_ARITY: K() expects at most N arguments, got M` |
+
+`reify check` prints `error: <message>`. The LSP `code` field carries the first column. Only the two `E_CTOR_*` mnemonics appear inside the message text. Each offending argument yields one diagnostic, and so does each offending element of a collection argument. A named argument supplied twice in an expression-position constructor is a separate error that carries no code. In the block form `sub x : T { ... }`, assigning a field twice is a warning, and the first assignment wins.
+
+**Known limitations.** Each of these is a gap, not a rule:
+
+- **Known limitation (#7956).** A single selector given to a `List<Geometry>` field is rejected at construction sites, though the same argument to a `fn` parameter is accepted.
+- **Known limitation (#7958).** These field types are not yet checked and accept any argument: `Frame`, `Transform3`, `Direction`, `Axis`, `Plane`, `Orientation`, `Complex`, `Range`, `BoundingBox`, function types, and generic structure types.
+- **Known limitation (#8101).** A `Geometry`-typed field accepts any argument, though a `Geometry` parameter default is checked.
+- **Known limitation (#8121).** A scalar argument at a `Point` field (a bare number, a quantity of any dimension, or a scalar-returning call) is not rejected.
+- **Known limitation (#8100).** Constructors inside associated-function bodies (structure-body and trait default `fn`s) are not checked.
+- **Known limitation (#7874).** Omitting a field that has no default is not diagnosed; the field is simply absent.
+- **Known limitation (#6946).** In the `sub x = T(...)` form, neither an unknown named field nor a named argument supplied twice is diagnosed. The block form `sub x : T { ... }` reports the unknown field and warns on the repeated assignment.
+
+Design record and rationale: [struct-ctor-field-type-conformance.md](prds/struct-ctor-field-type-conformance.md).
 
 ---
 
@@ -1502,19 +1623,38 @@ Strengthened persistent naming and advanced topological queries are deferred to 
 chain casting -> machining -> heat_treat -> finishing
 ```
 
-`chain` is sugar for connecting each occurrence's default output port to the next's default input port. Uses fully implicit matching via default ports only. Non-default port mapping requires explicit `connect`.
+`chain` is sugar for connecting each occurrence's output port to the next's input port, so the designer writes N occurrence names instead of 2N port names. The port each element contributes is inferred from the element alone; anything else requires naming the port explicitly, on that element or with `connect`.
 
-**Desugaring:** `chain` is expanded to a sequence of `connect` statements before evaluation graph construction. Each element must be an occurrence with exactly one `out` port and one `in` port (or ports marked as default for their direction). The desugaring is:
+**Desugaring:** `chain` is expanded to a sequence of `connect` statements before evaluation graph construction. Each element is resolved once **per role** — as a hop's source it contributes a port usable as `out`, as that hop's destination one usable as `in` — and exactly one of its ports must be usable in that role. Candidates are **tiered**, not pooled: the element's ports declared in the needed direction are the candidates, and only when it declares *none* in that direction do its `bidi` ports become the candidates (a `bidi` port is direction-valid in either role). So the common element declaring one `in`, one `out` and some `bidi` ports resolves to its `in`/`out` pair, while an element whose only port is `bidi` resolves to that port in both roles. Given
+
+```
+occurrence def Step {
+    port stock : in Workpiece
+    port part : out Workpiece
+}
+```
+
+the desugaring is:
 
 ```
 chain casting -> machining -> heat_treat -> finishing
 // Desugars to:
-connect casting.default_out -> machining.default_in
-connect machining.default_out -> heat_treat.default_in
-connect heat_treat.default_out -> finishing.default_in
+connect casting.part -> machining.stock
+connect machining.part -> heat_treat.stock
+connect heat_treat.part -> finishing.stock
 ```
 
-If any element has multiple `in` or `out` ports and none is marked as default, `chain` is a compile error for that element. The designer must use explicit `connect` statements instead.
+Resolving per role is what makes a chain longer than two elements direction-valid: `machining` means `machining.stock` as the first hop arrives and `machining.part` as the second leaves, so every hop is `out -> in`.
+
+If an element offers several candidate ports for the role it plays — or none at all — `chain` is a compile error for that element, naming what was found. The designer disambiguates by naming the port on that element (`chain casting.part -> machining`), which the grammar accepts for any element. A named port is taken verbatim in **both** the element's roles, so naming one on an *interior* element pins the same port for the hop arriving and the hop leaving: that resolves an element carrying *several* `bidi` ports, and otherwise the chain is split into explicit `connect` statements. An element naming one of the *enclosing* entity's own ports is likewise taken as that port and never re-inferred, which is what lets `chain` compose an enclosing structure's own `out` → `bidi` → `in` ports.
+
+**A chain element must denote exactly one occurrence.** Inference is per-instance, so naming a `List<T>` or `Keyed<T>` sub *without* an indexer is a compile error: such a name denotes N occurrences, and the port that would be inferred belongs to none of them. An indexer selects an occurrence only of a `List<T>` or `Keyed<T>` sub (on any other sub it selects nothing, and the element is an undefined port). Index the element (`chain vents[0] -> hub`), or chain the collection's occurrences with `forall`:
+
+```
+forall v in vents: chain v -> hub
+```
+
+The same inference applies inside a `forall … : chain …` body, after the bound variable is substituted for each element of the collection — the substituted variable denotes one occurrence, which is what makes it a valid chain element.
 
 ### 6.3 `where` Guards and Blocks
 
@@ -2316,7 +2456,11 @@ If no explicit purpose or objective is specified, a default purpose applies (pro
 minimize price_per_kg * density * volume_expr(self.thickness)
 ```
 
-`cost(<collection-expr>)` is the cost-aggregation builtin (M-WHOLE γ): it sums the `line_cost` of every `Costed`-conforming element of a collection expression -- typically `self.descendants` -- into a single `Scalar<Money>`. Non-`Costed` elements are filtered out before any `line_cost` lookup happens, so they are safely excluded rather than erroring on an absent `line_cost`. `cost(...)` reaches DEPTH-1 descendants only: direct `sub`s and top-level collection elements. A `Costed` cell nested a further level down is a different, v1-boundary case, not a silent exclusion: it still passes the conformance filter, but its `line_cost` does not resolve at that nested instance path, so the unresolved reference is `Undef` and poisons the whole aggregate to `Undef` rather than just omitting that one line -- keep `Costed` cells at depth-1 when using `cost(...)` in this slice. `cost(filter(self.descendants, Costed))` is an equivalent explicit passthrough. See `examples/cost_subtree_aggregate.ri`, covered end-to-end by `crates/reify-eval/tests/cost_subtree_aggregate_eval.rs`. Bound to a plain expression (e.g. via `let`), `cost(...)` is purely observational: it reads already-resolved child cost and does not by itself put a parent objective in joint control of child `auto` parameters -- that distinct, separately-gated capability is described in the next paragraph. A scope that is itself `Costed` (the BOM cost-rollup trait -- see `docs/prds/v0_6/io-lifecycle-bom-cost.md`) may instead write `minimize self.line_cost` whenever `line_cost` is closed-form in the scope's own auto parameters. See `examples/continuous_cost_min.ri` for a runnable end-to-end example.
+`cost(<collection-expr>)` is the cost-aggregation builtin (M-WHOLE γ): it sums the `line_cost` of every `Costed`-conforming element of a collection expression -- typically `self.descendants` -- into a single `Scalar<Money>`. Non-`Costed` elements are filtered out before any `line_cost` lookup happens, so they are safely excluded rather than erroring on an absent `line_cost`. `cost(...)` reaches DEPTH-1 descendants only: direct `sub`s and top-level collection elements. A `Costed` cell nested a further level down is a different, v1-boundary case, not a silent exclusion: it still passes the conformance filter, but its `line_cost` does not resolve at that nested instance path, so the unresolved reference is `Undef` and poisons the whole aggregate to `Undef` rather than just omitting that one line -- keep `Costed` cells at depth-1 when using `cost(...)` in this slice. `cost(filter(self.descendants, Costed))` is an equivalent explicit passthrough. See `examples/cost_subtree_aggregate.ri`, covered end-to-end by `crates/reify-eval/tests/cost_subtree_aggregate_eval.rs`. Bound to a plain expression (e.g. via `let`), `cost(...)` is purely observational: it is intended to read already-resolved child cost (subject to the resolution boundary below) and does not by itself put a parent objective in joint control of child `auto` parameters -- that distinct, separately-gated capability is described under "Subtree / whole-model cost" below.
+
+**Known limitation (#5835).** One boundary applies to that observational form regardless of coupling: when the aggregated child cell is itself resolved by the solver in a cross-sub scope (a child `auto` feeding `line_cost`), a parent-scope `let` reading that cost stays `Undef` post-solve today -- in BOTH the merged and the no-cluster frozen-cascade shapes -- so read the child's own cells instead. That is an engine gap, not a language rule. See the known-limitation pin `crates/reify-eval/tests/joint_drive_expansion_boundary.rs::parent_let_total_cost_is_declared_but_stays_unresolved_in_both_halves`, which asserts exactly that in both halves, and the "Reading the result" section of `examples/whole_model_joint_drive.ri`. A `let` over children whose `line_cost` folds from constants alone is unaffected -- `examples/cost_subtree_aggregate.ri` resolves its `subtree_cost` to 42.64 USD.
+
+A scope that is itself `Costed` (the BOM cost-rollup trait -- see `docs/prds/v0_6/io-lifecycle-bom-cost.md`) may instead write `minimize self.line_cost` whenever `line_cost` is closed-form in the scope's own auto parameters. See `examples/continuous_cost_min.ri` for a runnable end-to-end example.
 
 **Subtree / whole-model cost.** A parent's `minimize cost(self.descendants)`, written INLINED in the `minimize` -- never behind a `let` -- forms a merged solve cluster spanning parent and child, so the child's `auto` parameters are jointly resolved under the parent's cost objective rather than treated as frozen constants read bottom-up (M-WHOLE β/δ + the joint-drive seam). See `docs/prds/v0_6/whole-model-objective-coupling.md` (M-WHOLE) and `docs/prds/v0_6/whole-model-joint-drive-seam.md` for the coupling mechanism. Worked example: `examples/whole_model_joint_drive.ri`, asserted end-to-end by `crates/reify-eval/tests/joint_drive_expansion_boundary.rs::bt5_parent_objective_drives_child_auto_strictly_below_the_frozen_cascade` (the child auto resolves strictly below its frozen-cascade freeze; the merged whole-assembly cost strictly below the frozen baseline). This is a v1 slice with real boundaries, not an aspirational note: the aggregate must stay inlined in the `minimize` to couple -- an unexpanded `let subtree = cost(...)` followed by `minimize subtree` forms no cluster at all (the example file's header works this boundary case in detail); only depth-1 `Costed` descendants participate (as above); the coupled structure must be reachable by exactly one non-collection instance path for the parent-side surfacing to resolve; and a cluster wider than a fixed auto-dimension cap degrades to the ordinary bottom-up frozen-approximate solve plus a `W_COUPLING_APPROXIMATED` diagnostic instead of failing outright.
 
@@ -2324,9 +2468,13 @@ minimize price_per_kg * density * volume_expr(self.thickness)
 
 Applying the floor is loud, not silent: it emits a `RobustnessFloorApplied` Info diagnostic naming `cost_robustness_tradeoff(cost_expr, lambda)` (below) as the override. When the floor cannot be satisfied -- no point in the feasible region has slack >= `m` -- the solver reports the distinct `E_ROBUSTNESS_FLOOR_INFEASIBLE` diagnostic ("infeasible under robustness floor ...; relax opposing constraints or widen the tolerance margin") instead of the ordinary "constraints could not be satisfied" diagnostic every other infeasible solve reports. The margin `m` is a configurable default today; deriving it from the per-purpose tolerance scope is a deferred enhancement. See `examples/continuous_cost_min.ri`: a wall-thickness parameter is held off its 2mm stress/clearance boundary, with exactly one `RobustnessFloorApplied` Info diagnostic.
 
-**The `cost_robustness_tradeoff` override.** `minimize cost_robustness_tradeoff(<money-expr>, <lambda>)` is recognized by the compiler as a special objective form, where `lambda` must be a compile-time-known `Real` in `[0, 1]`. Its semantics are a normalized two-anchor blend: the solver solves the two anchor points (minimum cost, maximum robustness), normalizes each term to `[0, 1]` over its own anchor range, and minimizes `lambda * cost_hat + (1 - lambda) * (-robustness_hat)`. `lambda = 1` resolves to pure cost (the constraint boundary); `lambda = 0` resolves to the robustness-oriented centrality default (§10.7); intermediate values resolve to a normalized blend between the two. Normalization keeps `lambda` a true dimensionless dial and avoids the `USD + length` incoherence a naive weighted sum would have. When `cost_robustness_tradeoff` is present in a scope's objective, it replaces that scope's robustness-floor default above -- the user has taken explicit control.
+**The `cost_robustness_tradeoff` override.** `minimize cost_robustness_tradeoff(<money-expr>, <lambda>)` is recognized by the compiler as a special objective form, where `lambda` must be a compile-time-known `Real` in `[0, 1]`. Its semantics are a normalized two-anchor blend: the solver solves the two anchor points (minimum cost, maximum robustness), normalizes each term to `[0, 1]` over its own anchor range, and minimizes `lambda * cost_hat + (1 - lambda) * (-robustness_hat)`. `lambda = 1` resolves to pure cost -- the argmin of the cost expression, which is the constraint boundary only when the cost is MONOTONE; `lambda = 0` resolves to the robustness-oriented centrality default (§10.7) -- the max-min-slack point, which is the *geometric* Chebyshev centre only when every constraint has unit gradient. Both qualifications are spelled out two paragraphs below. Intermediate values resolve to a normalized blend between the two. Normalization keeps `lambda` a true dimensionless dial and avoids the `USD + length` incoherence a naive weighted sum would have. When `cost_robustness_tradeoff` is present in a scope's objective, it replaces that scope's robustness-floor default above -- the user has taken explicit control.
 
-Malformed calls report a diagnostic, never a panic: `E_COST_TRADEOFF_NON_MONEY` when the first argument is not `Money`-dimensioned, `E_COST_TRADEOFF_INVALID_LAMBDA` when `lambda` is outside `[0, 1]` or not compile-time-known, and `E_COST_TRADEOFF_ARITY` for the wrong number of arguments. See `examples/cost_robustness_tradeoff.ri`: the same `Money` cost and constraint box swept across `lambda = 1` (boundary), `lambda = 0.5` (between), and `lambda = 0` (the 13mm centrality point). Note: at today's eval layer the `lambda = 1` run lands boundary-*adjacent* rather than pinned exactly to the 1mm boundary -- `.ri`-compiled `auto` params get wide default bounds, so the example's e2e test asserts the strict ordering `t(1) < t(0.5) < t(0)` rather than an exact boundary value; the true zero-margin-boundary invariant is verified at the solver layer with tight `AutoParam` bounds (`crates/reify-constraints/tests/cost_robustness_tradeoff_blend.rs`).
+Malformed calls report a diagnostic, never a panic: `E_COST_TRADEOFF_NON_MONEY` when the first argument is not `Money`-dimensioned, `E_COST_TRADEOFF_INVALID_LAMBDA` when `lambda` is outside `[0, 1]` or not compile-time-known, and `E_COST_TRADEOFF_ARITY` for the wrong number of arguments. See `examples/cost_robustness_tradeoff.ri`: one `Money` cost and one constraint set swept across `lambda = 1`, `lambda = 0.5`, and `lambda = 0`. Two features of that example are deliberate, and each pins one anchor to an independently-derived target. Its cost has a closed-form INTERIOR optimum (`5USD * (t/1mm + 25mm/t)`, minimised at `sqrt(1mm * 25mm) = 5mm`), so `lambda = 1` resolves there; and its constraints are ASYMMETRIC (`t > 1mm`, `t < 25mm`, `t * 2 < 30mm`), so the centrality default's argmax `31/3 mm` is a different point from the solver's constraint-derived starting midpoint -- and `lambda = 0` resolves there, matched by an objectiveless `CentralityReference` structure in the same file. `lambda = 0.5` lands strictly between, and all three are separated from the seed.
+
+Two qualifications on those anchor names. **(1) Naming.** The `lambda = 0` target is the max-min-SLACK point, not the *geometric* Chebyshev centre of the feasible region (the largest ball inscribed in `(1mm, 15mm)` is centred at `8mm`): `collect_slack_terms` folds each inequality's signed slack un-normalised by that constraint's gradient, so a scaled constraint such as `t * 2 < 30mm` weighs double its geometric distance. The two coincide when every constraint has unit gradient -- the usual case, and the reason "Chebyshev centre" is the customary shorthand for the §10.7 default -- but `lambda = 0` is defined to reduce to the ENGINE's centrality objective, so the max-min-slack point is contract-correct whenever they differ. **(2) Layer.** BOTH `lambda = 1` forms are observable at today's eval layer -- the general one (the argmin of the cost) and the zero-margin *boundary* special case. `.ri`-compiled `auto` params still get `bounds: None`, so `effective_bounds` supplies only the wide `Length` default `[1um, 10m]`; the tradeoff form therefore derives its clamp box from the constraints themselves, strict bounds included, because the boundary is precisely this form's contracted `lambda = 1` answer. A floor-free monotone `lambda = 1` consequently reaches that boundary instead of drifting infeasible into the solver's seed-reporting safety net (task #6465). Measured at the eval layer, monotone `5USD * (t / 1mm)` under `1mm < t < 4mm`: `lambda = 1` resolves the nearest representable value above `1mm` regardless of seed, so the strict `t > 1mm` holds and `reify check` passes; `lambda = 0` resolves the `2.5mm` centre. The example nonetheless uses an interior optimum, for an independent reason: an interior `lambda = 1` target is a *different point* from the `lambda = 0` centrality argmax, which is what makes the sweep's two anchors distinguishable. Both forms are also verified at the solver layer (`crates/reify-constraints/tests/cost_robustness_tradeoff_blend.rs`).
+
+The derivations behind both qualifications -- and the measured values -- are OWNED by that example file's header, not restated here or in the PRD (`docs/prds/v0_6/continuous-cost-minimisation.md` §2.4 carries the PRD-side citation).
 
 **Deferred capabilities -- where the rest lives.** This section covers only single-aspect, closed-form, in-scope cost objectives. Three extensions are named successors to the owning PRD, `docs/prds/v0_6/continuous-cost-minimisation.md`, and remain deferred. (A fourth, subtree/whole-model cost, was originally scoped here too; it has since landed -- see "Subtree / whole-model cost" above.)
 
@@ -2684,8 +2832,10 @@ trait_decl      ::= 'pub'? 'trait' TYPE_IDENT type_params?
                      (':' trait_ref ('+' trait_ref)*)? where_clause?
                      '{' trait_member* '}'
 
-trait_member    ::= param_decl | port_decl | sub_decl | let_decl | constraint_line
+trait_member    ::= param_decl | sub_decl | let_decl | constraint_line
                    | assoc_type_decl
+                   (* port_decl: deferred -- see section 4.2 and
+                      prds/v0_6/generic-assemblies-interface-traits.md *)
 
 assoc_type_decl ::= 'type' TYPE_IDENT (':' trait_bound)?         (* associated type *)
 
@@ -2774,6 +2924,21 @@ where_guard     ::= 'where' expr                         (* per-declaration guar
 param_decl      ::= 'param' IDENT ':' type_expr ('=' expr)? where_guard?
 port_decl       ::= 'port' IDENT ':' dir? type_expr ('{' member* '}')? where_guard?
 sub_decl        ::= 'aux'? 'sub' IDENT ':' type_expr where_guard? ('{' member* '}')? ('at' expr)?
+                  | 'aux'? 'sub' IDENT '=' sub_derivation derived_body ('at' expr)?   (* v0.6 derived sub *)
+
+(* The derived alternative's 'at' tail is deliberate: an explicit 'at' on a
+   derived sub PARSES, and is rejected at COMPILE time as
+   E_DERIVED_SUB_EXPLICIT_AT (§4.7) -- the same division of labour 'at' on a
+   collection-form sub already uses.  Dropping it from this production would
+   invite a "fix" to the grammar that pre-empts the diagnostic. *)
+
+sub_derivation  ::= 'mirror' 'of' IDENT 'across' expr
+                  | 'image'  'of' IDENT 'under'  expr
+derived_body    ::= '{' (derived_override | disposition | let_decl | constraint_line)* '}'
+derived_override ::= IDENT '=' ('default' | expr) where_guard?
+disposition     ::= 'keep' disposition_path ('using' expr)?   (* 'using' RESERVED, no v0.6 meaning *)
+                  | 'exclude' disposition_path
+disposition_path ::= IDENT ('.' IDENT)*
 let_decl        ::= 'pub'? 'aux'? 'let' IDENT (':' type_expr)? '=' expr where_guard?
 constraint_line ::= 'constraint' (constraint_ref | expr) where_guard?
 
@@ -2793,7 +2958,15 @@ connect_block   ::= '{' (param_assign | port_mapping)* '}'
 param_assign    ::= IDENT '=' expr
 port_mapping    ::= IDENT '->' IDENT
 
-chain_stmt      ::= 'chain' IDENT ('->' IDENT)+
+chain_stmt      ::= 'chain' chain_elem ('->' chain_elem)+
+chain_elem      ::= IDENT chain_index? ('.' IDENT)* ('@' IDENT ('(' args ')')? )?
+chain_index     ::= '[' (INT_LIT | STRING_LIT) ']'
+
+(* A chain element is a port_ref whose head may carry one indexer. Naming the
+   port on an element (a.p, vents[0].inlet) is how §6.2 inference is
+   disambiguated, so the dotted form is load-bearing rather than merely
+   tolerated; the indexer (vents[0], vents["intake"]) is how an element of a
+   collection or keyed sub is named as the one occurrence §6.2 requires. *)
 
 port_ref        ::= path ('@' IDENT ('(' args ')')? )?
 

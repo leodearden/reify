@@ -78,7 +78,7 @@
 //!
 //! ## (e) The five deliberately ungated OCCT fields
 //!
-//! `OcctKernel::execute` has 46 numeric-extraction sites, split 46 = 41 + 3 + 2.
+//! `OcctKernel::execute` has 46 numeric-extraction sites, split 47 = 42 + 3 + 2.
 //! The 41 LENGTH-semantic ones go through the kernel's `extract_length_f64`;
 //! these five stay on the context-free `extract_f64`, each marked at its call
 //! site with a `// not length-semantic:` comment:

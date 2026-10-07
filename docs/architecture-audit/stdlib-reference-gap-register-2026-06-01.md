@@ -24,7 +24,7 @@ Ground-truth corroboration from source: `PrimitiveKind = {Box, Cylinder, Sphere,
 |-----|--------------|-----|------|---------|------------------|
 | high | cone primitive not implemented | §3.2 primitive L314 | missing_decl | tracked_open #4154(in-progress,0.41); #303(done,0.44) | cone() is a documented core solid primitive with no FFI, no PrimitiveKind, no IR op — fully unimplemented. |
 | high | torus primitive not implemented | §3.2 primitive L316 | missing_decl | tracked_open #4154(in-progress,0.41); #303(done,0.49); #2574(done,0.49) | torus() documented core primitive is unimplemented end-to-end. |
-| high | half_space primitive not implemented (doc-comment refers to nonexistent arm) | §3.2 primitive L318 | missing_decl | tracked_open #3465(pending,0.62); #3466(pending,0.53) | half_space() (the doc's headline unbounded-Solid example) is unimplemented; a doc-comment even cites a nonexistent enum arm. |
+| high | half_space primitive not implemented (doc-comment refers to nonexistent arm) | §3.2 primitive L318 | missing_decl | tracked_open #3465(pending,0.62); #3466(pending,0.53) | RESOLVED — LANDED on main by #3465 (`crates/reify-compiler/src/geometry.rs`: `"half_space" => { ... }` builds `PrimitiveKind::HalfSpace`, the enum arm the survey found missing). |
 | high | rectangle 2D shape not implemented | §3.2 2D shapes L324 | missing_decl | untracked #322(done,0.48); #324(done,0.42) | rectangle() — a fundamental 2D profile constructor (needed to feed extrude/revolve) — does not exist. |
 | high | circle 2D shape not implemented | §3.2 2D shapes L325 | missing_decl | untracked #324(done,0.41); #320(done,0.39) | circle() 2D profile constructor is unimplemented. |
 | high | polygon 2D shape not implemented | §3.2 2D shapes L326 | missing_decl | untracked #324(done,0.42); #2574(done,0.40) | polygon() 2D profile constructor is unimplemented. |
@@ -33,7 +33,7 @@ Ground-truth corroboration from source: `PrimitiveKind = {Box, Cylinder, Sphere,
 | medium | wedge primitive not implemented | §3.2 primitive L317 | missing_decl | tracked_open #4154(in-progress,0.40); #303(done,0.46) | wedge() documented solid primitive does not exist. |
 | medium | ellipse 2D shape not implemented | §3.2 2D shapes L327 | missing_decl | untracked #2914(done,0.43) | ellipse() 2D profile constructor is unimplemented. |
 | medium | offset_curve (3 overloads) not implemented | §3.5 modify L374-376 | missing_decl | untracked #320(done,0.41) | All three offset_curve overloads are unimplemented. |
-| low | nurbs_surface not implemented | §3.2 curves L339 | missing_decl | tracked_partial #320(done,0.45); #3621(done,0.40); #3615(done,0.40) | nurbs_surface() Surface constructor is unimplemented and even the doc signature is a placeholder. |
+| low | nurbs_surface not implemented | §3.2 curves L339 | missing_decl | tracked_partial #320(done,0.45); #3621(done,0.40); #3615(done,0.40) | RESOLVED — LANDED on main by #4191 (`crates/reify-compiler/src/geometry.rs`: `"nurbs_surface" => { ... }` lowers to `SurfaceKind::Nurbs`). |
 
 ### G-B geometry-modify-and-sweep  — 12 gaps (0 high)
 

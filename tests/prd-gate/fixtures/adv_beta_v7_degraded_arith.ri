@@ -1,0 +1,26 @@
+module adv_beta_v7_degraded_arith
+
+// Fixture (β ADVERSARY, docs/prds/v0_6/result-field-vacuity-closure.md leaf β).
+//
+// V7 asserts "every degraded-declared field of a degenerate/degraded modal
+// result is Value::Undef on the production path".  The β signal names
+// Mode.shape / Mode.participation_mass (cited to #7012) as degraded-declared.
+//
+// This fixture does ARITHMETIC on Mode.participation_mass on the
+// mechanism-modal production path.  If V7 held, the value would be
+// Value::Undef and the multiply would propagate/raise undef; measured on main
+// it is Value::Real(0.0) and the eval completes with exit 0.
+structure def AdvBetaV7DegradedArith {
+    let steel = Steel_AISI_1045()
+    let z_carriage_mass = 0.5kg
+    let z_flexure = prb_parallelogram_flexure(
+        20mm, 5mm, 0.5mm, 10mm, steel, vec3(0, 0, 1), point3(0mm, 0mm, 0mm))
+    let m0 = mechanism()
+    let carriage = body(m0, point_mass(z_carriage_mass), z_flexure)
+    let z_modal = mechanism_modal_analysis(carriage, ModalOptions())
+    let m0mode = z_modal.modes[0]
+    let pm = m0mode.participation_mass
+    let pm_plus_one = pm + 1.0
+    let norm_ratio = z_modal.mass_matrix_norm + z_modal.stiffness_matrix_norm
+    let bc_count = z_modal.boundary_conditions
+}

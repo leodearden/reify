@@ -504,11 +504,26 @@ fn lower_unit(u: &CompiledUnit) -> ItemDoc {
 // ---------------------------------------------------------------------------
 
 fn lower_type_alias(a: &CompiledTypeAlias) -> ItemDoc {
-    let type_repr = a
-        .resolved_type
-        .as_ref()
-        .map(type_to_string)
-        .unwrap_or_else(|| "<parameterized>".to_string());
+    let type_repr = match (a.resolved_type.as_ref(), a.type_expr.as_ref()) {
+        (Some(t), _) => type_to_string(t),
+        // A `None` resolved_type means the alias is parametric (its body is
+        // instantiated per use site) or its body names an entity/unresolvable
+        // type — in both cases the carried `type_expr` is the author's actual
+        // spelling, so render that instead of a sentinel. `Display` is used
+        // rather than span-slicing because `build_stdlib_doc_model` (below)
+        // passes `""` as source, so a span-slicing strategy would render
+        // every stdlib alias as the empty string.
+        (None, Some(te)) => te.to_string(),
+        // Reachable only via a synthetic fixture (e.g. a hand-built
+        // CompiledTypeAlias in a test): a real alias carries neither a
+        // resolved type nor a body, which says nothing about whether it is
+        // parametric — so the old "<parameterized>" sentinel was actively
+        // misleading here. "<unresolved>" is accurate and matches the house
+        // `<...>` sentinel style already used by reify_core::Type's Display
+        // for Type::Error (`impl Display for Type` in reify-core's `ty.rs`
+        // writes "<error>" for the `Type::Error` arm).
+        (None, None) => "<unresolved>".to_string(),
+    };
 
     ItemDoc {
         header: ItemHeader {
@@ -656,6 +671,16 @@ fn type_to_string(ty: &Type) -> String {
 /// production construction site, `convert_type_params`
 /// (`crates/reify-compiler/src/type_resolution.rs:3839-3852`), always builds
 /// it as `vec![]`, so a `<…>` arm here would be dead code.
+///
+/// **MIRRORED GRAMMAR — keep in sync.** The per-param skeleton described
+/// above is also rendered by `format_type_params` in
+/// `crates/reify-lsp/src/hover.rs` (task #6341) for LSP hover and, via
+/// `format_type_alias_signature`, for completion `detail`. The default's
+/// own rendering is deliberately NOT part of that obligation (semantic
+/// `reify_core::Type` Display here vs. syntactic `TypeExpr` Display there —
+/// see `format_type_alias_signature`'s doc comment). See
+/// `format_type_params`'s doc comment for the rest of the shared-grammar
+/// rationale.
 fn render_type_params(params: &[reify_ir::TypeParam]) -> Vec<String> {
     params
         .iter()

@@ -97,7 +97,6 @@ fn openvdb_stress_example_compiles_and_has_expected_shape() {
 #[test]
 fn openvdb_stress_cli_eval_prints_sampled_values() {
     use reify_kernel_openvdb::OpenVdbKernel;
-    use std::process::{Command, Stdio};
 
     // ── Fixture: unit cube mesh (8 verts, 12 tris, half-extent 1.0) ────────────
     let verts: Vec<[f32; 3]> = vec![
@@ -135,22 +134,13 @@ fn openvdb_stress_cli_eval_prints_sampled_values() {
 
     // ── Spawn `reify eval <example>` with CWD = tempdir ────────────────────────
     let example_path = common::example_path("imported_field/openvdb_stress.ri");
-    let output = Command::new(env!("CARGO_BIN_EXE_reify"))
-        .args(["eval", &example_path])
-        .current_dir(dir.path())
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .expect("failed to spawn reify binary");
-
-    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    let (status, stdout, stderr) =
+        common::run_with_args_in(dir.path(), &["eval", &example_path]);
 
     assert!(
-        output.status.success(),
+        status.success(),
         "reify eval exited with {:?}\nstdout:\n{}\nstderr:\n{}",
-        output.status.code(),
+        status.code(),
         stdout,
         stderr
     );

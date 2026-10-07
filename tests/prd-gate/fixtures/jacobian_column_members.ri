@@ -1,0 +1,42 @@
+// Fixture (task 6102): the user-observable signal that `joint_jacobian` returns
+// its own nominal structure, `JacobianColumn`, and that the structure declares
+// the two members the runtime actually carries.
+//
+// Before this task `joint_jacobian` was nominally typed as `Twist`, an EMPTY
+// marker structure. Compile-time member access is gated on a structure's
+// DECLARED params, so reading a column's parts was a hard compile error —
+// measured on the pre-task tree, exactly this source emitted:
+//
+//     error: structure 'Twist' has no member 'angular'
+//     error: structure 'Twist' has no member 'linear'
+//
+// So this file is unwritable before the split and clean after it, which is what
+// makes it a signal rather than a spelling test.
+//
+// The `.angular` / `.linear` reads are also deliberately EVALUATED by the
+// companion Rust test
+// (crates/reify-eval/tests/harness_fea_solver_e2e/jacobian_column_member_access.rs)
+// against the analytic column values — a declared-but-absent key evaluates to
+// `undef` rather than erroring (probed via `snapshot(m, []).is_singular`), so
+// only a value assertion distinguishes real wiring from vacuous wiring.
+//
+// A Jacobian column is dpose/dq — the partial derivative of pose with respect to
+// the joint coordinate — NOT a spatial velocity, which is why it is deliberately
+// not a `Twist` and must never be fed to `transform_exp`.
+
+module jacobian_column_members
+
+structure def JacobianColumnMembers {
+    // Revolute about +Z: the column is pure rotation — angular = [0,0,1] (rad/rad),
+    // linear = [0,0,0] (m/rad, zero because the axis passes through the origin).
+    let rev       = revolute(vec3(0.0, 0.0, 1.0), 0deg .. 120deg)
+    let rev_col   = joint_jacobian(rev)
+    let rev_ang   = rev_col.angular
+    let rev_lin   = rev_col.linear
+
+    // Prismatic along +X: the column is pure translation — angular = [0,0,0]
+    // (rad/m), linear = [1,0,0] (m/m).
+    let prism     = prismatic(vec3(1.0, 0.0, 0.0), 0mm .. 10mm)
+    let prism_col = joint_jacobian(prism)
+    let prism_lin = prism_col.linear
+}
