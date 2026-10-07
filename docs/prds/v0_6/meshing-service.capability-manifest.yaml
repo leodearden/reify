@@ -1,0 +1,1544 @@
+prd: docs/prds/v0_6/meshing-service.md
+schema_version: 1
+tasks:
+- label: α
+  task_id: 8284
+  title: 'meshing-service α: OCCT topology side channel — BoundaryTopology, TessellatedBody,
+    tessellate_with_topology'
+  capabilities:
+  - name: mapshapes-ordinal-substrate
+    binding: existing-substrate — crates/reify-kernel-occt/src/handle.rs::extract_faces
+      / extract_edges / extract_vertices (OcctKernelHandle) and cpp/occt_wrapper.cpp::get_vertices
+      follow the TopExp::MapShapes order the ordinals reuse (PRD §3 row 2). Verified
+      by git grep on main today.
+    verdict: PASS
+  - name: tessellate-shape-core-substrate
+    binding: existing-substrate — cpp/occt_wrapper.cpp::tessellate_shape returns TessResult
+      (vertices/indices/normals only; src/ffi.rs::TessResult); BRep_Tool::PolygonOnTriangulation
+      is called nowhere in crates/ (one test comment names NewPolygonOnTriangulation).
+      α shares that C++ core (C2).
+    verdict: PASS
+  - name: boundary-topology-value
+    binding: producer-self (C1) — reify-ir gains BoundaryTopology {face_of_triangle,
+      edges, vertices, solids}.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: pub struct BoundaryTopology\b
+      expect: present
+      paths:
+      - crates/reify-ir/src
+  - name: tessellated-body-pair
+    binding: producer-self (C1, D-E) — TessellatedBody {mesh, topology}; Mesh gains
+      no field.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: pub struct TessellatedBody\b
+      expect: present
+      paths:
+      - crates/reify-ir/src
+  - name: edge-kind-regular-seam-degenerate
+    binding: 'producer-self (C1, C2) — EdgePath.kind: EdgeKind {Regular, Seam, Degenerate};
+      seams via BRep_Tool::IsClosed(edge, face), zero-length edges Degenerate.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: pub enum EdgeKind\b
+      expect: present
+      paths:
+      - crates/reify-ir/src
+  - name: typed-topology-invariant
+    binding: producer-self (C1, heuristic 10) — BoundaryTopology::validate(&Mesh)
+      -> Result<(), TopologyInvariant>, the violation naming the invariant, ordinals
+      and counts (BT2).
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: pub (struct|enum) TopologyInvariant\b
+      expect: present
+      paths:
+      - crates/reify-ir/src
+  - name: trait-method-additive-default
+    binding: producer-self (C2) — GeometryKernel::tessellate_with_topology(handle,
+      tol) with a default Err, on the trait in reify-ir (the additive trait-method
+      pattern, as mesh_surface_to_volume_attributed's default today).
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn tessellate_with_topology\b
+      expect: present
+      paths:
+      - crates/reify-ir/src/geometry.rs
+  - name: occt-implements-side-channel
+    binding: producer-self (C2) — the OCCT kernel implements it through a new OcctRequest
+      variant on OcctKernelHandle.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn tessellate_with_topology\b
+      expect: present
+      paths:
+      - crates/reify-kernel-occt/src
+  - name: edge-polygons-read-from-face-triangulations
+    binding: producer-self (C2) — the shared C++ core calls BRep_Tool::PolygonOnTriangulation(edge,
+      triangulation, location) per incident face. Pattern requires a call paren, so
+      a prose mention without one cannot satisfy it.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: BRep_Tool::PolygonOnTriangulation\(
+      expect: present
+      paths:
+      - crates/reify-kernel-occt/cpp
+  - name: null-triangulation-is-an-error
+    binding: producer-self (C2) — a null face triangulation or null edge polygon is
+      an Error naming the ordinal (today a null face is skipped silently); face_of_triangle
+      counts emitted triangles.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'behavioural: α''s reify-kernel-occt unit tests; no grep separates the
+        new Error from the old skip.'
+  - name: bt1-bt2-against-real-occt
+    binding: 'producer-self — BT1 (all-edge filleted block, plate with a hole, cylinder
+      seam: counts equal extract_*''s, regular-edge sharing, Seam kind, validate passes)
+      and BT2 (out-of-range face ordinal names invariant, ordinal and face count).'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: BT1, BT2 — reify-kernel-occt integration tests against real OCCT shapes.
+- label: β
+  task_id: 8285
+  title: 'meshing-service β: reify-meshing facade; run_mesh (Surface arm) and the
+    2D sequence; typed MeshError at reify-kernel-gmsh''s API; in-process MeshService;
+    SizePolicy with today''s default'
+  capabilities:
+  - name: gmsh-registered-in-production-upstream
+    binding: 'producer-upstream — #6660 (hard edge; #6660 depends on #7052 per Q-y,
+      verified on the task record). #6660 links and registers gmsh in the CLI/GUI
+      on the plain producer and coded-refuses selector BCs on bodies (Q-x). Without
+      it no production body solve meshes and BT3 has nothing to observe.'
+    verdict: PASS
+  - name: meshing-crate
+    binding: producer-self (C3, C13) — new crate reify-meshing depending on reify-ir,
+      reify-core, serde, bincode only.
+    verdict: PASS
+    delivered_check:
+      kind: path
+      expect: present
+      paths:
+      - crates/reify-meshing/Cargo.toml
+  - name: mesh-service-trait
+    binding: 'producer-self (C3 as amended: C3 is the end state) — MeshService with
+      the Surface-arm methods (mesh, mesh_profile_2d); open_session arrives with MeshSession
+      at ζ.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: pub trait MeshService\b
+      expect: present
+      paths:
+      - crates/reify-meshing/src
+  - name: typed-mesh-error
+    binding: producer-self (C3 as amended) — MeshError with the variants the Surface
+      arm and the 2D request produce; TopologyInvalid arrives with δ, BudgetExceeded
+      with θ, the worker variants with ι.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: pub enum MeshError\b
+      expect: present
+      paths:
+      - crates/reify-meshing/src
+  - name: one-gmsh-sequence-surface-arm
+    binding: producer-self (C4) — reify_kernel_gmsh::run_mesh(&MeshRequest) -> Result<MeshReport,
+      MeshError>, Surface arm, one thread (D-J), plus the 2D .geo-API sequence behind
+      the same scope (S7). The Topological arm is δ's.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: pub fn run_mesh\b
+      expect: present
+      paths:
+      - crates/reify-kernel-gmsh/src
+  - name: in-process-service
+    binding: producer-self (C13) — reify-kernel-gmsh implements MeshService in process
+      (name-agnostic check on the impl).
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: impl MeshService for
+      expect: present
+      paths:
+      - crates/reify-kernel-gmsh/src
+  - name: sizing-types-move-to-facade
+    binding: producer-self (C3 Homes, S8) — BackgroundSizeField (today crates/reify-kernel-gmsh/src/background_size_field.rs)
+      moves into reify-meshing with its validation, with the classify-angle policy
+      table (π/4 uniform, π/12 field). The policy table has no PRD-fixed name, so
+      only the moved struct is mechanised.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: pub struct BackgroundSizeField\b
+      expect: present
+      paths:
+      - crates/reify-meshing/src
+  - name: size-policy-introduced
+    binding: producer-self (C10 as amended) — β INTRODUCES SizePolicy::resolve(options,
+      body) -> Sizing in reify-meshing, carrying today's default (the minimum OCCT
+      edge, uniform); η adds the user arm, θ replaces the default.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: (struct|enum|trait) SizePolicy\b
+      expect: present
+      paths:
+      - crates/reify-meshing/src
+  - name: mesh-pipeline-version
+    binding: producer-self (C3 MeshProvenance.pipeline_version, C11 as ruled) — MESH_PIPELINE_VERSION,
+      reify-meshing's constant bumped whenever the sequence's output changes (distinct
+      from ι's wire PROTOCOL_VERSION); η hashes it.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: pub const MESH_PIPELINE_VERSION\b
+      expect: present
+      paths:
+      - crates/reify-meshing/src
+  - name: gmsh-version-accessor
+    binding: producer-self (C3 MeshProvenance.gmsh_version, C11) — the service reports
+      the gmsh version; no accessor exists in reify-kernel-gmsh on main (no General.Version
+      / gmsh_version), so β adds one. Name not PRD-fixed.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: β unit test reading the version through the in-process service; η's
+        BT15 hash identity consumes it.
+  - name: typed-errors-at-the-refine-entry
+    binding: 'producer-self (BT4 as amended) — reify-kernel-gmsh''s refine entry point
+      returns MeshError, and volume_refine.rs maps it by match (today volume_refine.rs::map_geometry_error
+      routes by msg.contains). β does not reroute the caller to a service (§11: the
+      trampoline gets a service only at ζ). Accepted gap: a `use MeshError::*` glob
+      would false-FAIL; BT4 is the cover.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'MeshError::'
+      expect: present
+      paths:
+      - crates/reify-solver-elastic/src/volume_refine.rs
+  - name: typed-errors-at-the-2d-entry
+    binding: producer-self (BT4 as amended) — the 2D entry point returns MeshError
+      and mesher.rs maps it by match (today mesher.rs::map_geometry_error routes by
+      msg.contains). Same accepted gap.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'MeshError::'
+      expect: present
+      paths:
+      - crates/reify-solver-elastic/src/mesher.rs
+  - name: stub-marker-deleted
+    binding: producer-self (C3, INV-SF-6, heuristic 12) — the STUB_UNAVAILABLE_MARKER
+      constant (crates/reify-kernel-gmsh/src/mesh_profile_2d.rs today) is deleted.
+      Line-start anchored so the doc comments in volume_refine.rs and mesh_profile_2d.rs
+      that quote `pub const STUB_UNAVAILABLE_MARKER` cannot match.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^pub const STUB_UNAVAILABLE_MARKER\b
+      expect: absent
+      paths:
+      - crates
+  - name: substring-routing-deleted
+    binding: producer-self (C3, BT4's grep) — both msg.contains(...STUB_UNAVAILABLE_MARKER)
+      sites (mesher.rs::map_geometry_error, volume_refine.rs::map_geometry_error)
+      are deleted. Pattern excludes any line with a '/' before the call, so the explanatory
+      doc comments cannot hold it red; deleting the const makes any aliased reference
+      fail to compile.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^[^/]*\.contains\([^)]*STUB_UNAVAILABLE_MARKER
+      expect: absent
+      paths:
+      - crates
+  - name: bt3-one-sequence-deterministic-cli
+    binding: 'producer-self over producer-upstream #6660 (D3 correction, §11): BT3
+      reads a NEW CLI fixture whose cells are max(result.displacement) / result.max_von_mises
+      — fea_body_cantilever.ri prints neither and both read undef before #6660. Two
+      reify eval runs print identical maxima (NumThreads=1, D-J; absorbs #7409 part
+      D and #7970''s refine MeshSizeMax write).'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: BT3 — reify-cli subprocess e2e on the new fixture, two runs compared
+        within one test.
+  - name: bt4-bt5-typed-failures
+    binding: 'producer-self — BT4 (as amended: every MeshError variant reaches mesher.rs
+      and volume_refine.rs as a typed value and maps by match) and BT5 (zero tets
+      via a run_mesh test hook -> MeshError::EmptyResult; the MeshEmptyResult DiagnosticCode
+      is bound at ε, the first leaf that maps it into a diagnostic).'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: BT4, BT5 — Rust tests in reify-solver-elastic / reify-kernel-gmsh.
+  - name: absorbed-tasks-ported
+    binding: 'producer-self — #7970 (figure list re-baselined here), #7481 and #7409
+      part D are superseded with content ported first (PRD §7).'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: task-record port, not code.
+- label: γ
+  task_id: 8286
+  title: 'meshing-service γ: engine-owned VolumeMesh store; with_mesh_service; the
+    edge''s plain arm and the sweep''s 2D path through the service; morph arm into
+    the engine store'
+  capabilities:
+  - name: facade-upstream
+    binding: producer-upstream — leaf β (MeshService, MeshError, run_mesh, in-process
+      service).
+    verdict: PASS
+  - name: engine-substrate
+    binding: existing-substrate — crates/reify-eval/src/engine_build.rs::execute_realization_ops
+      (the §3.2 VolumeMesh edge), realization_cache.rs::RealizationCache / NO_OPTIONS,
+      realization_content.rs::resolve_realization_kernel; the sweep's 2D path is reify_eval::sweep_classifier
+      -> reify-solver-elastic mesher.rs::mesh_swept_profile_2d -> mesh_profile_2d.rs::mesh_plane_2d
+      — all verified on main.
+    verdict: PASS
+  - name: with-mesh-service
+    binding: producer-self (C7) — Engine::with_mesh_service(Arc<dyn MeshService>).
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: pub fn with_mesh_service\b
+      expect: present
+      paths:
+      - crates/reify-eval/src
+  - name: cli-installs-the-service
+    binding: 'producer-self (C7) — the CLI constructor installs the in-process service
+      where #6660 installs the gmsh kernel.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: with_mesh_service\(
+      expect: present
+      paths:
+      - crates/reify-cli/src
+  - name: gui-installs-the-service
+    binding: producer-self (C7) — the GUI engine constructor installs it likewise.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: with_mesh_service\(
+      expect: present
+      paths:
+      - gui/src-tauri/src
+  - name: sweep-2d-through-the-service
+    binding: 'producer-self (§7 γ, BT6b) — the hex/wedge sweep''s 2D profile path
+      calls MeshService::mesh_profile_2d. Scoped to both crates the path crosses.
+      Accepted gap: a UFCS spelling would false-FAIL; BT6b is the cover.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: \.mesh_profile_2d\(
+      expect: present
+      paths:
+      - crates/reify-eval/src
+      - crates/reify-solver-elastic/src
+  - name: edge-plain-arm-through-the-service
+    binding: producer-self (C7) — the VolumeMesh edge's plain arm calls MeshService::mesh
+      and stores an engine-owned value; gmsh's GeometryKernel path stays only for
+      the test-only attributed producer until ε deletes both.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'BT6 — reify-cli test: in-process service and `reify eval` subprocess
+        print the same content hash, compared within one test.'
+  - name: code-MeshBackendUnavailable
+    binding: producer-self (C12, BT6b) — Error; a fake MeshService returning BackendUnavailable
+      to the sweep surfaces it coded. Also the service-less body solve's code (C7).
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^    MeshBackendUnavailable\b
+      expect: present
+      paths:
+      - crates/reify-core/src/diagnostics.rs
+  - name: code-MeshModeUsed
+    binding: producer-self (C12, BT6) — Info printed on every mesh (`Classified` until
+      ε). Anchored on the DiagnosticCode variant line, so reify-meshing's MeshModeUsed
+      enum cannot satisfy it.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^    MeshModeUsed\b
+      expect: present
+      paths:
+      - crates/reify-core/src/diagnostics.rs
+  - name: engine-owned-store
+    binding: producer-self (C7 'The store') — VolumeMesh is an engine-owned value
+      in the realization cache; resolve_realization_kernel no longer serves VolumeMesh;
+      the morph arm stores into the same store; the plain arm's meshes are stored
+      with no body (ε adds the MeshableBody). γ keeps today's caching condition and
+      key (C11 is η's).
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: BT6 (shared with edge-plain-arm-through-the-service).
+  - name: bt6b-and-service-less-body-solve
+    binding: producer-self (C7) — BT6b (fake service -> MeshBackendUnavailable on
+      the sweep) and no service -> MeshBackendUnavailable on a body solve, never a
+      hollow result.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: BT6b and a γ engine test with no service installed.
+- label: δ
+  task_id: 8287
+  title: 'meshing-service δ: identity through gmsh — Topological arm, MeshIdentity,
+    extended BoundaryAssociation, face_closure_nodes; morph rekey and CarriedTopology
+    round trip'
+  capabilities:
+  - name: topology-upstream
+    binding: producer-upstream — leaf α (BoundaryTopology, TessellatedBody, validate).
+    verdict: PASS
+  - name: facade-upstream
+    binding: producer-upstream — leaf β (run_mesh Surface arm, GeometrySource, MeshReport,
+      MeshError).
+    verdict: PASS
+  - name: boundary-association-substrate
+    binding: existing-substrate — crates/reify-ir/src/boundary_attachment.rs::BoundaryAssociation
+      / NodeAttachment {OnFace, OnEdge, OnVertex}; reify-mesh-morph/src/boundary.rs::rekey_boundary_association
+      and compute_dirichlet_bcs; reify-eval/src/compute_targets/result_topology.rs::CarriedTopology;
+      the gmsh FFI wrappers ffi.rs::add_nodes_2d / get_elements_by_type hard-coding
+      dim 2 / tag −1 — verified on main.
+    verdict: PASS
+  - name: mesh-identity
+    binding: 'producer-self (C3 as amended: δ adds MeshIdentity and EntityPerFace;
+      C5) — node_entity (one EntityRef per boundary node) and face_triangles per face
+      ordinal.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: pub struct MeshIdentity\b
+      expect: present
+      paths:
+      - crates/reify-meshing/src
+  - name: topological-arm-entity-per-face
+    binding: producer-self (C4 steps 2-4, C5) — one discrete entity per B-rep ordinal
+      (tag = ordinal + 1), the FFI wrappers generalised beyond dim 2 / tag −1, classifySurfaces(π,
+      1, 1, π, 0), child->parent map read from input triangle tags before generate,
+      curves by parent-face pair.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: BT7 (all-edge filleted block), BT8 (each BT1 body) — reify-eval tests
+        with an engine-owned OCCT kernel (a standalone OCCT handle beside gmsh FFI
+        is crash-prone).
+  - name: boundary-adjacency
+    binding: producer-self (C6, S6) — BoundaryAssociation gains face -> edges, edge
+      -> vertices adjacency (handles).
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: pub struct BoundaryAdjacency\b
+      expect: present
+      paths:
+      - crates/reify-ir/src
+  - name: face-closure-resolver
+    binding: 'producer-self (C6, S6) — the one resolver: interior + rim + corner nodes
+      of a face set.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: pub fn face_closure_nodes\b
+      expect: present
+      paths:
+      - crates/reify-ir/src
+  - name: per-face-boundary-triangles
+    binding: 'producer-self (C6) — BoundaryAssociation::face_triangles(face) -> &[[u32;
+      3]] (consumer #8078).'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: pub fn face_triangles\b
+      expect: present
+      paths:
+      - crates/reify-ir/src/boundary_attachment.rs
+  - name: morph-rekey-and-carried-topology-round-trip
+    binding: producer-self (C6) — rekey_boundary_association re-keys adjacency and
+      face triangles, fail-closed; CarriedTopology's value encoding round-trips the
+      extension.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: δ unit tests in reify-mesh-morph and reify-eval (round trip); no PRD-fixed
+        construct to grep.
+- label: ε
+  task_id: 8288
+  title: 'meshing-service ε: identity on every B-rep mesh — meshable body, one realization
+    function, morph or mesh seed; gmsh leaves GeometryKernel; delete the attributed
+    producer, the mesh-morph feature and demanded_boundary; GUI morph dormant'
+  capabilities:
+  - name: store-upstream
+    binding: producer-upstream — leaf γ (engine-owned store, with_mesh_service, MeshModeUsed
+      code).
+    verdict: PASS
+  - name: identity-upstream
+    binding: producer-upstream — leaf δ (Topological arm, MeshIdentity, extended BoundaryAssociation,
+      face_closure_nodes).
+    verdict: PASS
+  - name: one-realization-function
+    binding: producer-self (C7, S11, Q-a) — realize_volume_mesh(body, request, morph_source)
+      -> StoredMesh seeds by morph or by MeshService::mesh and validates either association
+      with C5's invariants; a morph failing validation is a soft fail (fresh mesh,
+      never stored, counted).
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn realize_volume_mesh\b
+      expect: present
+      paths:
+      - crates/reify-eval/src
+  - name: stored-mesh-value
+    binding: 'producer-self (C7 as ruled) — StoredMesh {volume, body: Arc<MeshableBody>};
+      γ may introduce StoredMesh earlier with no body (then this check is satisfied
+      early, harmlessly). Paths cover every crate the PRD could home it in.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: struct StoredMesh\b
+      expect: present
+      paths:
+      - crates/reify-eval/src
+      - crates/reify-compute-contract/src
+      - crates/reify-meshing/src
+  - name: meshable-body-belongs-to-the-body
+    binding: 'producer-self (C7 as ruled, S11) — the meshable body (TessellatedBody
+      + ordinal -> handle map, or the surface Mesh) is built once per body and stored
+      with every seed, meshed or morphed. No RemeshFactory at ε: ζ builds it from
+      the stored MeshableBody (a factory needs MeshSession, ζ''s). The drafting-time
+      producer-downstream FAIL is resolved by this ruling.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: struct MeshableBody\b
+      expect: present
+      paths:
+      - crates/reify-eval/src
+      - crates/reify-meshing/src
+      - crates/reify-compute-contract/src
+  - name: gmsh-geometry-kernel-impl-retired
+    binding: 'producer-self (§11: moved from γ; S3, C13) — reify-kernel-gmsh loses
+      its GeometryKernel impls (kernel.rs stub and kernel_real.rs, both today), with
+      the test-only attributed producer that is their last user.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^impl GeometryKernel for GmshKernel\b
+      expect: absent
+      paths:
+      - crates/reify-kernel-gmsh/src
+  - name: gmsh-inventory-registration-retired
+    binding: 'producer-self (§11: moved from γ; S3) — register.rs''s inventory::submit!
+      retires. Line-start anchored: the `//!` doc lines that name inventory::submit!
+      cannot match.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^inventory::submit!
+      expect: absent
+      paths:
+      - crates/reify-kernel-gmsh/src
+  - name: kernel-id-gmsh-retired
+    binding: 'producer-self (§11: moved from γ; S3) — KernelId::Gmsh (the `    Gmsh,`
+      variant line in crates/reify-core/src/kernel.rs) retires; a config naming gmsh
+      gets a coded diagnostic (manual: ε test). Anchored to the 4-space variant line;
+      a test or doc naming KernelId::Gmsh cannot match.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^    Gmsh,
+      expect: absent
+      paths:
+      - crates/reify-core/src/kernel.rs
+  - name: ensure-gmsh-kernel-deleted
+    binding: 'producer-self (§11: moved from γ; C7) — Engine::ensure_gmsh_kernel deleted;
+      engine tests install the in-process service. #8257''s BT9 uses ensure_gmsh_kernel:
+      whichever lands second moves it to with_mesh_service (PRD §9).'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: pub fn ensure_gmsh_kernel\b
+      expect: absent
+      paths:
+      - crates/reify-eval/src
+  - name: attributed-producer-deleted
+    binding: producer-self — mesh_surface_to_volume_attributed (reify-ir geometry.rs
+      trait default, kernel_real.rs override) deleted. `\b` keeps the test fn mesh_surface_to_volume_attributed_default_is_unsupported_err
+      from matching.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn mesh_surface_to_volume_attributed\b
+      expect: absent
+      paths:
+      - crates
+  - name: mirror-sequence-deleted
+    binding: producer-self (D-B) — mesh_boundary.rs::run_meshing_with_entity_queries
+      (the 'deliberately mirrors' copy) deleted.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn run_meshing_with_entity_queries\b
+      expect: absent
+      paths:
+      - crates
+  - name: mesh-morph-feature-declarations-deleted
+    binding: producer-self (§7 ε 'in every manifest naming it', Q-x) — the `mesh-morph
+      = []` compile-gate feature in reify-kernel-gmsh and its mirror in reify-kernel-conformance
+      (which gates occt_gmsh_attributed_conformance.rs). NOT reify-kernel-occt's namesake
+      `mesh-morph = ["dep:reify-mesh-morph"]` (it gates OcctProjector for reify-mesh-morph,
+      unrelated to the gmsh gate) — that crate is not in the paths, and its form is
+      not `= []`.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^mesh-morph = \[\]
+      expect: absent
+      paths:
+      - crates/reify-kernel-gmsh/Cargo.toml
+      - crates/reify-kernel-conformance/Cargo.toml
+  - name: mesh-morph-feature-activations-deleted
+    binding: producer-self — every dependency line enabling reify-kernel-gmsh's mesh-morph
+      (reify-eval, reify-kernel-conformance, reify-kernel-gmsh's self-dev-dep today).
+      Anchored on the dependency-line shape, so the Cargo comments that quote `feature
+      = "mesh-morph"` cannot match.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^reify-kernel-gmsh = \{[^}]*\"mesh-morph\"
+      expect: absent
+      paths:
+      - crates/reify-eval/Cargo.toml
+      - crates/reify-kernel-conformance/Cargo.toml
+      - crates/reify-kernel-gmsh/Cargo.toml
+  - name: mesh-morph-cfg-gates-deleted
+    binding: 'producer-self — no `cfg(feature = "mesh-morph")` gate survives in reify-kernel-gmsh
+      or reify-kernel-conformance once the feature is gone: an orphaned gate compiles
+      its item out silently (only an unexpected_cfgs warning), the silent-vacuity
+      shape. ''^[^/]*'' excludes doc comments; reify-kernel-occt''s own gates are
+      out of scope.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^[^/]*feature = \"mesh-morph\"
+      expect: absent
+      paths:
+      - crates/reify-kernel-gmsh
+      - crates/reify-kernel-conformance
+  - name: face-anchors-deleted
+    binding: producer-self — bc_resolve.rs::build_face_anchors (nearest-centroid attribution
+      input) deleted.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: pub fn build_face_anchors\b
+      expect: absent
+      paths:
+      - crates/reify-eval/src
+  - name: demanded-boundary-plumbing-deleted
+    binding: 'producer-self (S2) — the `demanded_boundary: bool` field (engine_build.rs,
+      with with_demanded_boundary and the gate in execute_realization_ops) is deleted.
+      Scoped to the field declaration so a test literal `demanded_boundary: false`
+      or prose cannot hold it red. Accepted gap: a renamed field.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'demanded_boundary: bool'
+      expect: absent
+      paths:
+      - crates/reify-eval/src
+  - name: boundary-demand-registry-deleted
+    binding: 'producer-self (S2, C7 as amended) — Engine::register_volume_mesh_boundary_demand
+      (engine_admin.rs; called from compute_targets/mod.rs for solver::elastic_static
+      and from two reify-eval tests) is deleted with demanded_boundary. Anchored to
+      the `pub fn` definition: test modules call it but cannot define it (rule 4),
+      and the rustdoc intra-link cannot match.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: pub fn register_volume_mesh_boundary_demand\b
+      expect: absent
+      paths:
+      - crates/reify-eval/src
+  - name: bc-resolve-reads-face-closure
+    binding: producer-self (C6, heuristic 11) — bc_resolve::boundary_node_set calls
+      face_closure_nodes (today keeps OnFace only).
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: face_closure_nodes\(
+      expect: present
+      paths:
+      - crates/reify-eval/src/compute_targets/bc_resolve.rs
+  - name: topology-selectors-read-face-closure
+    binding: producer-self (C6) — topology_selectors::nodes_for_faces calls face_closure_nodes.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: face_closure_nodes\(
+      expect: present
+      paths:
+      - crates/reify-eval/src/topology_selectors.rs
+  - name: gui-morph-reason-names-2953
+    binding: 'producer-self (Q-e, BT11b) — the shipping GUI passes MorphRegistration::Unavailable
+      { reason } naming #2953 (gui/src-tauri/src/engine.rs mentions 2953 nowhere today).
+      Accepted gap: a comment alone satisfies it; the absent check below and BT11b
+      are the cover.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '#2953'
+      expect: present
+      paths:
+      - gui/src-tauri/src/engine.rs
+  - name: gui-morph-not-enabled
+    binding: 'producer-self (Q-e) — the `gui`-feature arm''s MorphRegistration::Enabled(reify_mesh_morph::register_morph_producer)
+      goes. ''^[^/]*'' keeps a comment saying what #2953 will restore from matching.
+      Scoped to engine.rs only (src/tests/engine_tests.rs documents the Enabled shape).'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^[^/]*MorphRegistration::Enabled\(reify_mesh_morph::register_morph_producer\)
+      expect: absent
+      paths:
+      - gui/src-tauri/src/engine.rs
+  - name: cli-morph-stays-enabled
+    binding: 'existing-substrate — crates/reify-cli/src/main.rs passes reify_eval::MorphRegistration::Enabled(..)
+      today (Q-a: unchanged).'
+    verdict: PASS
+  - name: code-MeshTopologyInvalid
+    binding: producer-self (C7, C12) — the meshable body's count mismatch and the
+      realization function's C5 validation emit it; an earlier leaf minting it satisfies
+      the check early, harmlessly.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^    MeshTopologyInvalid\b
+      expect: present
+      paths:
+      - crates/reify-core/src/diagnostics.rs
+  - name: code-MeshGeometryFailed
+    binding: producer-self (C12) — the realization function maps MeshError::Geometry
+      {stage, gmsh_log} to it (up to 40 log lines).
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^    MeshGeometryFailed\b
+      expect: present
+      paths:
+      - crates/reify-core/src/diagnostics.rs
+  - name: code-MeshEmptyResult
+    binding: 'producer-self (C12) — the realization function maps MeshError::EmptyResult
+      to it. BT5 (β) asserts the typed error at the gmsh API, where no DiagnosticCode
+      mapping exists yet (§11: β cannot reach the callers), so the code is bound to
+      the first leaf whose realization path maps it; minting it at γ satisfies this
+      early.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^    MeshEmptyResult\b
+      expect: present
+      paths:
+      - crates/reify-core/src/diagnostics.rs
+  - name: bt9-entity-per-face-on-every-mesh-cli
+    binding: 'producer-self — BT9: plate with a hole (`difference(box(200mm, 50mm,
+      5mm), translate(cylinder(5mm, 10mm), 0mm, 0mm, -5mm))`) prints MeshModeUsed
+      EntityPerFace with face/edge/vertex counts equal to the body''s.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: BT9 — reify-cli subprocess e2e.
+  - name: bt10-face-closure-on-a-realized-body
+    binding: 'producer-self over substrate elastic_static.rs::loads_supports_to_bc_node_sets
+      / target_node_set (the #4092 handle-valued path, present on main). As amended,
+      BT10 is observed at the resolver (target_node_set), not through a solve: #6660''s
+      Q-x refusal (not on main yet) stands until λ.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'BT10 — Rust engine test at the resolver level; #4092''s test retargets
+        to it.'
+  - name: bt11-morphed-seed-keeps-identity
+    binding: 'producer-self (Q-a, C7 as amended) — one engine, morph producer registered,
+      hole radius edited: the second seed is a morph (MeshModeUsed names the source
+      hash), its association passes C5, its stored mesh carries the body''s MeshableBody,
+      and a morph whose re-key fails validation is replaced by a fresh mesh. BT11b:
+      GUI registration is Unavailable naming #2953.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: BT11, BT11b — reify-eval engine test; gui/src-tauri engine_tests.rs.
+  - name: superseded-tasks-ported
+    binding: 'producer-self — #7277 and #8113 superseded with content ported first
+      (PRD §7).'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: task-record port, not code.
+- label: ζ
+  task_id: 8289
+  title: 'meshing-service ζ: refinement through MeshSession; RemeshFactory on the
+    read handle; reify-solver-elastic drops gmsh; GMSH_AVAILABLE deleted'
+  capabilities:
+  - name: realization-upstream
+    binding: producer-upstream — leaf ε (StoredMesh carrying the body's MeshableBody,
+      realize_volume_mesh).
+    verdict: PASS
+  - name: body-overload-fallback-upstream
+    binding: 'producer-upstream — #8248 (hard edge; #8248 depends on #8266 for the
+      ''stopped'' status). It owns MeshError as the RefineError trigger, last-iterate
+      handling and its selector-bc_override coded Error.'
+    verdict: PASS
+  - name: adaptive-lane-substrate
+    binding: existing-substrate — elastic_static.rs::RealizedAdaptiveProblem (pub(crate)),
+      volume_refine.rs::boundary_surface_mesh, adaptive.rs::refine_marked_elements,
+      reify-compute-contract realization.rs::RealizationReadHandle — verified on main.
+    verdict: PASS
+  - name: mesh-session-trait
+    binding: 'producer-self (C3 as amended: ζ adds MeshSession) — MeshSession {remesh}
+      and MeshService::open_session.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: pub trait MeshSession\b
+      expect: present
+      paths:
+      - crates/reify-meshing/src
+  - name: remesh-factory-from-the-meshable-body
+    binding: producer-self (C7 as ruled, S4, S11) — RemeshFactory {open_session(order)},
+      built from the store entry's MeshableBody and the engine's service; C13 homes
+      the trait in reify-meshing.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: pub trait RemeshFactory\b
+      expect: present
+      paths:
+      - crates/reify-meshing/src
+      - crates/reify-compute-contract/src
+  - name: read-handle-remesh
+    binding: producer-self (C7, S4) — RealizationReadHandle::remesh() -> Option<&Arc<dyn
+      RemeshFactory>>, projected from the store entry; ComputeFn unchanged.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: pub fn remesh\(
+      expect: present
+      paths:
+      - crates/reify-compute-contract/src
+  - name: contract-depends-on-facade
+    binding: producer-self (C7) — reify-compute-contract gains a dependency on reify-meshing
+      (OCCT- and gmsh-free).
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^reify-meshing
+      expect: present
+      paths:
+      - crates/reify-compute-contract/Cargo.toml
+  - name: adaptive-problem-holds-a-session
+    binding: producer-self (C8) — RealizedAdaptiveProblem holds a Box<dyn MeshSession>
+      opened from the seed handle's remesh(), not the seed boundary Mesh.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: MeshSession
+      expect: present
+      paths:
+      - crates/reify-eval/src/compute_targets/elastic_static.rs
+  - name: refine-takes-a-session
+    binding: producer-self (C8) — refine_marked_elements(session, volume_mesh, marked,
+      current_sizes); boundary_surface_mesh leaves the refine path.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: MeshSession
+      expect: present
+      paths:
+      - crates/reify-solver-elastic/src/adaptive.rs
+  - name: solver-elastic-depends-on-facade
+    binding: 'producer-self (C13 as amended: reify-solver-elastic drops gmsh at ζ)
+      — the positive half: reify-meshing in crates/reify-solver-elastic/Cargo.toml.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^reify-meshing
+      expect: present
+      paths:
+      - crates/reify-solver-elastic/Cargo.toml
+  - name: solver-elastic-drops-gmsh
+    binding: 'producer-self (C13) — reify-kernel-gmsh leaves reify-solver-elastic''s
+      [dependencies] (there today as `reify-kernel-gmsh = { workspace = true }`).
+      Not mechanised: git grep is single-line with no section awareness, and a [dev-dependencies]
+      line has the same shape, so no pattern is both non-vacuous and dev-dep-safe.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: BT20 (ι) — `cargo tree -p reify-gui --features gui -e normal` has no
+        reify-kernel-gmsh, which fails while reify-solver-elastic still depends on
+        it normally.
+  - name: gmsh-available-flag-deleted
+    binding: 'producer-self (§11: moved from β; C3) — reify_kernel_gmsh::GMSH_AVAILABLE
+      (lib.rs today, re-exported by reify-solver-elastic and read by elastic_static.rs)
+      is deleted; availability is MeshError::BackendUnavailable.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^pub const GMSH_AVAILABLE\b
+      expect: absent
+      paths:
+      - crates
+  - name: bt12-bt13-identity-survives-refinement
+    binding: 'producer-self (C8) over producer-upstream #8248 — as amended: BT12 is
+      an adaptive body solve on the plate with a hole with NO selector target; each
+      refined mesh carries an association passing C5, face_closure_nodes(hole) on
+      each contains both rims, MeshModeUsed per refine says EntityPerFace. BT13 inherits
+      it with a forced MeshError on the second remesh (#8248''s handling). The drafting-time
+      producer-downstream FAIL is resolved; the clamp across refines stays BT25 (μ).'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: BT12, BT13 — reify-eval engine tests; MeshModeUsed per refine from the
+        CLI.
+  - name: bt13b-refining-a-morphed-seed
+    binding: 'producer-self (S11) — BT11''s morphed seed with adaptive: true: its
+      read handle''s remesh() is present, the session remeshes the new body, each
+      refined association passes C5.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: BT13b — reify-eval engine test.
+  - name: bt13c-refine-path-through-the-session
+    binding: 'producer-self over #8248 (C8) — a fake RemeshFactory whose session returns
+      BackendUnavailable: #8248''s handling with MeshBackendUnavailable named; never
+      the uniform lane.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: BT13c — reify-eval engine test with a fake RemeshFactory.
+- label: η
+  task_id: 8290
+  title: 'meshing-service η: per-options VolumeMesh variants realized at dispatch;
+    options extractor; all of C11; morph sources per options; mesh_size honoured'
+  capabilities:
+  - name: realization-upstream
+    binding: producer-upstream — leaf ε (realize_volume_mesh, morph source keyed per
+      realization).
+    verdict: PASS
+  - name: options-present-at-dispatch-upstream
+    binding: 'producer-upstream — #7052 (hard edge). Today redispatch_geometry_consuming_compute_nodes
+      (engine_build.rs) passes Value::Undef options and a constant ContentHash(0)
+      key; #7052 makes the options value present (its record: ''make the options value
+      PRESENT in value_inputs'').'
+    verdict: PASS
+  - name: registration-model-substrate
+    binding: existing-substrate — engine_admin.rs::register_volume_mesh_demand (present
+      on main), the registration the new extractor is modelled on (C7 as amended).
+    verdict: PASS
+  - name: options-extractor-registry
+    binding: producer-self (C7, Q-c) — register_volume_mesh_options(target, extractor).
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: pub fn register_volume_mesh_options\b
+      expect: present
+      paths:
+      - crates/reify-eval/src
+  - name: elastic-declares-mesh-size
+    binding: 'producer-self (C7) — elastic_static registers its extractor (mesh_size;
+      element_order once #7075 lands). Scoped to compute_targets/; the definition
+      lives in engine_admin.rs and cannot satisfy it.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: register_volume_mesh_options\(
+      expect: present
+      paths:
+      - crates/reify-eval/src/compute_targets
+  - name: cache-every-variant
+    binding: producer-self (C11, §7 η owns all of C11; γ keeps today's caching condition
+      and key) — every variant cached whenever produced, under its tolerance and options_hash;
+      a morphed seed stays in-memory only.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: BT15 — the re-evaluation calls a counting service zero times.
+  - name: options-hash-pipeline-version
+    binding: producer-upstream — leaf β (MESH_PIPELINE_VERSION in reify-meshing, C11
+      as ruled); η folds it into options_hash. Not ι's wire PROTOCOL_VERSION, so nothing
+      downstream is needed (drafting-time producer-downstream FAIL resolved).
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: BT15 hash identity.
+  - name: options-hash-gmsh-version
+    binding: producer-upstream — leaf β (the service's gmsh-version accessor; none
+      exists in reify-kernel-gmsh on main).
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: BT15 hash identity.
+  - name: options-hash-occt-version
+    binding: 'existing-substrate — crates/reify-kernel-occt/src/register.rs::OCCT_KERNEL_VERSION
+      (re-exported at the crate root, lib.rs), the tessellating kernel''s registered
+      version (C11 as ruled). It is hard-coded "7.9.3" today while reify-kernel-occt
+      links system OCCT 7.8; making it truthful (from OCC_VERSION) is #7440''s. No
+      edge: the in-memory cache cannot span an OCCT change within one process. The
+      drafting-time producer-absent FAIL is resolved by this ruling.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: BT15 hash identity.
+  - name: dead-cache-key-deleted
+    binding: producer-self (C11) — reify_kernel_gmsh::volume_mesh_cache_key (cache_key.rs,
+      no production caller) deleted.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: pub fn volume_mesh_cache_key\b
+      expect: absent
+      paths:
+      - crates
+  - name: dead-options-hash-deleted
+    binding: 'producer-self (C11) — VolumeMeshOptions::content_hash (volume_mesh_options.rs)
+      deleted. Accepted gap: if β moves VolumeMeshOptions into reify-meshing with
+      the method, this path-scoped check is satisfied by the move; BT15''s options_hash
+      cache identity is the cover.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: pub fn content_hash\b
+      expect: absent
+      paths:
+      - crates/reify-kernel-gmsh/src/volume_mesh_options.rs
+  - name: bt14-mesh-size-honoured-cli
+    binding: 'producer-self (C10 user arm, added to β''s SizePolicy::resolve) — BT14:
+      plate at mesh_size 2 mm and 4 mm, MeshModeUsed tet counts differ, binding term
+      user (ElasticOptions(mesh_size: …) is accepted today with no reader — D3).'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: BT14 — reify-cli subprocess e2e.
+  - name: bt15-variants-and-cache-hits
+    binding: 'producer-self (C11) — BT15: two variants each handed to its own solve;
+      the re-evaluation calls the service zero times. BT15b: morph sources per options_hash,
+      never across sizes; on_refine_trigger drops every variant''s morph source (C7
+      as amended).'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: BT15, BT15b — reify-eval engine tests with a counting MeshService.
+  - name: absorbed-7409-a-c
+    binding: 'producer-self — #7409 parts A–C superseded with content ported first;
+      #2953 re-pointed to η (external edge).'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: task-record port, not code.
+- label: θ
+  task_id: 8291
+  title: 'meshing-service θ: default sizing policy (D-D per Q-b) and the post-surface
+    element budget'
+  capabilities:
+  - name: variants-upstream
+    binding: producer-upstream — leaf η (per-options variants; the engine builds every
+      request).
+    verdict: PASS
+  - name: degenerate-threshold-upstream
+    binding: 'producer-upstream — #8254 (hard edge): the absolute 1e-12 m^3 degenerate-tet
+      threshold would reject the finer default meshes as singular.'
+    verdict: PASS
+  - name: size-policy-upstream
+    binding: producer-upstream — leaf β introduces SizePolicy::resolve with today's
+      default; η adds the user arm.
+    verdict: PASS
+  - name: default-policy-thickness-term
+    binding: 'producer-self (C10, D-D per Q-b; C3 as amended: θ adds the default sizing
+      terms) — h = max(floor, min(cap, t/2)), t from inward ray-casts. The check asserts
+      a SizingTerm::Thickness use in reify-meshing. Accepted gap: a glob import spelling
+      a bare `Thickness` would false-FAIL; BT16 is the behavioural cover.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: SizingTerm::Thickness\b
+      expect: present
+      paths:
+      - crates/reify-meshing/src
+  - name: engine-size-policy-override
+    binding: producer-self (C10 as amended) — Engine::with_size_policy, the Rust-only
+      override BT17 configures; no .ri surface and no ElasticOptions budget field.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn with_size_policy\b
+      expect: present
+      paths:
+      - crates/reify-eval/src
+  - name: code-MeshSizeBudgetBound
+    binding: producer-self (C10, C12) — Warning naming the estimate and the budget
+      when the budget raises h.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^    MeshSizeBudgetBound\b
+      expect: present
+      paths:
+      - crates/reify-core/src/diagnostics.rs
+  - name: code-MeshBudgetExceeded
+    binding: 'producer-self (C12 as amended; C3: θ adds budget and BudgetExceeded)
+      — Error for MeshError::BudgetExceeded: the budget still binds after two regenerations;
+      names the estimate and the budget.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^    MeshBudgetExceeded\b
+      expect: present
+      paths:
+      - crates/reify-core/src/diagnostics.rs
+  - name: bt16-thin-plate-default-cli
+    binding: 'producer-self (Q-b) — 200 × 50 × 2 mm plate, no mesh_size: MeshModeUsed
+      reports h ≤ 1 mm, binding term thickness; h ≤ t/2 holds by construction when
+      the thickness term binds (PRD §7 G6 note).'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: BT16 — reify-cli subprocess e2e.
+  - name: bt17-budget-binds-engine
+    binding: producer-self — BT17 is an engine-level Rust test through Engine::with_size_policy
+      with a low budget; no .ri budget knob.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'BT17 — reify-eval engine test: MeshSizeBudgetBound names both counts;
+        the solve proceeds.'
+  - name: default-constants-decided-here
+    binding: a binding the leaf must MAKE (PRD §10) — cap fraction, absolute floor,
+      curvature_per_2pi, element budget, thickness percentile, decided from the fixtures
+      and recorded in MeshModeUsed.
+    verdict: OPEN
+    delivered_check:
+      kind: manual
+      reason: a ruling recorded by θ; no measurement exists before it runs.
+- label: ι
+  task_id: 8292
+  title: 'meshing-service ι: the mesh worker — binary, protocol, client, discovery,
+    deadline, crash boundary, fault injection, gate prebuild, GUI bundling; reify
+    and reify-gui stop linking gmsh'
+  capabilities:
+  - name: store-upstream
+    binding: 'producer-upstream — leaf γ (with_mesh_service: the seam the worker client
+      replaces the in-process service at).'
+    verdict: PASS
+  - name: solver-elastic-gmsh-drop-upstream
+    binding: 'producer-upstream — leaf ζ (hard edge, §7 as ruled): BT20''s `cargo
+      tree -p reify-gui --features gui -e normal` has no reify-kernel-gmsh only after
+      ζ drops it from reify-solver-elastic''s [dependencies].'
+    verdict: PASS
+  - name: link-pattern-substrate
+    binding: existing-substrate — crates/reify-cli/build.rs calls reify_build_utils::emit_tbb_pin_for_bins()
+      before emit_rpath_for_bins(NativeDep::Gmsh) (mechanism A″); no new NativeDep
+      arm. Workspace bincode = "=1.3" pinned under ELASTIC_RESULT_FORMAT_VERSION's
+      discipline (Cargo.toml). gui/src-tauri/tauri.conf.json bundle.externalBin =
+      ["sidecar/reify-sidecar"] today (§3 'Partial').
+    verdict: PASS
+  - name: worker-binary-crate
+    binding: producer-self (C9) — new binary crate reify-mesh-worker (reify-meshing
+      + reify-kernel-gmsh, never reify-kernel-occt).
+    verdict: PASS
+    delivered_check:
+      kind: path
+      expect: present
+      paths:
+      - crates/reify-mesh-worker/Cargo.toml
+  - name: worker-runpath-and-tbb-pin
+    binding: producer-self (C9) — the worker's own build.rs emits the tbb pin before
+      the gmsh RUNPATH.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: emit_tbb_pin_for_bins\(\)
+      expect: present
+      paths:
+      - crates/reify-mesh-worker/build.rs
+  - name: protocol-one-file
+    binding: 'producer-self (C9, heuristic 13) — reify_meshing::protocol in one file:
+      u32-LE length frames, bincode 1.3, Hello/Ready handshake, Mesh/Profile2d/OpenSession/Remesh/CloseSession.'
+    verdict: PASS
+    delivered_check:
+      kind: path
+      expect: present
+      paths:
+      - crates/reify-meshing/src/protocol.rs
+  - name: protocol-version
+    binding: 'producer-self (C9, C11) — PROTOCOL_VERSION (also folded into options_hash).
+      Scoped to reify-meshing: reify-audit already has an unrelated PROTOCOL_VERSION.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: pub const PROTOCOL_VERSION\b
+      expect: present
+      paths:
+      - crates/reify-meshing/src
+  - name: worker-client
+    binding: 'producer-self (C9; C3 as ruled: ι adds MeshError::Timeout and ::BackendCrashed)
+      — WorkerMeshService: lazy spawn, one request in flight, per-request deadline
+      (SIGKILL -> Timeout), pipe EOF / signal -> BackendCrashed, respawn on next request.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: pub struct WorkerMeshService\b
+      expect: present
+      paths:
+      - crates/reify-meshing/src
+  - name: worker-discovery
+    binding: producer-self (C9) — REIFY_MESH_WORKER if set, else a sibling of current_exe();
+      otherwise BackendUnavailable listing the paths tried.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: \"REIFY_MESH_WORKER\"
+      expect: present
+      paths:
+      - crates/reify-meshing/src
+  - name: fault-injection-feature
+    binding: producer-self (C9) — REIFY_MESH_WORKER_FAULT=segv|hang|exit compiled
+      only under the worker's fault-injection feature; release packaging builds without
+      it.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '^fault-injection = '
+      expect: present
+      paths:
+      - crates/reify-mesh-worker/Cargo.toml
+  - name: gate-prebuild-builds-the-worker
+    binding: 'producer-self (C9) — scripts/verify.sh''s prebuild builds reify-mesh-worker
+      (with fault-injection) next to reify. A verify-pipeline edit: full gate.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: reify-mesh-worker
+      expect: present
+      paths:
+      - scripts/verify.sh
+  - name: gui-bundle-ships-the-worker
+    binding: 'producer-self (C9) — the bundle step copies the worker into bundle.externalBin
+      under its target-triple name. Accepted gap: an externalBin entry whose base
+      name is not reify-mesh-worker would false-FAIL; BT20''s ldd half is the behavioural
+      cover.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: reify-mesh-worker
+      expect: present
+      paths:
+      - gui/src-tauri/tauri.conf.json
+  - name: run-gui-builds-the-worker
+    binding: producer-self (C9) — scripts/run-gui.sh builds the worker before launching.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: reify-mesh-worker
+      expect: present
+      paths:
+      - scripts/run-gui.sh
+  - name: run-gui-dev-builds-the-worker
+    binding: producer-self (C9) — scripts/run-gui-dev.sh likewise.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: reify-mesh-worker
+      expect: present
+      paths:
+      - scripts/run-gui-dev.sh
+  - name: code-MeshBackendCrashed
+    binding: producer-self (C12, BT18) — Error for MeshError::BackendCrashed (ι's
+      variant); the worker died.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^    MeshBackendCrashed\b
+      expect: present
+      paths:
+      - crates/reify-core/src/diagnostics.rs
+  - name: code-MeshTimeout
+    binding: producer-self (C12, BT19, BT21) — Error for MeshError::Timeout (ι's variant);
+      the deadline passed.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^    MeshTimeout\b
+      expect: present
+      paths:
+      - crates/reify-core/src/diagnostics.rs
+  - name: bt18-bt19-bt21-containment-cli
+    binding: 'producer-self — BT18 (segv -> MeshBackendCrashed, non-zero exit, printed
+      by the surviving reify), BT19 (hang -> MeshTimeout; next request on a fresh
+      worker succeeds), BT21 (#7584''s spinning fixture -> MeshTimeout; absorbs #7584).'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: BT18, BT19, BT21 — reify-cli subprocess tests plus the worker crate's
+        CARGO_BIN_EXE_reify-mesh-worker tests.
+  - name: bt20-no-gmsh-in-the-reify-process
+    binding: 'producer-self — reify''s NEEDED closure has no libgmsh / libTKernel.so.7.9;
+      the worker''s has both with the tbb pin first; `cargo tree -p reify-gui --features
+      gui -e normal` has no reify-kernel-gmsh. The CLI/GUI gmsh dependency is added
+      by #6660 and is not on main, so an absent grep would be vacuous today. Python
+      infra test + .sh wrapper + run-all-classification.manifest row in the same diff.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: BT20 — tests/infra Python member with its test_<name>.sh wrapper.
+  - name: guards-updated-to-the-one-occt-split
+    binding: 'producer-self — #7440''s closure guard and #4289''s check-manifold-deps
+      arm move to the one-OCCT split (both tasks live: #7440 pending, #4289 in-progress).'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: cross-task amendment; observed by those guards' own infra tests.
+  - name: occt-touching-crates-unchanged
+    binding: existing-substrate — scripts/occt-touching-crates.txt exists on main;
+      the worker is gmsh-only, so it is unchanged (C13).
+    verdict: PASS
+- label: κ
+  task_id: 8293
+  title: 'meshing-service κ: worker-backed sessions kept alive across refines'
+  capabilities:
+  - name: session-upstream
+    binding: producer-upstream — leaf ζ (MeshSession on the adaptive lane).
+    verdict: PASS
+  - name: worker-upstream
+    binding: producer-upstream — leaf ι (protocol OpenSession/Remesh/CloseSession,
+      WorkerMeshService).
+    verdict: PASS
+  - name: one-worker-per-loop
+    binding: producer-self (C8) — a session pins one worker that keeps the parametrised
+      model and, per remesh, clears the mesh, installs the new field and regenerates.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: BT22 — one worker spawn for the loop; refined meshes equal a fresh-session
+        replay within the same test.
+  - name: model-reuse-bit-identity-decided-here
+    binding: a binding the leaf must MAKE (PRD §10) — if a model-reusing session is
+      not bit-identical to a fresh one, κ re-runs the whole sequence per remesh in
+      the pinned worker and records why.
+    verdict: OPEN
+    delivered_check:
+      kind: manual
+      reason: a measurement κ makes.
+- label: λ
+  task_id: 8294
+  title: 'meshing-service λ: integration gate — a face clamp on a realized body from
+    .ri; Q-x''s refusal removed; FeaSelectorResolved; body-face-supports exemplar'
+  capabilities:
+  - name: identity-upstream
+    binding: producer-upstream — leaf ε (face_closure_nodes on every realized body).
+    verdict: PASS
+  - name: selector-consumption-upstream
+    binding: 'producer-upstream — #5313 (hard edge; #5313 depends on #4092, #5312
+      and #8253 on its record, and gains the external edge #5313 -> ε at decompose).
+      #5312 types FixedSupport.target as a selector, the grammar/type producer for
+      BT23''s `single(faces_by_surface_kind(plate, "Cylinder"))` target.'
+    verdict: PASS
+  - name: string-target-substrate
+    binding: 'existing-substrate — crates/reify-compiler/stdlib/fea_multi_case.ri::FixedSupport
+      has `param target : String` today, so BT23''s selector argument is a compile-time
+      argument-type rejection on main (D3, lead 2026-10-07) — consistent with the
+      #5313 -> #5312 binding, not a FAIL.'
+    verdict: PASS
+  - name: qx-refusal-upstream-and-removed
+    binding: 'producer-upstream — #6660 adds Q-x''s coded refusal (reaches λ through
+      β); λ deletes it (C12). Its construct is #6660''s to spell and is not on main,
+      so no grep can be authored now.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: BT23 — exit 0 with no Q-x refusal.
+  - name: code-FeaSelectorResolved
+    binding: 'producer-self (C12) — Info per solved mesh: a selector target''s face/edge/vertex
+      counts and node count; payload spelling decided here (§10), matching coordinate-target-fea''s
+      per-patch line.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^    FeaSelectorResolved\b
+      expect: present
+      paths:
+      - crates/reify-core/src/diagnostics.rs
+  - name: body-face-supports-exemplar
+    binding: producer-self — examples/best_practices/fea_body_face_supports.ri.
+    verdict: PASS
+    delivered_check:
+      kind: path
+      expect: present
+      paths:
+      - examples/best_practices/fea_body_face_supports.ri
+  - name: exemplar-index-row
+    binding: producer-self — the INDEX.md row for the exemplar (examples/best_practices/INDEX.md
+      exists on main).
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fea_body_face_supports
+      expect: present
+      paths:
+      - examples/best_practices/INDEX.md
+  - name: skill-and-chunk-lines
+    binding: 'producer-self — one line in .claude/skills/reify-design/SKILL.md; the
+      FEA chunk''s support section says face selectors work on bodies (chunks/fea.md
+      is extend-or-create with #8259 / #7088; absent on main). Wording unspecified,
+      so not grepped.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: docs review in λ's diff; ν's chunk checks cover the chunk's existence.
+  - name: bt23-face-clamp-from-ri-cli
+    binding: 'producer-self — plate with a hole, FixedSupport(target: single(faces_by_surface_kind(plate,
+      "Cylinder"))), single-shot: exit 0; FeaSelectorResolved names one face with
+      node count = face_closure_nodes(hole) (Rust twin).'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: BT23 — reify-cli subprocess e2e plus its Rust twin.
+  - name: bt24-no-topology-coded-refusal-cli
+    binding: 'producer-self (D-I, C12) — an SDF body with a face-selector support:
+      a coded Error, exit non-zero, MeshModeUsed Classified; λ probes which Error
+      fires first and codes it if code-less.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: BT24 — reify-cli subprocess e2e.
+- label: μ
+  task_id: 8295
+  title: 'meshing-service μ: integration gate — the face clamp across adaptive refinement;
+    #8248''s selector trigger removed'
+  capabilities:
+  - name: single-shot-gate-upstream
+    binding: producer-upstream — leaf λ (selector clamp on a realized body, FeaSelectorResolved).
+    verdict: PASS
+  - name: session-upstream
+    binding: producer-upstream — leaf ζ (identity on every refined mesh).
+    verdict: PASS
+  - name: coordinate-target-adaptive-upstream
+    binding: 'producer-upstream — #8257 (hard edge; it depends on #8248 and #8256):
+      both adaptive lanes carry SolveBoundary.'
+    verdict: PASS
+  - name: selector-trigger-removed
+    binding: 'producer-self over #8248 — μ deletes #8248''s selector-bc_override coded
+      Error (S10, C12). The construct is #8248''s to spell and is not on main.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: BT25 — no selector Error across ≥ 1 refine.
+  - name: bt25-face-clamp-survives-refinement-cli
+    binding: 'producer-self — BT23 with adaptive: true: ≥ 1 refine; each iteration''s
+      FeaSelectorResolved matches that mesh''s face closure.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: BT25 — reify-cli subprocess e2e.
+- label: ν
+  task_id: 8296
+  title: 'meshing-service ν: docs for the meshing surface — FEA chunk mesh diagnostics,
+    mesh_size and worker sections; a meshing note; engine-integration-norm §3.1/§3.2'
+  capabilities:
+  - name: surface-upstream
+    binding: producer-upstream — leaves ε, ζ, η, θ, ι (every code and knob the docs
+      name exists before ν).
+    verdict: PASS
+  - name: chunk-names-mesh-mode-used
+    binding: 'producer-self — the FEA chunk explains MeshModeUsed (''how fine is my
+      mesh''). The chunk is absent on main (extend-or-create with #8259 / #7088),
+      so a grep on content, not a path check, is what ν alone satisfies.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: MeshModeUsed
+      expect: present
+      paths:
+      - crates/reify-mcp/src/tools/chunks/fea.md
+  - name: chunk-names-the-error-codes
+    binding: producer-self — 'why did my mesh fail' finds the mesh error codes.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: MeshGeometryFailed
+      expect: present
+      paths:
+      - crates/reify-mcp/src/tools/chunks/fea.md
+  - name: chunk-gate-passes
+    binding: existing-substrate + producer-self — the chunk's fenced signatures pass
+      the existing chunk gate.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: the chunk gate already runs in every merge gate.
+  - name: engine-integration-norm-updated
+    binding: producer-self — docs/prds/v0_3/engine-integration-norm.md §3.1 (gmsh
+      leaves) / §3.2 (the plug-in is the service); it names neither reify-meshing
+      nor MeshService today.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: reify-meshing|MeshService
+      expect: present
+      paths:
+      - docs/prds/v0_3/engine-integration-norm.md
+  - name: meshing-note-and-mesh-size-section
+    binding: producer-self — a docs/notes meshing note and the chunk's mesh_size and
+      worker sections; names unspecified.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: docs review in ν's diff.
+- label: ω
+  task_id: 8297
+  title: 'meshing-service ω: PRD close — terminal stamp, AS-AUTHORED freeze header,
+    matching manifest header'
+  capabilities:
+  - name: every-leaf-upstream
+    binding: producer-upstream — leaves α–ν (real add_dependency edges to every sibling).
+    verdict: PASS
+  - name: freeze-header-precedent
+    binding: 'existing-substrate — the headers of docs/prds/v0_6/data-carrying-enums.md
+      (`**Status:** **SHIPPED (v0.6)**`) and docs/prds/kernel-seam-contracts.md (`**Status:
+      SHIPPED.**`); reify-audit --pattern PPRDSTATUS reads the token.'
+    verdict: PASS
+  - name: terminal-status-token
+    binding: producer-self — the PRD's Status line carries SHIPPED / SUPERSEDED /
+      WITHDRAWN. Line-start anchored to the header shape (both ratified forms, with
+      or without the blockquote), scoped to the PRD alone, so the body's mentions
+      of 'the terminal Status header' and this manifest's prose cannot match. The
+      PRD is not on main yet (merge queue, task/8283); its authored header `> **Status:**
+      active` does not match.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^(> )?\*\*Status:?(\*\*)?:? *(\*\*)?(SHIPPED|Shipped|SUPERSEDED|Superseded|WITHDRAWN|Withdrawn)
+      expect: present
+      paths:
+      - docs/prds/v0_6/meshing-service.md
+  - name: as-authored-freeze-and-manifest-header
+    binding: producer-self — the AS-AUTHORED paragraph, the LIVE vs AS-AUTHORED map,
+      landed leaf IDs, and the matching header on this .capability-manifest.md.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: the committed headers are the deliverable.

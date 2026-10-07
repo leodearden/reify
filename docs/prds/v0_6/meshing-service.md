@@ -1,9 +1,11 @@
 # PRD — Meshing service: face identity on every mesh, gmsh in a worker
 
-> **Status:** active — authored 2026-10-06 via `/prd` (Leo + Claude, agent team), from the
+> **Status:** active — authored 2026-10-06/07 via `/prd` (Leo + Claude, agent team), from the
 > adaptive-boundary-fidelity investigation (2026-10-05/06) and a stringent design review whose
 > decisions Leo ruled the same day (D-A–D-J, Q-x, Q-y), plus five rulings on this draft (Q-a–Q-e,
-> 2026-10-07; §4). An adversarial review of the draft is folded in.
+> 2026-10-07; §4). An adversarial review of the draft is folded in. Decomposed 2026-10-07: leaf task
+> ids are in §7 and the decompose-time corrections in §11; the capability manifest and its stamped
+> sidecar sit beside this file.
 >
 > **Milestone:** v0.6. **Approach:** B + H (FEA, multi-kernel and the realization seam are
 > load-bearing; eight crates change). Contract in §5, boundary tests in §6.
@@ -221,7 +223,7 @@ carried through `BoundaryAssociation` — is unchanged.
 |---|---|---|
 | **S1** | **One PRD, two phases**: identity (α–θ, λ, μ) and isolation (ι, κ). | The leaves share one contract (§5); two PRDs would split the facade's owner from its first consumer. |
 | **S2** | **Entity-per-face on every B-rep-sourced mesh**, not only where a target demands a boundary; the `demanded_boundary` plumbing is deleted. | Identity is exact and cheap (one extra `extract_*` round trip); an identity-free second path would be a second producer (D-B) and an axis with no consumer (heuristic 3). Every realized mesh's node order and boundary triangulation change once; recorded figures that move stay inside their ruled tolerances, and one that leaves its bound is escalated, never widened. |
-| **S3** | **gmsh stops being a `GeometryKernel`.** Its meshing trait methods, its `inventory` registration and `KernelId::Gmsh` retire; VolumeMesh terminals are engine-owned values. | A worker cannot sit behind an in-process trait object; gmsh implements no geometry operation (heuristic 6). |
+| **S3** | **gmsh stops being a `GeometryKernel`.** Its meshing trait methods, its `inventory` registration and `KernelId::Gmsh` retire; VolumeMesh terminals are engine-owned values. γ adds the engine store and the service path beside the old trait path; ε deletes the old path together with the attributed producer that is its last user. | A worker cannot sit behind an in-process trait object; gmsh implements no geometry operation (heuristic 6). |
 | **S4** | **Remeshing reaches the trampoline through the read handle**, as a narrow `RemeshFactory` capability; `ComputeFn` is unchanged. | The refine geometry is the seed's own input (heuristic 11); no global registry and no CN-contract signature change (heuristic 7); the handle carries only `open_session`, not the whole service (heuristic 9). Producers still resolve at §3.2 (seeds, including per-options variants, are realized by the engine); the factory only re-runs the producer the edge chose. |
 | **S5** | **Refine remeshes from the seed's input tessellation**, not from the seed mesh's boundary. | It is the only surface that carries topology. It is not the gated "fine frozen surface": no re-tessellation, the seed's OCCT tolerance. |
 | **S6** | **`BoundaryAssociation` keeps one attachment per node** (the lowest-dimension entity, gmsh's own node classification), and gains the face → edge → vertex adjacency and per-face boundary triangles; one resolver, `face_closure_nodes`, gives a face's interior + rim + corner nodes. | Multi-attachment would copy the adjacency into every node; consumers needing a rim ask the one resolver (heuristic 11). #8078 gets exact face triangles instead of re-deriving them from node sets. |
@@ -292,7 +294,7 @@ pub struct MeshReport  { pub volume: VolumeMesh, pub identity: Option<MeshIdenti
                          pub mode_used: MeshModeUsed, pub provenance: MeshProvenance,
                          pub diagnostics: Vec<MeshDiagnostic> }
 pub enum MeshModeUsed { EntityPerFace, Classified }          // Cad joins with the CAD-mode PRD
-pub struct MeshProvenance { pub gmsh_version: String, pub protocol_version: u32,
+pub struct MeshProvenance { pub gmsh_version: String, pub pipeline_version: u32,   // MESH_PIPELINE_VERSION
                             pub options_hash: ContentHash, pub binding_term: SizingTerm, pub h: f64 }
 pub enum MeshError {
     BackendUnavailable { reason: String },                   // no worker binary, version mismatch, no service
@@ -312,6 +314,10 @@ pub trait MeshService: Send + Sync {
 pub trait MeshSession: Send { fn remesh(&mut self, sizing: &Sizing) -> Result<MeshReport, MeshError>; }
 ```
 
+- **C3 is the end state.** Each type, field and variant is added by the leaf that first produces it,
+  so nothing is declared before it does anything: β the request, report and error types for the
+  `Surface` arm and the 2D request; δ `MeshIdentity` and `EntityPerFace`; ζ `MeshSession`; θ `budget`,
+  `BudgetExceeded` and the default sizing terms; ι `Timeout` and `BackendCrashed`.
 - **Homes.** `reify-meshing` depends on reify-ir, reify-core, serde and bincode only. β **moves** into
   it from reify-kernel-gmsh: `BackgroundSizeField` (with its validation), the classify-angle policy
   table (S8) and the sizing types. `MeshStage`, `SizingTerm`, `MeshDiagnostic`, `ProfileRequest`,
@@ -332,7 +338,10 @@ pub trait MeshSession: Send { fn remesh(&mut self, sizing: &Sizing) -> Result<Me
 `reify_kernel_gmsh::run_mesh(&MeshRequest) -> Result<MeshReport, MeshError>` replaces the plain,
 attributed and refine producers. In order:
 
-1. **Scope.** `init::lock`, `MeshSizeScope`, `clear`, `General.Terminal=0`, `LogCapture` armed,
+1. **Scope.** `init::lock`, an option scope that restores every option the sequence writes (size
+   options as `MeshSizeScope` does today, plus `Mesh.ElementOrder`, `Mesh.Algorithm3D`,
+   `General.NumThreads` and the recombination options — a long-lived worker serves many requests;
+   #7389), `clear`, `General.Terminal=0`, `LogCapture` armed,
    `General.NumThreads=1`, `Mesh.Algorithm3D=10`, `Mesh.ElementOrder`.
 2. **Discrete model.** `Topological`: one discrete point per vertex ordinal, one discrete curve per
    edge ordinal of every kind (boundary = its end points), one discrete surface per face ordinal
@@ -413,38 +422,45 @@ impl BoundaryAssociation {
   each VolumeMesh-demanded body's meshable form once. For a B-rep terminal: `tessellate_with_topology`
   plus the ordinal → handle map from `extract_faces/edges/vertices` (counts must equal the topology's,
   else `MeshTopologyInvalid` naming both). For a non-B-rep terminal (SDF, voxel, manifold mesh, STL):
-  the surface `Mesh` (`GeometrySource::Surface`, no association). The body's `RemeshFactory` is built
-  here; it belongs to the body (S11).
+  the surface `Mesh` (`GeometrySource::Surface`, no association). This `MeshableBody` belongs to the
+  body (S11): every seed of the body, meshed or morphed, is stored with it, and ζ builds the body's
+  `RemeshFactory` from it.
 - **One realization function.** `realize_volume_mesh(body, request, morph_source) -> StoredMesh` seeds
   by morphing the prior mesh of the same realization and `options_hash` when a morph producer is
   registered and the edit is eligible, and otherwise by `MeshService::mesh`. It converts the
   `MeshIdentity` (or the morph's re-keyed association) to a `BoundaryAssociation` validated against
   the body's topology with C5's invariants, pushes `MeshModeUsed` naming the seed producer (mesh, or
   morph with the source mesh's hash), records the result as the morph source for (realization,
-  `options_hash`), and returns `StoredMesh { volume, remesh: the body's factory }`.
+  `options_hash`), and returns `StoredMesh { volume, body: the body's MeshableBody }`.
 - **Per-options variants (Q-c).** The build pass realizes the default variant (default options). At
   a consuming node's (re)dispatch — the site #7052 gives the evaluated options — the engine resolves
   the node's mesh options through the target's registered extractor
-  (`register_volume_mesh_options(target, extractor)`, the sibling of
-  `register_volume_mesh_boundary_demand`; `elastic_static` declares `mesh_size`, and `element_order`
+  (`register_volume_mesh_options(target, extractor)`, modelled on `register_volume_mesh_demand`;
+  `register_volume_mesh_boundary_demand` is deleted with `demanded_boundary`, S2; `elastic_static`
+  declares `mesh_size`, and `element_order`
   once #7075 lands); a target without one gets the default. A differing `options_hash` realizes that
   variant through the same function, caches it (C11), and hands the trampoline that variant's read
   handle. The realization node holds its variants keyed by `options_hash`; readers outside compute
   dispatch read the default variant.
-- **The store.** A VolumeMesh is an engine-owned value, `Arc<StoredMesh { volume: VolumeMesh, remesh:
-  Option<Arc<dyn RemeshFactory>> }>`, not a kernel handle: the realization cache holds it under the
+- **The store.** A VolumeMesh is an engine-owned value, `Arc<StoredMesh { volume: VolumeMesh, body:
+  Arc<MeshableBody> }>` (γ stores the plain arm's meshes with no body; ε adds it), not a kernel handle: the realization cache holds it under the
   VolumeMesh repr and its `options_hash`, the read-handle projection reads it directly, and
   `resolve_realization_kernel` no longer serves VolumeMesh. Morphed and meshed seeds are stored alike.
+- **A morph that fails validation is a soft fail.** A morphed seed whose re-keyed association fails
+  C5's invariants is never stored: the function seeds by meshing instead and counts the outcome, as
+  for every other morph failure. `Engine::on_refine_trigger` drops the morph sources of every
+  options variant of the realization it names.
 - **Morph registration.** The CLI keeps `MorphRegistration::Enabled` (Q-a). The shipping GUI passes
   `MorphRegistration::Unavailable { reason }` naming #2953, which owns flipping it back once the GUI's
   settled-moment remesh and #2952's warm-start measurement exist (Q-e).
 - **Mode selection lives here and only here.** Trampolines never see a mode (heuristic 14:
   `elastic_static.rs` gains no branch).
 - **`RealizationReadHandle::remesh() -> Option<&Arc<dyn RemeshFactory>>`** (reify-compute-contract),
-  projected from the same store entry as the content. `RemeshFactory: Send + Sync + Debug` exposes
-  only `open_session(order) -> Result<Box<dyn MeshSession>, MeshError>`; the engine's implementation
-  holds the `GeometrySource`, the `TopologyHandles` and the service, and converts identity to handles
-  exactly as the realization function does. The contract crate gains a dependency on reify-meshing
+  added by ζ and built from the store entry's `MeshableBody` and the engine's service.
+  `RemeshFactory: Send + Sync + Debug` exposes only `open_session(order) -> Result<Box<dyn
+  MeshSession>, MeshError>`; the engine's implementation holds the `GeometrySource`, the
+  `TopologyHandles` and the service, and converts identity to handles exactly as the realization
+  function does. The contract crate gains a dependency on reify-meshing
   (OCCT-free, gmsh-free).
 - **One `MeshError` → `DiagnosticCode` mapping** (C12), used by the realization function, the
   trampoline paths and the sweep.
@@ -497,7 +513,10 @@ impl BoundaryAssociation {
 
 - **Who builds the request.** One function, `SizePolicy::resolve(options, body) -> Sizing`, in
   reify-meshing, called by the engine for every variant: default options for the build-pass variant,
-  the consuming node's options for a dispatch-time variant (C7, Q-c).
+  the consuming node's options for a dispatch-time variant (C7, Q-c). β introduces it carrying today's
+  default (the minimum OCCT edge, uniform); η adds the user arm; θ replaces the default with the
+  policy below. The engine holds one `SizePolicy` (the default constants); `Engine::with_size_policy`
+  overrides it from Rust (engine tests, BT17). There is no `.ri` surface for it.
 - `mesh_size` given → `Uniform { h: mesh_size, floor: mesh_size, curvature_per_2pi: 0 }`: the user
   wins outright.
 - Default → `h = max(floor, min(cap, t / 2))` with `curvature_per_2pi` applied by gmsh as a local size
@@ -516,8 +535,10 @@ impl BoundaryAssociation {
 
 - Every VolumeMesh variant is cached whenever it is produced (no longer only when a tolerance is
   demanded), under its tessellation tolerance and `options_hash` = hash(the request minus its
-  geometry, `PROTOCOL_VERSION`, the gmsh version, the OCCT version of the tessellation). Threads are not
-  in it (always 1).
+  geometry, `MESH_PIPELINE_VERSION` — reify-meshing's constant, bumped whenever the sequence's output
+  changes, distinct from ι's wire `PROTOCOL_VERSION` — the gmsh version the service reports (β adds
+  the accessor), and the tessellating kernel's registered version, `OCCT_KERNEL_VERSION`, which #7440
+  derives from `OCC_VERSION`). Threads are not in it (always 1).
 - A morphed seed is path-dependent and stays in-memory only, never persisted (mesh-morphing's D6). The
   persistent FEA cache keys the solve (#7052, #8140).
 - `reify_kernel_gmsh::volume_mesh_cache_key` and `VolumeMeshOptions::content_hash` are deleted.
@@ -534,9 +555,10 @@ impl BoundaryAssociation {
 | `MeshTopologyInvalid` | Error | same | a C1/C5/C7 invariant failed; the invariant and the values |
 | `MeshEmptyResult` | Error | same | zero tets or zero triangles |
 | `MeshSizeBudgetBound` | Warning | the realization function; a session | the element budget raised `h` |
+| `MeshBudgetExceeded` | Error | the realization function; a session | the budget still binds after two regenerations (`MeshError::BudgetExceeded`), naming the estimate and the budget |
 | `FeaSelectorResolved` | Info | the elastic trampoline, per solved mesh | a selector target's face, edge and vertex counts and its node count (λ, μ) |
 
-λ deletes the selector refusal #6660 adds (Q-x); μ deletes #8248's selector trigger. A face selector on
+Each code is minted by the leaf whose own test first needs it (the capability manifest names it). λ deletes the selector refusal #6660 adds (Q-x); μ deletes #8248's selector trigger. A face selector on
 a topology-free body (D-I) fails with whichever coded Error resolution raises first; λ probes which
 and codes it if it is code-less.
 
@@ -549,46 +571,52 @@ and codes it if it is code-less.
   `mesh-morph` feature.
 - `reify-mesh-worker` (new binary): reify-meshing + reify-kernel-gmsh.
 - `reify-solver-elastic`, `reify-eval`, `reify-compute-contract`: depend on reify-meshing, **not** on
-  reify-kernel-gmsh (from β; reify-eval keeps it as a dev-dependency). Between β and ι the CLI and GUI
-  construct the in-process service and so still link gmsh; ι replaces it with the worker client.
+  reify-kernel-gmsh. reify-solver-elastic drops it at ζ, when refinement goes through the session (β
+  types its errors; γ moves the 2D path to the engine's service); reify-eval keeps it as a
+  dev-dependency for in-process engine tests. Between γ and ι the CLI and GUI construct the in-process
+  service and so still link gmsh; ι replaces it with the worker client.
 - `scripts/occt-touching-crates.txt` is unchanged (the worker is gmsh-only).
 
 ## 6. Boundary-test sketch (both sides of the seam)
 
 CLI rows run `reify eval` on a fixture from a reify-cli integration test; the rest are Rust
-integration tests in the crate named. No row pins a mesh hash as a committed constant: hashes are
+integration tests in the crate named. The plate with a hole is `difference(box(200mm, 50mm, 5mm),
+translate(cylinder(5mm, 10mm), 0mm, 0mm, -5mm))`: `box` is origin-centred and the cylinder overshoots
+both faces, so the hole goes through with no coplanar end faces. No row pins a mesh hash as a committed constant: hashes are
 compared within one test run.
 
 | # | Scenario | Precondition | Postcondition | Leaf |
 |---|---|---|---|---|
 | BT1 | Side channel counts | All-edge filleted block; plate with a hole; cylinder (seam) — reify-kernel-occt | Face / edge / vertex / solid counts equal `extract_*`'s; every triangle has a face; each regular edge's path nodes are shared by exactly its faces; the seam is `Seam`; `validate` passes | α |
 | BT2 | Invariant is named | A `TessellatedBody` with one triangle's face ordinal out of range | `TopologyInvariant` naming the invariant, the ordinal and the face count | α |
-| BT3 | One sequence is deterministic (CLI) | `fea_body_cantilever.ri`, two `reify eval` runs | Identical printed displacement maxima (the plain path no longer drifts with thread count) | β |
-| BT4 | Typed unavailability | A fake `MeshService` returning `BackendUnavailable` to the refine path and the 2D profile path | Both callers surface `MeshBackendUnavailable`; no `msg.contains` remains (grep) | β |
-| BT5 | Zero tets is an error | A request whose volume is omitted (test hook in `run_mesh`) | `MeshEmptyResult` | β |
+| BT3 | One sequence is deterministic (CLI) | A new body-cantilever fixture with cells for `max(result.displacement)` and `result.max_von_mises` (`fea_body_cantilever.ri` prints neither; both read `undef` before #6660); two `reify eval` runs | Identical printed maxima (the plain path no longer drifts with thread count) | β |
+| BT4 | Typed errors at the gmsh API | reify-kernel-gmsh's refine and 2D entry points | Every `MeshError` variant reaches `mesher.rs` and `volume_refine.rs` as a typed value and maps by `match`; no `msg.contains` and no `STUB_UNAVAILABLE_MARKER` remain (grep) | β |
+| BT5 | Zero tets is an error | A request whose volume is omitted (test hook in `run_mesh`) | `MeshError::EmptyResult` (the `MeshEmptyResult` code arrives with the engine mapping) | β |
 | BT6 | Engine-owned store (CLI) | The body fixture | `MeshModeUsed` printed (`Classified` until ε); the in-process service and the `reify eval` subprocess, run from one reify-cli test, print the same content hash | γ |
+| BT6b | The sweep's 2D path through the service | A fake `MeshService` returning `BackendUnavailable` to the hex/wedge sweep | `MeshBackendUnavailable` (coded) | γ |
 | BT7 | Tangent faces keep identity | All-edge filleted block through the service | Every face ordinal has ≥ 1 boundary triangle; a fillet face's `face_closure_nodes` excludes the adjacent planes' interior nodes | δ |
 | BT8 | Identity per entity | Each body of BT1 through the service | No node has two attachments; every `Vertex` node sits on its topology vertex; every child surface maps to one face | δ |
 | BT9 | Identity on every mesh (CLI) | Plate with a hole | `MeshModeUsed` says `EntityPerFace` with face/edge/vertex counts equal to the body's | ε |
-| BT10 | Face closure on a realized body | Plate with a hole, a handle-valued `FixedSupport` target on the hole face (the #4092 path) | The resolved node set equals `face_closure_nodes(hole)` and contains every node of both hole rims | ε |
-| BT11 | A morphed seed keeps identity | One engine with the morph producer registered: build the plate with a hole, edit the hole radius, build again | The second seed is a morph (`MeshModeUsed` names the source hash); its association passes C5's invariants against the new body; its handle's `remesh()` is present | ε |
+| BT10 | Face closure on a realized body | Plate with a hole, a handle-valued `FixedSupport` target on the hole face (the #4092 path), observed at the resolver (`target_node_set`), not through a solve: #6660's refusal stands until λ | The resolved node set equals `face_closure_nodes(hole)` and contains every node of both hole rims | ε |
+| BT11 | A morphed seed keeps identity | One engine with the morph producer registered: build the plate with a hole, edit the hole radius, build again | The second seed is a morph (`MeshModeUsed` names the source hash); its association passes C5's invariants against the new body; its stored mesh carries the body's `MeshableBody`; a morph whose re-key fails validation is replaced by a fresh mesh | ε |
 | BT11b | GUI morph is declared dormant | The shipping GUI engine constructor | `MorphRegistration::Unavailable` with a reason naming #2953 (Q-e) | ε |
-| BT12 | Identity survives refinement | BT10 with `adaptive: true` | Each refined mesh's `face_closure_nodes(hole)` contains both rims; `MeshModeUsed` per refine says `EntityPerFace` | ζ |
+| BT12 | Identity survives refinement | An adaptive body solve on the plate with a hole with NO selector target (#8248 refuses a selector override on this lane until μ) | Each refined mesh carries an association passing C5's invariants; `face_closure_nodes(hole)` on each contains both rims; `MeshModeUsed` per refine says `EntityPerFace` | ζ |
 | BT13 | Remesh failure keeps the last iterate | BT12 with a forced `MeshError` on the second remesh | #8248's handling: last solved iterate, "stopped" status, coded Warning naming the mesh error | ζ |
-| BT13b | Refining a morphed seed | BT11's morphed seed, `adaptive: true` | The session remeshes the new body; each refined mesh carries an association that passes C5's invariants | ζ |
+| BT13b | Refining a morphed seed | BT11's morphed seed, `adaptive: true` | Its read handle's `remesh()` is present; the session remeshes the new body; each refined mesh carries an association that passes C5's invariants | ζ |
+| BT13c | The refine path through the session | A fake `RemeshFactory` whose session returns `BackendUnavailable` | #8248's handling with `MeshBackendUnavailable` named; never the uniform lane | ζ |
 | BT14 | `mesh_size` is honoured (CLI) | Plate at `mesh_size` 2 mm and 4 mm | `MeshModeUsed` tet counts differ; binding term `user` | η |
 | BT15 | Variants and cache hits | One body consumed by two solves, `mesh_size` 2 mm and default; then the same engine re-evaluated | Two variants realized, each handed to its own solve; the second evaluation calls the service zero times (counting service) | η |
 | BT15b | Morph sources are per options | BT11's edit with a 2 mm and a default consumer | Each variant morphs from the prior variant with its own `options_hash`, never across sizes | η |
 | BT16 | Thin plate default (CLI) | 200 × 50 × 2 mm plate, no `mesh_size` | `MeshModeUsed` reports `h ≤ 1 mm`, binding term `thickness` (per Q-b) | θ |
-| BT17 | Budget binds (CLI) | A 1 m block with a 0.2 mm fillet, low budget | `MeshSizeBudgetBound` names both counts; the solve proceeds | θ |
+| BT17 | Budget binds (engine) | A 1 m block with a 0.2 mm fillet; the engine's mesh budget configured low (no `.ri` knob — one would be declared and inert for authors) | `MeshSizeBudgetBound` names both counts; the solve proceeds | θ |
 | BT18 | Worker crash contained (CLI) | `REIFY_MESH_WORKER_FAULT=segv` | `MeshBackendCrashed`, exit non-zero, printed by the surviving `reify` process | ι |
 | BT19 | Worker hang contained (CLI) | `hang`, short deadline | `MeshTimeout`; the next request in the same engine succeeds on a fresh worker | ι |
 | BT20 | No gmsh in the reify process | Prebuilt `reify` and `reify-mesh-worker` | `reify`'s NEEDED closure has no `libgmsh` and no `libTKernel.so.7.9`; the worker's has both and the tbb pin first in RUNPATH; `cargo tree -p reify-gui --features gui -e normal` has no reify-kernel-gmsh (Python infra test + `.sh` wrapper) | ι |
 | BT21 | HXT spin is survivable | #7584's spinning fixture through the worker | `MeshTimeout` within the deadline | ι |
 | BT22 | One worker per loop | BT12 through the worker | One worker spawn for the loop; refined meshes identical to a replay in a fresh session within the same test | κ |
-| BT23 | Face clamp from `.ri` (CLI) | Plate with a hole, `FixedSupport(target: <hole-face selector>)`, single-shot | Exit 0; `FeaSelectorResolved` names one face and its node count equals `face_closure_nodes(hole)` (Rust twin); no Q-x refusal | λ |
+| BT23 | Face clamp from `.ri` (CLI) | Plate with a hole, `FixedSupport(target: single(faces_by_surface_kind(plate, "Cylinder")))`, single-shot (today a selector at `FixedSupport.target` is a compile-time argument-type rejection; #5312 types the field) | Exit 0; `FeaSelectorResolved` names one face and its node count equals `face_closure_nodes(hole)` (Rust twin); no Q-x refusal | λ |
 | BT24 | No topology, coded refusal (CLI) | An SDF body with a face-selector support | A coded Error, exit non-zero; `MeshModeUsed` says `Classified` | λ |
-| BT25 | Face clamp survives refinement (CLI) | BT23 with `adaptive: true` | ≥ 1 refine; each iteration's `FeaSelectorResolved` matches that mesh's face closure; no selector Error | μ |
+| BT25 | Face clamp survives refinement (CLI) | BT23 with `adaptive: true` | ≥ 1 refine, and each iteration's `FeaSelectorResolved` matches that mesh's face closure (the positive assertion discriminates: exit 0 with no selector Error already holds today because the target is dropped); no selector Error | μ |
 
 ## 7. Decomposition plan
 
@@ -599,30 +627,30 @@ with them.
 
 | Leaf | Title | Depends on | Observable signal |
 |---|---|---|---|
-| **α** | OCCT topology side channel: `BoundaryTopology`, `TessellatedBody`, `tessellate_with_topology` | — | Intermediate — unlocks δ, ε. BT1, BT2 against real OCCT shapes. |
-| **β** | `reify-meshing` facade; `run_mesh` (`Surface` arm); typed `MeshError`; in-process service; refine and the 2D profile mesher through the service; reify-solver-elastic drops gmsh | #6660 | BT3 (CLI), BT4, BT5. `STUB_UNAVAILABLE_MARKER` and `GMSH_AVAILABLE` gone; the plain path runs one thread. Absorbs #7970 (the refine `MeshSizeMax` write; its figure list re-baselines here), #7481 (one zero-result guard) and #7409 part D (determinism, no seed). |
-| **γ** | Engine-owned VolumeMesh store; `with_mesh_service`; gmsh leaves `GeometryKernel` | β | BT6 (CLI). `KernelId::Gmsh`, gmsh's `inventory` registration and `ensure_gmsh_kernel` are gone; the morph arm stores into the engine store. |
-| **δ** | Identity through gmsh: the `Topological` arm, `MeshIdentity`, extended `BoundaryAssociation`, `face_closure_nodes`; morph rekey and `CarriedTopology` round trip | α, β | Intermediate — unlocks ε. BT7, BT8. |
-| **ε** | Identity on every B-rep mesh: the meshable body and the one realization function (mesh or morph seed, the body's `RemeshFactory`); delete the attributed producer, the `mesh-morph` gate, `build_face_anchors` and `demanded_boundary`; readers use `face_closure_nodes`; GUI morph declared dormant | γ, δ | BT9 (CLI), BT10, BT11, BT11b. Supersedes #7277, #8113. #4092's test retargets to BT10. |
-| **ζ** | Refinement through `MeshSession`; `RemeshFactory` on the read handle | ε, #8248 | BT12, BT13, BT13b; `MeshModeUsed` per refine from the CLI. |
-| **η** | Per-options VolumeMesh variants realized at dispatch; the options extractor; meshing options in the cache key; morph sources per options; `mesh_size` honoured | ε, #7052 | BT14 (CLI), BT15, BT15b. Absorbs #7409 parts A–C. |
-| **θ** | Default sizing policy (D-D per Q-b) and the post-surface element budget | η, #8254 | BT16, BT17 (CLI). |
-| **ι** | The mesh worker: binary, protocol, client, discovery, deadline, crash boundary, fault injection, gate prebuild, GUI bundling; reify and reify-gui stop linking gmsh | γ | BT18, BT19 (CLI), BT20, BT21. Updates #7440's closure guard and #4289's check-manifold-deps arm to the one-OCCT split. Absorbs #7584 (its spinning fixture becomes BT21). |
-| **κ** | Worker-backed sessions kept alive across refines | ζ, ι | BT22. |
-| **λ** | Integration gate: a face clamp on a realized body from `.ri`; Q-x's refusal removed; `FeaSelectorResolved`; the body-face-supports exemplar | ε, #5313 | BT23, BT24 (CLI). `examples/best_practices/fea_body_face_supports.ri` and its `INDEX.md` row; one line in `.claude/skills/reify-design/SKILL.md`; the FEA chunk's support section says face selectors work on bodies. |
-| **μ** | Integration gate: the face clamp across adaptive refinement; #8248's selector trigger removed | λ, ζ, #8257 | BT25 (CLI). |
-| **ν** | Docs for the meshing surface: the FEA chunk's mesh diagnostics, `mesh_size` and worker sections; a meshing note; engine-integration-norm §3.1/§3.2 | ε, ζ, η, θ, ι | The chunk's fenced signatures pass the chunk gate; an author searching "why did my mesh fail" or "how fine is my mesh" finds `MeshModeUsed` and the error codes. `chunks/fea.md` is extended if #8259 or #7088 created it, else created (their rule). |
-| **ω** | PRD close | α–ν | The terminal `Status` header, per the overlay's freeze shape. |
+| **α** #8284 | OCCT topology side channel: `BoundaryTopology`, `TessellatedBody`, `tessellate_with_topology` | — | Intermediate — unlocks δ, ε. BT1, BT2 against real OCCT shapes. |
+| **β** #8285 | `reify-meshing` facade; `run_mesh` (`Surface` arm) and the 2D sequence; typed `MeshError` at reify-kernel-gmsh's API; the in-process `MeshService`; `SizePolicy` with today's default; `MESH_PIPELINE_VERSION`; the service's gmsh-version accessor | #6660 | BT3 (CLI), BT4, BT5. The plain path runs one thread. Absorbs #7970 (the refine `MeshSizeMax` write; its figure list re-baselines here), #7481 (one zero-result guard), #7389 (the non-size option scope), #7592 (the plain producer pinned to one thread; one thread block) and #7409 part D (determinism, no seed). |
+| **γ** #8286 | Engine-owned VolumeMesh store; `with_mesh_service`; the edge's plain arm and the sweep's 2D path through the service; the morph arm stores into the engine store | β | BT6 (CLI), BT6b. gmsh's `GeometryKernel` path stays for the test-only attributed producer until ε. |
+| **δ** #8287 | Identity through gmsh: the `Topological` arm (the FFI wrappers generalised beyond dim 2 / tag −1), `MeshIdentity`, extended `BoundaryAssociation`, `face_closure_nodes`; morph rekey and `CarriedTopology` round trip | α, β | Intermediate — unlocks ε. BT7, BT8, in reify-eval tests with an engine-owned OCCT kernel (a standalone OCCT handle beside gmsh FFI is crash-prone). |
+| **ε** #8288 | Identity on every B-rep mesh: the meshable body and the one realization function (mesh or morph seed, the body's `RemeshFactory`); delete the attributed producer, the gmsh `mesh-morph` gate (the features of reify-kernel-gmsh and reify-kernel-conformance with their activations and cfg gates; reify-kernel-occt's unrelated `mesh-morph` feature stays), `build_face_anchors`, `demanded_boundary` and its registry, gmsh's `GeometryKernel` impl and `inventory` registration, `KernelId::Gmsh` (a config naming `gmsh` gets a coded diagnostic) and `ensure_gmsh_kernel`; readers use `face_closure_nodes`; GUI morph declared dormant | γ, δ | BT9 (CLI), BT10, BT11, BT11b. Supersedes #7277, #8113. #4092's test retargets to BT10. |
+| **ζ** #8289 | Refinement through `MeshSession`; `RemeshFactory` (built from the stored `MeshableBody`) on the read handle; reify-solver-elastic drops gmsh; `GMSH_AVAILABLE` is deleted | ε, #8248 | BT12, BT13, BT13b, BT13c; `MeshModeUsed` per refine from the CLI. |
+| **η** #8290 | Per-options VolumeMesh variants realized at dispatch; the options extractor; all of C11 (γ keeps today's caching condition and key); morph sources per options; `mesh_size` honoured | ε, #7052 | BT14 (CLI), BT15, BT15b. Absorbs #7409 parts A–C. |
+| **θ** #8291 | Default sizing policy (D-D per Q-b) and the post-surface element budget | η, #8254 | BT16 (CLI), BT17 (engine). |
+| **ι** #8292 | The mesh worker: binary, protocol, client, discovery, deadline, crash boundary, fault injection, gate prebuild, GUI bundling; reify and reify-gui stop linking gmsh | γ, ζ | BT18, BT19 (CLI), BT20, BT21. Updates #7440's closure guard and #4289's check-manifold-deps arm to the one-OCCT split. Absorbs #7584 (its spinning fixture becomes BT21). |
+| **κ** #8293 | Worker-backed sessions kept alive across refines | ζ, ι | BT22. |
+| **λ** #8294 | Integration gate: a face clamp on a realized body from `.ri`; Q-x's refusal removed; `FeaSelectorResolved`; the body-face-supports exemplar | ε, #5313 | BT23, BT24 (CLI). `examples/best_practices/fea_body_face_supports.ri` and its `INDEX.md` row; one line in `.claude/skills/reify-design/SKILL.md`; the FEA chunk's support section says face selectors work on bodies. |
+| **μ** #8295 | Integration gate: the face clamp across adaptive refinement; #8248's selector trigger removed | λ, ζ, #8257 | BT25 (CLI). |
+| **ν** #8296 | Docs for the meshing surface: the FEA chunk's mesh diagnostics, `mesh_size` and worker sections; a meshing note; engine-integration-norm §3.1/§3.2 | ε, ζ, η, θ, ι | The chunk's fenced signatures pass the chunk gate; an author searching "why did my mesh fail" or "how fine is my mesh" finds `MeshModeUsed` and the error codes. `chunks/fea.md` is extended if #8259 or #7088 created it, else created (their rule). |
+| **ω** #8297 | PRD close | α–ν | The terminal `Status` header, per the overlay's freeze shape. |
 
 **External edges at decompose:** #5313 → ε (it reads vertex and edge attachments); #2953 → η
-(re-pointed from #7409). **New task (Q-e), filed in this batch without a leaf label:** the GUI calls
+(re-pointed from #7409). **New task (Q-e), filed in this batch without a leaf label (#8298):** the GUI calls
 `Engine::on_refine_trigger` at settled moments (auto-resolve accept, refine-now, user pause), so a GUI
 session re-establishes a fresh mesh where #3000 says it should; #2953 depends on it and on #2952.
 **Amendments:** #2953 (owns flipping the GUI back to `MorphRegistration::Enabled` once that task and
 #2952 land; #7836 decides morph performance on #2952's numbers), #6660 (β replaces its registration,
 λ removes its refusal), #8248 (μ removes its selector trigger), #8257 (its BT9 harness moves to
 `with_mesh_service` after γ), #7440 and #4289 (ι updates their guards). **Superseded** (content ported first): #7409 → η and β;
-#7277, #8113 → ε; #7481, #7970 → β; #7584 → ι.
+#7277, #8113 → ε; #7481, #7970, #7389, #7592 → β; #7584 → ι.
 
 **G6 notes.** BT3: one host, two processes, `NumThreads=1` — measured bit-identical (m5; the 12-run
 measurement in `docs/notes/adaptive-e2e-seed-mesh-drift-measurement.md`). BT6, BT22: compared within
@@ -703,3 +731,51 @@ drift-guard registrations (nextest partition, `run-all-classification.manifest` 
   options (it is meshed and never read; seconds per body). Decide in η.
 - **Where in the dispatch path the variant is realized** (before the trampoline's read-handle
   projection, or inside it). Decide in η against #7052's landed shape.
+
+## 11. Decompose amendments (2026-10-07)
+
+Recorded at decompose: a D3 premise run (`wf_16c10432-90e`, the seven CLI-observable leaves, probes on
+a 2026-10-06 `reify` build), the capability-manifest pass and the task-record pass. The rulings in §4
+stand. Each item names the section it amends; §5–§7 are edited in place. The manifest beside this file
+carries the evidence.
+
+- **§6 fixtures.** The plate with a hole is `difference(box(200mm, 50mm, 5mm),
+  translate(cylinder(5mm, 10mm), 0mm, 0mm, -5mm))`: `box` is origin-centred, and the first spelling
+  notched a corner instead of cutting a hole (D3, measured by volume).
+- **§6 BT3.** `fea_body_cantilever.ri` prints no displacement figure, so BT3 reads a new fixture with
+  displacement-maximum cells (both `undef` before #6660).
+- **§6 BT10.** Observed at the resolver, not through a solve: #6660's selector refusal stands until λ.
+- **§6 BT12/BT13.** Restated without a selector target: #8248 refuses a selector override on the
+  adaptive realized lane until μ, so the selector form could never reach a refine at ζ (manifest
+  producer-downstream FAIL, resolved). BT25 keeps the clamp across refinement.
+- **§6 BT17.** An engine-level test through `Engine::with_size_policy`; no `.ri` budget knob is added.
+- **§6 BT23.** The selector is `single(faces_by_surface_kind(plate, "Cylinder"))` (a case-sensitive
+  string). Today it is a compile-time argument-type rejection at `FixedSupport.target : String` (D3),
+  which λ's dependency on #5313 (→ #5312) covers.
+- **§6 BT25.** The positive `FeaSelectorResolved` assertion is the discriminating one: "exit 0, no
+  selector Error" already holds today because the target is dropped.
+- **§5 C3.** C3 is the end state; each type, field and variant arrives with the leaf that first
+  produces it.
+- **§5 C7.** `register_volume_mesh_boundary_demand` is deleted with `demanded_boundary`. A morphed seed
+  that fails validation is a soft fail (fresh mesh, never stored). `on_refine_trigger` drops every
+  options variant's morph source.
+- **§5 C10.** β introduces `SizePolicy::resolve` with today's default; η adds the user arm; θ the
+  default policy. `Engine::with_size_policy` is the Rust-only override.
+- **§5 C12.** `MeshBudgetExceeded` (Error) added for `MeshError::BudgetExceeded`. Each code is minted by
+  the leaf whose own test first needs it.
+- **§5 C4 step 1, §7 β.** The option scope restores every option the sequence writes, absorbing #7389;
+  β also absorbs #7592.
+- **§5 C13, §7 β/γ/ε/ζ.** β cannot reach the refine or sweep callers (the trampoline gets the service
+  only at ζ, the engine only at γ), so β types the errors at the gmsh API instead of rerouting; γ moves
+  the edge's plain arm and the sweep's 2D path to the service; ζ moves refinement and drops gmsh from
+  reify-solver-elastic. Removing gmsh as a `GeometryKernel` moves from γ to ε, which deletes it with
+  the test-only attributed producer that is its last user.
+- **§5 C3, C7, C11.** ε stores the body's `MeshableBody` with each seed and ζ builds the `RemeshFactory`
+  from it (a factory needs `MeshSession`, which is ζ's). The cache hash takes `MESH_PIPELINE_VERSION`
+  (β) instead of ι's wire `PROTOCOL_VERSION`, the gmsh version the service reports (β) and the
+  tessellating kernel's `OCCT_KERNEL_VERSION` (#7440 makes it truthful).
+- **§7 ι.** ι also depends on ζ: reify-solver-elastic drops gmsh only at ζ, so BT20's `cargo tree` on
+  reify-gui (which reaches it through reify-eval) holds only after ζ.
+- **Verified unchanged (D3).** `ElasticOptions(mesh_size: …)` is accepted today with no reader (η);
+  the current `reify` links `libgmsh.so.4.15` and both `libTKernel.so.7.8` and `.7.9` (ι).
+
