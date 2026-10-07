@@ -15,7 +15,6 @@
 
      Chunk-side guards (all in that one file, cited whole on one line each):
        measurement_chunk_smoke.rs::measurement_query_family_documented_in_measurement_chunk
-       measurement_chunk_smoke.rs::measurement_reify_fences_call_every_whole_handle_query
        measurement_chunk_smoke.rs::measurement_signature_arities_match_the_compiling_fences
        measurement_chunk_smoke.rs::the_undef_trap_example_is_a_query_the_hoist_does_not_cover
 

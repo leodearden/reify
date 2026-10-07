@@ -43,7 +43,7 @@ use crate::chunk_cite_gate::assert_cited_paths_resolve;
 use crate::chunk_io::{MEASUREMENT_CHUNK_PATH, read_chunk, report};
 use crate::chunk_markdown::{marker_closed_region, section_body};
 use crate::doc_forms::{
-    arity_drift, callee_names, documented_signature_arities, fence_arities, fence_call_forms,
+    arity_drift, documented_signature_arities, fence_arities, fence_call_forms,
 };
 
 /// Marker that OPENS the MEASUREMENT / mass-property section — the one that
@@ -61,6 +61,11 @@ use crate::doc_forms::{
 /// unscoped word scan is satisfied by every one of those while teaching a reader
 /// nothing about the kernel query — which is precisely the misdirection task
 /// 5581 exists to remove, so the SECTION is what gets scanned.
+///
+/// The section ends at the chunk's `## Eval status…` heading, because
+/// [`section_body`] stops at the next `##`. So only the main body (the signature
+/// list and the worked fence) is scanned, and a call form that the traps show
+/// only as an illustration does not count as documenting a query.
 const MEASUREMENT_SECTION_MARKER: &str = "<!-- MEASUREMENT-SECTION -->";
 
 /// Human-readable name of [`MEASUREMENT_SECTION_MARKER`]'s section. Panic text
@@ -160,53 +165,16 @@ fn measurement_query_family_documented_in_measurement_chunk() {
     }
 }
 
-/// Every whole-handle query is CALLED, in parsed code, by one of the chunk's
-/// ```` ```reify ```` fences.
-///
-/// The fence gate (`fence_gate.rs::every_reify_tagged_fence_compiles_clean`)
-/// compiles every bare ```` ```reify ```` fence VERBATIM, and its
-/// `REIFY_FENCE_FLOORS` entry for this chunk, held EXACT, is the one floor on
-/// how many there are. This test owns only the per-name half: a fence that
-/// silently stops calling a documented query would leave that gate green.
-///
-/// Why these four (task 5581): `volume`, `area` and `centroid` are the names the
-/// chunk corpus previously carried only as HAND-COMPUTED parameter arithmetic
-/// (`structures.md`'s `let volume = thickness * width * width`), so a documented
-/// call form that the compiler rejects would be indistinguishable, to a reader,
-/// from the arithmetic it is meant to replace. Requiring each inside a COMPILING
-/// fence is what makes the replacement credible.
-///
-/// The registry is iterated directly, so a name entering or leaving the hoisted
-/// set moves this check with it. Calls are read through the PARSER: the fence's
-/// own `// … volume(box(60mm, 40mm, 8mm)) works …` annotation is a comment,
-/// never a call, so deleting the fence's real call goes RED rather than leaving
-/// the annotation to stand in for it.
-#[test]
-fn measurement_reify_fences_call_every_whole_handle_query() {
-    let markdown = read_chunk(MEASUREMENT_CHUNK_PATH);
-    let called = callee_names(&fence_call_forms(&markdown, MEASUREMENT_CHUNK_PATH));
-    for name in reify_compiler::WHOLE_HANDLE_GEOMETRY_QUERY_NAMES {
-        assert!(
-            called.iter().any(|callee| callee == name),
-            "anti-vacuity: no ```reify fence in {MEASUREMENT_CHUNK_PATH} calls `{name}` — the \
-             worked examples no longer compile-verify that whole-handle query, so a documented \
-             call form the compiler outright rejects would ship unnoticed. (A call form mentioned \
-             only in a fence's `//` annotation or a string literal does not count; it is never \
-             compiled.) Fence call names: {called:?}"
-        );
-    }
-}
-
 /// The MEASUREMENT section's documented whole-handle signature arities and the
 /// arities its compiling fences call those names at must be the SAME set, drift
 /// in either direction reported together.
 ///
-/// Twin of `geometry_chunk_smoke.rs`'s
-/// `oracle_signature_arities_match_the_compiling_fences`, and deliberately the
-/// same shape rather than a generalisation of it: the two scope different
-/// sections and different name sets, and folding them into one parameterised
-/// helper would put the section marker, the name set and the panic's subject all
-/// behind arguments, which is how a failure ends up naming the wrong section.
+/// A name that no fence calls at all is drift too, so this is also the check
+/// that each of the four is compile-verified. That matters for these four (task
+/// 5581) because `volume`, `area` and `centroid` were previously in the chunk
+/// corpus only as HAND-COMPUTED parameter arithmetic (`structures.md`'s
+/// `let volume = thickness * width * width`). A documented call form the compiler
+/// rejects would look to a reader just like the arithmetic it is meant to replace.
 ///
 /// SCOPED TO `WHOLE_HANDLE_GEOMETRY_QUERY_NAMES` — four names, not the fifteen
 /// `measurement_query_family_documented_in_measurement_chunk` covers. That is a
@@ -368,7 +336,7 @@ fn the_undef_trap_example_is_a_query_the_hoist_does_not_cover() {
 /// counts, never round numbers under them — why exact, and how to re-measure
 /// one, is stated once next to `geometry_chunk_smoke.rs`'s `MINIMUM_FN_CITES`.
 /// Raise them WITH the chunk; never lower one to go green.
-const MINIMUM_FN_CITES: usize = 9;
+const MINIMUM_FN_CITES: usize = 8;
 const MINIMUM_RS_FILES: usize = 5;
 const MINIMUM_RI_FILES: usize = 1;
 

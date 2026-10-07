@@ -332,10 +332,9 @@ pub(crate) fn callee_names(forms: &[(String, usize)]) -> Vec<String> {
 /// read. `label` names the chunk `section` came from, in panic text only.
 ///
 /// The `->` is what separates a SIGNATURE from a mere mention, and the
-/// distinction is load-bearing: the geometry chunk's oracle traps subsection
-/// deliberately writes `min_clearance(a, b)` (the unsupported 2-arg overload)
-/// and `min_clearance(s, id, id)` (the self-pair rider) as prose. Neither is a
-/// contract the fences should be held to.
+/// distinction is load-bearing: a span without one, such as a call form a
+/// section names only to warn against it, is prose, not a contract the fences
+/// should be held to.
 ///
 /// PANICS on unreadable markup, and on a variadic signature, which has no fixed
 /// arity for the fences to mirror.
