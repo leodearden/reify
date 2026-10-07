@@ -1882,18 +1882,17 @@ _BH_CLONE_DONE="$_BH_PARENT/pin-clone-done"
 _spawn_pinning_reader "$_BH_LOCK" "$_BH_READY" "$_BH_CLONE_DONE" "$_BH_SRC" "$_BH_DST"
 _BH_READER_PID="$_PINNING_READER_PID"
 
-# Guarded handshake waits: capture the rc via `|| var=$?` (as BH-NEG-style
-# calls elsewhere in this file already do) rather than calling
-# _wait_for_marker bare — a bare non-zero return here would trip
-# set -euo pipefail and abort the whole suite mid-block, surfacing as an
-# unattributable abort instead of a named FAIL line in run_all.sh's
-# per-test summary.
+# Guarded handshake waits: capture the rc via `|| var=$?` (the same idiom as
+# BH2's probe below) rather than calling holder_wait_for_marker bare — a bare
+# non-zero return here would trip set -euo pipefail and abort the whole suite
+# mid-block, surfacing as an unattributable abort instead of a named FAIL line
+# in run_all.sh's per-test summary.
 _BH_HS_READY_RC=0
-_wait_for_marker "$_BH_READY" 30 || _BH_HS_READY_RC=$?
+holder_wait_for_marker "$_BH_READY" 150 || _BH_HS_READY_RC=$?
 assert "BH-HANDSHAKE: _spawn_pinning_reader signals ready within deadline" \
     test "$_BH_HS_READY_RC" -eq 0
 _BH_HS_CLONE_RC=0
-_wait_for_marker "$_BH_CLONE_DONE" 30 || _BH_HS_CLONE_RC=$?
+holder_wait_for_marker "$_BH_CLONE_DONE" 150 || _BH_HS_CLONE_RC=$?
 assert "BH-HANDSHAKE: _spawn_pinning_reader signals clone-done within deadline" \
     test "$_BH_HS_CLONE_RC" -eq 0
 
