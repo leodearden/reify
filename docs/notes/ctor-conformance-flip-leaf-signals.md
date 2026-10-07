@@ -43,7 +43,7 @@ follow for every leaf that owns one of them:
 
 The machine pin for "this site still fails at δ" is the gate-resident
 `ctor_conformance_corpus_residual_entries_are_all_live`
-(`crates/reify-compiler/tests/harness_compilation_surface/ctor_conformance_corpus_survey.rs`).
+(`crates/reify-compiler/tests/harness_ctor_conformance_survey/disposition.rs`).
 Each owning leaf deletes its own `CTOR_CONFORMANCE_CORPUS_RESIDUAL` entries in
 its own diff.
 

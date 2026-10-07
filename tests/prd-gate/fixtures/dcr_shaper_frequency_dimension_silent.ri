@@ -32,7 +32,7 @@ module dcr_shaper_frequency_dimension_silent
 //   and NEITHER profile is shaped, the 50Hz half included. This exit 1 is NOT
 //   ζ's signal. Machine pin: the gate-resident
 //   `ctor_conformance_corpus_residual_entries_are_all_live` (reify-compiler,
-//   harness_compilation_surface/ctor_conformance_corpus_survey.rs).
+//   harness_ctor_conformance_survey/disposition.rs).
 //   How ζ (#6941) reads its signal instead:
 //   docs/notes/ctor-conformance-flip-leaf-signals.md.
 
