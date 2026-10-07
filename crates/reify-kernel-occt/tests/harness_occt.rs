@@ -120,8 +120,6 @@ mod surface_angle_integration;
 mod sweep_with_history_integration;
 #[path = "harness_occt/tessellate_sphere_nondegenerate_integration.rs"]
 mod tessellate_sphere_nondegenerate_integration;
-#[path = "harness_occt/tessellation_winding_integration.rs"]
-mod tessellation_winding_integration;
 #[path = "harness_occt/topology_cache_observability.rs"]
 mod topology_cache_observability;
 #[path = "harness_occt/topology_selectors_integration.rs"]

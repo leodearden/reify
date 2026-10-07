@@ -161,7 +161,7 @@ as-designed signature.
 
 **Lift** *(done at α #5102 — the OCCT test now calls `Mesh::validate` and its private
 `weld_vertices` copy is gone)* the weld+winding+closedness checker then hand-rolled at
-`crates/reify-kernel-occt/tests/harness_occt/tessellation_winding_integration.rs` (`weld_vertices` + directed-edge
+`crates/reify-kernel-occt/tests/harness_occt_measurement/tessellation_winding_integration.rs` (`weld_vertices` + directed-edge
 invariant + outward-normal check) into `reify-ir` as the body of `validate()`. The OCCT test then
 consumes the lifted function instead of its private copy (kills the duplicate).
 
