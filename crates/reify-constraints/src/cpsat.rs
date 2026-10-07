@@ -377,8 +377,8 @@ struct SearchInputs<'p> {
 struct ScheduledCell<'p> {
     cell: &'p (ValueCellId, CompiledExpr),
     /// The deepest searched-variable index among the autos the cell reads
-    /// transitively (`0` if it reads none), or `None` for an unfoldable cell,
-    /// which never is.
+    /// transitively (`0` if it reads none), or `None` for a cell a stored-order
+    /// pass can leave stale, which never is.
     exact_from: Option<usize>,
 }
 
@@ -394,8 +394,15 @@ impl ScheduledCell<'_> {
 /// an auto's depth off its index in `variables` — the order the search actually
 /// visits — rather than off any other ordering of the same autos.
 ///
+/// A cell's depth is trusted only when [`derived_from_exact_cells`] holds;
+/// otherwise the cell is never exact and is re-derived at every depth, as a
+/// total fold would. Upstream stores the cells topologically and without
+/// duplicates (PRD §6.3), so a well-formed problem loses no skip to this, and
+/// the skip stays sound when that order is broken.
+///
 /// Built once per solve: the `ConstraintSolver::solve` seam cannot carry the
-/// registry's copy of the reads map.
+/// registry's copy of the reads map — the same per-call rebuild `solver.rs`'s
+/// `DerivationCtx` makes (#7728).
 fn schedule_dependent_cells<'p>(
     problem: &'p ResolutionProblem,
     variables: &[Variable],
@@ -406,19 +413,53 @@ fn schedule_dependent_cells<'p>(
         .map(|(i, var)| (&var.id, i))
         .collect();
     let reads = dependent_cell_auto_reads(&problem.dependent_cells, &problem.auto_params);
-    problem
-        .dependent_cells
-        .iter()
-        .map(|cell| ScheduledCell {
-            cell,
-            exact_from: match reads.lookup(&cell.0) {
-                CellReads::Foldable(autos) => autos
+    let mut stored_at: HashMap<&ValueCellId, Vec<usize>> = HashMap::new();
+    for (index, (id, _)) in problem.dependent_cells.iter().enumerate() {
+        stored_at.entry(id).or_default().push(index);
+    }
+
+    let mut scheduled: Vec<ScheduledCell<'p>> = Vec::with_capacity(problem.dependent_cells.len());
+    for cell in &problem.dependent_cells {
+        let exact_from = match reads.lookup(&cell.0) {
+            CellReads::Foldable(autos)
+                if derived_from_exact_cells(cell, &stored_at, &scheduled) =>
+            {
+                autos
                     .iter()
-                    .try_fold(0, |deepest, auto| Some(deepest.max(*depth.get(auto)?))),
-                CellReads::Unfoldable(_) | CellReads::NotACell => None,
-            },
+                    .try_fold(0, |deepest, auto| Some(deepest.max(*depth.get(auto)?)))
+            }
+            CellReads::Foldable(_) | CellReads::Unfoldable(_) | CellReads::NotACell => None,
+        };
+        scheduled.push(ScheduledCell { cell, exact_from });
+    }
+    scheduled
+}
+
+/// Whether a stored-order pass that reaches `cell` right after the cells in
+/// `scheduled` derives it from exact values only: no other entry shares its id
+/// (a later occurrence would overwrite it), and every dependent cell it reads is
+/// stored before it — so `scheduled` already holds that cell — and is itself
+/// eventually exact.
+fn derived_from_exact_cells(
+    (id, expr): &(ValueCellId, CompiledExpr),
+    stored_at: &HashMap<&ValueCellId, Vec<usize>>,
+    scheduled: &[ScheduledCell<'_>],
+) -> bool {
+    if stored_at
+        .get(id)
+        .is_some_and(|occurrences| occurrences.len() > 1)
+    {
+        return false;
+    }
+    collect_constraint_refs(expr)
+        .iter()
+        .filter_map(|r| stored_at.get(r))
+        .flatten()
+        .all(|&index| {
+            scheduled
+                .get(index)
+                .is_some_and(|read| read.exact_from.is_some())
         })
-        .collect()
 }
 
 /// Build the inputs a CP-SAT search needs, or report why it cannot.
@@ -556,27 +597,23 @@ fn build_search_inputs(problem: &ResolutionProblem) -> Result<SearchInputs<'_>, 
 /// # Which cells a trial re-derives, and why no unwind is needed
 ///
 /// A dependent cell is EXACT from the deepest variable index among its
-/// transitive autos ([`ScheduledCell`]); an unfoldable cell never is. Each
-/// trial re-derives, in stored order and before any constraint is read, every
-/// cell not yet exact at its depth, and skips the rest. A skipped cell became
-/// exact at a SHALLOWER depth: its autos are fixed on this path and no deeper
-/// trial re-derives it, so it holds exactly what a total fold would recompute.
-/// Every forward check therefore sees the total fold's map, `assignment.remove`
-/// on unwind only has to drop the variable itself, and a solution collected at
-/// the base case — a copy — is out of any later branch's reach.
+/// transitive autos, unless a stored-order pass can leave it stale, in which
+/// case it never is ([`schedule_dependent_cells`]). Each trial re-derives, in
+/// stored order and before any constraint is read, every cell not yet exact at
+/// its depth, and skips the rest. A skipped cell became exact at a SHALLOWER
+/// depth: its autos are fixed on this path, every cell it reads was already
+/// exact when it was derived, and no deeper trial re-derives it, so it holds
+/// exactly what a total fold would recompute. Every forward check therefore
+/// sees the total fold's map, `assignment.remove` on unwind only has to drop
+/// the variable itself, and a solution collected at the base case — a copy — is
+/// out of any later branch's reach.
 ///
 /// A not-yet-exact cell must be RE-DERIVED, never skipped or removed. Skipped,
-/// it would still hold what an ABANDONED deeper branch folded into it
-/// (`a_deeper_cell_left_over_from_an_abandoned_branch_is_never_observed_at_a_shallower_depth`,
-/// `two_autos_do_not_observe_a_stale_dependent_value_from_an_abandoned_sibling_branch`).
-/// Removed, it would lose the pruning a PARTIAL derivation affords: Kleene
-/// `false and _` is `false` and `true or _` is `true`, so a cell with unassigned
-/// autos can already be defined, and that is what cuts a `false` conjunct at
-/// its own depth
-/// (`a_conjunction_behind_a_dependent_cell_prunes_at_its_first_false_conjunct`).
-/// The skip saves one evaluation and one map insert per already-exact cell, at
-/// every depth, the leaves included. Unobservable by design, that saving is
-/// pinned by no test; the units named here pin soundness only.
+/// it would still hold what an ABANDONED deeper branch folded into it. Removed,
+/// it would lose the pruning a PARTIAL derivation affords: Kleene `false and _`
+/// is `false` and `true or _` is `true`, so a cell with unassigned autos can
+/// already be defined, and that is what cuts a `false` conjunct at its own
+/// depth. `dependent_cell_forward_check_tests` pins each of these.
 ///
 /// A re-derived cell reads an unassigned auto as ABSENT ONLY GIVEN THE STRIPPED
 /// SEED, and the guarantor is named deliberately (task #5467):
@@ -2295,6 +2332,79 @@ mod dependent_cell_forward_check_tests {
              a missing `f`",
         );
         assert!(complete, "a 36-point space must be exhausted");
+    }
+
+    /// LOCK 1 — the depth schedule does not trust the stored order (#6078).
+    ///
+    /// `n ∈ [0, 3]`, `m ∈ [0, 1]`; stored order `let g = f`, `let f = n * 2`,
+    /// `let x = g + 1`, so `g` reads a LATER cell and `x` reads `g`;
+    /// `constraint x + m == 7`, evaluated once `m` is assigned: the only model
+    /// is `(3, 0)`. All three cells read only `n`, yet the depth-0 pass derives
+    /// `g` from the previous trial's `f`, and `x` from that stale `g`. Both must
+    /// be re-derived at depth 1. A schedule that skipped either there, trusting
+    /// `n`'s depth alone, lets a stale `x` decide every leaf.
+    #[test]
+    fn cells_a_stored_order_pass_leaves_stale_are_re_derived_at_every_depth() {
+        let p = problem(
+            vec![int_auto("n", 0, 3), int_auto("m", 0, 1)],
+            vec![(
+                ConstraintNodeId::new("S", 0),
+                eq_int(sum_int(iref("x"), iref("m")), 7),
+            )],
+            vec![
+                (ValueCellId::new("S", "g"), iref("f")),
+                (ValueCellId::new("S", "f"), mul_int(iref("n"), 2)),
+                (ValueCellId::new("S", "x"), add_int(iref("g"), 1)),
+            ],
+        );
+
+        let (solutions, complete) = enumerated(CpSatSolver.solve_all(&p, GENEROUS_CAP));
+
+        assert_eq!(
+            n_m_models(&solutions),
+            vec![(3, 0)],
+            "`x = 2n + 1` with `x + m == 7` over n ∈ [0, 3], m ∈ [0, 1] has the \
+             one model (3, 0). (0, 0) and (0, 1) mean `x` stayed `Undef` from \
+             n = 0's depth-0 pass; a missing (3, 0) means it stayed one trial \
+             behind `f`",
+        );
+        assert!(complete, "an 8-point space must be exhausted");
+    }
+
+    /// LOCK 1 — a duplicated cell id still ends every pass at its LAST
+    /// occurrence (#6078).
+    ///
+    /// `n ∈ [0, 3]`, `m ∈ [0, 1]`; stored order `let d = f`, `let f = n * 2`,
+    /// `let d = n + 1`; `constraint d + m == 4`, evaluated once `m` is
+    /// assigned. A total fold leaves the last write, `d = n + 1`, so the models
+    /// are `(2, 1)` and `(3, 0)`. The first occurrence reads a later cell and is
+    /// re-derived at every depth; were the second skipped below depth 0, depth 1
+    /// would end on the first's `d = 2n` and come back with `(2, 0)` alone.
+    #[test]
+    fn every_occurrence_of_a_duplicated_cell_is_re_derived_so_the_last_still_wins() {
+        let p = problem(
+            vec![int_auto("n", 0, 3), int_auto("m", 0, 1)],
+            vec![(
+                ConstraintNodeId::new("S", 0),
+                eq_int(sum_int(iref("d"), iref("m")), 4),
+            )],
+            vec![
+                (ValueCellId::new("S", "d"), iref("f")),
+                (ValueCellId::new("S", "f"), mul_int(iref("n"), 2)),
+                (ValueCellId::new("S", "d"), add_int(iref("n"), 1)),
+            ],
+        );
+
+        let (solutions, complete) = enumerated(CpSatSolver.solve_all(&p, GENEROUS_CAP));
+
+        assert_eq!(
+            n_m_models(&solutions),
+            vec![(2, 1), (3, 0)],
+            "a total fold ends each pass on `d = n + 1`, so `d + m == 4` has the \
+             models (2, 1) and (3, 0). (2, 0) means a pass ended on the first \
+             occurrence's `d = 2n`",
+        );
+        assert!(complete, "an 8-point space must be exhausted");
     }
 
     /// LOCK 1 — a PARTIAL derivation still prunes (#6078). Kleene `and` makes
