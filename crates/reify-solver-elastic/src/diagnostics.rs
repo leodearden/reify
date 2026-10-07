@@ -431,12 +431,36 @@ mod tests {
     }
 
     #[test]
-    fn singular_stiffness_message_contains_key_phrase() {
-        let f = FeaFailure::SingularStiffness { element_id: 7 };
+    fn singular_stiffness_message_names_the_element_metric_and_threshold() {
+        let d = DegenerateTet {
+            element_id: 7,
+            quality: 0.0,
+        };
+        let message = FeaFailure::SingularStiffness(d).message();
         assert!(
-            f.message().contains("near-zero volume"),
-            "SingularStiffness message must contain 'near-zero volume', got: {}",
-            f.message()
+            message.contains(&d.to_string()),
+            "message must embed DegenerateTet's Display, got: {message}"
+        );
+        assert!(
+            message.contains(&format!("{MIN_TET_SHAPE_QUALITY:e}")),
+            "message must name the threshold, got: {message}"
+        );
+        assert!(
+            message.contains('7'),
+            "message must name the element, got: {message}"
+        );
+    }
+
+    #[test]
+    fn singular_stiffness_message_says_inverted_for_negative_quality() {
+        let message = FeaFailure::SingularStiffness(DegenerateTet {
+            element_id: 7,
+            quality: -0.5,
+        })
+        .message();
+        assert!(
+            message.contains("inverted"),
+            "inverted-tet message must say so, got: {message}"
         );
     }
 
@@ -469,7 +493,11 @@ mod tests {
 
     #[test]
     fn singular_stiffness_is_error() {
-        assert!(FeaFailure::SingularStiffness { element_id: 0 }.is_error());
+        let d = DegenerateTet {
+            element_id: 7,
+            quality: 0.0,
+        };
+        assert!(FeaFailure::SingularStiffness(d).is_error());
     }
 
     #[test]
@@ -929,13 +957,16 @@ mod tests {
 
     #[test]
     fn structured_detail_singular_stiffness_yields_problem_elements() {
-        let f = FeaFailure::SingularStiffness { element_id: 4 };
+        let f = FeaFailure::SingularStiffness(DegenerateTet {
+            element_id: 7,
+            quality: 0.0,
+        });
         assert_eq!(
             f.structured_detail(),
             Some(FeaDiagnosticDetail::ProblemElements {
-                ids: vec![ElementId(4)],
+                ids: vec![ElementId(7)],
             }),
-            "SingularStiffness{{element_id:4}} must map to ProblemElements{{ids:[ElementId(4)]}}"
+            "SingularStiffness(element 7) must map to ProblemElements{{ids:[ElementId(7)]}}"
         );
     }
 

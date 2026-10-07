@@ -6762,6 +6762,136 @@ mod tests {
         }
     }
 
+    // ── task 8254: scale-aware oriented degenerate-tet gate ───────────────────
+
+    /// Body-overload `value_inputs` (`[material, body, loads, supports, options]`,
+    /// as in `trampoline_body_overload_consumes_realized_volume_mesh`) with one
+    /// tip `PointLoad` of `force_n`.
+    fn body_overload_value_inputs(force_n: f64) -> [Value; 5] {
+        [
+            shell9_make_isotropic_material(200e9, 0.3),
+            Value::GeometryHandle {
+                realization_ref: reify_core::RealizationNodeId::new("TestBody", 0),
+                upstream_values_hash: [0u8; 32],
+                kernel_handle: None,
+            },
+            shell9_make_point_loads(force_n),
+            shell9_make_supports(),
+            shell9_make_options("Off"),
+        ]
+    }
+
+    fn tet_indices_mut(vm: &mut VolumeMesh) -> &mut Vec<u32> {
+        match &mut vm.connectivity {
+            reify_ir::VolumeConnectivity::Tet { indices, .. } => indices,
+            other => panic!("expected tet connectivity, got {other:?}"),
+        }
+    }
+
+    fn solve_body_overload_on(vm: VolumeMesh) -> ComputeOutcome {
+        solve_elastic_static_trampoline(
+            &body_overload_value_inputs(1.0),
+            &[vm_read_handle(vm)],
+            &Value::Undef,
+            None,
+            &CancellationHandle::new(),
+        )
+    }
+
+    /// Asserts `outcome` is the degenerate-mesh `Failed` naming `element_id`, and
+    /// returns its one Error diagnostic's message.
+    fn expect_singular_stiffness_failure(outcome: ComputeOutcome, element_id: usize) -> String {
+        let (diagnostics, structured_detail) = match outcome {
+            ComputeOutcome::Failed {
+                diagnostics,
+                structured_detail,
+            } => (diagnostics, structured_detail),
+            other => panic!("a degenerate mesh must yield ComputeOutcome::Failed, got {other:?}"),
+        };
+        let errors: Vec<&Diagnostic> = diagnostics
+            .iter()
+            .filter(|d| d.severity == reify_core::Severity::Error)
+            .collect();
+        assert_eq!(
+            errors.len(),
+            1,
+            "exactly one Error diagnostic, got {diagnostics:?}"
+        );
+        assert_eq!(errors[0].code, Some(DiagnosticCode::FeaSingularStiffness));
+        assert_eq!(
+            structured_detail,
+            vec![StructuredComputeDetail::Fea(
+                reify_solver_elastic::FeaDiagnosticDetail::ProblemElements {
+                    ids: vec![reify_solver_elastic::ElementId(element_id)],
+                }
+            )],
+        );
+        errors[0].message.clone()
+    }
+
+    /// Acceptance (a): a well-shaped body meshed at 0.1 mm (every tet volume
+    /// ≈ 1.7e-13 m³) must solve. The retired absolute 1e-12 m³ volume check
+    /// rejected it as degenerate.
+    #[test]
+    fn trampoline_body_solve_on_sub_mm_well_shaped_mesh_completes() {
+        let vm = make_box_tet_volume_mesh([2e-3, 4e-4, 4e-4], [20, 4, 4]);
+        let (coords, tets) = volume_mesh_to_solver_mesh(&vm).expect("usable P1 mesh");
+        assert_eq!((coords.len(), tets.len()), (525, 1920));
+        for tet in &tets {
+            let volume = tet_volume_p1(&tet.map(|n| coords[n]));
+            assert!(
+                volume < 1e-12,
+                "premise: every tet volume < 1e-12 m³, got {volume}"
+            );
+        }
+
+        let fields = shell9_result_fields(solve_body_overload_on(vm));
+
+        let realized_max = [2e-3_f64, 4e-4, 4e-4];
+        let bounds_max = match fields.get("displacement") {
+            Some(Value::Field { source, lambda, .. }) => {
+                assert!(matches!(source, FieldSourceKind::Sampled));
+                match lambda.as_ref() {
+                    Value::SampledField(sf) => sf.bounds_max.clone(),
+                    other => panic!("displacement lambda must be a SampledField, got {other:?}"),
+                }
+            }
+            other => panic!("displacement must be a Value::Field, got {other:?}"),
+        };
+        for axis in 0..3 {
+            assert!(
+                ((bounds_max[axis] - realized_max[axis]) / realized_max[axis]).abs() < 1e-5,
+                "displacement bounds_max[{axis}] = {} must match the realized AABB {}",
+                bounds_max[axis],
+                realized_max[axis],
+            );
+        }
+        match fields.get("max_von_mises") {
+            Some(Value::Scalar { si_value, .. }) => assert!(
+                si_value.is_finite() && *si_value > 0.0,
+                "max_von_mises must be finite and > 0, got {si_value}"
+            ),
+            other => panic!("max_von_mises must be a Scalar, got {other:?}"),
+        }
+    }
+
+    /// Acceptance (c): a tet oriented against the rest of the mesh fails the
+    /// solve with a FeaSingularStiffness diagnostic that says it is inverted.
+    /// Assembly takes `|det J|`, so without the gate the solve completes.
+    #[test]
+    fn trampoline_rejects_inverted_tet_with_fea_singular_stiffness() {
+        let mut vm = make_box_tet_volume_mesh([2.0, 0.5, 0.5], [2, 1, 1]);
+        // Tet 5 occupies buffer positions 20..24; swapping its first two nodes
+        // inverts it.
+        tet_indices_mut(&mut vm).swap(20, 21);
+
+        let message = expect_singular_stiffness_failure(solve_body_overload_on(vm), 5);
+        assert!(
+            message.contains("inverted"),
+            "the diagnostic must say the tet is inverted, got: {message}"
+        );
+    }
+
     // ── task 4091: honest fallback to the synthetic box (step-9) ──────────────
 
     /// step-9 (task 4091): `solve_elastic_static_trampoline` falls back to the

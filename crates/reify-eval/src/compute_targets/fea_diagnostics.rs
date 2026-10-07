@@ -76,7 +76,7 @@ pub fn fea_structured_detail(failure: &FeaFailure) -> Option<FeaDiagnosticDetail
 #[cfg(test)]
 mod tests {
     use reify_core::{DiagnosticCode, Severity, SourceSpan};
-    use reify_solver_elastic::FeaFailure;
+    use reify_solver_elastic::{DegenerateTet, FeaFailure};
 
     use super::fea_diagnostic_to_core;
 
@@ -126,7 +126,10 @@ mod tests {
 
     #[test]
     fn singular_stiffness_maps_to_fea_singular_stiffness_code() {
-        let f = FeaFailure::SingularStiffness { element_id: 5 };
+        let f = FeaFailure::SingularStiffness(DegenerateTet {
+            element_id: 5,
+            quality: 0.0,
+        });
         let d = fea_diagnostic_to_core(&f, None);
         assert_eq!(d.code, Some(DiagnosticCode::FeaSingularStiffness));
         assert_eq!(d.severity, Severity::Error);
@@ -217,7 +220,10 @@ mod tests {
     #[test]
     fn all_error_variants_produce_error() {
         let errors: Vec<FeaFailure> = vec![
-            FeaFailure::SingularStiffness { element_id: 0 },
+            FeaFailure::SingularStiffness(DegenerateTet {
+                element_id: 0,
+                quality: 0.0,
+            }),
             FeaFailure::LoadOnInterior {
                 selector: "x".to_string(),
             },
