@@ -533,6 +533,223 @@ mod tests {
         );
     }
 
+    // ── tet shape quality / find_degenerate_tet ───────────────────────────────
+
+    /// A `reps`-hex grid over a `dims` box, each hex split into the 6
+    /// positively oriented Freudenthal tets around the c0→c6 diagonal (the
+    /// split `elastic_static`'s box builder uses).
+    fn freudenthal_box(dims: [f64; 3], reps: [usize; 3]) -> (Vec<[f64; 3]>, Vec<[usize; 4]>) {
+        let [rx, ry, rz] = reps;
+        let (nx1, ny1, nz1) = (rx + 1, ry + 1, rz + 1);
+        let node = |ix: usize, iy: usize, iz: usize| iz * ny1 * nx1 + iy * nx1 + ix;
+        let mut coords = Vec::with_capacity(nx1 * ny1 * nz1);
+        for iz in 0..nz1 {
+            for iy in 0..ny1 {
+                for ix in 0..nx1 {
+                    coords.push([
+                        ix as f64 * dims[0] / rx as f64,
+                        iy as f64 * dims[1] / ry as f64,
+                        iz as f64 * dims[2] / rz as f64,
+                    ]);
+                }
+            }
+        }
+        let mut tets = Vec::with_capacity(rx * ry * rz * 6);
+        for hz in 0..rz {
+            for hy in 0..ry {
+                for hx in 0..rx {
+                    let c = [
+                        node(hx, hy, hz),
+                        node(hx + 1, hy, hz),
+                        node(hx + 1, hy + 1, hz),
+                        node(hx, hy + 1, hz),
+                        node(hx, hy, hz + 1),
+                        node(hx + 1, hy, hz + 1),
+                        node(hx + 1, hy + 1, hz + 1),
+                        node(hx, hy + 1, hz + 1),
+                    ];
+                    tets.extend([
+                        [c[0], c[1], c[2], c[6]],
+                        [c[0], c[2], c[3], c[6]],
+                        [c[0], c[5], c[1], c[6]],
+                        [c[0], c[3], c[7], c[6]],
+                        [c[0], c[4], c[5], c[6]],
+                        [c[0], c[7], c[4], c[6]],
+                    ]);
+                }
+            }
+        }
+        (coords, tets)
+    }
+
+    fn scaled(coords: &[[f64; 3]], s: f64) -> Vec<[f64; 3]> {
+        coords.iter().map(|p| p.map(|x| x * s)).collect()
+    }
+
+    fn tet_nodes(coords: &[[f64; 3]], tet: [usize; 4]) -> [[f64; 3]; 4] {
+        tet.map(|n| coords[n])
+    }
+
+    #[test]
+    fn tet_shape_quality_is_one_for_a_regular_tet() {
+        let regular = [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.5, 3.0_f64.sqrt() / 2.0, 0.0],
+            [0.5, 3.0_f64.sqrt() / 6.0, (2.0_f64 / 3.0).sqrt()],
+        ];
+        let q = tet_shape_quality(&regular);
+        assert!((q - 1.0).abs() < 1e-12, "regular tet quality = {q}");
+    }
+
+    #[test]
+    fn tet_shape_quality_of_the_cube_freudenthal_tet() {
+        let tet = [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [1.0, 1.0, 1.0],
+        ];
+        let expected = 2.0_f64.sqrt() / (10.0_f64 / 6.0).powf(1.5);
+        let q = tet_shape_quality(&tet);
+        assert!(
+            (q - expected).abs() < 1e-12,
+            "Freudenthal tet quality = {q}, expected {expected}"
+        );
+        assert!((q - 0.6573).abs() < 1e-4, "Freudenthal tet quality = {q}");
+    }
+
+    #[test]
+    fn tet_shape_quality_is_signed_by_orientation() {
+        let tet = [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [1.0, 1.0, 1.0],
+        ];
+        let swapped = [tet[1], tet[0], tet[2], tet[3]];
+        assert_eq!(tet_shape_quality(&swapped), -tet_shape_quality(&tet));
+    }
+
+    #[test]
+    fn tet_shape_quality_of_coplanar_points_is_zero() {
+        let flat = [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [0.0, 1.0, 0.0],
+        ];
+        assert_eq!(tet_shape_quality(&flat), 0.0);
+    }
+
+    #[test]
+    fn well_shaped_mesh_passes_the_degenerate_tet_gate_at_any_scale() {
+        let (unit_coords, tets) = freudenthal_box([1.0, 0.5, 0.25], [2, 2, 2]);
+        for s in [1e-6, 1e-4, 1e-3, 1.0, 1e3] {
+            let coords = scaled(&unit_coords, s);
+            assert_eq!(
+                find_degenerate_tet(&coords, &tets),
+                None,
+                "well-shaped box mesh scaled by {s} must pass the gate"
+            );
+            for &tet in &tets {
+                let q_unit = tet_shape_quality(&tet_nodes(&unit_coords, tet));
+                let q_scaled = tet_shape_quality(&tet_nodes(&coords, tet));
+                assert!(
+                    ((q_scaled - q_unit) / q_unit).abs() < 1e-9,
+                    "quality must be scale-invariant: {q_scaled} at scale {s} vs {q_unit} at 1"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn sub_tenth_mm_box_mesh_would_have_failed_the_old_absolute_volume_threshold() {
+        let (unit_coords, tets) = freudenthal_box([1.0, 0.5, 0.25], [2, 2, 2]);
+        let coords = scaled(&unit_coords, 1e-4);
+        for &tet in &tets {
+            let volume = crate::result::tet_volume_p1(&tet_nodes(&coords, tet));
+            assert!(
+                volume < 1e-12,
+                "premise: every tet volume < 1e-12, got {volume}"
+            );
+        }
+    }
+
+    #[test]
+    fn find_degenerate_tet_flags_an_appended_flat_tet() {
+        let (coords, mut tets) = freudenthal_box([1.0, 0.5, 0.25], [2, 2, 2]);
+        // Nodes 0, 1, 4, 3 are hex (0,0,0)'s z = 0 bottom face.
+        tets.push([0, 1, 4, 3]);
+        let flat_id = tets.len() - 1;
+        let d = find_degenerate_tet(&coords, &tets).expect("flat tet must be flagged");
+        assert_eq!(d.element_id, flat_id);
+        assert!(
+            !(d.quality >= MIN_TET_SHAPE_QUALITY),
+            "flat tet quality = {}",
+            d.quality
+        );
+    }
+
+    #[test]
+    fn find_degenerate_tet_flags_a_near_flat_sliver_at_any_scale() {
+        let sliver = [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [1.0, 1.0, 1e-12],
+        ];
+        for s in [1e-4, 1.0, 1e3] {
+            let coords = scaled(&sliver, s);
+            let d = find_degenerate_tet(&coords, &[[0, 1, 2, 3]])
+                .unwrap_or_else(|| panic!("sliver scaled by {s} must be flagged"));
+            assert_eq!(d.element_id, 0);
+            assert!(
+                d.quality > 0.0 && d.quality < MIN_TET_SHAPE_QUALITY,
+                "sliver (not inverted) quality at scale {s} = {}",
+                d.quality
+            );
+        }
+    }
+
+    #[test]
+    fn find_degenerate_tet_flags_a_tet_inverted_against_the_mesh() {
+        let (coords, mut tets) = freudenthal_box([1.0, 0.5, 0.25], [2, 2, 2]);
+        let k = 13;
+        tets[k].swap(0, 1);
+        let d = find_degenerate_tet(&coords, &tets).expect("inverted tet must be flagged");
+        assert_eq!(d.element_id, k);
+        assert!(d.quality < 0.0, "inverted tet quality = {}", d.quality);
+    }
+
+    #[test]
+    fn find_degenerate_tet_accepts_a_consistently_mirrored_mesh() {
+        let (coords, mut tets) = freudenthal_box([1.0, 0.5, 0.25], [2, 2, 2]);
+        for tet in &mut tets {
+            tet.swap(0, 1);
+        }
+        assert_eq!(find_degenerate_tet(&coords, &tets), None);
+    }
+
+    #[test]
+    fn find_degenerate_tet_flags_a_non_finite_coordinate() {
+        let (mut coords, tets) = freudenthal_box([1.0, 0.5, 0.25], [2, 2, 2]);
+        let poisoned = coords.len() - 1;
+        coords[poisoned][2] = f64::NAN;
+        let d = find_degenerate_tet(&coords, &tets).expect("NaN coordinate must be flagged");
+        assert!(d.quality.is_nan(), "quality = {}", d.quality);
+        assert!(
+            tets[d.element_id].contains(&poisoned),
+            "flagged element {} must reference the NaN node {poisoned}",
+            d.element_id
+        );
+    }
+
+    #[test]
+    fn find_degenerate_tet_on_an_empty_mesh_is_none() {
+        assert_eq!(find_degenerate_tet(&[], &[]), None);
+    }
+
     // ── DofDirection ──────────────────────────────────────────────────────────
 
     #[test]
