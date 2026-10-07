@@ -869,10 +869,11 @@ structure S {
 
 // Recursion-set discriminators. reify-ast's member walker descends into
 // `where`/`else` branches and match arms under every `MemberRecursionSet`; port
-// bodies and sub specialization overrides are the two cells that differ between
-// the sets. The port-body and sub-override tests therefore catch this lint being
-// wired to the wrong set, and the `else`-branch test pins a recursion site no
-// other test covers.
+// bodies, sub specialization overrides and sketch bodies are the cells that
+// differ between the sets, and `sketch_body` is true only in ALL_MEMBER_BODIES.
+// The port-body, sub-override and sketch-body tests therefore catch this lint
+// being wired to the wrong set, and the `else`-branch test pins a recursion site
+// no other test covers.
 
 /// Position 31: `MemberDecl::GuardedGroup.else_members` — nested member chain.
 #[test]
@@ -959,6 +960,29 @@ structure S {
         1,
         "Sub.keyed_members[].overrides (nested Let.value)",
     );
+}
+
+/// Position 36: `MemberDecl::Sketch.members` — chain nested in a sketch body.
+///
+/// The lint is a parse-level pre-pass, so it warns even though entity compile
+/// later rejects the sketch block.
+#[test]
+fn walker_recurses_into_sketch_body() {
+    let source = r#"
+structure S {
+    sketch p {
+        let x = a.b.c.d.e
+    }
+}
+"#;
+    assert!(
+        matches!(
+            structure_s_members(source).as_slice(),
+            [MemberDecl::Sketch(s)] if matches!(s.members.as_slice(), [MemberDecl::Let(_)])
+        ),
+        "fixture must lower to exactly one Sketch whose body is exactly one `let`"
+    );
+    assert_deep_chain_warning_count(source, 1, "Sketch.members (nested Let.value)");
 }
 
 // ── Structures nested in a purpose body ──────────────────────────────────────
