@@ -1277,12 +1277,6 @@ fn material_not_damped_outcome(material_type_name: &str) -> ComputeOutcome {
     }
 }
 
-/// Opaque `Part` placeholder — a zero-field `StructureInstance` whose
-/// `type_name` is `"Part"`.  All four production echo sites emit this value
-/// for the `part` field until `.part` converges on the analysed body's
-/// `GeometryHandleRef` join key (#7097).
-/// `StructureTypeId(u32::MAX)` is the registry-free sentinel, mirroring the
-/// other degenerate builders in this file.
 /// Returns the topology `Value` to embed in a ModalResult.
 ///
 /// Today the modal solver synthesizes a beam mesh with no B-rep attribution,
@@ -1296,6 +1290,12 @@ fn build_modal_topology_value() -> Value {
     Value::Undef
 }
 
+/// Opaque `Part` placeholder — a zero-field `StructureInstance` whose
+/// `type_name` is `"Part"`.  Every production producer of a modal `.part`
+/// field emits this value until `.part` converges on the analysed body's
+/// `GeometryHandleRef` join key; that convergence is owned by #7097.
+/// `StructureTypeId(u32::MAX)` is the registry-free sentinel, mirroring the
+/// other degenerate builders in this file.
 fn placeholder_part() -> Value {
     Value::StructureInstance(Box::new(StructureInstanceData {
         type_id: StructureTypeId(u32::MAX),

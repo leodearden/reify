@@ -42,11 +42,11 @@
 //      marker declared in this module (introduced by #4578, per
 //      `stdlib-surface-type-substrate.md` §12 open-question-3 — see
 //      `structure def Part` below for the full path and rationale). `Part`
-//      identity is a join key, not a payload: #7097 converges `.part` on the
+//      identity is a join key, not a payload: convergence of `.part` on the
 //      analysed body's `GeometryHandleRef` (the `CarriedTopology.part`
-//      identity channel) and grows no geometry+material+topology fields on
-//      `Part` (`result-field-vacuity-closure.md` §2.1); the single-module
-//      opaque form is non-blocking for task ζ.
+//      identity channel) is owned by #7097, and no geometry+material+topology
+//      fields are grown on `Part` (`result-field-vacuity-closure.md` §2.1);
+//      the single-module opaque form is non-blocking for task ζ.
 //   3. `Mode.frequency : Frequency` carries the natural-frequency dimension
 //      (`Frequency` = s⁻¹, a registered named dimension). Tightened from the
 //      former `Real` placeholder once `Frequency` gained a named scalar alias
@@ -348,9 +348,10 @@ structure def Mode {
 // declared zero-field here so all three `part : Part` params (ModalResult,
 // ForcingTimeHistory, DisplacementTimeHistory) resolve to the same nominal type
 // within this module, without depending on the F foundation / task 4574. The
-// "then grow" path is superseded: #7097 replaces this opaque placeholder with
-// the `GeometryHandleRef` join key, and no geometry+material+topology payload
-// is grown on `Part` (docs/prds/v0_6/result-field-vacuity-closure.md §2.1).
+// "then grow" path is superseded: convergence of `.part` on the
+// `GeometryHandleRef` join key is owned by #7097, and no
+// geometry+material+topology payload is grown on `Part`
+// (docs/prds/v0_6/result-field-vacuity-closure.md §2.1).
 // Single-module (modal_analysis.ri only); introduced by #4578.
 structure def Part { }
 
