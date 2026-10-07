@@ -26,14 +26,14 @@
 //! A slot whose argument is a metavariable is never type-checked: the poisoned
 //! name stands in for any type. An expression that does not OPEN with a call
 //! (e.g. `2*corner_r < min(width, depth)`) is not compiled. Only
-//! `IDIOM_GATED_CHUNKS` are read: units.md quotes deliberately-rejected forms in
+//! [`IDIOM_GATED_CHUNKS`] are read: units.md quotes deliberately-rejected forms in
 //! its prose, so admitting it needs a notion of an idiom documented as rejected
 //! first.
 
 use reify_compiler::{compile_with_stdlib, parse_with_stdlib};
 use reify_core::{DiagnosticCode, ModulePath};
 
-use crate::chunk_io::chunk_label;
+use crate::chunk_io::{chunk_label, read_chunk_file, report};
 use crate::chunk_prose::{code_spans, unfenced_prose};
 use crate::doc_forms::{doc_form_of_span, span_callee};
 use crate::module_compile::ModuleCompile;
@@ -137,6 +137,55 @@ fn prose_idiom_violations(chunks: &[(&str, &str)]) -> Vec<String> {
     violations.sort();
     violations.dedup();
     violations
+}
+
+// ---------------------------------------------------------------------------
+// The real-corpus gate
+// ---------------------------------------------------------------------------
+
+/// The chunks, by stem, whose prose idioms are gated.
+const IDIOM_GATED_CHUNKS: &[&str] = &["geometry"];
+
+/// The callee of an idiom each chunk's prose must yield. The geometry one sits in
+/// the Topology Selectors prose at the END of geometry.md, so reading it proves
+/// the extraction survived every fence and note above it.
+const SENTINELS: &[(&str, &str)] = &[("geometry", "adjacent_faces")];
+
+/// Every prose idiom in a gated chunk compiles, its metavariables left unbound.
+/// Scope and limits: this module's doc.
+#[test]
+fn every_prose_idiom_in_a_gated_chunk_compiles() {
+    let corpus: Vec<(&str, String)> = IDIOM_GATED_CHUNKS
+        .iter()
+        .map(|stem| (*stem, read_chunk_file(stem)))
+        .collect();
+    let chunks: Vec<(&str, &str)> = corpus
+        .iter()
+        .map(|(stem, markdown)| (*stem, markdown.as_str()))
+        .collect();
+
+    for (stem, callee) in SENTINELS {
+        let (_, markdown) = chunks
+            .iter()
+            .find(|(gated, _)| gated == stem)
+            .unwrap_or_else(|| panic!("sentinel chunk `{stem}` must be in IDIOM_GATED_CHUNKS"));
+        let idioms = prose_idioms(markdown).unwrap_or_else(|error| {
+            panic!("{}: {error} — repair the markup", chunk_label(stem))
+        });
+        assert!(
+            idioms
+                .iter()
+                .any(|idiom| span_callee(&idiom.span) == Some(*callee)),
+            "{} has a `{callee}(…)` idiom in its prose, but the scan did not read it — the \
+             extraction no longer reaches it (or the idiom was rewritten: re-pick the sentinel)",
+            chunk_label(stem)
+        );
+    }
+
+    report(
+        "idioms in the MCP language-reference chunks' prose that the compiler does not accept",
+        &prose_idiom_violations(&chunks),
+    );
 }
 
 // ---------------------------------------------------------------------------
