@@ -1,7 +1,46 @@
 //! Every concrete Reify IDIOM written in a gated chunk's unfenced prose must
-//! compile, its free identifiers left unbound as metavariables.
+//! compile: it is a call a designer will copy, so it is held to the criterion a
+//! signature fixture's calls are.
+//!
+//! A PROSE IDIOM is a code span of a chunk's unfenced prose that
+//!
+//! 1. opens call-shaped — `doc_forms::span_callee` reads a callee;
+//! 2. is no signature — `doc_forms::doc_form_of_span` reads none, so every span
+//!    has at most one owner and signatures stay `unfenced_signature_gate.rs`'s;
+//! 3. elides nothing — no ASCII `...` and no U+2026 `…`, since an elided call
+//!    is a schematic mention rather than an idiom.
+//!
+//! The prose read is `chunk_prose.rs`'s unfenced model, so fence bodies (the
+//! fence gate's jurisdiction) and maintainer notes are never scanned.
+//!
+//! An idiom must parse as ONE Reify expression, bound as the sole `let` of a
+//! `structure def`, and compile with no diagnostic that
+//! `signature_fixtures::discredits_calls` counts, `DiagnosticCode::UnresolvedName`
+//! excepted. An idiom's free identifiers are metavariables, unbound by design.
+//! The compiler poisons each one, so it raises no follow-on diagnostic, while a
+//! literal argument of the wrong type, a wrong arity or a misspelled callee
+//! beside it is still reported.
+//!
+//! # What is NOT established
+//!
+//! A slot whose argument is a metavariable is never type-checked: the poisoned
+//! name stands in for any type. An expression that does not OPEN with a call
+//! (e.g. `2*corner_r < min(width, depth)`) is not compiled. Only
+//! `IDIOM_GATED_CHUNKS` are read: units.md quotes deliberately-rejected forms in
+//! its prose, so admitting it needs a notion of an idiom documented as rejected
+//! first.
+
+use reify_compiler::{compile_with_stdlib, parse_with_stdlib};
+use reify_core::{DiagnosticCode, ModulePath};
 
 use crate::chunk_io::chunk_label;
+use crate::chunk_prose::{code_spans, unfenced_prose};
+use crate::doc_forms::{doc_form_of_span, span_callee};
+use crate::module_compile::ModuleCompile;
+use crate::signature_fixtures::{discredits_calls, rendered_diagnostic};
+
+/// What marks a span as eliding part of its argument list.
+const ELISIONS: &[&str] = &["...", "…"];
 
 /// One prose idiom: a call-shaped, unelided, non-signature code span.
 #[derive(Debug, PartialEq)]
@@ -11,16 +50,93 @@ struct ProseIdiom {
     span: String,
 }
 
-fn prose_idioms(_markdown: &str) -> Result<Vec<ProseIdiom>, String> {
-    todo!("#8050 read the prose idioms")
+/// Is the trimmed code span `span` a prose idiom (see the module doc)?
+fn is_prose_idiom(span: &str) -> bool {
+    span_callee(span).is_some()
+        && doc_form_of_span(span).is_none()
+        && !ELISIONS.iter().any(|elision| span.contains(elision))
 }
 
-fn idiom_violations(_span: &str) -> Vec<String> {
-    todo!("#8050 compile one idiom")
+/// Every prose idiom in `markdown`'s unfenced prose, trimmed, in document
+/// order; `Err` when the prose cannot be read.
+fn prose_idioms(markdown: &str) -> Result<Vec<ProseIdiom>, String> {
+    Ok(code_spans(&unfenced_prose(markdown)?)
+        .into_iter()
+        .filter_map(|span| {
+            let text = span.text.trim();
+            is_prose_idiom(text).then(|| ProseIdiom {
+                line: span.line,
+                span: text.to_string(),
+            })
+        })
+        .collect())
 }
 
-fn prose_idiom_violations(_chunks: &[(&str, &str)]) -> Vec<String> {
-    todo!("#8050 report every chunk's stale idioms")
+/// What the compiler holds against the idiom `span`, one line each; empty when
+/// it compiles clean, its metavariables aside.
+///
+/// A span that does not parse is ONE line carrying the parser's messages: any
+/// compile-layer diagnostic downstream of a broken AST describes the wreckage,
+/// not the idiom.
+fn idiom_violations(span: &str) -> Vec<String> {
+    let source = format!("structure def ProseIdiom {{\n    let idiom = {span}\n}}\n");
+    let parsed = parse_with_stdlib(&source, ModulePath::single("prose_idiom"));
+    if !parsed.errors.is_empty() {
+        let messages: Vec<&str> = parsed.errors.iter().map(|e| e.message.as_str()).collect();
+        return vec![format!(
+            "does not parse as a Reify expression: {}",
+            messages.join("; ")
+        )];
+    }
+    compile_with_stdlib(&parsed)
+        .diagnostics
+        .iter()
+        .filter(|diagnostic| {
+            discredits_calls(diagnostic)
+                && !matches!(diagnostic.code, Some(DiagnosticCode::UnresolvedName))
+        })
+        .map(rendered_diagnostic)
+        .collect()
+}
+
+/// The report for `idiom`, an idiom of the chunk named `stem`; `None` when it
+/// compiles clean.
+fn idiom_violation(stem: &str, idiom: &ProseIdiom) -> Option<String> {
+    let diagnostics = idiom_violations(&idiom.span);
+    (!diagnostics.is_empty()).then(|| {
+        format!(
+            "{}:{} — `{}` is an idiom the compiler does not accept:\n{}\nFIX: correct the idiom \
+             to a form the compiler accepts (and its mirror in docs/reify-stdlib-reference.md, if \
+             it has one); a placeholder argument list is written `…`, which makes the span a \
+             mention rather than an idiom.",
+            chunk_label(stem),
+            idiom.line,
+            idiom.span,
+            ModuleCompile::rendered(&diagnostics)
+        )
+    })
+}
+
+/// Everything wrong across `chunks` (`(stem, markdown)`), one report each,
+/// sorted and deduped: an idiom the compiler does not accept, and a chunk whose
+/// prose cannot be read. Pure — no file I/O.
+fn prose_idiom_violations(chunks: &[(&str, &str)]) -> Vec<String> {
+    let mut violations: Vec<String> = chunks
+        .iter()
+        .flat_map(|(stem, markdown)| match prose_idioms(markdown) {
+            Err(error) => vec![format!(
+                "{}: {error} — so no idiom in its prose is checked. FIX: repair the markup.",
+                chunk_label(stem)
+            )],
+            Ok(idioms) => idioms
+                .iter()
+                .filter_map(|idiom| idiom_violation(stem, idiom))
+                .collect(),
+        })
+        .collect();
+    violations.sort();
+    violations.dedup();
+    violations
 }
 
 // ---------------------------------------------------------------------------
@@ -108,7 +224,7 @@ fn a_stale_idiom_is_reported_whichever_layer_rejects_it() {
         ),
         (
             "translate(cylinder(r, h), 0, 0, -h/2)",
-            "Error",
+            "ArgTypeMismatch",
             "bare zeros are not lengths, so the type check rejects them",
         ),
         ("box(1mm, 2mm)", "Error", "box takes three arguments"),
