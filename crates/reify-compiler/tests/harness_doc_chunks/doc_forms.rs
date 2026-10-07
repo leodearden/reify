@@ -10,10 +10,17 @@
 //! capitalised names and lambdas are prose, never signatures — see
 //! [`doc_form_of_span`]. A ```` ```reify-schematic ```` listing is read span by
 //! span, as [`listing_signature_spans`] cuts it, through that same rule.
+//!
+//! A source's call forms are read off its parsed AST by [`call_forms`], and a
+//! chunk's ```` ```reify ```` fences are read the same way, one module per
+//! fence, by [`fence_call_forms`].
 
-use reify_ast::{Declaration, Expr, ExprKind, MemberDecl, ParsedModule, StringPart};
+use reify_ast::{Declaration, Expr, ExprKind, MemberDecl, ParsedModule, StringPart, WhereClause};
 use reify_compiler::parse_with_stdlib;
 use reify_core::ModulePath;
+
+use crate::chunk_markdown::tagged_fence_bodies;
+use crate::chunk_prose::{code_spans, unfenced_prose};
 
 /// A documented form's declared argument count: either an exact arity, or a
 /// variadic form carrying the given MINIMUM arity.
@@ -87,6 +94,29 @@ pub(crate) fn doc_form_of_span(span: &str) -> Option<DocForm> {
             Arity::Exact(count)
         },
     })
+}
+
+/// One signature-shaped span in a chunk's unfenced prose.
+pub(crate) struct DocumentedForm {
+    pub(crate) form: DocForm,
+    /// 1-based line of the span's opening backtick run.
+    pub(crate) line: usize,
+    pub(crate) span: String,
+}
+
+/// Every signature-shaped code span in `markdown`'s unfenced prose, in document
+/// order; `Err` when the prose cannot be read.
+pub(crate) fn documented_unfenced_forms(markdown: &str) -> Result<Vec<DocumentedForm>, String> {
+    Ok(code_spans(&unfenced_prose(markdown)?)
+        .into_iter()
+        .filter_map(|span| {
+            doc_form_of_span(&span.text).map(|form| DocumentedForm {
+                form,
+                line: span.line,
+                span: span.text,
+            })
+        })
+        .collect())
 }
 
 /// The candidate signature spans on each line of a ```` ```reify-schematic ````
@@ -209,10 +239,13 @@ pub(crate) fn parse_or_panic(source: &str, label: &str) -> ParsedModule {
 /// deterministic output. A named argument counts one, exactly as a documented
 /// form counts it.
 ///
-/// `source` must be `structure def`s whose members are all `let` bindings — the
-/// shape of the signature fixtures. Anything else PANICS rather than being
-/// skipped, so growing a fixture a new declaration or member kind is a loud
-/// "extend the walker", never a silent coverage hole.
+/// `source` must be `structure def`s whose members are `let`, `param` or
+/// `constraint` declarations — the shape of the signature fixtures, the
+/// chunks' ```` ```reify ```` fences and the cited examples. A `param`
+/// default and every member's `where` guard are walked too. Any other
+/// declaration or member kind PANICS rather than being skipped, so growing a
+/// source a new kind is a loud "extend the walker", never a silent coverage
+/// hole.
 pub(crate) fn call_forms(source: &str, label: &str) -> Vec<(String, usize)> {
     let parsed = parse_or_panic(source, label);
 
@@ -226,21 +259,77 @@ pub(crate) fn call_forms(source: &str, label: &str) -> Vec<(String, usize)> {
             );
         };
         for member in &structure.members {
-            let MemberDecl::Let(binding) = member else {
-                panic!(
-                    "{label}: `call_forms` only walks `let` members of `{}`, but it has another \
-                     member kind — extend `call_forms` rather than leaving those call sites \
-                     unchecked",
+            match member {
+                MemberDecl::Let(binding) => {
+                    collect_call_forms(&binding.value, &mut forms);
+                    collect_guard_call_forms(&binding.where_clause, &mut forms);
+                }
+                MemberDecl::Param(param) => {
+                    if let Some(default) = &param.default {
+                        collect_call_forms(default, &mut forms);
+                    }
+                    collect_guard_call_forms(&param.where_clause, &mut forms);
+                }
+                MemberDecl::Constraint(constraint) => {
+                    collect_call_forms(&constraint.expr, &mut forms);
+                    collect_guard_call_forms(&constraint.where_clause, &mut forms);
+                }
+                _ => panic!(
+                    "{label}: `call_forms` only walks `let`, `param` and `constraint` members of \
+                     `{}`, but it has another member kind — extend `call_forms` rather than \
+                     leaving those call sites unchecked",
                     structure.name
-                );
-            };
-            collect_call_forms(&binding.value, &mut forms);
+                ),
+            }
         }
     }
 
     forms.sort();
     forms.dedup();
     forms
+}
+
+/// Every `(call name, arg count)` form across the bare ```` ```reify ````
+/// fences of `markdown`, each fence parsed as its own module through
+/// [`call_forms`] — so prose, other-tagged fences, comments and string literals
+/// contribute nothing. Deduped and sorted across fences.
+///
+/// Every fence is thereby held to the shape [`call_forms`] walks, which is
+/// stricter than compiling clean: a fence that compiles but declares a `fn`,
+/// an `enum` or an `import` panics here until the walker is extended.
+///
+/// `label` says what `markdown` is — a whole chunk, or one section of it —
+/// because fences are numbered within `markdown`, not within the chunk. A
+/// fence that does not parse, or that [`call_forms`] cannot walk, panics naming
+/// `{label} ```reify fence #{n}`, `n` its 1-based position among `markdown`'s
+/// bare ```` ```reify ```` fences.
+pub(crate) fn fence_call_forms(markdown: &str, label: &str) -> Vec<(String, usize)> {
+    let mut forms: Vec<(String, usize)> = tagged_fence_bodies(markdown, "reify", label)
+        .iter()
+        .enumerate()
+        .flat_map(|(index, body)| {
+            call_forms(body, &format!("{label} ```reify fence #{}", index + 1))
+        })
+        .collect();
+    forms.sort();
+    forms.dedup();
+    forms
+}
+
+/// The distinct callee names of `forms`, sorted: every overload of a name
+/// collapses to one entry.
+pub(crate) fn callee_names(forms: &[(String, usize)]) -> Vec<String> {
+    let mut names: Vec<String> = forms.iter().map(|(name, _arity)| name.clone()).collect();
+    names.sort();
+    names.dedup();
+    names
+}
+
+/// [`collect_call_forms`] over a member's `where` guard, when it has one.
+fn collect_guard_call_forms(guard: &Option<WhereClause>, out: &mut Vec<(String, usize)>) {
+    if let Some(guard) = guard {
+        collect_call_forms(&guard.condition, out);
+    }
 }
 
 /// Push `(callee name, arg count)` for every `FunctionCall` in `expr`'s
@@ -519,6 +608,146 @@ structure def NamedArgument {
         call_forms(source, "named-argument snippet"),
         vec![("isosurface".to_string(), 2), ("sphere".to_string(), 1)],
         "a named argument is one argument, in the same currency the documented form is read in"
+    );
+}
+
+#[test]
+fn call_forms_walks_param_defaults_constraints_and_where_guards() {
+    let source = r#"
+structure def EveryMemberSlot {
+    param h : Length = default_height(40mm) where param_enabled(1mm, 2mm)
+    let b = box(h, h, h) where let_enabled(h)
+    constraint volume(b) > 1mm^3 where constraint_enabled(b, h, h, h)
+}
+"#;
+
+    let forms: Vec<(String, usize)> = [
+        ("box", 3),
+        ("constraint_enabled", 4),
+        ("default_height", 1),
+        ("let_enabled", 1),
+        ("param_enabled", 2),
+        ("volume", 1),
+    ]
+    .iter()
+    .map(|(name, arity)| (name.to_string(), *arity))
+    .collect();
+    assert_eq!(
+        call_forms(source, "member-slot snippet"),
+        forms,
+        "a param default, a constraint expression and every member's `where` guard (the `let` \
+         guard included) are call sites"
+    );
+}
+
+#[test]
+fn fence_call_forms_reads_only_the_parsed_code_of_bare_reify_fences() {
+    let markdown = r#"# Demo chunk
+
+Prose may name `prose_only(a)` in a code span, or prose_only(a) bare.
+
+```reify
+structure def Members {
+    param h : Length = 5mm
+    let s = sphere(h)
+    constraint volume(s) > 1mm^3
+}
+```
+
+```reify-schematic
+schematic_only(a, b)
+```
+
+```reify
+structure def Commented {
+    // line_commented(a, b)
+    /* block_commented(a) */
+    let note = "string_call(a)"
+    let g = box(1mm, 2mm, 3mm)
+    let ball = sphere(1mm)
+}
+```
+"#;
+
+    let forms: Vec<(String, usize)> = [("box", 3), ("sphere", 1), ("volume", 1)]
+        .iter()
+        .map(|(name, arity)| (name.to_string(), *arity))
+        .collect();
+    assert_eq!(
+        fence_call_forms(markdown, "demo.md"),
+        forms,
+        "only the parsed code of bare ```reify fences is read, each fence as its own module: \
+         prose, a schematic listing, comments and string literals contribute nothing, and the \
+         forms of every fence are sorted and deduped together"
+    );
+}
+
+#[test]
+#[should_panic(expected = "demo.md ```reify fence #2 must parse cleanly")]
+fn fence_call_forms_names_an_unparseable_fence_by_label_and_position() {
+    let markdown = r#"```reify-schematic
+schematic_only(a, b)
+```
+
+```reify
+structure def Parses {
+    let s = sphere(1mm)
+}
+```
+
+```reify
+structure def Broken {
+    let s = sphere(1mm
+}
+```
+"#;
+
+    fence_call_forms(markdown, "demo.md");
+}
+
+#[test]
+#[should_panic(expected = "demo.md's Fits section ```reify fence #1: `call_forms` only walks")]
+fn fence_call_forms_names_a_fence_it_cannot_walk_by_label_and_position() {
+    let markdown = "```reify\nenum FitType { Clearance, Transition, Interference }\n```\n";
+
+    fence_call_forms(markdown, "demo.md's Fits section");
+}
+
+#[test]
+fn documented_unfenced_forms_is_an_err_when_the_prose_cannot_be_read() {
+    let signature = "`volume(solid) -> Scalar<Volume>`\n\n";
+    assert_eq!(
+        documented_unfenced_forms(signature).map(|forms| forms.len()),
+        Ok(1),
+        "control: the signature alone is read"
+    );
+
+    for (defect, why) in [
+        ("```reify\nstructure def Open {\n", "an unterminated fence"),
+        (
+            "<!-- an unterminated note\n",
+            "an unterminated HTML comment",
+        ),
+    ] {
+        assert!(
+            documented_unfenced_forms(&format!("{signature}{defect}")).is_err(),
+            "{why} hides the rest of the chunk, so it is an Err, never a short list of forms"
+        );
+    }
+}
+
+#[test]
+fn callee_names_collapses_overloads_to_sorted_distinct_names() {
+    let forms = vec![
+        ("b".to_string(), 1),
+        ("a".to_string(), 2),
+        ("a".to_string(), 3),
+    ];
+
+    assert_eq!(
+        callee_names(&forms),
+        vec!["a".to_string(), "b".to_string()],
+        "two overloads of one name are one callee name, and the names come back sorted"
     );
 }
 
