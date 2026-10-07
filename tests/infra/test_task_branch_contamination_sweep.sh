@@ -29,6 +29,8 @@
 #             --audit's own non-terminal filter kept out of step-17's reach
 #   esc-7244-16 — C8-C10: the census reads SUBJECTS in reify's own
 #             `kind(<id>):` form, and fires on the esc-6205-4 shape itself
+#   task 7377 — C2/json and F6 peers: under --format json `peers` is an array
+#             of task-id numbers, or "-" when unmeasured
 #
 # Auto-discovered by tests/infra/run_all.sh via the test_*.sh glob.
 
@@ -685,6 +687,15 @@ _assert_field "C2: peers is the sorted-unique UNION of commit- and file-derived 
 # (f) signature is set by peer_commits alone
 _assert_field "C3: peer_commits>0 -> signature=SUSPECT" 9510 signature SUSPECT
 
+run_helper --task 9510 --db "$C_DB" --repo "$REPO" --format json
+assert "C2/json: peers is an ARRAY of task-id numbers, not a comma-joined string" \
+    bash -c 'printf "%s" "$1" | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+p=d[\"branches\"][0][\"peers\"]
+assert p==[9501,9502,9504], p
+"' _ "$OUT"
+
 # (b) isolated: a message that cites its OWN id must not flag even when it
 #     also names a live peer in the same message.
 _add_task 9520 pending '{"files":["o20.rs"]}'
@@ -935,6 +946,15 @@ assert s[\"branches\"]==7 and s[\"suspect\"]==1 and s[\"clean\"]==2, s
 assert s[\"skipped_terminal\"]==1 and s[\"skipped_nonnumeric\"]==1, s
 assert s[\"skipped_no_task\"]==0 and s[\"repo_unusable\"]==0, s
 "' _ "$OUT"
+assert "F6: peers is a JSON array when measured ([] when none) and the '-' placeholder when unmeasured" \
+    bash -c 'printf "%s" "$1" | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+p={b[\"task\"]: b[\"peers\"] for b in d[\"branches\"]}
+assert p[9603]==[9610], p
+assert p[9601]==[], p
+assert p[9606]==\"-\", p
+"' _ "$OUT"
 
 # (f) the two formats agree
 F7_JSON="$OUT"
@@ -946,8 +966,10 @@ import json,sys
 d=json.load(sys.stdin)
 cols=[\"task\",\"status\",\"merge_base\",\"behind\",\"commits\",\"peer_commits\",
       \"changed\",\"foreign\",\"peer_files\",\"peers\",\"scope\",\"signature\"]
+def cell(v):
+    return (\",\".join(map(str, v)) or \"-\") if isinstance(v, list) else v
 for b in d[\"branches\"]:
-    print(\" \".join(f\"{c}={b[c]}\" for c in cols))
+    print(\" \".join(f\"{c}={cell(b[c])}\" for c in cols))
 s=d[\"summary\"]
 print(\"SWEEP: \" + \" \".join(f\"{k}={s[k]}\" for k in
       [\"branches\",\"suspect\",\"peer_files\",\"out_of_scope\",\"undeclared\",
