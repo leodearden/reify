@@ -229,7 +229,7 @@ use super::shell_solve::{
 // Task 2929: FEA diagnostic mapping glue.
 use super::fea_diagnostics::fea_diagnostic_to_core;
 use reify_solver_elastic::{
-    FeaFailure, classify_convergence, find_degenerate_tet, thin_body_advisory,
+    DegenerateTet, FeaFailure, classify_convergence, find_degenerate_tet, thin_body_advisory,
 };
 // Task 4802 (R3b-1): structured FEA diagnostic channel.
 use crate::StructuredComputeDetail;
@@ -1008,7 +1008,7 @@ pub fn solve_elastic_static_trampoline(
         None
     };
 
-    let (fea, fresh_warm) = solve_cantilever_fea(
+    let (fea, fresh_warm) = match solve_cantilever_fea(
         &model,
         length,
         width,
@@ -1026,7 +1026,10 @@ pub fn solve_elastic_static_trampoline(
         // BC selection this single-shot solve used.
         bc_override.clone(),
         None,
-    );
+    ) {
+        Ok(solve) => solve,
+        Err(degenerate) => return degenerate_mesh_outcome(degenerate),
+    };
 
     // ── (6b) Cancel check ─────────────────────────────────────────────────────
     //
@@ -1038,18 +1041,7 @@ pub fn solve_elastic_static_trampoline(
     }
 
     // ── (6c) Post-solve FEA diagnostics (task 2929) ───────────────────────────
-    if let Some(degenerate) = find_degenerate_tet(&fea.coords, &fea.tet_connectivity) {
-        let failure = FeaFailure::SingularStiffness(degenerate);
-        let sd = failure
-            .structured_detail()
-            .map(|d| vec![StructuredComputeDetail::Fea(d)])
-            .unwrap_or_default();
-        return ComputeOutcome::Failed {
-            diagnostics: vec![fea_diagnostic_to_core(&failure, None)],
-            structured_detail: sd,
-        };
-    }
-
+    //
     // Non-convergence advisory: CG did not converge within max_iter iterations.
     // `SOLVER_MAX_ITER` is the shared const used by `solve_cantilever_fea`'s
     // `CgSolverOptions`; referencing the same const here guarantees the diagnostic
@@ -2749,6 +2741,19 @@ fn cantilever_tip_load(
     f
 }
 
+/// The `Failed` outcome for a mesh that [`solve_cantilever_fea`]'s degenerate-tet
+/// gate rejected: one FeaSingularStiffness Error plus the element to highlight.
+fn degenerate_mesh_outcome(degenerate: DegenerateTet) -> ComputeOutcome {
+    let failure = FeaFailure::SingularStiffness(degenerate);
+    ComputeOutcome::Failed {
+        diagnostics: vec![fea_diagnostic_to_core(&failure, None)],
+        structured_detail: failure
+            .structured_detail()
+            .map(|d| vec![StructuredComputeDetail::Fea(d)])
+            .unwrap_or_default(),
+    }
+}
+
 /// Core FEA solve for the cantilever fixture used by `solve_elastic_static_trampoline`
 /// and the unit tests.
 ///
@@ -2766,7 +2771,12 @@ fn cantilever_tip_load(
 ///   `element_stiffness_p1_with_field(&field)` (field samples centroid internally);
 ///   stress via `element_stress_anisotropic` at the SAME centroid for D-consistency.
 ///
-/// Returns `(CantileverFeaSolve, CgWarmState)`.
+/// # Returns
+///
+/// `Ok((CantileverFeaSolve, CgWarmState))`, or `Err` with the worst tet when the
+/// mesh (synthetic or realized) fails [`find_degenerate_tet`]'s shape-quality gate.
+/// The gate runs before assembly, so a degenerate mesh never reaches the
+/// element-stiffness Jacobian assert or the CG solve.
 // 10 args: the helper threads mesh geometry, tip load, pressures, gravity body
 // force, CG warm-state, and the task-2926 execution-mode knobs (`deterministic`,
 // `threads`) into a single cohesive solve; splitting them into a struct would not
@@ -2805,7 +2815,7 @@ pub(crate) fn solve_cantilever_fea(
     // `CantileverAdaptiveProblem::refine` (step-14) grow the mesh each adaptive
     // iteration without touching the realized-mesh path.
     grid_override: Option<(usize, usize, usize)>,
-) -> (CantileverFeaSolve, CgWarmState) {
+) -> Result<(CantileverFeaSolve, CgWarmState), DegenerateTet> {
     // ── Mesh ──────────────────────────────────────────────────────────────────
     //
     // Layout: X-axis = beam length, Y-axis = width, Z-axis = height.
@@ -2957,6 +2967,10 @@ pub(crate) fn solve_cantilever_fea(
         if let Some(load) = load_override {
             tip_nodes = load;
         }
+    }
+
+    if let Some(degenerate) = find_degenerate_tet(&coords, &tet_connectivity) {
+        return Err(degenerate);
     }
 
     let n_nodes = coords.len();
@@ -3170,7 +3184,7 @@ pub(crate) fn solve_cantilever_fea(
     let converged = cg_result.converged;
     let iterations = cg_result.iterations;
     if !converged && iterations < max_iter {
-        return (
+        return Ok((
             CantileverFeaSolve {
                 u: cg_result.into_shared_u(),
                 coords,
@@ -3187,7 +3201,7 @@ pub(crate) fn solve_cantilever_fea(
                 nz,
             },
             fresh_warm,
-        );
+        ));
     }
 
     // ── Stress recovery: max von Mises across all elements ────────────────────
@@ -3352,7 +3366,7 @@ pub(crate) fn solve_cantilever_fea(
         ny,
         nz,
     };
-    (fea, fresh_warm)
+    Ok((fea, fresh_warm))
 }
 
 // ── CantileverAdaptiveProblem (task 4902) ────────────────────────────────────
@@ -3533,10 +3547,10 @@ impl CantileverAdaptiveProblem {
 }
 
 impl AdaptiveProblem for CantileverAdaptiveProblem {
-    /// The v1 uniform-refinement `refine` step cannot fail — mirrors the
-    /// task's stub-driver convention (`crate::adaptive`'s test suite uses the
-    /// same `Infallible` for its synthetic stubs).
-    type Error = std::convert::Infallible;
+    /// The v1 uniform-refinement `refine` step cannot fail; a solve fails only
+    /// when the synthetic grid fails `solve_cantilever_fea`'s degenerate-tet
+    /// gate (an absurdly thin forced-tet slab).
+    type Error = DegenerateTet;
 
     fn solve_and_estimate(&mut self) -> Result<AdaptiveEstimate, Self::Error> {
         // The refinement loop is interruptible at CG granularity: a cancel
@@ -3570,7 +3584,7 @@ impl AdaptiveProblem for CantileverAdaptiveProblem {
             progress_opt,
             self.bc_override.clone(),
             Some(self.grid),
-        );
+        )?;
 
         // Recompute per-element Cauchy stress + volume to feed compute_zz_indicator,
         // via the shared `isotropic_stress_elements` helper (task 4902 amendment,
