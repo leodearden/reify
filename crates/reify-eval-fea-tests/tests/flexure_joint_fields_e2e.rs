@@ -10,9 +10,7 @@
 
 use reify_core::{DimensionVector, ValueCellId};
 use reify_ir::{PersistentMap, Value};
-use reify_test_support::{
-    collect_errors, compile_source_with_stdlib, make_simple_engine, parse_and_compile_with_stdlib,
-};
+use reify_test_support::{make_simple_engine, parse_and_compile_with_stdlib};
 
 fn field<'a>(m: &'a PersistentMap<String, Value>, k: &str) -> Option<&'a Value> {
     m.get(&k.to_string())
@@ -248,6 +246,8 @@ fn fixture_source() -> String {
         .unwrap_or_else(|e| panic!("failed to read fixture {}: {}", path.display(), e))
 }
 
+/// Panics on any Error-severity compile diagnostic, so every test that evaluates
+/// the fixture also carries the `reify check` signal.
 fn eval_fixture() -> reify_eval::EvalResult {
     let compiled = parse_and_compile_with_stdlib(&fixture_source());
     make_simple_engine().eval(&compiled)
@@ -304,19 +304,6 @@ fn expect_none(fields: &PersistentMap<String, Value>, key: &str) {
 
 const TRANSLATIONAL: DimensionVector = DimensionVector::TRANSLATIONAL_STIFFNESS;
 const ROTATIONAL: DimensionVector = DimensionVector::ROTATIONAL_STIFFNESS;
-
-/// The `reify check` signal: compliance on every kind's constrained groups,
-/// written in constructor form, compiles with no errors. Pre-task this drew one
-/// `E_CTOR_UNKNOWN_FIELD` per compliance argument.
-#[test]
-fn constrained_dof_compliance_fixture_compiles_clean() {
-    let compiled = compile_source_with_stdlib(&fixture_source());
-    let errors = collect_errors(&compiled.diagnostics);
-    assert!(
-        errors.is_empty(),
-        "fixture should compile with no Error-severity diagnostics; got {errors:#?}"
-    );
-}
 
 /// Expected values are SI: the fixture's `210N/um` reads back as 2.1e8 N/m, and
 /// its rotational literals are already SI (N·m/rad²).
