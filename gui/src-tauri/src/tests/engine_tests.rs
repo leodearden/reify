@@ -975,8 +975,16 @@ fn literal_bound_joint_is_scrubbable_only_if_the_engine_accepts_its_synth_name()
                 preview.is_ok(),
                 "joint {joint_index} ({synth_param_name}) advertises scrubbable={scrubbable} \
                  but preview_parameter returned {:?}",
-                preview.err()
+                preview.as_ref().err()
             );
+            if let Err(refusal) = preview {
+                assert!(
+                    refusal.starts_with("Invalid cell ID")
+                        || refusal.starts_with("Unknown parameter"),
+                    "joint {joint_index}: the preview of {synth_param_name} must be refused because \
+                     it names no cell, not for an unrelated reason; got {refusal:?}"
+                );
+            }
         }
     }
 }
