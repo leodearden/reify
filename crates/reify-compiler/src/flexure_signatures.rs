@@ -64,7 +64,7 @@
 //! arm. The family is pinned disjoint from all sibling families by the `units.rs`
 //! disjointness test, which is what makes that arm position unobservable.
 //!
-//! Registry τ4 (#6006, pending) migrates this family into `reify-builtins` rows
+//! Registry τ4 (#6006) migrates this family into `reify-builtins` rows
 //! and DELETES this slice and its `is_known_builtin` arm, per
 //! `unresolved_function.rs`'s "registry arm is where the rest of this union is
 //! going" contract — it must not leave both the rows and this slice.
@@ -186,10 +186,8 @@ mod tests {
     /// every expected name present, and no extra entry.
     ///
     /// This is the compiler-side half of the anti-drift guard. The count is
-    /// asserted explicitly at **13**: the PRD §3.2 and task #5476's description
-    /// both say "all 14 `prb_*` ctors", but the range they cite
-    /// (`flexures/diagnostics.rs::PRB_CTOR_NAMES`) holds 13 — and that file's own doc
-    /// comment reads "The 13 PRB flexure constructor names". The repo's 14th
+    /// asserted explicitly at **13**, matching
+    /// `flexures/diagnostics.rs::PRB_CTOR_NAMES`. The repo's 14th
     /// `prb_*` identifier is `prb_validity_range`, which is a
     /// `FlexureCompliance` FIELD name (it appears in all five family modules and
     /// as the `prb_validity_range` param of `structure def FlexureCompliance`
@@ -200,9 +198,8 @@ mod tests {
         assert_eq!(
             FLEXURE_CTOR_FN_NAMES.len(),
             13,
-            "FLEXURE_CTOR_FN_NAMES must hold exactly 13 names (NOT the 14 the PRD \
-             §3.2 states — `prb_validity_range` is a FlexureCompliance field, not \
-             a ctor); got {:?}",
+            "FLEXURE_CTOR_FN_NAMES must hold exactly 13 names (`prb_validity_range` \
+             is a FlexureCompliance field, not a ctor); got {:?}",
             FLEXURE_CTOR_FN_NAMES
         );
         assert_eq!(

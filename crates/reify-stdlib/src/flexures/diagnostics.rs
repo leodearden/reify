@@ -801,8 +801,7 @@ mod tests {
     ///
     /// - **`prb_validity_range`** shares the `prb_` prefix but is a
     ///   `FlexureCompliance` FIELD emitted by all five family modules — not a
-    ///   ctor. (It is also the reason the PRD §3.2 "14 prb_* ctors" count is
-    ///   off by one; there are 13.)
+    ///   ctor.
     /// - **`__flexure_compliance_get`** is the accessor intrinsic, intercepted
     ///   by a dedicated arm in `flexure_diagnose` placed BEFORE this
     ///   short-circuit, per the doc comment on `is_flexure_ctor`.

@@ -1086,8 +1086,8 @@ fn user_let_cell_type(source: &str, structure: &str, member: &str) -> Type {
 /// probe would be a ctor whose first arg is NOT a Length, so that name-dispatch
 /// and first-arg fallback could not coincidentally agree. No such ctor exists:
 /// every one of the 13 takes a Length first (`length` or `notch_radius`;
-/// verified against the signature doc comments in beam.rs / notch.rs /
-/// hinge.rs:168,182,275 / prismatic.rs:146,220 / compound.rs). The explicit
+/// verified against the signature doc comments on each `prb_*` fn in beam.rs /
+/// notch.rs / hinge.rs / prismatic.rs / compound.rs). The explicit
 /// `!= Scalar[LENGTH]` assertion below is therefore the signal that the arm —
 /// not the fallback — produced the type. At the unit level the discrimination
 /// is structural rather than asserted: `flexure_signatures::flexure_joint_type()`
