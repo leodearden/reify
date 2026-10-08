@@ -80,6 +80,38 @@ pub fn last() {}
 """
 PRODUCTION_VIEW_VISIBLE = [1, 2, 6, 7, 8, 12, 13, 14]
 
+GATED_MOD_TEMPLATE = "{attr}\nmod gated {{\n    fn inner() {{}}\n}}\npub fn after() {{}}\n"
+ARMING_ATTRS = [
+    "#[cfg(test)]",
+    '#[cfg(any(test, feature = "test-support"))]',
+    "#[cfg(all(test, has_occt))]",
+    "#[cfg(any(test))]",
+]
+ARMED_VISIBLE = [1, 5]
+NON_ARMING_ATTRS = [
+    "#[cfg(not(test))]",
+    '#[cfg(not(any(test, feature = "x")))]',
+    '#[cfg(any(not(test), feature = "x"))]',
+    "#[cfg(all(not(test), unix))]",
+    "#[cfg_attr(test, allow(dead_code))]",
+    "#[cfg(testing)]",
+    '#[cfg(any(testing, feature = "x"))]',
+    'let s = "#[cfg(all(test, has_occt))]";',
+]
+UNARMED_VISIBLE = [1, 2, 3, 4, 5]
+COMPOUND_ATTRS = [
+    '#[cfg(any(test, feature = "test-support"))]',
+    "#[cfg(all(test, has_occt))]",
+]
+BARE_ITEM_TEMPLATES = [
+    ("{attr}\nuse std::cmp::Ordering;\npub fn after() {{\n    body();\n}}\n", [1, 2, 3, 4, 5]),
+    ("{attr} use std::cmp::Ordering;\npub fn after() {{\n    body();\n}}\n", [1, 2, 3, 4]),
+]
+ARMING_MATRIX = (
+    [(attr, ARMED_VISIBLE) for attr in ARMING_ATTRS]
+    + [(attr, UNARMED_VISIBLE) for attr in NON_ARMING_ATTRS]
+)
+
 
 def run_lexer(driver, text, *awk_args, env=None):
     """RUST_LEXER_AWK + driver over `text` on stdin."""
@@ -235,6 +267,36 @@ class TestProductionView(TempDirCase):
         self.assertEqual(result.stderr, "")
 
 
+class TestTestModuleArming(TempDirCase):
+    """Which cfg attributes arm the test-module skipper."""
+
+    def visible_lines(self, text):
+        path = self.write("arming.rs", text)
+        result = run_view("{ print FNR }", path)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stderr, "")
+        return [int(n) for n in lines_of(result)]
+
+    def test_test_only_cfg_attributes_arm_the_module_skipper(self):
+        for attr in ARMING_ATTRS:
+            with self.subTest(attr=attr):
+                text = GATED_MOD_TEMPLATE.format(attr=attr)
+                self.assertEqual(self.visible_lines(text), ARMED_VISIBLE)
+
+    def test_negated_attr_and_string_spellings_do_not_arm(self):
+        for attr in NON_ARMING_ATTRS:
+            with self.subTest(attr=attr):
+                text = GATED_MOD_TEMPLATE.format(attr=attr)
+                self.assertEqual(self.visible_lines(text), UNARMED_VISIBLE)
+
+    def test_a_compound_gate_on_a_non_mod_item_does_not_arm(self):
+        for template, expected in BARE_ITEM_TEMPLATES:
+            for attr in COMPOUND_ATTRS:
+                with self.subTest(template=template, attr=attr):
+                    text = template.format(attr=attr)
+                    self.assertEqual(self.visible_lines(text), expected)
+
+
 class TestSourcingIsSideEffectFree(TempDirCase):
     """The gates' awk-failure checks rely on awk first failing at SCAN time."""
 
@@ -278,6 +340,16 @@ class TestPortability(TempDirCase):
         self.assertEqual(mawk.returncode, 0, mawk.stderr)
         self.assertEqual(mawk.stdout, default.stdout)
         self.assertEqual([int(n) for n in lines_of(mawk)], PRODUCTION_VIEW_VISIBLE)
+
+    def test_arming_matrix_agrees_under_mawk(self):
+        for attr, expected in ARMING_MATRIX:
+            with self.subTest(attr=attr):
+                path = self.write("arming.rs", GATED_MOD_TEMPLATE.format(attr=attr))
+                default = run_view("{ print FNR }", path)
+                mawk = run_view("{ print FNR }", path, env=self.mawk_env)
+                self.assertEqual(mawk.returncode, 0, mawk.stderr)
+                self.assertEqual(mawk.stdout, default.stdout)
+                self.assertEqual([int(n) for n in lines_of(mawk)], expected)
 
     def test_the_shim_really_selects_mawk(self):
         result = subprocess.run(
