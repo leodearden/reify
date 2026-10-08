@@ -40,11 +40,11 @@
 # mechanism and its best-effort limits). Comment text is DROPPED; string,
 # char-literal and raw-string CONTENTS are BLANKED with their delimiters kept (a
 # blanked string reads exactly `""`). A line is invisible to both passes when it
-# is inside a `#[cfg(test)] mod` body, or wholly inside a block comment or a
+# is inside a test-gated `mod` body, or wholly inside a block comment or a
 # carried-over multi-line string.
 #
 # The brace counts that drive `depth` — and so BOTH depth-driven skippers, the
-# `#[cfg(test)] mod` one and the definition-file `in_bundler` one — are taken
+# test-module one and the definition-file `in_bundler` one — are taken
 # from that LEXED view, never from the raw line. A brace that exists only inside
 # a comment, a string, a char literal or a raw string must not move `depth`: a
 # stray `{` over-extends the test-module skipper until the fourth-bundler pass
@@ -97,22 +97,12 @@
 #
 # EXCLUDED (negative pass):
 #   - comments and string literals, per the PRODUCTION-CODE VIEW above;
-#   - test code: `tests/` dirs (by path) and `#[cfg(test)] mod` bodies
+#   - test code: `tests/` dirs (by path) and test-gated `mod` bodies —
+#     `#[cfg(test)]`, `#[cfg(any(test, …))]`, `#[cfg(all(test, …))]`; the
+#     arming rule and its limits live in scripts/lib_rust_production_view.sh
 #     (brace-depth tracked, best-effort). Five real in-src callers live in
 #     `#[cfg(test)]` modules and are legitimate: compute_persist.rs:529,672;
-#     compute_targets/as_printed_material.rs:542; compute_targets/mod.rs:541,583.
-#     KNOWN LIMITATION — the skipper arms on the LITERAL `#[cfg(test)]` only.
-#     COMPOUND test gates (`#[cfg(any(test, feature = "test-support"))]`,
-#     `#[cfg(all(test, …))]`) do NOT arm it, so those module bodies are read as
-#     PRODUCTION by both passes. Real shapes, not hypothetical:
-#     crates/reify-audit/src/lib.rs:860,875,956,1184,1197,1241 and
-#     crates/reify-compiler/src/lib.rs:152,173. Today none of them contains a
-#     half-call, so the gate is green tree-wide — but that green is NOT proof of
-#     coverage: the first test-only `register_compute_fns(` to land under a
-#     compound gate is a FALSE RED whose only escape is the inline allow comment
-#     below. Broadening the arming regex is deliberately NOT done here: the
-#     regex lives in scripts/lib_rust_production_view.sh, and broadening it
-#     for both guards at once is task #6242;
+#     compute_targets/as_printed_material.rs:542; compute_targets/mod.rs:541,583;
 #   - inside the DEFINITION files (EXEMPT_DEFINITION_FILES) — and ONLY there —
 #     the two `fn register_*_compute_fns(` definition lines and the body of
 #     `fn register_production_compute_fns(` (that body IS the bundler). The
@@ -218,7 +208,7 @@ violations=""
 note() { violations+="$1"$'\n'; }
 
 # ── Both passes append their rules to RUST_PRODUCTION_VIEW_AWK (loaded above),
-# so neither can see what the other cannot. Its #[cfg(test)] skipper requires
+# so neither can see what the other cannot. Its test-module skipper requires
 # the opening line to declare a `mod`: a bare `#[cfg(test)] use …;` —
 # gui/src-tauri/src/engine.rs:21, :102, :104 all have one — must not arm it,
 # because that misfire is a silent under-flag on the negative pass but a FALSE
