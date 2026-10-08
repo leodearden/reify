@@ -416,8 +416,8 @@ _mount_tracks_atime() {
 }
 
 # _prune_unconsulted_units <profile_dir> <atime_probe_path>
-# <atime_probe_path> is a path on the mount whose reads cargo's fingerprint
-# consults update: the evidence is only as good as that mount's atime.
+# <atime_probe_path> is the advancing target dir, the tree cargo's fingerprint
+# reads went through: the liveness evidence is only as good as its mount's atime.
 _prune_unconsulted_units() {
     local deps="$1/deps" fp="$1/.fingerprint" summary
     if [ ! -d "$deps" ]; then
