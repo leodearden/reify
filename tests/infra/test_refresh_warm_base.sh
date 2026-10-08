@@ -8,6 +8,10 @@
 #              else prints an error + exits 1.
 #   mv       — NOT stubbed; real mv so filesystem postconditions are observable.
 #   xfs_bmap — records argv + emits REIFY_TEST_FRAG_EXTENTS extent rows per file.
+#   rm       — records argv; when REIFY_TEST_PRUNE_RM_FAIL=1, fails exactly the prune
+#              stage's own `rm -f --` call (the xargs batch) and execs the real rm for
+#              every other call (the EXIT trap's cleanup, GC's lock/gen removal) —
+#              isolates a simulated prune-unlink failure from the trap's own cleanup.
 #
 # run_helper captures STDOUT, STDERR, and RC separately:
 #   OUT     — captured stdout from the script
@@ -25,6 +29,7 @@
 #   H — buildroot provenance: per-gen .buildroot stamp == realpath(advancing worktree root)
 #   I — WIP refusal: advancing worktree with tracked WIP is refused; wording advises committing, never stashing
 #   DEPS — debug/deps faithful copy: every hash variant in the advancing debug/deps reaches the new gen, incl. same-mtime registry variants (#8366)
+#   LIVE — liveness prune: debug/deps units whose fingerprint was not consulted within 7 days of the tree's newest consult are pruned from the base gen; live variants, non-candidates and other dirs survive
 #
 # Auto-discovered by tests/infra/run_all.sh via the test_*.sh glob.
 #
@@ -125,6 +130,25 @@ done
 exit 0
 STUB_EOF
 chmod +x "$STUB_DIR/xfs_bmap"
+
+# rm stub: record argv; when REIFY_TEST_PRUNE_RM_FAIL=1, fail ONLY the prune
+# stage's own `xargs -0 rm -f -- <files>` (first args "-f" "--") while every other
+# invocation — the EXIT trap's `rm -rf "$_p"` and `rm -f "$_PRUNE_SUMMARY_FILE"`,
+# GC's `rm -f lock` — execs the real rm. This isolates "the prune's own unlink
+# failed" from "the trap's cleanup afterward also failed": a filesystem-permission
+# fault cannot make that distinction, since it defeats `rm -rf` identically.
+# Real rm path embedded at stub-creation time (mirrors the cp stub).
+_REAL_RM="$(command -v rm)"
+cat > "$STUB_DIR/rm" << STUB_EOF
+#!/usr/bin/env bash
+echo "rm \$*" >> "\${REIFY_TEST_CALLS_FILE:-/dev/null}"
+if [ "\${REIFY_TEST_PRUNE_RM_FAIL:-}" = "1" ] && [ "\${1:-}" = "-f" ] && [ "\${2:-}" = "--" ]; then
+    echo "rm: SIMULATED failure (REIFY_TEST_PRUNE_RM_FAIL=1)" >&2
+    exit 1
+fi
+exec "${_REAL_RM}" "\$@"
+STUB_EOF
+chmod +x "$STUB_DIR/rm"
 
 # ── run_helper ─────────────────────────────────────────────────────────────────
 # Invokes the script under the stub PATH.
@@ -795,8 +819,9 @@ assert "I4: refusal does NOT advise stashing" \
 # One stem can carry several concurrently-live hashes (semver / feature / host
 # variants) that all keep the same cold-build mtime, so no mtime rule can tell
 # them from superseded generations; #7426's keep-newest-2 prune deleted them and
-# every seeded lane rebuilt them. DEPS3 pins today's no-prune state; a
-# liveness-based replacement (#8352) may relax DEPS3 but must keep DEPS2 green.
+# every seeded lane rebuilt them. This fixture carries no debug/.fingerprint, so
+# Block LIVE's prune has no liveness evidence here and must copy debug/deps
+# faithfully: DEPS2 and DEPS3 stay green.
 # ──────────────────────────────────────────────────────────────────────────────
 echo ""
 echo "--- Block DEPS: debug/deps faithful copy ---"
@@ -854,6 +879,344 @@ assert "DEPS3: gen debug/deps filename set equals the advancing debug/deps filen
         [ -n "$s1" ] || { echo "advancing debug/deps fixture is empty"; exit 1; }
         [ "$s1" = "$s2" ] || { diff <(printf "%s\n" "$s1") <(printf "%s\n" "$s2"); exit 1; }
     ' _ "$DEPS_ADV/debug/deps" "$DEPS_GEN_DEPS"
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block LIVE — fingerprint-consult liveness prune of debug/deps (task 8352)
+#
+# Executable spec for scripts/refresh-warm-base.sh Step 3b. A depth-1 debug/deps
+# file is a candidate iff its name, final dot-suffix stripped, ends in
+# `-<16 lowercase hex>`; it is pruned iff that hash has a debug/.fingerprint
+# dir AND no file of that dir was read or written (max of atime and mtime)
+# within 7 days of the copied tree's newest consult, the ANCHOR. Cargo reads a
+# unit's fingerprint on every build whose graph contains the unit, so a hash
+# the lanes still build is consulted continuously whatever its artefact mtime.
+#
+# Fixtures use fixed past dates: no sleeps, and the window being anchored on
+# the tree rather than on `date` is itself under test (LIVE1).
+#
+# FIXTURE RULE: a case with a dead unit also carries a unit consulted at the
+# ANCHOR. Without one, the dead unit IS the newest consult, becomes the anchor
+# and is correctly kept, so a 'gone' assertion would fail for the wrong reason.
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block LIVE: fingerprint-consult liveness prune of debug/deps ---"
+
+LIVE_ANCHOR='2026-03-10 00:00:00'   # the copied tree's newest consult
+LIVE_RECENT='2026-03-08 00:00:00'   # 2 days before the anchor: inside the 7-day window
+LIVE_DEAD='2026-02-01 00:00:00'     # 37 days before the anchor: outside it
+LIVE_COLD='2026-01-01 00:00:00'     # cold-build mtime of artefacts nobody rebuilt
+
+# _mint_unit <profile_dir> <pkg> <hash> <fp_mtime> <fp_atime> [<deps_name>...]
+# One cargo unit: <profile_dir>/.fingerprint/<pkg>-<hash>/lib-<pkg>, stamped with
+# the given mtime and atime (-m before -a, so the mtime stamp cannot clobber the
+# atime), plus each named file under <profile_dir>/deps stamped with fp_mtime.
+_mint_unit() {
+    local profile="$1" pkg="$2" hash="$3" fp_mtime="$4" fp_atime="$5" fp name
+    shift 5
+    fp="$profile/.fingerprint/$pkg-$hash/lib-$pkg"
+    mkdir -p "$(dirname "$fp")" "$profile/deps"
+    echo "fingerprint $pkg-$hash" > "$fp"
+    touch -m -d "$fp_mtime" "$fp"
+    touch -a -d "$fp_atime" "$fp"
+    for name in "$@"; do
+        echo "deps $name" > "$profile/deps/$name"
+        touch -d "$fp_mtime" "$profile/deps/$name"
+    done
+}
+
+# _mint_anchor <profile_dir>: the unit consulted at the ANCHOR (FIXTURE RULE).
+_mint_anchor() {
+    _mint_unit "$1" anchor 00000000000000a1 "$LIVE_ANCHOR" "$LIVE_ANCHOR" libanchor-00000000000000a1.rlib
+}
+
+# _live_case: a fresh hermetic advancing lane for one case. Sets LIVE_ADV (the
+# advancing target dir), LIVE_PROFILE (its debug/, created by the first
+# _mint_unit so a case may leave it absent), LIVE_HEAD and LIVE_BASE.
+_live_case() {
+    local tmp lane
+    tmp="$(mktemp -d /tmp/test-refresh-warm-base-live-XXXXXX)"
+    _TMPDIRS+=("$tmp")
+    lane="$(mk_git_advancing "$tmp")"
+    LIVE_ADV="$lane/advancing"
+    LIVE_PROFILE="$LIVE_ADV/debug"
+    LIVE_HEAD="$(git -C "$lane" rev-parse HEAD)"
+    LIVE_BASE="$tmp/base"
+}
+
+# _live_refresh: run the real script over the current case (env prefixes pass
+# through). Sets LIVE_GEN to the gen dir the base now points at — empty when the
+# refresh did not advance the base.
+_live_refresh() {
+    reset_calls
+    REIFY_TEST_REFLINK_OK=1 run_helper "$LIVE_ADV" "$LIVE_BASE" --landed-commit "$LIVE_HEAD"
+    LIVE_GEN="$(readlink "$LIVE_BASE" || true)"
+}
+
+# _all_present / _none_present <dir> <relpath>...: name each offender and fail if
+# any. Both refuse an absent <dir>, so an empty LIVE_GEN can never make a 'gone'
+# check pass vacuously.
+_all_present() {
+    local dir="$1" rel rc=0
+    shift
+    [ -d "$dir" ] || { echo "no such dir: '$dir'"; return 1; }
+    for rel in "$@"; do
+        [ -f "$dir/$rel" ] || { echo "missing: $rel"; rc=1; }
+    done
+    return "$rc"
+}
+_none_present() {
+    local dir="$1" rel rc=0
+    shift
+    [ -d "$dir" ] || { echo "no such dir: '$dir'"; return 1; }
+    for rel in "$@"; do
+        [ ! -e "$dir/$rel" ] || { echo "still present: $rel"; rc=1; }
+    done
+    return "$rc"
+}
+
+# _stderr_matches <ere>: the last run_helper's stderr matches, case-insensitively.
+_stderr_matches() {
+    grep -qiE -- "$1" <<<"$ERR_OUT"
+}
+
+# LIVE1 — E19 regression, the core. Nine hashes of ONE registry stem (five with
+# .rlib+.rmeta, four .rmeta-only), every artefact and fingerprint mtime the
+# cold-build date, every fingerprint consulted at the ANCHOR by lanes that still
+# build them: all fourteen files must survive. The dead control proves the stage
+# is active, so the survivors did not survive by the stage being skipped.
+_live_case
+LIVE1_FULL_HASHES=(ece35e16166057f6 985ac887cd451fe2 0123456789abcdef fedcba9876543210 5a5a5a5a5a5a5a5a)
+LIVE1_META_HASHES=(a1a1a1a1a1a1a1a1 b2b2b2b2b2b2b2b2 c3c3c3c3c3c3c3c3 d4d4d4d4d4d4d4d4)
+LIVE1_FILES=()
+for h in "${LIVE1_FULL_HASHES[@]}"; do
+    _mint_unit "$LIVE_PROFILE" getrandom "$h" "$LIVE_COLD" "$LIVE_ANCHOR" \
+        "libgetrandom-$h.rlib" "libgetrandom-$h.rmeta"
+    LIVE1_FILES+=("libgetrandom-$h.rlib" "libgetrandom-$h.rmeta")
+done
+for h in "${LIVE1_META_HASHES[@]}"; do
+    _mint_unit "$LIVE_PROFILE" getrandom "$h" "$LIVE_COLD" "$LIVE_ANCHOR" "libgetrandom-$h.rmeta"
+    LIVE1_FILES+=("libgetrandom-$h.rmeta")
+done
+_mint_unit "$LIVE_PROFILE" reify_old_tests deadbeef00000001 "$LIVE_DEAD" "$LIVE_DEAD" \
+    reify_old_tests-deadbeef00000001
+_live_refresh
+LIVE1_DEPS="$LIVE_GEN/debug/deps"
+assert "LIVE1: refresh exits 0" test "$RC" -eq 0
+assert "LIVE1: all 14 same-mtime libgetrandom files survive (E19: every variant is still consulted)" \
+    _all_present "$LIVE1_DEPS" "${LIVE1_FILES[@]}"
+assert "LIVE1: the dead control reify_old_tests-deadbeef00000001 is pruned (the stage is active)" \
+    _none_present "$LIVE1_DEPS" reify_old_tests-deadbeef00000001
+assert "LIVE1: fixture dates are months before wall-clock now (precondition for the next assert)" \
+    test "$(( $(date +%s) - $(date -d "$LIVE_ANCHOR" +%s) ))" -gt "$(( 7 * 24 * 3600 ))"
+assert "LIVE1: window is anchored on the tree's newest consult, not wall clock — libgetrandom survives although every date is months before today" \
+    _all_present "$LIVE1_DEPS" "${LIVE1_FILES[@]}"
+
+# LIVE2 — stem collision (reify_ast). One stem, three hashes with unlike shapes
+# (extensionless + .d, and two .d-only), all consulted: all four files survive.
+_live_case
+_mint_unit "$LIVE_PROFILE" reify_ast 1a2b3c4d5e6f7a8b "$LIVE_COLD" "$LIVE_ANCHOR" \
+    reify_ast-1a2b3c4d5e6f7a8b reify_ast-1a2b3c4d5e6f7a8b.d
+_mint_unit "$LIVE_PROFILE" reify_ast 2b3c4d5e6f7a8b9c "$LIVE_RECENT" "$LIVE_RECENT" \
+    reify_ast-2b3c4d5e6f7a8b9c.d
+_mint_unit "$LIVE_PROFILE" reify_ast 3c4d5e6f7a8b9cad "$LIVE_RECENT" "$LIVE_RECENT" \
+    reify_ast-3c4d5e6f7a8b9cad.d
+_mint_unit "$LIVE_PROFILE" reify_old_tests deadbeef00000002 "$LIVE_DEAD" "$LIVE_DEAD" \
+    reify_old_tests-deadbeef00000002
+_live_refresh
+assert "LIVE2: refresh exits 0" test "$RC" -eq 0
+assert "LIVE2: all four reify_ast files survive (stem collision is not a liveness signal)" \
+    _all_present "$LIVE_GEN/debug/deps" reify_ast-1a2b3c4d5e6f7a8b reify_ast-1a2b3c4d5e6f7a8b.d \
+        reify_ast-2b3c4d5e6f7a8b9c.d reify_ast-3c4d5e6f7a8b9cad.d
+assert "LIVE2: the dead control is pruned" \
+    _none_present "$LIVE_GEN/debug/deps" reify_old_tests-deadbeef00000002
+
+# LIVE3 — superseded generation. One stem, one dead hash and two live hashes,
+# each extensionless + .d: the dead hash goes on BOTH extensions, the live stay.
+_live_case
+_mint_unit "$LIVE_PROFILE" reify_kernel_tests 1111aaaa1111aaaa "$LIVE_DEAD" "$LIVE_DEAD" \
+    reify_kernel_tests-1111aaaa1111aaaa reify_kernel_tests-1111aaaa1111aaaa.d
+_mint_unit "$LIVE_PROFILE" reify_kernel_tests 2222bbbb2222bbbb "$LIVE_COLD" "$LIVE_ANCHOR" \
+    reify_kernel_tests-2222bbbb2222bbbb reify_kernel_tests-2222bbbb2222bbbb.d
+_mint_unit "$LIVE_PROFILE" reify_kernel_tests 3333cccc3333cccc "$LIVE_RECENT" "$LIVE_RECENT" \
+    reify_kernel_tests-3333cccc3333cccc reify_kernel_tests-3333cccc3333cccc.d
+_live_refresh
+assert "LIVE3: refresh exits 0" test "$RC" -eq 0
+assert "LIVE3: the superseded hash is pruned on both its extensionless and .d files" \
+    _none_present "$LIVE_GEN/debug/deps" reify_kernel_tests-1111aaaa1111aaaa reify_kernel_tests-1111aaaa1111aaaa.d
+assert "LIVE3: both live hashes keep both their files" \
+    _all_present "$LIVE_GEN/debug/deps" reify_kernel_tests-2222bbbb2222bbbb reify_kernel_tests-2222bbbb2222bbbb.d \
+        reify_kernel_tests-3333cccc3333cccc reify_kernel_tests-3333cccc3333cccc.d
+
+# LIVE4 — the window. 6 days before the anchor is inside it, 8 days is outside.
+_live_case
+_mint_anchor "$LIVE_PROFILE"
+_mint_unit "$LIVE_PROFILE" inwindow 4a4a4a4a4a4a4a4a '2026-03-04 00:00:00' '2026-03-04 00:00:00' \
+    libinwindow-4a4a4a4a4a4a4a4a.rlib
+_mint_unit "$LIVE_PROFILE" outwindow 4b4b4b4b4b4b4b4b '2026-03-02 00:00:00' '2026-03-02 00:00:00' \
+    liboutwindow-4b4b4b4b4b4b4b4b.rlib
+_live_refresh
+assert "LIVE4: refresh exits 0" test "$RC" -eq 0
+assert "LIVE4: a unit last used 6 days before the anchor survives" \
+    _all_present "$LIVE_GEN/debug/deps" libinwindow-4a4a4a4a4a4a4a4a.rlib
+assert "LIVE4: a unit last used 8 days before the anchor is pruned" \
+    _none_present "$LIVE_GEN/debug/deps" liboutwindow-4b4b4b4b4b4b4b4b.rlib
+
+# LIVE5 — a write counts as a use. A fingerprint last READ long ago but last
+# WRITTEN (rebuilt) inside the window is live.
+_live_case
+_mint_anchor "$LIVE_PROFILE"
+_mint_unit "$LIVE_PROFILE" rebuilt 5c5c5c5c5c5c5c5c "$LIVE_RECENT" "$LIVE_DEAD" \
+    librebuilt-5c5c5c5c5c5c5c5c.rlib
+_mint_unit "$LIVE_PROFILE" reify_old_tests deadbeef00000005 "$LIVE_DEAD" "$LIVE_DEAD" \
+    reify_old_tests-deadbeef00000005
+_live_refresh
+assert "LIVE5: refresh exits 0" test "$RC" -eq 0
+assert "LIVE5: a unit with an old atime but a recent mtime survives" \
+    _all_present "$LIVE_GEN/debug/deps" librebuilt-5c5c5c5c5c5c5c5c.rlib
+assert "LIVE5: the dead control is pruned" \
+    _none_present "$LIVE_GEN/debug/deps" reify_old_tests-deadbeef00000005
+
+# LIVE6 — evidence required. A hashed deps file whose hash has NO fingerprint
+# dir is never a victim, however old.
+_live_case
+_mint_anchor "$LIVE_PROFILE"
+echo "no fingerprint" > "$LIVE_PROFILE/deps/libnofp-6a6a6a6a6a6a6a6a.rlib"
+touch -d '2020-01-01 00:00:00' "$LIVE_PROFILE/deps/libnofp-6a6a6a6a6a6a6a6a.rlib"
+_mint_unit "$LIVE_PROFILE" reify_old_tests deadbeef00000006 "$LIVE_DEAD" "$LIVE_DEAD" \
+    reify_old_tests-deadbeef00000006
+_live_refresh
+assert "LIVE6: refresh exits 0" test "$RC" -eq 0
+assert "LIVE6: a hashed file with no fingerprint dir survives" \
+    _all_present "$LIVE_GEN/debug/deps" libnofp-6a6a6a6a6a6a6a6a.rlib
+assert "LIVE6: the dead control is pruned" \
+    _none_present "$LIVE_GEN/debug/deps" reify_old_tests-deadbeef00000006
+
+# LIVE7 — grammar: names that are not `<stem>-<16 lowercase hex>[.<ext>]` are
+# never candidates. Each near-miss that carries a hash-like token is tied to a
+# DEAD fingerprint dir a looser grammar would key on, so its survival is
+# discriminating rather than vacuous; the dead unit's own conforming file is
+# the control.
+_live_case
+_mint_anchor "$LIVE_PROFILE"
+LIVE7_DEAD=deadbeef00000007
+_mint_unit "$LIVE_PROFILE" dead "$LIVE7_DEAD" "$LIVE_DEAD" "$LIVE_DEAD" "libdead-$LIVE7_DEAD.rlib"
+echo "readme" > "$LIVE_PROFILE/deps/README"
+echo "{}" > "$LIVE_PROFILE/deps/build-plan.json"
+_mint_unit "$LIVE_PROFILE" foo abc123 "$LIVE_DEAD" "$LIVE_DEAD" foo-abc123.rlib
+_mint_unit "$LIVE_PROFILE" foo AAAABBBBCCCCDDDD "$LIVE_DEAD" "$LIVE_DEAD" foo-AAAABBBBCCCCDDDD
+_mint_unit "$LIVE_PROFILE" foo 0123456789abcdef "$LIVE_DEAD" "$LIVE_DEAD" foo-0123456789abcdef0.rlib
+LIVE7_SHARD="axum-$LIVE7_DEAD.axum.7a7a7a7a7a7a7a7a-cgu.09.rcgu.dwo"
+echo "shard" > "$LIVE_PROFILE/deps/$LIVE7_SHARD"
+touch -d "$LIVE_DEAD" "$LIVE_PROFILE/deps/$LIVE7_SHARD"
+_live_refresh
+assert "LIVE7: refresh exits 0" test "$RC" -eq 0
+assert "LIVE7: README, a .json, a short hash, an uppercase hash, a 17-hex hash and a split-debuginfo shard all survive" \
+    _all_present "$LIVE_GEN/debug/deps" README build-plan.json foo-abc123.rlib foo-AAAABBBBCCCCDDDD \
+        foo-0123456789abcdef0.rlib "$LIVE7_SHARD"
+assert "LIVE7: the dead unit's own conforming file is pruned" \
+    _none_present "$LIVE_GEN/debug/deps" "libdead-$LIVE7_DEAD.rlib"
+
+# LIVE8 — scope: only debug/deps at depth 1 is ever pruned. A dead hash's files
+# elsewhere — build/, the profile root, a nested deps dir, the whole release
+# profile, and the fingerprint dir (the evidence itself) — are untouched.
+_live_case
+_mint_anchor "$LIVE_PROFILE"
+LIVE8_DEAD=deadbeef00000008
+_mint_unit "$LIVE_PROFILE" dead "$LIVE8_DEAD" "$LIVE_DEAD" "$LIVE_DEAD" "libdead-$LIVE8_DEAD.rlib"
+mkdir -p "$LIVE_PROFILE/build/dead-$LIVE8_DEAD" "$LIVE_PROFILE/deps/nested"
+echo "out" > "$LIVE_PROFILE/build/dead-$LIVE8_DEAD/out.txt"
+echo "root" > "$LIVE_PROFILE/dead-$LIVE8_DEAD"
+echo "nested" > "$LIVE_PROFILE/deps/nested/libdead-$LIVE8_DEAD.rlib"
+_mint_anchor "$LIVE_ADV/release"
+_mint_unit "$LIVE_ADV/release" dead "$LIVE8_DEAD" "$LIVE_DEAD" "$LIVE_DEAD" "libdead-$LIVE8_DEAD.rlib"
+_live_refresh
+assert "LIVE8: refresh exits 0" test "$RC" -eq 0
+assert "LIVE8: the dead hash's files outside debug/deps depth 1 all survive (build/, profile root, nested, release/, .fingerprint)" \
+    _all_present "$LIVE_GEN" "debug/build/dead-$LIVE8_DEAD/out.txt" "debug/dead-$LIVE8_DEAD" \
+        "debug/deps/nested/libdead-$LIVE8_DEAD.rlib" "release/deps/libdead-$LIVE8_DEAD.rlib" \
+        "release/.fingerprint/dead-$LIVE8_DEAD/lib-dead" "debug/.fingerprint/dead-$LIVE8_DEAD/lib-dead"
+assert "LIVE8: the dead hash's debug/deps/ file is pruned (control)" \
+    _none_present "$LIVE_GEN" "debug/deps/libdead-$LIVE8_DEAD.rlib"
+
+# LIVE9 — operator contract: stderr carries the machine-greppable summary
+# `prune deps=<path> files=N victim_bytes=N`, the byte figure being the summed
+# apparent size of exactly the victims; stdout stays empty.
+_live_case
+_mint_anchor "$LIVE_PROFILE"
+_mint_unit "$LIVE_PROFILE" deadone 9a9a9a9a9a9a9a9a "$LIVE_DEAD" "$LIVE_DEAD" libdeadone-9a9a9a9a9a9a9a9a.rlib
+_mint_unit "$LIVE_PROFILE" deadtwo 9b9b9b9b9b9b9b9b "$LIVE_DEAD" "$LIVE_DEAD" deadtwo-9b9b9b9b9b9b9b9b
+head -c 1500 /dev/zero > "$LIVE_PROFILE/deps/libdeadone-9a9a9a9a9a9a9a9a.rlib"
+head -c 700 /dev/zero > "$LIVE_PROFILE/deps/deadtwo-9b9b9b9b9b9b9b9b"
+LIVE9_BYTES=$(( $(stat -c %s "$LIVE_PROFILE/deps/libdeadone-9a9a9a9a9a9a9a9a.rlib") \
+    + $(stat -c %s "$LIVE_PROFILE/deps/deadtwo-9b9b9b9b9b9b9b9b") ))
+_live_refresh
+assert "LIVE9: refresh exits 0" test "$RC" -eq 0
+assert "LIVE9: stderr reports the prune with files=2" \
+    _stderr_matches 'prune deps=.*files=2( |$)'
+assert "LIVE9: stderr's victim_bytes is the summed apparent size of exactly the two dead files" \
+    _stderr_matches "files=2 victim_bytes=${LIVE9_BYTES}( |\$)"
+assert "LIVE9: stdout stays empty" test -z "$OUT"
+
+# LIVE10 — skip paths: with no deps dir, or no .fingerprint to read liveness
+# from, the stage deletes nothing, says so on stderr, and the refresh still
+# succeeds.
+_live_case
+echo "content" > "$LIVE_ADV/f.txt"
+_live_refresh
+assert "LIVE10a: refresh with no debug/ at all exits 0" test "$RC" -eq 0
+assert "LIVE10a: stderr says the stage was skipped" _stderr_matches 'skip'
+assert "LIVE10a: the advancing content reaches the new gen" _all_present "$LIVE_GEN" f.txt
+
+_live_case
+mkdir -p "$LIVE_PROFILE/deps"
+echo "dead-looking" > "$LIVE_PROFILE/deps/libdead-abababababababab.rlib"
+touch -d '2020-01-01 00:00:00' "$LIVE_PROFILE/deps/libdead-abababababababab.rlib"
+_live_refresh
+assert "LIVE10b: refresh with debug/deps but no debug/.fingerprint exits 0" test "$RC" -eq 0
+assert "LIVE10b: stderr says the stage was skipped" _stderr_matches 'skip'
+assert "LIVE10b: with no liveness evidence the dead-looking file survives" \
+    _all_present "$LIVE_GEN/debug/deps" libdead-abababababababab.rlib
+
+# LIVE11 — fail-closed: a prune whose unlink fails aborts the refresh BEFORE the
+# rename, so the base is not advanced and the EXIT trap leaves no staging dir.
+# The rm stub fails only the prune's own `rm -f --`.
+_live_case
+_mint_anchor "$LIVE_PROFILE"
+_mint_unit "$LIVE_PROFILE" failunit deadbeef00000011 "$LIVE_DEAD" "$LIVE_DEAD" libfailunit-deadbeef00000011.rlib
+REIFY_TEST_PRUNE_RM_FAIL=1 _live_refresh
+assert "LIVE11: a failing prune unlink makes the refresh exit non-zero" test "$RC" -ne 0
+assert "LIVE11: the failure is the prune's own rm (the stub fired)" _stderr_matches 'SIMULATED failure'
+assert "LIVE11: <base> is not created when the prune fails" test ! -e "$LIVE_BASE"
+assert "LIVE11: no <base>.gen.*.partial residue after a prune failure (EXIT trap cleanup)" \
+    bash -c '_n=0; for _p in "${1}".gen.*.partial; do [ -e "$_p" ] && _n=$((_n+1)); done; [ "$_n" -eq 0 ]' _ "$LIVE_BASE"
+
+# LIVE12 — staging siting: refreshing over a PRE-EXISTING base prunes only the
+# .partial staging copy. The old base (bootstrapped to .gen.1) is never edited;
+# a shared flock on its lock file defers the GC reap (script Step 6) so the
+# retired gen can still be inspected.
+_live_case
+_mint_anchor "$LIVE_PROFILE"
+_mint_unit "$LIVE_PROFILE" advdead deadbeef00000012 "$LIVE_DEAD" "$LIVE_DEAD" libadvdead-deadbeef00000012.rlib
+_mint_unit "$LIVE_BASE/debug" baseanchor bbbb0000000000a1 "$LIVE_ANCHOR" "$LIVE_ANCHOR" libbaseanchor-bbbb0000000000a1.rlib
+_mint_unit "$LIVE_BASE/debug" basedead bbbb00000000dead "$LIVE_DEAD" "$LIVE_DEAD" libbasedead-bbbb00000000dead.rlib
+LIVE12_RETIRED_GEN="${LIVE_BASE}.gen.1"
+touch "${LIVE12_RETIRED_GEN}.lock"
+exec {LIVE12_LOCK_FD}<>"${LIVE12_RETIRED_GEN}.lock"
+flock -s "$LIVE12_LOCK_FD"
+_live_refresh
+assert "LIVE12: refresh over a pre-existing base exits 0" test "$RC" -eq 0
+assert "LIVE12: retired gen.1 (the old base) still holds its own dead unit — the prune never edits it" \
+    _all_present "$LIVE12_RETIRED_GEN/debug/deps" libbasedead-bbbb00000000dead.rlib
+assert "LIVE12: the new gen lacks the advancing dead unit" \
+    _none_present "$LIVE_GEN/debug/deps" libadvdead-deadbeef00000012.rlib
+assert "LIVE12: the new gen keeps the advancing anchor unit" \
+    _all_present "$LIVE_GEN/debug/deps" libanchor-00000000000000a1.rlib
+assert "LIVE12: no <base>.gen.*.partial remains after refresh" \
+    bash -c '_n=0; for _p in "${1}".gen.*.partial; do [ -d "$_p" ] && _n=$((_n+1)); done; [ "$_n" -eq 0 ]' _ "$LIVE_BASE"
+assert "LIVE12: <base> is a symlink to a <base>.gen.N dir" \
+    bash -c '[ -L "$1" ] && readlink "$1" | grep -qE "[.]gen[.][0-9]+$"' _ "$LIVE_BASE"
+flock -u "$LIVE12_LOCK_FD"
+exec {LIVE12_LOCK_FD}<&-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Block TRASH: shared-trash litter guard (task 5612). Two asserts, deliberately
