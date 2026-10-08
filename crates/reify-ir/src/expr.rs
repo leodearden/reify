@@ -4,6 +4,7 @@ use reify_core::hash::ContentHash;
 use reify_core::identity::ValueCellId;
 use reify_core::ty::Type;
 use crate::value::Value;
+use std::ops::ControlFlow;
 
 /// A compiled expression tree — fully resolved, ready for evaluation.
 /// Shared by reify-eval and reify-constraints (via reify-expr).
@@ -191,7 +192,7 @@ pub enum CompiledExprKind {
         /// (task-4342). Each entry is `(member_name, compiled_expr)` in
         /// declaration order.  These reference template-local `ValueCellId`s
         /// (`entity == type_name`) and are intentionally NOT traversed by
-        /// `walk` / `collect_value_refs_inner` / `remap_entity` / `remap_cell`
+        /// `walk` / `try_for_each_value_ref` / `remap_entity` / `remap_cell`
         /// — those operations act on surrounding-scope refs only.
         lets: Vec<(String, CompiledExpr)>,
         /// The `.ri` source span of the constructor call site (task 4089,
@@ -951,7 +952,7 @@ impl CompiledExpr {
                 // that every ValueRef inside a let expr has entity == type_name.
                 // This makes the "no-traverse" contract visible and loud (rather than
                 // silently-wrong) if a future let ever captures a surrounding-scope ref.
-                // Walk + collect_value_refs_inner intentionally skip `lets` (they use
+                // Walk + try_for_each_value_ref intentionally skip `lets` (they use
                 // `..`), so any cross-scope ref there would be missed by dependency
                 // analysis and remapping — this assert fires before that can happen.
                 #[cfg(debug_assertions)]
@@ -1000,33 +1001,67 @@ impl CompiledExpr {
         }
     }
 
-    /// Collect all ValueRef ValueCellIds from this expression tree.
-    ///
-    /// For Lambda nodes, emits `captures` only — does NOT recurse into body.
-    /// This is the correct behavior for dependency tracking: a lambda's
-    /// dependencies are its captures, not the refs inside its body.
+    /// Every cell this expression depends on, in visit order with duplicates
+    /// kept — the cells `try_for_each_value_ref` reports.
     pub fn collect_value_refs(&self) -> Vec<ValueCellId> {
         let mut refs = Vec::new();
-        self.collect_value_refs_inner(&mut refs);
+        let _ = self.try_for_each_value_ref(&mut |id| {
+            refs.push(id.clone());
+            ControlFlow::Continue(())
+        });
         refs
     }
 
-    fn collect_value_refs_inner(&self, refs: &mut Vec<ValueCellId>) {
-        match &self.kind {
-            CompiledExprKind::ValueRef(id) | CompiledExprKind::CrossSubGeometryRef(id) => {
-                refs.push(id.clone())
+    /// Whether this expression depends on a cell satisfying `f`, under the
+    /// dependency semantics of `try_for_each_value_ref`. Short-circuits on the
+    /// first match and allocates nothing.
+    ///
+    /// This, not `walk`, is the reachability question a proof that a subtree
+    /// cannot move with some set of cells must ask.
+    pub fn contains_value_ref_matching(&self, mut f: impl FnMut(&ValueCellId) -> bool) -> bool {
+        self.try_for_each_value_ref(&mut |id| {
+            if f(id) {
+                ControlFlow::Break(())
+            } else {
+                ControlFlow::Continue(())
             }
+        })
+        .is_break()
+    }
+
+    /// Report each cell this expression depends on to `f`, stopping at the
+    /// first `Break`.
+    ///
+    /// Dependency semantics, deliberately different from a `walk` over
+    /// `ValueRef` nodes:
+    /// - a `Lambda` depends on its `captures` only — its body is not visited;
+    /// - a `Quantifier` depends on every ref in its `collection`, and on the
+    ///   refs in its `predicate` other than its bound `variable_id` (hidden at
+    ///   every depth below, including nested lambda captures);
+    /// - a `DeterminacyPredicate` depends on the `cell` it probes;
+    /// - a `StructureInstanceCtor` depends on its `ordered_args` and
+    ///   `defaults`, never on its template-local `lets`.
+    ///
+    /// `f` is a `dyn` callback because the quantifier arm wraps it in a
+    /// filtering closure and recurses; a generic bound would monomorphize a
+    /// new closure type per nesting level without end.
+    fn try_for_each_value_ref(
+        &self,
+        f: &mut dyn FnMut(&ValueCellId) -> ControlFlow<()>,
+    ) -> ControlFlow<()> {
+        match &self.kind {
+            CompiledExprKind::ValueRef(id) | CompiledExprKind::CrossSubGeometryRef(id) => f(id)?,
             CompiledExprKind::Literal(_) => {}
             CompiledExprKind::BinOp { left, right, .. } => {
-                left.collect_value_refs_inner(refs);
-                right.collect_value_refs_inner(refs);
+                left.try_for_each_value_ref(f)?;
+                right.try_for_each_value_ref(f)?;
             }
             CompiledExprKind::UnOp { operand, .. } => {
-                operand.collect_value_refs_inner(refs);
+                operand.try_for_each_value_ref(f)?;
             }
             CompiledExprKind::FunctionCall { args, .. } => {
                 for arg in args {
-                    arg.collect_value_refs_inner(refs);
+                    arg.try_for_each_value_ref(f)?;
                 }
             }
             CompiledExprKind::Conditional {
@@ -1034,55 +1069,55 @@ impl CompiledExpr {
                 then_branch,
                 else_branch,
             } => {
-                condition.collect_value_refs_inner(refs);
-                then_branch.collect_value_refs_inner(refs);
-                else_branch.collect_value_refs_inner(refs);
+                condition.try_for_each_value_ref(f)?;
+                then_branch.try_for_each_value_ref(f)?;
+                else_branch.try_for_each_value_ref(f)?;
             }
             CompiledExprKind::Match { discriminant, arms } => {
-                discriminant.collect_value_refs_inner(refs);
+                discriminant.try_for_each_value_ref(f)?;
                 for arm in arms {
-                    arm.body.collect_value_refs_inner(refs);
+                    arm.body.try_for_each_value_ref(f)?;
                 }
             }
             CompiledExprKind::UserFunctionCall { args, .. } => {
                 for arg in args {
-                    arg.collect_value_refs_inner(refs);
+                    arg.try_for_each_value_ref(f)?;
                 }
             }
             CompiledExprKind::Lambda { captures, .. } => {
                 for cap in captures {
-                    refs.push(cap.clone());
+                    f(cap)?;
                 }
             }
             CompiledExprKind::ListLiteral(elements) => {
                 for elem in elements {
-                    elem.collect_value_refs_inner(refs);
+                    elem.try_for_each_value_ref(f)?;
                 }
             }
             CompiledExprKind::ReflectiveCellList(elements) => {
                 for elem in elements {
-                    elem.collect_value_refs_inner(refs);
+                    elem.try_for_each_value_ref(f)?;
                 }
             }
             CompiledExprKind::SetLiteral(elements) => {
                 for elem in elements {
-                    elem.collect_value_refs_inner(refs);
+                    elem.try_for_each_value_ref(f)?;
                 }
             }
             CompiledExprKind::MapLiteral(entries) => {
                 for (key, val) in entries {
-                    key.collect_value_refs_inner(refs);
-                    val.collect_value_refs_inner(refs);
+                    key.try_for_each_value_ref(f)?;
+                    val.try_for_each_value_ref(f)?;
                 }
             }
             CompiledExprKind::IndexAccess { object, index } => {
-                object.collect_value_refs_inner(refs);
-                index.collect_value_refs_inner(refs);
+                object.try_for_each_value_ref(f)?;
+                index.try_for_each_value_ref(f)?;
             }
             CompiledExprKind::MethodCall { object, args, .. } => {
-                object.collect_value_refs_inner(refs);
+                object.try_for_each_value_ref(f)?;
                 for arg in args {
-                    arg.collect_value_refs_inner(refs);
+                    arg.try_for_each_value_ref(f)?;
                 }
             }
             CompiledExprKind::Quantifier {
@@ -1091,37 +1126,33 @@ impl CompiledExpr {
                 predicate,
                 ..
             } => {
-                // Collection refs are always dependencies
-                collection.collect_value_refs_inner(refs);
-                // Predicate refs excluding the bound variable
-                let mut pred_refs = Vec::new();
-                predicate.collect_value_refs_inner(&mut pred_refs);
-                for r in pred_refs {
-                    if r != *variable_id {
-                        refs.push(r);
+                collection.try_for_each_value_ref(f)?;
+                predicate.try_for_each_value_ref(&mut |id| {
+                    if id == variable_id {
+                        ControlFlow::Continue(())
+                    } else {
+                        f(id)
                     }
-                }
+                })?;
             }
             CompiledExprKind::OptionSome(inner) => {
-                inner.collect_value_refs_inner(refs);
+                inner.try_for_each_value_ref(f)?;
             }
             CompiledExprKind::OptionNone => {}
             CompiledExprKind::MetaAccess { .. } => {}
-            CompiledExprKind::DeterminacyPredicate { cell, .. } => {
-                refs.push(cell.clone());
-            }
+            CompiledExprKind::DeterminacyPredicate { cell, .. } => f(cell)?,
             CompiledExprKind::RangeConstructor { lower, upper, .. } => {
                 if let Some(lo) = lower {
-                    lo.collect_value_refs_inner(refs);
+                    lo.try_for_each_value_ref(f)?;
                 }
                 if let Some(hi) = upper {
-                    hi.collect_value_refs_inner(refs);
+                    hi.try_for_each_value_ref(f)?;
                 }
             }
             CompiledExprKind::AdHocSelector { base, args, .. } => {
-                base.collect_value_refs_inner(refs);
+                base.try_for_each_value_ref(f)?;
                 for arg in args {
-                    arg.collect_value_refs_inner(refs);
+                    arg.try_for_each_value_ref(f)?;
                 }
             }
             // Placeholder carries no concrete cell IDs — activation will
@@ -1133,16 +1164,17 @@ impl CompiledExpr {
                 ..
             } => {
                 for (_, arg) in ordered_args {
-                    arg.collect_value_refs_inner(refs);
+                    arg.try_for_each_value_ref(f)?;
                 }
                 for (_, def) in defaults {
-                    def.collect_value_refs_inner(refs);
+                    def.try_for_each_value_ref(f)?;
                 }
             }
             CompiledExprKind::ResolveSelector { selector } => {
-                selector.collect_value_refs_inner(refs);
+                selector.try_for_each_value_ref(f)?;
             }
         }
+        ControlFlow::Continue(())
     }
 
     /// Create a lambda expression.
