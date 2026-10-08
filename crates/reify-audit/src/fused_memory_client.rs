@@ -34,6 +34,7 @@ use std::time::Duration;
 
 use serde_json::{json, Value};
 
+use crate::mcp_handshake::check_initialize_response;
 use crate::{DoneProvenance, TaskMetadata};
 
 const PROTOCOL_VERSION: &str = "2024-11-05";
@@ -107,8 +108,10 @@ impl FusedMemoryClient {
         // `post()` checks every JSON-RPC response for the `error` field, so
         // a server that 200-OKs `initialize` with a `{"error":{...}}` body
         // surfaces here instead of being silently accepted and masked as a
-        // confusing `get_task` failure later.
-        let _ = self.post(&json!({
+        // confusing `get_task` failure later. A reply that is not an
+        // `InitializeResult` at all (a 202, an empty body, a bare `{}`) is
+        // refused by `check_initialize_response` for the same reason.
+        let response = self.post(&json!({
             "jsonrpc": "2.0",
             "id": self.next_id(),
             "method": "initialize",
@@ -121,6 +124,8 @@ impl FusedMemoryClient {
                 "capabilities": {},
             },
         }))?;
+        check_initialize_response(&response)
+            .map_err(|rejection| LoadError::Protocol(rejection.to_string()))?;
         let _ = self.post(&json!({
             "jsonrpc": "2.0",
             "method": "notifications/initialized",

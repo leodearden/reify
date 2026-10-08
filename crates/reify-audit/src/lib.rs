@@ -62,6 +62,9 @@ pub(crate) mod scan_util;
 /// Not a detector: public only so the live-serve test harnesses decode MCP
 /// response bodies with the same function both clients use.
 pub mod mcp_wire;
+/// Crate-internal: the one rule for what counts as a completed MCP
+/// `initialize`, shared by both MCP clients.
+pub(crate) mod mcp_handshake;
 pub mod fused_memory_client;
 pub mod jcodemunch_client;
 pub mod jcodemunch_index;

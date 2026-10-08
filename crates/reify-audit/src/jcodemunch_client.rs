@@ -52,6 +52,7 @@ use std::time::Duration;
 
 use serde_json::{json, Value};
 
+use crate::mcp_handshake::check_initialize_response;
 use crate::{
     ChangedSymbol, DeadSymbol, DeclSuppression, JCodemunchOps, LayerViolation, SymbolReference,
     UntestedSymbol,
@@ -1289,7 +1290,10 @@ impl JcodemunchClient {
     /// An `initialize` response that assigns no session id is a hard
     /// failure, not an empty session: without an id every later POST is
     /// answered `400 Missing session ID`, so an `Ok` here would hand back
-    /// a client that cannot make a single successful call.
+    /// a client that cannot make a single successful call. So is one whose
+    /// body is not an MCP `InitializeResult`
+    /// ([`check_initialize_response`]): a session id alone does not make a
+    /// responder a live seam.
     ///
     /// Gotcha, observed against a live serve: a jcodemunch **404**
     /// response also carries a fresh `mcp-session-id` header, so the id
@@ -1313,14 +1317,17 @@ impl JcodemunchClient {
             },
         });
         // No session header on `initialize`: the server assigns it.
-        let (assigned, _) = self.post_raw(&payload, None)?;
-        self.session_id = assigned.ok_or_else(|| {
+        let (assigned, response) = self.post_raw(&payload, None)?;
+        let session_id = assigned.ok_or_else(|| {
             LoadError::Protocol(
                 "initialize response carried no Mcp-Session-Id header — the \
                  server did not assign a session; not a live jcodemunch seam"
                     .into(),
             )
         })?;
+        check_initialize_response(&response)
+            .map_err(|rejection| LoadError::Protocol(rejection.to_string()))?;
+        self.session_id = session_id;
 
         let ack = json!({
             "jsonrpc": "2.0",
@@ -3356,13 +3363,13 @@ mod tests {
     // streamable-HTTP session lifecycle: the server assigns the session id,
     // the client never mints one.
     //
-    // The stub copies `tests/cli.rs`'s `spawn_mock_mcp_on` discipline —
-    // one request per connection (`Connection: close`, so `ureq` reconnects
-    // predictably) and a stop-flag + non-blocking accept poll teardown, so
-    // a failing assertion cannot leak the accept thread. The one addition
-    // is that it records each request's HEADERS alongside its body, which
-    // is exactly what `tests/cli.rs`'s version discards and what these
-    // contract assertions need.
+    // The stub follows the shared integration-test mock's discipline
+    // (`tests/common/mcp_mock.rs`), which a `#[cfg(test)]` module in `src/`
+    // cannot import — one request per connection (`Connection: close`, so
+    // `ureq` reconnects predictably) and a stop-flag + non-blocking accept
+    // poll teardown, so a failing assertion cannot leak the accept thread.
+    // Unlike that mock, it records each request's full BODY alongside its
+    // headers, which these contract assertions need.
     mod session_contract {
         use super::*;
 
@@ -3852,9 +3859,9 @@ mod tests {
         /// which is exactly the PASS-shaped nothing this task exists to
         /// remove.
         ///
-        /// The residual hole — a response that DOES carry a session id but
-        /// whose body is 202/empty/not an initialize result — belongs to
-        /// task #5832 and is deliberately not asserted here.
+        /// The other half — a response that DOES carry a session id but
+        /// whose body is 202/empty/not an initialize result — is pinned
+        /// for both clients by `tests/mcp_handshake.rs`.
         #[test]
         fn initialize_without_an_assigned_session_id_is_a_protocol_error() {
             let stub = RecordingStub::start_with(InitializeReply::NoSessionHeader);
