@@ -54,8 +54,8 @@ use serde_json::{json, Value};
 
 use crate::mcp_handshake::check_initialize_response;
 use crate::{
-    ChangedSymbol, DeadSymbol, DeclSuppression, JCodemunchOps, LayerViolation, SymbolReference,
-    UntestedSymbol,
+    ChangedSymbol, DeadSymbol, DeclSuppression, JCodemunchCallFailed, JCodemunchOps,
+    LayerViolation, SymbolReference, UntestedSymbol,
 };
 
 const PROTOCOL_VERSION: &str = "2024-11-05";
@@ -1527,7 +1527,11 @@ impl RealJCodemunchOps {
 }
 
 impl JCodemunchOps for RealJCodemunchOps {
-    fn get_changed_symbols(&self, since_sha: &str, until_sha: &str) -> Vec<ChangedSymbol> {
+    fn get_changed_symbols(
+        &self,
+        since_sha: &str,
+        until_sha: &str,
+    ) -> Result<Vec<ChangedSymbol>, JCodemunchCallFailed> {
         let decoded = match self.client.call_tool(
             "get_changed_symbols",
             json!({
@@ -1539,7 +1543,10 @@ impl JCodemunchOps for RealJCodemunchOps {
             Ok(v) => v,
             Err(e) => {
                 eprintln!("jcodemunch get_changed_symbols: {e}");
-                return Vec::new();
+                return Err(JCodemunchCallFailed {
+                    tool: "get_changed_symbols",
+                    detail: e.to_string(),
+                });
             }
         };
         let mut symbols = changed_symbols_from_wire(&decoded);
@@ -1557,7 +1564,7 @@ impl JCodemunchOps for RealJCodemunchOps {
         if let Some(msg) = enrich_suppression_flags(&mut symbols, &self.project_root) {
             eprintln!("{msg}");
         }
-        symbols
+        Ok(symbols)
     }
 
     fn find_references(&self, symbol: &ChangedSymbol) -> Vec<SymbolReference> {
@@ -4028,7 +4035,9 @@ mod tests {
                 .expect("handshake against the recording stub must succeed");
 
             // Must return, not panic.
-            let mut symbols = ops.get_changed_symbols("s^1", "s");
+            let mut symbols = ops
+                .get_changed_symbols("s^1", "s")
+                .expect("the stub answers get_changed_symbols");
 
             assert_eq!(symbols.len(), 1, "expected exactly the one declared symbol");
             let sym = &symbols[0];
@@ -4105,7 +4114,9 @@ mod tests {
             let ops = RealJCodemunchOps::new(stub.url(), "test-repo", tmp.path())
                 .expect("handshake against the recording stub must succeed");
 
-            let symbols = ops.get_changed_symbols("s^1", "s");
+            let symbols = ops
+                .get_changed_symbols("s^1", "s")
+                .expect("the stub answers get_changed_symbols");
 
             assert_eq!(symbols.len(), 1, "expected exactly the one declared symbol");
             let sym = &symbols[0];

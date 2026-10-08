@@ -9,7 +9,10 @@
 //! Reference: `docs/architecture-audit/f-infra-design.md` §10 (T-1) and §11
 //! (D-1 dependency row).
 
-use crate::{AuditContext, ChangedSymbol, EvidenceRef, Finding, GitCommit, Pattern, Severity, TaskMetadata};
+use crate::{
+    AuditContext, ChangedSymbol, EvidenceRef, Finding, GitCommit, JCodemunchCallFailed, Pattern,
+    Severity, TaskMetadata,
+};
 use std::collections::HashMap;
 
 // Empty/vacuous assertion patterns scanned for by H1 (gate b).
@@ -1626,10 +1629,10 @@ fn build_high_finding(meta: &TaskMetadata, missing: &[String], summary: &str) ->
 /// criteria): real jcodemunch substrate wired, non-vacuous live sweep,
 /// measured FP rate ≤ 5%. Per task 4141 live-corpus FP validation.
 ///
-/// When this pass examines nothing — `get_changed_symbols` returned an empty
-/// slice, or every symbol it returned had an unlocatable declaration — a
-/// stderr vacuous breadcrumb is emitted via [`h2_vacuous_breadcrumb`]
-/// (task 4144).
+/// When this pass examines nothing — `get_changed_symbols` failed, returned
+/// an empty slice, or every symbol it returned had an unlocatable
+/// declaration — a stderr vacuous breadcrumb is emitted via
+/// [`h2_vacuous_breadcrumb`] (task 4144).
 fn check_live_path_stranded(ctx: &AuditContext, meta: &TaskMetadata) -> Vec<Finding> {
     // Cross-crate gate: requires >=2 distinct crates/<name>/ roots.
     if crate_root_count(&meta.files) < 2 {
@@ -1642,10 +1645,15 @@ fn check_live_path_stranded(ctx: &AuditContext, meta: &TaskMetadata) -> Vec<Find
     let since_sha = format!("{commit}^1");
     let until_sha = commit;
 
-    let symbols = ctx.jcodemunch.get_changed_symbols(&since_sha, until_sha);
-    if let Some(msg) = h2_vacuous_breadcrumb(&symbols, &meta.task_id, &since_sha, until_sha) {
+    let answer = ctx.jcodemunch.get_changed_symbols(&since_sha, until_sha);
+    if let Some(msg) =
+        h2_vacuous_breadcrumb(answer.as_deref(), &meta.task_id, &since_sha, until_sha)
+    {
         eprintln!("{msg}");
     }
+    let Ok(symbols) = answer else {
+        return vec![];
+    };
     let mut findings = Vec::new();
     for symbol in symbols {
         // Same three-state reading as p1_producer_orphan: an unlocatable
@@ -1685,9 +1693,11 @@ fn check_live_path_stranded(ctx: &AuditContext, meta: &TaskMetadata) -> Vec<Find
 
 /// Returns a `reify-audit:` prefixed stderr breadcrumb message when H2's
 /// per-symbol pass examined NOTHING, so operators can distinguish a vacuous
-/// sweep from a legitimately clean corpus. Two ways in, each with its own
+/// sweep from a legitimately clean corpus. Three ways in, each with its own
 /// clause because each has its own remedy:
 ///
+/// - The `get_changed_symbols` query failed ([`JCodemunchCallFailed`]) — the
+///   range went unexamined; re-run once jcodemunch answers.
 /// - `get_changed_symbols` returned nothing — jcodemunch is unwired, or the
 ///   range really does introduce no symbol.
 /// - Symbols arrived but not one declaration was locatable
@@ -1699,28 +1709,44 @@ fn check_live_path_stranded(ctx: &AuditContext, meta: &TaskMetadata) -> Vec<Find
 /// annotation needed). Mirrors the `Option<String>`-diagnostic pattern from
 /// `jcodemunch_client.rs::read_source_lines_for_enrichment`.
 fn h2_vacuous_breadcrumb(
-    symbols: &[ChangedSymbol],
+    answer: Result<&[ChangedSymbol], &JCodemunchCallFailed>,
     task_id: &str,
     since_sha: &str,
     until_sha: &str,
 ) -> Option<String> {
-    let cause = if symbols.is_empty() {
-        format!(
-            "get_changed_symbols returned empty for {since_sha}..{until_sha} \
-             (corpus clean OR jcodemunch not wired / NoopJCodemunchOps)"
-        )
-    } else {
-        let unlocatable = crate::wholly_unlocatable_count(symbols)?;
-        format!(
-            "all {unlocatable} symbol(s) from {since_sha}..{until_sha} had an \
-             unlocatable declaration and were skipped unexamined (jcodemunch \
-             substrate degraded, not a clean corpus)"
-        )
+    let cause = match answer {
+        Err(failure) => format!(
+            "{since_sha}..{until_sha} went unexamined because the query failed \
+             ({failure})"
+        ),
+        Ok(symbols) => vacuous_answer_cause(symbols, since_sha, until_sha)?,
     };
     Some(format!(
         "reify-audit: H2 (live-path-stranded) vacuous for task {task_id}: \
          {cause} — H2 produced no findings"
     ))
+}
+
+/// The cause clause for an ANSWERED query that left nothing to examine, or
+/// `None` when at least one symbol was examinable.
+fn vacuous_answer_cause(
+    symbols: &[ChangedSymbol],
+    since_sha: &str,
+    until_sha: &str,
+) -> Option<String> {
+    if symbols.is_empty() {
+        Some(format!(
+            "get_changed_symbols returned empty for {since_sha}..{until_sha} \
+             (corpus clean OR jcodemunch not wired / NoopJCodemunchOps)"
+        ))
+    } else {
+        let unlocatable = crate::wholly_unlocatable_count(symbols)?;
+        Some(format!(
+            "all {unlocatable} symbol(s) from {since_sha}..{until_sha} had an \
+             unlocatable declaration and were skipped unexamined (jcodemunch \
+             substrate degraded, not a clean corpus)"
+        ))
+    }
 }
 
 /// Count the number of distinct `crates/<name>/` roots referenced by `files`.
@@ -1747,9 +1773,7 @@ fn crate_root_count(files: &[String]) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        DeclSuppression, DoneProvenance, JCodemunchCallFailed, MockGitOps, MockJCodemunchOps,
-    };
+    use crate::{DeclSuppression, DoneProvenance, MockGitOps, MockJCodemunchOps};
     use rusqlite::Connection;
     use std::collections::HashMap;
     use std::path::PathBuf;

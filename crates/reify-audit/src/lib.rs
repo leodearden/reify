@@ -94,6 +94,8 @@ pub enum Severity {
 /// - `P5PhantomDone` — phantom-done: commit provenance cannot be corroborated.
 /// - `P2ConsumerStub` — consumer task with stub markers in changed lines.
 /// - `P1ProducerOrphan` — producer with no non-test workspace callers.
+/// - `P1TaskUnexamined` — a done task P1 could not examine because its
+///   `get_changed_symbols` query failed.
 /// - `P5MetadataFilesGitignored` — metadata-hygiene: gitignored paths in
 ///   `metadata.files` that should be stripped. Complement to `P5PhantomDone`
 ///   (medium-severity cleanliness signal, not a phantom-done).
@@ -120,6 +122,13 @@ pub enum Pattern {
     /// consumer task; flagged Medium past the 14-day grace window, Low
     /// within it. See `docs/architecture-audit/f-infra-design.md` §5 P1.
     P1ProducerOrphan,
+    /// P1 — task-unexamined: a `done` task P1 could not examine because its
+    /// `get_changed_symbols` query failed (see [`JCodemunchCallFailed`]).
+    /// Always Low, so it never moves the exit code. Its presence is what
+    /// stops a sweep in which a query failed from reading as clean: without
+    /// it, the failed task's zero producer-orphan findings would be
+    /// indistinguishable from a range that introduced nothing.
+    P1TaskUnexamined,
     /// Metadata-hygiene: one or more entries in `metadata.files` are
     /// gitignored paths that should be stripped. Distinct from `P5PhantomDone`
     /// (medium-severity cleanliness signal, not a phantom-done).
@@ -1693,6 +1702,27 @@ pub struct LayerViolation {
     pub rule: String,
 }
 
+/// A [`JCodemunchOps`] query that failed outright, as distinct from one that
+/// answered with nothing. Carried by
+/// [`JCodemunchOps::get_changed_symbols`]'s `Err` so a caller can report the
+/// range it could not examine instead of reading the failure as empty.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JCodemunchCallFailed {
+    /// The jcodemunch tool whose call failed, e.g. `"get_changed_symbols"`.
+    pub tool: &'static str,
+    /// The client's description of the failure (transport, timeout, or an
+    /// error envelope).
+    pub detail: String,
+}
+
+impl std::fmt::Display for JCodemunchCallFailed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "jcodemunch {} call failed: {}", self.tool, self.detail)
+    }
+}
+
+impl std::error::Error for JCodemunchCallFailed {}
+
 /// Source-introspection operations the P1 detector needs. Production: a
 /// jcodemunch-MCP-backed impl supplied by the T-4 CLI. Tests:
 /// [`MockJCodemunchOps`] (gated behind `feature = "test-support"`) holds
@@ -1709,8 +1739,16 @@ pub trait JCodemunchOps {
     /// commit range `since_sha..until_sha`. Typically `since_sha = "{commit}^1"`
     /// and `until_sha = "{commit}"` for a single merged commit (mirrors the
     /// `^1..commit` convention from `RealGitOps::diff_added_lines_in_commit`).
-    /// Returns an empty vec when the range is empty or the commits are not found.
-    fn get_changed_symbols(&self, since_sha: &str, until_sha: &str) -> Vec<ChangedSymbol>;
+    ///
+    /// `Ok` with an empty vec means the range introduced nothing (or its
+    /// commits are not in the index). `Err` means the query itself failed —
+    /// unreachable mid-sweep, timed out, an error envelope — and must never
+    /// be read as empty: the range went unexamined.
+    fn get_changed_symbols(
+        &self,
+        since_sha: &str,
+        until_sha: &str,
+    ) -> Result<Vec<ChangedSymbol>, JCodemunchCallFailed>;
 
     /// Equivalent of `mcp__jcodemunch__find_references(symbol)`: every
     /// non-declaration reference of the symbol across the workspace, scoped
@@ -1754,8 +1792,12 @@ pub trait JCodemunchOps {
 pub struct NoopJCodemunchOps;
 
 impl JCodemunchOps for NoopJCodemunchOps {
-    fn get_changed_symbols(&self, _since_sha: &str, _until_sha: &str) -> Vec<ChangedSymbol> {
-        vec![]
+    fn get_changed_symbols(
+        &self,
+        _since_sha: &str,
+        _until_sha: &str,
+    ) -> Result<Vec<ChangedSymbol>, JCodemunchCallFailed> {
+        Ok(vec![])
     }
     fn find_references(&self, _symbol: &ChangedSymbol) -> Vec<SymbolReference> {
         vec![]
@@ -1784,7 +1826,8 @@ impl JCodemunchOps for NoopJCodemunchOps {
 #[cfg(any(test, feature = "test-support"))]
 #[derive(Debug, Default)]
 pub struct MockJCodemunchOps {
-    get_changed_symbols: HashMap<(String, String), Vec<ChangedSymbol>>,
+    get_changed_symbols:
+        HashMap<(String, String), Result<Vec<ChangedSymbol>, JCodemunchCallFailed>>,
     find_references: HashMap<(String, String), Vec<SymbolReference>>,
     dead_code: Vec<DeadSymbol>,
     untested: Vec<UntestedSymbol>,
@@ -1809,7 +1852,17 @@ impl MockJCodemunchOps {
         symbols: Vec<ChangedSymbol>,
     ) {
         self.get_changed_symbols
-            .insert((since_sha.to_string(), until_sha.to_string()), symbols);
+            .insert((since_sha.to_string(), until_sha.to_string()), Ok(symbols));
+    }
+
+    // G-allow: test-support fixture (feature = "test-support"); not consumed in production builds
+    pub fn fail_changed_symbols(&mut self, since_sha: &str, until_sha: &str, detail: &str) {
+        let failure = JCodemunchCallFailed {
+            tool: "get_changed_symbols",
+            detail: detail.to_string(),
+        };
+        self.get_changed_symbols
+            .insert((since_sha.to_string(), until_sha.to_string()), Err(failure));
     }
 
     // G-allow: test-support fixture (feature = "test-support"); not consumed in production builds
@@ -1840,11 +1893,15 @@ impl MockJCodemunchOps {
 
 #[cfg(any(test, feature = "test-support"))]
 impl JCodemunchOps for MockJCodemunchOps {
-    fn get_changed_symbols(&self, since_sha: &str, until_sha: &str) -> Vec<ChangedSymbol> {
+    fn get_changed_symbols(
+        &self,
+        since_sha: &str,
+        until_sha: &str,
+    ) -> Result<Vec<ChangedSymbol>, JCodemunchCallFailed> {
         self.get_changed_symbols
             .get(&(since_sha.to_string(), until_sha.to_string()))
             .cloned()
-            .unwrap_or_default()
+            .unwrap_or_else(|| Ok(vec![]))
     }
 
     fn find_references(&self, symbol: &ChangedSymbol) -> Vec<SymbolReference> {
