@@ -5644,8 +5644,8 @@ fn value_to_convergence_status(v: &Value) -> Option<ConvergenceStatus> {
 mod tests {
     use super::*;
     use reify_solver_elastic::{
-        AnisotropicMaterial, DORFLER_THETA, MaterialField, OrthotropicMaterial, RefinementBudget,
-        run_adaptive_refinement,
+        AnisotropicMaterial, DORFLER_THETA, MIN_TET_SHAPE_QUALITY, MaterialField,
+        OrthotropicMaterial, RefinementBudget, run_adaptive_refinement,
     };
 
     // Shared AsPrintedZones Value-fixture builders.  We cannot use
@@ -6858,6 +6858,100 @@ mod tests {
         assert!(
             message.contains("inverted"),
             "the diagnostic must say the tet is inverted, got: {message}"
+        );
+    }
+
+    /// The 12-tet `[2.0, 0.5, 0.5]` box (`reps = [2, 1, 1]`, so 3×2×2 nodes) with
+    /// a FLAT element 12 appended over hex (0,0,0)'s z = 0 bottom face, nodes
+    /// `[0, 1, 4, 3]`: det J = 0, and every node is already referenced.
+    fn box_mesh_with_flat_sliver() -> VolumeMesh {
+        let mut vm = make_box_tet_volume_mesh([2.0, 0.5, 0.5], [2, 1, 1]);
+        tet_indices_mut(&mut vm).extend([0, 1, 4, 3]);
+        vm
+    }
+
+    /// Acceptance (b): the gate runs BEFORE assembly. A zero-volume element
+    /// trips assembly's Jacobian assert, so only a pre-assembly gate turns it
+    /// into a clean `Failed`.
+    #[test]
+    fn trampoline_injected_flat_sliver_fails_fast_with_fea_singular_stiffness() {
+        let message = expect_singular_stiffness_failure(
+            solve_body_overload_on(box_mesh_with_flat_sliver()),
+            12,
+        );
+        assert!(
+            message.contains(&format!("{MIN_TET_SHAPE_QUALITY:e}")),
+            "the diagnostic must name the threshold, got: {message}"
+        );
+    }
+
+    /// Acceptance (d), realized lane: the shared solve rejects a degenerate
+    /// mesh with the `RefineError` the wiring site already turns into a
+    /// warning plus uniform-lane fallback.
+    #[test]
+    fn realized_adaptive_problem_rejects_degenerate_mesh_before_solving() {
+        let iso = IsotropicElastic {
+            youngs_modulus: 200e9,
+            poisson_ratio: 0.3,
+        };
+        // `solve_and_estimate` never reads the surface; take it from the clean box.
+        let surface = reify_solver_elastic::boundary_surface_mesh(&make_box_tet_volume_mesh(
+            [2.0, 0.5, 0.5],
+            [2, 1, 1],
+        ))
+        .expect("a P1 tet box has an extractable boundary");
+        let mut problem = RealizedAdaptiveProblem::new(
+            iso,
+            box_mesh_with_flat_sliver(),
+            surface,
+            reify_solver_elastic::MeshingOptions {
+                mesh_size: Some(0.25),
+                deterministic: true,
+                ..Default::default()
+            },
+            [0.0, 0.0, -1000.0],
+            vec![],
+            [0.0; 3],
+        )
+        .expect("a widenable P1 tet mesh seeds a RealizedAdaptiveProblem");
+
+        match problem.solve_and_estimate() {
+            Err(reify_solver_elastic::RefineError::Gmsh(
+                reify_ir::GeometryError::OperationFailed(message),
+            )) => assert!(
+                message.contains(&format!("{MIN_TET_SHAPE_QUALITY:e}")),
+                "the error must carry the gate's diagnostic, got: {message}"
+            ),
+            other => panic!("expected the degenerate-tet gate's RefineError, got {other:?}"),
+        }
+    }
+
+    /// Acceptance (d), uniform lane: an absurd forced-tet slab (1 m × 1 km ×
+    /// 1 mm, so the clamped synthetic grid has tets with q ≈ 3.6e-12) is
+    /// rejected by the shared solve.
+    #[test]
+    fn cantilever_adaptive_problem_rejects_degenerate_synthetic_grid_before_solving() {
+        let iso = IsotropicElastic {
+            youngs_modulus: 200e9,
+            poisson_ratio: 0.3,
+        };
+        let mut problem = CantileverAdaptiveProblem::new(
+            iso,
+            1.0,
+            1e3,
+            1e-3,
+            [0.0, 0.0, -1000.0],
+            vec![],
+            [0.0; 3],
+            None,
+        );
+        let degenerate = problem
+            .solve_and_estimate()
+            .expect_err("a q ≈ 3.6e-12 synthetic grid must fail the degenerate-tet gate");
+        assert!(
+            !(degenerate.quality >= MIN_TET_SHAPE_QUALITY),
+            "reported quality {} must fail the gate",
+            degenerate.quality
         );
     }
 
