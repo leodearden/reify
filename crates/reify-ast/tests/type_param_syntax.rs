@@ -2,6 +2,8 @@
 //! for one declared type parameter: `name`, then `": "` + bounds joined with
 //! `" + "`, then `" = "` + the caller-rendered default.
 
+use std::fmt;
+
 use reify_ast::render_type_param;
 
 #[test]
@@ -38,10 +40,20 @@ fn bounds_precede_default() {
     );
 }
 
+/// A default whose `Display` output is computed from its field rather than
+/// stored, standing in for a resolved type such as `reify_core::Type`.
+struct LengthPower(i32);
+
+impl fmt::Display for LengthPower {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Scalar[m^{}]", self.0)
+    }
+}
+
 #[test]
-fn default_renders_verbatim_through_callers_display() {
+fn non_string_default_renders_through_its_own_display() {
     assert_eq!(
-        render_type_param("Q", [] as [&str; 0], Some("Scalar[m]")),
-        "Q = Scalar[m]"
+        render_type_param("Q", ["Dimension"], Some(LengthPower(2))),
+        "Q: Dimension = Scalar[m^2]"
     );
 }
