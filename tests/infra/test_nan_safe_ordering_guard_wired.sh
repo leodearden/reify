@@ -654,6 +654,111 @@ assert "hE5: a self-terminating 'mod tests;' (external file, no local body) does
     _exits_with 1 bash "$GATE" --repo-root "$FIX"
 
 # ===========================================================================
+# hC — compound test cfg gates arm the test-module skipper (task #6242).
+# Arming rule: scripts/lib_rust_production_view.sh. Same harness as hE.
+# ===========================================================================
+echo ""
+echo "--- (hC): compound test cfg gates arm the test-module skipper ---"
+
+HC_ANY='#[cfg(any(test, feature = "test-support"))]'
+HC_ALL='#[cfg(all(test, has_gmsh))]'
+
+# The all() module, hazard inside, with an interposed attribute (hC2/hC3/hC5).
+hc_all_mod() {
+    cat <<RS
+$HC_ALL
+#[allow(clippy::needless_range_loop)]
+mod tests {
+    fn helper(v: &mut Vec<f64>) {
+        v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    }
+}
+RS
+}
+
+# A compound-gated bare `use`, then a production hazard on line 5 (hC4/hC5).
+hc_bare_use() {
+    cat <<RS
+$1
+use std::cmp::Ordering;
+
+pub fn sort_all(v: &mut Vec<f64>) {
+    v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+}
+RS
+}
+
+# hC1 — any(test, …) with an interposed comment arms: hazard inside is exempt.
+write_fixture <<'RS'
+#[cfg(any(test, feature = "test-support"))]
+// G-allow: test-support fixture; not consumed in production builds
+pub mod test_support {
+    pub fn sort_all(v: &mut Vec<f64>) {
+        v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    }
+}
+RS
+stage
+assert "hC1: a hazard inside a '#[cfg(any(test, …))] pub mod' is exempt" \
+    _exits_with 0 bash "$GATE" --repo-root "$FIX"
+
+# hC2 — all(test, …) with an interposed attribute arms: hazard inside is exempt.
+hc_all_mod | write_fixture
+stage
+assert "hC2: a hazard inside a '#[cfg(all(test, …))] mod' is exempt" \
+    _exits_with 0 bash "$GATE" --repo-root "$FIX"
+
+# hC3 — release control: the skipper releases at the module's closing brace,
+# so the production hazard after it (line 10) is flagged and the in-module
+# one (line 5) is not.
+{
+    hc_all_mod
+    cat <<'RS'
+
+pub fn sort_all(v: &mut Vec<f64>) {
+    v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+}
+RS
+} | write_fixture
+stage
+HC_ERR="$DET_TMP/hC3.stderr"
+assert "hC3: the production hazard after a '#[cfg(all(test, …))] mod' is flagged" \
+    _exits_with 1 bash "$GATE" --repo-root "$FIX"
+bash "$GATE" --repo-root "$FIX" >/dev/null 2>"$HC_ERR" || true
+assert "hC3: ...the flagged line is the production one (lib.rs:10)" \
+    grep -qF 'src/lib.rs:10:' "$HC_ERR"
+assert "hC3: ...and the in-module hazard (lib.rs:5) is not flagged" \
+    bash -c "! grep -qF 'src/lib.rs:5:' '$HC_ERR'"
+
+# hC4 — mod-required rule kept: a compound-gated bare `use` arms nothing.
+for hc_attr in "$HC_ANY" "$HC_ALL"; do
+    hc_bare_use "$hc_attr" | write_fixture
+    stage
+    assert "hC4: a bare '$hc_attr use …;' does not swallow the next production item" \
+        _exits_with 1 bash "$GATE" --repo-root "$FIX"
+done
+
+# hC5 — the broadened arming regex is POSIX-only: hC2 and hC4 agree under mawk.
+# Skip expressed OUTSIDE the assert, as in hD9.
+if command -v mawk >/dev/null 2>&1; then
+    MAWK_SHIM="$DET_TMP/mawk-shim"
+    mkdir -p "$MAWK_SHIM"
+    ln -sf "$(command -v mawk)" "$MAWK_SHIM/awk"
+
+    hc_all_mod | write_fixture
+    stage
+    assert "hC5: hC2's fixture agrees under PATH-shadowed mawk (exempt)" \
+        _exits_with 0 env PATH="$MAWK_SHIM:$PATH" bash "$GATE" --repo-root "$FIX"
+
+    hc_bare_use "$HC_ANY" | write_fixture
+    stage
+    assert "hC5: hC4's any() fixture agrees under PATH-shadowed mawk (flagged)" \
+        _exits_with 1 env PATH="$MAWK_SHIM:$PATH" bash "$GATE" --repo-root "$FIX"
+else
+    echo "  SKIP: hC5 (mawk portability) — mawk is not on PATH on this host."
+fi
+
+# ===========================================================================
 # hF — an awk failure mid-scan surfaces as the documented exit 2
 # (usage/internal error), never conflated with exit 1 (violation found).
 #
