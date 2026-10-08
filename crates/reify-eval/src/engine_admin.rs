@@ -727,7 +727,7 @@ impl Engine {
     ///   a monotonic lifetime count of new terminal realizations that survives
     ///   both cache eviction and [`clear_realization_cache`](Self::clear_realization_cache),
     ///   which is what makes it usable as a re-mesh-avoidance signal across
-    ///   `edit_param` / `edit_source` (both of which flush the cache).
+    ///   `edit_param` / `edit_source` (both of which evict stale families).
     /// - `cache_hits` / `cache_misses` / `early_cutoffs` are **cumulative
     ///   totals** across every [`Engine::eval_cached`](crate::Engine::eval_cached)
     ///   call on this engine — not the last call's figures. For a single call's
@@ -762,14 +762,15 @@ impl Engine {
     ///
     /// **Most callers do NOT need to call this manually.** Both
     /// [`Engine::edit_param`](crate::Engine::edit_param) and
-    /// [`Engine::edit_source`](crate::Engine::edit_source) already invoke
-    /// the same reset internally near function entry (the auto-invalidation
-    /// hook points pinned by tests
-    /// `edit_param_clears_realization_cache_to_prevent_stale_handle_on_subsequent_build_snapshot`
-    /// and `edit_source_clears_realization_cache_to_prevent_stale_handle_on_subsequent_build`
-    /// in `tests/harness_tolerance/tolerance_wiring_e2e.rs`). This method is the escape hatch
-    /// for scenarios that fall OUTSIDE those hook points; it is NOT a
-    /// required pre-`build_snapshot` step.
+    /// [`Engine::edit_source`](crate::Engine::edit_source) already evict the
+    /// family of every realization the edit made stale and keep the rest
+    /// (selective-realization-eviction γ #4730, pinned by
+    /// `edit_param_evicts_only_the_edited_bodys_family_and_the_unaffected_body_still_hits`
+    /// and `edit_source_evicts_the_recompiled_body_and_keeps_the_byte_identical_one`
+    /// in `tests/harness_tolerance/tolerance_wiring_e2e.rs`). This whole-cache
+    /// flush is the escape hatch for scenarios that fall OUTSIDE those edits,
+    /// and the GUI whole-file reload below; it is NOT a required
+    /// pre-`build_snapshot` step.
     ///
     /// **Shape**: takes `&mut self`, returns nothing, idempotent on an
     /// already-empty cache. Mirrors the precedent set by

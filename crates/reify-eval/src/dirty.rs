@@ -123,7 +123,8 @@ pub fn compute_dirty_cone(
 /// realization is pushed at most once regardless of which map discovered it —
 /// that is what makes the fixpoint terminate. It is deliberately NOT `dirty`:
 /// the seeds are pre-loaded into `seen_realizations` but never enter `dirty`
-/// (β leaves realization cache entries to γ #4730), so a `dirty`-guarded
+/// (the seeds' cache families are evicted by the edit site, from
+/// `realization_staleness::stale_realization_entities`), so a `dirty`-guarded
 /// re-seed would let a cycle returning to a seed re-enter the frontier.
 ///
 /// Seed discrimination (task-spec test 3, locked in by step-13): the caller
@@ -166,7 +167,7 @@ pub fn compute_dirty_cone_with_realizations(
 
     // Seed from changed realizations. `seen_realizations` is the visit set for
     // the realization frontier (NOT `dirty`, which never receives the seeds
-    // themselves: β leaves realization cache entries to γ #4730), so a cycle
+    // themselves: the edit site evicts the seeds' families), so a cycle
     // back through a seed cannot loop forever.
     let mut realization_frontier: VecDeque<RealizationNodeId> =
         changed_realizations.iter().cloned().collect();

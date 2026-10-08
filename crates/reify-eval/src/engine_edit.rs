@@ -159,7 +159,7 @@ use crate::deps::{DependencyTrace, extract_dependency_trace};
 use crate::engine_admin::{ParamOverrideRejection, validate_param_override};
 use crate::engine_helpers::collect_member_list;
 use crate::graph::{ConstraintNodeData, EvaluationGraph, GuardedGroupInfo};
-use crate::realization_staleness::compute_changed_realizations;
+use crate::realization_staleness::{compute_changed_realizations, stale_realization_entities};
 use crate::warm_pool::WarmStatePool;
 use crate::{
     CheckResult, Engine, EngineError, EvalResult, EvaluationState, GuardLookup,
@@ -1105,41 +1105,9 @@ impl Engine {
         let functions = Arc::clone(&self.functions);
         // Reset the per-edit guard-phase group evaluation counter before Phase 1.
         self.last_guard_phase_group_evals = 0;
-        // Auto-invalidate the realization cache: edit_param changes input
-        // parameter values, so any cached `GeometryHandleId` entries point at
-        // OLD geometry and would silently be served by a subsequent
-        // `build_snapshot()` cache-hit short-circuit. The reset mirrors the
-        // `topology_attribute_table` reset-at-hook-point pattern
-        // (`TopologyAttributeTable::default()` reset in
-        // `Engine::reset_per_build_state`, engine_build.rs): the engine
-        // cannot prove which cached entries survive a given edit without
-        // per-cell input-cone analysis we do not currently maintain, so we
-        // conservatively flush the entire cache on every edit. The next
-        // `build()` / `build_snapshot()` cold-misses on every realization
-        // and re-populates the cache from kernel execution. Pinned by
-        // `edit_param_clears_realization_cache_to_prevent_stale_handle_on_subsequent_build_snapshot`
-        // (task 2874, step-17).
-        //
-        // **Contract-lock (task 2874 step-20)**: this reset is symmetric with
-        // the `self.clear_realization_cache()` call near the entry of
-        // `Engine::edit_source`. Removing either reset, or
-        // reordering either function body so the reset moves AFTER any
-        // state mutation that could fail (which would let a stale cache
-        // leak when the edit returns Err),
-        // silently regresses the auto-invalidation hook. Both resets MUST
-        // co-exist near function entry; the symmetry is independently pinned
-        // by the test pair listed above plus
-        // `edit_source_clears_realization_cache_to_prevent_stale_handle_on_subsequent_build`
-        // (step-19).
-        //
-        // **Single-source the reset (task 2874 step-22)**: both auto-
-        // invalidation hooks (this one and the parallel `edit_source` reset)
-        // delegate to `Engine::clear_realization_cache` (engine_admin.rs)
-        // so the reset semantics are defined in exactly one place. The
-        // public mutator is the same primitive a production caller would
-        // invoke for out-of-band cache invalidation — see
-        // `clear_realization_cache_public_api_resets_cache_for_production_callers`.
-        self.clear_realization_cache();
+        // The realization cache is NOT flushed here: γ (#4730) evicts only the
+        // families this edit made stale, at the compare site near the end of
+        // this function.
         // Reset the test-instrumentation diff snapshot. The "most recent
         // edit_source call" invariant on `Engine::last_diff_value_cells()`
         // is enforced rather than documented — a subsequent edit_param
@@ -1195,11 +1163,7 @@ impl Engine {
         //
         // **Ordering (amend, review round 1 — `correctness`): this MUST sit
         // BELOW the `NotInitialized` / `CellNotFound` / `validate_param_override`
-        // guards**, which is the exact OPPOSITE requirement to the
-        // `clear_realization_cache()` contract-lock above (that one must sit
-        // before any fallible mutation so a stale handle cannot leak on an
-        // `Err` return). The two look co-locatable and are not, so they are
-        // deliberately kept apart.
+        // guards.**
         //
         // The reason is the field's semantics: the set is measured against the
         // input cone AS OF THE LAST EXECUTION, so it is cumulative across
@@ -1216,6 +1180,9 @@ impl Engine {
 
         // Clone snapshot and extract references (O(1) via PersistentMap)
         let parent_id = state.snapshot.id;
+        // γ (#4730): `edit_param` neither adds nor removes a realization, so
+        // its eviction set has no removed term. Asserted at the compare site.
+        let prior_realization_count = state.snapshot.graph.realizations.len();
         let mut new_snapshot = state.snapshot.clone();
 
         // Compute dirty cone and eval set while state borrow is active
@@ -2984,7 +2951,7 @@ impl Engine {
             // keep their cached result. `cache`, `warm_pool` and
             // `compiled_fields` are disjoint `Engine` fields from
             // `eval_state`, so these borrows coexist.
-            invalidate_realization_dirty_cone(
+            let cone = invalidate_realization_dirty_cone(
                 &mut self.cache,
                 &mut self.warm_pool,
                 graph,
@@ -2992,6 +2959,21 @@ impl Engine {
                 reusable_index,
                 &self.last_changed_realizations,
             );
+            // γ (#4730, PRD D4): evict the family of every realization the edit
+            // made stale and keep every other cached body. The collection
+            // re-elaboration above rewrites value cells only, so no
+            // realization was removed and the removed term is empty.
+            debug_assert_eq!(
+                graph.realizations.len(),
+                prior_realization_count,
+                "edit_param must not add or remove a realization: its eviction \
+                 set has no removed term"
+            );
+            let stale =
+                stale_realization_entities(&self.last_changed_realizations, [], &cone, graph);
+            for entity in stale {
+                self.realization_cache.evict_family(&entity);
+            }
         }
 
         // Task 4532: passive would-prune measurement, deferred to here so that
@@ -3135,39 +3117,9 @@ impl Engine {
         if self.eval_state.is_none() {
             return Err(EngineError::NotInitialized);
         }
-        // Auto-invalidate the realization cache: edit_source rebuilds the
-        // snapshot from a (potentially) different `CompiledModule`, so any
-        // cached `GeometryHandleId` entries are stale (the underlying
-        // geometry ops, parameter defaults, or template structure may have
-        // changed) and would silently be served by a subsequent `build()` /
-        // `build_snapshot()` cache-hit short-circuit. The reset mirrors the
-        // `topology_attribute_table` reset-at-hook-point pattern
-        // (`TopologyAttributeTable::default()` reset in
-        // `Engine::reset_per_build_state`, engine_build.rs) and the
-        // parallel reset in `edit_param`. Pinned by
-        // `edit_source_clears_realization_cache_to_prevent_stale_handle_on_subsequent_build`
-        // (task 2874, step-19).
-        //
-        // **Contract-lock (task 2874 step-20)**: this reset is symmetric with
-        // the `self.clear_realization_cache()` call near the entry of
-        // `Engine::edit_param`. Removing either reset, or
-        // reordering either function body so the reset moves AFTER any
-        // state mutation that could fail (which would let a stale cache
-        // leak when the edit returns Err),
-        // silently regresses the auto-invalidation hook. Both resets MUST
-        // co-exist near function entry; the symmetry is independently pinned
-        // by the test pair listed above plus
-        // `edit_param_clears_realization_cache_to_prevent_stale_handle_on_subsequent_build_snapshot`
-        // (step-17).
-        //
-        // **Single-source the reset (task 2874 step-22)**: both auto-
-        // invalidation hooks (this one and the parallel `edit_param` reset)
-        // delegate to `Engine::clear_realization_cache` (engine_admin.rs)
-        // so the reset semantics are defined in exactly one place. The
-        // public mutator is the same primitive a production caller would
-        // invoke for out-of-band cache invalidation — see
-        // `clear_realization_cache_public_api_resets_cache_for_production_callers`.
-        self.clear_realization_cache();
+        // The realization cache is NOT flushed here: γ (#4730) evicts only the
+        // families this recompile made stale, at the compare site just before
+        // step (15)'s install.
         // selective-realization-eviction β (#4729): the changed-realization
         // set describes exactly ONE edit, so clear it at entry — symmetric
         // with the reset at `edit_param`'s entry. The real set is computed at
@@ -4800,7 +4752,7 @@ impl Engine {
             // to the work already done; `edit_param` is the P0 latency path
             // and gets the reuse. Pinned by
             // `edit_source_evicts_only_the_compute_node_downstream_of_the_moved_realization`.
-            invalidate_realization_dirty_cone(
+            let cone = invalidate_realization_dirty_cone(
                 &mut self.cache,
                 &mut self.warm_pool,
                 &new_snapshot.graph,
@@ -4808,6 +4760,18 @@ impl Engine {
                 None,
                 &self.last_changed_realizations,
             );
+            // γ (#4730, PRD D4/D7): evict the family of every realization the
+            // recompile made stale, including every realization it dropped,
+            // and keep every byte-identical body's cached geometry.
+            let stale = stale_realization_entities(
+                &self.last_changed_realizations,
+                &removed_realizations,
+                &cone,
+                &new_snapshot.graph,
+            );
+            for entity in stale {
+                self.realization_cache.evict_family(&entity);
+            }
         }
 
         // (15) Install the new snapshot, dep structures, and demand; record

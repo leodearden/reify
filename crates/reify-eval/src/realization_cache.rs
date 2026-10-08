@@ -169,8 +169,10 @@ impl<V> RealizationCache<V> {
     /// Drops every cached entry, leaving the cache empty.
     ///
     /// This is the whole-cache flush behind
-    /// [`Engine::clear_realization_cache`](crate::Engine::clear_realization_cache)
-    /// (and therefore behind every `edit_param` / `edit_source`).
+    /// [`Engine::clear_realization_cache`](crate::Engine::clear_realization_cache),
+    /// the public escape hatch and the GUI whole-file reload. Edits do not
+    /// call it: `edit_param` / `edit_source` evict only stale families
+    /// through [`evict_family`](Self::evict_family).
     ///
     /// **Monotonicity holds by construction.** The flush clears `buckets`
     /// in place and structurally cannot reach `terminal_entries`, so the
@@ -178,9 +180,8 @@ impl<V> RealizationCache<V> {
     /// [`realization_entries`](Self::realization_entries) survives it without
     /// any save/restore dance at the call site. Reseating the whole struct to
     /// [`RealizationCache::new`] instead would zero the counter — that is
-    /// exactly what this method exists to make impossible. Because
-    /// `edit_param` / `edit_source` flush on every edit, a reset-on-flush
-    /// counter would be zeroed constantly and useless for cross-edit
+    /// exactly what this method exists to make impossible: a reset-on-flush
+    /// counter would be zeroed by every reload and useless for cross-reload
     /// measurement.
     ///
     /// Pinned by `clear_empties_the_cache_but_preserves_realization_entries`

@@ -2415,8 +2415,10 @@ fn compiled_geometry_op_to_operation(op: &CompiledGeometryOp) -> Operation {
 /// Used by `available_for_op`'s cross-realization name resolution (task
 /// 5033 Gap #2 Gap A) to look up a `GeomRef::Sub(name)` parent's produced
 /// repr in `named_step_reprs` when it names a DIFFERENT, already-completed
-/// realization rather than a step local to this one.
-fn sub_refs_in_op(op: &CompiledGeometryOp) -> Vec<&str> {
+/// realization rather than a step local to this one, and by
+/// `realization_staleness` to find the realizations that read another
+/// entity's geometry.
+pub(crate) fn sub_refs_in_op(op: &CompiledGeometryOp) -> Vec<&str> {
     let mut refs = Vec::new();
     match op {
         CompiledGeometryOp::Boolean { left, right, .. } => {
@@ -12083,11 +12085,11 @@ impl Engine {
     /// geometry is still valid and is reused (no re-dispatch → `last_dispatch_count`
     /// stays 0).  The stored hash is updated to the current value in both cases.
     ///
-    /// **NOTE (esc-4740-29):** the "clear on hash mismatch" branch is currently a
-    /// no-op in practice — `clear_realization_cache()` at `edit_param` entry already
-    /// drops all entries, so the entity bucket will be empty when we call
-    /// `evict_family`.  The method is wired now so the logic is correct when
-    /// eviction γ (task 4730) lands selective cache retention.
+    /// **NOTE (esc-4740-29, resolved by γ #4730):** edits no longer flush the
+    /// whole cache; they evict only the families their own compare found stale
+    /// and retain the rest. A mismatch found HERE — for instance on a cell Part B
+    /// just refreshed, which the edit-time compare saw as `Pending` — therefore
+    /// evicts genuinely retained geometry.
     /// Returns exempt realizations: those whose input-cone hash is UNCHANGED
     /// (`stored == Some(current_hash)`). These are excluded from the
     /// `demand_scoped_unified_pass` seed so they are not re-dispatched when
@@ -12248,8 +12250,8 @@ impl Engine {
         // (the actual cache key — see the cross-realization keying invariant at
         // engine_build.rs:1663) rather than `tmpl.name`.  For simple top-level
         // templates the two are identical, but for sub/indexed entities they may
-        // diverge, and using the wrong key would silently miss the cache entry when
-        // eviction γ (task 4730) lands selective retention.  The HashSet also
+        // diverge, and using the wrong key would silently miss the cache entry the
+        // edit's selective eviction (γ #4730) retained.  The HashSet also
         // deduplicates: a template with N demanded realizations all having stale
         // inputs would otherwise produce N identical `evict_family` calls.
         let mut entities_to_clear: HashSet<String> = HashSet::new();
@@ -12285,10 +12287,9 @@ impl Engine {
                         .and_then(|n| n.input_cone_hash);
                     if stored != Some(current_hash) {
                         // Inputs changed (or no stored hash yet): invalidate stale
-                        // geometry so tessellate_from_values re-executes.
-                        // Forward-looking: currently a no-op since edit_param's
-                        // clear_realization_cache already removed the entry
-                        // (esc-4740-29).
+                        // geometry so tessellate_from_values re-executes. Edits
+                        // retain unaffected families (γ #4730), so this evicts
+                        // real entries (esc-4740-29).
                         // Key on `realization_decl.id.entity` — the actual cache key
                         // (invariant at engine_build.rs:1663), NOT `tmpl.name`.
                         entities_to_clear.insert(realization_decl.id.entity.clone());

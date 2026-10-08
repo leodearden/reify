@@ -631,8 +631,9 @@ pub struct Engine {
     /// and compares it to α's stored `RealizationNodeData.input_cone_hash`),
     /// and consumed by the SUBSEQUENT build — which is why
     /// `reset_per_build_state` classifies it MUST-SURVIVE rather than
-    /// resetting it. Task γ (#4730) reads it to replace the two wholesale
-    /// `clear_realization_cache()` flushes with keyed eviction.
+    /// resetting it. γ (#4730) also reads it at both compare sites as the
+    /// seed of the edit's keyed eviction
+    /// (`realization_staleness::stale_realization_entities`).
     ///
     /// Always present and module-private with no cfg gate — the same shape
     /// as `last_dispatch_count` — so the `engine_edit.rs` write sites need
@@ -945,46 +946,40 @@ pub struct Engine {
     /// / `build_snapshot()` / `tessellate_realizations()` calls within a single
     /// `Engine` *as long as the inputs are value-stable*.
     ///
-    /// **Auto-invalidation hook points (task 2874, steps 17-20)**: `edit_param`
-    /// and `edit_source` delegate to [`Engine::clear_realization_cache`](Engine::clear_realization_cache)
-    /// near function entry, mirroring the `topology_attribute_table`
-    /// reset-at-hook-point pattern (`TopologyAttributeTable::default()`
-    /// reset in `Engine::reset_per_build_state`, engine_build.rs). That
-    /// mutator flushes the existing cache in place via
-    /// [`RealizationCache::clear`] (task 4152) rather than
-    /// reseating it to a fresh `RealizationCache::new()` (see that method's
-    /// doc for why an in-place clear rather than a reseat). After an edit,
-    /// the next `build()` / `build_snapshot()` cold-misses on every
-    /// realization and re-populates the cache from kernel execution. The
-    /// reset is conservative — the engine cannot prove which cached entries
-    /// survive a given edit without per-cell input-cone analysis we do not
-    /// currently maintain — so the entire cache is flushed on every edit
-    /// regardless of whether the edited cell participates in any
-    /// realization's input cone.
+    /// **Edit-time keyed eviction (task 2874's invariant, γ #4730's
+    /// expression of it)**: `edit_param` and `edit_source` evict, at their
+    /// post-value-cone compare sites, the whole family
+    /// ([`RealizationCache::evict_family`]) of every entity
+    /// `realization_staleness::stale_realization_entities` names: the
+    /// realizations whose input cone moved, their transitive dirty cone, the
+    /// realizations a recompile dropped, and the cross-entity `Sub`
+    /// consumers. Every other body keeps its cached geometry, so the next
+    /// `build()` / `build_snapshot()` re-executes only what the edit
+    /// affected (selective-realization-eviction PRD D4/D5).
     ///
     /// **Public escape hatch (task 2874, step-22)**: production callers can
-    /// also flush the cache explicitly via
+    /// flush the whole cache explicitly via
     /// [`Engine::clear_realization_cache`](Engine::clear_realization_cache)
-    /// (engine_admin.rs) for scenarios where the auto-invalidation hook
-    /// points (`edit_param`, `edit_source`) do not fire — for example,
-    /// kernel swaps via test seams or upstream module reloads that bypass
-    /// `edit_source`. Both auto-invalidation hooks delegate to that public
-    /// mutator so the reset semantics are single-sourced.
+    /// (engine_admin.rs) for scenarios outside those two edits — for
+    /// example, kernel swaps via test seams or upstream module reloads that
+    /// bypass `edit_source`. It flushes in place via
+    /// [`RealizationCache::clear`] (task 4152) rather than reseating the
+    /// cache (see that method's doc for why).
     ///
-    /// Pinned end-to-end by:
-    /// - `edit_param_clears_realization_cache_to_prevent_stale_handle_on_subsequent_build_snapshot`
-    ///   in `tests/tolerance_wiring_e2e.rs` (covers `edit_param`).
-    /// - `edit_source_clears_realization_cache_to_prevent_stale_handle_on_subsequent_build`
-    ///   in `tests/tolerance_wiring_e2e.rs` (covers `edit_source`).
+    /// Pinned end-to-end in `tests/harness_tolerance/tolerance_wiring_e2e.rs` by:
+    /// - `edit_param_evicts_only_the_edited_bodys_family_and_the_unaffected_body_still_hits`
+    ///   (covers `edit_param`).
+    /// - `edit_source_evicts_the_recompiled_body_and_keeps_the_byte_identical_one`
+    ///   (covers `edit_source`).
     /// - `clear_realization_cache_public_api_resets_cache_for_production_callers`
-    ///   in `tests/tolerance_wiring_e2e.rs` (covers the public mutator).
+    ///   (covers the public mutator).
     ///
     /// **Scope of the partial-order rule (amendment correction)**: the
     /// `cached_tol ≤ requested_tol` ordering ONLY mitigates *tolerance-driven*
     /// staleness — a tighter demand misses a looser cached entry. It does
     /// NOT cover parameter / source / purpose-binding edits that change the
     /// underlying geometry while keeping `(entity_id, BRep, demanded_tol)`
-    /// constant. The auto-invalidation hooks above close that gap for
+    /// constant. The edit-time keyed eviction above closes that gap for
     /// `edit_param` / `edit_source`. Purpose-binding edits via
     /// `activate_purpose` / `deactivate_purpose` are covered by the
     /// partial-order rule itself when they tighten the demanded tolerance

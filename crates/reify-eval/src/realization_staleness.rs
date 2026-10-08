@@ -6,7 +6,7 @@
 //! written here. `engine_edit` runs them at its two compare sites and applies
 //! the result to the cache.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use reify_core::RealizationNodeId;
 use reify_ir::PersistentMap;
@@ -95,7 +95,7 @@ pub(crate) fn compute_changed_realizations(
 /// The entities whose `RealizationCache` family an edit made stale (γ #4730,
 /// PRD D4) — what the edit must hand to `RealizationCache::evict_family`.
 ///
-/// Three terms, each closing a distinct stale-geometry hole:
+/// Four terms, each closing a distinct stale-geometry hole:
 ///
 /// - `changed`, the seeds [`compute_changed_realizations`] reported. They are
 ///   unioned in explicitly because `dirty::compute_dirty_cone_with_realizations`
@@ -107,6 +107,13 @@ pub(crate) fn compute_changed_realizations(
 /// - `removed`, realizations the edit dropped. The cache is keyed by entity
 ///   alone, so a dropped realization's cached terminal would otherwise stand
 ///   in for whatever realization of that entity remains.
+/// - once any of those is non-empty, every [cross-entity `Sub`
+///   consumer](cross_entity_sub_consumers) in `graph`, the post-edit graph.
+///   The reverse index behind the cone resolves a `"<sub>.<member>"` operand
+///   by member name alone and drops it when two entities export that member
+///   (`A.body` and `B.body`), so the cone cannot be trusted to reach these
+///   consumers. Evicting all of them over-evicts a consumer that does not
+///   read the stale body; that is wasted work, never stale geometry.
 ///
 /// Value, compute and constraint members of the cone name no family and are
 /// ignored.
@@ -114,17 +121,52 @@ pub(crate) fn stale_realization_entities<'a>(
     changed: &HashSet<RealizationNodeId>,
     removed: impl IntoIterator<Item = &'a RealizationNodeId>,
     realization_cone: &HashSet<NodeId>,
+    graph: &EvaluationGraph,
 ) -> HashSet<String> {
     let entity = |rid: &RealizationNodeId| rid.entity.clone();
     let reached = realization_cone.iter().filter_map(|node| match node {
         NodeId::Realization(rid) => Some(entity(rid)),
         _ => None,
     });
-    changed
+    let mut stale: HashSet<String> = changed
         .iter()
         .map(entity)
         .chain(removed.into_iter().map(entity))
         .chain(reached)
+        .collect();
+    if !stale.is_empty() {
+        stale.extend(cross_entity_sub_consumers(graph));
+    }
+    stale
+}
+
+/// The entities owning a realization that reads ANOTHER entity's geometry: a
+/// `GeomRef::Sub` operand that names no realization of its own entity.
+///
+/// A sibling operand names the geometry member of a same-entity realization
+/// (`union(base, hole)`); it needs no term of its own, because the family is
+/// keyed by entity and is evicted exactly when the sibling is.
+fn cross_entity_sub_consumers(graph: &EvaluationGraph) -> HashSet<String> {
+    let mut members_by_entity: HashMap<&str, HashSet<&str>> = HashMap::new();
+    for (rid, node) in graph.realizations.iter() {
+        if let Some(cell) = &node.geometry_cell {
+            members_by_entity
+                .entry(rid.entity.as_str())
+                .or_default()
+                .insert(cell.member.as_str());
+        }
+    }
+    graph
+        .realizations
+        .iter()
+        .filter(|(rid, node)| {
+            let siblings = members_by_entity.get(rid.entity.as_str());
+            node.operations
+                .iter()
+                .flat_map(crate::engine_build::sub_refs_in_op)
+                .any(|name| !siblings.is_some_and(|members| members.contains(name)))
+        })
+        .map(|(rid, _)| rid.entity.clone())
         .collect()
 }
 
@@ -149,11 +191,109 @@ mod tests {
         names.iter().map(|n| n.to_string()).collect()
     }
 
+    fn no_graph() -> EvaluationGraph {
+        EvaluationGraph::default()
+    }
+
+    /// A graph of realizations `(entity, index, geometry member, ops)`.
+    fn graph_of(
+        realizations: &[(&str, u32, &str, Vec<reify_compiler::CompiledGeometryOp>)],
+    ) -> EvaluationGraph {
+        use crate::graph::RealizationNodeData;
+        use reify_ir::ReprKind;
+
+        let mut graph = EvaluationGraph::default();
+        for (entity, index, member, operations) in realizations {
+            let id = RealizationNodeId::new(*entity, *index);
+            graph.realizations.insert(
+                id.clone(),
+                RealizationNodeData {
+                    id: id.clone(),
+                    operations: operations.clone(),
+                    content_hash: ContentHash::of_str(&id.to_string()),
+                    produced_repr: ReprKind::BRep,
+                    produced_kernel: None,
+                    geometry_cell: Some(ValueCellId::new(*entity, *member)),
+                    input_cone_hash: None,
+                },
+            );
+        }
+        graph
+    }
+
+    fn a_box() -> Vec<reify_compiler::CompiledGeometryOp> {
+        vec![reify_compiler::CompiledGeometryOp::Primitive {
+            kind: reify_compiler::PrimitiveKind::Box,
+            args: vec![],
+        }]
+    }
+
+    fn union_of(left: &str, right: &str) -> Vec<reify_compiler::CompiledGeometryOp> {
+        use reify_compiler::{BooleanOp, CompiledGeometryOp, GeomRef};
+        vec![CompiledGeometryOp::Boolean {
+            op: BooleanOp::Union,
+            left: GeomRef::Sub(left.to_string()),
+            right: GeomRef::Sub(right.to_string()),
+        }]
+    }
+
+    /// The 4317-class trap behind δ S7: `A.body` and `B.body` export the same
+    /// member name, so the reverse index cannot resolve `C`'s `a.body`
+    /// operand and β's cone never reaches `C`. Any cross-entity `Sub`
+    /// consumer is therefore stale whenever anything is.
+    #[test]
+    fn includes_every_cross_entity_sub_consumer_once_anything_is_stale() {
+        let graph = graph_of(&[
+            ("A", 0, "body", a_box()),
+            ("B", 0, "body", a_box()),
+            ("C", 0, "combined", union_of("a.body", "b.body")),
+        ]);
+        let changed = HashSet::from([rid("A")]);
+
+        let stale = stale_realization_entities(&changed, [], &HashSet::new(), &graph);
+
+        assert_eq!(stale, entities(&["A", "C"]));
+    }
+
+    /// A `Sub` operand naming a realization of the SAME entity is a sibling
+    /// reference: the family is keyed by entity, so it is already evicted
+    /// exactly when the sibling is.
+    #[test]
+    fn a_sibling_sub_reference_does_not_make_a_cross_entity_consumer() {
+        let graph = graph_of(&[
+            ("E", 0, "base", a_box()),
+            ("E", 1, "hole", a_box()),
+            ("E", 2, "body", union_of("base", "hole")),
+            ("X", 0, "body", a_box()),
+        ]);
+        let changed = HashSet::from([rid("X")]);
+
+        let stale = stale_realization_entities(&changed, [], &HashSet::new(), &graph);
+
+        assert_eq!(stale, entities(&["X"]));
+    }
+
+    /// PRD §6 zero-eviction row, with a cross-entity consumer present.
+    #[test]
+    fn a_cross_entity_sub_consumer_survives_an_edit_that_stales_nothing() {
+        let graph = graph_of(&[
+            ("A", 0, "body", a_box()),
+            ("C", 0, "combined", union_of("a.body", "a.body")),
+        ]);
+
+        let stale = stale_realization_entities(&HashSet::new(), [], &HashSet::new(), &graph);
+
+        assert!(
+            stale.is_empty(),
+            "nothing moved, nothing is evicted: {stale:?}"
+        );
+    }
+
     #[test]
     fn includes_the_entity_of_every_changed_seed() {
         let changed = HashSet::from([rid("PartA"), rid("PartB")]);
 
-        let stale = stale_realization_entities(&changed, [], &HashSet::new());
+        let stale = stale_realization_entities(&changed, [], &HashSet::new(), &no_graph());
 
         assert_eq!(stale, entities(&["PartA", "PartB"]));
     }
@@ -167,7 +307,7 @@ mod tests {
         let changed = HashSet::from([rid("PartA")]);
         let cone = HashSet::from([NodeId::Realization(rid("Asm"))]);
 
-        let stale = stale_realization_entities(&changed, [], &cone);
+        let stale = stale_realization_entities(&changed, [], &cone, &no_graph());
 
         assert_eq!(stale, entities(&["PartA", "Asm"]));
     }
@@ -179,7 +319,8 @@ mod tests {
     fn includes_the_entity_of_every_removed_realization() {
         let removed = [rid("Dropped")];
 
-        let stale = stale_realization_entities(&HashSet::new(), &removed, &HashSet::new());
+        let stale =
+            stale_realization_entities(&HashSet::new(), &removed, &HashSet::new(), &no_graph());
 
         assert_eq!(stale, entities(&["Dropped"]));
     }
@@ -192,7 +333,7 @@ mod tests {
             NodeId::Constraint(ConstraintNodeId::new("PartA", 0)),
         ]);
 
-        let stale = stale_realization_entities(&HashSet::new(), [], &cone);
+        let stale = stale_realization_entities(&HashSet::new(), [], &cone, &no_graph());
 
         assert!(
             stale.is_empty(),
@@ -204,7 +345,7 @@ mod tests {
     /// nothing.
     #[test]
     fn is_empty_for_a_no_realization_edit() {
-        let stale = stale_realization_entities(&HashSet::new(), [], &HashSet::new());
+        let stale = stale_realization_entities(&HashSet::new(), [], &HashSet::new(), &no_graph());
 
         assert!(stale.is_empty());
     }
