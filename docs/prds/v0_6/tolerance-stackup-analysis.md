@@ -6,8 +6,7 @@
 > (`stdlib/tolerancing.ri`: `DimensionalTolerance`, GD&T traits, `Fit`). What is missing is
 > the *analysis* that propagates those tolerances along a dimension chain and reports the
 > resulting gap distribution — worst-case, statistical (RSS), and Monte-Carlo. This PRD adds
-> that analysis as a set of stdlib builtins surfaced through `reify eval`, mirroring the
-> existing stress-analysis builtin pattern (`stdlib/analysis.ri` + `reify-stdlib/src/analysis.rs`).
+> that analysis as a set of stdlib builtins surfaced through `reify eval`.
 
 Status: contract (B+H). Authored 2026-05-27 in a `/prd` spec-gap-filling batch.
 Resolves spec §18 deferred item #7 ("Tolerance stack-up analysis — RSS, worst-case, Monte
@@ -277,7 +276,8 @@ Diagnostic codes (user-facing, surfaced via `reify eval` stderr like other eval 
 `E_StackupSeedRequired`, `E_StackupEmptyChain`, `E_StackupDimMismatch`,
 `E_StackupBadSign` (sign ∉ {+1,−1}), `E_StackupBadSamples` (samples ≤ 0). Malformed
 contributor maps ⇒ the builtin returns `Value::Undef` *and* emits the matching diagnostic
-(mirrors the `Value::Undef` fall-through in `analysis.rs`).
+(the `Value::Undef` half is `reify_stdlib::eval_builtin`'s own contract for wrong argument
+types or counts).
 
 ---
 
@@ -337,7 +337,7 @@ The decomposition is a vertical slice (§8) with a final integration-gate exampl
 
 | # | Seam | Producer side | Consumer side |
 |---|---|---|---|
-| 7.1 | builtin ↔ eval dispatch | `eval_stackup` returns `Some(Value::Map)` for each name, `None` for unknown (so `eval_builtin` falls through). Unchanged by #6001 (§4.1); *only if* these names are later registered as rows does the producer-side signal become the exhaustive `EvalBuiltinId` match **failing to compile** for a row with no arm | `eval_builtin("stackup_rss", …)` (the `eval_builtin` chain) routes to it and yields the Map; an unknown stackup-ish name ⇒ `Value::Undef`. Unchanged by #6001 — the consumer-side observable is the same under either shape (§4.1) |
+| 7.1 | builtin ↔ eval dispatch | `eval_stackup` returns `Some(Value::Map)` for each name, `None` for unknown (so `eval_builtin` falls through). Unchanged by #6001; for the producer-side signal under a later migration of these names to registry rows, see §4.1 | `eval_builtin("stackup_rss", …)` (the `eval_builtin` chain) routes to it and yields the Map; an unknown stackup-ish name ⇒ `Value::Undef`. Unchanged by #6001 — the consumer-side observable is the same under either shape (§4.1) |
 | 7.2 | stdlib `.ri` ↔ builtin | a `Contributor`/`contributor(...)` value is a Map with the §4.1 keys | the builtin reads the map; a malformed map ⇒ `E_StackupDimMismatch` + `Value::Undef` |
 | 7.3 | math ↔ hand-calc (RSS/worst-case) | builtins compute per §3.1/§3.2 | a 3-part golden `.ri` evaluated by `reify eval` prints `worst_case_band`, `rss_sigma` equal to hand-computed values to 1e-12 |
 | 7.4 | MC determinism | `monte_carlo_stackup` uses the vendored seeded PRNG | two evals at the same seed print bit-identical `mc_sigma`/`mc_mean`; a different seed differs; convergence: MC-σ within 2% of RSS-σ at samples=100k (derived SE basis §3.3) |
