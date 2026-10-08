@@ -312,6 +312,28 @@ fn compliance_outside_a_kinds_constrained_set_is_unrepresentable() {
     }
 }
 
+/// Coupling<P> is derived motion, not a physical joint, so it has no
+/// constrained groups of its own: every vocabulary name is unknown to it. The
+/// probe uses the bare `Coupling(…)` call because a type-applied call does not
+/// parse in expression position.
+#[test]
+fn coupling_carries_no_constrained_dof_compliance() {
+    let vocab = vocabulary();
+    let calls: Vec<String> = vocab
+        .iter()
+        .map(|(name, family)| format!("Coupling({name}: {})", family.literal()))
+        .collect();
+    let module = compile_probe(&calls);
+    let unknown = errors_with_code(&module, DiagnosticCode::CtorUnknownField);
+    for name in vocab.keys() {
+        assert!(
+            names_field(&unknown, name),
+            "Coupling.{name} must draw CtorUnknownField; diagnostics: {:#?}",
+            module.diagnostics
+        );
+    }
+}
+
 // ─── (e) absent compliance is ideal-rigid `none` ─────────────────────────────
 
 fn kinematic_param(structure: &str, field: &str) -> &'static ValueCellDecl {
