@@ -2364,7 +2364,8 @@ assert "P3c: build/cxx-AAAA/output WAS relocated in this same run (guards non-va
 # --fresh-checkout (esc-5214/task 5354 fail-safe flip: the #5223 --lane-lock
 # guard was opt-in and thus bypassable by a caller that simply omitted it — the
 # exact esc-5214 acquire-path clobber). --lane-lock stays accepted (implied under
-# --fresh-checkout; still the explicit opt-in for the --reset-in-place control arm).
+# --fresh-checkout; still the explicit opt-in for --reset-in-place, the B13
+# control arm AND the merge-spec acquire).
 #
 # Uses run_helper_real (real fixture: a non-empty <lane_dir>/target containing
 # a sentinel file) so the mv/clobber actually executes or is actually refused.
@@ -2391,9 +2392,9 @@ assert "P3c: build/cxx-AAAA/output WAS relocated in this same run (guards non-va
 # is a contradiction (usage error, exit 2).
 # H10 (task 5354, NEW) pins the complementary SCOPING property: the fail-safe
 # default acquire is gated on --fresh-checkout || --lane-lock and does NOT extend
-# to the bare --reset-in-place control arm — a held lock is ignored there (exit 0,
-# not 75), the property H6a/H6b (reset-in-place WITH --lane-lock) and E1/H3a
-# (reset-in-place, no held lock) leave unpinned.
+# to bare --reset-in-place (B13 control arm AND merge-spec acquire) — a held
+# lock is ignored there (exit 0, not 75), the property H6a/H6b (reset-in-place
+# WITH --lane-lock) and E1/H3a (reset-in-place, no held lock) leave unpinned.
 # H11/H12/H13 (task 5568, NEW) pin the lane-lock refusal's own discriminant.
 # The normative statement — why 75 is the wrong code, why the flag is opt-in
 # rather than an unconditional flip, and the dark-factory arm — lives in ONE
@@ -2672,10 +2673,14 @@ assert "H4e: lane lock is re-acquirable immediately after the ABORTED seed exits
     bash -c 'exec 8>"$1"; flock -n 8' _ "$Q_LOCK4E"
 
 # ── H5: bounded-wait "queue" via REIFY_WARM_LANE_LANE_LOCK_WAIT ─────────────
-# A refused acquirer of the SINGLETON _merge-verify lane has no alternate
-# FREE lane to fall back to, so the WAIT knob lets --lane-lock QUEUE (bounded
-# flock -w N) instead of refusing instantly (flock -n, the WAIT-unset
-# default from H1-H4 above).
+# The WAIT knob lets seed's own lane-lock acquire QUEUE (bounded flock -w N)
+# instead of refusing instantly (flock -n, the WAIT-unset default from H1-H4
+# above). It binds only a caller that lets seed self-acquire -- tests/infra
+# (these blocks) and dark-factory's ephemeral warm-seed path
+# (take_lane_lock=False). It is INERT on both production pool acquires, which
+# pass --assume-lane-lock-held; there DF's outer flock carries the wait (30s)
+# and the timeout code (124). See the --lane-lock note in
+# scripts/seed-warm-lane.sh's header.
 #
 # H5a: lock HELD (same backgrounded flock -x holder + _wait_for_reader_lock
 # causal handshake as H1) + WAIT=1 -> still refuses (75), but only AFTER the
@@ -2753,10 +2758,8 @@ assert "H5c: cp NEVER invoked (rejected before any mutation)" \
 
 # ── H5d: bounded-wait "unlimited" (mixed-case) -> blocks until acquired,
 # never refuses. Exercises the bare blocking `flock 9` branch
-# (seed-warm-lane.sh's _llw_unlimited=1 path) -- the exact path the
-# SINGLETON _merge-verify lane is documented to rely on (queue forever
-# rather than refuse, since it has no alternate FREE lane to fall back to).
-# Mixed-case "UnLiMiTeD" also covers the case-insensitive glob match. ───────
+# (seed-warm-lane.sh's _llw_unlimited=1 path); same binding scope as H5
+# above. Mixed-case "UnLiMiTeD" also covers the case-insensitive glob match. ──
 Q_LANE8="$(make_isolated_lane Q-lane8)"
 mkdir -p "$Q_LANE8/target"
 echo "sentinel content" > "$Q_LANE8/target/SENTINEL.txt"
@@ -3090,11 +3093,15 @@ assert "H9: base_artifact.a present in <lane>/target (clone from base succeeded)
     test -f "$Q_LANE11/target/debug/base_artifact.a"
 
 # ── H10: scoping guard — the fail-safe default acquire is SCOPED to
-# --fresh-checkout (|| explicit --lane-lock) and DOES NOT extend to the bare
-# --reset-in-place control arm (seed-warm-lane.sh:510 gates on
+# --fresh-checkout (|| explicit --lane-lock) and DOES NOT extend to bare
+# --reset-in-place — the B13 control arm AND the merge-spec acquire
+# (seed-warm-lane.sh gates its default acquire on
 # `[ -n "$FRESH_CHECKOUT" ] || [ -n "$LANE_LOCK_OPT" ]`, deliberately NOT
 # $RESET_IN_PLACE; the PRD keeps --lane-lock the explicit opt-in for the
-# reset-in-place arm). H6a/H6b exercise reset-in-place WITH --lane-lock, and
+# reset-in-place arm).
+# Production inv.11 exclusivity does not rest on this default for either pool
+# acquire (DF's outer flock holds it): PRD §9.5 inv.11, 2026-09-11 amendment.
+# H6a/H6b exercise reset-in-place WITH --lane-lock, and
 # E1/H3a exercise reset-in-place with NO held lock — so a leak of the default-on
 # acquire into reset-in-place would silently pass every case above. H10 pins it
 # directly: a live consumer HOLDS ${LANE}.lock (H7's backgrounded flock -x holder
@@ -3120,8 +3127,8 @@ _wait_for_reader_lock "$Q_READY14" 30
 reset_calls
 RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
     run_helper_real "$Q_BASE" "$Q_LANE14" --reset-in-place
-# NOTE: no --lane-lock and no --assume-lane-lock-held -- the bare reset-in-place
-# control arm must NOT default-acquire, so the held lock above is ignored.
+# NOTE: no --lane-lock and no --assume-lane-lock-held -- bare --reset-in-place
+# must NOT default-acquire, so the held lock above is ignored.
 
 assert "H10: reset-in-place + lock HELD + no --lane-lock → exit 0 (default acquire is NOT scoped to reset-in-place; not 75)" \
     test "$RC" -eq 0
