@@ -1014,4 +1014,43 @@ assert "hM4: ...and crates/reify-constraints/src/solver.rs still exists as a tra
 assert "hM5: ...and crates/reify-constraints/src/cpsat.rs still exists as a tracked file in the real tree" \
     git -C "$REPO_ROOT" ls-files --error-unmatch 'crates/reify-constraints/src/cpsat.rs'
 
+# ===========================================================================
+# hN — the gate takes its lexer from the SIBLING scripts/lib_rust_production_view.sh
+# (task 6202), not a stale embedded copy. Proven behaviourally: a gate copy
+# beside a stub lib follows the stub, and a copy with no lib cannot scan.
+# ===========================================================================
+echo ""
+echo "--- (hN): the gate's lexer comes from the sibling shared lib ---"
+rm -rf "$FIX/crates"
+mkdir -p "$DET_TMP/stub-lib-scripts" "$DET_TMP/no-lib-scripts"
+# The historical raw-$0 view: no lexing and no test skipping.
+cat > "$DET_TMP/stub-lib-scripts/lib_rust_production_view.sh" <<'STUB'
+RUST_PRODUCTION_VIEW_AWK='{ code = $0; comment_tail = ""; c = code; n_open = gsub(/[{]/, "x", c); c = code; n_close = gsub(/[}]/, "x", c); depth += n_open - n_close }'
+STUB
+cp "$GATE" "$DET_TMP/stub-lib-scripts/"
+cp "$GATE" "$DET_TMP/no-lib-scripts/"
+HN_STUB_GATE="$DET_TMP/stub-lib-scripts/check-nan-safe-ordering.sh"
+HN_NOLIB_GATE="$DET_TMP/no-lib-scripts/check-nan-safe-ordering.sh"
+
+write_fixture <<'RS'
+/// avoid partial_cmp(...).unwrap_or(Ordering::Equal) here; use total_cmp
+fn s() {}
+RS
+stage
+assert "hN1: positive control — the real gate does not flag a doc-comment mention" \
+    _exits_with 0 bash "$GATE" --repo-root "$FIX"
+assert "hN1: a gate copy beside a raw-\$0 stub lib DOES flag it — the verdict follows the sibling lib" \
+    _exits_with 1 bash "$HN_STUB_GATE" --repo-root "$FIX"
+
+write_fixture <<'RS'
+pub fn nothing() {}
+RS
+stage
+assert "hN2: a gate copy with NO sibling lib exits 2 (could not scan), never 1" \
+    _exits_with 2 bash "$HN_NOLIB_GATE" --repo-root "$FIX"
+assert "hN2: ...and its stderr names lib_rust_production_view.sh" \
+    bash -c "bash '$HN_NOLIB_GATE' --repo-root '$FIX' 2>&1 1>/dev/null | grep -q 'lib_rust_production_view.sh'"
+assert "hN3: the lib resolves relative to the gate script, not the CWD (run from /)" \
+    _exits_with 0 bash -c "cd / && bash '$GATE' --repo-root '$FIX'"
+
 test_summary

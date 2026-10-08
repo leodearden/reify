@@ -305,6 +305,19 @@ crates/reify-eval/src/test_runner.rs                tests/infra/test_compute_tra
 # check-compute-trampoline-registration.sh row above.
 scripts/check-nan-safe-ordering.sh    tests/infra/test_nan_safe_ordering_guard_wired.sh
 
+# Task 6202: scripts/lib_rust_production_view.sh is the SINGLE copy of the Rust
+# literal/comment lexer, so it needs a row per CONSUMER — the
+# one-artifact-multiple-rows pattern scripts/lib_task_citation.sh uses below.
+# Its own unit suite plus all three consumers' suites, each of which
+# load-bears the lib: a lib-only diff that selected only the unit suite would
+# leave both gates' verdicts and the orphan audit's cfg(test) masking unrun on
+# the very edit that can break them. The .py row is the task 7044 pair shape.
+scripts/lib_rust_production_view.sh    tests/infra/test_rust_production_view_lib.sh
+scripts/lib_rust_production_view.sh    tests/infra/test_nan_safe_ordering_guard_wired.sh
+scripts/lib_rust_production_view.sh    tests/infra/test_compute_trampoline_registration_wired.sh
+scripts/lib_rust_production_view.sh    tests/infra/test_audit_orphan_producers.sh
+tests/infra/test_rust_production_view_lib.py    tests/infra/test_rust_production_view_lib.sh
+
 # Task 6107 (β): the single `watch --once` index primitive. Its guard is
 # hermetic (temp CODE_INDEX_PATH, synthetic sqlite DBs, stub indexer), so it is
 # cheap enough to run as a per-task fail-fast pole — and it needs to, because

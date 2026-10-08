@@ -204,6 +204,17 @@ tests/infra/run-all-ambient-vars.manifest
 scripts/check-nan-safe-ordering.sh
 scripts/check-compute-trampoline-registration.sh
 #
+# scripts/lib_rust_production_view.sh (task 6202): the shared Rust
+#   literal/comment lexer sourced TRANSITIVELY by the two INV-FEA lint gates
+#   above (verify.sh → check-nan-safe-ordering.sh /
+#   check-compute-trampoline-registration.sh → lib_rust_production_view.sh).
+#   Not derivable from verify.sh's direct 'source "$SCRIPT_DIR/..."' lines nor
+#   from its emitted-gate paths, so verify-pipeline-guard.sh's auto-derivation
+#   misses it — same non-derivable property as scripts/lib_slot_acquire.sh. A
+#   lib-only edit changes what both gates can see, so it must route to the full
+#   --scope all gate rather than the merge-worker config fast-path.
+scripts/lib_rust_production_view.sh
+#
 # task-6243-followup (tkt_0RSKSDAK6WDWWR3N29RQ804T1B): CLOSED by task 6320 via
 #   auto-derivation (see the EMITTED GATE SCRIPTS note in the header) — all six
 #   gate scripts the ticket enumerated are now load-bearing, as are two

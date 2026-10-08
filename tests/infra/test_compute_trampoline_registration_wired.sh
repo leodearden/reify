@@ -1237,6 +1237,41 @@ assert "hF4: _code_has's early exit produces NO 'lexer state unbalanced' warning
 assert "hF4: the REAL tree produces no 'lexer state unbalanced' warning either" \
     bash -c "! bash '$GATE' --repo-root '$REPO_ROOT' 2>&1 >/dev/null | grep -q 'lexer state unbalanced'"
 
+# hW — the lexer comes from the SIBLING scripts/lib_rust_production_view.sh
+# (task 6202), not a stale embedded copy: a gate copy beside a raw-$0 stub lib
+# follows the stub, and a gate copy with no lib beside it cannot scan.
+echo ""
+echo "--- (hW): the gate's lexer comes from the sibling shared lib ---"
+mkdir -p "$DET_TMP/stub-lib-scripts" "$DET_TMP/no-lib-scripts"
+cat > "$DET_TMP/stub-lib-scripts/lib_rust_production_view.sh" <<'STUB'
+RUST_PRODUCTION_VIEW_AWK='{ code = $0; comment_tail = ""; c = code; n_open = gsub(/[{]/, "x", c); c = code; n_close = gsub(/[}]/, "x", c); depth += n_open - n_close }'
+STUB
+cp "$GATE" "$DET_TMP/stub-lib-scripts/"
+cp "$GATE" "$DET_TMP/no-lib-scripts/"
+HW_STUB_GATE="$DET_TMP/stub-lib-scripts/check-compute-trampoline-registration.sh"
+HW_NOLIB_GATE="$DET_TMP/no-lib-scripts/check-compute-trampoline-registration.sh"
+write_baseline
+mkdir -p "$FIX/crates/reify-foo/src"
+cat > "$FIX/crates/reify-foo/src/lib.rs" <<'RS'
+/// Never call register_compute_fns( directly; use the bundler.
+pub fn documented() {}
+RS
+stage
+assert "hW1: positive control — the real gate keeps a rustdoc mention of a half green" \
+    _exits_with 0 bash "$GATE" --repo-root "$FIX"
+assert "hW1: a gate copy beside a raw-\$0 stub lib exits 1 — the verdict follows the sibling lib" \
+    _exits_with 1 bash "$HW_STUB_GATE" --repo-root "$FIX"
+assert "hW1: ...and the line it flags is the rustdoc mention" \
+    bash -c "bash '$HW_STUB_GATE' --repo-root '$FIX' 2>&1 >/dev/null | grep -q 'crates/reify-foo/src/lib\.rs:1:'"
+write_baseline
+stage
+assert "hW2: a gate copy with NO sibling lib exits 2 (could not scan), never 1" \
+    _exits_with 2 bash "$HW_NOLIB_GATE" --repo-root "$FIX"
+assert "hW2: ...and its stderr names lib_rust_production_view.sh" \
+    bash -c "bash '$HW_NOLIB_GATE' --repo-root '$FIX' 2>&1 >/dev/null | grep -q 'lib_rust_production_view.sh'"
+assert "hW3: the lib resolves relative to the gate script, not the CWD (run from /)" \
+    _exits_with 0 bash -c "cd / && bash '$GATE' --repo-root '$FIX'"
+
 # ===========================================================================
 # Part B — verify.sh's TEST plan EXECUTES the gui-feature-gated suite.
 #
