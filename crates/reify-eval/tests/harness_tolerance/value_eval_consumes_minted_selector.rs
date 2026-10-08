@@ -225,28 +225,23 @@ fn end_effector_track_fixture_peak_differs_per_location() {
 
 /// R3e fixture: `R3eWidget` mirrors `WIDGET_SRC` (named `body` param + `loc`
 /// selector) but adds an `@optimized` compute-node `track` (registered via
-/// `r3e_track_fn`, modeled on `compute_dispatch_registry.rs`'s `identity_fn`)
-/// and a same-pass consumer `peak = peak_deviation_at(track, loc)` (the
-/// undeclared intrinsic, called directly — see the module-level comment above
-/// for why the `.ri`-declared `peak_deviation` wrapper can't be used here).
+/// `identity_track_fn`, modeled on `compute_dispatch_registry.rs`'s
+/// `identity_fn`) and a same-pass consumer `peak = peak_deviation_at(track,
+/// loc)` (the undeclared intrinsic, called directly — see the module-level
+/// comment above for why the `.ri`-declared `peak_deviation` wrapper can't be
+/// used here).
 ///
-/// `r3e_track_test`'s inline fallback body is `seed` (bare passthrough) —
-/// NOT `EndEffectorTrack()` (the no-arg ctor, `trajectory_fns.ri`), which
-/// body-inlines to `Value::Undef` (confirmed empirically: `eval_cached` has
-/// no `@optimized` ComputeNode-dispatch branch at all — see the module-level
-/// comment — so it ALWAYS body-inlines this fn regardless of registration,
-/// and an Undef `track` would short-circuit `peak` via strict undef-
-/// propagation for a reason unrelated to R3e). `compile_function` applies no
-/// body-vs-return-type check (same precedent as `evaluate_profile_at` et
-/// al.), so `seed : Real` type-checks fine against the declared
-/// `-> EndEffectorTrack`. `Engine::eval` / `engine_edit` register
-/// `r3e_track_fn` for `"test::r3e_track"` and dispatch through the
-/// ComputeNode path instead, which ALSO returns `seed`'s value — so both
-/// paths agree, isolating the regression purely to `loc`'s stale pre-mint
-/// read.
-const R3E_SRC: &str = r#"
+/// `track` is an `@optimized` IDENTITY over an `EndEffectorTrack` ARGUMENT
+/// (`end_effector_track_fixture!`), never one built in the fn body: `eval` (and
+/// `edit_param`, which carries `track` over from its `eval` baseline) get the
+/// dispatched trampoline result, while `eval_cached` and `edit_source` body-
+/// inline the fn (neither dispatches `@optimized` calls). The identity makes
+/// both yield the same `StructureInstance`, so `peak` has one expected value in
+/// every leg.
+const R3E_SRC: &str = concat!(
+    r#"
 @optimized("test::r3e_track")
-fn r3e_track_test(seed: Real) -> EndEffectorTrack {
+fn r3e_track_test(seed: EndEffectorTrack) -> EndEffectorTrack {
     seed
 }
 
@@ -257,16 +252,20 @@ structure def R3eWidget {
     param body   : Solid  = box(width, height, depth)
     let dir = vec3(0.0, 0.0, 1.0)
     let tol = 1deg
-    let track = r3e_track_test(1.0)
+    let track = r3e_track_test("#,
+    end_effector_track_fixture!(),
+    r#")
     let loc = faces_by_normal(body, dir, tol)
     let peak = peak_deviation_at(track, loc)
-}"#;
+}"#
+);
 
-/// Trampoline for `"test::r3e_track"` — returns its first value input (a
-/// non-Undef `Real`) so `track` is never itself `Undef`, isolating the
-/// regression to `loc`'s stale pre-mint read. Modeled verbatim on
-/// `compute_dispatch_registry.rs`'s `identity_fn`.
-fn r3e_track_fn(
+/// Identity trampoline for `"test::r3e_track"` and `"test::r3f_track"` —
+/// returns its first value input (the fixture `EndEffectorTrack`) unchanged, so
+/// the dispatched result equals the fn's inline body `seed` and `track` is never
+/// itself `Undef`, isolating the regression to `loc`'s stale pre-mint read.
+/// Modeled verbatim on `compute_dispatch_registry.rs`'s `identity_fn`.
+fn identity_track_fn(
     value_inputs: &[Value],
     _realization_inputs: &[RealizationReadHandle],
     _options: &Value,
@@ -322,7 +321,7 @@ fn value_eval_template_consumer_reads_minted_selector_finite_eval() {
     assert_no_compile_errors(&compiled);
 
     let mut engine = Engine::new(Box::new(SimpleConstraintChecker), None);
-    engine.register_compute_fn("test::r3e_track", r3e_track_fn as ComputeFn);
+    engine.register_compute_fn("test::r3e_track", identity_track_fn as ComputeFn);
     let result = engine.eval(&compiled);
 
     assert_peak_resolved(
@@ -347,7 +346,7 @@ fn value_eval_template_consumer_reads_minted_selector_finite_eval_cached() {
     assert_no_compile_errors(&compiled);
 
     let mut engine = Engine::new(Box::new(SimpleConstraintChecker), None);
-    engine.register_compute_fn("test::r3e_track", r3e_track_fn as ComputeFn);
+    engine.register_compute_fn("test::r3e_track", identity_track_fn as ComputeFn);
     let result = engine.eval_cached(&compiled, VersionId(1));
 
     assert_peak_resolved(
@@ -385,7 +384,7 @@ fn value_eval_template_consumer_reads_minted_selector_finite_after_edit() {
     assert_no_compile_errors(&compiled);
 
     let mut engine = Engine::new(Box::new(SimpleConstraintChecker), None);
-    engine.register_compute_fn("test::r3e_track", r3e_track_fn as ComputeFn);
+    engine.register_compute_fn("test::r3e_track", identity_track_fn as ComputeFn);
     // Establish baseline.
     engine.eval(&compiled);
 
@@ -437,9 +436,10 @@ fn value_eval_template_consumer_reads_minted_selector_finite_after_edit() {
 /// structural difference the root-cause isolates. `loc_box` has no value
 /// cell, so its `GeometryHandle` — and thus `loc` — can only be resolved by
 /// the POST-WALK mints, never the R3d in-walk retry.
-const R3F_SRC: &str = r#"
+const R3F_SRC: &str = concat!(
+    r#"
 @optimized("test::r3f_track")
-fn r3f_track_test(seed: Real) -> EndEffectorTrack {
+fn r3f_track_test(seed: EndEffectorTrack) -> EndEffectorTrack {
     seed
 }
 
@@ -450,10 +450,13 @@ structure def R3fWidget {
     let loc_box = box(width, height, depth)
     let dir = vec3(0.0, 0.0, 1.0)
     let tol = 1deg
-    let track = r3f_track_test(1.0)
+    let track = r3f_track_test("#,
+    end_effector_track_fixture!(),
+    r#")
     let loc = faces_by_normal(loc_box, dir, tol)
     let peak = peak_deviation_at(track, loc)
-}"#;
+}"#
+);
 
 /// `Engine::eval` (kernel-free, no build) must yield a non-Undef value for
 /// `R3fWidget.peak` — a same-pass consumer of BOTH the `@optimized` compute
@@ -470,7 +473,7 @@ fn value_eval_geometry_let_consumer_reads_minted_selector_finite_eval() {
     assert_no_compile_errors(&compiled);
 
     let mut engine = Engine::new(Box::new(SimpleConstraintChecker), None);
-    engine.register_compute_fn("test::r3f_track", r3e_track_fn as ComputeFn);
+    engine.register_compute_fn("test::r3f_track", identity_track_fn as ComputeFn);
     let result = engine.eval(&compiled);
 
     assert_peak_resolved(
@@ -495,7 +498,7 @@ fn value_eval_geometry_let_consumer_reads_minted_selector_finite_eval_cached() {
     assert_no_compile_errors(&compiled);
 
     let mut engine = Engine::new(Box::new(SimpleConstraintChecker), None);
-    engine.register_compute_fn("test::r3f_track", r3e_track_fn as ComputeFn);
+    engine.register_compute_fn("test::r3f_track", identity_track_fn as ComputeFn);
     let result = engine.eval_cached(&compiled, VersionId(1));
 
     assert_peak_resolved(
@@ -550,7 +553,7 @@ fn value_eval_geometry_let_consumer_reads_minted_selector_finite_after_source_ed
     assert_no_compile_errors(&compiled);
 
     let mut engine = Engine::new(Box::new(SimpleConstraintChecker), None);
-    engine.register_compute_fn("test::r3f_track", r3e_track_fn as ComputeFn);
+    engine.register_compute_fn("test::r3f_track", identity_track_fn as ComputeFn);
     // Establish edit_source's baseline precondition against the DISTINCT
     // trivial module — see the doc comment above for why.
     engine.eval(&baseline);
