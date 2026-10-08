@@ -158,28 +158,26 @@ impl Seeds {
     /// A `false` answer is a *proof* that the whole subtree is constant with
     /// respect to every seed.
     ///
-    /// # Why `collect_value_refs` and not `expr.walk`
+    /// # Why `contains_value_ref_matching` and not `expr.walk`
     ///
-    /// `walk` is allocation-free and sits right here in [`subtree_has_kink`],
-    /// so reaching for it is the obvious optimisation — and it answers a
-    /// DIFFERENT question.  On a `Lambda`, `collect_value_refs` reports the
-    /// CAPTURES and does not descend into the body, while `walk` descends into
-    /// the body and never sees the captures (`reify-ir/src/expr.rs`, the two
-    /// `Lambda` arms).  A walk-based predicate would therefore answer `false`
-    /// for a lambda that captures a seed — and `false` here is a PROOF the fast
-    /// path acts on, so the subtree would be handed to `eval_expr` and lifted
-    /// with `Tangent::Zero`: a silently flat row for a residual that genuinely
-    /// moves.  (`Quantifier` differs too, in the safe direction: `walk` sees
-    /// the bound variable that `collect_value_refs` excludes.)
+    /// `walk` sits right here in [`subtree_has_kink`], so reaching for it is
+    /// the obvious shortcut — and it answers a DIFFERENT question.  On a
+    /// `Lambda`, the dependency traversal reports the CAPTURES and does not
+    /// descend into the body, while `walk` descends into the body and never
+    /// sees the captures.  A walk-based predicate would therefore answer
+    /// `false` for a lambda that captures a seed — and `false` here is a PROOF
+    /// the fast path acts on, so the subtree would be handed to `eval_expr` and
+    /// lifted with `Tangent::Zero`: a silently flat row for a residual that
+    /// genuinely moves.
     ///
-    /// The allocation-free shape wants a `contains_value_ref_matching`
-    /// predicate on `CompiledExpr` itself, beside the traversal it must mirror;
-    /// restating those 26 arms here would be the same defect one level down.
+    /// Those dependency semantics live on `CompiledExpr` in reify-ir and are
+    /// deliberately not restated here: a second copy of its arms one level
+    /// down would drift from the first.
     pub fn depends_on_seed(&self, expr: &CompiledExpr) -> bool {
         if let Some(hit) = self.depends.borrow().get(&expr.content_hash) {
             return *hit;
         }
-        let answer = expr.collect_value_refs().iter().any(|id| self.index.contains_key(id));
+        let answer = expr.contains_value_ref_matching(|id| self.index.contains_key(id));
         self.depends.borrow_mut().insert(expr.content_hash, answer);
         answer
     }
@@ -337,7 +335,7 @@ impl DualEnv {
     /// tangent — and it is what keeps "bindings only ever GROW" true, which is
     /// what the `carries` memo's permanent-`true` rule rests on.
     ///
-    /// Uses `collect_value_refs` rather than `expr.walk` for the reason
+    /// Uses `contains_value_ref_matching` rather than `expr.walk` for the reason
     /// [`Seeds::depends_on_seed`] states: the two traversals disagree on
     /// `Lambda`, and this predicate's `false` also gates the fast path.
     fn carries_tangent(&self, expr: &CompiledExpr) -> bool {
@@ -349,7 +347,7 @@ impl DualEnv {
         {
             return hit;
         }
-        let answer = expr.collect_value_refs().iter().any(|id| self.bindings.contains_key(id));
+        let answer = expr.contains_value_ref_matching(|id| self.bindings.contains_key(id));
         self.carries.borrow_mut().insert(expr.content_hash, (self.generation, answer));
         answer
     }
