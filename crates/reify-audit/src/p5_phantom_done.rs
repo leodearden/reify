@@ -1629,10 +1629,11 @@ fn build_high_finding(meta: &TaskMetadata, missing: &[String], summary: &str) ->
 /// criteria): real jcodemunch substrate wired, non-vacuous live sweep,
 /// measured FP rate ≤ 5%. Per task 4141 live-corpus FP validation.
 ///
-/// When this pass examines nothing — `get_changed_symbols` failed, returned
-/// an empty slice, or every symbol it returned had an unlocatable
-/// declaration — a stderr vacuous breadcrumb is emitted via
-/// [`h2_vacuous_breadcrumb`] (task 4144).
+/// A FAILED `get_changed_symbols` query yields one Low
+/// [`Pattern::P5LivePathUnexamined`] ([`live_path_unexamined`]), as P1 does.
+/// An answered query that left nothing to examine — an empty slice, or every
+/// symbol with an unlocatable declaration — gets a stderr vacuous breadcrumb
+/// via [`h2_vacuous_breadcrumb`] (task 4144).
 fn check_live_path_stranded(ctx: &AuditContext, meta: &TaskMetadata) -> Vec<Finding> {
     // Cross-crate gate: requires >=2 distinct crates/<name>/ roots.
     if crate_root_count(&meta.files) < 2 {
@@ -1645,15 +1646,20 @@ fn check_live_path_stranded(ctx: &AuditContext, meta: &TaskMetadata) -> Vec<Find
     let since_sha = format!("{commit}^1");
     let until_sha = commit;
 
-    let answer = ctx.jcodemunch.get_changed_symbols(&since_sha, until_sha);
-    if let Some(msg) =
-        h2_vacuous_breadcrumb(answer.as_deref(), &meta.task_id, &since_sha, until_sha)
-    {
+    let symbols = match ctx.jcodemunch.get_changed_symbols(&since_sha, until_sha) {
+        Ok(symbols) => symbols,
+        Err(failure) => {
+            return vec![live_path_unexamined(
+                &meta.task_id,
+                &since_sha,
+                until_sha,
+                &failure,
+            )];
+        }
+    };
+    if let Some(msg) = h2_vacuous_breadcrumb(&symbols, &meta.task_id, &since_sha, until_sha) {
         eprintln!("{msg}");
     }
-    let Ok(symbols) = answer else {
-        return vec![];
-    };
     let mut findings = Vec::new();
     for symbol in symbols {
         // Same three-state reading as p1_producer_orphan: an unlocatable
@@ -1691,13 +1697,36 @@ fn check_live_path_stranded(ctx: &AuditContext, meta: &TaskMetadata) -> Vec<Find
     findings
 }
 
+/// The finding for a cross-crate done task H2 could not examine because its
+/// `get_changed_symbols` query failed. Low, so it never moves the exit code,
+/// and worded so that the task's lack of `P5LivePathStranded` findings
+/// cannot be read as a clean result. `evidence` is empty: the failed query
+/// returned no symbol or file to cite.
+fn live_path_unexamined(
+    task_id: &str,
+    since_sha: &str,
+    until_sha: &str,
+    failure: &JCodemunchCallFailed,
+) -> Finding {
+    Finding {
+        pattern: Pattern::P5LivePathUnexamined,
+        severity: Severity::Low,
+        task_id: task_id.to_string(),
+        summary: format!(
+            "live-path-unexamined: H2 could not examine done task {task_id}: \
+             the {since_sha}..{until_sha} query failed ({failure}); zero \
+             live-path-stranded findings for this task are not a clean result \
+             — re-run once jcodemunch answers"
+        ),
+        evidence: vec![],
+    }
+}
+
 /// Returns a `reify-audit:` prefixed stderr breadcrumb message when H2's
 /// per-symbol pass examined NOTHING, so operators can distinguish a vacuous
-/// sweep from a legitimately clean corpus. Three ways in, each with its own
+/// sweep from a legitimately clean corpus. Two ways in, each with its own
 /// clause because each has its own remedy:
 ///
-/// - The `get_changed_symbols` query failed ([`JCodemunchCallFailed`]) — the
-///   range went unexamined; re-run once jcodemunch answers.
 /// - `get_changed_symbols` returned nothing — jcodemunch is unwired, or the
 ///   range really does introduce no symbol.
 /// - Symbols arrived but not one declaration was locatable
@@ -1709,44 +1738,28 @@ fn check_live_path_stranded(ctx: &AuditContext, meta: &TaskMetadata) -> Vec<Find
 /// annotation needed). Mirrors the `Option<String>`-diagnostic pattern from
 /// `jcodemunch_client.rs::read_source_lines_for_enrichment`.
 fn h2_vacuous_breadcrumb(
-    answer: Result<&[ChangedSymbol], &JCodemunchCallFailed>,
+    symbols: &[ChangedSymbol],
     task_id: &str,
     since_sha: &str,
     until_sha: &str,
 ) -> Option<String> {
-    let cause = match answer {
-        Err(failure) => format!(
-            "{since_sha}..{until_sha} went unexamined because the query failed \
-             ({failure})"
-        ),
-        Ok(symbols) => vacuous_answer_cause(symbols, since_sha, until_sha)?,
+    let cause = if symbols.is_empty() {
+        format!(
+            "get_changed_symbols returned empty for {since_sha}..{until_sha} \
+             (corpus clean OR jcodemunch not wired / NoopJCodemunchOps)"
+        )
+    } else {
+        let unlocatable = crate::wholly_unlocatable_count(symbols)?;
+        format!(
+            "all {unlocatable} symbol(s) from {since_sha}..{until_sha} had an \
+             unlocatable declaration and were skipped unexamined (jcodemunch \
+             substrate degraded, not a clean corpus)"
+        )
     };
     Some(format!(
         "reify-audit: H2 (live-path-stranded) vacuous for task {task_id}: \
          {cause} — H2 produced no findings"
     ))
-}
-
-/// The cause clause for an ANSWERED query that left nothing to examine, or
-/// `None` when at least one symbol was examinable.
-fn vacuous_answer_cause(
-    symbols: &[ChangedSymbol],
-    since_sha: &str,
-    until_sha: &str,
-) -> Option<String> {
-    if symbols.is_empty() {
-        Some(format!(
-            "get_changed_symbols returned empty for {since_sha}..{until_sha} \
-             (corpus clean OR jcodemunch not wired / NoopJCodemunchOps)"
-        ))
-    } else {
-        let unlocatable = crate::wholly_unlocatable_count(symbols)?;
-        Some(format!(
-            "all {unlocatable} symbol(s) from {since_sha}..{until_sha} had an \
-             unlocatable declaration and were skipped unexamined (jcodemunch \
-             substrate degraded, not a clean corpus)"
-        ))
-    }
 }
 
 /// Count the number of distinct `crates/<name>/` roots referenced by `files`.
@@ -1785,7 +1798,7 @@ mod tests {
     #[test]
     fn h2_vacuous_breadcrumb_fires_when_empty_and_is_silent_once_a_symbol_is_examined() {
         // Empty slice → Some(msg) containing the task id and "vacuous".
-        let result = h2_vacuous_breadcrumb(Ok(&[]), "4144", "abc123^1", "abc123");
+        let result = h2_vacuous_breadcrumb(&[], "4144", "abc123^1", "abc123");
         let msg = result.expect("expected Some for empty symbols slice");
         assert!(
             msg.contains("4144"),
@@ -1806,7 +1819,7 @@ mod tests {
             // path entirely.
             suppression: Some(DeclSuppression::default()),
         };
-        let result = h2_vacuous_breadcrumb(Ok(&[sym]), "4144", "abc123^1", "abc123");
+        let result = h2_vacuous_breadcrumb(&[sym], "4144", "abc123^1", "abc123");
         assert!(
             result.is_none(),
             "expected None once a declaration was examined; got: {result:?}"
@@ -1832,7 +1845,7 @@ mod tests {
         };
         let symbols = vec![unlocatable("alpha"), unlocatable("beta")];
 
-        let msg = h2_vacuous_breadcrumb(Ok(&symbols), "4144", "abc123^1", "abc123")
+        let msg = h2_vacuous_breadcrumb(&symbols, "4144", "abc123^1", "abc123")
             .expect("an all-unlocatable sweep must produce a breadcrumb");
         assert!(
             msg.contains("4144") && msg.contains("vacuous"),
@@ -1859,44 +1872,9 @@ mod tests {
             },
         ];
         assert_eq!(
-            h2_vacuous_breadcrumb(Ok(&mixed), "4144", "abc123^1", "abc123"),
+            h2_vacuous_breadcrumb(&mixed, "4144", "abc123^1", "abc123"),
             None,
             "a sweep that examined even one declaration is not vacuous"
-        );
-    }
-
-    /// The fourth state: the query itself FAILED. That is neither "corpus
-    /// clean" nor "not wired", so the breadcrumb must name the failure and
-    /// the range it left unexamined, and must not offer the empty answer's
-    /// two explanations.
-    #[test]
-    fn h2_vacuous_breadcrumb_names_a_failed_query_rather_than_a_clean_corpus() {
-        let failure = JCodemunchCallFailed {
-            tool: "get_changed_symbols",
-            detail: "read body: timed out reading response".to_string(),
-        };
-        let msg = h2_vacuous_breadcrumb(Err(&failure), "4144", "abc123^1", "abc123")
-            .expect("a failed query must produce a breadcrumb");
-        assert!(
-            msg.contains("4144") && msg.contains("vacuous"),
-            "breadcrumb must carry the task id and name the sweep vacuous; got: {msg}"
-        );
-        assert!(
-            msg.contains("abc123^1..abc123"),
-            "breadcrumb must name the range left unexamined; got: {msg}"
-        );
-        assert!(
-            msg.contains("timed out reading response"),
-            "breadcrumb must carry the failure detail; got: {msg}"
-        );
-        assert!(
-            !msg.contains("corpus clean OR jcodemunch not wired"),
-            "a failed query must not be explained as an empty answer; got: {msg}"
-        );
-        assert_eq!(
-            msg.lines().count(),
-            1,
-            "breadcrumb must stay one line; got: {msg:?}"
         );
     }
 

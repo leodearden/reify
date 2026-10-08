@@ -94,8 +94,8 @@ pub enum Severity {
 /// - `P5PhantomDone` — phantom-done: commit provenance cannot be corroborated.
 /// - `P2ConsumerStub` — consumer task with stub markers in changed lines.
 /// - `P1ProducerOrphan` — producer with no non-test workspace callers.
-/// - `P1TaskUnexamined` — a done task P1 could not examine because its
-///   `get_changed_symbols` query failed.
+/// - `P1TaskUnexamined` / `P5LivePathUnexamined` — a done task P1 / P5 H2
+///   could not examine because its `get_changed_symbols` query failed.
 /// - `P5MetadataFilesGitignored` — metadata-hygiene: gitignored paths in
 ///   `metadata.files` that should be stripped. Complement to `P5PhantomDone`
 ///   (medium-severity cleanliness signal, not a phantom-done).
@@ -164,6 +164,12 @@ pub enum Pattern {
     /// See task 4140 / esc-4137-196 and
     /// `docs/architecture-audit/f-infra-design.md` §5 P5.
     P5LivePathStranded,
+    /// P5 — live-path-unexamined: a cross-crate `done` task that H2 could not
+    /// examine because its `get_changed_symbols` query failed. H2's
+    /// counterpart of [`Pattern::P1TaskUnexamined`], for the same reason:
+    /// always Low, so it never moves the exit code, and its presence stops
+    /// the task's zero `P5LivePathStranded` findings from reading as clean.
+    P5LivePathUnexamined,
     /// PTODO — TODO-tracking-invariant: a TODO-family marker that is not backed
     /// by a *live* canonical `#NNNN` task citation. The §8.3 finding `kind` is
     /// carried as a stable summary prefix rather than a per-kind variant. Three

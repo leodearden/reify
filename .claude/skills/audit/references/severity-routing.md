@@ -10,9 +10,9 @@ One row per `reify-audit --pattern` token, the CLI vocabulary defined in `reify_
 
 | Token | `Finding.pattern` value(s) | Default sweep | `Finding.task_id` carries | Routing notes |
 |---|---|---|---|---|
-| `P1` | `P1ProducerOrphan`, `P1TaskUnexamined` | yes | task id | §2 P1 template; §2 P1TaskUnexamined note |
+| `P1` | `P1ProducerOrphan`, `P1TaskUnexamined` | yes | task id | §2 P1 template; §2 unexamined-task note |
 | `P2` | `P2ConsumerStub` | yes | task id | §2 P2 template |
-| `P5` | `P5PhantomDone`, `P5MetadataFilesGitignored`, `P5TestsAssertEmpty`, `P5LivePathStranded` | yes | task id | §2 P5 note |
+| `P5` | `P5PhantomDone`, `P5MetadataFilesGitignored`, `P5TestsAssertEmpty`, `P5LivePathStranded`, `P5LivePathUnexamined` | yes | task id | §2 P5 note; §2 unexamined-task note |
 | `PTODO` | `PTodo` | yes | repo path for the structural and liveness lanes, which include every High kind; task id for the inverse lane (`task-cites-deleted-path` / `task-cites-renamed-path`) | §2 PTODO |
 | `PDSSENTINEL` | `PDsSentinel` | yes | repo path | §2 PDSSENTINEL |
 | `PDEAD` | `PDeadCode` | no | empty string | §2 P-* note |
@@ -32,7 +32,7 @@ One row per `reify-audit --pattern` token, the CLI vocabulary defined in `reify_
 |----------|--------|------|------------|
 | **High** | Escalate (advisory, non-blocking) | `mcp__escalation__escalate_info` | `task_id=<subject>` (see below), `agent_role="audit"`, `category="risk_identified"`, `summary="[<finding.pattern>] <finding.task_id>: <finding.summary>"`, `detail=<json of finding.evidence>`, `terminal_state_is_the_bug=True` |
 | **Medium** | File deferred follow-up task (with dedupe) | `mcp__fused-memory__submit_task` | `planning_mode=True` (synchronous, curator-bypassing); see §2 for title template and metadata |
-| **Low** | Log into per-run JSON only | _(none)_ | No side effects; `action_taken: "logged"`. **PDEAD, PUNTESTED, and PLAYER findings are always Low** — they are never escalated, never auto-filed, and never promoted to Medium. **`P1TaskUnexamined` is always Low** too, and likewise never filed or escalated (§2 P1TaskUnexamined note). **PTODO findings are severity-split by kind (task η, #4559):** a High kind escalates and every other kind files a task. The High kinds are listed once, in `references/modes.md` §4 PTODO notes. See §2 for PTODO title template and per-kind routing. |
+| **Low** | Log into per-run JSON only | _(none)_ | No side effects; `action_taken: "logged"`. **PDEAD, PUNTESTED, and PLAYER findings are always Low** — they are never escalated, never auto-filed, and never promoted to Medium. **`P1TaskUnexamined` and `P5LivePathUnexamined` are always Low** too, and likewise never filed or escalated (§2 unexamined-task note). **PTODO findings are severity-split by kind (task η, #4559):** a High kind escalates and every other kind files a task. The High kinds are listed once, in `references/modes.md` §4 PTODO notes. See §2 for PTODO title template and per-kind routing. |
 
 ### High severity — escalation details
 
@@ -104,7 +104,9 @@ mcp__fused-memory__submit_task(
 
 **P1/P2 templates:** Substitute `<symbol>` with the symbol name from `finding.evidence` (first reference that names the symbol, or fall back to `finding.summary` if not available). Substitute `<id>` with `finding.task_id`.
 
-**P1TaskUnexamined note:** the P1 template applies to `P1ProducerOrphan` only. A `P1TaskUnexamined` finding means P1 could not examine that done task because its `get_changed_symbols` query failed (the summary names the range and the failure). It is always Low and logged, never filed or escalated. Its remedy is a re-run once the jcodemunch serve answers, not a `Wire <symbol> consumer` task: there is no symbol to wire. Its presence is what stops such a run from reading as a clean P1 sweep.
+**Unexamined-task note (`P1TaskUnexamined`, `P5LivePathUnexamined`):** the P1 template applies to `P1ProducerOrphan` only. Each of these findings means its detector (P1, or P5's H2 live-path pass) could not examine that done task because its `get_changed_symbols` query failed (the summary names the range and the failure). They are always Low and logged, never filed or escalated. The remedy is a re-run once the jcodemunch serve answers, not a `Wire <symbol> consumer` task: there is no symbol to wire. Their presence is what stops such a run from reading as a clean P1 or H2 sweep.
+
+**Expected volume:** one finding per task whose query failed. P1 queries every done task with a commit that survives its foundation and pending-consumer guards, and H2 every done cross-crate task with a commit, so a serve that stops answering mid-sweep yields one `P1TaskUnexamined` for each remaining P1 task plus one `P5LivePathUnexamined` for each remaining cross-crate task, each with its own stderr breadcrumb. A serve that hangs rather than refuses costs the client's HTTP timeout on every one of those queries. Read a run of them as ONE event, the serve going away, and re-run once; do not triage them per task.
 
 **P5 severity note:** P5 (phantom-done) findings are **High-only or Low** in the periodic sweep:
 - High: verified phantom-done (task status=done + missing metadata evidence).

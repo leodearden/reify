@@ -118,6 +118,7 @@ mod tests {
             Pattern::PLayerViolation,
             Pattern::P5TestsAssertEmpty,
             Pattern::P5LivePathStranded,
+            Pattern::P5LivePathUnexamined,
             Pattern::PTodo,
             Pattern::PDsSentinel,
             Pattern::PDiag,
@@ -137,6 +138,7 @@ mod tests {
                 Pattern::PLayerViolation => {}
                 Pattern::P5TestsAssertEmpty => {}
                 Pattern::P5LivePathStranded => {}
+                Pattern::P5LivePathUnexamined => {}
                 Pattern::PTodo => {}
                 Pattern::PDsSentinel => {}
                 Pattern::PDiag => {}
@@ -3569,6 +3571,103 @@ mod tests {
                 .any(|f| f.summary.contains("unlocatable_helper")),
             "a symbol whose declaration was never located must not be stranded \
              — nothing read its opt-outs; got {h2_findings:?}",
+        );
+    }
+
+    /// H2's failed query: a cross-crate done task whose `get_changed_symbols`
+    /// query FAILS was not examined, so its zero `P5LivePathStranded`
+    /// findings must not read as clean. It yields exactly one Low
+    /// `P5LivePathUnexamined` naming the range and the failure, the same
+    /// contract P1 keeps with `P1TaskUnexamined`.
+    #[test]
+    fn h2_failed_changed_symbols_reports_the_task_unexamined() {
+        let conn = seed_db();
+        insert_task_completed_event(&conn, "H2FP5");
+
+        let mut git = MockGitOps::new();
+        git.set_diff_changed_paths(
+            "main",
+            "h2fp5_commit",
+            vec![
+                "crates/reify-compiler/src/compile.rs".to_string(),
+                "crates/reify-eval/src/lib.rs".to_string(),
+            ],
+        );
+        git.set_log_grep("main", "H2FP5", vec![]);
+
+        let mut task_metadata = HashMap::new();
+        task_metadata.insert(
+            "H2FP5".to_string(),
+            TaskMetadata {
+                task_id: "H2FP5".to_string(),
+                status: "done".to_string(),
+                // Two distinct crates/<name>/ roots satisfy the cross-crate gate.
+                files: vec![
+                    "crates/reify-compiler/src/compile.rs".to_string(),
+                    "crates/reify-eval/src/lib.rs".to_string(),
+                ],
+                done_provenance: Some(DoneProvenance {
+                    kind: Some("merged".to_string()),
+                    commit: Some("h2fp5_commit".to_string()),
+                    note: None,
+                }),
+                title: "Cross-crate whose changed-symbols query fails".to_string(),
+                prd: None,
+                consumer_ref: None,
+                audit_foundation: None,
+                done_at: None,
+            },
+        );
+
+        let mut jc = MockJCodemunchOps::new();
+        jc.fail_changed_symbols(
+            "h2fp5_commit^1",
+            "h2fp5_commit",
+            "read body: timed out reading response",
+        );
+
+        let ctx = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata,
+            target_task_id: None,
+            window: None,
+            now: None,
+            producer_branch: None,
+        };
+
+        let findings = p5_phantom_done::check(&ctx);
+        assert!(
+            !findings
+                .iter()
+                .any(|f| f.pattern == Pattern::P5LivePathStranded),
+            "a failed query examined no symbol, so nothing can be stranded; \
+             got {findings:?}",
+        );
+        let unexamined: Vec<_> = findings
+            .iter()
+            .filter(|f| f.pattern == Pattern::P5LivePathUnexamined)
+            .collect();
+        assert_eq!(
+            unexamined.len(),
+            1,
+            "the failed query must yield exactly one P5LivePathUnexamined; \
+             got {findings:?}",
+        );
+        let f = unexamined[0];
+        assert_eq!(f.severity, Severity::Low, "Low keeps the exit code neutral");
+        assert_eq!(f.task_id, "H2FP5");
+        assert!(
+            f.summary.contains("h2fp5_commit^1..h2fp5_commit"),
+            "the summary must name the range that went unexamined; got {:?}",
+            f.summary
+        );
+        assert!(
+            f.summary.contains("timed out reading response"),
+            "the summary must carry the failure detail; got {:?}",
+            f.summary
         );
     }
 
