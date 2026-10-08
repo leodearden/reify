@@ -209,8 +209,7 @@ _EMITTER = (
     '$0 == frame_end { print frame_end _lexer_open_state(); _lexer_reset(); next }\n'
     '{ print _strip_line($0) }\n'
 )
-_OPEN_STATES = {"": None, "block_comment": "block_comment",
-                "raw_string": "raw_string", "string": "string"}
+_OPEN_STATES = frozenset({"", "block_comment", "raw_string", "string"})
 
 
 def _cannot_lex(message):
@@ -220,34 +219,62 @@ def _cannot_lex(message):
     sys.exit(3)
 
 
-def lex_code_views(sources):
-    """Lex every `(path, lines)` in `sources` through ONE awk process running
-    the shared lexer; return `[(code_view, open_state), ...]` in that order.
+class _FrameError(Exception):
+    """The lexer's framed output does not match the files framed into it."""
 
-    `code_view` has one row per line. `open_state` is None when the file ends
-    cleanly, else "block_comment" / "raw_string" / "string": a construct left
-    open at EOF blanks every row after its open point, which can hide a later
-    `#[cfg(test)]` item's header shape SILENTLY (no brace count goes
-    non-zero), so the caller warns on it separately.
 
-    Protocol: awk is fed Python's OWN splitlines() lines, each file followed
-    by a line holding only _FRAME_END, so awk's row numbering cannot drift
-    from Python's (awk alone splits on newline only). awk prints one code row
-    per line and, at each separator, _FRAME_END followed by the open state,
-    then resets the lexer so no state leaks into the next file. One process
-    serves the whole corpus; one awk per file was measured at ~20s wall. The
-    frame count and every file's row count are checked against the input: a
-    mismatch, an unknown state or a failed awk exits 3.
-    """
-    if not sources:
-        return []
-    program = os.environ.get("RUST_LEXER_AWK", "")
-    if not program:
-        _cannot_lex("RUST_LEXER_AWK (the shared Rust lexer) is empty")
-    stream = "".join(
+def _framed_stream(sources):
+    """awk's input: Python's OWN splitlines() lines of each `(path, lines)`,
+    each file followed by a line holding only _FRAME_END. Feeding Python's
+    lines means awk's row numbering cannot drift from Python's (awk alone
+    splits on newline only)."""
+    return "".join(
         "".join(line + "\n" for line in lines) + _FRAME_END + "\n"
         for _, lines in sources
     )
+
+
+def _parse_frames(rows, sources):
+    """Split the lexer's output `rows` back into one `(code_view, open_state)`
+    per `(path, lines)` in `sources`, in order.
+
+    awk prints one code row per input line and, at each separator, _FRAME_END
+    followed by the open state ("" when the file ends cleanly). The frame
+    count and every file's row count must match the input; a mismatch or an
+    unknown state raises _FrameError naming the file and both counts.
+    """
+    views, code = [], []
+    for row in rows:
+        if not row.startswith(_FRAME_END):
+            code.append(row)
+            continue
+        state = row[len(_FRAME_END):]
+        if state not in _OPEN_STATES:
+            raise _FrameError(f"shared Rust lexer reported an unknown open state {state!r}")
+        views.append((code, state or None))
+        code = []
+    for (path, lines), (view, _) in zip(sources, views):
+        if len(view) != len(lines):
+            raise _FrameError(f"shared Rust lexer returned {len(view)} code rows for "
+                              f"the {len(lines)} lines of {path}")
+    if code or len(views) != len(sources):
+        unframed = sources[len(views)][0] if len(views) < len(sources) else "none"
+        raise _FrameError(f"shared Rust lexer returned {len(views)} file frames for "
+                          f"{len(sources)} files (first unframed: {unframed})")
+    return views
+
+
+def _run_lexer(stream):
+    """Run $RUST_LEXER_AWK plus _EMITTER over `stream` in ONE awk process and
+    return its output rows; one awk per file was measured at ~20s wall. An
+    empty lexer, a failed start or a non-zero exit is exit 3.
+
+    Deliberately not pinned to LC_ALL=C, though awk lexes faster there: byte
+    mode splits a non-ASCII char literal such as '—', so its quotes read as
+    lifetimes, and in `['é','{']` the `{` then reaches brace counting."""
+    program = os.environ.get("RUST_LEXER_AWK", "")
+    if not program:
+        _cannot_lex("RUST_LEXER_AWK (the shared Rust lexer) is empty")
     try:
         proc = subprocess.run(
             ["awk", "-v", f"frame_end={_FRAME_END}", program + "\n" + _EMITTER],
@@ -261,25 +288,28 @@ def lex_code_views(sources):
     rows = proc.stdout.split("\n")
     if rows[-1] == "":
         rows.pop()
-    views, code = [], []
-    for row in rows:
-        if not row.startswith(_FRAME_END):
-            code.append(row)
-            continue
-        state = row[len(_FRAME_END):]
-        if state not in _OPEN_STATES:
-            _cannot_lex(f"shared Rust lexer reported an unknown open state {state!r}")
-        views.append((code, _OPEN_STATES[state]))
-        code = []
-    for (path, lines), (view, _) in zip(sources, views):
-        if len(view) != len(lines):
-            _cannot_lex(f"shared Rust lexer returned {len(view)} code rows for "
-                        f"the {len(lines)} lines of {path}")
-    if code or len(views) != len(sources):
-        unframed = sources[len(views)][0] if len(views) < len(sources) else "none"
-        _cannot_lex(f"shared Rust lexer returned {len(views)} file frames for "
-                    f"{len(sources)} files (first unframed: {unframed})")
-    return views
+    return rows
+
+
+def lex_code_views(sources):
+    """Lex every `(path, lines)` in `sources` through the shared lexer; return
+    `[(code_view, open_state), ...]` in that order.
+
+    `code_view` has one row per line. `open_state` is None when the file ends
+    cleanly, else "block_comment" / "raw_string" / "string": a construct left
+    open at EOF blanks every row after its open point, which can hide a later
+    `#[cfg(test)]` item's header shape SILENTLY (no brace count goes
+    non-zero), so the caller warns on it separately. The lexer is reset at
+    each file boundary, so no state leaks into the next file. Output that
+    does not frame back onto `sources` exits 3.
+    """
+    if not sources:
+        return []
+    rows = _run_lexer(_framed_stream(sources))
+    try:
+        return _parse_frames(rows, sources)
+    except _FrameError as e:
+        _cannot_lex(str(e))
 
 
 def mask_cfg_test(lines, code):
