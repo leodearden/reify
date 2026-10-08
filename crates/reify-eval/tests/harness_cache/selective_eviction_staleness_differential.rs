@@ -65,14 +65,24 @@ fn canonical_shape(records: &[GeometryOpRecord], handle: GeometryHandleId) -> St
             width,
             height,
             depth,
-        } => format!("box({width:?}, {height:?}, {depth:?})"),
-        GeometryOp::Cylinder { radius, height } => format!("cylinder({radius:?}, {height:?})"),
+        } => format!("box({}, {}, {})", si(width), si(height), si(depth)),
+        GeometryOp::Cylinder { radius, height } => {
+            format!("cylinder({}, {})", si(radius), si(height))
+        }
         GeometryOp::Union { left, right } => format!("union({}, {})", parent(left), parent(right)),
         GeometryOp::Translate { target, dx, dy, dz } => {
             format!("translate({}, {dx}, {dy}, {dz})", parent(target))
         }
         other => panic!("canonical_shape does not cover {other:?}; extend it"),
     }
+}
+
+/// A numeric op argument by its SI value. Both regimes compile the same
+/// module, so an argument's dimension cannot differ between them.
+fn si(value: &Value) -> f64 {
+    value
+        .as_f64()
+        .unwrap_or_else(|| panic!("non-numeric op argument {value:?}"))
 }
 
 /// What one regime served for one realization after a build.
@@ -85,7 +95,15 @@ struct Served {
     resident: bool,
 }
 
-type Observation = BTreeMap<RealizationNodeId, Served>;
+/// `(entity, index)` of a realization: an ordered stand-in for
+/// `RealizationNodeId`, which is not `Ord`.
+type RealizationKey = (String, u32);
+
+fn key_of(rid: &RealizationNodeId) -> RealizationKey {
+    (rid.entity.clone(), rid.index)
+}
+
+type Observation = BTreeMap<RealizationKey, Served>;
 
 /// One engine plus its kernel's op log.
 struct Regime {
@@ -107,7 +125,8 @@ impl Regime {
     }
 
     fn terminal_handle(&self, entity: &str, tol: f64) -> Option<KernelHandle> {
-        self.engine.test_terminal_handle(entity, ReprKind::BRep, tol)
+        self.engine
+            .test_terminal_handle(entity, ReprKind::BRep, tol)
     }
 
     fn demanded_tol(&self, entity: &str) -> Option<f64> {
@@ -124,7 +143,11 @@ impl Regime {
             .expect("build_snapshot needs a prior eval");
         let records = self.ops.lock().unwrap().clone();
         let tallies = self.engine.last_dispatch_count_by_realization();
-        let graph = &self.engine.snapshot().expect("a built engine has a snapshot").graph;
+        let graph = &self
+            .engine
+            .snapshot()
+            .expect("a built engine has a snapshot")
+            .graph;
         graph
             .realizations
             .iter()
@@ -139,16 +162,20 @@ impl Regime {
                         }) => *id,
                         other => panic!("{rid}: geometry cell {cell} holds {other:?}"),
                     },
-                    None => cached
-                        .unwrap_or_else(|| panic!("{rid}: no geometry cell and no cached terminal"))
-                        .id,
+                    None => {
+                        cached
+                            .unwrap_or_else(|| {
+                                panic!("{rid}: no geometry cell and no cached terminal")
+                            })
+                            .id
+                    }
                 };
                 let served = Served {
                     shape: canonical_shape(&records, handle),
                     dispatched: tallies.get(rid).copied().unwrap_or(0),
                     resident: cached.map(|h| h.id) == Some(handle),
                 };
-                (rid.clone(), served)
+                (key_of(rid), served)
             })
             .collect()
     }
@@ -157,12 +184,15 @@ impl Regime {
 /// The per-realization verdict of one post-edit rebuild.
 struct Rebuilt {
     selective: Observation,
-    expected_hits: BTreeSet<RealizationNodeId>,
+    expected_hits: BTreeSet<RealizationKey>,
 }
 
 impl Rebuilt {
     fn hit_entities(&self) -> BTreeSet<String> {
-        self.expected_hits.iter().map(|r| r.entity.clone()).collect()
+        self.expected_hits
+            .iter()
+            .map(|(entity, _)| entity.clone())
+            .collect()
     }
 }
 
@@ -205,7 +235,7 @@ impl RegimePair {
             assert!(
                 self.selective_before
                     .iter()
-                    .any(|(rid, s)| rid.entity == *entity && s.resident),
+                    .any(|((e, _), s)| e == entity && s.resident),
                 "premise: {entity} must be cache-resident before the edit; observed {:#?}",
                 self.selective_before
             );
@@ -265,12 +295,12 @@ impl RegimePair {
             let base = &baseline[rid];
             if sel.shape != base.shape {
                 violations.push(format!(
-                    "(i) {rid}: selective serves {} but the baseline serves {}",
+                    "(i) {rid:?}: selective serves {} but the baseline serves {}",
                     sel.shape, base.shape
                 ));
             }
             if base.dispatched == 0 {
-                violations.push(format!("(iii) {rid}: the baseline did not re-dispatch"));
+                violations.push(format!("(iii) {rid:?}: the baseline did not re-dispatch"));
             }
             let was_resident = self.selective_before.get(rid).is_some_and(|s| s.resident);
             let content_moved = self
@@ -284,7 +314,7 @@ impl RegimePair {
             let observed_miss = sel.dispatched > 0;
             if expect_miss != observed_miss {
                 violations.push(format!(
-                    "(ii) {rid}: expected {} but observed {} (resident before: {was_resident}, \
+                    "(ii) {rid:?}: expected {} but observed {} (resident before: {was_resident}, \
                      content moved: {content_moved}, dispatched: {})",
                     if expect_miss { "MISS" } else { "HIT" },
                     if observed_miss { "MISS" } else { "HIT" },
@@ -516,13 +546,12 @@ fn tolerance_interplay_survivors_keep_partial_order_lookup() {
     pair.both_then_build(|engine| engine.activate_purpose("mfg_b_tight", "PartB"));
     pair.assert_resident(&["PartA", "PartB"]);
     let survivor = |pair: &RegimePair, tol: f64| pair.selective.terminal_handle("PartB", tol);
-    let survivor_len =
-        |pair: &RegimePair| {
-            pair.selective
-                .engine
-                .realization_cache()
-                .bucket_len("PartB", ReprKind::BRep, NO_OPTIONS)
-        };
+    let survivor_len = |pair: &RegimePair| {
+        pair.selective
+            .engine
+            .realization_cache()
+            .bucket_len("PartB", ReprKind::BRep, NO_OPTIONS)
+    };
     let (tight, loose) = (survivor(&pair, 1e-6), survivor(&pair, 1e-4));
     assert!(
         tight.is_some() && loose.is_some() && tight != loose && survivor_len(&pair) == 2,
@@ -567,7 +596,11 @@ pub structure C {
 }"#;
     let mut pair = RegimePair::new(
         compile_source(SRC),
-        &[("mfg_a", "A", 1e-6), ("mfg_b", "B", 1e-6), ("mfg_c", "C", 1e-6)],
+        &[
+            ("mfg_a", "A", 1e-6),
+            ("mfg_b", "B", 1e-6),
+            ("mfg_c", "C", 1e-6),
+        ],
     );
     pair.assert_resident(&["A", "B", "C"]);
 
