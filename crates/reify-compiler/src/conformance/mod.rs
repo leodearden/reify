@@ -1938,13 +1938,7 @@ fn walk_param_against_arg_type(param_type: &Type, arg_type: &Type, ctx: &mut Wal
             let is_conforming = match arg_ty {
                 Type::Matrix { .. } | Type::Tensor { .. } | Type::Vector { .. } => true,
                 Type::List(_) => list_bottoms_out_numeric(arg_ty),
-                // Scalar-family arg: `Int`, ANY `Scalar { .. }` (dimension- and
-                // rank-blind) or `ScalarParam(_)`. NOT `matrix(…)` / `diag(…)` /
-                // `vec(…)`, which match the nominal arm above. Pinned, one per
-                // leg, by `bare_numeric_literal_at_matrix_param_stays_clean`,
-                // `dimensioned_scalar_at_matrix_param_stays_clean`,
-                // `matching_scalar_at_rank0_tensor_param_stays_clean` and
-                // `scalar_param_at_matrix_param_stays_clean`.
+                // Scalar-family leg; inputs, reason and pins: arm comment above.
                 other => is_numeric_placeholder_leaf(other),
             };
             if !is_conforming {

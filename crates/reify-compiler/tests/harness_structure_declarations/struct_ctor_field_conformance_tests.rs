@@ -1927,7 +1927,9 @@ fn tensor_param_given_vector_stays_clean() {
 // `matrix_builtin_cross_dimension_at_inertia_param_errors_arg_type_mismatch`.
 //
 // One stays-clean fixture per leg below, so deleting or narrowing any leg fails a
-// test by name instead of passing unnoticed.
+// test by name instead of passing unnoticed. A failure names its leg in the
+// label; the legs share ONE predicate, so re-read the arm's comment in
+// `conformance/mod.rs` and spec §4.9 and check the others in the same pass.
 
 const SRC_BARE_NUMERIC_AT_MATRIX_PARAM: &str = r#"module test.bare_numeric_at_matrix
 structure def Body { param inertia : Matrix<3, 3, MomentOfInertia> }
@@ -1945,22 +1947,9 @@ structure def Root {
 /// this param spelling resolves and reaches the arm.
 #[test]
 fn bare_numeric_literal_at_matrix_param_stays_clean() {
-    let module = compile_source_with_stdlib(SRC_BARE_NUMERIC_AT_MATRIX_PARAM);
-    // Non-vacuity guard — see `bare_numeric_literal_at_point_param_stays_clean`.
-    assert!(
-        non_ctor_conformance_errors(&module).is_empty(),
-        "fixture must compile cleanly apart from the ctor-conformance fault under \
-         test, got: {:?}",
-        non_ctor_conformance_errors(&module)
-    );
-    let diags = ctor_conformance_diags(&module);
-    assert!(
-        diags.is_empty(),
-        "a bare numeric literal at a Matrix<3,3,MomentOfInertia> param must stay SILENT — the \
-         `Int` leg of the Matrix/Tensor arm's `is_numeric_placeholder_leaf` branch. If this now \
-         fires, that branch was narrowed or deleted: re-read spec §4.9 and the arm's own \
-         comment in conformance/mod.rs, and check the branch's other legs \
-         (any Type::Scalar {{ .. }}, Type::ScalarParam(_)) at the same time. Got: {diags:#?}"
+    assert_well_formed_and_no_ctor_conformance_diags(
+        SRC_BARE_NUMERIC_AT_MATRIX_PARAM,
+        "Int leg: Matrix<3,3,MomentOfInertia> ← 5",
     );
 }
 
@@ -1983,21 +1972,9 @@ structure def Root {
 /// accept pinned by `matching_scalar_at_rank0_tensor_param_stays_clean`.
 #[test]
 fn dimensioned_scalar_at_matrix_param_stays_clean() {
-    let module = compile_source_with_stdlib(SRC_DIMENSIONED_SCALAR_AT_MATRIX_PARAM);
-    assert!(
-        non_ctor_conformance_errors(&module).is_empty(),
-        "fixture must compile cleanly apart from the ctor-conformance fault under \
-         test, got: {:?}",
-        non_ctor_conformance_errors(&module)
-    );
-    let diags = ctor_conformance_diags(&module);
-    assert!(
-        diags.is_empty(),
-        "a DIMENSIONED scalar at a Matrix<3,3,MomentOfInertia> param is silent today — \
-         `is_numeric_placeholder_leaf` matches any `Type::Scalar {{ .. }}` regardless of \
-         dimension or of the param's rank. If this now fires, the Matrix/Tensor arm's scalar \
-         tolerance has been narrowed: that is a legitimate tightening, but re-read spec §4.9 \
-         and check the rank-0 Tensor accept, which shares the predicate. Got: {diags:#?}"
+    assert_well_formed_and_no_ctor_conformance_diags(
+        SRC_DIMENSIONED_SCALAR_AT_MATRIX_PARAM,
+        "Scalar leg, dimension- and rank-blind: Matrix<3,3,MomentOfInertia> ← 5kg",
     );
 }
 
@@ -2018,22 +1995,9 @@ structure def Root {
 /// ("requires type 'Tensor0x3<Scalar[m]>'").
 #[test]
 fn matching_scalar_at_rank0_tensor_param_stays_clean() {
-    let module = compile_source_with_stdlib(SRC_SCALAR_AT_RANK0_TENSOR_PARAM);
-    assert!(
-        non_ctor_conformance_errors(&module).is_empty(),
-        "fixture must compile cleanly apart from the ctor-conformance fault under \
-         test, got: {:?}",
-        non_ctor_conformance_errors(&module)
-    );
-    let diags = ctor_conformance_diags(&module);
-    assert!(
-        diags.is_empty(),
-        "a matching-dimension scalar at a Tensor<0,3,Length> param is a LEGAL conversion \
-         (type_compat.rs Rule 2a, Q → Tensor<0,_,Q>) and must stay SILENT — the \
-         `Type::Scalar {{ .. }}` leg of the Matrix/Tensor arm's `is_numeric_placeholder_leaf` \
-         branch. If this now fires, that branch was narrowed or deleted and the arm is \
-         rejecting a conversion type_compat.rs allows: re-read Rules 2a/2b before \
-         retargeting. Got: {diags:#?}"
+    assert_well_formed_and_no_ctor_conformance_diags(
+        SRC_SCALAR_AT_RANK0_TENSOR_PARAM,
+        "Scalar leg, a LEGAL conversion (type_compat Rules 2a/2b): Tensor<0,3,Length> ← 5m",
     );
 }
 
@@ -2050,21 +2014,9 @@ fn fwd<Q: Dimension>(x: Scalar<Q>) -> W { W(m: x) }
 /// `conformance/mod.rs` carries the concept.
 #[test]
 fn scalar_param_at_matrix_param_stays_clean() {
-    let module = compile_source_with_stdlib(SRC_SCALAR_PARAM_AT_MATRIX_PARAM);
-    assert!(
-        non_ctor_conformance_errors(&module).is_empty(),
-        "fixture must compile cleanly apart from the ctor-conformance fault under \
-         test, got: {:?}",
-        non_ctor_conformance_errors(&module)
-    );
-    let diags = ctor_conformance_diags(&module);
-    assert!(
-        diags.is_empty(),
-        "a `Type::ScalarParam(_)` arg at a Matrix<3,3,Length> param must stay SILENT — the \
-         `ScalarParam` leg of the Matrix/Tensor arm's `is_numeric_placeholder_leaf` branch; \
-         its dimension is unresolved and decided at instantiation. If this now fires, that \
-         branch was narrowed or deleted: re-read `scalar_param_arg_defers_at_scalar_slot` \
-         and the arm's own comment in conformance/mod.rs. Got: {diags:#?}"
+    assert_well_formed_and_no_ctor_conformance_diags(
+        SRC_SCALAR_PARAM_AT_MATRIX_PARAM,
+        "ScalarParam leg: Matrix<3,3,Length> ← ScalarParam(Q)",
     );
 }
 
@@ -2505,8 +2457,39 @@ fn value_floor_dimensionless_real_param_given_string_still_errors() {
 /// code set only — a fixture may still emit unrelated diagnostics (an
 /// `auto`-resolution warning, an unresolved-name Error) without weakening the
 /// claim, which is exactly what makes the I6 and A3 floors expressible.
+///
+/// That tolerance is why this helper carries no non-vacuity guard. A fixture
+/// that is meant to be error-free uses
+/// [`assert_well_formed_and_no_ctor_conformance_diags`] instead.
 fn assert_no_ctor_conformance_diags(source: &str, label: &str) {
     let module = compile_source_with_stdlib(source);
+    let diags = ctor_conformance_diags(&module);
+    assert!(
+        diags.is_empty(),
+        "{label}: expected ZERO ctor-conformance diagnostics, got: {diags:#?}"
+    );
+}
+
+/// [`assert_no_ctor_conformance_diags`] for a fixture that is meant to be
+/// ERROR-FREE: `source` must also compile with no error outside the
+/// ctor-conformance code set.
+///
+/// That second check is the non-vacuity guard of a stays-clean probe. If the
+/// fixture stopped compiling (a typo, a renamed type, a retired spelling) the
+/// walker might never reach the arg, "zero ctor-conformance diagnostics" would
+/// hold for the wrong reason, and a regression in the arm under test would pass
+/// unnoticed. Compiles `source` once and runs both checks on that module.
+///
+/// Not for a floor whose fixture deliberately carries an unrelated error (I6's
+/// `Type::Error` arg): that one stays on [`assert_no_ctor_conformance_diags`].
+fn assert_well_formed_and_no_ctor_conformance_diags(source: &str, label: &str) {
+    let module = compile_source_with_stdlib(source);
+    let other_errors = non_ctor_conformance_errors(&module);
+    assert!(
+        other_errors.is_empty(),
+        "{label}: fixture must compile cleanly apart from the ctor-conformance fault under \
+         test, got: {other_errors:?}"
+    );
     let diags = ctor_conformance_diags(&module);
     assert!(
         diags.is_empty(),
