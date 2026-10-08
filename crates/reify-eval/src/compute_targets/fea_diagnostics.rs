@@ -37,7 +37,7 @@ pub fn fea_diagnostic_to_core(failure: &FeaFailure, span: Option<SourceSpan>) ->
     let message = failure.message();
     let code = match failure {
         FeaFailure::UnderConstrained { .. } => DiagnosticCode::FeaUnderConstrained,
-        FeaFailure::SingularStiffness { .. } => DiagnosticCode::FeaSingularStiffness,
+        FeaFailure::SingularStiffness(_) => DiagnosticCode::FeaSingularStiffness,
         FeaFailure::NonConvergence { .. } => DiagnosticCode::FeaNonConvergence,
         FeaFailure::NoLoads => DiagnosticCode::FeaNoLoads,
         FeaFailure::LoadOnInterior { .. } => DiagnosticCode::FeaLoadOnInterior,

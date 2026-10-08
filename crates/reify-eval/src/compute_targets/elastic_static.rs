@@ -229,7 +229,7 @@ use super::shell_solve::{
 // Task 2929: FEA diagnostic mapping glue.
 use super::fea_diagnostics::fea_diagnostic_to_core;
 use reify_solver_elastic::{
-    FeaFailure, classify_convergence, classify_degenerate, thin_body_advisory,
+    FeaFailure, classify_convergence, find_degenerate_tet, thin_body_advisory,
 };
 // Task 4802 (R3b-1): structured FEA diagnostic channel.
 use crate::StructuredComputeDetail;
@@ -1038,47 +1038,16 @@ pub fn solve_elastic_static_trampoline(
     }
 
     // ── (6c) Post-solve FEA diagnostics (task 2929) ───────────────────────────
-    //
-    // Near-degenerate element guard: scan tet volumes and emit a FeaSingularStiffness
-    // Error for the element with the smallest volume when it falls below `eps`.
-    //
-    // IMPORTANT SCOPE NOTE: this guard fires only in the narrow window where an
-    // element is near-degenerate yet the CG solver still completed without panicking.
-    // A *genuinely* singular stiffness matrix panics inside `solve_cantilever_fea`
-    // at the `p·Kp > 0` assertion in the CG loop (see the solver contract comment at
-    // ~line 1244 below); such a mesh never reaches this post-solve block.  This guard
-    // therefore does NOT convert all singular-stiffness failures into a clean Failed
-    // outcome — it handles only the marginal near-degenerate case.
-    //
-    // Full coverage (surface min-tet-vol from `CantileverFeaSolve` to avoid the
-    // redundant O(n_tets) scan) is deferred; the per-solve overhead is negligible
-    // for the coarse cantilever mesh used today.
-    {
-        let mut min_tet_vol = f64::INFINITY;
-        let mut min_tet_elem = 0usize;
-        for (elem_id, conn) in fea.tet_connectivity.iter().enumerate() {
-            let phys = [
-                fea.coords[conn[0]],
-                fea.coords[conn[1]],
-                fea.coords[conn[2]],
-                fea.coords[conn[3]],
-            ];
-            let vol = tet_volume_p1(&phys);
-            if vol < min_tet_vol {
-                min_tet_vol = vol;
-                min_tet_elem = elem_id;
-            }
-        }
-        if let Some(failure) = classify_degenerate(min_tet_vol, 1e-12, min_tet_elem) {
-            let sd = failure
-                .structured_detail()
-                .map(|d| vec![StructuredComputeDetail::Fea(d)])
-                .unwrap_or_default();
-            return ComputeOutcome::Failed {
-                diagnostics: vec![fea_diagnostic_to_core(&failure, None)],
-                structured_detail: sd,
-            };
-        }
+    if let Some(degenerate) = find_degenerate_tet(&fea.coords, &fea.tet_connectivity) {
+        let failure = FeaFailure::SingularStiffness(degenerate);
+        let sd = failure
+            .structured_detail()
+            .map(|d| vec![StructuredComputeDetail::Fea(d)])
+            .unwrap_or_default();
+        return ComputeOutcome::Failed {
+            diagnostics: vec![fea_diagnostic_to_core(&failure, None)],
+            structured_detail: sd,
+        };
     }
 
     // Non-convergence advisory: CG did not converge within max_iter iterations.
@@ -13720,7 +13689,9 @@ mod tests {
     /// the reachable trigger: it widens cleanly (P1, stride-4, in-range
     /// indices) so a handle IS selected, and only then does boundary
     /// extraction fail — which is the arm under test. x-extent is 1.0, well
-    /// above `MIN_SOLVE_X_EXTENT`.
+    /// above `MIN_SOLVE_X_EXTENT`. All three tets are positively oriented, so
+    /// the solve's degenerate-tet gate (which rejects a tet inverted against
+    /// the rest of the mesh) passes it.
     fn non_manifold_tet_mesh() -> reify_ir::VolumeMesh {
         reify_ir::VolumeMesh {
             #[rustfmt::skip]
@@ -13733,7 +13704,7 @@ mod tests {
                 1.0, 1.0,  1.0, // 5 third apex
             ],
             connectivity: reify_ir::VolumeConnectivity::Tet {
-                indices: vec![0, 1, 2, 3, 0, 1, 2, 4, 0, 1, 2, 5],
+                indices: vec![0, 1, 2, 3, 1, 0, 2, 4, 0, 1, 2, 5],
                 order: ElementOrderTag::P1,
             },
             normals: None,

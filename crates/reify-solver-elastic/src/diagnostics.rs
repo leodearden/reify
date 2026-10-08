@@ -98,8 +98,9 @@ pub enum FeaDiagnosticDetail {
 pub enum FeaFailure {
     /// Root face auto-clamp model has no user-specified supports.
     UnderConstrained { support_count: usize },
-    /// One or more elements have near-zero volume (degenerate mesh).
-    SingularStiffness { element_id: usize },
+    /// The mesh's worst tet fails the [`MIN_TET_SHAPE_QUALITY`] gate, so its
+    /// stiffness matrix is numerically singular.
+    SingularStiffness(DegenerateTet),
     /// CG solver reached max iterations without converging.
     NonConvergence {
         iterations: usize,
@@ -130,9 +131,9 @@ impl FeaFailure {
                  the root face is auto-clamped but results may not reflect design intent. \
                  Add a FixedSupport or PinnedSupport to constrain the structure."
             ),
-            FeaFailure::SingularStiffness { element_id } => format!(
-                "stiffness matrix is singular: element {element_id} has near-zero volume \
-                 (degenerate mesh). Refine the mesh or check geometry for collapsed elements."
+            FeaFailure::SingularStiffness(d) => format!(
+                "stiffness matrix is singular: {d}. Refine the mesh or check the geometry \
+                 for collapsed or inverted elements."
             ),
             FeaFailure::NonConvergence {
                 iterations,
@@ -181,8 +182,8 @@ impl FeaFailure {
     ///   6-DOF rigid-body null space (see [`DofDirection::all_rigid_body_modes`]).
     ///   A fully-unsupported body always has exactly all 6 free-body modes; partial-
     ///   constraint mode-subset analysis (needing a K null-space solver) is out of scope.
-    /// - `SingularStiffness { element_id }` → [`FeaDiagnosticDetail::ProblemElements`]
-    ///   containing `[ElementId(element_id)]` — the degenerate element to highlight.
+    /// - `SingularStiffness(d)` → [`FeaDiagnosticDetail::ProblemElements`]
+    ///   containing `[ElementId(d.element_id)]` — the degenerate element to highlight.
     /// - `SelectorNoMatch { selector, .. }` → [`FeaDiagnosticDetail::UnresolvedSelector`]
     ///   with `selector_path = selector.clone()`.
     ///
@@ -210,10 +211,10 @@ impl FeaFailure {
                     rigid_body_modes: DofDirection::all_rigid_body_modes().into(),
                 })
             }
-            FeaFailure::SingularStiffness { element_id } => {
-                // Re-wrap the existing element_id into ProblemElements for outline rendering.
+            FeaFailure::SingularStiffness(d) => {
+                // Re-wrap the degenerate element into ProblemElements for outline rendering.
                 Some(FeaDiagnosticDetail::ProblemElements {
-                    ids: vec![ElementId(*element_id)],
+                    ids: vec![ElementId(d.element_id)],
                 })
             }
             FeaFailure::SelectorNoMatch { selector, .. } => {
@@ -235,7 +236,7 @@ impl FeaFailure {
     pub fn is_error(&self) -> bool {
         matches!(
             self,
-            FeaFailure::SingularStiffness { .. }
+            FeaFailure::SingularStiffness(_)
                 | FeaFailure::LoadOnInterior { .. }
                 | FeaFailure::SelectorNoMatch { .. }
         )
@@ -286,22 +287,6 @@ pub fn classify_convergence(
             max_iter,
             final_residual: residual,
         })
-    }
-}
-
-/// Classify a degenerate element.
-///
-/// Returns `Some(FeaFailure::SingularStiffness { element_id })` when
-/// `min_tet_volume < eps`; `None` otherwise.
-pub fn classify_degenerate(
-    min_tet_volume: f64,
-    eps: f64,
-    element_id: usize,
-) -> Option<FeaFailure> {
-    if min_tet_volume < eps {
-        Some(FeaFailure::SingularStiffness { element_id })
-    } else {
-        None
     }
 }
 
@@ -603,39 +588,6 @@ mod tests {
             }
             other => panic!("unexpected result: {:?}", other),
         }
-    }
-
-    // ── classify_degenerate ───────────────────────────────────────────────────
-
-    #[test]
-    fn classify_degenerate_tiny_volume_returns_failure() {
-        let result = classify_degenerate(1e-15, 1e-12, 3);
-        assert!(
-            matches!(result, Some(FeaFailure::SingularStiffness { element_id: 3 })),
-            "tiny tet volume must yield SingularStiffness{{element_id:3}}, got {:?}",
-            result
-        );
-    }
-
-    #[test]
-    fn classify_degenerate_normal_volume_returns_none() {
-        let result = classify_degenerate(1.0, 1e-12, 3);
-        assert!(
-            result.is_none(),
-            "normal tet volume must yield None, got {:?}",
-            result
-        );
-    }
-
-    #[test]
-    fn classify_degenerate_at_eps_returns_none() {
-        // volume == eps is NOT strictly less than eps → None.
-        let result = classify_degenerate(1e-12, 1e-12, 0);
-        assert!(
-            result.is_none(),
-            "volume exactly at eps must yield None (must be strictly <), got {:?}",
-            result
-        );
     }
 
     // ── tet shape quality / find_degenerate_tet ───────────────────────────────
