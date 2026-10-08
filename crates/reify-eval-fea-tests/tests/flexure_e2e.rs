@@ -745,16 +745,13 @@ fn flexures_example_corpus_compiles_and_evals_green() {
              regressed to loading before `std.kinematic`. Got: {compile_errors:?}"
         );
 
-        // (b) Eval-clean, modulo one narrowly-scoped PRE-EXISTING exclusion —
-        // see `is_preexisting_trampoline_fallback` for the measurement that
-        // justifies it.
+        // (b) Eval-clean.
         let mut engine = make_simple_engine();
         let eval_result = engine.eval(&compiled);
         let eval_errors: Vec<_> = eval_result
             .diagnostics
             .iter()
             .filter(|d| d.severity == Severity::Error)
-            .filter(|d| !is_preexisting_trampoline_fallback(&name, &d.message))
             .collect();
         assert!(
             eval_errors.is_empty(),
@@ -764,48 +761,6 @@ fn flexures_example_corpus_compiles_and_evals_green() {
              standing W_FlexureFatigueCheckMissing advisory. Got: {eval_errors:?}"
         );
     }
-}
-
-/// Is this eval diagnostic the KNOWN, PRE-EXISTING `@optimized` compute-trampoline
-/// fallback notice — a defect that predates task #5476 and is unrelated to it?
-///
-/// Tracked as **#5850** (`printer_z_compliant_mount.ri` emits two Error-severity
-/// `@optimized` trampoline-fallback diagnostics that escape the check exit gate),
-/// filed while implementing #5476 and deliberately not fixed here: fixing
-/// trampoline registration, or re-severitying the notice, is outside this task's
-/// scope. When #5850 lands, this helper and its single call site above should
-/// be deleted outright.
-///
-/// `examples/flexures/printer_z_compliant_mount.ri` emits exactly two of these
-/// (`modal::mechanism_modal` and `dynamics::inverse_dynamics`). They are
-/// Error-SEVERITY but describe a non-fatal degradation ("falling back to
-/// body-inlining"), and nothing about them touches joint typing.
-///
-/// MEASURED, not assumed. Both were reproduced on the BASE-COMMIT `reify`
-/// binary — built before any of this task's commits — via
-/// `reify check examples/flexures/printer_z_compliant_mount.ri`, which prints
-/// both lines and still exits 0 (the exit gate is compile-phase; these are
-/// eval-phase). So this exclusion is not the α retype hiding its own breakage.
-///
-/// SCOPED TO THE ONE MEASURED FILE. The exclusion is keyed on the example's
-/// FILE NAME as well as the message substring, because the measurement that
-/// justifies it was taken on exactly one file. Without the file-name key the
-/// suppression would silently spread: the same trampoline-fallback Error
-/// appearing in a DIFFERENT example — whether from a future change or from a
-/// newly added example — would be swallowed and the regression would be
-/// invisible. With it, any such occurrence fails the gate and forces a
-/// deliberate re-measurement (widen the match, or fix the cause).
-///
-/// It is otherwise as narrow as possible: it applies only at the eval stage and
-/// does NOT relax the compile-stage assertion above — which is where the α
-/// retype's actual risk lives (a `no matching overload` or a #4310
-/// `DrivingJoint` bound complaint would still fail this test). Any OTHER eval
-/// Error, in any example, still fails. Deliberately not count-pinned, so
-/// whoever fixes the underlying registration does not have to come back and
-/// edit this test.
-fn is_preexisting_trampoline_fallback(example_file_name: &str, message: &str) -> bool {
-    example_file_name == "printer_z_compliant_mount.ri"
-        && message.contains("no registered compute trampoline (falling back to body-inlining)")
 }
 
 /// PRD §3.6 defense-in-depth: a FABRICATED `FlexureJoint()` is statically legal
