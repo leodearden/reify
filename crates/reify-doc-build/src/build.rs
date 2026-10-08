@@ -659,10 +659,8 @@ fn type_to_string(ty: &Type) -> String {
 /// Render a declaration's type parameters to display strings, one per param,
 /// in declaration order (task #6342).
 ///
-/// Each entry comes from [`reify_ast::render_type_param`], which LSP hover's
-/// `format_type_params` also uses. The default goes in as the resolved `Type`,
-/// so it renders semantically (e.g. `Scalar[m]`). Hover shows the author's
-/// spelling instead, on purpose.
+/// Each entry comes from [`reify_ast::render_type_param`]. The default goes in
+/// as the resolved `Type`, so it renders semantically (e.g. `Scalar[m]`).
 ///
 /// `reify-doc` is a pure-data crate with no `reify-ir` dependency, so the
 /// rendering has to happen here rather than in a `Display` impl consumed by

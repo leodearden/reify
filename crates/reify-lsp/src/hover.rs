@@ -305,11 +305,9 @@ fn format_si_conversion(unit: &reify_compiler::CompiledUnit) -> Option<String> {
 /// Render a type-parameter list as `<T, U: Numeric, V: A + B = Int>`, or the empty
 /// string when there are none (so a zero-param alias never emits a bare `<>`).
 ///
-/// Each entry comes from [`reify_ast::render_type_param`], the per-param skeleton
-/// that reify-doc-build's generated docs use as well. The default goes in as the
-/// author's `TypeExpr`, so it renders as written (see
-/// [`format_type_alias_signature`]). The generated docs show the resolved `Type`
-/// instead, on purpose. Task #6341.
+/// Each entry comes from [`reify_ast::render_type_param`]. The default goes in as
+/// the author's `TypeExpr`, so it renders as written (see
+/// [`format_type_alias_signature`]). Task #6341.
 fn format_type_params(params: &[reify_ast::TypeParamDecl]) -> String {
     if params.is_empty() {
         return String::new();
