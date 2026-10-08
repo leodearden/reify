@@ -53,12 +53,16 @@
 //! - **Instance selector** — `Entity.member` (a single `.` with non-empty
 //!   halves); maps to the `Value` kind's `NodeId::Value(ValueCellId)`.
 //!
-//! No glob expansion is performed here; the consumer (`reify-runtime`) resolves
-//! the pattern against the concrete node graph. The three `commitment_policy`
-//! values mirror [`NodeCommitmentOverride`](reify_runtime) verbatim:
-//! `commit_if_slow`, `always_cancel_when_stale`, `only_run_on_final_inputs`.
-//! See `docs/prds/v0_3/node-traits-unification.md` §6 "Level 3" for the
-//! precedence chain this config slot fills.
+//! Selectors are exact matches; no glob expansion is performed.
+//! `reify-runtime`'s `NodePolicyOverrides::from_config_overrides` maps each
+//! one to a kind or `Value` instance override without consulting any node
+//! graph. The parsed entries are currently inert: nothing loads them and
+//! nothing enforces the policy (see `docs/notes/reify-toml-schema.md`). The
+//! three `commitment_policy` values mirror
+//! [`NodeCommitmentOverride`](reify_runtime) verbatim: `commit_if_slow`,
+//! `always_cancel_when_stale`, `only_run_on_final_inputs`. See
+//! `docs/prds/v0_3/node-traits-unification.md` §6 "Level 3" for the
+//! precedence chain that places these entries.
 //!
 //! # Usage
 //!
@@ -353,8 +357,9 @@ impl Manifest {
     /// `[[node_overrides]]` in `reify.toml`.
     ///
     /// Returns an empty slice when no `[[node_overrides]]` section is present.
-    /// The consumer (`reify-runtime`) converts this slice into a
-    /// `NodePolicyOverrides` object via `NodePolicyOverrides::from_config_overrides`.
+    /// `reify-runtime`'s `NodePolicyOverrides::from_config_overrides` can
+    /// convert this slice, but no production code calls it today; see
+    /// `docs/notes/reify-toml-schema.md` for the enforcement status.
     pub fn node_overrides(&self) -> &[NodePolicyOverride] {
         &self.node_overrides
     }
