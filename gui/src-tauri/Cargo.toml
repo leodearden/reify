@@ -106,7 +106,6 @@ reify-test-support.workspace = true
 # `time` / `process` are not repeated here.
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread"] }
 reify-eval = { workspace = true, features = ["test-instrumentation"] }
-reify-mcp = { workspace = true, features = ["test-support"] }
 reify-lsp = { workspace = true, features = ["test-support"] }
 # Activates stats::reset_for_test() on the dep for cross-crate test isolation
 # in debug_server.rs once engine wiring (PRD #2947-#2949) lands.
