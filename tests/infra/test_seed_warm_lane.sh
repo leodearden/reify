@@ -2672,10 +2672,14 @@ assert "H4e: lane lock is re-acquirable immediately after the ABORTED seed exits
     bash -c 'exec 8>"$1"; flock -n 8' _ "$Q_LOCK4E"
 
 # ── H5: bounded-wait "queue" via REIFY_WARM_LANE_LANE_LOCK_WAIT ─────────────
-# A refused acquirer of the SINGLETON _merge-verify lane has no alternate
-# FREE lane to fall back to, so the WAIT knob lets --lane-lock QUEUE (bounded
-# flock -w N) instead of refusing instantly (flock -n, the WAIT-unset
-# default from H1-H4 above).
+# The WAIT knob lets seed's own lane-lock acquire QUEUE (bounded flock -w N)
+# instead of refusing instantly (flock -n, the WAIT-unset default from H1-H4
+# above). It binds only a caller that lets seed self-acquire -- tests/infra
+# (these blocks) and dark-factory's ephemeral warm-seed path
+# (take_lane_lock=False). It is INERT on both production pool acquires, which
+# pass --assume-lane-lock-held; there DF's outer flock carries the wait (30s)
+# and the timeout code (124). See the --lane-lock note in
+# scripts/seed-warm-lane.sh's header.
 #
 # H5a: lock HELD (same backgrounded flock -x holder + _wait_for_reader_lock
 # causal handshake as H1) + WAIT=1 -> still refuses (75), but only AFTER the
@@ -2753,10 +2757,8 @@ assert "H5c: cp NEVER invoked (rejected before any mutation)" \
 
 # ── H5d: bounded-wait "unlimited" (mixed-case) -> blocks until acquired,
 # never refuses. Exercises the bare blocking `flock 9` branch
-# (seed-warm-lane.sh's _llw_unlimited=1 path) -- the exact path the
-# SINGLETON _merge-verify lane is documented to rely on (queue forever
-# rather than refuse, since it has no alternate FREE lane to fall back to).
-# Mixed-case "UnLiMiTeD" also covers the case-insensitive glob match. ───────
+# (seed-warm-lane.sh's _llw_unlimited=1 path); same binding scope as H5
+# above. Mixed-case "UnLiMiTeD" also covers the case-insensitive glob match. ──
 Q_LANE8="$(make_isolated_lane Q-lane8)"
 mkdir -p "$Q_LANE8/target"
 echo "sentinel content" > "$Q_LANE8/target/SENTINEL.txt"
