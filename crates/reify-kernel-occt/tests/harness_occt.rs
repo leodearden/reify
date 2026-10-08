@@ -32,8 +32,9 @@
 //! other side of the seam and why the consumers were the side that moved.
 //!
 //! cfg retention: every module here carries a crate-level `#![cfg(has_occt)]` unless named
-//! otherwise in this paragraph; 3 carry `#![cfg(all(has_occt, feature = "test-fixtures"))]`
-//! (boolean_parallel_determinism, conformance_integration, curve_curvature_integration), and 1 carries
+//! otherwise in this paragraph; 4 carry `#![cfg(all(has_occt, feature = "test-fixtures"))]`
+//! (boolean_parallel_determinism, conformance_integration, curve_curvature_integration,
+//! step_document_integration), and 1 carries
 //! `#![cfg(all(has_occt, feature = "mesh-morph"))]` (projector_impl). These inner attributes
 //! are retained VERBATIM on the moved submodules rather than hoisted to an outer `#[cfg]` on
 //! the `mod` declarations below — an inner `#![cfg(...)]` on a `#[path]`-loaded submodule
@@ -114,6 +115,8 @@ mod revolve_with_history_integration;
 mod shell_shape_oob_face_index_integration;
 #[path = "harness_occt/split_integration.rs"]
 mod split_integration;
+#[path = "harness_occt/step_document_integration.rs"]
+mod step_document_integration;
 #[path = "harness_occt/surface_angle_integration.rs"]
 mod surface_angle_integration;
 #[path = "harness_occt/sweep_with_history_integration.rs"]

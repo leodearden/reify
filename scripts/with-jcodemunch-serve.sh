@@ -34,7 +34,8 @@
 # is exported with the same spelling. `/mcp/` is NOT equivalent: a real serve
 # 307-redirects it and the redirect DROPS the `mcp-session-id` header, so the
 # session contract silently breaks downstream instead of failing here. Already
-# pinned at `crates/reify-audit/src/bin/reify-audit.rs:185-188` and reused by
+# pinned in `crates/reify-audit/src/bin/reify-audit.rs` (`Args::jcodemunch_url`
+# and the `JCODEMUNCH_URL` default in `parse_args`) and reused by
 # `scripts/smoke-jcodemunch-serve.sh`; do not "tidy" a slash onto either.
 #
 # ── READINESS IS AN IDENTITY CHECK, NOT A LIVENESS CHECK ────────────────────
@@ -60,18 +61,18 @@
 # ...AND IT IS ONLY HALF THE IDENTITY CONTRACT. This lever fixes what the SERVE
 # answers AS. It cannot fix what the CLIENT asks FOR, and this script
 # deliberately does not reach into the wrapped command's argv — δ owns the serve
-# LIFECYCLE only. `reify-audit` still defaults `--jcodemunch-repo` to
-# `leodearden/reify` (`crates/reify-audit/src/bin/reify-audit.rs:111,215`), the
-# same empty husk, so the canonical composition
+# LIFECYCLE only. The client-side half is `reify-audit`'s, closed by γ (#6108):
+# `--jcodemunch-repo` has no hardcoded default, and omitted it is derived from
+# `--project-root` as the same per-path `local/<basename>-<sha1[..8]>` that β
+# (`scripts/jcodemunch-index-reify.sh`) indexes (`effective_repo_id` /
+# `Args::jcodemunch_repo` in `crates/reify-audit/src/bin/reify-audit.rs`;
+# `--print-repo-id` prints it). So the canonical composition
 #
 #     scripts/with-jcodemunch-serve.sh reify-audit --pattern P1 --project-root …
 #
-# is STILL vacuous unless the caller ALSO passes
-# `--jcodemunch-repo local/reify-<hash>` by hand. Retiring that default is γ
-# (#6108) and wiring the invocation is ζ; until one of them lands, every caller
-# carries the client-side half itself — which is exactly why this task's
-# recorded acceptance evidence passes it explicitly rather than relying on the
-# default.
+# needs no `--jcodemunch-repo`. Passing the retired `leodearden/reify` names the
+# empty husk, which the freshness gate refuses as `E_JC_INDEX_EMPTY` (codes and
+# remedies: `.claude/skills/audit/references/cli-invocation.md` §4.1).
 #
 # PIN-BUMP CHECKLIST: consolidated into `scripts/lib_jcodemunch_pin.sh` (#6454),
 # the ONE definition site for the pin, the interpreter and this lever. Its
@@ -83,9 +84,9 @@
 #
 # ── STDERR DISCIPLINE IS A CORRECTNESS CONSTRAINT, NOT COSMETICS ────────────
 #
-# `reify-audit` writes its JSON findings array to STDERR
-# (`crates/reify-audit/src/bin/reify-audit.rs:689-695`) and every consumer
-# extracts it as the TRAILING block — `scripts/smoke-predone-hook.sh:233` pipes
+# `reify-audit` writes its JSON findings array to STDERR (`to_writer_pretty` in
+# `main`, `crates/reify-audit/src/bin/reify-audit.rs`) and every consumer
+# extracts it as the TRAILING block — `scripts/smoke-predone-hook.sh` pipes
 # through `awk 'BEGIN{p=0} /^\[/{p=1} p{print}' | jq -e 'type=="array"'`, and
 # `crates/reify-audit/tests/cli.rs` uses `rfind("\n[")`. So:
 #
@@ -590,7 +591,7 @@ cleanup() {
 # ON THE HEALTHY PATH THIS PRINTS NOTHING AT ALL, to either stream. That is not
 # tidiness: it is what leaves a wrapped command's trailing stderr block — a
 # reify-audit findings array — as the last thing on stderr, so the consumers
-# that extract it (smoke-predone-hook.sh:233's awk, cli.rs's `rfind("\n[")`)
+# that extract it (smoke-predone-hook.sh's awk, cli.rs's `rfind("\n[")`)
 # still see a well-formed array. See the stderr-discipline block in the header.
 #
 # A LEAK MUST NOT REPORT SUCCESS. A leaked serve keeps holding $PORT, so the

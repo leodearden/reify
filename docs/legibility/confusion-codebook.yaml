@@ -26233,3 +26233,55 @@ candidates:
     origin_phase: unknown
     manifested_phase: unknown
     evidence_quote: 'mcp__escalation__get_escalation({"escalation_id": "esc-6499-9"}) -> The operation timed out.'
+- id: cand-20261007-1
+  title: Edit issued with identical old_string and new_string, rejected as a no-op
+  cause: The agent issued an Edit whose replacement text was identical to the text it was replacing, so the tool rejected it with 'No changes to make'. The digest shows no evidence of why the agent chose a no-op replacement.
+  area: tooling
+  first_seen: '2026-10-07'
+  disposition: pending
+  sightings:
+  - date: '2026-10-07'
+    project: reify
+    session: 5675197b-17d6-4866-8eb9-726b5291cf0d
+    origin_phase: unknown
+    manifested_phase: unknown
+    evidence_quote: '(turn 470) Edit({"file_path": "/home/leo/src/warm-lanes/worktrees/_lane-11/tests/infra/test_warm_lane_pool.sh", "new_string": "# fd 205: 200 and 201 are already in use elsewhere in this file.", "old_string": "# fd 20...) -> <tool_use_error>No changes to make: old_string and new_string are exactly the same.</tool_use_error>'
+- id: cand-20261007-2
+  title: add_plan_step called with parameter names that don't match its schema (task_id/type passed; step_type required)
+  cause: The agent invoked the mcp__plan-tools__add_plan_step tool with keyword arguments task_id and type, which the schema rejects as unexpected, while omitting the required step_type argument. The tool's actual parameter names were not checked before the call.
+  area: mcp-tool-schema
+  first_seen: '2026-10-07'
+  disposition: pending
+  sightings:
+  - date: '2026-10-07'
+    project: reify
+    session: a2cf36cb-3064-4097-89da-e02d04a7bcb5
+    origin_phase: unknown
+    manifested_phase: unknown
+    evidence_quote: 'mcp__plan-tools__add_plan_step({"description": "Route auto-match and LocatedPort warning through own_port_name; add tests", "step_id": "impl-1", "task_id": "7387", "type": "impl"}) -> 3 validation errors for call[add_plan_step] step_type Missing required argument ... task_id Unexpected keyword argument ... type Unexpected keyword argument'
+- id: cand-20261007-3
+  title: MCP add_plan_step called with task_id where the schema requires step_id, causing a pydantic validation failure
+  cause: The agent invoked mcp__plan-tools__add_plan_step with a task_id argument and no step_id. The tool's schema requires step_id and does not accept task_id, so the call was rejected with missing_argument and unexpected_keyword_argument errors. The agent did not reconcile its argument names with the tool's actual parameter schema.
+  area: tool-invocation / MCP argument schema
+  first_seen: '2026-10-07'
+  disposition: pending
+  sightings:
+  - date: '2026-10-07'
+    project: reify
+    session: 6861e589-65a8-4258-9c8e-71e3519f592b
+    origin_phase: unknown
+    manifested_phase: unknown
+    evidence_quote: '(turn 86) mcp__plan-tools__add_plan_step({"description": "Re-point the polygon docstring cite in geometry_length_args_units_e2e.rs at the fence gate", "step_type": "impl", "task_id": "7056"}) -> 2 validation errors for call[add_plan_step] step_id Missing required argument [type=missing_argument ... task_id Unexpected keyword argument [type=unexpected_keyword_argument'
+- id: cand-20261007-4
+  title: Task scope assumes a dependency delivers a capability that its merged deliverables do not contain
+  cause: A task's description states that a completed dependency creates a specific detector, seam, and marker that the task will widen and reuse. The dependency's merged diff touches only unrelated files, and the capability was never present in any ref. The architect discovers the false premise only after the task is picked up, so the RED-test plan rests on a nonexistent prerequisite.
+  area: dependency-premise-verification
+  first_seen: '2026-10-07'
+  disposition: pending
+  sightings:
+  - date: '2026-10-07'
+    project: reify
+    session: 3d8c92c6-ec4d-4d11-9c89-eb31720c3851
+    origin_phase: unknown
+    manifested_phase: architect
+    evidence_quote: 'Task #7121 says its dependency #6526 ''creates the detector, the `is_in_scope` seam, and the `srccite:allow` marker this task widens and reuses''. ... #6526 is status=done ... That merge changes 20 files, all examples/*.ri (+79/-65), and nothing under crates/reify-audit/.'

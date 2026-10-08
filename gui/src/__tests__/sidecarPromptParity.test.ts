@@ -68,6 +68,7 @@ const NOT_ADVERTISED_TO_SIDECAR = {
   ],
   testHarness: [
     'health',
+    'engine_status',
     'store_state',
     'load_fixture',
     'inject_diagnostics',

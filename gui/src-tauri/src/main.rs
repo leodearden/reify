@@ -1040,12 +1040,14 @@ fn main() {
                 let engine_for_debug = Arc::clone(&engine_arc);
                 let selection_for_debug = Arc::clone(&selection_arc);
                 let last_state_for_debug = Arc::clone(&last_state_arc);
+                let evals_for_debug = Arc::clone(&evals);
                 tauri::async_runtime::spawn(async move {
                     if let Err(e) = reify_gui::debug_server::spawn_debug_server(
                         engine_for_debug,
                         selection_for_debug,
                         debug_bridge,
                         last_state_for_debug,
+                        evals_for_debug,
                     )
                     .await
                     {

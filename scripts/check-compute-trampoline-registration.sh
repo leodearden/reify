@@ -35,16 +35,13 @@
 #   hundreds of legitimate call sites — and neither is `register_morph_producer(`,
 #   which is a legitimate public API rather than a bundler.
 #
-# PRODUCTION-CODE VIEW (shared by BOTH passes — `_AWK_PRODUCTION_PROLOGUE`).
-# Each raw line is reduced to its production code by a single LEFT-TO-RIGHT
-# LEXER (`_strip_line`), not by a chain of regex substitutions. Comment text is
-# DROPPED; string, char-literal and raw-string CONTENTS are BLANKED with their
-# delimiters kept (a blanked string reads exactly `""`). The lexer carries
-# `/* … */` (which nests), `"…"` and `r#"…"#` state ACROSS lines, and tells a
-# char literal from a lifetime, so `&'static str` and `<'a, 'b>` survive
-# untouched. A line is invisible to both passes when it is inside a
-# `#[cfg(test)] mod` body, or wholly inside a block comment or a carried-over
-# multi-line string.
+# PRODUCTION-CODE VIEW (shared by BOTH passes — RUST_PRODUCTION_VIEW_AWK from
+# scripts/lib_rust_production_view.sh, whose header documents the lexer
+# mechanism and its best-effort limits). Comment text is DROPPED; string,
+# char-literal and raw-string CONTENTS are BLANKED with their delimiters kept (a
+# blanked string reads exactly `""`). A line is invisible to both passes when it
+# is inside a `#[cfg(test)] mod` body, or wholly inside a block comment or a
+# carried-over multi-line string.
 #
 # The brace counts that drive `depth` — and so BOTH depth-driven skippers, the
 # `#[cfg(test)] mod` one and the definition-file `in_bundler` one — are taken
@@ -58,27 +55,17 @@
 # crates/reify-test-support/src/orphan_audit.rs:778) and 277 of its files carry
 # raw strings.
 #
-# A desync is surfaced rather than trusted: the END block of
-# `_AWK_PRODUCTION_PROLOGUE` WARNs — never fails — when a file's lexer state is
-# unbalanced at EOF. It is the only signal for the failure mode that is
-# otherwise INVISIBLE, because a line matching `carried_in && code == ""` is
-# `next`ed and so never scanned, and an unscanned line cannot be flagged.
+# A desync is surfaced rather than trusted: the shared view's END block WARNs —
+# never fails — when a file's lexer state is unbalanced at EOF (the negative
+# pass only; `_code_has` passes `-v quiet_eof=1`, see there). It is the only
+# signal for the failure mode that is otherwise INVISIBLE, because a line
+# matching `carried_in && code == ""` is `next`ed and so never scanned, and an
+# unscanned line cannot be flagged.
 # MEASURED on this gate's own scan set at the time of writing: 562 files, of
 # which 562 end balanced, so the warning is silent on the live tree (verified
 # under gawk 5.2.1 and mawk 1.3.4; check-nan-safe-ordering.sh records the same
 # for its 121-file set). That measurement is what makes it safe as a warning
 # and premature as a failure.
-#
-# A two-regex chain cannot do this in EITHER order, which is why it was replaced
-# rather than reordered: strip comments first and a `//` living inside a STRING
-# truncates the code after it (11 lines of the live scan set change their brace
-# balance under that, e.g. crates/reify-audit/src/ptodo.rs:90
-# `if line.trim_start().starts_with("//") {`); blank strings first and a quote
-# living inside a COMMENT mis-blanks the code after it.
-#
-# Still BEST-EFFORT, deliberately not exhaustive: no macro expansion, no `cfg`
-# evaluation, and a `*/` appearing inside a string inside a block comment is not
-# modelled.
 #
 # The two passes are therefore symmetric by construction. That symmetry is
 # load-bearing on BOTH sides:
@@ -124,11 +111,8 @@
 #     coverage: the first test-only `register_compute_fns(` to land under a
 #     compound gate is a FALSE RED whose only escape is the inline allow comment
 #     below. Broadening the arming regex is deliberately NOT done here: the
-#     regex lives in the lexer body that is HAND-SYNCED FROM
-#     check-nan-safe-ordering.sh (see PRODUCTION-CODE VIEW), where main's copy
-#     is the source of truth and edits from this side are what the protocol
-#     forbids. It belongs in the shared lib that task #6034 extracts, applied to
-#     both guards at once;
+#     regex lives in scripts/lib_rust_production_view.sh, and broadening it
+#     for both guards at once is task #6242;
 #   - inside the DEFINITION files (EXEMPT_DEFINITION_FILES) — and ONLY there —
 #     the two `fn register_*_compute_fns(` definition lines and the body of
 #     `fn register_production_compute_fns(` (that body IS the bundler). The
@@ -154,12 +138,13 @@
 #   0  clean — every known site delegates with its required variant, and no
 #      production source hand-rolls the bundle
 #   1  at least one violation (each printed to stderr)
-#   2  the gate could not scan: usage / not-a-git-work-tree error, an EMPTY SCAN
-#      SET (SCOPE_PATHSPECS matched nothing, or matched only paths the */tests/*
-#      filter removes), or an AWK FAILURE while scanning. Exit 2 OUTRANKS exit 1
-#      — a gate that could not scan has established neither that the tree is
-#      clean nor that it is dirty, so a violation already queued by the positive
-#      pass does not downgrade it.
+#   2  the gate could not scan: usage / not-a-git-work-tree error, the shared
+#      lexer lib could not be loaded, an EMPTY SCAN SET (SCOPE_PATHSPECS matched
+#      nothing, or matched only paths the */tests/* filter removes), or an AWK
+#      FAILURE while scanning. Exit 2 OUTRANKS exit 1 — a gate that could not
+#      scan has established neither that the tree is clean nor that it is
+#      dirty, so a violation already queued by the positive pass does not
+#      downgrade it.
 # A `WARN: … lexer state unbalanced at EOF` line on stderr is verdict-neutral
 # and never changes any of the above; see PRODUCTION-CODE VIEW below.
 
@@ -181,6 +166,17 @@ if [[ -z "$REPO_ROOT" ]]; then
 fi
 if [[ -z "$REPO_ROOT" ]] || ! git -C "$REPO_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     echo "ERROR: not a git work tree: ${REPO_ROOT:-<cwd>}" >&2
+    exit 2
+fi
+
+# The shared lexer, resolved beside THIS script (never the CWD or --repo-root:
+# the gate scans fixture repos that have no scripts/). A failed load is "could
+# not scan", exit 2; a bare `source` failing under set -e would exit 1, which
+# reads as "violation found".
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/lib_rust_production_view.sh
+if ! source "$SCRIPT_DIR/lib_rust_production_view.sh" || [[ -z "${RUST_PRODUCTION_VIEW_AWK:-}" ]]; then
+    echo "ERROR: cannot load the shared Rust lexer lib: $SCRIPT_DIR/lib_rust_production_view.sh" >&2
     exit 2
 fi
 
@@ -221,250 +217,21 @@ EXEMPT_DEFINITION_FILES=(
 violations=""
 note() { violations+="$1"$'\n'; }
 
-# ── Shared awk prologue: lex each line down to its PRODUCTION code in `code`,
-# count the braces that drive `depth` from THAT view, and `next` the line
-# entirely when it is test-only or wholly inside a block comment / carried-over
-# string. Both passes prepend this, so neither can see what the other cannot.
-#
-# The `#[cfg(test)]` skipper additionally requires the opening line to declare a
-# `mod`. Without that requirement a bare `#[cfg(test)] use …;` —
-# gui/src-tauri/src/engine.rs:21, :102, :104 all have one — leaves the skipper
-# armed until the NEXT brace-opening line, which can be an unrelated production
-# item; that misfire is a silent under-flag on the negative pass but a FALSE
+# ── Both passes append their rules to RUST_PRODUCTION_VIEW_AWK (loaded above),
+# so neither can see what the other cannot. Its #[cfg(test)] skipper requires
+# the opening line to declare a `mod`: a bare `#[cfg(test)] use …;` —
+# gui/src-tauri/src/engine.rs:21, :102, :104 all have one — must not arm it,
+# because that misfire is a silent under-flag on the negative pass but a FALSE
 # RED on the positive pass.
-#
-# HAND-SYNCED WITH scripts/check-nan-safe-ordering.sh. That guard carries the
-# same lexer (task 6031 ported it there FROM here), and main's copy is the
-# source of truth for the executable BODY: it is a strict superset, so drift is
-# resolved by porting from it, never by editing it from this side. Two
-# hardenings arrived that way, each closing a defect this copy demonstrably had
-# (tests/infra/test_compute_trampoline_registration_wired.sh hD9/hD10/hE1):
-#   - `pending_mod` — the brace on the line AFTER the `mod` keyword. Legal Rust,
-#     and CLAUDE.md records this repo has no rustfmt gate forcing
-#     brace-on-same-line, so it is a shape tracked source really carries;
-#     without it the skipper never arms for that spelling, which makes the
-#     per-site variant pin VACUOUS and false-REDs legitimate test-module calls.
-#   - `comment_tail` — the escape is COMMENT text. Matched against raw $0 it
-#     was also matched against string content, so a line that merely mentioned
-#     the token in a string silently suppressed a real half-call on it.
-# Task #6034 owns extracting this into one sourced lib and is blocked on both
-# guards being on main; naming it here is what time-bounds the hand-sync.
-# The prose ABOVE the lexer body is deliberately NOT synced — it is
-# guard-specific (this guard has a SECOND depth-driven skipper, the
-# definition-file `in_bundler` one, and a `_code_has` early-exit helper; the
-# nan-safe guard has neither).
-#
-# The prologue is assembled through a quoted heredoc rather than a single-quoted
-# assignment so the lexer can contain apostrophes (it must reason about `'` to
-# tell a char literal from a lifetime).
-_AWK_PRODUCTION_PROLOGUE="$(cat <<'AWK_PROLOGUE'
-# _strip_line(line) -> the PRODUCTION-code view of one raw line.
-#
-# Comment text is DROPPED. String, char-literal and raw-string CONTENTS are
-# BLANKED with their delimiters KEPT, so a blanked string reads exactly "" —
-# the shape the _code_has patterns and the h2c fixture are written against.
-#
-# Cross-line state lives in globals: in_block (a NESTING depth, because Rust
-# block comments nest), in_str, and in_raw + raw_hashes. carried_in records
-# whether the line STARTED inside one of them.
-#
-# POSIX constructs only (substr / index / length / match, extra parameters as
-# locals, no gensub), so the gate is not silently gawk-only.
-function _strip_line(line,   out, i, n, ch, h, j, k, pfx, rest) {
-    carried_in = (in_block > 0 || in_str || in_raw)
-    # The dropped `//…` tail (if any) is stashed here, so a caller can match
-    # an escape token against the REAL comment text rather than raw $0 —
-    # $0 also contains any string/char-literal content on the line, so a
-    # token that merely APPEARS inside a string must not count as the
-    # escape. Reset unconditionally (including on the fast path below) so a
-    # PRIOR line's tail never leaks onto a line with no comment at all.
-    comment_tail = ""
-    n = length(line)
-    # Fast path: nothing here can open a comment, a string or a char literal.
-    # (A bare `/` is division or a path; only `//` and `/*` matter.)
-    if (!carried_in && line !~ /["']|\/\/|\/\*/) return line
-    out = ""
-    i = 1
-    while (i <= n) {
-        # --- state carried in from a previous line, or opened earlier here ---
-        if (in_block > 0) {
-            if (substr(line, i, 2) == "*/") { in_block--; i += 2; continue }
-            if (substr(line, i, 2) == "/*") { in_block++; i += 2; continue }
-            i++
-            continue
-        }
-        if (in_raw) {
-            # A raw string closes on a quote followed by exactly raw_hashes
-            # hashes, and honours NO escapes.
-            if (substr(line, i, 1) == "\"") {
-                h = 0
-                while (h < raw_hashes && substr(line, i + 1 + h, 1) == "#") h++
-                if (h == raw_hashes) {
-                    out = out substr(line, i, 1 + h)
-                    in_raw = 0
-                    i += 1 + h
-                    continue
-                }
-            }
-            i++
-            continue
-        }
-        if (in_str) {
-            if (substr(line, i, 1) == "\\") { i += 2; continue }
-            if (substr(line, i, 1) == "\"") { out = out "\""; in_str = 0; i++; continue }
-            i++
-            continue
-        }
-
-        # --- ordinary code: emit the run up to the next interesting token ---
-        rest = substr(line, i)
-        if (!match(rest, /["']|\/\/|\/\*|(r|b|c|br|cr)#*"/)) { out = out rest; break }
-        if (RSTART > 1) { out = out substr(rest, 1, RSTART - 1); i += RSTART - 1; continue }
-
-        ch = substr(line, i, 1)
-        if (ch == "/") {
-            if (substr(line, i, 2) == "//") {       # //… tail: drop it, but keep
-                comment_tail = substr(line, i)      # it for the escape check
-                break
-            }
-            in_block++                              # /*: enter (nesting) comment
-            i += 2
-            continue
-        }
-        if (ch == "'") {
-            # A CHAR LITERAL closes within one character — two with a backslash
-            # escape, more for \x41 / \u{7f}, whose own braces must not count.
-            # Anything else is a LIFETIME and is emitted verbatim, so
-            # &'static str and <'a, 'b> are untouched.
-            if (substr(line, i + 1, 1) == "\\") {
-                j = i + 3
-                while (j <= n && substr(line, j, 1) != "'") j++
-                if (j <= n && j - i <= 12) { out = out "''"; i = j + 1; continue }
-            } else if (substr(line, i + 2, 1) == "'") {
-                out = out "''"
-                i += 3
-                continue
-            }
-            out = out "'"
-            i++
-            continue
-        }
-        if (ch == "\"") { out = out "\""; in_str = 1; i++; continue }
-
-        # r"…" / r#"…"# / b"…" / br#"…"# / c"…" / cr#"…"# — the match above
-        # guarantees a prefix of at most two letters, then #*, then a quote.
-        pfx = ""
-        k = i
-        while (k <= n && length(pfx) < 2 && index("rbc", substr(line, k, 1)) > 0) {
-            pfx = pfx substr(line, k, 1)
-            k++
-        }
-        h = 0
-        while (substr(line, k + h, 1) == "#") h++
-        if (substr(line, k + h, 1) == "\"") {
-            out = out substr(line, i, (k - i) + h + 1)   # prefix + hashes + quote
-            if (index(pfx, "r") > 0) { in_raw = 1; raw_hashes = h } else { in_str = 1 }
-            i = k + h + 1
-            continue
-        }
-        out = out ch                                     # not a prefix after all
-        i++
-    }
-    return out
-}
-
-{
-    code = _strip_line($0)
-
-    # A line wholly inside a block comment or a carried-over multi-line string
-    # contributes no code braces at all — drop it before any depth bookkeeping.
-    if (carried_in && code == "") next
-
-    # Brace counts on the LEXED view, never on $0 (throwaway copies so `code`
-    # stays intact). Counting the raw line lets a brace that exists only inside
-    # a comment, a string, a char literal or a raw string move `depth`, which
-    # silently mis-drives both skippers below — see PRODUCTION-CODE VIEW.
-    c = code; n_open  = gsub(/[{]/, "x", c)
-    c = code; n_close = gsub(/[}]/, "x", c)
-
-    # --- #[cfg(test)] MODULE skipping (best-effort brace tracking) ---
-    if (in_test) {
-        depth += n_open - n_close
-        if (depth <= test_base) in_test = 0
-        next
-    }
-    if (code ~ /#\[cfg\(test\)\]/) {
-        pending_test = 1
-        pending_mod = 0
-    } else if (pending_test) {
-        # The pending gate survives only across blank lines, further attributes
-        # and comments; any other non-mod line disarms it. A comment-only line
-        # now lexes to the empty string, so the former `t ~ /^\/\//` alternative
-        # is unreachable and is gone: `t == ""` already covers it.
-        #
-        # A `mod IDENT` line that opens no brace of its own — e.g. `mod tests`
-        # with the `{` on the NEXT line, legal Rust and this repo has no
-        # rustfmt gate forcing brace-on-same-line (CLAUDE.md) — sets
-        # `pending_mod` so that later brace-opening line can still arm the
-        # skipper below, even though *that* line's own text says nothing
-        # about `mod`. Guarded to n_open==0 and no same-line `;` so a
-        # self-terminating `mod tests;` (external file, no local body) does
-        # NOT leave `pending_mod` armed for some unrelated later brace.
-        t = code; sub(/^[ \t]+/, "", t)
-        if (t ~ /(^|[^A-Za-z0-9_])mod[ \t]+[A-Za-z_]/ && n_open == 0 && t !~ /;/) pending_mod = 1
-        if (!(t == "" || t ~ /^#\[/ || t ~ /(^|[^A-Za-z0-9_])mod[ \t]/ || (pending_mod && n_open > 0))) {
-            pending_test = 0
-            pending_mod = 0
-        }
-    }
-    if (pending_test && n_open > 0) {
-        if (pending_mod || code ~ /(^|[^A-Za-z0-9_])mod[ \t]+[A-Za-z_]/) {
-            in_test = 1
-            test_base = depth        # depth BEFORE this block opened
-            depth += n_open - n_close
-            pending_test = 0
-            pending_mod = 0
-            next
-        }
-        pending_test = 0             # cfg(test) on a fn/field/use, not a module
-        pending_mod = 0
-    }
-    depth += n_open - n_close
-}
-
-# Self-consistency check: a lexer state left unbalanced at EOF (an unterminated
-# string / raw string / block comment, or a brace depth that never returns to 0)
-# means every line after the desync point lexed wrong — and, per the
-# `carried_in && code == ""` skip above, likely went entirely UNSCANNED. That
-# fails SILENTLY toward GREEN, because an unscanned line can never be flagged,
-# so it is surfaced here rather than left to discover itself.
-#
-# `quiet_eof` is this guard's one divergence from check-nan-safe-ordering.sh's
-# otherwise-identical block, and it is why that block cannot be copied
-# byte-for-byte: `_code_has` deliberately stops at its FIRST match
-# (`code ~ pat { found = 1; exit }`), which leaves the lexer legitimately
-# unbalanced mid-item, so a verbatim port would warn on every SUCCESSFUL site
-# lookup. The positive pass therefore passes -v quiet_eof=1 and only the
-# full-file negative scan can warn. No coverage is lost: all three KNOWN_SITES
-# are also in the negative pass's scan set and are scanned there in full.
-#
-# VERDICT-NEUTRAL — a warning, never a non-zero exit. Measured: this gate's
-# 562-file scan set ends every file balanced today, so the warning is silent on
-# the live tree; promoting it to a hard failure once that is trusted tree-wide
-# is a follow-up, not a day-one behavior change (same rationale main records
-# for its own 121-file set).
-END {
-    if (!quiet_eof && (in_str || in_raw || in_block > 0 || depth != 0))
-        printf "WARN: %s: lexer state unbalanced at EOF (str=%d raw=%d block=%d depth=%d)\n", FILENAME, in_str, in_raw, in_block, depth > "/dev/stderr"
-}
-AWK_PROLOGUE
-)"
 
 # _code_has <file> <awk-regex> — is the pattern present in PRODUCTION code?
-# quiet_eof=1 because the `exit` below stops mid-file by design; see the END
-# block in the prologue.
+# quiet_eof=1 because the `exit` below stops at the FIRST match by design,
+# which leaves the lexer legitimately unbalanced mid-item, so the shared END
+# block would otherwise WARN on every SUCCESSFUL site lookup. No coverage is
+# lost: all three KNOWN_SITES are also in the negative pass's scan set and are
+# scanned there in full, where the WARN stays live.
 _code_has() {
-    awk -v pat="$2" -v quiet_eof=1 "$_AWK_PRODUCTION_PROLOGUE"'
+    awk -v pat="$2" -v quiet_eof=1 "$RUST_PRODUCTION_VIEW_AWK"'
         code ~ pat { found = 1; exit }
         END { exit(found ? 0 : 1) }
     ' "$1"
@@ -515,7 +282,7 @@ if [[ ${#_files[@]} -eq 0 ]]; then
     exit 2
 fi
 
-# Per-file action block, appended to the shared prologue. In order:
+# Per-file action block, appended to the shared production view. In order:
 #   1. honor the same-line `trampoline-registration:allow` escape;
 #   2. in a DEFINITION file only, skip the bundler body and the two definition
 #      lines (everything else in those files is still matched);
@@ -531,7 +298,7 @@ for f in "${_files[@]}"; do
     # failure modes is 1 — indistinguishable from "found a violation" (verified:
     # PATH-shadowing awk to a stub that always exits 1 makes the pre-fix gate
     # exit 1 on a CLEAN fixture, silently, with nothing printed).
-    if ! out="$(awk -v rel="$f" -v allow_defs="$_allow_defs" "$_AWK_PRODUCTION_PROLOGUE"'
+    if ! out="$(awk -v rel="$f" -v allow_defs="$_allow_defs" "$RUST_PRODUCTION_VIEW_AWK"'
         {
             # --- inline escape (same-line), mirrors ptodo:allow §6.8 ---
             # Matched against comment_tail (the dropped `//…` text that
@@ -563,7 +330,7 @@ for f in "${_files[@]}"; do
                     # toward GREEN) inside exactly the two files the header
                     # calls the single most likely place for someone to add a
                     # fourth hand-rolled bundle. Mirrors the `pending_mod` guard
-                    # in the prologue (`n_open == 0 && t !~ /;/`); the
+                    # in the shared view (`n_open == 0 && t !~ /;/`); the
                     # `n_open > 0 ||` arm keeps the ordinary same-line `) {`
                     # spelling armed.
                     # NOTE: this block is single-quoted bash — no apostrophes.
