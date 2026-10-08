@@ -7,8 +7,8 @@
 #     §3  C3 — Reverse-closure completeness
 #         C4 — Global changes force ALL
 #         C5 — Fail safe, fail wide
-#     §5  File→crate mapping table
-#     §6  Algorithm
+#         File→crate mapping precedence (_file_to_crate is the mapping's SPOT)
+#         Reverse-closure definition (the algorithm)
 #
 # Designed to be sourced, not executed directly:
 #   source "$(dirname "${BASH_SOURCE[0]}")/affected-crates-lib.sh"
@@ -94,8 +94,9 @@ _is_global() {
 # through its `crates/*)` arm, affected_crates through _file_to_crate in its
 # accumulation loop — so a crate-OWNED *.md never reaches here and keeps mapping
 # to its owning crate. That shared attribute-first precedence is the load-bearing
-# half of the SPOT, and is recorded here rather than at each call site; §5 of the
-# contract records what it protects.
+# half of the SPOT, and is recorded here rather than at each call site; the
+# contract's "File→crate mapping precedence" paragraph (§3) records what it
+# protects.
 reify_is_inert_path() {
     local path="$1"
     case "$path" in
@@ -153,7 +154,7 @@ _is_crate_manifest() {
 
 # _file_to_crate <path> — map a crate-owned path to its crate name, or print
 # nothing if the path is not under a known crate location.
-# Mapping rules (§5):
+# Mapping rules (this case statement is their single source of truth):
 #   crates/<name>/**  -> <name>
 #   gui/src-tauri/**  -> reify-gui
 #   examples/**/*.ri  -> _RI_CORPUS_CRATES (corpus seeds)
