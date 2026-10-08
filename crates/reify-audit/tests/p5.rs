@@ -111,6 +111,7 @@ mod tests {
             Pattern::P5PhantomDone,
             Pattern::P2ConsumerStub,
             Pattern::P1ProducerOrphan,
+            Pattern::P1TaskUnexamined,
             Pattern::P5MetadataFilesGitignored,
             Pattern::PDeadCode,
             Pattern::PUntested,
@@ -129,6 +130,7 @@ mod tests {
                 Pattern::P5PhantomDone => {}
                 Pattern::P2ConsumerStub => {}
                 Pattern::P1ProducerOrphan => {}
+                Pattern::P1TaskUnexamined => {}
                 Pattern::P5MetadataFilesGitignored => {}
                 Pattern::PDeadCode => {}
                 Pattern::PUntested => {}

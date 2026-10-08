@@ -4819,6 +4819,11 @@ mod freshness_gate {
     /// which is where the `find_references` call lives — never runs its body. That is a property of THIS responder, not of the harness —
     /// the sibling below (`per_call_fail_soft_on_p1s_second_call`) dispatches
     /// on the arguments to reach it.
+    ///
+    /// The findings array is what makes this run distinguishable from a clean
+    /// one. The failed query surfaces as one Low `P1TaskUnexamined` for the
+    /// task it left unexamined, so the run still exits 0 but no longer reads
+    /// as "P1 found nothing".
     #[test]
     fn per_call_fail_soft_on_the_p1_pair() {
         let s = scenario();
@@ -4832,10 +4837,28 @@ mod freshness_gate {
 
         assert_admitted_after_a_successful_handshake(&out, &stderr);
         let findings = parse_findings_from_stderr(&stderr);
+        assert_eq!(
+            findings.len(),
+            1,
+            "the failed get_changed_symbols must surface as exactly one \
+             finding; got {findings:?}\nstderr:\n{stderr}"
+        );
+        let finding = &findings[0];
+        assert_eq!(finding["pattern"], "P1TaskUnexamined", "got {finding:?}");
+        assert_eq!(
+            finding["severity"], "Low",
+            "Low keeps the exit code neutral; got {finding:?}"
+        );
+        assert_eq!(
+            finding["task_id"], "synthetic-per-call-p1",
+            "got {finding:?}"
+        );
         assert!(
-            findings.is_empty(),
-            "get_changed_symbols returned Vec::new(), so P1 has nothing to \
-             report; got {findings:?}\nstderr:\n{stderr}"
+            finding["summary"]
+                .as_str()
+                .unwrap_or_default()
+                .contains(&s.live_head),
+            "the summary must name the range left unexamined; got {finding:?}"
         );
 
         assert!(

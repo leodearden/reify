@@ -1747,7 +1747,9 @@ fn crate_root_count(files: &[String]) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{DeclSuppression, DoneProvenance, MockGitOps, MockJCodemunchOps};
+    use crate::{
+        DeclSuppression, DoneProvenance, JCodemunchCallFailed, MockGitOps, MockJCodemunchOps,
+    };
     use rusqlite::Connection;
     use std::collections::HashMap;
     use std::path::PathBuf;
@@ -1759,7 +1761,7 @@ mod tests {
     #[test]
     fn h2_vacuous_breadcrumb_fires_when_empty_and_is_silent_once_a_symbol_is_examined() {
         // Empty slice → Some(msg) containing the task id and "vacuous".
-        let result = h2_vacuous_breadcrumb(&[], "4144", "abc123^1", "abc123");
+        let result = h2_vacuous_breadcrumb(Ok(&[]), "4144", "abc123^1", "abc123");
         let msg = result.expect("expected Some for empty symbols slice");
         assert!(
             msg.contains("4144"),
@@ -1780,7 +1782,7 @@ mod tests {
             // path entirely.
             suppression: Some(DeclSuppression::default()),
         };
-        let result = h2_vacuous_breadcrumb(&[sym], "4144", "abc123^1", "abc123");
+        let result = h2_vacuous_breadcrumb(Ok(&[sym]), "4144", "abc123^1", "abc123");
         assert!(
             result.is_none(),
             "expected None once a declaration was examined; got: {result:?}"
@@ -1806,7 +1808,7 @@ mod tests {
         };
         let symbols = vec![unlocatable("alpha"), unlocatable("beta")];
 
-        let msg = h2_vacuous_breadcrumb(&symbols, "4144", "abc123^1", "abc123")
+        let msg = h2_vacuous_breadcrumb(Ok(&symbols), "4144", "abc123^1", "abc123")
             .expect("an all-unlocatable sweep must produce a breadcrumb");
         assert!(
             msg.contains("4144") && msg.contains("vacuous"),
@@ -1833,9 +1835,44 @@ mod tests {
             },
         ];
         assert_eq!(
-            h2_vacuous_breadcrumb(&mixed, "4144", "abc123^1", "abc123"),
+            h2_vacuous_breadcrumb(Ok(&mixed), "4144", "abc123^1", "abc123"),
             None,
             "a sweep that examined even one declaration is not vacuous"
+        );
+    }
+
+    /// The fourth state: the query itself FAILED. That is neither "corpus
+    /// clean" nor "not wired", so the breadcrumb must name the failure and
+    /// the range it left unexamined, and must not offer the empty answer's
+    /// two explanations.
+    #[test]
+    fn h2_vacuous_breadcrumb_names_a_failed_query_rather_than_a_clean_corpus() {
+        let failure = JCodemunchCallFailed {
+            tool: "get_changed_symbols",
+            detail: "read body: timed out reading response".to_string(),
+        };
+        let msg = h2_vacuous_breadcrumb(Err(&failure), "4144", "abc123^1", "abc123")
+            .expect("a failed query must produce a breadcrumb");
+        assert!(
+            msg.contains("4144") && msg.contains("vacuous"),
+            "breadcrumb must carry the task id and name the sweep vacuous; got: {msg}"
+        );
+        assert!(
+            msg.contains("abc123^1..abc123"),
+            "breadcrumb must name the range left unexamined; got: {msg}"
+        );
+        assert!(
+            msg.contains("timed out reading response"),
+            "breadcrumb must carry the failure detail; got: {msg}"
+        );
+        assert!(
+            !msg.contains("corpus clean OR jcodemunch not wired"),
+            "a failed query must not be explained as an empty answer; got: {msg}"
+        );
+        assert_eq!(
+            msg.lines().count(),
+            1,
+            "breadcrumb must stay one line; got: {msg:?}"
         );
     }
 
