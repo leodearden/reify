@@ -154,8 +154,7 @@ fn value_eval_consumer_reads_minted_selector_finite_after_edit() {
 
 /// The `EndEffectorTrack` literal every R3e/R3f fixture hands to
 /// `peak_deviation_at`, held once so the data and the peaks derived from it
-/// (`FIXTURE_PEAK_AT_LOCATION_0` / `_1`) stay together. A macro rather than a
-/// `const &str` because `concat!` accepts only literals.
+/// (`FIXTURE_PEAK_AT_LOCATION_0` / `_1`) stay together.
 ///
 /// Two locations x three samples, nominal 1.0 throughout. Location 0 deviates
 /// `[0.125, 0.25, 0.0]`: its peak is the NEGATIVE mid-series excursion, so a
@@ -187,16 +186,14 @@ const TRACK_FIXTURE_PROBE_SRC: &str = concat!(
     let track = "#,
     end_effector_track_fixture!(),
     r#"
-    let peak_at_0 = peak_deviation_at(track, 0.0)
+    let peak_at_0 = peak_deviation_at(track, 0)
     let peak_at_1 = peak_deviation_at(track, 1)
 }"#
 );
 
 /// The fixture must give its two locations DIFFERENT peaks — that is what makes
 /// a selector resolved to the wrong location observable in
-/// `assert_peak_resolved`. Pins the discrimination as behaviour, so a data edit
-/// that equalises the locations fails here rather than silently degenerating
-/// every R3e/R3f assertion.
+/// `assert_peak_resolved`.
 #[test]
 fn end_effector_track_fixture_peak_differs_per_location() {
     let compiled = compile_source_with_stdlib(TRACK_FIXTURE_PROBE_SRC);
@@ -231,13 +228,9 @@ fn end_effector_track_fixture_peak_differs_per_location() {
 /// comment above for why the `.ri`-declared `peak_deviation` wrapper can't be
 /// used here).
 ///
-/// `track` is an `@optimized` IDENTITY over an `EndEffectorTrack` ARGUMENT
-/// (`end_effector_track_fixture!`), never one built in the fn body: `eval` (and
-/// `edit_param`, which carries `track` over from its `eval` baseline) get the
-/// dispatched trampoline result, while `eval_cached` and `edit_source` body-
-/// inline the fn (neither dispatches `@optimized` calls). The identity makes
-/// both yield the same `StructureInstance`, so `peak` has one expected value in
-/// every leg.
+/// `track` is an `@optimized` identity over an `EndEffectorTrack` argument
+/// (`end_effector_track_fixture!`), so the dispatched and body-inlined legs
+/// agree.
 const R3E_SRC: &str = concat!(
     r#"
 @optimized("test::r3e_track")
@@ -282,16 +275,16 @@ fn identity_track_fn(
 }
 
 /// Shared assertion for the `peak = peak_deviation_at(track, loc)` consumer
-/// shape used by every R3e/R3f test below. With the
-/// `end_effector_track_fixture!` track, `peak` has four distinguishable
-/// outcomes:
+/// shape used by every R3e/R3f test below. A `Value::Selector` always collapses
+/// to location 0 (`read_location_index`); the `end_effector_track_fixture!`
+/// track carries a second location only so that a wrong resolution can be
+/// seen. `peak` has four distinguishable outcomes:
 ///
 /// - `Value::Undef` — `loc` was read stale, pre-mint (the R3e/R3f regression);
 /// - `Real(0.0)` — the fold seed: `track` was not a `StructureInstance`, or the
 ///   index fell out of range;
 /// - `Real(0.75)` — `loc` resolved to the wrong location (1);
-/// - `Real(0.25)` — `loc` resolved to location 0, the sole end-effector
-///   location (`read_location_index`'s single-effector invariant).
+/// - `Real(0.25)` — `loc` resolved to location 0, the one a Selector maps to.
 ///
 /// Only the last is accepted. A numeric index 0 would give 0.25 too, so this
 /// also asserts `loc` itself resolved to a `Value::Selector` — that is what
