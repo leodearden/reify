@@ -775,13 +775,9 @@ fn end_to_end_tolerance_wiring_threads_promise_diagnostic_cache_and_per_stage_bu
 /// `RealizationCache`. Asserts the cache-populated premise before returning
 /// so a caller's post-op assertion is never vacuous.
 ///
-/// Shared by the `edit_param` / `edit_source` / `clear_realization_cache`
-/// cache-flush tests below (see e.g.
-/// `edit_param_clears_realization_cache_to_prevent_stale_handle_on_subsequent_build_snapshot`)
-/// so a change to the fixture shape or the premise assertion only needs
-/// updating in one place. `module_name` becomes the built module's single
-/// `ModulePath` segment — purely a debug label, since every assertion below
-/// keys on the fixed entity id `"MyDesign"`, not the module path.
+/// `module_name` becomes the built module's single `ModulePath` segment —
+/// purely a debug label, since every assertion keys on the fixed entity id
+/// `"MyDesign"`, not the module path.
 fn engine_with_populated_realization_cache(module_name: &str) -> reify_eval::Engine {
     let module = CompiledModuleBuilder::new(ModulePath::new(vec![module_name.to_string()]))
         .template(step_output_template(1e-6))
@@ -813,306 +809,234 @@ fn engine_with_populated_realization_cache(module_name: &str) -> reify_eval::Eng
     engine
 }
 
-/// Pins the auto-invalidation contract on `Engine::edit_param`'s
-/// realization-cache hook (task 2874).
+/// One body of the γ (#4730) two-body fixture: a template named `name`
+/// whose single named realization is a `Box` whose width READS the Length
+/// param `<name>.w` (default `width_mm`), with a literal `depth_mm`. A
+/// second param, `<name>.label`, is read by nothing — editing it moves no
+/// realization's input cone.
 ///
-/// Pins the production-correctness fix for the reviewer's blocking issue —
-/// `Engine::clear_realization_cache` (engine_admin.rs) and the field
-/// docstring on `Engine::realization_cache` (lib.rs): the cache MUST be
-/// reset on `edit_param` so a subsequent `build_snapshot()` cannot silently
-/// return a stale `GeometryHandleId` pointing at the OLD geometry. The current field
-/// docstring promises "Production callers must therefore either (a) avoid
-/// `build_snapshot` after `edit_param`, or (b) clear `realization_cache`
-/// themselves between the edit and the snapshot rebuild" — but the public
-/// surface offers no clear-cache primitive (the only mutator is internal),
-/// so clause (b) is unreachable and clause (a) defeats `build_snapshot`'s
-/// incremental-rebuild contract. The fix is to auto-flush the cache at the
-/// `edit_param` hook point — mirroring the `feature_tag_table` /
-/// `topology_attribute_table` reset-at-hook-point pattern.
-///
-/// Setup mirrors the cache-population tests above: `step_output_template(1µm)` plus
-/// `MyDesign` template with one Box realization plus
-/// `manufacturing_purpose("manufacturing", 1e-6)`. `MyDesign.thickness : Real`
-/// is the param cell we mutate — it does not need to drive the Box's args for
-/// this test, since the assertion is on cache-state immediately after
-/// `edit_param` returns (NOT on whether a subsequent build produces fresh
-/// geometry). Any `edit_param` invocation against any param cell in the
-/// graph must clear the cache, because the engine cannot know which cells
-/// participate in the realization's input cone without a cross-reference
-/// the current architecture does not maintain.
-///
-/// Sequence:
-///   (a) `engine_with_populated_realization_cache(...)` — eval →
-///       activate_purpose → build → assert
-///       `engine.realization_cache().lookup("MyDesign", ReprKind::BRep,
-///       1e-6, ContentHash(0)).is_some()` (cache populated by the build-time
-///       wiring; pins the test premise).
-///   (b) `engine.edit_param(ValueCellId::new("MyDesign", "thickness"),
-///       Value::Real(<new>)).unwrap()`.
-///   (c) Without calling `build_snapshot` yet, assert
-///       `engine.realization_cache().lookup("MyDesign", ReprKind::BRep,
-///       1e-6, ContentHash(0)).is_none()` — the entry was cleared on edit.
-///
-/// Landed contract: `Engine::edit_param` flushes the realization cache via
-/// `Engine::clear_realization_cache` before any fallible state mutation —
-/// the rejected-edit half of that ordering claim is pinned by
-/// `edit_param_flushes_realization_cache_even_when_rejected_with_cell_not_found`
-/// below. See `Engine::clear_realization_cache` (engine_admin.rs) and
-/// `RealizationCache::clear` (realization_cache.rs) for the exact placement
-/// and the in-place-clear-vs-reseat rationale.
-#[test]
-fn edit_param_clears_realization_cache_to_prevent_stale_handle_on_subsequent_build_snapshot() {
-    // (a) Cold-start eval, activate purpose, build → cache populated by the
-    // build-time wiring; the helper asserts the cache-populated premise
-    // before returning so the post-edit assertion below is never vacuous.
-    let mut engine =
-        engine_with_populated_realization_cache("test_edit_param_clears_realization_cache");
-
-    // (b) Edit any param cell — `MyDesign.thickness` is the param the
-    // template carries. We don't need the param to drive the Box's args for
-    // this test; the assertion below is on cache state immediately after
-    // `edit_param` returns. Auto-invalidation must fire regardless of
-    // whether the edited cell participates in the realization's input cone,
-    // because the engine cannot prove non-participation without per-cell
-    // dependency analysis we do not currently maintain.
-    let thickness_id = ValueCellId::new("MyDesign", "thickness");
-    let _result = engine
-        .edit_param(thickness_id, Value::Real(0.005))
-        .expect("edit_param must succeed against the MyDesign.thickness Real param");
-
-    // (c) Assert the cache was cleared by edit_param. This pins the
-    // edit_param/edit_source realization-cache auto-invalidation contract
-    // (Engine::clear_realization_cache) — without it, the entry persists and
-    // a subsequent build_snapshot() would silently return a stale
-    // GeometryHandleId from the (entity, repr, tol) bucket.
-    assert!(
-        engine
-            .realization_cache()
-            .lookup("MyDesign", ReprKind::BRep, 1e-6, ContentHash(0))
-            .is_none(),
-        "expected edit_param to auto-invalidate the RealizationCache so a \
-         subsequent build_snapshot() cannot return a stale GeometryHandleId. \
-         Lookup at (\"MyDesign\", ReprKind::BRep, 1e-6) returned Some(_) \
-         after edit_param — the entry survived the edit, breaking the \
-         edit_param/edit_source realization-cache auto-invalidation contract \
-         (Engine::clear_realization_cache). Cache len={}, dump: \
-         {:?}",
-        engine.realization_cache().len(),
-        engine.realization_cache(),
-    );
-}
-
-/// Pins the ordering half of the `edit_param` auto-invalidation contract
-/// that
-/// `edit_param_clears_realization_cache_to_prevent_stale_handle_on_subsequent_build_snapshot`
-/// above leaves unexercised: that test only drives the SUCCESS path
-/// (`.expect(...)`), so it cannot distinguish "the flush always fires" from
-/// "the flush fires whenever the edit happens to succeed". `Engine::edit_param`
-/// (engine_edit.rs) calls `self.clear_realization_cache()` unconditionally,
-/// before the `CellNotFound` guard on the cell lookup, so a REJECTED edit
-/// must still flush the cache. Without this pin, a refactor that moved the
-/// flush below the cell-existence / `validate_param_override` guards would
-/// keep every other assertion in this file green while silently letting a
-/// stale `GeometryHandleId` survive a rejected edit.
-///
-/// Sequence:
-///   (a) `engine_with_populated_realization_cache(...)` — eval →
-///       activate_purpose → build → assert cache populated (test premise,
-///       mirrors the sibling tests).
-///   (b) `engine.edit_param(ValueCellId::new("MyDesign", "no_such_param"),
-///       Value::Real(1.0))` against a cell absent from the graph — assert
-///       the result is `Err(EngineError::CellNotFound { .. })`.
-///   (c) Assert the cache was still cleared despite the rejected edit.
-#[test]
-fn edit_param_flushes_realization_cache_even_when_rejected_with_cell_not_found() {
-    // (a) Cold-start eval, activate purpose, build → cache populated; the
-    // helper asserts the cache-populated premise before returning.
-    let mut engine =
-        engine_with_populated_realization_cache("test_edit_param_flushes_cache_even_when_rejected");
-
-    // (b) Edit a cell that does not exist in the graph — must be rejected
-    // with CellNotFound rather than panicking or silently no-op'ing.
-    let bogus_id = ValueCellId::new("MyDesign", "no_such_param");
-    let result = engine.edit_param(bogus_id, Value::Real(1.0));
-    assert!(
-        matches!(result, Err(reify_eval::EngineError::CellNotFound { .. })),
-        "expected edit_param against a nonexistent cell to be rejected with \
-         EngineError::CellNotFound, got {:?}",
-        result,
-    );
-
-    // (c) Assert the cache was still cleared despite the rejected edit —
-    // pins that the flush in Engine::edit_param fires unconditionally,
-    // before the CellNotFound guard, so a rejected edit can never leave a
-    // stale GeometryHandleId behind.
-    assert!(
-        engine
-            .realization_cache()
-            .lookup("MyDesign", ReprKind::BRep, 1e-6, ContentHash(0))
-            .is_none(),
-        "expected edit_param to flush the RealizationCache even when the \
-         edit itself is rejected with CellNotFound. Lookup at \
-         (\"MyDesign\", ReprKind::BRep, 1e-6) returned Some(_) after the \
-         rejected edit_param call — the entry survived, breaking the \
-         edit_param ordering contract (the cache flush must precede the \
-         CellNotFound guard). Cache len={}, dump: {:?}",
-        engine.realization_cache().len(),
-        engine.realization_cache(),
-    );
-}
-
-/// Build a `MyDesign`-shaped template carrying a single named realization
-/// producing one `Box` primitive with caller-specified dimensions (in mm).
-///
-/// Mirrors `my_design_template_with_box_realization()` but parametrises the
-/// box dimensions so
-/// `edit_source_clears_realization_cache_to_prevent_stale_handle_on_subsequent_build`
-/// can build two structurally-identical modules that differ only in
-/// geometry literals (the "different parameter defaults, structurally
-/// identical realization graph" shape the test needs to pin
-/// edit_source's auto-invalidation behaviour against a non-trivial
-/// content-diff).
-fn my_design_template_with_box_realization_dims(
+/// The realization entity equals the template name because `build()`'s
+/// schedule filter matches `rid.entity == template.name`.
+fn body_template_reading_width(
+    name: &str,
     width_mm: f64,
-    height_mm: f64,
     depth_mm: f64,
 ) -> reify_compiler::TopologyTemplate {
     let mm_lit = |v: f64| CompiledExpr::literal(mm(v), Type::length());
     let box_op = CompiledGeometryOp::Primitive {
         kind: PrimitiveKind::Box,
         args: vec![
-            ("width".into(), mm_lit(width_mm)),
-            ("height".into(), mm_lit(height_mm)),
+            (
+                "width".into(),
+                CompiledExpr::value_ref(ValueCellId::new(name, "w"), Type::length()),
+            ),
+            ("height".into(), mm_lit(20.0)),
             ("depth".into(), mm_lit(depth_mm)),
         ],
     };
-    TopologyTemplateBuilder::new("MyDesign")
-        .param("MyDesign", "thickness", Type::dimensionless_scalar(), None)
-        .realization_named("MyDesign", 0, "body", vec![box_op])
+    TopologyTemplateBuilder::new(name)
+        .param(name, "w", Type::length(), Some(mm_lit(width_mm)))
+        .param(name, "label", Type::dimensionless_scalar(), None)
+        .realization_named(name, 0, "body", vec![box_op])
         .build()
 }
 
-/// Pins the auto-invalidation contract on `Engine::edit_source`'s
-/// realization-cache hook — the source-edit sibling of the `edit_param`
-/// contract pinned by
-/// `edit_param_clears_realization_cache_to_prevent_stale_handle_on_subsequent_build_snapshot`
-/// above.
-///
-/// Pins the parallel auto-invalidation contract for the source-edit hot
-/// path, mirroring the parameter-edit contract above. `edit_param` and
-/// `edit_source` both reset the cache via the same `clear_realization_cache`
-/// call (task 2874 single-sourced the reset semantics there), but a
-/// separate test pin per function guards against a future refactor that
-/// keeps the reset in only one of the two functions and silently regresses
-/// the other.
-///
-/// Setup mirrors the `edit_param` test above but exercises
-/// `engine.edit_source(&new_module)` instead of `engine.edit_param(...)`.
-/// The "second module" is built with
-/// the same template shape as the first but with different box-primitive
-/// dimensions — a "different parameter defaults, structurally identical
-/// realization graph" content diff that is realistic for a source-edit
-/// hot path (the user changes geometry literals, not just one param value).
-///
-/// Sequence:
-///   (a) `engine_with_populated_realization_cache(...)` — eval →
-///       activate_purpose → build → assert
-///       `engine.realization_cache().lookup("MyDesign", ReprKind::BRep,
-///       1e-6, ContentHash(0)).is_some()` (cache populated; pins the test premise).
-///   (b) Build a second `CompiledModule` with the same templates and
-///       purposes, but a `MyDesign` realization carrying different Box
-///       dimensions. Call `engine.edit_source(&module2).unwrap()`.
-///   (c) Without calling `build_snapshot` yet, assert
-///       `engine.realization_cache().lookup("MyDesign", ReprKind::BRep,
-///       1e-6, ContentHash(0)).is_none()` — the entry was cleared on edit_source.
-///
-/// Landed contract: `Engine::edit_source` flushes the realization cache via
-/// the same `Engine::clear_realization_cache` hook as `Engine::edit_param`,
-/// but after its own `NotInitialized` guard rather than before it (unlike
-/// `edit_param`, which has no guard preceding the clear) — pinned by
-/// `edit_source_rejects_with_not_initialized_before_flushing_realization_cache`
-/// below. See `Engine::clear_realization_cache` (engine_admin.rs) and
-/// `RealizationCache::clear` (realization_cache.rs) for the exact placement
-/// and the in-place-clear-vs-reseat rationale.
+/// The two-body module: `PartA` (w = 10mm, depth `part_a_depth_mm`) and
+/// `PartB` (w = 20mm, depth 5mm), plus one manufacturing purpose PER
+/// entity. `activate_purpose` is keyed by purpose name, so one shared purpose
+/// would silently bind only the first entity and leave the other uncached.
+fn two_body_module(module_name: &str, part_a_depth_mm: f64) -> reify_compiler::CompiledModule {
+    CompiledModuleBuilder::new(ModulePath::new(vec![module_name.to_string()]))
+        .template(step_output_template(1e-6))
+        .template(body_template_reading_width("PartA", 10.0, part_a_depth_mm))
+        .template(body_template_reading_width("PartB", 20.0, 5.0))
+        .compiled_purpose(manufacturing_purpose("mfg_a", 1e-6))
+        .compiled_purpose(manufacturing_purpose("mfg_b", 1e-6))
+        .build()
+}
+
+/// An engine over [`two_body_module`] after `eval → activate both purposes →
+/// build`, with the mock kernel's op recorder captured before boxing.
+struct TwoCachedBodies {
+    engine: reify_eval::Engine,
+    module: reify_compiler::CompiledModule,
+    ops: std::sync::Arc<std::sync::Mutex<Vec<reify_test_support::mocks::GeometryOpRecord>>>,
+}
+
+impl TwoCachedBodies {
+    fn served(&self, entity: &str) -> Option<reify_ir::KernelHandle> {
+        self.engine
+            .test_terminal_handle(entity, ReprKind::BRep, 1e-6)
+    }
+
+    fn op_count(&self) -> usize {
+        self.ops.lock().unwrap().len()
+    }
+
+    /// The kernel op that produced `handle`.
+    fn producing_op(&self, handle: reify_ir::KernelHandle) -> reify_ir::GeometryOp {
+        self.ops
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|r| r.result_handle == handle.id)
+            .unwrap_or_else(|| panic!("no recorded op produced {handle:?}"))
+            .op
+            .clone()
+    }
+}
+
+/// Builds [`TwoCachedBodies`] and PREMISE-LOCKS that both bodies are cache
+/// resident at `(entity, BRep, 1e-6, NO_OPTIONS)` — without that, every
+/// survival assertion a caller makes is vacuous.
+fn engine_with_two_cached_bodies(module_name: &str) -> TwoCachedBodies {
+    let module = two_body_module(module_name, 5.0);
+    let kernel = MockGeometryKernel::new();
+    let ops = kernel.operations_ref();
+    let mut engine = reify_eval::Engine::new(
+        Box::new(MockConstraintChecker::new()),
+        Some(Box::new(kernel)),
+    );
+    let _eval = engine.eval(&module);
+    engine.activate_purpose("mfg_a", "PartA");
+    engine.activate_purpose("mfg_b", "PartB");
+    let _build = engine.build(&module, ExportFormat::Step);
+
+    let fixture = TwoCachedBodies {
+        engine,
+        module,
+        ops,
+    };
+    for entity in ["PartA", "PartB"] {
+        assert!(
+            fixture.served(entity).is_some(),
+            "test premise: {entity} must be cache-resident at (BRep, 1e-6) after the \
+             cold build; cache dump: {:?}",
+            fixture.engine.realization_cache(),
+        );
+    }
+    fixture
+}
+
+/// γ (#4730, PRD `selective-realization-eviction` D5) supersedes the task
+/// #2874 expression "`edit_param` flushes the whole realization cache" while
+/// keeping its invariant — no stale handle is ever served after an edit. An
+/// edit of `PartA.w` evicts `PartA`'s family and nothing else: `PartB`'s
+/// input cone did not move, so its cached handle stays valid and stays
+/// servable.
 #[test]
-fn edit_source_clears_realization_cache_to_prevent_stale_handle_on_subsequent_build() {
-    // (a) Cold-start eval, activate purpose, build → cache populated
-    // (asserted as the test premise inside the helper). The first
-    // module's shape — `my_design_template_with_box_realization_dims(10.0,
-    // 20.0, 5.0)` — is dimension-for-dimension what the helper's
-    // `my_design_template_with_box_realization()` builds.
-    let mut engine =
-        engine_with_populated_realization_cache("test_edit_source_clears_realization_cache_v1");
+fn edit_param_evicts_only_the_edited_bodys_family_and_the_unaffected_body_still_hits() {
+    let mut fixture = engine_with_two_cached_bodies("test_edit_param_keyed_eviction");
+    let part_b_before = fixture.served("PartB");
 
-    // (b) Build a structurally-similar second module with different Box
-    // dimensions. The geometry literals differ from the first module built
-    // inside the helper, so the realization output would change — but the
-    // test does NOT depend on the content diff: edit_source's
-    // auto-invalidation is unconditional (mirrors edit_param). The diff just
-    // makes the test scenario realistic.
-    let module2 = CompiledModuleBuilder::new(ModulePath::new(vec![
-        "test_edit_source_clears_realization_cache_v2".to_string(),
-    ]))
-    .template(step_output_template(1e-6))
-    .template(my_design_template_with_box_realization_dims(
-        15.0, 25.0, 7.5,
-    ))
-    .compiled_purpose(manufacturing_purpose("manufacturing", 1e-6))
-    .build();
-    let _diff = engine
-        .edit_source(&module2)
-        .expect("edit_source must succeed against a structurally-valid second module");
+    fixture
+        .engine
+        .edit_param(ValueCellId::new("PartA", "w"), mm(30.0))
+        .expect("edit_param must succeed against the PartA.w Length param");
 
-    // (c) Assert the cache was cleared by edit_source. This pins the
-    // edit_param/edit_source realization-cache auto-invalidation contract
-    // (Engine::clear_realization_cache) for edit_source — symmetric with the
-    // edit_param contract pinned by
-    // edit_param_clears_realization_cache_to_prevent_stale_handle_on_subsequent_build_snapshot
-    // above. Without it, the entry persists and a subsequent
-    // build()/build_snapshot() would silently return a stale
-    // GeometryHandleId from the (entity, repr, tol) bucket pointing at the
-    // OLD geometry.
-    assert!(
-        engine
-            .realization_cache()
-            .lookup("MyDesign", ReprKind::BRep, 1e-6, ContentHash(0))
-            .is_none(),
-        "expected edit_source to auto-invalidate the RealizationCache so a \
-         subsequent build()/build_snapshot() cannot return a stale \
-         GeometryHandleId. Lookup at (\"MyDesign\", ReprKind::BRep, 1e-6) \
-         returned Some(_) after edit_source — the entry survived the edit, \
-         breaking the edit_param/edit_source realization-cache \
-         auto-invalidation contract (Engine::clear_realization_cache) (the \
-         reset must fire in BOTH edit_param and edit_source; this test \
-         guards against a future refactor that resets in only one of the \
-         two functions). Cache len={}, dump: {:?}",
-        engine.realization_cache().len(),
-        engine.realization_cache(),
+    assert_eq!(
+        fixture.served("PartA"),
+        None,
+        "the edited body's family must be evicted, or the next build serves its \
+         stale handle; cache dump: {:?}",
+        fixture.engine.realization_cache(),
+    );
+    assert_eq!(
+        fixture.served("PartB"),
+        part_b_before,
+        "the unaffected body's entry must survive the edit unchanged"
     );
 }
 
-/// Pins the guard-ordering half of `edit_source`'s auto-invalidation
-/// contract that
-/// `edit_source_clears_realization_cache_to_prevent_stale_handle_on_subsequent_build`
-/// above leaves unexercised: that test only drives the SUCCESS path, so it
-/// cannot distinguish "the `NotInitialized` guard runs before the flush"
-/// from "the flush runs before the guard" — both leave the cache empty on
-/// success. `Engine::edit_source`'s only rejection path is `NotInitialized`
-/// (`self.eval_state.is_none()`, checked first in the function body,
-/// engine_edit.rs) — documented as preceding the flush, the opposite
-/// placement from `edit_param` (which has no guard preceding its flush).
-///
-/// Unlike the `edit_param` rejected-path pin
-/// (`edit_param_flushes_realization_cache_even_when_rejected_with_cell_not_found`),
-/// this cannot additionally assert "the cache survived the rejected edit":
-/// `edit_source`'s only `return Err` in its entire body is this guard, so a
-/// never-eval'd engine's cache is empty regardless of whether the flush
-/// ran. What this test pins instead: the guard fires — and returns cleanly
-/// rather than panicking — before anything else in the function body,
-/// including the `self.eval_state.as_ref().unwrap()` further down that
-/// would panic were the guard ever removed or reordered past it.
+/// γ (#4730, PRD D5) supersedes task #2874's "a REJECTED `edit_param` still
+/// flushes". A rejected edit moves nothing, so evicting nothing is correct:
+/// both entries are unchanged and the next `build_snapshot` is served
+/// entirely from the cache — not stale, because no input moved.
 #[test]
-fn edit_source_rejects_with_not_initialized_before_flushing_realization_cache() {
+fn rejected_edit_param_evicts_nothing_and_the_next_build_serves_only_cache_hits() {
+    let mut fixture = engine_with_two_cached_bodies("test_rejected_edit_param_evicts_nothing");
+    let before = (fixture.served("PartA"), fixture.served("PartB"));
+
+    let result = fixture
+        .engine
+        .edit_param(ValueCellId::new("PartA", "no_such_param"), Value::Real(1.0));
+    assert!(
+        matches!(result, Err(reify_eval::EngineError::CellNotFound { .. })),
+        "expected CellNotFound for an absent cell, got {result:?}"
+    );
+    assert_eq!(
+        (fixture.served("PartA"), fixture.served("PartB")),
+        before,
+        "a rejected edit must leave every cached entry unchanged"
+    );
+
+    let ops_before = fixture.op_count();
+    let module = fixture.module.clone();
+    fixture.engine.build_snapshot(&module, ExportFormat::Step);
+    assert_eq!(
+        fixture.op_count(),
+        ops_before,
+        "nothing moved, so the build after a rejected edit must dispatch no kernel op"
+    );
+}
+
+/// γ (#4730, PRD D5/D7) supersedes task #2874's "`edit_source` flushes the
+/// whole realization cache". The v2 module changes ONLY `PartA`'s box (its
+/// depth literal); `PartB`'s template is byte-identical. The recompiled body
+/// is evicted, the identical one survives with the same handle, and the
+/// next build re-executes exactly `PartA`'s one op — producing the v2 depth.
+#[test]
+fn edit_source_evicts_the_recompiled_body_and_keeps_the_byte_identical_one() {
+    let mut fixture = engine_with_two_cached_bodies("test_edit_source_keyed_eviction");
+    let part_b_before = fixture.served("PartB");
+
+    let module_v2 = two_body_module("test_edit_source_keyed_eviction_v2", 7.5);
+    fixture
+        .engine
+        .edit_source(&module_v2)
+        .expect("edit_source must succeed against the structurally-valid v2 module");
+
+    assert_eq!(
+        fixture.served("PartA"),
+        None,
+        "the recompiled body's family must be evicted"
+    );
+    assert_eq!(
+        fixture.served("PartB"),
+        part_b_before,
+        "the byte-identical body must survive the recompile with the same handle"
+    );
+
+    let ops_before = fixture.op_count();
+    fixture
+        .engine
+        .build_snapshot(&module_v2, ExportFormat::Step);
+    let new_ops: Vec<_> = fixture.ops.lock().unwrap()[ops_before..]
+        .iter()
+        .map(|r| r.op.clone())
+        .collect();
+    assert_eq!(
+        new_ops.len(),
+        1,
+        "exactly PartA's one op must re-execute; new ops: {new_ops:?}"
+    );
+    assert!(
+        matches!(&new_ops[0], reify_ir::GeometryOp::Box { depth, .. } if *depth == mm(7.5)),
+        "the re-executed box must carry the v2 depth; got {:?}",
+        new_ops[0]
+    );
+}
+
+/// `edit_source`'s only rejection path is `NotInitialized`
+/// (`self.eval_state.is_none()`, checked first in the function body). This
+/// pins that the guard fires — and returns cleanly rather than panicking —
+/// before anything else in the body, including the
+/// `self.eval_state.as_ref().unwrap()` further down that would panic were
+/// the guard ever removed or reordered past it. A never-eval'd engine's
+/// cache is empty either way, so the cache assertion only confirms the
+/// rejected call left no unexpected state behind.
+#[test]
+fn edit_source_rejects_with_not_initialized_before_any_eval() {
     let module = CompiledModuleBuilder::new(ModulePath::new(vec![
         "test_edit_source_not_initialized_guard".to_string(),
     ]))
@@ -1125,10 +1049,6 @@ fn edit_source_rejects_with_not_initialized_before_flushing_realization_cache() 
     let kernel = MockGeometryKernel::new();
     let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
 
-    // No eval() call — eval_state is None, so the NotInitialized guard must
-    // fire (and return cleanly) before anything else in the function body,
-    // including the realization-cache flush and the
-    // `eval_state.as_ref().unwrap()` further down that would otherwise panic.
     let result = engine.edit_source(&module);
     assert!(
         matches!(result, Err(reify_eval::EngineError::NotInitialized)),
@@ -1137,12 +1057,6 @@ fn edit_source_rejects_with_not_initialized_before_flushing_realization_cache() 
          got {:?}",
         result,
     );
-
-    // The cache was never populated (no eval/build occurred), so it is
-    // empty regardless of whether the flush ran — this does not by itself
-    // prove the flush was skipped; that follows from the guard's early
-    // return (see engine_edit.rs), not from this assertion. It does confirm
-    // the rejected call left no unexpected cache state behind.
     assert!(
         engine.realization_cache().is_empty(),
         "expected realization_cache to remain empty after a rejected \
@@ -1203,13 +1117,9 @@ fn clear_realization_cache_public_api_resets_cache_for_production_callers() {
     // NOT be the only consumers.
     engine.clear_realization_cache();
 
-    // (c) Assert the cache was cleared by the public mutator. Mirrors the
-    // post-edit assertions in
-    // edit_param_clears_realization_cache_to_prevent_stale_handle_on_subsequent_build_snapshot
-    // / edit_source_clears_realization_cache_to_prevent_stale_handle_on_subsequent_build
-    // — the cache is keyed on `(entity_id, repr_kind, demanded_tol)` and a
-    // cleared cache returns `None` for every lookup, including exact-key
-    // ones.
+    // (c) Assert the cache was cleared by the public mutator — the cache is
+    // keyed on `(entity_id, repr_kind, demanded_tol)` and a cleared cache
+    // returns `None` for every lookup, including exact-key ones.
     assert!(
         engine
             .realization_cache()
@@ -1321,8 +1231,7 @@ fn eval_then_activate_purpose_then_build_preserves_tolerance_scope_across_intern
 ///       wastage across repeated builds).
 ///
 /// Complements `build_populates_realization_cache_keyed_on_demanded_tolerance`
-/// (which pins that NAMED realizations DO populate the cache) and the existing
-/// `edit_param_clears_realization_cache_...` pin (cache-clear mechanism).
+/// (which pins that NAMED realizations DO populate the cache).
 #[test]
 fn anonymous_realization_does_not_populate_realization_cache_when_lookup_gate_requires_name() {
     // Build a module with an ANONYMOUS realization — `realization(...)` not
@@ -1401,109 +1310,64 @@ fn anonymous_realization_does_not_populate_realization_cache_when_lookup_gate_re
     );
 }
 
-/// Task 3176: end-to-end behavioral pin for the
-/// `edit_param → build_snapshot` freshness contract.
+/// Task #3176's end-to-end `edit → build_snapshot` freshness contract,
+/// re-expressed for γ (#4730, PRD `selective-realization-eviction` D5).
 ///
-/// **What this pins**: the existing test
-/// `edit_param_clears_realization_cache_to_prevent_stale_handle_on_subsequent_build_snapshot`
-/// asserts the cache-clear *mechanism* fires (the cache is empty immediately
-/// after `edit_param` returns). This test asserts the user-visible *behavior*:
-/// that a subsequent `build_snapshot` actually invokes the kernel afresh
-/// (cold-misses on the cleared cache), so the resulting `GeometryHandleId` is
-/// NOT a stale cached one. The two tests are complementary — they guard against
-/// orthogonal regressions.
+/// #3176 edited a param that fed NO body and asserted the kernel re-ran —
+/// a pin of the wholesale flush, under which keyed eviction would correctly
+/// HIT. The invariant it guarded is that the handle a `build_snapshot`
+/// serves after an edit is never stale. Here the edit feeds `PartA` only:
+/// the kernel re-runs exactly `PartA`'s one op, the handle `PartA` now serves
+/// was produced by a Box carrying the NEW width, and `PartB`'s handle is
+/// untouched. A follow-up display-only edit dispatches nothing at all.
 ///
-/// **No re-activation between calls**: `edit_param` does NOT call `eval()` —
-/// it does its own incremental re-evaluation via `reify_expr::eval_expr`.
-/// `build_snapshot` also does NOT call `eval()` (it builds from the existing
-/// snapshot). Additionally, task 3103 (commits cb5c58ff6a → c8e6fe56da) changed
-/// `Engine::eval()` to preserve `active_purpose_bindings` via `mem::take` +
-/// re-inject (`Engine::eval` in `src/engine_eval.rs`), so bindings survive even when an
-/// internal eval round-trip fires. The lifecycle contract is "eval →
-/// activate_purpose → build requires no re-activation" (pinned by
-/// `eval_then_activate_purpose_then_build_preserves_tolerance_scope_across_internal_eval`).
-/// No re-activation is needed at any point in this
-/// test.
-///
-/// Sequence:
-///   (a) eval → activate_purpose → build → capture `ops_after_first`.
-///   (b) Sanity check cache IS populated (proves cache-hit WOULD have fired
-///       without the edit_param invalidation — makes the final assertion
-///       non-vacuous).
-///   (c) `edit_param(thickness, 0.005)` — clears the cache.
-///   (d) `build_snapshot(...)` — must cold-miss → kernel re-executes.
-///   (e) Assert `ops_after_build_snapshot > ops_after_first` (kernel grew,
-///       proving cold-miss and fresh execution rather than stale cache-hit).
+/// No re-activation between calls: neither `edit_param` nor
+/// `build_snapshot` calls `eval()`, and task 3103 made `eval()` preserve
+/// `active_purpose_bindings` anyway.
 #[test]
-fn edit_param_followed_by_build_snapshot_re_executes_kernel_so_geometry_handle_is_not_stale() {
-    let module = CompiledModuleBuilder::new(ModulePath::new(vec![
-        "test_edit_param_then_build_snapshot_kernel_reruns".to_string(),
-    ]))
-    .template(step_output_template(1e-6))
-    .template(my_design_template_with_box_realization())
-    .compiled_purpose(manufacturing_purpose("manufacturing", 1e-6))
-    .build();
+fn edit_param_followed_by_build_snapshot_re_executes_only_the_edited_body_so_no_handle_is_stale() {
+    let mut fixture = engine_with_two_cached_bodies("test_edit_param_then_build_snapshot");
+    let module = fixture.module.clone();
+    let part_b_before = fixture.served("PartB");
 
-    let checker = MockConstraintChecker::new();
-    let kernel = MockGeometryKernel::new();
-    // Grab the recorder BEFORE moving the kernel into the engine — the Arc
-    // keeps it alive across the ownership boundary (established pattern at
-    // tolerance_wiring_e2e.rs line ~307/475).
-    let ops_handle = kernel.operations_ref();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let ops_before = fixture.op_count();
+    fixture
+        .engine
+        .edit_param(ValueCellId::new("PartA", "w"), mm(30.0))
+        .expect("edit_param must succeed against the PartA.w Length param");
+    fixture.engine.build_snapshot(&module, ExportFormat::Step);
 
-    // (a) Cold-start: eval → activate_purpose → build → cache populated.
-    engine.eval(&module);
-    engine.activate_purpose("manufacturing", "MyDesign");
-    engine.build(&module, ExportFormat::Step);
-    let ops_after_first = ops_handle.lock().unwrap().len();
+    assert_eq!(
+        fixture.op_count() - ops_before,
+        1,
+        "exactly PartA's one op must re-execute"
+    );
+    let part_a = fixture
+        .served("PartA")
+        .expect("PartA must be re-cached by the rebuild");
     assert!(
-        ops_after_first >= 1,
-        "test premise: expected first build() to invoke the kernel at least once \
-         (cache miss → realization ops dispatched); got ops_after_first={}",
-        ops_after_first,
+        matches!(
+            fixture.producing_op(part_a),
+            reify_ir::GeometryOp::Box { width, .. } if width == mm(30.0)
+        ),
+        "PartA's served handle must come from a Box with the NEW width, not a stale one"
+    );
+    assert_eq!(
+        fixture.served("PartB"),
+        part_b_before,
+        "PartB's handle must be untouched by an edit that did not feed it"
     );
 
-    // (b) Sanity: cache IS populated after first build — proves a cache-hit
-    // WOULD have fired on the next build WITHOUT the edit_param invalidation.
-    assert!(
-        engine
-            .realization_cache()
-            .lookup("MyDesign", ReprKind::BRep, 1e-6, ContentHash(0))
-            .is_some(),
-        "sanity: expected RealizationCache to contain an entry at \
-         (\"MyDesign\", ReprKind::BRep, 1e-6) after build() — without this the \
-         final assertion is vacuous. Cache len={}, dump: {:?}",
-        engine.realization_cache().len(),
-        engine.realization_cache(),
-    );
-
-    // (c) Edit a param — clears the realization cache (task 2874).
-    // No re-activation needed: edit_param does not call eval(), and
-    // build_snapshot does not call eval() either.
-    let thickness_id = ValueCellId::new("MyDesign", "thickness");
-    engine
-        .edit_param(thickness_id, Value::Real(0.005))
-        .expect("edit_param must succeed against the MyDesign.thickness Real param");
-
-    // (d) build_snapshot must cold-miss on the cleared cache and re-execute
-    // the kernel.
-    engine.build_snapshot(&module, ExportFormat::Step);
-    let ops_after_build_snapshot = ops_handle.lock().unwrap().len();
-
-    // (e) Core assertion: kernel grew — proves build_snapshot cold-missed on
-    // the cache (the edit_param invalidation fired correctly) and called the
-    // kernel again, producing a fresh GeometryHandleId rather than returning
-    // the stale cached one.
-    assert!(
-        ops_after_build_snapshot > ops_after_first,
-        "expected build_snapshot() after edit_param() to cold-miss the \
-         RealizationCache and re-invoke the kernel (ops must grow beyond the \
-         first-build count). ops_after_first={}, ops_after_build_snapshot={} \
-         — kernel op count did not increase, indicating build_snapshot served \
-         a stale cache-hit or never reached execute_realization_ops.",
-        ops_after_first,
-        ops_after_build_snapshot,
+    let ops_before_label = fixture.op_count();
+    fixture
+        .engine
+        .edit_param(ValueCellId::new("PartB", "label"), Value::Real(0.5))
+        .expect("edit_param must succeed against the display-only PartB.label param");
+    fixture.engine.build_snapshot(&module, ExportFormat::Step);
+    assert_eq!(
+        fixture.op_count(),
+        ops_before_label,
+        "a display-only edit moves no realization, so the rebuild dispatches nothing"
     );
 }
 
