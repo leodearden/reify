@@ -4969,6 +4969,66 @@ mod freshness_gate {
         );
     }
 
+    /// The `Err`-arm breadcrumbs of `RealJCodemunchOps::get_untested_symbols`
+    /// and `::get_layer_violations`. Each has one consumer, the lock below it,
+    /// so they live here rather than in `breadcrumbs.rs`, which holds only
+    /// literals the live capstone also reads (its `P1_CALL` doc excludes these).
+    const PUNTESTED_GET_UNTESTED_SYMBOLS: &str = "jcodemunch get_untested_symbols:";
+    const PLAYER_GET_LAYER_VIOLATIONS: &str = "jcodemunch get_layer_violations:";
+
+    /// Runs one jcodemunch-only `pattern` after a successful handshake against
+    /// a responder that errors every `tools/call`, and asserts the PER-CALL
+    /// fail-soft shape: admitted, an empty but PRESENT findings array, and
+    /// `breadcrumb` on stderr.
+    ///
+    /// The index is FRESH because both callers' run sets are jcodemunch-only,
+    /// so a stale or empty index would exit 125 before any `tools/call`.
+    fn assert_per_call_fail_soft(pattern: &str, breadcrumb: &str) {
+        let s = scenario();
+        write_index_db(&s.index_dir, &s.repo_id, Some(&s.live_head), 7);
+
+        let mock = spawn_mock_mcp(|_args| None);
+        let out = s.run(pattern, &["--jcodemunch-url", mock.url()]);
+        mock.stop();
+        let stderr = String::from_utf8_lossy(&out.stderr);
+
+        assert_admitted_after_a_successful_handshake(&out, &stderr);
+        assert!(
+            stderr_has_parseable_findings_array(&stderr),
+            "{pattern} must still print a findings array — an absent one must \
+             not pass for an empty one; stderr:\n{stderr}"
+        );
+        let findings = parse_findings_from_stderr(&stderr);
+        assert!(
+            findings.is_empty(),
+            "the errored op returns Vec::new(), so {pattern}'s array must be \
+             empty; got {findings:?}\nstderr:\n{stderr}"
+        );
+        assert!(
+            stderr.contains(breadcrumb),
+            "the real binary must emit `{breadcrumb}`, the only signal that \
+             tells this empty run from a clean one. If that Err arm's \
+             `eprintln!` was reworded, update the const in freshness_gate.\
+             \nstderr:\n{stderr}"
+        );
+    }
+
+    /// PER-CALL FAIL-SOFT, PUNTESTED — locks the `Err` arm of
+    /// `RealJCodemunchOps::get_untested_symbols` against the real binary.
+    /// HERMETIC and gate-resident.
+    #[test]
+    fn per_call_fail_soft_on_puntested() {
+        assert_per_call_fail_soft("PUNTESTED", PUNTESTED_GET_UNTESTED_SYMBOLS);
+    }
+
+    /// PER-CALL FAIL-SOFT, PLAYER — locks the `Err` arm of
+    /// `RealJCodemunchOps::get_layer_violations` against the real binary.
+    /// HERMETIC and gate-resident.
+    #[test]
+    fn per_call_fail_soft_on_player() {
+        assert_per_call_fail_soft("PLAYER", PLAYER_GET_LAYER_VIOLATIONS);
+    }
+
     /// `--no-jcodemunch` PRECEDENCE — the explicit escape hatch bypasses the
     /// seam entirely, so it must bypass the gate too. An escape hatch that
     /// still hard-failed on index state would not be an escape hatch.
