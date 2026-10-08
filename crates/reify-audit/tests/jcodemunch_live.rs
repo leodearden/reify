@@ -51,7 +51,9 @@
 //! 4. no PER-CALL fail-soft — `jcodemunch <tool>: …`, the `Err` arms of
 //!    `RealJCodemunchOps::{get_changed_symbols, find_references,
 //!    get_dead_code}`, emitted when ONE `tools/call` errors after a SUCCESSFUL
-//!    handshake and that single op returns `Vec::new()`;
+//!    handshake and that single op degrades — `find_references` and
+//!    `get_dead_code` to `Vec::new()`, `get_changed_symbols` to an `Err` that
+//!    P1 records as a Low `P1TaskUnexamined` finding;
 //! 5. `count_symbols(index_dir, repo_id) > 0`.
 //!
 //! Links 3 and 4 are the load-bearing ones, and they are INDEPENDENT layers —

@@ -133,7 +133,12 @@ pub fn check(ctx: &AuditContext) -> Vec<Finding> {
         let symbols = match ctx.jcodemunch.get_changed_symbols(&since_sha, until_sha) {
             Ok(symbols) => symbols,
             Err(failure) => {
-                findings.push(task_unexamined(&meta.task_id, &since_sha, until_sha, &failure));
+                findings.push(task_unexamined(
+                    &meta.task_id,
+                    &since_sha,
+                    until_sha,
+                    &failure,
+                ));
                 continue;
             }
         };
