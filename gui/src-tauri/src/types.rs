@@ -1320,10 +1320,13 @@ pub enum JointBinding {
     /// no `bind()` at all. Construct with [`JointBinding::literal_bound`].
     /// `synth_param_name` is the reserved `__joint_*_v` name (namespace guarded by
     /// `W_KinematicReservedParamName`); it is NOT a resolvable cell id and not a write target.
-    /// `initial_value_si` is the SI value of the literal (e.g. `0.1` for `100mm`), `None` when unbound.
+    /// `initial_value_si` is the SI value of the literal (e.g. `0.1` for `100mm`); `None` when
+    /// unbound, or when the literal does not resolve here (non-builtin unit, compound expression).
     LiteralBound {
         synth_param_name: String,
         initial_value_si: Option<f64>,
+        /// Vestigial wire slot, always `false`; the GUI never reads it, since only
+        /// `ParamBound` has a write target.
         scrubbable: bool,
     },
     /// Joint position is derived from another driving joint (coupling joint).

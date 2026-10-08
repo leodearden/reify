@@ -13,7 +13,7 @@ import type { MechanismDescriptor, JointDescriptor } from '../types';
  *
  * - `param_bound`  → `binding.current_value_si` (falls back to legacy field)
  * - `literal_bound` → `binding.initial_value_si` (the AST literal, shown by the
- *    panel's read-only row; `null` for an unbound joint)
+ *    panel's read-only row; `null` when no literal value is known)
  * - `coupling_derived` / `fixed_no_motion` → `null`
  */
 export function jointCurrentSi(joint: Pick<JointDescriptor, 'binding' | 'current_value_si'>): number | null {

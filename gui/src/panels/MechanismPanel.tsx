@@ -295,7 +295,7 @@ const JointRow: Component<JointRowProps> = (props) => {
   const readOnlyLabel = (): string => {
     if (isLiteralBound()) {
       const disp = siToDisplay(bindingCurrentSi(), kind());
-      return disp === null ? 'unbound' : `literal ${formatDisplayValue(disp, kind())}`;
+      return disp === null ? 'value unknown' : `literal ${formatDisplayValue(disp, kind())}`;
     }
     return kind() === 'coupling' ? 'coupling (derived)' : 'fixed (no motion)';
   };

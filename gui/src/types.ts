@@ -868,7 +868,10 @@ export interface EntityTreeNode {
  * are backward-compat mirrors populated only for `param_bound` joints;
  * they are `null` for `literal_bound`, `coupling_derived`, and `fixed_no_motion`.
  *
- * `literal_bound` is read-only: `synth_param_name` is a reserved name, not a cell id, and the engine sends `scrubbable: false`.
+ * Only `param_bound` has a write target, so it alone is scrubbable. `literal_bound` is read-only:
+ * `synth_param_name` is a reserved name, not a cell id; `initial_value_si` is null when no literal
+ * value is known (unbound, or a literal the engine cannot resolve); `scrubbable` is a vestigial
+ * always-false slot the panel never reads.
  */
 export type JointBinding =
   | { kind: 'param_bound'; param_cell_id: string; current_value_si: number | null }

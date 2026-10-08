@@ -576,16 +576,20 @@ describe('MechanismPanel', () => {
       expect(badge.getAttribute('title')).toMatch(/bind it to a param/i);
     });
 
-    it('an unbound joint (literal_bound with no literal) reads "unbound", not "fixed (no motion)"', () => {
+    it.each([
+      ['a joint with no bind()', '__joint_0_v'],
+      ['bind(y_axis, 50inch), a literal whose unit the engine cannot resolve', '__joint_y_axis_v'],
+    ])('%s has no literal value and reads "value unknown", neither "unbound" nor "fixed"', (_case, synth_param_name) => {
       render(() => (
         <MechanismPanel
-          descriptors={[literalJointDescriptor({}, { synth_param_name: '__joint_0_v', initial_value_si: null })]}
+          descriptors={[literalJointDescriptor({}, { synth_param_name, initial_value_si: null })]}
           onSetParameter={vi.fn()} onPreviewParameter={vi.fn()} onScrubLocal={vi.fn()}
         />
       ));
       expect(screen.queryAllByRole('slider')).toHaveLength(0);
-      const badge = screen.getByText('unbound');
+      const badge = screen.getByText('value unknown');
       expect(badge.getAttribute('title')).toMatch(/bind it to a param/i);
+      expect(screen.queryByText('unbound')).toBeNull();
       expect(screen.queryByText('fixed (no motion)')).toBeNull();
     });
 
