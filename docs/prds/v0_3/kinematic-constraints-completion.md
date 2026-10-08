@@ -436,6 +436,8 @@ pub enum JointBinding {
 }
 ```
 
+*Superseded:* `LiteralBound` is never scrubbable (`scrubbable: false`); see the §8.3 status note.
+
 The synth name follows pattern `__joint_<joint_id>_v`. Engine ensures
 no name collision against user-defined `param` cells (rejection at
 mechanism-build time if a user names a param `__joint_*`; emit
@@ -622,6 +624,8 @@ Phase 7 is dogfood.
   - Prereqs: SIR-α (task 3540) — **cross-PRD `add_dependency` edge**.
 
 ### Phase 5 — GUI slider for literal-bound joints (η)
+
+*Superseded:* literal-bound joints render read-only and their descriptor carries `scrubbable: false`; see the §8.3 status note.
 
 - **η-engine — Extend `JointBinding` enum, descriptor extractor, name-collision detection in engine.rs.**
   - Crates: `gui/src-tauri/src/types.rs`, `gui/src-tauri/src/engine.rs`, `gui/src-tauri/src/commands.rs`.
