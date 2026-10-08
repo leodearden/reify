@@ -1,0 +1,15 @@
+// xi: imported VDB SDF -> sdf_from_samples -> implicit.
+// fixtures/cube20.vdb: a 20 mm cube SDF in SI metres, voxel 0.5 mm, narrow band 3 voxels,
+// so samples are valid to about 11 mm from the centre; the extent stays inside that.
+field def vdb_sdf : Point3 -> Length {
+    source = imported {
+        path = "fixtures/cube20.vdb"
+        format = OpenVDB
+        grid = "sdf"
+    }
+}
+
+structure def ImportedSdf {
+    let f = sdf_from_samples(vdb_sdf)
+    let body = implicit(f, vec3(21mm, 21mm, 21mm), 2mm)
+}
