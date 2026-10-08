@@ -12,6 +12,10 @@
 #              stage's own `rm -f --` call (the xargs batch) and execs the real rm for
 #              every other call (the EXIT trap's cleanup, GC's lock/gen removal) —
 #              isolates a simulated prune-unlink failure from the trap's own cleanup.
+#   findmnt  — records argv; REIFY_TEST_FINDMNT_FAIL=1 simulates findmnt failing (or
+#              being absent); else prints REIFY_TEST_FINDMNT_OPTIONS (default
+#              rw,relatime) as the mount's option list — an EMPTY value prints an
+#              empty line. Keeps the suite hermetic whatever /tmp's real mount options.
 #
 # run_helper captures STDOUT, STDERR, and RC separately:
 #   OUT     — captured stdout from the script
@@ -149,6 +153,23 @@ fi
 exec "${_REAL_RM}" "\$@"
 STUB_EOF
 chmod +x "$STUB_DIR/rm"
+
+# findmnt stub: record argv; REIFY_TEST_FINDMNT_FAIL=1 simulates findmnt failing
+# (including not being installed); otherwise print REIFY_TEST_FINDMNT_OPTIONS as the
+# mount's one-line option list. `${VAR-default}` (no colon), so an empty
+# REIFY_TEST_FINDMNT_OPTIONS prints an EMPTY line rather than the default. Stubbing
+# it keeps the suite hermetic regardless of the real mount options of /tmp.
+cat > "$STUB_DIR/findmnt" << 'STUB_EOF'
+#!/usr/bin/env bash
+echo "findmnt $*" >> "${REIFY_TEST_CALLS_FILE:-/dev/null}"
+if [ "${REIFY_TEST_FINDMNT_FAIL:-}" = "1" ]; then
+    echo "findmnt: SIMULATED failure (REIFY_TEST_FINDMNT_FAIL=1)" >&2
+    exit 1
+fi
+echo "${REIFY_TEST_FINDMNT_OPTIONS-rw,relatime}"
+exit 0
+STUB_EOF
+chmod +x "$STUB_DIR/findmnt"
 
 # ── run_helper ─────────────────────────────────────────────────────────────────
 # Invokes the script under the stub PATH.
@@ -894,6 +915,10 @@ assert "DEPS3: gen debug/deps filename set equals the advancing debug/deps filen
 # Fixtures use fixed past dates: no sleeps, and the window being anchored on
 # the tree rather than on `date` is itself under test (LIVE1).
 #
+# Two guards keep the evidence honest: the stage is skipped when the advancing
+# dir's mount does not maintain atime (LIVE13-17), and a future-dated consult
+# never moves the anchor (LIVE18).
+#
 # FIXTURE RULE: a case with a dead unit also carries a unit consulted at the
 # ANCHOR. Without one, the dead unit IS the newest consult, becomes the anchor
 # and is correctly kept, so a 'gone' assertion would fail for the wrong reason.
@@ -1227,6 +1252,78 @@ assert "LIVE12: <base> is a symlink to a <base>.gen.N dir" \
     bash -c '[ -L "$1" ] && readlink "$1" | grep -qE "[.]gen[.][0-9]+$"' _ "$LIVE_BASE"
 flock -u "$LIVE12_LOCK_FD"
 exec {LIVE12_LOCK_FD}<&-
+
+# LIVE13-17 — the atime guard. Under noatime, last_use degrades to mtime alone and
+# every unchanged registry unit would read as weeks stale, so the stage must skip
+# rather than prune. One fixture shape (an anchor unit plus one dead unit) runs
+# under each mount-option answer; LIVE13 is the control proving the dead unit IS
+# pruned where atime is maintained, so LIVE14-16 cannot pass vacuously.
+LIVE_MOUNT_DEAD=libmountdead-deadbeef00000013.rlib
+_live_mount_case() {
+    _live_case
+    _mint_anchor "$LIVE_PROFILE"
+    _mint_unit "$LIVE_PROFILE" mountdead deadbeef00000013 "$LIVE_DEAD" "$LIVE_DEAD" "$LIVE_MOUNT_DEAD"
+}
+
+_live_mount_case
+_live_refresh
+assert "LIVE13: refresh on a relatime mount exits 0" test "$RC" -eq 0
+assert "LIVE13: control — where atime is maintained the dead unit is pruned" \
+    _none_present "$LIVE_GEN/debug/deps" "$LIVE_MOUNT_DEAD"
+assert "LIVE13: control — the anchor unit survives" \
+    _all_present "$LIVE_GEN/debug/deps" libanchor-00000000000000a1.rlib
+assert "LIVE13: the mount asked about is the advancing dir's (findmnt -T <advancing dir>)" \
+    grep -qE -- "^findmnt( .*)? -T ${LIVE_ADV}( |\$)" "$CALLS_FILE"
+
+_live_mount_case
+REIFY_TEST_FINDMNT_OPTIONS='rw,noatime' _live_refresh
+assert "LIVE14: refresh on a noatime mount exits 0" test "$RC" -eq 0
+assert "LIVE14: on a noatime mount the dead unit survives (no atime, so no liveness evidence)" \
+    _all_present "$LIVE_GEN/debug/deps" "$LIVE_MOUNT_DEAD"
+assert "LIVE14: stderr says the stage was skipped" _stderr_matches 'skip'
+
+_live_mount_case
+REIFY_TEST_FINDMNT_FAIL=1 _live_refresh
+assert "LIVE15: refresh with findmnt failing exits 0" test "$RC" -eq 0
+assert "LIVE15: with findmnt failing the dead unit survives (unknown mount, no evidence)" \
+    _all_present "$LIVE_GEN/debug/deps" "$LIVE_MOUNT_DEAD"
+assert "LIVE15: stderr says the stage was skipped" _stderr_matches 'skip'
+
+_live_mount_case
+REIFY_TEST_FINDMNT_OPTIONS='' _live_refresh
+assert "LIVE16: refresh with findmnt printing nothing exits 0" test "$RC" -eq 0
+assert "LIVE16: with an empty option list the dead unit survives (unknown mount, no evidence)" \
+    _all_present "$LIVE_GEN/debug/deps" "$LIVE_MOUNT_DEAD"
+assert "LIVE16: stderr says the stage was skipped" _stderr_matches 'skip'
+
+_live_mount_case
+REIFY_TEST_FINDMNT_OPTIONS='rw,relatime,nodiratime' _live_refresh
+assert "LIVE17: refresh on a nodiratime mount exits 0" test "$RC" -eq 0
+assert "LIVE17: nodiratime is not noatime — the dead unit is still pruned" \
+    _none_present "$LIVE_GEN/debug/deps" "$LIVE_MOUNT_DEAD"
+
+# LIVE18 — a future-dated consult (clock skew, a stray touch, an extracted archive)
+# must not move the anchor, or every live unit would age out against it: a mass
+# deletion of exactly the E19 class from one outlier. The future unit still counts
+# as ITS OWN unit's use, so it survives.
+_live_case
+_mint_anchor "$LIVE_PROFILE"
+_mint_unit "$LIVE_PROFILE" liveunit 1818181818181801 '2026-03-06 00:00:00' '2026-03-06 00:00:00' \
+    libliveunit-1818181818181801.rlib
+_mint_unit "$LIVE_PROFILE" deadunit deadbeef00000018 "$LIVE_DEAD" "$LIVE_DEAD" \
+    libdeadunit-deadbeef00000018.rlib
+_mint_unit "$LIVE_PROFILE" futureunit 1818181818181802 "$LIVE_COLD" '2099-01-01 00:00:00' \
+    libfutureunit-1818181818181802.rlib
+assert "LIVE18: fixture check — the future-dated fingerprint reads back as later than now" \
+    test "$(stat -c %X "$LIVE_PROFILE/.fingerprint/futureunit-1818181818181802/lib-futureunit")" -gt "$(date +%s)"
+_live_refresh
+assert "LIVE18: refresh exits 0" test "$RC" -eq 0
+assert "LIVE18: the anchor unit and the live unit survive — a future-dated outlier does not move the anchor" \
+    _all_present "$LIVE_GEN/debug/deps" libanchor-00000000000000a1.rlib libliveunit-1818181818181801.rlib
+assert "LIVE18: the future-dated unit itself survives (a future consult still counts as its own use)" \
+    _all_present "$LIVE_GEN/debug/deps" libfutureunit-1818181818181802.rlib
+assert "LIVE18: the dead unit is still pruned (the stage is active)" \
+    _none_present "$LIVE_GEN/debug/deps" libdeadunit-deadbeef00000018.rlib
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Block TRASH: shared-trash litter guard (task 5612). Two asserts, deliberately
