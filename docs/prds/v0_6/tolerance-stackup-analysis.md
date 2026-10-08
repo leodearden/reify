@@ -18,27 +18,35 @@ Carlo; requires assembly graph + statistics").
 The body below is the AS-AUTHORED design record. Where it says "new", "adds" or "proposed" it
 describes the plan, not the tree; they are not current statements of fact. What is LIVE (kept
 current, because `crates/reify-stdlib/src/stackup.rs`, `stackup/rng.rs` and the examples defer
-to it): §0 (scope boundary), §3 (the math and its premises), §4.1 (dispatch shape), §4.2–4.3
-(result keys, invariants) as amended by **Landed deviations** below, and §5 (explicit-chain
-scoping). AS-AUTHORED: §1, §2, §6, §7 (its sketch was realized as the unit and CLI tests in
-`stackup.rs` and `reify-cli/tests/harness_cli/cli_stackup_*.rs`), §8 (a record of what
-landed), §9, §10 and the DESIGN FORKS / RESOLVED DECISIONS blocks.
+to it): §0 (scope boundary), §3 (the math and its premises; the §3.3 contract list as amended
+by **Landed deviations 1–3**), §4.1 (dispatch shape), §4.2–4.3 (result keys, invariants) as
+amended by **Landed deviations** below, §4.4 (error semantics) as amended by **Landed
+deviation 2**, and §5 (explicit-chain scoping). AS-AUTHORED: §1, §2, §6, §7 (its sketch was
+realized as the unit and CLI tests in `stackup.rs` and
+`reify-cli/tests/harness_cli/cli_stackup_*.rs`), §8 (a record of what landed), §9, §10 and the
+DESIGN FORKS / RESOLVED DECISIONS blocks.
 
-**Landed deviations** (measured against `stackup::eval_stackup` and its tests on 2026-10-08).
+**Landed deviations** (measured against `stackup::eval_stackup`, its tests and `reify eval` on
+2026-10-08).
 The numeric contracts hold: worst-case and RSS are asserted to 1e-12 relative (INV-2), the
 `monte_carlo_stackup` result is bit-identical at a fixed seed (INV-3) and pinned by a
-regression golden at N=100k, seed 42, and `examples/tolerance-stackup-3part.ri` asserts
-MC σ within 2% of RSS σ. Three places differ from the text below:
+regression golden at N=100k, seed 42, and
+`crates/reify-cli/tests/harness_cli/cli_stackup_3part.rs` asserts that
+`examples/tolerance-stackup-3part.ri`'s MC σ is within 2% of its RSS σ. Three places differ
+from the text below:
 
 1. **`seed` is positional, not a named argument.** `monte_carlo_stackup(chain, samples, seed,
    spec_min?, spec_max?, sigma_level?)` takes its arguments by position, as the example does
    (`monte_carlo_stackup(chain, 100000, 42, 2.5mm, 3.5mm)`). The `seed: 42` colon form of §2
    and §3.3 is not what ships.
 2. **`E_StackupSeedRequired` was never implemented.** A call with fewer than three arguments
-   is an arity miss and a non-`Int` seed returns `Value::Undef`; neither emits a diagnostic
-   (`stackup::diagnose` documents this). The determinism guarantee holds — there is no
-   wall-clock or default seed — but the §3.3 item 1 and §7.5 claim of a seed-less error
-   diagnostic is unmet. The shipped diagnostics are `E_StackupEmptyChain`,
+   is an arity miss and a non-`Int` seed returns `Value::Undef`; neither emits a stackup
+   diagnostic (`stackup::diagnose` returns `None` below three arguments and lists a non-`Int`
+   seed under "Not diagnosed"). `reify eval` prints the cell as `undef` and exits 0, where §7.5
+   promised `E_StackupSeedRequired` on stderr and exit 1. The determinism guarantee holds —
+   there is no wall-clock or default seed — but the §3.3 item 1 and §7.5 claim of a seed-less
+   error diagnostic is unmet. That is an open gap, not a decision to drop the diagnostic:
+   #8344 tracks it. The shipped diagnostics are `E_StackupEmptyChain`,
    `E_StackupDimMismatch`, `E_StackupBadSign` and `E_StackupBadSamples`.
 3. **Each contributor draws from its own sub-stream.** Every contributor's xoshiro256** is
    seeded from `seed ^ (index · 0x9E3779B97F4A7C15)`, rather than one stream consumed in
@@ -306,11 +314,11 @@ its entries.
 
 ### 4.4 Error semantics
 Diagnostic codes (user-facing, surfaced via `reify eval` stderr like other eval diagnostics):
-`E_StackupSeedRequired`, `E_StackupEmptyChain`, `E_StackupDimMismatch`,
-`E_StackupBadSign` (sign ∉ {+1,−1}), `E_StackupBadSamples` (samples ≤ 0). Malformed
-contributor maps ⇒ the builtin returns `Value::Undef` *and* emits the matching diagnostic
-(the `Value::Undef` half is `reify_stdlib::eval_builtin`'s own contract for wrong argument
-types or counts).
+`E_StackupSeedRequired` (never shipped — see **Landed deviation 2**), `E_StackupEmptyChain`,
+`E_StackupDimMismatch`, `E_StackupBadSign` (sign ∉ {+1,−1}), `E_StackupBadSamples`
+(samples ≤ 0). Malformed contributor maps ⇒ the builtin returns `Value::Undef` *and* emits the
+matching diagnostic (the `Value::Undef` half is `reify_stdlib::eval_builtin`'s own contract for
+wrong argument types or counts).
 
 ---
 
