@@ -82,6 +82,7 @@ pub use engine_constraints::{
 mod cell_eval_ctx;
 mod engine_demand;
 mod engine_edit;
+mod realization_staleness;
 mod engine_eval;
 mod engine_helpers;
 mod resolve_order;
