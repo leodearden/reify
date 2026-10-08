@@ -1567,7 +1567,7 @@ mod tests {
     ///   slice membership alone would turn every `linear_pattern(…)` call into a
     ///   panic on that `expect` — the names would never reach the CSG arm at all.
     ///   That overlap is not otherwise pinned: units.rs's
-    ///   `*_are_disjoint_from_other_families` tests iterate `GEOMETRY_QUERY_NAMES`
+    ///   `builtin_name_families_are_pairwise_disjoint` tests iterate `GEOMETRY_QUERY_NAMES`
     ///   and the other sibling families, but none iterates
     ///   `GEOMETRY_FUNCTION_NAMES` or `GEOMETRY_TOPOLOGY_SELECTOR_NAMES`, so
     ///   assertion (b) of [`arg_slot_keys_are_registered_builtin_names`] is what
