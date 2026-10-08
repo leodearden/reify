@@ -88,17 +88,41 @@
 //! for the MMG3D bookmark (task #3003): if a refinement loop spends >30% of
 //! wallclock in remeshing, swap to MMG3D.
 
-use std::collections::HashMap;
-
-use reify_ir::{ElementOrderTag, GeometryError, Mesh, VolumeConnectivity, VolumeMesh};
+use reify_ir::{ElementOrderTag, GeometryError, Mesh, VolumeMesh};
 
 use crate::background_size_field::BackgroundSizeField;
 use crate::options::MeshingOptions;
 
 #[cfg(has_gmsh)]
+use crate::kernel_real::{ClassifyAngles, build_meshable_region, read_back_tet_mesh};
+#[cfg(has_gmsh)]
 use crate::log_capture::LogCapture;
 #[cfg(has_gmsh)]
 use crate::mesh_size_scope::{GMSH_MESH_SIZE_MIN_DEFAULT, MeshSizeScope};
+
+/// Refine's `classify_surfaces` thresholds: π/12 (15°) for both angles.
+///
+/// Tighter than `mesh_to_volume`'s `CLASSIFY_FEATURE_ANGLE` (π/4) so that
+/// virtually every mesh edge is treated as a "hard" edge. For the unit-cube
+/// test geometry (90° dihedral angles at each edge), this ensures all 12 edges
+/// become 1D curve entities and all 8 cube-corner vertices become 0D point
+/// entities. A π/2 threshold would emit no corner entities at all (gmsh's
+/// sharp-edge test is strictly-greater-than and 90° is NOT > π/2); that is
+/// what broke `mesh_to_volume` in #6200, which is why it no longer uses π/2
+/// either. Before #7447 this path also attached its size hints to those corner
+/// entities; since #7447 sizing comes from the background field, and
+/// `Mesh.MeshSizeFromPoints=0` keeps the corners out of it. π/12 stays
+/// deliberately sharper than π/4 (this path wants every edge hard, not just
+/// the feature edges), so it is NOT folded into the shared constant.
+///
+/// The curve angle is the same π/12 so that vertices at intersections of
+/// curves separated by < 15° are still classified as hard corners; this keeps
+/// the corner count stable across test geometries.
+#[cfg(has_gmsh)]
+const REFINE_CLASSIFY_ANGLES: ClassifyAngles = ClassifyAngles {
+    feature: std::f64::consts::PI / 12.0,
+    curve: std::f64::consts::PI / 12.0,
+};
 
 /// Remesh the volume enclosed by `surface`, sized by a background size field.
 ///
@@ -224,7 +248,12 @@ pub fn refine_volume_with_size_field(
     let tri_node_tags: Vec<u64> = surface.indices.iter().map(|&i| i as u64 + 1).collect();
     ffi::add_elements_2d(surf_tag, 2, &tri_tags, &tri_node_tags)?;
 
-    build_refine_region(&_guard).map_err(|e| log_capture.annotate(e))?;
+    build_meshable_region(
+        &_guard,
+        "refine_volume_with_size_field",
+        REFINE_CLASSIFY_ANGLES,
+    )
+    .map_err(|e| log_capture.annotate(e))?;
 
     // --- Background size field ---
     //
@@ -334,135 +363,11 @@ pub fn refine_volume_with_size_field(
     // `mesher_poison_recovery::a_failed_refine_reports_gmshs_captured_log_not_just_the_last_error`.
     init::mesh_generate_with_recovery(&_guard, 3)?;
 
-    let volume = read_back_refined_volume(&_guard, order).map_err(|e| log_capture.annotate(e))?;
+    let volume = read_back_tet_mesh(&_guard, "refine_volume_with_size_field", order)
+        .map_err(|e| log_capture.annotate(e))?
+        .mesh;
     let _ = ffi::clear();
     Ok(volume)
-}
-
-/// Turn the discrete surface already pushed into gmsh's model into a closed
-/// B-rep region that HXT can fill — refine's own span, classified at π/12.
-///
-/// The [`crate::init::GmshGuard`] is an admission ticket only, as in
-/// `kernel_real::build_meshable_region`. That helper is not reused here because
-/// the classification angles differ by design (see the comment below). Split
-/// out of [`refine_volume_with_size_field`] so this span's failures reach the
-/// caller's `LogCapture` at one seam.
-#[cfg(has_gmsh)]
-fn build_refine_region(_guard: &crate::init::GmshGuard) -> Result<(), GeometryError> {
-    use crate::ffi;
-
-    // --- Classify and create geometry ---
-    //
-    // Use a tighter dihedral-angle threshold (PI/12 ≈ 15°) than
-    // `mesh_to_volume`'s `CLASSIFY_FEATURE_ANGLE` (PI/4) so that virtually
-    // every mesh edge is treated as a "hard" edge.  For the unit-cube test
-    // geometry (90° dihedral angles at each edge), this ensures all 12 edges
-    // become 1D curve entities and all 8 cube-corner vertices become 0D point
-    // entities.  A PI/2 threshold would emit no corner entities at all (gmsh's
-    // sharp-edge test is strictly-greater-than and 90° is NOT > PI/2); that
-    // is what broke `mesh_to_volume` in #6200, which is why it no longer uses
-    // PI/2 either.  Before #7447 this path also attached its size hints to
-    // those corner entities; since #7447 sizing comes from the background
-    // field the caller installs next, and `Mesh.MeshSizeFromPoints=0` keeps the
-    // corners out of it.
-    // PI/12 stays deliberately sharper than PI/4 (this path wants every edge
-    // hard, not just the feature edges), so it is NOT folded into the shared
-    // constant.
-    //
-    // For the `curveAngle` (4th argument) we use the same PI/12 so that
-    // vertices at intersections of curves separated by < 15° are still
-    // classified as hard corners; this keeps the corner count stable across
-    // test geometries.
-    ffi::classify_surfaces(
-        std::f64::consts::PI / 12.0,
-        1,
-        1,
-        std::f64::consts::PI / 12.0,
-        0,
-    )?;
-    ffi::create_geometry(&[])?;
-
-    let surface_tags = ffi::get_entity_tags(2)?;
-    if surface_tags.is_empty() {
-        return Err(GeometryError::OperationFailed(
-            "refine_volume_with_size_field: no dim=2 entities after classify+create_geometry; \
-             surface may be open or non-manifold"
-                .into(),
-        ));
-    }
-
-    let loop_tag = ffi::geo_add_surface_loop(&surface_tags)?;
-    let _vol_tag = ffi::geo_add_volume(&[loop_tag])?;
-    ffi::geo_synchronize()?;
-    Ok(())
-}
-
-/// Read the tets gmsh just generated back out of the process-global model and
-/// remap them onto a [`VolumeMesh`]'s 0-based local indices.
-///
-/// Same lock ticket as [`build_refine_region`], and split out of
-/// [`refine_volume_with_size_field`] for the same reason: one `LogCapture` seam
-/// for the whole readback.
-#[cfg(has_gmsh)]
-fn read_back_refined_volume(
-    _guard: &crate::init::GmshGuard,
-    order: ElementOrderTag,
-) -> Result<VolumeMesh, GeometryError> {
-    use crate::{ffi, init};
-
-    // --- Readback (mirrors mesh_to_volume verbatim) ---
-    let (out_node_tags, coord_buf) = ffi::get_nodes_all()?;
-    if coord_buf.len() != out_node_tags.len() * 3 {
-        return Err(GeometryError::OperationFailed(format!(
-            "refine_volume_with_size_field: get_nodes_all stride mismatch: \
-             node_tags.len()={}, coord_buf.len()={} (expected {})",
-            out_node_tags.len(),
-            coord_buf.len(),
-            out_node_tags.len() * 3,
-        )));
-    }
-    let elem_node_tags = init::read_tet_connectivity("refine_volume_with_size_field", order)?;
-
-    let mut paired: Vec<(u64, [f64; 3])> = out_node_tags
-        .iter()
-        .copied()
-        .zip(coord_buf.chunks_exact(3))
-        .map(|(t, c)| (t, [c[0], c[1], c[2]]))
-        .collect();
-    paired.sort_by_key(|(t, _)| *t);
-
-    let mut tag_to_idx: HashMap<u64, u32> = HashMap::with_capacity(paired.len());
-    let mut vertices: Vec<f32> = Vec::with_capacity(paired.len() * 3);
-    for (idx, (tag, xyz)) in paired.iter().enumerate() {
-        let idx_u32 = u32::try_from(idx).map_err(|_| {
-            GeometryError::OperationFailed(format!(
-                "refine_volume_with_size_field: {} nodes exceeds u32 tet_indices limit",
-                paired.len()
-            ))
-        })?;
-        tag_to_idx.insert(*tag, idx_u32);
-        vertices.extend(xyz.iter().map(|&v| v as f32));
-    }
-
-    let mut tet_indices: Vec<u32> = Vec::with_capacity(elem_node_tags.len());
-    for &tag in &elem_node_tags {
-        let idx = *tag_to_idx.get(&tag).ok_or_else(|| {
-            GeometryError::OperationFailed(format!(
-                "refine_volume_with_size_field: element references unknown node tag {tag}"
-            ))
-        })?;
-        tet_indices.push(idx);
-    }
-
-    Ok(VolumeMesh {
-        vertices,
-        connectivity: VolumeConnectivity::Tet {
-            indices: tet_indices,
-            order,
-        },
-        normals: None,
-        boundary: None,
-    })
 }
 
 /// Stub-build companion: always returns `GeometryError::OperationFailed`

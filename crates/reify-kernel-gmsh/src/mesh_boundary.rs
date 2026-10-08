@@ -16,7 +16,7 @@
 //! `has_gmsh` because it calls `mesh_surface_to_volume_with_diagnostics` which
 //! only exists in the real FFI build.
 
-use reify_ir::{BoundaryAssociation, GeometryError, GeometryHandleId, Mesh, NodeAttachment, VolumeConnectivity, VolumeMesh};
+use reify_ir::{BoundaryAssociation, GeometryError, GeometryHandleId, Mesh, NodeAttachment, VolumeMesh};
 // `MeshInvariant` / `MeshViolationCounts` / `MeshWitness` compose the
 // #4876 watertightness preflight's `GeometryError::MeshContractViolation`.
 // Not re-exported at the `reify_ir` crate root (see
@@ -38,6 +38,9 @@ use std::borrow::Cow;
 #[cfg(has_gmsh)]
 use crate::{
     auto_size::AutoSizeConfig,
+    kernel_real::{
+        FEATURE_EDGE_CLASSIFY_ANGLES, TetReadback, build_meshable_region, read_back_tet_mesh,
+    },
     mesh_size_scope::MeshSizeScope,
     mesh_volume::{compute_thickness_warnings, resolve_mesh_size},
     options::MeshingOptions,
@@ -575,9 +578,9 @@ fn surface_needs_weld(surface: &Mesh, repair_cfg: Option<RepairConfig>) -> bool 
 /// deliberately mirrors the structure of `kernel_real.rs::mesh_to_volume`
 /// (acquiring `GMSH_LOCK`, calling the same FFI sequence) while adding the
 /// entity-membership queries between `mesh_generate(3)` and `ffi::clear()`.
-/// It shares `mesh_to_volume`'s region builder,
-/// `kernel_real::build_meshable_region`, and arms the same
-/// [`crate::log_capture::LogCapture`].
+/// It shares `mesh_to_volume`'s region builder and tet readback,
+/// `kernel_real::build_meshable_region` / `kernel_real::read_back_tet_mesh`,
+/// and arms the same [`crate::log_capture::LogCapture`].
 #[cfg(has_gmsh)]
 fn run_meshing_with_entity_queries(
     surface: &Mesh,
@@ -656,8 +659,14 @@ fn run_meshing_with_entity_queries(
     let tri_node_tags: Vec<u64> = surface.indices.iter().map(|&i| i as u64 + 1).collect();
     ffi::add_elements_2d(surf_tag, 2, &tri_tags, &tri_node_tags)?;
 
-    // Shared with `mesh_to_volume`; the classify-angle rationale lives there.
-    crate::kernel_real::build_meshable_region(&_guard).map_err(|e| log_capture.annotate(e))?;
+    // Shared with `mesh_to_volume`, at the same angles; the classify-angle
+    // rationale lives with the builder.
+    build_meshable_region(
+        &_guard,
+        "mesh_surface_to_volume_with_attribution",
+        FEATURE_EDGE_CLASSIFY_ANGLES,
+    )
+    .map_err(|e| log_capture.annotate(e))?;
 
     // Via `init::mesh_generate_with_recovery`: the mesher is process-global, so
     // a failure here must not outlive this call. See that function.
@@ -687,7 +696,7 @@ fn read_back_attributed_volume(
     element_order: ElementOrderTag,
     attribution: &EntityAttribution,
 ) -> Result<(VolumeMesh, Vec<(u32, NodeAttachment)>), GeometryError> {
-    use crate::{ffi, init};
+    use crate::ffi;
     use std::collections::HashMap;
 
     // -----------------------------------------------------------------------
@@ -739,63 +748,11 @@ fn read_back_attributed_volume(
         }
     }
 
-    // -----------------------------------------------------------------------
-    // Read out the volume mesh (mirrors kernel_real.rs post-mesh readout)
-    // -----------------------------------------------------------------------
-
-    let (all_node_tags, coord_buf) = ffi::get_nodes_all()?;
-    if coord_buf.len() != all_node_tags.len() * 3 {
-        let _ = ffi::clear();
-        return Err(GeometryError::OperationFailed(format!(
-            "gmsh get_nodes_all stride mismatch: node_tags.len()={}, coord_buf.len()={}",
-            all_node_tags.len(),
-            coord_buf.len()
-        )));
-    }
-
-    let elem_node_tags = match init::read_tet_connectivity(
+    let TetReadback { mesh, tag_to_idx } = read_back_tet_mesh(
+        _guard,
         "mesh_surface_to_volume_with_attribution",
         element_order,
-    ) {
-        Ok(tags) => tags,
-        Err(e) => {
-            let _ = ffi::clear();
-            return Err(e);
-        }
-    };
-
-    // Sort by tag → assign local indices
-    let mut paired: Vec<(u64, [f64; 3])> = all_node_tags
-        .iter()
-        .copied()
-        .zip(coord_buf.chunks_exact(3))
-        .map(|(t, c)| (t, [c[0], c[1], c[2]]))
-        .collect();
-    paired.sort_by_key(|(t, _)| *t);
-
-    let mut tag_to_idx: HashMap<u64, u32> = HashMap::with_capacity(paired.len());
-    let mut vertices: Vec<f32> = Vec::with_capacity(paired.len() * 3);
-    for (idx, (tag, xyz)) in paired.iter().enumerate() {
-        let idx_u32 = u32::try_from(idx).map_err(|_| {
-            GeometryError::OperationFailed(format!(
-                "mesh has {} nodes, exceeding u32 limit",
-                paired.len()
-            ))
-        })?;
-        tag_to_idx.insert(*tag, idx_u32);
-        vertices.extend(xyz.iter().map(|&v| v as f32));
-    }
-
-    // Remap connectivity
-    let mut tet_indices: Vec<u32> = Vec::with_capacity(elem_node_tags.len());
-    for &tag in &elem_node_tags {
-        let idx = *tag_to_idx.get(&tag).ok_or_else(|| {
-            GeometryError::OperationFailed(format!(
-                "element references unknown node tag {tag}"
-            ))
-        })?;
-        tet_indices.push(idx);
-    }
+    )?;
 
     // Build node_tag → local_idx based attribution list
     let node_attribution: Vec<(u32, NodeAttachment)> = node_tag_to_attachment
@@ -807,18 +764,7 @@ fn read_back_attributed_volume(
 
     let _ = ffi::clear();
 
-    Ok((
-        VolumeMesh {
-            vertices,
-            connectivity: VolumeConnectivity::Tet {
-                indices: tet_indices,
-                order: element_order,
-            },
-            normals: None,
-            boundary: None,
-        },
-        node_attribution,
-    ))
+    Ok((mesh, node_attribution))
 }
 
 // ---------------------------------------------------------------------------
