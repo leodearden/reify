@@ -3092,11 +3092,15 @@ assert "H9: base_artifact.a present in <lane>/target (clone from base succeeded)
     test -f "$Q_LANE11/target/debug/base_artifact.a"
 
 # ── H10: scoping guard — the fail-safe default acquire is SCOPED to
-# --fresh-checkout (|| explicit --lane-lock) and DOES NOT extend to the bare
-# --reset-in-place control arm (seed-warm-lane.sh:510 gates on
+# --fresh-checkout (|| explicit --lane-lock) and DOES NOT extend to bare
+# --reset-in-place — the B13 control arm AND the merge-spec acquire
+# (seed-warm-lane.sh gates its default acquire on
 # `[ -n "$FRESH_CHECKOUT" ] || [ -n "$LANE_LOCK_OPT" ]`, deliberately NOT
 # $RESET_IN_PLACE; the PRD keeps --lane-lock the explicit opt-in for the
-# reset-in-place arm). H6a/H6b exercise reset-in-place WITH --lane-lock, and
+# reset-in-place arm).
+# Production inv.11 exclusivity does not rest on this default for either pool
+# acquire (DF's outer flock holds it): PRD §9.5 inv.11, 2026-09-11 amendment.
+# H6a/H6b exercise reset-in-place WITH --lane-lock, and
 # E1/H3a exercise reset-in-place with NO held lock — so a leak of the default-on
 # acquire into reset-in-place would silently pass every case above. H10 pins it
 # directly: a live consumer HOLDS ${LANE}.lock (H7's backgrounded flock -x holder
@@ -3122,8 +3126,8 @@ _wait_for_reader_lock "$Q_READY14" 30
 reset_calls
 RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
     run_helper_real "$Q_BASE" "$Q_LANE14" --reset-in-place
-# NOTE: no --lane-lock and no --assume-lane-lock-held -- the bare reset-in-place
-# control arm must NOT default-acquire, so the held lock above is ignored.
+# NOTE: no --lane-lock and no --assume-lane-lock-held -- bare --reset-in-place
+# must NOT default-acquire, so the held lock above is ignored.
 
 assert "H10: reset-in-place + lock HELD + no --lane-lock → exit 0 (default acquire is NOT scoped to reset-in-place; not 75)" \
     test "$RC" -eq 0
