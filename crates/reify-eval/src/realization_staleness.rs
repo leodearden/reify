@@ -783,7 +783,7 @@ mod tests {
         let wa = cell("wa");
         let before = values_of(&[(&wa, 10.0)]);
         let mut graph = EvaluationGraph::default();
-        insert_realization_reading(&mut graph, &rid("A"), &[wa.clone()], None);
+        insert_realization_reading(&mut graph, &rid("A"), std::slice::from_ref(&wa), None);
         stamp_all(&mut graph, &before);
 
         let after = values_of(&[(&wa, 20.0)]);
@@ -800,8 +800,8 @@ mod tests {
         let (wa, wb) = (cell("wa"), cell("wb"));
         let before = values_of(&[(&wa, 10.0), (&wb, 20.0)]);
         let mut graph = EvaluationGraph::default();
-        insert_realization_reading(&mut graph, &rid("A"), &[wa.clone()], None);
-        insert_realization_reading(&mut graph, &rid("B"), &[wb.clone()], None);
+        insert_realization_reading(&mut graph, &rid("A"), std::slice::from_ref(&wa), None);
+        insert_realization_reading(&mut graph, &rid("B"), std::slice::from_ref(&wb), None);
         stamp_all(&mut graph, &before);
 
         let after = values_of(&[(&wa, 30.0), (&wb, 20.0)]);
@@ -821,7 +821,7 @@ mod tests {
         let wa = cell("wa");
         let values = values_of(&[(&wa, 10.0)]);
         let mut graph = EvaluationGraph::default();
-        insert_realization_reading(&mut graph, &rid("A"), &[wa.clone()], None);
+        insert_realization_reading(&mut graph, &rid("A"), std::slice::from_ref(&wa), None);
 
         let result = scoped(&graph, &values, &values, &HashSet::new());
 
@@ -837,7 +837,7 @@ mod tests {
         let wa = cell("wa");
         let executed = values_of(&[(&wa, 10.0)]);
         let mut graph = EvaluationGraph::default();
-        insert_realization_reading(&mut graph, &rid("A"), &[wa.clone()], None);
+        insert_realization_reading(&mut graph, &rid("A"), std::slice::from_ref(&wa), None);
         stamp_all(&mut graph, &executed);
         let moved = values_of(&[(&wa, 20.0)]);
         let pending = HashSet::from([rid("A")]);
@@ -858,7 +858,7 @@ mod tests {
         let wa = cell("wa");
         let values = values_of(&[(&wa, 10.0)]);
         let mut graph = EvaluationGraph::default();
-        insert_realization_reading(&mut graph, &rid("A"), &[wa.clone()], None);
+        insert_realization_reading(&mut graph, &rid("A"), std::slice::from_ref(&wa), None);
         stamp_all(&mut graph, &values);
 
         let result = scoped(&graph, &values, &values, &HashSet::from([rid("Ghost")]));
@@ -873,8 +873,8 @@ mod tests {
     fn scoped_equals_unscoped_over_an_edit_sequence() {
         let cells = [cell("c0"), cell("c1"), cell("c2"), cell("c3")];
         let mut graph = EvaluationGraph::default();
-        insert_realization_reading(&mut graph, &rid("A"), &[cells[0].clone()], None);
-        insert_realization_reading(&mut graph, &rid("B"), &[cells[1].clone()], None);
+        insert_realization_reading(&mut graph, &rid("A"), std::slice::from_ref(&cells[0]), None);
+        insert_realization_reading(&mut graph, &rid("B"), std::slice::from_ref(&cells[1]), None);
         insert_realization_reading(
             &mut graph,
             &rid("C"),
@@ -888,7 +888,7 @@ mod tests {
             (&cells[3], 4.0),
         ]);
         stamp_all(&mut graph, &values);
-        insert_realization_reading(&mut graph, &rid("D"), &[cells[3].clone()], None);
+        insert_realization_reading(&mut graph, &rid("D"), std::slice::from_ref(&cells[3]), None);
 
         // (cell index, new value, build after the edit)
         let steps: [(usize, f64, bool); 9] = [
