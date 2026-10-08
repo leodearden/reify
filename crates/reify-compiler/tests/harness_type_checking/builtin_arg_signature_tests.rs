@@ -792,9 +792,9 @@ fn statically_invisible_primitive_operand_stays_silent_at_compile_time() {
 /// renders its `{builtin}` prefix from that kind's `Display`
 /// (`crates/reify-eval/src/geometry_ops.rs`'s `prim_box` passes `kind` as
 /// `kind_label`; the `PrimitiveKind::Box` arm of its `Display` impl in
-/// `crates/reify-compiler/src/types.rs` writes `"box"`), so
-/// eval says `box:` for a bare `box_centered(20, 20, 10)`. The compile layer is
-/// keyed on the CALL, so it says `box_centered:`.
+/// `crates/reify-compiler/src/types.rs` writes `"box"`), so eval says `box:` for
+/// a bare `box_centered(20, 20, 10)`. The compile layer is keyed on the CALL, so
+/// it says `box_centered:`.
 ///
 /// This is the ONE place decision D9's "byte-identical" wording does NOT hold,
 /// and it holds this way DELIBERATELY: the compile layer knows the name that
@@ -1175,11 +1175,11 @@ fn pattern_value_forms_give_no_arg_type_mismatch() {
 /// and the second instance of that class. `circular_pattern` lowers to
 /// `PatternKind::Circular`, whose `Display` — the eval layer's `kind_label` — is
 /// `"circular"` (the `PatternKind::Circular` arm of its `Display` impl in
-/// `crates/reify-compiler/src/types.rs`), so eval says
-/// `circular:` where this layer says `circular_pattern:`. `PatternKind::Mirror`
-/// displays as `"mirror"` (the `PatternKind::Mirror` arm of the same `Display`
-/// impl), so for `mirror` the two layers agree
-/// byte-for-byte and decision D9's "byte-identical" wording holds unmodified.
+/// `crates/reify-compiler/src/types.rs`), so eval says `circular:` where this
+/// layer says `circular_pattern:`. `PatternKind::Mirror` displays as `"mirror"`
+/// (the `PatternKind::Mirror` arm of the same `Display` impl), so for `mirror`
+/// the two layers agree byte-for-byte and decision D9's "byte-identical" wording
+/// holds unmodified.
 ///
 /// Both halves are pinned — the divergence AND its absence — because a reader
 /// who saw only the divergence might "fix" it in the wrong direction, by
