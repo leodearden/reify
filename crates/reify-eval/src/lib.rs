@@ -626,7 +626,7 @@ pub struct Engine {
     /// (third assertion) and
     /// `rejected_edit_param_does_not_wipe_the_changed_realization_record`.
     ///
-    /// Produced by `engine_edit::compute_changed_realizations` (which
+    /// Produced by `realization_staleness::compute_changed_realizations` (which
     /// recomputes the GHR-β input-cone fold against the post-edit context
     /// and compares it to α's stored `RealizationNodeData.input_cone_hash`),
     /// and consumed by the SUBSEQUENT build — which is why

@@ -104,7 +104,7 @@ pub fn compute_dirty_cone(
 ///   Isosurface (deps.rs:210-214). Re-seeded onto a dedicated realization
 ///   frontier so ITS own fan-out is walked too. Without this a ComputeNode
 ///   consuming a realization two hops downstream of the moved one is never
-///   reached: `engine_edit::compute_changed_realizations` folds only a
+///   reached: `realization_staleness::compute_changed_realizations` folds only a
 ///   realization's OWN op args and is blind to cross-`Sub` geometry refs, so
 ///   the downstream realization is not in the caller's seed set on its own
 ///   merit either.
@@ -147,7 +147,7 @@ pub fn compute_dirty_cone(
 /// eval while unaffected consumers keep their cached result.
 ///
 /// The seed is `Engine::last_changed_realizations`, produced by
-/// `engine_edit::compute_changed_realizations`. That helper compares the
+/// `realization_staleness::compute_changed_realizations`. That helper compares the
 /// recomputed GHR-β INPUT-cone hash against α's stored
 /// `RealizationNodeData::input_cone_hash` — deliberately NOT the static
 /// `RealizationNodeData::content_hash`, which is a Debug render of the op IR
@@ -1057,7 +1057,7 @@ mod tests {
     /// Seeding only `{R0}` must reach `Compute(C1)` AND `Value(b)` two hops
     /// downstream. This is the UNDER-eviction direction the frontier walk
     /// fixes, and it cannot be papered over at the caller:
-    /// `engine_edit::compute_changed_realizations` folds only a realization's
+    /// `realization_staleness::compute_changed_realizations` folds only a realization's
     /// OWN op args and is blind to cross-`Sub` geometry refs, so `R1` is not in
     /// the seed set on its own merit either. Without the re-seed arm `C1` is
     /// never evicted and serves STALE GEOMETRY — the exact failure β exists to

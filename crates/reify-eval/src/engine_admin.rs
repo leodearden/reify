@@ -2112,7 +2112,7 @@ impl Engine {
     /// INPUT-cone comparison, not the static
     /// `RealizationNodeData::content_hash` diff that
     /// [`Engine::last_diff_value_cells`]' realization analogue would give —
-    /// see `engine_edit::compute_changed_realizations` for why the static
+    /// see `realization_staleness::compute_changed_realizations` for why the static
     /// hash provably never moves on a value-driven change.
     ///
     /// Only available under `#[cfg(any(test, feature = "test-instrumentation"))]`.

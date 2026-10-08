@@ -13897,7 +13897,7 @@ fn compute_realization_upstream_values_hash(
 /// walk can call it using graph-resident `RealizationNodeData.operations`
 /// (which is the same type but is not wrapped in a `RealizationDecl`).
 ///
-/// `pub(crate)` for the same reason: `engine_edit.rs`'s
+/// `pub(crate)` for the same reason: `realization_staleness.rs`'s
 /// `compute_changed_realizations` (selective-realization-eviction task β)
 /// recomputes the input-cone hash over graph-resident ops and compares it
 /// against α's stored `RealizationNodeData.input_cone_hash`. PRD D1 forbids a
