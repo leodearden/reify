@@ -2364,7 +2364,8 @@ assert "P3c: build/cxx-AAAA/output WAS relocated in this same run (guards non-va
 # --fresh-checkout (esc-5214/task 5354 fail-safe flip: the #5223 --lane-lock
 # guard was opt-in and thus bypassable by a caller that simply omitted it — the
 # exact esc-5214 acquire-path clobber). --lane-lock stays accepted (implied under
-# --fresh-checkout; still the explicit opt-in for the --reset-in-place control arm).
+# --fresh-checkout; still the explicit opt-in for --reset-in-place, the B13
+# control arm AND the merge-spec acquire).
 #
 # Uses run_helper_real (real fixture: a non-empty <lane_dir>/target containing
 # a sentinel file) so the mv/clobber actually executes or is actually refused.
@@ -2391,9 +2392,9 @@ assert "P3c: build/cxx-AAAA/output WAS relocated in this same run (guards non-va
 # is a contradiction (usage error, exit 2).
 # H10 (task 5354, NEW) pins the complementary SCOPING property: the fail-safe
 # default acquire is gated on --fresh-checkout || --lane-lock and does NOT extend
-# to the bare --reset-in-place control arm — a held lock is ignored there (exit 0,
-# not 75), the property H6a/H6b (reset-in-place WITH --lane-lock) and E1/H3a
-# (reset-in-place, no held lock) leave unpinned.
+# to bare --reset-in-place (B13 control arm AND merge-spec acquire) — a held
+# lock is ignored there (exit 0, not 75), the property H6a/H6b (reset-in-place
+# WITH --lane-lock) and E1/H3a (reset-in-place, no held lock) leave unpinned.
 # H11/H12/H13 (task 5568, NEW) pin the lane-lock refusal's own discriminant.
 # The normative statement — why 75 is the wrong code, why the flag is opt-in
 # rather than an unconditional flip, and the dark-factory arm — lives in ONE
