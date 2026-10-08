@@ -316,9 +316,11 @@ pub trait AdaptiveProblem {
 
 /// Canonical Dörfler bulk-marking fraction θ = 0.5 (the task default).
 ///
-/// "Mark the smallest set of elements whose summed indicators reach half the
-/// global indicator." Pass this to [`mark_dorfler`] / [`run_adaptive_refinement`]
-/// unless a caller overrides it.
+/// θ is the fraction of `Σ_e w_e` — the per-element marking weights,
+/// accumulated linearly — that the marked set must reach. For Z-Z weights
+/// `w_e = η_e` that set also captures at least θ of `Σ_e η_e²`, the energy the
+/// global indicator is built from (see [`mark_dorfler`]). Pass this to
+/// [`mark_dorfler`] / [`run_adaptive_refinement`] unless a caller overrides it.
 pub const DORFLER_THETA: f64 = 0.5;
 
 /// Dörfler ("bulk") marking: select the smallest set of elements whose summed
@@ -332,6 +334,15 @@ pub const DORFLER_THETA: f64 = 0.5;
 /// 3. Accumulate from the largest, marking each visited element, and stop as
 ///    soon as the running sum reaches `theta * total`.
 /// 4. Return the marked indices sorted **ascending**.
+///
+/// # Linear accumulation is deliberate
+///
+/// For any non-negative weights the descending-prefix set marked here also
+/// satisfies `Σ_M w² ≥ θ Σ w²` at the same θ, and contains the minimal such
+/// set: a valid, non-minimal Dörfler set. Pinned by
+/// `the_linear_dorfler_set_meets_the_squared_bulk_criterion_and_contains_the_minimal_squared_set`
+/// in `tests/adaptive_refinement_tests.rs`; rationale and measurements in
+/// `docs/prds/v0_4/a-posteriori-error-estimation.md` (Dörfler amendment).
 ///
 /// # Fail-closed: non-finite indicators are excluded, not ordered
 ///
