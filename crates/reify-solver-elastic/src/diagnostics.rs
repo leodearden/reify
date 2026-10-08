@@ -299,7 +299,8 @@ pub const MIN_TET_SHAPE_QUALITY: f64 = 1e-8;
 /// signed volume and `ℓ_rms` the RMS of its 6 edge lengths.
 ///
 /// `q` is 1 for a regular tet, independent of scale, tends to 0 for slivers, needles,
-/// caps and flat tets, and changes sign with the node ordering. Coincident points give
+/// caps and flat tets, and changes sign with the node ordering. A tet with two or three
+/// coincident nodes has q = 0; all four coincident, or a non-finite coordinate, gives
 /// NaN.
 pub fn tet_shape_quality(phys: &[[f64; 3]; 4]) -> f64 {
     const EDGES: [(usize, usize); 6] = [(0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3)];
@@ -317,21 +318,25 @@ pub struct DegenerateTet {
     /// Index of the element in the mesh's tet list.
     pub element_id: usize,
     /// Its [`tet_shape_quality`] ORIENTED against the mesh: negative means the tet is
-    /// inverted relative to the rest of the mesh, NaN means non-finite geometry.
+    /// inverted relative to the rest of the mesh, NaN means a non-finite coordinate or
+    /// all four nodes coincident.
     pub quality: f64,
 }
 
 impl fmt::Display for DegenerateTet {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let shape = if self.quality < 0.0 {
-            "inverted relative to the rest of the mesh"
+        let cause = if self.quality.is_nan() {
+            "it has a non-finite coordinate or all four nodes coincident"
+        } else if self.quality < 0.0 {
+            "it is inverted relative to the rest of the mesh: folded, or its node ordering \
+             disagrees with the other tets'"
         } else {
-            "a sliver, needle or flat tet"
+            "it is a sliver, needle or flat tet"
         };
         write!(
             f,
             "element {} has oriented shape quality q = 6√2·V/ℓ_rms³ = {:e}, failing the \
-             minimum q ≥ {MIN_TET_SHAPE_QUALITY:e} (it is {shape})",
+             minimum q ≥ {MIN_TET_SHAPE_QUALITY:e} ({cause})",
             self.element_id, self.quality
         )
     }
@@ -341,8 +346,11 @@ impl fmt::Display for DegenerateTet {
 ///
 /// Orientation is relative to the mesh: each tet's [`tet_shape_quality`] is signed by the
 /// mesh's total signed volume, so a consistently mirrored mesh passes, matching the
-/// orientation-agnostic `|det J|` of assembly. A NaN quality fails closed. Every index in
-/// `tets` must be in range for `coords`, as for assembly.
+/// orientation-agnostic `|det J|` of assembly. This makes consistent node ordering a
+/// requirement on the input: every tet must share one orientation, and a tet ordered
+/// against the rest is rejected as inverted even when the mesh does not fold. A NaN
+/// quality fails closed. Every index in `tets` must be in range for `coords`, as for
+/// assembly.
 pub fn find_degenerate_tet(coords: &[[f64; 3]], tets: &[[usize; 4]]) -> Option<DegenerateTet> {
     let nodes = |tet: &[usize; 4]| tet.map(|n| coords[n]);
     let total_signed_volume: f64 = tets.iter().map(|t| tet_signed_volume_p1(&nodes(t))).sum();
@@ -725,19 +733,6 @@ mod tests {
     }
 
     #[test]
-    fn sub_tenth_mm_box_mesh_would_have_failed_the_old_absolute_volume_threshold() {
-        let (unit_coords, tets) = freudenthal_box([1.0, 0.5, 0.25], [2, 2, 2]);
-        let coords = scaled(&unit_coords, 1e-4);
-        for &tet in &tets {
-            let volume = crate::result::tet_volume_p1(&tet_nodes(&coords, tet));
-            assert!(
-                volume < 1e-12,
-                "premise: every tet volume < 1e-12, got {volume}"
-            );
-        }
-    }
-
-    #[test]
     fn find_degenerate_tet_flags_an_appended_flat_tet() {
         let (coords, mut tets) = freudenthal_box([1.0, 0.5, 0.25], [2, 2, 2]);
         // Nodes 0, 1, 4, 3 are hex (0,0,0)'s z = 0 bottom face.
@@ -803,6 +798,11 @@ mod tests {
             tets[d.element_id].contains(&poisoned),
             "flagged element {} must reference the NaN node {poisoned}",
             d.element_id
+        );
+        let message = d.to_string();
+        assert!(
+            message.contains("non-finite") && !message.contains("sliver"),
+            "a NaN quality must be reported as non-finite geometry, got: {message}"
         );
     }
 

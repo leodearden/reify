@@ -1697,6 +1697,10 @@ fn aabb(coords: &[[f64; 3]]) -> ([f64; 3], [f64; 3]) {
 /// `coords` widens all `vertices` (stride 3, f32→f64 via `vertex_f64`);
 /// `tet_connectivity` reshapes `tet_indices.chunks_exact(4)` into `[usize; 4]`.
 ///
+/// Node ordering is passed through, not normalised. The producer must emit
+/// consistently oriented tets: the solve's degenerate-tet gate
+/// ([`find_degenerate_tet`]) rejects a tet ordered against the rest of the mesh.
+///
 /// **Orphan compaction (task 5008 GAP B).** After the checks above, any
 /// vertex NOT referenced by at least one tet is DROPPED from `coords` and
 /// `tet_connectivity` is renumbered accordingly. A gmsh-realized tet mesh can
@@ -3712,7 +3716,7 @@ fn characteristic_sizes_from_solver_mesh(coords: &[[f64; 3]], tets: &[[usize; 4]
 /// Task 4902's uniform lane stays exactly as it is and remains the fallback.
 /// The two differ in every axis that matters — mesh source (realized
 /// `VolumeMesh` vs synthetic grid), refine mechanism (gmsh size-field remesh
-/// vs per-axis grid doubling), error type ([`RefineError`] vs [`DegenerateTet`]),
+/// vs per-axis grid doubling), error type ([`RealizedLaneError`] vs [`DegenerateTet`]),
 /// and BC model (coordinate re-derivation per remesh vs stable node indices)
 /// — so folding them behind one struct would mean a runtime enum in every
 /// method and would put 4902's already-tested fallback behaviour at risk on a
@@ -3865,13 +3869,42 @@ impl RealizedAdaptiveProblem {
     }
 }
 
+/// Why a [`RealizedAdaptiveProblem`] seam call failed. The wiring site treats
+/// both variants alike: it warns, naming this error, and re-runs on the
+/// uniform lane.
+#[derive(Debug)]
+pub(crate) enum RealizedLaneError {
+    /// The gmsh remesh failed, or produced a mesh this crate cannot widen.
+    Remesh(reify_solver_elastic::RefineError),
+    /// The current realized mesh failed the shared solve's degenerate-tet gate.
+    DegenerateMesh(DegenerateTet),
+}
+
+impl From<reify_solver_elastic::RefineError> for RealizedLaneError {
+    fn from(error: reify_solver_elastic::RefineError) -> Self {
+        Self::Remesh(error)
+    }
+}
+
+impl std::fmt::Display for RealizedLaneError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Remesh(error) => error.fmt(f),
+            Self::DegenerateMesh(degenerate) => write!(
+                f,
+                "the realized mesh failed the solve's degenerate-tet gate: {degenerate}"
+            ),
+        }
+    }
+}
+
 impl AdaptiveProblem for RealizedAdaptiveProblem {
     /// A gmsh remesh CAN fail at runtime (an open or non-manifold surface,
-    /// a gmsh FFI error, or libgmsh absent from this build —
-    /// `RefineError::GmshUnavailable` and `RefineError::Gmsh(..)` are
-    /// distinct, already-modelled variants). The wiring site catches this and
-    /// re-runs on the uniform lane rather than failing the solve.
-    type Error = reify_solver_elastic::RefineError;
+    /// a gmsh FFI error, or libgmsh absent from this build), and the realized
+    /// mesh can fail the shared solve's degenerate-tet gate. The wiring site
+    /// catches either and re-runs on the uniform lane rather than failing the
+    /// solve.
+    type Error = RealizedLaneError;
 
     /// Solve on the CURRENT realized mesh and estimate the Z-Z error.
     ///
@@ -3935,13 +3968,7 @@ impl AdaptiveProblem for RealizedAdaptiveProblem {
             // Synthetic-grid override is meaningless on the realized path.
             None,
         )
-        // Same `Gmsh(OperationFailed)` mapping as `refine`'s non-widenable
-        // remesh: the wiring site warns and falls back to the uniform lane.
-        .map_err(|degenerate| {
-            reify_solver_elastic::RefineError::Gmsh(reify_ir::GeometryError::OperationFailed(
-                format!("the realized mesh failed the solve's degenerate-tet gate: {degenerate}"),
-            ))
-        })?;
+        .map_err(RealizedLaneError::DegenerateMesh)?;
 
         let elements = isotropic_stress_elements(
             &fea.coords,
@@ -6916,8 +6943,8 @@ mod tests {
     }
 
     /// Acceptance (d), realized lane: the shared solve rejects a degenerate
-    /// mesh with the `RefineError` the wiring site already turns into a
-    /// warning plus uniform-lane fallback.
+    /// mesh with an error the wiring site turns into a warning plus
+    /// uniform-lane fallback.
     #[test]
     fn realized_adaptive_problem_rejects_degenerate_mesh_before_solving() {
         let iso = IsotropicElastic {
@@ -6946,13 +6973,12 @@ mod tests {
         .expect("a widenable P1 tet mesh seeds a RealizedAdaptiveProblem");
 
         match problem.solve_and_estimate() {
-            Err(reify_solver_elastic::RefineError::Gmsh(
-                reify_ir::GeometryError::OperationFailed(message),
-            )) => assert!(
-                message.contains(&format!("{MIN_TET_SHAPE_QUALITY:e}")),
-                "the error must carry the gate's diagnostic, got: {message}"
+            Err(RealizedLaneError::DegenerateMesh(degenerate)) => assert!(
+                degenerate.quality < MIN_TET_SHAPE_QUALITY,
+                "reported quality {} must fail the gate",
+                degenerate.quality
             ),
-            other => panic!("expected the degenerate-tet gate's RefineError, got {other:?}"),
+            other => panic!("expected the degenerate-tet gate's error, got {other:?}"),
         }
     }
 
@@ -14249,7 +14275,9 @@ mod tests {
         assert!(
             matches!(
                 err,
-                reify_solver_elastic::RefineError::SizeHintsLengthMismatch { .. }
+                RealizedLaneError::Remesh(
+                    reify_solver_elastic::RefineError::SizeHintsLengthMismatch { .. }
+                )
             ),
             "expected SizeHintsLengthMismatch, got: {err:?}",
         );
