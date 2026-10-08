@@ -103,7 +103,7 @@ the solve returns a hollow result (#6660; #7417 was folded into #6660).
 | A grid discriminator in `ModalCacheKey` | **ABSENT** — leaf ζ adds it | §2. Without it a warm engine would reuse an assembly from a different grid. |
 | Persistent FEA cache keys cover the new inputs | **Exists** | `engine_eval.rs::persistent_cache_key` hashes every evaluated argument value. Modal is not persisted. |
 | `max(result.displacement)` reads a deflection | **Exists** | `GantryFea.defl_cant` in `printer.ri`. |
-| Static P2, and Jacobi-CG converging on a thin plate | **Unverifiable today** — η is staged behind it | #7075 is pending; the 800×500×12 box on linear tets does not converge in 2000 iterations on main. |
+| Static P2, and Jacobi-CG converging on a thin plate | **Unverifiable today** — η is staged behind it | #7075 is pending; the 800×500×12 box on linear tets does not converge in 2000 iterations on main. (amended 2026-10-08 by docs/prds/v0_6/elastic-static-solver-performance.md) The Jacobi-CG non-convergence is resolved by the tiered solve of `docs/prds/v0_6/elastic-static-solver-performance.md` (its leaves β and ν); the converging linear solve it provides is what η's probe now runs against. |
 | Body overload from the CLI | **Prerequisite for ι only** | #6660 (#7417 was folded into #6660). |
 | A coordinate kind solving at sub-instance scope with a non-default argument | **To probe at decompose** (λ only) | `unfold/optimized_instance_reuse.rs` reuses the template's solved value only when inputs match. |
 
@@ -302,8 +302,10 @@ One function, `synthetic_grid(dims, has_coordinate_kind, element_order) -> (nx, 
 - **Ceiling:** a fixed DOF ceiling. When it binds, the in-plane size is coarsened equally in `x` and
   `y`, and `FeaSyntheticGridCapped` is emitted.
 - The grid counts join `ModalCacheKey`.
-- A scene with a coordinate kind can exceed `PARALLEL_DOF_THRESHOLD`, above which results are
-  bit-stable only for a fixed thread count. Gated fixtures set `deterministic: true`.
+- Every static and modal solve is single-threaded and bit-identical across `threads` values on one
+  machine, so a scene with a coordinate kind needs no `deterministic: true` and `PARALLEL_DOF_THRESHOLD`
+  is gone. (amended 2026-10-08 by docs/prds/v0_6/elastic-static-solver-performance.md) Originally: a scene with a coordinate kind can exceed `PARALLEL_DOF_THRESHOLD`, above which
+  results are bit-stable only for a fixed thread count, so gated fixtures set `deterministic: true`.
 
 Until #7075 lands the static solve is linear, so a thin plate with a coordinate kind gets a large,
 ill-conditioned linear-tet mesh and the existing thin-body Warning. That case is η's.
