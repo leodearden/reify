@@ -212,27 +212,24 @@ G6 cautionary precedents (esc-3453 guessed-5%, esc-3770 impossible-exactness) de
 
 ### 4.1 Builtin signatures (Rust side, `reify-stdlib/src/stackup.rs`)
 
-Each name below is dispatched by a `stackup::eval_stackup` arm on the `eval_builtin` chain
-(`reify-stdlib/src/lib.rs:225`), mirroring `analysis::eval_analysis`
-(`reify-stdlib/src/analysis.rs:27`, arm at `lib.rs:253`) — the shape that exists on main today.
+Each name below is dispatched by a `stackup::eval_stackup` family arm on the name-string chain
+of `reify_stdlib::eval_builtin`. That arm sits behind the chain's registry-first
+`registry_dispatch::try_dispatch` hop: a registry `None` falls through to the family arms
+exactly as any family's decline does, and `eval_builtin`'s own comment calls the shape
+"registry-first coexistence".
 
-**Pending #6001** (builtin-signature-registry leaf α; in flight on `task/6001`, unlanded as of
-2026-09-11): that task does **not** retire the name-string chain. `eval_builtin` survives
-(`lib.rs:226` there) and gains a registry-first `registry_dispatch::try_dispatch` hop ahead of
-the 23 family dispatchers that remain — `stackup::eval_stackup` among them — with a registry
-`None` falling through exactly as any other family's decline does; that branch's own comment
-calls the shape "registry-first coexistence". A name leaves the chain only when it is registered
-as a `BindingKind::EvalBuiltin` row in `crates/reify-builtins/src/registry.rs` with its eval
-kernel bound by an arm in the exhaustive `crates/reify-stdlib/src/registry_dispatch.rs::dispatch`
-match over `EvalBuiltinId`. Measured on `task/6001` @3100d29849, only parse + analysis have
-migrated (7 `EvalBuiltinId` variants) and **no stackup name is a row** — so the dispatch-arm
-shape above is what this PRD's builtins get under #6001 as it stands, and registering them as
-rows instead would be a separate, later migration. Re-check when #6001 lands. **This paragraph
-is this file's single #6001 re-point site** — §1, §2, §7.1 and RESOLVED DECISIONS defer here
-rather than restating it.
+#6001 (builtin-signature-registry leaf α; merged to main in `87b744b189`, 2026-09-12) did
+**not** retire that chain. It moved only the parse and analysis families off it: their names are
+`BindingKind::EvalBuiltin` rows in `crates/reify-builtins/src/registry.rs`, each eval kernel
+bound by an arm in the exhaustive `crates/reify-stdlib/src/registry_dispatch.rs::dispatch` match
+over `EvalBuiltinId`. It registered no stackup name, so the family arm above is the dispatch
+shape for this PRD's builtins, and registering them as rows instead would be a separate, later
+migration — its producer-side signal would be the exhaustive `EvalBuiltinId` match **failing to
+compile** for a row with no arm. This paragraph is this file's single statement of the dispatch
+shape — §1, §2, §7.1 and RESOLVED DECISIONS defer here rather than restating it.
 
 ```text
-eval_stackup(name, args) -> Option<Value>     // arm on the eval_builtin chain (lib.rs:225)
+eval_stackup(name, args) -> Option<Value>     // family arm on the eval_builtin chain
   "stackup_worst_case"  (chain: List<Contributor>)                        -> Map
   "stackup_rss"         (chain: List<Contributor>, sigma_level?: Real=3)  -> Map
   "monte_carlo_stackup" (chain: List<Contributor>,
