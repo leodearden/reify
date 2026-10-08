@@ -178,8 +178,8 @@ fn max_dofs_fires_when_dofs_reach_cap() {
 
 #[test]
 fn stalled_fires_on_insufficient_drop() {
-    // 0.5 → 0.48 is a 4% drop (<= 10%) ⇒ stall on the second solve; caps are
-    // far away so only the stall gate can fire.
+    // 0.5 → 0.48 is a 4% drop (<= 10%) ⇒ stall on the second solve. Caps are
+    // far away, so budget remains: the case stall exists for — stopping early.
     let mut stub = StubProblem::new(vec![est(0.5, 100), est(0.48, 100)]);
     let budget = RefinementBudget {
         target_accuracy: 0.001,
@@ -199,26 +199,13 @@ fn stalled_fires_on_insufficient_drop() {
     assert_eq!(stub.refine_calls.len(), 1, "one refine before the stall");
 }
 
-/// The deterministic home of the `Stalled`-vs-`MaxIterations` discrimination
-/// that `reify-eval`'s `solve_elastic_static_body_e2e.rs` deliberately no longer
-/// makes (task 7414).
-///
-/// Over two real gmsh remeshes that discrimination is not a categorical claim
-/// at all but a ~1% numeric band on a noisy physical quantity — see the
-/// measurement recorded in that e2e's doc comment. Here the same claim is
-/// exact, which is where a claim about termination PRECEDENCE belongs. This
-/// follows the convention the crate already states in
-/// `aposteriori_validation.rs`: `Stalled` "is intentionally NOT covered here:
-/// it is already unit-pinned at the `adaptive.rs` level with synthetic values".
-///
-/// The case pinned is the one each of the three siblings leaves out — at iter 1
-/// gate #2 (stall) and gate #3 (iteration cap) are live SIMULTANEOUSLY and #2
-/// must win. `stalled_fires_on_insufficient_drop` puts the cap far away,
-/// `max_iterations_fires_after_iter_cap` scripts drops steep enough that the
-/// stall gate never arms, and `target_reached_wins_over_simultaneous_caps` pins
-/// only #1 against the rest.
+/// At iter 1 the stall gate and the iteration cap are live SIMULTANEOUSLY; the
+/// cap wins. Stall is an early-stop rule, and here no further refine was
+/// possible anyway, so the cap is the cause of termination. See
+/// `docs/prds/v0_4/a-posteriori-error-estimation.md`, Resolved decisions →
+/// Budget knobs amendment (task 7449).
 #[test]
-fn stall_pre_empts_the_iteration_cap() {
+fn the_iteration_cap_outranks_a_simultaneous_stall() {
     // 0.5 → 0.48 is a 4% drop, so at iter 1 the stall gate is live
     // (0.48 >= 0.9 * 0.5 = 0.45) — and so is the iteration cap (iter 1 >= 1).
     // Deliberately NOT the exact-10% boundary: those float semantics are pinned
@@ -236,17 +223,46 @@ fn stall_pre_empts_the_iteration_cap() {
     assert_eq!(
         status,
         ConvergenceStatus::NotConverged {
-            reason: BudgetReason::Stalled
+            reason: BudgetReason::MaxIterations
         },
-        "stall (#2) must outrank the iteration cap (#3) when both fire on the \
-         same iteration — so a budget whose single refine happens not to clear \
-         the 10% drop reports `Stalled`, never `MaxIterations`"
+        "the iteration cap must outrank a stall on the same iteration — a \
+         budget whose single refine happens not to clear the 10% drop still \
+         reports `MaxIterations`, never `Stalled`"
     );
     assert_eq!(
         stub.refine_calls.len(),
         1,
-        "the refine budget is consumed identically under either reason: one \
-         refine at iter 0, then the iter-1 gates fire before any re-marking"
+        "one refine at iter 0, then the iter-1 gates fire before any re-marking"
+    );
+}
+
+/// At iter 1 the stall gate and the dof ceiling are live SIMULTANEOUSLY; the
+/// ceiling wins, for the same reason as the iteration cap above. The iteration
+/// cap is far away so only the dof ceiling and the stall compete.
+#[test]
+fn the_dof_ceiling_outranks_a_simultaneous_stall() {
+    // 0.5 → 0.48 is a 4% drop (stall gate live at iter 1), and the re-solve's
+    // n_dofs 2000 >= max_dofs 1000 (dof ceiling live at iter 1).
+    let mut stub = StubProblem::new(vec![est(0.5, 100), est(0.48, 2000)]);
+    let budget = RefinementBudget {
+        target_accuracy: 0.001,
+        max_refinement_iterations: 100,
+        max_dofs: 1000,
+    };
+
+    let status = run_adaptive_refinement(&mut stub, &budget, DORFLER_THETA).unwrap();
+
+    assert_eq!(
+        status,
+        ConvergenceStatus::NotConverged {
+            reason: BudgetReason::MaxDofs
+        },
+        "the dof ceiling must outrank a stall on the same iteration"
+    );
+    assert_eq!(
+        stub.refine_calls.len(),
+        1,
+        "one refine at iter 0, then the iter-1 gates fire before any re-marking"
     );
 }
 
