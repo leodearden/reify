@@ -290,6 +290,105 @@ fn target_reached_wins_over_simultaneous_caps() {
 }
 
 // ---------------------------------------------------------------------------
+// task 7449: linear Dörfler accumulation is a deliberate choice.
+// ---------------------------------------------------------------------------
+
+/// SplitMix64: a tiny deterministic generator, so the property sweep below
+/// needs no `rand` dev-dependency and has no flake surface.
+struct SplitMix64(u64);
+
+impl SplitMix64 {
+    fn next_u64(&mut self) -> u64 {
+        self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = self.0;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 31)
+    }
+
+    /// Uniform-enough draw from `0..n` (modulo bias is irrelevant here).
+    fn below(&mut self, n: u64) -> u64 {
+        self.next_u64() % n
+    }
+}
+
+fn squares_of(weights: &[f64]) -> Vec<f64> {
+    weights.iter().map(|w| w * w).collect()
+}
+
+/// For one `(weights, theta)`: the linear set meets the squared bulk criterion
+/// at the same θ, and contains the minimal squared set.
+fn assert_linear_set_meets_squared_bulk_criterion(weights: &[f64], theta: f64) {
+    let linear = mark_dorfler(weights, theta);
+    let squares = squares_of(weights);
+    let minimal_squared = mark_dorfler(&squares, theta);
+
+    let marked_squares: f64 = linear.iter().map(|&i| squares[i]).sum();
+    let total_squares: f64 = squares.iter().sum();
+    assert!(
+        marked_squares >= theta * total_squares,
+        "linear Dörfler set misses the squared bulk criterion: \
+         Σ_M w² = {marked_squares} < θ·Σ w² = {} \
+         (w = {weights:?}, θ = {theta}, linear = {linear:?}, \
+         minimal squared = {minimal_squared:?})",
+        theta * total_squares,
+    );
+    assert!(
+        minimal_squared.iter().all(|i| linear.contains(i)),
+        "linear Dörfler set does not contain the minimal squared set \
+         (w = {weights:?}, θ = {theta}, linear = {linear:?}, \
+         minimal squared = {minimal_squared:?})",
+    );
+}
+
+/// `mark_dorfler` accumulates weights linearly (Σ_M w ≥ θ Σ w). For any
+/// non-negative weights that set also meets the textbook squared bulk
+/// criterion Σ_M w² ≥ θ Σ w² at the SAME θ, and contains the minimal set that
+/// does. The PRD's convergence rationale needs only that bulk criterion, so
+/// linear marking keeps it while over-marking relative to the minimal set. See
+/// `docs/prds/v0_4/a-posteriori-error-estimation.md`, Resolved decisions →
+/// Refinement marking amendment (task 7449).
+///
+/// Integer weights in `0..=1000`, at most 40 of them, and dyadic θ keep every
+/// sum and threshold exact in f64, so the inequality needs no tolerance.
+#[test]
+fn the_linear_dorfler_set_meets_the_squared_bulk_criterion_and_contains_the_minimal_squared_set() {
+    const THETAS: [f64; 6] = [0.125, 0.25, DORFLER_THETA, 0.75, 0.875, 1.0];
+
+    // Non-vacuous: on a skewed vector the two forms really differ.
+    let skewed = vec![3.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0];
+    assert_eq!(mark_dorfler(&skewed, DORFLER_THETA), vec![0, 1, 2]);
+    assert_eq!(mark_dorfler(&squares_of(&skewed), DORFLER_THETA), vec![0]);
+
+    let mut cases: Vec<Vec<f64>> = vec![
+        skewed,
+        vec![5.0; 10],
+        vec![0.0, 7.0, 0.0, 3.0, 0.0, 0.0, 1.0],
+        vec![0.0, 0.0, 0.0],
+    ];
+    let mut rng = SplitMix64(0x7449);
+    for _ in 0..500 {
+        let len = 1 + rng.below(40) as usize;
+        // Half the vectors heavy-tailed (many small values, ties and zeros).
+        let heavy_tailed = rng.below(2) == 0;
+        let weights = (0..len)
+            .map(|_| {
+                let w = rng.below(1001);
+                let w = if heavy_tailed { w >> rng.below(11) } else { w };
+                w as f64
+            })
+            .collect();
+        cases.push(weights);
+    }
+
+    for weights in &cases {
+        for theta in THETAS {
+            assert_linear_set_meets_squared_bulk_criterion(weights, theta);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // step-13: refine_marked_elements — build-agnostic length-guard validation.
 //
 // The size-hint length guard runs BEFORE any gmsh remesh, so this test passes
