@@ -41,25 +41,16 @@
 #      <base_dir>.gen.<N>.partial's debug/deps whose name, final dot-suffix
 #      stripped, ends in `-<16 lowercase hex>` belongs to that cargo unit
 #      hash. It is deleted iff the hash has a debug/.fingerprint/<pkg>-<hash>
-#      dir AND last_use < anchor - 7 days, where last_use = max(atime, mtime)
-#      over that dir's files and anchor = the newest last_use in the copied
-#      tree that is not in the future (a skewed or stray future timestamp must
-#      not age every live unit out). Cargo reads those files for every unit in
-#      a build's graph, so atime records the last consult and a rebuild's
-#      write counts as a use. Liveness is consult RECENCY — not fingerprint
-#      MEMBERSHIP (every deps hash has a fingerprint dir, so that rule deletes
-#      nothing) and not mtime ranking (#7426, reverted by #8366: it cut
-#      concurrently-live variants that share a cold-build mtime). Skipped,
-#      deleting nothing, when debug/deps or debug/.fingerprint is absent, or
-#      when the advancing dir's mount does not maintain atime (findmnt reports
-#      noatime, fails, or prints nothing): under noatime last_use degrades to
-#      mtime alone and every unchanged registry unit would read as stale.
-#      Scope: the base's staging copy only (never a task lane, never
-#      _merge-verify), debug profile only; .fingerprint is never pruned — it is
-#      the evidence. The logged `victim_bytes=` is the victims' APPARENT size:
-#      the copy is a reflink, so real reclaim lags until the advancing source
-#      drops the same extents. Sited BEFORE the partial→gen rename, so a failed
-#      prune costs only the .partial, which the EXIT trap already sweeps.
+#      dir AND last_use < anchor - 7 days (_PRUNE_LIVENESS_WINDOW_SECS), where
+#      last_use = max(atime, mtime) over that dir's files (cargo reads them on
+#      every build whose graph holds the unit, and a rebuild rewrites them) and
+#      anchor = the newest last_use in the copied tree that is not in the
+#      future. Skipped, deleting nothing, when debug/deps or debug/.fingerprint
+#      is absent, or when the advancing dir's mount does not maintain atime
+#      (findmnt reports noatime, fails, or prints nothing). Scope: the base's
+#      staging copy only (never a task lane, never _merge-verify), debug
+#      profile only; .fingerprint is never pruned. A failed prune aborts the
+#      refresh before the partial→gen rename.
 #      Executable spec: tests/infra/test_refresh_warm_base.sh Block LIVE.
 #   3. Bootstrap (first refresh): if <base_dir> is a pre-existing real dir,
 #      rename it to a retired gen dir first (never rename-over-populated).
@@ -394,14 +385,7 @@ if ! cp -a --reflink=always "$ADVANCING_DIR" "$_new_gen_partial"; then
 fi
 ok "Reflink copy complete (gen ${_next_gen})."
 
-# Step 3b: prune debug/deps units whose fingerprint was not consulted within
-# _PRUNE_LIVENESS_WINDOW_SECS of the copied tree's newest consult that is not in
-# the future (rule, skip conditions incl. a mount without atime, and scope:
-# header item 2b). Sited on the .partial staging dir, never the live base or the
-# final gen, so a failure exits before the Step 4 rename and the EXIT trap's
-# .gen.*.partial sweep needs no new cleanup. Called plainly: an `if` or `||`
-# around it would disable `set -e` inside it.
-# Executable spec: tests/infra/test_refresh_warm_base.sh Block LIVE.
+# Step 3b: prune unconsulted units from the staging copy (header item 2b).
 readonly _PRUNE_LIVENESS_WINDOW_SECS=$(( 7 * 24 * 3600 ))
 
 # _mount_tracks_atime <path>: does the mount holding <path> maintain atime? The
@@ -415,28 +399,14 @@ _mount_tracks_atime() {
     return 0
 }
 
-# _prune_unconsulted_units <profile_dir> <atime_probe_path>
-# <atime_probe_path> is the advancing target dir, the tree cargo's fingerprint
-# reads went through: the liveness evidence is only as good as its mount's atime.
-_prune_unconsulted_units() {
-    local deps="$1/deps" fp="$1/.fingerprint" summary
-    if [ ! -d "$deps" ]; then
-        info "No deps dir under $1 — skipping liveness prune (files=0)."
-        return 0
-    fi
-    if [ ! -d "$fp" ]; then
-        info "No .fingerprint under $1 — no liveness evidence; skipping liveness prune (files=0)."
-        return 0
-    fi
-    _mount_tracks_atime "$2" || {
-        info "Mount of $2 does not maintain atime (noatime, or findmnt unavailable or empty) — no liveness evidence; skipping liveness prune (files=0)."
-        return 0
-    }
-    summary="$(mktemp)"
-    _PRUNE_SUMMARY_FILE="$summary"  # let the EXIT trap reclaim it on a mid-prune failure
-    # awk's stdout is the NUL-delimited deletion list, so the files=/victim_bytes=
-    # summary crosses back into this shell via the temp file and is logged through
-    # the real info() rather than re-implementing its formatting inside awk (SPOT).
+# _select_unconsulted_victims <fingerprint_dir> <deps_dir> <summary_file>
+# The liveness policy of header item 2b. stdout: the NUL-delimited names of the
+# <deps_dir> files to delete. <summary_file>: "files=N victim_bytes=N" for exactly
+# those files. stdout carries the list, so the summary crosses back through the
+# file; the caller logs it through the real info() rather than awk
+# re-implementing its formatting (SPOT).
+_select_unconsulted_victims() {
+    local fp="$1" deps="$2" summary="$3"
     { find "$fp" -mindepth 2 -maxdepth 2 -type f -printf 'F\t%A@\t%T@\t%P\n'
       find "$deps" -maxdepth 1 -type f -printf 'D\t%s\t%f\n'
     } | awk -F'\t' -v window="$_PRUNE_LIVENESS_WINDOW_SECS" -v now="$(date +%s)" -v summary_file="$summary" '
@@ -489,11 +459,35 @@ _prune_unconsulted_units() {
             }
             printf "files=%d victim_bytes=%.0f\n", files, bytes > summary_file
         }
-    ' | (cd "$deps" && xargs -r -0 rm -f --)
+    '
+}
+
+# _prune_unconsulted_units <profile_dir> <atime_probe_path>
+# <atime_probe_path> is the advancing target dir, the tree cargo's fingerprint
+# reads went through: the liveness evidence is only as good as its mount's atime.
+_prune_unconsulted_units() {
+    local deps="$1/deps" fp="$1/.fingerprint" summary
+    if [ ! -d "$deps" ]; then
+        info "No deps dir under $1 — skipping liveness prune (files=0)."
+        return 0
+    fi
+    if [ ! -d "$fp" ]; then
+        info "No .fingerprint under $1 — no liveness evidence; skipping liveness prune (files=0)."
+        return 0
+    fi
+    _mount_tracks_atime "$2" || {
+        info "Mount of $2 does not maintain atime (noatime, or findmnt unavailable or empty) — no liveness evidence; skipping liveness prune (files=0)."
+        return 0
+    }
+    summary="$(mktemp)"
+    _PRUNE_SUMMARY_FILE="$summary"  # let the EXIT trap reclaim it on a mid-prune failure
+    _select_unconsulted_victims "$fp" "$deps" "$summary" | (cd "$deps" && xargs -r -0 rm -f --)
     info "prune deps=$deps $(cat "$summary") (apparent victim size — real reclaim lags until the advancing source drops the same extents)"
     rm -f "$summary"
     _PRUNE_SUMMARY_FILE=""
 }
+
+# Called plainly: an `if` or `||` around it would disable `set -e` inside it.
 _prune_unconsulted_units "${_new_gen_partial}/debug" "$ADVANCING_DIR"
 
 # Step 4: rename staging dir to the final gen dir (dir→new-name rename, safe).
