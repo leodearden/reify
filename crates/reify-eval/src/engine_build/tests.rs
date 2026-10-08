@@ -4287,9 +4287,8 @@ structure Assembly {
     /// step-11 (RED): intermediate caching + cross-realization reuse. After one
     /// successful Mesh-demanding conversion realization (the step-7(A) fixture),
     /// each BRep→Mesh intermediate produced by the conversion executor must be
-    /// present in the [`RealizationCache`] at `(intermediate_entity, Mesh,
-    /// per_stage_tol, NO_OPTIONS)`, where `intermediate_entity` is the
-    /// per-input cache key (`intermediate_key(entity, Step(idx))` — the input's
+    /// present in the [`RealizationCache`] at `(key, Mesh, per_stage_tol,
+    /// NO_OPTIONS)`, where `key` is the per-input cache key (`intermediate_key(entity, Step(idx))` — the input's
     /// local step index makes it distinct-per-input AND stable across identical
     /// rebuilds) and `per_stage_tol = per_stage_tolerance_for_plan(&plan, tol)`
     /// for the single BRep→Mesh stage (`tol × 0.8`).
