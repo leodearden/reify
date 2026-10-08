@@ -105,6 +105,13 @@ mod boolean_parallelism;
 pub use boolean_parallelism::{
     BooleanParallelism, boolean_parallelism, parallel_bop_build_count, with_boolean_parallelism,
 };
+#[cfg(has_occt)]
+mod step_document;
+#[cfg(all(has_occt, feature = "test-fixtures"))]
+#[doc(hidden)]
+pub use step_document::xstep_cascade_unit_for_test;
+#[cfg(has_occt)]
+pub use step_document::{StepBodyError, StepDocument, StepReadError};
 // Re-export the result type so callers using the test-fixture wrapper below
 // can name it without reaching into the private bridge module.
 #[cfg(has_occt)]
@@ -4319,6 +4326,22 @@ impl OcctKernel {
         let p =
             ffi::ffi::query_face_normal(s).map_err(|e| QueryError::QueryFailed(e.to_string()))?;
         Ok([p.x, p.y, p.z])
+    }
+
+    /// Store the `body_index`-th solid of a STEP `product` as a Solid handle.
+    ///
+    /// The handle is in the product's LOCAL frame, in metres; the component
+    /// placements in [`StepDocument::tree`] are the occurrence poses.
+    /// `body_index` is 0-based, in the order `ProductKind::Part::solid_count`
+    /// counts. Nothing is stored on error.
+    pub fn import_step_body(
+        &mut self,
+        doc: &StepDocument,
+        product: &reify_ir::ProductRef,
+        body_index: u32,
+    ) -> Result<GeometryHandle, StepBodyError> {
+        doc.body_shape(product, body_index)
+            .map(|shape| self.store_with_repr(shape, BRepKind::Solid))
     }
 
     /// Linear deflection used by the CLI `export(handle, Stl, writer)` arm.
