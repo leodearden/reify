@@ -43,19 +43,23 @@
 #      hash. It is deleted iff the hash has a debug/.fingerprint/<pkg>-<hash>
 #      dir AND last_use < anchor - 7 days, where last_use = max(atime, mtime)
 #      over that dir's files and anchor = the newest last_use in the copied
-#      tree. Cargo reads those files for every unit in a build's graph, so
-#      atime records the last consult and a rebuild's write counts as a use.
-#      Liveness is consult RECENCY — not fingerprint MEMBERSHIP (every deps
-#      hash has a fingerprint dir, so that rule deletes nothing) and not mtime
-#      ranking (#7426, reverted by #8366: it cut concurrently-live variants
-#      that share a cold-build mtime). Skipped, deleting nothing, when
-#      debug/deps or debug/.fingerprint is absent. Scope: the base's staging
-#      copy only (never a task lane, never _merge-verify), debug profile only;
-#      .fingerprint is never pruned — it is the evidence. The logged
-#      `victim_bytes=` is the victims' APPARENT size: the copy is a reflink,
-#      so real reclaim lags until the advancing source drops the same extents.
-#      Sited BEFORE the partial→gen rename, so a failed prune costs only the
-#      .partial, which the EXIT trap already sweeps.
+#      tree that is not in the future (a skewed or stray future timestamp must
+#      not age every live unit out). Cargo reads those files for every unit in
+#      a build's graph, so atime records the last consult and a rebuild's
+#      write counts as a use. Liveness is consult RECENCY — not fingerprint
+#      MEMBERSHIP (every deps hash has a fingerprint dir, so that rule deletes
+#      nothing) and not mtime ranking (#7426, reverted by #8366: it cut
+#      concurrently-live variants that share a cold-build mtime). Skipped,
+#      deleting nothing, when debug/deps or debug/.fingerprint is absent, or
+#      when the advancing dir's mount does not maintain atime (findmnt reports
+#      noatime, fails, or prints nothing): under noatime last_use degrades to
+#      mtime alone and every unchanged registry unit would read as stale.
+#      Scope: the base's staging copy only (never a task lane, never
+#      _merge-verify), debug profile only; .fingerprint is never pruned — it is
+#      the evidence. The logged `victim_bytes=` is the victims' APPARENT size:
+#      the copy is a reflink, so real reclaim lags until the advancing source
+#      drops the same extents. Sited BEFORE the partial→gen rename, so a failed
+#      prune costs only the .partial, which the EXIT trap already sweeps.
 #      Executable spec: tests/infra/test_refresh_warm_base.sh Block LIVE.
 #   3. Bootstrap (first refresh): if <base_dir> is a pre-existing real dir,
 #      rename it to a retired gen dir first (never rename-over-populated).
@@ -391,15 +395,29 @@ fi
 ok "Reflink copy complete (gen ${_next_gen})."
 
 # Step 3b: prune debug/deps units whose fingerprint was not consulted within
-# _PRUNE_LIVENESS_WINDOW_SECS of the copied tree's newest consult (rule, skip
-# conditions and scope: header item 2b). Sited on the .partial staging dir,
-# never the live base or the final gen, so a failure exits before the Step 4
-# rename and the EXIT trap's .gen.*.partial sweep needs no new cleanup. Called
-# plainly: an `if` or `||` around it would disable `set -e` inside it.
+# _PRUNE_LIVENESS_WINDOW_SECS of the copied tree's newest consult that is not in
+# the future (rule, skip conditions incl. a mount without atime, and scope:
+# header item 2b). Sited on the .partial staging dir, never the live base or the
+# final gen, so a failure exits before the Step 4 rename and the EXIT trap's
+# .gen.*.partial sweep needs no new cleanup. Called plainly: an `if` or `||`
+# around it would disable `set -e` inside it.
 # Executable spec: tests/infra/test_refresh_warm_base.sh Block LIVE.
 readonly _PRUNE_LIVENESS_WINDOW_SECS=$(( 7 * 24 * 3600 ))
 
+# _mount_tracks_atime <path>: does the mount holding <path> maintain atime? The
+# option list is parsed once, here, on the exact token: nodiratime is not noatime,
+# and findmnt failing or printing nothing is "unknown", which counts as no.
+_mount_tracks_atime() {
+    local opts
+    opts="$(findmnt -n -o OPTIONS -T "$1" 2>/dev/null)" || return 1
+    [ -n "$opts" ] || return 1
+    case ",$opts," in *,noatime,*) return 1 ;; esac
+    return 0
+}
+
 # _prune_unconsulted_units <profile_dir> <atime_probe_path>
+# <atime_probe_path> is a path on the mount whose reads cargo's fingerprint
+# consults update: the evidence is only as good as that mount's atime.
 _prune_unconsulted_units() {
     local deps="$1/deps" fp="$1/.fingerprint" summary
     if [ ! -d "$deps" ]; then
@@ -410,6 +428,10 @@ _prune_unconsulted_units() {
         info "No .fingerprint under $1 — no liveness evidence; skipping liveness prune (files=0)."
         return 0
     fi
+    _mount_tracks_atime "$2" || {
+        info "Mount of $2 does not maintain atime (noatime, or findmnt unavailable or empty) — no liveness evidence; skipping liveness prune (files=0)."
+        return 0
+    }
     summary="$(mktemp)"
     _PRUNE_SUMMARY_FILE="$summary"  # let the EXIT trap reclaim it on a mid-prune failure
     # awk's stdout is the NUL-delimited deletion list, so the files=/victim_bytes=
@@ -417,7 +439,7 @@ _prune_unconsulted_units() {
     # the real info() rather than re-implementing its formatting inside awk (SPOT).
     { find "$fp" -mindepth 2 -maxdepth 2 -type f -printf 'F\t%A@\t%T@\t%P\n'
       find "$deps" -maxdepth 1 -type f -printf 'D\t%s\t%f\n'
-    } | awk -F'\t' -v window="$_PRUNE_LIVENESS_WINDOW_SECS" -v summary_file="$summary" '
+    } | awk -F'\t' -v window="$_PRUNE_LIVENESS_WINDOW_SECS" -v now="$(date +%s)" -v summary_file="$summary" '
         BEGIN {
             # The ONE copy of the unit-hash grammar: <stem>-<16 lowercase hex>.
             # Spelled out as repeated [0-9a-f] classes, not {16}: mawk < 1.3.4 and
@@ -440,7 +462,9 @@ _prune_unconsulted_units() {
             atime = $2 + 0; mtime = $3 + 0
             t = (atime > mtime) ? atime : mtime
             if (!(h in last_use) || t > last_use[h]) last_use[h] = t
-            if (t > anchor) anchor = t
+            # A future-dated consult still counts for its own unit but must not
+            # become the anchor, or every live unit would age out against it.
+            if (t <= now && t > anchor) anchor = t
             next
         }
         # D: one depth-1 deps file. Strip only the FINAL dot-suffix, so

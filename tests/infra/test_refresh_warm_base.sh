@@ -1197,6 +1197,8 @@ _live_refresh
 assert "LIVE10a: refresh with no debug/ at all exits 0" test "$RC" -eq 0
 assert "LIVE10a: stderr says the stage was skipped" _stderr_matches 'skip'
 assert "LIVE10a: the advancing content reaches the new gen" _all_present "$LIVE_GEN" f.txt
+assert "LIVE10a: with nothing to prune findmnt is never consulted" \
+    bash -c '! grep -q "^findmnt" "$1"' _ "$CALLS_FILE"
 
 _live_case
 mkdir -p "$LIVE_PROFILE/deps"
@@ -1207,6 +1209,8 @@ assert "LIVE10b: refresh with debug/deps but no debug/.fingerprint exits 0" test
 assert "LIVE10b: stderr says the stage was skipped" _stderr_matches 'skip'
 assert "LIVE10b: with no liveness evidence the dead-looking file survives" \
     _all_present "$LIVE_GEN/debug/deps" libdead-abababababababab.rlib
+assert "LIVE10b: with no evidence to read findmnt is never consulted" \
+    bash -c '! grep -q "^findmnt" "$1"' _ "$CALLS_FILE"
 
 # LIVE11 — fail-closed: a prune whose unlink fails aborts the refresh BEFORE the
 # rename, so the base is not advanced and the EXIT trap leaves no staging dir.
@@ -1283,6 +1287,16 @@ assert "LIVE14: on a noatime mount the dead unit survives (no atime, so no liven
 assert "LIVE14: stderr says the stage was skipped" _stderr_matches 'skip'
 
 _live_mount_case
+REIFY_TEST_FINDMNT_OPTIONS='noatime,rw' _live_refresh
+assert "LIVE14b: noatime as the FIRST option token is recognised too (dead unit survives)" \
+    _all_present "$LIVE_GEN/debug/deps" "$LIVE_MOUNT_DEAD"
+
+_live_mount_case
+REIFY_TEST_FINDMNT_OPTIONS='noatime' _live_refresh
+assert "LIVE14c: noatime as the ONLY option token is recognised too (dead unit survives)" \
+    _all_present "$LIVE_GEN/debug/deps" "$LIVE_MOUNT_DEAD"
+
+_live_mount_case
 REIFY_TEST_FINDMNT_FAIL=1 _live_refresh
 assert "LIVE15: refresh with findmnt failing exits 0" test "$RC" -eq 0
 assert "LIVE15: with findmnt failing the dead unit survives (unknown mount, no evidence)" \
@@ -1314,6 +1328,10 @@ _mint_unit "$LIVE_PROFILE" deadunit deadbeef00000018 "$LIVE_DEAD" "$LIVE_DEAD" \
     libdeadunit-deadbeef00000018.rlib
 _mint_unit "$LIVE_PROFILE" futureunit 1818181818181802 "$LIVE_COLD" '2099-01-01 00:00:00' \
     libfutureunit-1818181818181802.rlib
+# A second, long-stale fingerprint file in the same dir: ignoring the future-dated
+# one (rather than counting it for its own unit) would leave the unit looking dead.
+echo "stale sibling" > "$LIVE_PROFILE/.fingerprint/futureunit-1818181818181802/dep-lib-futureunit"
+touch -d "$LIVE_DEAD" "$LIVE_PROFILE/.fingerprint/futureunit-1818181818181802/dep-lib-futureunit"
 assert "LIVE18: fixture check — the future-dated fingerprint reads back as later than now" \
     test "$(stat -c %X "$LIVE_PROFILE/.fingerprint/futureunit-1818181818181802/lib-futureunit")" -gt "$(date +%s)"
 _live_refresh
