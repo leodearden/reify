@@ -24,8 +24,8 @@
 //   - structure def Spherical          : DrivingJoint (axis-isotropic; no axis field)
 //   - structure def Coupling  : Joint  (derived motion — no independent motion var)
 //   - structure def Fixed     : Joint  (0-DOF sub-assembly grouping)
-//   (every joint kind but Coupling also carries the constrained-DOF compliance
-//    fields of the ruling block above the joint structures)
+//   (every joint kind but Coupling also carries constrained-DOF `*_stiffness`
+//    params; see "Constrained-DOF compliance" above the joint structures)
 //   - structure def JointBinding       (element type of snapshot()'s `bindings` arg)
 //   - structure def Twist              (spatial velocity — transform_log/exp element)
 //   - structure def JacobianColumn     (dpose/dq column of joint_jacobian)
@@ -133,44 +133,24 @@ trait HasMotion {
 // the stored raw axis) and that function's `"planar"` arm (`unit_normalize` for
 // the Planar pair) — so the retype is behaviour-preserving.
 
-// Constrained-DOF compliance (task 7163 ruling) ───────────────────────────────
-// PRD: docs/prds/v0_6/assembly-modal-connection-graph.md §7 C2. This block is the
-// one statement of the partition; the structures below only declare the fields.
+// Constrained-DOF compliance (task 7163) ──────────────────────────────────────
+// PRD: docs/prds/v0_6/assembly-modal-connection-graph.md §7 C2.
 //
-// Each joint kind partitions its six relative DOFs into FREE DOFs (its motion)
-// and CONSTRAINED DOFs, and every constrained DOF lies in exactly ONE compliance
-// group: a named `Option<TranslationalStiffness>` (T) or
-// `Option<RotationalStiffness>` (R) field.
+// A joint's FREE DOFs are its motion; each symmetry group of its CONSTRAINED DOFs
+// is one `*_stiffness` param below. A free DOF has no such param, so compliance
+// on it cannot be written (E_CTOR_UNKNOWN_FIELD); its own spring is `spring_rate`.
 //   none (the default) ⇒ IDEAL-RIGID constraint — today's kinematic semantics.
-//   some(k)            ⇒ a spring of stiffness k on EVERY direction of the group,
-//                        isotropic within the group, acting between the two port
-//                        frames; directions are relative to the joint's own axes.
+//   some(k)            ⇒ a spring k on every direction of the group, isotropic,
+//                        between the two port frames, in the joint's own axes.
+// Group directions, where `axis` is the joint's axis (Planar: axis_x × axis_y):
+//   radial 2T ⊥ axis · axial, normal 1T along axis · translational 3T
+//   tilt 2R about the axes ⊥ axis · torsional 1R about axis · rotational 3R
 //
-//   group                    DOFs                         kinds
-//   radial_stiffness         2T ⊥ axis                    Prismatic, Revolute, Cylindrical
-//   axial_stiffness          1T along axis                Revolute
-//   normal_stiffness         1T along axis_x × axis_y     Planar
-//   translational_stiffness  3T                           Spherical, Fixed
-//   tilt_stiffness           2R about the axes ⊥ axis     Prismatic, Revolute, Cylindrical
-//                            (Planar: about axis_x and axis_y)
-//   torsional_stiffness      1R about axis                Prismatic
-//   rotational_stiffness     3R                           Fixed
-//
-// Only constrained groups are named, so compliance on a FREE DOF cannot be
-// written (E_CTOR_UNKNOWN_FIELD). A free DOF's own spring, where a kind has one,
-// is `spring_rate`; its absence means genuinely free (zero stiffness), not rigid.
-// Isotropy is forced: no kind carries a second reference direction to hang an
-// anisotropic split on.
-//
-// Modal-consumer-only: kinematics (transform_at / snapshot / sweep /
-// joint_jacobian) never reads these fields; the consumer is assembly modal
-// analysis (assembly-modal δ, #7165). Joints built by the lowercase builtins —
-// prismatic() / revolute() / cylindrical() / planar() / spherical() / fixed()
-// and the prb_* flexures — are `Value::Map` values with NO compliance key, so they
-// are ideal-rigid and a consumer must read an absent key as `none`; a member read
-// of that key still evaluates to undef (#8170). Value validation (positive,
-// finite, dimension) belongs to the consumer, as it does for `spring_rate`: the
-// connector-block form is not yet ctor-conformance checked (#8125).
+// Kinematics never reads these params; assembly modal δ (#7165) does. Joints from
+// the lowercase builtins and the prb_* flexures are `Value::Map` values with no
+// compliance key, so a consumer reads an absent key as `none` (a member read of
+// it is undef, #8170) and validates values itself (connector-block params skip
+// ctor conformance, #8125).
 
 // Prismatic — translational sliding joint (1 translational DOF).
 // `axis` is the translation direction in the parent body frame.
