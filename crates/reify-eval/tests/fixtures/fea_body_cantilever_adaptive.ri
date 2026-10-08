@@ -19,14 +19,10 @@
 // mark-driven refine and two solves, which bounds end-to-end wallclock while
 // still proving the refine ran. `max_dofs` is set high enough not to bind first.
 // So the budget guarantees `NotConverged`, a dof ceiling that does not bind, and
-// exactly one mark-driven refine — but it does NOT fix WHICH reason reports the
-// stop. The stall gate sits ABOVE the iteration cap in the loop's termination
-// precedence, so both are live at the second solve, and the stall wins whenever
-// that one refine fails to drop the global indicator by more than
-// `STALL_MIN_RELATIVE_DROP` (10%) — which it does not do reproducibly. The
-// terminal reason is therefore `MaxIterations` OR `Stalled`; task 7414 relocated
-// that discrimination to a deterministic unit pin
-// (`adaptive_refinement_tests.rs::stall_pre_empts_the_iteration_cap`).
+// exactly one mark-driven refine. The iteration cap binds at the second solve
+// and outranks a simultaneous stall, so the terminal reason is `MaxIterations`
+// by construction, however far that one refine drops the global indicator
+// (task 7449).
 //
 // No `target` field on the Load/Support: BC selection stays coordinate-based
 // (clamp x_min, load x_max), which is the only BC model that survives a remesh —
