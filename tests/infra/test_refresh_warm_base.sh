@@ -1137,6 +1137,8 @@ assert "LIVE8: the dead hash's files outside debug/deps depth 1 all survive (bui
         "release/.fingerprint/dead-$LIVE8_DEAD/lib-dead" "debug/.fingerprint/dead-$LIVE8_DEAD/lib-dead"
 assert "LIVE8: the dead hash's debug/deps/ file is pruned (control)" \
     _none_present "$LIVE_GEN" "debug/deps/libdead-$LIVE8_DEAD.rlib"
+assert "LIVE8: only the depth-1 file is counted as a victim (files=1) — the nested twin is never even a candidate" \
+    _stderr_matches 'prune deps=.*files=1( |$)'
 
 # LIVE9 — operator contract: stderr carries the machine-greppable summary
 # `prune deps=<path> files=N victim_bytes=N`, the byte figure being the summed
@@ -1149,8 +1151,12 @@ head -c 1500 /dev/zero > "$LIVE_PROFILE/deps/libdeadone-9a9a9a9a9a9a9a9a.rlib"
 head -c 700 /dev/zero > "$LIVE_PROFILE/deps/deadtwo-9b9b9b9b9b9b9b9b"
 LIVE9_BYTES=$(( $(stat -c %s "$LIVE_PROFILE/deps/libdeadone-9a9a9a9a9a9a9a9a.rlib") \
     + $(stat -c %s "$LIVE_PROFILE/deps/deadtwo-9b9b9b9b9b9b9b9b") ))
-_live_refresh
+LIVE9_TMPDIR="$(mktemp -d /tmp/test-refresh-warm-base-live9-tmp-XXXXXX)"
+_TMPDIRS+=("$LIVE9_TMPDIR")
+TMPDIR="$LIVE9_TMPDIR" _live_refresh
 assert "LIVE9: refresh exits 0" test "$RC" -eq 0
+assert "LIVE9: the stage's summary temp file is removed after a successful prune" \
+    test -z "$(ls -A "$LIVE9_TMPDIR")"
 assert "LIVE9: stderr reports the prune with files=2" \
     _stderr_matches 'prune deps=.*files=2( |$)'
 assert "LIVE9: stderr's victim_bytes is the summed apparent size of exactly the two dead files" \
@@ -1183,10 +1189,14 @@ assert "LIVE10b: with no liveness evidence the dead-looking file survives" \
 _live_case
 _mint_anchor "$LIVE_PROFILE"
 _mint_unit "$LIVE_PROFILE" failunit deadbeef00000011 "$LIVE_DEAD" "$LIVE_DEAD" libfailunit-deadbeef00000011.rlib
-REIFY_TEST_PRUNE_RM_FAIL=1 _live_refresh
+LIVE11_TMPDIR="$(mktemp -d /tmp/test-refresh-warm-base-live11-tmp-XXXXXX)"
+_TMPDIRS+=("$LIVE11_TMPDIR")
+TMPDIR="$LIVE11_TMPDIR" REIFY_TEST_PRUNE_RM_FAIL=1 _live_refresh
 assert "LIVE11: a failing prune unlink makes the refresh exit non-zero" test "$RC" -ne 0
 assert "LIVE11: the failure is the prune's own rm (the stub fired)" _stderr_matches 'SIMULATED failure'
 assert "LIVE11: <base> is not created when the prune fails" test ! -e "$LIVE_BASE"
+assert "LIVE11: the stage's summary temp file is reclaimed by the EXIT trap even though the prune failed" \
+    test -z "$(ls -A "$LIVE11_TMPDIR")"
 assert "LIVE11: no <base>.gen.*.partial residue after a prune failure (EXIT trap cleanup)" \
     bash -c '_n=0; for _p in "${1}".gen.*.partial; do [ -e "$_p" ] && _n=$((_n+1)); done; [ "$_n" -eq 0 ]' _ "$LIVE_BASE"
 

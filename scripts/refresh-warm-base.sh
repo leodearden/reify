@@ -37,6 +37,26 @@
 #      Fail-closed: no swap on refusal.
 #   2. Symlink-gen staging: build <base_dir>.gen.<N>.partial via
 #      cp -a --reflink=always (fail-closed — P2), rename to <base_dir>.gen.<N>.
+#   2b.Prune unconsulted units from the staging copy: a depth-1 file of
+#      <base_dir>.gen.<N>.partial's debug/deps whose name, final dot-suffix
+#      stripped, ends in `-<16 lowercase hex>` belongs to that cargo unit
+#      hash. It is deleted iff the hash has a debug/.fingerprint/<pkg>-<hash>
+#      dir AND last_use < anchor - 7 days, where last_use = max(atime, mtime)
+#      over that dir's files and anchor = the newest last_use in the copied
+#      tree. Cargo reads those files for every unit in a build's graph, so
+#      atime records the last consult and a rebuild's write counts as a use.
+#      Liveness is consult RECENCY — not fingerprint MEMBERSHIP (every deps
+#      hash has a fingerprint dir, so that rule deletes nothing) and not mtime
+#      ranking (#7426, reverted by #8366: it cut concurrently-live variants
+#      that share a cold-build mtime). Skipped, deleting nothing, when
+#      debug/deps or debug/.fingerprint is absent. Scope: the base's staging
+#      copy only (never a task lane, never _merge-verify), debug profile only;
+#      .fingerprint is never pruned — it is the evidence. The logged
+#      `victim_bytes=` is the victims' APPARENT size: the copy is a reflink,
+#      so real reclaim lags until the advancing source drops the same extents.
+#      Sited BEFORE the partial→gen rename, so a failed prune costs only the
+#      .partial, which the EXIT trap already sweeps.
+#      Executable spec: tests/infra/test_refresh_warm_base.sh Block LIVE.
 #   3. Bootstrap (first refresh): if <base_dir> is a pre-existing real dir,
 #      rename it to a retired gen dir first (never rename-over-populated).
 #   4. Write per-gen authoritative landed-commit stamp: <base_dir>.gen.<N>.basecommit
@@ -289,12 +309,14 @@ info "Provenance guard: OK (worktree clean, HEAD=$_prov_head)"
 
 # ── EXIT trap: clean up .gen.*.partial + restore prior base on failure ────────
 # State variables set during the swap; used by the trap for targeted recovery.
-_SWAP_PRIOR_LINK=""    # prior symlink target (if base was a symlink pre-swap)
-_SWAP_BOOTSTRAP_DIR="" # if bootstrap renamed a real base dir to a gen dir
+_SWAP_PRIOR_LINK=""     # prior symlink target (if base was a symlink pre-swap)
+_SWAP_BOOTSTRAP_DIR=""  # if bootstrap renamed a real base dir to a gen dir
+_PRUNE_SUMMARY_FILE=""  # Step 3b's summary temp file, if one was created
 
 _cleanup_on_exit() {
     local exit_code=$?
     [ $exit_code -eq 0 ] && return
+    [ -n "${_PRUNE_SUMMARY_FILE:-}" ] && rm -f "$_PRUNE_SUMMARY_FILE" 2>/dev/null || true
     if [ -n "${BASE_DIR:-}" ]; then
         # Restore prior base state on failure:
         if [ -n "${_SWAP_BOOTSTRAP_DIR:-}" ] \
@@ -367,6 +389,88 @@ if ! cp -a --reflink=always "$ADVANCING_DIR" "$_new_gen_partial"; then
     exit 1
 fi
 ok "Reflink copy complete (gen ${_next_gen})."
+
+# Step 3b: prune debug/deps units whose fingerprint was not consulted within
+# _PRUNE_LIVENESS_WINDOW_SECS of the copied tree's newest consult (rule, skip
+# conditions and scope: header item 2b). Sited on the .partial staging dir,
+# never the live base or the final gen, so a failure exits before the Step 4
+# rename and the EXIT trap's .gen.*.partial sweep needs no new cleanup. Called
+# plainly: an `if` or `||` around it would disable `set -e` inside it.
+# Executable spec: tests/infra/test_refresh_warm_base.sh Block LIVE.
+readonly _PRUNE_LIVENESS_WINDOW_SECS=$(( 7 * 24 * 3600 ))
+
+# _prune_unconsulted_units <profile_dir> <atime_probe_path>
+_prune_unconsulted_units() {
+    local deps="$1/deps" fp="$1/.fingerprint" summary
+    if [ ! -d "$deps" ]; then
+        info "No deps dir under $1 — skipping liveness prune (files=0)."
+        return 0
+    fi
+    if [ ! -d "$fp" ]; then
+        info "No .fingerprint under $1 — no liveness evidence; skipping liveness prune (files=0)."
+        return 0
+    fi
+    summary="$(mktemp)"
+    _PRUNE_SUMMARY_FILE="$summary"  # let the EXIT trap reclaim it on a mid-prune failure
+    # awk's stdout is the NUL-delimited deletion list, so the files=/victim_bytes=
+    # summary crosses back into this shell via the temp file and is logged through
+    # the real info() rather than re-implementing its formatting inside awk (SPOT).
+    { find "$fp" -mindepth 2 -maxdepth 2 -type f -printf 'F\t%A@\t%T@\t%P\n'
+      find "$deps" -maxdepth 1 -type f -printf 'D\t%s\t%f\n'
+    } | awk -F'\t' -v window="$_PRUNE_LIVENESS_WINDOW_SECS" -v summary_file="$summary" '
+        BEGIN {
+            # The ONE copy of the unit-hash grammar: <stem>-<16 lowercase hex>.
+            # Spelled out as repeated [0-9a-f] classes, not {16}: mawk < 1.3.4 and
+            # busybox awk lack interval expressions, under which {16} matches
+            # nothing and this whole stage would silently become a no-op.
+            hash_len = 16
+            hash_re = "^.+-"
+            for (i = 0; i < hash_len; i++) hash_re = hash_re "[0-9a-f]"
+            hash_re = hash_re "$"
+            anchor = 0; n = 0; files = 0; bytes = 0
+        }
+        function unit_hash(stem) {
+            return (stem ~ hash_re) ? substr(stem, length(stem) - hash_len + 1) : ""
+        }
+        # F: one file of a unit dir. last_use[hash] is the newest atime-or-mtime seen.
+        $1 == "F" {
+            split($4, parts, "/")
+            h = unit_hash(parts[1])
+            if (h == "") next
+            atime = $2 + 0; mtime = $3 + 0
+            t = (atime > mtime) ? atime : mtime
+            if (!(h in last_use) || t > last_use[h]) last_use[h] = t
+            if (t > anchor) anchor = t
+            next
+        }
+        # D: one depth-1 deps file. Strip only the FINAL dot-suffix, so
+        # reify_ast-<h> and reify_ast-<h>.d resolve to the same hash.
+        $1 == "D" {
+            stem = $3
+            sub(/\.[^.]*$/, "", stem)
+            h = unit_hash(stem)
+            if (h == "") next
+            n++
+            cand_name[n] = $3; cand_size[n] = $2; cand_hash[n] = h
+        }
+        END {
+            cutoff = anchor - window
+            for (i = 1; i <= n; i++) {
+                h = cand_hash[i]
+                if (!(h in last_use) || last_use[h] >= cutoff) continue
+                # NUL via %c: ORS="\0" is dropped by busybox awk, %c 0 is not.
+                printf "%s%c", cand_name[i], 0
+                files++
+                bytes += cand_size[i]
+            }
+            printf "files=%d victim_bytes=%.0f\n", files, bytes > summary_file
+        }
+    ' | (cd "$deps" && xargs -r -0 rm -f --)
+    info "prune deps=$deps $(cat "$summary") (apparent victim size — real reclaim lags until the advancing source drops the same extents)"
+    rm -f "$summary"
+    _PRUNE_SUMMARY_FILE=""
+}
+_prune_unconsulted_units "${_new_gen_partial}/debug" "$ADVANCING_DIR"
 
 # Step 4: rename staging dir to the final gen dir (dir→new-name rename, safe).
 info "Finalizing: $_new_gen_partial -> $_new_gen_dir"
