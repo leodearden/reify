@@ -4814,9 +4814,10 @@ mod freshness_gate {
     /// `Err` arm is one edit and both consumers move.
     ///
     /// `find_references` is NOT asserted HERE, and could not be: this
-    /// responder errors every tool, so `get_changed_symbols` returns no
-    /// symbol, so `p1_producer_orphan::check`'s `for symbol in ...` loop —
-    /// which is where the `find_references` call lives — never runs its body. That is a property of THIS responder, not of the harness —
+    /// responder errors every tool, so `get_changed_symbols` errors and
+    /// `p1_producer_orphan::check` records the task as unexamined and moves
+    /// on before its per-symbol loop, where the `find_references` call
+    /// lives. That is a property of THIS responder, not of the harness —
     /// the sibling below (`per_call_fail_soft_on_p1s_second_call`) dispatches
     /// on the arguments to reach it.
     ///
@@ -4874,9 +4875,9 @@ mod freshness_gate {
     /// PER-CALL FAIL-SOFT, P1's SECOND call — the anti-rot lock for
     /// `breadcrumbs::P1_FIND_REFERENCES`.
     ///
-    /// The sibling above errors EVERY tool, so `get_changed_symbols` returns
-    /// nothing and `find_references` is never reached. That is a limitation of
-    /// that responder, not of the mock: `spawn_mock_mcp`'s closure receives
+    /// The sibling above errors EVERY tool, so its `get_changed_symbols`
+    /// errors, P1 records the task as unexamined, and `find_references` is
+    /// never reached. That is a limitation of that responder, not of the mock: `spawn_mock_mcp`'s closure receives
     /// the `tools/call` arguments, and the two calls are trivially
     /// distinguishable — `get_changed_symbols` sends
     /// `{repo, since_sha, until_sha}` while `find_references` sends
