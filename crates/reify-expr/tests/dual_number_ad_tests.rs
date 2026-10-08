@@ -3141,3 +3141,70 @@ fn a_conditional_on_an_undef_comparison_refuses_rather_than_returning_a_row() {
         ),
     }
 }
+
+// ---------------------------------------------------------------------------
+// A lambda depends on its CAPTURES: the fast path must not prove it flat
+// ---------------------------------------------------------------------------
+
+/// A lambda whose body reads only its own parameter, so `capture` reaches it
+/// through the capture list and nowhere else.
+fn lambda_capturing(capture: ValueCellId) -> CompiledExpr {
+    let p_id = ValueCellId::new("$lambda0.S", "p");
+    CompiledExpr::lambda(
+        vec![("p".to_string(), None)],
+        vec![p_id.clone()],
+        CompiledExpr::value_ref(p_id, Type::Int),
+        vec![capture],
+        Type::Function {
+            params: vec![Type::Int],
+            return_type: Box::new(Type::Int),
+        },
+    )
+}
+
+#[test]
+fn a_lambda_capturing_a_seed_is_not_proved_seed_independent() {
+    // A reachability check that descended into the body instead of reading
+    // the captures would prove this node seed-independent, and the fast path
+    // would lift it as `Tangent::Zero`: a silently flat Jacobian row for a
+    // residual that moves with `x`.
+    let mut values = ValueMap::new();
+    values.insert(cell("x"), Value::Real(2.0));
+    let seeds = Seeds::new(&[cell("x")]);
+    let expr = lambda_capturing(cell("x"));
+
+    assert!(
+        seeds.depends_on_seed(&expr),
+        "the captured seed is a dependency"
+    );
+    let ctx = EvalContext::simple(&values);
+    let mut record = BranchRecord::new();
+    assert_eq!(
+        eval_dual(&expr, &ctx, &seeds, &mut record).tangent,
+        Tangent::None,
+        "a seed-capturing lambda has no derivative rule: refused, never lifted flat"
+    );
+}
+
+#[test]
+fn a_lambda_capturing_a_bound_derived_cell_is_not_lifted_flat() {
+    use reify_expr::{DualEnv, eval_dual_with_env};
+
+    // The `DualEnv` twin: `d` is no seed, but the overlay binds it a tangent,
+    // so a lambda capturing it moves with `x` exactly as a seed capture would.
+    let mut values = ValueMap::new();
+    values.insert(cell("x"), Value::Real(2.0));
+    values.insert(cell("d"), Value::Real(4.0));
+    let seeds = Seeds::new(&[cell("x")]);
+    let mut env = DualEnv::new();
+    env.bind(cell("d"), Tangent::Scalar(vec![2.0]));
+    let expr = lambda_capturing(cell("d"));
+
+    let ctx = EvalContext::simple(&values);
+    let mut record = BranchRecord::new();
+    assert_eq!(
+        eval_dual_with_env(&expr, &ctx, &seeds, &env, &mut record).tangent,
+        Tangent::None,
+        "a lambda capturing a tangent-carrying cell: refused, never lifted flat"
+    );
+}
