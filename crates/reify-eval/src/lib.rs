@@ -641,6 +641,15 @@ pub struct Engine {
     /// `#[cfg(any(test, feature = "test-instrumentation"))]` accessor
     /// `Engine::last_changed_realizations()` in `engine_admin.rs`.
     last_changed_realizations: std::collections::HashSet<reify_core::RealizationNodeId>,
+    /// Input-cone folds run by the most recent `edit_param` / `edit_source`
+    /// classification (#6086): the scoped count on `edit_param`, every
+    /// realization on `edit_source`. Reset to 0 at the start of each edit.
+    ///
+    /// The only observable of the scoped fold's cost saving. Exposed only
+    /// under `#[cfg(any(test, feature = "test-instrumentation"))]` via
+    /// `Engine::last_input_cone_fold_count()` in `engine_admin.rs`; the field
+    /// itself is always present so the `engine_edit.rs` writers need no gate.
+    last_input_cone_fold_count: usize,
     /// Count of param-override rejections due to `TypeKindMismatch` during the
     /// most recent `eval()` or `eval_cached()` call. Reset to 0 at the start
     /// of each call. Incremented inside `emit_param_override_rejection_warning`

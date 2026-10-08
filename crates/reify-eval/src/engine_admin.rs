@@ -297,6 +297,7 @@ impl Engine {
             last_role_flip_probes: 0,
             last_diff_value_cells: None,
             last_changed_realizations: std::collections::HashSet::new(),
+            last_input_cone_fold_count: 0,
             last_param_override_type_kind_rejections: 0,
             last_param_override_dimension_rejections: 0,
             last_sub_component_unknown_structure_errors: 0,
@@ -2124,6 +2125,18 @@ impl Engine {
         &self,
     ) -> &std::collections::HashSet<reify_core::RealizationNodeId> {
         &self.last_changed_realizations
+    }
+
+    /// Returns how many input-cone folds the most recent `edit_param` /
+    /// `edit_source` classification ran (#6086). `edit_param` folds only the
+    /// realizations the edit can have moved; `edit_source` folds them all.
+    ///
+    /// Only available under `#[cfg(any(test, feature = "test-instrumentation"))]`.
+    /// Integration tests reach this method via the self-dev-dep with the
+    /// `test-instrumentation` feature enabled (see `crates/reify-eval/Cargo.toml`).
+    #[cfg(any(test, feature = "test-instrumentation"))]
+    pub fn last_input_cone_fold_count(&self) -> usize {
+        self.last_input_cone_fold_count
     }
 
     /// Returns the number of param-override rejections due to `TypeKindMismatch`

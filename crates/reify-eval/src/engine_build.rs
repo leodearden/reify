@@ -3303,6 +3303,7 @@ impl Engine {
             last_role_flip_probes: _,        // edit instrumentation
             last_diff_value_cells: _,        // edit_source diff snapshot
             last_changed_realizations: _, // edit-produced changed-realization set, read by the following build (task β/γ)
+            last_input_cone_fold_count: _, // edit instrumentation (#6086): describes the last edit, not a build
             last_param_override_type_kind_rejections: _, // eval instrumentation
             last_param_override_dimension_rejections: _, // eval instrumentation
             last_sub_component_unknown_structure_errors: _, // eval instrumentation

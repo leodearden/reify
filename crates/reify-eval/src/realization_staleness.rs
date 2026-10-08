@@ -8,8 +8,8 @@
 
 use std::collections::{HashMap, HashSet};
 
-use reify_core::RealizationNodeId;
-use reify_ir::PersistentMap;
+use reify_core::{RealizationNodeId, ValueCellId};
+use reify_ir::{DeterminacyState, PersistentMap, Value, ValueMap};
 
 use crate::cache::NodeId;
 use crate::graph::{EvaluationGraph, RealizationNodeData};
@@ -90,6 +90,77 @@ pub(crate) fn compute_changed_realizations(
         })
         .map(|(rid, _)| rid.clone())
         .collect()
+}
+
+/// What [`compute_changed_realizations_scoped`] classified, and what it cost.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ScopedClassification {
+    /// The realizations whose input cone moved since their last execution:
+    /// the same set [`compute_changed_realizations`] reports.
+    pub(crate) changed: HashSet<RealizationNodeId>,
+    /// How many input-cone folds were actually run.
+    pub(crate) folded: usize,
+}
+
+/// `edit_param`'s classification (#6086): the result of
+/// [`compute_changed_realizations`] over a persisting graph, folding only
+/// the realizations this edit can have moved.
+///
+/// A realization is folded iff it is in `pending` (the previous edit's
+/// changed set) or one of the cells its ops read changed VALUE between
+/// `prior_values` (the pre-edit snapshot) and `values`. One with no stored
+/// hash is changed without a fold (PRD §11.2); every other one is skipped.
+/// The fold is the canonical one (PRD D1).
+///
+/// # Why the result equals the full fold
+///
+/// The fold evaluates exactly the op args whose cells
+/// `deps::extract_realization_dependencies` reports, so a realization none
+/// of whose read cells moved folds to the same hash it did before this edit.
+/// By induction over edits, a realization whose stored hash differed from
+/// that earlier fold was in the previous changed set, i.e. in `pending`.
+/// So a skipped realization's stored hash still equals its fold: it is
+/// unchanged. The scope is a value diff, not the edited param's static dirty
+/// cone, because a solver-owned `auto` cell moves without being a dependent
+/// of the param that moved it. `edit_param` debug-asserts this equality.
+pub(crate) fn compute_changed_realizations_scoped(
+    graph: &EvaluationGraph,
+    ctx: &reify_expr::EvalContext<'_>,
+    values: &ValueMap,
+    prior_values: &PersistentMap<ValueCellId, (Value, DeterminacyState)>,
+    pending: &HashSet<RealizationNodeId>,
+) -> ScopedClassification {
+    let mut moved_by_cell: HashMap<ValueCellId, bool> = HashMap::new();
+    let mut cell_moved = |cell: &ValueCellId| {
+        *moved_by_cell
+            .entry(cell.clone())
+            .or_insert_with(|| values.get(cell) != prior_values.get(cell).map(|(v, _)| v))
+    };
+    let mut changed = HashSet::new();
+    let mut folded = 0;
+    for (rid, node) in graph.realizations.iter() {
+        let Some(stored) = node.input_cone_hash else {
+            changed.insert(rid.clone());
+            continue;
+        };
+        let reachable = pending.contains(rid)
+            || crate::deps::extract_realization_dependencies(&node.operations)
+                .reads
+                .iter()
+                .any(&mut cell_moved);
+        if !reachable {
+            continue;
+        }
+        folded += 1;
+        let current = crate::engine_build::compute_realization_upstream_values_hash_from_ops(
+            &node.operations,
+            ctx,
+        );
+        if current != stored {
+            changed.insert(rid.clone());
+        }
+    }
+    ScopedClassification { changed, folded }
 }
 
 /// The entities whose `RealizationCache` family an edit made stale (γ #4730,

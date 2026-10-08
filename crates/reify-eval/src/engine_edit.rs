@@ -159,7 +159,9 @@ use crate::deps::{DependencyTrace, extract_dependency_trace};
 use crate::engine_admin::{ParamOverrideRejection, validate_param_override};
 use crate::engine_helpers::collect_member_list;
 use crate::graph::{ConstraintNodeData, EvaluationGraph, GuardedGroupInfo};
-use crate::realization_staleness::{compute_changed_realizations, stale_realization_entities};
+use crate::realization_staleness::{
+    compute_changed_realizations, compute_changed_realizations_scoped, stale_realization_entities,
+};
 use crate::warm_pool::WarmStatePool;
 use crate::{
     CheckResult, Engine, EngineError, EvalResult, EvaluationState, GuardLookup,
@@ -1105,6 +1107,7 @@ impl Engine {
         let functions = Arc::clone(&self.functions);
         // Reset the per-edit guard-phase group evaluation counter before Phase 1.
         self.last_guard_phase_group_evals = 0;
+        self.last_input_cone_fold_count = 0;
         // The realization cache is NOT flushed here: γ (#4730) evicts only the
         // families this edit made stale, at the compare site near the end of
         // this function.
@@ -1155,11 +1158,13 @@ impl Engine {
             }
         }
 
-        // selective-realization-eviction β (#4729): reset the changed-
-        // realization set. Ungated (the field is always present, like
-        // `last_dispatch_count`); the real set is computed at the
-        // post-value-cone seam near the end of this function, once the input
-        // cones can be recomputed against the UPDATED context.
+        // selective-realization-eviction β (#4729): take the changed-
+        // realization set as this edit's `pending` input. Ungated (the field
+        // is always present, like `last_dispatch_count`); the real set is
+        // computed at the post-value-cone seam near the end of this function,
+        // once the input cones can be recomputed against the UPDATED context.
+        // #6086's scoped fold re-folds every pending realization, which is
+        // how a realization edited but not yet rebuilt stays reported.
         //
         // **Ordering (amend, review round 1 — `correctness`): this MUST sit
         // BELOW the `NotInitialized` / `CellNotFound` / `validate_param_override`
@@ -1176,10 +1181,13 @@ impl Engine {
         // would leave the set empty with no compare site ever running, and γ
         // (#4730) would skip evicting genuinely stale geometry. Pinned by
         // `rejected_edit_param_does_not_wipe_the_changed_realization_record`.
-        self.last_changed_realizations.clear();
+        let pending = std::mem::take(&mut self.last_changed_realizations);
 
         // Clone snapshot and extract references (O(1) via PersistentMap)
         let parent_id = state.snapshot.id;
+        // #6086: the pre-edit values the scoped classification diffs against.
+        // Taken before any value mutation; O(1) via PersistentMap.
+        let prior_values = state.snapshot.values.clone();
         // γ (#4730): `edit_param` neither adds nor removes a realization, so
         // its eviction set has no removed term. Asserted at the compare site.
         let prior_realization_count = state.snapshot.graph.realizations.len();
@@ -2916,8 +2924,17 @@ impl Engine {
             let ctx = crate::eval_ctx_with_meta(&values, &functions, &self.meta_map);
             let state = self.eval_state.as_ref().unwrap();
             let graph = &state.snapshot.graph;
-            self.last_changed_realizations =
-                compute_changed_realizations(&graph.realizations, graph, &ctx);
+            let scoped =
+                compute_changed_realizations_scoped(graph, &ctx, &values, &prior_values, &pending);
+            #[cfg(debug_assertions)]
+            debug_assert_eq!(
+                scoped.changed,
+                compute_changed_realizations(&graph.realizations, graph, &ctx),
+                "#6086: the scoped classification must equal the full fold; a \
+                 realization it skipped is under-eviction and serves stale geometry"
+            );
+            self.last_input_cone_fold_count = scoped.folded;
+            self.last_changed_realizations = scoped.changed;
             // Reuse the installed reverse index instead of rebuilding an
             // O(graph) one per edit, but ONLY under the two admissibility
             // proofs the helper documents (amend, review round 1 —
@@ -3114,6 +3131,7 @@ impl Engine {
         // Precondition: prior eval() must have populated eval_state. This is
         // the same precondition as edit_param and is validated first so that
         // all later steps can rely on a present baseline.
+        self.last_input_cone_fold_count = 0;
         if self.eval_state.is_none() {
             return Err(EngineError::NotInitialized);
         }
@@ -4735,8 +4753,11 @@ impl Engine {
         // eviction and for δ's "selective ≡ wholesale on served handles" gate.
         {
             let ctx = crate::eval_ctx_with_meta(&values, &functions, &self.meta_map);
+            // The full fold, not #6086's scoped one: a recompile can change
+            // `functions` / `meta_map`, which no cell-value diff sees.
             let mut changed =
                 compute_changed_realizations(&prior_realizations, &new_snapshot.graph, &ctx);
+            self.last_input_cone_fold_count = new_snapshot.graph.realizations.len();
             changed.extend(changed_realizations.iter().cloned());
             changed.extend(added_realizations.iter().cloned());
             self.last_changed_realizations = changed;
