@@ -1367,8 +1367,9 @@ pub fn solve_elastic_static_trampoline(
             // The UNIFORM lane, verbatim 4902. Reached both when the localized
             // lane was never entered and when it failed at runtime, so both
             // paths land on identical, already-tested behaviour rather than
-            // two hand-copied bodies.
-            let run_uniform_lane = || {
+            // two hand-copied bodies. Its only failure is a refined synthetic
+            // grid failing the shared solve's degenerate-tet gate.
+            let run_uniform_lane = || -> Result<_, DegenerateTet> {
                 let mut problem = CantileverAdaptiveProblem::new(
                     *iso,
                     length,
@@ -1379,8 +1380,7 @@ pub fn solve_elastic_static_trampoline(
                     body_force,
                     bc_override.clone(),
                 );
-                let status = run_adaptive_refinement(&mut problem, &budget, DORFLER_THETA)
-                    .expect("CantileverAdaptiveProblem's AdaptiveProblem seam is Infallible");
+                let status = run_adaptive_refinement(&mut problem, &budget, DORFLER_THETA)?;
                 // Perf-cost visibility (reviewer_comprehensive/performance,
                 // task 4902 amendment): `refine` uniformly doubles all three
                 // grid axes per iteration (~8x DOF growth), so an
@@ -1392,10 +1392,10 @@ pub fn solve_elastic_static_trampoline(
                     "adaptive refinement finished at {} DOFs on a {nx}×{ny}×{nz} grid",
                     problem.last_n_dofs
                 ));
-                (status, problem.last_global_indicator, diag)
+                Ok((status, problem.last_global_indicator, diag))
             };
 
-            let (status, last_global_indicator, lane_diagnostic) = match realized_lane_seed {
+            let lane_outcome = match realized_lane_seed {
                 Some(mut problem) => {
                     let n_elements_before = problem.element_count();
                     match run_adaptive_refinement(&mut problem, &budget, DORFLER_THETA) {
@@ -1445,7 +1445,7 @@ pub fn solve_elastic_static_trampoline(
                                     problem.last_n_dofs, problem.refine_count
                                 )
                             });
-                            (status, problem.last_global_indicator, diag)
+                            Ok((status, problem.last_global_indicator, diag))
                         }
                         Err(e) => {
                             // libgmsh IS linked but this remesh failed (an open
@@ -1464,6 +1464,10 @@ pub fn solve_elastic_static_trampoline(
                     }
                 }
                 None => run_uniform_lane(),
+            };
+            let (status, last_global_indicator, lane_diagnostic) = match lane_outcome {
+                Ok(lane) => lane,
+                Err(degenerate) => return degenerate_mesh_outcome(degenerate),
             };
             // Post-loop cancel check (reviewer_comprehensive amendment), the
             // exact shape of §6b above and for the same compute-node-contract
@@ -3708,7 +3712,7 @@ fn characteristic_sizes_from_solver_mesh(coords: &[[f64; 3]], tets: &[[usize; 4]
 /// Task 4902's uniform lane stays exactly as it is and remains the fallback.
 /// The two differ in every axis that matters — mesh source (realized
 /// `VolumeMesh` vs synthetic grid), refine mechanism (gmsh size-field remesh
-/// vs per-axis grid doubling), error type ([`RefineError`] vs `Infallible`),
+/// vs per-axis grid doubling), error type ([`RefineError`] vs [`DegenerateTet`]),
 /// and BC model (coordinate re-derivation per remesh vs stable node indices)
 /// — so folding them behind one struct would mean a runtime enum in every
 /// method and would put 4902's already-tested fallback behaviour at risk on a
@@ -3930,7 +3934,14 @@ impl AdaptiveProblem for RealizedAdaptiveProblem {
             None,
             // Synthetic-grid override is meaningless on the realized path.
             None,
-        );
+        )
+        // Same `Gmsh(OperationFailed)` mapping as `refine`'s non-widenable
+        // remesh: the wiring site warns and falls back to the uniform lane.
+        .map_err(|degenerate| {
+            reify_solver_elastic::RefineError::Gmsh(reify_ir::GeometryError::OperationFailed(
+                format!("the realized mesh failed the solve's degenerate-tet gate: {degenerate}"),
+            ))
+        })?;
 
         let elements = isotropic_stress_elements(
             &fea.coords,
@@ -6009,7 +6020,8 @@ mod tests {
             None,
             None,
             None,
-        );
+        )
+        .expect("well-shaped test mesh passes the degenerate-tet gate");
 
         // (a) the solve ran on the realized mesh — counts == provided, NOT the
         // synthetic nx×1×6 box's counts for the same dims.
@@ -6056,7 +6068,8 @@ mod tests {
             None,
             None,
             None,
-        );
+        )
+        .expect("well-shaped test mesh passes the degenerate-tet gate");
         let nz = 6usize;
         let nx = ((dims[0] / dims[2] * nz as f64).round() as usize).max(1);
         let syn_nodes = (nx + 1) * 2 * (nz + 1);
@@ -6177,7 +6190,8 @@ mod tests {
             None,
             None,
             None,
-        );
+        )
+        .expect("well-shaped test mesh passes the degenerate-tet gate");
         assert!(
             fea.converged,
             "realized-mesh solve over the compacted (orphan-dropped) mesh must converge"
@@ -6346,7 +6360,8 @@ mod tests {
             None,
             None,
             None,
-        );
+        )
+        .expect("well-shaped test mesh passes the degenerate-tet gate");
         assert_eq!(
             fea_default.coords.len(),
             default_nodes,
@@ -6374,7 +6389,8 @@ mod tests {
             None,
             None,
             Some((nx_default * 2, 1, nz_default * 2)),
-        );
+        )
+        .expect("well-shaped test mesh passes the degenerate-tet gate");
         assert!(
             fea_refined.coords.len() > fea_default.coords.len(),
             "Some(finer) override must produce strictly more nodes than the default: \
@@ -6429,7 +6445,7 @@ mod tests {
 
         let est = problem
             .solve_and_estimate()
-            .expect("this problem's AdaptiveProblem seam cannot fail");
+            .expect("well-shaped test mesh passes the degenerate-tet gate");
 
         assert!(
             est.relative_error.is_finite() && (0.0..1.0).contains(&est.relative_error),
@@ -6499,7 +6515,7 @@ mod tests {
         };
 
         let status = run_adaptive_refinement(&mut problem, &budget, DORFLER_THETA)
-            .expect("CantileverAdaptiveProblem::Error is Infallible");
+            .expect("well-shaped test mesh passes the degenerate-tet gate");
 
         match status {
             ConvergenceStatus::NotConverged { reason } => {
@@ -6530,7 +6546,7 @@ mod tests {
         // strictly more dofs than the initial resolution.
         let final_est = problem
             .solve_and_estimate()
-            .expect("this problem's AdaptiveProblem seam cannot fail");
+            .expect("well-shaped test mesh passes the degenerate-tet gate");
         assert!(
             final_est.n_dofs > initial_dofs,
             "expected refine() to have grown the mesh past the initial {} dofs, got {}",
@@ -6963,7 +6979,7 @@ mod tests {
             .solve_and_estimate()
             .expect_err("a q ≈ 3.6e-12 synthetic grid must fail the degenerate-tet gate");
         assert!(
-            !(degenerate.quality >= MIN_TET_SHAPE_QUALITY),
+            degenerate.quality < MIN_TET_SHAPE_QUALITY,
             "reported quality {} must fail the gate",
             degenerate.quality
         );
@@ -7187,7 +7203,8 @@ mod tests {
             None,
             Some((Some(clamp_usize), Some(load_usize))),
             None,
-        );
+        )
+        .expect("well-shaped test mesh passes the degenerate-tet gate");
         assert!(fea.converged, "the selector-driven cantilever solve must converge");
         // The OVERRIDE moved the load to the x_min face → fea.tip_nodes == x_min face.
         let mut tip = fea.tip_nodes.clone();
@@ -7229,7 +7246,8 @@ mod tests {
             None,
             None,
             None,
-        );
+        )
+        .expect("well-shaped test mesh passes the degenerate-tet gate");
         let mut tip_coord = fea_coord.tip_nodes.clone();
         tip_coord.sort_unstable();
         assert_eq!(
@@ -8226,7 +8244,8 @@ mod tests {
             None,
             None,
             None,
-        );
+        )
+        .expect("well-shaped test mesh passes the degenerate-tet gate");
 
         assert!(result.converged, "FEA must converge under x_max pressure");
 
@@ -8286,7 +8305,8 @@ mod tests {
                 None,
                 bc_override,
                 grid_override,
-            );
+            )
+            .expect("well-shaped test mesh passes the degenerate-tet gate");
             assert!(result.converged, "{case}: solve did not converge");
             result
         };
@@ -8405,7 +8425,8 @@ mod tests {
             None,
             None,
             None,
-        );
+        )
+        .expect("well-shaped test mesh passes the degenerate-tet gate");
 
         // Tip deflection = max |u_z| over tip-face nodes.
         let tip_deflection = result
@@ -8490,7 +8511,8 @@ mod tests {
             None,
             None,
             None,
-        );
+        )
+        .expect("well-shaped test mesh passes the degenerate-tet gate");
         // Solve with the anisotropic identity-frame lift path.
         let (aniso_result, _) = solve_cantilever_fea(
             &MaterialModel::Anisotropic(aniso),
@@ -8507,7 +8529,8 @@ mod tests {
             None,
             None,
             None,
-        );
+        )
+        .expect("well-shaped test mesh passes the degenerate-tet gate");
 
         // Both must converge.
         assert!(iso_result.converged, "isotropic solve must converge");
@@ -8624,7 +8647,8 @@ mod tests {
             None,
             None,
             None,
-        );
+        )
+        .expect("well-shaped test mesh passes the degenerate-tet gate");
 
         // Analytic σ_max = 6·P·L / (b·h²) — independent of material stiffness.
         let sigma_analytic = 6.0 * tip_force * length / (width * height * height);
@@ -8789,7 +8813,8 @@ mod tests {
             None,
             None,
             None,
-        );
+        )
+        .expect("well-shaped test mesh passes the degenerate-tet gate");
 
         // Expected mesh counts: nz=6, nx=round(0.8/0.1*6)=48, ny=1
         let nz_exp = 6usize;
@@ -10181,7 +10206,8 @@ mod tests {
             }),
             None,
             None,
-        );
+        )
+        .expect("well-shaped test mesh passes the degenerate-tet gate");
 
         assert!(
             cancelled,
@@ -10223,7 +10249,8 @@ mod tests {
             None,
             None,
             None,
-        );
+        )
+        .expect("well-shaped test mesh passes the degenerate-tet gate");
 
         assert!(fea_full.converged, "uncancelled solve must converge");
         assert!(
@@ -10270,7 +10297,8 @@ mod tests {
             None,
             None,
             None,
-        );
+        )
+        .expect("well-shaped test mesh passes the degenerate-tet gate");
 
         assert!(result.converged, "directional Y-load solve must converge");
 
@@ -10851,7 +10879,8 @@ mod tests {
             let (sol, _) = solve_cantilever_fea(
                 model, L, W, H, None, tip_force, None, &[], [0.0; 3], true, None, None, None,
                 None,
-            );
+            )
+            .expect("well-shaped test mesh passes the degenerate-tet gate");
             assert!(sol.converged, "solve_cantilever_fea did not converge");
             // Max |u_z| over tip nodes (same metric as the orthotropic band test).
             sol.tip_nodes.iter()
@@ -13259,7 +13288,7 @@ mod tests {
 
         let est = problem
             .solve_and_estimate()
-            .expect("this problem's AdaptiveProblem seam cannot fail");
+            .expect("well-shaped test mesh passes the degenerate-tet gate");
 
         assert_eq!(
             est.per_element.len(),
@@ -13410,7 +13439,7 @@ mod tests {
 
         let est = problem
             .solve_and_estimate()
-            .expect("this problem's AdaptiveProblem seam cannot fail");
+            .expect("well-shaped test mesh passes the degenerate-tet gate");
         let marked = reify_solver_elastic::mark_dorfler(&est.per_element, DORFLER_THETA);
         assert!(
             !marked.is_empty(),
@@ -13474,7 +13503,7 @@ mod tests {
         let mut unmarked = gmsh_realized_problem(0.05);
         unmarked
             .solve_and_estimate()
-            .expect("this problem's AdaptiveProblem seam cannot fail");
+            .expect("well-shaped test mesh passes the degenerate-tet gate");
         unmarked
             .refine(&[])
             .expect("an empty marked set must still remesh cleanly");

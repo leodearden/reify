@@ -346,7 +346,11 @@ impl fmt::Display for DegenerateTet {
 pub fn find_degenerate_tet(coords: &[[f64; 3]], tets: &[[usize; 4]]) -> Option<DegenerateTet> {
     let nodes = |tet: &[usize; 4]| tet.map(|n| coords[n]);
     let total_signed_volume: f64 = tets.iter().map(|t| tet_signed_volume_p1(&nodes(t))).sum();
-    let orientation = if total_signed_volume >= 0.0 { 1.0 } else { -1.0 };
+    let orientation = if total_signed_volume >= 0.0 {
+        1.0
+    } else {
+        -1.0
+    };
     let mut worst: Option<DegenerateTet> = None;
     for (element_id, tet) in tets.iter().enumerate() {
         let candidate = DegenerateTet {
@@ -360,7 +364,7 @@ pub fn find_degenerate_tet(coords: &[[f64; 3]], tets: &[[usize; 4]]) -> Option<D
             worst = Some(candidate);
         }
     }
-    worst.filter(|w| !(w.quality >= MIN_TET_SHAPE_QUALITY))
+    worst.filter(|w| w.quality < MIN_TET_SHAPE_QUALITY)
 }
 
 // ── Unit tests ───────────────────────────────────────────────────────────────
@@ -742,7 +746,7 @@ mod tests {
         let d = find_degenerate_tet(&coords, &tets).expect("flat tet must be flagged");
         assert_eq!(d.element_id, flat_id);
         assert!(
-            !(d.quality >= MIN_TET_SHAPE_QUALITY),
+            d.quality < MIN_TET_SHAPE_QUALITY,
             "flat tet quality = {}",
             d.quality
         );
