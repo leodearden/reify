@@ -163,81 +163,106 @@ pub(crate) fn compute_changed_realizations_scoped(
     ScopedClassification { changed, folded }
 }
 
+/// The realizations an edit's realization dirty cone starts from (γ #4730):
+/// `changed`, plus — once anything is stale, i.e. `changed` is non-empty or
+/// `anything_removed` — every [`Sub` consumer the reverse index
+/// drops](sub_consumers_the_reverse_index_drops).
+///
+/// The input-cone fold sees only a realization's own op args, so a
+/// `GeomRef::Sub` consumer of a moved body is never in `changed` itself; the
+/// dirty cone reaches it through the reverse index's realization edges. Where
+/// the index has no edge, seeding the consumer directly makes the cone walk
+/// start at it, so its downstream ComputeNodes, geometry cell and constraints
+/// are invalidated along with its `RealizationCache` family. That over-evicts a
+/// dropped-operand consumer that does not read the stale body: wasted work,
+/// never stale geometry.
+pub(crate) fn realization_cone_seeds(
+    changed: &HashSet<RealizationNodeId>,
+    anything_removed: bool,
+    graph: &EvaluationGraph,
+) -> HashSet<RealizationNodeId> {
+    let mut seeds = changed.clone();
+    if !seeds.is_empty() || anything_removed {
+        seeds.extend(sub_consumers_the_reverse_index_drops(graph));
+    }
+    seeds
+}
+
 /// The entities whose `RealizationCache` family an edit made stale (γ #4730,
 /// PRD D4) — what the edit must hand to `RealizationCache::evict_family`.
 ///
-/// Four terms, each closing a distinct stale-geometry hole:
+/// Three terms, each closing a distinct stale-geometry hole:
 ///
-/// - `changed`, the seeds [`compute_changed_realizations`] reported. They are
-///   unioned in explicitly because `dirty::compute_dirty_cone_with_realizations`
-///   never puts its seeds in its own result.
+/// - `seeds`, from [`realization_cone_seeds`]. They are named explicitly
+///   because `dirty::compute_dirty_cone_with_realizations` never puts its
+///   seeds in its own result.
 /// - every `NodeId::Realization` in `realization_cone`, the transitive dirty
-///   cone of those seeds. The input-cone fold sees only a realization's own op
-///   args, so a `GeomRef::Sub` consumer of a moved body never becomes a seed
-///   itself; only the cone reaches it.
+///   cone of those seeds: the `GeomRef::Sub` consumers the index does link.
 /// - `removed`, realizations the edit dropped. The cache is keyed by entity
 ///   alone, so a dropped realization's cached terminal would otherwise stand
 ///   in for whatever realization of that entity remains.
-/// - once any of those is non-empty, every [cross-entity `Sub`
-///   consumer](cross_entity_sub_consumers) in `graph`, the post-edit graph.
-///   The reverse index behind the cone resolves a `"<sub>.<member>"` operand
-///   by member name alone and drops it when two entities export that member
-///   (`A.body` and `B.body`), so the cone cannot be trusted to reach these
-///   consumers. Evicting all of them over-evicts a consumer that does not
-///   read the stale body; that is wasted work, never stale geometry.
 ///
 /// Value, compute and constraint members of the cone name no family and are
 /// ignored.
 pub(crate) fn stale_realization_entities<'a>(
-    changed: &HashSet<RealizationNodeId>,
+    seeds: &HashSet<RealizationNodeId>,
     removed: impl IntoIterator<Item = &'a RealizationNodeId>,
     realization_cone: &HashSet<NodeId>,
-    graph: &EvaluationGraph,
 ) -> HashSet<String> {
     let entity = |rid: &RealizationNodeId| rid.entity.clone();
     let reached = realization_cone.iter().filter_map(|node| match node {
         NodeId::Realization(rid) => Some(entity(rid)),
         _ => None,
     });
-    let mut stale: HashSet<String> = changed
+    seeds
         .iter()
         .map(entity)
         .chain(removed.into_iter().map(entity))
         .chain(reached)
-        .collect();
-    if !stale.is_empty() {
-        stale.extend(cross_entity_sub_consumers(graph));
-    }
-    stale
+        .collect()
 }
 
-/// The entities owning a realization that reads ANOTHER entity's geometry: a
-/// `GeomRef::Sub` operand that names no realization of its own entity.
+/// The realizations owning a `GeomRef::Sub` operand that the reverse
+/// dependency index cannot resolve, and so never links to its producer.
 ///
-/// A sibling operand names the geometry member of a same-entity realization
-/// (`union(base, hole)`); it needs no term of its own, because the family is
-/// keyed by entity and is evicted exactly when the sibling is.
-fn cross_entity_sub_consumers(graph: &EvaluationGraph) -> HashSet<String> {
-    let mut members_by_entity: HashMap<&str, HashSet<&str>> = HashMap::new();
+/// This mirrors the index's resolver (`deps::resolve_geom_sub_edge`), which
+/// resolves an operand by geometry member name alone. A dotted
+/// `"<sub>.<member>"` operand resolves only when exactly one realization of
+/// ANOTHER entity exports `<member>`; a bare sibling operand only when exactly
+/// one realization of the consumer's OWN entity does. Two entities exporting
+/// `body`, or no exporter at all, leave the operand without an edge.
+/// `the_dropped_operand_rule_agrees_with_the_reverse_index` pins this mirror to
+/// the index itself.
+fn sub_consumers_the_reverse_index_drops(graph: &EvaluationGraph) -> HashSet<RealizationNodeId> {
+    let mut exporters: HashMap<&str, Vec<&str>> = HashMap::new();
     for (rid, node) in graph.realizations.iter() {
         if let Some(cell) = &node.geometry_cell {
-            members_by_entity
-                .entry(rid.entity.as_str())
+            exporters
+                .entry(cell.member.as_str())
                 .or_default()
-                .insert(cell.member.as_str());
+                .push(rid.entity.as_str());
         }
     }
+    let resolves = |operand: &str, consumer: &str| {
+        let (member, own_entity) = match operand.split_once('.') {
+            Some((_, member)) => (member, false),
+            None => (operand, true),
+        };
+        exporters.get(member).is_some_and(|entities| {
+            let candidates = entities.iter().filter(|e| (**e == consumer) == own_entity);
+            candidates.count() == 1
+        })
+    };
     graph
         .realizations
         .iter()
         .filter(|(rid, node)| {
-            let siblings = members_by_entity.get(rid.entity.as_str());
             node.operations
                 .iter()
                 .flat_map(crate::engine_build::sub_refs_in_op)
-                .any(|name| !siblings.is_some_and(|members| members.contains(name)))
+                .any(|operand| !resolves(operand, &rid.entity))
         })
-        .map(|(rid, _)| rid.entity.clone())
+        .map(|(rid, _)| rid.clone())
         .collect()
 }
 
@@ -252,7 +277,7 @@ mod tests {
 
     use super::{
         ScopedClassification, compute_changed_realizations, compute_changed_realizations_scoped,
-        stale_realization_entities,
+        realization_cone_seeds, stale_realization_entities,
     };
     use crate::cache::NodeId;
     use crate::graph::EvaluationGraph;
@@ -263,10 +288,6 @@ mod tests {
 
     fn entities(names: &[&str]) -> HashSet<String> {
         names.iter().map(|n| n.to_string()).collect()
-    }
-
-    fn no_graph() -> EvaluationGraph {
-        EvaluationGraph::default()
     }
 
     /// A graph of realizations `(entity, index, geometry member, ops)`.
@@ -311,12 +332,26 @@ mod tests {
         }]
     }
 
+    fn translate_of(operand: &str) -> Vec<reify_compiler::CompiledGeometryOp> {
+        use reify_compiler::{CompiledGeometryOp, GeomRef, TransformKind};
+        vec![CompiledGeometryOp::Transform {
+            kind: TransformKind::Translate,
+            target: GeomRef::Sub(operand.to_string()),
+            args: vec![],
+        }]
+    }
+
+    fn rids(ids: &[(&str, u32)]) -> HashSet<RealizationNodeId> {
+        ids.iter()
+            .map(|(entity, index)| RealizationNodeId::new(*entity, *index))
+            .collect()
+    }
+
     /// The 4317-class trap behind δ S7: `A.body` and `B.body` export the same
     /// member name, so the reverse index cannot resolve `C`'s `a.body`
-    /// operand and β's cone never reaches `C`. Any cross-entity `Sub`
-    /// consumer is therefore stale whenever anything is.
+    /// operand and β's cone never reaches `C`. `C` is seeded instead.
     #[test]
-    fn includes_every_cross_entity_sub_consumer_once_anything_is_stale() {
+    fn a_consumer_of_an_ambiguous_member_is_seeded_once_anything_is_stale() {
         let graph = graph_of(&[
             ("A", 0, "body", a_box()),
             ("B", 0, "body", a_box()),
@@ -324,16 +359,32 @@ mod tests {
         ]);
         let changed = HashSet::from([rid("A")]);
 
-        let stale = stale_realization_entities(&changed, [], &HashSet::new(), &graph);
+        let seeds = realization_cone_seeds(&changed, false, &graph);
 
-        assert_eq!(stale, entities(&["A", "C"]));
+        assert_eq!(seeds, HashSet::from([rid("A"), rid("C")]));
     }
 
-    /// A `Sub` operand naming a realization of the SAME entity is a sibling
-    /// reference: the family is keyed by entity, so it is already evicted
-    /// exactly when the sibling is.
+    /// An operand the index resolves is reached through the cone, so its
+    /// consumer is not seeded: editing one part leaves an independent
+    /// cross-entity consumer of another part alone.
     #[test]
-    fn a_sibling_sub_reference_does_not_make_a_cross_entity_consumer() {
+    fn a_consumer_of_a_resolvable_member_is_left_to_the_cone() {
+        let graph = graph_of(&[
+            ("A", 0, "body", a_box()),
+            ("S", 0, "shell", a_box()),
+            ("C", 0, "moved", translate_of("a.body")),
+            ("D", 0, "placed", translate_of("s.shell")),
+        ]);
+        let changed = HashSet::from([rid("A")]);
+
+        let seeds = realization_cone_seeds(&changed, false, &graph);
+
+        assert_eq!(seeds, changed);
+    }
+
+    /// A same-entity sibling reference resolves through the index too.
+    #[test]
+    fn a_resolvable_sibling_reference_is_left_to_the_cone() {
         let graph = graph_of(&[
             ("E", 0, "base", a_box()),
             ("E", 1, "hole", a_box()),
@@ -342,32 +393,95 @@ mod tests {
         ]);
         let changed = HashSet::from([rid("X")]);
 
-        let stale = stale_realization_entities(&changed, [], &HashSet::new(), &graph);
+        let seeds = realization_cone_seeds(&changed, false, &graph);
 
-        assert_eq!(stale, entities(&["X"]));
+        assert_eq!(seeds, changed);
     }
 
-    /// PRD §6 zero-eviction row, with a cross-entity consumer present.
+    /// PRD §6 zero-eviction row, with a dropped-operand consumer present.
     #[test]
-    fn a_cross_entity_sub_consumer_survives_an_edit_that_stales_nothing() {
+    fn nothing_is_seeded_by_an_edit_that_stales_nothing() {
         let graph = graph_of(&[
             ("A", 0, "body", a_box()),
-            ("C", 0, "combined", union_of("a.body", "a.body")),
+            ("B", 0, "body", a_box()),
+            ("C", 0, "combined", union_of("a.body", "b.body")),
         ]);
 
-        let stale = stale_realization_entities(&HashSet::new(), [], &HashSet::new(), &graph);
+        let seeds = realization_cone_seeds(&HashSet::new(), false, &graph);
 
         assert!(
-            stale.is_empty(),
-            "nothing moved, nothing is evicted: {stale:?}"
+            seeds.is_empty(),
+            "nothing moved, nothing is seeded: {seeds:?}"
+        );
+    }
+
+    /// A recompile that only drops a realization still stales the consumers
+    /// the index cannot link to whatever was dropped.
+    #[test]
+    fn a_removal_alone_seeds_the_dropped_operand_consumers() {
+        let graph = graph_of(&[
+            ("A", 0, "body", a_box()),
+            ("B", 0, "body", a_box()),
+            ("C", 0, "combined", union_of("a.body", "b.body")),
+        ]);
+
+        let seeds = realization_cone_seeds(&HashSet::new(), true, &graph);
+
+        assert_eq!(seeds, HashSet::from([rid("C")]));
+    }
+
+    /// The seeding rule mirrors the reverse index's resolver; this pins the
+    /// mirror to the index itself. Each consumer has ONE operand, so the
+    /// index dropped it exactly when no realization links to the consumer.
+    #[test]
+    fn the_dropped_operand_rule_agrees_with_the_reverse_index() {
+        let graph = graph_of(&[
+            ("A", 0, "body", a_box()),
+            ("B", 0, "body", a_box()),
+            ("S", 0, "shell", a_box()),
+            ("C", 0, "c_out", translate_of("x.body")),
+            ("D", 0, "d_out", translate_of("s.shell")),
+            ("F", 0, "f_out", translate_of("q.ghost")),
+            ("E", 0, "base", a_box()),
+            ("E", 1, "top", translate_of("base")),
+            ("G", 0, "twin", a_box()),
+            ("G", 1, "twin", a_box()),
+            ("G", 2, "g_out", translate_of("twin")),
+            ("H", 0, "own", a_box()),
+            ("H", 1, "h_out", translate_of("h.own")),
+        ]);
+        let index = crate::deps::ReverseDependencyIndex::build_from_graph(&graph);
+        let linked = |consumer: &RealizationNodeId| {
+            graph.realizations.iter().any(|(producer, _)| {
+                index
+                    .realization_dependents_of(producer)
+                    .contains(&NodeId::Realization(consumer.clone()))
+            })
+        };
+        let consumers = rids(&[("C", 0), ("D", 0), ("F", 0), ("E", 1), ("G", 2), ("H", 1)]);
+
+        let dropped = super::sub_consumers_the_reverse_index_drops(&graph);
+
+        for consumer in &consumers {
+            assert_eq!(
+                dropped.contains(consumer),
+                !linked(consumer),
+                "{consumer}: the mirror and the reverse index disagree on whether \
+                 its operand resolves"
+            );
+        }
+        assert_eq!(
+            dropped,
+            rids(&[("C", 0), ("F", 0), ("G", 2), ("H", 1)]),
+            "ambiguous, missing, ambiguous-sibling and own-entity dotted operands"
         );
     }
 
     #[test]
-    fn includes_the_entity_of_every_changed_seed() {
-        let changed = HashSet::from([rid("PartA"), rid("PartB")]);
+    fn includes_the_entity_of_every_seed() {
+        let seeds = HashSet::from([rid("PartA"), rid("PartB")]);
 
-        let stale = stale_realization_entities(&changed, [], &HashSet::new(), &no_graph());
+        let stale = stale_realization_entities(&seeds, [], &HashSet::new());
 
         assert_eq!(stale, entities(&["PartA", "PartB"]));
     }
@@ -375,13 +489,13 @@ mod tests {
     /// `Asm` is a `GeomRef::Sub` consumer of the seed `PartA`: its own
     /// input-cone fold never moves, so only the transitive dirty cone reaches
     /// it. `dirty::compute_dirty_cone_with_realizations` never puts the SEEDS
-    /// in its result, so the seed's entity must come from `changed`.
+    /// in its result, so the seed's entity must come from `seeds`.
     #[test]
     fn includes_the_entity_of_every_realization_reached_through_the_dirty_cone() {
-        let changed = HashSet::from([rid("PartA")]);
+        let seeds = HashSet::from([rid("PartA")]);
         let cone = HashSet::from([NodeId::Realization(rid("Asm"))]);
 
-        let stale = stale_realization_entities(&changed, [], &cone, &no_graph());
+        let stale = stale_realization_entities(&seeds, [], &cone);
 
         assert_eq!(stale, entities(&["PartA", "Asm"]));
     }
@@ -393,8 +507,7 @@ mod tests {
     fn includes_the_entity_of_every_removed_realization() {
         let removed = [rid("Dropped")];
 
-        let stale =
-            stale_realization_entities(&HashSet::new(), &removed, &HashSet::new(), &no_graph());
+        let stale = stale_realization_entities(&HashSet::new(), &removed, &HashSet::new());
 
         assert_eq!(stale, entities(&["Dropped"]));
     }
@@ -407,7 +520,7 @@ mod tests {
             NodeId::Constraint(ConstraintNodeId::new("PartA", 0)),
         ]);
 
-        let stale = stale_realization_entities(&HashSet::new(), [], &cone, &no_graph());
+        let stale = stale_realization_entities(&HashSet::new(), [], &cone);
 
         assert!(
             stale.is_empty(),
@@ -419,7 +532,7 @@ mod tests {
     /// nothing.
     #[test]
     fn is_empty_for_a_no_realization_edit() {
-        let stale = stale_realization_entities(&HashSet::new(), [], &HashSet::new(), &no_graph());
+        let stale = stale_realization_entities(&HashSet::new(), [], &HashSet::new());
 
         assert!(stale.is_empty());
     }

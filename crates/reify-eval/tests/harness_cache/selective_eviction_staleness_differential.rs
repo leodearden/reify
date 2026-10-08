@@ -40,6 +40,7 @@ use std::sync::{Arc, Mutex};
 use reify_compiler::{CompiledGeometryOp, CompiledModule, PrimitiveKind};
 use reify_constraints::SimpleConstraintChecker;
 use reify_core::{ModulePath, RealizationNodeId, Type, ValueCellId};
+use reify_eval::cache::NodeId;
 use reify_eval::realization_cache::NO_OPTIONS;
 use reify_eval::{BuildScheduler, Engine};
 use reify_ir::{
@@ -579,7 +580,9 @@ fn tolerance_interplay_survivors_keep_partial_order_lookup() {
 
 /// The 4317-class trap: `C.combined = union(self.a.body, self.b.body)`. An
 /// edit of `A.w` never moves C's own input-cone fold (it sees no Sub
-/// operand), yet C's served content changes — only the dirty cone reaches it.
+/// operand), yet C's served content changes. `A` and `B` both export `body`,
+/// so the reverse index cannot link C's operands at all: C must be seeded
+/// into the dirty cone, which also invalidates what is downstream of C.
 #[test]
 fn sub_consumer_of_the_edited_body_is_evicted() {
     const SRC: &str = r#"pub structure A {
@@ -593,6 +596,7 @@ pub structure C {
     sub a = A()
     sub b = B()
     let combined = union(self.a.body, self.b.body)
+    let v = volume(combined)
 }"#;
     let mut pair = RegimePair::new(
         compile_source(SRC),
@@ -603,11 +607,70 @@ pub structure C {
         ],
     );
     pair.assert_resident(&["A", "B", "C"]);
+    // An entry's presence, not its value: cross-sub geometry is `Undef` until
+    // a build, and `CacheStore::invalidate` is what removes an entry.
+    let cached = |pair: &RegimePair, entity: &str, member: &str| {
+        let cell = NodeId::Value(ValueCellId::new(entity, member));
+        pair.selective.engine.cache_store().get(&cell).is_some()
+    };
+    let downstream_of_c = [("C", "combined"), ("C", "v")];
+    for (entity, member) in downstream_of_c.into_iter().chain([("B", "body")]) {
+        assert!(
+            cached(&pair, entity, member),
+            "premise: {entity}.{member} has a cache entry before the edit"
+        );
+    }
+
+    pair.edit_param("A", "w", mm(30.0));
+    for (entity, member) in downstream_of_c {
+        assert!(
+            !cached(&pair, entity, member),
+            "{entity}.{member} is downstream of the edited body through C: the edit \
+             must invalidate it"
+        );
+    }
+    assert!(cached(&pair, "B", "body"), "B.body is not downstream of A");
+    let rebuilt = pair.rebuild();
+
+    assert_eq!(rebuilt.hit_entities(), entities(&["B"]));
+}
+
+/// Two cross-entity consumers, each reading a member exactly one entity
+/// exports, so the reverse index links each to its producer. An edit of `A`
+/// re-dispatches `A` and its consumer `Moved` only; `Placed` reads the
+/// untouched `S` and is served from the cache.
+#[test]
+fn an_edit_redispatches_only_the_sub_consumer_of_the_edited_part() {
+    const SRC: &str = r#"pub structure A {
+    param w : Length = 10mm
+    let body = box(w, 10mm, 10mm)
+}
+pub structure S {
+    let shell = cylinder(5mm, 10mm)
+}
+pub structure Moved {
+    sub a = A()
+    let moved = union(self.a.body, self.a.body)
+}
+pub structure Placed {
+    sub s = S()
+    let placed = union(self.s.shell, self.s.shell)
+}"#;
+    let mut pair = RegimePair::new(
+        compile_source(SRC),
+        &[
+            ("mfg_a", "A", 1e-6),
+            ("mfg_s", "S", 1e-6),
+            ("mfg_m", "Moved", 1e-6),
+            ("mfg_p", "Placed", 1e-6),
+        ],
+    );
+    pair.assert_resident(&["A", "S", "Moved", "Placed"]);
 
     pair.edit_param("A", "w", mm(30.0));
     let rebuilt = pair.rebuild();
 
-    assert_eq!(rebuilt.hit_entities(), entities(&["B"]));
+    assert_eq!(rebuilt.hit_entities(), entities(&["S", "Placed"]));
 }
 
 /// β's changed set is cumulative until a build re-executes: a display-only

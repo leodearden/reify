@@ -160,7 +160,8 @@ use crate::engine_admin::{ParamOverrideRejection, validate_param_override};
 use crate::engine_helpers::collect_member_list;
 use crate::graph::{ConstraintNodeData, EvaluationGraph, GuardedGroupInfo};
 use crate::realization_staleness::{
-    compute_changed_realizations, compute_changed_realizations_scoped, stale_realization_entities,
+    compute_changed_realizations, compute_changed_realizations_scoped, realization_cone_seeds,
+    stale_realization_entities,
 };
 use crate::warm_pool::WarmStatePool;
 use crate::{
@@ -555,13 +556,15 @@ pub(crate) fn diff_realizations(
     })
 }
 
-/// Seed the realization-driven dirty cone from `changed_realizations` and drop
-/// the cache entry of every node it reaches — the FIRST production caller of
+/// Seed the realization-driven dirty cone from `seeds` — the changed
+/// realizations plus the `Sub` consumers the reverse index cannot link
+/// ([`realization_cone_seeds`]) — and drop the cache entry of every node it
+/// reaches — the FIRST production caller of
 /// [`crate::dirty::compute_dirty_cone_with_realizations`]
 /// (selective-realization-eviction PRD task β, #4729).
 ///
 /// Shared by both edit seams so the ordering hazard below is handled in one
-/// place. A no-op when `changed_realizations` is empty, so a no-realization
+/// place. A no-op when `seeds` is empty, so a no-realization
 /// edit pays nothing for THIS half. (That is the PRD §6 zero-cost row for the
 /// propagation half only — the classification half,
 /// [`compute_changed_realizations`], still folds every realization's ops
@@ -659,9 +662,9 @@ fn invalidate_realization_dirty_cone(
     graph: &EvaluationGraph,
     compiled_fields: &[reify_compiler::CompiledField],
     prebuilt_index: Option<&crate::deps::ReverseDependencyIndex>,
-    changed_realizations: &HashSet<RealizationNodeId>,
+    seeds: &HashSet<RealizationNodeId>,
 ) -> HashSet<NodeId> {
-    if changed_realizations.is_empty() {
+    if seeds.is_empty() {
         return HashSet::new();
     }
     let rebuilt;
@@ -679,12 +682,8 @@ fn invalidate_realization_dirty_cone(
     // computed and applied upstream in both edit entries, so re-passing it
     // would be a harmless superset but pure redundant BFS on the P0 edit
     // latency path. The realization-driven cone is purely additive.
-    let dirty = crate::dirty::compute_dirty_cone_with_realizations(
-        &HashSet::new(),
-        changed_realizations,
-        index,
-        graph,
-    );
+    let dirty =
+        crate::dirty::compute_dirty_cone_with_realizations(&HashSet::new(), seeds, index, graph);
     for node in &dirty {
         // Capture the cost FIRST (`cost_per_byte_of` is read-only and stays
         // valid before the take), then take the warm state and donate both to
@@ -2965,29 +2964,32 @@ impl Engine {
             // cascade, now live on the param path), its geometry-query
             // constraints and its downstream `Sub` realizations — non-fresh,
             // so the next eval re-dispatches them while unaffected consumers
-            // keep their cached result. `cache`, `warm_pool` and
-            // `compiled_fields` are disjoint `Engine` fields from
-            // `eval_state`, so these borrows coexist.
-            let cone = invalidate_realization_dirty_cone(
-                &mut self.cache,
-                &mut self.warm_pool,
-                graph,
-                &self.compiled_fields,
-                reusable_index,
-                &self.last_changed_realizations,
-            );
-            // γ (#4730, PRD D4): evict the family of every realization the edit
-            // made stale and keep every other cached body. The collection
-            // re-elaboration above rewrites value cells only, so no
-            // realization was removed and the removed term is empty.
+            // keep their cached result. The walk also starts at every `Sub`
+            // consumer the index cannot link (`realization_cone_seeds`).
+            // `cache`, `warm_pool` and `compiled_fields` are disjoint `Engine`
+            // fields from `eval_state`, so these borrows coexist.
+            //
+            // γ (#4730, PRD D4): the collection re-elaboration above rewrites
+            // value cells only, so no realization was removed and the removed
+            // term is empty.
             debug_assert_eq!(
                 graph.realizations.len(),
                 prior_realization_count,
                 "edit_param must not add or remove a realization: its eviction \
                  set has no removed term"
             );
-            let stale =
-                stale_realization_entities(&self.last_changed_realizations, [], &cone, graph);
+            let seeds = realization_cone_seeds(&self.last_changed_realizations, false, graph);
+            let cone = invalidate_realization_dirty_cone(
+                &mut self.cache,
+                &mut self.warm_pool,
+                graph,
+                &self.compiled_fields,
+                reusable_index,
+                &seeds,
+            );
+            // Evict the family of every realization the edit made stale and
+            // keep every other cached body.
+            let stale = stale_realization_entities(&seeds, [], &cone);
             for entity in stale {
                 self.realization_cache.evict_family(&entity);
             }
@@ -4773,23 +4775,23 @@ impl Engine {
             // to the work already done; `edit_param` is the P0 latency path
             // and gets the reuse. Pinned by
             // `edit_source_evicts_only_the_compute_node_downstream_of_the_moved_realization`.
+            let seeds = realization_cone_seeds(
+                &self.last_changed_realizations,
+                !removed_realizations.is_empty(),
+                &new_snapshot.graph,
+            );
             let cone = invalidate_realization_dirty_cone(
                 &mut self.cache,
                 &mut self.warm_pool,
                 &new_snapshot.graph,
                 &self.compiled_fields,
                 None,
-                &self.last_changed_realizations,
+                &seeds,
             );
             // γ (#4730, PRD D4/D7): evict the family of every realization the
             // recompile made stale, including every realization it dropped,
             // and keep every byte-identical body's cached geometry.
-            let stale = stale_realization_entities(
-                &self.last_changed_realizations,
-                &removed_realizations,
-                &cone,
-                &new_snapshot.graph,
-            );
+            let stale = stale_realization_entities(&seeds, &removed_realizations, &cone);
             for entity in stale {
                 self.realization_cache.evict_family(&entity);
             }
