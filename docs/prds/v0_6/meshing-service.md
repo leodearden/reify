@@ -181,7 +181,7 @@ adds ~1 s at that size; against the Jacobi-CG solve (10–20 min) it is under 0.
 **G6 premise status.** Identity: established (live consumers; classify measured to over-split and to
 lose tangent faces). Robustness: established (#4876's SIGSEGV, the 25-minute HXT spin recorded in
 #7584, the PostView deadlock). Fidelity of CAD mode, P2 midside placement or a finer frozen surface:
-**not established** — gated on #8270. Meshing performance: **not a lever** — the solve is (#8271).
+**not established** — gated on #8270. Meshing performance: **not a lever** — the solve is (docs/prds/v0_6/elastic-static-solver-performance.md). (amended 2026-10-08 by docs/prds/v0_6/elastic-static-solver-performance.md)
 
 ## 4. Resolved design decisions
 
@@ -195,7 +195,7 @@ lose tangent faces). Robustness: established (#4876's SIGSEGV, the 25-minute HXT
 | **D-D** | **Sizing:** the user's `mesh_size` always wins. Default = min(bbox-relative cap, thickness/2, curvature term), with a floor and an element budget and a coded Warning when the budget binds. The min-edge term stays a floor contributor until a measurement retires it. |
 | **D-E** | Face identity lives in a **separate `BoundaryTopology` value** paired with `Mesh` (`TessellatedBody { mesh, topology }`), never in new fields on `Mesh`, and is carried on `VolumeMesh` as `BoundaryAssociation` extended with edges and vertices. |
 | **D-F** | Fidelity increments (CAD mode, P2 with geometry-placed midside nodes, a fine frozen surface) are **gated on #8270**. Identity and robustness proceed now. |
-| **D-G** | Solver performance is the wall-clock lever and is **out of scope** (#8271); it is why parallel meshing is not pursued. |
+| **D-G** | Solver performance is the wall-clock lever and is **out of scope** (`docs/prds/v0_6/elastic-static-solver-performance.md`, formerly the #8271 bookmark; (amended 2026-10-08 by docs/prds/v0_6/elastic-static-solver-performance.md)); it is why parallel meshing is not pursued. |
 | **D-H** | Assemblies and multi-solid bodies: one session per body, **non-conformal between bodies**, v1. |
 | **D-I** | SDF / voxel / STL bodies keep **classify as the explicit no-topology fallback**, with coded diagnostics; selector BCs on such bodies are a coded Error. |
 | **D-J** | Per-entity parallel meshing is **dropped**. Determinism stays at `NumThreads=1`, with no `RandomSeed`. |
@@ -676,7 +676,7 @@ drift-guard registrations (nextest partition, `run-all-classification.manifest` 
 - **CAD mode** (gmsh's OCC kernel in the worker, D-C's predicate and the `MeshMode` override), **P2
   with geometry-placed midside nodes**, and a **finer frozen surface**: #8270 decides whether to pursue
   them.
-- **Solver performance**: #8271. **Parallel meshing**: dropped (D-J).
+- **Solver performance**: `docs/prds/v0_6/elastic-static-solver-performance.md` (amended 2026-10-08 by docs/prds/v0_6/elastic-static-solver-performance.md). **Parallel meshing**: dropped (D-J).
 - **Conformal multi-body meshing**: v1 is one session per body, non-conformal (D-H).
 - **Identity for hex/wedge swept meshes** (`sweep.rs` emits `boundary: None`); `elastic_static` meshes
   tets only.
@@ -710,7 +710,7 @@ drift-guard registrations (nextest partition, `run-all-classification.manifest` 
 | `docs/prds/v0_3/engine-integration-norm.md` §3.1/§3.2 | modifies | gmsh leaves §3.1; §3.2's plug-in is the service | ν |
 | #8259 / #7088 FEA chunk | neighbour | `chunks/fea.md` | extend-or-create, whichever lands first |
 | #8270 fidelity milestone | gates | CAD mode, P2 midside, finer surface | #8270 |
-| #8271 solver performance | neighbour | the wall-clock lever | #8271 |
+| solver performance (formerly #8271) | neighbour | the wall-clock lever | `docs/prds/v0_6/elastic-static-solver-performance.md` (amended 2026-10-08 by docs/prds/v0_6/elastic-static-solver-performance.md) |
 | `docs/prds/v0_6/coordinate-target-fea.md` | neighbour | amended in the same landing (§9 rows, #8270) | that PRD |
 
 ## 10. Open questions (tactical)
