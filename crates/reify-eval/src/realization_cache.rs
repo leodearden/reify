@@ -1000,13 +1000,28 @@ mod tests {
     }
 
     /// (e) The counter is a LIFETIME metric, not a live size: neither `remove`
-    /// nor `clear_entity` decrements it.
+    /// nor `evict_family` decrements it, and an owned conversion intermediate
+    /// is never counted on the way in.
     #[test]
-    fn remove_and_clear_entity_do_not_decrement_realization_entries() {
+    fn remove_and_evict_family_do_not_decrement_realization_entries() {
+        use super::ConversionSlot;
+
         let mut cache = RealizationCache::<u32>::new();
         assert!(cache.insert_terminal("Body", ReprKind::Mesh, 0.01, ContentHash(0), 1));
         assert!(cache.insert_terminal("Other", ReprKind::Mesh, 0.01, ContentHash(0), 2));
-        assert_eq!(cache.realization_entries(), 2);
+        assert!(cache.insert_intermediate(
+            "Other",
+            ConversionSlot::Step(0),
+            ReprKind::Mesh,
+            0.01,
+            ContentHash(0),
+            3,
+        ));
+        assert_eq!(
+            cache.realization_entries(),
+            2,
+            "an owned conversion intermediate must not be counted as a realization"
+        );
 
         assert_eq!(
             cache.remove("Body", ReprKind::Mesh, 0.01, ContentHash(0)),
@@ -1019,13 +1034,172 @@ mod tests {
             "`remove` must NOT decrement the monotonic lifetime counter"
         );
 
-        cache.clear_entity("Other");
+        cache.evict_family("Other");
         assert_eq!(
             cache.realization_entries(),
             2,
-            "`clear_entity` must NOT decrement the monotonic lifetime counter"
+            "`evict_family` must NOT decrement the monotonic lifetime counter"
         );
-        assert!(cache.is_empty(), "both entries should now be gone");
+        assert!(cache.is_empty(), "every entry should now be gone");
+    }
+
+    // ---------------------------------------------------------------------
+    // γ (#4730): `evict_family` — the keyed eviction primitive behind
+    // selective realization eviction (PRD
+    // `docs/prds/v0_6/selective-realization-eviction.md` D4). An entity's
+    // FAMILY is its terminal key under every repr kind, options hash and
+    // tolerance, PLUS every cross-kernel conversion intermediate it owns:
+    // those intermediates are keyed stably across rebuilds, so leaving one
+    // behind would hand a re-executed realization its OLD converted input.
+    // ---------------------------------------------------------------------
+
+    /// Every repr-kind, tolerance and options-hash slot of the evicted entity
+    /// goes; a sibling entity is untouched.
+    #[test]
+    fn evict_family_removes_every_repr_tol_and_options_variant_of_the_entity() {
+        use super::NO_OPTIONS;
+
+        let mut cache = RealizationCache::<u32>::new();
+        // Looser first: a looser insert behind a tighter one is a dominated hit.
+        assert!(cache.insert_terminal("A", ReprKind::BRep, 1e-4, NO_OPTIONS, 1));
+        assert!(cache.insert_terminal("A", ReprKind::BRep, 1e-6, NO_OPTIONS, 2));
+        assert!(cache.insert_terminal("A", ReprKind::Mesh, 1e-6, NO_OPTIONS, 3));
+        assert!(cache.insert_terminal("A", ReprKind::BRep, 1e-6, ContentHash(7), 4));
+        assert!(cache.insert_terminal("B", ReprKind::BRep, 1e-6, NO_OPTIONS, 5));
+
+        cache.evict_family("A");
+
+        assert_eq!(cache.lookup("A", ReprKind::BRep, 1e-4, NO_OPTIONS), None);
+        assert_eq!(cache.lookup("A", ReprKind::BRep, 1e-6, NO_OPTIONS), None);
+        assert_eq!(cache.lookup("A", ReprKind::Mesh, 1e-6, NO_OPTIONS), None);
+        assert_eq!(cache.lookup("A", ReprKind::BRep, 1e-6, ContentHash(7)), None);
+        assert_eq!(
+            cache.lookup("B", ReprKind::BRep, 1e-6, NO_OPTIONS),
+            Some(&5),
+            "a sibling entity's family must survive"
+        );
+        assert_eq!(cache.len(), 1, "only B's entry may remain");
+    }
+
+    /// The family includes the conversion intermediates the entity OWNS, and
+    /// membership is by owner, never by name prefix: evicting "A" leaves "AB"
+    /// whole.
+    #[test]
+    fn evict_family_removes_the_entitys_conversion_intermediates_but_not_a_name_prefix_sibling() {
+        use super::{ConversionSlot, NO_OPTIONS};
+        use reify_ir::GeometryHandleId;
+
+        let tol = 1e-6;
+        let step0 = ConversionSlot::Step(0);
+        let ext42 = ConversionSlot::External(GeometryHandleId(42));
+        let key = |owner: &str, slot| RealizationCache::<u32>::intermediate_key(owner, slot);
+
+        let mut cache = RealizationCache::<u32>::new();
+        assert!(cache.insert_intermediate("A", step0, ReprKind::Mesh, tol, NO_OPTIONS, 1));
+        assert!(cache.insert_intermediate("A", ext42, ReprKind::Mesh, tol, NO_OPTIONS, 2));
+        assert!(cache.insert_intermediate("AB", step0, ReprKind::Mesh, tol, NO_OPTIONS, 3));
+        assert!(cache.insert_terminal("A", ReprKind::BRep, tol, NO_OPTIONS, 4));
+        assert!(cache.insert_terminal("AB", ReprKind::BRep, tol, NO_OPTIONS, 5));
+        assert_eq!(
+            cache.lookup(&key("A", step0), ReprKind::Mesh, tol, NO_OPTIONS),
+            Some(&1),
+            "premise: an owned intermediate is servable through its key"
+        );
+
+        cache.evict_family("A");
+
+        assert_eq!(cache.lookup(&key("A", step0), ReprKind::Mesh, tol, NO_OPTIONS), None);
+        assert_eq!(cache.lookup(&key("A", ext42), ReprKind::Mesh, tol, NO_OPTIONS), None);
+        assert_eq!(cache.lookup("A", ReprKind::BRep, tol, NO_OPTIONS), None);
+        assert_eq!(
+            cache.lookup(&key("AB", step0), ReprKind::Mesh, tol, NO_OPTIONS),
+            Some(&3),
+            "a name-prefix sibling's intermediate must survive"
+        );
+        assert_eq!(
+            cache.lookup("AB", ReprKind::BRep, tol, NO_OPTIONS),
+            Some(&5),
+            "a name-prefix sibling's terminal must survive"
+        );
+    }
+
+    /// PRD D4/§6 "tolerance interplay": evicting one family leaves a
+    /// survivor's tolerance partial order exactly as it was.
+    #[test]
+    fn evict_family_composes_with_the_tolerance_partial_order_of_survivors() {
+        use super::NO_OPTIONS;
+        use crate::tolerance_bucket::SOFT_CAPACITY;
+
+        let mut cache = RealizationCache::<u32>::new();
+        assert!(cache.insert_terminal("B", ReprKind::BRep, 1e-4, NO_OPTIONS, 40));
+        assert!(cache.insert_terminal("B", ReprKind::BRep, 1e-6, NO_OPTIONS, 60));
+        assert!(cache.insert_terminal("A", ReprKind::BRep, 1e-6, NO_OPTIONS, 1));
+        let survivor_len = cache.bucket_len("B", ReprKind::BRep, NO_OPTIONS);
+        assert_eq!(survivor_len, 2);
+
+        cache.evict_family("A");
+
+        assert_eq!(
+            cache.lookup("B", ReprKind::BRep, 1e-5, NO_OPTIONS),
+            Some(&60),
+            "a tighter survivor entry satisfies a looser request"
+        );
+        assert_eq!(
+            cache.lookup("B", ReprKind::BRep, 1e-3, NO_OPTIONS),
+            Some(&40),
+            "the loosest satisfying survivor entry is served"
+        );
+        assert_eq!(
+            cache.lookup("B", ReprKind::BRep, 1e-7, NO_OPTIONS),
+            None,
+            "no survivor entry is tight enough"
+        );
+        assert_eq!(cache.bucket_len("B", ReprKind::BRep, NO_OPTIONS), survivor_len);
+
+        for (i, tol) in [1e-7, 1e-8, 1e-9, 1e-10].into_iter().enumerate() {
+            assert!(cache.insert_terminal("B", ReprKind::BRep, tol, NO_OPTIONS, i as u32));
+        }
+        assert_eq!(
+            cache.bucket_len("B", ReprKind::BRep, NO_OPTIONS),
+            SOFT_CAPACITY,
+            "the survivor bucket still caps at SOFT_CAPACITY"
+        );
+    }
+
+    #[test]
+    fn evict_family_on_an_absent_entity_is_a_no_op() {
+        use super::NO_OPTIONS;
+
+        let mut cache = RealizationCache::<u32>::new();
+        assert!(cache.insert_terminal("B", ReprKind::BRep, 1e-6, NO_OPTIONS, 1));
+        let before = cache.len();
+
+        cache.evict_family("Absent");
+
+        assert_eq!(cache.len(), before);
+        assert_eq!(cache.lookup("B", ReprKind::BRep, 1e-6, NO_OPTIONS), Some(&1));
+    }
+
+    /// After the whole-cache `clear`, intermediate ownership recorded before
+    /// it must not linger: an intermediate inserted after the flush is still
+    /// reached by `evict_family`.
+    #[test]
+    fn clear_also_forgets_intermediate_ownership() {
+        use super::{ConversionSlot, NO_OPTIONS};
+
+        let slot = ConversionSlot::Step(0);
+        let key = RealizationCache::<u32>::intermediate_key("A", slot);
+
+        let mut cache = RealizationCache::<u32>::new();
+        assert!(cache.insert_intermediate("A", slot, ReprKind::Mesh, 1e-6, NO_OPTIONS, 1));
+        cache.clear();
+        assert!(cache.is_empty());
+
+        assert!(cache.insert_intermediate("A", slot, ReprKind::Mesh, 1e-6, NO_OPTIONS, 2));
+        cache.evict_family("A");
+
+        assert_eq!(cache.lookup(&key, ReprKind::Mesh, 1e-6, NO_OPTIONS), None);
+        assert!(cache.is_empty());
     }
 
     /// (e2) The whole-cache flush behind `Engine::clear_realization_cache`
