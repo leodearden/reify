@@ -29,6 +29,7 @@
 #   H — buildroot provenance: per-gen .buildroot stamp == realpath(advancing worktree root)
 #   I — WIP refusal: advancing worktree with tracked WIP is refused; wording advises committing, never stashing
 #   J — superseded hash-generation prune: keep newest 2 hash-generations per stem (ranked across every extension that hash has, together) under debug/deps, scope-contained, deterministic under mtime ties
+#   DEPS — debug/deps faithful copy: every hash variant in the advancing debug/deps reaches the new gen, incl. same-mtime registry variants (#8366)
 #
 # Auto-discovered by tests/infra/run_all.sh via the test_*.sh glob.
 #
@@ -1429,6 +1430,73 @@ assert "J5b: survivor filename SET is identical across two independent refreshes
         s2="$(cd "$2" && find . -maxdepth 1 -type f -name "reify_tie_unit-*" -printf "%f\n" | sort)"
         [ "$s1" = "$s2" ]
     ' _ "$J5_DEPS" "$J5B_DEPS"
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block DEPS — debug/deps faithful copy (task 8366)
+#
+# The new gen's debug/deps must hold every artefact the advancing target holds.
+# One stem can carry several concurrently-live hashes (semver / feature / host
+# variants) that all keep the same cold-build mtime, so no mtime rule can tell
+# them from superseded generations; #7426's keep-newest-2 prune deleted them and
+# every seeded lane rebuilt them. DEPS3 pins today's no-prune state; a
+# liveness-based replacement (#8352) may relax DEPS3 but must keep DEPS2 green.
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block DEPS: debug/deps faithful copy ---"
+
+DEPS_TMP="$(mktemp -d /tmp/test-refresh-warm-base-deps-XXXXXX)"
+_TMPDIRS+=("$DEPS_TMP")
+DEPS_LANE="$(mk_git_advancing "$DEPS_TMP")"
+DEPS_ADV="$DEPS_LANE/advancing"
+DEPS_HEAD="$(git -C "$DEPS_LANE" rev-parse HEAD)"
+mkdir -p "$DEPS_ADV/debug/deps"
+
+# Five concurrently-live hashes of ONE registry stem, each with .rlib and
+# .rmeta, all stamped with the SAME mtime (a cold build writes them together).
+# Every hash is 16 lowercase hex chars so a prune keyed on cargo's `-<16hex>`
+# suffix grammar genuinely matches them — the RED must never be vacuous.
+DEPS_REGISTRY_HASHES=(ece35e16166057f6 985ac887cd451fe2 0123456789abcdef fedcba9876543210 5a5a5a5a5a5a5a5a)
+for h in "${DEPS_REGISTRY_HASHES[@]}"; do
+    for ext in rlib rmeta; do
+        echo "getrandom $h $ext" > "$DEPS_ADV/debug/deps/libgetrandom-$h.$ext"
+    done
+done
+touch -d '2026-08-18 00:00:00' "$DEPS_ADV"/debug/deps/libgetrandom-*
+
+# Three extensionless test-binary generations at distinct mtimes, stamped
+# explicitly via `touch -d` — no sleeps (T8).
+echo "gen1 content" > "$DEPS_ADV/debug/deps/reify_kernel_tests-1111111111111111"
+echo "gen2 content" > "$DEPS_ADV/debug/deps/reify_kernel_tests-2222222222222222"
+echo "gen3 content" > "$DEPS_ADV/debug/deps/reify_kernel_tests-3333333333333333"
+touch -d '2026-01-01 00:00:00' "$DEPS_ADV/debug/deps/reify_kernel_tests-1111111111111111"
+touch -d '2026-02-01 00:00:00' "$DEPS_ADV/debug/deps/reify_kernel_tests-2222222222222222"
+touch -d '2026-03-01 00:00:00' "$DEPS_ADV/debug/deps/reify_kernel_tests-3333333333333333"
+
+DEPS_BASE="$DEPS_TMP/base"
+
+reset_calls
+REIFY_TEST_REFLINK_OK=1 run_helper "$DEPS_ADV" "$DEPS_BASE" --landed-commit "$DEPS_HEAD"
+assert "DEPS1: refresh with same-mtime hash variants exits 0" test "$RC" -eq 0
+
+DEPS_GEN_DEPS="$(readlink "$DEPS_BASE")/debug/deps"
+
+assert "DEPS2: every same-mtime libgetrandom hash variant reaches the new gen, on both .rlib and .rmeta" \
+    bash -c '
+        deps="$1"; shift
+        for h in "$@"; do
+            for ext in rlib rmeta; do
+                [ -f "$deps/libgetrandom-$h.$ext" ] || { echo "missing: libgetrandom-$h.$ext"; exit 1; }
+            done
+        done
+    ' _ "$DEPS_GEN_DEPS" "${DEPS_REGISTRY_HASHES[@]}"
+
+assert "DEPS3: gen debug/deps filename set equals the advancing debug/deps filename set" \
+    bash -c '
+        s1="$(cd "$1" && find . -maxdepth 1 -type f -printf "%f\n" | sort)"
+        s2="$(cd "$2" && find . -maxdepth 1 -type f -printf "%f\n" | sort)"
+        [ -n "$s1" ] || { echo "advancing debug/deps fixture is empty"; exit 1; }
+        [ "$s1" = "$s2" ] || { diff <(printf "%s\n" "$s1") <(printf "%s\n" "$s2"); exit 1; }
+    ' _ "$DEPS_ADV/debug/deps" "$DEPS_GEN_DEPS"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Block TRASH: shared-trash litter guard (task 5612). Two asserts, deliberately
