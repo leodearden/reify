@@ -81,6 +81,8 @@ mod selective_demand_measurement;
 mod selective_demand_redemand_staleness;
 #[path = "harness_cache/selective_eviction_slider_drag_dispatch_e2e.rs"]
 mod selective_eviction_slider_drag_dispatch_e2e;
+#[path = "harness_cache/selective_eviction_staleness_differential.rs"]
+mod selective_eviction_staleness_differential;
 #[path = "harness_cache/snapshot_cache_divergence_gate.rs"]
 mod snapshot_cache_divergence_gate;
 #[path = "harness_cache/unified_dag_boundary_cases.rs"]
