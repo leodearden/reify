@@ -7643,16 +7643,21 @@ impl Engine {
         let mut realization_step_reprs: Vec<ReprKind> = Vec::with_capacity(operations.len());
         // Task 4050 step-12: per-realization log of intermediate-cache keys the
         // conversion executor inserted, so step-14's rollback branch can drop
-        // exactly those keys (atomic with `step_handles.truncate(handle_start)`).
-        // Each entry is `(entity, repr, per_stage_tol, options_hash)`. The
+        // exactly those entries (atomic with `step_handles.truncate(handle_start)`).
+        // Each entry is `(slot, repr, per_stage_tol, options_hash)`; the owner is
+        // this realization's entity. The
         // options_hash is `NO_OPTIONS` for a Tessellate-sourced intermediate and
         // `surface_options_content_hash(iso, adaptive)` for a MarchingCubes-sourced
-        // one (task γ / 5001) — rollback must remove the EXACT key Phase 2
+        // one (task γ / 5001) — rollback must remove the EXACT entry Phase 2
         // inserted, so the log carries whichever hash was used. On the success
         // path the inserts stay committed so later same-build realizations reuse
         // them.
-        let mut intermediate_cache_inserts: Vec<(String, ReprKind, f64, reify_core::ContentHash)> =
-            Vec::new();
+        let mut intermediate_cache_inserts: Vec<(
+            ConversionSlot,
+            ReprKind,
+            f64,
+            reify_core::ContentHash,
+        )> = Vec::new();
         // Task #3443 (S6): track whether the KernelPragmaUnsatisfiable warning
         // has already been emitted for this realization. The pragma is
         // module-scoped and applies uniformly to all ops; emitting once per
@@ -8533,7 +8538,7 @@ impl Engine {
                                                     intermediate_handle,
                                                 );
                                                 intermediate_cache_inserts.push((
-                                                    intermediate_key,
+                                                    slot,
                                                     terminal_to,
                                                     per_stage_tol,
                                                     options_hash,
@@ -8998,16 +9003,23 @@ impl Engine {
         if rolled_back {
             step_handles.truncate(handle_start);
             // Task 4050 step-14: atomic intermediate-cache rollback. Drop every
-            // intermediate key this realization inserted (step-12) so a failed
+            // intermediate this realization inserted (step-12) so a failed
             // realization leaves NO cache entry behind — its handle truncation
             // and its cache mutations roll back together (PRD §9 OQ9,
-            // provisional). `remove` is an exact-tolerance delete that no-ops on
-            // an absent key, so it is safe even if a key was never committed.
+            // provisional). `remove_intermediate` is an exact-tolerance delete
+            // that no-ops on an absent entry, so it is safe even if an entry was
+            // never committed, and it keeps the owner's family exact.
             // The SUCCESS branch below deliberately does NOT drain this log: a
             // completed realization's intermediates stay committed so later
             // same-build realizations reuse them (step-11's reuse requirement).
-            for (entity, repr, tol, options_hash) in &intermediate_cache_inserts {
-                realization_cache.remove(entity, *repr, *tol, *options_hash);
+            for (slot, repr, tol, options_hash) in &intermediate_cache_inserts {
+                realization_cache.remove_intermediate(
+                    &realization_id.entity,
+                    *slot,
+                    *repr,
+                    *tol,
+                    *options_hash,
+                );
             }
         } else {
             // Fully-successful realization. Three things land here, all keyed
@@ -9723,8 +9735,8 @@ impl Engine {
                     // insert is accepted. This site is the one the counter is
                     // defined by: a terminal realization that genuinely produced
                     // and cached new geometry. The conversion-intermediate insert
-                    // (search `intermediate_cache_inserts`) stays on plain
-                    // `insert` and is deliberately NOT counted.
+                    // (search `intermediate_cache_inserts`) uses the uncounted
+                    // `insert_intermediate` and is deliberately NOT counted.
                     realization_cache.insert_terminal(
                         &realization_id.entity,
                         resolved_repr,

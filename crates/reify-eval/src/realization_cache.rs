@@ -127,6 +127,14 @@ pub struct RealizationCache<V> {
     /// Owner entity → the intermediate keys it inserted through
     /// [`RealizationCache::insert_intermediate`]. Family membership is read from
     /// here, so [`RealizationCache::evict_family`] never parses a key.
+    ///
+    /// Invariant: every listed key holds at least one entry, and no owner lists
+    /// an empty set. Only a removal can empty a key, so
+    /// [`remove_intermediate`](Self::remove_intermediate) prunes a key it
+    /// empties, [`evict_family`](Self::evict_family) and [`clear`](Self::clear)
+    /// drop whole families, and every removal re-checks the invariant in debug
+    /// builds. Soft-capacity eviction never empties a key: a bucket evicts only
+    /// when it is over capacity.
     intermediates_by_owner: HashMap<String, HashSet<String>>,
 }
 
@@ -315,9 +323,11 @@ impl<V> RealizationCache<V> {
     ///
     /// Mirrors [`lookup`](Self::lookup)'s key navigation but with `get_mut`, and
     /// delegates the bucket-local removal to [`ToleranceBucket::remove`] — an
-    /// **exact** tolerance match, NOT partial-order satisfaction. Used by the
-    /// intermediate-cache rollback (task 4050 step-14): a failed realization
-    /// drops exactly the keys it inserted, leaving every sibling slot intact.
+    /// **exact** tolerance match, NOT partial-order satisfaction.
+    ///
+    /// For a terminal entry. A conversion intermediate is removed through
+    /// [`remove_intermediate`](Self::remove_intermediate), which also keeps its
+    /// owner's family exact.
     ///
     /// Now-empty inner maps are left in place (cheap; `is_empty`/`len` already
     /// tolerate empty buckets), mirroring the no-prune policy elsewhere in the
@@ -328,7 +338,8 @@ impl<V> RealizationCache<V> {
     /// In debug builds, panics if `tol` is NaN, infinite, or negative (forwards
     /// [`ToleranceBucket::remove`]'s precondition) — but only once an actual
     /// bucket is reached; an absent `(entity, repr_kind, options_hash)` returns
-    /// `None` before any tolerance check.
+    /// `None` before any tolerance check. Also panics in debug builds if this
+    /// removes the last entry of an owned intermediate key.
     pub fn remove(
         &mut self,
         entity: &str,
@@ -336,11 +347,49 @@ impl<V> RealizationCache<V> {
         tol: f64,
         options_hash: ContentHash,
     ) -> Option<V> {
+        let removed = self.remove_exact(entity, repr_kind, tol, options_hash);
+        self.debug_assert_owned_keys_hold_entries();
+        removed
+    }
+
+    fn remove_exact(
+        &mut self,
+        key: &str,
+        repr_kind: ReprKind,
+        tol: f64,
+        options_hash: ContentHash,
+    ) -> Option<V> {
         self.buckets
             .get_mut(&repr_kind)
-            .and_then(|inner| inner.get_mut(entity))
+            .and_then(|inner| inner.get_mut(key))
             .and_then(|by_options| by_options.get_mut(&options_hash))
             .and_then(|b| b.remove(tol))
+    }
+
+    /// Whether any bucket under `key` still holds an entry.
+    fn holds_any_entry(&self, key: &str) -> bool {
+        self.buckets
+            .values()
+            .filter_map(|inner| inner.get(key))
+            .any(|by_options| by_options.values().any(|b| !b.is_empty()))
+    }
+
+    /// Checks the `intermediates_by_owner` invariant in debug builds.
+    fn debug_assert_owned_keys_hold_entries(&self) {
+        #[cfg(debug_assertions)]
+        for (owner, keys) in &self.intermediates_by_owner {
+            debug_assert!(
+                !keys.is_empty(),
+                "{owner} lists an empty intermediate family"
+            );
+            for key in keys {
+                debug_assert!(
+                    self.holds_any_entry(key),
+                    "{owner}'s family lists intermediate key {key:?}, which holds no entry: \
+                     remove a conversion intermediate through `remove_intermediate`"
+                );
+            }
+        }
     }
 
     /// The cache key of the conversion intermediate that `owner`'s realization
@@ -386,6 +435,37 @@ impl<V> RealizationCache<V> {
             }
         }
         inserted
+    }
+
+    /// Removes the conversion intermediate `owner`'s realization cached for
+    /// input `slot` at *exactly* `(repr_kind, tol, options_hash)` — see
+    /// [`remove`](Self::remove) for the exact-match semantics. Used by the
+    /// intermediate-cache rollback (task 4050 step-14): a failed realization
+    /// drops exactly the intermediates it inserted, leaving every sibling slot
+    /// intact.
+    ///
+    /// When this empties the slot's key, the key also leaves `owner`'s family,
+    /// so the family lists only keys the cache still holds.
+    pub fn remove_intermediate(
+        &mut self,
+        owner: &str,
+        slot: ConversionSlot,
+        repr_kind: ReprKind,
+        tol: f64,
+        options_hash: ContentHash,
+    ) -> Option<V> {
+        let key = Self::intermediate_key(owner, slot);
+        let removed = self.remove_exact(&key, repr_kind, tol, options_hash);
+        if !self.holds_any_entry(&key)
+            && let Some(keys) = self.intermediates_by_owner.get_mut(owner)
+        {
+            keys.remove(&key);
+            if keys.is_empty() {
+                self.intermediates_by_owner.remove(owner);
+            }
+        }
+        self.debug_assert_owned_keys_hold_entries();
+        removed
     }
 
     /// Evicts `entity`'s whole family: its terminal entries under every
@@ -1301,6 +1381,79 @@ mod tests {
 
         assert_eq!(cache.lookup(&key, ReprKind::Mesh, 1e-6, NO_OPTIONS), None);
         assert!(cache.is_empty());
+    }
+
+    /// The rollback removes one exact entry; the slot's other entry stays
+    /// servable and stays in the owner's family.
+    #[test]
+    fn remove_intermediate_keeps_the_slot_in_the_family_while_it_holds_an_entry() {
+        use super::{ConversionSlot, NO_OPTIONS};
+
+        let slot = ConversionSlot::Step(0);
+        let key = RealizationCache::<u32>::intermediate_key("A", slot);
+        let mut cache = RealizationCache::<u32>::new();
+        assert!(cache.insert_intermediate("A", slot, ReprKind::Mesh, 1e-4, NO_OPTIONS, 1));
+        assert!(cache.insert_intermediate("A", slot, ReprKind::Mesh, 1e-6, NO_OPTIONS, 2));
+
+        assert_eq!(
+            cache.remove_intermediate("A", slot, ReprKind::Mesh, 1e-6, NO_OPTIONS),
+            Some(2)
+        );
+        assert_eq!(
+            cache.lookup(&key, ReprKind::Mesh, 1e-4, NO_OPTIONS),
+            Some(&1)
+        );
+
+        cache.evict_family("A");
+        assert!(
+            cache.is_empty(),
+            "the surviving entry is still A's to evict"
+        );
+    }
+
+    /// Removing a slot's last entry also drops the slot from its owner's
+    /// family; the removal's own invariant check would panic otherwise.
+    #[test]
+    fn remove_intermediate_of_the_last_entry_leaves_the_family_exact() {
+        use super::{ConversionSlot, NO_OPTIONS};
+        use reify_ir::GeometryHandleId;
+
+        let step0 = ConversionSlot::Step(0);
+        let ext7 = ConversionSlot::External(GeometryHandleId(7));
+        let mut cache = RealizationCache::<u32>::new();
+        assert!(cache.insert_intermediate("A", step0, ReprKind::Mesh, 1e-6, NO_OPTIONS, 1));
+        assert!(cache.insert_intermediate("A", ext7, ReprKind::Mesh, 1e-6, NO_OPTIONS, 2));
+
+        assert_eq!(
+            cache.remove_intermediate("A", step0, ReprKind::Mesh, 1e-6, NO_OPTIONS),
+            Some(1)
+        );
+        assert_eq!(
+            cache.remove_intermediate("A", ext7, ReprKind::Mesh, 1e-6, NO_OPTIONS),
+            Some(2)
+        );
+        assert!(cache.is_empty());
+        assert_eq!(
+            cache.remove_intermediate("A", ext7, ReprKind::Mesh, 1e-6, NO_OPTIONS),
+            None,
+            "a second rollback of the same slot is a no-op"
+        );
+    }
+
+    /// Redundant enforcement of the ownership invariant: a plain `remove` that
+    /// empties an owned intermediate key is rejected in debug builds.
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "remove_intermediate")]
+    fn plain_remove_of_an_owned_intermediates_last_entry_is_rejected() {
+        use super::{ConversionSlot, NO_OPTIONS};
+
+        let slot = ConversionSlot::Step(0);
+        let key = RealizationCache::<u32>::intermediate_key("A", slot);
+        let mut cache = RealizationCache::<u32>::new();
+        assert!(cache.insert_intermediate("A", slot, ReprKind::Mesh, 1e-6, NO_OPTIONS, 1));
+
+        cache.remove(&key, ReprKind::Mesh, 1e-6, NO_OPTIONS);
     }
 
     /// (e2) The whole-cache flush behind `Engine::clear_realization_cache`
