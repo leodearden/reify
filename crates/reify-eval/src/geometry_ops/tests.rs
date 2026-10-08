@@ -7791,6 +7791,43 @@
         }
     }
 
+    /// Compile `offset_curve(curve, 2mm, vec3(x, y, z))` with a literal bare
+    /// direction, returning the eval-boundary result and its diagnostics.
+    ///
+    /// A Literal 3rd arg is not a ValueRef, so `resolve_parent_geometry_handle_arg`
+    /// returns None and the dispatch takes the direction-decode path.
+    fn compile_offset_curve_with_direction(
+        x: f64,
+        y: f64,
+        z: f64,
+    ) -> (Result<reify_ir::GeometryOp, String>, Vec<Diagnostic>) {
+        let op = CompiledGeometryOp::Modify {
+            kind: reify_compiler::ModifyKind::OffsetCurve,
+            target: reify_compiler::GeomRef::Step(0),
+            args: vec![
+                ("distance".into(), literal_length(0.002)),
+                (
+                    "third".into(),
+                    reify_ir::CompiledExpr::literal(
+                        bare_real_vector3(x, y, z),
+                        reify_core::Type::vec3(reify_core::Type::dimensionless_scalar()),
+                    ),
+                ),
+            ],
+        };
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &ValueMap::new(),
+            &[GeometryHandleId(10)],
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+        (result, diagnostics)
+    }
+
     /// (b) 3-arg `offset_curve(curve, distance, vec3(0,0,1))` — the 3rd arg is a
     /// `Value::Vector` → `direction: Some([0,0,1])`, `reference: None` (overload 3).
     ///
@@ -7798,40 +7835,7 @@
     /// `direction: None`.
     #[test]
     fn compile_geometry_op_offset_curve_3arg_vector_is_direction() {
-        let step_handles = vec![GeometryHandleId(10)];
-        let values = ValueMap::new();
-
-        // A literal vec3(0,0,1). resolve_parent_geometry_handle_arg returns None
-        // for a Literal (not a ValueRef), so the dispatch falls through to the
-        // direction-decode path; point3_components reads the 3 components.
-        let dir_expr = reify_ir::CompiledExpr::literal(
-            reify_ir::Value::Vector(vec![
-                reify_ir::Value::Real(0.0),
-                reify_ir::Value::Real(0.0),
-                reify_ir::Value::Real(1.0),
-            ]),
-            reify_core::Type::vec3(reify_core::Type::dimensionless_scalar()),
-        );
-
-        let op = CompiledGeometryOp::Modify {
-            kind: reify_compiler::ModifyKind::OffsetCurve,
-            target: reify_compiler::GeomRef::Step(0),
-            args: vec![
-                ("distance".into(), literal_length(0.002)),
-                ("third".into(), dir_expr),
-            ],
-        };
-
-        let mut diagnostics: Vec<Diagnostic> = Vec::new();
-        let result = compile_geometry_op(
-            &op,
-            &values,
-            &step_handles,
-            &[],
-            &HashMap::new(),
-            &HashMap::new(),
-            &mut diagnostics,
-        );
+        let (result, _) = compile_offset_curve_with_direction(0.0, 0.0, 1.0);
         match result {
             Ok(reify_ir::GeometryOp::OffsetCurve {
                 reference,
@@ -7914,40 +7918,6 @@
         }
     }
 
-    /// Compile `offset_curve(curve, 2mm, vec3(x, y, z))` with a literal bare
-    /// direction, returning the eval-boundary result and its diagnostics.
-    fn compile_offset_curve_with_direction(
-        x: f64,
-        y: f64,
-        z: f64,
-    ) -> (Result<reify_ir::GeometryOp, String>, Vec<Diagnostic>) {
-        let op = CompiledGeometryOp::Modify {
-            kind: reify_compiler::ModifyKind::OffsetCurve,
-            target: reify_compiler::GeomRef::Step(0),
-            args: vec![
-                ("distance".into(), literal_length(0.002)),
-                (
-                    "third".into(),
-                    reify_ir::CompiledExpr::literal(
-                        bare_real_vector3(x, y, z),
-                        reify_core::Type::vec3(reify_core::Type::dimensionless_scalar()),
-                    ),
-                ),
-            ],
-        };
-        let mut diagnostics: Vec<Diagnostic> = Vec::new();
-        let result = compile_geometry_op(
-            &op,
-            &ValueMap::new(),
-            &[GeometryHandleId(10)],
-            &[],
-            &HashMap::new(),
-            &HashMap::new(),
-            &mut diagnostics,
-        );
-        (result, diagnostics)
-    }
-
     /// A zero-magnitude offset_curve direction is rejected at the eval boundary
     /// with an error naming the builtin, rather than reaching the kernel.
     #[test]
@@ -7968,11 +7938,12 @@
         }
     }
 
-    /// A non-unit offset_curve direction is lowered as its unit vector, so the
-    /// IR is canonical for every magnitude of the same direction.
-    #[test]
-    fn compile_geometry_op_offset_curve_non_unit_direction_is_normalised() {
-        let (result, _) = compile_offset_curve_with_direction(3.0, 0.0, 4.0);
+    /// Assert `result` lowered to an `OffsetCurve` with no reference and a
+    /// direction within 1e-12 of `expected` in every component.
+    fn assert_offset_curve_direction(
+        result: Result<reify_ir::GeometryOp, String>,
+        expected: [f64; 3],
+    ) {
         match result {
             Ok(reify_ir::GeometryOp::OffsetCurve {
                 reference,
@@ -7980,7 +7951,6 @@
                 ..
             }) => {
                 assert_eq!(reference, None, "a vec3 3rd arg is NOT a reference");
-                let expected = [0.6, 0.0, 0.8];
                 for (axis, (got, want)) in d.iter().zip(expected).enumerate() {
                     assert!(
                         (got - want).abs() < 1e-12,
@@ -7990,6 +7960,24 @@
             }
             other => panic!("expected Ok(OffsetCurve) with a direction, got {other:?}"),
         }
+    }
+
+    /// A non-unit offset_curve direction is lowered as its unit vector, so the
+    /// IR is canonical for every magnitude of the same direction.
+    #[test]
+    fn compile_geometry_op_offset_curve_non_unit_direction_is_normalised() {
+        let (result, _) = compile_offset_curve_with_direction(3.0, 0.0, 4.0);
+        assert_offset_curve_direction(result, [0.6, 0.0, 0.8]);
+    }
+
+    /// A tiny but non-zero direction is a direction, not a degenerate one: it is
+    /// normalised, like an axis or plane direction. Its magnitude (1e-9) sits
+    /// above `GEOMETRY_EPSILON` but below the kernel's 1e-7 length tolerance,
+    /// which is the wrong kind of bound for a dimensionless vector.
+    #[test]
+    fn compile_geometry_op_offset_curve_tiny_direction_is_normalised_not_rejected() {
+        let (result, _) = compile_offset_curve_with_direction(1e-9, 0.0, 0.0);
+        assert_offset_curve_direction(result, [1.0, 0.0, 0.0]);
     }
 
     // ── Fillet eval-arm: anti-zero-edges + 2-arg back-compat (task 3205 step-9/10) ──
@@ -26591,34 +26579,7 @@
     /// reasons "this helper is the un-gated one, gate it everywhere".
     #[test]
     fn delta_scope_lock_offset_curve_direction_stays_dimensionless() {
-        let step_handles = vec![GeometryHandleId(10)];
-        let values = ValueMap::new();
-
-        let op = CompiledGeometryOp::Modify {
-            kind: reify_compiler::ModifyKind::OffsetCurve,
-            target: reify_compiler::GeomRef::Step(0),
-            args: vec![
-                ("distance".into(), literal_length(0.002)),
-                (
-                    "third".into(),
-                    reify_ir::CompiledExpr::literal(
-                        bare_real_vector3(0.0, 0.0, 1.0),
-                        reify_core::Type::vec3(reify_core::Type::dimensionless_scalar()),
-                    ),
-                ),
-            ],
-        };
-
-        let mut diagnostics: Vec<Diagnostic> = Vec::new();
-        let result = compile_geometry_op(
-            &op,
-            &values,
-            &step_handles,
-            &[],
-            &HashMap::new(),
-            &HashMap::new(),
-            &mut diagnostics,
-        );
+        let (result, diagnostics) = compile_offset_curve_with_direction(0.0, 0.0, 1.0);
         match result {
             Ok(reify_ir::GeometryOp::OffsetCurve { direction, .. }) => {
                 assert_eq!(
