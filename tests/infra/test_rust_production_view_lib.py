@@ -84,8 +84,14 @@ GATED_MOD_TEMPLATE = "{attr}\nmod gated {{\n    fn inner() {{}}\n}}\npub fn afte
 ARMING_ATTRS = [
     "#[cfg(test)]",
     '#[cfg(any(test, feature = "test-support"))]',
+    '#[cfg(any(test, feature = "test-instrumentation", feature="testing"))]',
     "#[cfg(all(test, has_occt))]",
+    "#[cfg(all(test, not(has_occt)))]",
+    '#[cfg(all(test, feature = "gui"))]',
     "#[cfg(any(test))]",
+    "# [ cfg ( test ) ]",
+    '#[cfg( any( test , feature = "test-support" ) )]',
+    "#[cfg( all( test, has_occt ))]",
 ]
 ARMED_VISIBLE = [1, 5]
 NON_ARMING_ATTRS = [
@@ -97,8 +103,23 @@ NON_ARMING_ATTRS = [
     "#[cfg(testing)]",
     '#[cfg(any(testing, feature = "x"))]',
     'let s = "#[cfg(all(test, has_occt))]";',
+    'let s = "#[cfg(any(test))]";',
+    '#[cfg(any(test, feature = "gui"))]',
+    '#[cfg(any(test, target_endian = "big"))]',
+    "#[cfg(any(test, debug_assertions))]",
+    '#[cfg(any(test, feature = "test-support", feature = "gui"))]',
+    '#[cfg(any(test, feature = "gui"))] // feature = "test-support"',
 ]
 UNARMED_VISIBLE = [1, 2, 3, 4, 5]
+SPLIT_CFG_MOD = (
+    "#[cfg(any(\n"
+    "    test,\n"
+    '    feature = "test-support"\n'
+    "))]\n"
+    "mod gated {\n"
+    "    fn inner() {}\n"
+    "}\n"
+)
 COMPOUND_ATTRS = [
     '#[cfg(any(test, feature = "test-support"))]',
     "#[cfg(all(test, has_occt))]",
@@ -283,11 +304,14 @@ class TestTestModuleArming(TempDirCase):
                 text = GATED_MOD_TEMPLATE.format(attr=attr)
                 self.assertEqual(self.visible_lines(text), ARMED_VISIBLE)
 
-    def test_negated_attr_and_string_spellings_do_not_arm(self):
+    def test_spellings_not_proven_test_only_do_not_arm(self):
         for attr in NON_ARMING_ATTRS:
             with self.subTest(attr=attr):
                 text = GATED_MOD_TEMPLATE.format(attr=attr)
                 self.assertEqual(self.visible_lines(text), UNARMED_VISIBLE)
+
+    def test_a_cfg_split_across_lines_reads_as_production(self):
+        self.assertEqual(self.visible_lines(SPLIT_CFG_MOD), [1, 2, 3, 4, 5, 6, 7])
 
     def test_a_compound_gate_on_a_non_mod_item_does_not_arm(self):
         for template, expected in BARE_ITEM_TEMPLATES:

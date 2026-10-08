@@ -97,7 +97,8 @@
 # EXCLUDED:
 #   - comments and string literals, per the PRODUCTION-CODE VIEW above;
 #   - test code: `tests/` dirs (by path) and test-gated `mod` BODIES —
-#     `#[cfg(test)]`, `#[cfg(any(test, …))]`, `#[cfg(all(test, …))]`; the
+#     `#[cfg(test)]`, `#[cfg(all(test, …))]`,
+#     `#[cfg(any(test, feature = "test…"))]`; the
 #     arming rule and its limits live in scripts/lib_rust_production_view.sh
 #     (brace-depth tracked, best-effort; a `mod IDENT` declaration must be
 #     seen before the block's opening brace — not necessarily on the same

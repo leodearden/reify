@@ -98,7 +98,8 @@
 # EXCLUDED (negative pass):
 #   - comments and string literals, per the PRODUCTION-CODE VIEW above;
 #   - test code: `tests/` dirs (by path) and test-gated `mod` bodies —
-#     `#[cfg(test)]`, `#[cfg(any(test, …))]`, `#[cfg(all(test, …))]`; the
+#     `#[cfg(test)]`, `#[cfg(all(test, …))]`,
+#     `#[cfg(any(test, feature = "test…"))]`; the
 #     arming rule and its limits live in scripts/lib_rust_production_view.sh
 #     (brace-depth tracked, best-effort). Five real in-src callers live in
 #     `#[cfg(test)]` modules and are legitimate: compute_persist.rs:529,672;

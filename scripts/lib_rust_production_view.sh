@@ -21,17 +21,20 @@
 # and drives `depth` and the test-module skipper from those counts: a brace
 # that exists only inside a comment, a string, a char literal or a raw string
 # must not move `depth`, or the skipper silently over-extends (swallowing
-# production code below it) or releases early. The skipper arms on a test-only
-# cfg attribute: `#[cfg(test)]`, or `test` as the FIRST predicate of
-# `#[cfg(any(test, …))]` / `#[cfg(all(test, …))]`. Negated spellings
-# (`not(test)`, `not(any(test, …))`, `any(not(test), …)`), `cfg_attr(test, …)`
-# and a non-first `test` read as production. `any(test, X)` is read as test
-# code on the assumption that X is a test-support cfg: the lexer blanks string
-# contents, so `feature = "gui"` is indistinguishable from
-# `feature = "test-support"`. It arms only when a `mod IDENT` declaration is
-# seen before the block's opening brace — on the same line, or (`pending_mod`)
-# on a brace-less `mod tests` line whose `{` comes later, legal Rust that no
-# rustfmt gate rules out here. A bare `#[cfg(test)] fn` or
+# production code below it) or releases early. The skipper arms on a cfg
+# attribute that compiles its item into test builds ONLY: `#[cfg(test)]`;
+# `#[cfg(all(test, …))]`, whatever follows `test`; or `#[cfg(any(test, …))]`
+# when every other predicate is a feature named `test…` (`test-support`,
+# `test-instrumentation`). Anything not shown to be test-only reads as
+# production, which is the loud direction (a false red, with the consumer's
+# inline escape as relief): `any(test, feature = "gui")`,
+# `any(test, debug_assertions)`, negated spellings (`not(test)`,
+# `any(not(test), …)`), `cfg_attr(test, …)`, a `test` that is not the first
+# predicate, and a cfg that rustfmt has split across lines. Whitespace between
+# tokens is tolerated; a line break is not. It arms only when a `mod IDENT`
+# declaration is seen before the block's opening brace — on the same line, or
+# (`pending_mod`) on a brace-less `mod tests` line whose `{` comes later, legal
+# Rust that no rustfmt gate rules out here. A bare `#[cfg(test)] fn` or
 # `#[cfg(any(test, …))] use …;` therefore does NOT arm it, and a
 # self-terminating `mod tests;` leaves nothing armed. A line wholly inside a
 # block comment or a carried-over string is skipped before any bookkeeping, so
@@ -210,6 +213,20 @@ AWK_LEXER
 
 RUST_PRODUCTION_VIEW_AWK="$RUST_LEXER_AWK
 $(cat <<'AWK_VIEW'
+# _is_test_only_cfg(code, raw) -> 1 when the line carries a cfg attribute that
+# arms the test-module skipper (rule: header). Whitespace is squeezed out
+# first. An `any(test, …)` tail is read from the RAW line, because the lexed
+# view blanks feature names — but only once the lexed line shows a real
+# `any(test` head, so a spelling in a comment or a string cannot arm.
+function _is_test_only_cfg(code, raw,   squeezed_code, squeezed_raw) {
+    squeezed_code = code; gsub(/[ \t]+/, "", squeezed_code)
+    if (squeezed_code ~ /#\[cfg\(test\)\]/) return 1
+    if (squeezed_code ~ /#\[cfg\(all\(test[,)]/) return 1
+    if (squeezed_code !~ /#\[cfg\(any\(test[,)]/) return 0
+    squeezed_raw = raw; gsub(/[ \t]+/, "", squeezed_raw)
+    return squeezed_raw ~ /#\[cfg\(any\(test(,feature="test[^"]*")*,?\)\)\]/
+}
+
 {
     code = _strip_line($0)
 
@@ -232,7 +249,7 @@ $(cat <<'AWK_VIEW'
         if (depth <= test_base) in_test = 0
         next
     }
-    if (code ~ /#\[cfg\(test\)\]|#\[cfg\((any|all)\(test[ \t]*[,)]/) {
+    if (_is_test_only_cfg(code, $0)) {
         pending_test = 1
         pending_mod = 0
     } else if (pending_test) {

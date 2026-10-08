@@ -908,13 +908,13 @@ echo "--- (hC): compound test cfg gates arm the test-module skipper ---"
 HC_ANY='#[cfg(any(test, feature = "test-support"))]'
 HC_ALL='#[cfg(all(test, has_occt))]'
 
-# reify-foo's lib.rs: a production no-op, then an any()-gated test-support
-# module whose fn hand-rolls both halves on lines 6-7 (hC1/hC4).
+# reify-foo's lib.rs: a production no-op, then a module gated by the any()
+# attribute in $1 whose fn hand-rolls both halves on lines 6-7 (hC1/hC4/hC6).
 hc_any_module() {
     cat <<RS
 pub fn nothing() {}
 
-$HC_ANY
+$1
 pub mod test_support {
     pub fn engine_for_tests(engine: &mut reify_eval::Engine) {
         reify_eval::compute_targets::register_compute_fns(&mut engine);
@@ -927,7 +927,7 @@ RS
 # hC1 — negative pass, any(test, …): the test-support module's half-calls are exempt.
 write_baseline
 mkdir -p "$FIX/crates/reify-foo/src"
-hc_any_module > "$FIX/crates/reify-foo/src/lib.rs"
+hc_any_module "$HC_ANY" > "$FIX/crates/reify-foo/src/lib.rs"
 stage
 assert "hC1: half-calls inside a '#[cfg(any(test, …))] pub mod' are NOT flagged" \
     _exits_with 0 bash "$GATE" --repo-root "$FIX"
@@ -983,7 +983,7 @@ done
 write_baseline
 mkdir -p "$FIX/crates/reify-foo/src"
 {
-    hc_any_module
+    hc_any_module "$HC_ANY"
     cat <<'RS'
 
 pub fn build_engine() -> reify_eval::Engine {
@@ -1022,6 +1022,19 @@ RS
     assert "hC5: a bare '$hc_attr use …;' does not swallow the next production bundler" \
         _exits_with 1 bash "$GATE" --repo-root "$FIX"
     assert "hC5: ...stderr names its half-call (lib.rs:6)" \
+        bash -c "bash '$GATE' --repo-root '$FIX' 2>&1 >/dev/null | grep -qF 'crates/reify-foo/src/lib.rs:6:'"
+done
+
+# hC6 — negative pass: any(test, X) with X reachable in a production build
+# does NOT arm, so the module's half-call on line 6 is flagged, not skipped.
+for hc_attr in '#[cfg(any(test, feature = "gui"))]' '#[cfg(any(test, target_endian = "big"))]'; do
+    write_baseline
+    mkdir -p "$FIX/crates/reify-foo/src"
+    hc_any_module "$hc_attr" > "$FIX/crates/reify-foo/src/lib.rs"
+    stage
+    assert "hC6: half-calls inside a '$hc_attr pub mod' ARE flagged" \
+        _exits_with 1 bash "$GATE" --repo-root "$FIX"
+    assert "hC6: ...stderr names the in-module half-call (lib.rs:6)" \
         bash -c "bash '$GATE' --repo-root '$FIX' 2>&1 >/dev/null | grep -qF 'crates/reify-foo/src/lib.rs:6:'"
 done
 

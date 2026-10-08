@@ -758,6 +758,24 @@ else
     echo "  SKIP: hC5 (mawk portability) — mawk is not on PATH on this host."
 fi
 
+# hC6 — any(test, X) with X reachable in a production build does NOT arm: the
+# module's hazard (line 4) is flagged rather than silently skipped.
+for hc_attr in '#[cfg(any(test, feature = "gui"))]' '#[cfg(any(test, target_endian = "big"))]'; do
+    write_fixture <<RS
+$hc_attr
+pub mod gui_support {
+    pub fn sort_all(v: &mut Vec<f64>) {
+        v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    }
+}
+RS
+    stage
+    assert "hC6: a hazard inside a '$hc_attr pub mod' is flagged" \
+        _exits_with 1 bash "$GATE" --repo-root "$FIX"
+    assert "hC6: ...at the in-module line (lib.rs:4)" \
+        bash -c "bash '$GATE' --repo-root '$FIX' 2>&1 >/dev/null | grep -qF 'src/lib.rs:4:'"
+done
+
 # ===========================================================================
 # hF — an awk failure mid-scan surfaces as the documented exit 2
 # (usage/internal error), never conflated with exit 1 (violation found).
