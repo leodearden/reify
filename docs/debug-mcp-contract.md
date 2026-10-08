@@ -28,7 +28,7 @@ separately by `gui/src-tauri/src/tests/debug_boundary_tests.rs` (steps 1–2).
 ### Source of truth
 
 **`tool_defs()` in `gui/src-tauri/src/debug_server.rs`** is the canonical,
-authoritative list of advertised MCP tools (currently **68**).  Every `ToolDef`
+authoritative list of advertised MCP tools (currently **69**).  Every `ToolDef`
 entry there becomes visible to MCP clients via `tools/list`.
 
 Do **not** maintain a separate exhaustive list here — that list would itself be
@@ -38,7 +38,7 @@ a drift surface.  The invariant is enforced at test time (see below).
 
 | Group | Tools |
 |-------|-------|
-| Liveness / engine | `health`, `engine_state`, `mesh_stats`, `morph_stats`, `mesh_morph_stats`, `load_fixture` |
+| Liveness / engine | `health`, `engine_status`, `engine_state`, `mesh_stats`, `morph_stats`, `mesh_morph_stats`, `load_fixture` |
 | Screenshots | `screenshot`, `screenshot_window`, `element_screenshot` |
 | DOM / style / layout / window | `dom_query`, `query_selector`, `query_selector_all`, `get_computed_style`, `get_layout_metrics`, `active_element`, `list_elements`, `get_window_state`, `ui_outline` |
 | Interaction | `click_element`, `click_at`, `type_in_editor`, `keyboard`, `press_tab`, `tab_order`, `focus_element`, `scroll`, `drag`, `hover`, `hover_at`, `scrub_range_input`, `edit_text_input`, `orbit_camera`, `pan_camera`, `zoom_camera`, `resize_panes`, `set_window_size` |
@@ -69,6 +69,92 @@ a drift surface.  The invariant is enforced at test time (see below).
 > false`) are default-hidden — whereas the two debug reads always report the full
 > realized scene. Hiding a body, or a fixture carrying an aux component, breaks
 > the equality legitimately.
+>
+> Each mesh entry of both reads carries `default_visible` (task 6752): the
+> ENGINE's hidden-by-default verdict, `false` for aux and consumed-intermediate
+> realizations (#5195), joined from the entity tree's realization nodes. The
+> rendered set can therefore be reconstructed as the `default_visible == true`
+> entries, modulo user eye toggles, the selected view and DisplayOutput routing,
+> which are frontend state; `viewport_state` stays the authority for what is
+> drawn. The parity smoke above is unchanged (#6498 part b).
+> A `mesh_stats` entry is `{entity_path, vertex_count, face_count, bounding_box:
+> {min, max} | null, element_kind_count, default_visible}`; `element_kind_count`
+> is the per-face element-kind histogram (`{}` for a mesh with no shell
+> classification), emitted since task 3598.
+
+### Engine activity, generations and `wait_for_idle` (task 6752)
+
+`engine_status` and `health`'s `engine_busy` read the engine lane WITHOUT ever
+waiting on the engine lock, so both answer during an evaluation of any length.
+The reading is a `try_lock` on the engine mutex, which every engine user holds
+while it works (the evaluation queue's drainer, a debug tool's own
+`run_on_engine`, setup), plus `EvalQueue::progress()`, which takes only the
+queue's own short-lived lock and adds work accepted but not yet running. The one
+implementation is `gui/src-tauri/src/engine_activity.rs`. `engine_status`
+replies `{busy, engine_lock_held, engine_started, generation,
+queue_outstanding}`; `engine_started` is `null` while the lock is held, since
+reading it would mean waiting. The reading itself holds the lock for the
+instant it takes to read `engine_started`, so of two overlapping reads
+(`engine_status`, `health`, a `wait_for_idle` poll) one can see
+`engine_lock_held: true`, and so `busy: true`, with no engine work in flight.
+`busy` can over-report for that instant but never under-reports, and
+`wait_for_idle` absorbs it by polling again.
+
+A **generation** is issued for every edit and evaluation the GUI's evaluation
+queue accepts (editor typing, slider and UI parameter edits, file-watcher
+reloads, UI file opens and the initial load, UI FEA-case changes, reify-mcp
+tool calls routed through the GUI), per GUI process, from 0, never reset.
+Queued engine calls (demand syncs, read-only queries) issue none. Nor does a
+debug/MCP tool's own engine work (`open_file`, `set_fea_case`, the `reify_*`
+write tools): that runs outside the queue (#7854), is complete when the tool
+returns, and shows only as `engine_lock_held` while in flight.
+
+To wait for the evaluation an action causes:
+
+```
+g = engine_status().generation
+<action>                          // e.g. type_in_editor, a slider drag
+wait_for_idle({since_generation: g})
+```
+
+This replaces polling `mesh_stats` until two consecutive polls agree. Without
+`since_generation`, `wait_for_idle` waits only for work already in hand, so it
+can return before the frontend has even submitted the evaluation an action will
+cause (editor typing is debounced). `wait_for_idle` polls the lock-free reading
+every 25 ms, then asks the frontend to confirm its own evaluation status and
+render a frame within what is left of `timeout_ms`. Replies:
+
+- `{ok: true, idle_after_ms, generation}`: `generation` is the newest settled.
+- `{error: "timeout", engine_busy, generation, awaiting_generation}`: the
+  engine lane never settled. `awaiting_generation: true` means it was idle but
+  no generation newer than `since_generation` was issued: the action caused no
+  evaluation, or has not submitted one yet.
+- `{error: "engine_not_started"}`: no design is loaded.
+- The frontend half's own `{error: "timeout"}` / `{error: "engine_phase",
+  phase}`, stamped with `generation`.
+
+Still open, both #7716: `open_file` is synchronous (it returns after the load,
+with no generation and no cancel), and `health` can still starve under CPU
+load. The lock-free read removes the engine mutex as a cause, not runtime
+starvation.
+
+### Large reads (task 6752)
+
+- `engine_state` DEFAULTS to the full payload, the shape the harness drivers
+  (`meshCountParity.mjs`, `railLengtheningGate.mjs`) read, and its
+  `files[].content` inlines every source file: megabytes on a large design.
+  `summary_only: true` replies `counts` (one length per array-valued key), a
+  content-free `files: [{path, bytes, lines}]`, and every non-array key
+  verbatim. `fields: [...]` replies only the named top-level keys, and an
+  unknown name is refused with the valid list. The two are mutually exclusive.
+  Valid names are the full payload's own keys
+  (`gui/src-tauri/src/engine_state_view.rs`).
+- `screenshot`, `screenshot_window` and `element_screenshot` take an optional
+  `save_path`: an ABSOLUTE path ending in `.png` whose parent directory exists.
+  The PNG is written there, overwriting any existing file (hence the extension
+  rule), and the reply is `{saved_to, bytes, mimeType}` (plus
+  `element_screenshot`'s pane diagnostics) instead of an inline image. It
+  renders as a TEXT block (§2d).
 
 ### AI write tools (INV-GUI-2 AI path, task 5097)
 
@@ -348,8 +434,32 @@ re-init + mesh rebuild), to write bytes already in memory. A cheap
 committed-buffer accessor would avoid both and would be safe — nothing changed,
 so nothing need be pushed — but it trades the four-tools-one-seam structure
 that `docs/prds/v0_6/ai-native-editing.md` §6.2 invariant (a) and task 5100's structural claim rest on, which is a
-design change rather than an optimisation. The cost has **not** been measured
-on a real (non-mock) kernel; the number belongs here once it exists.
+design change rather than an optimisation.
+
+**Measured** (task 6752) on the real OCCT kernel through the production boot
+path (`EngineSession::with_registered_kernel`), release build,
+`prj/printer_v01/dev_capstan.ri` (10 meshes, 64,494 faces), on 2026-09-30 on
+task 6752's branch at the pre-rebase commit patch-identical to `7e0d366f3e`,
+medians of 5 on a shared host (loadavg 54–110 on 32 cpus):
+
+| Measured | Median |
+|---|---|
+| `save_file_impl` alone: the pure-I/O floor | 0.2 ms |
+| `reify_save_file` seam: rebuild + write + baseline refresh | 8.6 s |
+| `build_gui_state` alone: the rebuild | 8.0 s |
+| `EngineSession::export(Step)` alone | 6.2 s |
+| `reify_export` seam: export + rebuild + baseline refresh | 16.0 s |
+| `apply_gui_state` push payload | 5.6 MB |
+
+The seam, not the I/O, is the whole cost of an AI save (8.6 s for a 0.2 ms
+write), and it more than doubles an export. The frontend's `initFromState` over
+the pushed payload comes on top and is not measured, since a headless test
+cannot. `printer.ri`, the design the dogfood drove, could not be measured: it
+crashes the engine on load (#7383). Reproduce with
+`REIFY_REBUILD_COST_DESIGN=prj/printer_v01/dev_capstan.ri cargo test -p reify-gui --lib --features gui --release rebuild_cost -- --ignored --nocapture`
+(`gui/src-tauri/src/debug_server/tests/rebuild_cost.rs`). The trade-off stands
+as accepted: the four tools keep one seam, and the committed-buffer accessor
+remains the named fix, filed as #8074.
 
 **`reify_save_file` never guesses its target.** `file_path` is the one
 OPTIONAL write-tool param, so "absent" carries the live meaning *save the
@@ -639,6 +749,9 @@ Decoder-author checklist:
   decoder that reads only `content[0]` silently discards the pane diagnostics.
 - `screenshot` and `screenshot_window` never emit the trailing block. Only
   `element_screenshot` does.
+- A reply to a `save_path` call carries no image: `{saved_to, bytes,
+  mimeType}` renders as a single text block, so the image-at-`content[0]` rule
+  holds for inline replies only.
 
 Two further facts about this envelope live with the code that enforces them:
 
