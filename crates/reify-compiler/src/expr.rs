@@ -3312,6 +3312,14 @@ fn compile_expr_guarded_with_expected_inner(
                     // mismatch, tag with SelectorKindMismatch so both the composition
                     // path (BT1, units.rs) and the param-binding path (BT6) carry the
                     // same DiagnosticCode. Message and label are unchanged.
+                    //
+                    // task 5476 (PRD placeholder-type-eradication-ratchet §3.3 /
+                    // INV-SF-6): the GENERAL no-match — everything the 4581 predicate
+                    // does not claim — carries NoMatchingOverload
+                    // (E_NO_MATCHING_OVERLOAD). The selector branch above keeps
+                    // priority; this only fills in the previously-untagged else.
+                    // Message and label stay byte-identical in both branches, so only
+                    // the code distinguishes them.
                     let base_diag = Diagnostic::error(format!(
                         "no matching overload for {}({}), candidates: {}",
                         name,
@@ -3329,7 +3337,7 @@ fn compile_expr_guarded_with_expected_inner(
                     ) {
                         base_diag.with_code(DiagnosticCode::SelectorKindMismatch)
                     } else {
-                        base_diag
+                        base_diag.with_code(DiagnosticCode::NoMatchingOverload)
                     };
                     make_poison_literal(diagnostics, diag)
                 }
@@ -3424,6 +3432,7 @@ fn compile_expr_guarded_with_expected_inner(
                     // `infer_list_helper_return_type` → `is_dynamics_query` →
                     // `is_dynamics_constructor` → `is_affine_map_constructor` →
                     // `is_math_typed_fn` → `is_joint_typed_fn` →
+                    // `is_flexure_typed_fn` (task #5476) →
                     // `registry_result_type` (the builtin-signature registry,
                     // task #6001 α — one arm replacing the former
                     // `is_analysis_typed_fn` and `is_parse_typed_fn` arms) →
@@ -3432,8 +3441,9 @@ fn compile_expr_guarded_with_expected_inner(
                     // first-arg fallback. The five geometry-name families plus the
                     // RBD-β `is_dynamics_query` family (task 3829), the task-4278
                     // `is_dynamics_constructor` family, the std.fields α
-                    // `is_field_op` family (task 4219), and the #4629 W2
-                    // `fea_envelope_result_type` family are pinned disjoint in
+                    // `is_field_op` family (task 4219), the #4629 W2
+                    // `fea_envelope_result_type` family, and the task-#5476
+                    // `is_flexure_typed_fn` family are pinned disjoint in
                     // `units.rs::tests::*_are_disjoint_from_other_families`,
                     // so within this arm the ordering is unobservable — no name can
                     // satisfy two predicates. `selector_composition_result_type` is
@@ -3759,6 +3769,43 @@ fn compile_expr_guarded_with_expected_inner(
                         // families by the units.rs disjointness test, so this
                         // arm's position in the ladder is unobservable.
                         joint_ctor_result_type(name, &compiled_args)
+                    } else if is_flexure_typed_fn(name) {
+                        // PRB flexure constructor family (placeholder-ratchet α,
+                        // PRD docs/prds/v0_6/placeholder-type-eradication-ratchet.md
+                        // §3.2, task #5476). All 13 prb_* ctors set the cell type
+                        // up-front to the nominal StructureRef("FlexureJoint") so
+                        // `flexure_compliance(joint: FlexureJoint)` matches a real
+                        // ctor result and REJECTS every bare literal through the
+                        // exact-equality overload filter (type_compat.rs).
+                        //
+                        // Falling through to the first-arg fallback instead
+                        // mis-types a flexure joint as its first geometric
+                        // argument's type — e.g. Scalar[LENGTH] from
+                        // notch_radius — which is exactly the placeholder PRD §2
+                        // names as the root cause: it made a bare `5mm`
+                        // statically indistinguishable from a real joint.
+                        //
+                        // Runtime stays Value::Map (esc-3845-91): StructureRef is
+                        // a representable cell type and value_type_kind_matches is
+                        // not enforced on let-cells. These cells already carry the
+                        // first-arg Scalar[LENGTH] mismatch today, so StructureRef
+                        // is strictly more correct. PRD §7.1's rejection of the
+                        // typed-joints migration is NOT reopened.
+                        //
+                        // Unlike the joint arm above, this family is name- AND
+                        // argument-agnostic — all 13 map to the one marker type,
+                        // so there is no Coupling-style args-aware branch. That
+                        // is why the resolver is a ZERO-ARG `flexure_joint_type()`
+                        // rather than the joint family's `(name, args)` shape:
+                        // neither would be consulted, and a signature that
+                        // accepts them would imply a dispatch that does not
+                        // exist.
+                        //
+                        // The family is pinned disjoint from all sibling families
+                        // by the units.rs disjointness test, so this arm's
+                        // position in the ladder is unobservable. The one hard
+                        // requirement is that it precede the first-arg fallback.
+                        flexure_joint_type()
                     } else if registry_owns(name)
                         && let Some(t) = registry_result_type(
                             name,
@@ -10373,6 +10420,90 @@ structure S {
             Type::Int,
             "`[1, 2, 3].sum` must resolve to the List's element type (Int), got: {:?}",
             get_let_expr(&m, "y").result_type
+        );
+    }
+
+    /// The GENERAL `OverloadResolution::NoMatch` poison Error carries
+    /// `DiagnosticCode::NoMatchingOverload` (`E_NO_MATCHING_OVERLOAD`), and its
+    /// rendered message is byte-identical to the pre-#5476 text.
+    ///
+    /// A nominal (structure-typed) param called with a bare dimensioned literal
+    /// is the plainest general no-match: it is not a `Selector`→`Selector` kind
+    /// mismatch, so it must take the `else` branch of the NoMatch arm's code
+    /// conditional. The verbatim message assertion is the mechanical form of the
+    /// task's "message text unchanged" contract — a future edit that improves the
+    /// wording has to come here and say so, rather than silently breaking every
+    /// consumer that greps the string.
+    ///
+    /// PRD `docs/prds/v0_6/placeholder-type-eradication-ratchet.md` §3.3 /
+    /// INV-SF-6 (task #5476).
+    #[test]
+    fn no_matching_overload_error_carries_no_matching_overload_code() {
+        use reify_test_support::compile_source;
+
+        let source = r#"
+structure def Marker { }
+pub fn takes_marker(m: Marker) -> Real { 1.0 }
+structure def Probe { let x = takes_marker(5mm) }
+"#;
+        let compiled = compile_source(source);
+        let err = the_one_error(&compiled.diagnostics);
+
+        assert_eq!(
+            err.code,
+            Some(DiagnosticCode::NoMatchingOverload),
+            "the general no-match poison Error must carry NoMatchingOverload, got: {:?}",
+            err
+        );
+        assert_eq!(
+            err.message,
+            "no matching overload for takes_marker(Scalar[m]), \
+             candidates: takes_marker(Marker) -> Real",
+            "the NoMatch message text must be unchanged by the code tagging"
+        );
+    }
+
+    /// Non-clobber guard for the code added above: when the no-match is
+    /// specifically a wrong-kind `Selector`→`Selector` param mismatch,
+    /// `coerce::is_selector_kind_mismatch_nomatch` holds and the diagnostic keeps
+    /// `DiagnosticCode::SelectorKindMismatch` — it must NOT be overwritten with
+    /// `NoMatchingOverload`.
+    ///
+    /// `edges(b)` is `Selector(Edge)`; `f`'s param is `FaceSelector` =
+    /// `Selector(Face)`. Same arity, non-generic, every other param equal — the
+    /// exact shape `is_selector_kind_mismatch_nomatch` looks for. This pins the
+    /// task 4581 / esc-4120-17 BT1↔BT6 code-uniformity contract, which is what
+    /// makes the composition path (`units.rs`) and this param-binding path report
+    /// one code. GREEN before #5476 and must stay GREEN after.
+    #[test]
+    fn selector_kind_mismatch_nomatch_keeps_its_own_code() {
+        use reify_test_support::compile_source_with_stdlib;
+
+        let source = r#"module test.selector_kind_nomatch
+pub fn takes_face(f: FaceSelector) -> Real { 1.0 }
+structure def Probe {
+    let b = box(10mm, 10mm, 10mm)
+    let x = takes_face(edges(b))
+}
+"#;
+        let compiled = compile_source_with_stdlib(source);
+        let nomatch: Vec<_> = compiled
+            .diagnostics
+            .iter()
+            .filter(|d| d.message.starts_with("no matching overload for takes_face"))
+            .collect();
+        assert_eq!(
+            nomatch.len(),
+            1,
+            "expected exactly one no-match diagnostic for takes_face, got: {:?}",
+            compiled.diagnostics
+        );
+        assert_eq!(
+            nomatch[0].code,
+            Some(DiagnosticCode::SelectorKindMismatch),
+            "a wrong-kind Selector→Selector no-match must KEEP SelectorKindMismatch \
+             and must not be clobbered with NoMatchingOverload, got: {:?}",
+            nomatch[0]
         );
     }
 }

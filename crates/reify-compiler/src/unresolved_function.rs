@@ -78,6 +78,7 @@
 
 use crate::builtin_registry::registry_knows_name;
 use crate::expr::DETERMINACY_PREDICATE_NAMES;
+use crate::flexure_signatures::FLEXURE_CTOR_FN_NAMES;
 use crate::joint_signatures::JOINT_TYPED_FN_NAMES;
 use crate::list_helpers::LIST_HELPER_NAMES;
 use crate::math_signatures::{
@@ -248,6 +249,9 @@ pub(crate) const FIRST_ARG_TYPED_NAMES: &[&str] = &[
 /// removing the group from this manifest is part of that task's diff, and
 /// `eval_deferred_names_are_disjoint_from_every_registered_family` is what
 /// turns a forgotten removal from a silent stale claim into a RED test.
+/// #5476 discharged the 13 `prb_*` ctors into `FLEXURE_CTOR_FN_NAMES`, so the
+/// dated "Derivation (2026-08-29)" counts above record that measurement, not
+/// this slice's current length.
 ///
 /// Case-sensitive: Reify function names are snake_case.
 pub(crate) const EVAL_DEFERRED_BUILTIN_NAMES: &[&str] = &[
@@ -312,26 +316,14 @@ pub(crate) const EVAL_DEFERRED_BUILTIN_NAMES: &[&str] = &[
     "solve_load_cases",
     "worst_buckling_case",
     "worst_case",
-    "prb_cantilever_beam",
-    "prb_cartwheel_flexure",
-    "prb_cross_spring_pivot",
-    "prb_double_parallelogram_flexure",
-    "prb_fixed_fixed_beam",
-    "prb_let_joint",
-    "prb_living_hinge",
-    "prb_notch_circular",
-    "prb_notch_elliptical",
-    "prb_notch_right_circular",
-    "prb_parallelogram_flexure",
-    "prb_prismatic_blade",
-    "prb_two_axis_pivot",
-    // The accessor INTRINSIC behind `pub fn flexure_compliance(joint: Length)`
-    // (stdlib/flexures.ri:238). Dispatched by name at
-    // `reify-stdlib/src/flexures/diagnostics.rs:59`, so it is genuinely
-    // eval-reachable — it is simply undeclared, which is why the double
-    // underscore is there. Surfaced by this task's corpus sweep, not by τ4's
-    // own enumeration, so it is called out rather than folded silently into
-    // the `prb_*` run above.
+    // The accessor INTRINSIC behind `pub fn flexure_compliance(joint:
+    // FlexureJoint)` (`flexure_compliance` in stdlib/flexures.ri). Dispatched
+    // by name in `flexure_diagnose` (`reify-stdlib/src/flexures/diagnostics.rs`),
+    // so it is genuinely eval-reachable — it is simply undeclared, which is why
+    // the double underscore is there. Surfaced by this task's corpus sweep, not
+    // by τ4's own enumeration. The `prb_*` ctors it consumes left this manifest
+    // when #5476 registered them as `FLEXURE_CTOR_FN_NAMES`; the intrinsic
+    // itself is still fallback-typed, so its deferral stands.
     "__flexure_compliance_get",
     "contributor",
     "contributor_asym",
@@ -439,6 +431,7 @@ pub fn is_known_builtin(name: &str) -> bool {
         || FEA_ENVELOPE_NAMES.contains(&name)
         || FIELD_OP_NAMES.contains(&name)
         || ORIENTATION_TYPED_FN_NAMES.contains(&name)
+        || FLEXURE_CTOR_FN_NAMES.contains(&name)
         // --- The four resolver-only families, promoted to production slices
         // --- by this task so the union can see them (they were previously
         // --- visible only as `match` arms inside their resolvers).
@@ -594,6 +587,7 @@ mod tests {
         ("RELATION_FN_NAMES", RELATION_FN_NAMES),
         ("JOINT_TYPED_FN_NAMES", JOINT_TYPED_FN_NAMES),
         ("ORIENTATION_TYPED_FN_NAMES", ORIENTATION_TYPED_FN_NAMES),
+        ("FLEXURE_CTOR_FN_NAMES", FLEXURE_CTOR_FN_NAMES),
     ];
 
     /// The four families promoted from resolver-only `match` arms to real

@@ -29,6 +29,7 @@ mod datum_projection;
 mod diagnostics;
 mod entity;
 mod expr;
+mod flexure_signatures;
 mod fn_return_check;
 mod forall_elaborate;
 mod functions;
@@ -87,6 +88,7 @@ pub(crate) use conformance::*;
 pub(crate) use connect::*;
 pub(crate) use entity::*;
 pub(crate) use expr::*;
+pub(crate) use flexure_signatures::*;
 #[allow(unused_imports)]
 pub(crate) use forall_elaborate::*;
 #[allow(unused_imports)]

@@ -614,6 +614,31 @@ pub enum DiagnosticCode {
     /// The PRD-prose mnemonic for this code is `E_SELECTOR_KIND_MISMATCH`
     /// (see `docs/prds/topology-selector-value-type.md` §11.2).
     SelectorKindMismatch,
+    /// Origin: `crates/reify-compiler/src/expr.rs`, the
+    /// `OverloadResolution::NoMatch` arm (task 5476).
+    /// Emitted as `Severity::Error` when user functions with the called name exist
+    /// but none of their signatures accepts the argument types at the call site.
+    ///
+    /// Canonical message form:
+    /// `"no matching overload for {name}({arg_types}), candidates: {candidate_sigs}"`
+    /// Label at the call span: `"no matching overload"`.
+    ///
+    /// The diagnostic is pushed through `make_poison_literal`, so the call's result
+    /// type becomes a poison sentinel — the anti-cascade contract from
+    /// tasks 448/1912/1921 that stops one bad call from spraying follow-on errors.
+    ///
+    /// **Non-clobber rule.** This code tags only the GENERAL no-match case. When
+    /// `coerce::is_selector_kind_mismatch_nomatch` holds — i.e. the no-match is
+    /// specifically a wrong-kind `Selector`→`Selector` param mismatch — the
+    /// diagnostic keeps [`DiagnosticCode::SelectorKindMismatch`] instead, so the
+    /// composition path (BT1, `units.rs`) and the param-binding path (BT6) report
+    /// the same code (task 4581 / esc-4120-17). Message and label are identical in
+    /// both branches; only the code differs.
+    ///
+    /// The PRD-prose mnemonic for this code is `E_NO_MATCHING_OVERLOAD`
+    /// (severity convention: `E_*` → `Error`); see
+    /// `docs/prds/v0_6/placeholder-type-eradication-ratchet.md` §3.3 / INV-SF-6.
+    NoMatchingOverload,
     /// Origin: `crates/reify-compiler/src/builtin_signatures.rs` (task 4493,
     /// type-hygiene ζ).
     /// Emitted as `Severity::Error` when a call site passes a statically-known
@@ -2668,12 +2693,20 @@ pub enum DiagnosticCode {
     /// Emitted as a `Severity::Warning` by the eval-time `flexure_diagnose`
     /// `__flexure_compliance_get` arm when the accessor's argument is NOT a joint
     /// `Value::Map` carrying the reserved hidden `__flexure_compliance` record
-    /// (e.g. a bare `Length`). The DSL `flexure_compliance(joint: Length)`
-    /// signature cannot distinguish a real PRB-ctor joint from any other `Length`
-    /// at compile time, so the intrinsic silently yields a sentinel-zero record;
-    /// this runtime warning surfaces that documented type-lie. A real joint
-    /// argument emits nothing. Full static enforcement rides the future
-    /// typed-joint work (out of scope here).
+    /// (e.g. a fabricated `FlexureJoint()`). A real joint argument emits nothing.
+    ///
+    /// RETAINED AS DEFENSE-IN-DEPTH, not superseded (task #5476, PRD
+    /// `docs/prds/v0_6/placeholder-type-eradication-ratchet.md` §3.6). The DSL
+    /// accessor is now `flexure_compliance(joint: FlexureJoint)`, so the bare-
+    /// literal case this warning was originally written for — any `Length`, e.g.
+    /// `5mm`, silently matching the old `joint: Length` placeholder and yielding a
+    /// sentinel-zero record — is a hard compile Error carrying
+    /// [`DiagnosticCode::NoMatchingOverload`]. What remains is the narrower
+    /// residual hole the type cannot close: `FlexureJoint` must be spellable in
+    /// that public signature, so a bare `FlexureJoint()` fabrication is
+    /// statically legal while carrying no `__flexure_compliance` cache entry.
+    /// This warning is the arm that keeps that case loud — INV-SF-5 bans a
+    /// placeholder being both statically and dynamically silent.
     ///
     /// The PRD-prose mnemonic for this code is `W_FLEXURE_NON_JOINT_ARG`
     /// (severity convention: `W_*` → Warning, `E_*` → Error).
@@ -7872,6 +7905,46 @@ mod tests {
         let s =
             serde_json::to_string(&DiagnosticCode::RepresentationBoundUnenforcedOnExport).unwrap();
         assert_eq!(s, "\"RepresentationBoundUnenforcedOnExport\"");
+    }
+
+    // --- NoMatchingOverload tests (task 5476 — E_NO_MATCHING_OVERLOAD) ---
+    // Pairs with the `OverloadResolution::NoMatch` poison-literal arm in
+    // `crates/reify-compiler/src/expr.rs`. PRD
+    // `docs/prds/v0_6/placeholder-type-eradication-ratchet.md` §3.3 / INV-SF-6.
+    // Variant-agnostic Copy/Clone/PartialEq/Eq/Hash/Debug derives are already
+    // covered by `diagnostic_code_derives` above; only the variant-specific
+    // round-trip and serde wire-format tests are added here.
+
+    /// `DiagnosticCode::NoMatchingOverload` round-trips through
+    /// `Diagnostic::error(...).with_code(...)` at `Severity::Error` — pinning the
+    /// documented-only `E_*` → Error convention, which is otherwise unenforced.
+    /// Also asserts the variant is distinct from `SelectorKindMismatch`, the code
+    /// the NoMatch arm must never clobber (task 4581 / esc-4120-17 BT1↔BT6 code
+    /// uniformity). Shape mirrors
+    /// `diagnostic_code_mechanism_nondriving_joint_with_code_round_trips`; a future
+    /// enum reorganisation that drops `NoMatchingOverload` is caught here.
+    #[test]
+    fn diagnostic_code_no_matching_overload_with_code_round_trips() {
+        use super::Severity;
+        assert_ne!(
+            DiagnosticCode::NoMatchingOverload,
+            DiagnosticCode::SelectorKindMismatch,
+            "NoMatchingOverload must be a distinct variant from SelectorKindMismatch — \
+             the NoMatch arm keeps SelectorKindMismatch on the selector-kind branch"
+        );
+        let d = Diagnostic::error("x").with_code(DiagnosticCode::NoMatchingOverload);
+        assert_eq!(d.code, Some(DiagnosticCode::NoMatchingOverload));
+        assert_eq!(d.severity, Severity::Error);
+    }
+
+    /// Under `feature = "serde"`, `DiagnosticCode::NoMatchingOverload`
+    /// serializes as `"NoMatchingOverload"` (PascalCase, from
+    /// `rename_all = "PascalCase"`).
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_no_matching_overload_serde_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::NoMatchingOverload).unwrap();
+        assert_eq!(s, "\"NoMatchingOverload\"");
     }
 }
 

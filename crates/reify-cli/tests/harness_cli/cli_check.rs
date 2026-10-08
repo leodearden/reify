@@ -1816,3 +1816,117 @@ structure def TrampolineSeverityProbe {
         "`reify build` must keep printing `{error_line}`.\nstderr: {stderr}"
     );
 }
+
+// ─── placeholder-ratchet α: flexure_compliance joint typing (task #5476) ─────
+//
+// PRD docs/prds/v0_6/placeholder-type-eradication-ratchet.md §7.3 BT1/BT2.
+//
+// These two tests are the USER-OBSERVABLE half of the α slice: the PRD §G2
+// headline is an exit-code flip, so it is asserted here at the CLI boundary
+// rather than inside the compiler.  The companion typed-code assertion
+// (`code == Some(DiagnosticCode::NoMatchingOverload)`) lives in
+// `crates/reify-compiler/tests/harness_mechanics/flexures_stdlib_compile.rs` because
+// `DiagnosticCode` has no `Display`/`code_str()` — the `E_*` mnemonics are
+// doc-comment prose, never rendered — and this task requires the
+// no-matching-overload MESSAGE TEXT to stay byte-identical, so the mnemonic
+// `E_NO_MATCHING_OVERLOAD` deliberately does NOT appear in CLI output and
+// cannot be asserted from here.
+//
+// Stream convention (measured on this worktree, matching
+// `check_compile_error_exits_failure` above): compile diagnostics go to
+// STDERR; the `All constraints satisfied.` / `Some constraints violated`
+// summary goes to STDOUT.
+
+/// BT1 (negative): `flexure_compliance(5mm)` must be a hard compile failure.
+///
+/// This is the PRD §G2 headline signal and the INV-SF-2 exit-gate pin.
+///
+/// MEASURED PRE-α BASELINE (this worktree's release binary at base commit,
+/// probed 2026-07-29 and re-probed 2026-07-30):
+///
+/// ```text
+/// $ reify check crates/reify-cli/tests/fixtures/flexure_compliance_non_joint.ri
+/// warning: W_FLEXURE_NON_JOINT_ARG: flexure_compliance() was called on a value
+///          that is not a flexure joint; ... silently masking the misuse
+/// All constraints satisfied.
+/// ; exit 0
+/// ```
+///
+/// A bare `5mm` overload-MATCHED `flexure_compliance(joint: Length)`, so no
+/// `NoMatch` was produced at all and the misuse degraded to a warning plus a
+/// sentinel-zero compliance record.
+///
+/// The flip to a nonzero exit rests on THREE things, any of which failing here
+/// identifies the regression: the accessor declares
+/// `flexure_compliance(joint: FlexureJoint)`; the exact-equality overload filter
+/// (`type_compat.rs::resolve_function_overload`) therefore rejects
+/// `Scalar[LENGTH]`; and the pre-existing compile-phase Error exit gate — NOT
+/// touched by task #5476, per the plan's work-item-5 design decision, and
+/// deliberately not a per-code bolt-on (INV-SF-2) — turns that Error into the
+/// nonzero exit.  Seeing the measured baseline above instead means the first of
+/// the three regressed.
+#[test]
+fn check_flexure_compliance_non_joint_exits_failure() {
+    let (status, stdout, stderr) = common::run_subcommand(
+        "check",
+        &common::fixture_path("flexure_compliance_non_joint.ri"),
+    );
+
+    assert!(
+        !status.success(),
+        "reify check must exit non-zero for flexure_compliance(5mm): a bare Length \
+         is not a flexure joint (PRD §7.3 BT1, task #5476).\n\
+         Measured pre-α baseline was exit 0 + \"All constraints satisfied.\" + only a \
+         W_FLEXURE_NON_JOINT_ARG warning — if that is what you are seeing, the \
+         `flexure_compliance(joint: Length)` placeholder signature is still in \
+         crates/reify-compiler/stdlib/flexures.ri.\n\
+         stdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("no matching overload for flexure_compliance"),
+        "stderr should carry the no-matching-overload Error for flexure_compliance \
+         (message text is contractually unchanged by this task), got: {stderr}"
+    );
+    assert!(
+        !stdout.contains("All constraints satisfied"),
+        "the misuse must NOT degrade to a clean run: `All constraints satisfied.` on \
+         stdout is exactly the pre-α behaviour PRD §G2 flips, got: {stdout}"
+    );
+}
+
+/// BT2 (positive): `flexure_compliance()` on a real `prb_*` ctor result stays
+/// exit 0 across the retarget.
+///
+/// MEASURED PRE-α BASELINE: exit 0, `All constraints satisfied.` (plus an
+/// unrelated W_FLEXURE_FATIGUE_CHECK_MISSING info line).  This is the
+/// regression pin that the ratchet tightens the type WITHOUT breaking the
+/// legitimate path.
+///
+/// PAIRED WITH BT1 — the two sides must move together.  The accessor's
+/// parameter type (`flexure_compliance(joint: FlexureJoint)` in
+/// `crates/reify-compiler/stdlib/flexures.ri`) and the `prb_*` ctors' result
+/// type (`StructureRef("FlexureJoint")`, from the `is_flexure_typed_fn` arm in
+/// `expr.rs`) must stay in exact agreement, because the overload filter compares
+/// them by equality.  A failure HERE while BT1 still passes means one side was
+/// changed without the other: the ratchet is rejecting real flexure joints, not
+/// just bare literals.  Widening BT1 without re-checking this test is exactly
+/// the mistake this pin exists to catch.
+#[test]
+fn check_flexure_compliance_prb_joint_exits_success() {
+    let (status, stdout, stderr) = common::run_subcommand(
+        "check",
+        &common::fixture_path("flexure_compliance_prb_joint.ri"),
+    );
+
+    assert!(
+        status.success(),
+        "reify check must exit 0 for flexure_compliance() applied to a genuine \
+         prb_notch_circular joint (PRD §7.3 BT2, task #5476) — the ratchet must \
+         reject bare literals WITHOUT rejecting real flexure joints.\n\
+         stdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stdout.contains("All constraints satisfied"),
+        "stdout should contain 'All constraints satisfied', got: {stdout}\nstderr: {stderr}"
+    );
+}
