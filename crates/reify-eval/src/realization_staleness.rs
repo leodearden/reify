@@ -177,9 +177,12 @@ mod tests {
     use reify_core::{
         ComputeNodeId, ConstraintNodeId, ContentHash, RealizationNodeId, Type, ValueCellId,
     };
-    use reify_ir::{CompiledExpr, PersistentMap, Value, ValueMap};
+    use reify_ir::{CompiledExpr, DeterminacyState, PersistentMap, Value, ValueMap};
 
-    use super::stale_realization_entities;
+    use super::{
+        ScopedClassification, compute_changed_realizations, compute_changed_realizations_scoped,
+        stale_realization_entities,
+    };
     use crate::cache::NodeId;
     use crate::graph::EvaluationGraph;
 
@@ -380,22 +383,38 @@ mod tests {
         cell: &ValueCellId,
         input_cone_hash: Option<[u8; 32]>,
     ) -> EvaluationGraph {
+        let mut graph = EvaluationGraph::default();
+        insert_realization_reading(&mut graph, rid, std::slice::from_ref(cell), input_cone_hash);
+        graph
+    }
+
+    /// Insert `rid` into `graph` with one `Primitive{Box}` op per cell in
+    /// `cells`, each reading its cell through a `ValueRef` width arg.
+    fn insert_realization_reading(
+        graph: &mut EvaluationGraph,
+        rid: &reify_core::RealizationNodeId,
+        cells: &[ValueCellId],
+        input_cone_hash: Option<[u8; 32]>,
+    ) {
         use crate::graph::RealizationNodeData;
         use reify_compiler::{CompiledGeometryOp, PrimitiveKind};
         use reify_ir::ReprKind;
 
-        let mut graph = EvaluationGraph::default();
+        let operations = cells
+            .iter()
+            .map(|cell| CompiledGeometryOp::Primitive {
+                kind: PrimitiveKind::Box,
+                args: vec![(
+                    "width".to_string(),
+                    CompiledExpr::value_ref(cell.clone(), Type::dimensionless_scalar()),
+                )],
+            })
+            .collect();
         graph.realizations.insert(
             rid.clone(),
             RealizationNodeData {
                 id: rid.clone(),
-                operations: vec![CompiledGeometryOp::Primitive {
-                    kind: PrimitiveKind::Box,
-                    args: vec![(
-                        "width".to_string(),
-                        CompiledExpr::value_ref(cell.clone(), Type::dimensionless_scalar()),
-                    )],
-                }],
+                operations,
                 content_hash: ContentHash::of_str(&rid.to_string()),
                 produced_repr: ReprKind::BRep,
                 produced_kernel: None,
@@ -403,7 +422,6 @@ mod tests {
                 input_cone_hash,
             },
         );
-        graph
     }
 
     /// Long-lived empty meta-map for the β helper tests.
@@ -632,5 +650,204 @@ mod tests {
              now DIFFERS the fold gained op-identity coverage; relax the edit_source \
              carry-forward skip rather than weakening this lock."
         );
+    }
+
+    // ------------------------------------------------------------------
+    // #6086: `compute_changed_realizations_scoped`, edit_param's fold
+    // restricted to the realizations the edit can have moved. Its contract is
+    // EQUALITY with the unscoped fold: a realization it skips but the full
+    // fold reports is under-eviction, which serves stale geometry.
+    // ------------------------------------------------------------------
+
+    fn cell(member: &str) -> ValueCellId {
+        ValueCellId::new("E", member)
+    }
+
+    fn values_of(bindings: &[(&ValueCellId, f64)]) -> ValueMap {
+        let mut values = ValueMap::default();
+        for (cell, v) in bindings {
+            values.insert((*cell).clone(), Value::Real(*v));
+        }
+        values
+    }
+
+    /// The pre-edit snapshot values `values` stand for.
+    fn snapshot_of(values: &ValueMap) -> PersistentMap<ValueCellId, (Value, DeterminacyState)> {
+        let mut snapshot = PersistentMap::default();
+        for (cell, value) in values.iter() {
+            snapshot.insert(cell.clone(), (value.clone(), DeterminacyState::Determined));
+        }
+        snapshot
+    }
+
+    /// α's write at execution: every realization's stored hash becomes the
+    /// fold over `values`.
+    fn stamp_all(graph: &mut EvaluationGraph, values: &ValueMap) {
+        let ctx = crate::eval_ctx_with_meta(values, &[], &NO_META);
+        let ids: Vec<RealizationNodeId> =
+            graph.realizations.iter().map(|(r, _)| r.clone()).collect();
+        for rid in ids {
+            let node = graph.realizations.get_mut(&rid).unwrap();
+            node.input_cone_hash = Some(
+                crate::engine_build::compute_realization_upstream_values_hash_from_ops(
+                    &node.operations,
+                    &ctx,
+                ),
+            );
+        }
+    }
+
+    fn scoped(
+        graph: &EvaluationGraph,
+        values: &ValueMap,
+        prior: &ValueMap,
+        pending: &HashSet<RealizationNodeId>,
+    ) -> ScopedClassification {
+        let ctx = crate::eval_ctx_with_meta(values, &[], &NO_META);
+        compute_changed_realizations_scoped(graph, &ctx, values, &snapshot_of(prior), pending)
+    }
+
+    #[test]
+    fn a_realization_whose_read_cell_value_changed_is_folded_and_reported() {
+        let wa = cell("wa");
+        let before = values_of(&[(&wa, 10.0)]);
+        let mut graph = EvaluationGraph::default();
+        insert_realization_reading(&mut graph, &rid("A"), &[wa.clone()], None);
+        stamp_all(&mut graph, &before);
+
+        let after = values_of(&[(&wa, 20.0)]);
+        let result = scoped(&graph, &after, &before, &HashSet::new());
+
+        assert_eq!(result.changed, HashSet::from([rid("A")]));
+        assert_eq!(result.folded, 1);
+    }
+
+    /// The cost claim: a realization none of whose read cells changed value
+    /// is neither reported nor folded.
+    #[test]
+    fn a_realization_whose_read_cells_are_value_identical_is_not_folded() {
+        let (wa, wb) = (cell("wa"), cell("wb"));
+        let before = values_of(&[(&wa, 10.0), (&wb, 20.0)]);
+        let mut graph = EvaluationGraph::default();
+        insert_realization_reading(&mut graph, &rid("A"), &[wa.clone()], None);
+        insert_realization_reading(&mut graph, &rid("B"), &[wb.clone()], None);
+        stamp_all(&mut graph, &before);
+
+        let after = values_of(&[(&wa, 30.0), (&wb, 20.0)]);
+        let result = scoped(&graph, &after, &before, &HashSet::new());
+
+        assert_eq!(result.changed, HashSet::from([rid("A")]));
+        assert_eq!(
+            result.folded, 1,
+            "B's read cell is value-identical: no fold"
+        );
+    }
+
+    /// PRD §11.2: never executed means conservatively CHANGED, and there is
+    /// no stored hash to compare a fold against.
+    #[test]
+    fn a_realization_with_no_stored_hash_is_changed_without_a_fold() {
+        let wa = cell("wa");
+        let values = values_of(&[(&wa, 10.0)]);
+        let mut graph = EvaluationGraph::default();
+        insert_realization_reading(&mut graph, &rid("A"), &[wa.clone()], None);
+
+        let result = scoped(&graph, &values, &values, &HashSet::new());
+
+        assert_eq!(result.changed, HashSet::from([rid("A")]));
+        assert_eq!(result.folded, 0);
+    }
+
+    /// β's cumulative "since the last EXECUTION" semantics: a realization an
+    /// earlier edit moved stays reported through an edit that touches none of
+    /// its cells, and drops out once a build re-stamps its hash.
+    #[test]
+    fn a_pending_realization_is_refolded_even_if_this_edit_did_not_touch_it() {
+        let wa = cell("wa");
+        let executed = values_of(&[(&wa, 10.0)]);
+        let mut graph = EvaluationGraph::default();
+        insert_realization_reading(&mut graph, &rid("A"), &[wa.clone()], None);
+        stamp_all(&mut graph, &executed);
+        let moved = values_of(&[(&wa, 20.0)]);
+        let pending = HashSet::from([rid("A")]);
+
+        let still_stale = scoped(&graph, &moved, &moved, &pending);
+
+        assert_eq!(still_stale.changed, pending, "not rebuilt since wa moved");
+        assert_eq!(still_stale.folded, 1);
+
+        stamp_all(&mut graph, &moved);
+        let rebuilt = scoped(&graph, &moved, &moved, &pending);
+
+        assert!(rebuilt.changed.is_empty(), "the rebuild retired it");
+    }
+
+    #[test]
+    fn a_pending_id_absent_from_the_graph_is_dropped() {
+        let wa = cell("wa");
+        let values = values_of(&[(&wa, 10.0)]);
+        let mut graph = EvaluationGraph::default();
+        insert_realization_reading(&mut graph, &rid("A"), &[wa.clone()], None);
+        stamp_all(&mut graph, &values);
+
+        let result = scoped(&graph, &values, &values, &HashSet::from([rid("Ghost")]));
+
+        assert!(result.changed.is_empty(), "got {:?}", result.changed);
+    }
+
+    /// The safety contract as a differential over an edit sequence: at every
+    /// step the scoped set equals the unscoped fold. `D` starts never
+    /// executed; `C` reads two cells.
+    #[test]
+    fn scoped_equals_unscoped_over_an_edit_sequence() {
+        let cells = [cell("c0"), cell("c1"), cell("c2"), cell("c3")];
+        let mut graph = EvaluationGraph::default();
+        insert_realization_reading(&mut graph, &rid("A"), &[cells[0].clone()], None);
+        insert_realization_reading(&mut graph, &rid("B"), &[cells[1].clone()], None);
+        insert_realization_reading(
+            &mut graph,
+            &rid("C"),
+            &[cells[0].clone(), cells[2].clone()],
+            None,
+        );
+        let mut values = values_of(&[
+            (&cells[0], 1.0),
+            (&cells[1], 2.0),
+            (&cells[2], 3.0),
+            (&cells[3], 4.0),
+        ]);
+        stamp_all(&mut graph, &values);
+        insert_realization_reading(&mut graph, &rid("D"), &[cells[3].clone()], None);
+
+        // (cell index, new value, build after the edit)
+        let steps: [(usize, f64, bool); 9] = [
+            (0, 5.0, false),
+            (1, 2.0, false),
+            (2, 9.0, false),
+            (3, 4.0, false),
+            (1, 6.0, true),
+            (0, 5.0, false),
+            (3, 8.0, false),
+            (2, 9.0, true),
+            (0, 1.0, false),
+        ];
+        let mut pending = HashSet::new();
+        let mut skipped_a_fold = false;
+        for (step, (index, value, build_after)) in steps.into_iter().enumerate() {
+            let prior = values.clone();
+            values.insert(cells[index].clone(), Value::Real(value));
+
+            let result = scoped(&graph, &values, &prior, &pending);
+            let ctx = crate::eval_ctx_with_meta(&values, &[], &NO_META);
+            let unscoped = compute_changed_realizations(&graph.realizations, &graph, &ctx);
+
+            assert_eq!(result.changed, unscoped, "step {step}: scoped ≠ unscoped");
+            skipped_a_fold |= result.folded < graph.realizations.len();
+            pending = result.changed;
+            if build_after {
+                stamp_all(&mut graph, &values);
+            }
+        }
+        assert!(skipped_a_fold, "the sequence must exercise a skipped fold");
     }
 }

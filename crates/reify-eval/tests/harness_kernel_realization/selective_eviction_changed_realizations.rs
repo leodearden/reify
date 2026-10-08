@@ -944,3 +944,143 @@ fn edit_source_evicts_only_the_compute_node_downstream_of_the_moved_realization(
          wholesale flush it exists to replace."
     );
 }
+
+// ── #6086: edit_param's scoped classification fold ─────────────────────
+//
+// `compute_changed_realizations_scoped` folds only realizations an edit can
+// have moved: one with a read cell whose VALUE changed, one already in the
+// previous changed set, or one never executed. Its contract is equality with
+// the unscoped fold (debug-asserted at the edit_param compare site); these
+// pin the cost claim and the solver case a dirty-cone scope would miss.
+
+/// The cost claim, end to end: a display-only edit folds NO realization, and
+/// an edit of `wa` folds exactly `body_a`'s.
+#[test]
+fn edit_param_classification_fold_visits_only_reachable_realizations() {
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!(
+            "skipping edit_param_classification_fold_visits_only_reachable_realizations: \
+             OCCT not available"
+        );
+        return;
+    }
+
+    let compiled = reify_test_support::parse_and_compile_with_stdlib(TWO_BODY_SRC);
+    let mut engine = make_occt_engine();
+    let _ = engine.eval(&compiled);
+    let _ = engine.build(&compiled, ExportFormat::Step);
+    let ra = realization_for_cell(&engine, "TwoBody", "body_a");
+    let rb = realization_for_cell(&engine, "TwoBody", "body_b");
+    {
+        let graph = &engine.snapshot().unwrap().graph;
+        for rid in [&ra, &rb] {
+            assert!(
+                graph
+                    .realizations
+                    .get(rid)
+                    .unwrap()
+                    .input_cone_hash
+                    .is_some(),
+                "premise: build() must stamp {rid}'s input_cone_hash, or every \
+                 realization is changed-without-a-fold and the count is vacuous"
+            );
+        }
+    }
+
+    engine
+        .edit_param(
+            ValueCellId::new("TwoBody", "label_pad"),
+            Value::length(0.009),
+        )
+        .expect("edit_param on TwoBody.label_pad must succeed");
+    assert_eq!(
+        engine.last_input_cone_fold_count(),
+        0,
+        "label_pad feeds no realization: nothing to fold"
+    );
+
+    engine
+        .edit_param(ValueCellId::new("TwoBody", "wa"), Value::length(0.030))
+        .expect("edit_param on TwoBody.wa must succeed");
+    assert_eq!(
+        engine.last_input_cone_fold_count(),
+        1,
+        "only body_a reads wa: body_b's fold must be skipped"
+    );
+    assert_eq!(engine.last_changed_realizations(), &HashSet::from([ra]));
+}
+
+/// A solver-owned `auto` cell is not a dependent of the param that moves it,
+/// so a scope taken from the edited param's static dirty cone would skip
+/// `body_a` here and serve stale geometry. The value-diff scope must not.
+#[test]
+fn solver_moved_auto_cell_still_reports_its_reading_body() {
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!(
+            "skipping solver_moved_auto_cell_still_reports_its_reading_body: OCCT not available"
+        );
+        return;
+    }
+
+    const SOLVED_SRC: &str = r#"
+structure Solved {
+    param target: Length = 10mm
+    param w: Length = auto
+    constraint w == target * 2
+    let body_a = box(w, 5mm, 5mm)
+    let body_b = box(7mm, 5mm, 5mm)
+}
+"#;
+    let compiled = reify_test_support::parse_and_compile_with_stdlib(SOLVED_SRC);
+    let mut engine = reify_eval::Engine::new(
+        Box::new(reify_constraints::SimpleConstraintChecker),
+        Some(Box::new(reify_kernel_occt::OcctKernelHandle::spawn())),
+    )
+    .with_solver(Box::new(reify_constraints::DimensionalSolver));
+    let _ = engine.eval(&compiled);
+    let _ = engine.build(&compiled, ExportFormat::Step);
+    let ra = realization_for_cell(&engine, "Solved", "body_a");
+    let rb = realization_for_cell(&engine, "Solved", "body_b");
+    let w = ValueCellId::new("Solved", "w");
+    let solved_w = |engine: &reify_eval::Engine| {
+        engine
+            .snapshot()
+            .unwrap()
+            .values
+            .get(&w)
+            .and_then(|(v, _)| v.as_f64())
+    };
+    let w_before = solved_w(&engine);
+    assert!(
+        engine
+            .snapshot()
+            .unwrap()
+            .graph
+            .realizations
+            .get(&ra)
+            .unwrap()
+            .input_cone_hash
+            .is_some(),
+        "premise: build() must stamp body_a's input_cone_hash"
+    );
+
+    engine
+        .edit_param(ValueCellId::new("Solved", "target"), Value::length(0.015))
+        .expect("edit_param on Solved.target must succeed");
+
+    let w_after = solved_w(&engine);
+    assert!(
+        w_before.is_some() && w_after.is_some() && w_before != w_after,
+        "premise: the solver must move w when target moves (before {w_before:?}, after \
+         {w_after:?}); otherwise this test does not exercise a solver-moved cell"
+    );
+    assert!(
+        engine.last_changed_realizations().contains(&ra),
+        "body_a reads the solver-moved w, so it must be reported changed; got {:?}",
+        engine.last_changed_realizations()
+    );
+    assert!(
+        !engine.last_changed_realizations().contains(&rb),
+        "body_b reads only literals"
+    );
+}
