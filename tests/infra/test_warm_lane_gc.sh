@@ -529,9 +529,12 @@ assert "C5: _merge-verify protected marker intact" \
 # Block D — always-reclaim: dirty POOL LANE reclaimed, dirty ORPHAN preserved
 # Under the task-5326 always-reclaim policy, a FREE pool lane whose live-consumer
 # flock is free is reclaimed UNCONDITIONALLY — dirty tracked changes no longer
-# preserve it (acquire_lane always re-seeds; committed work lives on the branch
-# ref; reset touches only target/). A dirty ORPHAN cold worktree (Pass 2) is
-# STILL preserved by the unchanged _is_reclaimable predicate.
+# preserve it (acquire_lane always re-seeds; committed work lives on the
+# refs/heads/task/NNNN ref and is never moved; the reset REPLACES only target/,
+# and its sole effect on the source tree is an mtime re-stamp — never a content
+# change, never a deletion: sizing-lifecycle Invariant T1, pinned by
+# tests/infra/test_seed_warm_lane.sh Block X). A dirty ORPHAN cold worktree
+# (Pass 2) is STILL preserved by the unchanged _is_reclaimable predicate.
 # ──────────────────────────────────────────────────────────────────────────────
 echo ""
 echo "--- Block D: always-reclaim (dirty pool lane reset, dirty orphan preserved) ---"
