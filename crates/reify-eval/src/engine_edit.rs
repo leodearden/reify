@@ -160,8 +160,8 @@ use crate::engine_admin::{ParamOverrideRejection, validate_param_override};
 use crate::engine_helpers::collect_member_list;
 use crate::graph::{ConstraintNodeData, EvaluationGraph, GuardedGroupInfo};
 use crate::realization_staleness::{
-    compute_changed_realizations, compute_changed_realizations_scoped, realization_cone_seeds,
-    stale_realization_entities,
+    ClassificationBaseline, compute_changed_realizations, compute_changed_realizations_scoped,
+    realization_cone_seeds, stale_realization_entities,
 };
 use crate::warm_pool::WarmStatePool;
 use crate::{
@@ -1184,9 +1184,15 @@ impl Engine {
 
         // Clone snapshot and extract references (O(1) via PersistentMap)
         let parent_id = state.snapshot.id;
-        // #6086: the pre-edit values the scoped classification diffs against.
-        // Taken before any value mutation; O(1) via PersistentMap.
+        // #6086: the pre-edit values the scoped classification diffs against,
+        // and the values this snapshot's stored hashes were last reconciled
+        // against. Taken before any value mutation; O(1) via PersistentMap.
         let prior_values = state.snapshot.values.clone();
+        let baseline_values = self
+            .classification_baseline
+            .as_ref()
+            .and_then(|baseline| baseline.values_for(parent_id))
+            .cloned();
         // γ (#4730): `edit_param` neither adds nor removes a realization, so
         // its eviction set has no removed term. Asserted at the compare site.
         let prior_realization_count = state.snapshot.graph.realizations.len();
@@ -2923,8 +2929,14 @@ impl Engine {
             let ctx = crate::eval_ctx_with_meta(&values, &functions, &self.meta_map);
             let state = self.eval_state.as_ref().unwrap();
             let graph = &state.snapshot.graph;
-            let scoped =
-                compute_changed_realizations_scoped(graph, &ctx, &values, &prior_values, &pending);
+            let scoped = compute_changed_realizations_scoped(
+                graph,
+                &ctx,
+                &values,
+                &prior_values,
+                baseline_values.as_ref(),
+                &pending,
+            );
             #[cfg(debug_assertions)]
             debug_assert_eq!(
                 scoped.changed,
@@ -2934,6 +2946,10 @@ impl Engine {
             );
             self.last_input_cone_fold_count = scoped.folded;
             self.last_changed_realizations = scoped.changed;
+            self.classification_baseline = Some(ClassificationBaseline::new(
+                state.snapshot.id,
+                &state.snapshot.values,
+            ));
             // Reuse the installed reverse index instead of rebuilding an
             // O(graph) one per edit, but ONLY under the two admissibility
             // proofs the helper documents (amend, review round 1 —
@@ -4763,6 +4779,10 @@ impl Engine {
             changed.extend(changed_realizations.iter().cloned());
             changed.extend(added_realizations.iter().cloned());
             self.last_changed_realizations = changed;
+            self.classification_baseline = Some(ClassificationBaseline::new(
+                new_snapshot.id,
+                &new_snapshot.values,
+            ));
             // Propagate over the NEW graph. `prebuilt_index` is `None` — the
             // unconditional rebuild — because neither admissibility proof the
             // helper accepts holds here: `new_reverse_index` was built near

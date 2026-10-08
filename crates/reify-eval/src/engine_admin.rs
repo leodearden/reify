@@ -298,6 +298,7 @@ impl Engine {
             last_diff_value_cells: None,
             last_changed_realizations: std::collections::HashSet::new(),
             last_input_cone_fold_count: 0,
+            classification_baseline: None,
             last_param_override_type_kind_rejections: 0,
             last_param_override_dimension_rejections: 0,
             last_sub_component_unknown_structure_errors: 0,

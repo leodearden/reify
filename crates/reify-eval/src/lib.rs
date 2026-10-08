@@ -650,6 +650,12 @@ pub struct Engine {
     /// `Engine::last_input_cone_fold_count()` in `engine_admin.rs`; the field
     /// itself is always present so the `engine_edit.rs` writers need no gate.
     last_input_cone_fold_count: usize,
+    /// The snapshot values `edit_param`'s scoped classification (#6086)
+    /// measures out-of-edit value writes against. Recorded by each edit's
+    /// classification and anchored before the first `input_cone_hash` stamp on
+    /// a snapshot no edit classified; see
+    /// `realization_staleness::ClassificationBaseline`.
+    classification_baseline: Option<crate::realization_staleness::ClassificationBaseline>,
     /// Count of param-override rejections due to `TypeKindMismatch` during the
     /// most recent `eval()` or `eval_cached()` call. Reset to 0 at the start
     /// of each call. Incremented inside `emit_param_override_rejection_warning`

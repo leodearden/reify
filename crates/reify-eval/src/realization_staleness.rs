@@ -8,7 +8,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use reify_core::{RealizationNodeId, ValueCellId};
+use reify_core::{RealizationNodeId, SnapshotId, ValueCellId};
 use reify_ir::{DeterminacyState, PersistentMap, Value, ValueMap};
 
 use crate::cache::NodeId;
@@ -92,6 +92,51 @@ pub(crate) fn compute_changed_realizations(
         .collect()
 }
 
+/// A snapshot's values, as `Snapshot::values` holds them.
+pub(crate) type SnapshotValues = PersistentMap<ValueCellId, (Value, DeterminacyState)>;
+
+/// The values the stored `input_cone_hash`es on one snapshot's graph were last
+/// reconciled against (#6086): the snapshot's values at the edit
+/// classification that installed it or, for a snapshot no edit classified (a
+/// cold `eval` builds a fresh graph with no stored hash), at the first stamp
+/// on it. [`compute_changed_realizations_scoped`] treats a cell whose value
+/// has moved since then as moved by the edit.
+#[derive(Debug, Clone)]
+pub(crate) struct ClassificationBaseline {
+    snapshot: SnapshotId,
+    values: SnapshotValues,
+}
+
+impl ClassificationBaseline {
+    /// `values` as the baseline of `snapshot`, recorded at an edit's
+    /// classification.
+    pub(crate) fn new(snapshot: SnapshotId, values: &SnapshotValues) -> Self {
+        Self {
+            snapshot,
+            values: values.clone(),
+        }
+    }
+
+    /// Anchors `snapshot`'s baseline at its current `values` unless one is
+    /// already recorded for it. Every `input_cone_hash` stamp calls this
+    /// first, so no stamp on a snapshot predates its baseline.
+    pub(crate) fn anchor_before_stamp(
+        baseline: &mut Option<Self>,
+        snapshot: SnapshotId,
+        values: &SnapshotValues,
+    ) {
+        if baseline.as_ref().is_none_or(|b| b.snapshot != snapshot) {
+            *baseline = Some(Self::new(snapshot, values));
+        }
+    }
+
+    /// The baseline values of `snapshot`; `None` if this baseline belongs to
+    /// another snapshot.
+    pub(crate) fn values_for(&self, snapshot: SnapshotId) -> Option<&SnapshotValues> {
+        (self.snapshot == snapshot).then_some(&self.values)
+    }
+}
+
 /// What [`compute_changed_realizations_scoped`] classified, and what it cost.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ScopedClassification {
@@ -107,34 +152,49 @@ pub(crate) struct ScopedClassification {
 /// the realizations this edit can have moved.
 ///
 /// A realization is folded iff it is in `pending` (the previous edit's
-/// changed set) or one of the cells its ops read changed VALUE between
-/// `prior_values` (the pre-edit snapshot) and `values`. One with no stored
-/// hash is changed without a fold (PRD §11.2); every other one is skipped.
-/// The fold is the canonical one (PRD D1).
+/// changed set) or one of the cells its ops read MOVED: its value in
+/// `values` differs from `prior_values` (the pre-edit snapshot), or its
+/// pre-edit value differs from `baseline`. One with no stored hash is changed
+/// without a fold (PRD §11.2); every other one is skipped. With no `baseline`
+/// for the pre-edit snapshot, every stored hash is folded. The fold is the
+/// canonical one (PRD D1).
 ///
 /// # Why the result equals the full fold
 ///
 /// The fold evaluates exactly the op args whose cells
-/// `deps::extract_realization_dependencies` reports, so a realization none
-/// of whose read cells moved folds to the same hash it did before this edit.
-/// By induction over edits, a realization whose stored hash differed from
-/// that earlier fold was in the previous changed set, i.e. in `pending`.
-/// So a skipped realization's stored hash still equals its fold: it is
-/// unchanged. The scope is a value diff, not the edited param's static dirty
-/// cone, because a solver-owned `auto` cell moves without being a dependent
-/// of the param that moved it. `edit_param` debug-asserts this equality.
+/// `deps::extract_realization_dependencies` reports, so a realization folds
+/// to its stored hash whenever each of its read cells holds the value it held
+/// at the stamp. Stamps happen only while building, at the values the
+/// snapshot held between `baseline` and the edit: the baseline is recorded
+/// at the last classification, or before the first stamp on a fresh graph.
+/// A snapshot value can change in that window without an edit, because the
+/// build-time passes write it directly (`redispatch_geometry_consuming_compute_nodes`
+/// writes `@optimized` outputs, `refresh_and_gate_demanded_realizations`
+/// refreshes demanded `let`s); any such write leaves the cell's pre-edit
+/// value different from `baseline`, so it counts as moved. A realization none
+/// of whose read cells moved therefore still holds a stamp of its current
+/// read values — unless it was already stale at the last classification, and
+/// then it is in `pending`. That rests on one assumption: no build writes a
+/// cell and then writes it back to its baseline value after a stamp read it.
+///
+/// The scope is a value diff, not the edited param's static dirty cone,
+/// because a solver-owned `auto` cell moves without being a dependent of the
+/// param that moved it. `edit_param` debug-asserts equality with the full fold.
 pub(crate) fn compute_changed_realizations_scoped(
     graph: &EvaluationGraph,
     ctx: &reify_expr::EvalContext<'_>,
     values: &ValueMap,
-    prior_values: &PersistentMap<ValueCellId, (Value, DeterminacyState)>,
+    prior_values: &SnapshotValues,
+    baseline: Option<&SnapshotValues>,
     pending: &HashSet<RealizationNodeId>,
 ) -> ScopedClassification {
     let mut moved_by_cell: HashMap<ValueCellId, bool> = HashMap::new();
     let mut cell_moved = |cell: &ValueCellId| {
-        *moved_by_cell
-            .entry(cell.clone())
-            .or_insert_with(|| values.get(cell) != prior_values.get(cell).map(|(v, _)| v))
+        *moved_by_cell.entry(cell.clone()).or_insert_with(|| {
+            let pre_edit = prior_values.get(cell).map(|(v, _)| v);
+            let at_baseline = baseline.map(|b| b.get(cell).map(|(v, _)| v));
+            values.get(cell) != pre_edit || at_baseline.is_some_and(|v| v != pre_edit)
+        })
     };
     let mut changed = HashSet::new();
     let mut folded = 0;
@@ -144,6 +204,7 @@ pub(crate) fn compute_changed_realizations_scoped(
             continue;
         };
         let reachable = pending.contains(rid)
+            || baseline.is_none()
             || crate::deps::extract_realization_dependencies(&node.operations)
                 .reads
                 .iter()
@@ -881,14 +942,100 @@ mod tests {
         }
     }
 
+    /// The scoped classification of an edit from `prior` to `values` with no
+    /// value written outside an edit since the last classification, so the
+    /// baseline is the pre-edit snapshot itself.
     fn scoped(
         graph: &EvaluationGraph,
         values: &ValueMap,
         prior: &ValueMap,
         pending: &HashSet<RealizationNodeId>,
     ) -> ScopedClassification {
+        scoped_since(graph, values, prior, Some(prior), pending)
+    }
+
+    fn scoped_since(
+        graph: &EvaluationGraph,
+        values: &ValueMap,
+        prior: &ValueMap,
+        baseline: Option<&ValueMap>,
+        pending: &HashSet<RealizationNodeId>,
+    ) -> ScopedClassification {
         let ctx = crate::eval_ctx_with_meta(values, &[], &NO_META);
-        compute_changed_realizations_scoped(graph, &ctx, values, &snapshot_of(prior), pending)
+        let baseline = baseline.map(snapshot_of);
+        compute_changed_realizations_scoped(
+            graph,
+            &ctx,
+            values,
+            &snapshot_of(prior),
+            baseline.as_ref(),
+            pending,
+        )
+    }
+
+    fn unscoped(graph: &EvaluationGraph, values: &ValueMap) -> HashSet<RealizationNodeId> {
+        let ctx = crate::eval_ctx_with_meta(values, &[], &NO_META);
+        compute_changed_realizations(&graph.realizations, graph, &ctx)
+    }
+
+    /// A build-time pass (an `@optimized` redispatch, a demanded-`let`
+    /// refresh) writes a cell after a stamp read it. The next edit leaves that
+    /// cell alone, yet the stamp is stale: the baseline sees the write.
+    #[test]
+    fn a_cell_a_build_wrote_after_the_stamp_counts_as_moved() {
+        let (wa, wd) = (cell("wa"), cell("wd"));
+        let classified = values_of(&[(&wa, 10.0), (&wd, 1.0)]);
+        let mut graph = EvaluationGraph::default();
+        insert_realization_reading(&mut graph, &rid("A"), std::slice::from_ref(&wa), None);
+        stamp_all(&mut graph, &classified);
+        let built = values_of(&[(&wa, 40.0), (&wd, 1.0)]);
+
+        let edited = values_of(&[(&wa, 40.0), (&wd, 2.0)]);
+        let result = scoped_since(&graph, &edited, &built, Some(&classified), &HashSet::new());
+
+        assert_eq!(result.changed, HashSet::from([rid("A")]));
+        assert_eq!(result.changed, unscoped(&graph, &edited));
+    }
+
+    /// No baseline for the pre-edit snapshot bounds nothing: every stored hash
+    /// is folded, which is the full fold.
+    #[test]
+    fn without_a_baseline_every_stored_hash_is_folded() {
+        let (wa, wb) = (cell("wa"), cell("wb"));
+        let values = values_of(&[(&wa, 10.0), (&wb, 20.0)]);
+        let mut graph = EvaluationGraph::default();
+        insert_realization_reading(&mut graph, &rid("A"), std::slice::from_ref(&wa), None);
+        insert_realization_reading(&mut graph, &rid("B"), std::slice::from_ref(&wb), None);
+        stamp_all(&mut graph, &values);
+
+        let result = scoped_since(&graph, &values, &values, None, &HashSet::new());
+
+        assert_eq!(result.folded, 2);
+        assert!(result.changed.is_empty());
+    }
+
+    #[test]
+    fn a_baseline_is_anchored_once_per_snapshot() {
+        use super::ClassificationBaseline;
+        use reify_core::SnapshotId;
+
+        let wa = cell("wa");
+        let first = snapshot_of(&values_of(&[(&wa, 1.0)]));
+        let later = snapshot_of(&values_of(&[(&wa, 2.0)]));
+        let mut baseline = None;
+
+        ClassificationBaseline::anchor_before_stamp(&mut baseline, SnapshotId(1), &first);
+        ClassificationBaseline::anchor_before_stamp(&mut baseline, SnapshotId(1), &later);
+        let anchored = baseline.clone().expect("anchored");
+        assert_eq!(anchored.values_for(SnapshotId(1)), Some(&first));
+        assert_eq!(anchored.values_for(SnapshotId(2)), None);
+
+        ClassificationBaseline::anchor_before_stamp(&mut baseline, SnapshotId(2), &later);
+        assert_eq!(
+            baseline.expect("re-anchored").values_for(SnapshotId(2)),
+            Some(&later),
+            "a stamp on a new snapshot re-anchors"
+        );
     }
 
     #[test]
@@ -1033,5 +1180,82 @@ mod tests {
             }
         }
         assert!(skipped_a_fold, "the sequence must exercise a skipped fold");
+    }
+
+    /// The safety contract across builds that write values: at every edit
+    /// the scoped set equals the unscoped fold, including edits that touch
+    /// none of a stale realization's cells.
+    #[test]
+    fn scoped_equals_unscoped_when_builds_write_values_between_edits() {
+        enum Event {
+            Edit(usize, f64),
+            Stamp(&'static [&'static str]),
+            BuildWrite(usize, f64),
+        }
+        use Event::{BuildWrite, Edit, Stamp};
+
+        let cells = [cell("c0"), cell("c1"), cell("c2")];
+        let mut graph = EvaluationGraph::default();
+        insert_realization_reading(&mut graph, &rid("A"), std::slice::from_ref(&cells[0]), None);
+        insert_realization_reading(&mut graph, &rid("B"), std::slice::from_ref(&cells[1]), None);
+        insert_realization_reading(
+            &mut graph,
+            &rid("C"),
+            &[cells[0].clone(), cells[2].clone()],
+            None,
+        );
+        let mut values = values_of(&[(&cells[0], 1.0), (&cells[1], 2.0), (&cells[2], 3.0)]);
+        stamp_all(&mut graph, &values);
+        let mut baseline = values.clone();
+
+        let events = [
+            BuildWrite(1, 7.0),
+            Edit(2, 5.0),
+            Stamp(&["B", "C"]),
+            BuildWrite(0, 9.0),
+            Edit(1, 7.0),
+            Stamp(&["A", "B", "C"]),
+            Edit(2, 6.0),
+        ];
+        let mut pending = HashSet::new();
+        let mut caught_a_build_write = false;
+        for (step, event) in events.into_iter().enumerate() {
+            match event {
+                Edit(index, value) => {
+                    let prior = values.clone();
+                    values.insert(cells[index].clone(), Value::Real(value));
+                    let result = scoped_since(&graph, &values, &prior, Some(&baseline), &pending);
+                    let edit_only = scoped(&graph, &values, &prior, &pending);
+
+                    assert_eq!(
+                        result.changed,
+                        unscoped(&graph, &values),
+                        "step {step}: scoped ≠ unscoped"
+                    );
+                    caught_a_build_write |= edit_only.changed != result.changed;
+                    pending = result.changed;
+                    baseline = values.clone();
+                }
+                Stamp(names) => {
+                    let ctx = crate::eval_ctx_with_meta(&values, &[], &NO_META);
+                    for name in names {
+                        let node = graph.realizations.get_mut(&rid(name)).unwrap();
+                        node.input_cone_hash = Some(
+                            crate::engine_build::compute_realization_upstream_values_hash_from_ops(
+                                &node.operations,
+                                &ctx,
+                            ),
+                        );
+                    }
+                }
+                BuildWrite(index, value) => {
+                    values.insert(cells[index].clone(), Value::Real(value));
+                }
+            }
+        }
+        assert!(
+            caught_a_build_write,
+            "the sequence must exercise a stale stamp only the baseline reveals"
+        );
     }
 }

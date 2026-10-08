@@ -31,6 +31,7 @@ use crate::primitive_attribute_seed::{
     seed_primitive_attributes_for_handle,
 };
 use crate::realization_cache::{ConversionSlot, NO_OPTIONS, RealizationCache};
+use crate::realization_staleness::ClassificationBaseline;
 use crate::sweep_classifier::{
     SweptKind, SweptKindTable, classify_swept_body, swept_kind_to_sweep_params,
 };
@@ -3304,6 +3305,7 @@ impl Engine {
             last_diff_value_cells: _,        // edit_source diff snapshot
             last_changed_realizations: _, // edit-produced changed-realization set, read by the following build (task β/γ)
             last_input_cone_fold_count: _, // edit instrumentation (#6086): describes the last edit, not a build
+            classification_baseline: _, // #6086: spans builds by design; stamps anchor it, edits re-record it
             last_param_override_type_kind_rejections: _, // eval instrumentation
             last_param_override_dimension_rejections: _, // eval instrumentation
             last_sub_component_unknown_structure_errors: _, // eval instrumentation
@@ -3771,6 +3773,11 @@ impl Engine {
                             );
                             compute_realization_upstream_values_hash(realization, &ctx)
                         };
+                        ClassificationBaseline::anchor_before_stamp(
+                            &mut self.classification_baseline,
+                            state.snapshot.id,
+                            &state.snapshot.values,
+                        );
                         node.input_cone_hash = Some(input_cone_hash_snap);
                     }
                     // Arch §9.1 lines 868–877: kernel error on a realization →
@@ -4755,6 +4762,11 @@ impl Engine {
                             );
                             compute_realization_upstream_values_hash(realization, &ctx)
                         };
+                        ClassificationBaseline::anchor_before_stamp(
+                            &mut self.classification_baseline,
+                            state.snapshot.id,
+                            &state.snapshot.values,
+                        );
                         node.input_cone_hash = Some(input_cone_hash_out);
                     }
                     // Arch §9.1 lines 868–877: kernel error on a realization →
@@ -12322,6 +12334,11 @@ impl Engine {
             self.realization_cache.evict_family(entity);
         }
         if let Some(state) = self.eval_state.as_mut() {
+            ClassificationBaseline::anchor_before_stamp(
+                &mut self.classification_baseline,
+                state.snapshot.id,
+                &state.snapshot.values,
+            );
             for (real_id, new_hash) in hash_updates {
                 if let Some(node_data) = state.snapshot.graph.realizations.get_mut(&real_id) {
                     node_data.input_cone_hash = Some(new_hash);

@@ -33,8 +33,11 @@
 //!
 //! Each scenario also pins its expected HIT set, so the oracle can never pass
 //! vacuously by expecting a miss everywhere.
+//!
+//! The last test is not a regime pair: it pins the CLASSIFICATION the
+//! selective regime evicts by, across a value a build writes between edits.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::sync::{Arc, Mutex};
 
 use reify_compiler::{CompiledGeometryOp, CompiledModule, PrimitiveKind};
@@ -691,4 +694,97 @@ fn repeated_edits_without_build_stay_stale_until_rebuilt() {
     let rebuilt = pair.rebuild();
 
     assert_eq!(rebuilt.hit_entities(), entities(&["PartB"]));
+}
+
+// ── A value a build writes between edits ────────────────────────────────────
+
+/// `edit_param` folds only realizations whose read cells moved (#6086). A
+/// selective-demand tessellate refreshes the demanded `let` `sb`
+/// (`refresh_and_gate_demanded_realizations`) without re-stamping `b`, which
+/// reads `sb` but is not demanded. The next edit moves an unrelated param and
+/// leaves `sb` alone, yet `b`'s stored hash predates the refresh, so `b` is
+/// changed — exactly what the full fold reports.
+#[test]
+fn a_realization_reading_a_build_refreshed_let_is_changed_by_an_unrelated_edit() {
+    const SRC: &str = r#"pub structure Refreshed {
+    param w : Length = 10mm
+    param pad : Length = 1mm
+    let sa = w * 3
+    let sb = w * 2
+    let a = box(sa, sa, sa)
+    let b = box(sb, sb, sb)
+}"#;
+    let compiled = compile_source(SRC);
+    let body_a = NodeId::Realization(RealizationNodeId::new("Refreshed", 0));
+    let rid_b = RealizationNodeId::new("Refreshed", 1);
+    let body_b = NodeId::Realization(rid_b.clone());
+    let sb = ValueCellId::new("Refreshed", "sb");
+    let sb_value = |engine: &Engine| {
+        let snapshot = engine
+            .snapshot()
+            .expect("an evaluated engine has a snapshot");
+        snapshot.values.get(&sb).map(|(value, _)| value.clone())
+    };
+    let stamp_of_b = |engine: &Engine| {
+        let snapshot = engine
+            .snapshot()
+            .expect("an evaluated engine has a snapshot");
+        snapshot
+            .graph
+            .realizations
+            .get(&rid_b)
+            .and_then(|node| node.input_cone_hash)
+    };
+    let mut engine = Engine::new(
+        Box::new(SimpleConstraintChecker),
+        Some(Box::new(MockGeometryKernel::new())),
+    );
+    engine.set_build_scheduler(BuildScheduler::UnifiedDag);
+    engine.eval(&compiled);
+    engine.set_demand_selective([body_a.clone(), body_b.clone()]);
+    engine
+        .tessellate_snapshot(&compiled)
+        .expect("tessellate_snapshot needs a prior eval");
+    let b_stamped = stamp_of_b(&engine);
+    assert!(b_stamped.is_some(), "premise: the tessellate stamps b");
+
+    engine.set_demand_selective([body_a.clone()]);
+    let sb_at_stamp = sb_value(&engine);
+    engine
+        .edit_param(ValueCellId::new("Refreshed", "w"), mm(20.0))
+        .expect("edit_param(w) must succeed");
+    assert_eq!(
+        sb_value(&engine),
+        sb_at_stamp,
+        "premise: a hidden `sb` is not re-evaluated by the edit"
+    );
+
+    engine.set_demand_selective([body_a, NodeId::Value(sb.clone())]);
+    assert!(
+        !engine.demand_is_demanded(&body_b),
+        "premise: demanding `sb` does not demand its reader b"
+    );
+    engine
+        .tessellate_snapshot(&compiled)
+        .expect("tessellate_snapshot needs a prior eval");
+    assert_ne!(
+        sb_value(&engine),
+        sb_at_stamp,
+        "premise: the tessellate refreshed `sb`"
+    );
+    assert_eq!(
+        stamp_of_b(&engine),
+        b_stamped,
+        "premise: the tessellate did not re-stamp b"
+    );
+
+    engine
+        .edit_param(ValueCellId::new("Refreshed", "pad"), mm(2.0))
+        .expect("edit_param(pad) must succeed");
+
+    assert_eq!(
+        engine.last_changed_realizations(),
+        &HashSet::from([rid_b]),
+        "b's stored hash predates the refreshed `sb`, so the unrelated edit must report it"
+    );
 }
