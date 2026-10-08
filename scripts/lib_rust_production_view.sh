@@ -18,20 +18,25 @@
 # COMMENT mis-blanks the code after it.
 #
 # The production layer counts braces on that LEXED view, never on the raw line,
-# and drives `depth` and the `#[cfg(test)]` MODULE skipper from those counts: a
-# brace that exists only inside a comment, a string, a char literal or a raw
-# string must not move `depth`, or the skipper silently over-extends (swallowing
-# production code below it) or releases early. The skipper arms only when a
-# `mod IDENT` declaration is seen before the block's opening brace — on the same
-# line, or (`pending_mod`) on a brace-less `mod tests` line whose `{` comes
-# later, legal Rust that no rustfmt gate rules out here. A bare
-# `#[cfg(test)] fn` or `#[cfg(test)] use …;` therefore does NOT arm it, and a
-# self-terminating `mod tests;` leaves nothing armed. It arms on the LITERAL
-# `#[cfg(test)]` only; compound gates such as `#[cfg(any(test, …))]` read as
-# production (broadening that is task #6242). A line wholly inside a block
-# comment or a carried-over string is skipped before any bookkeeping, so a
-# lexer desync would fail silently toward green; the END block therefore WARNs
-# on any file whose lexer state is unbalanced at EOF.
+# and drives `depth` and the test-module skipper from those counts: a brace
+# that exists only inside a comment, a string, a char literal or a raw string
+# must not move `depth`, or the skipper silently over-extends (swallowing
+# production code below it) or releases early. The skipper arms on a test-only
+# cfg attribute: `#[cfg(test)]`, or `test` as the FIRST predicate of
+# `#[cfg(any(test, …))]` / `#[cfg(all(test, …))]`. Negated spellings
+# (`not(test)`, `not(any(test, …))`, `any(not(test), …)`), `cfg_attr(test, …)`
+# and a non-first `test` read as production. `any(test, X)` is read as test
+# code on the assumption that X is a test-support cfg: the lexer blanks string
+# contents, so `feature = "gui"` is indistinguishable from
+# `feature = "test-support"`. It arms only when a `mod IDENT` declaration is
+# seen before the block's opening brace — on the same line, or (`pending_mod`)
+# on a brace-less `mod tests` line whose `{` comes later, legal Rust that no
+# rustfmt gate rules out here. A bare `#[cfg(test)] fn` or
+# `#[cfg(any(test, …))] use …;` therefore does NOT arm it, and a
+# self-terminating `mod tests;` leaves nothing armed. A line wholly inside a
+# block comment or a carried-over string is skipped before any bookkeeping, so
+# a lexer desync would fail silently toward green; the END block therefore
+# WARNs on any file whose lexer state is unbalanced at EOF.
 #
 # BEST-EFFORT, deliberately not exhaustive: no macro expansion, no `cfg`
 # evaluation, and a `*/` inside a string inside a block comment is not modelled.
@@ -221,13 +226,13 @@ $(cat <<'AWK_VIEW'
     c = code; n_open  = gsub(/[{]/, "x", c)
     c = code; n_close = gsub(/[}]/, "x", c)
 
-    # --- #[cfg(test)] MODULE skipping (best-effort brace tracking) ---
+    # --- test-gated MODULE skipping (best-effort brace tracking) ---
     if (in_test) {
         depth += n_open - n_close
         if (depth <= test_base) in_test = 0
         next
     }
-    if (code ~ /#\[cfg\(test\)\]/) {
+    if (code ~ /#\[cfg\(test\)\]|#\[cfg\((any|all)\(test[ \t]*[,)]/) {
         pending_test = 1
         pending_mod = 0
     } else if (pending_test) {

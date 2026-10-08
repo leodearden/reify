@@ -8,7 +8,7 @@ with one of its two exported programs plus a small driver rule.
 
   RUST_LEXER_AWK            _strip_line, _lexer_open_state, _lexer_reset
   RUST_PRODUCTION_VIEW_AWK  the lexer + the per-line production rule
-                            (#[cfg(test)] mod skipper) + the END WARN
+                            (test-module skipper) + the END WARN
 
 WHAT RUNS THIS: not the gate directly. run_all.sh discovers `test_*.sh` only,
 so the discovered member is the thin wrapper
