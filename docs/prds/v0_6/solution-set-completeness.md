@@ -56,7 +56,7 @@ Reify already has one honest instance of this, on the discrete side: `SolveAllRe
 
 | Rung | Multiplicity source | Engine | Verdict reachable | Owner |
 |---|---|---|---|---|
-| 1 | **Declared** discrete (`Int` / `Enum` / `discrete_set` domains) | CP-SAT backtracker | `Exhaustive` when enumeration completes | **PRD 2** (`discrete-cost-minimisation.md`) — β #5468 landed, γ #5469, δ #5470, ζ #5472 pending. **Adopted, not duplicated.** |
+| 1 | **Declared** discrete (`Int` / `Enum` / `discrete_set` domains) | CP-SAT backtracker | `Exhaustive` when enumeration completes | **PRD 2** (`discrete-cost-minimisation.md`) — β #5468 landed, γ #5469, δ #5470, ζ #5472 pending. **Adopted, not duplicated.** *(2026-10-08: `discrete_set` domains moved to `docs/prds/v0_6/catalog-membership-constraint.md` — catalog membership is the constraint `x in C`, with `discrete_set` as sugar; δ #5470 keeps the domain channel.)* |
 | 2 | **Undeclared**, interval-representable, bounded, small | box branch-and-bound over #6655's HC4 propagator | `Exhaustive` / `Refuted` | **this PRD** |
 | 3 | **Undeclared**, beyond rung 2's envelope | the same subdivision, truncated: surviving boxes seed the existing Nelder-Mead multistart | `Partial{reason}` only | **this PRD** |
 
@@ -136,7 +136,7 @@ Consequences for this PRD, both deliberate:
 
 Three substrate facts the design deliberately does **not** rely on, each probe-confirmed absent:
 
-- `@solver_hint("discrete_set", …)` parses and kind-validates but has **zero solve-time readers** (audit finding M-008; probe: a hint-annotated auto minimised against a stock set resolves to `13.2mm`, not a catalogue member). Wiring it is PRD 2 δ **#5470**.
+- `@solver_hint("discrete_set", …)` parses and kind-validates but has **zero solve-time readers** (audit finding M-008; probe: a hint-annotated auto minimised against a stock set resolves to `13.2mm`, not a catalogue member). Wiring it is PRD 2 δ **#5470**. *(2026-10-08: no longer δ's — `discrete_set` becomes sugar for `constraint x in C` in `docs/prds/v0_6/catalog-membership-constraint.md` β #8356 / γ #8357, Leo esc-5470-5.)*
 - `param s : SomeEnum = auto` parses and compiles, then reaches the continuous solver and fails with `solve failed: infeasible` at residual `1.00e0`. Enum domains are PRD 2's.
 - `minimize … where …` parses; the guard is **silently discarded** — a constant-false guard changes nothing, with no error and no warning. That is **#6647**, already filed; this PRD does not touch objectives' guard semantics.
 
@@ -461,7 +461,7 @@ Walked against `docs/legibility/design-invariants.md` (reify's normative list: t
 - The `solutions()` language surface, purposes-as-solve-scopes, and any solution-set *value* type in the language → PRD 2 bookmark **θ #5474**.
 - The mixed discrete×continuous outer loop → PRD 2 **ζ #5472**. MINLP / SCIP / `russcip` remain rejected (M-WHOLE §3.1, binding).
 - The HC4 propagator and the whole-box pre-solve refutation → **#6655** (this PRD consumes both).
-- CP-SAT registry population, `Int` bound-mining, `discrete_set` wiring → PRD 2 **γ #5469** / **δ #5470**.
+- CP-SAT registry population, `Int` bound-mining, `discrete_set` wiring → PRD 2 **γ #5469** / **δ #5470**. *(2026-10-08: `discrete_set` wiring → `docs/prds/v0_6/catalog-membership-constraint.md`.)*
 - **Integrality for `Int` autos.** `param n : Int = auto(free)` resolves to `3.3` with the type annotation erased and no diagnostic. Real defect, adjacent, not this PRD — §10.
 - **Enum autos reaching a solver at all** (`solve failed: infeasible` at residual `1.00e0` today) → PRD 2.
 - `@solver_hint` consumption of any kind → PRD 2 δ / `solver-hint-payloads.md`.

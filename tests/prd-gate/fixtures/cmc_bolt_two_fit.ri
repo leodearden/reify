@@ -1,0 +1,15 @@
+module cmc_bolt_two_fit
+
+// docs/prds/v0_6/catalog-membership-constraint.md §6 B5b (leaf β, with #6554).
+// Window [22.5mm, 30.5mm]: two members fit (25mm, 30mm).
+// After β + #6554: the strict auto reports the non-uniqueness Error naming 25mm and 30mm, exit 1.
+// Baseline (main 2026-10-08): parse error.
+structure BoltedJointTwoFit {
+    param bolt_length : Length = auto
+    param plate_a : Length = 6mm
+    param plate_b : Length = 8mm
+    param nut_h   : Length = 6.5mm
+    constraint bolt_length in standard_bolt_lengths()
+    constraint bolt_length >= plate_a + plate_b + nut_h + 2mm
+    constraint bolt_length <= plate_a + plate_b + nut_h + 10mm
+}

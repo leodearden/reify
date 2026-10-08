@@ -1,0 +1,13 @@
+module cmc_int_range
+
+// docs/prds/v0_6/catalog-membership-constraint.md §6 B8 (leaf β, with #5470).
+// A range literal on the right of `in` lowers to two comparisons; with PRD 2 B7's other
+// constraints the only feasible value is n = 4.
+// After β: IntRange.n = 4, no diagnostic, exit 0.
+// Baseline (main 2026-10-08): parse error.
+structure IntRange {
+    param n : Int = auto
+    constraint n in 1..8
+    constraint n * 3 >= 10
+    constraint n * n <= 17
+}

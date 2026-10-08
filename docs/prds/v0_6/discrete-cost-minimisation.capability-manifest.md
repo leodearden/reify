@@ -21,7 +21,7 @@ F-result carrier + dispatch, the CP-SAT solver + its domain arms, the classifier
 the `@solver_hint` compile chain, PRD 1's Money machinery) plus the **baseline
 bugs** each RED signal repairs — never the tasks' own deliverables, which by
 definition do not exist yet. The typed-diagnostic assertions (unbounded `Int`,
-unresolvable catalog) are δ's **own deliverables** (G6 branch 4: the rejection
+~~unresolvable catalog~~ — *moved 2026-10-08 to `docs/prds/v0_6/catalog-membership-constraint.md`*) are δ's **own deliverables** (G6 branch 4: the rejection
 mechanism is introduced by the task that asserts it), verified at δ's leaf
 signal, not as substrate probes.
 
@@ -42,7 +42,7 @@ No novel syntax. All 8 committed fixtures parse with 0 ERROR nodes
 `discrete_enum_auto`, `discrete_balance_inline`, `discrete_balance_lets`,
 `discrete_balance_min`.
 
-**Semantic-substrate wrinkle (captured 2026-07-24):**
+**Semantic-substrate wrinkle (captured 2026-07-24) — SUPERSEDED 2026-10-08:** the rejection below was the `@` port-selector parse join (an annotation after a valued member parses as `<value> @solver_hint(...)`, #8300), not a catalog rule; with the annotation first a local `let` catalog compiles clean. Catalogs are any in-scope list (`docs/prds/v0_6/catalog-membership-constraint.md`, Leo, esc-5470-5). The as-captured text follows:
 `@solver_hint("discrete_set", <local-let ident>)` is compile-REJECTED
 (`error: unknown selector kind '@solver_hint'`, exit 1); the registered-stdlib
 surface (`structure def` + `standard_bolt_lengths`) checks clean (exit 0).
@@ -81,16 +81,16 @@ v1 scopes catalogs to the stdlib surface (PRD §2.3/§3.7/§9).
 | Natural-formulation baselines (signal premises) | probes: `discrete_balance_inline.ri` → exit 1 misleading residual; `discrete_balance_lets.ri` → exit 0, autos `undef` (captured 2026-07-24) | **PASS** (bugs confirmed) |
 | CP-SAT solves the wired case (achievability) | spike e2e: n1 hexagon balance solved in 0.46 s, exact Bools, flag-off byte-identical | **PASS** |
 
-### δ — discrete domain channel (`Int` bound-mining + `discrete_set` → `AutoParam.domain`)
+### δ — discrete domain channel (~~`Int` bound-mining + `discrete_set` → `AutoParam.domain`~~ hard `AutoParam.domain` + `Int` bound-mining + Enum declared domain — *re-scoped 2026-10-08, esc-5470-5*)
 
 | Capability | Evidence | Verdict |
 |---|---|---|
 | CP-SAT `Int` arm exists, needs only bounds | `grep`: `build_variable_domain` Int arm + `MAX_INT_DOMAIN = 1000` (`cpsat.rs:14/49-88`); `bounds: None` always (`engine_eval.rs:1439`) | **PASS** |
 | Constraint-mining precedent in the same fn | `grep`: Enum arm scans constraint literals (`cpsat.rs:89-115`) | **PASS** |
-| Compiler-side hints present; IR seam absent (the gap δ fills) | `grep`: `ValueCellDecl.solver_hints` `reify-compiler/src/types.rs:1125`; **zero** matches for `SolverHint` in `reify-ir`/`reify-constraints`/`reify-eval` src (M-008 re-verified 2026-07-24) | **PASS** |
-| Stdlib catalog surface validates today | probe: `structure def` + `standard_bolt_lengths` → `reify check` exit 0; local-let catalog → exit 1 (out of scope, PRD §9); stdlib source `crates/reify-compiler/stdlib/standard_stock.ri` | **PASS** |
+| ~~Compiler-side hints present; IR seam absent (the gap δ fills)~~ *Struck 2026-10-08: hints no longer cross the IR seam; replaced by `autoparam-is-discrete-in-ir` (grep `fn is_discrete` present in `crates/reify-ir/src`) and `enum-declared-domain-cold-and-warm` in the sidecar* | `grep`: `ValueCellDecl.solver_hints` `reify-compiler/src/types.rs:1125`; **zero** matches for `SolverHint` in `reify-ir`/`reify-constraints`/`reify-eval` src (M-008 re-verified 2026-07-24) | **PASS** |
+| ~~Stdlib catalog surface validates today~~ *Struck 2026-10-08: misdiagnosed parse defect (#8300); catalogs moved to `docs/prds/v0_6/catalog-membership-constraint.md`* | probe: `structure def` + `standard_bolt_lengths` → `reify check` exit 0; local-let catalog → exit 1 (out of scope, PRD §9); stdlib source `crates/reify-compiler/stdlib/standard_stock.ri` | **PASS** |
 | `Int`-auto baseline failure (signal premise) | probe `discrete_int_auto.ri` → exit 1, "not uniquely determined", `undef` (captured 2026-07-24) | **PASS** (bug confirmed) |
-| Typed no-finite-domain / unresolvable-catalog diagnostics | δ's **own deliverable** (G6 branch-4 producer = this leaf); asserted by δ's RED tests, not a substrate probe | **PASS** (in-set) |
+| Typed no-finite-domain ~~/ unresolvable-catalog~~ diagnostics (*catalog half moved 2026-10-08*) | δ's **own deliverable** (G6 branch-4 producer = this leaf); asserted by δ's RED tests, not a substrate probe | **PASS** (in-set) |
 
 ### ε — integration gate (CI examples + harness e2e)
 
@@ -165,4 +165,5 @@ Adversary value adds folded in: `harness_engine.rs` confirmed tracked on main
 (C1 consolidated harness, #5056, last change `ff6874fcbe`); δ polarity trap
 recorded — today `reify eval` on the `discrete_set` fixture is a SILENT
 success (hint unenforced), so δ's membership assertion is a real behavioural
-flip, not a tautology.
+flip, not a tautology. *(2026-10-08: that membership assertion now belongs to
+`docs/prds/v0_6/catalog-membership-constraint.md` β #8356 / γ #8357, which re-measured the same baseline: 0.024 m, silent.)*
