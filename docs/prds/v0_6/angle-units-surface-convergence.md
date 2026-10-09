@@ -272,8 +272,8 @@ pointer beats a second copy to keep in sync.
 committed source, and the `@display` label validator (`annotations/schema.rs:334` + the
 dimension-phase rung check from task 5233) simply starts matching ASCII rungs.
 
-**`RayleighDamping.alpha`:** `param alpha : Frequency`, declared at
-`crates/reify-compiler/stdlib/modal_analysis.ri:161`. `crates/reify-eval/src/modal_ops.rs:1126`
+**`RayleighDamping.alpha`:** `param alpha : Frequency`, declared on `structure def RayleighDamping` in
+`crates/reify-compiler/stdlib/modal_analysis.ri`. `crates/reify-eval/src/modal_ops.rs:1126`
 builds `ω = 2π·f` and feeds it to `rayleigh_damping_ratio(alpha, beta, omega)` at `:1127`
 — the declared `Frequency` is consumed on the rad/s scale, so a caller writing `alpha: 1.0Hz`
 — reading Hz as cycles/s, which is what Hz means — gets it consumed as `1 rad/s`: a `2π`
@@ -288,7 +288,7 @@ five *migrated* corpus ctor sites —
 `crates/reify-eval-fea-tests/tests/r3b_modal_selector_displacement.rs:633` — so no wrong answer
 is reachable today. The reasoning —
 including why `alpha` is typed `Frequency` rather than `AngularVelocity` — lives in
-`modal_analysis.ri`'s ANGULAR-RATE TRAP comment (:131-150), which already names this PRD as the
+`modal_analysis.ri`'s ANGULAR-RATE TRAP comment, which already names this PRD as the
 surface's owner — not restated here. Pinned test-side by
 `modal_ops::tests::trampoline_shapes_modal_result_with_rayleigh_damping` (`modal_ops.rs:4617`),
 which recomputes `ω = 2π·f` from the emitted `Mode.frequency` and compares `damping_ratio`

@@ -122,8 +122,8 @@ declared type lying.
 `PressureLoad` − 4 locally-shadowed `PressureLoad` defs in
 `struct_ctor_field_conformance_tests.rs` + 2 `TractionLoad`), split 35 `.ri` / 77 `.rs`
 fixtures; **zero** of them pass a dimensioned literal today. `Gravity`'s 16 sites are already
-dimensioned. The precedent that the target type works end-to-end is `modal_analysis.ri:483`
-`StepForce { param magnitude : Force }`, called as `magnitude: 10N` in
+dimensioned. The precedent that the target type works end-to-end is
+`StepForce { param magnitude : Force }` in `modal_analysis.ri`, called as `magnitude: 10N` in
 `examples/modal/transient_step_response.ri:105`.
 
 ### 2.4 Premise corrections to the research note (re-verified; the note is wrong on three counts)

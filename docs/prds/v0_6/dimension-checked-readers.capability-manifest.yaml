@@ -210,7 +210,7 @@ tasks:
       declares `param force : Force = 0N`, `param magnitude : Pressure = 0Pa`, `param
       force_density : ForceDensity = 0N/m^3` plus dimensioned ctor args — `tree-sitter
       parse --quiet` 0 ERROR nodes, `reify check` EXIT 0, `reify eval` EXIT 0 zero
-      diagnostics. Shipped precedent: modal_analysis.ri:483 `param magnitude : Force`
+      diagnostics. Shipped precedent: modal_analysis.ri StepForce `param magnitude : Force`
       called as `magnitude: 10N`.'
     verdict: PASS
     delivered_check:
