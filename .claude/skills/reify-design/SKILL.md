@@ -11,7 +11,7 @@ Help the user author parametric designs in `.ri` files. Be terse and focus on ge
 
 All paths below are relative to the Reify repo root (find it via the working directory or `git rev-parse --show-toplevel` if unsure).
 
-- **Language reference (authoritative):** `crates/reify-mcp/src/tools/chunks/*.md` — one file per topic: `structures`, `syntax`, `types`, `units`, `geometry`, `traits`, `parameters`, `constraints`, `enums`, `fields`, `occurrences`, `connect`, `collections`, `functions`, `guards`, `purposes`, `stdlib`. Read the relevant chunk when unsure — these are the same chunks the in-GUI assistant exposes via `reify_language_reference`.
+- **Language reference (authoritative):** `crates/reify-mcp/src/tools/chunks/*.md` — one file per topic: `structures`, `syntax`, `types`, `units`, `geometry`, `measurement`, `topology`, `traits`, `parameters`, `constraints`, `enums`, `fields`, `occurrences`, `connect`, `collections`, `functions`, `guards`, `purposes`, `stdlib`. Read the relevant chunk when unsure — these are the same chunks the in-GUI assistant exposes via `reify_language_reference`.
 - **Examples:** `examples/*.ri`. Canonical patterns:
   - `m5_geometry_flange.ri` — `structure def ... : Rigid`, params with units, `cylinder` / `circular_pattern` / `difference`
   - `m8_units.ri`, `m8_materials.ri`, `m8_tolerancing.ri` — units, materials, tolerances

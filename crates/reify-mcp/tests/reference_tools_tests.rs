@@ -20,12 +20,14 @@ const ALL_TOPICS: &[&str] = &[
     "functions",
     "geometry",
     "guards",
+    "measurement",
     "occurrences",
     "parameters",
     "purposes",
     "stdlib",
     "structures",
     "syntax",
+    "topology",
     "traits",
     "types",
     "units",
@@ -60,6 +62,17 @@ fn language_reference_all_topics_return_non_empty_content() {
     let registry = setup_registry();
     let ctx = MockToolContext::default();
 
+    let help = registry
+        .call_tool(
+            "reify_language_reference",
+            serde_json::json!({"topic": "foobar"}),
+            &ctx,
+        )
+        .expect("an unknown topic should succeed with the help content");
+    let help_content = help["content"]
+        .as_str()
+        .expect("help content should be a string");
+
     for topic in ALL_TOPICS {
         let result = registry
             .call_tool(
@@ -80,6 +93,10 @@ fn language_reference_all_topics_return_non_empty_content() {
             content.len() > 100,
             "content for '{topic}' too short: {} chars",
             content.len()
+        );
+        assert_ne!(
+            content, help_content,
+            "topic '{topic}' served the unknown-topic help instead of a chunk"
         );
     }
 }
