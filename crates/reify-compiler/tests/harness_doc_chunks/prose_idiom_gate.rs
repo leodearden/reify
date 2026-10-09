@@ -272,7 +272,11 @@ fn a_stale_idiom_is_reported_whichever_layer_rejects_it() {
             "ArgTypeMismatch",
             "bare zeros are not lengths, so the type check rejects them",
         ),
-        ("box(1mm, 2mm)", "Error", "box takes three arguments"),
+        (
+            "box(1mm, 2mm)",
+            "box() expects 3 arguments, got 2",
+            "box takes three arguments, and the arity check (which carries no code) says so",
+        ),
         (
             "helixx(1mm, 2mm, 3mm)",
             "UnresolvedFunction",
