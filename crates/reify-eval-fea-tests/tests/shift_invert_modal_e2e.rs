@@ -1,19 +1,25 @@
 //! End-to-end signal for leaf δ (#7261) of
 //! `docs/prds/v0_6/shift-invert-eigensolve.md`: the modal trampoline honors the
-//! `ModalOptions.sigma` shift in λ-space, and SAYS SO when the shifted result is
-//! a window rather than the bottom of the spectrum.
+//! `ModalOptions.shift_frequency` shift (Hz, converted to λ = (2π·f)² at the
+//! trampoline — task #6097), and SAYS SO when the shifted result is a window
+//! rather than the bottom of the spectrum.
 //!
 //! The vehicle is the committed fixture PAIR
 //! `tests/prd-gate/fixtures/shift_invert_modal_{unshifted,shifted}.ri`, whose
-//! MODELS are identical except for their `sigma:` literal (they also carry
+//! MODELS are identical except for their `shift_frequency:` literal (they also carry
 //! distinct headers and distinct `module` / `structure` names, which they must
 //! to coexist in one gate). So the primary assertion is a MODE-SET DIFFERENCE
 //! between two files that differ in exactly one number, not "a warning stopped
 //! firing" (PRD §G2).
 //!
 //! That premise is ENFORCED, not merely asserted in prose: assertion (0) is
-//! `assert_fixtures_differ_only_in_sigma`, and every later assertion is a
-//! comparison that means nothing without it.
+//! `assert_fixtures_differ_only_in_shift_frequency`, and every later assertion
+//! is a comparison that means nothing without it.
+//!
+//! Because the author writes Hz, (1) and (2) are also what make the Hz→λ
+//! conversion OBSERVABLE: a missing conversion (λ = 61640), a missing 2π
+//! (λ = f²) or a reader that silently drops the field all solve near σ ≈ 0,
+//! return the LOWEST mode set, and fail (1).
 //!
 //! WHAT IS RED AND WHAT IS A REGRESSION FLOOR. Only assertion (3) — the
 //! `W_ShiftSkippedModes` warning — is RED when this file lands: that code is
@@ -41,16 +47,18 @@ fn shifted_source() -> &'static str {
     include_str!("../../../tests/prd-gate/fixtures/shift_invert_modal_shifted.ri")
 }
 
-/// The shifted fixture's `sigma:` literal, in EIGENVALUE (λ) space — transcribed
-/// from `shift_invert_modal_shifted.ri` exactly once, so the band below and the
-/// file it describes cannot drift apart. (Same one-constant-per-fixture
-/// discipline as `modal_analysis_e2e.rs`'s `BeamSection`.)
-const SIGMA: f64 = 150000000000.0;
+/// The shifted fixture's `shift_frequency:` literal, in Hz — transcribed from
+/// `shift_invert_modal_shifted.ri` exactly once, so the band below and the file
+/// it describes cannot drift apart. (Same one-constant-per-fixture discipline as
+/// `modal_analysis_e2e.rs`'s `BeamSection`.)
+const SHIFT_FREQUENCY_HZ: f64 = 61640.0;
 
-/// The frequency σ corresponds to: λ = ω² = (2π·f)², so f_σ = √σ / 2π.
-/// Measured 61640.4444 Hz.
-fn f_sigma() -> f64 {
-    SIGMA.sqrt() / (2.0 * std::f64::consts::PI)
+/// The λ-space shift σ the trampoline applies for [`SHIFT_FREQUENCY_HZ`],
+/// computed through the SAME declared helper the trampoline calls — never a
+/// re-derived 2π — so its `Display` is bit-identical to the one the
+/// `W_ShiftSkippedModes` message prints.
+fn sigma_lambda() -> f64 {
+    reify_stdlib::modal::free_vibration::frequency_hz_to_eigenvalue(SHIFT_FREQUENCY_HZ)
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────────
@@ -82,7 +90,7 @@ fn structure_body(source: &str) -> Vec<&str> {
 /// The premise every other assertion in this file rests on, made EXECUTABLE.
 ///
 /// Three prose statements — this module's header and both fixture headers —
-/// claim the pair differs only in its `sigma:` literal, and until now nothing
+/// claim the pair differs only in its `shift_frequency:` literal, and until now nothing
 /// enforced it. A later edit to `length`, `element_order` or the material in
 /// only one file would very plausibly leave assertion (1) green (a 1.5×
 /// frequency ratio with ~33% of headroom under the measurement) while the
@@ -90,7 +98,7 @@ fn structure_body(source: &str) -> Vec<&str> {
 /// DIFFERENCE test into two unrelated smoke tests.
 ///
 /// Nearly free: both sources are already `include_str!`ed into this binary.
-fn assert_fixtures_differ_only_in_sigma(unshifted: &str, shifted: &str) {
+fn assert_fixtures_differ_only_in_shift_frequency(unshifted: &str, shifted: &str) {
     let (a, b) = (structure_body(unshifted), structure_body(shifted));
     assert_eq!(
         a.len(),
@@ -117,8 +125,8 @@ fn assert_fixtures_differ_only_in_sigma(unshifted: &str, shifted: &str) {
     let i = differing[0];
     for (label, line) in [("unshifted", a[i]), ("shifted", b[i])] {
         assert!(
-            line.trim_start().starts_with("sigma:"),
-            "the one differing line must be the `sigma:` literal; the {label} \
+            line.trim_start().starts_with("shift_frequency:"),
+            "the one differing line must be the `shift_frequency:` literal; the {label} \
              fixture differs at {line:?} instead",
         );
     }
@@ -217,7 +225,7 @@ fn run_fixture(source: &str, structure: &str) -> ModalRun {
 fn shift_changes_the_mode_set_and_warns_once() {
     // (0) THE PREMISE. Everything below is a COMPARISON, so it means nothing
     //     unless the two files differ in exactly the one literal under test.
-    assert_fixtures_differ_only_in_sigma(unshifted_source(), shifted_source());
+    assert_fixtures_differ_only_in_shift_frequency(unshifted_source(), shifted_source());
 
     let unshifted = run_fixture(unshifted_source(), "ShiftInvertModalUnshifted");
     let shifted = run_fixture(shifted_source(), "ShiftInvertModalShifted");
@@ -237,16 +245,16 @@ fn shift_changes_the_mode_set_and_warns_once() {
         (unshifted.f1, unshifted.f2),
     );
 
-    // (2) CLUSTERING — the shifted pair brackets f_σ, which is what "a window
-    //     around sigma" means. Measured 0.9166× and 1.0594×, so the ±15% band
-    //     holds both with margin.
-    let f_sigma = f_sigma();
+    // (2) CLUSTERING — the shifted pair brackets the author's own
+    //     shift_frequency, which is what "a window around the shift" means.
+    //     Measured 0.9166× and 1.0594×, so the ±15% band holds both with margin.
+    let f_shift = SHIFT_FREQUENCY_HZ;
     for f in [shifted.f1, shifted.f2] {
-        let rel = (f - f_sigma).abs() / f_sigma;
+        let rel = (f - f_shift).abs() / f_shift;
         assert!(
             rel <= 0.15,
-            "shifted frequency {f} Hz must sit within ±15% of f_sigma = {f_sigma} Hz \
-             (measured 0.9166× and 1.0594×), got {:.1}% off",
+            "shifted frequency {f} Hz must sit within ±15% of shift_frequency = \
+             {f_shift} Hz (measured 0.9166× and 1.0594×), got {:.1}% off",
             rel * 100.0,
         );
     }
@@ -275,10 +283,11 @@ fn shift_changes_the_mode_set_and_warns_once() {
         "message must carry the canonical prefix, got: {}",
         warning.message,
     );
+    let sigma = sigma_lambda();
     assert!(
-        warning.message.contains(&format!("{SIGMA}")),
-        "the warning must NAME the sigma that was applied ({SIGMA}) so a reader never has \
-         to infer which shift produced the window, got: {}",
+        warning.message.contains(&sigma.to_string()),
+        "the warning must NAME the λ-space sigma that was applied ({sigma}) so a reader \
+         never has to infer which shift produced the window, got: {}",
         warning.message,
     );
 

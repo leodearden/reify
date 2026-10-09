@@ -4555,7 +4555,9 @@ mod tests {
     use reify_solver_elastic::assembly::test_support::promote_tets_to_p2;
     use reify_solver_elastic::{DirichletBc, EigenSolverOptions, IsotropicElastic};
     use reify_stdlib::dynamics::mass_props::resolve_density_strict;
-    use reify_stdlib::modal::free_vibration::{is_rigid_body_mode, rayleigh_damping_ratio};
+    use reify_stdlib::modal::free_vibration::{
+        frequency_hz_to_eigenvalue, is_rigid_body_mode, rayleigh_damping_ratio,
+    };
     use reify_stdlib::modal::trampoline::{ModalCacheKey, TransientCacheKey};
     use reify_stdlib::modal::transient::uniform_time_grid;
 
@@ -7109,9 +7111,12 @@ mod tests {
             ("n_modes".to_string(), Value::Int(7)),
             ("tol".to_string(), Value::Real(1e-7)),
             ("max_iters".to_string(), Value::Int(50)),
-            ("sigma".to_string(), Value::Real(2.5)),
+            ("shift_frequency".to_string(), frequency_scalar(100.0)),
         ]);
-        assert_eq!(extract_eigen_knobs(&opts), (7, 1e-7, 50, 2.5));
+        assert_eq!(
+            extract_eigen_knobs(&opts),
+            (7, 1e-7, 50, frequency_hz_to_eigenvalue(100.0))
+        );
 
         // Missing fields → defaults (10, 1e-9, 200, 0.0).
         assert_eq!(
@@ -7120,11 +7125,11 @@ mod tests {
         );
 
         // Malformed: non-positive n_modes clamps to ≥ 1; non-positive tol and
-        // non-finite sigma fall back to their defaults.
+        // non-finite shift_frequency fall back to their defaults.
         let bad = modal_options(vec![
             ("n_modes".to_string(), Value::Int(0)),
             ("tol".to_string(), Value::Real(-1.0)),
-            ("sigma".to_string(), Value::Real(f64::NAN)),
+            ("shift_frequency".to_string(), frequency_scalar(f64::NAN)),
         ]);
         assert_eq!(extract_eigen_knobs(&bad), (1, 1e-9, 200, 0.0));
 
@@ -7132,85 +7137,105 @@ mod tests {
         assert_eq!(extract_eigen_knobs(&Value::Undef), (10, 1e-9, 200, 0.0));
     }
 
-    /// δ (#7261): the λ-space σ read must not silently become 0.0 for a value
-    /// shape a user actually writes.
+    /// A `Frequency` scalar (SI hertz), as `ModalOptions.shift_frequency` arrives.
+    fn frequency_scalar(hz: f64) -> Value {
+        Value::Scalar {
+            si_value: hz,
+            dimension: DimensionVector::FREQUENCY,
+        }
+    }
+
+    /// #6097: `ModalOptions.shift_frequency` is read ONLY as a finite
+    /// `Scalar<Frequency>` (Hz) and converted to λ-space through
+    /// `frequency_hz_to_eigenvalue`; every other shape is the 0.0 default.
     ///
-    /// A `Real`-typed `.ri` param does not arrive as one Rust variant. A
-    /// literal `sigma: 2` arrives as [`Value::Int`], and a value that has been
-    /// through the dimensional machinery arrives as a DIMENSIONLESS
-    /// [`Value::Scalar`] — the shape the `tolerated` idiom in
-    /// [`extract_loss_factor`] exists for, one knob up in this same file.
-    /// Reading only [`Value::Real`] drops both to the default, which is the
-    /// silent-drop class this PRD exists to close (`buckling.rs` documents and
-    /// handles exactly this trap for the sibling knob, and β's own rustdoc
-    /// records it by name).
+    /// A bare number or an angular rate is not Hz: reading one would be a silent
+    /// 2π / 4π² error — strictly WORSE than dropping the value, because a wrong
+    /// shift returns a plausible-looking spectrum from the wrong band. The ctor
+    /// gate already rejects those shapes at compile time; this pins the reader.
     ///
-    /// A FREQUENCY-dimensioned `Scalar` is deliberately NOT honored — see the
-    /// case below.
-    ///
-    /// Every row also asserts the other three knobs, so the widening is provably
-    /// scoped to σ: the table is over the σ shape ONLY, with `n_modes`/`tol`/
-    /// `max_iters` held at fixed non-default values that must come back
-    /// unchanged.
+    /// Every row also asserts the other three knobs, so the table is provably
+    /// scoped to σ: `n_modes`/`tol`/`max_iters` are held at fixed non-default
+    /// values that must come back unchanged.
     #[test]
-    fn extract_eigen_knobs_sigma_value_shapes() {
+    fn extract_eigen_knobs_shift_frequency_value_shapes() {
         /// The three non-σ knobs, held at non-default values so a regression in
         /// their handling cannot hide behind a default.
-        fn with_sigma(sigma: Option<Value>) -> Value {
+        fn with_shift(field: &str, shift: Option<Value>) -> Value {
             let mut fields = vec![
                 ("n_modes".to_string(), Value::Int(7)),
                 ("tol".to_string(), Value::Real(1e-7)),
                 ("max_iters".to_string(), Value::Int(50)),
             ];
-            if let Some(sigma) = sigma {
-                fields.push(("sigma".to_string(), sigma));
+            if let Some(shift) = shift {
+                fields.push((field.to_string(), shift));
             }
             modal_options(fields)
         }
-        let dimensionless = |si_value: f64| Value::Scalar {
+        let scalar = |si_value: f64, dimension: DimensionVector| Value::Scalar {
             si_value,
-            dimension: DimensionVector::DIMENSIONLESS,
+            dimension,
         };
 
-        let cases: Vec<(&str, Option<Value>, f64)> = vec![
-            // The regression floor: the shape that already worked.
-            ("Real", Some(Value::Real(2.5)), 2.5),
-            // A `.ri` integer literal `sigma: 2`. RED before the widening.
-            ("Int", Some(Value::Int(2)), 2.0),
-            // A dimensionless Scalar, NEGATIVE: `ModalOptions` declares σ
-            // "explicitly NOT constrained" because a negative shift targets the
-            // negative side of the spectrum, so the sign must round-trip rather
-            // than being clamped away. RED before the widening.
-            ("Scalar<dimensionless>", Some(dimensionless(-1.5)), -1.5),
-            // REFUSED, and the default is the right answer. That shape is
-            // #6097's future `shift_frequency : Frequency` surface; reading
-            // 300 Hz as λ = 300 would be a silent 4π²-and-square error —
-            // strictly WORSE than dropping the value, because a wrong shift
-            // returns a plausible-looking spectrum from the wrong band.
-            // Converting it here would also duplicate #6097's scope and
-            // manufacture the INV-AD-4 angle crossing this branch deliberately
-            // does not have.
+        let cases: Vec<(&str, &str, Option<Value>, f64)> = vec![
+            // THE FLIP: Hz is read and converted.
             (
                 "Scalar<frequency>",
-                Some(Value::Scalar {
-                    si_value: 300.0,
-                    dimension: DimensionVector::FREQUENCY,
-                }),
+                "shift_frequency",
+                Some(frequency_scalar(300.0)),
+                frequency_hz_to_eigenvalue(300.0),
+            ),
+            (
+                "Scalar<frequency>(0)",
+                "shift_frequency",
+                Some(frequency_scalar(0.0)),
                 0.0,
             ),
-            // The finite guard survives the widening: an infinite or NaN σ
-            // would poison `K − σM`.
-            ("Real(inf)", Some(Value::Real(f64::INFINITY)), 0.0),
-            ("Real(NaN)", Some(Value::Real(f64::NAN)), 0.0),
-            // Existing fallbacks, unchanged.
-            ("absent", None, 0.0),
+            // Squaring erases the sign.
+            (
+                "Scalar<frequency>(negative)",
+                "shift_frequency",
+                Some(frequency_scalar(-300.0)),
+                frequency_hz_to_eigenvalue(300.0),
+            ),
+            // rad/s is NOT Hz.
+            (
+                "Scalar<angular velocity>",
+                "shift_frequency",
+                Some(scalar(300.0, DimensionVector::ANGULAR_VELOCITY)),
+                0.0,
+            ),
+            (
+                "Scalar<dimensionless>",
+                "shift_frequency",
+                Some(scalar(1.5, DimensionVector::DIMENSIONLESS)),
+                0.0,
+            ),
+            ("Real", "shift_frequency", Some(Value::Real(2.5)), 0.0),
+            ("Int", "shift_frequency", Some(Value::Int(2)), 0.0),
+            // The finite guard: an infinite or NaN σ would poison `K − σM`.
+            (
+                "Scalar<frequency>(inf)",
+                "shift_frequency",
+                Some(frequency_scalar(f64::INFINITY)),
+                0.0,
+            ),
+            (
+                "Scalar<frequency>(NaN)",
+                "shift_frequency",
+                Some(frequency_scalar(f64::NAN)),
+                0.0,
+            ),
+            // The pre-#6097 field name is no longer read.
+            ("legacy sigma", "sigma", Some(Value::Real(2.5)), 0.0),
+            ("absent", "shift_frequency", None, 0.0),
         ];
 
-        for (label, sigma, expected) in cases {
+        for (label, field, shift, expected) in cases {
             assert_eq!(
-                extract_eigen_knobs(&with_sigma(sigma)),
+                extract_eigen_knobs(&with_shift(field, shift)),
                 (7, 1e-7, 50, expected),
-                "sigma shape {label}: expected σ = {expected} with the other three \
+                "shift shape {label}: expected σ = {expected} with the other three \
                  knobs untouched",
             );
         }
