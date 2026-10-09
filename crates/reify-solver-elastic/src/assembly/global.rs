@@ -58,6 +58,13 @@ pub struct AssemblyElement<'a> {
     pub k_e: &'a ElementStiffness,
 }
 
+impl AssemblyElement<'_> {
+    /// `d_e = k_e.n_dofs / connectivity.len()`, the element's DOF stride.
+    fn dofs_per_node(&self) -> usize {
+        self.k_e.n_dofs / self.connectivity.len()
+    }
+}
+
 /// Thread count for [`assemble_global_stiffness`]: `Deterministic` is one
 /// thread, `Parallel { threads }` is `threads`. Both yield the same bits — the
 /// mode sets parallelism only.
@@ -229,7 +236,7 @@ pub fn detect_orphan_dofs(
     // that node. Nodes never mentioned in any connectivity stay 0 (untouched).
     let mut d_max_local = vec![0usize; n_nodes];
     for e in elements {
-        let d_e = e.k_e.n_dofs / e.connectivity.len();
+        let d_e = e.dofs_per_node();
         if d_e > d_global {
             d_global = d_e;
         }
@@ -334,16 +341,7 @@ pub fn assemble_stiffness(
     let nnz = row_ptr[dim];
     let mut col_idx = vec![0usize; nnz];
     let mut val = vec![0.0; nnz];
-    let mut fill_chunks = Vec::with_capacity(n_nodes.div_ceil(NODES_PER_CHUNK));
-    let (mut cols_rest, mut vals_rest) = (&mut col_idx[..], &mut val[..]);
-    for nodes in node_chunks(n_nodes) {
-        let len = row_ptr[d * nodes.end] - row_ptr[d * nodes.start];
-        let (cols, rest) = std::mem::take(&mut cols_rest).split_at_mut(len);
-        cols_rest = rest;
-        let (vals, rest) = std::mem::take(&mut vals_rest).split_at_mut(len);
-        vals_rest = rest;
-        fill_chunks.push((nodes, cols, vals));
-    }
+    let fill_chunks = split_by_node_chunks(&row_ptr, d, n_nodes, &mut col_idx, &mut val);
     run_chunks(fill_chunks, threads, poll, |(nodes, cols, vals)| {
         rows.fill(nodes, &row_ptr, cols, vals, &mut RowScratch::default());
     })?;
@@ -363,6 +361,26 @@ fn node_chunks(n_nodes: usize) -> impl Iterator<Item = Range<usize>> {
     (0..n_nodes)
         .step_by(NODES_PER_CHUNK)
         .map(move |first| first..(first + NODES_PER_CHUNK).min(n_nodes))
+}
+
+/// Carve the stored entries `cols`/`vals` of a `D·n_nodes`-row CSR into one
+/// `(nodes, cols, vals)` piece per [`node_chunks`] range, each holding exactly
+/// that range's rows under the prefix sum `row_ptr`.
+fn split_by_node_chunks<'a>(
+    row_ptr: &[usize],
+    d: usize,
+    n_nodes: usize,
+    mut cols: &'a mut [usize],
+    mut vals: &'a mut [f64],
+) -> Vec<(Range<usize>, &'a mut [usize], &'a mut [f64])> {
+    node_chunks(n_nodes)
+        .map(|nodes| {
+            let len = row_ptr[d * nodes.end] - row_ptr[d * nodes.start];
+            let chunk_cols = cols.split_off_mut(..len).expect("row_ptr spans cols");
+            let chunk_vals = vals.split_off_mut(..len).expect("row_ptr spans vals");
+            (nodes, chunk_cols, chunk_vals)
+        })
+        .collect()
 }
 
 /// Run `work` on every chunk using `threads` threads, the calling thread
@@ -461,11 +479,26 @@ impl NodeIncidence {
 struct RowScratch {
     /// `(neighbour node m, width w(n, m))`, ascending in `m`.
     neighbours: Vec<(usize, usize)>,
-    /// `offsets[α·K + k]`: where neighbour `k`'s block starts within row
-    /// `(n, α)`, for the `K` neighbours with `w > α`.
+    /// `offsets[α·K + k]`, over the `K` neighbours: where neighbour `k`'s
+    /// block of row `(n, α)` starts among node `n`'s stored entries. Only
+    /// neighbours with `w > α` have a block in that row.
     offsets: Vec<usize>,
     /// Neighbour index of each local node of the element being scattered.
     local_to_neighbour: Vec<usize>,
+}
+
+/// The column blocks of row `(n, α)`, in column order: `(k, m, w)` for each
+/// neighbour `k` of `n`, node `m` of width `w`, with `w > α`. A block holds
+/// the `w` columns `D·m + β`, `β < w`.
+fn row_blocks(
+    neighbours: &[(usize, usize)],
+    alpha: usize,
+) -> impl Iterator<Item = (usize, usize, usize)> + '_ {
+    neighbours
+        .iter()
+        .enumerate()
+        .filter(move |&(_, &(_, w))| w > alpha)
+        .map(|(k, &(m, w))| (k, m, w))
 }
 
 /// The node-owned row builder behind [`assemble_stiffness`]. Every method
@@ -487,17 +520,13 @@ impl<'s, 'e> NodeOwnedRows<'s, 'e> {
         }
     }
 
-    fn dofs_per_node(element: &AssemblyElement<'_>) -> usize {
-        element.k_e.n_dofs / element.connectivity.len()
-    }
-
     /// Sorted `(m, w(n, m))` over the nodes `m` sharing an element with
     /// `node`, where `w` is the largest `d_e` of the elements they share.
     fn neighbours(&self, node: usize, out: &mut Vec<(usize, usize)>) {
         out.clear();
         for &(e, _) in self.incidence.of(node) {
             let element = &self.elements[e];
-            let d_e = Self::dofs_per_node(element);
+            let d_e = element.dofs_per_node();
             out.extend(element.connectivity.iter().map(|&m| (m, d_e)));
         }
         out.sort_unstable();
@@ -513,15 +542,11 @@ impl<'s, 'e> NodeOwnedRows<'s, 'e> {
     /// Write the stored-entry count of every row of `nodes` into `row_len`,
     /// which holds exactly those `D·nodes.len()` rows.
     fn count(&self, nodes: Range<usize>, row_len: &mut [usize], scratch: &mut RowScratch) {
-        let d = self.d;
-        for (node, lens) in nodes.zip(row_len.chunks_exact_mut(d)) {
+        for (node, lens) in nodes.zip(row_len.chunks_exact_mut(self.d)) {
             self.neighbours(node, &mut scratch.neighbours);
             for (alpha, len) in lens.iter_mut().enumerate() {
-                *len = scratch
-                    .neighbours
-                    .iter()
-                    .filter(|&&(_, w)| w > alpha)
-                    .map(|&(_, w)| w)
+                *len = row_blocks(&scratch.neighbours, alpha)
+                    .map(|(_, _, w)| w)
                     .sum();
             }
         }
@@ -541,49 +566,78 @@ impl<'s, 'e> NodeOwnedRows<'s, 'e> {
         let d = self.d;
         let base = row_ptr[d * nodes.start];
         for node in nodes {
+            let entries = row_ptr[d * node] - base..row_ptr[d * (node + 1)] - base;
             self.neighbours(node, &mut scratch.neighbours);
-            let neighbours = &scratch.neighbours;
-            let k_count = neighbours.len();
-            let row_start = |alpha: usize| row_ptr[d * node + alpha] - base;
+            self.write_pattern(
+                &scratch.neighbours,
+                &mut col_idx[entries.clone()],
+                &mut scratch.offsets,
+            );
+            self.scatter_values(
+                node,
+                &scratch.neighbours,
+                &scratch.offsets,
+                &mut val[entries],
+                &mut scratch.local_to_neighbour,
+            );
+        }
+    }
 
-            scratch.offsets.clear();
-            scratch.offsets.resize(d * k_count, 0);
-            for alpha in 0..d {
-                let start = row_start(alpha);
-                let mut offset = 0;
-                for (k, &(m, w)) in neighbours.iter().enumerate() {
-                    if w > alpha {
-                        scratch.offsets[alpha * k_count + k] = offset;
-                        for (beta, col) in col_idx[start + offset..start + offset + w]
-                            .iter_mut()
-                            .enumerate()
-                        {
-                            *col = d * m + beta;
-                        }
-                        offset += w;
-                    }
+    /// Write the columns of node `n`'s `D` rows back to back into `cols`, which
+    /// holds exactly those rows' entries, and fill `offsets` (see
+    /// [`RowScratch::offsets`]) to match.
+    fn write_pattern(
+        &self,
+        neighbours: &[(usize, usize)],
+        cols: &mut [usize],
+        offsets: &mut Vec<usize>,
+    ) {
+        let k_count = neighbours.len();
+        offsets.clear();
+        offsets.resize(self.d * k_count, 0);
+        let mut next = 0;
+        for alpha in 0..self.d {
+            for (k, m, w) in row_blocks(neighbours, alpha) {
+                offsets[alpha * k_count + k] = next;
+                for (col, global) in cols[next..next + w].iter_mut().zip(self.d * m..) {
+                    *col = global;
                 }
-                debug_assert_eq!(start + offset, row_start(alpha + 1), "row length mismatch");
+                next += w;
             }
+        }
+        debug_assert_eq!(
+            next,
+            cols.len(),
+            "pattern length differs from the counted rows"
+        );
+    }
 
-            for &(e, a) in self.incidence.of(node) {
-                let element = &self.elements[e];
-                let d_e = Self::dofs_per_node(element);
-                scratch.local_to_neighbour.clear();
-                scratch
-                    .local_to_neighbour
-                    .extend(element.connectivity.iter().map(|&m| {
-                        neighbours
-                            .binary_search_by_key(&m, |&(m, _)| m)
-                            .expect("every node of an incident element is a neighbour")
-                    }));
-                for alpha in 0..d_e {
-                    let start = row_start(alpha);
-                    for (b, &k) in scratch.local_to_neighbour.iter().enumerate() {
-                        let dst = start + scratch.offsets[alpha * k_count + k];
-                        for beta in 0..d_e {
-                            val[dst + beta] += element.k_e.get(d_e * a + alpha, d_e * b + beta);
-                        }
+    /// Add the K_e rows of every element incident on `node` into `vals`, the
+    /// node's stored entries as laid out by `write_pattern`, in incidence
+    /// order.
+    fn scatter_values(
+        &self,
+        node: usize,
+        neighbours: &[(usize, usize)],
+        offsets: &[usize],
+        vals: &mut [f64],
+        local_to_neighbour: &mut Vec<usize>,
+    ) {
+        let k_count = neighbours.len();
+        for &(e, a) in self.incidence.of(node) {
+            let element = &self.elements[e];
+            let d_e = element.dofs_per_node();
+            local_to_neighbour.clear();
+            local_to_neighbour.extend(element.connectivity.iter().map(|&m| {
+                neighbours
+                    .binary_search_by_key(&m, |&(m, _)| m)
+                    .expect("every node of an incident element is a neighbour")
+            }));
+            for alpha in 0..d_e {
+                for (b, &k) in local_to_neighbour.iter().enumerate() {
+                    let block = offsets[alpha * k_count + k];
+                    for beta in 0..d_e {
+                        vals[block + beta] += element.k_e.get(d_e * a + alpha, d_e * b + beta);
                     }
                 }
             }
@@ -665,7 +719,7 @@ fn check_elements_and_derive_dofs_per_node(
             element.k_e.n_dofs,
             remainder,
         );
-        let dofs_per_node = element.k_e.n_dofs / n_local;
+        let dofs_per_node = element.dofs_per_node();
         assert!(
             dofs_per_node >= 1,
             "AssemblyElement {{ id: {} }} has connectivity.len() = {} \
@@ -690,7 +744,7 @@ fn check_elements_and_derive_dofs_per_node(
     }
     elements
         .iter()
-        .map(|e| e.k_e.n_dofs / e.connectivity.len())
+        .map(AssemblyElement::dofs_per_node)
         .max()
         .unwrap_or(3)
 }
