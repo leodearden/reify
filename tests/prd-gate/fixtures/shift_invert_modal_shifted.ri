@@ -29,15 +29,15 @@
 // real shifted Lanczos path — NOT the dense QZ arm. A smaller beam would reach
 // only the dense arm and would never touch the code this pair exists to pin.
 //
-// MEASURED (release `reify eval`, 2026-09-18): f = {56498.795781256,
-// 65303.560573976865} Hz, exit 0, plus exactly one `W_ShiftSkippedModes`
-// warning. The pair BRACKETS shift_frequency = 61640 Hz at 0.9166× and
-// 1.0594×, and min(shifted)/max(unshifted) = 1.9975 — a genuinely DISJOINT mode
+// MEASURED (release `reify eval`, 2026-10-09): f = {56514.15389639452,
+// 65349.81308365132} Hz, exit 0, plus exactly one `W_ShiftSkippedModes`
+// warning. The pair BRACKETS shift_frequency = 61640 Hz at 0.9168× and
+// 1.0602×, and min(shifted)/max(unshifted) = 1.9860 — a genuinely DISJOINT mode
 // set, not a numerical wobble.
 //
 // WHY THIS SHIFT AND NOT A SMALLER ONE. The trampoline shifts to
-// σ = (2π·61640)² ≈ 1.49998e11, which must sit strictly BETWEEN λ₃ ≈ 1.260e11
-// (56498.8 Hz) and λ₄ ≈ 1.684e11 (65303.6 Hz) of the measured spectrum for the
+// σ = (2π·61640)² ≈ 1.49998e11, which must sit strictly BETWEEN λ₃ ≈ 1.261e11
+// (56514.2 Hz) and λ₄ ≈ 1.686e11 (65349.8 Hz) of the measured spectrum for the
 // nearest-2 set to exclude λ₁ and λ₂ — so the set is unchanged from the
 // σ = 1.5e11 (λ-space `sigma`) measurement this pair was first pinned at. Two
 // smaller candidates were measured and REJECTED: at σ = 6.31655e10 (40000 Hz)

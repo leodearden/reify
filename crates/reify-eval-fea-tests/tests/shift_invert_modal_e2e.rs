@@ -30,7 +30,7 @@
 //! quietly un-honoring the shift cannot pass by deleting one assertion.
 //!
 //! Every band below is transcribed from a release `reify eval` measurement of
-//! these exact two files on 2026-09-18 (recorded in each fixture's header), not
+//! these exact two files on 2026-10-09 (recorded in each fixture's header), not
 //! from an analytic estimate.
 
 use reify_core::{DiagnosticCode, Severity, ValueCellId};
@@ -93,7 +93,7 @@ fn structure_body(source: &str) -> Vec<&str> {
 /// claim the pair differs only in its `shift_frequency:` literal, and until now nothing
 /// enforced it. A later edit to `length`, `element_order` or the material in
 /// only one file would very plausibly leave assertion (1) green (a 1.5×
-/// frequency ratio with ~33% of headroom under the measurement) while the
+/// frequency ratio with ~32% of headroom under the measurement) while the
 /// comparison silently stopped being about the shift, turning a MODE-SET
 /// DIFFERENCE test into two unrelated smoke tests.
 ///
@@ -230,15 +230,15 @@ fn shift_changes_the_mode_set_and_warns_once() {
     let unshifted = run_fixture(unshifted_source(), "ShiftInvertModalUnshifted");
     let shifted = run_fixture(shifted_source(), "ShiftInvertModalShifted");
 
-    // (1) MODE-SET DIFFERENCE — the signal. Measured ratio 1.9975 (unshifted
-    //     {18829.10, 28285.08} Hz vs shifted {56498.80, 65303.56} Hz): a
+    // (1) MODE-SET DIFFERENCE — the signal. Measured ratio 1.9860 (unshifted
+    //     {18925.97, 28456.13} Hz vs shifted {56514.15, 65349.81} Hz): a
     //     genuinely DISJOINT mode set, not a numerical wobble, so the 1.5 floor
-    //     has ~33% of headroom under the measurement.
+    //     has ~32% of headroom under the measurement.
     assert!(
         shifted.min_frequency() > 1.5 * unshifted.max_frequency(),
         "the shifted solve must return a DIFFERENT mode set, not a perturbed one: \
          min(shifted) = {} must exceed 1.5 · max(unshifted) = {} \
-         (measured ratio 1.9975); shifted = {:?}, unshifted = {:?}",
+         (measured ratio 1.9860); shifted = {:?}, unshifted = {:?}",
         shifted.min_frequency(),
         1.5 * unshifted.max_frequency(),
         (shifted.f1, shifted.f2),
@@ -247,14 +247,14 @@ fn shift_changes_the_mode_set_and_warns_once() {
 
     // (2) CLUSTERING — the shifted pair brackets the author's own
     //     shift_frequency, which is what "a window around the shift" means.
-    //     Measured 0.9166× and 1.0594×, so the ±15% band holds both with margin.
+    //     Measured 0.9168× and 1.0602×, so the ±15% band holds both with margin.
     let f_shift = SHIFT_FREQUENCY_HZ;
     for f in [shifted.f1, shifted.f2] {
         let rel = (f - f_shift).abs() / f_shift;
         assert!(
             rel <= 0.15,
             "shifted frequency {f} Hz must sit within ±15% of shift_frequency = \
-             {f_shift} Hz (measured 0.9166× and 1.0594×), got {:.1}% off",
+             {f_shift} Hz (measured 0.9168× and 1.0602×), got {:.1}% off",
             rel * 100.0,
         );
     }

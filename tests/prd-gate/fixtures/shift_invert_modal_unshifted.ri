@@ -29,8 +29,8 @@
 // real shifted Lanczos path — NOT the dense QZ arm. A smaller beam would reach
 // only the dense arm and would never touch the code this pair exists to pin.
 //
-// MEASURED (release `reify eval`, 2026-09-18): f = {18829.10242785022,
-// 28285.078935628768} Hz, exit 0, and NO `W_ShiftSkippedModes` — σ = 0 makes
+// MEASURED (release `reify eval`, 2026-10-09): f = {18925.96994693253,
+// 28456.125839671546} Hz, exit 0, and NO `W_ShiftSkippedModes` — σ = 0 makes
 // `shift_provenance_from_factorization` return false unconditionally.
 //
 // GRAMMAR notes: `.ri` structure bodies are NEWLINE-separated with NO statement
