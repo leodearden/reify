@@ -386,6 +386,14 @@ pub(crate) const EVAL_DEFERRED_BUILTIN_NAMES: &[&str] = &[
     "RepresentationWithin",
 ];
 
+/// A [`BUILTIN_NAME_FAMILIES`] row: the slice paired with its own identifier,
+/// so a row's label cannot drift from the slice it names.
+macro_rules! family_row {
+    ($slice:ident) => {
+        (stringify!($slice), $slice)
+    };
+}
+
 /// Every name slice the compiler classifies builtins by, paired with its
 /// identifier so a failure names the family that regressed.
 ///
@@ -393,39 +401,39 @@ pub(crate) const EVAL_DEFERRED_BUILTIN_NAMES: &[&str] = &[
 /// disjointness tests in `units.rs` and in this module iterate it. A family
 /// absent here is invisible to the oracle and to every disjointness guard, so
 /// a row is deleted only when its slice is (a registry migration discharging
-/// the family), and `builtin_name_families_table_lists_every_family` reds on
-/// any other change.
+/// the family); `family_anchor_names_stay_known_builtins` reds on any other
+/// deletion.
 ///
 /// [`EVAL_DEFERRED_BUILTIN_NAMES`] is deliberately not a row: it records names
 /// NO family owns yet, and is checked against every row.
 pub(crate) const BUILTIN_NAME_FAMILIES: &[(&str, &[&str])] = &[
-    ("GEOMETRY_QUERY_HELPER_NAMES", GEOMETRY_QUERY_HELPER_NAMES),
-    ("GEOMETRY_KINEMATIC_QUERY_NAMES", GEOMETRY_KINEMATIC_QUERY_NAMES),
-    ("GEOMETRY_TOPOLOGY_SELECTOR_NAMES", GEOMETRY_TOPOLOGY_SELECTOR_NAMES),
-    ("RELATION_FN_NAMES", RELATION_FN_NAMES),
-    ("GEOMETRY_QUERY_NAMES", GEOMETRY_QUERY_NAMES),
-    ("TOLERANCING_MARKER_NAMES", TOLERANCING_MARKER_NAMES),
-    ("GEOMETRY_FUNCTION_NAMES", GEOMETRY_FUNCTION_NAMES),
-    ("DYNAMICS_QUERY_NAMES", DYNAMICS_QUERY_NAMES),
-    ("DYNAMICS_CONSTRUCTOR_NAMES", DYNAMICS_CONSTRUCTOR_NAMES),
-    ("AFFINE_MAP_CONSTRUCTOR_NAMES", AFFINE_MAP_CONSTRUCTOR_NAMES),
-    ("MATH_CONSTRUCTION_NAMES", MATH_CONSTRUCTION_NAMES),
-    ("MATH_OPERATION_NAMES", MATH_OPERATION_NAMES),
-    ("MATH_TRANSCENDENTAL_NAMES", MATH_TRANSCENDENTAL_NAMES),
-    ("JOINT_TYPED_FN_NAMES", JOINT_TYPED_FN_NAMES),
-    ("FEA_ENVELOPE_NAMES", FEA_ENVELOPE_NAMES),
-    ("FIELD_OP_NAMES", FIELD_OP_NAMES),
-    ("ORIENTATION_TYPED_FN_NAMES", ORIENTATION_TYPED_FN_NAMES),
-    ("ORIENTATION_EULER_FN_NAMES", ORIENTATION_EULER_FN_NAMES),
-    ("FLEXURE_CTOR_FN_NAMES", FLEXURE_CTOR_FN_NAMES),
+    family_row!(GEOMETRY_QUERY_HELPER_NAMES),
+    family_row!(GEOMETRY_KINEMATIC_QUERY_NAMES),
+    family_row!(GEOMETRY_TOPOLOGY_SELECTOR_NAMES),
+    family_row!(RELATION_FN_NAMES),
+    family_row!(GEOMETRY_QUERY_NAMES),
+    family_row!(TOLERANCING_MARKER_NAMES),
+    family_row!(GEOMETRY_FUNCTION_NAMES),
+    family_row!(DYNAMICS_QUERY_NAMES),
+    family_row!(DYNAMICS_CONSTRUCTOR_NAMES),
+    family_row!(AFFINE_MAP_CONSTRUCTOR_NAMES),
+    family_row!(MATH_CONSTRUCTION_NAMES),
+    family_row!(MATH_OPERATION_NAMES),
+    family_row!(MATH_TRANSCENDENTAL_NAMES),
+    family_row!(JOINT_TYPED_FN_NAMES),
+    family_row!(FEA_ENVELOPE_NAMES),
+    family_row!(FIELD_OP_NAMES),
+    family_row!(ORIENTATION_TYPED_FN_NAMES),
+    family_row!(ORIENTATION_EULER_FN_NAMES),
+    family_row!(FLEXURE_CTOR_FN_NAMES),
     // Resolver-only families, promoted to slices by #5371.
-    ("DATUM_CONSTRUCTOR_NAMES", DATUM_CONSTRUCTOR_NAMES),
-    ("SELECTOR_COMPOSITION_NAMES", SELECTOR_COMPOSITION_NAMES),
-    ("LIST_HELPER_NAMES", LIST_HELPER_NAMES),
-    ("AFFINE_ALGEBRA_NAMES", AFFINE_ALGEBRA_NAMES),
+    family_row!(DATUM_CONSTRUCTOR_NAMES),
+    family_row!(SELECTOR_COMPOSITION_NAMES),
+    family_row!(LIST_HELPER_NAMES),
+    family_row!(AFFINE_ALGEBRA_NAMES),
     // A bare `match` in the `expr.rs` ladder, promoted to a slice by #5371.
-    ("DETERMINACY_PREDICATE_NAMES", DETERMINACY_PREDICATE_NAMES),
-    ("FIRST_ARG_TYPED_NAMES", FIRST_ARG_TYPED_NAMES),
+    family_row!(DETERMINACY_PREDICATE_NAMES),
+    family_row!(FIRST_ARG_TYPED_NAMES),
 ];
 
 /// Is `name` a builtin function name the compiler knows about *at all*?
@@ -549,47 +557,59 @@ pub(crate) fn arg_shape_expectation(name: &str) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    /// The table is the oracle's only family list, so its membership is a
-    /// ratchet: dropping a row silently blinds `is_known_builtin` and every
-    /// disjointness guard to that family. A discharged family (its slice
-    /// deleted by a registry migration) loses its row here in the same diff.
+
+    /// An emptied slice is a discharged family that kept its row.
     #[test]
-    fn builtin_name_families_table_lists_every_family() {
-        let listed: Vec<&str> = BUILTIN_NAME_FAMILIES.iter().map(|(n, _)| *n).collect();
-        assert_eq!(
-            listed,
-            [
-                "GEOMETRY_QUERY_HELPER_NAMES",
-                "GEOMETRY_KINEMATIC_QUERY_NAMES",
-                "GEOMETRY_TOPOLOGY_SELECTOR_NAMES",
-                "RELATION_FN_NAMES",
-                "GEOMETRY_QUERY_NAMES",
-                "TOLERANCING_MARKER_NAMES",
-                "GEOMETRY_FUNCTION_NAMES",
-                "DYNAMICS_QUERY_NAMES",
-                "DYNAMICS_CONSTRUCTOR_NAMES",
-                "AFFINE_MAP_CONSTRUCTOR_NAMES",
-                "MATH_CONSTRUCTION_NAMES",
-                "MATH_OPERATION_NAMES",
-                "MATH_TRANSCENDENTAL_NAMES",
-                "JOINT_TYPED_FN_NAMES",
-                "FEA_ENVELOPE_NAMES",
-                "FIELD_OP_NAMES",
-                "ORIENTATION_TYPED_FN_NAMES",
-                "ORIENTATION_EULER_FN_NAMES",
-                "FLEXURE_CTOR_FN_NAMES",
-                "DATUM_CONSTRUCTOR_NAMES",
-                "SELECTOR_COMPOSITION_NAMES",
-                "LIST_HELPER_NAMES",
-                "AFFINE_ALGEBRA_NAMES",
-                "DETERMINACY_PREDICATE_NAMES",
-                "FIRST_ARG_TYPED_NAMES",
-            ],
-            "BUILTIN_NAME_FAMILIES changed: a family row was added or removed. \
-             Update this list in the same diff, deliberately."
-        );
+    fn builtin_name_families_hold_no_empty_slice() {
         for (family, slice) in BUILTIN_NAME_FAMILIES {
-            assert!(!slice.is_empty(), "{family} is an empty slice — delete its row");
+            assert!(
+                !slice.is_empty(),
+                "{family} is an empty slice — delete its row"
+            );
+        }
+    }
+
+    /// Deleting a family's row blinds the oracle to every name only that row
+    /// carries. Each name below is carried by exactly one family, so the
+    /// oracle stops knowing it when its row goes — unless the names were
+    /// re-homed (a registry migration), which keeps it known and this test
+    /// green. A ratchet on the closed world rather than a copy of the table:
+    /// adding a family needs no edit here.
+    #[test]
+    fn family_anchor_names_stay_known_builtins() {
+        const ANCHOR_NAMES: &[&str] = &[
+            "is_watertight",
+            "min_clearance",
+            "angle_between_surfaces",
+            "antiparallel",
+            "perimeter",
+            "nominal",
+            "cylinder",
+            "body_mass_props",
+            "point_mass",
+            "affine_scale",
+            "diag",
+            "normalize",
+            "atan2",
+            "revolute",
+            "envelope_von_mises",
+            "laplacian",
+            "orient_slerp",
+            "orient_to_euler",
+            "prb_cantilever_beam",
+            "midplane",
+            "intersect",
+            "flat_map",
+            "affine_compose",
+            "partially_determined",
+            "to_global",
+        ];
+        for name in ANCHOR_NAMES {
+            assert!(
+                is_known_builtin(name),
+                "{name:?} is no longer a known builtin — a BUILTIN_NAME_FAMILIES \
+                 row was deleted without re-homing its names"
+            );
         }
     }
 
