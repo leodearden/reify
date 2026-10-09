@@ -1189,16 +1189,6 @@ pub fn solve_elastic_static_trampoline(
     let adaptive_params = extract_adaptive_params(options_vi);
     let adaptive_lane: Option<(IsotropicElastic, AdaptiveLaneOutcome)> =
         if adaptive_params.adaptive && let MaterialModel::Isotropic(iso) = &model {
-            // api_design note (reviewer_comprehensive, task 4902 amendment):
-            // surface the v1 result-bundle inconsistency (primary fields are
-            // coarse-mesh, a-posteriori fields are refined-loop) as an Info
-            // diagnostic rather than leaving it discoverable only via docs.
-            route_diagnostics.push(Diagnostic::info(
-                "adaptive refinement ran: displacement/stress/max_von_mises and the other \
-                 primary result fields reflect the INITIAL seed-resolution mesh, not the \
-                 adaptively-refined mesh; only convergence_status/global_relative_energy_error \
-                 reflect the refinement loop's outcome (v1 scope)",
-            ));
             let budget = RefinementBudget {
                 target_accuracy: adaptive_params.target_accuracy,
                 max_refinement_iterations: adaptive_params.max_refinement_iterations,
@@ -1393,7 +1383,7 @@ pub fn solve_elastic_static_trampoline(
                             Ok(AdaptiveLaneOutcome {
                                 status,
                                 global_relative_energy_error: problem.last_global_indicator,
-                                refined_solve: None,
+                                refined_solve: problem.into_refined_solve(),
                                 diagnostic,
                             })
                         }
@@ -3565,7 +3555,9 @@ fn zz_estimate(fea: &CantileverFeaSolve, material: &IsotropicElastic) -> Adaptiv
 /// bumped `(nx, ny, nz)` grid resolution each [`refine`](AdaptiveProblem::refine)
 /// call (via the step-10 `grid_override` seam) and recomputing the Z-Z
 /// energy-norm indicator via [`compute_zz_indicator`] on every
-/// [`solve_and_estimate`](AdaptiveProblem::solve_and_estimate).
+/// [`solve_and_estimate`](AdaptiveProblem::solve_and_estimate). Its final
+/// iterate is surfaced by [`into_refined_solve`](Self::into_refined_solve), so
+/// the trampoline reports the refined answer (task 8246).
 ///
 /// # v1 scope (RATIFIED esc-4902-83 option D)
 ///
@@ -3813,7 +3805,9 @@ fn characteristic_sizes_from_solver_mesh(coords: &[[f64; 3]], tets: &[[usize; 4]
 
 /// The **gmsh-realized** [`AdaptiveProblem`]: a-posteriori refinement that
 /// genuinely CONSUMES the Dörfler-marked element set, by remeshing the
-/// realized volume under a mark-driven size field.
+/// realized volume under a mark-driven size field. Its final iterate is
+/// surfaced by [`into_refined_solve`](Self::into_refined_solve), so the
+/// trampoline reports the remeshed answer (task 8246).
 ///
 /// # Sibling of, not replacement for, [`CantileverAdaptiveProblem`]
 ///
@@ -3891,6 +3885,10 @@ pub(crate) struct RealizedAdaptiveProblem {
     /// claims a mark-driven remesh that did not happen
     /// (reviewer_comprehensive amendment).
     pub(crate) refine_count: usize,
+    /// The most recent SUCCESSFUL solve, kept so the trampoline can report
+    /// the loop's final iterate; neither a failed solve nor a failed remesh
+    /// clears it.
+    last_solve: Option<CantileverFeaSolve>,
 }
 
 impl RealizedAdaptiveProblem {
@@ -3956,7 +3954,19 @@ impl RealizedAdaptiveProblem {
             last_global_indicator: 0.0,
             last_n_dofs: 0,
             refine_count: 0,
+            last_solve: None,
         })
+    }
+
+    /// The loop's final iterate, or `None` when no remesh ran (the seed
+    /// solve stands). After `run_adaptive_refinement` returns `Ok`, the last
+    /// call was always a solve of the current mesh.
+    pub(crate) fn into_refined_solve(self) -> Option<CantileverFeaSolve> {
+        if self.refine_count > 0 {
+            self.last_solve
+        } else {
+            None
+        }
     }
 
     /// Element count of the CURRENT mesh.
@@ -4077,6 +4087,7 @@ impl AdaptiveProblem for RealizedAdaptiveProblem {
         let estimate = zz_estimate(&fea, &self.material);
         self.last_global_indicator = estimate.relative_error;
         self.last_n_dofs = estimate.n_dofs;
+        self.last_solve = Some(fea);
         Ok(estimate)
     }
 
@@ -5718,8 +5729,8 @@ fn convergence_status_to_value(status: &ConvergenceStatus) -> Value {
 /// an opaque caller-supplied `Value` (this function does not construct it) —
 /// the caller passes `Value::Option(None)` when no field is available, or
 /// `Value::Option(Some(Box::new(Value::Field{..})))` (built via
-/// [`super::sampled_error_indicator_field`] from the coarse-mesh ZZ
-/// stress-error resample) on the isotropic adaptive path.
+/// [`error_indicator_field`] from the REPORTED solve's ZZ stress-error
+/// resample) on the isotropic adaptive path.
 fn aposteriori_adaptive_fields(
     status: &ConvergenceStatus,
     global_error: f64,

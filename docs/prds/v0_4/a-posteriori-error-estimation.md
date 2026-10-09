@@ -156,12 +156,11 @@ localization assertions are strict inequalities on element counts and on
 before/after sizes at a fixed physical position. Adaptive-vs-uniform log-log
 rate validation remains task #3002's remit.
 
-Also note: `displacement` / `stress` / `max_von_mises` and the other primary
-result fields still reflect the INITIAL seed mesh; only `convergence_status`,
-`global_relative_energy_error` and `error_indicator` reflect the refinement
-loop. That is #4902's ratified v1 contract, surfaced to callers as an Info
-diagnostic, and re-deriving the primary fields from the refined mesh would move
-the §7a resample grid that #4910 depends on.
+Since #8246, a run that refined reports its FINAL iterate in every
+solve-derived field and in `error_indicator`, resampled onto the seed solve's
+grid, so the result bundle describes one mesh and the §7a grid does not move;
+a zero-refine run reports the seed solve. The contract lives in
+`fea-result-model.md` §4.1 ("Adaptive solves").
 
 > This PRD edit rides task #4909's branch through the merge queue rather than
 > committing direct-to-main: #4909 is a mixed code+docs change, so the
