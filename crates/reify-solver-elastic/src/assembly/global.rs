@@ -289,7 +289,8 @@ pub fn detect_orphan_dofs(
 ///   claim, and never before the contract checks below.
 /// - Once `poll` returns `Break` it is not called again: chunks in progress
 ///   finish, no further chunk starts, and `Break(())` is returned.
-/// - A panic on a spawned thread reaches the caller with its original payload.
+/// - A panic on any thread likewise stops new chunks on every thread; a
+///   panic on a spawned thread reaches the caller with its original payload.
 ///
 /// # Panics
 ///
@@ -367,8 +368,9 @@ fn node_chunks(n_nodes: usize) -> impl Iterator<Item = Range<usize>> {
 /// Run `work` on every chunk using `threads` threads, the calling thread
 /// included; chunks are claimed in order from a shared queue. Only the calling
 /// thread polls, before each attempt to claim. On `Break` no further chunk
-/// starts, chunks in progress finish, and `Break(())` is returned. A worker's
-/// panic is re-raised on the caller with its original payload.
+/// starts, chunks in progress finish, and `Break(())` is returned. A panic in
+/// `work` on any thread likewise stops new chunks on every thread; a spawned
+/// thread's panic is re-raised on the caller with its original payload.
 fn run_chunks<C: Send>(
     chunks: Vec<C>,
     threads: NonZeroUsize,
@@ -377,29 +379,26 @@ fn run_chunks<C: Send>(
 ) -> ControlFlow<()> {
     let n_workers = threads.get().min(chunks.len()).saturating_sub(1);
     let queue = Mutex::new(chunks.into_iter());
-    let claim = || queue.lock().unwrap_or_else(PoisonError::into_inner).next();
     let cancelled = AtomicBool::new(false);
-    std::thread::scope(|scope| {
-        let workers: Vec<_> = (0..n_workers)
-            .map(|_| {
-                scope.spawn(|| {
-                    while !cancelled.load(Ordering::Relaxed) {
-                        let Some(chunk) = claim() else { break };
-                        work(chunk);
-                    }
-                })
-            })
-            .collect();
-        let outcome = loop {
-            if poll().is_break() {
+    let drain = |before_claim: &mut dyn FnMut() -> ControlFlow<()>| {
+        let _cancel_on_panic = CancelOnPanic(&cancelled);
+        while !cancelled.load(Ordering::Relaxed) {
+            if before_claim().is_break() {
                 cancelled.store(true, Ordering::Relaxed);
-                break ControlFlow::Break(());
+                return ControlFlow::Break(());
             }
-            let Some(chunk) = claim() else {
-                break ControlFlow::Continue(());
+            let Some(chunk) = queue.lock().unwrap_or_else(PoisonError::into_inner).next() else {
+                break;
             };
             work(chunk);
-        };
+        }
+        ControlFlow::Continue(())
+    };
+    std::thread::scope(|scope| {
+        let workers: Vec<_> = (0..n_workers)
+            .map(|_| scope.spawn(|| drain(&mut || ControlFlow::Continue(()))))
+            .collect();
+        let outcome = drain(poll);
         for worker in workers {
             if let Err(payload) = worker.join() {
                 std::panic::resume_unwind(payload);
@@ -407,6 +406,17 @@ fn run_chunks<C: Send>(
         }
         outcome
     })
+}
+
+/// Sets the flag if dropped while its thread unwinds from a panic.
+struct CancelOnPanic<'a>(&'a AtomicBool);
+
+impl Drop for CancelOnPanic<'_> {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            self.0.store(true, Ordering::Relaxed);
+        }
+    }
 }
 
 /// For each node, its `(element index, local index)` incidences in ascending
@@ -1051,15 +1061,16 @@ mod tests {
         }
     }
 
-    /// Regression guard for the panic-propagation contract: any change that
-    /// re-substitutes the worker's message (e.g. `.expect(...)` on the join,
-    /// a custom error type, or `unwrap_or_else(|_| panic!("..."))`) makes the
-    /// "out of bounds" substring disappear and this test fail. Every element
-    /// of a 137-tet chain shares a K_e with no data, so whichever of the
-    /// eight threads fills a chunk first panics.
+    /// A malformed K_e panics through parallel assembly with its own indexing
+    /// message instead of hanging or returning a matrix. Every element of a
+    /// 137-tet chain shares a K_e with no data, so every chunk panics, on the
+    /// calling thread as well as on spawned ones: this pins the end-to-end
+    /// outcome, not which thread's payload arrives.
+    /// `run_chunks_spawned_thread_panic_stops_new_chunks_and_reaches_caller_intact`
+    /// pins that a spawned thread's payload reaches the caller intact.
     #[test]
     #[should_panic(expected = "out of bounds")]
-    fn worker_thread_panic_payload_propagates_to_caller() {
+    fn parallel_assembly_of_malformed_k_e_panics_with_its_indexing_message() {
         let k_e = ElementStiffness {
             n_dofs: 12,
             data: vec![],
@@ -2937,27 +2948,67 @@ mod tests {
         assert_eq!(calls, 1, "poll must not be called after it breaks");
     }
 
-    /// A panic in whichever thread fills a chunk reaches the caller with its
-    /// original payload: every element shares a K_e with no data, so the
-    /// pattern pass succeeds and the value pass indexes out of bounds.
+    /// A spawned thread's panic stops new chunks on every thread and reaches
+    /// the caller with its original payload. Only the spawned thread panics,
+    /// so the payload can come from nowhere else. Its channel sender lives in
+    /// its thread-locals, so a first poll returns only once that thread has
+    /// fully unwound; the caller then finishes at most the chunk it claims
+    /// next (none, if the panic lands before the caller's first poll).
     #[test]
-    #[should_panic(expected = "out of bounds")]
-    fn assemble_stiffness_worker_panic_payload_propagates() {
-        let (nodes, conns) = unstructured_p1_box(8, 7, 6, BT7_P1_SEED);
-        let malformed = ElementStiffness {
-            n_dofs: 12,
-            data: vec![],
+    fn run_chunks_spawned_thread_panic_stops_new_chunks_and_reaches_caller_intact() {
+        use std::cell::RefCell;
+        use std::panic::{AssertUnwindSafe, catch_unwind, panic_any};
+        use std::sync::atomic::AtomicUsize;
+        use std::sync::mpsc::{Sender, channel};
+        use std::time::Duration;
+
+        struct SpawnedThreadPanic;
+        thread_local! {
+            static DROPPED_AT_THREAD_EXIT: RefCell<Option<Sender<()>>> =
+                const { RefCell::new(None) };
+        }
+        const CHUNKS: usize = 64;
+
+        let caller = std::thread::current().id();
+        let (exit_signal, spawned_thread_exited) = channel();
+        let exit_signal = Mutex::new(Some(exit_signal));
+        let chunks_on_caller = AtomicUsize::new(0);
+        let mut first_poll = true;
+        let mut hold_caller_until_spawned_thread_exits = || {
+            if std::mem::take(&mut first_poll) {
+                let _ = spawned_thread_exited.recv_timeout(Duration::from_secs(60));
+            }
+            ControlFlow::Continue(())
         };
-        let elements: Vec<AssemblyElement<'_>> = conns
-            .iter()
-            .enumerate()
-            .map(|(id, conn)| AssemblyElement {
-                id,
-                connectivity: conn,
-                k_e: &malformed,
-            })
-            .collect();
-        let _ = assemble_uncancelled(nodes.len(), &elements, 8);
+
+        let outcome = catch_unwind(AssertUnwindSafe(|| {
+            run_chunks(
+                vec![(); CHUNKS],
+                NonZeroUsize::new(2).expect("2 > 0"),
+                &mut hold_caller_until_spawned_thread_exits,
+                |()| {
+                    if std::thread::current().id() == caller {
+                        chunks_on_caller.fetch_add(1, Ordering::Relaxed);
+                        return;
+                    }
+                    let signal = exit_signal.lock().expect("unpoisoned").take();
+                    DROPPED_AT_THREAD_EXIT.with(|slot| *slot.borrow_mut() = signal);
+                    panic_any(SpawnedThreadPanic);
+                },
+            )
+        }));
+
+        let payload = outcome.expect_err("the spawned thread's panic must reach the caller");
+        assert!(
+            payload.is::<SpawnedThreadPanic>(),
+            "the caller must re-raise the spawned thread's own payload",
+        );
+        let caller_ran = chunks_on_caller.load(Ordering::Relaxed);
+        assert!(
+            caller_ran <= 1,
+            "after the spawned thread panicked the caller may finish only the \
+             chunk it had already claimed, but it ran {caller_ran} of {CHUNKS}",
+        );
     }
 
     /// `AssemblyMode` sets only parallelism (PRD S6): `Parallel { threads }`
