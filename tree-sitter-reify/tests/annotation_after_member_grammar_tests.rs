@@ -202,6 +202,25 @@ fn annotation_after_a_trailing_line_comment_is_its_own_member() {
     );
 }
 
+/// The boundary the scanner cannot see: a block comment opening the `@`'s line
+/// is lexed as an extra, and the scan after it starts past the line break, so
+/// the `@` is still a selector. `member_continuation.rs` clause 7 reports it.
+#[test]
+fn a_block_comment_opening_the_at_line_hides_the_break_from_the_scanner() {
+    let tree = parse("structure S {\n    let top = body\n    /* c */ @face(\"top\")\n}\n");
+    let root = tree.root_node();
+    assert!(!root.has_error(), "{}", root.to_sexp());
+    let selectors = nodes_of_kind(root, "ad_hoc_selector");
+    assert_eq!(selectors.len(), 1, "{}", root.to_sexp());
+    let base = selectors[0].child_by_field_name("base").expect("no base");
+    assert_eq!(
+        (base.end_position().row, selectors[0].end_position().row),
+        (1, 2),
+        "{}",
+        root.to_sexp()
+    );
+}
+
 // ── Cross-line selector attempts are rejected ───────────────────────────────
 
 #[test]

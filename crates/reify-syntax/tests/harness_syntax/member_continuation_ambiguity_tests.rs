@@ -1206,3 +1206,44 @@ fn annotations_at_the_member_column_in_both_guarded_bodies_are_clean() {
     assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
     assert_no_member_continuation_error("guarded-block annotations", source);
 }
+
+// ── (i) a block comment cannot carry a selector `@` across a line (#8300) ───
+//
+// The scanner cannot see a line break that a block comment opening the `@`'s
+// line sits after, so that layout still parses as a cross-line selector. It
+// is reported after the parse, wherever it occurs.
+
+#[test]
+fn a_selector_carried_across_a_line_by_a_block_comment_is_reported() {
+    let cases = [
+        (
+            "member",
+            "structure S {\n    let top = body\n    /* c */ @face(\"top\")\n    param y : Real = 1\n}\n",
+            "@face",
+        ),
+        (
+            "top level",
+            "unit foo : Length = 0.001\n/* c */ @deprecated(\"x\")\nstructure S {}\n",
+            "@deprecated",
+        ),
+        (
+            "argument list",
+            "structure S {\n    let y = f(body\n        /* c */ @face(\"top\"))\n}\n",
+            "@face",
+        ),
+        (
+            "multi-line comment",
+            "structure S {\n    let top = body /* a\n    b */ @face(\"top\")\n}\n",
+            "@face",
+        ),
+    ];
+    for (label, source, locator) in cases {
+        assert_one_member_continuation_error_at(label, source, locator, "@");
+    }
+}
+
+#[test]
+fn a_block_comment_before_a_same_line_selector_is_clean() {
+    let source = "structure S {\n    let top = body /* c */ @face(\"top\")\n}\n";
+    assert_no_member_continuation_error("same-line comment", source);
+}

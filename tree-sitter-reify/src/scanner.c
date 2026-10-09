@@ -363,6 +363,12 @@ bool tree_sitter_reify_external_scanner_scan(void *payload, TSLexer *lexer,
    * lookahead FALLS THROUGH: RADIX_LITERAL and AUTO_TOKEN below re-read the
    * lookahead and still work after this whitespace skip.  Placed after the
    * UNIT_* blocks, which test the un-advanced `c`.
+   *
+   * Blind spot: when a block comment opens the `@`'s line, the internal lexer
+   * lexes it as an extra, and the next scan starts after it, past the line
+   * break.  Skipping comments here cannot fix that, because a refusal resets
+   * the lexer and the comment is lexed again.
+   * crates/reify-syntax/src/member_continuation.rs clause 7 reports the layout.
    */
   if (valid_symbols[SELECTOR_AT]) {
     bool crossed_newline = false;
