@@ -24,16 +24,14 @@
 //! `harness_fea_solver_e2e/` are the authoritative current set:
 //!   - no `crate::common` use — at the split the only 5 users in `harness_fea_solver_e2e`
 //!     were the `as_printed_*` quartet and `fea_cold_start_heuristic_e2e`, all of which
-//!     stay (task #7033 later folded the `fdm_*` pair into `harness_fea_solver_e2e`,
-//!     adding two more users). So this root declares no `mod common;` at all and its
-//!     unit carries ZERO out-of-module-dir include lines;
+//!     stay. So this root declares no `mod common;` at all and its unit carries ZERO
+//!     out-of-module-dir include lines;
 //!   - no cross-submodule `super::`/`crate::` reference in either direction — at the
 //!     split `harness_fea_solver_e2e` held exactly ONE such edge,
-//!     `fea_bracket_minimize_mass_e2e` -> `fea_design_loop_support`. Task #6607 later added
-//!     two more into the same helper, from `fea_in_the_loop_producer` and
-//!     `edit_path_optimized_dispatch`. All three stay in `harness_fea_solver_e2e` and none
-//!     touches a `stress_*` module. Now that the two groups are separate crate roots, rustc
-//!     enforces that: a `crate::` path between them cannot resolve;
+//!     `fea_bracket_minimize_mass_e2e` -> `fea_design_loop_support`, and both ends stay
+//!     together. No edge crosses between `harness_stress_scenarios` and
+//!     `harness_fea_solver_e2e`, and rustc enforces that: they are separate crate roots,
+//!     so a path from one into the other cannot resolve;
 //!   - no `binary(...)`/`test(...)` selector names it. `.config/nextest.toml` never
 //!     mentions this harness, and both `scripts/heavy-test-filter-lib.sh` atoms that do
 //!     are test-scoped to `fea_in_the_loop_producer` and `fea_bracket_minimize_mass_e2e`
