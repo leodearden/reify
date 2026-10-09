@@ -10,7 +10,10 @@
 //! pure-shell meshes ⇒ `D = 6`, mixed tet+shell meshes ⇒ `D = 6` (shell
 //! dominates). Uses `faer-rs` CSR triplet builders.
 
-use faer::sparse::{SparseRowMat, Triplet};
+use std::num::NonZeroUsize;
+use std::ops::{ControlFlow, Range};
+
+use faer::sparse::{SparseRowMat, SymbolicSparseRowMat, Triplet};
 
 use super::ElementStiffness;
 
@@ -270,6 +273,244 @@ pub fn detect_orphan_dofs(
     OrphanDofsSummary { count, examples }
 }
 
+/// Assemble the global stiffness `K` — `D·n_nodes` square, canonical CSR —
+/// row by row: each node builds its own rows from the elements incident on it.
+///
+/// - `D = max(k_e.n_dofs / connectivity.len())` over `elements`, or `3` when
+///   `elements` is empty. An element's local DOF `d_e·a + α` maps to global
+///   DOF `D·connectivity[a] + α`, where `d_e = k_e.n_dofs / connectivity.len()`.
+/// - Pattern: row `D·n + α` stores column `D·m + β` exactly when some element
+///   containing both `n` and `m` has `d_e > max(α, β)`. Rows no element covers
+///   — the orphan rotation rows of tet-only nodes in a mixed tet+shell mesh,
+///   and every row of an untouched node — store nothing.
+/// - Values: each stored entry is `+0.0` plus its contributions in
+///   element-slice order, then local `(a, b)` order. That is the same entries
+///   and the same bits as folding each element's `(a, α, b, β)` block into `K`
+///   in slice order.
+/// - The result is bitwise identical for every `threads`.
+///
+/// Rationale: PRD `docs/prds/v0_6/elastic-static-solver-performance.md` §5 C12
+/// and decision S6.
+///
+/// # Panics
+///
+/// Before any work, if an element has empty connectivity, a `k_e.n_dofs` not
+/// divisible by `connectivity.len()`, zero DOFs per node, or a node
+/// `>= n_nodes`. Each message names the element id.
+pub fn assemble_stiffness(
+    n_nodes: usize,
+    elements: &[AssemblyElement<'_>],
+    threads: NonZeroUsize,
+    poll: &mut dyn FnMut() -> ControlFlow<()>,
+) -> ControlFlow<(), SparseRowMat<usize, f64>> {
+    let _ = (threads, poll);
+    let d = check_elements_and_derive_dofs_per_node(n_nodes, elements);
+    // Zero release-mode cost; eprintln! because this crate has no logging
+    // dependency (task 3293).
+    #[cfg(debug_assertions)]
+    {
+        let orphans = detect_orphan_dofs(n_nodes, elements);
+        if orphans.count > 0 {
+            eprintln!(
+                "[reify-solver-elastic] assemble_stiffness: {orphans}; \
+                 apply Dirichlet BC (task 2917) or MPC tying (task 3020) to \
+                 stabilise these DOFs before solving",
+            );
+        }
+    }
+    let rows = NodeOwnedRows::new(n_nodes, elements, d);
+    let dim = d * n_nodes;
+    let mut scratch = RowScratch::default();
+
+    let mut row_ptr = vec![0usize; dim + 1];
+    rows.count(0..n_nodes, &mut row_ptr[1..], &mut scratch);
+    for row in 0..dim {
+        row_ptr[row + 1] += row_ptr[row];
+    }
+
+    let nnz = row_ptr[dim];
+    let mut col_idx = vec![0usize; nnz];
+    let mut val = vec![0.0; nnz];
+    rows.fill(0..n_nodes, &row_ptr, &mut col_idx, &mut val, &mut scratch);
+
+    ControlFlow::Continue(SparseRowMat::new(
+        SymbolicSparseRowMat::new_checked(dim, dim, row_ptr, None, col_idx),
+        val,
+    ))
+}
+
+/// For each node, its `(element index, local index)` incidences in ascending
+/// order — one entry per occurrence, so an element repeating a node appears
+/// once per local index.
+struct NodeIncidence {
+    ptr: Vec<usize>,
+    entries: Vec<(usize, usize)>,
+}
+
+impl NodeIncidence {
+    /// Counting sort over `(element, local index)`; `elements` must already
+    /// satisfy the node-range contract.
+    fn new(n_nodes: usize, elements: &[AssemblyElement<'_>]) -> Self {
+        let mut ptr = vec![0usize; n_nodes + 1];
+        for element in elements {
+            for &node in element.connectivity {
+                ptr[node + 1] += 1;
+            }
+        }
+        for node in 0..n_nodes {
+            ptr[node + 1] += ptr[node];
+        }
+        let mut cursor = ptr[..n_nodes].to_vec();
+        let mut entries = vec![(0, 0); ptr[n_nodes]];
+        for (e, element) in elements.iter().enumerate() {
+            for (a, &node) in element.connectivity.iter().enumerate() {
+                entries[cursor[node]] = (e, a);
+                cursor[node] += 1;
+            }
+        }
+        Self { ptr, entries }
+    }
+
+    fn of(&self, node: usize) -> &[(usize, usize)] {
+        &self.entries[self.ptr[node]..self.ptr[node + 1]]
+    }
+}
+
+/// Per-node working buffers, reused across the nodes of one range.
+#[derive(Default)]
+struct RowScratch {
+    /// `(neighbour node m, width w(n, m))`, ascending in `m`.
+    neighbours: Vec<(usize, usize)>,
+    /// `offsets[α·K + k]`: where neighbour `k`'s block starts within row
+    /// `(n, α)`, for the `K` neighbours with `w > α`.
+    offsets: Vec<usize>,
+    /// Neighbour index of each local node of the element being scattered.
+    local_to_neighbour: Vec<usize>,
+}
+
+/// The node-owned row builder behind [`assemble_stiffness`]. Every method
+/// takes a node range and touches only that range's rows, so ranges are
+/// independent of each other.
+struct NodeOwnedRows<'s, 'e> {
+    elements: &'s [AssemblyElement<'e>],
+    incidence: NodeIncidence,
+    /// Global DOFs per node `D`.
+    d: usize,
+}
+
+impl<'s, 'e> NodeOwnedRows<'s, 'e> {
+    fn new(n_nodes: usize, elements: &'s [AssemblyElement<'e>], d: usize) -> Self {
+        Self {
+            elements,
+            incidence: NodeIncidence::new(n_nodes, elements),
+            d,
+        }
+    }
+
+    fn dofs_per_node(element: &AssemblyElement<'_>) -> usize {
+        element.k_e.n_dofs / element.connectivity.len()
+    }
+
+    /// Sorted `(m, w(n, m))` over the nodes `m` sharing an element with
+    /// `node`, where `w` is the largest `d_e` of the elements they share.
+    fn neighbours(&self, node: usize, out: &mut Vec<(usize, usize)>) {
+        out.clear();
+        for &(e, _) in self.incidence.of(node) {
+            let element = &self.elements[e];
+            let d_e = Self::dofs_per_node(element);
+            out.extend(element.connectivity.iter().map(|&m| (m, d_e)));
+        }
+        out.sort_unstable();
+        out.dedup_by(|later, kept| {
+            let same_node = later.0 == kept.0;
+            if same_node {
+                kept.1 = kept.1.max(later.1);
+            }
+            same_node
+        });
+    }
+
+    /// Write the stored-entry count of every row of `nodes` into `row_len`,
+    /// which holds exactly those `D·nodes.len()` rows.
+    fn count(&self, nodes: Range<usize>, row_len: &mut [usize], scratch: &mut RowScratch) {
+        let d = self.d;
+        for (node, lens) in nodes.zip(row_len.chunks_exact_mut(d)) {
+            self.neighbours(node, &mut scratch.neighbours);
+            for (alpha, len) in lens.iter_mut().enumerate() {
+                *len = scratch
+                    .neighbours
+                    .iter()
+                    .filter(|&&(_, w)| w > alpha)
+                    .map(|&(_, w)| w)
+                    .sum();
+            }
+        }
+    }
+
+    /// Write the column indices and summed values of every row of `nodes`.
+    /// `col_idx`/`val` hold exactly those rows' entries, starting at stored
+    /// index `row_ptr[D·nodes.start]`; `row_ptr` is the full prefix sum.
+    fn fill(
+        &self,
+        nodes: Range<usize>,
+        row_ptr: &[usize],
+        col_idx: &mut [usize],
+        val: &mut [f64],
+        scratch: &mut RowScratch,
+    ) {
+        let d = self.d;
+        let base = row_ptr[d * nodes.start];
+        for node in nodes {
+            self.neighbours(node, &mut scratch.neighbours);
+            let neighbours = &scratch.neighbours;
+            let k_count = neighbours.len();
+            let row_start = |alpha: usize| row_ptr[d * node + alpha] - base;
+
+            scratch.offsets.clear();
+            scratch.offsets.resize(d * k_count, 0);
+            for alpha in 0..d {
+                let start = row_start(alpha);
+                let mut offset = 0;
+                for (k, &(m, w)) in neighbours.iter().enumerate() {
+                    if w > alpha {
+                        scratch.offsets[alpha * k_count + k] = offset;
+                        for (beta, col) in col_idx[start + offset..start + offset + w]
+                            .iter_mut()
+                            .enumerate()
+                        {
+                            *col = d * m + beta;
+                        }
+                        offset += w;
+                    }
+                }
+                debug_assert_eq!(start + offset, row_start(alpha + 1), "row length mismatch");
+            }
+
+            for &(e, a) in self.incidence.of(node) {
+                let element = &self.elements[e];
+                let d_e = Self::dofs_per_node(element);
+                scratch.local_to_neighbour.clear();
+                scratch
+                    .local_to_neighbour
+                    .extend(element.connectivity.iter().map(|&m| {
+                        neighbours
+                            .binary_search_by_key(&m, |&(m, _)| m)
+                            .expect("every node of an incident element is a neighbour")
+                    }));
+                for alpha in 0..d_e {
+                    let start = row_start(alpha);
+                    for (b, &k) in scratch.local_to_neighbour.iter().enumerate() {
+                        let dst = start + scratch.offsets[alpha * k_count + k];
+                        for beta in 0..d_e {
+                            val[dst + beta] += element.k_e.get(d_e * a + alpha, d_e * b + beta);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Scatter per-element stiffness matrices into a global `D·N × D·N` sparse
 /// stiffness matrix, where `D` is the global DOFs-per-node count derived
 /// from the element slice (see below) and `N = n_nodes`.
@@ -360,78 +601,7 @@ pub fn assemble_global_stiffness(
              single-threaded slice-order accumulation.",
         );
     }
-    for element in elements {
-        let n_local = element.connectivity.len();
-        assert!(
-            n_local > 0,
-            "AssemblyElement {{ id: {} }} has empty connectivity \
-             (k_e.n_dofs = {}); cannot derive dofs_per_node from zero nodes",
-            element.id,
-            element.k_e.n_dofs,
-        );
-        let remainder = element.k_e.n_dofs % n_local;
-        assert!(
-            remainder == 0,
-            "AssemblyElement {{ id: {} }} has connectivity.len() = {} \
-             but k_e.n_dofs (= {}) is not divisible by connectivity.len() \
-             (remainder = {}); expected k_e.n_dofs to be a multiple of \
-             connectivity.len() so the per-element dofs_per_node is an integer",
-            element.id,
-            n_local,
-            element.k_e.n_dofs,
-            remainder,
-        );
-        let dofs_per_node = element.k_e.n_dofs / n_local;
-        assert!(
-            dofs_per_node >= 1,
-            "AssemblyElement {{ id: {} }} has connectivity.len() = {} \
-             but k_e.n_dofs = {} ⇒ dofs_per_node = {} < 1; element kernels \
-             must emit at least one DOF per node",
-            element.id,
-            n_local,
-            element.k_e.n_dofs,
-            dofs_per_node,
-        );
-        for &node in element.connectivity {
-            assert!(
-                node < n_nodes,
-                "AssemblyElement {{ id: {} }} references node {} \
-                 but n_nodes = {} (valid range is 0..{})",
-                element.id,
-                node,
-                n_nodes,
-                n_nodes,
-            );
-        }
-    }
-
-    // Global DOFs-per-node `D` is the maximum over all per-element
-    // `d_e = k_e.n_dofs / connectivity.len()`. Empty inputs default to
-    // `3` so the v0.3 tet-only `3N × 3N` empty-mesh shape is preserved
-    // bit-for-bit. Pure-tet meshes ⇒ `D = 3`. Pure-shell meshes ⇒
-    // `D = 6`. Mixed tet+shell meshes ⇒ `D = 6` (shell dominates;
-    // tet-only nodes carry orphan rotation rows/cols of zero, which
-    // downstream BC/MPC layers handle).
-    //
-    // Design note (task 3293): when `D > min(d_e)` (mixed tet+shell),
-    // nodes touched only by lower-`d_e` elements end up with structurally
-    // zero rows/cols at the extra DOFs (`α >= d_e_max_local(n)` for that
-    // node). Stabilisation is provided by Shells T10's MPC tying (task
-    // 3020, landed) plus the Dirichlet rotation auto-clamp (task 2917,
-    // landed); the contract owner is the BC/MPC layer.
-    //
-    // Diagnostic surface: `detect_orphan_dofs(n_nodes, elements)` returns
-    // an `OrphanDofsSummary { count, examples }` describing any such
-    // under-covered (node, axis) pairs. In debug builds this function
-    // calls `detect_orphan_dofs` internally and emits a single `eprintln!`
-    // warning if `count > 0`, so forgetting BC/MPC stabilisation surfaces
-    // at the assembly boundary rather than as a silent singular K in the
-    // linear solve.
-    let n_dofs_per_node: usize = elements
-        .iter()
-        .map(|e| e.k_e.n_dofs / e.connectivity.len())
-        .max()
-        .unwrap_or(3);
+    let n_dofs_per_node = check_elements_and_derive_dofs_per_node(n_nodes, elements);
 
     // Mode-specific dispatch. The deterministic arm exercises the shared
     // `emit_element_triplets` scatter primitive in slice order; the
@@ -625,6 +795,69 @@ pub fn assemble_global_stiffness(
         "triplets within declared n_dofs_per_node*n_nodes dims \
          (per-element bounds enforced upstream)",
     )
+}
+
+/// Enforce the per-element contract of [`assemble_stiffness`] and return the
+/// global DOFs-per-node `D = max(k_e.n_dofs / connectivity.len())`, or `3`
+/// for an empty slice (the v0.3 tet-only `3N × 3N` shape).
+///
+/// Unconditional `assert!` (not `debug_assert!`) per the project's Task-2544
+/// contract-explicitness convention, mirrored in
+/// `assembly/mod.rs::element_stiffness` and
+/// `elements/mod.rs::ReferenceElement::jacobian`.
+fn check_elements_and_derive_dofs_per_node(
+    n_nodes: usize,
+    elements: &[AssemblyElement<'_>],
+) -> usize {
+    for element in elements {
+        let n_local = element.connectivity.len();
+        assert!(
+            n_local > 0,
+            "AssemblyElement {{ id: {} }} has empty connectivity \
+             (k_e.n_dofs = {}); cannot derive dofs_per_node from zero nodes",
+            element.id,
+            element.k_e.n_dofs,
+        );
+        let remainder = element.k_e.n_dofs % n_local;
+        assert!(
+            remainder == 0,
+            "AssemblyElement {{ id: {} }} has connectivity.len() = {} \
+             but k_e.n_dofs (= {}) is not divisible by connectivity.len() \
+             (remainder = {}); expected k_e.n_dofs to be a multiple of \
+             connectivity.len() so the per-element dofs_per_node is an integer",
+            element.id,
+            n_local,
+            element.k_e.n_dofs,
+            remainder,
+        );
+        let dofs_per_node = element.k_e.n_dofs / n_local;
+        assert!(
+            dofs_per_node >= 1,
+            "AssemblyElement {{ id: {} }} has connectivity.len() = {} \
+             but k_e.n_dofs = {} ⇒ dofs_per_node = {} < 1; element kernels \
+             must emit at least one DOF per node",
+            element.id,
+            n_local,
+            element.k_e.n_dofs,
+            dofs_per_node,
+        );
+        for &node in element.connectivity {
+            assert!(
+                node < n_nodes,
+                "AssemblyElement {{ id: {} }} references node {} \
+                 but n_nodes = {} (valid range is 0..{})",
+                element.id,
+                node,
+                n_nodes,
+                n_nodes,
+            );
+        }
+    }
+    elements
+        .iter()
+        .map(|e| e.k_e.n_dofs / e.connectivity.len())
+        .max()
+        .unwrap_or(3)
 }
 
 /// Emit one dense `d_e² · n_local²` block of triplets for `element` and
@@ -3164,7 +3397,9 @@ mod tests {
     /// followed in the slice by a MITC3 shell `[6k, 6k+4, 6k+5]`. `D = 6`;
     /// nodes `6k+1..=6k+3` are tet-only, so their rotation rows are orphans.
     /// Returns `(n_nodes, conns, k_es)`.
-    fn replicated_mixed_tet_shell(copies: usize) -> (usize, Vec<Vec<usize>>, Vec<ElementStiffness>) {
+    fn replicated_mixed_tet_shell(
+        copies: usize,
+    ) -> (usize, Vec<Vec<usize>>, Vec<ElementStiffness>) {
         let mat = dimensionless_steel_like();
         let k_e_tet = element_stiffness_p1(&UNIT_TET_P1, &mat);
         let k_e_shell = shell_element_stiffness(&UNIT_TRI, SHELL_T, &mat);
@@ -3299,7 +3534,12 @@ mod tests {
         threads: usize,
     ) -> SparseRowMat<usize, f64> {
         let threads = NonZeroUsize::new(threads).expect("test thread count >= 1");
-        match assemble_stiffness(n_nodes, elements, threads, &mut || ControlFlow::Continue(())) {
+        match assemble_stiffness(
+            n_nodes,
+            elements,
+            threads,
+            &mut || ControlFlow::Continue(()),
+        ) {
             ControlFlow::Continue(k) => k,
             ControlFlow::Break(()) => panic!("a never-breaking poll cannot cancel assembly"),
         }
@@ -3324,10 +3564,26 @@ mod tests {
         let degenerate_k_es = [order_sensitive_stiffness(12, 0xDE6E)];
 
         let fixtures = [
-            ("shared-DOF 3×3×3 P1 box", box_n, elements_of(&box_conns, &box_k_es)),
-            ("unstructured P2 box", p2_nodes.len(), elements_of(&p2_conns, &p2_k_es)),
-            ("mixed tet+shell", mixed_n, elements_of(&mixed_conns, &mixed_k_es)),
-            ("repeated-node element", 3, elements_of(&degenerate_conns, &degenerate_k_es)),
+            (
+                "shared-DOF 3×3×3 P1 box",
+                box_n,
+                elements_of(&box_conns, &box_k_es),
+            ),
+            (
+                "unstructured P2 box",
+                p2_nodes.len(),
+                elements_of(&p2_conns, &p2_k_es),
+            ),
+            (
+                "mixed tet+shell",
+                mixed_n,
+                elements_of(&mixed_conns, &mixed_k_es),
+            ),
+            (
+                "repeated-node element",
+                3,
+                elements_of(&degenerate_conns, &degenerate_k_es),
+            ),
         ];
         for (label, n_nodes, elements) in &fixtures {
             let k = assemble_uncancelled(*n_nodes, elements, 1);
