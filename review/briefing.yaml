@@ -307,8 +307,9 @@ subprojects:
       architecture. Auto-parameter resolution routes through domain solvers
       (Nelder-Mead dimensional, SolveSpace geometric, pure-Rust backtracking
       logical). Compiled GeometryOps dispatch across the production kernels
-      (OCCT, Manifold, OpenVDB, Gmsh; Fidget is unlinked, see implicit-solids.md) via a descriptor-driven registry with
-      BFS conversion-chain routing, under the SHIPPED kernel-seam contracts
+      (OCCT, Manifold, OpenVDB, Gmsh; Fidget is unlinked, see
+      implicit-solids.md) via a descriptor-driven registry with BFS
+      conversion-chain routing, under the SHIPPED kernel-seam contracts
       (INV-GEO-1..4) pinned by reify-kernel-conformance. The stdlib provides
       dimension-aware math, geometric value constructors, topology selectors
       and the declarative engineering surface (GD&T, DFM, stackup, fields).
@@ -352,13 +353,10 @@ subprojects:
 
     known_gaps:
       - what: "Fidget is deliberately not linked into the production CLI or GUI: its kernel is complete and tested but unroutable from .ri (metre-scale domain), and linking is routing-inert"
-        why: "Decided 2026-10-08 (esc-8010-4); task #8010 cancelled. Supersedes the 2026-09-28 'unintended' ruling. See docs/prds/v0_6/implicit-solids.md section 11; the re-open decision is owned by #8411."
+        why: "Decided 2026-10-08 (esc-8010-4); task #8010 cancelled. Supersedes the 2026-09-28 'unintended' ruling. See docs/prds/v0_6/implicit-solids.md section 11; the re-open decision is owned by #8411, which also inherits the crate's adoption defects — including its export(), which refuses every format (no SDF→BRep/STEP path)."
         tracking: "#8411"
       - what: "OpenVDB voxel-Boolean execute() on two voxel grids is stubbed (OperationFailed(VOXEL_BOOL_STUB_MSG)); isosurface and mesh→voxel realization ARE wired"
         why: "Deferred to a multi-kernel PRD leaf cited only as 'task ε' in code — a TODO-invariant candidate."
-        tracking: null
-      - what: "Fidget SDF→BRep/STEP export"
-        why: "Explicitly a v0.3 follow-up in the kernel's export()."
         tracking: null
       - what: "Manifold cross-kernel selector wave: most commits landed but the task is still open"
         why: "Verify what remains against the task record before reviewing selector coverage as complete."
