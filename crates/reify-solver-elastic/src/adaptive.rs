@@ -337,9 +337,12 @@ pub const DORFLER_THETA: f64 = 0.5;
 ///
 /// # Linear accumulation is deliberate
 ///
-/// For any non-negative weights the descending-prefix set marked here also
-/// satisfies `Σ_M w² ≥ θ Σ w²` at the same θ, and contains the minimal such
-/// set: a valid, non-minimal Dörfler set. Pinned by
+/// Mathematically — for non-negative reals in exact arithmetic — the
+/// descending-prefix set marked here also satisfies `Σ_M w² ≥ θ Σ w²` at the
+/// same θ, and contains the minimal such set: a valid, non-minimal Dörfler
+/// set. In `f64` this can slip at the margins (rounding in the sums, or
+/// distinct tiny weights whose squares tie or underflow to zero). Pinned in the
+/// exact-arithmetic regime (integer weights, dyadic θ) by
 /// `the_linear_dorfler_set_meets_the_squared_bulk_criterion_and_contains_the_minimal_squared_set`
 /// in `tests/adaptive_refinement_tests.rs`; rationale and measurements in
 /// `docs/prds/v0_4/a-posteriori-error-estimation.md` (Dörfler amendment).

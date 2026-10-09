@@ -2214,8 +2214,8 @@ fn realized_cylinder_mesh_covers_its_own_aabb() {
 ///   (3) `convergence_status` is `NotConverged { reason: MaxIterations }` and
 ///       the full refinement budget was consumed — exactly one mark-driven
 ///       refine. `max_refinement_iterations: 1` makes the iteration cap bind at
-///       the second solve, and the cap outranks a simultaneous stall (task
-///       7449), so the reason is `MaxIterations` whatever the `g1/g0` ratio;
+///       the second solve; why that fixes the reason: the "Termination
+///       precedence" section of `reify_solver_elastic::adaptive::run_adaptive_refinement`;
 ///   (4) `global_relative_energy_error` is finite, > 0 and <= 1.0;
 ///   (5) the localized diagnostic's reported POST-refine element count is
 ///       strictly greater than its PRE-refine count.
@@ -2236,18 +2236,6 @@ fn realized_cylinder_mesh_covers_its_own_aabb() {
 /// target and the non-binding dof ceiling carry measured margins of three orders
 /// of magnitude or more; and (4) is a finiteness-and-range sanity check rather
 /// than a tolerance.
-///
-/// Why the categorical claim is back rather than the band being retuned: before
-/// task 7414 this test reddened 4 of 20 consecutive idle runs, always with
-/// `Stalled`, because the stall gate then outranked the iteration cap and turns
-/// on a `g1/g0` ratio measured at 0.8147-0.9013 against a 0.90 threshold — a
-/// ~1% band. Task 7414 dropped the variant claim; task 7449 changed the
-/// termination precedence so a binding cap outranks a simultaneous stall, which
-/// makes `MaxIterations` exact by construction. The run log, its provenance,
-/// and the (untested) hypothesis that the unpinned SEED mesh is the source live
-/// in `docs/notes/adaptive-e2e-seed-mesh-drift-measurement.md`; the
-/// seed-pinning work itself is ticket `tkt_0RTGVY62JW40ZMJDEQWEJRYCSE` and is
-/// deliberately not done here.
 #[cfg(has_gmsh)]
 #[test]
 fn body_adaptive_solve_runs_the_gmsh_realized_localized_lane() {
@@ -2355,15 +2343,8 @@ fn body_adaptive_solve_runs_the_gmsh_realized_localized_lane() {
             match &reason {
                 Value::Enum { variant, .. } => assert_eq!(
                     variant, "MaxIterations",
-                    "the iteration cap — and not the accuracy target — must be what \
-                     terminated the loop. `max_refinement_iterations: 1` makes the cap \
-                     bind at the second solve, and the cap outranks a simultaneous \
-                     stall (task 7449), so the reason is `MaxIterations` whatever the \
-                     g1/g0 ratio. `MaxDofs` is excluded: this fixture peaks at 1002 \
-                     dofs against a 2_000_000 cap (~2000x), so the dof ceiling provably \
-                     did not bind, and `TargetMissed` is never emitted by \
-                     `run_adaptive_refinement` (see its `BudgetReason` docs). got \
-                     reason: {reason:?}"
+                    "the binding iteration cap must report the stop (see \
+                     `run_adaptive_refinement`'s \"Termination precedence\"), got {reason:?}"
                 ),
                 other => panic!("the NotConverged reason must be a Value::Enum, got {other:?}"),
             }

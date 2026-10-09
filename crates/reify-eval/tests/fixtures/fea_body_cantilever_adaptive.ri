@@ -19,10 +19,10 @@
 // mark-driven refine and two solves, which bounds end-to-end wallclock while
 // still proving the refine ran. `max_dofs` is set high enough not to bind first.
 // So the budget guarantees `NotConverged`, a dof ceiling that does not bind, and
-// exactly one mark-driven refine. The iteration cap binds at the second solve
-// and outranks a simultaneous stall, so the terminal reason is `MaxIterations`
-// by construction, however far that one refine drops the global indicator
-// (task 7449).
+// exactly one mark-driven refine. The iteration cap binds at the second solve,
+// so the terminal reason is `MaxIterations`; why a binding cap fixes the reason:
+// the "Termination precedence" section of `run_adaptive_refinement`
+// (crates/reify-solver-elastic/src/adaptive.rs).
 //
 // No `target` field on the Load/Support: BC selection stays coordinate-based
 // (clamp x_min, load x_max), which is the only BC model that survives a remesh —
