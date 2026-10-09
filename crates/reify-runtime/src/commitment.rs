@@ -185,7 +185,7 @@ impl NodePolicyOverrides {
     /// [`resolve_with_traits`](Self::resolve_with_traits) reads. Whether
     /// anything reads `reify.toml` at all is recorded in
     /// `docs/notes/reify-toml-schema.md`.
-    // G-allow: retained with the reify.toml [[node_overrides]] surface pending the async-recalc/executor ruling (#5023); no binary loads the manifest, so no production caller until a consumer is wired.
+    // G-allow: no production caller pending #5023; status in docs/notes/reify-toml-schema.md
     pub fn from_config_overrides(
         entries: &[reify_config::NodePolicyOverride],
     ) -> Result<Self, NodeOverrideConfigError> {
@@ -329,7 +329,7 @@ pub enum CommitmentDecision {
 /// 3. Elapsed > `always_commit_after` → `Committed`
 /// 4. Estimated progress > `commit_when_proportion_done` → `Committed`
 /// 5. Otherwise → `NotYet`
-// G-allow: commitment enforcement retained pending the #5023 ruling on whether async recalc cancels in-flight work; no production caller since the concurrent scheduler was deleted in c1b8dba3f7.
+// G-allow: no production caller pending #5023; status in docs/notes/reify-toml-schema.md
 pub fn check_commitment(
     policy: &CommitmentPolicy,
     override_: NodeCommitmentOverride,
@@ -385,7 +385,7 @@ struct CommitmentState {
 /// Wraps the pure [`check_commitment`] function with stateful tracking:
 /// register tasks when they start, update status periodically, and query
 /// whether a task should continue or be cancelled.
-// G-allow: commitment enforcement retained pending the #5023 ruling on whether async recalc cancels in-flight work; no production caller since the concurrent scheduler was deleted in c1b8dba3f7.
+// G-allow: no production caller pending #5023; status in docs/notes/reify-toml-schema.md
 pub struct CommitmentTracker {
     policy: CommitmentPolicy,
     states: HashMap<NodeId, CommitmentState>,

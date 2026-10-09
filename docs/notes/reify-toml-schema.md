@@ -30,8 +30,9 @@ below for how a converted entry ranks.
    `reify.toml`, and `from_config_overrides` has no production caller.
 2. **No scheduler consults a resolved commitment policy.** The concurrent
    scheduler was deleted in c1b8dba3f7 (task ο, #5065). The enforcement code,
-   `check_commitment` and `CommitmentTracker`, is kept but nothing references
-   it. The task that owns its future is cited on those items' `// G-allow:`
+   `check_commitment` and `CommitmentTracker`, is kept, but nothing in
+   production references it (tests still exercise it). The task that owns its
+   future is cited on those items' `// G-allow:`
    markers in `crates/reify-runtime/src/commitment.rs`.
 3. **`reify dev inspect-node` does not read `reify.toml`.** Its
    `instance override` and `type override` lines always print `(none)`, and its
