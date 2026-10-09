@@ -12,6 +12,8 @@
 
 use std::num::NonZeroUsize;
 use std::ops::{ControlFlow, Range};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, PoisonError};
 
 use faer::sparse::{SparseRowMat, SymbolicSparseRowMat, Triplet};
 
@@ -292,6 +294,17 @@ pub fn detect_orphan_dofs(
 /// Rationale: PRD `docs/prds/v0_6/elastic-static-solver-performance.md` §5 C12
 /// and decision S6.
 ///
+/// # Threads and cancellation
+///
+/// Rows are built in chunks of whole nodes, claimed from a shared queue by
+/// `threads` threads; the calling thread is one of them, so `threads = 1`
+/// spawns none.
+/// - `poll` runs only on the calling thread, before each chunk it tries to
+///   claim, and never before the contract checks below.
+/// - Once `poll` returns `Break` it is not called again: chunks in progress
+///   finish, no further chunk starts, and `Break(())` is returned.
+/// - A panic on a spawned thread reaches the caller with its original payload.
+///
 /// # Panics
 ///
 /// Before any work, if an element has empty connectivity, a `k_e.n_dofs` not
@@ -303,7 +316,6 @@ pub fn assemble_stiffness(
     threads: NonZeroUsize,
     poll: &mut dyn FnMut() -> ControlFlow<()>,
 ) -> ControlFlow<(), SparseRowMat<usize, f64>> {
-    let _ = (threads, poll);
     let d = check_elements_and_derive_dofs_per_node(n_nodes, elements);
     // Zero release-mode cost; eprintln! because this crate has no logging
     // dependency (task 3293).
@@ -320,10 +332,14 @@ pub fn assemble_stiffness(
     }
     let rows = NodeOwnedRows::new(n_nodes, elements, d);
     let dim = d * n_nodes;
-    let mut scratch = RowScratch::default();
 
     let mut row_ptr = vec![0usize; dim + 1];
-    rows.count(0..n_nodes, &mut row_ptr[1..], &mut scratch);
+    let count_chunks: Vec<_> = node_chunks(n_nodes)
+        .zip(row_ptr[1..].chunks_mut(d * NODES_PER_CHUNK))
+        .collect();
+    run_chunks(count_chunks, threads, poll, |(nodes, row_len)| {
+        rows.count(nodes, row_len, &mut RowScratch::default());
+    })?;
     for row in 0..dim {
         row_ptr[row + 1] += row_ptr[row];
     }
@@ -331,12 +347,80 @@ pub fn assemble_stiffness(
     let nnz = row_ptr[dim];
     let mut col_idx = vec![0usize; nnz];
     let mut val = vec![0.0; nnz];
-    rows.fill(0..n_nodes, &row_ptr, &mut col_idx, &mut val, &mut scratch);
+    let mut fill_chunks = Vec::with_capacity(n_nodes.div_ceil(NODES_PER_CHUNK));
+    let (mut cols_rest, mut vals_rest) = (&mut col_idx[..], &mut val[..]);
+    for nodes in node_chunks(n_nodes) {
+        let len = row_ptr[d * nodes.end] - row_ptr[d * nodes.start];
+        let (cols, rest) = std::mem::take(&mut cols_rest).split_at_mut(len);
+        cols_rest = rest;
+        let (vals, rest) = std::mem::take(&mut vals_rest).split_at_mut(len);
+        vals_rest = rest;
+        fill_chunks.push((nodes, cols, vals));
+    }
+    run_chunks(fill_chunks, threads, poll, |(nodes, cols, vals)| {
+        rows.fill(nodes, &row_ptr, cols, vals, &mut RowScratch::default());
+    })?;
 
     ControlFlow::Continue(SparseRowMat::new(
         SymbolicSparseRowMat::new_checked(dim, dim, row_ptr, None, col_idx),
         val,
     ))
+}
+
+/// Nodes per work chunk: the unit of parallel work, and of cancellation
+/// latency (one poll per chunk).
+const NODES_PER_CHUNK: usize = 64;
+
+/// `0..n_nodes` in consecutive ranges of [`NODES_PER_CHUNK`] nodes.
+fn node_chunks(n_nodes: usize) -> impl Iterator<Item = Range<usize>> {
+    (0..n_nodes)
+        .step_by(NODES_PER_CHUNK)
+        .map(move |first| first..(first + NODES_PER_CHUNK).min(n_nodes))
+}
+
+/// Run `work` on every chunk using `threads` threads, the calling thread
+/// included; chunks are claimed in order from a shared queue. Only the calling
+/// thread polls, before each attempt to claim. On `Break` no further chunk
+/// starts, chunks in progress finish, and `Break(())` is returned. A worker's
+/// panic is re-raised on the caller with its original payload.
+fn run_chunks<C: Send>(
+    chunks: Vec<C>,
+    threads: NonZeroUsize,
+    poll: &mut dyn FnMut() -> ControlFlow<()>,
+    work: impl Fn(C) + Sync,
+) -> ControlFlow<()> {
+    let n_workers = threads.get().min(chunks.len()).saturating_sub(1);
+    let queue = Mutex::new(chunks.into_iter());
+    let claim = || queue.lock().unwrap_or_else(PoisonError::into_inner).next();
+    let cancelled = AtomicBool::new(false);
+    std::thread::scope(|scope| {
+        let workers: Vec<_> = (0..n_workers)
+            .map(|_| {
+                scope.spawn(|| {
+                    while !cancelled.load(Ordering::Relaxed) {
+                        let Some(chunk) = claim() else { break };
+                        work(chunk);
+                    }
+                })
+            })
+            .collect();
+        let outcome = loop {
+            if poll().is_break() {
+                cancelled.store(true, Ordering::Relaxed);
+                break ControlFlow::Break(());
+            }
+            let Some(chunk) = claim() else {
+                break ControlFlow::Continue(());
+            };
+            work(chunk);
+        };
+        for worker in workers {
+            if let Err(payload) = worker.join() {
+                std::panic::resume_unwind(payload);
+            }
+        }
+        outcome
+    })
 }
 
 /// For each node, its `(element index, local index)` incidences in ascending
