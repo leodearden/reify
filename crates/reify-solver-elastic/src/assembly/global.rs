@@ -3060,4 +3060,375 @@ mod tests {
             }
         }
     }
+
+    // ─── node-owned `assemble_stiffness` (PRD C12 / S6) ──────────────────────
+
+    use crate::assembly::test_support::promote_tets_to_p2;
+    use faer::sparse::SymbolicSparseRowMat;
+    use std::num::NonZeroUsize;
+    use std::ops::ControlFlow;
+
+    /// splitmix64 finalizer — the constants of `boundary/dirichlet.rs`'s
+    /// `mixed_sign_value`, so fixtures need no `rand` dependency.
+    fn splitmix64(seed: u64) -> u64 {
+        let mut h = seed.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        h = (h ^ (h >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        h = (h ^ (h >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        h ^ (h >> 31)
+    }
+
+    /// Deterministic pseudo-random value in `[-1, 1)`.
+    fn signed_unit(seed: u64) -> f64 {
+        (splitmix64(seed) >> 11) as f64 / (1u64 << 52) as f64 - 1.0
+    }
+
+    /// Fisher–Yates permutation of `0..n` driven by [`splitmix64`].
+    fn splitmix_permutation(n: usize, seed: u64) -> Vec<usize> {
+        let mut perm: Vec<usize> = (0..n).collect();
+        for i in (1..n).rev() {
+            let j = (splitmix64(seed ^ (i as u64).wrapping_mul(0xD1B5_4A32_D192_ED03))
+                % (i as u64 + 1)) as usize;
+            perm.swap(i, j);
+        }
+        perm
+    }
+
+    /// Kuhn-split `nx×ny×nz` box of unit cells whose node coordinates are
+    /// each jittered by at most `0.1·h`, whose node ids are relabelled by a
+    /// pseudo-random permutation, and whose element order is shuffled — so
+    /// every node's incidence list is irregular in both size and order.
+    fn unstructured_p1_box(
+        nx: usize,
+        ny: usize,
+        nz: usize,
+        seed: u64,
+    ) -> (Vec<[f64; 3]>, Vec<[usize; 4]>) {
+        let (grid, conns) = box_p1_mesh_fixture(nx as f64, ny as f64, nz as f64, nx, ny, nz);
+        let new_id = splitmix_permutation(grid.len(), seed);
+        let mut nodes = vec![[0.0; 3]; grid.len()];
+        for (old, p) in grid.iter().enumerate() {
+            let jitter = |axis: u64| 0.1 * signed_unit(seed ^ ((4 * old as u64 + axis + 1) << 8));
+            nodes[new_id[old]] = [p[0] + jitter(0), p[1] + jitter(1), p[2] + jitter(2)];
+        }
+        let order = splitmix_permutation(conns.len(), !seed);
+        let shuffled = order
+            .iter()
+            .map(|&e| conns[e].map(|node| new_id[node]))
+            .collect();
+        (nodes, shuffled)
+    }
+
+    /// [`unstructured_p1_box`] promoted to 10-node P2 tets.
+    fn unstructured_p2_box(
+        nx: usize,
+        ny: usize,
+        nz: usize,
+        seed: u64,
+    ) -> (Vec<[f64; 3]>, Vec<[usize; 10]>) {
+        let (nodes, conns) = unstructured_p1_box(nx, ny, nz, seed);
+        promote_tets_to_p2(&nodes, &conns)
+    }
+
+    /// One `kernel` K_e per element of a single-family tet mesh.
+    fn stiffnesses<const N: usize>(
+        nodes: &[[f64; 3]],
+        conns: &[[usize; N]],
+        kernel: fn(&[[f64; 3]; N], &IsotropicElastic) -> ElementStiffness,
+    ) -> Vec<ElementStiffness> {
+        let mat = dimensionless_steel_like();
+        conns
+            .iter()
+            .map(|conn| kernel(&conn.map(|node| nodes[node]), &mat))
+            .collect()
+    }
+
+    /// Pair connectivities with their K_e, ids in slice order.
+    fn elements_of<'a, C: AsRef<[usize]>>(
+        conns: &'a [C],
+        k_es: &'a [ElementStiffness],
+    ) -> Vec<AssemblyElement<'a>> {
+        assert_eq!(conns.len(), k_es.len(), "one K_e per connectivity");
+        conns
+            .iter()
+            .zip(k_es)
+            .enumerate()
+            .map(|(id, (conn, k_e))| AssemblyElement {
+                id,
+                connectivity: conn.as_ref(),
+                k_e,
+            })
+            .collect()
+    }
+
+    /// `copies` disjoint replicas of a P1 tet `[6k, 6k+1, 6k+2, 6k+3]`
+    /// followed in the slice by a MITC3 shell `[6k, 6k+4, 6k+5]`. `D = 6`;
+    /// nodes `6k+1..=6k+3` are tet-only, so their rotation rows are orphans.
+    /// Returns `(n_nodes, conns, k_es)`.
+    fn replicated_mixed_tet_shell(copies: usize) -> (usize, Vec<Vec<usize>>, Vec<ElementStiffness>) {
+        let mat = dimensionless_steel_like();
+        let k_e_tet = element_stiffness_p1(&UNIT_TET_P1, &mat);
+        let k_e_shell = shell_element_stiffness(&UNIT_TRI, SHELL_T, &mat);
+        let mut conns = Vec::with_capacity(2 * copies);
+        let mut k_es = Vec::with_capacity(2 * copies);
+        for k in 0..copies {
+            conns.push(vec![6 * k, 6 * k + 1, 6 * k + 2, 6 * k + 3]);
+            k_es.push(k_e_tet.clone());
+            conns.push(vec![6 * k, 6 * k + 4, 6 * k + 5]);
+            k_es.push(k_e_shell.clone());
+        }
+        (6 * copies, conns, k_es)
+    }
+
+    /// Dense `n_dofs × n_dofs` K_e whose entries span eight decades with
+    /// either sign, so a reordered summation of shared entries changes bits.
+    fn order_sensitive_stiffness(n_dofs: usize, seed: u64) -> ElementStiffness {
+        let data = (0..n_dofs * n_dofs)
+            .map(|i| {
+                let s = seed.wrapping_add(i as u64);
+                signed_unit(s) * 10f64.powi((splitmix64(!s) % 9) as i32 - 4)
+            })
+            .collect();
+        ElementStiffness { n_dofs, data }
+    }
+
+    /// Executable definition of the summation contract (PRD S6): fold every
+    /// element in slice order, each in `(a, α, b, β)` order, into a
+    /// `BTreeMap` starting from `+0.0`, then emit canonical CSR. Written
+    /// inline so it shares no code with the production scatter.
+    fn encounter_order_reference(
+        n_nodes: usize,
+        elements: &[AssemblyElement<'_>],
+    ) -> SparseRowMat<usize, f64> {
+        let d = elements
+            .iter()
+            .map(|e| e.k_e.n_dofs / e.connectivity.len())
+            .max()
+            .unwrap_or(3);
+        let mut fold: std::collections::BTreeMap<(usize, usize), f64> =
+            std::collections::BTreeMap::new();
+        for e in elements {
+            let d_e = e.k_e.n_dofs / e.connectivity.len();
+            for (a, &node_a) in e.connectivity.iter().enumerate() {
+                for alpha in 0..d_e {
+                    for (b, &node_b) in e.connectivity.iter().enumerate() {
+                        for beta in 0..d_e {
+                            *fold
+                                .entry((d * node_a + alpha, d * node_b + beta))
+                                .or_insert(0.0) += e.k_e.get(d_e * a + alpha, d_e * b + beta);
+                        }
+                    }
+                }
+            }
+        }
+        let dim = d * n_nodes;
+        let mut row_ptr = vec![0usize; dim + 1];
+        for &(row, _) in fold.keys() {
+            row_ptr[row + 1] += 1;
+        }
+        for row in 0..dim {
+            row_ptr[row + 1] += row_ptr[row];
+        }
+        let (col_idx, val): (Vec<usize>, Vec<f64>) =
+            fold.into_iter().map(|((_, col), v)| (col, v)).unzip();
+        SparseRowMat::new(
+            SymbolicSparseRowMat::new_checked(dim, dim, row_ptr, None, col_idx),
+            val,
+        )
+    }
+
+    /// Assert two CSR matrices are identical: shape, `row_ptr`, `row_nnz`,
+    /// `col_idx`, and the bits of every stored value. The failure names the
+    /// first differing index (and its `(row, col)` for stored entries).
+    fn assert_csr_bitwise_eq(
+        actual: &SparseRowMat<usize, f64>,
+        expected: &SparseRowMat<usize, f64>,
+        label: &str,
+    ) {
+        assert_eq!(
+            (actual.nrows(), actual.ncols()),
+            (expected.nrows(), expected.ncols()),
+            "{label}: shape differs",
+        );
+        let (a_sym, a_val) = actual.parts();
+        let (e_sym, e_val) = expected.parts();
+        assert_eq!(a_sym.row_nnz(), e_sym.row_nnz(), "{label}: row_nnz differs");
+        let first_diff = |a: &[usize], e: &[usize]| {
+            a.iter()
+                .zip(e)
+                .position(|(x, y)| x != y)
+                .or((a.len() != e.len()).then(|| a.len().min(e.len())))
+        };
+        if let Some(i) = first_diff(a_sym.row_ptr(), e_sym.row_ptr()) {
+            panic!(
+                "{label}: row_ptr differs first at index {i}: actual {:?} vs expected {:?}",
+                a_sym.row_ptr().get(i),
+                e_sym.row_ptr().get(i),
+            );
+        }
+        let row_of = |k: usize| e_sym.row_ptr().partition_point(|&p| p <= k) - 1;
+        if let Some(k) = first_diff(a_sym.col_idx(), e_sym.col_idx()) {
+            panic!(
+                "{label}: col_idx differs first at stored index {k} (row {}): \
+                 actual {:?} vs expected {:?}",
+                row_of(k),
+                a_sym.col_idx().get(k),
+                e_sym.col_idx().get(k),
+            );
+        }
+        assert_eq!(a_val.len(), e_val.len(), "{label}: value count differs");
+        if let Some(k) = a_val
+            .iter()
+            .zip(e_val)
+            .position(|(x, y)| x.to_bits() != y.to_bits())
+        {
+            panic!(
+                "{label}: value differs first at stored index {k} = K[{}][{}]: \
+                 actual {} vs expected {}",
+                row_of(k),
+                e_sym.col_idx()[k],
+                a_val[k],
+                e_val[k],
+            );
+        }
+    }
+
+    /// `assemble_stiffness` with a poll that never breaks.
+    fn assemble_uncancelled(
+        n_nodes: usize,
+        elements: &[AssemblyElement<'_>],
+        threads: usize,
+    ) -> SparseRowMat<usize, f64> {
+        let threads = NonZeroUsize::new(threads).expect("test thread count >= 1");
+        match assemble_stiffness(n_nodes, elements, threads, &mut || ControlFlow::Continue(())) {
+            ControlFlow::Continue(k) => k,
+            ControlFlow::Break(()) => panic!("a never-breaking poll cannot cancel assembly"),
+        }
+    }
+
+    /// The primitive reproduces the encounter-order fold entry for entry and
+    /// bit for bit: on a heavily shared P1 box (up to 48 contributions per
+    /// entry), an irregular P2 box, a mixed tet+shell mesh whose orphan
+    /// rotation rows must be EMPTY (not stored zeros), and a degenerate
+    /// element repeating a node, which pins the within-element `(a, b)` order.
+    #[test]
+    fn assemble_stiffness_matches_encounter_order_reference() {
+        let mat = dimensionless_steel_like();
+        let (box_n, box_k_es, box_conns) = build_shared_dof_box_3x3x3(&mat);
+
+        let (p2_nodes, p2_conns) = unstructured_p2_box(2, 2, 2, 0x5EED_0002);
+        let p2_k_es = stiffnesses(&p2_nodes, &p2_conns, element_stiffness_p2);
+
+        let (mixed_n, mixed_conns, mixed_k_es) = replicated_mixed_tet_shell(4);
+
+        let degenerate_conns = [[0usize, 1, 0, 2]];
+        let degenerate_k_es = [order_sensitive_stiffness(12, 0xDE6E)];
+
+        let fixtures = [
+            ("shared-DOF 3×3×3 P1 box", box_n, elements_of(&box_conns, &box_k_es)),
+            ("unstructured P2 box", p2_nodes.len(), elements_of(&p2_conns, &p2_k_es)),
+            ("mixed tet+shell", mixed_n, elements_of(&mixed_conns, &mixed_k_es)),
+            ("repeated-node element", 3, elements_of(&degenerate_conns, &degenerate_k_es)),
+        ];
+        for (label, n_nodes, elements) in &fixtures {
+            let k = assemble_uncancelled(*n_nodes, elements, 1);
+            assert!(
+                k.val().iter().any(|&v| v != 0.0),
+                "{label}: K is all-zero — fixture is degenerate",
+            );
+            assert_csr_bitwise_eq(&k, &encounter_order_reference(*n_nodes, elements), label);
+        }
+
+        let k_mixed = assemble_uncancelled(mixed_n, &fixtures[2].2, 1);
+        let row_ptr = k_mixed.symbolic().row_ptr();
+        for replica in 0..4 {
+            for node in 6 * replica + 1..=6 * replica + 3 {
+                for axis in 3..6 {
+                    let row = 6 * node + axis;
+                    assert_eq!(
+                        row_ptr[row],
+                        row_ptr[row + 1],
+                        "orphan row {row} (tet-only node {node}, axis {axis}) must store nothing",
+                    );
+                }
+            }
+        }
+    }
+
+    /// No elements ⇒ the `3N × 3N` shape (`D` defaults to 3) with nothing
+    /// stored.
+    #[test]
+    fn assemble_stiffness_empty_elements_gives_3n_square_zero_nnz() {
+        let k = assemble_uncancelled(4, &[], 1);
+        assert_eq!((k.nrows(), k.ncols()), (12, 12));
+        assert_eq!(k.compute_nnz(), 0);
+        assert_eq!(k.symbolic().row_ptr(), &[0; 13]);
+    }
+
+    #[test]
+    #[should_panic(expected = "empty connectivity")]
+    fn assemble_stiffness_empty_connectivity_panics() {
+        let k_e = ElementStiffness::zeros(3);
+        let element = AssemblyElement {
+            id: 7,
+            connectivity: &[],
+            k_e: &k_e,
+        };
+        let _ = assemble_uncancelled(1, &[element], 1);
+    }
+
+    #[test]
+    #[should_panic(expected = "k_e.n_dofs (= 20) is not divisible by")]
+    fn assemble_stiffness_non_divisible_n_dofs_panics() {
+        let k_e = ElementStiffness::zeros(20);
+        let conn = [0usize, 1, 2];
+        let element = AssemblyElement {
+            id: 13,
+            connectivity: &conn,
+            k_e: &k_e,
+        };
+        let _ = assemble_uncancelled(3, &[element], 1);
+    }
+
+    #[test]
+    #[should_panic(expected = "dofs_per_node = 0")]
+    fn assemble_stiffness_zero_dofs_per_node_panics() {
+        let k_e = ElementStiffness::zeros(0);
+        let conn = [0usize];
+        let element = AssemblyElement {
+            id: 5,
+            connectivity: &conn,
+            k_e: &k_e,
+        };
+        let _ = assemble_uncancelled(1, &[element], 1);
+    }
+
+    #[test]
+    #[should_panic(expected = "AssemblyElement { id: 42 } references node 5 but n_nodes = 4")]
+    fn assemble_stiffness_out_of_range_node_panics() {
+        let k_e = element_stiffness_p1(&UNIT_TET_P1, &dimensionless_steel_like());
+        let conn = [0usize, 1, 2, 5];
+        let element = AssemblyElement {
+            id: 42,
+            connectivity: &conn,
+            k_e: &k_e,
+        };
+        let _ = assemble_uncancelled(4, &[element], 1);
+    }
+
+    /// Contract checks run before the first poll: a poll that would cancel
+    /// immediately cannot mask a malformed mesh.
+    #[test]
+    #[should_panic(expected = "AssemblyElement { id: 42 } references node 5 but n_nodes = 4")]
+    fn assemble_stiffness_contract_panics_precede_a_breaking_poll() {
+        let k_e = element_stiffness_p1(&UNIT_TET_P1, &dimensionless_steel_like());
+        let conn = [0usize, 1, 2, 5];
+        let element = AssemblyElement {
+            id: 42,
+            connectivity: &conn,
+            k_e: &k_e,
+        };
+        let _ = assemble_stiffness(4, &[element], NonZeroUsize::MIN, &mut || {
+            ControlFlow::Break(())
+        });
+    }
 }
