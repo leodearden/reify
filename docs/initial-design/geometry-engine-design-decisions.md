@@ -428,6 +428,8 @@ The mechanisms for importing geometry from external formats (STEP, STL, OBJ, 3MF
 
 The bidirectional relationship between geometry and fields (§3.4) — SDF fields defining geometry, geometry sampled as distance fields — needs detailed specification of conversion triggers, accuracy guarantees, and interaction with the evaluation graph.
 
+> **Specified in `docs/prds/v0_6/implicit-solids.md`** (2026-10-08), which completes this section. Fidget is not the realization path; its evaluator re-open decision is owned by #8411.
+
 ---
 
 *Document generated from geometry engine design sessions. Intended as a living specification to be refined through subsequent design phases.*
