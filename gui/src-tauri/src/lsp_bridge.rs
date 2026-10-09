@@ -125,11 +125,12 @@ pub async fn lsp_request_impl(
 ///
 /// The membership of each set is deliberately NOT restated here.
 /// [`lane_for_method`]'s `matches!` arm is the single authoritative list, and
-/// the only copy under test — `lsp_bridge_tests`' (j) drives every entry of its
-/// `ORDERED_METHODS` / `QUERY_METHODS` constants through the real dispatcher, so
-/// a method renamed or added in `reify-lsp` reds there. Prose copies are
-/// unguarded by construction; only the COUNTS are repeated, because they are
-/// load-bearing (six + eight = the fourteen arms `handle_request` accepts).
+/// the only copy under test — `lsp_lane_routing_tests`' (j) drives every entry
+/// of its `ORDERED_METHODS` / `QUERY_METHODS` constants through the real
+/// dispatcher, so a method renamed or added in `reify-lsp` reds there. Prose
+/// copies are unguarded by construction; only the COUNTS are repeated, because
+/// they are load-bearing (six + eight = the fourteen arms `handle_request`
+/// accepts).
 ///
 /// # What this COSTS: an abandoned request still runs
 ///
@@ -176,7 +177,7 @@ pub async fn lsp_request_on_worker(
 /// and points here for the membership. That is deliberate: prose copies of a
 /// list are unguarded, so reclassifying one method (or `reify-lsp` adding an
 /// arm) used to leave six stale lists reading as authoritative. The only other
-/// copies are `lsp_bridge_tests`' `ORDERED_METHODS` / `QUERY_METHODS`
+/// copies are `lsp_lane_routing_tests`' `ORDERED_METHODS` / `QUERY_METHODS`
 /// constants, and those are guarded — (j) relates them to `HANDLE_REQUEST_ARMS`
 /// and drives every entry through the real dispatcher.
 ///
@@ -203,9 +204,9 @@ pub async fn lsp_request_on_worker(
 /// ordered set, default to the pool) it would look identical in review and would
 /// hand concurrency to every method added to `reify-lsp` in future, including a
 /// state-mutating one. Making the safe direction STRUCTURAL rather than a
-/// comment is what stops that; `lsp_bridge_tests`' (h) pins it with unrecognised
-/// methods, and (j) makes adding an arm a decision here rather than a silent
-/// default.
+/// comment is what stops that; `lsp_lane_routing_tests`' (h) pins it with
+/// unrecognised methods, and its (j) makes adding an arm a decision here rather
+/// than a silent default.
 ///
 /// # What each lane costs the other
 ///

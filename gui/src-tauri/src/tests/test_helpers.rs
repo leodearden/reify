@@ -694,6 +694,39 @@ pub(crate) fn deep_recurse_if_on_thread(
     Ok(deep_recurse(depth))
 }
 
+// ── LSP bridge fixture, shared by the bridge and lane-routing tests ─────────
+
+/// Drive a bridge to an initialized session with one open document:
+/// `initialize`, `initialized`, and a `didOpen` of the shared bracket fixture
+/// at `uri`.
+pub(crate) async fn init_and_open(bridge: &crate::lsp_bridge::LspBridge, uri: &str) {
+    crate::lsp_bridge::lsp_request_impl(
+        bridge,
+        "initialize",
+        reify_test_support::MINIMAL_INIT_PARAMS_JSON.to_string(),
+    )
+    .await
+    .expect("initialize");
+    crate::lsp_bridge::lsp_request_impl(bridge, "initialized", "{}".to_string())
+        .await
+        .expect("initialized");
+    crate::lsp_bridge::lsp_request_impl(
+        bridge,
+        "textDocument/didOpen",
+        serde_json::json!({
+            "textDocument": {
+                "uri": uri,
+                "languageId": "reify",
+                "version": 1,
+                "text": reify_test_support::bracket_source()
+            }
+        })
+        .to_string(),
+    )
+    .await
+    .expect("didOpen");
+}
+
 // ── Task 6190: η RepresentationWithin export-refusal fixture ─────────────────
 
 /// `reify_test_support::bracket_source` plus a non-circular checker structure

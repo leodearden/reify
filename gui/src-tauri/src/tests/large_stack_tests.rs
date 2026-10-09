@@ -1387,7 +1387,8 @@ fn a_pool_job_may_submit_to_another_lane() {
 // exists, and the file stays permanently dark to hover/completion/diagnostics.
 // `OnAbandon::Run` is therefore the default and `OnAbandon::Discard` an opt-in
 // carried by the queue — see `large_stack::OnAbandon`. (aj0) below pins the
-// `Run` half; `lsp_bridge_tests`' (o2) pins it end-to-end on a real lane.
+// `Run` half; `lsp_lane_routing_tests`' (o2) pins it end-to-end on a real
+// lane.
 //
 // # Why these tests use a SYNTHETIC sender
 //
@@ -1578,8 +1579,8 @@ async fn a_live_submission_is_still_driven() {
 /// learns the document exists, `ReifyLanguageServer::did_change` then takes its
 /// `didChange for unknown URI` branch and applies nothing, and every query
 /// handler answers `Ok(None)` for that URI. The file is permanently dark until it is closed and
-/// reopened. `lsp_bridge_tests`' (o2) pins that end-to-end through the real
-/// composition; this pins the primitive underneath it.
+/// reopened. `lsp_lane_routing_tests`' (o2) pins that end-to-end through the
+/// real composition; this pins the primitive underneath it.
 #[tokio::test]
 async fn an_abandoned_submission_to_a_run_destination_is_still_driven() {
     use crate::large_stack::OnAbandon;
@@ -1790,7 +1791,7 @@ async fn a_panicking_destructor_on_the_cancel_path_does_not_kill_the_sender() {
 /// serializes every LSP query again — the exact regression task 6517 exists to
 /// prevent — while `size()` still reports 4 and every routing test stays green.
 ///
-/// `lsp_bridge_tests`' (p) asserts the AFTER half against the production
+/// `lsp_lane_routing_tests`' (p) asserts the AFTER half against the production
 /// `LSP_POOL`. It cannot assert the BEFORE half: `LSP_POOL` is process-wide and
 /// this binary runs its tests in parallel, so another test may already have
 /// created it. A lane declared inside this fn body is touched by nothing else,
@@ -1818,7 +1819,8 @@ fn a_lane_reports_the_consumers_it_actually_started() {
     // Strict equality, with the diagnostic carrying the triage rather than the
     // assertion being softened — `>= 1` cannot see the silent narrowing this
     // exists to catch, because that narrowing IS a count between 1 and `SIZE`.
-    // See (p)'s twin in `lsp_bridge_tests` for the same reasoning at length.
+    // See (p)'s twin in `lsp_lane_routing_tests` for the same reasoning at
+    // length.
     let started = POOL.started();
     assert_eq!(
         started, SIZE,

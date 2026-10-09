@@ -529,16 +529,17 @@ fn assert_not_reentrant(sender: &JobSender) {
 /// serialise the accesses for safety — and it is exactly the pre-task-5772
 /// behaviour on the multi-threaded tauri runtime.
 ///
-/// A client that AWAITS each request before issuing the next still reads its own
-/// writes, because the awaited `didChange` job has returned before the next
-/// request is submitted at all (`lsp_bridge_tests`' (n)). Reify's own frontend
-/// awaits only for its position-based COMMANDS. In `gui/src/editor/Editor.tsx`,
-/// rename (F2) and find-uses (Shift-F12) go through `onceServerIsCurrent`, and
-/// every rename request through the rename guard's `syncServer`; both call
-/// `flushPendingLspChange`, which sends any still-debounced `didChange` and
-/// waits for it first. Otherwise `lspClient.didChange` fires from a `setTimeout`
-/// debounced by `EDITOR_DEBOUNCE_MS` that nothing sequences on, and completion,
-/// hover, go-to-definition and occurrence highlights are issued by their own
+/// A client that AWAITS each request before issuing the next still reads its
+/// own writes, because the awaited `didChange` job has returned before the next
+/// request is submitted at all (`lsp_lane_routing_tests`' (n)). Reify's own
+/// frontend awaits only for its position-based COMMANDS. In
+/// `gui/src/editor/Editor.tsx`, rename (F2) and find-uses (Shift-F12) go
+/// through `onceServerIsCurrent`, and every rename request through the rename
+/// guard's `syncServer`; both call `flushPendingLspChange`, which sends any
+/// still-debounced `didChange` and waits for it first. Otherwise
+/// `lspClient.didChange` fires from a `setTimeout` debounced by
+/// `EDITOR_DEBOUNCE_MS` that nothing sequences on, and completion, hover,
+/// go-to-definition and occurrence highlights are issued by their own
 /// independent CodeMirror sources on their own triggers. So the query behind a
 /// DISPLAYED answer can overtake a `didChange` on the pool, and the staleness
 /// above is reachable in the shipped app rather than only in a hypothetical
@@ -967,8 +968,9 @@ pub(crate) static ENGINE_LANE: Lane = Lane::new(WORKER_THREAD_NAME);
 ///
 /// WHICH six is not restated here. [`crate::lsp_bridge::lane_for_method`]'s
 /// `matches!` arm is the single authoritative list, and it is the only copy
-/// under test (`lsp_bridge_tests`' (j) executes every entry against the real
-/// dispatcher). A prose copy beside it is a second list that nothing checks.
+/// under test (`lsp_lane_routing_tests`' (j) executes every entry against the
+/// real dispatcher). A prose copy beside it is a second list that nothing
+/// checks.
 ///
 /// Separate from [`ENGINE_LANE`] so a hover never queues behind a geometry
 /// evaluation — see [`Lane`]'s "Why more than one lane". SIZE 1 is a
