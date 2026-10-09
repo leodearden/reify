@@ -40,19 +40,18 @@ pub(crate) fn is_persistable_target(target: &str) -> bool {
     PERSISTABLE_TARGETS.contains(&target)
 }
 
-/// Look up a prior result from the on-disk cache and reconstruct both the
-/// result [`reify_ir::Value`] and the diagnostics its original solve emitted,
-/// without re-running the trampoline.
+/// Look up a prior result from the on-disk cache and reconstruct the result
+/// [`reify_ir::Value`] together with the diagnostics and structured detail its
+/// original solve emitted, without re-running the trampoline.
 ///
-/// Returns `Some((value, diagnostics))` on a hit (the caller should complete
-/// the dispatch and return immediately, skipping `invoke_compute_trampoline`)
-/// or `None` on a miss or any read error (caller falls through to the normal
-/// invoke path).
+/// Returns `Some(entry)` on a hit (the caller should complete the dispatch and
+/// return immediately, skipping `invoke_compute_trampoline`) or `None` on a
+/// miss or any read error (caller falls through to the normal invoke path).
 ///
-/// The diagnostics come back through the same channel the trampoline's fresh
-/// diagnostics use, so a warm serve is indistinguishable from a cold one to
-/// every downstream consumer. `diagnostics` is empty for a solve that emitted
-/// none — an empty list is a hit, not a miss.
+/// The diagnostics and structured detail come back through the same channels
+/// the trampoline's fresh ones use, so a warm serve is indistinguishable from a
+/// cold one to every downstream consumer. Either list is empty for a solve that
+/// emitted none — empty lists are a hit, not a miss.
 ///
 /// Covered targets: `"solver::elastic_static"`, `"solver::buckling"`, and
 /// `"shell-extract::extract"` (task #4071).
@@ -73,7 +72,7 @@ pub(crate) fn persistent_lookup(
     cache_dir: &std::path::Path,
     target: &str,
     cache_key: reify_core::ContentHash,
-) -> Option<(reify_ir::Value, Vec<reify_core::Diagnostic>)> {
+) -> Option<crate::persistent_cache::WithDiagnostics<reify_ir::Value>> {
     debug_assert!(
         is_persistable_target(target),
         "persistent_lookup called for non-persistable target {:?}",
@@ -89,12 +88,9 @@ pub(crate) fn persistent_lookup(
                 crate::persistent_cache::ENGINE_VERSION_HASH,
                 &input_hash,
             ) {
-                Ok(Some(entry)) => Some((
-                    crate::compute_targets::elastic_static::value_from_elastic_result(
-                        &entry.value,
-                    ),
-                    entry.diagnostics,
-                )),
+                Ok(Some(entry)) => Some(entry.map_value(|er| {
+                    crate::compute_targets::elastic_static::value_from_elastic_result(&er)
+                })),
                 Ok(None) => None,
                 Err(e) => {
                     tracing::warn!(
@@ -118,10 +114,9 @@ pub(crate) fn persistent_lookup(
                 crate::persistent_cache::ENGINE_VERSION_HASH,
                 &input_hash,
             ) {
-                Ok(Some(entry)) => Some((
-                    crate::compute_targets::buckling::value_from_buckling_result(&entry.value),
-                    entry.diagnostics,
-                )),
+                Ok(Some(entry)) => Some(entry.map_value(|brc| {
+                    crate::compute_targets::buckling::value_from_buckling_result(&brc)
+                })),
                 Ok(None) => None,
                 Err(e) => {
                     tracing::warn!(
@@ -146,10 +141,9 @@ pub(crate) fn persistent_lookup(
                 crate::persistent_cache::ENGINE_VERSION_HASH,
                 &input_hash,
             ) {
-                Ok(Some(entry)) => Some((
-                    crate::shell_extract_compute::shell_extraction_result_to_value(&entry.value),
-                    entry.diagnostics,
-                )),
+                Ok(Some(entry)) => Some(entry.map_value(|ser| {
+                    crate::shell_extract_compute::shell_extraction_result_to_value(&ser)
+                })),
                 Ok(None) => None,
                 Err(e) => {
                     tracing::warn!(
@@ -172,14 +166,15 @@ pub(crate) fn persistent_lookup(
 ///
 /// # Behaviour
 ///
-/// Extracts a typed cache container from `result` via the target-specific
-/// bridge function, wraps it together with `diagnostics` in a
+/// Extracts a typed cache container from `entry.value` via the target-specific
+/// bridge function, swaps it into the same
 /// [`crate::persistent_cache::WithDiagnostics`] envelope, then calls
 /// [`crate::persistent_cache::write_entry`] (atomic temp+rename).
 ///
-/// `diagnostics` are the ones this dispatch's trampoline emitted. They are
-/// stored so a later warm serve can replay them; without them the on-disk
-/// cache would make every `W_*` warning first-run-only.
+/// `entry` carries the value plus the diagnostics and structured detail this
+/// dispatch's trampoline emitted. Both are stored so a later warm serve can
+/// replay them; without them the on-disk cache would make every `W_*` warning
+/// and every structured overlay first-run-only.
 ///
 /// Covered targets: `"solver::elastic_static"`, `"solver::buckling"`, and
 /// `"shell-extract::extract"` (task #4071).
@@ -200,8 +195,7 @@ pub(crate) fn persistent_write(
     cache_dir: &std::path::Path,
     target: &str,
     cache_key: reify_core::ContentHash,
-    result: &reify_ir::Value,
-    diagnostics: &[reify_core::Diagnostic],
+    entry: crate::persistent_cache::WithDiagnostics<&reify_ir::Value>,
 ) {
     debug_assert!(
         is_persistable_target(target),
@@ -213,7 +207,7 @@ pub(crate) fn persistent_write(
     match target {
         "solver::elastic_static" => {
             let Some(er) =
-                crate::compute_targets::elastic_static::elastic_result_from_value(result)
+                crate::compute_targets::elastic_static::elastic_result_from_value(entry.value)
             else {
                 tracing::warn!(
                     %cache_key,
@@ -228,10 +222,7 @@ pub(crate) fn persistent_write(
                 cache_dir,
                 crate::persistent_cache::ENGINE_VERSION_HASH,
                 &input_hash,
-                &crate::persistent_cache::WithDiagnostics {
-                    diagnostics: diagnostics.to_vec(),
-                    value: er,
-                },
+                &entry.map_value(|_| er),
             ) {
                 tracing::warn!(
                     %e,
@@ -244,7 +235,7 @@ pub(crate) fn persistent_write(
         }
         "solver::buckling" => {
             let Some(brc) =
-                crate::compute_targets::buckling::buckling_result_from_value(result)
+                crate::compute_targets::buckling::buckling_result_from_value(entry.value)
             else {
                 tracing::warn!(
                     %cache_key,
@@ -261,10 +252,7 @@ pub(crate) fn persistent_write(
                 cache_dir,
                 crate::persistent_cache::ENGINE_VERSION_HASH,
                 &input_hash,
-                &crate::persistent_cache::WithDiagnostics {
-                    diagnostics: diagnostics.to_vec(),
-                    value: brc,
-                },
+                &entry.map_value(|_| brc),
             ) {
                 tracing::warn!(
                     %e,
@@ -278,7 +266,7 @@ pub(crate) fn persistent_write(
         }
         "shell-extract::extract" => {
             let Some(ser) =
-                crate::shell_extract_compute::value_to_shell_extraction_result(result)
+                crate::shell_extract_compute::value_to_shell_extraction_result(entry.value)
             else {
                 tracing::warn!(
                     %cache_key,
@@ -295,10 +283,7 @@ pub(crate) fn persistent_write(
                 cache_dir,
                 crate::persistent_cache::ENGINE_VERSION_HASH,
                 &input_hash,
-                &crate::persistent_cache::WithDiagnostics {
-                    diagnostics: diagnostics.to_vec(),
-                    value: ser,
-                },
+                &entry.map_value(|_| ser),
             ) {
                 tracing::warn!(
                     %e,
@@ -792,6 +777,7 @@ mod tests {
             &input_hash,
             &WithDiagnostics {
                 diagnostics: Vec::new(),
+                structured_detail: Vec::new(),
                 value: er,
             },
         )
@@ -915,6 +901,7 @@ mod tests {
             &input_hash_a,
             &WithDiagnostics {
                 diagnostics: Vec::new(),
+                structured_detail: Vec::new(),
                 value: er,
             },
         )
@@ -1104,6 +1091,7 @@ mod tests {
             &input_hash,
             &WithDiagnostics {
                 diagnostics: Vec::new(),
+                structured_detail: Vec::new(),
                 value: brc,
             },
         )
@@ -1230,6 +1218,7 @@ mod tests {
             &input_hash_a,
             &WithDiagnostics {
                 diagnostics: Vec::new(),
+                structured_detail: Vec::new(),
                 value: brc,
             },
         )
@@ -1375,6 +1364,22 @@ mod tests {
     /// that target's bridge reader expects.
     type PersistableTargetFixture = (&'static str, fn() -> Value);
 
+    /// One row per persistable target, in allowlist order. Each target is a row
+    /// because each has its own `persistent_lookup`/`persistent_write` arm.
+    fn persistable_target_fixtures() -> [PersistableTargetFixture; 3] {
+        let targets: [PersistableTargetFixture; 3] = [
+            ("solver::elastic_static", elastic_static_cache_value),
+            ("solver::buckling", buckling_cache_value),
+            ("shell-extract::extract", shell_extract_cache_value),
+        ];
+        assert_eq!(
+            targets.map(|(target, _)| target).as_slice(),
+            super::PERSISTABLE_TARGETS.as_slice(),
+            "every persistable target needs a row in this table, in allowlist order",
+        );
+        targets
+    }
+
     /// The persist bridge must replay a diagnostic of ANY severity on EVERY
     /// persistable target, verbatim in every field a consumer can key off.
     ///
@@ -1389,16 +1394,7 @@ mod tests {
     fn persist_bridge_replays_every_severity_on_every_persistable_target() {
         use reify_core::Severity;
 
-        let targets: [PersistableTargetFixture; 3] = [
-            ("solver::elastic_static", elastic_static_cache_value),
-            ("solver::buckling", buckling_cache_value),
-            ("shell-extract::extract", shell_extract_cache_value),
-        ];
-        assert_eq!(
-            targets.map(|(target, _)| target).as_slice(),
-            super::PERSISTABLE_TARGETS.as_slice(),
-            "every persistable target needs a row in this table, in allowlist order",
-        );
+        let targets = persistable_target_fixtures();
         let severities = [Severity::Info, Severity::Warning, Severity::Error];
 
         // ONE cache dir for every cell, so each cell's KEY is what selects its
@@ -1420,11 +1416,18 @@ mod tests {
                     tmp.path(),
                     target,
                     cache_key,
-                    &value,
-                    std::slice::from_ref(&written),
+                    WithDiagnostics {
+                        diagnostics: vec![written.clone()],
+                        structured_detail: vec![],
+                        value: &value,
+                    },
                 );
 
-                let (got_value, got_diags) = super::persistent_lookup(tmp.path(), target, cache_key)
+                let WithDiagnostics {
+                    value: got_value,
+                    diagnostics: got_diags,
+                    ..
+                } = super::persistent_lookup(tmp.path(), target, cache_key)
                     .unwrap_or_else(|| panic!("{cell}: the entry just written must be a hit"));
 
                 assert_eq!(
@@ -1456,6 +1459,50 @@ mod tests {
                     "{cell}: the machine-readable candidate list must survive",
                 );
             }
+        }
+    }
+
+    /// The persist bridge must replay every structured-detail overlay on EVERY
+    /// persistable target. The envelope is target-generic, so a target arm that
+    /// stored its own empty list would silently drop a warm serve's overlays.
+    #[test]
+    fn persist_bridge_replays_structured_detail_on_every_persistable_target() {
+        let written = crate::persistent_cache::all_fea_structured_detail();
+
+        // ONE cache dir for every row, so each row's KEY selects its entry.
+        let tmp = tempfile::TempDir::new().unwrap();
+
+        for (target_index, (target, build_value)) in
+            persistable_target_fixtures().into_iter().enumerate()
+        {
+            let cache_key =
+                ContentHash(0x7345_0010_7345_0010_7345_0010_0000_0000_u128 | target_index as u128);
+            let value = build_value();
+
+            super::persistent_write(
+                tmp.path(),
+                target,
+                cache_key,
+                WithDiagnostics {
+                    diagnostics: vec![],
+                    structured_detail: written.clone(),
+                    value: &value,
+                },
+            );
+
+            let got = super::persistent_lookup(tmp.path(), target, cache_key)
+                .unwrap_or_else(|| panic!("{target}: the entry just written must be a hit"));
+
+            assert_eq!(
+                got.structured_detail, written,
+                "{target}: every overlay must be replayed exactly as written",
+            );
+            assert_eq!(
+                got.value.content_hash(),
+                value.content_hash(),
+                "{target}: carrying structured detail must not perturb the \
+                 reconstructed Value",
+            );
         }
     }
 
@@ -1731,12 +1778,16 @@ mod tests {
             tmp.path(),
             "solver::buckling",
             cache_key,
-            &value,
-            std::slice::from_ref(&written),
+            WithDiagnostics {
+                diagnostics: vec![written.clone()],
+                structured_detail: vec![],
+                value: &value,
+            },
         );
 
-        let (_, got_diags) = super::persistent_lookup(tmp.path(), "solver::buckling", cache_key)
-            .expect("the entry just written must be a hit");
+        let got_diags = super::persistent_lookup(tmp.path(), "solver::buckling", cache_key)
+            .expect("the entry just written must be a hit")
+            .diagnostics;
 
         assert_eq!(got_diags.len(), 1, "got {got_diags:?}");
         let got = &got_diags[0];
@@ -1765,11 +1816,23 @@ mod tests {
             &minimal_elastic_result(7.0),
         );
 
-        super::persistent_write(tmp.path(), "solver::elastic_static", cache_key, &value, &[]);
+        super::persistent_write(
+            tmp.path(),
+            "solver::elastic_static",
+            cache_key,
+            WithDiagnostics {
+                diagnostics: vec![],
+                structured_detail: vec![],
+                value: &value,
+            },
+        );
 
-        let (got_value, got_diags) =
-            super::persistent_lookup(tmp.path(), "solver::elastic_static", cache_key)
-                .expect("the entry just written must be a hit");
+        let WithDiagnostics {
+            value: got_value,
+            diagnostics: got_diags,
+            ..
+        } = super::persistent_lookup(tmp.path(), "solver::elastic_static", cache_key)
+            .expect("the entry just written must be a hit");
 
         assert_eq!(got_value.content_hash(), value.content_hash());
         assert!(
@@ -1815,13 +1878,16 @@ mod tests {
             tmp.path(),
             "solver::elastic_static",
             cache_key,
-            &value,
-            std::slice::from_ref(&diag),
+            WithDiagnostics {
+                diagnostics: vec![diag.clone()],
+                structured_detail: vec![],
+                value: &value,
+            },
         );
 
-        let (_, got_diags) =
-            super::persistent_lookup(tmp.path(), "solver::elastic_static", cache_key)
-                .expect("the entry just written must be a hit");
+        let got_diags = super::persistent_lookup(tmp.path(), "solver::elastic_static", cache_key)
+            .expect("the entry just written must be a hit")
+            .diagnostics;
 
         assert_eq!(got_diags.len(), 1, "got {got_diags:?}");
         let got = &got_diags[0];

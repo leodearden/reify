@@ -1163,14 +1163,16 @@ pub struct ValueData {
     /// `reason`) keeps older payloads without this key deserializing cleanly.
     #[serde(default)]
     pub last_substantive_value: Option<String>,
-    /// Canonical dimension name for this cell's value (e.g. `"Volume"`,
-    /// `"Length"`), from `DimensionVector::canonical_name()`. Empty string
-    /// for non-scalar, dimensionless, or composed-dimension values that
-    /// have no named ladder (task #5199: drives the Parameters panel's
-    /// per-cell unit picker — only cells with a non-empty `dimension` AND a
-    /// ladder of \u{2265}2 units get a `<select>` instead of the static unit
-    /// badge). `#[serde(default)]` (mirroring `reason`/`last_substantive_value`)
-    /// keeps older payloads without this key deserializing cleanly.
+    /// Canonical dimension name for this cell's current VALUE (e.g.
+    /// `"Volume"`, `"Length"`), from `DimensionVector::canonical_name()`.
+    /// Empty string for non-scalar, dimensionless, or composed-dimension
+    /// values that have no named ladder (task #5199: drives the Parameters
+    /// panel's per-cell unit picker — only cells with a non-empty `dimension`
+    /// AND a ladder of \u{2265}2 units get a `<select>` instead of the static
+    /// unit badge). Value-derived and paired with `si_value`; for what the
+    /// cell's TYPE requires, see `declared_dimension`. `#[serde(default)]`
+    /// (mirroring `reason`/`last_substantive_value`) keeps older payloads
+    /// without this key deserializing cleanly.
     #[serde(default)]
     pub dimension: String,
     /// The cell's raw canonical SI magnitude (e.g. cubic metres for a Volume
@@ -1183,6 +1185,15 @@ pub struct ValueData {
     /// the IPC wire (task #5199 engine_state decision: additive-only).
     #[serde(default)]
     pub si_value: Option<f64>,
+    /// Canonical name of the dimension the cell's DECLARED type requires
+    /// (`Option` wrappers peeled), whatever its value currently holds. `""`
+    /// for a non-scalar, dimensionless, or unnamed (composed) dimension.
+    /// Drives the panel's input-side decisions — bare-number gate, unit
+    /// alphabet, edit-seed unit — and is the same fact
+    /// `engine::parse_value_string_for_cell` gates on (task #6962).
+    /// `#[serde(default)]` keeps older payloads deserializing cleanly.
+    #[serde(default)]
+    pub declared_dimension: String,
 }
 
 /// A constraint with its check status.
@@ -1293,7 +1304,7 @@ pub struct JointDescriptor {
 /// | Variant | bind() form | Description |
 /// |---------|-------------|-------------|
 /// | `ParamBound` | `bind(j, param_ref)` | Joint driven by a named `param` cell; the param slider controls the joint position. |
-/// | `LiteralBound` | `bind(j, 100mm)` | Joint driven by a literal constant; surfaced as a scrub-virtual-param slider in the GUI. |
+/// | `LiteralBound` | `bind(j, 100mm)` / unbound | Joint driven by a literal constant, or by nothing; read-only in the GUI (no write target). |
 /// | `CouplingDerived` | coupling joint (no bind) | Joint position is geometrically derived from another driving joint. `source_joint` detection is deferred to ζ work. |
 /// | `FixedNoMotion` | fixed joint / default | Joint has no independent motion variable; position is fully constrained. |
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1305,13 +1316,17 @@ pub enum JointBinding {
         param_cell_id: String,
         current_value_si: Option<f64>,
     },
-    /// Joint is driven by a literal constant via `bind(joint, <literal>)`.
-    /// Surfaced as a scrubbable synth-virtual-param slider in the GUI.
-    /// `synth_param_name` is the virtual param name used internally (e.g. `__joint_y_axis_v`).
-    /// `initial_value_si` is the SI value of the literal (e.g. `0.1` for `100mm`).
+    /// Joint is driven by a literal constant via `bind(joint, <literal>)`, or by
+    /// no `bind()` at all. Construct with [`JointBinding::literal_bound`].
+    /// `synth_param_name` is the reserved `__joint_*_v` name (namespace guarded by
+    /// `W_KinematicReservedParamName`); it is NOT a resolvable cell id and not a write target.
+    /// `initial_value_si` is the SI value of the literal (e.g. `0.1` for `100mm`); `None` when
+    /// unbound, or when the literal does not resolve here (non-builtin unit, compound expression).
     LiteralBound {
         synth_param_name: String,
         initial_value_si: Option<f64>,
+        /// Vestigial wire slot, always `false`; the GUI never reads it, since only
+        /// `ParamBound` has a write target.
         scrubbable: bool,
     },
     /// Joint position is derived from another driving joint (coupling joint).
@@ -1319,6 +1334,19 @@ pub enum JointBinding {
     CouplingDerived { source_joint: String },
     /// Joint has no independent motion variable (fixed joint or conservative default).
     FixedNoMotion,
+}
+
+impl JointBinding {
+    /// A literal-bound joint has no write target — no cell or source span resolves
+    /// its synth name — so it is never scrubbable.
+    /// See docs/prds/v0_3/kinematic-constraints-completion.md §8.3.
+    pub fn literal_bound(synth_param_name: String, initial_value_si: Option<f64>) -> Self {
+        JointBinding::LiteralBound {
+            synth_param_name,
+            initial_value_si,
+            scrubbable: false,
+        }
+    }
 }
 
 /// Current phase of the evaluation engine (mirrors frontend EvaluationStatus interface).

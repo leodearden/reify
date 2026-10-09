@@ -12,7 +12,7 @@ use reify_eval::tolerance_combine::{
     OutputTarget, conforms_to_output, conforms_to_trait, extract_output_export_spec,
     unenforced_representation_bound_diagnostic,
 };
-use reify_eval::{CancellationHandle, CheckResult, Engine};
+use reify_eval::{CancellationHandle, CheckResult, ConstraintUpgrade, Engine};
 use reify_core::{
     ContentHash, ConstraintNodeId, DimensionVector, ModulePath, RealizationNodeId, Severity,
     ValueCellId,
@@ -589,12 +589,14 @@ pub struct EngineSession {
     /// re-source per-case FEA channels without re-tessellating — critical for
     /// keeping case-switch latency sub-frame even with large OCCT meshes.
     tess_mesh_cache: Option<Vec<MeshData>>,
-    /// Cache of tessellation diagnostics from the last `tessellate_snapshot`.
+    /// Diagnostics of the last `tessellate_snapshot`, as it emitted them —
+    /// before any constraint re-check replaced a claim it supersedes.
     ///
-    /// Populated alongside `tess_mesh_cache` in `build_gui_state`.  Used by
-    /// `set_active_fea_case` so the returned GuiState accurately reflects the
-    /// last tessellation result (no re-tessellation → same diagnostics).
-    tess_diag_cache: Vec<DiagnosticInfo>,
+    /// Populated alongside `tess_mesh_cache` in `build_gui_state`. Both
+    /// GuiState-producing paths derive their `tessellation_diagnostics` from it
+    /// with their OWN re-check's upgrades (`Self::tessellation_diagnostics`), so
+    /// a constraint's status and the warnings beside it come from one re-check.
+    tess_diag_cache: Vec<Diagnostic>,
     /// Task #5338: last delta-resolved value per geometry-derived panel cell —
     /// the VALUE-side twin of the mesh-side retention the frontend already does.
     ///
@@ -1351,25 +1353,24 @@ impl EngineSession {
         //
         // Prune safety is unaffected: `sync_demand` has already dropped every
         // hidden entity's entries, so only demanded entities can be replayed here.
-        {
-            let cache = &mut self.geometry_derived_cache;
-            surface_geometry_derived_cells(
-                self.core.engine(),
-                &mut values,
-                &mut constraints,
-                &ValueMap::new(),
-                &[],
-                cache,
-            );
-        }
+        let upgrades = surface_geometry_derived_cells(
+            self.core.engine(),
+            self.core.compiled().unwrap(),
+            &mut values,
+            &mut constraints,
+            &ValueMap::new(),
+            &[],
+            &mut self.geometry_derived_cache,
+        );
+
+        // The cached tessellation stream (no re-tessellation), with this pass's
+        // own upgrades replacing the Indeterminate claims they supersede.
+        let tessellation_diagnostics = self.tessellation_diagnostics(&upgrades);
 
         // Build files and compile diagnostics via shared helpers so both
         // `build_gui_state` and `set_active_fea_case` stay in sync.
         let files = self.build_files_with_live_edit();
-        let compile_diagnostics = self.build_compile_diagnostics();
-
-        // Tessellation diagnostics from the cache (no re-tessellation → same diags).
-        let tessellation_diagnostics = self.tess_diag_cache.clone();
+        let compile_diagnostics = self.build_compile_diagnostics(&tessellation_diagnostics);
 
         // Passive selective-demand measurement (task 4532): mirror build_gui_state
         // so the case-switch path carries the same observational record. Reading
@@ -2139,15 +2140,13 @@ impl EngineSession {
 
     /// Create a new EngineSession using the inventory-based kernel registry.
     ///
-    /// This is the production-binary boot path. Reads the static
-    /// linker-collected set of [`reify_types::KernelRegistration`] records once
-    /// at construction, picks the lexicographically smallest entry, and
-    /// instantiates the geometry kernel via its registered factory — mirroring
-    /// [`Engine::with_registered_kernel`]'s contract exactly.
-    ///
-    /// When no kernel adapter has submitted a registration (stub-mode build,
-    /// `cfg(has_occt)` off), the underlying engine receives `None` as the
-    /// geometry kernel, matching `Engine::new(checker, None)` semantics.
+    /// This is the production-binary boot path. The engine holds:
+    /// - the single-pick default kernel of [`Engine::with_registered_kernel`]:
+    ///   its lex-min BRep-capable adapter, else its lex-min adapter of any
+    ///   kind, and `None` only when nothing is registered;
+    /// - the OpenVDB adapter via [`Engine::ensure_openvdb_kernel`], when it is
+    ///   registered, so plans that name openvdb (an `isosurface`) realize;
+    /// - the production solver (below).
     ///
     /// Unit tests that require a mock or failing kernel should continue to
     /// use `EngineSession::new(checker, Some(Box::new(MockGeometryKernel::new())))` —
@@ -2161,8 +2160,9 @@ impl EngineSession {
     /// the shared `from_engine`/`EngineSession::new` path so that `new`-based unit
     /// tests keep `solver = None` and are unperturbed.
     pub fn with_registered_kernel(checker: Box<dyn ConstraintChecker>) -> Self {
-        let engine = Engine::with_registered_kernel(checker)
+        let mut engine = Engine::with_registered_kernel(checker)
             .with_solver(Box::new(reify_constraints::SolverRegistry::production()));
+        engine.ensure_openvdb_kernel();
         Self::from_engine(engine)
     }
 
@@ -3568,6 +3568,33 @@ impl EngineSession {
         Some((k.as_str(), v.as_str()))
     }
 
+    /// `tess_diag_cache` as the frontend receives it: each Indeterminate claim
+    /// that `upgrades` supersede replaced by the upgrade's own diagnostics, then
+    /// mapped to `DiagnosticInfo`.
+    ///
+    /// When source is unavailable (e.g. break_*_for_test helpers), the entries
+    /// are still produced but tagged code = "unresolved-source" so frontends can
+    /// distinguish reliable from unreliable positions.
+    fn tessellation_diagnostics(&self, upgrades: &[ConstraintUpgrade]) -> Vec<DiagnosticInfo> {
+        let mut diagnostics = self.tess_diag_cache.clone();
+        reify_eval::replace_superseded_constraint_diagnostics(&mut diagnostics, upgrades);
+        if diagnostics.is_empty() {
+            return Vec::new();
+        }
+        let resolved = self.resolve_source();
+        let unresolved = resolved.is_none();
+        let (file_path, source): (&str, &str) = resolved.unwrap_or(("<unknown>", ""));
+        let mut diags = diagnostics_to_info(&diagnostics, file_path, source);
+        if unresolved {
+            for d in &mut diags {
+                if d.code.is_none() {
+                    d.code = Some("unresolved-source".to_owned());
+                }
+            }
+        }
+        diags
+    }
+
     /// Look up source location for either a template name (e.g., `"Bracket"`) or a
     /// cell ID (e.g., `"Bracket.width"`).
     ///
@@ -3720,7 +3747,10 @@ impl EngineSession {
     /// Ordering: build-time errors are appended LAST, after the static
     /// diagnostics and the live-edit / hot-reload synthetics, so existing
     /// positional expectations over the leading entries are unaffected.
-    fn build_compile_diagnostics(&self) -> Vec<DiagnosticInfo> {
+    fn build_compile_diagnostics(
+        &self,
+        tessellation_diagnostics: &[DiagnosticInfo],
+    ) -> Vec<DiagnosticInfo> {
         let mut compile_diagnostics = self.get_diagnostics();
         if let Some(f) = &self.compile_failure
             && f.kind == CompileFailureKind::LiveEdit
@@ -3748,17 +3778,17 @@ impl EngineSession {
         }
 
         // Fold in build/realization-time geometry ERRORS (see the doc comment
-        // above). `tess_diag_cache` is refreshed by `build_gui_state` immediately
-        // after `tessellate_snapshot` and BEFORE this helper is called, and is
-        // reset to empty on the no-tessellation branch — so it always reflects
-        // the current snapshot and cannot carry stale errors forward.
+        // above). Both callers derive `tessellation_diagnostics` from
+        // `tess_diag_cache`, which `build_gui_state` refreshes immediately after
+        // `tessellate_snapshot` and resets to empty on the no-tessellation branch
+        // — so it always reflects the current snapshot and cannot carry stale
+        // errors forward.
         //
         // The identity guard is belt-and-braces: the two sources are disjoint by
         // construction (static compile vs. build pass), so it is a no-op today.
         // It exists so that if a diagnostic ever becomes reachable from both, the
         // designer sees it once rather than twice.
-        for diag in self
-            .tess_diag_cache
+        for diag in tessellation_diagnostics
             .iter()
             .filter(|d| d.severity == "Error")
         {
@@ -3984,48 +4014,29 @@ impl EngineSession {
         // retains the last delta-resolved value per cell and re-surfaces it on such
         // a gap. Disjoint-field borrow: the cache and the engine are distinct
         // `EngineSession` fields, so split the borrow rather than cloning.
-        if let Some(result) = &tess_result {
-            let cache = &mut self.geometry_derived_cache;
-            surface_geometry_derived_cells(
+        let upgrades = match &tess_result {
+            Some(result) => surface_geometry_derived_cells(
                 self.core.engine(),
+                self.core.compiled().unwrap(),
                 &mut values,
                 &mut constraints,
                 &result.values,
                 &result.meshes,
-                cache,
-            );
-        }
+                &mut self.geometry_derived_cache,
+            ),
+            None => Vec::new(),
+        };
 
         let (meshes, tessellation_diagnostics, display_panes, display_appearance) = match tess_result {
             Some(result) => {
                 // Map tessellation diagnostics → DiagnosticInfo and emit backend
-                // log entries so headless/CI runs still surface these via tracing.
-                let tess_diags = if result.diagnostics.is_empty() {
-                    Vec::new()
-                } else {
-                    // Log each diagnostic before mapping so stderr/tracing output
-                    // is available even when the GUI channel is not subscribed.
-                    for diag in &result.diagnostics {
-                        warn!(severity = diag.severity.as_wire_str(), message = %diag.message, "tessellation diagnostic");
-                    }
-                    // Resolve source for span lookup. When source is unavailable (e.g.
-                    // break_*_for_test helpers), we still produce DiagnosticInfo but tag
-                    // code = "unresolved-source" so frontends can distinguish reliable from
-                    // unreliable positions. Borrows from `self` — no allocation on the
-                    // happy path; the "<unknown>"/"" fallback is zero-length static strs.
-                    let resolved = self.resolve_source();
-                    let unresolved = resolved.is_none();
-                    let (file_path, source): (&str, &str) = resolved.unwrap_or(("<unknown>", ""));
-                    let mut diags = diagnostics_to_info(&result.diagnostics, file_path, source);
-                    if unresolved {
-                        for d in &mut diags {
-                            if d.code.is_none() {
-                                d.code = Some("unresolved-source".to_owned());
-                            }
-                        }
-                    }
-                    diags
-                };
+                // log entries so headless/CI runs still surface these via tracing,
+                // even when the GUI channel is not subscribed.
+                self.tess_diag_cache = result.diagnostics;
+                let tess_diags = self.tessellation_diagnostics(&upgrades);
+                for diag in &tess_diags {
+                    warn!(severity = diag.severity.as_str(), message = %diag.message, "tessellation diagnostic");
+                }
                 // T6 (task 3904) complete: `default_visible` is surfaced to the
                 // GUI via the entity-tree realization nodes — NOT through MeshData.
                 // `get_entity_tree` → `build_template_node` computes
@@ -4193,7 +4204,6 @@ impl EngineSession {
                     // serve geometry from the wrong model.
                     self.tess_mesh_cache = None;
                 }
-                self.tess_diag_cache = tess_diags.clone();
                 // Populate per-vertex FEA scalar/displacement channels when an
                 // ElasticResult is present in the evaluated values.  The helper
                 // returns early when no ElasticResult is found (negligible
@@ -4240,7 +4250,7 @@ impl EngineSession {
         // synthesis logic. Both helpers are also called from `set_active_fea_case`
         // to keep the two paths consistent.
         let files = self.build_files_with_live_edit();
-        let compile_diagnostics = self.build_compile_diagnostics();
+        let compile_diagnostics = self.build_compile_diagnostics(&tessellation_diagnostics);
 
         // Extract tensegrity wire and surface descriptors from value cells.
         // Single scoped borrow covers both — shared precondition made explicit.
@@ -4360,7 +4370,7 @@ impl EngineSession {
     ///
     /// Saved by MOVE, not by clone — `build_gui_state` ASSIGNS both fields
     /// unconditionally on every path (the FEA-gated `Some(..)`/`None` branch and
-    /// the no-tessellation branch) and never reads them, so handing the inner call
+    /// the no-tessellation branch) before any read of them, so handing the inner call
     /// an empty pair costs nothing and the restore is free even for large OCCT
     /// meshes.
     pub fn build_gui_state_full_scene(&mut self) -> Result<GuiState, String> {
@@ -5102,6 +5112,29 @@ fn display_scalar(v: &reify_ir::Value) -> Option<(f64, DimensionVector)> {
     }
 }
 
+/// Read a bare `Value::Int`/`Value::Real` held by a cell whose declared type
+/// is dimensioned as the `Value::Scalar` reify-eval's dimension wildcard makes
+/// of it: the number IS the canonical SI magnitude. Why such a value reaches a
+/// dimensioned cell at all: [`parse_value_string_for_cell`]'s doc. Every other
+/// value, and any value in an undimensioned cell, is returned as-is.
+fn value_as_declared(
+    val: &Value,
+    declared: Option<DimensionVector>,
+) -> std::borrow::Cow<'_, Value> {
+    use std::borrow::Cow;
+    match (val, declared) {
+        (Value::Int(i), Some(dimension)) => Cow::Owned(Value::Scalar {
+            si_value: *i as f64,
+            dimension,
+        }),
+        (Value::Real(r), Some(dimension)) => Cow::Owned(Value::Scalar {
+            si_value: *r,
+            dimension,
+        }),
+        _ => Cow::Borrowed(val),
+    }
+}
+
 /// Format the four display fields a `ValueData` cell derives directly from its
 /// `Value`: the default-unit `value` / `unit` pair (`format_value`) plus the
 /// per-cell canonical `si_value` + `dimension` name (`display_scalar`, task
@@ -5113,7 +5146,16 @@ fn display_scalar(v: &reify_ir::Value) -> Option<(f64, DimensionVector)> {
 /// `Undef` value, `display_scalar` yields `None`, so `si_value` is `None` and
 /// `dimension` is `""` — the GUI keeps the static unit badge with no ladder,
 /// exactly as `format_value` renders the value itself.
-fn format_determined_cell(val: &Value) -> (String, String, Option<f64>, String) {
+///
+/// `declared` is the cell's [`declared_scalar_dimension`]. A bare Int/Real in
+/// a declared-dimensioned cell is formatted as that dimension's SI magnitude
+/// (see [`value_as_declared`]), so the badge survives a bare-number edit.
+fn format_determined_cell(
+    val: &Value,
+    declared: Option<DimensionVector>,
+) -> (String, String, Option<f64>, String) {
+    let val = value_as_declared(val, declared);
+    let val = val.as_ref();
     let (value, unit) = format_value(val);
     let (si_value, dim) = match display_scalar(val) {
         Some((s, d)) => (Some(s), Some(d)),
@@ -5121,6 +5163,20 @@ fn format_determined_cell(val: &Value) -> (String, String, Option<f64>, String) 
     };
     let dimension = dim.and_then(|d| d.canonical_name()).unwrap_or("").to_string();
     (value, unit, si_value, dimension)
+}
+
+/// Every value cell of `module`, keyed by id, with its
+/// [`declared_scalar_dimension`] — one pass, so a caller formatting many cells
+/// pays one lookup per cell rather than a scan of every template.
+fn declared_dimension_index(
+    module: &CompiledModule,
+) -> HashMap<&ValueCellId, Option<DimensionVector>> {
+    module
+        .templates
+        .iter()
+        .flat_map(|t| &t.value_cells)
+        .map(|vc| (&vc.id, declared_scalar_dimension(&vc.cell_type)))
+        .collect()
 }
 
 fn build_values(
@@ -5132,7 +5188,13 @@ fn build_values(
     for template in &compiled.templates {
         for cell in &template.value_cells {
             let val = check.values.get_or_undef(&cell.id);
-            let (formatted_value, unit, si_value, dimension) = format_determined_cell(&val);
+            let declared = declared_scalar_dimension(&cell.cell_type);
+            let (formatted_value, unit, si_value, dimension) =
+                format_determined_cell(&val, declared);
+            let declared_dimension = declared
+                .and_then(|d| d.canonical_name())
+                .unwrap_or("")
+                .to_string();
             let determinacy = match &val {
                 reify_ir::Value::Undef => {
                     if cell.kind.is_auto() {
@@ -5155,12 +5217,13 @@ fn build_values(
             // the GUI displays the last good number, NOT the current
             // un-recomputed one (arch §8 prune-safety scenario 3 — "the displayed
             // number equals the last good value"). Computed ONLY for Pending
-            // cells; final/intermediate/failed cells carry `None`. Formatted via
-            // `format_value(..).0` (value part only), matching `value` above.
+            // cells; final/intermediate/failed cells carry `None`. Read through
+            // `value_as_declared` and formatted via `format_value(..).0` (value
+            // part only), matching `value` above.
             let last_substantive_value = if freshness == "pending" {
                 engine.and_then(|e| {
                     e.last_substantive_value(&NodeId::Value(cell.id.clone()))
-                        .map(|v| format_value(&v).0)
+                        .map(|v| format_value(&value_as_declared(&v, declared)).0)
                 })
             } else {
                 None
@@ -5201,6 +5264,7 @@ fn build_values(
                 last_substantive_value,
                 dimension,
                 si_value,
+                declared_dimension,
             });
         }
     }
@@ -5298,18 +5362,17 @@ pub(crate) fn build_constraints(
 ///
 /// Constraint re-check: `tessellate_snapshot`'s own `result.constraint_results`
 /// were checked BEFORE `run_post_processes` patched the mass-property cells, so a
-/// constraint over such a cell still reads Indeterminate there. Re-check the
-/// active constraints against the now-complete `result.values` and adopt any
-/// verdict that resolved from Indeterminate → Satisfied / Violated. This mirrors
-/// the post-geometry constraint re-check in `Engine::build` (engine_build.rs): a
-/// previously Satisfied/Violated constraint cannot regress because the re-check
-/// only ADDS now-resolved geometry cells, so only Indeterminate entries are
-/// touched. Skipped entirely when this pass surfaced no cell, or when nothing is
-/// Indeterminate (the common cases). Narrowing the dispatch further — to only the
-/// constraints that reference a cell surfaced this pass — would need a subset-checking
-/// `Engine` API in reify-eval (out of this task's scope); for a `: Rigid` body the
-/// `moi_principal[0] > 0` PD constraint references a surfaced cell, so its re-check is
-/// inherently required on every warm edit regardless.
+/// constraint over such a cell still reads Indeterminate there. Only the
+/// Indeterminate candidates are re-dispatched against the now-complete
+/// `result.values`, via `Engine::upgrade_indeterminate_verdicts`, and each verdict
+/// that became Satisfied / Violated is adopted; that API also withholds a
+/// geometric Conforms, whose verdict only the measure pass may give (C1). This
+/// mirrors the post-geometry constraint re-check in `Engine::build`
+/// (engine_build.rs): a Satisfied/Violated constraint is never a candidate, so it
+/// cannot regress. Skipped entirely when this pass surfaced no cell, or when
+/// nothing is Indeterminate (the common cases). Returns the adopted upgrades
+/// (empty when skipped) so the caller can replace the Indeterminate diagnostics
+/// they supersede.
 ///
 /// ## Task #5338: the delta contract
 ///
@@ -5365,18 +5428,19 @@ pub(crate) fn build_constraints(
 /// construction there — without fabricating a result struct.
 fn surface_geometry_derived_cells(
     engine: &Engine,
+    module: &CompiledModule,
     values: &mut [ValueData],
     constraints: &mut [ConstraintData],
     delta_values: &ValueMap,
     delta_meshes: &[reify_eval::MeshSurface],
     cache: &mut HashMap<ValueCellId, Value>,
-) {
+) -> Vec<ConstraintUpgrade> {
     // Track whether this pass surfaced any cell from Undef → Determined. If it
     // did not, `result.values` resolved nothing the kernel-less panel was
     // missing, so the constraint re-check below cannot flip any verdict (every
     // constraint input is a panel cell, and an Indeterminate constraint only
     // resolves once one of its Undef inputs is surfaced here) — skip it and
-    // spare the full active-constraint dispatch on every warm rebuild.
+    // spare the re-check dispatch on every warm rebuild.
     let mut surfaced_any = false;
     // Task #5338: `(id, value)` for each cell this pass served from the retention
     // cache because the delta omitted it. `delta_values` still reads `Undef` for
@@ -5435,6 +5499,10 @@ fn surface_geometry_derived_cells(
     // tracked-pattern comment, since the curator assigns the task id asynchronously
     // and a cite must resolve to a live task to be valid.
     let mut dispatched_entities: Option<HashSet<String>> = None;
+    // Task #6962: the declared dimension each surfaced cell is formatted under,
+    // built LAZILY on the first surfaced cell for the same reason as
+    // `dispatched_entities`.
+    let mut declared_dimensions: Option<HashMap<&ValueCellId, Option<DimensionVector>>> = None;
     for cell in values.iter_mut() {
         // Leave already-resolved cells untouched; only surface the ones the
         // kernel-less panel left Undef (undetermined / auto).
@@ -5483,7 +5551,12 @@ fn surface_geometry_derived_cells(
                 }
             }
         };
-        let (value, unit, si_value, dimension) = format_determined_cell(&val);
+        let declared = declared_dimensions
+            .get_or_insert_with(|| declared_dimension_index(module))
+            .get(&id)
+            .copied()
+            .flatten();
+        let (value, unit, si_value, dimension) = format_determined_cell(&val, declared);
         cell.value = value;
         cell.unit = unit;
         cell.determinacy = format_determinacy(DeterminacyState::Determined);
@@ -5526,28 +5599,18 @@ fn surface_geometry_derived_cells(
     // constraint permanently reading Indeterminate beside the value that satisfies
     // it. It costs, per re-render, one `im::HashMap` clone (O(1), structural
     // sharing) plus one insert per cache-sourced cell, and one
-    // `check_constraints_with_values` — a kernel-LESS `values.clone()` +
-    // active-constraint scan + dispatch over the active constraints
+    // `upgrade_indeterminate_verdicts` — a kernel-LESS `values.clone()` +
+    // active-constraint scan + dispatch over the Indeterminate candidates only
     // (reify-eval `engine_constraints.rs`). No kernel query, so the P0 kernel-less
-    // edit-latency gate is untouched; the load is proportional to the constraint
-    // graph, not to mesh size.
-    //
-    // Narrowing it further needs something this scope does not have. Skipping the
-    // dispatch when only cache-sourced cells were surfaced is NOT sound on its own
-    // (the verdicts would have to come from somewhere, and dropping them is the
-    // incoherence above); memoizing verdicts on the merged value set needs an
-    // equality/fingerprint over the whole `ValueMap` AND an argument that
-    // `active_constraint_ids` cannot move while those values hold still — active
-    // constraints are derived from the engine's own snapshot, not from the values
-    // passed in, so that argument is not available here. A per-constraint subset
-    // re-check API in reify-eval would close it properly; out of this task's locked
-    // scope.
+    // edit-latency gate is untouched; the load is proportional to the candidate
+    // subset, not to mesh size.
     //
     // The overlay is built INSIDE the guard so a pass that surfaces cells but has
     // no Indeterminate constraint left — the non-`Rigid` majority — pays neither
     // the clone nor the dispatch.
     //
-    // Both Indeterminate comparisons below compare through `satisfaction_token`:
+    // Both Indeterminate comparisons (this guard and the candidate filter in
+    // `recheck_indeterminate_constraints`) compare through `satisfaction_token`:
     // a bare literal out of step with it would disable this entire re-check with
     // no compile error, surfacing only as a PD constraint stuck Indeterminate.
     if surfaced_any
@@ -5565,26 +5628,48 @@ fn surface_geometry_derived_cells(
             Some(merged)
         };
         let recheck_values = merged.as_ref().unwrap_or(delta_values);
-
-        if let Ok((recheck, _diags)) = engine.check_constraints_with_values(recheck_values) {
-            for c in constraints.iter_mut() {
-                if c.status != satisfaction_token(Satisfaction::Indeterminate) {
-                    continue;
-                }
-                let Some(new_sat) = recheck
-                    .iter()
-                    .find(|e| e.id.to_string() == c.node_id)
-                    .map(|e| e.satisfaction)
-                else {
-                    continue;
-                };
-                if new_sat == Satisfaction::Indeterminate {
-                    continue;
-                }
-                c.status = satisfaction_token(new_sat).to_string();
-            }
-        }
+        return recheck_indeterminate_constraints(engine, module, constraints, recheck_values);
     }
+    Vec::new()
+}
+
+/// Adopt each verdict `Engine::upgrade_indeterminate_verdicts` settles for the
+/// panel's Indeterminate constraints and return those upgrades. An engine error
+/// leaves every status as is and returns none.
+fn recheck_indeterminate_constraints(
+    engine: &Engine,
+    module: &CompiledModule,
+    constraints: &mut [ConstraintData],
+    recheck_values: &ValueMap,
+) -> Vec<ConstraintUpgrade> {
+    use std::fmt::Write as _;
+
+    let indeterminate = satisfaction_token(Satisfaction::Indeterminate);
+    let candidate_at: HashMap<&str, usize> = constraints
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| c.status == indeterminate)
+        .map(|(at, c)| (c.node_id.as_str(), at))
+        .collect();
+    let mut id_text = String::new();
+    let Ok(upgrades) = engine.upgrade_indeterminate_verdicts(module, recheck_values, |id| {
+        id_text.clear();
+        write!(id_text, "{id}").expect("formatting into a String cannot fail");
+        candidate_at.contains_key(id_text.as_str())
+    }) else {
+        return Vec::new();
+    };
+    let verdicts: Vec<(usize, &'static str)> = upgrades
+        .iter()
+        .filter_map(|u| {
+            let at = *candidate_at.get(u.entry().id.to_string().as_str())?;
+            Some((at, satisfaction_token(u.entry().satisfaction)))
+        })
+        .collect();
+    for (at, status) in verdicts {
+        constraints[at].status = status.to_string();
+    }
+    upgrades
 }
 
 /// The trait defs a conformance check must be resolved against: the module's
@@ -6275,11 +6360,9 @@ fn extract_joint_descriptor(joint_val: &Value, joint_index: usize) -> Option<Joi
         "coupling" => JointBinding::CouplingDerived {
             source_joint: String::new(), // source detection deferred to ζ work
         },
-        "prismatic" | "revolute" => JointBinding::LiteralBound {
-            synth_param_name: format!("__joint_{joint_index}_v"),
-            initial_value_si: None,
-            scrubbable: true,
-        },
+        "prismatic" | "revolute" => {
+            JointBinding::literal_bound(format!("__joint_{joint_index}_v"), None)
+        }
         _ => JointBinding::FixedNoMotion, // conservative default for unknown kinds
     };
 
@@ -6571,11 +6654,10 @@ fn resolve_driving_params_from_ast(
                             // Refine the binding to LiteralBound using the joint cell name
                             // (not the index-based default) — first-wins guard.
                             if matches!(jd.binding, JointBinding::LiteralBound { initial_value_si: None, .. }) {
-                                jd.binding = JointBinding::LiteralBound {
-                                    synth_param_name: format!("__joint_{joint_cell_name}_v"),
+                                jd.binding = JointBinding::literal_bound(
+                                    format!("__joint_{joint_cell_name}_v"),
                                     initial_value_si,
-                                    scrubbable: true,
-                                };
+                                );
                             }
                         }
                     }
@@ -7988,6 +8070,23 @@ fn unwrap_optional(ty: &reify_core::Type) -> &reify_core::Type {
     ty
 }
 
+/// The dimension a cell's DECLARED type requires of a supplied value: its
+/// [`unwrap_optional`] type, if that is a non-dimensionless `Type::Scalar`.
+///
+/// The one definition of "a dimensioned cell" — consumed by the bare-number
+/// gate in [`parse_value_string_for_cell`], by `build_values`'
+/// `ValueData.declared_dimension`, and by [`format_determined_cell`]'s reading
+/// of a bare number — so the panel's input gate and the backend's agree by
+/// construction (task #6962).
+/// `!is_dimensionless()` is explicit so a `param x : Real` (compiled to
+/// `Scalar { DIMENSIONLESS }`) is never treated as dimensioned.
+pub(crate) fn declared_scalar_dimension(cell_type: &reify_core::Type) -> Option<DimensionVector> {
+    match unwrap_optional(cell_type) {
+        reify_core::Type::Scalar { dimension } if !dimension.is_dimensionless() => Some(*dimension),
+        _ => None,
+    }
+}
+
 /// Parse a value string for a SPECIFIC declared cell type (task #5757).
 ///
 /// The one thing the context-free [`parse_value_string`] cannot do: **refuse a
@@ -8018,8 +8117,12 @@ fn unwrap_optional(ty: &reify_core::Type) -> &reify_core::Type {
 ///
 /// Each conjunct, and what pins it:
 ///
-///   * `unwrap_optional` first, so an `Option<Length>` cell is gated like a
-///     `Length` one — `parse_value_string_for_cell_gates_through_an_option_wrapper`;
+///   * [`declared_scalar_dimension`] — the cell's declared, `Option`-peeled,
+///     non-dimensionless dimension, the same fact the panel's gate reads as
+///     `ValueData.declared_dimension`. An `Option<Length>` cell is gated like a
+///     `Length` one (`parse_value_string_for_cell_gates_through_an_option_wrapper`),
+///     and a `param x : Real` (`Scalar { DIMENSIONLESS }`) stays ungated even if
+///     a dimensionless quantity ever gains a curated ladder;
 ///   * only `Value::Int` / `Value::Real` are refused; every other variant falls
 ///     through to reify-eval's own `TypeKindMismatch` / `DimensionMismatch`,
 ///     notably `Value::Bool`, whose message an existing test depends on;
@@ -8028,12 +8131,7 @@ fn unwrap_optional(ty: &reify_core::Type) -> &reify_core::Type {
 ///     both ungated for the same reason, pinned together by
 ///     `parse_value_string_for_cell_keys_the_gate_on_expressibility_not_on_namedness`
 ///     because keying on `canonical_name().is_some()` would read as an
-///     equivalent refactor and split them;
-///   * `!dimension.is_dimensionless()` is explicit even though every covered
-///     dimension is non-dimensionless by construction, so a future curated
-///     ladder for a dimensionless quantity cannot silently start gating every
-///     ratio slider. `param x : Real` compiles to
-///     `Type::Scalar { DIMENSIONLESS }` and falls on the permissive side.
+///     equivalent refactor and split them.
 ///
 /// THE MESSAGE IS BUILT FROM THE LADDER DATA THE GATE JUST CONSULTED, so it can
 /// only name a rung this index parses — pinned across every curated ladder by
@@ -8057,10 +8155,9 @@ pub(crate) fn parse_value_string_for_cell(
     let s = s.trim();
     let value = parse_value_string(s)?;
 
-    if let reify_core::Type::Scalar { dimension } = unwrap_optional(cell_type)
-        && !dimension.is_dimensionless()
+    if let Some(dimension) = declared_scalar_dimension(cell_type)
         && matches!(value, Value::Int(_) | Value::Real(_))
-        && let Some((expected, rung)) = dimension_requires_unit(dimension)
+        && let Some((expected, rung)) = dimension_requires_unit(&dimension)
     {
         return Err(format!(
             "expects {expected}, got the bare number '{s}'; pass a dimensioned \

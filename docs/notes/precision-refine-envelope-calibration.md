@@ -42,8 +42,10 @@ most likely failure mode of this whole exercise is a table of confident near-zer
 that are silent non-realizations.
 
 There is also a *third* outcome, distinct from both: `INDETERMINATE`, which is what a
-construct that compiles but never realizes produces (loft, degenerate cone — §1.5,
-§2.3).
+construct that compiles but never realizes produces (a degenerate cone — §1.3).
+
+Loft was listed in that parenthesis until task #6188 made it realizable; §1.6 records what it
+measures now, and its same-plane form is a live instance of the `OK` trap above.
 
 **Caveat 3 — sampled lower bound.** The reported deviation is a sampled lower bound on
 the true Hausdorff chord error (4 interior points per facet), and per PRD §2.1 only the
@@ -60,6 +62,7 @@ Notation: `d` = requested `#precision`, `a` = achieved sampled facet deviation,
 
 | class | regime coordinate | sup K | at | status |
 |---|---|---|---|---|
+| loft | x-offset / `bottom_r`, `d` ‡ | **≥ 70.75** | `x/r` = 1.0, `d` = 0.06694 mm | **lower bound**, chaotic in `d`, budget-limited |
 | sphere | `d/R` | **2.079** | `d/R` = 3.12e-4 | supremum |
 | torus | `minor/major`, `d/minor` | 0.978 | 0.02, 0.015 | supremum |
 | cone | `top_r/bottom_r` | 0.970 | 0.8, `d/R` = 6e-4 | supremum |
@@ -68,7 +71,6 @@ Notation: `d` = requested `#precision`, `a` = achieved sampled facet deviation,
 | pipe | pipe_r / path curvature | 0.598 | `d/R` = 5e-2 | **lower bound** |
 | sweep | profile / path curvature | 0.534 | `d/R` = 1e-2 | **lower bound** |
 | spline | profile / path curvature | 0.013 | `d/R` = 2e-2 | **lower bound** |
-| loft | — | **no datum** | — | blocked at realization |
 
 † Two caveats, distinct from the other lower-bound rows. First, `d/span` reflects the
 committed **1000 mm × 1000 mm control net** only (§1.5) — unlike cone/torus/fillet, whose
@@ -87,6 +89,16 @@ continuum, and only three plateau edges of the very many in [0.12, 0.18] mm were
 (P1–P3; a fourth plateau was walked as a control, with its lower edge left unbracketed).
 So `lower bound` no longer means the structure is un-understood, and never meant a wall
 was hit — it means 1.0010 is a floor that further walking can only raise.
+
+‡ The worst class measured, and the least settled. The committed coaxial spelling is **not**
+the subject of this row: it measures as a cone (byte-identical `a` to `cone(500mm, 250mm,
+800mm)` at 19 of 19 rungs, K = 0.9210). The row is an **off-axis** loft — the top section's
+centre offset in x — whose `a` is piecewise-constant in `d` with isolated spikes: 70.75 at
+0.06694 mm sits beside ≈ 20 on both neighbouring plateaus, so no ladder samples it, and no
+turnover is shown. The largest values sit at the fine end of the walked range, where each
+rung costs minutes; one regime coordinate (the offset) was walked, at one top radius and one
+height. `K` > 16 is established — the true ratio at the headline `d` lies in [70.742,
+70.757) — but the value is a floor, and §3.1 consumes it as one. Full account: §1.6.
 
 The deviation is **deterministic**: `torus(1000mm,100mm)` at `d`=10 mm returned
 `5.665e-3` on three consecutive runs. The ratios carry no run-to-run error.
@@ -169,9 +181,14 @@ Every class shows a **floor** at coarse `d`: achieved stops falling because the
 tessellator has hit its minimum facet count. Sphere is pinned at `6.006e-2` for all
 `d ≥ 50 mm`; cone is identical at 100 mm and 20 mm; torus identical at 40 mm and 20 mm;
 nurbs_surface identical at 400 mm, 200 mm and 100 mm (§1.5), so its topmost mandated rung
-sits inside the floor as well.
+sits inside the floor as well; loft's coaxial spelling is identical from 400 mm down to 20 mm
+(`1.156e-2`, the same string as the cone control) and its off-axis spelling at 100, 50 and 20
+mm (`2.910e-3` at x-offset 200 mm; §1.6).
 In the floor regime `a/d < 1` **trivially**, so a coarse sweep reports a falsely
-comfortable envelope. This is the trap the non-analytic classes could not escape (§2.4).
+comfortable envelope. This is the trap the non-analytic classes could not escape (§2.4), and
+loft shows it in its most extreme measured form: the x-offset-500 spelling reads 0.1458 at 20
+mm, 2.3840 at 10 mm, 5.2975 at 4 mm and **70.75 at 0.06694 mm** (§1.6), so a sweep that
+stopped at the floor would have reported 0.1458.
 
 ### 1.5 Non-analytic classes
 
@@ -215,7 +232,9 @@ Not measurable, recorded honestly:
 * **sweep along a helix**, either profile — `TIMEOUT > 90 s` at every `d` tried.
 * **`nurbs(…)`** is excluded on semantics, not behaviour: it returns a **Wire**, which
   has no facets and therefore no chord deviation.
-* **loft** — blocked at realization, both failure modes below.
+
+(**loft** was listed here as not measurable until task #6188 made it realizable. It is
+measured in §1.6, not here, and is the worst class in §1.1.)
 
 **`nurbs_surface(…)` is measurable and does not belong in the list above.** The
 `INDETERMINATE` in 0.22 s originally recorded here was **not** a capability gap: it was
@@ -714,34 +733,373 @@ anywhere in the block, at any stage or resolution. Nothing timed out, so this cl
 1/deflection scaling its most expensive, is Stage B's 0.118 mm, well inside the regime 6545
 already showed to be affordable.
 
-### 1.6 Loft is unreachable from the source language
+### 1.6 Loft — measured (task #6318)
 
-Two mutually exclusive failure modes with no path between them:
+Task **#6188** made `loft(…)` realizable from source (merge `fca4a9ad5f`); the History paragraph at the
+end of this section records what this section said before, and what is retracted. That is what made this
+block possible, and the first thing it measured is that **the committed subject is the wrong probe**: the
+*coaxial* spelling measures as a **cone**. A loft whose top section is **offset sideways** is a different
+object, and it is the **worst class in this note by a wide margin** — and chaotic in `d`.
 
-1. Profiles in the **same plane** — the only thing the language can express — compile
-   but never realize (`INDETERMINATE`). Reproduced for `loft(circle, circle)`,
-   `loft(rectangle, circle)`, `loft(circle, ellipse)`, three-profile loft,
-   `loft(rectangle, polygon)`, `loft_guided(…)`, and `translate(loft(…))`. Coincident
-   profiles bound a degenerate zero-height solid, so this is the expected geometric
-   outcome, not a kernel defect.
-2. Separating the planes with `translate` is rejected at compile time:
-   `error: geometry argument 'profile' must be a 2D Surface profile (Closed, Planar)`
-   (`crates/reify-compiler/src/geometry.rs:729`, dispatched via
-   `crates/reify-compiler/src/conformance/mod.rs:6158`).
+**Headline (measured).** `loft(circle(500mm), translate(circle(250mm), 500mm, 0mm, 800mm))` at
+`#precision(0.06694mm)` returns `a` = **4.736e-3 m**, so **`a/d` = 70.7499** — about 34×
+the sphere's 2.079, until now the worst class. The display wall (§1.5) puts the true ratio in
+**[70.742, 70.757)**, entirely above 16. This is a **lower bound**, and a stronger kind of one than
+any other row in this note (see "What this is, and is not" below): the ratio is not a smooth function of `d`,
+the highest readings sit at the fine end of the walked range, where each rung costs minutes, and one regime
+coordinate of many was walked.
 
-**Root cause is structural, not a spelling problem**: every profile constructor is fixed
-arity with no plane or offset argument — `circle(r)`, `rectangle(w,h)`, `ellipse(a,b)`,
-`polygon(coords…)` at `crates/reify-compiler/src/geometry.rs:1598-1660`. No profile can
-be authored at non-zero z, and the one operator that could move it degrades the kind
-loft requires.
+**Provenance for this block** — own stamp; deliberately *not* §0's identity table, and not any §1.5 block's:
 
-`crates/reify-compiler/tests/fixtures/stdlib_geometry_ops_smoke.ri` contains
-`loft(prof, prof2)` and does **not** contradict this: that harness asserts arity and
-registry membership only, explicitly not argument type/dimension/order (its own header
-says so). It is a spelling reference, never evidence of realizability.
+| | |
+|---|---|
+| binary | `target/release/reify`, built 2026-10-06 16:59 — newer than every `crates/` commit reachable from the measured HEAD (the last is the task/6188 merge `fca4a9ad5f`, 15:32 the same day); not rebuilt afterwards |
+| HEAD | `8e81ea8339` (branch `task/6318`) when measured. The branch was later rebased onto `18d86776e7`; the only `crates/` paths that changed (`reify-test-support`'s helpers and one of its tests) are not in `reify-cli`'s normal dependency graph (`cargo tree --offline -p reify-cli -e normal -i reify-test-support` reports `nothing to print`), so the binary is unaffected and every datum below comes from this one binary |
+| kernel | OCCT 7.8 (26 `libTK*.so.7.8` ldd lines, 26 distinct sonames; `has_occt` live, confirmed functionally — every probe below realized and passed the §0 Caveat-2 datum gate). 27 `libTK*.so.7.9` lines are also linked, via gmsh; reify's own calls bind 7.8 |
+| machine | AMD Ryzen 9 3950X, 16C/32T (same box as §0), Linux 7.0.0-31 |
+| load | **45 – 541** 1-min loadavg at probe start across the session; per §0 Caveat 1 this moves wall clocks only |
 
-Filed as follow-up ticket `tkt_0RS9VJ0K316S7TBYJBDMPVTCY0`; the evidence is
-`tests/prd-gate/fixtures/pnrg_envelope_loft.ri`.
+**Reproduction gate.** Five readings were taken at plan time, earlier the same day, on this same binary.
+They were re-measured before any new datum was trusted, and all five match **exactly**:
+
+| subject | d | plan-time reading (a, m) | measured here (a, m) | a/d |
+|---|---|---|---|---|
+| coaxial | 20 mm | 1.156e-2 | 1.156e-2 | 0.5780 |
+| coaxial | 10 mm | 7.642e-3 | 7.642e-3 | 0.7642 |
+| coaxial | 1 mm | 8.745e-4 | 8.745e-4 | 0.8745 |
+| off-axis, x = 200 mm | 10 mm | 1.885e-2 | 1.885e-2 | 1.8850 |
+| off-axis, x = 200 mm | 5 mm | 2.175e-2 | 2.175e-2 | 4.3500 |
+
+This validates the apparatus (harness, fixture snapshot, subject rewrite) — a wrong binary, a stale
+fixture, the `E_MODULE_PATH_MISMATCH` trap (§4) or a silent non-realization each fail it loudly. It is a
+weaker gate than #7128's: same binary and same day, so it says nothing about a rebuilt binary.
+
+**The committed coaxial spelling is the cone class.** The committed subject,
+`loft(circle(500mm), translate(circle(250mm), 0mm, 0mm, 800mm))`, walked from 400 mm to 0.05 mm:
+
+| d | a (m) | a/d | `cone(500mm, 250mm, 800mm)` |
+|---|---|---|---|
+| 400 mm | 1.156e-2 | 0.0289 | identical |
+| 200 mm | 1.156e-2 | 0.0578 | identical |
+| 100 mm | 1.156e-2 | 0.1156 | identical |
+| 50 mm | 1.156e-2 | 0.2312 | identical |
+| 20 mm | 1.156e-2 | 0.5780 | identical |
+| 10 mm | 7.642e-3 | 0.7642 | identical |
+| 5 mm | 3.889e-3 | 0.7778 | identical |
+| 3 mm | 2.518e-3 | 0.8393 | identical |
+| 2 mm | 1.665e-3 | 0.8325 | identical |
+| 1 mm | 8.745e-4 | 0.8745 | identical |
+| 0.8 mm | 6.972e-4 | 0.8715 | identical |
+| 0.6 mm | 5.225e-4 | 0.8708 | identical |
+| 0.5 mm | 4.379e-4 | 0.8758 | identical |
+| 0.4 mm | 3.564e-4 | 0.8910 | identical |
+| 0.3 mm | 2.702e-4 | 0.9007 | identical |
+| 0.2 mm | 1.792e-4 | 0.8960 | identical |
+| 0.15 mm | 1.356e-4 | 0.9040 | identical |
+| 0.1 mm | 9.098e-5 | 0.9098 | identical |
+| 0.05 mm | 4.605e-5 | 0.9210 | identical |
+
+`cone(500mm, 250mm, 800mm)` — `pnrg_envelope_cone.ri`'s subject with its height set to 800 mm to match —
+returned a **byte-identical `a` at all 19 rungs** (last column; **measured**). The coaxial loft therefore
+contributes no loft-class datum: it *is* the cone class, and its K — 0.9210 at 0.05 mm, the highest on the
+ladder and still creeping up as `d` falls — is a cone number, comparable to §1.3's. It stays committed only
+as a control. *Hypothesis (not established by these runs):* ThruSections between two coaxial circles reduces
+to an analytic conical face, so the tessellator sees the same surface class as `cone(…)`. Nothing here
+distinguishes that from any other reason two code paths could return identical strings.
+
+**Four loft-specific spellings, and why one spine is not enough.** Each swapped into the fixture's
+`let g = …` line; all four realized at every rung of every ladder below:
+
+| label | subject |
+|---|---|
+| S1 off-axis | `loft(circle(500mm), translate(circle(250mm), 200mm, 0mm, 800mm))` |
+| S2 circle→ellipse | `loft(circle(500mm), translate(ellipse(400mm, 200mm), 0mm, 0mm, 800mm))` |
+| S3 three sections | `loft(circle(500mm), translate(circle(300mm), 0mm, 0mm, 400mm), translate(circle(150mm), 0mm, 0mm, 800mm))` |
+| S4 rectangle→circle | `loft(rectangle(800mm, 800mm), translate(circle(250mm), 0mm, 0mm, 800mm))` |
+
+`a` (m), with `a/d` in parentheses:
+
+| d | S1 off-axis | S2 circle→ellipse | S3 three sections | S4 rectangle→circle |
+|---|---|---|---|---|
+| 100 mm | 2.910e-3 (0.0291) | 1.016e-2 (0.1016) | 2.293e-2 (0.2293) | 1.827e-2 (0.1827) |
+| 50 mm | 2.910e-3 (0.0582) | 8.066e-3 (0.1613) | 2.293e-2 (0.4586) | 1.632e-2 (0.3264) |
+| 20 mm | 2.910e-3 (0.1455) | 8.901e-3 (0.4451) | 8.152e-3 (0.4076) | 1.254e-2 (0.6270) |
+| 10 mm | 1.885e-2 (1.8850) | 8.946e-3 (0.8946) | 8.313e-3 (0.8313) | 7.446e-3 (0.7446) |
+| 5 mm | 2.175e-2 (4.3500) | 4.896e-3 (0.9792) | 7.146e-3 (1.4292) | 4.315e-3 (0.8630) |
+| 3 mm | 2.955e-3 (0.9850) | 2.917e-3 (0.9723) | 4.844e-3 (1.6147) | 2.735e-3 (0.9117) |
+| 2 mm | 5.566e-3 (2.7830) | 4.032e-3 (2.0160) | 1.780e-3 (0.8900) | 1.623e-3 (0.8115) |
+| 1 mm | 9.913e-4 (0.9913) | 9.820e-4 (0.9820) | 1.292e-3 (1.2920) | 9.724e-4 (0.9724) |
+| 0.5 mm | 1.122e-3 (2.2440) | 4.895e-4 (0.9790) | 7.076e-4 (1.4152) | 4.608e-4 (0.9216) |
+| 0.3 mm | 2.830e-4 (0.9433) | 2.976e-4 (0.9920) | 3.680e-4 (1.2267) | 2.914e-4 (0.9713) |
+
+On the spine S1 peaks at 4.3500 (5 mm), S2 at 2.0160 (2 mm), S3 at 1.6147 (3 mm), S4 at 0.9724 (1 mm). A
+0.5 mm grid over [1, 20] mm, run for all four (S4 included although its spine never exceeded 1, because the
+spine aliases), moves two of them: S3 to **1.8707** at 4.5 mm and S4 to 0.9764 at 14 mm; S1 stays at 4.3500
+and S2 at 2.0160. S2's 2 mm rung is a lone spike — its grid neighbours at 1.5 and 2.5 mm read 0.9787 and
+0.9640 — and S3's best rung was missed by the spine entirely: §1.2's aliasing trap, again. **S4 never
+exceeds 1** on any rung measured; S1–S3 do.
+
+**The offset regime.** S1's coordinate is the top section's x-offset over the bottom radius (`x/r`, with
+`r` = 500 mm). Every offset was run at the three `d` the walk required (10, 5, 3 mm) and over the full
+0.5 mm grid [1, 20] mm — three fixed `d` per offset would have aliased here exactly as the spine does,
+because the position of each offset's peak moves with the offset — and, near the peaks, over a 0.1 mm grid
+[3, 7] mm. 600, 750 and 1000 mm go beyond the planned range (`x/r` ≤ 1) and are labelled as an extension:
+
+| x-offset (mm) | x/r | a/d @ 10 mm | @ 5 mm | @ 3 mm | max, 0.5 mm grid [1, 20] (at d) | max, 0.1 mm grid [3, 7] (at d) | lowest d with a/d > 1 in [3, 7] | a/d @ 0.1 mm |
+|---|---|---|---|---|---|---|---|---|
+| 0 | 0.00 | 0.7642 | 0.7778 | 0.8393 | 0.8745 (1) | — | — | 0.9098 |
+| 25 | 0.05 | 2.0020 | 4.5660 | 0.9577 | 4.5867 (4.5) | 4.6592 (4.9) | 4.4 | 10.2300 |
+| 50 | 0.10 | 1.9870 | 4.0480 | 0.9623 | 4.5511 (4.5) | 4.5511 (4.5) | 4.4 | 10.3100 |
+| 100 | 0.20 | 1.9550 | 4.4780 | 0.9710 | 4.4780 (5) | 4.5694 (4.9) | 4.4 | 10.4200 |
+| 150 | 0.30 | 1.9210 | 4.4160 | 0.9787 | 4.4160 (5) | 4.5061 (4.9) | 4.4 | 10.5200 |
+| 200 | 0.40 | 1.8850 | 4.3500 | 0.9850 | 4.3500 (5) | 4.4388 (4.9) | 4.3 | 10.3200 |
+| 300 | 0.60 | 1.8090 | 4.2100 | 0.9290 | 5.4850 (4) | 5.4850 (4) | 4 | 11.5600 |
+| 400 | 0.80 | 1.7300 | 4.0640 | 0.9353 | 5.6575 (4) | 5.8026 (3.9) | 3.9 | 12.3400 |
+| 500 | 1.00 | 2.3840 | 3.6100 | 0.9397 | 5.2975 (4) | 5.4333 (3.9) | 3.9 | 13.0000 |
+| 600 | 1.20 | 1.8840 | 4.3540 | 0.9417 | 6.1775 (4) | 6.3359 (3.9) | 3.9 | 13.4500 |
+| 750 | 1.50 | 3.5360 | 7.3180 | 0.9863 | 7.3180 (5) | 7.4673 (4.9) | 3.9 | 7.4360 |
+| 1000 | 2.00 | 1.1350 | 0.9216 | 0.9147 | 7.8400 (4) | 8.8848 (4.6) | 3.9 | 6.8760 |
+
+* **Offset 0 reproduces the coaxial values.** Fresh re-runs at 5, 10 and 3 mm returned the coaxial `a`
+  byte-identically (3.889e-3, 7.642e-3, 2.518e-3). This is the walk's built-in control.
+* **Any nonzero offset breaks the cone identity.** Even 25 mm (`x/r` = 0.05) reaches 4.5867 at 4.5 mm on the
+  0.5 mm grid. The transition lies somewhere in (0, 25] mm; it was not walked.
+* **Three regimes in `d`** on every nonzero offset (all **measured**): a **floor** at coarse `d`
+  (`a/d` ≪ 1 trivially; e.g. S1 at 100, 50 and 20 mm all return 2.910e-3); a **coarse-mesh regime** from a
+  cliff at `d` ≈ 3.9–4.4 mm (the "lowest `d` with `a/d` > 1" column) up to ≈ 13 mm, in which `a` stays in
+  ≈ 15–26 mm (up to 41 mm at 750 and 1000 mm) while `d` varies from 4 to 13 mm, so the ratio peaks at the
+  cliff's lower edge (4.4–8.9 across the walked offsets); and a **fine-`d` regime** below ≈ 1 mm, next.
+* **The `d` = 0.1 mm column is the largest in the table**: 10.23, 10.31, 10.42, 10.52, 10.32, 11.56, 12.34,
+  13.00, 13.45 from 25 to 600 mm (one dip, 150 → 200 mm), then 7.436 and 6.876 at 750 and 1000 mm — against
+  0.9098 at offset 0. The fine-`d` problem therefore **starts at the smallest offset walked**, an
+  order-of-magnitude jump between offset 0 and 25 mm (`x/r` = 0.05), and the offset thereafter moves the
+  *size* of the problem (`a` ≈ 1.0–1.35e-3 m throughout 25–600 mm), not its existence. One `d` only — no
+  claim is made about where the true peak in offset lies. The leader below sits at `x/r` = 1.0, on the
+  boundary of the planned range, not at an interior maximum.
+* **The spellings without an offset do not show it.** At 0.1 and 0.08 mm S2 reads 1.3620 and 1.4888, S3
+  1.9410 and 1.2900, S4 0.9707 and 0.9695 — no fine-`d` spike on these rungs. Two rungs each are not
+  a walk, and S2 and S3 already exceed 1.
+
+**Fine `d` is not a regime but a sawtooth with isolated spikes.** Offsets 400 and 500 were walked to the
+finest rungs the budget allows. Offset 400:
+
+| d | a (m) | a/d | wall |
+|---|---|---|---|
+| 1 mm | 9.923e-4 | 0.9923 | 12 s |
+| 0.95 mm | 1.511e-3 | 1.5905 | 14 s |
+| 0.9 mm | 8.843e-4 | 0.9826 | 15 s |
+| 0.85 mm | 1.246e-3 | 1.4659 | 18 s |
+| 0.8 mm | 1.748e-3 | 2.1850 | 14 s |
+| 0.75 mm | 1.624e-3 | 2.1653 | 14 s |
+| 0.7 mm | 1.597e-3 | 2.2814 | 16 s |
+| 0.65 mm | 1.903e-3 | 2.9277 | 18 s |
+| 0.6 mm | 1.412e-3 | 2.3533 | 16 s |
+| 0.55 mm | 1.313e-3 | 2.3873 | 18 s |
+| 0.5 mm | 1.176e-3 | 2.3520 | 18 s |
+| 0.45 mm | 1.973e-3 | 4.3844 | 25 s |
+| 0.4 mm | 8.441e-4 | 2.1103 | 25 s |
+| 0.35 mm | 1.158e-3 | 3.3086 | 29 s |
+| 0.3 mm | 2.352e-3 | 7.8400 | 29 s |
+| 0.25 mm | 8.132e-4 | 3.2528 | 36 s |
+| 0.2 mm | 4.615e-4 | 2.3075 | 53 s |
+| 0.15 mm | 4.470e-4 | 2.9800 | 66 s |
+| 0.14 mm | 8.095e-4 | 5.7821 | 86 s |
+| 0.13 mm | 1.297e-4 | 0.9977 | 98 s |
+| 0.12 mm | 3.199e-4 | 2.6658 | 141 s |
+| 0.11 mm | 1.007e-3 | 9.1545 | 180 s |
+| 0.1 mm | 1.234e-3 | 12.3400 | 92 s |
+| 0.09 mm | 1.267e-3 | 14.0778 | 225 s |
+| 0.08 mm | 1.219e-3 | 15.2375 | 142 s |
+| 0.079 mm | 1.165e-3 | 14.7468 | 117 s |
+| 0.078 mm | 1.189e-3 | 15.2436 | 113 s |
+| 0.077 mm | 1.264e-3 | 16.4156 | 116 s |
+| 0.076 mm | 1.232e-3 | 16.2105 | 118 s |
+| 0.075 mm | 1.203e-3 | 16.0400 | 124 s |
+| 0.074 mm | 1.203e-3 | 16.2568 | 130 s |
+| 0.073 mm | 1.183e-3 | 16.2055 | 128 s |
+| 0.072 mm | 1.147e-3 | 15.9306 | 130 s |
+| 0.071 mm | 1.165e-3 | 16.4085 | 128 s |
+| 0.07 mm | 5.174e-4 | 7.3914 | 256 s |
+| 0.06 mm | 4.517e-4 | 7.5283 | 353 s |
+| 0.05 mm | 3.449e-4 | 6.8980 | 375 s |
+
+and offset 500 from 0.1 mm down:
+
+| d | a (m) | a/d | wall |
+|---|---|---|---|
+| 0.1 mm | 1.300e-3 | 13.0000 | 186 s |
+| 0.09 mm | 1.328e-3 | 14.7556 | 120 s |
+| 0.08 mm | 1.216e-3 | 15.2000 | 113 s |
+| 0.07 mm | 1.226e-3 | 17.5143 | 133 s |
+| 0.069 mm | 1.364e-3 | 19.7681 | 147 s |
+| 0.068 mm | 1.348e-3 | 19.8235 | 157 s |
+| 0.067 mm | 4.736e-3 | 70.6866 | 166 s |
+| 0.066 mm | 1.339e-3 | 20.2879 | 162 s |
+| 0.065 mm | 9.145e-4 | 14.0692 | 242 s |
+| 0.064 mm | 3.995e-3 | 62.4219 | 237 s |
+| 0.062 mm | 7.216e-4 | 11.6387 | 240 s |
+| 0.06 mm | 4.128e-4 | 6.8800 | 273 s |
+
+What the rows show (**measured**):
+
+* **No trend toward 1 as `d` falls.** At offset 400 every one of the fifteen 0.05 mm rungs from 0.1 to
+  0.8 mm reads ≥ 2.1; `a` hovers at 0.4–2.4 mm over that whole span while `d` falls eightfold.
+* **The ratio rises through the K = 16 limit of §3.1 before the spike.** Offset 400 reads above 16 (16.04–16.42)
+  at six of the seven `d` in [0.071, 0.077] mm (0.072 mm reads 15.93); offset 500 reads 17.5 at 0.07 mm and
+  19.8 at 0.068 mm.
+* **Spikes.** Offset 500 returns `a` = 3.995e-3 at 0.064 mm (62.42) and `a` = 4.736e-3 at 0.067 mm (70.69)
+  against 0.7–1.4e-3 at the neighbouring rungs; 0.0664 mm returns 2.997e-3 (45.14). A spike is a plateau of `a` a
+  few 1e-4 mm wide, pinned next.
+* **Isolated lows too.** Offset 400 reads 0.9977 at 0.13 mm, between 2.67 (0.12) and 5.78 (0.14).
+* **It is expensive.** The finest rungs cost minutes each under load — offset 400 at 0.05 mm took
+  375 s, offset 500 at 0.06 mm took 273 s and at 0.025 mm (a halving-chain member, §3.1) 602 s — against 3.9 s for the *coaxial* loft at 0.1 mm and
+  92 s for offset 400 at the same 0.1 mm. (Two contended wall clocks: indicative, per §0 Caveat 1.)
+
+*Hypothesis (not established by these samples):* the offset spelling's lateral face is a non-analytic
+(B-spline) surface for which the tessellator's refinement decision flips at isolated `d`; when it declines
+to refine, one coarse patch sets the global maximum. Distinguishing that from any other reason `a` is
+piecewise-constant would need per-face facet counts, which `reify check` does not expose.
+
+**The headline datum: pinning the spike's edge.** Where `a` is constant on a plateau, `d` falling inside it
+raises `a/d`, so the maximum sits at the plateau's **lower** edge (§1.5, #7128). The 4.736e-3 plateau was
+walked at 0.0002, 0.00004 and 0.00001 mm steps, bracketed on both sides by probes returning a *different*
+`a` (§4's rule: `a` is not monotone in `d`):
+
+| d | a (m) | a/d | runs (byte-identical) | note |
+|---|---|---|---|---|
+| 0.066 mm | 1.339e-3 | 20.2879 | 2 |  |
+| 0.0662 mm | 1.339e-3 | 20.2266 | 2 |  |
+| 0.0664 mm | 2.997e-3 | 45.1355 | 2 |  |
+| 0.0666 mm | 1.291e-3 | 19.3844 | 2 |  |
+| 0.0668 mm | 1.329e-3 | 19.8952 | 2 |  |
+| 0.06684 mm | 1.329e-3 | 19.8833 | 2 |  |
+| 0.06688 mm | 1.329e-3 | 19.8714 | 2 |  |
+| 0.06692 mm | 1.329e-3 | 19.8595 | 2 |  |
+| 0.06693 mm | 1.329e-3 | 19.8566 | 2 |  |
+| 0.06694 mm | 4.736e-3 | 70.7499 | 2 | **spike plateau** |
+| 0.06695 mm | 4.736e-3 | 70.7394 | 2 | **spike plateau** |
+| 0.06696 mm | 4.736e-3 | 70.7288 | 2 | **spike plateau** |
+| 0.067 mm | 4.736e-3 | 70.6866 | 3 | **spike plateau** |
+| 0.06704 mm | 4.736e-3 | 70.6444 | 2 | **spike plateau** |
+| 0.06708 mm | 4.736e-3 | 70.6023 | 2 | **spike plateau** |
+| 0.06712 mm | 4.736e-3 | 70.5602 | 2 | **spike plateau** |
+| 0.06716 mm | 4.736e-3 | 70.5182 | 2 | **spike plateau** |
+| 0.0672 mm | 1.361e-3 | 20.2530 | 2 |  |
+| 0.0674 mm | 1.361e-3 | 20.1929 | 2 |  |
+| 0.0676 mm | 1.361e-3 | 20.1331 | 2 |  |
+| 0.0678 mm | 1.348e-3 | 19.8820 | 2 |  |
+| 0.068 mm | 1.348e-3 | 19.8235 | 2 |  |
+
+The plateau's lower edge lies in **(0.06693, 0.06694] mm**, pinned to 1e-5 mm — below it `a` = 1.329e-3, at and above it
+4.736e-3 — and its upper edge in (0.06716, 0.0672) mm, so its width lies in (0.00022, 0.00027) mm. Across
+the plateau the ratio falls monotonically with `d`, from 70.7499 to 70.5182, exactly as the plateau
+model predicts. The headline is the lowest `d` that was *measured* on the plateau, **0.06694 mm**, where
+`a/d` = **70.7499**; the edge is pinned to 1e-5 mm, and by the printed `a` alone
+the ratio at the true edge lies in [70.7499, 70.7605).
+
+*Derived.* `a` prints as `4.736e-3`, so the true value lies in [4.7355e-3, 4.7365e-3) m; `d` is exact (it
+is the *request*). The true ratio at 0.06694 mm therefore lies in **[70.742, 70.757)**. No
+display-wall argument is needed to establish the finding: even the lower end is 4.4× the K = 16 limit.
+n = ⌈log₂ K⌉ = ⌈6.14⌉ = **7** (derived; §3.1).
+
+**What this is, and is not.** 70.7499 is the largest `a/d` found anywhere, and it is a **lower bound**:
+
+* *No turnover.* §1.5's criterion for a `supremum` (from #6545's review) is a fall that exceeds the
+  oscillation amplitude seen elsewhere in the same ladder. Here that amplitude is itself 3.5× across a
+  single 0.00004 mm step (4.736e-3 at 0.06716 mm, 1.361e-3 at 0.0672 mm), and the offset-500 ladder runs
+  6.88 → 62.42 across 0.06 → 0.064 mm. Low readings at the finest rungs (6.90 at 0.05 mm on offset 400; 8.20 at 0.05 mm and 15.52 at 0.025 mm on
+  offset 500) are therefore not a turnover, and none is, or could be, demonstrated.
+* *Budget wall.* The finest rung measured, 0.025 mm on offset 500 (a halving-chain member, §3.1), cost
+  602 s and read 15.52 — below the spikes above it; the next halving would cost ≈ 1200 s
+  (**derived**, §2.1's 1/deflection scaling). This class is budget-limited at fine `d`, like sweep, pipe and
+  spline and unlike nurbs_surface, and what lies below 0.025 mm is unknown.
+* *One coordinate of many.* Walked: five spellings and one offset coordinate. **Not** walked: top radius
+  (250 mm throughout), height (800 mm), a y-offset or rotation of the top section, section count beyond
+  three, section shape beyond circle/ellipse/rectangle. The leader sits on the planned range's boundary.
+* *Dense search cannot prove a supremum over a continuum* (§1.5), and this class is not a plateau ladder
+  but a plateau *forest*: the spike at 0.067 mm was found by a 0.001 mm walk and does not appear on a
+  0.01 mm grid.
+
+The coaxial and the offset spellings share one fixture and nothing else; §3.1 carries the offset spelling's
+number, because it is the one the PRD's loop would meet on an author's first non-trivial loft.
+
+**Determinism and datum gates.** The harness extracts `a` only from the full line `sampled facet deviation
+<X> m exceeds bound 1.000e-6 m` and emits distinct `NO-DATUM` / `TIMEOUT` / `SED-FAILED` tokens (§4's
+recipe, rewritten in Python so the subject swap can assert exactly-once; each scratch `.ri` is regenerated
+from a `git show HEAD:` snapshot of the committed fixture, one parent directory per probe, basename kept).
+It was checked against live failures before any datum was trusted, and every arm fired: the same-plane
+subject `loft(circle(500mm), circle(250mm))` — §0 Caveat 2's shape exactly: `OK PnrgLoftCheck#constraint[0]`,
+`All constraints satisfied.`, **exit 0** — and a scratch file whose basename does not match its `module`
+(`E_MODULE_PATH_MISMATCH`, **exit 1**) both returned `NO-DATUM`; an anchor not present exactly once returned
+`SED-FAILED` without running `reify`; `timeout 1` returned `TIMEOUT` (rc 124). The positive control — the
+committed subject at 20 mm — read 1.156e-2. **No measurement run produced a token**: every one of the
+1778 runs below emitted the datum line, so neither a non-realization nor a timeout is hiding in any
+table.
+
+Re-runs: the five gate rungs, the three offset-0 control rungs, **every rung whose ratio is ≥ 2** and each
+spelling's highest rung were run again — 507 probes compared (any probe with two or more runs),
+**507 byte-identical, 0 divergent**. Not all 507 are determinism picks: for 470 every repeat is a
+determinism re-run, for 20 the only repeat is a halving-chain re-reach (§3.1) of a probe an earlier walk
+had already measured, and 17 carry both. The headline plateau was run three times at 0.067 mm and the 0.064 mm spike twice; both sides
+of the pinned edge were re-run. A plateau edge is where a facet count changes, so it is where a
+non-deterministic tie-break would surface if one existed; none did. Wall clocks varied with load, no
+achieved value did (§0 Caveat 1).
+
+**Deviation from §4, disclosed.** §4 prescribes `timeout 240`. The finest off-axis rungs would have been
+killed by it (offset 500 at 0.025 mm took 602 s, offset 400 at 0.05 mm 375 s), turning a datum into a `TIMEOUT` — a cost result,
+which is exactly what this class's budget-limited status should not be allowed to hide. `timeout 240`
+was used for the spines, the grids and the 0.05 mm-step walk. **Every off-axis rung finer than 0.1 mm**, and
+every halving-chain member (§3.1), ran under `timeout 600` (the lazily evaluated deep chains under 1500 s).
+None hit its limit.
+
+**Totals across the block:** **1778 runs over 1236 probes** (a probe is one subject at one
+`d`), covering 274 distinct `d`; 542 of the runs repeat a probe already run — 505 as determinism
+re-runs and 37 as halving-chain members (§3.1) that an earlier walk had already measured. Neither
+tally should be read as the other, and several `d` recur across stages and spellings. The 542 repeats
+fall on the 507 probes compared above: 489 ran twice, one three times and 17 four times
+(489 + 2 + 3 × 17 = 542). Every run emitted the datum line;
+not a single `OK`, `INDETERMINATE`, `NO-DATUM` or `TIMEOUT` occurred in a measurement run (the four
+non-datum results in the raw log are the deliberate validation runs above). No achieved value differed
+between repetitions anywhere. Finest `d` probed: 0.025 mm; most expensive run: 602 s. The raw log records **completed** runs only: probes
+in flight when the orchestrator restarted mid-session were killed and are not counted; every one was re-run.
+
+**History.** Until task **#6188** this section read "Loft is unreachable from the source language" and
+recorded two failure modes. That account is superseded by #6188 (ticket `tkt_0RS9VJ0K316S7TBYJBDMPVTCY0` → task 6188, merge
+`fca4a9ad5f`):
+
+* The compile-time rejection of a `translate`d profile (`geometry argument 'profile' must be a 2D Surface
+  profile (Closed, Planar)`), measured as of §0's HEAD `5db884e30b`, is fixed by #6188. Realizability of the
+  translate spelling is now pinned by `crates/reify-eval/tests/harness_sweep/loft_e2e.rs`. Profile
+  constructors still take no plane argument; sections are placed with `translate()`.
+* The **same-plane** failure's cause, as measured 2026-08-18 and recorded in #6318's description and in
+  #6188's commit `164b5d2818`, was `OperationFailed("OCCT loft_profiles: TopoDS::Wire")` — a shape-type
+  mismatch (a face section where the OCCT call requires a wire; #6188's commit `2fb3eceb48` routes loft
+  sections through the shared reducer `section_profile_to_wire`, via `add_loft_section`) that **never
+  reached geometric evaluation**. (Quoted as recorded; the
+  current binary no longer reproduces it, so it was not re-measured.) The earlier text's claim that
+  coincident profiles "bound a degenerate zero-height solid, so this is the expected geometric outcome, not
+  a kernel defect" is **retracted: it was measured wrong**, and must not be cited.
+* What the same-plane subject does **on this session's binary** (**measured**, verbatim). `reify check`
+  prints, and **exits 0**:
+
+      warning: constraint expression has type PnrgLoft, expected Bool
+        OK PnrgLoftCheck#constraint[0]
+      All constraints satisfied.
+
+  and `reify build --verbose` prints, also exiting 0:
+
+      warning: constraint expression has type PnrgLoft, expected Bool
+        INDETERMINATE PnrgLoftCheck#constraint[0]: undefined inputs: PnrgLoftCheck.subject
+      warning: constraint PnrgLoftCheck#constraint[0] indeterminate: undefined inputs: PnrgLoftCheck.subject
+        PnrgLoft#realization[0]: kernel: occt, repr: BRep
+      …
+      No constraints violated (1 indeterminate).
+
+  That is a live instance of §0 Caveat 2's `OK` trap — no datum, no error diagnostic — and the reason every
+  probe above gates on the deviation line rather than on the exit code. *Hypothesis (not established; the
+  cause was not investigated):* the kernel call still fails for coincident sections and the failure is
+  swallowed into an undefined `subject` rather than reported; the `realization[0]` line shows only that a
+  realization was attempted.
 
 ---
 
@@ -873,24 +1231,32 @@ the natural authoring case `B ≈ d0`, `n ≥ log2(K)`. **Derived** from the §1
 
 | class | sup K | required n |
 |---|---|---|
+| loft | ≥ 70.75 ‡ | ≥ **7** ‡ |
 | sphere | 2.079 | **2** |
 | torus | 0.978 | 0 |
 | cone | 0.970 | 0 |
 | fillet blend | 0.925 | 0 |
 | nurbs surface | ≥ 1.0010 † | 1 † |
 | sweep / pipe / spline | ≤ 0.598 * | 0 * |
-| loft | no datum | — |
 
-**No measured class exceeds K ≈ 16.** The worst is the sphere at 2.079, needing `n = 2`.
-nurbs_surface is the one class measured **above** the K = 1 boundary, and so the one whose
-`required n` is not 0: its best pinned value is 1.0010 (§1.1, §1.5), and the true ratio at
-that `d` is bounded in [1.000626, 1.001321) — an interval lying entirely above 1, so the
-crossing is established rather than merely not excluded. Per the † note below that value is
-still a lower bound, so the true supremum can only be higher. Even so this changes nothing
-at the cap level: `n = 1` is nowhere near the cap-4 budget, and no plausible reading of this
-class's data approaches K ≈ 16 — all 69 probes of its dense walk lie within [0.9623, 1.0010],
-with no second branch like the sphere's ~2.07 tread. Cap 4
-covers K up to 16 at `B = d0` — **7.7× headroom** over the worst thing measured.
+**One measured class exceeds K = 16: loft.** Its off-axis spelling reads **≥ 70.75** (§1.1,
+§1.6), so `n ≥ ⌈log2 70.75⌉ = ⌈6.14⌉ =` **7** (derived) — above the cap of 4, and a lower
+bound, so the true `n` can only be higher. Every other class stays at or below the sphere's
+2.079, needing `n = 2`.
+
+Cap 4 covers K up to 16 at `B = d0`. Against the sphere — the worst class before loft had a
+datum — that was **7.7× headroom** (16 / 2.079). Against loft it is a **shortfall**:
+16 / 70.75 = 0.23, i.e. K exceeds what cap 4 covers by at least **4.4×** (derived), and K is
+a floor. §3.3 is where that lands.
+
+Of the other classes, nurbs_surface is the one measured **above** the K = 1 boundary, and so
+the one whose `required n` is not 0: its best pinned value is 1.0010 (§1.1, §1.5), and the
+true ratio at that `d` is bounded in [1.000626, 1.001321) — an interval lying entirely above
+1, so the crossing is established rather than merely not excluded. Per the † note below that
+value is still a lower bound, so the true supremum can only be higher. Even so this changes
+nothing at the cap level: `n = 1` is nowhere near the cap-4 budget, and no plausible reading
+of this class's data approaches K ≈ 16 — all 69 probes of its dense walk lie within
+[0.9623, 1.0010], with no second branch like the sphere's ~2.07 tread.
 
 \* Lower bounds only. The fine-`d` regime where the sphere reached its supremum was
 unaffordable for these three classes (§1.5, §2.1 caveat 1). The cap is justified by
@@ -907,6 +1273,65 @@ were pinned (a fourth plateau was walked only as a control), and a dense search 
 prove a supremum over a continuum — so the true K can only be *higher* than 1.0010. That
 does not disturb the cap: `n = 1` is nowhere near the cap-4 budget, and no plausible
 reading of this class's data approaches K ≈ 16.
+
+‡ Lower bound for the reasons §1.6 gives: `a` is piecewise-constant in `d` with isolated
+spikes, the walk stopped where each rung costs minutes, and one regime coordinate of many was
+walked. `n = ⌈log2 70.75⌉ = 7` inherits the floor. The coaxial spelling is not this row: it
+is the cone class (§1.6), `n = 0`.
+
+**Cross-check: the K-bound model against halving chains (task #6318, measured).** §3.1's
+`n ≥ log2 K` says what a loop needs *if* `K` bounds `a/d` everywhere, so it is a worst case over `d` — and
+loft is the one class whose `a` is wildly non-monotone in `d`. The model was therefore tested against the loop
+it models. For each starting request `d0`, with `B = d0` (the natural authoring case), the chain
+`d0, d0/2, d0/4, …` was measured at the two leading x-offsets of §1.6 (500 and 400 mm): `n` is the first
+attempt `i` with `a_i ≤ B`, and cap 4 allows `i` ≤ 4. A cell is `a_i / B` — above 1 is a failed attempt — and
+a chain stops at its first pass, as the loop would. *Derived:* `a_i ≤ B` is the same as `a_i / d_i ≤ 2^i`, so
+attempt `i` passes exactly when the measured ratio at `d0/2^i` is at most 1, 2, 4, 8 or 16; the cap is
+exhausted only if the ratio exceeds **every** one of them, and the last threshold is §3.1's K = 16. 46
+chains (23 starting points × 2 offsets):
+
+| d0 (= B) | x = 500: n | a_i / B | x = 400: n | a_i / B |
+|---|---|---|---|---|
+| 20 mm | **0** | 0.15 | **0** | 0.15 |
+| 16 mm | **0** | 0.18 | **0** | 0.18 |
+| 12 mm | **2** | 1.99 → 2.17 → 0.23 | **2** | 1.35 → 2.09 → 0.23 |
+| 10 mm | **2** | 2.38 → 1.81 → 0.25 | **2** | 1.73 → 2.03 → 0.24 |
+| 8 mm | **2** | 2.98 → 2.65 → 0.44 | **2** | 2.16 → 2.83 → 0.25 |
+| 6.4 mm | **1** | 3.96 → 0.47 | **1** | 2.44 → 0.47 |
+| 5 mm | **1** | 3.61 → 0.49 | **1** | 4.06 → 0.49 |
+| 4 mm | **1** | 5.30 → 0.88 | **1** | 5.66 → 0.51 |
+| 3.2 mm | **0** | 0.94 | **0** | 0.93 |
+| 2.5 mm | **0** | 0.99 | **0** | 0.97 |
+| 2 mm | **1** | 1.76 → 0.50 | **1** | 1.02 → 0.50 |
+| 1.3 mm | **0** | 0.98 | **0** | 0.99 |
+| 1.2 mm | **3** | 3.38 → 1.63 → 1.69 → 0.37 | **3** | 3.66 → 1.18 → 1.96 → 0.37 |
+| 1.1 mm | **2** | 4.00 → 1.75 → 0.76 | **2** | 3.45 → 1.19 → 0.78 |
+| 1.05 mm | **2** | 5.97 → 1.34 → 0.98 | **2** | 4.34 → 1.39 → 0.37 |
+| 1 mm | **0** | 0.99 | **0** | 0.99 |
+| 0.9 mm | **4** | 1.05 → 1.65 → 1.98 → 1.11 → 0.52 | **0** | 0.98 |
+| 0.8 mm | **4** | 1.52 → 1.20 → 5.48 → 1.63 → 0.51 | **2** | 2.19 → 1.06 → 0.58 |
+| 0.7 mm | **1** | 2.40 → 0.50 | **2** | 2.28 → 1.65 → 0.58 |
+| 0.64 mm | **1** | 3.61 → 0.49 | **2** | 1.53 → 1.27 → 0.64 |
+| 0.6 mm | **2** | 3.26 → 3.39 → 0.74 | **2** | 2.35 → 3.92 → 0.75 |
+| 0.5 mm | **2** | 3.01 → 1.99 → 0.31 | **2** | 2.35 → 1.63 → 0.72 |
+| 0.4 mm | **4** | 2.40 → 10.97 → 3.25 → 1.03 → 0.97 | **3** | 2.11 → 1.15 → 3.09 → 0.86 |
+
+*Measured:* 46 of 46 chains converged within the cap (n = 0: 13, n = 1: 10, n = 2: 17, n = 3: 3, n = 4: 3; worst n = 4).
+
+* **The cap held on every chain measured — and is tight, not slack.** No chain exhausted the cap: every chain measured to completion converged, 3 of them only at the last attempt the cap allows (x = 500 mm, d0 = 0.9 mm; x = 500 mm, d0 = 0.8 mm; x = 500 mm, d0 = 0.4 mm), and the tightest passed its last attempt with `a/d` = 15.5 against the limit of 16 (x = 500 mm, d0 = 0.4 mm). 6 of the
+  46 chains needed 3 or 4 attempts, and every one of them starts between 0.4 and
+  1.2 mm.
+* **Those are the chains whose last members land in §1.6's fine regime.** Attempt 4 runs at `d0/16`, which for
+  `d0` = 0.4–1.2 mm is 0.025–0.075 mm — where §1.6 measured `a/d` between 6.88 and 70.75 and the chains' own last
+  members read 8.2, 8.3 and 15.5. The threshold there is 16, so each of these chains asks whether the
+  ratio at `d0/16` is above or below 16, in the regime where it is least predictable.
+* **`n(d0)` is erratic in `d0`, not a trend.** At x = 500 mm, `d0` = 0.9, 0.8, 0.7, 0.64 and 0.6 mm give
+  `n` = 4, 4, 1, 1 and 2: whether a spike lands on one of a chain's five members changes the verdict, so no
+  interpolation between the measured `d0` is licensed.
+* **What the chains do not show.** They sample 23 starting points at two offsets of one spelling; they
+  neither prove nor bound a supremum. Chains from `d0` < 0.4 mm are **unmeasured**: their last members sit below
+  0.025 mm, where no ratio has been measured. The 0.025 mm member cost 602 s under load, so the last
+  member of a `d0` = 0.2 mm chain, at 0.0125 mm, would cost ≈ 1200 s (**derived**, 1/`d` scaling, §2.1).
 
 ### 3.2 Cost
 
@@ -926,32 +1351,46 @@ Worst-case wall clock on the re-baselined sphere (11.66 s at 0.3 mm, median), bo
 counting the initial pass so they are comparable:
 **N = 3 → 15× → ~2.9 min**; **N = 4 → 31× → ~6.0 min**.
 
-### 3.3 Decision — keep the cap at 4
+### 3.3 Decision — keep the cap at 4: provisional, with an open question for loft
 
-*Buys over 3*: K headroom 16 vs 8, i.e. 7.7× vs 3.8× over the worst measured class. That
-ratio is unchanged by task #7128: nurbs_surface rose from 0.9975 to 1.0010, but the worst
-measured class is still the sphere at 2.079, so 16/2.079 = 7.7× stands as derived.
+Task #6318's loft datum (§1.6) breaks the arithmetic this section was built on. This note does **not**
+replace the decision with a new one: it records the finding, escalates it, and leaves the cap, PRD §4.2 and
+§3.4 as they were.
 
-The *argument* around it does move, and is re-derived rather than left standing. Four
-classes are still known only as lower bounds (sweep, pipe, spline and nurbs_surface) and
-one (loft) still has no datum at all, so the extra doubling is still cheap insurance
-against classes this session could not fully pin down — but the reasons now differ: three
-by the 90 s budget wall, and nurbs_surface because a dense search cannot prove a supremum
-over a continuum. Its oscillation is no longer unresolved (§1.5, task #7128); three pinned
-plateau edges simply are not exhaustiveness. That class has also become the **worked
-example** for the insurance rather than merely a claimant on it: believed to peak at
-0.9975, it was found on denser walking to exceed 1 (1.0010, `n` = 1). A lower-bound row
-moving upward once walked properly is precisely the risk the extra doubling covers, and it
-has now happened once, measured — which strengthens the case for 4 rather than weakening
-it.
+*What changed* (**derived** from §1.6's measured lower bound). Cap 4 covers `K` up to 16 at `B = d0`. Loft's
+off-axis spelling measures `K` ≥ 70.75, so `n ≥ 7` and the coverage falls short of the worst measured class
+by at least 70.75 / 16 = **4.4×** — where this section used to report **7.7× headroom** (16 / 2.079, against
+the sphere). `K` is a lower bound, so the shortfall can only be larger. Under §3.1's model, cap 4 **cannot be
+shown to reach `B = d0`** for that class.
 
-*Costs*: worst-case ~6.0 min instead of ~2.9 min on the re-baselined sphere — a worst
-case reached only when **every** attempt fails. The measured classes converge at
-`n = 0…2`.
+*The earlier argument, and what became of it.* "Buys over 3: K headroom 16 vs 8, i.e. 7.7× vs 3.8× over the
+worst measured class" was arithmetically right for the classes then measured. The insurance it argued for —
+"the extra doubling is still cheap insurance against classes this session could not fully pin down" — named
+the risk that materialised: loft was the one class not yet measured, and its first datum is 34× the
+previous worst. The insurance was too small, not misplaced. (nurbs_surface, the other worked example, moved
+from 0.9975 to 1.0010 on denser walking, and that still stands.)
 
-Framing is PRD §4.2's and is unchanged: the loop is a **safety net, not a search
-engine**. Neither the halving factor nor the cap is a soundness constant — the verdict is
-always the measured one, and the cap bounds **cost**, not correctness.
+*What the measurements say about the actual loop, and what they do not* (**measured**; §3.1's chains).
+No chain exhausted the cap: every chain measured to completion converged, 3 of them only at the last attempt the cap allows (x = 500 mm, d0 = 0.9 mm; x = 500 mm, d0 = 0.8 mm; x = 500 mm, d0 = 0.4 mm), and the tightest passed its last attempt with `a/d` = 15.5 against the limit of 16 (x = 500 mm, d0 = 0.4 mm). So the cap held on every starting request sampled — but with no slack in the band
+where `d0/16` lands in the fine regime, and the model's `n ≥ 7` is a bound over every `d` while a chain visits
+five of them. Whether a real loop exceeds 4 attempts on a loft requested at `d0` < 0.4 mm, or at a `d0` the
+walk did not sample, is **unmeasured, not shown safe**.
+
+*What buying the model's guarantee would cost* (**derived**; §3.2's arithmetic is class-independent). A cap of
+`N` costs 2^(N+1) − 1 base passes including the initial one: `N` = 5 → 63×, `N` = 6 → 127×, `N` = 7 → 255×,
+about 12, 25 and 50 minutes on the re-baselined sphere's 11.66 s base pass (`N` = 4: 31×, ~6.0 min). Whether to
+pay that, to scope the guarantee away from classes whose `a/d` no small K bounds, or to read the cap as a cost
+bound only, is a design question for PRD §4.2's owner and task γ1. No measurement decides it; it is escalated
+(`design_concern`) with this section's evidence.
+
+*Costs at cap 4* (unchanged arithmetic): worst case ~6.0 min instead of ~2.9 min on the re-baselined sphere — a
+worst case reached only when **every** attempt fails. Every measured class except loft converges at
+`n = 0…2`; loft converged at `n ≤ 4` on every chain measured and has model `n ≥ 7`.
+
+Framing is PRD §4.2's and is unchanged: the loop is a **safety net, not a search engine**. Neither the halving
+factor nor the cap is a soundness constant — the verdict is always the measured one, and the cap bounds
+**cost**, not correctness. That framing is why this is an open question about cost and coverage, not a defect
+in a verdict.
 
 ### 3.4 The per-iteration cost sentence
 
@@ -982,7 +1421,7 @@ expected values are continuous measurements that drift with OCCT and machine):
 | `tests/prd-gate/fixtures/pnrg_envelope_pipe.ri` | pipe |
 | `tests/prd-gate/fixtures/pnrg_envelope_spline.ri` | spline |
 | `tests/prd-gate/fixtures/pnrg_envelope_nurbs_surface.ri` | nurbs surface |
-| `tests/prd-gate/fixtures/pnrg_envelope_loft.ri` | loft — **evidence only**, does not realize |
+| `tests/prd-gate/fixtures/pnrg_envelope_loft.ri` | loft — off-axis spelling, pinned at the §1.6 headline rung; minutes per run, use `timeout 600` |
 | `tests/prd-gate/fixtures/pnrg_cost_split_sphere.ri` | cost split |
 
 A single probe:
@@ -1072,6 +1511,56 @@ wall at P=4. §1.5's Stage C values therefore reproduce from the *published* rec
 later session, not merely from whatever was typed at the time. The `TIMEOUT` arm was
 exercised by lowering `timeout 240` to `timeout 1` (prints `0.12mm TIMEOUT`, returns 0 so
 `xargs` does not abort) and the `NO-DATUM` arm by the two failures §1.5 records.
+
+**A loft subject swap** (task #6318) — sed is fragile for a subject full of parentheses and
+commas, so the spellings and offsets of §1.6 are produced by an exactly-once Python rewrite of
+the `let g = …` line. Anchoring on that line rather than on a spelling keeps the recipe valid
+whichever spelling the fixture has committed (it is pinned at the offset-500 leader). The fixture
+text comes from `git show HEAD:`, not the working tree, so an uncommitted edit cannot change the
+apparatus — §1.6's harness likewise rewrote a snapshot of the committed fixture. Same
+conventions as the dense walk above — one parent dir per probe, basename kept, `out` captured
+before the exit code is read, distinct failure tokens:
+
+```python
+# loft_probe.py — run from the repo root.  probe(d_mm [, rhs]) -> "<a>" | NO-DATUM | TIMEOUT | SED-FAILED
+import re, subprocess, tempfile
+from pathlib import Path
+F = "tests/prd-gate/fixtures/pnrg_envelope_loft.ri"
+DATUM = re.compile(r"sampled facet deviation (\S+) m exceeds bound 1\.000e-6 m")
+
+def probe(d_mm, rhs=None):
+    src = subprocess.run(["git", "show", f"HEAD:{F}"],     # committed text, never the working tree
+                         capture_output=True, text=True, check=True).stdout
+    if rhs is not None:                      # replace the whole `let g =` line, exactly once
+        src, n = re.subn(r"^(    let g = ).*$", lambda m: m.group(1) + rhs, src, flags=re.M)
+        if n != 1: return "SED-FAILED"
+    src, n = re.subn(r"^#precision\([^)]*\)$", f"#precision({d_mm}mm)", src, flags=re.M)
+    if n != 1: return "SED-FAILED"
+    path = Path(tempfile.mkdtemp(prefix="pnrg_loft_")) / Path(F).name
+    path.write_text(src)
+    p = subprocess.run(["timeout", "600", "./target/release/reify", "check", str(path)],
+                       capture_output=True, text=True)
+    if p.returncode == 124: return "TIMEOUT"
+    m = DATUM.search(p.stdout + p.stderr)
+    return m.group(1) if m else "NO-DATUM"      # `OK` and E_MODULE_PATH_MISMATCH land here
+
+S1 = lambda x: f"loft(circle(500mm), translate(circle(250mm), {x}mm, 0mm, 800mm))"  # x = offset, mm
+# probe(20, S1(0))      -> 1.156e-2   coaxial control (== cone(500mm, 250mm, 800mm))
+# probe(5,  S1(200))    -> 2.175e-2   §1.6 reproduction gate
+# probe(0.06694)        -> 4.736e-3   the committed fixture: the headline
+```
+
+The other spellings (S2–S4) are in the §1.6 table; pass each as `rhs`.
+
+*Checked.* The block above was extracted from this file and run verbatim: `probe(20, S1(0))`
+printed `1.156e-2`, `probe(5, S1(200))` printed `2.175e-2` and `probe(0.06694)` printed `4.736e-3`
+(the last in 199 s, 1-min loadavg 125 at launch). The `HEAD:` read was checked with the working-tree
+fixture deliberately dirty: each scratch copy carried the committed header, not the edited one. The
+committed fixture, run
+directly as `timeout 700 ./target/release/reify check
+tests/prd-gate/fixtures/pnrg_envelope_loft.ri`, printed `error: RepresentationWithin: sampled
+facet deviation 4.736e-3 m exceeds bound 1.000e-6 m for PnrgLoftCheck` and exited 1, in 249 s
+wall at a 1-min loadavg of ≈ 150 — the §1.6 headline, string for string.
 
 **The cost split** (three vectors; the STL path must go to tmpfs to keep the write term
 bounded):

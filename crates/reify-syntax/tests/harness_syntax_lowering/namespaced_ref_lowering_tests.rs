@@ -691,6 +691,52 @@ fn destructured_import_does_not_bind_a_namespace() {
     );
 }
 
+/// `pub` is orthogonal to the binding: a facade author who writes
+/// `pub import parts as pp` still reaches `parts` as `pp.` inside the facade.
+#[test]
+fn a_pub_import_binds_its_qualifier_like_a_plain_import() {
+    assert_qualified_call_accepted(
+        "pub import parts as pp\nstructure def S { let f = pp.Pulley() }",
+        "pp.Pulley",
+    );
+    assert_qualified_call_accepted(
+        "pub import parts\nstructure def S { let f = parts.Pulley() }",
+        "parts.Pulley",
+    );
+}
+
+/// A single-file parse binds only an import's OWN name (alias, else final path
+/// segment), never one its target might re-export: a qualifier is the importing
+/// file's own binding (stdlib-namespace NS-Q1 / D-7), and `pub import`
+/// re-exports defs, not bindings (resolution-unification D-7). The target is
+/// never loaded, so `units` and `parts` only stand in for re-exported modules.
+#[test]
+fn an_import_binds_only_its_own_name_not_its_targets_reexports() {
+    // Positive control: the import binds its own name, so the rejections
+    // below are not just "this import bound nothing".
+    assert_qualified_call_accepted(
+        "import std.prelude\nstructure def S { let f = prelude.Thing() }",
+        "prelude.Thing",
+    );
+
+    for (source, callee, qualifier) in [
+        // `std.prelude` re-exports `units` (stdlib-namespace NS-V1).
+        (
+            "import std.prelude\nstructure def S { let f = units.Thing() }",
+            "units.Thing",
+            "units",
+        ),
+        // A user facade `lib` that `pub import`s `parts`.
+        (
+            "import lib\nstructure def S { let f = parts.Pulley() }",
+            "parts.Pulley",
+            "parts",
+        ),
+    ] {
+        assert_qualifier_rejected(source, callee, qualifier);
+    }
+}
+
 /// A CAPITALISED MODULE SEGMENT IS UNREACHABLE AS A QUALIFIER, and the
 /// diagnostic has to say why (task 5495 μ, amendment; review suggestion #8).
 ///

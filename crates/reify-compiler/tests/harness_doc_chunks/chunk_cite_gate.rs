@@ -13,11 +13,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
+use crate::chunk_io::{all_chunks, chunk_label, repo_root, report};
 use crate::chunk_prose::{
     EARLY_CLOSED_NOTE_FIX, HTML_COMMENT_CLOSE, HtmlComment, html_comments,
     stray_comment_terminators,
 };
-use crate::fence_gate::{all_chunks, chunk_label, repo_root, report};
 
 /// Every `.rs`/`.ri` file under `crates/` and `examples/`, keyed by basename.
 type BasenameIndex = BTreeMap<String, Vec<PathBuf>>;
@@ -244,12 +244,13 @@ pub(crate) fn audit_cited_paths(chunk_path: &str, markdown: &str) -> CiteAudit {
 /// Assert every cite in `markdown` resolves, and that the chunk still carries at
 /// least `min_fn` / `min_rs` / `min_ri` of them.
 ///
-/// SHARED BY BOTH CHUNK MODULES — `geometry_chunk_smoke.rs`'s traps SYNC block
-/// and `units_chunk_smoke.rs`'s PINNED/UNPINNED inventory — so the resolution
-/// and existence rule has one copy.
+/// SHARED BY EVERY CHUNK MODULE THAT FLOORS ITS CITES — among them
+/// `geometry_chunk_smoke.rs`'s traps SYNC block and `units_chunk_smoke.rs`'s
+/// PINNED/UNPINNED inventory — so the resolution and existence rule has one
+/// copy.
 ///
 /// The CHUNK-SPECIFIC "why this matters" prose lives in each caller's docstring,
-/// not in the panic text here, so the shared message stays true for both. What
+/// not in the panic text here, so the shared message stays true for all of them. What
 /// the panics do carry is the chunk path, the floor that was missed and the full
 /// cite list, which is what a reader needs to act.
 ///
@@ -359,15 +360,15 @@ pub(crate) fn note_violations(chunk_path: &str, markdown: &str) -> Vec<String> {
 /// read across every chunk, and the chunks carrying at least one. EXACT live
 /// values — re-measure them by the protocol stated once next to
 /// `geometry_chunk_smoke.rs`'s `MINIMUM_FN_CITES`.
-const MINIMUM_CORPUS_CITES: usize = 67;
-const MINIMUM_CITING_CHUNKS: usize = 5;
+const MINIMUM_CORPUS_CITES: usize = 73;
+const MINIMUM_CITING_CHUNKS: usize = 7;
 
 /// Every repo path any chunk cites must exist — a `docs/…md` pointer, a
 /// `crates/…rs` test, an `examples/…ri` walk or a `name.rs::fn` alike.
 ///
 /// SCOPE: existence only, never that a cited test still asserts what the prose
-/// claims. Complementary to the chunk-local cite floors in
-/// `geometry_chunk_smoke.rs` and `units_chunk_smoke.rs`, which hold particular
+/// claims. Complementary to the chunk-local cite floors in the per-chunk smoke
+/// modules (`geometry_chunk_smoke.rs`, `units_chunk_smoke.rs`, …), which hold particular
 /// SYNC inventories to their size, and to
 /// `tests/infra/test_cited_test_paths_resolve.sh` (#7095), which reports only
 /// MOVED `crates/*/tests/*.rs` cites — never a deleted target or a non-test path.
@@ -412,7 +413,13 @@ fn every_path_cited_by_any_chunk_resolves() {
 /// its EXACT live count — attributed per file, and TOTAL, in fence_gate's
 /// `REIFY_FENCE_FLOORS` idiom. Re-measure by the protocol stated once next to
 /// `geometry_chunk_smoke.rs`'s `MINIMUM_FN_CITES`.
-const SYNC_NOTE_FLOORS: &[(&str, usize)] = &[("geometry", 5), ("stdlib", 1), ("units", 1)];
+const SYNC_NOTE_FLOORS: &[(&str, usize)] = &[
+    ("geometry", 3),
+    ("measurement", 1),
+    ("stdlib", 1),
+    ("topology", 1),
+    ("units", 1),
+];
 
 /// Every maintainer note in every chunk must be WHOLE, and every SYNC note must
 /// name a path.

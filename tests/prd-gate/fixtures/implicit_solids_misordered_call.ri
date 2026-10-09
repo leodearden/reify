@@ -1,0 +1,5 @@
+// B22: mis-ordered call implicit(f, 2mm, vec3(..)) must be a type error, never a misbind.
+structure def MisorderedImplicit {
+    let f = sdf_sphere(8mm)
+    let body = implicit(f, 2mm, vec3(30mm, 30mm, 30mm))
+}

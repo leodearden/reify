@@ -290,7 +290,7 @@ export interface ValueData {
    */
   last_substantive_value?: string | null;
   /**
-   * Canonical dimension name for this cell's value (e.g. `"Volume"`,
+   * Canonical dimension name for this cell's VALUE (e.g. `"Volume"`,
    * `"Length"`), from `DimensionVector::canonical_name()`. Empty string /
    * absent for non-scalar, dimensionless, or composed-dimension values
    * (task #5199: drives the Parameters panel's per-cell unit picker — only
@@ -308,6 +308,13 @@ export interface ValueData {
    * the IPC wire (task #5199 engine_state decision: additive-only).
    */
   si_value?: number | null;
+  /**
+   * Mirrors Rust `ValueData.declared_dimension` (task #6962): the canonical
+   * dimension the cell's DECLARED type requires; `''` / absent = none. Drives
+   * the input gate, unit alphabet and edit-seed unit. `dimension` stays the
+   * value's own and drives the picker.
+   */
+  declared_dimension?: string;
 }
 
 /** One selectable display unit within a {@link DimensionLadder} (task #5199). */
@@ -860,6 +867,11 @@ export interface EntityTreeNode {
  * `driving_param_cell_id` and `current_value_si` on `JointDescriptor`
  * are backward-compat mirrors populated only for `param_bound` joints;
  * they are `null` for `literal_bound`, `coupling_derived`, and `fixed_no_motion`.
+ *
+ * Only `param_bound` has a write target, so it alone is scrubbable. `literal_bound` is read-only:
+ * `synth_param_name` is a reserved name, not a cell id; `initial_value_si` is null when no literal
+ * value is known (unbound, or a literal the engine cannot resolve); `scrubbable` is a vestigial
+ * always-false slot the panel never reads.
  */
 export type JointBinding =
   | { kind: 'param_bound'; param_cell_id: string; current_value_si: number | null }

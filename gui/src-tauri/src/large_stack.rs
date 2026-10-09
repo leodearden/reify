@@ -52,12 +52,12 @@
 //!
 //! # What is still NOT covered
 //!
-//! Four boundaries, stated as limits rather than left to be inferred. All four
-//! are LSP-side: the engine surface is covered. Items 2 and 3 were OPEN at task
-//! 5772 and are now bounded rather than unbounded (task 6517); they are
+//! Three boundaries, stated as limits rather than left to be inferred. All
+//! three are LSP-side: the engine surface is covered. Items 1 and 2 were OPEN at
+//! task 5772 and are now bounded rather than unbounded (task 6517); they are
 //! restated as the narrower limits that actually hold, not deleted, because a
-//! limit that stopped being total did not stop existing. Item 4 is the reverse
-//! case — a limit item 2's bound does NOT reach.
+//! limit that stopped being total did not stop existing. Item 3 is the reverse
+//! case — a limit item 1's bound does NOT reach.
 //!
 //! Each item states its LIMIT and points at the one place that argues it. The
 //! arguments are not repeated here: [`Lane`] owns why the lanes are split and
@@ -65,29 +65,15 @@
 //! [`dispatch_async`] owns the cancellation mechanism, and
 //! [`crate::lsp_bridge::lane_for_method`] owns which methods go where.
 //!
-//! 1. **Four LSP methods do not get the large stack.**
-//!    `InProcessLsp::handle_request`'s `textDocument/definition`,
-//!    `prepareRename`, `rename` and `references` arms each call
-//!    `tokio::task::spawn_blocking`, so their compiler work executes on tokio's
-//!    BLOCKING POOL, whose threads take the std ~2 MiB default (nothing under
-//!    `gui/src-tauri` sets `thread_stack_size`). Putting `handle_request` on a
-//!    lane gives the big stack only to that thread's OWN frames, so no lane —
-//!    ordered or pooled — can help those four. Closing them needs a change in
-//!    `crates/reify-lsp/src/server.rs`, which is outside this module and would
-//!    also regress the stdio `reify lsp` CLI server (it relies on
-//!    `spawn_blocking` to keep its 2-worker runtime responsive). Tracked as
-//!    task #6195. NOTE this is a STACK limit only: their separate cost — holding
-//!    a consumer for a workspace-wide walk while gaining nothing from it — is
-//!    what item 2 now bounds, and the two were previously narrated as one.
-//! 2. **Concurrency WITHIN a lane is BOUNDED, not unlimited.** LSP work runs on
+//! 1. **Concurrency WITHIN a lane is BOUNDED, not unlimited.** LSP work runs on
 //!    TWO lanes — the single-consumer ORDERED [`LSP_LANE`] and the
 //!    [`LSP_POOL_SIZE`]-consumer [`LSP_POOL`] — so head-of-line blocking among
 //!    queries is bounded at [`LSP_POOL_SIZE`] (the fifth simultaneous in-flight
 //!    query queues) rather than total, as it was when one consumer served all
 //!    of LSP. Notifications still serialize against each other, which is a
 //!    REQUIREMENT rather than a residual limit. That bound is on CONSUMERS;
-//!    item 4 is the tighter one it does not reach. See [`Lane`].
-//! 3. **Drop-cancellation is PARTIAL, and on today's production path it is
+//!    item 3 is the tighter one it does not reach. See [`Lane`].
+//! 2. **Drop-cancellation is PARTIAL, and on today's production path it is
 //!    UNREACHABLE.** A job abandoned before a consumer picks it up is dropped
 //!    unrun — but only on an [`OnAbandon::Discard`] destination ([`LSP_POOL`]).
 //!    One already picked up runs to completion, now costing one of
@@ -96,8 +82,8 @@
 //!    future in `tauri` 2.11.2, so the only trigger reachable in the shipped app
 //!    is runtime/app teardown: a structural guarantee, not a live saving. Both
 //!    limits are measured in [`dispatch_async`]'s "Drop-cancellation" section.
-//! 4. **[`LSP_POOL_SIZE`] bounds CROSS-document query concurrency more tightly
-//!    than SAME-document concurrency.** Item 2's bound is on CONSUMERS, not on
+//! 3. **[`LSP_POOL_SIZE`] bounds CROSS-document query concurrency more tightly
+//!    than SAME-document concurrency.** Item 1's bound is on CONSUMERS, not on
 //!    parses, and the difference bites in the commonest case rather than an edge
 //!    one — a single cursor move issues hover, `documentHighlight` and
 //!    completion against ONE uri. Measured in `crates/reify-lsp/src/document.rs`:
@@ -108,7 +94,7 @@
 //!    pool consumers that reach it concurrently serialize on a blocking lock,
 //!    each holding one 256 MiB consumer while parked in it. The effective depth
 //!    against a same-document burst is therefore nearer ONE parse than four-way
-//!    concurrency; against DIFFERENT documents item 2's bound holds exactly.
+//!    concurrency; against DIFFERENT documents item 1's bound holds exactly.
 //!    Neither a regression (before task 6517 all LSP work serialized anyway) nor
 //!    unsoundness (the `Mutex` recovers poisoning), and not closable from this
 //!    crate: the fix is to compute the parse OUTSIDE the lock and install it
@@ -1153,11 +1139,12 @@ where
 /// # How the future is driven on the lane, and why by a `Handle`
 ///
 /// A lane thread is a plain `std` thread with no ambient runtime, so the future
-/// needs a driver. FOUR of `InProcessLsp::handle_request`'s arms
-/// (`textDocument/definition`, `prepareRename`, `rename`, `references`) call
-/// [`tokio::task::spawn_blocking`], whose first statement is `Handle::current()`
-/// — under a bare executor such as `futures::executor::block_on` those four
-/// would panic with "there is no reactor running".
+/// needs a driver, and the driver must not assume the future never needs a
+/// runtime context: `InProcessLsp`'s default `BlockingPool` placement calls
+/// [`tokio::task::spawn_blocking`], whose first statement is `Handle::current()`,
+/// so under a bare executor such as `futures::executor::block_on` it would panic
+/// with "there is no reactor running" (the GUI bridge picks `CallingThread`, but
+/// the lane does not depend on that choice).
 /// [`tokio::runtime::Handle::block_on`] installs the runtime context via
 /// `enter_runtime` and is explicitly legal from a NON-runtime thread. So the
 /// handle is captured HERE, on the submitter (which is inside the tauri
@@ -1184,8 +1171,8 @@ where
 /// * No ambient runtime ([`tokio::runtime::Handle::try_current`] is `Err`):
 ///   `.await` here too. `try_current` rather than `current` so a caller polled
 ///   outside any runtime DEGRADES instead of panicking; with no runtime there is
-///   no nesting hazard, and the four `spawn_blocking` arms would have failed
-///   under any driver in that state anyway.
+///   no nesting hazard, and a future that needs a runtime context would have
+///   failed under any driver in that state anyway.
 /// * `SendError(job)`: the queue handed the job BACK unrun. The job provably
 ///   contains a `Handle::block_on`, so it must NOT run in this frame — this
 ///   frame is inside the runtime, and `block_on` there panics "Cannot start a

@@ -1,10 +1,14 @@
 mod claude_bridge_tests;
 mod commands_tests;
+mod constraint_recheck_tests;
 mod debug_boundary_tests;
 mod debug_write_tool_routing_fixtures;
 mod debug_write_tool_routing_tests;
+mod dev_url_tests;
 mod diff_tests;
+mod engine_activity_tests;
 mod engine_lock_tests;
+mod engine_state_view_tests;
 mod engine_tests;
 mod eval_queue_tests;
 mod event_bus_tests;
@@ -16,7 +20,11 @@ mod lsp_bridge_tests;
 mod main_helpers_tests;
 mod mcp_context_tests;
 mod mcp_dispatch_tests;
+#[cfg(has_openvdb)]
+mod openvdb_kernel_tests;
 mod path_key_tests;
+mod screenshot_save_tests;
+mod tcp_port_tests;
 pub(crate) mod test_helpers;
 mod test_helpers_tests;
 mod types_tests;

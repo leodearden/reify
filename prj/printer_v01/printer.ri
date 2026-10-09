@@ -1932,8 +1932,6 @@ pub structure Envelope {
 //    (synthetic box, meshed internally) — the gantry tube is therefore an
 //    EQUIVALENT-EI box (same E, same I ⇒ same bending k; density retuned so
 //    modal masses match).
-//  - Passing the SAME cell to two dims args panics compute_cache_key
-//    (duplicate ValueCellId) — hence the `* 1.0` clone cells.
 //  - result_for/envelope_* multi-case accessors have no compile-time
 //    signature (eval-dispatch only), so per-case algebra reads come from
 //    separate typed solve_elastic_static calls; solve_load_cases exists in
@@ -2012,8 +2010,7 @@ pub structure GantryFea {
         - tube_id * tube_id * tube_id * tube_id)
     /// Equivalent-EI square box: h⁴ = 12·I (same E ⇒ same bending k).
     let h_eq  = sqrt(sqrt(12 * ixx))
-    let h_eq2 = h_eq * 1.0   // duplicate-ValueCellId panic workaround
-    let a_eq  = h_eq * h_eq2
+    let a_eq  = h_eq * h_eq
     let m_tube : Mass = pi / 4 * (tube_od * tube_od - tube_id * tube_id) * span * rho_cfrp
     /// Density retuned so the equivalent box carries the tube's real mass
     /// (statics don't care; the modal solves do).
@@ -2032,7 +2029,7 @@ pub structure GantryFea {
     // compute cache; forcing the tet path is what the hint asks for and is
     // the path the solve was already taking (values byte-identical, O5 round).
     let r_static = solve_elastic_static(
-        material_static, half_span, h_eq, h_eq2, [tip], [mount],
+        material_static, half_span, h_eq, h_eq, [tip], [mount],
         ElasticOptions(element_order: ElementOrder.P2, shell_force: ShellForce.Off))
     let defl_cant = max(r_static.displacement)
     let k_cant    : Stiffness = test_load * 1N / defl_cant
@@ -2057,9 +2054,8 @@ pub structure GantryFea {
         n_modes: 2, boundary_conditions: [pin_a, pin_b], damping: NoDamping(),
         sigma: 0.0, tol: 0.000000001, max_iters: 200,
         reference_direction: vec3(0.0, 0.0, 1.0), element_order: ElementOrder.P2)
-    let span_b = span * 1.0
-    let r_modal_cant = modal_analysis(mi.material, span,   h_eq, h_eq2, opts_cant)
-    let r_modal_ss   = modal_analysis(mi.material, span_b, h_eq, h_eq2, opts_ss)
+    let r_modal_cant = modal_analysis(mi.material, span, h_eq, h_eq, opts_cant)
+    let r_modal_ss   = modal_analysis(mi.material, span, h_eq, h_eq, opts_ss)
     let f1_tube_cant : Frequency = first_frequency(r_modal_cant)
     let f1_tube_ss   : Frequency = first_frequency(r_modal_ss)
     /// Euler-Bernoulli cantilever f1 = (λ₁²/2π)·√(EI/μL⁴), λ₁² = 3.5160.

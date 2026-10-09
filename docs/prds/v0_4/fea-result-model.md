@@ -193,7 +193,7 @@ on main @ 959bf42094:
 | `FeaFailure` source | `FeaDiagnosticDetail` | Rides | Production site |
 |---|---|---|---|
 | `UnderConstrained{support_count:0}` | `Unconstrained{rigid_body_modes:[…6 DOF]}` | `Completed` (auto-clamp **warning**) | `elastic_static.rs:416` — **wired source** |
-| `SingularStiffness{element_id}` | `ProblemElements{ids:[ElementId]}` | `Failed` | `elastic_static.rs:708` (`classify_degenerate`, near-degenerate marginal case) — **wired source** |
+| `SingularStiffness(DegenerateTet)` | `ProblemElements{ids:[ElementId]}` | `Failed` | `elastic_static.rs` `solve_cantilever_fea` (`find_degenerate_tet`, the pre-assembly oriented shape-quality gate shared by every solve path) — **wired source** |
 | `SelectorNoMatch{selector}` | `UnresolvedSelector{selector_path}` | `Failed` | **no production source today** — `SelectorNoMatch` is never constructed in the solve path; gated on selector-BC failure emission (P2/4092, `structural-analysis-fea`). Channel-ready, data-deferred. |
 
 The headline rigid-body-arrows overlay rides **Completed-with-warning**, NOT

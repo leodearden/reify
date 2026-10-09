@@ -21,20 +21,24 @@ tasks:
       paths:
       - crates/reify-ir/src/value.rs
       expect: present
-  - name: relocation-is-not-verbatim-13-self-paths
+  - name: relocation-landed-with-self-paths-rewritten
     binding: 'FALSIFIES PRD §3 Leg A / §6 decision 8 / §5 seam row, all of which say
-      "verbatim". crates/reify-eval/src/arg_acceptance.rs carries 13 fully-qualified
-      `reify_ir::Value` CODE paths (:117 :119 :120 :134 :136 :137 :146 :147 :148 plus
-      tests :159 :173 :188 :209) plus one doc mention (:21); workspace is edition
-      2024 and crates/reify-ir/src/ has NO `extern crate self as reify_ir`. RESOLVED
-      by amendment A1 in the task text: rewrite the paths to `crate::` or add the
-      self-alias. Not a substrate absence.'
+      "verbatim". At decompose (pre-relocation; #5791 moved the module to
+      crates/reify-ir/src/arg_acceptance.rs), crates/reify-eval/src/arg_acceptance.rs
+      carried 13 fully-qualified `reify_ir::Value` CODE paths (:117 :119 :120 :134
+      :136 :137 :146 :147 :148 plus tests :159 :173 :188 :209) plus one doc mention
+      (:21); workspace is edition 2024 and crates/reify-ir/src/ has NO
+      `extern crate self as reify_ir`.
+      RESOLVED by amendment A1 in the task text: rewrite the paths to `crate::` or add
+      the self-alias. Not a substrate absence. The delivered_check below asserts the
+      post-relocation state, the self-paths rewritten to `crate::` (mirrors task 5791
+      metadata.delivered_checks, corrected pre-merge 2026-09-14).'
     verdict: PASS
     delivered_check:
       kind: grep
-      pattern: reify_ir::Value
+      pattern: crate::value::Value
       paths:
-      - crates/reify-eval/src/arg_acceptance.rs
+      - crates/reify-ir/src/arg_acceptance.rs
       expect: present
   - name: accept-arg-has-no-Option-arm-but-the-gated-fields-are-Option
     binding: 'UNLISTED PREMISE found at decompose. arg_acceptance.rs:117-130 matches
@@ -206,7 +210,7 @@ tasks:
       declares `param force : Force = 0N`, `param magnitude : Pressure = 0Pa`, `param
       force_density : ForceDensity = 0N/m^3` plus dimensioned ctor args — `tree-sitter
       parse --quiet` 0 ERROR nodes, `reify check` EXIT 0, `reify eval` EXIT 0 zero
-      diagnostics. Shipped precedent: modal_analysis.ri:483 `param magnitude : Force`
+      diagnostics. Shipped precedent: modal_analysis.ri StepForce `param magnitude : Force`
       called as `magnitude: 10N`.'
     verdict: PASS
     delivered_check:

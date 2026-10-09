@@ -305,6 +305,19 @@ crates/reify-eval/src/test_runner.rs                tests/infra/test_compute_tra
 # check-compute-trampoline-registration.sh row above.
 scripts/check-nan-safe-ordering.sh    tests/infra/test_nan_safe_ordering_guard_wired.sh
 
+# Task 6202: scripts/lib_rust_production_view.sh is the SINGLE copy of the Rust
+# literal/comment lexer, so it needs a row per CONSUMER — the
+# one-artifact-multiple-rows pattern scripts/lib_task_citation.sh uses below.
+# Its own unit suite plus all three consumers' suites, each of which
+# load-bears the lib: a lib-only diff that selected only the unit suite would
+# leave both gates' verdicts and the orphan audit's cfg(test) masking unrun on
+# the very edit that can break them. The .py row is the task 7044 pair shape.
+scripts/lib_rust_production_view.sh    tests/infra/test_rust_production_view_lib.sh
+scripts/lib_rust_production_view.sh    tests/infra/test_nan_safe_ordering_guard_wired.sh
+scripts/lib_rust_production_view.sh    tests/infra/test_compute_trampoline_registration_wired.sh
+scripts/lib_rust_production_view.sh    tests/infra/test_audit_orphan_producers.sh
+tests/infra/test_rust_production_view_lib.py    tests/infra/test_rust_production_view_lib.sh
+
 # Task 6107 (β): the single `watch --once` index primitive. Its guard is
 # hermetic (temp CODE_INDEX_PATH, synthetic sqlite DBs, stub indexer), so it is
 # cheap enough to run as a per-task fail-fast pole — and it needs to, because
@@ -691,3 +704,57 @@ gui/vitest-worker-rpc-flake-reporter.ts    tests/infra/test_gui_vitest_rpc_harde
 # script OR the .py selects the wrapper.
 scripts/review-readme.sh    tests/infra/test_review_readme.sh
 tests/infra/test_review_readme.py    tests/infra/test_review_readme.sh
+# Task 7896: scripts/cargo-test-tally.py (one captured test log in, every
+# count out) is pinned by a .py suite behind a thin .sh wrapper — same pair
+# shape as flake_density_report / review_readme above, so an edit to the
+# script OR the .py selects the wrapper.
+scripts/cargo-test-tally.py    tests/infra/test_cargo_test_tally.sh
+tests/infra/test_cargo_test_tally.py    tests/infra/test_cargo_test_tally.sh
+# Task 6932: scripts/pprdstatus-escalate.py (the one-shot PPRDSTATUS escalation
+# raise) is pinned by a .py suite behind a thin .sh wrapper, same pair shape.
+scripts/pprdstatus-escalate.py    tests/infra/test_reify_audit_pprdstatus_wiring.sh
+tests/infra/test_reify_audit_pprdstatus_wiring.py    tests/infra/test_reify_audit_pprdstatus_wiring.sh
+# Task 6347: scripts/docs-truth-sweep.py (the recurring docs-truth sweep that
+# books one L2 adjudication sitting) is pinned by a .py suite behind a thin .sh
+# wrapper, same pair shape. The two modules it shares with
+# scripts/pprdstatus-escalate.py, and the shared test stubs, select BOTH
+# wrappers, since an edit to any of them can break either consumer.
+scripts/docs-truth-sweep.py    tests/infra/test_docs_truth_sweep.sh
+tests/infra/test_docs_truth_sweep.py    tests/infra/test_docs_truth_sweep.sh
+tests/infra/stub_escalation_mcp.py    tests/infra/test_docs_truth_sweep.sh
+scripts/escalation_mcp.py    tests/infra/test_docs_truth_sweep.sh
+scripts/reify_audit_findings.py    tests/infra/test_docs_truth_sweep.sh
+tests/infra/stub_escalation_mcp.py    tests/infra/test_reify_audit_pprdstatus_wiring.sh
+scripts/escalation_mcp.py    tests/infra/test_reify_audit_pprdstatus_wiring.sh
+scripts/reify_audit_findings.py    tests/infra/test_reify_audit_pprdstatus_wiring.sh
+# Task 6347: the sweep's systemd --user deployment (units, installer, and the
+# shared installer library it introduces) is pinned by a .py suite behind a
+# thin .sh wrapper, same pair shape.
+deploy/systemd/reify-docs-truth-sweep.service    tests/infra/test_docs_truth_sweep_units.sh
+deploy/systemd/reify-docs-truth-sweep.timer    tests/infra/test_docs_truth_sweep_units.sh
+scripts/install-docs-truth-sweep-units.sh    tests/infra/test_docs_truth_sweep_units.sh
+scripts/lib_systemd_user_install.sh    tests/infra/test_docs_truth_sweep_units.sh
+tests/infra/test_docs_truth_sweep_units.py    tests/infra/test_docs_truth_sweep_units.sh
+# Task 6582: scripts/graph-task-conflation-census.py (the read-only census,
+# offline review and repair check of Task-N conflations on the reify Graphiti
+# graph) and its sibling grammar module scripts/task_reference_grammar.py are
+# pinned by a .py suite behind a thin .sh wrapper, same pair shape.
+scripts/graph-task-conflation-census.py    tests/infra/test_graph_task_conflation_census.sh
+scripts/task_reference_grammar.py    tests/infra/test_graph_task_conflation_census.sh
+tests/infra/test_graph_task_conflation_census.py    tests/infra/test_graph_task_conflation_census.sh
+# Task 6059: scripts/hooks-armed-guard.sh (does git actually run the stash
+# guard in this worktree) is pinned by a .py suite behind a thin .sh wrapper,
+# same pair shape. seed-warm-lane.sh and setup-main-gate-worktree-config.sh
+# select it because the suite drives both for real (seed's --fresh-checkout
+# tail calls the guard; the guard's arm delegates to the setup script). The
+# hook rows are there because the suite runs the REAL hook copies.
+scripts/hooks-armed-guard.sh    tests/infra/test_hooks_armed_guard.sh
+tests/infra/test_hooks_armed_guard.py    tests/infra/test_hooks_armed_guard.sh
+scripts/seed-warm-lane.sh    tests/infra/test_hooks_armed_guard.sh
+scripts/setup-main-gate-worktree-config.sh    tests/infra/test_hooks_armed_guard.sh
+hooks/reference-transaction    tests/infra/test_hooks_armed_guard.sh
+hooks/main-gate-lib.sh    tests/infra/test_hooks_armed_guard.sh
+# The pin's one definition, sourced by both the guard and the setup script, so
+# an edit to it selects both suites.
+scripts/lib_worktree_hooks_pin.sh    tests/infra/test_hooks_armed_guard.sh
+scripts/lib_worktree_hooks_pin.sh    tests/infra/test_main_gate_worktree_config.sh

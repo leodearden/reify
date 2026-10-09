@@ -91,6 +91,7 @@ impl ConstraintChecker for CompileTimeIndeterminateChecker {
                 id: id.clone(),
                 satisfaction: Satisfaction::Indeterminate,
                 diagnostics: ConstraintDiagnostics::default(),
+                indeterminate_reason: None,
             })
             .collect()
     }

@@ -1,0 +1,13 @@
+module cmc_unextractable
+
+// docs/prds/v0_6/catalog-membership-constraint.md §6 B4 (leaf α; stays true after β).
+// The membership is not of the form `x in C` with x a bare auto, so no domain is extracted
+// and the continuous solver cannot enforce it.
+// After α: `reify eval` reports MembershipNotSolvable naming the constraint and `x`; exit 1.
+// Baseline (main 2026-10-08): parse error.
+structure Unextractable {
+    param x : Length = auto
+    constraint x + 2mm in standard_bolt_lengths()
+    constraint x >= 10mm
+    constraint x <= 30mm
+}

@@ -107,6 +107,7 @@ pub fn resample_nodal_to_grid(
 /// Used in tests to assert O(grid·log elems) complexity via deterministic
 /// count comparisons.  The public [`resample_nodal_to_grid`] is a thin
 /// wrapper that calls this and discards the stats.
+// G-allow: same-file caller only (resample_nodal_to_grid is a thin wrapper over it); audit counts cross-file refs
 pub fn resample_nodal_to_grid_instrumented(
     nodes: &[[f64; 3]],
     elems: &[[usize; 4]],
@@ -236,6 +237,7 @@ pub fn resample_multi_nodal_to_grid(
 /// counts locate evaluations per grid point (independent of field count).
 /// The public [`resample_multi_nodal_to_grid`] is a thin wrapper that calls
 /// this and discards the stats.
+// G-allow: same-file caller only (resample_multi_nodal_to_grid is a thin wrapper over it); audit counts cross-file refs
 pub fn resample_multi_nodal_to_grid_instrumented(
     nodes: &[[f64; 3]],
     elems: &[[usize; 4]],
@@ -440,6 +442,7 @@ pub struct GridMissReport {
 /// if `sf.data.len()` is not `n_grid · stride` — all of which indicate the field
 /// was not produced by the `resample_*` entry points this instrument is a
 /// sibling of.
+// G-allow: grid-miss instrument (task #6154 (done)); its cross-crate caller is crates/reify-eval/tests/solve_elastic_static_body_e2e.rs, a tests/ file this audit excludes
 pub fn classify_grid_misses(sf: &SampledField, stride: usize) -> GridMissReport {
     assert!(stride > 0, "classify_grid_misses: stride must be > 0");
     assert_eq!(

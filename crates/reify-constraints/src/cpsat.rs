@@ -4,6 +4,7 @@
 //! cardinality, and all-different via forward-checking backtracking search
 //! with eval_expr as the constraint checker.
 
+use crate::dependent_reads::{CellReads, dependent_cell_auto_reads};
 use reify_expr::{EvalContext, eval_expr};
 use reify_core::{ConstraintNodeId, Diagnostic, DiagnosticCode, Type, ValueCellId};
 use reify_ir::{AutoParam, BestFoundReason, CompiledExpr, CompiledExprKind, ConstraintSolver, OptimalityStatus, RankedCandidate, RankedSolveResult, ResolutionProblem, SolveResult, Value, ValueMap};
@@ -26,8 +27,8 @@ const MAX_INT_DOMAIN: i64 = 1000;
 /// never reaches that second collection: proving no second solution exists
 /// means refuting every remaining point — i.e. EXHAUSTING the space. Two
 /// `Type::Int` autos at [`MAX_INT_DOMAIN`] is 10^6 leaves, and every node on
-/// the way pays a total `fold_dependent_cells` pass plus a full constraint
-/// sweep. Without this bound, `solve()` would silently regress from "stop at
+/// the way pays a dependent-cell fold plus a full constraint sweep. Without
+/// this bound, `solve()` would silently regress from "stop at
 /// the first solution" to "walk the whole product" on every uniquely-solvable
 /// model — the common case, not a pathological one.
 ///
@@ -104,12 +105,12 @@ fn collect_constraint_refs(expr: &CompiledExpr) -> HashSet<ValueCellId> {
 /// and dropped on the spot.
 ///
 /// `decompose_into_components_with_reads` therefore caches the verdict PER AUTO
-/// PARAM INDEX across its constraint loop, so a decomposition performs at most
-/// one probe per auto param rather than one per (constraint × dependent-cell
-/// read × auto behind it) — which, with the enum arm's whole-slice scan, was
-/// quadratic in the constraint count. On a direct-only model the caller's
-/// `reached` set is empty and the probe never runs at all (PRD2 D1/B2
-/// identity).
+/// PARAM INDEX in its component-assembly loop, over that component's
+/// constraints, so a decomposition performs at most one probe per auto param
+/// rather than one per (constraint × dependent-cell read × auto behind it). It
+/// probes only autos the classifier cannot see — reached through a derived
+/// cell, or coupled in by the objective alone — so a model whose constraints
+/// read every auto directly never probes at all.
 pub(crate) fn can_enumerate(
     param: &AutoParam,
     constraints: &[(ConstraintNodeId, CompiledExpr)],
@@ -311,7 +312,7 @@ struct SearchContext<'a> {
     constraints: &'a [(ConstraintNodeId, CompiledExpr, HashSet<ValueCellId>)],
     auto_param_ids: &'a HashSet<ValueCellId>,
     functions: &'a [reify_ir::CompiledFunction],
-    dependent_cells: &'a [(ValueCellId, CompiledExpr)],
+    dependent_cells: &'a [ScheduledCell<'a>],
     /// Stop once this many solutions have been collected.
     cap: usize,
     /// Stop once this many search nodes have been visited, whether or not any
@@ -360,7 +361,7 @@ impl SolutionSink<'_> {
 
 /// The owned half of a search's inputs — what [`build_search_inputs`] produces
 /// and [`SearchContext`] borrows.
-struct SearchInputs {
+struct SearchInputs<'p> {
     variables: Vec<Variable>,
     auto_param_ids: HashSet<ValueCellId>,
     constraints: Vec<(ConstraintNodeId, CompiledExpr, HashSet<ValueCellId>)>,
@@ -368,6 +369,97 @@ struct SearchInputs {
     /// back out. See the strip's own rationale below — it is load-bearing, not
     /// hygiene.
     assignment: ValueMap,
+    /// The problem's `dependent_cells`, in stored order.
+    dependent_cells: Vec<ScheduledCell<'p>>,
+}
+
+/// A stored dependent cell and the search depth from which its value is EXACT.
+struct ScheduledCell<'p> {
+    cell: &'p (ValueCellId, CompiledExpr),
+    /// The deepest searched-variable index among the autos the cell reads
+    /// transitively (`0` if it reads none), or `None` for a cell a stored-order
+    /// pass can leave stale, which never is.
+    exact_from: Option<usize>,
+}
+
+impl ScheduledCell<'_> {
+    /// Whether a trial at `depth` must re-derive this cell: see
+    /// [`backtrack_all`]'s "Which cells a trial re-derives".
+    fn needs_rederive_at(&self, depth: usize) -> bool {
+        self.exact_from.is_none_or(|exact_from| exact_from >= depth)
+    }
+}
+
+/// Pair each of `problem`'s dependent cells with its exact-from depth, reading
+/// an auto's depth off its index in `variables` — the order the search actually
+/// visits — rather than off any other ordering of the same autos.
+///
+/// A cell's depth is trusted only when [`derived_from_exact_cells`] holds;
+/// otherwise the cell is never exact and is re-derived at every depth, as a
+/// total fold would. Upstream stores the cells topologically and without
+/// duplicates (PRD §6.3), so a well-formed problem loses no skip to this, and
+/// the skip stays sound when that order is broken.
+///
+/// Built once per solve: the `ConstraintSolver::solve` seam cannot carry the
+/// registry's copy of the reads map — the same per-call rebuild `solver.rs`'s
+/// `DerivationCtx` makes (#7728).
+fn schedule_dependent_cells<'p>(
+    problem: &'p ResolutionProblem,
+    variables: &[Variable],
+) -> Vec<ScheduledCell<'p>> {
+    let depth: HashMap<&ValueCellId, usize> = variables
+        .iter()
+        .enumerate()
+        .map(|(i, var)| (&var.id, i))
+        .collect();
+    let reads = dependent_cell_auto_reads(&problem.dependent_cells, &problem.auto_params);
+    let mut stored_at: HashMap<&ValueCellId, Vec<usize>> = HashMap::new();
+    for (index, (id, _)) in problem.dependent_cells.iter().enumerate() {
+        stored_at.entry(id).or_default().push(index);
+    }
+
+    let mut scheduled: Vec<ScheduledCell<'p>> = Vec::with_capacity(problem.dependent_cells.len());
+    for cell in &problem.dependent_cells {
+        let exact_from = match reads.lookup(&cell.0) {
+            CellReads::Foldable(autos)
+                if derived_from_exact_cells(cell, &stored_at, &scheduled) =>
+            {
+                autos
+                    .iter()
+                    .try_fold(0, |deepest, auto| Some(deepest.max(*depth.get(auto)?)))
+            }
+            CellReads::Foldable(_) | CellReads::Unfoldable(_) | CellReads::NotACell => None,
+        };
+        scheduled.push(ScheduledCell { cell, exact_from });
+    }
+    scheduled
+}
+
+/// Whether a stored-order pass that reaches `cell` right after the cells in
+/// `scheduled` derives it from exact values only: no other entry shares its id
+/// (a later occurrence would overwrite it), and every dependent cell it reads is
+/// stored before it — so `scheduled` already holds that cell — and is itself
+/// eventually exact.
+fn derived_from_exact_cells(
+    (id, expr): &(ValueCellId, CompiledExpr),
+    stored_at: &HashMap<&ValueCellId, Vec<usize>>,
+    scheduled: &[ScheduledCell<'_>],
+) -> bool {
+    if stored_at
+        .get(id)
+        .is_some_and(|occurrences| occurrences.len() > 1)
+    {
+        return false;
+    }
+    collect_constraint_refs(expr)
+        .iter()
+        .filter_map(|r| stored_at.get(r))
+        .flatten()
+        .all(|&index| {
+            scheduled
+                .get(index)
+                .is_some_and(|read| read.exact_from.is_some())
+        })
 }
 
 /// Build the inputs a CP-SAT search needs, or report why it cannot.
@@ -377,7 +469,7 @@ struct SearchInputs {
 /// because the auto-id strip below is a correctness repair (task #5467) that a
 /// second, hand-copied preamble would silently omit — which is precisely how the
 /// spike this task adapts got it wrong.
-fn build_search_inputs(problem: &ResolutionProblem) -> Result<SearchInputs, String> {
+fn build_search_inputs(problem: &ResolutionProblem) -> Result<SearchInputs<'_>, String> {
     // Build variable domains. `domain_spec`'s rejections come through here, and
     // are the ONLY error this function can produce.
     let mut variables = Vec::with_capacity(problem.auto_params.len());
@@ -449,11 +541,13 @@ fn build_search_inputs(problem: &ResolutionProblem) -> Result<SearchInputs, Stri
         assignment.remove(id);
     }
 
+    let dependent_cells = schedule_dependent_cells(problem, &variables);
     Ok(SearchInputs {
         variables,
         auto_param_ids,
         constraints,
         assignment,
+        dependent_cells,
     })
 }
 
@@ -461,7 +555,7 @@ fn build_search_inputs(problem: &ResolutionProblem) -> Result<SearchInputs, Stri
 /// solution it reaches until `ctx.cap` is met.
 ///
 /// At each level, picks the next unassigned variable, tries each domain value,
-/// materialises `dependent_cells` against that trial assignment, evaluates all
+/// re-derives the dependent cells not yet exact at that depth, evaluates all
 /// constraints whose variables are fully assigned, and prunes on violation.
 /// When every variable is assigned, the point is a solution: it is pushed to
 /// `out` and the search continues from the next sibling.
@@ -500,61 +594,38 @@ fn build_search_inputs(problem: &ResolutionProblem) -> Result<SearchInputs, Stri
 /// product comes back as "solutions", with `complete: true` then licensing a
 /// `ProvenOptimal` ranking over a set full of infeasible points.
 ///
-/// # Why no explicit unwind is needed
+/// # Which cells a trial re-derives, and why no unwind is needed
 ///
-/// The fold is TOTAL — it recomputes every dependent cell from the running
-/// assignment — and runs after EVERY trial insert, before any constraint is
-/// evaluated. So entries left behind by an abandoned sibling branch are always
-/// overwritten before they can be read: a cell whose expression reads a
-/// not-yet-assigned deeper auto simply re-evaluates to `Undef` here rather than
-/// retaining the abandoned branch's value. `assignment.remove` on unwind
-/// therefore only has to drop the variable itself. The
-/// `two_autos_*_abandoned_sibling_branch` unit below pins this, because the
-/// argument is not obvious from the code alone.
+/// A dependent cell is EXACT from the deepest variable index among its
+/// transitive autos, unless a stored-order pass can leave it stale, in which
+/// case it never is ([`schedule_dependent_cells`]). Each trial re-derives, in
+/// stored order and before any constraint is read, every cell not yet exact at
+/// its depth, and skips the rest. A skipped cell became exact at a SHALLOWER
+/// depth: its autos are fixed on this path, every cell it reads was already
+/// exact when it was derived, and no deeper trial re-derives it, so it holds
+/// exactly what a total fold would recompute. Every forward check therefore
+/// sees the total fold's map, `assignment.remove` on unwind only has to drop
+/// the variable itself, and a solution collected at the base case — a copy — is
+/// out of any later branch's reach.
 ///
-/// It holds unchanged under enumeration, and for the same reason: collecting a
-/// solution at the base case does not stop the search, so the very next trial
-/// re-folds every cell before reading one. The collected `HashMap` is a copy
-/// taken at the base case, so nothing a later branch folds can reach back into
-/// an already-collected solution.
+/// A not-yet-exact cell must be RE-DERIVED, never skipped or removed. Skipped,
+/// it would still hold what an ABANDONED deeper branch folded into it. Removed,
+/// it would lose the pruning a PARTIAL derivation affords: Kleene `false and _`
+/// is `false` and `true or _` is `true`, so a cell with unassigned autos can
+/// already be defined, and that is what cuts a `false` conjunct at its own
+/// depth. `dependent_cell_forward_check_tests` pins each of these.
 ///
-/// That `Undef` re-evaluation is TRUE ONLY GIVEN THE STRIPPED SEED, and the
-/// guarantor is named deliberately (task #5467): [`build_search_inputs`]
-/// removes every auto id from the `current_values` seed before the search
-/// starts (see the seed site there). A deeper auto is therefore genuinely
-/// ABSENT, not holding a stale value carried in from a previous resolution
-/// round or an earlier lexicographic stage. WITHOUT that strip this fold is not
-/// self-correcting: it materialises dependent cells from a mix of trial and
-/// stale values, and the `Bool(false)` arm below PRUNES A FEASIBLE BRANCH. The
-/// same stale seed also defeats `all_assigned` on the direct path, with no
-/// dependent cell involved at all — which is why the repair belongs at the seed
-/// and not in `fold_dependent_cells`. The `*_stale_*` units below pin both arms.
-///
-/// # Cost of the TOTAL fold, and why the obvious saving is unsound as stated
-///
-/// The fold runs on EVERY trial value at EVERY depth, so it costs
-/// `O(|dependent_cells| · Π|domain_i|)` expression evaluations plus one
-/// persistent-map insert each — and a `Type::Int` domain runs to
-/// `MAX_INT_DOMAIN` = 1000 values, so the multiplier is not academic. The
-/// obvious saving is to hand this function each cell's transitive auto set
-/// (`decompose::dependent_cell_auto_reads`, which `SolverRegistry::solve_inner`
-/// already builds once per solve) and SKIP a cell at a depth where any of its
-/// autos is still unassigned — the folded value would be `Undef` there anyway,
-/// and `get_or_undef` treats absent and `Undef` alike.
-///
-/// SKIPPING IS UNSOUND, and the correction is not obvious from the sketch: a
-/// cell skipped at depth k is not ABSENT — it still holds whatever an ABANDONED
-/// DEEPER branch folded into it, which is exactly the value the total fold
-/// overwrites with `Undef` and which
-/// `two_autos_do_not_observe_a_stale_dependent_value_from_an_abandoned_sibling_branch`
-/// exists to pin. A sound version must `remove` the unfoldable cell, not skip
-/// it. The saving survives that correction (an O(1) map op in place of an
-/// expression eval), but the `remove` is mandatory, not an optimisation detail.
-///
-/// Not done here: CP-SAT is reachable in production since #5469, so this cost
-/// is now paid there. The `remove`-based saving is filed as a follow-up
-/// (planning ticket tkt_0RV530QM659ANFS65B8ZB6JFQ8) and needs its own
-/// unwind-safety units rather than a rider on another change.
+/// A re-derived cell reads an unassigned auto as ABSENT ONLY GIVEN THE STRIPPED
+/// SEED, and the guarantor is named deliberately (task #5467):
+/// [`build_search_inputs`] removes every auto id from the `current_values` seed
+/// before the search starts (see the seed site there), so a deeper auto cannot
+/// hold a stale value carried in from a previous resolution round or an earlier
+/// lexicographic stage. WITHOUT that strip this fold is not self-correcting: it
+/// materialises dependent cells from a mix of trial and stale values, and the
+/// `Bool(false)` arm below PRUNES A FEASIBLE BRANCH. The same stale seed also
+/// defeats `all_assigned` on the direct path, with no dependent cell involved at
+/// all — which is why the repair belongs at the seed and not in
+/// `fold_dependent_cells`. The `*_stale_*` units below pin both arms.
 fn backtrack_all(
     ctx: &SearchContext<'_>,
     var_index: usize,
@@ -608,13 +679,12 @@ fn backtrack_all(
         // Assign this variable
         assignment.insert(var.id.clone(), value.clone());
 
-        // Materialise the dependent cells against this trial assignment, in
-        // STORED (topological) order, through THE fold body the DimensionalSolver
-        // residual path uses — never a cpsat-local twin (PRD2 §3.9 G7).
-        // `is_solver_owned` keeps a fold from clobbering a trial auto. An empty
-        // `dependent_cells` early-returns inside the helper without touching
-        // `assignment` or running any guard work, so the D1/B2 path is
-        // byte-identical to pre-α.
+        // Re-derive the dependent cells not yet exact at this depth (see the fn
+        // doc) against this trial assignment, in STORED (topological) order,
+        // through THE fold body the DimensionalSolver residual path uses — never
+        // a cpsat-local twin (PRD2 §3.9 G7). `is_solver_owned` keeps a fold from
+        // clobbering a trial auto. An empty `dependent_cells` folds nothing and
+        // runs no guard work, so the D1/B2 path is byte-identical to pre-α.
         // `dispatch: None` — cpsat has no compute-dispatch plumbing of its own,
         // and its forward-check below evaluates through a bare
         // `EvalContext::new` for the same reason. Passing `None` keeps the fold
@@ -622,7 +692,10 @@ fn backtrack_all(
         // adds no dispatch capability cpsat did not already have.
         crate::solver::fold_dependent_cells(
             assignment,
-            ctx.dependent_cells,
+            ctx.dependent_cells
+                .iter()
+                .filter(|scheduled| scheduled.needs_rederive_at(var_index))
+                .map(|scheduled| scheduled.cell),
             ctx.functions,
             |id| ctx.auto_param_ids.contains(id),
             None,
@@ -772,7 +845,7 @@ impl CpSatSolver {
             constraints: &inputs.constraints,
             auto_param_ids: &inputs.auto_param_ids,
             functions: &problem.functions,
-            dependent_cells: &problem.dependent_cells,
+            dependent_cells: &inputs.dependent_cells,
             cap,
             node_budget,
         };
@@ -1173,6 +1246,11 @@ impl CpSatSolver {
         RankedSolveResult::Ranked {
             candidates,
             optimality,
+            // Mapping `SolveAllResult::Enumerated.complete` to `Exhaustive` /
+            // `Partial{BoxBudgetExhausted}` is #6903's, and not a flag copy:
+            // `complete` is a claim about the SEARCH, `Exhaustive` one about the
+            // CARRIED set, which is truncated to `RANKED_CANDIDATE_CAP`.
+            completeness: reify_ir::Completeness::not_attempted(),
         }
     }
 }
@@ -1249,6 +1327,7 @@ fn lift_feasibility(solved: SolveResult) -> RankedSolveResult {
                 unique,
             }],
             optimality: OptimalityStatus::FeasibilityOnly,
+            completeness: reify_ir::Completeness::not_attempted(),
         },
         non_solved => non_solved
             .into_ranked_pass_through()
@@ -1313,11 +1392,13 @@ fn verdict_from_enumeration(
             // `a_model_found_before_the_budget_bit_is_not_reported_as_unique`.
             //
             // β sets the flag and stops there. It does NOT copy
-            // `DimensionalSolver::finalise_uniqueness` (solver.rs:2686),
+            // `DimensionalSolver`'s `finalise_uniqueness` (solver.rs),
             // which demotes a non-unique STRICT-auto solve to
             // `Infeasible { ConstraintNonUnique }`. The engine's
-            // non-unique warning is gated on `ap.free`
-            // (engine_eval.rs:3355/5975), so nothing user-visible turns
+            // non-unique warning is gated on `ap.free` (engine_eval.rs:
+            // `push_merged_cluster_nonunique_warnings` and the
+            // per-template arms of `Engine::eval` and
+            // `Engine::eval_cached`), so nothing user-visible turns
             // on the strict case yet, and the demotion POLICY belongs
             // with the step that first makes it observable. See
             // `a_strict_auto_gets_the_same_honest_flag_and_no_demotion`
@@ -1474,9 +1555,11 @@ mod cpsat_test_fixtures {
     ///
     /// Exists to pin that the distinction makes NO difference to what cpsat
     /// reports. `free` is what the engine gates its non-unique WARNING on
-    /// (engine_eval.rs:3355/5975), and `DimensionalSolver::finalise_uniqueness`
-    /// (solver.rs:2686) goes further still and DEMOTES a non-unique strict solve
-    /// to `Infeasible { ConstraintNonUnique }`. cpsat does neither: it reports
+    /// (engine_eval.rs: `push_merged_cluster_nonunique_warnings` and the
+    /// per-template arms of `Engine::eval` and `Engine::eval_cached`), and
+    /// `DimensionalSolver`'s `finalise_uniqueness` (solver.rs) goes further
+    /// still and DEMOTES a non-unique strict solve to
+    /// `Infeasible { ConstraintNonUnique }`. cpsat does neither: it reports
     /// the honest flag and stops there. That is a deliberate scope line, not an
     /// oversight, so it gets a fixture and a unit rather than silence.
     pub(super) fn strict_bool_auto(member: &str) -> AutoParam {
@@ -1687,6 +1770,42 @@ mod cpsat_test_fixtures {
     pub(super) fn or(l: CompiledExpr, r: CompiledExpr) -> CompiledExpr {
         CompiledExpr::binop(reify_ir::BinOp::Or, l, r, Type::Bool)
     }
+
+    /// A cap comfortably above every fixture's model count.
+    ///
+    /// STRICTLY GREATER, never equal, and that is load-bearing rather than
+    /// stylistic: the cap is checked AT THE PUSH, so a search that collects its
+    /// `cap`-th solution stops right there and reports `complete: false` even
+    /// when that solution happened to be the last one in the space. The flag is
+    /// deliberately conservative in the honest direction — "I did not prove I
+    /// exhausted it" — so a fixture wanting `complete: true` must leave the cap
+    /// room to come back empty-handed at least once.
+    pub(super) const GENEROUS_CAP: usize = 64;
+
+    /// Unwrap the enumerated arm, or panic naming the variant that came back.
+    ///
+    /// A bare `matches!` would let a `NotEnumerable` regression pass as "well,
+    /// it wasn't `Enumerated`" in some other assertion's shadow; naming the
+    /// actual variant here means a domain-rejection regression reads as one.
+    pub(super) fn enumerated(result: SolveAllResult) -> (Vec<HashMap<ValueCellId, Value>>, bool) {
+        match result {
+            SolveAllResult::Enumerated {
+                solutions,
+                complete,
+            } => (solutions, complete),
+            SolveAllResult::NotEnumerable { reason } => {
+                panic!("expected SolveAllResult::Enumerated; got NotEnumerable {{ {reason} }}")
+            }
+        }
+    }
+
+    /// The value of `S.<member>` in one enumerated solution.
+    pub(super) fn at(solution: &HashMap<ValueCellId, Value>, member: &str) -> Value {
+        solution
+            .get(&ValueCellId::new("S", member))
+            .unwrap_or_else(|| panic!("no enumerated value for S.{member}; got {solution:?}"))
+            .clone()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1707,6 +1826,8 @@ mod cpsat_test_fixtures {
 // regardless — `[Bool(true), Bool(false)]` for `Type::Bool`, i.e.
 // deterministically `true`, reported as `Solved`/`unique` rather than as a
 // failure. Removing the fold reintroduces exactly that.
+// The #6078 units at the end of this module pin what narrowing that fold to
+// the not-yet-exact cells must keep observable.
 //
 // LOCK 2 — the auto-id strip on the `current_values` seed in `solve`. Before
 // it, `assignment` started out carrying entries for auto params, so at depth k
@@ -2137,6 +2258,237 @@ mod dependent_cell_forward_check_tests {
              {flipped:?}",
         );
     }
+
+    /// Each enumerated model's `(n, m)`, sorted: the model SET, whatever order
+    /// the search visits it in.
+    fn n_m_models(solutions: &[HashMap<ValueCellId, Value>]) -> Vec<(i64, i64)> {
+        fn int(solution: &HashMap<ValueCellId, Value>, member: &str) -> i64 {
+            match at(solution, member) {
+                Value::Int(i) => i,
+                other => panic!("expected S.{member} to be an Int; got {other:?}"),
+            }
+        }
+        let mut models: Vec<(i64, i64)> = solutions
+            .iter()
+            .map(|s| (int(s, "n"), int(s, "m")))
+            .collect();
+        models.sort_unstable();
+        models
+    }
+
+    /// LOCK 1 — a cell folded by an ABANDONED deeper branch is never read at a
+    /// shallower depth (#6078).
+    ///
+    /// `n, m ∈ [0, 3]`, `let g = n + m`, `constraint g == 5`: exactly the models
+    /// `(2, 3)` and `(3, 2)`. The `n = 0` subtree folds `g` up to `3` at depth 1
+    /// and leaves it there on unwind. A fold that SKIPPED `g` at depth 0, where
+    /// its auto `m` is still unassigned, would read that leftover `3` at
+    /// `n = 1, 2, 3`, prune all three, and come back empty. Re-derived, `g` is
+    /// `Undef` there and cannot prune.
+    #[test]
+    fn a_deeper_cell_left_over_from_an_abandoned_branch_is_never_observed_at_a_shallower_depth() {
+        let p = problem(
+            vec![int_auto("n", 0, 3), int_auto("m", 0, 3)],
+            vec![(ConstraintNodeId::new("S", 0), eq_int(iref("g"), 5))],
+            vec![(ValueCellId::new("S", "g"), sum_int(iref("n"), iref("m")))],
+        );
+
+        let (solutions, complete) = enumerated(CpSatSolver.solve_all(&p, GENEROUS_CAP));
+
+        assert_eq!(
+            n_m_models(&solutions),
+            vec![(2, 3), (3, 2)],
+            "`let g = n + m` with `g == 5` over n, m ∈ [0, 3] has exactly the \
+             models (2, 3) and (3, 2). An EMPTY set means a shallower trial read \
+             the `g` an abandoned deeper branch left behind",
+        );
+        assert!(complete, "a 16-point space must be exhausted");
+    }
+
+    /// LOCK 1 — a cell exact since a SHALLOWER depth still feeds the deeper
+    /// cell that reads it (#6078).
+    ///
+    /// `n, m ∈ [0, 5]`; stored order `let f = n * 2`, `let g = f + m`;
+    /// `constraint g == 7`, `constraint f == 4`: the only model is `(2, 3)`.
+    /// `f` is exact from depth 0, so depth 1 need not re-derive it, but `g`,
+    /// re-derived there, must still read it. A fold that DROPPED `f` there
+    /// would leave `g` `Undef`: no constraint could prune at the leaf, and every
+    /// `m` would come back with `n = 2`.
+    #[test]
+    fn a_cell_exact_since_a_shallower_depth_feeds_a_deeper_cell_in_the_same_chain() {
+        let p = problem(
+            vec![int_auto("n", 0, 5), int_auto("m", 0, 5)],
+            vec![
+                (ConstraintNodeId::new("S", 0), eq_int(iref("g"), 7)),
+                (ConstraintNodeId::new("S", 1), eq_int(iref("f"), 4)),
+            ],
+            vec![
+                (ValueCellId::new("S", "f"), mul_int(iref("n"), 2)),
+                (ValueCellId::new("S", "g"), sum_int(iref("f"), iref("m"))),
+            ],
+        );
+
+        let (solutions, complete) = enumerated(CpSatSolver.solve_all(&p, GENEROUS_CAP));
+
+        assert_eq!(
+            n_m_models(&solutions),
+            vec![(2, 3)],
+            "`f = 2n` with `f == 4` pins n = 2, then `g = f + m` with `g == 7` \
+             pins m = 3. Extra models with n = 2 mean `g` was re-derived against \
+             a missing `f`",
+        );
+        assert!(complete, "a 36-point space must be exhausted");
+    }
+
+    /// LOCK 1 — the depth schedule does not trust the stored order (#6078).
+    ///
+    /// `n ∈ [0, 3]`, `m ∈ [0, 1]`; stored order `let g = f`, `let f = n * 2`,
+    /// `let x = g + 1`, so `g` reads a LATER cell and `x` reads `g`;
+    /// `constraint x + m == 7`, evaluated once `m` is assigned: the only model
+    /// is `(3, 0)`. All three cells read only `n`, yet the depth-0 pass derives
+    /// `g` from the previous trial's `f`, and `x` from that stale `g`. Both must
+    /// be re-derived at depth 1. A schedule that skipped either there, trusting
+    /// `n`'s depth alone, lets a stale `x` decide every leaf.
+    #[test]
+    fn cells_a_stored_order_pass_leaves_stale_are_re_derived_at_every_depth() {
+        let p = problem(
+            vec![int_auto("n", 0, 3), int_auto("m", 0, 1)],
+            vec![(
+                ConstraintNodeId::new("S", 0),
+                eq_int(sum_int(iref("x"), iref("m")), 7),
+            )],
+            vec![
+                (ValueCellId::new("S", "g"), iref("f")),
+                (ValueCellId::new("S", "f"), mul_int(iref("n"), 2)),
+                (ValueCellId::new("S", "x"), add_int(iref("g"), 1)),
+            ],
+        );
+
+        let (solutions, complete) = enumerated(CpSatSolver.solve_all(&p, GENEROUS_CAP));
+
+        assert_eq!(
+            n_m_models(&solutions),
+            vec![(3, 0)],
+            "`x = 2n + 1` with `x + m == 7` over n ∈ [0, 3], m ∈ [0, 1] has the \
+             one model (3, 0). (0, 0) and (0, 1) mean `x` stayed `Undef` from \
+             n = 0's depth-0 pass; a missing (3, 0) means it stayed one trial \
+             behind `f`",
+        );
+        assert!(complete, "an 8-point space must be exhausted");
+    }
+
+    /// LOCK 1 — a duplicated cell id still ends every pass at its LAST
+    /// occurrence (#6078).
+    ///
+    /// `n ∈ [0, 3]`, `m ∈ [0, 1]`; stored order `let d = f`, `let f = n * 2`,
+    /// `let d = n + 1`; `constraint d + m == 4`, evaluated once `m` is
+    /// assigned. A total fold leaves the last write, `d = n + 1`, so the models
+    /// are `(2, 1)` and `(3, 0)`. The first occurrence reads a later cell and is
+    /// re-derived at every depth; were the second skipped below depth 0, depth 1
+    /// would end on the first's `d = 2n` and come back with `(2, 0)` alone.
+    #[test]
+    fn every_occurrence_of_a_duplicated_cell_is_re_derived_so_the_last_still_wins() {
+        let p = problem(
+            vec![int_auto("n", 0, 3), int_auto("m", 0, 1)],
+            vec![(
+                ConstraintNodeId::new("S", 0),
+                eq_int(sum_int(iref("d"), iref("m")), 4),
+            )],
+            vec![
+                (ValueCellId::new("S", "d"), iref("f")),
+                (ValueCellId::new("S", "f"), mul_int(iref("n"), 2)),
+                (ValueCellId::new("S", "d"), add_int(iref("n"), 1)),
+            ],
+        );
+
+        let (solutions, complete) = enumerated(CpSatSolver.solve_all(&p, GENEROUS_CAP));
+
+        assert_eq!(
+            n_m_models(&solutions),
+            vec![(2, 1), (3, 0)],
+            "a total fold ends each pass on `d = n + 1`, so `d + m == 4` has the \
+             models (2, 1) and (3, 0). (2, 0) means a pass ended on the first \
+             occurrence's `d = 2n`",
+        );
+        assert!(complete, "an 8-point space must be exhausted");
+    }
+
+    /// LOCK 1 — a PARTIAL derivation still prunes (#6078). Kleene `and` makes
+    /// `false and _` defined, so a cell some of whose autos are unassigned can
+    /// already be `false`; re-deriving it at every depth is what prunes there.
+    ///
+    /// Ten `Bool` autos; `let all = a0 and a1 and … and a9`;
+    /// `constraint all == true`. Re-derived per trial, `all` is `false` as soon
+    /// as an assigned conjunct is, so every `false` branch dies at its own
+    /// depth: about 20 nodes for the one model. A fold that DROPPED `all` until
+    /// its last auto is assigned walks the whole ~2046-node tree. One that
+    /// SKIPPED it passes here: the `false` the abandoned `a9 = false` branch
+    /// leaves behind happens to prune only infeasible siblings. That mutant is
+    /// pinned by
+    /// `a_deeper_cell_left_over_from_an_abandoned_branch_is_never_observed_at_a_shallower_depth`.
+    ///
+    /// ANTI-VACUITY: the same conjunction written into the constraint itself,
+    /// with no dependent cell, is evaluated only at the leaves; under the same
+    /// node budget it must come back INCOMPLETE. That is what proves the budget
+    /// separates the pruned search from the unpruned one.
+    #[test]
+    fn a_conjunction_behind_a_dependent_cell_prunes_at_its_first_false_conjunct() {
+        const NODE_BUDGET: usize = 64;
+        let names: Vec<String> = (0..10).map(|i| format!("a{i}")).collect();
+        let autos: Vec<AutoParam> = names.iter().map(|n| bool_auto(n)).collect();
+        let conjunction = || {
+            names
+                .iter()
+                .map(|n| bref(n))
+                .reduce(and)
+                .expect("ten conjuncts")
+        };
+
+        let behind_a_cell = problem(
+            autos.clone(),
+            vec![(ConstraintNodeId::new("S", 0), eq_true(bref("all")))],
+            vec![(ValueCellId::new("S", "all"), conjunction())],
+        );
+        let (solutions, complete) = enumerated(CpSatSolver.solve_all_with_budget(
+            &behind_a_cell,
+            GENEROUS_CAP,
+            NODE_BUDGET,
+        ));
+        assert!(
+            complete,
+            "`all` is `false` from the first `false` conjunct on, so every \
+             `false` branch is pruned at its own depth and the search ends well \
+             inside {NODE_BUDGET} nodes. INCOMPLETE means the cell was not \
+             re-derived until its last auto was assigned",
+        );
+        assert_eq!(
+            solutions.len(),
+            1,
+            "only the all-true point satisfies `all == true`; got {solutions:?}",
+        );
+        for name in &names {
+            assert_eq!(
+                at(&solutions[0], name),
+                Value::Bool(true),
+                "the one model sets every conjunct true",
+            );
+        }
+
+        let direct = problem(
+            autos,
+            vec![(ConstraintNodeId::new("S", 0), eq_true(conjunction()))],
+            Vec::new(),
+        );
+        let (_, direct_complete) =
+            enumerated(CpSatSolver.solve_all_with_budget(&direct, GENEROUS_CAP, NODE_BUDGET));
+        assert!(
+            !direct_complete,
+            "fixture integrity: read directly, the conjunction is evaluated only \
+             once all ten autos are assigned, so the search walks the full tree \
+             and must exhaust {NODE_BUDGET} nodes. COMPLETE here means the \
+             budget no longer separates a pruned search from an unpruned one",
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2176,42 +2528,6 @@ mod solve_all_enumeration_tests {
     use super::*;
     use super::cpsat_test_fixtures::*;
     use std::collections::HashMap;
-
-    /// A cap comfortably above every fixture's model count.
-    ///
-    /// STRICTLY GREATER, never equal, and that is load-bearing rather than
-    /// stylistic: the cap is checked AT THE PUSH, so a search that collects its
-    /// `cap`-th solution stops right there and reports `complete: false` even
-    /// when that solution happened to be the last one in the space. The flag is
-    /// deliberately conservative in the honest direction — "I did not prove I
-    /// exhausted it" — so a fixture wanting `complete: true` must leave the cap
-    /// room to come back empty-handed at least once.
-    const GENEROUS_CAP: usize = 64;
-
-    /// Unwrap the enumerated arm, or panic naming the variant that came back.
-    ///
-    /// A bare `matches!` would let a `NotEnumerable` regression pass as "well,
-    /// it wasn't `Enumerated`" in some other assertion's shadow; naming the
-    /// actual variant here means a domain-rejection regression reads as one.
-    fn enumerated(result: SolveAllResult) -> (Vec<HashMap<ValueCellId, Value>>, bool) {
-        match result {
-            SolveAllResult::Enumerated {
-                solutions,
-                complete,
-            } => (solutions, complete),
-            SolveAllResult::NotEnumerable { reason } => {
-                panic!("expected SolveAllResult::Enumerated; got NotEnumerable {{ {reason} }}")
-            }
-        }
-    }
-
-    /// The value of `S.<member>` in one enumerated solution.
-    fn at(solution: &HashMap<ValueCellId, Value>, member: &str) -> Value {
-        solution
-            .get(&ValueCellId::new("S", member))
-            .unwrap_or_else(|| panic!("no enumerated value for S.{member}; got {solution:?}"))
-            .clone()
-    }
 
     /// `S.<member> == <b>`, as a plain bool, for membership assertions.
     fn boolean(solution: &HashMap<ValueCellId, Value>, member: &str) -> bool {
@@ -2546,8 +2862,8 @@ mod solve_all_enumeration_tests {
     // one model" from "at least two". But proving there is no SECOND solution
     // means proving the rest of the space holds none — i.e. EXHAUSTING it. Two
     // `Int` autos at `MAX_INT_DOMAIN` = 1000 is 10^6 leaves, and every node on
-    // the way pays a total `fold_dependent_cells` pass plus a full constraint
-    // sweep. Without a node bound, `solve()` would silently regress from "stop
+    // the way pays a dependent-cell fold plus a full constraint sweep. Without
+    // a node bound, `solve()` would silently regress from "stop
     // at the first solution" to "walk the whole product" — the same work
     // whether or not a second solution turns up on node two.
     //
@@ -3045,13 +3361,15 @@ mod unique_honesty_tests {
     /// is pinned rather than left to be inferred from an absence.
     ///
     /// β's job is to make `unique` TRUE-OR-FALSE-AS-MEASURED. It stops there.
-    /// It does NOT copy `DimensionalSolver::finalise_uniqueness`
-    /// (solver.rs:2686), which demotes a non-unique STRICT-auto solve all the
+    /// It does NOT copy `DimensionalSolver`'s `finalise_uniqueness`
+    /// (solver.rs), which demotes a non-unique STRICT-auto solve all the
     /// way to `Infeasible { ConstraintNonUnique }`. Two reasons, both outside
     /// this task: the engine's non-unique warning is gated on `ap.free`
-    /// (engine_eval.rs:3355/5975), so nothing user-visible turns on the strict
-    /// case yet; and the demotion POLICY belongs with the step that first makes
-    /// it observable (task #6554).
+    /// (engine_eval.rs: `push_merged_cluster_nonunique_warnings` and the
+    /// per-template arms of `Engine::eval` and `Engine::eval_cached`), so
+    /// nothing user-visible turns on the strict case yet; and the demotion
+    /// POLICY belongs with the step that first makes it observable
+    /// (task #6554).
     ///
     /// If a later step adds that demotion, this unit fails — which is the
     /// correct outcome. It asserts today's contract, not a wish.
@@ -3171,6 +3489,7 @@ mod solve_ranked_override_tests {
             RankedSolveResult::Ranked {
                 candidates,
                 optimality,
+                ..
             } => (candidates, optimality),
             other => panic!("expected RankedSolveResult::Ranked; got {other:?}"),
         }
@@ -3512,6 +3831,33 @@ mod solve_ranked_override_tests {
              they disagree; if they ever agree here, one of them has quietly \
              been redefined as the other",
         );
+    }
+
+    /// BT13 (solution-set-completeness): CpSat does not opt into the
+    /// completeness axis yet, so BOTH of its `Ranked` construction sites report
+    /// `not_attempted()` — the scored tail of `solve_ranked_with_budget`, reached
+    /// under an objective, and `lift_feasibility`, reached without one. The
+    /// mapping that replaces it is #6903's; see the scored tail's comment.
+    #[test]
+    fn both_ranked_construction_sites_report_not_attempted() {
+        let unscored = problem(
+            vec![bool_auto("a"), bool_auto("b")],
+            vec![(ConstraintNodeId::new("S", 0), or(bref("a"), bref("b")))],
+            Vec::new(),
+        );
+        for (site, p) in [
+            ("scored tail", a_or_b_scored(ObjectiveSense::Minimize)),
+            ("lift_feasibility", unscored),
+        ] {
+            match CpSatSolver.solve_ranked(&p) {
+                RankedSolveResult::Ranked { completeness, .. } => assert_eq!(
+                    completeness,
+                    reify_ir::Completeness::not_attempted(),
+                    "{site}: BT13"
+                ),
+                other => panic!("{site}: expected RankedSolveResult::Ranked; got {other:?}"),
+            }
+        }
     }
 
     // -----------------------------------------------------------------------

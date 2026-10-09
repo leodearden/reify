@@ -79,6 +79,7 @@ make_fixture() {
     cp "$REPO_ROOT/scripts/cpu-admit.sh" "$dir/scripts/cpu-admit.sh"
     cp "$REPO_ROOT/scripts/lib_proc_reaper.sh" "$dir/scripts/lib_proc_reaper.sh"
     cp "$REPO_ROOT/scripts/lib_git_env_scrub.sh" "$dir/scripts/lib_git_env_scrub.sh"
+    cp "$REPO_ROOT/scripts/lib_main_checkout.sh" "$dir/scripts/lib_main_checkout.sh"
     cp "$REPO_ROOT/scripts/gen-nextest-config.sh" "$dir/scripts/gen-nextest-config.sh"
     cp "$REPO_ROOT/scripts/heavy-test-filter-lib.sh" "$dir/scripts/heavy-test-filter-lib.sh"
     cp "$REPO_ROOT/scripts/verify-pipeline-infra-tests.txt" "$dir/scripts/verify-pipeline-infra-tests.txt"
@@ -412,8 +413,8 @@ assert "PG-DRIFT: marker self-test — the SIBLING 'pg-drift-dir:allow' does NOT
 # which prints `path:count` rather than a bare number.
 _PG_ALLOWED_MENTIONS="$(git -C "$REPO_ROOT" grep -h -E "$_PG_FIX_PAT" -- '*.rs' \
     | grep 'pg-drift:allow' | wc -l || true)"
-assert "PG-DRIFT: exactly three reviewed 'pg-drift:allow' fixture mentions are expected in *.rs (tangent_operand_check_tests.rs's uncoupled-probe sentence, plus ctor_conformance_corpus_survey.rs's two SYNTHETIC one.ri drift-render inputs); found $_PG_ALLOWED_MENTIONS" \
-    test "$_PG_ALLOWED_MENTIONS" -eq 3
+assert "PG-DRIFT: exactly five reviewed 'pg-drift:allow' fixture mentions are expected in *.rs (tangent_operand_check_tests.rs's uncoupled-probe sentence, harness_ctor_conformance_survey/render.rs's two SYNTHETIC one.ri drift-render inputs, and the two S-4 witness citations of getar_wildcard_headed_arg_silent.ri in overload.rs and result_combinator_resolution_tests.rs, task 8014); found $_PG_ALLOWED_MENTIONS" \
+    test "$_PG_ALLOWED_MENTIONS" -eq 5
 # (B) ABUSE SURFACE. The marker asserts "prose only — nothing compiled reads
 # this", so every marked path must classify RUN_RUST=0 against verify.sh's REAL
 # classifier. A marked basename that IS in _RUST_COUPLED_RI_FIXTURES would mean
@@ -953,6 +954,7 @@ make_branch_fixture() {
     cp "$REPO_ROOT/scripts/cpu-admit.sh" "$dir/scripts/cpu-admit.sh"
     cp "$REPO_ROOT/scripts/lib_proc_reaper.sh" "$dir/scripts/lib_proc_reaper.sh"
     cp "$REPO_ROOT/scripts/lib_git_env_scrub.sh" "$dir/scripts/lib_git_env_scrub.sh"
+    cp "$REPO_ROOT/scripts/lib_main_checkout.sh" "$dir/scripts/lib_main_checkout.sh"
     cp "$REPO_ROOT/scripts/gen-nextest-config.sh" "$dir/scripts/gen-nextest-config.sh"
     cp "$REPO_ROOT/scripts/heavy-test-filter-lib.sh" "$dir/scripts/heavy-test-filter-lib.sh"
     cp "$REPO_ROOT/scripts/verify-pipeline-infra-tests.txt" "$dir/scripts/verify-pipeline-infra-tests.txt"
@@ -1036,32 +1038,36 @@ plan_for_branch_env() {
     for f in "$@"; do rm -f "$FIX_B/$f"; done
 }
 
-# FIX_MOD — shared fixture for the MODIFY-vector (B-KLOC-mod-*) and rename
-# (B-KLOC-rename) scenarios below. An `M` status requires each target file to
-# already exist at the merge-base, so (like B-KLOC-mod-*'s dedicated fixture
-# used to) it can't reuse plan_for_branch's shared FIX_B — seeding these
-# targets into FIX_B's `main` would leak them into every OTHER branch
-# scenario's diff (they all share FIX_B's base). Unlike a private
-# per-scenario fixture, ALL targets are seeded into ONE fixture's merge-base
-# commit, up front, a single time: a file committed at the merge-base but
-# left untouched on a given scenario's task-branch simply never appears in
-# that scenario's `git diff <merge-base>`, so sharing one fixture is
-# behaviourally identical to giving each scenario its own — at a quarter of
-# the setup cost (one mktemp + script-copy + assert_source_closure_copied +
-# git init instead of four). Left dirty; reclaimed by the existing EXIT trap
-# via _TMPDIRS (FIX_B5/FIX_C5/FIX_KLOC_MERGE dedicated-inline-fixture idiom).
+# FIX_MOD — shared fixture for the MODIFY, DELETE and RENAME vectors of the
+# B-KLOC-*, B-PDIAG-* and B-PDOCCOVER-* scenario families below. An `M`, `D` or
+# `R` status requires each target file to already exist at the merge-base, so
+# (like B-KLOC-mod-*'s dedicated fixture used to) it can't reuse
+# plan_for_branch's shared FIX_B — seeding these targets into FIX_B's `main`
+# would leak them into every OTHER branch scenario's diff (they all share
+# FIX_B's base). Unlike a private per-scenario fixture, ALL targets are seeded
+# into ONE fixture's merge-base commit, up front, a single time: a file
+# committed at the merge-base but left untouched on a given scenario's
+# task-branch simply never appears in that scenario's `git diff <merge-base>`,
+# so sharing one fixture is behaviourally identical to giving each scenario its
+# own — at a quarter of the setup cost (one mktemp + script-copy +
+# assert_source_closure_copied + git init instead of four). Left dirty;
+# reclaimed by the existing EXIT trap via _TMPDIRS (FIX_B5/FIX_C5/
+# FIX_KLOC_MERGE dedicated-inline-fixture idiom).
 FIX_MOD=""
 make_branch_fixture FIX_MOD
 for _f in crates/reify-eval/tests/harness_probe/nested.rs \
           crates/reify-eval/tests/harness_probe.rs \
           crates/reify-eval/tests/zz_grandfathered.rs \
           crates/reify-eval/tests/foo.rs \
-          crates/reify-eval/src/lib.rs; do
+          crates/reify-eval/src/lib.rs \
+          crates/reify-mcp/src/tools/chunks/pdoccover_probe.md \
+          crates/reify-compiler/src/pdoccover_probe.rs \
+          crates/reify-audit/pdoccover-baseline.txt; do
     mkdir -p "$FIX_MOD/$(dirname "$_f")"
     printf 'seed\n' > "$FIX_MOD/$_f"
     git -C "$FIX_MOD" add "$_f"
 done
-git -C "$FIX_MOD" commit -q -m "seed B-KLOC-mod-*/B-KLOC-rename targets"
+git -C "$FIX_MOD" commit -q -m "seed MODIFY/DELETE/RENAME-vector targets"
 
 # plan_for_branch_modify <file...> — checkout a fresh task-branch off
 # FIX_MOD's main, grow (append to) the given already-seeded file(s) so each
@@ -1073,6 +1079,17 @@ plan_for_branch_modify() {
     git -C "$FIX_MOD" checkout -q -b task-branch
     for f in "$@"; do printf 'grown\n' >> "$FIX_MOD/$f"; done
     git -C "$FIX_MOD" commit -q -am "grow"          # M, not A, in `git diff <merge-base>`
+    PLAN_OUT="$(cd "$FIX_MOD" && bash scripts/verify.sh all --profile debug --scope branch --include-infra --print-plan 2>/dev/null)" || true
+    git -C "$FIX_MOD" checkout -q main
+    git -C "$FIX_MOD" branch -q -D task-branch
+}
+
+# plan_for_branch_delete <file...> — like plan_for_branch_modify, but each already-seeded file shows up as a D.
+plan_for_branch_delete() {
+    local f
+    git -C "$FIX_MOD" checkout -q -b task-branch
+    for f in "$@"; do git -C "$FIX_MOD" rm -q "$f"; done
+    git -C "$FIX_MOD" commit -q -m "delete"
     PLAN_OUT="$(cd "$FIX_MOD" && bash scripts/verify.sh all --profile debug --scope branch --include-infra --print-plan 2>/dev/null)" || true
     git -C "$FIX_MOD" checkout -q main
     git -C "$FIX_MOD" branch -q -D task-branch
@@ -1696,6 +1713,178 @@ assert "B-PDIAG-merge: selective PDIAG leaf ABSENT (run_all.sh owns it wholesale
     refute plan_match "$_PDIAG_PLAN_MERGE" "$_PDIAG_LEAF"
 assert "B-PDIAG-all: selective PDIAG leaf ABSENT under --scope all" \
     refute plan_match "$_PDIAG_PLAN_ALL" "$_PDIAG_LEAF"
+
+# ===========================================================================
+# B-PDOCCOVER-* scenarios (task #7987): the branch-scope PDOCCOVER ratchet
+# selector, select_pdoccover_ratchet in scripts/verify.sh — the twin of the
+# B-PDIAG-* block above, on the same two fixtures (FIX_B for adds, FIX_MOD for
+# the diff-status vectors).
+# ===========================================================================
+echo ""
+echo "=== Branch-scope PDOCCOVER ratchet selector (task #7987 B-PDOCCOVER-* scenarios) ==="
+_PDOCCOVER_LEAF='tests/infra/test_reify_audit_pdoccover\.sh'
+
+# ---------------------------------------------------------------------------
+# Scenario PDOCCOVER-DRIFT: verify.sh's pdoccover_input_path is a DERIVED COPY
+# of the four things the PDOCCOVER scanner reads: UNITS_PATH, is_chunk_path
+# (CHUNKS_PREFIX plus its .md suffix), in_oracle_scope's starts_with/ends_with
+# pairs, and BASELINE_PATH. Each is a literal in the Rust, so — unlike
+# PDIAG-DRIFT, which must replay is_swept_path's unit-test corpus because its
+# segment rules cannot be scraped — the DEFINITIONS themselves are re-derived
+# on every run and each derived root is probed through the selector. A literal
+# that changes in the Rust moves the probes with no edit here.
+#
+# A root (the chunk corpus, each oracle pair) gets a NESTED positive, pinning
+# that the bash glob crosses `/` the way starts_with does, and a wrong-suffix
+# `.orig` negative that reds a copy which dropped the suffix. UNITS_PATH and
+# BASELINE_PATH are exact paths: the positive pins that the selector accepts the
+# path, the `.orig` negative that it is not a prefix. UNITS_PATH has no arm of
+# its own in pdoccover_input_path (units.rs is an in_oracle_scope path), so its
+# positive is what reds if the census file ever leaves the oracle roots.
+#
+# The derivations never fail on a miss (this suite runs under set -e +
+# pipefail, where a grep that finds nothing would abort the whole file): a
+# scrape that finds nothing reds the non-vacuity asserts instead.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Scenario PDOCCOVER-DRIFT: every PDOCCOVER input re-derived from the Rust source, probed through the branch-scope selector ---"
+_PDOC_RS="$REPO_ROOT/crates/reify-audit/src/pdoccover.rs"
+_PDOC_BL_RS="$REPO_ROOT/crates/reify-audit/src/pdoccover_baseline.rs"
+_PDOC_UNITS="$(sed -n 's/^pub const UNITS_PATH: &str = "\([^"]*\)";$/\1/p' "$_PDOC_RS")"
+_PDOC_CHUNKS_PREFIX="$(sed -n 's/^pub const CHUNKS_PREFIX: &str = "\([^"]*\)";$/\1/p' "$_PDOC_RS")"
+_PDOC_BASELINE="$(sed -n 's/^pub const BASELINE_PATH: &str = "\([^"]*\)";$/\1/p' "$_PDOC_BL_RS")"
+# Requiring the literal CHUNKS_PREFIX ties the suffix to the prefix derived above.
+_PDOC_CHUNK_SUFFIX="$(sed -n '/^fn is_chunk_path(/,/^}/p' "$_PDOC_RS" \
+    | sed -n 's/.*starts_with(CHUNKS_PREFIX) && path\.ends_with("\([^"]*\)").*/\1/p')"
+_PDOC_ORACLE_BODY="$(sed -n '/^fn in_oracle_scope(/,/^}/p' "$_PDOC_RS")"
+# One "<prefix> <suffix>" line per starts_with/ends_with pair.
+_PDOC_ORACLE_PAIRS="$(printf '%s\n' "$_PDOC_ORACLE_BODY" \
+    | sed -n 's/.*starts_with("\([^"]*\)") && path\.ends_with("\([^"]*\)").*/\1 \2/p')"
+_PDOC_ORACLE_STARTS="$(printf '%s\n' "$_PDOC_ORACLE_BODY" | awk '{ n += gsub(/starts_with\(/, "&") } END { print n + 0 }')"
+_PDOC_ORACLE_READ="$(printf '%s\n' "$_PDOC_ORACLE_PAIRS" | awk 'NF { n++ } END { print n + 0 }')"
+assert "PDOCCOVER-DRIFT: derived UNITS_PATH is NON-EMPTY (the census probes are not vacuous)" \
+    test -n "$_PDOC_UNITS"
+assert "PDOCCOVER-DRIFT: derived CHUNKS_PREFIX is NON-EMPTY (the chunk probes are not vacuous)" \
+    test -n "$_PDOC_CHUNKS_PREFIX"
+assert "PDOCCOVER-DRIFT: derived is_chunk_path suffix is NON-EMPTY (the chunk probes are not vacuous)" \
+    test -n "$_PDOC_CHUNK_SUFFIX"
+assert "PDOCCOVER-DRIFT: derived BASELINE_PATH is NON-EMPTY (the ledger probes are not vacuous)" \
+    test -n "$_PDOC_BASELINE"
+assert "PDOCCOVER-DRIFT: derived in_oracle_scope pair list is NON-EMPTY (the oracle probes are not vacuous)" \
+    test -n "$_PDOC_ORACLE_PAIRS"
+# Completeness of the scrape itself: every starts_with( in in_oracle_scope's
+# body must be a pair the sed above reads. A pair reformatted across lines would
+# otherwise drop a root from the probe set while every floor above stays green.
+assert "PDOCCOVER-DRIFT: every starts_with( in in_oracle_scope is a pair the scraper reads ($_PDOC_ORACLE_READ of $_PDOC_ORACLE_STARTS)" \
+    [ "$_PDOC_ORACLE_STARTS" -eq "$_PDOC_ORACLE_READ" ]
+
+# Roots: "<Rust symbol> <prefix> <suffix>", the chunk corpus then each oracle pair.
+_PDOC_ROOTS="$(printf 'is_chunk_path %s %s\n' "$_PDOC_CHUNKS_PREFIX" "$_PDOC_CHUNK_SUFFIX"
+    printf '%s\n' "$_PDOC_ORACLE_PAIRS" | sed 's/^/in_oracle_scope /')"
+while read -r _pdoc_symbol _pdoc_prefix _pdoc_suffix; do
+    [ -n "$_pdoc_prefix" ] || continue
+    plan_for_branch "${_pdoc_prefix}pdoccover_drift/probe${_pdoc_suffix}"
+    assert "PDOCCOVER-DRIFT: ${_pdoc_prefix}pdoccover_drift/probe${_pdoc_suffix} (nested under an $_pdoc_symbol root) -> PDOCCOVER leaf emitted" \
+        plan_has "$_PDOCCOVER_LEAF"
+    plan_for_branch "${_pdoc_prefix}pdoccover_drift_probe${_pdoc_suffix}.orig"
+    assert "PDOCCOVER-DRIFT: ${_pdoc_prefix}pdoccover_drift_probe${_pdoc_suffix}.orig (wrong suffix under an $_pdoc_symbol root) -> NO PDOCCOVER leaf" \
+        plan_lacks "$_PDOCCOVER_LEAF"
+done <<< "$_PDOC_ROOTS"
+
+while read -r _pdoc_symbol _pdoc_exact; do
+    [ -n "$_pdoc_exact" ] || continue
+    plan_for_branch "$_pdoc_exact"
+    assert "PDOCCOVER-DRIFT: $_pdoc_exact ($_pdoc_symbol, an exact path) -> PDOCCOVER leaf emitted" \
+        plan_has "$_PDOCCOVER_LEAF"
+    plan_for_branch "${_pdoc_exact}.orig"
+    assert "PDOCCOVER-DRIFT: ${_pdoc_exact}.orig -> NO PDOCCOVER leaf ($_pdoc_symbol is an exact path, not a prefix)" \
+        plan_lacks "$_PDOCCOVER_LEAF"
+done <<< "UNITS_PATH $_PDOC_UNITS"$'\n'"BASELINE_PATH $_PDOC_BASELINE"
+
+# ---------------------------------------------------------------------------
+# Scenario B-PDOCCOVER-*: the diff-status and scope boundaries the DRIFT probes
+# do not reach. Every plan_for_branch capture there is an ADD, so the MODIFY,
+# DELETE and RENAME vectors are pinned here on FIX_MOD, whose merge-base
+# already carries a seeded chunk, oracle file and baseline.
+#
+# The DELETE and RENAME scenarios are where PDOCCOVER's selector DIVERGES from
+# PDIAG's (B-PDIAG-del asserts the leaf is ABSENT, because a PDIAG delete can
+# only yield a Medium OrphanRow): every status on a PDOCCOVER input can red the
+# gate, so a deletion, and a rename out of the corpus, must emit the leaf.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Scenario B-PDOCCOVER-mod: MODIFY of a chunk (crates/reify-mcp/src/tools/chunks/pdoccover_probe.md) -> PDOCCOVER leaf emitted ---"
+plan_for_branch_modify crates/reify-mcp/src/tools/chunks/pdoccover_probe.md
+assert "B-PDOCCOVER-mod: plan contains test_reify_audit_pdoccover.sh (an edited chunk can drop a documented name or add a fabricated one)" \
+    plan_has "$_PDOCCOVER_LEAF"
+
+echo ""
+echo "--- Scenario B-PDOCCOVER-del-chunk: DELETE of a chunk -> PDOCCOVER leaf emitted (the names only it documented become undocumented-name debt) ---"
+plan_for_branch_delete crates/reify-mcp/src/tools/chunks/pdoccover_probe.md
+assert "B-PDOCCOVER-del-chunk: plan contains test_reify_audit_pdoccover.sh (a deleted chunk orphans the names only it documented — undocumented-name, High — and stales its <chunk>:<name> ledger rows)" \
+    plan_has "$_PDOCCOVER_LEAF"
+
+echo ""
+echo "--- Scenario B-PDOCCOVER-del-oracle: DELETE of an oracle-scope file -> PDOCCOVER leaf emitted (a chunk call it alone vouched for becomes fabricated-name debt) ---"
+plan_for_branch_delete crates/reify-compiler/src/pdoccover_probe.rs
+assert "B-PDOCCOVER-del-oracle: plan contains test_reify_audit_pdoccover.sh (a deleted literal un-vouches a chunk call — fabricated-name, High)" \
+    plan_has "$_PDOCCOVER_LEAF"
+
+echo ""
+echo "--- Scenario B-PDOCCOVER-del-baseline: DELETE of the ledger -> PDOCCOVER leaf emitted (every accepted debt row becomes new debt) ---"
+plan_for_branch_delete crates/reify-audit/pdoccover-baseline.txt
+assert "B-PDOCCOVER-del-baseline: plan contains test_reify_audit_pdoccover.sh (with the ledger gone every baselined debt row is new debt)" \
+    plan_has "$_PDOCCOVER_LEAF"
+
+echo ""
+echo "--- Scenario B-PDOCCOVER-rename-out: a chunk RENAMED out of the corpus -> PDOCCOVER leaf emitted (only its D side carries the trigger) ---"
+# The root argument is a NON-input file and the destination (docs/) is outside
+# the input set, so the only PDOCCOVER trace in the diff is the chunk's own D
+# side. That pins BOTH D-inclusion and --no-renames: without --no-renames the
+# entry is an R whose --name-only destination is docs/pdoccover_probe.md.
+plan_for_branch_rename crates/reify-mcp/src/tools/chunks/pdoccover_probe.md docs/pdoccover_probe.md \
+    crates/reify-eval/tests/foo.rs '// touched'
+assert "B-PDOCCOVER-rename-out: plan contains test_reify_audit_pdoccover.sh (a chunk moved out of the corpus leaves the names only it documented undocumented)" \
+    plan_has "$_PDOCCOVER_LEAF"
+
+echo ""
+echo "--- Scenario B-PDOCCOVER-neg: a non-chunk .rs in the chunk corpus's crate -> NO PDOCCOVER leaf ---"
+plan_for_branch crates/reify-mcp/src/tools/pdoccover_probe.rs
+assert "B-PDOCCOVER-neg: crates/reify-mcp/src/tools/*.rs (same crate as the chunks, not a chunk) -> plan LACKS test_reify_audit_pdoccover.sh" \
+    plan_lacks "$_PDOCCOVER_LEAF"
+
+echo ""
+echo "--- Scenario B-PDOCCOVER-staged: a staged chunk -> NO PDOCCOVER leaf (the selector is branch-scope only) ---"
+plan_for staged crates/reify-mcp/src/tools/chunks/pdoccover_probe.md
+assert "B-PDOCCOVER-staged: plan LACKS test_reify_audit_pdoccover.sh" \
+    plan_lacks "$_PDOCCOVER_LEAF"
+
+# ---------------------------------------------------------------------------
+# Scenario B-PDOCCOVER-merge / B-PDOCCOVER-all: no SELECTIVE PDOCCOVER leaf
+# under the merge role or --scope all — run_all.sh runs the file wholesale there
+# (exactly-once, INV-5). Same two-guard reasoning as B-PDIAG-merge.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Scenario B-PDOCCOVER-merge / B-PDOCCOVER-all: chunk add under DF_VERIFY_ROLE=merge, and under --scope all -> no selective PDOCCOVER leaf ---"
+git -C "$FIX_B" checkout -q -b task-branch
+mkdir -p "$FIX_B/crates/reify-mcp/src/tools/chunks"
+printf 'x\n' > "$FIX_B/crates/reify-mcp/src/tools/chunks/pdoccover_merge_probe.md"
+git -C "$FIX_B" add crates/reify-mcp/src/tools/chunks/pdoccover_merge_probe.md
+git -C "$FIX_B" commit -q -m "task changes"
+_PDOCCOVER_PLAN_MERGE="$(cd "$FIX_B" && DF_VERIFY_ROLE=merge bash scripts/verify.sh all --profile debug --scope branch --include-infra --print-plan 2>/dev/null)" || true
+_PDOCCOVER_PLAN_ALL="$(cd "$FIX_B" && bash scripts/verify.sh all --profile debug --scope all --include-infra --print-plan 2>/dev/null)" || true
+PLAN_OUT="$(cd "$FIX_B" && bash scripts/verify.sh all --profile debug --scope branch --include-infra --print-plan 2>/dev/null)" || true
+git -C "$FIX_B" checkout -q main
+git -C "$FIX_B" branch -q -D task-branch
+rm -f "$FIX_B/crates/reify-mcp/src/tools/chunks/pdoccover_merge_probe.md"
+assert "B-PDOCCOVER-merge-vacuity: the SAME branch under plain --scope branch DOES emit the PDOCCOVER leaf" \
+    plan_has "$_PDOCCOVER_LEAF"
+assert "B-PDOCCOVER-merge: scope=all in plan header (DF_VERIFY_ROLE=merge forces full scope)" \
+    plan_match "$_PDOCCOVER_PLAN_MERGE" 'scope=all'
+assert "B-PDOCCOVER-merge: selective PDOCCOVER leaf ABSENT (run_all.sh owns it wholesale at the merge tier)" \
+    refute plan_match "$_PDOCCOVER_PLAN_MERGE" "$_PDOCCOVER_LEAF"
+assert "B-PDOCCOVER-all: selective PDOCCOVER leaf ABSENT under --scope all" \
+    refute plan_match "$_PDOCCOVER_PLAN_ALL" "$_PDOCCOVER_LEAF"
 
 # ===========================================================================
 # DEL-* scenarios (task 5140): scope classification must be deletion-aware.

@@ -12,19 +12,11 @@
 //! additionally covers the compile → eval geometry-error diagnostic channel
 //! and the mesh / STEP output path.
 //!
-//! Profile choice — why a bare `circle(3mm)` rather than a posed
-//! `translate(rotate(circle(3mm), …), …)`: the compiler's profile-precondition
-//! check (`GeometryProfileRequired`, crates/reify-compiler/src/geometry.rs)
-//! requires a `sweep` profile operand that is a statically-known Surface
-//! producer to be Closed ∧ Planar. An *inline* `translate(rotate(circle(…)))`
-//! operand is a known-combinator `FunctionCall` whose nested profile is opaque
-//! to the static inference, so it is rejected at compile time — that guard is
-//! independent of this task. A bare `circle(3mm)` is a direct Surface producer
-//! that passes the check and still sweeps cleanly along the helix (OCCT
-//! `MakePipe` transports the section along the spine frame), producing exactly
-//! one non-empty solid. The posed, volume-accurate case (π·r²·L within 5%) is
-//! covered by the kernel integration test; here we only need the full-pipeline
-//! no-error + non-empty-geometry acceptance.
+//! Profile choice: a bare `circle(3mm)` suffices for the full-pipeline
+//! no-error + non-empty-geometry acceptance this test makes (OCCT `MakePipe`
+//! transports the section along the spine frame, producing exactly one
+//! non-empty solid). The posed, volume-accurate case (π·r²·L within 5%) is
+//! covered by the kernel integration test.
 //!
 //! Modeled on the full-pipeline section of `tube_pipe_e2e.rs`.
 

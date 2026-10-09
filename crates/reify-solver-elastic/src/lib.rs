@@ -40,6 +40,7 @@
 //!     ShellElementStress, shell_element_stress,
 //!     DirichletBc, apply_dirichlet_row_elimination,
 //!     FaceOrder, apply_body_force, apply_point_load, apply_traction_load,
+//!     apply_patch_resultant, free_faces_within,
 //!     SupportKind, SupportBodyKind, SupportCompatibility, build_support_bcs,
 //!     MpcRow, apply_mpc_row_elimination,
 //!     solve_cg, solve_cg_warm, CgSolverOptions, CgResult, SolverMode,
@@ -59,7 +60,9 @@
 //!     // Task 2996: Z-Z error indicator surface
 //!     ZzIndicator, compute_zz_indicator,
 //!     // Task 2929: FEA diagnostic mapping — neutral classifier surface
-//!     FeaFailure, thin_body_advisory, classify_convergence, classify_degenerate,
+//!     FeaFailure, thin_body_advisory, classify_convergence,
+//!     // Task 8254: scale-aware oriented degenerate-tet gate
+//!     find_degenerate_tet, DegenerateTet, MIN_TET_SHAPE_QUALITY,
 //!     // Task 3000: per-probe target_accuracy contract + lazy-refinement timing contract
 //!     probe_target_accuracy, RefineTrigger, should_run_refinement,
 //!     NEAR_BOUNDARY_TARGET_ACCURACY, FAR_FROM_BOUNDARY_TARGET_ACCURACY,
@@ -485,15 +488,18 @@
 //!
 //! // Task 2929: FEA diagnostic mapping — neutral FeaFailure classifier smoke.
 //! // Pins the public surface of FeaFailure, thin_body_advisory,
-//! // classify_convergence, and classify_degenerate from the crate root.
+//! // classify_convergence, and (task 8254) find_degenerate_tet from the crate root.
 //! assert!(thin_body_advisory(1.0, 1.0, 0.01, 10.0).is_some()); // ratio=100 > 10
 //! assert!(thin_body_advisory(1.0, 1.0, 1.0,  10.0).is_none()); // ratio=1 ≤ 10
 //! assert!(classify_convergence(false, 2000, 2000, None).is_some());
 //! assert!(classify_convergence(true,  2000, 2000, None).is_none());
-//! assert!(classify_degenerate(1e-15, 1e-12, 0).is_some());
-//! assert!(classify_degenerate(1.0,   1e-12, 0).is_none());
+//! let unit_tet = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+//! assert!(find_degenerate_tet(&unit_tet, &[[0, 1, 2, 3]]).is_none());
+//! let flat_tet = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 0.0]];
+//! assert!(find_degenerate_tet(&flat_tet, &[[0, 1, 2, 3]]).is_some());
+//! assert!(MIN_TET_SHAPE_QUALITY > 0.0);
 //! assert!(!FeaFailure::NoLoads.is_error());
-//! assert!(FeaFailure::SingularStiffness { element_id: 0 }.is_error());
+//! assert!(FeaFailure::SingularStiffness(DegenerateTet { element_id: 0, quality: 0.0 }).is_error());
 //!
 //! // Task 3000: per-probe target_accuracy contract + lazy-refinement timing
 //! // contract. Pins the public surface of probe_target_accuracy, RefineTrigger,
@@ -515,8 +521,8 @@ pub mod boundary;
 // Task 2929: FEA diagnostic mapping — neutral FeaFailure enum + classifiers.
 pub mod diagnostics;
 pub use diagnostics::{
-    classify_convergence, classify_degenerate, thin_body_advisory, DofDirection, ElementId,
-    FeaDiagnosticDetail, FeaFailure,
+    DegenerateTet, DofDirection, ElementId, FeaDiagnosticDetail, FeaFailure, MIN_TET_SHAPE_QUALITY,
+    classify_convergence, find_degenerate_tet, tet_shape_quality, thin_body_advisory,
 };
 pub mod buckling_kernel;
 pub mod constitutive;
@@ -563,6 +569,9 @@ pub mod shell_result;
 pub mod shell_solve;
 pub mod solver;
 pub(crate) mod sparse_util;
+// Task 7602: a sparse Cholesky factor whose G⁻¹ / G⁻ᵀ halves apply separately,
+// for the Cholesky-symmetrized shift-invert Lanczos in `eigensolve`.
+pub mod split_cholesky;
 pub mod sweep;
 pub mod volume_refine;
 pub mod warm_state;
@@ -595,8 +604,8 @@ pub use assembly::{
     assemble_volume_mesh_stiffness,
 };
 pub use boundary::{
-    DirichletBc, FaceOrder, apply_body_force, apply_dirichlet_row_elimination, apply_point_load,
-    apply_traction_load,
+    DirichletBc, FaceOrder, apply_body_force, apply_dirichlet_row_elimination,
+    apply_patch_resultant, apply_point_load, apply_traction_load, free_faces_within,
 };
 pub use constitutive::{
     ConstitutiveLaw, IsotropicElastic, OrthotropicMaterial, TransverseIsotropicMaterial,
@@ -687,10 +696,12 @@ pub use qoi::{
 // Task 3882: generic shift-invert Lanczos over arbitrary SPD operator pairs.
 // PRD: docs/prds/v0_5/buckling-eigensolver.md §5 / §13 phase 2 task β.
 pub use eigensolve::{
-    EigenSolverOptions, EigenSolverResult, MetricOp, ShiftInvertFailure, SparseFactorRef,
-    SparseMetricOp, SparseStiffnessOp, StiffnessOp, lanczos_shift_invert, solve_eigen_dense,
-    solve_eigen_shift_invert, try_solve_eigen_shift_invert,
+    EigenSolverOptions, EigenSolverResult, LanczosMetric, MetricOp, ShiftInvertFailure,
+    SparseFactorRef, SparseMetricOp, SparseStiffnessOp, StiffnessOp, lanczos_shift_invert,
+    lanczos_shift_invert_in_metric, solve_eigen_dense, solve_eigen_shift_invert,
+    try_solve_eigen_shift_invert,
 };
+pub use split_cholesky::SplitCholesky;
 // Task 3453: buckling-kernel orchestrator — pre-stress → K_g → eigensolve → mode-shape.
 // PRD: docs/prds/v0_5/buckling-eigensolver.md §13 task δ.
 pub use buckling_kernel::{

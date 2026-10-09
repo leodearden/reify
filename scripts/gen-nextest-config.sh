@@ -418,5 +418,34 @@ sed -e "s/^occt = { max-threads = [0-9][0-9]* }$/occt = { max-threads = ${cap} }
     -e "s/^test-threads = \(\"num-cpus\"\|[0-9][0-9]*\)$/test-threads = ${tt}/" \
     "$REPO_ROOT/.config/nextest.toml" > "$tmp"
 
+# JUnit capture, UNCONDITIONAL (task 7423/α, PRD verify-confirm-failed-self-
+# discovery §4.1.1).  nextest 0.9.136 has no --junit CLI flag: JUnit output is
+# config-file-only, so this is the only seam.  Appended to the GENERATED copy,
+# never to the tracked .config/nextest.toml, which scopes the capture to
+# verify.sh-driven runs and leaves a bare developer `cargo nextest` untouched.
+#
+# WHY UNCONDITIONAL rather than gated on a role or a flag: the recording run
+# and the confirm run derive their failed-sets from the same JUnit reader, so
+# one capture path (not two) is a soundness property, and it keeps
+# `--confirm-failed` usable from any role.  The report is a pure side-channel
+# file write — invisible to the plan, the console and every exit code.
+#
+# ONLY A SUB-TABLE OF THE EXISTING profile.default, never a second named
+# profile.  The `test-threads` substitution above is LINE-anchored but NOT
+# section-anchored and is correct only while exactly one line in the file
+# matches it (see the block comment above it, and Test 17k in
+# tests/infra/test_occt_gated_scope.sh, which pins that count).  A
+# [profile.ci]/[profile.offline] table carrying its own test-threads would be
+# silently clobbered to the host-derived value.  This table carries no
+# test-threads key and adds no profile, so that precondition still holds.
+#
+# `path` is relative and resolves to target/nextest/<nextest-profile>/<path>
+# — target/nextest/default/reify-confirm.xml here (verified live on 0.9.136).
+# It is NOT cargo-profile-qualified, so a `--profile both` run's debug and
+# release passes share one report file.  That is why the manifest write is
+# fused inline into each nextest pass's own PLAN command: each pass must
+# extract its failures before the next pass overwrites the report.
+printf '\n[profile.default.junit]\npath = "reify-confirm.xml"\n' >> "$tmp"
+
 # Stdout contract: ONLY the path.
 printf '%s\n' "$tmp"

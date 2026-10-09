@@ -36,7 +36,7 @@ module dcr_solver_load_dropped_dimensioned
 //   CHOKEPOINT: compile-time struct-ctor field conformance. This exit 1 is NOT
 //   γ1's signal. Machine pin: the gate-resident
 //   `ctor_conformance_corpus_residual_entries_are_all_live` (reify-compiler,
-//   harness_compilation_surface/ctor_conformance_corpus_survey.rs).
+//   harness_ctor_conformance_survey/disposition.rs).
 //   The call site is ALREADY units-correct: the field's `Real` declaration is
 //   what fails. How γ1 (#6922) reads its signal instead:
 //   docs/notes/ctor-conformance-flip-leaf-signals.md.

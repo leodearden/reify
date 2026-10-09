@@ -1,0 +1,8 @@
+module flexure_compliance_non_joint
+// PRD docs/prds/v0_6/placeholder-type-eradication-ratchet.md §7.3 BT1 (task #5476).
+// Pre-α baseline: `reify check` exits 0 with "All constraints satisfied." and only a
+// W_FLEXURE_NON_JOINT_ARG Warning. Post-α: exit != 0 with the NoMatch Error carrying
+// DiagnosticCode::NoMatchingOverload (mnemonic E_NO_MATCHING_OVERLOAD).
+structure def FlexureComplianceNonJoint {
+    let c = flexure_compliance(5mm)
+}

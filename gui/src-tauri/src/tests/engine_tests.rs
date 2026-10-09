@@ -17,7 +17,7 @@ use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder, gt, lit
 use crate::engine::{CompileFailure, CompileFailureKind, CoreState, EngineSession, MergedTraitDefs, build_constraints, build_template_node, module_key, parse_value_string, unit_hint_from_default_literal};
 use crate::mcp_context::TauriToolContext;
 use crate::tests::test_helpers::{
-    assert_rigid_mass_props_determined, find_moi_principal_constraint,
+    assert_rigid_mass_props_determined, bounded_bracket_source, find_moi_principal_constraint,
     rigid_mass_props_fixture_path, rigid_mass_props_session, visible_realization_keys,
 };
 use crate::types::EntityTreeNode;
@@ -858,11 +858,10 @@ fn get_mechanism_descriptors_param_bind_binding_updates_after_preview_parameter(
 
 /// User-observable signal: `bind(y_axis, 50mm)` must produce
 /// `JointBinding::LiteralBound { synth_param_name: "__joint_y_axis_v",
-/// initial_value_si: Some(0.05), scrubbable: true }`.
-///
-/// This is the primary contract test for the η-engine task.
+/// initial_value_si: Some(0.05), scrubbable: false }` — read-only, because no
+/// cell resolves the synth name (task #7375).
 #[test]
-fn get_mechanism_descriptors_literal_bind_produces_scrubbable_literal_bound_binding() {
+fn get_mechanism_descriptors_literal_bind_produces_read_only_literal_bound_binding() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
     let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
@@ -884,10 +883,10 @@ fn get_mechanism_descriptors_literal_bind_produces_scrubbable_literal_bound_bind
         crate::types::JointBinding::LiteralBound {
             synth_param_name: "__joint_y_axis_v".to_string(),
             initial_value_si: Some(0.05),
-            scrubbable: true,
+            scrubbable: false,
         },
         "bind(y_axis, 50mm) must produce LiteralBound {{ synth_param_name: \"__joint_y_axis_v\", \
-         initial_value_si: Some(0.05), scrubbable: true }}; got {:?}",
+         initial_value_si: Some(0.05), scrubbable: false }}; got {:?}",
         joint.binding
     );
 
@@ -923,11 +922,71 @@ fn get_mechanism_descriptors_literal_bind_with_dimensionless_number_literal() {
         crate::types::JointBinding::LiteralBound {
             synth_param_name: "__joint_y_axis_v".to_string(),
             initial_value_si: Some(0.5),
-            scrubbable: true,
+            scrubbable: false,
         },
         "bind(y_axis, 0.5) must produce LiteralBound {{ initial_value_si: Some(0.5) }}; got {:?}",
         joint.binding
     );
+}
+
+/// Sibling of `SNAPSHOT_LITERAL_BIND_SOURCE` with no `snapshot()`: the prismatic
+/// joint keeps the kind-based `LiteralBound` default with no literal value.
+const UNBOUND_PRISMATIC_SOURCE: &str = r#"
+structure Kinematic {
+    let y_axis = prismatic(vec3(1, 0, 0), 0mm .. 800mm)
+    let m0     = mechanism()
+    let m1     = body(m0, "solid_a", y_axis)
+}
+"#;
+
+/// Task #7375: a descriptor must never advertise a scrub the engine cannot
+/// honour. A literal-bound joint is `scrubbable` exactly when the engine accepts
+/// a preview under its `synth_param_name`.
+#[test]
+fn literal_bound_joint_is_scrubbable_only_if_the_engine_accepts_its_synth_name() {
+    for source in [SNAPSHOT_LITERAL_BIND_SOURCE, UNBOUND_PRISMATIC_SOURCE] {
+        let mut session = make_session();
+        session
+            .load_from_source(source, "kinematic")
+            .expect("load literal-bound mechanism source");
+
+        let literal_bound: Vec<(usize, String, bool)> = session
+            .get_mechanism_descriptors()
+            .into_iter()
+            .flat_map(|d| d.joints)
+            .filter_map(|j| match j.binding {
+                crate::types::JointBinding::LiteralBound {
+                    synth_param_name,
+                    scrubbable,
+                    ..
+                } => Some((j.joint_index, synth_param_name, scrubbable)),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            !literal_bound.is_empty(),
+            "fixture must yield at least one LiteralBound joint; source:\n{source}"
+        );
+
+        for (joint_index, synth_param_name, scrubbable) in literal_bound {
+            let preview = session.preview_parameter(&synth_param_name, "100mm");
+            assert_eq!(
+                scrubbable,
+                preview.is_ok(),
+                "joint {joint_index} ({synth_param_name}) advertises scrubbable={scrubbable} \
+                 but preview_parameter returned {:?}",
+                preview.as_ref().err()
+            );
+            if let Err(refusal) = preview {
+                assert!(
+                    refusal.starts_with("Invalid cell ID")
+                        || refusal.starts_with("Unknown parameter"),
+                    "joint {joint_index}: the preview of {synth_param_name} must be refused because \
+                     it names no cell, not for an unrelated reason; got {refusal:?}"
+                );
+            }
+        }
+    }
 }
 
 // ---- edge case tests (amendment pass, suggestion 8) -------------------------
@@ -1650,29 +1709,6 @@ fn export_end_to_end() {
 //    above — the unbounded happy path, which the gate must leave untouched. It is not
 //    restated as a standalone test: a twin of that body would have to be kept in step
 //    with it, and both would be pinning the one export-success contract.
-
-/// [`bracket_source`] plus a non-circular checker structure declaring the bound, so
-/// the DECLARED BOUND is the ONLY delta between the case [`export_end_to_end`] exports
-/// green and the refused cases below. This is the CLI's
-/// `representation_within_satisfied.ri` idiom (geometry-owning structure + a separate
-/// `structure XCheck { param subject : X  constraint RepresentationWithin(subject,
-/// <bound>) }`) grafted onto that source.
-///
-/// The `1mm` is not a threshold and must not be retuned against an achieved deviation:
-/// η refuses on module shape alone, before any deviation is measured, so it fires
-/// identically for any bound.
-///
-/// `pub(super)` so `commands_tests.rs` shares this ONE definition — a per-file twin
-/// lets a future `RepresentationWithin` / `param subject` syntax change reach one copy
-/// and not the other, silently voiding the "only delta" invariant above. The canonical
-/// home is `crate::tests::test_helpers` (or `reify_test_support::fixtures`, beside
-/// `bracket_source`); both are outside task 6190's lock footprint.
-pub(super) fn bounded_bracket_source() -> String {
-    format!(
-        "{}\n\nstructure BracketCheck {{\n    param subject : Bracket = Bracket()\n    constraint RepresentationWithin(subject, 1mm)\n}}\n",
-        bracket_source()
-    )
-}
 
 /// η / C-SURFACE (2) at the GUI export boundary: a design declaring a
 /// `RepresentationWithin` bound the export path cannot demonstrate it honours must
@@ -2888,6 +2924,18 @@ const BARE_NUMBER_COVERAGE_SRC: &str = r#"structure def MoneyScope {
     let body = box(width, width, width)
 }"#;
 
+/// One cell per declared-type shape `ValueData.declared_dimension` must
+/// report: an `Option<Length>` holding `none` (value-side dimension empty), a
+/// plain `Length`, a named-but-unladdered `Money`, a dimensionless `Real`, and
+/// a non-scalar `let`.
+const DECLARED_DIMENSION_SRC: &str = r#"structure def DeclaredScope {
+    param gap : Option<Length> = none
+    param width : Length = 80mm
+    param cost : Money = 5USD
+    param scale : Real = 1.0
+    let body = box(width, width, width)
+}"#;
+
 /// A bare number typed into a dimensioned cell is refused, and the message
 /// names both the expected dimension and the offending input.
 #[test]
@@ -3042,9 +3090,24 @@ fn preview_parameter_still_accepts_a_bare_number_for_an_undimensioned_cell() {
         .load_from_source(BARE_NUMBER_GATE_SRC, "bare_number_gate")
         .expect("initial load");
 
-    session
+    let state = session
         .preview_parameter("GateScope.scale", "2.0")
         .expect("a Real cell must still take a bare number");
+    // A dimensionless cell's bare number is not reinterpreted as a Scalar.
+    let scale = state
+        .values
+        .iter()
+        .find(|v| v.name == "scale")
+        .expect("the Real cell must be in the payload");
+    assert_eq!(
+        (
+            scale.declared_dimension.as_str(),
+            scale.dimension.as_str(),
+            scale.unit.as_str()
+        ),
+        ("", "", ""),
+        "a dimensionless cell has no dimension or badge to carry; got {scale:?}"
+    );
     session
         .preview_parameter("GateScope.scale", "3")
         .expect("a Real cell must still take a bare integer");
@@ -3110,25 +3173,25 @@ fn preview_parameter_accepts_a_bare_number_for_a_dimension_no_curated_ladder_cov
             .expect("the Money cell must be in the payload")
     }
 
-    // (b) The uncovered cell takes a bare number, and the magnitude lands
-    // verbatim as the canonical SI number.
+    // (b) The uncovered cell takes a bare number, the magnitude lands verbatim
+    // as the canonical SI number, and the cell keeps its dimension and badge.
     //
-    // Asserted in BOTH states because the transition is the observable cost of
-    // leaving the Int/Real coercion to reify-eval (see
-    // `parse_value_string_for_cell`, which explains why this gate deliberately
-    // does not touch it). The `5USD` default compiles to a
-    // `Value::Scalar { MONEY }`, so the cell starts out carrying a dimension and
-    // an `si_value`; a bare-number edit replaces it with a `Value::Int`, which
-    // reify-eval accepts through that wildcard — and a non-Scalar has no
-    // dimension to report, so `dimension`/`si_value` go empty and `value` alone
-    // carries the magnitude. Pinned rather than described so a future change to
-    // that coercion surfaces here.
+    // reify-eval admits the bare number as a `Value::Int` through its
+    // dimension wildcard (see `parse_value_string_for_cell`). The payload reads
+    // a bare Int/Real held by a declared-dimensioned cell as that dimension's
+    // SI magnitude, so `value`/`unit`/`si_value`/`dimension` stay one coherent
+    // set across the edit instead of the badge dropping to "".
     let before = cost_cell(&loaded);
     assert_eq!(before.dimension, "Money", "the default is a dimensioned literal");
     assert_eq!(
         before.si_value,
         Some(5.0),
         "the default carries its SI magnitude; got {before:?}"
+    );
+    assert_eq!(before.declared_dimension, "Money", "got {before:?}");
+    assert!(
+        !before.unit.is_empty(),
+        "premise: the default shows a unit badge for the edit to preserve; got {before:?}"
     );
 
     let state = session
@@ -3140,11 +3203,16 @@ fn preview_parameter_accepts_a_bare_number_for_a_dimension_no_curated_ladder_cov
         "the bare number must land verbatim as the canonical SI magnitude; got {cost:?}"
     );
     assert_eq!(
-        (cost.dimension.as_str(), cost.si_value),
-        ("", None),
-        "a bare number lands as a `Value::Int`, which has no dimension to report — \
-         the pre-#5757 behaviour this relaxation restores; got {cost:?}"
+        cost.unit, before.unit,
+        "the unit badge the cell showed before the edit must survive it; got {cost:?}"
     );
+    assert_eq!(cost.dimension, "Money", "got {cost:?}");
+    assert_eq!(
+        cost.si_value,
+        Some(6.0),
+        "the bare number is the canonical SI magnitude; got {cost:?}"
+    );
+    assert_eq!(cost.declared_dimension, "Money", "got {cost:?}");
 
     // (c) The COVERED neighbour, in the SAME session, is untouched by the
     // relaxation — it has a ladder, so a unit is expressible and required.
@@ -3167,6 +3235,84 @@ fn preview_parameter_accepts_a_bare_number_for_a_dimension_no_curated_ladder_cov
         err.contains("Cannot parse value") && err.contains("6USD"),
         "got {err:?}"
     );
+}
+
+/// Every cell carries the dimension its DECLARED type requires, whatever its
+/// runtime value holds — and that field and the backend's bare-number gate
+/// read one fact.
+///
+/// The panel's input gate keys on this field; the backend gate keys on the
+/// declared `cell_type`. (c) makes their agreement executable: for every
+/// param, "a curated ladder covers its declared dimension" holds exactly when
+/// `preview_parameter(id, "120")` is refused as a bare number.
+#[test]
+fn every_value_cell_reports_its_declared_dimension_whatever_its_value_holds() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let loaded = session
+        .load_from_source(DECLARED_DIMENSION_SRC, "declared_dimension")
+        .expect("initial load");
+
+    let cell = |name: &str| -> crate::types::ValueData {
+        loaded
+            .values
+            .iter()
+            .find(|v| v.name == name)
+            .unwrap_or_else(|| panic!("cell `{name}` must be in the payload"))
+            .clone()
+    };
+
+    // (a) PREMISE, asserted not assumed: a `none`-valued `Option<Length>` has
+    // no value-side dimension, which is the divergence this field closes.
+    let gap = cell("gap");
+    assert_eq!(gap.determinacy, "determined", "got {gap:?}");
+    assert_eq!(
+        gap.dimension, "",
+        "the value-side dimension of a `none` Option cell is empty; got {gap:?}"
+    );
+
+    // (b) The declared dimension, per shape.
+    for (name, expected) in [
+        ("gap", "Length"),
+        ("width", "Length"),
+        ("cost", "Money"),
+        ("scale", ""),
+        ("body", ""),
+    ] {
+        let v = cell(name);
+        assert_eq!(
+            v.declared_dimension, expected,
+            "`{name}` must report its declared dimension; got {v:?}"
+        );
+    }
+
+    // (c) GATE PARITY. Collected up front so each preview below starts from
+    // the loaded payload, not from an earlier accepted edit.
+    let params: Vec<(String, String)> = loaded
+        .values
+        .iter()
+        .filter(|v| v.kind == "Param")
+        .map(|v| (v.cell_id.clone(), v.declared_dimension.clone()))
+        .collect();
+    assert!(
+        params.len() >= 4,
+        "premise: the fixture's four params must all be in the payload; got {params:?}"
+    );
+    let ladders = crate::display_units::unit_ladders();
+    for (cell_id, declared) in params {
+        let covered = !declared.is_empty() && ladders.iter().any(|l| l.dimension == declared);
+        let result = session.preview_parameter(&cell_id, "120");
+        let refused = matches!(&result, Err(e) if e.contains("bare number"));
+        assert_eq!(
+            covered,
+            refused,
+            "`{cell_id}` (declared_dimension {declared:?}): the panel's coverage of the \
+             declared dimension must match the backend gate's verdict on a bare `120`; \
+             got {:?}",
+            result.as_ref().map(|_| "accepted")
+        );
+    }
 }
 
 /// NAMEDNESS IS NOT THE KEY — EXPRESSIBILITY IS.
@@ -3255,10 +3401,9 @@ fn parse_value_string_for_cell_keys_the_gate_on_expressibility_not_on_namedness(
 /// Option<Length> = none`), `crates/reify-compiler/stdlib/flexures.ri`
 /// (`parasitic_error`), four `Option<Pressure>` params in
 /// `stdlib/fdm_correlations.ri`. Matching `Type::Scalar` directly skipped every
-/// one of them, and the `none`-valued state is reachable from the panel's own
-/// gate: `display_scalar` returns `None` for `Value::Option(None)`, so
-/// `format_determined_cell` emits `dimension: ""` and `acceptsBareNumber('', …)`
-/// lets the bare number through to be refused here.
+/// one of them. A `none`-valued Option cell reports `dimension: ""`, so the
+/// panel gates on `declared_dimension` instead, which peels the wrapper the
+/// same way (`every_value_cell_reports_its_declared_dimension_whatever_its_value_holds`).
 ///
 /// Not a corruption either way — reify-eval maps `Value::Int` onto
 /// `Type::Int | Type::Scalar { .. }` only, so the Option cell hard-errors
@@ -10721,7 +10866,7 @@ fn extract_joint_descriptor_assigns_kind_based_binding_defaults_coupling() {
 }
 
 /// `extract_joints_from_mechanism` assigns a `JointBinding::LiteralBound` with
-/// `synth_param_name = "__joint_2_v"`, `initial_value_si = None`, `scrubbable = true`
+/// `synth_param_name = "__joint_2_v"`, `initial_value_si = None`, `scrubbable = false`
 /// for a prismatic joint at joint_index 2.
 ///
 /// Note: joint_index is 0-based within the mechanism. To get index=2 we add 3 bodies
@@ -10772,7 +10917,7 @@ fn extract_joint_descriptor_assigns_kind_based_binding_defaults_prismatic() {
         JointBinding::LiteralBound {
             synth_param_name: "__joint_2_v".to_string(),
             initial_value_si: None,
-            scrubbable: true,
+            scrubbable: false,
         },
         "prismatic at joint_index=2 must have synth_param_name='__joint_2_v'; got {:?}",
         joints[2].binding
@@ -10780,7 +10925,7 @@ fn extract_joint_descriptor_assigns_kind_based_binding_defaults_prismatic() {
 }
 
 /// `extract_joints_from_mechanism` assigns a `JointBinding::LiteralBound` with
-/// `synth_param_name = "__joint_0_v"`, `initial_value_si = None`, `scrubbable = true`
+/// `synth_param_name = "__joint_0_v"`, `initial_value_si = None`, `scrubbable = false`
 /// for a revolute joint at joint_index 0.
 #[test]
 fn extract_joint_descriptor_assigns_kind_based_binding_defaults_revolute() {
@@ -10796,7 +10941,7 @@ fn extract_joint_descriptor_assigns_kind_based_binding_defaults_revolute() {
         JointBinding::LiteralBound {
             synth_param_name: "__joint_0_v".to_string(),
             initial_value_si: None,
-            scrubbable: true,
+            scrubbable: false,
         },
         "revolute at joint_index=0 must have synth_param_name='__joint_0_v'; got {:?}",
         joints[0].binding
@@ -10903,7 +11048,7 @@ structure Kinematic {
 "#;
 
 /// `bind(y_axis, 50inch)` — "inch" is not a resolvable DSL unit symbol — must
-/// produce `JointBinding::LiteralBound { initial_value_si: None, scrubbable: true }`
+/// produce `JointBinding::LiteralBound { initial_value_si: None, .. }`
 /// AND emit exactly one DEBUG event at the `literal_bind` target.
 #[test]
 fn get_mechanism_descriptors_literal_bind_with_unsupported_unit_yields_none_and_logs_debug() {
@@ -13979,7 +14124,7 @@ structure def Mock : PhysicalMock {
 ///
 /// Uses the `CARGO_MANIFEST_DIR`-relative idiom of
 /// `examples_multi_pane_viewport_realizes_section8_display_routing` (and
-/// `reify-compiler/tests/examples_smoke.rs`).
+/// `crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs`).
 #[test]
 fn examples_m5_geometry_flange_hides_consumed_intermediates() {
     let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/m5_geometry_flange.ri");
@@ -15996,16 +16141,19 @@ fn build_constraints_sorts_constraints_by_node_id() {
                 id: ConstraintNodeId::new("Zeta", 0),
                 label: None,
                 satisfaction: Satisfaction::Satisfied,
+                indeterminate_reason: None,
             },
             ConstraintCheckEntry {
                 id: ConstraintNodeId::new("Alpha", 0),
                 label: None,
                 satisfaction: Satisfaction::Satisfied,
+                indeterminate_reason: None,
             },
             ConstraintCheckEntry {
                 id: ConstraintNodeId::new("Mid", 0),
                 label: None,
                 satisfaction: Satisfaction::Satisfied,
+                indeterminate_reason: None,
             },
         ],
         diagnostics: vec![],
@@ -17418,7 +17566,7 @@ fn build_gui_state_display_appearance_empty_when_style_defaulted() {
 fn examples_multi_pane_viewport_realizes_section8_display_routing() {
     // Read the committed example via CARGO_MANIFEST_DIR (= gui/src-tauri at test time).
     // ../../examples resolves to the repo-root examples/ directory — same idiom as
-    // crates/reify-compiler/tests/examples_smoke.rs (EXAMPLES_DIR).
+    // crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs (EXAMPLES_DIR).
     let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/multi_pane_viewport.ri");
     let contents = std::fs::read_to_string(path)
         .expect("examples/multi_pane_viewport.ri must exist (created in step-2)");
@@ -19667,8 +19815,8 @@ fn examples_affine_tapered_spacer_renders_deformed_solid() {
 ///     (head_solid + dock_solid).
 ///   - The prismatic `j_x` joint (`bind(j_x, 0mm)`) is exposed as
 ///     `JointBinding::LiteralBound { synth_param_name: "__joint_j_x_v",
-///     initial_value_si: Some(0.0), scrubbable: true }` — i.e.
-///     `MechanismPanel` would render a functional scrub slider for it.
+///     initial_value_si: Some(0.0), scrubbable: false }` — i.e.
+///     `MechanismPanel` renders a read-only literal row for it (task #7375).
 ///   - The `dock_solid` body's `fixed()` joint yields
 ///     `JointBinding::FixedNoMotion` (no scrubbable slider).
 ///   - A second `get_mechanism_descriptors()` call still reports
@@ -19679,7 +19827,7 @@ fn examples_affine_tapered_spacer_renders_deformed_solid() {
 /// debug-MCP `mechanism-descriptors` command wraps. The frontend scrub
 /// itself is covered by `gui/src/__tests__/MechanismPanel.test.tsx`.
 #[test]
-fn dock_pickup_mechanism_exposes_scrubbable_literal_bound_slider_smoke() {
+fn dock_pickup_mechanism_exposes_read_only_literal_bound_joint_smoke() {
     let path = concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../../examples/kinematic/dock_pickup.ri"
@@ -19706,7 +19854,7 @@ fn dock_pickup_mechanism_exposes_scrubbable_literal_bound_slider_smoke() {
             )
         });
 
-    // j_x: prismatic, literal-bound at 0mm -> scrubbable slider.
+    // j_x: prismatic, literal-bound at 0mm -> read-only literal row.
     //
     // Note: dock_pickup.ri also drives j_x via `sweep(m2, j_x, 0mm .. 500mm, 11)`
     // (cell `snaps`), independently of the `snapshot(m2, [bind(j_x, 0mm)])`
@@ -19726,9 +19874,9 @@ fn dock_pickup_mechanism_exposes_scrubbable_literal_bound_slider_smoke() {
         crate::types::JointBinding::LiteralBound {
             synth_param_name: "__joint_j_x_v".to_string(),
             initial_value_si: Some(0.0),
-            scrubbable: true,
+            scrubbable: false,
         },
-        "j_x (bind(j_x, 0mm)) must produce a scrubbable LiteralBound slider descriptor; got {:?}",
+        "j_x (bind(j_x, 0mm)) must produce a read-only LiteralBound descriptor; got {:?}",
         j_x.binding
     );
 

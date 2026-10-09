@@ -20,7 +20,8 @@
 // sibling fixtures (cantilever_beam_modes.ri, simply_supported_beam_modes.ri)
 // use; the gantry crossbeam's dominant resonance is transverse bending, which
 // a rectangular box faithfully represents for a resonance-budget reference.
-// (Documented in crates/reify-compiler/stdlib/modal_analysis_fns.ri:28-36.)
+// (Documented in the "Signature deviation from PRD §1" note above
+// `pub fn modal_analysis` in crates/reify-compiler/stdlib/modal_analysis_fns.ri.)
 //
 // Boundary conditions — pin-pin realization:
 //   A gantry crossbeam RESTS ON two end mounts, so the mounts are pinned, not
@@ -41,7 +42,7 @@
 //   in `FEAMaterialInput(material: mat)` and pass `mi.material` (compile-time
 //   type `ElasticMaterial`). The runtime value is an Aluminium_6061_T6
 //   StructureInstance; the trampoline reads youngs_modulus / poisson_ratio /
-//   density off it. Aluminium_6061_T6 is defined in materials_fea.ri:170 and
+//   density off it. Aluminium_6061_T6 is defined in materials_fea.ri and
 //   is authentic for extruded-aluminium printer gantry rails.
 //
 // Asymmetric cross-section: width = 60 mm ≠ height = 40 mm. A square section
@@ -73,7 +74,7 @@
 // RayleighDamping: matches the PRD §1 dogfood snippet and the resonance-budget
 //   purpose (per-mode damping ratios ζₙ = (α + β·ωₙ²) / (2·ωₙ)). It is a real
 //   stdlib `structure def RayleighDamping` in modal_analysis.ri, fully
-//   supported by the trampoline via `extract_damping` in
+//   supported by the trampoline via `classify_damping` in
 //   reify-eval/src/modal_ops.rs. `rayleigh_damping_ratio` is NOT in
 //   modal_ops.rs — it is cross-crate, in reify-stdlib::modal::free_vibration,
 //   merely imported there. (Cited by symbol and file, never `file:line`:

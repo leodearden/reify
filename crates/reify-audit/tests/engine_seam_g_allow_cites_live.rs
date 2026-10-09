@@ -5,11 +5,12 @@
 //! (quality hardening) — are now terminal, and the morph seam has no live
 //! successor. Every remaining engine-seam `// G-allow:` cite is therefore
 //! provenance-exempt (`(done)` / `re-homed` / `formerly`), so the live scan
-//! extracts ZERO owner cites. The repo-wide hard gate
-//! (`g_allow_repo_wide_hard_gate_live`) is now the drift backstop for any
-//! future terminal-cite regression in these files; this test's has-teeth is
-//! carried structurally (marker-line presence + a synthetic control) rather
-//! than by a live-owner cite, because no live owner remains to point at.
+//! extracts ZERO owner cites. Live drift is owned by the cadenced
+//! dark-factory 5796 sweep (PRD §19(c)); both live checks, this file's Test B
+//! and `g_allow_repo_wide_hard_gate_live`, are on-demand. This test's
+//! has-teeth is carried structurally (marker-line presence + a synthetic
+//! control) rather than by a live-owner cite, because no live owner remains
+//! to point at.
 //!
 //! User-observable signal:
 //!   `cargo test -p reify-audit --test engine_seam_g_allow_cites_live`
@@ -24,11 +25,10 @@
 //!   now-wired files at `pub fn` granularity — so a file move/rename/deletion
 //!   still fails (anti-vacuous-green) and (2) a synthetic `done`-cite control
 //!   that must yield exactly one g-allow-orphaned.
-//! - **Test B** (live anti-drift guard): open the real .taskmaster/tasks/
-//!   tasks.db read-only; graceful-skip when absent (mirroring PTODO §6.7) OR
-//!   when the scan yields no cites (the graduated steady state); assert ZERO
-//!   g-allow-orphaned when cites are present. Fires during `/audit` sweeps to
-//!   catch real status drift.
+//! - **Test B** (live, on-demand `#[ignore]`): open the real
+//!   .taskmaster/tasks/tasks.db read-only and fail loud when it cannot be
+//!   opened; skip when the scan yields no cites (the graduated steady state);
+//!   assert ZERO g-allow-orphaned when cites are present.
 //!
 //! Scan scope: `// G-allow:` lines in the source files pinned by
 //! `engine_seam_orphans_g_allow.rs` PLUS the PINS array per-entry `//`
@@ -391,24 +391,34 @@ fn engine_seam_g_allow_owner_cites_resolve_live_hermetic() {
 }
 
 // -----------------------------------------------------------------------
-// Test B: live anti-drift guard — real tasks.db.
+// Test B: live drift check, on demand — real tasks.db.
 // -----------------------------------------------------------------------
 
-/// Live anti-drift guard: resolve the real scanned engine-seam cites against
-/// the real `.taskmaster/tasks/tasks.db` and assert ZERO g-allow-orphaned.
+/// Live drift check, on demand: resolve the real scanned engine-seam cites
+/// against the real `.taskmaster/tasks/tasks.db` and assert ZERO
+/// g-allow-orphaned. Run it with `--ignored` in the main checkout, or with
+/// `REIFY_PTODO_TASKS_DB` pointing at the main checkout's DB.
 ///
-/// Post-graduation (task #5255) every engine-seam cite is provenance-exempt, so
-/// the scan yields no cites and this test graceful-skips — the repo-wide
-/// `g_allow_repo_wide_hard_gate_live` is the live drift backstop in this steady
-/// state. The guard still has teeth: a future regression that re-adds a bare
-/// terminal owner cite to a SOURCE_FILES marker or a PINS comment block makes
-/// `all_cites` non-empty again, and — if that owner is terminal in the live DB
-/// — fails here. Also graceful-skips when the DB is absent (task worktrees,
-/// mirroring PTODO §6.7); the live guard fires in the `/audit` sweep where the
-/// main-checkout DB is present.
+/// `#[ignore]`d because liveness never reds a commit gate (PRD §19(c)); the
+/// cadenced dark-factory 5796 sweep owns live drift. Because it only runs when
+/// asked for, an unopenable DB fails loud rather than skipping. Post-graduation
+/// (task #5255) the scan yields no cites, which is a legitimate skip; a
+/// regression that re-adds a bare terminal owner cite to a SOURCE_FILES marker
+/// or a PINS comment block makes `all_cites` non-empty and fails here.
 #[test]
+#[ignore = "on-demand liveness check; owned by the DF 5796 cadenced sweep — run with --ignored in the main checkout"]
 fn engine_seam_g_allow_owner_cites_resolve_live_real_db() {
     let ws_root = workspace_root();
+
+    let db_path = tasks_db_path(&ws_root);
+    let conn = open_tasks_db(&db_path).unwrap_or_else(|e| {
+        panic!(
+            "the task DB at {} cannot be opened ({e}), so cite liveness cannot be \
+             checked. Run in the main checkout, or set \
+             REIFY_PTODO_TASKS_DB=/home/leo/src/reify/.taskmaster/tasks/tasks.db",
+            db_path.display()
+        )
+    });
 
     // Collect owner-cite tuples.
     let mut all_cites: Vec<(String, usize, Vec<u32>, String)> = Vec::new();
@@ -420,27 +430,10 @@ fn engine_seam_g_allow_owner_cites_resolve_live_real_db() {
     if all_cites.is_empty() {
         eprintln!(
             "engine_seam_g_allow_cites_live Test B: no engine-seam cites scanned \
-             (graduated steady state — all owners terminal, cites provenance-exempt); \
-             repo-wide g_allow_repo_wide_hard_gate_live is the live drift backstop — skip"
+             (graduated steady state — all owners terminal, cites provenance-exempt) — skip"
         );
         return;
     }
-
-    // Open the real tasks.db read-only; graceful-skip when absent (worktree
-    // without a local tasks.db — the live guard fires in the /audit sweep where
-    // the DB is present in the main checkout).
-    let db_path = tasks_db_path(&ws_root);
-    let conn = match open_tasks_db(&db_path) {
-        Ok(c) => c,
-        Err(_) => {
-            eprintln!(
-                "engine_seam_g_allow_cites_live Test B: tasks.db absent at '{}' — skip \
-                 (live guard fires in /audit sweep where DB is present)",
-                db_path.display()
-            );
-            return;
-        }
-    };
 
     // Resolve real cites against the live DB; assert ZERO g-allow-orphaned.
     let findings = resolve_g_allow_owner_liveness(&conn, &all_cites)

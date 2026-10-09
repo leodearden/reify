@@ -32,6 +32,8 @@ reify-geometry.workspace = true
 # build.rs (dylib + rpath). For distribution, OCCT .so/.dylib/.dll files are
 # listed in tauri.conf.json bundle.resources so they ship alongside the binary.
 reify-kernel-occt = { workspace = true, optional = true }
+# Target of the `extern crate reify_kernel_openvdb as _;` link anchor in lib.rs.
+reify-kernel-openvdb.workspace = true
 reify-stdlib.workspace = true
 reify-lsp.workspace = true
 reify-mcp.workspace = true
@@ -82,6 +84,8 @@ serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 tracing.workspace = true
 notify.workspace = true
+# Decodes the frontend's base64 screenshot data URLs for `screenshot_save`.
+base64 = "0.22"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
@@ -102,7 +106,6 @@ reify-test-support.workspace = true
 # `time` / `process` are not repeated here.
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread"] }
 reify-eval = { workspace = true, features = ["test-instrumentation"] }
-reify-mcp = { workspace = true, features = ["test-support"] }
 reify-lsp = { workspace = true, features = ["test-support"] }
 # Activates stats::reset_for_test() on the dep for cross-crate test isolation
 # in debug_server.rs once engine wiring (PRD #2947-#2949) lands.

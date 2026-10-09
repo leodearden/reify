@@ -1,0 +1,8 @@
+// B20 (R8): Boolean / Modify op with an implicit parent -> E_IMPLICIT_UNSUPPORTED_OP, inline (intra-realization) and named (cross-realization) parents.
+structure def OpOnImplicit {
+    let f = sdf_sphere(8mm)
+    let im = implicit(f, vec3(30mm, 30mm, 30mm), 2mm)
+    let u_cross = union(im, box(10mm, 10mm, 10mm))
+    let u_inline = union(implicit(f, vec3(30mm, 30mm, 30mm), 2mm), box(10mm, 10mm, 10mm))
+    let fl_inline = fillet(implicit(f, vec3(30mm, 30mm, 30mm), 2mm), 1mm)
+}

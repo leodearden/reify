@@ -48,7 +48,7 @@
 //   crates/reify-eval/tests/ad_hoc_selector_smoke_tests.rs::
 //     face_selector_ri_example_compiles_and_evaluates_to_frame   ← active
 //
-// See also: `resolve_unique_by_attribute` (topology_attribute_resolver.rs:147)
+// See also: `resolve_unique_by_attribute` (reify-eval topology_attribute_resolver.rs)
 //           and `cap_kind_translation` (geometry_ops.rs).
 
 structure def TopCapBracket {

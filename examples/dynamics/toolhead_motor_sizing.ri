@@ -33,7 +33,7 @@
 //
 // For a horizontal +x prismatic DOF RNEA gives τ = M·a EXACTLY:
 //
-//   default_gravity() = [0, 0, −9.81]  (rnea.rs:127)
+//   default_gravity() = [0, 0, −9.81]  (`default_gravity`, reify-stdlib dynamics/rnea.rs)
 //   base spatial accel linear-z = +9.81  (inertial acceleration)
 //   +x motion subspace S = [0,0,0,1,0,0]  → linear-x component only
 //   gravity (z) projects ZERO onto x-DOF for any joint position.
@@ -50,11 +50,13 @@
 //   max_accel= 5.0  (m/s²)
 //
 // Dimensioned literals (0mm / 500mm / 5000mm/s²) MISMATCH the Real params and
-// are rejected; the bare-float SI convention is the proven pattern from
-// `crates/reify-eval/tests/dynamics_compute_node.rs:51`.
+// are rejected; the bare-float SI convention is the proven pattern from the
+// `ramp_profile(0.0, …)` call in `FIXTURE`,
+// `crates/reify-eval-fea-tests/tests/dynamics_compute_node.rs`.
 //
-// Prismatic FK accepts bare-Real position bindings as METRES
-// (joints.rs:1486-1502 "Accept Length Scalar or bare Real/Int as metres").
+// Prismatic FK accepts bare-Real position bindings as METRES (the "prismatic"
+// arm of `transform_at_simple_joint`, reify-stdlib joints.rs: "Accept Length
+// Scalar or bare Real/Int as metres").
 //
 // ─── Numeric gate ────────────────────────────────────────────────────────────
 //

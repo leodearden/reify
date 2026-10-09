@@ -48,6 +48,10 @@ SCRIPT="$REPO_ROOT/scripts/seed-warm-lane.sh"
 # shellcheck source=tests/infra/test_helpers.sh
 source "$SCRIPT_DIR/test_helpers.sh"
 
+# slot_holder_handshake_lib.sh — holder_wait_until_waiter_queued, the causal barrier H5d/H9 use.
+[ -f "$SCRIPT_DIR/slot_holder_handshake_lib.sh" ] || { echo "ERROR: slot_holder_handshake_lib.sh not found at $SCRIPT_DIR/slot_holder_handshake_lib.sh"; exit 1; }
+source "$SCRIPT_DIR/slot_holder_handshake_lib.sh"
+
 echo "=== scripts/seed-warm-lane.sh hermetic tests (task 4660) ==="
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -796,6 +800,92 @@ assert "D3: --touch delta file mtime > 2020-01-01 (stamped to now)" \
 D4_TARGET_MTIME="$(stat -c '%Y' "$D_LANE/target/debug/artifact.a")"
 assert "D4: target/debug/artifact.a mtime > 2020-01-01 (pruned from bulk stamp)" \
     test "$D4_TARGET_MTIME" -gt "$EPOCH_2020"
+
+# DM1-DM5 — a --touch path that does not exist is warned and skipped, never
+# created (task #7231). ONE invocation carries every shape a stale or mistyped
+# --touch can take: a missing file under an existing dir, a missing parent, and a
+# DANGLING symlink (a plain `touch` follows the link and creates its target).
+# D_BASE is reused read-only as the clone source, exactly as D0 does.
+DM_LANE="$(make_isolated_lane D-touchmiss)"
+mkdir -p "$DM_LANE/src" "$DM_LANE/.git"
+echo '[core]' > "$DM_LANE/.git/config"
+DM_EXISTING="$DM_LANE/src/real.rs"
+echo 'pub fn real() {}' > "$DM_EXISTING"
+DM_MISSING="$DM_LANE/src/typo_missing.rs"           # parent exists, file absent
+DM_MISSING_PARENT="$DM_LANE/no_such_dir/stale.rs"   # parent absent
+DM_LINK="$DM_LANE/src/dangling.rs"
+ln -s ghost_target.rs "$DM_LINK"
+DM_LINK_TARGET="$DM_LANE/src/ghost_target.rs"       # what a following touch would create
+
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper_real "$D_BASE" "$DM_LANE" --fresh-checkout \
+        --touch "$DM_EXISTING" --touch "$DM_MISSING" \
+        --touch "$DM_MISSING_PARENT" --touch "$DM_LINK"
+
+assert "DM1: a missing --touch path degrades the seed, never aborts it (exit 0, STDOUT is <lane>/target)" \
+    bash -c '[ "$1" -eq 0 ] && [ "$2" = "$3" ]' _ "$RC" "$OUT" "$DM_LANE/target"
+assert "DM2: a --touch path that does not exist is not created" \
+    bash -c '[ ! -e "$1" ]' _ "$DM_MISSING"
+assert "DM3: a dangling-symlink --touch path does not create the link's target" \
+    bash -c '[ ! -e "$1" ] && [ -L "$2" ]' _ "$DM_LINK_TARGET" "$DM_LINK"
+# Attributability, not wording: each skipped path is named on a [warn] line.
+for _dm_skipped in "$DM_MISSING" "$DM_MISSING_PARENT" "$DM_LINK"; do
+    assert "DM4: a [warn] line names the skipped --touch path ${_dm_skipped#"$DM_LANE"/}" \
+        bash -c 'printf "%s\n" "$1" | grep -F "[warn]" | grep -qF -- "$2"' _ "$ERR_OUT" "$_dm_skipped"
+done
+DM_EXISTING_MTIME="$(stat -c '%Y' "$DM_EXISTING")"
+assert "DM5: the existing --touch path listed beside the misses is still touched to now" \
+    test "$DM_EXISTING_MTIME" -gt "$EPOCH_2020"
+
+# DM6-DM7 — the counterpart of DM1-DM5: a `touch` that FAILS on a path that DOES
+# exist must still abort the seed (empty STDOUT, so the caller rebuilds cold); it
+# is never swallowed as a skip. Both delta sources (--touch and git diff) stamp
+# through one helper, and a helper called from an `if` runs with errexit
+# suspended, so that abort cannot be left to `set -e`. DM6 is the discriminating
+# case: a --touch path has no second net. On the git-diff route the inv.9
+# post-condition (_assert_no_stale_delta_stamp) would also refuse the unstamped
+# path, so DM7 pins the OUTCOME there, not which of the two caught it.
+# A PATH shim fails ONLY the plain single-operand `touch <path>` naming
+# REIFY_TEST_TOUCH_FAIL_PATH (the delta touch); the multi-operand `-h -d` bulk
+# stamp and every other touch reach the real /bin/touch.
+DM_SHIM_DIR="$(mktemp -d "$_REAL_STUB_ROOT/touch-shim-XXXXXX")"
+cat > "$DM_SHIM_DIR/touch" << 'DM_TOUCH_SHIM_EOF'
+#!/usr/bin/env bash
+if [ "$#" -eq 1 ] && [ "$1" = "${REIFY_TEST_TOUCH_FAIL_PATH:-}" ]; then
+    echo "touch: cannot touch '$1': Permission denied" >&2
+    exit 1
+fi
+exec /bin/touch "$@"
+DM_TOUCH_SHIM_EOF
+chmod +x "$DM_SHIM_DIR/touch"
+
+DM6_LANE="$(make_isolated_lane D-touchfail)"
+mkdir -p "$DM6_LANE/src"
+DM6_PATH="$DM6_LANE/src/unstampable.rs"
+echo 'pub fn unstampable() {}' > "$DM6_PATH"
+reset_calls
+PATH="$DM_SHIM_DIR:$PATH" REIFY_TEST_TOUCH_FAIL_PATH="$DM6_PATH" \
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper_real "$D_BASE" "$DM6_LANE" --fresh-checkout --touch "$DM6_PATH"
+assert "DM6: a failing touch on an existing --touch path aborts the seed (exit non-zero, STDOUT empty)" \
+    bash -c '[ "$1" -ne 0 ] && [ -z "$2" ]' _ "$RC" "$OUT"
+assert "DM6: it is the delta touch of that very path that failed" \
+    bash -c 'printf "%s\n" "$1" | grep -F "cannot touch" | grep -qF -- "$2"' _ "$ERR_OUT" "$DM6_PATH"
+
+DM7_LANE="$(make_isolated_lane D-gitdeltafail)"
+mkdir -p "$DM7_LANE/src"
+DM7_PATH="$DM7_LANE/src/unstampable.rs"
+echo 'pub fn unstampable() {}' > "$DM7_PATH"
+reset_calls
+PATH="$DM_SHIM_DIR:$PATH" REIFY_TEST_TOUCH_FAIL_PATH="$DM7_PATH" \
+REIFY_TEST_GIT_DIFF_FILES="src/unstampable.rs" \
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper_real "$D_BASE" "$DM7_LANE" --fresh-checkout --base-commit shaX
+assert "DM7: a failing touch on an existing git-delta path aborts the seed (exit non-zero, STDOUT empty)" \
+    bash -c '[ "$1" -ne 0 ] && [ -z "$2" ]' _ "$RC" "$OUT"
+assert "DM7: it is the delta touch of that very path that failed" \
+    bash -c 'printf "%s\n" "$1" | grep -F "cannot touch" | grep -qF -- "$2"' _ "$ERR_OUT" "$DM7_PATH"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Block E — reset-in-place: NO bulk 2020-01-01 stamp (stub find+touch)
@@ -2274,7 +2364,8 @@ assert "P3c: build/cxx-AAAA/output WAS relocated in this same run (guards non-va
 # --fresh-checkout (esc-5214/task 5354 fail-safe flip: the #5223 --lane-lock
 # guard was opt-in and thus bypassable by a caller that simply omitted it — the
 # exact esc-5214 acquire-path clobber). --lane-lock stays accepted (implied under
-# --fresh-checkout; still the explicit opt-in for the --reset-in-place control arm).
+# --fresh-checkout; still the explicit opt-in for --reset-in-place, the B13
+# control arm AND the merge-spec acquire).
 #
 # Uses run_helper_real (real fixture: a non-empty <lane_dir>/target containing
 # a sentinel file) so the mv/clobber actually executes or is actually refused.
@@ -2301,9 +2392,9 @@ assert "P3c: build/cxx-AAAA/output WAS relocated in this same run (guards non-va
 # is a contradiction (usage error, exit 2).
 # H10 (task 5354, NEW) pins the complementary SCOPING property: the fail-safe
 # default acquire is gated on --fresh-checkout || --lane-lock and does NOT extend
-# to the bare --reset-in-place control arm — a held lock is ignored there (exit 0,
-# not 75), the property H6a/H6b (reset-in-place WITH --lane-lock) and E1/H3a
-# (reset-in-place, no held lock) leave unpinned.
+# to bare --reset-in-place (B13 control arm AND merge-spec acquire) — a held
+# lock is ignored there (exit 0, not 75), the property H6a/H6b (reset-in-place
+# WITH --lane-lock) and E1/H3a (reset-in-place, no held lock) leave unpinned.
 # H11/H12/H13 (task 5568, NEW) pin the lane-lock refusal's own discriminant.
 # The normative statement — why 75 is the wrong code, why the flag is opt-in
 # rather than an unconditional flip, and the dark-factory arm — lives in ONE
@@ -2582,10 +2673,14 @@ assert "H4e: lane lock is re-acquirable immediately after the ABORTED seed exits
     bash -c 'exec 8>"$1"; flock -n 8' _ "$Q_LOCK4E"
 
 # ── H5: bounded-wait "queue" via REIFY_WARM_LANE_LANE_LOCK_WAIT ─────────────
-# A refused acquirer of the SINGLETON _merge-verify lane has no alternate
-# FREE lane to fall back to, so the WAIT knob lets --lane-lock QUEUE (bounded
-# flock -w N) instead of refusing instantly (flock -n, the WAIT-unset
-# default from H1-H4 above).
+# The WAIT knob lets seed's own lane-lock acquire QUEUE (bounded flock -w N)
+# instead of refusing instantly (flock -n, the WAIT-unset default from H1-H4
+# above). It binds only a caller that lets seed self-acquire -- tests/infra
+# (these blocks) and dark-factory's ephemeral warm-seed path
+# (take_lane_lock=False). It is INERT on both production pool acquires, which
+# pass --assume-lane-lock-held; there DF's outer flock carries the wait (30s)
+# and the timeout code (124). See the --lane-lock note in
+# scripts/seed-warm-lane.sh's header.
 #
 # H5a: lock HELD (same backgrounded flock -x holder + _wait_for_reader_lock
 # causal handshake as H1) + WAIT=1 -> still refuses (75), but only AFTER the
@@ -2663,10 +2758,8 @@ assert "H5c: cp NEVER invoked (rejected before any mutation)" \
 
 # ── H5d: bounded-wait "unlimited" (mixed-case) -> blocks until acquired,
 # never refuses. Exercises the bare blocking `flock 9` branch
-# (seed-warm-lane.sh's _llw_unlimited=1 path) -- the exact path the
-# SINGLETON _merge-verify lane is documented to rely on (queue forever
-# rather than refuse, since it has no alternate FREE lane to fall back to).
-# Mixed-case "UnLiMiTeD" also covers the case-insensitive glob match. ───────
+# (seed-warm-lane.sh's _llw_unlimited=1 path); same binding scope as H5
+# above. Mixed-case "UnLiMiTeD" also covers the case-insensitive glob match. ──
 Q_LANE8="$(make_isolated_lane Q-lane8)"
 mkdir -p "$Q_LANE8/target"
 echo "sentinel content" > "$Q_LANE8/target/SENTINEL.txt"
@@ -2716,12 +2809,11 @@ reset_calls
 Q_SEED8_PID=$!
 _BGPIDS+=("$Q_SEED8_PID")
 
-# Brief settle so the backgrounded job has actually forked/reached the flock
-# call; this is NOT a wall-clock upper-bound assertion -- the "not done yet"
-# check below can only be a false failure (never a false pass), since the
-# holder genuinely holds the lock until killed below.
-# holder-sleep:allow — one-sided: can only false-FAIL, never false-pass.
-sleep 0.3
+# OBSERVE seed blocked in its own `flock 9` on the lane lock: the holder lives
+# until killed below, so once seed is queued the two not-done assertions that
+# follow cannot be outrun.
+assert "H5d-setup: the backgrounded 'unlimited' seed is QUEUED on the lane lock (a blocked flock waiter on ${Q_LOCK8} is listed in /proc/locks)" \
+    holder_wait_until_waiter_queued "$Q_LOCK8" 150
 assert "H5d: 'unlimited' (mixed-case) is still blocked while the lock is held (no done-marker yet)" \
     bash -c '[ ! -e "$1" ]' _ "$Q_DONE8"
 assert "H5d: sentinel file in <lane>/target still present while blocked (no clobber yet)" \
@@ -2973,11 +3065,9 @@ reset_calls
 Q_SEED11_PID=$!
 _BGPIDS+=("$Q_SEED11_PID")
 
-# Brief settle so the backgrounded job has reached the flock call. NOT a
-# wall-clock upper bound -- the "not done yet" check can only false-fail, never
-# false-pass, since the holder genuinely holds the lock until killed below.
-# holder-sleep:allow — one-sided: can only false-FAIL, never false-pass.
-sleep 0.3
+# Same causal barrier as H5d: observe seed queued on the lane lock first.
+assert "H9-setup: the backgrounded 'unlimited' seed is QUEUED on the lane lock (a blocked flock waiter on ${Q_LOCK11} is listed in /proc/locks)" \
+    holder_wait_until_waiter_queued "$Q_LOCK11" 150
 assert "H9: WAIT=unlimited + no --lane-lock is still BLOCKED while the lock is held (no done-marker yet)" \
     bash -c '[ ! -e "$1" ]' _ "$Q_DONE11"
 assert "H9: sentinel survives while blocked (no clobber yet)" \
@@ -3003,11 +3093,15 @@ assert "H9: base_artifact.a present in <lane>/target (clone from base succeeded)
     test -f "$Q_LANE11/target/debug/base_artifact.a"
 
 # ── H10: scoping guard — the fail-safe default acquire is SCOPED to
-# --fresh-checkout (|| explicit --lane-lock) and DOES NOT extend to the bare
-# --reset-in-place control arm (seed-warm-lane.sh:510 gates on
+# --fresh-checkout (|| explicit --lane-lock) and DOES NOT extend to bare
+# --reset-in-place — the B13 control arm AND the merge-spec acquire
+# (seed-warm-lane.sh gates its default acquire on
 # `[ -n "$FRESH_CHECKOUT" ] || [ -n "$LANE_LOCK_OPT" ]`, deliberately NOT
 # $RESET_IN_PLACE; the PRD keeps --lane-lock the explicit opt-in for the
-# reset-in-place arm). H6a/H6b exercise reset-in-place WITH --lane-lock, and
+# reset-in-place arm).
+# Production inv.11 exclusivity does not rest on this default for either pool
+# acquire (DF's outer flock holds it): PRD §9.5 inv.11, 2026-09-11 amendment.
+# H6a/H6b exercise reset-in-place WITH --lane-lock, and
 # E1/H3a exercise reset-in-place with NO held lock — so a leak of the default-on
 # acquire into reset-in-place would silently pass every case above. H10 pins it
 # directly: a live consumer HOLDS ${LANE}.lock (H7's backgrounded flock -x holder
@@ -3033,8 +3127,8 @@ _wait_for_reader_lock "$Q_READY14" 30
 reset_calls
 RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
     run_helper_real "$Q_BASE" "$Q_LANE14" --reset-in-place
-# NOTE: no --lane-lock and no --assume-lane-lock-held -- the bare reset-in-place
-# control arm must NOT default-acquire, so the held lock above is ignored.
+# NOTE: no --lane-lock and no --assume-lane-lock-held -- bare --reset-in-place
+# must NOT default-acquire, so the held lock above is ignored.
 
 assert "H10: reset-in-place + lock HELD + no --lane-lock → exit 0 (default acquire is NOT scoped to reset-in-place; not 75)" \
     test "$RC" -eq 0
@@ -3485,11 +3579,12 @@ assert "S2d: positive control: STDOUT is exactly <lane>/target" \
 # sub-second inversion holes cargo still mis-gates on (§9.5 inv.12).
 #
 # WHY the delta path here is itself a replay file: the seed stamps every delta
-# path to NOW (`touch "${TOUCH_PATHS[@]}"`, no -d), so a fixture CANNOT pre-arrange
-# a tie against a base-stamped `output` — the pre-stamp is overwritten during the
-# run. Passing the lane's own `output` via --touch makes the oldest delta and the
-# newest `output` the SAME inode, which is a tie by construction and needs no
-# wall-clock luck. Artificial as a delta path, exact as an operator pin.
+# path to NOW (`_touch_explicit_delta`'s plain `touch`, no -d), so a fixture
+# CANNOT pre-arrange a tie against a base-stamped `output` — the pre-stamp is
+# overwritten during the run. Passing the lane's own `output` via --touch makes
+# the oldest delta and the newest `output` the SAME inode, which is a tie by
+# construction and needs no wall-clock luck. Artificial as a delta path, exact as
+# an operator pin.
 IFS='|' read -r S2T_BASE S2T_LANE S2T_DELTA \
     <<< "$(_s_make_fixture S2t "2024-06-01 00:00:00.123456789")"
 S2T_OUTPUT="$S2T_LANE/target/debug/build/fakecc-1111/output"

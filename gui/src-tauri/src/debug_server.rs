@@ -22,6 +22,7 @@ use serde_json::{Value, json};
 
 use crate::debug::DebugBridge;
 use crate::engine::EngineSession;
+use crate::engine_activity;
 use reify_mcp::SelectionInfo;
 
 // --- Tool definitions ---
@@ -32,21 +33,43 @@ struct ToolDef {
     input_schema: Value,
 }
 
+/// The `save_path` param every image tool advertises, read by
+/// `crate::screenshot_save::take_save_path`.
+const SAVE_PATH_DESCRIPTION: &str = "Optional ABSOLUTE path ending in .png; when given the PNG is written there, overwriting any existing file, and the reply is {saved_to, bytes, mimeType} instead of an inline image — use it to keep large screenshots out of the tool result. The parent directory must exist.";
+
 fn tool_defs() -> Vec<ToolDef> {
     vec![
         ToolDef {
             name: "health",
-            description: "Liveness check — returns ok:true when the debug server is running",
+            description: "Liveness check — returns {ok: true, engine_busy} when the debug server is running. engine_busy is engine_status's busy, read without waiting on the engine lock.",
+            input_schema: json!({"type": "object", "properties": {}}),
+        },
+        ToolDef {
+            name: "engine_status",
+            description: "NON-BLOCKING engine lane read that never waits on the engine lock: {busy, engine_lock_held, engine_started (null while the lock is held), generation (newest EvalQueue generation issued this GUI process; pass it to wait_for_idle.since_generation), queue_outstanding}. busy covers both queued GUI evaluations and a debug tool's own in-flight engine work. It never under-reports, but can read true for an instant with no work in flight: the read itself holds the engine lock briefly, so an overlapping engine_status/health/wait_for_idle read can see engine_lock_held: true.",
             input_schema: json!({"type": "object", "properties": {}}),
         },
         ToolDef {
             name: "engine_state",
-            description: "Full engine state: meshes (entity paths + vertex/face counts), values, constraints, files, compile_diagnostics, tessellation_diagnostics, stale (bool), reload_error (string or null). stale=true means the last hot-reload failed; reload_error contains the failure message.",
-            input_schema: json!({"type": "object", "properties": {}}),
+            description: "Full engine state: meshes (entity paths + vertex/face counts + default_visible, the engine's hidden-by-default verdict as in mesh_stats), values, constraints, files, compile_diagnostics, tessellation_diagnostics, stale (bool), reload_error (string or null). stale=true means the last hot-reload failed; reload_error contains the failure message. The DEFAULT reply is the full payload, and files[].content inlines every source file, which can be megabytes on a large design. Pass summary_only: true for counts plus a content-free file list, or fields for only the named top-level keys. The two are mutually exclusive, and an unknown field name is refused with the valid list.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "summary_only": {
+                        "type": "boolean",
+                        "description": "Optional. When true, reply {counts: {<array key>: length}, files: [{path, bytes, lines}], ...every non-array key verbatim} instead of the full payload. Mutually exclusive with fields."
+                    },
+                    "fields": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Optional. Reply only these top-level keys of the full payload (e.g. [\"values\", \"stale\"]). An unknown name is refused with the list of valid names. Mutually exclusive with summary_only."
+                    }
+                }
+            }),
         },
         ToolDef {
             name: "mesh_stats",
-            description: "Per-entity mesh statistics: vertex count, face count, bounding box",
+            description: "Per-mesh statistics over the FULL realized scene, one entry per realized body: {meshes: [{entity_path, vertex_count, face_count, bounding_box: {min, max} | null, element_kind_count, default_visible}]}. element_kind_count is the per-face element-kind histogram {\"<kind>\": count}, an empty object for meshes with no shell classification. default_visible is the ENGINE's hidden-by-default verdict: false for aux and consumed-intermediate realizations, null if no entity-tree realization matched. It is not what is drawn — user eye toggles, views and DisplayOutput routing are frontend state; viewport_state reports what is drawn.",
             input_schema: json!({"type": "object", "properties": {}}),
         },
         ToolDef {
@@ -69,26 +92,34 @@ fn tool_defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "screenshot",
-            description: "Take a screenshot of the 3D viewport. Returns a PNG image.",
+            description: "Take a screenshot of the 3D viewport. Returns a PNG image, or with save_path writes it to that file and returns {saved_to, bytes, mimeType}.",
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "viewportId": {
                         "type": "string",
                         "description": "Optional viewport id (e.g. 'design-main', 'def-preview'). When omitted, the first populated viewport is targeted."
+                    },
+                    "save_path": {
+                        "type": "string",
+                        "description": SAVE_PATH_DESCRIPTION
                     }
                 }
             }),
         },
         ToolDef {
             name: "screenshot_window",
-            description: "Take a full-window screenshot including panels, overlays, and probe popups (DOM + WebGL composite via html-to-image). Returns a PNG image.",
+            description: "Take a full-window screenshot including panels, overlays, and probe popups (DOM + WebGL composite via html-to-image). Returns a PNG image, or with save_path writes it to that file and returns {saved_to, bytes, mimeType}.",
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "viewportId": {
                         "type": "string",
                         "description": "Optional viewport id (e.g. 'design-main', 'def-preview'). When omitted, the first populated viewport is targeted."
+                    },
+                    "save_path": {
+                        "type": "string",
+                        "description": SAVE_PATH_DESCRIPTION
                     }
                 }
             }),
@@ -286,7 +317,7 @@ fn tool_defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "element_screenshot",
-            description: "Crop a screenshot to the bounds of a DOM element identified by data-testid. Captures the full window via html-to-image, then extracts the element's bounding rect (CSS-logical px from the window origin) scaled by devicePixelRatio (τ0 DPR contract). Returns { data: \"data:image/png;base64,...\" } as an image content block. Optional viewportId scopes resolution to one viewport pane, so a per-pane element is cropped from the pane that was asked for; omitting it keeps the document-wide first match, and when more than one element matched, the pane diagnostics (viewportId, matchCount) arrive as a SECOND text content block after the image. Frontend-mediated (no Rust dispatch arm).",
+            description: "Crop a screenshot to the bounds of a DOM element identified by data-testid. Captures the full window via html-to-image, then extracts the element's bounding rect (CSS-logical px from the window origin) scaled by devicePixelRatio (τ0 DPR contract). Returns { data: \"data:image/png;base64,...\" } as an image content block. Optional viewportId scopes resolution to one viewport pane, so a per-pane element is cropped from the pane that was asked for; omitting it keeps the document-wide first match, and when more than one element matched, the pane diagnostics (viewportId, matchCount) arrive as a SECOND text content block after the image. With save_path the PNG is written to that file instead and the reply is {saved_to, bytes, mimeType} plus any pane diagnostics, as one text block. Frontend-mediated (its named Rust dispatch arm only handles save_path).",
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -297,6 +328,10 @@ fn tool_defs() -> Vec<ToolDef> {
                     "viewportId": {
                         "type": "string",
                         "description": "Optional. Crop the element in the pane whose [data-viewport-id] subtree contains (or is) it. Omit for the document-wide first match. Either way, a request matching more than one element additionally reports viewportId (the pane the driven element actually sits in) and matchCount — naming a pane narrows the candidates but does not guarantee one, since a testId can repeat within a pane."
+                    },
+                    "save_path": {
+                        "type": "string",
+                        "description": SAVE_PATH_DESCRIPTION
                     }
                 },
                 "required": ["testId"]
@@ -395,13 +430,17 @@ fn tool_defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "wait_for_idle",
-            description: "Block until the engine is idle (no in-flight evaluation) and one frame has rendered. Returns {ok: true, idle_after_ms: N} or {error: 'timeout'}. Used by the visual-regression harness to replace engine_state polling.",
+            description: "Wait until the engine lane is idle (no queued or running evaluation, polled without waiting on the engine lock) and one frame has rendered. Returns {ok: true, idle_after_ms, generation}, where generation is the newest evaluation generation settled; or {error: 'timeout', engine_busy, generation, awaiting_generation}; or {error: 'engine_not_started'} before any design is loaded. Debug/MCP tools' own engine work is synchronous (done when the tool returns) and issues no generation. Used by the visual-regression harness to replace engine_state polling.",
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "timeout_ms": {
                         "type": "integer",
                         "description": "Maximum wait in milliseconds; default 30000."
+                    },
+                    "since_generation": {
+                        "type": "integer",
+                        "description": "Optional. Wait for an evaluation NEWER than this generation (read engine_status.generation before your action) to finish; without it, waits for the current work to settle."
                     }
                 }
             }),
@@ -465,6 +504,86 @@ fn tool_defs() -> Vec<ToolDef> {
                     }
                 },
                 "required": ["channel"]
+            }),
+        },
+        ToolDef {
+            name: "scrub_range_input",
+            description: "Drive an <input type=range> slider through a gesture, frontend-mediated \
+                          with no dispatch_tool arm. It assigns the control's `.value` and dispatches \
+                          ONLY the DOM events the control's own handlers bind: one focus, then per \
+                          value (each of `frames`, then `value`) an `input` event and one animation \
+                          frame, then the commit. `commit: 'hold'` models a pointer still held (no \
+                          terminal event, so only previews fire); `commit: 'change'` models the \
+                          release (a `change` event, the durable write). It never calls a Tauri \
+                          command itself. `selector` must match exactly one element: zero or several \
+                          matches are errors, never a guess. A value the control cannot represent \
+                          (outside min/max, off the step) is refused before any event fires, and a \
+                          control that leaves the document mid-gesture stops it with an error. Returns \
+                          { ok: true, value, inputEvents, commit }, where `value` is the control's \
+                          DOM read-back after the gesture, reported and not judged; or { error }.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "selector": {
+                        "type": "string",
+                        "description": "CSS selector matching exactly one <input type=range> (e.g. '[data-testid=\"joint-row-0\"] input[type=\"range\"]')."
+                    },
+                    "value": {
+                        "type": "string",
+                        "description": "The final value, as the control's own `.value` string (display units, e.g. '120' for 120 mm)."
+                    },
+                    "frames": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Optional intermediate values typed before `value`, one animation frame apart."
+                    },
+                    "commit": {
+                        "type": "string",
+                        "enum": ["change", "hold"],
+                        "description": "'change' releases the slider (durable write); 'hold' leaves it held."
+                    }
+                },
+                "required": ["selector", "value", "commit"]
+            }),
+        },
+        ToolDef {
+            name: "edit_text_input",
+            description: "Type into an <input type=text> edit box, frontend-mediated with no \
+                          dispatch_tool arm. It assigns the control's `.value` and dispatches ONLY \
+                          the DOM events the control's own handlers bind: one focus, then per value \
+                          (each of `frames`, then `value`) an `input` event and one animation frame, \
+                          then the commit. Typing ends with `commit: 'enter'` (an Enter keydown) or \
+                          `commit: 'blur'` (a blur event); `commit: 'hold'` leaves the edit open. It \
+                          never calls a Tauri command itself. `selector` must match exactly one \
+                          element: zero or several matches are errors, never a guess. A value the \
+                          control cannot represent is refused before any event fires, and a control \
+                          that leaves the document mid-gesture stops it with an error. Returns \
+                          { ok: true, value, inputEvents, commit }, where `value` is the control's \
+                          DOM read-back after the gesture, reported and not judged (a commit may \
+                          legitimately rewrite it to the at-rest display); or { error }.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "selector": {
+                        "type": "string",
+                        "description": "CSS selector matching exactly one <input type=text> (e.g. '[data-testid=\"prop-row-Bracket.width\"] input[type=\"text\"]')."
+                    },
+                    "value": {
+                        "type": "string",
+                        "description": "The final text (e.g. '150mm')."
+                    },
+                    "frames": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Optional intermediate texts typed before `value` (e.g. ['1', '15', '150']), one animation frame apart."
+                    },
+                    "commit": {
+                        "type": "string",
+                        "enum": ["enter", "blur", "hold"],
+                        "description": "'enter' or 'blur' ends the edit (durable write); 'hold' leaves it open."
+                    }
+                },
+                "required": ["selector", "value", "commit"]
             }),
         },
         // --- DOM/style/layout/window inspection tools (R1) ---
@@ -620,7 +739,7 @@ fn tool_defs() -> Vec<ToolDef> {
                 "properties": {
                     "predicate": {
                         "type": "object",
-                        "description": "Tagged predicate: { kind: 'selector', testId, state?, text?, viewportId? } or { kind: 'store', path, equals }. Optional predicate.viewportId scopes the selector arm to the pane whose [data-viewport-id] subtree contains (or is) the element; omit for the document-wide first match. This arm builds the SAME selector predicate as wait_for_selector and carries that tool's unscoped-wait trap — see its viewportId parameter. Under state:'gone' a pane that does not exist counts as vacuously gone and resolves immediately."
+                        "description": "Tagged predicate: { kind: 'selector', testId, state?, text?, viewportId? } or { kind: 'store', path, equals }. Optional predicate.viewportId scopes the selector arm to the pane whose [data-viewport-id] subtree contains (or is) the element; omit to wait over every match document-wide. This arm builds the SAME selector predicate as wait_for_selector and shares that tool's semantics — see its viewportId parameter. Under state:'gone' a pane that does not exist counts as vacuously gone and resolves immediately."
                     },
                     "timeout_ms": { "type": "integer" }
                 }
@@ -628,7 +747,7 @@ fn tool_defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "wait_for_selector",
-            description: "Poll until a [data-testid] element reaches the requested state or a timeout elapses. Returns { ok: true, waited_ms: number } or { error: 'timeout' }. state: 'visible' (default) or 'gone'. Optional text asserts el.textContent.trim() matches when state='visible'. Optional viewportId scopes the wait to one viewport pane — note that under state:'gone' an element still visible in a DIFFERENT pane counts as gone from the named one, and so does a viewportId naming a pane that is absent entirely — an unmounted pane, or a typo'd id, resolves {ok:true, waited_ms:0} indistinguishably from a real teardown. Confirm the pane exists (dom_query) before relying on a gone-wait as proof one happened; under state:'visible' the same mistake instead fails loudly with a timeout. Omitting viewportId waits document-wide and is not proof about any one pane — see the viewportId parameter. Optional timeout_ms (default 5000, must be positive).",
+            description: "Poll until a [data-testid] element reaches the requested state or a timeout elapses. Returns { ok: true, waited_ms: number } or { error: 'timeout' }. state: 'visible' (default) or 'gone'. Optional text asserts el.textContent.trim() matches on the same visible element when state='visible'. Optional viewportId scopes the wait to one viewport pane — note that under state:'gone' an element still visible in a DIFFERENT pane counts as gone from the named one, and so does a viewportId naming a pane that is absent entirely — an unmounted pane, or a typo'd id, resolves {ok:true, waited_ms:0} indistinguishably from a real teardown. Confirm the pane exists (dom_query) before relying on a gone-wait as proof one happened; under state:'visible' the same mistake instead fails loudly with a timeout. Omitting viewportId waits document-wide and is not proof about any one pane — see the viewportId parameter. Optional timeout_ms (default 5000, must be positive).",
             input_schema: json!({
                 "type": "object",
                 "required": ["testId"],
@@ -638,7 +757,7 @@ fn tool_defs() -> Vec<ToolDef> {
                     "text": { "type": "string" },
                     "viewportId": {
                         "type": "string",
-                        "description": "Optional. Wait on the element in the pane whose [data-viewport-id] subtree contains (or is) it. Omit for the document-wide first match. Return shape is unchanged either way — this tool observes rather than drives, so it reports no viewportId/matchCount. Unscoped, the FIRST element in document order is selected BEFORE its state is evaluated, so an unscoped wait is not proof about any one pane in either direction; scope the wait whenever the follow-up action is scoped. The three concrete ways it misleads are enumerated in docs/debug-mcp-recipe.md under the heading 'wait_for_selector: the unscoped-wait trap'. Under state:'gone' a pane that does not exist counts as vacuously gone and resolves immediately."
+                        "description": "Optional. Wait on the matches in the pane whose [data-viewport-id] subtree contains (or is) them. Omit to wait over every match document-wide. Either way 'visible' is satisfied by ANY visible match, 'gone' only once EVERY match is hidden or absent. Return shape is unchanged — this tool observes rather than drives, so it reports no viewportId/matchCount. So an unscoped green is not proof about any one pane; scope the wait whenever the follow-up action is scoped (docs/debug-mcp-recipe.md, 'wait_for_selector: the unscoped-wait trap'). Under state:'gone' a pane that does not exist counts as vacuously gone and resolves immediately."
                     },
                     "timeout_ms": { "type": "integer" }
                 }
@@ -1217,6 +1336,9 @@ struct DebugServerState {
     /// `set_fea_case_on_engine_and_refresh_baseline` so a subsequent queued
     /// evaluation diffs against the post-debug-mutation state.
     last_state: Arc<Mutex<Option<crate::types::GuiState>>>,
+    /// The GUI's evaluation queue, read-only here: its `progress()` feeds
+    /// `engine_activity`. Routing debug writes through it is #7854.
+    evals: Arc<crate::eval_queue::EvalQueue>,
 }
 
 fn is_image_tool(name: &str) -> bool {
@@ -1265,11 +1387,9 @@ fn mcp_content_blocks(tool_name: &str, result: &Value) -> Value {
     if is_image_tool(tool_name)
         && let Some(data) = result.get("data").and_then(|d| d.as_str())
     {
-        // Strip data URL prefix if present
-        let base64 = data.strip_prefix("data:image/png;base64,").unwrap_or(data);
         let mut content = vec![json!({
             "type": "image",
-            "data": base64,
+            "data": crate::screenshot_save::png_base64(data),
             "mimeType": "image/png"
         })];
 
@@ -1309,7 +1429,6 @@ fn mcp_content_blocks(tool_name: &str, result: &Value) -> Value {
 // Returns Some(result) when the name matches a stateless arm, None otherwise.
 async fn dispatch_stateless_tool(name: &str, params: &Value) -> Option<Result<Value, String>> {
     match name {
-        "health" => Some(Ok(json!({"ok": true}))),
         "morph_stats" => Some(handle_morph_stats(params.clone()).await),
         "mesh_morph_stats" => Some(handle_mesh_morph_stats(params.clone()).await),
         _ => None,
@@ -1325,9 +1444,20 @@ async fn dispatch_tool(
         return result;
     }
     match name {
-        "engine_state" => handle_engine_state(state).await,
+        // Lock-free lane reads: neither ever waits on the engine lock.
+        "health" => Ok(engine_activity::probe(&state.engine, &state.evals).health_reply()),
+        "engine_status" => {
+            serde_json::to_value(engine_activity::probe(&state.engine, &state.evals))
+                .map_err(|e| e.to_string())
+        }
+        "engine_state" => handle_engine_state(state, params).await,
         "demand_dispatch" => handle_demand_dispatch(state).await,
         "mesh_stats" => handle_mesh_stats(state).await,
+        // Frontend-mediated like the catch-all default below; named only so
+        // a `save_path` is written Rust-side rather than returned inline.
+        "screenshot" | "screenshot_window" | "element_screenshot" => {
+            handle_image_tool(state, name, params).await
+        }
         // ONE funnel (`open_path_into_engine`), two advertised names: the
         // debug-native `open_file` and the reify-mcp identity
         // `reify_open_file` (task 5097 δ). The shared `open_file_path_param`
@@ -1389,11 +1519,29 @@ where
     rx.await.map_err(|_| "engine thread died".to_string())?
 }
 
-async fn handle_engine_state(state: &DebugServerState) -> Result<Value, String> {
-    run_on_engine(&state.engine, |session| {
+/// Forward an image tool to the frontend. With a `save_path`, the PNG it
+/// returns is written there and the reply says where, instead of inlining it.
+async fn handle_image_tool(
+    state: &DebugServerState,
+    name: &str,
+    params: Value,
+) -> Result<Value, String> {
+    let (save_path, forwarded) = crate::screenshot_save::take_save_path(params)?;
+    let result = state.debug_bridge.query_frontend(name, forwarded).await?;
+    match save_path {
+        Some(path) => crate::screenshot_save::save_image_result(result, &path),
+        None => Ok(result),
+    }
+}
+
+async fn handle_engine_state(state: &DebugServerState, params: Value) -> Result<Value, String> {
+    // Parsed first: a malformed view must not pay a full-scene rebuild.
+    let view = crate::engine_state_view::EngineStateView::from_params(&params)?;
+    let full = run_on_engine(&state.engine, |session| {
         crate::commands::engine_state_json(session)
     })
-    .await
+    .await?;
+    view.apply(full)
 }
 
 /// Engine-routing core of the `demand_dispatch` MCP tool (selective-demand ε,
@@ -1420,11 +1568,10 @@ async fn handle_demand_dispatch(state: &DebugServerState) -> Result<Value, Strin
 async fn handle_mesh_stats(state: &DebugServerState) -> Result<Value, String> {
     // Delegate to the headless-testable extraction (task 5348). It routes through
     // `build_gui_state_full_scene`, so `mesh_stats` reports the FULL realized scene
-    // (not the frontend's selective-demand incremental delta) and shares the exact
-    // per-mesh mapping — including `commands::element_kind_count` — with
-    // `engine_state_json`, so the two debug reads can never drift apart. The
-    // element-kind histogram helper was moved to the ungated `commands` module so
-    // this delegation and its headless unit test do not need the `gui` feature.
+    // (not the frontend's selective-demand incremental delta). It shares that
+    // builder and the per-mesh `default_visible` join with `engine_state_json`, so
+    // the two debug reads agree on which meshes exist and which are hidden by
+    // default; the element-kind histogram is mesh_stats' own.
     run_on_engine(&state.engine, |session| {
         crate::commands::mesh_stats_json(session)
     })
@@ -2885,38 +3032,38 @@ async fn handle_rest(
     }
 }
 
+/// Wait in two halves under one deadline: the engine lane settles (polled
+/// lock-free, so this never parks a runtime worker behind a long evaluation),
+/// then the frontend confirms its own evaluation status and renders a frame.
 async fn handle_wait_for_idle(state: &DebugServerState, params: Value) -> Result<Value, String> {
-    // Validate and canonicalize timeout_ms here so the Rust oneshot and the
-    // frontend handler both use the same effective timeout with no drift
-    // between two independent parsers.
-    let timeout_ms: u64 = match params.get("timeout_ms") {
-        None => 30_000,
-        Some(v) => match v.as_u64().filter(|&n| n > 0) {
-            Some(n) => n,
-            None => return Ok(json!({"error": "timeout_ms must be a positive integer"})),
-        },
+    let request = match engine_activity::SettleRequest::from_params(&params) {
+        Ok(request) => request,
+        Err(message) => return Ok(json!({"error": message})),
     };
 
-    // Fast Rust-side pre-check: if the engine session has never completed a
-    // compile/check cycle, return immediately rather than delegating to the
-    // frontend where `evalStatus` starts as `'idle'` by default and would
-    // produce a false-positive ok response on a fresh (un-loaded) session.
-    {
-        let is_idle = crate::engine_lock::with_engine_lock(&state.engine, |s| s.is_idle())?;
-        if !is_idle {
-            return Ok(json!({"error": "engine_not_started"}));
-        }
-    }
+    let outcome = engine_activity::wait_until_settled(&state.engine, &state.evals, &request).await;
+    let (generation, waited) = match outcome.settled_or_early_reply() {
+        Ok(settled) => settled,
+        Err(reply) => return Ok(reply),
+    };
 
-    // Build a canonical params object so the frontend receives a validated value.
-    let canonical_params = json!({ "timeout_ms": timeout_ms });
+    // The frontend gets what is left of the caller's budget, canonicalised so
+    // it never re-parses the caller's value.
+    let remaining_ms = u64::try_from(request.timeout.saturating_sub(waited).as_millis())
+        .unwrap_or(u64::MAX)
+        .max(1);
     // Add a 5-second buffer so the Rust-side oneshot fires *after* the frontend
     // has had a chance to return its own {error: "timeout"} response.
-    let rust_timeout = Duration::from_millis(timeout_ms.saturating_add(5_000));
-    state
+    let rust_timeout = Duration::from_millis(remaining_ms.saturating_add(5_000));
+    let reply = state
         .debug_bridge
-        .query_frontend_with_timeout("wait_for_idle", canonical_params, rust_timeout)
-        .await
+        .query_frontend_with_timeout(
+            "wait_for_idle",
+            json!({ "timeout_ms": remaining_ms }),
+            rust_timeout,
+        )
+        .await?;
+    Ok(engine_activity::stamp_generation(reply, generation))
 }
 
 async fn handle_wait_for(state: &DebugServerState, params: Value) -> Result<Value, String> {
@@ -3036,6 +3183,7 @@ pub async fn spawn_debug_server(
     selection: Arc<RwLock<SelectionInfo>>,
     debug_bridge: Arc<DebugBridge>,
     last_state: Arc<Mutex<Option<crate::types::GuiState>>>,
+    evals: Arc<crate::eval_queue::EvalQueue>,
 ) -> Result<(), String> {
     // Initialize the measurement-window clock at server spawn so
     // session_start_unix_ms reports the true debug-server start time
@@ -3047,6 +3195,7 @@ pub async fn spawn_debug_server(
         selection,
         debug_bridge,
         last_state,
+        evals,
     };
 
     let app = Router::new()
@@ -5010,6 +5159,14 @@ mod tests {
     // `debug_server/tests/write_tools.rs`. A child module, so it reads
     // `use super::*` and needed nothing here widened. ──
     mod write_tools;
+
+    // ── Task 6752: the wait/status/view/image tools' params are advertised
+    // under the names their parsers read. ──
+    mod advertised_params;
+
+    // ── Task 6752: on-demand real-kernel measurement of the write seam's
+    // rebuild cost (docs/debug-mcp-contract.md). ──
+    mod rebuild_cost;
 
     // ── Task 5193 step-1: regression — the debug open funnel must adopt the
     // newly-opened file's identity, not the previously-loaded file's ──

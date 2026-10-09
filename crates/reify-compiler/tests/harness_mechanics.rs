@@ -48,6 +48,8 @@ mod flexure_dimension_types;
 mod flexures_stdlib_compile;
 #[path = "harness_mechanics/ground_sugar_tests.rs"]
 mod ground_sugar_tests;
+#[path = "harness_mechanics/joint_constrained_dof_compliance.rs"]
+mod joint_constrained_dof_compliance;
 #[path = "harness_mechanics/joint_dof_self_check_tests.rs"]
 mod joint_dof_self_check_tests;
 #[path = "harness_mechanics/kinematic_stdlib_compile.rs"]

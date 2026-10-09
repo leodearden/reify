@@ -360,6 +360,23 @@ lanes DB-present on the main checkout and FILES healing tasks; the §6.6 ratchet
 DB-absent everywhere, the main checkout included, because the default path above resolves
 there and silently turned the hook-gated main-commit ratchet DB-present (§19 finding 2).
 
+**Amendment (task #7787) — the opt-in hard-require and the on-demand `*_live` gates; ruling:
+§19 (b)/(c).** `reify-audit --require-tasks-db` is the one deliberate exception to this
+section's fail-soft, for the caller that needs the DB-backed lanes to have run: the
+dark-factory 5796 cadenced sweep. It resolves the path through `ptodo::tasks_db_path`, so
+`REIFY_PTODO_TASKS_DB` is honoured identically. It is enforced on the run's own outcome: when
+PTODO reports its DB-backed lanes degraded (`ScanStats.tasks_db == Absent`), whether the path
+is missing or holds a file that opens but is not a tasks DB, the run exits **255** naming the
+resolved path and emits no findings array. A path that cannot be opened at all is refused the
+same way before any detector runs. "Never exit 125 for DB absence" still holds: 255 is not 125
+and lies outside the 1–254 High-count band. The flag guards the PTODO lanes only, so a run set
+without PTODO (`--pre-done`, or a `--pattern` that omits it) rejects it as an argument conflict
+(125) rather than accepting a requirement it cannot check. Without the flag nothing changes.
+`g_allow_repo_wide_hard_gate_live` and `engine_seam_g_allow_owner_cites_resolve_live_real_db`
+are now `#[ignore]`d on-demand checks (run with `--ignored`, `REIFY_PTODO_TASKS_DB` at the
+main checkout's DB). They fail loud on a DB they cannot read rather than skipping, and their
+hermetic siblings are the always-on assertions.
+
 ### 6.8 Allowlist — **path-prefix + inline escape; `.md` excluded entirely**
 
 Swept files: tracked files with extensions `.rs .ri .sh .py .ts .tsx .js` (~1900 of
@@ -614,6 +631,12 @@ is not. That is exactly why §6.6's "seed the baseline with the task DB present"
 load-bearing for δ-B in a way it was not for δ-A — a δ-B lane seeded from a worktree run
 looks green locally and goes red on `main`.
 
+**A discharged phantom-tracking line adds NO new kind (task #6816).** A `phantom-tracking`
+phrase on a line that ALSO carries a canonical `#NNNN` cite is discharged: it emits no
+structural kind and hands its on-line cites to the **unchanged** liveness lane (→ `orphaned` /
+`unknown-id` / `parked-on-anchor`), exactly as the comment-marker lane does. A `// G-allow:`
+line is left to its own lane. Ruling: §19(d).
+
 *Known divergence:* the `#[ignore]` γ lane has no `malformed-cite` branch — its reason
 policy is cite-first-then-blocker-prose and is byte-frozen (changing it would reclassify
 existing `#[ignore]` findings and perturb the §6.6 baseline). That is recorded here as a
@@ -633,6 +656,9 @@ As of task η (#4559, 2026-06-15) `untracked` / `orphaned` / `bare-ignore` emit
 `tests/infra` PTODO check hard-fails verify). `unknown-id` stays **Medium** (a
 DB-sync artifact must not hard-fail verify); `task-cites-deleted-path` stays
 advisory; `malformed-cite` / `phantom-tracking` stay **Medium**.
+
+Exit **255** is `--require-tasks-db`'s refusal when the PTODO lanes cannot use the task DB
+(§6.7 amendment, task #7787); it never collides with the High count, which is capped at 254.
 
 **Correction — the exit code is not the real-tree gate; the §6.6 ratchet is
 (2026-08-27, esc-6088-2 ruling; task 6088 cancelled as vacuous).** *This paragraph is
@@ -1520,7 +1546,7 @@ once #7001 empties the baseline; #7398 is rewritten as the **last manual** heali
 
 **(c) Liveness never reds a commit gate — corollary for the `*_live` cargo gates.** The
 main-checkout hard gates `g_allow_repo_wide_hard_gate_live` and
-`engine_seam_g_allow_cites_resolve_live_real_db` graceful-skip without a DB and therefore
+`engine_seam_g_allow_owner_cites_resolve_live_real_db` graceful-skip without a DB and therefore
 fire only on the hook-gated commit path (#7787's structural-defect analysis). Owner: reify
 **#7787**, extended — once 5796 owns liveness, those tests become on-demand (`#[ignore]`,
 run by the sweep or by hand), keeping their hermetic siblings as the always-on assertions.

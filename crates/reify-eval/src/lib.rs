@@ -74,7 +74,9 @@ pub mod appearance;
 pub mod dynamics_ops;
 mod dynamics_psd;
 mod engine_constraints;
-pub use engine_constraints::GdtCallout;
+pub use engine_constraints::{
+    ConstraintUpgrade, GdtCallout, replace_superseded_constraint_diagnostics,
+};
 // Task β (#5039): required-args cell_eval_ctx free-function constructor
 // (INV-EVAL-2; PRD eval-cell-commit-substrate.md §2.5, §8).
 mod cell_eval_ctx;
@@ -135,6 +137,8 @@ pub mod trajectory_ops;
 pub use source_location::resolve_entity_at_source_position;
 pub use source_location::resolve_entity_source_location;
 pub(crate) mod engine_hash_algo;
+#[cfg(test)]
+mod engine_hash_tests;
 pub mod field_import_provenance;
 pub mod modal_ops;
 pub mod morph_producer;
@@ -335,7 +339,14 @@ fn value_type_kind_matches(
         Value::Real(_) => matches!(ty, Type::Scalar { .. } | Type::Int),
         Value::String(_) => matches!(ty, Type::String),
         Value::Scalar { .. } => matches!(ty, Type::Scalar { .. }),
-        Value::Enum { .. } => matches!(ty, Type::Enum(_)),
+        Value::Enum { type_name, .. } => match ty {
+            Type::Enum(_) => true,
+            // Annotated generic enum (`param r : Result<Length, String>`): type
+            // args are compile-time only (PRD generic-enum-type-arg-retention
+            // C-5), so the runtime match is name-only, as for StructureInstance.
+            Type::Applied { name, .. } => name == type_name,
+            _ => false,
+        },
         Value::List(_) => matches!(ty, Type::List(_)),
         Value::Set(_) => matches!(ty, Type::Set(_)),
         Value::Map(_) => matches!(ty, Type::Map(_, _)),
@@ -1324,11 +1335,65 @@ pub struct CheckResult {
 }
 
 /// A single constraint's check result.
+///
+/// # Verdict invariant
+///
+/// A definite verdict never carries a reason: a MUST NOT of
+/// [`reify_ir::ConstraintChecker::check`], asserted wherever a checker result
+/// becomes an entry. The converse, that every Indeterminate carries one, is
+/// only a SHOULD for a checker, so it is asserted on the engine's own verdicts
+/// alone: [`Self::new`] and [`Self::set_verdict`] assert both directions.
 #[derive(Debug, Clone)]
 pub struct ConstraintCheckEntry {
     pub id: reify_core::ConstraintNodeId,
     pub label: Option<String>,
     pub satisfaction: Satisfaction,
+    /// Why `satisfaction` is `Indeterminate`, as recorded by the producer that
+    /// decided it. Reports render it verbatim and never substitute a guess.
+    pub indeterminate_reason: Option<reify_ir::IndeterminateReason>,
+}
+
+impl ConstraintCheckEntry {
+    /// An entry for a verdict the engine itself decided.
+    pub fn new(
+        id: reify_core::ConstraintNodeId,
+        label: Option<String>,
+        satisfaction: Satisfaction,
+        indeterminate_reason: Option<reify_ir::IndeterminateReason>,
+    ) -> Self {
+        debug_assert_reason_matches_verdict(&id, satisfaction, indeterminate_reason.as_ref());
+        Self {
+            id,
+            label,
+            satisfaction,
+            indeterminate_reason,
+        }
+    }
+
+    /// The only sanctioned way to overwrite a verdict after construction: the
+    /// reason moves with the satisfaction, so a re-check can never leave a
+    /// stale reason on a definite verdict or a reasonless Indeterminate.
+    pub fn set_verdict(
+        &mut self,
+        satisfaction: Satisfaction,
+        indeterminate_reason: Option<reify_ir::IndeterminateReason>,
+    ) {
+        debug_assert_reason_matches_verdict(&self.id, satisfaction, indeterminate_reason.as_ref());
+        self.satisfaction = satisfaction;
+        self.indeterminate_reason = indeterminate_reason;
+    }
+}
+
+fn debug_assert_reason_matches_verdict(
+    id: &reify_core::ConstraintNodeId,
+    satisfaction: Satisfaction,
+    indeterminate_reason: Option<&reify_ir::IndeterminateReason>,
+) {
+    debug_assert_eq!(
+        indeterminate_reason.is_some(),
+        satisfaction == Satisfaction::Indeterminate,
+        "constraint {id}: a reason accompanies exactly an Indeterminate verdict",
+    );
 }
 
 /// Result of a full build (eval + geometry).
@@ -2278,6 +2343,61 @@ mod tests {
         assert!(
             !value_type_kind_matches(&v, &t, Some(&reg)),
             "StructureInstance must NOT match Applied with different name"
+        );
+    }
+
+    // ── value_type_kind_matches: Enum arm vs Applied (task 8017 / θ) ────────────
+    // An annotated generic-enum param (`param r : Result<Length, String>`) keeps
+    // `Type::Applied`, while its runtime `Value::Enum` carries only the bare
+    // `type_name`: type args are compile-time only, so the match is name-only.
+
+    /// A real `Result::Ok` construction: bare enum name, non-empty named payload.
+    fn result_ok_enum_value() -> reify_ir::Value {
+        reify_ir::Value::Enum {
+            type_name: "Result".to_string(),
+            variant: "Ok".to_string(),
+            payload: vec![("value".to_string(), reify_ir::Value::length(0.005))],
+        }
+    }
+
+    /// θ: Applied type with the SAME name as the enum value → true (phantom
+    /// args are ignored; runtime match is name-only).
+    #[test]
+    fn value_type_kind_matches_enum_value_into_applied_same_name_returns_true() {
+        use reify_core::Type;
+        let t = Type::Applied {
+            name: "Result".to_string(),
+            args: vec![Type::length(), Type::String],
+        };
+        assert!(
+            value_type_kind_matches(&result_ok_enum_value(), &t, None),
+            "Value::Enum must match Applied with the same name (phantom args ignored)"
+        );
+    }
+
+    /// θ: Applied type with a DIFFERENT name — a generic-STRUCTURE head such as
+    /// `Holder<Length>`, which `Type::Applied` also carries — → false.
+    #[test]
+    fn value_type_kind_matches_enum_value_into_applied_different_name_returns_false() {
+        use reify_core::Type;
+        let t = Type::Applied {
+            name: "Holder".to_string(),
+            args: vec![Type::length()],
+        };
+        assert!(
+            !value_type_kind_matches(&result_ok_enum_value(), &t, None),
+            "Value::Enum must NOT match Applied with a different name"
+        );
+    }
+
+    /// θ regression guard: the bare `Type::Enum` arm keeps its kind-level match.
+    #[test]
+    fn value_type_kind_matches_enum_value_into_bare_enum_type_returns_true() {
+        use reify_core::Type;
+        let t = Type::Enum("Result".to_string());
+        assert!(
+            value_type_kind_matches(&result_ok_enum_value(), &t, None),
+            "Value::Enum must match a bare Type::Enum"
         );
     }
 

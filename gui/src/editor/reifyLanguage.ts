@@ -57,6 +57,8 @@ export const KEYWORD_LED_BODIES = [
   'PurposeDeclaration',
   // `relate { … }` — the `{` follows the `relate` keyword, so it is keyword-led.
   'RelateBlock',
+  // `sketch <name> { … }` — the `{` follows `sketch <name>`.
+  'SketchBlock',
   // `constraint def Name<T> { … }` — the `{` trails a header, never opens the node.
   'ConstraintDefinition',
   // `where { … }` trailing a sub's pose — keyword-led like `RelateBlock`.
@@ -82,7 +84,9 @@ export const KEYWORD_LED_BODIES = [
  * arm (`= expression`, grammar.js:239-246) needs.
  */
 function foldBody(node: SyntaxNode): { from: number; to: number } | null {
-  const open = node.getChild('{');
+  // `ImportItems` opens with `ImportItemsOpen` (`.{`), not a bare `{`; see the
+  // ImportDeclaration comment in reify.grammar.
+  const open = node.getChild('{') ?? node.getChild('ImportItemsOpen');
   const close = node.lastChild;
   if (!open || !close || close.name !== '}' || open.to >= close.from) return null;
   return { from: open.to, to: close.from };
