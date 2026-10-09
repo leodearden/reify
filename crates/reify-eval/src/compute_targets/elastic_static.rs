@@ -14668,6 +14668,124 @@ mod tests {
         }
     }
 
+    /// task 8246: once the gmsh-realized lane has remeshed, the result reports
+    /// the loop's FINAL iterate, resampled onto the SEED solve's grid.
+    ///
+    /// The final iterate is reproduced independently: the same problem re-run
+    /// through the same budget, then the lane's exact solve call on its final
+    /// mesh. Exact equality rests on determinism: the marks come from a serial
+    /// deterministic solve, and the remesher is pinned to one thread, which was
+    /// measured bit-identical across runs and processes (task 7411,
+    /// docs/notes/adaptive-e2e-seed-mesh-drift-measurement.md). The re-run's
+    /// global error is therefore checked FIRST, so a reproduction that drifted
+    /// fails as such rather than as a wrong report.
+    #[test]
+    fn adaptive_realized_lane_reports_the_final_remeshed_iterate_on_the_seed_grid() {
+        if !reify_solver_elastic::GMSH_AVAILABLE {
+            eprintln!("skipping: libgmsh not available in this build");
+            return;
+        }
+        const DIMS: [f64; 3] = [1.0, 0.1, 0.1];
+        let vm = make_box_tet_volume_mesh(DIMS, [6, 1, 1]);
+        let run = |iterations| {
+            run_adaptive_trampoline_on(
+                DIMS,
+                &[vm_read_handle(vm.clone())],
+                adaptive_options_with_iterations(iterations),
+            )
+        };
+        let (refined, refined_diags) = run(2);
+        let (seed_only, _) = run(0);
+
+        let (tip_force, pressures, body_force) = adaptive_test_loads();
+        let surface = reify_solver_elastic::boundary_surface_mesh(&vm)
+            .expect("a P1 tet box has an extractable boundary");
+        let mut problem = RealizedAdaptiveProblem::new(
+            ADAPTIVE_STEEL,
+            vm.clone(),
+            surface,
+            reify_solver_elastic::MeshingOptions::default(),
+            tip_force,
+            pressures.clone(),
+            body_force,
+        )
+        .expect("a widenable P1 tet mesh seeds a RealizedAdaptiveProblem");
+        let budget = RefinementBudget {
+            target_accuracy: 1e-6,
+            max_refinement_iterations: 2,
+            max_dofs: 2_000_000,
+        };
+        run_adaptive_refinement(&mut problem, &budget, DORFLER_THETA)
+            .expect("the box remeshes and solves at every iteration");
+        assert!(
+            problem.refine_count >= 1,
+            "fixture: an unreachable target must buy at least one remesh",
+        );
+        let refines = format!(", {} refinement iteration(s)", problem.refine_count);
+        assert!(
+            refined_diags
+                .iter()
+                .any(|d| d.message.contains(LOCALIZED_LANE_MARKER) && d.message.contains(&refines)),
+            "the trampoline must have run the localized lane with the same {} remesh(es), \
+             got: {refined_diags:?}",
+            problem.refine_count,
+        );
+
+        let solve_on = |mesh| {
+            solve_cantilever_fea(
+                &MaterialModel::Isotropic(ADAPTIVE_STEEL),
+                1.0,
+                1.0,
+                1.0,
+                Some(mesh),
+                tip_force,
+                None,
+                &pressures,
+                body_force,
+                true,
+                None,
+                None,
+                None,
+                None,
+            )
+            .expect("the box meshes are not degenerate")
+            .0
+        };
+        let final_solve = solve_on(
+            volume_mesh_to_solver_mesh(&problem.volume_mesh)
+                .expect("the remesh is a widenable P1 tet mesh"),
+        );
+        let seed_grid = seed_grid_of(&solve_on(
+            volume_mesh_to_solver_mesh(&vm).expect("the seed box is a widenable P1 tet mesh"),
+        ));
+
+        assert_eq!(
+            result_global_error(&refined).to_bits(),
+            problem.last_global_indicator.to_bits(),
+            "the independent re-run must reproduce the trampoline's loop bit-for-bit",
+        );
+        let refined_max_von_mises = result_max_von_mises(&refined);
+        assert_eq!(
+            refined_max_von_mises.to_bits(),
+            final_solve.max_von_mises.to_bits(),
+            "max_von_mises must be the FINAL iterate's: reported {refined_max_von_mises:e}, \
+             final mesh {:e}",
+            final_solve.max_von_mises,
+        );
+        assert_ne!(
+            refined_max_von_mises,
+            result_max_von_mises(&seed_only),
+            "a remeshed run must not report the seed solve's max_von_mises",
+        );
+        assert_channels_share_grid(
+            &refined,
+            &seed_only,
+            &seed_grid,
+            &["displacement", "stress", "error_indicator"],
+        );
+        assert_reports_solve_on_grid(&refined, &final_solve, &seed_grid);
+    }
+
     // ── ruling #6164: the `rotation` derivative channel ───────────────────────
     //
     // step-5 RED. `rotation` = ∇×u / 2 is the DESIGNATED CROSSING where the
