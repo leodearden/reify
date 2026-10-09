@@ -37,6 +37,22 @@ struct ToolDef {
 /// `crate::screenshot_save::take_save_path`.
 const SAVE_PATH_DESCRIPTION: &str = "Optional ABSOLUTE path ending in .png; when given the PNG is written there, overwriting any existing file, and the reply is {saved_to, bytes, mimeType} instead of an inline image — use it to keep large screenshots out of the tool result. The parent directory must exist.";
 
+/// What `bounds` and `hitTestable` mean, for every tool that reports them
+/// (contract §3 "Clipping and hit-testability"). A macro rather than a const
+/// because `concat!` splices only literals into a `&'static str`.
+macro_rules! placement_note {
+    () => {
+        "bounds is the element's UNCLIPPED layout rect; hitTestable reports whether click_at at the bounds centre reaches this element (contract §3)."
+    };
+}
+
+/// The aiming rule for every coordinate-addressed tool (click_at, hover, drag).
+macro_rules! aim_by_hit_testable_note {
+    () => {
+        "To aim at an element, use its bounds centre only when its hitTestable is true: a clipped or occluded element's centre resolves to a different element."
+    };
+}
+
 fn tool_defs() -> Vec<ToolDef> {
     vec![
         ToolDef {
@@ -136,7 +152,11 @@ fn tool_defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "dom_query",
-            description: "Query a DOM element by data-testid. Returns { exists, visible, hitTestable, text, tagName, bounds }. bounds is the element's UNCLIPPED layout rect; hitTestable reports whether click_at at the bounds centre reaches this element (contract §3). Optional viewportId scopes the query to one viewport pane; a testId absent from that pane returns { exists: false } rather than an error, so this stays usable as an existence probe while a pane is still appearing.",
+            description: concat!(
+                "Query a DOM element by data-testid. Returns { exists, visible, hitTestable, text, tagName, bounds }. ",
+                placement_note!(),
+                " Optional viewportId scopes the query to one viewport pane; a testId absent from that pane returns { exists: false } rather than an error, so this stays usable as an existence probe while a pane is still appearing."
+            ),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -154,7 +174,10 @@ fn tool_defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "list_elements",
-            description: "List all DOM elements with data-testid attributes. Returns { elements: [{ testId, tagName, visible, hitTestable, bounds }] }. bounds is the element's UNCLIPPED layout rect; hitTestable reports whether click_at at the bounds centre reaches this element (contract §3).",
+            description: concat!(
+                "List all DOM elements with data-testid attributes. Returns { elements: [{ testId, tagName, visible, hitTestable, bounds }] }. ",
+                placement_note!()
+            ),
             input_schema: json!({"type": "object", "properties": {}}),
         },
         ToolDef {
@@ -589,7 +612,10 @@ fn tool_defs() -> Vec<ToolDef> {
         // --- DOM/style/layout/window inspection tools (R1) ---
         ToolDef {
             name: "query_selector",
-            description: "Query a single DOM element by raw CSS selector. Returns { exists, tagName, testId, text, bounds, visible, hitTestable } on match, { exists: false } when no element matches, { error } on invalid selector or missing param. bounds is the element's UNCLIPPED layout rect; hitTestable reports whether click_at at the bounds centre reaches this element (contract §3).",
+            description: concat!(
+                "Query a single DOM element by raw CSS selector. Returns { exists, tagName, testId, text, bounds, visible, hitTestable } on match, { exists: false } when no element matches, { error } on invalid selector or missing param. ",
+                placement_note!()
+            ),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -603,7 +629,10 @@ fn tool_defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "query_selector_all",
-            description: "Query all DOM elements matching a raw CSS selector. Returns { count, elements: [...], truncated } (capped at 200 results; each element as query_selector describes it, including bounds, visible, hitTestable), { count: 0, elements: [], truncated: false } when none match, { error } on invalid selector or missing param. bounds is the element's UNCLIPPED layout rect; hitTestable reports whether click_at at the bounds centre reaches this element (contract §3).",
+            description: concat!(
+                "Query all DOM elements matching a raw CSS selector. Returns { count, elements: [...], truncated } (capped at 200 results; each element as query_selector describes it, including bounds, visible, hitTestable), { count: 0, elements: [], truncated: false } when none match, { error } on invalid selector or missing param. ",
+                placement_note!()
+            ),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -617,7 +646,10 @@ fn tool_defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "get_layout_metrics",
-            description: "Read scroll/client/bounds metrics for a DOM element. Returns { exists, bounds, visible, hitTestable, scroll: { top, left, width, height }, client: { width, height }, overflow: { horizontal, vertical } } where overflow.horizontal is true when scrollWidth > clientWidth (clipped/overflowing text). bounds is the element's UNCLIPPED layout rect; hitTestable reports whether click_at at the bounds centre reaches this element (contract §3).",
+            description: concat!(
+                "Read scroll/client/bounds metrics for a DOM element. Returns { exists, bounds, visible, hitTestable, scroll: { top, left, width, height }, client: { width, height }, overflow: { horizontal, vertical } } where overflow.horizontal is true when scrollWidth > clientWidth (clipped/overflowing text). ",
+                placement_note!()
+            ),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -900,14 +932,15 @@ fn tool_defs() -> Vec<ToolDef> {
         // default arm routes unknown names to debug_bridge.query_frontend (:693-697).
         ToolDef {
             name: "click_at",
-            description: "Simulate a pointer click at CSS-logical-pixel coordinates (x, y) measured from the window origin \
-                          (same frame as getBoundingClientRect / clientX/clientY; see contract §3). \
-                          Resolves the target element via document.elementFromPoint(x, y), then dispatches \
-                          pointerdown → pointerup → click events with clientX=x, clientY=y. \
-                          To aim at an element, use its bounds centre only when its hitTestable is true: \
-                          a clipped or occluded element's centre resolves to a different element. \
-                          Fires JS click handlers (React onClick etc.); CSS :hover/:active is NOT applied \
-                          (synthetic-event fidelity gap — contract §4).",
+            description: concat!(
+                "Simulate a pointer click at CSS-logical-pixel coordinates (x, y) measured from the window origin \
+                 (same frame as getBoundingClientRect / clientX/clientY; see contract §3). \
+                 Resolves the target element via document.elementFromPoint(x, y), then dispatches \
+                 pointerdown → pointerup → click events with clientX=x, clientY=y. ",
+                aim_by_hit_testable_note!(),
+                " Fires JS click handlers (React onClick etc.); CSS :hover/:active is NOT applied \
+                 (synthetic-event fidelity gap — contract §4)."
+            ),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -925,13 +958,14 @@ fn tool_defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "hover",
-            description: "Simulate a pointer move (hover) at CSS-logical-pixel coordinates (x, y). \
-                          Resolves the target element via document.elementFromPoint(x, y), then dispatches \
-                          pointermove + mousemove events with clientX=x, clientY=y. \
-                          To aim at an element, use its bounds centre only when its hitTestable is true: \
-                          a clipped or occluded element's centre resolves to a different element. \
-                          Fires JS move handlers; CSS :hover pseudo-class is NOT applied \
-                          (synthetic-event fidelity gap — contract §4).",
+            description: concat!(
+                "Simulate a pointer move (hover) at CSS-logical-pixel coordinates (x, y). \
+                 Resolves the target element via document.elementFromPoint(x, y), then dispatches \
+                 pointermove + mousemove events with clientX=x, clientY=y. ",
+                aim_by_hit_testable_note!(),
+                " Fires JS move handlers; CSS :hover pseudo-class is NOT applied \
+                 (synthetic-event fidelity gap — contract §4)."
+            ),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -949,11 +983,16 @@ fn tool_defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "drag",
-            description: "Simulate a synthetic pointer drag from one coordinate to another. \
-                          Dispatches pointerdown+mousedown at 'from', pointermove at 'to', then \
-                          pointerup+mouseup at 'to'. Fires JS pointer/mouse handlers; \
-                          there is NO native HTML5 drag-and-drop (dragstart/drop are NOT fired) — \
-                          this is a synthetic pointer-move drag (contract §4).",
+            description: concat!(
+                "Simulate a synthetic pointer drag from one coordinate to another. \
+                 Resolves each point's target element via document.elementFromPoint ('to' falls back \
+                 to the 'from' element when no element is there), then dispatches pointerdown+mousedown \
+                 at 'from', pointermove at 'to', then pointerup+mouseup at 'to'. ",
+                aim_by_hit_testable_note!(),
+                " Fires JS pointer/mouse handlers; \
+                 there is NO native HTML5 drag-and-drop (dragstart/drop are NOT fired) — \
+                 this is a synthetic pointer-move drag (contract §4)."
+            ),
             input_schema: json!({
                 "type": "object",
                 "properties": {

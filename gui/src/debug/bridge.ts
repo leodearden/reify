@@ -1285,10 +1285,11 @@ export function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHan
 
     // --- I1: Synthetic pointer/scroll/focus tools (task-4299) ---
     // NOTE (contract §4 fidelity): these tools fire JS handlers (onClick,
-    // onPointerDown, etc.) but do NOT apply CSS :hover/:active pseudo-classes
-    // and do NOT trigger native OS hit-testing. document.elementFromPoint is
-    // used for target resolution. See docs/debug-mcp-contract.md §4 for the
-    // full fidelity-gaps table.
+    // onPointerDown, etc.) but do NOT apply CSS :hover/:active pseudo-classes.
+    // The coordinate tools resolve their target with the webview's own
+    // document.elementFromPoint and dispatch on it, skipping native OS input
+    // delivery. See docs/debug-mcp-contract.md §4 for the full fidelity-gaps
+    // table.
 
     click_at: (params) => {
       if (!validXY(params)) return { error: 'x and y must be finite numbers' };
