@@ -647,9 +647,10 @@ pub(crate) fn affine_map_constructor_result_type(name: &str) -> Option<reify_cor
 /// [`crate::relation_signatures::RELATION_FN_NAMES`]). It is a member of this
 /// slice — membership is a NAME fact — but membership alone does not imply
 /// the resolver claims a given call.
-/// `builtin_name_families_are_pairwise_disjoint` iterates this
-/// slice and deliberately SKIPS `offset` for that reason; the slice itself
-/// does not, because `is_known_builtin` asks a pure name question.
+/// `unresolved_function::tests::builtin_name_families_are_pairwise_disjoint`
+/// sweeps this slice and allowlists `offset` against `RELATION_FN_NAMES` for
+/// that reason; the slice itself keeps `offset`, because `is_known_builtin`
+/// asks a pure name question.
 ///
 /// Case-sensitive: Reify function names are snake_case.
 pub(crate) const DATUM_CONSTRUCTOR_NAMES: &[&str] = &[
@@ -741,8 +742,9 @@ pub(crate) const DATUM_CONSTRUCTOR_NAMES: &[&str] = &[
 ///   that derives the quantity from the arguments — a different shape than this
 ///   arity-blind table. The four are twins in eval too (`construct_point_or_vector`
 ///   serves all of them, one bool apart), so keeping them together is what
-///   one-vocabulary-one-resolver requires. `builtin_name_families_are_pairwise_disjoint`
-///   pins that THIS resolver returns `None` for every one of them.
+///   one-vocabulary-one-resolver requires.
+///   `math_construction_names_are_not_claimed_by_the_datum_resolver` pins that
+///   THIS resolver returns `None` for every one of them.
 ///
 /// Called from the `expr.rs` `NoUserFunctions` ladder before the first-arg
 /// fallback; resolving here replaces the wrong first-arg fallback type (e.g.
@@ -995,7 +997,8 @@ pub(crate) fn affine_map_algebra_result_type(
 /// query arms — a name living in both would silently win at the earlier
 /// arm). Pinned by both directions: the
 /// `is_geometry_query_rejects_other_family_names` test (other → not in
-/// geometry-query) AND the `builtin_name_families_are_pairwise_disjoint`
+/// geometry-query) AND the
+/// `unresolved_function::tests::builtin_name_families_are_pairwise_disjoint`
 /// test (every entry of `GEOMETRY_QUERY_NAMES` is absent from the four
 /// sibling slices).
 ///
@@ -1117,7 +1120,7 @@ pub(crate) fn is_whole_handle_geometry_query(name: &str) -> bool {
 /// **Disjointness contract**: like the geometry families, this list MUST
 /// remain disjoint from all five geometry families so a name cannot satisfy
 /// two classification predicates. Pinned by
-/// `builtin_name_families_are_pairwise_disjoint`.
+/// `unresolved_function::tests::builtin_name_families_are_pairwise_disjoint`.
 ///
 /// **Result type**: every entry resolves to `Type::StructureRef("MassProperties")`,
 /// set up-front in `expr.rs::infer_type`'s `NoUserFunctions` ladder (the
@@ -1150,7 +1153,7 @@ pub(crate) fn is_dynamics_query(name: &str) -> bool {
 ///
 /// **Disjointness contract**: every entry must be absent from every
 /// other classification family; pinned by
-/// `builtin_name_families_are_pairwise_disjoint`.
+/// `unresolved_function::tests::builtin_name_families_are_pairwise_disjoint`.
 ///
 /// Case-sensitive: Reify function names are snake_case.
 pub const DYNAMICS_CONSTRUCTOR_NAMES: &[&str] = &["mass_properties", "point_mass"];
@@ -1187,7 +1190,7 @@ pub(crate) fn is_dynamics_constructor(name: &str) -> bool {
 ///
 /// **Disjointness contract**: all three names MUST be absent from every
 /// sibling classification family; pinned by
-/// `builtin_name_families_are_pairwise_disjoint`.
+/// `unresolved_function::tests::builtin_name_families_are_pairwise_disjoint`.
 ///
 /// Case-sensitive: Reify function names are snake_case.
 pub const FEA_ENVELOPE_NAMES: &[&str] = &[
@@ -1266,7 +1269,7 @@ pub(crate) fn fea_envelope_result_type(name: &str) -> Option<Type> {
 /// through whichever arm is dispatched first in `expr.rs`'s
 /// `NoUserFunctions` ladder. Pinned by both directions:
 /// `is_field_op_recognises_all_field_op_names` (membership) AND
-/// `builtin_name_families_are_pairwise_disjoint`.
+/// `unresolved_function::tests::builtin_name_families_are_pairwise_disjoint`.
 ///
 /// **Maintenance contract**: adding a name here REQUIRES a parallel arm in
 /// [`field_op_result_type`].  Pinned by
@@ -1909,8 +1912,6 @@ pub fn resolve_unit_expr(
 mod tests {
     use super::*;
     use crate::orientation_signatures::ORIENTATION_TYPED_FN_NAMES;
-    use crate::relation_signatures::is_relation_shared_verb;
-    use crate::unresolved_function::BUILTIN_NAME_FAMILIES;
 
     // --- Step 21: Verify new geometry function names are recognized ---
 
@@ -3176,7 +3177,8 @@ mod tests {
     // (GEOMETRY_TOPOLOGY_SELECTOR_NAMES), NOT GEOMETRY_FUNCTION_NAMES, because
     // it returns List<Solid> (multi-output). Family-disjointness invariant: once
     // "split" is added to GEOMETRY_TOPOLOGY_SELECTOR_NAMES, the existing
-    // disjointness test `builtin_name_families_are_pairwise_disjoint`
+    // disjointness test
+    // `unresolved_function::tests::builtin_name_families_are_pairwise_disjoint`
     // continues to pass because "split" is absent from all other families.
 
     #[test]
@@ -4530,103 +4532,6 @@ mod tests {
             !ORIENTATION_TYPED_FN_NAMES.contains(&"project"),
             "project must not be claimed by the orientation family either"
         );
-    }
-
-    /// The only two names two families are SUPPOSED to share, each resolved
-    /// downstream by an argument-based gate rather than by ladder order.
-    ///
-    /// * `offset` — arity-2 construction datum vs arity-3 relation, pinned by
-    ///   `datum_constructor_vocabulary_survives_the_neighbour_extension`.
-    /// * `determinant` — the affine arm fires only for an `AffineMap` first
-    ///   argument and otherwise falls through to the math arm.
-    /// * `affine_apply` — the earlier geometry-function arm shadows the affine
-    ///   algebra resolver for it (documented on `AFFINE_ALGEBRA_NAMES`).
-    /// * `union` / `difference` — CSG constructors (geometry functions) vs
-    ///   selector composition; `selector_composition_result_type`
-    ///   claims them only for selector arguments and otherwise falls through.
-    ///
-    /// Each entry is `(name, family, family)`.
-    const INTENTIONAL_OVERLAPS: &[(&str, &str, &str)] = &[
-        ("offset", "DATUM_CONSTRUCTOR_NAMES", "RELATION_FN_NAMES"),
-        ("determinant", "MATH_OPERATION_NAMES", "AFFINE_ALGEBRA_NAMES"),
-        ("union", "GEOMETRY_FUNCTION_NAMES", "SELECTOR_COMPOSITION_NAMES"),
-        ("affine_apply", "GEOMETRY_FUNCTION_NAMES", "AFFINE_ALGEBRA_NAMES"),
-        ("difference", "GEOMETRY_FUNCTION_NAMES", "SELECTOR_COMPOSITION_NAMES"),
-    ];
-
-    fn is_intentional_overlap(name: &str, a: &str, b: &str) -> bool {
-        INTENTIONAL_OVERLAPS
-            .iter()
-            .any(|&(n, x, y)| n == name && ((x == a && y == b) || (x == b && y == a)))
-    }
-
-    /// No two builtin-name families share a name (bar [`INTENTIONAL_OVERLAPS`]).
-    ///
-    /// Disjointness is what makes each arm's POSITION in the `NoUserFunctions`
-    /// ladder of `expr.rs` unobservable: a name in two families is silently
-    /// shadowed by the earlier arm, a mis-typing rather than a compile error.
-    /// One all-pairs sweep over [`BUILTIN_NAME_FAMILIES`] replaces the former
-    /// per-family tests, whose cost was quadratic in the family count and
-    /// whose coverage was newest-versus-predecessors only; a new family needs
-    /// one table row and no new test.
-    #[test]
-    fn builtin_name_families_are_pairwise_disjoint() {
-        for (i, (a_name, a)) in BUILTIN_NAME_FAMILIES.iter().enumerate() {
-            for (b_name, b) in &BUILTIN_NAME_FAMILIES[i + 1..] {
-                for name in *a {
-                    assert!(
-                        !b.contains(name) || is_intentional_overlap(name, a_name, b_name),
-                        "{name:?} appears in both {a_name} and {b_name}"
-                    );
-                }
-            }
-        }
-    }
-
-    /// An allowlisted overlap that stopped being real is a stale exemption
-    /// that would silently excuse a future genuine collision.
-    #[test]
-    fn intentional_overlaps_are_still_real() {
-        let family = |wanted: &str| {
-            BUILTIN_NAME_FAMILIES
-                .iter()
-                .find(|(n, _)| *n == wanted)
-                .unwrap_or_else(|| panic!("{wanted} is not a BUILTIN_NAME_FAMILIES row"))
-                .1
-        };
-        for &(name, a, b) in INTENTIONAL_OVERLAPS {
-            assert!(
-                family(a).contains(&name) && family(b).contains(&name),
-                "{name:?} is no longer in both {a} and {b} — drop it from INTENTIONAL_OVERLAPS"
-            );
-        }
-    }
-
-    /// The two vocabularies that are not slices — the builtin-signature
-    /// registry rows and the arity-gated relation shared verbs — claim no name
-    /// any family claims. The registry list is derived from
-    /// `reify_builtins::rows()`, so every later τ migration is covered the
-    /// moment its rows land. The shared verbs `angle`/`distance` live in
-    /// `GEOMETRY_QUERY_NAMES` by design (their arity-3 forms are relations),
-    /// so that one family is exempt from the shared-verb leg.
-    #[test]
-    fn registry_rows_and_shared_verbs_are_disjoint_from_every_family() {
-        assert!(
-            !reify_builtins::rows().is_empty(),
-            "premise guard: the registry holds no rows, so the sweep asserts nothing"
-        );
-        for (family, slice) in BUILTIN_NAME_FAMILIES {
-            for name in *slice {
-                assert!(
-                    reify_builtins::name_group(name).is_empty(),
-                    "{name:?} in {family} is also a builtin-signature-registry row name"
-                );
-                assert!(
-                    *family == "GEOMETRY_QUERY_NAMES" || !is_relation_shared_verb(name),
-                    "{name:?} in {family} is also an arity-gated relation shared verb"
-                );
-            }
-        }
     }
 
     /// `MATH_CONSTRUCTION_NAMES` is disjoint from the datum RESOLVER, which

@@ -398,15 +398,15 @@ macro_rules! family_row {
 /// identifier so a failure names the family that regressed.
 ///
 /// The ONE list of slice families: [`is_known_builtin`] unions it, and the
-/// disjointness tests in `units.rs` and in this module iterate it. A family
-/// absent here is invisible to the oracle and to every disjointness guard, so
-/// a row is deleted only when its slice is (a registry migration discharging
-/// the family); `family_anchor_names_stay_known_builtins` reds on any other
+/// disjointness and oracle tests below iterate it. A family absent here is
+/// invisible to the oracle and to every disjointness guard, so a row is
+/// deleted only when its slice is (a registry migration discharging the
+/// family); `family_anchor_names_stay_known_builtins` reds on any other
 /// deletion.
 ///
 /// [`EVAL_DEFERRED_BUILTIN_NAMES`] is deliberately not a row: it records names
 /// NO family owns yet, and is checked against every row.
-pub(crate) const BUILTIN_NAME_FAMILIES: &[(&str, &[&str])] = &[
+const BUILTIN_NAME_FAMILIES: &[(&str, &[&str])] = &[
     family_row!(GEOMETRY_QUERY_HELPER_NAMES),
     family_row!(GEOMETRY_KINEMATIC_QUERY_NAMES),
     family_row!(GEOMETRY_TOPOLOGY_SELECTOR_NAMES),
@@ -613,6 +613,123 @@ mod tests {
         }
     }
 
+    /// Names two families deliberately share, as `(name, family, family)`.
+    /// The `expr.rs` ladder keeps each overlap harmless, in one of two ways.
+    ///
+    /// By an arity or argument gate — the earlier arm declines the shapes it
+    /// does not own, so the later arm still sees them:
+    ///
+    /// * `offset` — arity-2 construction datum vs arity-3 relation; each
+    ///   resolver claims only its own arity, pinned by
+    ///   `units::tests::datum_constructor_vocabulary_survives_the_neighbour_extension`.
+    /// * `determinant` — the affine arm fires only for an `AffineMap` first
+    ///   argument; any other falls through to the math arm.
+    /// * `union` / `difference` — CSG constructors (geometry functions) vs
+    ///   selector composition; `selector_composition_result_type` claims them
+    ///   only for selector operands and otherwise falls through.
+    ///
+    /// By ladder order alone — the earlier arm claims every call:
+    ///
+    /// * `affine_apply` — the geometry-function arm precedes the
+    ///   affine-algebra resolver, which therefore never sees it (documented on
+    ///   `AFFINE_ALGEBRA_NAMES`).
+    const INTENTIONAL_OVERLAPS: &[(&str, &str, &str)] = &[
+        ("offset", "DATUM_CONSTRUCTOR_NAMES", "RELATION_FN_NAMES"),
+        (
+            "determinant",
+            "MATH_OPERATION_NAMES",
+            "AFFINE_ALGEBRA_NAMES",
+        ),
+        (
+            "union",
+            "GEOMETRY_FUNCTION_NAMES",
+            "SELECTOR_COMPOSITION_NAMES",
+        ),
+        (
+            "difference",
+            "GEOMETRY_FUNCTION_NAMES",
+            "SELECTOR_COMPOSITION_NAMES",
+        ),
+        (
+            "affine_apply",
+            "GEOMETRY_FUNCTION_NAMES",
+            "AFFINE_ALGEBRA_NAMES",
+        ),
+    ];
+
+    fn is_intentional_overlap(name: &str, a: &str, b: &str) -> bool {
+        INTENTIONAL_OVERLAPS
+            .iter()
+            .any(|&(n, x, y)| n == name && ((x == a && y == b) || (x == b && y == a)))
+    }
+
+    /// No two builtin-name families share a name (bar [`INTENTIONAL_OVERLAPS`]).
+    ///
+    /// Disjointness is what makes each arm's POSITION in the `NoUserFunctions`
+    /// ladder of `expr.rs` unobservable: a name in two families is silently
+    /// shadowed by the earlier arm, a mis-typing rather than a compile error.
+    /// The sweep covers every pair of [`BUILTIN_NAME_FAMILIES`] rows, so a new
+    /// family needs one table row and no new test.
+    #[test]
+    fn builtin_name_families_are_pairwise_disjoint() {
+        for (i, (a_name, a)) in BUILTIN_NAME_FAMILIES.iter().enumerate() {
+            for (b_name, b) in &BUILTIN_NAME_FAMILIES[i + 1..] {
+                for name in *a {
+                    assert!(
+                        !b.contains(name) || is_intentional_overlap(name, a_name, b_name),
+                        "{name:?} appears in both {a_name} and {b_name}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// An allowlisted overlap that stopped being real is a stale exemption
+    /// that would silently excuse a future genuine collision.
+    #[test]
+    fn intentional_overlaps_are_still_real() {
+        let family = |wanted: &str| {
+            BUILTIN_NAME_FAMILIES
+                .iter()
+                .find(|(n, _)| *n == wanted)
+                .unwrap_or_else(|| panic!("{wanted} is not a BUILTIN_NAME_FAMILIES row"))
+                .1
+        };
+        for &(name, a, b) in INTENTIONAL_OVERLAPS {
+            assert!(
+                family(a).contains(&name) && family(b).contains(&name),
+                "{name:?} is no longer in both {a} and {b} — drop it from INTENTIONAL_OVERLAPS"
+            );
+        }
+    }
+
+    /// The two vocabularies that are not slices — the builtin-signature
+    /// registry rows and the arity-gated relation shared verbs — claim no name
+    /// any family claims. The registry list is derived from
+    /// `reify_builtins::rows()`, so every later τ migration is covered the
+    /// moment its rows land. The shared verbs `angle`/`distance` live in
+    /// `GEOMETRY_QUERY_NAMES` by design (their arity-3 forms are relations),
+    /// so that one family is exempt from the shared-verb leg.
+    #[test]
+    fn registry_rows_and_shared_verbs_are_disjoint_from_every_family() {
+        assert!(
+            !reify_builtins::rows().is_empty(),
+            "premise guard: the registry holds no rows, so the sweep asserts nothing"
+        );
+        for (family, slice) in BUILTIN_NAME_FAMILIES {
+            for name in *slice {
+                assert!(
+                    reify_builtins::name_group(name).is_empty(),
+                    "{name:?} in {family} is also a builtin-signature-registry row name"
+                );
+                assert!(
+                    *family == "GEOMETRY_QUERY_NAMES" || !is_relation_shared_verb(name),
+                    "{name:?} in {family} is also an arity-gated relation shared verb"
+                );
+            }
+        }
+    }
+
     /// `is_known_builtin` must accept EVERY member of EVERY classification
     /// family the `expr.rs` ladder consults — not a spot-check per family.
     ///
@@ -694,9 +811,9 @@ mod tests {
     /// cannot linger after the resolver arm is removed.
     ///
     /// The premise-guard idiom is copied from
-    /// `units::tests::builtin_name_families_are_pairwise_disjoint`,
-    /// which asserts `datum_constructor_result_type(name, &[]).is_some()`
-    /// before its absence asserts for the same reason.
+    /// `units::tests::datum_constructor_slice_is_claimed_by_the_datum_resolver`,
+    /// which asserts `datum_constructor_result_type(name, &[]).is_some()` for
+    /// every arity-blind datum name.
     #[test]
     fn resolver_only_family_slices_match_their_resolvers() {
         use reify_core::Type;
