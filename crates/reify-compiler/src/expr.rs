@@ -1327,11 +1327,13 @@ fn build_user_function_call_expr(
 /// its type parameters (task 4231 β); a non-generic callee keeps its declared
 /// `return_type` (INV-6/D10). `arg_types` may be a strict prefix of
 /// `callee.params` (a default-padded call): trailing defaulted slots bind
-/// nothing. `Err` is the diagnostic to poison the call with: a double-binding
-/// (`E_FALLBACK_TYPE` for the recovery combinators, contract C-3 in
-/// `docs/prds/v0_6/result-and-fallback.md`; else `E_FN_TYPE_ARG_CONFLICT`) or a
-/// BARE unbound type-/dimension-param result. A NESTED unbound param such as
-/// `Field<D, Real>` is tolerated: an enclosing call pins it (B5).
+/// nothing, since a slot carrying a type parameter has no valid default
+/// (`FnParamDefaultTypeMismatch` at the definition). `Err` is the diagnostic
+/// to poison the call with: a double-binding (`E_FALLBACK_TYPE` for the
+/// recovery combinators, contract C-3 in `docs/prds/v0_6/result-and-fallback.md`;
+/// else `E_FN_TYPE_ARG_CONFLICT`) or a BARE unbound type-/dimension-param
+/// result. A NESTED unbound param such as `Field<D, Real>` is tolerated: an
+/// enclosing call pins it (B5).
 fn instantiate_call_return_type(
     callee: &CompiledFunction,
     call_name: &str,

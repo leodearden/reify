@@ -13,7 +13,8 @@
 
 use reify_core::{DiagnosticCode, DimensionVector, Severity, Type};
 use reify_test_support::{
-    cell_value, compile_source, errors_only, eval_source, get_let_expr, get_value_cell_in,
+    assert_error_code_present, cell_value, compile_source, errors_only, eval_source, get_let_expr,
+    get_value_cell_in,
 };
 
 // ── step-5 (ii): overload resolution selects the generic candidate ───────────
@@ -513,5 +514,47 @@ fn generic_default_padded_call_tolerates_nested_unbound_param() {
         },
         "cf(42.5) result_type should be Field<TypeParam(D), Real> (C bound, D unbound), got {:?}",
         v_expr.result_type
+    );
+}
+
+/// A type-param slot has no valid default: `y: T = 0.0` is rejected where the fn
+/// is defined, and the padded call `f(5mm)` types `T` from the provided arg alone.
+#[test]
+fn generic_default_padded_call_trailing_default_binds_no_type_param() {
+    let module =
+        compile_source("fn f<T>(x: T, y: T = 0.0) -> T { x } structure S { let v = f(5mm) }");
+
+    assert_error_code_present(
+        &module.diagnostics,
+        DiagnosticCode::FnParamDefaultTypeMismatch,
+        "a `Real` default on a `T`-typed slot",
+    );
+    assert_eq!(
+        get_let_expr(&module, "v").result_type,
+        Type::length(),
+        "f(5mm) should type `T` from the provided arg; the rejected default binds nothing"
+    );
+}
+
+/// A default cannot pin a type parameter that no provided arg binds: `mk()` is
+/// rejected where `mk` is defined (`k: T = 2.0`), reported unresolved and poisoned.
+#[test]
+fn generic_default_padded_call_default_cannot_pin_unbound_type_param() {
+    let module = compile_source("fn mk<T>(k: T = 2.0) -> T { k } structure S { let v = mk() }");
+
+    assert_error_code_present(
+        &module.diagnostics,
+        DiagnosticCode::FnParamDefaultTypeMismatch,
+        "a `Real` default on a `T`-typed slot",
+    );
+    assert_error_code_present(
+        &module.diagnostics,
+        DiagnosticCode::FnTypeArgUnresolved,
+        "mk() with no provided arg to bind `T`",
+    );
+    assert_eq!(
+        get_let_expr(&module, "v").result_type,
+        Type::Error,
+        "an unresolved padded call must be poisoned, not leak a TypeParam"
     );
 }
