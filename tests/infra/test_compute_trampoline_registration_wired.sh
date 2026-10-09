@@ -899,6 +899,146 @@ assert "hD10b: stderr names the fourth-bundler hit as file:line (not some other 
     bash -c "bash '$GATE' --repo-root '$FIX' 2>&1 >/dev/null | grep -qE 'crates/reify-foo/src/lib\.rs:[0-9]+'"
 
 # ===========================================================================
+# hC — compound test cfg gates arm the test-module skipper (task #6242).
+# Arming rule: scripts/lib_rust_production_view.sh. Both passes are pinned.
+# ===========================================================================
+echo ""
+echo "--- (hC): compound test cfg gates arm the test-module skipper ---"
+
+HC_ANY='#[cfg(any(test, feature = "test-support"))]'
+HC_ALL='#[cfg(all(test, has_occt))]'
+
+# reify-foo's lib.rs: a production no-op, then a module gated by the any()
+# attribute in $1 whose fn hand-rolls both halves on lines 6-7 (hC1/hC4/hC6).
+hc_any_module() {
+    cat <<RS
+pub fn nothing() {}
+
+$1
+pub mod test_support {
+    pub fn engine_for_tests(engine: &mut reify_eval::Engine) {
+        reify_eval::compute_targets::register_compute_fns(&mut engine);
+        reify_eval::register_shell_extract_compute_fns(&mut engine);
+    }
+}
+RS
+}
+
+# hC1 — negative pass, any(test, …): the test-support module's half-calls are exempt.
+write_baseline
+mkdir -p "$FIX/crates/reify-foo/src"
+hc_any_module "$HC_ANY" > "$FIX/crates/reify-foo/src/lib.rs"
+stage
+assert "hC1: half-calls inside a '#[cfg(any(test, …))] pub mod' are NOT flagged" \
+    _exits_with 0 bash "$GATE" --repo-root "$FIX"
+
+# hC2 — negative pass, all(test, …) with an interposed attribute: exempt.
+write_baseline
+mkdir -p "$FIX/crates/reify-foo/src"
+cat > "$FIX/crates/reify-foo/src/lib.rs" <<RS
+pub fn nothing() {}
+
+$HC_ALL
+#[allow(clippy::needless_range_loop)]
+mod tests {
+    #[test]
+    fn builds_an_engine() {
+        let mut engine = reify_eval::Engine::new();
+        reify_eval::compute_targets::register_compute_fns(&mut engine);
+        reify_eval::register_shell_extract_compute_fns(&mut engine);
+    }
+}
+RS
+stage
+assert "hC2: half-calls inside a '#[cfg(all(test, …))]' + '#[allow]' mod are NOT flagged" \
+    _exits_with 0 bash "$GATE" --repo-root "$FIX"
+
+# hC3 — positive pass, vacuous-pin direction: a compound-gated module naming
+# the Enabled variant does not satisfy engine.rs's production pin.
+for hc_attr in "$HC_ANY" "$HC_ALL"; do
+    write_baseline
+    cat > "$FIX/gui/src-tauri/src/engine.rs" <<RS
+fn from_engine(engine: &mut reify_eval::Engine) {
+    let morph = reify_eval::MorphRegistration::Unavailable { reason: "gui feature off" };
+    engine.register_production_compute_fns(morph);
+}
+
+$hc_attr
+mod tests {
+    #[test]
+    fn names_the_enabled_variant() {
+        let _ = reify_eval::MorphRegistration::Enabled(reify_mesh_morph::register_morph_producer);
+    }
+}
+RS
+    stage
+    assert "hC3: a '$hc_attr mod' mention of MorphRegistration::Enabled( does NOT satisfy the production variant pin" \
+        _exits_with 1 bash "$GATE" --repo-root "$FIX"
+    assert "hC3: ...stderr names the engine.rs VARIANT-PIN violation" \
+        bash -c "bash '$GATE' --repo-root '$FIX' 2>&1 >/dev/null | grep -qF 'gui/src-tauri/src/engine.rs: does not pass the required'"
+done
+
+# hC4 — release control: hC1's module, then a production bundler on lines
+# 11-16; its half-call at line 13 is flagged, the in-module one at line 6 is not.
+write_baseline
+mkdir -p "$FIX/crates/reify-foo/src"
+{
+    hc_any_module "$HC_ANY"
+    cat <<'RS'
+
+pub fn build_engine() -> reify_eval::Engine {
+    let mut engine = reify_eval::Engine::new();
+    reify_eval::compute_targets::register_compute_fns(&mut engine);
+    reify_eval::register_shell_extract_compute_fns(&mut engine);
+    engine
+}
+RS
+} > "$FIX/crates/reify-foo/src/lib.rs"
+stage
+assert "hC4: a production bundler after a '#[cfg(any(test, …))] pub mod' is flagged" \
+    _exits_with 1 bash "$GATE" --repo-root "$FIX"
+assert "hC4: ...stderr names the production half-call (lib.rs:13)" \
+    bash -c "bash '$GATE' --repo-root '$FIX' 2>&1 >/dev/null | grep -qF 'crates/reify-foo/src/lib.rs:13:'"
+assert "hC4: ...and not the in-module one (lib.rs:6)" \
+    bash -c "! bash '$GATE' --repo-root '$FIX' 2>&1 >/dev/null | grep -qF 'crates/reify-foo/src/lib.rs:6:'"
+
+# hC5 — mod-required rule kept: a compound-gated bare `use` arms nothing, so
+# the production bundler below it is flagged at its half-call on line 6.
+for hc_attr in "$HC_ANY" "$HC_ALL"; do
+    write_baseline
+    mkdir -p "$FIX/crates/reify-foo/src"
+    cat > "$FIX/crates/reify-foo/src/lib.rs" <<RS
+$hc_attr
+use reify_eval::compute_targets;
+
+pub fn build_engine() -> reify_eval::Engine {
+    let mut engine = reify_eval::Engine::new();
+    reify_eval::compute_targets::register_compute_fns(&mut engine);
+    reify_eval::register_shell_extract_compute_fns(&mut engine);
+    engine
+}
+RS
+    stage
+    assert "hC5: a bare '$hc_attr use …;' does not swallow the next production bundler" \
+        _exits_with 1 bash "$GATE" --repo-root "$FIX"
+    assert "hC5: ...stderr names its half-call (lib.rs:6)" \
+        bash -c "bash '$GATE' --repo-root '$FIX' 2>&1 >/dev/null | grep -qF 'crates/reify-foo/src/lib.rs:6:'"
+done
+
+# hC6 — negative pass: any(test, X) with X reachable in a production build
+# does NOT arm, so the module's half-call on line 6 is flagged, not skipped.
+for hc_attr in '#[cfg(any(test, feature = "gui"))]' '#[cfg(any(test, target_endian = "big"))]'; do
+    write_baseline
+    mkdir -p "$FIX/crates/reify-foo/src"
+    hc_any_module "$hc_attr" > "$FIX/crates/reify-foo/src/lib.rs"
+    stage
+    assert "hC6: half-calls inside a '$hc_attr pub mod' ARE flagged" \
+        _exits_with 1 bash "$GATE" --repo-root "$FIX"
+    assert "hC6: ...stderr names the in-module half-call (lib.rs:6)" \
+        bash -c "bash '$GATE' --repo-root '$FIX' 2>&1 >/dev/null | grep -qF 'crates/reify-foo/src/lib.rs:6:'"
+done
+
+# ===========================================================================
 # hE — THE INLINE ESCAPE IS A *COMMENT* CONCEPT.
 #
 # `// trampoline-registration:allow` declares an intentional direct half-call.

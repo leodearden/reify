@@ -71,7 +71,7 @@
 #
 # PRODUCTION-CODE VIEW: each raw line is matched in its production-code view —
 # comments dropped, string/char/raw-string contents blanked, braces counted on
-# that lexed view, `#[cfg(test)] mod` bodies skipped — produced by the shared
+# that lexed view, test-gated `mod` bodies skipped — produced by the shared
 # lexer in scripts/lib_rust_production_view.sh, whose header documents the
 # mechanism. A file whose lexer state is unbalanced at EOF gets a
 # verdict-neutral `WARN: … lexer state unbalanced at EOF` on stderr; promoting
@@ -96,7 +96,10 @@
 #
 # EXCLUDED:
 #   - comments and string literals, per the PRODUCTION-CODE VIEW above;
-#   - test code: `tests/` dirs (by path) and `#[cfg(test)] mod` BODIES
+#   - test code: `tests/` dirs (by path) and test-gated `mod` BODIES —
+#     `#[cfg(test)]`, `#[cfg(all(test, …))]`,
+#     `#[cfg(any(test, feature = "test…"))]`; the
+#     arming rule and its limits live in scripts/lib_rust_production_view.sh
 #     (brace-depth tracked, best-effort; a `mod IDENT` declaration must be
 #     seen before the block's opening brace — not necessarily on the same
 #     line, e.g. `mod tests` then `{` on the next line is honored too — so a
