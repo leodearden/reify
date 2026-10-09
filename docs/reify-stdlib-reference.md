@@ -2094,6 +2094,12 @@ The parametric spelling `Coupling<P>` and the projected associated type `P::Moti
 
 `Axis` (the `revolute()` parameter type and the `joint_axis(Revolute)` return type below) is a placeholder name owned by the geometry-transforms cluster, not by `std.mechanism`: at runtime it is a plain `Vector3<Dimensionless>`-shaped value today (a unit direction — the joint constructors reject a dimensioned axis), and its promotion to a distinct nominal type is tracked there.
 
+**Joint compliance — free vs constrained DOFs.** Each joint structure splits its six relative DOFs into *free* DOFs, which are its motion, and *constrained* DOFs. A free DOF may carry a spring (`spring_rate`; `none` means genuinely free, not rigid). Each symmetry group of constrained DOFs has one optional, isotropic compliance field, such as `radial_stiffness` or `tilt_stiffness`. Its default, `none`, is an ideal-rigid constraint. A free DOF has no compliance field, so `Prismatic(…, axial_stiffness: …)` is rejected with `E_CTOR_UNKNOWN_FIELD`. Only assembly modal analysis reads these fields, and kinematics ignores them. Joints built by the lowercase constructors below carry none and are ideal-rigid. A kind's groups are its declared `*_stiffness` params in `crates/reify-compiler/stdlib/kinematic.ri`, and the "Constrained-DOF compliance" block there gives each group's DOF directions.
+
+```
+let bearing = Prismatic(axis: vec3(1.0, 0.0, 0.0), radial_stiffness: some(200N/um), tilt_stiffness: some(5000N*m/rad^2))
+```
+
 **Constructors:**
 
 ```

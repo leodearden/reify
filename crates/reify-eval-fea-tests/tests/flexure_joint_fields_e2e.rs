@@ -1,8 +1,10 @@
-//! Eval round-trip tests for the flexure joint fields added in task 3849
-//! (Phase-1 of docs/prds/v0_3/compliant-joints-flexures.md).
+//! Eval round-trip tests for the compliant-joint fields on the std.kinematic
+//! joint structures: free-DOF compliance (task 3849, Phase-1 of
+//! docs/prds/v0_3/compliant-joints-flexures.md) and constrained-DOF compliance
+//! (task 7163, docs/prds/v0_6/assembly-modal-connection-graph.md §7 C2).
 //!
-//! Asserts that Revolute and Prismatic structure-def constructors carry the
-//! spring_rate / damping / neutral optional fields through the eval pipeline:
+//! Asserts that the structure-def constructors carry their optional compliance
+//! fields through the eval pipeline:
 //!   - a field supplied via `some(...)` → Value::Option(Some(Scalar{...}))
 //!   - a field omitted (defaults to `= none`) → Value::Option(None)
 
@@ -231,4 +233,124 @@ structure def Probe {
         }
         other => panic!("expected Value::StructureInstance for Probe.p, got {other:?}"),
     }
+}
+
+// ─── Constrained-DOF compliance (task 7163) ──────────────────────────────────
+
+/// Read the committed fixture. Path resolved from `CARGO_MANIFEST_DIR` so the
+/// test is location-independent.
+fn fixture_source() -> String {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/prd-gate/fixtures/joint_constrained_dof_compliance.ri");
+    std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("failed to read fixture {}: {}", path.display(), e))
+}
+
+/// Panics on any Error-severity compile diagnostic, so every test that evaluates
+/// the fixture also carries the `reify check` signal.
+fn eval_fixture() -> reify_eval::EvalResult {
+    let compiled = parse_and_compile_with_stdlib(&fixture_source());
+    make_simple_engine().eval(&compiled)
+}
+
+/// The fields of `JointConstrainedDofCompliance.<cell>`, which must have
+/// evaluated to a `kind` structure instance.
+fn joint_fields<'a>(
+    result: &'a reify_eval::EvalResult,
+    cell: &str,
+    kind: &str,
+) -> &'a PersistentMap<String, Value> {
+    let id = ValueCellId::new("JointConstrainedDofCompliance", cell);
+    match result.values.get(&id) {
+        Some(Value::StructureInstance(data)) => {
+            assert_eq!(data.type_name, kind, "{cell} should be a {kind} instance");
+            &data.fields
+        }
+        other => panic!("expected {cell} to evaluate to a {kind} instance, got {other:?}"),
+    }
+}
+
+fn expect_some_scalar(
+    fields: &PersistentMap<String, Value>,
+    key: &str,
+    si: f64,
+    dim: DimensionVector,
+) {
+    match field(fields, key) {
+        Some(Value::Option(Some(inner))) => match inner.as_ref() {
+            Value::Scalar {
+                si_value,
+                dimension,
+            } => {
+                assert!(
+                    (*si_value - si).abs() <= 1e-9 * si.abs(),
+                    "{key} should read back {si} (SI), got {si_value}"
+                );
+                assert_eq!(*dimension, dim, "{key} has the wrong dimension");
+            }
+            other => panic!("{key} should wrap a Scalar, got {other:?}"),
+        },
+        other => panic!("{key} should be Value::Option(Some(Scalar)), got {other:?}"),
+    }
+}
+
+fn expect_none(fields: &PersistentMap<String, Value>, key: &str) {
+    assert_eq!(
+        field(fields, key),
+        Some(&Value::Option(None)),
+        "omitted {key} must read back as none (ideal-rigid)"
+    );
+}
+
+const TRANSLATIONAL: DimensionVector = DimensionVector::TRANSLATIONAL_STIFFNESS;
+const ROTATIONAL: DimensionVector = DimensionVector::ROTATIONAL_STIFFNESS;
+
+/// Expected values are SI: the fixture's `210N/um` reads back as 2.1e8 N/m, and
+/// its rotational literals are already SI (N·m/rad²).
+#[test]
+fn constrained_dof_compliance_round_trips_through_ctor_form() {
+    let result = eval_fixture();
+
+    let air_bearing = joint_fields(&result, "air_bearing", "Prismatic");
+    expect_some_scalar(air_bearing, "radial_stiffness", 2.1e8, TRANSLATIONAL);
+    expect_some_scalar(air_bearing, "tilt_stiffness", 5100.0, ROTATIONAL);
+    expect_none(air_bearing, "torsional_stiffness");
+
+    let spindle = joint_fields(&result, "spindle", "Revolute");
+    expect_some_scalar(spindle, "axial_stiffness", 2.2e8, TRANSLATIONAL);
+    expect_some_scalar(spindle, "radial_stiffness", 2.3e8, TRANSLATIONAL);
+    expect_some_scalar(spindle, "tilt_stiffness", 5200.0, ROTATIONAL);
+
+    let quill = joint_fields(&result, "quill", "Cylindrical");
+    expect_some_scalar(quill, "radial_stiffness", 2.4e8, TRANSLATIONAL);
+    expect_some_scalar(quill, "tilt_stiffness", 5300.0, ROTATIONAL);
+
+    let puck = joint_fields(&result, "puck", "Planar");
+    expect_some_scalar(puck, "normal_stiffness", 2.5e8, TRANSLATIONAL);
+    expect_some_scalar(puck, "tilt_stiffness", 5400.0, ROTATIONAL);
+
+    let ball = joint_fields(&result, "ball", "Spherical");
+    expect_some_scalar(ball, "translational_stiffness", 2.6e8, TRANSLATIONAL);
+
+    let foot = joint_fields(&result, "foot", "Fixed");
+    expect_some_scalar(foot, "translational_stiffness", 2.7e8, TRANSLATIONAL);
+    expect_some_scalar(foot, "rotational_stiffness", 5500.0, ROTATIONAL);
+
+    let ideal = joint_fields(&result, "ideal", "Prismatic");
+    for key in ["radial_stiffness", "tilt_stiffness", "torsional_stiffness"] {
+        expect_none(ideal, key);
+    }
+}
+
+/// The connector form compiles to the synthetic `__connector_0` instance, which
+/// is the channel assembly-modal α extracts and δ reads (PRD C1). `reify check`
+/// cannot discriminate here (pre-task, an unknown connector-block param was
+/// dropped silently), so reading the value back is the signal.
+#[test]
+fn constrained_dof_compliance_round_trips_through_connector_form() {
+    let result = eval_fixture();
+    let connector = joint_fields(&result, "__connector_0", "Prismatic");
+    expect_some_scalar(connector, "radial_stiffness", 2.8e8, TRANSLATIONAL);
+    expect_some_scalar(connector, "tilt_stiffness", 5600.0, ROTATIONAL);
+    expect_none(connector, "torsional_stiffness");
 }
