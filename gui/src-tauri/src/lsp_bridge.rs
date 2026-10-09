@@ -185,18 +185,15 @@ pub async fn lsp_request_on_worker(
 /// The question this answers is "does this method mutate server-side document or
 /// session state?", and it is answered from the LSP specification's own notion
 /// of notifications-versus-requests — NOT from `reify-lsp`'s internal choice of
-/// which arms hop to [`tokio::task::spawn_blocking`].
+/// which arms carry blocking work ([`reify_lsp::blocking_work`]).
 ///
-/// That distinction is the whole reason this function exists rather than a
-/// method-keyed bypass of the lane. Keying on `spawn_blocking` would be the
-/// narrower change — those four arms are exactly the ones whose lane occupancy
-/// hurts most, since they hold a consumer for a workspace-wide walk while their
-/// deep frames run on the blocking pool's ~2 MiB threads — but it would couple
-/// `gui/src-tauri` to an implementation detail of another crate that this crate
-/// can neither observe nor test, and it would rot silently the day `reify-lsp`
-/// moved an arm. A pool subsumes it WITHOUT the coupling: work that gains
-/// nothing from the big stack merely occupies one of N consumers instead of the
-/// only one, and no list of `reify-lsp` internals is needed to say so.
+/// A method-keyed bypass of the lanes is not a candidate. The four blocking-work
+/// arms compute ON the thread that drives them (see [`LspBridge`]'s "Where
+/// blocking work runs"), so taking them off the lanes would hand their deep work
+/// back to a ~2 MiB thread, and keying on them would couple this crate to a
+/// `reify-lsp` placement detail it can neither observe nor test. The pool bounds
+/// their occupancy without either cost: a workspace-wide walk holds one of N
+/// consumers instead of the only one.
 ///
 /// # Why the fallthrough is the ORDERED lane
 ///

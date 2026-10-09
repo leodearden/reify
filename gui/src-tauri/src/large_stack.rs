@@ -128,28 +128,6 @@
 //!
 //! The worst outcome anywhere in this module is therefore a loud panic or an
 //! `Err` — never a silent hang, and never a nested runtime.
-//!
-//! ## Measured: a runtime torn down under a lane job does NOT panic the job
-//!
-//! Task 6517's brief predicted a shutdown edge — that a lane job outliving its
-//! runtime would hit an `unwrap`/`expect` on a `spawn_blocking` `JoinHandle` in
-//! `reify-lsp` and turn into a job panic. It was checked against the source and
-//! is REFUTED. In `crates/reify-lsp/src/server.rs`, each of
-//! `ReifyLanguageServer`'s `goto_definition`, `prepare_rename`, `rename` and
-//! `references` handles its `JoinError` with `tracing::error!` plus `None`.
-//! There is no `unwrap` or `expect` on any of those `JoinHandle`s — the only
-//! `unwrap`-family calls in those four bodies are `goto_definition`'s and
-//! `prepare_rename`'s `stdlib_path.unwrap_or_else(..)` on an
-//! `Option<PathBuf>`, both INSIDE a blocking closure and neither fallible. So
-//! the observed behaviour is: those arms log and answer `None`, and the
-//! predicted job panic does not occur.
-//!
-//! Cited by SYMBOL rather than by line, deliberately: these citations are what
-//! makes this section a measurement rather than a reassurance, and a line number
-//! in a file this crate does not own is invalidated by any `use` added above it,
-//! leaving the claim reading as verified when it is not. It is true of
-//! `reify-lsp` as of task 6517, and a future change there could make it false
-//! without anything here noticing.
 
 /// Stack size for the large-stack compile thread: 256 MiB.
 ///
@@ -525,10 +503,10 @@ fn assert_not_reentrant(sender: &JobSender) {
 /// `didChange`. Task 6517 replaces that with two lanes: [`LSP_LANE`] keeps ONE
 /// consumer for the state-mutating and lifecycle methods, and [`LSP_POOL`] runs
 /// the eight read-only queries on [`LSP_POOL_SIZE`] consumers. The sharpest case
-/// — a workspace-wide `references` or `rename` holding a consumer for its full
-/// duration while its deep frames run on the blocking pool's ~2 MiB threads
-/// (module docs item 1) — now costs one of [`LSP_POOL_SIZE`] consumers instead
-/// of the only one.
+/// — a workspace-wide `references` or `rename`, whose parse and compile run ON
+/// the consumer driving it (see [`crate::lsp_bridge::LspBridge`]'s "Where
+/// blocking work runs") — now occupies one of [`LSP_POOL_SIZE`] consumers
+/// instead of the only one.
 ///
 /// A pool needed two arguments before it could be an instance of this mechanism
 /// rather than a second design. Both are discharged:
@@ -1007,7 +985,7 @@ pub(crate) static LSP_LANE: Lane = Lane::new(LSP_WORKER_THREAD_NAME);
 /// membership is not.
 ///
 /// This is what bounds head-of-line blocking among LSP queries instead of
-/// leaving them serialized (module docs item 2), and — being declared with
+/// leaving them serialized (module docs item 1), and — being declared with
 /// [`Lane::cancelling_pool`] — it is also the ONE destination in the process
 /// that may discard an abandoned job unrun ([`OnAbandon`]). Both properties are
 /// licensed by the same fact and by nothing else: every method routed here is
@@ -1237,10 +1215,10 @@ where
 ///    `CancellationToken`), and neither is `futures`.
 /// 2. **It can only skip work that has NOT STARTED.** It never interrupts work
 ///    in flight: there is no cancellation point inside
-///    [`tokio::runtime::Handle::block_on`], and the four `spawn_blocking` arms
-///    are uninterruptible once started in any case — dropping a `JoinHandle`
-///    does not cancel a blocking task. Claiming more than "dropped from the
-///    queue" would be false.
+///    [`tokio::runtime::Handle::block_on`], and a blocking-work arm's
+///    parse/compile runs synchronously inside that `block_on` on the consumer
+///    (the bridge's `CallingThread` placement), with no await point to stop at.
+///    Claiming more than "dropped from the queue" would be false.
 /// 3. **It applies ONLY to an [`OnAbandon::Discard`] destination — today, only
 ///    [`LSP_POOL`].** The blanket version of this rule was a defect. What it
 ///    costs, why the parity argument that licensed it does not hold, and why

@@ -493,9 +493,10 @@ async fn lsp_request_on_worker_matches_direct_results_for_covered_methods() {
 
 /// The bridge's PLACEMENT: `definition`, `prepareRename`, `rename` and
 /// `references` answer with tokio's blocking pool saturated, so their
-/// parse/compile work runs on whatever thread polls `handle_request` — on the
-/// LSP lane, the lane's 256 MiB stack (test (d) pins that the lane is that
-/// thread) — rather than on a ~2 MiB blocking-pool thread.
+/// parse/compile work runs on whatever thread polls `handle_request` rather than
+/// on a ~2 MiB blocking-pool thread. In production that is the query-pool
+/// consumer that drives it: the production entry point reaches a lane thread per
+/// (q), and (i) routes these four to `LSP_POOL`.
 ///
 /// Driven through [`lsp_request_impl`], not `lsp_request_on_worker`: the
 /// property under test is the bridge's placement, and parking the
@@ -874,14 +875,8 @@ async fn lsp_request_impl_valid_json_passes_json_parse_step() {
 // bounds that by routing LSP work over TWO lanes instead of one.
 //
 // The classification key is LSP PROTOCOL semantics — does this method mutate
-// server-side document/session state? — and deliberately NOT `reify-lsp`'s
-// internal choice of which arms hop to `spawn_blocking`. Keying on the latter
-// would have been the narrower change (it is exactly the four arms whose lane
-// occupancy hurts most), but it couples `gui/src-tauri` to an implementation
-// detail of another crate that this crate cannot observe or test, and that would
-// rot silently the day `reify-lsp` moved an arm. The pool subsumes it without
-// the coupling: work that gains nothing from the big stack merely occupies one
-// of N consumers instead of the only one.
+// server-side document/session state? — for the reasons `lane_for_method`'s
+// "The classification key is LSP PROTOCOL semantics" doc gives.
 //
 // * ORDERED lane (`LSP_LANE`, size 1, unchanged): the six state-mutating and
 //   lifecycle methods — plus, conservatively, ANY unrecognised method.
@@ -899,11 +894,6 @@ async fn lsp_request_impl_valid_json_passes_json_parse_step() {
 // pre-5772 behaviour on the multi-threaded tauri runtime and which `reify-lsp`'s
 // own `RwLock`/`Mutex` already serialise for safety: a query can read older
 // text — staleness, never corruption.
-//
-// SCOPE UNCHANGED by this split: the four `spawn_blocking` arms still run their
-// compiler work on tokio's blocking pool at the std ~2 MiB default, whichever
-// lane submitted them (task #6195). What changes is that they no longer occupy
-// the ONLY LSP consumer while doing it.
 
 /// The order-sensitive / lifecycle methods, which must keep a single FIFO
 /// consumer. `initialize` / `initialized` / `shutdown` are session lifecycle;
@@ -926,8 +916,9 @@ const ORDERED_METHODS: [&str; 6] = [
 /// The read-only query methods, which may run concurrently.
 ///
 /// None mutates server-side state: each takes `state.read().await`, clones what
-/// it needs and drops the guard (four of them then hop to `spawn_blocking`).
-/// Reordering these against a notification can only make one read older text.
+/// it needs and drops the guard (four of them then run blocking work on the
+/// consumer that drives them). Reordering these against a notification can only
+/// make one read older text.
 const QUERY_METHODS: [&str; 8] = [
     "textDocument/completion",
     "textDocument/hover",
