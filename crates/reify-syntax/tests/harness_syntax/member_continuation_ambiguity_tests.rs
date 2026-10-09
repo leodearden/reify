@@ -1148,6 +1148,29 @@ fn an_indented_annotation_after_a_valued_member_is_reported() {
         "@face",
         "@",
     );
+    assert_top_keeps_its_bare_value(INDENTED_ANNOTATION);
+}
+
+/// The report comes from clause 6, not clause 5: the `@` row was split off as
+/// its own member, so `let top` keeps its bare `body` value.
+fn assert_top_keeps_its_bare_value(source: &str) {
+    let parsed = reify_syntax::parse(source, ModulePath::single("m"));
+    let top = parsed
+        .declarations
+        .iter()
+        .find_map(|d| match d {
+            reify_ast::Declaration::Structure(s) => s.members.iter().find_map(|m| match m {
+                reify_ast::MemberDecl::Let(l) if l.name == "top" => Some(l),
+                _ => None,
+            }),
+            _ => None,
+        })
+        .expect("no `let top` member");
+    assert!(
+        matches!(&top.value.kind, reify_ast::ExprKind::Ident(n) if n == "body"),
+        "the `@` row was joined onto `top`: {:?}",
+        top.value.kind
+    );
 }
 
 /// With no following member, `lower_members` would drop the annotation with
@@ -1156,6 +1179,31 @@ fn an_indented_annotation_after_a_valued_member_is_reported() {
 fn an_indented_trailing_annotation_is_reported() {
     let source = "structure S {\n    let top = body\n        @face(\"top\")\n}\n";
     assert_one_member_continuation_error_at("indented trailing annotation", source, "@face", "@");
+    assert_top_keeps_its_bare_value(source);
+}
+
+/// Clause 6 measures from the row where the predecessor ENDS.
+#[test]
+fn an_indented_annotation_after_a_multi_row_member_is_reported() {
+    let source = "structure S {\n    let xs = [\n        1,\n    ]\n        @deprecated(\"x\")\n    param y : Real = 1\n}\n";
+    assert_one_member_continuation_error_at("after a multi-row let", source, "@deprecated", "@");
+}
+
+/// An annotation on the row where a multi-row predecessor ends is not
+/// detached, although it starts on a later row than the predecessor starts.
+#[test]
+fn an_annotation_on_a_multi_row_members_last_row_is_clean() {
+    let source = "structure S {\n    where enabled {\n        let a = 1mm\n    } @deprecated(\"x\")\n    param y : Real = 1\n}\n";
+    let parsed = reify_syntax::parse(source, ModulePath::single("m"));
+    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+}
+
+/// Every consecutive pair is checked: the annotation at the member column is
+/// clean, and the one indented under it is reported.
+#[test]
+fn an_indented_annotation_stacked_under_another_is_reported() {
+    let source = "structure S {\n    let top = body\n    @deprecated(\"x\")\n        @face(\"top\")\n    param y : Real = 1\n}\n";
+    assert_one_member_continuation_error_at("stacked indented annotation", source, "@face", "@");
 }
 
 /// The rule is about layout, not about what the preceding member ends with.
@@ -1179,6 +1227,8 @@ fn an_annotation_at_the_member_column_is_clean() {
         include_str!("../../../reify-cli/tests/fixtures/annotation_after_constraint.ri"),
         // First member: no preceding member to read it as a continuation of.
         "structure S {\n        @deprecated(\"x\")\n    param y : Real = 1\n}\n",
+        // Stacked annotations, both at the member column.
+        "structure S {\n    let top = body\n    @deprecated(\"x\")\n    @deprecated(\"y\")\n    param y : Real = 1\n}\n",
     ];
     for source in cases {
         let parsed = reify_syntax::parse(source, ModulePath::single("m"));
