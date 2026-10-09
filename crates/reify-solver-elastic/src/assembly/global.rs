@@ -3687,4 +3687,137 @@ mod tests {
             ControlFlow::Break(())
         });
     }
+
+    /// Run `assemble_stiffness` with a poll that counts its calls and breaks
+    /// on call `break_on` (never, if `None`). Returns the result and the count.
+    fn assemble_counting_polls(
+        n_nodes: usize,
+        elements: &[AssemblyElement<'_>],
+        threads: usize,
+        break_on: Option<usize>,
+    ) -> (ControlFlow<(), SparseRowMat<usize, f64>>, usize) {
+        let threads = NonZeroUsize::new(threads).expect("test thread count >= 1");
+        let mut calls = 0;
+        let result = assemble_stiffness(n_nodes, elements, threads, &mut || {
+            calls += 1;
+            if Some(calls) == break_on {
+                ControlFlow::Break(())
+            } else {
+                ControlFlow::Continue(())
+            }
+        });
+        (result, calls)
+    }
+
+    /// Minimum single-thread poll count for a fixture to count as spanning
+    /// many work chunks, so that more threads genuinely split its rows.
+    const MANY_CHUNKS_POLLS: usize = 16;
+
+    /// BT7: `K` at `threads ∈ {2, 8}` is bitwise equal to `threads = 1` on a
+    /// fixture that spans many work chunks. Returns the `threads = 1` matrix.
+    fn assert_thread_invariant(
+        label: &str,
+        n_nodes: usize,
+        elements: &[AssemblyElement<'_>],
+    ) -> SparseRowMat<usize, f64> {
+        let (_, polls) = assemble_counting_polls(n_nodes, elements, 1, None);
+        assert!(
+            polls >= MANY_CHUNKS_POLLS,
+            "{label}: precondition — only {polls} polls at threads=1; \
+             grow the fixture so threads > 1 split its rows",
+        );
+        let k1 = assemble_uncancelled(n_nodes, elements, 1);
+        assert!(
+            k1.val().iter().any(|&v| v != 0.0),
+            "{label}: K is all-zero — fixture is degenerate",
+        );
+        for threads in [2, 8] {
+            let k = assemble_uncancelled(n_nodes, elements, threads);
+            assert_csr_bitwise_eq(&k, &k1, &format!("{label}: threads={threads} vs 1"));
+        }
+        k1
+    }
+
+    const BT7_P1_SEED: u64 = 0x5EED_0001;
+
+    #[test]
+    fn assemble_stiffness_bitwise_identical_across_threads_on_unstructured_p1_mesh() {
+        let (nodes, conns) = unstructured_p1_box(8, 7, 6, BT7_P1_SEED);
+        let k_es = stiffnesses(&nodes, &conns, element_stiffness_p1);
+        assert_thread_invariant("unstructured P1", nodes.len(), &elements_of(&conns, &k_es));
+    }
+
+    #[test]
+    fn assemble_stiffness_bitwise_identical_across_threads_on_unstructured_p2_mesh() {
+        let (nodes, conns) = unstructured_p2_box(4, 3, 3, 0x5EED_0003);
+        let k_es = stiffnesses(&nodes, &conns, element_stiffness_p2);
+        assert_thread_invariant("unstructured P2", nodes.len(), &elements_of(&conns, &k_es));
+    }
+
+    /// Mixed `d_e` across chunk boundaries: thread-invariant, still equal to
+    /// the encounter-order fold, orphan rows still empty.
+    #[test]
+    fn assemble_stiffness_bitwise_identical_across_threads_on_mixed_tet_shell_mesh() {
+        let (n_nodes, conns, k_es) = replicated_mixed_tet_shell(96);
+        let elements = elements_of(&conns, &k_es);
+        let k1 = assert_thread_invariant("mixed tet+shell", n_nodes, &elements);
+        assert_csr_bitwise_eq(
+            &k1,
+            &encounter_order_reference(n_nodes, &elements),
+            "mixed tet+shell vs encounter-order reference",
+        );
+    }
+
+    /// BT7b: a poll that breaks on its third call cancels assembly — `Break`
+    /// carries no matrix — and is never called again.
+    #[test]
+    fn assemble_stiffness_returns_break_when_poll_breaks_on_third_call() {
+        let (nodes, conns) = unstructured_p1_box(8, 7, 6, BT7_P1_SEED);
+        let k_es = stiffnesses(&nodes, &conns, element_stiffness_p1);
+        let elements = elements_of(&conns, &k_es);
+
+        let (_, uncancelled_polls) = assemble_counting_polls(nodes.len(), &elements, 1, None);
+        assert!(
+            uncancelled_polls >= 3,
+            "precondition — an uncancelled run polls only {uncancelled_polls} times",
+        );
+
+        let (result, calls) = assemble_counting_polls(nodes.len(), &elements, 1, Some(3));
+        assert!(matches!(result, ControlFlow::Break(())), "expected Break");
+        assert_eq!(calls, 3, "poll must not be called after it breaks");
+    }
+
+    #[test]
+    fn assemble_stiffness_break_on_first_poll_returns_break_at_eight_threads() {
+        let (nodes, conns) = unstructured_p1_box(8, 7, 6, BT7_P1_SEED);
+        let k_es = stiffnesses(&nodes, &conns, element_stiffness_p1);
+        let elements = elements_of(&conns, &k_es);
+
+        let (result, calls) = assemble_counting_polls(nodes.len(), &elements, 8, Some(1));
+        assert!(matches!(result, ControlFlow::Break(())), "expected Break");
+        assert_eq!(calls, 1, "poll must not be called after it breaks");
+    }
+
+    /// A panic in whichever thread fills a chunk reaches the caller with its
+    /// original payload: every element shares a K_e with no data, so the
+    /// pattern pass succeeds and the value pass indexes out of bounds.
+    #[test]
+    #[should_panic(expected = "out of bounds")]
+    fn assemble_stiffness_worker_panic_payload_propagates() {
+        let (nodes, conns) = unstructured_p1_box(8, 7, 6, BT7_P1_SEED);
+        let malformed = ElementStiffness {
+            n_dofs: 12,
+            data: vec![],
+        };
+        let elements: Vec<AssemblyElement<'_>> = conns
+            .iter()
+            .enumerate()
+            .map(|(id, conn)| AssemblyElement {
+                id,
+                connectivity: conn,
+                k_e: &malformed,
+            })
+            .collect();
+        let _ = assemble_uncancelled(nodes.len(), &elements, 8);
+    }
 }
