@@ -1,0 +1,8 @@
+// B14 (R5): volume() of an OpenVDB-owned isosurface body; QueryKernelMismatch once gamma lands, observed via reify build -o x.stl.
+structure def OwnerRouting {
+    param size : Length = 20mm
+    let solid = box(size, size, size)
+    let shell = isosurface(solid)
+    let v = volume(shell)
+    constraint v > 0mm^3
+}

@@ -1,0 +1,6 @@
+// R10 negative: labelled arguments on an sdf_* row are refused with SdfLabelledArgUnsupported until #6313 (never a silent positional misbind).
+structure def LabelledSdfArgs {
+    let a = sdf_sphere(8mm)
+    let b = sdf_box(10mm, 10mm, 10mm)
+    let d = sdf_difference(b: a, a: b)
+}

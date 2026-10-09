@@ -1,0 +1,7 @@
+// B19 (R3): sdf_from_solid reaching implicit() is a compile-time ImplicitFromSolidInRealization once iota lands; inline and let-bound (ValueRef closure) forms.
+structure def FromSolidInRealization {
+    let a = box(20mm, 20mm, 20mm)
+    let body = implicit(sdf_union(sdf_from_solid(a, 1mm), sdf_sphere(1mm)), vec3(40mm, 40mm, 40mm), 2mm)
+    let ff = sdf_union(sdf_from_solid(a, 1mm), sdf_sphere(1mm))
+    let body_ref = implicit(ff, vec3(40mm, 40mm, 40mm), 2mm)
+}
