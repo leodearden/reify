@@ -4,27 +4,14 @@
 use reify_ast::*;
 use reify_core::ModulePath;
 
-const AFTER_VALUED_PARAM: &str = "structure S {
-    param a : Length = 5mm
-    @solver_hint(\"discrete_set\", standard_bolt_lengths)
-    param b : Length = auto
-}
-";
-
-const AFTER_LET_CATALOG: &str = "structure S {
-    let sizes = [22mm, 24mm, 26mm]
-    @solver_hint(\"discrete_set\", sizes)
-    param b : Length = auto
-}
-";
-
-const AFTER_CONSTRAINT: &str = "structure S {
-    param a : Length = 5mm
-    constraint a >= 1mm
-    @solver_hint(\"discrete_set\", standard_bolt_lengths)
-    param b : Length = auto
-}
-";
+// The three repros are the CLI e2e fixtures, shared so every layer reads the
+// same source.
+const AFTER_VALUED_PARAM: &str =
+    include_str!("../../../reify-cli/tests/fixtures/annotation_after_valued_param.ri");
+const AFTER_LET_CATALOG: &str =
+    include_str!("../../../reify-cli/tests/fixtures/annotation_after_let_catalog.ri");
+const AFTER_CONSTRAINT: &str =
+    include_str!("../../../reify-cli/tests/fixtures/annotation_after_constraint.ri");
 
 const AFTER_SUB: &str = "structure S {
     sub s = Foo()

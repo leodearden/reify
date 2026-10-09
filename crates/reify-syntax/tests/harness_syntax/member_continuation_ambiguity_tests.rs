@@ -1172,15 +1172,15 @@ fn an_indented_annotation_is_reported_regardless_of_the_preceding_member_kind() 
 
 #[test]
 fn an_annotation_at_the_member_column_is_clean() {
-    let hint = "    @solver_hint(\"discrete_set\", standard_bolt_lengths)\n";
     let cases = [
-        format!("structure S {{\n    param a : Length = 5mm\n{hint}    param b : Length = auto\n}}\n"),
-        "structure S {\n    let sizes = [22mm, 24mm, 26mm]\n    @solver_hint(\"discrete_set\", sizes)\n    param b : Length = auto\n}\n".to_string(),
-        format!("structure S {{\n    param a : Length = 5mm\n    constraint a >= 1mm\n{hint}    param b : Length = auto\n}}\n"),
+        // #8300's repros, shared with the CLI e2e.
+        include_str!("../../../reify-cli/tests/fixtures/annotation_after_valued_param.ri"),
+        include_str!("../../../reify-cli/tests/fixtures/annotation_after_let_catalog.ri"),
+        include_str!("../../../reify-cli/tests/fixtures/annotation_after_constraint.ri"),
         // First member: no preceding member to read it as a continuation of.
-        "structure S {\n        @deprecated(\"x\")\n    param y : Real = 1\n}\n".to_string(),
+        "structure S {\n        @deprecated(\"x\")\n    param y : Real = 1\n}\n",
     ];
-    for source in &cases {
+    for source in cases {
         let parsed = reify_syntax::parse(source, ModulePath::single("m"));
         assert!(parsed.errors.is_empty(), "{source}: {:?}", parsed.errors);
         assert_no_member_continuation_error(source, source);
