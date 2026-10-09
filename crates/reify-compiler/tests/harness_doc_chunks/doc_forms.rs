@@ -21,7 +21,7 @@ use reify_compiler::parse_with_stdlib;
 use reify_core::ModulePath;
 
 use crate::chunk_markdown::tagged_fence_bodies;
-use crate::chunk_prose::{code_spans, unfenced_prose};
+use crate::chunk_prose::{CodeSpan, code_spans, unfenced_prose};
 
 /// A documented form's declared argument count: either an exact arity, or a
 /// variadic form carrying the given MINIMUM arity.
@@ -113,10 +113,23 @@ pub(crate) struct DocumentedForm {
     pub(crate) span: String,
 }
 
+/// Every code span in `markdown`'s unfenced prose, its text trimmed, in
+/// document order; `Err` when the prose cannot be read. The one scan each prose
+/// gate filters for the spans it owns.
+pub(crate) fn unfenced_code_spans(markdown: &str) -> Result<Vec<CodeSpan>, String> {
+    Ok(code_spans(&unfenced_prose(markdown)?)
+        .into_iter()
+        .map(|span| CodeSpan {
+            line: span.line,
+            text: span.text.trim().to_string(),
+        })
+        .collect())
+}
+
 /// Every signature-shaped code span in `markdown`'s unfenced prose, in document
 /// order; `Err` when the prose cannot be read.
 pub(crate) fn documented_unfenced_forms(markdown: &str) -> Result<Vec<DocumentedForm>, String> {
-    Ok(code_spans(&unfenced_prose(markdown)?)
+    Ok(unfenced_code_spans(markdown)?
         .into_iter()
         .filter_map(|span| {
             doc_form_of_span(&span.text).map(|form| DocumentedForm {
@@ -848,6 +861,30 @@ fn fence_call_forms_names_a_fence_it_cannot_walk_by_label_and_position() {
     let markdown = "```reify\nenum FitType { Clearance, Transition, Interference }\n```\n";
 
     fence_call_forms(markdown, "demo.md's Fits section");
+}
+
+#[test]
+fn unfenced_code_spans_reads_every_span_of_unfenced_prose_trimmed_with_its_line() {
+    let markdown = "Intro ` volume(solid)` and `2*r`.\n\n```reify\nlet b = `inner`\n```\n\n\
+                    <!-- `noted(x)` -->\n| `a` | `box(1mm, 1mm, 1mm)` |\n";
+
+    let read: Vec<(usize, String)> = unfenced_code_spans(markdown)
+        .expect("the synthetic chunk's prose is readable")
+        .into_iter()
+        .map(|span| (span.line, span.text))
+        .collect();
+
+    assert_eq!(
+        read,
+        vec![
+            (1, "volume(solid)".to_string()),
+            (1, "2*r".to_string()),
+            (8, "a".to_string()),
+            (8, "box(1mm, 1mm, 1mm)".to_string()),
+        ],
+        "every span of unfenced prose, trimmed, in document order with its line — a fence's or \
+         a maintainer note's never"
+    );
 }
 
 #[test]

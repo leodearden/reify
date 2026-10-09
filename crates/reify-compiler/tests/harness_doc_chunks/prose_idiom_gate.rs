@@ -34,21 +34,13 @@ use reify_compiler::{compile_with_stdlib, parse_with_stdlib};
 use reify_core::{DiagnosticCode, ModulePath};
 
 use crate::chunk_io::{chunk_label, read_chunk_file, report};
-use crate::chunk_prose::{code_spans, unfenced_prose};
-use crate::doc_forms::{doc_form_of_span, span_callee};
+use crate::chunk_prose::CodeSpan;
+use crate::doc_forms::{doc_form_of_span, span_callee, unfenced_code_spans};
 use crate::module_compile::ModuleCompile;
 use crate::signature_fixtures::{discredits_calls, rendered_diagnostic};
 
 /// What marks a span as eliding part of its argument list.
 const ELISIONS: &[&str] = &["...", "…"];
-
-/// One prose idiom: a call-shaped, unelided, non-signature code span.
-#[derive(Debug, PartialEq)]
-struct ProseIdiom {
-    /// 1-based chunk line of the span's opening backtick run.
-    line: usize,
-    span: String,
-}
 
 /// Is the trimmed code span `span` a prose idiom (see the module doc)?
 fn is_prose_idiom(span: &str) -> bool {
@@ -59,16 +51,10 @@ fn is_prose_idiom(span: &str) -> bool {
 
 /// Every prose idiom in `markdown`'s unfenced prose, trimmed, in document
 /// order; `Err` when the prose cannot be read.
-fn prose_idioms(markdown: &str) -> Result<Vec<ProseIdiom>, String> {
-    Ok(code_spans(&unfenced_prose(markdown)?)
+fn prose_idioms(markdown: &str) -> Result<Vec<CodeSpan>, String> {
+    Ok(unfenced_code_spans(markdown)?
         .into_iter()
-        .filter_map(|span| {
-            let text = span.text.trim();
-            is_prose_idiom(text).then(|| ProseIdiom {
-                line: span.line,
-                span: text.to_string(),
-            })
-        })
+        .filter(|span| is_prose_idiom(&span.text))
         .collect())
 }
 
@@ -101,8 +87,8 @@ fn idiom_violations(span: &str) -> Vec<String> {
 
 /// The report for `idiom`, an idiom of the chunk named `stem`; `None` when it
 /// compiles clean.
-fn idiom_violation(stem: &str, idiom: &ProseIdiom) -> Option<String> {
-    let diagnostics = idiom_violations(&idiom.span);
+fn idiom_violation(stem: &str, idiom: &CodeSpan) -> Option<String> {
+    let diagnostics = idiom_violations(&idiom.text);
     (!diagnostics.is_empty()).then(|| {
         format!(
             "{}:{} — `{}` is an idiom the compiler does not accept:\n{}\nFIX: correct the idiom \
@@ -111,7 +97,7 @@ fn idiom_violation(stem: &str, idiom: &ProseIdiom) -> Option<String> {
              mention rather than an idiom.",
             chunk_label(stem),
             idiom.line,
-            idiom.span,
+            idiom.text,
             ModuleCompile::rendered(&diagnostics)
         )
     })
@@ -174,7 +160,7 @@ fn every_prose_idiom_in_a_gated_chunk_compiles() {
         assert!(
             idioms
                 .iter()
-                .any(|idiom| span_callee(&idiom.span) == Some(*callee)),
+                .any(|idiom| span_callee(&idiom.text) == Some(*callee)),
             "{} has a `{callee}(…)` idiom in its prose, but the scan did not read it — the \
              extraction no longer reaches it (or the idiom was rewritten: re-pick the sentinel)",
             chunk_label(stem)
@@ -219,7 +205,7 @@ structure def S {
     let read: Vec<(usize, String)> = prose_idioms(markdown)
         .expect("the synthetic chunk's prose is readable")
         .into_iter()
-        .map(|idiom| (idiom.line, idiom.span))
+        .map(|idiom| (idiom.line, idiom.text))
         .collect();
 
     assert_eq!(
