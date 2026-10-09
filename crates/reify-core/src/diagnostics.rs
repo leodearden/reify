@@ -6910,6 +6910,20 @@ mod tests {
         assert_eq!(s, "\"BucklingOptionUnsupported\"");
     }
 
+    // --- ModalOptionUnsupported (task 6097 — W_ModalOptionUnsupported) ---
+    // Pairs with `mechanism_shift_unsupported_diagnostic` in
+    // `crates/reify-eval/src/modal_ops.rs`. Only the wire identifier is pinned,
+    // for the reasons the BucklingOptionUnsupported block above records.
+
+    /// Under `feature = "serde"`, `DiagnosticCode::ModalOptionUnsupported`
+    /// serializes as `"ModalOptionUnsupported"` (PascalCase).
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_modal_option_unsupported_serde_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::ModalOptionUnsupported).unwrap();
+        assert_eq!(s, "\"ModalOptionUnsupported\"");
+    }
+
     // --- §5.3/§5.4 shift-invert DiagnosticCode tests (task α, #7258) ---
     // Three new shift-contract codes, minted here unemitted: γ (#7260) and δ
     // (#7261) emit them, β (#7259) raises `ShiftAtEigenvalue`.  Mirrors the

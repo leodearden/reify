@@ -300,6 +300,18 @@ fn shift_changes_the_mode_set_and_warns_once() {
         unshifted.with_code(DiagnosticCode::ShiftSkippedModes),
     );
 
+    // (4b) NOT CLAIMED UN-HONORED. This path honors the shift, so the lumped
+    //      path's "declared but not yet honored" warning (#6097) would be a
+    //      false message here.
+    assert!(
+        shifted
+            .with_code(DiagnosticCode::ModalOptionUnsupported)
+            .is_empty(),
+        "the FEA path honors shift_frequency, so the shifted run must carry NO \
+         ModalOptionUnsupported diagnostic, got: {:?}",
+        shifted.with_code(DiagnosticCode::ModalOptionUnsupported),
+    );
+
     // (5) INV-SF-2 severity-hygiene corollary. This is `cmd_eval`'s exact
     //     predicate (`crates/reify-cli/src/main.rs`, the general severity fold —
     //     INV-SF-2 forbids a per-code bolt-on), so asserting it here is
