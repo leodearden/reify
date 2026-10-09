@@ -464,7 +464,10 @@ structure def ModalResult {
 //                          see the ANGULAR-RATE TRAP note on
 //                          `RayleighDamping`.
 //                          HONOR STATUS: honored by `modal_analysis` (the FEA
-//                          path, #7261).
+//                          path, #7261); not yet honored on
+//                          `mechanism_modal_analysis` (lumped) — it warns
+//                          `W_ModalOptionUnsupported` and solves at 0Hz;
+//                          owner #7263.
 //   tol                 — eigensolver convergence tolerance. Default 1e-9
 //                          (added later) encoded as the decimal literal
 //                          `0.000000001` — Reify's number grammar has no

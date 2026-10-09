@@ -60,7 +60,10 @@
 //                               `ModalResult.boundary_conditions` is `undef`,
 //                               not an echo of the caller's list. The same
 //                               ModalOptions type is accepted for API
-//                               consistency.
+//                               consistency. A non-zero shift_frequency is not
+//                               yet honored here: it warns
+//                               `W_ModalOptionUnsupported` and the solve
+//                               returns the lowest modes (owner #7263).
 //
 // Return type: `ModalResult` — same 6-field structure as `modal_analysis`;
 // modes are ordered ascending by frequency.  Each Mode carries `.frequency`

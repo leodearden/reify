@@ -2083,6 +2083,22 @@ fn mechanism_modal_result_value(
     }))
 }
 
+/// The lumped path's `W_ModalOptionUnsupported` Warning for a non-zero
+/// `ModalOptions.shift_frequency` (Hz) — `None` at the `0Hz` default. The
+/// lumped model always returns its lowest modes, so a requested shift would
+/// otherwise be dropped silently.
+fn mechanism_shift_unsupported_diagnostic(shift_hz: f64) -> Option<Diagnostic> {
+    (shift_hz != 0.0).then(|| {
+        Diagnostic::warning(format!(
+            "W_ModalOptionUnsupported: ModalOptions.shift_frequency = {shift_hz} Hz is \
+             declared but not yet honored by the mechanism_modal_analysis (lumped) \
+             trampoline (the lumped model always returns its lowest modes; #7263); \
+             solve falls back to the default 0 Hz",
+        ))
+        .with_code(DiagnosticCode::ModalOptionUnsupported)
+    })
+}
+
 /// Core implementation for the `modal::mechanism_modal` compute target (task
 /// #4271).
 ///
@@ -2117,6 +2133,9 @@ fn mechanism_modal_result_value(
 ///
 /// **`ModalOptions.n_modes` is respected**: the returned modes list is
 /// truncated to `n_modes` when `n_modes < n_physical_modes`.
+/// `ModalOptions.shift_frequency` is read and WARNED, not honored: a non-zero
+/// value carries [`mechanism_shift_unsupported_diagnostic`]'s Warning and the
+/// solve still returns the lowest modes (honoring it is #7263's).
 /// `ModalOptions.boundary_conditions` and `reference_direction` are unused
 /// (they are FEA-mesh concepts without meaning in the lumped model), so
 /// `ModalResult.boundary_conditions` is `Undef` rather than an echo. Any
@@ -2401,6 +2420,9 @@ fn run_mechanism_modal(
     // caller explicitly asked for fewer modes than we computed.
     // (`options` is bound at step (4c) above.)
     let (requested_n_modes, _, _, _) = extract_eigen_knobs(options);
+    diagnostics.extend(mechanism_shift_unsupported_diagnostic(
+        extract_shift_frequency_hz(options),
+    ));
     if requested_n_modes < modes_list.len() {
         diagnostics.push(Diagnostic::warning(format!(
             "I_MechanismModalNModesTruncated: ModalOptions.n_modes={requested_n_modes} \
