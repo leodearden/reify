@@ -13671,6 +13671,12 @@ mod tests {
     /// iteration cap is 1, so the loop does one mark-driven refine and two
     /// solves. That bounds wallclock while still proving the refine ran.
     fn adaptive_options() -> Value {
+        adaptive_options_with_iterations(1)
+    }
+
+    /// [`adaptive_options`] with the iteration cap set to
+    /// `max_refinement_iterations`; `0` means one solve and no refine.
+    fn adaptive_options_with_iterations(max_refinement_iterations: i64) -> Value {
         let fields: PersistentMap<String, Value> = [
             (
                 "shell_force".to_string(),
@@ -13682,7 +13688,10 @@ mod tests {
             ),
             ("adaptive".to_string(), Value::Bool(true)),
             ("target_accuracy".to_string(), Value::Real(1.0e-6)),
-            ("max_refinement_iterations".to_string(), Value::Int(1)),
+            (
+                "max_refinement_iterations".to_string(),
+                Value::Int(max_refinement_iterations),
+            ),
             ("max_dofs".to_string(), Value::Int(2_000_000)),
         ]
         .into_iter()
@@ -13700,27 +13709,57 @@ mod tests {
     fn run_adaptive_trampoline(
         realization_inputs: &[RealizationReadHandle],
     ) -> (PersistentMap<String, Value>, Vec<reify_core::Diagnostic>) {
+        run_adaptive_trampoline_on([1.0, 0.1, 0.1], realization_inputs, adaptive_options())
+    }
+
+    /// The steel cantilever's isotropic material, as
+    /// [`run_adaptive_trampoline_outcome_on`] hands it to the trampoline.
+    const ADAPTIVE_STEEL: IsotropicElastic = IsotropicElastic {
+        youngs_modulus: 200e9,
+        poisson_ratio: 0.3,
+    };
+
+    /// Drive the trampoline on a `dims` cantilever (1000 N tip load, fixed
+    /// root) with the given realization inputs and `ElasticOptions` value,
+    /// returning the raw outcome.
+    fn run_adaptive_trampoline_outcome_on(
+        dims: [f64; 3],
+        realization_inputs: &[RealizationReadHandle],
+        options: Value,
+    ) -> ComputeOutcome {
         let value_inputs = [
-            shell9_make_isotropic_material(200e9, 0.3),
-            shell9_make_len(1.0),
-            shell9_make_len(0.1),
-            shell9_make_len(0.1),
+            shell9_make_isotropic_material(
+                ADAPTIVE_STEEL.youngs_modulus,
+                ADAPTIVE_STEEL.poisson_ratio,
+            ),
+            shell9_make_len(dims[0]),
+            shell9_make_len(dims[1]),
+            shell9_make_len(dims[2]),
             // No `target` on any Load/Support, so `bc_override` stays `None`
             // and BC selection is coordinate-based - the only model that
             // survives a remesh.
             shell9_make_point_loads(1000.0),
             shell9_make_supports(),
-            adaptive_options(),
+            options,
         ];
         let cancellation = CancellationHandle::new();
-        let outcome = solve_elastic_static_trampoline(
+        solve_elastic_static_trampoline(
             &value_inputs,
             realization_inputs,
             &Value::Undef,
             None,
             &cancellation,
-        );
-        match outcome {
+        )
+    }
+
+    /// [`run_adaptive_trampoline_outcome_on`], unwrapped into
+    /// `(fields, diagnostics)`; panics unless the outcome is `Completed`.
+    fn run_adaptive_trampoline_on(
+        dims: [f64; 3],
+        realization_inputs: &[RealizationReadHandle],
+        options: Value,
+    ) -> (PersistentMap<String, Value>, Vec<reify_core::Diagnostic>) {
+        match run_adaptive_trampoline_outcome_on(dims, realization_inputs, options) {
             ComputeOutcome::Completed {
                 result,
                 diagnostics,
@@ -14140,23 +14179,7 @@ mod tests {
     fn run_adaptive_trampoline_outcome(
         realization_inputs: &[RealizationReadHandle],
     ) -> ComputeOutcome {
-        let value_inputs = [
-            shell9_make_isotropic_material(200e9, 0.3),
-            shell9_make_len(1.0),
-            shell9_make_len(0.1),
-            shell9_make_len(0.1),
-            shell9_make_point_loads(1000.0),
-            shell9_make_supports(),
-            adaptive_options(),
-        ];
-        let cancellation = CancellationHandle::new();
-        solve_elastic_static_trampoline(
-            &value_inputs,
-            realization_inputs,
-            &Value::Undef,
-            None,
-            &cancellation,
-        )
+        run_adaptive_trampoline_outcome_on([1.0, 0.1, 0.1], realization_inputs, adaptive_options())
     }
 
     /// The Warning marker a fallback case must carry IN THIS BUILD.
@@ -14282,6 +14305,248 @@ mod tests {
             "expected SizeHintsLengthMismatch, got: {err:?}",
         );
     }
+
+    // ── task 8246: an adaptive solve reports its FINAL iterate on the seed grid ──
+
+    /// The `(tip_force, pressures, body_force)` the trampoline extracts from
+    /// [`run_adaptive_trampoline_outcome_on`]'s load and material inputs.
+    fn adaptive_test_loads() -> ExtractedLoads {
+        let material = shell9_make_isotropic_material(
+            ADAPTIVE_STEEL.youngs_modulus,
+            ADAPTIVE_STEEL.poisson_ratio,
+        );
+        extract_loads(&shell9_make_point_loads(1000.0), extract_density(&material))
+            .expect("a PointLoad list is a well-formed load list")
+    }
+
+    /// The result grid the trampoline builds from a seed solve: the solve
+    /// mesh's AABB at the solve's element counts.
+    fn seed_grid_of(seed: &CantileverFeaSolve) -> GridSpec {
+        let (bounds_min, bounds_max) = aabb(&seed.coords);
+        GridSpec {
+            bounds_min,
+            bounds_max,
+            counts: [seed.nx, seed.ny, seed.nz],
+        }
+    }
+
+    /// The `SampledField` behind a result channel, unwrapping the `Option`
+    /// that carries `error_indicator`.
+    fn result_sampled_field(fields: &PersistentMap<String, Value>, name: &str) -> SampledField {
+        match fields.get(name) {
+            Some(Value::Option(Some(inner))) => expect_sampled_field(inner, name),
+            Some(Value::Option(None)) => panic!("{name} must be populated, got none"),
+            Some(other) => expect_sampled_field(other, name),
+            None => panic!("ElasticResult must carry {name}"),
+        }
+    }
+
+    fn result_max_von_mises(fields: &PersistentMap<String, Value>) -> f64 {
+        match fields.get("max_von_mises") {
+            Some(Value::Scalar { si_value, .. }) => *si_value,
+            other => panic!("max_von_mises must be a Scalar, got {other:?}"),
+        }
+    }
+
+    fn result_global_error(fields: &PersistentMap<String, Value>) -> f64 {
+        match fields.get("global_relative_energy_error") {
+            Some(Value::Option(Some(inner))) => match inner.as_ref() {
+                Value::Real(r) => *r,
+                other => panic!("global_relative_energy_error must wrap a Real, got {other:?}"),
+            },
+            other => panic!("global_relative_energy_error must be Some, got {other:?}"),
+        }
+    }
+
+    fn data_bits(sf: &SampledField) -> Vec<u64> {
+        sf.data.iter().map(|v| v.to_bits()).collect()
+    }
+
+    /// `actual` equals `expected` up to evaluation order: NaN (the
+    /// out-of-solid sentinel) at exactly the same indices, and every finite
+    /// value within `1e-12` of the channel's largest magnitude.
+    fn assert_nan_aware_close(actual: &[f64], expected: &[f64], what: &str) {
+        assert_eq!(actual.len(), expected.len(), "{what}: data length");
+        let scale = expected
+            .iter()
+            .filter(|v| v.is_finite())
+            .fold(0.0_f64, |m, v| m.max(v.abs()));
+        let tol = 1e-12 * scale;
+        for (i, (a, e)) in actual.iter().zip(expected).enumerate() {
+            assert_eq!(a.is_nan(), e.is_nan(), "{what}[{i}]: NaN pattern differs ({a} vs {e})");
+            assert!(
+                e.is_nan() || (a - e).abs() <= tol,
+                "{what}[{i}]: {a:e} vs expected {e:e} (tol {tol:e})",
+            );
+        }
+    }
+
+    /// The result's displacement and stress are `solve`'s nodal fields
+    /// resampled onto `grid`.
+    fn assert_reports_solve_on_grid(
+        fields: &PersistentMap<String, Value>,
+        solve: &CantileverFeaSolve,
+        grid: &GridSpec,
+    ) {
+        let nodal_stress = super::super::flatten_nodal_stress(&solve.nodal_stress);
+        let expected = resample_multi_nodal_to_grid(
+            &solve.coords,
+            &solve.tet_connectivity,
+            &[(&solve.u, 3, "displacement"), (&nodal_stress, 9, "stress")],
+            grid,
+            1e-9,
+        );
+        for (name, expected) in ["displacement", "stress"].into_iter().zip(&expected) {
+            assert_nan_aware_close(&result_sampled_field(fields, name).data, &expected.data, name);
+        }
+    }
+
+    /// Each named channel samples one grid in `a` and `b`, and it is `grid`.
+    fn assert_channels_share_grid(
+        a: &PersistentMap<String, Value>,
+        b: &PersistentMap<String, Value>,
+        grid: &GridSpec,
+        names: &[&str],
+    ) {
+        let node_counts: Vec<usize> = grid.counts.iter().map(|c| c + 1).collect();
+        for &name in names {
+            let (sa, sb) = (result_sampled_field(a, name), result_sampled_field(b, name));
+            assert!(sa.grid_metadata_eq(&sb), "{name}: the two results sample different grids");
+            assert_eq!(sa.bounds_min, grid.bounds_min, "{name}: bounds_min is not the seed grid's");
+            assert_eq!(sa.bounds_max, grid.bounds_max, "{name}: bounds_max is not the seed grid's");
+            let axis_lens: Vec<usize> = sa.axis_grids.iter().map(Vec::len).collect();
+            assert_eq!(axis_lens, node_counts, "{name}: axis node counts are not the seed grid's");
+        }
+    }
+
+    /// task 8246: once the uniform lane has refined, the result reports the
+    /// loop's FINAL iterate, resampled onto the SEED solve's grid.
+    ///
+    /// The final iterate is reproduced independently: the same problem run
+    /// through the same budget, then the lane's exact solve call at the grid
+    /// the loop ended on. A stubby 0.2 m beam keeps the doubled grids cheap
+    /// in a debug build; whether the loop stops after one refine (Stalled) or
+    /// two (MaxIterations) is read from the problem, never hard-coded.
+    #[test]
+    fn adaptive_uniform_lane_reports_the_final_refined_mesh_on_the_seed_grid() {
+        const DIMS: [f64; 3] = [0.2, 0.1, 0.1];
+        let (refined, _) =
+            run_adaptive_trampoline_on(DIMS, &[], adaptive_options_with_iterations(2));
+        let (seed_only, _) =
+            run_adaptive_trampoline_on(DIMS, &[], adaptive_options_with_iterations(0));
+
+        let (tip_force, pressures, body_force) = adaptive_test_loads();
+        let mut problem = CantileverAdaptiveProblem::new(
+            ADAPTIVE_STEEL,
+            DIMS[0],
+            DIMS[1],
+            DIMS[2],
+            tip_force,
+            pressures.clone(),
+            body_force,
+            None,
+        );
+        let budget = RefinementBudget {
+            target_accuracy: 1e-6,
+            max_refinement_iterations: 2,
+            max_dofs: 2_000_000,
+        };
+        run_adaptive_refinement(&mut problem, &budget, DORFLER_THETA)
+            .expect("the stubby synthetic box solves at every grid");
+        let seed_counts = synthetic_grid_counts(DIMS[0], DIMS[2]);
+        assert_eq!(seed_counts, (12, 1, 6), "fixture: the stubby beam's seed grid");
+        assert_ne!(
+            problem.grid, seed_counts,
+            "fixture: an unreachable target must buy at least one refine",
+        );
+
+        let solve_at = |grid_override| {
+            solve_cantilever_fea(
+                &MaterialModel::Isotropic(ADAPTIVE_STEEL),
+                DIMS[0],
+                DIMS[1],
+                DIMS[2],
+                None,
+                tip_force,
+                None,
+                &pressures,
+                body_force,
+                true,
+                None,
+                None,
+                None,
+                grid_override,
+            )
+            .expect("the stubby synthetic box is not degenerate")
+            .0
+        };
+        let final_solve = solve_at(Some(problem.grid));
+        let seed_grid = seed_grid_of(&solve_at(None));
+
+        let refined_max_von_mises = result_max_von_mises(&refined);
+        assert_eq!(
+            refined_max_von_mises.to_bits(),
+            final_solve.max_von_mises.to_bits(),
+            "(a) max_von_mises must be the FINAL iterate's: reported {refined_max_von_mises:e}, \
+             final mesh {:e}",
+            final_solve.max_von_mises,
+        );
+        assert_ne!(
+            refined_max_von_mises,
+            result_max_von_mises(&seed_only),
+            "(b) a refined run must not report the seed solve's max_von_mises",
+        );
+        assert_channels_share_grid(
+            &refined,
+            &seed_only,
+            &seed_grid,
+            &["displacement", "stress", "error_indicator"],
+        );
+        assert_reports_solve_on_grid(&refined, &final_solve, &seed_grid);
+        assert_eq!(
+            result_global_error(&refined).to_bits(),
+            problem.last_global_indicator.to_bits(),
+            "(e) global_relative_energy_error must describe the same final iterate",
+        );
+        assert_ne!(
+            data_bits(&result_sampled_field(&refined, "error_indicator")),
+            data_bits(&result_sampled_field(&seed_only, "error_indicator")),
+            "(f) error_indicator must describe the final iterate, not the seed solve",
+        );
+    }
+
+    /// task 8246 guard: on a REALIZED seed the uniform fallback solves the
+    /// placeholder box (#8248), so its refined iterate must never replace the
+    /// realized seed's fields.
+    #[test]
+    fn adaptive_uniform_fallback_on_a_realized_seed_keeps_the_realized_seed_fields() {
+        const DIMS: [f64; 3] = [1.0, 0.1, 0.1];
+        let run = |iterations| {
+            run_adaptive_trampoline_on(
+                DIMS,
+                &[vm_read_handle(non_manifold_tet_mesh())],
+                adaptive_options_with_iterations(iterations),
+            )
+        };
+        let (one_refine, diags) = run(1);
+        let (zero_refine, _) = run(0);
+
+        assert!(
+            diags.iter().any(|d| d.message.contains("adaptive refinement finished")
+                && d.message.contains(UNIFORM_LANE_MARKER)
+                && d.message.contains("120×2×12")),
+            "fixture: the uniform fallback must have run and refined the 60×1×6 box once, \
+             got: {diags:?}",
+        );
+        for name in ["displacement", "stress", "max_von_mises", "converged", "iterations"] {
+            assert_eq!(
+                one_refine.get(name),
+                zero_refine.get(name),
+                "{name} must stay the realized seed's",
+            );
+        }
+    }
+
     // ── ruling #6164: the `rotation` derivative channel ───────────────────────
     //
     // step-5 RED. `rotation` = ∇×u / 2 is the DESIGNATED CROSSING where the
