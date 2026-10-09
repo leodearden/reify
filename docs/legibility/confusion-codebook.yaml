@@ -834,6 +834,12 @@ entries:
     origin_phase: implement
     manifested_phase: implement
     note: TaskOutput called with block:true and a 600000ms timeout three times in a row for the same background task_id ('berajlhv5') — a foreground polling loop that appears to hit its own timeout and get reissued rather than switching strategy (e.g. Monitor) after the first stall.
+  - date: '2026-10-08'
+    project: reify
+    session: 02d6e881-4dfa-4b8e-9c9e-ba1c47d37c4a
+    origin_phase: unknown
+    manifested_phase: verify
+    note: A foreground `until grep -q` polling loop waits on an async completion marker (`^rc=`) in a test log. The harness killed it with exit 137 before the wait finished, matching the 'foreground polling loop hits hard timeout, discarding the wait' pattern.
 - id: entry-cand-20260719-1
   title: Leak-status oracle unset silently downgrades leaked=0 into a false 'no leaks' signal
   severity: medium
@@ -2273,6 +2279,12 @@ entries:
     origin_phase: ops
     manifested_phase: ops
     note: 'watcher-rearm.sh retried 14 times (more severe than codebook''s 5x) with identical command and 3600-second timeout; run_in_background: true; no cosmetic variations visible across retries'
+  - date: '2026-10-08'
+    project: reify
+    session: 16ffd98f-72bb-4eea-83df-3a4ede488aa0
+    origin_phase: ops
+    manifested_phase: ops
+    note: watcher-rearm.sh with --timeout 3600 was retried many times with near-identical arguments and no change in approach, matching the CEILING retry pattern. The session did not end in a user interrupt (interrupt count is 0).
 - id: entry-cand-20260720-5
   title: watcher-rearm.sh CEILING outcome forces redundant manual polling
   severity: medium
@@ -4242,6 +4254,18 @@ entries:
     origin_phase: unknown
     manifested_phase: ops
     note: 'Rearm re-issued identically after first CEILING: turn 174 (3600s) and turn 189 (1172s timeout only change), both hit CEILING'
+  - date: '2026-10-08'
+    project: reify
+    session: 16ffd98f-72bb-4eea-83df-3a4ede488aa0
+    origin_phase: ops
+    manifested_phase: ops
+    note: A watcher-rearm Bash call with a 3600s ceiling and run_in_background was re-issued identically about 80 times, so the bounded-rearm wait was repeated unchanged after its own ceiling.
+  - date: '2026-10-08'
+    project: reify
+    session: 227bc601-4b73-48de-98ac-f077f7a598ee
+    origin_phase: unknown
+    manifested_phase: ops
+    note: Bash x16 re-issues the identical watcher-rearm command (--level 2 --timeout 3600, run_in_background) across repeated 1h slices. The digest does not show the ceiling being hit, so this is a partial match on the identical-re-issue pattern.
 - id: entry-cand-20260726-8
   title: Warm-lane .task/plan.json symlink resolves to empty/unreadable target with no error surfaced
   severity: medium
@@ -8536,6 +8560,12 @@ entries:
     origin_phase: recon
     manifested_phase: recon
     note: 'Turn 188: Bash(''sleep 90; echo waited'') blocked by the anti-chaining sandbox guard during agent-team escalation exploration for esc-5495-3; guard message explicitly redirects to Monitor/run_in_background, matching the generic sleep+check polling-chain block pattern rather than a background-task-output-tail variant.'
+  - date: '2026-10-08'
+    project: reify
+    session: 16ffd98f-72bb-4eea-83df-3a4ede488aa0
+    origin_phase: ops
+    manifested_phase: ops
+    note: A Bash call chaining sleep 25 with ls/grep/reap commands was blocked by the sandbox, and the guard message directed the agent to Monitor or run_in_background instead of shorter sleeps.
 - id: entry-cand-20260801-5
   title: Bash `rg` invocation fails — ripgrep binary absent from worktree environment
   severity: medium
@@ -8686,6 +8716,12 @@ entries:
     origin_phase: unknown
     manifested_phase: unknown
     note: Grep call against reify-compiler/tests used a JS/PCRE-style pattern with negative lookahead `(?!structure|"#)`; ripgrep's default regex engine rejected it with 'look-around, including look-ahead and look-behind, is not supported', confirming the agent assumed full PCRE support from the Grep tool.
+  - date: '2026-10-08'
+    project: reify
+    session: 9b63ab36-e909-4eb5-a74e-355508a150c9
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: At turn 208 the Grep tool rejected a look-behind pattern (?!\.) with 'look-around ... not supported'. At turn 212 the agent acknowledged the assumption of PCRE support as its own mistake and switched to a broader match. Phase is not supported by the digest, so both phases are unknown.
 - id: entry-cand-20260724-6
   title: Foreground build reproduction killed by harness timeout before yielding the real error
   severity: medium
@@ -9305,6 +9341,12 @@ entries:
     origin_phase: review
     manifested_phase: review
     note: The digest's 'User Correction' is the review-round adjudication prompt, which warns that the prior-round list mixes RESOLVED and DEFERRED (still-open) suggestions. This is the same conflation risk the entry describes. The truncated digest shows no outcome, so only the risk is evidenced.
+  - date: '2026-10-08'
+    project: reify
+    session: 34b8fc58-9bec-45b6-bfd0-d1bda896a861
+    origin_phase: review
+    manifested_phase: review
+    note: Review-round adjudication prompt explicitly warns that PRIOR-ROUND suggestions include DEFERRED, still-open items that must not be classed as settled. This matches the codebook pattern of conflating DEFERRED (still-open) prior suggestions with RESOLVED ones. The digest is truncated, so the adjudication outcome itself is not visible.
 - id: entry-cand-20260819-19
   title: Deferred tool (Monitor) invoked before its schema is loaded via ToolSearch, causing wrong-parameter InputValidationError
   severity: medium
@@ -9483,6 +9525,18 @@ entries:
     origin_phase: unknown
     manifested_phase: review
     note: The orchestrator-injected review-adjudication prompt (turn 3, 'You are adjudicating whether each CURRENT review suggestion...') is not a human correction, but the digest lists it under 'User Corrections'. This is the same mislabeling of injected system content as a user correction.
+  - date: '2026-10-08'
+    project: reify
+    session: b15fe42d-d46f-4908-bc13-1993a32926c5
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: The digest's User Corrections section lists the turn-7 /team command invocation, which is the initial task prompt rather than a user correction. This is the same digest-mislabeling pattern as the injected-notification case.
+  - date: '2026-10-08'
+    project: reify
+    session: 057b4b75-b1ba-4857-ae86-67a20f74ac7a
+    origin_phase: unknown
+    manifested_phase: recon
+    note: 'The digest''s ''User Corrections'' section contains a ''Task ID: 7435 ... Block reason: Architect reported task unactionable'' block, which is an injected task-block notification rather than a user correction. This matches the mislabeling pattern in this entry. Origin phase is not supported by the digest, so it is unknown.'
 - id: entry-cand-20260813-11
   title: Agent assumes earlier &&-chained command executed despite the whole chain being rejected upfront by an eval syntax error
   severity: medium
@@ -10031,6 +10085,12 @@ entries:
     origin_phase: verify
     manifested_phase: verify
     note: 'Turn 163: Probed path ''gui/src-tauri/sidecar/'' surfaces only as bare exit 2 with stderr redirected (2>&1), concealing ''No such file or directory'' diagnostic detail from the exit code alone'
+  - date: '2026-10-08'
+    project: reify
+    session: 16ffd98f-72bb-4eea-83df-3a4ede488aa0
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: A guessed docs path was probed with stderr suppressed, and the nonexistent path surfaced only as a bare exit 2 from ls after a 2>/dev/null grep.
 candidates:
 - id: cand-20260715-1
   title: Autonomous escalation watcher in non-DF project loses script context and env setup
@@ -26285,3 +26345,42 @@ candidates:
     origin_phase: unknown
     manifested_phase: architect
     evidence_quote: 'Task #7121 says its dependency #6526 ''creates the detector, the `is_in_scope` seam, and the `srccite:allow` marker this task widens and reuses''. ... #6526 is status=done ... That merge changes 20 files, all examples/*.ri (+79/-65), and nothing under crates/reify-audit/.'
+- id: cand-20261008-1
+  title: Info-level escalation park does not hold against the scheduler's stranded-task sweep
+  cause: Parking an info-level escalation is assumed to keep its task out of the scheduler's stranded-task sweep. The sweep re-pends the task regardless, so the park silently fails to hold and the task can dispatch or be re-pended unexpectedly until it is set to deferred.
+  area: escalation / orchestrator scheduling
+  first_seen: '2026-10-08'
+  disposition: pending
+  sightings:
+  - date: '2026-10-08'
+    project: reify
+    session: 16ffd98f-72bb-4eea-83df-3a4ede488aa0
+    origin_phase: ops
+    manifested_phase: ops
+    evidence_quote: Parking an info-level escalation doesn't stop the scheduler's stranded-task sweep, which re-pended it. That's a known trap with a memory entry, and I missed it.
+- id: cand-20261008-2
+  title: Generated ESM script contains top-level return, failing node syntax check
+  cause: A script generated for PRD decomposition verification places a bare `return` at module top level in a .mjs file. Node's ES module parser rejects this with 'Illegal return statement', so the script must be rewritten before it can run.
+  area: prd-decompose tooling / generated workflow scripts
+  first_seen: '2026-10-08'
+  disposition: pending
+  sightings:
+  - date: '2026-10-08'
+    project: reify
+    session: b15fe42d-d46f-4908-bc13-1993a32926c5
+    origin_phase: decompose
+    manifested_phase: decompose
+    evidence_quote: '/tmp/claude-1000/-home-leo-src-reify/b15fe42d-d46f-4908-bc13-1993a32926c5/scratchpad/prd-decompose-verify-isol.mjs:718 return _wfResult; ^^^^^^ SyntaxError: Illegal return statement'
+- id: cand-20261008-3
+  title: Workflow launched with unfilled placeholder argument, discarding a full agent run
+  cause: A decompose workflow was launched with a placeholder argument still in place instead of the real value. The run consumed a full agent's token budget before the mistake was noticed and the run was discarded.
+  area: prd-decompose workflow launch / argument handling
+  first_seen: '2026-10-08'
+  disposition: pending
+  sightings:
+  - date: '2026-10-08'
+    project: reify
+    session: b15fe42d-d46f-4908-bc13-1993a32926c5
+    origin_phase: decompose
+    manifested_phase: decompose
+    evidence_quote: One D3 launch went out with a placeholder argument by my mistake. It ran a single agent (~69k tokens) and was discarded.
