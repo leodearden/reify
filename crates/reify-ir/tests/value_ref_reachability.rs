@@ -8,6 +8,7 @@
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
+use std::collections::BTreeSet;
 
 use reify_ast::QuantifierKind;
 use reify_core::{ContentHash, Type, ValueCellId};
@@ -163,20 +164,51 @@ fn composite() -> CompiledExpr {
     ])
 }
 
-fn corpus() -> Vec<(&'static str, CompiledExpr)> {
+/// One corpus expression and the dependency set it must report, written out
+/// by hand so the shared visitor's arms are pinned by something other than
+/// the visitor itself.
+struct Case {
+    name: &'static str,
+    expr: CompiledExpr,
+    depends_on: BTreeSet<ValueCellId>,
+}
+
+fn case(
+    name: &'static str,
+    expr: CompiledExpr,
+    depends_on: impl IntoIterator<Item = ValueCellId>,
+) -> Case {
+    Case {
+        name,
+        expr,
+        depends_on: depends_on.into_iter().collect(),
+    }
+}
+
+fn cells(members: &[&str]) -> Vec<ValueCellId> {
+    members.iter().map(|m| cell(m)).collect()
+}
+
+fn corpus() -> Vec<Case> {
     vec![
-        (
+        case(
             "literal",
             CompiledExpr::literal(Value::Bool(true), Type::Bool),
+            [],
         ),
-        ("value_ref", r("a")),
-        (
+        case("value_ref", r("a"), cells(&["a"])),
+        case(
             "cross_sub_geometry_ref",
             CompiledExpr::cross_sub_geometry_ref(cross_sub_cell(), Type::Geometry),
+            [cross_sub_cell()],
         ),
-        ("binop", add(r("a"), r("b"))),
-        ("unop", CompiledExpr::unop(UnOp::Neg, r("a"), scalar())),
-        (
+        case("binop", add(r("a"), r("b")), cells(&["a", "b"])),
+        case(
+            "unop",
+            CompiledExpr::unop(UnOp::Neg, r("a"), scalar()),
+            cells(&["a"]),
+        ),
+        case(
             "function_call",
             node(CompiledExprKind::FunctionCall {
                 function: ResolvedFunction {
@@ -185,17 +217,19 @@ fn corpus() -> Vec<(&'static str, CompiledExpr)> {
                 },
                 args: vec![r("a"), r("b")],
             }),
+            cells(&["a", "b"]),
         ),
-        (
+        case(
             "conditional",
             node(CompiledExprKind::Conditional {
                 condition: Box::new(r("a")),
                 then_branch: Box::new(r("b")),
                 else_branch: Box::new(r("c")),
             }),
+            cells(&["a", "b", "c"]),
         ),
-        (
-            "match",
+        case(
+            "match_does_not_hide_its_binders",
             CompiledExpr::match_expr(
                 r("a"),
                 vec![
@@ -213,85 +247,121 @@ fn corpus() -> Vec<(&'static str, CompiledExpr)> {
                 ],
                 scalar(),
             ),
+            cells(&["a", "b", "y_bind", "c"]),
         ),
-        (
+        case(
             "user_function_call",
             CompiledExpr::user_function_call("f".to_string(), vec![r("a"), r("b")], scalar()),
+            cells(&["a", "b"]),
         ),
-        ("lambda", lambda_capturing_a_b()),
-        ("list_literal", list(vec![r("a"), r("b")])),
-        (
+        case("lambda", lambda_capturing_a_b(), cells(&["a", "b"])),
+        case(
+            "list_literal",
+            list(vec![r("a"), r("b")]),
+            cells(&["a", "b"]),
+        ),
+        case(
             "reflective_cell_list",
             CompiledExpr::reflective_cell_list(
                 vec![r("a"), r("b")],
                 Type::List(Box::new(scalar())),
             ),
+            cells(&["a", "b"]),
         ),
-        (
+        case(
             "set_literal",
             CompiledExpr::set_literal(vec![r("a"), r("b")], Type::Set(Box::new(scalar()))),
+            cells(&["a", "b"]),
         ),
-        (
+        case(
             "map_literal",
             CompiledExpr::map_literal(vec![(r("a"), r("b")), (r("c"), r("d"))], Type::Bool),
+            cells(&["a", "b", "c", "d"]),
         ),
-        (
+        case(
             "index_access",
             CompiledExpr::index_access(r("a"), r("b"), scalar()),
+            cells(&["a", "b"]),
         ),
-        (
+        case(
             "method_call",
             CompiledExpr::method_call(r("a"), "m".to_string(), vec![r("b"), r("c")], scalar()),
+            cells(&["a", "b", "c"]),
         ),
-        ("quantifier", quantifier_binding_v()),
-        ("nested_quantifier", nested_quantifier()),
-        (
+        case(
+            "quantifier",
+            quantifier_binding_v(),
+            cells(&["v", "c", "f"]),
+        ),
+        case(
+            "nested_quantifier",
+            nested_quantifier(),
+            cells(&["c", "d", "f"]),
+        ),
+        case(
             "quantifier_over_capturing_lambda",
             quantifier_over_capturing_lambda(),
+            cells(&["c", "g"]),
         ),
-        (
+        case(
             "option_some",
             CompiledExpr::option_some(r("a"), Type::Option(Box::new(scalar()))),
+            cells(&["a"]),
         ),
-        (
+        case(
             "option_none",
             CompiledExpr::option_none(Type::Option(Box::new(scalar()))),
+            [],
         ),
-        (
+        case(
             "meta_access",
             CompiledExpr::meta_access("E".to_string(), "k".to_string()),
+            [],
         ),
-        (
+        case(
             "determinacy_predicate",
             CompiledExpr::determinacy_predicate(DeterminacyPredicateKind::Determined, cell("d")),
+            cells(&["d"]),
         ),
-        (
+        case(
             "range_constructor",
             CompiledExpr::range_constructor(Some(r("a")), Some(r("b")), true, false, Type::Bool),
+            cells(&["a", "b"]),
         ),
-        (
+        case(
             "range_constructor_upper_only",
             CompiledExpr::range_constructor(None, Some(r("b")), false, true, Type::Bool),
+            cells(&["b"]),
         ),
-        (
+        case(
             "ad_hoc_selector",
             CompiledExpr::ad_hoc_selector(
                 r("a"),
                 SelectorKind::Point,
                 vec![r("b"), r("c"), r("d")],
             ),
+            cells(&["a", "b", "c", "d"]),
         ),
-        (
+        case(
             "purpose_reflective_aggregation",
             CompiledExpr::purpose_reflective_aggregation(
                 "subject".to_string(),
                 "params".to_string(),
                 Type::Bool,
             ),
+            [],
         ),
-        ("structure_instance_ctor", structure_ctor_with_lets()),
-        ("resolve_selector", CompiledExpr::resolve_selector(r("a"))),
-        ("composite", composite()),
+        case(
+            "structure_instance_ctor_excludes_its_lets",
+            structure_ctor_with_lets(),
+            cells(&["a", "b"]),
+        ),
+        case(
+            "resolve_selector",
+            CompiledExpr::resolve_selector(r("a")),
+            cells(&["a"]),
+        ),
+        case("composite", composite(), cells(&["a", "b", "c", "d", "f"])),
     ]
 }
 
@@ -324,8 +394,21 @@ fn reaches(expr: &CompiledExpr, target: &ValueCellId) -> bool {
 }
 
 #[test]
+fn collect_value_refs_reports_each_cases_hand_written_dependency_set() {
+    for Case {
+        name,
+        expr,
+        depends_on,
+    } in corpus()
+    {
+        let collected: BTreeSet<ValueCellId> = expr.collect_value_refs().into_iter().collect();
+        assert_eq!(collected, depends_on, "{name}");
+    }
+}
+
+#[test]
 fn the_predicate_is_consulted_on_exactly_the_refs_collect_value_refs_reports() {
-    for (name, expr) in corpus() {
+    for Case { name, expr, .. } in corpus() {
         let mut consulted = Vec::new();
         let matched = expr.contains_value_ref_matching(|id| {
             consulted.push(id.clone());
@@ -346,7 +429,7 @@ fn the_predicate_is_consulted_on_exactly_the_refs_collect_value_refs_reports() {
 #[test]
 fn per_cell_membership_agrees_with_collect_value_refs() {
     let universe = universe();
-    for (name, expr) in corpus() {
+    for Case { name, expr, .. } in corpus() {
         let collected = expr.collect_value_refs();
         for target in &universe {
             assert_eq!(
