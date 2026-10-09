@@ -1040,23 +1040,6 @@ pub fn solve_elastic_static_trampoline(
         return ComputeOutcome::Cancelled;
     }
 
-    // ── (6c) Post-solve FEA diagnostics (task 2929) ───────────────────────────
-    //
-    // Non-convergence advisory: CG did not converge within max_iter iterations.
-    // `SOLVER_MAX_ITER` is the shared const used by `solve_cantilever_fea`'s
-    // `CgSolverOptions`; referencing the same const here guarantees the diagnostic
-    // message ("did not converge after N/M iterations") is always consistent with
-    // the actual solver limit.  The residual is not surfaced by `CantileverFeaSolve`
-    // so `None` is passed.
-    // Advisory (Warning on Completed) — a partially-converged result is still
-    // returned; non-convergence is never .ri-triggerable for the well-conditioned
-    // fixed cantilever, so the classifier is covered by unit tests (step-1).
-    if let Some(non_conv) =
-        classify_convergence(fea.converged, fea.iterations, SOLVER_MAX_ITER, None)
-    {
-        route_diagnostics.push(fea_diagnostic_to_core(&non_conv, None));
-    }
-
     // ── (7) Build ElasticResult StructureInstance ────────────────────────────
     //
     // StructureTypeId(u32::MAX) is a synthetic sentinel for this slice.
@@ -1080,8 +1063,8 @@ pub fn solve_elastic_static_trampoline(
 
     // ── (7a) The Regular3D result grid, built from the SEED solve ────────────
     //
-    // Every Sampled channel is resampled onto this grid in §7b, including an
-    // adaptive run's refined iterate.
+    // Every Sampled channel is resampled onto this grid, including an
+    // adaptive run's refined iterate and its error_indicator.
     //
     // Grid counts = solve-mesh element counts (nx × ny × nz); grid nodes =
     // counts + 1 per axis. Bounds = the per-axis AABB of the SOLVE mesh
@@ -1187,7 +1170,7 @@ pub fn solve_elastic_static_trampoline(
     // solve is interruptible at CG granularity (the gmsh remesh itself is an
     // FFI call and is not).
     let adaptive_params = extract_adaptive_params(options_vi);
-    let adaptive_lane: Option<(IsotropicElastic, AdaptiveLaneOutcome)> =
+    let (aposteriori_fields, refined_solve): ([(String, Value); 3], Option<CantileverFeaSolve>) =
         if adaptive_params.adaptive && let MaterialModel::Isotropic(iso) = &model {
             let budget = RefinementBudget {
                 target_accuracy: adaptive_params.target_accuracy,
@@ -1312,20 +1295,19 @@ pub fn solve_elastic_static_trampoline(
                 // the single-shot solve above with no caller-visible signal
                 // beyond this diagnostic.
                 let (nx, ny, nz) = problem.grid;
+                let iterates = problem.iterates;
                 let diagnostic = Diagnostic::info(format!(
                     "adaptive refinement finished at {} DOFs on a {nx}×{ny}×{nz} grid",
-                    problem.last_n_dofs
+                    iterates.last_n_dofs
                 ));
-                let global_relative_energy_error = problem.last_global_indicator;
-                let refined_solve = if uniform_lane_solves_the_seed_geometry {
-                    problem.into_refined_solve()
-                } else {
-                    None
-                };
                 Ok(AdaptiveLaneOutcome {
                     status,
-                    global_relative_energy_error,
-                    refined_solve,
+                    global_relative_energy_error: iterates.last_global_indicator,
+                    refined_iterate: if uniform_lane_solves_the_seed_geometry {
+                        iterates.into_refined_iterate()
+                    } else {
+                        None
+                    },
                     diagnostic,
                 })
             };
@@ -1359,14 +1341,15 @@ pub fn solve_elastic_static_trampoline(
                             // refine ran. Both wordings keep the same
                             // `elements N -> M` tail so the parse contract holds
                             // either way.
-                            let diagnostic = Diagnostic::info(if problem.refine_count == 0 {
+                            let iterates = problem.iterates;
+                            let diagnostic = Diagnostic::info(if iterates.refine_count == 0 {
                                 format!(
                                     "adaptive refinement finished at {} DOFs; the gmsh-realized \
                                      LOCALIZED lane was selected but the budget terminated \
                                      before any mark-driven remesh ran (0 refinement \
                                      iterations): elements {n_elements_before} -> \
                                      {n_elements_after}",
-                                    problem.last_n_dofs
+                                    iterates.last_n_dofs
                                 )
                             } else {
                                 format!(
@@ -1377,13 +1360,13 @@ pub fn solve_elastic_static_trampoline(
                                      {n_elements_after}. Cost note: each refinement iteration \
                                      is a FULL remesh from the extracted boundary surface, not \
                                      an incremental subdivision",
-                                    problem.last_n_dofs, problem.refine_count
+                                    iterates.last_n_dofs, iterates.refine_count
                                 )
                             });
                             Ok(AdaptiveLaneOutcome {
                                 status,
-                                global_relative_energy_error: problem.last_global_indicator,
-                                refined_solve: problem.into_refined_solve(),
+                                global_relative_energy_error: iterates.last_global_indicator,
+                                refined_iterate: iterates.into_refined_iterate(),
                                 diagnostic,
                             })
                         }
@@ -1405,7 +1388,12 @@ pub fn solve_elastic_static_trampoline(
                 }
                 None => run_uniform_lane(),
             };
-            let lane = match lane_outcome {
+            let AdaptiveLaneOutcome {
+                status,
+                global_relative_energy_error,
+                refined_iterate,
+                diagnostic,
+            } = match lane_outcome {
                 Ok(lane) => lane,
                 Err(degenerate) => return degenerate_mesh_outcome(degenerate),
             };
@@ -1421,8 +1409,27 @@ pub fn solve_elastic_static_trampoline(
             if ctx_cancel.as_ref().is_some_and(|c| c.is_cancelled()) {
                 return ComputeOutcome::Cancelled;
             }
-            route_diagnostics.push(lane.diagnostic.clone());
-            Some((*iso, lane))
+            route_diagnostics.push(diagnostic);
+            // The error indicator describes the reported solve: the loop's
+            // refined iterate reuses the stress error its estimate already
+            // computed; only the seed's is computed here.
+            let (refined_solve, error_indicator) = match refined_iterate {
+                Some(EstimatedSolve {
+                    solve,
+                    per_element_stress_error,
+                }) => {
+                    let field = error_indicator_field(&solve, &per_element_stress_error, &grid);
+                    (Some(solve), field)
+                }
+                None => {
+                    let seed_stress_error = zz_indicator(&fea, iso).per_element_stress_error;
+                    (None, error_indicator_field(&fea, &seed_stress_error, &grid))
+                }
+            };
+            (
+                aposteriori_adaptive_fields(&status, global_relative_energy_error, error_indicator),
+                refined_solve,
+            )
         } else if adaptive_params.adaptive {
             // step-19/20: `adaptive: true` on a non-isotropic material
             // (anisotropic or heterogeneous) — `compute_zz_indicator` is
@@ -1448,7 +1455,7 @@ pub fn solve_elastic_static_trampoline(
                 );
             }
             route_diagnostics.push(Diagnostic::warning(material_warning));
-            None
+            (aposteriori_nonadaptive_default_fields(), None)
         } else {
             // Silent-no-op guard (step-17/18, RATIFIED requirement): a
             // budget knob set to a non-default value without `adaptive:
@@ -1464,24 +1471,15 @@ pub fn solve_elastic_static_trampoline(
                      adaptive: true to enable the a-posteriori refinement loop",
                 ));
             }
-            None
+            (aposteriori_nonadaptive_default_fields(), None)
         };
 
     // ── (7b) Resample the REPORTED solve onto the seed grid ──────────────────
     //
     // `reported` is the adaptive loop's final iterate when it refined, else
-    // the seed `fea`. §6c classified the seed's CG; a refined iterate gets
-    // the same advisory, since `converged` below now describes it.
-    let refined_solve = adaptive_lane
-        .as_ref()
-        .and_then(|(_, lane)| lane.refined_solve.as_ref());
-    if let Some(refined) = refined_solve
-        && let Some(non_conv) =
-            classify_convergence(refined.converged, refined.iterations, SOLVER_MAX_ITER, None)
-    {
-        route_diagnostics.push(fea_diagnostic_to_core(&non_conv, None));
-    }
-    let reported: &CantileverFeaSolve = refined_solve.unwrap_or(&fea);
+    // the seed `fea`.
+    let (reported, convergence_advisory) = reported_solve(&fea, refined_solve.as_ref());
+    route_diagnostics.extend(convergence_advisory);
     let SampledResultChannels {
         displacement,
         stress,
@@ -1491,14 +1489,6 @@ pub fn solve_elastic_static_trampoline(
         rotation,
         shear_angles,
     } = sampled_result_channels(reported, &grid);
-    let aposteriori_fields: [(String, Value); 3] = match &adaptive_lane {
-        Some((iso, lane)) => aposteriori_adaptive_fields(
-            &lane.status,
-            lane.global_relative_energy_error,
-            error_indicator_field(reported, iso, &grid),
-        ),
-        None => aposteriori_nonadaptive_default_fields(),
-    };
 
     let fields: PersistentMap<String, Value> = [
         ("displacement".to_string(), displacement),
@@ -1576,6 +1566,29 @@ pub fn solve_elastic_static_trampoline(
         diagnostics: route_diagnostics,
         structured_detail,
     }
+}
+
+/// The solve an `ElasticResult` reports (`refined` when the adaptive loop
+/// produced one, else `seed`) with THAT solve's CG non-convergence advisory,
+/// so the Warning and the `converged` channel always describe one solve.
+///
+/// The advisory is a Warning on a still-Completed result (task 2929).
+/// `SOLVER_MAX_ITER` is the limit `solve_cantilever_fea` gives CG, so the
+/// "did not converge after N/M iterations" message matches the solver; the
+/// residual is not surfaced by `CantileverFeaSolve`.
+fn reported_solve<'a>(
+    seed: &'a CantileverFeaSolve,
+    refined: Option<&'a CantileverFeaSolve>,
+) -> (&'a CantileverFeaSolve, Option<Diagnostic>) {
+    let reported = refined.unwrap_or(seed);
+    let advisory = classify_convergence(
+        reported.converged,
+        reported.iterations,
+        SOLVER_MAX_ITER,
+        None,
+    )
+    .map(|non_conv| fea_diagnostic_to_core(&non_conv, None));
+    (reported, advisory)
 }
 
 /// The tet path's Sampled `ElasticResult` channels, all on one grid.
@@ -1667,26 +1680,30 @@ fn sampled_result_channels(solve: &CantileverFeaSolve, grid: &GridSpec) -> Sampl
     }
 }
 
-/// task 4910: `solve`'s Pa-valued Z-Z stress-error indicator, resampled onto
-/// `grid` and wrapped as the `Option<Field>` the `error_indicator` channel
-/// carries. Resampled onto the SAME grid as the other channels, so the result
-/// bundle stays grid-consistent (grids_equal invariant).
+/// task 4910: `solve`'s Pa-valued Z-Z stress error (one entry per tet, in
+/// `tet_connectivity` order), resampled onto `grid` and wrapped as the
+/// `Option<Field>` the `error_indicator` channel carries. Resampled onto the
+/// SAME grid as the other channels, so the result bundle stays
+/// grid-consistent (grids_equal invariant).
 fn error_indicator_field(
     solve: &CantileverFeaSolve,
-    material: &IsotropicElastic,
+    per_element_stress_error: &[f64],
     grid: &GridSpec,
 ) -> Value {
-    let elements =
-        isotropic_stress_elements(&solve.coords, &solve.tet_connectivity, &solve.u, material);
-    let vmesh = volume_mesh_from_solver_mesh(&solve.coords, &solve.tet_connectivity);
-    let zz = compute_zz_indicator(&elements, &vmesh, material);
-    let scalar_elements: Vec<ScalarElement<'_>> = elements
+    let coords = &solve.coords;
+    let scalar_elements: Vec<ScalarElement<'_>> = solve
+        .tet_connectivity
         .iter()
-        .zip(zz.per_element_stress_error.iter())
-        .map(|(el, &value)| ScalarElement {
-            connectivity: el.connectivity,
+        .zip(per_element_stress_error)
+        .map(|(conn, &value)| ScalarElement {
+            connectivity: conn.as_slice(),
             value,
-            volume: el.volume,
+            volume: tet_volume_p1(&[
+                coords[conn[0]],
+                coords[conn[1]],
+                coords[conn[2]],
+                coords[conn[3]],
+            ]),
         })
         .collect();
     let nodal_error_indicator = recover_nodal_scalar_p1(solve.coords.len(), &scalar_elements);
@@ -3489,19 +3506,15 @@ fn volume_mesh_from_solver_mesh(coords: &[[f64; 3]], tets: &[[usize; 4]]) -> Vol
 /// [`element_stress_p1`], and compute the element volume via
 /// [`tet_volume_p1`]. Feeds `compute_zz_indicator`'s `&[StressElement]` input.
 ///
-/// Callers: [`zz_estimate`] (both adaptive problems) and
-/// [`error_indicator_field`]. The single-shot tet path's own per-element loop (§ "Stress
-/// recovery" above, ~line 2516) is intentionally NOT converted to call this
-/// helper: that loop computes `stress_elements` / `gradient_elements` /
-/// `max_von_mises` together in a SINGLE pass across three material models
-/// (isotropic / anisotropic / heterogeneous), sharing one `tet_volume_p1`
-/// call per element with the gradient recovery. Splitting out just its
-/// isotropic branch would mean a second `tet_volume_p1` pass rather than a
-/// pure de-duplication, for a loop this helper cannot fully replace anyway
-/// (it has no anisotropic/heterogeneous or gradient/vM bookkeeping).
-/// `CantileverAdaptiveProblem` has none of that — it always solves an
-/// isotropic material and only ever needs the `StressElement` slice — so
-/// this helper cleanly captures its ENTIRE per-element recovery step.
+/// The single-shot tet path's own per-element loop (§ "Stress recovery"
+/// above) is intentionally NOT converted to call this helper: that loop
+/// computes `stress_elements` / `gradient_elements` / `max_von_mises`
+/// together in a SINGLE pass across three material models (isotropic /
+/// anisotropic / heterogeneous), sharing one `tet_volume_p1` call per element
+/// with the gradient recovery. Splitting out just its isotropic branch would
+/// mean a second `tet_volume_p1` pass rather than a pure de-duplication, for
+/// a loop this helper cannot fully replace anyway (it has no
+/// anisotropic/heterogeneous or gradient/vM bookkeeping).
 fn isotropic_stress_elements<'a>(
     coords: &[[f64; 3]],
     tet_connectivity: &'a [[usize; 4]],
@@ -3534,17 +3547,82 @@ fn isotropic_stress_elements<'a>(
         .collect()
 }
 
-/// The Z-Z energy-norm estimate of one adaptive iterate — the
-/// `solve_and_estimate` tail both adaptive problems share.
-fn zz_estimate(fea: &CantileverFeaSolve, material: &IsotropicElastic) -> AdaptiveEstimate {
-    let elements = isotropic_stress_elements(&fea.coords, &fea.tet_connectivity, &fea.u, material);
-    let vmesh = volume_mesh_from_solver_mesh(&fea.coords, &fea.tet_connectivity);
-    let zz = compute_zz_indicator(&elements, &vmesh, material);
-    AdaptiveEstimate {
-        relative_error: zz.global_relative_energy_error,
-        per_element: zz.per_element,
-        n_dofs: 3 * fea.coords.len(),
-        qoi: None,
+/// `solve`'s Z-Z error indicator for an isotropic material.
+fn zz_indicator(
+    solve: &CantileverFeaSolve,
+    material: &IsotropicElastic,
+) -> reify_solver_elastic::ZzIndicator {
+    let elements =
+        isotropic_stress_elements(&solve.coords, &solve.tet_connectivity, &solve.u, material);
+    let vmesh = volume_mesh_from_solver_mesh(&solve.coords, &solve.tet_connectivity);
+    compute_zz_indicator(&elements, &vmesh, material)
+}
+
+/// A solved adaptive iterate with its per-element Z-Z stress error, so the
+/// `error_indicator` channel reuses the estimate the loop already computed.
+struct EstimatedSolve {
+    solve: CantileverFeaSolve,
+    per_element_stress_error: Vec<f64>,
+}
+
+/// What an adaptive problem remembers of its iterates. Both problems embed
+/// one, so "a refined iterate is reported only after at least one refine"
+/// has a single home.
+#[derive(Default)]
+struct IterateRecord {
+    /// The latest estimate's `global_relative_energy_error`. Set on every
+    /// solve, whatever the terminal `ConvergenceStatus`, because
+    /// `run_adaptive_refinement` always solves before any budget check.
+    last_global_indicator: f64,
+    /// The latest estimate's DOF count, surfaced in the lanes' post-loop
+    /// diagnostics as the achieved mesh cost.
+    last_n_dofs: usize,
+    /// How many times `refine` has run to completion. `run_adaptive_refinement`
+    /// can return without ever refining (`max_refinement_iterations: 0`, or a
+    /// first estimate already within `target_accuracy`).
+    refine_count: usize,
+    /// The latest SUCCESSFUL solve; neither a failed solve nor a failed
+    /// refine clears it.
+    last_iterate: Option<EstimatedSolve>,
+}
+
+impl IterateRecord {
+    /// Estimate `solve`'s Z-Z error, keep it as the latest iterate, and
+    /// return the estimate the refinement loop marks from.
+    fn record(
+        &mut self,
+        solve: CantileverFeaSolve,
+        material: &IsotropicElastic,
+    ) -> AdaptiveEstimate {
+        let zz = zz_indicator(&solve, material);
+        let n_dofs = 3 * solve.coords.len();
+        self.last_global_indicator = zz.global_relative_energy_error;
+        self.last_n_dofs = n_dofs;
+        self.last_iterate = Some(EstimatedSolve {
+            solve,
+            per_element_stress_error: zz.per_element_stress_error,
+        });
+        AdaptiveEstimate {
+            relative_error: zz.global_relative_energy_error,
+            per_element: zz.per_element,
+            n_dofs,
+            qoi: None,
+        }
+    }
+
+    fn note_refine(&mut self) {
+        self.refine_count += 1;
+    }
+
+    /// The loop's final iterate, or `None` when no refine ran (the seed
+    /// solve stands). After `run_adaptive_refinement` returns `Ok`, the last
+    /// call was always a solve of the current mesh.
+    fn into_refined_iterate(self) -> Option<EstimatedSolve> {
+        if self.refine_count > 0 {
+            self.last_iterate
+        } else {
+            None
+        }
     }
 }
 
@@ -3555,9 +3633,9 @@ fn zz_estimate(fea: &CantileverFeaSolve, material: &IsotropicElastic) -> Adaptiv
 /// bumped `(nx, ny, nz)` grid resolution each [`refine`](AdaptiveProblem::refine)
 /// call (via the step-10 `grid_override` seam) and recomputing the Z-Z
 /// energy-norm indicator via [`compute_zz_indicator`] on every
-/// [`solve_and_estimate`](AdaptiveProblem::solve_and_estimate). Its final
-/// iterate is surfaced by [`into_refined_solve`](Self::into_refined_solve), so
-/// the trampoline reports the refined answer (task 8246).
+/// [`solve_and_estimate`](AdaptiveProblem::solve_and_estimate). Its
+/// [`IterateRecord`] surfaces the final iterate, so the trampoline reports
+/// the refined answer (task 8246).
 ///
 /// # v1 scope (RATIFIED esc-4902-83 option D)
 ///
@@ -3587,30 +3665,10 @@ pub(crate) struct CantileverAdaptiveProblem {
     /// single-shot (non-adaptive) tet-path solve uses — and doubled per axis
     /// on each `refine` call (step-14).
     grid: (usize, usize, usize),
-    /// The most recent `solve_and_estimate()`'s `global_relative_energy_error`
-    /// — populated on EVERY call (both `Converged` and budget-capped
-    /// `NotConverged` outcomes alike, since `run_adaptive_refinement` always
-    /// solves at least once before any budget check), so
-    /// `aposteriori_adaptive_fields` can thread a populated
-    /// `global_relative_energy_error` regardless of the terminal
-    /// `ConvergenceStatus`.
-    pub(crate) last_global_indicator: f64,
-    /// The most recent `solve_and_estimate()`'s DOF count (`3 *
-    /// fea.coords.len()`, mirroring `AdaptiveEstimate.n_dofs`) — populated
-    /// alongside `last_global_indicator` on every call. Surfaced in a
-    /// post-loop diagnostic (reviewer_comprehensive/performance, task 4902
-    /// amendment) so a caller can see the achieved mesh cost of an
-    /// `adaptive: true` request without instrumenting the solve themselves —
-    /// each `refine` (uniform per-axis doubling) grows this roughly 8×, and
-    /// the default budget (`max_refinement_iterations: 5`) can reach several
-    /// million DOFs; `max_dofs` bounds it but was otherwise invisible to the
-    /// caller beyond the Info diagnostic already emitted before the loop ran.
-    pub(crate) last_n_dofs: usize,
-    /// The most recent SUCCESSFUL solve, kept so the trampoline can report
-    /// the loop's final iterate; a failed solve never clears it.
-    last_solve: Option<CantileverFeaSolve>,
-    /// How many times `refine` has run.
-    refine_count: usize,
+    /// Each `refine` (uniform per-axis doubling) grows the DOF count roughly
+    /// 8×, so the default budget can reach several million DOFs; the
+    /// post-loop diagnostic surfaces `last_n_dofs` for that reason.
+    iterates: IterateRecord,
 }
 
 impl CantileverAdaptiveProblem {
@@ -3639,21 +3697,7 @@ impl CantileverAdaptiveProblem {
             body_force,
             bc_override,
             grid,
-            last_global_indicator: 0.0,
-            last_n_dofs: 0,
-            last_solve: None,
-            refine_count: 0,
-        }
-    }
-
-    /// The loop's final iterate, or `None` when no refine ran (the seed
-    /// solve stands). After `run_adaptive_refinement` returns `Ok`, the last
-    /// call was always a solve of the current grid.
-    pub(crate) fn into_refined_solve(self) -> Option<CantileverFeaSolve> {
-        if self.refine_count > 0 {
-            self.last_solve
-        } else {
-            None
+            iterates: IterateRecord::default(),
         }
     }
 }
@@ -3698,11 +3742,7 @@ impl AdaptiveProblem for CantileverAdaptiveProblem {
             Some(self.grid),
         )?;
 
-        let estimate = zz_estimate(&fea, &self.material);
-        self.last_global_indicator = estimate.relative_error;
-        self.last_n_dofs = estimate.n_dofs;
-        self.last_solve = Some(fea);
-        Ok(estimate)
+        Ok(self.iterates.record(fea, &self.material))
     }
 
     fn refine(&mut self, _marked: &[usize]) -> Result<(), Self::Error> {
@@ -3719,7 +3759,7 @@ impl AdaptiveProblem for CantileverAdaptiveProblem {
         // deferred to follow-up task 4909.
         let (nx, ny, nz) = self.grid;
         self.grid = (nx * 2, ny * 2, nz * 2);
-        self.refine_count += 1;
+        self.iterates.note_refine();
         Ok(())
     }
 }
@@ -3730,10 +3770,11 @@ struct AdaptiveLaneOutcome {
     global_relative_energy_error: f64,
     /// The loop's final iterate when at least one refine ran and that
     /// iterate solved the seed's geometry; `None` reports the seed solve.
-    refined_solve: Option<CantileverFeaSolve>,
+    refined_iterate: Option<EstimatedSolve>,
     /// The lane's post-loop Info diagnostic.
     diagnostic: Diagnostic,
 }
+
 /// A CG per-iteration callback that ONLY polls the ambient cancel handle.
 ///
 /// `None` when no cancel handle is installed in the current dispatch context,
@@ -3805,9 +3846,9 @@ fn characteristic_sizes_from_solver_mesh(coords: &[[f64; 3]], tets: &[[usize; 4]
 
 /// The **gmsh-realized** [`AdaptiveProblem`]: a-posteriori refinement that
 /// genuinely CONSUMES the Dörfler-marked element set, by remeshing the
-/// realized volume under a mark-driven size field. Its final iterate is
-/// surfaced by [`into_refined_solve`](Self::into_refined_solve), so the
-/// trampoline reports the remeshed answer (task 8246).
+/// realized volume under a mark-driven size field. Its [`IterateRecord`]
+/// surfaces the final iterate, so the trampoline reports the remeshed answer
+/// (task 8246).
 ///
 /// # Sibling of, not replacement for, [`CantileverAdaptiveProblem`]
 ///
@@ -3868,27 +3909,10 @@ pub(crate) struct RealizedAdaptiveProblem {
     tip_force: [f64; 3],
     pressures: Vec<PressureSpec>,
     body_force: [f64; 3],
-    /// The most recent `solve_and_estimate()`'s `global_relative_energy_error`
-    /// — populated on EVERY call, so `aposteriori_adaptive_fields` can thread
-    /// a populated value regardless of the terminal `ConvergenceStatus`.
-    /// Mirrors [`CantileverAdaptiveProblem`]'s field of the same name.
-    pub(crate) last_global_indicator: f64,
-    /// The most recent `solve_and_estimate()`'s DOF count. Surfaced in the
-    /// post-loop diagnostic so a caller can see the achieved mesh cost.
-    pub(crate) last_n_dofs: usize,
-    /// How many times `refine` has run to completion.
-    ///
-    /// `run_adaptive_refinement` can return WITHOUT ever calling `refine` — a
-    /// `max_refinement_iterations: 0` budget (documented as legitimate: "one
-    /// solve, zero refinements"), or a first estimate already at or under
-    /// `target_accuracy`. The post-loop diagnostic reads this so it never
-    /// claims a mark-driven remesh that did not happen
-    /// (reviewer_comprehensive amendment).
-    pub(crate) refine_count: usize,
-    /// The most recent SUCCESSFUL solve, kept so the trampoline can report
-    /// the loop's final iterate; neither a failed solve nor a failed remesh
-    /// clears it.
-    last_solve: Option<CantileverFeaSolve>,
+    /// The post-loop diagnostic reads `refine_count` so it never claims a
+    /// mark-driven remesh that did not happen (reviewer_comprehensive
+    /// amendment).
+    iterates: IterateRecord,
 }
 
 impl RealizedAdaptiveProblem {
@@ -3951,22 +3975,8 @@ impl RealizedAdaptiveProblem {
             tip_force,
             pressures,
             body_force,
-            last_global_indicator: 0.0,
-            last_n_dofs: 0,
-            refine_count: 0,
-            last_solve: None,
+            iterates: IterateRecord::default(),
         })
-    }
-
-    /// The loop's final iterate, or `None` when no remesh ran (the seed
-    /// solve stands). After `run_adaptive_refinement` returns `Ok`, the last
-    /// call was always a solve of the current mesh.
-    pub(crate) fn into_refined_solve(self) -> Option<CantileverFeaSolve> {
-        if self.refine_count > 0 {
-            self.last_solve
-        } else {
-            None
-        }
     }
 
     /// Element count of the CURRENT mesh.
@@ -4084,11 +4094,7 @@ impl AdaptiveProblem for RealizedAdaptiveProblem {
         )
         .map_err(RealizedLaneError::DegenerateMesh)?;
 
-        let estimate = zz_estimate(&fea, &self.material);
-        self.last_global_indicator = estimate.relative_error;
-        self.last_n_dofs = estimate.n_dofs;
-        self.last_solve = Some(fea);
-        Ok(estimate)
+        Ok(self.iterates.record(fea, &self.material))
     }
 
     /// Consume the Dörfler-marked set by remeshing the volume under a
@@ -4143,7 +4149,7 @@ impl AdaptiveProblem for RealizedAdaptiveProblem {
 
         self.current_sizes = characteristic_sizes_from_solver_mesh(&coords, &tets);
         self.volume_mesh = refined;
-        self.refine_count += 1;
+        self.iterates.note_refine();
         Ok(())
     }
 }
@@ -6596,7 +6602,7 @@ mod tests {
         );
 
         assert_eq!(
-            problem.last_global_indicator, est.relative_error,
+            problem.iterates.last_global_indicator, est.relative_error,
             "the problem must record the returned relative_error"
         );
     }
@@ -6662,10 +6668,10 @@ mod tests {
             }
         }
 
+        let last_global_indicator = problem.iterates.last_global_indicator;
         assert!(
-            problem.last_global_indicator.is_finite() && problem.last_global_indicator >= 0.0,
-            "last_global_indicator must be finite and non-negative, got {}",
-            problem.last_global_indicator
+            last_global_indicator.is_finite() && last_global_indicator >= 0.0,
+            "last_global_indicator must be finite and non-negative, got {last_global_indicator}",
         );
 
         // `refine` ran at least once: a fresh solve_and_estimate at the
@@ -13431,11 +13437,11 @@ mod tests {
             est.relative_error,
         );
         assert_eq!(
-            problem.last_global_indicator, est.relative_error,
+            problem.iterates.last_global_indicator, est.relative_error,
             "the problem must record the returned relative_error",
         );
         assert_eq!(
-            problem.last_n_dofs, est.n_dofs,
+            problem.iterates.last_n_dofs, est.n_dofs,
             "the problem must record the returned n_dofs",
         );
     }
@@ -14509,6 +14515,25 @@ mod tests {
         }
     }
 
+    /// The result's error_indicator is `solve`'s Z-Z stress error resampled
+    /// onto `grid`, bit for bit.
+    fn assert_error_indicator_describes_solve(
+        fields: &PersistentMap<String, Value>,
+        solve: &CantileverFeaSolve,
+        grid: &GridSpec,
+    ) {
+        let stress_error = zz_indicator(solve, &ADAPTIVE_STEEL).per_element_stress_error;
+        let expected = match error_indicator_field(solve, &stress_error, grid) {
+            Value::Option(Some(inner)) => expect_sampled_field(&inner, "error_indicator"),
+            other => panic!("error_indicator_field must wrap a Field, got {other:?}"),
+        };
+        assert_eq!(
+            data_bits(&result_sampled_field(fields, "error_indicator")),
+            data_bits(&expected),
+            "error_indicator must be the reported solve's Z-Z stress error",
+        );
+    }
+
     /// Each named channel samples one grid in `a` and `b`, and it is `grid`.
     fn assert_channels_share_grid(
         a: &PersistentMap<String, Value>,
@@ -14629,7 +14654,7 @@ mod tests {
         assert_reports_solve_on_grid(&refined, &final_solve, &seed_grid);
         assert_eq!(
             result_global_error(&refined).to_bits(),
-            problem.last_global_indicator.to_bits(),
+            problem.iterates.last_global_indicator.to_bits(),
             "(e) global_relative_energy_error must describe the same final iterate",
         );
         assert_ne!(
@@ -14637,6 +14662,7 @@ mod tests {
             data_bits(&result_sampled_field(&seed_only, "error_indicator")),
             "(f) error_indicator must describe the final iterate, not the seed solve",
         );
+        assert_error_indicator_describes_solve(&refined, &final_solve, &seed_grid);
     }
 
     /// task 8246 guard: on a REALIZED seed the uniform fallback solves the
@@ -14728,18 +14754,18 @@ mod tests {
         };
         run_adaptive_refinement(&mut problem, &budget, DORFLER_THETA)
             .expect("the box remeshes and solves at every iteration");
+        let refine_count = problem.iterates.refine_count;
         assert!(
-            problem.refine_count >= 1,
+            refine_count >= 1,
             "fixture: an unreachable target must buy at least one remesh",
         );
-        let refines = format!(", {} refinement iteration(s)", problem.refine_count);
+        let refines = format!(", {refine_count} refinement iteration(s)");
         assert!(
             refined_diags
                 .iter()
                 .any(|d| d.message.contains(LOCALIZED_LANE_MARKER) && d.message.contains(&refines)),
-            "the trampoline must have run the localized lane with the same {} remesh(es), \
-             got: {refined_diags:?}",
-            problem.refine_count,
+            "the trampoline must have run the localized lane with the same {refine_count} \
+             remesh(es), got: {refined_diags:?}",
         );
 
         let solve_on = |mesh| {
@@ -14772,7 +14798,7 @@ mod tests {
 
         assert_eq!(
             result_global_error(&refined).to_bits(),
-            problem.last_global_indicator.to_bits(),
+            problem.iterates.last_global_indicator.to_bits(),
             "the independent re-run must reproduce the trampoline's loop bit-for-bit",
         );
         let refined_max_von_mises = result_max_von_mises(&refined);
@@ -14795,6 +14821,74 @@ mod tests {
             &["displacement", "stress", "error_indicator"],
         );
         assert_reports_solve_on_grid(&refined, &final_solve, &seed_grid);
+        assert_error_indicator_describes_solve(&refined, &final_solve, &seed_grid);
+    }
+
+    /// A stand-in solve whose only meaningful fields are its CG outcome;
+    /// [`reported_solve`] reads nothing else.
+    fn solve_with_cg_outcome(converged: bool, iterations: usize) -> CantileverFeaSolve {
+        CantileverFeaSolve {
+            u: Arc::new(Vec::new()),
+            coords: Vec::new(),
+            tip_nodes: Vec::new(),
+            max_von_mises: 0.0,
+            converged,
+            iterations,
+            warm_started: false,
+            tet_connectivity: Vec::new(),
+            nodal_stress: Vec::new(),
+            nodal_gradient: Vec::new(),
+            nx: 0,
+            ny: 0,
+            nz: 0,
+        }
+    }
+
+    /// task 8246: the non-convergence Warning describes the solve the result
+    /// reports, never a seed solve the refined iterate replaced. CG
+    /// non-convergence cannot be provoked through the well-conditioned
+    /// cantilever, so the reported-solve choice is driven directly.
+    #[test]
+    fn reported_solve_carries_the_convergence_advisory_of_the_solve_it_reports() {
+        let stalled_seed = solve_with_cg_outcome(false, SOLVER_MAX_ITER);
+        let converged_refined = solve_with_cg_outcome(true, 17);
+        let (reported, advisory) = reported_solve(&stalled_seed, Some(&converged_refined));
+        assert!(
+            std::ptr::eq(reported, &converged_refined),
+            "a refined iterate is reported"
+        );
+        assert!(
+            advisory.is_none(),
+            "a converged refined iterate must not carry the replaced seed's Warning, got \
+             {advisory:?}",
+        );
+
+        let converged_seed = solve_with_cg_outcome(true, 17);
+        let stalled_refined = solve_with_cg_outcome(false, SOLVER_MAX_ITER);
+        let (reported, advisory) = reported_solve(&converged_seed, Some(&stalled_refined));
+        assert!(
+            std::ptr::eq(reported, &stalled_refined),
+            "a refined iterate is reported"
+        );
+        let advisory = advisory.expect("a non-converged refined iterate carries the Warning");
+        assert_eq!(advisory.severity, reify_core::Severity::Warning);
+        assert!(
+            advisory.message.contains(&format!(
+                "after {SOLVER_MAX_ITER}/{SOLVER_MAX_ITER} iterations"
+            )),
+            "the Warning must name the reported solve's iterations, got {:?}",
+            advisory.message,
+        );
+
+        let (reported, advisory) = reported_solve(&stalled_seed, None);
+        assert!(
+            std::ptr::eq(reported, &stalled_seed),
+            "with no refined iterate the seed stands"
+        );
+        assert!(
+            advisory.is_some(),
+            "a non-converged seed it reports carries the Warning"
+        );
     }
 
     // ── ruling #6164: the `rotation` derivative channel ───────────────────────
