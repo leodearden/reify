@@ -1323,6 +1323,55 @@ fn build_user_function_call_expr(
     }
 }
 
+/// The type a call to `callee` yields once unification over `arg_types` binds
+/// its type parameters (task 4231 β); a non-generic callee keeps its declared
+/// `return_type` (INV-6/D10). `arg_types` may be a strict prefix of
+/// `callee.params` (a default-padded call): trailing defaulted slots bind
+/// nothing. `Err` is the diagnostic to poison the call with: a double-binding
+/// (`E_FALLBACK_TYPE` for the recovery combinators, contract C-3 in
+/// `docs/prds/v0_6/result-and-fallback.md`; else `E_FN_TYPE_ARG_CONFLICT`) or a
+/// BARE unbound type-/dimension-param result. A NESTED unbound param such as
+/// `Field<D, Real>` is tolerated: an enclosing call pins it (B5).
+fn instantiate_call_return_type(
+    callee: &CompiledFunction,
+    call_name: &str,
+    arg_types: &[Type],
+    call_span: SourceSpan,
+) -> Result<Type, Diagnostic> {
+    if callee.type_params.is_empty() {
+        return Ok(callee.return_type.clone());
+    }
+    let mut subst: std::collections::HashMap<String, Type> = std::collections::HashMap::new();
+    for ((_, declared), arg_ty) in callee.params.iter().zip(arg_types.iter()) {
+        if let Err(conflict) = type_compat::unify(declared, arg_ty, &mut subst) {
+            let (code, prefix) = if is_fallback_combinator(call_name) {
+                (DiagnosticCode::FallbackType, "E_FALLBACK_TYPE: ")
+            } else {
+                (DiagnosticCode::FnTypeArgConflict, "")
+            };
+            let message = format!(
+                "{}conflicting type arguments for type parameter \
+                 '{}' in call to '{}': {} vs {}",
+                prefix, conflict.param, call_name, conflict.existing, conflict.incoming
+            );
+            return Err(Diagnostic::error(message)
+                .with_code(code)
+                .with_label(DiagnosticLabel::new(call_span, "conflicting type argument")));
+        }
+    }
+    let substituted = type_resolution::substitute_type_params(&callee.return_type, &subst);
+    if matches!(substituted, Type::TypeParam(_) | Type::ScalarParam(_)) {
+        return Err(Diagnostic::error(format!(
+            "cannot infer type argument(s) for generic call to '{}': \
+             result type is undetermined",
+            call_name
+        ))
+        .with_code(DiagnosticCode::FnTypeArgUnresolved)
+        .with_label(DiagnosticLabel::new(call_span, "unresolved type argument")));
+    }
+    Ok(substituted)
+}
+
 /// Compile an `Expr` from the AST into a `CompiledExpr`, with guard context.
 ///
 /// When `current_guard` is Some, references to names guarded by a different
@@ -3151,85 +3200,12 @@ fn compile_expr_guarded_with_expected_inner(
                     if let Some(msg) = deprecation_message(&matched_fn.annotations) {
                         emit_deprecation_warning("function", name, msg, expr.span, diagnostics);
                     }
-                    // Generic call (task 4231 β): infer type arguments by unifying
-                    // each declared param type against the concrete arg type, then
-                    // substitute the bound type parameters into the return type.
-                    // Non-generic fns (empty type_params) keep the exact
-                    // return_type.clone() path bit-for-bit unchanged (INV-6/D10).
-                    let result_type = if matched_fn.type_params.is_empty() {
-                        matched_fn.return_type.clone()
-                    } else {
-                        let mut subst: std::collections::HashMap<String, Type> =
-                            std::collections::HashMap::new();
-                        for ((_, declared), arg_ty) in
-                            matched_fn.params.iter().zip(arg_types.iter())
+                    let result_type =
+                        match instantiate_call_return_type(matched_fn, name, &arg_types, expr.span)
                         {
-                            // A type-param double-binding to two different types is
-                            // a call-site type-argument conflict (PRD D2 / §4.2).
-                            // For recovery combinators (unwrap_or / or_default /
-                            // fallback / get_or — the default-must-match-element
-                            // family), emit E_FALLBACK_TYPE + mnemonic (contract
-                            // C-3, PRD docs/prds/v0_6/result-and-fallback.md).
-                            // For all other generic fns, emit E_FN_TYPE_ARG_CONFLICT
-                            // bit-for-bit unchanged.  Both paths poison the call via
-                            // make_poison_literal (D3: result_type = Type::Error
-                            // inference sentinel, not a payload).
-                            if let Err(conflict) = type_compat::unify(declared, arg_ty, &mut subst)
-                            {
-                                let (code, prefix) = if is_fallback_combinator(name) {
-                                    (DiagnosticCode::FallbackType, "E_FALLBACK_TYPE: ")
-                                } else {
-                                    (DiagnosticCode::FnTypeArgConflict, "")
-                                };
-                                let message = format!(
-                                    "{}conflicting type arguments for type parameter \
-                                     '{}' in call to '{}': {} vs {}",
-                                    prefix,
-                                    conflict.param,
-                                    name,
-                                    conflict.existing,
-                                    conflict.incoming
-                                );
-                                return make_poison_literal(
-                                    diagnostics,
-                                    Diagnostic::error(message)
-                                        .with_code(code)
-                                        .with_label(DiagnosticLabel::new(
-                                            expr.span,
-                                            "conflicting type argument",
-                                        )),
-                                );
-                            }
-                        }
-                        let substituted = type_resolution::substitute_type_params(
-                            &matched_fn.return_type,
-                            &subst,
-                        );
-                        // A BARE top-level unbound type-param or dimension-param
-                        // means nothing pinned the result type (e.g. `make<T>() -> T`
-                        // called as `make()`, or `mk<Q: Dimension>(k: Real) -> Scalar<Q>`
-                        // called as `mk(3.0)` — Q undetermined): the call yields a
-                        // wholly-undetermined type → error + poison (task ζ / D8).
-                        // A NESTED unbound param (e.g. `Field<TypeParam(D), Real>`)
-                        // is TOLERATED — it is pinned by an enclosing call (B5,
-                        // PRD §8 / D3-decision).
-                        if matches!(substituted, Type::TypeParam(_) | Type::ScalarParam(_)) {
-                            return make_poison_literal(
-                                diagnostics,
-                                Diagnostic::error(format!(
-                                    "cannot infer type argument(s) for generic call to '{}': \
-                                     result type is undetermined",
-                                    name
-                                ))
-                                .with_code(DiagnosticCode::FnTypeArgUnresolved)
-                                .with_label(DiagnosticLabel::new(
-                                    expr.span,
-                                    "unresolved type argument",
-                                )),
-                            );
-                        }
-                        substituted
-                    };
+                            Ok(result_type) => result_type,
+                            Err(diagnostic) => return make_poison_literal(diagnostics, diagnostic),
+                        };
                     build_user_function_call_expr(name, compiled_args, result_type)
                 }
                 OverloadResolution::Ambiguous(candidates) => {
@@ -3260,7 +3236,6 @@ fn compile_expr_guarded_with_expected_inner(
                     if let Some((padded_fn, default_exprs)) =
                         try_default_padding(&named_candidates, &arg_types)
                     {
-                        let result_type = padded_fn.return_type.clone();
                         // Deprecation check: mirror the Resolved arm — warn if the
                         // padded function is @deprecated.
                         if let Some(msg) = deprecation_message(&padded_fn.annotations) {
@@ -3272,6 +3247,12 @@ fn compile_expr_guarded_with_expected_inner(
                                 diagnostics,
                             );
                         }
+                        let result_type = match instantiate_call_return_type(
+                            padded_fn, name, &arg_types, expr.span,
+                        ) {
+                            Ok(result_type) => result_type,
+                            Err(diagnostic) => return make_poison_literal(diagnostics, diagnostic),
+                        };
                         let mut padded_args = compiled_args;
                         padded_args.extend(default_exprs);
                         return build_user_function_call_expr(name, padded_args, result_type);
@@ -3290,7 +3271,12 @@ fn compile_expr_guarded_with_expected_inner(
                         if let Some(msg) = deprecation_message(&matched_fn.annotations) {
                             emit_deprecation_warning("function", name, msg, expr.span, diagnostics);
                         }
-                        let result_type = matched_fn.return_type.clone();
+                        let result_type = match instantiate_call_return_type(
+                            matched_fn, name, &arg_types, expr.span,
+                        ) {
+                            Ok(result_type) => result_type,
+                            Err(diagnostic) => return make_poison_literal(diagnostics, diagnostic),
+                        };
                         let coerced_args: Vec<CompiledExpr> = compiled_args
                             .into_iter()
                             .zip(matched_fn.params.iter())
@@ -6672,7 +6658,12 @@ fn compile_expr_guarded_with_expected_inner(
                             diagnostics,
                         );
                     }
-                    let result_type = matched_fn.return_type.clone();
+                    let result_type = match instantiate_call_return_type(
+                        matched_fn, &symbol, &arg_types, expr.span,
+                    ) {
+                        Ok(result_type) => result_type,
+                        Err(diagnostic) => return make_poison_literal(diagnostics, diagnostic),
+                    };
                     build_user_function_call_expr(&symbol, compiled_args, result_type)
                 }
                 OverloadResolution::Ambiguous(candidates) => {
