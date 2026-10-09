@@ -444,3 +444,28 @@ fn a_refused_import_does_not_take_its_well_formed_neighbour_with_it() {
     assert_eq!(imports[0].path, "c.d", "`{source}`");
     assert_eq!(imports[0].kind, ImportKind::Module, "`{source}`");
 }
+
+/// A refused import still binds the names it declares, so the refusal stays the only
+/// diagnostic: a use of `pp` is not reported again as unbound, with the advice to declare
+/// `import <path> as pp`, the very line being refused.
+#[test]
+fn a_refused_import_still_binds_its_alias() {
+    let source = "import a.1.b as pp\nstructure def S { let f = pp.mk() }";
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test"));
+    assert!(
+        matches!(parsed.errors.as_slice(), [only] if only.message.starts_with("invalid import: ")),
+        "`{source}`: expected the refusal as the only diagnostic, got: {:?}",
+        parsed.errors
+    );
+}
+
+#[test]
+fn a_refused_import_still_binds_its_recovered_items() {
+    let source = "import a.b.{C D}\nstructure def S { let f = C.mk() }";
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test"));
+    only_error_starting_with(&parsed.errors, "invalid import: ");
+    only_error_starting_with(
+        &parsed.errors,
+        "qualifier `C` in `C.mk(...)` is not a module namespace: an import in this file binds `C`",
+    );
+}

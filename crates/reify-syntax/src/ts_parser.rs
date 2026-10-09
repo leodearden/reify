@@ -864,6 +864,15 @@ impl<'a> Lowering<'a> {
     /// pass that seeds `known_enums`, so an `import parts as pp` written after
     /// the structure that uses `pp.Pulley()` still binds.
     ///
+    /// **A refused import binds too.** This pass does not ask whether the second
+    /// pass will accept the import. One whose CST carries a nested fault is refused
+    /// there with a single `invalid import:` diagnostic, yet the names its
+    /// recoverable parts declare (`pp` in `import a.1.b as pp`, `C` in
+    /// `import a.b.{C D}`) are recorded here. Skipping them would report each use of
+    /// `pp` a second time as unbound, advising the author to declare
+    /// `import <path> as pp`, which is the very line being refused. The bindings
+    /// are best effort, which is safe because the module already carries an error.
+    ///
     /// **Per-file by construction: nothing outside the file seeds these
     /// bindings.** `known_enums` takes an external seed
     /// (`parse_with_prelude_enums`) because enum names are pub DEFS, which cross
