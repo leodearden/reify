@@ -1068,9 +1068,6 @@ pub fn solve_elastic_static_trampoline(
     //                    path emits a real ShellStress here instead, via the §3b
     //                    early return above (task 3594/δ).
     // `cost_per_byte` is derived as 1/(warm-state size in bytes).
-    let n_iters = fea.iterations as i64;
-    let converged = fea.converged;
-    let warm_started = fea.warm_started;
     let size_bytes = fresh_warm.estimated_size_bytes();
     // cost_per_byte: reciprocal of warm-state size — a bigger state is pricier
     // to keep. Tuners should replace this with a profiling-derived estimate.
@@ -1081,7 +1078,10 @@ pub fn solve_elastic_static_trampoline(
     };
     let new_warm_state = Some(fresh_warm.into_opaque_state());
 
-    // ── (7a) Resample displacement + stress onto a Regular3D grid ────────────
+    // ── (7a) The Regular3D result grid, built from the SEED solve ────────────
+    //
+    // Every Sampled channel is resampled onto this grid in §7b, including an
+    // adaptive run's refined iterate.
     //
     // Grid counts = solve-mesh element counts (nx × ny × nz); grid nodes =
     // counts + 1 per axis. Bounds = the per-axis AABB of the SOLVE mesh
@@ -1107,76 +1107,6 @@ pub fn solve_elastic_static_trampoline(
         counts: [fea.nx, fea.ny, fea.nz],
     };
 
-    // Flatten nodal stress [[f64;3];3] → stride-9 row-major.
-    // Layout: σ_xx,σ_xy,σ_xz, σ_yx,σ_yy,σ_yz, σ_zx,σ_zy,σ_zz per node.
-    let nodal_stress_flat = super::flatten_nodal_stress(&fea.nodal_stress);
-
-    // Project nodal_gradient → divergence = trace(∇u) = ∇u[0][0]+∇u[1][1]+∇u[2][2].
-    // Stored as stride-1 scalar per node; the full 3×3 tensor rides on
-    // fea.nodal_gradient for PRD task β (gradient/curl channels).
-    let nodal_divergence: Vec<f64> = fea
-        .nodal_gradient
-        .iter()
-        .map(|g| g[0][0] + g[1][1] + g[2][2])
-        .collect();
-
-    // task 4565/β: stride-9 gradient = row-major flatten of ∇u (same operation
-    // as stress flatten — reuse flatten_nodal_stress which is a pure 3×3 flatten).
-    let nodal_gradient_flat = super::flatten_nodal_stress(&fea.nodal_gradient);
-
-    // task 4565/β: stride-3 curl = antisymmetric part of ∇u per node.
-    let nodal_curl_flat: Vec<f64> = fea
-        .nodal_gradient
-        .iter()
-        .flat_map(curl_from_gradient)
-        .collect();
-
-    // Single geometry pass: locate the containing tet once per grid point,
-    // then interpolate displacement (stride 3), stress (stride 9), divergence
-    // (stride 1), gradient (stride 9), and curl (stride 3).
-    // One BVH query per grid node covers all five fields.
-    let mut sampled = resample_multi_nodal_to_grid(
-        &fea.coords,
-        &fea.tet_connectivity,
-        &[
-            (&fea.u, 3, "displacement"), // Arc<Vec<f64>> → &[f64] via Deref
-            (&nodal_stress_flat, 9, "stress"),
-            (&nodal_divergence, 1, "divergence"),
-            (&nodal_gradient_flat, 9, "gradient"),
-            (&nodal_curl_flat, 3, "curl"),
-        ],
-        &grid,
-        1e-9,
-    );
-    debug_assert_eq!(
-        sampled.len(),
-        5,
-        "expected 5 sampled fields (displacement + stress + divergence + gradient + curl)"
-    );
-    let curl_sf = sampled.pop().unwrap(); // index 4
-    let grad_sf = sampled.pop().unwrap(); // index 3
-    let div_sf = sampled.pop().unwrap(); // index 2
-    let stress_sf = sampled.pop().unwrap(); // index 1
-    let disp_sf = sampled.pop().unwrap(); // index 0
-
-    let disp_field = super::sampled_disp_field(disp_sf);
-    let stress_field = super::sampled_stress_field(stress_sf);
-    let div_field = super::sampled_divergence_field(div_sf);
-    // task #6183: `shear_angles` is DERIVED from the gradient SampledField, like
-    // `rotation` from curl below (see `shear_angles_sf_from_gradient`).
-    let shear_angles_field = super::sampled_shear_angles_field(
-        super::shear_angles_sf_from_gradient(&grad_sf)
-            .expect("live tet gradient is stride-9 by construction (resampled as 3×3 per node)"),
-    );
-    let grad_field = super::sampled_gradient_field(grad_sf);
-    // ruling #6164: `rotation` = ∇×u / 2 is DERIVED from the curl SampledField
-    // here rather than resampled independently — note there is deliberately NO
-    // 6th entry in the `resample_multi_nodal_to_grid` call above, so the channel
-    // costs no extra BVH pass and shares curl's grid bit-identically. Derived
-    // BEFORE `curl_sf` is moved into `sampled_curl_field` below.
-    let rotation_field = super::sampled_rotation_field(super::rotation_sf_from_curl(&curl_sf));
-    let curl_field = super::sampled_curl_field(curl_sf);
-
     // ── A-posteriori adaptive refinement (task 4902; v1 mesh-free UNIFORM
     // refinement — see `CantileverAdaptiveProblem`'s module docs + the plan
     // design decisions) ────────────────────────────────────────────────────
@@ -1190,11 +1120,10 @@ pub fn solve_elastic_static_trampoline(
     //     knob was set to a non-default value with no effect (step-17/18's
     //     silent-no-op guard).
     //
-    // The adaptive loop runs SEPARATELY from the single-shot `fea` solve
-    // above: `displacement`/`stress`/`max_von_mises`/etc. still reflect the
-    // INITIAL coarse solve (re-deriving them from the adaptively-refined mesh
-    // is out of v1 scope). Only the three a-posteriori fields below are
-    // threaded from the adaptive loop's outcome.
+    // Once the loop has refined, every solve-derived field reports its FINAL
+    // iterate, resampled onto the seed grid above (contract:
+    // docs/prds/v0_4/fea-result-model.md §4.1); a zero-refine run reports the
+    // seed `fea` solve.
     //
     // PERF NOTE (reviewer_comprehensive/performance, task 4902 amendment):
     // `CantileverAdaptiveProblem::new` below seeds `grid` to the exact same
@@ -1258,7 +1187,7 @@ pub fn solve_elastic_static_trampoline(
     // solve is interruptible at CG granularity (the gmsh remesh itself is an
     // FFI call and is not).
     let adaptive_params = extract_adaptive_params(options_vi);
-    let aposteriori_fields: [(String, Value); 3] =
+    let adaptive_lane: Option<(IsotropicElastic, AdaptiveLaneOutcome)> =
         if adaptive_params.adaptive && let MaterialModel::Isotropic(iso) = &model {
             // api_design note (reviewer_comprehensive, task 4902 amendment):
             // surface the v1 result-bundle inconsistency (primary fields are
@@ -1369,7 +1298,12 @@ pub fn solve_elastic_static_trampoline(
             // paths land on identical, already-tested behaviour rather than
             // two hand-copied bodies. Its only failure is a refined synthetic
             // grid failing the shared solve's degenerate-tet gate.
-            let run_uniform_lane = || -> Result<_, DegenerateTet> {
+            //
+            // It refines the dims box. On a REALIZED seed that box is not the
+            // body (#8248 removes this fallback), so its iterate is never
+            // reported in place of the realized seed's fields.
+            let uniform_lane_solves_the_seed_geometry = realized_handle.is_none();
+            let run_uniform_lane = || -> Result<AdaptiveLaneOutcome, DegenerateTet> {
                 let mut problem = CantileverAdaptiveProblem::new(
                     *iso,
                     length,
@@ -1388,11 +1322,22 @@ pub fn solve_elastic_static_trampoline(
                 // the single-shot solve above with no caller-visible signal
                 // beyond this diagnostic.
                 let (nx, ny, nz) = problem.grid;
-                let diag = Diagnostic::info(format!(
+                let diagnostic = Diagnostic::info(format!(
                     "adaptive refinement finished at {} DOFs on a {nx}×{ny}×{nz} grid",
                     problem.last_n_dofs
                 ));
-                Ok((status, problem.last_global_indicator, diag))
+                let global_relative_energy_error = problem.last_global_indicator;
+                let refined_solve = if uniform_lane_solves_the_seed_geometry {
+                    problem.into_refined_solve()
+                } else {
+                    None
+                };
+                Ok(AdaptiveLaneOutcome {
+                    status,
+                    global_relative_energy_error,
+                    refined_solve,
+                    diagnostic,
+                })
             };
 
             let lane_outcome = match realized_lane_seed {
@@ -1424,7 +1369,7 @@ pub fn solve_elastic_static_trampoline(
                             // refine ran. Both wordings keep the same
                             // `elements N -> M` tail so the parse contract holds
                             // either way.
-                            let diag = Diagnostic::info(if problem.refine_count == 0 {
+                            let diagnostic = Diagnostic::info(if problem.refine_count == 0 {
                                 format!(
                                     "adaptive refinement finished at {} DOFs; the gmsh-realized \
                                      LOCALIZED lane was selected but the budget terminated \
@@ -1445,7 +1390,12 @@ pub fn solve_elastic_static_trampoline(
                                     problem.last_n_dofs, problem.refine_count
                                 )
                             });
-                            Ok((status, problem.last_global_indicator, diag))
+                            Ok(AdaptiveLaneOutcome {
+                                status,
+                                global_relative_energy_error: problem.last_global_indicator,
+                                refined_solve: None,
+                                diagnostic,
+                            })
                         }
                         Err(e) => {
                             // libgmsh IS linked but this remesh failed (an open
@@ -1465,7 +1415,7 @@ pub fn solve_elastic_static_trampoline(
                 }
                 None => run_uniform_lane(),
             };
-            let (status, last_global_indicator, lane_diagnostic) = match lane_outcome {
+            let lane = match lane_outcome {
                 Ok(lane) => lane,
                 Err(degenerate) => return degenerate_mesh_outcome(degenerate),
             };
@@ -1474,48 +1424,15 @@ pub fn solve_elastic_static_trampoline(
             // §2 reason: a cancel raised DURING the refinement loop makes every
             // CG solve from that point on bail early (BOTH lanes'
             // `solve_and_estimate` pass `ambient_cg_cancel_poll()` as their CG
-            // progress callback), so the a-posteriori triple below would be
+            // progress callback), so the reported fields below would be
             // computed from partial displacements. §6b fires before this branch and cannot see a
             // cancel raised after it. Returning `Cancelled` leaves the output VC
             // `Freshness::Pending` rather than caching a bogus partial result.
             if ctx_cancel.as_ref().is_some_and(|c| c.is_cancelled()) {
                 return ComputeOutcome::Cancelled;
             }
-            route_diagnostics.push(lane_diagnostic);
-            // task 4910: build the Pa-valued error_indicator Field from the
-            // COARSE seed solve (`fea` above — the SAME mesh that produced
-            // displacement/stress), resampled onto the SAME `grid`, so the
-            // result bundle stays grid-consistent (grids_equal invariant).
-            // Distinct from `global_relative_energy_error`, which reflects
-            // the REFINED loop's final iteration.
-            let coarse_elements =
-                isotropic_stress_elements(&fea.coords, &fea.tet_connectivity, &fea.u, iso);
-            let coarse_vmesh = volume_mesh_from_solver_mesh(&fea.coords, &fea.tet_connectivity);
-            let coarse_zz = compute_zz_indicator(&coarse_elements, &coarse_vmesh, iso);
-            let scalar_elements: Vec<ScalarElement<'_>> = coarse_elements
-                .iter()
-                .zip(coarse_zz.per_element_stress_error.iter())
-                .map(|(el, &value)| ScalarElement {
-                    connectivity: el.connectivity,
-                    value,
-                    volume: el.volume,
-                })
-                .collect();
-            let nodal_error_indicator =
-                recover_nodal_scalar_p1(fea.coords.len(), &scalar_elements);
-            let error_indicator_sf = resample_nodal_to_grid(
-                &fea.coords,
-                &fea.tet_connectivity,
-                &nodal_error_indicator,
-                1,
-                &grid,
-                "error_indicator",
-                1e-9,
-            );
-            let error_indicator_value = Value::Option(Some(Box::new(
-                super::sampled_error_indicator_field(error_indicator_sf),
-            )));
-            aposteriori_adaptive_fields(&status, last_global_indicator, error_indicator_value)
+            route_diagnostics.push(lane.diagnostic.clone());
+            Some((*iso, lane))
         } else if adaptive_params.adaptive {
             // step-19/20: `adaptive: true` on a non-isotropic material
             // (anisotropic or heterogeneous) — `compute_zz_indicator` is
@@ -1541,7 +1458,7 @@ pub fn solve_elastic_static_trampoline(
                 );
             }
             route_diagnostics.push(Diagnostic::warning(material_warning));
-            aposteriori_nonadaptive_default_fields()
+            None
         } else {
             // Silent-no-op guard (step-17/18, RATIFIED requirement): a
             // budget knob set to a non-default value without `adaptive:
@@ -1557,12 +1474,45 @@ pub fn solve_elastic_static_trampoline(
                      adaptive: true to enable the a-posteriori refinement loop",
                 ));
             }
-            aposteriori_nonadaptive_default_fields()
+            None
         };
 
+    // ── (7b) Resample the REPORTED solve onto the seed grid ──────────────────
+    //
+    // `reported` is the adaptive loop's final iterate when it refined, else
+    // the seed `fea`. §6c classified the seed's CG; a refined iterate gets
+    // the same advisory, since `converged` below now describes it.
+    let refined_solve = adaptive_lane
+        .as_ref()
+        .and_then(|(_, lane)| lane.refined_solve.as_ref());
+    if let Some(refined) = refined_solve
+        && let Some(non_conv) =
+            classify_convergence(refined.converged, refined.iterations, SOLVER_MAX_ITER, None)
+    {
+        route_diagnostics.push(fea_diagnostic_to_core(&non_conv, None));
+    }
+    let reported: &CantileverFeaSolve = refined_solve.unwrap_or(&fea);
+    let SampledResultChannels {
+        displacement,
+        stress,
+        divergence,
+        gradient,
+        curl,
+        rotation,
+        shear_angles,
+    } = sampled_result_channels(reported, &grid);
+    let aposteriori_fields: [(String, Value); 3] = match &adaptive_lane {
+        Some((iso, lane)) => aposteriori_adaptive_fields(
+            &lane.status,
+            lane.global_relative_energy_error,
+            error_indicator_field(reported, iso, &grid),
+        ),
+        None => aposteriori_nonadaptive_default_fields(),
+    };
+
     let fields: PersistentMap<String, Value> = [
-        ("displacement".to_string(), disp_field),
-        ("stress".to_string(), stress_field),
+        ("displacement".to_string(), displacement),
+        ("stress".to_string(), stress),
         ("frame".to_string(), Value::Undef),
         // task #4067 (PRD S1 / DR-3 / I-3): tet/solid results always emit
         // shell_channels=Undef (through-thickness data is undefined for solid
@@ -1571,28 +1521,34 @@ pub fn solve_elastic_static_trampoline(
         ("shell_channels".to_string(), Value::Undef),
         // task 4564/α: divergence = tr(ε) = volumetric strain, Sampled Field.
         // Shell path emits Undef (PRD §7: derivative channels out of scope for shells).
-        ("divergence".to_string(), div_field),
+        ("divergence".to_string(), divergence),
         // task 4565/β: displacement-gradient ∇u and curl ∇×u, both dimensionless.
         // Shell path emits Undef (PRD §7).
-        ("gradient".to_string(), grad_field),
-        ("curl".to_string(), curl_field),
+        ("gradient".to_string(), gradient),
+        ("curl".to_string(), curl),
         // ruling #6164: rotation = ∇×u / 2, the designated crossing where the
         // radian enters (Vector3<Angle>). Derived from the curl SampledField at
         // wrap time and stored nowhere. Shell path emits Undef (PRD §7).
-        ("rotation".to_string(), rotation_field),
+        ("rotation".to_string(), rotation),
         // task #6183: Voigt engineering shears (Vector3<Angle>), derived from
         // the gradient SampledField the same way. Shell path emits Undef.
-        ("shear_angles".to_string(), shear_angles_field),
+        ("shear_angles".to_string(), shear_angles),
         (
             "max_von_mises".to_string(),
             Value::Scalar {
-                si_value: fea.max_von_mises,
+                si_value: reported.max_von_mises,
                 dimension: DimensionVector::PRESSURE,
             },
         ),
-        ("converged".to_string(), Value::Bool(converged)),
-        ("iterations".to_string(), Value::Int(n_iters)),
-        ("warm_started".to_string(), Value::Bool(warm_started)),
+        ("converged".to_string(), Value::Bool(reported.converged)),
+        (
+            "iterations".to_string(),
+            Value::Int(reported.iterations as i64),
+        ),
+        (
+            "warm_started".to_string(),
+            Value::Bool(reported.warm_started),
+        ),
     ]
     .into_iter()
     // task 2998/4902: trivial non-adaptive defaults OR the real adaptive-loop
@@ -1630,6 +1586,132 @@ pub fn solve_elastic_static_trampoline(
         diagnostics: route_diagnostics,
         structured_detail,
     }
+}
+
+/// The tet path's Sampled `ElasticResult` channels, all on one grid.
+struct SampledResultChannels {
+    displacement: Value,
+    stress: Value,
+    divergence: Value,
+    gradient: Value,
+    curl: Value,
+    rotation: Value,
+    shear_angles: Value,
+}
+
+/// Resample `solve`'s nodal fields onto `grid` as the result's Sampled
+/// channels.
+fn sampled_result_channels(solve: &CantileverFeaSolve, grid: &GridSpec) -> SampledResultChannels {
+    // Flatten nodal stress [[f64;3];3] → stride-9 row-major.
+    // Layout: σ_xx,σ_xy,σ_xz, σ_yx,σ_yy,σ_yz, σ_zx,σ_zy,σ_zz per node.
+    let nodal_stress_flat = super::flatten_nodal_stress(&solve.nodal_stress);
+
+    // Project nodal_gradient → divergence = trace(∇u) = ∇u[0][0]+∇u[1][1]+∇u[2][2].
+    // Stored as stride-1 scalar per node; the full 3×3 tensor rides on
+    // solve.nodal_gradient for PRD task β (gradient/curl channels).
+    let nodal_divergence: Vec<f64> = solve
+        .nodal_gradient
+        .iter()
+        .map(|g| g[0][0] + g[1][1] + g[2][2])
+        .collect();
+
+    // task 4565/β: stride-9 gradient = row-major flatten of ∇u (same operation
+    // as stress flatten — reuse flatten_nodal_stress which is a pure 3×3 flatten).
+    let nodal_gradient_flat = super::flatten_nodal_stress(&solve.nodal_gradient);
+
+    // task 4565/β: stride-3 curl = antisymmetric part of ∇u per node.
+    let nodal_curl_flat: Vec<f64> = solve
+        .nodal_gradient
+        .iter()
+        .flat_map(curl_from_gradient)
+        .collect();
+
+    // Single geometry pass: locate the containing tet once per grid point,
+    // then interpolate displacement (stride 3), stress (stride 9), divergence
+    // (stride 1), gradient (stride 9), and curl (stride 3).
+    // One BVH query per grid node covers all five fields.
+    let mut sampled = resample_multi_nodal_to_grid(
+        &solve.coords,
+        &solve.tet_connectivity,
+        &[
+            (&solve.u, 3, "displacement"), // Arc<Vec<f64>> → &[f64] via Deref
+            (&nodal_stress_flat, 9, "stress"),
+            (&nodal_divergence, 1, "divergence"),
+            (&nodal_gradient_flat, 9, "gradient"),
+            (&nodal_curl_flat, 3, "curl"),
+        ],
+        grid,
+        1e-9,
+    );
+    debug_assert_eq!(
+        sampled.len(),
+        5,
+        "expected 5 sampled fields (displacement + stress + divergence + gradient + curl)"
+    );
+    let curl_sf = sampled.pop().unwrap(); // index 4
+    let grad_sf = sampled.pop().unwrap(); // index 3
+    let div_sf = sampled.pop().unwrap(); // index 2
+    let stress_sf = sampled.pop().unwrap(); // index 1
+    let disp_sf = sampled.pop().unwrap(); // index 0
+
+    // task #6183: `shear_angles` is DERIVED from the gradient SampledField, like
+    // `rotation` from curl below (see `shear_angles_sf_from_gradient`).
+    let shear_angles = super::sampled_shear_angles_field(
+        super::shear_angles_sf_from_gradient(&grad_sf)
+            .expect("live tet gradient is stride-9 by construction (resampled as 3×3 per node)"),
+    );
+    // ruling #6164: `rotation` = ∇×u / 2 is DERIVED from the curl SampledField
+    // here rather than resampled independently — note there is deliberately NO
+    // 6th entry in the `resample_multi_nodal_to_grid` call above, so the channel
+    // costs no extra BVH pass and shares curl's grid bit-identically. Derived
+    // BEFORE `curl_sf` is moved into `sampled_curl_field` below.
+    let rotation = super::sampled_rotation_field(super::rotation_sf_from_curl(&curl_sf));
+    SampledResultChannels {
+        displacement: super::sampled_disp_field(disp_sf),
+        stress: super::sampled_stress_field(stress_sf),
+        divergence: super::sampled_divergence_field(div_sf),
+        gradient: super::sampled_gradient_field(grad_sf),
+        curl: super::sampled_curl_field(curl_sf),
+        rotation,
+        shear_angles,
+    }
+}
+
+/// task 4910: `solve`'s Pa-valued Z-Z stress-error indicator, resampled onto
+/// `grid` and wrapped as the `Option<Field>` the `error_indicator` channel
+/// carries. Resampled onto the SAME grid as the other channels, so the result
+/// bundle stays grid-consistent (grids_equal invariant).
+fn error_indicator_field(
+    solve: &CantileverFeaSolve,
+    material: &IsotropicElastic,
+    grid: &GridSpec,
+) -> Value {
+    let elements =
+        isotropic_stress_elements(&solve.coords, &solve.tet_connectivity, &solve.u, material);
+    let vmesh = volume_mesh_from_solver_mesh(&solve.coords, &solve.tet_connectivity);
+    let zz = compute_zz_indicator(&elements, &vmesh, material);
+    let scalar_elements: Vec<ScalarElement<'_>> = elements
+        .iter()
+        .zip(zz.per_element_stress_error.iter())
+        .map(|(el, &value)| ScalarElement {
+            connectivity: el.connectivity,
+            value,
+            volume: el.volume,
+        })
+        .collect();
+    let nodal_error_indicator = recover_nodal_scalar_p1(solve.coords.len(), &scalar_elements);
+    let error_indicator_sf = resample_nodal_to_grid(
+        &solve.coords,
+        &solve.tet_connectivity,
+        &nodal_error_indicator,
+        1,
+        grid,
+        "error_indicator",
+        1e-9,
+    );
+    Value::Option(Some(Box::new(super::sampled_error_indicator_field(
+        error_indicator_sf,
+    ))))
 }
 
 // ── Realized-VolumeMesh consumption (task 4091) ───────────────────────────────
@@ -3417,10 +3499,8 @@ fn volume_mesh_from_solver_mesh(coords: &[[f64; 3]], tets: &[[usize; 4]]) -> Vol
 /// [`element_stress_p1`], and compute the element volume via
 /// [`tet_volume_p1`]. Feeds `compute_zz_indicator`'s `&[StressElement]` input.
 ///
-/// Extracted (task 4902 amendment, reviewer_comprehensive/code_reuse) from
-/// what was a hand-duplicated copy of this same gather/recover/volume loop
-/// inside [`CantileverAdaptiveProblem::solve_and_estimate`] — now its ONLY
-/// call site. The single-shot tet path's own per-element loop (§ "Stress
+/// Callers: [`zz_estimate`] (both adaptive problems) and
+/// [`error_indicator_field`]. The single-shot tet path's own per-element loop (§ "Stress
 /// recovery" above, ~line 2516) is intentionally NOT converted to call this
 /// helper: that loop computes `stress_elements` / `gradient_elements` /
 /// `max_von_mises` together in a SINGLE pass across three material models
@@ -3462,6 +3542,20 @@ fn isotropic_stress_elements<'a>(
             StressElement { connectivity: conn.as_slice(), stress, volume }
         })
         .collect()
+}
+
+/// The Z-Z energy-norm estimate of one adaptive iterate — the
+/// `solve_and_estimate` tail both adaptive problems share.
+fn zz_estimate(fea: &CantileverFeaSolve, material: &IsotropicElastic) -> AdaptiveEstimate {
+    let elements = isotropic_stress_elements(&fea.coords, &fea.tet_connectivity, &fea.u, material);
+    let vmesh = volume_mesh_from_solver_mesh(&fea.coords, &fea.tet_connectivity);
+    let zz = compute_zz_indicator(&elements, &vmesh, material);
+    AdaptiveEstimate {
+        relative_error: zz.global_relative_energy_error,
+        per_element: zz.per_element,
+        n_dofs: 3 * fea.coords.len(),
+        qoi: None,
+    }
 }
 
 /// Drives the v1 mesh-free UNIFORM a-posteriori adaptive refinement loop over
@@ -3520,6 +3614,11 @@ pub(crate) struct CantileverAdaptiveProblem {
     /// million DOFs; `max_dofs` bounds it but was otherwise invisible to the
     /// caller beyond the Info diagnostic already emitted before the loop ran.
     pub(crate) last_n_dofs: usize,
+    /// The most recent SUCCESSFUL solve, kept so the trampoline can report
+    /// the loop's final iterate; a failed solve never clears it.
+    last_solve: Option<CantileverFeaSolve>,
+    /// How many times `refine` has run.
+    refine_count: usize,
 }
 
 impl CantileverAdaptiveProblem {
@@ -3550,6 +3649,19 @@ impl CantileverAdaptiveProblem {
             grid,
             last_global_indicator: 0.0,
             last_n_dofs: 0,
+            last_solve: None,
+            refine_count: 0,
+        }
+    }
+
+    /// The loop's final iterate, or `None` when no refine ran (the seed
+    /// solve stands). After `run_adaptive_refinement` returns `Ok`, the last
+    /// call was always a solve of the current grid.
+    pub(crate) fn into_refined_solve(self) -> Option<CantileverFeaSolve> {
+        if self.refine_count > 0 {
+            self.last_solve
+        } else {
+            None
         }
     }
 }
@@ -3594,31 +3706,11 @@ impl AdaptiveProblem for CantileverAdaptiveProblem {
             Some(self.grid),
         )?;
 
-        // Recompute per-element Cauchy stress + volume to feed compute_zz_indicator,
-        // via the shared `isotropic_stress_elements` helper (task 4902 amendment,
-        // reviewer_comprehensive/code_reuse — see its doc comment for why the
-        // single-shot tet path's own stress-recovery loop is not converted to
-        // share this same helper).
-        let elements = isotropic_stress_elements(
-            &fea.coords,
-            &fea.tet_connectivity,
-            &fea.u,
-            &self.material,
-        );
-
-        let vmesh = volume_mesh_from_solver_mesh(&fea.coords, &fea.tet_connectivity);
-        let zz = compute_zz_indicator(&elements, &vmesh, &self.material);
-
-        let n_dofs = 3 * fea.coords.len();
-        self.last_global_indicator = zz.global_relative_energy_error;
-        self.last_n_dofs = n_dofs;
-
-        Ok(AdaptiveEstimate {
-            relative_error: zz.global_relative_energy_error,
-            per_element: zz.per_element,
-            n_dofs,
-            qoi: None,
-        })
+        let estimate = zz_estimate(&fea, &self.material);
+        self.last_global_indicator = estimate.relative_error;
+        self.last_n_dofs = estimate.n_dofs;
+        self.last_solve = Some(fea);
+        Ok(estimate)
     }
 
     fn refine(&mut self, _marked: &[usize]) -> Result<(), Self::Error> {
@@ -3635,8 +3727,20 @@ impl AdaptiveProblem for CantileverAdaptiveProblem {
         // deferred to follow-up task 4909.
         let (nx, ny, nz) = self.grid;
         self.grid = (nx * 2, ny * 2, nz * 2);
+        self.refine_count += 1;
         Ok(())
     }
+}
+
+/// What one adaptive lane hands back to the trampoline.
+struct AdaptiveLaneOutcome {
+    status: ConvergenceStatus,
+    global_relative_energy_error: f64,
+    /// The loop's final iterate when at least one refine ran and that
+    /// iterate solved the seed's geometry; `None` reports the seed solve.
+    refined_solve: Option<CantileverFeaSolve>,
+    /// The lane's post-loop Info diagnostic.
+    diagnostic: Diagnostic,
 }
 /// A CG per-iteration callback that ONLY polls the ambient cancel handle.
 ///
@@ -3970,25 +4074,10 @@ impl AdaptiveProblem for RealizedAdaptiveProblem {
         )
         .map_err(RealizedLaneError::DegenerateMesh)?;
 
-        let elements = isotropic_stress_elements(
-            &fea.coords,
-            &fea.tet_connectivity,
-            &fea.u,
-            &self.material,
-        );
-        let vmesh = volume_mesh_from_solver_mesh(&fea.coords, &fea.tet_connectivity);
-        let zz = compute_zz_indicator(&elements, &vmesh, &self.material);
-
-        let n_dofs = 3 * fea.coords.len();
-        self.last_global_indicator = zz.global_relative_energy_error;
-        self.last_n_dofs = n_dofs;
-
-        Ok(AdaptiveEstimate {
-            relative_error: zz.global_relative_energy_error,
-            per_element: zz.per_element,
-            n_dofs,
-            qoi: None,
-        })
+        let estimate = zz_estimate(&fea, &self.material);
+        self.last_global_indicator = estimate.relative_error;
+        self.last_n_dofs = estimate.n_dofs;
+        Ok(estimate)
     }
 
     /// Consume the Dörfler-marked set by remeshing the volume under a
@@ -14373,7 +14462,11 @@ mod tests {
             .fold(0.0_f64, |m, v| m.max(v.abs()));
         let tol = 1e-12 * scale;
         for (i, (a, e)) in actual.iter().zip(expected).enumerate() {
-            assert_eq!(a.is_nan(), e.is_nan(), "{what}[{i}]: NaN pattern differs ({a} vs {e})");
+            assert_eq!(
+                a.is_nan(),
+                e.is_nan(),
+                "{what}[{i}]: NaN pattern differs ({a} vs {e})"
+            );
             assert!(
                 e.is_nan() || (a - e).abs() <= tol,
                 "{what}[{i}]: {a:e} vs expected {e:e} (tol {tol:e})",
@@ -14397,7 +14490,11 @@ mod tests {
             1e-9,
         );
         for (name, expected) in ["displacement", "stress"].into_iter().zip(&expected) {
-            assert_nan_aware_close(&result_sampled_field(fields, name).data, &expected.data, name);
+            assert_nan_aware_close(
+                &result_sampled_field(fields, name).data,
+                &expected.data,
+                name,
+            );
         }
     }
 
@@ -14411,11 +14508,23 @@ mod tests {
         let node_counts: Vec<usize> = grid.counts.iter().map(|c| c + 1).collect();
         for &name in names {
             let (sa, sb) = (result_sampled_field(a, name), result_sampled_field(b, name));
-            assert!(sa.grid_metadata_eq(&sb), "{name}: the two results sample different grids");
-            assert_eq!(sa.bounds_min, grid.bounds_min, "{name}: bounds_min is not the seed grid's");
-            assert_eq!(sa.bounds_max, grid.bounds_max, "{name}: bounds_max is not the seed grid's");
+            assert!(
+                sa.grid_metadata_eq(&sb),
+                "{name}: the two results sample different grids"
+            );
+            assert_eq!(
+                sa.bounds_min, grid.bounds_min,
+                "{name}: bounds_min is not the seed grid's"
+            );
+            assert_eq!(
+                sa.bounds_max, grid.bounds_max,
+                "{name}: bounds_max is not the seed grid's"
+            );
             let axis_lens: Vec<usize> = sa.axis_grids.iter().map(Vec::len).collect();
-            assert_eq!(axis_lens, node_counts, "{name}: axis node counts are not the seed grid's");
+            assert_eq!(
+                axis_lens, node_counts,
+                "{name}: axis node counts are not the seed grid's"
+            );
         }
     }
 
@@ -14454,7 +14563,11 @@ mod tests {
         run_adaptive_refinement(&mut problem, &budget, DORFLER_THETA)
             .expect("the stubby synthetic box solves at every grid");
         let seed_counts = synthetic_grid_counts(DIMS[0], DIMS[2]);
-        assert_eq!(seed_counts, (12, 1, 6), "fixture: the stubby beam's seed grid");
+        assert_eq!(
+            seed_counts,
+            (12, 1, 6),
+            "fixture: the stubby beam's seed grid"
+        );
         assert_ne!(
             problem.grid, seed_counts,
             "fixture: an unreachable target must buy at least one refine",
@@ -14532,13 +14645,21 @@ mod tests {
         let (zero_refine, _) = run(0);
 
         assert!(
-            diags.iter().any(|d| d.message.contains("adaptive refinement finished")
-                && d.message.contains(UNIFORM_LANE_MARKER)
-                && d.message.contains("120×2×12")),
+            diags
+                .iter()
+                .any(|d| d.message.contains("adaptive refinement finished")
+                    && d.message.contains(UNIFORM_LANE_MARKER)
+                    && d.message.contains("120×2×12")),
             "fixture: the uniform fallback must have run and refined the 60×1×6 box once, \
              got: {diags:?}",
         );
-        for name in ["displacement", "stress", "max_von_mises", "converged", "iterations"] {
+        for name in [
+            "displacement",
+            "stress",
+            "max_von_mises",
+            "converged",
+            "iterations",
+        ] {
             assert_eq!(
                 one_refine.get(name),
                 zero_refine.get(name),
