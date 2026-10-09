@@ -8,14 +8,16 @@
 //! (derived as `max` over the per-element `k_e.n_dofs / connectivity.len()`,
 //! defaulting to `3` for empty inputs). Tet-only meshes ⇒ `D = 3`,
 //! pure-shell meshes ⇒ `D = 6`, mixed tet+shell meshes ⇒ `D = 6` (shell
-//! dominates). Uses `faer-rs` CSR triplet builders.
+//! dominates). Assembly is pattern-first and node-owned
+//! ([`assemble_stiffness`]; PRD `docs/prds/v0_6/elastic-static-solver-performance.md`
+//! §5 C12): each node builds its own rows of a canonical faer CSR matrix.
 
 use std::num::NonZeroUsize;
 use std::ops::{ControlFlow, Range};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, PoisonError};
 
-use faer::sparse::{SparseRowMat, SymbolicSparseRowMat, Triplet};
+use faer::sparse::{SparseRowMat, SymbolicSparseRowMat};
 
 use super::ElementStiffness;
 
@@ -42,10 +44,9 @@ const MAX_EXAMPLES: usize = 16;
 /// `max(d_e)` over all elements (see module docs).
 ///
 /// The `id` field is descriptive metadata used in panic messages (e.g. to
-/// name the offending element in a contract violation) and is *not* used
-/// internally as a sort key in any [`AssemblyMode`]. Callers requiring a
-/// canonical iteration order in [`AssemblyMode::Deterministic`] must sort
-/// the slice themselves before passing it in.
+/// name the offending element in a contract violation) and is never a sort
+/// key: the slice order alone fixes the order in which shared entries sum
+/// (see [`assemble_stiffness`]).
 pub struct AssemblyElement<'a> {
     /// Element ID (descriptive metadata; surfaces in panic messages).
     pub id: usize,
@@ -57,40 +58,24 @@ pub struct AssemblyElement<'a> {
     pub k_e: &'a ElementStiffness,
 }
 
-/// How [`assemble_global_stiffness`] iterates over `elements` when scattering
-/// per-element triplets into the global system.
+/// Thread count for [`assemble_global_stiffness`]: `Deterministic` is one
+/// thread, `Parallel { threads }` is `threads`. Both yield the same bits — the
+/// mode sets parallelism only.
 ///
-/// # `Deterministic`
+/// A compatibility shim: ξ (#8375) moves the remaining callers to
+/// [`assemble_stiffness`], whose `NonZeroUsize` thread count cannot express
+/// zero, and deletes this enum with the wrapper.
 ///
-/// Single-threaded, slice-order accumulation. The triplet emission order is
-/// exactly the iteration order of the input slice. faer's CSR builder sums
-/// duplicate `(row, col)` pairs in the order it encounters them, so the
-/// global `K[i][j]` summation order is fully determined by the slice's
-/// iteration order. Bit-stable across runs **and across machines**.
-///
-/// # `Parallel { threads }`
-///
-/// Multi-threaded scatter via `std::thread::scope`. The element slice is
-/// partitioned into `threads` chunks; each thread accumulates a local
-/// `Vec<Triplet>` in slice order; after join the per-thread Vecs are
-/// concatenated in **`handles`-vector order (== chunk-iteration order ==
-/// slice order)** before being handed to faer. This gives bit-stability
-/// for any *fixed* thread count, but the
-/// summation order — and hence the LSB of shared-DOF sums — varies across
-/// thread counts. Cross-thread-count equivalence is bounded by
-/// `O(ulp · max|K_e[i][j]|)`, far below the FEA tolerance band.
-///
-/// `Parallel { threads: 0 }` is rejected with a panic at function entry —
-/// auto-falling-back to single-threaded would silently mask caller bugs
-/// (e.g. a misread config defaulting `threads` to 0). The "tiny problems
-/// fall back to single-threaded under 10K DOF" policy lives in the
-/// `ElasticOptions` resolution layer (PRD task #16), not in this primitive.
+/// `Parallel { threads: 0 }` panics rather than falling back to one thread,
+/// which would silently mask caller bugs (e.g. a misread config defaulting
+/// `threads` to 0). The "tiny problems run single-threaded" policy lives in
+/// the `ElasticOptions` resolution layer (PRD task #16), not here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AssemblyMode {
-    /// Single-threaded, slice-order accumulation.
+    /// One thread.
     Deterministic,
-    /// Multi-threaded scatter with fixed-handle-order merge. `threads`
-    /// must be `>= 1`; passing `0` panics.
+    /// `threads` threads, the calling thread included. `threads` must be
+    /// `>= 1`; passing `0` panics.
     Parallel {
         /// Worker thread count.
         threads: usize,
@@ -175,7 +160,7 @@ impl std::fmt::Display for OrphanDofsSummary {
 /// ```
 ///
 /// with `d_e_e = e.k_e.n_dofs / e.connectivity.len()` (the same formula used
-/// by [`assemble_global_stiffness`] to derive the global `D`). The global
+/// by [`assemble_stiffness`] to derive the global `D`). The global
 /// `D = max(d_e_max_local)` over all elements. Empty `elements` returns an
 /// empty summary (`count=0`) without computing `D` (see early return below).
 ///
@@ -187,9 +172,10 @@ impl std::fmt::Display for OrphanDofsSummary {
 ///
 /// ## In debug builds
 ///
-/// [`assemble_global_stiffness`] calls this function internally under
+/// [`assemble_stiffness`] calls this function internally under
 /// `#[cfg(debug_assertions)]` and emits an `eprintln!` warning if
-/// `count > 0`. See the design note at the assembly boundary.
+/// `count > 0`, so a forgotten BC/MPC stabilisation surfaces at assembly
+/// rather than as a silently singular `K` in the linear solve.
 ///
 /// ## Task marker
 ///
@@ -202,7 +188,7 @@ impl std::fmt::Display for OrphanDofsSummary {
 /// Panics (index out of bounds) if any node index in an element's connectivity
 /// is `>= n_nodes`. Panics (divide by zero) if any element's connectivity is
 /// empty (`e.connectivity.len() == 0`). These contracts match those of
-/// [`assemble_global_stiffness`] — callers should validate the mesh before
+/// [`assemble_stiffness`] — callers should validate the mesh before
 /// calling this function as a pre-assembly check.
 ///
 /// In debug builds, two `debug_assert!`s enforce these contracts eagerly:
@@ -216,7 +202,7 @@ pub fn detect_orphan_dofs(
         return OrphanDofsSummary::default();
     }
 
-    // Validate input contracts (matches assemble_global_stiffness's implicit
+    // Validate input contracts (matches assemble_stiffness's implicit
     // contract): every element must have non-empty connectivity, and every
     // referenced node must be in-bounds for n_nodes.
     #[cfg(debug_assertions)]
@@ -235,7 +221,7 @@ pub fn detect_orphan_dofs(
     }
 
     // Global DOFs-per-node D = max(d_e_e) over all elements, mirroring the
-    // formula in assemble_global_stiffness. Derived inline with the per-node
+    // formula in assemble_stiffness. Derived inline with the per-node
     // aggregation below; the early return above guarantees elements is non-empty
     // here so d_global is always set to at least the first element's d_e.
     let mut d_global: usize = 0;
@@ -595,290 +581,45 @@ impl<'s, 'e> NodeOwnedRows<'s, 'e> {
     }
 }
 
-/// Scatter per-element stiffness matrices into a global `D·N × D·N` sparse
-/// stiffness matrix, where `D` is the global DOFs-per-node count derived
-/// from the element slice (see below) and `N = n_nodes`.
-///
-/// `n_nodes` is the global node count; the returned matrix has
-/// `D * n_nodes` rows and columns, where:
-///
-/// - `D = max(k_e.n_dofs / connectivity.len())` over all elements, with
-///   `unwrap_or(3)` so empty inputs yield the v0.3 tet-only `3N × 3N`
-///   shape. This rule produces:
-///     - pure-tet meshes ⇒ `D = 3` (backward-compatible),
-///     - pure-shell meshes ⇒ `D = 6`,
-///     - mixed tet + shell meshes ⇒ `D = 6` (shell dominates).
-///
-/// `elements` is the slice of element contributions (see
-/// [`AssemblyElement`]); each contribution emits a full dense `(a, b, α, β)`
-/// block of `d_e² · n_local²` triplets (where `d_e = k_e.n_dofs / n_local`
-/// is the element's own DOFs-per-node count), and faer's CSR builder sums
-/// duplicates that share a `(row, col)` pair.
-///
-/// Tet-only nodes in a `D = 6` mixed-element global system carry orphan
-/// rotation rows/cols of zero (rows/cols `D·n + 3..D·n + 6` at any node
-/// touched only by tets). Stabilising those orphan DOFs is the
-/// downstream BC/MPC layers' job (Dirichlet auto-clamp on rotations,
-/// shell-tet tying via `crate::mpc`); the assembler ships them as zeros.
-///
-/// # Symmetry
-///
-/// `K_global` inherits the symmetry of the per-element `K_e`. For
-/// `IsotropicElastic` materials `K_e = ∫ BᵀDB dV` is symmetric by
-/// construction (Task 2915 pins this via unit tests). The emission loop
-/// in `emit_element_triplets` emits the **full dense `(a, b, α, β)` block**
-/// — both `(a, b)` and `(b, a)` for every local pair — rather than just
-/// the upper triangle. Combined with faer's stable duplicate-summation
-/// order, this means `|K_global[i][j] − K_global[j][i]|` is bounded by
-/// `O(ulp · max|K_e[i][j]|)` for any input — far below
-/// `1e-9 · max(|K[i][j]|, |K[j][i]|, 1)`, the tolerance pinned by
-/// `global_k_is_symmetric_within_fp_tolerance`.
-///
-/// Why full-block instead of upper-triangle-only: emitting only the upper
-/// triangle would shift the mirror-and-sum bookkeeping onto callers (or
-/// onto a separate post-pass), and would couple `assemble_global_stiffness`
-/// to the property "`K_e` is symmetric" — a property of the constitutive
-/// law, not a hard contract on the input. The `9 · n_local²` triplet
-/// emission per element is dominated by the constitutive-tensor pre-pass
-/// (PRD task #8) anyway, so the 2× emission cost is invisible at the
-/// pipeline level. See `design_decisions[2]` in the plan for the full
-/// rationale.
+/// Assemble the global stiffness `K` with [`assemble_stiffness`], which owns
+/// the contract: shape, pattern, summation order and panics.
+/// `AssemblyMode` only chooses the thread count — `Deterministic` is one
+/// thread, `Parallel { threads }` is `threads` — so both give the same bits.
 ///
 /// # Panics
 ///
-/// - `AssemblyMode::Parallel { threads: 0 }` — auto-fallback to
-///   single-threaded would silently mask caller bugs (e.g. a misread config
-///   defaulting `threads` to 0); the panic surfaces them at the call site.
-///   The "tiny problems run single-threaded" policy lives in the
-///   `ElasticOptions` resolution layer (PRD task #16), not in this primitive.
-/// - `k_e.n_dofs % connectivity.len() != 0` for any element — `k_e.n_dofs`
-///   must be divisible by `connectivity.len()` so the per-element DOFs-per-node
-///   count `d_e = k_e.n_dofs / connectivity.len()` is an integer; otherwise
-///   the `(D·conn[a]+α, D·conn[b]+β)` mapping is ill-defined. The panic
-///   message names the offending element id, observed `connectivity.len()`,
-///   observed `k_e.n_dofs`, and the divisibility remainder.
-/// - `connectivity[i] >= n_nodes` for any element — out-of-range global node
-///   ID would translate to an out-of-range DOF row/col index. The panic
-///   message names the offending element id and node id.
-///
-/// See [`AssemblyMode`] for the iteration / merge contract per mode.
+/// - `AssemblyMode::Parallel { threads: 0 }`, checked first, even for an
+///   empty `elements`: auto-fallback to single-threaded would silently mask
+///   caller bugs (e.g. a misread config defaulting `threads` to 0). The
+///   "tiny problems run single-threaded" policy lives in the `ElasticOptions`
+///   resolution layer (PRD task #16), not here.
+/// - Every contract panic of [`assemble_stiffness`].
 pub fn assemble_global_stiffness(
     n_nodes: usize,
     elements: &[AssemblyElement<'_>],
     mode: AssemblyMode,
 ) -> SparseRowMat<usize, f64> {
-    // Public-surface contract checks. Unconditional `assert!` (not
-    // `debug_assert!`) per the project's Task-2544 contract-explicitness
-    // convention, mirrored in `assembly/mod.rs::element_stiffness` and
-    // `elements/mod.rs::ReferenceElement::jacobian`.
-    //
-    // Threads check first, before per-element checks: a `Parallel { threads: 0 }`
-    // call with an empty `elements` slice should still panic, surfacing the
-    // caller bug regardless of mesh size.
-    if let AssemblyMode::Parallel { threads } = mode {
-        assert!(
-            threads != 0,
-            "AssemblyMode::Parallel {{ threads: 0 }} is invalid: \
-             auto-fallback to single-threaded would silently mask \
-             caller bugs (e.g. a misread config defaulting threads to 0). \
-             Pass threads >= 1, or use AssemblyMode::Deterministic for \
-             single-threaded slice-order accumulation.",
-        );
-    }
-    let n_dofs_per_node = check_elements_and_derive_dofs_per_node(n_nodes, elements);
-
-    // Mode-specific dispatch. The deterministic arm exercises the shared
-    // `emit_element_triplets` scatter primitive in slice order; the
-    // parallel arm partitions into `threads` chunks via
-    // `std::thread::scope` and merges per-thread Vecs in spawn order.
-    //
-    // Each element emits a full dense block of `d_e² · n_local²` triplets
-    // where `d_e = k_e.n_dofs / n_local` is the element's per-node DOF
-    // count (3 for tet, 6 for MITC3 shell). Worked examples: P1 tet
-    // ⇒ 3² · 4² = 144; P2 tet ⇒ 3² · 10² = 900; MITC3 shell
-    // ⇒ 6² · 3² = 324. Pre-sizing both the merged accumulator and
-    // per-thread local Vecs to the exact triplet count avoids the
-    // O(log N) reallocs `Vec::new()` would walk through on the FEA hot
-    // path — for ~10K P1 elements at 144 triplets each (24 B per
-    // `Triplet<usize, usize, f64>`), that's ~34 MB of allocator churn
-    // the worker would otherwise perform per chunk.
-    let total_triplets: usize = elements
-        .iter()
-        .map(|e| {
-            let dpn = e.k_e.n_dofs / e.connectivity.len();
-            dpn * dpn * e.connectivity.len() * e.connectivity.len()
-        })
-        .sum();
-    let triplets: Vec<Triplet<usize, usize, f64>> = match mode {
-        AssemblyMode::Deterministic => {
-            // Pre-aggregate every duplicate `(row, col)` contribution into a
-            // `BTreeMap<(usize, usize), f64>` in slice/encounter order, then
-            // emit a **duplicate-free** triplet set to faer. This makes K a
-            // pure reify-owned function of `(n_nodes, elements)` — faer's
-            // internal `sort_unstable`-based dedup order no longer affects
-            // any stored value.
-            //
-            // Accumulation is left-fold / encounter order:
-            //   K[i][j] = Σ (over elements sharing DOF pair (i,j))
-            //              K_e[a·d_e+α][b·d_e+β]
-            // processed in the order elements appear in the `elements` slice
-            // (and within each element in `(a, α, b, β)` row-major order as
-            // emitted by `emit_element_triplets`).
-            //
-            // With unique keys faer's `try_new_from_triplets` dedup becomes a
-            // no-op — the canary `faer_sums_duplicate_triplets_in_encounter_order`
-            // still validates the parallel-mode path (unchanged below).
-            let mut btree: std::collections::BTreeMap<(usize, usize), f64> =
-                std::collections::BTreeMap::new();
-            // Pre-size `scratch` to the largest per-element triplet block to
-            // avoid repeated reallocs (one Vec is reused via `clear()` across
-            // all elements). `total_triplets / elements.len().max(1)` gives the
-            // average count; using the true per-element max would require an
-            // extra pass over elements, but the average is sufficient for
-            // avoiding pathological realloc cascades on heterogeneous meshes.
-            let scratch_cap = total_triplets / elements.len().max(1);
-            let mut scratch: Vec<Triplet<usize, usize, f64>> = Vec::with_capacity(scratch_cap);
-            for element in elements {
-                scratch.clear();
-                emit_element_triplets(element, n_dofs_per_node, &mut scratch);
-                for t in &scratch {
-                    *btree.entry((t.row, t.col)).or_insert(0.0) += t.val;
-                }
-            }
-            btree
-                .into_iter()
-                .map(|((row, col), val)| Triplet::new(row, col, val))
-                .collect()
-        }
-        AssemblyMode::Parallel { threads } => {
-            // Partition `elements` into `threads` chunks via
-            // `chunks(div_ceil(...))`, so chunk i goes to thread i with
-            // at most one short tail chunk. `.max(1)` clamps the chunk
-            // size: `[].chunks(0)` would panic, but `[].chunks(1)`
-            // yields zero chunks ⇒ zero spawned threads ⇒ empty triplet
-            // Vec, the right behavior for the empty-elements case.
-            //
-            // When `elements.len() < threads`, only `elements.len()`
-            // threads spawn (one per non-empty chunk); the requested
-            // `threads` count is an upper bound, not a lower bound.
-            //
-            // # Determinism contract
-            //
-            // **The merge order is `handles` insertion order
-            // (== chunk-iteration order == slice order).** Concretely:
-            //
-            //   (a) `elements.chunks(chunk_size)` is called once with a
-            //       stable chunk size, so the chunk-iteration order is
-            //       deterministic and matches `elements`'s slice order.
-            //   (b) Threads spawn sequentially in chunk-iteration order,
-            //       so handle slot `t` in the `handles` Vec always
-            //       corresponds to the worker for chunk `t` — regardless
-            //       of what OS thread id that worker was assigned.
-            //   (c) `handles[t].join()` is called in `t`-ascending order,
-            //       and `acc.extend(...)` appends each worker's local
-            //       Vec in that order — preserving thread-spawn order
-            //       in the merged Vec.
-            //
-            // Reordering the spawn loop, switching to a non-stable chunk
-            // dispatch (e.g. work-stealing), or joining handles in any
-            // order other than spawn order would break the
-            // fixed-thread-count bit-stability contract pinned by
-            // `parallel_mode_bit_equal_to_deterministic_on_disjoint_mesh`
-            // (step-11) and the back-to-back determinism check in
-            // `parallel_mode_tolerance_equivalent_to_deterministic_on_shared_dof_mesh`
-            // (step-13). See PRD `docs/prds/v0_3/structural-analysis-fea.md`
-            // task #9 for the user-facing contract.
-            let chunk_size = elements.len().div_ceil(threads).max(1);
-            std::thread::scope(|s| {
-                let mut handles = Vec::with_capacity(threads);
-                for chunk in elements.chunks(chunk_size) {
-                    handles.push(s.spawn(move || {
-                        // Pre-size to the exact per-chunk triplet count;
-                        // see the rationale on `total_triplets` above.
-                        let cap: usize = chunk
-                            .iter()
-                            .map(|e| {
-                                let dpn = e.k_e.n_dofs / e.connectivity.len();
-                                dpn * dpn * e.connectivity.len() * e.connectivity.len()
-                            })
-                            .sum();
-                        let mut local: Vec<Triplet<usize, usize, f64>> = Vec::with_capacity(cap);
-                        for element in chunk {
-                            emit_element_triplets(element, n_dofs_per_node, &mut local);
-                        }
-                        local
-                    }));
-                }
-                let mut acc: Vec<Triplet<usize, usize, f64>> = Vec::with_capacity(total_triplets);
-                for h in handles {
-                    // Joining in handle-vector order = spawn order =
-                    // chunk-iteration order in `elements`. A worker
-                    // panic is forwarded to the caller via
-                    // `resume_unwind` rather than being swallowed by
-                    // `.expect(...)`: `expect` would format the boxed
-                    // `Any` payload as `Any { .. }` (losing the
-                    // original panic text and backtrace location),
-                    // whereas `resume_unwind` propagates the original
-                    // payload intact so the caller sees the worker's
-                    // exact panic message (e.g. "index out of bounds").
-                    // Per the Task-2544 contract-explicitness
-                    // convention: make the contract explicit in
-                    // production code rather than relying on test
-                    // coverage. Mirrors the `run_with_deadlock_timeout`
-                    // pattern in `reify-test-support::mocks`.
-                    match h.join() {
-                        Ok(local) => acc.extend(local),
-                        Err(payload) => std::panic::resume_unwind(payload),
-                    }
-                }
-                acc
-            })
-        }
+    let threads = match mode {
+        AssemblyMode::Deterministic => NonZeroUsize::MIN,
+        AssemblyMode::Parallel { threads } => NonZeroUsize::new(threads).unwrap_or_else(|| {
+            panic!(
+                "AssemblyMode::Parallel {{ threads: 0 }} is invalid: \
+                 auto-fallback to single-threaded would silently mask \
+                 caller bugs (e.g. a misread config defaulting threads to 0). \
+                 Pass threads >= 1, or use AssemblyMode::Deterministic for \
+                 single-threaded slice-order accumulation.",
+            )
+        }),
     };
-    // **Duplicate-summation ownership split:**
-    //
-    // *Deterministic mode* — the `BTreeMap` pre-aggregation above produces a
-    // duplicate-free triplet set, so faer's internal `sort_unstable`-based
-    // dedup is a no-op and does not influence any stored value. The summation
-    // order (left-fold / encounter order over the `elements` slice) is fully
-    // reify-owned. This makes `K` a pure function of `(n_nodes, elements)`,
-    // eliminating the flaky-determinism failure mode documented in task 4573.
-    //
-    // *Parallel mode* — the merged triplet `Vec` still contains duplicates at
-    // shared DOFs, so `try_new_from_triplets` **must** sum them in encounter
-    // order. The `faer_sums_duplicate_triplets_in_encounter_order` canary
-    // (below) pins that faer contract: it seeds five duplicate triplets whose
-    // left-fold and pairwise-tree-reduction sums diverge above the LSB, so a
-    // faer upgrade that switches summation strategy surfaces immediately rather
-    // than silently invalidating the parallel-mode determinism contract. Faer's
-    // own `test_from_indices` (sparse/mod.rs:280-326) uses sum-order-invariant
-    // values; our canary does not, so it also catches regressions that survive
-    // faer's own suite.
-    //
-    // If a future faer version breaks encounter-order summation in parallel mode
-    // (e.g. overwrites instead of summing), apply the same BTreeMap pre-merge
-    // to the parallel arm and remove the canary dependency.
-    // Debug-only orphan-DOF diagnostic. Zero release-mode cost; matches the
-    // #[cfg(debug_assertions)] gating idiom in mpc.rs:172-213. Uses eprintln!
-    // rather than tracing/log because reify-solver-elastic has no logging
-    // dependency (task 3293, design decision 3).
-    #[cfg(debug_assertions)]
-    {
-        let orphans = detect_orphan_dofs(n_nodes, elements);
-        if orphans.count > 0 {
-            eprintln!(
-                "[reify-solver-elastic] assemble_global_stiffness: {orphans}; \
-                 apply Dirichlet BC (task 2917) or MPC tying (task 3020) to \
-                 stabilise these DOFs before solving",
-            );
-        }
+    match assemble_stiffness(
+        n_nodes,
+        elements,
+        threads,
+        &mut || ControlFlow::Continue(()),
+    ) {
+        ControlFlow::Continue(k) => k,
+        ControlFlow::Break(()) => unreachable!("a never-breaking poll cannot cancel assembly"),
     }
-
-    let dim = n_dofs_per_node * n_nodes;
-    SparseRowMat::try_new_from_triplets(dim, dim, &triplets).expect(
-        "triplets within declared n_dofs_per_node*n_nodes dims \
-         (per-element bounds enforced upstream)",
-    )
 }
 
 /// Enforce the per-element contract of [`assemble_stiffness`] and return the
@@ -944,97 +685,6 @@ fn check_elements_and_derive_dofs_per_node(
         .unwrap_or(3)
 }
 
-/// Emit one dense `d_e² · n_local²` block of triplets for `element` and
-/// append to `out`. `d_e = element.k_e.n_dofs / n_local` is the element's
-/// per-node DOF count (3 for tet, 6 for MITC3 shell). `n_dofs_per_node`
-/// is the **global** per-node DOF count (`D` in module docs); it sets the
-/// global row/col stride `D · conn[a] + α` independent of `d_e`. When
-/// `D > d_e` (e.g. tet element in a 6-DOF/node mixed system, `D = 6`,
-/// `d_e = 3`), the element fills only the first `d_e` rows/cols at each
-/// node-pair block and the remaining `D − d_e` rows/cols stay zero
-/// (orphan DOFs at tet-only nodes in a `D = 6` system).
-///
-/// # Worked examples (per-element local stride `d_e` × global stride `D`)
-///
-/// - **P1 tet in pure-tet mesh** (`d_e = 3`, `n_local = 4`, `D = 3`):
-///   emits `9 · 16 = 144` triplets at `(3·conn[a]+α, 3·conn[b]+β)`.
-/// - **P2 tet in pure-tet mesh** (`d_e = 3`, `n_local = 10`, `D = 3`):
-///   emits `9 · 100 = 900` triplets at `(3·conn[a]+α, 3·conn[b]+β)`.
-/// - **MITC3 shell in pure-shell mesh** (`d_e = 6`, `n_local = 3`,
-///   `D = 6`): emits `36 · 9 = 324` triplets at
-///   `(6·conn[a]+α, 6·conn[b]+β)`.
-/// - **P1 tet in mixed tet+shell mesh** (`d_e = 3`, `n_local = 4`,
-///   `D = 6`): emits the same `144` triplets at
-///   `(6·conn[a]+α, 6·conn[b]+β)` for `α, β ∈ 0..3` — leaves
-///   `α, β ∈ 3..6` rows/cols **unstored** at the touched nodes,
-///   producing the orphan rotation rows/cols densified to zero.
-/// - **MITC3 shell in mixed tet+shell mesh** (`d_e = 6`, `n_local = 3`,
-///   `D = 6`): identical to the pure-shell case (the local and global
-///   strides agree). Both translation and rotation DOFs land at
-///   `(6·conn[a]+α, 6·conn[b]+β)` for `α, β ∈ 0..6`.
-///
-/// The emission order is the C-style row-major nesting
-/// `for a in 0..n_local { for α in 0..d_e { for b in 0..n_local { for β in 0..d_e } } }` —
-/// chosen so the within-block `(row, col)` sequence is monotonic, which
-/// gives faer's duplicate-summation step a stable input ordering and
-/// matches the row-major layout of [`ElementStiffness::data`] (one
-/// sequential read per output triplet).
-///
-/// # Sparsity contract
-///
-/// Explicit-zero entries (`K_e[i][j] == 0.0`) are emitted unconditionally —
-/// this helper does not zero-prune. For current dense isotropic-elastic K_e
-/// producers there are no structural zeros, so this is a no-op. Callers
-/// feeding K_e with structural zeros (e.g. anisotropic or shell-coupled
-/// stiffness blocks) and requiring sparse-storage savings must pre-prune K_e
-/// before calling; storing wasted explicit-zero entries downstream in CSR is
-/// the caller's responsibility, not this helper's. The current behavior is
-/// intentional — zero-pruning here would couple the helper to K_e's sparsity
-/// pattern without benefiting current consumers.
-///
-/// # N-agnostic / D-agnostic contract
-///
-/// The loop bounds derive from `n_local = element.connectivity.len()`,
-/// `d_e = element.k_e.n_dofs / n_local`, and the global `n_dofs_per_node`
-/// stride exclusively — there is no hardcoded `4` (P1 node count) or `10`
-/// (P2 node count) or `3` (tet axes per node) or `6` (shell DOFs per node)
-/// anywhere in the body. The `assemble_global_stiffness` entry-point's
-/// per-element contract check (`k_e.n_dofs % connectivity.len() == 0`) is
-/// the only coupling between `n_local` and `k_e`, so this primitive
-/// accepts any element shape whose K_e satisfies that invariant. Pinned by
-/// `single_p2_element_identity_connectivity_matches_k_e_bit_for_bit` (n=10,
-/// d=3) and `single_shell_18dof_element_identity_connectivity_matches_k_e_bit_for_bit`
-/// (n=3, d=6).
-fn emit_element_triplets(
-    element: &AssemblyElement<'_>,
-    n_dofs_per_node: usize,
-    out: &mut Vec<Triplet<usize, usize, f64>>,
-) {
-    let n_local = element.connectivity.len();
-    let local_dofs_per_node = element.k_e.n_dofs / n_local;
-    // Iteration order is `(a, α, b, β)` so row = D*conn[a]+α stays fixed
-    // for the inner `(b, β)` sweep — that's the row-major traversal of
-    // both the local k_e block and the global K row, minimizing cache
-    // pressure and giving faer monotonically non-decreasing rows for
-    // duplicate-summation stability.
-    for a in 0..n_local {
-        let row_node = element.connectivity[a];
-        for alpha in 0..local_dofs_per_node {
-            let row = n_dofs_per_node * row_node + alpha;
-            let local_row = local_dofs_per_node * a + alpha;
-            for b in 0..n_local {
-                let col_node = element.connectivity[b];
-                for beta in 0..local_dofs_per_node {
-                    let col = n_dofs_per_node * col_node + beta;
-                    let local_col = local_dofs_per_node * b + beta;
-                    let val = element.k_e.get(local_row, local_col);
-                    out.push(Triplet::new(row, col, val));
-                }
-            }
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1076,15 +726,9 @@ mod tests {
 
     /// Empty `elements` slice → `3N × 3N` all-zero sparse matrix.
     ///
-    /// Pins the empty-input contract: the function returns a matrix whose
-    /// dimensions match `3 * n_nodes`, and whose stored-entry count is zero
-    /// (faer's CSR builder must accept a zero-triplet input cleanly).
-    ///
-    /// Exercised through every `AssemblyMode` variant. The parallel arm's
-    /// `chunks(chunk_size)` over an empty slice yields zero chunks, so zero
-    /// worker threads spawn — but the dim/nnz contract still holds. A
-    /// regression that, say, panics on `elements.len().div_ceil(threads)` for
-    /// `threads > 0` and `elements.len() == 0` would surface here.
+    /// Pins the empty-input contract through every `AssemblyMode` variant:
+    /// the matrix is `3 * n_nodes` square (`D` defaults to 3) and stores
+    /// nothing.
     #[test]
     fn empty_elements_returns_zero_3n_by_3n_sparse_matrix() {
         let n_nodes = 4;
@@ -1098,7 +742,7 @@ mod tests {
             assert_eq!(
                 k.compute_nnz(),
                 0,
-                "no triplets ⇒ zero stored entries (mode = {mode:?})",
+                "no elements ⇒ zero stored entries (mode = {mode:?})",
             );
         }
     }
@@ -1226,8 +870,8 @@ mod tests {
                         }
                         let actual = read(&k, i, j);
                         // Two-summand FP add is order-independent in IEEE754
-                        // for a single (a+b) pairing — and faer iterates
-                        // duplicates in encounter order, which here is
+                        // for a single (a+b) pairing — and assembly sums
+                        // contributions in element order, which here is
                         // element 0 then element 1 (matches our `expected`
                         // construction). Bit-equality is achievable.
                         assert_eq!(
@@ -1354,11 +998,10 @@ mod tests {
     /// step-13.
     ///
     /// Per-element K_e is symmetric (pinned by Task 2915's tests, since
-    /// `K_e = ∫ BᵀDB dV` with symmetric `D`). faer's CSR-from-triplets
-    /// sums duplicates in a fixed encounter order, so `K_global[i][j]`
-    /// and `K_global[j][i]` are sums of mirror pairs of triplets. The
-    /// emission loop emits both `(a, b)` and `(b, a)` for every local
-    /// pair, so the LSB of the sum order at `(i, j)` and `(j, i)` can
+    /// `K_e = ∫ BᵀDB dV` with symmetric `D`). Assembly sums contributions
+    /// in a fixed element order, so `K_global[i][j]` and `K_global[j][i]`
+    /// are sums of mirror pairs of K_e entries. Every element scatters both
+    /// `(a, b)` and `(b, a)` for every local pair, so the LSB of the sum order at `(i, j)` and `(j, i)` can
     /// differ — but both must equal each other within FP tolerance.
     ///
     /// Mesh: 4 P1 tets fanning around node 0, `n_nodes = 13` (same as
@@ -1409,82 +1052,30 @@ mod tests {
     }
 
     /// Regression guard for the panic-propagation contract: any change that
-    /// re-substitutes the worker's message (e.g. reverting to `.expect(...)`,
-    /// wrapping with a custom error type, or `unwrap_or_else(|_| panic!("..."))`)
-    /// will cause the "out of bounds" substring to disappear and this test to
-    /// fail — surfacing the regression immediately rather than silently burying
-    /// it.
+    /// re-substitutes the worker's message (e.g. `.expect(...)` on the join,
+    /// a custom error type, or `unwrap_or_else(|_| panic!("..."))`) makes the
+    /// "out of bounds" substring disappear and this test fail. Every element
+    /// of a 137-tet chain shares a K_e with no data, so whichever of the
+    /// eight threads fills a chunk first panics.
     #[test]
     #[should_panic(expected = "out of bounds")]
     fn worker_thread_panic_payload_propagates_to_caller() {
-        use crate::assembly::ElementStiffness;
         let k_e = ElementStiffness {
             n_dofs: 12,
             data: vec![],
         };
-        let connectivity = [0usize, 1, 2, 3];
-        let element = AssemblyElement {
-            id: 99,
-            connectivity: &connectivity,
-            k_e: &k_e,
-        };
-        // threads: 1 — one worker, one panic, deterministic. Higher thread
-        // counts add no coverage of the propagation path and risk timing noise.
-        let _ = assemble_global_stiffness(4, &[element], AssemblyMode::Parallel { threads: 1 });
-    }
-
-    /// Faer's `try_new_from_triplets` sums duplicate `(row, col)` entries
-    /// in **encounter order** — the contract `assemble_global_stiffness`'s
-    /// parallel-mode determinism depends on. A faer minor-version bump
-    /// that switches internally to e.g. tree-pairwise reduction (without
-    /// breaking faer's own internal `test_from_indices` fixture, whose
-    /// values happen to be sum-order-invariant) would silently invalidate
-    /// the bit-stability claim pinned by
-    /// `parallel_mode_bit_equal_to_deterministic_on_disjoint_mesh` and the
-    /// fixed-thread-count back-to-back determinism check in
-    /// `parallel_mode_tolerance_equivalent_to_deterministic_on_shared_dof_mesh`.
-    ///
-    /// Five duplicate triplets at `(0, 0)` whose left-fold (encounter-order)
-    /// sum and pairwise-tree-reduction sum diverge well above the LSB:
-    ///
-    /// ```text
-    /// values:           [1e20, 1.0, -1e20, 1.0, 1.0]
-    /// encounter-fold:   ((((1e20 + 1.0) + -1e20) + 1.0) + 1.0)
-    ///                 = ((1e20 + -1e20) + 1.0) + 1.0
-    ///                 = (0.0 + 1.0) + 1.0
-    ///                 = 2.0
-    /// pairwise-tree:    ((1e20 + 1.0) + (-1e20 + 1.0)) + 1.0
-    ///                 = (1e20 + -1e20) + 1.0
-    ///                 = 0.0 + 1.0
-    ///                 = 1.0
-    /// ```
-    ///
-    /// (`1.0` is below the half-ulp of `1e20 ≈ 2^66`, so `1e20 + 1.0` and
-    /// `-1e20 + 1.0` round back to `±1e20` exactly.) Any non-`2.0` result
-    /// means faer's summation order has changed and the assembly
-    /// determinism contract must be re-validated.
-    #[test]
-    fn faer_sums_duplicate_triplets_in_encounter_order() {
-        let triplets = [
-            Triplet::new(0usize, 0usize, 1e20),
-            Triplet::new(0, 0, 1.0),
-            Triplet::new(0, 0, -1e20),
-            Triplet::new(0, 0, 1.0),
-            Triplet::new(0, 0, 1.0),
-        ];
-        let k = SparseRowMat::try_new_from_triplets(1, 1, &triplets)
-            .expect("1x1 input within declared dims");
-        let v = read(&k, 0, 0);
-        assert_eq!(
-            v.to_bits(),
-            2.0_f64.to_bits(),
-            "faer no longer sums duplicates in encounter order: got {v}, expected 2.0. \
-             This breaks the parallel-mode determinism contract pinned by \
-             `parallel_mode_bit_equal_to_deterministic_on_disjoint_mesh` and the \
-             tolerance-equivalence claim in \
-             `parallel_mode_tolerance_equivalent_to_deterministic_on_shared_dof_mesh`. \
-             Re-validate before bumping the faer dep.",
-        );
+        let conns: Vec<[usize; 4]> = (0..137).map(|i| [i, i + 1, i + 2, i + 3]).collect();
+        let elements: Vec<AssemblyElement<'_>> = conns
+            .iter()
+            .enumerate()
+            .map(|(id, connectivity)| AssemblyElement {
+                id,
+                connectivity,
+                k_e: &k_e,
+            })
+            .collect();
+        let _ =
+            assemble_global_stiffness(137 + 3, &elements, AssemblyMode::Parallel { threads: 8 });
     }
 
     /// Single P2 element with identity connectivity `[0..10]` → K_global
@@ -1532,7 +1123,7 @@ mod tests {
     /// Single P1 hex element with identity connectivity `[0..8]` → K_global
     /// equals K_e bit-for-bit at every entry.
     ///
-    /// Pins that the D-agnostic emission loop in `emit_element_triplets`
+    /// Pins that the D-agnostic scatter in `assemble_stiffness`
     /// handles `n_local = 8`, `d_e = 3`. Identity connectivity ⇒ no
     /// FP-summation reordering ⇒ bit-equality is achievable, not just
     /// tolerance-equality. The 24×24 dim assertion is the first regression
@@ -1586,12 +1177,12 @@ mod tests {
     /// equals K_e bit-for-bit at every entry.
     ///
     /// First regression test for `n_local = 6` in `assemble_global_stiffness`.
-    /// Pins that the D-agnostic emission loop handles the wedge's 6-node
+    /// Pins that the D-agnostic scatter handles the wedge's 6-node
     /// footprint (`d_e = 3`, `n_dofs = 18`) at identity connectivity.
     ///
     /// Pure-wedge mesh ⇒ `D = max(d_e) = 3`, so `K.nrows() == 18` and
     /// `K.ncols() == 18`. A regression that special-cases `n_local ∈ {4, 8, 10}`
-    /// in `emit_element_triplets`'s loop bounds would surface here.
+    /// in the scatter's loop bounds would surface here.
     #[test]
     fn single_p1_wedge_identity_connectivity_matches_k_e_bit_for_bit() {
         let mat = dimensionless_steel_like();
@@ -1694,9 +1285,9 @@ mod tests {
     /// Pinning strategy (each assertion locks a different contract):
     /// - **dim**: `D = 6` derives from `max(d_e)` = `max(3, 6)` = 6.
     /// - **node 0 displacement block (rows/cols 0..3)**: both tet and
-    ///   shell touch translational DOFs. faer sums duplicates in encounter
-    ///   order — tet emits first (it appears first in the slice), shell
-    ///   emits second — so the bit-for-bit expected value is
+    ///   shell touch translational DOFs. Contributions sum in element
+    ///   order — tet first (it appears first in the slice), shell
+    ///   second — so the bit-for-bit expected value is
     ///   `K_e_tet[α][β] + K_e_shell[α][β]` summed in that order.
     /// - **node 0 rotation block (rows/cols 3..6)**: only the shell has
     ///   rotation DOFs; the tet's 3-DOF/node emission stops at α < 3, so
@@ -1739,7 +1330,7 @@ mod tests {
 
         // (ii) Node 0 displacement-displacement block (α, β ∈ 0..3): both
         // elements contribute. Encounter order is tet (slice index 0) then
-        // shell (slice index 1); faer sums duplicates left-to-right.
+        // shell (slice index 1); contributions sum left-to-right.
         for alpha in 0..3 {
             for beta in 0..3 {
                 let i = alpha;
@@ -1883,7 +1474,7 @@ mod tests {
     /// - **dim**: pure-volume-element mesh ⇒ D = 3, dim = 48 (NOT 96).
     /// - **node 0 displacement block (rows/cols 0..3)**: all three elements
     ///   contribute. Encounter order matches slice order tet → hex → wedge;
-    ///   faer sums duplicates left-to-right so the bit-for-bit expected value
+    ///   contributions sum left-to-right so the bit-for-bit expected value
     ///   is `K_e_tet[α][β] + K_e_hex[α][β] + K_e_wedge[α][β]` summed in that
     ///   order. A three-summand left-fold has stable bit-equality with the
     ///   `expected` construction order.
@@ -2047,7 +1638,7 @@ mod tests {
         // partner, and `(gn=partner, gn=0)` exercises the mirror direction.
         // A regression that miscomputed the dest-row when the *first*
         // connectivity entry is shared but the second is exclusive (e.g.
-        // a stale `local_a == 0` early-return in `emit_element_triplets`)
+        // a stale `local_a == 0` early-return in the scatter)
         // would not be caught by the (a)/(c)/(d)/(e) self-block pinned
         // cells alone — this section closes that gap.
         for (gn_partner, k_e, local_partner, kind) in [
@@ -2110,14 +1701,12 @@ mod tests {
     /// (Task 2915 / `tet::tests::p1_element_stiffness_is_symmetric...`)
     /// and `shell_element_stiffness` ships a symmetric `K_e_shell`
     /// (Task 3014 / `shell_element_stiffness_is_symmetric_within_fp_tolerance`).
-    /// faer's `try_new_from_triplets` sums duplicate `(row, col)` entries
-    /// in fixed encounter order — pinned by
-    /// `faer_sums_duplicate_triplets_in_encounter_order`. The D-derived
-    /// emission loop in step-2 emits the **full** `(a, α, b, β)` block
+    /// Assembly sums each entry's contributions in fixed element order
+    /// (PRD S6). The D-derived scatter takes the **full** `(a, α, b, β)` block
     /// for every element kind (not upper-triangle only), so
     /// `K_global[i][j]` and `K_global[j][i]` are sums of element-mirror
-    /// pairs of triplets coming from the same `K_e` matrices. The LSB
-    /// of the encounter-order summation at `(i, j)` versus `(j, i)` can
+    /// pairs of entries coming from the same `K_e` matrices. The LSB
+    /// of the element-order summation at `(i, j)` versus `(j, i)` can
     /// differ, but both sides reduce to the same value within the FP
     /// summation band the tet-only case pins. A regression that breaks
     /// the full-block invariant for **either** kind (e.g. half-block
@@ -2186,12 +1775,11 @@ mod tests {
     /// - hex / wedge via Task 2985 / `run_element_stiffness_tests` block-(b)
     ///   symmetry check.
     ///
-    /// The full-block emission of `emit_element_triplets` (both `(a, b)` and
-    /// `(b, a)` triplets) combined with faer's stable duplicate-summation
-    /// order means `K_global[i][j]` and `K_global[j][i]` are sums of
-    /// mirror-pair triplets from the same K_e — the LSB of the encounter-
-    /// order summation at `(i, j)` versus `(j, i)` can differ, but both
-    /// reduce to the same value within the FP summation band.
+    /// Each element scatters its full `(a, b)` block, both `(a, b)` and
+    /// `(b, a)`, so `K_global[i][j]` and `K_global[j][i]` are sums of mirror
+    /// pairs of the same K_e entries — the LSB of the element-order summation
+    /// at `(i, j)` versus `(j, i)` can differ, but both reduce to the same
+    /// value within the FP summation band.
     ///
     /// Mirrors `mixed_mesh_global_k_is_symmetric_within_fp_tolerance` (which
     /// pins tet+shell symmetry); this test extends the contract to
@@ -2725,12 +2313,10 @@ mod tests {
     /// Geometry: `[0,1]×[0,1]×[0,1]`, `3×3×3` hex cells →
     /// `4×4×4 = 64` nodes, `6×27 = 162` P1 tet elements.
     ///
-    /// Total triplets: `162 × 144 = 23 328`. Interior nodes (e.g. node at
+    /// Interior nodes (e.g. node at
     /// position `(1/3, 1/3, 1/3)`) are shared by up to 8 hex cells × 6 tets
     /// = 48 elements, so the most-shared `(row, col)` pairs in the assembled
-    /// K receive up to 48 duplicate contributions — well into faer's
-    /// large-array argsort / quicksort regime (above the ~20-element
-    /// insertion-sort threshold). Element geometries vary across the mesh
+    /// K receive up to 48 contributions. Element geometries vary across the mesh
     /// (the 6 Kuhn-split tets per hex cell have distinct shapes), so
     /// contributions to shared `(row, col)` pairs carry distinct values —
     /// FP non-associativity from different summation orders produces
@@ -2760,24 +2346,12 @@ mod tests {
         (n_nodes, ke_list, conns)
     }
 
-    // ─── step-1 (RED): assembly-level determinism guards ─────────────────────
+    // ─── assembly-level determinism guards ───────────────────────────────────
 
     /// 32 sequential `AssemblyMode::Deterministic` assemblies of the shared-DOF
     /// 3×3×3 box mesh produce bit-identical K (stored values AND sparsity
-    /// pattern).
-    ///
-    /// **Before the BTreeMap fix** (step-2): faer's `sort_unstable` is
-    /// deterministic for the same in-memory input in sequential execution, so
-    /// this test will PASS even without the fix.  Under concurrent CPU load,
-    /// however, different heap-allocation patterns change the physical layout
-    /// of the triplet `Vec`, which can cause `sort_unstable` to produce
-    /// different orderings for equal-key `(row, col)` triplets → different K
-    /// matrices → diverging CG iteration counts (the observed harness flake).
-    ///
-    /// **After the BTreeMap fix**: K is a pure reify-owned left-fold over
-    /// elements in encounter order, guaranteed bit-identical across ANY
-    /// execution environment (loaded or not, any thread count, any OS scheduler
-    /// decision). The test encodes this cross-environment invariant.
+    /// pattern): K is a pure function of `(n_nodes, elements)`, whatever the
+    /// load or scheduling.
     ///
     /// Non-trivial-K sanity check: asserts at least one stored value is
     /// non-zero, so a degenerate zero-K can't make the test pass spuriously.
@@ -2841,100 +2415,30 @@ mod tests {
         }
     }
 
-    /// `AssemblyMode::Deterministic` on the shared-DOF 3×3×3 box mesh produces
-    /// K bit-identical to the encounter-order BTreeMap reference at every
-    /// `(row, col)` entry.
-    ///
-    /// **Reference construction**: independently accumulate the same elements
-    /// into a `BTreeMap<(usize,usize),f64>` in slice/encounter order,
-    /// mirroring `emit_element_triplets`' `(a,α,b,β)` emission —
-    /// `reference[(row,col)] = Σ K_e[a*d+α][b*d+β]` summed over all elements
-    /// contributing to `(row, col)` in the order they appear in the element
-    /// slice. This is the reify-owned left-fold that the BTreeMap fix
-    /// guarantees.
-    ///
-    /// **Before the BTreeMap fix** (step-2): faer's `sort_unstable` on 23 328
-    /// triplets operates in the large-array quicksort regime (NOT insertion
-    /// sort), which is **not stable** — equal-key triplets may land in any
-    /// relative order. For the 3×3×3 mesh, interior nodes receive up to 48
-    /// contributions per `(row,col)` pair; if quicksort reorders them
-    /// differently from encounter order, the resulting K[i][j] sum will differ
-    /// from the reference due to FP non-associativity (distinct element
-    /// geometries → distinct contribution values → order-dependent sums).
-    ///
-    /// Expected: **FAIL** with a `to_bits()` mismatch at a shared-DOF entry
-    /// (confirms faer's sort does not preserve encounter order for large meshes,
-    /// establishing the RED baseline for the BTreeMap fix).
-    ///
-    /// **After the BTreeMap fix**: K_det IS the encounter-order BTreeMap fold,
-    /// so this assertion is guaranteed to pass bit-for-bit.
+    /// `AssemblyMode::Deterministic` on the shared-DOF 3×3×3 box mesh (up to
+    /// 48 contributions per entry) is the encounter-order fold — same
+    /// entries, same summation order, same bits (PRD S6).
     #[test]
     fn deterministic_assembly_matches_encounter_order_reference() {
         let mat = dimensionless_steel_like();
         let (n_nodes, ke_list, conns) = build_shared_dof_box_3x3x3(&mat);
+        let elements = elements_of(&conns, &ke_list);
 
-        let elements: Vec<AssemblyElement<'_>> = conns
-            .iter()
-            .zip(ke_list.iter())
-            .enumerate()
-            .map(|(i, (conn, ke))| AssemblyElement {
-                id: i,
-                connectivity: conn.as_slice(),
-                k_e: ke,
-            })
-            .collect();
-
-        // Assemble via the Deterministic path (currently delegates dedup to faer).
-        let k_det =
-            assemble_global_stiffness(n_nodes, &elements, AssemblyMode::Deterministic);
-
-        // Build the encounter-order BTreeMap reference.
-        // Uses emit_element_triplets (the production scatter primitive) to
-        // ensure the reference mirrors exactly the same (a,α,b,β) emission
-        // order, then folds contributions in slice order.
-        let n_dofs_per_node = 3usize; // pure P1 tet mesh → D = 3
-        let mut reference: std::collections::BTreeMap<(usize, usize), f64> =
-            std::collections::BTreeMap::new();
-        let mut tmp: Vec<Triplet<usize, usize, f64>> = Vec::new();
-        for element in &elements {
-            tmp.clear();
-            emit_element_triplets(element, n_dofs_per_node, &mut tmp);
-            for t in &tmp {
-                *reference.entry((t.row, t.col)).or_insert(0.0) += t.val;
-            }
-        }
-
-        // Sanity: reference is non-trivial.
+        let k_det = assemble_global_stiffness(n_nodes, &elements, AssemblyMode::Deterministic);
         assert!(
-            reference.values().any(|&v| v != 0.0),
-            "encounter-order reference is all-zero — fixture may be degenerate",
+            k_det.val().iter().any(|&v| v != 0.0),
+            "K is all-zero — fixture may be degenerate",
         );
-
-        // Every (row, col) in the reference must match K_det bit-for-bit.
-        // A mismatch at any shared-DOF entry means faer's sort reordered equal-
-        // key triplets differently from encounter order — the RED confirmation.
-        let dim = 3 * n_nodes;
-        for row in 0..dim {
-            for col in 0..dim {
-                let ref_val = reference.get(&(row, col)).copied().unwrap_or(0.0);
-                let det_val = read(&k_det, row, col);
-                assert_eq!(
-                    det_val.to_bits(),
-                    ref_val.to_bits(),
-                    "K_det[{row}][{col}] = {det_val} differs from encounter-order \
-                     reference = {ref_val}; \
-                     faer sort reordered equal-key triplets at this shared DOF",
-                );
-            }
-        }
+        assert_csr_bitwise_eq(
+            &k_det,
+            &encounter_order_reference(n_nodes, &elements),
+            "Deterministic vs encounter-order reference",
+        );
     }
 
     // ─── node-owned `assemble_stiffness` (PRD C12 / S6) ──────────────────────
 
     use crate::assembly::test_support::promote_tets_to_p2;
-    use faer::sparse::SymbolicSparseRowMat;
-    use std::num::NonZeroUsize;
-    use std::ops::ControlFlow;
 
     /// splitmix64 finalizer — the constants of `boundary/dirichlet.rs`'s
     /// `mixed_sign_value`, so fixtures need no `rand` dependency.
@@ -3491,8 +2995,11 @@ mod tests {
         for (label, n_nodes, elements) in &fixtures {
             let det = assemble_global_stiffness(*n_nodes, elements, AssemblyMode::Deterministic);
             for threads in [1, 2, 3, 5, 7, 8] {
-                let par =
-                    assemble_global_stiffness(*n_nodes, elements, AssemblyMode::Parallel { threads });
+                let par = assemble_global_stiffness(
+                    *n_nodes,
+                    elements,
+                    AssemblyMode::Parallel { threads },
+                );
                 assert_csr_bitwise_eq(
                     &par,
                     &det,
