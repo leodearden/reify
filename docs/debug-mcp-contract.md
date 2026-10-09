@@ -868,7 +868,7 @@ click_at(center)      # dispatches synthetic PointerEvent at clientX/clientY
 which stubs `getBoundingClientRect` to `{x:100, y:50, width:80, height:40}`,
 verifies `get_layout_metrics.bounds === {x:100, y:50, width:80, height:40}`,
 then proves the derived center `(140, 70)` fires the element's click handler.
-Its cases (d)–(f) cover the precondition: a clipped or occluded element reports
+Its case (d) covers the precondition: a clipped or occluded element reports
 `hitTestable: false` and `click_at` at its centre lands on another element, and
 `hitTestable` agrees with whether `click_at` at the centre fires the handler.
 
@@ -905,8 +905,8 @@ Its cases (d)–(f) cover the precondition: a clipped or occluded element report
 - `element_screenshot` crops the same unclipped rect, so a clipped element's
   crop shows whatever is painted there.
 
-**Guarded by:** `debugContract.test.ts` §coordinate-convention (step-5) cases
-(d)–(f), and `debugElementPlacement.test.ts`.
+**Guarded by:** `debugContract.test.ts` §coordinate-convention (step-5) case
+(d), and `debugElementPlacement.test.ts`.
 
 ### Notes
 

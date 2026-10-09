@@ -373,11 +373,11 @@ describe('apply_gui_state — AI write-tool editor sync (task 5097)', () => {
 // returns getBoundingClientRect verbatim (CSS-logical-px from window origin);
 // (c) the center derived from bounds is a valid clientX/clientY that fires the
 // element's handler — the get_layout_metrics→click(center) convention I1 wraps;
-// (d)-(f) `hitTestable` predicts whether that round-trip holds: an element
+// (d) `hitTestable` predicts whether that round-trip holds: an element
 // clipped by an overflow ancestor or occluded by another painted element reports
 // false, and click_at at its centre lands elsewhere (#7770).
 //
-// NOTE: jsdom has no layout engine, so (d)-(f) model WebKit's hit test with a
+// NOTE: jsdom has no layout engine, so (d) models WebKit's hit test with a
 // fake compositor (`mountHitFixture`); the live checks are the
 // get_layout_metrics_hit_testable_* VALUE_SCENARIOS (npm run test:e2e).
 // ─────────────────────────────────────────────────────────────────────────────
@@ -413,9 +413,10 @@ describe('debug contract — coordinate convention (step-5)', () => {
    * A clip pane holding a shown row and a row laid out below the pane's bottom
    * edge, a sibling panel painting where that clipped row claims to be, and a
    * button covered by an unrelated overlay. Each element's getBoundingClientRect
-   * reports its UNCLIPPED layout rect, as WebKit does.
+   * reports its UNCLIPPED layout rect, as WebKit does. Returns those rects by
+   * testId.
    */
-  function mountHitFixture(): void {
+  function mountHitFixture(): Record<string, Box> {
     document.body.innerHTML = `
       <div data-testid="clip-pane" style="overflow:hidden">
         <div data-testid="shown-row"><span data-testid="shown-row-label">row</span></div>
@@ -444,6 +445,7 @@ describe('debug contract — coordinate convention (step-5)', () => {
       const id = PAINT_ORDER.find((candidate) => boxContains(LAYOUT[candidate], x, y));
       return id === undefined ? null : byId(id);
     });
+    return LAYOUT;
   }
 
   async function layoutMetricsOf(id: number, testId: string): Promise<any> {
@@ -497,7 +499,7 @@ describe('debug contract — coordinate convention (step-5)', () => {
     // Pins the get_layout_metrics→click(center) convention I1 will wrap.
     // The center is in the same CSS-logical-px frame as getBoundingClientRect,
     // so a synthetic MouseEvent at (centerX, centerY) fires the element's handler.
-    // Whether elementFromPoint at that centre reaches the element is (d)-(f).
+    // Whether elementFromPoint at that centre reaches the element is (d).
     const el = document.createElement('div');
     el.setAttribute('data-testid', 'click-target');
     document.body.appendChild(el);
@@ -529,76 +531,39 @@ describe('debug contract — coordinate convention (step-5)', () => {
     expect(receivedY).toBeLessThanOrEqual(BOUNDS.y + BOUNDS.height);
   });
 
-  it('(d) an element clipped by an overflow:hidden ancestor reports hitTestable false; click_at at its centre lands elsewhere', async () => {
-    mountHitFixture();
-    const clippedRow = document.querySelector('[data-testid="clipped-row"]') as HTMLElement;
-    let clippedRowClicked = false;
-    clippedRow.addEventListener('click', () => {
-      clippedRowClicked = true;
-    });
+  it('(d) hitTestable predicts the round-trip: click_at at the bounds centre fires the handler iff hitTestable', async () => {
+    const layout = mountHitFixture();
     await initDebugBridge(makeStores());
 
-    const metrics = await layoutMetricsOf(110, 'clipped-row');
-    expect(metrics.bounds).toEqual({ x: 0, y: 120, width: 300, height: 23 });
-    expect(metrics.visible).toBe(true);
-    expect(metrics.hitTestable).toBe(false);
-
-    const centre = centreOf(metrics.bounds);
-    const click = (await dispatchCmd(capturedHandler!, 111, 'click_at', centre)) as any;
-    expect(click.ok).toBe(true);
-    expect(click.target.testId).toBe('other-panel');
-    expect(clippedRowClicked).toBe(false);
-  });
-
-  it('(e) a shown element reports hitTestable true and click_at at its centre fires its handler', async () => {
-    mountHitFixture();
-    const shownRow = document.querySelector('[data-testid="shown-row"]') as HTMLElement;
-    let received: { x: number; y: number } | undefined;
-    shownRow.addEventListener('click', (e) => {
-      received = { x: (e as MouseEvent).clientX, y: (e as MouseEvent).clientY };
-    });
-    await initDebugBridge(makeStores());
-
-    const metrics = await layoutMetricsOf(120, 'shown-row');
-    expect(metrics.hitTestable).toBe(true);
-
-    const centre = centreOf(metrics.bounds);
-    const click = (await dispatchCmd(capturedHandler!, 121, 'click_at', centre)) as any;
-    expect(click.ok).toBe(true);
-    expect(received).toEqual(centre);
-  });
-
-  it('(f) hitTestable agrees with whether click_at at the bounds centre fires the element handler', async () => {
-    mountHitFixture();
-    await initDebugBridge(makeStores());
-
-    const TARGETS = ['shown-row', 'clipped-row', 'other-panel', 'covered-button'];
-    const outcomes: Record<string, { hitTestable: boolean; fired: boolean }> = {};
-    let id = 130;
-    for (const testId of TARGETS) {
+    // landsOn: the element click_at at the target's bounds centre resolves to.
+    const CASES: Record<string, { hitTestable: boolean; landsOn: string }> = {
+      'shown-row': { hitTestable: true, landsOn: 'shown-row-label' },
+      'clipped-row': { hitTestable: false, landsOn: 'other-panel' },
+      'other-panel': { hitTestable: true, landsOn: 'other-panel' },
+      'covered-button': { hitTestable: false, landsOn: 'overlay' },
+    };
+    let id = 110;
+    for (const [testId, expected] of Object.entries(CASES)) {
       const el = document.querySelector(`[data-testid="${testId}"]`) as HTMLElement;
-      let fired = false;
-      const onClick = () => {
-        fired = true;
+      let received: { x: number; y: number } | undefined;
+      const onClick = (e: MouseEvent) => {
+        received = { x: e.clientX, y: e.clientY };
       };
       el.addEventListener('click', onClick);
 
       const metrics = await layoutMetricsOf(id++, testId);
-      await dispatchCmd(capturedHandler!, id++, 'click_at', centreOf(metrics.bounds));
+      const centre = centreOf(metrics.bounds);
+      const click = (await dispatchCmd(capturedHandler!, id++, 'click_at', centre)) as any;
       el.removeEventListener('click', onClick);
 
-      outcomes[testId] = { hitTestable: metrics.hitTestable, fired };
+      expect(metrics.bounds, `${testId}: bounds are the unclipped layout rect`).toEqual(layout[testId]);
+      expect(metrics.visible, `${testId}: visible ignores clipping and occlusion`).toBe(true);
+      expect(metrics.hitTestable, `${testId}: hitTestable`).toBe(expected.hitTestable);
+      expect(click.target?.testId, `${testId}: click_at at the centre lands on`).toBe(expected.landsOn);
+      expect(received, `${testId}: handler fires at the centre iff hitTestable`).toEqual(
+        metrics.hitTestable ? centre : undefined,
+      );
     }
-
-    for (const testId of TARGETS) {
-      expect(outcomes[testId].hitTestable, testId).toBe(outcomes[testId].fired);
-    }
-    expect(outcomes).toEqual({
-      'shown-row': { hitTestable: true, fired: true },
-      'clipped-row': { hitTestable: false, fired: false },
-      'other-panel': { hitTestable: true, fired: true },
-      'covered-button': { hitTestable: false, fired: false },
-    });
   });
 });
 
