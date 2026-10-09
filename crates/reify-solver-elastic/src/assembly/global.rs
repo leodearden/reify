@@ -1350,376 +1350,6 @@ mod tests {
         let _ = assemble_global_stiffness(4, &[], AssemblyMode::Parallel { threads: 0 });
     }
 
-    /// Parallel mode produces the bit-identical dense matrix as deterministic
-    /// mode on a 4-element disjoint-tet mesh, for thread counts 1, 2, and 4.
-    ///
-    /// The mesh has no shared nodes (4 tets, each on 4 fresh nodes for
-    /// `n_nodes = 16`), so every global DOF receives at most one element's
-    /// contribution. Without duplicate summation there is no FP
-    /// non-associativity, so bit-equality is achievable across any
-    /// partition / merge order — this is the strongest possible bit-stability
-    /// claim, applicable to *any* thread count, not just to a fixed thread
-    /// count.
-    ///
-    /// Pinning all four results to bit-identical means a future regression
-    /// that introduces an out-of-order accumulation in the parallel path
-    /// (even on disjoint meshes) surfaces here. Step-13 covers the
-    /// shared-DOF case where bit-equality across threads is impossible and
-    /// only tolerance-equivalence holds.
-    #[test]
-    fn parallel_mode_bit_equal_to_deterministic_on_disjoint_mesh() {
-        let mat = dimensionless_steel_like();
-        let k_e = element_stiffness_p1(&UNIT_TET_P1, &mat);
-        assert_eq!(k_e.n_dofs, 12);
-
-        // 4 disjoint tets, each on its own block of 4 nodes.
-        let conns: [[usize; 4]; 4] = [[0, 1, 2, 3], [4, 5, 6, 7], [8, 9, 10, 11], [12, 13, 14, 15]];
-        let n_nodes = 16;
-        let elements: Vec<AssemblyElement<'_>> = conns
-            .iter()
-            .enumerate()
-            .map(|(i, c)| AssemblyElement {
-                id: i,
-                connectivity: c,
-                k_e: &k_e,
-            })
-            .collect();
-
-        let det = assemble_global_stiffness(n_nodes, &elements, AssemblyMode::Deterministic);
-        let par1 =
-            assemble_global_stiffness(n_nodes, &elements, AssemblyMode::Parallel { threads: 1 });
-        let par2 =
-            assemble_global_stiffness(n_nodes, &elements, AssemblyMode::Parallel { threads: 2 });
-        let par4 =
-            assemble_global_stiffness(n_nodes, &elements, AssemblyMode::Parallel { threads: 4 });
-        assert_eq!(det.nrows(), 3 * n_nodes);
-        assert_eq!(det.ncols(), 3 * n_nodes);
-
-        for i in 0..3 * n_nodes {
-            for j in 0..3 * n_nodes {
-                let d = read(&det, i, j);
-                let p1 = read(&par1, i, j);
-                let p2 = read(&par2, i, j);
-                let p4 = read(&par4, i, j);
-                // Bit-equality across all four — disjoint mesh ⇒ no
-                // duplicate summation ⇒ no FP non-associativity.
-                assert_eq!(
-                    d.to_bits(),
-                    p1.to_bits(),
-                    "K[{i}][{j}] det={d} != par1={p1}",
-                );
-                assert_eq!(
-                    d.to_bits(),
-                    p2.to_bits(),
-                    "K[{i}][{j}] det={d} != par2={p2}",
-                );
-                assert_eq!(
-                    d.to_bits(),
-                    p4.to_bits(),
-                    "K[{i}][{j}] det={d} != par4={p4}",
-                );
-            }
-        }
-    }
-
-    /// Parallel mode is tolerance-equivalent to deterministic mode on a
-    /// shared-DOF mesh, and bit-stable across back-to-back invocations at
-    /// a fixed thread count.
-    ///
-    /// Mesh: 4 tets fanning around central node 0 (`n_nodes = 13`,
-    /// connectivity `[0,1,2,3]`, `[0,4,5,6]`, `[0,7,8,9]`, `[0,10,11,12]`).
-    /// Node 0 is shared across all 4 elements ⇒ the (0..3, 0..3) DOF block
-    /// receives a 4-way summation, surfacing any FP non-associativity that
-    /// a different parallel summation order would introduce.
-    ///
-    /// Two assertions:
-    /// 1. **Tolerance-equivalence**: for every `(i, j)`,
-    ///    `|K_par[i][j] − K_det[i][j]| < 1e-12 * max(1, |K_det[i][j]|)`.
-    ///    Strict bit-equality is not required across modes (different
-    ///    summation order can perturb the LSB). Our implementation
-    ///    happens to merge in slice order so bit-equality holds today,
-    ///    but the test pins the tolerance contract — the PRD only
-    ///    requires the FP delta be far below physical tolerance.
-    /// 2. **Fixed-thread-count bit-stability**: two back-to-back
-    ///    invocations with `Parallel { threads: 4 }` on the same input
-    ///    produce bit-identical output. This is the determinism contract
-    ///    the PRD pins: at a fixed thread count, the assembly is
-    ///    reproducible bit-for-bit.
-    #[test]
-    fn parallel_mode_tolerance_equivalent_to_deterministic_on_shared_dof_mesh() {
-        let mat = dimensionless_steel_like();
-        let k_e = element_stiffness_p1(&UNIT_TET_P1, &mat);
-        assert_eq!(k_e.n_dofs, 12);
-
-        // 4 tets fanning around central node 0.
-        let conns: [[usize; 4]; 4] = [[0, 1, 2, 3], [0, 4, 5, 6], [0, 7, 8, 9], [0, 10, 11, 12]];
-        let n_nodes = 13;
-        let elements: Vec<AssemblyElement<'_>> = conns
-            .iter()
-            .enumerate()
-            .map(|(i, c)| AssemblyElement {
-                id: i,
-                connectivity: c,
-                k_e: &k_e,
-            })
-            .collect();
-
-        let det = assemble_global_stiffness(n_nodes, &elements, AssemblyMode::Deterministic);
-        let par_a =
-            assemble_global_stiffness(n_nodes, &elements, AssemblyMode::Parallel { threads: 4 });
-        let par_b =
-            assemble_global_stiffness(n_nodes, &elements, AssemblyMode::Parallel { threads: 4 });
-
-        let dim = 3 * n_nodes;
-        assert_eq!(det.nrows(), dim);
-        assert_eq!(par_a.nrows(), dim);
-
-        for i in 0..dim {
-            for j in 0..dim {
-                let d = read(&det, i, j);
-                let pa = read(&par_a, i, j);
-                let pb = read(&par_b, i, j);
-
-                // (1) Tolerance-equivalence: parallel ≈ deterministic
-                // within a relative-or-absolute tolerance of 1e-12. The
-                // "max(1, |d|)" form covers both the small-magnitude
-                // (absolute) and large-magnitude (relative) regimes
-                // without a special-case branch.
-                let tol = 1e-12 * d.abs().max(1.0);
-                let delta = (pa - d).abs();
-                assert!(
-                    delta < tol,
-                    "K_par[{i}][{j}] = {pa} but K_det[{i}][{j}] = {d}; \
-                     |Δ| = {delta} ≥ tol = {tol}",
-                );
-
-                // (2) Fixed-thread-count bit-stability: par_a == par_b
-                // bit-for-bit. This is the determinism contract the PRD
-                // pins.
-                assert_eq!(
-                    pa.to_bits(),
-                    pb.to_bits(),
-                    "back-to-back Parallel {{ threads: 4 }} not bit-stable at \
-                     [{i}][{j}]: par_a={pa}, par_b={pb}",
-                );
-            }
-        }
-    }
-
-    /// `Parallel { threads: 2 }` and `Parallel { threads: 4 }` produce
-    /// tolerance-equivalent results on a shared-DOF mesh.
-    ///
-    /// The `AssemblyMode::Parallel` doc comment claims cross-thread-count
-    /// drift on shared-DOF meshes is bounded by `O(ulp · max|K_e[i][j]|)` —
-    /// but
-    /// `parallel_mode_tolerance_equivalent_to_deterministic_on_shared_dof_mesh`
-    /// only exercises Deterministic vs `Parallel { threads: 4 }`. This test
-    /// pins the cross-thread-count claim directly: two parallel runs at
-    /// **different** thread counts must agree within the same tolerance.
-    ///
-    /// Mesh: same fan-around-central-node mesh as step-13. Two thread
-    /// counts that produce different chunk partitions:
-    /// - `threads = 2` ⇒ `chunk_size = ceil(4 / 2) = 2` ⇒ chunks
-    ///   `[e0, e1]`, `[e2, e3]`. Two workers, each emits 2 elements'
-    ///   triplets, then merge.
-    /// - `threads = 4` ⇒ `chunk_size = ceil(4 / 4) = 1` ⇒ chunks
-    ///   `[e0]`, `[e1]`, `[e2]`, `[e3]`. Four workers, each emits 1
-    ///   element's triplets, then merge.
-    ///
-    /// In our current implementation both flatten to the same triplet
-    /// sequence (slice order, since chunks tile slice order) and faer
-    /// sums in encounter order, so today's output is bit-equal across
-    /// the two thread counts. The test asserts the *looser* tolerance
-    /// contract because (a) it matches what the docstring guarantees,
-    /// (b) it leaves implementation flexibility for a future load-balanced
-    /// chunker that might reorder accumulation, and (c) bit-equality
-    /// would be an over-fit — the right contract for FEA is
-    /// tolerance-equivalence, not bit-stability across thread counts.
-    #[test]
-    fn parallel_mode_cross_thread_count_tolerance_equivalent_on_shared_dof_mesh() {
-        let mat = dimensionless_steel_like();
-        let k_e = element_stiffness_p1(&UNIT_TET_P1, &mat);
-
-        // Same fan-around-central-node mesh as step-13.
-        let conns: [[usize; 4]; 4] = [[0, 1, 2, 3], [0, 4, 5, 6], [0, 7, 8, 9], [0, 10, 11, 12]];
-        let n_nodes = 13;
-        let elements: Vec<AssemblyElement<'_>> = conns
-            .iter()
-            .enumerate()
-            .map(|(i, c)| AssemblyElement {
-                id: i,
-                connectivity: c,
-                k_e: &k_e,
-            })
-            .collect();
-
-        let par2 =
-            assemble_global_stiffness(n_nodes, &elements, AssemblyMode::Parallel { threads: 2 });
-        let par4 =
-            assemble_global_stiffness(n_nodes, &elements, AssemblyMode::Parallel { threads: 4 });
-
-        let dim = 3 * n_nodes;
-        for i in 0..dim {
-            for j in 0..dim {
-                let p2 = read(&par2, i, j);
-                let p4 = read(&par4, i, j);
-                let tol = 1e-12 * p4.abs().max(1.0);
-                let delta = (p2 - p4).abs();
-                assert!(
-                    delta < tol,
-                    "K_par2[{i}][{j}] = {p2} but K_par4[{i}][{j}] = {p4}; \
-                     |Δ| = {delta} ≥ tol = {tol}",
-                );
-            }
-        }
-    }
-
-    /// Partition-edge correctness of `Parallel` across thread counts on a
-    /// 137-element chain mesh.
-    ///
-    /// # What this tests
-    ///
-    /// `assemble_global_stiffness` with `AssemblyMode::Parallel { threads }`
-    /// partitions the element slice into `threads` chunks of size up to
-    /// `ceil(N / threads)` (via `elements.chunks(ceil(N / threads))`), assigns
-    /// one chunk per worker thread, and merges the local `Vec<Triplet>` in
-    /// handle-vector (== chunk-iteration == slice) order. The merge order is
-    /// deterministic for any fixed `threads`, but the per-thread accumulation
-    /// boundary shifts with `threads`, so shared-DOF sums may differ at the
-    /// LSB level across thread counts.
-    ///
-    /// This test asserts tolerance-equivalence (|K_par − K_det| < 1e-12 ·
-    /// |K_det|.max(1.0)) between every `Parallel { threads }` result and the
-    /// `Deterministic` baseline for `threads ∈ {1, 2, 3, 5, 7, 8}`.
-    ///
-    /// # Why N = 137 (prime)
-    ///
-    /// 137 is prime. For every thread count `t > 1` in the sweep, `ceil(137 / t)`
-    /// produces a tail chunk strictly smaller than the leading chunks; `t = 1`
-    /// is included as a no-partition baseline. This means partition-edge effects
-    /// (shared-DOF sums that land on a chunk boundary) are exercised for every
-    /// `t > 1` — unlike with 4 elements, where thread counts 1, 2, 4 all evenly
-    /// tile the slice. Explicit chunk shapes:
-    ///
-    /// - threads=1 → 1 chunk of 137
-    /// - threads=2 → chunks (69, 68)
-    /// - threads=3 → chunks (46, 46, 45)
-    /// - threads=5 → chunks (28, 28, 28, 28, 25)
-    /// - threads=7 → chunks (20, 20, 20, 20, 20, 20, 17)
-    /// - threads=8 → chunks (18, 18, 18, 18, 18, 18, 18, 11)
-    ///
-    /// # Chain mesh shape and shared-DOF rationale
-    ///
-    /// Tet `i` has connectivity `[i, i+1, i+2, i+3]` (sliding-window).
-    /// Each tet shares a 3-node face with the previous tet, so shared-DOF
-    /// accumulation occurs at every interior face. FP non-associativity from
-    /// chunk reordering would surface in exactly these shared-DOF entries.
-    /// `n_nodes = 140`, `dim = 420`; total triplets per assembly ≈ 19 728.
-    ///
-    /// A single shared `k_e` (computed from `UNIT_TET_P1` and
-    /// `dimensionless_steel_like()`) is reused for all 137 elements.
-    /// The 137 distinct connectivities exercise all DOF-mapping paths; K_e
-    /// numerics stay in O(1) range for readable failure messages.
-    ///
-    /// # Complement to existing fan-mesh tests
-    ///
-    /// `parallel_mode_tolerance_equivalent_to_deterministic_on_shared_dof_mesh`
-    /// and `parallel_mode_cross_thread_count_tolerance_equivalent_on_shared_dof_mesh`
-    /// use a 4-element fan mesh with thread counts in {1, 2, 4}. For that mesh
-    /// size, `chunk_size = ceil(4 / t)` always evenly tiles the 4 elements —
-    /// no tail chunk exists — so those tests cannot surface partition-edge bugs.
-    /// This test fills that gap with a workload where uneven partitioning
-    /// actually occurs for every thread count in the sweep.
-    #[test]
-    fn parallel_mode_chain_mesh_tolerance_equivalent_to_deterministic_across_thread_counts() {
-        const N_ELEMENTS: usize = 137;
-        let n_nodes = N_ELEMENTS + 3; // 140
-
-        let k_e = element_stiffness_p1(&UNIT_TET_P1, &dimensionless_steel_like());
-        assert_eq!(
-            k_e.n_dofs, 12,
-            "P1 tet must have 12 DOFs (4 nodes × 3 axes)"
-        );
-
-        // Sliding-window connectivity: tet i → [i, i+1, i+2, i+3].
-        // Each consecutive pair shares a 3-node face, so every interior face
-        // is a shared-DOF accumulation site.
-        let conns: Vec<[usize; 4]> = (0..N_ELEMENTS).map(|i| [i, i + 1, i + 2, i + 3]).collect();
-        let elements: Vec<AssemblyElement<'_>> = conns
-            .iter()
-            .enumerate()
-            .map(|(i, c)| AssemblyElement {
-                id: i,
-                connectivity: c,
-                k_e: &k_e,
-            })
-            .collect();
-
-        let det = assemble_global_stiffness(n_nodes, &elements, AssemblyMode::Deterministic);
-        assert_eq!(det.nrows(), 3 * n_nodes, "det rows must equal 3 * n_nodes");
-        assert_eq!(det.ncols(), 3 * n_nodes, "det cols must equal 3 * n_nodes");
-
-        let dim = 3 * n_nodes;
-
-        // Track the worst-offending (threads, i, j) pair across the full sweep so
-        // the failure message names the entry with the largest |Δ|/tol ratio, not
-        // merely the first one encountered in row-major order.
-        struct Worst {
-            threads: usize,
-            i: usize,
-            j: usize,
-            p: f64,
-            d: f64,
-            delta: f64,
-            tol: f64,
-        }
-        let mut worst: Option<Worst> = None;
-
-        for threads in [1_usize, 2, 3, 5, 7, 8] {
-            let par =
-                assemble_global_stiffness(n_nodes, &elements, AssemblyMode::Parallel { threads });
-            for i in 0..dim {
-                for j in 0..dim {
-                    let d = read(&det, i, j);
-                    let p = read(&par, i, j);
-                    let tol = 1e-12 * d.abs().max(1.0);
-                    let delta = (p - d).abs();
-                    if delta >= tol {
-                        let is_worse = worst.as_ref().is_none_or(|w| delta / tol > w.delta / w.tol);
-                        if is_worse {
-                            worst = Some(Worst {
-                                threads,
-                                i,
-                                j,
-                                p,
-                                d,
-                                delta,
-                                tol,
-                            });
-                        }
-                    }
-                }
-            }
-        }
-        if let Some(Worst {
-            threads,
-            i,
-            j,
-            p,
-            d,
-            delta,
-            tol,
-        }) = worst
-        {
-            panic!(
-                "worst-offender across sweep: threads={threads} K_par[{i}][{j}] = {p} \
-                 but K_det[{i}][{j}] = {d}; |Δ| = {delta} ≥ tol = {tol} \
-                 (ratio = {:.1}×)",
-                delta / tol
-            );
-        }
-    }
-
     /// Global K is symmetric within FP tolerance on the fan mesh from
     /// step-13.
     ///
@@ -2193,85 +1823,6 @@ mod tests {
                         );
                     }
                 }
-            }
-        }
-    }
-
-    /// Parallel mode is tolerance-equivalent to deterministic mode on a
-    /// 4×-replicated mixed-element (tet + shell-sharing-node) mesh.
-    ///
-    /// Mesh: four disjoint copies of the step-3 fixture (one P1 tet
-    /// `[6k, 6k+1, 6k+2, 6k+3]` plus one MITC3 shell `[6k, 6k+4, 6k+5]`,
-    /// for k ∈ {0, 1, 2, 3}). 8 elements total, 24 nodes, dim = `6 · 24
-    /// = 144`. The eight-element slice gives `Parallel { threads: 4 }`'s
-    /// `chunk_size = ceil(8 / 4) = 2` two elements per worker; each
-    /// worker handles one tet + one shell from its own disjoint copy.
-    ///
-    /// Pins three contracts that step-2's generalisation must preserve:
-    ///
-    /// 1. **Per-thread Vec capacity formula** uses
-    ///    `Σ d_e² · n_local²` (P1 tet: 144, MITC3 shell: 324) — not the
-    ///    old hardcoded `9 · n_local²` (which would over-allocate
-    ///    by 3× for tets but under-allocate by 4× for shells, masking
-    ///    correctness via Vec growth but breaking the pre-sized invariant
-    ///    the docstring claims).
-    /// 2. **Mixed `d_e` slice in a single chunk** — when one chunk
-    ///    contains both a tet (`d_e = 3`) and a shell (`d_e = 6`),
-    ///    `emit_element_triplets` must derive `d_e` per-element rather
-    ///    than reading some chunk-level constant.
-    /// 3. **Slice-order merge survives mixed-element emission** —
-    ///    `K_par` matches `K_det` to 1e-12 relative+absolute, the same
-    ///    band the existing pure-tet shared-DOF tests pin.
-    #[test]
-    fn mixed_mesh_parallel_mode_tolerance_equivalent_to_deterministic() {
-        let mat = dimensionless_steel_like();
-        let k_e_tet = element_stiffness_p1(&UNIT_TET_P1, &mat);
-        let k_e_shell = shell_element_stiffness(&UNIT_TRI, SHELL_T, &mat);
-
-        // Four disjoint replicas: replica k owns nodes 6k..6k+6.
-        // Slice ordering interleaves tet, shell, tet, shell, ... so a
-        // chunk_size of 2 puts (tet_k, shell_k) into worker k.
-        let conns_tet: Vec<[usize; 4]> = (0..4)
-            .map(|k| [6 * k, 6 * k + 1, 6 * k + 2, 6 * k + 3])
-            .collect();
-        let conns_shell: Vec<[usize; 3]> = (0..4).map(|k| [6 * k, 6 * k + 4, 6 * k + 5]).collect();
-
-        let mut elements: Vec<AssemblyElement<'_>> = Vec::with_capacity(8);
-        for k in 0..4usize {
-            elements.push(AssemblyElement {
-                id: 2 * k,
-                connectivity: &conns_tet[k],
-                k_e: &k_e_tet,
-            });
-            elements.push(AssemblyElement {
-                id: 2 * k + 1,
-                connectivity: &conns_shell[k],
-                k_e: &k_e_shell,
-            });
-        }
-        let n_nodes = 24;
-        let dim = 6 * n_nodes; // 144
-
-        let det = assemble_global_stiffness(n_nodes, &elements, AssemblyMode::Deterministic);
-        let par =
-            assemble_global_stiffness(n_nodes, &elements, AssemblyMode::Parallel { threads: 4 });
-
-        assert_eq!(det.nrows(), dim);
-        assert_eq!(det.ncols(), dim);
-        assert_eq!(par.nrows(), dim);
-        assert_eq!(par.ncols(), dim);
-
-        for i in 0..dim {
-            for j in 0..dim {
-                let d = read(&det, i, j);
-                let p = read(&par, i, j);
-                let tol = 1e-12 * d.abs().max(1.0);
-                let delta = (p - d).abs();
-                assert!(
-                    delta < tol,
-                    "K_par[{i}][{j}] = {p} but K_det[{i}][{j}] = {d}; \
-                     |Δ| = {delta} ≥ tol = {tol}",
-                );
             }
         }
     }
@@ -3903,5 +3454,56 @@ mod tests {
             })
             .collect();
         let _ = assemble_uncancelled(nodes.len(), &elements, 8);
+    }
+
+    /// `AssemblyMode` sets only parallelism (PRD S6): `Parallel { threads }`
+    /// is bitwise equal to `Deterministic` and to the primitive at the same
+    /// `threads`. Fixtures: the shared-DOF box (up to 48 contributions per
+    /// entry), a 137-tet sliding-window chain (prime, so no thread count tiles
+    /// it evenly), and the mixed tet+shell mesh.
+    #[test]
+    fn assemble_global_stiffness_parallel_bitwise_equals_deterministic_and_primitive() {
+        let mat = dimensionless_steel_like();
+        let (box_n, box_k_es, box_conns) = build_shared_dof_box_3x3x3(&mat);
+
+        let chain_conns: Vec<[usize; 4]> = (0..137).map(|i| [i, i + 1, i + 2, i + 3]).collect();
+        let chain_k_es = vec![element_stiffness_p1(&UNIT_TET_P1, &mat); chain_conns.len()];
+
+        let (mixed_n, mixed_conns, mixed_k_es) = replicated_mixed_tet_shell(4);
+
+        let fixtures = [
+            (
+                "shared-DOF 3×3×3 P1 box",
+                box_n,
+                elements_of(&box_conns, &box_k_es),
+            ),
+            (
+                "137-tet chain",
+                137 + 3,
+                elements_of(&chain_conns, &chain_k_es),
+            ),
+            (
+                "mixed tet+shell",
+                mixed_n,
+                elements_of(&mixed_conns, &mixed_k_es),
+            ),
+        ];
+        for (label, n_nodes, elements) in &fixtures {
+            let det = assemble_global_stiffness(*n_nodes, elements, AssemblyMode::Deterministic);
+            for threads in [1, 2, 3, 5, 7, 8] {
+                let par =
+                    assemble_global_stiffness(*n_nodes, elements, AssemblyMode::Parallel { threads });
+                assert_csr_bitwise_eq(
+                    &par,
+                    &det,
+                    &format!("{label}: Parallel {{ threads: {threads} }} vs Deterministic"),
+                );
+                assert_csr_bitwise_eq(
+                    &assemble_uncancelled(*n_nodes, elements, threads),
+                    &det,
+                    &format!("{label}: assemble_stiffness at threads={threads} vs Deterministic"),
+                );
+            }
+        }
     }
 }
