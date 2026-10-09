@@ -62,7 +62,8 @@ pub enum BudgetReason {
     MaxIterations,
     /// The next refinement would exceed the `max_dofs` cap.
     MaxDofs,
-    /// The global error indicator stopped improving iteration-over-iteration.
+    /// The global error indicator stopped improving iteration-over-iteration,
+    /// with budget remaining.
     Stalled,
 }
 
@@ -315,9 +316,11 @@ pub trait AdaptiveProblem {
 
 /// Canonical Dörfler bulk-marking fraction θ = 0.5 (the task default).
 ///
-/// "Mark the smallest set of elements whose summed indicators reach half the
-/// global indicator." Pass this to [`mark_dorfler`] / [`run_adaptive_refinement`]
-/// unless a caller overrides it.
+/// θ is the fraction of `Σ_e w_e` — the per-element marking weights,
+/// accumulated linearly — that the marked set must reach. For Z-Z weights
+/// `w_e = η_e` that set also captures at least θ of `Σ_e η_e²`, the energy the
+/// global indicator is built from (see [`mark_dorfler`]). Pass this to
+/// [`mark_dorfler`] / [`run_adaptive_refinement`] unless a caller overrides it.
 pub const DORFLER_THETA: f64 = 0.5;
 
 /// Dörfler ("bulk") marking: select the smallest set of elements whose summed
@@ -331,6 +334,18 @@ pub const DORFLER_THETA: f64 = 0.5;
 /// 3. Accumulate from the largest, marking each visited element, and stop as
 ///    soon as the running sum reaches `theta * total`.
 /// 4. Return the marked indices sorted **ascending**.
+///
+/// # Linear accumulation is deliberate
+///
+/// Mathematically — for non-negative reals in exact arithmetic — the
+/// descending-prefix set marked here also satisfies `Σ_M w² ≥ θ Σ w²` at the
+/// same θ, and contains the minimal such set: a valid, non-minimal Dörfler
+/// set. In `f64` this can slip at the margins (rounding in the sums, or
+/// distinct tiny weights whose squares tie or underflow to zero). Pinned in the
+/// exact-arithmetic regime (integer weights, dyadic θ) by
+/// `the_linear_dorfler_set_meets_the_squared_bulk_criterion_and_contains_the_minimal_squared_set`
+/// in `tests/adaptive_refinement_tests.rs`; rationale and measurements in
+/// `docs/prds/v0_4/a-posteriori-error-estimation.md` (Dörfler amendment).
 ///
 /// # Fail-closed: non-finite indicators are excluded, not ordered
 ///
@@ -522,22 +537,29 @@ pub fn dorfler_size_hints(marked: &[usize], current_sizes: &[f64]) -> Vec<f64> {
 /// Same reasoning, same strength as
 /// [`crate::qoi::QoiError::DegenerateContributingSet`].
 ///
-/// # Termination precedence: target > stall > max-iter > max-dofs
+/// # Termination precedence: target > max-iter > max-dofs > stall
 ///
 /// 1. **Target** — `relative_error <= target_accuracy` ⇒
 ///    [`ConvergenceStatus::Converged`]. Success outranks every budget reason,
 ///    so a solve that meets the target while also tripping a cap still reports
 ///    `Converged`.
-/// 2. **Stall** (only after the first solve) — [`is_stalled`] of the previous
-///    vs current `relative_error` ⇒ [`BudgetReason::Stalled`]. Diminishing
-///    returns: refining further is unproductive.
-/// 3. **Max iterations** — `iter >= max_refinement_iterations` ⇒
+/// 2. **Max iterations** — `iter >= max_refinement_iterations` ⇒
 ///    [`BudgetReason::MaxIterations`]. `max_refinement_iterations == 0` is
 ///    legitimate: one solve, zero refinements.
-/// 4. **Max dofs** — `n_dofs >= max_dofs` ⇒ [`BudgetReason::MaxDofs`]. The
+/// 3. **Max dofs** — `n_dofs >= max_dofs` ⇒ [`BudgetReason::MaxDofs`]. The
 ///    operational reading of "the next refinement would exceed `max_dofs`":
 ///    any refine only grows the dof count, so being at/over the ceiling means
 ///    the next refine necessarily exceeds it.
+/// 4. **Stall** (only after the first solve) — [`is_stalled`] of the previous
+///    vs current `relative_error` ⇒ [`BudgetReason::Stalled`]. Stall is the
+///    early-stop rule, evaluated only when the budget would have allowed
+///    another refine, so `Stalled` always means "stopped with budget
+///    remaining".
+///
+/// The two caps are hard facts that no further refine is possible, so either
+/// is reported whenever it binds, even on an iteration that also stalled.
+/// Rationale: `docs/prds/v0_4/a-posteriori-error-estimation.md`, Resolved
+/// decisions → Budget knobs amendment (task 7449).
 ///
 /// The stall check is skipped on the first solve (`prev_global` is `None`),
 /// since there is no prior iteration to compare against. `prev_global` is
@@ -568,24 +590,24 @@ pub fn run_adaptive_refinement<P: AdaptiveProblem>(
                 final_indicator: est.relative_error,
             });
         }
-        // (2) Stall — only meaningful once there is a prior iteration.
-        if let Some(prev) = prev_global
-            && is_stalled(prev, est.relative_error)
-        {
-            return Ok(ConvergenceStatus::NotConverged {
-                reason: BudgetReason::Stalled,
-            });
-        }
-        // (3) Iteration cap (0 ⇒ one solve, no refinement).
+        // (2) Iteration cap (0 ⇒ one solve, no refinement).
         if iter >= budget.max_refinement_iterations {
             return Ok(ConvergenceStatus::NotConverged {
                 reason: BudgetReason::MaxIterations,
             });
         }
-        // (4) Dof ceiling — at/over the cap, any refine would exceed it.
+        // (3) Dof ceiling — at/over the cap, any refine would exceed it.
         if est.n_dofs >= budget.max_dofs {
             return Ok(ConvergenceStatus::NotConverged {
                 reason: BudgetReason::MaxDofs,
+            });
+        }
+        // (4) Stall — only meaningful once there is a prior iteration.
+        if let Some(prev) = prev_global
+            && is_stalled(prev, est.relative_error)
+        {
+            return Ok(ConvergenceStatus::NotConverged {
+                reason: BudgetReason::Stalled,
             });
         }
 
