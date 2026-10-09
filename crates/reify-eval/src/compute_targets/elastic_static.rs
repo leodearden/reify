@@ -229,7 +229,7 @@ use super::shell_solve::{
 // Task 2929: FEA diagnostic mapping glue.
 use super::fea_diagnostics::fea_diagnostic_to_core;
 use reify_solver_elastic::{
-    FeaFailure, classify_convergence, classify_degenerate, thin_body_advisory,
+    DegenerateTet, FeaFailure, classify_convergence, find_degenerate_tet, thin_body_advisory,
 };
 // Task 4802 (R3b-1): structured FEA diagnostic channel.
 use crate::StructuredComputeDetail;
@@ -1008,7 +1008,7 @@ pub fn solve_elastic_static_trampoline(
         None
     };
 
-    let (fea, fresh_warm) = solve_cantilever_fea(
+    let (fea, fresh_warm) = match solve_cantilever_fea(
         &model,
         length,
         width,
@@ -1026,7 +1026,10 @@ pub fn solve_elastic_static_trampoline(
         // BC selection this single-shot solve used.
         bc_override.clone(),
         None,
-    );
+    ) {
+        Ok(solve) => solve,
+        Err(degenerate) => return degenerate_mesh_outcome(degenerate),
+    };
 
     // ── (6b) Cancel check ─────────────────────────────────────────────────────
     //
@@ -1039,48 +1042,6 @@ pub fn solve_elastic_static_trampoline(
 
     // ── (6c) Post-solve FEA diagnostics (task 2929) ───────────────────────────
     //
-    // Near-degenerate element guard: scan tet volumes and emit a FeaSingularStiffness
-    // Error for the element with the smallest volume when it falls below `eps`.
-    //
-    // IMPORTANT SCOPE NOTE: this guard fires only in the narrow window where an
-    // element is near-degenerate yet the CG solver still completed without panicking.
-    // A *genuinely* singular stiffness matrix panics inside `solve_cantilever_fea`
-    // at the `p·Kp > 0` assertion in the CG loop (see the solver contract comment at
-    // ~line 1244 below); such a mesh never reaches this post-solve block.  This guard
-    // therefore does NOT convert all singular-stiffness failures into a clean Failed
-    // outcome — it handles only the marginal near-degenerate case.
-    //
-    // Full coverage (surface min-tet-vol from `CantileverFeaSolve` to avoid the
-    // redundant O(n_tets) scan) is deferred; the per-solve overhead is negligible
-    // for the coarse cantilever mesh used today.
-    {
-        let mut min_tet_vol = f64::INFINITY;
-        let mut min_tet_elem = 0usize;
-        for (elem_id, conn) in fea.tet_connectivity.iter().enumerate() {
-            let phys = [
-                fea.coords[conn[0]],
-                fea.coords[conn[1]],
-                fea.coords[conn[2]],
-                fea.coords[conn[3]],
-            ];
-            let vol = tet_volume_p1(&phys);
-            if vol < min_tet_vol {
-                min_tet_vol = vol;
-                min_tet_elem = elem_id;
-            }
-        }
-        if let Some(failure) = classify_degenerate(min_tet_vol, 1e-12, min_tet_elem) {
-            let sd = failure
-                .structured_detail()
-                .map(|d| vec![StructuredComputeDetail::Fea(d)])
-                .unwrap_or_default();
-            return ComputeOutcome::Failed {
-                diagnostics: vec![fea_diagnostic_to_core(&failure, None)],
-                structured_detail: sd,
-            };
-        }
-    }
-
     // Non-convergence advisory: CG did not converge within max_iter iterations.
     // `SOLVER_MAX_ITER` is the shared const used by `solve_cantilever_fea`'s
     // `CgSolverOptions`; referencing the same const here guarantees the diagnostic
@@ -1406,8 +1367,9 @@ pub fn solve_elastic_static_trampoline(
             // The UNIFORM lane, verbatim 4902. Reached both when the localized
             // lane was never entered and when it failed at runtime, so both
             // paths land on identical, already-tested behaviour rather than
-            // two hand-copied bodies.
-            let run_uniform_lane = || {
+            // two hand-copied bodies. Its only failure is a refined synthetic
+            // grid failing the shared solve's degenerate-tet gate.
+            let run_uniform_lane = || -> Result<_, DegenerateTet> {
                 let mut problem = CantileverAdaptiveProblem::new(
                     *iso,
                     length,
@@ -1418,8 +1380,7 @@ pub fn solve_elastic_static_trampoline(
                     body_force,
                     bc_override.clone(),
                 );
-                let status = run_adaptive_refinement(&mut problem, &budget, DORFLER_THETA)
-                    .expect("CantileverAdaptiveProblem's AdaptiveProblem seam is Infallible");
+                let status = run_adaptive_refinement(&mut problem, &budget, DORFLER_THETA)?;
                 // Perf-cost visibility (reviewer_comprehensive/performance,
                 // task 4902 amendment): `refine` uniformly doubles all three
                 // grid axes per iteration (~8x DOF growth), so an
@@ -1431,10 +1392,10 @@ pub fn solve_elastic_static_trampoline(
                     "adaptive refinement finished at {} DOFs on a {nx}×{ny}×{nz} grid",
                     problem.last_n_dofs
                 ));
-                (status, problem.last_global_indicator, diag)
+                Ok((status, problem.last_global_indicator, diag))
             };
 
-            let (status, last_global_indicator, lane_diagnostic) = match realized_lane_seed {
+            let lane_outcome = match realized_lane_seed {
                 Some(mut problem) => {
                     let n_elements_before = problem.element_count();
                     match run_adaptive_refinement(&mut problem, &budget, DORFLER_THETA) {
@@ -1484,7 +1445,7 @@ pub fn solve_elastic_static_trampoline(
                                     problem.last_n_dofs, problem.refine_count
                                 )
                             });
-                            (status, problem.last_global_indicator, diag)
+                            Ok((status, problem.last_global_indicator, diag))
                         }
                         Err(e) => {
                             // libgmsh IS linked but this remesh failed (an open
@@ -1503,6 +1464,10 @@ pub fn solve_elastic_static_trampoline(
                     }
                 }
                 None => run_uniform_lane(),
+            };
+            let (status, last_global_indicator, lane_diagnostic) = match lane_outcome {
+                Ok(lane) => lane,
+                Err(degenerate) => return degenerate_mesh_outcome(degenerate),
             };
             // Post-loop cancel check (reviewer_comprehensive amendment), the
             // exact shape of §6b above and for the same compute-node-contract
@@ -1731,6 +1696,10 @@ fn aabb(coords: &[[f64; 3]]) -> ([f64; 3], [f64; 3]) {
 ///
 /// `coords` widens all `vertices` (stride 3, f32→f64 via `vertex_f64`);
 /// `tet_connectivity` reshapes `tet_indices.chunks_exact(4)` into `[usize; 4]`.
+///
+/// Node ordering is passed through, not normalised. The producer must emit
+/// consistently oriented tets: the solve's degenerate-tet gate
+/// ([`find_degenerate_tet`]) rejects a tet ordered against the rest of the mesh.
 ///
 /// **Orphan compaction (task 5008 GAP B).** After the checks above, any
 /// vertex NOT referenced by at least one tet is DROPPED from `coords` and
@@ -2780,6 +2749,19 @@ fn cantilever_tip_load(
     f
 }
 
+/// The `Failed` outcome for a mesh that [`solve_cantilever_fea`]'s degenerate-tet
+/// gate rejected: one FeaSingularStiffness Error plus the element to highlight.
+fn degenerate_mesh_outcome(degenerate: DegenerateTet) -> ComputeOutcome {
+    let failure = FeaFailure::SingularStiffness(degenerate);
+    ComputeOutcome::Failed {
+        diagnostics: vec![fea_diagnostic_to_core(&failure, None)],
+        structured_detail: failure
+            .structured_detail()
+            .map(|d| vec![StructuredComputeDetail::Fea(d)])
+            .unwrap_or_default(),
+    }
+}
+
 /// Core FEA solve for the cantilever fixture used by `solve_elastic_static_trampoline`
 /// and the unit tests.
 ///
@@ -2797,7 +2779,12 @@ fn cantilever_tip_load(
 ///   `element_stiffness_p1_with_field(&field)` (field samples centroid internally);
 ///   stress via `element_stress_anisotropic` at the SAME centroid for D-consistency.
 ///
-/// Returns `(CantileverFeaSolve, CgWarmState)`.
+/// # Returns
+///
+/// `Ok((CantileverFeaSolve, CgWarmState))`, or `Err` with the worst tet when the
+/// mesh (synthetic or realized) fails [`find_degenerate_tet`]'s shape-quality gate.
+/// The gate runs before assembly, so a degenerate mesh never reaches the
+/// element-stiffness Jacobian assert or the CG solve.
 // 10 args: the helper threads mesh geometry, tip load, pressures, gravity body
 // force, CG warm-state, and the task-2926 execution-mode knobs (`deterministic`,
 // `threads`) into a single cohesive solve; splitting them into a struct would not
@@ -2836,7 +2823,7 @@ pub(crate) fn solve_cantilever_fea(
     // `CantileverAdaptiveProblem::refine` (step-14) grow the mesh each adaptive
     // iteration without touching the realized-mesh path.
     grid_override: Option<(usize, usize, usize)>,
-) -> (CantileverFeaSolve, CgWarmState) {
+) -> Result<(CantileverFeaSolve, CgWarmState), DegenerateTet> {
     // ── Mesh ──────────────────────────────────────────────────────────────────
     //
     // Layout: X-axis = beam length, Y-axis = width, Z-axis = height.
@@ -2988,6 +2975,10 @@ pub(crate) fn solve_cantilever_fea(
         if let Some(load) = load_override {
             tip_nodes = load;
         }
+    }
+
+    if let Some(degenerate) = find_degenerate_tet(&coords, &tet_connectivity) {
+        return Err(degenerate);
     }
 
     let n_nodes = coords.len();
@@ -3201,7 +3192,7 @@ pub(crate) fn solve_cantilever_fea(
     let converged = cg_result.converged;
     let iterations = cg_result.iterations;
     if !converged && iterations < max_iter {
-        return (
+        return Ok((
             CantileverFeaSolve {
                 u: cg_result.into_shared_u(),
                 coords,
@@ -3218,7 +3209,7 @@ pub(crate) fn solve_cantilever_fea(
                 nz,
             },
             fresh_warm,
-        );
+        ));
     }
 
     // ── Stress recovery: max von Mises across all elements ────────────────────
@@ -3383,7 +3374,7 @@ pub(crate) fn solve_cantilever_fea(
         ny,
         nz,
     };
-    (fea, fresh_warm)
+    Ok((fea, fresh_warm))
 }
 
 // ── CantileverAdaptiveProblem (task 4902) ────────────────────────────────────
@@ -3564,10 +3555,10 @@ impl CantileverAdaptiveProblem {
 }
 
 impl AdaptiveProblem for CantileverAdaptiveProblem {
-    /// The v1 uniform-refinement `refine` step cannot fail — mirrors the
-    /// task's stub-driver convention (`crate::adaptive`'s test suite uses the
-    /// same `Infallible` for its synthetic stubs).
-    type Error = std::convert::Infallible;
+    /// The v1 uniform-refinement `refine` step cannot fail; a solve fails only
+    /// when the synthetic grid fails `solve_cantilever_fea`'s degenerate-tet
+    /// gate (an absurdly thin forced-tet slab).
+    type Error = DegenerateTet;
 
     fn solve_and_estimate(&mut self) -> Result<AdaptiveEstimate, Self::Error> {
         // The refinement loop is interruptible at CG granularity: a cancel
@@ -3601,7 +3592,7 @@ impl AdaptiveProblem for CantileverAdaptiveProblem {
             progress_opt,
             self.bc_override.clone(),
             Some(self.grid),
-        );
+        )?;
 
         // Recompute per-element Cauchy stress + volume to feed compute_zz_indicator,
         // via the shared `isotropic_stress_elements` helper (task 4902 amendment,
@@ -3725,7 +3716,7 @@ fn characteristic_sizes_from_solver_mesh(coords: &[[f64; 3]], tets: &[[usize; 4]
 /// Task 4902's uniform lane stays exactly as it is and remains the fallback.
 /// The two differ in every axis that matters — mesh source (realized
 /// `VolumeMesh` vs synthetic grid), refine mechanism (gmsh size-field remesh
-/// vs per-axis grid doubling), error type ([`RefineError`] vs `Infallible`),
+/// vs per-axis grid doubling), error type ([`RealizedLaneError`] vs [`DegenerateTet`]),
 /// and BC model (coordinate re-derivation per remesh vs stable node indices)
 /// — so folding them behind one struct would mean a runtime enum in every
 /// method and would put 4902's already-tested fallback behaviour at risk on a
@@ -3878,13 +3869,42 @@ impl RealizedAdaptiveProblem {
     }
 }
 
+/// Why a [`RealizedAdaptiveProblem`] seam call failed. The wiring site treats
+/// both variants alike: it warns, naming this error, and re-runs on the
+/// uniform lane.
+#[derive(Debug)]
+pub(crate) enum RealizedLaneError {
+    /// The gmsh remesh failed, or produced a mesh this crate cannot widen.
+    Remesh(reify_solver_elastic::RefineError),
+    /// The current realized mesh failed the shared solve's degenerate-tet gate.
+    DegenerateMesh(DegenerateTet),
+}
+
+impl From<reify_solver_elastic::RefineError> for RealizedLaneError {
+    fn from(error: reify_solver_elastic::RefineError) -> Self {
+        Self::Remesh(error)
+    }
+}
+
+impl std::fmt::Display for RealizedLaneError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Remesh(error) => error.fmt(f),
+            Self::DegenerateMesh(degenerate) => write!(
+                f,
+                "the realized mesh failed the solve's degenerate-tet gate: {degenerate}"
+            ),
+        }
+    }
+}
+
 impl AdaptiveProblem for RealizedAdaptiveProblem {
     /// A gmsh remesh CAN fail at runtime (an open or non-manifold surface,
-    /// a gmsh FFI error, or libgmsh absent from this build —
-    /// `RefineError::GmshUnavailable` and `RefineError::Gmsh(..)` are
-    /// distinct, already-modelled variants). The wiring site catches this and
-    /// re-runs on the uniform lane rather than failing the solve.
-    type Error = reify_solver_elastic::RefineError;
+    /// a gmsh FFI error, or libgmsh absent from this build), and the realized
+    /// mesh can fail the shared solve's degenerate-tet gate. The wiring site
+    /// catches either and re-runs on the uniform lane rather than failing the
+    /// solve.
+    type Error = RealizedLaneError;
 
     /// Solve on the CURRENT realized mesh and estimate the Z-Z error.
     ///
@@ -3947,7 +3967,8 @@ impl AdaptiveProblem for RealizedAdaptiveProblem {
             None,
             // Synthetic-grid override is meaningless on the realized path.
             None,
-        );
+        )
+        .map_err(RealizedLaneError::DegenerateMesh)?;
 
         let elements = isotropic_stress_elements(
             &fea.coords,
@@ -5675,8 +5696,8 @@ fn value_to_convergence_status(v: &Value) -> Option<ConvergenceStatus> {
 mod tests {
     use super::*;
     use reify_solver_elastic::{
-        AnisotropicMaterial, DORFLER_THETA, MaterialField, OrthotropicMaterial, RefinementBudget,
-        run_adaptive_refinement,
+        AnisotropicMaterial, DORFLER_THETA, MIN_TET_SHAPE_QUALITY, MaterialField,
+        OrthotropicMaterial, RefinementBudget, run_adaptive_refinement,
     };
 
     // Shared AsPrintedZones Value-fixture builders.  We cannot use
@@ -6026,7 +6047,8 @@ mod tests {
             None,
             None,
             None,
-        );
+        )
+        .expect("well-shaped test mesh passes the degenerate-tet gate");
 
         // (a) the solve ran on the realized mesh — counts == provided, NOT the
         // synthetic nx×1×6 box's counts for the same dims.
@@ -6073,7 +6095,8 @@ mod tests {
             None,
             None,
             None,
-        );
+        )
+        .expect("well-shaped test mesh passes the degenerate-tet gate");
         let nz = 6usize;
         let nx = ((dims[0] / dims[2] * nz as f64).round() as usize).max(1);
         let syn_nodes = (nx + 1) * 2 * (nz + 1);
@@ -6194,7 +6217,8 @@ mod tests {
             None,
             None,
             None,
-        );
+        )
+        .expect("well-shaped test mesh passes the degenerate-tet gate");
         assert!(
             fea.converged,
             "realized-mesh solve over the compacted (orphan-dropped) mesh must converge"
@@ -6363,7 +6387,8 @@ mod tests {
             None,
             None,
             None,
-        );
+        )
+        .expect("well-shaped test mesh passes the degenerate-tet gate");
         assert_eq!(
             fea_default.coords.len(),
             default_nodes,
@@ -6391,7 +6416,8 @@ mod tests {
             None,
             None,
             Some((nx_default * 2, 1, nz_default * 2)),
-        );
+        )
+        .expect("well-shaped test mesh passes the degenerate-tet gate");
         assert!(
             fea_refined.coords.len() > fea_default.coords.len(),
             "Some(finer) override must produce strictly more nodes than the default: \
@@ -6446,7 +6472,7 @@ mod tests {
 
         let est = problem
             .solve_and_estimate()
-            .expect("this problem's AdaptiveProblem seam cannot fail");
+            .expect("well-shaped test mesh passes the degenerate-tet gate");
 
         assert!(
             est.relative_error.is_finite() && (0.0..1.0).contains(&est.relative_error),
@@ -6516,7 +6542,7 @@ mod tests {
         };
 
         let status = run_adaptive_refinement(&mut problem, &budget, DORFLER_THETA)
-            .expect("CantileverAdaptiveProblem::Error is Infallible");
+            .expect("well-shaped test mesh passes the degenerate-tet gate");
 
         match status {
             ConvergenceStatus::NotConverged { reason } => {
@@ -6547,7 +6573,7 @@ mod tests {
         // strictly more dofs than the initial resolution.
         let final_est = problem
             .solve_and_estimate()
-            .expect("this problem's AdaptiveProblem seam cannot fail");
+            .expect("well-shaped test mesh passes the degenerate-tet gate");
         assert!(
             final_est.n_dofs > initial_dofs,
             "expected refine() to have grown the mesh past the initial {} dofs, got {}",
@@ -6760,6 +6786,229 @@ mod tests {
             }
             other => panic!("max_von_mises must be a Scalar[PRESSURE], got {other:?}"),
         }
+    }
+
+    // ── task 8254: scale-aware oriented degenerate-tet gate ───────────────────
+
+    /// Body-overload `value_inputs` (`[material, body, loads, supports, options]`,
+    /// as in `trampoline_body_overload_consumes_realized_volume_mesh`) with one
+    /// tip `PointLoad` of `force_n`.
+    fn body_overload_value_inputs(force_n: f64) -> [Value; 5] {
+        [
+            shell9_make_isotropic_material(200e9, 0.3),
+            Value::GeometryHandle {
+                realization_ref: reify_core::RealizationNodeId::new("TestBody", 0),
+                upstream_values_hash: [0u8; 32],
+                kernel_handle: None,
+            },
+            shell9_make_point_loads(force_n),
+            shell9_make_supports(),
+            shell9_make_options("Off"),
+        ]
+    }
+
+    fn tet_indices_mut(vm: &mut VolumeMesh) -> &mut Vec<u32> {
+        match &mut vm.connectivity {
+            reify_ir::VolumeConnectivity::Tet { indices, .. } => indices,
+            other => panic!("expected tet connectivity, got {other:?}"),
+        }
+    }
+
+    fn solve_body_overload_on(vm: VolumeMesh) -> ComputeOutcome {
+        solve_elastic_static_trampoline(
+            &body_overload_value_inputs(1.0),
+            &[vm_read_handle(vm)],
+            &Value::Undef,
+            None,
+            &CancellationHandle::new(),
+        )
+    }
+
+    /// Asserts `outcome` is the degenerate-mesh `Failed` naming `element_id`, and
+    /// returns its one Error diagnostic's message.
+    fn expect_singular_stiffness_failure(outcome: ComputeOutcome, element_id: usize) -> String {
+        let (diagnostics, structured_detail) = match outcome {
+            ComputeOutcome::Failed {
+                diagnostics,
+                structured_detail,
+            } => (diagnostics, structured_detail),
+            other => panic!("a degenerate mesh must yield ComputeOutcome::Failed, got {other:?}"),
+        };
+        let errors: Vec<&Diagnostic> = diagnostics
+            .iter()
+            .filter(|d| d.severity == reify_core::Severity::Error)
+            .collect();
+        assert_eq!(
+            errors.len(),
+            1,
+            "exactly one Error diagnostic, got {diagnostics:?}"
+        );
+        assert_eq!(errors[0].code, Some(DiagnosticCode::FeaSingularStiffness));
+        assert_eq!(
+            structured_detail,
+            vec![StructuredComputeDetail::Fea(
+                reify_solver_elastic::FeaDiagnosticDetail::ProblemElements {
+                    ids: vec![reify_solver_elastic::ElementId(element_id)],
+                }
+            )],
+        );
+        errors[0].message.clone()
+    }
+
+    /// Acceptance (a): a well-shaped body meshed at 0.1 mm (every tet volume
+    /// ≈ 1.7e-13 m³) must solve. The retired absolute 1e-12 m³ volume check
+    /// rejected it as degenerate.
+    #[test]
+    fn trampoline_body_solve_on_sub_mm_well_shaped_mesh_completes() {
+        let vm = make_box_tet_volume_mesh([2e-3, 4e-4, 4e-4], [20, 4, 4]);
+        let (coords, tets) = volume_mesh_to_solver_mesh(&vm).expect("usable P1 mesh");
+        assert_eq!((coords.len(), tets.len()), (525, 1920));
+        for tet in &tets {
+            let volume = tet_volume_p1(&tet.map(|n| coords[n]));
+            assert!(
+                volume < 1e-12,
+                "premise: every tet volume < 1e-12 m³, got {volume}"
+            );
+        }
+
+        let fields = shell9_result_fields(solve_body_overload_on(vm));
+
+        let realized_max = [2e-3_f64, 4e-4, 4e-4];
+        let bounds_max = match fields.get("displacement") {
+            Some(Value::Field { source, lambda, .. }) => {
+                assert!(matches!(source, FieldSourceKind::Sampled));
+                match lambda.as_ref() {
+                    Value::SampledField(sf) => sf.bounds_max.clone(),
+                    other => panic!("displacement lambda must be a SampledField, got {other:?}"),
+                }
+            }
+            other => panic!("displacement must be a Value::Field, got {other:?}"),
+        };
+        for axis in 0..3 {
+            assert!(
+                ((bounds_max[axis] - realized_max[axis]) / realized_max[axis]).abs() < 1e-5,
+                "displacement bounds_max[{axis}] = {} must match the realized AABB {}",
+                bounds_max[axis],
+                realized_max[axis],
+            );
+        }
+        match fields.get("max_von_mises") {
+            Some(Value::Scalar { si_value, .. }) => assert!(
+                si_value.is_finite() && *si_value > 0.0,
+                "max_von_mises must be finite and > 0, got {si_value}"
+            ),
+            other => panic!("max_von_mises must be a Scalar, got {other:?}"),
+        }
+    }
+
+    /// Acceptance (c): a tet oriented against the rest of the mesh fails the
+    /// solve with a FeaSingularStiffness diagnostic that says it is inverted.
+    /// Assembly takes `|det J|`, so without the gate the solve completes.
+    #[test]
+    fn trampoline_rejects_inverted_tet_with_fea_singular_stiffness() {
+        let mut vm = make_box_tet_volume_mesh([2.0, 0.5, 0.5], [2, 1, 1]);
+        // Tet 5 occupies buffer positions 20..24; swapping its first two nodes
+        // inverts it.
+        tet_indices_mut(&mut vm).swap(20, 21);
+
+        let message = expect_singular_stiffness_failure(solve_body_overload_on(vm), 5);
+        assert!(
+            message.contains("inverted"),
+            "the diagnostic must say the tet is inverted, got: {message}"
+        );
+    }
+
+    /// The 12-tet `[2.0, 0.5, 0.5]` box (`reps = [2, 1, 1]`, so 3×2×2 nodes) with
+    /// a FLAT element 12 appended over hex (0,0,0)'s z = 0 bottom face, nodes
+    /// `[0, 1, 4, 3]`: det J = 0, and every node is already referenced.
+    fn box_mesh_with_flat_sliver() -> VolumeMesh {
+        let mut vm = make_box_tet_volume_mesh([2.0, 0.5, 0.5], [2, 1, 1]);
+        tet_indices_mut(&mut vm).extend([0, 1, 4, 3]);
+        vm
+    }
+
+    /// Acceptance (b): the gate runs BEFORE assembly. A zero-volume element
+    /// trips assembly's Jacobian assert, so only a pre-assembly gate turns it
+    /// into a clean `Failed`.
+    #[test]
+    fn trampoline_injected_flat_sliver_fails_fast_with_fea_singular_stiffness() {
+        let message = expect_singular_stiffness_failure(
+            solve_body_overload_on(box_mesh_with_flat_sliver()),
+            12,
+        );
+        assert!(
+            message.contains(&format!("{MIN_TET_SHAPE_QUALITY:e}")),
+            "the diagnostic must name the threshold, got: {message}"
+        );
+    }
+
+    /// Acceptance (d), realized lane: the shared solve rejects a degenerate
+    /// mesh with an error the wiring site turns into a warning plus
+    /// uniform-lane fallback.
+    #[test]
+    fn realized_adaptive_problem_rejects_degenerate_mesh_before_solving() {
+        let iso = IsotropicElastic {
+            youngs_modulus: 200e9,
+            poisson_ratio: 0.3,
+        };
+        // `solve_and_estimate` never reads the surface; take it from the clean box.
+        let surface = reify_solver_elastic::boundary_surface_mesh(&make_box_tet_volume_mesh(
+            [2.0, 0.5, 0.5],
+            [2, 1, 1],
+        ))
+        .expect("a P1 tet box has an extractable boundary");
+        let mut problem = RealizedAdaptiveProblem::new(
+            iso,
+            box_mesh_with_flat_sliver(),
+            surface,
+            reify_solver_elastic::MeshingOptions {
+                mesh_size: Some(0.25),
+                deterministic: true,
+                ..Default::default()
+            },
+            [0.0, 0.0, -1000.0],
+            vec![],
+            [0.0; 3],
+        )
+        .expect("a widenable P1 tet mesh seeds a RealizedAdaptiveProblem");
+
+        match problem.solve_and_estimate() {
+            Err(RealizedLaneError::DegenerateMesh(degenerate)) => assert!(
+                degenerate.quality < MIN_TET_SHAPE_QUALITY,
+                "reported quality {} must fail the gate",
+                degenerate.quality
+            ),
+            other => panic!("expected the degenerate-tet gate's error, got {other:?}"),
+        }
+    }
+
+    /// Acceptance (d), uniform lane: an absurd forced-tet slab (1 m × 1 km ×
+    /// 1 mm, so the clamped synthetic grid has tets with q ≈ 3.6e-12) is
+    /// rejected by the shared solve.
+    #[test]
+    fn cantilever_adaptive_problem_rejects_degenerate_synthetic_grid_before_solving() {
+        let iso = IsotropicElastic {
+            youngs_modulus: 200e9,
+            poisson_ratio: 0.3,
+        };
+        let mut problem = CantileverAdaptiveProblem::new(
+            iso,
+            1.0,
+            1e3,
+            1e-3,
+            [0.0, 0.0, -1000.0],
+            vec![],
+            [0.0; 3],
+            None,
+        );
+        let degenerate = problem
+            .solve_and_estimate()
+            .expect_err("a q ≈ 3.6e-12 synthetic grid must fail the degenerate-tet gate");
+        assert!(
+            degenerate.quality < MIN_TET_SHAPE_QUALITY,
+            "reported quality {} must fail the gate",
+            degenerate.quality
+        );
     }
 
     // ── task 4091: honest fallback to the synthetic box (step-9) ──────────────
@@ -6980,7 +7229,8 @@ mod tests {
             None,
             Some((Some(clamp_usize), Some(load_usize))),
             None,
-        );
+        )
+        .expect("well-shaped test mesh passes the degenerate-tet gate");
         assert!(fea.converged, "the selector-driven cantilever solve must converge");
         // The OVERRIDE moved the load to the x_min face → fea.tip_nodes == x_min face.
         let mut tip = fea.tip_nodes.clone();
@@ -7022,7 +7272,8 @@ mod tests {
             None,
             None,
             None,
-        );
+        )
+        .expect("well-shaped test mesh passes the degenerate-tet gate");
         let mut tip_coord = fea_coord.tip_nodes.clone();
         tip_coord.sort_unstable();
         assert_eq!(
@@ -8019,7 +8270,8 @@ mod tests {
             None,
             None,
             None,
-        );
+        )
+        .expect("well-shaped test mesh passes the degenerate-tet gate");
 
         assert!(result.converged, "FEA must converge under x_max pressure");
 
@@ -8079,7 +8331,8 @@ mod tests {
                 None,
                 bc_override,
                 grid_override,
-            );
+            )
+            .expect("well-shaped test mesh passes the degenerate-tet gate");
             assert!(result.converged, "{case}: solve did not converge");
             result
         };
@@ -8198,7 +8451,8 @@ mod tests {
             None,
             None,
             None,
-        );
+        )
+        .expect("well-shaped test mesh passes the degenerate-tet gate");
 
         // Tip deflection = max |u_z| over tip-face nodes.
         let tip_deflection = result
@@ -8283,7 +8537,8 @@ mod tests {
             None,
             None,
             None,
-        );
+        )
+        .expect("well-shaped test mesh passes the degenerate-tet gate");
         // Solve with the anisotropic identity-frame lift path.
         let (aniso_result, _) = solve_cantilever_fea(
             &MaterialModel::Anisotropic(aniso),
@@ -8300,7 +8555,8 @@ mod tests {
             None,
             None,
             None,
-        );
+        )
+        .expect("well-shaped test mesh passes the degenerate-tet gate");
 
         // Both must converge.
         assert!(iso_result.converged, "isotropic solve must converge");
@@ -8417,7 +8673,8 @@ mod tests {
             None,
             None,
             None,
-        );
+        )
+        .expect("well-shaped test mesh passes the degenerate-tet gate");
 
         // Analytic σ_max = 6·P·L / (b·h²) — independent of material stiffness.
         let sigma_analytic = 6.0 * tip_force * length / (width * height * height);
@@ -8582,7 +8839,8 @@ mod tests {
             None,
             None,
             None,
-        );
+        )
+        .expect("well-shaped test mesh passes the degenerate-tet gate");
 
         // Expected mesh counts: nz=6, nx=round(0.8/0.1*6)=48, ny=1
         let nz_exp = 6usize;
@@ -9974,7 +10232,8 @@ mod tests {
             }),
             None,
             None,
-        );
+        )
+        .expect("well-shaped test mesh passes the degenerate-tet gate");
 
         assert!(
             cancelled,
@@ -10016,7 +10275,8 @@ mod tests {
             None,
             None,
             None,
-        );
+        )
+        .expect("well-shaped test mesh passes the degenerate-tet gate");
 
         assert!(fea_full.converged, "uncancelled solve must converge");
         assert!(
@@ -10063,7 +10323,8 @@ mod tests {
             None,
             None,
             None,
-        );
+        )
+        .expect("well-shaped test mesh passes the degenerate-tet gate");
 
         assert!(result.converged, "directional Y-load solve must converge");
 
@@ -10644,7 +10905,8 @@ mod tests {
             let (sol, _) = solve_cantilever_fea(
                 model, L, W, H, None, tip_force, None, &[], [0.0; 3], true, None, None, None,
                 None,
-            );
+            )
+            .expect("well-shaped test mesh passes the degenerate-tet gate");
             assert!(sol.converged, "solve_cantilever_fea did not converge");
             // Max |u_z| over tip nodes (same metric as the orthotropic band test).
             sol.tip_nodes.iter()
@@ -13052,7 +13314,7 @@ mod tests {
 
         let est = problem
             .solve_and_estimate()
-            .expect("this problem's AdaptiveProblem seam cannot fail");
+            .expect("well-shaped test mesh passes the degenerate-tet gate");
 
         assert_eq!(
             est.per_element.len(),
@@ -13203,7 +13465,7 @@ mod tests {
 
         let est = problem
             .solve_and_estimate()
-            .expect("this problem's AdaptiveProblem seam cannot fail");
+            .expect("well-shaped test mesh passes the degenerate-tet gate");
         let marked = reify_solver_elastic::mark_dorfler(&est.per_element, DORFLER_THETA);
         assert!(
             !marked.is_empty(),
@@ -13267,7 +13529,7 @@ mod tests {
         let mut unmarked = gmsh_realized_problem(0.05);
         unmarked
             .solve_and_estimate()
-            .expect("this problem's AdaptiveProblem seam cannot fail");
+            .expect("well-shaped test mesh passes the degenerate-tet gate");
         unmarked
             .refine(&[])
             .expect("an empty marked set must still remesh cleanly");
@@ -13590,7 +13852,9 @@ mod tests {
     /// the reachable trigger: it widens cleanly (P1, stride-4, in-range
     /// indices) so a handle IS selected, and only then does boundary
     /// extraction fail — which is the arm under test. x-extent is 1.0, well
-    /// above `MIN_SOLVE_X_EXTENT`.
+    /// above `MIN_SOLVE_X_EXTENT`. All three tets are positively oriented, so
+    /// the solve's degenerate-tet gate (which rejects a tet inverted against
+    /// the rest of the mesh) passes it.
     fn non_manifold_tet_mesh() -> reify_ir::VolumeMesh {
         reify_ir::VolumeMesh {
             #[rustfmt::skip]
@@ -13603,7 +13867,7 @@ mod tests {
                 1.0, 1.0,  1.0, // 5 third apex
             ],
             connectivity: reify_ir::VolumeConnectivity::Tet {
-                indices: vec![0, 1, 2, 3, 0, 1, 2, 4, 0, 1, 2, 5],
+                indices: vec![0, 1, 2, 3, 1, 0, 2, 4, 0, 1, 2, 5],
                 order: ElementOrderTag::P1,
             },
             normals: None,
@@ -14011,7 +14275,9 @@ mod tests {
         assert!(
             matches!(
                 err,
-                reify_solver_elastic::RefineError::SizeHintsLengthMismatch { .. }
+                RealizedLaneError::Remesh(
+                    reify_solver_elastic::RefineError::SizeHintsLengthMismatch { .. }
+                )
             ),
             "expected SizeHintsLengthMismatch, got: {err:?}",
         );

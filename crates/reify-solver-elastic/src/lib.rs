@@ -60,7 +60,9 @@
 //!     // Task 2996: Z-Z error indicator surface
 //!     ZzIndicator, compute_zz_indicator,
 //!     // Task 2929: FEA diagnostic mapping — neutral classifier surface
-//!     FeaFailure, thin_body_advisory, classify_convergence, classify_degenerate,
+//!     FeaFailure, thin_body_advisory, classify_convergence,
+//!     // Task 8254: scale-aware oriented degenerate-tet gate
+//!     find_degenerate_tet, DegenerateTet, MIN_TET_SHAPE_QUALITY,
 //!     // Task 3000: per-probe target_accuracy contract + lazy-refinement timing contract
 //!     probe_target_accuracy, RefineTrigger, should_run_refinement,
 //!     NEAR_BOUNDARY_TARGET_ACCURACY, FAR_FROM_BOUNDARY_TARGET_ACCURACY,
@@ -486,15 +488,18 @@
 //!
 //! // Task 2929: FEA diagnostic mapping — neutral FeaFailure classifier smoke.
 //! // Pins the public surface of FeaFailure, thin_body_advisory,
-//! // classify_convergence, and classify_degenerate from the crate root.
+//! // classify_convergence, and (task 8254) find_degenerate_tet from the crate root.
 //! assert!(thin_body_advisory(1.0, 1.0, 0.01, 10.0).is_some()); // ratio=100 > 10
 //! assert!(thin_body_advisory(1.0, 1.0, 1.0,  10.0).is_none()); // ratio=1 ≤ 10
 //! assert!(classify_convergence(false, 2000, 2000, None).is_some());
 //! assert!(classify_convergence(true,  2000, 2000, None).is_none());
-//! assert!(classify_degenerate(1e-15, 1e-12, 0).is_some());
-//! assert!(classify_degenerate(1.0,   1e-12, 0).is_none());
+//! let unit_tet = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+//! assert!(find_degenerate_tet(&unit_tet, &[[0, 1, 2, 3]]).is_none());
+//! let flat_tet = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 0.0]];
+//! assert!(find_degenerate_tet(&flat_tet, &[[0, 1, 2, 3]]).is_some());
+//! assert!(MIN_TET_SHAPE_QUALITY > 0.0);
 //! assert!(!FeaFailure::NoLoads.is_error());
-//! assert!(FeaFailure::SingularStiffness { element_id: 0 }.is_error());
+//! assert!(FeaFailure::SingularStiffness(DegenerateTet { element_id: 0, quality: 0.0 }).is_error());
 //!
 //! // Task 3000: per-probe target_accuracy contract + lazy-refinement timing
 //! // contract. Pins the public surface of probe_target_accuracy, RefineTrigger,
@@ -516,8 +521,8 @@ pub mod boundary;
 // Task 2929: FEA diagnostic mapping — neutral FeaFailure enum + classifiers.
 pub mod diagnostics;
 pub use diagnostics::{
-    classify_convergence, classify_degenerate, thin_body_advisory, DofDirection, ElementId,
-    FeaDiagnosticDetail, FeaFailure,
+    DegenerateTet, DofDirection, ElementId, FeaDiagnosticDetail, FeaFailure, MIN_TET_SHAPE_QUALITY,
+    classify_convergence, find_degenerate_tet, tet_shape_quality, thin_body_advisory,
 };
 pub mod buckling_kernel;
 pub mod constitutive;
