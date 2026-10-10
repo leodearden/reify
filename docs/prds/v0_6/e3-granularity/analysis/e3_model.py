@@ -8,6 +8,7 @@ registration. Imports run downward only: e3_protocol, e3_sources' records and
 e3_stats.
 """
 
+import enum
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -111,3 +112,40 @@ def _standard_members(snapshot, protocol):
             for record in records
         ]
     return members
+
+
+class AttemptClass(enum.Enum):
+    """§7.4: a drain-censored attempt is not rework for either arm."""
+
+    COUNTED = "counted"
+    DRAIN_CENSORED = "drain-censored"
+    IN_FLIGHT = "in-flight"
+
+
+def classify_attempt(attempt, protocol):
+    """DRAIN_CENSORED when an orchestrator shutdown ended the attempt: a
+    cancellation within protocol.drain_window of its run's end, or no
+    completion at all in a run that has ended. IN_FLIGHT when there is no
+    completion and the run is live. Every other attempt is counted rework."""
+    if attempt.ended_at is None and attempt.run_ended_at is None:
+        return AttemptClass.IN_FLIGHT
+    if attempt.ended_at is None:
+        return AttemptClass.DRAIN_CENSORED
+    at_run_end = (attempt.run_ended_at is not None
+                  and abs(attempt.run_ended_at - attempt.ended_at) <= protocol.drain_window)
+    if attempt.outcome == "cancelled" and at_run_end:
+        return AttemptClass.DRAIN_CENSORED
+    return AttemptClass.COUNTED
+
+
+def freeze_window_set(arm_tasks, attempts, protocol):
+    """The arm tasks with any attempt started before the freeze cutoff
+    (addendum (b)2); raises unless it is exactly the pre-registered set."""
+    arm_ids = {task.id for task in arm_tasks}
+    derived = frozenset(
+        a.task_id for a in attempts
+        if a.task_id in arm_ids and a.started_at < protocol.freeze_cutoff
+    )
+    require(derived == protocol.expected_freeze_set, "freeze-window set",
+            format_ids(protocol.expected_freeze_set), format_ids(derived))
+    return derived
