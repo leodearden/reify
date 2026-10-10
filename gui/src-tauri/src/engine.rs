@@ -8328,56 +8328,35 @@ fn expr_kind_name(kind: &reify_ast::ExprKind) -> &'static str {
 /// rename within one directory is atomic, so every reader sees the whole old
 /// file or the whole new one and that failure mode does not exist.
 ///
-/// Four details that are load-bearing rather than incidental:
+/// Contract:
 ///
-/// * **Symlinks are followed, not replaced.** `rename(2)` does NOT follow a
-///   symlink at its destination, so renaming straight over `path` would DELETE
-///   a symlinked `.ri` and leave a regular file in its place, while the file
-///   the link pointed at kept the pre-edit content forever — and the caller's
-///   divergence guard could not notice, because `fs::read_to_string` follows
-///   the link and would keep comparing against the (matching) target's bytes.
-///   `path` is therefore resolved through [`std::fs::canonicalize`] first and
-///   the write goes to the RESOLVED file, matching the write-through behaviour
-///   a plain `fs::write` would have had. A path that cannot be canonicalized
-///   (it does not exist yet, say) falls back to itself unchanged.
-/// * **Same directory.** `rename` is only atomic within a filesystem, so the
-///   temp lives beside the resolved target — not in `/tmp`, and not beside the
-///   symlink when those differ.
-/// * **`.tmp` suffix, plus pid AND a process-local sequence number.** The GUI's
-///   watcher filters on the `.ri` extension (`watcher.rs`), so a `.tmp` sibling
-///   never reads as a design file appearing in the project. The pid keeps two
-///   PROCESSES writing the same design off one temp path, and the sequence
-///   number does the same for two `EngineSession`s inside ONE process, which
-///   share a pid. The rename itself DOES fire a watch event for the resolved
-///   path — the watcher accepts `Modify(_)`, which covers inotify's
-///   rename-into-place — so hot reload still works; through a symlink the event
-///   lands on the target's directory rather than the link's, which the
-///   authoritative in-process recompile (D7) already covers.
-/// * **Permissions are carried over** from the file being replaced, so a
-///   design the user made read-only-for-group (or otherwise chmod'd) does not
-///   silently come back with the process umask's mode. Best-effort: a
-///   permission read/write failure is not worth failing the edit over.
-///
-/// The temp is removed on every failure path, so a failed write leaves no
-/// litter next to the user's design.
-///
-/// Contents are `sync_all`ed before the rename, and the containing DIRECTORY is
-/// synced after it, so the replacement survives a power loss rather than merely
-/// being atomic against concurrent readers. The directory sync is best-effort:
-/// not every filesystem permits opening a directory for sync, and a design edit
-/// that already reached the page cache is not worth failing over one.
+/// * **Symlinks are followed, not replaced.** `rename(2)` does not follow a
+///   symlink at its destination, so renaming over `path` would replace a
+///   symlinked `.ri` with a regular file and leave the link's target stale —
+///   invisibly to the caller's divergence guard, which reads through the link.
+///   `path` is resolved through [`std::fs::canonicalize`] and the write goes to
+///   the RESOLVED file; a path that cannot be resolved is used as given.
+/// * **The temp is a sibling of the resolved target** (rename is only atomic
+///   within one filesystem), named `<file>.<random>.tmp` and created
+///   exclusively, so no two writers ever share one. Its extension is never
+///   `ri`, so the GUI's watcher (`watcher.rs`) never mistakes it for a design;
+///   the rename itself still fires a `Modify` event for the target, so hot
+///   reload keeps working.
+/// * **The replaced file's permissions are carried over**, best-effort, onto
+///   the open temp. A fresh temp is created `0o600`, so without this every
+///   write-back would narrow the design's mode, not merely drop a user's chmod.
+/// * **No litter on failure.** `NamedTempFile`'s `Drop` removes the temp on
+///   every error path. It cannot after a SIGKILL between creating the temp and
+///   the rename (no destructor runs) — the same residual
+///   `reify_eval::persistent_cache::write_entry` documents.
+/// * **Durable.** Contents and mode are synced before the rename; the
+///   directory is synced after it, best-effort (not every filesystem permits
+///   it, and an edit already in the page cache is not worth failing over).
+/// * **It fails before the rename or not at all.** The caller's rollback relies
+///   on this: an `Err` means the design on disk is untouched.
 fn write_file_atomically(path: &Path, content: &str) -> std::io::Result<()> {
     use std::io::Write;
-    use std::sync::atomic::{AtomicU64, Ordering};
 
-    /// Disambiguates temp paths between two `EngineSession`s in ONE process,
-    /// which the pid alone cannot: they would otherwise race on the same name
-    /// and one would `create`-truncate the other's half-written temp.
-    static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
-
-    // See the doc comment: rename(2) would otherwise destroy a symlinked `.ri`
-    // and orphan its target. Fall back to `path` when it cannot be resolved —
-    // there is then no link to follow and nothing this can improve on.
     let target = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
 
     let file_name = target.file_name().ok_or_else(|| {
@@ -8386,55 +8365,37 @@ fn write_file_atomically(path: &Path, content: &str) -> std::io::Result<()> {
             "path has no file name to write",
         )
     })?;
-    let mut tmp_name = file_name.to_os_string();
-    tmp_name.push(format!(
-        ".{}.{}.tmp",
-        std::process::id(),
-        TMP_SEQ.fetch_add(1, Ordering::Relaxed)
-    ));
-    let tmp_path = target.with_file_name(tmp_name);
-
-    let write_and_rename = || -> std::io::Result<()> {
-        let mut file = std::fs::File::create(&tmp_path)?;
-        file.write_all(content.as_bytes())?;
-        // Order the contents before the rename: a rename that lands while the
-        // data is still only in the page cache would publish an empty or
-        // partial file to a reader that crosses the same crash.
-        file.sync_all()?;
-        drop(file);
-
-        // Best-effort mode preservation — see the doc comment. Deliberately
-        // ignores errors: failing an otherwise-good edit because a mode could
-        // not be copied would be the wrong trade.
-        if let Ok(meta) = std::fs::metadata(&target)
-            && meta.is_file()
-        {
-            let _ = std::fs::set_permissions(&tmp_path, meta.permissions());
-        }
-
-        std::fs::rename(&tmp_path, &target)?;
-
-        // Durability, not atomicity: the rename is already atomic against a
-        // concurrent reader, but the DIRECTORY entry it rewrote can still be
-        // lost to a power cut until the directory itself is synced. Mirrors
-        // `reify_eval::persistent_cache::write_entry`. Best-effort by design —
-        // see the doc comment.
-        if let Some(parent) = target.parent()
-            && let Ok(dir) = std::fs::File::open(parent)
-        {
-            let _ = dir.sync_all();
-        }
-        Ok(())
+    // One directory for both the temp and the post-rename sync: a relative
+    // fallback path like `part.ri` has an EMPTY parent, which `File::open`
+    // cannot open.
+    let dir = match target.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent,
+        _ => Path::new("."),
     };
 
-    let result = write_and_rename();
-    if result.is_err() {
-        // The rename is what consumes the temp, so any failure before it (or a
-        // failed rename itself) leaves the temp behind. Remove it rather than
-        // littering the user's project directory with one file per failure.
-        let _ = std::fs::remove_file(&tmp_path);
+    let mut prefix = file_name.to_os_string();
+    prefix.push(".");
+    let mut tmp = tempfile::Builder::new()
+        .prefix(&prefix)
+        .suffix(".tmp")
+        .tempfile_in(dir)?;
+    tmp.write_all(content.as_bytes())?;
+
+    // An fchmod on the open fd: unlike `Builder::permissions`, it is not
+    // filtered by the umask, and it lands before the sync below.
+    if let Ok(meta) = std::fs::metadata(&target)
+        && meta.is_file()
+    {
+        let _ = tmp.as_file().set_permissions(meta.permissions());
     }
-    result
+    tmp.as_file().sync_all()?;
+
+    tmp.persist(&target).map_err(|e| e.error)?;
+
+    if let Ok(dir_handle) = std::fs::File::open(dir) {
+        let _ = dir_handle.sync_all();
+    }
+    Ok(())
 }
 
 /// Reports whether `s` looks like a source identifier (`[A-Za-z_][A-Za-z0-9_]*`).

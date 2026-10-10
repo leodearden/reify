@@ -20849,6 +20849,23 @@ fn writeback_session_from(source: &str) -> (tempfile::TempDir, std::path::PathBu
     (dir, path, session)
 }
 
+/// Every entry name in `dir`, sorted — the exact listing the no-litter checks
+/// compare against, so they pin "nothing but the design is left" rather than
+/// any temp-file naming format.
+fn sorted_entry_names(dir: &Path) -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(dir)
+        .expect("the fixture directory should be readable")
+        .map(|e| {
+            e.expect("directory entry should be readable")
+                .file_name()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
+    names.sort();
+    names
+}
+
 #[test]
 fn apply_param_to_source_writes_disk_source_map_and_eval_state_consistently() {
     let (_dir, path, mut session) = writeback_session();
@@ -21176,7 +21193,7 @@ fn apply_param_to_source_rolls_the_engine_back_when_the_disk_write_fails() {
     // Trigger: replace the `.ri` with a DIRECTORY at the same path. `fs::write`
     // then fails EISDIR deterministically — and unlike a `chmod 0444` trigger,
     // it still fails when the suite happens to run as root.
-    let (_dir, path, mut session) = writeback_session_from(writeback_rejection_source());
+    let (dir, path, mut session) = writeback_session_from(writeback_rejection_source());
     std::fs::remove_file(&path).expect("removing the fixture .ri should succeed");
     std::fs::create_dir(&path).expect("creating a directory at the .ri path should succeed");
 
@@ -21195,22 +21212,14 @@ fn apply_param_to_source_rolls_the_engine_back_when_the_disk_write_fails() {
 
     // A failed write must also clean up after itself: the write goes through a
     // sibling temp file, and the rename is what consumes it, so a rename that
-    // fails leaves the temp behind unless the error path removes it. One
-    // `part.ri.<pid>.<seq>.tmp` per failed edit accumulating next to the user's
-    // design would be a user-visible regression.
-    let litter: Vec<String> = std::fs::read_dir(_dir.path())
-        .expect("the fixture directory should be readable")
-        .map(|e| {
-            e.expect("directory entry should be readable")
-                .file_name()
-                .to_string_lossy()
-                .into_owned()
-        })
-        .filter(|name| name.ends_with(".tmp"))
-        .collect();
-    assert!(
-        litter.is_empty(),
-        "a failed write-back must leave no temp file behind, found: {litter:?}"
+    // fails leaves the temp behind unless the error path removes it. One temp
+    // sibling per failed edit accumulating next to the user's design would be a
+    // user-visible regression. `part.ri` is the directory planted above, and it
+    // must be the only entry.
+    assert_eq!(
+        sorted_entry_names(dir.path()),
+        vec!["part.ri"],
+        "a failed write-back must leave no temp file behind"
     );
 
     // Disk is deliberately not read back here — it is a directory now, so
@@ -21574,26 +21583,16 @@ fn apply_param_to_source_leaves_no_temp_file_beside_the_design() {
     // The write is temp-file-plus-rename (so a partial write can never leave a
     // truncated `.ri` for the watcher to reload). The temp is an implementation
     // detail and must stay one: the rename consumes it on success, and the
-    // failure path removes it — a project directory accumulating
-    // `part.ri.1234.0.tmp` siblings would be a user-visible regression.
+    // failure path removes it — a project directory accumulating temp siblings
+    // would be a user-visible regression.
     let (dir, path, mut session) = writeback_session();
 
     session
         .apply_param_to_source("Part.width", &mm(120.0))
         .expect("apply_param_to_source should succeed");
 
-    let mut entries: Vec<String> = std::fs::read_dir(dir.path())
-        .expect("the fixture directory should be readable")
-        .map(|e| {
-            e.expect("directory entry should be readable")
-                .file_name()
-                .to_string_lossy()
-                .into_owned()
-        })
-        .collect();
-    entries.sort();
     assert_eq!(
-        entries,
+        sorted_entry_names(dir.path()),
         vec![
             path.file_name()
                 .expect("fixture path has a file name")
@@ -21601,6 +21600,46 @@ fn apply_param_to_source_leaves_no_temp_file_beside_the_design() {
                 .into_owned()
         ],
         "a successful write-back must leave the design file and nothing else"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn apply_param_to_source_preserves_the_design_files_permission_mode() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let (_dir, path, mut session) = writeback_session();
+    // 0o604 is neither a temp file's default creation mode (0o600) nor what any
+    // common umask gives a fresh file, so only a real carry-over produces it;
+    // the owner keeps rw so the engine's own read-back still works.
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o604))
+        .expect("chmod of the fixture design should succeed");
+    let before = inode_of(&path);
+
+    session
+        .apply_param_to_source("Part.width", &mm(120.0))
+        .expect("apply_param_to_source should succeed");
+
+    assert_ne!(
+        inode_of(&path),
+        before,
+        "the write-back must REPLACE the design file, or the mode check below \
+         would pass through an in-place write"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&path).expect("disk file should be readable"),
+        writeback_source().replace("80mm", "120mm"),
+        "the replacement must carry the edited text"
+    );
+    let mode = std::fs::metadata(&path)
+        .expect("the design should still exist")
+        .permissions()
+        .mode()
+        & 0o7777;
+    assert_eq!(
+        format!("{mode:o}"),
+        "604",
+        "a write-back must keep the design's mode"
     );
 }
 
@@ -21657,23 +21696,18 @@ fn apply_param_to_source_writes_through_a_symlinked_design_rather_than_replacing
     // directories: the temp is a sibling of the RESOLVED target (rename is only
     // atomic within one filesystem), so it must not appear beside the link
     // either.
-    for probe in [dir.path(), target_dir.as_path()] {
-        let litter: Vec<String> = std::fs::read_dir(probe)
-            .expect("the probed directory should be readable")
-            .map(|e| {
-                e.expect("directory entry should be readable")
-                    .file_name()
-                    .to_string_lossy()
-                    .into_owned()
-            })
-            .filter(|name| name.ends_with(".tmp"))
-            .collect();
-        assert!(
-            litter.is_empty(),
-            "a successful write-back must leave no temp file in {}, found: {litter:?}",
-            probe.display()
-        );
-    }
+    assert_eq!(
+        sorted_entry_names(dir.path()),
+        vec!["current.ri", "versions"],
+        "a successful write-back must leave nothing but the link and its \
+         target directory beside the link"
+    );
+    assert_eq!(
+        sorted_entry_names(&target_dir),
+        vec!["v3.ri"],
+        "a successful write-back must leave nothing but the design beside the \
+         link's target"
+    );
 }
 
 #[test]
