@@ -1,8 +1,9 @@
 //! `reify dev` subcommand group (GR-038 ε integration gate).
 //!
 //! Provides `reify dev inspect-node <node-id>`, which prints a node's
-//! kind, declared traits, derived priority, derived policy, and active
-//! instance/type overrides by routing through the α/β/γ/δ chain end-to-end.
+//! kind, declared traits, derived priority, derived policy, and the
+//! instance/type override slots (always `(none)` today; see
+//! `render_inspection`) by routing through the α/β/γ/δ chain end-to-end.
 
 use std::process::ExitCode;
 
@@ -179,11 +180,10 @@ pub fn render_inspection(node_id: &NodeId) -> String {
     let policy_overrides = NodePolicyOverrides::new();
     let policy: NodeCommitmentOverride = policy_overrides.resolve_with_traits(node_id, traits);
 
-    // Instance and type override slots — intentionally pinned to "(none)".
-    // With NodePolicyOverrides::new() both instance_overrides and type_overrides
-    // maps are empty, so no real override can be reported even if one existed.
-    // These should be derived from the override maps once config-file override
-    // support (GR-007) populates NodePolicyOverrides with per-node entries.
+    // Instance and type override slots — pinned to "(none)". inspect-node never
+    // loads reify.toml and no production path populates NodePolicyOverrides, so
+    // both maps are always empty. `policy` above is the kind+traits default; no
+    // scheduler applies it. Status: docs/notes/reify-toml-schema.md.
     let instance_override = "(none)";
     let type_override = "(none)";
 
