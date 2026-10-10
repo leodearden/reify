@@ -12,9 +12,12 @@ it there) so e3_protocol imports by name.
 """
 
 import json
+import os
 import sqlite3
+import subprocess
 from datetime import datetime, timedelta, timezone
 from fractions import Fraction
+from pathlib import Path
 
 from e3_protocol import Amendment, Arm, ArmPrd, EraEvent, Protocol
 
@@ -273,6 +276,90 @@ def escalated(task_id, run_id, at, escalation_id, severity=None, level=None,
         data["level"] = level
     return {"timestamp": at, "run_id": run_id, "task_id": task_id,
             "event_type": "escalation_created", "data": data}
+
+
+BASE_FILE = "base.txt"
+BASE_LINES = [f"base line {n}" for n in range(20)]
+REPO_BASE_DATE = "2026-08-01T00:00:00+00:00"
+REPO_TAIL_DATE = "2026-10-05T00:00:00+00:00"
+
+
+def _git_env(date):
+    """A hermetic git env: no inherited GIT_* state (a hook's GIT_DIR or
+    GIT_INDEX_FILE would outrank `git -C`), no global or system config, a
+    fixed identity, and author and committer dates pinned to date."""
+    env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+    env.update({
+        "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_AUTHOR_NAME": "e3-fixture", "GIT_AUTHOR_EMAIL": "e3-fixture@example.test",
+        "GIT_COMMITTER_NAME": "e3-fixture", "GIT_COMMITTER_EMAIL": "e3-fixture@example.test",
+        "GIT_AUTHOR_DATE": date, "GIT_COMMITTER_DATE": date,
+    })
+    return env
+
+
+def _git(repo, *args, date=REPO_BASE_DATE):
+    completed = subprocess.run(
+        ["git", "-C", str(repo), "-c", "core.hooksPath=/dev/null",
+         "-c", "commit.gpgsign=false", *args],
+        capture_output=True, text=True, env=_git_env(date),
+    )
+    if completed.returncode != 0:
+        raise AssertionError(f"git {' '.join(args)} failed: {completed.stderr}")
+    return completed.stdout.strip()
+
+
+def _write_files(repo, files):
+    for relative, content in files.items():
+        target = Path(repo) / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if isinstance(content, bytes):
+            target.write_bytes(content)
+        else:
+            target.write_text(content)
+
+
+def _merge_branch(repo, branch, subject, date, files):
+    _git(repo, "checkout", "-q", "-B", branch, "main", date=date)
+    _write_files(repo, files)
+    _git(repo, "add", "-A", date=date)
+    _git(repo, "commit", "-q", "-m", f"work on {branch}", date=date)
+    _git(repo, "checkout", "-q", "main", date=date)
+    _git(repo, "merge", "-q", "--no-ff", "-m", subject, branch, date=date)
+    sha = _git(repo, "rev-parse", "HEAD", date=date)
+    _git(repo, "branch", "-q", "-D", branch, date=date)
+    return sha
+
+
+def make_merge_repo(path, merges):
+    """A git repo at path whose main carries one `Merge task/<id> into main`
+    --no-ff merge per (task_id, committer_date_with_offset, {path: content})
+    spec, in order, plus one `Merge branch x` and one direct commit on main.
+
+    base.txt (20 lines) is committed first so a spec can edit existing lines.
+    Returns [(task_id, merge sha)] in spec order.
+    """
+    Path(path).mkdir(parents=True, exist_ok=True)
+    _git(path, "init", "-q", "-b", "main")
+    _write_files(path, {BASE_FILE: "\n".join(BASE_LINES) + "\n"})
+    _git(path, "add", "-A")
+    _git(path, "commit", "-q", "-m", "base")
+    shas = [
+        (task_id, _merge_branch(path, f"task/{task_id}", f"Merge task/{task_id} into main",
+                                date, files))
+        for task_id, date, files in merges
+    ]
+    _merge_branch(path, "x", "Merge branch x", REPO_TAIL_DATE, {"x.txt": "x\n"})
+    _write_files(path, {"direct.txt": "direct\n"})
+    _git(path, "add", "-A", date=REPO_TAIL_DATE)
+    _git(path, "commit", "-q", "-m", "direct commit on main", date=REPO_TAIL_DATE)
+    return shas
+
+
+def base_with_edits(edited):
+    """base.txt's content with the given line indexes rewritten."""
+    lines = [f"edited {n}" if n in edited else line for n, line in enumerate(BASE_LINES)]
+    return "\n".join(lines) + "\n"
 
 
 def fake_task_store(payload):

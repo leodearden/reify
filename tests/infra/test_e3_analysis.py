@@ -469,5 +469,56 @@ class RunsDbSourceTests(unittest.TestCase):
         self.assertFalse(bare.exists())
 
 
+class GitSourceTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory()
+        cls.repo = Path(cls.tmp.name) / "repo"
+        new_file = "".join(f"new line {n}\n" for n in range(10))
+        cls.shas = fx.make_merge_repo(cls.repo, [
+            (101, "2026-09-27T21:10:57+01:00", {
+                "feature/new.txt": new_file,
+                fx.BASE_FILE: fx.base_with_edits({2, 7, 11}),
+                "blob.bin": b"\x00\x01\x02\x03",
+            }),
+            (102, "2026-09-28T10:00:00+00:00", {"other.txt": "a\nb\n"}),
+            (103, "2026-09-29T10:00:00+00:00", {"t103.txt": "1\n"}),
+            (103, "2026-09-30T10:00:00+00:00", {"t103.txt": "1\n2\n"}),
+        ])
+        cls.merges = e3_sources.read_task_merges(cls.repo, "main", {101, 103})
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.tmp.cleanup()
+
+    def _of(self, task_id):
+        return [m for m in self.merges if m.task_id == task_id]
+
+    def test_merge_carries_first_parent_numstat(self):
+        (merge,) = self._of(101)
+        self.assertEqual(merge.commit, self.shas[0][1])
+        self.assertEqual((merge.insertions, merge.deletions), (13, 3))
+        self.assertEqual(merge.loc, 16)
+
+    def test_committer_date_is_normalised_to_utc(self):
+        (merge,) = self._of(101)
+        self.assertEqual(merge.merged_at, datetime(2026, 9, 27, 20, 10, 57, tzinfo=UTC))
+        self.assertEqual(merge.merged_at.utcoffset(), timedelta(0))
+
+    def test_unrequested_and_non_task_merges_are_ignored(self):
+        self.assertEqual({m.task_id for m in self.merges}, {101, 103})
+        self.assertEqual(len(self.merges), 3)
+
+    def test_task_merged_twice_yields_two_merges(self):
+        merges = sorted(self._of(103), key=lambda m: m.merged_at)
+        self.assertEqual([m.commit for m in merges], [self.shas[2][1], self.shas[3][1]])
+        self.assertEqual([(m.insertions, m.deletions) for m in merges], [(1, 0), (1, 0)])
+
+    def test_unknown_ref_raises_source_error_with_git_stderr(self):
+        with self.assertRaises(e3_sources.SourceError) as caught:
+            e3_sources.read_task_merges(self.repo, "no-such-ref", {101})
+        self.assertIn("no-such-ref", str(caught.exception))
+
+
 if __name__ == "__main__":
     unittest.main()
