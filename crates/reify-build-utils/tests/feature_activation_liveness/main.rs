@@ -5,3 +5,4 @@
 mod fixture;
 mod gated_surface;
 mod manifest;
+mod usage;
