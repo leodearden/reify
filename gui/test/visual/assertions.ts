@@ -157,6 +157,32 @@ export const VALUE_SCENARIOS: ValueScenario[] = [
       { path: "overflow.horizontal", op: "equals", expected: true },
     ],
   },
+  // Real-WebKit check of the centre hit-test behind `hitTestable` (#7770); live-only via npm run test:e2e.
+  {
+    name: "get_layout_metrics_hit_testable_app_layout",
+    fixture: "small_cube",
+    tool: "get_layout_metrics",
+    args: { selector: '[data-testid="app-layout"]' },
+    assertions: [
+      { path: "exists", op: "equals", expected: true },
+      { path: "visible", op: "equals", expected: true },
+      { path: "hitTestable", op: "equals", expected: true },
+    ],
+  },
+  // The false branch. overflow.ri's 528-char line does not wrap, so `.cm-content` is
+  // thousands of px wide and its centre lies past `.cm-scroller`'s clip (and past the
+  // 1400px default window): `visible` stays true while the centre resolves elsewhere.
+  {
+    name: "get_layout_metrics_hit_testable_clipped_cm_content",
+    fixture: "overflow",
+    tool: "get_layout_metrics",
+    args: { selector: ".cm-content" },
+    assertions: [
+      { path: "exists", op: "equals", expected: true },
+      { path: "visible", op: "equals", expected: true },
+      { path: "hitTestable", op: "equals", expected: false },
+    ],
+  },
   // task-4297 step-8 GREEN: R2 e2e signal scenarios (live signal via npm run test:e2e)
   // Non-racy: openFixture in run.ts calls open_file + wait_for_idle before invoking the
   // tool, so the engine has settled and diagnostic population is complete before the

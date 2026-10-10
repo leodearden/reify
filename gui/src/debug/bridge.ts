@@ -23,6 +23,7 @@ import {
 } from '../stores/layoutStore';
 import { syncOrbitUpAxis } from '../viewport/controls';
 import { driveFormControl, RANGE_INPUT, TEXT_INPUT } from './formControl';
+import { describePlacement } from './elementPlacement';
 
 // Reject oversize payloads before they hit the Tauri IPC channel.
 // 16 MB ceiling is empirical: html-to-image silently truncates output above the
@@ -489,16 +490,13 @@ function paneDiagnostics(
 }
 
 // Shared element descriptor used by query_selector and query_selector_all.
-// Mirrors the bounds + visible formula from dom_query for cross-tool consistency.
+// The bounds/visible/hitTestable trio comes from describePlacement.
 function describeElement(el: HTMLElement) {
-  const rect = el.getBoundingClientRect();
-  const style = window.getComputedStyle(el);
   return {
     tagName: el.tagName.toLowerCase(),
     testId: el.getAttribute('data-testid'),
     text: el.innerText?.slice(0, 500) ?? '',
-    bounds: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
-    visible: style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0,
+    ...describePlacement(el),
   };
 }
 
@@ -534,9 +532,10 @@ function shapeDiagnostic(d: DiagnosticInfo) {
 
 /**
  * Returns true iff the element is visible in the render tree.
- * Reuses the existing isEffectivelyHidden() ancestor walk (so collapsed/hidden
- * panels count as not-visible) plus the rect.width>0 convention shared with
- * describeElement/dom_query/list_elements.
+ * Walks ancestors via isEffectivelyHidden(), so an element inside a collapsed
+ * panel is NOT visible here. This intentionally differs from describePlacement's
+ * `visible`, which reads only the element's own display/visibility (the R1
+ * payload meaning, contract §3); only the rect.width>0 test is shared.
  */
 function isElementVisible(el: Element): boolean {
   return !isEffectivelyHidden(el) && (el as HTMLElement).getBoundingClientRect().width > 0;
@@ -963,14 +962,11 @@ export function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHan
       }
 
       const el = r.el as HTMLElement;
-      const rect = el.getBoundingClientRect();
-      const style = window.getComputedStyle(el);
       return {
         exists: true,
-        visible: style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0,
         text: el.innerText?.slice(0, 500) ?? '',
         tagName: el.tagName.toLowerCase(),
-        bounds: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+        ...describePlacement(el),
         ...paneDiagnostics(r),
       };
     },
@@ -979,13 +975,10 @@ export function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHan
       const elements = document.querySelectorAll('[data-testid]');
       const result: Array<Record<string, unknown>> = [];
       elements.forEach((el) => {
-        const rect = (el as HTMLElement).getBoundingClientRect();
-        const style = window.getComputedStyle(el);
         result.push({
           testId: el.getAttribute('data-testid'),
           tagName: el.tagName.toLowerCase(),
-          visible: style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0,
-          bounds: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+          ...describePlacement(el),
         });
       });
       return { elements: result };
@@ -1023,10 +1016,9 @@ export function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHan
       if ('error' in r) return { error: r.error };
       if (!r.el) return { exists: false };
       const h = r.el as HTMLElement;
-      const rect = h.getBoundingClientRect();
       return {
         exists: true,
-        bounds: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+        ...describePlacement(h),
         scroll: { top: h.scrollTop, left: h.scrollLeft, width: h.scrollWidth, height: h.scrollHeight },
         client: { width: h.clientWidth, height: h.clientHeight },
         overflow: {
@@ -1293,10 +1285,11 @@ export function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHan
 
     // --- I1: Synthetic pointer/scroll/focus tools (task-4299) ---
     // NOTE (contract §4 fidelity): these tools fire JS handlers (onClick,
-    // onPointerDown, etc.) but do NOT apply CSS :hover/:active pseudo-classes
-    // and do NOT trigger native OS hit-testing. document.elementFromPoint is
-    // used for target resolution. See docs/debug-mcp-contract.md §4 for the
-    // full fidelity-gaps table.
+    // onPointerDown, etc.) but do NOT apply CSS :hover/:active pseudo-classes.
+    // The coordinate tools resolve their target with the webview's own
+    // document.elementFromPoint and dispatch on it, skipping native OS input
+    // delivery. See docs/debug-mcp-contract.md §4 for the full fidelity-gaps
+    // table.
 
     click_at: (params) => {
       if (!validXY(params)) return { error: 'x and y must be finite numbers' };

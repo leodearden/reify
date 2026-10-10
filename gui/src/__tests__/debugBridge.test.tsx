@@ -48,19 +48,6 @@ import {
 } from './debugBridgeTestHelpers';
 import { cssEscapePolyfill, ESCAPE_ARMS } from './test_utils/cssEscape';
 
-// jsdom 25 does not implement document.elementFromPoint — the method is simply
-// absent from the document prototype. vi.spyOn requires the property to exist
-// before it can be overridden per test. Define a stub that returns null (matching
-// jsdom's layout-less behaviour) so that vi.spyOn/.mockReturnValue works and
-// vi.restoreAllMocks() reverts to this stub after each test.
-if (typeof document.elementFromPoint !== 'function') {
-  Object.defineProperty(document, 'elementFromPoint', {
-    configurable: true,
-    writable: true,
-    value: (): Element | null => null,
-  });
-}
-
 /** The shared minimal stores, with the selection set to `selectedEntities` (last = primary). */
 function makeStores(selectedEntities: string[] = [], anchorEntity: string | null = null): DebugStores {
   const stores = makeDebugStores();
@@ -3619,8 +3606,9 @@ describe('debug bridge dom_query viewport scoping', () => {
    * Two panes each holding a same-testid element with DISTINGUISHABLE text, so
    * asserting on `text` proves WHICH element was described — not merely that
    * something existed. jsdom implements no layout and no innerText, so `text` is
-   * stubbed per element; `bounds` stays all-zero (and therefore `visible` false)
-   * exactly as it already does for every other jsdom-hosted dom_query.
+   * stubbed per element; `bounds` stays all-zero (and therefore `visible` and
+   * `hitTestable` false) exactly as it already does for every other jsdom-hosted
+   * dom_query.
    */
   function twoPanesWithBadge() {
     document.body.innerHTML = `
@@ -3637,10 +3625,11 @@ describe('debug bridge dom_query viewport scoping', () => {
     return { designMain, pane1 };
   }
 
-  /** The complete pre-#5891 five-key payload — asserted with toEqual so an extra key fails. */
+  /** The complete single-match payload — asserted with toEqual so an extra key fails. */
   const description = (text: string) => ({
     exists: true,
     visible: false, // jsdom reports a zero-width rect for every element
+    hitTestable: false, // not visible, so never hit-testable
     text,
     tagName: 'div',
     bounds: { x: 0, y: 0, width: 0, height: 0 },
@@ -3699,7 +3688,7 @@ describe('debug bridge dom_query viewport scoping', () => {
     });
   });
 
-  it('#5891 single match keeps today\'s exact five-key payload — no diagnostic keys leak', async () => {
+  it('#5891 single match keeps the exact single-match payload — no diagnostic keys leak', async () => {
     document.body.innerHTML = '<div data-testid="lonely-badge"></div>';
     const el = document.querySelector('[data-testid="lonely-badge"]') as HTMLElement;
     Object.defineProperty(el, 'innerText', { configurable: true, value: 'only one' });

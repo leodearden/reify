@@ -122,7 +122,7 @@ gate *decides* is caught without a GUI — only the live *execution* needs one.
 |------|------|---------|
 | `store_state` | `{}` | Full Solid store snapshot (`engine`, `editor`, `selection`, …) |
 | `get_window_state` | `{}` | `{devicePixelRatio, innerWidth, innerHeight, …}` |
-| `get_layout_metrics` | `{selector}` | `{exists, width, height, overflow:{horizontal,vertical}}` |
+| `get_layout_metrics` | `{selector}` | `{exists, bounds, visible, hitTestable, scroll:{top,left,width,height}, client:{width,height}, overflow:{horizontal,vertical}}` — check `hitTestable` before click_at at the bounds centre (contract §3) |
 
 ### R2 — Diagnostics & outline
 
