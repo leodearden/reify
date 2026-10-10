@@ -66,7 +66,9 @@ use std::process::ExitCode;
 // feature.
 use reify_audit::{
     AuditContext, Finding, JCodemunchOps, NoopJCodemunchOps, RealGitOps, Severity, TaskMetadata,
-    TimeWindow, fused_memory_client::FusedMemoryClient, jcodemunch_client::RealJCodemunchOps,
+    TimeWindow,
+    fused_memory_client::FusedMemoryClient,
+    jcodemunch_client::{LoadError, RealJCodemunchOps},
     jcodemunch_index, p1_producer_orphan, p2_consumer_stub, p5_phantom_done, pattern_flag, pcite,
     pdcheck, pdead_dead_code, pdiag, pdoccover, pdssentinel, player, pprdstatus, ptodo, puntested,
 };
@@ -779,6 +781,137 @@ fn effective_repo_id(args: &Args) -> String {
 }
 
 // -----------------------------------------------------------------------
+// The jcodemunch seam a run binds
+// -----------------------------------------------------------------------
+
+/// Why a run that needs jcodemunch binds the inert stub instead of a live
+/// session. Every arm is involuntary: `--no-jcodemunch` is [`Seam::OptedOut`].
+enum SeamUnavailable {
+    /// The endpoint never answered: connection refused or reset, timeout.
+    Unreachable { url: String, error: LoadError },
+    /// The endpoint answered, but not as a live MCP seam: a non-2xx status, or
+    /// a body that is not an MCP `InitializeResult`.
+    HandshakeRefused { url: String, error: LoadError },
+    /// The handshake succeeded but the §4.3 gate refused the index; `refusal`
+    /// is its rendered message, carrying its `E_JC_INDEX_` marker when the
+    /// index itself was judged.
+    IndexUnusable { refusal: String },
+}
+
+impl SeamUnavailable {
+    /// Classify a failed handshake against `url` by whether the endpoint
+    /// answered at all.
+    fn from_handshake(url: &str, error: LoadError) -> Self {
+        let url = url.to_string();
+        match error {
+            LoadError::Http(_) => Self::Unreachable { url, error },
+            LoadError::Status(_) | LoadError::Protocol(_) => Self::HandshakeRefused { url, error },
+        }
+    }
+}
+
+impl std::fmt::Display for SeamUnavailable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unreachable { url, error } => {
+                write!(f, "jcodemunch unreachable at '{url}': {error}")
+            }
+            Self::HandshakeRefused { url, error } => {
+                write!(f, "jcodemunch handshake refused at '{url}': {error}")
+            }
+            Self::IndexUnusable { refusal } => f.write_str(refusal),
+        }
+    }
+}
+
+/// The jcodemunch seam a run binds, and why.
+enum Seam {
+    Live(RealJCodemunchOps),
+    /// No selected detector queries jcodemunch, or the run is `--pre-done`.
+    NotNeeded,
+    /// `--no-jcodemunch`: a declared scope reduction.
+    OptedOut,
+    Unavailable(SeamUnavailable),
+}
+
+impl Seam {
+    /// The ops every detector queries: the live session, or the inert stub.
+    fn ops(&self) -> &dyn JCodemunchOps {
+        match self {
+            Seam::Live(ops) => ops,
+            Seam::NotNeeded | Seam::OptedOut | Seam::Unavailable(_) => &NoopJCodemunchOps,
+        }
+    }
+
+    fn unavailable(&self) -> Option<&SeamUnavailable> {
+        match self {
+            Seam::Unavailable(reason) => Some(reason),
+            Seam::Live(_) | Seam::NotNeeded | Seam::OptedOut => None,
+        }
+    }
+}
+
+/// Decide the seam this run binds. `Err` is the §4.3 refusal of a run set in
+/// which nothing survives an unusable index ([`jcodemunch_only_run_set`]):
+/// the caller exits [`ERROR_EXIT`] before printing any findings array.
+///
+/// The gate fires only after a SUCCESSFUL handshake, i.e. when a live serve is
+/// genuinely about to be queried. With no serve there is no corpus to be
+/// misled by, so gating earlier would turn the unreachable fail-soft into an
+/// exit 125 on every machine where jcodemunch is legitimately absent.
+fn bind_jcodemunch(args: &Args, git: &RealGitOps, repo_id: &str) -> Result<Seam, String> {
+    if args.no_jcodemunch {
+        return Ok(Seam::OptedOut);
+    }
+    if !needs_jcodemunch(args) {
+        return Ok(Seam::NotNeeded);
+    }
+    let ops = match RealJCodemunchOps::new(
+        args.jcodemunch_url.clone(),
+        repo_id,
+        PathBuf::from(&args.project_root),
+    ) {
+        Ok(ops) => ops,
+        Err(error) => {
+            return Ok(Seam::Unavailable(SeamUnavailable::from_handshake(
+                &args.jcodemunch_url,
+                error,
+            )));
+        }
+    };
+    match enforce_index_freshness(args, git, repo_id) {
+        Ok(()) => Ok(Seam::Live(ops)),
+        Err(refusal) if jcodemunch_only_run_set(args) => Err(refusal),
+        Err(refusal) => Ok(Seam::Unavailable(SeamUnavailable::IndexUnusable {
+            refusal,
+        })),
+    }
+}
+
+/// The one stderr line for a run whose seam is unavailable: why, which of the
+/// selected detectors ran without jcodemunch, and the remedy for that cause.
+fn seam_unavailable_breadcrumb(reason: &SeamUnavailable, pattern: Option<&str>) -> String {
+    let degraded: Vec<&str> = selected_detectors(pattern)
+        .filter(|detector| detector.queries_jcodemunch)
+        .map(|detector| detector.token)
+        .collect();
+    let remedy = match reason {
+        SeamUnavailable::Unreachable { .. } | SeamUnavailable::HandshakeRefused { .. } => {
+            "pass --no-jcodemunch to skip them deliberately"
+        }
+        SeamUnavailable::IndexUnusable { .. } => {
+            "re-index, or select only jcodemunch-backed detectors (e.g. --pattern P1) \
+             to make this a hard refusal"
+        }
+    };
+    format!(
+        "reify-audit: {reason} — {} ran without jcodemunch; every other selected \
+         detector still runs ({remedy})",
+        degraded.join(", ")
+    )
+}
+
+// -----------------------------------------------------------------------
 // Main
 // -----------------------------------------------------------------------
 
@@ -901,81 +1034,19 @@ fn main() -> ExitCode {
     // diverge. `--jcodemunch-repo` overrides; otherwise derive per §4.2.
     let jcodemunch_repo_id = effective_repo_id(&args);
 
-    // Construct jcodemunch seam:
-    // - Noop for --no-jcodemunch, P5/pre-done, and P2-only runs (never connects).
-    // - Real for P1/PDEAD runs; if the serve is unreachable, fail-soft to Noop
-    //   so P2/P5 still run and P1 degrades to zero findings. Exit 125 is
-    //   reserved for genuine arg/IO misconfiguration, not an optional substrate.
-    let jcodemunch: Box<dyn JCodemunchOps> =
-        if args.no_jcodemunch || !needs_jcodemunch(&args) {
-            Box::new(NoopJCodemunchOps)
-        } else {
-            match RealJCodemunchOps::new(
-                args.jcodemunch_url.clone(),
-                jcodemunch_repo_id.clone(),
-                PathBuf::from(&args.project_root),
-            ) {
-                Ok(r) => {
-                    // §4.3 freshness precondition. This is the ONLY place the
-                    // gate fires, and the placement is the load-bearing part:
-                    // a jcodemunch-backed detector is in the run set,
-                    // --no-jcodemunch was absent, AND the handshake actually
-                    // succeeded — so a live serve is genuinely about to be
-                    // queried. It runs before `ctx` is built and therefore
-                    // before any detector `check()`.
-                    //
-                    // Deliberately NOT earlier. §4.3's harm model is false
-                    // orphans produced FROM a stale corpus; with the serve
-                    // down there is no corpus to be misled by (the Err arm
-                    // below already fail-softs to zero findings), so there is
-                    // nothing to refuse. Gating before the connection attempt
-                    // would convert that documented fail-soft into a hard exit
-                    // 125 on every machine where jcodemunch is legitimately
-                    // absent — an outage on a healthy path. Constructing the
-                    // client is not "a detector query", so gating a successful
-                    // construction satisfies §4.3 literally while preserving
-                    // the fail-soft.
-                    match enforce_index_freshness(&args, &git, &jcodemunch_repo_id) {
-                        Ok(()) => Box::new(r),
-                        // Nothing in the run set survives a refusal, so refuse
-                        // the process. Returns BEFORE any findings array is
-                        // serialized, so the refusal emits no parseable JSON on
-                        // stderr — which is what lets the /audit skill's
-                        // existing exit-125 disambiguator classify this as an
-                        // infra error rather than 125 High findings.
-                        Err(msg) if jcodemunch_only_run_set(&args) => {
-                            eprintln!("reify-audit: {msg}");
-                            return ExitCode::from(ERROR_EXIT);
-                        }
-                        // Mixed or default sweep: the corpus is still never
-                        // queried (Noop answers every jcodemunch call with
-                        // nothing), but P2/P5/PTODO/PDSSENTINEL keep running
-                        // and the run still emits its findings array. The
-                        // breadcrumb carries the marker token, so the condition
-                        // is machine-detectable rather than silent — the same
-                        // contract the unreachable-serve fail-soft has.
-                        Err(msg) => {
-                            eprintln!(
-                                "reify-audit: {msg} — jcodemunch-backed detectors \
-                                degraded to zero findings; the rest of the sweep \
-                                still runs (use --pattern P1 to make this a hard \
-                                refusal)"
-                            );
-                            Box::new(NoopJCodemunchOps)
-                        }
-                    }
-                }
-                Err(e) => {
-                    eprintln!(
-                        "reify-audit: jcodemunch unreachable at '{}': {} — \
-                        P1 degraded to zero findings; P2/P5 still run \
-                        (pass --no-jcodemunch to silence)",
-                        args.jcodemunch_url, e
-                    );
-                    Box::new(NoopJCodemunchOps)
-                }
-            }
-        };
+    let seam = match bind_jcodemunch(&args, &git, &jcodemunch_repo_id) {
+        Ok(seam) => seam,
+        Err(refusal) => {
+            eprintln!("reify-audit: {refusal}");
+            return ExitCode::from(ERROR_EXIT);
+        }
+    };
+    if let Some(reason) = seam.unavailable() {
+        eprintln!(
+            "{}",
+            seam_unavailable_breadcrumb(reason, args.pattern.as_deref())
+        );
+    }
 
     // Build window (for --since).
     let window = args.since.as_ref().map(|s| TimeWindow {
@@ -983,13 +1054,11 @@ fn main() -> ExitCode {
         until: None,
     });
 
-    // Build context.  Box<dyn JCodemunchOps>::as_ref() coerces to
-    // &dyn JCodemunchOps, satisfying the borrowed seam; the Box outlives ctx.
     let ctx = AuditContext {
         project_root: PathBuf::from(&args.project_root),
         conn: &conn,
         git: &git,
-        jcodemunch: jcodemunch.as_ref(),
+        jcodemunch: seam.ops(),
         task_metadata,
         target_task_id: args.task_id.clone(),
         window,

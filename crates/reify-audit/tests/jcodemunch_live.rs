@@ -1218,14 +1218,17 @@ mod live_leg_seam {
     ///
     /// Pinned by the same mechanism as the per-call layer so neither can rot
     /// into a check that can never fire. The fixture quotes the real
-    /// message from `main`'s client-construction `Err` arm verbatim.
+    /// breadcrumb the bin's seam binding prints for a refused connection.
     #[test]
     #[should_panic(expected = "FAILED to open a jcodemunch session")]
     fn live_leg_rejects_the_construction_fail_soft() {
         let stderr = vacuous_pass_stderr(
             "reify-audit: jcodemunch unreachable at 'http://127.0.0.1:8917/mcp': \
-             transport error: connection refused — P1 degraded to zero findings; \
-             P2/P5 still run (pass --no-jcodemunch to silence)",
+             jcodemunch HTTP error: POST http://127.0.0.1:8917/mcp: \
+             http://127.0.0.1:8917/mcp: Connection Failed: Connect error: \
+             Connection refused (os error 111) — PDEAD ran without jcodemunch; \
+             every other selected detector still runs (pass --no-jcodemunch to \
+             skip them deliberately)",
         );
         assert_live_leg("PDEAD", Some(0), &[], &stderr, breadcrumbs::PDEAD_CALL);
     }
@@ -1239,7 +1242,9 @@ mod live_leg_seam {
         let stderr = vacuous_pass_stderr(
             "reify-audit: jcodemunch handshake refused at 'http://127.0.0.1:8917/mcp': \
              jcodemunch HTTP status error: POST http://127.0.0.1:8917/mcp: \
-             http://127.0.0.1:8917/mcp: status code 404",
+             http://127.0.0.1:8917/mcp: status code 404 — PDEAD ran without \
+             jcodemunch; every other selected detector still runs (pass \
+             --no-jcodemunch to skip them deliberately)",
         );
         assert_live_leg("PDEAD", Some(0), &[], &stderr, breadcrumbs::PDEAD_CALL);
     }
