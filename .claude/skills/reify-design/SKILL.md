@@ -85,10 +85,10 @@ One line per idiom. Worked, compile-gated exemplars live in `examples/best_pract
   OCCT-less build, or an in-process `Engine::new(.., None)`) reports them INDETERMINATE.
   → `clearance_oracle.ri`; assembly-grade worked example:
   `examples/tolerancing/vc_bolt_pattern_clearance.ri`.
-- **Discrete choices**: until CP-SAT is wired, `param s : Real = auto(free)` +
-  `constraint s*s == 1` (s = ±1). Note `auto` is a binding *value* — `auto s : Real` is a
-  parse error — and strict `auto` goes `undef` here because two roots defeat the uniqueness
-  re-solve. → `discrete_choice.ri`
+- **Discrete choices**: keep a binary choice in the model as a `Bool` auto read by a
+  constraint — `param b : Bool = auto(free)`, `let s = if b then 1.0 else -1.0`,
+  `constraint s*s == 1`. Note `auto` is a binding *value* — `auto s : Real` is a parse error.
+  → `discrete_choice.ri`
 - **Turning an arc-measure ratio into an angle — and why the `* 1rad`**:
   `let theta : Angle = (s/r) * 1rad` enters Angle, `theta / 1rad` leaves; arc length is
   `r * theta / 1rad`. No-space literal only (`1 rad` is a parse error). Not optional:

@@ -480,9 +480,9 @@ const EXPECTED_INDETERMINATE: &[(&str, u32, &str)] = &[
         "discrete_choice.ri",
         0,
         "`constraint side * side == 1` — `DiscreteChoice.side` (an `auto(free)` param) is \
-         undefined on this check surface. discrete_choice.ri:49-60 documents the sharp \
-         edge: the solved root is only approximately +-1 (-0.9999999999999973, not \
-         -1.0), and `==` is exact float equality — accepted at solve time by the \
+         undefined on this check surface. The SHARP EDGE paragraph of discrete_choice.ri \
+         documents it: the solved root is only approximately +-1 (-0.9999999999999973, \
+         not -1.0), and `==` is exact float equality — accepted at solve time by the \
          solver's own residual tolerance, which is why `reify eval` resolves this \
          constraint cleanly even though this check surface cannot.",
     ),

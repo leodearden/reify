@@ -1,7 +1,24 @@
 module discrete_choice
 
-// discrete_choice.ri — IDIOM: encode a binary (+-1) choice for the solver with
-// a dimensionless free auto and a quadratic constraint, until CP-SAT is wired.
+// discrete_choice.ri — IDIOM: keep a binary (+-1) choice IN the model, as an
+// auto the solver resolves. The exact form is a Bool auto mapped to a sign,
+// plus a constraint that reads it:
+//
+//     param right : Bool = auto(free)
+//     let   side  = if right then 1.0 else -1.0     // exactly +1.0 or -1.0
+//     constraint side * side == 1                   // reads `right`
+//
+// The constraint is not optional. `side * side == 1` always holds here; its
+// job is to read `right`, which hands it to the solver. With no constraint
+// reading `right`, it stays undef ("awaiting solve"). CP-SAT (default-on since
+// #5469) enumerates `right` and resolves `side` to an exact value. Both
+// alternatives satisfy `side * side == 1`, so it returns one of them, which is
+// not something to rely on, and `auto(free)` warns that the "result is not
+// uniquely determined". To choose an alternative, add a constraint that
+// discriminates (e.g. `side < 0`). Prefer this form for a genuinely binary
+// choice. This file keeps the continuous Real form below, with a dimensionless
+// free auto and a quadratic constraint, and documents what that form does and
+// does not give you:
 //
 //     param side : Real = auto(free)
 //     constraint side * side == 1        // side is +1 or -1, nothing else
@@ -39,7 +56,10 @@ module discrete_choice
 // root from one start (-1 above, not "-1 and +1"). Which root you get is not
 // something to rely on. To pin a particular alternative, add a constraint that
 // discriminates between them; to explore both, you currently need two runs.
-// Real branch-and-bound over discrete variables is what CP-SAT will bring.
+// CP-SAT ships default-on, but it enumerates only finite-domain autos (Bool,
+// bounded Int, Enum). `side` is a continuous Real with no finite domain, so
+// this component never reaches CP-SAT: the continuous solver solves it and
+// returns one root.
 //
 // Dimensionality: `side` must be dimensionless (`Real`), because it is compared
 // against the bare integer `1`. `Real` resolves to a dimensionless scalar, and
@@ -56,8 +76,9 @@ module discrete_choice
 // resolving `side` to -0.999.... Measured directly: identical files with and
 // without that one geometry cell differ exactly in whether the violation is
 // reported. So keep the +-1 encoding on the value surface, and if a downstream
-// consumer needs the sign, give it a tolerance band rather than exact equality
-// until CP-SAT can represent the choice properly.
+// consumer needs the sign, give it a tolerance band rather than exact equality,
+// or use the Bool form above: it resolves `side` to exactly +-1.0, which
+// survives the post-solve exact re-check.
 
 structure def DiscreteChoice {
     // THE IDIOM: one dimensionless free auto, one quadratic constraint.
