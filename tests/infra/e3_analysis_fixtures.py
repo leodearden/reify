@@ -12,6 +12,7 @@ it there) so e3_protocol imports by name.
 """
 
 import json
+import sqlite3
 from datetime import datetime, timedelta, timezone
 from fractions import Fraction
 
@@ -191,6 +192,87 @@ def snapshot_payload(protocol, overrides=None):
 def done_override(commit):
     """The override that marks a task done by merge of commit."""
     return {"status": "done", "metadata": {"done_provenance": {"kind": "merged", "commit": commit}}}
+
+
+RUNS_DB_SCHEMA = """
+CREATE TABLE runs (
+    run_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, prd_path TEXT,
+    started_at TEXT NOT NULL, completed_at TEXT
+);
+CREATE TABLE events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp TEXT NOT NULL,
+    run_id TEXT NOT NULL, task_id TEXT, event_type TEXT NOT NULL, phase TEXT,
+    role TEXT, data TEXT DEFAULT '{}', cost_usd REAL, duration_ms INTEGER
+);
+CREATE INDEX idx_events_run ON events(run_id);
+CREATE TABLE invocations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL, task_id TEXT,
+    project_id TEXT NOT NULL, account_name TEXT NOT NULL, model TEXT NOT NULL,
+    role TEXT NOT NULL, cost_usd REAL NOT NULL DEFAULT 0.0,
+    duration_ms INTEGER NOT NULL DEFAULT 0, capped INTEGER NOT NULL DEFAULT 0,
+    started_at TEXT NOT NULL, completed_at TEXT NOT NULL
+);
+"""
+
+
+def iso(moment):
+    """A runs.db timestamp: ISO 8601 with an explicit +00:00 offset."""
+    return moment.astimezone(UTC).isoformat()
+
+
+def make_runs_db(path, runs, events, invocations):
+    """A runs.db at path with the live tables' column names.
+
+    runs: dicts {run_id, started_at, completed_at, project_id='reify'};
+    events: dicts {timestamp, run_id, task_id, event_type, data};
+    invocations: dicts {run_id, task_id, role, cost_usd, started_at,
+    project_id='reify'}. Datetimes are written as ISO '+00:00' strings.
+    """
+    connection = sqlite3.connect(path)
+    try:
+        connection.executescript(RUNS_DB_SCHEMA)
+        connection.executemany(
+            "INSERT INTO runs (run_id, project_id, started_at, completed_at) VALUES (?, ?, ?, ?)",
+            [(r["run_id"], r.get("project_id", "reify"), iso(r["started_at"]),
+              iso(r["completed_at"]) if r.get("completed_at") else None) for r in runs],
+        )
+        connection.executemany(
+            "INSERT INTO events (timestamp, run_id, task_id, event_type, data) VALUES (?, ?, ?, ?, ?)",
+            [(iso(e["timestamp"]), e["run_id"],
+              None if e.get("task_id") is None else str(e["task_id"]),
+              e["event_type"], json.dumps(e.get("data", {}))) for e in events],
+        )
+        connection.executemany(
+            "INSERT INTO invocations (run_id, task_id, project_id, account_name, model, role,"
+            " cost_usd, started_at, completed_at) VALUES (?, ?, ?, 'max-a', 'opus', ?, ?, ?, ?)",
+            [(i["run_id"], str(i["task_id"]), i.get("project_id", "reify"), i["role"],
+              i["cost_usd"], iso(i["started_at"]), iso(i["started_at"] + timedelta(minutes=5)))
+             for i in invocations],
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+
+def started(task_id, run_id, at):
+    return {"timestamp": at, "run_id": run_id, "task_id": task_id,
+            "event_type": "task_started", "data": {"title": f"task {task_id}"}}
+
+
+def completed(task_id, run_id, at, outcome):
+    return {"timestamp": at, "run_id": run_id, "task_id": task_id,
+            "event_type": "task_completed", "data": {"outcome": outcome}}
+
+
+def escalated(task_id, run_id, at, escalation_id, severity=None, level=None,
+              category="review_issues"):
+    data = {"escalation_id": escalation_id, "category": category}
+    if severity is not None:
+        data["severity"] = severity
+    if level is not None:
+        data["level"] = level
+    return {"timestamp": at, "run_id": run_id, "task_id": task_id,
+            "event_type": "escalation_created", "data": data}
 
 
 def fake_task_store(payload):

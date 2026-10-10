@@ -18,6 +18,7 @@ live runs.db, task store or main ref.
 
 import dataclasses
 import json
+import sqlite3
 import statistics
 import sys
 import tempfile
@@ -343,6 +344,129 @@ class SnapshotSourceTests(unittest.TestCase):
             with self.assertRaises(ValueError) as caught:
                 e3_sources.fused_memory_url(path)
             self.assertIn(str(path), str(caught.exception))
+
+
+def at(day, hour, minute=0, second=0, month=9):
+    return datetime(2026, month, day, hour, minute, second, tzinfo=UTC)
+
+
+class RunsDbSourceTests(unittest.TestCase):
+    """r1 completed; r2 crashed (no completed_at, a later run exists); r3 live."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.path = Path(self.tmp.name) / "runs.db"
+        runs = [
+            {"run_id": "r1", "started_at": at(1, 0), "completed_at": at(1, 10)},
+            {"run_id": "rX", "started_at": at(1, 5), "completed_at": at(1, 6),
+             "project_id": "dark-factory"},
+            {"run_id": "r2", "started_at": at(1, 11), "completed_at": None},
+            {"run_id": "r3", "started_at": at(2, 0), "completed_at": None},
+        ]
+        events = [
+            fx.started(1101, "r1", at(1, 1)),
+            fx.completed(1101, "r1", at(1, 2), "requeued"),
+            fx.started(1101, "r1", at(1, 3)),
+            fx.escalated(1101, "r1", at(1, 4), "esc-1101-1", severity="blocking"),
+            fx.started(1101, "rX", at(1, 5, 30)),
+            fx.completed(1101, "rX", at(1, 5, 40), "done"),
+            fx.completed(1101, "r2", at(1, 11, 30), "cancelled"),
+            fx.started(1102, "r2", at(1, 12)),
+            fx.escalated(1102, "r2", at(1, 12, 30), "esc-1102-1", level=1),
+            {"timestamp": at(1, 13), "run_id": "r2", "task_id": None,
+             "event_type": "orchestrator_heartbeat", "data": {}},
+            fx.started(1102, "r3", at(2, 1)),
+            fx.started(1103, "r3", at(2, 2)),
+        ]
+        invocations = [
+            {"run_id": "r1", "task_id": 1101, "role": "architect", "cost_usd": 0.5,
+             "started_at": at(1, 1, 1)},
+            {"run_id": "r1", "task_id": 1101, "role": "implementer", "cost_usd": 1.25,
+             "started_at": at(1, 3, 1)},
+            {"run_id": "r1", "task_id": 1101, "role": "reviewer_comprehensive",
+             "cost_usd": 0.75, "started_at": at(1, 3, 30)},
+            {"run_id": "r2", "task_id": 1101, "role": "steward", "cost_usd": 0.1,
+             "started_at": at(1, 11, 15)},
+            {"run_id": "r3", "task_id": 1103, "role": "architect", "cost_usd": 9.0,
+             "started_at": at(2, 2, 1)},
+            {"run_id": "rX", "task_id": 1101, "role": "architect", "cost_usd": 100.0,
+             "started_at": at(1, 5, 31), "project_id": "dark-factory"},
+        ]
+        fx.make_runs_db(self.path, runs, events, invocations)
+        self.data = e3_sources.read_runs_db(self.path, {1101, 1102})
+
+    def _attempts(self, task_id):
+        return [a for a in self.data.attempts if a.task_id == task_id]
+
+    def test_start_pairs_with_first_later_completion_in_same_run(self):
+        first, second = self._attempts(1101)
+        self.assertEqual((first.run_id, first.started_at, first.ended_at, first.outcome),
+                         ("r1", at(1, 1), at(1, 2), "requeued"))
+        self.assertEqual(second.started_at, at(1, 3))
+        self.assertIsNone(second.ended_at)
+        self.assertIsNone(second.outcome)
+
+    def test_attempts_across_runs_in_time_order(self):
+        attempts = self._attempts(1102)
+        self.assertEqual([a.run_id for a in attempts], ["r2", "r3"])
+        self.assertEqual([a.started_at for a in attempts], [at(1, 12), at(2, 1)])
+
+    def test_unclosed_attempt_in_completed_run_ends_with_the_run(self):
+        second = self._attempts(1101)[1]
+        self.assertEqual(second.run_ended_at, at(1, 10))
+
+    def test_crashed_run_ends_at_its_last_event(self):
+        in_crashed_run = self._attempts(1102)[0]
+        self.assertEqual(in_crashed_run.run_ended_at, at(1, 13))
+
+    def test_latest_run_without_completion_is_live(self):
+        live = self._attempts(1102)[1]
+        self.assertIsNone(live.run_ended_at)
+
+    def test_closed_attempts_carry_their_run_end(self):
+        self.assertEqual(self._attempts(1101)[0].run_ended_at, at(1, 10))
+
+    def test_invocations_cover_every_role_of_requested_tasks(self):
+        self.assertEqual(
+            sorted((i.task_id, i.role, i.cost_usd, i.started_at) for i in self.data.invocations),
+            sorted([
+                (1101, "architect", 0.5, at(1, 1, 1)),
+                (1101, "implementer", 1.25, at(1, 3, 1)),
+                (1101, "reviewer_comprehensive", 0.75, at(1, 3, 30)),
+                (1101, "steward", 0.1, at(1, 11, 15)),
+            ]))
+
+    def test_escalations_parse_with_optional_severity(self):
+        by_id = {e.escalation_id: e for e in self.data.escalations}
+        self.assertEqual(set(by_id), {"esc-1101-1", "esc-1102-1"})
+        blocking = by_id["esc-1101-1"]
+        self.assertEqual((blocking.task_id, blocking.created_at, blocking.severity,
+                          blocking.level, blocking.category),
+                         (1101, at(1, 4), "blocking", None, "review_issues"))
+        self.assertIsNone(by_id["esc-1102-1"].severity)
+        self.assertEqual(by_id["esc-1102-1"].level, 1)
+
+    def test_timestamps_are_aware_utc(self):
+        moments = [a.started_at for a in self.data.attempts]
+        moments += [i.started_at for i in self.data.invocations]
+        moments += [e.created_at for e in self.data.escalations]
+        for moment in moments:
+            self.assertEqual(moment.utcoffset(), timedelta(0))
+
+    def test_other_projects_are_ignored(self):
+        self.assertNotIn("rX", {a.run_id for a in self.data.attempts})
+        self.assertNotIn(100.0, {i.cost_usd for i in self.data.invocations})
+
+    def test_missing_database_raises_without_creating_it(self):
+        missing = Path(self.tmp.name) / "absent" / "runs.db"
+        with self.assertRaises(sqlite3.Error):
+            e3_sources.read_runs_db(missing, {1101})
+        self.assertFalse(missing.exists())
+        bare = Path(self.tmp.name) / "absent.db"
+        with self.assertRaises(sqlite3.Error):
+            e3_sources.read_runs_db(bare, {1101})
+        self.assertFalse(bare.exists())
 
 
 if __name__ == "__main__":
