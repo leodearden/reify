@@ -11,6 +11,7 @@ The analysis directory must already be on sys.path (test_e3_analysis.py puts
 it there) so e3_protocol imports by name.
 """
 
+import json
 from datetime import datetime, timedelta, timezone
 from fractions import Fraction
 
@@ -106,3 +107,104 @@ def mini_protocol(n_coarse=2, n_standard=2, **overrides):
     )
     fields.update(overrides)
     return Protocol(**fields)
+
+
+SNAPSHOT_UPDATED_AT = "2026-10-01T12:00:00.000Z"
+PROTOCOL_DOC_PATH = "docs/prds/v0_6/e3-decomposition-granularity-ab.md"
+
+
+def _task(task_id, metadata, status="pending"):
+    return {
+        "id": task_id,
+        "title": f"task {task_id}",
+        "status": status,
+        "updatedAt": SNAPSHOT_UPDATED_AT,
+        "metadata": metadata,
+    }
+
+
+def _coarse_tasks(prd):
+    tasks = {}
+    for position, task_id in enumerate(sorted(prd.coalesced)):
+        constituents = [f"{task_id * 10 + n}:leaf{n}" for n in range(2 + position % 2)]
+        tasks[task_id] = _task(task_id, {
+            "prd_path": prd.prd_path, "x_e3_arm": "coarse", "x_e3_prd": prd.slug,
+            "x_e3_constituents": constituents,
+        })
+    for task_id in sorted(prd.reused):
+        tasks[task_id] = _task(task_id, {
+            "prd_path": prd.prd_path, "x_e3_arm": "coarse", "x_e3_prd": prd.slug,
+            "x_e3_reused": True,
+        })
+    return tasks
+
+
+def _standard_tasks(prd):
+    members = sorted(prd.stamped_ids())[: prd.stamped_count]
+    return {task_id: _task(task_id, {"prd_path": prd.prd_path}) for task_id in members}
+
+
+def _apply_override(tasks, task_id, change):
+    if change is None:
+        tasks.pop(task_id, None)
+        return
+    task = tasks.setdefault(task_id, _task(task_id, {}))
+    for key, value in change.items():
+        if key != "metadata":
+            task[key] = value
+            continue
+        for meta_key, meta_value in value.items():
+            if meta_value is None:
+                task["metadata"].pop(meta_key, None)
+            else:
+                task["metadata"][meta_key] = meta_value
+
+
+def snapshot_payload(protocol, overrides=None):
+    """{id: get_task-shaped dict} consistent with protocol.
+
+    Coalesced tasks carry 2-3 constituents, reused singletons x_e3_reused,
+    standard leaves only their prd_path; one retired leaf, the carve-outs and
+    the infrastructure tasks are present too. overrides maps an id to None
+    (drop the task) or to top-level fields to set, where a "metadata" dict is
+    merged key by key and a None value deletes that key.
+    """
+    tasks = {}
+    first_coarse = protocol.prds_in(Arm.COARSE)[0]
+    for prd in protocol.prds:
+        tasks.update(_coarse_tasks(prd) if prd.arm is Arm.COARSE else _standard_tasks(prd))
+    tasks[MINI_RETIRED] = _task(MINI_RETIRED, {
+        "prd_path": first_coarse.prd_path, "x_e3_arm": "standard-retired",
+        "x_e3_replacement": str(min(first_coarse.coalesced)),
+    }, status="deferred")
+    for task_id in sorted(protocol.carve_outs):
+        tasks[task_id] = _task(task_id, {"prd_path": first_coarse.prd_path})
+    for task_id in sorted(protocol.infrastructure):
+        tasks[task_id] = _task(task_id, {
+            "prd_path": PROTOCOL_DOC_PATH, "x_e3_arm": "infrastructure",
+        })
+    for task_id, change in (overrides or {}).items():
+        _apply_override(tasks, task_id, change)
+    return tasks
+
+
+def done_override(commit):
+    """The override that marks a task done by merge of commit."""
+    return {"status": "done", "metadata": {"done_provenance": {"kind": "merged", "commit": commit}}}
+
+
+def fake_task_store(payload):
+    """(call_tool, calls): an in-memory fused-memory answering get_statuses and
+    get_task from payload, recording every (tool, arguments) call."""
+    calls = []
+
+    def call_tool(name, arguments):
+        calls.append((name, arguments))
+        if name == "get_statuses":
+            wanted = [int(i) for i in arguments["ids"]]
+            return {"statuses": {str(i): payload[i]["status"] for i in wanted if i in payload}}
+        if name == "get_task":
+            return json.loads(json.dumps(payload[int(arguments["id"])]))
+        raise AssertionError(f"unexpected tool {name}")
+
+    return call_tool, calls

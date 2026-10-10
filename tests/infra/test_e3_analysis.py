@@ -17,8 +17,10 @@ live runs.db, task store or main ref.
 """
 
 import dataclasses
+import json
 import statistics
 import sys
+import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
 from fractions import Fraction
@@ -33,6 +35,7 @@ sys.path.insert(0, str(ANALYSIS_DIR))
 
 import e3_analysis_fixtures as fx  # noqa: E402  (after sys.path manipulation)
 import e3_stats  # noqa: E402
+import e3_sources  # noqa: E402
 from e3_protocol import E3, Arm, ProtocolViolation  # noqa: E402
 
 UTC = timezone.utc
@@ -252,6 +255,94 @@ class StatsTests(unittest.TestCase):
         self.assertIsNone(
             e3_stats.bootstrap_interval([], statistic=statistics.median, seed="s",
                                         resamples=50, level=Fraction(9, 10)))
+
+
+FETCHED_AT = datetime(2026, 10, 10, 20, 0, tzinfo=UTC)
+
+
+class SnapshotSourceTests(unittest.TestCase):
+    def setUp(self):
+        self.protocol = fx.mini_protocol()
+        self.payload = fx.snapshot_payload(
+            self.protocol, overrides={1102: fx.done_override("abc123")})
+
+    def _fetch(self, payload=None):
+        call_tool, calls = fx.fake_task_store(payload or self.payload)
+        candidates = self.protocol.snapshot_candidate_ids() + (99999,)
+        snapshot = e3_sources.fetch_task_snapshot(
+            call_tool, self.protocol.project_root, candidates, FETCHED_AT)
+        return snapshot, calls, candidates
+
+    def test_fetch_reads_statuses_once_then_only_known_tasks(self):
+        snapshot, calls, candidates = self._fetch()
+        status_calls = [args for name, args in calls if name == "get_statuses"]
+        self.assertEqual(status_calls, [{
+            "project_root": self.protocol.project_root,
+            "ids": [str(i) for i in candidates],
+        }])
+        self.assertEqual(calls[0][0], "get_statuses")
+        fetched = [int(args["id"]) for name, args in calls if name == "get_task"]
+        self.assertEqual(sorted(fetched), sorted(set(self.payload) & set(candidates)))
+        self.assertNotIn(99999, fetched)
+        self.assertEqual(snapshot.fetched_at, FETCHED_AT)
+        self.assertEqual(snapshot.project_root, self.protocol.project_root)
+        self.assertEqual({t.id for t in snapshot.tasks}, set(fetched))
+
+    def test_fetch_parses_metadata_into_records(self):
+        snapshot, _, _ = self._fetch()
+        coalesced = snapshot.task(101)
+        self.assertEqual(coalesced.x_e3_arm, "coarse")
+        self.assertEqual(coalesced.x_e3_prd, "c1")
+        self.assertFalse(coalesced.x_e3_reused)
+        self.assertIsInstance(coalesced.constituents, tuple)
+        self.assertEqual(len(coalesced.constituents), 2)
+        self.assertEqual(coalesced.prd_path, "docs/prds/v0_6/c1.md")
+        self.assertTrue(snapshot.task(103).x_e3_reused)
+        standard = snapshot.task(1102)
+        self.assertEqual(standard.status, "done")
+        self.assertEqual(standard.provenance_commit, "abc123")
+        self.assertIsNone(standard.x_e3_arm)
+        self.assertEqual(standard.constituents, ())
+        self.assertIsNone(snapshot.task(1101).provenance_commit)
+        self.assertIsNone(snapshot.task(99999))
+
+    def test_fetch_rejects_a_record_for_another_id(self):
+        payload = fx.snapshot_payload(self.protocol, overrides={101: {"id": 999}})
+        with self.assertRaises(ProtocolViolation) as caught:
+            self._fetch(payload)
+        self.assertEqual(caught.exception.invariant, "snapshot record id")
+        self.assertIn("999", str(caught.exception))
+
+    def test_write_then_read_round_trips(self):
+        snapshot, _, _ = self._fetch()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "tasks-snapshot.json"
+            e3_sources.write_task_snapshot(snapshot, path)
+            self.assertEqual(json.loads(path.read_text())["schema"], "e3-task-snapshot/1")
+            self.assertEqual(e3_sources.read_task_snapshot(path), snapshot)
+
+    def test_read_rejects_another_schema(self):
+        snapshot, _, _ = self._fetch()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "tasks-snapshot.json"
+            e3_sources.write_task_snapshot(snapshot, path)
+            document = json.loads(path.read_text())
+            document["schema"] = "e3-task-snapshot/0"
+            path.write_text(json.dumps(document))
+            with self.assertRaises(ValueError):
+                e3_sources.read_task_snapshot(path)
+
+    def test_fused_memory_url_reads_mcp_config(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / ".mcp.json"
+            path.write_text(json.dumps({"mcpServers": {
+                "fused-memory": {"type": "http", "url": "http://127.0.0.1:8002/mcp"},
+            }}))
+            self.assertEqual(e3_sources.fused_memory_url(path), "http://127.0.0.1:8002/mcp")
+            path.write_text(json.dumps({"mcpServers": {"escalation": {"url": "x"}}}))
+            with self.assertRaises(ValueError) as caught:
+                e3_sources.fused_memory_url(path)
+            self.assertIn(str(path), str(caught.exception))
 
 
 if __name__ == "__main__":
