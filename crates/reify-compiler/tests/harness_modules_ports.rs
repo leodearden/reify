@@ -48,6 +48,8 @@ mod io_traits_tests;
 mod module_dag_tests;
 #[path = "harness_modules_ports/module_decl_remedy_tests.rs"]
 mod module_decl_remedy_tests;
+#[path = "harness_modules_ports/name_env_policy_tests.rs"]
+mod name_env_policy_tests;
 #[path = "harness_modules_ports/occurrence_compile_tests.rs"]
 mod occurrence_compile_tests;
 #[path = "harness_modules_ports/pin_cell_id_namespace_tests.rs"]
