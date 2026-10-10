@@ -800,4 +800,157 @@ mod tests {
             "{err:?}"
         );
     }
+
+    fn violations(files: &[(&str, &str)]) -> (Fixture, Vec<ShapeViolation>) {
+        let fx = crate_with(files);
+        let violations = GatedSurface::scan(&lib_root(&fx), "f")
+            .expect("fixture crate scans")
+            .violations;
+        (fx, violations)
+    }
+
+    fn at(fx: &Fixture, rel: &str, line: usize, shape: Shape) -> ShapeViolation {
+        ShapeViolation {
+            file: fx.root().join(rel),
+            line,
+            shape,
+        }
+    }
+
+    #[test]
+    fn cfg_attr_keyed_on_the_feature_is_a_violation() {
+        let (fx, found) = violations(&[(
+            "src/lib.rs",
+            "#[cfg_attr(feature = \"f\", derive(Debug))]\npub struct S;\n\
+             pub struct T {\n    #[cfg_attr(any(test, feature = \"f\"), allow(dead_code))]\n    pub x: u8,\n}\n\
+             #[cfg_attr(feature = \"other\", derive(Debug))]\npub struct U;\n\
+             #[cfg_attr(not(feature = \"f\"), derive(Debug))]\npub struct V;\n",
+        )]);
+        assert_eq!(
+            found,
+            vec![
+                at(&fx, "src/lib.rs", 1, Shape::CfgAttr),
+                at(&fx, "src/lib.rs", 4, Shape::CfgAttr),
+            ]
+        );
+    }
+
+    #[test]
+    fn gated_trait_impl_for_a_gated_type_is_admissible_in_either_order() {
+        let (_fx, found) = violations(&[(
+            "src/lib.rs",
+            "#[cfg(feature = \"f\")]\nimpl Default for Mock {\n    fn default() -> Self {\n        Mock\n    }\n}\n\
+             #[cfg(feature = \"f\")]\npub struct Mock;\n",
+        )]);
+        assert_eq!(found, vec![]);
+    }
+
+    #[test]
+    fn gated_trait_impl_for_an_ungated_type_is_a_violation() {
+        let (fx, found) = violations(&[(
+            "src/lib.rs",
+            "pub struct Engine;\n\
+             #[cfg(feature = \"f\")]\nimpl From<u8> for Engine {\n    fn from(_: u8) -> Self {\n        Engine\n    }\n}\n",
+        )]);
+        let shape = Shape::TraitImplForUngatedSelf {
+            self_ty: "Engine".to_string(),
+        };
+        assert_eq!(found, vec![at(&fx, "src/lib.rs", 2, shape)]);
+    }
+
+    #[test]
+    fn trait_impl_inheriting_a_module_gate_for_an_ungated_type_is_a_violation() {
+        let (fx, found) = violations(&[
+            (
+                "src/lib.rs",
+                "pub struct Engine;\n#[cfg(feature = \"f\")]\nmod hooks;\n",
+            ),
+            (
+                "src/hooks.rs",
+                "impl Clone for crate::Engine {\n    fn clone(&self) -> Self {\n        crate::Engine\n    }\n}\n",
+            ),
+        ]);
+        let shape = Shape::TraitImplForUngatedSelf {
+            self_ty: "Engine".to_string(),
+        };
+        assert_eq!(found, vec![at(&fx, "src/hooks.rs", 1, shape)]);
+    }
+
+    #[test]
+    fn gated_item_inside_an_ungated_trait_impl_is_a_violation() {
+        let (fx, found) = violations(&[(
+            "src/lib.rs",
+            "pub trait Kernel {\n    fn morph(&self) {}\n}\npub struct Gmsh;\n\
+             impl Kernel for Gmsh {\n    #[cfg(feature = \"f\")]\n    fn morph(&self) {}\n}\n",
+        )]);
+        let shape = Shape::GatedItemInUngatedTraitImpl {
+            item: "morph".to_string(),
+        };
+        assert_eq!(found, vec![at(&fx, "src/lib.rs", 6, shape)]);
+    }
+
+    #[test]
+    fn gated_public_glob_reexport_is_a_violation() {
+        let (fx, found) = violations(&[(
+            "src/lib.rs",
+            "mod inner {\n    pub fn a() {}\n}\n\
+             #[cfg(feature = \"f\")]\npub use inner::*;\n\
+             #[cfg(feature = \"f\")]\nuse inner::*;\n",
+        )]);
+        assert_eq!(found, vec![at(&fx, "src/lib.rs", 4, Shape::GlobReexport)]);
+    }
+
+    #[test]
+    fn gated_item_position_macro_invocation_is_a_violation() {
+        let (fx, found) = violations(&[
+            (
+                "src/lib.rs",
+                "#[cfg(feature = \"f\")]\nsome_macro! { x }\n\
+                 other_macro! { y }\n\
+                 #[cfg(feature = \"f\")]\nmacro_rules! m {\n    () => {};\n}\n\
+                 #[cfg(feature = \"f\")]\nmod registry;\n",
+            ),
+            ("src/registry.rs", "inventory::submit! { Thing }\n"),
+        ]);
+        assert_eq!(
+            found,
+            vec![
+                at(&fx, "src/lib.rs", 1, Shape::ItemMacroInvocation),
+                at(&fx, "src/registry.rs", 1, Shape::ItemMacroInvocation),
+            ]
+        );
+    }
+
+    #[test]
+    fn gated_inherent_impl_on_an_ungated_type_is_admissible() {
+        let fx = crate_with(&[(
+            "src/lib.rs",
+            "pub struct Engine;\n#[cfg(feature = \"f\")]\nimpl Engine {\n    pub fn hook(&self) {}\n}\n",
+        )]);
+        let surface = GatedSurface::scan(&lib_root(&fx), "f").expect("fixture crate scans");
+        assert_eq!(surface.violations, vec![]);
+        assert_eq!(surface.evidence, names(&["hook"]));
+    }
+
+    #[test]
+    fn violations_across_files_are_reported_in_walk_order() {
+        let (fx, found) = violations(&[
+            ("src/lib.rs", "pub mod a;\npub mod b;\n"),
+            (
+                "src/a.rs",
+                "#[cfg(feature = \"f\")]\npub use std::collections::*;\n",
+            ),
+            (
+                "src/b.rs",
+                "#[cfg_attr(feature = \"f\", derive(Debug))]\npub struct B;\n",
+            ),
+        ]);
+        assert_eq!(
+            found,
+            vec![
+                at(&fx, "src/a.rs", 1, Shape::GlobReexport),
+                at(&fx, "src/b.rs", 1, Shape::CfgAttr),
+            ]
+        );
+    }
 }
