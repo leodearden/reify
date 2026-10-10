@@ -608,20 +608,23 @@ fn pattern_selects(pattern: &str, token: &str) -> bool {
 }
 
 /// Return true when at least one selected detector queries jcodemunch, so the
-/// run needs a live client. `--pre-done` never does: it runs P5 alone.
+/// run needs a live client. `--pre-done` never connects: it runs inside
+/// fused-memory's write lock under a hard timeout, and at hook time H2 has no
+/// persisted provenance to query anyway.
 fn needs_jcodemunch(args: &Args) -> bool {
     !args.pre_done
         && selected_detectors(args.pattern.as_deref()).any(|detector| detector.jcodemunch.queries())
 }
 
-/// Return true when EVERY detector selected by `--pattern` is
-/// jcodemunch-backed, i.e. a refusal costs the run nothing it could still
-/// have delivered.
+/// Return true when EVERY detector selected by `--pattern` requires
+/// jcodemunch ([`JcodemunchUse::Required`]), i.e. a refusal costs the run
+/// nothing it could still have delivered.
 ///
 /// This is the blast-radius boundary for the §4.3 gate. `needs_jcodemunch` is
-/// true for the pattern-less DEFAULT sweep, which also runs P2, P5, PTODO and
-/// PDSSENTINEL — none of which consult jcodemunch at all. Refusing the whole
-/// process there would kill five working detectors over one unusable corpus,
+/// true for the pattern-less DEFAULT sweep, which also runs P2, PTODO and
+/// PDSSENTINEL — none of which consult jcodemunch at all — and P5, which
+/// consults it in its H2 pass only. Refusing the whole process there would
+/// kill four working detectors and P5's other passes over one unusable corpus,
 /// and §4.2 makes that the EXPECTED case rather than an anomaly: identity is
 /// now per-checkout, so every warm-lane/task worktree derives an id nothing
 /// has indexed. A default sweep from any such worktree with the serve up would
@@ -629,9 +632,10 @@ fn needs_jcodemunch(args: &Args) -> bool {
 ///
 /// So the refusal is scoped: an all-jcodemunch run set has nothing to salvage
 /// and hard-refuses (the §4.3 contract, and what B4/B5/B6 pin); a mixed or
-/// default run set degrades the jcodemunch-backed detectors to the Noop seam
-/// and keeps going, which is exactly the shape the unreachable-serve fail-soft
-/// already has. Either way the corpus is never queried.
+/// default run set degrades the jcodemunch-backed passes to the Noop seam,
+/// records them as unexamined, and keeps going, which is exactly the shape
+/// the unreachable-serve fail-soft already has. Either way the corpus is never
+/// queried.
 ///
 /// `false` for a pattern-less run: the default sweep is mixed by definition.
 fn jcodemunch_only_run_set(args: &Args) -> bool {
@@ -709,6 +713,13 @@ enum JcodemunchUse {
     Required {
         unexamined: Option<fn(&str) -> Finding>,
     },
+    /// Only some of its passes query jcodemunch. Selecting it makes the run
+    /// connect, but an unusable index never refuses it (its other passes do
+    /// not read the index); `unexamined` records the jcodemunch passes as
+    /// unexamined when the seam is unavailable, and is not optional.
+    InSomePasses {
+        unexamined: fn(&str) -> Finding,
+    },
 }
 
 impl JcodemunchUse {
@@ -729,6 +740,7 @@ impl Detector {
         match self.jcodemunch {
             JcodemunchUse::Never => None,
             JcodemunchUse::Required { unexamined } => unexamined,
+            JcodemunchUse::InSomePasses { unexamined } => Some(unexamined),
         }
     }
 
@@ -744,7 +756,7 @@ impl Detector {
 const DETECTORS: &[Detector] = &[
     Detector { token: pattern_flag::P1,          in_default_sweep: true,  refuses_empty_task_corpus: false, check: Check::Plain(p1_producer_orphan::check),       jcodemunch: JcodemunchUse::Required { unexamined: Some(p1_producer_orphan::run_unexamined) } },
     Detector { token: pattern_flag::P2,          in_default_sweep: true,  refuses_empty_task_corpus: false, check: Check::Plain(p2_consumer_stub::check),         jcodemunch: JcodemunchUse::Never },
-    Detector { token: pattern_flag::P5,          in_default_sweep: true,  refuses_empty_task_corpus: false, check: Check::Plain(p5_phantom_done::check),          jcodemunch: JcodemunchUse::Never },
+    Detector { token: pattern_flag::P5,          in_default_sweep: true,  refuses_empty_task_corpus: false, check: Check::Plain(p5_phantom_done::check),          jcodemunch: JcodemunchUse::InSomePasses { unexamined: p5_phantom_done::live_path_run_unexamined } },
     Detector { token: pattern_flag::PDEAD,       in_default_sweep: false, refuses_empty_task_corpus: false, check: Check::Plain(pdead_dead_code::check),          jcodemunch: JcodemunchUse::Required { unexamined: None } },
     Detector { token: pattern_flag::PUNTESTED,   in_default_sweep: false, refuses_empty_task_corpus: false, check: Check::Plain(puntested::check),                jcodemunch: JcodemunchUse::Required { unexamined: None } },
     Detector { token: pattern_flag::PLAYER,      in_default_sweep: false, refuses_empty_task_corpus: false, check: Check::Plain(player::check),                   jcodemunch: JcodemunchUse::Required { unexamined: None } },

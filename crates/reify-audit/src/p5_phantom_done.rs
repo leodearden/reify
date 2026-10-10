@@ -1612,22 +1612,16 @@ fn build_high_finding(meta: &TaskMetadata, missing: &[String], summary: &str) ->
 ///
 /// ## 4141 live-corpus validation note
 ///
-/// Task 4141 confirmed that H2 **cannot be live-validated** against the current
-/// corpus. `needs_jcodemunch()` in `bin/reify-audit.rs:433–443` returns `false`
-/// for `--pattern P5` (and for `--pre-done`) → the binary always wires
-/// `NoopJCodemunchOps` for P5 runs. A default sweep attempts
-/// `RealJCodemunchOps` but fail-softs to `NoopJCodemunchOps` because
-/// `jcodemunch-serve` is not yet deployed in reify
-/// (`bin/reify-audit.rs:547–567`). With `NoopJCodemunchOps`,
-/// `get_changed_symbols` returns `vec![]` → this function iterates nothing →
-/// zero H2 findings regardless of real cross-crate stranding. A zero-finding
-/// H2 sweep is therefore **vacuous** and cannot justify a `Medium → High`
-/// promotion. H2 remains at `Severity::Medium` (non-blocking for the D-1
-/// hook) pending the real jcodemunch JCodemunchOps implementation. Future
-/// promotion task must meet the criteria in
-/// `docs/prds/p5-h1-h2-live-corpus-fp-validation.md` §6 (H2 promotion
-/// criteria): real jcodemunch substrate wired, non-vacuous live sweep,
-/// measured FP rate ≤ 5%. Per task 4141 live-corpus FP validation.
+/// Task 4141 found H2 could not be live-validated: every P5 run bound
+/// `NoopJCodemunchOps`, whose `get_changed_symbols` answers nothing, so a
+/// zero-finding H2 sweep was **vacuous**. A `--pattern P5` run (and a default
+/// sweep) now handshakes for H2 (the bin's `needs_jcodemunch`), and a run
+/// whose seam is unavailable records H2 as one run-level
+/// [`Pattern::P5LivePathUnexamined`] ([`live_path_run_unexamined`]) rather
+/// than reading as clean. `--pre-done` and `--no-jcodemunch` still bind the
+/// stub. H2 stays `Severity::Medium` (non-blocking for the D-1 hook) until a
+/// promotion meets `docs/prds/p5-h1-h2-live-corpus-fp-validation.md` §6: a
+/// non-vacuous live sweep with a measured FP rate ≤ 5%.
 ///
 /// A FAILED `get_changed_symbols` query yields one Low
 /// [`Pattern::P5LivePathUnexamined`] ([`live_path_unexamined`]), as P1 does.
@@ -1717,6 +1711,24 @@ fn live_path_unexamined(
              the {since_sha}..{until_sha} query failed ({failure}); zero \
              live-path-stranded findings for this task are not a clean result \
              — re-run once jcodemunch answers"
+        ),
+        evidence: vec![],
+    }
+}
+
+/// The finding for a run in which H2 had no usable jcodemunch session at all,
+/// so it examined no task: `reason` says why. Low, run-level (empty
+/// `task_id`), and worded so that the run's lack of `P5LivePathStranded`
+/// findings cannot be read as a clean result.
+pub fn live_path_run_unexamined(reason: &str) -> Finding {
+    Finding {
+        pattern: Pattern::P5LivePathUnexamined,
+        severity: Severity::Low,
+        task_id: String::new(),
+        summary: format!(
+            "live-path-unexamined: H2 ran without jcodemunch this run ({reason}); \
+             zero live-path-stranded findings are not a clean result — re-run \
+             once jcodemunch answers"
         ),
         evidence: vec![],
     }
