@@ -20,7 +20,7 @@ from fractions import Fraction
 from pathlib import Path
 
 from e3_protocol import Amendment, Arm, ArmPrd, EraEvent, Protocol
-from e3_sources import fetch_task_snapshot
+from e3_sources import fetch_task_snapshot, write_task_snapshot
 
 UTC = timezone.utc
 
@@ -391,3 +391,45 @@ def task_snapshot(protocol, overrides=None, fetched_at=SNAPSHOT_FETCHED_AT):
     call_tool, _ = fake_task_store(snapshot_payload(protocol, overrides))
     return fetch_task_snapshot(
         call_tool, protocol.project_root, protocol.snapshot_candidate_ids(), fetched_at)
+
+
+CLI_RUN_START = datetime(2026, 8, 27, 0, 0, tzinfo=UTC)
+LOCAL_OFFSET = timezone(timedelta(hours=1))
+
+
+def build_cli_inputs(directory, protocol, landings, extra_starts=(),
+                     fetched_at=SNAPSHOT_FETCHED_AT):
+    """The three CLI inputs under directory, mutually consistent.
+
+    landings: (task_id, merged_at, loc, cost) — each is a `Merge task/<id>
+    into main` of a loc-line file committed at merged_at (+01:00 local), a
+    done-by-merge snapshot record, one done attempt and one invocation of
+    cost. Every id in protocol.expected_freeze_set gets an attempt started an
+    hour before the freeze cutoff; extra_starts adds (task_id, started_at)
+    task_started events. Returns {snapshot, runs_db, repo} paths.
+    """
+    directory = Path(directory)
+    repo = directory / "repo"
+    shas = dict(make_merge_repo(repo, [
+        (task_id, merged_at.astimezone(LOCAL_OFFSET).isoformat(), {f"t{task_id}.txt": "x\n" * loc})
+        for task_id, merged_at, loc, _ in sorted(landings, key=lambda landing: landing[1])
+    ]))
+    snapshot_path = directory / "tasks-snapshot.json"
+    call_tool, _ = fake_task_store(snapshot_payload(
+        protocol, {task_id: done_override(sha) for task_id, sha in shas.items()}))
+    write_task_snapshot(fetch_task_snapshot(
+        call_tool, protocol.project_root, protocol.snapshot_candidate_ids(), fetched_at),
+        snapshot_path)
+    events, invocations = [], []
+    for task_id, merged_at, _, cost in landings:
+        events += [started(task_id, "r1", merged_at - timedelta(hours=2)),
+                   completed(task_id, "r1", merged_at - timedelta(hours=1), "done")]
+        invocations.append({"run_id": "r1", "task_id": task_id, "role": "implementer",
+                            "cost_usd": cost, "started_at": merged_at - timedelta(hours=2)})
+    for task_id in sorted(protocol.expected_freeze_set):
+        events.append(started(task_id, "r1", protocol.freeze_cutoff - timedelta(hours=1)))
+    events += [started(task_id, "r1", started_at) for task_id, started_at in extra_starts]
+    runs_db = directory / "runs.db"
+    make_runs_db(runs_db, [{"run_id": "r1", "started_at": CLI_RUN_START, "completed_at": None}],
+                 events, invocations)
+    return {"snapshot": snapshot_path, "runs_db": runs_db, "repo": repo}

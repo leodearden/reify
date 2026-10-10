@@ -16,7 +16,9 @@ Every fixture lives under a tempfile dir: no network, no shared state, no
 live runs.db, task store or main ref.
 """
 
+import contextlib
 import dataclasses
+import io
 import json
 import sqlite3
 import statistics
@@ -38,6 +40,7 @@ import e3_analysis_fixtures as fx  # noqa: E402  (after sys.path manipulation)
 import e3_stats  # noqa: E402
 import e3_sources  # noqa: E402
 import e3_model  # noqa: E402
+import e3_analysis  # noqa: E402
 from e3_protocol import E3, Arm, ProtocolViolation  # noqa: E402
 
 UTC = timezone.utc
@@ -1147,6 +1150,167 @@ class DescriptiveTests(unittest.TestCase):
         scenario = EndpointScenario()
         self.assertEqual({c.label for c in e3_model.era_split(scenario.outcomes())},
                          {"DESCRIPTIVE"})
+
+
+CLI_AS_OF = "2026-10-10T20:00:00Z"
+MINI_4V3 = fx.mini_protocol(n_coarse=4, n_standard=3)
+FLOOR_UNMET = [(1102, at(27, 20), 512, 31.05), (1101, at(12, 7), 2425, 107.58)]
+FLOOR_ORDER = [101, 102, 201, 202, 301, 302, 401, 402, 1102, 1103, 1201, 1202, 1301, 1302]
+
+
+def floor_cost(task_id):
+    """Coarse PRD c<i> costs i per task, standard s<j> costs 4 + j: every
+    coarse $/kLOC sits below every standard one at the trigger."""
+    prd_index = task_id // 100
+    return float(prd_index if task_id < 1000 else prd_index - 10 + 4)
+
+
+FLOOR_MET = [(task_id, at(10 + n, 0), 100, floor_cost(task_id))
+             for n, task_id in enumerate(FLOOR_ORDER)]
+POST_TRIGGER = (1303, at(25, 0), 10000, 0.0)
+
+
+def run_cli(argv, protocol=MINI_4V3):
+    stdout, stderr = io.StringIO(), io.StringIO()
+    with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+        code = e3_analysis.main(argv, protocol=protocol)
+    return code, stdout.getvalue(), stderr.getvalue()
+
+
+def cli_argv(inputs, out_dir, as_of=CLI_AS_OF, runs_db=None):
+    return ["--tasks-snapshot", str(inputs["snapshot"]),
+            "--runs-db", str(runs_db or inputs["runs_db"]),
+            "--repo", str(inputs["repo"]), "--ref", "main",
+            "--as-of", as_of, "--out-dir", str(out_dir)]
+
+
+def section(report, title):
+    """The lines of report under the `== title` heading, up to the next one."""
+    lines = report.split("\n")
+    start = next(n for n, line in enumerate(lines) if line.startswith(f"== {title}"))
+    end = next((n for n in range(start + 1, len(lines)) if lines[n].startswith("== ")),
+               len(lines))
+    return "\n".join(lines[start:end])
+
+
+def labels(document):
+    """Every 'label' value anywhere in a JSON document."""
+    if isinstance(document, dict):
+        found = [document["label"]] if "label" in document else []
+        return found + [label for value in document.values() for label in labels(value)]
+    if isinstance(document, list):
+        return [label for value in document for label in labels(value)]
+    return []
+
+
+class CliTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory()
+        root = Path(cls.tmp.name)
+        cls.unmet = fx.build_cli_inputs(root / "unmet", MINI_4V3, FLOOR_UNMET)
+        cls.drift = fx.build_cli_inputs(root / "drift", MINI_4V3, FLOOR_UNMET,
+                                        extra_starts=[(1201, fx.MINI_FREEZE_CUTOFF
+                                                       - timedelta(hours=2))])
+        cls.met = fx.build_cli_inputs(root / "met", MINI_4V3, FLOOR_MET + [POST_TRIGGER])
+        cls.unmet_run = run_cli(cli_argv(cls.unmet, root / "unmet-out"))
+        cls.unmet_out = root / "unmet-out"
+        cls.met_run = run_cli(cli_argv(cls.met, root / "met-out"))
+        cls.met_out = root / "met-out"
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.tmp.cleanup()
+
+    def _out_dir(self, name):
+        return Path(self.tmp.name) / name
+
+    def test_floor_unmet_run_succeeds_and_prints_the_probe(self):
+        code, stdout, stderr = self.unmet_run
+        self.assertEqual(code, 0, stderr)
+        probe = section(stdout, "STOP-RULE PROBE")
+        for prd in MINI_4V3.prds:
+            expected = "1/2" if prd.slug == "s1" else "0/2"
+            self.assertRegex(
+                probe, rf"(?m)^\s+{prd.arm.value}\s+{prd.slug}\s+{expected} qualifying")
+        self.assertIn("#1102", probe)
+        self.assertIn("trigger instant: none", probe)
+
+    def test_floor_unmet_writes_report_and_endpoints(self):
+        self.assertTrue((self.unmet_out / "report.txt").is_file())
+        self.assertFalse((self.unmet_out / "tasks-snapshot.json").exists())
+        document = json.loads((self.unmet_out / "endpoints.json").read_text())
+        self.assertEqual(document["verdict"]["label"], "DESCRIPTIVE")
+        found = labels(document)
+        self.assertTrue(found)
+        self.assertEqual(set(found), {"DESCRIPTIVE"})
+        self.assertEqual((self.unmet_out / "report.txt").read_text(), self.unmet_run[1])
+
+    def test_report_names_censoring_counts_and_exclusions(self):
+        report = self.unmet_run[1]
+        censoring = section(report, "CENSORING")
+        for name in ("freeze-window excluded", "right-censored", "drain-censored attempts"):
+            self.assertIn(name, censoring)
+        self.assertIn("#1101", section(report, "EXCLUDED TASKS"))
+        self.assertIn("#1102", section(report, "SENSITIVITY"))
+        self.assertIn("DESCRIPTIVE", report.split("\n")[1])
+
+    def test_floor_met_runs_one_look_frozen_at_the_trigger(self):
+        code, stdout, stderr = self.met_run
+        self.assertEqual(code, 0, stderr)
+        document = json.loads((self.met_out / "endpoints.json").read_text())
+        verdict = document["verdict"]
+        self.assertEqual(verdict["label"], "CONFIRMATORY")
+        self.assertEqual(verdict["trigger_instant"], "2026-09-23T00:00:00Z")
+        self.assertEqual(document["stop_rule_probe"]["trigger_instant"], "2026-09-23T00:00:00Z")
+        per_prd = {}
+        for task_id, _, loc, cost in FLOOR_MET:
+            slug = "c" + str(task_id // 100) if task_id < 1000 else "s" + str(task_id // 100 - 10)
+            total_cost, total_loc = per_prd.get(slug, (0.0, 0))
+            per_prd[slug] = (total_cost + cost, total_loc + loc)
+        values = {slug: 1000 * c / l for slug, (c, l) in per_prd.items()}
+        expected = e3_stats.exact_mann_whitney_u(
+            [values[f"c{i}"] for i in range(1, 5)], [values[f"s{j}"] for j in range(1, 4)])
+        self.assertEqual(verdict["test"]["u"]["exact"], str(expected.u))
+        self.assertEqual(verdict["test"]["p"]["exact"], str(expected.p))
+        self.assertEqual(document["current"]["kind"], "post-trigger descriptive update")
+        self.assertIn("POST-TRIGGER DESCRIPTIVE UPDATE", stdout)
+
+    def test_freeze_window_drift_fails_loudly_and_writes_nothing(self):
+        out_dir = self._out_dir("drift-out")
+        code, _, stderr = run_cli(cli_argv(self.drift, out_dir))
+        self.assertEqual(code, 1)
+        self.assertIn("freeze-window set", stderr)
+        self.assertIn("{1101}", stderr)
+        self.assertIn("{1101, 1201}", stderr)
+        self.assertFalse(out_dir.exists() and any(out_dir.iterdir()))
+
+    def test_missing_runs_db_is_an_unreadable_source(self):
+        missing = Path(self.tmp.name) / "nowhere" / "runs.db"
+        code, _, stderr = run_cli(cli_argv(self.unmet, self._out_dir("missing-out"),
+                                           runs_db=missing))
+        self.assertEqual(code, 3)
+        self.assertIn(str(missing), stderr)
+
+    def test_as_of_after_the_snapshot_is_refused(self):
+        code, _, stderr = run_cli(cli_argv(self.unmet, self._out_dir("late-out"),
+                                           as_of="2026-10-11T00:00:00Z"))
+        self.assertEqual(code, 2)
+        self.assertIn("as-of", stderr)
+
+    def test_existing_record_is_never_overwritten(self):
+        out_dir = self._out_dir("kept-out")
+        out_dir.mkdir()
+        (out_dir / "report.txt").write_text("committed record\n")
+        code, _, _ = run_cli(cli_argv(self.unmet, out_dir))
+        self.assertEqual(code, 2)
+        self.assertEqual((out_dir / "report.txt").read_text(), "committed record\n")
+
+    def test_default_out_dir_is_inside_the_analysis_results(self):
+        as_of = datetime(2026, 10, 10, 20, 0, tzinfo=UTC)
+        out_dir = e3_analysis.default_out_dir(as_of)
+        self.assertEqual(out_dir, ANALYSIS_DIR / "results" / "20261010T200000Z")
+        self.assertNotIn("tmp", out_dir.resolve().parts)
 
 
 if __name__ == "__main__":
