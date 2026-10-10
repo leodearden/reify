@@ -37,14 +37,18 @@ fn bin_op<'e>(expr: &'e Expr, expected: &str) -> (&'e Expr, &'e Expr) {
 }
 
 #[test]
-fn quantifier_predicate_lowers_with_whole_conjunction() {
-    let value = sole_let_value("let r = forall v in xs: v > 0 and v < 3");
-    let ExprKind::Quantifier { predicate, .. } = &value.kind else {
-        panic!("expected Quantifier, got {:?}", value.kind);
-    };
-    let (left, right) = bin_op(predicate, "and");
-    bin_op(left, ">");
-    bin_op(right, "<");
+fn quantifier_predicate_lowers_with_whole_keyword_chain() {
+    for q in ["forall", "exists"] {
+        for op in ["and", "or", "implies"] {
+            let value = sole_let_value(&format!("let r = {q} v in xs: v > 0 {op} v < 3"));
+            let ExprKind::Quantifier { predicate, .. } = &value.kind else {
+                panic!("{q} … {op}: expected Quantifier, got {:?}", value.kind);
+            };
+            let (left, right) = bin_op(predicate, op);
+            bin_op(left, ">");
+            bin_op(right, "<");
+        }
+    }
 }
 
 #[test]

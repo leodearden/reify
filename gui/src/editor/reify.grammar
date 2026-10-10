@@ -1970,8 +1970,9 @@ ReservedWord {
   // `|x| a and b` is `|x| (a and b)`, never `(|x| a) and b`, and
   // `forall v in vs : a and b` binds the same way. This port matches by listing
   // `conditional`, `quantifier` and `lambda` below `kwImplies`. Ruling:
-  // docs/reify-language-spec.md §16. The two below never compete with each other
-  // (different leading tokens), so their relative order here is arbitrary.
+  // docs/reify-language-spec.md §16. `quantifier` and `lambda` never compete
+  // with each other (different leading tokens), so their relative order here is
+  // arbitrary.
   quantifier @right,
   lambda @right
 }
