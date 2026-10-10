@@ -407,6 +407,133 @@ fn e2e_vm_probe_reads_back_tet_volume_mesh_from_demanded_body() {
     );
 }
 
+/// The `volume_mesh_box.ri` shape plus a tolerance contract, so the
+/// VolumeMesh-demanded `body` terminal is written to the realization cache.
+///
+/// The terminal cache insert is gated on `is_terminal_realization &&
+/// demanded_tol.is_some() && realization_name.is_some()`; the
+/// `RepresentationWithin` bound declared inside the SAME structure is what
+/// makes `demanded_tol` Some (the shape proven in
+/// `solve_elastic_static_body_e2e.rs::NON_PRISMATIC_ONE_CASE_BODY_SOURCE`).
+#[cfg(has_gmsh)]
+const CACHED_VOLUME_MESH_BOX_SOURCE: &str = r#"
+@optimized("test::vm-demand-probe")
+fn vm_probe(g: Geometry) -> Int {
+    0
+}
+
+structure FeaMeshTolerance {
+    param nominal : Real = 1.0
+}
+
+structure CachedVolumeMeshBox {
+    param mesh_tol : FeaMeshTolerance = FeaMeshTolerance()
+    constraint RepresentationWithin(mesh_tol, 100um)
+
+    param width: Length = 10mm
+    param depth: Length = 10mm
+    param height: Length = 10mm
+
+    let body = box(width, depth, height)
+    let probe = vm_probe(body)
+}
+"#;
+
+/// The STEP text with the header line that carries the write timestamp
+/// removed, so two exports of the same body compare equal.
+#[cfg(has_gmsh)]
+fn step_without_timestamp(step: &[u8]) -> String {
+    String::from_utf8_lossy(step)
+        .lines()
+        .filter(|line| !line.contains("FILE_NAME("))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// `cfg(has_gmsh)`: a cache-served VolumeMesh terminal exports the same body
+/// the cold build exported.
+///
+/// The cold build meshes the OCCT `box` into a gmsh VolumeMesh and caches that
+/// terminal; Phase-B egress reads the body the VolumeMesh was meshed from. The
+/// warm build is served from the realization cache without the VolumeMesh edge
+/// running, so it must find the same meshed-from body rather than handing the
+/// gmsh VolumeMesh to the exporter.
+#[cfg(has_gmsh)]
+#[test]
+fn cache_served_volume_mesh_terminal_exports_the_body_the_cold_build_exported() {
+    use reify_core::{KernelId, Severity};
+    use reify_ir::{ExportFormat, ReprKind};
+
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!(
+            "skipping cache_served_volume_mesh_terminal_exports_the_body_the_cold_build_exported: \
+             OCCT not available (no BRep kernel to build the box body)"
+        );
+        return;
+    }
+
+    let compiled = reify_test_support::parse_and_compile_with_stdlib(CACHED_VOLUME_MESH_BOX_SOURCE);
+
+    let mut engine = make_occt_engine();
+    engine.register_volume_mesh_demand("test::vm-demand-probe");
+    assert!(
+        engine.ensure_gmsh_kernel(),
+        "ensure_gmsh_kernel() must acquire the gmsh adapter from the registry"
+    );
+
+    let before = engine.cache_stats().realization_entries;
+    let cold = engine.build(&compiled, ExportFormat::Step);
+    let mid = engine.cache_stats().realization_entries;
+    let warm = engine.build(&compiled, ExportFormat::Step);
+    let after = engine.cache_stats().realization_entries;
+
+    assert!(
+        mid - before >= 1,
+        "precondition: the cold build must cache the toleranced VolumeMesh terminal; \
+         realization_entries went {before} -> {mid}"
+    );
+    assert_eq!(
+        after, mid,
+        "precondition: the warm build must be cache-served and realize nothing new"
+    );
+    let provenance = engine.realization_kernel_provenance();
+    assert!(
+        provenance
+            .iter()
+            .any(|p| p.repr == ReprKind::VolumeMesh && p.kernel == KernelId::Gmsh),
+        "precondition: after the warm build a (VolumeMesh, Gmsh) realization must \
+         still be reported. provenance: {:?}",
+        provenance
+            .iter()
+            .map(|p| (p.realization.clone(), p.repr, p.kernel))
+            .collect::<Vec<_>>()
+    );
+
+    let mut exports = Vec::new();
+    for (label, result) in [("cold", &cold), ("warm", &warm)] {
+        let errors: Vec<_> = result
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Error)
+            .map(|d| d.message.clone())
+            .collect();
+        assert!(
+            errors.is_empty(),
+            "the {label} build must report no Error diagnostic. got: {errors:?}"
+        );
+        let bytes = result
+            .geometry_output
+            .as_deref()
+            .filter(|bytes| !bytes.is_empty())
+            .unwrap_or_else(|| panic!("the {label} build must export non-empty STEP geometry"));
+        exports.push(step_without_timestamp(bytes));
+    }
+    assert_eq!(
+        exports[0], exports[1],
+        "the cache-served build must export the same body the cold build exported"
+    );
+}
+
 /// `cfg(not(has_gmsh))`: skip-stub.
 ///
 /// When the gmsh adapter is absent (no `has_gmsh` cfg), the registry does not

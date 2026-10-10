@@ -112,6 +112,7 @@ pub(crate) mod structural_query;
 mod engine_tolerance;
 mod geometry_ops;
 pub(crate) mod kernel_owner;
+pub(crate) mod volume_mesh_sources;
 #[cfg(test)]
 mod registry_drift_tests;
 // Task 6013 (registry ψ): the executed static-vs-runtime parity harness for the
