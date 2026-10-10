@@ -46,6 +46,8 @@ mod assoc_type_consumption_tests;
 mod auto_binding_sites_grammar_tests;
 #[path = "harness_syntax/auto_type_arg_tests.rs"]
 mod auto_type_arg_tests;
+#[path = "harness_syntax/binder_body_precedence_tests.rs"]
+mod binder_body_precedence_tests;
 #[path = "harness_syntax/boundary1_producer.rs"]
 mod boundary1_producer;
 #[path = "harness_syntax/cfg_import_attachment_tests.rs"]
