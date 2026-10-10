@@ -267,6 +267,36 @@ impl<'a> RealizationOutputs<'a> {
     }
 }
 
+/// What [`Engine::execute_realization_ops`] hands back for its caller to apply
+/// after the call — writes that need state the executor cannot borrow.
+#[derive(Default)]
+struct ExecutedRealization {
+    /// Task 4744 β step-20: the source bundle the NEXT tick's morph needs, for
+    /// the caller to store in `Engine::morph_source`. `Some` only when a morph
+    /// producer is active AND this realization produced a VolumeMesh.
+    morph_source: Option<crate::morph_producer::MorphSource>,
+    /// The handle the VolumeMesh edge meshed from, `Some` exactly when that edge
+    /// appended a gmsh VolumeMesh as this realization's terminal. The VolumeMesh
+    /// is an extra representation for an FEA consumer; the body's geometry is
+    /// still this handle, so Phase-B egress reads it ([`record_phase_b_terminal`]).
+    volume_mesh_source: Option<KernelHandle>,
+}
+
+/// Record a realization's Phase-B terminal — the handle export, the tessellate
+/// walk and `distance_between_placed` read for it — into its `terminal_handles`
+/// slot: the handle the VolumeMesh edge meshed from when that edge ran, else the
+/// realization's last step handle. `realization_handles` is the realization's
+/// own slice of `step_handles`; when it is empty the slot is left untouched.
+fn record_phase_b_terminal(
+    slot: &mut Option<KernelHandle>,
+    realization_handles: &[KernelHandle],
+    volume_mesh_source: Option<KernelHandle>,
+) {
+    if let Some(&last) = realization_handles.last() {
+        *slot = Some(volume_mesh_source.unwrap_or(last));
+    }
+}
+
 /// Bundle of the positional inputs `Engine::execute_realization_ops` reads
 /// from. Input-side twin of [`RealizationOutputs`] above (task 3119 → task
 /// 5054 ζ): together the two structs are the executor's full parameter
@@ -3733,7 +3763,7 @@ impl Engine {
                         source: self.morph_source.get(&realization.id),
                         new_graph: self.eval_state.as_ref().map(|s| &s.snapshot.graph),
                     };
-                    let morph_source_out = Engine::execute_realization_ops(
+                    let executed = Engine::execute_realization_ops(
                         RealizationOpsInput::new(
                             &mut self.geometry_kernels,
                             &registry_borrowed,
@@ -3798,11 +3828,12 @@ impl Engine {
                         ),
                     );
                     // θ (task 4361): record this realization's terminal handle
-                    // by (t_idx, r_idx) for the Phase-B export walk, mirroring
-                    // build()'s terminal_handles bookkeeping (:2803).
-                    if step_handles.len() > handle_start_snap {
-                        terminal_handles[t_idx][r_idx] = step_handles.last().copied();
-                    }
+                    // by (t_idx, r_idx) for the Phase-B export walk.
+                    record_phase_b_terminal(
+                        &mut terminal_handles[t_idx][r_idx],
+                        &step_handles[handle_start_snap..],
+                        executed.volume_mesh_source,
+                    );
                     // Step-10 (task ε / 3436): persist the executor's terminal
                     // [`ReprKind`] into the snapshot graph node. The
                     // `eval_state` field is disjoint from `geometry_kernels`,
@@ -3863,7 +3894,7 @@ impl Engine {
                     // bundle (returned by the executor) for the NEXT tick's
                     // morph. `store_morph_source` needs `&mut self`; safe here —
                     // the executor's disjoint field borrows have all released.
-                    if let Some(src) = morph_source_out {
+                    if let Some(src) = executed.morph_source {
                         self.store_morph_source(realization.id.clone(), src);
                     }
                 }
@@ -4651,7 +4682,7 @@ impl Engine {
                         source: self.morph_source.get(&realization.id),
                         new_graph: self.eval_state.as_ref().map(|s| &s.snapshot.graph),
                     };
-                    let morph_source_out = Engine::execute_realization_ops(
+                    let executed = Engine::execute_realization_ops(
                         RealizationOpsInput::new(
                             &mut self.geometry_kernels,
                             &registry_borrowed,
@@ -4721,11 +4752,12 @@ impl Engine {
                         ),
                     );
                     // T7 (task 3905): record this realization's terminal handle
-                    // by (t_idx, r_idx) for the Phase-B export walk.  Mirrors
-                    // the tessellate_from_values Phase-A bookkeeping.
-                    if step_handles.len() > handle_start {
-                        terminal_handles[t_idx][r_idx] = step_handles.last().copied();
-                    }
+                    // by (t_idx, r_idx) for the Phase-B export walk.
+                    record_phase_b_terminal(
+                        &mut terminal_handles[t_idx][r_idx],
+                        &step_handles[handle_start..],
+                        executed.volume_mesh_source,
+                    );
                     // Step-10 (task ε / 3436): persist the executor's terminal
                     // [`ReprKind`] into the snapshot graph node. See the
                     // `build_snapshot` mirror for the full rationale; both
@@ -4780,7 +4812,7 @@ impl Engine {
                     // (returned by the executor) for the NEXT tick's morph.
                     // `store_morph_source` needs `&mut self`; safe here — the
                     // executor's disjoint field borrows have all released.
-                    if let Some(src) = morph_source_out {
+                    if let Some(src) = executed.morph_source {
                         self.store_morph_source(realization.id.clone(), src);
                     }
                     // Task 4358 ε: per-realization geometry-handle hydration slice
@@ -5745,7 +5777,7 @@ impl Engine {
                 let mut kernel_error: Option<ErrorRef> = None;
                 let mut produced_repr_out: Option<ReprKind> = None;
                 let handle_start = step_handles.len();
-                Engine::execute_realization_ops(
+                let executed = Engine::execute_realization_ops(
                     RealizationOpsInput::new(
                         &mut self.geometry_kernels,
                         &registry_borrowed,
@@ -5799,9 +5831,11 @@ impl Engine {
                         &mut produced_repr_out,
                     ),
                 );
-                if step_handles.len() > handle_start {
-                    terminal_handles[t_idx][r_idx] = step_handles.last().copied();
-                }
+                record_phase_b_terminal(
+                    &mut terminal_handles[t_idx][r_idx],
+                    &step_handles[handle_start..],
+                    executed.volume_mesh_source,
+                );
                 // Kernel errors are recorded in diagnostics by execute_realization_ops;
                 // the distance query will simply find no handle for failed realizations.
                 let _ = kernel_error;
@@ -6845,7 +6879,7 @@ impl Engine {
                     .get(&r_idx)
                     .copied()
                     .unwrap_or(ReprKind::BRep);
-                Engine::execute_realization_ops(
+                let executed = Engine::execute_realization_ops(
                     RealizationOpsInput::new(
                         geometry_kernels,
                         registry,
@@ -6907,9 +6941,11 @@ impl Engine {
                 // is `Copy`; `step_handles` outlives this iteration so the
                 // handle stays valid for Phase B (the kernel sessions in
                 // `geometry_kernels` live for the whole call).
-                if step_handles.len() > handle_start {
-                    terminal_handles[t_idx][r_idx] = step_handles.last().copied();
-                }
+                record_phase_b_terminal(
+                    &mut terminal_handles[t_idx][r_idx],
+                    &step_handles[handle_start..],
+                    executed.volume_mesh_source,
+                );
             }
             // Step-8 (task ε / 3436): re-borrow the default kernel from the
             // map for post-process — see `build` / `build_snapshot` mirror.
@@ -7390,12 +7426,7 @@ impl Engine {
     fn execute_realization_ops(
         input: RealizationOpsInput<'_>,
         mut outputs: RealizationOutputs<'_>,
-        // Task 4744 β step-20: returns the source-bundle stash for this
-        // realization (the freshly-produced VolumeMesh + a snapshot of the BRep
-        // it was meshed from) when a morph producer is active, so the caller can
-        // store it for the NEXT tick's morph. `None` whenever no producer is
-        // registered or no VolumeMesh was produced (every off-build call site).
-    ) -> Option<crate::morph_producer::MorphSource> {
+    ) -> ExecutedRealization {
         let RealizationOpsInput {
             kernels,
             registry,
@@ -7432,7 +7463,7 @@ impl Engine {
             is_terminal_realization,
             &mut outputs,
         ) {
-            return None;
+            return ExecutedRealization::default();
         }
         let RealizationOutputs {
             step_handles,
@@ -7451,6 +7482,9 @@ impl Engine {
         // so every `disabled()` call site (no producer) returns `None` and is
         // byte-identical. Populated in the success branch's VolumeMesh dispatch.
         let mut morph_source_stash: Option<crate::morph_producer::MorphSource> = None;
+        // Set by the VolumeMesh edge, at the moment it appends a gmsh VolumeMesh,
+        // to the handle it meshed from (see `ExecutedRealization`).
+        let mut volume_mesh_source: Option<KernelHandle> = None;
         // Task 4050 step-8: the per-op `available` set is no longer a hoisted
         // loop-invariant `{BRep}` constant — it is derived per op from the
         // reprs of that op's resolved input handles (`realization_step_reprs`,
@@ -9128,6 +9162,8 @@ impl Engine {
             // (`build` / `build_snapshot`) then sets `produced_kernel` from
             // `step_handles.last().kernel` and `realization_handles[node]` from
             // the same handle, so the read side (`volume_mesh()`) is unchanged.
+            // Phase-B egress instead reads the handle the edge meshed from,
+            // which each push records in `volume_mesh_source`.
             //
             // Element order is fixed to P1 for α (design_decision 6);
             // consumer-driven order is the FEA/morph arm's concern. The
@@ -9167,9 +9203,10 @@ impl Engine {
             // (byte-identical to pre-step-20). Honest-degrade to `None` on any
             // extraction failure.
             //
-            // (kernel registry name, face handles, edge handles, vertex handles);
-            // aliased to tame clippy::type_complexity.
+            // (terminal handle, kernel registry name, face handles, edge handles,
+            // vertex handles); aliased to tame clippy::type_complexity.
             type BRepTerminalSlices = (
+                KernelHandle,
                 String,
                 Vec<GeometryHandleId>,
                 Vec<GeometryHandleId>,
@@ -9189,7 +9226,7 @@ impl Engine {
                             let faces = src.extract_faces(terminal.id).unwrap_or_default();
                             let edges = src.extract_edges(terminal.id).unwrap_or_default();
                             let vertices = src.extract_vertices(terminal.id).unwrap_or_default();
-                            Some((terminal_name, faces, edges, vertices))
+                            Some((terminal, terminal_name, faces, edges, vertices))
                         }
                         None => None,
                     }
@@ -9197,7 +9234,7 @@ impl Engine {
                     None
                 };
             // ── Morph arm: fires only on the warm path (a prior source exists) ─
-            if let Some((terminal_name, faces, edges, vertices)) = brep_terminal.as_ref()
+            if let Some((terminal, terminal_name, faces, edges, vertices)) = brep_terminal.as_ref()
                 && let (Some(producer), Some(source), Some(new_graph)) =
                     (morph_io.producer, morph_io.source, morph_io.new_graph)
                 && let Some(kernel) = kernels.get(terminal_name.as_str())
@@ -9232,6 +9269,7 @@ impl Engine {
                                         kernel: KernelId::Gmsh,
                                         id,
                                     });
+                                    volume_mesh_source = Some(*terminal);
                                     last_produced_repr = Some(ReprKind::VolumeMesh);
                                     morph_stored = true;
                                     produced_vm = Some(stash_vm);
@@ -9388,6 +9426,7 @@ impl Engine {
                                                 kernel: KernelId::Gmsh,
                                                 id,
                                             });
+                                            volume_mesh_source = Some(terminal);
                                             last_produced_repr = Some(ReprKind::VolumeMesh);
                                             stored = true;
                                             produced_vm = Some(stash_vm);
@@ -9448,6 +9487,7 @@ impl Engine {
                                                 kernel: KernelId::Gmsh,
                                                 id,
                                             });
+                                            volume_mesh_source = Some(terminal);
                                             last_produced_repr = Some(ReprKind::VolumeMesh);
                                             produced_vm = Some(stash_vm);
                                         }
@@ -9574,7 +9614,7 @@ impl Engine {
             // clone cheaply (persistent maps / small records). Returned to the
             // caller, which writes it into `Engine::morph_source` (needs
             // `&mut self`, unavailable here).
-            if let (Some((_, faces, edges, vertices)), Some(vm), Some(new_graph)) =
+            if let (Some((_, _, faces, edges, vertices)), Some(vm), Some(new_graph)) =
                 (brep_terminal, produced_vm, morph_io.new_graph)
             {
                 morph_source_stash = Some(crate::morph_producer::MorphSource {
@@ -9680,10 +9720,10 @@ impl Engine {
                 }
             }
         }
-        // Task 4744 β step-20: hand the caller the source-bundle stash (Some only
-        // when a morph producer is active AND this realization produced a
-        // VolumeMesh; None on every off-build/no-producer call site).
-        morph_source_stash
+        ExecutedRealization {
+            morph_source: morph_source_stash,
+            volume_mesh_source,
+        }
     }
 
     /// Returns the `VersionId` of the current eval round — the id stamped into
