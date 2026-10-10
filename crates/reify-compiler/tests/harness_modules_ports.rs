@@ -50,6 +50,8 @@ mod module_dag_tests;
 mod module_decl_remedy_tests;
 #[path = "harness_modules_ports/name_env_policy_tests.rs"]
 mod name_env_policy_tests;
+#[path = "harness_modules_ports/ns_p4_parity_tests.rs"]
+mod ns_p4_parity_tests;
 #[path = "harness_modules_ports/occurrence_compile_tests.rs"]
 mod occurrence_compile_tests;
 #[path = "harness_modules_ports/pin_cell_id_namespace_tests.rs"]
