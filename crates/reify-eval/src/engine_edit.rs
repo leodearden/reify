@@ -8010,4 +8010,49 @@ structure GrowColl {
              sentinel survives here the reset was dropped entirely rather than moved"
         );
     }
+
+    /// A realization map `{entity#0 → node}` whose node hashes derive from
+    /// `(entity, salt)`, so the same ids can carry moved content.
+    fn realizations_of(
+        entities: &[(&str, &str)],
+    ) -> PersistentMap<reify_core::RealizationNodeId, crate::graph::RealizationNodeData> {
+        let mut map = PersistentMap::default();
+        for (entity, salt) in entities {
+            let id = reify_core::RealizationNodeId::new(*entity, 0);
+            map.insert(
+                id.clone(),
+                crate::graph::RealizationNodeData {
+                    id: id.clone(),
+                    operations: vec![],
+                    content_hash: ContentHash::of_str(&format!("{id}:{salt}")),
+                    produced_repr: reify_ir::ReprKind::BRep,
+                    produced_kernel: None,
+                    geometry_cell: Some(ValueCellId::new(*entity, "body")),
+                    input_cone_hash: Some(cone_hash_of(salt)),
+                },
+            );
+        }
+        map
+    }
+
+    fn cone_hash_of(salt: &str) -> [u8; 32] {
+        let mut cone = [0u8; 32];
+        cone[..16].copy_from_slice(&ContentHash::of_str(salt).0.to_le_bytes());
+        cone
+    }
+
+    #[test]
+    #[should_panic(expected = "edit_param must not add or remove a realization")]
+    fn edit_param_realization_check_rejects_a_same_count_swap() {
+        let prior = realizations_of(&[("A", "v1"), ("B", "v1")]);
+        let current = realizations_of(&[("A", "v1"), ("C", "v1")]);
+        super::assert_realization_ids_unchanged(&prior, &current);
+    }
+
+    #[test]
+    fn edit_param_realization_check_accepts_the_same_ids_with_moved_content() {
+        let prior = realizations_of(&[("A", "v1"), ("B", "v1")]);
+        let current = realizations_of(&[("A", "v1"), ("B", "v2")]);
+        super::assert_realization_ids_unchanged(&prior, &current);
+    }
 }
