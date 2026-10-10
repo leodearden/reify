@@ -83,6 +83,7 @@
 //! | `multi_case_non_prismatic_body_caches_one_realization_for_both_cases` | 1 |
 //! | `scalar_dims_solve_still_yields_synthetic_854_grid` | 0 — kernel-less `eval` |
 //! | `body_adaptive_solve_runs_the_gmsh_realized_localized_lane` | 1 |
+//! | `body_adaptive_solve_reports_the_refined_mesh_not_the_seed` | 1 |
 //! | `realized_cylinder_mesh_covers_its_own_aabb` | 1, but `#[ignore]` — costs the gate nothing |
 //!
 //! EXACTLY ONE test does two full builds, not the three the profiling task was
@@ -180,11 +181,16 @@ fn extract_field(result: &reify_ir::Value, field: &str) -> Option<reify_ir::Valu
 }
 
 /// Extract the `SampledField` behind a named `Value::Field { Sampled }` in a
-/// result. Panics with a descriptive message if the field is absent or not a
-/// Sampled field (the body/scalar solve always emits Sampled displacement).
+/// result, unwrapping the `Option` that carries `error_indicator`. Panics with
+/// a descriptive message if the field is absent or not a Sampled field (the
+/// body/scalar solve always emits Sampled displacement).
 fn sampled_field(result: &reify_ir::Value, field: &str) -> reify_ir::SampledField {
     let field_val =
         extract_field(result, field).unwrap_or_else(|| panic!("field '{field}' not found in result"));
+    let field_val = match field_val {
+        reify_ir::Value::Option(Some(inner)) => *inner,
+        other => other,
+    };
     match &field_val {
         reify_ir::Value::Field { source, lambda, .. } => {
             assert!(
@@ -2399,6 +2405,114 @@ fn body_adaptive_solve_runs_the_gmsh_realized_localized_lane() {
         report.elements_after,
         localized.message
     );
+}
+
+/// `cfg(has_gmsh)`: once the gmsh-realized lane has remeshed, the result
+/// reports the REFINED mesh's answer on the SEED grid (task 8246).
+///
+/// One body, two solves: `refined` (up to two remeshes) and `seed` (none).
+/// Both consume one realization, so they share the seed mesh and therefore the
+/// result grid. That is why this is one two-cell fixture and not two builds:
+/// the plain gmsh seed producer is not bit-stable across separate
+/// realizations (task 7414).
+#[cfg(has_gmsh)]
+#[test]
+fn body_adaptive_solve_reports_the_refined_mesh_not_the_seed() {
+    use reify_core::ValueCellId;
+    use reify_ir::Value;
+
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!(
+            "skipping body_adaptive_solve_reports_the_refined_mesh_not_the_seed: \
+             OCCT not available (no BRep kernel to build the box body)"
+        );
+        return;
+    }
+
+    const STRUCTURE: &str = "FeaBodyCantileverAdaptiveRefinedVsSeed";
+    let (_engine, build_result) = build_realized(
+        include_str!("fixtures/fea_body_cantilever_adaptive_refined_vs_seed.ri"),
+        "adaptive refined-vs-seed body",
+        register_elastic_static_body_trampoline,
+    );
+    let cell = |name: &str| {
+        let value: &Value = build_result
+            .values
+            .get(&ValueCellId::new(STRUCTURE, name))
+            .unwrap_or_else(|| panic!("cell {STRUCTURE}.{name} not found in build values"));
+        assert!(
+            matches!(value, Value::StructureInstance(_) | Value::Map(_)),
+            "{name} must be a populated ElasticResult, got: {value:?} — a pre-hydration \
+             Failed/Undef here means the redispatch did not deliver the realized mesh"
+        );
+        value
+    };
+    let (refined, seed) = (cell("refined"), cell("seed"));
+
+    // Each cell emits a localized Info; only a run that remeshed carries the
+    // refinement-count marker.
+    let localized = build_result
+        .diagnostics
+        .iter()
+        .find(|d| d.message.contains(LocalizedReport::REFINES_MARKER))
+        .unwrap_or_else(|| {
+            panic!(
+                "expected the `refined` cell's localized Info reporting its remeshes. \
+                 diagnostics: {:?}",
+                build_result.diagnostics
+            )
+        });
+    assert!(
+        LocalizedReport::parse(&localized.message).refines >= 1,
+        "an unreachable target must buy at least one remesh (diagnostic: {})",
+        localized.message
+    );
+
+    assert_ne!(
+        extract_field(refined, "max_von_mises"),
+        extract_field(seed, "max_von_mises"),
+        "a remeshed adaptive solve must report the refined mesh's max_von_mises, not the seed's"
+    );
+    for name in ["displacement", "stress", "error_indicator"] {
+        assert!(
+            sampled_field(refined, name).grid_metadata_eq(&sampled_field(seed, name)),
+            "{name}: both cells must sample the one seed grid. If not, check first that \
+             both consumed ONE realization (task 7414)"
+        );
+    }
+    let data_bits =
+        |sf: &reify_ir::SampledField| -> Vec<u64> { sf.data.iter().map(|v| v.to_bits()).collect() };
+    assert_ne!(
+        data_bits(&sampled_field(refined, "displacement")),
+        data_bits(&sampled_field(seed, "displacement")),
+        "a remeshed adaptive solve must report the refined mesh's displacement, not the seed's"
+    );
+
+    let (error_indicator, stress) = (
+        sampled_field(refined, "error_indicator"),
+        sampled_field(refined, "stress"),
+    );
+    assert_eq!(
+        error_indicator.data.len() * 9,
+        stress.data.len(),
+        "error_indicator (stride 1) must sample stress's (stride 9) grid"
+    );
+    for (i, (stress_at, &indicator)) in stress
+        .data
+        .chunks_exact(9)
+        .zip(&error_indicator.data)
+        .enumerate()
+    {
+        assert_eq!(
+            indicator.is_nan(),
+            stress_at.iter().any(|v| !v.is_finite()),
+            "error_indicator[{i}] must be NaN exactly where stress is (out of solid)"
+        );
+        assert!(
+            indicator.is_nan() || indicator >= 0.0,
+            "error_indicator[{i}] = {indicator} must be a non-negative norm"
+        );
+    }
 }
 
 /// The three counts the localized lane's Info diagnostic reports about the
