@@ -555,6 +555,24 @@ pub(crate) fn diff_realizations(
     })
 }
 
+/// `edit_param`'s debug-only realization invariant (γ, #4730): the edit may
+/// move a realization's content but never its identity, because the eviction
+/// set it computes has no removed term. Compares id SETS, so a same-count
+/// swap is caught; content moves are the classifier's business, not this
+/// check's.
+#[cfg(debug_assertions)]
+fn assert_realization_ids_unchanged(
+    prior: &PersistentMap<RealizationNodeId, crate::graph::RealizationNodeData>,
+    current: &PersistentMap<RealizationNodeId, crate::graph::RealizationNodeData>,
+) {
+    let (_changed, added, removed) = diff_nodes(prior, current, |n| n.content_hash);
+    assert!(
+        added.is_empty() && removed.is_empty(),
+        "edit_param must not add or remove a realization: its eviction set has no \
+         removed term; added {added:?}, removed {removed:?}"
+    );
+}
+
 /// Seed the realization-driven dirty cone from `seeds` — the changed
 /// realizations plus the `Sub` consumers the reverse index cannot link
 /// ([`realization_cone_seeds`]) — and drop the cache entry of every node it
@@ -1181,8 +1199,10 @@ impl Engine {
         // Clone snapshot and extract references (O(1) via PersistentMap)
         let parent_id = state.snapshot.id;
         // γ (#4730): `edit_param` neither adds nor removes a realization, so
-        // its eviction set has no removed term. Asserted at the compare site.
-        let prior_realization_count = state.snapshot.graph.realizations.len();
+        // its eviction set has no removed term. Asserted, by id set, at the
+        // compare site.
+        #[cfg(debug_assertions)]
+        let prior_realizations = state.snapshot.graph.realizations.clone();
         let mut new_snapshot = state.snapshot.clone();
 
         // Compute dirty cone and eval set while state borrow is active
@@ -2956,12 +2976,8 @@ impl Engine {
             // γ (#4730, PRD D4): the collection re-elaboration above rewrites
             // value cells only, so no realization was removed and the removed
             // term is empty.
-            debug_assert_eq!(
-                graph.realizations.len(),
-                prior_realization_count,
-                "edit_param must not add or remove a realization: its eviction \
-                 set has no removed term"
-            );
+            #[cfg(debug_assertions)]
+            assert_realization_ids_unchanged(&prior_realizations, &graph.realizations);
             let seeds = realization_cone_seeds(&self.last_changed_realizations, false, graph);
             let cone = invalidate_realization_dirty_cone(
                 &mut self.cache,
@@ -8011,48 +8027,58 @@ structure GrowColl {
         );
     }
 
-    /// A realization map `{entity#0 → node}` whose node hashes derive from
-    /// `(entity, salt)`, so the same ids can carry moved content.
-    fn realizations_of(
-        entities: &[(&str, &str)],
-    ) -> PersistentMap<reify_core::RealizationNodeId, crate::graph::RealizationNodeData> {
-        let mut map = PersistentMap::default();
-        for (entity, salt) in entities {
-            let id = reify_core::RealizationNodeId::new(*entity, 0);
-            map.insert(
-                id.clone(),
-                crate::graph::RealizationNodeData {
-                    id: id.clone(),
-                    operations: vec![],
-                    content_hash: ContentHash::of_str(&format!("{id}:{salt}")),
-                    produced_repr: reify_ir::ReprKind::BRep,
-                    produced_kernel: None,
-                    geometry_cell: Some(ValueCellId::new(*entity, "body")),
-                    input_cone_hash: Some(cone_hash_of(salt)),
-                },
-            );
+    /// `assert_realization_ids_unchanged` exists only in debug builds, so its
+    /// pins do too.
+    #[cfg(debug_assertions)]
+    mod realization_id_check {
+        use reify_core::{ContentHash, RealizationNodeId, ValueCellId};
+        use reify_ir::PersistentMap;
+
+        use crate::graph::RealizationNodeData;
+
+        /// A realization map `{entity#0 → node}` whose node hashes derive from
+        /// `(entity, salt)`, so the same ids can carry moved content.
+        fn realizations_of(
+            entities: &[(&str, &str)],
+        ) -> PersistentMap<RealizationNodeId, RealizationNodeData> {
+            let mut map = PersistentMap::default();
+            for (entity, salt) in entities {
+                let id = RealizationNodeId::new(*entity, 0);
+                map.insert(
+                    id.clone(),
+                    RealizationNodeData {
+                        id: id.clone(),
+                        operations: vec![],
+                        content_hash: ContentHash::of_str(&format!("{id}:{salt}")),
+                        produced_repr: reify_ir::ReprKind::BRep,
+                        produced_kernel: None,
+                        geometry_cell: Some(ValueCellId::new(*entity, "body")),
+                        input_cone_hash: Some(cone_hash_of(salt)),
+                    },
+                );
+            }
+            map
         }
-        map
-    }
 
-    fn cone_hash_of(salt: &str) -> [u8; 32] {
-        let mut cone = [0u8; 32];
-        cone[..16].copy_from_slice(&ContentHash::of_str(salt).0.to_le_bytes());
-        cone
-    }
+        fn cone_hash_of(salt: &str) -> [u8; 32] {
+            let mut cone = [0u8; 32];
+            cone[..16].copy_from_slice(&ContentHash::of_str(salt).0.to_le_bytes());
+            cone
+        }
 
-    #[test]
-    #[should_panic(expected = "edit_param must not add or remove a realization")]
-    fn edit_param_realization_check_rejects_a_same_count_swap() {
-        let prior = realizations_of(&[("A", "v1"), ("B", "v1")]);
-        let current = realizations_of(&[("A", "v1"), ("C", "v1")]);
-        super::assert_realization_ids_unchanged(&prior, &current);
-    }
+        #[test]
+        #[should_panic(expected = "edit_param must not add or remove a realization")]
+        fn edit_param_realization_check_rejects_a_same_count_swap() {
+            let prior = realizations_of(&[("A", "v1"), ("B", "v1")]);
+            let current = realizations_of(&[("A", "v1"), ("C", "v1")]);
+            super::super::assert_realization_ids_unchanged(&prior, &current);
+        }
 
-    #[test]
-    fn edit_param_realization_check_accepts_the_same_ids_with_moved_content() {
-        let prior = realizations_of(&[("A", "v1"), ("B", "v1")]);
-        let current = realizations_of(&[("A", "v1"), ("B", "v2")]);
-        super::assert_realization_ids_unchanged(&prior, &current);
+        #[test]
+        fn edit_param_realization_check_accepts_the_same_ids_with_moved_content() {
+            let prior = realizations_of(&[("A", "v1"), ("B", "v1")]);
+            let current = realizations_of(&[("A", "v1"), ("B", "v2")]);
+            super::super::assert_realization_ids_unchanged(&prior, &current);
+        }
     }
 }
