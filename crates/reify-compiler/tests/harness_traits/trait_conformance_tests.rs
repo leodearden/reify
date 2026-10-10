@@ -10,22 +10,24 @@ use reify_test_support::{
     try_get_value_cell_in_template,
 };
 
-/// Asserts `template` carries exactly one value cell for `member`, whatever its entity.
-/// `get_value_cell_in_template` cannot pin this count: it resolves the template's own
-/// `S.x` beside a trait-scoped `D.x` silently.
+/// Asserts `template` carries exactly one value cell for `member`, whatever its entity,
+/// and returns it. `get_value_cell_in_template` cannot pin this count: it resolves the
+/// template's own `S.x` beside a trait-scoped `D.x` silently.
 #[track_caller]
-fn assert_one_value_cell_named(template: &TopologyTemplate, member: &str) {
-    let ids: Vec<String> = template
+fn assert_one_value_cell_named<'t>(
+    template: &'t TopologyTemplate,
+    member: &str,
+) -> &'t ValueCellDecl {
+    let cells: Vec<&ValueCellDecl> = template
         .value_cells
         .iter()
         .filter(|vc| vc.id.member == member)
-        .map(|vc| vc.id.to_string())
         .collect();
-    assert_eq!(
-        ids.len(),
-        1,
-        "expected exactly 1 value cell '{member}', got {ids:?}"
-    );
+    let [cell] = cells.as_slice() else {
+        let ids: Vec<String> = cells.iter().map(|vc| vc.id.to_string()).collect();
+        panic!("expected exactly 1 value cell '{member}', got {ids:?}");
+    };
+    cell
 }
 
 /// Step 1: Compile a trait declaration produces CompiledTrait in CompiledModule.trait_defs.
@@ -206,7 +208,6 @@ structure def S : HasSize {
     assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
 
     // The template should contain a value cell for 'size' injected from the trait default.
-    // A missing cell panics here, naming every cell the template does carry.
     let size_cell = get_value_cell_in_template(&template, "size");
     assert_eq!(size_cell.kind, ValueCellKind::Param);
     assert_eq!(
@@ -579,8 +580,7 @@ structure def S : A {
     assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
 
     // x comes from D, reachable via both B->D and C->D paths; must appear exactly once.
-    assert_one_value_cell_named(&template, "x");
-    let x_cell = get_value_cell_in_template(&template, "x");
+    let x_cell = assert_one_value_cell_named(&template, "x");
     assert_eq!(
         x_cell.cell_type,
         Type::length(),
@@ -752,8 +752,7 @@ structure def S : A {
     assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
 
     // d comes from trait D, reachable via both B->D and C->D; must appear exactly once.
-    assert_one_value_cell_named(&template, "d");
-    let d_cell = get_value_cell_in_template(&template, "d");
+    let d_cell = assert_one_value_cell_named(&template, "d");
     assert_eq!(
         d_cell.cell_type,
         Type::length(),
@@ -832,12 +831,10 @@ structure def S : A {
     assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
 
     // x comes from D, reachable via B->E->D and C->D; must appear exactly once.
-    assert_one_value_cell_named(&template, "x");
-    let x_cell = get_value_cell_in_template(&template, "x");
+    let x_cell = assert_one_value_cell_named(&template, "x");
 
     // y comes from E, reachable via one path (B->E); must also appear exactly once.
-    assert_one_value_cell_named(&template, "y");
-    let y_cell = get_value_cell_in_template(&template, "y");
+    let y_cell = assert_one_value_cell_named(&template, "y");
 
     assert_eq!(
         x_cell.cell_type,
@@ -917,8 +914,7 @@ structure def S : A {
     );
 
     // Even with a type conflict error, dedup must still produce exactly one cell for 'x'.
-    assert_one_value_cell_named(&template, "x");
-    let x_cell = get_value_cell_in_template(&template, "x");
+    let x_cell = assert_one_value_cell_named(&template, "x");
     assert_eq!(
         x_cell.cell_type,
         Type::length(),
