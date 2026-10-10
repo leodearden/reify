@@ -34,6 +34,18 @@
 //! Each scenario also pins its expected HIT set, so the oracle can never pass
 //! vacuously by expecting a miss everywhere.
 //!
+//! # Consumer kinds
+//!
+//! Beyond param, guard-value, collection, source and tolerance edits, the
+//! corpus reaches a moved body's consumers through each path the eviction set
+//! is built from: a one-hop and a two-hop resolvable `Sub` chain (the dirty
+//! cone), a hierarchical chain of ambiguous `Sub` operands (dropped-operand
+//! seeding), and cross-entity and same-entity pattern ops. The converse of the
+//! ambiguous case — an ambiguous consumer that must HIT after an unrelated
+//! edit — over-evicts by design today (#8338). The conversion intermediate an
+//! evicted family owns is pinned separately, in
+//! `selective_eviction_conversion_intermediate`.
+//!
 //! The last test is not a regime pair: it pins the CLASSIFICATION the
 //! selective regime evicts by, across a value a build writes between edits.
 //!
@@ -43,6 +55,8 @@
 //!   `build_snapshot` neither the selector let (#7270) nor the cross-sub read
 //!   (#7300) resolves, so the fillet never dispatches, and `build()`
 //!   re-evaluates the module, so an edit never reaches its kernel.
+//! - A guard flip that ACTIVATES or DEACTIVATES a realization: guards do not
+//!   gate realization on main, so both regimes behave identically (#8450).
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::sync::{Arc, Mutex};
