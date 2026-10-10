@@ -3,4 +3,5 @@
 //! on that feature.
 
 mod fixture;
+mod gated_surface;
 mod manifest;
