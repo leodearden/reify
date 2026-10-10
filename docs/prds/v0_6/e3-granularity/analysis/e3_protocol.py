@@ -142,66 +142,67 @@ class Protocol:
         return None
 
 
-def _require(condition, invariant, expected, found):
+def require(condition, invariant, expected, found):
+    """Raise ProtocolViolation(invariant, expected, found) unless condition holds."""
     if not condition:
         raise ProtocolViolation(invariant, expected, found)
 
 
 def _check_unique_slugs(prds):
     slugs = [prd.slug for prd in prds]
-    _require(len(slugs) == len(set(slugs)), "unique PRD slugs",
-             "each slug once", ", ".join(sorted(slugs)))
+    require(len(slugs) == len(set(slugs)), "unique PRD slugs",
+            "each slug once", ", ".join(sorted(slugs)))
 
 
 def _check_prd_shape(prd):
     if prd.arm is Arm.COARSE:
-        _require(prd.stamped_range is None and prd.stamped_count is None,
-                 "coarse PRD shape", f"{prd.slug}: no stamped range",
-                 f"{prd.stamped_range} / {prd.stamped_count}")
+        require(prd.stamped_range is None and prd.stamped_count is None,
+                "coarse PRD shape", f"{prd.slug}: no stamped range",
+                f"{prd.stamped_range} / {prd.stamped_count}")
         return
-    _require(prd.stamped_range is not None and prd.stamped_count is not None
-             and not prd.coalesced and not prd.reused,
-             "standard PRD shape", f"{prd.slug}: a stamped range and count, no coarse ids",
-             f"range {prd.stamped_range}, count {prd.stamped_count}, "
-             f"coarse ids {format_ids(prd.coalesced | prd.reused)}")
-    _require(prd.stamped_count <= len(prd.stamped_ids()), "standard PRD shape",
-             f"{prd.slug}: count <= {len(prd.stamped_ids())} ids in range",
-             str(prd.stamped_count))
+    require(prd.stamped_range is not None and prd.stamped_count is not None
+            and not prd.coalesced and not prd.reused,
+            "standard PRD shape", f"{prd.slug}: a stamped range and count, no coarse ids",
+            f"range {prd.stamped_range}, count {prd.stamped_count}, "
+            f"coarse ids {format_ids(prd.coalesced | prd.reused)}")
+    require(prd.stamped_count <= len(prd.stamped_ids()), "standard PRD shape",
+            f"{prd.slug}: count <= {len(prd.stamped_ids())} ids in range",
+            str(prd.stamped_count))
 
 
 def _check_landing_floor(prd, k):
     if prd.arm is not Arm.COARSE:
         return
-    _require(len(prd.coalesced) >= k, "landing-floor feasibility",
-             f"{prd.slug}: at least k={k} coalesced tasks",
-             f"{len(prd.coalesced)} coalesced {format_ids(prd.coalesced)}")
+    require(len(prd.coalesced) >= k, "landing-floor feasibility",
+            f"{prd.slug}: at least k={k} coalesced tasks",
+            f"{len(prd.coalesced)} coalesced {format_ids(prd.coalesced)}")
 
 
 def _check_leaves_registered(prd):
     if prd.arm is Arm.COARSE:
-        _require(prd.close_leaf in prd.reused, "coarse close leaf is a reused singleton",
-                 f"{prd.slug}: close leaf in {format_ids(prd.reused)}", str(prd.close_leaf))
+        require(prd.close_leaf in prd.reused, "coarse close leaf is a reused singleton",
+                f"{prd.slug}: close leaf in {format_ids(prd.reused)}", str(prd.close_leaf))
         return
     leaves = prd.gate_leaves | {prd.close_leaf}
     outside = leaves - prd.stamped_ids()
-    _require(not outside, "standard gate/close leaf in stamped range",
-             f"{prd.slug}: leaves within {prd.stamped_range}", format_ids(outside))
+    require(not outside, "standard gate/close leaf in stamped range",
+            f"{prd.slug}: leaves within {prd.stamped_range}", format_ids(outside))
 
 
 def _check_freeze_set_disjoint(expected_freeze_set, carve_outs):
     overlap = expected_freeze_set & carve_outs
-    _require(not overlap, "freeze set disjoint from carve-outs",
-             f"no carve-out among {format_ids(expected_freeze_set)}", format_ids(overlap))
+    require(not overlap, "freeze set disjoint from carve-outs",
+            f"no carve-out among {format_ids(expected_freeze_set)}", format_ids(overlap))
 
 
 def _check_stratum_b_pair(protocol):
     by_slug = {prd.slug: prd for prd in protocol.prds}
     pair = tuple(by_slug.get(slug) for slug in protocol.stratum_b_pair)
-    _require(len(pair) == 2 and None not in pair
-             and pair[0].arm is Arm.COARSE and pair[1].arm is Arm.STANDARD
-             and pair[0].stratum == "B" and pair[1].stratum == "B",
-             "stratum-B pair", "(coarse stratum-B PRD, standard stratum-B PRD)",
-             str(protocol.stratum_b_pair))
+    require(len(pair) == 2 and None not in pair
+            and pair[0].arm is Arm.COARSE and pair[1].arm is Arm.STANDARD
+            and pair[0].stratum == "B" and pair[1].stratum == "B",
+            "stratum-B pair", "(coarse stratum-B PRD, standard stratum-B PRD)",
+            str(protocol.stratum_b_pair))
 
 
 def _range(low, high):
