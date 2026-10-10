@@ -1,6 +1,365 @@
 //! Activation inventory: which workspace members turn a provider's feature on,
 //! and from which manifest site.
 
+use std::collections::{BTreeMap, BTreeSet};
+use std::fmt;
+use std::fs;
+use std::io;
+use std::path::{Path, PathBuf};
+
+use toml::{Table, Value};
+
+#[derive(Debug)]
+pub enum ManifestError {
+    Io { path: PathBuf, source: io::Error },
+    Toml { path: PathBuf, message: String },
+    UnsupportedMembersGlob { entry: String },
+    MissingMember { dir: PathBuf },
+}
+
+impl fmt::Display for ManifestError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Io { path, source } => write!(f, "cannot read {}: {source}", path.display()),
+            Self::Toml { path, message } => write!(f, "{}: {message}", path.display()),
+            Self::UnsupportedMembersGlob { entry } => write!(
+                f,
+                "workspace members entry `{entry}` is a glob; list members explicitly"
+            ),
+            Self::MissingMember { dir } => {
+                write!(f, "workspace member {} has no Cargo.toml", dir.display())
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DepKind {
+    Normal,
+    Dev,
+    Build,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DepTable {
+    pub kind: DepKind,
+    pub target: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ActivationSite {
+    Dependency {
+        table: DepTable,
+        key: String,
+        inherited_from_workspace: bool,
+    },
+    FeatureTable {
+        feature: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Activation {
+    pub consumer: String,
+    pub manifest: PathBuf,
+    pub site: ActivationSite,
+}
+
+#[derive(Debug)]
+pub struct Member {
+    pub name: String,
+    pub dir: PathBuf,
+    pub manifest: PathBuf,
+    pub lib_root: PathBuf,
+    pub declared_features: BTreeSet<String>,
+    pub default_features: BTreeSet<String>,
+    features: BTreeMap<String, Vec<String>>,
+    dependencies: Vec<DependencyEntry>,
+}
+
+#[derive(Debug)]
+struct DependencyEntry {
+    table: DepTable,
+    key: String,
+    resolved: ResolvedDep,
+}
+
+#[derive(Debug)]
+struct ResolvedDep {
+    provider: String,
+    own_features: BTreeSet<String>,
+    workspace_features: BTreeSet<String>,
+}
+
+#[derive(Debug)]
+pub struct Workspace {
+    members: Vec<Member>,
+}
+
+impl Workspace {
+    pub fn load(root: &Path) -> Result<Workspace, ManifestError> {
+        let root_manifest = root.join("Cargo.toml");
+        let root_table = read_manifest(&root_manifest)?;
+        let workspace = section(&root_table, "workspace");
+        let workspace_deps = workspace.and_then(|w| section(w, "dependencies"));
+        let members = member_entries(&root_manifest, workspace)?
+            .iter()
+            .map(|entry| Member::load(&root.join(entry), workspace_deps))
+            .collect::<Result<_, _>>()?;
+        Ok(Workspace { members })
+    }
+
+    pub fn member(&self, package: &str) -> Option<&Member> {
+        self.members.iter().find(|m| m.name == package)
+    }
+
+    pub fn activations(&self, provider: &str, feature: &str) -> Vec<Activation> {
+        self.members
+            .iter()
+            .flat_map(|member| {
+                member
+                    .activation_sites(provider, feature)
+                    .map(|site| Activation {
+                        consumer: member.name.clone(),
+                        manifest: member.manifest.clone(),
+                        site,
+                    })
+            })
+            .collect()
+    }
+}
+
+impl Member {
+    fn load(dir: &Path, workspace_deps: Option<&Table>) -> Result<Member, ManifestError> {
+        let manifest = dir.join("Cargo.toml");
+        if !manifest.is_file() {
+            return Err(ManifestError::MissingMember {
+                dir: dir.to_path_buf(),
+            });
+        }
+        let table = read_manifest(&manifest)?;
+        let name = section(&table, "package")
+            .and_then(|package| package.get("name"))
+            .and_then(Value::as_str)
+            .ok_or_else(|| schema_error(&manifest, "expected a [package] name"))?
+            .to_string();
+        let lib_path = section(&table, "lib")
+            .and_then(|lib| lib.get("path"))
+            .and_then(Value::as_str)
+            .unwrap_or("src/lib.rs");
+        let features = feature_table(&table);
+        Ok(Member {
+            name,
+            dir: dir.to_path_buf(),
+            lib_root: dir.join(lib_path),
+            declared_features: features
+                .keys()
+                .filter(|f| *f != "default")
+                .cloned()
+                .collect(),
+            default_features: features
+                .get("default")
+                .into_iter()
+                .flatten()
+                .cloned()
+                .collect(),
+            features,
+            dependencies: dependency_entries(&table, workspace_deps),
+            manifest,
+        })
+    }
+
+    fn activation_sites<'a>(
+        &'a self,
+        provider: &'a str,
+        feature: &'a str,
+    ) -> impl Iterator<Item = ActivationSite> + 'a {
+        let dependency_sites = self
+            .dependencies
+            .iter()
+            .filter(move |entry| entry.resolved.provider == provider)
+            .filter_map(move |entry| entry.activation_site(feature));
+        dependency_sites.chain(feature_table_activations(
+            &self.features,
+            &self.dependencies,
+            provider,
+            feature,
+        ))
+    }
+}
+
+impl DependencyEntry {
+    fn activation_site(&self, feature: &str) -> Option<ActivationSite> {
+        let inherited = self.resolved.workspace_features.contains(feature);
+        (inherited || self.resolved.own_features.contains(feature)).then(|| {
+            ActivationSite::Dependency {
+                table: self.table.clone(),
+                key: self.key.clone(),
+                inherited_from_workspace: inherited,
+            }
+        })
+    }
+}
+
+fn read_manifest(path: &Path) -> Result<Table, ManifestError> {
+    let text = fs::read_to_string(path).map_err(|source| ManifestError::Io {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    text.parse::<Table>().map_err(|e| ManifestError::Toml {
+        path: path.to_path_buf(),
+        message: e.to_string(),
+    })
+}
+
+fn schema_error(path: &Path, message: &str) -> ManifestError {
+    ManifestError::Toml {
+        path: path.to_path_buf(),
+        message: message.to_string(),
+    }
+}
+
+fn section<'a>(table: &'a Table, name: &str) -> Option<&'a Table> {
+    table.get(name).and_then(Value::as_table)
+}
+
+fn strings(value: Option<&Value>) -> impl Iterator<Item = String> + '_ {
+    value
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(str::to_string)
+}
+
+fn member_entries(
+    root_manifest: &Path,
+    workspace: Option<&Table>,
+) -> Result<Vec<String>, ManifestError> {
+    let entries = workspace
+        .and_then(|w| w.get("members"))
+        .and_then(Value::as_array)
+        .ok_or_else(|| schema_error(root_manifest, "expected a [workspace] members array"))?;
+    entries
+        .iter()
+        .map(|entry| {
+            let entry = entry
+                .as_str()
+                .ok_or_else(|| schema_error(root_manifest, "members entries must be strings"))?;
+            if entry.contains(['*', '?', '[']) {
+                return Err(ManifestError::UnsupportedMembersGlob {
+                    entry: entry.to_string(),
+                });
+            }
+            Ok(entry.to_string())
+        })
+        .collect()
+}
+
+fn feature_table(manifest: &Table) -> BTreeMap<String, Vec<String>> {
+    section(manifest, "features")
+        .into_iter()
+        .flatten()
+        .map(|(name, enables)| (name.clone(), strings(Some(enables)).collect()))
+        .collect()
+}
+
+const DEPENDENCY_TABLE_NAMES: [(&str, DepKind); 3] = [
+    ("dependencies", DepKind::Normal),
+    ("dev-dependencies", DepKind::Dev),
+    ("build-dependencies", DepKind::Build),
+];
+
+fn dependency_tables(manifest: &Table) -> impl Iterator<Item = (DepTable, &Table)> {
+    let targeted = section(manifest, "target")
+        .into_iter()
+        .flatten()
+        .filter_map(|(cfg, scope)| scope.as_table().map(|scope| (cfg, scope)))
+        .flat_map(|(cfg, scope)| kinded_tables(scope, Some(cfg)));
+    kinded_tables(manifest, None).chain(targeted)
+}
+
+fn kinded_tables<'a>(
+    scope: &'a Table,
+    target: Option<&'a str>,
+) -> impl Iterator<Item = (DepTable, &'a Table)> + 'a {
+    DEPENDENCY_TABLE_NAMES
+        .iter()
+        .filter_map(move |(name, kind)| {
+            let table = DepTable {
+                kind: *kind,
+                target: target.map(str::to_string),
+            };
+            section(scope, name).map(|deps| (table, deps))
+        })
+}
+
+fn dependency_entries(manifest: &Table, workspace_deps: Option<&Table>) -> Vec<DependencyEntry> {
+    dependency_tables(manifest)
+        .flat_map(|(table, deps)| {
+            deps.iter().map(move |(key, value)| DependencyEntry {
+                table: table.clone(),
+                key: key.clone(),
+                resolved: resolve_entry(key, value, workspace_deps),
+            })
+        })
+        .collect()
+}
+
+/// The provider is the entry's `package` (or the key); a `workspace = true`
+/// entry also inherits `package` and `features` from the root entry.
+fn resolve_entry(key: &str, value: &Value, workspace_deps: Option<&Table>) -> ResolvedDep {
+    let spec = value.as_table();
+    let inherits = spec
+        .and_then(|s| s.get("workspace"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let root_spec = workspace_deps
+        .filter(|_| inherits)
+        .and_then(|deps| deps.get(key))
+        .and_then(Value::as_table);
+    let package = [spec, root_spec]
+        .into_iter()
+        .flatten()
+        .find_map(|s| s.get("package").and_then(Value::as_str));
+    ResolvedDep {
+        provider: package.unwrap_or(key).to_string(),
+        own_features: strings(spec.and_then(|s| s.get("features"))).collect(),
+        workspace_features: strings(root_spec.and_then(|s| s.get("features"))).collect(),
+    }
+}
+
+/// Splits a `[features]` value `dep/feat` or `dep?/feat`; `dep:x` and bare
+/// feature names enable no dependency feature.
+fn dependency_feature(enable: &str) -> Option<(&str, &str)> {
+    let (dep, feature) = enable.split_once('/')?;
+    Some((dep.strip_suffix('?').unwrap_or(dep), feature))
+}
+
+fn feature_table_activations<'a>(
+    features: &'a BTreeMap<String, Vec<String>>,
+    dependencies: &'a [DependencyEntry],
+    provider: &'a str,
+    feature: &'a str,
+) -> impl Iterator<Item = ActivationSite> + 'a {
+    let names_provider = move |key: &str| {
+        dependencies
+            .iter()
+            .any(|entry| entry.key == key && entry.resolved.provider == provider)
+    };
+    features
+        .iter()
+        .filter(move |(_, enables)| {
+            enables
+                .iter()
+                .filter_map(|e| dependency_feature(e))
+                .any(|(dep, enabled)| enabled == feature && names_provider(dep))
+        })
+        .map(|(name, _)| ActivationSite::FeatureTable {
+            feature: name.clone(),
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeSet;
@@ -24,7 +383,10 @@ mod tests {
 
     fn provider_and_consumer(workspace_deps: &str, consumer_rest: &str) -> Fixture {
         let fx = Fixture::new();
-        fx.write("Cargo.toml", &root_manifest(&["prov", "cons"], workspace_deps));
+        fx.write(
+            "Cargo.toml",
+            &root_manifest(&["prov", "cons"], workspace_deps),
+        );
         fx.write("prov/Cargo.toml", &package("prov", PROVIDER_FEATURES));
         fx.write("cons/Cargo.toml", &package("cons", consumer_rest));
         fx
@@ -79,7 +441,10 @@ mod tests {
         let beta = ws.member("beta").expect("beta is a member");
         assert_eq!(beta.lib_root, fx.root().join("crates/beta/lib/custom.rs"));
 
-        assert!(ws.member("alpha").is_none(), "lookup is by package name, not dir");
+        assert!(
+            ws.member("alpha").is_none(),
+            "lookup is by package name, not dir"
+        );
     }
 
     #[test]
@@ -88,7 +453,10 @@ mod tests {
         fx.write("Cargo.toml", &root_manifest(&["prov", "bare"], ""));
         fx.write(
             "prov/Cargo.toml",
-            &package("prov", "[features]\ndefault = [\"f\"]\nf = []\ng = [\"f\"]\n"),
+            &package(
+                "prov",
+                "[features]\ndefault = [\"f\"]\nf = []\ng = [\"f\"]\n",
+            ),
         );
         fx.write("bare/Cargo.toml", &package("bare", ""));
         let ws = load(&fx);
@@ -149,8 +517,14 @@ mod tests {
         assert_eq!(
             sites(&ws.activations("prov", "f")),
             vec![
-                ("normal".to_string(), dep_site(DepKind::Normal, None, "prov", false)),
-                ("build".to_string(), dep_site(DepKind::Build, None, "prov", false)),
+                (
+                    "normal".to_string(),
+                    dep_site(DepKind::Normal, None, "prov", false)
+                ),
+                (
+                    "build".to_string(),
+                    dep_site(DepKind::Build, None, "prov", false)
+                ),
                 (
                     "targeted".to_string(),
                     dep_site(DepKind::Dev, Some("cfg(unix)"), "prov", false)
@@ -169,7 +543,10 @@ mod tests {
 
         assert_eq!(
             sites(&ws.activations("prov", "f")),
-            vec![("cons".to_string(), dep_site(DepKind::Dev, None, "alias", false))]
+            vec![(
+                "cons".to_string(),
+                dep_site(DepKind::Dev, None, "alias", false)
+            )]
         );
         assert!(ws.activations("alias", "f").is_empty());
     }
@@ -184,7 +561,10 @@ mod tests {
 
         assert_eq!(
             sites(&ws.activations("prov", "f")),
-            vec![("cons".to_string(), dep_site(DepKind::Normal, None, "alias", false))]
+            vec![(
+                "cons".to_string(),
+                dep_site(DepKind::Normal, None, "alias", false)
+            )]
         );
     }
 
@@ -198,7 +578,10 @@ mod tests {
 
         assert_eq!(
             sites(&ws.activations("prov", "f")),
-            vec![("cons".to_string(), dep_site(DepKind::Dev, None, "prov", true))]
+            vec![(
+                "cons".to_string(),
+                dep_site(DepKind::Dev, None, "prov", true)
+            )]
         );
     }
 
@@ -262,7 +645,10 @@ mod tests {
         assert!(ws.activations("prov", "f").is_empty());
         assert_eq!(
             sites(&ws.activations("prov", "g")),
-            vec![("different".to_string(), dep_site(DepKind::Dev, None, "prov", false))],
+            vec![(
+                "different".to_string(),
+                dep_site(DepKind::Dev, None, "prov", false)
+            )],
             "the fixture's other feature is seen, so the empty result above is not vacuous"
         );
     }
@@ -284,7 +670,10 @@ mod tests {
 
         assert_eq!(
             sites(&ws.activations("prov", "f")),
-            vec![("prov".to_string(), dep_site(DepKind::Dev, None, "prov", false))]
+            vec![(
+                "prov".to_string(),
+                dep_site(DepKind::Dev, None, "prov", false)
+            )]
         );
     }
 
