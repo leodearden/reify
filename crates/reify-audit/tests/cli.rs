@@ -1797,6 +1797,18 @@ mod cli {
             out.status.code(),
             String::from_utf8_lossy(&out.stderr)
         );
+        // The hot path never binds a seam it needed, so it never records a
+        // fallback.
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let findings = parse_findings_from_stderr(&stderr);
+        assert!(
+            !findings.iter().any(|f| matches!(
+                f["pattern"].as_str(),
+                Some("P1TaskUnexamined" | "P5LivePathUnexamined")
+            )),
+            "--pre-done must record nothing as unexamined; findings:\n{:#}",
+            serde_json::Value::Array(findings)
+        );
     }
 
     /// `--pattern PDEAD --no-jcodemunch` exits 0 with an empty findings array.
@@ -5034,10 +5046,29 @@ mod freshness_gate {
             "the non-jcodemunch detectors must still emit their findings; stderr:\n{stderr}"
         );
         // Degraded, not silent: the marker keeps the condition machine-
-        // detectable.
+        // detectable, and P1 records itself unexamined for this run.
         assert!(
             stderr.contains("E_JC_INDEX_STALE"),
             "the degraded sweep must still carry the marker; stderr:\n{stderr}"
+        );
+        let findings = parse_findings_from_stderr(&stderr);
+        let p1_unexamined: Vec<&serde_json::Value> = findings
+            .iter()
+            .filter(|f| f["pattern"].as_str() == Some("P1TaskUnexamined"))
+            .collect();
+        assert_eq!(
+            p1_unexamined.len(),
+            1,
+            "exactly one run-level P1TaskUnexamined; findings:\n{:#}",
+            serde_json::Value::Array(findings.clone())
+        );
+        assert_eq!(p1_unexamined[0]["task_id"].as_str(), Some(""));
+        assert!(
+            p1_unexamined[0]["summary"]
+                .as_str()
+                .is_some_and(|summary| summary.contains("E_JC_INDEX_STALE")),
+            "the record must carry the index refusal; got {:#}",
+            p1_unexamined[0]
         );
     }
 

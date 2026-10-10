@@ -2,11 +2,17 @@
 //! the run needs a jcodemunch-backed detector, but the seam it binds is the
 //! inert stub because the endpoint never answered or refused the handshake.
 //!
-//! Pins what the real binary says about that on stderr: an endpoint that
-//! never answered is labelled `jcodemunch unreachable at`, one that answered
-//! but is not a live MCP seam is labelled `jcodemunch handshake refused at`,
-//! so an operator is sent to start a serve in the first case and to check
-//! what is listening on the port in the second.
+//! Pins two things the real binary reports about it:
+//!
+//! - on stderr, the label: an endpoint that never answered is
+//!   `jcodemunch unreachable at`, one that answered but is not a live MCP seam
+//!   is `jcodemunch handshake refused at`, so an operator is sent to start a
+//!   serve in the first case and to check what is listening on the port in
+//!   the second;
+//! - in the findings array, ONE run-level Low unexamined finding (empty
+//!   `task_id`) per affected detector, carrying that reason, so the run's
+//!   zero findings from that detector cannot read as a clean result.
+//!   `--no-jcodemunch` is a declared scope reduction and records nothing.
 //!
 //! Hermetic: the refusing endpoint is `common::net::unreachable_mcp_url()`,
 //! the answering ones are `common::mcp_mock` responders on ephemeral ports.
@@ -22,12 +28,17 @@ mod breadcrumbs;
 #[path = "common/cli_fixture.rs"]
 mod cli_fixture;
 
+#[path = "common/task_json.rs"]
+mod task_json;
+
 use std::net::TcpListener;
 use std::path::PathBuf;
 use std::process::{Command, Output};
 
 use breadcrumbs::{CONSTRUCTION_HANDSHAKE_REFUSED, CONSTRUCTION_UNREACHABLE};
+use common::findings::parse_findings_from_stderr;
 use common::mcp_mock::{InitializeReply, MockConfig, MockServer, spawn_mock_mcp_configured};
+use serde_json::Value;
 
 /// A tempdir standing in for the project root, holding the run's own
 /// `tasks.json` and `runs.db`, so no run reaches fused-memory or a shared DB.
@@ -149,4 +160,113 @@ fn a_non_mcp_2xx_responder_is_labelled_handshake_refused() {
 #[test]
 fn a_foreign_http_service_answering_404_is_labelled_handshake_refused() {
     assert_handshake_refused(404, "not found");
+}
+
+/// One P1-eligible done task, so a P1 run with a live seam would have queried
+/// jcodemunch for it.
+fn p1_eligible_tasks() -> Vec<Value> {
+    vec![task_json::done_task_fixture(
+        "7001",
+        "0123456789abcdef0123456789abcdef01234567",
+        1_700_000_000,
+    )]
+}
+
+/// The findings array of a run that must have exited 0.
+fn findings_of_a_clean_exit(out: &Output) -> Vec<Value> {
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "a Low unexamined record never moves the exit code; stderr:\n{stderr}"
+    );
+    parse_findings_from_stderr(&stderr)
+}
+
+/// `findings` holds exactly one `pattern` finding, and it is the run-level
+/// unexamined record: Low, empty `task_id`, its summary carrying `reason`.
+fn assert_one_run_level_unexamined(findings: &[Value], pattern: &str, reason: &str) {
+    let all = Value::Array(findings.to_vec());
+    let matching: Vec<&Value> = findings
+        .iter()
+        .filter(|f| f["pattern"].as_str() == Some(pattern))
+        .collect();
+    assert_eq!(
+        matching.len(),
+        1,
+        "expected exactly one {pattern}; findings:\n{all:#}"
+    );
+    let finding = matching[0];
+    assert_eq!(finding["severity"].as_str(), Some("Low"), "{finding:#}");
+    assert_eq!(
+        finding["task_id"].as_str(),
+        Some(""),
+        "the start-of-run record is run-level, not about one task: {finding:#}"
+    );
+    let summary = finding["summary"].as_str().unwrap_or_default();
+    assert!(
+        summary.contains(reason),
+        "the summary must carry the reason `{reason}`; got {summary:?}"
+    );
+}
+
+#[test]
+fn p1_records_itself_unexamined_once_when_the_endpoint_never_answered() {
+    let s = sandbox(&p1_eligible_tasks());
+    let url = common::net::unreachable_mcp_url();
+    let out = s.run(&["--pattern", "P1", "--jcodemunch-url", &url]);
+    let findings = findings_of_a_clean_exit(&out);
+    assert_eq!(
+        findings.len(),
+        1,
+        "the run-level record is P1's only finding: {:#}",
+        Value::Array(findings.clone())
+    );
+    assert_one_run_level_unexamined(
+        &findings,
+        "P1TaskUnexamined",
+        &format!("jcodemunch unreachable at '{url}'"),
+    );
+}
+
+#[test]
+fn p1_records_itself_unexamined_once_when_the_handshake_was_refused() {
+    let s = sandbox(&p1_eligible_tasks());
+    let mock = spawn_handshake_answering(404, "not found");
+    let url = mock.url().to_string();
+    let out = s.run(&["--pattern", "P1", "--jcodemunch-url", &url]);
+    mock.stop();
+    let findings = findings_of_a_clean_exit(&out);
+    assert_eq!(
+        findings.len(),
+        1,
+        "the run-level record is P1's only finding: {:#}",
+        Value::Array(findings.clone())
+    );
+    assert_one_run_level_unexamined(
+        &findings,
+        "P1TaskUnexamined",
+        &format!("jcodemunch handshake refused at '{url}'"),
+    );
+}
+
+/// `--no-jcodemunch` declares the jcodemunch-backed passes out of scope (the
+/// per-run artifact records the argv), so nothing is recorded as unexamined.
+#[test]
+fn no_jcodemunch_records_nothing_unexamined() {
+    let s = sandbox(&p1_eligible_tasks());
+    let url = common::net::unreachable_mcp_url();
+    let out = s.run(&[
+        "--pattern",
+        "P1",
+        "--no-jcodemunch",
+        "--jcodemunch-url",
+        &url,
+    ]);
+    let findings = findings_of_a_clean_exit(&out);
+    assert!(
+        findings.is_empty(),
+        "a declared scope reduction records no unexamined finding: {:#}",
+        Value::Array(findings)
+    );
 }
