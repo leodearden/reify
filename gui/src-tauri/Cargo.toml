@@ -86,6 +86,8 @@ tracing.workspace = true
 notify.workspace = true
 # Decodes the frontend's base64 screenshot data URLs for `screenshot_save`.
 base64 = "0.22"
+# engine.rs's `write_file_atomically`: sibling temp file + persist (rename).
+tempfile.workspace = true
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
@@ -110,4 +112,3 @@ reify-lsp = { workspace = true, features = ["test-support"] }
 # Activates stats::reset_for_test() on the dep for cross-crate test isolation
 # in debug_server.rs once engine wiring (PRD #2947-#2949) lands.
 reify-mesh-morph = { workspace = true, features = ["testing"] }
-tempfile.workspace = true
