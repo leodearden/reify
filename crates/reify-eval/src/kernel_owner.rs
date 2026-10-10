@@ -1,8 +1,81 @@
+//! Map a geometry handle's owning [`KernelId`] to the engine kernel-map key
+//! that serves it.
+//!
+//! The rule, stated once here: a handle is served by the map entry keyed by
+//! its owner's registry name when that name is a key of the map, else by
+//! `default_kernel_name`. The fallback exists because single-pick (sentinel)
+//! mode keys the default kernel under `Engine::DEFAULT_KERNEL_NAME`
+//! (`__reify_eval_default_kernel`), never under `"occt"`. It matters because
+//! handle ids are kernel-local — every kernel counts from 1 — so a handle
+//! resolved against any kernel other than its owner names an unrelated shape.
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::fmt;
+
+use reify_ir::KernelId;
+
+/// The kernel-map key serving a handle owned by `owner`.
+///
+/// The result borrows only `default_kernel_name`, never `kernels`, so callers
+/// may `get_mut` the map with it.
+pub(crate) fn resolve_owning_kernel_name<'a, V>(
+    kernels: &BTreeMap<String, V>,
+    owner: KernelId,
+    default_kernel_name: &'a str,
+) -> &'a str {
+    let registry_name = owner.as_registry_name();
+    if kernels.contains_key(registry_name) {
+        registry_name
+    } else {
+        default_kernel_name
+    }
+}
+
+/// The one kernel-map key serving every handle in `owners`, for exporting
+/// them together; `default_kernel_name` when `owners` is empty.
+///
+/// Owners are compared on their RESOLVED keys, so several owners that all fall
+/// back to the default kernel are one owner, not a mix.
+pub(crate) fn export_kernel_for_owners<'a, V>(
+    kernels: &BTreeMap<String, V>,
+    owners: impl IntoIterator<Item = KernelId>,
+    default_kernel_name: &'a str,
+) -> Result<&'a str, MixedExportOwners> {
+    let resolved: BTreeSet<&'a str> = owners
+        .into_iter()
+        .map(|owner| resolve_owning_kernel_name(kernels, owner, default_kernel_name))
+        .collect();
+    if resolved.len() > 1 {
+        return Err(MixedExportOwners {
+            kernel_names: resolved.into_iter().map(str::to_string).collect(),
+        });
+    }
+    Ok(resolved.into_iter().next().unwrap_or(default_kernel_name))
+}
+
+/// Product bodies that resolve to more than one serving kernel, so they
+/// cannot be assembled into one compound: a compound takes ids in a single
+/// kernel's id space.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct MixedExportOwners {
+    /// The distinct resolved kernel-map keys, sorted.
+    pub kernel_names: Vec<String>,
+}
+
+impl fmt::Display for MixedExportOwners {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "cannot export product bodies owned by different kernels as one compound \
+             (owners: {}); cross-kernel compound export is not supported",
+            self.kernel_names.join(", ")
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reify_ir::KernelId;
-    use std::collections::BTreeMap;
 
     const SENTINEL: &str = crate::Engine::DEFAULT_KERNEL_NAME;
 

@@ -12,6 +12,7 @@ use reify_ir::{
 use reify_solver_elastic::DEGENERATE_RING_AREA_TOLERANCE;
 
 use crate::eval_ctx_with_meta;
+use crate::kernel_owner::resolve_owning_kernel_name;
 
 /// Minimum meaningful distance in meters (1 picometer).
 ///
@@ -12799,25 +12800,10 @@ pub(crate) fn walk_placed_realizations<V>(
         if pre_filter.is_some_and(|f| !f(t_idx, r_idx, &entity_path)) {
             continue;
         }
-        // Task 5033 Gap D: resolve the kernel that actually OWNS this handle
-        // (`handle.kernel`), not unconditionally `default_kernel_name`. Every
-        // pre-5033 realization dispatched at BRep demand (task 4050 step-8
-        // design_decision 4), so `handle.kernel` was always the default
-        // kernel and this lookup was a no-op in practice. `tessellate_from_values`
-        // now demands Voxel for an isosurface operand (Gap D sibling fix,
-        // `voxel_demanded_realization_indices`), so a handle reaching this
-        // walk can legitimately live on a non-default kernel (e.g. OpenVDB);
-        // tessellating it via the wrong kernel's disjoint id space would
-        // panic or silently mistessellate. Same registry-name-vs-map-key
-        // fallback used by `engine_build.rs`'s Voxel/VolumeMesh post-loop
-        // edges (backward-compat sentinel mode keys the default kernel's
-        // handle under `default_kernel_name`, not its own registry name).
+        // Task 5033 Gap D: resolve the kernel that OWNS this handle, not
+        // unconditionally the default kernel.
         let resolved_kernel_name =
-            if geometry_kernels.contains_key(handle.kernel.as_registry_name()) {
-                handle.kernel.as_registry_name()
-            } else {
-                default_kernel_name
-            };
+            resolve_owning_kernel_name(geometry_kernels, handle.kernel, default_kernel_name);
         let resolved_kernel = geometry_kernels
             .get_mut(resolved_kernel_name)
             .expect("resolved kernel must remain in the map across the surfacing walk");

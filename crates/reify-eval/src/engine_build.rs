@@ -26,6 +26,7 @@ use crate::deps::{DependencyTrace, extract_realization_dependencies};
 use crate::dispatcher::{DispatchPlan, dispatch, per_stage_tolerance_for_plan};
 use crate::geometry_ops::compile_geometry_op;
 use crate::journal::{EvalEvent, EventJournal, EventKind};
+use crate::kernel_owner::resolve_owning_kernel_name;
 use crate::primitive_attribute_seed::{
     is_seedable_primitive, parse_bbox_xyz_min, record_solid_attribute,
     seed_primitive_attributes_for_handle,
@@ -9254,11 +9255,9 @@ impl Engine {
                     && is_terminal_realization
                     && let Some(&terminal) = step_handles[handle_start..].last()
                 {
-                    let terminal_name = if kernels.contains_key(terminal.kernel.as_registry_name()) {
-                        terminal.kernel.as_registry_name().to_string()
-                    } else {
-                        default_kernel_name.to_string()
-                    };
+                    let terminal_name =
+                        resolve_owning_kernel_name(kernels, terminal.kernel, default_kernel_name)
+                            .to_string();
                     match kernels.get_mut(&terminal_name) {
                         Some(src) => {
                             let faces = src.extract_faces(terminal.id).unwrap_or_default();
@@ -9335,19 +9334,8 @@ impl Engine {
                 // on its source kernel (`&self`; the owned result releases the
                 // borrow before the gmsh borrow below — non-conflicting
                 // sequential `kernels.get()` immutable borrows).
-                // The terminal handle is keyed in `kernels` by the name the
-                // per-op loop produced it under — that is `default_kernel_name`
-                // for a primitive box realization (the same key the centroid
-                // block above resolves via `kernels.get_mut(default_kernel_name)`).
-                // The `KernelHandle::kernel` registry name can differ from that
-                // map key (e.g. a synthetic default-kernel holder), so prefer the
-                // terminal's own registry name only when it is actually a key,
-                // else fall back to `default_kernel_name`.
-                let terminal_name = if kernels.contains_key(terminal.kernel.as_registry_name()) {
-                    terminal.kernel.as_registry_name()
-                } else {
-                    default_kernel_name
-                };
+                let terminal_name =
+                    resolve_owning_kernel_name(kernels, terminal.kernel, default_kernel_name);
                 let surface = match kernels.get(terminal_name) {
                     Some(src) => match src.tessellate(terminal.id, tol) {
                         Ok(mesh) => Some(mesh),
@@ -9602,14 +9590,8 @@ impl Engine {
                 && let Some(&terminal) = step_handles[handle_start..].last()
             {
                 let tol = demanded_tol.unwrap_or(Self::DEFAULT_TESSELLATION_TOLERANCE);
-                // Same registry-name-vs-map-key dance as the VolumeMesh edge
-                // above (backward-compat sentinel mode keys OCCT's handle under
-                // `default_kernel_name`, not `"occt"`).
-                let terminal_name = if kernels.contains_key(terminal.kernel.as_registry_name()) {
-                    terminal.kernel.as_registry_name()
-                } else {
-                    default_kernel_name
-                };
+                let terminal_name =
+                    resolve_owning_kernel_name(kernels, terminal.kernel, default_kernel_name);
                 let surface = match kernels.get(terminal_name) {
                     Some(src) => match src.tessellate(terminal.id, tol) {
                         Ok(mesh) => Some(mesh),
