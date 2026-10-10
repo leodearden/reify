@@ -160,8 +160,7 @@ use crate::engine_admin::{ParamOverrideRejection, validate_param_override};
 use crate::engine_helpers::collect_member_list;
 use crate::graph::{ConstraintNodeData, EvaluationGraph, GuardedGroupInfo};
 use crate::realization_staleness::{
-    ClassificationBaseline, compute_changed_realizations, compute_changed_realizations_scoped,
-    realization_cone_seeds, stale_realization_entities,
+    compute_changed_realizations, realization_cone_seeds, stale_realization_entities,
 };
 use crate::warm_pool::WarmStatePool;
 use crate::{
@@ -1106,7 +1105,6 @@ impl Engine {
         let functions = Arc::clone(&self.functions);
         // Reset the per-edit guard-phase group evaluation counter before Phase 1.
         self.last_guard_phase_group_evals = 0;
-        self.last_input_cone_fold_count = 0;
         // The realization cache is NOT flushed here: γ (#4730) evicts only the
         // families this edit made stale, at the compare site near the end of
         // this function.
@@ -1157,13 +1155,11 @@ impl Engine {
             }
         }
 
-        // selective-realization-eviction β (#4729): take the changed-
-        // realization set as this edit's `pending` input. Ungated (the field
-        // is always present, like `last_dispatch_count`); the real set is
-        // computed at the post-value-cone seam near the end of this function,
-        // once the input cones can be recomputed against the UPDATED context.
-        // #6086's scoped fold re-folds every pending realization, which is
-        // how a realization edited but not yet rebuilt stays reported.
+        // selective-realization-eviction β (#4729): reset the changed-
+        // realization set. Ungated (the field is always present, like
+        // `last_dispatch_count`); the real set is computed at the
+        // post-value-cone seam near the end of this function, once the input
+        // cones can be recomputed against the UPDATED context.
         //
         // **Ordering (amend, review round 1 — `correctness`): this MUST sit
         // BELOW the `NotInitialized` / `CellNotFound` / `validate_param_override`
@@ -1180,19 +1176,10 @@ impl Engine {
         // would leave the set empty with no compare site ever running, and γ
         // (#4730) would skip evicting genuinely stale geometry. Pinned by
         // `rejected_edit_param_does_not_wipe_the_changed_realization_record`.
-        let pending = std::mem::take(&mut self.last_changed_realizations);
+        self.last_changed_realizations.clear();
 
         // Clone snapshot and extract references (O(1) via PersistentMap)
         let parent_id = state.snapshot.id;
-        // #6086: the pre-edit values the scoped classification diffs against,
-        // and the values this snapshot's stored hashes were last reconciled
-        // against. Taken before any value mutation; O(1) via PersistentMap.
-        let prior_values = state.snapshot.values.clone();
-        let baseline_values = self
-            .classification_baseline
-            .as_ref()
-            .and_then(|baseline| baseline.values_for(parent_id))
-            .cloned();
         // γ (#4730): `edit_param` neither adds nor removes a realization, so
         // its eviction set has no removed term. Asserted at the compare site.
         let prior_realization_count = state.snapshot.graph.realizations.len();
@@ -2929,27 +2916,8 @@ impl Engine {
             let ctx = crate::eval_ctx_with_meta(&values, &functions, &self.meta_map);
             let state = self.eval_state.as_ref().unwrap();
             let graph = &state.snapshot.graph;
-            let scoped = compute_changed_realizations_scoped(
-                graph,
-                &ctx,
-                &values,
-                &prior_values,
-                baseline_values.as_ref(),
-                &pending,
-            );
-            #[cfg(debug_assertions)]
-            debug_assert_eq!(
-                scoped.changed,
-                compute_changed_realizations(&graph.realizations, graph, &ctx),
-                "#6086: the scoped classification must equal the full fold; a \
-                 realization it skipped is under-eviction and serves stale geometry"
-            );
-            self.last_input_cone_fold_count = scoped.folded;
-            self.last_changed_realizations = scoped.changed;
-            self.classification_baseline = Some(ClassificationBaseline::new(
-                state.snapshot.id,
-                &state.snapshot.values,
-            ));
+            self.last_changed_realizations =
+                compute_changed_realizations(&graph.realizations, graph, &ctx);
             // Reuse the installed reverse index instead of rebuilding an
             // O(graph) one per edit, but ONLY under the two admissibility
             // proofs the helper documents (amend, review round 1 —
@@ -3149,7 +3117,6 @@ impl Engine {
         // Precondition: prior eval() must have populated eval_state. This is
         // the same precondition as edit_param and is validated first so that
         // all later steps can rely on a present baseline.
-        self.last_input_cone_fold_count = 0;
         if self.eval_state.is_none() {
             return Err(EngineError::NotInitialized);
         }
@@ -4771,18 +4738,11 @@ impl Engine {
         // eviction and for δ's "selective ≡ wholesale on served handles" gate.
         {
             let ctx = crate::eval_ctx_with_meta(&values, &functions, &self.meta_map);
-            // The full fold, not #6086's scoped one: a recompile can change
-            // `functions` / `meta_map`, which no cell-value diff sees.
             let mut changed =
                 compute_changed_realizations(&prior_realizations, &new_snapshot.graph, &ctx);
-            self.last_input_cone_fold_count = new_snapshot.graph.realizations.len();
             changed.extend(changed_realizations.iter().cloned());
             changed.extend(added_realizations.iter().cloned());
             self.last_changed_realizations = changed;
-            self.classification_baseline = Some(ClassificationBaseline::new(
-                new_snapshot.id,
-                &new_snapshot.values,
-            ));
             // Propagate over the NEW graph. `prebuilt_index` is `None` — the
             // unconditional rebuild — because neither admissibility proof the
             // helper accepts holds here: `new_reverse_index` was built near

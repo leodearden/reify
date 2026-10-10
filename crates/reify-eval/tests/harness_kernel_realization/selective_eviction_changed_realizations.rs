@@ -945,74 +945,17 @@ fn edit_source_evicts_only_the_compute_node_downstream_of_the_moved_realization(
     );
 }
 
-// ── #6086: edit_param's scoped classification fold ─────────────────────
+// ── Value movers the edit does not name ────────────────────────────────
 //
-// `compute_changed_realizations_scoped` folds only realizations an edit can
-// have moved: one with a read cell whose VALUE changed, one already in the
-// previous changed set, or one never executed. Its contract is equality with
-// the unscoped fold (debug-asserted at the edit_param compare site); these
-// pin the cost claim and the solver case a dirty-cone scope would miss.
-
-/// The cost claim, end to end: a display-only edit folds NO realization, and
-/// an edit of `wa` folds exactly `body_a`'s.
-#[test]
-fn edit_param_classification_fold_visits_only_reachable_realizations() {
-    if !reify_kernel_occt::OCCT_AVAILABLE {
-        eprintln!(
-            "skipping edit_param_classification_fold_visits_only_reachable_realizations: \
-             OCCT not available"
-        );
-        return;
-    }
-
-    let compiled = reify_test_support::parse_and_compile_with_stdlib(TWO_BODY_SRC);
-    let mut engine = make_occt_engine();
-    let _ = engine.eval(&compiled);
-    let _ = engine.build(&compiled, ExportFormat::Step);
-    let ra = realization_for_cell(&engine, "TwoBody", "body_a");
-    let rb = realization_for_cell(&engine, "TwoBody", "body_b");
-    {
-        let graph = &engine.snapshot().unwrap().graph;
-        for rid in [&ra, &rb] {
-            assert!(
-                graph
-                    .realizations
-                    .get(rid)
-                    .unwrap()
-                    .input_cone_hash
-                    .is_some(),
-                "premise: build() must stamp {rid}'s input_cone_hash, or every \
-                 realization is changed-without-a-fold and the count is vacuous"
-            );
-        }
-    }
-
-    engine
-        .edit_param(
-            ValueCellId::new("TwoBody", "label_pad"),
-            Value::length(0.009),
-        )
-        .expect("edit_param on TwoBody.label_pad must succeed");
-    assert_eq!(
-        engine.last_input_cone_fold_count(),
-        0,
-        "label_pad feeds no realization: nothing to fold"
-    );
-
-    engine
-        .edit_param(ValueCellId::new("TwoBody", "wa"), Value::length(0.030))
-        .expect("edit_param on TwoBody.wa must succeed");
-    assert_eq!(
-        engine.last_input_cone_fold_count(),
-        1,
-        "only body_a reads wa: body_b's fold must be skipped"
-    );
-    assert_eq!(engine.last_changed_realizations(), &HashSet::from([ra]));
-}
+// `edit_param` classifies with the full input-cone fold over every
+// realization. A scope taken from the edited param — its static dirty cone, or
+// a diff of the snapshot cells each realization reads — misses realizations
+// whose inputs move without being snapshot dependents of that param; see the
+// selective-realization-eviction PRD §12.
 
 /// A solver-owned `auto` cell is not a dependent of the param that moves it,
 /// so a scope taken from the edited param's static dirty cone would skip
-/// `body_a` here and serve stale geometry. The value-diff scope must not.
+/// `body_a` here and serve stale geometry.
 #[test]
 fn solver_moved_auto_cell_still_reports_its_reading_body() {
     if !reify_kernel_occt::OCCT_AVAILABLE {
@@ -1082,5 +1025,65 @@ structure Solved {
     assert!(
         !engine.last_changed_realizations().contains(&rb),
         "body_b reads only literals"
+    );
+}
+
+/// `top` is sized by `volume(self.a.body)`, a geometry query that `build()`
+/// hydrates into its own values and never writes back to the snapshot. An
+/// edit of the sub's `wa` moves `body`, so `top`'s cached geometry handle must
+/// not survive the edit as a final value: a classification that diffs only the
+/// snapshot cells `top` reads sees `v` unmoved and keeps it.
+#[test]
+fn edit_param_evicts_a_body_sized_by_a_geometry_query_of_an_edited_sub_body() {
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!(
+            "skipping edit_param_evicts_a_body_sized_by_a_geometry_query_of_an_edited_sub_body: \
+             OCCT not available"
+        );
+        return;
+    }
+
+    const QUERY_SIZED_SRC: &str = r#"
+structure A {
+    param wa: Length = 10mm
+    let body = box(wa, 5mm, 5mm)
+}
+structure B {
+    sub a = A()
+    let v = volume(self.a.body)
+    let top = box(v / (5mm * 5mm), 5mm, 5mm)
+}
+"#;
+    let compiled = reify_test_support::parse_and_compile_with_stdlib(QUERY_SIZED_SRC);
+    let mut engine = make_occt_engine();
+    let _ = engine.eval(&compiled);
+    let _ = engine.build(&compiled, ExportFormat::Step);
+    let top = NodeId::Value(ValueCellId::new("B", "top"));
+    let r_top = realization_for_cell(&engine, "B", "top");
+    assert!(
+        engine
+            .snapshot()
+            .unwrap()
+            .graph
+            .realizations
+            .get(&r_top)
+            .unwrap()
+            .input_cone_hash
+            .is_some(),
+        "premise: build() must stamp top's input_cone_hash"
+    );
+    assert!(
+        engine.cache_store().get(&top).is_some(),
+        "premise: build() must cache top's geometry handle"
+    );
+
+    engine
+        .edit_param(ValueCellId::new("A", "wa"), Value::length(0.020))
+        .expect("edit_param on A.wa must succeed");
+
+    assert!(
+        engine.cache_store().get(&top).is_none(),
+        "A.wa moved body, so volume(body) and top's width moved with it: top's cached \
+         handle was built at the old width and must be evicted, not served"
     );
 }
