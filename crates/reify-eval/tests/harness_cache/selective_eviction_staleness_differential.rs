@@ -698,12 +698,12 @@ fn repeated_edits_without_build_stay_stale_until_rebuilt() {
 
 // ── A value a build writes between edits ────────────────────────────────────
 
-/// `edit_param` folds only realizations whose read cells moved (#6086). A
-/// selective-demand tessellate refreshes the demanded `let` `sb`
+/// A selective-demand tessellate refreshes the demanded `let` `sb`
 /// (`refresh_and_gate_demanded_realizations`) without re-stamping `b`, which
 /// reads `sb` but is not demanded. The next edit moves an unrelated param and
 /// leaves `sb` alone, yet `b`'s stored hash predates the refresh, so `b` is
-/// changed — exactly what the full fold reports.
+/// changed: a classification that diffs only the cells the edit moved would
+/// miss it.
 #[test]
 fn a_realization_reading_a_build_refreshed_let_is_changed_by_an_unrelated_edit() {
     const SRC: &str = r#"pub structure Refreshed {
