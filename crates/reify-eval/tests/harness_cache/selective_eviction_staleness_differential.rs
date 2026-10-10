@@ -78,6 +78,27 @@ fn canonical_shape(records: &[GeometryOpRecord], handle: GeometryHandleId) -> St
         GeometryOp::Translate { target, dx, dy, dz } => {
             format!("translate({}, {dx}, {dy}, {dz})", parent(target))
         }
+        GeometryOp::LinearPattern {
+            target,
+            direction,
+            count,
+            spacing,
+        } => format!(
+            "linear_pattern({}, {direction:?}, {count}, {})",
+            parent(target),
+            si(spacing)
+        ),
+        GeometryOp::CircularPattern {
+            target,
+            axis_origin,
+            axis_dir,
+            count,
+            angle,
+        } => format!(
+            "circular_pattern({}, {axis_origin:?}, {axis_dir:?}, {count}, {})",
+            parent(target),
+            si(angle)
+        ),
         other => panic!("canonical_shape does not cover {other:?}; extend it"),
     }
 }
@@ -796,6 +817,48 @@ pub structure Bystander {
     let rebuilt = pair.rebuild();
 
     assert_eq!(rebuilt.hit_entities(), entities(&["Bystander"]));
+}
+
+/// Pattern consumers, across entities and within one. `Ring` patterns `A`'s
+/// body through a `Sub` operand; `Row` patterns its own sibling `base`, so
+/// `row` is `Row`'s terminal and `base` is never cache-resident. Each edit
+/// must evict exactly the patterns downstream of the moved body.
+#[test]
+fn pattern_consumers_of_the_edited_body_are_evicted() {
+    const SRC: &str = r#"pub structure A {
+    param w : Length = 10mm
+    let body = box(w, 10mm, 10mm)
+}
+pub structure Ring {
+    sub a = A()
+    let ring = circular_pattern(self.a.body, 0mm, 0mm, 0mm, 0, 0, 1, 4, 90deg)
+}
+pub structure Row {
+    param w2 : Length = 4mm
+    let base = box(w2, 5mm, 5mm)
+    let row = linear_pattern(base, 1, 0, 0, 3, 10mm)
+}
+pub structure S {
+    let shell = cylinder(5mm, 10mm)
+}"#;
+    let mut pair = RegimePair::new(
+        compile_source(SRC),
+        &[
+            ("mfg_a", "A", 1e-6),
+            ("mfg_ring", "Ring", 1e-6),
+            ("mfg_row", "Row", 1e-6),
+            ("mfg_s", "S", 1e-6),
+        ],
+    );
+    pair.assert_resident(&["A", "Ring", "Row", "S"]);
+
+    pair.edit_param("A", "w", mm(30.0));
+    let rebuilt = pair.rebuild();
+    assert_eq!(rebuilt.hit_entities(), entities(&["Row", "S"]));
+
+    pair.edit_param("Row", "w2", mm(6.0));
+    let rebuilt = pair.rebuild();
+    assert_eq!(rebuilt.hit_entities(), entities(&["A", "Ring", "S"]));
 }
 
 // ── A value a build writes between edits ────────────────────────────────────
