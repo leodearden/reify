@@ -108,6 +108,26 @@ fn rows() -> Vec<ParityRow> {
             loser_probe: "r",
             loser_error: "has no member",
         },
+        ParityRow {
+            // The std module comes FIRST in the slice, so only a tiered rule
+            // binds `b` — on the eval side as well as the compile side.
+            name: "(e) template, mixed prelude: import tier beats an earlier std module",
+            setup: Setup::SyntheticPrelude(&[
+                (
+                    "std.p1",
+                    "pub structure def Widget {\n    param from_std : Real = 7.0\n}\n",
+                ),
+                (
+                    "b",
+                    "pub structure def Widget {\n    param from_b : Real = 2.0\n}\n",
+                ),
+            ]),
+            entry: READ_WIDGET,
+            winner_probe: "from_b",
+            winner_value: || Value::Real(2.0),
+            loser_probe: "from_std",
+            loser_error: "has no member",
+        },
     ]
 }
 
