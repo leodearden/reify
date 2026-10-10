@@ -166,7 +166,8 @@ fn judge(workspace: &Workspace, pair: RegisteredPair) -> Result<Vec<Finding>, Ch
     ];
     let mut findings: Vec<Finding> = defects
         .into_iter()
-        .filter_map(|(present, kind)| present.then(|| defect(kind)))
+        .filter(|(present, _)| *present)
+        .map(|(_, kind)| defect(kind))
         .collect();
     findings.extend(
         surface

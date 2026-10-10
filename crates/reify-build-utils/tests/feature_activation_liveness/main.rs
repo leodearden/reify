@@ -10,6 +10,22 @@ mod gated_surface;
 mod manifest;
 mod usage;
 
+use detector::RegisteredPair;
+
+/// Pairs whose gated surface is reachable only by naming a gated item; the
+/// scan enforces that through gated_surface's Shape rules. Adding a row is a
+/// one-line change the gate itself validates.
+const REGISTRY: &[RegisteredPair] = &[
+    RegisteredPair {
+        provider: "reify-eval",
+        feature: "test-instrumentation",
+    },
+    RegisteredPair {
+        provider: "reify-mcp",
+        feature: "test-support",
+    },
+];
+
 #[test]
 fn registered_feature_activations_are_live() {
     assert!(!REGISTRY.is_empty(), "an empty REGISTRY gates nothing");
