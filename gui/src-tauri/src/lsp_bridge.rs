@@ -132,24 +132,13 @@ pub async fn lsp_request_impl(
 /// they are load-bearing (six + eight = the fourteen arms `handle_request`
 /// accepts).
 ///
-/// # What this COSTS: an abandoned request still runs
+/// # An abandoned request still runs
 ///
-/// A behaviour change this routing introduced, and one that is only
-/// structurally repaired. A request already picked up by a consumer runs to
-/// completion, and so does every abandoned request routed to the ordered lane;
-/// only a query abandoned while still QUEUED on the pool is dropped unrun. Not a
-/// correctness bug in either direction — the work is idempotent request-handling
-/// against the bridge's own state, and every arm still RESOLVES — but a
-/// wasted-work and latency cost, whose SIZE is what task 6517 changed: an
-/// abandoned in-flight query now occupies one of
-/// [`crate::large_stack::LSP_POOL_SIZE`] consumers rather than the only LSP
-/// consumer in the process, so it no longer stalls every subsequent keystroke
-/// behind it.
-///
-/// The mechanism, the measurement that `tauri` 2.11.2 never drops an abandoned
-/// command future anyway, and why the ordered lane must NOT discard are all in
-/// [`crate::large_stack::dispatch_async`]'s "Drop-cancellation" section and on
-/// [`crate::large_stack::OnAbandon`]. They are not restated here.
+/// Dropping this future does not cancel the work: it runs to completion on its
+/// lane and its answer is discarded (see [`crate::large_stack::dispatch_async`]'s
+/// "Abandonment"). An abandoned query occupies one of
+/// [`crate::large_stack::LSP_POOL_SIZE`] consumers for its duration, not the only
+/// LSP consumer in the process.
 ///
 /// # Why this composition lives here, not inline in `main.rs`
 ///
@@ -282,21 +271,9 @@ async fn lsp_request_future(
 /// vacuous: its closure contained no `block_on`, so it could not see that the
 /// real one panicked.
 ///
-/// # Relationship to [`lsp_request_on_worker`]
-///
-/// Since task 6517 this is the ONE production body, and the lane is genuinely
-/// its only variable: [`lsp_request_on_worker`] IS
-/// `lsp_request_on_lane(lane_for_method(&method), ..)`, by construction rather
-/// than by resemblance. Both spellings submit [`lsp_request_future`]'s single
-/// body, so a test written against this seam exercises the production path and
-/// the only difference either side can develop is the lane argument itself.
-///
-/// It is therefore no longer `#[cfg(test)]`. The gate was honest while
-/// production reached the lane through
-/// [`crate::large_stack::run_on_lsp_worker`] and this existed only to vary the
-/// lane from a test; now that production routes over TWO lanes, the lane must be
-/// a parameter of the real path, not a test-only one. `pub(crate)` still adds no
-/// public API surface, and `main.rs` is unaffected.
+/// This is the ONE production body: [`lsp_request_on_worker`] is
+/// `lsp_request_on_lane(lane_for_method(&method), ..)`, so a test written
+/// against this seam exercises the production path and can vary only the lane.
 pub(crate) async fn lsp_request_on_lane(
     sender: Option<&crate::large_stack::JobSender>,
     bridge: Arc<LspBridge>,

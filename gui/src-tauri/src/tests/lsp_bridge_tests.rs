@@ -270,8 +270,8 @@ async fn lsp_request_impl_null_literal_passes_json_parse_step() {
 /// runs; naming the type is the assertion.
 fn assert_send_sync_static<T: Send + Sync + 'static>() {}
 
-/// (a) `Arc<LspBridge>` is `Send + Sync + 'static` — the bound
-/// `run_on_lsp_worker`'s `'static` closure requires.
+/// (a) `Arc<LspBridge>` is `Send + Sync + 'static` — the bound a lane job's
+/// `'static` future requires.
 ///
 /// It must already be true: `main.rs` `app.manage`s the bridge, and Tauri
 /// requires managed state to be `Send + Sync + 'static`. Pinned HERE so the
@@ -559,45 +559,6 @@ async fn lsp_request_on_worker_preserves_the_error_path() {
     );
 }
 
-/// (d) The ORDERED-lane helper `run_on_lsp_worker` genuinely runs its future on
-/// the lane thread — not inline on the awaiting tokio worker.
-///
-/// SCOPE, corrected in the task-6517 amendment pass: this probes
-/// `crate::large_stack::run_on_lsp_worker`, which since the routing change has
-/// no production caller — `lsp_request_on_worker` is
-/// `lsp_request_on_lane(lane_for_method(&method), ..)`. So the claim this doc
-/// used to make ("if `lsp_request_on_worker` were quietly awaiting
-/// `lsp_request_impl` directly, only this test would notice") is no longer this
-/// test's to make; it belongs to `lsp_lane_routing_tests`' (q), which asserts
-/// it against the production entry point through a thread-recording sink. What
-/// (d) still pins, and what it is kept for, is the ORDERED lane's own dispatch
-/// mechanism: the helper several tests use for work that must be ordered
-/// against the notification stream puts that work on `LSP_WORKER_THREAD_NAME`
-/// rather than awaiting it inline.
-#[tokio::test]
-async fn the_lsp_lane_runs_its_work_off_the_awaiting_runtime_thread() {
-    use crate::large_stack::{LSP_WORKER_THREAD_NAME, run_on_lsp_worker};
-
-    let caller = std::thread::current().id();
-    let (name, id) = run_on_lsp_worker(async {
-        (
-            std::thread::current().name().map(str::to_owned),
-            std::thread::current().id(),
-        )
-    })
-    .await;
-
-    assert_eq!(
-        name.as_deref(),
-        Some(LSP_WORKER_THREAD_NAME),
-        "LSP work must land on the named LSP lane thread"
-    );
-    assert_ne!(
-        id, caller,
-        "LSP work must not run inline on the awaiting tokio worker"
-    );
-}
-
 /// (e) END-TO-END deep nesting: a real `.ri` document with deeply-nested
 /// expressions is opened, hovered and searched for references THROUGH the
 /// lane, and every request succeeds with a well-formed response.
@@ -763,8 +724,8 @@ async fn lsp_request_on_lane_without_a_lane_still_resolves_to_the_right_value() 
 /// (f) and (g) together pin that the degradation is BEHAVIOUR-PRESERVING rather
 /// than merely non-crashing — and they keep (f) honest in the other direction
 /// too. A future change that silently sent every request down the degraded arm
-/// would satisfy (f) alone; it fails (d)'s off-thread assertion, which submits
-/// through the same lane API this seam uses.
+/// would satisfy (f) alone; it fails `lsp_lane_routing_tests`' (q), which
+/// observes the thread the production entry point runs on.
 #[tokio::test]
 async fn lsp_request_on_lane_with_a_lane_returns_the_same_payload() {
     use crate::lsp_bridge::lsp_request_on_lane;
@@ -812,9 +773,9 @@ async fn lsp_request_on_lane_with_a_lane_returns_the_same_payload() {
 /// more, so the driver contract is pinned here directly.
 #[tokio::test]
 async fn the_lsp_lane_drives_its_futures_inside_a_runtime_context() {
-    use crate::large_stack::run_on_lsp_worker;
+    use crate::large_stack::{LSP_LANE, dispatch_async};
 
-    let answer = run_on_lsp_worker(async {
+    let answer = dispatch_async(LSP_LANE.sender(), async {
         tokio::task::spawn_blocking(|| 7u32)
             .await
             .expect("blocking work submitted from the lane completes")

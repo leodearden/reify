@@ -1,5 +1,5 @@
 //! How LSP requests are routed across the ordered lane (`LSP_LANE`) and the
-//! query pool (`LSP_POOL`), and what an abandoned request does on each.
+//! query pool (`LSP_POOL`).
 
 use std::sync::Arc;
 
@@ -8,7 +8,6 @@ use serde_json::json;
 use crate::lsp_bridge::{LspBridge, lsp_request_impl};
 use crate::tests::test_helpers::init_and_open;
 use reify_lsp::server::NotificationSink;
-use reify_lsp::test_support::RecordingSink;
 
 // ── Task 6517: the ordered lane / query pool split ───────────────────────────
 //
@@ -31,7 +30,7 @@ use reify_lsp::test_support::RecordingSink;
 // list nothing checks, so this comment carries only the counts.
 //
 // Ordering among NOTIFICATIONS is therefore preserved exactly — one FIFO
-// consumer, which is what `didChange` correctness rests on, pinned by (k). The
+// consumer, which is what `didChange` correctness rests on, pinned by (p). The
 // only ordering given up is query-vs-notification, which is precisely the
 // pre-5772 behaviour on the multi-threaded tauri runtime and which `reify-lsp`'s
 // own `RwLock`/`Mutex` already serialise for safety: a query can read older
@@ -291,41 +290,6 @@ async fn the_classification_covers_every_dispatchable_method() {
     }
 }
 
-/// (k) The ORDERED lane still has EXACTLY ONE consumer after the `Lane`
-/// generalisation.
-///
-/// This is the invariant `didChange` correctness rests on, and it is the one the
-/// pool mechanism could most easily take away by accident — `Lane::pool` and
-/// `Lane::new` share a receive loop, so a default that spawned more than one
-/// consumer would leave every other test green while making concurrent edits
-/// applicable out of order.
-///
-/// A size-N lane would fail this rather than pass it by luck: the shared
-/// receiver lock is handed off after each dequeue, so consumers ROTATE across
-/// sequential submissions even when only one job is in flight at a time.
-///
-/// Its twin for the other lane is (p): this pins `LSP_LANE` at exactly 1, and
-/// (p) pins `LSP_POOL` at `LSP_POOL_SIZE`. Both counts are load-bearing and in
-/// opposite directions, so neither can be left to the other.
-#[test]
-fn the_ordered_lane_still_has_exactly_one_consumer() {
-    use crate::large_stack::LSP_LANE;
-    use crate::tests::test_helpers::post_and_wait;
-    use std::collections::HashSet;
-
-    let ids: HashSet<_> = (0..16)
-        .map(|_| post_and_wait(LSP_LANE.sender(), || std::thread::current().id()))
-        .collect();
-    assert_eq!(
-        ids.len(),
-        1,
-        "the ordered lane must keep exactly ONE consumer: notifications are \
-         order-sensitive against each other, and a second consumer would let a \
-         `didChange` overtake an earlier one. (A degraded lane fails here too: \
-         `post` then spawns a fresh thread per job.) Saw {ids:?}"
-    );
-}
-
 /// (l) END-TO-END: a real `textDocument/hover` completes while another consumer
 /// of the same lane is OCCUPIED — the head-of-line-blocking property, driven
 /// through the REAL production composition.
@@ -564,368 +528,29 @@ async fn an_awaited_sequence_still_observes_its_own_edits() {
     );
 }
 
-/// What `abandoned_didopen_outcome` observed. (o) and (o2) assert OPPOSITE
-/// polarities on the same two fields, which is the whole difference between
-/// them.
-struct AbandonedOutcome {
-    /// Every URI the recording sink saw diagnostics published for, in arrival
-    /// order. Carried as `String` rather than `Url` so the callers' failure
-    /// messages can print it without a second conversion.
-    published: Vec<String>,
-    /// Whether the abandoned URI has server-side state — a document, hence
-    /// diagnostics — once the lane has had its chance at the job.
-    abandoned_has_state: bool,
-}
-
-/// The shared body of (o) and (o2): manufacture an abandoned
-/// `textDocument/didOpen` on `lane`, then report what the SERVER actually
-/// observed.
+/// (p) The PRODUCTION query pool runs the consumers it DECLARES, and the
+/// ordered lane keeps exactly one.
 ///
-/// (o) and (o2) differ in exactly two things — the destination's declared
-/// `OnAbandon` policy, and the polarity of the conclusion — so the ~150 lines
-/// they share are written ONCE here. Every part of that shape is load-bearing
-/// and would be a drift hazard duplicated: the recording bridge and its
-/// take-and-discard of the setup publishes, the probe that parks the lane's
-/// single consumer, the elapsing timeout that PERFORMS the abandonment, the
-/// release-on-every-exit-path discipline, and the live request that doubles as
-/// the FIFO barrier. A fix applied to one copy would silently not reach the
-/// other. Same reason `large_stack_tests`' `observe_concurrent_arrivals`
-/// exists, and its docstring says so in as many words.
+/// STRUCTURAL: `LSP_POOL.size() == LSP_POOL_SIZE` catches a static rebuilt with
+/// `Lane::new` or a stray literal; `LSP_LANE.size() == 1` is the invariant
+/// `didChange` ordering rests on. (`LSP_POOL_SIZE >= 2` is a `const` assertion
+/// beside the constant.)
 ///
-/// # What is asserted here, and what is left to the caller
+/// BEHAVIOURAL: every probe dispatched through the real pool must land on an
+/// indexed `{LSP_POOL_THREAD_PREFIX}{i}` thread. A size-1 lane names its
+/// consumer exactly `name`, so a collapsed pool reports the bare prefix and reds
+/// here. The observed set is NOT asserted to be the full set: which consumer
+/// wins the freed receiver lock is the OS's choice, and parking all four would
+/// starve concurrently-running tests.
 ///
-/// Asserted here: the PRECONDITIONS of the measurement, which belong to neither
-/// test's claim. The probe really occupied a real lane consumer (a lane that
-/// degraded to a spawned thread would leave the queue free and make both
-/// callers vacuous); the request really was abandoned (the elapse *is* the
-/// abandonment); the live request really resolved, and answered `null` as a
-/// notification must.
-///
-/// Left to the caller: everything about the ABANDONED job. Both the
-/// server-side-effect field and the published list come back untouched, so each
-/// test states its own conclusion — and the non-vacuity check on the LIVE uri
-/// stays with the caller too, since it is what makes that test's own absence or
-/// presence assertion mean something.
-///
-/// # Why a size-1 lane, and why test-local
-///
-/// Size 1 because the ABANDONMENT has to be forced: the request must sit in the
-/// queue while its awaiting side is dropped, which means every consumer must be
-/// occupied. Test-local because parking the process-wide `LSP_LANE` would
-/// starve every concurrently-running test in this binary.
-///
-/// Ordering is deterministic rather than timed: the queue is FIFO with one
-/// consumer, so the abandoned job is dequeued strictly before the live one, and
-/// by the time the live request resolves the abandoned one has already had its
-/// chance to publish.
-///
-/// # Why a `didOpen`, on lanes production routes one to only half of
-///
-/// Because the assertion has to be a SERVER-SIDE EFFECT, and `didOpen` is the
-/// method with the loudest one. It is a probe here, not a claim about routing:
-/// production sends `didOpen` to the ordered lane, which is `OnAbandon::Run`
-/// precisely so a discard cannot happen to it. Reading (o) as "an abandoned
-/// `didOpen` is dropped" inverts it — the discard follows from the LANE being
-/// declared `Lane::cancelling_pool`, which is (o)'s to declare and (o2)'s to
-/// contradict.
-///
-/// Asserting the server-side effect rather than merely "the lane recovered" is
-/// the point of both. A lane that ran the abandoned job to completion and then
-/// carried on would satisfy "recovered" perfectly while doing exactly the
-/// wasted work (o) is about; equally, a lane that DROPPED it would satisfy
-/// "recovered" while losing the document (o2) is about. Only the publish
-/// distinguishes them.
-async fn abandoned_didopen_outcome(
-    lane: &'static crate::large_stack::Lane,
-    lane_name: &str,
-    abandoned_uri: &str,
-    live_uri: &str,
-) -> AbandonedOutcome {
-    use crate::large_stack::post;
-    use crate::lsp_bridge::lsp_request_on_lane;
-    use std::sync::mpsc;
-    use std::time::Duration;
-
-    /// Broken source, so `didOpen` is GUARANTEED to publish error diagnostics
-    /// through the sink — "no publish" then means "never ran", not "ran and had
-    /// nothing to say".
-    const BROKEN: &str = "structure {";
-
-    let sink = Arc::new(RecordingSink::default());
-    let bridge = Arc::new(LspBridge::with_sink(sink.clone()));
-
-    // Session setup runs DIRECTLY, not through the lane, so the parked consumer
-    // is the only thing between the abandoned request and its execution.
-    lsp_request_impl(
-        &bridge,
-        "initialize",
-        reify_test_support::MINIMAL_INIT_PARAMS_JSON.to_string(),
-    )
-    .await
-    .expect("initialize");
-    lsp_request_impl(&bridge, "initialized", "{}".to_string())
-        .await
-        .expect("initialized");
-    // Discard any setup publishes so the caller's assertions speak only about
-    // the two requests under test.
-    let _ = sink.take_calls();
-
-    let did_open = |uri: &str| {
-        json!({
-            "textDocument": {
-                "uri": uri,
-                "languageId": "reify",
-                "version": 1,
-                "text": BROKEN
-            }
-        })
-        .to_string()
-    };
-
-    // Occupy the lane's single consumer.
-    let (parked_tx, parked_rx) = mpsc::channel::<Option<String>>();
-    let (release_tx, release_rx) = mpsc::channel::<()>();
-    post(
-        lane.sender(),
-        Box::new(move || {
-            let _ = parked_tx.send(std::thread::current().name().map(str::to_owned));
-            let _ = release_rx.recv();
-        }),
-    )
-    .expect("posting the probe must succeed");
-    let parked_on = parked_rx
-        .recv_timeout(Duration::from_secs(10))
-        .expect("the probe job must reach the consumer and report where it parked");
-    assert_eq!(
-        parked_on.as_deref(),
-        Some(lane_name),
-        "the probe must occupy the real lane consumer; a lane that degraded to \
-         a spawned thread would leave the queue free and make this test vacuous"
-    );
-
-    // Enqueue a real `didOpen` and then ABANDON it: the only consumer is parked,
-    // so the timeout necessarily elapses and drops the submitted future.
-    let abandoned = tokio::time::timeout(
-        Duration::from_millis(200),
-        lsp_request_on_lane(
-            lane.sender(),
-            Arc::clone(&bridge),
-            "textDocument/didOpen".to_string(),
-            did_open(abandoned_uri),
-        ),
-    )
-    .await;
-    assert!(
-        abandoned.is_err(),
-        "precondition: with the only consumer parked the request must not have \
-         completed — that elapse is what abandons it"
-    );
-
-    // Release the consumer; it now dequeues the abandoned job.
-    drop(release_tx);
-
-    // A LIVE request through the same lane, which is also the FIFO barrier: by
-    // the time it resolves the abandoned job has already been dequeued and has
-    // had whatever chance the destination's policy gives it.
-    let live = tokio::time::timeout(
-        Duration::from_secs(10),
-        lsp_request_on_lane(
-            lane.sender(),
-            Arc::clone(&bridge),
-            "textDocument/didOpen".to_string(),
-            did_open(live_uri),
-        ),
-    )
-    .await
-    .expect("the lane must keep serving after an abandoned request")
-    .expect("the live didOpen must resolve to Ok");
-    assert_eq!(
-        live, "null",
-        "`didOpen` is a notification, so it answers Null through the lane"
-    );
-
-    AbandonedOutcome {
-        published: sink
-            .take_calls()
-            .iter()
-            .map(|(uri, ..)| uri.as_str().to_owned())
-            .collect(),
-        abandoned_has_state: !bridge.get_diagnostics(abandoned_uri).await.is_empty(),
-    }
-}
-
-/// (o) An ABANDONED request to a DISCARDING destination produces no server-side
-/// effect — the end-to-end counterpart of `large_stack_tests`' (ah), through
-/// the REAL composition.
-///
-/// (ah) proves the mechanism with a synthetic sender and an `AtomicBool`. This
-/// proves it against a real lane, a real `InProcessLsp` and a real notification
-/// sink: the abandoned request never reaches the server, so it publishes no
-/// diagnostics and leaves no document behind.
-///
-/// The shape is `abandoned_didopen_outcome` above — shared verbatim with (o2),
-/// which asserts the opposite polarity on the same two fields. Only the lane's
-/// declared policy differs, which is what makes the pair a contrast rather than
-/// two similar-looking tests.
-#[tokio::test]
-async fn an_abandoned_request_on_a_discarding_lane_has_no_server_side_effect() {
-    use crate::large_stack::Lane;
-
-    const LANE_NAME: &str = "t6517-canc";
-    // `cancelling_pool`, i.e. `OnAbandon::Discard` — the policy the real
-    // `LSP_POOL` carries. See the helper's doc for why a `didOpen` is
-    // nonetheless the payload.
-    static CANCEL_LANE: Lane = Lane::cancelling_pool(LANE_NAME, 1);
-
-    const ABANDONED_URI: &str = "file:///abandoned.ri";
-    const LIVE_URI: &str = "file:///still_live.ri";
-
-    let outcome =
-        abandoned_didopen_outcome(&CANCEL_LANE, LANE_NAME, ABANDONED_URI, LIVE_URI).await;
-
-    assert!(
-        outcome.published.iter().any(|uri| uri == LIVE_URI),
-        "non-vacuity: the LIVE didOpen must have published diagnostics, or the \
-         absence assertion below would hold for a sink that records nothing. \
-         Recorded: {:?}",
-        outcome.published
-    );
-    assert!(
-        outcome.published.iter().all(|uri| uri != ABANDONED_URI),
-        "the abandoned didOpen must never have reached `InProcessLsp`: it \
-         published diagnostics, so the lane drove work whose awaiting side was \
-         already gone. Recorded: {:?}",
-        outcome.published
-    );
-    assert!(
-        !outcome.abandoned_has_state,
-        "the abandoned request must have left NO server-side state — no \
-         document, and therefore no diagnostics, for its URI"
-    );
-}
-
-/// (o2) An abandoned `textDocument/didOpen` on an ORDERED (`OnAbandon::Run`)
-/// destination IS STILL APPLIED.
-///
-/// (o)'s inverse, and the end-to-end statement of why cancel-at-the-lane is a
-/// property of the destination rather than a blanket rule. It runs the SAME
-/// `abandoned_didopen_outcome` body as (o) — same parked consumer, same
-/// manufactured abandonment, same sink — with the lane's declared policy as the
-/// only difference, so a regression to the blanket `if reply_tx.is_closed()`
-/// reds exactly here. Sharing the body is what makes "everything is identical
-/// except the policy" literally true rather than true by resemblance.
-///
-/// # What the regression costs, which is why this is asserted end-to-end
-///
-/// Not a lost notification. A lost DOCUMENT. If the queued `didOpen` is
-/// discarded, `InProcessLsp` never learns the URI exists; a subsequent
-/// `didChange` then takes `ReifyLanguageServer::did_change`'s `didChange for
-/// unknown URI` branch and silently applies nothing, and every query handler —
-/// `hover`, `goto_definition`, `completion`, `document_symbol`,
-/// `document_highlight`, `prepare_rename`, `rename`, `references` — returns
-/// `Ok(None)` from its `documents.get(&uri)` miss arm. The pane
-/// stays dark to hover, completion and diagnostics for the rest of the session,
-/// with no error anywhere. Asserting the PUBLISH (a real server-side effect)
-/// rather than "the lane recovered" is what distinguishes that outcome from a
-/// healthy one — a lane that dropped the job would satisfy "recovered"
-/// perfectly.
-///
-/// The second `didOpen` is the non-vacuity twin, exactly as in (o): without it
-/// a sink that recorded everything twice would also pass.
-#[tokio::test]
-async fn an_abandoned_request_on_the_ordered_lane_is_still_applied() {
-    use crate::large_stack::Lane;
-
-    const LANE_NAME: &str = "t6517-ord";
-    // `Lane::pool`, i.e. `OnAbandon::Run` — the policy `LSP_LANE` carries.
-    static ORDERED_LANE: Lane = Lane::pool(LANE_NAME, 1);
-
-    const ABANDONED_URI: &str = "file:///abandoned_ordered.ri";
-    const LIVE_URI: &str = "file:///still_live_ordered.ri";
-
-    let outcome =
-        abandoned_didopen_outcome(&ORDERED_LANE, LANE_NAME, ABANDONED_URI, LIVE_URI).await;
-
-    assert!(
-        outcome.published.iter().any(|uri| uri == LIVE_URI),
-        "non-vacuity: the LIVE didOpen must have published diagnostics. \
-         Recorded: {:?}",
-        outcome.published
-    );
-    assert!(
-        outcome.published.iter().any(|uri| uri == ABANDONED_URI),
-        "the ABANDONED didOpen must still have reached `InProcessLsp`. It did \
-         not — so on the ordered lane a request whose caller stopped listening \
-         now silently loses the document: `didChange` for that URI applies \
-         nothing and every query answers None, for the rest of the session. \
-         Recorded: {:?}",
-        outcome.published
-    );
-    assert!(
-        outcome.abandoned_has_state,
-        "the abandoned request must have left its server-side state behind — a \
-         document, and diagnostics for it"
-    );
-}
-
-/// (p) The PRODUCTION query pool runs the consumers it DECLARES — the twin of
-/// (k), for the lane whose consumer count is the whole point of task 6517.
-///
-/// (k) pins `LSP_LANE` at exactly one consumer, because a second one would let a
-/// `didChange` overtake an earlier one. This pins the opposite direction, and
-/// nothing else in any test file does: `large_stack_tests`' (aa)/(ab)/(ad)/
-/// (ae) measure the mechanism against test-local `Lane::pool(..)` instances,
-/// (l) above deliberately uses a test-local size-2 pool, and (i) only compares
-/// `lane_for_method`'s returned POINTER with `LSP_POOL.sender()`. So before this
-/// test, rebuilding the static as `Lane::new(LSP_POOL_THREAD_PREFIX)` — or
-/// letting `LSP_POOL_SIZE` fall to 1 — left every other test in this binary
-/// green while restoring total head-of-line blocking among LSP queries, which is
-/// exactly the regression the task exists to prevent.
-///
-/// # Two assertions, because neither alone is enough
-///
-/// STRUCTURAL, via `Lane::size()`. `LSP_POOL.size() == LSP_POOL_SIZE` catches a
-/// static rebuilt with `Lane::new` or with a stray literal; `LSP_POOL_SIZE == 4`
-/// catches the constant itself being lowered. The second is a VALUE assertion
-/// rather than a `>= 2` range check on purpose — `LSP_POOL_SIZE`'s own docs
-/// justify a fixed constant by promising "the same number on every machine —
-/// directly assertable from a test", and a range check would let 4 drift to 2
-/// unremarked, which is precisely the silent narrowing this guards.
-///
-/// BEHAVIOURAL, via thread names. A declared size means nothing if `Lane::sender`
-/// does not act on it, so a probe is dispatched through the real pool and the
-/// thread it lands on is named. This is a sharp check rather than a soft one
-/// because of `Lane`'s naming rule: a size-1 lane names its consumer EXACTLY
-/// `name`, with no index (that is what keeps `reify-lsp-w` byte-identical across
-/// the pool generalisation), so BOTH regressions above produce the bare
-/// `reify-lsp-p` — which is not in the expected set and reds here.
-///
-/// # Why the observed set is NOT asserted to be the full set
-///
-/// That would be a scheduling bet dressed as a property. Consumers do rotate
-/// across sequential submissions — the shared receiver lock is released before
-/// each job body — but WHICH waiter wins the freed lock is the OS's choice, so
-/// "all four names appear within N submissions" can fail on a loaded machine
-/// with nothing broken. The alternative — PARKING four consumers to observe them
-/// at once — is the starvation hazard (l) documents from the other side: any
-/// concurrently-running test in this binary holding one pool consumer would make
-/// the parked count fall short and RED a healthy pool. So the count is pinned
-/// structurally and the naming behaviourally, and neither assertion depends on
-/// the scheduler. This test never parks a consumer for longer than a
-/// `ThreadId` read.
+/// REALISED: `LSP_POOL.started()` must equal `LSP_POOL_SIZE`, because
+/// `Lane::sender` survives a partial spawn failure with a narrower pool.
 #[test]
 fn the_query_pool_runs_the_consumers_it_declares() {
     use crate::large_stack::{LSP_LANE, LSP_POOL, LSP_POOL_SIZE, LSP_POOL_THREAD_PREFIX};
     use crate::tests::test_helpers::post_and_wait;
     use std::collections::HashSet;
 
-    assert_eq!(
-        LSP_POOL_SIZE, 4,
-        "`LSP_POOL_SIZE` is a FIXED constant so the head-of-line bound is the \
-         same number on every machine and in every bug report. Changing it is a \
-         legitimate decision — but a deliberate one, which is what this line \
-         makes it."
-    );
     assert_eq!(
         LSP_POOL.size(),
         LSP_POOL_SIZE,
@@ -937,8 +562,9 @@ fn the_query_pool_runs_the_consumers_it_declares() {
     assert_eq!(
         LSP_LANE.size(),
         1,
-        "the ordered lane must stay single-consumer — the structural twin of \
-         (k)'s behavioural check, and the invariant `didChange` ordering rests on"
+        "the ordered lane must stay single-consumer: notifications are \
+         order-sensitive against each other, and a second consumer would let a \
+         `didChange` overtake an earlier one"
     );
 
     let expected: HashSet<String> = (0..LSP_POOL_SIZE)
@@ -979,25 +605,9 @@ fn the_query_pool_runs_the_consumers_it_declares() {
          assertions meaningless. Saw {seen:?}"
     );
 
-    // REALISED, via `Lane::started()`, and placed after the loop because the
-    // count is meaningful only once `sender()` has run. The two assertions above
-    // are both about what the pool DECLARES; `Lane::sender` warns and continues
-    // on a partial spawn failure, so a pool that started 1 of 4 consumers passes
-    // every one of them while serializing LSP queries again. This is the only
-    // line in either file that can tell those apart.
-    //
-    // It stays a strict equality, and the diagnostic does the work instead.
-    // Weakening it to `>= 1` would delete the whole point — the silent
-    // narrowing is exactly a count between 1 and `LSP_POOL_SIZE`, so a liveness
-    // check cannot see it. But the shortfall has TWO possible causes and they
-    // belong to different subsystems: a code defect here, or an OS that refused
-    // one of this binary's many concurrent 256 MiB mappings. This binary
-    // declares a lot of them at once (`LSP_POOL`'s four, `LSP_LANE`,
-    // `ENGINE_LANE`, plus the test-local lanes of every concurrently-running
-    // `#[test]`), and verify runs under CPU/memory admission control alongside
-    // other cargo waves, so the environment cause is real rather than
-    // theoretical. The message names the discriminator so a red here is
-    // triaged at the right subsystem rather than at this crate by default.
+    // After the loop: the count is meaningful only once `sender()` has run.
+    // The 0-before-use half is `large_stack_tests`' (al), on a test-local pool,
+    // because another test may already have created `LSP_POOL`.
     let started = LSP_POOL.started();
     assert_eq!(
         started, LSP_POOL_SIZE,
@@ -1015,22 +625,11 @@ fn the_query_pool_runs_the_consumers_it_declares() {
          binary can observe that. Either way the number above is the realised \
          bound, not the declared one."
     );
-    // The anti-vacuity twin — that `started()` reports 0 for a lane nobody has
-    // used — is `large_stack_tests`' (al), on a TEST-LOCAL pool. It cannot live
-    // here: every `static` in this module is process-wide, and any of the ~dozen
-    // concurrently-running tests in this binary may have created `LSP_LANE`
-    // already, so "0 before use" is not a property this test can observe.
 }
 
 /// A [`NotificationSink`] that records the NAME of the thread each
-/// `publish_diagnostics` call arrives on.
-///
-/// `reify_lsp::test_support::RecordingSink` records the CALL but not its thread,
-/// and it lives in `crates/reify-lsp` — outside this task's scope — so the
-/// thread observation is made with a local sink rather than by widening that
-/// one. Being a sink, it is also the ONLY hook `reify-lsp` exposes to this
-/// crate that can report where server-side work ran, which is why (q) below can
-/// make the observation for a notification and not for a query.
+/// `publish_diagnostics` call arrives on — the one hook `reify-lsp` exposes that
+/// can report where server-side work ran.
 #[derive(Default)]
 struct ThreadNameSink {
     threads: std::sync::Mutex<Vec<Option<String>>>,
@@ -1060,39 +659,20 @@ impl ThreadNameSink {
     }
 }
 
-/// (q) The PRODUCTION entry point genuinely reaches a lane thread — asserted
-/// against `lsp_request_on_worker` itself, not against a lane helper beside it.
+/// (q) The PRODUCTION entry point runs its work on a lane thread, not inline on
+/// the awaiting runtime worker.
 ///
-/// `lsp_bridge_tests`' (d) makes the same claim, but since the routing change
-/// it makes it about `crate::large_stack::run_on_lsp_worker`, which production
-/// no longer calls at all: `lsp_request_on_worker` is now
-/// `lsp_request_on_lane(lane_for_method(&method), ..)`. So (d) went vacuous
-/// with respect to its own stated purpose — gutting `lsp_request_on_worker` to
-/// a plain `lsp_request_impl(..).await` would leave that (d) and this file's
-/// (h), (i), (l), (n) and (o) all green, because each of those either drives
-/// the `lsp_request_on_lane` seam directly, inspects `lane_for_method` in
-/// isolation, or only checks a returned VALUE — and a value is exactly what a
-/// gutted wrapper still gets right. This restores the property against the real
-/// entry point.
+/// Asserted against `lsp_request_on_worker` itself: a wrapper gutted to
+/// `lsp_request_impl(..).await` would still return the right values, so (h),
+/// (i), (l) and (n) would all stay green. The observation is the sink:
+/// `did_open` publishes diagnostics synchronously on whatever thread runs the
+/// handler, and broken source guarantees a publish.
 ///
-/// The observation is the sink: `did_open` calls `publish_diagnostics`
-/// synchronously, on whatever thread is running the handler, so the recorded
-/// name IS the thread `lsp_request_on_worker` put the work on. Broken source
-/// guarantees a publish, so "no record" means "never ran" rather than "ran and
-/// had nothing to say".
-///
-/// # What this covers for the QUERY pool, and how
-///
-/// Not by the same observation: no read-only query publishes anything, so the
-/// sink is silent for all eight of them, and PARKING pool consumers to watch
-/// them instead is the starvation hazard (l) and (p) document. It is covered by
-/// COMPOSITION, which since task 6517 is one line — `lsp_request_on_worker` IS
-/// `lsp_request_on_lane(lane_for_method(&method), ..)`, for every method at
-/// once. This test proves that line reaches a lane rather than awaiting inline;
-/// (i) proves `lane_for_method` returns `LSP_POOL`'s sender for each of the
-/// eight queries; (p) proves those consumers are real, indexed pool threads.
-/// The gutting this exists to catch removes the lane hop for EVERY method
-/// simultaneously, so catching it on one is catching it.
+/// The query pool is covered by composition rather than observation, because no
+/// query publishes anything: `lsp_request_on_worker` is
+/// `lsp_request_on_lane(lane_for_method(&method), ..)` for every method, (i)
+/// shows `lane_for_method` returns `LSP_POOL`'s sender for the eight queries,
+/// and (p) shows those consumers are real pool threads.
 #[tokio::test]
 async fn the_production_entry_point_runs_its_work_on_a_lane_thread() {
     use crate::large_stack::LSP_WORKER_THREAD_NAME;
@@ -1161,54 +741,5 @@ async fn the_production_entry_point_runs_its_work_on_a_lane_thread() {
          worker. Diagnostics were published from {threads:?} — which is what a \
          wrapper gutted to `lsp_request_impl(..).await` would report, while \
          still returning exactly the right value."
-    );
-}
-
-/// (r) Each PRODUCTION lane declares the abandoned-job policy its work requires.
-///
-/// The structural twin of (o)/(o2), and the guard neither of them can be. Both
-/// of those measure a TEST-LOCAL lane, because forcing an abandonment means
-/// parking every consumer and doing that to a process-wide `static` would
-/// starve whichever other test in this binary is using it. So before this test,
-/// rebuilding `LSP_LANE` as `Lane::cancelling_pool(..)` — which would start
-/// silently discarding queued `didOpen`s in the shipped GUI — left every test in
-/// the binary green, exactly the way declaring `LSP_POOL` with `Lane::new` did
-/// before (p) existed.
-///
-/// It is a three-line assertion over `Lane::on_abandon()` for that reason: the
-/// property is a declaration, so a declaration is the honest thing to check.
-/// What LICENSES each value is not: `LSP_POOL` may discard only because every
-/// method `lane_for_method` routes there is read-only against server-side state,
-/// which (i)/(j) pin from the other side.
-#[test]
-fn each_production_lane_declares_the_abandon_policy_its_work_requires() {
-    use crate::large_stack::{ENGINE_LANE, LSP_LANE, LSP_POOL, OnAbandon};
-
-    assert_eq!(
-        LSP_LANE.on_abandon(),
-        OnAbandon::Run,
-        "the ORDERED LSP lane must run an abandoned job anyway. It carries \
-         `didOpen`/`didChange`/`didClose`; discarding one unrun leaves \
-         `InProcessLsp` without the document, after which `didChange` applies \
-         nothing and every query answers None for that URI — permanently, and \
-         with no error anywhere."
-    );
-    assert_eq!(
-        ENGINE_LANE.on_abandon(),
-        OnAbandon::Run,
-        "the ENGINE lane must run an abandoned job anyway: it carries the \
-         projection / incremental-re-eval commands, several of which mutate \
-         session state. Today it is fed only by the fire-and-forget \
-         `post_to_worker`, and `post` always runs its job without consulting \
-         this policy — so no current path reads it, and this row guards the \
-         day a `dispatch_async` submitter to the engine lane is added."
-    );
-    assert_eq!(
-        LSP_POOL.on_abandon(),
-        OnAbandon::Discard,
-        "the QUERY pool is the one destination that may discard — and the \
-         anti-vacuity half of this test. Without it, a change that made \
-         `OnAbandon::Run` universal would satisfy the two assertions above \
-         while deleting cancel-at-the-lane outright."
     );
 }

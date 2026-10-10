@@ -259,11 +259,11 @@ fn post_without_a_lane_runs_the_job_on_a_spawned_engine_thread() {
 /// rather than inline on the poster.
 #[test]
 fn post_hands_a_job_refused_by_a_dead_lane_to_a_spawned_engine_thread() {
-    use crate::large_stack::{ENGINE_THREAD_NAME, JobSender, OnAbandon, post};
+    use crate::large_stack::{ENGINE_THREAD_NAME, JobSender, post};
 
     let (lane_tx, lane_rx) = std::sync::mpsc::channel();
     drop(lane_rx);
-    let dead = JobSender::new("dead-lane", lane_tx, OnAbandon::Run);
+    let dead = JobSender::new("dead-lane", lane_tx);
 
     let (tx, rx) = std::sync::mpsc::channel();
     post(
@@ -432,14 +432,14 @@ fn large_stack_thread_names_are_pairwise_distinct() {
 /// so equality proves reuse and inequality proves a distinct thread.
 #[tokio::test]
 async fn the_two_lanes_are_separate_threads_each_amortised() {
-    use crate::large_stack::run_on_lsp_worker;
+    use crate::large_stack::{LSP_LANE, dispatch_async};
 
     let caller_id = std::thread::current().id();
 
     let engine_a = engine_lane_thread();
     let engine_b = engine_lane_thread();
-    let lsp_a = run_on_lsp_worker(async { std::thread::current().id() }).await;
-    let lsp_b = run_on_lsp_worker(async { std::thread::current().id() }).await;
+    let lsp_a = dispatch_async(LSP_LANE.sender(), async { std::thread::current().id() }).await;
+    let lsp_b = dispatch_async(LSP_LANE.sender(), async { std::thread::current().id() }).await;
 
     // Non-vacuity: a degraded lane reports the CALLER's id, which would make the
     // "same thread within a lane" assertions trivially true and the "different
@@ -487,7 +487,7 @@ async fn the_two_lanes_are_separate_threads_each_amortised() {
 #[test]
 fn a_job_on_one_lane_may_submit_to_the_other_lane() {
     use crate::large_stack::{
-        LSP_WORKER_THREAD_NAME, WORKER_THREAD_NAME, post_to_worker, run_on_lsp_worker,
+        LSP_LANE, LSP_WORKER_THREAD_NAME, WORKER_THREAD_NAME, dispatch_async, post_to_worker,
     };
 
     let (tx, rx) = std::sync::mpsc::channel();
@@ -495,7 +495,9 @@ fn a_job_on_one_lane_may_submit_to_the_other_lane() {
         let outer = this_thread();
         let inner = tokio::runtime::Builder::new_current_thread()
             .build()
-            .map(|runtime| runtime.block_on(run_on_lsp_worker(async { this_thread() })));
+            .map(|runtime| {
+                runtime.block_on(dispatch_async(LSP_LANE.sender(), async { this_thread() }))
+            });
         let _ = tx.send((outer, inner));
     })
     .expect("posting to the ENGINE lane must succeed");
@@ -523,16 +525,19 @@ fn a_job_on_one_lane_may_submit_to_the_other_lane() {
 /// equal pair across the panic proves the same thread survived.
 #[tokio::test]
 async fn lsp_lane_is_panic_isolated_and_survives() {
-    use crate::large_stack::run_on_lsp_worker;
+    use crate::large_stack::{LSP_LANE, dispatch_async};
 
     let caller_id = std::thread::current().id();
-    let before = run_on_lsp_worker(async { std::thread::current().id() }).await;
+    let before = dispatch_async(LSP_LANE.sender(), async { std::thread::current().id() }).await;
     assert_ne!(
         before, caller_id,
         "the pre-panic job must run on the lane, not inline on the caller"
     );
 
-    let poisoned = tokio::spawn(run_on_lsp_worker::<_, ()>(async { panic!("lsp boom") })).await;
+    let poisoned = tokio::spawn(dispatch_async::<_, ()>(LSP_LANE.sender(), async {
+        panic!("lsp boom")
+    }))
+    .await;
     let payload = poisoned
         .expect_err("a panicking LSP-lane job must reach its awaiter")
         .into_panic();
@@ -542,7 +547,10 @@ async fn lsp_lane_is_panic_isolated_and_survives() {
         "the awaiter must receive the JOB's original payload, not a substitute"
     );
 
-    let (value, after) = run_on_lsp_worker(async { (5u32, std::thread::current().id()) }).await;
+    let (value, after) = dispatch_async(LSP_LANE.sender(), async {
+        (5u32, std::thread::current().id())
+    })
+    .await;
     assert_eq!(
         value, 5,
         "the LSP lane must keep answering submissions after a poisoned job"
@@ -572,8 +580,8 @@ async fn lsp_lane_is_panic_isolated_and_survives() {
 /// (u) The async submission returns the closure's value, and the closure body
 /// runs on the LSP lane's thread — not on a tokio worker, and not inline.
 #[tokio::test]
-async fn run_on_lsp_worker_returns_value_and_runs_on_the_lane() {
-    use crate::large_stack::{LSP_WORKER_THREAD_NAME, run_on_lsp_worker};
+async fn lsp_lane_dispatch_returns_value_and_runs_on_the_lane() {
+    use crate::large_stack::{LSP_LANE, LSP_WORKER_THREAD_NAME, dispatch_async};
 
     let caller_id = std::thread::current().id();
     // Owned and MOVED into the job, because the lane outlives this frame — a
@@ -581,7 +589,7 @@ async fn run_on_lsp_worker_returns_value_and_runs_on_the_lane() {
     // copy.
     let data = Vec::from([1u64, 2, 3, 4, 5]);
 
-    let (sum, inner_id, inner_name) = run_on_lsp_worker(async move {
+    let (sum, inner_id, inner_name) = dispatch_async(LSP_LANE.sender(), async move {
         let s: u64 = data.iter().sum();
         (
             s,
@@ -621,8 +629,8 @@ async fn run_on_lsp_worker_returns_value_and_runs_on_the_lane() {
 ///   spawned task (which completes at once), and 300 ms later the oneshot fires.
 ///   The flag therefore reads `true`. GREEN.
 #[tokio::test]
-async fn run_on_lsp_worker_does_not_block_the_calling_runtime() {
-    use crate::large_stack::run_on_lsp_worker;
+async fn lane_dispatch_does_not_block_the_calling_runtime() {
+    use crate::large_stack::{LSP_LANE, dispatch_async};
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -638,7 +646,7 @@ async fn run_on_lsp_worker_does_not_block_the_calling_runtime() {
 
     // Long enough that "did the runtime get to poll anything else?" is not a
     // close call either way.
-    let lane_result = run_on_lsp_worker(async {
+    let lane_result = dispatch_async(LSP_LANE.sender(), async {
         std::thread::sleep(std::time::Duration::from_millis(300));
         "lane job done"
     })
@@ -676,14 +684,14 @@ async fn run_on_lsp_worker_does_not_block_the_calling_runtime() {
 /// the payload through [`tokio::task::JoinError::into_panic`], so no
 /// `futures::FutureExt::catch_unwind` (and no new dependency) is needed.
 #[tokio::test]
-async fn run_on_lsp_worker_propagates_the_original_job_panic() {
-    use crate::large_stack::run_on_lsp_worker;
+async fn lane_dispatch_propagates_the_original_job_panic() {
+    use crate::large_stack::{LSP_LANE, dispatch_async};
 
     let joined = tokio::spawn(async {
         // Concrete `T = ()` so inference is unambiguous; the closure never
         // returns normally, but the panic must still cross the lane AND the
         // oneshot to reach the awaiting task.
-        run_on_lsp_worker::<_, ()>(async { panic!("async boom") }).await;
+        dispatch_async::<_, ()>(LSP_LANE.sender(), async { panic!("async boom") }).await;
     })
     .await;
 
@@ -753,10 +761,10 @@ async fn async_dispatch_without_a_lane_runs_inline_and_still_resolves() {
 /// through [`deep_recurse_if_on_thread`], so a degraded lane yields a clean
 /// assertion failure instead of overflowing and SIGABRTing the whole binary.
 #[tokio::test]
-async fn run_on_lsp_worker_survives_deep_recursion_over_default_stack() {
-    use crate::large_stack::{LSP_WORKER_THREAD_NAME, run_on_lsp_worker};
+async fn lsp_lane_dispatch_survives_deep_recursion_over_default_stack() {
+    use crate::large_stack::{LSP_LANE, LSP_WORKER_THREAD_NAME, dispatch_async};
 
-    let result = run_on_lsp_worker(async {
+    let result = dispatch_async(LSP_LANE.sender(), async {
         deep_recurse_if_on_thread(LSP_WORKER_THREAD_NAME, DEEP_RECURSION_DEPTH)
     })
     .await;
@@ -793,13 +801,13 @@ async fn run_on_lsp_worker_survives_deep_recursion_over_default_stack() {
 /// synthetic sender's type can be named here at all.
 #[tokio::test]
 async fn async_dispatch_recovers_a_handed_back_job_off_the_submitting_frame() {
-    use crate::large_stack::{JobSender, OnAbandon, dispatch_async};
+    use crate::large_stack::{JobSender, dispatch_async};
 
     // Consumer dropped before any send: every `send` fails at once with
     // `SendError(job)`, which is the arm under test.
     let (tx, rx) = std::sync::mpsc::channel();
     drop(rx);
-    let dead = JobSender::new("test-dead-async", tx, OnAbandon::Run);
+    let dead = JobSender::new("test-dead-async", tx);
 
     let caller_id = std::thread::current().id();
 
@@ -863,12 +871,15 @@ async fn async_dispatch_recovers_a_handed_back_job_off_the_submitting_frame() {
 /// make this test's report legible while every other LSP-lane test hung anyway.
 #[tokio::test]
 async fn submitting_to_your_own_lane_from_a_future_panics_loudly_instead_of_wedging_it() {
-    use crate::large_stack::{LSP_WORKER_THREAD_NAME, run_on_lsp_worker};
+    use crate::large_stack::{LSP_LANE, LSP_WORKER_THREAD_NAME, dispatch_async};
 
     let joined = tokio::spawn(async {
         // The OUTER future is driven ON the LSP lane; the inner submission
         // targets that same lane, which is the wedge.
-        run_on_lsp_worker(async { run_on_lsp_worker(async { 1u32 }).await }).await
+        dispatch_async(LSP_LANE.sender(), async {
+            dispatch_async(LSP_LANE.sender(), async { 1u32 }).await
+        })
+        .await
     })
     .await;
 
@@ -895,8 +906,10 @@ async fn submitting_to_your_own_lane_from_a_future_panics_loudly_instead_of_wedg
     // submission would hang here, and one that had silently degraded to an
     // inline await would answer from the caller's thread instead. Asserting the
     // thread NAME rather than just the value is what separates those two.
-    let (value, ran_on) =
-        run_on_lsp_worker(async { (7u32, std::thread::current().name().map(str::to_owned)) }).await;
+    let (value, ran_on) = dispatch_async(LSP_LANE.sender(), async {
+        (7u32, std::thread::current().name().map(str::to_owned))
+    })
+    .await;
     assert_eq!(
         value, 7,
         "the lane must survive a rejected re-entrant submission and keep serving \
@@ -1330,7 +1343,7 @@ async fn submitting_to_your_own_pool_panics_loudly_instead_of_wedging_it() {
 /// `post_and_wait` fails at once rather than hanging.
 #[test]
 fn a_pool_job_may_submit_to_another_lane() {
-    use crate::large_stack::{LSP_WORKER_THREAD_NAME, Lane, run_on_lsp_worker};
+    use crate::large_stack::{LSP_LANE, LSP_WORKER_THREAD_NAME, Lane, dispatch_async};
 
     const PREFIX: &str = "t6517-cross-";
     static POOL: Lane = Lane::pool(PREFIX, 2);
@@ -1339,7 +1352,9 @@ fn a_pool_job_may_submit_to_another_lane() {
         let outer = this_thread();
         let inner = tokio::runtime::Builder::new_current_thread()
             .build()
-            .map(|runtime| runtime.block_on(run_on_lsp_worker(async { this_thread() })));
+            .map(|runtime| {
+                runtime.block_on(dispatch_async(LSP_LANE.sender(), async { this_thread() }))
+            });
         (outer, inner)
     });
 
@@ -1356,428 +1371,6 @@ fn a_pool_job_may_submit_to_another_lane() {
          inline await on the pool consumer"
     );
     assert_ne!(outer, inner);
-}
-
-// ── Cancel at the lane (task 6517) ───────────────────────────────────────────
-//
-// `dispatch_async` moves a `tokio::sync::oneshot::Sender` into the job, and
-// `Sender::is_closed()` is true exactly when the awaiting side's future was
-// dropped. On a destination declared `OnAbandon::Discard`, checking it before
-// driving anything skips an abandoned job instead of executing it. No new
-// dependency, no new token type, no change to the job contract.
-//
-// # What this is, and is NOT, evidence of
-//
-// It is a STRUCTURAL guarantee, not a measured saving, and these tests are
-// written knowing that. Task 5772 disclosed the lane as a loss of
-// drop-cancellation on the premise that an abandoned frontend `invoke`
-// previously dropped the Tauri command's future; against the pinned `tauri`
-// 2.11.2 that premise is false. `InvokeResolver::respond_async` /
-// `respond_async_serialized_inner` both `async_runtime::spawn(..)` and discard
-// the returned handle, and dropping a tokio
-// `JoinHandle` detaches rather than cancels — so the command future ran to
-// completion before 5772 too. On the shipped app the only thing that closes the
-// receiver is runtime/app teardown, which is why every test below MANUFACTURES
-// the drop with `tokio::time::timeout`.
-//
-// # Why the policy is a property of the DESTINATION
-//
-// The check was first written blanket, and that was a defect: discarding a
-// queued `textDocument/didOpen` means `InProcessLsp` never learns the document
-// exists, and the file stays permanently dark to hover/completion/diagnostics.
-// `OnAbandon::Run` is therefore the default and `OnAbandon::Discard` an opt-in
-// carried by the queue — see `large_stack::OnAbandon`. (aj0) below pins the
-// `Run` half; `lsp_lane_routing_tests`' (o2) pins it end-to-end on a real
-// lane.
-//
-// # Why these tests use a SYNTHETIC sender
-//
-// They need to observe the queue between the submission and the job running,
-// which no real lane permits — a real consumer would pick the job up
-// immediately. Building a `JobSender` over a channel whose `Receiver` the TEST
-// holds makes the ordering provable rather than timed: the job cannot possibly
-// have run before the test runs it by hand. No global lane is touched, and no
-// assertion depends on a race.
-
-/// The shared body of (ah) and (aj0): manufacture an ABANDONED submission to a
-/// destination declared with `on_abandon`, and report whether the lane drove
-/// its future.
-///
-/// (ah) and (aj0) differ in exactly two things — the destination's declared
-/// policy, and the polarity of the conclusion — so what they share is written
-/// ONCE here. Writing it twice is what would let the two drift, and every part
-/// of it is load-bearing: the synthetic sender whose `Receiver` this frame
-/// holds, the elapsing timeout that PERFORMS the abandonment, the `try_recv`
-/// proving the job was nonetheless enqueued, and the hand-invocation on a plain
-/// `std` thread. A fix applied to one copy would silently not reach the other.
-/// Same reason `observe_concurrent_arrivals` above exists.
-///
-/// The preconditions are asserted HERE rather than by the callers, because they
-/// are preconditions of the MEASUREMENT and not either test's claim: the await
-/// must elapse (that elapse *is* the abandonment), the future must not have
-/// been polled beforehand (this frame holds the only `Receiver`), the job must
-/// have been enqueued regardless, and invoking it must not panic. Only the
-/// answer — was the future polled — is returned, and each caller asserts its
-/// own polarity on it.
-///
-/// # Why the job is invoked on a plain `std` thread
-///
-/// The job carries a `Handle::block_on`, and calling that inside this test's
-/// runtime panics "Cannot start a runtime from within a runtime". On a plain
-/// `std` thread it is legal — so at RED the future genuinely runs and the
-/// caller fails on the flag it is about, rather than on a nested-runtime panic
-/// that names nothing.
-async fn abandoned_submission_was_polled(
-    on_abandon: crate::large_stack::OnAbandon,
-    sender_name: &'static str,
-) -> bool {
-    use crate::large_stack::{JobSender, dispatch_async};
-    use std::sync::Arc;
-    use std::sync::atomic::{AtomicBool, Ordering};
-    use std::time::Duration;
-
-    // This frame HOLDS `rx`, so nothing drains the queue and the job provably
-    // cannot run before the hand-invocation below.
-    let (tx, rx) = std::sync::mpsc::channel();
-    let sender = JobSender::new(sender_name, tx, on_abandon);
-
-    let polled = Arc::new(AtomicBool::new(false));
-    let polled_in_fut = Arc::clone(&polled);
-
-    let elapsed = tokio::time::timeout(
-        Duration::from_millis(50),
-        dispatch_async(Some(&sender), async move {
-            polled_in_fut.store(true, Ordering::SeqCst);
-            7u32
-        }),
-    )
-    .await;
-    assert!(
-        elapsed.is_err(),
-        "precondition: with nobody draining the queue the await must time out — \
-         that elapse is what DROPS the submitted future and abandons the request"
-    );
-    assert!(
-        !polled.load(Ordering::SeqCst),
-        "precondition: the job cannot have run yet — this frame holds the only \
-         `Receiver`"
-    );
-
-    let job = rx.try_recv().expect(
-        "the abandoned request must still have been ENQUEUED — these tests are \
-         about what the lane does with it, not about whether it arrived",
-    );
-
-    std::thread::spawn(job).join().expect(
-        "invoking the job must be a clean no-op or a clean run, never a panic. \
-         On a `Discard` destination the captured future is dropped unpolled, \
-         and that drop must not panic — cancellation must not trade wasted work \
-         for a new failure mode.",
-    );
-
-    polled.load(Ordering::SeqCst)
-}
-
-/// (ah) An ABANDONED submission to an `OnAbandon::Discard` destination is
-/// dropped at the lane instead of driven.
-///
-/// The abandonment is SYNTHESISED by `abandoned_submission_was_polled` above —
-/// `tokio::time::timeout` elapsing drops the awaiting future, which drops the
-/// `oneshot` receiver and closes the `reply_tx` the job holds. It is not
-/// modelled on a production trigger, because in `tauri` 2.11.2 there isn't one
-/// short of runtime teardown: an abandoned `invoke` leaves the command future
-/// detached and running (see this section's header). This pins the mechanism,
-/// not a saving.
-///
-/// `Discard` is the whole subject: on an `OnAbandon::Run` destination this same
-/// submission MUST be driven, which is (aj0)'s claim and its visible twin.
-#[tokio::test]
-async fn an_abandoned_submission_is_dropped_at_the_lane_instead_of_driven() {
-    use crate::large_stack::OnAbandon;
-
-    let polled = abandoned_submission_was_polled(OnAbandon::Discard, "test-cancel").await;
-
-    assert!(
-        !polled,
-        "the lane must DISCARD a job whose awaiting side is gone, not drive it. \
-         The future was polled, so the abandoned request ran anyway — occupying a \
-         consumer and delaying the live requests queued behind it, which is \
-         exactly the cost task 5772 disclosed."
-    );
-}
-
-/// (ai) The anti-vacuity twin of (ah): a LIVE submission is still driven.
-///
-/// Without this, (ah) would also be satisfied by an implementation that never
-/// ran anything at all — a lane that dropped every job would pass a
-/// "cancellation works" assertion perfectly while resolving nothing.
-///
-/// Same synthetic-sender shape, but a second thread drains the queue and runs
-/// the job WHILE this task awaits, so the `oneshot` receiver is provably alive at
-/// the moment the job body checks it. That thread is also what makes the job's
-/// `Handle::block_on` legal, as in (ah).
-#[tokio::test]
-async fn a_live_submission_is_still_driven() {
-    use crate::large_stack::{JobSender, OnAbandon, dispatch_async};
-    use std::sync::Arc;
-    use std::sync::atomic::{AtomicBool, Ordering};
-    use std::time::Duration;
-
-    // `Discard`, deliberately the same policy as (ah): that is what makes this
-    // twin sharp. It proves the check gates on the RECEIVER being gone and on
-    // nothing else — an implementation that read the policy and skipped
-    // everything queued to a discarding destination would pass (ah) perfectly.
-    let (tx, rx) = std::sync::mpsc::channel();
-    let sender = JobSender::new("test-live", tx, OnAbandon::Discard);
-
-    let polled = Arc::new(AtomicBool::new(false));
-    let polled_in_fut = Arc::clone(&polled);
-
-    let drainer = std::thread::spawn(move || {
-        let job = rx.recv().expect("a live submission must be enqueued");
-        job();
-    });
-
-    let value = tokio::time::timeout(
-        Duration::from_secs(10),
-        dispatch_async(Some(&sender), async move {
-            polled_in_fut.store(true, Ordering::SeqCst);
-            4242u32
-        }),
-    )
-    .await
-    .expect(
-        "a submission whose awaiting side is still alive must RESOLVE — a lane \
-         that skipped it would hang this await until the timeout",
-    );
-
-    drainer.join().expect("the drainer thread must not panic");
-
-    assert_eq!(
-        value, 4242,
-        "a live submission must deliver its value unchanged: the cancellation \
-         check must gate on the receiver being GONE, never on anything else"
-    );
-    assert!(
-        polled.load(Ordering::SeqCst),
-        "a live submission's future must actually be POLLED, not merely answered"
-    );
-}
-
-/// (aj0) An abandoned submission to an `OnAbandon::Run` destination IS DRIVEN.
-///
-/// (ah)'s structural twin, and the one that makes cancel-at-the-lane a property
-/// of the DESTINATION rather than a blanket rule. Same manufactured
-/// abandonment, through the same `abandoned_submission_was_polled` body — the
-/// declared policy is the ONLY thing that differs, which is what makes a
-/// regression to the blanket `if reply_tx.is_closed()` red exactly here and
-/// nowhere else. Sharing the body is what keeps that claim literally true
-/// rather than true by resemblance.
-///
-/// What it stands in for is not hypothetical. The ordered LSP lane carries
-/// `textDocument/didOpen`; discarding one unrun means `InProcessLsp` never
-/// learns the document exists, `ReifyLanguageServer::did_change` then takes its
-/// `didChange for unknown URI` branch and applies nothing, and every query
-/// handler answers `Ok(None)` for that URI. The file is permanently dark until it is closed and
-/// reopened. `lsp_lane_routing_tests`' (o2) pins that end-to-end through the
-/// real composition; this pins the primitive underneath it.
-#[tokio::test]
-async fn an_abandoned_submission_to_a_run_destination_is_still_driven() {
-    use crate::large_stack::OnAbandon;
-
-    let polled = abandoned_submission_was_polled(OnAbandon::Run, "test-run-anyway").await;
-
-    assert!(
-        polled,
-        "an `OnAbandon::Run` destination must DRIVE a job whose awaiting side is \
-         gone. It was skipped — which for the ordered LSP lane means a queued \
-         `didOpen` never reaches the server and the document stays permanently \
-         unknown to hover, completion and diagnostics."
-    );
-}
-
-/// (aj) The cancel path drops `fut` INSIDE the runtime context.
-///
-/// `dispatch_async` is generic over `Fut`, and the discard arm is the only place
-/// a submitted future is disposed of without `handle.block_on` — so it is the
-/// only place a captured tokio resource's destructor would run on a plain `std`
-/// thread with no ambient runtime. The guard is one line (`let _enter =
-/// handle.enter();`); without a test, deleting it leaves every other assertion
-/// in this file green, because (ah)'s future captures only an `Arc<AtomicBool>`
-/// and a `u32` and has no runtime-dependent destructor at all.
-///
-/// # Why the payload is a hand-written `Drop`, not a `tokio::time::Sleep`
-///
-/// Because the claim under test is "a destructor that needs the ambient runtime
-/// context does not panic here", and `Handle::current()` IS that requirement,
-/// stated directly. A never-polled `Sleep` short-circuits its own
-/// `TimerEntry::cancel` when its inner state was never initialised, so it would
-/// drop cleanly with or without the guard and the test would be vacuous. This
-/// payload cannot be vacuous: `Handle::current()` panics "there is no reactor
-/// running, must be called from the context of a Tokio 1.x runtime" whenever the
-/// guard is absent.
-///
-/// # Why the assertion is a FLAG and not the join result
-///
-/// The discard arm also wraps the drop in `catch_unwind` — (ak)'s subject — so a
-/// panicking destructor is swallowed and `join()` succeeds either way. Only a
-/// flag stored AFTER the `Handle::current()` call can tell "dropped cleanly"
-/// from "panicked and was caught".
-#[tokio::test]
-async fn the_cancel_path_drops_the_future_inside_the_runtime_context() {
-    use crate::large_stack::{JobSender, OnAbandon, dispatch_async};
-    use std::sync::Arc;
-    use std::sync::atomic::{AtomicBool, Ordering};
-    use std::time::Duration;
-
-    /// Stands in for any tokio resource whose destructor needs the ambient
-    /// runtime — `Sleep`, `Interval`, `TcpStream`, anything holding a driver
-    /// handle.
-    struct NeedsRuntimeOnDrop {
-        dropped_cleanly: Arc<AtomicBool>,
-    }
-    impl Drop for NeedsRuntimeOnDrop {
-        fn drop(&mut self) {
-            // Panics without an ambient runtime context; the store below is
-            // therefore reached only when `handle.enter()` installed one.
-            let _handle = tokio::runtime::Handle::current();
-            self.dropped_cleanly.store(true, Ordering::SeqCst);
-        }
-    }
-
-    let (tx, rx) = std::sync::mpsc::channel();
-    let sender = JobSender::new("test-enter", tx, OnAbandon::Discard);
-
-    let dropped_cleanly = Arc::new(AtomicBool::new(false));
-    let payload = NeedsRuntimeOnDrop {
-        dropped_cleanly: Arc::clone(&dropped_cleanly),
-    };
-
-    let elapsed = tokio::time::timeout(
-        Duration::from_millis(50),
-        dispatch_async(Some(&sender), async move {
-            // Captured, never polled: the discard arm drops it unrun.
-            let _payload = payload;
-            7u32
-        }),
-    )
-    .await;
-    assert!(
-        elapsed.is_err(),
-        "precondition: nothing drains this queue, so the await must elapse and \
-         abandon the submission"
-    );
-
-    let job = rx.try_recv().expect("the abandoned request must have been ENQUEUED");
-
-    // A plain `std` thread — NO ambient runtime, exactly like a lane consumer.
-    std::thread::spawn(job)
-        .join()
-        .expect("the job itself must not unwind into the consumer's receive loop");
-
-    assert!(
-        dropped_cleanly.load(Ordering::SeqCst),
-        "the discarded future's destructor must run INSIDE the runtime context. \
-         It did not: `Handle::current()` panicked \"there is no reactor running\" \
-         on the lane consumer's plain `std` thread and was swallowed by the \
-         discard arm's `catch_unwind`, so the resource was never released. That \
-         is what `let _enter = handle.enter();` in the cancel path prevents."
-    );
-}
-
-/// (ak) A PANICKING destructor on the cancel path cannot kill the consumer, and
-/// the same sender keeps working.
-///
-/// The discard arm's second guard. That arm runs only on an `OnAbandon::Discard`
-/// destination — today `LSP_POOL` — so a consumer lost here is one of that
-/// pool's: the pool silently narrows, and with it the head-of-line bound it
-/// exists to provide, while neither `Lane::size` nor `Lane::started` shows the
-/// loss. Without this test, deleting the `catch_unwind` leaves the suite green,
-/// because no other submitted future in this file has a destructor that can
-/// panic.
-///
-/// Two assertions, because the first alone is not the claim. That the job
-/// returns cleanly says the unwind did not escape; that a LATER live submission
-/// through the SAME sender still resolves says the queue survived it — which is
-/// what a real consumer's receive loop would have had to do next.
-#[tokio::test]
-async fn a_panicking_destructor_on_the_cancel_path_does_not_kill_the_sender() {
-    use crate::large_stack::{JobSender, OnAbandon, dispatch_async};
-    use std::sync::Arc;
-    use std::sync::atomic::{AtomicBool, Ordering};
-    use std::time::Duration;
-
-    struct PanicsOnDrop;
-    impl Drop for PanicsOnDrop {
-        fn drop(&mut self) {
-            panic!("destructor of a discarded future");
-        }
-    }
-
-    let (tx, rx) = std::sync::mpsc::channel();
-    let sender = JobSender::new("test-panic-drop", tx, OnAbandon::Discard);
-
-    // CONSTRUCTED OUTSIDE the async block and moved in, so it is part of the
-    // future's captured state rather than a local. A value bound inside the body
-    // does not exist until the future is polled — and the discard arm never
-    // polls it, so an inside-the-body payload would make this test vacuous.
-    let payload = PanicsOnDrop;
-
-    let elapsed = tokio::time::timeout(
-        Duration::from_millis(50),
-        dispatch_async(Some(&sender), async move {
-            let _payload = payload;
-            7u32
-        }),
-    )
-    .await;
-    assert!(
-        elapsed.is_err(),
-        "precondition: nothing drains this queue, so the await must elapse and \
-         abandon the submission"
-    );
-
-    let doomed = rx.try_recv().expect("the abandoned request must have been ENQUEUED");
-
-    // The hook is left alone deliberately: it is process-global, and this binary
-    // runs its tests in parallel, so swapping it would suppress an unrelated
-    // test's panic message. The expected backtrace on stderr is the cheaper
-    // cost.
-    let joined = std::thread::spawn(doomed).join();
-
-    assert!(
-        joined.is_ok(),
-        "a panicking destructor on the discard path must be CAUGHT inside the \
-         job. It escaped, which on a real lane unwinds the consumer's receive \
-         loop and takes that consumer out of the pool for the process lifetime."
-    );
-
-    // Second half: the queue is still usable. A live submission, drained and run
-    // by a helper thread exactly as (ai) does.
-    let polled = Arc::new(AtomicBool::new(false));
-    let polled_in_fut = Arc::clone(&polled);
-    let drainer = std::thread::spawn(move || {
-        let job = rx.recv().expect("the follow-up submission must be enqueued");
-        job();
-    });
-
-    let value = tokio::time::timeout(
-        Duration::from_secs(10),
-        dispatch_async(Some(&sender), async move {
-            polled_in_fut.store(true, Ordering::SeqCst);
-            4242u32
-        }),
-    )
-    .await
-    .expect("the sender must still serve a live submission after the panicking drop");
-
-    drainer.join().expect("the drainer thread must not panic");
-
-    assert_eq!(value, 4242, "the follow-up submission must deliver its value unchanged");
-    assert!(
-        polled.load(Ordering::SeqCst),
-        "the follow-up submission's future must actually be POLLED"
-    );
 }
 
 /// (al) `Lane::started()` reports 0 before creation and the full `size` after —
