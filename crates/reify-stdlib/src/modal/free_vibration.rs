@@ -57,7 +57,7 @@ pub fn eigenvalue_to_frequency_hz(lambda: f64) -> f64 {
 ///
 /// Squaring erases the sign of `f_hz`, so f and −f select the same λ — the
 /// reason `ModalOptions.shift_frequency` cannot express a negative-λ shift (see
-/// that param's note in `crates/reify-compiler/stdlib/modal_analysis.ri`).
+/// `docs/prds/v0_3/modal-analysis.md` §4.3).
 pub fn frequency_hz_to_eigenvalue(f_hz: f64) -> f64 {
     let omega = 2.0 * PI * f_hz;
     omega * omega

@@ -446,29 +446,12 @@ structure def ModalResult {
 //                          Required at construction (no default in this wave;
 //                          a trait-typed `= NoDamping()` default is deferred
 //                          per plan design-decision-5).
-//   shift_frequency     — the frequency (Hz) the eigensolver targets. The
-//                          trampoline shifts to λ = (2π·shift_frequency)² via
-//                          `frequency_hz_to_eigenvalue`
-//                          (crates/reify-stdlib/src/modal/free_vibration.rs).
-//                          Default `0Hz` = σ = 0 = the lowest modes.
-//                          ACCEPTED COST — near is not near: shift-invert
-//                          picks the λ nearest σ, and a λ-symmetric window is
-//                          asymmetric in Hz, biased LOW. At 100Hz a 90Hz mode
-//                          is 4π²·1900 ≈ 75009 away in λ and a 110Hz mode
-//                          4π²·2100 ≈ 82905 away, so the solver prefers 90Hz.
-//                          NAMING: deliberately not `sigma` — σ is
-//                          Lanczos/ARPACK eigenvalue-space notation, and
-//                          `BucklingOptions.sigma` (a dimensionless load
-//                          factor) stays λ-space; this param intentionally
-//                          breaks that naming mirror. Cycles-vs-rad surface:
-//                          see the ANGULAR-RATE TRAP note on
-//                          `RayleighDamping`.
-//                          HONOR STATUS: honored by `modal_analysis` (the FEA
-//                          path, #7261); not yet honored on
-//                          `mechanism_modal_analysis` (lumped) — it warns
-//                          `W_ModalOptionUnsupported` and solves at 0Hz;
-//                          owner #7263.
-//   tol                 — eigensolver convergence tolerance. Default 1e-9
+//   shift_frequency     — the frequency (Hz, not rad/s) the eigensolver
+//                          targets; the solver shifts to λ = (2π·f)² via
+//                          `frequency_hz_to_eigenvalue`. Default `0Hz` = the
+//                          lowest modes. Accepted costs and per-path honor
+//                          status: PRD §4.3.
+//   tol                — eigensolver convergence tolerance. Default 1e-9
 //                          (added later) encoded as the decimal literal
 //                          `0.000000001` — Reify's number grammar has no
 //                          scientific notation (same convention as
@@ -568,16 +551,10 @@ structure def ModalOptions {
     // Same task-2544 rationale as above.
     constraint max_iters > 0
     // NOTE — explicitly NOT constrained:
-    //   shift_frequency     : Frequency             — ACCEPTED COST: the
-    //                          conversion squares it, so f and −f select the
-    //                          same λ and a negative-λ shift is no longer
-    //                          expressible. That NARROWS the old λ-space
-    //                          `sigma` contract but loses no observable
-    //                          capability: `eigenvalue_to_frequency_hz` already
-    //                          clamps λ ≤ 0 to 0 Hz, so the negative branch
-    //                          never reached the output. A `>= 0Hz` constraint
-    //                          would add a failure mode with no physical
-    //                          content.
+    //   shift_frequency     : Frequency             — the conversion squares
+    //                          it, so f and −f select the same λ; a `>= 0Hz`
+    //                          constraint would add a failure mode with no
+    //                          physical content.
     //   reference_direction : Vector3<Dimensionless> — the `norm() > 0`
     //                          invariant is a method-call on Vector3, NOT a
     //                          scalar predicate, so it is NOT expressible in
