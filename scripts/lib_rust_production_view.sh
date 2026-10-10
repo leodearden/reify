@@ -228,6 +228,12 @@ function _is_test_only_cfg(code, raw,   squeezed_code, squeezed_raw) {
     return squeezed_raw ~ /#\[cfg\(any\(test(,feature="test[^"]*")*,?\)\)\]/
 }
 
+# _has_mod_head(s) -> 1 when s carries a `mod IDENT` declaration head: the word
+# `mod` (not the tail of a longer identifier), whitespace, then an identifier.
+function _has_mod_head(s) {
+    return s ~ /(^|[^A-Za-z0-9_])mod[ \t]+[A-Za-z_]/
+}
+
 {
     code = _strip_line($0)
 
@@ -263,25 +269,23 @@ function _is_test_only_cfg(code, raw,   squeezed_code, squeezed_raw) {
         # rustfmt gate forcing brace-on-same-line (CLAUDE.md) — sets
         # `pending_mod` so that later brace-opening line can still arm the
         # skipper below, even though *that* line's own text says nothing
-        # about `mod`. Guarded to n_open==0 and no same-line `;` so a
-        # self-terminating `mod tests;` (external file, no local body) does
-        # NOT leave `pending_mod` armed for some unrelated later brace.
+        # about `mod`.
         t = code; sub(/^[ \t]+/, "", t)
-        if (t ~ /(^|[^A-Za-z0-9_])mod[ \t]+[A-Za-z_]/ && n_open == 0 && t !~ /;/) pending_mod = 1
+        if (_has_mod_head(t) && n_open == 0) pending_mod = 1
         if (!(t == "" || t ~ /^#\[/ || t ~ /(^|[^A-Za-z0-9_])mod[ \t]/ || (pending_mod && n_open > 0))) {
             pending_test = 0
             pending_mod = 0
         }
     }
     # A self-terminating `mod tests;` (cfg on this line or an earlier one) has
-    # no local body, so it must not leave the skipper armed for the NEXT
-    # `mod X {`, which is production code.
-    if (pending_test && n_open == 0 && code ~ /;/ && code ~ /(^|[^A-Za-z0-9_])mod[ \t]+[A-Za-z_]/) {
+    # no local body, so it must leave nothing armed: neither the NEXT `mod X {`
+    # (production code) nor an unrelated later brace may read as its body.
+    if (pending_test && n_open == 0 && code ~ /;/ && _has_mod_head(code)) {
         pending_test = 0
         pending_mod = 0
     }
     if (pending_test && n_open > 0) {
-        if (pending_mod || code ~ /(^|[^A-Za-z0-9_])mod[ \t]+[A-Za-z_]/) {
+        if (pending_mod || _has_mod_head(code)) {
             in_test = 1
             test_base = depth        # depth BEFORE this block opened
             depth += n_open - n_close
