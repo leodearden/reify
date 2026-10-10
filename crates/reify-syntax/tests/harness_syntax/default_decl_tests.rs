@@ -9,6 +9,8 @@
 
 use reify_ast::*;
 
+use crate::parse_error_lookup::only_error_starting_with;
+
 /// Helper: parse source and return declarations and errors.
 fn parse_decls(source: &str) -> (Vec<Declaration>, Vec<ParseError>) {
     let module = reify_syntax::parse(
@@ -245,5 +247,23 @@ fn annotation_before_default_emits_parse_error() {
         matches!(decls[0], Declaration::Default(_)),
         "expected Declaration::Default, got {:?}",
         decls[0]
+    );
+}
+
+// ── Malformed default declaration is reported, not dropped ────────────────────
+
+#[test]
+fn default_with_a_missing_right_operand_is_reported_not_dropped() {
+    let source = "default Real = 1 +";
+    let (decls, errors) = parse_decls(source);
+    let error = only_error_starting_with(&errors, "invalid default declaration: ");
+    assert_eq!(
+        error.span.start as usize,
+        source.len(),
+        "`{source}`: expected the diagnostic at the missing right operand, got: {error:?}"
+    );
+    assert!(
+        !decls.iter().any(|d| matches!(d, Declaration::Default(_))),
+        "`{source}`: a refused default declaration must not be lowered, got: {decls:?}"
     );
 }

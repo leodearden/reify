@@ -627,7 +627,9 @@ impl<'a> Lowering<'a> {
                 "import_declaration" => {
                     let annotations = std::mem::take(&mut pending_annotations);
                     let cfg_predicates = std::mem::take(&mut pending_cfg);
-                    if let Some(mut decl) = self.lower_import(child) {
+                    if let Some(mut decl) =
+                        check_and_lower!(self, child, "import", self.lower_import(child))
+                    {
                         decl.annotations = annotations;
                         decl.cfg_predicates = cfg_predicates;
                         self.declarations.push(Declaration::Import(decl));
@@ -691,7 +693,9 @@ impl<'a> Lowering<'a> {
                 "unit_declaration" => {
                     let annotations = std::mem::take(&mut pending_annotations);
                     let _ = std::mem::take(&mut pending_cfg);
-                    if let Some(mut decl) = self.lower_unit(child) {
+                    if let Some(mut decl) =
+                        check_and_lower!(self, child, "unit declaration", self.lower_unit(child))
+                    {
                         decl.annotations = annotations;
                         self.declarations.push(Declaration::Unit(decl));
                     }
@@ -699,7 +703,9 @@ impl<'a> Lowering<'a> {
                 "type_alias_declaration" => {
                     let annotations = std::mem::take(&mut pending_annotations);
                     let _ = std::mem::take(&mut pending_cfg);
-                    if let Some(mut decl) = self.lower_type_alias(child) {
+                    if let Some(mut decl) =
+                        check_and_lower!(self, child, "type alias", self.lower_type_alias(child))
+                    {
                         decl.annotations = annotations;
                         self.declarations.push(Declaration::TypeAlias(decl));
                     }
@@ -707,7 +713,9 @@ impl<'a> Lowering<'a> {
                 "joint_definition" => {
                     let annotations = std::mem::take(&mut pending_annotations);
                     let _ = std::mem::take(&mut pending_cfg);
-                    if let Some(mut decl) = self.lower_joint(child) {
+                    if let Some(mut decl) =
+                        check_and_lower!(self, child, "joint definition", self.lower_joint(child))
+                    {
                         decl.annotations = annotations;
                         self.declarations.push(Declaration::Joint(decl));
                     }
@@ -738,7 +746,12 @@ impl<'a> Lowering<'a> {
                             cfg.span,
                         );
                     }
-                    if let Some(decl) = self.lower_default_decl(child) {
+                    if let Some(decl) = check_and_lower!(
+                        self,
+                        child,
+                        "default declaration",
+                        self.lower_default_decl(child)
+                    ) {
                         self.declarations.push(Declaration::Default(decl));
                     }
                 }
@@ -761,7 +774,9 @@ impl<'a> Lowering<'a> {
                     // of the `path` (import_path) field — mirrors lower_import's
                     // segment-collection loop.
                     let _ = std::mem::take(&mut pending_cfg);
-                    if let Some(path_node) = child.child_by_field_name("path") {
+                    if !self.refuse_if_faulty(child, "module declaration")
+                        && let Some(path_node) = child.child_by_field_name("path")
+                    {
                         let mut segments = Vec::new();
                         let mut seg_cursor = path_node.walk();
                         for seg in path_node.children(&mut seg_cursor) {
@@ -848,6 +863,15 @@ impl<'a> Lowering<'a> {
     /// Called from `lower_source_file`'s FIRST pass, the same order-independent
     /// pass that seeds `known_enums`, so an `import parts as pp` written after
     /// the structure that uses `pp.Pulley()` still binds.
+    ///
+    /// **A refused import binds too.** This pass does not ask whether the second
+    /// pass will accept the import. One whose CST carries a nested fault is refused
+    /// there with a single `invalid import:` diagnostic, yet the names its
+    /// recoverable parts declare (`pp` in `import a.1.b as pp`, `C` in
+    /// `import a.b.{C D}`) are recorded here. Skipping them would report each use of
+    /// `pp` a second time as unbound, advising the author to declare
+    /// `import <path> as pp`, which is the very line being refused. The bindings
+    /// are best effort, which is safe because the module already carries an error.
     ///
     /// **Per-file by construction: nothing outside the file seeds these
     /// bindings.** `known_enums` takes an external seed
@@ -967,11 +991,6 @@ impl<'a> Lowering<'a> {
             // The `items`/`alias` FIELDS are what select the ImportKind here,
             // which is why the brace list stays a field on `import_declaration`
             // rather than folding into `import_path` as the spec EBNF nests it.
-            //
-            // KNOWN GAP: the `"import_declaration"` dispatch arm calls this
-            // directly instead of routing through `check_and_lower!`, so an
-            // ERROR nested in the subtree never becomes a diagnostic. Latent,
-            // not intentional design; tracked by #6286.
             let path = segments.join(".");
             let mut names = Vec::new();
             let mut items_cursor = items.walk();

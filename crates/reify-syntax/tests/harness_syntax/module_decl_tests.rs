@@ -9,6 +9,8 @@
 use reify_ast::{Declaration, ModuleDecl};
 use reify_core::ModulePath;
 
+use crate::parse_error_lookup::only_error_starting_with;
+
 // ── Test A: round-trip ────────────────────────────────────────────────────────
 
 /// Parse a top-of-file `module a.b.c` declaration and assert:
@@ -79,5 +81,36 @@ fn module_declaration_after_other_decl_is_an_error() {
     assert!(
         parsed.declared_module_path.is_none(),
         "declared_module_path should be None when module decl is out-of-position"
+    );
+}
+
+// ── Test C: faulty module path ────────────────────────────────────────────────
+
+/// A trailing `.` makes tree-sitter recover by folding the next line into the module's
+/// path, so lowering it would declare a module (`a.import.b`) the source never names.
+/// The declaration is refused instead, with the diagnostic on the absorbed line.
+#[test]
+fn module_path_that_absorbs_the_next_line_is_refused() {
+    let source = "module a.\nimport a.b";
+    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
+
+    let error = only_error_starting_with(&parsed.errors, "invalid module declaration: ");
+    let rendered = error.render(source);
+    assert!(
+        rendered.starts_with("2:"),
+        "{source:?}: expected the diagnostic on the absorbed line 2, got: {rendered:?}"
+    );
+    assert!(
+        parsed.declared_module_path.is_none(),
+        "{source:?}: a refused module declaration must not declare a path, got: {:?}",
+        parsed.declared_module_path
+    );
+    assert!(
+        !parsed
+            .declarations
+            .iter()
+            .any(|d| matches!(d, Declaration::Module(_))),
+        "{source:?}: a refused module declaration must not be lowered, got: {:?}",
+        parsed.declarations
     );
 }
