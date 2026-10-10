@@ -14,7 +14,9 @@ Nothing here decides what a record means for the protocol; e3_model does.
 
 import dataclasses
 import json
+import re
 import sqlite3
+import subprocess
 import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -30,6 +32,7 @@ from escalation_mcp import McpSession  # noqa: E402  (after sys.path manipulatio
 SNAPSHOT_SCHEMA = "e3-task-snapshot/1"
 MCP_SOURCE = "fused-memory MCP get_statuses + get_task"
 ATTEMPT_EVENTS = ("task_started", "task_completed", "escalation_created")
+TASK_MERGE_SUBJECT = re.compile(r"^Merge task/(\d+) into main$")
 
 
 class SourceError(Exception):
@@ -316,3 +319,54 @@ def read_runs_db(path, task_ids, project_id="reify"):
         invocations=invocations,
         escalations=_escalations(events),
     )
+
+
+@dataclass(frozen=True)
+class Merge:
+    """One `Merge task/<id> into main` on main's first-parent chain, with the
+    insertions and deletions of its diff against main (binary files count 0)."""
+
+    task_id: int
+    commit: str
+    merged_at: datetime
+    insertions: int
+    deletions: int
+
+    @property
+    def loc(self):
+        return self.insertions + self.deletions
+
+
+def _numstat_totals(lines):
+    insertions = deletions = 0
+    for line in lines:
+        added, removed, _ = line.split("\t", 2)
+        insertions += int(added) if added != "-" else 0
+        deletions += int(removed) if removed != "-" else 0
+    return insertions, deletions
+
+
+def _parse_merge(chunk, task_ids):
+    header, *body = chunk.split("\n")
+    commit, committed, subject = header.split("\x00", 2)
+    matched = TASK_MERGE_SUBJECT.match(subject)
+    if not matched or int(matched.group(1)) not in task_ids:
+        return None
+    insertions, deletions = _numstat_totals(line for line in body if line.strip())
+    return Merge(int(matched.group(1)), commit, utc_timestamp(committed), insertions, deletions)
+
+
+def read_task_merges(repo, ref, task_ids):
+    """Every first-parent `Merge task/<id> into main` on ref for task_ids, oldest first."""
+    completed = subprocess.run(
+        ["git", "-C", str(repo), "log", ref, "--first-parent", "--merges",
+         "--diff-merges=first-parent", "--numstat", "--format=%x01%H%x00%cI%x00%s", "--"],
+        capture_output=True, text=True, encoding="utf-8", errors="replace", check=False,
+    )
+    if completed.returncode != 0:
+        raise SourceError(
+            f"git log {ref} in {repo} exited {completed.returncode}: {completed.stderr.strip()}"
+        )
+    wanted = frozenset(task_ids)
+    merges = (_parse_merge(chunk, wanted) for chunk in completed.stdout.split("\x01") if chunk)
+    return tuple(sorted((m for m in merges if m), key=lambda m: m.merged_at))
