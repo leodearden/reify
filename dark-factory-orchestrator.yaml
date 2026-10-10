@@ -1360,8 +1360,17 @@ git:
   merge_spec_warm_lane_pool: true
   # Off-lane detective (PRD §10 inv.6b): periodically re-verify a landed commit COLD and
   # compare test-level vs the warm result; divergence fires a born-at-L2 alarm naming the
-  # commit + diverging tests. Cadence left at dark-factory defaults (every 40 lands OR nightly).
+  # commit + diverging tests.
   warm_verify_shadow_compare: true
+  # Weekly cadence per Leo's ruling 2026-10-09 (dark-factory
+  # plans/verify-rate-improvement-2026-10-09/MEMO.md §3 item 8 / §4 ruling 2), amended 2026-10-10
+  # (esc-8428-2 option A), reify task 8428. Measured 2026-09-25..10-09: 13 nightly cold full gates,
+  # p50 134 min, 11.8% of reify merge-verify hours, zero warm/cold divergence escalations ever.
+  # The legs are ORed (DF merge_lane/shadow.py::_shadow_compare_due), so every_n_merges must exceed
+  # a normal week's lands or the count leg governs: 83-107 lands/week measured 09-11..10-09, so 150
+  # leaves it a burst valve only. Restart-tier: neither key is in DF RELOADABLE_FIELDS.
+  warm_verify_shadow_compare_nightly_interval_secs: 604800
+  warm_verify_shadow_compare_every_n_merges: 150
   # Offline deep-test lane (coverage-gap closure, 2026-07-19 merge-verify CPU survey —
   # docs/notes/merge-verify-cpu-survey-2026-07.md §Coverage gaps; PRD docs/prds/merge-gate-health.md
   # context). Before this the offline worker (DF offline_lane.py) had NEVER run: unconditionally-
