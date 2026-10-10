@@ -216,6 +216,26 @@ impl ArgRejection {
             base
         }
     }
+
+    /// The one Error rendering of a rejection: [`ArgRejection::message`]'s
+    /// wording, coded `DimensionedArgRejected` (PRD 5 §7 I4/I6).
+    pub fn to_error(&self, builtin: &str, arg_name: &str) -> reify_core::Diagnostic {
+        reify_core::Diagnostic::error(self.message(builtin, arg_name))
+            .with_code(reify_core::DiagnosticCode::DimensionedArgRejected)
+    }
+}
+
+/// A rejected struct field, named by its dotted path (`"<Struct>.<field>"`).
+#[derive(Debug, PartialEq)]
+pub struct FieldRejection {
+    pub path: String,
+    pub rejection: ArgRejection,
+}
+
+impl FieldRejection {
+    pub fn to_error(&self, builtin: &str) -> reify_core::Diagnostic {
+        self.rejection.to_error(builtin, &self.path)
+    }
 }
 
 /// Returns the [`ArgSpec`] for the `density` argument of `center_of_mass` and
@@ -504,6 +524,31 @@ pub fn rotational_stiffness_spec() -> ArgSpec {
     }
 }
 
+/// Returns the [`ArgSpec`] for a PRISMATIC joint's `damping` reader position
+/// (N·s·m⁻¹). Its revolute sibling is [`rotational_damping_spec`]; PRD §3
+/// Leg B routes `damping` by joint kind, exactly as it routes `spring_rate`.
+///
+/// `migration_hint` is intentionally `None` — see the section banner above.
+pub fn translational_damping_spec() -> ArgSpec {
+    ArgSpec {
+        type_name: "TranslationalDamping",
+        dimension: reify_core::DimensionVector::TRANSLATIONAL_DAMPING,
+        migration_hint: None,
+    }
+}
+
+/// Returns the [`ArgSpec`] for a REVOLUTE joint's `damping` reader position
+/// (N·m·s·rad⁻²).
+///
+/// `migration_hint` is intentionally `None` — see the section banner above.
+pub fn rotational_damping_spec() -> ArgSpec {
+    ArgSpec {
+        type_name: "RotationalDamping",
+        dimension: reify_core::DimensionVector::ROTATIONAL_DAMPING,
+        migration_hint: None,
+    }
+}
+
 
 /// Returns the [`ArgSpec`] for a DELIBERATELY-BARE reader position — one whose
 /// quantity is genuinely dimensionless (a ratio, a count, a relative
@@ -583,6 +628,21 @@ pub fn accept_arg(value: &crate::value::Value, spec: &ArgSpec) -> Acceptance {
             expected: spec.type_name,
             migration_hint: spec.migration_hint,
         }),
+    }
+}
+
+/// [`accept_arg`], plus a bare `Real`/`Int` accepted as the legacy
+/// undimensioned spelling of a dimensioned reader position.
+///
+/// TRANSITIONAL, and the ONE home of that rule. Its consumers are the FEA
+/// load readers (narrowed to [`accept_arg`] by γ3 #5802) and the dynamics
+/// mass / com / inertia / joint-compliance readers. A `Scalar` must still
+/// carry `spec.dimension`; a DIMENSIONLESS `Scalar` is a dimension, not bare.
+pub fn accept_arg_or_bare(value: &crate::value::Value, spec: &ArgSpec) -> Acceptance {
+    match value {
+        crate::value::Value::Real(r) => Acceptance::Accepted(*r),
+        crate::value::Value::Int(i) => Acceptance::Accepted(*i as f64),
+        other => accept_arg(other, spec),
     }
 }
 
@@ -1020,11 +1080,11 @@ mod tests {
         use crate::value::Value;
         use reify_core::{DiagnosticCode, Severity};
 
-        let Acceptance::Rejected(rejection) = accept_arg(&Value::Real(0.4), &length_spec())
-        else {
+        let Acceptance::Rejected(rejection) = accept_arg(&Value::Real(0.4), &length_spec()) else {
             unreachable!("a bare Real at a LENGTH position must be Rejected");
         };
-        let expected_message = rejection.message("as_printed_material", "AsPrintedOptions.line_width");
+        let expected_message =
+            rejection.message("as_printed_material", "AsPrintedOptions.line_width");
 
         let arg_error = rejection.to_error("as_printed_material", "AsPrintedOptions.line_width");
         assert_eq!(arg_error.severity, Severity::Error);
@@ -1037,7 +1097,10 @@ mod tests {
         };
         let field_error = field.to_error("as_printed_material");
         assert_eq!(field_error.severity, Severity::Error);
-        assert_eq!(field_error.code, Some(DiagnosticCode::DimensionedArgRejected));
+        assert_eq!(
+            field_error.code,
+            Some(DiagnosticCode::DimensionedArgRejected)
+        );
         assert_eq!(field_error.message, expected_message);
         assert!(
             field_error.message.starts_with(
