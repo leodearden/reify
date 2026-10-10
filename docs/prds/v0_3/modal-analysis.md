@@ -305,6 +305,14 @@ frequency space rather than buckling-load space). Validation runs at
 ctor: `n_modes >= 1`, `tol > 0`, `max_iters >= 1`,
 `reference_direction.norm() > 0`.
 
+> **The shift shipped as `shift_frequency : Frequency = 0Hz` (task #6097), and four other knobs drifted from this sketch.** The shipped declaration is `structure def ModalOptions` in `crates/reify-compiler/stdlib/modal_analysis.ri`. The `sigma : Frequency` above shipped first as `sigma : Real` in eigenvalue (λ) space, and is now `shift_frequency : Frequency = 0Hz` (Leo, 2026-08-31, superseding the 2026-08-07 Frequency² ruling): the author writes Hz and the solver shifts to λ = (2π·shift_frequency)² via `frequency_hz_to_eigenvalue`. It is honored on the FEA `modal_analysis` path (#7261) and warned-and-dropped (`W_ModalOptionUnsupported`) on the lumped `mechanism_modal_analysis` path pending #7263. The `BucklingOptions` naming mirror the paragraph above leans on is deliberately broken: σ is λ-space notation, and `BucklingOptions.sigma` remains a dimensionless load factor. Two costs are accepted. First, near is not near: shift-invert picks the λ nearest σ, and a window symmetric in λ is skewed in Hz, biased low (at 100 Hz a 90 Hz mode is 4π²·1900 ≈ 75009 away in λ and a 110 Hz mode 4π²·2100 ≈ 82905 away, so the solver prefers 90 Hz). Second, squaring erases the sign, so a negative-λ shift is no longer expressible; that narrows the old λ-space `sigma` contract but loses no observable capability, because `eigenvalue_to_frequency_hz` already clamps λ ≤ 0 to 0 Hz. The other drifts:
+> - `element_order : ElementOrder = ElementOrder.P1` exists (task 4066) and is absent above.
+> - `reference_direction` ships as `Vector3<Dimensionless>`, not `Vec3`, and is DEFAULTLESS — no `-Z_HAT` default; the trampoline's degenerate-input fallback is +Z (`[0, 0, 1]`).
+> - `damping` ships DEFAULTLESS, not `// default: NoDamping`.
+> - `n_modes` ships with default 10.
+>
+> So the "six-knob shape" is eight params, and `reference_direction.norm() > 0` is handled at the trampoline (a zero-norm direction falls back to +Z), not validated at ctor.
+
 ## §5 — Contract: Transient response
 
 ### §5.1 — ForcingTimeHistory

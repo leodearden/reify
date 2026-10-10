@@ -2944,6 +2944,20 @@ pub enum DiagnosticCode {
     /// has no effect.  The solve continues with kernel defaults (this is advisory,
     /// not an error).
     BucklingOptionUnsupported,
+    /// Origin: `crates/reify-eval/src/modal_ops.rs` (`run_mechanism_modal`, the
+    /// lumped `mechanism_modal_analysis` trampoline —
+    /// `mechanism_shift_unsupported_diagnostic`).
+    ///
+    /// Canonical message form:
+    /// `"W_ModalOptionUnsupported: ModalOptions.<param> = <value> is declared but not yet honored by the mechanism_modal_analysis (lumped) trampoline (<note>; #7263); solve falls back to the default <default>"`.
+    ///
+    /// Emitted as a `Severity::Warning` (PRD-prose mnemonic
+    /// `W_ModalOptionUnsupported`) when `shift_frequency` is present and
+    /// non-zero. The FEA `modal_analysis` path honors the shift and never emits
+    /// it. Owner #7263 (shift-invert leaf ζ,
+    /// `docs/prds/v0_6/shift-invert-eigensolve.md`) retires it by honoring the
+    /// shift on the lumped path. Advisory: the solve continues at the default.
+    ModalOptionUnsupported,
     /// Origin: `crates/reify-eval/src/compute_targets/buckling.rs` and
     /// `crates/reify-eval/src/modal_ops.rs`, via the shift-honoring solve paths
     /// (leaves γ #7260 and δ #7261).  Minted here unemitted by leaf α (#7258) so
@@ -6908,6 +6922,20 @@ mod tests {
     fn diagnostic_code_buckling_option_unsupported_serde_pascal_case() {
         let s = serde_json::to_string(&DiagnosticCode::BucklingOptionUnsupported).unwrap();
         assert_eq!(s, "\"BucklingOptionUnsupported\"");
+    }
+
+    // --- ModalOptionUnsupported (task 6097 — W_ModalOptionUnsupported) ---
+    // Pairs with `mechanism_shift_unsupported_diagnostic` in
+    // `crates/reify-eval/src/modal_ops.rs`. Only the wire identifier is pinned,
+    // for the reasons the BucklingOptionUnsupported block above records.
+
+    /// Under `feature = "serde"`, `DiagnosticCode::ModalOptionUnsupported`
+    /// serializes as `"ModalOptionUnsupported"` (PascalCase).
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_modal_option_unsupported_serde_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::ModalOptionUnsupported).unwrap();
+        assert_eq!(s, "\"ModalOptionUnsupported\"");
     }
 
     // --- §5.3/§5.4 shift-invert DiagnosticCode tests (task α, #7258) ---

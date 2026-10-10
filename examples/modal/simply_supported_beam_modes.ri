@@ -82,11 +82,11 @@ structure SimplySupportedBeamModes {
     // Ctor args bind BY NAME (task 4522), so a MISSPELLED label is the hazard
     // here: the typo'd arg never claims `element_order`, which then falls back
     // to its `ElementOrder.P1` default and quietly reinstates the bending lock
-    // this fixture exists to avoid. Every param is written out — sigma / tol /
-    // max_iters at their ModalOptions defaults (0.0 / 1e-9 / 200) — purely so
-    // a typo stays visible under review. What the compiler does with the
-    // typo'd arg, and how loudly it says so, are deliberately NOT restated
-    // here; both are pinned in
+    // this fixture exists to avoid. Every param is written out —
+    // shift_frequency / tol / max_iters at their ModalOptions defaults
+    // (0Hz / 1e-9 / 200) — purely so a typo stays visible under review. What
+    // the compiler does with the typo'd arg, and how loudly it says so, are
+    // deliberately NOT restated here; both are pinned in
     // `crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs::misspelled_ctor_label_is_diagnosed_but_still_leniently_appended`.
     // n_modes = 8 (not 3): this beam is wide (b=10mm) and thin (h=2mm), so the
     // lateral Y-bending family is ≈ (b/h) = 5× stiffer in frequency than the
@@ -100,7 +100,7 @@ structure SimplySupportedBeamModes {
         n_modes: 8,
         boundary_conditions: [pin_min, pin_max],
         damping: NoDamping(),
-        sigma: 0.0,
+        shift_frequency: 0Hz,
         tol: 0.000000001,
         max_iters: 200,
         reference_direction: vec3(0.0, 0.0, 1.0),

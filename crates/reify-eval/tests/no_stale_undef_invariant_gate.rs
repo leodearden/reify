@@ -1156,7 +1156,7 @@ const TRAJECTORY_SIMULATE_PROBE_SRC: &str = r#"structure TrajectorySimulateProbe
         n_modes: 1,
         boundary_conditions: [root],
         damping: NoDamping(),
-        sigma: 0.0,
+        shift_frequency: 0Hz,
         tol: 0.000000001,
         max_iters: 200,
         reference_direction: vec3(0.0, 0.0, 1.0),

@@ -2048,11 +2048,11 @@ pub structure GantryFea {
     let pin_b = PinnedSupport(target: "x_max")
     let opts_cant = ModalOptions(
         n_modes: 2, boundary_conditions: [fix_a], damping: NoDamping(),
-        sigma: 0.0, tol: 0.000000001, max_iters: 200,
+        shift_frequency: 0Hz, tol: 0.000000001, max_iters: 200,
         reference_direction: vec3(0.0, 0.0, 1.0), element_order: ElementOrder.P2)
     let opts_ss = ModalOptions(
         n_modes: 2, boundary_conditions: [pin_a, pin_b], damping: NoDamping(),
-        sigma: 0.0, tol: 0.000000001, max_iters: 200,
+        shift_frequency: 0Hz, tol: 0.000000001, max_iters: 200,
         reference_direction: vec3(0.0, 0.0, 1.0), element_order: ElementOrder.P2)
     let r_modal_cant = modal_analysis(mi.material, span, h_eq, h_eq, opts_cant)
     let r_modal_ss   = modal_analysis(mi.material, span, h_eq, h_eq, opts_ss)
@@ -2429,7 +2429,7 @@ pub structure AFrame {
     let pin_b = PinnedSupport(target: "x_max")
     let opts_field = ModalOptions(
         n_modes: 2, boundary_conditions: [pin_a, pin_b], damping: NoDamping(),
-        sigma: 0.0, tol: 0.000000001, max_iters: 200,
+        shift_frequency: 0Hz, tol: 0.000000001, max_iters: 200,
         reference_direction: vec3(0.0, 0.0, 1.0), element_order: ElementOrder.P2)
     let fld_lz2 = fld_lz * 1.0
     let r_modal_field = modal_analysis(mi.material, fld_lz2, fld_ly, side_t, opts_field)
