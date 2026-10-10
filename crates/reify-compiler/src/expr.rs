@@ -3432,7 +3432,7 @@ fn compile_expr_guarded_with_expected_inner(
                     // `is_field_op` family (task 4219), the #4629 W2
                     // `fea_envelope_result_type` family, and the task-#5476
                     // `is_flexure_typed_fn` family are pinned disjoint in
-                    // `units.rs::tests::*_are_disjoint_from_other_families`,
+                    // `units.rs::tests::builtin_name_families_are_pairwise_disjoint`,
                     // so within this arm the ordering is unobservable — no name can
                     // satisfy two predicates. `selector_composition_result_type` is
                     // arg-aware (returns None for CSG non-selector operands) so CSG
@@ -3652,7 +3652,7 @@ fn compile_expr_guarded_with_expected_inner(
                         // at eval time. Uniform `StructureRef("MassProperties")`
                         // result (mirrors the `is_dynamics_query` arm above).
                         // Pinned disjoint from all sibling families by
-                        // `dynamics_constructor_names_are_disjoint_from_other_families`.
+                        // `builtin_name_families_are_pairwise_disjoint`.
                         Type::StructureRef("MassProperties".to_string())
                     } else if is_affine_map_constructor(name) {
                         // affine_scale / affine_shear_* / affine_translate /
@@ -3729,8 +3729,7 @@ fn compile_expr_guarded_with_expected_inner(
                         // variant with a best-effort `n` when the shape is not
                         // statically determinable. Both slices are pinned disjoint
                         // from the geometry/dynamics families AND from each other
-                        // (units.rs `math_typed_fn_names_are_disjoint_from_other_families`
-                        // + `math_operation_fn_names_are_disjoint_from_other_families`),
+                        // (units.rs `builtin_name_families_are_pairwise_disjoint`),
                         // so this arm's position in the ladder is unobservable.
                         // NOTE: `determinant(AffineMap)` → Real is served by the
                         // earlier `affine_map_algebra_result_type` arm above, so
@@ -3817,7 +3816,7 @@ fn compile_expr_guarded_with_expected_inner(
                         //
                         // Folding parse into the analysis POSITION is
                         // unobservable: `units.rs`'s
-                        // `registry_row_names_are_disjoint_from_legacy_families`
+                        // `builtin_name_families_are_pairwise_disjoint`
                         // pins every row name absent from every legacy sibling
                         // family slice, so at most one arm can ever claim a
                         // given name.
@@ -3863,7 +3862,7 @@ fn compile_expr_guarded_with_expected_inner(
                         // which is the same set `fea_envelope_result_type` matches
                         // on — so the `expect` is infallible here.
                         // The family is pinned disjoint from all sibling families
-                        // by `fea_envelope_names_are_disjoint_from_other_families`
+                        // by `builtin_name_families_are_pairwise_disjoint`
                         // in `units.rs`, so arm position is unobservable.
                         fea_envelope_result_type(name).expect(
                             "is_fea_envelope_query guarantees fea_envelope_result_type is Some",
@@ -3894,7 +3893,7 @@ fn compile_expr_guarded_with_expected_inner(
                         // laplacian lives in `reify-expr`; fn_field/from_samples/
                         // restrict/compose arrive in tasks β/γ/δ.  The FIELD_OP
                         // family is pinned disjoint from all sibling families
-                        // (units.rs `field_op_names_are_disjoint_from_other_families`),
+                        // (units.rs `builtin_name_families_are_pairwise_disjoint`),
                         // so this arm's position in the ladder is unobservable.
                         t
                     } else if is_orientation_typed_fn(name) {
@@ -3941,7 +3940,7 @@ fn compile_expr_guarded_with_expected_inner(
                         // already typed Orientation(3) by the #5344 arm above,
                         // so that arm wins and this one never sees it. The two
                         // slices are pinned disjoint in units.rs
-                        // (`orientation_euler_fn_names_are_disjoint_from_other_families`),
+                        // (`builtin_name_families_are_pairwise_disjoint`),
                         // which also makes this arm's ladder position
                         // unobservable.
                         //

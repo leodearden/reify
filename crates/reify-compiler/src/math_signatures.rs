@@ -37,7 +37,7 @@ use reify_ir::{CompiledExpr, CompiledExprKind, Value};
 /// both carry the argument-DEPENDENT quantity slot that needs this args-aware
 /// resolver shape. Splitting the twins across two families would contradict
 /// one-vocabulary-one-resolver; `units.rs`'s
-/// `math_typed_fn_names_are_disjoint_from_other_families` pins that the datum
+/// `builtin_name_families_are_pairwise_disjoint` pins that the datum
 /// resolver does not also claim them.
 pub const MATH_CONSTRUCTION_NAMES: &[&str] = &[
     "vec", "matrix", "diag", "identity", "vec3", "vec2", "point3", "point2",

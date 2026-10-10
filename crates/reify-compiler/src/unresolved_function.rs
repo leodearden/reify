@@ -84,7 +84,7 @@ use crate::list_helpers::LIST_HELPER_NAMES;
 use crate::math_signatures::{
     MATH_CONSTRUCTION_NAMES, MATH_OPERATION_NAMES, MATH_TRANSCENDENTAL_NAMES,
 };
-use crate::orientation_signatures::ORIENTATION_TYPED_FN_NAMES;
+use crate::orientation_signatures::{ORIENTATION_EULER_FN_NAMES, ORIENTATION_TYPED_FN_NAMES};
 use crate::relation_signatures::{RELATION_FN_NAMES, is_relation_shared_verb};
 use crate::units::{
     AFFINE_ALGEBRA_NAMES, AFFINE_MAP_CONSTRUCTOR_NAMES, DATUM_CONSTRUCTOR_NAMES,
@@ -288,8 +288,9 @@ pub(crate) const EVAL_DEFERRED_BUILTIN_NAMES: &[&str] = &[
     "joint_ratio",
     "joint_offset",
     // --- orientation decomposers — owner #6004 (registry τ2) ---------------
-    // The four decomposers return heterogeneous Maps that τ2 gives nominal
-    // structures (`AxisAngle`, `Twist`).
+    // The three decomposers below return heterogeneous Maps that τ2 gives
+    // nominal structures (`AxisAngle`, `Twist`). `orient_to_euler` is NOT
+    // here: it is typed by `ORIENTATION_EULER_FN_NAMES` (#6082).
     //
     // The `bbox`/`bbox_size`/`bbox_center` trio USED to sit here awaiting
     // #6081's Length-valued ruling. That ruling landed, and #6081 registered
@@ -298,7 +299,6 @@ pub(crate) const EVAL_DEFERRED_BUILTIN_NAMES: &[&str] = &[
     // is what named the overlap when this task made the slice authoritative.
     "orient_log",
     "orient_to_axis_angle",
-    "orient_to_euler",
     "transform_log",
     // --- fea / flexures / stackup / dfm / tolerancing / loads / tensegrity --
     // --- owner #6006 (registry τ4) -----------------------------------------
@@ -386,6 +386,56 @@ pub(crate) const EVAL_DEFERRED_BUILTIN_NAMES: &[&str] = &[
     "RepresentationWithin",
 ];
 
+/// A [`BUILTIN_NAME_FAMILIES`] row: the slice paired with its own identifier,
+/// so a row's label cannot drift from the slice it names.
+macro_rules! family_row {
+    ($slice:ident) => {
+        (stringify!($slice), $slice)
+    };
+}
+
+/// Every name slice the compiler classifies builtins by, paired with its
+/// identifier so a failure names the family that regressed.
+///
+/// The ONE list of slice families: [`is_known_builtin`] unions it, and the
+/// disjointness and oracle tests below iterate it. A family absent here is
+/// invisible to the oracle and to every disjointness guard, so a row is
+/// deleted only when its slice is (a registry migration discharging the
+/// family); `family_anchor_names_stay_known_builtins` reds on any other
+/// deletion.
+///
+/// [`EVAL_DEFERRED_BUILTIN_NAMES`] is deliberately not a row: it records names
+/// NO family owns yet, and is checked against every row.
+const BUILTIN_NAME_FAMILIES: &[(&str, &[&str])] = &[
+    family_row!(GEOMETRY_QUERY_HELPER_NAMES),
+    family_row!(GEOMETRY_KINEMATIC_QUERY_NAMES),
+    family_row!(GEOMETRY_TOPOLOGY_SELECTOR_NAMES),
+    family_row!(RELATION_FN_NAMES),
+    family_row!(GEOMETRY_QUERY_NAMES),
+    family_row!(TOLERANCING_MARKER_NAMES),
+    family_row!(GEOMETRY_FUNCTION_NAMES),
+    family_row!(DYNAMICS_QUERY_NAMES),
+    family_row!(DYNAMICS_CONSTRUCTOR_NAMES),
+    family_row!(AFFINE_MAP_CONSTRUCTOR_NAMES),
+    family_row!(MATH_CONSTRUCTION_NAMES),
+    family_row!(MATH_OPERATION_NAMES),
+    family_row!(MATH_TRANSCENDENTAL_NAMES),
+    family_row!(JOINT_TYPED_FN_NAMES),
+    family_row!(FEA_ENVELOPE_NAMES),
+    family_row!(FIELD_OP_NAMES),
+    family_row!(ORIENTATION_TYPED_FN_NAMES),
+    family_row!(ORIENTATION_EULER_FN_NAMES),
+    family_row!(FLEXURE_CTOR_FN_NAMES),
+    // Resolver-only families, promoted to slices by #5371.
+    family_row!(DATUM_CONSTRUCTOR_NAMES),
+    family_row!(SELECTOR_COMPOSITION_NAMES),
+    family_row!(LIST_HELPER_NAMES),
+    family_row!(AFFINE_ALGEBRA_NAMES),
+    // A bare `match` in the `expr.rs` ladder, promoted to a slice by #5371.
+    family_row!(DETERMINACY_PREDICATE_NAMES),
+    family_row!(FIRST_ARG_TYPED_NAMES),
+];
+
 /// Is `name` a builtin function name the compiler knows about *at all*?
 ///
 /// Closed-world union over every classification family the `expr.rs`
@@ -413,55 +463,22 @@ pub(crate) const EVAL_DEFERRED_BUILTIN_NAMES: &[&str] = &[
 ///
 /// Case-sensitive — Reify function names are snake_case.
 pub fn is_known_builtin(name: &str) -> bool {
-    // --- The name slices the ladder consults, in ladder order. ---
-    GEOMETRY_QUERY_HELPER_NAMES.contains(&name)
-        || GEOMETRY_KINEMATIC_QUERY_NAMES.contains(&name)
-        || GEOMETRY_TOPOLOGY_SELECTOR_NAMES.contains(&name)
-        || RELATION_FN_NAMES.contains(&name)
-        || GEOMETRY_QUERY_NAMES.contains(&name)
-        || TOLERANCING_MARKER_NAMES.contains(&name)
-        || GEOMETRY_FUNCTION_NAMES.contains(&name)
-        || DYNAMICS_QUERY_NAMES.contains(&name)
-        || DYNAMICS_CONSTRUCTOR_NAMES.contains(&name)
-        || AFFINE_MAP_CONSTRUCTOR_NAMES.contains(&name)
-        || MATH_CONSTRUCTION_NAMES.contains(&name)
-        || MATH_OPERATION_NAMES.contains(&name)
-        || MATH_TRANSCENDENTAL_NAMES.contains(&name)
-        || JOINT_TYPED_FN_NAMES.contains(&name)
-        || FEA_ENVELOPE_NAMES.contains(&name)
-        || FIELD_OP_NAMES.contains(&name)
-        || ORIENTATION_TYPED_FN_NAMES.contains(&name)
-        || FLEXURE_CTOR_FN_NAMES.contains(&name)
-        // --- The four resolver-only families, promoted to production slices
-        // --- by this task so the union can see them (they were previously
-        // --- visible only as `match` arms inside their resolvers).
-        || DATUM_CONSTRUCTOR_NAMES.contains(&name)
-        || SELECTOR_COMPOSITION_NAMES.contains(&name)
-        || LIST_HELPER_NAMES.contains(&name)
-        || AFFINE_ALGEBRA_NAMES.contains(&name)
-        // --- The builtin-signature registry (#6001 α). ---
-        //
-        // Not a slice but a row table, and the successor to the
-        // `PARSE_FN_NAMES` / `ANALYSIS_FN_NAMES` slices this union used to
-        // carry — #6001 α deleted both modules. Asked through
-        // `builtin_registry`, the compiler's one seam onto `reify-builtins`,
-        // so this module does not open a second one.
+    BUILTIN_NAME_FAMILIES
+        .iter()
+        .any(|(_, slice)| slice.contains(&name))
+        // The builtin-signature registry (#6001 α): not a slice but a row
+        // table, and the successor to the `PARSE_FN_NAMES` /
+        // `ANALYSIS_FN_NAMES` slices this union used to carry. Asked through
+        // `builtin_registry`, the compiler's one seam onto `reify-builtins`.
         //
         // `registry_knows_name`, not `registry_owns`: the question here is
         // membership, and an arity-overloaded name is a member even though no
         // single row can type it.
         || registry_knows_name(name)
-        // --- Vocabularies that live outside any slice. ---
-        //
         // The arity-gated shared verbs `angle`/`distance` are deliberately
         // absent from RELATION_FN_NAMES (their arity-2 DERIVE forms are
-        // geometry queries), so the slices above do not reach them.
+        // geometry queries), so no slice reaches them.
         || is_relation_shared_verb(name)
-        // The determinacy predicates are a bare `match` in the ladder; #5371
-        // promoted them to a slice for exactly this reason.
-        || DETERMINACY_PREDICATE_NAMES.contains(&name)
-        // --- This module's two manifests. ---
-        || FIRST_ARG_TYPED_NAMES.contains(&name)
         || EVAL_DEFERRED_BUILTIN_NAMES.contains(&name)
 }
 
@@ -540,66 +557,178 @@ pub(crate) fn arg_shape_expectation(name: &str) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::joint_signatures::JOINT_TYPED_FN_NAMES;
-    use crate::math_signatures::{
-        MATH_CONSTRUCTION_NAMES, MATH_OPERATION_NAMES, MATH_TRANSCENDENTAL_NAMES,
-    };
-    use crate::orientation_signatures::ORIENTATION_TYPED_FN_NAMES;
-    use crate::relation_signatures::RELATION_FN_NAMES;
-    use crate::units::{
-        AFFINE_MAP_CONSTRUCTOR_NAMES, DYNAMICS_CONSTRUCTOR_NAMES, DYNAMICS_QUERY_NAMES,
-        FEA_ENVELOPE_NAMES, FIELD_OP_NAMES, GEOMETRY_FUNCTION_NAMES,
-        GEOMETRY_KINEMATIC_QUERY_NAMES, GEOMETRY_QUERY_HELPER_NAMES, GEOMETRY_QUERY_NAMES,
-        GEOMETRY_TOPOLOGY_SELECTOR_NAMES, TOLERANCING_MARKER_NAMES,
-    };
 
-    /// Every name slice the `NoUserFunctions` ladder consults, paired with its
-    /// identifier so a failure names the family that regressed.
+    /// An emptied slice is a discharged family that kept its row.
+    #[test]
+    fn builtin_name_families_hold_no_empty_slice() {
+        for (family, slice) in BUILTIN_NAME_FAMILIES {
+            assert!(
+                !slice.is_empty(),
+                "{family} is an empty slice — delete its row"
+            );
+        }
+    }
+
+    /// Deleting a family's row blinds the oracle to every name only that row
+    /// carries. Each name below is carried by exactly one family, so the
+    /// oracle stops knowing it when its row goes — unless the names were
+    /// re-homed (a registry migration), which keeps it known and this test
+    /// green. A ratchet on the closed world rather than a copy of the table:
+    /// adding a family needs no edit here.
+    #[test]
+    fn family_anchor_names_stay_known_builtins() {
+        const ANCHOR_NAMES: &[&str] = &[
+            "is_watertight",
+            "min_clearance",
+            "angle_between_surfaces",
+            "antiparallel",
+            "perimeter",
+            "nominal",
+            "cylinder",
+            "body_mass_props",
+            "point_mass",
+            "affine_scale",
+            "diag",
+            "normalize",
+            "atan2",
+            "revolute",
+            "envelope_von_mises",
+            "laplacian",
+            "orient_slerp",
+            "orient_to_euler",
+            "prb_cantilever_beam",
+            "midplane",
+            "intersect",
+            "flat_map",
+            "affine_compose",
+            "partially_determined",
+            "to_global",
+        ];
+        for name in ANCHOR_NAMES {
+            assert!(
+                is_known_builtin(name),
+                "{name:?} is no longer a known builtin — a BUILTIN_NAME_FAMILIES \
+                 row was deleted without re-homing its names"
+            );
+        }
+    }
+
+    /// Names two families deliberately share, as `(name, family, family)`.
+    /// The `expr.rs` ladder keeps each overlap harmless, in one of two ways.
     ///
-    /// One entry per registered family slice; each
-    /// `*_are_disjoint_from_other_families` test in `units.rs` loops the
-    /// others (it excludes its own).
+    /// By an arity or argument gate — the earlier arm declines the shapes it
+    /// does not own, so the later arm still sees them:
     ///
-    /// The analysis and parse families are absent because #6001 α moved their
-    /// signatures into `reify-builtins` rows — they no longer have a
-    /// compiler-side slice to iterate.
-    const ALL_FAMILY_SLICES: &[(&str, &[&str])] = &[
-        ("GEOMETRY_FUNCTION_NAMES", GEOMETRY_FUNCTION_NAMES),
-        ("GEOMETRY_QUERY_HELPER_NAMES", GEOMETRY_QUERY_HELPER_NAMES),
+    /// * `offset` — arity-2 construction datum vs arity-3 relation; each
+    ///   resolver claims only its own arity, pinned by
+    ///   `units::tests::datum_constructor_vocabulary_survives_the_neighbour_extension`.
+    /// * `determinant` — the affine arm fires only for an `AffineMap` first
+    ///   argument; any other falls through to the math arm.
+    /// * `union` / `difference` — CSG constructors (geometry functions) vs
+    ///   selector composition; `selector_composition_result_type` claims them
+    ///   only for selector operands and otherwise falls through.
+    ///
+    /// By ladder order alone — the earlier arm claims every call:
+    ///
+    /// * `affine_apply` — the geometry-function arm precedes the
+    ///   affine-algebra resolver, which therefore never sees it (documented on
+    ///   `AFFINE_ALGEBRA_NAMES`).
+    const INTENTIONAL_OVERLAPS: &[(&str, &str, &str)] = &[
+        ("offset", "DATUM_CONSTRUCTOR_NAMES", "RELATION_FN_NAMES"),
         (
-            "GEOMETRY_KINEMATIC_QUERY_NAMES",
-            GEOMETRY_KINEMATIC_QUERY_NAMES,
+            "determinant",
+            "MATH_OPERATION_NAMES",
+            "AFFINE_ALGEBRA_NAMES",
         ),
         (
-            "GEOMETRY_TOPOLOGY_SELECTOR_NAMES",
-            GEOMETRY_TOPOLOGY_SELECTOR_NAMES,
+            "union",
+            "GEOMETRY_FUNCTION_NAMES",
+            "SELECTOR_COMPOSITION_NAMES",
         ),
-        ("GEOMETRY_QUERY_NAMES", GEOMETRY_QUERY_NAMES),
-        ("AFFINE_MAP_CONSTRUCTOR_NAMES", AFFINE_MAP_CONSTRUCTOR_NAMES),
-        ("TOLERANCING_MARKER_NAMES", TOLERANCING_MARKER_NAMES),
-        ("DYNAMICS_QUERY_NAMES", DYNAMICS_QUERY_NAMES),
-        ("DYNAMICS_CONSTRUCTOR_NAMES", DYNAMICS_CONSTRUCTOR_NAMES),
-        ("FEA_ENVELOPE_NAMES", FEA_ENVELOPE_NAMES),
-        ("FIELD_OP_NAMES", FIELD_OP_NAMES),
-        ("MATH_CONSTRUCTION_NAMES", MATH_CONSTRUCTION_NAMES),
-        ("MATH_OPERATION_NAMES", MATH_OPERATION_NAMES),
-        ("MATH_TRANSCENDENTAL_NAMES", MATH_TRANSCENDENTAL_NAMES),
-        ("RELATION_FN_NAMES", RELATION_FN_NAMES),
-        ("JOINT_TYPED_FN_NAMES", JOINT_TYPED_FN_NAMES),
-        ("ORIENTATION_TYPED_FN_NAMES", ORIENTATION_TYPED_FN_NAMES),
-        ("FLEXURE_CTOR_FN_NAMES", FLEXURE_CTOR_FN_NAMES),
+        (
+            "difference",
+            "GEOMETRY_FUNCTION_NAMES",
+            "SELECTOR_COMPOSITION_NAMES",
+        ),
+        (
+            "affine_apply",
+            "GEOMETRY_FUNCTION_NAMES",
+            "AFFINE_ALGEBRA_NAMES",
+        ),
     ];
 
-    /// The four families promoted from resolver-only `match` arms to real
-    /// slices by #5371 — kept separate from `ALL_FAMILY_SLICES` because the
-    /// pre-existing `*_are_disjoint_from_other_families` tests in `units.rs`
-    /// iterate the registered slices only.
-    const RESOLVER_ONLY_FAMILY_SLICES: &[(&str, &[&str])] = &[
-        ("DATUM_CONSTRUCTOR_NAMES", DATUM_CONSTRUCTOR_NAMES),
-        ("SELECTOR_COMPOSITION_NAMES", SELECTOR_COMPOSITION_NAMES),
-        ("LIST_HELPER_NAMES", LIST_HELPER_NAMES),
-        ("AFFINE_ALGEBRA_NAMES", AFFINE_ALGEBRA_NAMES),
-    ];
+    fn is_intentional_overlap(name: &str, a: &str, b: &str) -> bool {
+        INTENTIONAL_OVERLAPS
+            .iter()
+            .any(|&(n, x, y)| n == name && ((x == a && y == b) || (x == b && y == a)))
+    }
+
+    /// No two builtin-name families share a name (bar [`INTENTIONAL_OVERLAPS`]).
+    ///
+    /// Disjointness is what makes each arm's POSITION in the `NoUserFunctions`
+    /// ladder of `expr.rs` unobservable: a name in two families is silently
+    /// shadowed by the earlier arm, a mis-typing rather than a compile error.
+    /// The sweep covers every pair of [`BUILTIN_NAME_FAMILIES`] rows, so a new
+    /// family needs one table row and no new test.
+    #[test]
+    fn builtin_name_families_are_pairwise_disjoint() {
+        for (i, (a_name, a)) in BUILTIN_NAME_FAMILIES.iter().enumerate() {
+            for (b_name, b) in &BUILTIN_NAME_FAMILIES[i + 1..] {
+                for name in *a {
+                    assert!(
+                        !b.contains(name) || is_intentional_overlap(name, a_name, b_name),
+                        "{name:?} appears in both {a_name} and {b_name}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// An allowlisted overlap that stopped being real is a stale exemption
+    /// that would silently excuse a future genuine collision.
+    #[test]
+    fn intentional_overlaps_are_still_real() {
+        let family = |wanted: &str| {
+            BUILTIN_NAME_FAMILIES
+                .iter()
+                .find(|(n, _)| *n == wanted)
+                .unwrap_or_else(|| panic!("{wanted} is not a BUILTIN_NAME_FAMILIES row"))
+                .1
+        };
+        for &(name, a, b) in INTENTIONAL_OVERLAPS {
+            assert!(
+                family(a).contains(&name) && family(b).contains(&name),
+                "{name:?} is no longer in both {a} and {b} — drop it from INTENTIONAL_OVERLAPS"
+            );
+        }
+    }
+
+    /// The two vocabularies that are not slices — the builtin-signature
+    /// registry rows and the arity-gated relation shared verbs — claim no name
+    /// any family claims. The registry list is derived from
+    /// `reify_builtins::rows()`, so every later τ migration is covered the
+    /// moment its rows land. The shared verbs `angle`/`distance` live in
+    /// `GEOMETRY_QUERY_NAMES` by design (their arity-3 forms are relations),
+    /// so that one family is exempt from the shared-verb leg.
+    #[test]
+    fn registry_rows_and_shared_verbs_are_disjoint_from_every_family() {
+        assert!(
+            !reify_builtins::rows().is_empty(),
+            "premise guard: the registry holds no rows, so the sweep asserts nothing"
+        );
+        for (family, slice) in BUILTIN_NAME_FAMILIES {
+            for name in *slice {
+                assert!(
+                    reify_builtins::name_group(name).is_empty(),
+                    "{name:?} in {family} is also a builtin-signature-registry row name"
+                );
+                assert!(
+                    *family == "GEOMETRY_QUERY_NAMES" || !is_relation_shared_verb(name),
+                    "{name:?} in {family} is also an arity-gated relation shared verb"
+                );
+            }
+        }
+    }
 
     /// `is_known_builtin` must accept EVERY member of EVERY classification
     /// family the `expr.rs` ladder consults — not a spot-check per family.
@@ -616,10 +745,7 @@ mod tests {
     /// predicates — are named explicitly below, each behind a premise guard.
     #[test]
     fn is_known_builtin_recognises_every_compiler_family() {
-        for (family, slice) in ALL_FAMILY_SLICES
-            .iter()
-            .chain(RESOLVER_ONLY_FAMILY_SLICES.iter())
-        {
+        for (family, slice) in BUILTIN_NAME_FAMILIES {
             for name in *slice {
                 assert!(
                     is_known_builtin(name),
@@ -685,9 +811,9 @@ mod tests {
     /// cannot linger after the resolver arm is removed.
     ///
     /// The premise-guard idiom is copied from
-    /// `units::tests::datum_constructor_names_are_disjoint_from_other_families`,
-    /// which asserts `datum_constructor_result_type(name, &[]).is_some()`
-    /// before its absence asserts for the same reason.
+    /// `units::tests::datum_constructor_slice_is_claimed_by_the_datum_resolver`,
+    /// which asserts `datum_constructor_result_type(name, &[]).is_some()` for
+    /// every arity-blind datum name.
     #[test]
     fn resolver_only_family_slices_match_their_resolvers() {
         use reify_core::Type;
@@ -929,19 +1055,12 @@ mod tests {
     #[test]
     fn eval_deferred_names_are_disjoint_from_every_registered_family() {
         for name in EVAL_DEFERRED_BUILTIN_NAMES {
-            for (family, slice) in ALL_FAMILY_SLICES {
+            for (family, slice) in BUILTIN_NAME_FAMILIES {
                 assert!(
                     !slice.contains(name),
                     "EVAL_DEFERRED_BUILTIN_NAMES entry {name:?} is now claimed \
                      by {family} — remove it from the manifest; the deferral it \
                      records has been discharged"
-                );
-            }
-            for (family, slice) in RESOLVER_ONLY_FAMILY_SLICES {
-                assert!(
-                    !slice.contains(name),
-                    "EVAL_DEFERRED_BUILTIN_NAMES entry {name:?} is now claimed \
-                     by {family} — remove it from the manifest"
                 );
             }
             // The registry is a family like any other for this purpose, and
@@ -957,20 +1076,14 @@ mod tests {
                  builtin-signature-registry row — remove it from the \
                  manifest; the deferral it records has been discharged"
             );
-            assert!(
-                !FIRST_ARG_TYPED_NAMES.contains(name),
-                "{name:?} is in BOTH manifests. They make different claims — \
-                 FIRST_ARG_TYPED_NAMES asserts the fallback types it CORRECTLY, \
-                 EVAL_DEFERRED_BUILTIN_NAMES asserts only that it is \
-                 eval-dispatchable and unregistered. Pick one."
-            );
+            // FIRST_ARG_TYPED_NAMES is a row of BUILTIN_NAME_FAMILIES, so the
+            // loop above already rules out the double-claim: the two
+            // manifests make DIFFERENT claims about the same fallback (one
+            // says its typing is verified right, the other says it is simply
+            // unexamined), so a name in both would assert two things at once.
             assert!(
                 !crate::relation_signatures::is_relation_shared_verb(name),
                 "{name:?} is an arity-gated relation shared verb"
-            );
-            assert!(
-                !DETERMINACY_PREDICATE_NAMES.contains(name),
-                "{name:?} in DETERMINACY_PREDICATE_NAMES"
             );
         }
     }
