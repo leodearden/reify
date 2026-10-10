@@ -36,6 +36,13 @@
 //!
 //! The last test is not a regime pair: it pins the CLASSIFICATION the
 //! selective regime evicts by, across a value a build writes between edits.
+//!
+//! # Not covered
+//!
+//! - A selector consumer, `fillet(base, edges(self.a.body), r)`: under
+//!   `build_snapshot` neither the selector let (#7270) nor the cross-sub read
+//!   (#7300) resolves, so the fillet never dispatches, and `build()`
+//!   re-evaluates the module, so an edit never reaches its kernel.
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::sync::{Arc, Mutex};
