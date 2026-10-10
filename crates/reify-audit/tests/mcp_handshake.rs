@@ -213,3 +213,36 @@ fn fused_memory_client_accepts_a_well_formed_initialize_under_both_framings() {
     let misses = well_formed_replies_not_accepted("FusedMemoryClient", connect_fused_memory);
     assert!(misses.is_empty(), "{}", misses.join("\n"));
 }
+
+/// An endpoint that ANSWERED `initialize` with a non-2xx status is reachable —
+/// a live serve refusing a stale session, or a foreign HTTP service on the
+/// port — so it must not share a variant with one that never answered.
+#[test]
+fn jcodemunch_client_separates_an_answered_non_2xx_from_an_unreachable_endpoint() {
+    let mut misses = Vec::new();
+    for status in [404, 405, 500] {
+        let mock = spawn(replying(InitializeReply::Raw {
+            status,
+            body: "not found",
+        }));
+        let result = JcodemunchClient::new(mock.url());
+        mock.stop();
+        match result {
+            Err(jcodemunch_client::LoadError::Status(_)) => {}
+            Err(other) => misses.push(format!(
+                "status {status}: expected LoadError::Status, got {other:?}"
+            )),
+            Ok(_) => misses.push(format!(
+                "status {status}: ACCEPTED as a completed MCP handshake"
+            )),
+        }
+    }
+    match JcodemunchClient::new(common::net::unreachable_mcp_url()) {
+        Err(jcodemunch_client::LoadError::Http(_)) => {}
+        Err(other) => misses.push(format!(
+            "refused connection: expected LoadError::Http, got {other:?}"
+        )),
+        Ok(_) => misses.push("refused connection: ACCEPTED".to_string()),
+    }
+    assert!(misses.is_empty(), "{}", misses.join("\n"));
+}
