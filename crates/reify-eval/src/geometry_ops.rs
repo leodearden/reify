@@ -12682,13 +12682,17 @@ pub(crate) type PlacedPreFilter<'a> = Option<&'a dyn Fn(usize, usize, &str) -> b
 /// Placed-product body collected by the T7 export walk (`surface_export_bodies`).
 ///
 /// The `entity_path` is the composed PRD §11.2 path; `handle_id` is the
-/// `GeometryHandleId` of the placed BRep (world transform already baked in via
-/// `ApplyTransform`); `default_visible` follows the same OR-of-aux rule as
-/// `surface_subtree` (`false` iff aux or under-aux-sub).
+/// `GeometryHandleId` of the placed body (world transform already baked in via
+/// `ApplyTransform`) and `kernel` is the kernel that owns it. Handle ids are
+/// kernel-local, so `handle_id` means nothing without `kernel`: resolve the
+/// serving map entry with `crate::kernel_owner::resolve_owning_kernel_name`.
+/// `default_visible` follows the same OR-of-aux rule as `surface_subtree`
+/// (`false` iff aux or under-aux-sub).
 #[derive(Debug)]
 pub(crate) struct ExportBody {
     pub entity_path: String,
     pub handle_id: GeometryHandleId,
+    pub kernel: KernelId,
     pub default_visible: bool,
 }
 
@@ -12701,13 +12705,13 @@ pub(crate) struct ExportBody {
 ///
 /// # Visitor
 ///
-/// `visit_realization(kernel, placed_id, entity_path, default_visible, t_idx, r_idx, diagnostics)`
+/// `visit_realization(kernel, placed, entity_path, default_visible, t_idx, r_idx, diagnostics)`
 /// — called once per realization that produced a handle, after the composed world
 /// transform is applied:
-/// - `kernel`: mutable borrow of the default kernel (over the visit call; released before
-///   recursion so the sub loop can re-borrow).
-/// - `placed_id`: the `GeometryHandleId` after `ApplyTransform` (or the source handle for
-///   identity/undecomposable poses — no extra kernel op).
+/// - `kernel`: mutable borrow of the kernel that OWNS the handle (over the visit call;
+///   released before recursion so the sub loop can re-borrow).
+/// - `placed`: the handle after `ApplyTransform` (or the source handle for
+///   identity/undecomposable poses — no extra kernel op), tagged with its owning kernel.
 /// - `entity_path`: PRD §11.2 composed path (owned `String`).
 /// - `default_visible`: `false` iff aux or under-aux-sub (same OR rule as the callers).
 /// - `t_idx`, `r_idx`: template and realization indices (for budget lookup in the
@@ -12757,7 +12761,7 @@ pub(crate) fn walk_placed_realizations<V>(
 ) where
     V: FnMut(
         &mut dyn GeometryKernel,
-        GeometryHandleId,
+        KernelHandle,
         String,
         bool,
         usize,
@@ -12834,7 +12838,10 @@ pub(crate) fn walk_placed_realizations<V>(
         // `&mut **resolved_kernel` gives the `&mut dyn GeometryKernel` the visitor expects.
         visit_realization(
             &mut **resolved_kernel,
-            placed_id,
+            KernelHandle {
+                kernel: handle.kernel,
+                id: placed_id,
+            },
             entity_path,
             default_visible,
             t_idx,
@@ -13067,13 +13074,14 @@ pub(crate) fn surface_export_bodies(
         meta_map,
         diagnostics,
         Some(combined_filter),
-        &mut |_kernel, placed_id, entity_path, default_visible, _t, _r, _diag| {
+        &mut |_kernel, placed, entity_path, default_visible, _t, _r, _diag| {
             // The combined pre_filter already excluded non-final / non-target
             // realizations before the transform, so every body reaching this
             // visitor should be collected unconditionally.
             export_bodies.push(ExportBody {
                 entity_path,
-                handle_id: placed_id,
+                handle_id: placed.id,
+                kernel: placed.kernel,
                 default_visible,
             });
         },
@@ -13148,7 +13156,7 @@ pub(crate) fn surface_subtree(
     capture_repr_tol: bool,
     // Determinacy β (task 4198): per-build map from realized-occurrence name
     // ("{entity}#realization[{index}]") to sampled max facet-chord deviation
-    // in SI metres. Populated here (the unique site holding kernel + placed_id
+    // in SI metres. Populated here (the unique site holding kernel + placed handle
     // + fresh mesh + entity_path simultaneously) when `capture_repr_tol` is
     // true. Recording is skip-on-None and skip-on-empty-mesh so the map never
     // contains misleading 0.0 entries (honest absence = missing key, B3).
@@ -13183,9 +13191,9 @@ pub(crate) fn surface_subtree(
         meta_map,
         diagnostics,
         Some(&not_query_only),
-        &mut |kernel, placed_id, entity_path, default_visible, t, r, diag| {
+        &mut |kernel, placed, entity_path, default_visible, t, r, diag| {
             let budget = tessellation_budgets[t][r];
-            match kernel.tessellate(placed_id, budget) {
+            match kernel.tessellate(placed.id, budget) {
                 Ok(mesh) => {
                     // Determinacy β (task 4198): record the sampled max
                     // facet-chord deviation BEFORE moving entity_path into
@@ -13200,7 +13208,7 @@ pub(crate) fn surface_subtree(
                     // facet-chord error, NOT the configured deflection budget.
                     if capture_repr_tol
                         && !mesh.indices.is_empty()
-                        && let Some(dev) = kernel.measure_mesh_deviation(placed_id, &mesh)
+                        && let Some(dev) = kernel.measure_mesh_deviation(placed.id, &mesh)
                     {
                         achieved_repr_tol.insert(entity_path.clone(), dev);
                     }
