@@ -11,7 +11,7 @@
 
 #![allow(clippy::mutable_key_type)]
 
-use reify_core::{DiagnosticCode, Severity, ValueCellId};
+use reify_core::{DiagnosticCode, DimensionVector, Severity, ValueCellId};
 use reify_ir::Value;
 use reify_test_support::{
     compile_source_with_stdlib, make_simple_engine, parse_and_compile_with_stdlib,
@@ -50,6 +50,26 @@ fn map_get<'a>(v: &'a Value, key: &str) -> Option<&'a Value> {
     match v {
         Value::Map(m) => m.get(&Value::String(key.to_string())),
         _ => None,
+    }
+}
+
+/// Read the seeded constrained-DOF `radial_stiffness` (task 7191):
+/// `Option(Some(TRANSLATIONAL_STIFFNESS Scalar))`, the shape the
+/// `Prismatic(radial_stiffness: some(..))` ctor stores.
+fn radial_stiffness_si(flexure: &Value) -> f64 {
+    match map_get(flexure, "radial_stiffness") {
+        Some(Value::Option(Some(inner))) => match inner.as_ref() {
+            Value::Scalar {
+                si_value,
+                dimension,
+            } if *dimension == DimensionVector::TRANSLATIONAL_STIFFNESS => *si_value,
+            other => panic!(
+                "expected radial_stiffness Option(Some(TRANSLATIONAL_STIFFNESS Scalar)), got Option(Some({other:?}))"
+            ),
+        },
+        other => panic!(
+            "expected radial_stiffness Option(Some(TRANSLATIONAL_STIFFNESS Scalar)), got {other:?}"
+        ),
     }
 }
 
@@ -110,6 +130,7 @@ fn cantilever_beam_prb_runs_end_to_end() {
 /// Error-clean, and checks the §10.1 row-3 producer signal:
 /// - spring_rate within 1% of 48·E·I/L³
 /// - transverse_stiffness / spring_rate ≥ 1000 (stiffness ratio)
+/// - radial_stiffness within 1% of 4·E·t·b³/L³ and ≤ transverse_stiffness
 /// - parasitic_error < L/1000
 #[test]
 fn parallelogram_stage_runs_end_to_end() {
@@ -170,6 +191,20 @@ fn parallelogram_stage_runs_end_to_end() {
     assert!(
         ratio >= 1000.0,
         "transverse/spring ratio {ratio} ≥ 1000 (§10.1 row 3)"
+    );
+
+    // Constrained-DOF radial_stiffness: the isotropic lower bound, here the
+    // out-of-plane strong-axis bending stiffness 4·E·t·b³/L³ (b < L).
+    let radial_si = radial_stiffness_si(flexure);
+    let k_radial_expected = 4.0 * e * thickness * width.powi(3) / length.powi(3);
+    let rel = (radial_si - k_radial_expected).abs() / k_radial_expected;
+    assert!(
+        rel < 0.01,
+        "radial_stiffness {radial_si} within 1% of {k_radial_expected} (rel {rel})"
+    );
+    assert!(
+        radial_si <= transverse_si,
+        "radial_stiffness {radial_si} ≤ transverse_stiffness {transverse_si}"
     );
 
     // §10.1 row 3: parasitic_error is Option(Some(Length)) with si_value < L/1000.
@@ -245,6 +280,7 @@ fn notch_hinge_circular_prb_runs_end_to_end() {
 /// Compiles and evals `examples/flexures/double_parallelogram.ri`, asserts
 /// Error-clean, and checks the §10.1 row-4 producer signal:
 /// - spring_rate within 1% of 24·E·I/L³ (series-halved)
+/// - radial_stiffness within 1% of 2·E·t·b³/L³ (series-halved) and ≤ transverse_stiffness
 /// - parasitic_error < L/100000 (mirror-cancellation, 4+ orders better than single)
 #[test]
 fn double_parallelogram_runs_end_to_end() {
@@ -314,6 +350,20 @@ fn double_parallelogram_runs_end_to_end() {
     assert!(
         ratio >= 1000.0,
         "transverse/spring ratio {ratio} ≥ 1000 (§10.1 row 4: ratio preserved)"
+    );
+
+    // Constrained-DOF radial_stiffness: the series-halved isotropic lower bound,
+    // here the out-of-plane strong-axis bending stiffness 2·E·t·b³/L³ (b < L).
+    let radial_si = radial_stiffness_si(flexure);
+    let k_radial_expected = 2.0 * e * thickness * width.powi(3) / length.powi(3);
+    let rel = (radial_si - k_radial_expected).abs() / k_radial_expected;
+    assert!(
+        rel < 0.01,
+        "radial_stiffness {radial_si} within 1% of {k_radial_expected} (rel {rel})"
+    );
+    assert!(
+        radial_si <= transverse_si,
+        "radial_stiffness {radial_si} ≤ transverse_stiffness {transverse_si}"
     );
 
     // §10.1 row 4: parasitic_error is Option(Some(Length)) with si_value < L/100000

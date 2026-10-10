@@ -1188,6 +1188,115 @@ mod tests {
         }
     }
 
+    // ── task 7191: constrained-DOF radial_stiffness seed ──────────────────────
+
+    /// Read the seeded `radial_stiffness` — `Option(Some(TRANSLATIONAL_STIFFNESS
+    /// Scalar))`, the shape the `Prismatic(radial_stiffness: some(..))` ctor stores.
+    fn radial_stiffness_si(joint: &Value) -> f64 {
+        match map_get(joint, "radial_stiffness") {
+            Some(Value::Option(Some(inner))) => match inner.as_ref() {
+                Value::Scalar {
+                    si_value,
+                    dimension,
+                } if *dimension == DimensionVector::TRANSLATIONAL_STIFFNESS => *si_value,
+                other => panic!(
+                    "expected radial_stiffness Option(Some(TRANSLATIONAL_STIFFNESS Scalar)), got Option(Some({other:?}))"
+                ),
+            },
+            other => panic!(
+                "expected radial_stiffness Option(Some(TRANSLATIONAL_STIFFNESS Scalar)), got {other:?}"
+            ),
+        }
+    }
+
+    /// Read the bare-Scalar in-plane `transverse_stiffness`.
+    fn transverse_si(joint: &Value) -> f64 {
+        match map_get(joint, "transverse_stiffness") {
+            Some(Value::Scalar { si_value, .. }) => *si_value,
+            other => panic!("expected transverse_stiffness Scalar, got {other:?}"),
+        }
+    }
+
+    /// [`compound_args`] with the blade width widened to b = 40 mm > L = 20 mm,
+    /// so the in-plane (axial-stretch) stiffness is the smaller radial one.
+    fn wide_blade_args() -> Vec<Value> {
+        let mut args = compound_args();
+        args[1] = Value::length(0.040);
+        args
+    }
+
+    fn assert_rel_close(actual: f64, expected: f64, tol: f64, label: &str) {
+        let rel = (actual - expected).abs() / expected.abs();
+        assert!(rel < tol, "{label}: {actual} vs {expected} (rel {rel})");
+    }
+
+    #[test]
+    fn prb_parallelogram_flexure_seeds_radial_stiffness_lower_bound() {
+        let length = 0.02_f64;
+        let width = 0.005_f64;
+        let thick = 0.0005_f64;
+        let e = 205e9_f64;
+
+        // Narrow blades (b < L): the out-of-plane strong-axis bending branch.
+        let narrow = crate::eval_builtin("prb_parallelogram_flexure", &compound_args());
+        let radial = radial_stiffness_si(&narrow);
+        let transverse = transverse_si(&narrow);
+        let k_out_of_plane = 4.0 * e * thick * width.powi(3) / length.powi(3);
+        assert_rel_close(radial, k_out_of_plane, 1e-9, "radial == 4·E·t·b³/L³");
+        assert!(
+            radial < transverse,
+            "radial {radial} < in-plane transverse {transverse} for b < L"
+        );
+        assert_rel_close(
+            radial / transverse,
+            (width / length).powi(2),
+            1e-9,
+            "radial/transverse == (b/L)²",
+        );
+
+        // Wide blades (b > L): the in-plane axial-stretch branch.
+        let wide = crate::eval_builtin("prb_parallelogram_flexure", &wide_blade_args());
+        assert_rel_close(
+            radial_stiffness_si(&wide),
+            transverse_si(&wide),
+            1e-12,
+            "wide-blade radial == transverse",
+        );
+    }
+
+    #[test]
+    fn prb_double_parallelogram_flexure_seeds_halved_radial_stiffness() {
+        let length = 0.02_f64;
+        let width = 0.005_f64;
+        let thick = 0.0005_f64;
+        let e = 205e9_f64;
+
+        let narrow = crate::eval_builtin("prb_double_parallelogram_flexure", &compound_args());
+        let radial = radial_stiffness_si(&narrow);
+        let k_out_of_plane_double = 2.0 * e * thick * width.powi(3) / length.powi(3);
+        assert_rel_close(
+            radial,
+            k_out_of_plane_double,
+            1e-9,
+            "double radial == 2·E·t·b³/L³",
+        );
+        let single = crate::eval_builtin("prb_parallelogram_flexure", &compound_args());
+        assert_rel_close(
+            radial,
+            radial_stiffness_si(&single) / 2.0,
+            1e-12,
+            "double radial == single radial / 2",
+        );
+
+        let wide = crate::eval_builtin("prb_double_parallelogram_flexure", &wide_blade_args());
+        assert_rel_close(
+            radial_stiffness_si(&wide),
+            transverse_si(&wide),
+            1e-12,
+            "wide-blade double radial == transverse",
+        );
+    }
+
     // ── step-19: RED — compound-family compliance population ──────────────────
 
     /// Read the `__flexure_compliance` FlexureCompliance record's fields from a
