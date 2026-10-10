@@ -10,12 +10,15 @@ module discrete_choice
 //
 // The constraint is not optional. `side * side == 1` always holds here; its
 // job is to read `right`, which hands it to the solver. With no constraint
-// reading `right`, it stays undef ("awaiting solve"). A constraint that
-// discriminates (e.g. `side < 0`) pins the alternative instead. CP-SAT
-// (default-on since #5469) enumerates `right` and resolves `side` to an exact
-// value; prefer this form for a genuinely binary choice. This file keeps the
-// continuous Real form below, with a dimensionless free auto and a quadratic
-// constraint, and documents what that form does and does not give you:
+// reading `right`, it stays undef ("awaiting solve"). CP-SAT (default-on since
+// #5469) enumerates `right` and resolves `side` to an exact value. Both
+// alternatives satisfy `side * side == 1`, so it returns one of them, which is
+// not something to rely on, and `auto(free)` warns that the "result is not
+// uniquely determined". To choose an alternative, add a constraint that
+// discriminates (e.g. `side < 0`). Prefer this form for a genuinely binary
+// choice. This file keeps the continuous Real form below, with a dimensionless
+// free auto and a quadratic constraint, and documents what that form does and
+// does not give you:
 //
 //     param side : Real = auto(free)
 //     constraint side * side == 1        // side is +1 or -1, nothing else
