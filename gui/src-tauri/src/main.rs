@@ -628,9 +628,12 @@ async fn mcp_tool_call(
         .await
 }
 
-/// Task 5772: dispatched on the persistent large-stack LSP lane rather than on
-/// the awaiting tokio worker, whose ~2 MiB stack this compiler-adjacent work
-/// reaches at keystroke frequency.
+/// Task 5772: dispatched on a persistent large-stack LSP lane rather than on the
+/// awaiting tokio worker, whose ~2 MiB stack this compiler-adjacent work reaches
+/// at keystroke frequency.
+///
+/// Task 6517: routed by method across an ordered lane and a query pool (see
+/// `lsp_bridge::lane_for_method`). The frontend sees no difference.
 ///
 /// Stays `async`. Converting it to a sync command would make Tauri run it as
 /// `ExecutionContext::Blocking` on the IPC thread with NO ambient tokio runtime,
