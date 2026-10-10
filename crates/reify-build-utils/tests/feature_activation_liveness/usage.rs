@@ -1,5 +1,127 @@
 //! Does a consumer package's Rust source name any of a set of identifiers?
 
+use std::collections::BTreeSet;
+use std::fmt;
+use std::fs;
+use std::io;
+use std::path::{Path, PathBuf};
+use std::str::FromStr;
+
+use proc_macro2::{TokenStream, TokenTree};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Use {
+    pub file: PathBuf,
+    pub line: usize,
+    pub name: String,
+}
+
+#[derive(Debug)]
+pub enum UsageError {
+    Io { path: PathBuf, source: io::Error },
+    Lex { file: PathBuf },
+}
+
+impl fmt::Display for UsageError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Io { path, source } => write!(f, "cannot read {}: {source}", path.display()),
+            Self::Lex { file } => write!(f, "cannot lex {} as Rust tokens", file.display()),
+        }
+    }
+}
+
+/// The first identifier in `names` that the package's `.rs` files spell,
+/// in sorted depth-first order. Comments never count; macro bodies do.
+pub fn first_use(
+    package_dir: &Path,
+    exclude: Option<&Path>,
+    names: &BTreeSet<String>,
+) -> Result<Option<Use>, UsageError> {
+    for file in rust_files(package_dir, exclude)? {
+        if let Some(found) = first_use_in_file(&file, names)? {
+            return Ok(Some(found));
+        }
+    }
+    Ok(None)
+}
+
+fn rust_files(package_dir: &Path, exclude: Option<&Path>) -> Result<Vec<PathBuf>, UsageError> {
+    let mut files = Vec::new();
+    collect_rust_files(package_dir, exclude, &mut files)?;
+    Ok(files)
+}
+
+/// Skips build output, hidden entries, the excluded dir, and nested
+/// packages (a subdirectory with its own Cargo.toml is another consumer).
+fn collect_rust_files(
+    dir: &Path,
+    exclude: Option<&Path>,
+    files: &mut Vec<PathBuf>,
+) -> Result<(), UsageError> {
+    for entry in sorted_entries(dir)? {
+        let path = entry.path();
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name == "target" || name.starts_with('.') || Some(path.as_path()) == exclude {
+            continue;
+        }
+        let file_type = entry
+            .file_type()
+            .map_err(|source| io_error(&path, source))?;
+        if file_type.is_dir() {
+            if !path.join("Cargo.toml").is_file() {
+                collect_rust_files(&path, exclude, files)?;
+            }
+        } else if path.extension().is_some_and(|ext| ext == "rs") {
+            files.push(path);
+        }
+    }
+    Ok(())
+}
+
+fn sorted_entries(dir: &Path) -> Result<Vec<fs::DirEntry>, UsageError> {
+    let mut entries = fs::read_dir(dir)
+        .and_then(|read| read.collect::<io::Result<Vec<_>>>())
+        .map_err(|source| io_error(dir, source))?;
+    entries.sort_by_key(fs::DirEntry::file_name);
+    Ok(entries)
+}
+
+fn io_error(path: &Path, source: io::Error) -> UsageError {
+    UsageError::Io {
+        path: path.to_path_buf(),
+        source,
+    }
+}
+
+fn first_use_in_file(file: &Path, names: &BTreeSet<String>) -> Result<Option<Use>, UsageError> {
+    let source = fs::read_to_string(file).map_err(|source| io_error(file, source))?;
+    let tokens = TokenStream::from_str(&source).map_err(|_| UsageError::Lex {
+        file: file.to_path_buf(),
+    })?;
+    Ok(first_named_ident(tokens, names).map(|(name, line)| Use {
+        file: file.to_path_buf(),
+        line,
+        name,
+    }))
+}
+
+/// Depth-first through every delimited group, so macro bodies are searched.
+fn first_named_ident(tokens: TokenStream, names: &BTreeSet<String>) -> Option<(String, usize)> {
+    tokens.into_iter().find_map(|tree| match tree {
+        TokenTree::Ident(ident) => {
+            let text = ident.to_string();
+            let bare = text.strip_prefix("r#").unwrap_or(&text);
+            names
+                .contains(bare)
+                .then(|| (bare.to_string(), ident.span().start().line))
+        }
+        TokenTree::Group(group) => first_named_ident(group.stream(), names),
+        TokenTree::Punct(_) | TokenTree::Literal(_) => None,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeSet;
