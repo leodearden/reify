@@ -24,7 +24,10 @@ use reify_core::ty::SelectorKind;
 use reify_eval::Engine;
 use reify_ir::value::{LeafQuery, SelectorNode};
 use reify_ir::{ExportFormat, Value};
-use reify_test_support::{MockGeometryKernel, assert_selector_value};
+use reify_test_support::{
+    MockGeometryKernel, assert_leaf_node_targeting, assert_selector_leaf_targeting,
+    assert_selector_value,
+};
 
 /// Absolute path to a fixture file in `tests/fixtures/selectors/`.
 fn fixture_path(name: &str) -> String {
@@ -33,19 +36,6 @@ fn fixture_path(name: &str) -> String {
         env!("CARGO_MANIFEST_DIR"),
         name
     )
-}
-
-/// Assert `node` is a `Leaf` with a symbolic (`kernel_handle == None`) target.
-fn assert_symbolic_leaf(node: &SelectorNode, label: &str) {
-    match node {
-        SelectorNode::Leaf { target, .. } => {
-            assert_eq!(
-                target.kernel_handle, None,
-                "{label}: symbolic eval must yield target.kernel_handle == None"
-            );
-        }
-        other => panic!("{label}: expected a Leaf node, got {other:?}"),
-    }
 }
 
 /// BT2 — `Engine::eval` must mint `BT2SameKindUnion.u`
@@ -74,7 +64,7 @@ fn bt2_union_eval_yields_symbolic_union_selector() {
         SelectorNode::Union(children) => {
             assert_eq!(children.len(), 2, "BT2: union must have 2 children");
             for (i, child) in children.iter().enumerate() {
-                assert_symbolic_leaf(&child.node, &format!("BT2 union child[{i}]"));
+                assert_leaf_node_targeting(&child.node, &format!("BT2 union child[{i}]"), None);
             }
         }
         other => panic!("BT2SameKindUnion.u must be SelectorNode::Union, got {other:?}"),
@@ -109,8 +99,8 @@ fn bt3_difference_and_intersect_eval_yield_symbolic_composition_selectors() {
     let sv_d = assert_selector_value(d_value, "BT3SetOps.d", SelectorKind::Face);
     match &sv_d.node {
         SelectorNode::Difference(a, b) => {
-            assert_symbolic_leaf(&a.node, "BT3 difference minuend");
-            assert_symbolic_leaf(&b.node, "BT3 difference subtrahend");
+            assert_leaf_node_targeting(&a.node, "BT3 difference minuend", None);
+            assert_leaf_node_targeting(&b.node, "BT3 difference subtrahend", None);
         }
         other => panic!("BT3SetOps.d must be SelectorNode::Difference, got {other:?}"),
     }
@@ -121,7 +111,11 @@ fn bt3_difference_and_intersect_eval_yield_symbolic_composition_selectors() {
         SelectorNode::Intersect(children) => {
             assert_eq!(children.len(), 2, "BT3: intersect must have 2 children");
             for (idx, child) in children.iter().enumerate() {
-                assert_symbolic_leaf(&child.node, &format!("BT3 intersect child[{idx}]"));
+                assert_leaf_node_targeting(
+                    &child.node,
+                    &format!("BT3 intersect child[{idx}]"),
+                    None,
+                );
             }
         }
         other => panic!("BT3SetOps.i must be SelectorNode::Intersect, got {other:?}"),
@@ -208,21 +202,13 @@ fn bt8_named_leaf_eval_yields_symbolic_named_selector() {
     let result = engine.eval(&compiled);
 
     let value = result.values.get(&ValueCellId::new("BT8NamedLeaf", "s"));
-    let sv = assert_selector_value(value, "BT8NamedLeaf.s", SelectorKind::Face);
-    match &sv.node {
-        SelectorNode::Leaf { target, query } => {
-            assert_eq!(
-                target.kernel_handle, None,
-                "BT8: symbolic target must have kernel_handle == None"
-            );
-            assert_eq!(
-                query,
-                &LeafQuery::Named("nope".to_string()),
-                "BT8: Named(\"nope\") leaf"
-            );
-        }
-        other => panic!("BT8NamedLeaf.s must be SelectorNode::Leaf, got {other:?}"),
-    }
+    assert_selector_leaf_targeting(value, "BT8NamedLeaf.s", SelectorKind::Face, None, |q| {
+        assert_eq!(
+            q,
+            &LeafQuery::Named("nope".to_string()),
+            "BT8: Named(\"nope\") leaf"
+        );
+    });
 
     let violations = engine.check_no_stale_undef();
     assert!(

@@ -40,7 +40,8 @@ pub fn assert_selector_leaf(
     kind: SelectorKind,
     check_query: impl FnOnce(&LeafQuery),
 ) {
-    let (_, query) = selector_leaf_parts(cell_value, label, kind);
+    let node = &assert_selector_value(cell_value, label, kind).node;
+    let (_, query) = leaf_node_parts(node, label);
     check_query(query);
 }
 
@@ -55,12 +56,26 @@ pub fn assert_selector_leaf_targeting(
     expected_kernel_handle: Option<GeometryHandleId>,
     check_query: impl FnOnce(&LeafQuery),
 ) {
-    let (target, query) = selector_leaf_parts(cell_value, label, kind);
+    let node = &assert_selector_value(cell_value, label, kind).node;
+    let query = assert_leaf_node_targeting(node, label, expected_kernel_handle);
+    check_query(query);
+}
+
+/// Node-level [`assert_selector_leaf_targeting`] for a selector that is not a
+/// cell of its own, such as a composition's child: assert `node` is a single
+/// `Leaf` whose target has `expected_kernel_handle`, and return its query.
+#[track_caller]
+pub fn assert_leaf_node_targeting<'a>(
+    node: &'a SelectorNode,
+    label: &str,
+    expected_kernel_handle: Option<GeometryHandleId>,
+) -> &'a LeafQuery {
+    let (target, query) = leaf_node_parts(node, label);
     assert_eq!(
         target.kernel_handle, expected_kernel_handle,
         "{label}: leaf target kernel_handle"
     );
-    check_query(query);
+    query
 }
 
 /// Assert `cell_value` holds a `Value::Selector` of the expected `kind` and
@@ -80,12 +95,11 @@ pub fn assert_selector_value<'a>(
 }
 
 #[track_caller]
-fn selector_leaf_parts<'a>(
-    cell_value: Option<&'a Value>,
+fn leaf_node_parts<'a>(
+    node: &'a SelectorNode,
     label: &str,
-    kind: SelectorKind,
 ) -> (&'a GeometryHandleRef, &'a LeafQuery) {
-    match &assert_selector_value(cell_value, label, kind).node {
+    match node {
         SelectorNode::Leaf { target, query } => (target, query),
         other => panic!("{label} must be a Leaf selector node, got: {other:?}"),
     }
@@ -100,8 +114,8 @@ mod tests {
     use reify_ir::{GeometryHandleId, Value};
 
     use super::{
-        assert_selector_leaf, assert_selector_leaf_targeting, assert_selector_value,
-        decompose_point3, read_f64,
+        assert_leaf_node_targeting, assert_selector_leaf, assert_selector_leaf_targeting,
+        assert_selector_value, decompose_point3, read_f64,
     };
 
     // ── read_f64 tests ────────────────────────────────────────────────────────
@@ -342,5 +356,38 @@ mod tests {
     fn assert_selector_value_panics_on_kind_mismatch() {
         let cell = selector_leaf_cell(SelectorKind::Edge, LeafQuery::All, None);
         assert_selector_value(Some(&cell), "lbl", SelectorKind::Face);
+    }
+
+    // ── assert_leaf_node_targeting tests ──────────────────────────────────────
+
+    fn selector_leaf(kind: SelectorKind, kernel_handle: Option<GeometryHandleId>) -> SelectorValue {
+        let Value::Selector(leaf) = selector_leaf_cell(kind, LeafQuery::All, kernel_handle) else {
+            unreachable!("selector_leaf_cell always builds a Value::Selector");
+        };
+        leaf
+    }
+
+    #[test]
+    fn assert_leaf_node_targeting_returns_query_of_matching_leaf() {
+        let leaf = selector_leaf(SelectorKind::Edge, None);
+        assert_eq!(
+            assert_leaf_node_targeting(&leaf.node, "lbl", None),
+            &LeafQuery::All
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "lbl must be a Leaf selector node")]
+    fn assert_leaf_node_targeting_panics_on_non_leaf_node() {
+        let union = SelectorValue::union(vec![selector_leaf(SelectorKind::Edge, None)])
+            .expect("union construction");
+        assert_leaf_node_targeting(&union.node, "lbl", None);
+    }
+
+    #[test]
+    #[should_panic(expected = "lbl: leaf target kernel_handle")]
+    fn assert_leaf_node_targeting_panics_on_realized_vs_symbolic() {
+        let leaf = selector_leaf(SelectorKind::Edge, Some(GeometryHandleId(1)));
+        assert_leaf_node_targeting(&leaf.node, "lbl", None);
     }
 }
