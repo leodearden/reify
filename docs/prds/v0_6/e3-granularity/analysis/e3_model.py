@@ -207,8 +207,7 @@ class TaskOutcome:
 
 
 def task_outcomes(arm_tasks, snapshot, runs, merges, freeze_set, as_of, protocol):
-    """Every arm task's outcome with every source cut at as_of, the one place
-    as_of applies, so a past as_of is a frozen snapshot."""
+    """Every arm task's outcome as of as_of (each source cut by task_ledger)."""
     return tuple(
         _task_outcome(task, snapshot.task(task.id), runs, merges, freeze_set, as_of, protocol)
         for task in arm_tasks
@@ -216,29 +215,79 @@ def task_outcomes(arm_tasks, snapshot, runs, merges, freeze_set, as_of, protocol
 
 
 def _task_outcome(task, record, runs, merges, freeze_set, as_of, protocol):
-    own_merges = tuple(m for m in merges if m.task_id == task.id)
+    ledger = task_ledger(record, runs, merges, as_of, protocol)
+    return TaskOutcome(
+        task=task,
+        status=ledger.status,
+        landed_at=ledger.landed_at,
+        merges=ledger.merges,
+        loc=ledger.loc,
+        cost=ledger.cost,
+        attempts_counted=ledger.attempts_counted,
+        attempts_drain_censored=ledger.attempts_drain_censored,
+        attempts_in_flight=ledger.attempts_in_flight,
+        blocking_escalations=ledger.blocking_escalations,
+        excluded=EXCLUDED_FREEZE_WINDOW if task.id in freeze_set else None,
+        era=_era(ledger.attempt_starts, protocol),
+        anomalies=ledger.anomalies,
+    )
+
+
+@dataclass(frozen=True)
+class TaskLedger:
+    """One task's records as they stood at an instant, with no arm judgement:
+    landed_at needs status done and a merge by then."""
+
+    task_id: int
+    status: str
+    landed_at: datetime | None
+    merges: tuple
+    loc: int
+    cost: float
+    attempts_counted: int
+    attempts_drain_censored: int
+    attempts_in_flight: int
+    blocking_escalations: int
+    attempt_starts: tuple
+    anomalies: tuple
+
+
+def task_ledger(record, runs, merges, as_of, protocol):
+    """record's merges, cost, attempts and escalations with every source cut
+    at as_of, the one place as_of applies, so a past as_of is a frozen
+    snapshot. Cost spans every role and is never censored (§7.4 censors
+    rework only)."""
+    own_merges = tuple(m for m in merges if m.task_id == record.id)
     merged = tuple(m for m in own_merges if m.merged_at <= as_of)
     landed = record.status == "done" and bool(merged)
     attempts = [_attempt_as_of(a, as_of) for a in runs.attempts
-                if a.task_id == task.id and a.started_at <= as_of]
+                if a.task_id == record.id and a.started_at <= as_of]
     classes = [classify_attempt(a, protocol) for a in attempts]
-    return TaskOutcome(
-        task=task,
+    return TaskLedger(
+        task_id=record.id,
         status=record.status,
         landed_at=min(m.merged_at for m in merged) if landed else None,
         merges=merged,
         loc=sum(m.loc for m in merged),
         cost=sum(i.cost_usd for i in runs.invocations
-                 if i.task_id == task.id and i.started_at <= as_of),
+                 if i.task_id == record.id and i.started_at <= as_of),
         attempts_counted=classes.count(AttemptClass.COUNTED),
         attempts_drain_censored=classes.count(AttemptClass.DRAIN_CENSORED),
         attempts_in_flight=classes.count(AttemptClass.IN_FLIGHT),
         blocking_escalations=len({e.escalation_id for e in runs.escalations
-                                  if e.task_id == task.id and e.severity == "blocking"
+                                  if e.task_id == record.id and e.severity == "blocking"
                                   and e.created_at <= as_of}),
-        excluded=EXCLUDED_FREEZE_WINDOW if task.id in freeze_set else None,
-        era=_era([a.started_at for a in attempts], protocol),
+        attempt_starts=tuple(a.started_at for a in attempts),
         anomalies=_anomalies(record, own_merges),
+    )
+
+
+def carve_out_ledgers(snapshot, runs, merges, as_of, protocol):
+    """The §7.1 carve-outs' ledgers, reported descriptively beside the arms."""
+    return tuple(
+        task_ledger(snapshot.task(task_id), runs, merges, as_of, protocol)
+        for task_id in sorted(protocol.carve_outs)
+        if snapshot.task(task_id) is not None
     )
 
 

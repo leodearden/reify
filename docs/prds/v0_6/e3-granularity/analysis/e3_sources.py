@@ -13,6 +13,7 @@ Nothing here decides what a record means for the protocol; e3_model does.
 """
 
 import dataclasses
+import http.client
 import json
 import re
 import sqlite3
@@ -27,7 +28,7 @@ from e3_protocol import ProtocolViolation
 REPO_ROOT = Path(__file__).resolve().parents[5]
 sys.path.insert(0, str(REPO_ROOT / "scripts"))
 
-from escalation_mcp import McpSession  # noqa: E402  (after sys.path manipulation)
+from escalation_mcp import EscalationError, McpSession  # noqa: E402  (after sys.path manipulation)
 
 SNAPSHOT_SCHEMA = "e3-task-snapshot/1"
 MCP_SOURCE = "fused-memory MCP get_statuses + get_task"
@@ -144,11 +145,25 @@ def fused_memory_url(mcp_config_path):
     return url
 
 
+MCP_FAILURES = (OSError, ValueError, http.client.HTTPException, EscalationError)
+
+
 def open_fused_memory(url):
-    """A live call_tool bound to an initialized fused-memory MCP session."""
+    """A live call_tool bound to an initialized fused-memory MCP session; a
+    transport failure or a refused call raises SourceError naming the url."""
     session = McpSession(url, "e3-analysis")
-    session.open()
-    return session.call_tool
+    try:
+        session.open()
+    except MCP_FAILURES as error:
+        raise SourceError(f"fused-memory MCP {url}: {error}") from error
+
+    def call_tool(name, arguments):
+        try:
+            return session.call_tool(name, arguments)
+        except MCP_FAILURES as error:
+            raise SourceError(f"fused-memory MCP {url} {name}: {error}") from error
+
+    return call_tool
 
 
 @dataclass(frozen=True)
