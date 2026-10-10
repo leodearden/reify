@@ -89,48 +89,19 @@ pub async fn lsp_request_impl(
     serde_json::to_string(&result).map_err(|e| format!("serialize error: {e}"))
 }
 
-/// [`lsp_request_impl`], dispatched on a persistent LARGE-STACK LSP lane instead
-/// of on the awaiting tokio worker (task 5772), and ROUTED by method to one of
-/// two such lanes (task 6517) — see "Which lane" below.
+/// [`lsp_request_impl`], dispatched on a persistent LARGE-STACK lane chosen by
+/// [`lane_for_method`] instead of on the awaiting tokio worker.
 ///
-/// `lsp_request` fires on effectively every keystroke and cursor move, and the
-/// work it reaches is compiler-adjacent: `reify-syntax`'s CST-to-AST walk (which
-/// has neither a `stacker` guard nor a depth cap) and `reify-compiler`'s
-/// recursive compile. A tokio worker gives that the default ~2 MiB stack; the
-/// lane gives it [`crate::large_stack::COMPILE_STACK_SIZE`] (256 MiB), amortised
-/// over one thread for the process lifetime rather than a fresh 256 MiB mapping
-/// per keystroke. That covers every `handle_request` arm, the four blocking-work
-/// arms included (see [`LspBridge`]'s "Where blocking work runs").
+/// `lsp_request` fires on effectively every keystroke, and the work it reaches
+/// is compiler-adjacent: `reify-syntax`'s CST-to-AST walk (no `stacker` guard,
+/// no depth cap) and `reify-compiler`'s recursive compile. A tokio worker gives
+/// that ~2 MiB of stack; a lane gives it
+/// [`crate::large_stack::COMPILE_STACK_SIZE`], on threads that live for the
+/// process. That covers every `handle_request` arm, the four blocking-work arms
+/// included (see [`LspBridge`]'s "Where blocking work runs").
 ///
-/// # What this hands the lane, and what the lane does with it
-///
-/// A FUTURE, not a closure. The lane thread has no ambient runtime, so the
-/// future does need a driver, but choosing it is
-/// [`crate::large_stack::dispatch_async`]'s job, not this function's.
-/// Pre-baking a [`tokio::runtime::Handle::block_on`] here would break the lane's
-/// degraded arms, which run in the submitting async frame where `block_on`
-/// panics "Cannot start a runtime from within a runtime"; see
-/// [`crate::large_stack::dispatch_async`]'s degradation policy.
-///
-/// # Which lane
-///
-/// Since task 6517 there are TWO destinations, chosen by [`lane_for_method`]:
-///
-/// * ORDERED lane ([`crate::large_stack::LSP_LANE`], one consumer) — the six
-///   state-mutating and lifecycle methods, plus any method `handle_request`
-///   does not recognise.
-/// * QUERY pool ([`crate::large_stack::LSP_POOL`],
-///   [`crate::large_stack::LSP_POOL_SIZE`] consumers) — the eight read-only
-///   queries.
-///
-/// The membership of each set is deliberately NOT restated here.
-/// [`lane_for_method`]'s `matches!` arm is the single authoritative list, and
-/// the only copy under test — `lsp_lane_routing_tests`' (j) drives every entry
-/// of its `ORDERED_METHODS` / `QUERY_METHODS` constants through the real
-/// dispatcher, so a method renamed or added in `reify-lsp` reds there. Prose
-/// copies are unguarded by construction; only the COUNTS are repeated, because
-/// they are load-bearing (six + eight = the fourteen arms `handle_request`
-/// accepts).
+/// The lane is handed a FUTURE; choosing its driver is
+/// [`crate::large_stack::dispatch_async`]'s job.
 ///
 /// # An abandoned request still runs
 ///
@@ -140,12 +111,9 @@ pub async fn lsp_request_impl(
 /// [`crate::large_stack::LSP_POOL_SIZE`] consumers for its duration, not the only
 /// LSP consumer in the process.
 ///
-/// # Why this composition lives here, not inline in `main.rs`
-///
-/// `main.rs` is the `--features gui` bin and has no test module, so a wrapper
-/// written there would be untestable. Keeping it in the lib is what lets
-/// `lsp_bridge_tests.rs` prove result parity against a direct
-/// [`lsp_request_impl`] call.
+/// It lives in the lib rather than in `main.rs`, the `--features gui` bin with
+/// no test module, so `lsp_bridge_tests.rs` can prove result parity against a
+/// direct [`lsp_request_impl`] call.
 pub async fn lsp_request_on_worker(
     bridge: Arc<LspBridge>,
     method: String,
@@ -154,59 +122,33 @@ pub async fn lsp_request_on_worker(
     lsp_request_on_lane(lane_for_method(&method), bridge, method, params).await
 }
 
-/// Which large-stack lane a given LSP method travels: the size-1 ORDERED lane,
-/// or the [`crate::large_stack::LSP_POOL_SIZE`]-consumer QUERY POOL (task 6517).
+/// Which large-stack lane an LSP method travels: the size-1 ORDERED lane
+/// [`crate::large_stack::LSP_LANE`], or the QUERY POOL
+/// [`crate::large_stack::LSP_POOL`].
 ///
-/// # This `matches!` arm is the AUTHORITATIVE classification
+/// This `matches!` arm is the AUTHORITATIVE classification; every other
+/// description of the split carries only counts and points here. The test
+/// copies, `lsp_lane_routing_tests`' `ORDERED_METHODS` / `QUERY_METHODS`, are
+/// driven through the real dispatcher by its (j), so an arm renamed or removed
+/// in `reify-lsp` reds there. An arm ADDED in `reify-lsp` is not caught: it takes
+/// the ordered-lane default until someone classifies it here.
 ///
-/// Every other site that describes the split — [`lsp_request_on_worker`]'s
-/// "Which lane", [`crate::large_stack::LSP_LANE`] and
-/// [`crate::large_stack::LSP_POOL`], the `large_stack` module docs,
-/// `main.rs::lsp_request`, both test-file section headers — carries the COUNTS
-/// and points here for the membership. That is deliberate: prose copies of a
-/// list are unguarded, so reclassifying one method (or `reify-lsp` adding an
-/// arm) used to leave six stale lists reading as authoritative. The only other
-/// copies are `lsp_lane_routing_tests`' `ORDERED_METHODS` / `QUERY_METHODS`
-/// constants, and those are guarded — (j) relates them to `HANDLE_REQUEST_ARMS`
-/// and drives every entry through the real dispatcher.
+/// The key is LSP PROTOCOL semantics — does this method mutate server-side
+/// document or session state? — not `reify-lsp`'s choice of which arms carry
+/// blocking work. Those four arms compute on the thread that drives them, so
+/// routing them off the lanes would hand their deep work back to a ~2 MiB
+/// thread; the pool bounds their occupancy instead.
 ///
-/// # The classification key is LSP PROTOCOL semantics
+/// The arm lists the CONCURRENCY-SAFE set and defaults everything else,
+/// including every unrecognised method, to the ordered lane. The opposite
+/// spelling would hand concurrency to any method added later, state-mutating
+/// ones included. `lsp_lane_routing_tests`' (h) pins the default with
+/// unrecognised methods.
 ///
-/// The question this answers is "does this method mutate server-side document or
-/// session state?", and it is answered from the LSP specification's own notion
-/// of notifications-versus-requests — NOT from `reify-lsp`'s internal choice of
-/// which arms carry blocking work ([`reify_lsp::blocking_work`]).
-///
-/// A method-keyed bypass of the lanes is not a candidate. The four blocking-work
-/// arms compute ON the thread that drives them (see [`LspBridge`]'s "Where
-/// blocking work runs"), so taking them off the lanes would hand their deep work
-/// back to a ~2 MiB thread, and keying on them would couple this crate to a
-/// `reify-lsp` placement detail it can neither observe nor test. The pool bounds
-/// their occupancy without either cost: a workspace-wide walk holds one of N
-/// consumers instead of the only one.
-///
-/// # Why the fallthrough is the ORDERED lane
-///
-/// The `matches!` below lists the CONCURRENCY-SAFE set and defaults everything
-/// else — including every method `InProcessLsp::handle_request` does not
-/// recognise — to the ordered lane. Spelled the other way round (list the
-/// ordered set, default to the pool) it would look identical in review and would
-/// hand concurrency to every method added to `reify-lsp` in future, including a
-/// state-mutating one. Making the safe direction STRUCTURAL rather than a
-/// comment is what stops that; `lsp_lane_routing_tests`' (h) pins it with
-/// unrecognised methods, and its (j) makes adding an arm a decision here rather
-/// than a silent default.
-///
-/// # What each lane costs the other
-///
-/// Order among NOTIFICATIONS is preserved exactly — they share one FIFO
-/// consumer, which is what `didChange` correctness rests on. The one ordering
-/// property given up is query-versus-notification: a query may now read text
-/// older than a concurrently-processing `didChange`. Server-side that is
-/// staleness, never corruption (`reify-lsp`'s own `RwLock`/`Mutex` serialise
-/// the accesses for safety), and it is precisely the pre-task-5772 behaviour on
-/// the multi-threaded tauri runtime. What the shipped frontend then does with a
-/// stale answer is on [`crate::large_stack::Lane`].
+/// The ordering given up is query-versus-notification: a query may read text
+/// older than a concurrently-processing `didChange` — staleness, never
+/// corruption. What the shipped frontend does with a stale answer is on
+/// [`crate::large_stack::Lane`].
 pub(crate) fn lane_for_method(method: &str) -> Option<&'static crate::large_stack::JobSender> {
     let concurrency_safe = matches!(
         method,
@@ -227,28 +169,18 @@ pub(crate) fn lane_for_method(method: &str) -> Option<&'static crate::large_stac
     if concurrency_safe {
         crate::large_stack::LSP_POOL.sender()
     } else {
-        // Everything else: the state-mutating and lifecycle methods, and —
-        // conservatively — anything `InProcessLsp::handle_request` does not
-        // recognise. Defined by EXCLUSION from the arm above rather than
-        // enumerated, which is the structural half of "Why the fallthrough is
-        // the ORDERED lane".
+        // The state-mutating and lifecycle methods, and anything
+        // `InProcessLsp::handle_request` does not recognise.
         crate::large_stack::LSP_LANE.sender()
     }
 }
 
-/// The ONE future both LSP entry points submit: `lsp_request_impl`, owned and
-/// `'static` so a lane can take it.
+/// The ONE future both LSP entry points submit: [`lsp_request_impl`] with owned
+/// arguments, so it is `Send + 'static` as a lane requires.
 ///
-/// Factored out so [`lsp_request_on_worker`] (production) and
-/// `lsp_request_on_lane` (the lane-parameterised test seam) submit the SAME
-/// body rather than two independently-written `async move` blocks. Two spellings
-/// of the composition is precisely the divergence hazard the seam exists to
-/// avoid: the tested one could keep resolving while the production one acquired
-/// a defect. With one body, the only thing the seam varies is which lane the
-/// work travels — which is the variable the tests actually mean to control.
-/// Every argument is OWNED, so the returned future is `Send + 'static` — the
-/// bound a lane requires — without spelling either out (clippy rejects the
-/// explicit `-> impl Future` form here as `manual_async_fn`).
+/// [`lsp_request_on_worker`] and [`lsp_request_on_lane`] share this body, so a
+/// test of the seam cannot pass while the production composition diverges.
+/// (clippy rejects the explicit `-> impl Future` spelling as `manual_async_fn`.)
 async fn lsp_request_future(
     bridge: Arc<LspBridge>,
     method: String,
@@ -257,19 +189,9 @@ async fn lsp_request_future(
     lsp_request_impl(&bridge, &method, params).await
 }
 
-/// [`lsp_request_on_worker`] with its "is there a lane?" question turned into a
-/// PARAMETER — the one body both the lane path and the degraded path run.
-///
-/// The lane a request travels is a parameter for the same reason
-/// [`crate::large_stack::dispatch_async`]'s is: it makes the DEGRADED arm
-/// reachable from a test. Provoking a real `pthread_create` failure from a unit
-/// test is not possible, so passing `None` here tests the seam instead of the
-/// OS — and it tests it through the REAL composition. A test that rebuilt the
-/// `dispatch_async(None, async { lsp_request_impl(..) })` composition itself
-/// would only prove that its own copy resolves; the production body could
-/// diverge and stay green. That is exactly how the earlier generic guard went
-/// vacuous: its closure contained no `block_on`, so it could not see that the
-/// real one panicked.
+/// [`lsp_request_on_worker`] with the lane as a PARAMETER, so a test can reach
+/// the degraded `None` arm through the real composition rather than through a
+/// copy of it.
 ///
 /// This is the ONE production body: [`lsp_request_on_worker`] is
 /// `lsp_request_on_lane(lane_for_method(&method), ..)`, so a test written

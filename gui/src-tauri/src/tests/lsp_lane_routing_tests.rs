@@ -1,5 +1,11 @@
 //! How LSP requests are routed across the ordered lane (`LSP_LANE`) and the
 //! query pool (`LSP_POOL`).
+//!
+//! The six state-mutating and lifecycle methods, plus any unrecognised one,
+//! travel the size-1 ordered lane; the eight read-only queries travel the
+//! `LSP_POOL_SIZE`-consumer pool. The membership is authoritative in
+//! `lane_for_method`'s `matches!` arm; the constants below are its test copies,
+//! which (j) executes against the real dispatcher.
 
 use std::sync::Arc;
 
@@ -9,42 +15,9 @@ use crate::lsp_bridge::{LspBridge, lsp_request_impl};
 use crate::tests::test_helpers::init_and_open;
 use reify_lsp::server::NotificationSink;
 
-// ── Task 6517: the ordered lane / query pool split ───────────────────────────
-//
-// Task 5772 put every `lsp_request` on one large-stack lane with one consumer,
-// so every request serialized against every other. Task 6517 bounds that by
-// routing LSP work over TWO lanes instead of one.
-//
-// The classification key is LSP PROTOCOL semantics — does this method mutate
-// server-side document/session state? — for the reasons `lane_for_method`'s
-// "The classification key is LSP PROTOCOL semantics" doc gives.
-//
-// * ORDERED lane (`LSP_LANE`, size 1, unchanged): the six state-mutating and
-//   lifecycle methods — plus, conservatively, ANY unrecognised method.
-// * QUERY pool (`LSP_POOL`, size `LSP_POOL_SIZE`): the eight read-only queries.
-//
-// The membership is spelled out ONCE per direction of the check: authoritatively
-// in `lane_for_method`'s `matches!` arm, and as the `ORDERED_METHODS` /
-// `QUERY_METHODS` constants below, which (j) relates to `HANDLE_REQUEST_ARMS`
-// and executes against the real dispatcher. A third prose copy here would be a
-// list nothing checks, so this comment carries only the counts.
-//
-// Ordering among NOTIFICATIONS is therefore preserved exactly — one FIFO
-// consumer, which is what `didChange` correctness rests on, pinned by (p). The
-// only ordering given up is query-vs-notification, which is precisely the
-// pre-5772 behaviour on the multi-threaded tauri runtime and which `reify-lsp`'s
-// own `RwLock`/`Mutex` already serialise for safety: a query can read older
-// text — staleness, never corruption.
-
-/// The order-sensitive / lifecycle methods, which must keep a single FIFO
-/// consumer. `initialize` / `initialized` / `shutdown` are session lifecycle;
-/// the three `did*` notifications mutate the server's document set, and
-/// `didOpen`/`didChange` additionally hold `reify-lsp`'s `eval_state` mutex
-/// across a synchronous diagnostics eval.
-///
-/// Reordering two of these against each other is CORRUPTION, not staleness —
-/// applying edit N+1 before edit N yields text neither the client nor the server
-/// ever had — which is why the pool must not carry them.
+/// The order-sensitive / lifecycle methods, which keep a single FIFO consumer.
+/// Reordering two of them is corruption, not staleness: applying edit N+1 before
+/// edit N yields text neither side ever had.
 const ORDERED_METHODS: [&str; 6] = [
     "initialize",
     "initialized",
@@ -54,12 +27,9 @@ const ORDERED_METHODS: [&str; 6] = [
     "shutdown",
 ];
 
-/// The read-only query methods, which may run concurrently.
-///
-/// None mutates server-side state: each takes `state.read().await`, clones what
-/// it needs and drops the guard (four of them then run blocking work on the
-/// consumer that drives them). Reordering these against a notification can only
-/// make one read older text.
+/// The read-only query methods, which may run concurrently: each takes
+/// `state.read().await`, clones what it needs and drops the guard. Reordering one
+/// against a notification can only make it read older text.
 const QUERY_METHODS: [&str; 8] = [
     "textDocument/completion",
     "textDocument/hover",
@@ -71,25 +41,15 @@ const QUERY_METHODS: [&str; 8] = [
     "textDocument/references",
 ];
 
-/// Strings `InProcessLsp::handle_request` does NOT accept — they fall through to
-/// its `other => Err(UNSUPPORTED_METHOD)` arm.
-///
-/// These are the load-bearing cases of (h), not filler. They pin the
-/// CONSERVATIVE default: a method added to `reify-lsp` tomorrow — which may well
-/// mutate state — must NOT silently acquire concurrency here by virtue of not
+/// Strings `InProcessLsp::handle_request` does NOT accept. (h) uses them to pin the
+/// conservative default: an unclassified method must not acquire concurrency by not
 /// being listed.
 const UNRECOGNISED_METHODS: [&str; 2] = ["textDocument/notAThing", ""];
 
-/// Every arm string `InProcessLsp::handle_request` accepts, transcribed from
-/// `crates/reify-lsp/src/bridge.rs`'s `match method` (the fourteen arms before
-/// its `other =>` fallthrough).
-///
-/// Transcribed by hand, and therefore NOT self-validating: (j) drives every
-/// entry through the real dispatcher rather than trusting the transcription, so
-/// an arm renamed or deleted in `reify-lsp` reds this file instead of drifting
-/// out of it silently. An earlier revision of this comment claimed the
-/// transcription itself was the cross-check; it was not — three hand-maintained
-/// `const` arrays in one file can only ever prove each other consistent.
+/// Every arm string `InProcessLsp::handle_request` accepts, transcribed by hand from
+/// `crates/reify-lsp/src/bridge.rs`'s `match method`. (j) drives every entry through
+/// the real dispatcher, so an arm renamed or removed in `reify-lsp` reds there. An
+/// arm ADDED there is not caught until it is transcribed here.
 const HANDLE_REQUEST_ARMS: [&str; 14] = [
     "initialize",
     "initialized",
@@ -110,16 +70,10 @@ const HANDLE_REQUEST_ARMS: [&str; 14] = [
 /// (h) Order-sensitive methods — and every UNRECOGNISED method — route to the
 /// ORDERED lane.
 ///
-/// Compared by POINTER IDENTITY rather than by any observable behaviour, because
-/// that is the only comparison that cannot be satisfied by coincidence: two
-/// distinct lanes both answer a probe correctly, and both run it off the
-/// caller's thread. Only pointer equality says "the same queue".
-///
-/// The unknown-method rows are the ones worth having. A `matches!` over the
-/// CONCURRENCY-SAFE set with `_ => ordered` makes the safe direction structural;
-/// the opposite spelling (list the ordered set, default to the pool) would look
-/// identical in review and would hand concurrency to every future method by
-/// default. These rows are what tells the two apart.
+/// Compared by POINTER identity: two distinct lanes both answer a probe off the
+/// caller's thread, so only pointer equality says "the same queue". The
+/// unrecognised rows are what tell the structural default (list the
+/// concurrency-safe set, default to ordered) from the opposite spelling.
 #[test]
 fn order_sensitive_methods_route_to_the_ordered_lane() {
     use crate::large_stack::LSP_LANE;
@@ -153,11 +107,9 @@ fn order_sensitive_methods_route_to_the_ordered_lane() {
     }
 }
 
-/// (i) The eight read-only query methods route to the QUERY POOL.
-///
-/// The non-vacuity assertion is what stops (h) and (i) both passing against a
-/// single lane: if `LSP_POOL.sender()` and `LSP_LANE.sender()` were the same
-/// pointer, every row of both tables would hold while nothing had been split.
+/// (i) The eight read-only query methods route to the QUERY POOL — a different
+/// queue from the ordered lane, or (h) and (i) would both hold with nothing
+/// split.
 #[test]
 fn query_methods_route_to_the_query_pool() {
     use crate::large_stack::{LSP_LANE, LSP_POOL};
@@ -186,46 +138,20 @@ fn query_methods_route_to_the_query_pool() {
     }
 }
 
-/// (j) The classification is TOTAL over what the bridge can dispatch: the union
-/// of the ordered and query tables is exactly `handle_request`'s arm set.
+/// (j) The classification is TOTAL and DISJOINT over `HANDLE_REQUEST_ARMS`, and the
+/// arm list is EXECUTED against the real dispatcher.
 ///
-/// Without this, a method that exists in `reify-lsp` but appears in neither
-/// table would simply take `lane_for_method`'s conservative fallthrough and no
-/// test would ever mention it. That is safe but silent — and silence is how a
-/// keystroke-frequency method ends up on the ordered lane by accident and stays
-/// there. This is the test that makes adding an arm to `reify-lsp` a decision
-/// here rather than a default.
+/// The set half relates three hand-maintained arrays, which proves them consistent
+/// with each other and nothing more. So every `HANDLE_REQUEST_ARMS` entry is also
+/// driven through [`lsp_request_impl`] and must NOT come back with `reify-lsp`'s
+/// own `bridge::error_prefix::UNSUPPORTED_METHOD` (an `Ok`, or an `Err` from its
+/// params parse, both mean the arm exists), while every `UNRECOGNISED_METHODS`
+/// entry MUST. A removed or renamed arm therefore reds here; a NEW arm nobody
+/// transcribed does not.
 ///
-/// Disjointness is asserted too: a method listed in BOTH tables would make (h)
-/// and (i) contradictory, and whichever ran second would look like a routing bug
-/// rather than a table bug.
-///
-/// # The arm list is EXECUTED against the real dispatcher, not just compared
-///
-/// The set half above relates three hand-maintained `const` arrays in this file
-/// to each other, which proves them internally consistent and nothing more:
-/// rename or delete an arm in `crates/reify-lsp/src/bridge.rs` and every set
-/// assertion still holds, because `HANDLE_REQUEST_ARMS` is a copy, not an
-/// observation. So the second half calls [`lsp_request_impl`] for every entry of
-/// both tables and reads the answer through `reify-lsp`'s OWN public constant,
-/// `bridge::error_prefix::UNSUPPORTED_METHOD` — the exact string its `other =>`
-/// fallthrough emits:
-///
-/// * every `HANDLE_REQUEST_ARMS` entry must NOT come back unsupported (it may
-///   come back `Ok`, or `Err` from its own params parse — both mean the arm is
-///   there), and
-/// * every `UNRECOGNISED_METHODS` entry MUST come back unsupported.
-///
-/// That is what turns "adding an arm to `reify-lsp` is a decision here" from a
-/// claim into a mechanism, in both directions: a NEW arm nobody classified is
-/// caught by the set half only once it is transcribed, but a REMOVED or RENAMED
-/// arm — the drift that no assertion could previously see — now reds this test
-/// on the first run.
-///
-/// `"null"` is the params payload for every row because the question is which
-/// ARM was reached, never whether it liked its arguments. Each arm is driven on
-/// its OWN bridge so nothing (notably `shutdown`) can leave state that changes a
-/// later row's answer.
+/// `"null"` is the params payload for every row, because the question is which ARM
+/// was reached. Each row gets its own bridge, so `shutdown` cannot change a later
+/// row's answer.
 #[tokio::test]
 async fn the_classification_covers_every_dispatchable_method() {
     use reify_lsp::bridge::error_prefix::UNSUPPORTED_METHOD;
@@ -290,27 +216,14 @@ async fn the_classification_covers_every_dispatchable_method() {
     }
 }
 
-/// (l) END-TO-END: a real `textDocument/hover` completes while another consumer
-/// of the same lane is OCCUPIED — the head-of-line-blocking property, driven
-/// through the REAL production composition.
+/// (l) END-TO-END: a real `textDocument/hover` completes while another consumer of
+/// the same pool is OCCUPIED — the head-of-line-blocking property, through the real
+/// `lsp_request_on_lane` composition.
 ///
-/// `large_stack_tests`' (aa) measures the mechanism with synthetic jobs; this
-/// measures the composition `lsp_request_on_worker` actually performs, via the
-/// `lsp_request_on_lane` seam whose only variable is the lane. A test that
-/// rebuilt the `dispatch_async(pool, lsp_request_future(..))` composition itself
-/// would only prove its own copy is concurrent.
-///
-/// # Why a TEST-LOCAL pool and not `LSP_POOL`
-///
-/// Proving occupancy means PARKING a consumer, and `LSP_POOL` is a process-wide
-/// `static` that every test in this binary shares while cargo runs them
-/// concurrently. Parking one of its consumers would starve whichever other test
-/// is using it — hanging the suite instead of failing it. The local pool is
-/// size 2 for the same reason: park one, leave exactly one free, so the property
-/// is deterministic rather than a race.
-///
-/// Against a SINGLE-consumer lane this fails as a clean `tokio::time::timeout`
-/// elapse, not a hang, and the probe is released on every exit path.
+/// The pool is TEST-LOCAL and size 2: park one consumer, leave exactly one free.
+/// Parking a consumer of the process-wide `LSP_POOL` would starve
+/// concurrently-running tests. Against a single-consumer lane this fails as a clean
+/// `tokio::time::timeout` elapse, and the probe is released on every exit path.
 #[tokio::test]
 async fn a_query_does_not_queue_behind_an_occupied_lane_consumer() {
     use crate::large_stack::{Lane, post};
@@ -403,36 +316,16 @@ async fn a_query_does_not_queue_behind_an_occupied_lane_consumer() {
 
 /// (n) An AWAITED sequence still observes its own edits, across the lane split.
 ///
-/// This is the cross-lane ordering guard the split must not break, driven the
-/// way `gui/src/editor/lspClient.ts` drives a single request: each `invoke`
-/// awaited before the next is issued. The sequence spans BOTH destinations —
-/// `initialize` / `initialized` / `didOpen` / `didChange` travel the ordered
-/// lane, and the `hover` that reads the result travels the POOL, on a different
-/// OS thread.
+/// Each request is awaited before the next is issued, as `lspClient.ts` drives a
+/// single request. `didOpen` / `didChange` travel the ordered lane, and the `hover`
+/// that reads the result travels the pool, on a different thread. The `didChange`
+/// job has returned before the `hover` is submitted, so the pool cannot observe
+/// pre-change text. This pins the AWAITING client only: the shipped editor's
+/// debounced `didChange` CAN be overtaken, as disclosed on
+/// [`crate::large_stack::Lane`].
 ///
-/// It pins the AWAITING client, which is not the whole of the shipped app, and
-/// the scope is worth stating so this test is not read as covering more than it
-/// does: `Editor.tsx` fires `didChange` from a debounced `setTimeout` that only
-/// its rename and find-uses commands wait for, and CodeMirror issues
-/// completion/hover/highlight from independent sources, so a real query CAN
-/// overtake a real `didChange`. That
-/// interleaving is disclosed on [`crate::large_stack::Lane`] as reachable
-/// staleness; it is deliberately not asserted here, because the only property
-/// available to assert about it — that neither answer is self-inconsistent — is
-/// weaker than what (n) already establishes and would race on the scheduler.
-///
-/// What it pins is a happens-before that survives only because the client awaits
-/// AND because `LSP_LANE` stays single-consumer: the `didChange` job has
-/// returned (which is what resolved the awaited promise) before the `hover` is
-/// ever submitted, so the pool consumer cannot observe pre-change text. A split
-/// that had let notifications run concurrently would make this a race even for a
-/// client that awaits.
-///
-/// The hover payload carries the parameter's DEFAULT VALUE (`param width:
-/// Scalar[m] = 0.08 m`), which is what makes "the answer differs before and
-/// after" a real observation rather than a hope: the pre-change assertion is a
-/// stated precondition, and the post-change one asserts the new value is present
-/// AND the old one is gone.
+/// The hover payload carries the parameter's DEFAULT VALUE, so "before" and "after"
+/// are distinct observations: the new value is present AND the old one is gone.
 #[tokio::test]
 async fn an_awaited_sequence_still_observes_its_own_edits() {
     use crate::lsp_bridge::lsp_request_on_worker;

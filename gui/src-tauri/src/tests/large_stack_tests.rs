@@ -1,21 +1,14 @@
-//! Unit tests for [`crate::large_stack`] — the defense-in-depth module that runs
-//! engine and compiler work on OS threads with an explicit LARGE stack (task
-//! 5357, belt-and-suspenders atop task 5337's compiler-layer
-//! `stacker::maybe_grow` + recursion-depth cap).
+//! Unit tests for [`crate::large_stack`].
 //!
 //! ## Why the deep-recursion tests are safe (no "violent RED")
 //!
-//! The large-stack property is proven by [`deep_recurse`], which pins ~8 KiB of
-//! stack per frame and recurses ~2048 deep (~16 MiB — 8x the compiler's 2 MiB
-//! default worker stack). Running that on a default-stack thread would SIGSEGV
-//! and abort the *entire* test binary. So the recursion is reached ONLY through
-//! the large-stack helpers — and on the lanes only through
-//! [`deep_recurse_if_on_thread`], which CHECKS the thread first: each lane has a
-//! degraded arm that runs its work on a default-size stack, and a degraded lane
-//! must yield a clean assertion failure rather than an overflow. The per-call
-//! `spawn_on_large_stack` test calls [`deep_recurse`] directly: that helper's
-//! only degradation is a refused spawn, which it reports as `Err` instead of
-//! running the closure anywhere.
+//! The large-stack property is proven by [`deep_recurse`], which recurses
+//! ~16 MiB deep — 8x a default 2 MiB stack. On a default-stack thread that would
+//! SIGSEGV and abort the whole test binary, so the recursion is reached ONLY
+//! through the large-stack helpers, and on the lanes only through
+//! [`deep_recurse_if_on_thread`] / `deep_recurse_if_on_lane`, which check the
+//! thread first: a degraded lane runs its work on a default-size stack, and must
+//! yield a clean assertion failure rather than an overflow.
 
 use crate::tests::test_helpers::{
     ANTI_WEDGE, DEEP_RECURSION_DEPTH, deep_recurse, deep_recurse_if_on_thread, post_and_wait,
@@ -321,65 +314,26 @@ fn a_job_on_the_engine_lane_may_post_to_its_own_lane() {
     );
 }
 
-// ── Named LANES: one mechanism, two instances (task 5772) ────────────────────
+// ── Named LANES: one mechanism, several instances (task 5772) ───────────────
 //
-// `lsp_request` also needs a large stack, and the task asks for ONE worker
-// design rather than two divergent large-stack approaches. Taken as "one
-// THREAD", though, that would be a latency regression: LSP dispatch never takes
-// the engine mutex, so it shares nothing with engine work, yet a single-consumer
-// queue would make a hover or completion queue behind an in-flight
-// `set_parameter` geometry evaluation (hundreds of ms to seconds) — head-of-line
-// blocking on the highest-frequency path in the GUI.
-//
-// So the mechanism is generalized into a named LANE: one code path, two `static`
-// instances. These tests pin that "one mechanism" and "two threads" are BOTH
-// true — a second lane must be a second INSTANCE, not a second design, and must
-// inherit every property the engine lane already proves (large stack, panic
-// isolation, per-lane amortisation).
-//
-// What none of THESE claims — (q) through (t) — is concurrency WITHIN a lane:
-// (r) pins that the two lanes are separate threads, not that either lane runs
-// two jobs at once. That boundary is no longer open, though. Task 6517
-// generalised `Lane` to N consumers and the "Bounded intra-lane concurrency"
-// section below asserts it directly — (aa) is the head-of-line-blocking
-// measurement, and it FAILS against a single-consumer lane. Read this paragraph
-// as scoping the 5772 tests, not as a standing claim about the file.
+// A second lane must be a second INSTANCE of the lane mechanism, not a second
+// design, and must inherit every property the engine lane proves: large stack,
+// panic isolation, per-lane amortisation. One thread for all large-stack work
+// would instead make a hover queue behind an in-flight geometry evaluation.
+// Concurrency WITHIN a lane belongs to the "Bounded intra-lane concurrency"
+// section below.
 
-/// (q) Every large-stack thread name is DISTINCT from every other, so a
-/// backtrace, `top -H` row or profiler capture says which TIER — and which LANE
-/// — the work is on.
+/// (q) Every large-stack thread name is DISTINCT, so a backtrace, `top -H` row or
+/// profiler capture says which TIER and which LANE the work is on.
 ///
-/// Distinctness is the whole content of the property: a shared label would make
-/// a keystroke-path stall and a geometry-evaluation stall indistinguishable in
-/// exactly the capture where telling them apart matters.
+/// The 15-byte `pthread_setname_np` budget is proven at compile time by the
+/// `const` assertion beside each constant in `large_stack.rs`.
 ///
-/// The other half the two per-constant tests this replaces used to assert —
-/// `len() <= 15`, Linux's `pthread_setname_np` budget, which `std` silently
-/// ignores when exceeded — is proven at COMPILE time by the
-/// `const _: () = assert!(..)` block beside each constant in `large_stack.rs`.
-/// A runtime assertion for it cannot fail in any build that exists, so carrying
-/// one was dead weight; the const asserts are the real guard.
-///
-/// EXTENDED for task 6517 to cover the query pool, in TWO halves, because the
-/// pool's names are the only ones here that are realised rather than declared.
-/// [`crate::large_stack::LSP_POOL_THREAD_PREFIX`] is a PREFIX, so what reaches
-/// `top -H` is `{prefix}{i}`, and inequality over the four raw constants cannot
-/// see the regressions this docstring claims to rule out —
-/// [`crate::large_stack::LSP_WORKER_THREAD_NAME`] changed to `reify-lsp-p0`
-/// would be distinct from the prefix and identical to a realised pool name, and
-/// a pool prefix equal to another tier's whole name would yield `reify-lsp-w0`
-/// and make a filter keyed on the ordered lane match pool rows. So the second
-/// half asserts PREFIX-FREEDOM between each realised pool name and every other
-/// tier: a pool row is naturally selected by prefix, and that selector must
-/// catch nothing else.
-///
-/// Prefix-freedom is deliberately NOT asserted across the whole-name tiers, and
-/// the reason is measured rather than assumed: `ENGINE_THREAD_NAME`
-/// (`reify-engine`) already prefixes `WORKER_THREAD_NAME` (`reify-engine-w`).
-/// Those two are distinct whole names selected by exact match, the containment
-/// predates pools, and renaming a shipped thread is precisely what
-/// [`crate::large_stack::Lane`]'s naming rule promises not to do — so it is
-/// recorded here rather than asserted away.
+/// The pool prefix is checked as the names it REALISES, `{prefix}{i}`: no realised
+/// pool name may equal or prefix another tier's name, or a `top -H` filter keyed on
+/// one would match the other's rows. Prefix-freedom is not asserted among the
+/// whole-name tiers: `reify-engine` already prefixes `reify-engine-w`, and both are
+/// selected by exact match.
 #[test]
 fn large_stack_thread_names_are_pairwise_distinct() {
     use crate::large_stack::{
@@ -711,23 +665,10 @@ async fn lane_dispatch_propagates_the_original_job_panic() {
 /// (x) The DEGRADED arm of the async path: with no lane, the future is awaited
 /// natively on the caller and the `.await` still RESOLVES.
 ///
-/// A refused 256 MiB mapping must never hang an `await`; this exercises that
-/// arm rather than leaving it to prose.
-///
-/// # Why this test alone is NOT sufficient, and must not be trusted as if it were
-///
-/// The body submitted here is deliberately trivial, which makes it blind to the
-/// hazard that actually lived in this arm. In its earlier CLOSURE form
-/// (`|| (77u32, thread::current().id())`) it needed no runtime, so it passed
-/// while the ONLY production submission — a pre-baked
-/// `Handle::block_on(lsp_request_impl(..))` — panicked "Cannot start a runtime
-/// from within a runtime" every time this arm ran, unwinding the Tauri command
-/// and leaving the frontend's `invoke` promise unresolved. A generic guard over
-/// a stand-in body can only show that the ARM resolves, never that the real
-/// WORK does. The claim about production belongs to
+/// The body is trivial, so this shows only that the ARM resolves, not that real
+/// work does. The production claim is
 /// `lsp_bridge_tests::lsp_request_on_lane_without_a_lane_still_resolves_to_the_right_value`,
-/// which drives the same arm through the real composition; do not weaken that
-/// one on the grounds that this one covers it.
+/// which drives the same arm through the real composition.
 #[tokio::test]
 async fn async_dispatch_without_a_lane_runs_inline_and_still_resolves() {
     use crate::large_stack::dispatch_async;
@@ -778,27 +719,13 @@ async fn lsp_lane_dispatch_survives_deep_recursion_over_default_stack() {
     );
 }
 
-/// (z) The `SendError` recovery arm of the ASYNC lane, driven by a job that —
-/// like production — must be driven by a [`tokio::runtime::Handle`] and
-/// therefore cannot legally run in the submitting async frame.
+/// (z) The `SendError` recovery arm: a job handed back by a dead queue still runs
+/// and delivers its value, and NOT in the submitting async frame.
 ///
-/// The second half of the same finding (x) covers for the `None` arm. When
-/// `send` fails, `mpsc` hands the JOB BACK, and the async lane's job is exactly
-/// the one the lane thread would have run: a `Handle::block_on` of the caller's
-/// future. Running that in this frame — a thread already inside the tauri tokio
-/// runtime — hits `enter_runtime`'s `is_entered()` guard and panics "Cannot
-/// start a runtime from within a runtime", which unwinds the Tauri command and
-/// leaves the frontend's `invoke` promise unresolved. So the recovery arm must
-/// hand the job to a thread that is NOT in a runtime context.
-///
-/// The failure is provoked deterministically with a SYNTHETIC sender whose
-/// consumer is already gone — no real lane, no `pthread_create` failure, no
-/// timing. Asserting on the RESOLVED VALUE (rather than merely "did not hang")
-/// is what makes this a real assertion about recovery: a result must never be
-/// lost, and it must be produced somewhere legal.
-///
-/// DEPENDS on [`crate::large_stack::JobSender`] being `pub(crate)`, so the
-/// synthetic sender's type can be named here at all.
+/// The handed-back job carries a `Handle::block_on`, which panics "Cannot start a
+/// runtime from within a runtime" inside the tauri runtime, so the arm must hand
+/// it to a thread outside any runtime context. A SYNTHETIC sender whose consumer is
+/// already gone provokes the arm deterministically.
 #[tokio::test]
 async fn async_dispatch_recovers_a_handed_back_job_off_the_submitting_frame() {
     use crate::large_stack::{JobSender, dispatch_async};
@@ -832,43 +759,21 @@ async fn async_dispatch_recovers_a_handed_back_job_off_the_submitting_frame() {
 /// (r4) A FUTURE that submits to the lane it is being DRIVEN on — and would wait
 /// for it — gets a loud panic naming that lane, and the lane survives.
 ///
-/// The alternative is the module's worst possible outcome: a lane has a SINGLE
-/// consumer, so the inner job could only run once the outer one returned, while
-/// the outer one waits for it. The lane thread would never return to its
-/// `for job in rx` loop, so the lane is dead AND every later submitter in the
-/// process hangs too — silently, unrecoverably.
+/// Without the guard the lane's single consumer could run the inner job only after
+/// the outer one returned, while the outer one waits for it: the lane and every
+/// later submitter in the process would hang. The panic must escape the inner
+/// future mid-poll, unwind out of [`tokio::runtime::Handle::block_on`], be caught by
+/// the outer job's `catch_unwind`, ride back over the `oneshot`, and be
+/// `resume_unwind`-ed on the awaiting submitter; `tokio::spawn` is the unwind
+/// boundary, as in (w).
 ///
-/// The rejection takes a long route, and every link is load-bearing. The panic
-/// must escape the INNER future mid-poll,
-/// unwind out of [`tokio::runtime::Handle::block_on`] (whose `enter_runtime`
-/// guard has to restore the runtime context on the way out), be caught by the
-/// OUTER job's own `catch_unwind`, ride back over the `tokio::sync::oneshot`,
-/// and be `resume_unwind`-ed on the awaiting submitter. Any one of those links
-/// failing turns a loud rejection back into the process-wide wedge the guard
-/// exists to replace.
+/// The guard is reached because the outer job is driven by `handle.block_on`, so
+/// `try_current()` inside the inner submission succeeds. (A lane thread with no
+/// ambient runtime awaits inline and enqueues nothing, which cannot wedge.)
 ///
-/// `tokio::spawn` is the unwind boundary, exactly as in (w): the panic arrives
-/// on the awaiting task, so [`tokio::task::JoinError::into_panic`] hands back
-/// the payload without needing `futures::FutureExt::catch_unwind` (and so
-/// without a new dependency).
-///
-/// # Why the guard is genuinely REACHED here
-///
-/// `dispatch_async` runs its reentrancy check AFTER an early return on
-/// [`tokio::runtime::Handle::try_current`] being `Err`, so a submission from a
-/// lane thread with NO ambient runtime would `.await` inline and never reach the
-/// check. That is not a hole this test papers over — it is the safe arm: an
-/// inline `.await` enqueues nothing, so it cannot wedge anything, and the guard
-/// is only needed where a job would actually be queued. On the production path
-/// the check IS reached, and that is what this test pins: the outer job is
-/// driven by `handle.block_on`, which installs the runtime context, so
-/// `try_current()` inside the inner submission succeeds and execution falls
-/// through to `assert_not_reentrant`.
-///
-/// Unlike the deep-recursion tests, this one cannot honour the "no violent RED"
-/// doctrine: if the guard is ever removed this test hangs rather than failing,
-/// because the wedge is of a process-wide `static` lane. A timeout could only
-/// make this test's report legible while every other LSP-lane test hung anyway.
+/// This test cannot honour the "no violent RED" doctrine: without the guard it
+/// hangs rather than failing, because the wedge is of a process-wide `static`
+/// lane.
 #[tokio::test]
 async fn submitting_to_your_own_lane_from_a_future_panics_loudly_instead_of_wedging_it() {
     use crate::large_stack::{LSP_LANE, LSP_WORKER_THREAD_NAME, dispatch_async};
@@ -924,44 +829,18 @@ async fn submitting_to_your_own_lane_from_a_future_panics_loudly_instead_of_wedg
 }
 // ── Bounded intra-lane concurrency (task 6517) ───────────────────────────────
 //
-// The section above closes with the boundary task 5772 left open: "no test here
-// claims concurrency WITHIN a lane". This section is that claim, and it is the
-// whole content of task 6517's first half — a lane generalised from ONE consumer
-// to N, so that head-of-line blocking among LSP queries becomes BOUNDED at the
-// pool size rather than total.
-//
-// # Why every test here declares its OWN lane
-//
-// `ENGINE_LANE` and `LSP_LANE` are process-wide `static`s shared by every test
-// in this binary, and cargo runs those tests CONCURRENTLY. A test that parked a
-// consumer of a global pool to prove occupancy would therefore be parking a
-// resource an unrelated test is simultaneously trying to use — starving it, and
-// hanging the suite rather than failing it. So each test below declares a
-// TEST-LOCAL `static POOL: Lane = Lane::pool(..)` inside its own fn body. A
-// `static` in a fn body still has `'static` lifetime (which `Lane::sender`
-// requires) but is nameable only from that fn, which makes the isolation
-// structural rather than a convention someone must remember.
-//
-// # Why no RED here is a hang
-//
-// Same doctrine as the rest of this file. Concurrency is measured with an
-// arrival counter under a `Condvar` plus a generous wall-clock DEADLINE: a lane
-// that failed to run N jobs at once makes the counter stall, the deadline
-// elapses, and the job returns `false` — a clean assertion failure naming what
-// it saw.
-// The deep-recursion test goes through [`deep_recurse_if_on_lane`], which
-// refuses to recurse anywhere but a real pool consumer, for exactly the reason
-// [`deep_recurse_if_on_thread`] exists.
+// A lane of N consumers bounds head-of-line blocking at N. Every test here
+// declares its OWN `static POOL: Lane = Lane::pool(..)` inside its fn body: the
+// production lanes are process-wide statics shared by concurrently-running
+// tests, and parking one of their consumers would starve another test and hang
+// the suite. Concurrency is measured with an arrival counter under a `Condvar`
+// and a wall-clock deadline, so a lane that still serializes fails a clean
+// assertion rather than hanging.
 
-/// Recurse ~16 MiB ONLY if we genuinely landed on a consumer of the pool lane
-/// named by `prefix`; otherwise report where we actually are, without recursing.
-///
-/// The pool sibling of [`deep_recurse_if_on_thread`], and it must be a separate
-/// helper rather than a call to that one: a pool consumer's thread name is
-/// `{prefix}{index}`, so no single `&'static str` is the expected name. Matching
-/// the prefix plus an all-digits tail is what keeps the check as tight as the
-/// exact-name one — `reify-lsp-w` must not satisfy a `reify-lsp-p` probe, and
-/// neither must a caller thread that merely happens to start with the prefix.
+/// Recurse ~16 MiB ONLY if this thread is a consumer of the pool named by `prefix`
+/// (a `{prefix}<digits>` thread); otherwise report where it is, without
+/// recursing. The pool sibling of [`deep_recurse_if_on_thread`], which matches one
+/// exact name.
 fn deep_recurse_if_on_lane(prefix: &'static str, depth: u32) -> Result<u64, String> {
     let actual = std::thread::current().name().map(str::to_owned);
     let on_pool_consumer = actual.as_deref().is_some_and(|name| {
@@ -979,39 +858,22 @@ fn deep_recurse_if_on_lane(prefix: &'static str, depth: u32) -> Result<u64, Stri
     Ok(deep_recurse(depth))
 }
 
-/// Post `n` jobs to `lane`, each of which increments a shared arrival counter
-/// and then parks on a `Condvar` until every one of the `n` has arrived — or
-/// until a wall-clock deadline elapses.
+/// Post `n` jobs to `lane`, each of which records its arrival and then parks on a
+/// `Condvar` until all `n` have arrived or a deadline elapses. Returns, per job,
+/// whether it saw all `n` in flight AT ONCE.
 ///
-/// The wait PARKS rather than spins. A spinning arrival loop keeps every
-/// consumer that has already arrived on a CPU for the whole wait, so under a
-/// loaded verify it can starve the very sibling it is waiting for of the
-/// scheduling it needs to arrive, and report a false "still serializes".
+/// On a single-consumer lane job 1 holds the only consumer, the rest never start,
+/// and job 1 reports `false` at the deadline. The wait parks rather than spins, so
+/// it cannot starve the siblings it waits for.
 ///
-/// Returns, per job, whether it observed all `n` in flight AT ONCE. On a
-/// single-consumer lane job 1 parks holding the only consumer, jobs 2..n never
-/// start, the deadline elapses and job 1 reports `false` — a bounded assertion
-/// failure, never a hang, which is the property this whole file is written to.
-///
-/// Factored out because it is the measurement BOTH (aa) and (ae) need: (aa)
-/// establishes the concurrency, (ae) re-establishes it after a panic to prove no
-/// consumer was lost. Writing it twice would let the two drift.
-///
-/// The non-vacuity guard is load-bearing HERE rather than in either caller,
-/// because the degraded lane is invisible from the `Vec<bool>` this returns: a
-/// lane with no consumers makes `post` run every job on its own spawned
-/// default-stack thread, so all `n` jobs would run concurrently anyway and every
-/// one would report `true` with ZERO consumers started. That is the exact
-/// head-of-line-blocking property task 6517 exists to establish, asserted over a
-/// lane that never ran — so it is ruled out before a single job is posted.
+/// It first asserts that the lane started: with no lane, `post` runs every job on
+/// its own spawned thread, so all `n` would see each other with zero consumers.
 fn observe_concurrent_arrivals(lane: &'static crate::large_stack::Lane, n: usize) -> Vec<bool> {
     use crate::large_stack::post;
     use std::sync::{Arc, Condvar, Mutex};
 
-    /// A liveness BACKSTOP, not the property under test — see the section
-    /// header. A true serialization never recovers, so a long deadline costs
-    /// nothing on green. It stays well under [`ANTI_WEDGE`] because a
-    /// serialized lane releases its verdicts one deadline apart, and each
+    /// A liveness backstop, not the property under test. Well under [`ANTI_WEDGE`],
+    /// because a serialized lane releases its verdicts one deadline apart and each
     /// `recv_timeout(ANTI_WEDGE)` below must outlast that gap.
     const ARRIVAL_DEADLINE: std::time::Duration =
         std::time::Duration::from_secs(ANTI_WEDGE.as_secs() / 4);
@@ -1055,15 +917,8 @@ fn observe_concurrent_arrivals(lane: &'static crate::large_stack::Lane, n: usize
         .collect()
 }
 
-/// (aa) A size-N lane runs N jobs CONCURRENTLY — the head-of-line-blocking
-/// measurement in regression-test form.
-///
-/// This is the property task 6517 exists to establish, and it is asserted
-/// directly rather than inferred from thread names: every one of the three jobs
-/// must observe all three in flight at once, which is only possible if three
-/// consumers are draining the queue simultaneously. A single-consumer lane fails
-/// it as a clean assertion bounded by [`observe_concurrent_arrivals`]'s
-/// deadline, never as a hang.
+/// (aa) A size-N lane runs N jobs CONCURRENTLY: each of three jobs must see all
+/// three in flight at once. A single-consumer lane fails at the deadline.
 #[test]
 fn a_pool_lane_runs_its_jobs_concurrently_up_to_its_size() {
     use crate::large_stack::Lane;
@@ -1087,23 +942,8 @@ fn a_pool_lane_runs_its_jobs_concurrently_up_to_its_size() {
     );
 }
 
-/// (ab) A pool NAMES each consumer `{prefix}{index}` and AMORTISES them: every
-/// job lands on a thread drawn from a set of at most `size`, and never on the
-/// caller.
-///
-/// Three properties in one submission loop, because they are the same property
-/// seen from three sides. The NAME is the observability half — a pool whose
-/// consumers reported `<unnamed>`, or all reported the same string, would make a
-/// stalled query indistinguishable from a stalled sibling in a `top -H` capture.
-/// The bounded `ThreadId` SET is the amortisation half: a pool that spawned a
-/// thread per job would pay the 256 MiB mapping this tier exists to eliminate.
-/// And "never the caller" is the non-vacuity half — a lane that degraded to
-/// inline execution would satisfy both of the others trivially.
-///
-/// The 15-byte assertion is the runtime companion to the `const _: () =
-/// assert!(..)` beside each production prefix: `std` silently IGNORES a
-/// `pthread_setname_np` name that overruns Linux's budget, so an over-long
-/// pool name would not fail loudly — it would just not appear in `/proc`.
+/// (ab) A pool NAMES each consumer `{prefix}{index}` and AMORTISES them: every job
+/// lands on one of at most `size` threads, and never on the caller.
 #[test]
 fn a_pool_lane_names_and_amortises_each_consumer_thread() {
     use crate::large_stack::Lane;
@@ -1157,15 +997,9 @@ fn a_pool_lane_names_and_amortises_each_consumer_thread() {
     );
 }
 
-/// (ac) Generalising `Lane` to N consumers renames NOTHING: a size-1 lane still
-/// reports its exact constant, with no index suffix.
-///
-/// The load-bearing half of the generalisation's compatibility story, and the
-/// one a `format!("{name}{i}")`-for-every-lane implementation would silently
-/// break: `reify-engine-w0` is a different string from `reify-engine-w`, so
-/// every existing profiler alert, `top -H` filter and test assertion keyed on
-/// the constants would stop matching. Pinning it here means the pool mechanism
-/// cannot be landed by renaming the threads that predate it.
+/// (ac) A size-1 lane's consumer keeps its exact constant name, with no index
+/// suffix, so profiler filters and `top -H` alerts keyed on the constants still
+/// match.
 #[test]
 fn a_single_consumer_lane_keeps_its_exact_thread_name() {
     use crate::large_stack::{ENGINE_LANE, LSP_LANE, LSP_WORKER_THREAD_NAME, WORKER_THREAD_NAME};
@@ -1189,18 +1023,9 @@ fn a_single_consumer_lane_keeps_its_exact_thread_name() {
     );
 }
 
-/// (ad) LARGE STACK — a pool consumer survives ~16 MiB of recursion, exactly as
-/// a single-consumer lane does.
-///
-/// A pool is an INSTANCE of the lane mechanism, not a second design, so it must
-/// inherit every property the single-consumer lanes already prove. The stack is
-/// the one that would be easiest to lose while rewriting the spawn loop —
-/// `Builder::new().name(..)` without `.stack_size(..)` compiles fine and yields
-/// a 2 MiB consumer.
-///
-/// Per this file's "no violent RED" doctrine the recursion is reached ONLY
-/// through [`deep_recurse_if_on_lane`], so a degraded lane yields a clean
-/// assertion failure instead of SIGABRTing the whole binary.
+/// (ad) A pool consumer carries the LARGE STACK: it survives ~16 MiB of recursion.
+/// `Builder::new().name(..)` without `.stack_size(..)` compiles fine and yields a
+/// 2 MiB consumer.
 #[test]
 fn a_pool_lane_carries_the_large_stack() {
     use crate::large_stack::Lane;
@@ -1220,15 +1045,9 @@ fn a_pool_lane_carries_the_large_stack() {
     );
 }
 
-/// (ae) A panicking pool job re-raises its ORIGINAL payload on ITS awaiter,
-/// and the pool afterwards still runs `size` jobs CONCURRENTLY.
-///
-/// The second half is what makes this more than a re-run of (t) against a new
-/// instance. A pool has N consumers, so "it still answers" is satisfied by a
-/// pool that lost N-1 of them — the panic would have silently converted the
-/// bounded-blocking guarantee back into the total serialization task 6517 exists
-/// to remove, while every simple survival assertion stayed green. Re-measuring
-/// full concurrency is the only assertion that can see that.
+/// (ae) A panicking pool job re-raises its ORIGINAL payload on its awaiter, and the
+/// pool afterwards still runs `size` jobs CONCURRENTLY — "it still answers" would
+/// also hold for a pool that had lost N-1 consumers.
 #[tokio::test]
 async fn a_pool_lane_is_panic_isolated_and_keeps_all_its_consumers() {
     use crate::large_stack::{Lane, dispatch_async};
@@ -1265,22 +1084,13 @@ async fn a_pool_lane_is_panic_isolated_and_keeps_all_its_consumers() {
     );
 }
 
-/// (af) A job running ON a pool that submits to THAT SAME pool is rejected
-/// loudly, naming the reentrancy and the lane — and the pool survives.
+/// (af) A job running ON a pool that submits to THAT pool is rejected loudly,
+/// naming the reentrancy and the lane, and the pool survives.
 ///
-/// The guard stays BLANKET per lane rather than becoming "reject only when no
-/// consumer is free". That is deliberately conservative: a pool with a free
-/// consumer could in principle serve a self-submission, but `size` simultaneous
-/// self-submissions genuinely wedge a size-`size` pool, and the wedge is
-/// process-wide and silent — the one outcome `large_stack`'s docs promise never
-/// to produce. A rule whose safety depends on how many callers happen to be
-/// in flight is not a rule.
-///
-/// The guard is reached for the reason (r4) gives: the outer future is driven
-/// by `handle.block_on`, so the inner submission sees a runtime and falls
-/// through to `assert_not_reentrant`. Unlike (r4), removing the guard would not
-/// hang this test: this size-2 pool's second consumer would serve the inner
-/// job, and the test would fail on the missing panic instead.
+/// The guard is reached as in (r4): the outer future is driven by
+/// `handle.block_on`, so the inner submission sees a runtime. Without the guard
+/// this size-2 pool's second consumer would serve the inner job, so the test fails
+/// on the missing panic rather than hanging.
 #[tokio::test]
 async fn submitting_to_your_own_pool_panics_loudly_instead_of_wedging_it() {
     use crate::large_stack::{Lane, dispatch_async};
@@ -1327,20 +1137,11 @@ async fn submitting_to_your_own_pool_panics_loudly_instead_of_wedging_it() {
 
 /// (ag) A pool job may submit to ANOTHER lane, and lands on that lane's thread.
 ///
-/// The pool counterpart of (r3), and it pins the same distinction: the guard is
-/// keyed on the lane IDENTITY published by the consumer thread, not on "am I on
-/// some lane thread". Every consumer of a pool publishes the SAME lane name —
-/// which is what makes (af) work — so a sloppy generalisation could easily
-/// publish a per-consumer name (`{prefix}{index}`) instead, which would leave
-/// (af) passing for one consumer and silently failing for the rest. Asserting
-/// the inner job's thread NAME rather than merely that it returned is what pins
-/// that it genuinely crossed lanes.
-///
-/// Reached exactly as (r3) reaches it: the pool job drives the submission with
-/// a runtime of its own, because a lane thread has no ambient runtime and
-/// without one `dispatch_async` awaits inline and never reaches the guard. A
-/// wrongly rejected submission panics inside the probe, `post` contains it, and
-/// `post_and_wait` fails at once rather than hanging.
+/// Every consumer of a pool publishes the SAME lane name; a per-consumer name would
+/// make (af) hold for one consumer and silently fail for the rest. Asserting the
+/// inner thread's NAME pins that the submission crossed lanes. As in (r3), the pool
+/// job drives the submission with its own runtime, and a wrongly rejected
+/// submission makes `post_and_wait` fail at once.
 #[test]
 fn a_pool_job_may_submit_to_another_lane() {
     use crate::large_stack::{LSP_LANE, LSP_WORKER_THREAD_NAME, Lane, dispatch_async};
@@ -1373,22 +1174,10 @@ fn a_pool_job_may_submit_to_another_lane() {
     assert_ne!(outer, inner);
 }
 
-/// (al) `Lane::started()` reports 0 before creation and the full `size` after —
-/// on a TEST-LOCAL pool, so both halves are observable.
-///
-/// `Lane::size()` is what a lane DECLARES; `Lane::started()` is what it got.
-/// They diverge exactly when `Lane::sender` hit a partial spawn failure, which
-/// it deliberately survives (a pool with three of four consumers still drains
-/// its queue on a large stack, so degrading it would be strictly worse). The
-/// cost of surviving it silently is that a pool which started 1 of 4 consumers
-/// serializes every LSP query again — the exact regression task 6517 exists to
-/// prevent — while `size()` still reports 4 and every routing test stays green.
-///
-/// `lsp_lane_routing_tests`' (p) asserts the AFTER half against the production
-/// `LSP_POOL`. It cannot assert the BEFORE half: `LSP_POOL` is process-wide and
-/// this binary runs its tests in parallel, so another test may already have
-/// created it. A lane declared inside this fn body is touched by nothing else,
-/// which is what makes "0 before, `size` after" a fact here rather than a race.
+/// (al) `Lane::started()` reports 0 before creation and the full `size` after, on a
+/// TEST-LOCAL pool so both halves are observable. `lsp_lane_routing_tests`' (p)
+/// asserts the after half against the production `LSP_POOL`, which another test
+/// may already have created.
 #[test]
 fn a_lane_reports_the_consumers_it_actually_started() {
     use crate::large_stack::Lane;
@@ -1409,11 +1198,8 @@ fn a_lane_reports_the_consumers_it_actually_started() {
     POOL.sender()
         .expect("the pool must start at least one consumer under test conditions");
 
-    // Strict equality, with the diagnostic carrying the triage rather than the
-    // assertion being softened — `>= 1` cannot see the silent narrowing this
-    // exists to catch, because that narrowing IS a count between 1 and `SIZE`.
-    // See (p)'s twin in `lsp_lane_routing_tests` for the same reasoning at
-    // length.
+    // Strict equality: the silent narrowing this catches IS a count between 1
+    // and `SIZE`, which `>= 1` cannot see.
     let started = POOL.started();
     assert_eq!(
         started, SIZE,

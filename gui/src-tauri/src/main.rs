@@ -632,13 +632,8 @@ async fn mcp_tool_call(
 /// awaiting tokio worker, whose ~2 MiB stack this compiler-adjacent work reaches
 /// at keystroke frequency.
 ///
-/// Task 6517: ROUTED by method across two such lanes by the lib-internal
-/// `lsp_bridge::lane_for_method` — a single-consumer ORDERED lane and a
-/// `LSP_POOL_SIZE`-consumer QUERY POOL. What goes where, and what the split buys
-/// and gives up, is that function's and `large_stack::Lane`'s to state; this
-/// comment restates neither. What matters HERE is that the frontend sees no
-/// difference: this command's signature, its arguments and its return type are
-/// exactly as task 5772 left them.
+/// Task 6517: routed by method across an ordered lane and a query pool (see
+/// `lsp_bridge::lane_for_method`). The frontend sees no difference.
 ///
 /// Stays `async`. Converting it to a sync command would make Tauri run it as
 /// `ExecutionContext::Blocking` on the IPC thread with NO ambient tokio runtime,

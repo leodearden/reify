@@ -260,11 +260,8 @@ async fn lsp_request_impl_null_literal_passes_json_parse_step() {
 // `BlockingWorkPlacement::CallingThread` — pinned by
 // `lsp_bridge_answers_the_blocking_work_methods_with_the_blocking_pool_saturated`.
 //
-// Since task 6517 the fourteen arms are also split across two lanes — six
-// ordered + every unrecognised method on `LSP_LANE`, eight read-only queries on
-// `LSP_POOL`. That is orthogonal to the stack every arm now gets; the parity
-// table in (b) spans every pooled arm plus one ordered-lane arm, because those
-// are exactly the arms whose lane changed.
+// Since task 6517 the arms are also split across two lanes (see
+// `lsp_lane_routing_tests`); that is orthogonal to the stack every arm gets.
 
 /// Compile-time proof that `T` satisfies the bound the lane rests on. Never
 /// runs; naming the type is the assertion.
@@ -306,23 +303,11 @@ fn lsp_bridge_arc_is_send_sync_and_static() {
 /// `null == null` comparison would satisfy the parity assertion while proving
 /// nothing ran, so they additionally have to produce a real answer.
 ///
-/// # (m) Task 6517: the table now spans BOTH LANES, and every pooled arm
+/// # (m) The table spans BOTH lanes
 ///
-/// This is the migration guard the ordered-lane/query-pool split rests on, so
-/// it has to cover the arms whose LANE CHANGED — which is precisely what the
-/// five original rows did not. `documentHighlight`, `prepareRename` and
-/// `rename` are added, completing the eight methods `lane_for_method` routes to
-/// the pool, and `didChange` is added as an ORDERED-lane row so the table spans
-/// both destinations rather than silently testing one.
-///
-/// `must_resolve` is set for the three added arms, two of which
-/// (`prepareRename`, `rename`) are blocking-work arms: a `null == null`
-/// comparison is exactly what an arm that stopped running looks like, and these
-/// are the ones whose routing moved.
-///
-/// `didChange` is LAST on purpose. It mutates both bridges — identically, so
-/// parity would hold either way — but running it earlier would silently change
-/// the text every later row queries, making a failure hard to attribute.
+/// It covers all eight pool-routed methods plus `didChange` from the ordered
+/// lane. `didChange` is LAST because it mutates both bridges (identically), and
+/// an earlier position would change the text every later row queries.
 #[tokio::test]
 async fn lsp_request_on_worker_matches_direct_results_for_covered_methods() {
     use crate::lsp_bridge::lsp_request_on_worker;
@@ -382,9 +367,8 @@ async fn lsp_request_on_worker_matches_direct_results_for_covered_methods() {
             }),
             true,
         ),
-        // ── task 6517: the remaining POOL-routed arms ────────────────────────
-        // Inline arm, but on the `width` declaration token (line 1) it produces
-        // real highlights, so it can carry `must_resolve`.
+        // The remaining pool-routed arms, on the `width` declaration token
+        // (line 1), where each produces a real answer.
         (
             "textDocument/documentHighlight",
             json!({
@@ -393,8 +377,6 @@ async fn lsp_request_on_worker_matches_direct_results_for_covered_methods() {
             }),
             true,
         ),
-        // Blocking-work arms, on the same `width` declaration token
-        // `references` uses.
         (
             "textDocument/prepareRename",
             json!({
@@ -412,11 +394,8 @@ async fn lsp_request_on_worker_matches_direct_results_for_covered_methods() {
             }),
             true,
         ),
-        // ── task 6517: an ORDERED-lane arm, so the table spans both lanes ────
-        // A notification: it answers `Null`, hence `must_resolve: false`. LAST,
-        // because it MUTATES both bridges — identically, so parity holds either
-        // way, but an earlier position would change the text every later row
-        // queries.
+        // An ordered-lane notification: it answers `Null`. LAST, because it
+        // mutates both bridges.
         (
             "textDocument/didChange",
             json!({
@@ -660,23 +639,14 @@ async fn deeply_nested_source_opens_hovers_and_finds_references_through_the_lane
 }
 
 /// (f) The DEGRADED arm of the LSP routing, driven by the REAL production
-/// composition rather than by a stand-in closure.
+/// composition rather than by a stand-in body.
 ///
 /// `dispatch_async`'s `None` arm is what runs when the OS refuses the 256 MiB
-/// mapping. The generic guard for it — `large_stack_tests`'
-/// `async_dispatch_without_a_lane_runs_inline_and_still_resolves` — submits
-/// `|| (77u32, thread::current().id())`, a body that needs no runtime and so
-/// cannot detect the hazard the PRODUCTION body carries: the only real caller
-/// pre-bakes a [`tokio::runtime::Handle::block_on`], and `block_on` called from
-/// inside a runtime panics "Cannot start a runtime from within a runtime". The
-/// degraded arm therefore has to be exercised through the SAME function body
-/// `lsp_request_on_worker` delegates to, or the test rots into testing a COPY of
-/// the composition rather than the composition.
-///
-/// The claim is RESOLVING WITH THE RIGHT VALUE, not merely "did not hang": a
-/// degraded arm that panics unwinds the Tauri command and leaves the frontend's
-/// `invoke` promise unresolved — precisely the silently-dead-editor-pane outcome
-/// the routing exists to prevent.
+/// mapping. Its generic guard in `large_stack_tests` submits a trivial body, so it
+/// cannot see a hazard in the production one; this drives the arm through the same
+/// `lsp_request_on_lane` body `lsp_request_on_worker` uses. The claim is RESOLVING
+/// WITH THE RIGHT VALUE: a degraded arm that panicked would leave the frontend's
+/// `invoke` promise unresolved.
 #[tokio::test]
 async fn lsp_request_on_lane_without_a_lane_still_resolves_to_the_right_value() {
     use crate::lsp_bridge::lsp_request_on_lane;
