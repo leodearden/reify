@@ -92,6 +92,26 @@ fn panic_site(f: impl FnOnce()) -> PanicSite {
     }
 }
 
+/// Asserts `site` was attributed to the CALLER (this file), not to `helpers.rs`, and that
+/// its payload contains `needle`. File identity alone discriminates the regression, so no
+/// exact line is pinned (`rustfmt --edition 2024` is free to shift it); `site.line` is
+/// surfaced for diagnosis only.
+#[track_caller]
+fn assert_attributed_here(site: &PanicSite, needle: &str) {
+    assert_eq!(
+        site.file.as_str(),
+        file!(),
+        "panic must attribute to the CALLER (this file), not to helpers.rs; reported {}:{}",
+        site.file,
+        site.line,
+    );
+    assert!(
+        site.message.contains(needle),
+        "panic message no longer contains {needle:?}; got: {}",
+        site.message,
+    );
+}
+
 #[test]
 fn require_default_expr_panic_reports_caller_not_helpers_rs() {
     let template = reify_test_support::TopologyTemplateBuilder::new("S")
@@ -102,24 +122,7 @@ fn require_default_expr_panic_reports_caller_not_helpers_rs() {
         reify_test_support::get_let_expr_in_template(&template, "x");
     });
 
-    // File identity alone discriminates the regression: helpers.rs is a
-    // different file by construction, so "attributes to the caller, not
-    // helpers.rs" is fully captured without pinning an exact line (which
-    // `rustfmt --edition 2024` would otherwise be free to shift, per this
-    // task's review). `site.line` is still surfaced below for diagnosis.
-    assert_eq!(
-        site.file.as_str(),
-        file!(),
-        "require_default_expr's panic must attribute to the CALLER (this \
-         file), not to helpers.rs; reported {}:{}",
-        site.file,
-        site.line,
-    );
-    assert!(
-        site.message.contains("has no default expr"),
-        "panic message changed; got: {}",
-        site.message,
-    );
+    assert_attributed_here(&site, "has no default expr");
 }
 
 #[cfg(feature = "eval-helpers")]
@@ -131,21 +134,7 @@ fn cell_value_panic_reports_caller_not_helpers_rs() {
         reify_test_support::cell_value(&result, "Nope", "missing");
     });
 
-    // See `require_default_expr_panic_reports_caller_not_helpers_rs` above:
-    // file identity is the contract; the exact line is diagnostic-only.
-    assert_eq!(
-        site.file.as_str(),
-        file!(),
-        "cell_value's panic must attribute to the CALLER (this file), not to \
-         helpers.rs; reported {}:{}",
-        site.file,
-        site.line,
-    );
-    assert!(
-        site.message.contains("not found in eval result"),
-        "panic message changed; got: {}",
-        site.message,
-    );
+    assert_attributed_here(&site, "not found in eval result");
 }
 
 #[test]
@@ -158,19 +147,7 @@ fn get_value_cell_empty_module_panic_reports_caller_not_helpers_rs() {
         reify_test_support::get_value_cell(&module, "x");
     });
 
-    assert_eq!(
-        site.file.as_str(),
-        file!(),
-        "get_value_cell's empty-module panic must attribute to the CALLER \
-         (this file), not to helpers.rs; reported {}:{}",
-        site.file,
-        site.line,
-    );
-    assert!(
-        site.message.contains("expected at least one template"),
-        "panic message changed; got: {}",
-        site.message,
-    );
+    assert_attributed_here(&site, "expected at least one template");
 }
 
 #[test]
@@ -181,19 +158,7 @@ fn get_value_cell_missing_cell_panic_reports_caller_not_helpers_rs() {
         reify_test_support::get_value_cell(&module, "missing");
     });
 
-    assert_eq!(
-        site.file.as_str(),
-        file!(),
-        "get_value_cell's missing-cell panic must attribute to the CALLER \
-         (this file), not to helpers.rs; reported {}:{}",
-        site.file,
-        site.line,
-    );
-    assert!(
-        site.message.contains("no value cell named"),
-        "panic message changed; got: {}",
-        site.message,
-    );
+    assert_attributed_here(&site, "no value cell named");
 }
 
 #[test]
@@ -204,19 +169,7 @@ fn get_value_cell_in_missing_template_panic_reports_caller_not_helpers_rs() {
         reify_test_support::get_value_cell_in(&module, "DoesNotExist", "x");
     });
 
-    assert_eq!(
-        site.file.as_str(),
-        file!(),
-        "get_value_cell_in's missing-template panic must attribute to the \
-         CALLER (this file), not to helpers.rs; reported {}:{}",
-        site.file,
-        site.line,
-    );
-    assert!(
-        site.message.contains("no template named"),
-        "panic message changed; got: {}",
-        site.message,
-    );
+    assert_attributed_here(&site, "no template named");
 }
 
 #[test]
@@ -227,19 +180,7 @@ fn get_let_expr_in_missing_cell_panic_reports_caller_not_helpers_rs() {
         reify_test_support::get_let_expr_in(&module, "S", "missing");
     });
 
-    assert_eq!(
-        site.file.as_str(),
-        file!(),
-        "get_let_expr_in's missing-cell panic must attribute to the CALLER \
-         (this file), not to helpers.rs; reported {}:{}",
-        site.file,
-        site.line,
-    );
-    assert!(
-        site.message.contains("no value cell named"),
-        "panic message changed; got: {}",
-        site.message,
-    );
+    assert_attributed_here(&site, "no value cell named");
 }
 
 #[test]
@@ -257,19 +198,7 @@ fn get_let_expr_ambiguous_cell_panic_reports_caller_not_helpers_rs() {
         reify_test_support::get_let_expr(&module, "x");
     });
 
-    assert_eq!(
-        site.file.as_str(),
-        file!(),
-        "get_let_expr's ambiguous-cell panic must attribute to the CALLER \
-         (this file), not to helpers.rs; reported {}:{}",
-        site.file,
-        site.line,
-    );
-    assert!(
-        site.message.contains("ambiguous cell name"),
-        "panic message changed; got: {}",
-        site.message,
-    );
+    assert_attributed_here(&site, "ambiguous cell name");
 }
 
 #[test]
@@ -282,17 +211,5 @@ fn get_let_expr_empty_module_panic_reports_caller_not_helpers_rs() {
         reify_test_support::get_let_expr(&module, "x");
     });
 
-    assert_eq!(
-        site.file.as_str(),
-        file!(),
-        "get_let_expr's empty-module panic must attribute to the CALLER \
-         (this file), not to helpers.rs; reported {}:{}",
-        site.file,
-        site.line,
-    );
-    assert!(
-        site.message.contains("expected at least one template"),
-        "panic message changed; got: {}",
-        site.message,
-    );
+    assert_attributed_here(&site, "expected at least one template");
 }
