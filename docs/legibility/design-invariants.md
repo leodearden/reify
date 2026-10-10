@@ -337,8 +337,8 @@ the arc measure? Is there any path to an Angle-typed value in this
 feature that does not pass through a named primitive/channel/helper?
 
 **Evidence**: inverse trig and `phase`/`arg` return `Type::angle()` at
-the static layer (`crates/reify-compiler/src/math_signatures.rs:357,
-:375`) and tag `DimensionVector::ANGLE` at eval
+the static layer (`crates/reify-compiler/src/math_signatures.rs:514,
+:532`) and tag `DimensionVector::ANGLE` at eval
 (`crates/reify-stdlib/src/trig.rs:20-35`); the geometry queries `angle`
 and `angle_between_surfaces` are the same shape — `Type::angle()` at
 `crates/reify-compiler/src/units.rs:349` (`angle_between_surfaces`) and
@@ -533,7 +533,7 @@ unrelated reasons — nothing in this family changes that:
   (`check_transcendental_arg_dimensions`,
   `crates/reify-compiler/src/math_signatures.rs:196`, wired into
   `resolve_function_overload`'s `NoUserFunctions` arm at
-  `crates/reify-compiler/src/expr.rs:3491`). `sin(5.0mm)` (LENGTH)
+  `crates/reify-compiler/src/expr.rs:3489`). `sin(5.0mm)` (LENGTH)
   therefore no longer compiles clean. But `sin(2.5)` and
   `sin(ratio * 2.0)` still do, and for the same reason as each
   other: the check accepts `Angle`, dimensionless, and `Int` alike
