@@ -696,6 +696,49 @@ fn repeated_edits_without_build_stay_stale_until_rebuilt() {
     assert_eq!(rebuilt.hit_entities(), entities(&["PartB"]));
 }
 
+/// A two-hop `Sub` chain `A.body → B.mid → C.top`. Every member name is
+/// exported by exactly one entity, so the reverse index links each hop and
+/// nothing is seeded as a dropped operand. Only `A`'s own fold moves; `B` and
+/// `C` must be reached by the realization cone, `C` two hops deep.
+#[test]
+fn a_two_hop_sub_chain_is_evicted_through_the_cone() {
+    const SRC: &str = r#"pub structure A {
+    param w : Length = 10mm
+    let body = box(w, 10mm, 10mm)
+}
+pub structure B {
+    sub a = A()
+    let mid = translate(self.a.body, 1mm, 0mm, 0mm)
+}
+pub structure C {
+    sub b = B()
+    let top = translate(self.b.mid, 0mm, 1mm, 0mm)
+}
+pub structure S {
+    let shell = cylinder(5mm, 10mm)
+}"#;
+    let mut pair = RegimePair::new(
+        compile_source(SRC),
+        &[
+            ("mfg_a", "A", 1e-6),
+            ("mfg_b", "B", 1e-6),
+            ("mfg_c", "C", 1e-6),
+            ("mfg_s", "S", 1e-6),
+        ],
+    );
+    pair.assert_resident(&["A", "B", "C", "S"]);
+
+    pair.edit_param("A", "w", mm(30.0));
+    assert_eq!(
+        pair.selective.engine.last_changed_realizations(),
+        &HashSet::from([RealizationNodeId::new("A", 0)]),
+        "premise: only A's own input cone moves; B and C ride the cone"
+    );
+    let rebuilt = pair.rebuild();
+
+    assert_eq!(rebuilt.hit_entities(), entities(&["S"]));
+}
+
 // ── A value a build writes between edits ────────────────────────────────────
 
 /// A selective-demand tessellate refreshes the demanded `let` `sb`
