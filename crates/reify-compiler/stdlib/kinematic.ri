@@ -147,10 +147,13 @@ trait HasMotion {
 //   tilt 2R about the axes ⊥ axis · torsional 1R about axis · rotational 3R
 //
 // Kinematics never reads these params; assembly modal δ (#7165) does. Joints from
-// the lowercase builtins and the prb_* flexures are `Value::Map` values with no
-// compliance key, so a consumer reads an absent key as `none` (a member read of
-// it is undef, #8170) and validates values itself (connector-block params skip
-// ctor conformance, #8125).
+// the lowercase builtins and the prb_* flexures are `Value::Map` values. A Map
+// joint carries a param as a same-named key holding the `Option` the ctor stores;
+// only prb_parallelogram_flexure and prb_double_parallelogram_flexure set one
+// today (`radial_stiffness`, see reify-stdlib/src/flexures/compound.rs). A
+// consumer reads an absent key as `none` (a member read of it is undef, #8170)
+// and validates values itself (connector-block params skip ctor conformance,
+// #8125).
 
 // Prismatic — translational sliding joint (1 translational DOF).
 // `axis` is the translation direction in the parent body frame.
