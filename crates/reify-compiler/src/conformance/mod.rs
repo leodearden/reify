@@ -1381,10 +1381,10 @@ fn dimensioned_scalar_migration_hint(dimension: &DimensionVector) -> String {
 /// unknown, whereas with `ScalarParam` the FAMILY is known (it is a scalar) and
 /// only its dimension is open. Adding it here would silence genuine family-level
 /// mismatches such as `String ← Scalar<Q>` at every arm at once. Instead, the
-/// arms that already tolerate a scalar-family arg as the expression compiler's
-/// numeric-fallback placeholder (`Point`, `Matrix`/`Tensor`) accept it through
-/// [`is_numeric_placeholder_leaf`], which is where its scalar-ness — not its
-/// unknown-ness — is the load-bearing property.
+/// two arms that already tolerate a scalar-family arg (`Point`,
+/// `Matrix`/`Tensor`) accept it through [`is_numeric_placeholder_leaf`], which
+/// is where its scalar-ness — not its unknown-ness — is the load-bearing
+/// property.
 fn arg_type_is_unverifiable(arg_ty: &Type) -> bool {
     matches!(
         arg_ty,
@@ -1393,8 +1393,7 @@ fn arg_type_is_unverifiable(arg_ty: &Type) -> bool {
 }
 
 /// The NARROW numeric-leaf predicate the `Point` and `Matrix`/`Tensor` shape
-/// arms use to accept the expression compiler's numeric-fallback placeholder
-/// (task 5465).
+/// arms use to accept a scalar-family arg (task 5465).
 ///
 /// Its membership is exactly what the `matches!` below says: `Type::Int`, ANY
 /// `Type::Scalar { .. }` — dimensioned or not, the match is dimension-BLIND —
@@ -1443,9 +1442,9 @@ fn is_numeric_placeholder_leaf(ty: &Type) -> bool {
 /// Reusing it as the arg-side accept HERE would silence `Scalar<Q> ← Int` (I3)
 /// and `Scalar<Length> ← Scalar<Mass>` (I2) — precisely the two rejections γ
 /// exists to produce — leaving the promotion green, the corpus clean and the
-/// whole task functionally inert. The `Point` / `Matrix` / `Tensor` arms want its
-/// full membership set because a numeric-fallback placeholder is what they
-/// actually receive; this arm wants only the dimension-placeholder half.
+/// whole task functionally inert. The `Point` and `Matrix`/`Tensor` arms want its
+/// full membership set, each for the reason stated at its own call site; this
+/// arm wants only the dimension-placeholder half.
 ///
 /// It is a PER-ARM guard for the same reason it is not an entry in
 /// [`arg_type_is_unverifiable`]: adding it there would silence
@@ -1894,10 +1893,24 @@ fn walk_param_against_arg_type(param_type: &Type, arg_type: &Type, ctx: &mut Wal
         //     [`list_bottoms_out_numeric`]: an unconstrained `Type::List(_)`
         //     accept also swallowed `Body(inertia: ["a", "b"])`, leaving the
         //     promoted family a hole on the very shape the accept exists for.
-        //   • `Type::Int | Type::Scalar | Type::ScalarParam` — rank-0 scalar
-        //     equivalence (Rules 2a/2b) plus matrix/tensor-builtin
-        //     numeric-fallback placeholders, via the same narrow
-        //     [`is_numeric_placeholder_leaf`] the `Point` arm uses.
+        //   • `Type::Int | Type::Scalar | Type::ScalarParam` — everything
+        //     [`is_numeric_placeholder_leaf`] matches. ANY `Type::Scalar { .. }`
+        //     arrives (dimension- AND rank-blind: a scalar-returning call such
+        //     as `trace(…)` lands here too). Only a matching scalar at a rank-0
+        //     `Tensor` param has a rule behind it (Rules 2a/2b,
+        //     `type_compat.rs`); at a `Matrix` or rank≥1 `Tensor` param it is a
+        //     bounded cost, though spec §4.9 lists "a scalar" as legal. NOT the
+        //     math builtins that build a matrix, tensor or vector (`matrix`,
+        //     `diag`, `identity`, `vec`, `transpose`, `inverse`, `outer`): they
+        //     carry a real `Type::Matrix` / `Type::Tensor` / `Type::Vector` from
+        //     `math_fn_result_type`, take the nominal branch above and are
+        //     quantity-checked, pinned by
+        //     `matrix_builtin_cross_dimension_at_inertia_param_errors_arg_type_mismatch`.
+        //     One pin per leg here:
+        //     `bare_numeric_literal_at_matrix_param_stays_clean`,
+        //     `dimensioned_scalar_at_matrix_param_stays_clean`,
+        //     `matching_scalar_at_rank0_tensor_param_stays_clean` and
+        //     `scalar_param_at_matrix_param_stays_clean`.
         //
         // Everything else (`String`, `Bool`, `Selector`/`AnySelector`, `Enum`,
         // `Applied`, `StructureRef`, `Field`, `Point`, `Frame`, `Transform`,
@@ -1925,6 +1938,7 @@ fn walk_param_against_arg_type(param_type: &Type, arg_type: &Type, ctx: &mut Wal
             let is_conforming = match arg_ty {
                 Type::Matrix { .. } | Type::Tensor { .. } | Type::Vector { .. } => true,
                 Type::List(_) => list_bottoms_out_numeric(arg_ty),
+                // Scalar-family leg; inputs, reason and pins: arm comment above.
                 other => is_numeric_placeholder_leaf(other),
             };
             if !is_conforming {

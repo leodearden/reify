@@ -1918,6 +1918,108 @@ fn tensor_param_given_vector_stays_clean() {
     );
 }
 
+// ── (b) Matrix/Tensor ← a scalar-family arg (`is_numeric_placeholder_leaf` branch) ──
+//
+// That branch takes `Int`, ANY `Scalar { .. }` and `ScalarParam(_)`. The math
+// builtins (`matrix(…)`, `diag(…)`, `vec(…)`, …) are NOT among its inputs: they
+// carry a real `Tensor` / `Vector` type and take the arm's nominal branch, where
+// the quantity rule compares them — pinned by
+// `matrix_builtin_cross_dimension_at_inertia_param_errors_arg_type_mismatch`.
+//
+// One stays-clean fixture per leg below, so deleting or narrowing any leg fails a
+// test by name instead of passing unnoticed. A failure names its leg in the
+// label; the legs share ONE predicate, so re-read the arm's comment in
+// `conformance/mod.rs` and spec §4.9 and check the others in the same pass.
+
+const SRC_BARE_NUMERIC_AT_MATRIX_PARAM: &str = r#"module test.bare_numeric_at_matrix
+structure def Body { param inertia : Matrix<3, 3, MomentOfInertia> }
+structure def Root {
+    let b = Body(inertia: 5)
+}
+"#;
+
+/// The `Int` leg: a bare numeric literal at a rank-2 `Matrix` param is silent.
+///
+/// No `type_compat.rs` rule backs this at rank 2 — it is the shared predicate's
+/// rank-blind tolerance. It is nonetheless documented behaviour: the spec's §4.9
+/// `Matrix<M, N, Q>` / `Tensor<R, N, Q>` row lists "a scalar" as legal. The `Body`
+/// declaration is `SRC_MATRIX_GIVEN_STRING`'s, whose rejecting test shows that
+/// this param spelling resolves and reaches the arm.
+#[test]
+fn bare_numeric_literal_at_matrix_param_stays_clean() {
+    assert_well_formed_and_no_ctor_conformance_diags(
+        SRC_BARE_NUMERIC_AT_MATRIX_PARAM,
+        "Int leg: Matrix<3,3,MomentOfInertia> ← 5",
+    );
+}
+
+const SRC_DIMENSIONED_SCALAR_AT_MATRIX_PARAM: &str = r#"module test.dim_scalar_at_matrix
+structure def Body { param inertia : Matrix<3, 3, MomentOfInertia> }
+structure def Root {
+    let b = Body(inertia: 5kg)
+}
+"#;
+
+/// The `Scalar { .. }` leg at its TRUE size — the `Matrix` twin of
+/// `dimensioned_scalar_at_point_param_stays_clean`.
+///
+/// The predicate is dimension-BLIND and, at a `Matrix` param, rank-BLIND: a
+/// `Scalar[kg]` at `Matrix<3,3,MomentOfInertia>` is silent, though the same
+/// scalar at a dimensioned `Scalar` slot is rejected
+/// (`g_i2_cross_dimension_arg_at_dimensioned_slot_errors`). Narrowing this leg
+/// inline in the `Matrix` arm is a legitimate future ruling and would flip this
+/// pin deliberately. Narrowing the SHARED predicate would also move the rank-0
+/// accept pinned by `matching_scalar_at_rank0_tensor_param_stays_clean`.
+#[test]
+fn dimensioned_scalar_at_matrix_param_stays_clean() {
+    assert_well_formed_and_no_ctor_conformance_diags(
+        SRC_DIMENSIONED_SCALAR_AT_MATRIX_PARAM,
+        "Scalar leg, dimension- and rank-blind: Matrix<3,3,MomentOfInertia> ← 5kg",
+    );
+}
+
+const SRC_SCALAR_AT_RANK0_TENSOR_PARAM: &str = r#"module test.scalar_at_rank0_tensor
+structure def Holder { param t : Tensor<0, 3, Length> }
+structure def Root {
+    let h = Holder(t: 5m)
+}
+"#;
+
+/// The ONE leg that a `type_compat.rs` rule justifies: a matching scalar at a
+/// rank-0 `Tensor` param.
+///
+/// Rule 2a (`Q → Tensor<0,_,Q>`) makes `Holder(t: 5m)` a LEGAL conversion, so
+/// the arm must not reject it — this is the fixture that answers "why does the
+/// `Matrix`/`Tensor` arm accept scalars at all". Deleting the
+/// `is_numeric_placeholder_leaf` branch turns it into a FALSE `ArgTypeMismatch`
+/// ("requires type 'Tensor0x3<Scalar[m]>'").
+#[test]
+fn matching_scalar_at_rank0_tensor_param_stays_clean() {
+    assert_well_formed_and_no_ctor_conformance_diags(
+        SRC_SCALAR_AT_RANK0_TENSOR_PARAM,
+        "Scalar leg, a LEGAL conversion (type_compat Rules 2a/2b): Tensor<0,3,Length> ← 5m",
+    );
+}
+
+const SRC_SCALAR_PARAM_AT_MATRIX_PARAM: &str = r#"module test.scalar_param_at_matrix
+structure def W { param m : Matrix<3, 3, Length> }
+fn fwd<Q: Dimension>(x: Scalar<Q>) -> W { W(m: x) }
+"#;
+
+/// The `ScalarParam(_)` leg, in the γ D4-5 fn-forwarding shape (cf.
+/// `g_i5_scalarparam_arg_at_dimensioned_slot_is_silent`).
+///
+/// The arg is a scalar whose DIMENSION is unresolved and decided at
+/// instantiation; `scalar_param_arg_defers_at_scalar_slot` in
+/// `conformance/mod.rs` carries the concept.
+#[test]
+fn scalar_param_at_matrix_param_stays_clean() {
+    assert_well_formed_and_no_ctor_conformance_diags(
+        SRC_SCALAR_PARAM_AT_MATRIX_PARAM,
+        "ScalarParam leg: Matrix<3,3,Length> ← ScalarParam(Q)",
+    );
+}
+
 // The `Matrix`/`Tensor` arm's NOMINAL SELF-ACCEPT (a genuinely `Type::Matrix`-
 // typed arg at a `Matrix` param, and with it the deliberate ABSENCE of an m/n
 // arity check) is pinned by `matrix_param_accepts_matrix_arg_without_arity_check`
@@ -1925,7 +2027,7 @@ fn tensor_param_given_vector_stays_clean() {
 // and for the same reason: no inline `.ri` fixture reliably yields a
 // `Type::Matrix`-typed arg, so the `Type` is constructed directly. The probes
 // above cover only the LOOSE accepts (nested list literal, `Vector` →
-// `Tensor<1,…>`).
+// `Tensor<1,…>`, scalar-family args).
 
 // ── (b) excluded family: Field ← erased Field<Real, Real> ────────────────────
 //
@@ -2355,8 +2457,39 @@ fn value_floor_dimensionless_real_param_given_string_still_errors() {
 /// code set only — a fixture may still emit unrelated diagnostics (an
 /// `auto`-resolution warning, an unresolved-name Error) without weakening the
 /// claim, which is exactly what makes the I6 and A3 floors expressible.
+///
+/// That tolerance is why this helper carries no non-vacuity guard. A fixture
+/// that is meant to be error-free uses
+/// [`assert_well_formed_and_no_ctor_conformance_diags`] instead.
 fn assert_no_ctor_conformance_diags(source: &str, label: &str) {
     let module = compile_source_with_stdlib(source);
+    let diags = ctor_conformance_diags(&module);
+    assert!(
+        diags.is_empty(),
+        "{label}: expected ZERO ctor-conformance diagnostics, got: {diags:#?}"
+    );
+}
+
+/// [`assert_no_ctor_conformance_diags`] for a fixture that is meant to be
+/// ERROR-FREE: `source` must also compile with no error outside the
+/// ctor-conformance code set.
+///
+/// That second check is the non-vacuity guard of a stays-clean probe. If the
+/// fixture stopped compiling (a typo, a renamed type, a retired spelling) the
+/// walker might never reach the arg, "zero ctor-conformance diagnostics" would
+/// hold for the wrong reason, and a regression in the arm under test would pass
+/// unnoticed. Compiles `source` once and runs both checks on that module.
+///
+/// Not for a floor whose fixture deliberately carries an unrelated error (I6's
+/// `Type::Error` arg): that one stays on [`assert_no_ctor_conformance_diags`].
+fn assert_well_formed_and_no_ctor_conformance_diags(source: &str, label: &str) {
+    let module = compile_source_with_stdlib(source);
+    let other_errors = non_ctor_conformance_errors(&module);
+    assert!(
+        other_errors.is_empty(),
+        "{label}: fixture must compile cleanly apart from the ctor-conformance fault under \
+         test, got: {other_errors:?}"
+    );
     let diags = ctor_conformance_diags(&module);
     assert!(
         diags.is_empty(),
