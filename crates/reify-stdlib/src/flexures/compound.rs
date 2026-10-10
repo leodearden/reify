@@ -18,6 +18,13 @@
 //! Two single stages in mirror-symmetric series cancel the first-order parasitic
 //! term; the residual scales as (δ/L)³ instead of (δ/L):
 //!   δ_rot_double = δ_rot_single · (δ_max/L)²
+//!
+//! ### Constrained-DOF compliance
+//! `radial_stiffness` (kinematic.ri, task 7163) is ONE isotropic spring on both
+//! directions ⊥ the motion axis, but the stage's in-plane (4·E·b·t/L, blade
+//! axial stretching) and out-of-plane (4·E·t·b³/L³, strong-axis fixed-guided
+//! bending) stiffnesses differ by (b/L)². The seed is therefore their minimum —
+//! a conservative lower bound. `transverse_stiffness` stays the in-plane value.
 
 use std::collections::BTreeMap;
 
@@ -123,6 +130,10 @@ where
     let k_blade = FIXED_GUIDED_GAMMA * c.e * c.i / c.length.powi(3);
     let k_stage = 4.0 * k_blade / series_divisor;
     let k_transverse = 4.0 * c.e * (c.width * c.thickness) / c.length / series_divisor;
+    let k_out_of_plane = 4.0 * FIXED_GUIDED_GAMMA * c.e * (c.thickness * c.width.powi(3) / 12.0)
+        / c.length.powi(3)
+        / series_divisor;
+    let k_radial = k_transverse.min(k_out_of_plane);
 
     // Auto SAFE displacement δ_auto = yield·L²/(3·E·t) (the fixed-guided
     // surface-yield deflection; no yield_stress ⇒ 0.1·L). Retained as the SAFE
@@ -168,6 +179,13 @@ where
             si_value: k_transverse,
             dimension: DimensionVector::TRANSLATIONAL_STIFFNESS,
         },
+    );
+    m.insert(
+        Value::String("radial_stiffness".to_string()),
+        Value::Option(Some(Box::new(Value::Scalar {
+            si_value: k_radial,
+            dimension: DimensionVector::TRANSLATIONAL_STIFFNESS,
+        }))),
     );
     m.insert(
         Value::String("parasitic_error".to_string()),
@@ -362,7 +380,8 @@ fn prb_cartwheel_flexure(args: &[Value]) -> Value {
 ///
 /// Returns a joint `Value::Map` (`kind == "prismatic"`) with:
 /// - `spring_rate` = k_stage = 48·E·I/L³ (TRANSLATIONAL_STIFFNESS)
-/// - `transverse_stiffness` = 4·E·(b·t)/L (axial blade stretching)
+/// - `transverse_stiffness` = 4·E·(b·t)/L, the in-plane (blade-axial) stiffness
+/// - `radial_stiffness` = some(min(4·E·b·t/L, 4·E·t·b³/L³)) (TRANSLATIONAL_STIFFNESS)
 /// - `range` = ±δ_max (symmetric LENGTH-bounded range)
 /// - `parasitic_error` = Option(Some(Length(δ_rot))) where δ_rot = L·(1−cos(δ_max/L))
 ///
@@ -382,7 +401,8 @@ fn prb_parallelogram_flexure(args: &[Value]) -> Value {
 ///
 /// Returns a joint `Value::Map` (`kind == "prismatic"`) with:
 /// - `spring_rate` = k_stage/2 = 24·E·I/L³ (series composition halves)
-/// - `transverse_stiffness` = (4·E·(b·t)/L)/2
+/// - `transverse_stiffness` = (4·E·(b·t)/L)/2, the in-plane (blade-axial) stiffness
+/// - `radial_stiffness` = some(min(4·E·b·t/L, 4·E·t·b³/L³)/2) (TRANSLATIONAL_STIFFNESS)
 /// - `range` = ±δ_max (same per-stage range as single, for apples-to-apples §10.1 comparison)
 /// - `parasitic_error` = Option(Some(Length(δ_rot_double))) (added in step-12)
 ///
