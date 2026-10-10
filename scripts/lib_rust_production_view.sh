@@ -36,7 +36,8 @@
 # (`pending_mod`) on a brace-less `mod tests` line whose `{` comes later, legal
 # Rust that no rustfmt gate rules out here. A bare `#[cfg(test)] fn` or
 # `#[cfg(any(test, …))] use …;` therefore does NOT arm it, and a
-# self-terminating `mod tests;` leaves nothing armed. A line wholly inside a
+# self-terminating `mod tests;` (no local body) disarms the pending gate, so
+# the next `mod X {` is read as production. A line wholly inside a
 # block comment or a carried-over string is skipped before any bookkeeping, so
 # a lexer desync would fail silently toward green; the END block therefore
 # WARNs on any file whose lexer state is unbalanced at EOF.
@@ -271,6 +272,13 @@ function _is_test_only_cfg(code, raw,   squeezed_code, squeezed_raw) {
             pending_test = 0
             pending_mod = 0
         }
+    }
+    # A self-terminating `mod tests;` (cfg on this line or an earlier one) has
+    # no local body, so it must not leave the skipper armed for the NEXT
+    # `mod X {`, which is production code.
+    if (pending_test && n_open == 0 && code ~ /;/ && code ~ /(^|[^A-Za-z0-9_])mod[ \t]+[A-Za-z_]/) {
+        pending_test = 0
+        pending_mod = 0
     }
     if (pending_test && n_open > 0) {
         if (pending_mod || code ~ /(^|[^A-Za-z0-9_])mod[ \t]+[A-Za-z_]/) {
