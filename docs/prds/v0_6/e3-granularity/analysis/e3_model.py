@@ -370,3 +370,73 @@ def arm_censoring_counts(outcomes):
         )
         for arm in Arm
     )
+
+
+@dataclass(frozen=True)
+class PrdFloor:
+    """One PRD's qualifying landings (addendum (a)(ii)), in landing order."""
+
+    prd_slug: str
+    arm: Arm
+    qualifying: tuple
+    floor_met: bool
+    floor_instant: datetime | None
+
+
+@dataclass(frozen=True)
+class StopRuleProbe:
+    """Addendum (a): rule (ii) the k-landing floor in every PRD, rule (i) every
+    close leaf terminal; the trigger is the earliest determined instant of a
+    met rule. Rule (iii) is a human decision and is not probed."""
+
+    per_prd: tuple
+    rule_ii_met: bool
+    rule_ii_instant: datetime | None
+    rule_i_met: bool
+    rule_i_instant: datetime | None
+    trigger_instant: datetime | None
+
+
+def stop_rule_probe(outcomes, protocol):
+    floors = tuple(_prd_floor(prd, outcomes, protocol.landing_floor_k) for prd in protocol.prds)
+    rule_ii_met = all(floor.floor_met for floor in floors)
+    rule_ii_instant = max(floor.floor_instant for floor in floors) if rule_ii_met else None
+    rule_i_met, rule_i_instant = _rule_i(outcomes, protocol)
+    determined = [instant for met, instant in ((rule_i_met, rule_i_instant),
+                                               (rule_ii_met, rule_ii_instant))
+                  if met and instant is not None]
+    return StopRuleProbe(
+        per_prd=floors,
+        rule_ii_met=rule_ii_met,
+        rule_ii_instant=rule_ii_instant,
+        rule_i_met=rule_i_met,
+        rule_i_instant=rule_i_instant,
+        trigger_instant=min(determined) if determined else None,
+    )
+
+
+def _prd_floor(prd, outcomes, k):
+    """A qualifying landing is an eligible landing of a task that counts
+    toward the floor (ArmTask.counts_toward_floor, the like-for-like rule)."""
+    qualifying = sorted(
+        ((o.task.id, o.landed_at) for o in outcomes
+         if o.task.prd_slug == prd.slug and o.task.counts_toward_floor and o.landed_eligible),
+        key=lambda landing: (landing[1], landing[0]),
+    )
+    floor_met = len(qualifying) >= k
+    return PrdFloor(prd.slug, prd.arm, tuple(qualifying), floor_met,
+                    qualifying[k - 1][1] if floor_met else None)
+
+
+def _rule_i(outcomes, protocol):
+    """(met, instant): every close leaf cancelled or done by a merge as of the
+    outcomes' instant; the instant is the last close-leaf merge, known only
+    when every close leaf landed."""
+    by_id = {o.task.id: o for o in outcomes}
+    missing = {prd.close_leaf for prd in protocol.prds} - set(by_id)
+    require(not missing, "close leaves attributed", "every PRD's close leaf among the outcomes",
+            f"missing {format_ids(missing)}")
+    closes = [by_id[prd.close_leaf] for prd in protocol.prds]
+    met = all(o.status == "cancelled" or o.landed_at is not None for o in closes)
+    all_landed = all(o.landed_at is not None for o in closes)
+    return met, max(o.landed_at for o in closes) if met and all_landed else None
