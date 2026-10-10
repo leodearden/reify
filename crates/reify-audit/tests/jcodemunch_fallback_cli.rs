@@ -37,37 +37,60 @@ use std::process::{Command, Output};
 
 use breadcrumbs::{CONSTRUCTION_HANDSHAKE_REFUSED, CONSTRUCTION_UNREACHABLE};
 use common::findings::parse_findings_from_stderr;
-use common::mcp_mock::{InitializeReply, MockConfig, MockServer, spawn_mock_mcp_configured};
-use serde_json::Value;
+use common::index_fixture;
+use common::mcp_mock::{
+    InitializeReply, MockConfig, MockServer, spawn_mock_mcp, spawn_mock_mcp_configured,
+};
+use serde_json::{Value, json};
 
-/// A tempdir standing in for the project root, holding the run's own
-/// `tasks.json` and `runs.db`, so no run reaches fused-memory or a shared DB.
+/// A tempdir holding the project root and, beside it, the run's own
+/// `tasks.json`, `runs.db` and jcodemunch index directory, so no run reaches
+/// fused-memory, a shared DB or the operator's `~/.code-index`.
 struct Sandbox {
     _tmp: tempfile::TempDir,
     root: PathBuf,
+    index_dir: PathBuf,
     tasks_file: PathBuf,
     runs_db: PathBuf,
 }
 
-fn sandbox(tasks: &[serde_json::Value]) -> Sandbox {
+fn sandbox(tasks: &[Value]) -> Sandbox {
     let tmp = tempfile::tempdir().expect("create tempdir");
-    let root = tmp.path().to_path_buf();
-    let tasks_file = root.join("tasks.json");
-    std::fs::write(
-        &tasks_file,
-        serde_json::to_string_pretty(tasks).expect("serialize tasks.json"),
-    )
-    .expect("write tasks.json");
-    let runs_db = cli_fixture::write_empty_runs_db(&root);
-    Sandbox {
-        _tmp: tmp,
+    let root = tmp.path().join("project");
+    std::fs::create_dir_all(&root).expect("create project root");
+    let index_dir = tmp.path().join("code-index");
+    std::fs::create_dir_all(&index_dir).expect("create index dir");
+    let sandbox = Sandbox {
+        tasks_file: tmp.path().join("tasks.json"),
+        runs_db: cli_fixture::write_empty_runs_db(tmp.path()),
         root,
-        tasks_file,
-        runs_db,
-    }
+        index_dir,
+        _tmp: tmp,
+    };
+    sandbox.write_tasks(tasks);
+    sandbox
 }
 
 impl Sandbox {
+    fn write_tasks(&self, tasks: &[Value]) {
+        let json = serde_json::to_string_pretty(tasks).expect("serialize tasks.json");
+        std::fs::write(&self.tasks_file, json).expect("write tasks.json");
+    }
+
+    /// Make the project root a one-commit git repo (committing `seed.rs`,
+    /// declaring `pub fn seed`) and index it as of `indexed_head`, or as of
+    /// its own HEAD when `None`, i.e. fresh. Returns the live HEAD.
+    fn commit_and_index(&self, indexed_head: Option<&str>) -> String {
+        let live_head = index_fixture::init_git_repo_with_one_commit(&self.root);
+        index_fixture::write_index_db(
+            &self.index_dir,
+            &index_fixture::expected_repo_id(&self.root),
+            Some(indexed_head.unwrap_or(&live_head)),
+            2,
+        );
+        live_head
+    }
+
     /// Invoke the binary with `args` plus this sandbox's substrates.
     fn run(&self, args: &[&str]) -> Output {
         Command::new(env!("CARGO_BIN_EXE_reify-audit"))
@@ -79,6 +102,8 @@ impl Sandbox {
                 self.runs_db.to_str().unwrap(),
                 "--project-root",
                 self.root.to_str().unwrap(),
+                "--jcodemunch-index-dir",
+                self.index_dir.to_str().unwrap(),
             ])
             .output()
             .expect("invoke reify-audit")
@@ -269,4 +294,130 @@ fn no_jcodemunch_records_nothing_unexamined() {
         "a declared scope reduction records no unexamined finding: {:#}",
         Value::Array(findings)
     );
+}
+
+// -----------------------------------------------------------------------
+// P5: only its H2 pass queries jcodemunch
+// -----------------------------------------------------------------------
+
+/// A done/merged task no runs.db event corroborates: P5's provenance pass
+/// reports it High whatever jcodemunch does.
+fn phantom_done_tasks() -> Vec<Value> {
+    vec![task_json::task_fixture(
+        "3242",
+        "done",
+        Some("merged"),
+        Some("deadbeef"),
+    )]
+}
+
+/// The findings array of a run that was not refused: P5's other passes never
+/// depend on jcodemunch, so no seam outcome may cost them the run.
+fn findings_of_an_unrefused_run(out: &Output) -> Vec<Value> {
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_ne!(
+        out.status.code(),
+        Some(125),
+        "the seam outcome must never refuse a run that selects P5; stderr:\n{stderr}"
+    );
+    parse_findings_from_stderr(&stderr)
+}
+
+#[test]
+fn p5_records_h2_unexamined_once_when_the_endpoint_never_answered() {
+    let s = sandbox(&phantom_done_tasks());
+    let url = common::net::unreachable_mcp_url();
+    let out = s.run(&["--pattern", "P5", "--jcodemunch-url", &url]);
+    let findings = findings_of_an_unrefused_run(&out);
+    assert!(
+        findings.iter().any(|f| f["pattern"] == "P5PhantomDone"
+            && f["severity"] == "High"
+            && f["task_id"] == "3242"),
+        "P5's provenance pass must still report the phantom-done task: {:#}",
+        Value::Array(findings.clone())
+    );
+    assert_one_run_level_unexamined(
+        &findings,
+        "P5LivePathUnexamined",
+        &format!("jcodemunch unreachable at '{url}'"),
+    );
+}
+
+/// `--pattern P5` binds the LIVE seam, so H2 actually queries: the mock
+/// answers `get_changed_symbols` with `seed` (committed into the repo, so its
+/// declaration is located) and `find_references` with an empty, SUCCESSFUL
+/// result, so H2 finds no non-test caller and reports `seed` stranded.
+#[test]
+fn p5_runs_h2_against_a_live_seam() {
+    let s = sandbox(&[]);
+    let live_head = s.commit_and_index(None);
+    let mut task = task_json::done_task_fixture("8001", &live_head, 1_700_000_000);
+    task["files"] = json!(["crates/a/src/lib.rs", "crates/b/src/lib.rs"]);
+    s.write_tasks(&[task]);
+    let mock = spawn_mock_mcp(|args| {
+        if args.get("identifier").is_some() {
+            Some(json!({"__rows__": []}))
+        } else {
+            Some(json!({"added_symbols": [{"name": "seed", "file": "seed.rs", "line": 1}]}))
+        }
+    });
+    let url = mock.url().to_string();
+    let out = s.run(&["--pattern", "P5", "--jcodemunch-url", &url]);
+    mock.stop();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+
+    for label in breadcrumbs::CONSTRUCTION {
+        assert!(
+            !stderr.contains(label),
+            "the handshake must have succeeded; stderr:\n{stderr}"
+        );
+    }
+    assert!(
+        !stderr.contains("E_JC_INDEX_"),
+        "the fresh index must have been admitted; stderr:\n{stderr}"
+    );
+    let findings = findings_of_an_unrefused_run(&out);
+    let all = Value::Array(findings.clone());
+    assert!(
+        findings.iter().any(|f| f["pattern"] == "P5LivePathStranded"
+            && f["summary"].as_str().is_some_and(|m| m.contains("`seed`"))),
+        "H2 must have queried the live seam and reported `seed`: {all:#}"
+    );
+    assert!(
+        !findings
+            .iter()
+            .any(|f| f["pattern"] == "P5LivePathUnexamined"),
+        "a live seam records nothing as unexamined: {all:#}"
+    );
+}
+
+/// An unusable index degrades H2 alone: P5's other passes never read it, so a
+/// P5 run is not an all-jcodemunch run set and is never refused for it.
+#[test]
+fn p5_degrades_h2_rather_than_refusing_on_a_stale_index() {
+    let s = sandbox(&phantom_done_tasks());
+    s.commit_and_index(Some("0123456789abcdef0123456789abcdef01234567"));
+    let mock = spawn_mock_mcp(|_args| Some(json!({})));
+    let url = mock.url().to_string();
+    let out = s.run(&["--pattern", "P5", "--jcodemunch-url", &url]);
+    mock.stop();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+
+    assert!(
+        stderr.contains("E_JC_INDEX_STALE"),
+        "the gate must have judged the index stale; stderr:\n{stderr}"
+    );
+    let findings = findings_of_an_unrefused_run(&out);
+    assert_one_run_level_unexamined(&findings, "P5LivePathUnexamined", "E_JC_INDEX_STALE");
+}
+
+#[test]
+fn a_default_sweep_records_p1_and_p5_h2_unexamined_once_each() {
+    let s = sandbox(&p1_eligible_tasks());
+    let url = common::net::unreachable_mcp_url();
+    let out = s.run(&["--jcodemunch-url", &url]);
+    let findings = findings_of_an_unrefused_run(&out);
+    let reason = format!("jcodemunch unreachable at '{url}'");
+    assert_one_run_level_unexamined(&findings, "P1TaskUnexamined", &reason);
+    assert_one_run_level_unexamined(&findings, "P5LivePathUnexamined", &reason);
 }

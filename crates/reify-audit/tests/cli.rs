@@ -1082,6 +1082,7 @@ mod cli {
                 "2026-05-01",
                 "--pattern",
                 "P5",
+                "--no-jcodemunch",
                 "--tasks-file",
                 tasks_file.to_str().unwrap(),
                 "--runs-db",
@@ -2124,41 +2125,6 @@ mod cli {
             Some("crates/reify-cli"),
             "finding evidence[0] must point at from_file; got:\n{:#}",
             f["evidence"]
-        );
-    }
-
-    /// `--pattern P5` with an unreachable jcodemunch URL must NOT exit 125 —
-    /// P5 never contacts jcodemunch.
-    #[test]
-    fn sweep_pattern_p5_skips_jcodemunch() {
-        let tmp = tempfile::tempdir().expect("create tempdir");
-        let dir = tmp.path();
-
-        let tasks = vec![task_fixture("77", "pending", None, None)];
-        let tasks_file = write_tasks_json(dir, &tasks);
-        let runs_db = write_empty_runs_db(dir);
-
-        let unreachable_url = common::net::unreachable_mcp_url();
-
-        let bin = env!("CARGO_BIN_EXE_reify-audit");
-        let out = Command::new(bin)
-            .args([
-                "--pattern", "P5",
-                "--jcodemunch-url", &unreachable_url,
-                "--tasks-file", tasks_file.to_str().unwrap(),
-                "--runs-db", runs_db.to_str().unwrap(),
-                "--project-root", dir.to_str().unwrap(),
-            ])
-            .output()
-            .expect("invoke reify-audit --pattern P5 with closed jcodemunch url");
-
-        assert_ne!(
-            out.status.code(),
-            Some(125),
-            "--pattern P5 must not contact jcodemunch (exit 125 would mean it did); \
-             got {:?}\nstderr: {}",
-            out.status.code(),
-            String::from_utf8_lossy(&out.stderr)
         );
     }
 
@@ -3845,6 +3811,7 @@ mod http_loader {
             .args([
                 "--since", "2026-05-01",
                 "--pattern", "P5",
+                "--no-jcodemunch",
                 "--fused-memory-url", mock.url(),
                 "--runs-db", runs_db.to_str().unwrap(),
                 "--project-root", dir.to_str().unwrap(),
@@ -4497,16 +4464,16 @@ mod freshness_gate {
     }
 
     /// B7 — detectors that never touch jcodemunch must be unaffected by a
-    /// stale index. `needs_jcodemunch` is false for a P2/P5-only run, so no
-    /// client is constructed and the gate is unreachable. A gate that fired
-    /// here would turn every P2/P5 sweep red on any machine with a stale
+    /// stale index. `needs_jcodemunch` is false for a P2/PDSSENTINEL-only run,
+    /// so no client is constructed and the gate is unreachable. A gate that
+    /// fired here would turn every such sweep red on any machine with a stale
     /// corpus it never consults.
     #[test]
     fn b7_non_jcodemunch_patterns_ignore_a_stale_index() {
         let s = scenario();
         write_index_db(&s.index_dir, &s.repo_id, Some(BOGUS_SHA), 12);
 
-        let out = s.run("P2,P5", &[]);
+        let out = s.run("P2,PDSSENTINEL", &[]);
         let stderr = String::from_utf8_lossy(&out.stderr);
 
         assert_eq!(out.status.code(), Some(0), "stderr:\n{stderr}");
@@ -5069,6 +5036,24 @@ mod freshness_gate {
                 .is_some_and(|summary| summary.contains("E_JC_INDEX_STALE")),
             "the record must carry the index refusal; got {:#}",
             p1_unexamined[0]
+        );
+        let h2_unexamined: Vec<&serde_json::Value> = findings
+            .iter()
+            .filter(|f| f["pattern"].as_str() == Some("P5LivePathUnexamined"))
+            .collect();
+        assert_eq!(
+            h2_unexamined.len(),
+            1,
+            "exactly one run-level P5LivePathUnexamined; findings:\n{:#}",
+            serde_json::Value::Array(findings.clone())
+        );
+        assert_eq!(h2_unexamined[0]["task_id"].as_str(), Some(""));
+        assert!(
+            h2_unexamined[0]["summary"]
+                .as_str()
+                .is_some_and(|summary| summary.contains("E_JC_INDEX_STALE")),
+            "the record must carry the index refusal; got {:#}",
+            h2_unexamined[0]
         );
     }
 

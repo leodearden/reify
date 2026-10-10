@@ -1464,8 +1464,8 @@ mod tests {
         assert!(needs_jcodemunch(&make_args(false, Some("P1"))));
         // P2-only → false
         assert!(!needs_jcodemunch(&make_args(false, Some("P2"))));
-        // P5-only → false
-        assert!(!needs_jcodemunch(&make_args(false, Some("P5"))));
+        // P5-only → true (its H2 pass queries jcodemunch)
+        assert!(needs_jcodemunch(&make_args(false, Some("P5"))));
         // PDEAD explicitly → true (needs live jcodemunch server)
         assert!(needs_jcodemunch(&make_args(false, Some("PDEAD"))));
     }
@@ -1715,8 +1715,12 @@ mod tests {
     #[test]
     fn needs_jcodemunch_comma_pattern_routing() {
         assert!(
-            !needs_jcodemunch(&make_args(false, Some("P2,P5"))),
-            "P2,P5 must not need jcodemunch"
+            needs_jcodemunch(&make_args(false, Some("P2,P5"))),
+            "P2,P5 must need jcodemunch (P5's H2 pass queries it)"
+        );
+        assert!(
+            !needs_jcodemunch(&make_args(false, Some("P2,PDSSENTINEL"))),
+            "P2,PDSSENTINEL must not need jcodemunch"
         );
         assert!(
             needs_jcodemunch(&make_args(false, Some("P2,P1"))),
@@ -1730,6 +1734,25 @@ mod tests {
             needs_jcodemunch(&make_args(false, Some("P2,PUNTESTED"))),
             "P2,PUNTESTED must need jcodemunch (PUNTESTED present)"
         );
+    }
+
+    /// Only a run set in which every detector REQUIRES jcodemunch refuses an
+    /// unusable index. P5 queries it in one pass only, so a run including P5
+    /// always has passes to salvage.
+    #[test]
+    fn jcodemunch_only_run_set_excludes_a_partial_user() {
+        for pattern in ["P1", "P1,PDEAD"] {
+            assert!(
+                jcodemunch_only_run_set(&make_args(false, Some(pattern))),
+                "{pattern} is all-jcodemunch"
+            );
+        }
+        for pattern in ["P5", "P1,P5"] {
+            assert!(
+                !jcodemunch_only_run_set(&make_args(false, Some(pattern))),
+                "{pattern} includes P5, whose other passes never read the index"
+            );
+        }
     }
 
     /// The opt-in detectors PDEAD/PUNTESTED must be enabled when their token
