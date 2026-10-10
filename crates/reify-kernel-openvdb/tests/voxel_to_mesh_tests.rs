@@ -377,7 +377,10 @@ fn export_stl_of_voxel_grid_matches_its_tessellation() {
         .expect("STL export of a voxel grid must succeed");
 
     let exported_triangles = binary_stl_aabb(&stl).triangles;
-    assert!(exported_triangles > 0, "the cube grid's STL must not be empty");
+    assert!(
+        exported_triangles > 0,
+        "the cube grid's STL must not be empty"
+    );
     assert_eq!(
         exported_triangles, tessellated_triangles,
         "the STL must carry exactly the kernel's own tessellation of the grid",
