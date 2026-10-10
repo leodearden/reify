@@ -3,3 +3,4 @@
 //! on that feature.
 
 mod fixture;
+mod manifest;
