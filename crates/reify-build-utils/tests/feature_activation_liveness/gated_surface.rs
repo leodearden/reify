@@ -7,6 +7,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use syn::ext::IdentExt;
+use syn::parse::ParseStream;
 use syn::punctuated::Punctuated;
 use syn::spanned::Spanned;
 use syn::{
@@ -101,6 +102,7 @@ struct SurfaceEntry {
     name: Option<String>,
     own_gate: bool,
     inherited_gate: bool,
+    cfg_attr_gate: bool,
     public: bool,
     file: PathBuf,
     line: usize,
@@ -152,6 +154,17 @@ struct Facts<'a> {
     name: Option<String>,
     attrs: &'a [Attribute],
     public: bool,
+}
+
+impl<'a> Facts<'a> {
+    fn unnamed(kind: EntryKind, attrs: &'a [Attribute]) -> Self {
+        Facts {
+            kind,
+            name: None,
+            attrs,
+            public: false,
+        }
+    }
 }
 
 struct Walker<'f> {
@@ -298,6 +311,7 @@ impl Walker<'_> {
             name: facts.name,
             own_gate: self.gates(facts.attrs),
             inherited_gate: parent_gated,
+            cfg_attr_gate: self.cfg_attr_gates(facts.attrs),
             public: facts.public,
             file: file.to_path_buf(),
             line: line_of(node),
@@ -312,6 +326,14 @@ impl Walker<'_> {
             .iter()
             .filter(|attr| attr.path().is_ident("cfg"))
             .filter_map(|attr| attr.parse_args::<Meta>().ok())
+            .any(|predicate| positively_mentions(&predicate, self.feature))
+    }
+
+    fn cfg_attr_gates(&self, attrs: &[Attribute]) -> bool {
+        attrs
+            .iter()
+            .filter(|attr| attr.path().is_ident("cfg_attr"))
+            .filter_map(|attr| attr.parse_args_with(cfg_attr_predicate).ok())
             .any(|predicate| positively_mentions(&predicate, self.feature))
     }
 }
@@ -344,6 +366,13 @@ fn mentions_with_polarity(meta: &Meta, feature: &str, positive: bool) -> bool {
         }
         Meta::Path(_) => false,
     }
+}
+
+/// The predicate of `cfg_attr(predicate, attrs...)`; the attributes stay unparsed.
+fn cfg_attr_predicate(input: ParseStream) -> syn::Result<Meta> {
+    let predicate = input.parse()?;
+    input.parse::<proc_macro2::TokenStream>()?;
+    Ok(predicate)
 }
 
 fn is_str_literal(expr: &Expr, expected: &str) -> bool {
@@ -404,12 +433,6 @@ fn item_facts(item: &Item) -> Facts<'_> {
         attrs,
         public: is_public(vis),
     };
-    let unnamed = |kind, attrs| Facts {
-        kind,
-        name: None,
-        attrs,
-        public: false,
-    };
     match item {
         Item::Const(i) => named(EntryKind::NamedItem, &i.ident, &i.attrs, &i.vis),
         Item::Enum(i) => named(EntryKind::TypeItem, &i.ident, &i.attrs, &i.vis),
@@ -423,7 +446,7 @@ fn item_facts(item: &Item) -> Facts<'_> {
                 trait_impl: i.trait_.is_some(),
                 self_ty: self_type_name(&i.self_ty),
             };
-            unnamed(kind, &i.attrs)
+            Facts::unnamed(kind, &i.attrs)
         }
         Item::Macro(i) => match &i.ident {
             Some(ident) => Facts {
@@ -432,7 +455,7 @@ fn item_facts(item: &Item) -> Facts<'_> {
                 attrs: &i.attrs,
                 public: false,
             },
-            None => unnamed(EntryKind::MacroInvocation, &i.attrs),
+            None => Facts::unnamed(EntryKind::MacroInvocation, &i.attrs),
         },
         Item::Mod(i) => named(EntryKind::NamedItem, &i.ident, &i.attrs, &i.vis),
         Item::Static(i) => named(EntryKind::NamedItem, &i.ident, &i.attrs, &i.vis),
@@ -450,47 +473,47 @@ fn item_facts(item: &Item) -> Facts<'_> {
             };
             Facts {
                 public: is_public(&i.vis),
-                ..unnamed(kind, &i.attrs)
+                ..Facts::unnamed(kind, &i.attrs)
             }
         }
-        Item::ForeignMod(i) => unnamed(EntryKind::Other, &i.attrs),
-        _ => unnamed(EntryKind::Other, &[]),
+        Item::ForeignMod(i) => Facts::unnamed(EntryKind::Other, &i.attrs),
+        _ => Facts::unnamed(EntryKind::Other, &[]),
     }
 }
 
 /// Trait items carry no visibility of their own: they are public with the trait.
 fn trait_item_facts(item: &TraitItem, trait_public: bool) -> Facts<'_> {
-    let (name, attrs) = match item {
-        TraitItem::Const(i) => (unraw(&i.ident), &i.attrs[..]),
-        TraitItem::Fn(i) => (unraw(&i.sig.ident), &i.attrs[..]),
-        TraitItem::Type(i) => (unraw(&i.ident), &i.attrs[..]),
-        TraitItem::Macro(i) => (None, &i.attrs[..]),
-        _ => (None, &[][..]),
+    let (ident, attrs) = match item {
+        TraitItem::Const(i) => (&i.ident, &i.attrs),
+        TraitItem::Fn(i) => (&i.sig.ident, &i.attrs),
+        TraitItem::Type(i) => (&i.ident, &i.attrs),
+        TraitItem::Macro(i) => return Facts::unnamed(EntryKind::MacroInvocation, &i.attrs),
+        _ => return Facts::unnamed(EntryKind::Other, &[]),
     };
     Facts {
         kind: EntryKind::TraitItem,
-        name,
+        name: unraw(ident),
         attrs,
         public: trait_public,
     }
 }
 
 fn impl_item_facts(item: &ImplItem, in_trait_impl: bool, self_ty: Option<String>) -> Facts<'_> {
-    let (name, attrs, public) = match item {
-        ImplItem::Const(i) => (unraw(&i.ident), &i.attrs[..], is_public(&i.vis)),
-        ImplItem::Fn(i) => (unraw(&i.sig.ident), &i.attrs[..], is_public(&i.vis)),
-        ImplItem::Type(i) => (unraw(&i.ident), &i.attrs[..], is_public(&i.vis)),
-        ImplItem::Macro(i) => (None, &i.attrs[..], false),
-        _ => (None, &[][..], false),
+    let (ident, attrs, vis) = match item {
+        ImplItem::Const(i) => (&i.ident, &i.attrs, &i.vis),
+        ImplItem::Fn(i) => (&i.sig.ident, &i.attrs, &i.vis),
+        ImplItem::Type(i) => (&i.ident, &i.attrs, &i.vis),
+        ImplItem::Macro(i) => return Facts::unnamed(EntryKind::MacroInvocation, &i.attrs),
+        _ => return Facts::unnamed(EntryKind::Other, &[]),
     };
     Facts {
         kind: EntryKind::ImplItem {
             in_trait_impl,
             self_ty,
         },
-        name,
+        name: unraw(ident),
         attrs,
-        public,
+        public: is_public(vis),
     }
 }
 
@@ -540,12 +563,25 @@ fn classify(entries: &[SurfaceEntry]) -> GatedSurface {
         .filter(|entry| matches!(entry.kind, EntryKind::TypeItem) && entry.gated())
         .filter_map(|entry| entry.name.as_deref())
         .collect();
+    let gated_types = &gated_types;
     GatedSurface {
         evidence: entries
             .iter()
-            .flat_map(|entry| evidence_names(entry, &gated_types))
+            .flat_map(|entry| evidence_names(entry, gated_types))
             .collect(),
-        violations: Vec::new(),
+        violations: entries
+            .iter()
+            .flat_map(|entry| {
+                SHAPE_RULES
+                    .iter()
+                    .filter_map(move |rule| rule(entry, gated_types))
+                    .map(move |shape| ShapeViolation {
+                        file: entry.file.clone(),
+                        line: entry.line,
+                        shape,
+                    })
+            })
+            .collect(),
     }
 }
 
@@ -569,6 +605,68 @@ fn evidence_names(entry: &SurfaceEntry, gated_types: &BTreeSet<&str>) -> Vec<Str
         _ if entry.public => name(),
         _ => Vec::new(),
     }
+}
+
+/// One admissibility rule: the shape by which a position exposes gated
+/// surface that a consumer can reach without naming an evidence item.
+type ShapeRule = fn(&SurfaceEntry, &BTreeSet<&str>) -> Option<Shape>;
+
+const SHAPE_RULES: [ShapeRule; 5] = [
+    cfg_attr_shape,
+    trait_impl_for_ungated_self,
+    gated_item_in_ungated_trait_impl,
+    glob_reexport,
+    item_macro_invocation,
+];
+
+/// Reported as the Self of a trait impl whose Self type is not a path.
+const NON_PATH_SELF_TYPE: &str = "<non-path type>";
+
+fn cfg_attr_shape(entry: &SurfaceEntry, _: &BTreeSet<&str>) -> Option<Shape> {
+    entry.cfg_attr_gate.then_some(Shape::CfgAttr)
+}
+
+fn trait_impl_for_ungated_self(
+    entry: &SurfaceEntry,
+    gated_types: &BTreeSet<&str>,
+) -> Option<Shape> {
+    let EntryKind::Impl {
+        trait_impl: true,
+        self_ty,
+    } = &entry.kind
+    else {
+        return None;
+    };
+    let self_is_gated = self_ty
+        .as_deref()
+        .is_some_and(|ty| gated_types.contains(ty));
+    (entry.gated() && !self_is_gated).then(|| Shape::TraitImplForUngatedSelf {
+        self_ty: self_ty.as_deref().unwrap_or(NON_PATH_SELF_TYPE).to_string(),
+    })
+}
+
+fn gated_item_in_ungated_trait_impl(entry: &SurfaceEntry, _: &BTreeSet<&str>) -> Option<Shape> {
+    let EntryKind::ImplItem {
+        in_trait_impl: true,
+        ..
+    } = &entry.kind
+    else {
+        return None;
+    };
+    let item = entry.name.clone()?;
+    (entry.own_gate && !entry.inherited_gate).then_some(Shape::GatedItemInUngatedTraitImpl { item })
+}
+
+fn glob_reexport(entry: &SurfaceEntry, _: &BTreeSet<&str>) -> Option<Shape> {
+    let EntryKind::Use { glob: true, .. } = &entry.kind else {
+        return None;
+    };
+    (entry.gated() && entry.public).then_some(Shape::GlobReexport)
+}
+
+fn item_macro_invocation(entry: &SurfaceEntry, _: &BTreeSet<&str>) -> Option<Shape> {
+    (matches!(entry.kind, EntryKind::MacroInvocation) && entry.gated())
+        .then_some(Shape::ItemMacroInvocation)
 }
 
 #[cfg(test)]
