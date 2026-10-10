@@ -783,7 +783,7 @@ mod tests {
     fn prd5_spec_constructors_read_dimensions_from_the_core_registry() {
         use reify_core::DimensionVector as DV;
 
-        let cases: [(&str, ArgSpec, DV); 11] = [
+        let cases: [(&str, ArgSpec, DV); 13] = [
             ("pressure_spec", pressure_spec(), DV::PRESSURE),
             ("force_spec", force_spec(), DV::FORCE),
             ("mass_spec", mass_spec(), DV::MASS),
@@ -806,6 +806,16 @@ mod tests {
                 "rotational_stiffness_spec",
                 rotational_stiffness_spec(),
                 DV::ROTATIONAL_STIFFNESS,
+            ),
+            (
+                "translational_damping_spec",
+                translational_damping_spec(),
+                DV::TRANSLATIONAL_DAMPING,
+            ),
+            (
+                "rotational_damping_spec",
+                rotational_damping_spec(),
+                DV::ROTATIONAL_DAMPING,
             ),
         ];
 
@@ -913,6 +923,128 @@ mod tests {
             ),
             "a ROTATIONAL_STIFFNESS Scalar must be Rejected at a \
              translational_stiffness_spec position"
+        );
+    }
+
+    /// The damping pair mirrors the stiffness pair: a joint's `damping` is
+    /// routed BY JOINT KIND, so the two specs must stay distinct and named.
+    #[test]
+    fn translational_and_rotational_damping_specs_are_distinct() {
+        let translational = translational_damping_spec();
+        let rotational = rotational_damping_spec();
+        assert!(!translational.type_name.is_empty());
+        assert!(!rotational.type_name.is_empty());
+        assert_ne!(translational.type_name, rotational.type_name);
+        assert_ne!(
+            translational.dimension, rotational.dimension,
+            "a revolute damping must never be accepted at a prismatic reader"
+        );
+    }
+
+    // ── accept_arg_or_bare: the transitional bare-tolerant sibling ─────────────
+
+    #[test]
+    fn accept_arg_or_bare_accepts_bare_and_the_spec_dimension_only() {
+        use crate::value::Value;
+        use reify_core::DimensionVector as DV;
+
+        let force = force_spec();
+        assert_eq!(
+            accept_arg_or_bare(&Value::Real(1000.0), &force),
+            Acceptance::Accepted(1000.0)
+        );
+        assert_eq!(
+            accept_arg_or_bare(&Value::Int(5), &force),
+            Acceptance::Accepted(5.0)
+        );
+        assert_eq!(
+            accept_arg_or_bare(
+                &Value::Scalar {
+                    si_value: 1000.0,
+                    dimension: DV::FORCE,
+                },
+                &force
+            ),
+            Acceptance::Accepted(1000.0)
+        );
+        assert_eq!(
+            accept_arg_or_bare(&Value::Undef, &force),
+            Acceptance::Undefined
+        );
+
+        let Acceptance::Rejected(rej) = accept_arg_or_bare(
+            &Value::Scalar {
+                si_value: 2.0,
+                dimension: DV::LENGTH,
+            },
+            &force,
+        ) else {
+            unreachable!("a LENGTH Scalar at a force position must be Rejected");
+        };
+        assert_eq!(rej.got, "Length Scalar");
+        assert_eq!(rej.expected, "Force");
+
+        assert!(
+            matches!(
+                accept_arg_or_bare(
+                    &Value::Scalar {
+                        si_value: 1.0,
+                        dimension: DV::DIMENSIONLESS,
+                    },
+                    &force
+                ),
+                Acceptance::Rejected(_)
+            ),
+            "\"bare\" means literally Real/Int; a DIMENSIONLESS Scalar is a \
+             dimension, and the wrong one"
+        );
+        assert!(matches!(
+            accept_arg_or_bare(&Value::Bool(true), &force),
+            Acceptance::Rejected(_)
+        ));
+
+        assert!(
+            matches!(
+                accept_arg(&Value::Real(1000.0), &force),
+                Acceptance::Rejected(_)
+            ),
+            "amendment A1: accept_arg itself must still reject a bare Real at \
+             a dimensioned spec"
+        );
+    }
+
+    // ── FieldRejection / ArgRejection::to_error: the one Error rendering ───────
+
+    #[test]
+    fn rejections_render_as_one_coded_error_diagnostic() {
+        use crate::value::Value;
+        use reify_core::{DiagnosticCode, Severity};
+
+        let Acceptance::Rejected(rejection) = accept_arg(&Value::Real(0.4), &length_spec())
+        else {
+            unreachable!("a bare Real at a LENGTH position must be Rejected");
+        };
+        let expected_message = rejection.message("as_printed_material", "AsPrintedOptions.line_width");
+
+        let arg_error = rejection.to_error("as_printed_material", "AsPrintedOptions.line_width");
+        assert_eq!(arg_error.severity, Severity::Error);
+        assert_eq!(arg_error.code, Some(DiagnosticCode::DimensionedArgRejected));
+        assert_eq!(arg_error.message, expected_message);
+
+        let field = FieldRejection {
+            path: "AsPrintedOptions.line_width".to_string(),
+            rejection,
+        };
+        let field_error = field.to_error("as_printed_material");
+        assert_eq!(field_error.severity, Severity::Error);
+        assert_eq!(field_error.code, Some(DiagnosticCode::DimensionedArgRejected));
+        assert_eq!(field_error.message, expected_message);
+        assert!(
+            field_error.message.starts_with(
+                "as_printed_material: AsPrintedOptions.line_width argument expects Length, got Real"
+            ),
+            "got {:?}",
+            field_error.message
         );
     }
 
