@@ -58,6 +58,38 @@ pub enum ActivationSite {
     },
 }
 
+impl fmt::Display for DepTable {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let table = DEPENDENCY_TABLE_NAMES
+            .iter()
+            .find_map(|(name, kind)| (*kind == self.kind).then_some(*name))
+            .unwrap_or_default();
+        match &self.target {
+            Some(cfg) => write!(f, "target.'{cfg}'.{table}"),
+            None => f.write_str(table),
+        }
+    }
+}
+
+impl fmt::Display for ActivationSite {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Dependency {
+                table,
+                key,
+                inherited_from_workspace,
+            } => {
+                write!(f, "[{table}] {key}")?;
+                if *inherited_from_workspace {
+                    f.write_str(" (feature set in [workspace.dependencies])")?;
+                }
+                Ok(())
+            }
+            Self::FeatureTable { feature } => write!(f, "[features] {feature}"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Activation {
     pub consumer: String,

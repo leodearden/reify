@@ -1,6 +1,232 @@
 //! The gate: judge every registered (provider, feature) pair against the
 //! workspace's activations of it.
 
+use std::collections::{BTreeMap, BTreeSet};
+use std::fmt;
+use std::path::Path;
+
+use crate::gated_surface::{GatedSurface, ScanError, ShapeViolation};
+use crate::manifest::{Activation, ManifestError, Member, Workspace};
+use crate::usage::{UsageError, first_use};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RegisteredPair {
+    pub provider: &'static str,
+    pub feature: &'static str,
+}
+
+impl fmt::Display for RegisteredPair {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}/{}", self.provider, self.feature)
+    }
+}
+
+/// A registry row that would make the gate vacuous for its pair.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RegistryDefect {
+    ProviderNotMember,
+    FeatureNotDeclared,
+    FeatureEnabledByDefault,
+    NoGatedSurface,
+    NoActivations,
+}
+
+#[derive(Debug, PartialEq)]
+pub enum Finding {
+    DeadActivation {
+        pair: RegisteredPair,
+        activation: Activation,
+    },
+    InadmissibleShape {
+        pair: RegisteredPair,
+        violation: ShapeViolation,
+    },
+    RegistryDefect {
+        pair: RegisteredPair,
+        defect: RegistryDefect,
+    },
+}
+
+impl fmt::Display for Finding {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::DeadActivation { pair, activation } => write!(
+                f,
+                "dead feature activation: {} activates {pair} at {} {} but names none of the \
+                 items {} gates on `{}`; drop the activation or use a gated item",
+                activation.consumer,
+                activation.manifest.display(),
+                activation.site,
+                pair.provider,
+                pair.feature,
+            ),
+            Self::InadmissibleShape { pair, violation } => write!(
+                f,
+                "inadmissible gate shape: {}:{}: {} exposes {pair} surface through {} without \
+                 naming a gated item, so liveness cannot be judged by name; gate a named item \
+                 instead, or drop the pair from REGISTRY",
+                violation.file.display(),
+                violation.line,
+                pair.provider,
+                violation.shape,
+            ),
+            Self::RegistryDefect { pair, defect } => {
+                write!(f, "registry defect for {pair}: ")?;
+                describe_defect(f, *pair, *defect)?;
+                f.write_str("; fix the REGISTRY row so the gate is not vacuous for it")
+            }
+        }
+    }
+}
+
+fn describe_defect(
+    f: &mut fmt::Formatter<'_>,
+    pair: RegisteredPair,
+    defect: RegistryDefect,
+) -> fmt::Result {
+    let RegisteredPair { provider, feature } = pair;
+    match defect {
+        RegistryDefect::ProviderNotMember => write!(f, "{provider} is not a workspace member"),
+        RegistryDefect::FeatureNotDeclared => {
+            write!(f, "{provider} declares no feature `{feature}`")
+        }
+        RegistryDefect::FeatureEnabledByDefault => write!(
+            f,
+            "`{feature}` is a default feature of {provider}, so every dependent turns it on"
+        ),
+        RegistryDefect::NoGatedSurface => {
+            write!(f, "{provider} gates no public item on `{feature}`")
+        }
+        RegistryDefect::NoActivations => write!(f, "no workspace member activates {pair}"),
+    }
+}
+
+#[derive(Debug)]
+pub enum CheckError {
+    Manifest(ManifestError),
+    Scan(ScanError),
+    Usage(UsageError),
+}
+
+impl fmt::Display for CheckError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Manifest(e) => e.fmt(f),
+            Self::Scan(e) => e.fmt(f),
+            Self::Usage(e) => e.fmt(f),
+        }
+    }
+}
+
+impl From<ManifestError> for CheckError {
+    fn from(e: ManifestError) -> Self {
+        Self::Manifest(e)
+    }
+}
+
+impl From<ScanError> for CheckError {
+    fn from(e: ScanError) -> Self {
+        Self::Scan(e)
+    }
+}
+
+impl From<UsageError> for CheckError {
+    fn from(e: UsageError) -> Self {
+        Self::Usage(e)
+    }
+}
+
+pub fn check(root: &Path, registry: &[RegisteredPair]) -> Result<Vec<Finding>, CheckError> {
+    let workspace = Workspace::load(root)?;
+    let mut findings = Vec::new();
+    for &pair in registry {
+        findings.extend(judge(&workspace, pair)?);
+    }
+    Ok(findings)
+}
+
+/// Registry defects first, then shape violations, then dead activations.
+fn judge(workspace: &Workspace, pair: RegisteredPair) -> Result<Vec<Finding>, CheckError> {
+    let defect = |defect| Finding::RegistryDefect { pair, defect };
+    let Some(provider) = workspace.member(pair.provider) else {
+        return Ok(vec![defect(RegistryDefect::ProviderNotMember)]);
+    };
+    if !provider.declared_features.contains(pair.feature) {
+        return Ok(vec![defect(RegistryDefect::FeatureNotDeclared)]);
+    }
+    let surface = GatedSurface::scan(&provider.lib_root, pair.feature)?;
+    let activations = workspace.activations(pair.provider, pair.feature);
+    let defects = [
+        (
+            provider.default_features.contains(pair.feature),
+            RegistryDefect::FeatureEnabledByDefault,
+        ),
+        (surface.evidence.is_empty(), RegistryDefect::NoGatedSurface),
+        (activations.is_empty(), RegistryDefect::NoActivations),
+    ];
+    let mut findings: Vec<Finding> = defects
+        .into_iter()
+        .filter_map(|(present, kind)| present.then(|| defect(kind)))
+        .collect();
+    findings.extend(
+        surface
+            .violations
+            .into_iter()
+            .map(|violation| Finding::InadmissibleShape { pair, violation }),
+    );
+    if !surface.evidence.is_empty() {
+        findings.extend(dead_activations(
+            provider,
+            pair,
+            &surface.evidence,
+            activations,
+        )?);
+    }
+    Ok(findings)
+}
+
+/// Each consumer is scanned once per pair, however many sites activate it.
+fn dead_activations(
+    provider: &Member,
+    pair: RegisteredPair,
+    evidence: &BTreeSet<String>,
+    activations: Vec<Activation>,
+) -> Result<Vec<Finding>, CheckError> {
+    let mut liveness: BTreeMap<String, bool> = BTreeMap::new();
+    let mut findings = Vec::new();
+    for activation in activations {
+        let live = match liveness.get(&activation.consumer) {
+            Some(&live) => live,
+            None => {
+                let live = names_evidence(provider, &activation, evidence)?;
+                liveness.insert(activation.consumer.clone(), live);
+                live
+            }
+        };
+        if !live {
+            findings.push(Finding::DeadActivation { pair, activation });
+        }
+    }
+    Ok(findings)
+}
+
+/// The consumer's package dir is its manifest's dir. A provider activating
+/// itself is judged without its own lib source, where every mention is a
+/// definition or sits under cfg(test).
+fn names_evidence(
+    provider: &Member,
+    activation: &Activation,
+    evidence: &BTreeSet<String>,
+) -> Result<bool, CheckError> {
+    let package_dir = activation.manifest.parent().unwrap_or(Path::new(""));
+    let exclude = if activation.consumer == provider.name {
+        provider.lib_root.parent()
+    } else {
+        None
+    };
+    Ok(first_use(package_dir, exclude, evidence)?.is_some())
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::Path;

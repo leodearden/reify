@@ -77,6 +77,22 @@ pub enum Shape {
     ItemMacroInvocation,
 }
 
+impl fmt::Display for Shape {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::CfgAttr => f.write_str("a cfg_attr keyed on the feature"),
+            Self::TraitImplForUngatedSelf { self_ty } => {
+                write!(f, "a trait impl for the ungated type `{self_ty}`")
+            }
+            Self::GatedItemInUngatedTraitImpl { item } => {
+                write!(f, "the item `{item}` inside an ungated trait impl")
+            }
+            Self::GlobReexport => f.write_str("a glob re-export"),
+            Self::ItemMacroInvocation => f.write_str("an item-position macro invocation"),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct GatedSurface {
     pub evidence: BTreeSet<String>,
