@@ -3391,12 +3391,13 @@ fn extract_eigen_knobs(val: &Value) -> (usize, f64, usize, f64) {
 }
 
 /// The author's `ModalOptions.shift_frequency` in Hz — the SINGLE reader of that
-/// field. Only a finite `Scalar<Frequency>` is accepted; anything else (missing
-/// field, non-StructureInstance, a bare `Real`/`Int`, a dimensionless or
-/// angular-velocity `Scalar`, a non-finite value) is the `0.0` default. A bare
-/// number or a rad/s value is not Hz, so reading one would be a silent 2π / 4π²
-/// error that returns a plausible spectrum from the wrong band; the ctor gate
-/// already rejects those shapes at compile time.
+/// field. Only a `Scalar<Frequency>` whose λ = (2π·f)² is finite is accepted;
+/// anything else (missing field, non-StructureInstance, a bare `Real`/`Int`, a
+/// dimensionless or angular-velocity `Scalar`, a non-finite f, or a finite f
+/// whose square overflows) is the `0.0` default, so every σ this yields is
+/// finite. A bare number or a rad/s value is not Hz, so reading one would be a
+/// silent 2π / 4π² error that returns a plausible spectrum from the wrong band;
+/// the ctor gate already rejects those shapes at compile time.
 fn extract_shift_frequency_hz(options: &Value) -> f64 {
     let Value::StructureInstance(data) = options else {
         return 0.0;
@@ -3405,7 +3406,11 @@ fn extract_shift_frequency_hz(options: &Value) -> f64 {
         Some(Value::Scalar {
             si_value,
             dimension,
-        }) if *dimension == DimensionVector::FREQUENCY && si_value.is_finite() => *si_value,
+        }) if *dimension == DimensionVector::FREQUENCY
+            && frequency_hz_to_eigenvalue(*si_value).is_finite() =>
+        {
+            *si_value
+        }
         _ => 0.0,
     }
 }
@@ -7200,7 +7205,14 @@ mod tests {
             ),
             ("Real", "shift_frequency", Some(Value::Real(2.5)), 0.0),
             ("Int", "shift_frequency", Some(Value::Int(2)), 0.0),
-            // The finite guard: an infinite or NaN σ would poison `K − σM`.
+            // The finite guard: σ must be finite or it poisons `K − σM`, whether
+            // f itself is non-finite or a finite f's square overflows.
+            (
+                "Scalar<frequency>(1e200), λ overflows",
+                "shift_frequency",
+                Some(frequency_scalar(1e200)),
+                0.0,
+            ),
             (
                 "Scalar<frequency>(inf)",
                 "shift_frequency",
