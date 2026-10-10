@@ -379,6 +379,28 @@ fn annotated_return_contradicted_by_generic_passthrough_body_warns() {
     }
 }
 
+/// The annotated arm shares the exactness gate: arithmetic on a type param keeps
+/// the param's static type whatever the real result (`a / b` is dimensionless,
+/// so `-> Real` is correct; `x * x` is T²), so an annotation is not judged
+/// against it either. Covers a type param and a dimension param.
+#[test]
+fn annotated_return_with_generic_arithmetic_placeholder_body_is_silent() {
+    for source in [
+        "fn sq<T>(x: T) -> Real { x * x }\n",
+        "fn ratio<T>(a: T, b: T) -> Real { a / b }\n",
+        "fn ratio_q<Q: Dimension>(a: Scalar<Q>, b: Scalar<Q>) -> Real { a / b }\n",
+    ] {
+        let module = compile_source(source);
+
+        assert_no_errors(&module);
+        assert!(
+            with_code(&module, DiagnosticCode::FnReturnTypeMismatch).is_empty(),
+            "expected no FnReturnTypeMismatch for {source:?}, got: {:?}",
+            module.diagnostics
+        );
+    }
+}
+
 /// Agreeing bodies stay silent, including `Int` widening to `Real` and generic
 /// declared types outside the `Int | Scalar` reconciliation scope.
 #[test]
