@@ -616,5 +616,84 @@ class AttributionTests(unittest.TestCase):
         self.assertIn("/elsewhere", str(violation))
 
 
+RUN_END = datetime(2026, 9, 10, 12, 0, tzinfo=UTC)
+
+
+def attempt(task_id=1101, started_at=None, ended_at=None, outcome=None,
+            run_ended_at=RUN_END, run_id="r1"):
+    return e3_sources.Attempt(
+        task_id=task_id, run_id=run_id,
+        started_at=started_at or RUN_END - timedelta(hours=6),
+        ended_at=ended_at, outcome=outcome, run_ended_at=run_ended_at)
+
+
+class CensoringTests(unittest.TestCase):
+    def setUp(self):
+        self.protocol = fx.mini_protocol()
+        self.arm_tasks = e3_model.attribute(fx.task_snapshot(self.protocol), self.protocol)
+
+    def _classify(self, **fields):
+        return e3_model.classify_attempt(attempt(**fields), self.protocol)
+
+    def test_cancelled_at_the_run_boundary_is_drain_censored(self):
+        self.assertIs(
+            self._classify(ended_at=RUN_END - timedelta(seconds=40), outcome="cancelled"),
+            e3_model.AttemptClass.DRAIN_CENSORED)
+
+    def test_cancelled_far_from_the_run_end_is_rework(self):
+        self.assertIs(
+            self._classify(ended_at=RUN_END - timedelta(hours=2), outcome="cancelled"),
+            e3_model.AttemptClass.COUNTED)
+
+    def test_drain_window_is_inclusive(self):
+        window = self.protocol.drain_window
+        self.assertIs(self._classify(ended_at=RUN_END - window, outcome="cancelled"),
+                      e3_model.AttemptClass.DRAIN_CENSORED)
+        self.assertIs(
+            self._classify(ended_at=RUN_END - window - timedelta(seconds=1), outcome="cancelled"),
+            e3_model.AttemptClass.COUNTED)
+
+    def test_unfinished_attempt_in_an_ended_run_is_drain_censored(self):
+        self.assertIs(self._classify(ended_at=None), e3_model.AttemptClass.DRAIN_CENSORED)
+
+    def test_unfinished_attempt_in_a_live_run_is_in_flight(self):
+        self.assertIs(self._classify(ended_at=None, run_ended_at=None),
+                      e3_model.AttemptClass.IN_FLIGHT)
+
+    def test_other_outcomes_always_count(self):
+        for outcome in ("done", "requeued", "blocked", "escalated"):
+            for distance in (timedelta(seconds=10), timedelta(hours=3)):
+                self.assertIs(
+                    self._classify(ended_at=RUN_END - distance, outcome=outcome),
+                    e3_model.AttemptClass.COUNTED, (outcome, distance))
+
+    def _freeze(self, attempts):
+        return e3_model.freeze_window_set(self.arm_tasks, attempts, self.protocol)
+
+    def test_freeze_window_set_matches_expected(self):
+        before = fx.MINI_FREEZE_CUTOFF - timedelta(minutes=10)
+        attempts = [
+            attempt(task_id=1101, started_at=before),
+            attempt(task_id=1101, started_at=fx.MINI_FREEZE_CUTOFF + timedelta(days=2)),
+            attempt(task_id=1102, started_at=fx.MINI_FREEZE_CUTOFF),
+            attempt(task_id=150, started_at=before),
+            attempt(task_id=fx.MINI_RETIRED, started_at=before),
+        ]
+        self.assertEqual(self._freeze(attempts), {1101})
+
+    def test_freeze_window_drift_raises_with_both_sets(self):
+        before = fx.MINI_FREEZE_CUTOFF - timedelta(minutes=10)
+        with self.assertRaises(ProtocolViolation) as caught:
+            self._freeze([attempt(task_id=1101, started_at=before),
+                          attempt(task_id=202, started_at=before)])
+        self.assertEqual(caught.exception.invariant, "freeze-window set")
+        self.assertIn("{1101}", str(caught.exception))
+        self.assertIn("{202, 1101}", str(caught.exception))
+        with self.assertRaises(ProtocolViolation) as caught:
+            self._freeze([])
+        self.assertEqual(caught.exception.invariant, "freeze-window set")
+        self.assertIn("{}", str(caught.exception))
+
+
 if __name__ == "__main__":
     unittest.main()
