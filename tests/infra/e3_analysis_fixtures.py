@@ -195,7 +195,8 @@ def snapshot_payload(protocol, overrides=None):
 
 def done_override(commit):
     """The override that marks a task done by merge of commit."""
-    return {"status": "done", "metadata": {"done_provenance": {"kind": "merged", "commit": commit}}}
+    provenance = {"kind": "merged", "commit": commit}
+    return {"status": "done", "metadata": {"done_provenance": provenance}}
 
 
 RUNS_DB_SCHEMA = """
@@ -241,7 +242,8 @@ def make_runs_db(path, runs, events, invocations):
               iso(r["completed_at"]) if r.get("completed_at") else None) for r in runs],
         )
         connection.executemany(
-            "INSERT INTO events (timestamp, run_id, task_id, event_type, data) VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO events (timestamp, run_id, task_id, event_type, data)"
+            " VALUES (?, ?, ?, ?, ?)",
             [(iso(e["timestamp"]), e["run_id"],
               None if e.get("task_id") is None else str(e["task_id"]),
               e["event_type"], json.dumps(e.get("data", {}))) for e in events],

@@ -10,16 +10,23 @@ e3_stats.
 
 import dataclasses
 import enum
+import statistics
 from dataclasses import dataclass
 from datetime import datetime
 from fractions import Fraction
 from pathlib import Path
 
 from e3_protocol import Amendment, Arm, ProtocolViolation, format_ids, require
+from e3_stats import (
+    MannWhitneyResult, bootstrap_interval, exact_mann_whitney_u, min_achievable_p,
+)
 
 LABEL_DESCRIPTIVE = "DESCRIPTIVE"
 LABEL_CONFIRMATORY = "CONFIRMATORY"
 EXCLUDED_FREEZE_WINDOW = "freeze-window"
+ENDPOINT_METRICS = ("usd_per_kloc", "attempts_per_task", "attempts_per_kloc",
+                    "blocking_esc_per_task", "blocking_esc_per_kloc")
+ERAS = ("pre", "post", "straddle")
 
 
 @dataclass(frozen=True)
@@ -319,13 +326,17 @@ def prd_endpoints(outcomes, protocol, drop=frozenset()):
     )
 
 
+def _pooled(landed):
+    """(cost, loc, counted attempts, blocking escalations) summed over landed."""
+    return (sum(o.cost for o in landed), sum(o.loc for o in landed),
+            sum(o.attempts_counted for o in landed),
+            sum(o.blocking_escalations for o in landed))
+
+
 def _prd_endpoint(prd, outcomes):
     landed = [o for o in outcomes if o.landed_eligible]
     censored = [o for o in outcomes if o.right_censored]
-    loc = sum(o.loc for o in landed)
-    cost = sum(o.cost for o in landed)
-    attempts = sum(o.attempts_counted for o in landed)
-    escalations = sum(o.blocking_escalations for o in landed)
+    cost, loc, attempts, escalations = _pooled(landed)
     scope = sum(o.task.scope_weight for o in landed + censored)
     return PrdEndpoints(
         prd_slug=prd.slug,
@@ -440,3 +451,126 @@ def _rule_i(outcomes, protocol):
     met = all(o.status == "cancelled" or o.landed_at is not None for o in closes)
     all_landed = all(o.landed_at is not None for o in closes)
     return met, max(o.landed_at for o in closes) if met and all_landed else None
+
+
+@dataclass(frozen=True)
+class Verdict:
+    """The §7.3 confirmatory look. label is CONFIRMATORY only when the stop
+    rule triggered and the contributing split can reach alpha; rejects_null
+    then says which way the one exact test came out."""
+
+    label: str
+    reason: str
+    split: tuple | None
+    min_p: Fraction | None
+    test: MannWhitneyResult | None
+    trigger_instant: datetime | None
+    rejects_null: bool | None
+
+
+def _arm_values(endpoints, arm, metric):
+    return [getattr(e, metric) for e in endpoints
+            if e.arm is arm and getattr(e, metric) is not None]
+
+
+def confirmatory_verdict(probe, prd_endpoints_at_trigger, protocol):
+    """The one look, on per-PRD $/kLOC frozen at the trigger instant. The
+    only path to CONFIRMATORY: trigger present, then the contributing split's
+    minimum achievable p <= alpha (exact), then the exact U test."""
+    trigger = probe.trigger_instant
+    if trigger is None:
+        return Verdict(LABEL_DESCRIPTIVE,
+                       "stop rule not met: no trigger instant, no confirmatory look",
+                       None, None, None, None, None)
+    coarse = _arm_values(prd_endpoints_at_trigger, Arm.COARSE, "usd_per_kloc")
+    standard = _arm_values(prd_endpoints_at_trigger, Arm.STANDARD, "usd_per_kloc")
+    split = (len(coarse), len(standard))
+    if not coarse or not standard:
+        return Verdict(LABEL_DESCRIPTIVE, f"split {split[0]}v{split[1]} at the trigger: an arm "
+                       "contributes no $/kLOC value", split, None, None, trigger, None)
+    min_p = min_achievable_p(*split)
+    if min_p > protocol.alpha:
+        return Verdict(LABEL_DESCRIPTIVE, f"split {split[0]}v{split[1]}: minimum achievable p "
+                       f"{min_p} > alpha {protocol.alpha}", split, min_p, None, trigger, None)
+    test = exact_mann_whitney_u(coarse, standard)
+    return Verdict(
+        LABEL_CONFIRMATORY,
+        f"one-sided exact Mann-Whitney U on per-PRD $/kLOC, split {split[0]}v{split[1]}: "
+        f"U={test.u}, p={test.p}, alpha={protocol.alpha}",
+        split, min_p, test, trigger, test.p <= protocol.alpha,
+    )
+
+
+@dataclass(frozen=True)
+class ArmSummary:
+    metric: str
+    arm: Arm
+    n_prds: int
+    median: float | None
+    interval: tuple | None
+    label: str = LABEL_DESCRIPTIVE
+
+
+@dataclass(frozen=True)
+class Descriptives:
+    """Arm medians with seeded bootstrap-by-PRD intervals for every endpoint
+    metric, and the stratum-B pair side by side (§7.3)."""
+
+    summaries: tuple
+    stratum_b: tuple
+    label: str = LABEL_DESCRIPTIVE
+
+    def summary(self, metric, arm):
+        for summary in self.summaries:
+            if summary.metric == metric and summary.arm is arm:
+                return summary
+        raise KeyError((metric, arm))
+
+
+def descriptives(prd_endpoints, protocol):
+    by_slug = {e.prd_slug: e for e in prd_endpoints}
+    return Descriptives(
+        summaries=tuple(_arm_summary(prd_endpoints, metric, arm, protocol)
+                        for metric in ENDPOINT_METRICS for arm in Arm),
+        stratum_b=tuple(by_slug[slug] for slug in protocol.stratum_b_pair),
+    )
+
+
+def _arm_summary(endpoints, metric, arm, protocol):
+    values = _arm_values(endpoints, arm, metric)
+    return ArmSummary(
+        metric=metric,
+        arm=arm,
+        n_prds=len(values),
+        median=statistics.median(values) if values else None,
+        interval=bootstrap_interval(
+            values, statistics.median, f"{protocol.bootstrap_seed}:{metric}:{arm.value}",
+            protocol.bootstrap_resamples, protocol.interval_level),
+    )
+
+
+@dataclass(frozen=True)
+class EraCell:
+    """§7.6: pooled endpoints of one arm's landed eligible tasks in one era."""
+
+    arm: Arm
+    era: str
+    n_tasks: int
+    usd_per_kloc: float | None
+    attempts_per_task: float | None
+    blocking_esc_per_task: float | None
+    label: str = LABEL_DESCRIPTIVE
+
+
+def era_split(outcomes):
+    return tuple(
+        _era_cell(arm, era, [o for o in outcomes
+                             if o.task.arm is arm and o.era == era and o.landed_eligible])
+        for arm in Arm for era in ERAS
+    )
+
+
+def _era_cell(arm, era, landed):
+    cost, loc, attempts, escalations = _pooled(landed)
+    return EraCell(arm, era, len(landed), _ratio(cost, loc, 1000),
+                   _ratio(attempts, len(landed)), _ratio(escalations, len(landed)))

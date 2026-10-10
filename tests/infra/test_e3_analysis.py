@@ -1125,7 +1125,7 @@ class DescriptiveTests(unittest.TestCase):
     def test_era_split_pools_landed_eligible_tasks(self):
         scenario = EndpointScenario()
         cells = {(c.arm, c.era): c
-                 for c in e3_model.era_split(scenario.outcomes(), scenario.protocol)}
+                 for c in e3_model.era_split(scenario.outcomes())}
         self.assertEqual(set(cells), {(arm, era) for arm in Arm
                                       for era in ("pre", "post", "straddle")})
         straddle = cells[(Arm.COARSE, "straddle")]
@@ -1145,8 +1145,7 @@ class DescriptiveTests(unittest.TestCase):
         self.assertEqual({s.label for s in result.summaries}, {"DESCRIPTIVE"})
         self.assertEqual({e.label for e in result.stratum_b}, {"DESCRIPTIVE"})
         scenario = EndpointScenario()
-        self.assertEqual({c.label for c in e3_model.era_split(scenario.outcomes(),
-                                                              scenario.protocol)},
+        self.assertEqual({c.label for c in e3_model.era_split(scenario.outcomes())},
                          {"DESCRIPTIVE"})
 
 
