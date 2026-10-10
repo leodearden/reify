@@ -1785,14 +1785,20 @@ pub trait JCodemunchOps {
 
 /// Inert [`JCodemunchOps`] — every query answers "nothing".
 ///
-/// Unlike [`MockJCodemunchOps`] this is NOT test-support: it is the production
-/// binding whenever a run does not need the jcodemunch seam at all, and it is
-/// ungated for exactly that reason. Its production call sites:
+/// Its `Ok(vec![])` from `get_changed_symbols` is not a statement about any
+/// range: no query was made. Unlike [`MockJCodemunchOps`] this is NOT
+/// test-support: it is the production binding whenever a run has no live
+/// seam, and it is ungated for exactly that reason. Its production call sites:
 ///
 /// 1. `--no-jcodemunch` — the explicit offline escape hatch: P1 runs and
 ///    produces zero findings without opening a socket.
 /// 2. Detector runs that never touch the seam (`needs_jcodemunch() == false`).
-/// 3. The `*-baseline-gen` structural censuses, which still have to populate
+/// 3. The fallback for a needed seam that is unreachable, refused the
+///    handshake, or sits over an unusable index. The bin's seam binding
+///    (`bind_jcodemunch` in `src/bin/reify-audit.rs`) records the affected
+///    detectors as unexamined in that case, so their silence is not read as
+///    a clean result.
+/// 4. The `*-baseline-gen` structural censuses, which still have to populate
 ///    [`AuditContext`]'s field.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct NoopJCodemunchOps;

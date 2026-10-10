@@ -35,7 +35,8 @@
 //! A task whose `get_changed_symbols` query FAILS is not a task that
 //! introduced nothing: it yields one Low [`Pattern::P1TaskUnexamined`]
 //! ([`task_unexamined`]) and the sweep moves on, so the failure shows in the
-//! findings rather than hiding among the clean tasks.
+//! findings rather than hiding among the clean tasks. A run with no usable
+//! jcodemunch session at all records P1 once, run-level ([`run_unexamined`]).
 //!
 //! When the FIRST of those per-symbol guards eats a task's entire symbol list,
 //! zero findings means "examined nothing", not "corpus clean", so
@@ -240,6 +241,24 @@ fn task_unexamined(
              {since_sha}..{until_sha} query failed ({failure}); zero \
              producer-orphan findings for this task are not a clean result \
              — re-run once jcodemunch answers"
+        ),
+        evidence: vec![],
+    }
+}
+
+/// The finding for a run in which P1 had no usable jcodemunch session at all,
+/// so it examined no task: `reason` says why. Low, run-level (empty
+/// `task_id`, as for the corpus-level detectors), and worded so that the
+/// run's lack of producer-orphan findings cannot be read as a clean result.
+pub fn run_unexamined(reason: &str) -> Finding {
+    Finding {
+        pattern: Pattern::P1TaskUnexamined,
+        severity: Severity::Low,
+        task_id: String::new(),
+        summary: format!(
+            "task-unexamined: P1 ran without jcodemunch this run ({reason}); zero \
+             producer-orphan findings are not a clean result — re-run once \
+             jcodemunch answers"
         ),
         evidence: vec![],
     }
