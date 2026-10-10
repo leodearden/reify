@@ -4272,7 +4272,9 @@ dependencies = [
 name = "reify-build-utils"
 version = "0.1.0"
 dependencies = [
+ "proc-macro2",
  "serde",
+ "syn 2.0.117",
  "tempfile",
  "toml 0.8.2",
 ]
