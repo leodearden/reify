@@ -365,19 +365,7 @@ mod tests {
     use std::collections::BTreeSet;
 
     use super::*;
-    use crate::fixture::Fixture;
-
-    fn root_manifest(members: &[&str], workspace_deps: &str) -> String {
-        let list: Vec<String> = members.iter().map(|m| format!("\"{m}\"")).collect();
-        format!(
-            "[workspace]\nmembers = [{}]\n\n[workspace.dependencies]\n{workspace_deps}\n",
-            list.join(", ")
-        )
-    }
-
-    fn package(name: &str, rest: &str) -> String {
-        format!("[package]\nname = \"{name}\"\nversion = \"0.1.0\"\n\n{rest}\n")
-    }
+    use crate::fixture::{Fixture, package_manifest as package, root_manifest};
 
     const PROVIDER_FEATURES: &str = "[features]\nf = []\ng = []\n";
 

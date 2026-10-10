@@ -2,6 +2,7 @@
 //! be activated only by a crate that names one of the items the provider gates
 //! on that feature.
 
+mod detector;
 mod fixture;
 mod gated_surface;
 mod manifest;
