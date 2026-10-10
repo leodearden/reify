@@ -695,5 +695,212 @@ class CensoringTests(unittest.TestCase):
         self.assertIn("{}", str(caught.exception))
 
 
+AS_OF = datetime(2026, 10, 10, 20, 0, tzinfo=UTC)
+
+
+def inv(task_id, cost, started_at, role="implementer"):
+    return e3_sources.Invocation(task_id=task_id, role=role, started_at=started_at,
+                                 cost_usd=cost)
+
+
+def esc(task_id, escalation_id, created_at, severity="blocking", level=None):
+    return e3_sources.Escalation(task_id=task_id, escalation_id=escalation_id,
+                                 created_at=created_at, severity=severity, level=level,
+                                 category="review_issues")
+
+
+def merge(task_id, commit, merged_at, insertions, deletions=0):
+    return e3_sources.Merge(task_id=task_id, commit=commit, merged_at=merged_at,
+                            insertions=insertions, deletions=deletions)
+
+
+def closed(task_id, started_at, outcome, ended_at=None, run_ended_at=None):
+    ended_at = ended_at or started_at + timedelta(hours=1)
+    return attempt(task_id=task_id, started_at=started_at, ended_at=ended_at,
+                   outcome=outcome, run_ended_at=run_ended_at or ended_at + timedelta(hours=5))
+
+
+def drained(task_id, started_at):
+    ended_at = started_at + timedelta(hours=1)
+    return attempt(task_id=task_id, started_at=started_at, ended_at=ended_at,
+                   outcome="cancelled", run_ended_at=ended_at + timedelta(seconds=20))
+
+
+class EndpointScenario:
+    """A mini 2v2 protocol with freeze set {1101, 203}, at AS_OF:
+    c1: 101 landed (loc 1000, $20, 2 counted + 1 drained attempt, 2 blocking
+        escalations, straddles the era), 102 unlanded (1 counted attempt, 1
+        blocking escalation, pre-era), 103 reused unlanded;
+    c2: 202 landed (weight 3), 201 unlanded (weight 2), 203 freeze-window;
+    s1: 1101 freeze-window but landed, 1102 landed (loc 200, $4, provenance
+        mismatch, amended), 1103 done but merged after AS_OF, 1104 done with no
+        merge, 1105 pending yet merged after AS_OF;
+    s2: nothing landed."""
+
+    def __init__(self):
+        self.protocol = fx.mini_protocol(expected_freeze_set=frozenset({1101, 203}))
+        self.freeze_set = frozenset({1101, 203})
+        self.snapshot = fx.task_snapshot(self.protocol, {
+            101: fx.done_override("m101"), 202: fx.done_override("m202"),
+            1101: fx.done_override("m1101"), 1102: fx.done_override("not-a-merge"),
+            1103: fx.done_override("m1103"), 1104: fx.done_override("m1104"),
+        })
+        self.arm_tasks = e3_model.attribute(self.snapshot, self.protocol)
+        pre, post = at(28, 12, month=8), at(15, 9)
+        late = AS_OF + timedelta(days=3)
+        self.runs = e3_sources.RunsData(
+            attempts=(
+                closed(101, pre, "requeued"), closed(101, post, "done"), drained(101, post),
+                closed(101, late, "done"),
+                closed(102, pre, "blocked"),
+                drained(203, at(27, 9, month=8)),
+                closed(1101, at(27, 8, month=8), "done"), drained(1101, at(2, 1)),
+                closed(1102, at(20, 9), "done"),
+                drained(1103, at(21, 9)),
+                attempt(task_id=202, started_at=AS_OF - timedelta(hours=2),
+                        ended_at=AS_OF + timedelta(hours=1), outcome="done",
+                        run_ended_at=AS_OF + timedelta(hours=2)),
+            ),
+            invocations=(
+                inv(101, 10.0, pre, "architect"), inv(101, 5.0, post),
+                inv(101, 5.0, post, "reviewer_comprehensive"), inv(101, 7.0, late),
+                inv(102, 3.0, pre), inv(1101, 2.5, at(27, 8, month=8)),
+                inv(1102, 4.0, at(20, 9)), inv(202, 6.0, AS_OF - timedelta(hours=2)),
+            ),
+            escalations=(
+                esc(101, "esc-101-1", post), esc(101, "esc-101-1", post + timedelta(hours=1)),
+                esc(101, "esc-101-2", post, level=1), esc(101, "esc-101-3", post, severity=None),
+                esc(101, "esc-101-4", post, severity="info"), esc(101, "esc-101-5", late),
+                esc(102, "esc-102-1", pre),
+            ),
+        )
+        self.merges = (
+            merge(101, "m101", at(20, 9), 900, 100),
+            merge(202, "m202", at(22, 9), 300),
+            merge(1101, "m1101", at(5, 9), 50),
+            merge(1102, "m1102", at(25, 9), 150, 50),
+            merge(1103, "m1103", AS_OF + timedelta(days=5), 80),
+            merge(1105, "m1105", AS_OF + timedelta(days=6), 10),
+        )
+
+    def outcomes(self, as_of=AS_OF):
+        return e3_model.task_outcomes(self.arm_tasks, self.snapshot, self.runs, self.merges,
+                                      self.freeze_set, as_of, self.protocol)
+
+
+class EndpointTests(unittest.TestCase):
+    def setUp(self):
+        self.scenario = EndpointScenario()
+        self.outcomes = {o.task.id: o for o in self.scenario.outcomes()}
+
+    def _endpoints(self, drop=frozenset()):
+        return {e.prd_slug: e for e in e3_model.prd_endpoints(
+            tuple(self.outcomes.values()), self.scenario.protocol, drop=drop)}
+
+    def test_landed_requires_done_and_a_merge_by_as_of(self):
+        landed = self.outcomes[101]
+        self.assertEqual(landed.landed_at, at(20, 9))
+        self.assertEqual(landed.loc, 1000)
+        self.assertEqual([m.commit for m in landed.merges], ["m101"])
+        self.assertIsNone(self.outcomes[1103].landed_at)
+        self.assertEqual(self.outcomes[1103].loc, 0)
+        self.assertIsNone(self.outcomes[1104].landed_at)
+        self.assertIsNone(self.outcomes[1105].landed_at)
+
+    def test_cost_sums_every_role_started_by_as_of(self):
+        self.assertEqual(self.outcomes[101].cost, 20.0)
+        self.assertEqual(self.outcomes[1102].cost, 4.0)
+        self.assertEqual(self.outcomes[103].cost, 0.0)
+
+    def test_attempts_split_by_class_as_of(self):
+        outcome = self.outcomes[101]
+        self.assertEqual((outcome.attempts_counted, outcome.attempts_drain_censored,
+                          outcome.attempts_in_flight), (2, 1, 0))
+
+    def test_attempt_ending_after_as_of_is_in_flight(self):
+        outcome = self.outcomes[202]
+        self.assertEqual((outcome.attempts_counted, outcome.attempts_in_flight), (0, 1))
+
+    def test_blocking_escalations_are_distinct_blocking_ids_by_as_of(self):
+        self.assertEqual(self.outcomes[101].blocking_escalations, 2)
+        self.assertEqual(self.outcomes[102].blocking_escalations, 1)
+
+    def test_freeze_window_task_is_flagged_and_never_eligible(self):
+        frozen = self.outcomes[1101]
+        self.assertEqual(frozen.excluded, "freeze-window")
+        self.assertEqual(frozen.landed_at, at(5, 9))
+        self.assertFalse(frozen.landed_eligible)
+        self.assertTrue(self.outcomes[1102].landed_eligible)
+        self.assertIsNone(self.outcomes[1102].excluded)
+
+    def test_era_by_attempt_starts(self):
+        self.assertEqual(self.outcomes[101].era, "straddle")
+        self.assertEqual(self.outcomes[102].era, "pre")
+        self.assertEqual(self.outcomes[1102].era, "post")
+        self.assertIsNone(self.outcomes[103].era)
+
+    def test_integrity_anomalies(self):
+        kinds = {task_id: {a.kind for a in o.anomalies} for task_id, o in self.outcomes.items()}
+        self.assertEqual(kinds[1104], {"done-without-merge"})
+        self.assertEqual(kinds[1105], {"merged-but-not-done"})
+        self.assertEqual(kinds[1102], {"provenance-not-a-task-merge"})
+        self.assertEqual(kinds[101], set())
+        self.assertEqual(kinds[1103], set())
+
+    def test_usd_per_kloc_over_landed_eligible_tasks(self):
+        endpoints = self._endpoints()
+        self.assertEqual(endpoints["c1"].usd_per_kloc, 20.0)
+        self.assertEqual(endpoints["s1"].usd_per_kloc, 20.0)
+        self.assertEqual(endpoints["c2"].usd_per_kloc, 20.0)
+        self.assertIsNone(endpoints["s2"].usd_per_kloc)
+
+    def test_rework_and_escalation_rates(self):
+        c1 = self._endpoints()["c1"]
+        self.assertEqual(c1.attempts_per_task, 2.0)
+        self.assertEqual(c1.attempts_per_kloc, 2.0)
+        self.assertEqual(c1.blocking_esc_per_task, 2.0)
+        self.assertEqual(c1.blocking_esc_per_kloc, 2.0)
+        s2 = self._endpoints()["s2"]
+        self.assertIsNone(s2.attempts_per_task)
+        self.assertIsNone(s2.blocking_esc_per_kloc)
+
+    def test_task_counts_are_disjoint_and_complete(self):
+        endpoints = self._endpoints()
+        expected = {"c1": (1, 2, 0), "c2": (1, 1, 1), "s1": (1, 3, 1), "s2": (0, 5, 0)}
+        for slug, counts in expected.items():
+            e = endpoints[slug]
+            self.assertEqual((e.n_landed, e.n_right_censored, e.n_freeze_excluded), counts)
+            self.assertEqual(e.n_landed + e.n_right_censored + e.n_freeze_excluded, e.n_tasks)
+
+    def test_landed_scope_share_weights_constituents(self):
+        endpoints = self._endpoints()
+        self.assertEqual(endpoints["c2"].landed_scope_share, Fraction(3, 5))
+        self.assertEqual(endpoints["c1"].landed_scope_share, Fraction(2, 6))
+        self.assertEqual(endpoints["s2"].landed_scope_share, Fraction(0))
+
+    def test_unlanded_work_is_reported_separately(self):
+        c1 = self._endpoints()["c1"]
+        self.assertEqual((c1.unlanded_attempts, c1.unlanded_blocking_escalations), (1, 1))
+
+    def test_drop_removes_a_task_from_every_count(self):
+        s1 = self._endpoints(drop=frozenset({1102}))["s1"]
+        self.assertEqual((s1.n_tasks, s1.n_landed), (4, 0))
+        self.assertIsNone(s1.usd_per_kloc)
+
+    def test_arm_censoring_counts_are_three_separate_counts(self):
+        counts = {c.arm: c for c in e3_model.arm_censoring_counts(tuple(self.outcomes.values()))}
+        coarse, standard = counts[Arm.COARSE], counts[Arm.STANDARD]
+        self.assertEqual((coarse.freeze_window_excluded, coarse.right_censored,
+                          coarse.drain_censored_attempts), (1, 3, 1))
+        self.assertEqual((standard.freeze_window_excluded, standard.right_censored,
+                          standard.drain_censored_attempts), (1, 8, 1))
+
+    def test_earlier_as_of_is_a_frozen_snapshot(self):
+        earlier = {o.task.id: o for o in self.scenario.outcomes(as_of=at(21, 0))}
+        self.assertIsNone(earlier[202].landed_at)
+        self.assertEqual(earlier[101].landed_at, at(20, 9))
+        self.assertIsNone(earlier[1102].landed_at)
+
+
 if __name__ == "__main__":
     unittest.main()
