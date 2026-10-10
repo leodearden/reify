@@ -10,7 +10,9 @@
 
 use std::collections::HashSet;
 
-use reify_compiler::name_env::{Bindings, Definition, FunctionSignature, Origin, Tier, bind, resolve};
+use reify_compiler::name_env::{
+    Bindings, Definition, FunctionSignature, Origin, Tier, bind, resolve,
+};
 use reify_compiler::{
     CompiledConstraintDef, CompiledModule, CompiledPurpose, CompiledTrait, CompiledTypeAlias,
     TopologyTemplate,
@@ -218,7 +220,10 @@ fn fixture() -> Fixture {
         traits: LOCAL_PLAN.iter().map(|n| trait_def(n)).collect(),
         functions: LOCAL_PLAN.iter().map(|n| int_fn(n)).collect(),
         aliases: LOCAL_PLAN.iter().map(|n| type_alias(n, false)).collect(),
-        constraint_defs: LOCAL_PLAN.iter().map(|n| constraint_def(n, false)).collect(),
+        constraint_defs: LOCAL_PLAN
+            .iter()
+            .map(|n| constraint_def(n, false))
+            .collect(),
         purposes: LOCAL_PLAN.iter().map(|n| purpose(n, false)).collect(),
     }
 }
@@ -266,12 +271,18 @@ fn first_wins_among_import_peers_and_among_std_peers() {
     let fx = fixture();
     let import_winner = resolve(&fx.templates, &fx.prelude, "ImportStd").expect("resolves");
     assert!(
-        std::ptr::eq(import_winner, template_in(&fx.module("a").templates, "ImportStd")),
+        std::ptr::eq(
+            import_winner,
+            template_in(&fx.module("a").templates, "ImportStd")
+        ),
         "a precedes b in the slice, so a's ImportStd wins"
     );
     let std_winner = resolve(&fx.templates, &fx.prelude, "StdOnly").expect("resolves");
     assert!(
-        std::ptr::eq(std_winner, template_in(&fx.module("std.p1").templates, "StdOnly")),
+        std::ptr::eq(
+            std_winner,
+            template_in(&fx.module("std.p1").templates, "StdOnly")
+        ),
         "std.p1 precedes std.p2 in the slice, so std.p1's StdOnly wins"
     );
 }
@@ -283,7 +294,15 @@ fn winners_are_listed_in_precedence_order() {
     let order: Vec<&str> = bindings.winners().map(|t| t.name.as_str()).collect();
     assert_eq!(
         order,
-        vec!["Shared", "LocalImport", "LocalStd", "LocalSolo", "ImportStd", "Solo", "StdOnly"],
+        vec![
+            "Shared",
+            "LocalImport",
+            "LocalStd",
+            "LocalSolo",
+            "ImportStd",
+            "Solo",
+            "StdOnly"
+        ],
         "locals first, then import winners in slice order, then std winners in slice order"
     );
     let map = bindings.into_map();
@@ -347,13 +366,28 @@ fn resolve_and_bind_agree_for_every_key_of_every_kind() {
     assert_lookup_agrees_with_table("enum", &fx.enums, p, &keys);
     let keys = all_keys(&fx.traits, p, |m| m.trait_defs.as_slice(), "Absent");
     assert_lookup_agrees_with_table("trait", &fx.traits, p, &keys);
-    let keys = all_keys(&fx.functions, p, |m| m.functions.as_slice(), absent_fn.key());
+    let keys = all_keys(
+        &fx.functions,
+        p,
+        |m| m.functions.as_slice(),
+        absent_fn.key(),
+    );
     assert_lookup_agrees_with_table("function", &fx.functions, p, &keys);
     let keys = all_keys(&fx.aliases, p, |m| m.type_aliases.as_slice(), "Absent");
     assert_lookup_agrees_with_table("type alias", &fx.aliases, p, &keys);
-    let keys = all_keys(&fx.constraint_defs, p, |m| m.constraint_defs.as_slice(), "Absent");
+    let keys = all_keys(
+        &fx.constraint_defs,
+        p,
+        |m| m.constraint_defs.as_slice(),
+        "Absent",
+    );
     assert_lookup_agrees_with_table("constraint def", &fx.constraint_defs, p, &keys);
-    let keys = all_keys(&fx.purposes, p, |m| m.compiled_purposes.as_slice(), "Absent");
+    let keys = all_keys(
+        &fx.purposes,
+        p,
+        |m| m.compiled_purposes.as_slice(),
+        "Absent",
+    );
     assert_lookup_agrees_with_table("purpose", &fx.purposes, p, &keys);
 }
 
@@ -372,14 +406,24 @@ fn shadowing_rows<'a, D: Definition>(
         .map(|s| {
             let winner = origin_label(s.winner.origin);
             let shadowed = origin_label(s.shadowed.origin);
-            assert_eq!(s.winner.origin.tier(), expected_tier(&winner), "{kind}: winner tier");
-            assert_eq!(s.shadowed.origin.tier(), expected_tier(&shadowed), "{kind}: shadowed tier");
+            assert_eq!(
+                s.winner.origin.tier(),
+                expected_tier(&winner),
+                "{kind}: winner tier"
+            );
+            assert_eq!(
+                s.shadowed.origin.tier(),
+                expected_tier(&shadowed),
+                "{kind}: shadowed tier"
+            );
             assert!(
                 s.winner.definition.key() == s.key && s.shadowed.definition.key() == s.key,
                 "{kind}: a shadowing pairs two definitions of its own key"
             );
             assert!(
-                bindings.get(&s.key).is_some_and(|w| std::ptr::eq(w, s.winner.definition)),
+                bindings
+                    .get(&s.key)
+                    .is_some_and(|w| std::ptr::eq(w, s.winner.definition)),
                 "{kind}: the recorded winner is the bound definition"
             );
             (name_of(s.shadowed.definition).to_string(), winner, shadowed)
@@ -437,7 +481,10 @@ fn collision_free_keys_record_no_shadowing() {
         .collect();
     for name in ["Solo", "LocalSolo"] {
         assert!(bindings.get(name).is_some(), "{name} is bound");
-        assert!(!shadowed_names.contains(name), "{name} collides with nothing");
+        assert!(
+            !shadowed_names.contains(name),
+            "{name} collides with nothing"
+        );
     }
 }
 
@@ -461,7 +508,10 @@ fn functions_are_keyed_by_name_and_param_types_only() {
         std_over.key() == a_over.key(),
         "param names and return type are not part of a function's key"
     );
-    assert!(b_over.key() != a_over.key(), "different param types are different keys");
+    assert!(
+        b_over.key() != a_over.key(),
+        "different param types are different keys"
+    );
     assert_eq!(
         a_over.key(),
         FunctionSignature::new("over", &a_over.params),
@@ -470,11 +520,15 @@ fn functions_are_keyed_by_name_and_param_types_only() {
 
     let bindings = bind(&fx.functions, &fx.prelude);
     assert!(
-        bindings.get(&a_over.key()).is_some_and(|f| std::ptr::eq(f, a_over)),
+        bindings
+            .get(&a_over.key())
+            .is_some_and(|f| std::ptr::eq(f, a_over)),
         "same signature: the import-tier over(Int) wins over std.p1's"
     );
     assert!(
-        bindings.get(&b_over.key()).is_some_and(|f| std::ptr::eq(f, b_over)),
+        bindings
+            .get(&b_over.key())
+            .is_some_and(|f| std::ptr::eq(f, b_over)),
         "a different signature is bound alongside, not shadowed"
     );
 }
@@ -483,7 +537,9 @@ fn functions_are_keyed_by_name_and_param_types_only() {
 fn templates_enums_and_traits_are_separate_name_keyed_namespaces() {
     let fx = fixture();
     let p = &fx.prelude;
-    let t = bind(&fx.templates, p).get("ImportStd").expect("template bound");
+    let t = bind(&fx.templates, p)
+        .get("ImportStd")
+        .expect("template bound");
     let e = bind(&fx.enums, p).get("ImportStd").expect("enum bound");
     let r = bind(&fx.traits, p).get("ImportStd").expect("trait bound");
     let a = fx.module("a");
@@ -498,12 +554,30 @@ fn templates_enums_and_traits_are_separate_name_keyed_namespaces() {
 fn non_pub_prelude_aliases_constraint_defs_and_purposes_are_not_bound() {
     let fx = fixture();
     let p = &fx.prelude;
-    assert!(bind(&fx.aliases, p).get(HIDDEN).is_none(), "non-pub prelude alias");
-    assert!(resolve(&fx.aliases, p, HIDDEN).is_none(), "non-pub prelude alias");
-    assert!(bind(&fx.constraint_defs, p).get(HIDDEN).is_none(), "non-pub prelude constraint def");
-    assert!(resolve(&fx.constraint_defs, p, HIDDEN).is_none(), "non-pub prelude constraint def");
-    assert!(bind(&fx.purposes, p).get(HIDDEN).is_none(), "non-pub prelude purpose");
-    assert!(resolve(&fx.purposes, p, HIDDEN).is_none(), "non-pub prelude purpose");
+    assert!(
+        bind(&fx.aliases, p).get(HIDDEN).is_none(),
+        "non-pub prelude alias"
+    );
+    assert!(
+        resolve(&fx.aliases, p, HIDDEN).is_none(),
+        "non-pub prelude alias"
+    );
+    assert!(
+        bind(&fx.constraint_defs, p).get(HIDDEN).is_none(),
+        "non-pub prelude constraint def"
+    );
+    assert!(
+        resolve(&fx.constraint_defs, p, HIDDEN).is_none(),
+        "non-pub prelude constraint def"
+    );
+    assert!(
+        bind(&fx.purposes, p).get(HIDDEN).is_none(),
+        "non-pub prelude purpose"
+    );
+    assert!(
+        resolve(&fx.purposes, p, HIDDEN).is_none(),
+        "non-pub prelude purpose"
+    );
 }
 
 #[test]
@@ -511,23 +585,47 @@ fn pub_prelude_aliases_constraint_defs_and_purposes_are_bound() {
     let fx = fixture();
     let p = &fx.prelude;
     let a = fx.module("a");
-    let alias = bind(&fx.aliases, p).get("Solo").expect("pub prelude alias bound");
-    assert!(std::ptr::eq(alias, a.type_aliases.iter().find(|x| x.name == "Solo").unwrap()));
-    let cd = bind(&fx.constraint_defs, p).get("Solo").expect("pub prelude constraint def bound");
-    assert!(std::ptr::eq(cd, a.constraint_defs.iter().find(|x| x.name == "Solo").unwrap()));
-    let pp = bind(&fx.purposes, p).get("Solo").expect("pub prelude purpose bound");
-    assert!(std::ptr::eq(pp, a.compiled_purposes.iter().find(|x| x.name == "Solo").unwrap()));
+    let alias = bind(&fx.aliases, p)
+        .get("Solo")
+        .expect("pub prelude alias bound");
+    assert!(std::ptr::eq(
+        alias,
+        a.type_aliases.iter().find(|x| x.name == "Solo").unwrap()
+    ));
+    let cd = bind(&fx.constraint_defs, p)
+        .get("Solo")
+        .expect("pub prelude constraint def bound");
+    assert!(std::ptr::eq(
+        cd,
+        a.constraint_defs.iter().find(|x| x.name == "Solo").unwrap()
+    ));
+    let pp = bind(&fx.purposes, p)
+        .get("Solo")
+        .expect("pub prelude purpose bound");
+    assert!(std::ptr::eq(
+        pp,
+        a.compiled_purposes
+            .iter()
+            .find(|x| x.name == "Solo")
+            .unwrap()
+    ));
 }
 
 #[test]
 fn non_pub_local_definitions_are_still_bound() {
     let fx = fixture();
     let p = &fx.prelude;
-    let alias = bind(&fx.aliases, p).get("LocalSolo").expect("local alias bound");
+    let alias = bind(&fx.aliases, p)
+        .get("LocalSolo")
+        .expect("local alias bound");
     assert!(std::ptr::eq(alias, &fx.aliases[3]));
-    let cd = bind(&fx.constraint_defs, p).get("LocalSolo").expect("local constraint def bound");
+    let cd = bind(&fx.constraint_defs, p)
+        .get("LocalSolo")
+        .expect("local constraint def bound");
     assert!(std::ptr::eq(cd, &fx.constraint_defs[3]));
-    let pp = bind(&fx.purposes, p).get("LocalSolo").expect("local purpose bound");
+    let pp = bind(&fx.purposes, p)
+        .get("LocalSolo")
+        .expect("local purpose bound");
     assert!(std::ptr::eq(pp, &fx.purposes[3]));
 }
 

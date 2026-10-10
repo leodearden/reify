@@ -53,6 +53,7 @@ mod member_path;
 // to surface the relation ΔDOF contract on hover (geometric-relations γ, task 4383).
 pub mod module_dag;
 mod module_pragmas;
+pub mod name_env;
 mod orientation_signatures;
 mod port_path;
 pub mod prelude_context;
