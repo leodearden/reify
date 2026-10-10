@@ -1,6 +1,8 @@
 //! Feature-activation liveness gate: a registered (provider, feature) pair may
 //! be activated only by a crate that names one of the items the provider gates
-//! on that feature.
+//! on that feature. It lives in reify-build-utils so a per-crate manifest
+//! touch runs it at task scope: docs/prds/verify-scope-contract.md §3, "Per-crate
+//! manifest touches also contribute the crate-DAG gate".
 
 use std::path::{Path, PathBuf};
 
