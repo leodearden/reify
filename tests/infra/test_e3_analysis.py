@@ -902,5 +902,110 @@ class EndpointTests(unittest.TestCase):
         self.assertIsNone(earlier[1102].landed_at)
 
 
+def landings_outcomes(protocol, landings, statuses=None, freeze_set=frozenset({1101}),
+                      as_of=AS_OF):
+    """Outcomes where each task in landings is done and merged at its instant;
+    statuses overrides other tasks' snapshot status."""
+    overrides = {task_id: fx.done_override(f"m{task_id}") for task_id in landings}
+    overrides.update({task_id: {"status": status} for task_id, status in (statuses or {}).items()})
+    snapshot = fx.task_snapshot(protocol, overrides)
+    arm_tasks = e3_model.attribute(snapshot, protocol)
+    merges = tuple(merge(task_id, f"m{task_id}", landed_at, 100)
+                   for task_id, landed_at in landings.items())
+    runs = e3_sources.RunsData(attempts=(), invocations=(), escalations=())
+    return e3_model.task_outcomes(arm_tasks, snapshot, runs, merges, freeze_set, as_of,
+                                  protocol)
+
+
+ALL_FLOORS = {101: at(10, 0), 102: at(11, 0), 201: at(12, 0), 202: at(13, 0),
+              1102: at(14, 0), 1103: at(15, 0), 1201: at(16, 0), 1202: at(17, 0)}
+ALL_CLOSE = {103: at(18, 0), 203: at(19, 0), 1105: at(20, 0), 1205: at(21, 0)}
+
+
+class StopRuleTests(unittest.TestCase):
+    def setUp(self):
+        self.protocol = fx.mini_protocol()
+
+    def _probe(self, landings, **kwargs):
+        outcomes = landings_outcomes(self.protocol, landings, **kwargs)
+        return e3_model.stop_rule_probe(outcomes, self.protocol)
+
+    def _floor(self, probe, slug):
+        (floor,) = [f for f in probe.per_prd if f.prd_slug == slug]
+        return floor
+
+    def test_coarse_counts_coalesced_landings_only(self):
+        probe = self._probe({101: at(10, 0), 103: at(11, 0)})
+        self.assertEqual(self._floor(probe, "c1").qualifying, ((101, at(10, 0)),))
+
+    def test_standard_excludes_gate_and_close_leaves(self):
+        probe = self._probe({1102: at(10, 0), 1103: at(11, 0), 1104: at(12, 0),
+                             1105: at(13, 0)})
+        self.assertEqual([task_id for task_id, _ in self._floor(probe, "s1").qualifying],
+                         [1102, 1103])
+
+    def test_freeze_window_landings_never_qualify(self):
+        probe = self._probe({1101: at(10, 0), 1102: at(11, 0)})
+        self.assertEqual(self._floor(probe, "s1").qualifying, ((1102, at(11, 0)),))
+
+    def test_floor_met_at_the_kth_landing(self):
+        probe = self._probe({1103: at(12, 0), 1102: at(11, 0), 101: at(10, 0)})
+        s1 = self._floor(probe, "s1")
+        self.assertTrue(s1.floor_met)
+        self.assertEqual(s1.floor_instant, at(12, 0))
+        c1 = self._floor(probe, "c1")
+        self.assertFalse(c1.floor_met)
+        self.assertIsNone(c1.floor_instant)
+        self.assertIs(c1.arm, Arm.COARSE)
+
+    def test_rule_ii_instant_is_the_floor_completing_landing(self):
+        probe = self._probe(ALL_FLOORS)
+        self.assertTrue(probe.rule_ii_met)
+        self.assertEqual(probe.rule_ii_instant, at(17, 0))
+        self.assertEqual(probe.trigger_instant, at(17, 0))
+        short = self._probe({k: v for k, v in ALL_FLOORS.items() if k != 202})
+        self.assertFalse(short.rule_ii_met)
+        self.assertIsNone(short.rule_ii_instant)
+        self.assertIsNone(short.trigger_instant)
+
+    def test_rule_i_all_close_leaves_terminal(self):
+        probe = self._probe(ALL_CLOSE)
+        self.assertTrue(probe.rule_i_met)
+        self.assertEqual(probe.rule_i_instant, at(21, 0))
+        self.assertFalse(probe.rule_ii_met)
+        self.assertEqual(probe.trigger_instant, at(21, 0))
+
+    def test_rule_i_with_a_cancelled_close_leaf_has_no_instant(self):
+        landings = {k: v for k, v in ALL_CLOSE.items() if k != 1205}
+        probe = self._probe(landings, statuses={1205: "cancelled"})
+        self.assertTrue(probe.rule_i_met)
+        self.assertIsNone(probe.rule_i_instant)
+        self.assertIsNone(probe.trigger_instant)
+
+    def test_rule_i_unmet_while_a_close_leaf_is_open(self):
+        probe = self._probe({k: v for k, v in ALL_CLOSE.items() if k != 1205})
+        self.assertFalse(probe.rule_i_met)
+        self.assertIsNone(probe.rule_i_instant)
+
+    def test_rule_i_close_leaf_merged_after_as_of_is_not_terminal(self):
+        probe = self._probe({**ALL_CLOSE, 1205: AS_OF + timedelta(days=1)})
+        self.assertFalse(probe.rule_i_met)
+
+    def test_trigger_is_the_earliest_met_rule(self):
+        probe = self._probe({**ALL_FLOORS, **ALL_CLOSE})
+        self.assertTrue(probe.rule_i_met and probe.rule_ii_met)
+        self.assertEqual(probe.trigger_instant, at(17, 0))
+
+    def test_todays_analogue_has_no_trigger_and_ignores_later_landings(self):
+        landings = {1102: at(27, 20), 1101: at(12, 7), 1103: AS_OF + timedelta(days=2)}
+        probe = self._probe(landings)
+        self.assertEqual(self._floor(probe, "s1").qualifying, ((1102, at(27, 20)),))
+        for slug in ("c1", "c2", "s2"):
+            self.assertEqual(self._floor(probe, slug).qualifying, ())
+        self.assertIsNone(probe.trigger_instant)
+        later = self._probe(landings, as_of=AS_OF + timedelta(days=3))
+        self.assertTrue(self._floor(later, "s1").floor_met)
+
+
 if __name__ == "__main__":
     unittest.main()
