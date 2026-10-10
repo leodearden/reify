@@ -2224,4 +2224,44 @@ mod tests {
             "--help must list --print-repo-id; got:\n{usage}"
         );
     }
+
+    // -------------------------------------------------------------------
+    // Seam binding: how a failed handshake is named
+    // -------------------------------------------------------------------
+
+    /// An endpoint that never answered is unreachable; one that answered —
+    /// with a non-2xx status or a non-MCP body — refused the handshake. The
+    /// label sends the operator to different fixes, so it must follow the
+    /// error's variant, and name the endpoint.
+    #[test]
+    fn a_failed_handshake_is_labelled_by_whether_the_endpoint_answered() {
+        use reify_audit::jcodemunch_client::LoadError;
+        let url = "http://127.0.0.1:8917/mcp";
+        let cases = [
+            (
+                LoadError::Http("POST: Connection refused".into()),
+                "jcodemunch unreachable at",
+            ),
+            (
+                LoadError::Status("POST: status code 404".into()),
+                "jcodemunch handshake refused at",
+            ),
+            (
+                LoadError::Protocol("initialize: not an InitializeResult".into()),
+                "jcodemunch handshake refused at",
+            ),
+        ];
+        for (error, label) in cases {
+            let shown = error.to_string();
+            let rendered = SeamUnavailable::from_handshake(url, error).to_string();
+            assert!(
+                rendered.starts_with(&format!("{label} '{url}': ")),
+                "`{shown}` must render under `{label} '{url}'`; got {rendered:?}"
+            );
+            assert!(
+                rendered.ends_with(&shown),
+                "the rendering must carry the error itself; got {rendered:?}"
+            );
+        }
+    }
 }

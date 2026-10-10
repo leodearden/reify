@@ -45,7 +45,8 @@
 //! 1. exit 0;
 //! 2. no `E_JC_INDEX_` refusal marker (the §4.3 gate admitted the run);
 //! 3. no CONSTRUCTION fail-soft — `reify-audit: jcodemunch unreachable at
-//!    '<url>': …`, `main`'s client-construction `Err` arm in
+//!    '<url>': …` or `reify-audit: jcodemunch handshake refused at '<url>': …`
+//!    (`breadcrumbs::CONSTRUCTION`), the bin's seam-binding breadcrumb in
 //!    `src/bin/reify-audit.rs`, emitted when `JcodemunchClient::initialize`
 //!    fails and the ENTIRE run degrades to `NoopJCodemunchOps`;
 //! 4. no PER-CALL fail-soft — `jcodemunch <tool>: …`, the `Err` arms of
@@ -860,8 +861,8 @@ fn require_reachable_serve(url: &str) {
 /// # What is asserted, per leg
 ///
 /// The five-part chain, applied by `assert_live_leg`: exit 0; no
-/// `E_JC_INDEX_` refusal marker; no `jcodemunch unreachable at` CONSTRUCTION
-/// breadcrumb; no `jcodemunch <tool>:` PER-CALL breadcrumb; a well-formed
+/// `E_JC_INDEX_` refusal marker; no CONSTRUCTION breadcrumb
+/// (`breadcrumbs::CONSTRUCTION`); no `jcodemunch <tool>:` PER-CALL breadcrumb; a well-formed
 /// findings array.
 ///
 /// Why each link is there, why 3 and 4 are INDEPENDENT layers rather than one
@@ -1028,7 +1029,7 @@ const RUN_COMMAND: &str = "  CODE_INDEX_PATH=$(mktemp -d) bash scripts/with-jcod
 /// 1. the exit code, because a non-zero exit subsumes everything below;
 /// 2. the `E_JC_INDEX_` marker, so a §4.3 REFUSAL is never misread as a seam
 ///    failure;
-/// 3. the CONSTRUCTION fail-soft (`jcodemunch unreachable at`);
+/// 3. the CONSTRUCTION fail-soft (`breadcrumbs::CONSTRUCTION`);
 /// 4. the PER-CALL fail-soft (`jcodemunch <tool>:`);
 /// 5. only then, the payload's shape.
 ///
@@ -1064,15 +1065,17 @@ fn assert_live_leg(
          admitting it, so no detector ever executed. β had just reported \
          INDEX-OK for this corpus, so the gate and β disagree.\nstderr:\n{stderr}"
     );
-    assert!(
-        !stderr.contains("jcodemunch unreachable at"),
-        "{leg} leg: the binary FAILED to open a jcodemunch session and \
-         fail-softed to NoopJCodemunchOps. It still exited 0 and still emitted \
-         a well-formed empty findings array — which is exactly how PRD §2.3's \
-         broken handshake survived ten weeks. The preflight said the endpoint \
-         is a real jcodemunch-mcp serve, so the client is the broken half.\
-         \nstderr:\n{stderr}"
-    );
+    for label in breadcrumbs::CONSTRUCTION {
+        assert!(
+            !stderr.contains(label),
+            "{leg} leg: the binary FAILED to open a jcodemunch session \
+             (`{label}`) and fail-softed to NoopJCodemunchOps. It still exited \
+             0 and still emitted a well-formed findings array — which is \
+             exactly how PRD §2.3's broken handshake survived ten weeks. The \
+             preflight said the endpoint is a real jcodemunch-mcp serve, so \
+             the client is the broken half.\nstderr:\n{stderr}"
+        );
+    }
     for breadcrumb in call_breadcrumbs {
         assert!(
             !stderr.contains(breadcrumb),
@@ -1081,7 +1084,7 @@ fn assert_live_leg(
              EMPTY-BY-FAILURE, not empty-by-fact.\n\n\
              This is the SECOND, independent fail-soft layer, and every other \
              assertion here is silent on it: the session DID open (so no \
-             `jcodemunch unreachable at`), the §4.3 gate DID admit the run (so \
+             CONSTRUCTION label), the §4.3 gate DID admit the run (so \
              no `E_JC_INDEX_` marker), the binary DID exit 0, and the array IS \
              well-formed. `count_symbols(...) > 0` does not close it either — \
              that reads the index DB directly and says nothing about whether \
@@ -1223,6 +1226,20 @@ mod live_leg_seam {
             "reify-audit: jcodemunch unreachable at 'http://127.0.0.1:8917/mcp': \
              transport error: connection refused — P1 degraded to zero findings; \
              P2/P5 still run (pass --no-jcodemunch to silence)",
+        );
+        assert_live_leg("PDEAD", Some(0), &[], &stderr, breadcrumbs::PDEAD_CALL);
+    }
+
+    /// The CONSTRUCTION layer's second label: an endpoint that answered but
+    /// refused the handshake. Without it in link 3, a live leg whose
+    /// handshake was refused would pass.
+    #[test]
+    #[should_panic(expected = "FAILED to open a jcodemunch session")]
+    fn live_leg_rejects_the_handshake_refused_construction_fail_soft() {
+        let stderr = vacuous_pass_stderr(
+            "reify-audit: jcodemunch handshake refused at 'http://127.0.0.1:8917/mcp': \
+             jcodemunch HTTP status error: POST http://127.0.0.1:8917/mcp: \
+             http://127.0.0.1:8917/mcp: status code 404",
         );
         assert_live_leg("PDEAD", Some(0), &[], &stderr, breadcrumbs::PDEAD_CALL);
     }
