@@ -21636,9 +21636,10 @@ fn apply_param_to_source_preserves_the_design_files_permission_mode() {
         .permissions()
         .mode()
         & 0o7777;
-    assert!(
-        mode == 0o604,
-        "a write-back must keep the design's mode: expected 604, got {mode:o}"
+    assert_eq!(
+        format!("{mode:o}"),
+        "604",
+        "a write-back must keep the design's mode"
     );
 }
 
