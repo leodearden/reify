@@ -44,6 +44,7 @@ use reify_compiler::{CompiledGeometryOp, CompiledModule, PrimitiveKind};
 use reify_constraints::SimpleConstraintChecker;
 use reify_core::{ModulePath, RealizationNodeId, Type, ValueCellId};
 use reify_eval::cache::NodeId;
+use reify_eval::deps::ReverseDependencyIndex;
 use reify_eval::realization_cache::NO_OPTIONS;
 use reify_eval::{BuildScheduler, Engine};
 use reify_ir::{
@@ -737,6 +738,64 @@ pub structure S {
     let rebuilt = pair.rebuild();
 
     assert_eq!(rebuilt.hit_entities(), entities(&["S"]));
+}
+
+/// A hierarchical chain `P.body → Asm.body → Top.body` where every hop
+/// exports `body`, so for each consumer the producer candidates are
+/// ambiguous and the reverse index links neither hop. `Asm` and `Top` are
+/// reached only because the edit seeds every `Sub` consumer the index drops.
+/// The converse — an ambiguous consumer that must HIT after an unrelated edit
+/// — over-evicts by design today and is #8338's deliverable.
+#[test]
+fn a_hierarchical_chain_of_ambiguous_sub_operands_is_evicted_by_seeding() {
+    const SRC: &str = r#"pub structure P {
+    param w : Length = 10mm
+    let body = box(w, 10mm, 10mm)
+}
+pub structure Asm {
+    sub p = P()
+    let body = translate(self.p.body, 1mm, 0mm, 0mm)
+}
+pub structure Top {
+    sub a = Asm()
+    let body = translate(self.a.body, 0mm, 1mm, 0mm)
+}
+pub structure Bystander {
+    let shell = cylinder(5mm, 10mm)
+}"#;
+    let mut pair = RegimePair::new(
+        compile_source(SRC),
+        &[
+            ("mfg_p", "P", 1e-6),
+            ("mfg_asm", "Asm", 1e-6),
+            ("mfg_top", "Top", 1e-6),
+            ("mfg_by", "Bystander", 1e-6),
+        ],
+    );
+    pair.assert_resident(&["P", "Asm", "Top", "Bystander"]);
+    let graph = &pair
+        .selective
+        .engine
+        .snapshot()
+        .expect("a built engine has a snapshot")
+        .graph;
+    let index = ReverseDependencyIndex::build_from_graph(graph);
+    for producer in ["P", "Asm"] {
+        let linked: Vec<_> = index
+            .realization_dependents_of(&RealizationNodeId::new(producer, 0))
+            .iter()
+            .filter(|node| matches!(node, NodeId::Realization(_)))
+            .collect();
+        assert!(
+            linked.is_empty(),
+            "premise: the index links no consumer of the ambiguous {producer}.body; got {linked:?}"
+        );
+    }
+
+    pair.edit_param("P", "w", mm(30.0));
+    let rebuilt = pair.rebuild();
+
+    assert_eq!(rebuilt.hit_entities(), entities(&["Bystander"]));
 }
 
 // ── A value a build writes between edits ────────────────────────────────────
