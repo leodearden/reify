@@ -51,6 +51,14 @@ scripts/flake-density-report.py    tests/infra/test_flake_density_report.sh
 # pair at the bottom of this file. Without this row a --scope branch diff
 # touching only the .py selects no infra test at all.
 tests/infra/test_flake_density_report.py    tests/infra/test_flake_density_report.sh
+# Task 8455: the E3 §7 analysis modules and their suite select its wrapper.
+docs/prds/v0_6/e3-granularity/analysis/e3_protocol.py    tests/infra/test_e3_analysis.sh
+docs/prds/v0_6/e3-granularity/analysis/e3_stats.py    tests/infra/test_e3_analysis.sh
+docs/prds/v0_6/e3-granularity/analysis/e3_sources.py    tests/infra/test_e3_analysis.sh
+docs/prds/v0_6/e3-granularity/analysis/e3_model.py    tests/infra/test_e3_analysis.sh
+docs/prds/v0_6/e3-granularity/analysis/e3_analysis.py    tests/infra/test_e3_analysis.sh
+tests/infra/test_e3_analysis.py    tests/infra/test_e3_analysis.sh
+tests/infra/e3_analysis_fixtures.py    tests/infra/test_e3_analysis.sh
 
 # Warm-lane CoW pool scripts — edits route to the end-to-end integration gate.
 # Note: this is a load-bearing verify-pipeline file (see CLAUDE.md); editing it
