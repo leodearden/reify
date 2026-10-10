@@ -9,17 +9,19 @@
 //!
 //! Every test here therefore fails a mesh on purpose. Most then assert the
 //! process is still usable — that the damage is confined to the call that
-//! earned it. The last asserts what that failing call REPORTS, which needs
-//! the same deliberate failure to observe. The failing call itself is
-//! expected to be loud; what is under test is the state it leaves behind and
-//! the diagnosis it hands back.
+//! earned it. The `*_reports_gmshs_captured_log_*` tests assert what that
+//! failing call REPORTS, which needs the same deliberate failure to observe.
+//! The failing call itself is expected to be loud; what is under test is the
+//! state it leaves behind and the diagnosis it hands back.
 //!
-//! Two of this crate's four `mesh_generate` sites are driven from here —
-//! `mesh_to_volume` and `refine_volume_with_size_field`, in both directions.
-//! The other two are uncovered for a measured reason stated at each site:
-//! `mesh_profile_2d.rs` (no cheap 2D geometry that fails `mesh_generate(2)`
-//! was identified) and `mesh_boundary.rs` (its watertight preflight rejects
-//! every unmeshable fixture this binary has before gmsh is reached).
+//! Three of this crate's four `mesh_generate` sites are driven from here:
+//! `mesh_to_volume` and `refine_volume_with_size_field`, in both directions,
+//! and `mesh_surface_to_volume_with_attribution`, via two disjoint closed
+//! cubes that pass its watertight preflight. Only `mesh_profile_2d.rs`'s
+//! `mesh_generate(2)` stays uncovered at the mesher, for a measured reason:
+//! degenerate outlines make it succeed with zero elements (rejected at the
+//! readback, and tested in `mesh_plane_2d_tests.rs`), and a NaN vertex fails
+//! it only after ~98 s.
 //!
 //! These tests live in their own binary rather than in
 //! `mesh_to_volume_tests.rs` so that a recovery regression reds one binary
@@ -53,6 +55,8 @@ mod size_field;
 
 use clamp_probe::{CLAMP_TEST_ORDER, probe_triangle_count};
 use reify_ir::{ElementOrderTag, GeometryError, Mesh};
+#[cfg(feature = "mesh-morph")]
+use reify_kernel_gmsh::{EntityAttribution, mesh_surface_to_volume_with_attribution};
 use reify_kernel_gmsh::{GmshKernel, MeshingOptions, ffi, init, refine_volume_with_size_field};
 use reify_test_support::mesh_fixtures::unit_cube_mesh;
 use size_field::uniform_unit_cube_size_field;
@@ -73,6 +77,38 @@ fn unmeshable_open_triangle() -> Mesh {
     }
 }
 
+/// Two disjoint closed unit cubes, the second shifted +3 in x.
+///
+/// Both shells are closed, consistently wound and welded, so the attributed
+/// producer's watertight preflight (#4876) accepts them and the call reaches
+/// gmsh. Gmsh's single surface loop over two shells then fails HXT. MEASURED
+/// (libgmsh 4.15.2): `Info: some volumes of the BRep were not found`, then
+/// `Error: HXT 3D mesh failed`, in ~50 ms at [`poison_via_attributed`]'s
+/// options. Not hoisted into `reify_test_support::mesh_fixtures`, for the same
+/// reason as [`unmeshable_open_triangle`]: it has one consumer.
+#[cfg(feature = "mesh-morph")]
+fn two_disjoint_unit_cubes() -> Mesh {
+    const OFFSET_X: f32 = 3.0;
+    let cube = unit_cube_mesh();
+    let cube_vertex_count =
+        u32::try_from(cube.vertices.len() / 3).expect("a unit cube's vertex count fits in u32");
+
+    let mut vertices = cube.vertices.clone();
+    vertices.extend(
+        cube.vertices
+            .chunks_exact(3)
+            .flat_map(|v| [v[0] + OFFSET_X, v[1], v[2]]),
+    );
+    let mut indices = cube.indices.clone();
+    indices.extend(cube.indices.iter().map(|&i| i + cube_vertex_count));
+
+    Mesh {
+        vertices,
+        indices,
+        normals: None,
+    }
+}
+
 /// The premise every test in this binary rests on: the call failed AT THE
 /// MESHER, so there is real damage for the recovery to repair.
 ///
@@ -85,7 +121,7 @@ fn unmeshable_open_triangle() -> Mesh {
 /// into that weaker form.
 ///
 /// Returns the error it checked, so a caller with more to say about the
-/// message — the captured-log test at the foot of this file — states this
+/// message — the captured-log tests at the foot of this file — states this
 /// premise by reusing it rather than by re-deriving a weaker copy.
 #[track_caller]
 fn assert_failed_at_the_mesher<T>(
@@ -93,7 +129,7 @@ fn assert_failed_at_the_mesher<T>(
     result: Result<T, GeometryError>,
 ) -> GeometryError {
     let Err(err) = result else {
-        panic!("{entry_point}: an open triangle bounds no volume — it must report a failure");
+        panic!("{entry_point}: this fixture cannot be tet-meshed — it must report a failure");
     };
     let msg = format!("{err:?}");
     assert!(
@@ -138,7 +174,7 @@ fn poison_via_mesh_to_volume() {
 /// the open triangle: a degenerate field would be rejected at construction and
 /// the failure would land before gmsh, proving nothing about recovery.
 /// `assert_failed_at_the_mesher` is what holds that line.
-fn poison_via_refine() {
+fn poison_via_refine() -> GeometryError {
     assert_failed_at_the_mesher(
         "refine_volume_with_size_field",
         refine_volume_with_size_field(
@@ -147,6 +183,94 @@ fn poison_via_refine() {
             &many_threads(),
             ElementOrderTag::P1,
         ),
+    )
+}
+
+/// Poison the shared mesher through `mesh_surface_to_volume_with_attribution`.
+///
+/// `mesh_size` and `deterministic` are both pinned because they set what the
+/// failure costs: measured 4-6 s per failure under `MeshingOptions::default()`,
+/// against ~50 ms here. The empty attribution matches nothing, which costs
+/// nothing either: the call fails before any matching runs.
+#[cfg(feature = "mesh-morph")]
+fn poison_via_attributed() -> GeometryError {
+    assert_failed_at_the_mesher(
+        "mesh_surface_to_volume_with_attribution",
+        mesh_surface_to_volume_with_attribution(
+            &two_disjoint_unit_cubes(),
+            &MeshingOptions {
+                mesh_size: Some(0.5),
+                deterministic: true,
+                ..MeshingOptions::default()
+            },
+            ElementOrderTag::P1,
+            None,
+            None,
+            None,
+            &EntityAttribution {
+                faces: vec![],
+                edges: vec![],
+                vertices: vec![],
+                match_tolerance: 0.0,
+            },
+        ),
+    )
+}
+
+/// Require `err` — a failure [`assert_failed_at_the_mesher`] already placed at
+/// the mesher — to carry gmsh's captured log on top of the last-error line,
+/// folded in exactly once.
+///
+/// One copy for every mesher-failure test in this binary; why each assertion
+/// is there is set out on
+/// [`a_failed_mesh_to_volume_reports_gmshs_captured_log_not_just_the_last_error`].
+/// Display, not Debug: this is the form that reaches a log or the GUI.
+#[track_caller]
+fn assert_carries_gmshs_captured_log_once(entry_point: &str, err: &GeometryError) {
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("gmshModelMeshGenerate") && msg.contains("HXT 3D mesh failed"),
+        "{entry_point}: the pre-existing last-error annotation must be preserved, not \
+         replaced; got: {msg}",
+    );
+    assert!(
+        msg.contains("gmsh log ("),
+        "{entry_point}: expected the captured-log header; got: {msg}",
+    );
+    assert!(
+        msg.contains("Info:"),
+        "{entry_point}: expected a captured Info line — gmshLoggerGetLastError can never \
+         supply one; got: {msg}",
+    );
+    assert_eq!(
+        msg.matches("gmsh log (").count(),
+        1,
+        "{entry_point}: the mesher failure must be annotated exactly ONCE — \
+         init::mesh_generate_with_recovery folds the capture in itself, so a \
+         LogCapture seam drawn over that call would append the same tail a \
+         second time; got: {msg}",
+    );
+}
+
+/// Require gmsh's capture to be stopped and drained after `entry_point` failed
+/// at the mesher — the exit shape where recovery recycled the library holding
+/// the buffer while the capture was armed.
+///
+/// Call it after the entry point has returned: it takes `GMSH_LOCK` itself, so
+/// the read is serialised against any concurrent mesher rather than racing one
+/// mid-flight, and the caller's `CLAMP_TEST_ORDER` keeps this binary's siblings
+/// out of the window. Mirrors
+/// `mesh_to_volume_tests::mesh_to_volume_leaves_the_gmsh_logger_stopped`.
+#[track_caller]
+fn assert_capture_left_stopped_and_drained(entry_point: &str) {
+    let _guard = init::GMSH_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let leftover = ffi::logger_get().expect("ffi::logger_get failed");
+    assert!(
+        leftover.is_empty(),
+        "a {entry_point} that failed AT THE MESHER must still leave gmsh's capture \
+         stopped and drained, even though recovery recycled the library holding the \
+         buffer mid-window; {} lines left: {leftover:?}",
+        leftover.len(),
     );
 }
 
@@ -331,12 +455,13 @@ fn a_failed_mesh_to_volume_leaves_the_default_clamp_behind() {
 ///
 /// The tail is folded in exactly ONCE. `init::mesh_generate_with_recovery`
 /// annotates its own failure — it has to, since it destroys the library
-/// holding the capture — so `mesh_to_volume` deliberately leaves that one
-/// call outside its `LogCapture` seam. Only a comment marks that exclusion at
-/// the call site, and a later edit extending the seam over it "for symmetry"
-/// with its two neighbours would fail SILENTLY: every mesher-failure message
-/// would carry the same ~40 lines twice. The count assertion below is what
-/// reds instead.
+/// holding the capture — so every mesher deliberately leaves that one call
+/// outside its `LogCapture` seams. Only a comment marks that exclusion at
+/// each call site, and a later edit extending a seam over it "for symmetry"
+/// with its neighbours would fail SILENTLY: every mesher-failure message
+/// would carry the same ~40 lines twice. The count assertion in
+/// [`assert_carries_gmshs_captured_log_once`], shared by every mesher-failure
+/// test here, is what reds instead.
 ///
 /// The capture is still stopped and drained afterwards. This is the third
 /// and riskiest of the guard's exit shapes:
@@ -360,42 +485,59 @@ fn a_failed_mesh_to_volume_reports_gmshs_captured_log_not_just_the_last_error() 
         ),
     );
 
-    // Display, not Debug: this is the form that reaches a log or the GUI.
-    let msg = format!("{err}");
-    assert!(
-        msg.contains("gmshModelMeshGenerate") && msg.contains("HXT 3D mesh failed"),
-        "the pre-existing last-error annotation must be preserved, not replaced; got: {msg}",
-    );
-    assert!(
-        msg.contains("gmsh log ("),
-        "expected the captured-log header; got: {msg}",
-    );
-    assert!(
-        msg.contains("Info:"),
-        "expected a captured Info line — gmshLoggerGetLastError can never supply one; got: {msg}",
-    );
-    assert_eq!(
-        msg.matches("gmsh log (").count(),
-        1,
-        "the mesher failure must be annotated exactly ONCE — \
-         init::mesh_generate_with_recovery folds the capture in itself, so a \
-         LogCapture seam drawn over that call would append the same tail a \
-         second time; got: {msg}",
-    );
+    assert_carries_gmshs_captured_log_once("mesh_to_volume", &err);
+    assert_capture_left_stopped_and_drained("mesh_to_volume");
+}
 
-    // `mesh_to_volume` released GMSH_LOCK on return, so this read is
-    // serialised against any concurrent mesher rather than racing one
-    // mid-flight — and `_order` above keeps this binary's siblings out of the
-    // window. Mirrors `mesh_to_volume_leaves_the_gmsh_logger_stopped`, on the
-    // path where recovery destroyed and rebuilt the library holding the buffer
-    // while the capture was armed.
-    let _guard = init::GMSH_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let leftover = ffi::logger_get().expect("ffi::logger_get failed");
-    assert!(
-        leftover.is_empty(),
-        "a mesh_to_volume that failed AT THE MESHER must still leave gmsh's capture \
-         stopped and drained, even though recovery recycled the library holding the \
-         buffer mid-window; {} lines left: {leftover:?}",
-        leftover.len(),
-    );
+/// A `refine_volume_with_size_field` that fails at the mesher must report
+/// gmsh's own diagnosis too, folded in exactly once, and leave the capture
+/// stopped and drained.
+///
+/// The exactly-once assertion is what stops a `LogCapture` seam being drawn
+/// over refine's own `init::mesh_generate_with_recovery` call. The drained
+/// check carries more weight here than at `mesh_to_volume`: after recovery
+/// recycles the library, refine's `BackgroundFieldGuard::drop` tears its field
+/// down against the NEW library and logs errors into the still-armed capture
+/// (measured: `Error: Cannot delete field id 1, it does not exist`), so those
+/// lines too must be drained before the call returns.
+#[test]
+fn a_failed_refine_reports_gmshs_captured_log_not_just_the_last_error() {
+    let _order = CLAMP_TEST_ORDER.lock().unwrap_or_else(|e| e.into_inner());
+
+    let err = poison_via_refine();
+
+    assert_carries_gmshs_captured_log_once("refine_volume_with_size_field", &err);
+    assert_capture_left_stopped_and_drained("refine_volume_with_size_field");
+}
+
+/// A `mesh_surface_to_volume_with_attribution` that fails at the mesher must
+/// report gmsh's own diagnosis too, folded in exactly once, and leave the
+/// capture stopped and drained.
+///
+/// Measured on [`two_disjoint_unit_cubes`], the capture is where the
+/// explanation lives — `Info: some volumes of the BRep were not found` — while
+/// the last error says only `HXT 3D mesh failed`.
+#[cfg(feature = "mesh-morph")]
+#[test]
+fn a_failed_attributed_mesh_reports_gmshs_captured_log_not_just_the_last_error() {
+    let _order = CLAMP_TEST_ORDER.lock().unwrap_or_else(|e| e.into_inner());
+
+    let err = poison_via_attributed();
+
+    assert_carries_gmshs_captured_log_once("mesh_surface_to_volume_with_attribution", &err);
+    assert_capture_left_stopped_and_drained("mesh_surface_to_volume_with_attribution");
+}
+
+/// A failed attributed mesh must leave `mesh_to_volume` fully usable — the
+/// recovery half of the attributed producer's `mesh_generate` site.
+///
+/// Validated by mutation: with that site's `init::mesh_generate_with_recovery`
+/// replaced by a bare `ffi::mesh_generate(3)`, this test reds.
+#[cfg(feature = "mesh-morph")]
+#[test]
+fn a_failed_attributed_mesh_leaves_mesh_to_volume_usable() {
+    let _order = CLAMP_TEST_ORDER.lock().unwrap_or_else(|e| e.into_inner());
+
+    poison_via_attributed();
+    assert_cube_still_meshes("a failed mesh_surface_to_volume_with_attribution");
 }
