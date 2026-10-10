@@ -4266,6 +4266,12 @@ entries:
     origin_phase: unknown
     manifested_phase: ops
     note: Bash x16 re-issues the identical watcher-rearm command (--level 2 --timeout 3600, run_in_background) across repeated 1h slices. The digest does not show the ceiling being hit, so this is a partial match on the identical-re-issue pattern.
+  - date: '2026-10-09'
+    project: reify
+    session: 15c7ad90-db13-4e8d-9881-762c852a6aa1
+    origin_phase: unknown
+    manifested_phase: ops
+    note: The same bounded-wait watcher-rearm Bash command (timeout 3660000) was re-issued five times verbatim in the Retry Loops section, with no change between attempts.
 - id: entry-cand-20260726-8
   title: Warm-lane .task/plan.json symlink resolves to empty/unreadable target with no error surfaced
   severity: medium
@@ -8084,6 +8090,12 @@ entries:
     origin_phase: unknown
     manifested_phase: unknown
     note: Per-lane task-meta context in warm-lane worktree; not_found signal aligns with iterations.jsonl missing at expected path, manifested as turn/iteration record absent
+  - date: '2026-10-09'
+    project: reify
+    session: 7f4cddd8-a34f-40d2-9c2d-e31efcb19342
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: Turn 34 probed the per-lane .task-meta/_lane-49/iterations.jsonl path; wc returned 'No such file or directory' while the sibling ls succeeded, so the expected per-lane iterations file is absent at that path.
 - id: entry-cand-20260727-8
   title: No cross-session visibility into which concurrent sessions own which blocked tasks
   severity: medium
@@ -26384,3 +26396,29 @@ candidates:
     origin_phase: decompose
     manifested_phase: decompose
     evidence_quote: One D3 launch went out with a placeholder argument by my mistake. It ran a single agent (~69k tokens) and was discarded.
+- id: cand-20261009-1
+  title: Parser error from a grammar join misread as a deliberate language restriction and codified into a PRD scope limit
+  cause: A pre-existing parse error caused by an ambiguous grammar join (an annotation token after a value-ended member parsed as an ad-hoc port selector) was interpreted as a compile-time rejection rule for local-let discrete_set catalogs. The misreading was written into a PRD as a scope restriction and was not corrected until a later verification request.
+  area: grammar/parser diagnostics
+  first_seen: '2026-10-09'
+  disposition: pending
+  sightings:
+  - date: '2026-10-09'
+    project: reify
+    session: 6840317b-9da2-4841-8105-3e0b05135b98
+    origin_phase: unknown
+    manifested_phase: unknown
+    evidence_quote: That pre-#7094 error was misread on 2026-07-24 as "local-let discrete_set catalogs are compile-rejected" (docs/prds/v0_6/discrete-cost-minimisation.md §2.3, line ~81, and §9). The misreading became a scope restriction that Leo has now ruled lifted.
+- id: cand-20261009-2
+  title: Ruled numeric cadence bound assumes a timer governs alongside an ORed count trigger, so the timer never fires
+  cause: A task prescribed a configuration to meet a stated cadence bound without checking how the two trigger legs combine. The legs are ORed, so the count leg fires far more often and the timer never governs, leaving the stated bound unreachable and the configuration wrong for the next change.
+  area: orchestrator config / merge-verify shadow scheduling
+  first_seen: '2026-10-09'
+  disposition: pending
+  sightings:
+  - date: '2026-10-09'
+    project: reify
+    session: 2f946eda-216c-4e92-aa53-e25cd2b3b539
+    origin_phase: unknown
+    manifested_phase: implement
+    evidence_quote: The two legs are ORed. dark-factory merge_lane/shadow.py::_shadow_compare_due returns `count_due or timer_due`
