@@ -1007,5 +1007,148 @@ class StopRuleTests(unittest.TestCase):
         self.assertTrue(self._floor(later, "s1").floor_met)
 
 
+TRIGGER = at(30, 12)
+
+
+def prd_endpoint(slug, arm, usd_per_kloc, **rates):
+    """A PrdEndpoints carrying the given rates; every count zero."""
+    fields = {f.name: 0 for f in dataclasses.fields(e3_model.PrdEndpoints)
+              if f.name not in ("prd_slug", "arm", "label")}
+    fields.update(usd_per_kloc=usd_per_kloc, attempts_per_task=None, attempts_per_kloc=None,
+                  blocking_esc_per_task=None, blocking_esc_per_kloc=None,
+                  landed_scope_share=None)
+    fields.update(rates)
+    return e3_model.PrdEndpoints(prd_slug=slug, arm=arm, **fields)
+
+
+def endpoints_for(coarse_values, standard_values):
+    return tuple(
+        [prd_endpoint(f"c{i}", Arm.COARSE, v) for i, v in enumerate(coarse_values, 1)]
+        + [prd_endpoint(f"s{j}", Arm.STANDARD, v) for j, v in enumerate(standard_values, 1)])
+
+
+def probe_with_trigger(trigger):
+    return e3_model.StopRuleProbe(
+        per_prd=(), rule_ii_met=trigger is not None, rule_ii_instant=trigger,
+        rule_i_met=False, rule_i_instant=None, trigger_instant=trigger)
+
+
+class ConfirmatoryTests(unittest.TestCase):
+    def setUp(self):
+        self.protocol = fx.mini_protocol(n_coarse=4, n_standard=3)
+
+    def _verdict(self, trigger, endpoints):
+        return e3_model.confirmatory_verdict(probe_with_trigger(trigger), endpoints,
+                                             self.protocol)
+
+    def test_no_trigger_is_descriptive(self):
+        verdict = self._verdict(None, None)
+        self.assertEqual(verdict.label, "DESCRIPTIVE")
+        self.assertIn("stop rule", verdict.reason)
+        self.assertIsNone(verdict.test)
+        self.assertIsNone(verdict.trigger_instant)
+        self.assertIsNone(verdict.rejects_null)
+
+    def test_full_split_runs_the_exact_test(self):
+        coarse, standard = [8.0, 9.5, 11.0, 30.0], [20.0, 25.0, 40.0]
+        verdict = self._verdict(TRIGGER, endpoints_for(coarse, standard))
+        self.assertEqual(verdict.label, "CONFIRMATORY")
+        self.assertEqual(verdict.split, (4, 3))
+        self.assertEqual(verdict.min_p, Fraction(1, 35))
+        self.assertEqual(verdict.test, e3_stats.exact_mann_whitney_u(coarse, standard))
+        self.assertEqual(verdict.trigger_instant, TRIGGER)
+        self.assertEqual(verdict.rejects_null, verdict.test.p <= self.protocol.alpha)
+
+    def test_two_v_two_cannot_reach_alpha(self):
+        verdict = self._verdict(TRIGGER, endpoints_for([1.0, 2.0, None, None],
+                                                       [3.0, 4.0, None]))
+        self.assertEqual(verdict.label, "DESCRIPTIVE")
+        self.assertEqual(verdict.split, (2, 2))
+        self.assertEqual(verdict.min_p, Fraction(1, 6))
+        self.assertIn("1/6", verdict.reason)
+        self.assertIsNone(verdict.test)
+
+    def test_three_v_two_passes_the_inclusive_gate(self):
+        verdict = self._verdict(TRIGGER, endpoints_for([1.0, 2.0, 3.0, None],
+                                                       [4.0, 5.0, None]))
+        self.assertEqual(verdict.label, "CONFIRMATORY")
+        self.assertEqual(verdict.min_p, Fraction(1, 10))
+        self.assertEqual(verdict.test.p, Fraction(1, 10))
+        self.assertTrue(verdict.rejects_null)
+
+    def test_prd_without_a_value_does_not_contribute(self):
+        verdict = self._verdict(TRIGGER, endpoints_for([1.0, 2.0, 3.0, None],
+                                                       [4.0, 5.0, 6.0]))
+        self.assertEqual(verdict.split, (3, 3))
+        self.assertEqual(verdict.test.n_coarse, 3)
+
+
+class DescriptiveTests(unittest.TestCase):
+    def setUp(self):
+        self.protocol = fx.mini_protocol(n_coarse=4, n_standard=2)
+        self.endpoints = (
+            prd_endpoint("c1", Arm.COARSE, 10.0, attempts_per_task=1.0),
+            prd_endpoint("c2", Arm.COARSE, 20.0, attempts_per_task=2.0),
+            prd_endpoint("c3", Arm.COARSE, 30.0),
+            prd_endpoint("c4", Arm.COARSE, None),
+            prd_endpoint("s1", Arm.STANDARD, 40.0),
+            prd_endpoint("s2", Arm.STANDARD, 50.0),
+        )
+
+    def test_arm_medians_with_seeded_bootstrap_intervals(self):
+        first = e3_model.descriptives(self.endpoints, self.protocol)
+        second = e3_model.descriptives(self.endpoints, self.protocol)
+        self.assertEqual(first, second)
+        coarse = first.summary("usd_per_kloc", Arm.COARSE)
+        self.assertEqual((coarse.n_prds, coarse.median), (3, 20.0))
+        low, high = coarse.interval
+        self.assertTrue(10.0 <= low <= 20.0 <= high <= 30.0)
+        self.assertEqual(first.summary("usd_per_kloc", Arm.STANDARD).median, 45.0)
+        self.assertEqual(first.summary("attempts_per_task", Arm.COARSE).median, 1.5)
+        empty = first.summary("attempts_per_task", Arm.STANDARD)
+        self.assertEqual(empty.n_prds, 0)
+        self.assertIsNone(empty.median)
+        self.assertIsNone(empty.interval)
+
+    def test_every_metric_is_summarised_for_both_arms(self):
+        summaries = e3_model.descriptives(self.endpoints, self.protocol).summaries
+        self.assertEqual(
+            {(s.metric, s.arm) for s in summaries},
+            {(metric, arm) for metric in ("usd_per_kloc", "attempts_per_task",
+                                          "attempts_per_kloc", "blocking_esc_per_task",
+                                          "blocking_esc_per_kloc") for arm in Arm})
+
+    def test_stratum_b_pair_side_by_side(self):
+        pair = e3_model.descriptives(self.endpoints, self.protocol).stratum_b
+        self.assertEqual([e.prd_slug for e in pair], ["c1", "s1"])
+
+    def test_era_split_pools_landed_eligible_tasks(self):
+        scenario = EndpointScenario()
+        cells = {(c.arm, c.era): c
+                 for c in e3_model.era_split(scenario.outcomes(), scenario.protocol)}
+        self.assertEqual(set(cells), {(arm, era) for arm in Arm
+                                      for era in ("pre", "post", "straddle")})
+        straddle = cells[(Arm.COARSE, "straddle")]
+        self.assertEqual((straddle.n_tasks, straddle.usd_per_kloc, straddle.attempts_per_task,
+                          straddle.blocking_esc_per_task), (1, 20.0, 2.0, 2.0))
+        post = cells[(Arm.COARSE, "post")]
+        self.assertEqual((post.n_tasks, post.usd_per_kloc, post.attempts_per_task), (1, 20.0, 0.0))
+        standard_post = cells[(Arm.STANDARD, "post")]
+        self.assertEqual((standard_post.n_tasks, standard_post.attempts_per_task), (1, 1.0))
+        empty = cells[(Arm.COARSE, "pre")]
+        self.assertEqual(empty.n_tasks, 0)
+        self.assertIsNone(empty.usd_per_kloc)
+
+    def test_every_descriptive_object_is_labelled(self):
+        result = e3_model.descriptives(self.endpoints, self.protocol)
+        self.assertEqual(result.label, "DESCRIPTIVE")
+        self.assertEqual({s.label for s in result.summaries}, {"DESCRIPTIVE"})
+        self.assertEqual({e.label for e in result.stratum_b}, {"DESCRIPTIVE"})
+        scenario = EndpointScenario()
+        self.assertEqual({c.label for c in e3_model.era_split(scenario.outcomes(),
+                                                              scenario.protocol)},
+                         {"DESCRIPTIVE"})
+
+
 if __name__ == "__main__":
     unittest.main()
