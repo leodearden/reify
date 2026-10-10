@@ -3109,6 +3109,8 @@ From highest to lowest precedence:
 
 Chained comparisons: `a < b < c` desugars to `a < b and b < c`.
 
+Binder bodies have no row because they are not operators. That covers a quantifier predicate (the expression after `forall`/`exists` … `:`), a conditional's `else` branch and a lambda body. Each body extends as far right as possible, past every operator in the table, `implies` included. So `forall v in xs: v > 0 and v < 3` means `forall v in xs: (v > 0 and v < 3)`, and `if c then a else b and d` means `if c then a else (b and d)`. To end a body early, parenthesise the binder: `(forall v in xs: p) and q`.
+
 ---
 
 ## 17. Appendix: Complete Keyword List
