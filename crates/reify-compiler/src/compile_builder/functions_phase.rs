@@ -12,7 +12,8 @@ use crate::compile_builder::ctx::CompilationCtx;
 use crate::entity::build_structure_def_skeleton;
 use crate::functions::compile_function;
 use crate::merge_prelude_functions;
-use crate::types::{EntityKind, TopologyTemplate};
+use crate::name_env;
+use crate::types::TopologyTemplate;
 
 /// Run phase-7 (functions).
 ///
@@ -58,18 +59,10 @@ pub(crate) fn phase_functions(
             })
             .collect();
 
-        // Build the merged registry: prelude entries first (so same-module skeletons
-        // shadow prelude templates of the same name — mirrors compile_entity's
-        // entity_template_registry composition at entity.rs:396-405).
-        let mut merged_registry: HashMap<String, &TopologyTemplate> = prelude
-            .iter()
-            .flat_map(|m| m.templates.iter())
-            .filter(|t| t.entity_kind == EntityKind::Structure)
-            .map(|t| (t.name.clone(), t))
-            .collect();
-        for sk in skeletons.iter() {
-            merged_registry.insert(sk.name.clone(), sk);
-        }
+        // Same-module skeletons are the local tier: they shadow prelude
+        // templates of the same name.
+        let merged_registry: HashMap<String, &TopologyTemplate> =
+            name_env::structure_registry(&skeletons, prelude);
 
         // Compile user functions in source order.
         //

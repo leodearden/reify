@@ -65,12 +65,11 @@ use reify_core::{Diagnostic, DiagnosticLabel};
 
 use crate::compile_builder::ctx::CompilationCtx;
 use crate::compile_builder::traits_phase::build_trait_registry;
+use crate::name_env;
 use crate::type_resolution::{
     TypeAliasEntry, resolve_alias_dfs, validate_pub_parametric_alias_def_site,
 };
-use crate::types::{
-    CompiledModule, CompiledTrait, CompiledTypeAlias, EntityKind, TopologyTemplate,
-};
+use crate::types::{CompiledModule, CompiledTrait, CompiledTypeAlias, TopologyTemplate};
 
 /// Run phase-5 (type aliases).
 ///
@@ -204,14 +203,8 @@ pub(crate) fn phase_validate_pub_parametric_alias_defs(
         return;
     }
 
-    // Build template registry (prelude structures first, then local override).
-    let template_registry: HashMap<String, &TopologyTemplate> = prelude_refs
-        .iter()
-        .flat_map(|m| m.templates.iter())
-        .filter(|t| t.entity_kind == EntityKind::Structure)
-        .map(|t: &TopologyTemplate| (t.name.clone(), t))
-        .chain(ctx.templates.iter().map(|t| (t.name.clone(), t)))
-        .collect();
+    let template_registry: HashMap<String, &TopologyTemplate> =
+        name_env::structure_registry(&ctx.templates, prelude_refs);
 
     // Build trait registry (same composition as phase_pending_bound_checks).
     let trait_registry: HashMap<String, &CompiledTrait> =
