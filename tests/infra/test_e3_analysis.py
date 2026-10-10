@@ -37,6 +37,7 @@ sys.path.insert(0, str(ANALYSIS_DIR))
 import e3_analysis_fixtures as fx  # noqa: E402  (after sys.path manipulation)
 import e3_stats  # noqa: E402
 import e3_sources  # noqa: E402
+import e3_model  # noqa: E402
 from e3_protocol import E3, Arm, ProtocolViolation  # noqa: E402
 
 UTC = timezone.utc
@@ -518,6 +519,101 @@ class GitSourceTests(unittest.TestCase):
         with self.assertRaises(e3_sources.SourceError) as caught:
             e3_sources.read_task_merges(self.repo, "no-such-ref", {101})
         self.assertIn("no-such-ref", str(caught.exception))
+
+
+class AttributionTests(unittest.TestCase):
+    def setUp(self):
+        self.protocol = fx.mini_protocol()
+
+    def _attribute(self, overrides=None):
+        snapshot = fx.task_snapshot(self.protocol, overrides)
+        return {task.id: task for task in e3_model.attribute(snapshot, self.protocol)}
+
+    def _violation(self, overrides=None, snapshot=None):
+        snapshot = snapshot or fx.task_snapshot(self.protocol, overrides)
+        with self.assertRaises(ProtocolViolation) as caught:
+            e3_model.attribute(snapshot, self.protocol)
+        return caught.exception
+
+    def test_coarse_members_come_from_the_tag(self):
+        tasks = self._attribute()
+        for task_id, weight in ((101, 2), (102, 3), (201, 2), (202, 3)):
+            task = tasks[task_id]
+            self.assertIs(task.arm, Arm.COARSE)
+            self.assertTrue(task.is_coalesced)
+            self.assertFalse(task.is_reused)
+            self.assertEqual(task.scope_weight, weight)
+            self.assertTrue(task.counts_toward_floor)
+        reused = tasks[103]
+        self.assertEqual((reused.prd_slug, reused.is_reused, reused.is_coalesced,
+                          reused.scope_weight, reused.counts_toward_floor),
+                         ("c1", True, False, 1, False))
+
+    def test_standard_members_are_untagged_stamped_leaves(self):
+        tasks = self._attribute()
+        s1 = {i: tasks[i] for i in range(1101, 1106)}
+        for task in s1.values():
+            self.assertIs(task.arm, Arm.STANDARD)
+            self.assertEqual(task.prd_slug, "s1")
+            self.assertEqual(task.scope_weight, 1)
+        self.assertEqual({i for i, t in s1.items() if not t.counts_toward_floor}, {1104, 1105})
+
+    def test_retired_carve_outs_and_infrastructure_never_appear(self):
+        tasks = self._attribute()
+        self.assertEqual(len(tasks), 2 * 3 + 2 * 5)
+        for excluded in (fx.MINI_RETIRED, *fx.MINI_CARVE_OUTS, *fx.MINI_INFRASTRUCTURE):
+            self.assertNotIn(excluded, tasks)
+
+    def test_results_are_sorted_by_id(self):
+        snapshot = fx.task_snapshot(self.protocol)
+        ids = [task.id for task in e3_model.attribute(snapshot, self.protocol)]
+        self.assertEqual(ids, sorted(ids))
+
+    def test_amended_task_carries_its_amendment(self):
+        tasks = self._attribute()
+        self.assertEqual(tasks[1102].amendment, self.protocol.amendment_for(1102))
+        self.assertIsNone(tasks[1101].amendment)
+
+    def test_missing_registered_coarse_task_raises(self):
+        violation = self._violation({102: None})
+        self.assertIn("102", str(violation))
+
+    def test_untagged_registered_coarse_task_raises(self):
+        violation = self._violation({102: {"metadata": {"x_e3_arm": None}}})
+        self.assertIn("{101, 102, 103}", str(violation))
+        self.assertIn("{101, 103}", str(violation))
+
+    def test_coarse_tag_for_unregistered_task_raises(self):
+        violation = self._violation({201: {"metadata": {"x_e3_prd": "c1",
+                                                        "prd_path": "docs/prds/v0_6/c1.md"}}})
+        self.assertIn("201", str(violation))
+
+    def test_coarse_tag_naming_an_unknown_prd_raises(self):
+        self._violation({104: {"metadata": {"x_e3_arm": "coarse", "x_e3_prd": "zz",
+                                            "prd_path": "docs/prds/v0_6/zz.md"}}})
+
+    def test_reused_flag_must_match_registration(self):
+        self._violation({101: {"metadata": {"x_e3_reused": True}}})
+        self._violation({103: {"metadata": {"x_e3_reused": None}}})
+
+    def test_coarse_prd_path_must_match_its_x_e3_prd(self):
+        violation = self._violation({101: {"metadata": {"prd_path": "docs/prds/v0_6/c2.md"}}})
+        self.assertIn("101", str(violation))
+
+    def test_standard_member_count_must_match(self):
+        violation = self._violation({1103: None})
+        self.assertIn("s1", str(violation))
+        self.assertIn("5", str(violation))
+        self.assertIn("4", str(violation))
+
+    def test_untagged_standard_task_outside_stamped_range_raises(self):
+        violation = self._violation({1199: {"metadata": {"prd_path": "docs/prds/v0_6/s1.md"}}})
+        self.assertIn("1199", str(violation))
+
+    def test_snapshot_from_another_project_raises(self):
+        snapshot = dataclasses.replace(fx.task_snapshot(self.protocol), project_root="/elsewhere")
+        violation = self._violation(snapshot=snapshot)
+        self.assertIn("/elsewhere", str(violation))
 
 
 if __name__ == "__main__":

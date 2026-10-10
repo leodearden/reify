@@ -20,6 +20,7 @@ from fractions import Fraction
 from pathlib import Path
 
 from e3_protocol import Amendment, Arm, ArmPrd, EraEvent, Protocol
+from e3_sources import fetch_task_snapshot
 
 UTC = timezone.utc
 
@@ -377,3 +378,14 @@ def fake_task_store(payload):
         raise AssertionError(f"unexpected tool {name}")
 
     return call_tool, calls
+
+
+SNAPSHOT_FETCHED_AT = datetime(2026, 10, 10, 20, 0, tzinfo=UTC)
+
+
+def task_snapshot(protocol, overrides=None, fetched_at=SNAPSHOT_FETCHED_AT):
+    """A TaskSnapshot of snapshot_payload(protocol, overrides), read through
+    the public fetch path against the in-memory task store."""
+    call_tool, _ = fake_task_store(snapshot_payload(protocol, overrides))
+    return fetch_task_snapshot(
+        call_tool, protocol.project_root, protocol.snapshot_candidate_ids(), fetched_at)
