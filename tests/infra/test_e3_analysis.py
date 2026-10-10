@@ -17,6 +17,7 @@ live runs.db, task store or main ref.
 """
 
 import dataclasses
+import statistics
 import sys
 import unittest
 from datetime import datetime, timedelta, timezone
@@ -31,6 +32,7 @@ sys.path.insert(0, str(INFRA_DIR))
 sys.path.insert(0, str(ANALYSIS_DIR))
 
 import e3_analysis_fixtures as fx  # noqa: E402  (after sys.path manipulation)
+import e3_stats  # noqa: E402
 from e3_protocol import E3, Arm, ProtocolViolation  # noqa: E402
 
 UTC = timezone.utc
@@ -172,6 +174,84 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(violation.invariant, "freeze-window set")
         self.assertEqual(violation.expected, "{1, 2}")
         self.assertEqual(violation.found, "{1, 3}")
+
+
+class StatsTests(unittest.TestCase):
+    """The 4v3 null distribution of U is the Gaussian binomial [7 choose 3]_q:
+    1,1,2,3,4,4,5,4,4,3,2,1,1 — so P(U<=0)=1/35, P(U<=1)=2/35, P(U<=2)=4/35."""
+
+    def test_perfect_separation_in_prediction_direction(self):
+        result = e3_stats.exact_mann_whitney_u(coarse=[1, 2, 3, 4], standard=[5, 6, 7])
+        self.assertEqual(result.u, 0)
+        self.assertEqual(result.p, Fraction(1, 35))
+        self.assertEqual(result.arrangements, 35)
+        self.assertEqual((result.n_coarse, result.n_standard), (4, 3))
+
+    def test_one_inverted_pair(self):
+        result = e3_stats.exact_mann_whitney_u(coarse=[1, 2, 3, 5], standard=[4, 6, 7])
+        self.assertEqual(result.u, 1)
+        self.assertEqual(result.p, Fraction(2, 35))
+
+    def test_two_inverted_pairs(self):
+        result = e3_stats.exact_mann_whitney_u(coarse=[1, 2, 3, 6], standard=[4, 5, 7])
+        self.assertEqual(result.u, 2)
+        self.assertEqual(result.p, Fraction(4, 35))
+
+    def test_coarse_all_higher_is_against_prediction(self):
+        result = e3_stats.exact_mann_whitney_u(coarse=[4, 5, 6, 7], standard=[1, 2, 3])
+        self.assertEqual(result.u, 12)
+        self.assertEqual(result.p, 1)
+
+    def test_ties_score_half(self):
+        result = e3_stats.exact_mann_whitney_u(coarse=[5.0] * 4, standard=[5.0] * 3)
+        self.assertEqual(result.u, 6)
+        self.assertEqual(result.p, 1)
+
+    def test_partial_tie_counts_half_pair(self):
+        result = e3_stats.exact_mann_whitney_u(coarse=[1, 2, 3, 4], standard=[4, 6, 7])
+        self.assertEqual(result.u, Fraction(1, 2))
+
+    def test_min_achievable_p_table(self):
+        table = {
+            (4, 3): Fraction(1, 35), (3, 3): Fraction(1, 20), (4, 2): Fraction(1, 15),
+            (3, 2): Fraction(1, 10), (2, 3): Fraction(1, 10), (2, 2): Fraction(1, 6),
+            (4, 1): Fraction(1, 5),
+        }
+        for (n_coarse, n_standard), expected in table.items():
+            self.assertEqual(e3_stats.min_achievable_p(n_coarse, n_standard), expected)
+
+    def test_three_v_two_perfect_separation_reaches_alpha_inclusive(self):
+        result = e3_stats.exact_mann_whitney_u(coarse=[1, 2, 3], standard=[4, 5])
+        self.assertEqual(result.p, Fraction(1, 10))
+        self.assertTrue(result.p <= E3.alpha)
+
+    def test_empty_group_raises(self):
+        with self.assertRaises(ValueError):
+            e3_stats.exact_mann_whitney_u(coarse=[], standard=[1, 2])
+        with self.assertRaises(ValueError):
+            e3_stats.exact_mann_whitney_u(coarse=[1], standard=[])
+
+    def test_bootstrap_interval_is_seeded_and_brackets_the_median(self):
+        values = [3.0, 9.0, 1.5, 7.25, 4.0, 12.0, 5.5]
+        first = e3_stats.bootstrap_interval(
+            values, statistic=statistics.median, seed="s", resamples=2000,
+            level=Fraction(9, 10))
+        second = e3_stats.bootstrap_interval(
+            values, statistic=statistics.median, seed="s", resamples=2000,
+            level=Fraction(9, 10))
+        self.assertEqual(first, second)
+        low, high = first
+        self.assertLessEqual(low, statistics.median(values))
+        self.assertLessEqual(statistics.median(values), high)
+
+    def test_bootstrap_interval_degenerate_inputs(self):
+        self.assertEqual(
+            e3_stats.bootstrap_interval([4.5], statistic=statistics.median, seed="s",
+                                        resamples=50, level=Fraction(9, 10)),
+            (4.5, 4.5))
+        self.assertIsNone(
+            e3_stats.bootstrap_interval([], statistic=statistics.median, seed="s",
+                                        resamples=50, level=Fraction(9, 10)))
 
 
 if __name__ == "__main__":
