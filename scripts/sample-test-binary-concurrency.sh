@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 # Sample the HOST-WIDE peak number of concurrently-running Rust test binaries.
+# Host-wide holds for a caller with ptrace read reach over the host's processes;
+# a sandboxed caller sees only its own process tree, and the summary says which.
 #
 # Task 6018's ACCEPTANCE instrument (residual of task 5984 carry-over 1,
 # esc-5984-2): 6018 un-narrowed the global nextest pool ([profile.default]
@@ -23,6 +25,10 @@
 # empty host — absence of test binaries is DATA, not an error: it is launched
 # beside a verify without being coupled to it, so a window that starts early or
 # outlives the run must not fail whatever launched it.
+#
+# The summary also carries own_uid_links= and resolved_links=, each summed over
+# the window; a stderr WARNING fires when resolved_links is under half of
+# own_uid_links — the reading then covers only the caller's visible tree.
 #
 # ENVIRONMENT — two injection seams; the contract guard drives both.
 #   REIFY_SAMPLER_PROC_ROOT  the /proc to read (default /proc).
@@ -131,6 +137,23 @@
 # A whitespace-only --deps-glob is rejected for the same reason: it passes a
 # naive non-empty check but splits to ZERO patterns, after which every sample
 # counts 0 forever — the same silent-wrong-measurement class.
+#
+# ---------------------------------------------------------------------------
+# WHY own_uid_links / resolved_links EXIST (defect (e), measured).
+#
+# readlink /proc/<pid>/exe needs ptrace READ access to <pid>.  Under Landlock
+# that access is denied for every process outside the caller's domain, same uid
+# included, so a sandboxed caller confirms only its own descendants and reports
+# peak=0 nonzero_samples=0 over a host busy running tests: a THIRD silent zero,
+# textually the defect-(b) INCONCLUSIVE window.  A stat of /proc/<pid> is not
+# ptrace-gated, so the caller can still COUNT its own-uid candidates while blind
+# to their exe — own_uid_links is that count, resolved_links the operands the
+# confirmation resolved.  The denominator is own-uid on purpose: DAC denies every
+# root daemon and kernel thread to any healthy non-root caller, so a ratio over
+# all candidates would sit next to normal operation.  Under half resolved WARNs.
+# The measurements live in
+# docs/notes/nextest-global-pool-concurrency-observation.md -> "Ptrace blindness
+# (detected, task #7500)", their single owner.
 # ---------------------------------------------------------------------------
 set -euo pipefail
 
@@ -149,7 +172,7 @@ while [ "$#" -gt 0 ]; do
         (--deps-glob)  [ "$#" -ge 2 ] || _die "--deps-glob needs a value"; DEPS_GLOB="$2"; shift 2 ;;
         (--deps-glob=*) DEPS_GLOB="${1#*=}"; shift ;;
         (-h|--help)
-            sed -n '2,30p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+            sed -n '2,36p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
             exit 0 ;;
         (*) _die "unknown argument '$1'" ;;
     esac
@@ -178,8 +201,10 @@ set +f
 # measured with a stub that exits 127).  Batching made that blast radius the
 # WHOLE sample, where a per-candidate readlink lost one pid; `xargs` is also a
 # dependency this script did not previously have.  Die loudly here instead: the
-# missing-tool case is fully in this script's control, unlike the residual
-# "present but every operand denied" case (sandbox/ptrace, task #7500).
+# missing-tool case is fully in this script's control, unlike the "present but
+# every operand denied" case (a caller without ptrace read reach, defect (e)),
+# which no preflight can prevent and which is instead REPORTED: own_uid_links /
+# resolved_links on the summary line, plus the blindness WARNING.
 for _tool in readlink xargs; do
     command -v "$_tool" >/dev/null 2>&1 || \
         _die "$_tool not found on PATH — required for the batched exe confirmation"
