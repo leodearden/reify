@@ -1,5 +1,5 @@
-//! Closed-mesh fixtures shared by this crate's unit tests and its `tests/`
-//! integration binaries.
+//! Test geometry fixtures (closed meshes and dense SDF grids) shared by this
+//! crate's unit tests and its `tests/` integration binaries.
 //!
 //! # Why a module rather than a copy per test file
 //!
@@ -21,7 +21,7 @@
 //! statement of what a length in a resolution request means — before reading a
 //! millimetre figure into any fixture below.
 
-use reify_ir::Mesh;
+use reify_ir::{DenseSdfGrid, Mesh};
 
 /// Closed axis-aligned box spanning `min`..`max`: 8 corner vertices and 12
 /// outward-wound triangles.
@@ -86,4 +86,22 @@ pub fn box_mesh(hx: f32, hy: f32, hz: f32) -> Mesh {
 /// mid-plane probe lands exactly on a sample point.
 pub fn plate_100x100x1() -> Mesh {
     axis_aligned_box([0.0, 0.0, 0.0], [100.0, 100.0, 1.0])
+}
+
+/// Exact signed distance to a sphere of `radius` centred at
+/// `grid_centre + sphere_offset`, sampled on a `dims` grid of spacing `h`
+/// centred at `grid_centre` (negative inside).
+pub fn sphere_sdf_grid(
+    grid_centre: [f64; 3],
+    sphere_offset: [f64; 3],
+    radius: f64,
+    dims: [u32; 3],
+    h: f64,
+) -> DenseSdfGrid {
+    let sphere_centre: [f64; 3] = std::array::from_fn(|a| grid_centre[a] + sphere_offset[a]);
+    DenseSdfGrid::from_fn(dims, grid_centre, h, |p| {
+        let d2: f64 = (0..3).map(|a| (p[a] - sphere_centre[a]).powi(2)).sum();
+        d2.sqrt() - radius
+    })
+    .expect("sphere_sdf_grid: fixture arguments must form a valid DenseSdfGrid")
 }
