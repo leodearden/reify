@@ -1,4 +1,6 @@
-// Shared staleness primitives for the tree-sitter parser pipeline.
+// The build-script logic shared with `tests/build_logic_tests.rs` for the
+// tree-sitter parser pipeline: staleness predicates, stamp writers, and the
+// generate step's helpers.
 //
 // `include!`-ed by BOTH `build.rs` and `tests/build_logic_tests.rs`. It is a
 // bare item list, not a module: a build script cannot be `use`d by a test
@@ -20,6 +22,25 @@
 /// The expected output files that tree-sitter generate produces.
 #[allow(dead_code)]
 const EXPECTED_OUTPUTS: &[&str] = &["parser.c", "grammar.json", "node-types.json"];
+
+/// Report which `EXPECTED_OUTPUTS` are missing from `src_dir` after a generate.
+/// The build script panics on `Err`, so the message is what cargo prints.
+#[allow(dead_code)]
+fn verify_outputs(src_dir: &std::path::Path) -> Result<(), String> {
+    let missing: Vec<&str> = EXPECTED_OUTPUTS
+        .iter()
+        .copied()
+        .filter(|name| !src_dir.join(name).exists())
+        .collect();
+    if missing.is_empty() {
+        return Ok(());
+    }
+    Err(format!(
+        "tree-sitter generate succeeded but these output files are missing: {}. \
+         Check tree-sitter CLI version.",
+        missing.join(", ")
+    ))
+}
 
 /// Filename of the generated-output content manifest, written beside the
 /// outputs it describes (i.e. inside `tree-sitter-reify/src/`).

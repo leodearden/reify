@@ -1,4 +1,4 @@
-// The staleness primitives shared with `tests/build_logic_tests.rs`.
+// The build-script logic shared with `tests/build_logic_tests.rs`.
 //
 // A build script cannot be `use`d by a test target, and the old workaround —
 // hand-copying this logic into the test file — is how `#6992` shipped: the
@@ -200,24 +200,6 @@ fn write_inputs_stamp(out_dir: &str) {
     }
 }
 
-/// Verify that all expected output files exist after generation.
-/// Panics with a clear message naming whichever file is missing.
-fn verify_outputs(src_dir: &std::path::Path) {
-    let mut missing = Vec::new();
-    for name in EXPECTED_OUTPUTS {
-        if !src_dir.join(name).exists() {
-            missing.push(*name);
-        }
-    }
-    if !missing.is_empty() {
-        panic!(
-            "tree-sitter generate succeeded but these output files are missing: {}. \
-             Check tree-sitter CLI version.",
-            missing.join(", ")
-        );
-    }
-}
-
 fn main() {
     let src_dir = std::path::Path::new("src");
     let parser_path = src_dir.join("parser.c");
@@ -301,7 +283,9 @@ fn main() {
             let grammar_sha_before = sha256_of_path(grammar_path);
             run_tree_sitter_generate();
             // Verify all 3 output files were created.
-            verify_outputs(src_dir);
+            if let Err(msg) = verify_outputs(src_dir) {
+                panic!("{msg}");
+            }
             // Re-attest what was just generated (`#6992`, Hole B). Before this,
             // build.rs could regenerate parser.c and leave
             // `src/.grammar_hash.stamp` describing the PREVIOUS grammar — so a
