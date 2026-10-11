@@ -209,7 +209,7 @@ HOST_NPROC="$(_host_nproc)"
 #
 # IT YIELDS LINK PATHS, NOT PIDS, because that is what the confirmation consumes.
 # An earlier shape had the default branch strip each globbed path back to a bare
-# pid only for _confirmed_count to re-assemble it — a lossy round-trip that
+# pid only for the sampler to re-assemble it — a lossy round-trip that
 # existed solely to make the production path speak the pid-shaped vocabulary of
 # the test-only override seam, and that split the "one pass over one snapshot"
 # property across two functions.
@@ -247,13 +247,41 @@ EOF
     printf '%s\n' "${exes[@]}"
 }
 
+# _own_uid_link_count <link>... — how many of the given <root>/<pid>/exe links
+# belong to a process running as this caller's effective uid.  It tests the
+# <root>/<pid> DIRECTORY, never the exe link: `[ -O` follows symlinks, and
+# following /proc/<pid>/exe is ptrace-gated exactly like reading it, so it would
+# go blind together with the confirmation it exists to audit.  A stat of the
+# directory is not ptrace-gated.  Builtin test only, no fork per link.
+_own_uid_link_count() {
+    local link n=0
+    for link in "$@"; do
+        [ -O "${link%/exe}" ] && n=$((n + 1))
+    done
+    printf '%s' "$n"
+}
+
+# _lacks_ptrace_reach <own_uid_links> <resolved_links> — true iff the caller
+# resolved fewer than half of the exe links of processes running as its own uid.
+# The one definition of "blind"; the summary WARNING is its only consumer.
+_lacks_ptrace_reach() {
+    local own="$1" resolved="$2"
+    [ "$own" -gt 0 ] && [ $((resolved * 2)) -lt "$own" ]
+}
+
 # ---------------------------------------------------------------------------
-# _confirmed_count — one sample.  ONE batched confirmation, never one per pid.
+# _sample — one sample.  ONE batched confirmation, never one per pid.  Prints
+# ONE line of three integers: `<confirmed> <resolved> <own_uid>` — test binaries
+# confirmed, operands the confirmation resolved at all, and candidates owned by
+# this caller's uid (the reach audit, counted AFTER the confirmation so it adds
+# nothing to the discovery->confirmation gap).
 #
 # Candidate discovery may legitimately yield nothing (a host with no test
 # binaries), and any candidate may exit before it is confirmed, leaving no
 # <root>/<pid> — both are normal, not errors, so every step is guarded and the
-# function always succeeds with a count on stdout.
+# function always succeeds with its three counts on stdout.  An EMPTY
+# confirmation is not a reason to stop early: total blindness is exactly the
+# case the own-uid count must still report.
 #
 # The confirmation is a SINGLE multi-operand `readlink`: it prints one line per
 # resolvable operand, silently omits the unresolvable ones, and exits 1 if any
@@ -265,22 +293,23 @@ EOF
 # at startup, so an empty result here means the operands were unresolvable — not
 # that the confirmation never ran.
 # ---------------------------------------------------------------------------
-_confirmed_count() {
-    local candidates link exe glob resolved n=0 matched
+_sample() {
+    local candidates link exe glob resolved own n=0 r=0 matched
     local -a links=()
     candidates="$(_candidate_exe_links)"
-    [ -n "$candidates" ] || { printf '%s' 0; return 0; }
+    [ -n "$candidates" ] || { printf '0 0 0\n'; return 0; }
     while IFS= read -r link; do
         [ -n "$link" ] || continue
         links+=( "$link" )
     done <<EOF
 $candidates
 EOF
-    [ "${#links[@]}" -gt 0 ] || { printf '%s' 0; return 0; }
+    [ "${#links[@]}" -gt 0 ] || { printf '0 0 0\n'; return 0; }
     resolved="$(printf '%s\0' "${links[@]}" | xargs -0 readlink 2>/dev/null || true)"
-    [ -n "$resolved" ] || { printf '%s' 0; return 0; }
+    own="$(_own_uid_link_count "${links[@]}")"
     while IFS= read -r exe; do
         [ -n "$exe" ] || continue
+        r=$((r + 1))
         matched=0
         # Iterate the pre-split ARRAY, never the raw string (defect (c)).  The
         # `case` pattern stays UNQUOTED on purpose: case patterns undergo neither
@@ -294,19 +323,23 @@ EOF
     done <<EOF
 $resolved
 EOF
-    printf '%s' "$n"
+    printf '%s %s %s\n' "$n" "$r" "$own"
 }
 
 _started="$SECONDS"
 peak=0
 samples=0
 nonzero=0
+own_uid_total=0
+resolved_total=0
 
 # Sample FIRST, then test the deadline: --duration 0 must still yield exactly one
 # observation rather than an empty window.
 while :; do
-    c="$(_confirmed_count)"
+    read -r c r o <<<"$(_sample)"
     samples=$((samples + 1))
+    own_uid_total=$((own_uid_total + o))
+    resolved_total=$((resolved_total + r))
     [ "$c" -gt "$peak" ] && peak="$c"
     [ "$c" -gt 0 ] && nonzero=$((nonzero + 1))
     echo "sample-test-binary-concurrency.sh: t=$((SECONDS - _started))s confirmed=$c peak=$peak" >&2
@@ -316,9 +349,12 @@ done
 
 # ONE grep-able summary line, mirroring the `INFO: ... peak=<P> ...` grammar
 # tests/infra/run_all.sh:1722 already uses for its worker-shell peak.
-echo "INFO: nextest test-binary concurrency: peak=${peak} samples=${samples} nonzero_samples=${nonzero} interval=${INTERVAL}s duration=${DURATION}s deps_glob=${DEPS_GLOB} host_nproc=${HOST_NPROC}"
+echo "INFO: nextest test-binary concurrency: peak=${peak} samples=${samples} nonzero_samples=${nonzero} interval=${INTERVAL}s duration=${DURATION}s deps_glob=${DEPS_GLOB} host_nproc=${HOST_NPROC} own_uid_links=${own_uid_total} resolved_links=${resolved_total}"
 
 if [ "$nonzero" -eq 0 ]; then
     echo "sample-test-binary-concurrency.sh: WARNING — nonzero_samples=0: this window never observed a test-execution phase. The result is INCONCLUSIVE and is NOT evidence about the pool bound. Re-run over a longer window." >&2
+fi
+if _lacks_ptrace_reach "$own_uid_total" "$resolved_total"; then
+    echo "sample-test-binary-concurrency.sh: WARNING — resolved_links=${resolved_total} of own_uid_links=${own_uid_total}: this caller could not read /proc/<pid>/exe for most processes running as its own uid, i.e. it lacks ptrace read reach (a sandboxed caller, e.g. under Landlock, sees only its own process tree). peak and nonzero_samples cover only the visible processes: a zero is NOT evidence of an empty host, and a non-zero peak is a FLOOR. Re-run from an unsandboxed shell, or launch the workload as a descendant of this sampler's caller." >&2
 fi
 exit 0
