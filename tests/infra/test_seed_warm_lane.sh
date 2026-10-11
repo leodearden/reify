@@ -2365,7 +2365,8 @@ assert "P3c: build/cxx-AAAA/output WAS relocated in this same run (guards non-va
 # guard was opt-in and thus bypassable by a caller that simply omitted it — the
 # exact esc-5214 acquire-path clobber). --lane-lock stays accepted (implied under
 # --fresh-checkout; still the explicit opt-in for --reset-in-place, the B13
-# control arm AND the merge-spec acquire).
+# control arm — no production pool acquire passes --reset-in-place since
+# dark_factory:5380).
 #
 # Uses run_helper_real (real fixture: a non-empty <lane_dir>/target containing
 # a sentinel file) so the mv/clobber actually executes or is actually refused.
@@ -2392,7 +2393,7 @@ assert "P3c: build/cxx-AAAA/output WAS relocated in this same run (guards non-va
 # is a contradiction (usage error, exit 2).
 # H10 (task 5354, NEW) pins the complementary SCOPING property: the fail-safe
 # default acquire is gated on --fresh-checkout || --lane-lock and does NOT extend
-# to bare --reset-in-place (B13 control arm AND merge-spec acquire) — a held
+# to bare --reset-in-place (B13 control arm; no production pool caller) — a held
 # lock is ignored there (exit 0, not 75), the property H6a/H6b (reset-in-place
 # WITH --lane-lock) and E1/H3a (reset-in-place, no held lock) leave unpinned.
 # H11/H12/H13 (task 5568, NEW) pin the lane-lock refusal's own discriminant.
@@ -3094,8 +3095,8 @@ assert "H9: base_artifact.a present in <lane>/target (clone from base succeeded)
 
 # ── H10: scoping guard — the fail-safe default acquire is SCOPED to
 # --fresh-checkout (|| explicit --lane-lock) and DOES NOT extend to bare
-# --reset-in-place — the B13 control arm AND the merge-spec acquire
-# (seed-warm-lane.sh gates its default acquire on
+# --reset-in-place — the B13 control arm, with no production pool caller since
+# dark_factory:5380 (seed-warm-lane.sh gates its default acquire on
 # `[ -n "$FRESH_CHECKOUT" ] || [ -n "$LANE_LOCK_OPT" ]`, deliberately NOT
 # $RESET_IN_PLACE; the PRD keeps --lane-lock the explicit opt-in for the
 # reset-in-place arm).
@@ -5702,12 +5703,10 @@ assert "W9: ...and the guard was pointed at THIS lane (the -C field is \$W_LANE1
     _guard_targeted_lane "$W_LANE1" "$CALLS_FILE"
 
 # W2 (b): NOT invoked on --reset-in-place, which pins the mode gate. That gate
-# covers every TASK-lane acquire (dark-factory drives those through
-# _seed_warm_lane(lane, '--fresh-checkout')), but NOT the merge-spec lane —
-# measured 2026-08-30, acquire_spec_lane always passes --reset-in-place. That is
-# harmless here because the pin is a property of the ONE shared .git/config, not
-# of a lane: any acquire that pins it pins it for every lane. See the mode-gate
-# comment in scripts/seed-warm-lane.sh for the full measurement.
+# covers every production pool acquire, task and merge-spec alike (dark-factory
+# drives both through _seed_warm_lane(lane, '--fresh-checkout') since
+# dark_factory:5380); W2 pins that the remaining --reset-in-place mode stays
+# outside it. See the mode-gate comment in scripts/seed-warm-lane.sh.
 # Same fixture shape as Block E's --reset-in-place run.
 W_LANE2="$(make_isolated_lane W-reset)"
 mkdir -p "$W_LANE2/src"
