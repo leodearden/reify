@@ -10,6 +10,17 @@ use reify_ir::{
 };
 use reify_kernel_manifold::ManifoldKernel;
 
+fn assert_names_variant_and_kernel(msg: &str, token: &str) {
+    assert!(
+        msg.contains(token),
+        "message does not name {token:?}: {msg:?}"
+    );
+    assert!(
+        msg.contains("manifold"),
+        "message does not name the kernel: {msg:?}"
+    );
+}
+
 #[test]
 fn execute_rejects_non_boolean_op_naming_its_kind() {
     let ops = [
@@ -29,8 +40,7 @@ fn execute_rejects_non_boolean_op_naming_its_kind() {
         let mut kernel = ManifoldKernel::new();
         match kernel.execute(&op) {
             Err(GeometryError::OperationFailed(msg)) => {
-                assert!(msg.contains(op.kind_name()), "{msg:?}");
-                assert!(msg.contains("manifold"), "{msg:?}");
+                assert_names_variant_and_kernel(&msg, op.kind_name())
             }
             other => panic!(
                 "expected OperationFailed for {}, got {other:?}",
@@ -50,8 +60,7 @@ fn query_rejects_unanswered_variant_naming_its_kind() {
     for query in queries {
         match kernel.query(&query) {
             Err(QueryError::QueryFailed(msg)) => {
-                assert!(msg.contains(query.kind_name()), "{msg:?}");
-                assert!(msg.contains("manifold"), "{msg:?}");
+                assert_names_variant_and_kernel(&msg, query.kind_name())
             }
             other => panic!(
                 "expected QueryFailed for {}, got {other:?}",
@@ -64,15 +73,10 @@ fn query_rejects_unanswered_variant_naming_its_kind() {
 #[test]
 fn export_rejects_unsupported_format_naming_it() {
     let kernel = ManifoldKernel::new();
-    for format in [ExportFormat::Step, ExportFormat::Obj] {
-        let token = format!("{format:?}");
-
+    for (format, token) in [(ExportFormat::Step, "Step"), (ExportFormat::Obj, "Obj")] {
         let mut buf: Vec<u8> = Vec::new();
         match kernel.export(GeometryHandleId(1), format, &mut buf) {
-            Err(ExportError::FormatError(msg)) => {
-                assert!(msg.contains(&token), "{msg:?}");
-                assert!(msg.contains("manifold"), "{msg:?}");
-            }
+            Err(ExportError::FormatError(msg)) => assert_names_variant_and_kernel(&msg, token),
             other => panic!("expected FormatError from export({token}), got {other:?}"),
         }
         assert!(buf.is_empty(), "export({token}) wrote {} bytes", buf.len());
@@ -80,10 +84,7 @@ fn export_rejects_unsupported_format_naming_it() {
         let mut buf: Vec<u8> = Vec::new();
         let options = ExportOptions::default();
         match kernel.export_with_options(GeometryHandleId(1), format, &options, &mut buf) {
-            Err(ExportError::FormatError(msg)) => {
-                assert!(msg.contains(&token), "{msg:?}");
-                assert!(msg.contains("manifold"), "{msg:?}");
-            }
+            Err(ExportError::FormatError(msg)) => assert_names_variant_and_kernel(&msg, token),
             other => {
                 panic!("expected FormatError from export_with_options({token}), got {other:?}")
             }
