@@ -204,10 +204,7 @@ pub fn joint_range_midpoint(joint: &Value) -> Option<JointValue> {
             let mid = range_midpoint(map, "range")?;
             Some(JointValue::Scalar(mid))
         }
-        JointKind::Coupling => {
-            let parent = map.get(&Value::String("parent".to_string()))?;
-            joint_range_midpoint(parent)
-        }
+        JointKind::Coupling => joint_range_midpoint(coupling_parent(joint)?),
         // 0-DOF — empty free-variable space; no midpoint to seed.
         JointKind::Fixed => None,
         JointKind::Planar => {
@@ -286,7 +283,9 @@ pub fn per_joint_jacobian_local(joint: &Value) -> Option<[f64; 6]> {
 /// `transform_log(transform_inverse(T_minus) ⋅ T_plus) / (2*eps)` to recover
 /// the central-difference column.  This is symmetric-error O(ε²) and works
 /// for every joint kind `value_for_joint` handles (all seven JOINT_KINDS post
-/// KCC-γ widening).
+/// KCC-γ widening).  Each column is the derivative w.r.t. free joint `i`'s
+/// motion variable, so every coupling of `chain[i]` in the chain moves with it
+/// ([`propagate_to_couplings`]).
 ///
 /// Returns `None` if `eps <= 0`, any free index is out of range, the
 /// `chain.len() != values.len()`, or any `chain_transform` along the way
@@ -325,6 +324,8 @@ pub fn chain_jacobian_fd(
             let mut minus = values.to_vec();
             perturb_storage_component(&mut plus[i], c, eps);
             perturb_storage_component(&mut minus[i], c, -eps);
+            propagate_to_couplings(chain, &mut plus, i);
+            propagate_to_couplings(chain, &mut minus, i);
             let t_plus = chain_transform(chain, &plus)?;
             let t_minus = chain_transform(chain, &minus)?;
             let t_minus_inv = eval_builtin("transform_inverse", &[t_minus]);
@@ -585,7 +586,7 @@ pub fn extract_loop_closure_chains(
     // Free-variable membership is `joints::is_driving_joint`, so `fixed` and
     // `coupling` never get a free variable.  A coupling's slot carries its
     // parent's value; when that parent is itself free, the solver keeps the
-    // slot in step with it.
+    // slot in step with it (`propagate_to_couplings`).
     let mut vals_b_initial = Vec::with_capacity(chain_b.len());
     let mut free_b: Vec<usize> = Vec::new();
     for (i, joint) in chain_b.iter().enumerate() {
@@ -800,18 +801,35 @@ fn resolve_joint_value(joint: &Value, bindings: &[Value]) -> Option<JointValue> 
     if let Some(v) = direct_binding_value(joint, bindings) {
         return Some(v);
     }
-    match joint_kind(joint) {
-        Some(JointKind::Coupling) => {
-            if let Value::Map(map) = joint
-                && let Some(parent) = map.get(&Value::String("parent".to_string()))
-            {
-                return resolve_joint_value(parent, bindings);
-            }
-        }
-        Some(JointKind::Fixed) => return Some(JointValue::Scalar(0.0)),
-        _ => {}
+    if let Some(parent) = coupling_parent(joint) {
+        return resolve_joint_value(parent, bindings);
+    }
+    if joint_kind(joint) == Some(JointKind::Fixed) {
+        return Some(JointValue::Scalar(0.0));
     }
     joint_range_midpoint(joint)
+}
+
+/// The `parent` joint of a coupling; `None` for every other kind.
+fn coupling_parent(joint: &Value) -> Option<&Value> {
+    match (joint_kind(joint)?, joint) {
+        (JointKind::Coupling, Value::Map(m)) => m.get(&Value::String("parent".to_string())),
+        _ => None,
+    }
+}
+
+/// A coupling has no motion variable of its own: its slot carries its parent's
+/// (as in [`resolve_joint_value`] and snapshot's `value_for`), so when slot
+/// `driver` moves, every slot coupled to `chain[driver]` moves with it (#7497).
+pub(crate) fn propagate_to_couplings(chain: &[Value], values: &mut [JointValue], driver: usize) {
+    let (Some(parent), Some(driven)) = (chain.get(driver), values.get(driver).cloned()) else {
+        return;
+    };
+    for (joint, slot) in chain.iter().zip(values.iter_mut()) {
+        if coupling_parent(joint) == Some(parent) {
+            *slot = driven.clone();
+        }
+    }
 }
 
 /// Compute the loop-closure residual Jacobian with respect to caller-supplied
