@@ -1,15 +1,13 @@
+import { REIFY_DEBUG_TOOL_PREFIX } from './tool-surface.js';
+
 export interface SystemPromptOptions {
+  /** Whether the host's reify-debug server is live; only then are its tools described. */
+  reifyDebugLive: boolean;
   workingDirectory?: string;
 }
 
-/**
- * The reify-debug MCP server's tool namespace. session.ts's ALLOWED_TOOLS must
- * grant it; system-prompt.test.ts checks every tool the prompt names is grantable.
- */
-const REIFY_DEBUG_PREFIX = 'mcp__reify-debug__';
-
 function debugTool(name: string): string {
-  return `${REIFY_DEBUG_PREFIX}${name}`;
+  return `${REIFY_DEBUG_TOOL_PREFIX}${name}`;
 }
 
 interface AdvertisedTool {
@@ -183,36 +181,60 @@ structure def Bracket {
 \`\`\`
 `;
 
+const FILE_TOOLS_LINE =
+  '- **Read / Write / Edit** — Read and modify `.ri` source files on disk; the GUI reloads the design when its file changes.';
+
+function renderToolsSection(reifyDebugLive: boolean): string {
+  const lines = ['## Tools', '', FILE_TOOLS_LINE];
+  if (reifyDebugLive) {
+    lines.push(
+      '',
+      `The Reify GUI serves the tools below over MCP; call them by their full \`${REIFY_DEBUG_TOOL_PREFIX}\` names.`,
+      '',
+      renderToolGroups(ADVERTISED_DEBUG_TOOLS),
+    );
+  }
+  return lines.join('\n');
+}
+
+const DEBUG_TOOL_GUIDELINES: readonly string[] = [
+  `**Read before writing.** Always use Read and ${debugTool('get_diagnostics')} before modifying code.`,
+  `**Choose the right edit.** A value change goes through ${debugTool('reify_set_parameter')} (a surgical edit on disk). Structural edits (members, constraints, geometry) go through Edit/Write. ${debugTool('reify_update_source')} edits live only in memory until ${debugTool('reify_save_file')}.`,
+  `**Check your work.** After an edit, call ${debugTool('wait_for_idle')}, then ${debugTool('get_diagnostics')}, and take a ${debugTool('screenshot')} when geometry changed.`,
+];
+
+const SOURCE_ONLY_GUIDELINES: readonly string[] = [
+  '**Read before writing.** Always Read a file before modifying it.',
+  '**Make changes with Edit/Write.** The GUI reloads the design when its file changes.',
+];
+
+const COMMON_GUIDELINES: readonly string[] = [
+  '**Preserve structure.** When editing, maintain existing params, constraints, and sub-components unless explicitly asked to change them.',
+  '**Use units consistently.** Physical quantities should always include units (e.g., `80mm` not `80`).',
+  '**Add constraints.** When adding parameters, suggest sensible constraints for manufacturing feasibility.',
+  '**Explain changes.** Briefly describe what you changed and why.',
+];
+
+function renderGuidelines(reifyDebugLive: boolean): string {
+  const guidelines = [
+    ...(reifyDebugLive ? DEBUG_TOOL_GUIDELINES : SOURCE_ONLY_GUIDELINES),
+    ...COMMON_GUIDELINES,
+  ];
+  return ['## Guidelines', '', ...guidelines.map((g, i) => `${i + 1}. ${g}`)].join('\n');
+}
+
 /**
- * Condensed Reify language briefing and tool-usage guide for the Claude Code SDK.
- * This inline briefing is the full reference — there is no separate lookup tool.
+ * The condensed Reify language briefing and tool-usage guide for the Claude Code
+ * SDK — the full reference, there is no separate lookup tool. The reify-debug
+ * tools are described only when the host's server is live.
  */
-export const SYSTEM_PROMPT = `${LANGUAGE_BRIEFING}
-## Tools
+export function buildSystemPrompt(options: SystemPromptOptions): string {
+  let prompt = `${LANGUAGE_BRIEFING}
+${renderToolsSection(options.reifyDebugLive)}
 
-- **Read / Write / Edit** — Read and modify \`.ri\` source files on disk; the GUI reloads the design when its file changes.
-
-The Reify GUI serves the tools below over MCP; call them by their full \`${REIFY_DEBUG_PREFIX}\` names.
-
-${renderToolGroups(ADVERTISED_DEBUG_TOOLS)}
-
-## Guidelines
-
-1. **Read before writing.** Always use Read and ${debugTool('get_diagnostics')} before modifying code.
-2. **Choose the right edit.** A value change goes through ${debugTool('reify_set_parameter')} (a surgical edit on disk). Structural edits (members, constraints, geometry) go through Edit/Write. ${debugTool('reify_update_source')} edits live only in memory until ${debugTool('reify_save_file')}.
-3. **Check your work.** After an edit, call ${debugTool('wait_for_idle')}, then ${debugTool('get_diagnostics')}, and take a ${debugTool('screenshot')} when geometry changed.
-4. **Preserve structure.** When editing, maintain existing params, constraints, and sub-components unless explicitly asked to change them.
-5. **Use units consistently.** Physical quantities should always include units (e.g., \`80mm\` not \`80\`).
-6. **Add constraints.** When adding parameters, suggest sensible constraints for manufacturing feasibility.
-7. **Explain changes.** Briefly describe what you changed and why.
+${renderGuidelines(options.reifyDebugLive)}
 `;
-
-/**
- * Build the complete system prompt, optionally injecting runtime context.
- */
-export function buildSystemPrompt(options?: SystemPromptOptions): string {
-  let prompt = SYSTEM_PROMPT;
-  if (options?.workingDirectory) {
+  if (options.workingDirectory) {
     prompt += `\n## Working Directory\n\nProject directory: ${options.workingDirectory}\n`;
   }
   return prompt;
