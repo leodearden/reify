@@ -1,7 +1,115 @@
+//! The PLINECITE ratchet ledger — the grammar of the committed
+//! `crates/reify-audit/plinecite-baseline.txt`.
+//!
+//! The file lists PLINECITE's accepted line-cite debt, one [`CiteRow`] per
+//! line. The ratchet and its generator settle these rows with
+//! [`crate::ratchet_ledger::Ledger`]'s set algebra.
+//!
+//! This module knows nothing about how debt is found — `plinecite.rs` derives
+//! the live rows; this is only the format of one committed file.
+
+use std::collections::BTreeSet;
+use std::fmt;
+
+/// The committed ledger, read only when git-tracked (an untracked copy is
+/// inert).
+pub const BASELINE_PATH: &str = "crates/reify-audit/plinecite-baseline.txt";
+
+/// The preamble [`render_baseline`] writes above the rows. Every line is a
+/// `#` comment, so [`parse_baseline`] reads none of it as a row.
+pub const BASELINE_HEADER: &str = "\
+# PLINECITE baseline — accepted line-cite debt.
+#
+# One row per line, `<path> :: <cite>`: a tracked in-scope file, and a hard
+# `<file>.rs:<line>` / `<file>.ri:<line>` cite that one of its comment lines
+# carries. The citing line's own number is deliberately absent, so a row
+# survives code motion.
+#
+# GENERATED — do not hand-edit. Regenerate with:
+#   cargo run -p reify-audit --bin plinecite-baseline-gen -- --project-root . \\
+#     > crates/reify-audit/plinecite-baseline.txt
+#
+# The default regeneration only DROPS stale rows. `--admit-new` is the only way
+# to add debt, and every row it adds must be justified in review; the real fix
+# is to cite the enclosing symbol, or to mark a deliberate dated cite
+# `plinecite:allow — <reason>`. Re-numbering a cite is not a fix: the new
+# number is new debt.
+#
+# A row that matches no live cite is STALE, and `reify-audit --pattern
+# PLINECITE` reports it as `stale-baseline-entry`: delete it, or rerun the
+# default generator.
+#
+# A regeneration is valid for EXACTLY the tree it ran against. Any later rebase,
+# merge, amend or cherry-pick is a different tree and invalidates it. Re-verify
+# on the COMMITTED tree:
+#   git status --porcelain    # must be empty
+#   cargo run -p reify-audit --bin plinecite-baseline-gen -- --project-root . \\
+#     | diff -u crates/reify-audit/plinecite-baseline.txt -
+";
+
+/// Between a row's path and its cite. A path holds no space and a cite can
+/// (` esc-<id>`), so a row splits at the first occurrence.
+const SEPARATOR: &str = " :: ";
+
+/// One line of the ledger: a citing file and one cite it carries.
+///
+/// The derived `Ord` sorts by path, then cite — the order [`render_baseline`]
+/// writes.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct CiteRow {
+    pub path: String,
+    pub cite: String,
+}
+
+impl CiteRow {
+    /// Parse one non-comment line. Never fails: a line with no separator
+    /// becomes a row with an empty cite, which no live cite matches, so the
+    /// ratchet reports it stale.
+    pub fn parse(line: &str) -> Self {
+        let line = line.trim();
+        let (path, cite) = line.split_once(SEPARATOR).unwrap_or((line, ""));
+        Self {
+            path: path.to_string(),
+            cite: cite.to_string(),
+        }
+    }
+}
+
+impl fmt::Display for CiteRow {
+    /// The row's line, so a stale row is named by the text to delete.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.cite.is_empty() {
+            f.write_str(&self.path)
+        } else {
+            write!(f, "{}{SEPARATOR}{}", self.path, self.cite)
+        }
+    }
+}
+
+/// Every row in a ledger file. Blank and `#` lines are skipped; every other
+/// line becomes a row, so no line is ever silently discarded.
+pub fn parse_baseline(content: &str) -> BTreeSet<CiteRow> {
+    content
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .map(CiteRow::parse)
+        .collect()
+}
+
+/// The ledger file's bytes: [`BASELINE_HEADER`], then one row per line in
+/// [`CiteRow`] order. An empty set renders the header alone.
+pub fn render_baseline(rows: &BTreeSet<CiteRow>) -> String {
+    let mut out = String::from(BASELINE_HEADER);
+    for row in rows {
+        out.push_str(&format!("{row}\n"));
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::BTreeSet;
 
     const CACHE: &str = "crates/reify-eval/src/cache.rs";
     const STDLIB_FEA: &str = "crates/reify-compiler/stdlib/materials_fea.ri";

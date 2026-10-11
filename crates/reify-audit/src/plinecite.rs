@@ -21,13 +21,10 @@
 //! Rationale, scope, measured surface and the normative grammar:
 //! `docs/prds/reify-audit-stale-line-cite-detector.md`.
 
+use crate::plinecite_baseline::BASELINE_PATH;
 use crate::scan_util::{allow_marker_body, find_word_boundary_token, is_word_byte};
 use crate::{AuditContext, EvidenceRef, Finding, Pattern, Severity};
 use std::collections::BTreeMap;
-
-/// The committed ledger of accepted line-cite debt — also the handle of every
-/// finding about the run as a whole rather than one citing line.
-pub const BASELINE_PATH: &str = "crates/reify-audit/plinecite-baseline.txt";
 
 /// The per-line escape hatch: `plinecite:allow — <reason>`.
 const ALLOW_TOKEN: &str = "plinecite:allow";
@@ -43,7 +40,7 @@ const ESC_ANCHOR: &[u8] = b" esc-";
 
 /// Whether PLINECITE scans the tracked file `path` — the lane's single scope
 /// boundary: the bundled stdlib's `.ri` files, and every `.rs` under a
-/// crate's `src/` outside [`EXCLUDED_PREFIXES`].
+/// crate's `src/` outside `EXCLUDED_PREFIXES`.
 // G-allow: pub for the cross-crate real-tree smoke in tests/plinecite.rs; the production caller, check(), is same-file, and the orphan audit counts only cross-file call sites
 pub fn in_scope(path: &str) -> bool {
     let parts: Vec<&str> = path.split('/').collect();
