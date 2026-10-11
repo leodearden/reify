@@ -207,10 +207,8 @@ pub(crate) fn eval_snapshot(name: &str, args: &[Value]) -> Option<Value> {
             // `free_values` shape produced by step-6.  Outer-List length
             // MUST equal `loop_closures.len()` — defense-in-depth against
             // a caller threading a stale snapshot's free_values into a
-            // structurally different mechanism.  Per-loop inner-List
-            // length checks land later (need each loop's `free_b.len()`
-            // to validate, which is computed inside the closed-chain
-            // block below).
+            // structurally different mechanism.  Each inner row's width
+            // is checked by the solver (see the strategy pick below).
             //
             // Open-chain (loop_closures empty) + 3-arg with empty outer
             // List is a no-op fast path: the warm-start vec stays empty
@@ -252,9 +250,11 @@ pub(crate) fn eval_snapshot(name: &str, args: &[Value]) -> Option<Value> {
 
             // Per-loop converged free-variable values, threaded into the
             // Snapshot Map's `free_values` key (task 2678 step-6).  Outer
-            // List length == loop_closures.len(); inner List length ==
-            // per-loop free var count; leaves are `Value::Real` carrying
-            // SI-unit values (matches the warm-start arg shape in step-8).
+            // List length == loop_closures.len(); inner List length == the
+            // loop's flat Newton-state width (sum of `JointKind::flat_len`,
+            // Sphere = 4), not its free-joint count; leaves are
+            // `Value::Real` carrying SI-unit values (matches the warm-start
+            // arg shape in step-8).
             // Open-chain mechanisms emit an empty outer List for shape
             // stability (the BTreeMap key invariant {bodies, free_values,
             // kind} stays alphabetically consistent across mechanism
@@ -309,22 +309,12 @@ pub(crate) fn eval_snapshot(name: &str, args: &[Value]) -> Option<Value> {
                             None => return Some(Value::Undef),
                         };
 
-                    // Pick the strategy: warm-start when the caller supplied
-                    // a 3rd arg with a matching-length seed vector, midpoint
-                    // otherwise.  Per-loop inner-List length (validated here)
-                    // MUST equal this loop's `free_b.len()` — the solver's
-                    // own `validate_loop_closure_inputs` re-enforces it, but
-                    // catching it here surfaces the structural bug at the
-                    // snapshot boundary rather than burying it inside an
-                    // `InvalidInput` outcome.
+                    // A warm row is this loop's flat Newton state.  Its width
+                    // rule is owned and enforced by the solver's
+                    // `validate_loop_closure_inputs`; a mis-sized row comes
+                    // back as `InvalidInput`, which maps to Undef below.
                     let strategy = match warm_start_seeds.as_ref() {
-                        Some(seeds) => {
-                            let row = &seeds[loop_idx];
-                            if row.len() != free_b.len() {
-                                return Some(Value::Undef);
-                            }
-                            StartStrategy::WarmStart(row.clone())
-                        }
+                        Some(seeds) => StartStrategy::WarmStart(seeds[loop_idx].clone()),
                         None => StartStrategy::Midpoint,
                     };
 

@@ -1819,7 +1819,11 @@ mod tests {
 
         // Expected solved jB = driver + midpoint(jX) = i/4 + 0.25 m.
         for (i, row) in sweep_single_loop_free_rows(mech, j_a).iter().enumerate() {
-            assert_eq!(row.len(), 1, "snap {i} inner free_values must have one Real (jB)");
+            assert_eq!(
+                row.len(),
+                1,
+                "snap {i} inner free_values must have one Real (jB)"
+            );
             let solved = row[0];
             let driver = (i as f64) / 4.0;
             let expected = driver + 0.25;
