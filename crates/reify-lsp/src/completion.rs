@@ -259,13 +259,12 @@ const DIMENSIONLESS_NORMAL_NOTE: &str =
 /// gated" enumeration lives in `arg_acceptance`'s module doc — cited, not
 /// restated here (G7).
 ///
-/// RESIDUAL: this table is a snapshot of the families gated as of task 5750
-/// (leaf η — see `builtin_signatures.rs`'s module doc, which attributes the
-/// PRIMITIVE/PROFILE compile-layer slots this table mirrors to that task),
-/// taken before the units-length-gate-completion PRD's closure guard (task
-/// ι) has landed to close the gated set by construction. TODO(#5752): once ι
-/// lands, re-check this table against its allowlist — the gated set can
-/// still grow via ι's downstream siblings.
+/// Which positions are gated, and which are deliberately left bare, is pinned
+/// by reify-eval's units-length closure guard
+/// (crates/reify-eval/tests/harness_geometry/units_length_closure_guard.rs).
+/// This table mirrors that guard's verdicts for the `01-geometry` rows, and
+/// `tests::length_gated_tables_stay_in_sync` reds when a `01-geometry`
+/// signature types a slot `Length` without a row here.
 const LENGTH_GATED_EXAMPLES: &[(&str, &str, Option<&'static str>)] = &[
     ("box", "box(20mm, 10mm, 30mm)", None),
     ("cylinder", "cylinder(5mm, 20mm)", None),
@@ -1411,8 +1410,8 @@ mod tests {
     /// added to `LENGTH_GATED_EXAMPLES` alone would ship a doc claim with no
     /// behavioural pin at all, and a typo'd or stale `LENGTH_GATED_EXAMPLES`
     /// key is simply never looked up by `builtin_doc_with_length_gate_note`'s
-    /// `find` and never reds. All three are exactly the failure modes the
-    /// TODO(#5752) residual anticipates as the gated set grows.
+    /// `find` and never reds. All three are failure modes that open up as the
+    /// gated set grows.
     #[test]
     fn length_gated_tables_stay_in_sync() {
         let example_names: HashSet<&str> = LENGTH_GATED_EXAMPLES
