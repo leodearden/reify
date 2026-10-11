@@ -3439,7 +3439,7 @@ impl Engine {
             solvers: _,            // named solver registry
             warm_pool: _,          // warm-start state pool (cross-edit)
             realization_cache: _,  // task 2874 engine-scoped realization cache
-            volume_mesh_sources: _, // VolumeMesh meshed-from records (span builds, as realization_cache)
+            volume_mesh_sources: _, // VolumeMesh meshed-from records (span builds; full cache flush only)
             cumulative_eval_cache_totals: _, // task 4152 lifetime eval-cache totals
             solver_progress_sink: _, // per-iteration progress hook
             active_solve_cancel: _,  // in-flight solve cancellation hook
@@ -5565,6 +5565,14 @@ impl Engine {
 
                 // (6) Emit one file via the default kernel's export_with_options(); isolate
                 //     a kernel failure as an error diagnostic + continue.
+                //
+                //     Unlike the Phase-B product export (`export_product_bodies`),
+                //     which serializes each body through the kernel that owns it,
+                //     this path cannot route by owner: the subject's
+                //     `Value::GeometryHandle` carries a kernel-local id and no owning
+                //     kernel, so a subject realized on a non-default kernel exports
+                //     whatever shape that id names on the default kernel. Carrying
+                //     the owner on the subject is task #6366.
                 //
                 // (6a) Resolve per-body color (δ, task #4763 B7/B8): scan values for a
                 //      Physical body whose geometry handle matches `handle_id` and has a

@@ -4,11 +4,18 @@
 //! geometry, so Phase-B egress (export, the tessellate walk,
 //! `distance_between_placed`) reads the meshed-from body rather than the gmsh
 //! VolumeMesh. Records are keyed by the full [`KernelHandle`] because handle ids
-//! are kernel-local. Records span builds, as the realization cache does: a
-//! cache-served VolumeMesh terminal reaches Phase-B without the VolumeMesh edge
-//! running, so the record made by the build that cached it is the only source.
-//! They are cleared with the cache, because after a flush or kernel reset no
-//! recorded VolumeMesh can be served again and kernels may re-mint ids.
+//! are kernel-local. Records span builds: a cache-served VolumeMesh terminal
+//! reaches Phase-B without the VolumeMesh edge running, so the record made by
+//! the build that cached it is the only source.
+//!
+//! Records are dropped only by a full flush (`clear_realization_cache`,
+//! `reset_geometry_for_reload`), after which no recorded VolumeMesh can be
+//! served again and kernels may re-mint ids. A selective eviction
+//! (`RealizationCache::evict_family`, on an edit) keeps the evicted VolumeMesh's
+//! record. That record can never be read again, because gmsh mints ids
+//! monotonically until a reset, but it stays until the next flush: each re-mesh
+//! after an eviction leaves one unreachable record, beside the VolumeMesh the
+//! re-mesh left in the gmsh store.
 
 use std::collections::HashMap;
 
@@ -22,7 +29,8 @@ pub(crate) struct MeshedVolume {
     pub meshed_from: KernelHandle,
 }
 
-/// Every [`MeshedVolume`] recorded since the realization cache was last cleared.
+/// Every [`MeshedVolume`] recorded since the realization cache was last fully
+/// cleared.
 #[derive(Debug, Default)]
 pub(crate) struct VolumeMeshSources(HashMap<KernelHandle, KernelHandle>);
 
