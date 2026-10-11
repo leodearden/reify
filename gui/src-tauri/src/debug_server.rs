@@ -3219,9 +3219,59 @@ pub fn debug_endpoint_url(port: u16) -> String {
     format!("http://127.0.0.1:{port}/mcp")
 }
 
+/// A reify-debug listener this process has bound on `127.0.0.1`; holding one
+/// is what makes the debug server live.
+pub struct BoundDebugListener {
+    listener: std::net::TcpListener,
+    port: u16,
+}
+
+impl BoundDebugListener {
+    /// Bind `127.0.0.1:port` now; `port` 0 binds an ephemeral port, reported by [`Self::port`].
+    pub fn bind(port: u16) -> Result<Self, String> {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", port))
+            .map_err(|e| format!("failed to bind debug server on 127.0.0.1:{port}: {e}"))?;
+        listener
+            .set_nonblocking(true)
+            .map_err(|e| format!("failed to make debug listener on :{port} non-blocking: {e}"))?;
+        let port = listener
+            .local_addr()
+            .map_err(|e| format!("failed to read debug listener address for :{port}: {e}"))?
+            .port();
+        Ok(Self { listener, port })
+    }
+
+    pub fn port(&self) -> u16 {
+        self.port
+    }
+
+    pub fn endpoint_url(&self) -> String {
+        debug_endpoint_url(self.port)
+    }
+}
+
+/// The bound listener when `debug_enabled` and the bind succeeds; `None` means
+/// the debug server is not live in this process.
+pub fn bind_debug_listener(debug_enabled: bool, port: u16) -> Option<BoundDebugListener> {
+    if !debug_enabled {
+        return None;
+    }
+    match BoundDebugListener::bind(port) {
+        Ok(listener) => Some(listener),
+        Err(e) => {
+            eprintln!(
+                "REIFY_DEBUG=1 but the debug server is NOT live on port {port} ({e}); \
+                 the in-app assistant will get no reify-debug tools"
+            );
+            None
+        }
+    }
+}
+
 // --- Server spawn ---
 
 pub async fn spawn_debug_server(
+    listener: BoundDebugListener,
     engine: Arc<Mutex<EngineSession>>,
     selection: Arc<RwLock<SelectionInfo>>,
     debug_bridge: Arc<DebugBridge>,
@@ -3246,12 +3296,11 @@ pub async fn spawn_debug_server(
         .route("/debug/{command}", post(handle_rest))
         .with_state(state);
 
-    let port = resolve_debug_port();
-    let listener = tokio::net::TcpListener::bind(format!("127.0.0.1:{port}"))
-        .await
-        .map_err(|e| format!("failed to bind debug server on :{port}: {e}"))?;
+    let endpoint = listener.endpoint_url();
+    let listener = tokio::net::TcpListener::from_std(listener.listener)
+        .map_err(|e| format!("failed to register debug listener for {endpoint}: {e}"))?;
 
-    tracing::info!("Debug server listening on {}", debug_endpoint_url(port));
+    tracing::info!("Debug server listening on {endpoint}");
 
     axum::serve(listener, app.into_make_service())
         .await

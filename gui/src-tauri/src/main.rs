@@ -657,6 +657,9 @@ async fn lsp_request(
 /// Wrapper for REIFY_DEBUG=1 state, managed by Tauri.
 struct DebugEnabled(bool);
 
+/// `Some(url)` only when THIS process bound the reify-debug listener.
+struct DebugMcpEndpoint(Option<String>);
+
 #[tauri::command]
 fn is_debug_enabled(state: tauri::State<'_, DebugEnabled>) -> bool {
     state.0
@@ -903,11 +906,22 @@ fn main() {
         pending_solve_cancel: Arc::clone(&solve_cancel_slot),
     };
 
+    let debug_listener = reify_gui::debug_server::bind_debug_listener(
+        debug_enabled,
+        reify_gui::debug_server::resolve_debug_port(),
+    );
+    let debug_mcp_endpoint = DebugMcpEndpoint(
+        debug_listener
+            .as_ref()
+            .map(reify_gui::debug_server::BoundDebugListener::endpoint_url),
+    );
+
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_shell::init())
         .manage(app_state)
         .manage(DebugEnabled(debug_enabled))
+        .manage(debug_mcp_endpoint)
         .setup(move |app| {
             // Create LspBridge with TauriNotificationSink now that AppHandle is available
             let sink = Arc::new(TauriNotificationSink {
@@ -1038,14 +1052,19 @@ fn main() {
             let debug_bridge = Arc::new(reify_gui::debug::DebugBridge::new(app.handle().clone()));
             app.manage(debug_bridge.clone());
 
-            // Spawn the debug HTTP/MCP server when REIFY_DEBUG=1
-            if debug_enabled {
+            // Serve the debug HTTP/MCP server on the listener bound above (REIFY_DEBUG=1)
+            if let Some(listener) = debug_listener {
+                eprintln!(
+                    "REIFY_DEBUG=1: debug server starting on {}",
+                    listener.endpoint_url()
+                );
                 let engine_for_debug = Arc::clone(&engine_arc);
                 let selection_for_debug = Arc::clone(&selection_arc);
                 let last_state_for_debug = Arc::clone(&last_state_arc);
                 let evals_for_debug = Arc::clone(&evals);
                 tauri::async_runtime::spawn(async move {
                     if let Err(e) = reify_gui::debug_server::spawn_debug_server(
+                        listener,
                         engine_for_debug,
                         selection_for_debug,
                         debug_bridge,
@@ -1057,12 +1076,6 @@ fn main() {
                         eprintln!("Debug server failed: {e}");
                     }
                 });
-                eprintln!(
-                    "REIFY_DEBUG=1: debug server starting on {}",
-                    reify_gui::debug_server::debug_endpoint_url(
-                        reify_gui::debug_server::resolve_debug_port()
-                    )
-                );
             }
 
             // Notify the frontend of the kernel availability at startup.

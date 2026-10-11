@@ -26,7 +26,11 @@ fn an_occupied_port_is_not_live() {
 fn a_successful_bind_reports_its_real_port_and_url_and_accepts_connections() {
     let listener = bind_debug_listener(true, 0).expect("ephemeral bind succeeds");
 
-    assert_ne!(listener.port(), 0, "bind(0) must report the real ephemeral port");
+    assert_ne!(
+        listener.port(),
+        0,
+        "bind(0) must report the real ephemeral port"
+    );
     assert_eq!(listener.endpoint_url(), debug_endpoint_url(listener.port()));
     TcpStream::connect(("127.0.0.1", listener.port()))
         .expect("the listener is really bound and accepts a connection");
