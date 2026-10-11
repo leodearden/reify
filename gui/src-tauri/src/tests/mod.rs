@@ -24,6 +24,7 @@ mod lsp_lane_routing_tests;
 mod main_helpers_tests;
 mod mcp_context_tests;
 mod mcp_dispatch_tests;
+mod mesh_count_parity_fixture_tests;
 #[cfg(has_openvdb)]
 mod openvdb_kernel_tests;
 mod path_key_tests;
