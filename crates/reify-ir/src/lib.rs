@@ -27,6 +27,7 @@ pub mod boundary_attachment;
 pub mod color;
 pub mod completeness;
 pub mod constraint;
+pub mod dense_sdf;
 pub mod expr;
 pub mod geometry;
 pub mod indeterminate;
