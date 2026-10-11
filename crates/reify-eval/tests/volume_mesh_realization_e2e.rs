@@ -549,6 +549,88 @@ fn cache_served_volume_mesh_terminal_exports_the_body_the_cold_build_exported() 
     );
 }
 
+/// The `[x, y, z]` extents of `mesh`'s vertices, in metres.
+#[cfg(has_gmsh)]
+fn axis_extents_m(mesh: &reify_ir::Mesh) -> [f64; 3] {
+    let mut min = [f64::INFINITY; 3];
+    let mut max = [f64::NEG_INFINITY; 3];
+    for vertex in mesh.vertices.chunks_exact(3) {
+        for axis in 0..3 {
+            min[axis] = min[axis].min(f64::from(vertex[axis]));
+            max[axis] = max[axis].max(f64::from(vertex[axis]));
+        }
+    }
+    [0, 1, 2].map(|axis| max[axis] - min[axis])
+}
+
+/// `cfg(has_gmsh)`: after a build has cached a body's gmsh VolumeMesh terminal,
+/// the tessellate walk (the GUI viewport surface) still draws that body as the
+/// 10 mm box it was meshed from.
+///
+/// The VolumeMesh is an FEA representation the viewport cannot draw. The
+/// tessellate walk demands BRep, so it is not served the cached VolumeMesh;
+/// this pins the drawn outcome, not that mechanism.
+#[cfg(has_gmsh)]
+#[test]
+fn tessellate_walk_draws_a_volume_mesh_demanded_body_as_its_box() {
+    use reify_core::{KernelId, Severity};
+    use reify_ir::{ExportFormat, ReprKind};
+
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!(
+            "skipping tessellate_walk_draws_a_volume_mesh_demanded_body_as_its_box: \
+             OCCT not available (no BRep kernel to build the box body)"
+        );
+        return;
+    }
+    const BOX_EDGE_M: f64 = 0.010;
+    const EXTENT_TOLERANCE_M: f64 = 1e-6;
+
+    let compiled = reify_test_support::parse_and_compile_with_stdlib(CACHED_VOLUME_MESH_BOX_SOURCE);
+    let mut engine = make_occt_engine();
+    engine.register_volume_mesh_demand("test::vm-demand-probe");
+    assert!(
+        engine.ensure_gmsh_kernel(),
+        "ensure_gmsh_kernel() must acquire the gmsh adapter from the registry"
+    );
+
+    engine.build(&compiled, ExportFormat::Step);
+    assert!(
+        engine
+            .realization_kernel_provenance()
+            .iter()
+            .any(|p| p.repr == ReprKind::VolumeMesh && p.kernel == KernelId::Gmsh),
+        "precondition: the build must realize `body` as a gmsh VolumeMesh"
+    );
+    let result = engine.tessellate_realizations(&compiled);
+
+    let errors: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .map(|d| d.message.clone())
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "the tessellate walk must report no Error diagnostic. got: {errors:?}"
+    );
+    let surfaces: Vec<_> = result.meshes.iter().map(|s| &s.entity_path).collect();
+    let [body] = result.meshes.as_slice() else {
+        panic!("the tessellate walk must draw exactly the `body` surface. got: {surfaces:?}");
+    };
+    assert!(
+        !body.mesh.indices.is_empty(),
+        "the `body` surface must have triangles"
+    );
+    let extents = axis_extents_m(&body.mesh);
+    assert!(
+        extents
+            .iter()
+            .all(|extent| (extent - BOX_EDGE_M).abs() <= EXTENT_TOLERANCE_M),
+        "the `body` surface must span the 10 mm box on every axis. extents (m): {extents:?}"
+    );
+}
+
 /// `cfg(not(has_gmsh))`: skip-stub.
 ///
 /// When the gmsh adapter is absent (no `has_gmsh` cfg), the registry does not
