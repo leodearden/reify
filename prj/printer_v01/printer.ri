@@ -520,8 +520,10 @@ pub structure CapstanUnit {
     /// 2026-08-23 pitch-radius re-sync: at cap_pitch_r 24 the old stand-off
     /// left the pulley rims 0.06mm off the drum flanges (analytic sweep
     /// 2026-08-25); +5mm restores a ~5mm rim-to-rim margin.
-    /// TODO(#6583): replace the L376-style 2D bound with a real posed
-    /// distance() constraint once cross-sub geometry reads carry placement.
+    /// TODO(#5436): replace the analytic 2D flange-crossing bound below
+    /// (`pulley_x - r_pitch > sqrt(...)`) with a real posed distance()
+    /// constraint once member geometry reads compose through the sub's
+    /// placement.
     param pulley_x : Length = 50mm
     /// #6586 pin: == self.capstan.groove_len (constraints below). The pair
     /// heights derive from THIS so they can feed FairleadPair constructor
