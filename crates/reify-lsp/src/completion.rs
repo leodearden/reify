@@ -469,6 +469,7 @@ pub(crate) const BODY_KEYWORDS: &[&str] = &[
     "maximize",
     "port",
     "connect",
+    "chain",
     "where",
 ];
 

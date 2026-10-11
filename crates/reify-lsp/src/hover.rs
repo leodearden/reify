@@ -384,6 +384,10 @@ pub(crate) const KEYWORD_DESCRIPTIONS: &[(&str, &str)] = &[
     ("maximize", "Declares a quantity to maximize."),
     ("port", "Declares an interface port for connections."),
     ("connect", "Declares a connection between ports."),
+    (
+        "chain",
+        "Connects a sequence of occurrences, each one's output port to the next one's input port.",
+    ),
     ("where", "Introduces additional type or value constraints."),
 ];
 
