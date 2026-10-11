@@ -223,47 +223,50 @@ fn test_needs_generate_true_when_output_missing() {
     );
 }
 
-/// Duplicates verify_outputs logic from build.rs for testability.
-/// Returns Err with a message naming the missing file(s).
-fn verify_outputs(src_dir: &Path) -> Result<(), String> {
-    let mut missing = Vec::new();
-    for name in EXPECTED_OUTPUTS {
-        if !src_dir.join(name).exists() {
-            missing.push(*name);
-        }
-    }
-    if missing.is_empty() {
-        Ok(())
-    } else {
-        Err(format!(
-            "tree-sitter generate succeeded but these output files are missing: {}",
-            missing.join(", ")
-        ))
-    }
-}
-
 #[test]
 fn test_all_three_outputs_verified() {
     let dir = tempfile::tempdir().unwrap();
     let src_dir = make_populated_src_dir(dir.path());
-    assert!(
-        verify_outputs(&src_dir).is_ok(),
+    assert_eq!(
+        verify_outputs(&src_dir),
+        Ok(()),
         "all files present should verify ok"
     );
 
-    // Remove each file in turn and verify it's detected as missing.
+    // Remove each file in turn: the error names exactly that file.
     for name in EXPECTED_OUTPUTS {
         let path = src_dir.join(name);
         std::fs::remove_file(&path).unwrap();
         let err = verify_outputs(&src_dir).unwrap_err();
         assert!(
             err.contains(name),
-            "error message should name the missing file '{}', got: {}",
+            "error should name the missing file '{}', got: {}",
             name,
             err
         );
-        // Restore for next iteration
+        for present in EXPECTED_OUTPUTS.iter().filter(|p| *p != name) {
+            assert!(
+                !err.contains(present),
+                "error must not name '{}', which is still present, got: {}",
+                present,
+                err
+            );
+        }
         std::fs::write(&path, b"placeholder").unwrap();
+    }
+
+    // Remove all of them: the error names every one.
+    for name in EXPECTED_OUTPUTS {
+        std::fs::remove_file(src_dir.join(name)).unwrap();
+    }
+    let err = verify_outputs(&src_dir).unwrap_err();
+    for name in EXPECTED_OUTPUTS {
+        assert!(
+            err.contains(name),
+            "error should name every missing file, '{}' absent from: {}",
+            name,
+            err
+        );
     }
 }
 
