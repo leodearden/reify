@@ -1,7 +1,41 @@
+//! The set algebra every committed-ratchet ledger shares: live debt the
+//! ledger already holds is kept, live debt it lacks is new, and a committed
+//! row no live debt matches is stale. It knows nothing about a ledger file's
+//! row grammar or about how a detector finds its debt.
+
+use std::collections::BTreeSet;
+
+/// Live debt (what a detector finds today) against committed debt (the
+/// ledger file). The three views are disjoint: `kept ∪ new_debt == live` and
+/// `kept ∪ stale == committed`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Ledger<R: Ord + Clone> {
+    pub live: BTreeSet<R>,
+    pub committed: BTreeSet<R>,
+}
+
+impl<R: Ord + Clone> Ledger<R> {
+    /// Live debt the ledger already accounts for — what a shrink-only
+    /// regeneration writes.
+    pub fn kept(&self) -> BTreeSet<R> {
+        self.live.intersection(&self.committed).cloned().collect()
+    }
+
+    /// Live debt the ledger lacks — reported by the ratchet.
+    pub fn new_debt(&self) -> BTreeSet<R> {
+        self.live.difference(&self.committed).cloned().collect()
+    }
+
+    /// Committed rows no live debt matches — removing one would change no
+    /// other finding, so each is reported as dead weight.
+    pub fn stale(&self) -> BTreeSet<R> {
+        self.committed.difference(&self.live).cloned().collect()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::BTreeSet;
 
     fn rows<const N: usize>(items: [&str; N]) -> BTreeSet<String> {
         items.into_iter().map(str::to_string).collect()

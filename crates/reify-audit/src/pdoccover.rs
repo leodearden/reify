@@ -236,7 +236,8 @@
 //! relaxing the floor restores the exact silent-false-clean failure the guard
 //! exists to prevent.
 
-use crate::pdoccover_baseline::{BASELINE_PATH, BaselineRow, Ledger, parse_baseline};
+use crate::pdoccover_baseline::{BASELINE_PATH, BaselineRow, parse_baseline};
+use crate::ratchet_ledger::Ledger;
 use crate::scan_util::{
     allow_marker_body, contains_word, find_word_boundary_token, is_identifier_shaped, is_word_byte,
 };
@@ -1852,7 +1853,7 @@ impl fmt::Display for DegenerateInputs {
 /// [`baseline_ledger`], and so the one place a degenerate tree is refused.
 struct Audit {
     lanes: LaneResults,
-    ledger: Ledger,
+    ledger: Ledger<BaselineRow>,
 }
 
 fn audit(ctx: &AuditContext<'_>) -> Result<Audit, DegenerateInputs> {
@@ -1940,7 +1941,7 @@ pub fn check(ctx: &AuditContext<'_>) -> Vec<Finding> {
 /// derivation [`check`] settles, so a regenerated ledger is by construction
 /// one the ratchet accepts. Refuses a degenerate tree rather than deriving a
 /// ledger that would wipe the committed one.
-pub fn baseline_ledger(ctx: &AuditContext<'_>) -> Result<Ledger, DegenerateInputs> {
+pub fn baseline_ledger(ctx: &AuditContext<'_>) -> Result<Ledger<BaselineRow>, DegenerateInputs> {
     audit(ctx).map(|audit| audit.ledger)
 }
 
