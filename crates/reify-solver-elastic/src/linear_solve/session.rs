@@ -29,6 +29,32 @@ enum Tier {
     Jacobi,
 }
 
+/// What `prepare`'s symbolic analysis produced.
+struct Analysis {
+    symbolic: Symbolic,
+    /// The column-major copy of `K` the numeric factorisation reads.
+    csc: SparseColMat<usize, f64>,
+    estimate: FactorEstimate,
+}
+
+impl Tier {
+    /// The tier `strategy` names — the decision is the only source of the
+    /// tier on every path — built from `prepare`'s analysis, if one ran.
+    fn for_strategy(strategy: Strategy, analysis: Option<Analysis>) -> Self {
+        match strategy {
+            Strategy::Direct => {
+                let Analysis { symbolic, csc, .. } =
+                    analysis.expect("choose_strategy names Direct only from a symbolic estimate");
+                Self::Direct(Box::new(DirectTier::new(symbolic, csc)))
+            }
+            Strategy::Pcg(PreconditionerKind::Jacobi) => Self::Jacobi,
+            Strategy::Pcg(PreconditionerKind::SmoothedAggregation) => {
+                unreachable!("choose_strategy names SmoothedAggregation only once its tier exists")
+            }
+        }
+    }
+}
+
 impl SpdSolver {
     /// Decides the tier. Auto and Direct run the symbolic analysis the
     /// decision needs; no numeric work happens until a non-zero solve.
@@ -38,30 +64,20 @@ impl SpdSolver {
         policy: &SolvePolicy,
         ctl: &mut SolveControl<'_>,
     ) -> Result<Self, SolveStop> {
-        if choice == LinearSolverChoice::Iterative {
-            return Ok(Self {
-                decision: choose_strategy(choice, None, policy)?,
-                system,
-                estimate: None,
-                tier: Tier::Jacobi,
-            });
-        }
-        ctl.enter(SolvePhase::Analyse)?;
-        let (symbolic, csc) = analyse(&system)?;
-        let estimate = symbolic.estimate();
-        let decision = choose_strategy(choice, Some(&estimate), policy)?;
-        let tier = match decision.strategy {
-            Strategy::Direct => Tier::Direct(Box::new(DirectTier::new(symbolic, csc))),
-            Strategy::Pcg(PreconditionerKind::Jacobi) => Tier::Jacobi,
-            Strategy::Pcg(PreconditionerKind::SmoothedAggregation) => {
-                unreachable!("choose_strategy names SmoothedAggregation only once its tier exists")
+        let analysis = match choice {
+            LinearSolverChoice::Iterative => None,
+            LinearSolverChoice::Auto | LinearSolverChoice::Direct => {
+                ctl.enter(SolvePhase::Analyse)?;
+                Some(analyse(&system)?)
             }
         };
+        let estimate = analysis.as_ref().map(|analysis| analysis.estimate);
+        let decision = choose_strategy(choice, estimate.as_ref(), policy)?;
         Ok(Self {
             system,
             decision,
-            estimate: Some(estimate),
-            tier,
+            estimate,
+            tier: Tier::for_strategy(decision.strategy, analysis),
         })
     }
 
@@ -174,9 +190,8 @@ impl SpdSolver {
     }
 }
 
-/// The symbolic analysis of `system`, with the column-major copy of `K` the
-/// numeric factorisation reads.
-fn analyse(system: &SpdSystem) -> Result<(Symbolic, SparseColMat<usize, f64>), SolveFailure> {
+/// The symbolic analysis of `system`.
+fn analyse(system: &SpdSystem) -> Result<Analysis, SolveFailure> {
     let k = system.matrix();
     let out_of_memory = || SolveFailure::OutOfMemory {
         requested: column_major_bytes(k.ncols(), k.compute_nnz()),
@@ -184,7 +199,11 @@ fn analyse(system: &SpdSystem) -> Result<(Symbolic, SparseColMat<usize, f64>), S
     };
     let csc = k.to_col_major().map_err(|_| out_of_memory())?;
     let symbolic = direct::analyse(csc.as_ref().symbolic()).map_err(|_| out_of_memory())?;
-    Ok((symbolic, csc))
+    Ok(Analysis {
+        estimate: symbolic.estimate(),
+        symbolic,
+        csc,
+    })
 }
 
 /// `8·(n+1) + 16·nnz`: the column pointers, and a row index and a value per
