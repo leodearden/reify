@@ -41,7 +41,7 @@ use reify_core::{DiagnosticCode, DimensionVector, Severity, ValueCellId};
 use reify_ir::{ExportFormat, Satisfaction, Value};
 use reify_test_support::{
     MockGeometryKernel, check_source, check_source_with_stdlib, compile_source_with_stdlib,
-    eval_source, parse_and_compile_with_stdlib,
+    eval_source, parse_and_compile_with_stdlib, read_f64,
 };
 
 // ── Path constants ────────────────────────────────────────────────────────────
@@ -634,7 +634,10 @@ fn row_14_rnea_numerically_identical_post_kappa() {
 
     // Extract ScalarTorque.magnitude.
     let value = field(&forces[0], "JointForce", "value");
-    let torque = num(field(value, "ScalarTorque", "magnitude"));
+    let torque = read_f64(
+        field(value, "ScalarTorque", "magnitude"),
+        "§10 row 14: ScalarTorque.magnitude",
+    );
 
     let expected = 0.4905_f64; // m·g·L·sin(30°) = 1·9.81·0.1·0.5
     let tol = 1e-6_f64; // 1 µN·m
@@ -646,15 +649,6 @@ fn row_14_rnea_numerically_identical_post_kappa() {
 }
 
 // ── Field-extraction helpers (row 14) ────────────────────────────────────────
-
-fn num(v: &Value) -> f64 {
-    match v {
-        Value::Real(r) => *r,
-        Value::Int(n) => *n as f64,
-        Value::Scalar { si_value, .. } => *si_value,
-        other => panic!("§10 row 14: expected a numeric Value, got {other:?}"),
-    }
-}
 
 fn field<'a>(v: &'a Value, type_name: &str, member: &str) -> &'a Value {
     match v {
