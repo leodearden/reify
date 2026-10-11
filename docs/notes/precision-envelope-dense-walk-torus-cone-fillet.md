@@ -153,3 +153,175 @@ ratio's divisor. Every tally in this record is computed by one script over `runs
 sentinels and the in-place runs need: an extra exactly-once rewrite, a basename override and a
 working-tree run. The nine §1.2 subject probes (the eight table rows plus the committed torus
 subject at 10 mm) then ran through this listing verbatim and returned the same `a` strings.
+
+---
+
+## 2. Stage A — the extension spine
+
+**Status criterion, fixed in the task's plan before any run.** A class keeps `supremum` only
+if (1) its spine shows a fall below the leader at finer `d` that exceeds the oscillation
+amplitude between adjacent rungs of the same ladder — #6545's review criterion, as the main
+note's §1.5 and §1.6 apply it — **and** (2) no dense bracket or regime spot-check exceeds the
+leader. Otherwise it is a `lower bound`, naming the clause that failed. `K` > 1 is judged by
+#7128's three-way verdict on the display-wall interval (main note §1.5).
+
+**Method.** Each class at its regime point, walked down from 0.3 mm: 0.3, then 0.29 to 0.25 at
+0.01 mm steps, then 0.2, 0.15, 0.12, 0.1, 0.08, 0.06, 0.05, 0.04, 0.03, 0.025, 0.02, 0.015 and
+0.01 mm, continuing to 0.008, 0.006 and 0.005 mm while the previous rung completed in under
+240 s. A class stops at its first `TIMEOUT`, its budget wall. `T` = 240 s, raised to 600 s below
+0.05 mm (a deviation from §4's 240 s, as in the main note's §1.6). Bold marks the published
+§1.3 rung and the spine maximum. Walls are contended (main note §0 Caveat 1).
+
+**Torus**, `torus(1000mm, 20mm)`:
+
+| d | a (m) | a/d | wall | note |
+|---|---|---|---|---|
+| **0.3 mm** | 2.934e-4 | **0.9780** | 6 s | published §1.3 rung |
+| 0.29 mm | 2.782e-4 | 0.9593 | 8 s |  |
+| 0.28 mm | 2.737e-4 | 0.9775 | 8 s |  |
+| 0.27 mm | 2.587e-4 | 0.9581 | 7 s |  |
+| 0.26 mm | 2.546e-4 | 0.9792 | 8 s | beats the published rung, 0.04 mm finer |
+| 0.25 mm | 2.411e-4 | 0.9644 | 8 s |  |
+| 0.2 mm | 1.953e-4 | 0.9765 | 9 s |  |
+| 0.15 mm | 1.463e-4 | 0.9753 | 13 s |  |
+| 0.12 mm | 1.184e-4 | 0.9867 | 15 s |  |
+| 0.1 mm | 9.842e-5 | 0.9842 | 18 s |  |
+| 0.08 mm | 7.938e-5 | 0.9923 | 22 s |  |
+| 0.06 mm | 5.928e-5 | 0.9880 | 27 s |  |
+| 0.05 mm | 4.985e-5 | 0.9970 | 30 s |  |
+| 0.04 mm | 3.958e-5 | 0.9895 | 35 s |  |
+| 0.03 mm | 2.969e-5 | 0.9897 | 50 s |  |
+| 0.025 mm | 2.498e-5 | 0.9992 | 65 s |  |
+| 0.02 mm | 1.990e-5 | 0.9950 | 78 s |  |
+| 0.015 mm | 1.499e-5 | 0.9993 | 140 s |  |
+| **0.01 mm** | 1.001e-5 | **1.0010** | 354 s | spine maximum; finest rung reached: 354 s ≥ 240 s ends the descent |
+
+*Measured.* The published 0.9780 at 0.3 mm is beaten by 12 of the 18 other rungs, including
+0.26 mm (0.9792), just 0.04 mm finer, so 0.3 mm was not even the maximum of [0.25, 0.3] mm. The
+ratio is **still rising at the finest rung reached**: 1.0010 at 0.01 mm. No rung timed out;
+the descent stopped because 0.01 mm took 354 s. Adjacent rungs swing by up to **0.0211**
+(0.27 → 0.26 mm), and by up to 0.0095 at and below 0.1 mm (0.03 → 0.025 mm). *Derived:*
+`a` = 1.001e-5 m prints to 1e-8 m, so the true ratio at 0.01 mm lies in [1.0005, 1.0015),
+entirely above 1.
+
+**Cone**, `cone(500mm, 400mm, 1000mm)`:
+
+| d | a (m) | a/d | wall | note |
+|---|---|---|---|---|
+| **0.3 mm** | 2.911e-4 | **0.9703** | 1 s | published §1.3 rung |
+| 0.29 mm | 2.787e-4 | 0.9610 | 1 s |  |
+| 0.28 mm | 2.728e-4 | 0.9743 | 2 s |  |
+| 0.27 mm | 2.615e-4 | 0.9685 | 2 s |  |
+| 0.26 mm | 2.514e-4 | 0.9669 | 2 s |  |
+| 0.25 mm | 2.414e-4 | 0.9656 | 2 s |  |
+| 0.2 mm | 1.925e-4 | 0.9625 | 2 s |  |
+| 0.15 mm | 1.454e-4 | 0.9693 | 2 s |  |
+| 0.12 mm | 1.167e-4 | 0.9725 | 2 s |  |
+| 0.1 mm | 9.705e-5 | 0.9705 | 3 s |  |
+| 0.08 mm | 7.833e-5 | 0.9791 | 4 s |  |
+| 0.06 mm | 5.897e-5 | 0.9828 | 4 s |  |
+| 0.05 mm | 4.889e-5 | 0.9778 | 5 s |  |
+| 0.04 mm | 3.925e-5 | 0.9813 | 6 s |  |
+| 0.03 mm | 2.957e-5 | 0.9857 | 10 s |  |
+| 0.025 mm | 2.456e-5 | 0.9824 | 8 s |  |
+| 0.02 mm | 1.968e-5 | 0.9840 | 9 s |  |
+| 0.015 mm | 1.481e-5 | 0.9873 | 10 s |  |
+| 0.01 mm | 9.900e-6 | 0.9900 | 26 s |  |
+| 0.008 mm | 7.912e-6 | 0.9890 | 25 s |  |
+| 0.006 mm | 5.944e-6 | 0.9907 | 35 s |  |
+| **0.005 mm** | 4.961e-6 | **0.9922** | 38 s | spine maximum; the spine's last rung |
+
+*Measured.* The published 0.9703 at 0.3 mm is beaten by 15 of the 21 other rungs, the first at
+0.28 mm (0.9743). The ratio is **still rising at 0.005 mm** (0.9922), the spine's last rung,
+which cost 38 s: the descent ended where the spine ends, not at a budget limit. Adjacent rungs
+swing by up to **0.0133** (0.29 → 0.28 mm), and by up to 0.0086 at and below 0.1 mm
+(0.1 → 0.08 mm). Below 0.03 mm the ratio dips twice (at 0.025 and 0.008 mm) and otherwise
+climbs.
+
+**Fillet blend**, `fillet(box(1000mm, 1000mm, 1000mm), 490mm)`:
+
+| d | a (m) | a/d | wall | note |
+|---|---|---|---|---|
+| **0.3 mm** | 2.774e-4 | **0.9247** | 7 s | published §1.3 rung |
+| 0.29 mm | 2.774e-4 | 0.9566 | 8 s | same `a` as 0.3 mm |
+| 0.28 mm | 2.653e-4 | 0.9475 | 8 s |  |
+| 0.27 mm | 2.034e-4 | 0.7533 | 8 s | trough |
+| 0.26 mm | 2.466e-4 | 0.9485 | 8 s |  |
+| 0.25 mm | 2.365e-4 | 0.9460 | 8 s |  |
+| 0.2 mm | 1.913e-4 | 0.9565 | 12 s |  |
+| 0.15 mm | 1.444e-4 | 0.9627 | 15 s |  |
+| 0.12 mm | 1.162e-4 | 0.9683 | 19 s |  |
+| 0.1 mm | 9.724e-5 | 0.9724 | 22 s |  |
+| 0.08 mm | 7.614e-5 | 0.9518 | 24 s |  |
+| 0.06 mm | 5.872e-5 | 0.9787 | 30 s |  |
+| 0.05 mm | 4.842e-5 | 0.9684 | 36 s |  |
+| 0.04 mm | 3.925e-5 | 0.9813 | 47 s |  |
+| 0.03 mm | 2.920e-5 | 0.9733 | 68 s |  |
+| 0.025 mm | 2.432e-5 | 0.9728 | 74 s |  |
+| 0.02 mm | 1.950e-5 | 0.9750 | 122 s |  |
+| 0.015 mm | 1.468e-5 | 0.9787 | 188 s |  |
+| **0.01 mm** | 9.818e-6 | **0.9818** | 299 s | spine maximum; finest rung reached: 299 s ≥ 240 s ends the descent |
+
+*Measured.* The published 0.9247 at 0.3 mm is beaten by 17 of the 18 other rungs — every one
+except 0.27 mm. 0.29 and 0.3 mm return byte-identical `a` = 2.774e-4: a plateau, on which the
+ratio falls as `d` rises, so the published rung sat on the plateau's high-`d` side (0.9566 at
+0.29 mm). 0.27 mm is a deep trough (0.7533), which gives the largest adjacent swing in this
+record, **0.1952** (0.27 → 0.26 mm); at and below 0.1 mm swings reach 0.0269 (0.08 → 0.06 mm).
+The spine maximum, 0.9818 at 0.01 mm, is the finest rung reached (299 s ended the descent),
+and it leads 0.9813 at 0.04 mm by only 0.0005. At and below 0.1 mm the ratio oscillates within
+[0.9518, 0.9818] rather than rising cleanly.
+
+**The leader sits at the finest rung on every class.** Torus (0.01 mm), cone (0.005 mm) and
+fillet blend (0.01 mm) each peak at the finest rung their descent reached, so no spine shows a
+fall below its leader at finer `d`. Clause (1) of the status criterion therefore fails for all
+three, and each class is a **`lower bound`** whatever Stages B and C find. No class met a budget
+wall: no rung timed out, and the finest rungs cost 38 s (cone), 299 s (fillet blend) and 354 s
+(torus).
+
+**Regime spot-check** at each class's spine-best `d` (≤ 4 probes per class; the regime
+coordinate is not walked). It asks whether §1.1's "at" coordinate, which §1.3 chose at
+`d` = 10 mm, still carries the class maximum at fine `d`:
+
+| class | coordinate | subject | d | a (m) | a/d | vs the regime point |
+|---|---|---|---|---|---|---|
+| torus | minor/major 0.02 | `torus(1000mm, 20mm)` | 0.01 mm | 1.001e-5 | 1.0010 | the regime point |
+| torus | 0.012 | `torus(1000mm, 12mm)` | 0.01 mm | 1.003e-5 | **1.0030** | **above** |
+| torus | 0.05 | `torus(1000mm, 50mm)` | 0.01 mm | `TIMEOUT` (600 s) | — | cost result |
+| torus | 0.5 | `torus(1000mm, 500mm)` | 0.01 mm | `TIMEOUT` (600 s) | — | cost result |
+| cone | top/bottom 0.8 | `cone(500mm, 400mm, 1000mm)` | 0.005 mm | 4.961e-6 | 0.9922 | the regime point |
+| cone | 0.9 | `cone(500mm, 450mm, 1000mm)` | 0.005 mm | 4.991e-6 | **0.9982** | **above** |
+| cone | 0.98 | `cone(500mm, 490mm, 1000mm)` | 0.005 mm | 5.005e-6 | **1.0010** | **above** |
+| cone | 0.998 | `cone(500mm, 499mm, 1000mm)` | 0.005 mm | 5.009e-6 | **1.0018** | **above** |
+| fillet blend | r/feature 0.49 | `fillet(box(…), 490mm)` | 0.01 mm | 9.818e-6 | 0.9818 | the regime point |
+| fillet blend | 0.45 | `fillet(box(…), 450mm)` | 0.01 mm | 9.775e-6 | 0.9775 | below |
+| fillet blend | 0.25 | `fillet(box(…), 250mm)` | 0.01 mm | 9.751e-6 | 0.9751 | below |
+
+*Measured.* On torus and cone the published regime point does **not** carry the class
+maximum at fine `d`. The cone rises monotonically toward the cylinder limit across the four
+points, as §1.3's 10 mm regime table did, and crosses 1. *Derived* display-wall intervals:
+torus 0.012 in [1.0025, 1.0035); cone 0.98 in [1.0009, 1.0011); cone 0.998 in [1.0017,
+1.0019) — each entirely above 1. Fillet blend's regime point still leads its two spot-checks.
+The torus coordinates thicker than the regime point were unaffordable at 0.01 mm. These are
+spot readings: the regime coordinate is not walked here.
+
+**Determinism.** 13 probes re-run, 13 byte-identical `a`: each class's top-3 spine rungs by
+ratio (fillet blend's third place is a tie, 0.06 and 0.015 mm both reading 0.9787, so both
+were re-run), every spine rung ≥ 0.999 (all three are already in torus's top 3), and every
+spot-check ≥ 0.999 (torus 0.012, cone 0.98 and 0.998). Load varied from 62 to 467 1-min
+loadavg across Stage A; no `a` did.
+
+**Stage-B brackets, derived from the bracket rule.** (i) [0.290, 0.310] mm at 0.001 mm for
+each class. (ii) d_c ± 5 % around each class's top-2 spine rungs, at 0.001 mm for d_c ≥ 0.2 mm
+and 0.5 % · d_c below, with `d` rounded to 1e-5 mm; a bracket whose Stage-A probe cost more
+than 120 s is skipped and the rung stays spine-only:
+
+| class | top-2 rungs (Stage-A cost) | bracket (ii) |
+|---|---|---|
+| torus | 0.01 mm (354 s), 0.015 mm (140 s) | none — both spine-only |
+| cone | 0.005 mm (38 s), 0.006 mm (35 s) | [0.00475, 0.00525] mm at 0.000025 mm; [0.0057, 0.0063] mm at 0.00003 mm |
+| fillet blend | 0.01 mm (299 s), 0.04 mm (47 s) | 0.01 mm spine-only; [0.038, 0.042] mm at 0.0002 mm |
+
+The relative step departs from the task's fixed 0.001 mm, which at `d` = 0.005 mm is 20 % of
+`d`, far coarser than the ~0.1–0.4 % plateaus the main note's §1.5 and §1.6 measured. Rounding
+to 1e-5 mm makes the first cone bracket's steps alternate between 2e-5 and 3e-5 mm. Torus's
+1.0010 is a Stage-C target even without a bracket, because it reads ≥ 0.9995.
