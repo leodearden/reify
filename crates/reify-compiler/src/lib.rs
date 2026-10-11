@@ -704,36 +704,23 @@ pub fn compile_with_prelude_context_checked_with_config(
         &decl_refs.fn_refs,
     );
 
-    // The merged prelude enum set, used BOTH to resolve enum-typed variant
-    // payload fields (task 2998) AND to seed `ctx.resolution_enums`.
-    // `prelude_refs.is_empty()` covers two cases:
-    //   (a) #no_prelude pragma is active — suppress prelude enum contribution.
-    //   (b) caller passed an empty prelude — ctx.resolution_enums() is also
-    //       empty by construction, so &[] and ctx.resolution_enums() are equivalent.
-    let prelude_enums = if prelude_refs.is_empty() {
-        &[][..]
-    } else {
-        ctx.resolution_enums()
-    };
-
     // Resolve each enum variant's named-field payload TypeExprs into the IR
     // `VariantPayload::Named` (task δ #3942). An enum-typed payload field
     // (e.g. `NotConverged { reason: BudgetReason }`) resolves against the
-    // prelude ++ local enum set (task 2998). MUST run before
+    // enums in scope — local plus prelude, bound by `name_env` (task 2998).
+    // `prelude_refs` is already empty under `#no_prelude`. MUST run before
     // `build_resolution_enums_from_cache` so the resolved payloads land in
     // `ctx.resolution_enums` (the set threaded into `compile_expr`, where
     // brace-form variant construction is field-set/type checked).
     compile_builder::enums_phase::resolve_enum_variant_payloads(
         &mut compile_ctx,
         parsed,
-        prelude_enums,
+        prelude_refs,
     );
 
-    // Seed `ctx.resolution_enums` from the same prelude set (skips re-flattening
-    // the prelude modules on every call).
     compile_builder::enums_phase::build_resolution_enums_from_cache(
         &mut compile_ctx,
-        prelude_enums,
+        prelude_refs,
     );
 
     compile_builder::functions_phase::phase_functions(

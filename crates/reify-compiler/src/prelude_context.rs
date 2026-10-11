@@ -7,9 +7,9 @@
 //!
 //! # Cached fields
 //!
-//! - **`resolution_enums`** — all `EnumDef`s from every prelude module, in
-//!   source order.  Used by `enums_phase::build_resolution_enums_from_cache`
-//!   so the flat_map-then-clone is done once at construction.
+//! - **`resolution_enums`** — the enums the prelude binds on its own under
+//!   NS-P1 ([`crate::name_env`]): one per name, in precedence order. Feeds the
+//!   parser's enum-name seed ([`PreludeContext::enum_names`]).
 //!
 //! - **`pub_aliases`** — all `CompiledTypeAlias` entries marked `is_pub == true`
 //!   from every prelude module, in source order.  Filtered at construction so
@@ -82,10 +82,8 @@ use crate::types::CompiledTypeAlias;
 
 /// An immutable, pre-built cache of prelude module data.
 ///
-/// Caches the flattened `resolution_enums` and `pub_aliases` from a slice of
-/// prelude modules so that the flat_map-then-clone in
-/// `enums_phase::build_resolution_enums` (and the analogous alias pass) is
-/// executed only once (at construction) rather than on every compile call.
+/// Caches the prelude's bound `resolution_enums` and `pub_aliases` so they
+/// are computed only once (at construction) rather than on every compile call.
 ///
 /// # Typical usage
 ///
@@ -101,7 +99,7 @@ use crate::types::CompiledTypeAlias;
 pub struct PreludeContext<'a> {
     /// Borrowed references to the prelude modules.
     modules: Vec<&'a CompiledModule>,
-    /// Pre-flattened enum definitions from every prelude module, in source order.
+    /// The prelude's own NS-P1 enum bindings, in precedence order.
     resolution_enums: Vec<EnumDef>,
     /// Pre-flattened pub type aliases from every prelude module, in source order.
     /// Only `is_pub == true` entries are included (non-pub aliases are filtered out
@@ -119,11 +117,7 @@ pub struct PreludeContext<'a> {
 impl<'a> PreludeContext<'a> {
     /// Construct a `PreludeContext` from a slice of prelude module references.
     ///
-    /// Computes `resolution_enums` by flattening `enum_defs` from every module
-    /// in `prelude` (in source order) using the same `flatten_prelude_enum_defs`
-    /// helper that the context-less path calls per compile. The result is cached
-    /// on the `PreludeContext` so subsequent `compile_with_prelude_context` calls
-    /// skip the flat_map entirely.
+    /// Computes `resolution_enums` once, via `flatten_prelude_enum_defs`.
     ///
     /// Use [`from_slice`](Self::from_slice) when you own the `CompiledModule`
     /// values (e.g. `&'static [CompiledModule]` from `load_stdlib()`).
@@ -178,11 +172,8 @@ impl<'a> PreludeContext<'a> {
         &self.modules
     }
 
-    /// The pre-flattened enum definitions from every prelude module, in source
-    /// order (m[0] enums first, then m[1], …).
-    ///
-    /// This is the cached result of
-    /// `prelude.iter().flat_map(|m| m.enum_defs.iter().cloned()).collect()`.
+    /// The enums the prelude binds on its own under NS-P1: one per name, user
+    /// imports' before std modules', each tier in slice order.
     pub fn resolution_enums(&self) -> &[EnumDef] {
         &self.resolution_enums
     }
