@@ -3,6 +3,13 @@
 //! or by preconditioned CG. Contract: PRD
 //! `docs/prds/v0_6/elastic-static-solver-performance.md` §5 C1–C4.
 
+mod outcome;
+mod policy;
 mod system;
 
+pub use outcome::SolveFailure;
+pub use policy::{
+    FactorEstimate, LinearSolverChoice, PreconditionerKind, SolvePolicy, Strategy,
+    StrategyDecision, StrategyReason, choose_strategy,
+};
 pub use system::{SpdSystem, SystemInvalid};
