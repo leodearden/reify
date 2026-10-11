@@ -70,6 +70,7 @@ export async function main(
     workspace,
     landlockExec,
     landlockAvailable,
+    reifyDebugMcpUrl,
   });
 
   // Wire session output to the writable stream
