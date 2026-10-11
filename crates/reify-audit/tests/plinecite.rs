@@ -11,6 +11,8 @@
 //!   pinned: the residual is debt meant to shrink, so a count is a time bomb
 //!   on every crate's comments.
 
+use reify_audit::plinecite_baseline::CiteRow;
+use reify_audit::ratchet_ledger::Ledger;
 use reify_audit::{
     AuditContext, EvidenceRef, Finding, MockGitOps, MockJCodemunchOps, Pattern, RealGitOps,
     Severity,
@@ -341,6 +343,167 @@ fn a_tree_whose_only_source_is_the_excluded_crate_is_scope_empty() {
         vec!["scope-empty"],
         "the self-crate exclusion removes files from scope, not just findings; \
          got {findings:#?}"
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Ledger settlement — check() reports only what the committed ledger lacks
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// A ledger file holding `rows`, each `<path> :: <cite>`.
+fn ledger(rows: &[&str]) -> String {
+    let mut out = String::from("# PLINECITE baseline (fixture)\n#\n");
+    for row in rows {
+        out.push_str(&format!("{row}\n"));
+    }
+    out
+}
+
+fn ledger_row(path: &str, cite: &str) -> String {
+    format!("{path} :: {cite}")
+}
+
+#[test]
+fn a_ledgered_cite_is_absorbed() {
+    let rows = ledger(&[&ledger_row(STDLIB, "cache.rs:617")]);
+    let findings = check_fixture(&[(STDLIB, CITING), (LEDGER, &rows)], &[STDLIB, LEDGER]);
+    assert!(findings.is_empty(), "got {findings:#?}");
+}
+
+#[test]
+fn a_cite_the_ledger_lacks_is_new_debt() {
+    let rows = ledger(&[&ledger_row(OTHER_STDLIB, "a.rs:1")]);
+    let findings = check_fixture(
+        &[
+            (STDLIB, CITING),
+            (OTHER_STDLIB, "// see a.rs:1\n"),
+            (LEDGER, &rows),
+        ],
+        &[STDLIB, OTHER_STDLIB, LEDGER],
+    );
+    assert_eq!(names_in(&findings, "line-cite"), vec!["cache.rs:617"]);
+    assert_eq!(findings.len(), 1, "got {findings:#?}");
+    assert_eq!(findings[0].task_id, STDLIB);
+}
+
+#[test]
+fn a_row_matching_no_live_cite_is_one_medium_stale_baseline_entry() {
+    let stale = ledger_row(STDLIB, "gone.rs:1");
+    let rows = ledger(&[&ledger_row(STDLIB, "cache.rs:617"), &stale]);
+    let findings = check_fixture(&[(STDLIB, CITING), (LEDGER, &rows)], &[STDLIB, LEDGER]);
+    assert_eq!(findings.len(), 1, "got {findings:#?}");
+    let f = &findings[0];
+    assert_eq!(category(f), "stale-baseline-entry");
+    assert_eq!(name(f), stale, "named by the row text to delete");
+    assert_eq!(f.pattern, Pattern::PLineCite);
+    assert_eq!(f.severity, Severity::Medium);
+    assert_eq!(f.task_id, LEDGER);
+    assert_eq!(
+        f.evidence,
+        vec![EvidenceRef::File {
+            path: LEDGER.to_string()
+        }]
+    );
+    assert!(
+        f.summary.contains("plinecite-baseline-gen"),
+        "the summary names the regeneration remedy: {}",
+        f.summary
+    );
+}
+
+#[test]
+fn an_untracked_ledger_is_inert() {
+    let rows = ledger(&[&ledger_row(STDLIB, "gone.rs:1")]);
+    let findings = check_fixture(&[(STDLIB, CITING), (LEDGER, &rows)], &[STDLIB]);
+    assert_eq!(
+        findings.iter().map(category).collect::<Vec<_>>(),
+        vec!["line-cite"],
+        "the cite is reported and the untracked row is never read; got {findings:#?}"
+    );
+}
+
+#[test]
+fn a_ledgered_cite_stays_absorbed_when_its_comment_moves() {
+    let rows = ledger(&[&ledger_row(STDLIB, "cache.rs:617")]);
+    let moved = "structure S {}\n\n\n\n\nstructure T {}\n// see cache.rs:617-621 for the rule\n";
+    let findings = check_fixture(&[(STDLIB, moved), (LEDGER, &rows)], &[STDLIB, LEDGER]);
+    assert!(
+        findings.is_empty(),
+        "the citing line's own number is not part of the row; got {findings:#?}"
+    );
+}
+
+#[test]
+fn re_numbering_a_ledgered_cite_is_new_debt_plus_a_stale_row() {
+    let rows = ledger(&[&ledger_row(STDLIB, "cache.rs:348")]);
+    let findings = check_fixture(
+        &[(STDLIB, "// see cache.rs:352\n"), (LEDGER, &rows)],
+        &[STDLIB, LEDGER],
+    );
+    assert_eq!(names_in(&findings, "line-cite"), vec!["cache.rs:352"]);
+    assert_eq!(
+        names_in(&findings, "stale-baseline-entry"),
+        vec![ledger_row(STDLIB, "cache.rs:348")],
+        "re-pointing a number is not the fix; got {findings:#?}"
+    );
+    assert_eq!(findings.len(), 2, "got {findings:#?}");
+}
+
+#[test]
+fn allowing_a_ledgered_cite_makes_its_row_stale() {
+    let rows = ledger(&[&ledger_row(STDLIB, "cache.rs:617")]);
+    let allowed = "// see cache.rs:617 plinecite:allow — dated evidence\n";
+    let findings = check_fixture(&[(STDLIB, allowed), (LEDGER, &rows)], &[STDLIB, LEDGER]);
+    assert_eq!(
+        names_in(&findings, "stale-baseline-entry"),
+        vec![ledger_row(STDLIB, "cache.rs:617")],
+        "an allowed cite is not debt; got {findings:#?}"
+    );
+    assert_eq!(findings.len(), 1, "got {findings:#?}");
+}
+
+#[test]
+fn baseline_ledger_is_the_same_derivation_check_reports() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let files = [
+        (
+            STDLIB,
+            "// see z.rs:9\n// see a.rs:1 plinecite:allow\n// x.ri:5\n",
+        ),
+        (OTHER_STDLIB, CITING),
+    ];
+    for (path, content) in files {
+        write_file(dir.path(), path, content);
+    }
+    let harness = Harness::new(&[STDLIB, OTHER_STDLIB]);
+    let ctx = harness.ctx(dir.path());
+
+    let reported: BTreeSet<CiteRow> = reify_audit::plinecite::check(&ctx)
+        .iter()
+        .filter(|f| category(f) == "line-cite")
+        .map(|f| CiteRow {
+            path: f.task_id.clone(),
+            cite: name(f).to_string(),
+        })
+        .collect();
+    let ledger: Ledger<CiteRow> = reify_audit::plinecite::baseline_ledger(&ctx)
+        .unwrap_or_else(|e| panic!("the fixture tree has an in-scope file: {e}"));
+    assert_eq!(
+        ledger.live, reported,
+        "live debt is EXACTLY what check() reports against an empty ledger"
+    );
+    assert!(ledger.committed.is_empty(), "no ledger is tracked");
+    assert_eq!(reported.len(), 4, "{reported:#?}");
+}
+
+#[test]
+fn baseline_ledger_refuses_a_tree_with_nothing_in_scope() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    write_file(dir.path(), "docs/notes/n.md", CITING);
+    let harness = Harness::new(&["docs/notes/n.md"]);
+    assert!(
+        reify_audit::plinecite::baseline_ledger(&harness.ctx(dir.path())).is_err(),
+        "an empty scope must never derive a ledger that would wipe the committed one"
     );
 }
 
