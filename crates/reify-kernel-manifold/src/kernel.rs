@@ -40,14 +40,6 @@ use manifold3d::Manifold;
 use reify_ir::geometry::MeshContractMode;
 use reify_ir::{ExportError, ExportFormat, ExportOptions, ExportWarning, FeatureId, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, KernelAttributeHook, KernelAttributeOutcome, KernelHandle, KernelId, Mesh, QueryError, TessError, ThreeMfOptions, ThreeMfWarning, TopologyAttributeTable, Value, write_3mf, write_stl_binary};
 
-/// Error message used by the v0.2 stub paths (`query`/`export`) that
-/// have not yet been wired to real FFI. Boolean ops (`Union`,
-/// `Difference`, `Intersection`) and `tessellate` are now wired via
-/// `manifold3d` 0.1; `query`/`export` remain follow-up work for v0.2.
-const STUB_MSG: &str = "Manifold query/export not yet implemented for v0.2; \
-    boolean ops and tessellate are wired via manifold3d 0.1, but query/export \
-    are follow-up work (see docs/prds/v0_2/multi-kernel.md).";
-
 /// [`MeshInvariant::NonDegenerate`](reify_ir::geometry::MeshInvariant::NonDegenerate)
 /// twice-area epsilon used by the pre-ingest [`Mesh::check_mesh_contract_welded`]
 /// call in [`manifold_from_reify_mesh`].
@@ -411,9 +403,11 @@ impl GeometryKernel for ManifoldKernel {
                 let result = l.intersection(r);
                 Ok(self.store(result))
             }
-            // Non-boolean ops are out of scope for the v0.2 manifold
-            // adapter — see `STUB_MSG`.
-            _ => Err(GeometryError::OperationFailed(STUB_MSG.into())),
+            // Primitives reach this kernel via ingest_mesh; only booleans execute natively.
+            other => Err(GeometryError::OperationFailed(format!(
+                "unsupported op {} on manifold kernel",
+                other.kind_name()
+            ))),
         }
     }
 
@@ -691,8 +685,10 @@ impl GeometryKernel for ManifoldKernel {
                     )),
                 }
             }
-            // All other queries remain follow-up work (see STUB_MSG).
-            _ => Err(QueryError::QueryFailed(STUB_MSG.into())),
+            other => Err(QueryError::QueryFailed(format!(
+                "unsupported query {} on manifold kernel",
+                other.kind_name()
+            ))),
         }
     }
 
@@ -724,7 +720,9 @@ impl GeometryKernel for ManifoldKernel {
                     .map(|_warnings| ())
                     .map_err(|e| ExportError::IoError(e.to_string()))
             }
-            _ => Err(ExportError::FormatError(STUB_MSG.into())),
+            other => Err(ExportError::FormatError(format!(
+                "unsupported export format {other:?} on manifold kernel"
+            ))),
         }
     }
 
@@ -2115,11 +2113,6 @@ mod tests {
     /// [5,6].  The closest vertex pair is at x=1 vs x=5, giving an exact
     /// vertex-to-vertex min distance of |5 − 1| = 4.0.
     ///
-    /// RED (task 3610 step-7): `ManifoldKernel::query` currently returns
-    /// `Err(QueryError::QueryFailed(STUB_MSG))` for every query variant.
-    /// GREEN is delivered by step-8 which adds `queries.rs` and wires
-    /// the `Distance` arm.
-    ///
     /// Match-on-Ok rather than assert_eq! because `QueryError` does not
     /// derive `PartialEq`.
     #[cfg(feature = "test-fixtures")]
@@ -2774,8 +2767,6 @@ mod tests {
     /// Mirrors `export_stl_of_unit_cube_writes_valid_binary` for 3MF.
     /// Because Stored=uncompressed, OPC part names and model XML appear
     /// literally in raw bytes — no zip reader needed.
-    ///
-    /// RED before step-8: Manifold export() routes ThreeMF to `_ => Err(STUB_MSG)`.
     #[cfg(feature = "test-fixtures")]
     #[test]
     fn export_3mf_of_unit_cube_writes_valid_package() {
