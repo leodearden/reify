@@ -36,7 +36,11 @@
 #                              <PROC_ROOT>/*/exe directly; B2 pins it)
 # No real host process is inspected, so the expectations are exact integers on
 # ANY host and under ANY concurrent load — the Tests 13a-15b form the sibling
-# nextest suites use.  Compile-free: bash/awk/readlink only, no cargo, no
+# nextest suites use.  The two deliberate exceptions are C4a/C4b, which pin
+# KERNEL premises no fake tree can (DAC and Landlock behaviour of the real
+# /proc); they read only processes they chose or spawned, so their integers stay
+# exact, and they SKIP where the premise cannot be exercised.  Compile-free:
+# bash/awk/readlink (plus python3 for C4b's Landlock helper) only, no cargo, no
 # nextest, no workspace compile (task 4613).
 #
 # Bucket `pool` in tests/infra/run-all-classification.manifest: hermetic, safe to
@@ -734,6 +738,103 @@ assert "C3: the summary line is the seven existing fields in order, then own_uid
         re="^INFO: nextest test-binary concurrency: peak=[0-9]+ samples=[0-9]+ nonzero_samples=[0-9]+ interval=[0-9]+s duration=[0-9]+s deps_glob=[^ ]+ host_nproc=[^ ]+ own_uid_links=[0-9]+ resolved_links=[0-9]+$"
         grep -qE "$re" <<<"$out"
     '
+
+# ---------------------------------------------------------------------------
+# C4a/C4b (LIVE KERNEL PREMISES of the C-series detector).
+#
+# C1-C3 pin the arithmetic over a shim; they cannot pin the two kernel facts the
+# detector rests on.  (i) DAC denies the exe of every OTHER-uid process on a
+# healthy non-root host, so those must stay out of the denominator — a naive
+# resolved/enumerated ratio would false-warn on every healthy host (C4a).
+# (ii) Under real Landlock, a stat of /proc/<pid> still sees an own-uid process
+# whose exe readlink is denied — if it did not, own_uid_links would read 0 and
+# the detector would itself go silent (C4b).
+#
+# Both are GREEN on arrival against the implementation and were validated by
+# mutation (see the commit that added them).  The blindness WARNING is matched
+# by its own_uid_links= token: these fixtures contain no test binary, so the
+# independent nonzero_samples=0 WARNING legitimately fires as well.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- C4a-C4b (live): other-uid DAC denials are not blindness; real Landlock blindness is reported ---"
+
+_c4a_skip=""
+_c4a_foreign_pids=()
+if [ "$(id -u)" -eq 0 ]; then
+    _c4a_skip="C4a needs a non-root caller"
+else
+    for _p in /proc/[0-9]*; do
+        [ -O "$_p" ] && continue
+        _c4a_foreign_pids+=( "${_p#/proc/}" )
+        [ "${#_c4a_foreign_pids[@]}" -ge 20 ] && break
+    done
+    unset _p
+    [ "${#_c4a_foreign_pids[@]}" -gt 0 ] || \
+        _c4a_skip="C4a found no other-uid process in /proc (hidepid?)"
+fi
+
+if [ -n "$_c4a_skip" ]; then
+    echo "  SKIP: $_c4a_skip"
+else
+    assert "C4a: real /proc — this shell plus ${#_c4a_foreign_pids[@]} other-uid pids reads own_uid_links=1 resolved_links=1 and does NOT warn of blindness (DAC denials of other uids are not in the denominator)" \
+        bash -c '
+            set -eu
+            d=$(mktemp -d); trap "rm -rf \"$d\"" EXIT
+            '"$(declare -f _field)"'
+            for p in $$ '"${_c4a_foreign_pids[*]}"'; do echo "$p"; done > "$d/pids"
+            unset REIFY_SAMPLER_PROC_ROOT
+            out=$(REIFY_SAMPLER_PIDS_CMD="cat $d/pids" \
+                  bash "'"$SAMPLER"'" --duration 0 --interval 0 2>"$d/err") \
+                && rc=0 || rc=$?
+            [ "$rc" -eq 0 ] || exit 1
+            [ "$(_field "$out" own_uid_links)" = "1" ] || exit 1
+            [ "$(_field "$out" resolved_links)" = "1" ] || exit 1
+            if grep WARNING "$d/err" | grep -q own_uid_links; then exit 1; fi
+        '
+fi
+
+HELPER="$REPO_ROOT/gui/src-tauri/sandbox/landlock_exec.py"
+_c4b_skip=""
+if ! command -v python3 >/dev/null 2>&1; then
+    _c4b_skip="python3 not on PATH"
+elif [ ! -f "$HELPER" ]; then
+    _c4b_skip="helper missing: $HELPER"
+elif ! python3 "$HELPER" -- true >/dev/null 2>&1; then
+    _c4b_skip="python3 landlock_exec.py -- true failed"
+fi
+
+if [ -n "$_c4b_skip" ]; then
+    echo "  SKIP: C4b: Landlock unavailable on this host ($_c4b_skip)"
+else
+    assert "C4b: real Landlock — 8 own sleep processes read own_uid_links=8 resolved_links=8 unsandboxed, and own_uid_links=8 resolved_links=0 plus a blindness WARNING from inside a nested Landlock domain, exit 0" \
+        bash -c '
+            set -eu
+            d=$(mktemp -d); sl=""
+            trap "kill \$sl 2>/dev/null; rm -rf \"$d\"" EXIT
+            '"$(declare -f _field)"'
+            for i in 1 2 3 4 5 6 7 8; do
+                sleep 300 </dev/null >/dev/null 2>&1 &
+                sl="$sl $!"
+                echo "$!" >> "$d/pids"
+            done
+            unset REIFY_SAMPLER_PROC_ROOT
+            out=$(REIFY_SAMPLER_PIDS_CMD="cat $d/pids" \
+                  bash "'"$SAMPLER"'" --duration 0 --interval 0 2>"$d/err.direct") \
+                && rc=0 || rc=$?
+            [ "$rc" -eq 0 ] || exit 1
+            [ "$(_field "$out" own_uid_links)" = "8" ] || exit 1
+            [ "$(_field "$out" resolved_links)" = "8" ] || exit 1
+            if grep WARNING "$d/err.direct" | grep -q own_uid_links; then exit 1; fi
+            out=$(REIFY_SAMPLER_PIDS_CMD="cat $d/pids" \
+                  python3 "'"$HELPER"'" --writable "$d" --writable "${TMPDIR:-/tmp}" -- \
+                  bash "'"$SAMPLER"'" --duration 0 --interval 0 2>"$d/err.sandboxed") \
+                && rc=0 || rc=$?
+            [ "$rc" -eq 0 ] || exit 1
+            [ "$(_field "$out" own_uid_links)" = "8" ] || exit 1
+            [ "$(_field "$out" resolved_links)" = "0" ] || exit 1
+            grep WARNING "$d/err.sandboxed" | grep -qE "own_uid_links=8([^0-9]|$)"
+        '
+fi
 
 
 test_summary
