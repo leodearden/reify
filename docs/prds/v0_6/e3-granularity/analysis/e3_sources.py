@@ -9,20 +9,26 @@ Each reader parses its source into frozen records the pure model consumes:
   escalations;
 - git main history, for each task's first-parent merge and its LOC.
 
-Nothing here decides what a record means for the protocol; e3_model does.
+Every vocabulary a source fixes (task status, attempt outcome, escalation
+severity) is parsed here into a closed enum, so a value outside it fails at
+the boundary instead of silently failing a comparison downstream. Nothing
+here decides what a record means for the protocol; e3_model does.
 The live MCP client, scripts/escalation_mcp.py, is imported only when a
 session opens; the e3_analysis entrypoint puts scripts/ on sys.path.
 """
 
 import dataclasses
+import enum
 import http.client
 import json
 import re
 import sqlite3
 import subprocess
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
+
+from e3_protocol import UTC
 
 SNAPSHOT_SCHEMA = "e3-task-snapshot/1"
 MCP_SOURCE = "fused-memory MCP get_statuses + get_task"
@@ -34,11 +40,26 @@ class SourceError(Exception):
     """A data source could not be read or does not parse as its contract says."""
 
 
+class TaskStatus(enum.Enum):
+    """The task store's closed status vocabulary (dark-factory
+    shared/task_statuses.py)."""
+
+    PENDING = "pending"
+    IN_PROGRESS = "in-progress"
+    BLOCKED = "blocked"
+    DEFERRED = "deferred"
+    REVIEW = "review"
+    MERGE_DEFERRED = "merge-deferred"
+    INFRA_HOLD = "infra-hold"
+    DONE = "done"
+    CANCELLED = "cancelled"
+
+
 @dataclass(frozen=True)
 class TaskRecord:
     id: int
     title: str
-    status: str
+    status: TaskStatus
     prd_path: str | None
     x_e3_arm: str | None
     x_e3_prd: str | None
@@ -67,7 +88,7 @@ def _task_record(raw):
     return TaskRecord(
         id=int(raw["id"]),
         title=raw.get("title", ""),
-        status=raw["status"],
+        status=TaskStatus(raw["status"]),
         prd_path=metadata.get("prd_path"),
         x_e3_arm=metadata.get("x_e3_arm"),
         x_e3_prd=metadata.get("x_e3_prd"),
@@ -104,7 +125,8 @@ def write_task_snapshot(snapshot, path):
         "fetched_at": snapshot.fetched_at.isoformat(),
         "project_root": snapshot.project_root,
         "source": snapshot.source,
-        "tasks": [dataclasses.asdict(record) for record in snapshot.tasks],
+        "tasks": [{**dataclasses.asdict(record), "status": record.status.value}
+                  for record in snapshot.tasks],
     }
     Path(path).write_text(json.dumps(document, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
@@ -120,7 +142,8 @@ def read_task_snapshot(path):
         project_root=document["project_root"],
         source=document["source"],
         tasks=tuple(
-            TaskRecord(**{**task, "constituents": tuple(task["constituents"])})
+            TaskRecord(**{**task, "status": TaskStatus(task["status"]),
+                          "constituents": tuple(task["constituents"])})
             for task in document["tasks"]
         ),
     )
@@ -164,6 +187,30 @@ def open_fused_memory(url):
     return call_tool
 
 
+class AttemptOutcome(enum.Enum):
+    """A task_completed event's outcome (dark-factory orchestrator
+    WorkflowOutcome)."""
+
+    DONE = "done"
+    PLANNED = "planned"
+    BLOCKED = "blocked"
+    REQUEUED = "requeued"
+    ESCALATED = "escalated"
+    CANCELLED = "cancelled"
+    MERGE_DEFERRED = "merge-deferred"
+    SOFT_CANCELLED = "soft-cancelled"
+
+
+class Severity(enum.Enum):
+    """An escalation's severity (dark-factory escalation KNOWN_SEVERITIES).
+    An escalation_created event may carry none."""
+
+    INFO = "info"
+    BLOCKING = "blocking"
+    CRITICAL = "critical"
+    URGENT = "urgent"
+
+
 @dataclass(frozen=True)
 class Attempt:
     """One dispatch: a task_started and the first later task_completed of the
@@ -177,7 +224,7 @@ class Attempt:
     run_id: str
     started_at: datetime
     ended_at: datetime | None
-    outcome: str | None
+    outcome: AttemptOutcome | None
     run_ended_at: datetime | None
     run_end_known_at: datetime | None
 
@@ -195,7 +242,7 @@ class Escalation:
     task_id: int
     escalation_id: str
     created_at: datetime
-    severity: str | None
+    severity: Severity | None
     level: int | None
     category: str | None
 
@@ -221,7 +268,7 @@ def utc_timestamp(text):
     moment = datetime.fromisoformat(text)
     if moment.tzinfo is None:
         raise SourceError(f"timestamp {text!r} carries no UTC offset")
-    return moment.astimezone(timezone.utc)
+    return moment.astimezone(UTC)
 
 
 def _placeholders(values):
@@ -291,7 +338,7 @@ def _pair_attempts(events, run_ends):
             run_id=start.run_id,
             started_at=start.at,
             ended_at=end.at if end else None,
-            outcome=end.data.get("outcome") if end else None,
+            outcome=AttemptOutcome(end.data["outcome"]) if end else None,
             run_ended_at=run_ends[start.run_id][0],
             run_end_known_at=run_ends[start.run_id][1],
         )
@@ -300,13 +347,17 @@ def _pair_attempts(events, run_ends):
     return tuple(sorted(attempts, key=lambda a: (a.started_at, a.task_id)))
 
 
+def _severity(raw):
+    return None if raw is None else Severity(raw)
+
+
 def _escalations(events):
     return tuple(
         Escalation(
             task_id=event.task_id,
             escalation_id=event.data.get("escalation_id"),
             created_at=event.at,
-            severity=event.data.get("severity"),
+            severity=_severity(event.data.get("severity")),
             level=event.data.get("level"),
             category=event.data.get("category"),
         )

@@ -36,6 +36,7 @@ sys.path.insert(0, str(ANALYSIS_DIR))
 
 import e3_analysis_fixtures as fx  # noqa: E402  (after sys.path manipulation)
 import e3_sources  # noqa: E402
+from e3_sources import AttemptOutcome, Severity, TaskStatus  # noqa: E402
 from e3_protocol import UTC  # noqa: E402
 
 at = fx.at
@@ -83,7 +84,8 @@ class SnapshotSourceTests(unittest.TestCase):
         self.assertEqual(coalesced.prd_path, "docs/prds/v0_6/c1.md")
         self.assertTrue(snapshot.task(103).x_e3_reused)
         standard = snapshot.task(1102)
-        self.assertEqual(standard.status, "done")
+        self.assertIs(standard.status, TaskStatus.DONE)
+        self.assertIs(snapshot.task(1101).status, TaskStatus.PENDING)
         self.assertEqual(standard.provenance_commit, "abc123")
         self.assertIsNone(standard.x_e3_arm)
         self.assertEqual(standard.constituents, ())
@@ -96,6 +98,12 @@ class SnapshotSourceTests(unittest.TestCase):
             self._fetch(payload)
         self.assertIn("101", str(caught.exception))
         self.assertIn("999", str(caught.exception))
+
+    def test_fetch_refuses_a_status_outside_the_store_vocabulary(self):
+        payload = fx.snapshot_payload(self.protocol, overrides={101: {"status": "superseded"}})
+        with self.assertRaises(ValueError) as caught:
+            self._fetch(payload)
+        self.assertIn("superseded", str(caught.exception))
 
     def test_read_rejects_a_fetch_instant_without_offset(self):
         snapshot, _, _ = self._fetch()
@@ -113,7 +121,9 @@ class SnapshotSourceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "tasks-snapshot.json"
             e3_sources.write_task_snapshot(snapshot, path)
-            self.assertEqual(json.loads(path.read_text())["schema"], "e3-task-snapshot/1")
+            document = json.loads(path.read_text())
+            self.assertEqual(document["schema"], "e3-task-snapshot/1")
+            self.assertEqual({t["id"]: t["status"] for t in document["tasks"]}[1102], "done")
             self.assertEqual(e3_sources.read_task_snapshot(path), snapshot)
 
     def test_read_rejects_another_schema(self):
@@ -192,7 +202,7 @@ class RunsDbSourceTests(unittest.TestCase):
     def test_start_pairs_with_first_later_completion_in_same_run(self):
         first, second = self._attempts(1101)
         self.assertEqual((first.run_id, first.started_at, first.ended_at, first.outcome),
-                         ("r1", at(1, 1), at(1, 2), "requeued"))
+                         ("r1", at(1, 1), at(1, 2), AttemptOutcome.REQUEUED))
         self.assertEqual(second.started_at, at(1, 3))
         self.assertIsNone(second.ended_at)
         self.assertIsNone(second.outcome)
@@ -241,7 +251,7 @@ class RunsDbSourceTests(unittest.TestCase):
         blocking = by_id["esc-1101-1"]
         self.assertEqual((blocking.task_id, blocking.created_at, blocking.severity,
                           blocking.level, blocking.category),
-                         (1101, at(1, 4), "blocking", None, "review_issues"))
+                         (1101, at(1, 4), Severity.BLOCKING, None, "review_issues"))
         self.assertIsNone(by_id["esc-1102-1"].severity)
         self.assertEqual(by_id["esc-1102-1"].level, 1)
 
@@ -255,6 +265,17 @@ class RunsDbSourceTests(unittest.TestCase):
     def test_other_projects_are_ignored(self):
         self.assertNotIn("rX", {a.run_id for a in self.data.attempts})
         self.assertNotIn(100.0, {i.cost_usd for i in self.data.invocations})
+
+    def test_an_outcome_or_severity_outside_the_vocabulary_is_refused(self):
+        run = {"run_id": "r1", "started_at": at(1, 0), "completed_at": at(1, 10)}
+        for name, event in (("outcome", fx.completed(1101, "r1", at(1, 2), "vanished")),
+                            ("severity", fx.escalated(1101, "r1", at(1, 4), "esc-x",
+                                                      severity="dire"))):
+            with self.subTest(name):
+                path = Path(self.tmp.name) / f"unknown-{name}.db"
+                fx.make_runs_db(path, [run], [fx.started(1101, "r1", at(1, 1)), event], [])
+                with self.assertRaises(ValueError):
+                    e3_sources.read_runs_db(path, {1101})
 
     def test_missing_database_raises_without_creating_it(self):
         missing = Path(self.tmp.name) / "absent" / "runs.db"

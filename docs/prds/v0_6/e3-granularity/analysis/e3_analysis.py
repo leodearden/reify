@@ -315,6 +315,10 @@ def _num(value, digits=2):
     return "—" if value is None else f"{value:.{digits}f}"
 
 
+def _name(member):
+    return "—" if member is None else member.value
+
+
 def _frac(value):
     return "—" if value is None else f"{value} ({float(value):.3f})"
 
@@ -422,7 +426,7 @@ def _landed_task_row(outcome):
     ledger, amendment = outcome.ledger, outcome.task.amendment
     return (f"      #{ledger.task_id} landed {_ts(ledger.landed_at)}: cost ${ledger.cost:.2f}, "
             f"LOC {ledger.loc}, attempts {ledger.attempts_counted}, blocking esc "
-            f"{ledger.blocking_escalations}, era {outcome.era}"
+            f"{ledger.blocking_escalations}, era {_name(outcome.era)}"
             + (f", amended {amendment.source}" if amendment else ""))
 
 
@@ -471,7 +475,7 @@ def _era_section(analysis):
     boundaries = ", ".join(f"{_ts(e.at)} ({e.label})" for e in analysis.protocol.era_events)
     lines = [f"== ERA SPLIT (§7.6 at {boundaries}; landed eligible tasks; DESCRIPTIVE) =="]
     for cell in analysis.era_cells:
-        lines.append(f"  {cell.arm.value:<8} {cell.era:<9} n={cell.n_tasks:<3} "
+        lines.append(f"  {cell.arm.value:<8} {cell.era.value:<9} n={cell.n_tasks:<3} "
                      f"$/kLOC {_num(cell.usd_per_kloc):>8}  att/task "
                      f"{_num(cell.attempts_per_task):>6}  blk/task "
                      f"{_num(cell.blocking_esc_per_task):>6}")
@@ -488,7 +492,7 @@ def _sensitivity_section(analysis):
 
 def _ledger_row(ledger, prefix):
     """One excluded task's descriptive figures."""
-    return (f"  #{ledger.task_id} {prefix}: status {ledger.status}, landed "
+    return (f"  #{ledger.task_id} {prefix}: status {ledger.status.value}, landed "
             f"{_ts(ledger.landed_at)}, cost ${ledger.cost:.2f}, LOC {ledger.loc}, attempts "
             f"counted {ledger.attempts_counted} / drain-censored "
             f"{ledger.attempts_drain_censored} / in-flight {ledger.attempts_in_flight}, "
@@ -497,7 +501,7 @@ def _ledger_row(ledger, prefix):
 
 def _excluded_section(analysis):
     lines = ["== EXCLUDED TASKS (descriptive only; never in an endpoint) =="]
-    lines += [_ledger_row(o.ledger, f"{o.task.arm.value} {o.task.prd_slug} {o.excluded}")
+    lines += [_ledger_row(o.ledger, f"{o.task.arm.value} {o.task.prd_slug} {o.excluded.value}")
               for o in analysis.outcomes if not o.eligible]
     lines += [_ledger_row(ledger, "carve-out (§7.1)") for ledger in analysis.carve_outs]
     return lines + [""]

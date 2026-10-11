@@ -36,6 +36,7 @@ sys.path.insert(0, str(ANALYSIS_DIR))
 import e3_analysis_fixtures as fx  # noqa: E402  (after sys.path manipulation)
 import e3_model  # noqa: E402
 import e3_sources  # noqa: E402
+from e3_sources import AttemptOutcome, Severity, TaskStatus  # noqa: E402
 import e3_stats  # noqa: E402
 from e3_protocol import E3, UTC, Arm, ProtocolViolation  # noqa: E402
 
@@ -239,20 +240,20 @@ class CensoringTests(unittest.TestCase):
 
     def test_cancelled_at_the_run_boundary_is_drain_censored(self):
         self.assertIs(
-            self._classify(ended_at=RUN_END - timedelta(seconds=40), outcome="cancelled"),
+            self._classify(ended_at=RUN_END - timedelta(seconds=40), outcome=AttemptOutcome.CANCELLED),
             e3_model.AttemptClass.DRAIN_CENSORED)
 
     def test_cancelled_far_from_the_run_end_is_rework(self):
         self.assertIs(
-            self._classify(ended_at=RUN_END - timedelta(hours=2), outcome="cancelled"),
+            self._classify(ended_at=RUN_END - timedelta(hours=2), outcome=AttemptOutcome.CANCELLED),
             e3_model.AttemptClass.COUNTED)
 
     def test_drain_window_is_inclusive(self):
         window = self.protocol.drain_window
-        self.assertIs(self._classify(ended_at=RUN_END - window, outcome="cancelled"),
+        self.assertIs(self._classify(ended_at=RUN_END - window, outcome=AttemptOutcome.CANCELLED),
                       e3_model.AttemptClass.DRAIN_CENSORED)
         self.assertIs(
-            self._classify(ended_at=RUN_END - window - timedelta(seconds=1), outcome="cancelled"),
+            self._classify(ended_at=RUN_END - window - timedelta(seconds=1), outcome=AttemptOutcome.CANCELLED),
             e3_model.AttemptClass.COUNTED)
 
     def test_unfinished_attempt_in_an_ended_run_is_drain_censored(self):
@@ -263,7 +264,7 @@ class CensoringTests(unittest.TestCase):
                       e3_model.AttemptClass.IN_FLIGHT)
 
     def test_other_outcomes_always_count(self):
-        for outcome in ("done", "requeued", "blocked", "escalated"):
+        for outcome in [o for o in AttemptOutcome if o is not AttemptOutcome.CANCELLED]:
             for distance in (timedelta(seconds=10), timedelta(hours=3)):
                 self.assertIs(
                     self._classify(ended_at=RUN_END - distance, outcome=outcome),
@@ -320,7 +321,7 @@ def inv(task_id, cost, started_at, role="implementer"):
                                  cost_usd=cost)
 
 
-def esc(task_id, escalation_id, created_at, severity="blocking", level=None):
+def esc(task_id, escalation_id, created_at, severity=Severity.BLOCKING, level=None):
     return e3_sources.Escalation(task_id=task_id, escalation_id=escalation_id,
                                  created_at=created_at, severity=severity, level=level,
                                  category="review_issues")
@@ -340,7 +341,7 @@ def closed(task_id, started_at, outcome, ended_at=None, run_ended_at=None):
 def drained(task_id, started_at):
     ended_at = started_at + timedelta(hours=1)
     return attempt(task_id=task_id, started_at=started_at, ended_at=ended_at,
-                   outcome="cancelled", run_ended_at=ended_at + timedelta(seconds=20))
+                   outcome=AttemptOutcome.CANCELLED, run_ended_at=ended_at + timedelta(seconds=20))
 
 
 class EndpointScenario:
@@ -369,16 +370,16 @@ class EndpointScenario:
         late = AS_OF + timedelta(days=3)
         self.runs = e3_sources.RunsData(
             attempts=(
-                closed(101, pre, "requeued"), closed(101, post, "done"), drained(101, post),
-                closed(101, late, "done"),
-                closed(102, pre, "blocked"),
+                closed(101, pre, AttemptOutcome.REQUEUED), closed(101, post, AttemptOutcome.DONE), drained(101, post),
+                closed(101, late, AttemptOutcome.DONE),
+                closed(102, pre, AttemptOutcome.BLOCKED),
                 drained(203, at(27, 9, month=8)),
-                closed(1101, at(27, 8, month=8), "done"), drained(1101, at(2, 1)),
-                closed(1102, at(20, 9), "done"),
+                closed(1101, at(27, 8, month=8), AttemptOutcome.DONE), drained(1101, at(2, 1)),
+                closed(1102, at(20, 9), AttemptOutcome.DONE),
                 drained(1103, at(21, 9)),
-                closed(150, at(22, 9), "done"),
+                closed(150, at(22, 9), AttemptOutcome.DONE),
                 attempt(task_id=202, started_at=AS_OF - timedelta(hours=2),
-                        ended_at=AS_OF + timedelta(hours=1), outcome="done",
+                        ended_at=AS_OF + timedelta(hours=1), outcome=AttemptOutcome.DONE,
                         run_ended_at=AS_OF + timedelta(hours=2)),
             ),
             invocations=(
@@ -391,7 +392,7 @@ class EndpointScenario:
             escalations=(
                 esc(101, "esc-101-1", post), esc(101, "esc-101-1", post + timedelta(hours=1)),
                 esc(101, "esc-101-2", post, level=1), esc(101, "esc-101-3", post, severity=None),
-                esc(101, "esc-101-4", post, severity="info"), esc(101, "esc-101-5", late),
+                esc(101, "esc-101-4", post, severity=Severity.INFO), esc(101, "esc-101-5", late),
                 esc(102, "esc-102-1", pre),
             ),
         )
@@ -450,16 +451,16 @@ class EndpointTests(unittest.TestCase):
 
     def test_freeze_window_task_is_flagged_and_never_eligible(self):
         frozen = self.outcomes[1101]
-        self.assertEqual(frozen.excluded, "freeze-window")
+        self.assertIs(frozen.excluded, e3_model.Exclusion.FREEZE_WINDOW)
         self.assertEqual(frozen.ledger.landed_at, at(5, 9))
         self.assertFalse(frozen.landed_eligible)
         self.assertTrue(self.outcomes[1102].landed_eligible)
         self.assertIsNone(self.outcomes[1102].excluded)
 
     def test_era_by_attempt_starts(self):
-        self.assertEqual(self.outcomes[101].era, "straddle")
-        self.assertEqual(self.outcomes[102].era, "pre")
-        self.assertEqual(self.outcomes[1102].era, "post")
+        self.assertIs(self.outcomes[101].era, e3_model.Era.STRADDLE)
+        self.assertIs(self.outcomes[102].era, e3_model.Era.PRE)
+        self.assertIs(self.outcomes[1102].era, e3_model.Era.POST)
         self.assertIsNone(self.outcomes[103].era)
 
     def test_integrity_anomalies(self):
@@ -526,9 +527,9 @@ class EndpointTests(unittest.TestCase):
         self.assertEqual([ledger.task_id for ledger in ledgers], [150, 151])
         landed, untouched = ledgers
         self.assertEqual((landed.status, landed.landed_at, landed.loc, landed.cost,
-                          landed.attempts_counted), ("done", at(23, 9), 40, 1.5, 1))
+                          landed.attempts_counted), (TaskStatus.DONE, at(23, 9), 40, 1.5, 1))
         self.assertEqual((untouched.status, untouched.landed_at, untouched.cost,
-                          untouched.attempts_counted), ("pending", None, 0.0, 0))
+                          untouched.attempts_counted), (TaskStatus.PENDING, None, 0.0, 0))
         self.assertFalse({150, 151} & set(self.outcomes))
 
     def test_earlier_as_of_is_a_frozen_snapshot(self):
@@ -817,15 +818,15 @@ class DescriptiveTests(unittest.TestCase):
         cells = {(c.arm, c.era): c
                  for c in e3_model.era_split(scenario.outcomes())}
         self.assertEqual(set(cells), {(arm, era) for arm in Arm
-                                      for era in ("pre", "post", "straddle")})
-        straddle = cells[(Arm.COARSE, "straddle")]
+                                      for era in e3_model.Era})
+        straddle = cells[(Arm.COARSE, e3_model.Era.STRADDLE)]
         self.assertEqual((straddle.n_tasks, straddle.usd_per_kloc, straddle.attempts_per_task,
                           straddle.blocking_esc_per_task), (1, 20.0, 2.0, 2.0))
-        post = cells[(Arm.COARSE, "post")]
+        post = cells[(Arm.COARSE, e3_model.Era.POST)]
         self.assertEqual((post.n_tasks, post.usd_per_kloc, post.attempts_per_task), (1, 20.0, 0.0))
-        standard_post = cells[(Arm.STANDARD, "post")]
+        standard_post = cells[(Arm.STANDARD, e3_model.Era.POST)]
         self.assertEqual((standard_post.n_tasks, standard_post.attempts_per_task), (1, 1.0))
-        empty = cells[(Arm.COARSE, "pre")]
+        empty = cells[(Arm.COARSE, e3_model.Era.PRE)]
         self.assertEqual(empty.n_tasks, 0)
         self.assertIsNone(empty.usd_per_kloc)
 

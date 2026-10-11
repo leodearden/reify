@@ -4,8 +4,9 @@ from E3 records. Pure: no I/O.
 
 It reads the frozen records e3_sources parses, judges them against the frozen
 Protocol, and raises ProtocolViolation whenever the data drifts from the
-registration. Imports run downward only, to e3_protocol and e3_stats; the
-e3_sources records arrive as arguments.
+registration. Imports run downward only: e3_protocol, e3_stats, and
+e3_sources for the vocabulary enums its records carry. The records
+themselves arrive as arguments.
 """
 
 import dataclasses
@@ -17,16 +18,15 @@ from fractions import Fraction
 from pathlib import Path
 
 from e3_protocol import Amendment, Arm, ProtocolViolation, format_ids, require
+from e3_sources import AttemptOutcome, Severity, TaskStatus
 from e3_stats import (
     MannWhitneyResult, bootstrap_interval, exact_mann_whitney_u, min_achievable_p,
 )
 
 LABEL_DESCRIPTIVE = "DESCRIPTIVE"
 LABEL_CONFIRMATORY = "CONFIRMATORY"
-EXCLUDED_FREEZE_WINDOW = "freeze-window"
 ENDPOINT_METRICS = ("usd_per_kloc", "attempts_per_task", "attempts_per_kloc",
                     "blocking_esc_per_task", "blocking_esc_per_kloc")
-ERAS = ("pre", "post", "straddle")
 
 
 @dataclass(frozen=True)
@@ -136,6 +136,20 @@ class AttemptClass(enum.Enum):
     IN_FLIGHT = "in-flight"
 
 
+class Exclusion(enum.Enum):
+    """Why an arm task never enters an endpoint."""
+
+    FREEZE_WINDOW = "freeze-window"
+
+
+class Era(enum.Enum):
+    """§7.6: where a task's attempt starts fall against the era boundary."""
+
+    PRE = "pre"
+    POST = "post"
+    STRADDLE = "straddle"
+
+
 def classify_attempt(attempt, protocol):
     """DRAIN_CENSORED when an orchestrator shutdown ended the attempt: a
     cancellation within protocol.drain_window of its run's end, or no
@@ -147,7 +161,7 @@ def classify_attempt(attempt, protocol):
         return AttemptClass.DRAIN_CENSORED
     at_run_end = (attempt.run_ended_at is not None
                   and abs(attempt.run_ended_at - attempt.ended_at) <= protocol.drain_window)
-    if attempt.outcome == "cancelled" and at_run_end:
+    if attempt.outcome is AttemptOutcome.CANCELLED and at_run_end:
         return AttemptClass.DRAIN_CENSORED
     return AttemptClass.COUNTED
 
@@ -180,7 +194,7 @@ class TaskLedger:
     snapshot's, as of its fetch."""
 
     task_id: int
-    status: str
+    status: TaskStatus
     landed_at: datetime | None
     merges: tuple
     loc: int
@@ -202,7 +216,7 @@ def task_ledger(record, runs, merges, as_of, protocol):
     is never censored (§7.4 censors rework only)."""
     own_merges = tuple(m for m in merges if m.task_id == record.id)
     merged = tuple(m for m in own_merges if m.merged_at <= as_of)
-    landed = record.status == "done" and bool(merged)
+    landed = record.status is TaskStatus.DONE and bool(merged)
     attempts = [_attempt_as_of(a, as_of) for a in runs.attempts
                 if a.task_id == record.id and a.started_at <= as_of]
     classes = [classify_attempt(a, protocol) for a in attempts]
@@ -218,7 +232,7 @@ def task_ledger(record, runs, merges, as_of, protocol):
         attempts_drain_censored=classes.count(AttemptClass.DRAIN_CENSORED),
         attempts_in_flight=classes.count(AttemptClass.IN_FLIGHT),
         blocking_escalations=len({e.escalation_id for e in runs.escalations
-                                  if e.task_id == record.id and e.severity == "blocking"
+                                  if e.task_id == record.id and e.severity is Severity.BLOCKING
                                   and e.created_at <= as_of}),
         attempt_starts=tuple(a.started_at for a in attempts),
         anomalies=_anomalies(record, own_merges),
@@ -256,8 +270,8 @@ class TaskOutcome:
 
     task: ArmTask
     ledger: TaskLedger
-    excluded: str | None
-    era: str | None
+    excluded: Exclusion | None
+    era: Era | None
 
     @property
     def eligible(self):
@@ -285,7 +299,7 @@ def _task_outcome(task, record, runs, merges, freeze_set, as_of, protocol):
     return TaskOutcome(
         task=task,
         ledger=ledger,
-        excluded=EXCLUDED_FREEZE_WINDOW if task.id in freeze_set else None,
+        excluded=Exclusion.FREEZE_WINDOW if task.id in freeze_set else None,
         era=_era(ledger.attempt_starts, protocol),
     )
 
@@ -297,26 +311,27 @@ def _era_boundary(protocol):
 
 
 def _era(starts, protocol):
-    """pre / post / straddle by the task's attempt starts against the §7.6
-    boundary; None when it was never dispatched."""
+    """The task's Era by its attempt starts against the §7.6 boundary; None
+    when it was never dispatched."""
     if not starts:
         return None
     boundary = _era_boundary(protocol)
     if all(start < boundary for start in starts):
-        return "pre"
+        return Era.PRE
     if all(start >= boundary for start in starts):
-        return "post"
-    return "straddle"
+        return Era.POST
+    return Era.STRADDLE
 
 
 def _anomalies(record, own_merges):
     commits = {m.commit for m in own_merges}
     found = []
-    if record.status == "done" and not own_merges:
+    if record.status is TaskStatus.DONE and not own_merges:
         found.append(Anomaly("done-without-merge", f"#{record.id} is done with no task merge"))
-    if record.status != "done" and own_merges:
+    if record.status is not TaskStatus.DONE and own_merges:
         found.append(Anomaly("merged-but-not-done",
-                             f"#{record.id} is {record.status} with merges {sorted(commits)}"))
+                             f"#{record.id} is {record.status.value} with merges "
+                             f"{sorted(commits)}"))
     if own_merges and record.provenance_commit and record.provenance_commit not in commits:
         found.append(Anomaly("provenance-not-a-task-merge",
                              f"#{record.id} done_provenance {record.provenance_commit}"
@@ -521,7 +536,7 @@ def _rule_i(outcomes, protocol, operator_instant):
     closes = [by_id[prd.close_leaf].ledger for prd in protocol.prds]
     landed = [ledger.landed_at for ledger in closes if ledger.landed_at is not None]
     cancelled = tuple(ledger.task_id for ledger in closes
-                      if ledger.landed_at is None and ledger.status == "cancelled")
+                      if ledger.landed_at is None and ledger.status is TaskStatus.CANCELLED)
     last_merge = max(landed, default=None)
     if len(landed) + len(cancelled) < len(closes):
         _refuse_operator_instant(operator_instant, "a close leaf is still open")
@@ -653,7 +668,7 @@ class EraCell:
     """§7.6: pooled endpoints of one arm's landed eligible tasks in one era."""
 
     arm: Arm
-    era: str
+    era: Era
     n_tasks: int
     usd_per_kloc: float | None
     attempts_per_task: float | None
@@ -665,7 +680,7 @@ def era_split(outcomes):
     return tuple(
         _era_cell(arm, era, [o for o in outcomes
                              if o.task.arm is arm and o.era == era and o.landed_eligible])
-        for arm in Arm for era in ERAS
+        for arm in Arm for era in Era
     )
 
 
