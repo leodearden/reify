@@ -196,16 +196,11 @@ impl Seeds {
     /// arity-1 call a `__field__` cell may shadow with a lambda), so the fast
     /// path can never be the thing that swallowed a branch.
     ///
-    /// # The one remaining gap
-    ///
     /// A `true` here keeps the node off the fast path, and every kind the
-    /// traversal DIFFERENTIATES then records its own kinks.  The kinds it does
-    /// not — `IndexAccess`, `ListLiteral`, the rest of
-    /// [`refuse_or_constant`]'s clients — hand the whole node to
-    /// [`crate::eval_expr`], so a kink nested inside one of those is evaluated
-    /// without being recorded even though this predicate saw it.  That is the
-    /// ONLY shape for which an empty record still under-reports, and
-    /// [`refuse_or_constant`] states it at the point it happens.
+    /// traversal DIFFERENTIATES then records its own kinks.  A `true` on a node
+    /// the traversal delegates whole yields one [`KinkKind::Unplaced`] entry
+    /// from [`refuse_or_constant`] instead, so an empty record means no kink
+    /// anywhere.
     pub fn subtree_has_kink(&self, expr: &CompiledExpr) -> bool {
         if let Some(hit) = self.kinky.borrow().get(&expr.content_hash) {
             return *hit;
@@ -382,7 +377,8 @@ fn node_is_kink(e: &CompiledExpr) -> bool {
         // subtree.  Its own arguments keep the fast path (they are ordinary
         // subtrees), the shadow-cell probe is one `eval_expr` pays for every
         // arity-1 call anyway, and a traversed call records its branches
-        // properly — `eval_dual_fn_body` and `eval_dual_lambda_apply` both do.
+        // properly — `eval_dual_fn_body` and `eval_dual_lambda_apply` both do,
+        // and an intercepted family, delegated whole, records one `Unplaced`.
         CompiledExprKind::UserFunctionCall { .. } => true,
         CompiledExprKind::FunctionCall { args, .. } if args.len() == 1 => true,
         CompiledExprKind::BinOp { op, .. } => matches!(
@@ -554,9 +550,15 @@ fn eval_dual_at(
                 finish_unary(value, &inner, |_| -1.0)
             }
             // `not` is Bool-valued: there is no scalar derivative to take.
-            UnOp::Not => {
-                refuse_or_constant(expr, ctx, seeds, env, path, "unary `not` (Bool-valued)")
-            }
+            UnOp::Not => refuse_or_constant(
+                expr,
+                ctx,
+                seeds,
+                env,
+                record,
+                path,
+                "unary `not` (Bool-valued)",
+            ),
         },
 
         CompiledExprKind::BinOp { op, left, right } => {
@@ -584,7 +586,7 @@ fn eval_dual_at(
         }
 
         // Everything else is a kind this task does not differentiate.
-        _ => refuse_or_constant(expr, ctx, seeds, env, path, kind_name(expr)),
+        _ => refuse_or_constant(expr, ctx, seeds, env, record, path, kind_name(expr)),
     }
 }
 
@@ -609,31 +611,24 @@ fn descend(
 /// [`Tangent::None`] when the node could move with a seed, [`Tangent::Zero`]
 /// when it provably cannot.
 ///
-/// # The one place an empty record still under-reports
-///
-/// This hands the WHOLE node to [`crate::eval_expr`] without traversing it, so
-/// a kink nested inside an undifferentiated kind — `[a, if p then 1 else 2][0]`
-/// — is selected without an entry being emitted.  In the refusing branch that
-/// is harmless: the row comes back as an `Err`, so nothing reads the record.
-/// In the seed-independent branch the row is a legitimate flat one, and its
-/// record is silent about a branch that was taken.
-///
-/// Closing it needs a vocabulary for "a kink is in here and this module cannot
-/// place it", which is λ's (#6679) consumption contract to design, not ε's to
-/// presume — so the gap is stated here and in [`Seeds::subtree_has_kink`]
-/// rather than papered over.  Until then λ must read an empty record as "no
-/// kink in any kind ε differentiates", which is what these two doc comments and
-/// no other say.
+/// The node is handed WHOLE to [`crate::eval_expr`], so no kink beneath it can
+/// be placed: a node whose subtree holds one records a single
+/// [`KinkKind::Unplaced`] entry at its own site instead.
 fn refuse_or_constant(
     expr: &CompiledExpr,
     ctx: &EvalContext,
     seeds: &Seeds,
     env: &DualEnv,
+    record: &mut BranchRecord,
     path: &[u16],
     kind: &'static str,
 ) -> DualValue {
     let value = crate::eval_expr(expr, ctx);
-    if seeds.depends_on_seed(expr) || env.carries_tangent(expr) {
+    let moves = seeds.depends_on_seed(expr) || env.carries_tangent(expr);
+    if seeds.subtree_has_kink(expr) {
+        note(record, path, KinkKind::Unplaced, BranchChoice::OutcomeHash(value.content_hash()));
+    }
+    if moves {
         seeds.note_refusal(NonDifferentiable::UnsupportedKind {
             kind,
             site: KinkSite::new(path.to_vec()),
@@ -1927,7 +1922,7 @@ fn eval_dual_user_fn(
     // the combinators (lib.rs:780-782).  That is also why this cannot double
     // evaluate: no argument was evaluated on the dual path at all.
     if let Some(family) = is_intercepted_user_fn(function_name, args.len()) {
-        return refuse_or_constant(expr, ctx, seeds, env, path, family);
+        return refuse_or_constant(expr, ctx, seeds, env, record, path, family);
     }
 
     let duals: Vec<DualValue> = args
