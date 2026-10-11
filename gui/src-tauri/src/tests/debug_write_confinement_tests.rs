@@ -83,6 +83,13 @@ impl LaunchedDesign {
             .await
     }
 
+    /// A symlink outside the design dir that aliases it.
+    fn alias_of_design_dir(&self) -> PathBuf {
+        let alias = self.other.path().join("alias");
+        std::os::unix::fs::symlink(self.dir.path(), &alias).expect("symlink alias -> design dir");
+        alias
+    }
+
     /// A refusal wrote nothing to the design and left the baseline at S0.
     fn assert_untouched(&self) {
         assert_eq!(
@@ -191,6 +198,36 @@ async fn save_as_into_a_subdirectory_of_the_design_dir_is_permitted() {
         DESIGN_SOURCE,
         "the permitted target must receive the session's source"
     );
+}
+
+#[tokio::test]
+async fn save_as_through_an_alias_of_the_design_dir_lands_in_the_design_dir() {
+    let d = launched_design();
+    let alias = d.alias_of_design_dir();
+
+    d.save(&path_string(&alias.join("copy.ri")))
+        .await
+        .expect("a save-as naming the design dir through an alias must succeed");
+
+    assert_eq!(
+        std::fs::read_to_string(d.dir.path().join("copy.ri")).expect("copy.ri readable"),
+        DESIGN_SOURCE,
+        "the save-as must land in the real design dir"
+    );
+}
+
+#[tokio::test]
+async fn export_through_an_alias_of_the_design_dir_lands_in_the_design_dir() {
+    let d = launched_design();
+    let alias = d.alias_of_design_dir();
+
+    d.export_step(&path_string(&alias.join("part.step")))
+        .await
+        .expect("an export naming the design dir through an alias must succeed");
+
+    let written = std::fs::metadata(d.dir.path().join("part.step"))
+        .expect("the export must land in the real design dir");
+    assert!(written.len() > 0, "the exported file must not be empty");
 }
 
 #[tokio::test]
