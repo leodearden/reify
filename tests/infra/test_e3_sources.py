@@ -210,12 +210,20 @@ class RunsDbSourceTests(unittest.TestCase):
         in_crashed_run = self._attempts(1102)[0]
         self.assertEqual(in_crashed_run.run_ended_at, at(1, 13))
 
+    def test_crashed_run_end_is_known_once_the_next_run_starts(self):
+        in_crashed_run = self._attempts(1102)[0]
+        self.assertEqual(in_crashed_run.run_end_known_at, at(2, 0))
+
     def test_latest_run_without_completion_is_live(self):
         live = self._attempts(1102)[1]
         self.assertIsNone(live.run_ended_at)
+        self.assertIsNone(live.run_end_known_at)
 
     def test_closed_attempts_carry_their_run_end(self):
         self.assertEqual(self._attempts(1101)[0].run_ended_at, at(1, 10))
+
+    def test_completed_run_end_is_known_when_it_completes(self):
+        self.assertEqual(self._attempts(1101)[0].run_end_known_at, at(1, 10))
 
     def test_invocations_cover_every_role_of_requested_tasks(self):
         self.assertEqual(

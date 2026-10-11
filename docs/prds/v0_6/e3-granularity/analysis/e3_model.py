@@ -176,7 +176,8 @@ class Anomaly:
 @dataclass(frozen=True)
 class TaskLedger:
     """One task's records as they stood at an instant, with no arm judgement:
-    landed_at needs status done and a merge by then."""
+    landed_at needs status done and a merge by then. status is the
+    snapshot's, as of its fetch."""
 
     task_id: int
     status: str
@@ -193,10 +194,12 @@ class TaskLedger:
 
 
 def task_ledger(record, runs, merges, as_of, protocol):
-    """record's merges, cost, attempts and escalations with every source cut
-    at as_of, the one place as_of applies, so a past as_of is a frozen
-    snapshot. Cost spans every role and is never censored (§7.4 censors
-    rework only)."""
+    """record's merges, cost, attempts and escalations as they stood at as_of,
+    the one place as_of applies: every runs.db and git record counts from its
+    own instant, and a run's end from when the record shows it. The status
+    is not cut: the task store keeps no status history, so it is the
+    snapshot's, as of its fetch, for every as_of. Cost spans every role and
+    is never censored (§7.4 censors rework only)."""
     own_merges = tuple(m for m in merges if m.task_id == record.id)
     merged = tuple(m for m in own_merges if m.merged_at <= as_of)
     landed = record.status == "done" and bool(merged)
@@ -232,15 +235,16 @@ def carve_out_ledgers(snapshot, runs, merges, as_of, protocol):
 
 
 def _attempt_as_of(attempt, as_of):
-    """The attempt as it stood at as_of: a completion or run end after it had
-    not happened yet."""
+    """The attempt as it stood at as_of: a completion after it had not
+    happened yet, and a run end the record shows only later was not known."""
     ended = attempt.ended_at is not None and attempt.ended_at <= as_of
-    run_ended = attempt.run_ended_at is not None and attempt.run_ended_at <= as_of
+    run_ended = attempt.run_end_known_at is not None and attempt.run_end_known_at <= as_of
     return dataclasses.replace(
         attempt,
         ended_at=attempt.ended_at if ended else None,
         outcome=attempt.outcome if ended else None,
         run_ended_at=attempt.run_ended_at if run_ended else None,
+        run_end_known_at=attempt.run_end_known_at if run_ended else None,
     )
 
 

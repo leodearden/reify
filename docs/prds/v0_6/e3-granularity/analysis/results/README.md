@@ -25,9 +25,18 @@ cmp "$RECORD/report.txt" /tmp/e3-replay/report.txt
 cmp "$RECORD/endpoints.json" /tmp/e3-replay/endpoints.json
 ```
 
-A replay re-reads the live `data/orchestrator/runs.db` and the `main` ref, but
-every source is cut at the `--as-of` instant. Activity after that instant
-therefore cannot change the record. Only a change to the script's output can.
+A replay re-reads the live `data/orchestrator/runs.db` and the `main` ref, and
+cuts both at the `--as-of` instant. A merge, invocation, escalation or attempt
+event counts only from its own timestamp. A run that crashed counts as ended
+only once the run after it had started. Activity in those two sources after
+`--as-of` therefore cannot change the record.
+
+Task status is the exception. The task store keeps no status history, so each
+task's status, and with it its arm membership, is the one in
+`tasks-snapshot.json`. That status was taken at the snapshot's `fetched_at`,
+which can be later than `--as-of`. The frozen look at a stop-rule trigger uses
+the same statuses. Replaying the committed snapshot holds them fixed. Only a
+change to the script's output can then change the record.
 
 `tests/infra/test_e3_analysis.py` (`CommittedRecordTests`) checks the
 hermetic half of this. Every committed `tasks-snapshot.json` must still read,

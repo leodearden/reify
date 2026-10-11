@@ -168,7 +168,10 @@ def open_fused_memory(url):
 class Attempt:
     """One dispatch: a task_started and the first later task_completed of the
     same task in the same run (ended_at/outcome None when the run never
-    completed it). run_ended_at is None while the run is live."""
+    completed it). run_ended_at is when the run ended, and run_end_known_at
+    when the record first shows it over: its completed_at, or for a run that
+    crashed, the start of the run after it. Both are None while the run is
+    live."""
 
     task_id: int
     run_id: str
@@ -176,6 +179,7 @@ class Attempt:
     ended_at: datetime | None
     outcome: str | None
     run_ended_at: datetime | None
+    run_end_known_at: datetime | None
 
 
 @dataclass(frozen=True)
@@ -241,25 +245,31 @@ def _task_events(connection, task_ids, project_id):
 
 
 def _run_ends(connection, run_ids, project_id):
-    """run_id -> when it ended: completed_at; else, for a run a later run
-    followed (it crashed), its last event; else None (still live)."""
-    runs = {
-        run_id: (utc_timestamp(started), utc_timestamp(completed) if completed else None)
+    """run_id -> (ended_at, known_at). A completed run ended at completed_at,
+    known then. A run with no completed_at that a later run followed crashed:
+    it ended at its last event, known once the next run started. The last run
+    to start is live: (None, None)."""
+    runs = sorted(
+        (utc_timestamp(started), run_id, utc_timestamp(completed) if completed else None)
         for run_id, started, completed in connection.execute(
             "SELECT run_id, started_at, completed_at FROM runs WHERE project_id = ?",
             [project_id],
         )
-    }
-    latest = max(runs, key=lambda run_id: runs[run_id][0]) if runs else None
+    )
+    completed_at = {run_id: completed for _, run_id, completed in runs}
+    next_start = {run_id: following[0] for (_, run_id, _), following in zip(runs, runs[1:])}
     ends = {}
     for run_id in run_ids:
-        end = runs[run_id][1]
-        if end is None and run_id != latest:
+        if completed_at[run_id] is not None:
+            ends[run_id] = (completed_at[run_id], completed_at[run_id])
+        elif run_id in next_start:
             (last,) = connection.execute(
                 "SELECT max(timestamp) FROM events WHERE run_id = ?", [run_id]
             ).fetchone()
-            end = utc_timestamp(last)
-        ends[run_id] = end
+            ended = utc_timestamp(last)
+            ends[run_id] = (ended, max(ended, next_start[run_id]))
+        else:
+            ends[run_id] = (None, None)
     return ends
 
 
@@ -282,7 +292,8 @@ def _pair_attempts(events, run_ends):
             started_at=start.at,
             ended_at=end.at if end else None,
             outcome=end.data.get("outcome") if end else None,
-            run_ended_at=run_ends[start.run_id],
+            run_ended_at=run_ends[start.run_id][0],
+            run_end_known_at=run_ends[start.run_id][1],
         )
         for start, end in closed + unclosed
     ]

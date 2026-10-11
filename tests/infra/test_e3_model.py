@@ -219,11 +219,14 @@ RUN_END = datetime(2026, 9, 10, 12, 0, tzinfo=UTC)
 
 
 def attempt(task_id=1101, started_at=None, ended_at=None, outcome=None,
-            run_ended_at=RUN_END, run_id="r1"):
+            run_ended_at=RUN_END, run_id="r1", run_end_known_at=None):
+    """An Attempt whose run's end is known when it happens unless
+    run_end_known_at says later (a crashed run)."""
     return e3_sources.Attempt(
         task_id=task_id, run_id=run_id,
         started_at=started_at or RUN_END - timedelta(hours=6),
-        ended_at=ended_at, outcome=outcome, run_ended_at=run_ended_at)
+        ended_at=ended_at, outcome=outcome, run_ended_at=run_ended_at,
+        run_end_known_at=run_end_known_at or run_ended_at)
 
 
 class CensoringTests(unittest.TestCase):
@@ -265,6 +268,21 @@ class CensoringTests(unittest.TestCase):
                 self.assertIs(
                     self._classify(ended_at=RUN_END - distance, outcome=outcome),
                     e3_model.AttemptClass.COUNTED, (outcome, distance))
+
+    def test_a_crashed_run_counts_as_live_until_the_next_run_starts(self):
+        crashed, next_run = at(10, 12), at(10, 14)
+        runs = e3_sources.RunsData(
+            attempts=(attempt(task_id=1102, started_at=at(10, 9), run_ended_at=crashed,
+                              run_end_known_at=next_run),),
+            invocations=(), escalations=())
+        record = fx.task_snapshot(self.protocol).task(1102)
+
+        def drained_and_in_flight(as_of):
+            ledger = e3_model.task_ledger(record, runs, (), as_of, self.protocol)
+            return ledger.attempts_drain_censored, ledger.attempts_in_flight
+
+        self.assertEqual(drained_and_in_flight(at(10, 13)), (0, 1))
+        self.assertEqual(drained_and_in_flight(next_run), (1, 0))
 
     def _freeze(self, attempts):
         return e3_model.freeze_window_set(self.arm_tasks, attempts, self.protocol)
