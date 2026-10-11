@@ -1607,3 +1607,55 @@ fn an_unplaced_entry_reports_a_hidden_flip_and_only_a_hidden_flip() {
     );
     assert_eq!(then_side.signature_key(), moved.signature_key());
 }
+
+/// `max([x, if p then 10.0 else 20.0][0], 100.0)`: the IndexAccess IS `x`, so
+/// it moves with the seed and refuses a tangent, and `max` then discards that
+/// refusal by selecting the constant operand.
+fn max_discarding_a_refused_hidden_selection() -> CompiledExpr {
+    call("max", vec![
+        CompiledExpr::index_access(
+            list_hiding_a_conditional(vref("x")),
+            literal(Value::Int(0)),
+            dimensionless(),
+        ),
+        literal(Value::Real(100.0)),
+    ])
+}
+
+#[test]
+fn an_unplaced_entry_over_a_seed_dependent_node_is_stable_in_a_row_that_survives_the_refusal() {
+    let expr = max_discarding_a_refused_hidden_selection();
+    let expected = [
+        BranchEntry {
+            site: KinkSite::new(vec![0]),
+            kind: KinkKind::Unplaced,
+            choice: BranchChoice::Unresolved,
+        },
+        BranchEntry { site: KinkSite::root(), kind: KinkKind::Max, choice: BranchChoice::Operand(1) },
+    ];
+    // Every x stays below 100, so `max` never flips: nothing λ may count moved.
+    let records: Vec<BranchRecord> = [2.0, 3.0, 50.0]
+        .into_iter()
+        .map(|x| {
+            let cells = [("x", Value::Real(x)), ("p", Value::Bool(true))];
+            let (v, t, rec) = run(&expr, &cells, &["x"]);
+            assert_eq!(v, Value::Real(100.0), "x = {x}");
+            assert_eq!(
+                row(&t, 1, "max over a refused operand"),
+                vec![0.0],
+                "x = {x}: the row exists although the IndexAccess refused, so its record is read"
+            );
+            assert_eq!(rec.entries(), expected.as_slice(), "x = {x}");
+            rec
+        })
+        .collect();
+    for later in &records[1..] {
+        assert_eq!(
+            records[0].differs_from(later),
+            None,
+            "the Unplaced choice must not move with a value that moves continuously with the \
+             seed, or every trial point would read as a flip"
+        );
+        assert_eq!(records[0].signature_key(), later.signature_key());
+    }
+}
