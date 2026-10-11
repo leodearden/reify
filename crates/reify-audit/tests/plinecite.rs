@@ -277,6 +277,74 @@ fn findings_are_sorted_by_category_name_path_and_deterministic() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Widened scope — crates/*/src .rs comments
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn crate_src_rust_files_are_in_scope_at_any_depth() {
+    let in_scope = [
+        "crates/reify-eval/src/a.rs",
+        "crates/reify-eval/src/deep/b.rs",
+        STDLIB,
+    ];
+    let mut files: Vec<(&str, &str)> = in_scope.iter().map(|p| (*p, CITING)).collect();
+    let doc_comment = "//! Entry point.\n\n/// Mirrors cache.rs:617 exactly.\nfn main() {}\n";
+    files.push(("crates/reify-cli/src/main.rs", doc_comment));
+    let mut tracked = in_scope.to_vec();
+    tracked.push("crates/reify-cli/src/main.rs");
+
+    let findings = check_fixture(&files, &tracked);
+    let cited: BTreeSet<&str> = findings
+        .iter()
+        .filter(|f| category(f) == "line-cite")
+        .map(|f| f.task_id.as_str())
+        .collect();
+    assert_eq!(
+        cited,
+        tracked.iter().copied().collect(),
+        "each in-scope file yields its comment cite; got {findings:#?}"
+    );
+    assert_eq!(findings.len(), tracked.len(), "{findings:#?}");
+}
+
+#[test]
+fn other_trees_stay_out_of_the_widened_scope() {
+    let out_of_scope = [
+        "crates/reify-audit/src/c.rs",
+        "crates/reify-eval/tests/d.rs",
+        "crates/reify-eval/benches/e.rs",
+        "crates/reify-eval/build.rs",
+        "crates/reify-eval/src/g.ri",
+        "gui/src-tauri/src/f.rs",
+        "docs/prds/p.md",
+    ];
+    let clean_src = "crates/reify-eval/src/clean.rs";
+    let mut files: Vec<(&str, &str)> = out_of_scope.iter().map(|p| (*p, CITING)).collect();
+    files.push((clean_src, CLEAN));
+    let mut tracked = out_of_scope.to_vec();
+    tracked.push(clean_src);
+
+    let findings = check_fixture(&files, &tracked);
+    assert!(
+        findings.is_empty(),
+        "the self crate, tests, benches, build scripts, .ri under src, gui and \
+         docs are never scanned; got {findings:#?}"
+    );
+}
+
+#[test]
+fn a_tree_whose_only_source_is_the_excluded_crate_is_scope_empty() {
+    let audit_src = "crates/reify-audit/src/c.rs";
+    let findings = check_fixture(&[(audit_src, CITING)], &[audit_src]);
+    assert_eq!(
+        findings.iter().map(category).collect::<Vec<_>>(),
+        vec!["scope-empty"],
+        "the self-crate exclusion removes files from scope, not just findings; \
+         got {findings:#?}"
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // CLI — reachable by `--pattern PLINECITE`, and exit-neutral
 // ─────────────────────────────────────────────────────────────────────────────
 
