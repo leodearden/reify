@@ -332,17 +332,19 @@ export DF_VERIFY_ROLE=task
 # REIFY_RELEASE_DELTA_SKIP=1 into the orchestrator verify_env, which exports it
 # into the WHOLE merge-gate verify.sh process tree — including this pool. The
 # knob is meant to be consulted exactly ONCE, by the top-level merge verify at
-# plan-build time (verify.sh:1160-1178), and its decision is already baked into
-# the frozen PLAN before any plan line (this run_all.sh launch included)
-# executes. But pool members that re-assert `DF_VERIFY_ROLE=merge` inline to
-# drive their own hermetic `verify.sh --print-plan` fixtures (test_verify_scope.sh
-# MG-B5, test_verify_role_prio.sh C1, and the occt/release/semaphore plan-shape
-# meta-tests) would otherwise inherit the ambient knob and see the release pass
-# wrongly suppressed on a delta-clean fixture — turning the merge gate RED on
-# every delta-clean merge. Neutralize it here for all members, exactly mirroring
-# the DF_VERIFY_ROLE=task normalization above (K4: "never ambient in the pool").
-# Members that legitimately need the knob (the knob's own drift test) set it
-# inline per command, and that per-command assignment still overrides this.
+# plan-build time (verify.sh's `_RELEASE_DELTA_SKIP` decision, under its
+# "Delta-conditional release-pass skip" header), and its decision is already
+# baked into the frozen PLAN before any plan line (this run_all.sh launch
+# included) executes. But pool members that re-assert `DF_VERIFY_ROLE=merge`
+# inline to drive their own hermetic `verify.sh --print-plan` fixtures
+# (test_verify_scope.sh MG-B5, test_verify_role_prio.sh C1, and the
+# occt/release/semaphore plan-shape meta-tests) would otherwise inherit the
+# ambient knob and see the release pass wrongly suppressed on a delta-clean
+# fixture — turning the merge gate RED on every delta-clean merge. Neutralize
+# it here for all members, exactly mirroring the DF_VERIFY_ROLE=task
+# normalization above (K4: "never ambient in the pool"). Members that
+# legitimately need the knob (the knob's own drift test) set it inline per
+# command, and that per-command assignment still overrides this.
 export REIFY_RELEASE_DELTA_SKIP=0
 
 # Worktree-removal self-check "armed" gate (task #5261, W4e). The merge
@@ -434,7 +436,8 @@ _RA_CLOCK_SANITIZE='s/@@REIFY_CLOCK_/@@REIFY_QUOTED_CLOCK_/g'
 # Scope: identical to the clock rule, and stated as the set of SITES rather
 # than a single path, because there are two -- everything that re-emits
 # through the shared helpers below: the concurrent-pool Phase-3 replay, AND
-# the `REIFY_RUN_ALL_MEMBER_SUBSET` retry loop (:1440 / :1452). Naming the
+# the `REIFY_RUN_ALL_MEMBER_SUBSET` retry loop (the
+# "REIFY_RUN_ALL_MEMBER_SUBSET dedicated serial branch" below). Naming the
 # subset site explicitly matters more for this family than it did for the
 # clock one it borrows its phrasing from: that subset run IS dark-factory's
 # OWN retry (see the note at its call site) and therefore runs ON the
@@ -489,7 +492,8 @@ _RA_SLOT_SANITIZE='s/@@REIFY_SLOT_/@@REIFY_QUOTED_SLOT_/g'
 # actually aborts on rc=75 still fails loudly with its own FAIL detail.
 #
 # Scope: the same as rules 1 and 2 -- the concurrent-pool Phase-3 replay and
-# the `REIFY_RUN_ALL_MEMBER_SUBSET` retry site (:1440 / :1452, dark-factory's
+# the `REIFY_RUN_ALL_MEMBER_SUBSET` retry site (the
+# "REIFY_RUN_ALL_MEMBER_SUBSET dedicated serial branch" below, dark-factory's
 # own retry, on the DF-parsed stream), i.e. everything routed through the two
 # shared helpers below; NOT `--scope host-infra` (H9) and NOT the legacy
 # all-serial path. run_all's OWN H9 Lane-X acquire failure line uses basename
@@ -823,8 +827,9 @@ _ra_partial_failed_names() {
 # timeout sends SIGTERM first (SIGKILL only after the kill-after grace
 # period), so this handler gets a real window to reclassify a mid-run kill
 # BEFORE dark-factory's classifier falls through to a tree_sitter_generate_error
-# mislabel for want of any Summary/FAILED line (the normal-path emit block,
-# lines ~988-997 below, never runs on a signal death).
+# mislabel for want of any Summary/FAILED line (the normal-path
+# `=== Summary:` / `=== FAILED:` emit block at the end of this file never
+# runs on a signal death).
 #
 # Emits, to STDOUT (the same stream the normal-path marker uses and DF's
 # `^FAILED\s` scan reads):
@@ -938,9 +943,11 @@ echo "=== Running all infra tests in: $INFRA_DIR ==="
 # PRODUCTION-INERT two-key + state-path gate: the engine does NOTHING (no
 # decision lines, discovered list untouched) unless ALL of
 #   REIFY_RUN_ALL_CONTENT_SKIP=1
-#   AND _RA_INBOUND_ROLE == merge   (the INBOUND role snapshot at :230 — NOT
-#                                    the normalized DF_VERIFY_ROLE, which is
-#                                    always "task" from :231 onward)
+#   AND _RA_INBOUND_ROLE == merge   (the INBOUND role snapshot taken just
+#                                    before `export DF_VERIFY_ROLE=task`
+#                                    above — NOT the normalized DF_VERIFY_ROLE,
+#                                    which is always "task" from that export
+#                                    onward)
 #   AND REIFY_RUN_ALL_SKIP_STATE non-empty
 # hold. So every existing run_all invocation / fixture (none set these) is a
 # silent no-op, and activation is left to sibling task 5276 wiring the durable
@@ -1447,9 +1454,9 @@ elif [ "${#_ra_member_subset[@]}" -gt 0 ]; then
     # Clock-marker sanitization (task #5288 pair 2; task 4998/esc-4791-52
     # class): unlike --scope host-infra / legacy (off the DF-parsed verify
     # stream), a subset retry runs ON it -- so each named member's output is
-    # captured to a reused temp file and re-emitted via _ra_emit_sanitized
-    # (:274), exactly the concurrent-pool Phase-3 replay shape, instead of
-    # streaming directly to stdout.
+    # captured to a reused temp file and re-emitted via _ra_emit_sanitized,
+    # exactly the concurrent-pool Phase-3 replay shape, instead of streaming
+    # directly to stdout.
     # -------------------------------------------------------------------------
     _ra_subset_tmp="$(mktemp "${TMPDIR:-/tmp}/reify-run-all-subset.XXXXXX")"
     _ra_subset_matched=()
@@ -1719,9 +1726,10 @@ elif [ "$_H2_POOL_ACTIVE" -eq 1 ]; then
     # kill after the Phase-1 join (below) remains the primary stop path; this
     # is a backstop for a signal-driven exit (INT/TERM) that unwinds through
     # this trap first -- same "explicit path primary, EXIT trap backstop"
-    # shape as lane_x_flock_release above (:384). A SIGKILL to the parent
-    # still bypasses this (and every) trap; that residual case is left to the
-    # orphaned-test-binary reaper, per docs/notes/orphaned-test-binary-reaper.md.
+    # shape as the H9 branch's `trap 'lane_x_flock_release' EXIT` above. A
+    # SIGKILL to the parent still bypasses this (and every) trap; that
+    # residual case is left to the orphaned-test-binary reaper, per
+    # docs/notes/orphaned-test-binary-reaper.md.
     trap '[ -n "${_h2_progress_pid:-}" ] && kill "$_h2_progress_pid" 2>/dev/null || true; rm -rf "$_H2_WORKDIR"' EXIT
 
     # Discovery/partition/pool-workdir-setup guard ends here -- clear before
@@ -1798,10 +1806,11 @@ elif [ "$_H2_POOL_ACTIVE" -eq 1 ]; then
     # exactly one entry, so decrement by 1": _h2_pids accumulates every pid
     # ever spawned and is never pruned, so a throttled run hands `wait -n` a
     # growing mix of live and already-reaped pids. This repo pins no minimum
-    # bash version (see :461), and whether `wait -n <ids>` tolerates
-    # already-reaped ids in that list and keeps blocking for a live one, vs.
-    # returning early the moment it hits an id it no longer recognizes, is
-    # exactly the kind of edge case that has differed across bash releases --
+    # bash version (see the note at the `_h3_kept` empty-array guard above),
+    # and whether `wait -n <ids>` tolerates already-reaped ids in that list
+    # and keeps blocking for a live one, vs. returning early the moment it
+    # hits an id it no longer recognizes, is exactly the kind of edge case
+    # that has differed across bash releases --
     # trusting a fixed decrement would let the live count silently drift
     # under an untested bash, over-spawning past _H2_POOL_N without any
     # signal. Instead `wait -n` is used ONLY as a blocking wake-up; the live
@@ -1911,7 +1920,7 @@ elif [ "$_H2_POOL_ACTIVE" -eq 1 ]; then
     # Stop the single-writer progress printer now that Phase 1 has joined --
     # disowned above, so it is invisible to `jobs -rp`/`wait` and must be
     # stopped explicitly via its saved PID (task #5130). This is the primary
-    # stop path; the _H2_WORKDIR EXIT trap above (:517) is the backstop for a
+    # stop path; the _H2_WORKDIR EXIT trap above is the backstop for a
     # signal-driven exit that never reaches this line.
     [ -n "${_h2_progress_pid:-}" ] && kill "$_h2_progress_pid" 2>/dev/null || true
     if [ "${#_h2_pool_members[@]}" -gt 0 ]; then
