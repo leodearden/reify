@@ -944,3 +944,146 @@ fn edit_source_evicts_only_the_compute_node_downstream_of_the_moved_realization(
          wholesale flush it exists to replace."
     );
 }
+
+// ── Value movers the edit does not name ────────────────────────────────
+//
+// `edit_param` classifies with the full input-cone fold over every
+// realization. A scope taken from the edited param — its static dirty cone, or
+// a diff of the snapshot cells each realization reads — misses realizations
+// whose inputs move without being snapshot dependents of that param; see the
+// selective-realization-eviction PRD §12.
+
+/// A solver-owned `auto` cell is not a dependent of the param that moves it,
+/// so a scope taken from the edited param's static dirty cone would skip
+/// `body_a` here and serve stale geometry.
+#[test]
+fn solver_moved_auto_cell_still_reports_its_reading_body() {
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!(
+            "skipping solver_moved_auto_cell_still_reports_its_reading_body: OCCT not available"
+        );
+        return;
+    }
+
+    const SOLVED_SRC: &str = r#"
+structure Solved {
+    param target: Length = 10mm
+    param w: Length = auto
+    constraint w == target * 2
+    let body_a = box(w, 5mm, 5mm)
+    let body_b = box(7mm, 5mm, 5mm)
+}
+"#;
+    let compiled = reify_test_support::parse_and_compile_with_stdlib(SOLVED_SRC);
+    let mut engine = reify_eval::Engine::new(
+        Box::new(reify_constraints::SimpleConstraintChecker),
+        Some(Box::new(reify_kernel_occt::OcctKernelHandle::spawn())),
+    )
+    .with_solver(Box::new(reify_constraints::DimensionalSolver));
+    let _ = engine.eval(&compiled);
+    let _ = engine.build(&compiled, ExportFormat::Step);
+    let ra = realization_for_cell(&engine, "Solved", "body_a");
+    let rb = realization_for_cell(&engine, "Solved", "body_b");
+    let w = ValueCellId::new("Solved", "w");
+    let solved_w = |engine: &reify_eval::Engine| {
+        engine
+            .snapshot()
+            .unwrap()
+            .values
+            .get(&w)
+            .and_then(|(v, _)| v.as_f64())
+    };
+    let w_before = solved_w(&engine);
+    assert!(
+        engine
+            .snapshot()
+            .unwrap()
+            .graph
+            .realizations
+            .get(&ra)
+            .unwrap()
+            .input_cone_hash
+            .is_some(),
+        "premise: build() must stamp body_a's input_cone_hash"
+    );
+
+    engine
+        .edit_param(ValueCellId::new("Solved", "target"), Value::length(0.015))
+        .expect("edit_param on Solved.target must succeed");
+
+    let w_after = solved_w(&engine);
+    assert!(
+        w_before.is_some() && w_after.is_some() && w_before != w_after,
+        "premise: the solver must move w when target moves (before {w_before:?}, after \
+         {w_after:?}); otherwise this test does not exercise a solver-moved cell"
+    );
+    assert!(
+        engine.last_changed_realizations().contains(&ra),
+        "body_a reads the solver-moved w, so it must be reported changed; got {:?}",
+        engine.last_changed_realizations()
+    );
+    assert!(
+        !engine.last_changed_realizations().contains(&rb),
+        "body_b reads only literals"
+    );
+}
+
+/// `top` is sized by `volume(self.a.body)`, a geometry query that `build()`
+/// hydrates into its own values and never writes back to the snapshot. An
+/// edit of the sub's `wa` moves `body`, so `top`'s cached geometry handle must
+/// not survive the edit as a final value: a classification that diffs only the
+/// snapshot cells `top` reads sees `v` unmoved and keeps it.
+#[test]
+fn edit_param_evicts_a_body_sized_by_a_geometry_query_of_an_edited_sub_body() {
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!(
+            "skipping edit_param_evicts_a_body_sized_by_a_geometry_query_of_an_edited_sub_body: \
+             OCCT not available"
+        );
+        return;
+    }
+
+    const QUERY_SIZED_SRC: &str = r#"
+structure A {
+    param wa: Length = 10mm
+    let body = box(wa, 5mm, 5mm)
+}
+structure B {
+    sub a = A()
+    let v = volume(self.a.body)
+    let top = box(v / (5mm * 5mm), 5mm, 5mm)
+}
+"#;
+    let compiled = reify_test_support::parse_and_compile_with_stdlib(QUERY_SIZED_SRC);
+    let mut engine = make_occt_engine();
+    let _ = engine.eval(&compiled);
+    let _ = engine.build(&compiled, ExportFormat::Step);
+    let top = NodeId::Value(ValueCellId::new("B", "top"));
+    let r_top = realization_for_cell(&engine, "B", "top");
+    assert!(
+        engine
+            .snapshot()
+            .unwrap()
+            .graph
+            .realizations
+            .get(&r_top)
+            .unwrap()
+            .input_cone_hash
+            .is_some(),
+        "premise: build() must stamp top's input_cone_hash"
+    );
+    assert!(
+        engine.cache_store().get(&top).is_some(),
+        "premise: build() must cache top's geometry handle"
+    );
+
+    engine
+        .edit_param(ValueCellId::new("A", "wa"), Value::length(0.020))
+        .expect("edit_param on A.wa must succeed");
+
+    assert!(
+        engine.cache_store().get(&top).is_none(),
+        "A.wa moved body, so volume(body) and top's width moved with it: top's cached \
+         handle was built at the old width and must be evicted, not served"
+    );
+}

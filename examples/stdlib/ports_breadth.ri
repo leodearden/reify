@@ -9,7 +9,8 @@
 // Three η integration signals are exercised here:
 //   (a) ThreadSpec derived lets (M6×1 ISO 68-1 numerics) — via ThreadAssembly.spec
 //   (b) Asymmetric-LocatedPort warning — MechanicalPort (located) ↔ ThermalPort
-//       (non-located) bare connect emits connect.rs:344's warning
+//       (non-located) bare connect emits the asymmetric-LocatedPort warning in
+//       `compile_connection` (reify-compiler connect.rs)
 //   (c) HydraulicPort multi-domain conformance — FluidPort+MechanicalPort diamond
 //       resolves; zero Error diagnostics
 //
@@ -42,8 +43,8 @@ structure def ThreadAssembly {
 // ── (b) Signal: asymmetric-LocatedPort warning from stdlib-derived ports ──────
 // MechanicalPort refines LocatedPort (β restructure, landed task 4255).
 // ThermalPort refines only Port.
-// Bare `connect mech -> heat` triggers connect.rs:344's asymmetric-LocatedPort
-// warning — the integration point PRD §0 highlights ("previously unreachable
+// Bare `connect mech -> heat` triggers the asymmetric-LocatedPort warning in
+// `compile_connection` (reify-compiler connect.rs) — the integration point PRD §0 highlights ("previously unreachable
 // from stdlib-derived ports").
 
 structure def AsymmetricRig {

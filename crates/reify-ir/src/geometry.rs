@@ -1075,13 +1075,12 @@ pub enum GeometryOp {
         /// way — but it is no longer what decides how an author's bare number
         /// is read.
         ///
-        /// **Not pinned:** that a draft angle of `0.1` means 0.1 RADIANS
-        /// rather than 0.1 degrees. Both tests above prove tag-transparency,
-        /// not magnitude, and `draft_angle_on_box` is a smoke test that
-        /// tolerates `OperationFailed`. The radian-vs-degree separation is
-        /// ~57x, so a behavioural pin is achievable — it needs a measured
-        /// numeric oracle over OCCT draft geometry, and is filed as #7119
-        /// rather than guessed at here.
+        /// **Magnitude pinned:** a draft angle of `0.1` means 0.1 RADIANS, not
+        /// 0.1 degrees — pinned at real OCCT output by
+        /// `draft_angle_magnitude_is_read_as_radians`
+        /// (`crates/reify-kernel-occt/tests/harness_occt/draft_integration.rs`),
+        /// which checks the drafted wall's tilt and the swept volume against
+        /// closed forms. The two tests above pin tag-transparency only.
         ///
         /// **GATED at eval**, like [`GeometryOp::Arc`]'s two angles: a bare
         /// number is REJECTED, not read silently as radians. `modify_draft`
@@ -1108,7 +1107,10 @@ pub enum GeometryOp {
     /// - both `None` → planar 2-D offset (BRepOffsetAPI_MakeOffset on the wire);
     /// - `reference: Some(face)` → offset on a reference Surface (a `faces()`
     ///   sub-handle, resolved to an OCCT face via `get_shape` at execute time);
-    /// - `direction: Some([dx,dy,dz])` → offset in the given direction Vector3.
+    /// - `direction: Some([dx,dy,dz])` → planar offset, then displaced by
+    ///   `distance` along this dimensionless UNIT vector. Its magnitude never
+    ///   scales the displacement, and a zero-magnitude vector is rejected, so
+    ///   `vec3(0,0,2)` and `vec3(0,0,1)` lower to identical IR.
     ///
     /// A positive `distance` grows the curve outward (e.g. radius 10mm → 12mm).
     /// Produces fresh `BRepKind::Wire` geometry via the normal single-output
@@ -11455,6 +11457,10 @@ mod tests {
     // ── 3MF serializer tests ─────────────────────────────────────────────────
 
     /// Helper: build a 12-triangle unit cube mesh (8 vertices, 36 indices).
+    ///
+    /// Judgment call (task #7137): a deliberate local copy of the canonical
+    /// `reify_test_support::mesh_fixtures::unit_cube_mesh`, kept in step by
+    /// `crates/reify-ir/tests/cube_fixture_agreement.rs`, which also says why.
     fn unit_cube_mesh() -> Mesh {
         // 8 corners of a unit cube [0,1]^3
         #[rustfmt::skip]
@@ -11478,7 +11484,7 @@ mod tests {
             // -Y face
             0, 1, 5,  0, 5, 4,
             // +Y face
-            3, 6, 2,  3, 7, 6,
+            3, 7, 6,  3, 6, 2,
             // -X face
             0, 4, 7,  0, 7, 3,
             // +X face

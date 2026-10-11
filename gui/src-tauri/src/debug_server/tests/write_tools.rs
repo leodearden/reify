@@ -954,9 +954,9 @@ async fn reify_save_file_writes_the_session_buffer() {
         "the seam must refresh last_state even for a pure-I/O tool"
     );
 
-    // (ii) An explicit target writes THERE and leaves the original alone.
-    let other_dir = tempfile::tempdir().unwrap();
-    let other = other_dir.path().join("copy.ri").to_string_lossy().into_owned();
+    // (ii) An explicit target writes THERE and leaves the original alone. It
+    // lies inside the design's directory, the only place a save-as may write.
+    let other = dir.path().join("copy.ri").to_string_lossy().into_owned();
     let s2 = reify_save_file_on_engine_and_refresh_baseline(
         &engine,
         &last_state,
@@ -1064,22 +1064,21 @@ async fn reify_save_file_refuses_when_the_session_has_no_canonical_path() {
         "a refused save must leave the baseline where it was"
     );
 
-    // …and an EXPLICIT target still works on the very same session, so the
-    // refusal is about the missing target, not about the session kind.
+    // …and an EXPLICIT target is refused too: with no design file there is no
+    // design directory, the only place an AI write may land.
     let dir = tempfile::tempdir().unwrap();
-    let explicit = dir.path().join("saved.ri").to_string_lossy().into_owned();
+    let explicit = dir.path().join("saved.ri");
     reify_save_file_on_engine_and_refresh_baseline(
         &engine,
         &last_state,
-        Some(explicit.clone()),
+        Some(explicit.to_string_lossy().into_owned()),
     )
     .await
-    .expect("an explicit target must still save a load_from_source session");
+    .expect_err("a load_from_source session has no design dir to confine a save-as to");
     assert!(
-        std::fs::read_to_string(&explicit)
-            .expect("the explicit target must be readable")
-            .contains("structure def"),
-        "the explicit target must receive the session's in-memory source"
+        !explicit.exists(),
+        "the refused save-as must not have created {}",
+        explicit.display()
     );
 }
 
@@ -1214,8 +1213,9 @@ async fn reify_save_file_refuses_a_rejected_buffer_for_an_explicit_target_too() 
     .await
     .expect_err("source that does not compile must be REFUSED");
 
-    let other_dir = tempfile::tempdir().unwrap();
-    let other = other_dir.path().join("copy.ri");
+    // Inside the design's directory, so the refusal is the interlock's and
+    // not the write-target confinement's.
+    let other = dir.path().join("copy.ri");
     reify_save_file_on_engine_and_refresh_baseline(
         &engine,
         &last_state,

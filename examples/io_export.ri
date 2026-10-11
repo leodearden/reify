@@ -18,7 +18,7 @@
 // Sub-component templates resolve against the prelude at eval time (Regime B,
 // docs/prds/v0_6/resolution-unification.md §1).
 //
-// Auto-discovered by crates/reify-compiler/tests/examples_smoke.rs; the cells
+// Auto-discovered by crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs; the cells
 // below are locked by crates/reify-eval/tests/m8_4_stdlib_integration.rs.
 
 // ── Export-ready part ─────────────────────────────────────────────────────────

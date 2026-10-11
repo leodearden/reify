@@ -103,8 +103,10 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 /// [`CapturingSubscriberBuilder::build`] — now call this themselves, so tests
 /// that obtain their subscriber from one of those (directly or via
 /// [`warn_counting_guard`] / [`warn_capturing_subscriber`]) need no explicit
-/// call. An explicit call is only needed for a test that asserts event counts
-/// **without** using them, e.g. one that hand-rolls its own `Subscriber`.
+/// call. A hand-rolled subscriber outside this crate is rejected by the
+/// workspace ratchet in [`crate::tracing_hygiene`], so an explicit call is only
+/// needed inside reify-test-support itself, where a test hand-rolls its own
+/// `Subscriber`.
 ///
 /// `Once`-gated, so it stays safe and cheap to call from anywhere; the
 /// pre-existing explicit call sites across the workspace remain correct

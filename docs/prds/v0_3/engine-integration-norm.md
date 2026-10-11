@@ -174,6 +174,17 @@ Catalog churn: new seams added by the PRD that introduces them, in the same comm
 | **Contract owner** | `gdt-geometric-zones-and-containment.md` (PRD v0_6, task θ/4481 introduces this seam entry). Sibling: `measure_dfm_rules` (§3.8, `process-dfm-overhang-draft.md`, task 4408) is the same seam shape and landed first — cross-reference per PRD §7 "whichever lands second cites the first". |
 | **Consumer policy** | No default kernel → no realized geometry handle → the pass degrades to `Indeterminate` / no-op, **never** a false `Violated` (C1 invariant; mirrors the `RepresentationWithin` empty-`achieved_repr_tol` → Indeterminate path and the DFM walk guard at `engine_constraints.rs:812`). |
 
+### §3.12 — Build-level geometry-coupled resolution seam
+
+| | |
+|---|---|
+| **Call site** | `Engine::resolve_geometry_coupled` (working name), introduced by `docs/prds/v0_6/material-waste-cost-minimisation.md` task γ — **not yet landed** when this entry was written (2026-10-11); called by `cmd_eval`'s geometry branch before `realize_for_check` and by the GUI's `check_with_solve_slot` (that PRD's δ). Never called from inside `build_with_geometry_output`, which `relate_solve::realize_structures` re-enters for sub-modules. |
+| **Invoked from** | The top-level caller, before its normal build path. A bounded outer loop around the engine's own eval + realisation: for each finite candidate assignment of a geometry-coupled scope's autos it pins the assignment, runs a non-emitting build, scores the scope's objective over post-realisation values and reads its post-geometry constraint verdicts, then pins the winner for the caller's own build. It is the "bounded fixpoint scoped to the Resolution node" that `docs/design/geometric-relations.md` §12 deferred, realised as a finite enumeration. |
+| **Registration** | None — a call edge, like §3.6 / §3.8 / §3.11. Candidates are enumerated by the existing §3.5 `CpSatSolver::solve_all`; each candidate build rides §3.1. |
+| **Plug-ins** | None. Its inputs are the classification pass inside the §3.5 seam's engine-side callers and the engine's `sweep_pins` overlay. |
+| **Contract owner** | `material-waste-cost-minimisation.md` (M-WASTE) §4.3. The continuous inner layer (P2 `GeometryDispatch` #6683 plus a re-realisation arm) is a separate future seam, bookmarked there as ι. |
+| **Consumer policy** | No solver, no kernel, or a non-`UnifiedDag` scheduler ⇒ the sweep does not run and the coupled autos carry `W_GEOMETRY_COUPLED_NOT_RESOLVED` plus an `UndefCause` — never a silent pick. A continuous auto in the sweep set is an Error on every path. |
+
 ## §4 — Per-seam consumer policy
 
 A mechanism-kind-to-seam matrix. When authoring a PRD that introduces a kernel module, match the kind to the seam.

@@ -31,10 +31,9 @@
 //! future dead-code sweep from deleting an otherwise unreferenced binding).
 //!
 //! The logger family is production code as of task #6969. It backs
-//! [`crate::log_capture::LogCapture`], which
-//! [`crate::kernel_real::GmshKernel::mesh_to_volume`] arms so a meshing
-//! failure reports gmsh's own diagnosis rather than only the last ERROR
-//! line `gmshLoggerGetLastError` supplies. [`logger_get`] has a second
+//! [`crate::log_capture::LogCapture`], which every production mesher in this
+//! crate arms so a meshing failure reports gmsh's own diagnosis rather than
+//! only the last ERROR line `gmshLoggerGetLastError` supplies. [`logger_get`] has a second
 //! production caller, `init::mesh_generate_with_recovery`, which
 //! reads the capture before it recycles libgmsh. Those three carry no
 //! marker: a non-test workspace caller is itself the exemption, so a marker
@@ -312,6 +311,29 @@ unsafe extern "C" {
         numEle: c_int,
         data: *const f64,
         data_n: usize,
+        ierr: *mut c_int,
+    );
+
+    /// `void gmshViewProbe(const int tag, const double x, const double y, const double z, double ** values, size_t * values_n, double * distance, const int step, const int numComp, const int gradient, const double distanceMax, const double * xElemCoord, const size_t xElemCoord_n, const double * yElemCoord, const size_t yElemCoord_n, const double * zElemCoord, const size_t zElemCoord_n, const int dim, int * ierr)` — gmshc.h:3304
+    pub fn gmshViewProbe(
+        tag: c_int,
+        x: f64,
+        y: f64,
+        z: f64,
+        values: *mut *mut f64,
+        values_n: *mut usize,
+        distance: *mut f64,
+        step: c_int,
+        numComp: c_int,
+        gradient: c_int,
+        distanceMax: f64,
+        xElemCoord: *const f64,
+        xElemCoord_n: usize,
+        yElemCoord: *const f64,
+        yElemCoord_n: usize,
+        zElemCoord: *const f64,
+        zElemCoord_n: usize,
+        dim: c_int,
         ierr: *mut c_int,
     );
 
@@ -1190,6 +1212,56 @@ pub fn view_add_list_data(
             &mut ierr,
         )
     )
+}
+
+/// Probe the scalar view `tag` at `point`: one interpolated value per time
+/// step, or an EMPTY `Vec` (not an error) when no element of the view
+/// contains `point` — the closest-node fallback is disabled.
+///
+/// Read-only with respect to the view's data, but it does make gmsh build the
+/// view's lazy lookup structure, which `refine_volume` relies on; see
+/// `docs/notes/gmsh-postview-background-field-threading.md`.
+pub fn view_probe(tag: i32, point: [f64; 3]) -> Result<Vec<f64>, GeometryError> {
+    const ALL_STEPS: c_int = -1;
+    const SCALAR: c_int = 1;
+    const NO_GRADIENT: c_int = 0;
+    const EXACT_MATCH_ONLY: f64 = 0.0;
+    const ANY_DIM: c_int = -1;
+    let [x, y, z] = point;
+    let mut values_ptr: *mut f64 = ptr::null_mut();
+    let mut values_n: usize = 0;
+    let mut distance: f64 = 0.0;
+    let mut ierr: c_int = 0;
+    unsafe {
+        gmshViewProbe(
+            tag,
+            x,
+            y,
+            z,
+            &mut values_ptr,
+            &mut values_n,
+            &mut distance,
+            ALL_STEPS,
+            SCALAR,
+            NO_GRADIENT,
+            EXACT_MATCH_ONLY,
+            ptr::null(),
+            0,
+            ptr::null(),
+            0,
+            ptr::null(),
+            0,
+            ANY_DIM,
+            &mut ierr,
+        );
+    }
+    // SAFETY: values_ptr is either null or was just populated by the
+    // gmshViewProbe call above, owning at least values_n contiguous,
+    // initialised elements. Taken before the ierr check so the error path
+    // frees it too.
+    let values = unsafe { take_gmsh_buf(values_ptr, values_n) };
+    check_ierr("gmshViewProbe", ierr)?;
+    Ok(values)
 }
 
 /// Add a mesh size field of type `field_type` (e.g. `"PostView"`) and return

@@ -7,74 +7,54 @@ use super::sanitize::sanitize_value;
 /// Returns `Some(value)` for recognized complex methods (`magnitude`, `phase`,
 /// `conjugate`, `re`, `im`), `None` otherwise — letting the caller fall through
 /// to other method-dispatch logic.
-pub(crate) fn eval_complex_method(obj: &Value, method: &str, args: &[Value]) -> Option<Value> {
+pub(crate) fn eval_complex_method(obj: &Value, method: &str) -> Option<Value> {
     match method {
-        "magnitude" => {
-            if !args.is_empty() {
-                return Some(Value::Undef);
+        "magnitude" => match obj {
+            Value::Complex { re, im, dimension } => {
+                let mag = re.hypot(*im);
+                Some(sanitize_value(Value::from_real_scalar(mag, *dimension)))
             }
-            match obj {
-                Value::Complex { re, im, dimension } => {
-                    let mag = re.hypot(*im);
-                    Some(sanitize_value(Value::from_real_scalar(mag, *dimension)))
+            _ => Some(Value::Undef),
+        },
+        "phase" => match obj {
+            // Delegate to the shared helper in reify-stdlib so this method path
+            // and the builtin path (stdlib::eval_complex "phase" arm) use the
+            // exact same pre-guards (is_finite + zero-vector) and output shape.
+            // See `reify_stdlib::complex_phase` for the guard rationale.
+            Value::Complex { re, im, .. } => Some(reify_stdlib::complex_phase(*re, *im)),
+            _ => Some(Value::Undef),
+        },
+        "conjugate" => match obj {
+            Value::Complex { re, im, dimension } => {
+                // Defense-in-depth: reject poisoned inputs before constructing
+                // the output Complex, mirroring the phase-method pattern above.
+                // Unlike phase (where atan2(y, Inf) = 0.0 is finite and sanitize_value
+                // alone cannot detect the poisoned input), conjugate does no numeric
+                // transformation — sanitize_value's Complex arm would also catch Inf/NaN
+                // here, making the two approaches functionally equivalent for conjugate.
+                // The pre-guard is still preferred for stylistic parity with the phase
+                // method and for forward-compatibility: if the Complex arm of
+                // sanitize_value is ever removed, conjugate stays safe.
+                if !re.is_finite() || !im.is_finite() {
+                    return Some(Value::Undef);
                 }
-                _ => Some(Value::Undef),
+                Some(Value::Complex {
+                    re: *re,
+                    im: -im,
+                    dimension: *dimension,
+                })
             }
-        }
-        "phase" => {
-            if !args.is_empty() {
-                return Some(Value::Undef);
+            _ => Some(Value::Undef),
+        },
+        "re" | "im" => match obj {
+            Value::Complex { re, im, dimension } => {
+                let component = if method == "re" { *re } else { *im };
+                Some(sanitize_value(Value::from_real_scalar(
+                    component, *dimension,
+                )))
             }
-            match obj {
-                // Delegate to the shared helper in reify-stdlib so this method path
-                // and the builtin path (stdlib::eval_complex "phase" arm) use the
-                // exact same pre-guards (is_finite + zero-vector) and output shape.
-                // See `reify_stdlib::complex_phase` for the guard rationale.
-                Value::Complex { re, im, .. } => Some(reify_stdlib::complex_phase(*re, *im)),
-                _ => Some(Value::Undef),
-            }
-        }
-        "conjugate" => {
-            if !args.is_empty() {
-                return Some(Value::Undef);
-            }
-            match obj {
-                Value::Complex { re, im, dimension } => {
-                    // Defense-in-depth: reject poisoned inputs before constructing
-                    // the output Complex, mirroring the phase-method pattern above.
-                    // Unlike phase (where atan2(y, Inf) = 0.0 is finite and sanitize_value
-                    // alone cannot detect the poisoned input), conjugate does no numeric
-                    // transformation — sanitize_value's Complex arm would also catch Inf/NaN
-                    // here, making the two approaches functionally equivalent for conjugate.
-                    // The pre-guard is still preferred for stylistic parity with the phase
-                    // method and for forward-compatibility: if the Complex arm of
-                    // sanitize_value is ever removed, conjugate stays safe.
-                    if !re.is_finite() || !im.is_finite() {
-                        return Some(Value::Undef);
-                    }
-                    Some(Value::Complex {
-                        re: *re,
-                        im: -im,
-                        dimension: *dimension,
-                    })
-                }
-                _ => Some(Value::Undef),
-            }
-        }
-        "re" | "im" => {
-            if !args.is_empty() {
-                return Some(Value::Undef);
-            }
-            match obj {
-                Value::Complex { re, im, dimension } => {
-                    let component = if method == "re" { *re } else { *im };
-                    Some(sanitize_value(Value::from_real_scalar(
-                        component, *dimension,
-                    )))
-                }
-                _ => Some(Value::Undef),
-            }
-        }
+            _ => Some(Value::Undef),
+        },
         _ => None,
     }
 }

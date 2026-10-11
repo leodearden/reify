@@ -1,0 +1,24 @@
+// slider_write_back.ri — subject of the slider/edit-box write-back live gate
+// (gui/test/visual/smoke_slider_write_back_e2e.mjs; predicates and constants in
+// gui/test/visual/sliderWriteBackGate.mjs).
+//
+// One literal-defaulted Length param, `width`, does three jobs:
+//   1. it sizes `plate`, so an exported STL's X extent witnesses its value;
+//   2. it drives the prismatic joint through `bind(slide, width)`, so the
+//      MechanismPanel renders a param-bound slider for it;
+//   3. it is the PropertyEditor row `prop-row-SliderWriteBack.width`.
+//
+// The live driver edits a temporary COPY; this file is never written.
+
+module slider_write_back
+
+structure SliderWriteBack {
+    param width: Length = 40mm
+
+    let plate = box(width, 20mm, 5mm)
+
+    let slide = prismatic(vec3(1, 0, 0), 0mm .. 200mm)
+    let m0 = mechanism()
+    let m1 = body(m0, "carriage", slide)
+    let snap = snapshot(m1, [bind(slide, width)])
+}

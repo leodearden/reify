@@ -196,30 +196,29 @@ ModulePath {
 }
 
 // ── Imports ──────────────────────────────────────────────
-// Mirrors tree-sitter-reify/grammar.js:258-282. The `String` alternative is
-// retained for the legacy `import "foo.ri"` form.
+// Mirrors tree-sitter-reify/grammar.js's `import_declaration` rule. The
+// `String` alternative is retained for the legacy `import "foo.ri"` form.
 //
-// UNSETTLED — the destructured form's separator. This port follows the
-// tree-sitter RULE, which sequences import_path then import_items with NO
-// separator (`import a.b {C, D}`). But grammar.js's own doc comment on that
-// rule (:263) and the lowering at crates/reify-syntax/src/ts_parser.rs:538
-// both spell it `import a.b.{C, D}`, with a dot. The rule and the two comments
-// therefore disagree, and nothing settles it: `import_items` has no
-// tree-sitter corpus test, no committed `.ri` uses it (every import under
-// examples/ and tests/prd-gate/fixtures/ is a bare `import x.y` or
-// `import x as y`), and no Rust code matches on the node name. The corpus test
-// deliberately does NOT pin either spelling — asserting one would cement an
-// unverified shape as an intentional GUI contract. Filed as #5931, which
-// decides the canonical form against the authoritative surface first; until it
-// lands, `ImportItems` is live grammar surface with no test coverage by
-// design, and that is the one thing here a reader should not mistake for an
-// intentional contract.
+// The destructured form is DOTTED, `import a.b.{C, D}`, per the `import_path`
+// production in docs/reify-language-spec.md §15 "Grammar Summary" (#5931).
+//
+// DELIBERATE DIVERGENCE from grammar.js. The dot is folded into the opener
+// token `ImportItemsOpen` (`.{`) instead of being written
+// `ModulePath ("." ImportItems | ...)`, because that faithful spelling is a
+// shift/reduce conflict between `("." Identifier)+` and
+// `ModulePath -> Identifier`, and Lezer has no `conflicts` hatch to resolve it
+// the way grammar.js's `[$.import_path]` entry does; one token moves the
+// decision into the lexer. The token is NAMED, not an inline `".{"` literal,
+// because an anonymous literal produces no tree node, and the fold
+// (reifyLanguage.ts), the brace style (highlight.ts) and bracket matching all
+// need one. The cost: whitespace between the `.` and the `{`
+// (`import a . { B }`), which tree-sitter accepts, is rejected here.
 ImportDeclaration {
   kw<"pub">? kw<"import"> (ModulePath (ImportItems | kw<"as"> Identifier)? | String)
 }
 
 ImportItems {
-  "{" (Identifier ("," Identifier)* ","?)? "}"
+  ImportItemsOpen (Identifier ("," Identifier)* ","?)? "}"
 }
 
 // ── Structure ───────────────────────────────────────────
@@ -307,6 +306,7 @@ Member {
   ChainStatement |
   ForallStatement |
   RelateBlock |
+  SketchBlock |
   MatchArmDeclBlock |
   MetaBlock |
   Pragma |
@@ -447,6 +447,8 @@ DefaultValue {
 // arises inside a ConstraintDefinition body. See the `itemStart` note in the
 // @precedence block. Both parenthesised arms need one — a marker on just the
 // first leaves the second's conflict unresolved.
+//
+// The positional `auto(<expr>)` seed is a separate node; see AutoSeed.
 AutoKeyword {
   kw<"auto"> !itemStart "(" kw<"free"> ")" |
   kw<"auto"> !itemStart "(" AutoParamList ")" |
@@ -470,8 +472,12 @@ AutoParam {
 // with a solver-determined value. `AutoKeyword` is deliberately NOT a member of
 // `primaryExpression` — upstream keeps it out of `_expression` too — so it has
 // to be admitted at each binding site that accepts it.
+//
+// The `pub`/`priv` and `aux` prefixes transliterate grammar.js
+// `let_declaration`; the compiler parses all three, and rejects `priv`
+// semantically (E_PRIV_REDUNDANT), not in the grammar.
 LetDeclaration {
-  kw<"let"> Identifier TypeAnnotation? "=" bindingValue ~where WhereClause?
+  (kw<"pub"> | kw<"priv">)? kw<"aux">? kw<"let"> Identifier TypeAnnotation? "=" bindingValue ~where WhereClause?
 }
 
 // ── Constraint ──────────────────────────────────────────
@@ -655,6 +661,15 @@ RelateBlock {
 
 RelationMember {
   expression
+}
+
+// ── Sketch block ────────────────────────────────────────
+// grammar.js `sketch_block`. `ekw` for the reason RelateBlock records. The body
+// reuses LetDeclaration and RelationMember, as upstream reuses
+// `let_declaration` and `relation_member`. Upstream's reserved `on <expr>`
+// slot is intentionally absent (PRD constrained-2d-sketch §5 D2).
+SketchBlock {
+  ekw<"sketch"> Identifier "{" (LetDeclaration | RelationMember)* "}"
 }
 
 // ── Joint definition ────────────────────────────────────
@@ -1689,7 +1704,20 @@ ArgumentList {
 // `VariantConstruction` is admitted here, and NOT in `primaryExpression` — see
 // the long note on that production for why the two positions differ.
 argument {
-  NamedArgument | VariantConstruction | expression
+  NamedArgument | AutoSeed | VariantConstruction | expression
+}
+
+// grammar.js `auto_seed`: a separate node admitted only in `argument_list`.
+// Not a fourth AutoKeyword arm, which would also admit bare positional `auto`
+// that upstream still rejects (task 3808). No marker is needed: `auto` is a
+// context-free `kw`, so `expression` never starts with it. The compiler, not
+// the grammar, rejects the seed outside sketch scope.
+//
+// The `free` arm stands in for upstream's identifier seed: grammar.js reads
+// positional `auto(free)` as a seed whose value is the identifier `free`, but
+// `free` is a context-free `kw` here and never lexes as an `Identifier`.
+AutoSeed {
+  kw<"auto"> "(" (expression | kw<"free">) ")"
 }
 
 MemberAccess {
@@ -2155,6 +2183,9 @@ ReservedWord {
   // Without this, `..` lexes as two member-access `.` and every range becomes
   // an error node — the same trap `->`/`::` fell into above.
   @precedence { "..<", "..", "." }
+
+  // The destructured import's opener; see the ImportDeclaration comment.
+  ImportItemsOpen { ".{" }
 
   // `;` terminates a fn-body let binding (FnLetBinding) and appears nowhere
   // else in the language.

@@ -1,0 +1,23 @@
+module relate_static_violated_engine
+
+// Engine-phase relate violation: no `at auto` sub, so the relation is verified
+// at the fixed placements, where the two axes sit 30mm apart.
+
+structure Bore {
+    let hole = translate(cylinder(3.2mm, 10mm), 30mm, 0mm, 0mm)
+    let hole_axis : Axis = hole.axis
+}
+
+structure Pin {
+    let shank = cylinder(3mm, 20mm)
+    let shank_axis : Axis = shank.axis
+}
+
+structure PinBesideBore {
+    sub pin : Pin
+    sub bore : Bore
+
+    relate {
+        concentric(pin.shank_axis, bore.hole_axis)
+    }
+}

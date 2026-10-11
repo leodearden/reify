@@ -112,7 +112,8 @@ tasks:
       reason: post-wiring solve asserted by γ tests + ε harness e2e
 - label: δ
   task_id: 5470
-  title: 'PRD2 δ: discrete domain channel — Int bound-mining + discrete_set → AutoParam.domain'
+  title: 'PRD2 δ: discrete domain channel — AutoParam.domain + Int bound-mining + Enum
+    declared domain + discreteness routing'
   capabilities:
   - name: int-arm-needs-only-bounds
     binding: substrate — cpsat.rs build_variable_domain Int arm + MAX_INT_DOMAIN=1000;
@@ -123,25 +124,29 @@ tasks:
       kind: manual
       reason: mining behaviour asserted by δ tests (B7); message-string absence checks
         would be brittle
-  - name: solver-hints-cross-ir-seam
-    binding: 'capability→producer (this leaf) — gap verified (M-008 re-check 2026-07-24):
-      ValueCellDecl.solver_hints types.rs:1125 compiler-side only; zero SolverHint
-      refs in reify-ir/reify-constraints/reify-eval src'
+  - name: autoparam-is-discrete-in-ir
+    binding: 'producer-self (re-scoped 2026-10-08, esc-5470-5) — AutoParam.domain: Option<DiscreteDomain>
+      (hard, producer-agnostic) and AutoParam::is_discrete() defined once in reify-ir.
+      Replaces solver-hints-cross-ir-seam: hints no longer cross the IR seam (discrete_set
+      is sugar for `x in C`, docs/prds/v0_6/catalog-membership-constraint.md γ #8357).
+      Matches #5470 metadata.delivered_checks.'
     verdict: PASS
     delivered_check:
       kind: grep
-      pattern: solver_hint
+      pattern: fn is_discrete
       paths:
       - crates/reify-ir/src
       expect: present
-  - name: stdlib-catalog-surface-validates
-    binding: 'substrate probe 2026-07-24 — structure def + standard_bolt_lengths:
-      reify check exit 0; local-let catalog REJECTED exit 1 ("unknown selector kind")
-      → v1 stdlib-only (PRD §2.3/§9); catalogs at crates/reify-compiler/stdlib/standard_stock.ri'
+  - name: enum-declared-domain-cold-and-warm
+    binding: 'producer-self (2026-10-08, #5470 ruling M) — an Enum auto''s domain is its
+      declared unit variants, built by one shared helper that every AutoParam builder calls
+      (build_solver_problem, build_merged_solver_problem, engine_edit.rs edit_param / edit_source);
+      PRD §5 B7b.'
     verdict: PASS
     delivered_check:
       kind: manual
-      reason: probe-captured compile behaviour; δ e2e asserts the wired resolution
+      reason: behavioural — cold eval and warm edit_param tests on discrete_enum_auto.ri
+        with `s != Supplier.Acme`
   - name: int-auto-baseline-failure
     binding: 'signal premise — probe: discrete_int_auto.ri exit 1 "not uniquely determined"
       + undef'
@@ -155,8 +160,8 @@ tasks:
     + harness e2e'
   capabilities:
   - name: producers-all-upstream
-    binding: DAG-direction — ε ← {γ, δ} ← β ← α; no capability owed by a downstream
-      task (anti-inversion)
+    binding: DAG-direction — ε ← {γ, δ} ← β ← α, and (2026-10-08) ε ← catalog-membership
+      γ #8357; no capability owed by a downstream task (anti-inversion)
     verdict: PASS
     delivered_check:
       kind: manual

@@ -1,0 +1,20 @@
+module getar_wildcard_placeholder_binder_silent
+
+// PRD `docs/prds/v0_6/generic-enum-type-arg-retention.md` — leaf β RED
+// before-image (S-4, binder form). MEASURED 2026-09-29, both binaries:
+//   check EXIT 0, eval EXIT 0, `W.v = false` (the Ok arm is taken).
+// The Err binder `e` is typed bare `TypeParam("E")` today (empty binder
+// substitution over the erased subject), so `hb(e)` against `hb(b: Bool)`
+// resolves through the same tier-3 `type_carries_type_param(arg_ty)`
+// wildcard: an unknown-typed value is accepted by a concrete Bool parameter
+// with no diagnostic. After δ the binder is typed with the R1 placeholder for
+// E; β must not let a placeholder-typed bare argument be a universal
+// wildcard either (it may match generic params only).
+// EXPECTED after β+δ: `reify check` EXIT 1, "no matching overload for hb(".
+
+fn hb(b: Bool) -> Bool { b }
+
+structure def W {
+    let r = Ok { value: 5mm }
+    let v : Bool = match r { Ok { value: x } => false, Err { error: e } => hb(e) }
+}

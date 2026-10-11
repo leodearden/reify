@@ -30,7 +30,7 @@ use crate::primitive_attribute_seed::{
     is_seedable_primitive, parse_bbox_xyz_min, record_solid_attribute,
     seed_primitive_attributes_for_handle,
 };
-use crate::realization_cache::{NO_OPTIONS, RealizationCache};
+use crate::realization_cache::{ConversionSlot, NO_OPTIONS, RealizationCache};
 use crate::sweep_classifier::{
     SweptKind, SweptKindTable, classify_swept_body, swept_kind_to_sweep_params,
 };
@@ -2110,16 +2110,17 @@ fn substitute_op_parents(
     }
 }
 
-/// Cache-key `entity` id for a cross-kernel conversion intermediate (task 4050
-/// step-12).
+/// The [`ConversionSlot`] of a cross-kernel conversion intermediate (task 4050
+/// step-12): which input of its owning realization it converts.
 ///
 /// The conversion executor tessellates each BRep input handle of an op and
 /// ingests the result into the target kernel, producing a Mesh intermediate
-/// that is cached (keyed `(entity, Mesh, per_stage_tol, NO_OPTIONS)`) so a later
-/// realization can reuse it instead of re-tessellating. The `entity` component
-/// must be both DISTINCT per input (so an op's N inputs cache as N separate
-/// intermediates — no within-realization clobber) AND STABLE across identical
-/// rebuilds of the same realization (so the reuse hit fires).
+/// that is cached (keyed `(RealizationCache::intermediate_key(entity, slot),
+/// Mesh, per_stage_tol, NO_OPTIONS)`) so a later realization can reuse it
+/// instead of re-tessellating. The slot must be both DISTINCT per input (so an
+/// op's N inputs cache as N separate intermediates — no within-realization
+/// clobber) AND STABLE across identical rebuilds of the same realization (so
+/// the reuse hit fires).
 ///
 /// For a same-realization `Step` input — the only shape the v0.3-ε fixtures
 /// exercise — the input's *local step index* (its position in
@@ -2128,33 +2129,31 @@ fn substitute_op_parents(
 /// steps. A cross-realization (`Sub`) input is absent from
 /// `realization_step_ids` and falls back to the input handle id, which is
 /// itself a stable cached-terminal handle (the producing realization re-hits
-/// its own terminal cache on rebuild and hands back the same id). The `#`
-/// separator cannot occur in a DSL entity identifier, so the synthesised key
-/// can never collide with a real entity's terminal-cache key.
+/// its own terminal cache on rebuild and hands back the same id).
 ///
-/// **Cross-realization keying invariant.** The synthesised key embeds
-/// `realization_entity` but NOT the realization's index within its template, so
+/// **Cross-realization keying invariant.** The intermediate's owner is
+/// `realization_id.entity`, NOT the realization's index within its template, so
 /// two realizations that share an entity name (differing only by index) would
-/// generate identical intermediate keys for their first conversion input. This
-/// is deliberately consistent with the TERMINAL cache keying — the post-loop
-/// `realization_cache.insert(&realization_id.entity, …)` likewise keys on
-/// `entity` alone — and BOTH rely on the same invariant: within a single build a
-/// realization's `entity` uniquely identifies it in the cache (distinct cached
-/// realizations carry distinct entity names). If that invariant is ever weakened
-/// (e.g. multiple indexed realizations of one entity become independently
-/// cacheable), this key AND the terminal key must additionally incorporate
-/// `realization_id.index`; they must change together to stay consistent.
-fn conversion_intermediate_entity_id(
-    realization_entity: &str,
+/// share an intermediate key for their first conversion input. This is
+/// deliberately consistent with the TERMINAL cache keying — the post-loop
+/// `realization_cache.insert_terminal(&realization_id.entity, …)` likewise keys
+/// on `entity` alone — and BOTH rely on the same invariant: within a single
+/// build a realization's `entity` uniquely identifies it in the cache (distinct
+/// cached realizations carry distinct entity names). If that invariant is ever
+/// weakened (e.g. multiple indexed realizations of one entity become
+/// independently cacheable), the owner AND the terminal key must additionally
+/// incorporate `realization_id.index`; they must change together to stay
+/// consistent.
+fn conversion_slot(
     input_handle: GeometryHandleId,
     realization_step_ids: &[GeometryHandleId],
-) -> String {
+) -> ConversionSlot {
     match realization_step_ids
         .iter()
         .position(|id| *id == input_handle)
     {
-        Some(idx) => format!("{realization_entity}#conv-step{idx}"),
-        None => format!("{realization_entity}#conv-ext{}", input_handle.0),
+        Some(idx) => ConversionSlot::Step(idx),
+        None => ConversionSlot::External(input_handle),
     }
 }
 
@@ -2416,8 +2415,10 @@ fn compiled_geometry_op_to_operation(op: &CompiledGeometryOp) -> Operation {
 /// Used by `available_for_op`'s cross-realization name resolution (task
 /// 5033 Gap #2 Gap A) to look up a `GeomRef::Sub(name)` parent's produced
 /// repr in `named_step_reprs` when it names a DIFFERENT, already-completed
-/// realization rather than a step local to this one.
-fn sub_refs_in_op(op: &CompiledGeometryOp) -> Vec<&str> {
+/// realization rather than a step local to this one, and by
+/// `realization_staleness` to find the realizations that read another
+/// entity's geometry.
+pub(crate) fn sub_refs_in_op(op: &CompiledGeometryOp) -> Vec<&str> {
     let mut refs = Vec::new();
     match op {
         CompiledGeometryOp::Boolean { left, right, .. } => {
@@ -5244,7 +5245,7 @@ impl Engine {
                         diagnostics.push(d.clone());
                     }
                 }
-                entry.satisfaction = new_sat;
+                entry.set_verdict(new_sat, None);
             }
             // A2 (task #4734): add DFM build-level diagnostics from the
             // post-geometry constraint harvest unconditionally. These are
@@ -7641,16 +7642,21 @@ impl Engine {
         let mut realization_step_reprs: Vec<ReprKind> = Vec::with_capacity(operations.len());
         // Task 4050 step-12: per-realization log of intermediate-cache keys the
         // conversion executor inserted, so step-14's rollback branch can drop
-        // exactly those keys (atomic with `step_handles.truncate(handle_start)`).
-        // Each entry is `(entity, repr, per_stage_tol, options_hash)`. The
+        // exactly those entries (atomic with `step_handles.truncate(handle_start)`).
+        // Each entry is `(slot, repr, per_stage_tol, options_hash)`; the owner is
+        // this realization's entity. The
         // options_hash is `NO_OPTIONS` for a Tessellate-sourced intermediate and
         // `surface_options_content_hash(iso, adaptive)` for a MarchingCubes-sourced
-        // one (task γ / 5001) — rollback must remove the EXACT key Phase 2
+        // one (task γ / 5001) — rollback must remove the EXACT entry Phase 2
         // inserted, so the log carries whichever hash was used. On the success
         // path the inserts stay committed so later same-build realizations reuse
         // them.
-        let mut intermediate_cache_inserts: Vec<(String, ReprKind, f64, reify_core::ContentHash)> =
-            Vec::new();
+        let mut intermediate_cache_inserts: Vec<(
+            ConversionSlot,
+            ReprKind,
+            f64,
+            reify_core::ContentHash,
+        )> = Vec::new();
         // Task #3443 (S6): track whether the KernelPragmaUnsatisfiable warning
         // has already been emitted for this realization. The pragma is
         // module-scoped and applies uniformly to all ops; emitting once per
@@ -8232,14 +8238,15 @@ impl Engine {
                                     };
                                     'convert: for &pid in &parents {
                                         // Task 4050 step-12: the intermediate cache
-                                        // key for THIS input — distinct per input
-                                        // (stable across rebuilds; see
-                                        // `conversion_intermediate_entity_id`).
-                                        let intermediate_entity = conversion_intermediate_entity_id(
-                                            &realization_id.entity,
-                                            pid,
-                                            &realization_step_ids,
-                                        );
+                                        // slot and key for THIS input — distinct per
+                                        // input (stable across rebuilds; see
+                                        // `conversion_slot`).
+                                        let slot = conversion_slot(pid, &realization_step_ids);
+                                        let intermediate_key =
+                                            RealizationCache::<KernelHandle>::intermediate_key(
+                                                &realization_id.entity,
+                                                slot,
+                                            );
                                         // Task #4636: forward the source solid's
                                         // attribute (recorded by
                                         // `record_solid_attribute` at the seed site
@@ -8365,7 +8372,7 @@ impl Engine {
                                         // target-kernel handle (Copy); reuse its id
                                         // and skip the redundant production+ingest.
                                         if let Some(&cached) = realization_cache.lookup(
-                                            &intermediate_entity,
+                                            &intermediate_key,
                                             terminal_to,
                                             per_stage_tol,
                                             options_hash,
@@ -8507,28 +8514,30 @@ impl Engine {
                                                     id: handle.id,
                                                 };
                                                 // **Task 4152: this is the UNCOUNTED
-                                                // insert.** Plain `insert`, so it does
-                                                // not move
+                                                // insert.** `insert_intermediate`
+                                                // does not move
                                                 // `CacheStats::realization_entries`.
                                                 // These are per-step conversion
                                                 // intermediates *within* one
-                                                // realization (keyed
-                                                // `"{entity}#conv-step{N}"`), not
-                                                // realizations — the OCCT→gmsh
-                                                // VolumeMesh route passes through here,
-                                                // so counting them would break the
-                                                // "one body, one entry" contract. The
-                                                // terminal site below uses
-                                                // `insert_terminal`.
-                                                realization_cache.insert(
-                                                    &intermediate_entity,
+                                                // realization, not realizations —
+                                                // the OCCT→gmsh VolumeMesh route
+                                                // passes through here, so counting
+                                                // them would break the "one body,
+                                                // one entry" contract. The terminal
+                                                // site below uses `insert_terminal`.
+                                                // Recording the owner puts the
+                                                // intermediate in the realization's
+                                                // eviction family (γ #4730).
+                                                realization_cache.insert_intermediate(
+                                                    &realization_id.entity,
+                                                    slot,
                                                     terminal_to,
                                                     per_stage_tol,
                                                     options_hash,
                                                     intermediate_handle,
                                                 );
                                                 intermediate_cache_inserts.push((
-                                                    intermediate_entity,
+                                                    slot,
                                                     terminal_to,
                                                     per_stage_tol,
                                                     options_hash,
@@ -8993,16 +9002,23 @@ impl Engine {
         if rolled_back {
             step_handles.truncate(handle_start);
             // Task 4050 step-14: atomic intermediate-cache rollback. Drop every
-            // intermediate key this realization inserted (step-12) so a failed
+            // intermediate this realization inserted (step-12) so a failed
             // realization leaves NO cache entry behind — its handle truncation
             // and its cache mutations roll back together (PRD §9 OQ9,
-            // provisional). `remove` is an exact-tolerance delete that no-ops on
-            // an absent key, so it is safe even if a key was never committed.
+            // provisional). `remove_intermediate` is an exact-tolerance delete
+            // that no-ops on an absent entry, so it is safe even if an entry was
+            // never committed, and it keeps the owner's family exact.
             // The SUCCESS branch below deliberately does NOT drain this log: a
             // completed realization's intermediates stay committed so later
             // same-build realizations reuse them (step-11's reuse requirement).
-            for (entity, repr, tol, options_hash) in &intermediate_cache_inserts {
-                realization_cache.remove(entity, *repr, *tol, *options_hash);
+            for (slot, repr, tol, options_hash) in &intermediate_cache_inserts {
+                realization_cache.remove_intermediate(
+                    &realization_id.entity,
+                    *slot,
+                    *repr,
+                    *tol,
+                    *options_hash,
+                );
             }
         } else {
             // Fully-successful realization. Three things land here, all keyed
@@ -9718,8 +9734,8 @@ impl Engine {
                     // insert is accepted. This site is the one the counter is
                     // defined by: a terminal realization that genuinely produced
                     // and cached new geometry. The conversion-intermediate insert
-                    // (search `intermediate_cache_inserts`) stays on plain
-                    // `insert` and is deliberately NOT counted.
+                    // (search `intermediate_cache_inserts`) uses the uncounted
+                    // `insert_intermediate` and is deliberately NOT counted.
                     realization_cache.insert_terminal(
                         &realization_id.entity,
                         resolved_repr,
@@ -10711,9 +10727,12 @@ impl Engine {
     /// an in-walk symbolic `GeometryHandle` with a byte-identical
     /// `upstream_values_hash` (GHR-β invariant preserved).
     ///
-    /// The lookup key is `RealizationNodeData.geometry_cell` — the graph-side link
-    /// from a realization to its backing `Type::Geometry` value cell, set at
-    /// graph-construction time in `EvaluationGraph::from_templates`.
+    /// The lookup key is `RealizationNodeData.geometry_cell`, set at
+    /// graph-construction time in `EvaluationGraph::from_templates`. It answers
+    /// only for a SCALAR `Type::Geometry` cell. A geometry-list cell is linked
+    /// N:1 (task #5385), and for length 1 that is indistinguishable from 1:1 by
+    /// link count; its value is never one element's handle, but is assembled by
+    /// the list regroup and by `tessellate_snapshot`'s baseline mint.
     pub(crate) fn mint_symbolic_geometry_handle_for_cell_from_graph(
         cell_id: &reify_core::identity::ValueCellId,
         graph: &crate::graph::EvaluationGraph,
@@ -10728,6 +10747,13 @@ impl Engine {
             values.get(cell_id),
             Some(Value::GeometryHandle { kernel_handle: Some(_), .. })
         ) {
+            return None;
+        }
+        if graph
+            .value_cells
+            .get(cell_id)
+            .is_none_or(|cell| cell.cell_type != reify_core::Type::Geometry)
+        {
             return None;
         }
         // Find the realization whose geometry_cell link points at this cell.
@@ -12065,16 +12091,17 @@ impl Engine {
     /// input-cone hash (`compute_realization_upstream_values_hash`) against the just-
     /// refreshed snapshot values and compares to the stored
     /// `RealizationNodeData.input_cone_hash`.  If the hashes DIFFER (inputs changed),
-    /// `realization_cache.clear_entity` drops stale geometry so
+    /// `realization_cache.evict_family` drops stale geometry (terminal and owned
+    /// conversion intermediates) so
     /// `tessellate_from_values` is forced to re-execute.  If SAME, the cached
     /// geometry is still valid and is reused (no re-dispatch → `last_dispatch_count`
     /// stays 0).  The stored hash is updated to the current value in both cases.
     ///
-    /// **NOTE (esc-4740-29):** the "clear on hash mismatch" branch is currently a
-    /// no-op in practice — `clear_realization_cache()` at `edit_param` entry already
-    /// drops all entries, so the entity bucket will be empty when we call
-    /// `clear_entity`.  The method is wired now so the logic is correct when
-    /// eviction γ (task 4730) lands selective cache retention.
+    /// **NOTE (esc-4740-29, resolved by γ #4730):** edits no longer flush the
+    /// whole cache; they evict only the families their own compare found stale
+    /// and retain the rest. A mismatch found HERE — for instance on a cell Part B
+    /// just refreshed, which the edit-time compare saw as `Pending` — therefore
+    /// evicts genuinely retained geometry.
     /// Returns exempt realizations: those whose input-cone hash is UNCHANGED
     /// (`stored == Some(current_hash)`). These are excluded from the
     /// `demand_scoped_unified_pass` seed so they are not re-dispatched when
@@ -12197,12 +12224,7 @@ impl Engine {
                 // guard, with no test pinning it either way. Untested
                 // behaviour change plus inert motivation ⇒ removed.
                 //
-                // The real defect on the geometry-list side — under selective
-                // demand a second no-op `tessellate_snapshot` returns
-                // `[Undef; n]` where the first returned live handles, while full
-                // scope returns live handles both times — is filed separately as
-                // task #6460 (escalation esc-5385-5) and is NOT addressed by
-                // anything at this line.
+                // List cells are re-derived by `tessellate_snapshot`'s baseline mint (#6460).
                 if !new_val.is_undef() {
                     // Preserve existing DeterminacyState from snapshot.values.
                     let det = existing
@@ -12240,10 +12262,10 @@ impl Engine {
         // (the actual cache key — see the cross-realization keying invariant at
         // engine_build.rs:1663) rather than `tmpl.name`.  For simple top-level
         // templates the two are identical, but for sub/indexed entities they may
-        // diverge, and using the wrong key would silently miss the cache entry when
-        // eviction γ (task 4730) lands selective retention.  The HashSet also
+        // diverge, and using the wrong key would silently miss the cache entry the
+        // edit's selective eviction (γ #4730) retained.  The HashSet also
         // deduplicates: a template with N demanded realizations all having stale
-        // inputs would otherwise produce N identical `clear_entity` calls.
+        // inputs would otherwise produce N identical `evict_family` calls.
         let mut entities_to_clear: HashSet<String> = HashSet::new();
         let mut hash_updates: Vec<(reify_core::RealizationNodeId, [u8; 32])> = Vec::new();
         // Exempt realizations: those whose input-cone hash is UNCHANGED
@@ -12277,10 +12299,9 @@ impl Engine {
                         .and_then(|n| n.input_cone_hash);
                     if stored != Some(current_hash) {
                         // Inputs changed (or no stored hash yet): invalidate stale
-                        // geometry so tessellate_from_values re-executes.
-                        // Forward-looking: currently a no-op since edit_param's
-                        // clear_realization_cache already removed the entry
-                        // (esc-4740-29).
+                        // geometry so tessellate_from_values re-executes. Edits
+                        // retain unaffected families (γ #4730), so this evicts
+                        // real entries (esc-4740-29).
                         // Key on `realization_decl.id.entity` — the actual cache key
                         // (invariant at engine_build.rs:1663), NOT `tmpl.name`.
                         entities_to_clear.insert(realization_decl.id.entity.clone());
@@ -12297,7 +12318,7 @@ impl Engine {
 
         // Apply: clear stale cache entries + update stored hashes.
         for entity in &entities_to_clear {
-            self.realization_cache.clear_entity(entity);
+            self.realization_cache.evict_family(entity);
         }
         if let Some(state) = self.eval_state.as_mut() {
             for (real_id, new_hash) in hash_updates {
@@ -12318,6 +12339,17 @@ impl Engine {
     /// companion to `tessellate_realizations()`: after `edit_param()` updates
     /// values, call `tessellate_snapshot()` to get updated meshes without a
     /// cold restart.
+    ///
+    /// A geometry-backed cell whose realizations this pass does NOT execute
+    /// (hidden, or hash-exempt because their inputs are unchanged) carries the
+    /// symbolic eval-path handle (`kernel_handle: None`) minted from the
+    /// current values — scalar and list cells alike. Hydration upgrades a
+    /// scalar cell to a kernel-backed handle when its realization executes,
+    /// but a list cell only when EVERY element executes: hash exemption is
+    /// per realization while the list regroup is all-or-nothing, so a partly
+    /// re-executed list is served wholly symbolic, its executed elements
+    /// included. Geometry-list cases: reify-eval
+    /// `tests/harness_cache/selective_demand_redemand_staleness.rs`.
     pub fn tessellate_snapshot(&mut self, module: &CompiledModule) -> Option<TessellateResult> {
         // Reset all per-build engine state through the single exhaustive-
         // destructure choke-point (#5069, INV-BUILD-1). Placed at the TOP:
@@ -12385,6 +12417,18 @@ impl Engine {
         for (id, (val, _det)) in state.snapshot.values.iter() {
             values.insert(id.clone(), val.clone());
         }
+        // The symbolic geometry baseline `build` / `tessellate_realizations`
+        // get from `check().values`, re-derived from the CURRENT values: a
+        // geometry-list cell's snapshot entry is only its pre-hydration
+        // `[Undef; n]` placeholder, so without this a list whose realizations
+        // this pass does not execute (hash-exempt or hidden) would ship that
+        // placeholder (task #6460).
+        Engine::mint_symbolic_geometry_handles_into_values(
+            module,
+            &mut values,
+            &self.functions,
+            &self.meta_map,
+        );
 
         // Check constraints (guard-aware)
         let (constraint_results, mut diagnostics) =
@@ -13866,7 +13910,7 @@ fn compute_realization_upstream_values_hash(
 /// walk can call it using graph-resident `RealizationNodeData.operations`
 /// (which is the same type but is not wrapped in a `RealizationDecl`).
 ///
-/// `pub(crate)` for the same reason: `engine_edit.rs`'s
+/// `pub(crate)` for the same reason: `realization_staleness.rs`'s
 /// `compute_changed_realizations` (selective-realization-eviction task β)
 /// recomputes the input-cone hash over graph-resident ops and compares it
 /// against α's stored `RealizationNodeData.input_cone_hash`. PRD D1 forbids a
@@ -14070,6 +14114,10 @@ mod post_process_cross_sub_value_cells_tests;
 
 #[cfg(test)]
 mod diagnose_topology_correspondence_drops_tests;
+
+// ── mint_symbolic_geometry_handle_for_cell_from_graph cell-shape guard (#6460) ─
+#[cfg(test)]
+mod geometry_cell_mint_from_graph_tests;
 
 // ── reset_per_build_state per-surface classification unit tests (task ι, #5069) ─
 //

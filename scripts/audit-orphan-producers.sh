@@ -17,8 +17,13 @@
 # preceding a `pub fn` declaration marks that fn as intentional library
 # API surface. The reason is mandatory.
 #
-# Exits 0 always unless --strict is passed (then exits 1 when orphans
-# without `// G-allow:` markers are found).
+# Exits 0 unless --strict is passed (then exits 1 when orphans without
+# `// G-allow:` markers are found); 2 is a usage error. Exit 3 means the audit
+# could not run: python3, git or awk is missing, or the shared Rust lexer that
+# the `#[cfg(test)]` masking reads (scripts/lib_rust_production_view.sh,
+# sourced from this script's own directory) could not be loaded or failed.
+# stdout is then EMPTY, so a caller parsing --format json gets nothing rather
+# than a partial envelope.
 #
 # A `#[cfg(test)]` item whose mask never closes (brace-counting runs to
 # EOF without the block balancing back to zero) is reported as a WARNING
@@ -62,12 +67,22 @@ if [[ ${#SCOPES[@]} -eq 0 ]]; then
     SCOPES=("crates/reify-*/src")
 fi
 
-for tool in python3 git; do
+for tool in python3 git awk; do
     if ! command -v "$tool" >/dev/null 2>&1; then
         echo "audit-orphan-producers.sh: $tool not on PATH" >&2
         exit 3
     fi
 done
+
+# The shared Rust lexer, resolved beside THIS script (never the CWD or the
+# audited repo) and before the cd below, because BASH_SOURCE may be relative to
+# the caller's CWD. A failed load is exit 3; nothing has reached stdout yet.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/lib_rust_production_view.sh
+if ! source "$SCRIPT_DIR/lib_rust_production_view.sh" || [[ -z "${RUST_LEXER_AWK:-}" ]]; then
+    echo "audit-orphan-producers.sh: cannot load the shared Rust lexer lib: $SCRIPT_DIR/lib_rust_production_view.sh" >&2
+    exit 3
+fi
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 cd "$REPO_ROOT"
@@ -79,9 +94,12 @@ for s in "${SCOPES[@]}"; do
     SCOPE_ARGS+=("$s")
 done
 
-python3 - "$FORMAT" "$STRICT" "$QUIET" "${SCOPE_ARGS[@]}" <<'PYTHON_SCRIPT'
+# Command-prefix scope: the lexer text lives only for the python3 process.
+RUST_LEXER_AWK="$RUST_LEXER_AWK" python3 - "$FORMAT" "$STRICT" "$QUIET" "${SCOPE_ARGS[@]}" <<'PYTHON_SCRIPT'
 import json
+import os
 import re
+import subprocess
 import sys
 from collections import defaultdict
 from pathlib import Path
@@ -177,252 +195,124 @@ LINE_COMMENT_RE = re.compile(r'//.*$')
 BLOCK_KW_RE = re.compile(r'\b(?:fn|mod|impl|struct|enum|trait|union)\b')
 
 
-# --- literal/comment-aware code view ---------------------------------------
+# --- code view: the shared Rust lexer ----------------------------------------
 #
-# strip_literals_and_comments() builds a same-shape "code view" so brace
-# counting (and, for cfg(test) item headers, keyword/suffix tests) can
-# ignore braces that live inside strings, char literals, and comments.
-# These are cheap "is there anything interesting left" / "jump to the next
-# interesting position" probes; the heavy lifting (raw-string hash
-# counting, char-literal offset tests) is plain string indexing once a
-# candidate position is found, not backtracking regexes.
-#
-# This is the THIRD Rust literal/comment lexer in this repo (the second
-# design): scripts/check-nan-safe-ordering.sh and
-# scripts/check-compute-trampoline-registration.sh each carry an awk
-# `_strip_line(line, out, i, n, ch, h, j, k, pfx, rest)` with the same
-# state machine -- nesting block comments, cross-line raw-string/string
-# state, the same char-literal-vs-lifetime rule -- and the same `lexer
-# state unbalanced at EOF` self-check (see mask_cfg_test's docstring
-# below). One deliberate divergence: the awk lexers BLANK literal/comment
-# CONTENTS but KEEP the delimiters, so a blanked string reads exactly `""`;
-# this Python view blanks the delimiters too, so a blanked string leaves
-# nothing. Nothing wires the three together -- an edge-case fix in one is
-# not automatically ported to the others.
-_CODE_SPECIAL_RE = re.compile(r'["\'/]')
-_BLOCK_COMMENT_TOKEN_RE = re.compile(r'/\*|\*/')
-_STRING_TOKEN_RE = re.compile(r'["\\]')
-_HEX_DIGITS = set("0123456789abcdefABCDEF")
-_IDENT_CHARS = set(
-    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_"
+# mask_cfg_test reads a "code view" of each file, so braces, keywords and
+# `;`/`,` suffixes inside string, char and raw-string literals or comments do
+# not perturb it. That view is the shared lexer's `_strip_line` view
+# (scripts/lib_rust_production_view.sh, passed in as $RUST_LEXER_AWK): comment
+# text dropped, literal contents blanked with the delimiters kept, so a blanked
+# string reads exactly `""`. mask_cfg_test needs no column alignment, only
+# brace counts, keyword hits and line suffixes, all of which that view keeps.
+_FRAME_END = "\x1c"  # ASCII FS: str.splitlines() splits on it, so no line holds it
+_EMITTER = (
+    '$0 == frame_end { print frame_end _lexer_open_state(); _lexer_reset(); next }\n'
+    '{ print _strip_line($0) }\n'
 )
+_OPEN_STATES = frozenset({"", "block_comment", "raw_string", "string"})
 
 
-def _char_literal_span(line, j, n):
-    """Return the number of characters (starting at `j`, the opening `'`)
-    consumed by a char literal at position j, or None if `line[j]` is a
-    lifetime/loop-label tick rather than a char literal.
+def _cannot_lex(message):
+    """Exit 3 ("could not run") before anything reaches stdout, so a caller
+    parsing the JSON gets nothing rather than a partial envelope."""
+    print(f"audit-orphan-producers.sh: {message}", file=sys.stderr)
+    sys.exit(3)
 
-    A `'` opens a char literal ONLY when a closing `'` sits at the exact
-    offset the escape-aware grammar implies:
-      'X'         -> closing ' at offset 2
-      '\\X'       -> closing ' at offset 3   (\\n \\t \\\\ \\' \\" \\0 ...)
-      '\\xNN'     -> closing ' at offset 5   (NN hex digits)
-      '\\u{...}'  -> closing ' immediately after the matching '}'
-    Otherwise it is a lifetime or loop label (`&'a str`, `<'a>`,
-    `'outer: loop`) and the caller must treat it as a single blank tick,
-    never swallowing forward to the next `'`.
+
+class _FrameError(Exception):
+    """The lexer's framed output does not match the files framed into it."""
+
+
+def _framed_stream(sources):
+    """awk's input: Python's OWN splitlines() lines of each `(path, lines)`,
+    each file followed by a line holding only _FRAME_END. Feeding Python's
+    lines means awk's row numbering cannot drift from Python's (awk alone
+    splits on newline only)."""
+    return "".join(
+        "".join(line + "\n" for line in lines) + _FRAME_END + "\n"
+        for _, lines in sources
+    )
+
+
+def _parse_frames(rows, sources):
+    """Split the lexer's output `rows` back into one `(code_view, open_state)`
+    per `(path, lines)` in `sources`, in order.
+
+    awk prints one code row per input line and, at each separator, _FRAME_END
+    followed by the open state ("" when the file ends cleanly). The frame
+    count and every file's row count must match the input; a mismatch or an
+    unknown state raises _FrameError naming the file and both counts.
     """
-    if j + 1 >= n:
-        return None
-    if line[j + 1] == '\\':
-        if j + 3 < n and line[j + 2] == 'u' and line[j + 3] == '{':
-            close = line.find('}', j + 4)
-            if close != -1 and close + 1 < n and line[close + 1] == "'":
-                return close - j + 2
-        if (
-            j + 5 < n
-            and line[j + 2] == 'x'
-            and line[j + 3] in _HEX_DIGITS
-            and line[j + 4] in _HEX_DIGITS
-            and line[j + 5] == "'"
-        ):
-            return 6
-        if j + 3 < n and line[j + 3] == "'":
-            return 4
-        return None
-    if j + 2 < n and line[j + 2] == "'":
-        return 3
-    return None
+    views, code = [], []
+    for row in rows:
+        if not row.startswith(_FRAME_END):
+            code.append(row)
+            continue
+        state = row[len(_FRAME_END):]
+        if state not in _OPEN_STATES:
+            raise _FrameError(f"shared Rust lexer reported an unknown open state {state!r}")
+        views.append((code, state or None))
+        code = []
+    for (path, lines), (view, _) in zip(sources, views):
+        if len(view) != len(lines):
+            raise _FrameError(f"shared Rust lexer returned {len(view)} code rows for "
+                              f"the {len(lines)} lines of {path}")
+    if code or len(views) != len(sources):
+        unframed = sources[len(views)][0] if len(views) < len(sources) else "none"
+        raise _FrameError(f"shared Rust lexer returned {len(views)} file frames for "
+                          f"{len(sources)} files (first unframed: {unframed})")
+    return views
 
 
-def strip_literals_and_comments(lines):
-    """Return a list of strings, PARALLEL to `lines` (same length, and
-    each entry the same length as the corresponding input line), with
-    every comment and string/char/raw-string-literal byte replaced by a
-    space -- so a caller that only needs brace counts or a header's
-    keyword/suffix shape sees code only.
+def _run_lexer(stream):
+    """Run $RUST_LEXER_AWK plus _EMITTER over `stream` in ONE awk process and
+    return its output rows; one awk per file was measured at ~20s wall. An
+    empty lexer, a failed start or a non-zero exit is exit 3.
 
-    Handles, in precedence order: block comments (`/* ... */`, which
-    NEST), raw strings (opened by `(b?r)(#*)"`, only when the preceding
-    byte is not an identifier character; closed by `"` followed by
-    exactly the opening hash count), normal/byte strings (`"`, opened
-    directly or after a `b`; `\\` escapes the next byte; may span lines),
-    line comments (`//` to EOL), and char literals vs. lifetime/loop-label
-    ticks (see `_char_literal_span`).
+    Deliberately not pinned to LC_ALL=C, though awk lexes faster there: byte
+    mode splits a non-ASCII char literal such as '—', so its quotes read as
+    lifetimes, and in `['é','{']` the `{` then reaches brace counting."""
+    program = os.environ.get("RUST_LEXER_AWK", "")
+    if not program:
+        _cannot_lex("RUST_LEXER_AWK (the shared Rust lexer) is empty")
+    try:
+        proc = subprocess.run(
+            ["awk", "-v", f"frame_end={_FRAME_END}", program + "\n" + _EMITTER],
+            input=stream, stdout=subprocess.PIPE,
+            text=True, encoding="utf-8", errors="replace",
+        )
+    except OSError as e:
+        _cannot_lex(f"awk (shared Rust lexer) failed to start: {e}")
+    if proc.returncode != 0:
+        _cannot_lex(f"awk (shared Rust lexer) failed with exit {proc.returncode}")
+    rows = proc.stdout.split("\n")
+    if rows[-1] == "":
+        rows.pop()
+    return rows
 
-    State (which of the above we are inside, plus block-comment nesting
-    depth and raw-string hash count) is carried ACROSS lines within one
-    call, and reset at the start of each call -- `mask_cfg_test` invokes
-    this once per file, so a misparse is bounded to a single file.
 
-    Returns (code_view, final_state). `final_state` is None when the file
-    ends cleanly back in "code" state, or one of "block_comment" /
-    "raw_string" / "string" when that state is still open at EOF -- an
-    unterminated construct (e.g. a truncated file, or a stray `"`). From
-    the open point on, every code-view line is entirely blank (see the
-    "no closing token on this line" branches below), which can hide a
-    later `#[cfg(test)]` item's real header shape from `mask_cfg_test`
-    the same way an unclosed brace count does, but SILENTLY: no brace
-    count ever goes non-zero, so the unclosed-mask warning never fires
-    for it. See the "lexer state unbalanced at EOF" self-check in this
-    repo's two awk siblings (module header comment above).
+def lex_code_views(sources):
+    """Lex every `(path, lines)` in `sources` through the shared lexer; return
+    `[(code_view, open_state), ...]` in that order.
+
+    `code_view` has one row per line. `open_state` is None when the file ends
+    cleanly, else "block_comment" / "raw_string" / "string": a construct left
+    open at EOF blanks every row after its open point, which can hide a later
+    `#[cfg(test)]` item's header shape SILENTLY (no brace count goes
+    non-zero), so the caller warns on it separately. The lexer is reset at
+    each file boundary, so no state leaks into the next file. Output that
+    does not frame back onto `sources` exits 3.
     """
-    out = []
-    state = "code"  # "code" | "block_comment" | "raw_string" | "string"
-    block_depth = 0
-    raw_hashes = 0
-
-    for line in lines:
-        n = len(line)
-
-        # Whole-line fast path: in code state with none of the trigger
-        # characters present, the line cannot contain a comment or literal
-        # opener, so it passes through unchanged.
-        if state == "code" and not _CODE_SPECIAL_RE.search(line):
-            out.append(line)
-            continue
-
-        buf = []
-        i = 0
-        while i < n:
-            if state == "block_comment":
-                m = _BLOCK_COMMENT_TOKEN_RE.search(line, i)
-                if m is None:
-                    buf.append(' ' * (n - i))
-                    i = n
-                    continue
-                j = m.start()
-                buf.append(' ' * (j - i))
-                if line[j] == '/':  # nested "/*"
-                    block_depth += 1
-                else:  # "*/"
-                    block_depth -= 1
-                    if block_depth <= 0:
-                        state = "code"
-                        block_depth = 0
-                buf.append('  ')
-                i = j + 2
-                continue
-
-            if state == "raw_string":
-                close = '"' + ('#' * raw_hashes)
-                idx = line.find(close, i)
-                if idx == -1:
-                    buf.append(' ' * (n - i))
-                    i = n
-                    continue
-                buf.append(' ' * (idx - i + len(close)))
-                i = idx + len(close)
-                state = "code"
-                continue
-
-            if state == "string":
-                m = _STRING_TOKEN_RE.search(line, i)
-                if m is None:
-                    buf.append(' ' * (n - i))
-                    i = n
-                    continue
-                j = m.start()
-                buf.append(' ' * (j - i))
-                if line[j] == '\\':
-                    if j + 1 < n:
-                        buf.append('  ')
-                        i = j + 2
-                    else:
-                        buf.append(' ')
-                        i = j + 1
-                    continue
-                buf.append(' ')
-                i = j + 1
-                state = "code"
-                continue
-
-            # state == "code"
-            m = _CODE_SPECIAL_RE.search(line, i)
-            if m is None:
-                buf.append(line[i:])
-                i = n
-                continue
-            j = m.start()
-            ch = line[j]
-
-            if ch == '/':
-                if j + 1 < n and line[j + 1] == '/':
-                    buf.append(line[i:j])
-                    buf.append(' ' * (n - j))
-                    i = n
-                elif j + 1 < n and line[j + 1] == '*':
-                    buf.append(line[i:j])
-                    buf.append('  ')
-                    state = "block_comment"
-                    block_depth = 1
-                    i = j + 2
-                else:
-                    # Lone '/' (division, path separator, ...): not a
-                    # comment opener, copy verbatim.
-                    buf.append(line[i:j + 1])
-                    i = j + 1
-                continue
-
-            if ch == '"':
-                # Backward scan for a raw-string opener: (b?r)(#*)" with a
-                # non-identifier byte (or start of line) immediately before.
-                h = 0
-                k = j - 1
-                while k >= 0 and line[k] == '#':
-                    h += 1
-                    k -= 1
-                raw_start = None
-                if k >= 0 and line[k] == 'r':
-                    cand = k
-                    pre = k - 1
-                    if pre >= 0 and line[pre] == 'b':
-                        cand = pre
-                        pre -= 1
-                    if pre < 0 or line[pre] not in _IDENT_CHARS:
-                        raw_start = cand
-                if raw_start is not None:
-                    buf.append(line[i:raw_start])
-                    buf.append(' ' * (j - raw_start + 1))
-                    state = "raw_string"
-                    raw_hashes = h
-                    i = j + 1
-                else:
-                    buf.append(line[i:j])
-                    buf.append(' ')
-                    state = "string"
-                    i = j + 1
-                continue
-
-            # ch == "'"
-            span = _char_literal_span(line, j, n)
-            if span is None:
-                buf.append(line[i:j])
-                buf.append(' ')
-                i = j + 1
-            else:
-                buf.append(line[i:j])
-                buf.append(' ' * span)
-                i = j + span
-            continue
-
-        out.append(''.join(buf))
-
-    return out, (None if state == "code" else state)
+    if not sources:
+        return []
+    rows = _run_lexer(_framed_stream(sources))
+    try:
+        return _parse_frames(rows, sources)
+    except _FrameError as e:
+        _cannot_lex(str(e))
 
 
-def mask_cfg_test(lines):
+def mask_cfg_test(lines, code):
     """Mark lines belonging to `#[cfg(test)]`-attributed items.
 
     Three item shapes:
@@ -434,9 +324,9 @@ def mask_cfg_test(lines):
 
     Brace counts, and the item-shape test that decides whether an item is
     a block (`fn`/`mod`/`impl`/`struct`/`enum`/`trait`/`union`) or a
-    single statement/field (its `;`/`,` suffix), are computed from a
-    literal/comment-stripped "code view" (see
-    `strip_literals_and_comments`), so `{`/`}` and keyword/suffix text
+    single statement/field (its `;`/`,` suffix), are computed from the
+    caller-supplied literal/comment-stripped "code view" `code` (see
+    `lex_code_views`), so `{`/`}` and keyword/suffix text
     inside string, raw string, char, or byte-string literals and
     line/block comments do not perturb either decision. Locating the item
     header itself -- skipping blank lines, line comments, and stacked
@@ -450,15 +340,6 @@ def mask_cfg_test(lines):
     longer opens a mask over whatever item happens to follow it. One
     approximation remains: no full Rust lexing is performed beyond what
     these checks need.
-
-    The early-out below (`any(CFG_TEST_RE.search(l) for l in lines)`) reads
-    RAW text on purpose; the asymmetry with the line above is deliberate,
-    not an oversight to be tidied away. It runs before `code` exists and
-    only decides whether to do any work at all, and blanking literals and
-    comments can only REMOVE matches, never add them, so a raw-text miss
-    guarantees a code-view miss. Making it code-view-aware would force
-    `strip_literals_and_comments` over every file in the corpus -- including
-    the majority that never mention the attribute -- to buy nothing.
 
     Corpus sweep for the literal-aware mask START (base main 32f4a7b098,
     scope `crates/reify-*/src`). Emphatically NOT neutral, unlike the
@@ -475,19 +356,12 @@ def mask_cfg_test(lines):
     baseline report they drift against is owned by #7634. Neither list is
     copied here, so neither can go stale against its owner.
 
-    Returns (masked, unclosed, lexer_open_state). `lexer_open_state` is
-    the `strip_literals_and_comments` terminal state (None, or one of
-    "block_comment" / "raw_string" / "string") -- see that function's
-    docstring for why an open state at EOF is a DIFFERENT, silent failure
-    mode from an unclosed brace count, and why the caller must warn on it
-    separately.
+    Returns (masked, unclosed): a per-line mask flag, and the 1-based
+    attribute line of every block mask that runs to EOF without closing.
     """
     masked = [False] * len(lines)
     unclosed = []
     n = len(lines)
-    if not any(CFG_TEST_RE.search(l) for l in lines):
-        return masked, unclosed, None
-    code, lexer_open_state = strip_literals_and_comments(lines)
     i = 0
     while i < n:
         if not CFG_TEST_RE.search(code[i]):
@@ -562,7 +436,7 @@ def mask_cfg_test(lines):
             # Single-statement item or field/variant. Mask one line.
             masked[j] = True
             i = j + 1
-    return masked, unclosed, lexer_open_state
+    return masked, unclosed
 
 
 def name_token_re(name):
@@ -572,14 +446,31 @@ def name_token_re(name):
 candidates = []        # (file, line_1based, name, allowed, allow_reason)
 masked_cache = {}      # path_str -> (lines, masked_flags)
 
+file_lines = []        # (path, lines) for every readable source file
 for path in src_files:
     try:
         text = path.read_text(encoding="utf-8", errors="replace")
     except OSError as e:
         print(f"audit-orphan-producers.sh: skip {path}: {e}", file=sys.stderr)
         continue
-    lines = text.splitlines()
-    masked, unclosed, lexer_open_state = mask_cfg_test(lines)
+    file_lines.append((path, text.splitlines()))
+
+# Only a file whose RAW text mentions the attribute is lexed; mask_cfg_test then
+# matches the attribute on the code view. The asymmetry is deliberate, not an
+# oversight to be tidied away: blanking literals and dropping comments only
+# REMOVE matches (short of a comment spliced inside the attribute itself,
+# `#[cfg(/* … */test)]`), so a raw-text miss is a code-view miss, and the
+# majority of the corpus that never mentions the attribute stays out of awk.
+needs_view = [(path, lines) for path, lines in file_lines
+              if any(CFG_TEST_RE.search(l) for l in lines)]
+code_views = dict(zip((path for path, _ in needs_view), lex_code_views(needs_view)))
+
+for path, lines in file_lines:
+    code, lexer_open_state = code_views.get(path, (None, None))
+    if code is None:
+        masked, unclosed = [False] * len(lines), []
+    else:
+        masked, unclosed = mask_cfg_test(lines, code)
     for lineno in unclosed:
         print(f"audit-orphan-producers.sh: WARNING: {path}:{lineno}: "
               f"#[cfg(test)] mask never closes and runs to EOF; any `pub fn` "

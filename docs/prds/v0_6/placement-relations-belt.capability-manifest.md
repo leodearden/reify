@@ -95,6 +95,13 @@ belt degenerate-input errors) is instructed to carry a `DiagnosticCode`.
   (`crates/reify-eval/src/engine_eval.rs:1553`, #5188 done — same evidence
   DIC's manifest binds); §7.1.3's cycle check extends this graph with
   `pose(s) → .world_frame(s)` edges.
+- `carried-frame-cross-sub-geometry-read` (§7.1.5; ported #6583 acceptance (a)) → PASS,
+  producer-self. `delivered_check`: `distance\(` present in
+  `crates/reify-eval/tests/harness_engine/cross_sub_posed_geometry_reads.rs` (β's declared test
+  file; absent on main, so the gate is not vacuous). Guards P2 ο #6683, which depends on β for
+  posed operands. *Added 2026-10-11*: the check previously lived only in #5436's task metadata as a
+  bare `cross_sub` grep that already matched on main. Accepted gap: proves the acceptance test
+  exists and exercises `distance`, not the composed value — the test's own assertion is the cover.
 - `pose-cycle-rejection` (G6 branch 4, B5) → PASS, producer-self:
   `E_POSE_CYCLE` is β's own deliverable; β's boundary test observes the
   diagnostic fire and nonzero exit. Compile-phase Error-severity already

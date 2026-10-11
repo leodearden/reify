@@ -40,7 +40,7 @@
 # Keystone for H2 (reads intra-run-serial), H3/H9 (read host-exclusive), and
 # H5-H7 (reclassify entries as they rescue/split host-exclusive files).
 
-# --- intra-run-serial (6) ----------------------------------------------------
+# --- intra-run-serial (7) ----------------------------------------------------
 # test_reify_audit_pdiag.sh (task #5405) drives `reify_audit_guard ...
 # rebuild-budget-safe`, which forks `cargo build --release -p reify-audit` on a
 # stale binary and so mutates the lane-shared CoW target/ — the identical reason
@@ -48,6 +48,9 @@
 # `pool` it would race other pool members over that shared build state.
 test_reify_audit_pdiag.sh intra-run-serial
 test_reify_audit_ptodo.sh intra-run-serial
+# test_reify_audit_pdoccover.sh (task #6931): same reason — reify_audit_guard
+# rebuild-budget-safe may fork cargo build and mutate the lane-shared CoW target/.
+test_reify_audit_pdoccover.sh intra-run-serial
 test_tree_sitter_pipeline.sh intra-run-serial
 # test_verify_nextest_absent_suites.sh nests test_verify_semaphore_e2e.sh (the
 # row directly below), so it inherits that file's intra-run-serial bucket —
@@ -76,13 +79,15 @@ test_cpu_load_governance_deflake.sh host-exclusive
 test_seed_lane_lock_release_soak.sh host-exclusive
 test_warm_lane_pool.sh host-exclusive
 
-# --- pool (170, the hermetic majority incl. this drift-guard itself) -------
+# --- pool (the hermetic majority incl. this drift-guard itself) --------------
 test_affected_crates_lib.sh pool
 test_agent_cache_redirect.sh pool
 test_agent_cargo_shim.sh pool
 test_amendment_rounds_default_restored.sh pool
 test_audit_orphan_producers.sh pool
+test_await_merge_landing.sh pool
 test_cargo_incremental_lane_decision.sh pool
+test_cargo_test_tally.sh pool
 test_check_event_inventory.sh pool
 test_cited_test_paths_resolve.sh pool
 test_compute_trampoline_registration_wired.sh pool
@@ -90,6 +95,9 @@ test_copy_list_preflight.sh pool
 test_cpu_admit.sh pool
 test_cpu_governance_config.sh pool
 test_cpu_governed_exec.sh pool
+# pool: stub reify-audit + stub MCP server; its entrypoint cases run reify_audit_guard only over a non-git temp root, where it fails open before any cargo build.
+test_docs_truth_sweep.sh pool
+test_docs_truth_sweep_units.sh pool
 test_engine_hash_closure.sh pool
 test_ensure_gui_sidecar_placeholder.sh pool
 test_ensure_warm_base.sh pool
@@ -102,6 +110,7 @@ test_fleet_load_detector.sh pool
 test_flock_detached_fork_guard.sh pool
 test_git_rerere_guard.sh pool
 test_govtest_slice_reaper.sh pool
+test_graph_task_conflation_census.sh pool
 test_gui_dist_gitignored.sh pool
 test_gui_test_script.sh pool
 test_gui_typecheck_test_side.sh pool
@@ -109,6 +118,7 @@ test_gui_vitest_rpc_hardening.sh pool
 test_harness_baseline_registration_gate.sh pool
 test_harness_kloc_cap.sh pool
 test_heavy_filter_atoms.sh pool
+test_hooks_armed_guard.sh pool
 test_hooks_call_verify.sh pool
 test_host_global_unit_pinning.sh pool
 test_infra_classification_manifest_gate.sh pool
@@ -185,6 +195,8 @@ test_reify_audit_freshness.sh pool
 # DOES inherit: its nested script's mutations have no such neutralising seam.
 test_reify_audit_pdiag_budget_skip.sh pool
 test_reify_audit_pdiag_vacuity.sh pool
+# pool, not intra-run-serial: it drives a stub reify-audit and a stub MCP server, never reify_audit_guard or cargo.
+test_reify_audit_pprdstatus_wiring.sh pool
 test_reify_audit_predone_wrapper.sh pool
 test_reify_audit_ptodo_budget_skip.sh pool
 test_reify_audit_ptodo_orphan_hardgate.sh pool
@@ -207,6 +219,7 @@ test_run_all_pool_lock_host_global.sh pool
 test_run_all_tiering.sh pool
 test_run_gui_scripts.sh pool
 test_run_offline_deep.sh pool
+test_rust_production_view_lib.sh pool
 test_sandbox_cache_writability_seam.sh pool
 test_scope_boundary.sh pool
 test_seed_warm_base_initial.sh pool
@@ -232,7 +245,9 @@ test_thin_warm_lane.sh pool
 test_tree_sitter_parse_isolation.sh pool
 test_typecheck_compiles_tests.sh pool
 test_verify_admission_knob_parity.sh pool
+test_verify_background_sweep_ledger.sh pool
 test_verify_compile_gate.sh pool
+test_verify_confirm_failed.sh pool
 test_verify_env_ambient_isolation.sh pool
 test_verify_failfast_order.sh pool
 test_verify_gate_exclude_heavy.sh pool

@@ -1,0 +1,2889 @@
+prd: docs/prds/v0_6/implicit-solids.md
+schema_version: 1
+tasks:
+- label: α
+  task_id: 8389
+  title: 'implicit-solids α: SdfExpr tree (base variants), free sdf_eval, Sdf field
+    carriage, sample arm and sdf_sphere end-to-end; picks the builtin registration
+    route'
+  capabilities:
+  - name: sdf-expr-tree
+    binding: producer-self (§7.1, D-16, R1) — pub enum SdfExpr + Rigid3 in crates/reify-ir/src/sdf_expr.rs
+      with exactly the base variants Sphere, Box, Cylinder, Torus, HalfSpace, Union,
+      Intersect, Difference, SmoothUnion, Offset, Shell, Transform, Mirror, Gyroid.
+      Samples (β), FromSolid (ι) and Sweep (κ) arrive with the leaf that constructs
+      them, each with its eval arm.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: pub enum SdfExpr\b
+      expect: present
+      paths:
+      - crates/reify-ir/src
+  - name: rigid3
+    binding: producer-self (R1) — Rigid3, the rigid-transform payload of Transform/Mirror
+      (and later Sweep's inverse poses).
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: pub struct Rigid3\b
+      expect: present
+      paths:
+      - crates/reify-ir/src
+  - name: sdf-expr-content-hash
+    binding: producer-self (§7.1 I-3) — SdfExpr::content_hash, O(tree).
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: pub fn content_hash\(&self\) -> ContentHash
+      expect: present
+      paths:
+      - crates/reify-ir/src/sdf_expr.rs
+  - name: sdf-eval-free-fn
+    binding: 'producer-self (§7.1, D-16) — free pub fn sdf_eval(e: &SdfExpr, p: [f64;
+      3]) -> f64 in crates/reify-expr/src/sdf_eval.rs with an arm per base variant.
+      Crate DAG permits it (reify-expr depends on reify-ir).'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: pub fn sdf_eval\(
+      expect: present
+      paths:
+      - crates/reify-expr/src
+  - name: field-source-kind-sdf-variant
+    binding: 'producer-self (§7.2) — FieldSourceKind::Sdf in crates/reify-ir/src/value.rs;
+      every exhaustive match on FieldSourceKind gains an arm (R35: no ''~4 sites''
+      count).'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^\s*Sdf,\s*$
+      expect: present
+      paths:
+      - crates/reify-ir/src/value.rs
+  - name: value-sdfexpr-variant-hashed
+    binding: producer-self (§7.2, R1) — Value::SdfExpr(Arc<SdfExpr>) with the next
+      free content_hash tag, a discriminant-rank entry and membership in the content_hash
+      tag-uniqueness test. Pattern requires a match-arm binding, so a doc mention
+      cannot satisfy it.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: Value::SdfExpr\([a-z_]+\) =>
+      expect: present
+      paths:
+      - crates/reify-ir/src/value.rs
+  - name: field-lambda-slot-carriage
+    binding: 'existing-substrate — crates/reify-ir/src/value.rs::Value::Field { domain_type,
+      codomain_type, source, lambda: Arc<Value> }, the data-in-lambda-slot precedent
+      (Restricted, AsPrintedZones, Composed list form).'
+    verdict: PASS
+  - name: sample-intercept-site
+    binding: existing-substrate — crates/reify-expr/src/lib.rs::eval_expr's `sample`
+      FunctionCall intercept and lib.rs::sample_field_at dispatching on (lambda, source);
+      today a non-Lambda/non-SampledField slot falls to Undef.
+    verdict: PASS
+  - name: sample-sdf-arm
+    binding: producer-self (§7.2) — a (Value::SdfExpr, FieldSourceKind::Sdf) arm in
+      crates/reify-expr/src/lib.rs::sample_field_at calling sdf_eval and returning
+      a LENGTH scalar.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: FieldSourceKind::Sdf\b
+      expect: present
+      paths:
+      - crates/reify-expr/src/lib.rs
+  - name: type-F-expressible-as-builtin-result
+    binding: existing-substrate — reify_core::ty::Type::Field{domain, codomain} and
+      Type::Point{n, quantity} (crates/reify-core/src/ty.rs); crates/reify-compiler/src/units.rs::field_op_result_type
+      and crates/reify-builtins/src/row.rs::ResultSpec::Const can both return F =
+      Field<Point3<Length>, Length>.
+    verdict: PASS
+  - name: sample-compile-type-is-codomain
+    binding: existing-substrate — crates/reify-compiler/src/units.rs::field_op_result_type's
+      `sample` arm returns arg0's codomain (Length for F).
+    verdict: PASS
+  - name: eval-prints-negative-length
+    binding: existing-substrate (R31) — `reify eval` prints a Length cell from a structure
+      let as `<Struct>.<cell> = -0.005 m` (phase-A probe isdec-algebra-b2print.ri).
+    verdict: PASS
+  - name: builtin-registration-route
+    binding: 'producer-self (R1) — α chooses the route for the whole PRD: reify-builtins
+      rows with eval bound by BuiltinId (preferred; crates/reify-builtins/tests/i_reg_1_seed_string_dispatch_gate.rs
+      forbids `"name" =>` string dispatch for registered names) or the legacy units.rs
+      name slice + result-type fn + crates/reify-compiler/src/unresolved_function.rs::is_known_builtin
+      and the family-disjointness tests. Every later leaf (β, ε, θ, ι, κ) follows
+      the recorded choice.'
+    verdict: OPEN
+    delivered_check:
+      kind: manual
+      reason: a ruling α records in its task result; β/ε/θ/ι/κ registrations follow
+        it.
+  - name: sdf-sphere-registered
+    binding: 'producer-self (R1; resolves the phase-A producer-downstream FAIL sdf-sphere-builtin-for-B2)
+      — `sdf_sphere` registered on α''s route with result type F. Route-agnostic:
+      matches a units.rs slice entry or a reify-builtins row; the builtin_signatures.rs
+      slot-key test rows are out of scope.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '^\s*("sdf_sphere",|name: "sdf_sphere")'
+      expect: present
+      paths:
+      - crates/reify-compiler/src/units.rs
+      - crates/reify-builtins/src
+  - name: sdf-sphere-length-slot
+    binding: 'producer-self (R1) — a Length slot for `sdf_sphere` in crates/reify-compiler/src/builtin_signatures.rs::builtin_arg_slots
+      with its NON_SELECTOR_ARG_SLOT_KEYS and LOWERING_ACCEPTED_ARITIES rows; a mis-dimensioned
+      literal is rejected at compile time (analog probe: translate(.., 5kg, ..) →
+      ArgTypeMismatch).'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'route-agnostic (lead 2026-10-08: α picks the registry-row or legacy
+        route, and I-REG-1 forbids string-dispatch arms for registry rows, so no single
+        construct can be grepped) — α B-row: sdf_sphere(5kg) is rejected at compile
+        time with the route''s slot diagnostic (ArgTypeMismatch on the legacy route).'
+  - name: sdf-sphere-eval-constructor
+    binding: 'producer-self (R1) — evaluating sdf_sphere(r) builds Value::Field{source:
+      Sdf, lambda: Value::SdfExpr(Sphere)}; Length-dimension rejection reuses DiagnosticCode::DimensionedArgRejected
+      (R6).'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: covered by B2 (the printed sample) and α's unit tests; the constructor
+        site depends on the route.
+  - name: gradient-on-sdf-refused-not-silent
+    binding: producer-self (R1) — §7.2's gradient claim is false on main (crates/reify-expr/src/calculus.rs::validate_differentiable_field
+      accepts only Analytical/Composed lambdas) and moves to §9. α's test pins that
+      gradient(sdf_sphere(..)) takes the existing refusal path, not a silent Undef;
+      if it is silent, α makes it coded.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: α unit/eval test on gradient(sdf_sphere(5mm)).
+  - name: b1-primitive-exactness
+    binding: 'producer-self — B1: sdf_eval over Sphere/Box/Cylinder/Torus/HalfSpace
+      equals an independently stated closed form to 1e-12 at 50 random points (bound
+      well above the ~1e-15 m f64 floor for |p| ≤ 1 m).'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: B1 — reify-expr unit tests in sdf_eval.rs; no grep separates a correct
+        distance formula from a wrong one.
+  - name: b2-cli-observable
+    binding: producer-self (R1, R31) — `reify eval` on a structure with `let s = sample(sdf_sphere(5mm),
+      point3(0mm, 0mm, 0mm))` prints `<S>.s = -0.005 m`.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: B2 — CLI/engine e2e asserting the exact printed line.
+  - name: chunk-documents-sdf_sphere
+    binding: 'producer-self (R27) — `sdf_sphere` documented in the relevant chunk
+      (fields.md or geometry.md) IN THE SAME DIFF as the registration, so PDOCCOVER
+      (tests/infra/test_reify_audit_pdoccover.sh) and the fence gate (crates/reify-compiler/tests/harness_doc_chunks/fence_gate.rs)
+      stay green; a name documented in geometry.md must be in a callable_registries.rs::CALLABLE_NAME_REGISTRIES
+      registry or that list is extended in the same diff. The pattern also accepts
+      a qualified `….name(` spelling so ρ''s re-home cannot turn it NOT-DELIVERED.
+      Accepted gap: a prose mention satisfies the grep; the fence gate is the cover.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: (\bsdf_|\.)sphere\(
+      expect: present
+      paths:
+      - crates/reify-mcp/src/tools/chunks/fields.md
+      - crates/reify-mcp/src/tools/chunks/geometry.md
+- label: β
+  task_id: 8390
+  title: 'implicit-solids β: remaining sdf_* builtins with Length typing, the Samples
+    node, plane-typed half-space, label and value-domain refusals, and examples/implicit/sdf_algebra.ri
+    with a Satisfied-asserting engine test'
+  capabilities:
+  - name: algebra-grammar-fixture
+    binding: grammar-fixture — tests/prd-gate/fixtures/implicit_solids_algebra_builtins.ri
+      (one call per §7.3 builtin, half-space as a plane) parses with 0 ERROR nodes
+      (tree-sitter, isolated cache, 2026-10-08); landed by the decompose carrier.
+      **Evidence only.**
+    verdict: PASS
+  - name: sdf-core-upstream
+    binding: producer-upstream — leaf α (SdfExpr base variants, sdf_eval, Value::SdfExpr/FieldSourceKind::Sdf
+      carriage, sample arm, sdf_sphere, and the recorded registration route).
+    verdict: PASS
+  - name: sdf-builtin-names-registered
+    binding: producer-self (§7.3) — sdf_box, sdf_cylinder, sdf_torus, sdf_half_space,
+      sdf_union/intersect/difference, sdf_smooth_union, sdf_offset, sdf_shell, sdf_transform,
+      sdf_mirror, sdf_gyroid, sdf_from_samples registered on α's route with result
+      type F. One representative name is mechanised; B3 covers the rest.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '^\s*("sdf_smooth_union",|name: "sdf_smooth_union")'
+      expect: present
+      paths:
+      - crates/reify-compiler/src/units.rs
+      - crates/reify-builtins/src
+  - name: compile-length-slot-typing
+    binding: producer-self over existing-substrate — Length slots in crates/reify-compiler/src/builtin_signatures.rs::builtin_arg_slots
+      (length_arg) for every Length parameter, with NON_SELECTOR_ARG_SLOT_KEYS and
+      LOWERING_ACCEPTED_ARITIES rows (R1).
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'route-agnostic (lead 2026-10-08, same reason as α''s sdf-sphere-length-slot)
+        — β B-row: a mis-dimensioned Length argument to sdf_box/sdf_cylinder/sdf_torus
+        is rejected at compile time.'
+  - name: eval-length-dimension-rejection
+    binding: 'producer-self over existing-substrate — eval-time Length-dimension rejection
+      reuses DiagnosticCode::DimensionedArgRejected (R6), surfaced through crates/reify-expr/src/lib.rs::emit_undef_builtin_diagnostics
+      (analog probe: plane_xy(5kg) → coded error, rc=1).'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'β unit test: an sdf_* builtin given a non-Length arg returns Undef
+        with DimensionedArgRejected.'
+  - name: samples-variant
+    binding: producer-self (R1) — SdfExpr::Samples arrives with β, with its sdf_eval
+      arm (trilinear, saturating outside the bounds).
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: SdfExpr::Samples\b
+      expect: present
+      paths:
+      - crates/reify-expr/src
+  - name: transform3-value-shape
+    binding: existing-substrate — transform3(Orientation, Vector3<Length>) → Value::Transform{rotation,
+      translation} (crates/reify-stdlib/src/geometry.rs "transform3" arm); compile
+      type Type::Transform(3).
+    verdict: PASS
+  - name: transform-decoder-reachable
+    binding: existing-substrate — crates/reify-stdlib/src/geometry.rs::decompose_transform
+      (crate-private; a visibility change or a local decode). NOT reify-eval's private
+      geometry_ops.rs::accept_transform_to_arrays, unreachable from reify-expr/reify-stdlib.
+    verdict: PASS
+  - name: plane-value-shape
+    binding: existing-substrate — plane_xy/xz/yz(offset) → Value::Plane{origin, normal}
+      (crates/reify-stdlib/src/geometry.rs::make_plane); compile type Type::Plane.
+      Mirror and HalfSpace take (n, d) = (normal, normal·origin).
+    verdict: PASS
+  - name: half-space-takes-plane
+    binding: 'producer-self (R11) — sdf_half_space(plane: Plane), unit normal by construction,
+      matching sdf_mirror and HalfSpace{n, d}; the Vector3<Real> placeholder is gone.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: (sdf_|\.)half_space\(plane
+      expect: present
+      paths:
+      - examples/implicit/sdf_algebra.ri
+  - name: sampled-3d-length-field-authorable
+    binding: 'existing-substrate — an inline `field def s3 : Point3 -> Length { source
+      = sampled { grid = "RegularGrid3", … } }` builds via crates/reify-eval/src/engine_eval.rs::build_sampled_field
+      and samples trilinearly (phase-A probe isdec-algebra-samp3.ri).'
+    verdict: PASS
+  - name: sdf-from-samples-domain-form
+    binding: producer-self (R14) — sdf_from_samples accepts the field-def domain form
+      (bare `Point3`, resolved today as StructureRef("Point3") with a warning); β
+      ONLY (ξ no longer lists it). Its unit check is dimension-only and cannot see
+      a mis-scaled length unit (stated in β's text).
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'β test: sdf_from_samples over the sdf_algebra.ri sampled field def
+        samples equal to the field.'
+  - name: label-refusal-shared-check
+    binding: 'producer-self (R10, G7 declared-intent) — until #6313, labelled arguments
+      on THIS PRD''s builtin rows are refused at compile time with SdfLabelledArgUnsupported,
+      keyed on a property of the rows (one shared check); ε, θ, ι, κ rows join it.
+      Negative fixture tests/prd-gate/fixtures/implicit_solids_named_args.ri (labels
+      on an sdf_* row).'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: β compile test over tests/prd-gate/fixtures/implicit_solids_named_args.ri
+        asserting the code; positional calls unaffected.
+  - name: code-SdfLabelledArgUnsupported
+    binding: 'producer-self (R6) — new reify-core DiagnosticCode variant SdfLabelledArgUnsupported
+      (β; every later leaf''s rows join the check); attached with .with_code(..) and
+      its mnemonic carried as the message prefix (the CLI prints `{severity}: {message}`,
+      never the code). Anchored on the 4-space variant line so doc prose and tests
+      cannot match.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^    SdfLabelledArgUnsupported\b
+      expect: present
+      paths:
+      - crates/reify-core/src/diagnostics.rs
+  - name: value-domain-refusal
+    binding: 'producer-self (R12) — constructors validate and refuse with SdfInvalidArg
+      + UndefCause::OpContractFailed{code}: SmoothUnion k > 0, Gyroid cell > 0, wall
+      ≥ 0, radii/half-extents > 0, every input finite; so I-1 (total, finite) holds
+      by construction. One B-row per class.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: β unit tests, one per refused class, asserting code identity and the
+        UndefCause.
+  - name: code-SdfInvalidArg
+    binding: 'producer-self (R6) — new reify-core DiagnosticCode variant SdfInvalidArg
+      (β; ε and θ reuse it for feature/extent, ν for the lambda domain); attached
+      with .with_code(..) and its mnemonic carried as the message prefix (the CLI
+      prints `{severity}: {message}`, never the code). Anchored on the 4-space variant
+      line so doc prose and tests cannot match.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^    SdfInvalidArg\b
+      expect: present
+      paths:
+      - crates/reify-core/src/diagnostics.rs
+  - name: examples-implicit-compile-gated
+    binding: existing-substrate — crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs
+      walks examples/ recursively (Error-severity only) and unresolved_function_corpus_sweep.rs
+      sweeps examples/, so sdf_algebra.ri must resolve fully when it lands.
+    verdict: PASS
+  - name: sdf-algebra-example
+    binding: producer-self — examples/implicit/sdf_algebra.ri samples every combinator
+      against its closed form.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: (sdf_|\.)(gyroid|mirror|transform|smooth_union)\(
+      expect: present
+      paths:
+      - examples/implicit/sdf_algebra.ri
+  - name: fn-wrapped-combinator
+    binding: producer-self (R14) — sdf_algebra.ri includes one fn-wrapped combinator
+      (`fn rounded(f, d) = sdf_offset(f, d)`) asserted equal to the direct call (sdf_*
+      are Rust builtins, so this path does not wait on σ).
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^\s*fn \w+\(.*= *(sdf_|(\w+\.)+)offset\(
+      expect: present
+      paths:
+      - examples/implicit/sdf_algebra.ri
+  - name: b3-satisfied-assertion-test
+    binding: producer-self (R14) — an engine test in the crates/reify-eval/tests/fn_field_example_smoke.rs
+      shape asserting every sdf_algebra.ri constraint is Satisfaction::Satisfied (examples_smoke
+      fails only on Error; `reify check` exits 0 on INDETERMINATE).
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: sdf_algebra\.ri
+      expect: present
+      paths:
+      - crates/reify-eval/tests
+  - name: b3-tolerance-comparisons
+    binding: producer-self (R13; resolves the phase-A bound<=floor FAIL b3-transform-roundtrip-exact-equality)
+      — comparisons involving coordinate arithmetic are `abs(a - b) <= 1e-12m` (probed
+      Satisfied); exact `==` only for bit-exact cases (gyroid at origin, zero-offset
+      mirror). `reify check` `==` is exact f64.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: B3 — sdf_algebra.ri constraints, asserted Satisfied by the β engine
+        test.
+  - name: b3-gyroid-origin
+    binding: producer-self — g(0,0,0) = 0 exactly, so f = −wall/2 bit-exactly; a second
+      sample point carries the non-vacuous cell check.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: B3 closed-form constraints in sdf_algebra.ri.
+  - name: csg-smooth-closed-forms
+    binding: producer-self — CSG min/max/max(a,−b), polynomial smooth-min (§10 Q1
+      decided in β), offset f−d, shell |f|−t/2, torus, plane half-space — each sampled
+      against its closed form within the B3 tolerance.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: B3 — sdf_algebra.ri constraints + the β engine test.
+  - name: chunk-documents-sdf_smooth_union
+    binding: 'producer-self (R27) — every sdf_* name β registers documented in the
+      relevant chunk (fields.md or geometry.md) IN THE SAME DIFF as the registration,
+      so PDOCCOVER (tests/infra/test_reify_audit_pdoccover.sh) and the fence gate
+      (crates/reify-compiler/tests/harness_doc_chunks/fence_gate.rs) stay green; a
+      name documented in geometry.md must be in a callable_registries.rs::CALLABLE_NAME_REGISTRIES
+      registry or that list is extended in the same diff. The pattern also accepts
+      a qualified `….name(` spelling so ρ''s re-home cannot turn it NOT-DELIVERED.
+      Accepted gap: a prose mention satisfies the grep; the fence gate is the cover.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: (\bsdf_|\.)smooth_union\(
+      expect: present
+      paths:
+      - crates/reify-mcp/src/tools/chunks/fields.md
+      - crates/reify-mcp/src/tools/chunks/geometry.md
+- label: γ
+  task_id: 8391
+  title: 'implicit-solids γ: owner-routed-or-rejected geometry, kinematic and conformance
+    queries and topology selectors; owner-bearing realization handles; typed realize_solid_sdf_at
+    failure; the post-process UndefCause channel'
+  capabilities:
+  - name: named-step-owner-recorded
+    binding: 'existing-substrate — crates/reify-ir/src/geometry.rs::KernelHandle{kernel:
+      KernelId, id} is the value type of the named_steps map; the owner-resolution
+      rule to copy is crates/reify-eval/src/geometry_ops.rs::walk_placed_realizations
+      (geometry_kernels.contains_key(handle.kernel.as_registry_name()) else the default
+      kernel).'
+    verdict: PASS
+  - name: openvdb-cannot-serve-queries
+    binding: existing-substrate — crates/reify-kernel-openvdb/src/kernel_real.rs::OpenVdbKernel::query
+      returns Err(QueryError::QueryFailed(VOXEL_BOOL_STUB_MSG)) for every query, so
+      the v1 answer is the mismatch refusal.
+    verdict: PASS
+  - name: isosurface-body-is-openvdb-owned-under-build
+    binding: 'existing-substrate — crates/reify-cli/src/main.rs::cmd_build calls Engine::ensure_openvdb_kernel
+      under module_has_isosurface; `reify build <B14 fixture> -o x.stl --verbose`
+      prints `kernel: openvdb` for both realizations.'
+    verdict: PASS
+  - name: code-QueryKernelMismatch
+    binding: 'producer-self (R6) — new reify-core DiagnosticCode variant QueryKernelMismatch
+      (γ); attached with .with_code(..) and its mnemonic carried as the message prefix
+      (the CLI prints `{severity}: {message}`, never the code). Anchored on the 4-space
+      variant line so doc prose and tests cannot match.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^    QueryKernelMismatch\b
+      expect: present
+      paths:
+      - crates/reify-core/src/diagnostics.rs
+  - name: geometry-query-owner-check-emits-code
+    binding: 'producer-self (R5) — the owner check lives INSIDE try_eval_geometry_query
+      / try_eval_kinematic_query / try_eval_conformance_query (crates/reify-eval/src/geometry_ops.rs),
+      so every caller (post_process_geometry_queries, hydrate_value_cell_in_loop,
+      post_process_cross_sub_value_cells, the tessellate_from_values path) inherits
+      it. Accepted gap: a unit test building the diagnostic would also match; B14
+      is the behavioural cover.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: \.with_code\(DiagnosticCode::QueryKernelMismatch\)
+      expect: present
+      paths:
+      - crates/reify-eval/src
+  - name: mnemonic-prefix-E_QUERY_KERNEL_MISMATCH
+    binding: 'producer-self (R6) — the message carries `E_QUERY_KERNEL_MISMATCH: …`
+      (query and kernel are message text only). String-literal or const construct,
+      not a comment. Accepted gap: a test literal also matches; B14''s CLI half asserts
+      the prefix on stderr.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '(const E_QUERY_KERNEL_MISMATCH: &str|"E_QUERY_KERNEL_MISMATCH[:"])'
+      expect: present
+      paths:
+      - crates
+  - name: owner-identity-threaded
+    binding: producer-self (R5) — owner identity (kernel-map keys + default_kernel_name)
+      threaded to each query site; GeometryKernel has no identity accessor and the
+      sites take a single &dyn GeometryKernel.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'signature shape is the architect''s; cover: B14 plus the negative control
+        that a BRep body''s volume() is still served.'
+  - name: conformance-query-owner-check
+    binding: producer-self (R5; resolves the phase-A producer-absent FAIL) — Engine::post_process_conformance_queries
+      (is_watertight/is_manifold/is_orientable, crates/reify-eval/src/engine_build.rs)
+      joins γ's sites; γ flips the pinned test geometry_ops/tests.rs::try_eval_conformance_query_resolves_via_kernel_handle_id.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: the flipped unit test plus a conformance query on an OpenVDB-owned body
+        → Undef + QueryKernelMismatch.
+  - name: kinematic-query-owner-check
+    binding: producer-self (R5) — post_process_kinematic_queries / try_eval_kinematic_query
+      resolve the owner; γ flips geometry_ops/tests.rs::try_eval_kinematic_query_resolves_via_kernel_handle_id.
+      Kinematic walks emit only when a query is actually requested on that body.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: the flipped unit test; interferes()/min_clearance() over an OpenVDB-owned
+        snapshot body → Undef + QueryKernelMismatch.
+  - name: selector-on-unservable-owner
+    binding: producer-self (R5, R8; resolves the phase-A producer-absent FAIL d9-selector-with-implicit-parent)
+      — topology-selector evaluation on a body whose owner cannot serve it is refused
+      (moved here from D-9's UNSUPPORTED_OP list) with QueryKernelMismatch (lead-pinned
+      2026-10-08), never a foreign-id answer.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'γ test: a selector over an OpenVDB-owned body yields the coded refusal.'
+  - name: dfm-disposition-warning-code
+    binding: 'producer-self (R5, G7 INV-SF-4) — a DFM rule over a body its owner cannot
+      measure is Indeterminate with a Warning-coded attributable reason, never Error.
+      Code pinned by the lead (2026-10-08): QueryKernelUnserved (W_QUERY_KERNEL_UNSERVED).'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'γ test: a min_wall rule over an OpenVDB-owned body → Indeterminate
+        + QueryKernelUnserved, check exit unchanged.'
+  - name: code-QueryKernelUnserved
+    binding: 'producer-self (R6) — new reify-core DiagnosticCode variant QueryKernelUnserved
+      (γ; Warning: an automatic walk or DFM rule over a body whose owner cannot measure
+      it — lead-pinned 2026-10-08); attached with .with_code(..) and its mnemonic
+      carried as the message prefix (the CLI prints `{severity}: {message}`, never
+      the code). Anchored on the 4-space variant line so doc prose and tests cannot
+      match.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^    QueryKernelUnserved\b
+      expect: present
+      paths:
+      - crates/reify-core/src/diagnostics.rs
+  - name: realization-handles-keep-owner
+    binding: 'producer-self (R5) — Engine.realization_handles (crates/reify-eval/src/lib.rs,
+      today HashMap<RealizationNodeId, GeometryHandleId>) keeps the owner: widened
+      to KernelHandle or a sibling owner map.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'mechanism is the architect''s (two allowed shapes, so no single construct
+        to grep); cover: the realize_solid_sdf_at owner test.'
+  - name: realize-solid-sdf-at-typed-failure
+    binding: producer-self (R5) — crates/reify-eval/src/realize_solid_sdf.rs::Engine::realize_solid_sdf_at
+      returns a typed failure enum (OwnerMismatch, NoOpenVdb, NoDefaultKernel, Unresolvable,
+      RequestRejected, ChainFailed) instead of a bare Option; an OpenVDB-owned subject
+      refuses before any default-kernel tessellate. ι maps the enum to codes; DFM
+      callers keep mapping failure to Indeterminate.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^\s+OwnerMismatch\b
+      expect: present
+      paths:
+      - crates/reify-eval/src
+  - name: post-process-undef-cause-channel
+    binding: 'producer-self (R5) — ONE channel: post-process passes record UndefCause::OpContractFailed{code,
+      span} into a map merged into Engine.last_undef_causes after the post-processes
+      (today last_undef_causes is written only by Engine::eval). ι and θ reuse it.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'engine-level: Engine::trace_undef_causes(v) == OpContractFailed{code:
+        QueryKernelMismatch} after build with capture on.'
+  - name: b14-fixture-named-let
+    binding: 'existing-substrate (R5; resolves the phase-A fixture-ERROR FAIL b14-fixture-compiles)
+      — tests/prd-gate/fixtures/implicit_solids_owner_routing_isosurface.ri (`let
+      solid = box(size, size, size)`, `let shell = isosurface(solid)`, `let v = volume(shell)`,
+      `constraint v > 0mm^3`), committed with the PRD carrier: tree-sitter 0 ERROR;
+      `reify build <fixture> -o x.stl` reports VIOLATED with volume silently 0 m^3
+      today (re-probed 2026-10-08).'
+    verdict: PASS
+  - name: b14-rejection
+    binding: producer-self (R5) — post-γ, `reify build <fixture> -o x.stl` prints
+      the E_QUERY_KERNEL_MISMATCH prefix, the constraint is INDETERMINATE (not VIOLATED)
+      and the cell is Undef with a cause; never the exit code or the STL. Plus an
+      engine e2e (Engine::with_registered_kernel + ensure_openvdb_kernel).
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: B14 — CLI harness test + engine e2e; asserts code, verdict and cause.
+  - name: b14-observable-from-own-dependency-set
+    binding: existing-substrate — `reify build -o x.stl` loads OpenVDB under module_has_isosurface
+      today, so B14 needs nothing downstream of γ; `reify check`/`reify eval` do not
+      load OpenVDB until ε.
+    verdict: PASS
+- label: δ
+  task_id: 8392
+  title: 'implicit-solids δ: ImplicitOptions, the f32 DenseSdfGrid carrier, OpenVDB
+    dense-SDF ingest FFI, ingest_dense_sdf with stub arm and SingleKernelHolder delegation,
+    activation policy, B5 round trip'
+  capabilities:
+  - name: tbb-one-thread-test-hook
+    binding: producer-self (critic M3, 2026-10-08) — δ, which owns ffi.rs and cpp/openvdb_wrapper.{h,cpp},
+      adds a test-fixtures FFI hook that scopes tbb::global_control(max_allowed_parallelism,
+      1) for ε's B17. No thread control exists in the repo today.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: tbb::global_control
+      expect: present
+      paths:
+      - crates/reify-kernel-openvdb/cpp
+  - name: densify-layout-substrate
+    binding: existing-substrate — crates/reify-kernel-openvdb/src/kernel_real.rs::OpenVdbKernel::densify_grid_to_sampled
+      over cpp/openvdb_wrapper.cpp::grid_densify_to_buffer (X outermost, row-major,
+      ACTIVE bbox only).
+    verdict: PASS
+  - name: trait-default-err-precedent
+    binding: existing-substrate — crates/reify-ir/src/geometry.rs::GeometryKernel::ingest_mesh
+      / densify_grid_to_sampled default to Err (the additive-default pattern).
+    verdict: PASS
+  - name: stub-kernel-substrate
+    binding: existing-substrate — crates/reify-kernel-openvdb/src/kernel.rs::OpenVdbKernel
+      (cfg(not(has_openvdb))) returns STUB_MSG, pinned by reify_test_support::assert_stub_kernel_errors!.
+    verdict: PASS
+  - name: sync-audit-contract-substrate
+    binding: 'existing-substrate — the MAINTENANCE CONTRACT on `unsafe impl Sync for
+      OpenVdbKernel` (kernel_real.rs): &mut self constructors need no audit entry
+      and in-place mutation of a registered grid is forbidden (I-6).'
+    verdict: PASS
+  - name: implicit-options-type
+    binding: producer-self (R19; resolves the phase-A producer-downstream FAIL) —
+      ImplicitOptions { voxel_size, band_voxels } in reify-ir with content_hash under
+      a non-zero domain tag; `adaptive` is DROPPED (no reader; collides with ElasticOptions.adaptive).
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: pub struct ImplicitOptions\b
+      expect: present
+      paths:
+      - crates/reify-ir/src
+  - name: dense-sdf-grid-carrier
+    binding: 'producer-self (R19) — DenseSdfGrid { dims, origin/centre, h, data: Vec<f32>
+      }, a dedicated f32 carrier (SampledField is Vec<f64>). Memory basis restated:
+      4 B/voxel payload + the grid ≈ 1 GiB payload at the 256 Mi cap.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: pub struct DenseSdfGrid\b
+      expect: present
+      paths:
+      - crates/reify-ir/src
+  - name: ingest-dense-sdf-trait-method
+    binding: 'producer-self (R19) — GeometryKernel::ingest_dense_sdf(&mut self, grid:
+      &DenseSdfGrid, opts: &ImplicitOptions) with a default Err on the trait.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn ingest_dense_sdf\(
+      expect: present
+      paths:
+      - crates/reify-ir/src/geometry.rs
+  - name: dense-ingest-ffi-bridge
+    binding: producer-self — one cxx bridge fn in src/ffi.rs taking the flat f32 sample
+      slice (today only &[[f32; 3]] / &[[u32; 3]] mesh slices exist, which do not
+      match).
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: :\s*&\[f32\]
+      expect: present
+      paths:
+      - crates/reify-kernel-openvdb/src/ffi.rs
+  - name: dense-ingest-cpp-entry
+    binding: producer-self — the matching C++ declaration taking rust::Slice<const
+      float>; the entry calls ensure_initialized_cpp_side() first, like every existing
+      entry.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: rust::Slice<const float>
+      expect: present
+      paths:
+      - crates/reify-kernel-openvdb/cpp/openvdb_wrapper.h
+  - name: level-set-grid-populated-before-registration
+    binding: producer-self (D-8, I-6) — the C++ side builds a FloatGrid of class LEVEL_SET
+      with background +band·h, a linear transform and name/units metadata before the
+      handle is returned. The grep proves the class only; B5 covers the rest.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: GRID_LEVEL_SET|createLevelSet<
+      expect: present
+      paths:
+      - crates/reify-kernel-openvdb/cpp
+  - name: openvdb-ingest-override
+    binding: producer-self — OpenVdbKernel overrides ingest_dense_sdf as a &mut self
+      method (FFI, alloc_id, handles.insert), mirroring realize_voxel_from_mesh.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn ingest_dense_sdf\(
+      expect: present
+      paths:
+      - crates/reify-kernel-openvdb/src/kernel_real.rs
+  - name: stub-ingest-arm
+    binding: producer-self — the cfg(not(has_openvdb)) stub returns STUB_MSG for ingest_dense_sdf
+      (not the generic trait-default text).
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn ingest_dense_sdf\(
+      expect: present
+      paths:
+      - crates/reify-kernel-openvdb/src/kernel.rs
+  - name: single-kernel-holder-delegation
+    binding: producer-self (R19) — crates/reify-geometry/src/lib.rs::SingleKernelHolder
+      gains the delegating ingest_dense_sdf; parity test tests::delegates_all_capability_methods_to_inner_kernel.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn ingest_dense_sdf\(
+      expect: present
+      paths:
+      - crates/reify-geometry/src/lib.rs
+  - name: activation-policy-pinned
+    binding: producer-self (R19, D-8) — every voxel of the padded block stays ACTIVE
+      (no prune, no tolerance deactivation); band_voxels is both the per-side padding
+      and the ±band·h clamp. Pruning is a §10 question.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: B5 round trip (values everywhere in the padded block).
+  - name: b5-round-trip
+    binding: 'producer-self (R19; resolves the phase-A bound<=floor FAIL b5-bbox-equals-extent)
+      — B5: per-axis bounds == centre ± (n−1)·h/2 with n = ⌈E/h⌉ + 2·band; values
+      == clamp(±band·h, s) everywhere; voxel size == h.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: B5 — cfg(has_openvdb) integration test in crates/reify-kernel-openvdb/tests
+        through the trait-level densify.
+  - name: b5-voxel-size-observable
+    binding: existing-substrate — the grid_voxel_sizes FFI feeds SampledField.spacing
+      inside densify_grid_to_sampled, so B5's voxel-size assertion needs no new accessor.
+    verdict: PASS
+- label: ε
+  task_id: 8395
+  title: 'implicit-solids ε: implicit() → ImplicitSolid on OpenVDB — voxel-source
+    dispatch tier, grid-policy hoist and budget, module_requires_openvdb, clipped/empty/undef-argument
+    codes, smooth_bracket.ri without the mass line'
+  capabilities:
+  - name: sdf-builtins-upstream
+    binding: producer-upstream — leaf β (sdf_box, sdf_cylinder, sdf_transform, sdf_smooth_union;
+      SdfInvalidArg; the label-refusal check) and, through β, leaf α (carriage, sdf_eval).
+    verdict: PASS
+  - name: dense-ingest-upstream
+    binding: producer-upstream — leaf δ (ImplicitOptions, DenseSdfGrid, ingest_dense_sdf,
+      the dense FFI entry).
+    verdict: PASS
+  - name: goal-literal-substrate
+    binding: existing-substrate — transform3(orient_identity(), vec3(..)), vec3/point3
+      with Length components and 7850kg/m^3 parse and evaluate on main.
+    verdict: PASS
+  - name: operation-variant
+    binding: producer-self — Operation::ImplicitSolid, a unit variant in the reify-ir
+      Operation enum (strum::EnumIter).
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^\s+ImplicitSolid,\s*(//.*)?$
+      expect: present
+      paths:
+      - crates/reify-ir/src/geometry.rs
+  - name: geometry-op-variant
+    binding: 'producer-self (R19) — GeometryOp::ImplicitSolid { grid: Arc<DenseSdfGrid>,
+      options: ImplicitOptions } with a manual Debug that elides the sample data.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^\s+ImplicitSolid \{
+      expect: present
+      paths:
+      - crates/reify-ir/src/geometry.rs
+  - name: op-args-key-the-cache
+    binding: producer-self (R19) — the compiled op carries field/extent/feature/centre
+      in its `args`, so crates/reify-eval/src/deps.rs::extract_realization_dependencies
+      keys the RealizationCache on them.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'ε test: a param edit feeding the field re-realizes (no stale cache
+        hit).'
+  - name: descriptor-row
+    binding: 'producer-self (R35) — one GEOMETRY_OP_DESCRIPTORS row {disc: ImplicitSolid,
+      operation: Some(Operation::ImplicitSolid), parent_role: ParentRole::None, names:
+      ["implicit"]} delivers geometry_op_to_operation / parent_handles_for_op / substitute_op_parents;
+      plus the compiled_geometry_op_to_operation and classify_op_input_reprs arms.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'disc: GeometryOpDiscriminants::ImplicitSolid'
+      expect: present
+      paths:
+      - crates/reify-ir/src/geometry.rs
+  - name: classifier-arm-empty-input
+    binding: producer-self (R4) — ImplicitSolid classified with an EMPTY input set
+      (satisfying mixed_region_tests.rs::classify_op_all_variants_are_classified);
+      never a &[Voxel] input class, which is value-identical to Surface's and would
+      dispatch isosurface at (Surface, Voxel).
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^\s+(Operation::)?ImplicitSolid => Some\(
+      expect: present
+      paths:
+      - crates/reify-eval/src/engine_build.rs
+  - name: voxel-source-dispatch-tier
+    binding: producer-self (R4, D-6) — a tier in Engine::execute_realization_ops keyed
+      on a separate OUTPUT-side predicate (a voxel-source predicate or a descriptor
+      field) dispatching ImplicitSolid at (op, Voxel) whatever the demand; crates/reify-eval/tests/voxel_to_mesh_e2e.rs
+      stays green.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: B7 e2e (produced_repr == Voxel, produced_kernel == openvdb under STL,
+        Step and VolumeMesh demand) + voxel_to_mesh_e2e.rs.
+  - name: dispatch-first-pop-zero-conversion
+    binding: 'existing-substrate — crates/reify-eval/src/dispatcher.rs::dispatch returns
+      DispatchPlan{kernel, conversions: []} on the first pop when only openvdb declares
+      (ImplicitSolid, Voxel).'
+    verdict: PASS
+  - name: plan-output-repr-voxel
+    binding: existing-substrate — crates/reify-eval/src/engine_build.rs::plan_output_repr
+      returns the first descriptor row matching the op.
+    verdict: PASS
+  - name: openvdb-descriptor-row
+    binding: producer-self — openvdb_capability_descriptor gains (ImplicitSolid, ReprKind::Voxel).
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: \(ImplicitSolid, ReprKind::Voxel\)
+      expect: present
+      paths:
+      - crates/reify-kernel-openvdb/src/register.rs
+  - name: openvdb-execute-arm
+    binding: producer-self — OpenVdbKernel::execute's ImplicitSolid arm calls ingest_dense_sdf.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: GeometryOp::ImplicitSolid
+      expect: present
+      paths:
+      - crates/reify-kernel-openvdb/src/kernel_real.rs
+  - name: occt-defensive-arm
+    binding: producer-self (R20) — OcctKernel::execute's exhaustive GeometryOp match
+      gains a defensive ImplicitSolid arm (the arm a missed OpenVDB load reaches);
+      it carries B18's coded Error.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: GeometryOp::ImplicitSolid
+      expect: present
+      paths:
+      - crates/reify-kernel-occt/src/lib.rs
+  - name: compiler-implicit-arm
+    binding: producer-self — the `"implicit" =>` lowering arm in crates/reify-compiler/src/geometry.rs
+      producing a new CompiledGeometryOp variant (exhaustive matches in entities_phase.rs
+      and deps.rs gain arms).
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '"implicit" =>'
+      expect: present
+      paths:
+      - crates/reify-compiler/src/geometry.rs
+  - name: implicit-joins-geometry-function-names
+    binding: producer-self (R20) — `implicit` joins crates/reify-compiler/src/units.rs::GEOMETRY_FUNCTION_NAMES.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^\s*"implicit",
+      expect: present
+      paths:
+      - crates/reify-compiler/src/units.rs
+  - name: implicit-infers-solid
+    binding: producer-self (§7.3) — the name-keyed trait-inference table maps implicit
+      to InferredTraits::solid() (an unknown name falls back to all()).
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '"implicit" =>'
+      expect: present
+      paths:
+      - crates/reify-compiler/src/geometry_traits_inference.rs
+  - name: length-closure-guard-row
+    binding: 'producer-self (R20; replaces the C4 sentence) — crates/reify-eval/tests/harness_geometry/units_length_closure_guard.rs
+      gains the op_args arm and an UNSWEPT_BUILTINS/RESIDUAL_SPANS row for the Field
+      argument citing #7714; `feature` is gated by crates/reify-eval/src/geometry_ops.rs::required_length_value.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: \("implicit",
+      expect: present
+      paths:
+      - crates/reify-eval/tests/harness_geometry/units_length_closure_guard.rs
+  - name: b22-feature-slot-registration
+    binding: producer-self (R9) — builtin_arg_slots arm `"implicit"` with length_arg(2,
+      "feature"), LOWERING_ACCEPTED_ARITIES Exactly(&[3, 4]) and the NON_SELECTOR_ARG_SLOT_KEYS
+      row.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '"implicit"( \| "\w+")*( if [^>]+)? =>'
+      expect: present
+      paths:
+      - crates/reify-compiler/src/builtin_signatures.rs
+  - name: b22-misorder-rejected-on-feature-slot
+    binding: 'producer-self (R9; resolves the phase-A rejection-absent FAIL b22-length-where-vector3-expected)
+      — tests/prd-gate/fixtures/implicit_solids_misordered_call.ri gets ArgTypeMismatch
+      on the FEATURE slot, worded `implicit: feature argument expects Length, got
+      Vector3<…>` (the existing form: box(10mm, vec3(..), 10mm) → `box: height argument
+      expects Length, got Vector3<Scalar[m]>`, D3 2026-10-08); B22 pins distinct-typed
+      misorders only (no ExpectedArg::Vector exists).'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: B22 compile test over the fixture asserting ArgTypeMismatch on the feature
+        slot.
+  - name: label-refusal-joined
+    binding: producer-self (R10) — implicit's row joins β's SdfLabelledArgUnsupported
+      check.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'ε compile test: implicit(f, extent: .., feature: ..) → SdfLabelledArgUnsupported.'
+  - name: grid-policy-hoisted-to-reify-ir
+    binding: producer-self (R2, SPOT) — MIN_FEATURE_VOXELS_ACROSS, DENSIFY_BUDGET_VOXELS
+      and a pure grid-sizing fn ((extent, feature, band) -> Result<GridDims, ImplicitBudgetExceeded{implied_voxels,
+      budget}>) hoisted into reify-ir beside VoxelResolution; θ reuses them.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: pub const DENSIFY_BUDGET_VOXELS\b
+      expect: present
+      paths:
+      - crates/reify-ir/src
+  - name: grid-policy-definitions-leave-openvdb
+    binding: producer-self (R2) — the two definitions leave crates/reify-kernel-openvdb/src/mesh_to_voxel_options.rs;
+      reify-kernel-openvdb re-exports. Line-start anchored to the `pub const` definition,
+      so a `pub use` re-export and doc prose cannot hold it red.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^pub const (DENSIFY_BUDGET_VOXELS|MIN_FEATURE_VOXELS_ACROSS)\b
+      expect: absent
+      paths:
+      - crates/reify-kernel-openvdb/src/mesh_to_voxel_options.rs
+  - name: typed-budget-error
+    binding: 'producer-self (R2, R6) — ImplicitBudgetExceeded{implied_voxels (saturating),
+      budget}: requested/max counts asserted through the typed Rust error in a unit
+      test, message text only at the CLI (§10 Q5 decided).'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ImplicitBudgetExceeded *\{
+      expect: present
+      paths:
+      - crates/reify-ir/src
+  - name: code-ImplicitBudget
+    binding: 'producer-self (R6) — new reify-core DiagnosticCode variant ImplicitBudget
+      (ε; θ reuses); attached with .with_code(..) and its mnemonic carried as the
+      message prefix (the CLI prints `{severity}: {message}`, never the code). Anchored
+      on the 4-space variant line so doc prose and tests cannot match.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^    ImplicitBudget\b
+      expect: present
+      paths:
+      - crates/reify-core/src/diagnostics.rs
+  - name: b4-budget-refusal-before-allocation
+    binding: producer-self (D-7, I-5) — the budget is checked from extent/feature
+      in ε's lowering before any allocation or dispatch; the op fails to lower with
+      a coded Error.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: with_code\(([A-Za-z_]+::)*DiagnosticCode::ImplicitBudget\)
+      expect: present
+      paths:
+      - crates/reify-eval/src
+  - name: b4-no-ffi-call
+    binding: existing-substrate — crates/reify-eval/src/engine_admin.rs::Engine::last_dispatch_count_by_realization
+      stays 0 for the refused realization (the refusal precedes dispatch).
+    verdict: PASS
+  - name: b4-no-allocation
+    binding: 'producer-self — the implied count is computed saturating before any
+      Vec allocation (tests/prd-gate/fixtures/implicit_solids_budget_refusal.ri: 10
+      m extent at 1 mm feature).'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: ε test with an extent/feature whose implied count saturates i64, asserting
+        the coded Error is returned.
+  - name: feature-extent-domain-refusal
+    binding: producer-self (R12) — feature > 0 and extent > 0 validated BEFORE the
+      budget arithmetic, refusing with β's SdfInvalidArg.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'ε B-rows: feature 0mm and a zero extent component → SdfInvalidArg,
+        no budget diagnostic.'
+  - name: code-ImplicitClipped
+    binding: 'producer-self (R6) — new reify-core DiagnosticCode variant ImplicitClipped
+      (Warning; ε; θ reuses); attached with .with_code(..) and its mnemonic carried
+      as the message prefix (the CLI prints `{severity}: {message}`, never the code).
+      Anchored on the 4-space variant line so doc prose and tests cannot match.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^    ImplicitClipped\b
+      expect: present
+      paths:
+      - crates/reify-core/src/diagnostics.rs
+  - name: b23-clipped-warning
+    binding: producer-self (D-4) — computed from the sampled grid's boundary faces
+      in ε's lowering after the budget check; Warning, so check's exit is unchanged.
+      Fixture tests/prd-gate/fixtures/implicit_solids_clipped_field.ri.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: with_code\(([A-Za-z_]+::)*DiagnosticCode::ImplicitClipped\)
+      expect: present
+      paths:
+      - crates/reify-eval/src
+      - crates/reify-expr/src
+  - name: code-ImplicitEmpty
+    binding: 'producer-self (R6) — new reify-core DiagnosticCode variant ImplicitEmpty
+      (Warning; ε, NEW); attached with .with_code(..) and its mnemonic carried as
+      the message prefix (the CLI prints `{severity}: {message}`, never the code).
+      Anchored on the 4-space variant line so doc prose and tests cannot match.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^    ImplicitEmpty\b
+      expect: present
+      paths:
+      - crates/reify-core/src/diagnostics.rs
+  - name: empty-solid-warning
+    binding: producer-self (R20, G7) — no f ≤ 0 sample in the grid ⇒ ImplicitEmpty
+      Warning (empty solid), computed in ε's lowering; Warning so a transiently empty
+      iterate does not fail check.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'ε B-row: a sphere outside the extent → ImplicitEmpty.'
+  - name: code-ImplicitUndefArg
+    binding: 'producer-self (R6) — new reify-core DiagnosticCode variant ImplicitUndefArg
+      (ε); attached with .with_code(..) and its mnemonic carried as the message prefix
+      (the CLI prints `{severity}: {message}`, never the code). Anchored on the 4-space
+      variant line so doc prose and tests cannot match.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^    ImplicitUndefArg\b
+      expect: present
+      paths:
+      - crates/reify-core/src/diagnostics.rs
+  - name: undef-argument-disposition
+    binding: producer-self (R20, G7 error-severity-exits-nonzero) — any root-Undef
+      implicit() argument not inheriting AwaitingSolve emits ImplicitUndefArg Error,
+      which the code-less CHECK_ERROR_EXIT_ALLOWLIST entry cannot excuse.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'ε B-row: implicit() over a β-refused field → ImplicitUndefArg, `reify
+        check` exit ≠ 0.'
+  - name: awaiting-solve-argument-warning
+    binding: 'producer-self (R20) — an argument whose Undef inherits AwaitingSolve
+      degrades with a Warning and Indeterminate constraints. Code pinned by the lead
+      (2026-10-08): ImplicitArgAwaitingSolve (W_IMPLICIT_ARG_AWAITING_SOLVE).'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'ε B-row: an implicit() fed by an auto param → ImplicitArgAwaitingSolve
+        + Indeterminate, `reify check` exit 0.'
+  - name: code-ImplicitArgAwaitingSolve
+    binding: 'producer-self (R6) — new reify-core DiagnosticCode variant ImplicitArgAwaitingSolve
+      (ε; Warning — lead-pinned 2026-10-08); attached with .with_code(..) and its
+      mnemonic carried as the message prefix (the CLI prints `{severity}: {message}`,
+      never the code). Anchored on the 4-space variant line so doc prose and tests
+      cannot match.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^    ImplicitArgAwaitingSolve\b
+      expect: present
+      paths:
+      - crates/reify-core/src/diagnostics.rs
+  - name: cli-detector-fn
+    binding: producer-self (R4) — module_requires_openvdb (any Voxel-producing op,
+      thickness-DFM; ι adds the sdf_from_solid arm) replaces module_has_isosurface
+      and the thickness-only gate.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn module_requires_openvdb\(
+      expect: present
+      paths:
+      - crates/reify-cli/src/main.rs
+  - name: detector-wired-before-realization
+    binding: producer-self (R4) — Engine::ensure_openvdb_kernel() is called BEFORE
+      realize_for_check in cmd_check and cmd_eval, and before `match output_path`
+      in cmd_build; otherwise the 0-conversion arm runs ImplicitSolid on OCCT.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'CLI harness tests: `reify check` / `reify eval` of examples/implicit/smooth_bracket.ri
+        carry no Error and report openvdb provenance.'
+  - name: b18-stub-degradation
+    binding: 'producer-self (R20; G7 WAIVER error-severity-exits-nonzero: cfg(not(has_openvdb))
+      is not a supported configuration — scripts/check-manifold-deps.sh makes OpenVDB
+      presence fatal — so a design containing implicit() is unrealizable there) —
+      I-7 restated ''not registered under the stub''; a coded Error at `module_requires_openvdb
+      && !ensure_openvdb_kernel()` in the CLI and at the OCCT defensive arm, code
+      ImplicitNoOpenVdb (E_IMPLICIT_NO_OPENVDB; lead-pinned 2026-10-08).'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'engine-level test with a registry lacking OpenVDB: one ImplicitNoOpenVdb
+        Error, no panic.'
+  - name: code-ImplicitNoOpenVdb
+    binding: 'producer-self (R6) — new reify-core DiagnosticCode variant ImplicitNoOpenVdb
+      (ε; lead-pinned 2026-10-08); attached with .with_code(..) and its mnemonic carried
+      as the message prefix (the CLI prints `{severity}: {message}`, never the code).
+      Anchored on the 4-space variant line so doc prose and tests cannot match.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^    ImplicitNoOpenVdb\b
+      expect: present
+      paths:
+      - crates/reify-core/src/diagnostics.rs
+  - name: verbose-provenance-line
+    binding: 'existing-substrate (R20 B7) — `reify build examples/implicit/smooth_bracket.ri
+      --verbose` (no -o) prints `<realization>: kernel: openvdb, repr: Voxel` via
+      Engine::realization_kernel_provenance; no conversion count is printed.'
+    verdict: PASS
+  - name: zero-conversion-assertion
+    binding: producer-self (R20 B7) — zero conversions asserted by a reify-eval crate-internal
+      test of the tier + dispatcher::dispatch (no Engine accessor exposes plan.conversions).
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: B7 crate-internal test.
+  - name: demand-unchanged-oracle
+    binding: producer-self (B6) — compute_demanded_reprs and voxel_pipeline_demand_overrides
+      stay identical for every non-ImplicitSolid realization (mixed_region_tests.rs
+      C-3 shape).
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: B6 oracle test in crates/reify-eval/src/engine_build/mixed_region_tests.rs.
+  - name: gui-override-entry
+    binding: producer-self — voxel_pipeline_demand_overrides maps ImplicitSolid realizations
+      to Voxel (today it pre-filters on CompiledGeometryOp::Isosurface).
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: ε tessellate_realizations e2e and ζ's B9.
+  - name: owner-tessellate-marching-cubes
+    binding: existing-substrate — OpenVdbKernel::tessellate (marching cubes, iso 0)
+      reached through walk_placed_realizations; Engine::tessellate_realizations returns
+      per-entity meshes.
+    verdict: PASS
+  - name: triangle-floor-and-bbox-envelope
+    binding: producer-self (§7.9, R20) — owner-tessellated mesh ≥ 0.5·A/h² = 14,412
+      triangles (A ≈ 7,206 mm², h = 0.5 mm; ≈59k expected; grid 164·124·84 ≈ 1.7 M
+      voxels); bbox within 2h of the smooth-union extent (z_min = −3.5 mm from the
+      polynomial smooth-min bulge at the coplanar caps).
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: ε e2e on smooth_bracket.ri.
+  - name: b17-run-twice-one-thread
+    binding: producer-self over producer-upstream δ (R20; critic M3 moved the hook
+      to δ) — two FRESH engines (a same-engine rebuild is a cache hit) under δ's test-fixtures
+      tbb::global_control(max_allowed_parallelism, 1) hook; owner-tessellated Mesh
+      buffers compared bitwise.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'ε e2e B17: two fresh engines, one thread, bitwise-equal meshes.'
+  - name: smooth-bracket-example-file
+    binding: producer-self (R20, R36; resolves the phase-A producer-downstream FAIL
+      smooth-bracket-mass-line) — examples/implicit/smooth_bracket.ri WITHOUT the
+      mass line (θ appends it), so the file resolves fully under examples_smoke and
+      unresolved_function_corpus_sweep.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: =\s*(\w+\.)*implicit\(
+      expect: present
+      paths:
+      - examples/implicit/smooth_bracket.ri
+  - name: check-exit-nonzero-on-error
+    binding: existing-substrate — crates/reify-cli/src/main.rs::cmd_check exits non-zero
+      on Error-severity diagnostics except CHECK_ERROR_EXIT_ALLOWLIST entries.
+    verdict: PASS
+  - name: chunk-documents-implicit
+    binding: 'producer-self (R27) — `implicit` (geometry.md; it joins GEOMETRY_FUNCTION_NAMES,
+      a CALLABLE_NAME_REGISTRIES member) documented in the relevant chunk (fields.md
+      or geometry.md) IN THE SAME DIFF as the registration, so PDOCCOVER (tests/infra/test_reify_audit_pdoccover.sh)
+      and the fence gate (crates/reify-compiler/tests/harness_doc_chunks/fence_gate.rs)
+      stay green; a name documented in geometry.md must be in a callable_registries.rs::CALLABLE_NAME_REGISTRIES
+      registry or that list is extended in the same diff. The pattern also accepts
+      a qualified `….name(` spelling so ρ''s re-home cannot turn it NOT-DELIVERED.
+      Accepted gap: a prose mention satisfies the grep; the fence gate is the cover.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: \bimplicit\(
+      expect: present
+      paths:
+      - crates/reify-mcp/src/tools/chunks/fields.md
+      - crates/reify-mcp/src/tools/chunks/geometry.md
+- label: φ
+  task_id: 8396
+  title: 'implicit-solids φ: sink refusals — E_IMPLICIT_NO_BREP, E_IMPLICIT_UNSUPPORTED_OP
+    and the interim E_IMPLICIT_EXPORT_UNROUTED'
+  capabilities:
+  - name: implicit-solid-upstream
+    binding: producer-upstream — leaf ε (ImplicitSolid op, the voxel-source tier,
+      module_requires_openvdb, smooth_bracket.ri).
+    verdict: PASS
+  - name: diagnostic-code-convention
+    binding: 'existing-substrate — crates/reify-core/src/diagnostics.rs::DiagnosticCode
+      is #[non_exhaustive], fieldless and Copy; the CLI (crates/reify-cli/src/main.rs::report_eval_output)
+      prints `{severity}: {message}` and never the code, so each mnemonic reaches
+      stderr only as a message prefix (R6; the W_MODULE_DECL_MISSING convention).'
+    verdict: PASS
+  - name: code-ImplicitNoBrep
+    binding: 'producer-self (R6) — new reify-core DiagnosticCode variant ImplicitNoBrep
+      (φ); attached with .with_code(..) and its mnemonic carried as the message prefix
+      (the CLI prints `{severity}: {message}`, never the code). Anchored on the 4-space
+      variant line so doc prose and tests cannot match.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^    ImplicitNoBrep\b
+      expect: present
+      paths:
+      - crates/reify-core/src/diagnostics.rs
+  - name: code-ImplicitUnsupportedOp
+    binding: 'producer-self (R6) — new reify-core DiagnosticCode variant ImplicitUnsupportedOp
+      (φ); attached with .with_code(..) and its mnemonic carried as the message prefix
+      (the CLI prints `{severity}: {message}`, never the code). Anchored on the 4-space
+      variant line so doc prose and tests cannot match.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^    ImplicitUnsupportedOp\b
+      expect: present
+      paths:
+      - crates/reify-core/src/diagnostics.rs
+  - name: goal-transcript-format
+    binding: 'producer-self (R6, R32; resolves the phase-A producer-absent FAIL goal-cli-bracket-error-format)
+      — the STEP refusal prints `error: E_IMPLICIT_NO_BREP: …` (no `error[CODE]:`
+      renderer exists or is added). String-literal or const construct. Accepted gap:
+      a test literal also matches; B8''s CLI test is the cover.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '(const E_IMPLICIT_NO_BREP: &str|"E_IMPLICIT_NO_BREP[:"])'
+      expect: present
+      paths:
+      - crates
+  - name: check-gates-coded-errors
+    binding: existing-substrate — cmd_check gates on check_gating_error(&merged_diagnostics);
+      CHECK_ERROR_EXIT_ALLOWLIST excuses no new coded Error; Warnings and INDETERMINATE
+      never move the exit.
+    verdict: PASS
+  - name: b8-phase-b-step-sink
+    binding: existing-substrate — crates/reify-eval/src/engine_build.rs::Engine::build_with_geometry_output's
+      Phase-B arm (only when emit_geometry_output); Engine::realize_for_check demands
+      Step with emit=false, so a demand-keyed refusal would fail every check.
+    verdict: PASS
+  - name: b8-step-refusal-emission
+    binding: producer-self (D-9, R6 'one site per sink') — E_IMPLICIT_NO_BREP at the
+      Phase-B STEP arm when any product body is ImplicitSolid-produced, before both
+      the single-body and make_compound arms, and at the STEPOutput declarative site.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: with_code\(([A-Za-z_]+::)*DiagnosticCode::ImplicitNoBrep\)
+      expect: present
+      paths:
+      - crates/reify-eval/src
+  - name: b8-no-file
+    binding: producer-self (R7) — on refusal Phase-B returns None for the whole export
+      (today an Error does not stop cmd_build writing the file); the declarative path
+      pushes an empty partial artifact.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'B8 harness_cli test: exit ≠ 0, prefix on stderr, output path absent.'
+  - name: b8-check-passes
+    binding: 'producer-self — `reify check` of the same file: exit 0, no Error, no
+      ImplicitNoBrep, openvdb/Voxel provenance (exit 0 alone is not evidence).'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: B8 harness_cli check half.
+  - name: b8-declarative-site
+    binding: existing-substrate — engine_build.rs::Engine::build_outputs_with_result;
+      subject identity keys on Value::GeometryHandle.realization_ref (precedent gui/src-tauri/src/engine.rs::collect_display_routing).
+    verdict: PASS
+  - name: b20-parent-substrate
+    binding: existing-substrate — the per-op loop's realization_step_ids/realization_step_reprs
+      (intra) and named_step_reprs via sub_refs_in_op (cross); a nested call lowers
+      inline (compile_geometry_call), a bare sibling ident to GeomRef::Sub.
+    verdict: PASS
+  - name: b20-unsupported-op-refusal
+    binding: producer-self (R8) — in the per-op loop BEFORE dispatch, any Boolean/Transform/Pattern/Modify
+      op whose parent is ImplicitSolid-produced (producer-op identity; intra-realization
+      steps and cross-realization parents alike) gets E_IMPLICIT_UNSUPPORTED_OP; isosurface
+      Voxel parents are EXCLUDED. Fixture tests/prd-gate/fixtures/implicit_solids_op_on_implicit_parent.ri
+      covers both paths.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: with_code\(([A-Za-z_]+::)*DiagnosticCode::ImplicitUnsupportedOp\)
+      expect: present
+      paths:
+      - crates/reify-eval/src/engine_build.rs
+  - name: b20-both-paths
+    binding: producer-self (R8) — the inline (intra) and named (cross) parents are
+      each tested, never an OCCT handle (Engine::realization_kernel_provenance has
+      no occt row for the refused realization).
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: B20 engine tests over the fixture's u_cross, u_inline and fl_inline
+        cells.
+  - name: export-unrouted-code-interim
+    binding: 'producer-self (R6, R7) — ImplicitExportUnrouted variant, mnemonic-prefixed.
+      INTERIM: υ deletes it, so a `present` grep would turn NOT-DELIVERED for φ''s
+      later dependents once υ lands.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: B21 tests below assert the code identity.
+  - name: b21-cli-arm
+    binding: 'producer-self (R7; resolves the phase-A premise-invalid FAIL b21-interim-export-refusal-scope)
+      — keyed on ImplicitSolid-PRODUCED product bodies only (producer-op identity,
+      never ''owned by a non-default kernel'', so crates/reify-cli/tests/harness_cli/cli_build_voxel_to_mesh.rs
+      stays green); defined as ''an ImplicitSolid product body whose export would
+      not reach an owner that can export the format'', true before and after #6308.
+      Fires at the export sink after the post-processes; Phase-B returns None ahead
+      of both arms. η removes this arm by identity.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'B21 harness_cli test: `-o x.stl` on smooth_bracket.ri → prefix on stderr,
+        no file; interim construct, so no grep.'
+  - name: b21-declarative-arm
+    binding: producer-self (R7) — STLOutput/ThreeMFOutput keyed on Value::GeometryHandle.realization_ref
+      → an ImplicitSolid realization (fixture tests/prd-gate/fixtures/implicit_solids_export_unrouted.ri).
+      υ removes it and deletes the variant.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'build_outputs test: STLOutput on an implicit body → empty partial artifact
+        + the code.'
+- label: ζ
+  task_id: 8397
+  title: 'implicit-solids ζ: GUI preview of implicit bodies — EngineSession test on
+    smooth_bracket.ri asserting the face_count floor and a 3-axis bbox'
+  capabilities:
+  - name: slice-upstream
+    binding: producer-upstream — leaf ε (voxel_pipeline_demand_overrides entry, the
+      output-side voxel-source tier, smooth_bracket.ri).
+    verdict: PASS
+  - name: gui-session-loads-openvdb
+    binding: existing-substrate — gui/src-tauri/src/engine.rs::EngineSession::with_registered_kernel
+      calls ensure_openvdb_kernel(); pinned by openvdb_kernel_tests.rs::production_session_holds_the_openvdb_kernel.
+    verdict: PASS
+  - name: owner-resolved-tessellate-walk
+    binding: existing-substrate — crates/reify-eval/src/geometry_ops.rs::walk_placed_realizations
+      tessellates on the owner; precedent openvdb_kernel_tests.rs::production_session_realizes_isosurface_shell.
+    verdict: PASS
+  - name: mesh-stats-fields
+    binding: existing-substrate (R23) — gui/src-tauri/src/commands.rs::mesh_stats_json
+      emits face_count, vertex_count and bounding_box{min,max}; `triangle_count` does
+      not exist.
+    verdict: PASS
+  - name: gui-test-gate-resident
+    binding: existing-substrate — gui/src-tauri/src/tests/mod.rs gates openvdb_kernel_tests
+      on cfg(has_openvdb); scripts/verify.sh runs the reify-gui test pass for any
+      diff under gui/src-tauri/src.
+    verdict: PASS
+  - name: b9-preview-test
+    binding: 'producer-self (R23) — an openvdb_kernel_tests-shaped test loading examples/implicit/smooth_bracket.ri
+      through the production EngineSession: no Error, face_count ≥ 14,412, bounding_box
+      spanning 3 axes. Accepted gap: the grep proves the test names the example, not
+      the floor; B9 is the cover.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: implicit/smooth_bracket\.ri
+      expect: present
+      paths:
+      - gui/src-tauri/src/tests
+- label: η
+  task_id: 8398
+  title: 'implicit-solids η: OpenVdbKernel::export for grid handles and 3MF; CLI triangle-floor
+    test; removes φ''s CLI E_IMPLICIT_EXPORT_UNROUTED arm'
+  capabilities:
+  - name: retire-phi-cli-test
+    binding: producer-self (critic M2) — removing φ's CLI ImplicitExportUnrouted arm
+      retires φ's B21 CLI-arm harness_cli test in the same diff; B21's declarative
+      twin stays until υ.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: η's B10 harness_cli test on smooth_bracket.ri passes and no B21 CLI-arm
+        test remains.
+  - name: owner-routed-export-upstream
+    binding: 'producer-upstream — #6308 (hard edge): ExportBody.kernel + owner-routed
+      export at build_with_geometry_output and build_snapshot; its acceptance on examples/multi_kernel/voxel_to_mesh.ri
+      may itself land the mesh-handle STL arm of OpenVdbKernel::export.'
+    verdict: PASS
+  - name: refusal-arm-upstream
+    binding: producer-upstream — leaf φ (the CLI E_IMPLICIT_EXPORT_UNROUTED arm η
+      removes) and leaf ε.
+    verdict: PASS
+  - name: shared-writers-reachable
+    binding: existing-substrate — reify_ir::write_stl_binary / write_3mf (crates/reify-ir/src/geometry.rs);
+      precedent crates/reify-kernel-manifold/src/kernel.rs::ManifoldKernel::export.
+    verdict: PASS
+  - name: export-stl-grid-handles
+    binding: 'producer-self (R22) — extend OpenVdbKernel::export as landed by #6308
+      to grid handles via tessellate + write_stl_binary. Not mechanised: #6308 may
+      land the STL arm first, so the grep would not discriminate η.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: B10 harness_cli test on smooth_bracket.ri (a grid-handle body).
+  - name: export-3mf
+    binding: producer-self (R22) — ThreeMF via tessellate + write_3mf; η's discriminating
+      construct.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: write_3mf\(
+      expect: present
+      paths:
+      - crates/reify-kernel-openvdb/src/kernel_real.rs
+  - name: obj-and-step-stay-err
+    binding: producer-self (R22; the phase-A producer-absent FAIL openvdb-export-obj
+      is dropped with OBJ) — `Stl|ThreeMF → tessellate + writer; Obj, Step → Err`
+      (no shared OBJ writer).
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'η unit test: export(Obj) and export(Step) return Err.'
+  - name: cli-export-arm-removed
+    binding: producer-self (R7, R22) — η removes φ's CLI ImplicitExportUnrouted arm
+      by identity (the variant stays for υ).
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: B10 writes an STL and exits 0, impossible while the CLI refusal fires;
+        an `absent` grep would be vacuous today.
+  - name: cli-triangles-line
+    binding: 'existing-substrate (R32) — cmd_build prints provenance, `mesh updates:
+      …`, `Wrote … (N bytes)`, then `Triangles: N` (crates/reify-cli/src/main.rs::stl_triangle_count).'
+    verdict: PASS
+  - name: cli-has-openvdb-cfg
+    binding: existing-substrate — crates/reify-cli/build.rs emits cfg(has_openvdb);
+      precedent crates/reify-cli/tests/harness_cli/cli_build_voxel_to_mesh.rs registered
+      in crates/reify-cli/tests/harness_cli.rs.
+    verdict: PASS
+  - name: b10-cli-stl-floor
+    binding: 'producer-self — a harness_cli test running `reify build examples/implicit/smooth_bracket.ri
+      -o <tmp>.stl`: exit 0, `Triangles: N` with N ≥ 14,412, STL bbox spanning 3 axes
+      (helper from #6308''s reify-test-support stl.rs if it lands).'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: B10 — not grep-distinguishable from φ's B21 tests, which name the same
+        example.
+  - name: no-query-kernel-mismatch-on-stl
+    binding: producer-self (R5 B-row) — η's STL of smooth_bracket.ri carries no QueryKernelMismatch
+      (γ's per-site dispositions).
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: B10 test asserts the code is absent from the diagnostics.
+- label: θ
+  task_id: 8400
+  title: 'implicit-solids θ: sdf_volume / sdf_clearance / sdf_penetration with clipped
+    and empty-domain codes and the derived-lets sink; appends the mass line to smooth_bracket.ri'
+  capabilities:
+  - name: sdf-algebra-upstream
+    binding: producer-upstream — leaf β (sdf_transform, SdfInvalidArg, the label check)
+      and through it leaf α (sdf_sphere, carriage, sdf_eval).
+    verdict: PASS
+  - name: grid-policy-upstream
+    binding: producer-upstream (R2; resolves the phase-A producer-extent-short FAIL
+      grid-constants-reachable-from-reify-expr) — leaf ε's hoisted MIN_FEATURE_VOXELS_ACROSS
+      / DENSIFY_BUDGET_VOXELS / grid-sizing fn in reify-ir, reachable from reify-expr.
+    verdict: PASS
+  - name: budget-code-upstream
+    binding: producer-upstream (R2; resolves the phase-A producer-downstream FAIL
+      measurement-budget-code) — leaf ε's ImplicitBudget and ImplicitClipped, shared.
+    verdict: PASS
+  - name: undef-cause-channel-upstream
+    binding: producer-upstream (R5) — leaf γ's post-process UndefCause channel for
+      derived-lets measurement cells.
+    verdict: PASS
+  - name: measurement-registered
+    binding: producer-self (§7.3) — sdf_volume / sdf_clearance / sdf_penetration registered
+      on α's route with Length typing and the optional trailing centre. One representative
+      name mechanised; B11/B12 cover all three.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '^\s*("sdf_penetration",|name: "sdf_penetration")'
+      expect: present
+      paths:
+      - crates/reify-compiler/src/units.rs
+      - crates/reify-builtins/src
+  - name: measurement-eval-sites
+    binding: producer-self (D-16) — the three evaluate in reify-expr (an intercept
+      or a BuiltinId-bound eval, per α's route).
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: B11/B12 — the evaluated values; the site's spelling depends on α's route.
+  - name: volume-result-type
+    binding: 'existing-substrate — the `Volume` annotation resolves (prj/printer_v01/printer.ri''s
+      `let pen_y_lintel : Volume = …`).'
+    verdict: PASS
+  - name: main-eval-sinks
+    binding: existing-substrate — crates/reify-expr/src/lib.rs::push_op_contract_failure
+      and EvalContext::with_runtime_diagnostics, wired in Engine::eval.
+    verdict: PASS
+  - name: derived-lets-diagnostics-sink
+    binding: 'producer-self — Engine::post_process_derived_lets stops discarding diagnostics
+      (its `_diagnostics` parameter is unused today). Anchored on the unused-parameter
+      line. Accepted gap: a rename without wiring passes; the post-process-derived
+      case below is the cover.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '^\s+_diagnostics: &mut Vec<Diagnostic>,'
+      expect: absent
+      paths:
+      - crates/reify-eval/src/engine_build.rs
+  - name: post-process-derived-case
+    binding: producer-self (R18) — θ's signal gains a case whose measurement argument
+      is post-process-derived (e.g. a feature computed from volume(box(..)) that trips
+      the budget), so the derived-lets sink is observed in `reify check` output.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: θ CLI test asserting the coded diagnostic from the derived-lets pass.
+  - name: derived-lets-feed-constraints
+    binding: existing-substrate — Engine::post_process_derived_lets (deep-Undef fixpoint)
+      and crates/reify-cli/src/main.rs::merge_post_build_verdicts.
+    verdict: PASS
+  - name: volume-bounds
+    binding: producer-self (R18; resolves the phase-A bound<=floor FAIL volume-bias-bound)
+      — sound bound |ΔV| ≤ A·h (628.3 mm³ at r = 10 mm, h = 0.5 mm; floor (√3/2)·A·h
+      ≈ 544 mm³) AND bias ceiling B = A·h/3 ≈ 209 mm³ (below the 306.4 mm³ inward
+      half-voxel bias), with 3×measured ≤ B recorded.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: B11 — sphere e2e recording the measured error.
+  - name: clearance-penetration-bound
+    binding: 'producer-self (R18; resolves the phase-A bound<=floor FAIL clearance-penetration-bound)
+      — feasibility-restricted derivation (optimum on ∂a, error one-sided): assert
+      ≤ 1.5·L·h with L = 1 for the sphere pair (L is per-node test arithmetic; lipschitz_bound
+      is dropped, R1).'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: B12 — two-sphere overlap/separation cases.
+  - name: non-overlap-penetration-zero
+    binding: producer-self — separated spheres give penetration exactly 0 (max over
+      {a ≤ 0} of −b < 0, clamped).
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: B12's separated-pair assertion.
+  - name: operand-clipping-check
+    binding: producer-self (R18, G7) — every measurement operand gets the clipping
+      check → ε's ImplicitClipped Warning naming the builtin; sdf_volume of a clipped
+      field → ImplicitClipped.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'θ B-row: clipped-sphere volume → ImplicitClipped, not a silent under-report.'
+  - name: empty-domain-codes
+    binding: 'producer-self (R18, G7) — {a ≤ 0} empty within the extent → sdf_clearance
+      Undef with a coded cause; sdf_penetration over an empty or clipped `a` returns
+      Undef with UndefCause::OpContractFailed{code: ImplicitEmpty | ImplicitClipped}
+      (constraint Indeterminate), never a value — the same disposition as sdf_clearance
+      (critic B1: a value with a Warning reads Satisfied on λ''s `<= 0mm` gate). Codes
+      pinned by the lead (2026-10-08): θ reuses ε''s ImplicitEmpty and ImplicitClipped.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'θ B-row B29: sphere outside the extent → Undef + ImplicitEmpty cause,
+        never 0; clipped operand → Undef + ImplicitClipped.'
+  - name: feature-extent-domain-refusal
+    binding: producer-self (R12) — feature > 0 and extent > 0 validated before the
+      budget arithmetic, refusing with β's SdfInvalidArg.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: θ B-row per class.
+  - name: label-refusal-joined
+    binding: 'producer-self (R10) — the three rows join β''s SdfLabelledArgUnsupported
+      check; B-row `sdf_clearance(b: x, a: y, …)` → the code.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: θ compile test on the labelled sdf_clearance call.
+  - name: b11-b12-cli-observable
+    binding: existing-substrate — the measurement cells are pure, so `reify eval`
+      prints them (fixture tests/prd-gate/fixtures/implicit_solids_measure_builtins.ri).
+    verdict: PASS
+  - name: mass-line-appended
+    binding: producer-self (R18, R36) — θ appends `let mass = sdf_volume(...) * 7850kg/m^3`
+      to examples/implicit/smooth_bracket.ri with a sanity assertion (the Goal notes
+      the line arrives with θ; θ-era text at tests/prd-gate/fixtures/implicit_solids_goal_smooth_bracket.ri).
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: (sdf_|\.)volume\(
+      expect: present
+      paths:
+      - examples/implicit/smooth_bracket.ri
+  - name: chunk-documents-sdf_penetration
+    binding: 'producer-self (R27) — sdf_volume, sdf_clearance and sdf_penetration
+      documented in the relevant chunk (fields.md or geometry.md) IN THE SAME DIFF
+      as the registration, so PDOCCOVER (tests/infra/test_reify_audit_pdoccover.sh)
+      and the fence gate (crates/reify-compiler/tests/harness_doc_chunks/fence_gate.rs)
+      stay green; a name documented in geometry.md must be in a callable_registries.rs::CALLABLE_NAME_REGISTRIES
+      registry or that list is extended in the same diff. The pattern also accepts
+      a qualified `….name(` spelling so ρ''s re-home cannot turn it NOT-DELIVERED.
+      Accepted gap: a prose mention satisfies the grep; the fence gate is the cover.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: (\bsdf_|\.)penetration\(
+      expect: present
+      paths:
+      - crates/reify-mcp/src/tools/chunks/fields.md
+      - crates/reify-mcp/src/tools/chunks/geometry.md
+- label: ι
+  task_id: 8401
+  title: 'implicit-solids ι: sdf_from_solid — FromSolid node, is_realizable, post-process
+    pass, detector arm, B19 compile-time check, coded degradation; realize_solid_sdf.rs
+    doc fix'
+  capabilities:
+  - name: consumer-call-list-joined
+    binding: producer-self (critic B3) — sdf_from_solid joins crates/reify-eval/src/geometry_ops.rs::is_geometry_consumer_call,
+      so a kernel-free evaluation reports EvalUnresolved loudly, as volume() does
+      (λ extends idler_seat_e2e.rs's list).
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '"sdf_from_solid"'
+      expect: present
+      paths:
+      - crates/reify-eval/src/geometry_ops.rs
+  - name: frame-semantics
+    binding: producer-self (critic M9, §7.7) — a FromSolid field is in the subject
+      realization's authored (unplaced) frame; posing is the author's sdf_transform,
+      as printer.ri's apply_transform(carrier_y, transform_of(s, id_car)) gate does.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'ι unit test: from_solid of a placed sub samples in its authored frame.'
+  - name: sdf-core-upstream
+    binding: producer-upstream — leaf α (SdfExpr, sdf_eval, carriage, sample arm,
+      registration route).
+    verdict: PASS
+  - name: owner-check-upstream
+    binding: producer-upstream — leaf γ (owner-bearing realization handles, typed
+      realize_solid_sdf_at failure, the UndefCause channel).
+    verdict: PASS
+  - name: detector-upstream
+    binding: producer-upstream (R3) — leaf ε (module_requires_openvdb, ensure_openvdb_kernel
+      before realize_for_check, the ImplicitSolid lowering ι's defensive check sits
+      in). λ inherits ε through ι.
+    verdict: PASS
+  - name: brep-to-sampled-sdf-bridge
+    binding: 'existing-substrate — crates/reify-eval/src/realize_solid_sdf.rs::Engine::realize_solid_sdf_at,
+      on the production path via the DFM measures. R33: #6988/#8213 share this file;
+      if #6988 has landed, FromSolid stores what realize_solid_sdf_at returns (SparseVoxelGrid
+      / an SdfSource-like enum) or ι densifies explicitly through densify_grid_to_sampled
+      with the budget stated.'
+    verdict: PASS
+  - name: target-voxel-size-resolution
+    binding: existing-substrate — crates/reify-ir/src/geometry.rs::VoxelResolution::TargetVoxelSize
+      consumed by MeshToVoxelOptions::for_resolution (crates/reify-kernel-openvdb/src/mesh_to_voxel_options.rs).
+    verdict: PASS
+  - name: b13-interior-sample-premise
+    binding: 'existing-substrate — box 20 mm at voxel 1 mm: not RequestTooCoarse,
+      band covers the interior, implied count ≈ 44³; the origin samples ≈ −10 mm within
+      h.'
+    verdict: PASS
+  - name: sdf-from-solid-registered
+    binding: producer-self (R3) — sdf_from_solid `(Solid, Length) -> F` registered
+      on α's route.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '^\s*("sdf_from_solid",|name: "sdf_from_solid")'
+      expect: present
+      paths:
+      - crates/reify-compiler/src/units.rs
+      - crates/reify-builtins/src
+  - name: from-solid-variant-eval-arm
+    binding: producer-self (R1, R3) — SdfExpr::FromSolid arrives with ι, with its
+      sdf_eval arm (trilinear over the grid, saturating outside).
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: SdfExpr::FromSolid\b
+      expect: present
+      paths:
+      - crates/reify-expr/src
+  - name: is-realizable
+    binding: producer-self (R3) — SdfExpr::is_realizable (false iff a FromSolid node
+      is present).
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: pub fn is_realizable\(
+      expect: present
+      paths:
+      - crates/reify-ir/src
+  - name: post-process-pass
+    binding: producer-self (§7.7) — Engine::post_process_sdf_from_solid, after post_process_geometry_handle_cells
+      and the redispatch passes, before the default-kernel borrow and run_post_processes,
+      at build_with_geometry_output and build_snapshot.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn post_process_sdf_from_solid\b
+      expect: present
+      paths:
+      - crates/reify-eval/src
+  - name: from-solid-node-built-by-pass
+    binding: 'producer-self — the pass constructs SdfExpr::FromSolid{provenance: (realization
+      content hash, h), grid}.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: SdfExpr::FromSolid\s*\{
+      expect: present
+      paths:
+      - crates/reify-eval/src
+  - name: pass-wired-at-both-sites
+    binding: producer-self — both call sites; a grep proves presence, not count.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: B13 positive half through Engine::build and Engine::build_snapshot on
+        the same fixture.
+  - name: unifieddag-exclusion
+    binding: producer-self (R34) — explicit EXCLUSION from the UnifiedDag hydration
+      mirror with the D-11 reason (from_solid never feeds a realization); B13 runs
+      under the default UnifiedDag scheduler.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: design record in ι's text; B13 under the default scheduler.
+  - name: detector-sdf-from-solid-arm
+    binding: producer-self (R3, R4; resolves the phase-A producer-downstream FAIL
+      sdf-from-solid-detector-arm, moved from ε) — the sdf_from_solid arm of ε's module_requires_openvdb,
+      so `reify check` loads OpenVDB for from_solid designs (λ inherits it).
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: B13 positive half via `reify check` (OpenVDB loaded by this arm); the
+        arm's spelling depends on α's route.
+  - name: b19-compile-time-closure-check
+    binding: 'producer-self (R3; resolves the phase-A producer-downstream FAIL b19-sdf-from-solid-builtin,
+      moved from ε) — compile-time ValueRef-closure check over implicit()''s field
+      argument refusing any reachable sdf_from_solid with ImplicitFromSolidInRealization
+      (fixture tests/prd-gate/fixtures/implicit_solids_from_solid_in_implicit.ri:
+      inline and let-bound forms). Today an unresolved sdf_from_solid compiles with
+      a warning only, so the check is meaningful only once ι''s builtin exists.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: with_code\(([A-Za-z_]+::)*DiagnosticCode::ImplicitFromSolidInRealization\)
+      expect: present
+      paths:
+      - crates/reify-compiler/src
+  - name: code-ImplicitFromSolidInRealization
+    binding: 'producer-self (R6) — new reify-core DiagnosticCode variant ImplicitFromSolidInRealization
+      (ι); attached with .with_code(..) and its mnemonic carried as the message prefix
+      (the CLI prints `{severity}: {message}`, never the code). Anchored on the 4-space
+      variant line so doc prose and tests cannot match.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^    ImplicitFromSolidInRealization\b
+      expect: present
+      paths:
+      - crates/reify-core/src/diagnostics.rs
+  - name: defensive-runtime-check
+    binding: producer-self (R3) — the defensive runtime check in ε's lowering consults
+      is_realizable.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'ι unit test: an ImplicitSolid lowering over a FromSolid tree refuses
+        with the code.'
+  - name: code-SdfFromSolidNoKernel
+    binding: 'producer-self (R6) — new reify-core DiagnosticCode variant SdfFromSolidNoKernel
+      (ι); attached with .with_code(..) and its mnemonic carried as the message prefix
+      (the CLI prints `{severity}: {message}`, never the code). Anchored on the 4-space
+      variant line so doc prose and tests cannot match.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^    SdfFromSolidNoKernel\b
+      expect: present
+      paths:
+      - crates/reify-core/src/diagnostics.rs
+  - name: code-SdfFromSolidFailed
+    binding: 'producer-self (R6) — new reify-core DiagnosticCode variant SdfFromSolidFailed
+      (ι; budget / tessellation / ingest / densify / RequestTooCoarse / FlatBody /
+      NoDefaultKernel are message text over a typed enum, one unit test per cause);
+      attached with .with_code(..) and its mnemonic carried as the message prefix
+      (the CLI prints `{severity}: {message}`, never the code). Anchored on the 4-space
+      variant line so doc prose and tests cannot match.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^    SdfFromSolidFailed\b
+      expect: present
+      paths:
+      - crates/reify-core/src/diagnostics.rs
+  - name: every-failure-path-coded
+    binding: 'producer-self (R6, S-14) — every realize_solid_sdf_at failure maps to
+      a code + UndefCause through γ''s channel. Accepted gap: presence does not prove
+      every path; the per-cause unit tests in realize_solid_sdf.rs''s RecordingVoxelizerKernel
+      harness are the cover.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: with_code\(([A-Za-z_]+::)*DiagnosticCode::SdfFromSolidFailed\)
+      expect: present
+      paths:
+      - crates/reify-eval/src
+  - name: code-SdfFromSolidUnresolvableSubject
+    binding: 'producer-self (R6) — new reify-core DiagnosticCode variant SdfFromSolidUnresolvableSubject
+      (ι); attached with .with_code(..) and its mnemonic carried as the message prefix
+      (the CLI prints `{severity}: {message}`, never the code). Anchored on the 4-space
+      variant line so doc prose and tests cannot match.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^    SdfFromSolidUnresolvableSubject\b
+      expect: present
+      paths:
+      - crates/reify-core/src/diagnostics.rs
+  - name: unresolvable-subject-refusal
+    binding: producer-self (R34) — compile-time refusal of an sdf_from_solid whose
+      args[0] is not a ValueRef to a named realization in scope; B-row with an inline
+      `sdf_from_solid(box(20mm, 20mm, 20mm), 1mm)`.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: ι compile test on the inline form.
+  - name: code-SdfFromSolidPreviewUnavailable
+    binding: 'producer-self (R6) — new reify-core DiagnosticCode variant SdfFromSolidPreviewUnavailable
+      (Warning; ι); attached with .with_code(..) and its mnemonic carried as the message
+      prefix (the CLI prints `{severity}: {message}`, never the code). Anchored on
+      the 4-space variant line so doc prose and tests cannot match.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^    SdfFromSolidPreviewUnavailable\b
+      expect: present
+      paths:
+      - crates/reify-core/src/diagnostics.rs
+  - name: preview-path-degradation
+    binding: producer-self (R34, Q8 decided) — the GUI preview path degrades with
+      SdfFromSolidPreviewUnavailable W + UndefCause; a static helper over (geometry_kernels,
+      default_kernel_name, named_steps) may remove it.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: ι tessellate_from_values test.
+  - name: b13-positive-half-cli
+    binding: producer-self (R3, R34; resolves the phase-A producer-downstream FAIL
+      b13-positive-half-cli-observable) — `reify check` on tests/prd-gate/fixtures/implicit_solids_from_solid_sample.ri
+      reports the sample gate Satisfied (origin within h of −10 mm).
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: B13 CLI test.
+  - name: b13-openvdb-absent-half
+    binding: existing-substrate — Engine::with_registered_kernel without ensure_openvdb_kernel
+      takes the no-OpenVDB path (precedent realize_solid_sdf.rs::realize_solid_sdf_no_openvdb_kernel_returns_none);
+      asserted at engine level only.
+    verdict: PASS
+  - name: realize-solid-sdf-doc-fix
+    binding: producer-self (R30) — the false layering sentence in realize_solid_sdf_at's
+      doc ('`reify-eval` cannot name `reify-kernel-openvdb`'; it is a normal dependency)
+      is corrected; the real chord-tolerance 'Known limitation' stays. Anchored on
+      the doc line's exact ending.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^    /// .*`reify-eval` cannot name$
+      expect: absent
+      paths:
+      - crates/reify-eval/src/realize_solid_sdf.rs
+  - name: label-refusal-joined
+    binding: producer-self (R10) — sdf_from_solid's row joins β's SdfLabelledArgUnsupported
+      check.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: ι compile test.
+  - name: chunk-documents-sdf_from_solid
+    binding: 'producer-self (R27) — `sdf_from_solid` documented in the relevant chunk
+      (fields.md or geometry.md) IN THE SAME DIFF as the registration, so PDOCCOVER
+      (tests/infra/test_reify_audit_pdoccover.sh) and the fence gate (crates/reify-compiler/tests/harness_doc_chunks/fence_gate.rs)
+      stay green; a name documented in geometry.md must be in a callable_registries.rs::CALLABLE_NAME_REGISTRIES
+      registry or that list is extended in the same diff. The pattern also accepts
+      a qualified `….name(` spelling so ρ''s re-home cannot turn it NOT-DELIVERED.
+      Accepted gap: a prose mention satisfies the grep; the fence gate is the cover.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: (\bsdf_|\.)from_solid\(
+      expect: present
+      paths:
+      - crates/reify-mcp/src/tools/chunks/fields.md
+      - crates/reify-mcp/src/tools/chunks/geometry.md
+- label: κ
+  task_id: 8402
+  title: 'implicit-solids κ: sdf_sweep(field, snapshots, body: BodyId) — Sweep node,
+    snapshot decode by body id, SdfSweepMisuse'
+  capabilities:
+  - name: ptodo-ratchet-checked
+    binding: 'producer-self (critic M7; UNVERIFIED whether a live #NNNN cite fingerprints)
+      — the TODO(#6007) at sdf_sweep''s signature row meets tests/infra/test_reify_audit_ptodo.sh''s
+      fingerprint ratchet; κ runs it DB-absent and regenerates crates/reify-audit/ptodo-baseline.txt
+      in the same diff if the cite fingerprints.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: test_reify_audit_ptodo.sh green on κ's branch.
+  - name: sdf-core-upstream
+    binding: producer-upstream — leaf α (SdfExpr, sdf_eval, sample arm, sdf_sphere,
+      registration route) and leaf β (F-typed rows, the label check).
+    verdict: PASS
+  - name: kinematic-sweep-snapshot-list
+    binding: 'existing-substrate — 4-arg sweep(mech, joint, range, n) → List of snapshot
+      Maps with bodies: List<Map{id, pose, solid, world_transform}> (crates/reify-stdlib/src/sweep.rs::build_snapshot_list).'
+    verdict: PASS
+  - name: body-id-nominal
+    binding: existing-substrate — body_id_of compiles to StructureRef("BodyId") (crates/reify-compiler/src/joint_signatures.rs)
+      and is Value::Int at runtime.
+    verdict: PASS
+  - name: pose-lookup-by-body-id
+    binding: existing-substrate (R16) — the body record is the `bodies` element whose
+      `id` equals the BodyId (crates/reify-stdlib/src/snapshot.rs `transform_of` semantics),
+      not `bodies[body]`.
+    verdict: PASS
+  - name: transform-decode-and-invert
+    binding: producer-self (R16) — decode via crates/reify-stdlib/src/geometry.rs::decompose_transform
+      (visibility change; reify-stdlib joins κ's modules) or a local decode — NOT
+      reify-eval's private accept_transform_to_arrays; inverses stored.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'κ unit test: a rotated pose samples equal to inner(inv·p).'
+  - name: slots-compile-unchecked
+    binding: existing-substrate (R16) — slots 2–3 are compile-UNCHECKED in v1 (the
+      4-arg sweep compiles as Real; no slot vocabulary for List/BodyId); D-12's 'never
+      a bare Int' is dropped.
+    verdict: PASS
+  - name: result-typing-owner-cited
+    binding: 'producer-self (R16) — #6007 is cited as the live owner of typing sweep''s
+      result (§10 Q7), with `TODO(#6007)` at the sdf_sweep signature row; no edge
+      to #6007.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: TODO\(#6007\)
+      expect: present
+      paths:
+      - crates/reify-compiler/src
+      - crates/reify-builtins/src
+  - name: sdf-sweep-registered
+    binding: producer-self — sdf_sweep registered on α's route with result type F.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '^\s*("sdf_sweep",|name: "sdf_sweep")'
+      expect: present
+      paths:
+      - crates/reify-compiler/src/units.rs
+      - crates/reify-builtins/src
+  - name: sweep-node-eval
+    binding: producer-self (R1) — SdfExpr::Sweep{inner, inv_poses} arrives with κ;
+      sdf_eval takes the min over poses of inner(inv·p). Discriminating because α
+      lands no Sweep variant.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: SdfExpr::Sweep\b
+      expect: present
+      paths:
+      - crates/reify-expr/src
+  - name: code-SdfSweepMisuse
+    binding: 'producer-self (R6) — new reify-core DiagnosticCode variant SdfSweepMisuse
+      (κ); attached with .with_code(..) and its mnemonic carried as the message prefix
+      (the CLI prints `{severity}: {message}`, never the code). Anchored on the 4-space
+      variant line so doc prose and tests cannot match.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^    SdfSweepMisuse\b
+      expect: present
+      paths:
+      - crates/reify-core/src/diagnostics.rs
+  - name: misuse-cases
+    binding: producer-self (R16, G7) — SdfSweepMisuse + UndefCause on a non-List value,
+      a non-snapshot element (tests/prd-gate/fixtures/implicit_solids_sweep_non_snapshot_list.ri),
+      an EMPTY list (min over ∅ = +∞ breaks I-1) and a snapshot lacking the body;
+      never a silently dropped pose.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: κ tests, one per case, asserting code identity.
+  - name: sweep-closed-form-signal
+    binding: 'producer-self — sdf_sphere(5mm) over translations {0, 100 mm}: −5 mm
+      at both poses, +45 mm midway (tests/prd-gate/fixtures/implicit_solids_sweep_two_snapshots.ri).'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: κ e2e over the two-snapshot fixture.
+  - name: label-refusal-joined
+    binding: producer-self (R10) — sdf_sweep's row joins β's SdfLabelledArgUnsupported
+      check.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: κ compile test.
+  - name: chunk-documents-sdf_sweep
+    binding: 'producer-self (R27) — `sdf_sweep` documented in the relevant chunk (fields.md
+      or geometry.md) IN THE SAME DIFF as the registration, so PDOCCOVER (tests/infra/test_reify_audit_pdoccover.sh)
+      and the fence gate (crates/reify-compiler/tests/harness_doc_chunks/fence_gate.rs)
+      stay green; a name documented in geometry.md must be in a callable_registries.rs::CALLABLE_NAME_REGISTRIES
+      registry or that list is extended in the same diff. The pattern also accepts
+      a qualified `….name(` spelling so ρ''s re-home cannot turn it NOT-DELIVERED.
+      Accepted gap: a prose mention satisfies the grep; the fence gate is the cover.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: (\bsdf_|\.)sweep\(
+      expect: present
+      paths:
+      - crates/reify-mcp/src/tools/chunks/fields.md
+      - crates/reify-mcp/src/tools/chunks/geometry.md
+- label: λ
+  task_id: 8403
+  title: 'implicit-solids λ: printer ToolDock swept-volume gate on sdf_from_solid
+    + sdf_sweep + sdf_penetration — committed extracted fixture, per-gate parity'
+  capabilities:
+  - name: from-solid-and-detector-upstream
+    binding: producer-upstream (R3; resolves the phase-A producer-downstream FAIL
+      openvdb-loaded-under-reify-check) — leaf ι (sdf_from_solid, the post-process
+      pass, the detector arm; ε inherited through ι).
+    verdict: PASS
+  - name: sweep-upstream
+    binding: producer-upstream — leaf κ (sdf_sweep).
+    verdict: PASS
+  - name: penetration-upstream
+    binding: producer-upstream — leaf θ (sdf_penetration, the derived-lets sink).
+    verdict: PASS
+  - name: owner-routing-upstream
+    binding: producer-upstream — leaf γ.
+    verdict: PASS
+  - name: snapshot-inputs-exist
+    binding: existing-substrate — ToolDock already builds snaps_y / snaps_x via sweep(…)
+      and id_car / id_hx via body_id_of; the from_solid subjects are top-level named
+      realizations, so the ValueRef shape holds.
+    verdict: PASS
+  - name: from-solid-cells-in-printer
+    binding: producer-self — the new gate's sdf_from_solid cells sit beside the old
+      sampled-union gate in printer.ri for one release.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: = *(sdf_|(\w+\.)+)from_solid\(
+      expect: present
+      paths:
+      - prj/printer_v01/printer.ri
+  - name: sweep-cells-in-printer
+    binding: producer-self — sdf_sweep cells over the existing snapshot lists.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: = *(sdf_|(\w+\.)+)sweep\(
+      expect: present
+      paths:
+      - prj/printer_v01/printer.ri
+  - name: penetration-cells-in-printer
+    binding: producer-self — the penetration lets the new constraints read (constraint
+      naming is not PRD-fixed, so the let is the anchor).
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '^\s*(aux )?let \w+ *(: *Length)? *= *(sdf_|(\w+\.)+)penetration\('
+      expect: present
+      paths:
+      - prj/printer_v01/printer.ri
+  - name: derived-let-consumption-path
+    binding: existing-substrate — Engine::post_process_derived_lets and crates/reify-cli/src/main.rs::merge_post_build_verdicts
+      carry printer.ri's existing volume() gate.
+    verdict: PASS
+  - name: extracted-fixture-durable-signal
+    binding: 'producer-self (R25; resolves the phase-A producer-absent FAIL old-gate-verdict-baseline-for-b15-parity)
+      — the durable signal is a committed extracted fixture (ToolBody + ToolDock)
+      under tests/prd-gate/fixtures/, following the #8260 pattern; `reify check prj/printer_v01/printer.ri`
+      SIGSEGVs today (#7383, cited, NOT an edge) and is noted, not asserted. File
+      name pinned by the lead (2026-10-08): tests/prd-gate/fixtures/implicit_solids_tooldock_gate.ri
+      — the old y-pair sampled-union gates, the new y- and x-pair sdf_* gates and
+      NOT the old x-pair union (a verbatim extraction keeping it SIGSEGVs, D3 2026-10-08)
+      — registered in scripts/verify.sh _RUST_COUPLED_RI_FIXTURES in the same diff.'
+    verdict: PASS
+    delivered_check:
+      kind: path
+      expect: present
+      paths:
+      - tests/prd-gate/fixtures/implicit_solids_tooldock_gate.ri
+  - name: seeded-violation-fixture
+    binding: producer-self (R25; critic B2 names it) — tests/prd-gate/fixtures/implicit_solids_tooldock_gate_seeded.ri
+      (pitch = 55 mm flips pen_y_parked), registered in _RUST_COUPLED_RI_FIXTURES.
+    verdict: PASS
+    delivered_check:
+      kind: path
+      expect: present
+      paths:
+      - tests/prd-gate/fixtures/implicit_solids_tooldock_gate_seeded.ri
+  - name: gate-sketch-grammar-fixture
+    binding: grammar-fixture — tests/prd-gate/fixtures/implicit_solids_collision_gate.ri
+      (sdf_from_solid + sdf_sweep + sdf_offset + sdf_penetration in an unnamed `constraint
+      <expr> <= 0mm`) parses with 0 ERROR nodes (tree-sitter, isolated cache, 2026-10-08);
+      landed by the decompose carrier. **Evidence only.**
+    verdict: PASS
+  - name: y-pair-parity
+    binding: 'producer-self (R25) — pen_y_lintel, pen_y_parked: the new gate is Satisfied
+      where the old one is (both Satisfied today on the y-only fixture), and the seeded
+      violation (pitch = 55 mm flips pen_y_parked) flips the new gate too.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'λ e2e: per-gate Satisfied-vs-Satisfied plus the seeded-violation fixture;
+        never exit 0.'
+  - name: x-pair-determinate
+    binding: 'producer-self (R25) — pen_x_parked, pen_x_lintel: the new gate is determinate
+      (not INDETERMINATE) in a fixture without the crashing union; x-pair parity with
+      the old gate is recorded as observable once #7383 lands.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: λ e2e on the x-pair fixture.
+  - name: parity-semantics-and-blind-spot
+    binding: producer-self (R25) — new gate Satisfied where the old gate is Satisfied
+      with clearance > τ + method error, Violated for overlap depth > τ; the sub-τ
+      blind spot, h, τ ≥ 2h, per-body padded-grid memory and runtime recorded; Layer-1
+      clr_*/margins_* cells are not covered.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: review of the committed project-doc section.
+  - name: project-doc-records-sdf-gate
+    binding: producer-self — docs/projects/printer_v01.md records the gate's numbers.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: (sdf_|\.)penetration\b
+      expect: present
+      paths:
+      - docs/projects/printer_v01.md
+  - name: stale-ceiling-claim-corrected
+    binding: producer-self — ToolDock's header claim that a sampled union is the ceiling
+      is false once sdf_sweep exists. The defect IS the comment, so an absent check
+      on that exact line is the construct (overlay rule 1).
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^///    sampled union is the ceiling\.$
+      expect: absent
+      paths:
+      - prj/printer_v01/printer.ri
+  - name: kernel-free-surface-extended
+    binding: 'producer-self (critic B3) — crates/reify-eval/tests/harness_sweep/idler_seat_e2e.rs::check_printer
+      runs Engine::check kernel-free and pins PRINTER_VOLUME_UNRESOLVED (EvalUnresolved
+      cells, held in both directions); ι adds sdf_from_solid to geometry_ops::is_geometry_consumer_call,
+      so λ''s new ToolDock from_solid cells report EvalUnresolved there and λ extends
+      PRINTER_VOLUME_UNRESOLVED with them in the same diff. #8260 is a design precedent
+      and file-lock neighbour on printer.ri.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: idler_seat_e2e.rs check_printer stays green with the extended list.
+- label: μ
+  task_id: 8404
+  title: 'implicit-solids μ: fixed-parameter FEA body solve on an implicit body —
+    engine e2e and CLI run, monotone differential, ElasticOptions disposition'
+  capabilities:
+  - name: slice-upstream
+    binding: 'producer-upstream — leaf ε (the output-side voxel-source tier dispatches
+      ImplicitSolid at (op, Voxel) under VolumeMesh demand) and leaf γ (ordering safety:
+      no foreign-id kernel query on the body).'
+    verdict: PASS
+  - name: gmsh-cli-registration-upstream
+    binding: 'producer-upstream — #6660 (hard edge): plain-producer gmsh registration
+      in the CLI/GUI.'
+    verdict: PASS
+  - name: cache-key-upstream
+    binding: 'producer-upstream — #7052 (hard edge; #6660 depends on it).'
+    verdict: PASS
+  - name: body-overload-solve
+    binding: existing-substrate (R21) — the 5-arg body overload solve_elastic_static(ConstitutiveLaw,
+      Geometry, List<Load>, List<Support>, ElasticOptions) (crates/reify-compiler/stdlib/solver_elastic.ri);
+      the 4-arg form does not exist.
+    verdict: PASS
+  - name: volume-mesh-demand-and-edge
+    binding: existing-substrate — Engine::register_volume_mesh_demand + volume_mesh_demanded_indices;
+      the VolumeMesh edge already tessellates on the owner (terminal.kernel) → gmsh,
+      so μ's edge work is limited.
+    verdict: PASS
+  - name: aabb-face-bcs
+    binding: existing-substrate — crates/reify-eval/src/compute_targets/elastic_static.rs::realized_cantilever_bc_node_sets
+      clamps x_min / loads x_max of the realized mesh AABB.
+    verdict: PASS
+  - name: gmsh-in-test-binary
+    binding: existing-substrate — reify-eval dev-dep reify-kernel-gmsh + cfg(has_gmsh);
+      body harness precedent crates/reify-eval/tests/solve_elastic_static_body_e2e.rs;
+      differential shape from crates/reify-eval/tests/harness_fea_solver_e2e/fea_bracket_minimize_mass_e2e.rs.
+    verdict: PASS
+  - name: fixed-param-body-solve
+    binding: producer-self (R21; replaces the phase-A producer-absent FAILs on minimize
+      and the mass objective, both dropped) — a FIXED-parameter solve on an implicit
+      body converges with non-Undef displacement/stress; geometry-in-the-loop optimisation
+      moves to §9 (engine-unified-build-dag.md). Fixture tests/prd-gate/fixtures/implicit_solids_fea_body.ri.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: engine e2e (gmsh dev-dep).
+  - name: monotone-differential
+    binding: 'producer-self (R21) — anti-vacuity: two web thicknesses ⇒ the thicker
+      web gives the lower max displacement.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: engine e2e comparing two solves.
+  - name: cli-run-asserted
+    binding: 'producer-self (R21) — μ asserts the CLI run itself: `reify eval examples/implicit/fea_implicit_bracket.ri`
+      prints non-Undef displacement/stress (possible because #6660 and #7052 are hard
+      edges).'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: CLI harness test on the example.
+  - name: fea-example-file
+    binding: producer-self (R21) — examples/implicit/fea_implicit_bracket.ri (renamed;
+      no mass objective, so no θ edge).
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: solve_elastic_static\(
+      expect: present
+      paths:
+      - examples/implicit/fea_implicit_bracket.ri
+  - name: fea-e2e-names-example
+    binding: producer-self — the reify-eval e2e drives the example.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fea_implicit_bracket\.ri
+      expect: present
+      paths:
+      - crates/reify-eval/tests
+  - name: heavy-test-filter-atom
+    binding: producer-self — scripts/heavy-test-filter-lib.sh REIFY_HEAVY_NEXTEST_FILTER
+      gains the e2e's atom in the same diff.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fea_implicit_bracket
+      expect: present
+      paths:
+      - scripts/heavy-test-filter-lib.sh
+  - name: elastic-options-disposition
+    binding: producer-self (R21, G7 declared-param-reaches-kernel) — every ElasticOptions
+      param on the implicit-body route is honoured (site named) or coded-refused when
+      non-default; the e2e asserts mesh_size changes the DOF count.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: μ disposition table in its task text + the mesh_size DOF assertion.
+  - name: require-hex-wedge-refusal-code
+    binding: 'producer-self (R21) — `require_hex_wedge: true` on the implicit-body
+      route ''emits its code''. No E_PARAM_NOT_HONORED variant exists on main (#7079
+      is cited as its future minter in crates/reify-eval/src/compute_persist.rs),
+      and R21 does not say which code — lead-pinned 2026-10-08: μ mints ImplicitFeaOptionUnsupported
+      (E_IMPLICIT_FEA_OPTION_UNSUPPORTED), scoped to the implicit-body route; #7079
+      may later generalise it.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'μ e2e asserting ImplicitFeaOptionUnsupported for require_hex_wedge:
+        true.'
+  - name: code-ImplicitFeaOptionUnsupported
+    binding: 'producer-self (R6) — new reify-core DiagnosticCode variant ImplicitFeaOptionUnsupported
+      (μ; lead-pinned 2026-10-08); attached with .with_code(..) and its mnemonic carried
+      as the message prefix (the CLI prints `{severity}: {message}`, never the code).
+      Anchored on the 4-space variant line so doc prose and tests cannot match.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^    ImplicitFeaOptionUnsupported\b
+      expect: present
+      paths:
+      - crates/reify-core/src/diagnostics.rs
+  - name: mc-adaptivity-knob
+    binding: producer-self (R21, §10 Q3 decided) — an MC adaptivity knob `mc_adaptivity`
+      is added only if μ measures a need, read at the VolumeMesh-edge owner tessellation
+      via GeometryKernel::realize_mesh_from_voxel(handle, iso, adaptive); never sourced
+      from ElasticOptions.adaptive.
+    verdict: OPEN
+    delivered_check:
+      kind: manual
+      reason: a measurement μ makes; recorded in its task result.
+  - name: mc-surface-acceptable-to-gmsh
+    binding: producer-self (§9 assessed in μ) — whether OpenVDB volumeToMesh output
+      passes gmsh mesh_surface_to_volume is recorded.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: the e2e's convergence is the observation.
+- label: ν
+  task_id: 8405
+  title: 'implicit-solids ν: implicit() and the measurement builtins over component-wise
+    fn_field lambda fields; non-Point3<Length> domain refusal'
+  capabilities:
+  - name: lambda-coordinate-access-upstream
+    binding: 'producer-upstream — #6871 (hard edge): `.x/.y/.z` on a Point3 lambda
+      param and the `|p : Point3<Length>|` annotation. Vector3 projection is #6892,
+      not a dependency.'
+    verdict: PASS
+  - name: slice-upstream
+    binding: producer-upstream — leaf ε (implicit(), the ImplicitSolid lowering's
+      field-sampling step).
+    verdict: PASS
+  - name: measurement-upstream
+    binding: producer-upstream (R26; resolves the phase-A producer-downstream FAIL
+      measurement-builtins-accept-analytical-fields) — leaf θ.
+    verdict: PASS
+  - name: length-math-for-closed-form-sdf
+    binding: existing-substrate — sqrt/abs/max/min over Length evaluate on main (phase-A
+      probe isdec_integration_nu5.ri).
+    verdict: PASS
+  - name: analytical-grid-fill
+    binding: producer-self — the field-sampling step gains a FieldSourceKind::Analytical
+      branch (per-voxel lambda evaluation via reify-expr); its cost is recorded for
+      π.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: ν e2e building lambda_sdf.ri.
+  - name: lambda-example-component-wise
+    binding: 'producer-self (R26) — examples/implicit/lambda_sdf.ri indexes p.x/p.y/p.z
+      with sqrt/abs/max over an annotated `|p : Point3<Length>|` lambda (no Vector3
+      projection).'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '\|\w+ *: *Point3<Length>\|'
+      expect: present
+      paths:
+      - examples/implicit/lambda_sdf.ri
+  - name: lambda-example-realizes
+    binding: producer-self — the example passes the lambda field to implicit().
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: = *(\w+\.)*implicit\(
+      expect: present
+      paths:
+      - examples/implicit/lambda_sdf.ri
+  - name: domain-refusal
+    binding: producer-self (R26) — implicit()/measurement over a Field whose domain
+      is not Point3<Length> (e.g. an unannotated `fn_field(|p| ..)` typed Field<Real,
+      ..>, which `sample` silently accepts today) is refused with β's SdfInvalidArg
+      (negative fixture tests/prd-gate/fixtures/implicit_solids_lambda_field.ri).
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: ν test over the fixture asserting the code, not the exit status.
+  - name: self-documented
+    binding: 'producer-self (R27) — ν documents lambda-field acceptance in fields.md
+      in its own diff (ο does not wait on #6871).'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: fence gate + PDOCCOVER stay green in ν's diff.
+- label: ξ
+  task_id: 8406
+  title: 'implicit-solids ξ: imported VDB SDF → sdf_from_samples → implicit → STL
+    — Rust test-time generator, named fixture and floor'
+  capabilities:
+  - name: imported-sdf-grammar-fixture
+    binding: grammar-fixture — tests/prd-gate/fixtures/implicit_solids_imported_sdf.ri
+      (20 mm cube VDB at extent 21 mm, feature 2 mm; D3 2026-10-08 measured finite
+      samples only to ≈ 11 mm from the centre for a band-3, 0.5 mm-voxel cube) parses
+      with 0 ERROR nodes; landed by the decompose carrier. **Evidence only.**
+    verdict: PASS
+  - name: domain-form-upstream
+    binding: producer-upstream (R14, R24) — leaf β owns sdf_from_samples' field-def
+      domain-form acceptance (removed from ξ's modules) and the Samples node.
+    verdict: PASS
+  - name: slice-upstream
+    binding: producer-upstream — leaf ε (implicit, ImplicitSolid, ingest).
+    verdict: PASS
+  - name: export-upstream
+    binding: 'producer-upstream — leaf η (OpenVdbKernel::export STL, riding #6308).'
+    verdict: PASS
+  - name: imported-field-def-syntax
+    binding: 'existing-substrate — top-level `field def X : Point3 -> Length { source
+      = imported { … format = OpenVDB … } }` (examples/imported_field/openvdb_stress.ri);
+      a missing file is a coded FieldImportFailed.'
+    verdict: PASS
+  - name: vdb-read-to-sampled-field
+    binding: existing-substrate — crates/reify-kernel-openvdb/src/ingest.rs::read_vdb_file
+      → lower_to_sampled; the path resolves against the process CWD.
+    verdict: PASS
+  - name: vdb-units-contract
+    binding: existing-substrate — ingest.rs::validate_grid_units checks dimension
+      only; write_vdb_grid writes no units metadata, so the fixture is SI metres with
+      no units tag.
+    verdict: PASS
+  - name: test-time-generator
+    binding: existing-substrate (R24) — OpenVdbKernel::realize_voxel_from_mesh + write_vdb_grid
+      into a tempdir, CLI run with CWD = tempdir via crates/reify-cli/tests/common/mod.rs::run_with_args_in
+      (precedent cli_imported_field_eval.rs); no committed binary, no Python (no pyopenvdb
+      on the host).
+    verdict: PASS
+  - name: named-fixture-and-floor
+    binding: producer-self (R24) — a 20 mm cube SDF in SI metres, no units tag, feature
+      2 mm ⇒ h 0.5 mm, A = 2400 mm² ⇒ floor 4,800 triangles (≈19.8 k expected); implicit()'s
+      extent stays inside the VDB bounds.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: the CLI test's floor assertion.
+  - name: imported-sdf-example
+    binding: producer-self — examples/implicit/imported_sdf_to_stl.ri, runnable only
+      from a directory holding fixtures/<x>.vdb (README note like examples/imported_field/README.md).
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: (sdf_|\.)from_samples\(
+      expect: present
+      paths:
+      - examples/implicit/imported_sdf_to_stl.ri
+  - name: imported-sdf-cli-test
+    binding: 'producer-self — a cfg(has_openvdb) harness_cli test: generate the VDB,
+      `reify build <example> -o out.stl` with CWD = tempdir, assert `Triangles: N
+      ≥ 4,800` and a 3-axis bbox.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: imported_sdf_to_stl\.ri
+      expect: present
+      paths:
+      - crates/reify-cli/tests
+- label: ο
+  task_id: 8407
+  title: 'implicit-solids ο: docs coherence — best-practices exemplar + INDEX row,
+    reify-design index line, discoverability, documented-signature smoke'
+  capabilities:
+  - name: exemplar-constraint-gate
+    binding: 'producer-self (critic M4) — examples/best_practices/implicit_solids.ri
+      is swept kernel-free by crates/reify-eval/tests/harness_corpus_gates/best_practices_constraint_gate.rs
+      (bidirectional EXPECTED_INDETERMINATE pin): its constraints are pure sdf_* sampling
+      (Satisfied kernel-free) or their rows are added in the same diff.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: best_practices_constraint_gate.rs stays green.
+  - name: per-leaf-chunk-lines-upstream
+    binding: producer-upstream (R27; resolves the phase-A producer-downstream FAIL
+      chunk-from-solid-and-sweep) — leaves β, ε, θ, ι, κ document their own names
+      in the same diff; ο's prereqs β, ε, φ, θ, ι, κ make every documented builtin
+      exist when ο lands.
+    verdict: PASS
+  - name: chunk-gates-exist
+    binding: existing-substrate — crates/reify-compiler/tests/harness_doc_chunks/{fence_gate.rs,
+      geometry_chunk_smoke.rs, callable_registries.rs} and tests/infra/test_reify_audit_pdoccover.sh
+      + crates/reify-audit/pdoccover-baseline.txt.
+    verdict: PASS
+  - name: best-practices-exemplar
+    binding: 'producer-self — examples/best_practices/implicit_solids.ri (best_practices_constraint_gate.rs:
+      constraints Satisfied or documented Indeterminate on the kernel-less surface).'
+    verdict: PASS
+    delivered_check:
+      kind: path
+      expect: present
+      paths:
+      - examples/best_practices/implicit_solids.ri
+  - name: best-practices-index-row
+    binding: producer-self — the INDEX.md row in the same commit (examples_smoke.rs::best_practices_index_matches_corpus_directory
+      is a bidirectional pin).
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: implicit_solids\.ri
+      expect: present
+      paths:
+      - examples/best_practices/INDEX.md
+  - name: reify-design-index-line
+    binding: producer-self — one-line index entry in .claude/skills/reify-design/SKILL.md
+      pointing at the corpus file.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: implicit_solids\.ri
+      expect: present
+      paths:
+      - .claude/skills/reify-design/SKILL.md
+  - name: intent-level-discoverability
+    binding: producer-self — 'check two parts don't collide', 'lattice', 'smooth blend'
+      find sdf_penetration / sdf_gyroid / sdf_smooth_union from the chunks or INDEX.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: intent-phrase assertions added to an existing harness_doc_chunks module
+        (geometry_chunk_smoke.rs style).
+  - name: coherence-smoke
+    binding: producer-self (R27) — a coherence pass with a smoke .ri compiling every
+      documented signature.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: the fence gate plus the smoke .ri compiling at zero Error.
+- label: π
+  task_id: 8408
+  title: 'implicit-solids π: end-to-end measurement baseline — docs/notes/implicit-solids-baseline.md'
+  capabilities:
+  - name: gate-fixture-upstream
+    binding: producer-upstream — leaf λ (the committed extracted fixture, the measured
+      subject).
+    verdict: PASS
+  - name: slice-upstream
+    binding: producer-upstream — leaf ε (smooth_bracket.ri).
+    verdict: PASS
+  - name: baseline-note
+    binding: producer-self (R28) — the note's header carries date, as-of SHA, release
+      profile, one-core method and host.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^\*\*As-of SHA:\*\* [0-9a-f]{10,40}
+      expect: present
+      paths:
+      - docs/notes/implicit-solids-baseline.md
+  - name: end-to-end-recipe
+    binding: producer-self (R28) — release `reify` built in the lane; `reify build`
+      / `reify check` under `taskset -c <one core>` with `/usr/bin/time -f '%e %U
+      %S'`, best-of-N, minus a trivial-module baseline, load average recorded; subjects
+      λ's extracted fixture and smooth_bracket.ri at feature 2 mm and 0.5 mm. No stage
+      split (no timer exists; §11 t1 is end-to-end; the phase-A producer-absent FAIL
+      stage-split-grid-fill-vs-marching-cubes-timing is dropped); stages named as
+      λ runs them (from_solid voxelisation, Sweep/FromSolid sampling, penetration
+      sampling — no marching cubes).
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: the committed note's numbers, reviewed by reading it.
+  - name: trigger-evaluator-named
+    binding: producer-self (R28) — the note names F3 (the Fidget evaluator re-open
+      decision) as the trigger evaluator.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: note review; F3's task id is backfilled by the lead.
+- label: ρ
+  task_id: 8409
+  title: 'implicit-solids ρ: re-home sdf_* under std.implicit — mechanism, name table,
+    SdfDeprecatedBareName, value-asserting signal'
+  capabilities:
+  - name: qualified-lookup-upstream
+    binding: 'producer-upstream — #5505 (hard edge): qualified `<binding>.Name` lookup.'
+    verdict: PASS
+  - name: std-import-resolution-upstream
+    binding: 'producer-upstream (R29; resolves the phase-A producer-extent-short FAIL
+      import-std-implicit-resolves) — #5500 (hard edge), the `import std.*` resolver.'
+    verdict: PASS
+  - name: stdlib-namespace-prereq-upstream
+    binding: 'producer-upstream — #5499 (hard edge), #5500''s prerequisite.'
+    verdict: PASS
+  - name: in-batch-upstream
+    binding: producer-upstream (R29) — leaves σ (wrapper route needs it), ο, λ, μ,
+      ν, ξ (ρ migrates every in-repo bare use, so it lands after every leaf that authors
+      one).
+    verdict: PASS
+  - name: std-implicit-module
+    binding: producer-self (R29) — a real std.implicit stdlib module.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^module std\.implicit\b
+      expect: present
+      paths:
+      - crates/reify-compiler/stdlib
+  - name: names-reach-builtins
+    binding: 'producer-self (R29; resolves the phase-A producer-extent-short FAIL
+      qualified-call-reaches-builtin-backed-names and, via σ, the producer-downstream
+      FAIL wrapper-route-silent-undef-s6) — std.implicit''s pub names reach the Rust
+      builtins through wrapper .ri fns or a builtin-namespace alias table: ρ''s design.'
+    verdict: OPEN
+    delivered_check:
+      kind: manual
+      reason: the value-asserting signal below.
+  - name: name-table
+    binding: producer-self (R29) — an explicit name table (sdf_box → std.implicit.box,
+      …, plus the names for sdf_volume, sdf_from_solid and sdf_sweep); `implicit`,
+      like `isosurface`, stays a bare geometry-constructor name (critic M1), so ε's
+      and ν's `implicit(` checks survive ρ.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: the table in ρ's task text and chunk docs.
+  - name: code-SdfDeprecatedBareName
+    binding: 'producer-self (R6) — new reify-core DiagnosticCode variant SdfDeprecatedBareName
+      (Warning; ρ; one emit site); attached with .with_code(..) and its mnemonic carried
+      as the message prefix (the CLI prints `{severity}: {message}`, never the code).
+      Anchored on the 4-space variant line so doc prose and tests cannot match.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^    SdfDeprecatedBareName\b
+      expect: present
+      paths:
+      - crates/reify-core/src/diagnostics.rs
+  - name: bare-names-kept-one-release
+    binding: producer-self (R29) — bare names keep resolving for one minor release
+      with the SdfDeprecatedBareName Warning, message-prefixed.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'ρ test: sdf_box(..) still evaluates and warns.'
+  - name: value-asserting-signal
+    binding: producer-self (R29) — `import std.implicit as sdf; … sdf.box(..)` asserted
+      on an EVALUATED value (unresolved qualified calls exit 0 today); grammar probe
+      tests/prd-gate/fixtures/implicit_solids_namespace_rehome.ri.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: ρ eval test printing the sampled value.
+  - name: in-repo-migration
+    binding: producer-self (R29) — every in-repo bare use migrated (examples/implicit/*,
+      printer.ri, the chunks and exemplar); ρ documents itself (R27).
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: review of ρ's diff; the deprecation warning count over examples/ is
+        zero after it.
+- label: σ
+  task_id: 8393
+  title: 'implicit-solids σ: stdlib .ri functions invisible inside user fn bodies
+    (S-6)'
+  capabilities:
+  - name: s6-reproduces-on-main
+    binding: 'existing-substrate (R17) — any stdlib .ri pub fn called from a user
+      fn body evaluates to Undef (probed: pointwise_min, compose, threshold, standard_bolt_lengths);
+      the direct call works.'
+    verdict: PASS
+  - name: cause-area
+    binding: existing-substrate (R17) — crates/reify-compiler/src/compile_builder/functions_phase.rs::phase_functions
+      compiles bodies against `&ctx.functions` before the prelude merge (traits_phase.rs
+      unverified).
+    verdict: PASS
+  - name: user-fn-sees-prelude-fns
+    binding: producer-self (R17) — user fn bodies compile against the user+prelude
+      table (user shadowing respected).
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: compiler/eval test below.
+  - name: signal-value-and-constraint
+    binding: producer-self (R17) — a user fn wrapping a field stdlib fn AND a non-field
+      stdlib fn, in value and constraint position, evaluates identically to the direct
+      call (Satisfied / equal value, never exit 0).
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: σ eval/check test.
+  - name: undef-provenance
+    binding: existing-substrate — any remaining Undef carries UndefCause OpContractFailed
+      via crates/reify-expr/src/lib.rs::push_op_contract_failure.
+    verdict: PASS
+  - name: no-beta-edge
+    binding: existing-substrate (R17) — sdf_* are Rust builtins (β's fn-wrapped combinator
+      guards that path), so no σ→β edge; σ is a prereq of ρ.
+    verdict: PASS
+- label: τ
+  task_id: 8394
+  title: 'implicit-solids τ: companion corrections (docs/yaml only) — Fidget supersession
+    notes, briefing, design-decisions pointer'
+  capabilities:
+  - name: multi-kernel-default-on-annotated
+    binding: producer-self (R30) — docs/prds/v0_2/multi-kernel.md's kernel-registration
+      paragraph ('All implemented kernels default-on') gains a Fidget-only supersession
+      note in a fixed blockquote template.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^> \*\*Superseded \(Fidget only
+      expect: present
+      paths:
+      - docs/prds/v0_2/multi-kernel.md
+  - name: phase3-kappa-entry-annotated
+    binding: producer-self (R30) — docs/prds/v0_3/multi-kernel-phase-3.md §8 Phase
+      5 task κ entry records 'kernel-level only; .ri signal superseded by implicit-solids'.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: kernel-level only.*superseded by.*implicit-solids
+      expect: present
+      paths:
+      - docs/prds/v0_3/multi-kernel-phase-3.md
+  - name: briefing-purpose-five-kernels
+    binding: 'producer-self (R30) — review/briefing.yaml''s constraints-and-geometry
+      purpose no longer says GeometryOps dispatch across five kernels including Fidget.
+      Anchored on the purpose sentence''s line. Accepted gap: a reworded claim passes;
+      no behavioural test covers briefing prose.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: GeometryOps dispatch across five kernels \(OCCT,$
+      expect: absent
+      paths:
+      - review/briefing.yaml
+  - name: briefing-fidget-valid-meshes-claim
+    binding: producer-self (R30) — the what_working_means item claiming Fidget dual-contouring
+      meshes is corrected. Anchored to the YAML list-item construct, not the bare
+      token. Same accepted gap.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^      - "OCCT primitives, booleans, transforms, selectors and export
+        produce valid output; Manifold booleans and Fidget dual-contouring
+      expect: absent
+      paths:
+      - review/briefing.yaml
+  - name: briefing-8010-known-gap
+    binding: 'producer-self (R30) — the known_gaps entry tracked as #8010 is replaced
+      (a cite to #8010 no longer has a live owner).'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '^        tracking: "#8010"$'
+      expect: absent
+      paths:
+      - review/briefing.yaml
+  - name: briefing-points-here
+    binding: producer-self (R30) — the corrected known_gaps entry cites the PRD and
+      F3.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: implicit-solids\.md
+      expect: present
+      paths:
+      - review/briefing.yaml
+  - name: design-decisions-10-6-points-here
+    binding: producer-self (R30) — docs/initial-design/geometry-engine-design-decisions.md
+      §10.6 points here.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: implicit-solids\.md
+      expect: present
+      paths:
+      - docs/initial-design/geometry-engine-design-decisions.md
+  - name: cites-f3
+    binding: producer-self (R30) — τ's edits cite F3 (the crate's live owner; G7 nothing-vacuous-and-unowned).
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: docs review; F3's task id is backfilled by the lead.
+  - name: docs-only
+    binding: existing-substrate (R30) — the realize_solid_sdf.rs doc fix moved to
+      ι, so τ touches docs/yaml only.
+    verdict: PASS
+- label: υ
+  task_id: 8399
+  title: 'implicit-solids υ: retire the declarative E_IMPLICIT_EXPORT_UNROUTED arm
+    and delete the variant'
+  capabilities:
+  - name: declarative-provenance-upstream
+    binding: 'producer-upstream — #6366 (hard edge): Value::GeometryHandle provenance
+      and owner-routed declarative export.'
+    verdict: PASS
+  - name: refusal-arm-upstream
+    binding: producer-upstream — leaf φ (the declarative arm and the variant).
+    verdict: PASS
+  - name: openvdb-export-upstream
+    binding: producer-upstream — leaf η (OpenVdbKernel::export; the CLI arm already
+      removed).
+    verdict: PASS
+  - name: declarative-arm-removed
+    binding: 'producer-self (R7) — the STLOutput/ThreeMFOutput refusal is removed
+      by identity. An `absent` grep cannot be written: the construct does not exist
+      on main today (φ introduces it), so the check would be vacuous at filing.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: the B21 twin below.
+  - name: variant-deleted
+    binding: producer-self (R7) — DiagnosticCode::ImplicitExportUnrouted is deleted.
+      Same vacuity reason as above; deletion is compiler-enforced at every reference.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: compile of the workspace + the B21 twin.
+  - name: b21-twin-flips
+    binding: 'producer-self (R7) — B21''s declarative twin flips: STLOutput/ThreeMFOutput
+      on an implicit body writes a non-degenerate artifact with no ImplicitExportUnrouted.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: build_outputs test on the export fixture.
+- label: ω
+  task_id: 8410
+  title: 'implicit-solids ω: PRD close — terminal Status header on the PRD and its
+    manifest'
+  capabilities:
+  - name: every-leaf-upstream
+    binding: 'producer-upstream — all 21 sibling leaves α β γ δ ε φ ζ η θ ι κ λ μ
+      ν ξ ο π ρ σ τ υ (real add_dependency edges). Out-of-batch chains (#5505/#5500,
+      #6871, #6308, #6660/#7052, #6366) may delay it (R35, accepted).'
+    verdict: PASS
+  - name: freeze-header-precedent
+    binding: existing-substrate — the headers of docs/prds/v0_6/data-carrying-enums.md
+      and docs/prds/kernel-seam-contracts.md; reify-audit --pattern PPRDSTATUS reads
+      the token.
+    verdict: PASS
+  - name: terminal-status-token
+    binding: producer-self — the PRD's Status line carries SHIPPED / SUPERSEDED /
+      WITHDRAWN. Line-start anchored to the header shape, scoped to the PRD alone.
+      The PRD is untracked at the evidence base; its authored header does not match.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^(> )?\*\*Status:?(\*\*)?:? *(\*\*)?(SHIPPED|Shipped|SUPERSEDED|Superseded|WITHDRAWN|Withdrawn)
+      expect: present
+      paths:
+      - docs/prds/v0_6/implicit-solids.md
+  - name: as-authored-freeze-and-manifest-header
+    binding: producer-self — the AS-AUTHORED paragraph, the LIVE vs AS-AUTHORED map,
+      landed leaf IDs, and the matching header on this .capability-manifest.md.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: the committed headers are the deliverable.

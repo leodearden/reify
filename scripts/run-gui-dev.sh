@@ -42,6 +42,15 @@
 #                  "Could not create GBM EGL display: EGL_NOT_INITIALIZED".
 #                  Export 0 to restore the DMABUF path where it works.
 #
+# REIFY_VITE_PORT  Defaults to 1420. The port vite serves on AND the page
+#                  reify-gui loads: the launched binary retargets
+#                  tauri.conf.json's devUrl to it at startup
+#                  (gui/src-tauri/src/dev_url.rs). Set it to run a second dev
+#                  session or an e2e smoke while :1420 is taken. vite.config.ts
+#                  `strictPort: true` keeps vite from drifting off it. Must be
+#                  1..65535; anything else is refused before any build, even
+#                  under REIFY_GUI_SKIP_PREFLIGHT.
+#
 # vite stdin       The dev server is spawned with stdin redirected from
 #                  /dev/null, so vite's interactive CLI shortcuts (r/u/o/q) are
 #                  unavailable BY DESIGN. Without the redirect, job control
@@ -78,7 +87,7 @@ if [ "$#" -lt 1 ]; then
     echo "" >&2
     echo "  <file>  path to a .ri source file" >&2
     echo "" >&2
-    echo "Launches reify-gui in dev mode (vite dev server on :1420 by default, devtools," >&2
+    echo "Launches reify-gui in dev mode (vite dev server on :\${REIFY_VITE_PORT:-1420}, devtools," >&2
     echo "MCP debug listener on :\${REIFY_DEBUG_PORT:-3939} via REIFY_DEBUG=1)." >&2
     echo "For release mode, use scripts/run-gui.sh." >&2
     exit 1
@@ -100,21 +109,19 @@ esac
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$REPO_ROOT"
 
-# Vite dev server port: default 1420, overridable via REIFY_VITE_PORT.
-# Used by tests/infra/test_run_gui_scripts.sh Test 25 to avoid collisions
-# with another worktree's vite already bound to :1420. See task 2308.
-#
-# TEST-ONLY KNOB — do NOT advertise it as a remedy for an occupied port.
-# It is honoured by the vite spawn (§4) and the readiness poll (§5) ONLY.
-# The launched binary does not read it: gui/src-tauri/tauri.conf.json pins
-# `"devUrl": "http://localhost:1420"`, which tauri bakes into reify-gui at
-# COMPILE time, and nothing under gui/src-tauri/src/ reads REIFY_VITE_PORT.
-# So overriding it for a real launch moves OUR vite off :1420 while reify-gui
-# still loads :1420 — i.e. the foreign listener that prompted the override,
-# or a connection-refused window — and the launcher reports success anyway.
-# Making it user-facing requires the GUI-side half first (a build-time devUrl
-# override via TAURI_CONFIG, or reading the env var in the Rust shell).
+# Vite dev server port. Validated here unconditionally — it is user input, not
+# an environment preflight, so REIFY_GUI_SKIP_PREFLIGHT does not skip it. The
+# length cap keeps the arithmetic test below clear of bash integer overflow.
 REIFY_VITE_PORT="${REIFY_VITE_PORT:-1420}"
+if ! [[ "$REIFY_VITE_PORT" =~ ^[0-9]+$ ]] || [ "${#REIFY_VITE_PORT}" -gt 5 ] \
+    || [ "$REIFY_VITE_PORT" -lt 1 ] || [ "$REIFY_VITE_PORT" -gt 65535 ]; then
+    echo "Error: REIFY_VITE_PORT='$REIFY_VITE_PORT' is not a TCP port (expected 1..65535)" >&2
+    exit 1
+fi
+# Exported so this one variable drives the vite spawn (§4), the readiness probe
+# (§5) AND the page reify-gui loads (it retargets tauri.conf.json's devUrl at
+# startup, gui/src-tauri/src/dev_url.rs).
+export REIFY_VITE_PORT
 
 # Debug server port: default 3939, overridable via REIFY_DEBUG_PORT.
 # Set per worktree to avoid collisions when running concurrent GUI smokes.
@@ -160,15 +167,16 @@ if [ "${REIFY_GUI_SKIP_PREFLIGHT:-}" != "1" ]; then
             _preflight_listener="$(ss -ltnpH "sport = :$REIFY_VITE_PORT" 2>/dev/null \
                 | grep -oE 'pid=[0-9]+' | head -1 | cut -d= -f2 || true)"
         fi
+        # Two remedies: free the listener, or relocate this launch — reify-gui
+        # follows REIFY_VITE_PORT, so a relocated launch loads its own vite.
+        # The launcher never relocates on its own: silently moving an
+        # interactive session would hide which vite the window shows.
         if [ -n "$_preflight_listener" ]; then
-            # Freeing the port is the ONLY remedy offered on purpose: see the
-            # REIFY_VITE_PORT comment at §1 — reify-gui's devUrl is baked to
-            # :1420 at compile time, so relocating vite would leave the GUI
-            # pointed at this very listener.
             echo "  Listener pid $_preflight_listener (\`ls -l /proc/$_preflight_listener/cwd\` shows which worktree it serves); free it with \`kill $_preflight_listener\`." >&2
         else
             echo "  Free the port before retrying." >&2
         fi
+        echo "  Or relocate this launch: REIFY_VITE_PORT=<free port> scripts/run-gui-dev.sh $FILE" >&2
         exit 1
     fi
 fi

@@ -19,7 +19,7 @@ vi.mock('../sandbox.js', () => ({
 
 // Mock node:fs with an in-memory virtual filesystem so tests never touch real /tmp.
 // session.ts calls mkdtempSync + writeFileSync on the first invokeSdk turn; tests that
-// read back the config (e.g. "writes reify-debug MCP config unconditionally") use
+// read back the config (e.g. the reify-debug MCP wiring describe) use
 // readFileSync and roundtrip through the same virtual map. destroy() calls unlinkSync
 // and rmdirSync, which are safe no-ops here since session.ts wraps them in try/catch.
 //
@@ -3109,17 +3109,43 @@ describe('SidecarSession permission-prompt wiring (step-3)', () => {
     const mcpIdx = callArgs.indexOf('--mcp-config');
     expect(mcpIdx).toBeGreaterThanOrEqual(0);
 
-    // (a3) The temp file contains both reify-debug and reify-permission entries
+    // (a3) Without a live reify-debug URL the temp file holds only reify-permission
     expect(capturedMcpConfig).toEqual({
       mcpServers: {
-        'reify-debug': {
-          type: 'http',
-          url: 'http://127.0.0.1:3939/mcp',
-        },
         'reify-permission': {
           type: 'http',
           url: permUrl,
         },
+      },
+    });
+  });
+
+  it('(a3-live) with a live reify-debug URL the MCP config holds both entries', async () => {
+    const { server } = makeMockPermissionServer();
+    const permUrl = 'http://127.0.0.1:29999/mcp';
+    const debugUrl = 'http://127.0.0.1:4500/mcp';
+
+    let capturedMcpConfig: unknown = null;
+    vi.mocked(spawn).mockImplementation((((_cmd: string, args: string[]) => {
+      capturedMcpConfig = JSON.parse(readFileSync(args[args.indexOf('--mcp-config') + 1], 'utf-8'));
+      return createMockProcess([{ type: 'result', session_id: 'sess-perm-a3-live' }]);
+    }) as any));
+
+    const session = new SidecarSession({
+      model: 'claude-opus-4-6',
+      workingDirectory: '/tmp/test-project',
+      systemPrompt: 'You are helpful.',
+      permissionMcp: { url: permUrl, server },
+      reifyDebugMcpUrl: debugUrl,
+    } as any);
+    session.onOutput = (msg) => outputs.push(msg);
+
+    await session.handleMessage({ type: 'send_message', id: 'msg-perm-a3-live', text: 'Hello' });
+
+    expect(capturedMcpConfig).toEqual({
+      mcpServers: {
+        'reify-debug': { type: 'http', url: debugUrl },
+        'reify-permission': { type: 'http', url: permUrl },
       },
     });
   });
@@ -3418,7 +3444,7 @@ describe('SidecarSession permission-prompt wiring (step-3)', () => {
   });
 });
 
-describe('SidecarSession reify-debug MCP wiring (task 3210)', () => {
+describe('SidecarSession reify-debug MCP wiring (task 3210; debug-only since 7816)', () => {
   let outputs: OutboundMessage[];
 
   beforeEach(() => {
@@ -3426,19 +3452,16 @@ describe('SidecarSession reify-debug MCP wiring (task 3210)', () => {
     vi.mocked(spawn).mockReset();
   });
 
-  it('writes reify-debug MCP config unconditionally (no permissionMcp)', async () => {
-    let capturedMcpConfig: unknown = null;
-    let capturedArgs: string[] = [];
+  interface Spawned {
+    args: string[];
+    mcpConfig: unknown;
+  }
 
+  async function spawnWith(reifyDebugMcpUrl: string | undefined): Promise<Spawned> {
+    const spawned: Spawned = { args: [], mcpConfig: null };
     vi.mocked(spawn).mockImplementation((((_cmd: string, args: string[]) => {
-      capturedArgs = args;
-      const mcpConfigIdx = args.indexOf('--mcp-config');
-      if (mcpConfigIdx !== -1) {
-        const filePath = args[mcpConfigIdx + 1];
-        try {
-          capturedMcpConfig = JSON.parse(readFileSync(filePath, 'utf-8'));
-        } catch {}
-      }
+      spawned.args = args;
+      spawned.mcpConfig = JSON.parse(readFileSync(args[args.indexOf('--mcp-config') + 1], 'utf-8'));
       return createMockProcess([{ type: 'result', session_id: 'sess-debug-mcp' }]);
     }) as any));
 
@@ -3446,26 +3469,34 @@ describe('SidecarSession reify-debug MCP wiring (task 3210)', () => {
       model: 'claude-opus-4-6',
       workingDirectory: '/tmp/test-project',
       systemPrompt: 'You are helpful.',
-      // No permissionMcp — reify-debug should still be written
+      reifyDebugMcpUrl,
     });
     session.onOutput = (msg) => outputs.push(msg);
-
     await session.handleMessage({ type: 'send_message', id: 'msg-debug-mcp', text: 'Hello' });
+    return spawned;
+  }
 
-    // --mcp-config must be present even without permissionMcp
-    const mcpIdx = capturedArgs.indexOf('--mcp-config');
-    expect(mcpIdx).toBeGreaterThanOrEqual(0);
-    expect(capturedArgs[mcpIdx + 1]).toBeTruthy();
+  function allowedTools(args: string[]): string {
+    return args[args.indexOf('--allowed-tools') + 1];
+  }
 
-    // MCP config contains reify-debug only (no reify-permission)
-    expect(capturedMcpConfig).toEqual({
-      mcpServers: {
-        'reify-debug': {
-          type: 'http',
-          url: 'http://127.0.0.1:3939/mcp',
-        },
-      },
-    });
+  it('(i) no live reify-debug URL: no reify-debug entry, no grant, and strict MCP config', async () => {
+    const { args, mcpConfig } = await spawnWith(undefined);
+
+    expect(mcpConfig).toEqual({ mcpServers: {} });
+    expect(allowedTools(args)).not.toContain('mcp__reify-debug__');
+    // Without --strict-mcp-config the CLI would also load ~/.claude.json and a
+    // project .mcp.json, which can define a FOREIGN reify-debug server.
+    expect(args).toContain('--strict-mcp-config');
+  });
+
+  it('(ii) a live reify-debug URL: registered verbatim and granted', async () => {
+    const url = 'http://127.0.0.1:4500/mcp';
+    const { args, mcpConfig } = await spawnWith(url);
+
+    expect(mcpConfig).toEqual({ mcpServers: { 'reify-debug': { type: 'http', url } } });
+    expect(allowedTools(args).endsWith('mcp__reify-debug__*')).toBe(true);
+    expect(args).toContain('--strict-mcp-config');
   });
 
   it('does NOT include --permission-prompt-tool when permissionMcp is not configured', async () => {
@@ -3539,7 +3570,7 @@ describe('SidecarSession permission-mode + allowed-tools (task 3210)', () => {
     const args = await runSession(true);
     const idx = args.indexOf('--allowed-tools');
     expect(idx).toBeGreaterThanOrEqual(0);
-    expect(args[idx + 1]).toBe('Read Edit Write Bash Glob Grep mcp__reify-debug__*');
+    expect(args[idx + 1]).toBe('Read Edit Write Bash Glob Grep');
   });
 
   it('(c) args do NOT contain --dangerously-skip-permissions (with permissionMcp)', async () => {
@@ -3558,7 +3589,7 @@ describe('SidecarSession permission-mode + allowed-tools (task 3210)', () => {
     const args = await runSession(false);
     const idx = args.indexOf('--allowed-tools');
     expect(idx).toBeGreaterThanOrEqual(0);
-    expect(args[idx + 1]).toBe('Read Edit Write Bash Glob Grep mcp__reify-debug__*');
+    expect(args[idx + 1]).toBe('Read Edit Write Bash Glob Grep');
   });
 
   it('(c) args do NOT contain --dangerously-skip-permissions (no permissionMcp)', async () => {
@@ -3920,28 +3951,19 @@ describe('virtual node:fs mock readFileSync semantics (task 3306)', () => {
   });
 });
 
-describe('REIFY_DEBUG_PORT env override (task 4340)', () => {
-  let outputs: OutboundMessage[];
-
+describe('REIFY_DEBUG_PORT alone never registers reify-debug (task 7816)', () => {
   beforeEach(() => {
-    outputs = [];
     vi.mocked(spawn).mockReset();
   });
 
-  it('uses REIFY_DEBUG_PORT=4500 in the MCP config url when set', async () => {
+  it('the sidecar derives no endpoint from the port', async () => {
     const savedPort = process.env['REIFY_DEBUG_PORT'];
     process.env['REIFY_DEBUG_PORT'] = '4500';
     try {
       let capturedMcpConfig: unknown = null;
       vi.mocked(spawn).mockImplementation((((_cmd: string, args: string[]) => {
-        const mcpConfigIdx = args.indexOf('--mcp-config');
-        if (mcpConfigIdx !== -1) {
-          const filePath = args[mcpConfigIdx + 1];
-          try {
-            capturedMcpConfig = JSON.parse(readFileSync(filePath, 'utf-8'));
-          } catch {}
-        }
-        return createMockProcess([{ type: 'result', session_id: 'sess-4340-port' }]);
+        capturedMcpConfig = JSON.parse(readFileSync(args[args.indexOf('--mcp-config') + 1], 'utf-8'));
+        return createMockProcess([{ type: 'result', session_id: 'sess-7816-port' }]);
       }) as any));
 
       const session = new SidecarSession({
@@ -3949,50 +3971,14 @@ describe('REIFY_DEBUG_PORT env override (task 4340)', () => {
         workingDirectory: '/tmp/test-project',
         systemPrompt: 'You are helpful.',
       });
-      session.onOutput = (msg) => outputs.push(msg);
-      await session.handleMessage({ type: 'send_message', id: 'msg-4340-port', text: 'Hello' });
+      session.onOutput = () => {};
+      await session.handleMessage({ type: 'send_message', id: 'msg-7816-port', text: 'Hello' });
 
-      expect((capturedMcpConfig as any)?.mcpServers?.['reify-debug']?.url).toBe(
-        'http://127.0.0.1:4500/mcp',
-      );
+      expect((capturedMcpConfig as any)?.mcpServers).not.toHaveProperty('reify-debug');
     } finally {
       if (savedPort === undefined) {
         delete process.env['REIFY_DEBUG_PORT'];
       } else {
-        process.env['REIFY_DEBUG_PORT'] = savedPort;
-      }
-    }
-  });
-
-  it('uses default port 3939 when REIFY_DEBUG_PORT is unset (back-compat)', async () => {
-    const savedPort = process.env['REIFY_DEBUG_PORT'];
-    delete process.env['REIFY_DEBUG_PORT'];
-    try {
-      let capturedMcpConfig: unknown = null;
-      vi.mocked(spawn).mockImplementation((((_cmd: string, args: string[]) => {
-        const mcpConfigIdx = args.indexOf('--mcp-config');
-        if (mcpConfigIdx !== -1) {
-          const filePath = args[mcpConfigIdx + 1];
-          try {
-            capturedMcpConfig = JSON.parse(readFileSync(filePath, 'utf-8'));
-          } catch {}
-        }
-        return createMockProcess([{ type: 'result', session_id: 'sess-4340-default' }]);
-      }) as any));
-
-      const session = new SidecarSession({
-        model: 'claude-opus-4-6',
-        workingDirectory: '/tmp/test-project',
-        systemPrompt: 'You are helpful.',
-      });
-      session.onOutput = (msg) => outputs.push(msg);
-      await session.handleMessage({ type: 'send_message', id: 'msg-4340-default', text: 'Hello' });
-
-      expect((capturedMcpConfig as any)?.mcpServers?.['reify-debug']?.url).toBe(
-        'http://127.0.0.1:3939/mcp',
-      );
-    } finally {
-      if (savedPort !== undefined) {
         process.env['REIFY_DEBUG_PORT'] = savedPort;
       }
     }

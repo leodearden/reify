@@ -30,7 +30,7 @@ use reify_core::ConstraintNodeId;
 use reify_core::{ContentHash, DiagnosticCode, DimensionVector, Severity, Type};
 use reify_eval::graph::ConstraintNodeData;
 use reify_eval::tolerance_combine::extract_output_tolerance_bound;
-use reify_ir::{CompiledExpr, PersistentMap, Satisfaction};
+use reify_ir::{CompiledExpr, IndeterminateReason, PersistentMap, Satisfaction, TransientReason};
 use reify_test_support::{make_simple_engine, parse_and_compile};
 use std::collections::BTreeMap;
 
@@ -909,6 +909,73 @@ fn measuring_surface_indeterminate_carries_no_attribution_diagnostic() {
     );
 }
 
+/// The RepresentationWithin entry's indeterminate reason, which must be a
+/// `MeasurementUnavailable` (the surface did not measure this subject).
+fn rw_measurement_detail(result: &reify_eval::CheckResult) -> String {
+    let rw_entry = result
+        .constraint_results
+        .iter()
+        .find(|e| e.id.entity == "Checker" && e.id.index == 0)
+        .expect("must have Checker#constraint[0] (RepresentationWithin)");
+    assert_eq!(rw_entry.satisfaction, Satisfaction::Indeterminate);
+    match &rw_entry.indeterminate_reason {
+        Some(IndeterminateReason::Transient(TransientReason::MeasurementUnavailable {
+            detail,
+        })) => detail.clone(),
+        other => panic!("expected a MeasurementUnavailable reason, got {other:?}"),
+    }
+}
+
+/// R1 on a NON-measuring surface: the RepresentationWithin Indeterminate records
+/// the same reason its attribution diagnostic states — one source rendered
+/// twice, so the CLI's strict detail and stderr cannot disagree.
+#[test]
+fn non_measuring_surface_records_the_attributed_reason() {
+    let compiled = parse_and_compile(NON_MEASURING_SURFACE_SOURCE);
+    let mut engine = make_simple_engine();
+
+    let result = engine.check(&compiled);
+
+    let detail = rw_measurement_detail(&result);
+    let attribution = result
+        .diagnostics
+        .iter()
+        .find(|d| {
+            d.severity == Severity::Info
+                && d.code == Some(DiagnosticCode::ConstraintIndeterminate)
+        })
+        .unwrap_or_else(|| panic!("expected the Info attribution, got {:#?}", result.diagnostics));
+    assert_eq!(
+        attribution.message,
+        format!("constraint Checker#constraint[0] indeterminate: {detail}")
+    );
+}
+
+/// R1 on a MEASURING surface whose subject key is unresolvable: the entry
+/// still records a reason even though no attribution DIAGNOSTIC is emitted
+/// (`measuring_surface_indeterminate_carries_no_attribution_diagnostic`). The
+/// reason is cause-neutral — this surface demonstrably measured, so blaming
+/// the kernel or pointing at `reify check` would be false.
+#[test]
+fn measuring_surface_indeterminate_records_a_cause_neutral_reason() {
+    let compiled = parse_and_compile(NON_MEASURING_SURFACE_SOURCE);
+    let mut engine = make_simple_engine();
+    engine.set_achieved_repr_tol_for_test(BTreeMap::from([(
+        "Unrelated#realization[0]".to_string(),
+        1e-9_f64,
+    )]));
+
+    let result = engine.check(&compiled);
+
+    let detail = rw_measurement_detail(&result);
+    for blame in ["kernel", "OCCT", "reify check"] {
+        assert!(
+            !detail.contains(blame),
+            "a surface that measured must not be blamed ({blame:?}): {detail}"
+        );
+    }
+}
+
 /// The combination neither measuring-surface guard covers: a MEASURING surface
 /// (non-empty `achieved_repr_tol`) whose subject key does not resolve AND whose
 /// subject operand is genuinely UNBOUND.
@@ -950,6 +1017,13 @@ fn measuring_surface_with_unbound_subject_still_attributes_the_undefined_input()
         rw_entry.satisfaction,
         Satisfaction::Indeterminate,
         "an unbound subject cannot be decided either way → Indeterminate"
+    );
+    assert_eq!(
+        rw_entry.indeterminate_reason,
+        Some(IndeterminateReason::Transient(TransientReason::UndefInputs {
+            cells: vec![reify_core::ValueCellId::new("Checker", "subject")],
+        })),
+        "the declined entry carries the checker's reason, not a surface reason"
     );
 
     let messages: Vec<&str> = result

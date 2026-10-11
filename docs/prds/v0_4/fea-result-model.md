@@ -104,6 +104,8 @@ An architect implementing the producer side should need nothing beyond this sect
 
 **Grid-metadata invariant (load-bearing for multi-case):** for a fixed `(body, options.element_order, options.mesh_size)`, the resample grid (`bounds_min/max`, `spacing`, `axis_grids`) is **identical** across solves — so two `ElasticResult`s for the same geometry satisfy `grids_equal` and feed `envelope_*`/`linear_combine` without `Undef`. The grid resolution is derived deterministically from the solve mesh (document the rule in α; default: one grid axis-count per solve `nx/ny/nz`).
 
+**Adaptive solves (#8246).** When the a-posteriori refinement loop ran at least one refine, every solve-derived field (`displacement`, `stress`, `divergence`, `gradient`, `curl`, `rotation`, `shear_angles`, `max_von_mises`, `converged`, `iterations`, `warm_started`) and `error_indicator` describe the loop's FINAL iterate, resampled onto the SEED solve's grid. The grid is therefore still a function of `(body, options.element_order, options.mesh_size)`, and adaptive and non-adaptive results for the same body satisfy `grids_equal`. `global_relative_energy_error` and `convergence_status` describe that same iterate, and so does the CG non-convergence Warning, which always names the solve `converged` reports. A zero-refine run reports the seed solve unchanged. The donated CG warm state stays the seed solve's, because the next request's seed solve runs on the seed mesh. One exception remains until #8248: when the uniform lane runs as a fallback for a REALIZED body it solves a placeholder box, so the realized seed's fields are kept.
+
 ### 4.2 Resample contract (producer: α)
 
 `resample_nodal_to_grid(nodes: &[[f64;3]], elems: &[[usize;4]], nodal_values: &[f64], stride: usize, grid: &GridSpec) -> SampledField`:
@@ -193,7 +195,7 @@ on main @ 959bf42094:
 | `FeaFailure` source | `FeaDiagnosticDetail` | Rides | Production site |
 |---|---|---|---|
 | `UnderConstrained{support_count:0}` | `Unconstrained{rigid_body_modes:[…6 DOF]}` | `Completed` (auto-clamp **warning**) | `elastic_static.rs:416` — **wired source** |
-| `SingularStiffness{element_id}` | `ProblemElements{ids:[ElementId]}` | `Failed` | `elastic_static.rs:708` (`classify_degenerate`, near-degenerate marginal case) — **wired source** |
+| `SingularStiffness(DegenerateTet)` | `ProblemElements{ids:[ElementId]}` | `Failed` | `elastic_static.rs` `solve_cantilever_fea` (`find_degenerate_tet`, the pre-assembly oriented shape-quality gate shared by every solve path) — **wired source** |
 | `SelectorNoMatch{selector}` | `UnresolvedSelector{selector_path}` | `Failed` | **no production source today** — `SelectorNoMatch` is never constructed in the solve path; gated on selector-BC failure emission (P2/4092, `structural-analysis-fea`). Channel-ready, data-deferred. |
 
 The headline rigid-body-arrows overlay rides **Completed-with-warning**, NOT

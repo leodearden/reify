@@ -398,7 +398,7 @@ export function describeUnscopedAmbiguity(payload, { testId, expectedMatchCount 
  * straight off the stores; a driver cannot, because THE WIRE EXPOSES NO PER-PANE
  * FEA STATE — `store_state` projects `viewports[id]` as `{meshCount}` alone, no
  * `get_fea_mode_state` tool exists, and `dom_query`'s literal
- * (`{exists, visible, text, tagName, bounds, ...paneDiagnostics}`) cannot read
+ * (`{exists, visible, hitTestable, text, tagName, bounds, ...paneDiagnostics}`) cannot read
  * `checked`. So the ONLY observable proxy for a pane's `enabled` flag is
  * conditional rendering: `FeaModeToolbar.tsx` gates its body on
  * `<Show when={!collapsed() && props.store.state.enabled}>` and renders

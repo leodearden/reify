@@ -61,10 +61,16 @@ mod cli_check_cfg;
 mod cli_check_cfg_example;
 #[path = "harness_cli/cli_check_connect_direction.rs"]
 mod cli_check_connect_direction;
+#[path = "harness_cli/cli_check_connect_undeclared_member.rs"]
+mod cli_check_connect_undeclared_member;
 #[path = "harness_cli/cli_check_parametric_rate.rs"]
 mod cli_check_parametric_rate;
 #[path = "harness_cli/cli_check_parametric_vec3.rs"]
 mod cli_check_parametric_vec3;
+#[path = "harness_cli/cli_check_qualified_ref_positions.rs"]
+mod cli_check_qualified_ref_positions;
+#[path = "harness_cli/cli_check_relate_family_exit.rs"]
+mod cli_check_relate_family_exit;
 #[path = "harness_cli/cli_check_result_prelude.rs"]
 mod cli_check_result_prelude;
 #[path = "harness_cli/cli_check_variant_construction.rs"]
@@ -83,6 +89,8 @@ mod cli_dfm_overhang;
 mod cli_dfm_thickness;
 #[path = "harness_cli/cli_doc.rs"]
 mod cli_doc;
+#[path = "harness_cli/cli_eval_annotation_after_valued_member.rs"]
+mod cli_eval_annotation_after_valued_member;
 #[path = "harness_cli/cli_eval_auto_resolve.rs"]
 mod cli_eval_auto_resolve;
 #[path = "harness_cli/cli_eval_data_carrying_enum.rs"]
@@ -131,6 +139,8 @@ mod cli_keyed_eval;
 mod cli_keyed_forall;
 #[path = "harness_cli/cli_materials_starter_library_golden.rs"]
 mod cli_materials_starter_library_golden;
+#[path = "harness_cli/cli_module_decl_remedy.rs"]
+mod cli_module_decl_remedy;
 #[path = "harness_cli/cli_module_visibility_example.rs"]
 mod cli_module_visibility_example;
 #[path = "harness_cli/cli_objective_inheritance_golden.rs"]
@@ -177,6 +187,8 @@ mod cli_tensegrity_t0a_golden;
 mod cli_tolerancing_eval;
 #[path = "harness_cli/cli_trait_assoc_fn_overload.rs"]
 mod cli_trait_assoc_fn_overload;
+#[path = "harness_cli/cli_transform_consumer_length_diag.rs"]
+mod cli_transform_consumer_length_diag;
 #[path = "harness_cli/cli_transform_twist_dimension_diag.rs"]
 mod cli_transform_twist_dimension_diag;
 #[path = "harness_cli/cli_type_hygiene_strict.rs"]

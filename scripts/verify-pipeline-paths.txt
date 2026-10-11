@@ -112,6 +112,19 @@ scripts/occt-touching-crates.txt
 scripts/release-sensitive-crates.txt
 scripts/verify-pipeline-infra-tests.txt
 scripts/gen-nextest-config.sh
+#
+# scripts/confirm-failed-manifest.sh (task 7423): the ONE JUnit-report reader
+#   behind `--confirm-failed`. Both callers are inside the verify pipeline —
+#   the recording pass's inline manifest write (fused into emit_nextest_pass's
+#   own PLAN command) and the confirm run's own derivation — and an edit here
+#   changes which test IDs the offline lane reports as confirmed-still-failing,
+#   i.e. what dark-factory files a fix task against. It is neither sourced by
+#   verify.sh nor named as a standalone add()/add_tool() plan leaf (it appears
+#   only WITHIN a larger mixed shell+cargo command string), so neither of
+#   verify-pipeline-guard.sh's auto-derivation clauses reaches it. This is the
+#   narrow residual the header's ONE QUALIFICATION paragraph describes, so a
+#   row is the correct registration rather than a redundant one.
+scripts/confirm-failed-manifest.sh
 .config/nextest.toml
 #
 # scripts/lib_slot_acquire.sh: shared slot-acquire core sourced TRANSITIVELY
@@ -190,6 +203,17 @@ tests/infra/run-all-ambient-vars.manifest
 #   for each is separately wired via scripts/verify-pipeline-infra-tests.txt.
 scripts/check-nan-safe-ordering.sh
 scripts/check-compute-trampoline-registration.sh
+#
+# scripts/lib_rust_production_view.sh (task 6202): the shared Rust
+#   literal/comment lexer sourced TRANSITIVELY by the two INV-FEA lint gates
+#   above (verify.sh → check-nan-safe-ordering.sh /
+#   check-compute-trampoline-registration.sh → lib_rust_production_view.sh).
+#   Not derivable from verify.sh's direct 'source "$SCRIPT_DIR/..."' lines nor
+#   from its emitted-gate paths, so verify-pipeline-guard.sh's auto-derivation
+#   misses it — same non-derivable property as scripts/lib_slot_acquire.sh. A
+#   lib-only edit changes what both gates can see, so it must route to the full
+#   --scope all gate rather than the merge-worker config fast-path.
+scripts/lib_rust_production_view.sh
 #
 # task-6243-followup (tkt_0RSKSDAK6WDWWR3N29RQ804T1B): CLOSED by task 6320 via
 #   auto-derivation (see the EMITTED GATE SCRIPTS note in the header) — all six

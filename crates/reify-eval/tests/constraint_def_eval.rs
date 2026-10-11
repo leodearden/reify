@@ -445,6 +445,7 @@ impl ConstraintChecker for LabelEmittingChecker {
                     diagnostics: ConstraintDiagnostics {
                         messages: vec![diagnostic],
                     },
+                    indeterminate_reason: None,
                 }
             })
             .collect()
@@ -536,6 +537,7 @@ impl ConstraintChecker for NonEmbeddingChecker {
                 diagnostics: ConstraintDiagnostics {
                     messages: vec![Diagnostic::error("wall thickness below minimum")],
                 },
+                indeterminate_reason: None,
             })
             .collect()
     }

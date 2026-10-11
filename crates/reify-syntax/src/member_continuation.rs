@@ -40,6 +40,16 @@
 //!    on a row strictly greater than `M`'s start row.
 //! 5. A row-leading `t` is **reported** when `d == 0` at the moment `t` is
 //!    inspected AND `t.start_position().column <= c0`.
+//! 6. For consecutive members `P`, `M` of one container, an `annotation` `M`
+//!    is **reported** at its `@` when it starts on a row after `P` ends AND at
+//!    a column greater than `P`'s start column. It is clause 5's mirror: the
+//!    layout says "continuation", but a selector `@` must share its base's
+//!    line (#8300), so the grammar starts a new member there.
+//! 7. Anywhere in the tree, not only in members, an `ad_hoc_selector` is
+//!    **reported** at its `@` when that `@` starts on a row after its `base`
+//!    ends. The scanner refuses such an `@` unless a block comment hides the
+//!    line break from it (see "Why post-parse"), so this clause is the check
+//!    that holds for that layout.
 //!
 //! Clause 5's column test says: the continuation begins at or to the LEFT of
 //! the member it continues, which is exactly the shape a reader parses as a
@@ -106,6 +116,13 @@
 //! binaries at risk, to police a rule that is purely about layout. Keeping the
 //! check here also keeps the merge surface against the pending 801-line
 //! `ts_parser.rs` change on `task/5392` down to the single call site.
+//!
+//! The one exception is the `@` row: since #8300 the scanner's `SELECTOR_AT`
+//! keeps a selector `@` on its base's line, and clause 6 reports the indented
+//! layout that change re-reads as an annotation. The scanner has one blind
+//! spot, which clause 7 covers. When a block comment opens the `@`'s line, the
+//! internal lexer lexes the comment as an extra, and the next scan starts after
+//! it, past the line break.
 //!
 //! # Severity: a hard failure on every entry path (measured, #7094 step-10)
 //!
@@ -293,9 +310,16 @@ pub(crate) fn check_member_continuations(root: tree_sitter::Node<'_>) -> Vec<(So
     // hold a `guarded_block` — so a match never prunes the descent.
     let mut stack = vec![root];
     while let Some(node) = stack.pop() {
+        if node.kind() == "ad_hoc_selector" {
+            check_selector_line(node, &mut out);
+        }
         if MEMBER_LIST_CONTAINERS.contains(&node.kind()) {
-            for member in members_of(node) {
+            let members = members_of(node);
+            for &member in &members {
                 check_member(member, &mut out);
+            }
+            for pair in members.windows(2) {
+                check_detached_annotation(pair[0], pair[1], &mut out);
             }
         }
         let mut cursor = node.walk();
@@ -398,6 +422,45 @@ fn check_member(member: tree_sitter::Node<'_>, out: &mut Vec<(SourceSpan, String
     }
 }
 
+/// Clause 6: report an annotation member `cur` that starts on a later row than
+/// `prev` ends, indented past `prev`'s start column. The span is its `@`.
+fn check_detached_annotation(
+    prev: tree_sitter::Node<'_>,
+    cur: tree_sitter::Node<'_>,
+    out: &mut Vec<(SourceSpan, String)>,
+) {
+    if cur.kind() != "annotation" {
+        return;
+    }
+    let col = cur.start_position().column;
+    let c0 = prev.start_position().column;
+    if cur.start_position().row > prev.end_position().row && col > c0 {
+        let at = cur.start_byte() as u32;
+        out.push((
+            SourceSpan::new(at, at + 1),
+            detached_annotation_message(col, c0),
+        ));
+    }
+}
+
+/// Clause 7: report an `ad_hoc_selector` whose `@` starts on a later row than
+/// its base ends. The span is the `@`.
+fn check_selector_line(selector: tree_sitter::Node<'_>, out: &mut Vec<(SourceSpan, String)>) {
+    let Some(base) = selector.child_by_field_name("base") else {
+        return;
+    };
+    let mut cursor = selector.walk();
+    let Some(at) = selector.children(&mut cursor).find(|c| c.kind() == "@") else {
+        return;
+    };
+    if at.start_position().row > base.end_position().row {
+        out.push((
+            SourceSpan::new(at.start_byte() as u32, at.end_byte() as u32),
+            detached_selector_message(),
+        ));
+    }
+}
+
 /// The stable head of every member-continuation diagnostic, and the ONLY text
 /// [`is_member_continuation_message`] matches on.
 ///
@@ -417,6 +480,28 @@ fn continuation_message(col: usize, c0: usize) -> String {
          the enclosing member's start column {c0}, but the grammar joins it onto that \
          member's expression rather than starting a new member; indent it past column \
          {c0} to continue the expression, or separate the members"
+    )
+}
+
+/// Clause 6's wording: like [`continuation_message`], it names both readings
+/// and both fixes, on one line.
+fn detached_annotation_message(col: usize, c0: usize) -> String {
+    format!(
+        "{MESSAGE_HEAD} this annotation starts at column {col}, past the preceding \
+         member's start column {c0}, so it reads as a continuation of that member, but a \
+         selector `@` must be on the same line as its base expression and the grammar \
+         starts a new member here; join it onto the line above to apply a selector, or \
+         start it at column {c0} to annotate the next member"
+    )
+}
+
+/// Clause 7's wording, naming both readings and both fixes on one line.
+fn detached_selector_message() -> String {
+    format!(
+        "{MESSAGE_HEAD} this selector `@` is on a later line than the expression it \
+         selects from, which a comment before it hid from the parser, but a selector `@` \
+         must be on the same line as its base expression; join it onto that line to apply \
+         a selector, or move the comment off this line to start an annotation"
     )
 }
 

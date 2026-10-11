@@ -1,0 +1,21 @@
+module getar_decl_match_let_construct_ok
+
+// PRD `docs/prds/v0_6/generic-enum-type-arg-retention.md` — leaf ε2
+// REGRESSION GUARD. MEASURED 2026-09-29, both binaries: check EXIT 0,
+// "All constraints satisfied."; eval prints `Bolt.r = Result::Ok`.
+// Accepted today only because the let-bound construction erases to
+// `Type::Enum("Result")`, which the decl-form match lowering accepts. Once δ
+// types the let `Applied{Result,[Length, ?E]}`, this file would be refused
+// ("expected an enum") unless ε2 has widened the discriminant check first.
+// EXPECTED after ε2 and after δ: unchanged, EXIT 0.
+
+structure def HexHead {}
+structure def SocketHead {}
+
+structure def Bolt {
+    let r = Ok { value: 5mm }
+    match r {
+        Ok => sub head : HexHead,
+        Err => sub head : SocketHead
+    }
+}

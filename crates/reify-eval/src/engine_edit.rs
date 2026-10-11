@@ -158,7 +158,10 @@ use crate::cell_eval_ctx::cell_eval_ctx;
 use crate::deps::{DependencyTrace, extract_dependency_trace};
 use crate::engine_admin::{ParamOverrideRejection, validate_param_override};
 use crate::engine_helpers::collect_member_list;
-use crate::graph::{ConstraintNodeData, EvaluationGraph, GuardedGroupInfo, RealizationNodeData};
+use crate::graph::{ConstraintNodeData, EvaluationGraph, GuardedGroupInfo};
+use crate::realization_staleness::{
+    compute_changed_realizations, realization_cone_seeds, stale_realization_entities,
+};
 use crate::warm_pool::WarmStatePool;
 use crate::{
     CheckResult, Engine, EngineError, EvalResult, EvaluationState, GuardLookup,
@@ -552,90 +555,15 @@ pub(crate) fn diff_realizations(
     })
 }
 
-/// Classify every realization in `new_graph` as CHANGED or UNCHANGED by
-/// recomputing its INPUT-cone hash against the post-edit context and
-/// comparing it to the prior node's stored `input_cone_hash`
-/// (selective-realization-eviction PRD task β, #4729).
-///
-/// # One helper, two compare sites (PRD §11.3)
-///
-/// This is the single comparison helper shared by both edit entry points,
-/// parameterised only by *where the prior hash lives*:
-///
-/// - `edit_param` does not rebuild the graph, so the persisting graph is
-///   both `prior_realizations` and `new_graph`.
-/// - `edit_source` does rebuild it, so `prior_realizations` is the OLD
-///   graph's realization map and `new_graph` is the new one.
-///
-/// # Why NOT `RealizationNodeData::content_hash` (design §5.2)
-///
-/// [`diff_realizations`] directly above keys on `content_hash`, which
-/// `EvaluationGraph::from_templates` builds (graph.rs:371-396) as
-/// `of_str(id) ⊕ combine_all(of_str(format!("{:?}", op)))` — a `Debug`
-/// render of the compiled op IR. A `Primitive{Box, args:[("width",
-/// ValueRef(width))]}` renders identically no matter what `width`
-/// *evaluates to*, so that hash provably never moves on a value-driven
-/// change. Keying eviction on it would compile, run, and silently evict
-/// nothing — the 4317-class trap design §5.2 warns about. This helper
-/// therefore uses the GHR-β INPUT-cone fold instead: the same canonical
-/// `compute_realization_upstream_values_hash_from_ops` (PRD D1 — never a
-/// second fold) that α's stored hash, the value-cell early cutoff, and the
-/// tag-28 in-memory geometry cache key all agree on.
-///
-/// The two are complementary, not alternatives: an ops-level source change
-/// is a real change that the input-cone fold could in principle miss, so
-/// `edit_source` UNIONs this result with `diff_realizations`' changed∪added
-/// sets rather than replacing them.
-///
-/// # Read-only with respect to `input_cone_hash`
-///
-/// This helper never writes the stored hash. That field means "the input
-/// cone **as of the last EXECUTION**" — owned by α's write inside
-/// `execute_realization_ops` and re-stamped by the build-time gate
-/// `refresh_and_gate_demanded_realizations`. Re-stamping it here, at EDIT
-/// time, would make that gate observe `stored == current` for a realization
-/// whose geometry is stale, mark it exempt from re-dispatch, and serve
-/// stale geometry — a textbook 4317-class stale.
-///
-/// # Conservative direction
-///
-/// A missing prior hash — `None` (never executed, demand-pruned, or
-/// un-hydrated) or no prior entry at all (newly added by a recompile) —
-/// classifies as CHANGED (PRD §11.2). Over-eviction is merely wasted work;
-/// under-eviction serves stale geometry, so every uncertain case rounds
-/// towards CHANGED.
-pub(crate) fn compute_changed_realizations(
-    prior_realizations: &PersistentMap<RealizationNodeId, RealizationNodeData>,
-    new_graph: &EvaluationGraph,
-    ctx: &reify_expr::EvalContext<'_>,
-) -> HashSet<RealizationNodeId> {
-    new_graph
-        .realizations
-        .iter()
-        .filter(|(rid, node)| {
-            let current = crate::engine_build::compute_realization_upstream_values_hash_from_ops(
-                &node.operations,
-                ctx,
-            );
-            let prior = prior_realizations
-                .get(*rid)
-                .and_then(|prior_node| prior_node.input_cone_hash);
-            // This single `!=` expresses all three §11.2 cases at once:
-            // a `None` prior — never executed, demand-pruned, or newly
-            // added — can never equal `Some(current)`, so it is CHANGED.
-            prior != Some(current)
-        })
-        .map(|(rid, _)| rid.clone())
-        .collect()
-}
-
-/// Seed the realization-driven dirty cone from `changed_realizations` and drop
-/// the cache entry of every node it reaches — the FIRST production caller of
+/// Seed the realization-driven dirty cone from `seeds` — the changed
+/// realizations plus the `Sub` consumers the reverse index cannot link
+/// ([`realization_cone_seeds`]) — and drop the cache entry of every node it
+/// reaches — the FIRST production caller of
 /// [`crate::dirty::compute_dirty_cone_with_realizations`]
 /// (selective-realization-eviction PRD task β, #4729).
 ///
 /// Shared by both edit seams so the ordering hazard below is handled in one
-/// place. A no-op when `changed_realizations` is empty, so a no-realization
+/// place. A no-op when `seeds` is empty, so a no-realization
 /// edit pays nothing for THIS half. (That is the PRD §6 zero-cost row for the
 /// propagation half only — the classification half,
 /// [`compute_changed_realizations`], still folds every realization's ops
@@ -724,16 +652,19 @@ pub(crate) fn compute_changed_realizations(
 /// Takes the cache, pool, graph and fields as separate parameters rather than
 /// `&mut self` so callers can pass disjoint `Engine` field borrows (the graph
 /// may live inside `self.eval_state`).
+///
+/// Returns the cone it invalidated (empty when there are no seeds), so the
+/// caller derives the eviction set from the same walk instead of a second one.
 fn invalidate_realization_dirty_cone(
     cache: &mut CacheStore,
     warm_pool: &mut WarmStatePool,
     graph: &EvaluationGraph,
     compiled_fields: &[reify_compiler::CompiledField],
     prebuilt_index: Option<&crate::deps::ReverseDependencyIndex>,
-    changed_realizations: &HashSet<RealizationNodeId>,
-) {
-    if changed_realizations.is_empty() {
-        return;
+    seeds: &HashSet<RealizationNodeId>,
+) -> HashSet<NodeId> {
+    if seeds.is_empty() {
+        return HashSet::new();
     }
     let rebuilt;
     let index = match prebuilt_index {
@@ -750,12 +681,8 @@ fn invalidate_realization_dirty_cone(
     // computed and applied upstream in both edit entries, so re-passing it
     // would be a harmless superset but pure redundant BFS on the P0 edit
     // latency path. The realization-driven cone is purely additive.
-    let dirty = crate::dirty::compute_dirty_cone_with_realizations(
-        &HashSet::new(),
-        changed_realizations,
-        index,
-        graph,
-    );
+    let dirty =
+        crate::dirty::compute_dirty_cone_with_realizations(&HashSet::new(), seeds, index, graph);
     for node in &dirty {
         // Capture the cost FIRST (`cost_per_byte_of` is read-only and stays
         // valid before the take), then take the warm state and donate both to
@@ -768,6 +695,7 @@ fn invalidate_realization_dirty_cone(
         }
         cache.invalidate(node);
     }
+    dirty
 }
 
 /// Drop-guard for the `pending_warm_seeds` staging map used in `Engine::edit_source`
@@ -1177,41 +1105,9 @@ impl Engine {
         let functions = Arc::clone(&self.functions);
         // Reset the per-edit guard-phase group evaluation counter before Phase 1.
         self.last_guard_phase_group_evals = 0;
-        // Auto-invalidate the realization cache: edit_param changes input
-        // parameter values, so any cached `GeometryHandleId` entries point at
-        // OLD geometry and would silently be served by a subsequent
-        // `build_snapshot()` cache-hit short-circuit. The reset mirrors the
-        // `topology_attribute_table` reset-at-hook-point pattern
-        // (`TopologyAttributeTable::default()` reset in
-        // `Engine::reset_per_build_state`, engine_build.rs): the engine
-        // cannot prove which cached entries survive a given edit without
-        // per-cell input-cone analysis we do not currently maintain, so we
-        // conservatively flush the entire cache on every edit. The next
-        // `build()` / `build_snapshot()` cold-misses on every realization
-        // and re-populates the cache from kernel execution. Pinned by
-        // `edit_param_clears_realization_cache_to_prevent_stale_handle_on_subsequent_build_snapshot`
-        // (task 2874, step-17).
-        //
-        // **Contract-lock (task 2874 step-20)**: this reset is symmetric with
-        // the `self.clear_realization_cache()` call near the entry of
-        // `Engine::edit_source`. Removing either reset, or
-        // reordering either function body so the reset moves AFTER any
-        // state mutation that could fail (which would let a stale cache
-        // leak when the edit returns Err),
-        // silently regresses the auto-invalidation hook. Both resets MUST
-        // co-exist near function entry; the symmetry is independently pinned
-        // by the test pair listed above plus
-        // `edit_source_clears_realization_cache_to_prevent_stale_handle_on_subsequent_build`
-        // (step-19).
-        //
-        // **Single-source the reset (task 2874 step-22)**: both auto-
-        // invalidation hooks (this one and the parallel `edit_source` reset)
-        // delegate to `Engine::clear_realization_cache` (engine_admin.rs)
-        // so the reset semantics are defined in exactly one place. The
-        // public mutator is the same primitive a production caller would
-        // invoke for out-of-band cache invalidation — see
-        // `clear_realization_cache_public_api_resets_cache_for_production_callers`.
-        self.clear_realization_cache();
+        // The realization cache is NOT flushed here: γ (#4730) evicts only the
+        // families this edit made stale, at the compare site near the end of
+        // this function.
         // Reset the test-instrumentation diff snapshot. The "most recent
         // edit_source call" invariant on `Engine::last_diff_value_cells()`
         // is enforced rather than documented — a subsequent edit_param
@@ -1267,11 +1163,7 @@ impl Engine {
         //
         // **Ordering (amend, review round 1 — `correctness`): this MUST sit
         // BELOW the `NotInitialized` / `CellNotFound` / `validate_param_override`
-        // guards**, which is the exact OPPOSITE requirement to the
-        // `clear_realization_cache()` contract-lock above (that one must sit
-        // before any fallible mutation so a stale handle cannot leak on an
-        // `Err` return). The two look co-locatable and are not, so they are
-        // deliberately kept apart.
+        // guards.**
         //
         // The reason is the field's semantics: the set is measured against the
         // input cone AS OF THE LAST EXECUTION, so it is cumulative across
@@ -1288,6 +1180,9 @@ impl Engine {
 
         // Clone snapshot and extract references (O(1) via PersistentMap)
         let parent_id = state.snapshot.id;
+        // γ (#4730): `edit_param` neither adds nor removes a realization, so
+        // its eviction set has no removed term. Asserted at the compare site.
+        let prior_realization_count = state.snapshot.graph.realizations.len();
         let mut new_snapshot = state.snapshot.clone();
 
         // Compute dirty cone and eval set while state borrow is active
@@ -3053,17 +2948,35 @@ impl Engine {
             // cascade, now live on the param path), its geometry-query
             // constraints and its downstream `Sub` realizations — non-fresh,
             // so the next eval re-dispatches them while unaffected consumers
-            // keep their cached result. `cache`, `warm_pool` and
-            // `compiled_fields` are disjoint `Engine` fields from
-            // `eval_state`, so these borrows coexist.
-            invalidate_realization_dirty_cone(
+            // keep their cached result. The walk also starts at every `Sub`
+            // consumer the index cannot link (`realization_cone_seeds`).
+            // `cache`, `warm_pool` and `compiled_fields` are disjoint `Engine`
+            // fields from `eval_state`, so these borrows coexist.
+            //
+            // γ (#4730, PRD D4): the collection re-elaboration above rewrites
+            // value cells only, so no realization was removed and the removed
+            // term is empty.
+            debug_assert_eq!(
+                graph.realizations.len(),
+                prior_realization_count,
+                "edit_param must not add or remove a realization: its eviction \
+                 set has no removed term"
+            );
+            let seeds = realization_cone_seeds(&self.last_changed_realizations, false, graph);
+            let cone = invalidate_realization_dirty_cone(
                 &mut self.cache,
                 &mut self.warm_pool,
                 graph,
                 &self.compiled_fields,
                 reusable_index,
-                &self.last_changed_realizations,
+                &seeds,
             );
+            // Evict the family of every realization the edit made stale and
+            // keep every other cached body.
+            let stale = stale_realization_entities(&seeds, [], &cone);
+            for entity in stale {
+                self.realization_cache.evict_family(&entity);
+            }
         }
 
         // Task 4532: passive would-prune measurement, deferred to here so that
@@ -3207,39 +3120,9 @@ impl Engine {
         if self.eval_state.is_none() {
             return Err(EngineError::NotInitialized);
         }
-        // Auto-invalidate the realization cache: edit_source rebuilds the
-        // snapshot from a (potentially) different `CompiledModule`, so any
-        // cached `GeometryHandleId` entries are stale (the underlying
-        // geometry ops, parameter defaults, or template structure may have
-        // changed) and would silently be served by a subsequent `build()` /
-        // `build_snapshot()` cache-hit short-circuit. The reset mirrors the
-        // `topology_attribute_table` reset-at-hook-point pattern
-        // (`TopologyAttributeTable::default()` reset in
-        // `Engine::reset_per_build_state`, engine_build.rs) and the
-        // parallel reset in `edit_param`. Pinned by
-        // `edit_source_clears_realization_cache_to_prevent_stale_handle_on_subsequent_build`
-        // (task 2874, step-19).
-        //
-        // **Contract-lock (task 2874 step-20)**: this reset is symmetric with
-        // the `self.clear_realization_cache()` call near the entry of
-        // `Engine::edit_param`. Removing either reset, or
-        // reordering either function body so the reset moves AFTER any
-        // state mutation that could fail (which would let a stale cache
-        // leak when the edit returns Err),
-        // silently regresses the auto-invalidation hook. Both resets MUST
-        // co-exist near function entry; the symmetry is independently pinned
-        // by the test pair listed above plus
-        // `edit_param_clears_realization_cache_to_prevent_stale_handle_on_subsequent_build_snapshot`
-        // (step-17).
-        //
-        // **Single-source the reset (task 2874 step-22)**: both auto-
-        // invalidation hooks (this one and the parallel `edit_param` reset)
-        // delegate to `Engine::clear_realization_cache` (engine_admin.rs)
-        // so the reset semantics are defined in exactly one place. The
-        // public mutator is the same primitive a production caller would
-        // invoke for out-of-band cache invalidation — see
-        // `clear_realization_cache_public_api_resets_cache_for_production_callers`.
-        self.clear_realization_cache();
+        // The realization cache is NOT flushed here: γ (#4730) evicts only the
+        // families this recompile made stale, at the compare site just before
+        // step (15)'s install.
         // selective-realization-eviction β (#4729): the changed-realization
         // set describes exactly ONE edit, so clear it at entry — symmetric
         // with the reset at `edit_param`'s entry. The real set is computed at
@@ -4872,14 +4755,26 @@ impl Engine {
             // to the work already done; `edit_param` is the P0 latency path
             // and gets the reuse. Pinned by
             // `edit_source_evicts_only_the_compute_node_downstream_of_the_moved_realization`.
-            invalidate_realization_dirty_cone(
+            let seeds = realization_cone_seeds(
+                &self.last_changed_realizations,
+                !removed_realizations.is_empty(),
+                &new_snapshot.graph,
+            );
+            let cone = invalidate_realization_dirty_cone(
                 &mut self.cache,
                 &mut self.warm_pool,
                 &new_snapshot.graph,
                 &self.compiled_fields,
                 None,
-                &self.last_changed_realizations,
+                &seeds,
             );
+            // γ (#4730, PRD D4/D7): evict the family of every realization the
+            // recompile made stale, including every realization it dropped,
+            // and keep every byte-identical body's cached geometry.
+            let stale = stale_realization_entities(&seeds, &removed_realizations, &cone);
+            for entity in stale {
+                self.realization_cache.evict_family(&entity);
+            }
         }
 
         // (15) Install the new snapshot, dep structures, and demand; record
@@ -8039,290 +7934,6 @@ structure GrowColl {
             ),
             other => panic!("expected Started payload Custom({expected_slug:?}), got {other:?}"),
         }
-    }
-
-    // ------------------------------------------------------------------
-    // selective-realization-eviction task β (#4729): the shared
-    // recompute-then-compare helper `compute_changed_realizations`.
-    //
-    // These are pure graph-level unit tests — no Engine, no kernel, no
-    // `.ri` source. The fixture style is copied from `dirty.rs:658-735`
-    // (literal `RealizationNodeData` / `ValueCellNode` construction over a
-    // hand-built `EvaluationGraph`), which is what makes the core §11.2
-    // contract testable without OCCT.
-    //
-    // Every expected hash is DERIVED by calling the canonical fold
-    // (`engine_build::compute_realization_upstream_values_hash_from_ops`,
-    // widened to `pub(crate)` by this task's prerequisite) rather than
-    // hard-coded — PRD D1 forbids a second fold, so the test must key on
-    // the same identity the production compare does. These are exact
-    // 32-byte equalities over a deterministic XXH3 fold; there is no
-    // tolerance anywhere.
-    // ------------------------------------------------------------------
-
-    /// Build a one-realization `EvaluationGraph` whose single
-    /// `Primitive{Box}` op reads `E.<cell>` through a `ValueRef` arg, so the
-    /// input-cone fold is non-trivial and moves with the `EvalContext`.
-    ///
-    /// `input_cone_hash` is whatever the caller supplies, standing in for
-    /// α's production write inside `execute_realization_ops`.
-    fn realization_graph_reading_cell(
-        rid: &reify_core::RealizationNodeId,
-        cell: &ValueCellId,
-        input_cone_hash: Option<[u8; 32]>,
-    ) -> EvaluationGraph {
-        use crate::graph::RealizationNodeData;
-        use reify_compiler::{CompiledGeometryOp, PrimitiveKind};
-        use reify_ir::ReprKind;
-
-        let mut graph = EvaluationGraph::default();
-        graph.realizations.insert(
-            rid.clone(),
-            RealizationNodeData {
-                id: rid.clone(),
-                operations: vec![CompiledGeometryOp::Primitive {
-                    kind: PrimitiveKind::Box,
-                    args: vec![(
-                        "width".to_string(),
-                        CompiledExpr::value_ref(cell.clone(), Type::dimensionless_scalar()),
-                    )],
-                }],
-                content_hash: ContentHash::of_str(&rid.to_string()),
-                produced_repr: ReprKind::BRep,
-                produced_kernel: None,
-                geometry_cell: None,
-                input_cone_hash,
-            },
-        );
-        graph
-    }
-
-    /// Long-lived empty meta-map for the β helper tests.
-    ///
-    /// `eval_ctx_with_meta` borrows the map for the whole lifetime of the
-    /// returned `EvalContext`, so it cannot be a `&HashMap::new()`
-    /// temporary. Same shape as `deps.rs:73`'s `EMPTY_SET`.
-    static NO_META: std::sync::LazyLock<HashMap<String, HashMap<String, String>>> =
-        std::sync::LazyLock::new(HashMap::new);
-
-    /// A `ValueMap` binding `cell` to the real number `v`.
-    fn values_binding(cell: &ValueCellId, v: f64) -> ValueMap {
-        let mut values = ValueMap::default();
-        values.insert(cell.clone(), Value::Real(v));
-        values
-    }
-
-    /// §11.2 case (a): the stored `input_cone_hash` equals the hash
-    /// recomputed over the SAME context → the realization is UNCHANGED and
-    /// must be absent from the returned set.
-    ///
-    /// This is the case that makes β selective at all: if it were ever to
-    /// regress into "always changed", γ's keyed eviction degenerates back
-    /// into the wholesale flush it is meant to replace.
-    #[test]
-    fn compute_changed_realizations_omits_realization_whose_input_cone_is_unmoved() {
-        use crate::engine_build::compute_realization_upstream_values_hash_from_ops;
-
-        let rid = reify_core::RealizationNodeId::new("E", 0);
-        let cell = ValueCellId::new("E", "wa");
-        let values = values_binding(&cell, 10.0);
-        let ctx = crate::eval_ctx_with_meta(&values, &[], &NO_META);
-
-        // Derive the "as of last execution" hash from the canonical fold
-        // over the very same ctx, exactly as α's production write does.
-        let probe = realization_graph_reading_cell(&rid, &cell, None);
-        let stored = compute_realization_upstream_values_hash_from_ops(
-            &probe.realizations.get(&rid).unwrap().operations,
-            &ctx,
-        );
-
-        let graph = realization_graph_reading_cell(&rid, &cell, Some(stored));
-        let changed = super::compute_changed_realizations(&graph.realizations, &graph, &ctx);
-
-        assert!(
-            changed.is_empty(),
-            "an unmoved input cone must not be reported changed, got: {changed:?}"
-        );
-    }
-
-    /// §11.2 case (b): the context moved, so the recomputed fold differs
-    /// from the stored hash → the realization IS in the set.
-    #[test]
-    fn compute_changed_realizations_reports_realization_whose_input_cone_moved() {
-        use crate::engine_build::compute_realization_upstream_values_hash_from_ops;
-
-        let rid = reify_core::RealizationNodeId::new("E", 0);
-        let cell = ValueCellId::new("E", "wa");
-
-        // "Last execution" was at wa = 10.
-        let old_values = values_binding(&cell, 10.0);
-        let old_ctx = crate::eval_ctx_with_meta(&old_values, &[], &NO_META);
-        let probe = realization_graph_reading_cell(&rid, &cell, None);
-        let stored = compute_realization_upstream_values_hash_from_ops(
-            &probe.realizations.get(&rid).unwrap().operations,
-            &old_ctx,
-        );
-
-        // The edit moved wa to 20.
-        let new_values = values_binding(&cell, 20.0);
-        let new_ctx = crate::eval_ctx_with_meta(&new_values, &[], &NO_META);
-
-        // Premise lock: the fold genuinely moves with the context. Without
-        // this the test could pass for the wrong reason (e.g. a fold that
-        // ignores its args would make EVERY realization look changed).
-        let recomputed = compute_realization_upstream_values_hash_from_ops(
-            &probe.realizations.get(&rid).unwrap().operations,
-            &new_ctx,
-        );
-        assert_ne!(
-            stored, recomputed,
-            "premise: the input-cone fold must move when a ValueRef arg's value moves"
-        );
-
-        let graph = realization_graph_reading_cell(&rid, &cell, Some(stored));
-        let changed = super::compute_changed_realizations(&graph.realizations, &graph, &new_ctx);
-
-        assert_eq!(
-            changed,
-            HashSet::from([rid.clone()]),
-            "a moved input cone must be reported changed"
-        );
-    }
-
-    /// §11.2 case (c), sub-case 1: the prior entry EXISTS but its
-    /// `input_cone_hash` is `None` — never executed, demand-pruned, or
-    /// un-hydrated. Conservatively CHANGED.
-    #[test]
-    fn compute_changed_realizations_reports_realization_with_no_stored_hash() {
-        let rid = reify_core::RealizationNodeId::new("E", 0);
-        let cell = ValueCellId::new("E", "wa");
-        let values = values_binding(&cell, 10.0);
-        let ctx = crate::eval_ctx_with_meta(&values, &[], &NO_META);
-
-        let graph = realization_graph_reading_cell(&rid, &cell, None);
-        let changed = super::compute_changed_realizations(&graph.realizations, &graph, &ctx);
-
-        assert_eq!(
-            changed,
-            HashSet::from([rid.clone()]),
-            "a realization that has never executed (input_cone_hash == None) must be \
-             conservatively reported changed (PRD §11.2)"
-        );
-    }
-
-    /// §11.2 case (c), sub-case 2: the realization is present in
-    /// `new_graph` but has NO prior entry at all — newly added by an
-    /// `edit_source` recompile. Conservatively CHANGED.
-    #[test]
-    fn compute_changed_realizations_reports_realization_absent_from_prior_map() {
-        use crate::engine_build::compute_realization_upstream_values_hash_from_ops;
-
-        let rid = reify_core::RealizationNodeId::new("E", 0);
-        let cell = ValueCellId::new("E", "wa");
-        let values = values_binding(&cell, 10.0);
-        let ctx = crate::eval_ctx_with_meta(&values, &[], &NO_META);
-
-        // The new graph's node even carries a matching stored hash — the
-        // point is that the PRIOR map is what is consulted, and it is empty.
-        let probe = realization_graph_reading_cell(&rid, &cell, None);
-        let stored = compute_realization_upstream_values_hash_from_ops(
-            &probe.realizations.get(&rid).unwrap().operations,
-            &ctx,
-        );
-        let new_graph = realization_graph_reading_cell(&rid, &cell, Some(stored));
-
-        let empty_prior: PersistentMap<
-            reify_core::RealizationNodeId,
-            crate::graph::RealizationNodeData,
-        > = PersistentMap::default();
-        let changed = super::compute_changed_realizations(&empty_prior, &new_graph, &ctx);
-
-        assert_eq!(
-            changed,
-            HashSet::from([rid.clone()]),
-            "a realization with no entry in the PRIOR map (newly added by a recompile) \
-             must be conservatively reported changed — the prior map, not the new \
-             node's own field, is the comparison source"
-        );
-    }
-
-    /// CHARACTERIZATION LOCK, not a behavioural assertion: the canonical
-    /// input-cone fold is BLIND to a boolean-kind flip.
-    ///
-    /// `compute_realization_upstream_values_hash_from_ops` folds only
-    /// `(arg_name, evaluated value)` pairs, and its match arm for a boolean is
-    /// `CompiledGeometryOp::Boolean { .. } => &[]` in `engine_build.rs` — so
-    /// the arg loop never runs and the op contributes NOTHING to the hash. No
-    /// arm mixes in the op discriminant, the op kind, the op count, or the
-    /// operand `GeomRef`s either. Two op vectors that differ only in a
-    /// `BooleanOp::Union` vs `BooleanOp::Difference` therefore fold to the
-    /// byte-identical 32-byte hash.
-    ///
-    /// This PASSES from the start. It is pinned as a first-class executable
-    /// fact because it is the load-bearing premise for the `edit_source`
-    /// carry-forward restriction: the input-cone fold cannot detect an
-    /// ops-only change, so the carry-forward must NOT rely on "the recomputed
-    /// fold will differ anyway" and must instead key on
-    /// `RealizationNodeData::content_hash`, which sees the op IR.
-    ///
-    /// If this test ever FAILS, the fold has gained op-identity coverage and
-    /// the `!changed_realizations.contains(rid)` skip in `edit_source` may be
-    /// relaxed. Do NOT "fix" it by weakening the assertion — the failure is
-    /// the signal.
-    ///
-    /// Exact byte equality over a deterministic XXH3 fold; no tolerance.
-    #[test]
-    fn input_cone_fold_is_blind_to_a_boolean_kind_flip() {
-        use crate::engine_build::compute_realization_upstream_values_hash_from_ops;
-        use reify_compiler::{BooleanOp, CompiledGeometryOp, GeomRef, PrimitiveKind};
-
-        let cell = ValueCellId::new("E", "wa");
-        let values = values_binding(&cell, 10.0);
-        let ctx = crate::eval_ctx_with_meta(&values, &[], &NO_META);
-
-        // Two boxes, then a boolean over them — the shape `compile_boolean`
-        // emits (`left_ops ++ right_ops ++ [Boolean{op,left,right}]`,
-        // geometry_boolean.rs:165-171).
-        let ops_with = |op: BooleanOp| -> Vec<CompiledGeometryOp> {
-            vec![
-                CompiledGeometryOp::Primitive {
-                    kind: PrimitiveKind::Box,
-                    args: vec![(
-                        "width".to_string(),
-                        CompiledExpr::value_ref(cell.clone(), Type::dimensionless_scalar()),
-                    )],
-                },
-                CompiledGeometryOp::Primitive {
-                    kind: PrimitiveKind::Box,
-                    args: vec![(
-                        "width".to_string(),
-                        CompiledExpr::value_ref(cell.clone(), Type::dimensionless_scalar()),
-                    )],
-                },
-                CompiledGeometryOp::Boolean {
-                    op,
-                    // Identical operands on both sides: the ONLY difference
-                    // between the two vectors is the `op` field itself.
-                    left: GeomRef::Step(0),
-                    right: GeomRef::Step(1),
-                },
-            ]
-        };
-
-        let union_hash =
-            compute_realization_upstream_values_hash_from_ops(&ops_with(BooleanOp::Union), &ctx);
-        let difference_hash = compute_realization_upstream_values_hash_from_ops(
-            &ops_with(BooleanOp::Difference),
-            &ctx,
-        );
-
-        assert_eq!(
-            union_hash, difference_hash,
-            "the input-cone fold must be blind to a union→difference flip — it folds \
-             only (arg_name, value) pairs and matches `Boolean {{ .. }} => &[]`. If this \
-             now DIFFERS the fold gained op-identity coverage; relax the edit_source \
-             carry-forward skip rather than weakening this lock."
-        );
     }
 
     /// A REJECTED `edit_param` must leave `last_changed_realizations` intact

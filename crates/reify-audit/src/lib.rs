@@ -48,7 +48,10 @@ pub mod ptodo;
 pub mod pdssentinel;
 pub mod pdiag;
 pub mod pdoccover;
+pub mod pdoccover_baseline;
 pub mod pdcheck;
+pub mod pcite;
+pub mod pprdstatus;
 pub mod pattern_flag;
 /// Crate-internal: shared scaffolding for the lanes that read the task DB.
 /// Not part of the detector API surface — the lanes are.
@@ -56,9 +59,16 @@ pub(crate) mod task_rows;
 /// Crate-internal: shared text-scanning primitives for the structural
 /// detectors. Not part of the detector API surface — the detectors are.
 pub(crate) mod scan_util;
+/// Not a detector: public only so the live-serve test harnesses decode MCP
+/// response bodies with the same function both clients use.
+pub mod mcp_wire;
+/// Crate-internal: the one rule for what counts as a completed MCP
+/// `initialize`, shared by both MCP clients.
+pub(crate) mod mcp_handshake;
 pub mod fused_memory_client;
 pub mod jcodemunch_client;
 pub mod jcodemunch_index;
+pub mod jcodemunch_seam;
 
 // -----------------------------------------------------------------------
 // Public surface — finding shape
@@ -85,6 +95,10 @@ pub enum Severity {
 /// - `P5PhantomDone` — phantom-done: commit provenance cannot be corroborated.
 /// - `P2ConsumerStub` — consumer task with stub markers in changed lines.
 /// - `P1ProducerOrphan` — producer with no non-test workspace callers.
+/// - `P1TaskUnexamined` / `P5LivePathUnexamined` — P1 / P5 H2 examined
+///   nothing where it should have. Per-task form: that task's
+///   `get_changed_symbols` query failed. Run-level form, `task_id` empty: the
+///   run had no usable jcodemunch seam from the start.
 /// - `P5MetadataFilesGitignored` — metadata-hygiene: gitignored paths in
 ///   `metadata.files` that should be stripped. Complement to `P5PhantomDone`
 ///   (medium-severity cleanliness signal, not a phantom-done).
@@ -111,6 +125,23 @@ pub enum Pattern {
     /// consumer task; flagged Medium past the 14-day grace window, Low
     /// within it. See `docs/architecture-audit/f-infra-design.md` §5 P1.
     P1ProducerOrphan,
+    /// P1 — task-unexamined: P1 examined nothing where it should have. Two
+    /// forms, told apart by `task_id` alone:
+    ///
+    /// - **per-task** (`task_id` = the task): a `done` task P1 could not
+    ///   examine because its `get_changed_symbols` query failed (see
+    ///   [`JCodemunchCallFailed`]);
+    /// - **run-level** (`task_id` empty, the convention the corpus-level
+    ///   detectors use): the run had no usable jcodemunch seam from the start
+    ///   — unreachable, handshake refused, or an unusable index — so P1
+    ///   examined no task. At most one per run; the summary names the reason
+    ///   ([`jcodemunch_seam::SeamUnavailable`]).
+    ///
+    /// Always Low, so it never moves the exit code. Its presence is what
+    /// stops such a sweep from reading as clean: without it, zero
+    /// producer-orphan findings would be indistinguishable from a range that
+    /// introduced nothing.
+    P1TaskUnexamined,
     /// Metadata-hygiene: one or more entries in `metadata.files` are
     /// gitignored paths that should be stripped. Distinct from `P5PhantomDone`
     /// (medium-severity cleanliness signal, not a phantom-done).
@@ -146,6 +177,19 @@ pub enum Pattern {
     /// See task 4140 / esc-4137-196 and
     /// `docs/architecture-audit/f-infra-design.md` §5 P5.
     P5LivePathStranded,
+    /// P5 — live-path-unexamined: H2 examined nothing where it should have.
+    /// H2's counterpart of [`Pattern::P1TaskUnexamined`], with the same two
+    /// forms told apart by `task_id`:
+    ///
+    /// - **per-task**: a cross-crate `done` task whose `get_changed_symbols`
+    ///   query failed;
+    /// - **run-level** (`task_id` empty): the run had no usable jcodemunch
+    ///   seam from the start, and it sweeps at least one task H2 would have
+    ///   queried for. At most one per run.
+    ///
+    /// Always Low, so it never moves the exit code; its presence stops zero
+    /// `P5LivePathStranded` findings from reading as clean.
+    P5LivePathUnexamined,
     /// PTODO — TODO-tracking-invariant: a TODO-family marker that is not backed
     /// by a *live* canonical `#NNNN` task citation. The §8.3 finding `kind` is
     /// carried as a stable summary prefix rather than a per-kind variant. Three
@@ -223,27 +267,32 @@ pub enum Pattern {
     /// PDOCCOVER — bidirectional registry↔chunk name drift between the
     /// compiler's builtin-name registries and the MCP language-reference
     /// chunks (`crates/reify-mcp/src/tools/chunks/*.md`). ONE detector, two
-    /// directions, five finding categories carried as a stable summary prefix
+    /// directions, its finding categories carried as a stable summary prefix
     /// (PTODO's `kind`-as-prefix convention above), all at
     /// [`Severity::High`]:
     ///
     /// - **Omission lane** — a `*_NAMES` registry entry in
     ///   `crates/reify-compiler/src/units.rs` that is not documented in any
-    ///   chunk, not marked `// pdoccover:allow — <reason>`, and not listed in
-    ///   `crates/reify-audit/pdoccover-baseline.txt` → `undocumented-name:`.
-    ///   Ratchet-honesty siblings: `stale-baseline-entry:` (a baselined name
-    ///   that IS documented) and `stale-allow-entry:` (an allow-marked name
-    ///   that IS documented).
+    ///   chunk, not marked `// pdoccover:allow — <reason>`, and not ledgered
+    ///   as a bare-name row → `undocumented-name:`. Ratchet-honesty sibling:
+    ///   `stale-allow-entry:` (an allow-marked name that IS documented).
     /// - **Fabrication lane** — a call-shaped name documented in a chunk that
-    ///   exists nowhere in the compiler/stdlib sources → `fabricated-name:`.
+    ///   exists nowhere in the compiler/stdlib sources and is not ledgered as
+    ///   a `<chunk path>:<name>` row → `fabricated-name:`.
     /// - Both lanes share `allow-missing-reason:` — a `pdoccover:allow` token
     ///   with a blank reason body confers NO exemption and is itself a finding.
+    /// - `stale-baseline-entry:` — a row of the committed ledger
+    ///   `crates/reify-audit/pdoccover-baseline.txt` that settles no live debt.
+    /// - `census-empty:` / `no-chunks:` — no registry name, or no readable
+    ///   chunk (a failed `git ls-files` is both): the run's ONLY finding, so a
+    ///   tree PDOCCOVER never read cannot report clean.
     ///
-    /// **Opt-in only** (`is_some_and`, mirroring PDEAD/PUNTESTED/PLAYER): the
-    /// census is non-empty until #5480 seeds the baseline, and the CLI exit
-    /// code is the High-severity count, so joining the no-`--pattern` default
-    /// sweep would drown every other detector. Structural: reads the working
-    /// tree via `ls_files()` + `std::fs`, never contacts jcodemunch.
+    /// **Opt-in only**, like PDIAG: the exit code is the High-severity count,
+    /// so a drifting ledger in the no-`--pattern` default sweep would move
+    /// every bare `reify-audit` exit code. The hard gate over the committed
+    /// ledger is `tests/infra/test_reify_audit_pdoccover.sh`. Structural:
+    /// reads the working tree via `ls_files()` + `std::fs`, never contacts
+    /// jcodemunch.
     ///
     /// Reference: `docs/prds/v0_6/doc-chunk-truth-enforcement.md` §(b) / leaf γ.
     PDocCover,
@@ -274,6 +323,23 @@ pub enum Pattern {
     ///
     /// Reference: `docs/architecture-audit/f-infra-design.md` §5.
     PDeliveredCheckPath,
+    /// PCITE — capability-manifest cite lane: a symbol a
+    /// `docs/prds/**/*.capability-manifest.md` row cites as `grep:` evidence
+    /// that no tracked source outside `docs/` and markdown contains. Two kinds,
+    /// carried as a stable summary prefix (PTODO's `kind`-as-prefix convention
+    /// above): `fabricated-cite:` (one per manifest and name) and
+    /// `allow-missing-reason:` (a `pcite:allow` marker with no reason body,
+    /// which exempts nothing). Each carries one [`EvidenceRef::FileLine`]:
+    /// the manifest line, and the cited symbol for `fabricated-cite:`.
+    ///
+    /// **Medium only** — report-only and exit-neutral, so the lane cannot gate
+    /// even when selected. Opt-in, like PDIAG/PDOCCOVER/PDCHECK. Structural:
+    /// reads the working tree via `ls_files()` + `std::fs`, never contacts
+    /// jcodemunch. Grammar, oracle and their measured basis: `pcite.rs`.
+    PManifestCite,
+    /// PPRDSTATUS — PRD status-prose drift. The [`pprdstatus`] module doc is
+    /// the canonical definition of its lanes, inputs and opt-in rationale.
+    PPrdStatus,
 }
 
 /// A pointer to forensic evidence supporting a [`Finding`]. Renders verbatim
@@ -283,6 +349,16 @@ pub enum Pattern {
 pub enum EvidenceRef {
     /// Filesystem path relative to `project_root`.
     File { path: String },
+    /// One line of a file relative to `project_root`, and the `symbol` on it
+    /// the finding is about — `None` when the finding is about the line
+    /// itself. A detector that reports several findings per file carries
+    /// each one's handle here, so a consumer (the `/audit` dedupe key, a
+    /// follow-up title) reads it rather than parsing it out of the summary.
+    FileLine {
+        path: String,
+        line: usize,
+        symbol: Option<String>,
+    },
     /// A git commit by SHA + first-line subject.
     Commit { sha: String, subject: String },
     /// One or more entries from a task's `metadata.files`.
@@ -1652,6 +1728,27 @@ pub struct LayerViolation {
     pub rule: String,
 }
 
+/// A [`JCodemunchOps`] query that failed outright, as distinct from one that
+/// answered with nothing. Carried by
+/// [`JCodemunchOps::get_changed_symbols`]'s `Err` so a caller can report the
+/// range it could not examine instead of reading the failure as empty.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JCodemunchCallFailed {
+    /// The jcodemunch tool whose call failed, e.g. `"get_changed_symbols"`.
+    pub tool: &'static str,
+    /// The client's description of the failure (transport, timeout, or an
+    /// error envelope).
+    pub detail: String,
+}
+
+impl std::fmt::Display for JCodemunchCallFailed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "jcodemunch {} call failed: {}", self.tool, self.detail)
+    }
+}
+
+impl std::error::Error for JCodemunchCallFailed {}
+
 /// Source-introspection operations the P1 detector needs. Production: a
 /// jcodemunch-MCP-backed impl supplied by the T-4 CLI. Tests:
 /// [`MockJCodemunchOps`] (gated behind `feature = "test-support"`) holds
@@ -1668,8 +1765,16 @@ pub trait JCodemunchOps {
     /// commit range `since_sha..until_sha`. Typically `since_sha = "{commit}^1"`
     /// and `until_sha = "{commit}"` for a single merged commit (mirrors the
     /// `^1..commit` convention from `RealGitOps::diff_added_lines_in_commit`).
-    /// Returns an empty vec when the range is empty or the commits are not found.
-    fn get_changed_symbols(&self, since_sha: &str, until_sha: &str) -> Vec<ChangedSymbol>;
+    ///
+    /// `Ok` with an empty vec means the range introduced nothing (or its
+    /// commits are not in the index). `Err` means the query itself failed —
+    /// unreachable mid-sweep, timed out, an error envelope — and must never
+    /// be read as empty: the range went unexamined.
+    fn get_changed_symbols(
+        &self,
+        since_sha: &str,
+        until_sha: &str,
+    ) -> Result<Vec<ChangedSymbol>, JCodemunchCallFailed>;
 
     /// Equivalent of `mcp__jcodemunch__find_references(symbol)`: every
     /// non-declaration reference of the symbol across the workspace, scoped
@@ -1700,31 +1805,31 @@ pub trait JCodemunchOps {
 
 /// Inert [`JCodemunchOps`] — every query answers "nothing".
 ///
-/// Unlike [`MockJCodemunchOps`] this is NOT test-support: it is the production
-/// binding whenever a run does not need the jcodemunch seam at all, and it is
-/// ungated for exactly that reason. Three call sites, all of them real:
+/// Its `Ok(vec![])` from `get_changed_symbols` is not a statement about any
+/// range: no query was made. Unlike [`MockJCodemunchOps`] this is NOT
+/// test-support: it is the production binding whenever a run has no live
+/// seam, and it is ungated for exactly that reason. Its production call sites:
 ///
 /// 1. `--no-jcodemunch` — the explicit offline escape hatch: P1 runs and
 ///    produces zero findings without opening a socket.
-/// 2. Detector runs that never touch the seam (`needs_jcodemunch() == false`):
-///    P5/pre-done, P2-only, and the purely structural lanes (PTODO, PDIAG).
-/// 3. `pdiag-baseline-gen`, a structural census that still has to populate
+/// 2. Detector runs that never touch the seam (`needs_jcodemunch() == false`).
+/// 3. The fallback for a needed seam that is unreachable, refused the
+///    handshake, or sits over an unusable index
+///    ([`jcodemunch_seam::Seam::Unavailable`]). The bin records the affected
+///    detectors as unexamined in that case, so their silence is not read as
+///    a clean result.
+/// 4. The `*-baseline-gen` structural censuses, which still have to populate
 ///    [`AuditContext`]'s field.
-///
-/// Lives here rather than in each bin because it was copy-pasted into three of
-/// them, so every future change to the trait had to be replayed by hand in
-/// three places — a silent drift hazard with no compiler backstop until one
-/// copy stopped building. Two of the three now bind this one.
-///
-/// The third, `src/bin/ptodo-baseline-gen.rs`, still carries a private copy
-/// that re-opens that hazard in the one bin that still has it — a residual
-/// defect, not a design choice, tracked as #7132.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct NoopJCodemunchOps;
 
 impl JCodemunchOps for NoopJCodemunchOps {
-    fn get_changed_symbols(&self, _since_sha: &str, _until_sha: &str) -> Vec<ChangedSymbol> {
-        vec![]
+    fn get_changed_symbols(
+        &self,
+        _since_sha: &str,
+        _until_sha: &str,
+    ) -> Result<Vec<ChangedSymbol>, JCodemunchCallFailed> {
+        Ok(vec![])
     }
     fn find_references(&self, _symbol: &ChangedSymbol) -> Vec<SymbolReference> {
         vec![]
@@ -1753,7 +1858,8 @@ impl JCodemunchOps for NoopJCodemunchOps {
 #[cfg(any(test, feature = "test-support"))]
 #[derive(Debug, Default)]
 pub struct MockJCodemunchOps {
-    get_changed_symbols: HashMap<(String, String), Vec<ChangedSymbol>>,
+    get_changed_symbols:
+        HashMap<(String, String), Result<Vec<ChangedSymbol>, JCodemunchCallFailed>>,
     find_references: HashMap<(String, String), Vec<SymbolReference>>,
     dead_code: Vec<DeadSymbol>,
     untested: Vec<UntestedSymbol>,
@@ -1778,7 +1884,17 @@ impl MockJCodemunchOps {
         symbols: Vec<ChangedSymbol>,
     ) {
         self.get_changed_symbols
-            .insert((since_sha.to_string(), until_sha.to_string()), symbols);
+            .insert((since_sha.to_string(), until_sha.to_string()), Ok(symbols));
+    }
+
+    // G-allow: test-support fixture (feature = "test-support"); not consumed in production builds
+    pub fn fail_changed_symbols(&mut self, since_sha: &str, until_sha: &str, detail: &str) {
+        let failure = JCodemunchCallFailed {
+            tool: "get_changed_symbols",
+            detail: detail.to_string(),
+        };
+        self.get_changed_symbols
+            .insert((since_sha.to_string(), until_sha.to_string()), Err(failure));
     }
 
     // G-allow: test-support fixture (feature = "test-support"); not consumed in production builds
@@ -1809,11 +1925,15 @@ impl MockJCodemunchOps {
 
 #[cfg(any(test, feature = "test-support"))]
 impl JCodemunchOps for MockJCodemunchOps {
-    fn get_changed_symbols(&self, since_sha: &str, until_sha: &str) -> Vec<ChangedSymbol> {
+    fn get_changed_symbols(
+        &self,
+        since_sha: &str,
+        until_sha: &str,
+    ) -> Result<Vec<ChangedSymbol>, JCodemunchCallFailed> {
         self.get_changed_symbols
             .get(&(since_sha.to_string(), until_sha.to_string()))
             .cloned()
-            .unwrap_or_default()
+            .unwrap_or_else(|| Ok(vec![]))
     }
 
     fn find_references(&self, symbol: &ChangedSymbol) -> Vec<SymbolReference> {

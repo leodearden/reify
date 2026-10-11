@@ -659,48 +659,26 @@ fn type_to_string(ty: &Type) -> String {
 /// Render a declaration's type parameters to display strings, one per param,
 /// in declaration order (task #6342).
 ///
-/// Each param renders as `name`, then `": "` followed by its bounds joined
-/// with `" + "` when it has any, then `" = "` followed by its default when it
-/// has one — e.g. `T`, `Q: Dimension`, `T: A + B`, `T = Real`.
+/// Each entry comes from [`reify_ast::render_type_param`]. The default goes in
+/// as the resolved `Type`, so it renders semantically (e.g. `Scalar[m]`).
 ///
 /// `reify-doc` is a pure-data crate with no `reify-ir` dependency, so the
 /// rendering has to happen here rather than in a `Display` impl consumed by
 /// the formatters.
 ///
 /// `TraitBound.trait_ref.type_args` is intentionally NOT rendered: the only
-/// production construction site, `convert_type_params`
-/// (`crates/reify-compiler/src/type_resolution.rs:3839-3852`), always builds
-/// it as `vec![]`, so a `<…>` arm here would be dead code.
-///
-/// **MIRRORED GRAMMAR — keep in sync.** The per-param skeleton described
-/// above is also rendered by `format_type_params` in
-/// `crates/reify-lsp/src/hover.rs` (task #6341) for LSP hover and, via
-/// `format_type_alias_signature`, for completion `detail`. The default's
-/// own rendering is deliberately NOT part of that obligation (semantic
-/// `reify_core::Type` Display here vs. syntactic `TypeExpr` Display there —
-/// see `format_type_alias_signature`'s doc comment). See
-/// `format_type_params`'s doc comment for the rest of the shared-grammar
-/// rationale.
+/// production construction site, `convert_type_params` in
+/// `crates/reify-compiler/src/type_resolution.rs`, always builds it as
+/// `vec![]`, so a `<…>` arm here would be dead code.
 fn render_type_params(params: &[reify_ir::TypeParam]) -> Vec<String> {
     params
         .iter()
         .map(|p| {
-            let mut rendered = p.name.clone();
-            if !p.bounds.is_empty() {
-                rendered.push_str(": ");
-                rendered.push_str(
-                    &p.bounds
-                        .iter()
-                        .map(|b| b.trait_ref.name.as_str())
-                        .collect::<Vec<_>>()
-                        .join(" + "),
-                );
-            }
-            if let Some(default) = &p.default {
-                rendered.push_str(" = ");
-                rendered.push_str(&type_to_string(default));
-            }
-            rendered
+            reify_ast::render_type_param(
+                &p.name,
+                p.bounds.iter().map(|b| b.trait_ref.name.as_str()),
+                p.default.as_ref(),
+            )
         })
         .collect()
 }

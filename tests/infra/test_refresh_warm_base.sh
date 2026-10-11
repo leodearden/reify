@@ -8,10 +8,14 @@
 #              else prints an error + exits 1.
 #   mv       — NOT stubbed; real mv so filesystem postconditions are observable.
 #   xfs_bmap — records argv + emits REIFY_TEST_FRAG_EXTENTS extent rows per file.
-#   rm       — records argv; when REIFY_TEST_PRUNE_RM_FAIL=1, fails a non-recursive
-#              call (the prune stage's own `rm -f`) while a recursive call (the
-#              EXIT trap's `rm -rf` cleanup) always execs the real rm — isolates a
-#              simulated prune-unlink failure from the trap's own cleanup.
+#   rm       — records argv; when REIFY_TEST_PRUNE_RM_FAIL=1, fails exactly the prune
+#              stage's own `rm -f --` call (the xargs batch) and execs the real rm for
+#              every other call (the EXIT trap's cleanup, GC's lock/gen removal) —
+#              isolates a simulated prune-unlink failure from the trap's own cleanup.
+#   findmnt  — records argv; REIFY_TEST_FINDMNT_FAIL=1 simulates findmnt failing (or
+#              being absent); else prints REIFY_TEST_FINDMNT_OPTIONS (default
+#              rw,relatime) as the mount's option list — an EMPTY value prints an
+#              empty line. Keeps the suite hermetic whatever /tmp's real mount options.
 #
 # run_helper captures STDOUT, STDERR, and RC separately:
 #   OUT     — captured stdout from the script
@@ -28,7 +32,8 @@
 #   G — basecommit provenance: per-gen .basecommit stamp == --landed-commit, reaped with its gen
 #   H — buildroot provenance: per-gen .buildroot stamp == realpath(advancing worktree root)
 #   I — WIP refusal: advancing worktree with tracked WIP is refused; wording advises committing, never stashing
-#   J — superseded hash-generation prune: keep newest 2 hash-generations per stem (ranked across every extension that hash has, together) under debug/deps, scope-contained, deterministic under mtime ties
+#   DEPS — debug/deps faithful copy: every hash variant in the advancing debug/deps reaches the new gen, incl. same-mtime registry variants (#8366)
+#   LIVE — liveness prune: debug/deps units whose fingerprint was not consulted within 7 days of the tree's newest consult are pruned from the base gen; live variants, non-candidates and other dirs survive
 #
 # Auto-discovered by tests/infra/run_all.sh via the test_*.sh glob.
 #
@@ -130,31 +135,41 @@ exit 0
 STUB_EOF
 chmod +x "$STUB_DIR/xfs_bmap"
 
-# rm stub: record argv; when REIFY_TEST_PRUNE_RM_FAIL=1, fail ONLY a
-# non-recursive invocation (the prune stage's own `xargs -0 rm -f -- <files>`,
-# first arg "-f") while a recursive invocation (the EXIT trap's cleanup
-# `rm -rf "$_p"`, first arg "-rf") always execs the real rm. This isolates
-# "the prune's own unlink failed" from "the trap's cleanup afterward also
-# failed for an unrelated reason" — a filesystem-permission fault (e.g. a
-# write-protected debug/deps) cannot make that distinction: verified
-# empirically that it defeats `rm -rf` identically, since both are the same
-# unlink operation under the same directory permission, which would fail the
-# "no residue" assertion for the wrong reason. Real rm path embedded at
-# stub-creation time (mirrors the cp stub).
+# rm stub: record argv; when REIFY_TEST_PRUNE_RM_FAIL=1, fail ONLY the prune
+# stage's own `xargs -0 rm -f -- <files>` (first args "-f" "--") while every other
+# invocation — the EXIT trap's `rm -rf "$_p"` and `rm -f "$_PRUNE_SUMMARY_FILE"`,
+# GC's `rm -f lock` — execs the real rm. This isolates "the prune's own unlink
+# failed" from "the trap's cleanup afterward also failed": a filesystem-permission
+# fault cannot make that distinction, since it defeats `rm -rf` identically.
+# Real rm path embedded at stub-creation time (mirrors the cp stub).
 _REAL_RM="$(command -v rm)"
 cat > "$STUB_DIR/rm" << STUB_EOF
 #!/usr/bin/env bash
 echo "rm \$*" >> "\${REIFY_TEST_CALLS_FILE:-/dev/null}"
-if [ "\${REIFY_TEST_PRUNE_RM_FAIL:-}" = "1" ]; then
-    case "\$1" in
-        -*r*) exec "${_REAL_RM}" "\$@" ;;
-    esac
+if [ "\${REIFY_TEST_PRUNE_RM_FAIL:-}" = "1" ] && [ "\${1:-}" = "-f" ] && [ "\${2:-}" = "--" ]; then
     echo "rm: SIMULATED failure (REIFY_TEST_PRUNE_RM_FAIL=1)" >&2
     exit 1
 fi
 exec "${_REAL_RM}" "\$@"
 STUB_EOF
 chmod +x "$STUB_DIR/rm"
+
+# findmnt stub: record argv; REIFY_TEST_FINDMNT_FAIL=1 simulates findmnt failing
+# (including not being installed); otherwise print REIFY_TEST_FINDMNT_OPTIONS as the
+# mount's one-line option list. `${VAR-default}` (no colon), so an empty
+# REIFY_TEST_FINDMNT_OPTIONS prints an EMPTY line rather than the default. Stubbing
+# it keeps the suite hermetic regardless of the real mount options of /tmp.
+cat > "$STUB_DIR/findmnt" << 'STUB_EOF'
+#!/usr/bin/env bash
+echo "findmnt $*" >> "${REIFY_TEST_CALLS_FILE:-/dev/null}"
+if [ "${REIFY_TEST_FINDMNT_FAIL:-}" = "1" ]; then
+    echo "findmnt: SIMULATED failure (REIFY_TEST_FINDMNT_FAIL=1)" >&2
+    exit 1
+fi
+echo "${REIFY_TEST_FINDMNT_OPTIONS-rw,relatime}"
+exit 0
+STUB_EOF
+chmod +x "$STUB_DIR/findmnt"
 
 # ── run_helper ─────────────────────────────────────────────────────────────────
 # Invokes the script under the stub PATH.
@@ -819,616 +834,514 @@ assert "I4: refusal does NOT advise stashing" \
     bash -c '! printf "%s\n" "$1" | grep -qi "stash"' _ "$ERR_OUT"
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Block J — superseded hash-generation prune (keep newest 2) (task 7426)
+# Block DEPS — debug/deps faithful copy (task 8366)
 #
-# scripts/refresh-warm-base.sh prunes superseded cargo hash-generations from
-# <partial>/debug/deps during the refresh, keeping only the newest 2 HASHES
-# per stem — ranked across every extension that hash has, together, not
-# independently per (stem, ext) — ordered by mtime. This reclaims the
-# 96.6%-by-bytes prize (extensionless test/bench binaries) on the live warm
-# base while leaving a fallback generation so a lane whose fingerprint
-# misses the single newest survivor does not rebuild cold.
-#
-# J1 — the core N=2 boundary on the extensionless case: three generations of
-# one unit prune to the newest two; a sibling two-generation group is left
-# entirely intact (the property that distinguishes keep-newest-2 from
-# keep-newest-1).
+# The new gen's debug/deps must hold every artefact the advancing target holds.
+# One stem can carry several concurrently-live hashes (semver / feature / host
+# variants) that all keep the same cold-build mtime, so no mtime rule can tell
+# them from superseded generations; #7426's keep-newest-2 prune deleted them and
+# every seeded lane rebuilt them. This fixture carries no debug/.fingerprint, so
+# Block LIVE's prune has no liveness evidence here and must copy debug/deps
+# faithfully: DEPS2 and DEPS3 stay green.
 # ──────────────────────────────────────────────────────────────────────────────
 echo ""
-echo "--- Block J: superseded hash-generation prune (keep newest 2) ---"
+echo "--- Block DEPS: debug/deps faithful copy ---"
 
-J_TMP="$(mktemp -d /tmp/test-refresh-warm-base-j-XXXXXX)"
-_TMPDIRS+=("$J_TMP")
-J_LANE="$(mk_git_advancing "$J_TMP")"
-J_ADV="$J_LANE/advancing"
-J_HEAD="$(git -C "$J_LANE" rev-parse HEAD)"
-mkdir -p "$J_ADV/debug/deps"
+DEPS_TMP="$(mktemp -d /tmp/test-refresh-warm-base-deps-XXXXXX)"
+_TMPDIRS+=("$DEPS_TMP")
+DEPS_LANE="$(mk_git_advancing "$DEPS_TMP")"
+DEPS_ADV="$DEPS_LANE/advancing"
+DEPS_HEAD="$(git -C "$DEPS_LANE" rev-parse HEAD)"
+mkdir -p "$DEPS_ADV/debug/deps"
 
-# Three hash-generations of ONE unit, extensionless (the 96.6%-by-bytes case:
-# test/bench binaries), distinct non-empty content, distinct mtimes (oldest to
-# newest). No sleeps: mtimes are stamped explicitly via `touch -d` (T8).
-echo "gen1 content" > "$J_ADV/debug/deps/reify_kernel_tests-1111111111111111"
-echo "gen2 content" > "$J_ADV/debug/deps/reify_kernel_tests-2222222222222222"
-echo "gen3 content" > "$J_ADV/debug/deps/reify_kernel_tests-3333333333333333"
-touch -d '2026-01-01 00:00:00' "$J_ADV/debug/deps/reify_kernel_tests-1111111111111111"
-touch -d '2026-02-01 00:00:00' "$J_ADV/debug/deps/reify_kernel_tests-2222222222222222"
-touch -d '2026-03-01 00:00:00' "$J_ADV/debug/deps/reify_kernel_tests-3333333333333333"
+# Five concurrently-live hashes of ONE registry stem, each with .rlib and
+# .rmeta, all stamped with the SAME mtime (a cold build writes them together).
+# Every hash is 16 lowercase hex chars so a prune keyed on cargo's `-<16hex>`
+# suffix grammar genuinely matches them — the RED must never be vacuous.
+DEPS_REGISTRY_HASHES=(ece35e16166057f6 985ac887cd451fe2 0123456789abcdef fedcba9876543210 5a5a5a5a5a5a5a5a)
+for h in "${DEPS_REGISTRY_HASHES[@]}"; do
+    for ext in rlib rmeta; do
+        echo "getrandom $h $ext" > "$DEPS_ADV/debug/deps/libgetrandom-$h.$ext"
+    done
+done
+touch -d '2026-08-18 00:00:00' "$DEPS_ADV"/debug/deps/libgetrandom-*
 
-# A second unit with only TWO generations — both must survive untouched; this
-# is what distinguishes keep-newest-2 from keep-newest-1 (J1e).
-echo "other gen a" > "$J_ADV/debug/deps/reify_other_crate-aaaaaaaaaaaaaaaa"
-echo "other gen b" > "$J_ADV/debug/deps/reify_other_crate-bbbbbbbbbbbbbbbb"
-touch -d '2026-01-15 00:00:00' "$J_ADV/debug/deps/reify_other_crate-aaaaaaaaaaaaaaaa"
-touch -d '2026-02-15 00:00:00' "$J_ADV/debug/deps/reify_other_crate-bbbbbbbbbbbbbbbb"
+# Three extensionless test-binary generations at distinct mtimes, stamped
+# explicitly via `touch -d` — no sleeps (T8).
+echo "gen1 content" > "$DEPS_ADV/debug/deps/reify_kernel_tests-1111111111111111"
+echo "gen2 content" > "$DEPS_ADV/debug/deps/reify_kernel_tests-2222222222222222"
+echo "gen3 content" > "$DEPS_ADV/debug/deps/reify_kernel_tests-3333333333333333"
+touch -d '2026-01-01 00:00:00' "$DEPS_ADV/debug/deps/reify_kernel_tests-1111111111111111"
+touch -d '2026-02-01 00:00:00' "$DEPS_ADV/debug/deps/reify_kernel_tests-2222222222222222"
+touch -d '2026-03-01 00:00:00' "$DEPS_ADV/debug/deps/reify_kernel_tests-3333333333333333"
 
-J_BASE="$J_TMP/base"
-
-reset_calls
-REIFY_TEST_REFLINK_OK=1 run_helper "$J_ADV" "$J_BASE" --landed-commit "$J_HEAD"
-assert "J1a: refresh with superseded hash-generations exits 0" test "$RC" -eq 0
-
-J_GEN="$(readlink "$J_BASE")"
-J_DEPS="$J_GEN/debug/deps"
-
-assert "J1b: newest two generations survive (-2222..., -3333...)" \
-    bash -c 'test -f "$1/reify_kernel_tests-2222222222222222" && test -f "$1/reify_kernel_tests-3333333333333333"' _ "$J_DEPS"
-
-assert "J1c: oldest generation is pruned (-1111...)" \
-    bash -c 'test ! -f "$1/reify_kernel_tests-1111111111111111"' _ "$J_DEPS"
-
-assert "J1d: exactly 2 files remain in the reify_kernel_tests group" \
-    bash -c '[ "$(find "$1" -maxdepth 1 -type f -name "reify_kernel_tests-*" | wc -l)" -eq 2 ]' _ "$J_DEPS"
-
-assert "J1e: a 2-generation group is left entirely intact (keep-2, not keep-1)" \
-    bash -c 'test -f "$1/reify_other_crate-aaaaaaaaaaaaaaaa" && test -f "$1/reify_other_crate-bbbbbbbbbbbbbbbb"' _ "$J_DEPS"
-
-# J2 — pin the artefact-name grammar. This is the assertion set that protects
-# the ruled-and-measured 64.8 GiB mechanism from a greedier regex, and it is
-# the discrepancy that reconciles the task's 11,193 groups with the
-# 3,607 + 7,586 split (the 7,586 are all `.dwo` singletons — see J2b).
-J2_TMP="$(mktemp -d /tmp/test-refresh-warm-base-j2-XXXXXX)"
-_TMPDIRS+=("$J2_TMP")
-J2_LANE="$(mk_git_advancing "$J2_TMP")"
-J2_ADV="$J2_LANE/advancing"
-J2_HEAD="$(git -C "$J2_LANE" rev-parse HEAD)"
-mkdir -p "$J2_ADV/debug/deps"
-J2_SRC="$J2_ADV/debug/deps"
-
-# J2a — EXTENSION SPLIT: hashes are ranked per stem, across every extension
-# a hash has, together — never independently per (stem, ext), and never
-# pooled across stems. Three hashes, each present as BOTH .rlib and .rmeta
-# (six files, one stem), with mtimes synced per hash across both extensions
-# here: the top-2 ranked hashes keep BOTH their .rlib and .rmeta (4 files
-# survive, not the 2 a stem-only grouper would keep by pooling all six).
-# J2e below exercises the case these synced mtimes cannot: a stem whose
-# per-extension mtime ORDER disagrees across hashes.
-echo "rlib a" > "$J2_SRC/libreify_core-aaaaaaaaaaaaaaaa.rlib"
-echo "rmeta a" > "$J2_SRC/libreify_core-aaaaaaaaaaaaaaaa.rmeta"
-touch -d '2026-01-01 00:00:00' "$J2_SRC/libreify_core-aaaaaaaaaaaaaaaa.rlib" "$J2_SRC/libreify_core-aaaaaaaaaaaaaaaa.rmeta"
-echo "rlib b" > "$J2_SRC/libreify_core-bbbbbbbbbbbbbbbb.rlib"
-echo "rmeta b" > "$J2_SRC/libreify_core-bbbbbbbbbbbbbbbb.rmeta"
-touch -d '2026-02-01 00:00:00' "$J2_SRC/libreify_core-bbbbbbbbbbbbbbbb.rlib" "$J2_SRC/libreify_core-bbbbbbbbbbbbbbbb.rmeta"
-echo "rlib c" > "$J2_SRC/libreify_core-cccccccccccccccc.rlib"
-echo "rmeta c" > "$J2_SRC/libreify_core-cccccccccccccccc.rmeta"
-touch -d '2026-03-01 00:00:00' "$J2_SRC/libreify_core-cccccccccccccccc.rlib" "$J2_SRC/libreify_core-cccccccccccccccc.rmeta"
-
-# J2b — .dwo NON-CANDIDATE: split-debuginfo-shaped names, three different
-# leading hashes. Stem-before-last-dot ends "-cgu.09.rcgu" (not "-<16hex>"),
-# so these are never a prune candidate — exactly the boundary a permissive
-# `^(.+)-[0-9a-f]{16}(\..*)?$` would cross, silently changing the measured
-# reclaim.
-echo "dwo 1" > "$J2_SRC/axum-0082f0d2178b90e5.axum.191af5780e3108ae-cgu.09.rcgu.dwo"
-echo "dwo 2" > "$J2_SRC/axum-1111111111111111.axum.191af5780e3108ae-cgu.09.rcgu.dwo"
-echo "dwo 3" > "$J2_SRC/axum-2222222222222222.axum.191af5780e3108ae-cgu.09.rcgu.dwo"
-touch -d '2026-01-01 00:00:00' "$J2_SRC/axum-0082f0d2178b90e5.axum.191af5780e3108ae-cgu.09.rcgu.dwo"
-touch -d '2026-01-02 00:00:00' "$J2_SRC/axum-1111111111111111.axum.191af5780e3108ae-cgu.09.rcgu.dwo"
-touch -d '2026-01-03 00:00:00' "$J2_SRC/axum-2222222222222222.axum.191af5780e3108ae-cgu.09.rcgu.dwo"
-
-# J2c — NON-CONFORMING NAMES NEVER DELETED: no hash at all, and a
-# short/long/uppercase pseudo-hash. Every one survives regardless of mtime.
-echo "readme" > "$J2_SRC/README"
-touch -d '2026-01-01 00:00:00' "$J2_SRC/README"
-echo "plan1" > "$J2_SRC/build-plan-1.json"
-echo "plan2" > "$J2_SRC/build-plan-2.json"
-echo "plan3" > "$J2_SRC/build-plan-3.json"
-touch -d '2026-01-05 00:00:00' "$J2_SRC/build-plan-1.json"
-touch -d '2026-01-10 00:00:00' "$J2_SRC/build-plan-2.json"
-touch -d '2026-01-15 00:00:00' "$J2_SRC/build-plan-3.json"
-echo "short" > "$J2_SRC/foo-abc123.rlib"
-touch -d '2026-01-20 00:00:00' "$J2_SRC/foo-abc123.rlib"
-echo "upper" > "$J2_SRC/foo-AAAABBBBCCCCDDDD"
-touch -d '2026-01-25 00:00:00' "$J2_SRC/foo-AAAABBBBCCCCDDDD"
-echo "long" > "$J2_SRC/foo-0123456789abcdef0.rlib"
-touch -d '2026-01-30 00:00:00' "$J2_SRC/foo-0123456789abcdef0.rlib"
-
-# J2d — DISTINCT UNITS DO NOT MERGE: two extensionless units, three
-# generations each; each keeps exactly 2, proving the group key is the stem
-# and not a global pool.
-echo "a1" > "$J2_SRC/reify_a-1111111111111111"
-echo "a2" > "$J2_SRC/reify_a-2222222222222222"
-echo "a3" > "$J2_SRC/reify_a-3333333333333333"
-touch -d '2026-01-01 00:00:00' "$J2_SRC/reify_a-1111111111111111"
-touch -d '2026-02-01 00:00:00' "$J2_SRC/reify_a-2222222222222222"
-touch -d '2026-03-01 00:00:00' "$J2_SRC/reify_a-3333333333333333"
-echo "b1" > "$J2_SRC/reify_b-4444444444444444"
-echo "b2" > "$J2_SRC/reify_b-5555555555555555"
-echo "b3" > "$J2_SRC/reify_b-6666666666666666"
-touch -d '2026-01-01 00:00:00' "$J2_SRC/reify_b-4444444444444444"
-touch -d '2026-02-01 00:00:00' "$J2_SRC/reify_b-5555555555555555"
-touch -d '2026-03-01 00:00:00' "$J2_SRC/reify_b-6666666666666666"
-
-J2_BASE="$J2_TMP/base"
+DEPS_BASE="$DEPS_TMP/base"
 
 reset_calls
-REIFY_TEST_REFLINK_OK=1 run_helper "$J2_ADV" "$J2_BASE" --landed-commit "$J2_HEAD"
-assert "J2: refresh exits 0" test "$RC" -eq 0
+REIFY_TEST_REFLINK_OK=1 run_helper "$DEPS_ADV" "$DEPS_BASE" --landed-commit "$DEPS_HEAD"
+assert "DEPS1: refresh with same-mtime hash variants exits 0" test "$RC" -eq 0
 
-J2_GEN="$(readlink "$J2_BASE")"
-J2_DEPS="$J2_GEN/debug/deps"
+DEPS_GEN_DEPS="$(readlink "$DEPS_BASE")/debug/deps"
 
-assert "J2a: newest 2 .rlib survive (bbbb, cccc)" \
-    bash -c 'test -f "$1/libreify_core-bbbbbbbbbbbbbbbb.rlib" && test -f "$1/libreify_core-cccccccccccccccc.rlib"' _ "$J2_DEPS"
-assert "J2a: oldest .rlib pruned (aaaa)" \
-    bash -c 'test ! -f "$1/libreify_core-aaaaaaaaaaaaaaaa.rlib"' _ "$J2_DEPS"
-assert "J2a: newest 2 .rmeta survive (bbbb, cccc)" \
-    bash -c 'test -f "$1/libreify_core-bbbbbbbbbbbbbbbb.rmeta" && test -f "$1/libreify_core-cccccccccccccccc.rmeta"' _ "$J2_DEPS"
-assert "J2a: oldest .rmeta pruned (aaaa)" \
-    bash -c 'test ! -f "$1/libreify_core-aaaaaaaaaaaaaaaa.rmeta"' _ "$J2_DEPS"
-assert "J2a: exactly 4 libreify_core files remain (2 rlib + 2 rmeta, not 2 total)" \
-    bash -c '[ "$(find "$1" -maxdepth 1 -type f -name "libreify_core-*" | wc -l)" -eq 4 ]' _ "$J2_DEPS"
+assert "DEPS2: every same-mtime libgetrandom hash variant reaches the new gen, on both .rlib and .rmeta" \
+    bash -c '
+        deps="$1"; shift
+        for h in "$@"; do
+            for ext in rlib rmeta; do
+                [ -f "$deps/libgetrandom-$h.$ext" ] || { echo "missing: libgetrandom-$h.$ext"; exit 1; }
+            done
+        done
+    ' _ "$DEPS_GEN_DEPS" "${DEPS_REGISTRY_HASHES[@]}"
 
-assert "J2b: all three .dwo split-debuginfo shards survive" \
-    bash -c 'n=$(find "$1" -maxdepth 1 -type f -name "axum-*.dwo" | wc -l); [ "$n" -eq 3 ]' _ "$J2_DEPS"
+assert "DEPS3: gen debug/deps filename set equals the advancing debug/deps filename set" \
+    bash -c '
+        s1="$(cd "$1" && find . -maxdepth 1 -type f -printf "%f\n" | sort)"
+        s2="$(cd "$2" && find . -maxdepth 1 -type f -printf "%f\n" | sort)"
+        [ -n "$s1" ] || { echo "advancing debug/deps fixture is empty"; exit 1; }
+        [ "$s1" = "$s2" ] || { diff <(printf "%s\n" "$s1") <(printf "%s\n" "$s2"); exit 1; }
+    ' _ "$DEPS_ADV/debug/deps" "$DEPS_GEN_DEPS"
 
-assert "J2c: README (no hash) survives" test -f "$J2_DEPS/README"
-assert "J2c: all three non-conforming build-plan files survive" \
-    bash -c 'test -f "$1/build-plan-1.json" && test -f "$1/build-plan-2.json" && test -f "$1/build-plan-3.json"' _ "$J2_DEPS"
-assert "J2c: short pseudo-hash (6 chars) survives" test -f "$J2_DEPS/foo-abc123.rlib"
-assert "J2c: uppercase pseudo-hash survives" test -f "$J2_DEPS/foo-AAAABBBBCCCCDDDD"
-assert "J2c: long pseudo-hash (17 chars) survives" test -f "$J2_DEPS/foo-0123456789abcdef0.rlib"
+# ──────────────────────────────────────────────────────────────────────────────
+# Block LIVE — fingerprint-consult liveness prune of debug/deps (task 8352)
+#
+# Executable spec for scripts/refresh-warm-base.sh Step 3b. A depth-1 debug/deps
+# file is a candidate iff its name, final dot-suffix stripped, ends in
+# `-<16 lowercase hex>`; it is pruned iff that hash has a debug/.fingerprint
+# dir AND no file of that dir was read or written (max of atime and mtime)
+# within 7 days of the copied tree's newest consult, the ANCHOR. Cargo reads a
+# unit's fingerprint on every build whose graph contains the unit, so a hash
+# the lanes still build is consulted continuously whatever its artefact mtime.
+#
+# Fixtures use fixed past dates: no sleeps, and the window being anchored on
+# the tree rather than on `date` is itself under test (LIVE1).
+#
+# Two guards keep the evidence honest: the stage is skipped when the advancing
+# dir's mount does not maintain atime (LIVE13-17), and a future-dated consult
+# never moves the anchor (LIVE18).
+#
+# FIXTURE RULE: a case with a dead unit also carries a unit consulted at the
+# ANCHOR. Without one, the dead unit IS the newest consult, becomes the anchor
+# and is correctly kept, so a 'gone' assertion would fail for the wrong reason.
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block LIVE: fingerprint-consult liveness prune of debug/deps ---"
 
-assert "J2d: reify_a keeps newest 2 (2222, 3333), prunes oldest (1111)" \
-    bash -c 'test -f "$1/reify_a-2222222222222222" && test -f "$1/reify_a-3333333333333333" && test ! -f "$1/reify_a-1111111111111111"' _ "$J2_DEPS"
-assert "J2d: reify_b keeps newest 2 (5555, 6666), prunes oldest (4444)" \
-    bash -c 'test -f "$1/reify_b-5555555555555555" && test -f "$1/reify_b-6666666666666666" && test ! -f "$1/reify_b-4444444444444444"' _ "$J2_DEPS"
-assert "J2d: exactly 4 reify_a/reify_b files total (2 each, distinct pools)" \
-    bash -c '[ "$(find "$1" -maxdepth 1 -type f \( -name "reify_a-*" -o -name "reify_b-*" \) | wc -l)" -eq 4 ]' _ "$J2_DEPS"
+LIVE_ANCHOR='2026-03-10 00:00:00'   # the copied tree's newest consult
+LIVE_RECENT='2026-03-08 00:00:00'   # 2 days before the anchor: inside the 7-day window
+LIVE_DEAD='2026-02-01 00:00:00'     # 37 days before the anchor: outside it
+LIVE_COLD='2026-01-01 00:00:00'     # cold-build mtime of artefacts nobody rebuilt
 
-# J2e — HASH CONSISTENCY across extensions (task 7426 amendment): hashes are
-# ranked per stem, never per (stem, ext) independently, so a kept "fallback
-# generation" is always COMPLETE on every extension it has. Mtimes are
-# deliberately CROSSED between extensions: hash h1's .rlib is the OLDEST of
-# the three but its .rmeta is the NEWEST, and h3's .rlib is the NEWEST but
-# its .rmeta is the OLDEST (h2 sits in the middle on both). Ranking each
-# extension independently (the pre-amendment behaviour) would keep a
-# DIFFERENT hash pair per extension — .rlib survivors {h2, h3}, .rmeta
-# survivors {h1, h2} — silently shipping a fallback generation that is only
-# partially present. Ranking by each hash's max-over-extensions mtime keeps
-# {h1, h3} — identically — on BOTH extensions, and prunes h2 on both.
-J2E_TMP="$(mktemp -d /tmp/test-refresh-warm-base-j2e-XXXXXX)"
-_TMPDIRS+=("$J2E_TMP")
-J2E_LANE="$(mk_git_advancing "$J2E_TMP")"
-J2E_ADV="$J2E_LANE/advancing"
-J2E_HEAD="$(git -C "$J2E_LANE" rev-parse HEAD)"
-mkdir -p "$J2E_ADV/debug/deps"
-J2E_SRC="$J2E_ADV/debug/deps"
-
-echo "h1 rlib"  > "$J2E_SRC/libreify_cross-1111111111111111.rlib"
-echo "h1 rmeta" > "$J2E_SRC/libreify_cross-1111111111111111.rmeta"
-echo "h2 rlib"  > "$J2E_SRC/libreify_cross-2222222222222222.rlib"
-echo "h2 rmeta" > "$J2E_SRC/libreify_cross-2222222222222222.rmeta"
-echo "h3 rlib"  > "$J2E_SRC/libreify_cross-3333333333333333.rlib"
-echo "h3 rmeta" > "$J2E_SRC/libreify_cross-3333333333333333.rmeta"
-touch -d '2026-01-01 00:00:00' "$J2E_SRC/libreify_cross-1111111111111111.rlib"   # h1 rlib: oldest
-touch -d '2026-03-01 00:00:00' "$J2E_SRC/libreify_cross-1111111111111111.rmeta"  # h1 rmeta: newest
-touch -d '2026-02-01 00:00:00' "$J2E_SRC/libreify_cross-2222222222222222.rlib"   # h2 rlib: mid
-touch -d '2026-02-01 00:00:00' "$J2E_SRC/libreify_cross-2222222222222222.rmeta"  # h2 rmeta: mid
-touch -d '2026-03-01 00:00:00' "$J2E_SRC/libreify_cross-3333333333333333.rlib"   # h3 rlib: newest
-touch -d '2026-01-01 00:00:00' "$J2E_SRC/libreify_cross-3333333333333333.rmeta"  # h3 rmeta: oldest
-
-J2E_BASE="$J2E_TMP/base"
-
-reset_calls
-REIFY_TEST_REFLINK_OK=1 run_helper "$J2E_ADV" "$J2E_BASE" --landed-commit "$J2E_HEAD"
-assert "J2e: refresh with crossed per-extension mtimes exits 0" test "$RC" -eq 0
-
-J2E_GEN="$(readlink "$J2E_BASE")"
-J2E_DEPS="$J2E_GEN/debug/deps"
-
-assert "J2e: surviving .rlib hash set is {h1, h3}" \
-    bash -c 'test -f "$1/libreify_cross-1111111111111111.rlib" && test -f "$1/libreify_cross-3333333333333333.rlib" && test ! -f "$1/libreify_cross-2222222222222222.rlib"' _ "$J2E_DEPS"
-assert "J2e: surviving .rmeta hash set is {h1, h3} — IDENTICAL to .rlib, not ranked independently" \
-    bash -c 'test -f "$1/libreify_cross-1111111111111111.rmeta" && test -f "$1/libreify_cross-3333333333333333.rmeta" && test ! -f "$1/libreify_cross-2222222222222222.rmeta"' _ "$J2E_DEPS"
-assert "J2e: exactly 4 files remain (2 surviving hashes x 2 extensions, h2 fully pruned)" \
-    bash -c '[ "$(find "$1" -maxdepth 1 -type f -name "libreify_cross-*" | wc -l)" -eq 4 ]' _ "$J2E_DEPS"
-
-# J3 — scope containment. The prune must reach debug/deps and nothing else;
-# this is the assertion set that keeps a future widening from quietly eating
-# the fingerprint/build/release trees. One fixture advancing dir carries three
-# same-unit generations in each of six locations; only the debug/deps copy
-# (the control) may be pruned.
-_j3_mint_three() {
-    local dir="$1"
-    mkdir -p "$dir"
-    echo "gen1" > "$dir/reify_scope_unit-1111111111111111"
-    echo "gen2" > "$dir/reify_scope_unit-2222222222222222"
-    echo "gen3" > "$dir/reify_scope_unit-3333333333333333"
-    touch -d '2026-01-01 00:00:00' "$dir/reify_scope_unit-1111111111111111"
-    touch -d '2026-02-01 00:00:00' "$dir/reify_scope_unit-2222222222222222"
-    touch -d '2026-03-01 00:00:00' "$dir/reify_scope_unit-3333333333333333"
+# _mint_unit <profile_dir> <pkg> <hash> <fp_mtime> <fp_atime> [<deps_name>...]
+# One cargo unit: <profile_dir>/.fingerprint/<pkg>-<hash>/lib-<pkg>, stamped with
+# the given mtime and atime (-m before -a, so the mtime stamp cannot clobber the
+# atime), plus each named file under <profile_dir>/deps stamped with fp_mtime.
+_mint_unit() {
+    local profile="$1" pkg="$2" hash="$3" fp_mtime="$4" fp_atime="$5" fp name
+    shift 5
+    fp="$profile/.fingerprint/$pkg-$hash/lib-$pkg"
+    mkdir -p "$(dirname "$fp")" "$profile/deps"
+    echo "fingerprint $pkg-$hash" > "$fp"
+    touch -m -d "$fp_mtime" "$fp"
+    touch -a -d "$fp_atime" "$fp"
+    for name in "$@"; do
+        echo "deps $name" > "$profile/deps/$name"
+        touch -d "$fp_mtime" "$profile/deps/$name"
+    done
 }
 
-J3_TMP="$(mktemp -d /tmp/test-refresh-warm-base-j3-XXXXXX)"
-_TMPDIRS+=("$J3_TMP")
-J3_LANE="$(mk_git_advancing "$J3_TMP")"
-J3_ADV="$J3_LANE/advancing"
-J3_HEAD="$(git -C "$J3_LANE" rev-parse HEAD)"
+# _mint_anchor <profile_dir>: the unit consulted at the ANCHOR (FIXTURE RULE).
+_mint_anchor() {
+    _mint_unit "$1" anchor 00000000000000a1 "$LIVE_ANCHOR" "$LIVE_ANCHOR" libanchor-00000000000000a1.rlib
+}
 
-_j3_mint_three "$J3_ADV/debug/deps"          # J3a: the control — pruned to 2
-_j3_mint_three "$J3_ADV/debug/.fingerprint"  # J3b: sibling of deps — untouched
-_j3_mint_three "$J3_ADV/debug/build"         # J3c: sibling of deps — untouched
-_j3_mint_three "$J3_ADV/release/deps"        # J3d: different top-level tree — untouched
-_j3_mint_three "$J3_ADV/debug/deps/nested"   # J3e: depth-2 under deps — untouched
-_j3_mint_three "$J3_ADV/debug"               # J3f: hashed file directly in debug/ — untouched
+# _live_case: a fresh hermetic advancing lane for one case. Sets LIVE_ADV (the
+# advancing target dir), LIVE_PROFILE (its debug/, created by the first
+# _mint_unit so a case may leave it absent), LIVE_HEAD and LIVE_BASE.
+_live_case() {
+    local tmp lane
+    tmp="$(mktemp -d /tmp/test-refresh-warm-base-live-XXXXXX)"
+    _TMPDIRS+=("$tmp")
+    lane="$(mk_git_advancing "$tmp")"
+    LIVE_ADV="$lane/advancing"
+    LIVE_PROFILE="$LIVE_ADV/debug"
+    LIVE_HEAD="$(git -C "$lane" rev-parse HEAD)"
+    LIVE_BASE="$tmp/base"
+}
 
-J3_BASE="$J3_TMP/base"
+# _live_refresh: run the real script over the current case (env prefixes pass
+# through). Sets LIVE_GEN to the gen dir the base now points at — empty when the
+# refresh did not advance the base.
+_live_refresh() {
+    reset_calls
+    REIFY_TEST_REFLINK_OK=1 run_helper "$LIVE_ADV" "$LIVE_BASE" --landed-commit "$LIVE_HEAD"
+    LIVE_GEN="$(readlink "$LIVE_BASE" || true)"
+}
 
-reset_calls
-REIFY_TEST_REFLINK_OK=1 run_helper "$J3_ADV" "$J3_BASE" --landed-commit "$J3_HEAD"
-assert "J3: refresh exits 0" test "$RC" -eq 0
+# _all_present / _none_present <dir> <relpath>...: name each offender and fail if
+# any. Both refuse an absent <dir>, so an empty LIVE_GEN can never make a 'gone'
+# check pass vacuously.
+_all_present() {
+    local dir="$1" rel rc=0
+    shift
+    [ -d "$dir" ] || { echo "no such dir: '$dir'"; return 1; }
+    for rel in "$@"; do
+        [ -f "$dir/$rel" ] || { echo "missing: $rel"; rc=1; }
+    done
+    return "$rc"
+}
+_none_present() {
+    local dir="$1" rel rc=0
+    shift
+    [ -d "$dir" ] || { echo "no such dir: '$dir'"; return 1; }
+    for rel in "$@"; do
+        [ ! -e "$dir/$rel" ] || { echo "still present: $rel"; rc=1; }
+    done
+    return "$rc"
+}
 
-J3_GEN="$(readlink "$J3_BASE")"
+# _stderr_matches <ere>: the last run_helper's stderr matches, case-insensitively.
+_stderr_matches() {
+    grep -qiE -- "$1" <<<"$ERR_OUT"
+}
 
-assert "J3a: debug/deps (the prune target) is pruned to 2 — control proving the instrument fires" \
-    bash -c '[ "$(find "$1/debug/deps" -maxdepth 1 -type f -name "reify_scope_unit-*" | wc -l)" -eq 2 ] && [ ! -f "$1/debug/deps/reify_scope_unit-1111111111111111" ]' _ "$J3_GEN"
-assert "J3b: debug/.fingerprint is untouched — all 3 generations survive" \
-    bash -c '[ "$(find "$1/debug/.fingerprint" -maxdepth 1 -type f -name "reify_scope_unit-*" | wc -l)" -eq 3 ]' _ "$J3_GEN"
-assert "J3c: debug/build is untouched — all 3 generations survive" \
-    bash -c '[ "$(find "$1/debug/build" -maxdepth 1 -type f -name "reify_scope_unit-*" | wc -l)" -eq 3 ]' _ "$J3_GEN"
-assert "J3d: release/deps is untouched — all 3 generations survive (out of scope)" \
-    bash -c '[ "$(find "$1/release/deps" -maxdepth 1 -type f -name "reify_scope_unit-*" | wc -l)" -eq 3 ]' _ "$J3_GEN"
-assert "J3e: debug/deps/nested is untouched — depth-1 only" \
-    bash -c '[ "$(find "$1/debug/deps/nested" -maxdepth 1 -type f -name "reify_scope_unit-*" | wc -l)" -eq 3 ]' _ "$J3_GEN"
-assert "J3f: a hashed file directly in debug/ (not deps/) survives" \
-    bash -c '[ "$(find "$1/debug" -maxdepth 1 -type f -name "reify_scope_unit-*" | wc -l)" -eq 3 ]' _ "$J3_GEN"
-
-# J3g — structural: an advancing dir with NO debug/deps at all refreshes
-# exit 0 and produces a correct base (the graceful-no-op path every existing
-# Block B-I fixture already depends on).
-J3G_TMP="$(mktemp -d /tmp/test-refresh-warm-base-j3g-XXXXXX)"
-_TMPDIRS+=("$J3G_TMP")
-J3G_LANE="$(mk_git_advancing "$J3G_TMP")"
-J3G_ADV="$J3G_LANE/advancing"
-J3G_HEAD="$(git -C "$J3G_LANE" rev-parse HEAD)"
-echo "content" > "$J3G_ADV/unrelated.txt"
-J3G_BASE="$J3G_TMP/base"
-
-reset_calls
-REIFY_TEST_REFLINK_OK=1 run_helper "$J3G_ADV" "$J3G_BASE" --landed-commit "$J3G_HEAD"
-assert "J3g: refresh with no debug/deps at all exits 0" test "$RC" -eq 0
-assert "J3g: base has advancing content (graceful no-op path)" \
-    bash -c '[ "$(cat "$1/unrelated.txt")" = "content" ]' _ "$J3G_BASE"
-
-# J3h — structural: an EMPTY debug/deps directory refreshes exit 0 and leaves
-# the directory present and empty (no `rm -rf` of the dir itself; the prune
-# removes files, never the container).
-J3H_TMP="$(mktemp -d /tmp/test-refresh-warm-base-j3h-XXXXXX)"
-_TMPDIRS+=("$J3H_TMP")
-J3H_LANE="$(mk_git_advancing "$J3H_TMP")"
-J3H_ADV="$J3H_LANE/advancing"
-J3H_HEAD="$(git -C "$J3H_LANE" rev-parse HEAD)"
-mkdir -p "$J3H_ADV/debug/deps"
-J3H_BASE="$J3H_TMP/base"
-
-reset_calls
-REIFY_TEST_REFLINK_OK=1 run_helper "$J3H_ADV" "$J3H_BASE" --landed-commit "$J3H_HEAD"
-assert "J3h: refresh with an empty debug/deps exits 0" test "$RC" -eq 0
-J3H_GEN="$(readlink "$J3H_BASE")"
-assert "J3h: debug/deps directory itself still present (not rm -rf'd)" \
-    test -d "$J3H_GEN/debug/deps"
-assert "J3h: debug/deps is empty (no phantom files created)" \
-    bash -c '[ -z "$(find "$1" -maxdepth 1 -type f)" ]' _ "$J3H_GEN/debug/deps"
-
-# J4a-c — the operator-facing prune summary on stderr: a machine-greppable
-# line naming both the deleted-file count and the reclaimed bytes (the signal
-# an operator reads to apply the E19 stop rule), stdout stays empty (B7), and
-# the no-debug/deps path is non-silent about the (skipped) stage.
-J4_TMP="$(mktemp -d /tmp/test-refresh-warm-base-j4-XXXXXX)"
-_TMPDIRS+=("$J4_TMP")
-J4_LANE="$(mk_git_advancing "$J4_TMP")"
-J4_ADV="$J4_LANE/advancing"
-J4_HEAD="$(git -C "$J4_LANE" rev-parse HEAD)"
-mkdir -p "$J4_ADV/debug/deps"
-echo "gen1 content" > "$J4_ADV/debug/deps/reify_summary_unit-1111111111111111"
-echo "gen2 content" > "$J4_ADV/debug/deps/reify_summary_unit-2222222222222222"
-echo "gen3 content" > "$J4_ADV/debug/deps/reify_summary_unit-3333333333333333"
-touch -d '2026-01-01 00:00:00' "$J4_ADV/debug/deps/reify_summary_unit-1111111111111111"
-touch -d '2026-02-01 00:00:00' "$J4_ADV/debug/deps/reify_summary_unit-2222222222222222"
-touch -d '2026-03-01 00:00:00' "$J4_ADV/debug/deps/reify_summary_unit-3333333333333333"
-# Computed, not hardcoded, so the assertion tracks the fixture's actual content.
-J4_VICTIM_BYTES="$(stat -c %s "$J4_ADV/debug/deps/reify_summary_unit-1111111111111111")"
-J4_BASE="$J4_TMP/base"
-
-reset_calls
-REIFY_TEST_REFLINK_OK=1 run_helper "$J4_ADV" "$J4_BASE" --landed-commit "$J4_HEAD"
-assert "J4a: refresh exits 0" test "$RC" -eq 0
-assert "J4a: stderr carries a machine-greppable prune summary (prune...deps...files=1)" \
-    bash -c 'printf "%s\n" "$1" | grep -qE "prune.*deps.*files=1"' _ "$ERR_OUT"
-assert "J4a: prune summary names the victim bytes (exact victim size; apparent size, not disk actually reclaimed — see script comment)" \
-    bash -c 'printf "%s\n" "$1" | grep -qE "victim_bytes=$2([^0-9]|\$)"' _ "$ERR_OUT" "$J4_VICTIM_BYTES"
-assert "J4b: stdout stays empty on the refresh path (B7 contract)" \
-    bash -c '[ -z "$1" ]' _ "$OUT"
-
-# J4a2 — the summary aggregate crosses GROUPS correctly. J4a's fixture has
-# exactly one group contributing exactly one victim, which cannot tell a
-# correct cross-group total apart from a per-group count, a last-group-only
-# value, or a max. This fixture has THREE groups (two extensionless stems
-# plus one .rlib/.rmeta pair) each contributing victims, and asserts the
-# EXACT summed files= and victim_bytes= — the awk END loop's aggregation
-# across every stem is otherwise untested as an aggregation.
-J4A2_TMP="$(mktemp -d /tmp/test-refresh-warm-base-j4a2-XXXXXX)"
-_TMPDIRS+=("$J4A2_TMP")
-J4A2_LANE="$(mk_git_advancing "$J4A2_TMP")"
-J4A2_ADV="$J4A2_LANE/advancing"
-J4A2_HEAD="$(git -C "$J4A2_LANE" rev-parse HEAD)"
-mkdir -p "$J4A2_ADV/debug/deps"
-J4A2_SRC="$J4A2_ADV/debug/deps"
-
-# Stem A: 4 extensionless generations, keep 2 -> 2 victims (oldest two).
-echo "a1 victim" > "$J4A2_SRC/reify_agg_a-1111111111111111"
-echo "a2 victim" > "$J4A2_SRC/reify_agg_a-2222222222222222"
-echo "a3 keep"   > "$J4A2_SRC/reify_agg_a-3333333333333333"
-echo "a4 keep"   > "$J4A2_SRC/reify_agg_a-4444444444444444"
-touch -d '2026-01-01 00:00:00' "$J4A2_SRC/reify_agg_a-1111111111111111"
-touch -d '2026-01-02 00:00:00' "$J4A2_SRC/reify_agg_a-2222222222222222"
-touch -d '2026-01-03 00:00:00' "$J4A2_SRC/reify_agg_a-3333333333333333"
-touch -d '2026-01-04 00:00:00' "$J4A2_SRC/reify_agg_a-4444444444444444"
-
-# Stem B: 4 extensionless generations, keep 2 -> 2 victims (oldest two).
-# Deliberately longer content than stem A's so the byte sum cannot pass by
-# accidentally matching a per-group rather than cross-group total.
-echo "b1 victim with longer content than the others" > "$J4A2_SRC/reify_agg_b-5555555555555555"
-echo "b2 victim" > "$J4A2_SRC/reify_agg_b-6666666666666666"
-echo "b3 keep"   > "$J4A2_SRC/reify_agg_b-7777777777777777"
-echo "b4 keep"   > "$J4A2_SRC/reify_agg_b-8888888888888888"
-touch -d '2026-01-01 00:00:00' "$J4A2_SRC/reify_agg_b-5555555555555555"
-touch -d '2026-01-02 00:00:00' "$J4A2_SRC/reify_agg_b-6666666666666666"
-touch -d '2026-01-03 00:00:00' "$J4A2_SRC/reify_agg_b-7777777777777777"
-touch -d '2026-01-04 00:00:00' "$J4A2_SRC/reify_agg_b-8888888888888888"
-
-# Stem C: an .rlib/.rmeta pair, 3 hash-generations, keep 2 -> the oldest HASH
-# loses on BOTH extensions (2 victim files) — also exercises the
-# cross-extension hash-consistency property Block J2e pins.
-echo "c1 rlib victim"  > "$J4A2_SRC/libreify_agg_c-9999999999999999.rlib"
-echo "c1 rmeta victim" > "$J4A2_SRC/libreify_agg_c-9999999999999999.rmeta"
-echo "c2 rlib keep"    > "$J4A2_SRC/libreify_agg_c-aaaaaaaaaaaaaaaa.rlib"
-echo "c2 rmeta keep"   > "$J4A2_SRC/libreify_agg_c-aaaaaaaaaaaaaaaa.rmeta"
-echo "c3 rlib keep"    > "$J4A2_SRC/libreify_agg_c-bbbbbbbbbbbbbbbb.rlib"
-echo "c3 rmeta keep"   > "$J4A2_SRC/libreify_agg_c-bbbbbbbbbbbbbbbb.rmeta"
-touch -d '2026-01-01 00:00:00' "$J4A2_SRC/libreify_agg_c-9999999999999999.rlib" "$J4A2_SRC/libreify_agg_c-9999999999999999.rmeta"
-touch -d '2026-01-02 00:00:00' "$J4A2_SRC/libreify_agg_c-aaaaaaaaaaaaaaaa.rlib" "$J4A2_SRC/libreify_agg_c-aaaaaaaaaaaaaaaa.rmeta"
-touch -d '2026-01-03 00:00:00' "$J4A2_SRC/libreify_agg_c-bbbbbbbbbbbbbbbb.rlib" "$J4A2_SRC/libreify_agg_c-bbbbbbbbbbbbbbbb.rmeta"
-
-# Exact expected totals, computed from the fixture rather than hardcoded —
-# same idiom as J4_VICTIM_BYTES above.
-J4A2_VICTIM_FILES=(
-    "$J4A2_SRC/reify_agg_a-1111111111111111"
-    "$J4A2_SRC/reify_agg_a-2222222222222222"
-    "$J4A2_SRC/reify_agg_b-5555555555555555"
-    "$J4A2_SRC/reify_agg_b-6666666666666666"
-    "$J4A2_SRC/libreify_agg_c-9999999999999999.rlib"
-    "$J4A2_SRC/libreify_agg_c-9999999999999999.rmeta"
-)
-J4A2_EXPECT_FILES="${#J4A2_VICTIM_FILES[@]}"
-J4A2_EXPECT_BYTES=0
-for _f in "${J4A2_VICTIM_FILES[@]}"; do
-    J4A2_EXPECT_BYTES=$(( J4A2_EXPECT_BYTES + $(stat -c %s "$_f") ))
+# LIVE1 — E19 regression, the core. Nine hashes of ONE registry stem (five with
+# .rlib+.rmeta, four .rmeta-only), every artefact and fingerprint mtime the
+# cold-build date, every fingerprint consulted at the ANCHOR by lanes that still
+# build them: all fourteen files must survive. The dead control proves the stage
+# is active, so the survivors did not survive by the stage being skipped.
+_live_case
+LIVE1_FULL_HASHES=(ece35e16166057f6 985ac887cd451fe2 0123456789abcdef fedcba9876543210 5a5a5a5a5a5a5a5a)
+LIVE1_META_HASHES=(a1a1a1a1a1a1a1a1 b2b2b2b2b2b2b2b2 c3c3c3c3c3c3c3c3 d4d4d4d4d4d4d4d4)
+LIVE1_FILES=()
+for h in "${LIVE1_FULL_HASHES[@]}"; do
+    _mint_unit "$LIVE_PROFILE" getrandom "$h" "$LIVE_COLD" "$LIVE_ANCHOR" \
+        "libgetrandom-$h.rlib" "libgetrandom-$h.rmeta"
+    LIVE1_FILES+=("libgetrandom-$h.rlib" "libgetrandom-$h.rmeta")
 done
+for h in "${LIVE1_META_HASHES[@]}"; do
+    _mint_unit "$LIVE_PROFILE" getrandom "$h" "$LIVE_COLD" "$LIVE_ANCHOR" "libgetrandom-$h.rmeta"
+    LIVE1_FILES+=("libgetrandom-$h.rmeta")
+done
+_mint_unit "$LIVE_PROFILE" reify_old_tests deadbeef00000001 "$LIVE_DEAD" "$LIVE_DEAD" \
+    reify_old_tests-deadbeef00000001
+_live_refresh
+LIVE1_DEPS="$LIVE_GEN/debug/deps"
+assert "LIVE1: refresh exits 0" test "$RC" -eq 0
+assert "LIVE1: all 14 same-mtime libgetrandom files survive (E19: every variant is still consulted)" \
+    _all_present "$LIVE1_DEPS" "${LIVE1_FILES[@]}"
+assert "LIVE1: the dead control reify_old_tests-deadbeef00000001 is pruned (the stage is active)" \
+    _none_present "$LIVE1_DEPS" reify_old_tests-deadbeef00000001
+assert "LIVE1: fixture dates are months before wall-clock now (precondition for the next assert)" \
+    test "$(( $(date +%s) - $(date -d "$LIVE_ANCHOR" +%s) ))" -gt "$(( 7 * 24 * 3600 ))"
+assert "LIVE1: window is anchored on the tree's newest consult, not wall clock — libgetrandom survives although every date is months before today" \
+    _all_present "$LIVE1_DEPS" "${LIVE1_FILES[@]}"
 
-J4A2_BASE="$J4A2_TMP/base"
+# LIVE2 — stem collision (reify_ast). One stem, three hashes with unlike shapes
+# (extensionless + .d, and two .d-only), all consulted: all four files survive.
+_live_case
+_mint_unit "$LIVE_PROFILE" reify_ast 1a2b3c4d5e6f7a8b "$LIVE_COLD" "$LIVE_ANCHOR" \
+    reify_ast-1a2b3c4d5e6f7a8b reify_ast-1a2b3c4d5e6f7a8b.d
+_mint_unit "$LIVE_PROFILE" reify_ast 2b3c4d5e6f7a8b9c "$LIVE_RECENT" "$LIVE_RECENT" \
+    reify_ast-2b3c4d5e6f7a8b9c.d
+_mint_unit "$LIVE_PROFILE" reify_ast 3c4d5e6f7a8b9cad "$LIVE_RECENT" "$LIVE_RECENT" \
+    reify_ast-3c4d5e6f7a8b9cad.d
+_mint_unit "$LIVE_PROFILE" reify_old_tests deadbeef00000002 "$LIVE_DEAD" "$LIVE_DEAD" \
+    reify_old_tests-deadbeef00000002
+_live_refresh
+assert "LIVE2: refresh exits 0" test "$RC" -eq 0
+assert "LIVE2: all four reify_ast files survive (stem collision is not a liveness signal)" \
+    _all_present "$LIVE_GEN/debug/deps" reify_ast-1a2b3c4d5e6f7a8b reify_ast-1a2b3c4d5e6f7a8b.d \
+        reify_ast-2b3c4d5e6f7a8b9c.d reify_ast-3c4d5e6f7a8b9cad.d
+assert "LIVE2: the dead control is pruned" \
+    _none_present "$LIVE_GEN/debug/deps" reify_old_tests-deadbeef00000002
 
-reset_calls
-REIFY_TEST_REFLINK_OK=1 run_helper "$J4A2_ADV" "$J4A2_BASE" --landed-commit "$J4A2_HEAD"
-assert "J4a2: refresh with victims spread across 3 groups exits 0" test "$RC" -eq 0
-assert "J4a2: summary files= is the exact cross-group total ($J4A2_EXPECT_FILES), not a per-group count or a max" \
-    bash -c 'printf "%s\n" "$1" | grep -qE "files=$2([^0-9]|\$)"' _ "$ERR_OUT" "$J4A2_EXPECT_FILES"
-assert "J4a2: summary victim_bytes= is the exact sum of every victim's size ($J4A2_EXPECT_BYTES)" \
-    bash -c 'printf "%s\n" "$1" | grep -qE "victim_bytes=$2([^0-9]|\$)"' _ "$ERR_OUT" "$J4A2_EXPECT_BYTES"
+# LIVE3 — superseded generation. One stem, one dead hash and two live hashes,
+# each extensionless + .d: the dead hash goes on BOTH extensions, the live stay.
+_live_case
+_mint_unit "$LIVE_PROFILE" reify_kernel_tests 1111aaaa1111aaaa "$LIVE_DEAD" "$LIVE_DEAD" \
+    reify_kernel_tests-1111aaaa1111aaaa reify_kernel_tests-1111aaaa1111aaaa.d
+_mint_unit "$LIVE_PROFILE" reify_kernel_tests 2222bbbb2222bbbb "$LIVE_COLD" "$LIVE_ANCHOR" \
+    reify_kernel_tests-2222bbbb2222bbbb reify_kernel_tests-2222bbbb2222bbbb.d
+_mint_unit "$LIVE_PROFILE" reify_kernel_tests 3333cccc3333cccc "$LIVE_RECENT" "$LIVE_RECENT" \
+    reify_kernel_tests-3333cccc3333cccc reify_kernel_tests-3333cccc3333cccc.d
+_live_refresh
+assert "LIVE3: refresh exits 0" test "$RC" -eq 0
+assert "LIVE3: the superseded hash is pruned on both its extensionless and .d files" \
+    _none_present "$LIVE_GEN/debug/deps" reify_kernel_tests-1111aaaa1111aaaa reify_kernel_tests-1111aaaa1111aaaa.d
+assert "LIVE3: both live hashes keep both their files" \
+    _all_present "$LIVE_GEN/debug/deps" reify_kernel_tests-2222bbbb2222bbbb reify_kernel_tests-2222bbbb2222bbbb.d \
+        reify_kernel_tests-3333cccc3333cccc reify_kernel_tests-3333cccc3333cccc.d
 
-J4A2_GEN="$(readlink "$J4A2_BASE")"
-J4A2_DEPS="$J4A2_GEN/debug/deps"
-assert "J4a2: stem A kept its newest 2, pruned its oldest 2" \
-    bash -c '[ "$(find "$1" -maxdepth 1 -type f -name "reify_agg_a-*" | wc -l)" -eq 2 ] && test -f "$1/reify_agg_a-3333333333333333" && test -f "$1/reify_agg_a-4444444444444444"' _ "$J4A2_DEPS"
-assert "J4a2: stem B kept its newest 2, pruned its oldest 2" \
-    bash -c '[ "$(find "$1" -maxdepth 1 -type f -name "reify_agg_b-*" | wc -l)" -eq 2 ] && test -f "$1/reify_agg_b-7777777777777777" && test -f "$1/reify_agg_b-8888888888888888"' _ "$J4A2_DEPS"
-assert "J4a2: stem C's losing hash is pruned on BOTH extensions" \
-    bash -c 'test ! -f "$1/libreify_agg_c-9999999999999999.rlib" && test ! -f "$1/libreify_agg_c-9999999999999999.rmeta"' _ "$J4A2_DEPS"
+# LIVE4 — the window. 6 days before the anchor is inside it, 8 days is outside.
+_live_case
+_mint_anchor "$LIVE_PROFILE"
+_mint_unit "$LIVE_PROFILE" inwindow 4a4a4a4a4a4a4a4a '2026-03-04 00:00:00' '2026-03-04 00:00:00' \
+    libinwindow-4a4a4a4a4a4a4a4a.rlib
+_mint_unit "$LIVE_PROFILE" outwindow 4b4b4b4b4b4b4b4b '2026-03-02 00:00:00' '2026-03-02 00:00:00' \
+    liboutwindow-4b4b4b4b4b4b4b4b.rlib
+_live_refresh
+assert "LIVE4: refresh exits 0" test "$RC" -eq 0
+assert "LIVE4: a unit last used 6 days before the anchor survives" \
+    _all_present "$LIVE_GEN/debug/deps" libinwindow-4a4a4a4a4a4a4a4a.rlib
+assert "LIVE4: a unit last used 8 days before the anchor is pruned" \
+    _none_present "$LIVE_GEN/debug/deps" liboutwindow-4b4b4b4b4b4b4b4b.rlib
 
-J4C_TMP="$(mktemp -d /tmp/test-refresh-warm-base-j4c-XXXXXX)"
-_TMPDIRS+=("$J4C_TMP")
-J4C_LANE="$(mk_git_advancing "$J4C_TMP")"
-J4C_ADV="$J4C_LANE/advancing"
-J4C_HEAD="$(git -C "$J4C_LANE" rev-parse HEAD)"
-echo "content" > "$J4C_ADV/f.txt"
-J4C_BASE="$J4C_TMP/base"
+# LIVE5 — a write counts as a use. A fingerprint last READ long ago but last
+# WRITTEN (rebuilt) inside the window is live.
+_live_case
+_mint_anchor "$LIVE_PROFILE"
+_mint_unit "$LIVE_PROFILE" rebuilt 5c5c5c5c5c5c5c5c "$LIVE_RECENT" "$LIVE_DEAD" \
+    librebuilt-5c5c5c5c5c5c5c5c.rlib
+_mint_unit "$LIVE_PROFILE" reify_old_tests deadbeef00000005 "$LIVE_DEAD" "$LIVE_DEAD" \
+    reify_old_tests-deadbeef00000005
+_live_refresh
+assert "LIVE5: refresh exits 0" test "$RC" -eq 0
+assert "LIVE5: a unit with an old atime but a recent mtime survives" \
+    _all_present "$LIVE_GEN/debug/deps" librebuilt-5c5c5c5c5c5c5c5c.rlib
+assert "LIVE5: the dead control is pruned" \
+    _none_present "$LIVE_GEN/debug/deps" reify_old_tests-deadbeef00000005
 
-reset_calls
-REIFY_TEST_REFLINK_OK=1 run_helper "$J4C_ADV" "$J4C_BASE" --landed-commit "$J4C_HEAD"
-assert "J4c: refresh with no debug/deps exits 0" test "$RC" -eq 0
-assert "J4c: stderr is non-silent about the (skipped) prune stage" \
-    bash -c 'printf "%s\n" "$1" | grep -qi "skip"' _ "$ERR_OUT"
+# LIVE6 — evidence required. A hashed deps file whose hash has NO fingerprint
+# dir is never a victim, however old.
+_live_case
+_mint_anchor "$LIVE_PROFILE"
+echo "no fingerprint" > "$LIVE_PROFILE/deps/libnofp-6a6a6a6a6a6a6a6a.rlib"
+touch -d '2020-01-01 00:00:00' "$LIVE_PROFILE/deps/libnofp-6a6a6a6a6a6a6a6a.rlib"
+_mint_unit "$LIVE_PROFILE" reify_old_tests deadbeef00000006 "$LIVE_DEAD" "$LIVE_DEAD" \
+    reify_old_tests-deadbeef00000006
+_live_refresh
+assert "LIVE6: refresh exits 0" test "$RC" -eq 0
+assert "LIVE6: a hashed file with no fingerprint dir survives" \
+    _all_present "$LIVE_GEN/debug/deps" libnofp-6a6a6a6a6a6a6a6a.rlib
+assert "LIVE6: the dead control is pruned" \
+    _none_present "$LIVE_GEN/debug/deps" reify_old_tests-deadbeef00000006
 
-# J4d-f — staging placement (fail-closed): refresh over a PRE-EXISTING base
-# with its own (unpruned) debug/deps generations. The prune reads/writes only
-# the .partial staging copy — the previous generation is never edited in
-# place. A shared flock on the retired gen's lock file (the documented
-# reader-refcount protocol, script Step 6) defers the GC reap so this test
-# can observe gen.1's untouched content instead of racing its removal.
-J4D_TMP="$(mktemp -d /tmp/test-refresh-warm-base-j4d-XXXXXX)"
-_TMPDIRS+=("$J4D_TMP")
-J4D_LANE="$(mk_git_advancing "$J4D_TMP")"
-J4D_ADV="$J4D_LANE/advancing"
-J4D_HEAD="$(git -C "$J4D_LANE" rev-parse HEAD)"
-mkdir -p "$J4D_ADV/debug/deps"
-echo "new1" > "$J4D_ADV/debug/deps/reify_new_unit-7777777777777777"
-echo "new2" > "$J4D_ADV/debug/deps/reify_new_unit-8888888888888888"
-echo "new3" > "$J4D_ADV/debug/deps/reify_new_unit-9999999999999999"
-touch -d '2026-01-01 00:00:00' "$J4D_ADV/debug/deps/reify_new_unit-7777777777777777"
-touch -d '2026-02-01 00:00:00' "$J4D_ADV/debug/deps/reify_new_unit-8888888888888888"
-touch -d '2026-03-01 00:00:00' "$J4D_ADV/debug/deps/reify_new_unit-9999999999999999"
+# LIVE7 — grammar: names that are not `<stem>-<16 lowercase hex>[.<ext>]` are
+# never candidates. Each near-miss that carries a hash-like token is tied to a
+# DEAD fingerprint dir a looser grammar would key on, so its survival is
+# discriminating rather than vacuous; the dead unit's own conforming file is
+# the control.
+_live_case
+_mint_anchor "$LIVE_PROFILE"
+LIVE7_DEAD=deadbeef00000007
+_mint_unit "$LIVE_PROFILE" dead "$LIVE7_DEAD" "$LIVE_DEAD" "$LIVE_DEAD" "libdead-$LIVE7_DEAD.rlib"
+echo "readme" > "$LIVE_PROFILE/deps/README"
+echo "{}" > "$LIVE_PROFILE/deps/build-plan.json"
+_mint_unit "$LIVE_PROFILE" foo abc123 "$LIVE_DEAD" "$LIVE_DEAD" foo-abc123.rlib
+_mint_unit "$LIVE_PROFILE" foo AAAABBBBCCCCDDDD "$LIVE_DEAD" "$LIVE_DEAD" foo-AAAABBBBCCCCDDDD
+_mint_unit "$LIVE_PROFILE" foo 0123456789abcdef "$LIVE_DEAD" "$LIVE_DEAD" foo-0123456789abcdef0.rlib
+LIVE7_SHARD="axum-$LIVE7_DEAD.axum.7a7a7a7a7a7a7a7a-cgu.09.rcgu.dwo"
+echo "shard" > "$LIVE_PROFILE/deps/$LIVE7_SHARD"
+touch -d "$LIVE_DEAD" "$LIVE_PROFILE/deps/$LIVE7_SHARD"
+_live_refresh
+assert "LIVE7: refresh exits 0" test "$RC" -eq 0
+assert "LIVE7: README, a .json, a short hash, an uppercase hash, a 17-hex hash and a split-debuginfo shard all survive" \
+    _all_present "$LIVE_GEN/debug/deps" README build-plan.json foo-abc123.rlib foo-AAAABBBBCCCCDDDD \
+        foo-0123456789abcdef0.rlib "$LIVE7_SHARD"
+assert "LIVE7: the dead unit's own conforming file is pruned" \
+    _none_present "$LIVE_GEN/debug/deps" "libdead-$LIVE7_DEAD.rlib"
 
-J4D_BASE="$J4D_TMP/base"
-mkdir -p "$J4D_BASE/debug/deps"
-echo "old1" > "$J4D_BASE/debug/deps/reify_old_unit-1111111111111111"
-echo "old2" > "$J4D_BASE/debug/deps/reify_old_unit-2222222222222222"
-echo "old3" > "$J4D_BASE/debug/deps/reify_old_unit-3333333333333333"
-touch -d '2026-01-01 00:00:00' "$J4D_BASE/debug/deps/reify_old_unit-1111111111111111"
-touch -d '2026-02-01 00:00:00' "$J4D_BASE/debug/deps/reify_old_unit-2222222222222222"
-touch -d '2026-03-01 00:00:00' "$J4D_BASE/debug/deps/reify_old_unit-3333333333333333"
+# LIVE8 — scope: only debug/deps at depth 1 is ever pruned. A dead hash's files
+# elsewhere — build/, the profile root, a nested deps dir, the whole release
+# profile, and the fingerprint dir (the evidence itself) — are untouched.
+_live_case
+_mint_anchor "$LIVE_PROFILE"
+LIVE8_DEAD=deadbeef00000008
+_mint_unit "$LIVE_PROFILE" dead "$LIVE8_DEAD" "$LIVE_DEAD" "$LIVE_DEAD" "libdead-$LIVE8_DEAD.rlib"
+mkdir -p "$LIVE_PROFILE/build/dead-$LIVE8_DEAD" "$LIVE_PROFILE/deps/nested"
+echo "out" > "$LIVE_PROFILE/build/dead-$LIVE8_DEAD/out.txt"
+echo "root" > "$LIVE_PROFILE/dead-$LIVE8_DEAD"
+echo "nested" > "$LIVE_PROFILE/deps/nested/libdead-$LIVE8_DEAD.rlib"
+_mint_anchor "$LIVE_ADV/release"
+_mint_unit "$LIVE_ADV/release" dead "$LIVE8_DEAD" "$LIVE_DEAD" "$LIVE_DEAD" "libdead-$LIVE8_DEAD.rlib"
+_live_refresh
+assert "LIVE8: refresh exits 0" test "$RC" -eq 0
+assert "LIVE8: the dead hash's files outside debug/deps depth 1 all survive (build/, profile root, nested, release/, .fingerprint)" \
+    _all_present "$LIVE_GEN" "debug/build/dead-$LIVE8_DEAD/out.txt" "debug/dead-$LIVE8_DEAD" \
+        "debug/deps/nested/libdead-$LIVE8_DEAD.rlib" "release/deps/libdead-$LIVE8_DEAD.rlib" \
+        "release/.fingerprint/dead-$LIVE8_DEAD/lib-dead" "debug/.fingerprint/dead-$LIVE8_DEAD/lib-dead"
+assert "LIVE8: the dead hash's debug/deps/ file is pruned (control)" \
+    _none_present "$LIVE_GEN" "debug/deps/libdead-$LIVE8_DEAD.rlib"
+assert "LIVE8: only the depth-1 file is counted as a victim (files=1) — the nested twin is never even a candidate" \
+    _stderr_matches 'prune deps=.*files=1( |$)'
 
-# Bootstrap numbering (mirrors Block B8): a pre-existing REAL base dir becomes
-# .gen.1 on the FIRST refresh, and the new gen becomes .gen.2.
-J4D_RETIRED_GEN="${J4D_BASE}.gen.1"
-J4D_RETIRED_LOCK="${J4D_RETIRED_GEN}.lock"
-touch "$J4D_RETIRED_LOCK"
-exec {J4D_LOCK_FD}<>"$J4D_RETIRED_LOCK"
-flock -s "$J4D_LOCK_FD"
+# LIVE9 — operator contract: stderr carries the machine-greppable summary
+# `prune deps=<path> files=N victim_bytes=N`, the byte figure being the summed
+# apparent size of exactly the victims; stdout stays empty.
+_live_case
+_mint_anchor "$LIVE_PROFILE"
+_mint_unit "$LIVE_PROFILE" deadone 9a9a9a9a9a9a9a9a "$LIVE_DEAD" "$LIVE_DEAD" libdeadone-9a9a9a9a9a9a9a9a.rlib
+_mint_unit "$LIVE_PROFILE" deadtwo 9b9b9b9b9b9b9b9b "$LIVE_DEAD" "$LIVE_DEAD" deadtwo-9b9b9b9b9b9b9b9b
+head -c 1500 /dev/zero > "$LIVE_PROFILE/deps/libdeadone-9a9a9a9a9a9a9a9a.rlib"
+head -c 700 /dev/zero > "$LIVE_PROFILE/deps/deadtwo-9b9b9b9b9b9b9b9b"
+LIVE9_BYTES=$(( $(stat -c %s "$LIVE_PROFILE/deps/libdeadone-9a9a9a9a9a9a9a9a.rlib") \
+    + $(stat -c %s "$LIVE_PROFILE/deps/deadtwo-9b9b9b9b9b9b9b9b") ))
+LIVE9_TMPDIR="$(mktemp -d /tmp/test-refresh-warm-base-live9-tmp-XXXXXX)"
+_TMPDIRS+=("$LIVE9_TMPDIR")
+TMPDIR="$LIVE9_TMPDIR" _live_refresh
+assert "LIVE9: refresh exits 0" test "$RC" -eq 0
+assert "LIVE9: the stage's summary temp file is removed after a successful prune" \
+    test -z "$(ls -A "$LIVE9_TMPDIR")"
+assert "LIVE9: stderr reports the prune with files=2" \
+    _stderr_matches 'prune deps=.*files=2( |$)'
+assert "LIVE9: stderr's victim_bytes is the summed apparent size of exactly the two dead files" \
+    _stderr_matches "files=2 victim_bytes=${LIVE9_BYTES}( |\$)"
+assert "LIVE9: stdout stays empty" test -z "$OUT"
 
-reset_calls
-REIFY_TEST_REFLINK_OK=1 run_helper "$J4D_ADV" "$J4D_BASE" --landed-commit "$J4D_HEAD"
-assert "J4d: refresh over a pre-existing base exits 0" test "$RC" -eq 0
-assert "J4d: retired gen.1 (the old base) still has all 3 of its OWN generations — prune never touched it" \
-    bash -c '[ "$(find "$1" -maxdepth 1 -type f -name "reify_old_unit-*" | wc -l)" -eq 3 ]' _ "$J4D_RETIRED_GEN/debug/deps"
+# LIVE10 — skip paths: with no deps dir, or no .fingerprint to read liveness
+# from, the stage deletes nothing, says so on stderr, and the refresh still
+# succeeds.
+_live_case
+echo "content" > "$LIVE_ADV/f.txt"
+_live_refresh
+assert "LIVE10a: refresh with no debug/ at all exits 0" test "$RC" -eq 0
+assert "LIVE10a: stderr says the stage was skipped" _stderr_matches 'skip'
+assert "LIVE10a: the advancing content reaches the new gen" _all_present "$LIVE_GEN" f.txt
+assert "LIVE10a: with nothing to prune findmnt is never consulted" \
+    bash -c '! grep -q "^findmnt" "$1"' _ "$CALLS_FILE"
 
-J4D_NEW_GEN="$(readlink "$J4D_BASE")"
-assert "J4e: new gen carries the pruned (2-file) set of the advancing unit" \
-    bash -c '[ "$(find "$1" -maxdepth 1 -type f -name "reify_new_unit-*" | wc -l)" -eq 2 ] && [ ! -f "$1/reify_new_unit-7777777777777777" ]' _ "$J4D_NEW_GEN/debug/deps"
+_live_case
+mkdir -p "$LIVE_PROFILE/deps"
+echo "dead-looking" > "$LIVE_PROFILE/deps/libdead-abababababababab.rlib"
+touch -d '2020-01-01 00:00:00' "$LIVE_PROFILE/deps/libdead-abababababababab.rlib"
+_live_refresh
+assert "LIVE10b: refresh with debug/deps but no debug/.fingerprint exits 0" test "$RC" -eq 0
+assert "LIVE10b: stderr says the stage was skipped" _stderr_matches 'skip'
+assert "LIVE10b: with no liveness evidence the dead-looking file survives" \
+    _all_present "$LIVE_GEN/debug/deps" libdead-abababababababab.rlib
+assert "LIVE10b: with no evidence to read findmnt is never consulted" \
+    bash -c '! grep -q "^findmnt" "$1"' _ "$CALLS_FILE"
 
-assert "J4f: no <base>.gen.*.partial remains after refresh" \
-    bash -c '_n=0; for _p in "${1}".gen.*.partial; do [ -d "$_p" ] && _n=$((_n+1)); done; [ "$_n" -eq 0 ]' _ "$J4D_BASE"
-assert "J4f: <base> is a symlink to a <base>.gen.N dir" \
-    bash -c '[ -L "$1" ] && readlink "$1" | grep -qE "[.]gen[.][0-9]+$"' _ "$J4D_BASE"
+# LIVE11 — fail-closed: a prune whose unlink fails aborts the refresh BEFORE the
+# rename, so the base is not advanced and the EXIT trap leaves no staging dir.
+# The rm stub fails only the prune's own `rm -f --`.
+_live_case
+_mint_anchor "$LIVE_PROFILE"
+_mint_unit "$LIVE_PROFILE" failunit deadbeef00000011 "$LIVE_DEAD" "$LIVE_DEAD" libfailunit-deadbeef00000011.rlib
+LIVE11_TMPDIR="$(mktemp -d /tmp/test-refresh-warm-base-live11-tmp-XXXXXX)"
+_TMPDIRS+=("$LIVE11_TMPDIR")
+TMPDIR="$LIVE11_TMPDIR" REIFY_TEST_PRUNE_RM_FAIL=1 _live_refresh
+assert "LIVE11: a failing prune unlink makes the refresh exit non-zero" test "$RC" -ne 0
+assert "LIVE11: the failure is the prune's own rm (the stub fired)" _stderr_matches 'SIMULATED failure'
+assert "LIVE11: <base> is not created when the prune fails" test ! -e "$LIVE_BASE"
+assert "LIVE11: the stage's summary temp file is reclaimed by the EXIT trap even though the prune failed" \
+    test -z "$(ls -A "$LIVE11_TMPDIR")"
+assert "LIVE11: no <base>.gen.*.partial residue after a prune failure (EXIT trap cleanup)" \
+    bash -c '_n=0; for _p in "${1}".gen.*.partial; do [ -e "$_p" ] && _n=$((_n+1)); done; [ "$_n" -eq 0 ]' _ "$LIVE_BASE"
 
-# Release the shared lock now that assertions are done (fixture cleanup no
-# longer needs to race the GC this was deferring).
-flock -u "$J4D_LOCK_FD"
-exec {J4D_LOCK_FD}<&-
+# LIVE12 — staging siting: refreshing over a PRE-EXISTING base prunes only the
+# .partial staging copy. The old base (bootstrapped to .gen.1) is never edited;
+# a shared flock on its lock file defers the GC reap (script Step 6) so the
+# retired gen can still be inspected.
+_live_case
+_mint_anchor "$LIVE_PROFILE"
+_mint_unit "$LIVE_PROFILE" advdead deadbeef00000012 "$LIVE_DEAD" "$LIVE_DEAD" libadvdead-deadbeef00000012.rlib
+_mint_unit "$LIVE_BASE/debug" baseanchor bbbb0000000000a1 "$LIVE_ANCHOR" "$LIVE_ANCHOR" libbaseanchor-bbbb0000000000a1.rlib
+_mint_unit "$LIVE_BASE/debug" basedead bbbb00000000dead "$LIVE_DEAD" "$LIVE_DEAD" libbasedead-bbbb00000000dead.rlib
+LIVE12_RETIRED_GEN="${LIVE_BASE}.gen.1"
+touch "${LIVE12_RETIRED_GEN}.lock"
+exec {LIVE12_LOCK_FD}<>"${LIVE12_RETIRED_GEN}.lock"
+flock -s "$LIVE12_LOCK_FD"
+_live_refresh
+assert "LIVE12: refresh over a pre-existing base exits 0" test "$RC" -eq 0
+assert "LIVE12: retired gen.1 (the old base) still holds its own dead unit — the prune never edits it" \
+    _all_present "$LIVE12_RETIRED_GEN/debug/deps" libbasedead-bbbb00000000dead.rlib
+assert "LIVE12: the new gen lacks the advancing dead unit" \
+    _none_present "$LIVE_GEN/debug/deps" libadvdead-deadbeef00000012.rlib
+assert "LIVE12: the new gen keeps the advancing anchor unit" \
+    _all_present "$LIVE_GEN/debug/deps" libanchor-00000000000000a1.rlib
+assert "LIVE12: no <base>.gen.*.partial remains after refresh" \
+    bash -c '_n=0; for _p in "${1}".gen.*.partial; do [ -d "$_p" ] && _n=$((_n+1)); done; [ "$_n" -eq 0 ]' _ "$LIVE_BASE"
+assert "LIVE12: <base> is a symlink to a <base>.gen.N dir" \
+    bash -c '[ -L "$1" ] && readlink "$1" | grep -qE "[.]gen[.][0-9]+$"' _ "$LIVE_BASE"
+flock -u "$LIVE12_LOCK_FD"
+exec {LIVE12_LOCK_FD}<&-
 
-# J4g — PRUNE FAILURE LEAVES NO RESIDUE. The REIFY_TEST_PRUNE_RM_FAIL=1 rm
-# stub fails only the prune stage's own non-recursive `rm -f` (never the EXIT
-# trap's recursive `rm -rf` cleanup — see the stub's own comment), so the
-# refusal is isolated to the prune's own unlink and the trap's cleanup is
-# genuinely exercised with the real rm.
-J4G_TMP="$(mktemp -d /tmp/test-refresh-warm-base-j4g-XXXXXX)"
-_TMPDIRS+=("$J4G_TMP")
-J4G_LANE="$(mk_git_advancing "$J4G_TMP")"
-J4G_ADV="$J4G_LANE/advancing"
-J4G_HEAD="$(git -C "$J4G_LANE" rev-parse HEAD)"
-mkdir -p "$J4G_ADV/debug/deps"
-echo "g1" > "$J4G_ADV/debug/deps/reify_fail_unit-1111111111111111"
-echo "g2" > "$J4G_ADV/debug/deps/reify_fail_unit-2222222222222222"
-echo "g3" > "$J4G_ADV/debug/deps/reify_fail_unit-3333333333333333"
-touch -d '2026-01-01 00:00:00' "$J4G_ADV/debug/deps/reify_fail_unit-1111111111111111"
-touch -d '2026-02-01 00:00:00' "$J4G_ADV/debug/deps/reify_fail_unit-2222222222222222"
-touch -d '2026-03-01 00:00:00' "$J4G_ADV/debug/deps/reify_fail_unit-3333333333333333"
-J4G_BASE="$J4G_TMP/base"
+# LIVE13-17 — the atime guard. Under noatime, last_use degrades to mtime alone and
+# every unchanged registry unit would read as weeks stale, so the stage must skip
+# rather than prune. One fixture shape (an anchor unit plus one dead unit) runs
+# under each mount-option answer; LIVE13 is the control proving the dead unit IS
+# pruned where atime is maintained, so LIVE14-16 cannot pass vacuously.
+LIVE_MOUNT_DEAD=libmountdead-deadbeef00000013.rlib
+_live_mount_case() {
+    _live_case
+    _mint_anchor "$LIVE_PROFILE"
+    _mint_unit "$LIVE_PROFILE" mountdead deadbeef00000013 "$LIVE_DEAD" "$LIVE_DEAD" "$LIVE_MOUNT_DEAD"
+}
 
-reset_calls
-REIFY_TEST_REFLINK_OK=1 REIFY_TEST_PRUNE_RM_FAIL=1 run_helper "$J4G_ADV" "$J4G_BASE" --landed-commit "$J4G_HEAD"
-assert "J4g: prune rm failure makes the refresh exit non-zero" test "$RC" -ne 0
-assert "J4g: <base> not created/advanced after prune failure" test ! -e "$J4G_BASE"
-assert "J4g: no <base>.gen.*.partial residue after prune failure (EXIT trap cleanup)" \
-    bash -c '_n=0; for _p in "${1}".gen.*.partial; do [ -e "$_p" ] && _n=$((_n+1)); done; [ "$_n" -eq 0 ]' _ "$J4G_BASE"
+_live_mount_case
+_live_refresh
+assert "LIVE13: refresh on a relatime mount exits 0" test "$RC" -eq 0
+assert "LIVE13: control — where atime is maintained the dead unit is pruned" \
+    _none_present "$LIVE_GEN/debug/deps" "$LIVE_MOUNT_DEAD"
+assert "LIVE13: control — the anchor unit survives" \
+    _all_present "$LIVE_GEN/debug/deps" libanchor-00000000000000a1.rlib
+assert "LIVE13: the mount asked about is the advancing dir's (findmnt -T <advancing dir>)" \
+    grep -qE -- "^findmnt( .*)? -T ${LIVE_ADV}( |\$)" "$CALLS_FILE"
 
-# J5 — mtime-tie determinism. NOT a theoretical edge case: measured on the
-# live base, 1 of 3,607 (stem, ext) groups contains duplicate mtimes. Every
-# hash is ranked by (max mtime desc, hash string desc) — both keys explicit,
-# in the hash_newer() comparator (scripts/refresh-warm-base.sh Step 3b) — so
-# the survivor set stays deterministic even when two generations of the same
-# stem tie exactly on mtime.
-J5_TMP="$(mktemp -d /tmp/test-refresh-warm-base-j5-XXXXXX)"
-_TMPDIRS+=("$J5_TMP")
-J5_LANE="$(mk_git_advancing "$J5_TMP")"
-J5_ADV="$J5_LANE/advancing"
-J5_HEAD="$(git -C "$J5_LANE" rev-parse HEAD)"
-mkdir -p "$J5_ADV/debug/deps"
+_live_mount_case
+REIFY_TEST_FINDMNT_OPTIONS='rw,noatime' _live_refresh
+assert "LIVE14: refresh on a noatime mount exits 0" test "$RC" -eq 0
+assert "LIVE14: on a noatime mount the dead unit survives (no atime, so no liveness evidence)" \
+    _all_present "$LIVE_GEN/debug/deps" "$LIVE_MOUNT_DEAD"
+assert "LIVE14: stderr says the stage was skipped" _stderr_matches 'skip'
 
-# Three generations of one unit: the two OLDEST tied at an IDENTICAL mtime
-# (touch -d the same timestamp on both), the newest distinct. Content sizes
-# are deliberately swapped relative to filename order — the LEXICALLY
-# SMALLER hash suffix (-1111...) gets the LARGER byte count, and the
-# LEXICALLY LARGER suffix (-2222...) gets the SMALLER byte count — so that
-# "tiebreak by byte size" and "tiebreak by filename" pick DIFFERENT
-# survivors. No sleeps; explicit `touch -d` timestamps only (T8).
-printf '%s' "aaaaa" > "$J5_ADV/debug/deps/reify_tie_unit-1111111111111111"                 # 5 bytes
-printf '%s' "bbbbbbbbbbbbbbbbbbbb" > "$J5_ADV/debug/deps/reify_tie_unit-2222222222222222"  # 20 bytes
-printf '%s' "newest content" > "$J5_ADV/debug/deps/reify_tie_unit-3333333333333333"
-touch -d '2026-01-01 00:00:00' \
-    "$J5_ADV/debug/deps/reify_tie_unit-1111111111111111" \
-    "$J5_ADV/debug/deps/reify_tie_unit-2222222222222222"
-touch -d '2026-03-01 00:00:00' "$J5_ADV/debug/deps/reify_tie_unit-3333333333333333"
+_live_mount_case
+REIFY_TEST_FINDMNT_OPTIONS='noatime,rw' _live_refresh
+assert "LIVE14b: noatime as the FIRST option token is recognised too (dead unit survives)" \
+    _all_present "$LIVE_GEN/debug/deps" "$LIVE_MOUNT_DEAD"
 
-J5_BASE="$J5_TMP/base"
+_live_mount_case
+REIFY_TEST_FINDMNT_OPTIONS='noatime' _live_refresh
+assert "LIVE14c: noatime as the ONLY option token is recognised too (dead unit survives)" \
+    _all_present "$LIVE_GEN/debug/deps" "$LIVE_MOUNT_DEAD"
 
-reset_calls
-REIFY_TEST_REFLINK_OK=1 run_helper "$J5_ADV" "$J5_BASE" --landed-commit "$J5_HEAD"
-assert "J5a: refresh with a tied-mtime group exits 0" test "$RC" -eq 0
+_live_mount_case
+REIFY_TEST_FINDMNT_FAIL=1 _live_refresh
+assert "LIVE15: refresh with findmnt failing exits 0" test "$RC" -eq 0
+assert "LIVE15: with findmnt failing the dead unit survives (unknown mount, no evidence)" \
+    _all_present "$LIVE_GEN/debug/deps" "$LIVE_MOUNT_DEAD"
+assert "LIVE15: stderr says the stage was skipped" _stderr_matches 'skip'
 
-J5_GEN="$(readlink "$J5_BASE")"
-J5_DEPS="$J5_GEN/debug/deps"
+_live_mount_case
+REIFY_TEST_FINDMNT_OPTIONS='' _live_refresh
+assert "LIVE16: refresh with findmnt printing nothing exits 0" test "$RC" -eq 0
+assert "LIVE16: with an empty option list the dead unit survives (unknown mount, no evidence)" \
+    _all_present "$LIVE_GEN/debug/deps" "$LIVE_MOUNT_DEAD"
+assert "LIVE16: stderr says the stage was skipped" _stderr_matches 'skip'
 
-assert "J5a: exactly 2 files remain in the tied group (keep count honoured despite the tie)" \
-    bash -c '[ "$(find "$1" -maxdepth 1 -type f -name "reify_tie_unit-*" | wc -l)" -eq 2 ]' _ "$J5_DEPS"
-assert "J5a: the distinct-newest generation survives" \
-    test -f "$J5_DEPS/reify_tie_unit-3333333333333333"
+_live_mount_case
+REIFY_TEST_FINDMNT_OPTIONS='rw,relatime,nodiratime' _live_refresh
+assert "LIVE17: refresh on a nodiratime mount exits 0" test "$RC" -eq 0
+assert "LIVE17: nodiratime is not noatime — the dead unit is still pruned" \
+    _none_present "$LIVE_GEN/debug/deps" "$LIVE_MOUNT_DEAD"
 
-# J5c — the tiebreak is hash-string desc (mtime desc primary), never an
-# accident of byte size. -2222... is the lexically LARGER of the tied-old
-# pair (both are extensionless, so filename desc and hash desc agree here),
-# so hash_newer() (scripts/refresh-warm-base.sh Step 3b) keeps it and prunes
-# -1111.... Content sizes are deliberately swapped relative to filename
-# order (see the fixture comment above) so a byte-size-based tiebreak would
-# pick the OPPOSITE survivor — pinning that the tiebreak reads the hash,
-# never whatever field happens to sit next in the `find -printf` stream.
-assert "J5c: the lexically-larger tied filename survives (-2222...)" \
-    test -f "$J5_DEPS/reify_tie_unit-2222222222222222"
-assert "J5c: the lexically-smaller tied filename is pruned (-1111...)" \
-    test ! -f "$J5_DEPS/reify_tie_unit-1111111111111111"
-
-# J5b — the survivor SET is deterministic across independent refreshes: a
-# second, byte-identical advancing fixture (same names, same stamped mtimes,
-# same content), built from an independently-created lane so this exercises
-# a genuinely separate `find`/readdir traversal, must produce the same
-# surviving filename set as the first.
-J5B_TMP="$(mktemp -d /tmp/test-refresh-warm-base-j5b-XXXXXX)"
-_TMPDIRS+=("$J5B_TMP")
-J5B_LANE="$(mk_git_advancing "$J5B_TMP")"
-J5B_ADV="$J5B_LANE/advancing"
-J5B_HEAD="$(git -C "$J5B_LANE" rev-parse HEAD)"
-mkdir -p "$J5B_ADV/debug/deps"
-printf '%s' "aaaaa" > "$J5B_ADV/debug/deps/reify_tie_unit-1111111111111111"
-printf '%s' "bbbbbbbbbbbbbbbbbbbb" > "$J5B_ADV/debug/deps/reify_tie_unit-2222222222222222"
-printf '%s' "newest content" > "$J5B_ADV/debug/deps/reify_tie_unit-3333333333333333"
-touch -d '2026-01-01 00:00:00' \
-    "$J5B_ADV/debug/deps/reify_tie_unit-1111111111111111" \
-    "$J5B_ADV/debug/deps/reify_tie_unit-2222222222222222"
-touch -d '2026-03-01 00:00:00' "$J5B_ADV/debug/deps/reify_tie_unit-3333333333333333"
-
-J5B_BASE="$J5B_TMP/base"
-
-reset_calls
-REIFY_TEST_REFLINK_OK=1 run_helper "$J5B_ADV" "$J5B_BASE" --landed-commit "$J5B_HEAD"
-assert "J5b: second independent refresh of a byte-identical fixture exits 0" test "$RC" -eq 0
-
-J5B_GEN="$(readlink "$J5B_BASE")"
-J5B_DEPS="$J5B_GEN/debug/deps"
-
-assert "J5b: survivor filename SET is identical across two independent refreshes" \
-    bash -c '
-        s1="$(cd "$1" && find . -maxdepth 1 -type f -name "reify_tie_unit-*" -printf "%f\n" | sort)"
-        s2="$(cd "$2" && find . -maxdepth 1 -type f -name "reify_tie_unit-*" -printf "%f\n" | sort)"
-        [ "$s1" = "$s2" ]
-    ' _ "$J5_DEPS" "$J5B_DEPS"
+# LIVE18 — a future-dated consult (clock skew, a stray touch, an extracted archive)
+# must not move the anchor, or every live unit would age out against it: a mass
+# deletion of exactly the E19 class from one outlier. The future unit still counts
+# as ITS OWN unit's use, so it survives.
+_live_case
+_mint_anchor "$LIVE_PROFILE"
+_mint_unit "$LIVE_PROFILE" liveunit 1818181818181801 '2026-03-06 00:00:00' '2026-03-06 00:00:00' \
+    libliveunit-1818181818181801.rlib
+_mint_unit "$LIVE_PROFILE" deadunit deadbeef00000018 "$LIVE_DEAD" "$LIVE_DEAD" \
+    libdeadunit-deadbeef00000018.rlib
+_mint_unit "$LIVE_PROFILE" futureunit 1818181818181802 "$LIVE_COLD" '2099-01-01 00:00:00' \
+    libfutureunit-1818181818181802.rlib
+# A second, long-stale fingerprint file in the same dir: ignoring the future-dated
+# one (rather than counting it for its own unit) would leave the unit looking dead.
+echo "stale sibling" > "$LIVE_PROFILE/.fingerprint/futureunit-1818181818181802/dep-lib-futureunit"
+touch -d "$LIVE_DEAD" "$LIVE_PROFILE/.fingerprint/futureunit-1818181818181802/dep-lib-futureunit"
+assert "LIVE18: fixture check — the future-dated fingerprint reads back as later than now" \
+    test "$(stat -c %X "$LIVE_PROFILE/.fingerprint/futureunit-1818181818181802/lib-futureunit")" -gt "$(date +%s)"
+_live_refresh
+assert "LIVE18: refresh exits 0" test "$RC" -eq 0
+assert "LIVE18: the anchor unit and the live unit survive — a future-dated outlier does not move the anchor" \
+    _all_present "$LIVE_GEN/debug/deps" libanchor-00000000000000a1.rlib libliveunit-1818181818181801.rlib
+assert "LIVE18: the future-dated unit itself survives (a future consult still counts as its own use)" \
+    _all_present "$LIVE_GEN/debug/deps" libfutureunit-1818181818181802.rlib
+assert "LIVE18: the dead unit is still pruned (the stage is active)" \
+    _none_present "$LIVE_GEN/debug/deps" libdeadunit-deadbeef00000018.rlib
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Block TRASH: shared-trash litter guard (task 5612). Two asserts, deliberately

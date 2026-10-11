@@ -1581,6 +1581,7 @@ async fn spawn_sidecar_impl_returns_error_for_missing_binary() {
         |_name: String, _payload: serde_json::Value| {},
         Path::new("/tmp/test-ws"),
         None,
+        None,
     )
     .await;
 
@@ -1602,6 +1603,7 @@ async fn spawn_sidecar_impl_returns_handle_for_valid_binary() {
         Path::new("/bin/cat"),
         |_name: String, _payload: serde_json::Value| {},
         Path::new("/tmp/test-ws"),
+        None,
         None,
     )
     .await;
@@ -3035,147 +3037,6 @@ mod workspace_resolution {
         let result = resolve_workspace_dir(None, Some(Path::new("/init/foo.ri")), &fallback);
         assert_eq!(result, PathBuf::from("/init"));
     }
-}
-
-// --- sidecar_env tests (task 3210 step-13) ---
-
-mod sidecar_env {
-    use crate::claude_bridge::compute_sidecar_env;
-    use std::path::Path;
-
-    #[test]
-    fn workspace_and_landlock_exec_both_present() {
-        let envs = compute_sidecar_env(Path::new("/ws"), Some(Path::new("/sb/le.py")));
-        let reify_ws = envs.iter().find(|(k, _)| k == "REIFY_WORKSPACE");
-        let reify_le = envs.iter().find(|(k, _)| k == "REIFY_LANDLOCK_EXEC");
-        assert_eq!(
-            reify_ws,
-            Some(&("REIFY_WORKSPACE".to_string(), "/ws".to_string()))
-        );
-        assert_eq!(
-            reify_le,
-            Some(&("REIFY_LANDLOCK_EXEC".to_string(), "/sb/le.py".to_string()))
-        );
-    }
-
-    #[test]
-    fn landlock_exec_none_omits_key() {
-        let envs = compute_sidecar_env(Path::new("/ws"), None);
-        let reify_ws = envs.iter().find(|(k, _)| k == "REIFY_WORKSPACE");
-        let reify_le = envs.iter().find(|(k, _)| k == "REIFY_LANDLOCK_EXEC");
-        assert_eq!(
-            reify_ws,
-            Some(&("REIFY_WORKSPACE".to_string(), "/ws".to_string()))
-        );
-        assert!(
-            reify_le.is_none(),
-            "REIFY_LANDLOCK_EXEC should not appear when None"
-        );
-    }
-
-    #[test]
-    fn ordering_is_workspace_first_then_landlock_exec() {
-        let envs = compute_sidecar_env(Path::new("/ws"), Some(Path::new("/sb/le.py")));
-        // Under `--features gui`, compute_sidecar_env also appends REIFY_DEBUG_PORT
-        // after REIFY_LANDLOCK_EXEC (see compute_sidecar_env_includes_debug_port_and_workspace),
-        // so the exact count is feature-dependent; assert on relative ordering by key instead.
-        let expected_len = if cfg!(feature = "gui") { 3 } else { 2 };
-        assert_eq!(envs.len(), expected_len);
-        assert_eq!(envs[0].0, "REIFY_WORKSPACE");
-        assert_eq!(envs[1].0, "REIFY_LANDLOCK_EXEC");
-        #[cfg(feature = "gui")]
-        assert_eq!(envs[2].0, "REIFY_DEBUG_PORT");
-    }
-
-    #[test]
-    fn only_workspace_when_no_landlock() {
-        let envs = compute_sidecar_env(Path::new("/ws"), None);
-        // Under `--features gui`, REIFY_DEBUG_PORT is also present (no landlock_exec entry).
-        let expected_len = if cfg!(feature = "gui") { 2 } else { 1 };
-        assert_eq!(envs.len(), expected_len);
-        assert_eq!(envs[0].0, "REIFY_WORKSPACE");
-        #[cfg(feature = "gui")]
-        assert_eq!(envs[1].0, "REIFY_DEBUG_PORT");
-    }
-}
-
-// --- apply_sidecar_env + spawn_sidecar_impl signature tests (task 3210 step-15) ---
-
-mod apply_sidecar_env_tests {
-    use crate::claude_bridge::apply_sidecar_env;
-    use std::path::Path;
-
-    #[test]
-    fn sets_workspace_only_when_no_landlock_exec() {
-        let mut cmd = tokio::process::Command::new("/bin/true");
-        apply_sidecar_env(&mut cmd, Path::new("/ws"), None);
-        let envs: Vec<_> = cmd
-            .as_std()
-            .get_envs()
-            .map(|(k, v)| {
-                (
-                    k.to_string_lossy().into_owned(),
-                    v.map(|v| v.to_string_lossy().into_owned()),
-                )
-            })
-            .collect();
-        let has_ws = envs
-            .iter()
-            .any(|(k, v)| k == "REIFY_WORKSPACE" && v.as_deref() == Some("/ws"));
-        let has_le = envs.iter().any(|(k, _)| k == "REIFY_LANDLOCK_EXEC");
-        assert!(has_ws, "REIFY_WORKSPACE=/ws should be set: {:?}", envs);
-        assert!(!has_le, "REIFY_LANDLOCK_EXEC should not be set: {:?}", envs);
-    }
-
-    #[test]
-    fn sets_both_when_landlock_exec_some() {
-        let mut cmd = tokio::process::Command::new("/bin/true");
-        apply_sidecar_env(&mut cmd, Path::new("/ws"), Some(Path::new("/sb/le.py")));
-        let envs: Vec<_> = cmd
-            .as_std()
-            .get_envs()
-            .map(|(k, v)| {
-                (
-                    k.to_string_lossy().into_owned(),
-                    v.map(|v| v.to_string_lossy().into_owned()),
-                )
-            })
-            .collect();
-        let has_ws = envs
-            .iter()
-            .any(|(k, v)| k == "REIFY_WORKSPACE" && v.as_deref() == Some("/ws"));
-        let has_le = envs
-            .iter()
-            .any(|(k, v)| k == "REIFY_LANDLOCK_EXEC" && v.as_deref() == Some("/sb/le.py"));
-        assert!(has_ws, "REIFY_WORKSPACE=/ws should be set: {:?}", envs);
-        assert!(
-            has_le,
-            "REIFY_LANDLOCK_EXEC=/sb/le.py should be set: {:?}",
-            envs
-        );
-    }
-}
-
-// spawn_sidecar_impl signature test (step-15c)
-#[tokio::test]
-async fn spawn_sidecar_impl_with_workspace_and_no_landlock_returns_error_for_missing_binary() {
-    use std::path::Path;
-
-    let result = spawn_sidecar_impl(
-        Path::new("/tmp/no-such-binary"),
-        |_name: String, _payload: serde_json::Value| {},
-        Path::new("/tmp/ws"),
-        None,
-    )
-    .await;
-
-    assert!(result.is_err(), "Expected error for missing binary");
-    let err = result.err().expect("Expected Err variant");
-    assert!(
-        err.contains("Failed to spawn sidecar"),
-        "Error should mention 'Failed to spawn sidecar': {}",
-        err
-    );
 }
 
 // --- on_sidecar_exit direct unit tests (task 3301) ---

@@ -498,7 +498,8 @@ tasks:
       emits a tier-2 refusal rather than converging on a zero gradient. DAG verified.'
     verdict: PASS
   - name: posed-operands
-    binding: 'producer:task-6583 UPSTREAM — HARD edge ADDED BY THE D3 RUN. Measured on main
+    binding: 'producer:task-5436 (+5483) UPSTREAM, re-pointed 2026-09-21 from task-6583 (cancelled as
+      a duplicate of 5436, whose belt §7.1.5 carried-frame rule owns the fix) — HARD edge ADDED BY THE D3 RUN. Measured on main
       2ea72cc5e8: cross-sub distance does NOT resolve on the build path (inline form reports
       "operator undefined for these operand kinds: StructureInstance"; let-bound form leaves
       the cell undef; the at-auto pose stays identity under >= 5mm, >= 500mm and no constraint

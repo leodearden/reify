@@ -202,8 +202,8 @@ pub(crate) enum MorphDecision {
     /// preserved by construction).
     Morphed(VolumeMesh),
     /// Fall back to a Gmsh remesh — no producer, no prior [`MorphSource`], the
-    /// source carried no boundary attribution, or `try_morph` returned a
-    /// non-`Ok` outcome (Ineligible / QualityReject / SolverError).
+    /// source carried no, or an empty, boundary attribution, or `try_morph`
+    /// returned a non-`Ok` outcome (Ineligible / QualityReject / SolverError).
     Remesh,
 }
 
@@ -211,10 +211,10 @@ pub(crate) enum MorphDecision {
 /// scratch, per the PRD §4.3 decision tree.
 ///
 /// Returns [`MorphDecision::Remesh`] whenever a precondition is missing — no
-/// `producer`, no prior `source`, or a `source` mesh that carries no boundary
-/// attribution (only the task-4092 attributed producer threads one; without it
-/// `compute_dirichlet_bcs` has no anchors to project) — or when `try_morph`
-/// returns a non-`Ok` outcome.
+/// `producer`, no prior `source`, or a `source` mesh that carries no, or an
+/// empty, boundary attribution (only the task-4092 attributed producer threads
+/// one, and with no attached nodes there is nothing to project) — or when
+/// `try_morph` returns a non-`Ok` outcome.
 ///
 /// ## Diagnostics (engine layer)
 ///
@@ -240,10 +240,15 @@ pub(crate) fn decide_morph_or_remesh(
         (Some(p), Some(s)) => (p, s),
         _ => return MorphDecision::Remesh,
     };
-    // The source mesh must carry a task-4092 boundary association — the morph
-    // projects each boundary node onto the new BRep via the correspondence map,
-    // so without attribution there is nothing to project and we remesh.
-    let Some(boundary) = source.source_mesh.boundary.as_ref() else {
+    // The source must carry a NON-EMPTY task-4092 boundary association: with no
+    // attached nodes there is nothing to project onto the new BRep, so any
+    // producer `Ok` would be vacuous.
+    let Some(boundary) = source
+        .source_mesh
+        .boundary
+        .as_ref()
+        .filter(|b| !b.is_empty())
+    else {
         return MorphDecision::Remesh;
     };
     let request = MorphRequest {
@@ -314,6 +319,7 @@ mod tests {
     use super::*;
     use crate::Engine;
     use reify_core::{Diagnostic, RealizationNodeId, Severity};
+    use reify_ir::NodeAttachment;
     use reify_test_support::mocks::{FailingMockGeometryKernel, MockConstraintChecker};
 
     fn mesh_with_tets(tets: Vec<u32>) -> VolumeMesh {
@@ -706,13 +712,15 @@ mod tests {
         }
     }
 
-    /// Build a [`MorphSource`] whose source mesh carries a (non-`None`)
-    /// boundary association — the precondition the helper checks before it can
-    /// build a [`MorphRequest`] (only the task-4092 attributed path threads a
-    /// boundary; the plain path leaves it `None`).
+    /// Build a [`MorphSource`] whose source mesh carries a non-empty boundary
+    /// association — the precondition the helper checks before it can build a
+    /// [`MorphRequest`] (only the task-4092 attributed path threads a boundary;
+    /// the plain path leaves it `None`).
     fn source_with_boundary(tets: Vec<u32>) -> MorphSource {
+        let mut boundary = BoundaryAssociation::default();
+        boundary.associate(0, NodeAttachment::OnFace(GeometryHandleId(1)));
         let mut mesh = mesh_with_tets(tets);
-        mesh.boundary = Some(BoundaryAssociation::default());
+        mesh.boundary = Some(boundary);
         MorphSource {
             source_mesh: mesh,
             old_brep: owned_brep(),
@@ -789,6 +797,27 @@ mod tests {
         assert!(
             matches!(decision, MorphDecision::Remesh),
             "a source mesh with no boundary attribution cannot be morphed"
+        );
+        assert!(diags.is_empty());
+    }
+
+    #[test]
+    fn decide_source_with_empty_boundary_remeshes() {
+        // `Some` but node-less: as unprojectable as `None`. The Ok-outcome mock
+        // makes a wrongly-consulted producer observable as `Morphed`.
+        let producer = DecisionMockProducer {
+            outcome: MockOutcome::Ok,
+        };
+        let mut mesh = mesh_with_tets(vec![0, 1, 2, 3]);
+        mesh.boundary = Some(BoundaryAssociation::default());
+        let source = MorphSource {
+            source_mesh: mesh,
+            old_brep: owned_brep(),
+        };
+        let (decision, diags) = run_decision(Some(&producer), Some(&source));
+        assert!(
+            matches!(decision, MorphDecision::Remesh),
+            "a node-less boundary association has nothing to project and must remesh, not Morph"
         );
         assert!(diags.is_empty());
     }

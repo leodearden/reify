@@ -79,8 +79,11 @@ module.exports = grammar({
     // bytes between `"`, `{`, and `}` delimiters — including whitespace — that
     // would otherwise be eaten by the extras `/\s/` rule.  Aliased to the visible
     // `string_chunk` node at each call site in `interpolated_string`.
-    // ENUM ORDER: must remain the LAST entry so appending preserves all prior indices.
     $._string_content,
+    // SELECTOR_AT: the ad_hoc_selector `@`, emitted by scanner.c only when it
+    // shares its base expression's line (spec §6.1.3).
+    // ENUM ORDER: must remain the LAST entry so appending preserves all prior indices.
+    $._selector_at,
   ],
 
   extras: $ => [
@@ -121,6 +124,17 @@ module.exports = grammar({
     //   `_primary_expression`, `variant_construction`".
     // PRD §4.4 / task α (data-carrying-enums, step-6).
     [$._primary_expression, $.variant_construction],
+    // import_path must stay live across a `.` so the parser can decide, on the
+    // token AFTER it, whether the dot continues the path (`a.b.c`, `a.b.C`) or
+    // introduces the destructured item list (`a.b.{C, D}`).  That is a
+    // 2-token-lookahead decision an LR(1) table cannot make, so without this
+    // entry `tree-sitter generate` aborts with:
+    //   "Unresolved conflict for symbol sequence:  'import'  identifier  •  '.'
+    //    …  Add a conflict for these rules: `import_path`".
+    // Required by the `.`-before-`{` terminal in import_declaration below; per
+    // the convention noted at the foot of this file, it is present only because
+    // generate reported the conflict and named this rule.  Task #5931.
+    [$.import_path],
   ],
 
   rules: {
@@ -262,7 +276,23 @@ module.exports = grammar({
       field('path', $.import_path),
       optional(choice(
         // Destructured: import a.b.{C, D}
-        field('items', $.import_items),
+        //
+        // The `.` before the brace list is NORMATIVE, per the `import_path`
+        // production in docs/reify-language-spec.md §15 "Grammar Summary":
+        //   import_path ::= module_path ('.' '{' IDENT (',' IDENT)* '}')?
+        // (corroborated by that spec's §7.3 "Import Forms" table, row
+        // "Destructured import", and by the identical `import_path` production
+        // in docs/initial-design/syntax-design-decisions.md §11 "Grammar
+        // summary").  Pinned by tests/import_items_grammar_tests.rs (#5931).
+        //
+        // The braces deliberately stay a SEPARATE `items` field on
+        // import_declaration rather than being folded into import_path the way
+        // the spec EBNF nests them: lower_import (crates/reify-syntax/src/
+        // ts_parser.rs) distinguishes Destructured from Aliased/Entity/Module
+        // by which optional FIELD is present.  Only the surface `.` terminal is
+        // normative here, so adding it settles the spelling without disturbing
+        // the CST shape or the lowering.
+        seq('.', field('items', $.import_items)),
         // Aliased: import a.b as x  OR  import a.b.C as X
         seq('as', field('alias', $.identifier)),
       )),
@@ -2020,9 +2050,10 @@ module.exports = grammar({
     // ── Ad-hoc port selector ────────────────────────────────
     // expr @ ident(args) — selects a port on a substructure using a named selector
     // Binds tighter than index_access (prec 9) but looser than member_access (prec 11)
+    // The `@` must be on its base's line; an `@` that begins a line is an annotation.
     ad_hoc_selector: $ => prec.left(10, seq(
       field('base', $._expression),
-      '@',
+      alias($._selector_at, '@'),
       field('selector', $.identifier),
       callTail($),
     )),

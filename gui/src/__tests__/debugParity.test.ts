@@ -94,6 +94,9 @@ const dispatchArmNames = extractDispatchArmNames(debugServerSource);
  */
 const PURE_ENGINE_SIDE = [
   'health',
+  // engine_status (task 6752): named Rust arm, a lock-free probe that never
+  // calls query_frontend.
+  'engine_status',
   'engine_state',
   // demand_dispatch (selective-demand ε, task 4741) has a named dispatch_tool
   // arm (handle_demand_dispatch → demand_dispatch_on_engine → run_on_engine /

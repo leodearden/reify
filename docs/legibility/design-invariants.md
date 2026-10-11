@@ -144,12 +144,20 @@ never take effect, do they find out at compile time?
 
 **Evidence**: `relate` on a scope with no `at auto` sub returns
 `RelateSolution::default()` — relations neither solved nor verified
-(`crates/reify-eval/src/relate_solve.rs`, zero-auto early return); Bool
-autos fall back to the continuous DimensionalSolver because
-`SolverRegistry::production()` leaves the Logical slot None while
-`cpsat.rs` sits unregistered (`crates/reify-constraints/src/registry.rs`);
-minimize over Bool autos builds zero objective components and never
-solves; DFM rules with unrealized handles are "silently skipped".
+(`crates/reify-eval/src/relate_solve.rs`, zero-auto early return); DFM
+rules with unrealized handles are "silently skipped". The 2026-07-24
+census also found Bool autos falling back to the continuous
+DimensionalSolver (CP-SAT unregistered) and minimize over Bool autos
+never consulted — both discharged: #5468 (PRD2 β) gave `CpSatSolver`
+its `solve_ranked` argmin override, and #5469 (PRD2 γ) made
+`SolverRegistry::production()` install `CpSatSolver` (Logical slot)
+and `DiscreteFirstFallback` (CrossDomain fallback), so an all-discrete
+component is enumerated by CP-SAT in both shipped binaries and its
+objective picks the configuration. The live successor on that seam: a
+STRICT `auto` over a multi-model all-discrete component resolves
+silently — CP-SAT reports `unique: false` but no diagnostic reaches
+the user (#6554; see `verdict_from_enumeration` in
+`crates/reify-constraints/src/cpsat.rs`).
 
 **House pattern**: the #5014 collateral-observability diagnostic (names a
 whole unresolved cluster when a merged solve is skipped); the relate
@@ -595,9 +603,10 @@ populated by `placeholder_part()` (a well-formed zero-field fake) with
 zero readers and its growth promise citing done #4578; the undeclared
 engine-attached `ModalResult.topology`, always `Undef` on the dims
 path; `mechanism_modal`'s `shape = []` / `participation_mass = 0`
-(#7012 owns the degraded reason). Normative contract, census and
-decomposition: `docs/prds/v0_6/result-field-vacuity-closure.md`
-(C1′–C4′ there; not restated here).
+(flipped to honest `Undef` by #7012; reason recorded at the
+producer). Normative contract, census and decomposition:
+`docs/prds/v0_6/result-field-vacuity-closure.md` (C1′–C4′ there; not
+restated here).
 
 **House pattern**: the tet-result `Undef`-for-unpopulated convention —
 buckling `pre_stress`, `degenerate_modal_result`'s `damping` — is C2′

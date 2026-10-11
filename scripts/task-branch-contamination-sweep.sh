@@ -58,7 +58,8 @@
 #   changed      files in `git diff -z --name-only <merge_base> <branch>`
 #   foreign      changed files absent from this task's metadata.files
 #   peer_files   foreign files declared by a non-terminal task that is NOT this one
-#   peers        the union of peer task ids implicated, sorted-unique, or "-"
+#   peers        the union of peer task ids implicated, sorted-unique and
+#                comma-joined, or "-" when there are none or it is unmeasured
 #   scope        CLEAN | OUT-OF-SCOPE | PEER-FILES | UNDECLARED | UNKNOWN
 #   signature    SUSPECT | -
 #
@@ -83,7 +84,8 @@
 #                       so an all-zero summary still reads as a clean pool.
 #
 # `--format json` emits one document: a `branches` array of objects carrying
-# the same keys, and a sibling `summary` object with the same counters.
+# the same keys, and a sibling `summary` object with the same counters. There,
+# `peers` is an array of task-id numbers (`[]` when none, "-" when unmeasured).
 #
 # ── Invariants ───────────────────────────────────────────────────────────────
 #   R1  Read-only on the task store. Opened strictly -readonly / mode=ro, and
@@ -467,6 +469,12 @@ _BRANCH_PREFIX_RE="$(task_citation_regex_escape "$BRANCH_PREFIX")"
 # ── per-branch measurement ────────────────────────────────────────────────────
 # Row fields, in the order the header documents. Set by _measure_branch and
 # consumed by the emitters; declared here so the field list has ONE definition.
+#
+# R_PEERS is the one field with three states, and this is where they are defined:
+#   "-"    unmeasured — set only by _row_unknown, like every count's placeholder
+#   ""     measured, no peers — _classify_scope's starting value
+#   "a,b"  measured: peer task ids, sorted-unique, comma-joined
+# Each renderer spells "" its own way: "-" in the table, [] in json.
 _DB_WARNED=0
 R_TASK=""; R_STATUS=""; R_MERGE_BASE=""; R_BEHIND=""; R_COMMITS=""
 R_PEER_COMMITS=""; R_CHANGED=""; R_FOREIGN=""; R_PEER_FILES=""; R_PEERS=""
@@ -646,7 +654,7 @@ _census_commits() {
     # ones, sorted-unique. Both halves feed ONE column because both answer the
     # same question: which other tasks are implicated in this branch.
     if [ -n "$commit_peers" ]; then
-        [ "$R_PEERS" = "-" ] || commit_peers="$commit_peers${R_PEERS//,/$'\n'}"$'\n'
+        [ -z "$R_PEERS" ] || commit_peers="$commit_peers${R_PEERS//,/$'\n'}"$'\n'
         R_PEERS="$(printf '%s' "$commit_peers" | sort -nu | paste -sd, -)"
     fi
     return 0
@@ -678,7 +686,7 @@ _census_commits() {
 # unused dimension of variability.
 _classify_scope() {
     local id="$1" declared path owner peers_found=""
-    R_FOREIGN=0; R_PEER_FILES=0; R_PEERS="-"
+    R_FOREIGN=0; R_PEER_FILES=0; R_PEERS=""
 
     declared="${_DECLARED["$id"]:-}"
     if [ -z "$declared" ]; then
@@ -775,9 +783,9 @@ import json, os, sys
 
 COLS = ("task", "status", "merge_base", "behind", "commits", "peer_commits",
         "changed", "foreign", "peer_files", "peers", "scope", "signature")
-# The counted columns are emitted as JSON numbers when they hold a count, and
-# as the "-" placeholder string when the branch could not be measured. A
-# consumer therefore never has to parse "-" out of an integer field.
+# Typed columns: counts are JSON numbers, and `peers` is an array of task-id
+# numbers ([] when none). An unmeasured branch carries the "-" placeholder
+# string in both, so a consumer never parses a list or a "-" out of them.
 NUMERIC = {"task", "behind", "commits", "peer_commits", "changed", "foreign",
            "peer_files"}
 
@@ -792,6 +800,8 @@ with open(os.environ["_TB_ROWS"]) as fh:
         for k in NUMERIC:
             if row[k].isdigit():
                 row[k] = int(row[k])
+        if row["peers"] != "-":
+            row["peers"] = [int(p) for p in row["peers"].split(",") if p]
         branches.append(row)
 
 doc = {"branches": branches}
@@ -812,7 +822,7 @@ PY
         [ -n "${c_task:-}" ] || continue
         printf 'task=%s status=%s merge_base=%s behind=%s commits=%s peer_commits=%s changed=%s foreign=%s peer_files=%s peers=%s scope=%s signature=%s\n' \
             "$c_task" "$c_status" "$c_mb" "$c_behind" "$c_commits" "$c_peer_commits" \
-            "$c_changed" "$c_foreign" "$c_peer_files" "$c_peers" "$c_scope" "$c_signature"
+            "$c_changed" "$c_foreign" "$c_peer_files" "${c_peers:--}" "$c_scope" "$c_signature"
     done < "$_ROWS" || return 1
     [ -z "$summary" ] || printf 'SWEEP: %s\n' "$summary"
     return 0
@@ -836,7 +846,8 @@ fi
 # costs no git work at all beyond the one for-each-ref, and a task with no
 # branch costs none. Every ref outside that intersection is still ACCOUNTED
 # for — by a named skip counter, or by an UNKNOWN row when the store itself is
-# what could not be consulted. Rows are emitted in ascending task id.
+# what could not be consulted. Rows are emitted in ascending task id, whatever
+# --branch-prefix is.
 N_BRANCHES=0; N_SUSPECT=0; N_PEER_FILES=0; N_OUT_OF_SCOPE=0
 N_UNDECLARED=0; N_CLEAN=0; N_UNKNOWN=0
 N_SKIPPED_TERMINAL=0; N_SKIPPED_NONNUMERIC=0; N_SKIPPED_NO_TASK=0
@@ -863,15 +874,25 @@ _tally() {
     esac
 }
 
-while IFS= read -r _ref; do
-    [ -n "$_ref" ] || continue
-    _id="${_ref#"${BRANCH_PREFIX}"}"
+# _fleet_suffixes — the suffix after refs/heads/<prefix> of every fleet ref,
+# one per line, ascending numerically. The sort key is the suffix itself (the
+# task id), so the order holds for any --branch-prefix. `%(refname)`, not
+# `%(refname:short)`: the short form is `heads/<name>` whenever a tag shares
+# the name.
+_fleet_suffixes() {
+    local ref
+    _git for-each-ref --format='%(refname)' "refs/heads/${BRANCH_PREFIX}*" 2>/dev/null |
+        while IFS= read -r ref; do printf '%s\n' "${ref#"refs/heads/${BRANCH_PREFIX}"}"; done |
+        sort -n
+}
+
+while IFS= read -r _id; do
     case "$_id" in
         ''|*[!0-9]*)
             # Never silently dropped and never an error: 48 of the live pool's
             # 1095 task/* refs have non-numeric suffixes (task/1741-recovered,
             # task/208-merge, task/2962-20260530T173412Z).
-            warn "Skipping non-numeric branch: $_ref"
+            warn "Skipping non-numeric branch: ${BRANCH_PREFIX}${_id}"
             N_SKIPPED_NONNUMERIC=$((N_SKIPPED_NONNUMERIC + 1))
             continue ;;
     esac
@@ -900,9 +921,8 @@ while IFS= read -r _ref; do
     _measure_branch "$_id"
     _tally
     _append_row
-done < <(_git for-each-ref --format='%(refname:short)' \
-             "refs/heads/${BRANCH_PREFIX}*" 2>/dev/null | sort -t/ -k2 -n)
-unset _ref _id
+done < <(_fleet_suffixes)
+unset _id
 
 # The two aggregate stderr diagnostics, emitted once and only when they apply.
 # A pool of refs whose tag holds NO live task at all is never a legitimate

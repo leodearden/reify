@@ -212,6 +212,11 @@ mechanism the dogfood duplicates prove works end-to-end).
 
 ## 7. Cross-PRD relationships (G4)
 
+> **Solid-param op substitution (step-assembly-import ο #8067).** This PRD owns the recursive
+> overlay and the re-realization trigger only. Replacing a `Solid` param's default-compiled
+> realization ops with the override expression's (both arms) is owned by
+> `docs/prds/v0_6/step-assembly-import.md` η (#8061), which extends this PRD's scope there.
+
 | Other PRD / task | Direction | Seam mechanism | Owner | Status |
 |---|---|---|---|---|
 | assembly-derivation-toolbox.md (paired commit) | it consumes | merged-args elaboration + loud-failure diagnostics | this PRD | its batch dep-wires onto α/β/γ/δ |

@@ -16,7 +16,7 @@
 //! `affine_apply_e2e.rs` (task 3963).
 
 use reify_core::Severity;
-use reify_test_support::{MockConstraintChecker, MockGeometryKernel, compile_source_with_stdlib};
+use reify_test_support::{compile_source_with_stdlib, make_engine_with_mock_kernel};
 
 /// Path to the committed example, relative to this crate's manifest.
 ///
@@ -37,13 +37,6 @@ fn compiled_example() -> reify_compiler::CompiledModule {
 }
 
 // ── Engine builder helpers (copied from sub_placement_assembly_gate.rs) ───────
-
-/// Build a Mock-kernel engine for structural surfacing assertions.
-fn mock_engine() -> reify_eval::Engine {
-    let checker = MockConstraintChecker::new();
-    let kernel = MockGeometryKernel::new();
-    reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)))
-}
 
 /// Build a real-OCCT engine via the production `SingleKernelHolder` planner.
 fn occt_engine_via_holder() -> reify_eval::Engine {
@@ -137,7 +130,7 @@ fn deformed_body_surfaces_under_mock() {
         .expect("TaperedSpacer template not found in compiled module");
     let body_path = root_realization_path(spacer, "body");
 
-    let mut engine = mock_engine();
+    let mut engine = make_engine_with_mock_kernel();
     let result = engine.tessellate_realizations(&compiled);
     let tess_errors: Vec<_> = result
         .diagnostics

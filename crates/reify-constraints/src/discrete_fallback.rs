@@ -61,8 +61,9 @@ mod tests {
     use crate::{CpSatSolver, DimensionalSolver};
     use reify_core::{DiagnosticCode, Type, ValueCellId};
     use reify_ir::{
-        AutoParam, BinOp, CompiledExpr, ConstraintSolver, ObjectiveSense, ObjectiveSet,
-        OptimalityStatus, RankedSolveResult, ResolutionProblem, SolveResult, Value, ValueMap,
+        AutoParam, BinOp, CompiledExpr, Completeness, ConstraintSolver, ObjectiveSense,
+        ObjectiveSet, OptimalityStatus, RankedSolveResult, ResolutionProblem, SolveResult, Value,
+        ValueMap,
     };
     use reify_test_support::{
         binop, cnid, conditional_expr, eq, ge, le, literal, value_ref_typed, vcid,
@@ -143,6 +144,7 @@ mod tests {
         Ranked {
             candidates: Vec<Candidate>,
             optimality: String,
+            completeness: Completeness,
         },
         Infeasible(Vec<(Option<DiagnosticCode>, String)>),
         NoProgress(String),
@@ -173,6 +175,7 @@ mod tests {
                 RankedSolveResult::Ranked {
                     candidates,
                     optimality,
+                    completeness,
                 } => Outcome::Ranked {
                     candidates: candidates
                         .into_iter()
@@ -183,6 +186,7 @@ mod tests {
                         })
                         .collect(),
                     optimality: format!("{optimality:?}"),
+                    completeness,
                 },
                 RankedSolveResult::Infeasible { diagnostics } => Outcome::Infeasible(
                     diagnostics
@@ -262,6 +266,7 @@ mod tests {
                 RankedSolveResult::Ranked {
                     candidates,
                     optimality: OptimalityStatus::ProvenOptimal,
+                    ..
                 } => assert_eq!(
                     candidates[0].values.get(&vcid(ENTITY, "a")),
                     Some(&Value::Bool(false)),
