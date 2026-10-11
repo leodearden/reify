@@ -17,60 +17,6 @@ fn content_hash(path: &std::path::Path) -> String {
     format!("{:016x}", hasher.finish())
 }
 
-/// Run a command with a timeout. Returns Ok(()) on success, Err on failure/timeout.
-///
-/// IMPORTANT: Child stdout is discarded (Stdio::null) for two reasons:
-///   1. Cargo parses build-script stdout line-by-line for "cargo:" directives.
-///      If the child emits anything to stdout, Cargo would misinterpret it.
-///   2. Using Stdio::piped() creates a deadlock risk: the parent only drains
-///      the pipe after try_wait() returns Some(status), but if the child writes
-///      \>64KB to stdout, the pipe buffer fills, the child blocks, and try_wait()
-///      returns Ok(None) indefinitely — a hard deadlock until the timeout fires.
-///
-/// tree-sitter generate writes its useful diagnostics to stderr, which is
-/// inherited directly (Stdio::inherit) and displayed by Cargo as-is.
-fn run_with_timeout(cmd: &str, args: &[&str], timeout_secs: u64) -> Result<(), String> {
-    use std::process::Stdio;
-    use std::time::{Duration, Instant};
-
-    let mut child = std::process::Command::new(cmd)
-        .args(args)
-        .stdout(Stdio::null())
-        .stderr(Stdio::inherit())
-        .spawn()
-        .map_err(|e| format!("Failed to spawn '{}': {}", cmd, e))?;
-
-    let deadline = Instant::now() + Duration::from_secs(timeout_secs);
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                if status.success() {
-                    return Ok(());
-                } else {
-                    return Err(format!(
-                        "'{}' failed with exit code {}",
-                        cmd,
-                        status.code().unwrap_or(-1)
-                    ));
-                }
-            }
-            Ok(None) => {
-                if Instant::now() >= deadline {
-                    let _ = child.kill();
-                    let _ = child.wait(); // Reap the process.
-                    return Err(format!("'{}' timed out after {}s", cmd, timeout_secs));
-                }
-                std::thread::sleep(Duration::from_millis(100));
-            }
-            Err(e) => {
-                let _ = child.kill();
-                let _ = child.wait(); // Reap the process to prevent orphans.
-                return Err(format!("Error waiting for '{}': {}", cmd, e));
-            }
-        }
-    }
-}
-
 /// Default timeout for tree-sitter generate subprocess (seconds).
 const GENERATE_TIMEOUT_SECS: u64 = 60;
 

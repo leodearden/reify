@@ -42,6 +42,58 @@ fn verify_outputs(src_dir: &std::path::Path) -> Result<(), String> {
     ))
 }
 
+/// Run a command with a timeout. Returns Ok(()) on success, Err on failure/timeout.
+///
+/// IMPORTANT: Child stdout is discarded (Stdio::null) for two reasons:
+///   1. Cargo parses build-script stdout line-by-line for "cargo:" directives.
+///      If the child emits anything to stdout, Cargo would misinterpret it.
+///   2. Using Stdio::piped() creates a deadlock risk: the parent only drains
+///      the pipe after try_wait() returns Some(status), but if the child writes
+///      \>64KB to stdout, the pipe buffer fills, the child blocks, and try_wait()
+///      returns Ok(None) indefinitely — a hard deadlock until the timeout fires.
+///
+/// tree-sitter generate writes its useful diagnostics to stderr, which is
+/// inherited directly (Stdio::inherit) and displayed by Cargo as-is.
+#[allow(dead_code)]
+fn run_with_timeout(cmd: &str, args: &[&str], timeout_secs: u64) -> Result<(), String> {
+    let mut child = std::process::Command::new(cmd)
+        .args(args)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::inherit())
+        .spawn()
+        .map_err(|e| format!("Failed to spawn '{}': {}", cmd, e))?;
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                if status.success() {
+                    return Ok(());
+                } else {
+                    return Err(format!(
+                        "'{}' failed with exit code {}",
+                        cmd,
+                        status.code().unwrap_or(-1)
+                    ));
+                }
+            }
+            Ok(None) => {
+                if std::time::Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait(); // Reap the process.
+                    return Err(format!("'{}' timed out after {}s", cmd, timeout_secs));
+                }
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            Err(e) => {
+                let _ = child.kill();
+                let _ = child.wait(); // Reap the process to prevent orphans.
+                return Err(format!("Error waiting for '{}': {}", cmd, e));
+            }
+        }
+    }
+}
+
 /// Filename of the generated-output content manifest, written beside the
 /// outputs it describes (i.e. inside `tree-sitter-reify/src/`).
 ///
