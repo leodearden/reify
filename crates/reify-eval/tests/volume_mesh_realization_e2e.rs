@@ -439,13 +439,28 @@ structure CachedVolumeMeshBox {
 }
 "#;
 
-/// The STEP text with the header line that carries the write timestamp
-/// removed, so two exports of the same body compare equal.
+/// OCCT names every exported product `Open CASCADE STEP translator <version>
+/// <n>`, where `<n>` counts the STEP writes made by this process.
 #[cfg(has_gmsh)]
-fn step_without_timestamp(step: &[u8]) -> String {
+const OCCT_PRODUCT_NAME: &str = "Open CASCADE STEP translator ";
+
+/// The STEP text without its two per-write markers, so two exports of the
+/// same body compare equal: the header line carrying the write timestamp, and
+/// the version and write count after [`OCCT_PRODUCT_NAME`].
+#[cfg(has_gmsh)]
+fn step_without_write_markers(step: &[u8]) -> String {
     String::from_utf8_lossy(step)
         .lines()
         .filter(|line| !line.contains("FILE_NAME("))
+        .map(|line| {
+            let mut pieces = line.split(OCCT_PRODUCT_NAME);
+            let mut kept = pieces.next().unwrap_or_default().to_string();
+            for piece in pieces {
+                kept.push_str(OCCT_PRODUCT_NAME);
+                kept.push_str(&piece[piece.find('\'').unwrap_or(piece.len())..]);
+            }
+            kept
+        })
         .collect::<Vec<_>>()
         .join("\n")
 }
@@ -526,7 +541,7 @@ fn cache_served_volume_mesh_terminal_exports_the_body_the_cold_build_exported() 
             .as_deref()
             .filter(|bytes| !bytes.is_empty())
             .unwrap_or_else(|| panic!("the {label} build must export non-empty STEP geometry"));
-        exports.push(step_without_timestamp(bytes));
+        exports.push(step_without_write_markers(bytes));
     }
     assert_eq!(
         exports[0], exports[1],

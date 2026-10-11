@@ -354,6 +354,7 @@ impl Engine {
             // cached handle satisfies the request under the partial-order
             // rule.
             realization_cache: crate::realization_cache::RealizationCache::new(),
+            volume_mesh_sources: Default::default(),
             // Task 4152: zeroed eval-cache accumulator. Folded forward by
             // `eval_cached` and surfaced (alongside the live realization
             // counter) by `Engine::cache_stats`.
@@ -789,7 +790,10 @@ impl Engine {
     /// `param_overrides`, registered solvers/kernels, or any other engine
     /// state. The reset is single-purpose: only `realization_cache`'s entries
     /// are dropped, via
-    /// [`RealizationCache::clear`](crate::realization_cache::RealizationCache::clear).
+    /// [`RealizationCache::clear`](crate::realization_cache::RealizationCache::clear),
+    /// together with the VolumeMesh source records that let a cache-served
+    /// VolumeMesh terminal export the body it was meshed from (the crate-private
+    /// `volume_mesh_sources` module).
     ///
     /// **What this method does NOT reset**: the cache's
     /// [`realization_entries`](crate::realization_cache::RealizationCache::realization_entries)
@@ -806,6 +810,7 @@ impl Engine {
         // See `RealizationCache::clear` for why the lifetime counter's survival
         // depends on that (task 4152).
         self.realization_cache.clear();
+        self.volume_mesh_sources.clear();
     }
 
     /// Reset all geometry kernels and drop the realization cache for a GUI

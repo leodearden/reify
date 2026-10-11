@@ -1024,6 +1024,9 @@ pub struct Engine {
     /// `anonymous_realization_does_not_populate_realization_cache_when_lookup_gate_requires_name`
     /// in `tests/tolerance_wiring_e2e.rs`.
     realization_cache: crate::realization_cache::RealizationCache<KernelHandle>,
+    /// The body each VolumeMesh was meshed from, for Phase-B egress; see
+    /// [`crate::volume_mesh_sources`].
+    volume_mesh_sources: crate::volume_mesh_sources::VolumeMeshSources,
     /// Running totals of the per-call eval-cache counters, folded in at the end
     /// of every [`Engine::eval_cached`] call (task 4152).
     ///

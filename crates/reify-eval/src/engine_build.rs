@@ -40,6 +40,7 @@ use crate::topology_attribute_propagation::{
     populate_extrude_attributes, populate_loft_attributes, populate_revolve_attributes,
     populate_sweep_attributes, propagate_attributes_via_brepalgoapi_history,
 };
+use crate::volume_mesh_sources::{MeshedVolume, VolumeMeshSources};
 use crate::{BuildResult, Engine, EvaluationState, MeshSurface, TessellateResult};
 
 /// The four build/tessellate entry-point "surfaces" whose per-build engine
@@ -275,25 +276,33 @@ struct ExecutedRealization {
     /// the caller to store in `Engine::morph_source`. `Some` only when a morph
     /// producer is active AND this realization produced a VolumeMesh.
     morph_source: Option<crate::morph_producer::MorphSource>,
-    /// The handle the VolumeMesh edge meshed from, `Some` exactly when that edge
-    /// appended a gmsh VolumeMesh as this realization's terminal. The VolumeMesh
-    /// is an extra representation for an FEA consumer; the body's geometry is
-    /// still this handle, so Phase-B egress reads it ([`record_phase_b_terminal`]).
-    volume_mesh_source: Option<KernelHandle>,
+    /// The gmsh VolumeMesh the VolumeMesh edge appended as this realization's
+    /// terminal, paired with the handle it meshed from; `Some` exactly when that
+    /// edge ran. The VolumeMesh is an extra representation for an FEA consumer;
+    /// the body's geometry is still the meshed-from handle, so Phase-B egress
+    /// reads it ([`record_phase_b_terminal`]).
+    volume_mesh: Option<MeshedVolume>,
 }
 
 /// Record a realization's Phase-B terminal — the handle export, the tessellate
 /// walk and `distance_between_placed` read for it — into its `terminal_handles`
-/// slot: the handle the VolumeMesh edge meshed from when that edge ran, else the
-/// realization's last step handle. `realization_handles` is the realization's
-/// own slice of `step_handles`; when it is empty the slot is left untouched.
+/// slot: the realization's last step handle, or the body it was meshed from
+/// when that handle is a VolumeMesh. A cold run records the VolumeMesh edge's
+/// pair in `sources`; a cache-served run, where the edge did not run, finds the
+/// pair recorded by the build that cached it, so both store the same body.
+/// `realization_handles` is the realization's own slice of `step_handles`;
+/// when it is empty the slot is left untouched.
 fn record_phase_b_terminal(
     slot: &mut Option<KernelHandle>,
     realization_handles: &[KernelHandle],
-    volume_mesh_source: Option<KernelHandle>,
+    volume_mesh: Option<MeshedVolume>,
+    sources: &mut VolumeMeshSources,
 ) {
+    if let Some(meshed) = volume_mesh {
+        sources.record(meshed);
+    }
     if let Some(&last) = realization_handles.last() {
-        *slot = Some(volume_mesh_source.unwrap_or(last));
+        *slot = Some(sources.egress_body(last));
     }
 }
 
@@ -3430,6 +3439,7 @@ impl Engine {
             solvers: _,            // named solver registry
             warm_pool: _,          // warm-start state pool (cross-edit)
             realization_cache: _,  // task 2874 engine-scoped realization cache
+            volume_mesh_sources: _, // VolumeMesh meshed-from records (span builds, as realization_cache)
             cumulative_eval_cache_totals: _, // task 4152 lifetime eval-cache totals
             solver_progress_sink: _, // per-iteration progress hook
             active_solve_cancel: _,  // in-flight solve cancellation hook
@@ -3832,7 +3842,8 @@ impl Engine {
                     record_phase_b_terminal(
                         &mut terminal_handles[t_idx][r_idx],
                         &step_handles[handle_start_snap..],
-                        executed.volume_mesh_source,
+                        executed.volume_mesh,
+                        &mut self.volume_mesh_sources,
                     );
                     // Step-10 (task ε / 3436): persist the executor's terminal
                     // [`ReprKind`] into the snapshot graph node. The
@@ -4756,7 +4767,8 @@ impl Engine {
                     record_phase_b_terminal(
                         &mut terminal_handles[t_idx][r_idx],
                         &step_handles[handle_start..],
-                        executed.volume_mesh_source,
+                        executed.volume_mesh,
+                        &mut self.volume_mesh_sources,
                     );
                     // Step-10 (task ε / 3436): persist the executor's terminal
                     // [`ReprKind`] into the snapshot graph node. See the
@@ -5834,7 +5846,8 @@ impl Engine {
                 record_phase_b_terminal(
                     &mut terminal_handles[t_idx][r_idx],
                     &step_handles[handle_start..],
-                    executed.volume_mesh_source,
+                    executed.volume_mesh,
+                    &mut self.volume_mesh_sources,
                 );
                 // Kernel errors are recorded in diagnostics by execute_realization_ops;
                 // the distance query will simply find no handle for failed realizations.
@@ -6246,6 +6259,7 @@ impl Engine {
             &mut self.topology_attribute_table,
             &mut self.swept_kind_table,
             &mut self.realization_cache,
+            &mut self.volume_mesh_sources,
             &demanded_tols,
             &tessellation_budgets,
             &mut self.last_dispatch_count,
@@ -6587,6 +6601,7 @@ impl Engine {
         topology_attribute_table: &mut TopologyAttributeTable,
         swept_kind_table: &mut SweptKindTable,
         realization_cache: &mut RealizationCache<KernelHandle>,
+        volume_mesh_sources: &mut VolumeMeshSources,
         demanded_tols: &[Vec<Option<f64>>],
         tessellation_budgets: &[Vec<f64>],
         // Task ε (3436) step-12: per-build dispatch-count instrumentation
@@ -6944,7 +6959,8 @@ impl Engine {
                 record_phase_b_terminal(
                     &mut terminal_handles[t_idx][r_idx],
                     &step_handles[handle_start..],
-                    executed.volume_mesh_source,
+                    executed.volume_mesh,
+                    volume_mesh_sources,
                 );
             }
             // Step-8 (task ε / 3436): re-borrow the default kernel from the
@@ -7483,8 +7499,9 @@ impl Engine {
         // byte-identical. Populated in the success branch's VolumeMesh dispatch.
         let mut morph_source_stash: Option<crate::morph_producer::MorphSource> = None;
         // Set by the VolumeMesh edge, at the moment it appends a gmsh VolumeMesh,
-        // to the handle it meshed from (see `ExecutedRealization`).
-        let mut volume_mesh_source: Option<KernelHandle> = None;
+        // to that VolumeMesh paired with the handle it meshed from (see
+        // `ExecutedRealization`).
+        let mut volume_mesh: Option<MeshedVolume> = None;
         // Task 4050 step-8: the per-op `available` set is no longer a hoisted
         // loop-invariant `{BRep}` constant — it is derived per op from the
         // reprs of that op's resolved input handles (`realization_step_reprs`,
@@ -9163,7 +9180,8 @@ impl Engine {
             // `step_handles.last().kernel` and `realization_handles[node]` from
             // the same handle, so the read side (`volume_mesh()`) is unchanged.
             // Phase-B egress instead reads the handle the edge meshed from,
-            // which each push records in `volume_mesh_source`.
+            // which each push records, paired with the VolumeMesh, in
+            // `volume_mesh`.
             //
             // Element order is fixed to P1 for α (design_decision 6);
             // consumer-driven order is the FEA/morph arm's concern. The
@@ -9265,11 +9283,15 @@ impl Engine {
                             let stash_vm = mesh.clone();
                             match gmsh.store_volume_mesh(mesh) {
                                 Ok(id) => {
-                                    step_handles.push(KernelHandle {
+                                    let gmsh_volume_mesh = KernelHandle {
                                         kernel: KernelId::Gmsh,
                                         id,
+                                    };
+                                    step_handles.push(gmsh_volume_mesh);
+                                    volume_mesh = Some(MeshedVolume {
+                                        volume_mesh: gmsh_volume_mesh,
+                                        meshed_from: *terminal,
                                     });
-                                    volume_mesh_source = Some(*terminal);
                                     last_produced_repr = Some(ReprKind::VolumeMesh);
                                     morph_stored = true;
                                     produced_vm = Some(stash_vm);
@@ -9422,11 +9444,15 @@ impl Engine {
                                         let stash_vm = vm.clone();
                                         match gmsh.store_volume_mesh(vm) {
                                         Ok(id) => {
-                                            step_handles.push(KernelHandle {
+                                            let gmsh_volume_mesh = KernelHandle {
                                                 kernel: KernelId::Gmsh,
                                                 id,
+                                            };
+                                            step_handles.push(gmsh_volume_mesh);
+                                            volume_mesh = Some(MeshedVolume {
+                                                volume_mesh: gmsh_volume_mesh,
+                                                meshed_from: terminal,
                                             });
-                                            volume_mesh_source = Some(terminal);
                                             last_produced_repr = Some(ReprKind::VolumeMesh);
                                             stored = true;
                                             produced_vm = Some(stash_vm);
@@ -9483,11 +9509,15 @@ impl Engine {
                                     let stash_vm = vm.clone();
                                     match gmsh.store_volume_mesh(vm) {
                                         Ok(id) => {
-                                            step_handles.push(KernelHandle {
+                                            let gmsh_volume_mesh = KernelHandle {
                                                 kernel: KernelId::Gmsh,
                                                 id,
+                                            };
+                                            step_handles.push(gmsh_volume_mesh);
+                                            volume_mesh = Some(MeshedVolume {
+                                                volume_mesh: gmsh_volume_mesh,
+                                                meshed_from: terminal,
                                             });
-                                            volume_mesh_source = Some(terminal);
                                             last_produced_repr = Some(ReprKind::VolumeMesh);
                                             produced_vm = Some(stash_vm);
                                         }
@@ -9722,7 +9752,7 @@ impl Engine {
         }
         ExecutedRealization {
             morph_source: morph_source_stash,
-            volume_mesh_source,
+            volume_mesh,
         }
     }
 
@@ -12424,6 +12454,7 @@ impl Engine {
             &mut self.topology_attribute_table,
             &mut self.swept_kind_table,
             &mut self.realization_cache,
+            &mut self.volume_mesh_sources,
             &demanded_tols,
             &tessellation_budgets,
             &mut self.last_dispatch_count,
