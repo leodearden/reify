@@ -8,9 +8,9 @@
 #   staled lane is rescued to warm rather than rebuilt near-cold via --reset-in-place.
 #   No production pool acquire passes --reset-in-place (dark_factory:5380 moved the
 #   merge-spec acquire off it).
-#   TWO homes, do not restate this anywhere else in this file: the MODE GATE note
-#   near the tail is the in-file home for what it MEANS HERE (which acquires an
-#   effect gated on $FRESH_CHECKOUT reaches); PRD §9.5's 2026-10-11 ledger entry is
+#   TWO homes, do not restate this anywhere else in this file: the ACQUIRE MODES
+#   note near the tail is the in-file home for what it MEANS HERE (which acquires
+#   an effect gated on $FRESH_CHECKOUT reaches); PRD §9.5's 2026-10-11 ledger entry is
 #   the normative home for the merge-spec seed mode and its history.
 #
 #   Resolve convention (D8 seam): the caller MUST resolve <base>/target (a symlink
@@ -1655,13 +1655,13 @@ fi
 #   A --reset-in-place lane was built at its own path, so its build dirs already
 #   hold correct lane-K paths; invalidating them would waste build-script re-runs
 #   for no benefit.  This mode's callers are tests/infra fixtures and hand use (the
-#   warmth-delta control arm); it has no production pool caller (MODE GATE note
-#   below), so the skip needs no caller-dependent condition.
+#   warmth-delta control arm); it has no production pool caller (ACQUIRE MODES
+#   note below), so the skip needs no caller-dependent condition.
 #
-# MODE GATE — the single in-file home for which acquires a $FRESH_CHECKOUT gate
-# reaches; every other mention in this script points at it rather than restating it
-# (G7/SPOT).  Every production pool acquire, task and merge-spec alike, passes
-# --fresh-checkout:
+# ACQUIRE MODES — the single in-file home for which acquires a $FRESH_CHECKOUT
+# gate reaches; every other mention in this script points at it rather than
+# restating it (G7/SPOT).  Every production pool acquire, task and merge-spec
+# alike, passes --fresh-checkout:
 #   task lanes  → DF `_acquire_warm_lane_impl`
 #   merge-spec  → DF `acquire_spec_lane` (the `_spec-` pool)
 # So an effect gated on $FRESH_CHECKOUT — lane-scoped or shared-store scoped —
@@ -1735,9 +1735,7 @@ fi
 #
 # MODE GATE — $FRESH_CHECKOUT, not a new flag. It reuses the discriminator this
 # script already switches on at the three sites above rather than inventing a
-# mode flag, and it covers every production pool acquire, task and merge-spec
-# alike: dark-factory drives both through _seed_warm_lane(lane, '--fresh-checkout')
-# (`_acquire_warm_lane_impl`, `acquire_spec_lane` — MODE GATE note above).
+# mode flag; which acquires that reaches: ACQUIRE MODES note above.
 if [ -n "$FRESH_CHECKOUT" ] && [ "${REIFY_WARM_LANE_RERERE_ARM:-1}" != "0" ] \
         && [ -x "$_SCRIPT_DIR/git-rerere-guard.sh" ]; then
     _rerere_arm_rc=0
@@ -1763,7 +1761,7 @@ fi
 # normative in scripts/hooks-armed-guard.sh's header.  FAIL-OPEN, like the block
 # above: an acquire never fails on this advisory defence.  >/dev/null keeps this
 # script's single-use stdout.  Gated on $FRESH_CHECKOUT, which every production
-# pool acquire passes (MODE GATE note above).
+# pool acquire passes (ACQUIRE MODES note above).
 if [ -n "$FRESH_CHECKOUT" ] && [ -x "$_SCRIPT_DIR/hooks-armed-guard.sh" ]; then
     _hooks_arm_rc=0
     "$_SCRIPT_DIR/hooks-armed-guard.sh" arm "$LANE_DIR" >/dev/null || _hooks_arm_rc=$?
