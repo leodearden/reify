@@ -5,8 +5,8 @@
  * Task 3229: verify compile_diagnostics is copied by convertRawGuiState.
  */
 import { describe, it, expect } from 'vitest';
-import { convertRawMesh, convertRawGuiState } from '../types';
-import type { RawMeshData, RawGuiState, DiagnosticInfo, FeaDiagnosticInfo, FeaConvergenceInfo } from '../types';
+import { convertRawMesh, convertRawGuiState, CONSTRAINT_STATUSES } from '../types';
+import type { RawMeshData, RawGuiState, RawConstraintData, DiagnosticInfo, FeaDiagnosticInfo, FeaConvergenceInfo } from '../types';
 
 describe('convertRawMesh', () => {
   it('converts scalar_channels number[] → Float32Array when present', () => {
@@ -676,5 +676,56 @@ describe('convertRawGuiState', () => {
     };
     const state = convertRawGuiState(raw);
     expect(state.fea_convergence).toBeNull();
+  });
+});
+
+describe('convertRawGuiState — constraint verdict tokens', () => {
+  function stateWith(constraint: RawConstraintData): RawGuiState {
+    return {
+      meshes: [],
+      values: [],
+      constraints: [constraint],
+      files: [],
+      tessellation_diagnostics: [],
+      compile_diagnostics: [],
+    };
+  }
+
+  function errorThrownBy(fn: () => unknown): Error | undefined {
+    try {
+      fn();
+    } catch (e) {
+      return e as Error;
+    }
+    return undefined;
+  }
+
+  function rawConstraint(status: string): RawConstraintData {
+    return {
+      node_id: 'Box#constraint[0]',
+      expression: 'w > 0',
+      status,
+      label: 'lbl',
+      parameter_ids: ['Box.w'],
+    };
+  }
+
+  it.each(CONSTRAINT_STATUSES)('passes the in-contract token %j through unchanged', (token) => {
+    const raw = rawConstraint(token);
+    const state = convertRawGuiState(stateWith(raw));
+    expect(state.constraints).toHaveLength(1);
+    expect(state.constraints[0]).toStrictEqual(raw);
+  });
+
+  // 'Satisfied' is the exact historical drift (the Rust enum variant name):
+  // the boundary rejects it rather than lower-casing it.
+  it.each(['Satisfied', 'VIOLATED', 'unknown', ''])('rejects the out-of-contract token %j by name', (token) => {
+    const error = errorThrownBy(() => convertRawGuiState(stateWith(rawConstraint(token))));
+    expect(error).toBeInstanceOf(Error);
+    expect(error?.message).toContain(JSON.stringify(token));
+    expect(error?.message).toContain('Box#constraint[0]');
+    for (const accepted of CONSTRAINT_STATUSES) {
+      expect(error?.message).toContain(accepted);
+    }
   });
 });

@@ -46,7 +46,7 @@ vi.mock('../bridge', () => ({
   onDisplayAppearanceUpdate: vi.fn(() => Promise.resolve(() => {})),
 }));
 
-import { convertRawGuiState } from '../types';
+import { convertRawGuiState, CONSTRAINT_STATUSES } from '../types';
 import type { ConstraintData, RawGuiState } from '../types';
 import { createEngineStore } from '../stores/engineStore';
 import { ConstraintPanel } from '../panels/ConstraintPanel';
@@ -135,6 +135,16 @@ function badgeFor(container: HTMLElement, nodeId: string): HTMLElement {
   if (!badge) throw new Error(`constraint row "${nodeId}" rendered no status badge`);
   return badge;
 }
+
+describe('constraint verdict wire contract — the frontend’s closed set is exactly the engine’s', () => {
+  it('CONSTRAINT_STATUSES equals the set of tokens engine.rs emits, in both directions', () => {
+    // The cases below prove every engine token is accepted and rendered; this
+    // closes the other direction: the union carries no token the producer
+    // never emits (e.g. one left stale by a Rust rename).
+    const emitted = new Set(extractVerdictTokens(readEngineSource()).values());
+    expect(emitted).toStrictEqual(new Set(CONSTRAINT_STATUSES));
+  });
+});
 
 describe('constraint verdict wire contract — ConstraintPanel renders the engine’s own tokens', () => {
   it('the Satisfied verdict renders ✓ and data-status="satisfied"', () => {
