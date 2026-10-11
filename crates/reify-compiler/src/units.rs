@@ -2244,10 +2244,13 @@ mod tests {
         assert_eq!(topology_selector_result_type("is_watertight"), None);
         assert_eq!(topology_selector_result_type("interferes"), None);
         assert_eq!(topology_selector_result_type(""), None);
-        // Defensive: names that will be added by task 2699 but are not in scope
-        // for any other recognised family.
-        assert_eq!(topology_selector_result_type("single"), None);
-        assert_eq!(topology_selector_result_type("flat_map"), None);
+        for &name in crate::list_helpers::LIST_HELPER_NAMES {
+            assert_eq!(
+                topology_selector_result_type(name),
+                None,
+                "list helper {name:?} must not be typed as a topology selector"
+            );
+        }
     }
 
     // --- Task 2699 topology-selector registry — table-driven coverage ---
