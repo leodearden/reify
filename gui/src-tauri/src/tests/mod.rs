@@ -32,6 +32,7 @@ pub(crate) mod test_helpers;
 mod test_helpers_tests;
 mod types_tests;
 mod watcher_tests;
+mod write_confinement_tests;
 
 use std::sync::{Arc, Mutex};
 
