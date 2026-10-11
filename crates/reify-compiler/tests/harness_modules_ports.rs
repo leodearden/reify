@@ -74,6 +74,8 @@ mod standard_gravity_tests;
 mod standard_joint_library_tests;
 #[path = "harness_modules_ports/standard_stock_tests.rs"]
 mod standard_stock_tests;
+#[path = "harness_modules_ports/stdlib_shadow_warning_tests.rs"]
+mod stdlib_shadow_warning_tests;
 #[path = "harness_modules_ports/sub_placement_lowering_tests.rs"]
 mod sub_placement_lowering_tests;
 #[path = "harness_modules_ports/sub_structure_existence_tests.rs"]
