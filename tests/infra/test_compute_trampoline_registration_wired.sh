@@ -1455,9 +1455,10 @@ assert "b0: the offline-role plan still carries a 'cargo (test|nextest run)' lin
 # _gui_feature_pass_lines <plan> — the gui-feature TEST-EXECUTION lines of
 # <plan>: a `cargo test` / `cargo nextest run` line carrying BOTH `-p reify-gui`
 # AND `--features gui`.  The COMBINATION is the discriminator: the pre-existing
-# lint-side `cargo check -p reify-gui --features gui --tests` at verify.sh:2223
-# carries `--features gui` too, so `--features gui` alone would be satisfied by
-# a compile-check that executes nothing.
+# lint-side `cargo check -p reify-gui --features gui --tests` (verify.sh
+# build_plan's "gui-feature compile-check" block) carries `--features gui`
+# too, so `--features gui` alone would be satisfied by a compile-check that
+# executes nothing.
 _gui_feature_pass_lines() {
     printf '%s\n' "$1" \
         | grep -E 'cargo (test|nextest run)' \
@@ -1565,9 +1566,10 @@ else
 fi
 
 # -- (b7): emitted INSIDE the semaphore bracket --------------------------------
-# verify.sh:1853-1862 records that MEMORY is the binding constraint on this host
-# and the held slot's whole-block serialization is the only implicit bound on
-# concurrent RSS-heavy link waves.  Independently re-asserted by
+# verify.sh's comment above `add "@@SEMAPHORE_ACQUIRE@@"` in add_test_passes
+# records that MEMORY is the binding constraint on this host and the held
+# slot's whole-block serialization is the only implicit bound on concurrent
+# RSS-heavy link waves.  Independently re-asserted by
 # test_verify_semaphore_wiring.sh (1o).
 echo ""
 echo "--- (b7): the gui-feature pass falls BETWEEN the ACQUIRE and RELEASE markers ---"
