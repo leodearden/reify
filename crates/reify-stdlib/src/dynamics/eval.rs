@@ -469,12 +469,20 @@ pub fn resolve_body_mass(body: &Value) -> Option<Value> {
 
 // ── dynamics diagnose hook (task 4278) ───────────────────────────────────────
 
-/// Undef-path diagnostic hook for `inverse_dynamics` intrinsics.
+/// Undef-path diagnostic hook for the dynamics builtins.
 ///
 /// Mirrors the `stackup_diagnose` / `fea_diagnose` / `geometry_diagnose`
 /// pattern: called by `reify-expr`'s `emit_undef_builtin_diagnostics` after
-/// the builtin returns `Value::Undef`, re-derives the cause by inspecting the
-/// mechanism's spanning-tree bodies, and emits
+/// the builtin returns `Value::Undef`. It consults the SAME readers the
+/// builtins use (PRD-5 §7 I1), so a field they refuse is the field it names:
+///
+/// - `mass_properties` / `point_mass`: an argument of the wrong dimension
+///   (`mass_properties(2m, …)`) yields its `DimensionedArgRejected` Error.
+/// - `inverse_dynamics_lower` / `inverse_dynamics_at_snapshot_lower`: see
+///   below.
+///
+/// For the inverse-dynamics intrinsics it inspects the mechanism's
+/// spanning-tree bodies, and emits
 /// [`DiagnosticCode::DynamicsBodyMassUnresolved`] for the first body whose mass
 /// cannot be resolved via [`resolve_body_mass`].
 ///
@@ -496,10 +504,25 @@ pub fn resolve_body_mass(body: &Value) -> Option<Value> {
 /// is acceptable — the hook provides a best-effort hint, not an authoritative
 /// root-cause analysis.
 pub fn diagnose(name: &str, args: &[Value]) -> Option<Diagnostic> {
-    match name {
-        "inverse_dynamics_lower" | "inverse_dynamics_at_snapshot_lower" => {}
-        _ => return None,
+    match (name, args) {
+        ("mass_properties", [mass, com, inertia]) => {
+            let (field, rejection) = read_mass_properties(mass, com, inertia).err()?;
+            Some(rejection.to_error(name, field))
+        }
+        ("point_mass", [mass]) => {
+            let rejection = dimensioned_cell(mass, &mass_spec()).err()?;
+            Some(rejection.to_error(name, "mass"))
+        }
+        ("inverse_dynamics_lower" | "inverse_dynamics_at_snapshot_lower", _) => {
+            diagnose_inverse_dynamics(args)
+        }
+        _ => None,
     }
+}
+
+/// The inverse-dynamics arm of [`diagnose`]: the first spanning-tree body
+/// whose mass is unresolvable, or whose mass / joint compliance is rejected.
+fn diagnose_inverse_dynamics(args: &[Value]) -> Option<Diagnostic> {
     let mech = match args.first() {
         Some(Value::Map(m)) => m,
         _ => return None,

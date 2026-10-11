@@ -1981,51 +1981,56 @@ fn interp_render(value: &Value) -> String {
 /// `eval_user_fn_recursion_depth_exceeded`).
 ///
 /// The six name families (stackup math builtins / `"linear_combine"` / the
-/// geometry-builtin family (`geometry_diagnose`) / inverse-dynamics /
+/// geometry-builtin family (`geometry_diagnose`) / dynamics /
 /// `"iso_it_tolerance"` / `"orient_exp"`) are disjoint, so at most one of the
 /// six classifiers returns `Some` for any single `Undef`; each returns `None`
 /// for every other name or for valid input, making this a cheap no-op for
 /// ordinary builtins.
+///
+/// A classified `DimensionedArgRejected` also records that specific code as
+/// the cell's `UndefCause::OpContractFailed` (PRD-5 §7 I5), via
+/// [`push_op_contract_failure`].
 #[inline(never)]
 fn emit_undef_builtin_diagnostics(name: &str, args: &[Value], result: &Value, ctx: &EvalContext) {
-    if !matches!(result, Value::Undef) {
+    // The classifiers run when EITHER sink is attached: the undef-cause capture
+    // pass (`record_op_contract_failures`) re-evaluates with a cause sink and no
+    // diagnostics sink, and it is the pass that records the I5 cause below.
+    if !matches!(result, Value::Undef) || (ctx.diagnostics.is_none() && ctx.undef_causes.is_none())
+    {
         return;
     }
-    let Some(sink) = ctx.diagnostics else {
-        return;
-    };
-    // §4.4 stackup error diagnostics (empty/invalid chain, bad samples).
-    if let Some(diag) = reify_stdlib::stackup_diagnose(name, args) {
-        sink.borrow_mut().push(diag);
-    }
-    // Multi-load-case FEA failures (empty/unknown-case weights, incompatible meshes).
-    if let Some(diag) = reify_stdlib::fea_diagnose(name, args) {
-        sink.borrow_mut().push(diag);
-    }
-    // Geometry-builtin diagnostics: post-`Undef`-only, one classifier with
-    // severity split by fault class, disjoint from the sibling hooks here.
-    // See `geometry_diagnose`'s own doc comment for the per-name breakdown.
-    if let Some(diag) = reify_stdlib::geometry_diagnose(name, args) {
-        sink.borrow_mut().push(diag);
-    }
-    // Inverse-dynamics Undef: body has no resolvable mass.
-    if let Some(diag) = reify_stdlib::dynamics_diagnose(name, args) {
-        sink.borrow_mut().push(diag);
-    }
-    // ISO 286-1 tolerancing: out-of-envelope iso_it_tolerance (grade outside
-    // IT5–IT18 / nominal > 500 mm) — well-typed but unsupported, surfaced as
-    // Severity::Error instead of a silent Undef. Post-Undef-only, same
-    // (name,&[Value])->Option<Diagnostic> shape as stackup/fea/geometry/dynamics.
-    if let Some(diag) = reify_stdlib::tolerancing_diagnose(name, args) {
-        sink.borrow_mut().push(diag);
-    }
-    // Rotation-vector dimension (#6080): `orient_exp` requires Vector3<Angle>,
-    // since log(q) = axis * angle. DIMENSIONLESS used to be the accepted
-    // spelling, so this Severity::Error is the migration mechanism for that
-    // breaking change rather than a silent Undef. Post-Undef-only, same
-    // (name,&[Value])->Option<Diagnostic> shape as the five above.
-    if let Some(diag) = reify_stdlib::orientation_diagnose(name, args) {
-        sink.borrow_mut().push(diag);
+    let classified = [
+        // §4.4 stackup error diagnostics (empty/invalid chain, bad samples).
+        reify_stdlib::stackup_diagnose(name, args),
+        // Multi-load-case FEA failures (empty/unknown-case weights, incompatible meshes).
+        reify_stdlib::fea_diagnose(name, args),
+        // Geometry-builtin diagnostics: one classifier with severity split by
+        // fault class. See `geometry_diagnose`'s own doc for the per-name breakdown.
+        reify_stdlib::geometry_diagnose(name, args),
+        // Dynamics: inverse-dynamics body mass / compliance, and the
+        // `mass_properties` / `point_mass` argument dimensions.
+        reify_stdlib::dynamics_diagnose(name, args),
+        // ISO 286-1 tolerancing: out-of-envelope iso_it_tolerance (grade outside
+        // IT5–IT18 / nominal > 500 mm) — well-typed but unsupported, surfaced as
+        // Severity::Error instead of a silent Undef.
+        reify_stdlib::tolerancing_diagnose(name, args),
+        // Rotation-vector dimension (#6080): `orient_exp` requires Vector3<Angle>,
+        // since log(q) = axis * angle. DIMENSIONLESS used to be the accepted
+        // spelling, so this Severity::Error is the migration mechanism for that
+        // breaking change rather than a silent Undef.
+        reify_stdlib::orientation_diagnose(name, args),
+    ];
+    for diag in classified.into_iter().flatten() {
+        // PRD-5 §7 I5: a dimension rejection records its SPECIFIC cause. This
+        // runs before the generic `OpContractViolation` push in `eval_expr`'s
+        // `FunctionCall` arm, and the engine keeps the first `OpContractFailed`
+        // per cell, so the specific code is the one recorded.
+        if diag.code == Some(DiagnosticCode::DimensionedArgRejected) {
+            push_op_contract_failure(ctx, DiagnosticCode::DimensionedArgRejected);
+        }
+        if let Some(sink) = ctx.diagnostics {
+            sink.borrow_mut().push(diag);
+        }
     }
 }
 
@@ -2897,6 +2902,12 @@ fn push_eval_error(ctx: &EvalContext, msg: &str, code: DiagnosticCode) {
 ///    short-circuit at lib.rs:206 already filtered out Undef args).
 /// 2. `eval_binop`, after the strict undef-propagation check (both operands
 ///    are determined at that point; an Undef result is a genuine contract failure).
+///
+/// Both push the generic `OpContractViolation`. The one SPECIFIC cause is
+/// `DimensionedArgRejected` (PRD-5 §7 I5, task 6922), pushed by
+/// `emit_undef_builtin_diagnostics` when a classifier rejects an argument's
+/// dimension; it runs before site 1, and the engine keeps the first
+/// `OpContractFailed` per cell, so the specific code wins.
 ///
 /// Uses an **empty placeholder span** (`SourceSpan::default()`) because
 /// `CompiledExpr` carries no span (spans are lost at compile). The engine's
