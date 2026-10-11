@@ -1,27 +1,14 @@
-//! Compile-side type pins for `crates/reify-compiler/stdlib/modal_analysis_fns.ri`
-//! — the `std.modal.analysis.fns` module (split out from `std.modal.analysis`
-//! because `phase_functions` runs before `phase_entities`; see the WHY header at
-//! modal_analysis_fns.ri:6-20).
+//! Compile-side type pins for the `std.modal.analysis.fns` module
+//! (`crates/reify-compiler/stdlib/modal_analysis_fns.ri`).
 //!
-//! Scope (#6094): `displacement_at`'s DECLARED return type, which is
-//! `List<Length>` and not `List<Real>`. WHY the reconstruction Φ·ξ is plain
-//! metres — and why Φ and ξ *alone* stay undimensioned — is derived once, at
-//! the declaration the type belongs to:
+//! Scope (#6094): `displacement_at` returns `List<Length>`, not `List<Real>`.
+//! Why the reconstruction Φ·ξ is plain metres is derived at the declaration:
 //! `crates/reify-compiler/stdlib/modal_analysis_fns.ri` :: `displacement_at`.
 //!
 //! Two independent signals:
 //!   (a) both `displacement_at` overloads declare `List<Length>`;
-//!   (b) at a real call site the bound cell TYPES as `List<Length>` (with zero
-//!       Error diagnostics) — the user-observable half, since a consumer of
-//!       `tip[j]` gets a Length rather than a bare Real.
-//!
-//! MEASURED (#6094, before the retype): the zero-Error half of (b) passes even
-//! RED — a `let tip : List<Length> = <List<Real> expr>` annotation raises NO
-//! diagnostic today; the inferred type simply wins and the cell types as
-//! `List<Scalar<dimensionless>>`. So the `cell_type` assertion is what actually
-//! carries (b)'s RED signal, and the zero-Error assertion is a companion guard
-//! that the retype does not introduce a diagnostic. Do not read (b) as evidence
-//! that annotated-let mismatches are diagnosed — they are not.
+//!   (b) at a call site the bound cell types as `List<Length>`, with zero Error
+//!       diagnostics.
 
 use reify_compiler::{CompiledModule, stdlib_loader};
 use reify_core::{DimensionVector, Type, ty::SelectorKind};
@@ -51,14 +38,9 @@ fn load_stdlib_module() -> &'static CompiledModule {
         })
 }
 
-/// Collect ALL compiled functions named `name` in `std/modal/analysis/fns`.
-///
-/// Deliberately a filter, NOT a `.find()`: `displacement_at` is declared TWICE
-/// (a `location: String` overload and a `location: FaceSelector` overload)
-/// sharing the ONE registered `modal::displacement_at` trampoline. A single
-/// lookup would silently leave the second declaration unpinned — and
-/// `stdlib_loader_tests.rs` records that INTRA-module duplicates like this are
-/// not covered by the loader's duplicate detection, so nothing else catches it.
+/// Collect every compiled function named `name` in `std/modal/analysis/fns`.
+/// `displacement_at` has two overloads (String and FaceSelector `location`), so
+/// a `.find()` would leave one of them unpinned.
 fn find_overloads(name: &str) -> Vec<&'static CompiledFunction> {
     load_stdlib_module()
         .functions
@@ -76,15 +58,8 @@ fn list_of_length() -> Type {
 
 // ─── (a) declared return type of both overloads ───────────────────────────────
 
-/// Both `displacement_at` overloads must declare `-> List<Length>`.
-///
-/// `List<Length>` = `Type::List(Box::new(Type::Scalar { dimension: LENGTH }))`
-/// — one Length scalar per timestep, the same shape as the near-identical
-/// per-time-sample displacement series `deviation_from_nominal(...) ->
-/// List<Length>` (trajectory.ri).
-///
-/// RED before the retype: both declare `List<Real>` (= `List<Scalar<dimensionless>>`, a
-/// dimensionless scalar list).
+/// Both `displacement_at` overloads must declare `-> List<Length>`: one Length
+/// per timestep.
 #[test]
 fn displacement_at_overloads_return_list_of_length() {
     let overloads = find_overloads("displacement_at");
@@ -100,10 +75,7 @@ fn displacement_at_overloads_return_list_of_length() {
         overloads.iter().map(|f| &f.params).collect::<Vec<_>>()
     );
 
-    // Non-vacuity guard 2: the two overloads are genuinely DIFFERENT
-    // declarations — their `location` param types must differ (String vs
-    // FaceSelector). Without this, the count above could not distinguish "both
-    // covered" from "the same declaration twice".
+    // Non-vacuity guard 2: the two overloads are different declarations.
     let location_types: Vec<&Type> = overloads
         .iter()
         .map(|f| {
@@ -152,28 +124,10 @@ fn displacement_at_overloads_return_list_of_length() {
 
 // ─── (b) user-observable consumer signal ──────────────────────────────────────
 
-/// A `structure` reaching a `displacement_at` call site with a well-typed
-/// `DisplacementTimeHistory`, binding the result through a `List<Length>`
-/// annotation.
-///
-/// DELIBERATELY MINIMAL — it constructs the `DisplacementTimeHistory`
-/// directly rather than driving the modal_analysis -> transient_response ->
-/// displacement_at pipeline. Only the DECLARED return type of
-/// `displacement_at` decides the bound cell's type, so the whole solver
-/// preamble (`Steel_AISI_1045` / `FEAMaterialInput` / `ModalOptions` / `box` /
-/// `faces_by_normal` / `StepForce` / `ForcingTimeHistory` / `modal_analysis` /
-/// `transient_response`) contributed nothing to the signal while coupling
-/// this pin to nine further stdlib signatures — as a third near-verbatim copy
-/// of a fixture already carried by `examples/modal/transient_step_response.ri`
-/// and by `compile_displacement_at_probe`
-/// (reify-eval-fea-tests/tests/r3b_modal_selector_displacement.rs), it would
-/// have rotted into a compile error on any of their signature changes while
-/// adding no coverage those two do not already give. They keep the end-to-end
-/// pipeline coverage; this pin needs only a well-typed `history` argument, so
-/// it builds one.
-///
-/// `modes` / `boundary_conditions` are empty and the matrix norms are
-/// placeholders: nothing here is evaluated, only type-checked.
+/// A `structure` binding `displacement_at(...)` through a `List<Length>`
+/// annotation, fed a directly-constructed `DisplacementTimeHistory`. Nothing
+/// here is evaluated, only type-checked, so `modes` / `boundary_conditions` are
+/// empty and the matrix norms are placeholders.
 const LIST_LENGTH_CONSUMER_PROBE: &str = r#"
 structure DisplacementAtLengthConsumerProbe {
     let modal_result = ModalResult(
@@ -196,13 +150,7 @@ structure DisplacementAtLengthConsumerProbe {
 "#;
 
 /// `displacement_at(...)`'s result must reach a `List<Length>` consumer as a
-/// `List<Length>` — the task's stated user-observable signal.
-///
-/// RED before the retype comes from the `cell_type` assertion: the cell types
-/// as `List<Scalar<dimensionless>>` (= `List<Real>`). The zero-Error assertion
-/// passes in BOTH states (measured — the annotation mismatch is undiagnosed);
-/// it is kept as a guard that the retype introduces no new diagnostic, not as
-/// the RED signal.
+/// `List<Length>`.
 #[test]
 fn displacement_at_result_feeds_dimensioned_list_length_consumer() {
     let module = compile_source_with_stdlib(LIST_LENGTH_CONSUMER_PROBE);
@@ -214,15 +162,8 @@ fn displacement_at_result_feeds_dimensioned_list_length_consumer() {
          annotation must produce no Error diagnostics (#6094); got: {errs:?}"
     );
 
-    // What follows pins the call site's INFERRED cell type — the type the
-    // `displacement_at` declaration propagates into `tip`. It does NOT pin
-    // the `: List<Length>` annotation: per the module docs above, an
-    // annotated-let mismatch raises no diagnostic today and the inferred type
-    // simply wins, so this assertion would read identically with the
-    // annotation deleted. The annotation is kept only because it spells out
-    // the consumer shape the task is about ("a user who writes
-    // `let tip : List<Length> = displacement_at(...)` gets what they asked
-    // for"); do not read it as a checked constraint.
+    // A `List<...>` let annotation is not yet checked against its initializer
+    // (#6947), so this pins the inferred cell type, not the annotation.
     let template = module
         .templates
         .iter()
