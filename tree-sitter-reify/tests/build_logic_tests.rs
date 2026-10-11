@@ -10,9 +10,9 @@
 //! and both `build.rs` and this test target `include!` it. A test that passes
 //! here is a statement about the code cargo actually runs.
 //!
-//! The remaining local duplicates (`content_hash`, `stamp_write`,
-//! `verify_outputs`, `run_with_timeout`) are logic this task does not touch;
-//! they stay hand-copied and are still labelled as such.
+//! Every build.rs function this file exercises comes from that shared file, so
+//! redefining one here is a duplicate-definition compile error, not a silent
+//! replica.
 //!
 //! DO NOT ASSERT ON build.rs's OR build_support.rs's SOURCE TEXT HERE. A
 //! `contains("write_shell_stamps(")`-style scan is satisfied by a comment or a
@@ -33,18 +33,7 @@
 //! text are a different thing and stay — they pin this file's conventions.
 include!("../build_support.rs");
 
-use std::hash::{Hash, Hasher};
 use std::path::Path;
-
-/// Duplicates the content_hash logic from build.rs for testability.
-/// Returns hex-encoded u64 hash of file contents.
-fn content_hash(path: &Path) -> String {
-    let bytes = std::fs::read(path)
-        .unwrap_or_else(|e| panic!("Failed to read {} for hashing: {}", path.display(), e));
-    let mut hasher = std::hash::DefaultHasher::new();
-    bytes.hash(&mut hasher);
-    format!("{:016x}", hasher.finish())
-}
 
 #[test]
 fn test_content_hash_deterministic() {
