@@ -11,9 +11,9 @@
 //!   NS-P1 ([`crate::name_env`]): one per name, in precedence order. Feeds the
 //!   parser's enum-name seed ([`PreludeContext::enum_names`]).
 //!
-//! - **`pub_aliases`** — all `CompiledTypeAlias` entries marked `is_pub == true`
-//!   from every prelude module, in source order.  Filtered at construction so
-//!   callers never need to re-apply the `is_pub` predicate.  Used by
+//! - **`pub_aliases`** — the pub `CompiledTypeAlias` entries the prelude binds
+//!   on its own under NS-P1 ([`crate::name_env`]): one per name, in precedence
+//!   order.  Non-pub aliases never enter it.  Used by
 //!   `aliases_phase::phase_aliases` to seed `ctx.alias_registry` before
 //!   resolving user-module aliases (task 2750).
 //!
@@ -31,47 +31,11 @@
 //!
 //! # Cross-prelude collision policy
 //!
-//! Three sibling phases all consume `PreludeContext` data but apply **different**
-//! collision policies when two prelude modules declare the same name:
-//!
-//! | Phase | Call site | Policy | Diagnostic |
-//! |-------|-----------|--------|------------|
-//! | **units** | `compile_builder::units_phase::phase_units` | last-wins | `Severity::Warning` "declared in both X and Y; last-wins" |
-//! | **aliases** | `compile_builder::aliases_phase::phase_aliases` (emission in `compile_with_prelude_context`) | first-wins | `Severity::Warning` "declared in both X and Y; first-wins" |
-//! | **functions** | `merge_prelude_functions` | first-wins | none (silent) |
-//!
-//! **Why the divergence exists (architectural root):**
-//!
-//! - *Aliases* are pre-computed and cached on `PreludeContext` at construction
-//!   time (here, in `PreludeContext::new`). Eager dedup is the natural
-//!   cache-build flow; first-wins falls out of "skip if already in HashMap."
-//!   Cross-prelude alias collisions are therefore resolved **before** the seed
-//!   loop in `phase_aliases` ever runs — the seed loop sees a pre-deduplicated
-//!   slice and is idempotent.
-//!
-//! - *Units* are **not** cached on `PreludeContext` (there is no `pub_units`
-//!   field). The seed loop in `phase_units` iterates raw `prelude_module.units`
-//!   on every compile call; overwrite-on-collision is the natural
-//!   register-as-you-go flow, and emitting the warning at the overwrite site is
-//!   the natural emission point.
-//!
-//! - *Functions* go through the separate `merge_prelude_functions` helper
-//!   (used by `compile_with_prelude_refs` to build the overload-resolution
-//!   table). Silent first-wins is documented as deliberate: rely on
-//!   stdlib-level review for accidental prelude-vs-prelude function collisions
-//!   rather than a diagnostic.
-//!
-//! **This divergence is deliberate** (documented in task 2776). Runtime
-//! contracts are pinned by existing regression tests:
-//!
-//! - *units last-wins*: `prelude_module_unit_collision_emits_warning`,
-//!   `three_prelude_collision_emits_two_chained_warnings`,
-//!   `intra_module_duplicate_prelude_units_suppresses_nonsense_collision_warning`
-//!   (`tests/unit_registry_tests.rs`).
-//! - *aliases first-wins*: `cross_prelude_alias_collision_emits_warning`
-//!   (`tests/cross_module_alias_propagation_tests.rs`).
-//! - *functions first-wins-silent*: no diagnostic to pin; stdlib-level review
-//!   is the guard.
+//! Templates, enums, traits, functions, type aliases, constraint defs and
+//! purposes bind by [`crate::name_env`] (NS-P1/P3, PRD
+//! `docs/prds/v0_6/stdlib-namespace.md` §3.1). Units are the one remaining
+//! exception — last-wins with a Warning in `compile_builder::units_phase` —
+//! until resolution-unification θ #5522 moves them onto the same rule.
 
 use reify_ir::EnumDef;
 

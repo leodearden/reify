@@ -648,12 +648,9 @@ pub fn compile_with_prelude_context_checked_with_config(
     let prelude_aliases = if prelude_refs.is_empty() {
         &[][..]
     } else {
-        // Emit cross-prelude pub alias collision warnings detected at PreludeContext
-        // construction time. Mirroring units_phase's 'last-wins' warning for cross-prelude
-        // unit collisions, but first-wins here (PreludeContext::new deduplicates eagerly).
-        // See `prelude_context` § "Cross-prelude collision policy" for the full cross-phase
-        // comparison (units = last-wins/warns; aliases = first-wins/warns; functions =
-        // first-wins/silent).
+        // Prelude-vs-prelude pub alias collisions, as `name_env` bound them when
+        // the PreludeContext was built (`prelude_context` § "Cross-prelude
+        // collision policy").
         for (alias_name, first_module, second_module) in ctx.pub_alias_collision_warnings() {
             compile_ctx.diagnostics.push(
                 Diagnostic::warning(format!(

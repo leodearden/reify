@@ -920,8 +920,8 @@ pub(crate) fn phase_pending_bound_checks(ctx: &mut CompilationCtx, prelude: &[&C
                     &arg_name,
                     &compiled_arg,
                     span,
-                    // task 5465 (family 4): `enum_defs` is `prelude ++
-                    // module-local`, so the walker's general concrete-leaf arm
+                    // task 5465 (family 4): `enum_defs` is the module-local
+                    // plus prelude enum table, so the walker's general concrete-leaf arm
                     // can tolerate D1 / F-Mono enum erasure. All three are
                     // disjoint-field shared borrows alongside the
                     // `&mut ctx.diagnostics` below.
@@ -1338,7 +1338,7 @@ pub(crate) fn phase_fn_arg_conformance(ctx: &mut CompilationCtx, prelude: &[&Com
     // per call (see doc-comment) requires the full table, not a name-keyed map.
     let resolution_functions: &[CompiledFunction] = &ctx.resolution_functions;
 
-    // task 5465 (family 4): `prelude ++ module-local` enum table, threaded into
+    // task 5465 (family 4): module-local plus prelude enum table, threaded into
     // the conformance walker so its general concrete-leaf arm can tolerate
     // D1/F-Mono enum erasure (see `WalkCtx.enum_defs`). Bound here next to
     // `resolution_functions` because the `walk` closure below borrows `ctx`

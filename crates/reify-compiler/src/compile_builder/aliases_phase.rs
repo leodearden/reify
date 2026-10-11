@@ -49,14 +49,10 @@
 //! type args at compile time.  This is PRELUDE-ONLY: general user-module →
 //! user-module alias import is the deferred bookmark (#4687 out-of-scope).
 //!
-//! **Cross-phase note:** cross-prelude alias collisions (two prelude modules
-//! declaring the same pub alias name) are resolved by `PreludeContext::new`
-//! *before* this phase is called — the `prelude_aliases` slice passed to
-//! `phase_aliases` is already deduplicated (first-wins).  The seed loop below
-//! is therefore idempotent with respect to prelude-vs-prelude duplicates.
-//! See `prelude_context` § "Cross-prelude collision policy" for the full
-//! cross-phase comparison (units = last-wins/warns; aliases =
-//! first-wins/warns; functions = first-wins/silent).
+//! Prelude-vs-prelude alias collisions are bound by [`crate::name_env`] when
+//! the `PreludeContext` is built, so the `prelude_aliases` slice holds one
+//! alias per name and the seed loop below never meets a prelude duplicate
+//! (`prelude_context` § "Cross-prelude collision policy").
 
 use std::collections::{HashMap, HashSet};
 
@@ -110,8 +106,8 @@ pub(crate) fn phase_aliases(
         let entry = TypeAliasEntry::from_compiled_for_prelude(pa);
         // Use register_as_prelude_seed so the entry is excluded from
         // into_compiled() and iter() (which feed the module's exported
-        // type_aliases and content hash).  Silently ignore Err — duplicates
-        // are already deduplicated by PreludeContext::new (first-wins).
+        // type_aliases and content hash).  Err cannot arise from a prelude
+        // duplicate: PreludeContext::new binds one alias per name.
         let _ = ctx.alias_registry.register_as_prelude_seed(entry);
     }
 
@@ -170,7 +166,7 @@ pub(crate) fn phase_aliases(
 ///
 /// **Note on enum names:** there is no `ctx.resolution_enum_names` field to
 /// read — the name set is derived here from `ctx.resolution_enums`, the
-/// prelude ++ local `Vec<EnumDef>` that `enums_phase::build_resolution_enums_
+/// local-plus-prelude `Vec<EnumDef>` that `enums_phase::build_resolution_enums_
 /// from_cache` populates well before this phase's `lib.rs` call site.  Without
 /// this fourth namespace the guard rejects `pub type G<T> = Option<SomeEnum>`
 /// at its own definition site for a plainly declared name (#6477).
@@ -217,7 +213,7 @@ pub(crate) fn phase_validate_pub_parametric_alias_defs(
     let trait_names_for_guard: HashSet<String> = trait_registry.keys().cloned().collect();
 
     // Derive the set of known enum names the same way, from ctx.resolution_enums
-    // (prelude ++ local) — the only enum-name source available here, as there is
+    // (local plus prelude) — the only enum-name source available here, as there is
     // no ctx.resolution_enum_names field.
     let enum_names_for_guard: HashSet<String> = ctx
         .resolution_enums
