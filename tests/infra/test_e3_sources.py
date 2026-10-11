@@ -304,6 +304,9 @@ class GitSourceTests(unittest.TestCase):
         self.assertEqual([m.commit for m in merges], [self.shas[2][1], self.shas[3][1]])
         self.assertEqual([(m.insertions, m.deletions) for m in merges], [(1, 0), (1, 0)])
 
+    def test_no_requested_task_merged_reads_no_merge(self):
+        self.assertEqual(e3_sources.read_task_merges(self.repo, "main", {999}), ())
+
     def test_unknown_ref_raises_source_error_with_git_stderr(self):
         with self.assertRaises(e3_sources.SourceError) as caught:
             e3_sources.read_task_merges(self.repo, "no-such-ref", {101})

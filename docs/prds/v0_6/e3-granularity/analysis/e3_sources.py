@@ -359,27 +359,51 @@ def _numstat_totals(lines):
     return insertions, deletions
 
 
-def _parse_merge(chunk, task_ids):
-    header, *body = chunk.split("\n")
-    commit, committed, subject = header.split("\x00", 2)
-    matched = TASK_MERGE_SUBJECT.match(subject)
-    if not matched or int(matched.group(1)) not in task_ids:
-        return None
-    insertions, deletions = _numstat_totals(line for line in body if line.strip())
-    return Merge(int(matched.group(1)), commit, utc_timestamp(committed), insertions, deletions)
-
-
-def read_task_merges(repo, ref, task_ids):
-    """Every first-parent `Merge task/<id> into main` on ref for task_ids, oldest first."""
+def _git(repo, *args):
+    """git's stdout in repo; a non-zero exit raises SourceError with its stderr."""
     completed = subprocess.run(
-        ["git", "-C", str(repo), "log", ref, "--first-parent", "--merges",
-         "--diff-merges=first-parent", "--numstat", "--format=%x01%H%x00%cI%x00%s", "--"],
+        ["git", "-C", str(repo), *args],
         capture_output=True, text=True, encoding="utf-8", errors="replace", check=False,
     )
     if completed.returncode != 0:
-        raise SourceError(
-            f"git log {ref} in {repo} exited {completed.returncode}: {completed.stderr.strip()}"
-        )
-    wanted = frozenset(task_ids)
-    merges = (_parse_merge(chunk, wanted) for chunk in completed.stdout.split("\x01") if chunk)
-    return tuple(sorted((m for m in merges if m), key=lambda m: m.merged_at))
+        raise SourceError(f"git {' '.join(args[:2])} in {repo} exited {completed.returncode}: "
+                          f"{completed.stderr.strip()}")
+    return completed.stdout
+
+
+def _task_merge_heads(repo, ref, task_ids):
+    """(task_id, commit, merged_at) of each first-parent task merge on ref for
+    task_ids, newest first, from a walk that reads headers and no diffs."""
+    heads = []
+    log = _git(repo, "log", ref, "--first-parent", "--merges", "--format=%H%x00%cI%x00%s", "--")
+    for line in log.splitlines():
+        commit, committed, subject = line.split("\x00", 2)
+        matched = TASK_MERGE_SUBJECT.match(subject)
+        if matched and int(matched.group(1)) in task_ids:
+            heads.append((int(matched.group(1)), commit, utc_timestamp(committed)))
+    return heads
+
+
+def _first_parent_numstats(repo, commits):
+    """commit -> (insertions, deletions) of its diff against its first parent."""
+    if not commits:
+        return {}
+    shown = _git(repo, "show", "--diff-merges=first-parent", "--numstat", "--format=%x01%H",
+                 *commits, "--")
+    totals = {}
+    for chunk in shown.split("\x01"):
+        if chunk:
+            commit, *body = chunk.split("\n")
+            totals[commit] = _numstat_totals(line for line in body if line.strip())
+    return totals
+
+
+def read_task_merges(repo, ref, task_ids):
+    """Every first-parent `Merge task/<id> into main` on ref for task_ids,
+    oldest first. Only the wanted merges are diffed, so the cost follows
+    task_ids rather than the length of main's history."""
+    heads = _task_merge_heads(repo, ref, frozenset(task_ids))
+    numstats = _first_parent_numstats(repo, [commit for _, commit, _ in heads])
+    merges = (Merge(task_id, commit, merged_at, *numstats[commit])
+              for task_id, commit, merged_at in heads)
+    return tuple(sorted(merges, key=lambda m: m.merged_at))
