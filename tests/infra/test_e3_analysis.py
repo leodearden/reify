@@ -13,13 +13,15 @@ e3_analysis_fixtures.py) and the analysis directory are prepended to sys.path,
 so the modules import by their plain names without installation.
 
 Every fixture lives under a tempfile dir: no network, no shared state, no
-live runs.db, task store or main ref.
+live runs.db, task store or main ref. The one tracked input is the committed
+analysis/results/*/tasks-snapshot.json, read-only, by CommittedRecordTests.
 """
 
 import contextlib
 import dataclasses
 import io
 import json
+import shutil
 import sqlite3
 import statistics
 import sys
@@ -311,12 +313,23 @@ class SnapshotSourceTests(unittest.TestCase):
         self.assertIsNone(snapshot.task(1101).provenance_commit)
         self.assertIsNone(snapshot.task(99999))
 
-    def test_fetch_rejects_a_record_for_another_id(self):
+    def test_fetch_rejects_a_record_for_another_id_as_a_source_fault(self):
         payload = fx.snapshot_payload(self.protocol, overrides={101: {"id": 999}})
-        with self.assertRaises(ProtocolViolation) as caught:
+        with self.assertRaises(e3_sources.SourceError) as caught:
             self._fetch(payload)
-        self.assertEqual(caught.exception.invariant, "snapshot record id")
+        self.assertIn("101", str(caught.exception))
         self.assertIn("999", str(caught.exception))
+
+    def test_read_rejects_a_fetch_instant_without_offset(self):
+        snapshot, _, _ = self._fetch()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "tasks-snapshot.json"
+            e3_sources.write_task_snapshot(snapshot, path)
+            document = json.loads(path.read_text())
+            document["fetched_at"] = "2026-10-10T20:00:00"
+            path.write_text(json.dumps(document))
+            with self.assertRaises(e3_sources.SourceError):
+                e3_sources.read_task_snapshot(path)
 
     def test_write_then_read_round_trips(self):
         snapshot, _, _ = self._fetch()
@@ -738,7 +751,8 @@ class EndpointScenario:
     s1: 1101 freeze-window but landed, 1102 landed (loc 200, $4, provenance
         mismatch, amended), 1103 done but merged after AS_OF, 1104 done with no
         merge, 1105 pending yet merged after AS_OF;
-    s2: nothing landed."""
+    s2: nothing landed;
+    carve-outs: 150 landed (loc 40, $1.50, 1 counted attempt), 151 untouched."""
 
     def __init__(self):
         self.protocol = fx.mini_protocol(expected_freeze_set=frozenset({1101, 203}))
@@ -747,6 +761,7 @@ class EndpointScenario:
             101: fx.done_override("m101"), 202: fx.done_override("m202"),
             1101: fx.done_override("m1101"), 1102: fx.done_override("not-a-merge"),
             1103: fx.done_override("m1103"), 1104: fx.done_override("m1104"),
+            150: fx.done_override("m150"),
         })
         self.arm_tasks = e3_model.attribute(self.snapshot, self.protocol)
         pre, post = at(28, 12, month=8), at(15, 9)
@@ -760,6 +775,7 @@ class EndpointScenario:
                 closed(1101, at(27, 8, month=8), "done"), drained(1101, at(2, 1)),
                 closed(1102, at(20, 9), "done"),
                 drained(1103, at(21, 9)),
+                closed(150, at(22, 9), "done"),
                 attempt(task_id=202, started_at=AS_OF - timedelta(hours=2),
                         ended_at=AS_OF + timedelta(hours=1), outcome="done",
                         run_ended_at=AS_OF + timedelta(hours=2)),
@@ -769,6 +785,7 @@ class EndpointScenario:
                 inv(101, 5.0, post, "reviewer_comprehensive"), inv(101, 7.0, late),
                 inv(102, 3.0, pre), inv(1101, 2.5, at(27, 8, month=8)),
                 inv(1102, 4.0, at(20, 9)), inv(202, 6.0, AS_OF - timedelta(hours=2)),
+                inv(150, 1.5, at(22, 9)),
             ),
             escalations=(
                 esc(101, "esc-101-1", post), esc(101, "esc-101-1", post + timedelta(hours=1)),
@@ -784,6 +801,7 @@ class EndpointScenario:
             merge(1102, "m1102", at(25, 9), 150, 50),
             merge(1103, "m1103", AS_OF + timedelta(days=5), 80),
             merge(1105, "m1105", AS_OF + timedelta(days=6), 10),
+            merge(150, "m150", at(23, 9), 30, 10),
         )
 
     def outcomes(self, as_of=AS_OF):
@@ -795,43 +813,44 @@ class EndpointTests(unittest.TestCase):
     def setUp(self):
         self.scenario = EndpointScenario()
         self.outcomes = {o.task.id: o for o in self.scenario.outcomes()}
+        self.ledgers = {task_id: o.ledger for task_id, o in self.outcomes.items()}
 
     def _endpoints(self, drop=frozenset()):
         return {e.prd_slug: e for e in e3_model.prd_endpoints(
             tuple(self.outcomes.values()), self.scenario.protocol, drop=drop)}
 
     def test_landed_requires_done_and_a_merge_by_as_of(self):
-        landed = self.outcomes[101]
+        landed = self.ledgers[101]
         self.assertEqual(landed.landed_at, at(20, 9))
         self.assertEqual(landed.loc, 1000)
         self.assertEqual([m.commit for m in landed.merges], ["m101"])
-        self.assertIsNone(self.outcomes[1103].landed_at)
-        self.assertEqual(self.outcomes[1103].loc, 0)
-        self.assertIsNone(self.outcomes[1104].landed_at)
-        self.assertIsNone(self.outcomes[1105].landed_at)
+        self.assertIsNone(self.ledgers[1103].landed_at)
+        self.assertEqual(self.ledgers[1103].loc, 0)
+        self.assertIsNone(self.ledgers[1104].landed_at)
+        self.assertIsNone(self.ledgers[1105].landed_at)
 
     def test_cost_sums_every_role_started_by_as_of(self):
-        self.assertEqual(self.outcomes[101].cost, 20.0)
-        self.assertEqual(self.outcomes[1102].cost, 4.0)
-        self.assertEqual(self.outcomes[103].cost, 0.0)
+        self.assertEqual(self.ledgers[101].cost, 20.0)
+        self.assertEqual(self.ledgers[1102].cost, 4.0)
+        self.assertEqual(self.ledgers[103].cost, 0.0)
 
     def test_attempts_split_by_class_as_of(self):
-        outcome = self.outcomes[101]
-        self.assertEqual((outcome.attempts_counted, outcome.attempts_drain_censored,
-                          outcome.attempts_in_flight), (2, 1, 0))
+        ledger = self.ledgers[101]
+        self.assertEqual((ledger.attempts_counted, ledger.attempts_drain_censored,
+                          ledger.attempts_in_flight), (2, 1, 0))
 
     def test_attempt_ending_after_as_of_is_in_flight(self):
-        outcome = self.outcomes[202]
-        self.assertEqual((outcome.attempts_counted, outcome.attempts_in_flight), (0, 1))
+        ledger = self.ledgers[202]
+        self.assertEqual((ledger.attempts_counted, ledger.attempts_in_flight), (0, 1))
 
     def test_blocking_escalations_are_distinct_blocking_ids_by_as_of(self):
-        self.assertEqual(self.outcomes[101].blocking_escalations, 2)
-        self.assertEqual(self.outcomes[102].blocking_escalations, 1)
+        self.assertEqual(self.ledgers[101].blocking_escalations, 2)
+        self.assertEqual(self.ledgers[102].blocking_escalations, 1)
 
     def test_freeze_window_task_is_flagged_and_never_eligible(self):
         frozen = self.outcomes[1101]
         self.assertEqual(frozen.excluded, "freeze-window")
-        self.assertEqual(frozen.landed_at, at(5, 9))
+        self.assertEqual(frozen.ledger.landed_at, at(5, 9))
         self.assertFalse(frozen.landed_eligible)
         self.assertTrue(self.outcomes[1102].landed_eligible)
         self.assertIsNone(self.outcomes[1102].excluded)
@@ -843,7 +862,8 @@ class EndpointTests(unittest.TestCase):
         self.assertIsNone(self.outcomes[103].era)
 
     def test_integrity_anomalies(self):
-        kinds = {task_id: {a.kind for a in o.anomalies} for task_id, o in self.outcomes.items()}
+        kinds = {task_id: {a.kind for a in ledger.anomalies}
+                 for task_id, ledger in self.ledgers.items()}
         self.assertEqual(kinds[1104], {"done-without-merge"})
         self.assertEqual(kinds[1105], {"merged-but-not-done"})
         self.assertEqual(kinds[1102], {"provenance-not-a-task-merge"})
@@ -898,8 +918,20 @@ class EndpointTests(unittest.TestCase):
         self.assertEqual((standard.freeze_window_excluded, standard.right_censored,
                           standard.drain_censored_attempts), (1, 8, 1))
 
+    def test_carve_outs_get_ledgers_beside_the_arms(self):
+        scenario = self.scenario
+        ledgers = e3_model.carve_out_ledgers(scenario.snapshot, scenario.runs, scenario.merges,
+                                             AS_OF, scenario.protocol)
+        self.assertEqual([ledger.task_id for ledger in ledgers], [150, 151])
+        landed, untouched = ledgers
+        self.assertEqual((landed.status, landed.landed_at, landed.loc, landed.cost,
+                          landed.attempts_counted), ("done", at(23, 9), 40, 1.5, 1))
+        self.assertEqual((untouched.status, untouched.landed_at, untouched.cost,
+                          untouched.attempts_counted), ("pending", None, 0.0, 0))
+        self.assertFalse({150, 151} & set(self.outcomes))
+
     def test_earlier_as_of_is_a_frozen_snapshot(self):
-        earlier = {o.task.id: o for o in self.scenario.outcomes(as_of=at(21, 0))}
+        earlier = {o.task.id: o.ledger for o in self.scenario.outcomes(as_of=at(21, 0))}
         self.assertIsNone(earlier[202].landed_at)
         self.assertEqual(earlier[101].landed_at, at(20, 9))
         self.assertIsNone(earlier[1102].landed_at)
@@ -923,15 +955,16 @@ def landings_outcomes(protocol, landings, statuses=None, freeze_set=frozenset({1
 ALL_FLOORS = {101: at(10, 0), 102: at(11, 0), 201: at(12, 0), 202: at(13, 0),
               1102: at(14, 0), 1103: at(15, 0), 1201: at(16, 0), 1202: at(17, 0)}
 ALL_CLOSE = {103: at(18, 0), 203: at(19, 0), 1105: at(20, 0), 1205: at(21, 0)}
+ALL_CLOSE_BUT_1205 = {k: v for k, v in ALL_CLOSE.items() if k != 1205}
 
 
 class StopRuleTests(unittest.TestCase):
     def setUp(self):
         self.protocol = fx.mini_protocol()
 
-    def _probe(self, landings, **kwargs):
+    def _probe(self, landings, operator_rule_i_instant=None, **kwargs):
         outcomes = landings_outcomes(self.protocol, landings, **kwargs)
-        return e3_model.stop_rule_probe(outcomes, self.protocol)
+        return e3_model.stop_rule_probe(outcomes, self.protocol, operator_rule_i_instant)
 
     def _floor(self, probe, slug):
         (floor,) = [f for f in probe.per_prd if f.prd_slug == slug]
@@ -973,30 +1006,72 @@ class StopRuleTests(unittest.TestCase):
 
     def test_rule_i_all_close_leaves_terminal(self):
         probe = self._probe(ALL_CLOSE)
-        self.assertTrue(probe.rule_i_met)
-        self.assertEqual(probe.rule_i_instant, at(21, 0))
+        self.assertTrue(probe.rule_i.met)
+        self.assertEqual(probe.rule_i.instant, at(21, 0))
+        self.assertFalse(probe.rule_i.undetermined)
         self.assertFalse(probe.rule_ii_met)
         self.assertEqual(probe.trigger_instant, at(21, 0))
 
-    def test_rule_i_with_a_cancelled_close_leaf_has_no_instant(self):
-        landings = {k: v for k, v in ALL_CLOSE.items() if k != 1205}
-        probe = self._probe(landings, statuses={1205: "cancelled"})
-        self.assertTrue(probe.rule_i_met)
-        self.assertIsNone(probe.rule_i_instant)
+    def test_rule_i_with_a_cancelled_close_leaf_is_undetermined(self):
+        probe = self._probe(ALL_CLOSE_BUT_1205, statuses={1205: "cancelled"})
+        self.assertFalse(probe.rule_i.met)
+        self.assertTrue(probe.rule_i.undetermined)
+        self.assertEqual(probe.rule_i.cancelled, (1205,))
+        self.assertIsNone(probe.rule_i.instant)
+        self.assertEqual(probe.rule_i.last_merge, at(20, 0))
         self.assertIsNone(probe.trigger_instant)
 
+    def test_operator_fixed_rule_i_instant_determines_the_trigger(self):
+        probe = self._probe(ALL_CLOSE_BUT_1205, statuses={1205: "cancelled"},
+                            operator_rule_i_instant=at(25, 0))
+        self.assertTrue(probe.rule_i.met)
+        self.assertTrue(probe.rule_i.operator_fixed)
+        self.assertFalse(probe.rule_i.undetermined)
+        self.assertEqual(probe.rule_i.instant, at(25, 0))
+        self.assertEqual(probe.trigger_instant, at(25, 0))
+
+    def test_operator_rule_i_instant_before_the_last_close_merge_is_refused(self):
+        with self.assertRaises(e3_model.OperatorInstantRefused) as caught:
+            self._probe(ALL_CLOSE_BUT_1205, statuses={1205: "cancelled"},
+                        operator_rule_i_instant=at(19, 0))
+        self.assertIn("last close-leaf merge", str(caught.exception))
+
+    def test_operator_rule_i_instant_is_refused_unless_rule_i_is_undetermined(self):
+        for landings, statuses in ((ALL_CLOSE, None), (ALL_CLOSE_BUT_1205, None)):
+            with self.assertRaises(e3_model.OperatorInstantRefused):
+                self._probe(landings, statuses=statuses, operator_rule_i_instant=at(25, 0))
+
+    def test_undetermined_rule_i_withholds_a_trigger_it_may_precede(self):
+        close = {103: at(2, 0), 203: at(3, 0), 1105: at(4, 0)}
+        probe = self._probe({**ALL_FLOORS, **close}, statuses={1205: "cancelled"})
+        self.assertTrue(probe.rule_ii_met)
+        self.assertTrue(probe.rule_i.undetermined)
+        self.assertIsNone(probe.trigger_instant)
+
+    def test_undetermined_rule_i_after_the_floor_keeps_the_rule_ii_trigger(self):
+        probe = self._probe({**ALL_FLOORS, **ALL_CLOSE_BUT_1205}, statuses={1205: "cancelled"})
+        self.assertTrue(probe.rule_i.undetermined)
+        self.assertEqual(probe.trigger_instant, at(17, 0))
+
     def test_rule_i_unmet_while_a_close_leaf_is_open(self):
-        probe = self._probe({k: v for k, v in ALL_CLOSE.items() if k != 1205})
-        self.assertFalse(probe.rule_i_met)
-        self.assertIsNone(probe.rule_i_instant)
+        probe = self._probe(ALL_CLOSE_BUT_1205)
+        self.assertFalse(probe.rule_i.met)
+        self.assertFalse(probe.rule_i.undetermined)
+        self.assertIsNone(probe.rule_i.instant)
+
+    def test_rule_i_open_close_leaf_hides_other_cancellations(self):
+        landings = {k: v for k, v in ALL_CLOSE_BUT_1205.items() if k != 1105}
+        probe = self._probe(landings, statuses={1205: "cancelled"})
+        self.assertFalse(probe.rule_i.met)
+        self.assertEqual(probe.rule_i.cancelled, ())
 
     def test_rule_i_close_leaf_merged_after_as_of_is_not_terminal(self):
         probe = self._probe({**ALL_CLOSE, 1205: AS_OF + timedelta(days=1)})
-        self.assertFalse(probe.rule_i_met)
+        self.assertFalse(probe.rule_i.met)
 
     def test_trigger_is_the_earliest_met_rule(self):
         probe = self._probe({**ALL_FLOORS, **ALL_CLOSE})
-        self.assertTrue(probe.rule_i_met and probe.rule_ii_met)
+        self.assertTrue(probe.rule_i.met and probe.rule_ii_met)
         self.assertEqual(probe.trigger_instant, at(17, 0))
 
     def test_todays_analogue_has_no_trigger_and_ignores_later_landings(self):
@@ -1030,10 +1105,12 @@ def endpoints_for(coarse_values, standard_values):
         + [prd_endpoint(f"s{j}", Arm.STANDARD, v) for j, v in enumerate(standard_values, 1)])
 
 
-def probe_with_trigger(trigger):
+def probe_with_trigger(trigger, cancelled_close_leaves=()):
+    rule_i = e3_model.RuleI(met=False, instant=None, cancelled=cancelled_close_leaves,
+                            last_merge=None, operator_fixed=False)
     return e3_model.StopRuleProbe(
         per_prd=(), rule_ii_met=trigger is not None, rule_ii_instant=trigger,
-        rule_i_met=False, rule_i_instant=None, trigger_instant=trigger)
+        rule_i=rule_i, trigger_instant=trigger)
 
 
 class ConfirmatoryTests(unittest.TestCase):
@@ -1047,10 +1124,19 @@ class ConfirmatoryTests(unittest.TestCase):
     def test_no_trigger_is_descriptive(self):
         verdict = self._verdict(None, None)
         self.assertEqual(verdict.label, "DESCRIPTIVE")
-        self.assertIn("stop rule", verdict.reason)
+        self.assertIn("stop rule not met", verdict.reason)
         self.assertIsNone(verdict.test)
         self.assertIsNone(verdict.trigger_instant)
         self.assertIsNone(verdict.rejects_null)
+
+    def test_undetermined_rule_i_is_descriptive_without_claiming_the_rule_unmet(self):
+        verdict = e3_model.confirmatory_verdict(
+            probe_with_trigger(None, cancelled_close_leaves=(1205,)), None, self.protocol)
+        self.assertEqual(verdict.label, "DESCRIPTIVE")
+        self.assertIn("undetermined", verdict.reason)
+        self.assertIn("1205", verdict.reason)
+        self.assertNotIn("not met", verdict.reason)
+        self.assertIsNone(verdict.test)
 
     def test_full_split_runs_the_exact_test(self):
         coarse, standard = [8.0, 9.5, 11.0, 30.0], [20.0, 25.0, 40.0]
@@ -1154,7 +1240,10 @@ class DescriptiveTests(unittest.TestCase):
 
 CLI_AS_OF = "2026-10-10T20:00:00Z"
 MINI_4V3 = fx.mini_protocol(n_coarse=4, n_standard=3)
-FLOOR_UNMET = [(1102, at(27, 20), 512, 31.05), (1101, at(12, 7), 2425, 107.58)]
+FLOOR_UNMET = [(1102, at(27, 20), 512, 31.05), (1101, at(12, 7), 2425, 107.58),
+               (103, at(26, 9), 10, 1.0)]
+MINI_CLOSE_LEAVES = tuple(prd.close_leaf for prd in MINI_4V3.prds)
+STUB_URL = "http://stub.invalid/mcp"
 FLOOR_ORDER = [101, 102, 201, 202, 301, 302, 401, 402, 1102, 1103, 1201, 1202, 1301, 1302]
 
 
@@ -1170,18 +1259,28 @@ FLOOR_MET = [(task_id, at(10 + n, 0), 100, floor_cost(task_id))
 POST_TRIGGER = (1303, at(25, 0), 10000, 0.0)
 
 
-def run_cli(argv, protocol=MINI_4V3):
+def run_cli(argv, protocol=MINI_4V3, open_task_store=e3_sources.open_fused_memory):
     stdout, stderr = io.StringIO(), io.StringIO()
     with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
-        code = e3_analysis.main(argv, protocol=protocol)
+        code = e3_analysis.main(argv, protocol=protocol, open_task_store=open_task_store)
     return code, stdout.getvalue(), stderr.getvalue()
 
 
-def cli_argv(inputs, out_dir, as_of=CLI_AS_OF, runs_db=None):
-    return ["--tasks-snapshot", str(inputs["snapshot"]),
-            "--runs-db", str(runs_db or inputs["runs_db"]),
+def source_argv(inputs, out_dir, as_of=CLI_AS_OF, runs_db=None):
+    return ["--runs-db", str(runs_db or inputs["runs_db"]),
             "--repo", str(inputs["repo"]), "--ref", "main",
             "--as-of", as_of, "--out-dir", str(out_dir)]
+
+
+def cli_argv(inputs, out_dir, as_of=CLI_AS_OF, runs_db=None):
+    """A replay of the committed-style snapshot file."""
+    return ["--tasks-snapshot", str(inputs["snapshot"])] + source_argv(inputs, out_dir, as_of,
+                                                                       runs_db)
+
+
+def live_argv(inputs, out_dir):
+    """A live read of the task store at STUB_URL."""
+    return ["--fused-memory-url", STUB_URL] + source_argv(inputs, out_dir)
 
 
 def section(report, title):
@@ -1213,10 +1312,15 @@ class CliTests(unittest.TestCase):
                                         extra_starts=[(1201, fx.MINI_FREEZE_CUTOFF
                                                        - timedelta(hours=2))])
         cls.met = fx.build_cli_inputs(root / "met", MINI_4V3, FLOOR_MET + [POST_TRIGGER])
+        cls.cancelled = fx.build_cli_inputs(
+            root / "cancelled", MINI_4V3, FLOOR_MET,
+            statuses={leaf: "cancelled" for leaf in MINI_CLOSE_LEAVES})
         cls.unmet_run = run_cli(cli_argv(cls.unmet, root / "unmet-out"))
         cls.unmet_out = root / "unmet-out"
         cls.met_run = run_cli(cli_argv(cls.met, root / "met-out"))
         cls.met_out = root / "met-out"
+        cls.cancelled_run = run_cli(cli_argv(cls.cancelled, root / "cancelled-out"))
+        cls.cancelled_out = root / "cancelled-out"
 
     @classmethod
     def tearDownClass(cls):
@@ -1252,6 +1356,7 @@ class CliTests(unittest.TestCase):
         for name in ("freeze-window excluded", "right-censored", "drain-censored attempts"):
             self.assertIn(name, censoring)
         self.assertIn("#1101", section(report, "EXCLUDED TASKS"))
+        self.assertIn("#150 carve-out (§7.1): status pending", section(report, "EXCLUDED TASKS"))
         self.assertIn("#1102", section(report, "SENSITIVITY"))
         self.assertIn("DESCRIPTIVE", report.split("\n")[1])
 
@@ -1305,12 +1410,141 @@ class CliTests(unittest.TestCase):
         code, _, _ = run_cli(cli_argv(self.unmet, out_dir))
         self.assertEqual(code, 2)
         self.assertEqual((out_dir / "report.txt").read_text(), "committed record\n")
+        other = self._out_dir("other-out")
+        other.mkdir()
+        (other / "notes.txt").write_text("not a record\n")
+        code, _, _ = run_cli(cli_argv(self.unmet, other))
+        self.assertEqual(code, 2)
+        self.assertEqual(sorted(p.name for p in other.iterdir()), ["notes.txt"])
+
+    def test_endpoint5_reports_closed_prds_and_waits_for_the_rest(self):
+        endpoint5 = section(self.unmet_run[1], "ENDPOINT 5")
+        self.assertRegex(endpoint5, r"c1\s+close leaf #103: closed 2026-09-26T09:00:00Z; "
+                                    r"window ends 2026-10-26T09:00:00Z")
+        for prd in MINI_4V3.prds[1:]:
+            self.assertRegex(endpoint5, rf"{prd.slug}\s+close leaf #{prd.close_leaf}: not closed")
+
+    def test_undetermined_rule_i_withholds_the_look_and_says_why(self):
+        code, stdout, stderr = self.cancelled_run
+        self.assertEqual(code, 0, stderr)
+        self.assertIn("rule (i) every close leaf terminal: undetermined",
+                      section(stdout, "STOP-RULE PROBE"))
+        label = stdout.split("\n")[1]
+        self.assertIn("DESCRIPTIVE", label)
+        self.assertIn("undetermined", label)
+        self.assertNotIn("not met", label)
+        document = json.loads((self.cancelled_out / "endpoints.json").read_text())
+        self.assertTrue(document["stop_rule_probe"]["rule_ii_met"])
+        self.assertIsNone(document["stop_rule_probe"]["trigger_instant"])
+        self.assertEqual(document["stop_rule_probe"]["rule_i"]["cancelled"],
+                         sorted(MINI_CLOSE_LEAVES))
+
+    def test_operator_rule_i_instant_runs_the_one_look_frozen_there(self):
+        out_dir = self._out_dir("operator-out")
+        code, stdout, stderr = run_cli(cli_argv(self.cancelled, out_dir)
+                                       + ["--rule-i-instant", "2026-09-20T00:00:00Z"])
+        self.assertEqual(code, 0, stderr)
+        self.assertIn("operator-fixed", section(stdout, "STOP-RULE PROBE"))
+        document = json.loads((out_dir / "endpoints.json").read_text())
+        self.assertTrue(document["stop_rule_probe"]["rule_i"]["operator_fixed"])
+        verdict = document["verdict"]
+        self.assertEqual(verdict["label"], "CONFIRMATORY")
+        self.assertEqual(verdict["trigger_instant"], "2026-09-20T00:00:00Z")
+        self.assertEqual(verdict["split"], [4, 2])
+
+    def test_rule_i_instant_later_than_as_of_is_refused(self):
+        out_dir = self._out_dir("operator-late-out")
+        code, _, stderr = run_cli(cli_argv(self.cancelled, out_dir)
+                                  + ["--rule-i-instant", "2026-10-10T21:00:00Z"])
+        self.assertEqual(code, 2)
+        self.assertIn("--rule-i-instant", stderr)
+        self.assertFalse(out_dir.exists())
+
+    def test_rule_i_instant_is_refused_unless_rule_i_is_undetermined(self):
+        out_dir = self._out_dir("operator-open-out")
+        code, _, stderr = run_cli(cli_argv(self.unmet, out_dir)
+                                  + ["--rule-i-instant", "2026-10-01T00:00:00Z"])
+        self.assertEqual(code, 2)
+        self.assertIn("refused", stderr)
+        self.assertFalse(out_dir.exists())
+
+    def test_live_task_store_read_is_persisted_and_replays_identically(self):
+        call_tool, calls = fx.fake_task_store(self.unmet["payload"])
+        opened = []
+
+        def open_task_store(url):
+            opened.append(url)
+            return call_tool
+
+        live_out = self._out_dir("live-out")
+        code, stdout, stderr = run_cli(live_argv(self.unmet, live_out),
+                                       open_task_store=open_task_store)
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(opened, [STUB_URL])
+        self.assertEqual(calls[0][0], "get_statuses")
+        self.assertIn(e3_sources.MCP_SOURCE, stdout.split("\n")[3])
+        written = e3_sources.read_task_snapshot(live_out / "tasks-snapshot.json")
+        self.assertEqual(written.tasks, e3_sources.read_task_snapshot(self.unmet["snapshot"]).tasks)
+        self.assertGreaterEqual(written.fetched_at, datetime.fromisoformat(CLI_AS_OF))
+        replay_out = self._out_dir("live-replay-out")
+        replayed = {**self.unmet, "snapshot": live_out / "tasks-snapshot.json"}
+        code, _, stderr = run_cli(cli_argv(replayed, replay_out))
+        self.assertEqual(code, 0, stderr)
+        for name in ("report.txt", "endpoints.json"):
+            self.assertEqual((replay_out / name).read_text(), (live_out / name).read_text(), name)
+        self.assertFalse((replay_out / "tasks-snapshot.json").exists())
+
+    def test_malformed_task_store_reply_is_an_unreadable_source(self):
+        out_dir = self._out_dir("malformed-store-out")
+        code, _, stderr = run_cli(live_argv(self.unmet, out_dir),
+                                  open_task_store=lambda url: lambda name, arguments: {})
+        self.assertEqual(code, 3)
+        self.assertIn(STUB_URL, stderr)
+        self.assertFalse(out_dir.exists())
+
+    def test_malformed_runs_db_row_is_an_unreadable_source(self):
+        corrupt = Path(self.tmp.name) / "corrupt-runs.db"
+        shutil.copy(self.unmet["runs_db"], corrupt)
+        with contextlib.closing(sqlite3.connect(corrupt)) as connection:
+            connection.execute("UPDATE events SET data = '{not json'"
+                               " WHERE event_type = 'task_completed'")
+            connection.commit()
+        code, _, stderr = run_cli(cli_argv(self.unmet, self._out_dir("corrupt-out"),
+                                           runs_db=corrupt))
+        self.assertEqual(code, 3)
+        self.assertIn(str(corrupt), stderr)
+
+    def test_unwritable_record_exits_4_and_prints_nothing(self):
+        blocker = Path(self.tmp.name) / "a-file"
+        blocker.write_text("not a directory\n")
+        code, stdout, stderr = run_cli(cli_argv(self.unmet, blocker / "out"))
+        self.assertEqual(code, 4)
+        self.assertIn("RECORD NOT WRITTEN", stderr)
+        self.assertEqual(stdout, "")
+        self.assertEqual(blocker.read_text(), "not a directory\n")
 
     def test_default_out_dir_is_inside_the_analysis_results(self):
         as_of = datetime(2026, 10, 10, 20, 0, tzinfo=UTC)
         out_dir = e3_analysis.default_out_dir(as_of)
         self.assertEqual(out_dir, ANALYSIS_DIR / "results" / "20261010T200000Z")
         self.assertNotIn("tmp", out_dir.resolve().parts)
+
+
+class CommittedRecordTests(unittest.TestCase):
+    """The hermetic half of replaying a committed record: its task snapshot
+    still reads and attributes under the registered protocol. The rest needs
+    the live runs.db and main ref (results/README.md has the command)."""
+
+    def test_every_committed_snapshot_still_reads_and_attributes(self):
+        snapshots = sorted((ANALYSIS_DIR / "results").glob("*/tasks-snapshot.json"))
+        self.assertTrue(snapshots)
+        coarse = sum(len(prd.coalesced | prd.reused) for prd in E3.prds_in(Arm.COARSE))
+        standard = sum(prd.stamped_count for prd in E3.prds_in(Arm.STANDARD))
+        for path in snapshots:
+            with self.subTest(record=path.parent.name):
+                arm_tasks = e3_model.attribute(e3_sources.read_task_snapshot(path), E3)
+                self.assertEqual(sum(1 for t in arm_tasks if t.arm is Arm.COARSE), coarse)
+                self.assertEqual(sum(1 for t in arm_tasks if t.arm is Arm.STANDARD), standard)
 
 
 if __name__ == "__main__":

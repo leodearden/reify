@@ -10,6 +10,8 @@ Each reader parses its source into frozen records the pure model consumes:
 - git main history, for each task's first-parent merge and its LOC.
 
 Nothing here decides what a record means for the protocol; e3_model does.
+The live MCP client, scripts/escalation_mcp.py, is imported only when a
+session opens; the e3_analysis entrypoint puts scripts/ on sys.path.
 """
 
 import dataclasses
@@ -18,17 +20,9 @@ import json
 import re
 import sqlite3
 import subprocess
-import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-
-from e3_protocol import ProtocolViolation
-
-REPO_ROOT = Path(__file__).resolve().parents[5]
-sys.path.insert(0, str(REPO_ROOT / "scripts"))
-
-from escalation_mcp import EscalationError, McpSession  # noqa: E402  (after sys.path manipulation)
 
 SNAPSHOT_SCHEMA = "e3-task-snapshot/1"
 MCP_SOURCE = "fused-memory MCP get_statuses + get_task"
@@ -98,7 +92,8 @@ def fetch_task_snapshot(call_tool, project_root, candidate_ids, fetched_at, sour
     for task_id in sorted(int(key) for key in statuses):
         raw = call_tool("get_task", {"id": str(task_id), "project_root": project_root})
         if int(raw.get("id", -1)) != task_id:
-            raise ProtocolViolation("snapshot record id", str(task_id), str(raw.get("id")))
+            raise SourceError(
+                f"get_task {task_id} answered with the record of task {raw.get('id')}")
         records.append(_task_record(raw))
     return TaskSnapshot(fetched_at, project_root, source, tuple(records))
 
@@ -121,7 +116,7 @@ def read_task_snapshot(path):
             f"{path}: snapshot schema {document.get('schema')!r}, expected {SNAPSHOT_SCHEMA!r}"
         )
     return TaskSnapshot(
-        fetched_at=datetime.fromisoformat(document["fetched_at"]),
+        fetched_at=utc_timestamp(document["fetched_at"]),
         project_root=document["project_root"],
         source=document["source"],
         tasks=tuple(
@@ -145,22 +140,25 @@ def fused_memory_url(mcp_config_path):
     return url
 
 
-MCP_FAILURES = (OSError, ValueError, http.client.HTTPException, EscalationError)
-
-
 def open_fused_memory(url):
     """A live call_tool bound to an initialized fused-memory MCP session; a
-    transport failure or a refused call raises SourceError naming the url."""
+    missing client, a transport failure or a refused call raises SourceError
+    naming the url."""
+    try:
+        from escalation_mcp import EscalationError, McpSession
+    except ImportError as error:
+        raise SourceError(f"fused-memory MCP client scripts/escalation_mcp.py: {error}") from error
+    failures = (OSError, ValueError, http.client.HTTPException, EscalationError)
     session = McpSession(url, "e3-analysis")
     try:
         session.open()
-    except MCP_FAILURES as error:
+    except failures as error:
         raise SourceError(f"fused-memory MCP {url}: {error}") from error
 
     def call_tool(name, arguments):
         try:
             return session.call_tool(name, arguments)
-        except MCP_FAILURES as error:
+        except failures as error:
             raise SourceError(f"fused-memory MCP {url} {name}: {error}") from error
 
     return call_tool

@@ -4,8 +4,8 @@ from E3 records. Pure: no I/O.
 
 It reads the frozen records e3_sources parses, judges them against the frozen
 Protocol, and raises ProtocolViolation whenever the data drifts from the
-registration. Imports run downward only: e3_protocol, e3_sources' records and
-e3_stats.
+registration. Imports run downward only, to e3_protocol and e3_stats; the
+e3_sources records arrive as arguments.
 """
 
 import dataclasses
@@ -174,66 +174,6 @@ class Anomaly:
 
 
 @dataclass(frozen=True)
-class TaskOutcome:
-    """One arm task's state as of an instant. landed_at is set whenever the
-    task is done with a merge by then, even when excluded is set; only an
-    eligible landing enters an endpoint."""
-
-    task: ArmTask
-    status: str
-    landed_at: datetime | None
-    merges: tuple
-    loc: int
-    cost: float
-    attempts_counted: int
-    attempts_drain_censored: int
-    attempts_in_flight: int
-    blocking_escalations: int
-    excluded: str | None
-    era: str | None
-    anomalies: tuple
-
-    @property
-    def eligible(self):
-        return self.excluded is None
-
-    @property
-    def landed_eligible(self):
-        return self.eligible and self.landed_at is not None
-
-    @property
-    def right_censored(self):
-        return self.eligible and self.landed_at is None
-
-
-def task_outcomes(arm_tasks, snapshot, runs, merges, freeze_set, as_of, protocol):
-    """Every arm task's outcome as of as_of (each source cut by task_ledger)."""
-    return tuple(
-        _task_outcome(task, snapshot.task(task.id), runs, merges, freeze_set, as_of, protocol)
-        for task in arm_tasks
-    )
-
-
-def _task_outcome(task, record, runs, merges, freeze_set, as_of, protocol):
-    ledger = task_ledger(record, runs, merges, as_of, protocol)
-    return TaskOutcome(
-        task=task,
-        status=ledger.status,
-        landed_at=ledger.landed_at,
-        merges=ledger.merges,
-        loc=ledger.loc,
-        cost=ledger.cost,
-        attempts_counted=ledger.attempts_counted,
-        attempts_drain_censored=ledger.attempts_drain_censored,
-        attempts_in_flight=ledger.attempts_in_flight,
-        blocking_escalations=ledger.blocking_escalations,
-        excluded=EXCLUDED_FREEZE_WINDOW if task.id in freeze_set else None,
-        era=_era(ledger.attempt_starts, protocol),
-        anomalies=ledger.anomalies,
-    )
-
-
-@dataclass(frozen=True)
 class TaskLedger:
     """One task's records as they stood at an instant, with no arm judgement:
     landed_at needs status done and a merge by then."""
@@ -301,6 +241,48 @@ def _attempt_as_of(attempt, as_of):
         ended_at=attempt.ended_at if ended else None,
         outcome=attempt.outcome if ended else None,
         run_ended_at=attempt.run_ended_at if run_ended else None,
+    )
+
+
+@dataclass(frozen=True)
+class TaskOutcome:
+    """One arm task's ledger as of an instant, with its arm judgement.
+    ledger.landed_at is set whenever the task is done with a merge by then,
+    even when excluded is set; only an eligible landing enters an endpoint."""
+
+    task: ArmTask
+    ledger: TaskLedger
+    excluded: str | None
+    era: str | None
+
+    @property
+    def eligible(self):
+        return self.excluded is None
+
+    @property
+    def landed_eligible(self):
+        return self.eligible and self.ledger.landed_at is not None
+
+    @property
+    def right_censored(self):
+        return self.eligible and self.ledger.landed_at is None
+
+
+def task_outcomes(arm_tasks, snapshot, runs, merges, freeze_set, as_of, protocol):
+    """Every arm task's outcome as of as_of (each source cut by task_ledger)."""
+    return tuple(
+        _task_outcome(task, snapshot.task(task.id), runs, merges, freeze_set, as_of, protocol)
+        for task in arm_tasks
+    )
+
+
+def _task_outcome(task, record, runs, merges, freeze_set, as_of, protocol):
+    ledger = task_ledger(record, runs, merges, as_of, protocol)
+    return TaskOutcome(
+        task=task,
+        ledger=ledger,
+        excluded=EXCLUDED_FREEZE_WINDOW if task.id in freeze_set else None,
+        era=_era(ledger.attempt_starts, protocol),
     )
 
 
@@ -377,9 +359,10 @@ def prd_endpoints(outcomes, protocol, drop=frozenset()):
 
 def _pooled(landed):
     """(cost, loc, counted attempts, blocking escalations) summed over landed."""
-    return (sum(o.cost for o in landed), sum(o.loc for o in landed),
-            sum(o.attempts_counted for o in landed),
-            sum(o.blocking_escalations for o in landed))
+    ledgers = [o.ledger for o in landed]
+    return (sum(ledger.cost for ledger in ledgers), sum(ledger.loc for ledger in ledgers),
+            sum(ledger.attempts_counted for ledger in ledgers),
+            sum(ledger.blocking_escalations for ledger in ledgers))
 
 
 def _prd_endpoint(prd, outcomes):
@@ -403,8 +386,8 @@ def _prd_endpoint(prd, outcomes):
         blocking_esc_per_kloc=_ratio(escalations, loc, 1000),
         landed_scope_share=(Fraction(sum(o.task.scope_weight for o in landed), scope)
                             if scope else None),
-        unlanded_attempts=sum(o.attempts_counted for o in censored),
-        unlanded_blocking_escalations=sum(o.blocking_escalations for o in censored),
+        unlanded_attempts=sum(o.ledger.attempts_counted for o in censored),
+        unlanded_blocking_escalations=sum(o.ledger.blocking_escalations for o in censored),
     )
 
 
@@ -425,7 +408,7 @@ def arm_censoring_counts(outcomes):
             freeze_window_excluded=sum(1 for o in outcomes
                                        if o.task.arm is arm and not o.eligible),
             right_censored=sum(1 for o in outcomes if o.task.arm is arm and o.right_censored),
-            drain_censored_attempts=sum(o.attempts_drain_censored for o in outcomes
+            drain_censored_attempts=sum(o.ledger.attempts_drain_censored for o in outcomes
                                         if o.task.arm is arm and o.eligible),
         )
         for arm in Arm
@@ -444,42 +427,77 @@ class PrdFloor:
 
 
 @dataclass(frozen=True)
+class RuleI:
+    """Addendum (a)(i): every close leaf done by a merge or cancelled. The
+    task store records no cancellation instant, so cancelled close leaves
+    leave the rule UNDETERMINED (neither met nor unmet) until an operator
+    fixes its instant, no earlier than last_merge, the latest close-leaf
+    merge. cancelled stays empty while any close leaf is still open."""
+
+    met: bool
+    instant: datetime | None
+    cancelled: tuple
+    last_merge: datetime | None
+    operator_fixed: bool
+
+    @property
+    def undetermined(self):
+        return bool(self.cancelled) and not self.met
+
+
+class OperatorInstantRefused(Exception):
+    """An operator-fixed instant that the protocol does not admit or that the
+    records contradict."""
+
+
+@dataclass(frozen=True)
 class StopRuleProbe:
     """Addendum (a): rule (ii) the k-landing floor in every PRD, rule (i) every
-    close leaf terminal; the trigger is the earliest determined instant of a
-    met rule. Rule (iii) is a human decision and is not probed."""
+    close leaf terminal; the trigger is the earliest instant of a met rule,
+    unless an undetermined rule (i) may have come first. Rule (iii) is a
+    human decision and is not probed."""
 
     per_prd: tuple
     rule_ii_met: bool
     rule_ii_instant: datetime | None
-    rule_i_met: bool
-    rule_i_instant: datetime | None
+    rule_i: RuleI
     trigger_instant: datetime | None
 
 
-def stop_rule_probe(outcomes, protocol):
+def stop_rule_probe(outcomes, protocol, operator_rule_i_instant=None):
+    """operator_rule_i_instant fixes an undetermined rule (i); passing it in
+    any other state raises OperatorInstantRefused."""
     floors = tuple(_prd_floor(prd, outcomes, protocol.landing_floor_k) for prd in protocol.prds)
     rule_ii_met = all(floor.floor_met for floor in floors)
     rule_ii_instant = max(floor.floor_instant for floor in floors) if rule_ii_met else None
-    rule_i_met, rule_i_instant = _rule_i(outcomes, protocol)
-    determined = [instant for met, instant in ((rule_i_met, rule_i_instant),
-                                               (rule_ii_met, rule_ii_instant))
-                  if met and instant is not None]
+    rule_i = _rule_i(outcomes, protocol, operator_rule_i_instant)
     return StopRuleProbe(
         per_prd=floors,
         rule_ii_met=rule_ii_met,
         rule_ii_instant=rule_ii_instant,
-        rule_i_met=rule_i_met,
-        rule_i_instant=rule_i_instant,
-        trigger_instant=min(determined) if determined else None,
+        rule_i=rule_i,
+        trigger_instant=_trigger_instant(rule_i, rule_ii_instant),
     )
+
+
+def _trigger_instant(rule_i, rule_ii_instant):
+    """The earliest met rule's instant. An undetermined rule (i) is met at
+    some unrecorded instant no earlier than its last close-leaf merge, so it
+    withholds any trigger it may precede."""
+    determined = [instant for instant in (rule_i.instant, rule_ii_instant) if instant is not None]
+    if not determined:
+        return None
+    first = min(determined)
+    if rule_i.undetermined and (rule_i.last_merge is None or rule_i.last_merge < first):
+        return None
+    return first
 
 
 def _prd_floor(prd, outcomes, k):
     """A qualifying landing is an eligible landing of a task that counts
     toward the floor (ArmTask.counts_toward_floor, the like-for-like rule)."""
     qualifying = sorted(
-        ((o.task.id, o.landed_at) for o in outcomes
+        ((o.task.id, o.ledger.landed_at) for o in outcomes
          if o.task.prd_slug == prd.slug and o.task.counts_toward_floor and o.landed_eligible),
         key=lambda landing: (landing[1], landing[0]),
     )
@@ -488,18 +506,39 @@ def _prd_floor(prd, outcomes, k):
                     qualifying[k - 1][1] if floor_met else None)
 
 
-def _rule_i(outcomes, protocol):
-    """(met, instant): every close leaf cancelled or done by a merge as of the
-    outcomes' instant; the instant is the last close-leaf merge, known only
-    when every close leaf landed."""
+def _rule_i(outcomes, protocol, operator_instant):
+    """Rule (i) as of the outcomes' instant: met at the last close-leaf merge
+    when every close leaf landed, undetermined when the rest are cancelled
+    (unless operator_instant fixes it), unmet while any is open."""
     by_id = {o.task.id: o for o in outcomes}
     missing = {prd.close_leaf for prd in protocol.prds} - set(by_id)
     require(not missing, "close leaves attributed", "every PRD's close leaf among the outcomes",
             f"missing {format_ids(missing)}")
-    closes = [by_id[prd.close_leaf] for prd in protocol.prds]
-    met = all(o.status == "cancelled" or o.landed_at is not None for o in closes)
-    all_landed = all(o.landed_at is not None for o in closes)
-    return met, max(o.landed_at for o in closes) if met and all_landed else None
+    closes = [by_id[prd.close_leaf].ledger for prd in protocol.prds]
+    landed = [ledger.landed_at for ledger in closes if ledger.landed_at is not None]
+    cancelled = tuple(ledger.task_id for ledger in closes
+                      if ledger.landed_at is None and ledger.status == "cancelled")
+    last_merge = max(landed, default=None)
+    if len(landed) + len(cancelled) < len(closes):
+        _refuse_operator_instant(operator_instant, "a close leaf is still open")
+        return RuleI(False, None, (), last_merge, False)
+    if not cancelled:
+        _refuse_operator_instant(operator_instant, "every close leaf landed, so rule (i)'s "
+                                 f"instant is the last close-leaf merge {last_merge.isoformat()}")
+        return RuleI(True, last_merge, (), last_merge, False)
+    if operator_instant is None:
+        return RuleI(False, None, cancelled, last_merge, False)
+    if last_merge is not None and operator_instant < last_merge:
+        raise OperatorInstantRefused(
+            f"rule (i) instant {operator_instant.isoformat()} precedes the last close-leaf merge "
+            f"{last_merge.isoformat()}")
+    return RuleI(True, operator_instant, cancelled, last_merge, True)
+
+
+def _refuse_operator_instant(operator_instant, reason):
+    if operator_instant is not None:
+        raise OperatorInstantRefused(
+            f"rule (i) has no undetermined instant to fix: {reason}")
 
 
 @dataclass(frozen=True)
@@ -528,8 +567,7 @@ def confirmatory_verdict(probe, prd_endpoints_at_trigger, protocol):
     minimum achievable p <= alpha (exact), then the exact U test."""
     trigger = probe.trigger_instant
     if trigger is None:
-        return Verdict(LABEL_DESCRIPTIVE,
-                       "stop rule not met: no trigger instant, no confirmatory look",
+        return Verdict(LABEL_DESCRIPTIVE, _no_trigger_reason(probe.rule_i),
                        None, None, None, None, None)
     coarse = _arm_values(prd_endpoints_at_trigger, Arm.COARSE, "usd_per_kloc")
     standard = _arm_values(prd_endpoints_at_trigger, Arm.STANDARD, "usd_per_kloc")
@@ -548,6 +586,14 @@ def confirmatory_verdict(probe, prd_endpoints_at_trigger, protocol):
         f"U={test.u}, p={test.p}, alpha={protocol.alpha}",
         split, min_p, test, trigger, test.p <= protocol.alpha,
     )
+
+
+def _no_trigger_reason(rule_i):
+    if rule_i.undetermined:
+        return (f"stop rule (i) undetermined: cancelled close leaf {format_ids(rule_i.cancelled)} "
+                "carries no recorded cancellation instant; the one confirmatory look waits for "
+                "an operator-fixed rule (i) instant")
+    return "stop rule not met: no trigger instant, no confirmatory look"
 
 
 @dataclass(frozen=True)

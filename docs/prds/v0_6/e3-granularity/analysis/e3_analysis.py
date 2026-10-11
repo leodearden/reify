@@ -7,6 +7,7 @@ Usage:
     python3 docs/prds/v0_6/e3-granularity/analysis/e3_analysis.py [--as-of ISO]
         [--tasks-snapshot PATH] [--runs-db PATH] [--repo PATH] [--ref REF]
         [--fused-memory-url URL] [--project-root PATH] [--out-dir DIR]
+        [--rule-i-instant ISO]
 
 Data sources, all read-only:
 - the fused-memory task store through its MCP (get_statuses, then get_task),
@@ -15,12 +16,19 @@ Data sources, all read-only:
   blocking escalations;
 - git main: each task's first-parent `Merge task/<id> into main` and its LOC.
 
+The task store records no cancellation instant, so a cancelled close leaf
+leaves stop rule (i) undetermined; --rule-i-instant is the operator's fix for
+that state and is refused in any other.
+
 Outputs, under analysis/results/<as-of>/ unless --out-dir names another
 directory: report.txt (also printed), endpoints.json, and tasks-snapshot.json
-when the task store was read live. An existing record is never overwritten.
+when the task store was read live. The record is written into a staging
+directory and renamed into place, and an existing record is never
+overwritten.
 
-Exit codes: 0 ok; 1 a pre-registered invariant is violated (nothing is
-written); 2 usage; 3 a data source is unreadable.
+Exit codes: 0 ok; 1 a pre-registered invariant is violated; 2 usage; 3 a
+data source is unreadable; 4 the record could not be written. Nothing is
+left behind unless the exit code is 0.
 
 The legacy reify_task_size_analysis.py beside this file is the parent
 investigation's record, not the E3 script.
@@ -28,6 +36,8 @@ investigation's record, not the E3 script.
 
 import argparse
 import json
+import os
+import shutil
 import sqlite3
 import sys
 from dataclasses import dataclass, fields, is_dataclass
@@ -44,11 +54,13 @@ from e3_sources import (
 )
 
 ANALYSIS_DIR = Path(__file__).resolve().parent
+SCRIPTS_DIR = ANALYSIS_DIR.parents[4] / "scripts"
 REPORT_NAME = "report.txt"
 ENDPOINTS_NAME = "endpoints.json"
 SNAPSHOT_NAME = "tasks-snapshot.json"
 ENDPOINTS_SCHEMA = "e3-endpoints/1"
-EXIT_OK, EXIT_PROTOCOL, EXIT_USAGE, EXIT_SOURCE = 0, 1, 2, 3
+EXIT_OK, EXIT_PROTOCOL, EXIT_USAGE, EXIT_SOURCE, EXIT_RECORD = 0, 1, 2, 3, 4
+SOURCE_PARSE_FAILURES = (OSError, ValueError, KeyError, TypeError, sqlite3.Error)
 DEFECT_ESCAPE_WINDOW = timedelta(days=30)
 UTC = timezone.utc
 
@@ -84,7 +96,7 @@ class Analysis:
     carve_outs: tuple
 
 
-def analyse(snapshot, arm_tasks, runs, merges, as_of, protocol):
+def analyse(snapshot, arm_tasks, runs, merges, as_of, protocol, operator_rule_i_instant=None):
     """§7 over the parsed sources: freeze check, outcomes at as_of, the stop
     rule, the one look frozen at the trigger, then the descriptive figures."""
     freeze_set = model.freeze_window_set(arm_tasks, runs.attempts, protocol)
@@ -94,7 +106,7 @@ def analyse(snapshot, arm_tasks, runs, merges, as_of, protocol):
                                    protocol)
 
     outcomes = outcomes_at(as_of)
-    probe = model.stop_rule_probe(outcomes, protocol)
+    probe = model.stop_rule_probe(outcomes, protocol, operator_rule_i_instant)
     at_trigger = (model.prd_endpoints(outcomes_at(probe.trigger_instant), protocol)
                   if probe.trigger_instant is not None else None)
     current = model.prd_endpoints(outcomes, protocol)
@@ -132,43 +144,63 @@ def _parser(protocol):
     parser.add_argument("--as-of", help="ISO 8601 instant with offset (default: now, UTC)")
     parser.add_argument("--out-dir", type=Path,
                         help="default: analysis/results/<as-of %%Y%%m%%dT%%H%%M%%SZ>")
+    parser.add_argument("--rule-i-instant",
+                        help="ISO 8601 instant, operator-fixed, at which stop rule (i) was met; "
+                             "admitted only while cancelled close leaves leave it undetermined")
     return parser
+
+
+def _instant(option, text):
+    try:
+        moment = datetime.fromisoformat(text)
+    except ValueError as error:
+        raise UsageError(f"{option} {text!r} is not ISO 8601: {error}") from error
+    if moment.tzinfo is None:
+        raise UsageError(f"{option} {text!r} carries no UTC offset")
+    return moment.astimezone(UTC)
 
 
 def _as_of(text):
     if text is None:
         return datetime.now(UTC).replace(microsecond=0)
-    try:
-        moment = datetime.fromisoformat(text)
-    except ValueError as error:
-        raise UsageError(f"--as-of {text!r} is not ISO 8601: {error}") from error
-    if moment.tzinfo is None:
-        raise UsageError(f"--as-of {text!r} carries no UTC offset")
-    return moment.astimezone(UTC)
+    return _instant("--as-of", text)
+
+
+def _operator_rule_i_instant(text, as_of):
+    if text is None:
+        return None
+    instant = _instant("--rule-i-instant", text)
+    if instant > as_of:
+        raise UsageError(f"--rule-i-instant {_ts(instant)} is later than --as-of {_ts(as_of)}")
+    return instant
 
 
 def _refuse_existing(out_dir):
-    present = [name for name in (REPORT_NAME, ENDPOINTS_NAME, SNAPSHOT_NAME)
-               if (out_dir / name).exists()]
-    if present:
-        raise UsageError(f"{out_dir} already holds {', '.join(present)}; "
+    if out_dir.exists() and (not out_dir.is_dir() or any(out_dir.iterdir())):
+        raise UsageError(f"{out_dir} already exists and is not an empty directory; "
                          "a committed record is never overwritten")
 
 
-def _load_snapshot(args, repo, protocol):
+def _read_source(name, read):
+    """read(), with any failure to read or parse the source raised as a
+    SourceError naming it, so that exit 1 stays reserved for the protocol."""
+    try:
+        return read()
+    except SOURCE_PARSE_FAILURES as error:
+        raise SourceError(f"{name}: {error}") from error
+
+
+def _load_snapshot(args, repo, protocol, open_task_store):
     """(snapshot, fetched live?)."""
     if args.tasks_snapshot is not None:
-        try:
-            return read_task_snapshot(args.tasks_snapshot), False
-        except (OSError, ValueError, KeyError, TypeError) as error:
-            raise SourceError(f"task snapshot {args.tasks_snapshot}: {error}") from error
-    try:
-        url = args.fused_memory_url or fused_memory_url(repo / ".mcp.json")
-    except (OSError, ValueError) as error:
-        raise SourceError(f"fused-memory url: {error}") from error
+        return _read_source(f"task snapshot {args.tasks_snapshot}",
+                            lambda: read_task_snapshot(args.tasks_snapshot)), False
+    url = args.fused_memory_url or _read_source(
+        "fused-memory url", lambda: fused_memory_url(repo / ".mcp.json"))
     fetched_at = datetime.now(UTC).replace(microsecond=0)
-    return fetch_task_snapshot(open_fused_memory(url), args.project_root,
-                               protocol.snapshot_candidate_ids(), fetched_at), True
+    return _read_source(f"fused-memory task store {url}", lambda: fetch_task_snapshot(
+        open_task_store(url), args.project_root, protocol.snapshot_candidate_ids(),
+        fetched_at)), True
 
 
 def _refuse_late_as_of(as_of, snapshot):
@@ -178,42 +210,36 @@ def _refuse_late_as_of(as_of, snapshot):
                          "for that state")
 
 
-def _read_runs(path, task_ids):
-    try:
-        return read_runs_db(path, task_ids)
-    except (sqlite3.Error, OSError) as error:
-        raise SourceError(f"runs.db {path}: {error}") from error
-
-
-def _read_merges(repo, ref, task_ids):
-    try:
-        return read_task_merges(repo, ref, task_ids)
-    except OSError as error:
-        raise SourceError(f"git {repo}: {error}") from error
-
-
-def _compute(args, protocol):
+def _compute(args, protocol, open_task_store):
     """(analysis, the live snapshot to persist or None, out_dir)."""
     as_of = _as_of(args.as_of)
+    operator_rule_i_instant = _operator_rule_i_instant(args.rule_i_instant, as_of)
     out_dir = args.out_dir or default_out_dir(as_of)
     _refuse_existing(out_dir)
     project_root = Path(args.project_root)
     repo = args.repo or project_root
-    snapshot, live = _load_snapshot(args, repo, protocol)
+    snapshot, live = _load_snapshot(args, repo, protocol, open_task_store)
     _refuse_late_as_of(as_of, snapshot)
     arm_tasks = model.attribute(snapshot, protocol)
     task_ids = {task.id for task in arm_tasks} | protocol.carve_outs
-    runs = _read_runs(args.runs_db or project_root / "data" / "orchestrator" / "runs.db",
-                      task_ids)
-    merges = _read_merges(repo, args.ref, task_ids)
-    analysis = analyse(snapshot, arm_tasks, runs, merges, as_of, protocol)
+    runs_db = args.runs_db or project_root / "data" / "orchestrator" / "runs.db"
+    runs = _read_source(f"runs.db {runs_db}", lambda: read_runs_db(runs_db, task_ids))
+    merges = _read_source(f"git {repo} {args.ref}",
+                          lambda: read_task_merges(repo, args.ref, task_ids))
+    try:
+        analysis = analyse(snapshot, arm_tasks, runs, merges, as_of, protocol,
+                           operator_rule_i_instant)
+    except model.OperatorInstantRefused as refusal:
+        raise UsageError(f"--rule-i-instant refused: {refusal}") from refusal
     return analysis, (snapshot if live else None), out_dir
 
 
-def main(argv=None, protocol=E3):
+def main(argv=None, protocol=E3, open_task_store=open_fused_memory):
+    """open_task_store(url) -> call_tool is the live task-store seam; the
+    default opens a fused-memory MCP session."""
     args = _parser(protocol).parse_args(argv)
     try:
-        analysis, live_snapshot, out_dir = _compute(args, protocol)
+        analysis, live_snapshot, out_dir = _compute(args, protocol, open_task_store)
     except UsageError as error:
         print(f"e3_analysis: {error}", file=sys.stderr)
         return EXIT_USAGE
@@ -224,18 +250,31 @@ def main(argv=None, protocol=E3):
         print(f"E3 DATA SOURCE UNREADABLE: {error}", file=sys.stderr)
         return EXIT_SOURCE
     report = render_report(analysis)
-    _write_outputs(out_dir, report, to_json(analysis), live_snapshot)
+    try:
+        _write_outputs(out_dir, report, to_json(analysis), live_snapshot)
+    except OSError as error:
+        print(f"E3 RECORD NOT WRITTEN: {error}", file=sys.stderr)
+        return EXIT_RECORD
     print(report, end="")
     return EXIT_OK
 
 
 def _write_outputs(out_dir, report, document, live_snapshot):
-    out_dir.mkdir(parents=True, exist_ok=True)
-    (out_dir / REPORT_NAME).write_text(report, encoding="utf-8")
-    (out_dir / ENDPOINTS_NAME).write_text(
-        json.dumps(document, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    if live_snapshot is not None:
-        write_task_snapshot(live_snapshot, out_dir / SNAPSHOT_NAME)
+    """Write the record into a staging sibling, then rename it into place
+    (onto an absent or empty out_dir), so a failure leaves no partial record."""
+    out_dir.parent.mkdir(parents=True, exist_ok=True)
+    staging = out_dir.with_name(f".{out_dir.name}.staging-{os.getpid()}")
+    staging.mkdir()
+    try:
+        (staging / REPORT_NAME).write_text(report, encoding="utf-8")
+        (staging / ENDPOINTS_NAME).write_text(
+            json.dumps(document, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        if live_snapshot is not None:
+            write_task_snapshot(live_snapshot, staging / SNAPSHOT_NAME)
+        staging.rename(out_dir)
+    except BaseException:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
 
 
 # ── rendering ──────────────────────────────────────────────────────────────
@@ -294,13 +333,25 @@ def _probe_section(analysis):
     lines += [
         f"  rule (ii) landing floor in every PRD: "
         f"{'met at ' + _ts(probe.rule_ii_instant) if probe.rule_ii_met else 'not met'}",
-        f"  rule (i) every close leaf terminal: "
-        f"{('met, instant ' + _ts(probe.rule_i_instant)) if probe.rule_i_met else 'not met'}",
+        f"  rule (i) every close leaf terminal: {_rule_i_state(probe.rule_i)}",
         "  rule (iii) human re-review 2027-01-09: an operator decision, not probed",
         f"  trigger instant: {_ts(probe.trigger_instant) if probe.trigger_instant else 'none'}",
         "",
     ]
     return lines
+
+
+def _rule_i_state(rule_i):
+    cancelled = format_ids(rule_i.cancelled)
+    if rule_i.operator_fixed:
+        return (f"met, instant {_ts(rule_i.instant)} (operator-fixed --rule-i-instant; "
+                f"cancelled close leaf {cancelled} carries no recorded instant)")
+    if rule_i.met:
+        return f"met, instant {_ts(rule_i.instant)}"
+    if rule_i.undetermined:
+        return (f"undetermined — cancelled close leaf {cancelled} carries no recorded "
+                "cancellation instant; an operator fixes it with --rule-i-instant")
+    return "not met"
 
 
 def _verdict_section(analysis):
@@ -340,11 +391,17 @@ def _endpoint_row(e):
             f"{_num(e.blocking_esc_per_kloc):>8}  {_frac(e.landed_scope_share)}")
 
 
+def _landed_task_row(outcome):
+    ledger, amendment = outcome.ledger, outcome.task.amendment
+    return (f"      #{ledger.task_id} landed {_ts(ledger.landed_at)}: cost ${ledger.cost:.2f}, "
+            f"LOC {ledger.loc}, attempts {ledger.attempts_counted}, blocking esc "
+            f"{ledger.blocking_escalations}, era {outcome.era}"
+            + (f", amended {amendment.source}" if amendment else ""))
+
+
 def _landed_task_rows(analysis, slug):
-    return [f"      #{o.task.id} landed {_ts(o.landed_at)}: cost ${o.cost:.2f}, LOC {o.loc}, "
-            f"attempts {o.attempts_counted}, blocking esc {o.blocking_escalations}, "
-            f"era {o.era}" + (f", amended {o.task.amendment.source}" if o.task.amendment else "")
-            for o in analysis.outcomes if o.task.prd_slug == slug and o.landed_eligible]
+    return [_landed_task_row(o) for o in analysis.outcomes
+            if o.task.prd_slug == slug and o.landed_eligible]
 
 
 def _endpoints_section(analysis):
@@ -402,9 +459,9 @@ def _sensitivity_section(analysis):
             + _median_rows(analysis.sensitivity_descriptives, ("usd_per_kloc",)) + [""])
 
 
-def _ledger_row(task_id, ledger, prefix):
-    """One excluded task's descriptive figures (a TaskOutcome or a TaskLedger)."""
-    return (f"  #{task_id} {prefix}: status {ledger.status}, landed "
+def _ledger_row(ledger, prefix):
+    """One excluded task's descriptive figures."""
+    return (f"  #{ledger.task_id} {prefix}: status {ledger.status}, landed "
             f"{_ts(ledger.landed_at)}, cost ${ledger.cost:.2f}, LOC {ledger.loc}, attempts "
             f"counted {ledger.attempts_counted} / drain-censored "
             f"{ledger.attempts_drain_censored} / in-flight {ledger.attempts_in_flight}, "
@@ -413,10 +470,9 @@ def _ledger_row(task_id, ledger, prefix):
 
 def _excluded_section(analysis):
     lines = ["== EXCLUDED TASKS (descriptive only; never in an endpoint) =="]
-    lines += [_ledger_row(o.task.id, o, f"{o.task.arm.value} {o.task.prd_slug} {o.excluded}")
+    lines += [_ledger_row(o.ledger, f"{o.task.arm.value} {o.task.prd_slug} {o.excluded}")
               for o in analysis.outcomes if not o.eligible]
-    lines += [_ledger_row(ledger.task_id, ledger, "carve-out (§7.1)")
-              for ledger in analysis.carve_outs]
+    lines += [_ledger_row(ledger, "carve-out (§7.1)") for ledger in analysis.carve_outs]
     return lines + [""]
 
 
@@ -429,7 +485,7 @@ def _unlanded_section(analysis):
 
 
 def _endpoint5_section(analysis):
-    by_id = {o.task.id: o for o in analysis.outcomes}
+    by_id = {o.task.id: o.ledger for o in analysis.outcomes}
     lines = ["== ENDPOINT 5 (defect escape: PRD close + 30 days) =="]
     for prd in analysis.protocol.prds:
         closed_at = by_id[prd.close_leaf].landed_at
@@ -441,7 +497,7 @@ def _endpoint5_section(analysis):
 
 
 def _integrity_section(analysis):
-    anomalies = [a for o in analysis.outcomes for a in o.anomalies]
+    anomalies = [a for o in analysis.outcomes for a in o.ledger.anomalies]
     anomalies += [a for ledger in analysis.carve_outs for a in ledger.anomalies]
     return (["== DATA INTEGRITY =="]
             + ([f"  {a.kind}: {a.detail}" for a in anomalies] or ["  none"]))
@@ -505,4 +561,5 @@ def to_json(analysis):
 
 
 if __name__ == "__main__":
+    sys.path.insert(0, str(SCRIPTS_DIR))
     sys.exit(main())

@@ -398,7 +398,7 @@ LOCAL_OFFSET = timezone(timedelta(hours=1))
 
 
 def build_cli_inputs(directory, protocol, landings, extra_starts=(),
-                     fetched_at=SNAPSHOT_FETCHED_AT):
+                     fetched_at=SNAPSHOT_FETCHED_AT, statuses=None):
     """The three CLI inputs under directory, mutually consistent.
 
     landings: (task_id, merged_at, loc, cost) — each is a `Merge task/<id>
@@ -406,7 +406,9 @@ def build_cli_inputs(directory, protocol, landings, extra_starts=(),
     done-by-merge snapshot record, one done attempt and one invocation of
     cost. Every id in protocol.expected_freeze_set gets an attempt started an
     hour before the freeze cutoff; extra_starts adds (task_id, started_at)
-    task_started events. Returns {snapshot, runs_db, repo} paths.
+    task_started events; statuses sets other tasks' snapshot status. Returns
+    {snapshot, runs_db, repo} paths plus payload, the get_task-shaped dict
+    the snapshot was fetched from (for fake_task_store).
     """
     directory = Path(directory)
     repo = directory / "repo"
@@ -415,8 +417,10 @@ def build_cli_inputs(directory, protocol, landings, extra_starts=(),
         for task_id, merged_at, loc, _ in sorted(landings, key=lambda landing: landing[1])
     ]))
     snapshot_path = directory / "tasks-snapshot.json"
-    call_tool, _ = fake_task_store(snapshot_payload(
-        protocol, {task_id: done_override(sha) for task_id, sha in shas.items()}))
+    overrides = {task_id: {"status": status} for task_id, status in (statuses or {}).items()}
+    overrides.update({task_id: done_override(sha) for task_id, sha in shas.items()})
+    payload = snapshot_payload(protocol, overrides)
+    call_tool, _ = fake_task_store(payload)
     write_task_snapshot(fetch_task_snapshot(
         call_tool, protocol.project_root, protocol.snapshot_candidate_ids(), fetched_at),
         snapshot_path)
@@ -432,4 +436,4 @@ def build_cli_inputs(directory, protocol, landings, extra_starts=(),
     runs_db = directory / "runs.db"
     make_runs_db(runs_db, [{"run_id": "r1", "started_at": CLI_RUN_START, "completed_at": None}],
                  events, invocations)
-    return {"snapshot": snapshot_path, "runs_db": runs_db, "repo": repo}
+    return {"snapshot": snapshot_path, "runs_db": runs_db, "repo": repo, "payload": payload}
