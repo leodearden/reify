@@ -150,7 +150,7 @@ PDSSENTINEL (`--pattern PDSSENTINEL`) is **part of the no-`--pattern` default al
 These three patterns are **opt-in only** — they are NOT part of the default all-detector sweep (`references/severity-routing.md` §0). They fire only when named explicitly via `--pattern`.
 
 - **Severity:** All three emit Severity Low — log-only, advisory, **never auto-filed** as a follow-up task. See `references/severity-routing.md` for routing details.
-- **Serve dependency:** PDEAD, PUNTESTED, and PLAYER all require a serve for the duration of the run. When no serve answers, they degrade to **zero findings** (same fail-soft path as P1; P2/P5/PTODO are unaffected — NOT exit 125). One asymmetry to know: because all three are jcodemunch-backed, invoking them alone (`--pattern PDEAD`, `--pattern PDEAD,PUNTESTED`, …) is an all-jcodemunch run set, so a serve that IS reachable but whose index is stale/empty/unreadable hard-exits 125 instead of fail-softing. See `references/cli-invocation.md` §4.1 for both arms, the refusal codes and their remedies.
+- **Serve dependency:** PDEAD, PUNTESTED, and PLAYER all require a serve for the duration of the run. When no serve answers, they degrade to **zero findings** (the fail-soft path P1 takes — NOT exit 125). P2 and PTODO are unaffected; P1 and P5's H2 live-path pass each record themselves unexamined with one run-level Low finding, and P5's other passes still run. One asymmetry to know: because all three are jcodemunch-backed, invoking them alone (`--pattern PDEAD`, `--pattern PDEAD,PUNTESTED`, …) is an all-jcodemunch run set, so a serve that IS reachable but whose index is stale/empty/unreadable hard-exits 125 instead of fail-softing. See `references/cli-invocation.md` §4.1 for both arms, the refusal codes and their remedies.
 - **Activation:** Bring a serve up by wrapping the invocation in `scripts/with-jcodemunch-serve.sh`; there is no persistent unit to start. `docs/architecture-audit/jcodemunch-serve-activation.md` remains the identifier and runbook record.
 
 ### Structural opt-in patterns (PDIAG / PDOCCOVER / PDCHECK / PCITE) — notes
@@ -206,7 +206,7 @@ Slice-2 deeper rendering (per-finding evidence expansion, links to task URLs) is
 
 | Combination | Effect |
 |---|---|
-| `--task <id> --pattern P5` | Spot-check task `<id>`, P5 only |
+| `--task <id> --pattern P5` | Spot-check task `<id>`, P5 only; dials jcodemunch for H2, which examines cross-crate tasks only (`--no-jcodemunch` stays offline) |
 | `--since <date> --pattern P1` | Window sweep from `<date>`, P1 only |
 | `--since <date> --pattern PTODO` | PTODO only, over the whole tree — `<date>` does not narrow it (Medium; deterministic, no jcodemunch) |
 | `--since <date> --pattern PDEAD` | Window sweep from `<date>`, PDEAD advisory only (Low/log) |
@@ -216,4 +216,4 @@ Slice-2 deeper rendering (per-finding evidence expansion, links to task URLs) is
 | `--task <id> --since <date>` | Both flags accepted; `AuditContext` receives both `target_task_id` and `window` (CLI source: `reify-audit.rs` lines 333–342). Whether detectors treat this as a strict scope intersection depends on the detector implementation — verify against the detector source or CLI `--help` if exact semantics matter. |
 | `--format markdown` | Adds markdown output to **any** of the above |
 
-**`--pre-done` is NOT composable from the skill.** It is reserved exclusively for the dark-factory D-1 pre-done hook (`REIFY_AUDIT_PREDONE_CMD`). The skill never passes `--pre-done` to the CLI. If a user asks to simulate a pre-done check, use `--task <id> --pattern P5` instead, which runs P5 in periodic-sweep (not blocking) mode.
+**`--pre-done` is NOT composable from the skill.** It is reserved exclusively for the dark-factory D-1 pre-done hook (`REIFY_AUDIT_PREDONE_CMD`). The skill never passes `--pre-done` to the CLI. If a user asks to simulate a pre-done check, use `--task <id> --pattern P5 --no-jcodemunch` instead, which runs P5 in periodic-sweep (not blocking) mode and, like the hook, never connects. Without `--no-jcodemunch` the run dials jcodemunch for P5's H2 pass, and a port that accepts but never replies costs the client's HTTP timeout (`HTTP_TIMEOUT_SECS` in `jcodemunch_client.rs`, 60 s) before H2 is skipped.

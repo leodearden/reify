@@ -1082,6 +1082,7 @@ mod cli {
                 "2026-05-01",
                 "--pattern",
                 "P5",
+                "--no-jcodemunch",
                 "--tasks-file",
                 tasks_file.to_str().unwrap(),
                 "--runs-db",
@@ -1539,70 +1540,6 @@ mod cli {
         );
     }
 
-    /// P1 with an unreachable jcodemunch endpoint fails soft to Noop:
-    /// exits 0, produces zero findings, and emits a fallback breadcrumb.
-    ///
-    /// The old contract (exit 125) is inverted: jcodemunch is an optional
-    /// substrate, so an unreachable endpoint degrades P1 to zero findings
-    /// while still running P2/P5. Exit 125 is reserved for genuine arg/IO
-    /// misconfiguration (e.g. unreadable tasks-file, bad runs-db).
-    #[test]
-    fn p1_unreachable_jcodemunch_fails_soft_to_noop() {
-        let tmp = tempfile::tempdir().expect("create tempdir");
-        let dir = tmp.path();
-
-        let tasks = vec![task_fixture("1", "pending", None, None)];
-        let tasks_file = write_tasks_json(dir, &tasks);
-        let runs_db = write_empty_runs_db(dir);
-
-        let unreachable_url = common::net::unreachable_mcp_url();
-
-        let bin = env!("CARGO_BIN_EXE_reify-audit");
-        let out = Command::new(bin)
-            .args([
-                "--pattern", "P1",
-                "--jcodemunch-url", &unreachable_url,
-                "--tasks-file", tasks_file.to_str().unwrap(),
-                "--runs-db", runs_db.to_str().unwrap(),
-                "--project-root", dir.to_str().unwrap(),
-            ])
-            .output()
-            .expect("invoke reify-audit --pattern P1 unreachable jcodemunch");
-
-        let stderr = String::from_utf8_lossy(&out.stderr);
-        assert_eq!(
-            out.status.code(),
-            Some(0),
-            "--pattern P1 with unreachable jcodemunch must fail-soft to exit 0; got {:?}\nstdout: {}\nstderr: {}",
-            out.status.code(),
-            String::from_utf8_lossy(&out.stdout),
-            stderr
-        );
-
-        // Zero findings (P1 degrades to Noop).
-        let findings = parse_findings_from_stderr(&stderr);
-        assert!(
-            findings.is_empty(),
-            "P1 with unreachable jcodemunch must produce zero findings; got:\n{:#}",
-            serde_json::Value::Array(findings)
-        );
-
-        // Fallback breadcrumb must appear on stderr, pinned to the endpoint
-        // under test. Loose substrings will not do: the binary independently
-        // emits "tasks.db unreachable at ... advisory lanes degraded", so a
-        // bare `contains("unreachable")`/`contains("degrad")` is satisfied
-        // whether or not the jcodemunch arm ever ran.
-        let breadcrumb = format!("jcodemunch unreachable at '{unreachable_url}'");
-        assert!(
-            stderr.contains(&breadcrumb),
-            "stderr must contain the fail-soft breadcrumb `{breadcrumb}`; stderr:\n{stderr}"
-        );
-        assert!(
-            stderr.contains("P1 degraded to zero findings"),
-            "stderr breadcrumb must describe the fail-soft degradation; stderr:\n{stderr}"
-        );
-    }
-
     /// Default sweep (no --pattern/--task/--since) survives an unreachable
     /// jcodemunch endpoint: P5 still runs and detects phantom-done tasks, exit
     /// code is non-zero (findings found), and the fallback breadcrumb appears.
@@ -1861,6 +1798,18 @@ mod cli {
             out.status.code(),
             String::from_utf8_lossy(&out.stderr)
         );
+        // The hot path never binds a seam it needed, so it never records a
+        // fallback.
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let findings = parse_findings_from_stderr(&stderr);
+        assert!(
+            !findings.iter().any(|f| matches!(
+                f["pattern"].as_str(),
+                Some("P1TaskUnexamined" | "P5LivePathUnexamined")
+            )),
+            "--pre-done must record nothing as unexamined; findings:\n{:#}",
+            serde_json::Value::Array(findings)
+        );
     }
 
     /// `--pattern PDEAD --no-jcodemunch` exits 0 with an empty findings array.
@@ -2040,8 +1989,8 @@ mod cli {
     /// is refused at construction, so the run fail-softs to zero findings and
     /// exit 0 — and the breadcrumb names the decode refusal itself.
     ///
-    /// "jcodemunch unreachable" alone would be a false green: a refused
-    /// connection prints the same prefix. "SSE data parse" is what proves the
+    /// The handshake-refused label alone would be a weak green: any non-MCP
+    /// reply prints the same prefix. "SSE data parse" is what proves the
     /// malformed payload was refused rather than skipped. The empty findings
     /// array doubles as the never-reached-`tools/call` guard: had the canned
     /// responder been reached, its violation would surface as a finding.
@@ -2058,8 +2007,8 @@ mod cli {
             out.status.code(),
         );
         assert!(
-            stderr.contains("jcodemunch unreachable"),
-            "expected the construction-layer fail-soft breadcrumb; stderr: {stderr}"
+            stderr.contains(breadcrumbs::CONSTRUCTION_HANDSHAKE_REFUSED),
+            "expected the handshake-refused construction breadcrumb; stderr: {stderr}"
         );
         assert!(
             stderr.contains("SSE data parse"),
@@ -2176,41 +2125,6 @@ mod cli {
             Some("crates/reify-cli"),
             "finding evidence[0] must point at from_file; got:\n{:#}",
             f["evidence"]
-        );
-    }
-
-    /// `--pattern P5` with an unreachable jcodemunch URL must NOT exit 125 —
-    /// P5 never contacts jcodemunch.
-    #[test]
-    fn sweep_pattern_p5_skips_jcodemunch() {
-        let tmp = tempfile::tempdir().expect("create tempdir");
-        let dir = tmp.path();
-
-        let tasks = vec![task_fixture("77", "pending", None, None)];
-        let tasks_file = write_tasks_json(dir, &tasks);
-        let runs_db = write_empty_runs_db(dir);
-
-        let unreachable_url = common::net::unreachable_mcp_url();
-
-        let bin = env!("CARGO_BIN_EXE_reify-audit");
-        let out = Command::new(bin)
-            .args([
-                "--pattern", "P5",
-                "--jcodemunch-url", &unreachable_url,
-                "--tasks-file", tasks_file.to_str().unwrap(),
-                "--runs-db", runs_db.to_str().unwrap(),
-                "--project-root", dir.to_str().unwrap(),
-            ])
-            .output()
-            .expect("invoke reify-audit --pattern P5 with closed jcodemunch url");
-
-        assert_ne!(
-            out.status.code(),
-            Some(125),
-            "--pattern P5 must not contact jcodemunch (exit 125 would mean it did); \
-             got {:?}\nstderr: {}",
-            out.status.code(),
-            String::from_utf8_lossy(&out.stderr)
         );
     }
 
@@ -3897,6 +3811,7 @@ mod http_loader {
             .args([
                 "--since", "2026-05-01",
                 "--pattern", "P5",
+                "--no-jcodemunch",
                 "--fused-memory-url", mock.url(),
                 "--runs-db", runs_db.to_str().unwrap(),
                 "--project-root", dir.to_str().unwrap(),
@@ -4549,16 +4464,16 @@ mod freshness_gate {
     }
 
     /// B7 — detectors that never touch jcodemunch must be unaffected by a
-    /// stale index. `needs_jcodemunch` is false for a P2/P5-only run, so no
-    /// client is constructed and the gate is unreachable. A gate that fired
-    /// here would turn every P2/P5 sweep red on any machine with a stale
+    /// stale index. `needs_jcodemunch` is false for a P2/PDSSENTINEL-only run,
+    /// so no client is constructed and the gate is unreachable. A gate that
+    /// fired here would turn every such sweep red on any machine with a stale
     /// corpus it never consults.
     #[test]
     fn b7_non_jcodemunch_patterns_ignore_a_stale_index() {
         let s = scenario();
         write_index_db(&s.index_dir, &s.repo_id, Some(BOGUS_SHA), 12);
 
-        let out = s.run("P2,P5", &[]);
+        let out = s.run("P2,PDSSENTINEL", &[]);
         let stderr = String::from_utf8_lossy(&out.stderr);
 
         assert_eq!(out.status.code(), Some(0), "stderr:\n{stderr}");
@@ -4614,8 +4529,8 @@ mod freshness_gate {
     /// No index is written, on purpose. Had the handshake been accepted, the
     /// §4.3 gate would find no index under this jcodemunch-only run set and
     /// refuse with `E_JC_INDEX_EMPTY` / exit 125. So the absence of every
-    /// `E_JC_INDEX_` marker, next to the unreachable breadcrumb, is what shows
-    /// construction failed rather than being admitted.
+    /// `E_JC_INDEX_` marker, next to the handshake-refused breadcrumb, is what
+    /// shows construction failed rather than being admitted.
     #[test]
     fn non_mcp_initialize_responder_takes_the_construction_fail_soft() {
         let s = scenario();
@@ -4628,7 +4543,8 @@ mod freshness_gate {
             ..MockConfig::default()
         };
         let mock = spawn_mock_mcp_configured(listener, config, |_args| None);
-        let out = s.run("PLAYER", &["--jcodemunch-url", mock.url()]);
+        let mock_url = mock.url().to_string();
+        let out = s.run("PLAYER", &["--jcodemunch-url", &mock_url]);
         mock.stop();
         let stderr = String::from_utf8_lossy(&out.stderr);
 
@@ -4639,9 +4555,18 @@ mod freshness_gate {
              refuse; stderr:\n{stderr}"
         );
         assert!(
-            stderr.contains("jcodemunch unreachable at"),
-            "the handshake must have been REJECTED, taking the construction \
-             fail-soft breadcrumb; stderr:\n{stderr}"
+            stderr.contains(&format!(
+                "{} '{}'",
+                breadcrumbs::CONSTRUCTION_HANDSHAKE_REFUSED,
+                mock_url
+            )),
+            "the handshake must have been REJECTED, taking the handshake-refused \
+             construction breadcrumb; stderr:\n{stderr}"
+        );
+        assert!(
+            !stderr.contains(breadcrumbs::CONSTRUCTION_UNREACHABLE),
+            "the responder ANSWERED, so it must not be labelled unreachable; \
+             stderr:\n{stderr}"
         );
         assert!(
             !stderr.contains("E_JC_INDEX_"),
@@ -4702,8 +4627,8 @@ mod freshness_gate {
     /// Exit 0 (the seam fail-softs, it does not refuse); no `E_JC_INDEX_`
     /// marker (the §4.3 gate ADMITTED the run, so a detector really did
     /// execute and the breadcrumb the caller asserts on is reachable); no
-    /// `jcodemunch unreachable at` (the handshake SUCCEEDED, so this is the
-    /// PER-CALL layer and not the CONSTRUCTION one).
+    /// `breadcrumbs::CONSTRUCTION` label (the handshake SUCCEEDED, so this is
+    /// the PER-CALL layer and not the CONSTRUCTION one).
     ///
     /// Shared by all three `per_call_fail_soft_*` tests rather than written
     /// three times over — the shape `jcodemunch_live.rs::assert_live_leg`
@@ -4724,12 +4649,14 @@ mod freshness_gate {
              detector ever ran and the per-call breadcrumb is unreachable; \
              stderr:\n{stderr}"
         );
-        assert!(
-            !stderr.contains("jcodemunch unreachable at"),
-            "the handshake must have SUCCEEDED, or this would be the \
-             CONSTRUCTION fail-soft layer rather than the PER-CALL one; \
-             stderr:\n{stderr}"
-        );
+        for label in breadcrumbs::CONSTRUCTION {
+            assert!(
+                !stderr.contains(label),
+                "the handshake must have SUCCEEDED, or this would be the \
+                 CONSTRUCTION fail-soft layer (`{label}`) rather than the \
+                 PER-CALL one; stderr:\n{stderr}"
+            );
+        }
     }
 
     /// PER-CALL FAIL-SOFT — the vacuous pass that survives every other check.
@@ -5056,8 +4983,9 @@ mod freshness_gate {
     /// corpus.
     ///
     /// The default sweep runs P2, P5, PTODO and PDSSENTINEL alongside P1, and
-    /// none of those four consult jcodemunch at all. Refusing the process here
-    /// would delete four working detectors' output over one stale index — and
+    /// only P5's H2 pass among them consults jcodemunch. Refusing the process
+    /// here would delete four working detectors' output over one stale index —
+    /// and
     /// §4.2 makes that the EXPECTED case, not an anomaly: identity is now
     /// per-checkout, so every task worktree derives an id nothing has indexed.
     /// A default `reify-audit --since <date>` from any warm lane with the
@@ -5086,14 +5014,29 @@ mod freshness_gate {
             "the non-jcodemunch detectors must still emit their findings; stderr:\n{stderr}"
         );
         // Degraded, not silent: the marker keeps the condition machine-
-        // detectable, and the breadcrumb names what was lost.
+        // detectable, and P1 records itself unexamined for this run.
         assert!(
             stderr.contains("E_JC_INDEX_STALE"),
             "the degraded sweep must still carry the marker; stderr:\n{stderr}"
         );
+        let findings = parse_findings_from_stderr(&stderr);
+        let p1_unexamined: Vec<&serde_json::Value> = findings
+            .iter()
+            .filter(|f| f["pattern"].as_str() == Some("P1TaskUnexamined"))
+            .collect();
+        assert_eq!(
+            p1_unexamined.len(),
+            1,
+            "exactly one run-level P1TaskUnexamined; findings:\n{:#}",
+            serde_json::Value::Array(findings.clone())
+        );
+        assert_eq!(p1_unexamined[0]["task_id"].as_str(), Some(""));
         assert!(
-            stderr.contains("degraded to zero findings"),
-            "the breadcrumb must name what was lost; stderr:\n{stderr}"
+            p1_unexamined[0]["summary"]
+                .as_str()
+                .is_some_and(|summary| summary.contains("E_JC_INDEX_STALE")),
+            "the record must carry the index refusal; got {:#}",
+            p1_unexamined[0]
         );
     }
 

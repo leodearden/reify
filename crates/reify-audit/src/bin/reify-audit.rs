@@ -57,18 +57,21 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-// `NoopJCodemunchOps` — the inert stub bound for `--no-jcodemunch` and for
-// detector runs that never touch the seam — now lives in the library, where
-// its doc records the call sites. It used to be copy-pasted into this bin and
-// both `*-baseline-gen` bins; this bin and `pdiag-baseline-gen` now bind the
-// library's, while `ptodo-baseline-gen` still carries its own (see that doc).
-// The library's `MockJCodemunchOps` remains test-only via the `test-support`
-// feature.
+// `NoopJCodemunchOps` — the inert stub this bin binds, through
+// `jcodemunch_seam::Seam`, whenever a run has no live seam — lives in the
+// library, where its doc records the call sites. It used to be copy-pasted
+// into this bin and both `*-baseline-gen` bins; this bin and
+// `pdiag-baseline-gen` now bind the library's, while `ptodo-baseline-gen`
+// still carries its own (see that doc). The library's `MockJCodemunchOps`
+// remains test-only via the `test-support` feature.
 use reify_audit::{
-    AuditContext, Finding, JCodemunchOps, NoopJCodemunchOps, RealGitOps, Severity, TaskMetadata,
-    TimeWindow, fused_memory_client::FusedMemoryClient, jcodemunch_client::RealJCodemunchOps,
-    jcodemunch_index, p1_producer_orphan, p2_consumer_stub, p5_phantom_done, pattern_flag, pcite,
-    pdcheck, pdead_dead_code, pdiag, pdoccover, pdssentinel, player, pprdstatus, ptodo, puntested,
+    AuditContext, Finding, RealGitOps, Severity, TaskMetadata, TimeWindow,
+    fused_memory_client::FusedMemoryClient,
+    jcodemunch_client::RealJCodemunchOps,
+    jcodemunch_index,
+    jcodemunch_seam::{Seam, SeamUnavailable},
+    p1_producer_orphan, p2_consumer_stub, p5_phantom_done, pattern_flag, pcite, pdcheck,
+    pdead_dead_code, pdiag, pdoccover, pdssentinel, player, pprdstatus, ptodo, puntested,
 };
 
 // -----------------------------------------------------------------------
@@ -95,7 +98,8 @@ fn print_usage(out: &mut dyn Write) {
     let _ = writeln!(out, "  --jcodemunch-url <url>   jcodemunch MCP endpoint for P1 (default: $JCODEMUNCH_URL or http://127.0.0.1:8901/mcp)");
     let _ = writeln!(out, "  --jcodemunch-repo <id>   jcodemunch repo identifier (default: derived per-path, e.g. local/<basename>-<sha1[..8]>)");
     let _ = writeln!(out, "  --jcodemunch-index-dir <path> jcodemunch index directory for the freshness gate (default: $JCODEMUNCH_INDEX_DIR, else $CODE_INDEX_PATH, else $HOME/.code-index)");
-    let _ = writeln!(out, "  --no-jcodemunch          Use inert stub (offline/test); P1 yields nothing, no connection");
+    let _ = writeln!(out, "  --no-jcodemunch          Use inert stub (offline/test): P1 and P5's H2 pass yield nothing;");
+    let _ = writeln!(out, "                           no connection, and no unexamined finding is recorded");
     let _ = writeln!(out, "  --require-tasks-db       Refuse (exit 255, naming the resolved path) when the PTODO lanes");
     let _ = writeln!(out, "                           cannot use the task DB, instead of degrading them; the run set");
     let _ = writeln!(out, "                           must include PTODO (else exit 125)");
@@ -319,8 +323,9 @@ struct Args {
     /// override, so the gate can be pointed at a different store than the
     /// indexer without disturbing `CODE_INDEX_PATH` for co-running tools.
     jcodemunch_index_dir: String,
-    /// When true, bind `NoopJCodemunchOps` even for P1 runs. Preserves
-    /// hermetic test behaviour and provides an offline escape hatch.
+    /// When true, bind `NoopJCodemunchOps` for every jcodemunch-backed pass: a
+    /// declared scope reduction, so no unexamined finding is recorded.
+    /// Preserves hermetic test behaviour and provides an offline escape hatch.
     no_jcodemunch: bool,
     /// `--print-repo-id`: print the jcodemunch repo identity for
     /// `--project-root` to stdout and exit, touching none of the
@@ -604,20 +609,23 @@ fn pattern_selects(pattern: &str, token: &str) -> bool {
 }
 
 /// Return true when at least one selected detector queries jcodemunch, so the
-/// run needs a live client. `--pre-done` never does: it runs P5 alone.
+/// run needs a live client. `--pre-done` never connects: it runs inside
+/// fused-memory's write lock under a hard timeout, and at hook time H2 has no
+/// persisted provenance to query anyway.
 fn needs_jcodemunch(args: &Args) -> bool {
     !args.pre_done
-        && selected_detectors(args.pattern.as_deref()).any(|detector| detector.queries_jcodemunch)
+        && selected_detectors(args.pattern.as_deref()).any(|detector| detector.jcodemunch.queries())
 }
 
-/// Return true when EVERY detector selected by `--pattern` is
-/// jcodemunch-backed, i.e. a refusal costs the run nothing it could still
-/// have delivered.
+/// Return true when EVERY detector selected by `--pattern` requires
+/// jcodemunch ([`JcodemunchUse::Required`]), i.e. a refusal costs the run
+/// nothing it could still have delivered.
 ///
 /// This is the blast-radius boundary for the §4.3 gate. `needs_jcodemunch` is
-/// true for the pattern-less DEFAULT sweep, which also runs P2, P5, PTODO and
-/// PDSSENTINEL — none of which consult jcodemunch at all. Refusing the whole
-/// process there would kill five working detectors over one unusable corpus,
+/// true for the pattern-less DEFAULT sweep, which also runs P2, PTODO and
+/// PDSSENTINEL — none of which consult jcodemunch at all — and P5, which
+/// consults it in its H2 pass only. Refusing the whole process there would
+/// kill four working detectors and P5's other passes over one unusable corpus,
 /// and §4.2 makes that the EXPECTED case rather than an anomaly: identity is
 /// now per-checkout, so every warm-lane/task worktree derives an id nothing
 /// has indexed. A default sweep from any such worktree with the serve up would
@@ -625,14 +633,16 @@ fn needs_jcodemunch(args: &Args) -> bool {
 ///
 /// So the refusal is scoped: an all-jcodemunch run set has nothing to salvage
 /// and hard-refuses (the §4.3 contract, and what B4/B5/B6 pin); a mixed or
-/// default run set degrades the jcodemunch-backed detectors to the Noop seam
-/// and keeps going, which is exactly the shape the unreachable-serve fail-soft
-/// already has. Either way the corpus is never queried.
+/// default run set degrades the jcodemunch-backed passes to the Noop seam,
+/// records them as unexamined, and keeps going, which is exactly the shape
+/// the unreachable-serve fail-soft already has. Either way the corpus is never
+/// queried.
 ///
 /// `false` for a pattern-less run: the default sweep is mixed by definition.
 fn jcodemunch_only_run_set(args: &Args) -> bool {
     args.pattern.is_some()
-        && selected_detectors(args.pattern.as_deref()).all(|detector| detector.queries_jcodemunch)
+        && selected_detectors(args.pattern.as_deref())
+            .all(|detector| matches!(detector.jcodemunch, JcodemunchUse::Required { .. }))
 }
 
 /// Return true when EVERY detector selected by `--pattern` refuses an empty
@@ -666,12 +676,6 @@ struct Detector {
     /// sweep it would turn those invocations non-zero for reasons unrelated
     /// to the work under audit.
     in_default_sweep: bool,
-    /// Whether it cannot produce a finding without querying jcodemunch.
-    /// Selecting it makes the run connect ([`needs_jcodemunch`]), and a run of
-    /// nothing else hard-refuses on a stale index ([`jcodemunch_only_run_set`]),
-    /// so a structural detector marked `true` would exit 125 on every stale
-    /// index while never reading it.
-    queries_jcodemunch: bool,
     /// Whether it treats an empty task corpus as a setup error rather than a
     /// clean result. A run of nothing else refuses an empty corpus with 125
     /// before printing any findings array ([`task_corpus_only_run_set`]); in a
@@ -679,6 +683,9 @@ struct Detector {
     /// way no caller can read the unchecked detector as clean.
     refuses_empty_task_corpus: bool,
     check: Check,
+    /// Whether it queries jcodemunch, and how a run whose seam was unavailable
+    /// records it.
+    jcodemunch: JcodemunchUse,
 }
 
 /// How a [`Detector`] runs. Whether it reads the task DB and how it reports
@@ -692,10 +699,55 @@ enum Check {
     TasksDbBacked(fn(&AuditContext<'_>) -> (Vec<Finding>, ptodo::ScanStats)),
 }
 
+/// How a [`Detector`] uses jcodemunch. Whether it queries the seam and how it
+/// records a run in which the seam was unavailable are one fact, so they are
+/// one variant.
+#[derive(Clone, Copy)]
+enum JcodemunchUse {
+    Never,
+    /// It cannot produce a finding without querying jcodemunch. Selecting it
+    /// makes the run connect ([`needs_jcodemunch`]), and a run of nothing else
+    /// hard-refuses an unusable index ([`jcodemunch_only_run_set`]), so a
+    /// structural detector marked `Required` would exit 125 on every stale
+    /// index while never reading it. `unexamined` builds the run-level finding
+    /// recording it as unexamined when the seam is unavailable.
+    Required {
+        unexamined: Option<fn(&str) -> Finding>,
+    },
+    /// Only some of its passes query jcodemunch. Selecting it makes the run
+    /// connect, but an unusable index never refuses it (its other passes do
+    /// not read the index). `unexamined` records the jcodemunch passes as
+    /// unexamined when the seam is unavailable, and is not optional; it
+    /// answers `None` when the sweep holds no task those passes would have
+    /// queried for.
+    InSomePasses {
+        unexamined: fn(&AuditContext<'_>, &str) -> Option<Finding>,
+    },
+}
+
+impl JcodemunchUse {
+    fn queries(self) -> bool {
+        !matches!(self, JcodemunchUse::Never)
+    }
+}
+
 impl Detector {
     /// `None` is the pattern-less default sweep.
     fn selected_by(&self, pattern: Option<&str>) -> bool {
         pattern.map_or(self.in_default_sweep, |p| pattern_selects(p, self.token))
+    }
+
+    /// The run-level finding that records this detector as unexamined in a
+    /// run whose jcodemunch seam was unavailable for `reason`, if it records
+    /// one.
+    fn unexamined(&self, ctx: &AuditContext<'_>, reason: &str) -> Option<Finding> {
+        match self.jcodemunch {
+            JcodemunchUse::Never | JcodemunchUse::Required { unexamined: None } => None,
+            JcodemunchUse::Required {
+                unexamined: Some(build),
+            } => Some(build(reason)),
+            JcodemunchUse::InSomePasses { unexamined } => unexamined(ctx, reason),
+        }
     }
 
     fn reads_tasks_db(&self) -> bool {
@@ -708,19 +760,19 @@ impl Detector {
 /// emitted in.
 #[rustfmt::skip]
 const DETECTORS: &[Detector] = &[
-    Detector { token: pattern_flag::P1,          in_default_sweep: true,  queries_jcodemunch: true,  refuses_empty_task_corpus: false, check: Check::Plain(p1_producer_orphan::check) },
-    Detector { token: pattern_flag::P2,          in_default_sweep: true,  queries_jcodemunch: false, refuses_empty_task_corpus: false, check: Check::Plain(p2_consumer_stub::check) },
-    Detector { token: pattern_flag::P5,          in_default_sweep: true,  queries_jcodemunch: false, refuses_empty_task_corpus: false, check: Check::Plain(p5_phantom_done::check) },
-    Detector { token: pattern_flag::PDEAD,       in_default_sweep: false, queries_jcodemunch: true,  refuses_empty_task_corpus: false, check: Check::Plain(pdead_dead_code::check) },
-    Detector { token: pattern_flag::PUNTESTED,   in_default_sweep: false, queries_jcodemunch: true,  refuses_empty_task_corpus: false, check: Check::Plain(puntested::check) },
-    Detector { token: pattern_flag::PLAYER,      in_default_sweep: false, queries_jcodemunch: true,  refuses_empty_task_corpus: false, check: Check::Plain(player::check) },
-    Detector { token: pattern_flag::PTODO,       in_default_sweep: true,  queries_jcodemunch: false, refuses_empty_task_corpus: false, check: Check::TasksDbBacked(ptodo::check_with_stats) },
-    Detector { token: pattern_flag::PDSSENTINEL, in_default_sweep: true,  queries_jcodemunch: false, refuses_empty_task_corpus: false, check: Check::Plain(pdssentinel::check) },
-    Detector { token: pattern_flag::PDIAG,       in_default_sweep: false, queries_jcodemunch: false, refuses_empty_task_corpus: false, check: Check::Plain(pdiag::check) },
-    Detector { token: pattern_flag::PDOCCOVER,   in_default_sweep: false, queries_jcodemunch: false, refuses_empty_task_corpus: false, check: Check::Plain(pdoccover::check) },
-    Detector { token: pattern_flag::PDCHECK,     in_default_sweep: false, queries_jcodemunch: false, refuses_empty_task_corpus: false, check: Check::Plain(pdcheck::check) },
-    Detector { token: pattern_flag::PCITE,       in_default_sweep: false, queries_jcodemunch: false, refuses_empty_task_corpus: false, check: Check::Plain(pcite::check) },
-    Detector { token: pattern_flag::PPRDSTATUS,  in_default_sweep: false, queries_jcodemunch: false, refuses_empty_task_corpus: true,  check: Check::Plain(pprdstatus::check) },
+    Detector { token: pattern_flag::P1,          in_default_sweep: true,  refuses_empty_task_corpus: false, check: Check::Plain(p1_producer_orphan::check),       jcodemunch: JcodemunchUse::Required { unexamined: Some(p1_producer_orphan::run_unexamined) } },
+    Detector { token: pattern_flag::P2,          in_default_sweep: true,  refuses_empty_task_corpus: false, check: Check::Plain(p2_consumer_stub::check),         jcodemunch: JcodemunchUse::Never },
+    Detector { token: pattern_flag::P5,          in_default_sweep: true,  refuses_empty_task_corpus: false, check: Check::Plain(p5_phantom_done::check),          jcodemunch: JcodemunchUse::InSomePasses { unexamined: p5_phantom_done::live_path_run_unexamined } },
+    Detector { token: pattern_flag::PDEAD,       in_default_sweep: false, refuses_empty_task_corpus: false, check: Check::Plain(pdead_dead_code::check),          jcodemunch: JcodemunchUse::Required { unexamined: None } },
+    Detector { token: pattern_flag::PUNTESTED,   in_default_sweep: false, refuses_empty_task_corpus: false, check: Check::Plain(puntested::check),                jcodemunch: JcodemunchUse::Required { unexamined: None } },
+    Detector { token: pattern_flag::PLAYER,      in_default_sweep: false, refuses_empty_task_corpus: false, check: Check::Plain(player::check),                   jcodemunch: JcodemunchUse::Required { unexamined: None } },
+    Detector { token: pattern_flag::PTODO,       in_default_sweep: true,  refuses_empty_task_corpus: false, check: Check::TasksDbBacked(ptodo::check_with_stats), jcodemunch: JcodemunchUse::Never },
+    Detector { token: pattern_flag::PDSSENTINEL, in_default_sweep: true,  refuses_empty_task_corpus: false, check: Check::Plain(pdssentinel::check),              jcodemunch: JcodemunchUse::Never },
+    Detector { token: pattern_flag::PDIAG,       in_default_sweep: false, refuses_empty_task_corpus: false, check: Check::Plain(pdiag::check),                    jcodemunch: JcodemunchUse::Never },
+    Detector { token: pattern_flag::PDOCCOVER,   in_default_sweep: false, refuses_empty_task_corpus: false, check: Check::Plain(pdoccover::check),                jcodemunch: JcodemunchUse::Never },
+    Detector { token: pattern_flag::PDCHECK,     in_default_sweep: false, refuses_empty_task_corpus: false, check: Check::Plain(pdcheck::check),                  jcodemunch: JcodemunchUse::Never },
+    Detector { token: pattern_flag::PCITE,       in_default_sweep: false, refuses_empty_task_corpus: false, check: Check::Plain(pcite::check),                    jcodemunch: JcodemunchUse::Never },
+    Detector { token: pattern_flag::PPRDSTATUS,  in_default_sweep: false, refuses_empty_task_corpus: true,  check: Check::Plain(pprdstatus::check),               jcodemunch: JcodemunchUse::Never },
 ];
 
 /// What one detector run produced.
@@ -776,6 +828,70 @@ fn effective_repo_id(args: &Args) -> String {
     args.jcodemunch_repo
         .clone()
         .unwrap_or_else(|| jcodemunch_index::resolve_repo_id(Path::new(&args.project_root)))
+}
+
+// -----------------------------------------------------------------------
+// The jcodemunch seam a run binds
+// -----------------------------------------------------------------------
+
+/// Decide the seam this run binds. `Err` is the §4.3 refusal of a run set in
+/// which nothing survives an unusable index ([`jcodemunch_only_run_set`]):
+/// the caller exits [`ERROR_EXIT`] before printing any findings array.
+///
+/// The gate fires only after a SUCCESSFUL handshake, i.e. when a live serve is
+/// genuinely about to be queried. With no serve there is no corpus to be
+/// misled by, so gating earlier would turn the unreachable fail-soft into an
+/// exit 125 on every machine where jcodemunch is legitimately absent.
+fn bind_jcodemunch(args: &Args, git: &RealGitOps, repo_id: &str) -> Result<Seam, String> {
+    if args.no_jcodemunch {
+        return Ok(Seam::OptedOut);
+    }
+    if !needs_jcodemunch(args) {
+        return Ok(Seam::NotNeeded);
+    }
+    let ops = match RealJCodemunchOps::new(
+        args.jcodemunch_url.clone(),
+        repo_id,
+        PathBuf::from(&args.project_root),
+    ) {
+        Ok(ops) => ops,
+        Err(error) => {
+            return Ok(Seam::Unavailable(SeamUnavailable::from_handshake(
+                &args.jcodemunch_url,
+                error,
+            )));
+        }
+    };
+    match enforce_index_freshness(args, git, repo_id) {
+        Ok(()) => Ok(Seam::Live(ops)),
+        Err(refusal) if jcodemunch_only_run_set(args) => Err(refusal),
+        Err(refusal) => Ok(Seam::Unavailable(SeamUnavailable::IndexUnusable {
+            refusal,
+        })),
+    }
+}
+
+/// The one stderr line for a run whose seam is unavailable: why, which of the
+/// selected detectors ran without jcodemunch, and the remedy for that cause.
+fn seam_unavailable_breadcrumb(reason: &SeamUnavailable, pattern: Option<&str>) -> String {
+    let degraded: Vec<&str> = selected_detectors(pattern)
+        .filter(|detector| detector.jcodemunch.queries())
+        .map(|detector| detector.token)
+        .collect();
+    let remedy = match reason {
+        SeamUnavailable::Unreachable { .. } | SeamUnavailable::HandshakeRefused { .. } => {
+            "pass --no-jcodemunch to skip them deliberately"
+        }
+        SeamUnavailable::IndexUnusable { .. } => {
+            "re-index, or select only jcodemunch-backed detectors (e.g. --pattern P1) \
+             to make this a hard refusal"
+        }
+    };
+    format!(
+        "reify-audit: {reason} — {} ran without jcodemunch; every other selected \
+         detector still runs ({remedy})",
+        degraded.join(", ")
+    )
 }
 
 // -----------------------------------------------------------------------
@@ -901,81 +1017,19 @@ fn main() -> ExitCode {
     // diverge. `--jcodemunch-repo` overrides; otherwise derive per §4.2.
     let jcodemunch_repo_id = effective_repo_id(&args);
 
-    // Construct jcodemunch seam:
-    // - Noop for --no-jcodemunch, P5/pre-done, and P2-only runs (never connects).
-    // - Real for P1/PDEAD runs; if the serve is unreachable, fail-soft to Noop
-    //   so P2/P5 still run and P1 degrades to zero findings. Exit 125 is
-    //   reserved for genuine arg/IO misconfiguration, not an optional substrate.
-    let jcodemunch: Box<dyn JCodemunchOps> =
-        if args.no_jcodemunch || !needs_jcodemunch(&args) {
-            Box::new(NoopJCodemunchOps)
-        } else {
-            match RealJCodemunchOps::new(
-                args.jcodemunch_url.clone(),
-                jcodemunch_repo_id.clone(),
-                PathBuf::from(&args.project_root),
-            ) {
-                Ok(r) => {
-                    // §4.3 freshness precondition. This is the ONLY place the
-                    // gate fires, and the placement is the load-bearing part:
-                    // a jcodemunch-backed detector is in the run set,
-                    // --no-jcodemunch was absent, AND the handshake actually
-                    // succeeded — so a live serve is genuinely about to be
-                    // queried. It runs before `ctx` is built and therefore
-                    // before any detector `check()`.
-                    //
-                    // Deliberately NOT earlier. §4.3's harm model is false
-                    // orphans produced FROM a stale corpus; with the serve
-                    // down there is no corpus to be misled by (the Err arm
-                    // below already fail-softs to zero findings), so there is
-                    // nothing to refuse. Gating before the connection attempt
-                    // would convert that documented fail-soft into a hard exit
-                    // 125 on every machine where jcodemunch is legitimately
-                    // absent — an outage on a healthy path. Constructing the
-                    // client is not "a detector query", so gating a successful
-                    // construction satisfies §4.3 literally while preserving
-                    // the fail-soft.
-                    match enforce_index_freshness(&args, &git, &jcodemunch_repo_id) {
-                        Ok(()) => Box::new(r),
-                        // Nothing in the run set survives a refusal, so refuse
-                        // the process. Returns BEFORE any findings array is
-                        // serialized, so the refusal emits no parseable JSON on
-                        // stderr — which is what lets the /audit skill's
-                        // existing exit-125 disambiguator classify this as an
-                        // infra error rather than 125 High findings.
-                        Err(msg) if jcodemunch_only_run_set(&args) => {
-                            eprintln!("reify-audit: {msg}");
-                            return ExitCode::from(ERROR_EXIT);
-                        }
-                        // Mixed or default sweep: the corpus is still never
-                        // queried (Noop answers every jcodemunch call with
-                        // nothing), but P2/P5/PTODO/PDSSENTINEL keep running
-                        // and the run still emits its findings array. The
-                        // breadcrumb carries the marker token, so the condition
-                        // is machine-detectable rather than silent — the same
-                        // contract the unreachable-serve fail-soft has.
-                        Err(msg) => {
-                            eprintln!(
-                                "reify-audit: {msg} — jcodemunch-backed detectors \
-                                degraded to zero findings; the rest of the sweep \
-                                still runs (use --pattern P1 to make this a hard \
-                                refusal)"
-                            );
-                            Box::new(NoopJCodemunchOps)
-                        }
-                    }
-                }
-                Err(e) => {
-                    eprintln!(
-                        "reify-audit: jcodemunch unreachable at '{}': {} — \
-                        P1 degraded to zero findings; P2/P5 still run \
-                        (pass --no-jcodemunch to silence)",
-                        args.jcodemunch_url, e
-                    );
-                    Box::new(NoopJCodemunchOps)
-                }
-            }
-        };
+    let seam = match bind_jcodemunch(&args, &git, &jcodemunch_repo_id) {
+        Ok(seam) => seam,
+        Err(refusal) => {
+            eprintln!("reify-audit: {refusal}");
+            return ExitCode::from(ERROR_EXIT);
+        }
+    };
+    if let Some(reason) = seam.unavailable() {
+        eprintln!(
+            "{}",
+            seam_unavailable_breadcrumb(reason, args.pattern.as_deref())
+        );
+    }
 
     // Build window (for --since).
     let window = args.since.as_ref().map(|s| TimeWindow {
@@ -983,13 +1037,11 @@ fn main() -> ExitCode {
         until: None,
     });
 
-    // Build context.  Box<dyn JCodemunchOps>::as_ref() coerces to
-    // &dyn JCodemunchOps, satisfying the borrowed seam; the Box outlives ctx.
     let ctx = AuditContext {
         project_root: PathBuf::from(&args.project_root),
         conn: &conn,
         git: &git,
-        jcodemunch: jcodemunch.as_ref(),
+        jcodemunch: seam.ops(),
         task_metadata,
         target_task_id: args.task_id.clone(),
         window,
@@ -1017,6 +1069,11 @@ fn main() -> ExitCode {
                 return ExitCode::from(TASKS_DB_ABSENT_EXIT);
             }
             findings.extend(run.findings);
+            if let Some(reason) = seam.unavailable()
+                && let Some(unexamined) = detector.unexamined(&ctx, &reason.to_string())
+            {
+                findings.push(unexamined);
+            }
         }
         findings
     };
@@ -1360,8 +1417,8 @@ mod tests {
         assert!(needs_jcodemunch(&make_args(false, Some("P1"))));
         // P2-only → false
         assert!(!needs_jcodemunch(&make_args(false, Some("P2"))));
-        // P5-only → false
-        assert!(!needs_jcodemunch(&make_args(false, Some("P5"))));
+        // P5-only → true (its H2 pass queries jcodemunch)
+        assert!(needs_jcodemunch(&make_args(false, Some("P5"))));
         // PDEAD explicitly → true (needs live jcodemunch server)
         assert!(needs_jcodemunch(&make_args(false, Some("PDEAD"))));
     }
@@ -1611,8 +1668,12 @@ mod tests {
     #[test]
     fn needs_jcodemunch_comma_pattern_routing() {
         assert!(
-            !needs_jcodemunch(&make_args(false, Some("P2,P5"))),
-            "P2,P5 must not need jcodemunch"
+            needs_jcodemunch(&make_args(false, Some("P2,P5"))),
+            "P2,P5 must need jcodemunch (P5's H2 pass queries it)"
+        );
+        assert!(
+            !needs_jcodemunch(&make_args(false, Some("P2,PDSSENTINEL"))),
+            "P2,PDSSENTINEL must not need jcodemunch"
         );
         assert!(
             needs_jcodemunch(&make_args(false, Some("P2,P1"))),
@@ -1626,6 +1687,25 @@ mod tests {
             needs_jcodemunch(&make_args(false, Some("P2,PUNTESTED"))),
             "P2,PUNTESTED must need jcodemunch (PUNTESTED present)"
         );
+    }
+
+    /// Only a run set in which every detector REQUIRES jcodemunch refuses an
+    /// unusable index. P5 queries it in one pass only, so a run including P5
+    /// always has passes to salvage.
+    #[test]
+    fn jcodemunch_only_run_set_excludes_a_partial_user() {
+        for pattern in ["P1", "P1,PDEAD"] {
+            assert!(
+                jcodemunch_only_run_set(&make_args(false, Some(pattern))),
+                "{pattern} is all-jcodemunch"
+            );
+        }
+        for pattern in ["P5", "P1,P5"] {
+            assert!(
+                !jcodemunch_only_run_set(&make_args(false, Some(pattern))),
+                "{pattern} includes P5, whose other passes never read the index"
+            );
+        }
     }
 
     /// The opt-in detectors PDEAD/PUNTESTED must be enabled when their token
@@ -1931,7 +2011,7 @@ mod tests {
     ///
     /// The claim is asserted in `Pattern::PDiag`'s docs, but both PDIAG
     /// integration tests pass `--no-jcodemunch`, so nothing else would go red
-    /// if a future edit set `queries_jcodemunch` on PDIAG's row. That
+    /// if a future edit marked PDIAG's row as querying jcodemunch. That
     /// regression is not cosmetic: via `jcodemunch_only_run_set` a
     /// jcodemunch-backed PDIAG would hard-refuse with exit 125 on a stale
     /// index, turning the merge gate red for a detector that never reads the

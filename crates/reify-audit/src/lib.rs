@@ -68,6 +68,7 @@ pub(crate) mod mcp_handshake;
 pub mod fused_memory_client;
 pub mod jcodemunch_client;
 pub mod jcodemunch_index;
+pub mod jcodemunch_seam;
 
 // -----------------------------------------------------------------------
 // Public surface — finding shape
@@ -94,8 +95,10 @@ pub enum Severity {
 /// - `P5PhantomDone` — phantom-done: commit provenance cannot be corroborated.
 /// - `P2ConsumerStub` — consumer task with stub markers in changed lines.
 /// - `P1ProducerOrphan` — producer with no non-test workspace callers.
-/// - `P1TaskUnexamined` / `P5LivePathUnexamined` — a done task P1 / P5 H2
-///   could not examine because its `get_changed_symbols` query failed.
+/// - `P1TaskUnexamined` / `P5LivePathUnexamined` — P1 / P5 H2 examined
+///   nothing where it should have. Per-task form: that task's
+///   `get_changed_symbols` query failed. Run-level form, `task_id` empty: the
+///   run had no usable jcodemunch seam from the start.
 /// - `P5MetadataFilesGitignored` — metadata-hygiene: gitignored paths in
 ///   `metadata.files` that should be stripped. Complement to `P5PhantomDone`
 ///   (medium-severity cleanliness signal, not a phantom-done).
@@ -122,12 +125,22 @@ pub enum Pattern {
     /// consumer task; flagged Medium past the 14-day grace window, Low
     /// within it. See `docs/architecture-audit/f-infra-design.md` §5 P1.
     P1ProducerOrphan,
-    /// P1 — task-unexamined: a `done` task P1 could not examine because its
-    /// `get_changed_symbols` query failed (see [`JCodemunchCallFailed`]).
+    /// P1 — task-unexamined: P1 examined nothing where it should have. Two
+    /// forms, told apart by `task_id` alone:
+    ///
+    /// - **per-task** (`task_id` = the task): a `done` task P1 could not
+    ///   examine because its `get_changed_symbols` query failed (see
+    ///   [`JCodemunchCallFailed`]);
+    /// - **run-level** (`task_id` empty, the convention the corpus-level
+    ///   detectors use): the run had no usable jcodemunch seam from the start
+    ///   — unreachable, handshake refused, or an unusable index — so P1
+    ///   examined no task. At most one per run; the summary names the reason
+    ///   ([`jcodemunch_seam::SeamUnavailable`]).
+    ///
     /// Always Low, so it never moves the exit code. Its presence is what
-    /// stops a sweep in which a query failed from reading as clean: without
-    /// it, the failed task's zero producer-orphan findings would be
-    /// indistinguishable from a range that introduced nothing.
+    /// stops such a sweep from reading as clean: without it, zero
+    /// producer-orphan findings would be indistinguishable from a range that
+    /// introduced nothing.
     P1TaskUnexamined,
     /// Metadata-hygiene: one or more entries in `metadata.files` are
     /// gitignored paths that should be stripped. Distinct from `P5PhantomDone`
@@ -164,11 +177,18 @@ pub enum Pattern {
     /// See task 4140 / esc-4137-196 and
     /// `docs/architecture-audit/f-infra-design.md` §5 P5.
     P5LivePathStranded,
-    /// P5 — live-path-unexamined: a cross-crate `done` task that H2 could not
-    /// examine because its `get_changed_symbols` query failed. H2's
-    /// counterpart of [`Pattern::P1TaskUnexamined`], for the same reason:
-    /// always Low, so it never moves the exit code, and its presence stops
-    /// the task's zero `P5LivePathStranded` findings from reading as clean.
+    /// P5 — live-path-unexamined: H2 examined nothing where it should have.
+    /// H2's counterpart of [`Pattern::P1TaskUnexamined`], with the same two
+    /// forms told apart by `task_id`:
+    ///
+    /// - **per-task**: a cross-crate `done` task whose `get_changed_symbols`
+    ///   query failed;
+    /// - **run-level** (`task_id` empty): the run had no usable jcodemunch
+    ///   seam from the start, and it sweeps at least one task H2 would have
+    ///   queried for. At most one per run.
+    ///
+    /// Always Low, so it never moves the exit code; its presence stops zero
+    /// `P5LivePathStranded` findings from reading as clean.
     P5LivePathUnexamined,
     /// PTODO — TODO-tracking-invariant: a TODO-family marker that is not backed
     /// by a *live* canonical `#NNNN` task citation. The §8.3 finding `kind` is
@@ -1785,14 +1805,20 @@ pub trait JCodemunchOps {
 
 /// Inert [`JCodemunchOps`] — every query answers "nothing".
 ///
-/// Unlike [`MockJCodemunchOps`] this is NOT test-support: it is the production
-/// binding whenever a run does not need the jcodemunch seam at all, and it is
-/// ungated for exactly that reason. Its production call sites:
+/// Its `Ok(vec![])` from `get_changed_symbols` is not a statement about any
+/// range: no query was made. Unlike [`MockJCodemunchOps`] this is NOT
+/// test-support: it is the production binding whenever a run has no live
+/// seam, and it is ungated for exactly that reason. Its production call sites:
 ///
 /// 1. `--no-jcodemunch` — the explicit offline escape hatch: P1 runs and
 ///    produces zero findings without opening a socket.
 /// 2. Detector runs that never touch the seam (`needs_jcodemunch() == false`).
-/// 3. The `*-baseline-gen` structural censuses, which still have to populate
+/// 3. The fallback for a needed seam that is unreachable, refused the
+///    handshake, or sits over an unusable index
+///    ([`jcodemunch_seam::Seam::Unavailable`]). The bin records the affected
+///    detectors as unexamined in that case, so their silence is not read as
+///    a clean result.
+/// 4. The `*-baseline-gen` structural censuses, which still have to populate
 ///    [`AuditContext`]'s field.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct NoopJCodemunchOps;

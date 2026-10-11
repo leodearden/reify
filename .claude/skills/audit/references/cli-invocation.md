@@ -95,7 +95,7 @@ $REIFY_AUDIT_BIN \
   [--jcodemunch-url <url>]   \  # default: $JCODEMUNCH_URL or http://127.0.0.1:8901/mcp
   [--jcodemunch-repo <id>]   \  # NO default: derived per-path as local/<basename>-<sha1(abs project_root)[..8]>
   [--jcodemunch-index-dir <path>] \  # freshness-gate index dir: flag > $JCODEMUNCH_INDEX_DIR > $CODE_INDEX_PATH > $HOME/.code-index
-  [--no-jcodemunch]          \  # force inert stub (offline/test); P1/P-* yield nothing
+  [--no-jcodemunch]          \  # force inert stub (offline/test); P1, P5's H2 and P-* yield nothing, nothing recorded unexamined
   --tasks-file "$SNAPSHOT" \
   --runs-db    "$REPO_ROOT/data/orchestrator/runs.db" \
   --project-root "$REPO_ROOT" \
@@ -194,15 +194,17 @@ PPRDSTATUS is unaffected too: it opens no jcodemunch connection and reads no `ta
 
 See `references/modes.md` §4 notes for detail.
 
-When the jcodemunch MCP server is unreachable (the common case — jcodemunch is not in reify's `.mcp.json` and must be started separately), the default sweep, `--pattern P1`, and the advisory `--pattern PDEAD|PUNTESTED|PLAYER` do **not** exit 125. Instead:
+When the jcodemunch MCP server is unreachable (the common case — jcodemunch is not in reify's `.mcp.json` and must be started separately), or something answers at the URL but refuses the MCP handshake, the default sweep, `--pattern P1`, `--pattern P5` and the advisory `--pattern PDEAD|PUNTESTED|PLAYER` do **not** exit 125. (`--pattern P5` attempts the handshake because P5's H2 live-path pass queries jcodemunch; its other passes never do.) Instead:
 
-- P1 **and** the advisory P-* patterns (PDEAD, PUNTESTED, PLAYER) degrade to **zero findings** (the inert `NoopJCodemunchOps` stub is used for all of them).
-- Every selected detector that does not query jcodemunch — P2 (consumer-stub), P5 (phantom-done) and the structural lanes above — **still runs** and produces normal findings.
-- A breadcrumb line appears on stderr before the JSON array:
+- Every jcodemunch-backed pass runs on the inert `NoopJCodemunchOps` stub, which answers every query with nothing.
+- P1 and P5's H2 pass each record **one** Low run-level unexamined finding — `P1TaskUnexamined` / `P5LivePathUnexamined` with an empty `task_id` — whose summary carries the reason, so their silence is never read as a clean result. H2's is recorded only when the run sweeps a task H2 would have queried jcodemunch for: a done task whose `metadata.files` span two or more `crates/<name>/` roots and which has a provenance commit (`h2_range` in `p5_phantom_done.rs`). A sweep, or a `--task` spot-check, holding no such task records none, since its zero H2 findings are clean either way. The advisory P-* patterns (PDEAD, PUNTESTED, PLAYER) degrade to **zero findings** with no such record.
+- Every pass that does not query jcodemunch — P2 (consumer-stub), P5's other passes (phantom-done, gitignored metadata, tests-assert-empty) and the structural lanes above — **still runs** and produces normal findings.
+- One breadcrumb line appears on stderr before the JSON array, naming the cause and the selected jcodemunch-backed detectors. Its label says which failure it was — nothing answered, versus an answer that is not a live MCP serve (a 4xx/5xx status, or a body that is not an MCP `InitializeResult`):
   ```
-  reify-audit: jcodemunch unreachable at 'http://127.0.0.1:8901/mcp': … — P1 degraded to zero findings; P2/P5 still run (pass --no-jcodemunch to silence)
+  reify-audit: jcodemunch unreachable at 'http://127.0.0.1:8901/mcp': … — P1, P5 ran without jcodemunch; every other selected detector still runs (pass --no-jcodemunch to skip them deliberately)
+  reify-audit: jcodemunch handshake refused at 'http://127.0.0.1:8901/mcp': … — P1, P5 ran without jcodemunch; every other selected detector still runs (pass --no-jcodemunch to skip them deliberately)
   ```
-  *(Note: the breadcrumb text names "P1" generically, even when an advisory P-* pattern such as PDEAD, PUNTESTED, or PLAYER is the pattern that degraded — the message text in the binary was written before the P-* patterns existed. All of P1/PDEAD/PUNTESTED/PLAYER degrade identically; the breadcrumb wording is not a reliable indicator of which pattern triggered the degradation.)*
+  The first means start a serve; the second means check what is listening on that port.
 
 **This breadcrumb is NOT exit 125** — the exit code is determined by findings severity (0 = none, 1+ = findings), same as a normal run. The §3.1 disambiguator applies normally. The freshness gate below does **not** fire on this path: with no serve there is no corpus to be misled by, so there is nothing to refuse.
 
@@ -211,7 +213,7 @@ When the jcodemunch MCP server is unreachable (the common case — jcodemunch is
 After a **successful** handshake, a freshness gate probes the index for this checkout before any detector runs. The outcome splits on what `--pattern` selected:
 
 - An **all-jcodemunch** pattern set — any comma set drawn only from `P1`, `PDEAD`, `PUNTESTED`, `PLAYER` — **hard-exits 125** with the refusal on stderr (carrying a marker token in three of the four cases tabulated below). Nothing in the run set could have survived a refusal, so nothing is salvaged.
-- A **mixed or pattern-less** run fail-softs exactly as the unreachable-serve path does: the jcodemunch-backed detectors degrade to zero findings, every other selected detector still runs, and the findings array is still emitted. The breadcrumb repeats the refusal message verbatim, so a run that would have carried a marker token on the hard arm carries the same one here — and the token-less HEAD case below stays token-less on both arms.
+- A **mixed or pattern-less** run — including any set that selects `P5`, whose other passes never read the index — fail-softs exactly as the unreachable-serve path does: the jcodemunch-backed passes run on the inert stub, P1 and P5's H2 pass each record one run-level unexamined finding, PDEAD/PUNTESTED/PLAYER yield zero findings, every other selected detector still runs, and the findings array is still emitted. The breadcrumb and the unexamined findings' summaries repeat the refusal message verbatim, so a run that would have carried a marker token on the hard arm carries the same one here — and the token-less HEAD case below stays token-less on both arms.
 
 The refusal returns **before any findings array is serialized**, so it emits no parseable JSON. That is precisely what lets the existing §3.1 disambiguator classify it correctly: the tempfile does not parse as a JSON array, so it is routed as an infra error rather than as 125 High findings. §3.1 needs no change for this — do not edit it.
 
@@ -226,9 +228,9 @@ The refusal returns **before any findings array is serialized**, so it emits no 
 
 **The marker token is not exhaustive, and that is deliberate.** The fourth row is token-less by design: `enforce_index_freshness` (`crates/reify-audit/src/bin/reify-audit.rs`) writes that message to be *distinct* from every marker token precisely because neither staleness nor emptiness nor unreadability of the index has been established, and mislabelling it as one of them would send an operator to re-index over what is actually a git fault. So the token, **when present**, is the discriminator — but a 125 whose message names freshness and carries no token is this case, not an undocumented fourth code.
 
-**Escape hatch:** pass `--no-jcodemunch` to force the inert stub without connecting, silencing the breadcrumb. Useful for P2/P5-only sweeps where P1 and the advisory P-* patterns are intentionally skipped.
+**Escape hatch:** pass `--no-jcodemunch` to force the inert stub without connecting, silencing the breadcrumb. It is a declared scope reduction (the per-run artifact records the argv), so it records **no** unexamined finding. It is how to run P5 without H2 — `--pattern P5` alone now connects — and how to run P2/P5 sweeps where P1 and the advisory P-* patterns are intentionally skipped. Connecting has a latency cost: a refused connection fails fast, but a port that accepts and never replies costs the client's HTTP timeout (`HTTP_TIMEOUT_SECS` in `jcodemunch_client.rs`, 60 s) before the run falls back. So a `--pattern P5` or `--task <id> --pattern P5` spot-check that must stay quick should pass `--no-jcodemunch`. `--pre-done` never connects.
 
-**Serve prerequisite:** For P1 and the advisory P-* patterns (PDEAD/PUNTESTED/PLAYER) to produce **real** findings, a serve must be answering at the configured URL for the duration of the run. There is no persistent systemd unit and no `systemctl` query to run — wrap the invocation instead:
+**Serve prerequisite:** For P1, P5's H2 pass and the advisory P-* patterns (PDEAD/PUNTESTED/PLAYER) to produce **real** findings, a serve must be answering at the configured URL for the duration of the run. There is no persistent systemd unit and no `systemctl` query to run — wrap the invocation instead:
 
 ```bash
 scripts/with-jcodemunch-serve.sh -- $REIFY_AUDIT_BIN --pattern P1 --project-root "$REPO_ROOT" …
@@ -295,8 +297,8 @@ exactly once per task and `check_one` returns `Option<Finding>`, so the
 phantom-done corroboration legs are mutually exclusive — you will never see two
 `P5PhantomDone` rows for the same `task_id` in one run. A task CAN carry a
 `P5PhantomDone` plus one of the independent per-task passes
-(`P5MetadataFilesGitignored`, `P5TestsAssertEmpty`, `P5LivePathStranded`), which
-is the multi-finding shape above. Two `P5PhantomDone` rows in one run always
+(`P5MetadataFilesGitignored`, `P5TestsAssertEmpty`, `P5LivePathStranded`,
+`P5LivePathUnexamined`), which is the multi-finding shape above. Two `P5PhantomDone` rows in one run always
 mean two distinct task ids.
 
 ### `--pre-done` landing gate (the D-1 hook path)

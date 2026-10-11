@@ -23,7 +23,7 @@
 //!
 //! A client-minted id is not merely redundant: a live jcodemunch serve
 //! answers such an `initialize` with `404 Invalid or expired session ID`,
-//! which [`post`](JcodemunchClient::post) maps to [`LoadError::Http`] and
+//! which [`post`](JcodemunchClient::post) maps to [`LoadError::Status`] and
 //! `reify-audit` then fail-softs into a no-op detector — silently.
 //!
 //! `fused_memory_client.rs` still mints its own id. That divergence is
@@ -71,9 +71,16 @@ const HTTP_TIMEOUT_SECS: u64 = 60;
 /// a down serve must not crash the sweep).
 #[derive(Debug)]
 pub enum LoadError {
-    /// Transport-level failure: connection refused, timeout, non-2xx status,
-    /// body read failure.
+    /// Transport-level failure — the endpoint never answered: connection
+    /// refused or reset, or a timeout, before any status line arrived.
     Http(String),
+    /// The endpoint answered with a non-2xx HTTP status: reachable, but it
+    /// refused the request (a live serve's `404 Invalid or expired session
+    /// ID`, or a foreign HTTP service on the port).
+    Status(String),
+    /// The endpoint answered with a 2xx status, but its body could not be
+    /// read whole: it broke off, timed out, or was not UTF-8.
+    Body(String),
     /// Protocol-level failure: malformed JSON-RPC envelope, missing expected
     /// fields, server-returned `error` payload, MUNCH decode failure.
     Protocol(String),
@@ -83,6 +90,8 @@ impl std::fmt::Display for LoadError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             LoadError::Http(m) => write!(f, "jcodemunch HTTP error: {m}"),
+            LoadError::Status(m) => write!(f, "jcodemunch HTTP status error: {m}"),
+            LoadError::Body(m) => write!(f, "jcodemunch HTTP body error: {m}"),
             LoadError::Protocol(m) => write!(f, "jcodemunch protocol error: {m}"),
         }
     }
@@ -1299,7 +1308,7 @@ impl JcodemunchClient {
     /// response also carries a fresh `mcp-session-id` header, so the id
     /// must only ever be read off a *success* response. `ureq` returns
     /// `Err(Error::Status(..))` for 4xx and [`Self::post_raw`] maps that to
-    /// [`LoadError::Http`] before the header is read, so the confusion is
+    /// [`LoadError::Status`] before the header is read, so the confusion is
     /// unreachable today — this note exists so a future refactor (e.g. one
     /// that inspects error responses) does not quietly make it reachable.
     fn initialize(&mut self) -> Result<(), LoadError> {
@@ -1366,9 +1375,13 @@ impl JcodemunchClient {
         if let Some(session) = session {
             request = request.set("mcp-session-id", session);
         }
-        let response = request
-            .send_json(payload.clone())
-            .map_err(|e| LoadError::Http(format!("POST {}: {e}", self.url)))?;
+        let response = request.send_json(payload.clone()).map_err(|e| {
+            let msg = format!("POST {}: {e}", self.url);
+            match e {
+                ureq::Error::Status(..) => LoadError::Status(msg),
+                ureq::Error::Transport(..) => LoadError::Http(msg),
+            }
+        })?;
 
         let assigned = response.header("mcp-session-id").map(|s| s.to_string());
 
@@ -1385,7 +1398,7 @@ impl JcodemunchClient {
         response
             .into_reader()
             .read_to_string(&mut body)
-            .map_err(|e| LoadError::Http(format!("read body: {e}")))?;
+            .map_err(|e| LoadError::Body(format!("read body: {e}")))?;
 
         let value = crate::mcp_wire::decode_body(&ctype, &body)
             .map_err(|e| LoadError::Protocol(e.to_string()))?;
@@ -1802,7 +1815,7 @@ mod tests {
                 );
             }
             Ok(_) => panic!("expected Protocol error for 2-segment table spec, got Ok"),
-            Err(LoadError::Http(_)) => panic!("expected Protocol error, got Http error"),
+            Err(other) => panic!("expected Protocol error, got {other}"),
         }
     }
 
@@ -1843,7 +1856,7 @@ mod tests {
         match decode_tool_result(&result) {
             Err(LoadError::Protocol(_)) => {} // expected
             Ok(_) => panic!("expected Protocol error for garbage MUNCH, got Ok"),
-            Err(LoadError::Http(_)) => panic!("expected Protocol error, got Http error"),
+            Err(other) => panic!("expected Protocol error, got {other}"),
         }
     }
 
@@ -2744,7 +2757,7 @@ mod tests {
                 );
             }
             Ok(_) => panic!("expected Protocol error for field-count mismatch, got Ok"),
-            Err(LoadError::Http(_)) => panic!("expected Protocol error, got Http"),
+            Err(other) => panic!("expected Protocol error, got {other}"),
         }
     }
 
@@ -3798,7 +3811,7 @@ mod tests {
         /// In MCP streamable-HTTP the session is assigned by the server on
         /// `initialize`. A client-minted id makes a real jcodemunch serve
         /// answer `404 Invalid or expired session ID`, which `post` maps to
-        /// `LoadError::Http` and `reify-audit` fail-softs into a no-op —
+        /// `LoadError::Status` and `reify-audit` fail-softs into a no-op —
         /// silently, which is how the seam stayed dead for ten weeks.
         #[test]
         fn initialize_carries_no_client_minted_session_header() {
@@ -3880,9 +3893,9 @@ mod tests {
                      carries no Mcp-Session-Id header, got Ok — a client with \
                      no session id fails every later call",
                 ),
-                Err(LoadError::Http(e)) => panic!(
+                Err(other) => panic!(
                     "expected Protocol error for the missing session id, got \
-                     Http error: {e}",
+                     {other}",
                 ),
             }
         }
@@ -3900,9 +3913,9 @@ mod tests {
                     "expected Protocol error when initialize is answered 202 \
                      with no Mcp-Session-Id header, got Ok",
                 ),
-                Err(LoadError::Http(e)) => panic!(
+                Err(other) => panic!(
                     "expected Protocol error for the 202-without-session-id \
-                     handshake, got Http error: {e}",
+                     handshake, got {other}",
                 ),
             }
         }
@@ -3946,7 +3959,8 @@ mod tests {
         /// exactly the PASS-shaped nothing this client's session handling
         /// exists to remove — a caller would read it as "the serve offers
         /// no such tool" rather than "the serve answered nonsense". Never
-        /// `Http` either: the transport succeeded, the payload did not.
+        /// `Http`, `Status` or `Body` either: the transport succeeded, the
+        /// payload did not.
         fn assert_list_tools_is_a_protocol_error(reply: ToolsListReply, what: &str) {
             let stub = RecordingStub::start_with_tools(reply);
             let client = JcodemunchClient::new(stub.url()).expect("handshake");
@@ -3958,9 +3972,7 @@ mod tests {
                      malformed tool list must never be reported as a (possibly \
                      empty or shortened) set of tools",
                 ),
-                Err(LoadError::Http(e)) => panic!(
-                    "expected a Protocol error for {what}; got Http error: {e}",
-                ),
+                Err(other) => panic!("expected a Protocol error for {what}; got {other}"),
             }
         }
 
