@@ -321,6 +321,7 @@ The relative step departs from the task's fixed 0.001 mm, which at `d` = 0.005 m
 `d`, far coarser than the ~0.1–0.4 % plateaus the main note's §1.5 and §1.6 measured. Rounding
 to 1e-5 mm makes the first cone bracket's steps alternate between 2e-5 and 3e-5 mm. Torus's
 1.0010 is a Stage-C target even without a bracket, because it reads ≥ 0.9995.
+
 ---
 
 ## 3. Stage B — the dense brackets

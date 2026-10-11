@@ -1249,7 +1249,8 @@ point under load).
 ### 3.1 Convergence
 
 With `achieved ≤ K·d`, reaching `achieved ≤ B` from `d0` needs `n ≥ log2(K·d0/B)`; for
-the natural authoring case `B ≈ d0`, `n ≥ log2(K)`. **Derived** from the §1 suprema:
+the natural authoring case `B ≈ d0`, `n ≥ log2(K)`. **Derived** from the §1.1 envelope values
+(suprema or lower bounds, per row):
 
 | class | sup K | required n |
 |---|---|---|
