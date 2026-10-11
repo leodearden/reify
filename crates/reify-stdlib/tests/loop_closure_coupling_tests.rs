@@ -5,7 +5,9 @@ use std::f64::consts::PI;
 
 use reify_ir::Value;
 use reify_stdlib::eval_builtin;
-use reify_stdlib::loop_closure::{chain_jacobian_fd, extract_loop_closure_chains};
+use reify_stdlib::loop_closure::{
+    chain_jacobian_fd, extract_loop_closure_chains, loop_residual_twist,
+};
 use reify_stdlib::loop_closure_solver::{
     NewtonConfig, NewtonOutcome, StartStrategy, solve_loop_closure,
     solve_loop_closure_with_diagnostics,
@@ -305,4 +307,84 @@ fn chain_jacobian_fd_leaves_a_coupling_of_an_absent_parent_alone() {
         [0.0, 0.0, 0.0, 1.0, 0.0, 0.0],
         "a coupling of a joint outside the chain does not follow jB",
     );
+}
+
+/// Case 2, the coupling's parent is itself free on the closing side:
+/// `jP + 2·jP = jA` along X.
+///
+/// Body ids: 0 sA@jA, 1 sP@jP, 2 sC@jC (on its own parent jP), 3 sX@jX (on
+/// jA), 4 sD@jX (on jC) — the closing edge, `path_a = [world, jA, jX]`,
+/// `path_b = [world, jP, jC]`. jP's range midpoint (0.25) is off the closure,
+/// so Newton has to move.
+struct FreeParentFixture {
+    mechanism: Value,
+    bindings: Vec<Value>,
+}
+
+fn free_parent_mechanism() -> FreeParentFixture {
+    let world = eval_builtin("world", &[]);
+    let j_a = prismatic_x(0.0, 1.0);
+    let j_p = prismatic_x(0.0, 0.5);
+    let j_c = couple_by_two(&j_p);
+    let j_x = revolute_z_0_to_pi();
+
+    let mut m = eval_builtin("mechanism", &[]);
+    m = body(m, "sA", &j_a, &world);
+    m = body(m, "sP", &j_p, &world);
+    m = body(m, "sC", &j_c, &j_p);
+    m = body(m, "sX", &j_x, &j_a);
+    m = body(m, "sD", &j_x, &j_c);
+
+    FreeParentFixture {
+        mechanism: m,
+        bindings: vec![bind_len(&j_a, 0.6), bind_ang(&j_x, 0.0)],
+    }
+}
+
+#[test]
+fn solve_loop_closure_keeps_a_coupling_in_step_with_its_free_parent() {
+    let fixture = free_parent_mechanism();
+    let (chain_a, vals_a, chain_b, vals_b_initial, free_b) =
+        extract_loop_closure_chains(only_loop_closure(&fixture.mechanism), &fixture.bindings)
+            .expect("the free-parent loop must extract");
+    assert_eq!(free_b, vec![0], "jP is free; its coupling jC is not");
+
+    let outcome = solve_loop_closure(
+        &chain_a,
+        &vals_a,
+        &chain_b,
+        &vals_b_initial,
+        &free_b,
+        &StartStrategy::Midpoint,
+        &NewtonConfig::default(),
+    );
+    let x = match outcome {
+        NewtonOutcome::Converged { x, .. } => x,
+        other => panic!("expected Converged, got {other:?}"),
+    };
+    assert_eq!(x.len(), 1, "one free variable");
+    assert_close(x[0], 0.2, "solved jP");
+
+    let realised = [JointValue::Scalar(x[0]), JointValue::Scalar(x[0])];
+    let residual = loop_residual_twist(&chain_a, &vals_a, &chain_b, &realised)
+        .expect("the residual must evaluate at the solved configuration");
+    assert!(
+        residual.iter().all(|r| r.abs() < SOLVE_TOL),
+        "the loop must close with jC following jP, residual {residual:?}"
+    );
+}
+
+#[test]
+fn snapshot_honours_coupling_ratio_when_parent_is_free() {
+    let fixture = free_parent_mechanism();
+    let snapshot = eval_builtin(
+        "snapshot",
+        &[fixture.mechanism, Value::List(fixture.bindings)],
+    );
+
+    assert_close(only_free_value(&snapshot), 0.2, "solved jP");
+    assert_close(x_of(&snapshot, 1), 0.2, "sP at jP");
+    assert_close(x_of(&snapshot, 2), 0.6, "sC at jP + 2·jP");
+    assert_close(x_of(&snapshot, 3), 0.6, "sX at jA");
+    assert_close(x_of(&snapshot, 4), 0.6, "closing body sD meets sX");
 }
