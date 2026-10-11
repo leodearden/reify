@@ -6,6 +6,10 @@ use std::f64::consts::PI;
 use reify_ir::Value;
 use reify_stdlib::eval_builtin;
 use reify_stdlib::loop_closure::extract_loop_closure_chains;
+use reify_stdlib::loop_closure_solver::{
+    NewtonConfig, NewtonOutcome, StartStrategy, solve_loop_closure,
+    solve_loop_closure_with_diagnostics,
+};
 use reify_stdlib::loop_closure_value::JointValue;
 
 const SOLVE_TOL: f64 = 1e-6;
@@ -197,4 +201,69 @@ fn snapshot_honours_coupling_ratio_when_parent_is_bound() {
     assert_close(x_of(&snapshot, 3), 0.5, "sB at 2·jP + jB");
     assert_close(x_of(&snapshot, 4), 0.5, "sX at jA");
     assert_close(x_of(&snapshot, 5), 0.5, "closing body sD meets sX");
+}
+
+/// A closing side whose second slot is the non-driving joint under test.
+struct NonDrivingFreeSlot {
+    chain_a: Vec<Value>,
+    vals_a: Vec<JointValue>,
+    chain_b: Vec<Value>,
+    vals_b_initial: Vec<JointValue>,
+}
+
+fn non_driving_in_second_slot(non_driving: impl FnOnce(&Value) -> Value) -> NonDrivingFreeSlot {
+    let j_p = prismatic_x(0.0, 1.0);
+    let second = non_driving(&j_p);
+    NonDrivingFreeSlot {
+        chain_a: vec![prismatic_x(0.0, 2.0)],
+        vals_a: vec![JointValue::Scalar(0.6)],
+        chain_b: vec![j_p, second],
+        vals_b_initial: vec![JointValue::Scalar(0.5), JointValue::Scalar(0.5)],
+    }
+}
+
+fn assert_non_driving_rejection(outcome: &NewtonOutcome, label: &str) {
+    match outcome {
+        NewtonOutcome::InvalidInput { reason } => assert!(
+            reason.contains("non-driving") && reason.contains("index 1"),
+            "{label}: the reason must name the non-driving free_b index 1, got {reason:?}"
+        ),
+        other => panic!("{label}: expected InvalidInput, got {other:?}"),
+    }
+}
+
+#[test]
+fn solve_loop_closure_rejects_a_non_driving_joint_in_free_b() {
+    let cases: [(&str, fn(&Value) -> Value); 2] = [
+        ("coupling", couple_by_two),
+        ("fixed", |_| eval_builtin("fixed", &[])),
+    ];
+    for (label, non_driving) in cases {
+        let input = non_driving_in_second_slot(non_driving);
+        let outcome = solve_loop_closure(
+            &input.chain_a,
+            &input.vals_a,
+            &input.chain_b,
+            &input.vals_b_initial,
+            &[0, 1],
+            &StartStrategy::Midpoint,
+            &NewtonConfig::default(),
+        );
+        assert_non_driving_rejection(&outcome, label);
+    }
+}
+
+#[test]
+fn solve_loop_closure_with_diagnostics_rejects_a_non_driving_joint_in_free_b() {
+    let input = non_driving_in_second_slot(couple_by_two);
+    let report = solve_loop_closure_with_diagnostics(
+        &input.chain_a,
+        &input.vals_a,
+        &input.chain_b,
+        &input.vals_b_initial,
+        &[0, 1],
+        &StartStrategy::Midpoint,
+        &NewtonConfig::default(),
+    );
+    assert_non_driving_rejection(&report.outcome, "coupling via diagnostics");
 }
