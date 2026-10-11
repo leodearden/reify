@@ -1684,9 +1684,11 @@ pub fn diagnose(name: &str, args: &[Value], result: &Value) -> Vec<Diagnostic> {
 #[cfg(test)]
 mod tests {
     use crate::eval_builtin;
+    use crate::loop_closure_value::JointKind;
     use crate::test_fixtures::{
-        angle_range_0_to_pi, axis_x_unit, axis_z_unit, body_world_transform, length_range_0_to_1m,
-        offset_prismatic_x, offset_revolute_z, planar_xy_joint, two_link_offset_chain,
+        angle_range_0_to_pi, axis_x_unit, axis_z_unit, body_world_transform,
+        cylindrical_z_joint_centred, length_range_0_to_1m, offset_prismatic_x, offset_revolute_z,
+        planar_xy_joint, planar_xy_joint_centred, spherical_joint, two_link_offset_chain,
     };
     use reify_ir::Value;
     use std::collections::BTreeMap;
@@ -4599,6 +4601,166 @@ mod tests {
             "snapshot with mismatched-length warm-start arg must return Undef, got {:?}",
             s
         );
+    }
+
+    // ── Multi-DOF closing-side free joint warm start (task 8545) ──────────
+    //
+    // Same body topology as the round-trip test above, with jA and jX both
+    // revolute Z (bound to π/6 and 0) so path_a = [world, jA, jX] composes to
+    // a pure rotation R_z(π/6), and path_b = [world, jB] with jB free.  That
+    // closure is reachable by a planar-XY, cylindrical-Z or spherical jB, so
+    // one fixture covers flat Newton-state widths 3, 2 and 4.
+
+    /// Returns `(mechanism, bindings)` for the rotation-about-Z closed chain
+    /// whose single free variable is the closing-side joint `j_b`.
+    fn rotation_closure_around(j_b: Value) -> (Value, Value) {
+        let j_a = eval_builtin("revolute", &[axis_z_unit(), angle_range_0_to_pi()]);
+        // jX: structurally distinct from jA by range (joints match by Eq).
+        let j_x = eval_builtin(
+            "revolute",
+            &[
+                axis_z_unit(),
+                Value::Range {
+                    lower: Some(Box::new(Value::angle(0.0))),
+                    upper: Some(Box::new(Value::angle(std::f64::consts::FRAC_PI_2))),
+                    lower_inclusive: true,
+                    upper_inclusive: true,
+                },
+            ],
+        );
+        let world = eval_builtin("world", &[]);
+        let mut mech = eval_builtin("mechanism", &[]);
+        for (solid, joint, parent) in [
+            ("solidA", &j_a, &world),
+            ("solidB", &j_b, &world),
+            ("solidC", &j_x, &j_a),
+            ("solidD", &j_x, &j_b),
+        ] {
+            mech = eval_builtin(
+                "body",
+                &[
+                    mech,
+                    Value::String(solid.to_string()),
+                    joint.clone(),
+                    parent.clone(),
+                ],
+            );
+        }
+        let bindings = Value::List(vec![
+            eval_builtin("bind", &[j_a, Value::angle(std::f64::consts::FRAC_PI_6)]),
+            eval_builtin("bind", &[j_x, Value::angle(0.0)]),
+        ]);
+        (mech, bindings)
+    }
+
+    /// The single loop's `free_values` row of `snap`, panicking with `label`
+    /// when the snapshot is not a one-loop Snapshot Map of Real leaves.
+    fn single_loop_free_row(snap: &Value, label: &str) -> Vec<f64> {
+        let smap = match snap {
+            Value::Map(m) => m,
+            other => panic!("{label}: expected Snapshot Map, got {other:?}"),
+        };
+        let loops = match smap.get(&Value::String("free_values".to_string())) {
+            Some(Value::List(l)) => l,
+            other => panic!("{label}: free_values must be a List, got {other:?}"),
+        };
+        assert_eq!(loops.len(), 1, "{label}: exactly one loop closure expected");
+        match &loops[0] {
+            Value::List(row) => row
+                .iter()
+                .map(|leaf| match leaf {
+                    Value::Real(r) => *r,
+                    other => panic!("{label}: free_values leaf must be Real, got {other:?}"),
+                })
+                .collect(),
+            other => panic!("{label}: free_values[0] must be a List, got {other:?}"),
+        }
+    }
+
+    /// A cold snapshot over a multi-DOF free joint emits that joint's flat
+    /// storage row (planar 3, cylindrical 2, spherical 4 — not the free-joint
+    /// count 1), and feeding that row back as the 3-arg warm start must
+    /// converge to the same row instead of collapsing to Undef.
+    #[test]
+    fn snapshot_warm_start_accepts_flat_storage_row_for_multi_dof_free_joint() {
+        let theta = std::f64::consts::FRAC_PI_6;
+        let cases = [
+            (
+                "planar",
+                planar_xy_joint_centred(),
+                JointKind::Planar,
+                vec![0.0, 0.0, theta],
+            ),
+            (
+                "cylindrical",
+                cylindrical_z_joint_centred(),
+                JointKind::Cylindrical,
+                vec![0.0, theta],
+            ),
+            (
+                "spherical",
+                spherical_joint(),
+                JointKind::Spherical,
+                vec![(theta / 2.0).cos(), 0.0, 0.0, (theta / 2.0).sin()],
+            ),
+        ];
+        for (label, j_b, kind, expected) in cases {
+            let (mech, bindings) = rotation_closure_around(j_b);
+
+            let cold = eval_builtin("snapshot", &[mech.clone(), bindings.clone()]);
+            let cold_row = single_loop_free_row(&cold, &format!("{label} cold"));
+            assert_eq!(
+                cold_row.len(),
+                kind.flat_len(),
+                "{label}: cold free row must be the flat Newton state"
+            );
+            for (got, want) in cold_row.iter().zip(&expected) {
+                assert!(
+                    (got - want).abs() < 1e-5,
+                    "{label}: cold free row {cold_row:?} must match closed form {expected:?}"
+                );
+            }
+
+            let cold_free_values = Value::List(vec![Value::List(
+                cold_row.iter().map(|&v| Value::Real(v)).collect(),
+            )]);
+            let warm = eval_builtin("snapshot", &[mech, bindings, cold_free_values]);
+            assert!(
+                !warm.is_undef(),
+                "{label}: warm snapshot seeded with the cold flat row must not be Undef"
+            );
+            let warm_row = single_loop_free_row(&warm, &format!("{label} warm"));
+            assert_eq!(
+                warm_row.len(),
+                cold_row.len(),
+                "{label}: warm free row width must equal cold"
+            );
+            for (w, c) in warm_row.iter().zip(&cold_row) {
+                assert!(
+                    (w - c).abs() < 1e-6,
+                    "{label}: warm free row {warm_row:?} must agree with cold {cold_row:?}"
+                );
+            }
+        }
+    }
+
+    /// A warm row whose width is not the loop's flat Newton-state width must
+    /// still make the snapshot Undef — including width 1, the free-joint
+    /// count, which is NOT the planar state width 3.
+    #[test]
+    fn snapshot_warm_start_row_width_mismatch_returns_undef() {
+        let (mech, bindings) = rotation_closure_around(planar_xy_joint_centred());
+        for width in [1, 4] {
+            let row = Value::List(vec![Value::Real(0.0); width]);
+            let s = eval_builtin(
+                "snapshot",
+                &[mech.clone(), bindings.clone(), Value::List(vec![row])],
+            );
+            assert!(
+                s.is_undef(),
+                "planar warm row of width {width} must make snapshot Undef, got {s:?}"
+            );
+        }
     }
 
     // ── KIN-OFFSET γ step-2 (B8 routes 2 + 4): no-bypass invariant ───────────────

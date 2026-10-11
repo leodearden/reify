@@ -509,9 +509,10 @@ fn make_sweep_dim(joint: Value, range: Value, steps: Value) -> Value {
 #[cfg(test)]
 mod tests {
     use crate::eval_builtin;
+    use crate::loop_closure_value::JointKind;
     use crate::test_fixtures::{
         angle_range_0_to_pi, axis_x_unit, axis_y_unit, axis_z_unit, length_range_0_to_1m,
-        planar_xy_joint,
+        planar_xy_joint, planar_xy_joint_centred,
     };
     use reify_ir::Value;
 
@@ -1669,24 +1670,10 @@ mod tests {
     // since that assertion pins each step to within 1e-6 m of a prediction
     // whose consecutive values are 0.25 m apart and so already implies it.
 
-    /// Closed-chain sweep produces N snapshots, each with non-empty
-    /// `free_values` whose single leaf matches the closed-form closure
-    /// prediction for that step's driver value.
-    #[test]
-    fn sweep_threads_warm_start_through_closed_chain_steps() {
+    /// Builds the fixture above around the closing-side free joint `j_b` and
+    /// returns `(mechanism, jA)`, `jA` being the joint to sweep.
+    fn closed_chain_with_closing_joint(j_b: Value) -> (Value, Value) {
         let j_a = eval_builtin("prismatic", &[axis_x_unit(), length_range_0_to_1m()]);
-        let j_b = eval_builtin(
-            "prismatic",
-            &[
-                axis_x_unit(),
-                Value::Range {
-                    lower: Some(Box::new(Value::length(0.0))),
-                    upper: Some(Box::new(Value::length(2.0))),
-                    lower_inclusive: true,
-                    upper_inclusive: true,
-                },
-            ],
-        );
 
         // jX: tree-side joint, structurally distinct from jA and jB by range.
         let j_x = eval_builtin(
@@ -1764,56 +1751,106 @@ mod tests {
             }
             other => panic!("expected Mechanism Map, got {:?}", other),
         }
+        (m3, j_a)
+    }
 
-        // Sweep jA over [0, 1]m in 5 steps → driver values: 0, 0.25, 0.5, 0.75, 1.0.
-        let result = eval_builtin("sweep", &[m3, j_a, length_range_0_to_1m(), Value::Int(5)]);
+    /// Sweeps jA over [0, 1]m in 5 steps (driver values 0, 0.25, 0.5,
+    /// 0.75, 1.0) and returns each step's single-loop `free_values` row.
+    fn sweep_single_loop_free_rows(mech: Value, j_a: Value) -> Vec<Vec<f64>> {
+        let result = eval_builtin("sweep", &[mech, j_a, length_range_0_to_1m(), Value::Int(5)]);
         let snaps = match result {
             Value::List(s) => s,
             other => panic!("sweep must return a List of snapshots, got {:?}", other),
         };
         assert_eq!(snaps.len(), 5, "sweep must produce 5 snapshots");
+        snaps
+            .iter()
+            .enumerate()
+            .map(|(i, snap)| {
+                let smap = match snap {
+                    Value::Map(m) => m,
+                    other => panic!("snap {i} must be a Map, got {:?}", other),
+                };
+                let fv = smap
+                    .get(&Value::String("free_values".to_string()))
+                    .unwrap_or_else(|| panic!("snap {i} must carry free_values"));
+                let outer = match fv {
+                    Value::List(l) => l,
+                    other => panic!("snap {i} free_values must be List, got {:?}", other),
+                };
+                assert_eq!(
+                    outer.len(),
+                    1,
+                    "snap {i} outer free_values must have one entry (one loop)"
+                );
+                let inner = match &outer[0] {
+                    Value::List(l) => l,
+                    other => panic!("snap {i} inner free_values must be List, got {:?}", other),
+                };
+                inner
+                    .iter()
+                    .map(|leaf| match leaf {
+                        Value::Real(r) => *r,
+                        other => panic!("snap {i} leaf must be Real, got {:?}", other),
+                    })
+                    .collect()
+            })
+            .collect()
+    }
 
-        // Per-step free_values shape + closure prediction.  Expected
-        // solved jB = driver + 0.25, so as driver increases 0→1, solved
-        // jB increases 0.25→1.25.
-        for (i, snap) in snaps.iter().enumerate() {
-            let smap = match snap {
-                Value::Map(m) => m,
-                other => panic!("snap {i} must be a Map, got {:?}", other),
-            };
-            let fv = smap
-                .get(&Value::String("free_values".to_string()))
-                .unwrap_or_else(|| panic!("snap {i} must carry free_values"));
-            let outer = match fv {
-                Value::List(l) => l,
-                other => panic!("snap {i} free_values must be List, got {:?}", other),
-            };
-            assert_eq!(
-                outer.len(),
-                1,
-                "snap {i} outer free_values must have one entry (one loop)"
-            );
-            let inner = match &outer[0] {
-                Value::List(l) => l,
-                other => panic!("snap {i} inner free_values must be List, got {:?}", other),
-            };
-            assert_eq!(
-                inner.len(),
-                1,
-                "snap {i} inner free_values must have one Real (jB)"
-            );
-            let solved = match &inner[0] {
-                Value::Real(r) => *r,
-                other => panic!("snap {i} leaf must be Real, got {:?}", other),
-            };
-            // Expected: driver + midpoint(jX) where driver = i / 4.0 m for
-            // 5 steps over [0,1] and midpoint(jX) = 0.25 m.
+    /// Closed-chain sweep produces N snapshots, each with non-empty
+    /// `free_values` whose single leaf matches the closed-form closure
+    /// prediction for that step's driver value.
+    #[test]
+    fn sweep_threads_warm_start_through_closed_chain_steps() {
+        let j_b = eval_builtin(
+            "prismatic",
+            &[
+                axis_x_unit(),
+                Value::Range {
+                    lower: Some(Box::new(Value::length(0.0))),
+                    upper: Some(Box::new(Value::length(2.0))),
+                    lower_inclusive: true,
+                    upper_inclusive: true,
+                },
+            ],
+        );
+        let (mech, j_a) = closed_chain_with_closing_joint(j_b);
+
+        // Expected solved jB = driver + midpoint(jX) = i/4 + 0.25 m.
+        for (i, row) in sweep_single_loop_free_rows(mech, j_a).iter().enumerate() {
+            assert_eq!(row.len(), 1, "snap {i} inner free_values must have one Real (jB)");
+            let solved = row[0];
             let driver = (i as f64) / 4.0;
             let expected = driver + 0.25;
             assert!(
                 (solved - expected).abs() < 1e-6,
                 "snap {i}: solved jB={solved} must match closure prediction {expected} (driver={driver})"
             );
+        }
+    }
+
+    /// Same closed chain with a free PLANAR closing-side joint: each step's
+    /// warm row is the planar flat state (x, y, θ), three wide, and the sweep
+    /// must thread it into the next step rather than collapse to Undef.
+    #[test]
+    fn sweep_warm_starts_closed_chain_with_free_planar_joint() {
+        let (mech, j_a) = closed_chain_with_closing_joint(planar_xy_joint_centred());
+
+        // Closure is a pure +X translation: (x, y, θ) = (i/4 + 0.25, 0, 0).
+        for (i, row) in sweep_single_loop_free_rows(mech, j_a).iter().enumerate() {
+            assert_eq!(
+                row.len(),
+                JointKind::Planar.flat_len(),
+                "snap {i}: planar free row must be the flat Newton state (x, y, θ)"
+            );
+            let expected = [(i as f64) / 4.0 + 0.25, 0.0, 0.0];
+            for (got, want) in row.iter().zip(expected) {
+                assert!(
+                    (got - want).abs() < 1e-6,
+                    "snap {i}: planar free row {row:?} must match closure prediction {expected:?}"
+                );
+            }
         }
     }
 

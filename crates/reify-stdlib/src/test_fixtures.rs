@@ -71,6 +71,51 @@ pub(crate) fn cylindrical_z_joint() -> Value {
     )
 }
 
+fn symmetric_length_range(half_width_m: f64) -> Value {
+    Value::Range {
+        lower: Some(Box::new(Value::length(-half_width_m))),
+        upper: Some(Box::new(Value::length(half_width_m))),
+        lower_inclusive: true,
+        upper_inclusive: true,
+    }
+}
+
+fn symmetric_angle_range_half_pi() -> Value {
+    let half_pi = std::f64::consts::FRAC_PI_2;
+    Value::Range {
+        lower: Some(Box::new(Value::angle(-half_pi))),
+        upper: Some(Box::new(Value::angle(half_pi))),
+        lower_inclusive: true,
+        upper_inclusive: true,
+    }
+}
+
+/// Planar XY joint whose range midpoint (its cold Newton seed) is `Planar([0, 0, 0])`.
+pub(crate) fn planar_xy_joint_centred() -> Value {
+    eval_builtin(
+        "planar",
+        &[
+            axis_x_unit(),
+            axis_y_unit(),
+            symmetric_length_range(2.0),
+            symmetric_length_range(2.0),
+            symmetric_angle_range_half_pi(),
+        ],
+    )
+}
+
+/// Cylindrical Z joint whose range midpoint (its cold Newton seed) is `Cyl([0, 0])`.
+pub(crate) fn cylindrical_z_joint_centred() -> Value {
+    eval_builtin(
+        "cylindrical",
+        &[
+            axis_z_unit(),
+            symmetric_length_range(1.0),
+            symmetric_angle_range_half_pi(),
+        ],
+    )
+}
+
 // ── KIN-OFFSET γ shared offset fixtures ──────────────────────────────────────
 //
 // Shared offset-joint constructors used by the joints/loop_closure/snapshot/
