@@ -212,6 +212,10 @@ pub(crate) struct TetReadback {
     pub(crate) mesh: VolumeMesh,
     /// gmsh node tag → that node's 0-based index in `mesh`. The attributed
     /// producer translates its entity-membership queries through it.
+    #[cfg_attr(
+        not(feature = "mesh-morph"),
+        expect(dead_code, reason = "only reader is the mesh-morph-gated mesh_boundary")
+    )]
     pub(crate) tag_to_idx: HashMap<u64, u32>,
 }
 
