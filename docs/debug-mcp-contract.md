@@ -52,33 +52,42 @@ a drift surface.  The invariant is enforced at test time (see below).
 | AI write tools (task 5097) | `reify_set_parameter`, `reify_update_source`, `reify_open_file`, `reify_save_file`, `reify_export` |
 
 > **Full realized scene (task 5348):** `engine_state` and `mesh_stats` report the
-> FULL realized scene — one mesh entry per rendered body, a full-scope snapshot via
-> `EngineSession::build_gui_state_full_scene` — so their mesh list stays consistent
-> with `viewport_state.meshCount` even while the frontend's delta path runs
+> FULL realized scene — one mesh entry per realized body, a full-scope snapshot via
+> `EngineSession::build_gui_state_full_scene` — so their rendered entries (below)
+> stay consistent with `viewport_state.meshCount` even while the frontend's delta path runs
 > selective demand (where the plain `build_gui_state` returns only the incremental
 > delta subset, per the engine_build.rs DELTA CONTRACT).
-> That consistency is ENFORCED end-to-end (task 5367) by
-> `gui/test/visual/smoke_mesh_count_parity_e2e.mjs` — live-only,
-> `npm --prefix gui run test:smoke:mesh-count-parity` — which asserts
-> `viewport_state.meshCount === mesh_stats.meshes.length === engine_state.meshes.length`;
-> its decision logic is CI-covered by `gui/test/visual/meshCountParity.test.ts`.
-> The smoke first requires `demand_dispatch.full_scope === false`, because under
-> full scope `build_gui_state` and `build_gui_state_full_scene` agree by
-> construction, so the parity would be trivially true and prove nothing.
-> The equality is CONDITIONAL on every realized body being in `show` visibility
-> state: `viewport_state.meshCount` counts `meshManager.getSceneMeshes()`, which
-> excludes ghosted and hidden meshes — and aux realizations (`default_visible:
-> false`) are default-hidden — whereas the two debug reads always report the full
-> realized scene. Hiding a body, or a fixture carrying an aux component, breaks
-> the equality legitimately.
->
 > Each mesh entry of both reads carries `default_visible` (task 6752): the
 > ENGINE's hidden-by-default verdict, `false` for aux and consumed-intermediate
 > realizations (#5195), joined from the entity tree's realization nodes. The
 > rendered set can therefore be reconstructed as the `default_visible == true`
 > entries, modulo user eye toggles, the selected view and DisplayOutput routing,
 > which are frontend state; `viewport_state` stays the authority for what is
-> drawn. The parity smoke above is unchanged (#6498 part b).
+> drawn.
+>
+> That consistency is ENFORCED end-to-end (tasks 5367, 6498) by
+> `gui/test/visual/smoke_mesh_count_parity_e2e.mjs` — live-only,
+> `npm --prefix gui run test:smoke:mesh-count-parity` — which asserts, under
+> selective demand,
+> `viewport_state.meshCount === count(mesh_stats.meshes, default_visible == true)
+> === count(engine_state.meshes, default_visible == true)`;
+> its decision logic is CI-covered by `gui/test/visual/meshCountParity.test.ts`.
+> The smoke first requires `demand_dispatch.full_scope === false`, because under
+> full scope `build_gui_state` and `build_gui_state_full_scene` agree by
+> construction, so the parity would be trivially true and prove nothing.
+> It runs two fixtures from `gui/test/fixtures/`: `large_assembly.ri` (aux-free,
+> 7 rendered) and `aux_assembly.ri` (aux-bearing, 3 rendered + 4 hidden). The
+> `default_visible == false` counts are floor-gated per fixture, never compared,
+> because `viewport_state.meshCount` counts only `show`-state meshes
+> (`meshManager.getSceneMeshes()`) and so cannot see hidden bodies; the hidden
+> floor keeps the aux fixture non-vacuous (aux bodies vanishing from the reads
+> fails) and pins the 6752 flag end to end. Each fixture's exact composition is
+> CI-pinned by `gui/src-tauri/src/tests/mesh_count_parity_fixture_tests.rs`.
+> The remaining legitimate breakers of the equality are frontend state: user eye
+> toggles (ghost/hide), the selected view, and DisplayOutput routing that shows a
+> hidden-by-default subject (autoViewGenerator rule -1), which is why the
+> fixtures carry no DisplayOutput.
+>
 > A `mesh_stats` entry is `{entity_path, vertex_count, face_count, bounding_box:
 > {min, max} | null, element_kind_count, default_visible}`; `element_kind_count`
 > is the per-face element-kind histogram (`{}` for a mesh with no shell
