@@ -1418,8 +1418,7 @@ mod tests {
     #[test]
     fn read_slice_settings_converts_layer_height_metres_to_mm() {
         use reify_core::DimensionVector;
-        // `0.2mm` evaluates to a Length Scalar of si_value 0.0002 m; `field_scalar`
-        // ignores the dimension, so LENGTH is just for realism.
+        // `0.2mm` evaluates to a Length Scalar of si_value 0.0002 m.
         let process = structure(
             "FDMProcess",
             vec![(
@@ -1430,7 +1429,8 @@ mod tests {
                 },
             )],
         );
-        let settings = read_slice_settings(&[Value::Undef, process, Value::Undef]);
+        let settings = read_slice_settings(&[Value::Undef, process, Value::Undef])
+            .expect("a LENGTH layer_height reads");
         assert_eq!(
             settings.layer_height, 0.2,
             "0.0002 m must convert to 0.2 mm, not stay 0.0002"
@@ -1447,8 +1447,28 @@ mod tests {
             "--layer-height must be 0.2 (mm), not 0.0002; got {args:?}"
         );
         // The Undef-process fallback is mm-consistent with the converted real path.
-        let undef = read_slice_settings(&[Value::Undef, Value::Undef, Value::Undef]);
+        let undef = read_slice_settings(&[Value::Undef, Value::Undef, Value::Undef])
+            .expect("an Undef process reads the defaults");
         assert_eq!(undef.layer_height, 0.2, "Undef fallback stays 0.2 mm");
+    }
+
+    /// task 6922 η: a bare `layer_height` is rejected, not read as metres.
+    #[test]
+    fn read_slice_settings_rejects_a_bare_layer_height() {
+        let process = structure("FDMProcess", vec![("layer_height", Value::Real(0.2))]);
+        let Err(rejection) = read_slice_settings(&[Value::Undef, process, Value::Undef]) else {
+            unreachable!("a bare layer_height must be rejected");
+        };
+        let diagnostic = rejection.to_error("fdm_slice");
+        assert_eq!(
+            diagnostic.code,
+            Some(DiagnosticCode::DimensionedArgRejected)
+        );
+        assert!(
+            diagnostic.message.contains("FDMProcess.layer_height"),
+            "got {:?}",
+            diagnostic.message
+        );
     }
 
     /// REVIEW-FIX (blocking issue 2/2, robustness_unit_mismatch): the STL

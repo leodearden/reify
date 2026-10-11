@@ -23,8 +23,10 @@
 
 use std::sync::Arc;
 
-use crate::common::as_printed::{as_printed_options, box_mesh, fdm_process, r0_toolpath_gcode, structure};
-use reify_core::{ContentHash, RealizationNodeId, Type};
+use crate::common::as_printed::{
+    as_printed_options, box_mesh, fdm_process, r0_toolpath_gcode, structure, with_field,
+};
+use reify_core::{ContentHash, DiagnosticCode, RealizationNodeId, Severity, Type};
 use reify_eval::compute_targets::as_printed_material::as_printed_material_r_fast_trampoline;
 use reify_eval::compute_targets::as_printed_material_r0::as_printed_material_r0_trampoline;
 use reify_eval::{CancellationHandle, ComputeOutcome, RealizationReadHandle, RealizedContent};
@@ -368,5 +370,37 @@ fn register_compute_fns_installs_fdm_as_printed_material_r0() {
             .compute_dispatch("fdm::as_printed_material_r_fast")
             .is_some(),
         "the R-fast rung must remain registered alongside the R0 rung"
+    );
+}
+
+/// task 6922 η: the R0 rung reads `FDMProcess.layer_height` through the same
+/// dimension-checked reader as R-fast, so a bare number is a coded `Failed`.
+#[test]
+fn r0_trampoline_rejects_a_bare_layer_height() {
+    let process = with_field(fdm_process(), "layer_height", Value::Real(0.0002));
+    let outcome = as_printed_material_r0_trampoline(
+        &[
+            Value::String(r0_toolpath_gcode().to_string()),
+            process,
+            as_printed_options(),
+        ],
+        &[],
+        &Value::Undef,
+        None,
+        &CancellationHandle::new(),
+    );
+    let ComputeOutcome::Failed { diagnostics, .. } = &outcome else {
+        panic!("a bare layer_height must yield Failed, got {outcome:?}");
+    };
+    assert_eq!(diagnostics.len(), 1, "exactly one diagnostic, got {diagnostics:?}");
+    assert_eq!(diagnostics[0].severity, Severity::Error);
+    assert_eq!(
+        diagnostics[0].code,
+        Some(DiagnosticCode::DimensionedArgRejected)
+    );
+    assert!(
+        diagnostics[0].message.contains("FDMProcess.layer_height"),
+        "got {:?}",
+        diagnostics[0].message
     );
 }
