@@ -20,7 +20,7 @@ use super::fault_injection::{self, ReservationSite};
 use super::outcome::{FactorReuse, NpdSite, SolveFailure, SolveStop};
 use super::policy::FactorEstimate;
 
-const F64_BYTES: u64 = size_of::<f64>() as u64;
+pub(crate) const F64_BYTES: u64 = size_of::<f64>() as u64;
 
 /// The symbolic structure of a factor: fill-reducing permutation, variant
 /// (simplicial or supernodal) and the factor's sparsity.
@@ -158,6 +158,7 @@ impl Factor {
 
 /// The symbolic analysis of `a`'s lower triangle.
 pub(crate) fn analyse(a: SymbolicSparseColMatRef<'_, usize>) -> Result<Symbolic, FaerError> {
+    fault_injection::symbolic_fault()?;
     let params = CholeskySymbolicParams {
         supernodal_flop_ratio_threshold: fault_injection::symbolic_threshold(),
         ..Default::default()

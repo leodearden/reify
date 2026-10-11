@@ -7,6 +7,7 @@
 //! armed with. A thread with no installed probe sees inert hooks either way,
 //! so parallel tests never observe each other.
 
+use faer::sparse::FaerError;
 use faer::sparse::linalg::SupernodalThreshold;
 use faer::sparse::linalg::cholesky::SymbolicCholeskyRaw;
 
@@ -15,9 +16,13 @@ pub use armed::{
     FaultProbe, INJECTED_NUMERIC_PANIC, NumericBarrier, ProbeGuard, Reservation, SymbolicVariant,
 };
 #[cfg(feature = "linear-solve-fault-injection")]
-pub(crate) use armed::{before_numeric, record_symbolic, reserve, symbolic_threshold};
+pub(crate) use armed::{
+    before_numeric, record_symbolic, reserve, symbolic_fault, symbolic_threshold,
+};
 #[cfg(not(feature = "linear-solve-fault-injection"))]
-pub(crate) use inert::{before_numeric, record_symbolic, reserve, symbolic_threshold};
+pub(crate) use inert::{
+    before_numeric, record_symbolic, reserve, symbolic_fault, symbolic_threshold,
+};
 
 /// The driver's two fallible numeric-step allocations, in the order made.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -34,6 +39,10 @@ pub(crate) struct Injected;
 #[cfg(not(feature = "linear-solve-fault-injection"))]
 mod inert {
     use super::*;
+
+    pub(crate) fn symbolic_fault() -> Result<(), FaerError> {
+        Ok(())
+    }
 
     pub(crate) fn symbolic_threshold() -> SupernodalThreshold {
         SupernodalThreshold::AUTO
@@ -77,6 +86,7 @@ mod armed {
 
     #[derive(Default)]
     struct State {
+        failing_symbolic: Option<FaerError>,
         forced_variant: Option<SymbolicVariant>,
         failing_site: Option<ReservationSite>,
         symbolic_variants: Vec<SymbolicVariant>,
@@ -152,6 +162,12 @@ mod armed {
             }
         }
 
+        /// Makes every later symbolic analysis fail with `error` before
+        /// faer runs it.
+        pub fn fail_symbolic(&self, error: FaerError) {
+            self.state().failing_symbolic = Some(error);
+        }
+
         /// Makes every later symbolic analysis produce `variant`.
         pub fn force_symbolic_variant(&self, variant: SymbolicVariant) {
             self.state().forced_variant = Some(variant);
@@ -223,6 +239,12 @@ mod armed {
     /// `f` applied to the installed probe's state; `None` with no probe.
     fn with_installed<R>(f: impl FnOnce(&mut State) -> R) -> Option<R> {
         INSTALLED.with_borrow(|probe| probe.as_ref().map(|probe| f(&mut probe.state())))
+    }
+
+    pub(crate) fn symbolic_fault() -> Result<(), FaerError> {
+        with_installed(|state| state.failing_symbolic)
+            .flatten()
+            .map_or(Ok(()), Err)
     }
 
     pub(crate) fn symbolic_threshold() -> SupernodalThreshold {

@@ -246,6 +246,22 @@ fn failed_numeric_scratch_reservation_is_out_of_memory_before_numeric() {
 }
 
 #[test]
+fn an_injected_symbolic_failure_reaches_split_cholesky_unchanged() {
+    for error in [FaerError::OutOfMemory, FaerError::IndexOverflow] {
+        let probe = FaultProbe::new();
+        probe.fail_symbolic(error);
+        let _g = probe.install();
+        match SplitCholesky::try_new(&tridiagonal(80)) {
+            Err(LltError::Generic(seen)) => assert_eq!(seen, error),
+            Err(other) => panic!("expected LltError::Generic({error:?}), got {other:?}"),
+            Ok(_) => panic!("a failed symbolic analysis must not produce a factor"),
+        }
+        assert_eq!(probe.symbolic_calls(), 0, "{error:?}");
+        assert!(probe.reservations().is_empty(), "{error:?}");
+    }
+}
+
+#[test]
 fn probe_sees_only_its_own_thread_and_only_while_installed() {
     let a = tridiagonal(80);
     let probe = FaultProbe::new();
@@ -1186,6 +1202,35 @@ fn a_failed_factor_reservation_is_out_of_memory_in_the_factor_phase() {
             "{site:?}"
         );
         assert_eq!(probe.numeric_calls(), 0, "{site:?}");
+    }
+}
+
+#[test]
+fn a_failed_symbolic_analysis_names_its_real_cause() {
+    let (n, nnz) = (8, 64);
+    let column_major_bytes =
+        ((n + 1) * size_of::<usize>() + nnz * (size_of::<usize>() + size_of::<f64>())) as u64;
+    for (error, failure) in [
+        (
+            FaerError::OutOfMemory,
+            SolveFailure::OutOfMemory {
+                requested: column_major_bytes,
+                phase: SolvePhase::Analyse,
+            },
+        ),
+        (FaerError::IndexOverflow, SolveFailure::IndexOverflow),
+    ] {
+        for choice in [LinearSolverChoice::Auto, LinearSolverChoice::Direct] {
+            let probe = FaultProbe::new();
+            probe.fail_symbolic(error);
+            let _g = probe.install();
+            assert_eq!(
+                prepare(&system(dense8()), choice, &SolvePolicy::default()).err(),
+                Some(SolveStop::Failed(failure)),
+                "{error:?} under {choice:?}"
+            );
+            assert_eq!(probe.symbolic_calls(), 0, "{error:?} under {choice:?}");
+        }
     }
 }
 

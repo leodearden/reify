@@ -4,10 +4,10 @@
 
 use std::sync::Arc;
 
-use faer::sparse::SparseColMat;
+use faer::sparse::{FaerError, SparseColMat};
 
 use super::control::{SolveControl, SolvePhase};
-use super::direct::{self, DirectTier, Symbolic};
+use super::direct::{self, DirectTier, F64_BYTES, Symbolic};
 use super::outcome::{FactorReuse, Solution, SolveFailure, SolveLimits, SolveReport, SolveStop};
 use super::pcg::{self, PcgOutcome};
 use super::policy::{
@@ -190,15 +190,14 @@ impl SpdSolver {
     }
 }
 
+const INDEX_BYTES: u64 = size_of::<usize>() as u64;
+
 /// The symbolic analysis of `system`.
 fn analyse(system: &SpdSystem) -> Result<Analysis, SolveFailure> {
     let k = system.matrix();
-    let out_of_memory = || SolveFailure::OutOfMemory {
-        requested: column_major_bytes(k.ncols(), k.compute_nnz()),
-        phase: SolvePhase::Analyse,
-    };
-    let csc = k.to_col_major().map_err(|_| out_of_memory())?;
-    let symbolic = direct::analyse(csc.as_ref().symbolic()).map_err(|_| out_of_memory())?;
+    let failure = |error| analyse_failure(error, column_major_bytes(k.ncols(), k.compute_nnz()));
+    let csc = k.to_col_major().map_err(failure)?;
+    let symbolic = direct::analyse(csc.as_ref().symbolic()).map_err(failure)?;
     Ok(Analysis {
         estimate: symbolic.estimate(),
         symbolic,
@@ -206,10 +205,23 @@ fn analyse(system: &SpdSystem) -> Result<Analysis, SolveFailure> {
     })
 }
 
-/// `8·(n+1) + 16·nnz`: the column pointers, and a row index and a value per
-/// stored entry.
+/// The typed failure for a `FaerError` of the analysis, whose reservations
+/// are bounded by the column-major copy's `column_major_bytes`.
+fn analyse_failure(error: FaerError, column_major_bytes: u64) -> SolveFailure {
+    match error {
+        FaerError::OutOfMemory => SolveFailure::OutOfMemory {
+            requested: column_major_bytes,
+            phase: SolvePhase::Analyse,
+        },
+        FaerError::IndexOverflow => SolveFailure::IndexOverflow,
+        other => unreachable!("faer 0.24's FaerError has no variant {other:?}"),
+    }
+}
+
+/// The column-major copy's size: `n+1` column pointers, and a row index and
+/// a value per stored entry.
 fn column_major_bytes(ncols: usize, nnz: usize) -> u64 {
     (ncols as u64 + 1)
-        .saturating_mul(8)
-        .saturating_add((nnz as u64).saturating_mul(16))
+        .saturating_mul(INDEX_BYTES)
+        .saturating_add((nnz as u64).saturating_mul(INDEX_BYTES + F64_BYTES))
 }

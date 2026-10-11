@@ -81,12 +81,17 @@ pub enum SolveFailure {
         ceiling: u64,
     },
     /// A reservation of `requested` bytes failed. In `Analyse` the figure is
-    /// the column-major copy of `K` (`8·(n+1) + 16·nnz`), which bounds the
-    /// same O(n + nnz) as faer's unexposed symbolic workspace.
+    /// the column-major copy of `K` — `n+1` column pointers, and a row index
+    /// and a value per stored entry — which bounds the same O(n + nnz) as
+    /// faer's unexposed symbolic workspace.
     OutOfMemory {
         requested: u64,
         phase: SolvePhase,
     },
+    /// The symbolic analysis counted more entries than its `usize` indices
+    /// can address (faer caps them at `isize::MAX`). `K` itself always fits,
+    /// so in practice this is the fill of a factor larger than any memory.
+    IndexOverflow,
 }
 
 /// Where a non-positive-definite `K` was detected.
@@ -159,6 +164,11 @@ impl fmt::Display for SolveFailure {
             Self::OutOfMemory { requested, phase } => write!(
                 f,
                 "out of memory reserving {requested} bytes in the {phase:?} phase"
+            ),
+            Self::IndexOverflow => write!(
+                f,
+                "system too large to factor: the symbolic analysis counted more entries than \
+                 its indices can address"
             ),
         }
     }
