@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { RawGuiState, RawConstraintData, EvaluationStatus, MechanismDescriptor, PublishedState, RawPublishedState } from '../types';
 import { CONSTRAINT_STATUSES } from '../types';
+import { makeRawConstraint } from './constraintFixtures';
 
 // Mock Tauri API modules
 vi.mock('@tauri-apps/api/core', () => ({
@@ -1040,16 +1041,6 @@ describe('onConstraintUpdate', () => {
     return mockListen.mock.calls[0][1] as (event: { payload: RawConstraintData }) => void;
   }
 
-  function payload(status: string): RawConstraintData {
-    return {
-      node_id: 'Box#constraint[0]',
-      expression: 'w > 0',
-      status,
-      label: null,
-      parameter_ids: ['Box.w'],
-    };
-  }
-
   it('subscribes to the constraint-update channel and returns its UnlistenFn', async () => {
     const unlisten = vi.fn();
     mockListen.mockResolvedValue(unlisten);
@@ -1065,7 +1056,7 @@ describe('onConstraintUpdate', () => {
     const callback = vi.fn();
     await onConstraintUpdate(callback);
 
-    const raw = payload(token);
+    const raw = makeRawConstraint(token);
     registeredHandler()({ payload: raw });
 
     expect(callback).toHaveBeenCalledTimes(1);
@@ -1077,11 +1068,12 @@ describe('onConstraintUpdate', () => {
     const callback = vi.fn();
     await onConstraintUpdate(callback);
 
-    const deliver = () => registeredHandler()({ payload: payload('Satisfied') });
+    const raw = makeRawConstraint('Satisfied');
+    const deliver = () => registeredHandler()({ payload: raw });
 
     expect(deliver).toThrow(Error);
     expect(deliver).toThrow('"Satisfied"');
-    expect(deliver).toThrow('Box#constraint[0]');
+    expect(deliver).toThrow(raw.node_id);
     expect(callback).not.toHaveBeenCalled();
   });
 });

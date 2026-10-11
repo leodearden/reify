@@ -7,6 +7,7 @@
 import { describe, it, expect } from 'vitest';
 import { convertRawMesh, convertRawGuiState, CONSTRAINT_STATUSES } from '../types';
 import type { RawMeshData, RawGuiState, RawConstraintData, DiagnosticInfo, FeaDiagnosticInfo, FeaConvergenceInfo } from '../types';
+import { makeRawConstraint } from './constraintFixtures';
 
 describe('convertRawMesh', () => {
   it('converts scalar_channels number[] → Float32Array when present', () => {
@@ -700,18 +701,8 @@ describe('convertRawGuiState — constraint verdict tokens', () => {
     return undefined;
   }
 
-  function rawConstraint(status: string): RawConstraintData {
-    return {
-      node_id: 'Box#constraint[0]',
-      expression: 'w > 0',
-      status,
-      label: 'lbl',
-      parameter_ids: ['Box.w'],
-    };
-  }
-
   it.each(CONSTRAINT_STATUSES)('passes the in-contract token %j through unchanged', (token) => {
-    const raw = rawConstraint(token);
+    const raw = makeRawConstraint(token);
     const state = convertRawGuiState(stateWith(raw));
     expect(state.constraints).toHaveLength(1);
     expect(state.constraints[0]).toStrictEqual(raw);
@@ -720,10 +711,11 @@ describe('convertRawGuiState — constraint verdict tokens', () => {
   // 'Satisfied' is the exact historical drift (the Rust enum variant name):
   // the boundary rejects it rather than lower-casing it.
   it.each(['Satisfied', 'VIOLATED', 'unknown', ''])('rejects the out-of-contract token %j by name', (token) => {
-    const error = errorThrownBy(() => convertRawGuiState(stateWith(rawConstraint(token))));
+    const raw = makeRawConstraint(token);
+    const error = errorThrownBy(() => convertRawGuiState(stateWith(raw)));
     expect(error).toBeInstanceOf(Error);
     expect(error?.message).toContain(JSON.stringify(token));
-    expect(error?.message).toContain('Box#constraint[0]');
+    expect(error?.message).toContain(raw.node_id);
     for (const accepted of CONSTRAINT_STATUSES) {
       expect(error?.message).toContain(accepted);
     }
