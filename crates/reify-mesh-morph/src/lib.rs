@@ -154,49 +154,6 @@ pub fn eligible(old_brep: BRep, new_brep: BRep) -> bool {
     )
 }
 
-/// Morph `old_mesh` to the shape described by `new_brep`, returning the
-/// deformed [`reify_types::VolumeMesh`] on success.
-///
-/// ## API contract (task #4)
-///
-/// The function commits the full public signature. The engine logic is deferred:
-///
-/// | Path | Behaviour |
-/// |------|-----------|
-/// | Ineligible edit | Returns `Err(MorphFailure::Ineligible(reason))` immediately |
-/// | Eligible edit | Returns `Err(MorphFailure::SolverError(...))` until PRD tasks #5–#9 land the engine |
-///
-/// ## Parameters
-///
-/// - `old_mesh` — the current tetrahedral mesh to deform.
-/// - `old_brep` / `new_brep` — boundary-rep snapshots for eligibility and
-///   boundary-node projection (PRD task #5).
-/// - `options` — quality thresholds and fictitious-stiffness parameters;
-///   see [`MorphOptions`].
-///
-/// ## Failure modes
-///
-/// See [`MorphFailure`] for the four-variant taxonomy. Only `Ineligible` is
-/// produced by this skeleton; the remaining three variants are wired in PRD
-/// tasks #7 and #9.
-pub fn morph(
-    old_mesh: &reify_ir::VolumeMesh,
-    old_brep: BRep,
-    new_brep: BRep,
-    options: &MorphOptions,
-) -> Result<reify_ir::VolumeMesh, MorphFailure> {
-    let _ = old_mesh;
-    let _ = options;
-    match eligibility::morph_eligible(old_brep, new_brep) {
-        Eligibility::Ineligible(reason) => Err(MorphFailure::Ineligible(reason)),
-        Eligibility::Eligible(_correspondence_map) => {
-            Err(MorphFailure::SolverError(SolverErrorPayload::new(
-                "engine not yet implemented (PRD docs/prds/v0_3/mesh-morphing.md tasks #5-#9)",
-            )))
-        }
-    }
-}
-
 // ── compose_morph: the real morph pipeline (task 4744 β) ───────────────────────
 
 /// Fraction of the source mesh's bounding-box diagonal below which the cheap
@@ -210,10 +167,10 @@ const LAPLACIAN_DISPLACEMENT_FRACTION: f64 = 0.05;
 /// Compose the landed morph primitives into the full morph pipeline used at the
 /// engine seam (task 4744 β / PRD `docs/prds/v0_3/mesh-morphing.md` task #10).
 ///
-/// Distinct from the [`morph`] skeleton: this fn additionally takes the source
-/// mesh's [`BoundaryAssociation`] (from the 4092 attributed VolumeMesh producer)
-/// and a `&dyn GeometryKernel` for the **new** BRep, so it can actually project
-/// boundary nodes and deform the mesh. Pipeline:
+/// This is the crate's morph entry point. It takes the source mesh's
+/// [`BoundaryAssociation`] (from the 4092 attributed VolumeMesh producer) and a
+/// `&dyn GeometryKernel` for the **new** BRep, so it can project boundary nodes
+/// and deform the mesh. Pipeline:
 ///
 /// 1. [`morph_eligible`] — Stage A + Stage B → [`CorrespondenceMap`].
 /// 2. [`compute_dirichlet_bcs`] over a [`KernelProjector`] — project each
@@ -529,18 +486,6 @@ mod tests {
         }
     }
 
-    fn empty_mesh() -> reify_ir::VolumeMesh {
-        reify_ir::VolumeMesh {
-            vertices: Vec::new(),
-            connectivity: reify_ir::VolumeConnectivity::Tet {
-                indices: Vec::new(),
-                order: reify_ir::ElementOrderTag::P1,
-            },
-            normals: None,
-            boundary: None,
-        }
-    }
-
     // ── Stage-B fixture helpers (mirrored from eligibility::tests) ────────────
 
     fn h(n: u64) -> GeometryHandleId {
@@ -587,48 +532,6 @@ mod tests {
         let old_brep = make_brep(&old_graph, &values, &table);
         let new_brep = make_brep(&new_graph, &values, &table);
         assert!(!eligible(old_brep, new_brep));
-    }
-
-    // ── Step-7/amendment: morph() Ineligible and Eligible paths ─────────────
-
-    #[test]
-    fn morph_returns_solver_error_on_eligible_path() {
-        // Verifies the Eligible arm of morph() returns SolverError (not panics)
-        // until the engine lands in PRD tasks #5–#9.
-        let id = ValueCellId::new("Part", "width");
-        let old_graph = graph_with_cell(&id, Type::length());
-        let new_graph = old_graph.clone();
-        let mut values = ValueMap::new();
-        values.insert(id, Value::length(0.05));
-        let table = TopologyAttributeTable::default();
-        let old_brep = make_brep(&old_graph, &values, &table);
-        let new_brep = make_brep(&new_graph, &values, &table);
-        let mesh = empty_mesh();
-        let options = MorphOptions::default();
-        let result = morph(&mesh, old_brep, new_brep, &options);
-        assert!(
-            matches!(result, Err(MorphFailure::SolverError(_))),
-            "eligible path should return SolverError (unimplemented), got: {result:?}"
-        );
-    }
-
-    #[test]
-    fn morph_returns_ineligible_failure_on_stage_a_structural_change() {
-        let id = ValueCellId::new("Part", "width");
-        let old_graph = graph_with_cell(&id, Type::length());
-        let new_graph = diverged_graph(&old_graph);
-        let mut values = ValueMap::new();
-        values.insert(id, Value::length(0.05));
-        let table = TopologyAttributeTable::default();
-        let old_brep = make_brep(&old_graph, &values, &table);
-        let new_brep = make_brep(&new_graph, &values, &table);
-        let mesh = empty_mesh();
-        let options = MorphOptions::default();
-        let result = morph(&mesh, old_brep, new_brep, &options);
-        assert!(matches!(
-            result,
-            Err(MorphFailure::Ineligible(Reason::StructuralChange))
-        ));
     }
 
     // ── Step-31: lib re-exports make boundary module public surface accessible ─
@@ -791,122 +694,6 @@ mod tests {
         let _fn_ref: fn(BRep, BRep) -> bool = eligible;
         let _ = _fn_ref;
     };
-
-    // ── Step 3 (task 3153): pin the by-value `morph` signature ───────────────
-
-    // Compile fence: fails to compile until `morph` takes `BRep` by value.
-    // `old_mesh` and `options` remain `&`-bound (not `Copy`).
-    #[allow(unused)]
-    const _: fn() = || {
-        let _fn_ref: fn(
-            &reify_ir::VolumeMesh,
-            BRep,
-            BRep,
-            &MorphOptions,
-        ) -> Result<reify_ir::VolumeMesh, MorphFailure> = morph;
-        let _ = _fn_ref;
-    };
-
-    // ── Steps 1-2 (task 3142): Stage-B regression guards ─────────────────────
-
-    #[test]
-    fn morph_returns_ineligible_bijection_failure_on_stage_b_count_mismatch() {
-        // Regression guard: morph() must project Stage-B CountMismatch into
-        // MorphFailure::Ineligible(Reason::BijectionFailure(_)), not SolverError
-        // or panic.
-        let id = ValueCellId::new("Part", "width");
-        let old_graph = graph_with_cell(&id, Type::length());
-        let new_graph = old_graph.clone();
-        let mut values = ValueMap::new();
-        values.insert(id, Value::length(0.05));
-
-        // old: 1 face with Cap(Top); new: 2 faces Cap(Top)+Cap(Bottom).
-        // Stage A passes (identical graphs); Stage B rejects on CountMismatch.
-        let mut old_table = TopologyAttributeTable::default();
-        old_table.record(KernelHandle { kernel: KernelId::Occt, id: h(10) }, attr(Role::Cap(CapKind::Top), 0));
-
-        let mut new_table = TopologyAttributeTable::default();
-        new_table.record(KernelHandle { kernel: KernelId::Occt, id: h(20) }, attr(Role::Cap(CapKind::Top), 0));
-        new_table.record(KernelHandle { kernel: KernelId::Occt, id: h(21) }, attr(Role::Cap(CapKind::Bottom), 1));
-
-        let old_brep = BRep {
-            graph: &old_graph,
-            values: &values,
-            topology_attributes: &old_table,
-            faces: &[h(10)],
-            edges: &[],
-            vertices: &[],
-        };
-        let new_brep = BRep {
-            graph: &new_graph,
-            values: &values,
-            topology_attributes: &new_table,
-            faces: &[h(20), h(21)],
-            edges: &[],
-            vertices: &[],
-        };
-
-        let mesh = empty_mesh();
-        let options = MorphOptions::default();
-        let result = morph(&mesh, old_brep, new_brep, &options);
-        assert!(
-            matches!(
-                result,
-                Err(MorphFailure::Ineligible(Reason::BijectionFailure(_)))
-            ),
-            "Stage-B CountMismatch should project to MorphFailure::Ineligible(BijectionFailure), got: {result:?}"
-        );
-    }
-
-    #[test]
-    fn morph_returns_ineligible_naming_layer_error_on_stage_b_imported_geometry() {
-        // Regression guard: morph() must project Stage-B NamingLayerError::Imported
-        // into MorphFailure::Ineligible(Reason::NamingLayerError {..}), not into
-        // Reason::BijectionFailure or SolverError.
-        let id = ValueCellId::new("Part", "width");
-        let old_graph = graph_with_cell(&id, Type::length());
-        let new_graph = old_graph.clone();
-        let mut values = ValueMap::new();
-        values.insert(id, Value::length(0.05));
-
-        // Empty tables + non-empty face slices → Stage B surfaces
-        // BijectionFailure::NamingLayerError { kind: Face, reason: Imported },
-        // which morph_eligible projects to top-level Reason::NamingLayerError.
-        let old_table = TopologyAttributeTable::default();
-        let new_table = TopologyAttributeTable::default();
-
-        let old_brep = BRep {
-            graph: &old_graph,
-            values: &values,
-            topology_attributes: &old_table,
-            faces: &[h(10)],
-            edges: &[],
-            vertices: &[],
-        };
-        let new_brep = BRep {
-            graph: &new_graph,
-            values: &values,
-            topology_attributes: &new_table,
-            faces: &[h(20)],
-            edges: &[],
-            vertices: &[],
-        };
-
-        let mesh = empty_mesh();
-        let options = MorphOptions::default();
-        let result = morph(&mesh, old_brep, new_brep, &options);
-        assert!(
-            matches!(
-                result,
-                Err(MorphFailure::Ineligible(Reason::NamingLayerError {
-                    kind: SubShapeKind::Face,
-                    reason: NamingLayerErrorReason::Imported,
-                }))
-            ),
-            "Stage-B NamingLayerError::Imported should project to \
-             MorphFailure::Ineligible(Reason::NamingLayerError), got: {result:?}"
-        );
-    }
 
     // ── Step-7 (task 4744 β): compose_morph success path ─────────────────────
 
@@ -1125,7 +912,7 @@ mod tests {
         });
     }
 
-    // ── compose_morph: Ineligible projection (re-homed from the deleted morph() skeleton tests) ──
+    // ── compose_morph: Ineligible projection (re-homed from the deleted `morph` skeleton's tests) ──
 
     #[test]
     fn compose_morph_stage_a_structural_change_returns_ineligible_and_records_structural_bucket() {

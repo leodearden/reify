@@ -65,7 +65,7 @@ pub enum StiffnessRule {
 
 // ── MorphFailure ──────────────────────────────────────────────────────────────
 
-/// Structured failure result from [`crate::morph`].
+/// Structured failure result from [`crate::compose_morph`].
 ///
 /// Four variants covering the full failure-mode taxonomy in PRD
 /// `docs/prds/v0_3/mesh-morphing.md` §"Failure-mode visibility":
