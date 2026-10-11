@@ -49,6 +49,7 @@ pub mod pdssentinel;
 pub mod pdiag;
 pub mod pdoccover;
 pub mod pdoccover_baseline;
+pub mod ratchet_ledger;
 pub mod pdcheck;
 pub mod pcite;
 pub mod pprdstatus;
