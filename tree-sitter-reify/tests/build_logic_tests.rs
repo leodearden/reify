@@ -124,18 +124,6 @@ fn make_attested_src_dir(base: &Path) -> std::path::PathBuf {
     src_dir
 }
 
-/// Duplicates stamp-write logic from build.rs for testability.
-/// Writes the grammar hash to the stamp file, warning on failure instead of panicking.
-fn stamp_write(stamp_path: &Path, grammar_hash: &str) {
-    std::fs::write(stamp_path, grammar_hash).unwrap_or_else(|e| {
-        eprintln!(
-            "cargo:warning=Failed to write stamp file {}: {}",
-            stamp_path.display(),
-            e
-        );
-    });
-}
-
 #[test]
 fn test_needs_generate_true_when_no_stamp() {
     let dir = tempfile::tempdir().unwrap();
@@ -310,7 +298,7 @@ fn test_gating_predicates_converge_after_one_regeneration() {
     // OUT_DIR stamp written — exactly what build.rs's branch does.
     let sha = sha256_of_path(&grammar).unwrap().unwrap();
     write_shell_stamps(&src_dir, &sha);
-    std::fs::write(&out_stamp, &grammar_hash).unwrap();
+    write_out_dir_grammar_stamp(&out_stamp, &grammar_hash);
 
     // Round 2: settled. And round 3, so "settled" is a fixed point rather than
     // an alternation.
@@ -432,13 +420,12 @@ fn test_run_with_timeout_reports_spawn_failure() {
 #[test]
 #[cfg(unix)] // set_readonly(true) on a directory only prevents file creation on Unix (POSIX);
 // on Windows the readonly attribute does NOT block creating files within the directory.
-fn test_stamp_write_failure_no_panic() {
+fn test_out_dir_grammar_stamp_write_failure_does_not_panic() {
     if is_root() {
         eprintln!("skipping: test requires non-root user (root bypasses DAC permissions)");
         return;
     }
-    // Verify that stamp_write does not panic when the destination is read-only.
-    // This mirrors build.rs behavior where write failure emits a warning instead of panicking.
+    // A write failure on the OUT_DIR stamp warns instead of panicking.
     let dir = tempfile::tempdir().unwrap();
     let readonly_dir = dir.path().join("readonly");
     std::fs::create_dir_all(&readonly_dir).unwrap();
@@ -454,7 +441,7 @@ fn test_stamp_write_failure_no_panic() {
     let stamp_path = readonly_dir.join("grammar_hash.stamp");
 
     // Should not panic — just warn
-    stamp_write(&stamp_path, "somehash");
+    write_out_dir_grammar_stamp(&stamp_path, "somehash");
 
     // Verify the stamp was NOT written (write should have failed)
     assert!(
@@ -464,8 +451,8 @@ fn test_stamp_write_failure_no_panic() {
 }
 
 #[test]
-fn test_stamp_write_exact_content() {
-    // Validates that stamp_write produces exact hash bytes with no trailing
+fn test_out_dir_grammar_stamp_exact_content() {
+    // Validates that the OUT_DIR stamp holds exact hash bytes with no trailing
     // whitespace, newline, or other content corruption. Since needs_generate
     // uses .trim() when reading, corruption would be silently masked without
     // this direct content assertion.
@@ -473,12 +460,12 @@ fn test_stamp_write_exact_content() {
     let stamp_path = dir.path().join("grammar_hash.stamp");
     let hash = "a1b2c3d4e5f60708";
 
-    stamp_write(&stamp_path, hash);
+    write_out_dir_grammar_stamp(&stamp_path, hash);
 
     let raw_content = std::fs::read_to_string(&stamp_path).unwrap();
     assert_eq!(
         raw_content, hash,
-        "stamp_write must produce exact hash bytes — no trailing newline, whitespace, or BOM. \
+        "the OUT_DIR stamp must hold exact hash bytes — no trailing newline, whitespace, or BOM. \
          Got {:?}, expected {:?}",
         raw_content, hash
     );
@@ -509,9 +496,9 @@ fn test_stamp_path_is_profile_independent() {
     // Write matching stamp to both profiles
     let debug_stamp = debug_out.join("grammar_hash.stamp");
     let release_stamp = release_out.join("grammar_hash.stamp");
-    stamp_write(&debug_stamp, &hash);
+    write_out_dir_grammar_stamp(&debug_stamp, &hash);
     assert_eq!(std::fs::read_to_string(&debug_stamp).unwrap(), hash);
-    stamp_write(&release_stamp, &hash);
+    write_out_dir_grammar_stamp(&release_stamp, &hash);
     assert_eq!(std::fs::read_to_string(&release_stamp).unwrap(), hash);
 
     // Both profiles report no regeneration needed
@@ -563,7 +550,7 @@ fn test_stamp_shared_across_simulated_profiles() {
     let stamp_2 = out_dir_2.join("grammar_hash.stamp");
 
     // Write stamp to only OUT_DIR_1
-    stamp_write(&stamp_1, &hash);
+    write_out_dir_grammar_stamp(&stamp_1, &hash);
     assert_eq!(std::fs::read_to_string(&stamp_1).unwrap(), hash);
 
     // OUT_DIR_1 has matching stamp — no regeneration needed
@@ -578,7 +565,7 @@ fn test_stamp_shared_across_simulated_profiles() {
     );
 
     // Now write the same stamp to OUT_DIR_2
-    stamp_write(&stamp_2, &hash);
+    write_out_dir_grammar_stamp(&stamp_2, &hash);
     assert_eq!(std::fs::read_to_string(&stamp_2).unwrap(), hash);
 
     // Both locations now report no regeneration needed
