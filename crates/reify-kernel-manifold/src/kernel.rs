@@ -22,17 +22,11 @@
 //! (`reify_eval::propagate_via_kernel_attribute_hook`) routes Manifold ops
 //! through the hook.
 //!
-//! ## Task-9-pending stub semantics
+//! ## Attribute propagation
 //!
-//! [`KernelAttributeHook::propagate_attributes`] currently returns
-//! `Ok(KernelAttributeOutcome::Discarded)` and emits a
-//! `tracing::warn!(reason="task_9_pending", …)` event before returning.
-//! The Manifold C++ FFI is wired and the manifold3d accessors
-//! (`originalID`, `MeshGL.run_*`, merge vectors, etc.) are reachable from
-//! this crate, but the actual MeshGL walk is implemented in
-//! persistent-naming-v2 PRD task 9 (a separate task that depends on this
-//! crate's FFI wiring). The trait surface is stable across that swap; only
-//! the body changes.
+//! [`KernelAttributeHook::propagate_attributes`] walks the boolean result's
+//! `MeshGL64` provenance and returns `Propagated`; it returns `Discarded`
+//! with one WARN only on the degenerate path (see the impl's rustdoc).
 
 use std::collections::HashMap;
 
@@ -1483,9 +1477,6 @@ mod tests {
     /// construction, and the `tessellate` boundary intentionally ignores
     /// the caller-supplied tolerance for the v0.2 path. Step-8 wires
     /// `tessellate` via `Manifold::to_mesh_f64()`.
-    ///
-    /// Currently fails because `tessellate` returns the stub
-    /// `TessError::TessellationFailed`.
     #[cfg(feature = "test-fixtures")]
     #[test]
     fn tessellate_of_stored_union_returns_nonempty_mesh() {
@@ -1614,7 +1605,7 @@ mod tests {
             ),
         }
 
-        // (b) Table is unchanged: stub does not write spurious entries.
+        // (b) Table is unchanged: the degenerate path does not write spurious entries.
         assert!(
             table.is_empty(),
             "Manifold Discarded path must not write to TopologyAttributeTable — \
