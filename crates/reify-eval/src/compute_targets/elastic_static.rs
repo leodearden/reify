@@ -5264,29 +5264,25 @@ fn parse_pressure_spec(
 /// Extract all `PressureLoad` StructureInstances from a `Value::List`.
 ///
 /// Items that are not `PressureLoad` (e.g. `PointLoad`, `FixedSupport`) are
-/// silently skipped — the caller is responsible for handling them separately.
-///
-/// Returns an empty Vec if the list contains no `PressureLoad` items.
+/// skipped — the caller is responsible for handling them separately. Errs
+/// exactly where [`extract_loads`] does: a non-List `val`, or a magnitude of
+/// the wrong dimension.
 ///
 /// Production code uses the combined [`extract_loads`] (single pass over both
 /// `PointLoad` and `PressureLoad`).  This function is kept for targeted unit
 /// testing of the pressure-extraction path in isolation.
 #[cfg(test)]
-pub(crate) fn extract_pressure_loads(val: &Value) -> Vec<PressureSpec> {
-    let items = match val {
-        Value::List(v) => v,
-        _ => return vec![],
-    };
+fn extract_pressure_loads(val: &Value) -> Result<Vec<PressureSpec>, FeaValueShapeError> {
     let mut result = Vec::new();
-    for item in items.iter() {
+    for item in load_items(val, "extract_pressure_loads")? {
         if let Value::StructureInstance(data) = item
             && data.type_name == "PressureLoad"
-            && let Ok(Some(spec)) = parse_pressure_spec(data)
+            && let Some(spec) = parse_pressure_spec(data)?
         {
             result.push(spec);
         }
     }
-    result
+    Ok(result)
 }
 
 /// Map a face-name string to `(axis, at_max, extent, inward_normal)`.
@@ -7611,7 +7607,7 @@ mod tests {
 
         let loads = Value::List(vec![pressure_load, point_load]);
 
-        let specs = extract_pressure_loads(&loads);
+        let specs = extract_pressure_loads(&loads).expect("a bare magnitude reads");
 
         assert_eq!(
             specs.len(),
@@ -7624,7 +7620,8 @@ mod tests {
         assert_eq!(specs[0].direction, "normal");
 
         // Also assert that a bare empty list → empty Vec.
-        let empty_specs = extract_pressure_loads(&Value::List(vec![]));
+        let empty_specs =
+            extract_pressure_loads(&Value::List(vec![])).expect("an empty list reads");
         assert!(empty_specs.is_empty(), "empty list should return empty Vec");
     }
 
@@ -7680,7 +7677,7 @@ mod tests {
         let loads = Value::List(vec![pressure_load]);
 
         // (a) extract_pressure_loads — the isolated pressure path.
-        let specs = extract_pressure_loads(&loads);
+        let specs = extract_pressure_loads(&loads).expect("a bare magnitude reads");
         assert_eq!(
             specs.len(),
             1,
@@ -7759,7 +7756,8 @@ mod tests {
             Some("x_max"),
             "Option(Some(Selector(Named))) must recurse+unwrap to the face name"
         );
-        let specs = extract_pressure_loads(&make_pressure_list(wrapped));
+        let specs =
+            extract_pressure_loads(&make_pressure_list(wrapped)).expect("a bare magnitude reads");
         assert_eq!(
             specs.len(),
             1,
@@ -7776,11 +7774,52 @@ mod tests {
             None,
             "Option(None) is the `= none` default → no face name"
         );
-        let none_specs = extract_pressure_loads(&make_pressure_list(Value::Option(None)));
+        let none_specs = extract_pressure_loads(&make_pressure_list(Value::Option(None)))
+            .expect("a face-less load is skipped, not rejected");
         assert!(
             none_specs.is_empty(),
             "Option(None) face (the `= none` default) must skip the load, got {} spec(s)",
             none_specs.len()
+        );
+    }
+
+    /// task 6922 γ1: the isolated pressure path refuses a magnitude of the
+    /// wrong dimension exactly as `extract_loads` does, rather than dropping
+    /// the load.
+    #[test]
+    fn extract_pressure_loads_rejects_a_force_magnitude() {
+        use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId};
+
+        let fields: PersistentMap<String, Value> = [
+            (
+                "magnitude".to_string(),
+                Value::Scalar {
+                    si_value: 1.0e6,
+                    dimension: DimensionVector::FORCE,
+                },
+            ),
+            ("face".to_string(), Value::String("x_max".to_string())),
+        ]
+        .into_iter()
+        .collect();
+        let loads = Value::List(vec![Value::StructureInstance(Box::new(
+            StructureInstanceData {
+                type_name: "PressureLoad".to_string(),
+                type_id: StructureTypeId(u32::MAX),
+                version: 0,
+                fields,
+            },
+        ))]);
+
+        let isolated = extract_pressure_loads(&loads);
+        assert!(
+            matches!(isolated, Err(FeaValueShapeError::WrongDimension { .. })),
+            "got {isolated:?}"
+        );
+        assert_eq!(
+            isolated.err(),
+            extract_loads(&loads, 0.0).err(),
+            "both pressure paths must reject the same way"
         );
     }
 

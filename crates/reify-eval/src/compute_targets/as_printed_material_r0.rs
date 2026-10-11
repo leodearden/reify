@@ -49,10 +49,10 @@ use reify_fdm::{
 use reify_ir::{OpaqueState, Value};
 
 use super::as_printed_material::{
-    as_printed_field_value, field_int, field_real, field_scalar, field_vec3, orthotropic_material,
-    read_base_elastic, rejected_outcome, struct_data, structure,
+    AS_PRINTED_MATERIAL, as_printed_field_value, field_int, field_real, field_scalar, field_vec3,
+    orthotropic_material, read_base_elastic, struct_data, structure,
 };
-use super::MM_TO_M;
+use super::{MM_TO_M, rejected_input_outcome};
 use crate::arg_acceptance::{FieldRejection, length_spec};
 use crate::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
 
@@ -79,7 +79,7 @@ pub fn as_printed_material_r0_trampoline(
             diagnostics: Vec::new(),
             structured_detail: vec![],
         },
-        Err(rejection) => rejected_outcome(&rejection),
+        Err(rejection) => rejected_input_outcome(rejection.to_error(AS_PRINTED_MATERIAL)),
     }
 }
 

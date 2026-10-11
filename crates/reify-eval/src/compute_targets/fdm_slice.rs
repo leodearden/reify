@@ -29,6 +29,7 @@ use reify_fdm::{
 use reify_ir::{OpaqueState, Value};
 
 use super::as_printed_material::{field_int, field_real, field_scalar, struct_data, structure};
+use super::rejected_input_outcome;
 use crate::arg_acceptance::{FieldRejection, length_spec};
 use crate::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
 
@@ -234,12 +235,7 @@ pub(crate) fn fdm_slice_dispatch(
     // is installed.
     let settings = match read_slice_settings(value_inputs) {
         Ok(settings) => settings,
-        Err(rejection) => {
-            return ComputeOutcome::Failed {
-                diagnostics: vec![rejection.to_error("fdm_slice")],
-                structured_detail: vec![],
-            };
-        }
+        Err(rejection) => return rejected_input_outcome(rejection.to_error("fdm_slice")),
     };
     let Some(bin) = slicer_bin else {
         return ComputeOutcome::Completed {

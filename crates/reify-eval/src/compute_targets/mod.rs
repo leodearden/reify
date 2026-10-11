@@ -424,6 +424,17 @@ pub(crate) fn sampled_error_indicator_field(sf: SampledField) -> Value {
     }
 }
 
+// ── Rejected-input outcome ──────────────────────────────────────────────────
+
+/// The `Failed` outcome of a trampoline whose input gate rejected an argument:
+/// exactly that one `error`, no structured detail.
+pub(crate) fn rejected_input_outcome(error: reify_core::Diagnostic) -> crate::ComputeOutcome {
+    crate::ComputeOutcome::Failed {
+        diagnostics: vec![error],
+        structured_detail: vec![],
+    }
+}
+
 // ── Scalar / point / list builders (form-find result encoding) ──────────────
 //
 // The form-find trampoline emits its result as plain dimensioned `Value::Scalar`

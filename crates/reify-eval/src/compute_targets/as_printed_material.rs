@@ -49,6 +49,7 @@ use reify_ir::{
     FieldSourceKind, OpaqueState, PersistentMap, StructureInstanceData, StructureTypeId, Value,
 };
 
+use super::rejected_input_outcome;
 use crate::arg_acceptance::{
     ArgSpec, FieldAcceptance, FieldRejection, accept_field, density_spec, dimensionless_spec,
     length_spec, pressure_spec,
@@ -85,17 +86,13 @@ pub fn as_printed_material_r_fast_trampoline(
             diagnostics: Vec::new(),
             structured_detail: vec![],
         },
-        Err(rejection) => rejected_outcome(&rejection),
+        Err(rejection) => rejected_input_outcome(rejection.to_error(AS_PRINTED_MATERIAL)),
     }
 }
 
-/// The `Failed` outcome of an as-printed field `rejection`.
-pub(crate) fn rejected_outcome(rejection: &FieldRejection) -> ComputeOutcome {
-    ComputeOutcome::Failed {
-        diagnostics: vec![rejection.to_error("as_printed_material")],
-        structured_detail: vec![],
-    }
-}
+/// The builtin both as-printed rungs (R-fast and R0) implement, named in their
+/// rejection diagnostics.
+pub(crate) const AS_PRINTED_MATERIAL: &str = "as_printed_material";
 
 /// Build the `AsPrintedZones` material field: `Ok(None)` if any required input
 /// is missing or unresolved (caller degrades to [`degraded_field`]), `Err` if a

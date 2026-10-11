@@ -6,21 +6,12 @@
 
 use reify_core::{Diagnostic, DiagnosticCode};
 
+use super::rejected_input_outcome;
 use crate::ComputeOutcome;
 
-/// Errors produced by the FEA `Value`-shape leaf extractors/classifiers when
-/// the input does not match the expected shape (PRD compute-fea-hardening
-/// §C3).
-///
-/// This module's extract/classify helpers were migrated (tasks D2-D9) from
-/// "panic on malformed `Value`" to `Result<_, FeaValueShapeError>`. D9 (task
-/// 5087) completed the migration: every production call site in
-/// `solve_elastic_static_trampoline` now runs through that fn's
-/// validate-all-inputs gate, which `match`es each `Result` and returns
-/// `ComputeOutcome::Failed` with a diagnostic naming the offending arg on the
-/// first `Err`, instead of panicking. The transitional `FeaShimExt::fea_shim`
-/// bridging shim (D2-D8) has been removed.
-#[allow(dead_code)] // ExpectedStructureInstance is constructed by D3/D5/D7, not D2
+/// Why an FEA input `Value` does not have the shape its reader expects (PRD
+/// compute-fea-hardening §C3). The readers that produce it live in
+/// `elastic_static`, `fea_loads` and `buckling`.
 #[derive(Debug, Clone, PartialEq)]
 pub(super) enum FeaValueShapeError {
     /// Expected a `Value::StructureInstance`, got something else.
@@ -110,8 +101,5 @@ pub(super) fn failed_outcome(
     if let Some(code) = err.diagnostic_code() {
         diagnostic = diagnostic.with_code(code);
     }
-    ComputeOutcome::Failed {
-        diagnostics: vec![diagnostic],
-        structured_detail: vec![],
-    }
+    rejected_input_outcome(diagnostic)
 }
