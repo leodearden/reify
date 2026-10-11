@@ -52,6 +52,7 @@ pub mod warm_registry;
 
 pub use annotation::{Annotation, AnnotationArg, AnnotationArgValue, has_test_annotation};
 pub use color::Rgb8;
+pub use dense_sdf::{DenseSdfGrid, ImplicitGridError, ImplicitOptions};
 pub use boundary_attachment::{BoundaryAssociation, NodeAttachment};
 pub use constraint::{
     AutoParam, ComputeDispatch, ConstraintChecker, ConstraintDiagnostics, ConstraintDomain,

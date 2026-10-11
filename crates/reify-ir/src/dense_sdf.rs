@@ -1,3 +1,239 @@
+//! The f32 dense signed-distance sample carrier and the ingest options for
+//! implicit solids. All lengths are SI metres; samples sit at voxel centres
+//! `centre + (i − (n−1)/2)·h` per axis, stored X-outermost row-major (the
+//! layout `densify_grid_to_sampled` reads back). Resolution, padding and the
+//! activation policy are `docs/prds/v0_6/implicit-solids.md` D-7 / D-8.
+
+use std::fmt;
+
+use reify_core::ContentHash;
+
+/// Options for ingesting a [`DenseSdfGrid`] as a level-set solid.
+///
+/// `band_voxels` is both the per-side padding of the grid and the ±clamp of
+/// the stored distances (D-8); see [`Self::band_half_width`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ImplicitOptions {
+    voxel_size: f64,
+    band_voxels: u32,
+}
+
+impl ImplicitOptions {
+    pub fn new(voxel_size: f64, band_voxels: u32) -> Result<Self, ImplicitGridError> {
+        if !is_valid_voxel_size(voxel_size) {
+            return Err(ImplicitGridError::InvalidVoxelSize { value: voxel_size });
+        }
+        if band_voxels == 0 {
+            return Err(ImplicitGridError::ZeroBand);
+        }
+        Ok(Self {
+            voxel_size,
+            band_voxels,
+        })
+    }
+
+    pub fn voxel_size(&self) -> f64 {
+        self.voxel_size
+    }
+
+    pub fn band_voxels(&self) -> u32 {
+        self.band_voxels
+    }
+
+    /// The narrow-band half width `band_voxels · voxel_size`: the ± clamp on
+    /// every stored distance and the level set's background value.
+    pub fn band_half_width(&self) -> f64 {
+        f64::from(self.band_voxels) * self.voxel_size
+    }
+
+    /// Cache key for these options. Wire order is fixed: domain tag →
+    /// `voxel_size` LE bytes → `band_voxels` LE bytes. The domain tag keeps the
+    /// hash away from the `ContentHash(0)` NO_OPTIONS sentinel.
+    pub fn content_hash(&self) -> ContentHash {
+        ContentHash::of_str("ImplicitOptions")
+            .combine(ContentHash::of(&self.voxel_size.to_le_bytes()))
+            .combine(ContentHash::of(&self.band_voxels.to_le_bytes()))
+    }
+}
+
+/// A dense, axis-aligned block of f32 signed-distance samples.
+#[derive(Clone, PartialEq)]
+pub struct DenseSdfGrid {
+    dims: [u32; 3],
+    centre: [f64; 3],
+    h: f64,
+    data: Vec<f32>,
+}
+
+impl DenseSdfGrid {
+    /// Samples `f` at every voxel centre. Every argument is validated before
+    /// anything is allocated or sampled, and a sample that is not finite once
+    /// stored as f32 is refused, naming its voxel. The fill is sequential, so
+    /// the result is deterministic for a deterministic `f`.
+    pub fn from_fn(
+        dims: [u32; 3],
+        centre: [f64; 3],
+        h: f64,
+        mut f: impl FnMut([f64; 3]) -> f64,
+    ) -> Result<Self, ImplicitGridError> {
+        if let Some(axis) = dims.iter().position(|&n| n == 0) {
+            return Err(ImplicitGridError::EmptyAxis { axis, dims });
+        }
+        if !is_valid_voxel_size(h) {
+            return Err(ImplicitGridError::InvalidVoxelSize { value: h });
+        }
+        if !centre.iter().all(|c| c.is_finite()) {
+            return Err(ImplicitGridError::NonFiniteCentre { centre });
+        }
+        let count = dims
+            .iter()
+            .try_fold(1usize, |acc, &n| acc.checked_mul(n as usize))
+            .ok_or(ImplicitGridError::VoxelCountOverflow { dims })?;
+
+        let mut data = Vec::with_capacity(count);
+        for ix in 0..dims[0] {
+            for iy in 0..dims[1] {
+                for iz in 0..dims[2] {
+                    let index = [ix, iy, iz];
+                    let value = f(voxel_centre_of(dims, centre, h, index));
+                    let stored = value as f32;
+                    if !stored.is_finite() {
+                        return Err(ImplicitGridError::NonFiniteSample { index, value });
+                    }
+                    data.push(stored);
+                }
+            }
+        }
+        Ok(Self {
+            dims,
+            centre,
+            h,
+            data,
+        })
+    }
+
+    pub fn dims(&self) -> [u32; 3] {
+        self.dims
+    }
+
+    /// World position of the block's centre, metres.
+    pub fn centre(&self) -> [f64; 3] {
+        self.centre
+    }
+
+    /// Voxel side length, metres.
+    pub fn h(&self) -> f64 {
+        self.h
+    }
+
+    /// Samples, X-outermost row-major: `data[(ix·ny + iy)·nz + iz]`.
+    pub fn data(&self) -> &[f32] {
+        &self.data
+    }
+
+    /// World position of the centre of voxel `index`, metres.
+    pub fn voxel_centre(&self, index: [u32; 3]) -> [f64; 3] {
+        voxel_centre_of(self.dims, self.centre, self.h, index)
+    }
+
+    /// Refuses options whose voxel size differs from the grid's spacing. The
+    /// comparison is exact: both are built from one `h`.
+    pub fn check_options(&self, opts: &ImplicitOptions) -> Result<(), ImplicitGridError> {
+        if self.h == opts.voxel_size() {
+            Ok(())
+        } else {
+            Err(ImplicitGridError::VoxelSizeMismatch {
+                grid_h: self.h,
+                options_voxel_size: opts.voxel_size(),
+            })
+        }
+    }
+}
+
+impl fmt::Debug for DenseSdfGrid {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("DenseSdfGrid")
+            .field("dims", &self.dims)
+            .field("centre", &self.centre)
+            .field("h", &self.h)
+            .field("data", &format_args!("<{} f32 samples>", self.data.len()))
+            .finish()
+    }
+}
+
+fn is_valid_voxel_size(h: f64) -> bool {
+    h.is_finite() && h > 0.0
+}
+
+fn voxel_centre_of(dims: [u32; 3], centre: [f64; 3], h: f64, index: [u32; 3]) -> [f64; 3] {
+    std::array::from_fn(|a| centre[a] + (f64::from(index[a]) - f64::from(dims[a] - 1) / 2.0) * h)
+}
+
+/// A violated [`DenseSdfGrid`] / [`ImplicitOptions`] invariant, carrying the
+/// offending values.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ImplicitGridError {
+    InvalidVoxelSize {
+        value: f64,
+    },
+    ZeroBand,
+    EmptyAxis {
+        axis: usize,
+        dims: [u32; 3],
+    },
+    VoxelCountOverflow {
+        dims: [u32; 3],
+    },
+    NonFiniteCentre {
+        centre: [f64; 3],
+    },
+    NonFiniteSample {
+        index: [u32; 3],
+        value: f64,
+    },
+    VoxelSizeMismatch {
+        grid_h: f64,
+        options_voxel_size: f64,
+    },
+}
+
+impl fmt::Display for ImplicitGridError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidVoxelSize { value } => {
+                write!(f, "voxel size must be finite and > 0 m; got {value}")
+            }
+            Self::ZeroBand => write!(f, "band_voxels must be at least 1; got 0"),
+            Self::EmptyAxis { axis, dims } => {
+                write!(
+                    f,
+                    "every grid axis needs at least one voxel; axis {axis} of dims {dims:?} is empty"
+                )
+            }
+            Self::VoxelCountOverflow { dims } => {
+                write!(f, "voxel count of dims {dims:?} overflows usize")
+            }
+            Self::NonFiniteCentre { centre } => {
+                write!(f, "grid centre must be finite; got {centre:?}")
+            }
+            Self::NonFiniteSample { index, value } => write!(
+                f,
+                "every SDF sample must be finite as f32; voxel {index:?} sampled {value}"
+            ),
+            Self::VoxelSizeMismatch {
+                grid_h,
+                options_voxel_size,
+            } => write!(
+                f,
+                "grid voxel size {grid_h} m differs from ImplicitOptions voxel size \
+                 {options_voxel_size} m"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for ImplicitGridError {}
+
 #[cfg(test)]
 mod tests {
     use super::{DenseSdfGrid, ImplicitGridError, ImplicitOptions};
@@ -94,7 +330,10 @@ mod tests {
         assert!(
             matches!(
                 result,
-                Err(ImplicitGridError::EmptyAxis { axis: 1, dims: [3, 0, 2] })
+                Err(ImplicitGridError::EmptyAxis {
+                    axis: 1,
+                    dims: [3, 0, 2]
+                })
             ),
             "got {result:?}",
         );
@@ -134,9 +373,15 @@ mod tests {
         let bad_point = probe.voxel_centre(bad_index);
         // 1e300 is finite as f64 but overflows to +inf as f32.
         for bad in [f64::NAN, f64::INFINITY, 1e300] {
-            let result = DenseSdfGrid::from_fn(dims, [0.0; 3], h, |p| {
-                if p == bad_point { bad } else { 0.0 }
-            });
+            let result =
+                DenseSdfGrid::from_fn(
+                    dims,
+                    [0.0; 3],
+                    h,
+                    |p| {
+                        if p == bad_point { bad } else { 0.0 }
+                    },
+                );
             assert!(
                 matches!(result, Err(ImplicitGridError::NonFiniteSample { index, value })
                     if index == bad_index && value.to_bits() == bad.to_bits()),
