@@ -2,17 +2,16 @@
 # scripts/seed-warm-lane.sh — CoW clone + warmth-transfer helper for warm-lane pool.
 #
 # D10 always-re-seed-at-acquire contract (PRD §9.3, 2026-06-18 amendment):
-#   The seed primitive itself is UNCHANGED.  The TASK-lane acquire path (pool
-#   consumer, DF ζ `_acquire_warm_lane_impl`) MUST always pass --fresh-checkout so a
+#   The seed primitive itself is UNCHANGED.  Both production pool acquires -- task
+#   lanes (DF ζ `_acquire_warm_lane_impl`) and the merge-spec `_spec-` pool (DF
+#   `acquire_spec_lane`) -- MUST always pass --fresh-checkout, and both do, so a
 #   staled lane is rescued to warm rather than rebuilt near-cold via --reset-in-place.
-#   The merge-spec `_spec-` acquire (DF `acquire_spec_lane`) always passes
-#   --reset-in-place instead, so --reset-in-place is NOT "B13 control arm only":
-#   it is the control arm AND a production acquire mode.
-#   TWO homes, do not restate the split anywhere else in this file: the MODE SPLIT
-#   note near the tail is the in-file home for what the split MEANS HERE (the
-#   consequence rule for anything gated on one mode); PRD §9.5's 2026-09-11 ledger
-#   entry is the normative home for the measurement and the spec/implementation
-#   divergence it records.
+#   No production pool acquire passes --reset-in-place (dark_factory:5380 moved the
+#   merge-spec acquire off it).
+#   TWO homes, do not restate this anywhere else in this file: the ACQUIRE MODES
+#   note near the tail is the in-file home for what it MEANS HERE (which acquires
+#   an effect gated on $FRESH_CHECKOUT reaches); PRD §9.5's 2026-10-11 ledger entry is
+#   the normative home for the merge-spec seed mode and its history.
 #
 #   Resolve convention (D8 seam): the caller MUST resolve <base>/target (a symlink
 #   to a .gen.N dir) to its CONCRETE .gen.N path before passing it to this script.
@@ -48,11 +47,10 @@
 #     which is BOTH production pool acquires, task and merge-spec alike.  So on
 #     the production pool path seed never takes the lane lock for EITHER role,
 #     and inv.11 is held for both by DF's own OUTER
-#     `flock -x -w 30 -E 124 <lane_dir>.lock` on this same sibling path.  The
-#     mode split changes seed's DEFAULT only; do not read it as a live
-#     task-vs-merge-spec difference in who locks.  Seed does still self-acquire
-#     for a caller that omits the opt-out: tests/infra, and DF's ephemeral
-#     warm-seed path (`take_lane_lock=False`), which is not a pool lane.
+#     `flock -x -w 30 -E 124 <lane_dir>.lock` on this same sibling path.  Seed
+#     does still self-acquire for a caller that omits the opt-out: tests/infra,
+#     and DF's ephemeral warm-seed path (`take_lane_lock=False`), which is not a
+#     pool lane.
 #     REIFY_WARM_LANE_LANE_LOCK_WAIT (env, whenever the lock is acquired): 0
 #     (default) = non-blocking refuse; N>0 = queue up to N seconds (flock -w N)
 #     before refusing; "unlimited" = block until acquired, never refuses. The
@@ -274,9 +272,9 @@ Seed mode: CoW-clone a warm base target/ into a pool lane.
   --fresh-checkout    Replace non-empty <lane_dir>/target (mv to trash, reflink-clone,
                       rm trash); then bulk-stamp sources to 2020-01-01 and touch
                       changed files to now (D5).
-  --reset-in-place    Refuse a non-empty <lane_dir>/target.  No bulk stamp.  Serves BOTH
-                      the B13 warmth-delta control arm and the merge-spec `_spec-`
-                      acquire mode; task-lane acquires use --fresh-checkout.
+  --reset-in-place    Refuse a non-empty <lane_dir>/target.  No bulk stamp.  No
+                      production pool acquire uses it: task and merge-spec acquires
+                      both pass --fresh-checkout.
   --base-commit sha   Git commit the base was built from; drives git diff --name-only.
   --touch path        Additional path to touch to now after bulk stamp (repeatable).
                       A path that does not exist (a dangling symlink included) is
@@ -947,8 +945,8 @@ if [ -n "$_should_acquire_lane_lock" ]; then
     # flock (block until acquired, never refuses).
     # Attribute NO wait policy to the singleton _merge-verify lane: it does not
     # call this script at all, and the prescription that used to stand here was
-    # WITHDRAWN as advice addressed to a non-caller (MODE SPLIT note near the
-    # tail). Validation mirrors lib_lane_x_flock.sh's
+    # WITHDRAWN as advice addressed to a non-caller (PRD §9.3 NAMING
+    # paragraph). Validation mirrors lib_lane_x_flock.sh's
     # REIFY_LANE_X_FLOCK_WAIT gate (non-negative integer or "unlimited",
     # else exit 64/usage) and runs BEFORE the lock FD is even opened, so a
     # bad knob can never touch the target.
@@ -1267,14 +1265,13 @@ if [ -n "$FRESH_CHECKOUT" ]; then
         mv "$LANE_TARGET" "$RESEED_TRASH"
     fi
 else
-    # --reset-in-place: keep existing clobber-refusal.  This mode seeds a cold/empty
-    # lane only.  It is NOT test-only (it is also the merge-spec acquire mode — MODE
-    # SPLIT note near the tail), and the refusal below is not merely a contract a
-    # PRODUCTION caller COULD hit: DF retains `target/` across a `_spec-` release and
-    # excludes it from the pre-seed clean, so the refusal IS reached on every acquire
-    # after a lane's create-once one, degrading that verify to cold.  Composition,
-    # evidence and the DF-side fix: PRD §9.5's 2026-09-11 ledger entry and task #7410.
-    # Do not "fix" it by relaxing the guard here — that is the open question 7410 owns.
+    # --reset-in-place: keep existing clobber-refusal.  The refusal is the deliberate
+    # contract: this mode seeds a cold/empty lane only.  The merge-spec acquire that
+    # used to reach it on every re-acquire (DF retains `target/` across a `_spec-`
+    # release) moved to --fresh-checkout in dark_factory:5380.  A replace-existing
+    # opt-in for THIS mode was considered and NOT adopted: this mode does no mtime
+    # normalisation, so a reused lane could reuse stale outputs.  Record: PRD §9.5's
+    # 2026-10-11 ledger entry.
     if [ -d "$LANE_TARGET" ] && [ -n "$(ls -A "$LANE_TARGET" 2>/dev/null)" ]; then
         err "Clobber guard: <lane_dir>/target already exists and is non-empty: $LANE_TARGET"
         err "seed-warm-lane.sh --reset-in-place only seeds cold/empty lanes. Remove the lane first."
@@ -1657,39 +1654,30 @@ fi
 # --reset-in-place: no bulk stamp AND no build-dir invalidation.
 #   A --reset-in-place lane was built at its own path, so its build dirs already
 #   hold correct lane-K paths; invalidating them would waste build-script re-runs
-#   for no benefit.  That reasoning holds for BOTH of this mode's callers (below),
-#   which is why the skip needs no caller-dependent condition.
+#   for no benefit.  This mode's callers are tests/infra fixtures and hand use (the
+#   warmth-delta control arm); it has no production pool caller (ACQUIRE MODES
+#   note below), so the skip needs no caller-dependent condition.
 #
-# MODE SPLIT — the single in-file home for what the mode split means HERE; every
-# other mention in this script points at it rather than restating it (G7/SPOT).
-# The MEASUREMENT behind it, its liveness, and the spec/implementation divergence it
-# records are normative in PRD §9.5's 2026-09-11 ledger entry (task 7045) — read that
-# before amending this, and amend it THERE, not here.
-#   task lanes  → --fresh-checkout   DF `_acquire_warm_lane_impl`
-#   merge-spec  → --reset-in-place   DF `acquire_spec_lane`, ALWAYS (the call sits at
-#                                    an indent common to both its branches)
+# ACQUIRE MODES — the single in-file home for which acquires a $FRESH_CHECKOUT
+# gate reaches; every other mention in this script points at it rather than
+# restating it (G7/SPOT).  Every production pool acquire, task and merge-spec
+# alike, passes --fresh-checkout:
+#   task lanes  → DF `_acquire_warm_lane_impl`
+#   merge-spec  → DF `acquire_spec_lane` (the `_spec-` pool)
+# So an effect gated on $FRESH_CHECKOUT — lane-scoped or shared-store scoped —
+# reaches every production pool acquire, and --reset-in-place has no production
+# pool caller.  The history (the merge-spec pool seeded --reset-in-place until
+# dark_factory:5380) is normative in PRD §9.5's 2026-09-11 and 2026-10-11 ledger
+# entries — amend it THERE, not here.
 # Resolve both by SYMBOL, never by line number: the cross-repo coordinates this note
 # used to carry drifted 26 lines in twelve days, which is why they are gone.
-#
-#   Do NOT read the split as "the merge-spec lane skips re-seeding" — D10's
-#   always-re-seed PROPERTY holds for BOTH classes (`acquire_spec_lane`'s own docstring
-#   asserts inv.8); only the mode differs.  And the split is LIVE in this deployment,
-#   not latent: `git.merge_spec_warm_lane_pool: true` in `dark-factory-orchestrator.yaml`
-#   (cited by KEY, and that file is tracked in THIS repo, so one grep re-checks it —
-#   deployment state can flip, so re-read the key rather than trusting a date).
-#
-# CONSEQUENCE RULE for anything gated on $FRESH_CHECKOUT (e.g. the rerere pin below):
-#   the gate reaches every acquire only for a SHARED-STORE scoped effect.  Any
-#   LANE-SCOPED effect — a per-lane config write, marker, or sweep — silently excludes
-#   the merge-spec slot, PRESENT TENSE, not hypothetically.  TWO live instances, each
-#   benign for its own reason rather than by luck of the gate: the build-dir
-#   invalidation above (lane-scoped, task lanes only — correct here for the first
-#   paragraph's reason), and the stash-guard liveness arm below (the merge-spec lane
-#   serves speculative merge verifies and is never handed to an agent).  The lane
-#   lock is NOT a third instance, though it reads like one: seed's own acquire is
-#   default-on under $FRESH_CHECKOUT, but DF's `--assume-lane-lock-held` clears it
-#   on BOTH production pool acquires, so that gate decides nothing for either
-#   role — see the --lane-lock note in the header.
+# Whether the `_spec-` pool runs at all is deployment state that can flip: re-read
+# `git.merge_spec_warm_lane_pool` in `dark-factory-orchestrator.yaml` (cited by KEY;
+# that file is tracked in THIS repo, so one grep re-checks it), never trust a date.
+#   The lane lock is the one gate that reads like a counterexample: seed's own
+#   acquire is default-on under $FRESH_CHECKOUT, but DF's `--assume-lane-lock-held`
+#   clears it on BOTH production pool acquires — see the --lane-lock note in the
+#   header.
 
 # ── git rerere disarm at LANE cadence (task 6889, open item (c)) ─────────────
 #
@@ -1747,19 +1735,7 @@ fi
 #
 # MODE GATE — $FRESH_CHECKOUT, not a new flag. It reuses the discriminator this
 # script already switches on at the three sites above rather than inventing a
-# mode flag, and it covers every TASK-lane acquire: dark-factory drives the pooled
-# task-lane acquire through _seed_warm_lane(lane, '--fresh-checkout') in
-# `_acquire_warm_lane_impl`.
-#
-# It does NOT cover the merge-spec lane: that acquire is always --reset-in-place,
-# so it never reaches this block (it still re-seeds — MODE SPLIT note above, the
-# single in-file home for the split and its consequence rule).
-#
-# That gap is harmless for THIS defence, which is why the gate stays as it is:
-# the pin is a property of the ONE shared .git/config, not of a lane, so any
-# acquire that pins it pins it for every lane including the spec lane — and
-# task-lane acquires dominate by volume. It would matter for a lane-scoped
-# write; it does not for a shared-store one.
+# mode flag; which acquires that reaches: ACQUIRE MODES note above.
 if [ -n "$FRESH_CHECKOUT" ] && [ "${REIFY_WARM_LANE_RERERE_ARM:-1}" != "0" ] \
         && [ -x "$_SCRIPT_DIR/git-rerere-guard.sh" ]; then
     _rerere_arm_rc=0
@@ -1784,8 +1760,8 @@ fi
 # DELEGATION: what "armed" means, the repair and the `0 | 2 | *` exit contract are
 # normative in scripts/hooks-armed-guard.sh's header.  FAIL-OPEN, like the block
 # above: an acquire never fails on this advisory defence.  >/dev/null keeps this
-# script's single-use stdout.  Gated on $FRESH_CHECKOUT, so the merge-spec lane is
-# skipped (benign: CONSEQUENCE RULE above).
+# script's single-use stdout.  Gated on $FRESH_CHECKOUT, which every production
+# pool acquire passes (ACQUIRE MODES note above).
 if [ -n "$FRESH_CHECKOUT" ] && [ -x "$_SCRIPT_DIR/hooks-armed-guard.sh" ]; then
     _hooks_arm_rc=0
     "$_SCRIPT_DIR/hooks-armed-guard.sh" arm "$LANE_DIR" >/dev/null || _hooks_arm_rc=$?
