@@ -71,7 +71,8 @@ use reify_audit::{
     jcodemunch_index,
     jcodemunch_seam::{Seam, SeamUnavailable},
     p1_producer_orphan, p2_consumer_stub, p5_phantom_done, pattern_flag, pcite, pdcheck,
-    pdead_dead_code, pdiag, pdoccover, pdssentinel, player, pprdstatus, ptodo, puntested,
+    pdead_dead_code, pdiag, pdoccover, pdssentinel, player, plinecite, pprdstatus, ptodo,
+    puntested,
 };
 
 // -----------------------------------------------------------------------
@@ -773,6 +774,7 @@ const DETECTORS: &[Detector] = &[
     Detector { token: pattern_flag::PDCHECK,     in_default_sweep: false, refuses_empty_task_corpus: false, check: Check::Plain(pdcheck::check),                  jcodemunch: JcodemunchUse::Never },
     Detector { token: pattern_flag::PCITE,       in_default_sweep: false, refuses_empty_task_corpus: false, check: Check::Plain(pcite::check),                    jcodemunch: JcodemunchUse::Never },
     Detector { token: pattern_flag::PPRDSTATUS,  in_default_sweep: false, refuses_empty_task_corpus: true,  check: Check::Plain(pprdstatus::check),               jcodemunch: JcodemunchUse::Never },
+    Detector { token: pattern_flag::PLINECITE,   in_default_sweep: false, refuses_empty_task_corpus: false, check: Check::Plain(plinecite::check),                jcodemunch: JcodemunchUse::Never },
 ];
 
 /// What one detector run produced.

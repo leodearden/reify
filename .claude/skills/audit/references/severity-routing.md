@@ -23,6 +23,7 @@ One row per `reify-audit --pattern` token, the CLI vocabulary defined in `reify_
 | `PDCHECK` | `PDeliveredCheckPath` | no | task id: the owning non-terminal task | §2 PDCHECK |
 | `PCITE` | `PManifestCite` | no | repo path: a `docs/prds/**/*.capability-manifest.md` | §2 PCITE |
 | `PPRDSTATUS` | `PPrdStatus` | no | repo path: the PRD (`docs/prds/**.md`) | §2 PPRDSTATUS (batched) |
+| `PLINECITE` | `PLineCite` | no | repo path: the citing file, or `crates/reify-audit/plinecite-baseline.txt` for ledger/scope findings | §2 PLINECITE (grouped per file) |
 
 ---
 
@@ -101,6 +102,7 @@ mcp__fused-memory__submit_task(
 | **PDCHECK** (`delivered_checks` dead path) — Medium `delivered-check-vacuous-absent-path` only | `Repair vacuous delivered_check <check_name> (PDCHECK on task <id>)` |
 | **PCITE** (capability-manifest cite) — Medium `fabricated-cite` | `Fix fabricated manifest cite (PCITE fabricated-cite <name> at <path>)` |
 | **PPRDSTATUS** (PRD status-prose drift) | _(High only: batched escalation via scripts/pprdstatus-escalate.py, no Medium template)_ |
+| **PLINECITE** (hard line cite) — Medium `line-cite` | `De-number line cites in <path> (PLINECITE line-cite)` |
 
 **P1/P2 templates:** Substitute `<symbol>` with the symbol name from `finding.evidence` (first reference that names the symbol, or fall back to `finding.summary` if not available). Substitute `<id>` with `finding.task_id`.
 
@@ -138,6 +140,8 @@ Every PDOCCOVER finding then records `action_taken: "escalated"` with that one `
 **PDCHECK note:** the High kind (`delivered-check-unsatisfiable-path`) escalates per finding with `task_id=finding.task_id`, the owning live task. The Medium kind (`delivered-check-vacuous-absent-path`) files a follow-up. Take `<check_name>` from the finding's `DeliveredCheck` evidence, which is also its dedupe symbol (§3). Either repair is a `metadata.delivered_checks` edit a human makes; §4 forbids the skill mutating tasks. A run whose stderr carries the `PDCHECK … lane skipped … NOT a clean bill of health` breadcrumb checked nothing, so its empty PDCHECK result is not evidence of health.
 
 **PCITE note:** both kinds are Medium, so PCITE never escalates and never moves the exit code. `fabricated-cite` files a follow-up with the §2 template; take `<name>` and `<path>` from the finding's `FileLine` evidence (`symbol` and `path`; `line` locates the row), never from the summary. The fix is to correct the manifest row, or — when the symbol legitimately lives outside this repo (dark-factory, OCCT) — to add `<!-- pcite:allow — <reason> -->` on that line. `allow-missing-reason` files `Add pcite:allow reason (PCITE allow-missing-reason at <path>:<line>)`, with `<path>` and `<line>` from the same evidence (its `symbol` is null).
+
+**PLINECITE note:** every kind is Medium, so PLINECITE never escalates and never moves the exit code. `line-cite` files ONE follow-up per citing file with the §2 template (`<path>` = `finding.task_id`), listing each cite from its `FileLine` evidence's `symbol`. The fix is to cite the enclosing symbol; a deliberate dated cite gets `plinecite:allow — <reason>` on its line.
 
 **PPRDSTATUS note:** every PPRDSTATUS finding is High (both kinds are listed in `references/modes.md` §4), and they are raised as **one batched escalation per run** by running the escalation script, never by calling `escalate_info` here:
 

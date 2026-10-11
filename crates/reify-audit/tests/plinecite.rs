@@ -313,14 +313,21 @@ fn pattern_plinecite_reports_a_line_cite_and_exits_zero() {
         .expect("create events table");
 
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_reify-audit"));
-    cmd.args(["--pattern", "PLINECITE", "--no-jcodemunch", "--project-root"])
-        .arg(repo.path())
-        .arg("--tasks-file")
-        .arg(&tasks_file)
-        .arg("--runs-db")
-        .arg(&runs_db);
+    cmd.args([
+        "--pattern",
+        "PLINECITE",
+        "--no-jcodemunch",
+        "--project-root",
+    ])
+    .arg(repo.path())
+    .arg("--tasks-file")
+    .arg(&tasks_file)
+    .arg("--runs-db")
+    .arg(&runs_db);
     reify_audit::git_env::sanitize(&mut cmd);
-    let out = cmd.output().expect("invoke reify-audit --pattern PLINECITE");
+    let out = cmd
+        .output()
+        .expect("invoke reify-audit --pattern PLINECITE");
     let stderr = String::from_utf8_lossy(&out.stderr);
 
     assert_eq!(

@@ -342,6 +342,9 @@ pub enum Pattern {
     /// PPRDSTATUS — PRD status-prose drift. The [`pprdstatus`] module doc is
     /// the canonical definition of its lanes, inputs and opt-in rationale.
     PPrdStatus,
+    /// PLINECITE — stale hard line cites. The [`plinecite`] module doc is the
+    /// canonical definition.
+    PLineCite,
 }
 
 /// A pointer to forensic evidence supporting a [`Finding`]. Renders verbatim

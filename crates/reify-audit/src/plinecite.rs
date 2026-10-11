@@ -5,18 +5,182 @@
 //! the number. PLINECITE reports each such cite so the author cites the
 //! enclosing symbol instead.
 //!
-//! It reports and never certifies. The grammar ([`line_cites`]) is
+//! It reports and never certifies. The grammar (`line_cites`) is
 //! deliberately decline-only: prose, line-wrapped and string-literal cites go
 //! unseen, so a clean run does not prove a file free of line cites.
 //!
-//! Rationale, measured surface and the normative grammar:
+//! Every finding is [`Severity::Medium`], so the lane is report-only and
+//! exit-neutral. Kinds, carried as the summary prefix:
+//!
+//! - `line-cite:` — one per citing file and cite, at its first line;
+//! - `allow-missing-reason:` — a `plinecite:allow` marker with no reason,
+//!   which exempts nothing;
+//! - `scope-empty:` — no tracked file is in [`in_scope`]: the run's only
+//!   finding, so a tree that was never read cannot report clean.
+//!
+//! Rationale, scope, measured surface and the normative grammar:
 //! `docs/prds/reify-audit-stale-line-cite-detector.md`.
 
-use crate::scan_util::is_word_byte;
+use crate::scan_util::{allow_marker_body, find_word_boundary_token, is_word_byte};
+use crate::{AuditContext, EvidenceRef, Finding, Pattern, Severity};
+use std::collections::BTreeMap;
+
+/// The committed ledger of accepted line-cite debt — also the handle of every
+/// finding about the run as a whole rather than one citing line.
+pub const BASELINE_PATH: &str = "crates/reify-audit/plinecite-baseline.txt";
+
+/// The per-line escape hatch: `plinecite:allow — <reason>`.
+const ALLOW_TOKEN: &str = "plinecite:allow";
+
+const STDLIB_ROOT: &str = "crates/reify-compiler/stdlib/";
 
 /// The escalation anchor a cite may carry between its extension and its line
 /// number.
 const ESC_ANCHOR: &[u8] = b" esc-";
+
+/// Whether PLINECITE scans the tracked file `path` — the lane's single scope
+/// boundary.
+// G-allow: pub for the cross-crate real-tree smoke in tests/plinecite.rs; the production caller, check(), is same-file, and the orphan audit counts only cross-file call sites
+pub fn in_scope(path: &str) -> bool {
+    path.starts_with(STDLIB_ROOT) && path.ends_with(".ri")
+}
+
+/// Every hard line cite and malformed allow marker in the tracked in-scope
+/// files, sorted by `(category, name, path)`. An unreadable file is skipped.
+pub fn check(ctx: &AuditContext<'_>) -> Vec<Finding> {
+    let scanned: Vec<String> = ctx
+        .git
+        .ls_files()
+        .into_iter()
+        .filter(|path| in_scope(path))
+        .collect();
+    if scanned.is_empty() {
+        return vec![scope_empty().finding];
+    }
+    let mut scan = Scan::default();
+    for path in &scanned {
+        if let Some(content) = ctx.read_relative(path) {
+            scan.file(path, &content);
+        }
+    }
+    let mut keyed = scan.findings;
+    keyed.extend(scan.debt.into_values());
+    keyed.sort_by(|a, b| a.key().cmp(&b.key()));
+    keyed.into_iter().map(|k| k.finding).collect()
+}
+
+/// The scanned files' findings, split by what a ledger row could absorb.
+#[derive(Default)]
+struct Scan {
+    /// Findings no ledger row absorbs: reasonless allow markers.
+    findings: Vec<Keyed>,
+    /// Each `(path, cite)` pair's first-occurrence `line-cite:` finding.
+    debt: BTreeMap<(String, String), Keyed>,
+}
+
+impl Scan {
+    fn file(&mut self, path: &str, content: &str) {
+        for (idx, line) in content.lines().enumerate() {
+            let line_no = idx + 1;
+            if find_word_boundary_token(line, ALLOW_TOKEN).is_some() {
+                if allow_marker_body(line, ALLOW_TOKEN).is_some() {
+                    continue;
+                }
+                self.findings.push(allow_missing_reason(path, line_no));
+            }
+            for cite in line_cites(line) {
+                self.debt
+                    .entry((path.to_string(), cite.to_string()))
+                    .or_insert_with(|| line_cite(path, line_no, cite));
+            }
+        }
+    }
+}
+
+/// A finding with its `(category, name, path)` sort key.
+struct Keyed {
+    category: &'static str,
+    name: String,
+    finding: Finding,
+}
+
+impl Keyed {
+    fn key(&self) -> (&str, &str, &str) {
+        (self.category, &self.name, &self.finding.task_id)
+    }
+}
+
+/// One finding about `path`, named by `name`; the summary names the same
+/// handle the evidence carries.
+fn keyed(
+    category: &'static str,
+    name: String,
+    path: &str,
+    evidence: EvidenceRef,
+    detail: &str,
+) -> Keyed {
+    let finding = Finding {
+        pattern: Pattern::PLineCite,
+        severity: Severity::Medium,
+        task_id: path.to_string(),
+        summary: format!("{category}: {name} — {detail}"),
+        evidence: vec![evidence],
+    };
+    Keyed {
+        category,
+        name,
+        finding,
+    }
+}
+
+fn file_line(path: &str, line: usize, symbol: Option<&str>) -> EvidenceRef {
+    EvidenceRef::FileLine {
+        path: path.to_string(),
+        line,
+        symbol: symbol.map(str::to_string),
+    }
+}
+
+fn line_cite(path: &str, line: usize, cite: &str) -> Keyed {
+    keyed(
+        "line-cite",
+        cite.to_string(),
+        path,
+        file_line(path, line, Some(cite)),
+        &format!(
+            "{path}:{line} cites code by line number, which rots silently; cite \
+             the enclosing symbol instead, or mark a deliberate dated cite \
+             `{ALLOW_TOKEN} — <reason>`"
+        ),
+    )
+}
+
+fn allow_missing_reason(path: &str, line: usize) -> Keyed {
+    keyed(
+        "allow-missing-reason",
+        format!("{path}:{line}"),
+        path,
+        file_line(path, line, None),
+        &format!(
+            "`{ALLOW_TOKEN}` with no reason body exempts nothing; write \
+             `{ALLOW_TOKEN} — <reason>`"
+        ),
+    )
+}
+
+fn scope_empty() -> Keyed {
+    keyed(
+        "scope-empty",
+        BASELINE_PATH.to_string(),
+        BASELINE_PATH,
+        EvidenceRef::File {
+            path: BASELINE_PATH.to_string(),
+        },
+        "no tracked file is in PLINECITE's scope, so nothing was checked; check \
+         that --project-root is the git worktree and that `git ls-files` \
+         succeeds there",
+    )
+}
 
 /// The hard cite tokens `line` carries, in line order; none unless `line` is
 /// a comment line. Each token runs from its stem through the first digit run
