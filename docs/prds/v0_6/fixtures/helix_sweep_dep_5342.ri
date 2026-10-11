@@ -7,10 +7,7 @@
 // edge-on like that the body came back with a NEGATIVE volume, which `volume()`
 // downgrades to Undef — a flat ribbon, not the tube this fixture is for.  Posed,
 // it realizes 8.488830310745207e-8 m^3, matching pi*r^2*L within 0.2%.
-//
-// The pose must go through a NAMED BINDING: an inline `translate(rotate(...))`
-// sweep profile is rejected at compile time by the `GeometryProfileRequired`
-// precondition.  #7248's pose guard rejects the unposed spelling outright.
+// #7248's pose guard rejects the unposed spelling outright.
 
 structure def Test {
     let path = helix(2.15mm, 0.8mm, 10mm)

@@ -151,8 +151,7 @@ profile onto the path's start frame, so the body encloses
 `(profile area) x (spine displacement . profile normal)`. An XY-plane profile swept along a path
 that starts in the XY plane is edge-on and encloses nothing. A profile whose plane lies within
 **4 degrees** of the path's start tangent is refused with a typed geometry error that reports the
-measured start tangent. Pose the profile normal along that tangent, and bind the posed profile with
-`let` first: an inline transform as the profile argument is rejected (`GeometryProfileRequired`).
+measured start tangent. Pose the profile normal along that tangent.
 `pipe` is the contrast: it builds its circle on the path's start frame, so it needs no posing. The
 same contract is stated at the signature in `docs/reify-stdlib-reference.md` §3.6.
 

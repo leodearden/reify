@@ -45,11 +45,10 @@
 // about +X takes its +Z normal to +Y) then "yaw it onto the start tangent"
 // (the start tangent is the first pole leg (500, 800, 0), at
 // atan2(800, 500) = 57.9946168 deg from +X, i.e. -32.0053832 deg from +Y).
-// The pose must go through a NAMED BINDING: an inline `translate(rotate(...))`
-// sweep profile is rejected by the `GeometryProfileRequired` precondition, and
-// #7248's pose guard rejects the unposed spelling outright.  It is a plain
-// `let`, not `aux let`: the GUI's Lezer grammar does not parse `aux let`, and
-// gui/src/__tests__/reifyGrammarCorpus.test.ts pins this file as parsing clean.
+// #7248's pose guard rejects the unposed spelling outright.  The posed profile
+// is bound with a plain `let`, not `aux let`: the GUI's Lezer grammar does not
+// parse `aux let`, and gui/src/__tests__/reifyGrammarCorpus.test.ts pins this
+// file as parsing clean.
 //
 // NOT wired into any probe set or auto-run gate.
 
