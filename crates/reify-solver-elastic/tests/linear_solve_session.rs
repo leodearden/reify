@@ -1055,6 +1055,29 @@ fn breaking_on_substitute_or_verify_cancels_in_that_phase() {
 }
 
 #[test]
+fn breaking_on_iterate_or_verify_cancels_the_iterative_tier_in_that_phase() {
+    for phase in [SolvePhase::Iterate, SolvePhase::Verify] {
+        let mut solver = prepared(&system(nudged_banded()), LinearSolverChoice::Iterative);
+        let (result, events) = recorded(
+            |event| *event == SolveEvent::Phase(phase),
+            |ctl| solver.solve(&scattered_rhs(300), LIMITS, None, ctl),
+        );
+        assert_eq!(result.err(), Some(SolveStop::Cancelled { phase }));
+        let iterations = events
+            .iter()
+            .filter(|event| matches!(event, SolveEvent::Iteration { .. }))
+            .count();
+        match phase {
+            SolvePhase::Iterate => assert_eq!(events, [SolveEvent::Phase(phase)]),
+            _ => {
+                assert!(iterations >= 1, "PCG ran before Verify: {events:?}");
+                assert_eq!(events.last(), Some(&SolveEvent::Phase(phase)));
+            }
+        }
+    }
+}
+
+#[test]
 fn breaking_on_an_iteration_cancels_the_iterate_phase() {
     let mut solver = prepared(&system(nudged_banded()), LinearSolverChoice::Iterative);
     let (result, _) = recorded(
