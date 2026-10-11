@@ -289,7 +289,7 @@ impl GeometryKernel for SingleKernelHolder {
 mod tests {
     use reify_test_support::MockGeometryKernel;
     use reify_test_support::mm3;
-    use reify_ir::{AttributeHistory, BRepKind, ExportError, ExportFormat, ExportOptions, ExportWarning, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, KernelAttributeHook, Mesh, QueryError, SampledField, TessError, Value, VoxelResolution};
+    use reify_ir::{AttributeHistory, BRepKind, DenseSdfGrid, ExportError, ExportFormat, ExportOptions, ExportWarning, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, ImplicitOptions, KernelAttributeHook, Mesh, QueryError, SampledField, TessError, Value, VoxelResolution};
     use std::sync::{Arc, Mutex};
 
     use super::*;
@@ -764,6 +764,15 @@ mod tests {
             Ok(Self::handle())
         }
 
+        fn ingest_dense_sdf(
+            &mut self,
+            _grid: &DenseSdfGrid,
+            _opts: &ImplicitOptions,
+        ) -> Result<GeometryHandle, GeometryError> {
+            self.record("ingest_dense_sdf");
+            Ok(Self::handle())
+        }
+
         fn attribute_hook(&self) -> Option<&dyn KernelAttributeHook> {
             self.record("attribute_hook");
             None
@@ -798,6 +807,8 @@ mod tests {
             depth: Value::length(0.01),
         };
         let mesh = Mesh { vertices: vec![], indices: vec![], normals: None };
+        let dense_grid = DenseSdfGrid::from_fn([2, 2, 2], [0.0; 3], 1e-3, |_| 0.0).unwrap();
+        let dense_opts = ImplicitOptions::new(dense_grid.h(), 1).unwrap();
         let mut buf = Vec::new();
 
         // Invoke every GeometryKernel method through the holder.
@@ -822,6 +833,7 @@ mod tests {
         let _ = holder.make_compound(&[GeometryHandleId(1)]);
         let ingest = holder.ingest_mesh(&mesh);
         let _ = holder.ingest_mesh_at_resolution(&mesh, VoxelResolution::HonestFloor);
+        let dense_ingest = holder.ingest_dense_sdf(&dense_grid, &dense_opts);
         let _ = holder.attribute_hook();
         let deviation = holder.measure_mesh_deviation(GeometryHandleId(1), &mesh);
 
@@ -853,6 +865,11 @@ mod tests {
             "measure_mesh_deviation must propagate the inner kernel's Some(0.0), \
              not fall back to the None default"
         );
+        assert!(
+            dense_ingest.is_ok(),
+            "ingest_dense_sdf must propagate the inner kernel's Ok(handle) result, \
+             not fall back to the Err(\"does not ingest dense SDF grids\") default"
+        );
 
         let recorded = log.lock().unwrap();
         for method in [
@@ -872,6 +889,7 @@ mod tests {
             "make_compound",
             "ingest_mesh",
             "ingest_mesh_at_resolution",
+            "ingest_dense_sdf",
             "attribute_hook",
             "measure_mesh_deviation",
         ] {
@@ -950,6 +968,23 @@ mod tests {
                 );
             }
             other => panic!("expected OperationFailed, got {other:?}"),
+        }
+    }
+
+    /// An empty holder's `ingest_dense_sdf` returns the trait default's
+    /// no-kernel output, naming the holder via `type_name::<Self>()`.
+    #[test]
+    fn ingest_dense_sdf_no_kernel_names_the_holder() {
+        let mut holder = SingleKernelHolder::new();
+        let grid = DenseSdfGrid::from_fn([2, 2, 2], [0.0; 3], 1e-3, |_| 0.0).unwrap();
+        let opts = ImplicitOptions::new(grid.h(), 1).unwrap();
+
+        match holder.ingest_dense_sdf(&grid, &opts) {
+            Err(GeometryError::OperationFailed(msg)) => assert!(
+                msg.contains("SingleKernelHolder does not ingest dense SDF grids"),
+                "the message must name the holder via type_name::<Self>(): {msg}"
+            ),
+            other => panic!("expected Err(OperationFailed(_)), got {other:?}"),
         }
     }
 }
