@@ -137,7 +137,7 @@ pub fn solve_buckling_trampoline(
         total_load,
     } = match read_buckling_inputs(value_inputs) {
         Ok(inputs) => inputs,
-        Err(failed) => return failed,
+        Err((arg, err)) => return failed_outcome("solve_buckling_trampoline", arg, &err),
     };
 
     // ── (4) Extract BucklingOptions ───────────────────────────────────────────
@@ -680,17 +680,17 @@ struct BucklingInputs {
 
 /// Read material → length → width → height → loads through the same
 /// Result-returning readers as `solve_elastic_static`, returning the first
-/// `Err` as the `Failed` outcome naming its arg.
-fn read_buckling_inputs(value_inputs: &[Value]) -> Result<BucklingInputs, ComputeOutcome> {
-    let gate = |arg: &'static str| {
-        move |err: FeaValueShapeError| failed_outcome("solve_buckling_trampoline", arg, &err)
-    };
+/// `Err` with the name of its arg.
+fn read_buckling_inputs(
+    value_inputs: &[Value],
+) -> Result<BucklingInputs, (&'static str, FeaValueShapeError)> {
+    let at = |arg: &'static str| move |err: FeaValueShapeError| (arg, err);
     Ok(BucklingInputs {
-        mat: extract_material(&value_inputs[0]).map_err(gate("material"))?,
-        length: extract_scalar_si(&value_inputs[1]).map_err(gate("length"))?,
-        width: extract_scalar_si(&value_inputs[2]).map_err(gate("width"))?,
-        height: extract_scalar_si(&value_inputs[3]).map_err(gate("height"))?,
-        total_load: total_point_load(&value_inputs[4]).map_err(gate("loads"))?,
+        mat: extract_material(&value_inputs[0]).map_err(at("material"))?,
+        length: extract_scalar_si(&value_inputs[1]).map_err(at("length"))?,
+        width: extract_scalar_si(&value_inputs[2]).map_err(at("width"))?,
+        height: extract_scalar_si(&value_inputs[3]).map_err(at("height"))?,
+        total_load: total_point_load(&value_inputs[4]).map_err(at("loads"))?,
     })
 }
 
