@@ -53,6 +53,8 @@
 //!   chunk, split out of geometry.md with the guards that cover it.
 //! - `topology_chunk_smoke` (#7344) — truth checks for the `topology` chunk,
 //!   split out of geometry.md with the guard that covers it.
+//! - `prose_idiom_gate` (#8050) — every concrete idiom in a gated chunk's
+//!   unfenced prose compiles, its metavariables left unbound.
 
 #[path = "harness_doc_chunks/angle_crossings_diagnostics_smoke.rs"]
 mod angle_crossings_diagnostics_smoke;
@@ -84,6 +86,8 @@ mod measurement_chunk_smoke;
 mod module_compile;
 #[path = "harness_doc_chunks/oracle_xref_smoke.rs"]
 mod oracle_xref_smoke;
+#[path = "harness_doc_chunks/prose_idiom_gate.rs"]
+mod prose_idiom_gate;
 #[path = "harness_doc_chunks/schematic_listing_gate.rs"]
 mod schematic_listing_gate;
 #[path = "harness_doc_chunks/signature_fixtures.rs"]

@@ -9,7 +9,8 @@
 //! `-> Type`. Concrete idioms, expressions, declarations, qualified or
 //! capitalised names and lambdas are prose, never signatures — see
 //! [`doc_form_of_span`]. A ```` ```reify-schematic ```` listing is read span by
-//! span, as [`listing_signature_spans`] cuts it, through that same rule.
+//! span, as [`listing_signature_spans`] cuts it, through that same rule. What
+//! counts as a call-shaped opening at all is [`span_callee`]'s one definition.
 //!
 //! A source's call forms are read off its parsed AST by [`call_forms`], and a
 //! chunk's ```` ```reify ```` fences are read the same way, one module per
@@ -20,7 +21,7 @@ use reify_compiler::parse_with_stdlib;
 use reify_core::ModulePath;
 
 use crate::chunk_markdown::tagged_fence_bodies;
-use crate::chunk_prose::{code_spans, unfenced_prose};
+use crate::chunk_prose::{CodeSpan, code_spans, unfenced_prose};
 
 /// A documented form's declared argument count: either an exact arity, or a
 /// variadic form carrying the given MINIMUM arity.
@@ -62,11 +63,11 @@ impl DocForm {
 /// makes the form `AtLeast`; every other argument counts one.
 pub(crate) fn doc_form_of_span(span: &str) -> Option<DocForm> {
     let span = span.trim();
-    let open = span.find('(')?;
+    let name = span_callee(span)?;
+    let open = name.len();
     let close = open + span[open..].find(')')?;
-    let name = &span[..open];
     let params = &span[open + 1..close];
-    if !is_metavariable(name) || params.contains('(') || !is_return_annotation(&span[close + 1..]) {
+    if params.contains('(') || !is_return_annotation(&span[close + 1..]) {
         return None;
     }
 
@@ -96,6 +97,14 @@ pub(crate) fn doc_form_of_span(span: &str) -> Option<DocForm> {
     })
 }
 
+/// The name `span` opens by calling: the text before its first `(`, when that
+/// is a lowercase snake_case identifier; `None` for any other opening. The
+/// caller trims.
+pub(crate) fn span_callee(span: &str) -> Option<&str> {
+    let name = &span[..span.find('(')?];
+    is_metavariable(name).then_some(name)
+}
+
 /// One signature-shaped span in a chunk's unfenced prose.
 pub(crate) struct DocumentedForm {
     pub(crate) form: DocForm,
@@ -104,10 +113,23 @@ pub(crate) struct DocumentedForm {
     pub(crate) span: String,
 }
 
+/// Every code span in `markdown`'s unfenced prose, its text trimmed, in
+/// document order; `Err` when the prose cannot be read. The one scan each prose
+/// gate filters for the spans it owns.
+pub(crate) fn unfenced_code_spans(markdown: &str) -> Result<Vec<CodeSpan>, String> {
+    Ok(code_spans(&unfenced_prose(markdown)?)
+        .into_iter()
+        .map(|span| CodeSpan {
+            line: span.line,
+            text: span.text.trim().to_string(),
+        })
+        .collect())
+}
+
 /// Every signature-shaped code span in `markdown`'s unfenced prose, in document
 /// order; `Err` when the prose cannot be read.
 pub(crate) fn documented_unfenced_forms(markdown: &str) -> Result<Vec<DocumentedForm>, String> {
-    Ok(code_spans(&unfenced_prose(markdown)?)
+    Ok(unfenced_code_spans(markdown)?
         .into_iter()
         .filter_map(|span| {
             doc_form_of_span(&span.text).map(|form| DocumentedForm {
@@ -648,6 +670,55 @@ fn doc_form_of_span_reads_nothing_else_as_a_signature() {
 }
 
 #[test]
+fn span_callee_reads_the_name_a_span_opens_by_calling() {
+    let cases = [
+        (
+            "translate(z=-height/2)",
+            Some("translate"),
+            "a call-shaped opening, even though the span does not parse",
+        ),
+        (
+            "distance(a, b) > tol",
+            Some("distance"),
+            "the opening is what counts, not the whole span",
+        ),
+        ("mechanism()", Some("mechanism"), "an empty argument list"),
+        (
+            "point3(x, y, z)",
+            Some("point3"),
+            "digits are allowed after the first letter",
+        ),
+        (
+            "let all_faces = faces(b)",
+            None,
+            "a declaration, not a call",
+        ),
+        (
+            "fn faces(solid: Solid) -> List<Surface>",
+            None,
+            "a declaration, not a call",
+        ),
+        ("Selector(Face)", None, "a capitalised name"),
+        ("Engine::new(x)", None, "a qualified name"),
+        (
+            "2*corner_r < min(width, depth)",
+            None,
+            "an expression that does not open with a call",
+        ),
+        ("sel[0]", None, "no paren at all"),
+        (
+            "point3 (x)",
+            None,
+            "the name must be DIRECTLY followed by `(`",
+        ),
+    ];
+
+    for (span, expected, why) in cases {
+        assert_eq!(span_callee(span), expected, "`{span}`: {why}");
+    }
+}
+
+#[test]
 fn is_exercised_by_matches_exact_by_equality_and_at_least_by_minimum() {
     let calls = vec![("rotate".to_string(), 5), ("union_all".to_string(), 3)];
 
@@ -790,6 +861,30 @@ fn fence_call_forms_names_a_fence_it_cannot_walk_by_label_and_position() {
     let markdown = "```reify\nenum FitType { Clearance, Transition, Interference }\n```\n";
 
     fence_call_forms(markdown, "demo.md's Fits section");
+}
+
+#[test]
+fn unfenced_code_spans_reads_every_span_of_unfenced_prose_trimmed_with_its_line() {
+    let markdown = "Intro ` volume(solid)` and `2*r`.\n\n```reify\nlet b = `inner`\n```\n\n\
+                    <!-- `noted(x)` -->\n| `a` | `box(1mm, 1mm, 1mm)` |\n";
+
+    let read: Vec<(usize, String)> = unfenced_code_spans(markdown)
+        .expect("the synthetic chunk's prose is readable")
+        .into_iter()
+        .map(|span| (span.line, span.text))
+        .collect();
+
+    assert_eq!(
+        read,
+        vec![
+            (1, "volume(solid)".to_string()),
+            (1, "2*r".to_string()),
+            (8, "a".to_string()),
+            (8, "box(1mm, 1mm, 1mm)".to_string()),
+        ],
+        "every span of unfenced prose, trimmed, in document order with its line — a fence's or \
+         a maintainer note's never"
+    );
 }
 
 #[test]

@@ -552,7 +552,7 @@ convention changes:
 | `sphere` | centred at origin | |
 | `torus` | centred at origin; axis is +Z | |
 | `cylinder` | base at z=0, axis +Z, x/y centred | top face at `z = height`; NOT centred on z |
-| `cylinder_centered` | z-centred at origin, axis +Z, x/y centred | `cylinder` + `translate(z=-height/2)`, composed for you |
+| `cylinder_centered` | z-centred at origin, axis +Z, x/y centred | `translate(cylinder(radius, height), 0mm, 0mm, -height/2)`, composed for you |
 | `cone` | base at z=0, axis +Z, x/y centred | bottom radius at z=0, top radius at z=height |
 | `tube` | base at z=0, axis +Z, x/y centred | outer `cylinder` minus inner `cylinder` (§3.3), so it inherits `cylinder`'s anchor |
 | `wedge` | min-corner at origin, +X/+Y/+Z octant | the one primitive anchored at a corner |

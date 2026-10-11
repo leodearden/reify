@@ -19,6 +19,9 @@
 //!   every listed form with a call in a compile-verified signature fixture.
 //! - Signatures in unfenced prose and tables (`extrude`, `revolve`, the oracle
 //!   queries) — `unfenced_signature_gate.rs`, the same way.
+//! - Concrete idioms in unfenced prose (e.g.
+//!   `intersects(box(10mm, 10mm, 10mm), bracket)`) — `prose_idiom_gate.rs`
+//!   compiles each one, its metavariables left unbound.
 //! - ```` ```reify ```` worked examples — `fence_gate.rs` compiles every one
 //!   verbatim and holds their count exact;
 //!   `geometry_reify_fences_call_every_worked_example_form` requires the forms
