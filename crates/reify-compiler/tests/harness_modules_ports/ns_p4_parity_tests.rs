@@ -394,12 +394,14 @@ fn kind_rows() -> Vec<KindRow> {
             loser_error: "missing required member 'ax'",
         },
         KindRow {
-            // std.units declares `pub type Velocity = Length / Time`.
+            // std.surface_finish declares `pub type ArealCostRate = Money /
+            // Area`. (Not `Velocity`: that is a builtin named dimension, which
+            // type resolution consults BEFORE any alias.)
             name: "type alias, import tier beats the stdlib",
-            imports: &[("a", "pub type Velocity = Length\n")],
-            entry: "import a\n\nstructure def Main {\n    param v : Velocity = PROBE\n}\n",
+            imports: &[("a", "pub type ArealCostRate = Length\n")],
+            entry: "import a\n\nstructure def Main {\n    param v : ArealCostRate = PROBE\n}\n",
             winner_probe: "3mm",
-            loser_probe: "3mm / 1s",
+            loser_probe: "2USD/m^2",
             loser_error: "declared `Scalar[m]`",
         },
         KindRow {
@@ -413,7 +415,7 @@ fn kind_rows() -> Vec<KindRow> {
             entry: "import a\n\nstructure def Main {\n    param x : PROBE = ramp_profile(1.0, 2.0, 3.0, 4.0)\n}\n",
             winner_probe: "Real",
             loser_probe: "MotionTrajectory",
-            loser_error: "evaluates to `Real`",
+            loser_error: "has type 'Real'",
         },
         KindRow {
             // std.tolerancing declares `pub constraint def Conforms` with a

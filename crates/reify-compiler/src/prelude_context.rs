@@ -74,10 +74,10 @@
 //!   is the guard.
 
 use reify_ir::EnumDef;
-use std::collections::HashMap;
 
 use crate::CompiledModule;
 use crate::compile_builder::enums_phase::flatten_prelude_enum_defs;
+use crate::name_env;
 use crate::types::CompiledTypeAlias;
 
 /// An immutable, pre-built cache of prelude module data.
@@ -101,16 +101,12 @@ pub struct PreludeContext<'a> {
     modules: Vec<&'a CompiledModule>,
     /// The prelude's own NS-P1 enum bindings, in precedence order.
     resolution_enums: Vec<EnumDef>,
-    /// Pre-flattened pub type aliases from every prelude module, in source order.
-    /// Only `is_pub == true` entries are included (non-pub aliases are filtered out
-    /// at construction time so callers never need to filter themselves).
+    /// The prelude's own NS-P1 binding of pub type aliases, in precedence order.
     pub_aliases: Vec<CompiledTypeAlias>,
-    /// Cross-prelude pub alias name collisions detected at construction time.
-    ///
-    /// Each element is `(alias_name, first_module_path, second_module_path)`.
-    /// Stored with first-wins deduplication: only the first-seen alias per name
-    /// survives in `pub_aliases`; subsequent modules with the same pub alias name
-    /// are recorded here for diagnostic emission by `compile_with_prelude_context`.
+    /// Cross-prelude pub alias name collisions detected at construction time:
+    /// one `(alias_name, winning_module_path, shadowed_module_path)` per pub
+    /// alias that lost its name, for diagnostic emission by
+    /// `compile_with_prelude_context`.
     collision_warnings: Vec<(String, String, String)>,
 }
 
@@ -123,31 +119,20 @@ impl<'a> PreludeContext<'a> {
     /// values (e.g. `&'static [CompiledModule]` from `load_stdlib()`).
     pub fn new(prelude: &[&'a CompiledModule]) -> Self {
         let resolution_enums = flatten_prelude_enum_defs(prelude);
-        // Build pub_aliases with first-wins deduplication across prelude modules.
-        // If two modules declare a pub alias with the same name, only the first
-        // survives in pub_aliases; the collision is recorded in collision_warnings
-        // for diagnostic emission at compile time.
-        let mut alias_first_module: HashMap<String, String> = HashMap::new();
-        let mut collision_warnings: Vec<(String, String, String)> = Vec::new();
-        let mut pub_aliases: Vec<CompiledTypeAlias> = Vec::new();
-        for m in prelude {
-            let module_path = m.path.to_string();
-            for a in &m.type_aliases {
-                if a.is_pub {
-                    if let Some(first_module) = alias_first_module.get(&a.name) {
-                        collision_warnings.push((
-                            a.name.clone(),
-                            first_module.clone(),
-                            module_path.clone(),
-                        ));
-                        // first-wins: skip this duplicate
-                    } else {
-                        alias_first_module.insert(a.name.clone(), module_path.clone());
-                        pub_aliases.push(a.clone());
-                    }
-                }
-            }
-        }
+        // The prelude's own NS-P1 alias binding: winners are seeded, and every
+        // shadowed pub alias is recorded for a collision warning naming the
+        // winning module first.
+        let alias_bindings = name_env::bind::<CompiledTypeAlias, _>(&[], prelude.iter().copied());
+        let pub_aliases: Vec<CompiledTypeAlias> = alias_bindings.winners().cloned().collect();
+        let collision_warnings: Vec<(String, String, String)> = alias_bindings
+            .shadowings()
+            .iter()
+            .filter_map(|s| {
+                let winner = s.winner.origin.module()?;
+                let shadowed = s.shadowed.origin.module()?;
+                Some((s.key.to_string(), winner.to_string(), shadowed.to_string()))
+            })
+            .collect();
         Self {
             modules: prelude.to_vec(),
             resolution_enums,
@@ -178,21 +163,16 @@ impl<'a> PreludeContext<'a> {
         &self.resolution_enums
     }
 
-    /// The pre-flattened pub type aliases from every prelude module, in source
-    /// order (m[0] pub aliases first, then m[1], …).
-    ///
-    /// Only `is_pub == true` entries are included — non-pub aliases from prelude
-    /// modules are not visible to user modules by design.
-    ///
-    /// This is the cached result of:
-    /// `prelude.iter().flat_map(|m| m.type_aliases.iter().filter(|a| a.is_pub).cloned()).collect()`.
+    /// The pub type aliases the prelude binds on its own under NS-P1: one per
+    /// name, user imports' before std modules', each tier in slice order.
+    /// Non-pub prelude aliases are not visible to user modules by design.
     pub fn pub_aliases(&self) -> &[CompiledTypeAlias] {
         &self.pub_aliases
     }
 
     /// Cross-prelude pub alias name collisions detected at construction time.
     ///
-    /// Each element is `(alias_name, first_module_path, second_module_path)`.
+    /// Each element is `(alias_name, winning_module_path, shadowed_module_path)`.
     /// Used by `compile_with_prelude_context` to emit `Severity::Warning`
     /// diagnostics so stdlib reviewers are notified of accidental pub alias
     /// name collisions across prelude modules.

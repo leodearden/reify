@@ -33,11 +33,19 @@ pub enum Origin<'a> {
     Module(&'a ModulePath),
 }
 
-impl Origin<'_> {
+impl<'a> Origin<'a> {
     pub fn tier(&self) -> Tier {
         match self {
             Origin::Local => Tier::Local,
             Origin::Module(path) => module_tier(path),
+        }
+    }
+
+    /// The declaring prelude module; `None` for the local tier.
+    pub fn module(&self) -> Option<&'a ModulePath> {
+        match self {
+            Origin::Local => None,
+            Origin::Module(path) => Some(path),
         }
     }
 }

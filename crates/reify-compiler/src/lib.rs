@@ -429,56 +429,37 @@ pub fn compile_with_prelude_checked(
     compile_with_prelude_refs_checked(parsed, &refs, checker)
 }
 
-/// Merge user functions with prelude functions, applying the canonical shadowing rule:
-/// prelude functions whose `(name, arity, param_types)` triple matches any user function
-/// are excluded; all others are appended. The result has user functions first, preserving
-/// first-match-wins dispatch order for any resolver that iterates linearly.
+/// Merge user functions with an already-ordered FLAT list of prelude functions:
+/// all user functions first, then each prelude function whose key — a
+/// [`name_env::FunctionSignature`], name plus param types — no user function and no
+/// earlier prelude function claims. First-match-wins dispatch over the result
+/// therefore reaches the same function the key binds.
 ///
-/// First-wins dedup also applies prelude-vs-prelude: the shadow check runs against
-/// `result` (the accumulating output), not `user` alone, so when two stdlib modules
-/// both declare the same `(name, arity, param_types)` triple only the first-seen
-/// entry survives. This mirrors stdlib load order (sequential in `stdlib_loader::load_stdlib`)
-/// and silently drops duplicates without a diagnostic — intentional for now; if a future
-/// stdlib PR introduces an accidental collision it will be invisible, so rely on
-/// stdlib-level review rather than this function for duplicate detection.
-///
-/// This is the single-source shadow predicate for Reify function tables. It is used by
-/// [`compile_with_prelude_refs`] to build the compile-time overload-resolution table.
-/// `reify_eval::Engine` uses an unfiltered append that is dispatch-equivalent under
-/// first-match-wins semantics (shadowed prelude entries are unreachable at dispatch time),
-/// but the dedup logic for the filtered case lives here.
-///
-/// **Cross-phase note:** the silent first-wins policy here is the third variant in a set
-/// of three divergent cross-prelude collision policies; see `prelude_context` §
-/// "Cross-prelude collision policy" for the full comparison (units = last-wins/warns;
-/// aliases = first-wins/warns; functions = first-wins/silent).
+/// A flat list carries no module origins, so no NS-P1 tiering happens here; the
+/// compiler builds its own table from the prelude MODULES with
+/// `compile_builder::functions_phase::build_resolution_functions`, which binds
+/// through [`name_env`].
 pub fn merge_prelude_functions(
     user: &[CompiledFunction],
     prelude: &[CompiledFunction],
 ) -> Vec<CompiledFunction> {
-    let mut result = user.to_vec();
-    for f in prelude {
-        let shadowed = result.iter().any(|uf| {
-            uf.name == f.name
-                && uf.params.len() == f.params.len()
-                && uf
-                    .params
-                    .iter()
-                    .zip(f.params.iter())
-                    .all(|((_, ut), (_, ft))| ut == ft)
-        });
-        if !shadowed {
-            result.push(f.clone());
-        }
-    }
-    result
+    let mut claimed: HashSet<name_env::FunctionSignature> =
+        user.iter().map(name_env::Definition::key).collect();
+    user.iter()
+        .chain(
+            prelude
+                .iter()
+                .filter(|f| claimed.insert(name_env::Definition::key(*f))),
+        )
+        .cloned()
+        .collect()
 }
 
 /// Merge is_pub prelude purposes into the user module's compiled_purposes.
 ///
-/// Appends each prelude pub purpose whose name is not already present in
-/// `user_purposes` (first-wins shadow: a user-defined purpose overrides any
-/// stdlib purpose of the same name).
+/// Appends each prelude pub purpose that wins its name under NS-P1
+/// ([`name_env`]); a user-defined purpose shadows any prelude purpose of the
+/// same name.
 ///
 /// This propagates standard purposes (e.g. `simulation_ready`, `design_review`
 /// from `std.determinacy.purposes`) into every user module compiled against the
@@ -510,19 +491,22 @@ pub fn merge_prelude_purposes(
     user_purposes: Vec<CompiledPurpose>,
     prelude_refs: &[&CompiledModule],
 ) -> Vec<CompiledPurpose> {
-    let mut result = user_purposes;
-    for module in prelude_refs {
-        for p in &module.compiled_purposes {
-            if p.is_pub && !result.iter().any(|up| up.name == p.name) {
+    let prelude_winners: Vec<CompiledPurpose> =
+        name_env::bind(&user_purposes, prelude_refs.iter().copied())
+            .winning_candidates()
+            .iter()
+            .filter(|candidate| candidate.origin != name_env::Origin::Local)
+            .map(|candidate| {
                 // Mark merged purposes with the prelude sentinel so downstream
                 // consumers (e.g. doc-model builders) can distinguish them from
                 // user-declared purposes in the same compiled_purposes list.
-                let mut merged = p.clone();
+                let mut merged = candidate.definition.clone();
                 merged.declaration_span = SourceSpan::prelude();
-                result.push(merged);
-            }
-        }
-    }
+                merged
+            })
+            .collect();
+    let mut result = user_purposes;
+    result.extend(prelude_winners);
     result
 }
 
@@ -718,10 +702,7 @@ pub fn compile_with_prelude_context_checked_with_config(
         prelude_refs,
     );
 
-    compile_builder::enums_phase::build_resolution_enums_from_cache(
-        &mut compile_ctx,
-        prelude_refs,
-    );
+    compile_builder::enums_phase::build_resolution_enums_from_cache(&mut compile_ctx, prelude_refs);
 
     compile_builder::functions_phase::phase_functions(
         &mut compile_ctx,
