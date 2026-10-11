@@ -17,6 +17,12 @@ Whether a path is global, and which crates it seeds or unions, comes from
 per-path rules. Their parity is enforced by
 ``tests/infra/test_affected_crates_lib.sh``'s OVERLAP-MIRROR-PARITY guard.
 
+Cost of the corpus edge: an ``examples/*.ri`` edit seeds every corpus reader,
+so its footprint is as wide as an edit to reify-test-support — 25 of 37
+workspace crates (measured 2026-10-11; bash's closure gives 24, so (B) below
+adds only one). Corpus edits will seldom coalesce once this detector is wired;
+that is the safe direction, and worth re-measuring as coalescing loss then.
+
 Deliberate divergence
 ---------------------
 Attribution matches bash exactly; the detector differs from bash in two places.

@@ -37,10 +37,9 @@
 #   tests/infra/test_affected_crates_lib.sh  (drift catcher, and the Python
 #                               mirror's parity guard)
 #
-# Mirrored by scripts/reify_path_attribution.py, for the merge-queue overlap
-# detector: _is_global, _file_to_crate, _RI_CORPUS_CRATES, _is_crate_manifest
-# and _REIFY_DAG_GATE_CRATE. Edit both sides together —
-# test_affected_crates_lib.sh's OVERLAP-MIRROR-PARITY reds a one-sided edit.
+# Mirrored by scripts/reify_path_attribution.py (its docstring lists the rules
+# it mirrors); OVERLAP-MIRROR-PARITY in test_affected_crates_lib.sh reds a
+# one-sided edit.
 
 # Source guard — prevent double-sourcing.
 if [ "${_REIFY_AFFECTED_CRATES_LIB_SOURCED:-}" = "1" ]; then

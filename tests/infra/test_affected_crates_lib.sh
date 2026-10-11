@@ -61,10 +61,9 @@
 #      package is exactly ALL, composing with task 6268's unresolvable-seed
 #      C5 arm
 #  20. (task 7491) OVERLAP-MIRROR-PARITY: scripts/reify_path_attribution.py,
-#      the Python mirror of this lib's per-path attribution (_is_global,
-#      _file_to_crate, _is_crate_manifest + _REIFY_DAG_GATE_CRATE), agrees
-#      with it on every tracked path plus a fixed boundary-probe list, and
-#      loads with no site-packages; plus a non-vacuity check on the bash side
+#      the Python mirror of this lib's per-path attribution, agrees with it
+#      on every tracked path plus a fixed boundary-probe list, and loads with
+#      no site-packages; plus a non-vacuity check on the bash side
 
 set -euo pipefail
 
