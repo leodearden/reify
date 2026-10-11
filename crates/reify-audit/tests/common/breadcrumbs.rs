@@ -1,8 +1,8 @@
 //! The jcodemunch fail-soft breadcrumb literals — both layers — in ONE place.
 //!
 //! Each string is a copy of an `eprintln!` in production code: the
-//! CONSTRUCTION layer's labels come from the bin's seam binding
-//! (`SeamUnavailable`'s rendering in `src/bin/reify-audit.rs`), emitted when
+//! CONSTRUCTION layer's labels come from the seam binding
+//! (`SeamUnavailable`'s rendering in `src/jcodemunch_seam.rs`), emitted when
 //! the handshake fails and the whole run binds the inert stub; the PER-CALL
 //! layer's come from `src/jcodemunch_client.rs`, emitted when one
 //! `tools/call` fails after a successful handshake. Test binaries consume

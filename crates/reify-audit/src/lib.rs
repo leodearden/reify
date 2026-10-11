@@ -68,6 +68,7 @@ pub(crate) mod mcp_handshake;
 pub mod fused_memory_client;
 pub mod jcodemunch_client;
 pub mod jcodemunch_index;
+pub mod jcodemunch_seam;
 
 // -----------------------------------------------------------------------
 // Public surface — finding shape
@@ -1794,8 +1795,8 @@ pub trait JCodemunchOps {
 ///    produces zero findings without opening a socket.
 /// 2. Detector runs that never touch the seam (`needs_jcodemunch() == false`).
 /// 3. The fallback for a needed seam that is unreachable, refused the
-///    handshake, or sits over an unusable index. The bin's seam binding
-///    (`bind_jcodemunch` in `src/bin/reify-audit.rs`) records the affected
+///    handshake, or sits over an unusable index
+///    ([`jcodemunch_seam::Seam::Unavailable`]). The bin records the affected
 ///    detectors as unexamined in that case, so their silence is not read as
 ///    a clean result.
 /// 4. The `*-baseline-gen` structural censuses, which still have to populate

@@ -57,20 +57,21 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-// `NoopJCodemunchOps` — the inert stub bound for `--no-jcodemunch` and for
-// detector runs that never touch the seam — now lives in the library, where
-// its doc records the call sites. It used to be copy-pasted into this bin and
-// both `*-baseline-gen` bins; this bin and `pdiag-baseline-gen` now bind the
-// library's, while `ptodo-baseline-gen` still carries its own (see that doc).
-// The library's `MockJCodemunchOps` remains test-only via the `test-support`
-// feature.
+// `NoopJCodemunchOps` — the inert stub this bin binds, through
+// `jcodemunch_seam::Seam`, whenever a run has no live seam — lives in the
+// library, where its doc records the call sites. It used to be copy-pasted
+// into this bin and both `*-baseline-gen` bins; this bin and
+// `pdiag-baseline-gen` now bind the library's, while `ptodo-baseline-gen`
+// still carries its own (see that doc). The library's `MockJCodemunchOps`
+// remains test-only via the `test-support` feature.
 use reify_audit::{
-    AuditContext, Finding, JCodemunchOps, NoopJCodemunchOps, RealGitOps, Severity, TaskMetadata,
-    TimeWindow,
+    AuditContext, Finding, RealGitOps, Severity, TaskMetadata, TimeWindow,
     fused_memory_client::FusedMemoryClient,
-    jcodemunch_client::{LoadError, RealJCodemunchOps},
-    jcodemunch_index, p1_producer_orphan, p2_consumer_stub, p5_phantom_done, pattern_flag, pcite,
-    pdcheck, pdead_dead_code, pdiag, pdoccover, pdssentinel, player, pprdstatus, ptodo, puntested,
+    jcodemunch_client::RealJCodemunchOps,
+    jcodemunch_index,
+    jcodemunch_seam::{Seam, SeamUnavailable},
+    p1_producer_orphan, p2_consumer_stub, p5_phantom_done, pattern_flag, pcite, pdcheck,
+    pdead_dead_code, pdiag, pdoccover, pdssentinel, player, pprdstatus, ptodo, puntested,
 };
 
 // -----------------------------------------------------------------------
@@ -827,73 +828,6 @@ fn effective_repo_id(args: &Args) -> String {
 // -----------------------------------------------------------------------
 // The jcodemunch seam a run binds
 // -----------------------------------------------------------------------
-
-/// Why a run that needs jcodemunch binds the inert stub instead of a live
-/// session. Every arm is involuntary: `--no-jcodemunch` is [`Seam::OptedOut`].
-enum SeamUnavailable {
-    /// The endpoint never answered: connection refused or reset, timeout.
-    Unreachable { url: String, error: LoadError },
-    /// The endpoint answered, but not as a live MCP seam: a non-2xx status, or
-    /// a body that is not an MCP `InitializeResult`.
-    HandshakeRefused { url: String, error: LoadError },
-    /// The handshake succeeded but the §4.3 gate refused the index; `refusal`
-    /// is its rendered message, carrying its `E_JC_INDEX_` marker when the
-    /// index itself was judged.
-    IndexUnusable { refusal: String },
-}
-
-impl SeamUnavailable {
-    /// Classify a failed handshake against `url` by whether the endpoint
-    /// answered at all.
-    fn from_handshake(url: &str, error: LoadError) -> Self {
-        let url = url.to_string();
-        match error {
-            LoadError::Http(_) => Self::Unreachable { url, error },
-            LoadError::Status(_) | LoadError::Protocol(_) => Self::HandshakeRefused { url, error },
-        }
-    }
-}
-
-impl std::fmt::Display for SeamUnavailable {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Unreachable { url, error } => {
-                write!(f, "jcodemunch unreachable at '{url}': {error}")
-            }
-            Self::HandshakeRefused { url, error } => {
-                write!(f, "jcodemunch handshake refused at '{url}': {error}")
-            }
-            Self::IndexUnusable { refusal } => f.write_str(refusal),
-        }
-    }
-}
-
-/// The jcodemunch seam a run binds, and why.
-enum Seam {
-    Live(RealJCodemunchOps),
-    /// No selected detector queries jcodemunch, or the run is `--pre-done`.
-    NotNeeded,
-    /// `--no-jcodemunch`: a declared scope reduction.
-    OptedOut,
-    Unavailable(SeamUnavailable),
-}
-
-impl Seam {
-    /// The ops every detector queries: the live session, or the inert stub.
-    fn ops(&self) -> &dyn JCodemunchOps {
-        match self {
-            Seam::Live(ops) => ops,
-            Seam::NotNeeded | Seam::OptedOut | Seam::Unavailable(_) => &NoopJCodemunchOps,
-        }
-    }
-
-    fn unavailable(&self) -> Option<&SeamUnavailable> {
-        match self {
-            Seam::Unavailable(reason) => Some(reason),
-            Seam::Live(_) | Seam::NotNeeded | Seam::OptedOut => None,
-        }
-    }
-}
 
 /// Decide the seam this run binds. `Err` is the §4.3 refusal of a run set in
 /// which nothing survives an unusable index ([`jcodemunch_only_run_set`]):
@@ -2362,45 +2296,5 @@ mod tests {
             usage.contains("--print-repo-id"),
             "--help must list --print-repo-id; got:\n{usage}"
         );
-    }
-
-    // -------------------------------------------------------------------
-    // Seam binding: how a failed handshake is named
-    // -------------------------------------------------------------------
-
-    /// An endpoint that never answered is unreachable; one that answered —
-    /// with a non-2xx status or a non-MCP body — refused the handshake. The
-    /// label sends the operator to different fixes, so it must follow the
-    /// error's variant, and name the endpoint.
-    #[test]
-    fn a_failed_handshake_is_labelled_by_whether_the_endpoint_answered() {
-        use reify_audit::jcodemunch_client::LoadError;
-        let url = "http://127.0.0.1:8917/mcp";
-        let cases = [
-            (
-                LoadError::Http("POST: Connection refused".into()),
-                "jcodemunch unreachable at",
-            ),
-            (
-                LoadError::Status("POST: status code 404".into()),
-                "jcodemunch handshake refused at",
-            ),
-            (
-                LoadError::Protocol("initialize: not an InitializeResult".into()),
-                "jcodemunch handshake refused at",
-            ),
-        ];
-        for (error, label) in cases {
-            let shown = error.to_string();
-            let rendered = SeamUnavailable::from_handshake(url, error).to_string();
-            assert!(
-                rendered.starts_with(&format!("{label} '{url}': ")),
-                "`{shown}` must render under `{label} '{url}'`; got {rendered:?}"
-            );
-            assert!(
-                rendered.ends_with(&shown),
-                "the rendering must carry the error itself; got {rendered:?}"
-            );
-        }
     }
 }
