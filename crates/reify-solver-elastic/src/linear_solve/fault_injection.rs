@@ -11,7 +11,9 @@ use faer::sparse::linalg::SupernodalThreshold;
 use faer::sparse::linalg::cholesky::SymbolicCholeskyRaw;
 
 #[cfg(feature = "linear-solve-fault-injection")]
-pub use armed::{FaultProbe, ProbeGuard, Reservation, SymbolicVariant};
+pub use armed::{
+    FaultProbe, INJECTED_NUMERIC_PANIC, NumericBarrier, ProbeGuard, Reservation, SymbolicVariant,
+};
 #[cfg(feature = "linear-solve-fault-injection")]
 pub(crate) use armed::{before_numeric, record_symbolic, reserve, symbolic_threshold};
 #[cfg(not(feature = "linear-solve-fault-injection"))]
@@ -50,9 +52,14 @@ mod inert {
 mod armed {
     use std::cell::RefCell;
     use std::marker::PhantomData;
+    use std::sync::mpsc::{self, Receiver, Sender};
     use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
     use super::*;
+
+    /// The text an armed [`FaultProbe::panic_in_numeric`] panics with.
+    pub const INJECTED_NUMERIC_PANIC: &str =
+        "linear_solve fault injection: panic in the numeric step";
 
     /// Which structure faer's symbolic analysis produced.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -75,6 +82,43 @@ mod armed {
         symbolic_variants: Vec<SymbolicVariant>,
         reservations: Vec<Reservation>,
         numeric_calls: usize,
+        barrier: Option<BarrierPost>,
+        panic_in_numeric: bool,
+    }
+
+    /// The test's side of a numeric-step barrier.
+    pub struct NumericBarrier {
+        reached: Receiver<()>,
+        release: Sender<()>,
+    }
+
+    /// The numeric step's side of a [`NumericBarrier`].
+    struct BarrierPost {
+        reached: Sender<()>,
+        release: Receiver<()>,
+    }
+
+    impl NumericBarrier {
+        /// Blocks until a numeric step reaches the barrier.
+        pub fn wait_until_reached(&self) {
+            self.reached
+                .recv()
+                .expect("the armed barrier was dropped without being reached");
+        }
+
+        /// Lets the held numeric step proceed.
+        pub fn release(self) {
+            // A step that already gave up waiting needs no signal.
+            let _ = self.release.send(());
+        }
+    }
+
+    impl BarrierPost {
+        fn arrive_and_wait(self) {
+            // The test may have stopped watching; the step proceeds either way.
+            let _ = self.reached.send(());
+            let _ = self.release.recv();
+        }
     }
 
     /// A shared record of the driver's activity on every thread it is
@@ -116,6 +160,33 @@ mod armed {
         /// Makes every later reservation at `site` fail as out-of-memory.
         pub fn fail_reservation(&self, site: ReservationSite) {
             self.state().failing_site = Some(site);
+        }
+
+        /// Holds the next numeric step — after both reservations, before
+        /// faer's numeric call — until the returned barrier is released.
+        pub fn hold_numeric_at_barrier(&self) -> NumericBarrier {
+            let (reached_tx, reached_rx) = mpsc::channel();
+            let (release_tx, release_rx) = mpsc::channel();
+            self.state().barrier = Some(BarrierPost {
+                reached: reached_tx,
+                release: release_rx,
+            });
+            NumericBarrier {
+                reached: reached_rx,
+                release: release_tx,
+            }
+        }
+
+        /// Makes the next numeric step panic with [`INJECTED_NUMERIC_PANIC`]
+        /// — after both reservations, before faer's numeric call.
+        pub fn panic_in_numeric(&self) {
+            self.state().panic_in_numeric = true;
+        }
+
+        /// The probe installed on the current thread, for re-installing on a
+        /// thread that does this one's work.
+        pub fn current() -> Option<FaultProbe> {
+            INSTALLED.with_borrow(Clone::clone)
         }
 
         /// Completed symbolic analyses.
@@ -181,7 +252,23 @@ mod armed {
         .unwrap_or(Ok(()))
     }
 
+    /// Counts the step, then runs its armed one-shot faults outside the
+    /// probe's lock: the barrier first, then the panic.
     pub(crate) fn before_numeric() {
-        with_installed(|state| state.numeric_calls += 1);
+        let Some((barrier, panic)) = with_installed(|state| {
+            state.numeric_calls += 1;
+            (
+                state.barrier.take(),
+                std::mem::take(&mut state.panic_in_numeric),
+            )
+        }) else {
+            return;
+        };
+        if let Some(barrier) = barrier {
+            barrier.arrive_and_wait();
+        }
+        if panic {
+            panic!("{INJECTED_NUMERIC_PANIC}");
+        }
     }
 }
