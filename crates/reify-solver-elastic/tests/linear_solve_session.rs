@@ -8,6 +8,9 @@
 //! - `SpdSolver` sessions on both tiers: the tier decision, the lazy factor,
 //!   the zero-RHS rule, the true residual on every tier, typed stops instead
 //!   of panics, phases and cooperative cancel, and agreement of the tiers.
+//! - The hooks a detached factorisation worker (ι) relies on: carrying the
+//!   probe to another thread, holding the numeric step at a barrier, and
+//!   panicking in it. Every wait is a blocking handshake with no timeout.
 //!
 //! No row asserts a wall-clock time or a committed bit pattern; bit equality
 //! is compared within one run.
@@ -24,7 +27,8 @@ use faer::sparse::linalg::{LltError, SupernodalThreshold};
 use faer::sparse::{FaerError, SparseRowMat, Triplet};
 use faer::{Conj, Mat, Par, Side};
 use reify_solver_elastic::linear_solve::fault_injection::{
-    FaultProbe, Reservation, ReservationSite, SymbolicVariant,
+    FaultProbe, INJECTED_NUMERIC_PANIC, NumericBarrier, Reservation, ReservationSite,
+    SymbolicVariant,
 };
 use reify_solver_elastic::linear_solve::{
     FactorEstimate, FactorReuse, LinearSolverChoice, NpdSite, PreconditionerKind, Solution,
@@ -1190,4 +1194,95 @@ fn a_failed_factor_reservation_is_out_of_memory_in_the_factor_phase() {
 fn a_wrong_length_rhs_is_a_contract_violation() {
     let mut solver = prepared(&system(dense8()), LinearSolverChoice::Direct);
     let _ = solve(&mut solver, &[1.0; 7], LIMITS, None);
+}
+
+// ---------------------------------------------------------------------------
+// Hooks for a detached factorisation worker (ι).
+// ---------------------------------------------------------------------------
+
+fn reservation_sites(probe: &FaultProbe) -> Vec<ReservationSite> {
+    probe.reservations().iter().map(|r| r.site).collect()
+}
+
+const BOTH_SITES: [ReservationSite; 2] = [
+    ReservationSite::FactorValues,
+    ReservationSite::NumericScratch,
+];
+
+#[test]
+fn current_is_the_probe_installed_on_this_thread() {
+    assert!(FaultProbe::current().is_none(), "no probe installed");
+    let probe = FaultProbe::new();
+    let guard = probe.install();
+    let current = FaultProbe::current().expect("installed probe");
+    let inner = current.install();
+    SplitCholesky::try_new(&tridiagonal(80)).expect("fixture is SPD");
+    assert_eq!(probe.numeric_calls(), 1, "counted through the shared state");
+    drop(inner);
+    drop(guard);
+    assert!(
+        FaultProbe::current().is_none(),
+        "the guard restored no probe"
+    );
+}
+
+#[test]
+fn a_probe_carried_to_another_thread_counts_its_factorisation() {
+    let probe = FaultProbe::new();
+    let _g = probe.install();
+    let carried = FaultProbe::current().expect("installed probe");
+    std::thread::scope(|s| {
+        s.spawn(move || {
+            let _g = carried.install();
+            SplitCholesky::try_new(&tridiagonal(80))
+                .map(|_| ())
+                .expect("fixture is SPD");
+        });
+    });
+    assert_eq!(probe.symbolic_calls(), 1);
+    assert_eq!(probe.numeric_calls(), 1);
+}
+
+#[test]
+fn a_barrier_holds_the_numeric_step_after_both_reservations() {
+    let probe = FaultProbe::new();
+    let barrier: NumericBarrier = probe.hold_numeric_at_barrier();
+    let worker_probe = probe.clone();
+    let worker = std::thread::spawn(move || {
+        let _g = worker_probe.install();
+        let mut solver = prepared(&system(dense8()), LinearSolverChoice::Direct);
+        solve(&mut solver, &[1.0; 8], LIMITS, None)
+    });
+
+    barrier.wait_until_reached();
+    assert_eq!(probe.numeric_calls(), 1);
+    assert_eq!(reservation_sites(&probe), BOTH_SITES);
+    assert!(!worker.is_finished(), "the worker is held at the barrier");
+
+    barrier.release();
+    let solution = worker.join().expect("worker").expect("F4 solve");
+    assert!(solution.report.true_rel_residual <= LIMITS.tolerance);
+}
+
+#[test]
+fn an_armed_panic_fires_in_the_numeric_step_after_both_reservations() {
+    let probe = FaultProbe::new();
+    let _g = probe.install();
+    let mut solver = prepared(&system(dense8()), LinearSolverChoice::Direct);
+    probe.panic_in_numeric();
+    let payload = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        solve(&mut solver, &[1.0; 8], LIMITS, None)
+    }))
+    .expect_err("the armed hook panics");
+    let message = payload
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| payload.downcast_ref::<&str>().copied())
+        .unwrap_or_default();
+    assert!(
+        message.contains(INJECTED_NUMERIC_PANIC),
+        "payload: {message:?}"
+    );
+    assert_eq!(probe.numeric_calls(), 1);
+    assert_eq!(reservation_sites(&probe), BOTH_SITES);
 }
