@@ -4,6 +4,7 @@ use std::fmt;
 
 use faer::sparse::SparseRowMat;
 
+use crate::solver::{norm2_squared, spmv_seq};
 use crate::sparse_util::find_in_row;
 
 /// A post-boundary-condition stiffness `K`, both triangles stored, that
@@ -57,6 +58,21 @@ impl SpdSystem {
 
     pub fn n_dofs(&self) -> usize {
         self.k.nrows()
+    }
+
+    pub(crate) fn matrix(&self) -> &SparseRowMat<usize, f64> {
+        &self.k
+    }
+
+    /// The true relative residual `‖f − K·u‖₂ / ‖f‖₂`, over every stored
+    /// entry of `K`. The one home of this figure: every tier reports it.
+    pub(crate) fn relative_residual(&self, f: &[f64], u: &[f64]) -> f64 {
+        let mut residual = vec![0.0; f.len()];
+        spmv_seq(&self.k, u, &mut residual);
+        for (r, fi) in residual.iter_mut().zip(f) {
+            *r = fi - *r;
+        }
+        norm2_squared(&residual).sqrt() / norm2_squared(f).sqrt()
     }
 }
 

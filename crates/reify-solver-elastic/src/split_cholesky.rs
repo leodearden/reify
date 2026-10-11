@@ -38,8 +38,8 @@ impl SplitCholesky {
     pub(crate) fn try_new_col_major(a: SparseColMatRef<'_, usize, f64>) -> Result<Self, LltError> {
         let symbolic = direct::analyse(a.symbolic())?;
         let values = direct::factorize(&symbolic, a).map_err(|error| match error {
-            FactorizeError::OutOfMemory => LltError::Generic(FaerError::OutOfMemory),
-            FactorizeError::NonPositivePivot { raw } => LltError::Numeric(raw),
+            FactorizeError::OutOfMemory { .. } => LltError::Generic(FaerError::OutOfMemory),
+            FactorizeError::NonPositivePivot { raw, .. } => LltError::Numeric(raw),
         })?;
         Ok(Self {
             factor: Factor::new(symbolic, values),
