@@ -82,7 +82,11 @@ fn measure() {
         ms(serialise),
     );
 
-    let rows = measure_rows(&engine, s0);
+    let design_path = root.join(&design);
+    let design_dir = design_path
+        .parent()
+        .expect("the design has a parent directory");
+    let rows = measure_rows(&engine, s0, design_dir);
     println!(
         "{:<62} {:>10} {:>10} {:>10}",
         format!("row (ms, n={ITERATIONS})"),
@@ -101,14 +105,22 @@ fn measure() {
 }
 
 /// One warm-up round, then [`ITERATIONS`] timed rounds of every row. `s0` is
-/// the state the frontend holds, which the seams diff against.
-fn measure_rows(engine: &Engine, s0: GuiState) -> Vec<(&'static str, Vec<Duration>)> {
+/// the state the frontend holds, which the seams diff against. The scratch
+/// targets live under `design_dir`, the only place the AI write seams write.
+fn measure_rows(
+    engine: &Engine,
+    s0: GuiState,
+    design_dir: &Path,
+) -> Vec<(&'static str, Vec<Duration>)> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .expect("runtime");
     let baseline = Mutex::new(Some(s0.clone()));
-    let scratch = tempfile::tempdir().expect("tempdir");
+    let scratch = tempfile::Builder::new()
+        .prefix(".rebuild-cost-")
+        .tempdir_in(design_dir)
+        .expect("scratch dir inside the design's directory");
     let save_target = scratch.path().join("saved.ri");
     let save_target_str = save_target.to_string_lossy().into_owned();
     let export_target = scratch.path().join("export.step");
