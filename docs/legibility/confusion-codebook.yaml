@@ -4272,6 +4272,12 @@ entries:
     origin_phase: unknown
     manifested_phase: ops
     note: The same bounded-wait watcher-rearm Bash command (timeout 3660000) was re-issued five times verbatim in the Retry Loops section, with no change between attempts.
+  - date: '2026-10-10'
+    project: reify
+    session: 0036b8db-1e99-4fda-aba7-f87a596f998a
+    origin_phase: unknown
+    manifested_phase: ops
+    note: Bash watcher-rearm.sh (--timeout 3600, run_in_background) is re-issued identically about 65 times. The digest shows the identical re-issue but does not explicitly show the ceiling being hit.
 - id: entry-cand-20260726-8
   title: Warm-lane .task/plan.json symlink resolves to empty/unreadable target with no error surfaced
   severity: medium
@@ -9455,6 +9461,12 @@ entries:
     origin_phase: verify
     manifested_phase: verify
     note: Agent assumes test file money_arithmetic_tests.rs exists in crates/reify-compiler/tests/, but actual tests are in crates/reify-syntax/tests/ after prior reorganization (#7040); two separate not-found errors (turns 24, 36) indicate persistence of wrong directory assumption
+  - date: '2026-10-10'
+    project: reify
+    session: 4a44aa3b-f656-4a82-9951-70381b71585f
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: A Grep at turn 29 targeted an assumed test-file path under crates/reify-compiler/tests/ that does not exist. The turn-346 self-correction places the file under tests/harness_type_checking/, so the wrong assumed subdirectory was corrected much later. The entry describes two consecutive not-found errors, but this digest shows only one, so the match is partial. The digest has no phase cues, so both phases are unknown.
 - id: entry-cand-20260915-21
   title: Multi-file wc/count command's missing-argument failure is easy to overlook amid emitted partial output
   severity: medium
@@ -9717,6 +9729,12 @@ entries:
     origin_phase: architect
     manifested_phase: unknown
     note: Session runs from nested warm-lane worktree cwd (_lane-9) and emits 3 repeated file-not-found errors at turns 44, 68, 129, matching the pattern of repo-root-relative path guesses failing when worktree is nested under /worktrees/
+  - date: '2026-10-10'
+    project: reify
+    session: 137cea8f-7de5-4b90-8e9f-31a6bb079ab7
+    origin_phase: unknown
+    manifested_phase: verify
+    note: After `cd crates/reify-audit`, a later command used repo-relative paths (`crates/reify-audit/tests/...`, `crates/reify-audit/crates/reify-audit/`), which failed with 'did not match any files' and 'No such file or directory' (turn 689). This is a partial match to the nested-cwd path-guessing pattern. The digest does not show the origin phase, so it is set to unknown.
 - id: entry-cand-20260909-14
   title: Agent invokes hallucinated 'read_file' tool with generic-agent param names instead of the harness's actual Read tool
   severity: medium
@@ -9788,6 +9806,12 @@ entries:
     origin_phase: recon
     manifested_phase: recon
     evidence_quote: 'mcp__fused-memory__get_memories_by_metadata x3: {"filters": {"topic": "harness-kloc-cap-split-remedy"}, "project_id": "reify"}'
+  - date: '2026-10-10'
+    project: reify
+    session: 0036b8db-1e99-4fda-aba7-f87a596f998a
+    origin_phase: unknown
+    manifested_phase: ops
+    note: 'Same identical argument set re-issued repeatedly without adapting: mcp__escalation__get_pending_escalations x21 with {compact: true, level: 2}, plus merge_status x5 and get_statuses x3 with identical args.'
 - id: entry-cand-20260916-20
   title: Consolidation procedure has no built-in rule for pending-task-widen-vs-file-new or peer re-staleness-check, forcing mid-task user disambiguation
   severity: medium
@@ -26422,3 +26446,16 @@ candidates:
     origin_phase: unknown
     manifested_phase: implement
     evidence_quote: The two legs are ORed. dark-factory merge_lane/shadow.py::_shadow_compare_due returns `count_due or timer_due`
+- id: cand-20261010-1
+  title: add_plan_step arguments guessed by trial and error, with each retry swapping in different wrong field names
+  cause: The agent called mcp__plan-tools__add_plan_step without first reading its argument schema. The first call used task_id and step_type, which failed validation (step_id missing, task_id unexpected). The retry used step_id and type, which failed again (step_type missing, type unexpected). Each attempt guessed a new field set instead of consulting the tool's required parameters, so each failed call costs a turn and risks a malformed plan step.
+  area: tooling/mcp-schema
+  first_seen: '2026-10-10'
+  disposition: pending
+  sightings:
+  - date: '2026-10-10'
+    project: reify
+    session: e67246ca-7256-43af-89ca-2b65af2ac15d
+    origin_phase: unknown
+    manifested_phase: unknown
+    evidence_quote: '(turn 108) mcp__plan-tools__add_plan_step({"description": "Remove duplicate test and repoint citations by path", "step_type": "impl", "task_id": "7464"}) -> 2 validation errors for call[add_plan_step] ... (turn 112) mcp__plan-tools__add_plan_step({"description": "Remove duplicate test and repoint citations by path", "step_id": "step-1", "type": "impl"}) -> 2 validation errors for call[add_plan_step]'
