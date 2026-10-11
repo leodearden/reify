@@ -39,6 +39,7 @@
 
 use std::hash::{Hash, Hasher};
 
+use reify_core::ContentHash;
 use reify_ir::{BinOp, Value};
 
 /// Path segment marking a descent OUT of a call site and INTO the callee's
@@ -137,7 +138,8 @@ pub enum ReductionKind {
     ArgMin,
 }
 
-/// The kind of non-smooth node — the full PRD §7.7 kink vocabulary.
+/// The kind of non-smooth node: the PRD §7.7 kink vocabulary, plus
+/// [`KinkKind::Unplaced`].
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum KinkKind {
     /// `if cond then a else b`
@@ -158,6 +160,12 @@ pub enum KinkKind {
     Round,
     Mod,
     FieldReduction(ReductionKind),
+    /// Not a PRD §7.7 kind: a node evaluated WHOLE by `eval_expr` encloses at
+    /// least one kink the dual traversal did not visit.
+    ///
+    /// The site is that enclosing node's own structural path, not any inner
+    /// kink's, and this one entry stands for every kink beneath it.
+    Unplaced,
 }
 
 /// Which branch of a kink was taken.
@@ -196,6 +204,15 @@ pub enum BranchChoice {
     ModQuotient(i64),
     /// The domain coordinate at which a field reduction attained its extremum.
     FieldArgExtremum(Box<Value>),
+    // Unplaced
+    /// The content hash (`Value::content_hash`) of the value the enclosing
+    /// node evaluated to.
+    ///
+    /// Only ever recorded for a node constant in every seed, where that value
+    /// is everything the residual can observe of the branches selected.  An
+    /// `Unplaced` entry for a node that moves with the seeds carries
+    /// [`BranchChoice::Unresolved`]; the rule is `dual_eval::refuse_or_constant`'s.
+    OutcomeHash(ContentHash),
     /// The branch could not be determined (e.g. an `Undef` comparison, or a
     /// field whose `argmax`/`argmin` is not computable).
     Unresolved,
@@ -218,7 +235,21 @@ impl Hash for BranchChoice {
             BranchChoice::Arm(i) | BranchChoice::Operand(i) => i.hash(state),
             BranchChoice::IntegerCell(k) | BranchChoice::ModQuotient(k) => k.hash(state),
             BranchChoice::FieldArgExtremum(v) => v.content_hash().0.hash(state),
-            _ => {}
+            BranchChoice::OutcomeHash(h) => h.hash(state),
+            BranchChoice::Then
+            | BranchChoice::Else
+            | BranchChoice::Satisfied
+            | BranchChoice::Unsatisfied
+            | BranchChoice::LeftAbsorbing
+            | BranchChoice::BothEvaluated
+            | BranchChoice::LeftTypeError
+            | BranchChoice::Negative
+            | BranchChoice::Zero
+            | BranchChoice::Positive
+            | BranchChoice::BelowLo
+            | BranchChoice::Interior
+            | BranchChoice::AboveHi
+            | BranchChoice::Unresolved => {}
         }
     }
 }
@@ -242,7 +273,9 @@ pub struct BranchEntry {
 /// derivative rather than a Clarke selection.  That statement has to be
 /// trustworthy, so a kink is recorded even when its tangent turns out to be
 /// zero or unavailable: "no entries" must mean "no kink", never "we did not
-/// look".
+/// look".  A node the traversal delegates whole contributes a single
+/// [`KinkKind::Unplaced`] entry for whatever kinks it encloses, so the
+/// statement holds through those nodes too.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
 pub struct BranchRecord {
     entries: Vec<BranchEntry>,
