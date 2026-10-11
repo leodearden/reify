@@ -4,7 +4,9 @@
 > #4787 dispatched with all preconditions landed (esc-4787-3; Leo ruled option A, "expand now").
 > Authored via `/prd` as an agent team (five investigation seats and an adversarial critic whose 24
 > findings are folded in); the design forks were ruled by Leo on 2026-10-10 (§3, Q-A–Q-E).
-> Decomposition is done by a sibling `/prd decompose` session; leaf ids are backfilled into §8 then.
+> Decomposed 2026-10-11 by a sibling `/prd decompose` session into α #8487 … ω #8504 (ids in §8);
+> capability manifest `material-waste-cost-minimisation.capability-manifest.{md,yaml}`, whose
+> "Decompose-time corrections" section records the fixture/substrate refinements found at decompose.
 >
 > **Milestone:** v0_6. **Cluster:** `cost-optimisation` (PRD 1 → F-result → PRD 2 → M-WHOLE →
 > M-UNITS → **M-WASTE**, the program's eventual goal). **Approach:** B + H — a new build-level
@@ -788,7 +790,10 @@ outer layer is this PRD's, the inner layer (arm B) is bookmark ι's, and P2 keep
 
 ## §8 — Decomposition plan
 
-B+H shape. Greek labels; task ids are assigned by the sibling decompose session and backfilled here.
+B+H shape. Greek labels with the task ids filed at decompose (2026-10-11). Decompose-time adjustments —
+θ1's reify-design index line moved to θ2, B10's failing-candidate fixture shape, the `AddOptimal` scope for
+curved faces, the one-line record shorthand — are recorded in the capability manifest's "Decompose-time
+corrections" and in each task's description, not here.
 Spine α → β → γ → {γ2, δ}; ε → ζ → ζ2 in parallel; η the integration gate; θ1–θ3 docs; ι / κ / λ
 bookmarks; ω close.
 
@@ -801,7 +806,7 @@ every `tests/prd-gate/fixtures/*.ri` a compiled test reads is added to `_RUST_CO
 `scripts/verify.sh` in the same diff (PG-DRIFT in `tests/infra/test_verify_scope.sh` enforces it); a
 leaf departing from this layout carries its own registration in the same diff.
 
-- **α — Geometry-coupling classification pass + coded refusals, on every path.**
+- **α #8487 — Geometry-coupling classification pass + coded refusals, on every path.**
   Modules: `crates/reify-eval/src/engine_eval.rs` (`classify_geometry_coupling`; called from `eval` /
   `eval_cached` outside the solver gate and from both problem builders; objective removal; δ-predicate
   supersession; `SweepState` read; `E_OBJECTIVE_INERT` for an empty *S*),
@@ -811,7 +816,7 @@ leaf departing from this layout carries its own registration in the same diff.
   **LEAF signal:** B1 (`reify eval` and `reify check`), B2 (pre-γ form), B3, B4, B4b, B12, B15, B16.
   Prereqs: none. `grammar_confirmed = true`.
 
-- **β — Auto-pin overlay.**
+- **β #8488 — Auto-pin overlay.**
   Modules: `crates/reify-eval/src/{engine_eval.rs, engine_build.rs (reset_per_build_state rows),
   graph.rs, snapshot.rs, engine_edit.rs, resolve_order.rs, deps.rs, engine_admin.rs, invariants.rs}`.
   §4.2 in full; the site classification is written into the task's own description.
@@ -820,7 +825,7 @@ leaf departing from this layout carries its own registration in the same diff.
   skipped by the warm re-solve.
   Prereqs: α. `grammar_confirmed = true`.
 
-- **γ — The sweep: engine entry, enumeration, candidate evaluation, ranking, honesty; `reify eval` wiring.**
+- **γ #8489 — The sweep: engine entry, enumeration, candidate evaluation, ranking, honesty; `reify eval` wiring.**
   Modules: `crates/reify-eval/src/` (new sweep module; `engine_build.rs` non-emitting candidate build
   returning score + verdicts + residual status; `engine_eval.rs` `optimality_unproven_finding`
   `pub(crate)`, robustness-floor exclusion), `crates/reify-constraints/src/{solver.rs
@@ -831,13 +836,13 @@ leaf departing from this layout carries its own registration in the same diff.
   resolves to the 20 mm width).
   Prereqs: α, β, **#5470** (out-of-batch, hard). `grammar_confirmed = true`.
 
-- **γ2 — Sweep verdict diagnostics per P3 §3.4.**
+- **γ2 #8490 — Sweep verdict diagnostics per P3 §3.4.**
   Modules: the §3.4 policy function (wherever #6901 places it, or created here if γ2 lands first —
   §3 decision 7), the sweep's commit step.
   **LEAF signal:** B11.
   Prereqs: γ. Coordinates with #6901 (no edge). `grammar_confirmed = true`.
 
-- **δ — GUI: load / commit / Export see the sweep; drags keep the winner; cancellation.**
+- **δ #8491 — GUI: load / commit / Export see the sweep; drags keep the winner; cancellation.**
   Modules: `gui/src-tauri/src/engine.rs` (`check_with_solve_slot` calls the entry; Export builds the
   current pins; the per-solve `CancellationHandle` reaches the sweep),
   `crates/reify-eval/src/engine_edit.rs` (`I_GEOMETRY_SWEEP_STALE` when an edit touches *T*'s inputs;
@@ -846,7 +851,7 @@ leaf departing from this layout carries its own registration in the same diff.
   adds.
   Prereqs: γ, **#6724** (out-of-batch, hard). `grammar_confirmed = true`.
 
-- **ε — Exact extents + stock vocabulary.**
+- **ε #8492 — Exact extents + stock vocabulary.**
   Modules: `crates/reify-kernel-occt/cpp/occt_wrapper.cpp` (`query_bbox` → `AddOptimal`), the
   `bounding_box` consumers and tests listed in §4.5, `crates/reify-compiler/stdlib/stock.ri` (new:
   `SheetStock`, `Stocked`, `SheetPart`), `crates/reify-compiler/src/stdlib_loader.rs` (registration).
@@ -854,7 +859,7 @@ leaf departing from this layout carries its own registration in the same diff.
   back its fields; the `AddOptimal` timing ratio is recorded.
   Prereqs: none (parallel to α–δ). `grammar_confirmed = true`.
 
-- **ζ — Rectangular nesting builtin + status pass.**
+- **ζ #8493 — Rectangular nesting builtin + status pass.**
   Modules: `crates/reify-builtins/src/registry.rs` (row), `crates/reify-stdlib/src/{nesting.rs (new),
   registry_dispatch.rs, lib.rs}`, `crates/reify-compiler/stdlib/stock.ri` (`NestStatus`,
   `PartFootprint`, `NestGroup`, `NestResult`), `crates/reify-eval/src/engine_build.rs` (the status
@@ -862,14 +867,14 @@ leaf departing from this layout carries its own registration in the same diff.
   **LEAF signal:** B18's explicit-list half under `reify eval`.
   Prereqs: ε. `grammar_confirmed = true`.
 
-- **ζ2 — `nest_sheet_parts(filter(self.descendants, SheetPart), …)`.**
+- **ζ2 #8494 — `nest_sheet_parts(filter(self.descendants, SheetPart), …)`.**
   Modules: `crates/reify-compiler/src/expr.rs` (intercept beside `cost(...)`),
   `crates/reify-eval/src/structural_query.rs` (rewrite beside `apply_cost_aggregation`, with a
   diagnostics sink).
   **LEAF signal:** B18's descendants half.
   Prereqs: ζ. `grammar_confirmed = true`.
 
-- **η — Integration gate: CI examples + harness e2e.**
+- **η #8495 — Integration gate: CI examples + harness e2e.**
   Modules: `examples/material_waste_stock_pick.ri` (catalog `in` thickness + Enum width class, a
   volume floor, material + coating Money objective over `Stocked` blank lets),
   `examples/material_waste_nesting.ri` (three `SheetPart` plates sized by one swept catalog thickness
@@ -879,7 +884,7 @@ leaf departing from this layout carries its own registration in the same diff.
   values, `ProvenOptimal` silence and exact `I_GEOMETRY_SWEEP` counts; §5 rows asserted end to end.
   Prereqs: γ, γ2, δ, ε, ζ2, **#8357**, **#5470**. `grammar_confirmed = true` (the `in` grammar is #8355's).
 
-- **θ1 — Doc chunks, registry-verified + reify-design index + discoverability.**
+- **θ1 #8496 — Doc chunks, registry-verified + reify-design index + discoverability.**
   Modules: `crates/reify-mcp/src/tools/chunks/` (`measurement.md`: exact extents, `Stocked`;
   `constraints.md`: geometry-coupled objectives / constraints, the finite-domain rule, the sweep
   summary and budget, the v1 scope rule; a stock / nesting section, including §4.6 item 7's honesty
@@ -889,7 +894,7 @@ leaf departing from this layout carries its own registration in the same diff.
   the mechanism from the chunk / index wording.
   Prereqs: η. `grammar_confirmed = true`.
 
-- **θ2 — Exemplar corpus.**
+- **θ2 #8497 — Exemplar corpus.**
   Modules: `examples/best_practices/<geometry-cost exemplar>.ri` + its `INDEX.md` row in the same
   commit (`best_practices_index_matches_corpus_directory`).
   **LEAF signal:** the exemplar compiles clean; its swept and geometric constraints are listed in
@@ -898,7 +903,7 @@ leaf departing from this layout carries its own registration in the same diff.
   continuous form is shown in the θ1 chunk, never in the gated corpus file.
   Prereqs: η. `grammar_confirmed = true`.
 
-- **θ3 — Companion corrections.**
+- **θ3 #8498 — Companion corrections.**
   Modules (docs only): `docs/prds/v0_6/ranked-solve-result.md` (§0 / §6 / §7 stale F-cache names and
   4787 rows; §3.1 carrier listing), `continuous-cost-minimisation.md` (§5 row 3, §10),
   `discrete-cost-minimisation.md` (§7 M-WASTE row), `geometry-algebra-solver-unification.md` (§5 row,
@@ -910,20 +915,20 @@ leaf departing from this layout carries its own registration in the same diff.
   cites a non-existent F-cache PRD.
   Prereqs: η. `grammar_confirmed = true`.
 
-- **ι — `[MILESTONE]` Bookmark: continuous geometry-in-the-loop (the inner layer).**
+- **ι #8499 — `[MILESTONE]` Bookmark: continuous geometry-in-the-loop (the inner layer).**
   PENDING milestone; ON DISPATCH escalate for a `/prd` design session — do NOT implement. Charter: arm
   B (per-trial re-realisation) on P2's `GeometryDispatch`, routed from α's continuous refusal;
   local-optimum honesty (`BestFound`); content-addressed realisation memo; native-memory policy;
   finite-difference budget. `execution_class: decision`.
   Prereqs: **#6683** (P2 ο), γ.
 
-- **κ — `[MILESTONE]` Deferred-optimisation decision (§9).**
+- **κ #8500 — `[MILESTONE]` Deferred-optimisation decision (§9).**
   PENDING milestone; ON DISPATCH measure per-candidate in-process cost on η's examples (and any
   printer_v01-scale coupled model), re-read §9's trigger table, and either file the justified items or
   record why none is. `execution_class: decision`.
   Prereqs: η.
 
-- **μ — `[MILESTONE]` Bookmark: multi-instance coupled templates.**
+- **μ #8501 — `[MILESTONE]` Bookmark: multi-instance coupled templates.**
   PENDING milestone; ON DISPATCH escalate for `/prd` design — do NOT implement. Charter: lift §3
   decision 2's "instantiated once" limit — per-instance pins (keyed by instance, not template cell),
   per-instance scoring of the template's objective, how instances' objectives combine, and the
@@ -931,20 +936,20 @@ leaf departing from this layout carries its own registration in the same diff.
   Prereqs: η, **#6592** and **#6657** (instantiation-value-flow β / κ — per-instance overlays and
   solved-value flow).
 
-- **ν — `[MILESTONE]` Bookmark: cross-template sweep sets.**
+- **ν #8502 — `[MILESTONE]` Bookmark: cross-template sweep sets.**
   PENDING milestone; ON DISPATCH escalate for `/prd` design — do NOT implement. Charter: lift §3
   decision 2's "*S* ⊆ *T*'s own autos" and "one coupled template" limits — child autos joining a
   parent's geometry-objective sweep, several coupled templates in one module, and how that composes
   with M-WHOLE's merged clusters. `execution_class: decision`.
   Prereqs: η, **#6592**, **#6657**.
 
-- **λ — `[MILESTONE]` Bookmark: true-profile nesting.**
+- **λ #8503 — `[MILESTONE]` Bookmark: true-profile nesting.**
   PENDING milestone; ON DISPATCH escalate for `/prd` design. Charter: irregular profiles (a flat-profile
   extraction query + a no-fit-polygon engine), arbitrary rotations, common-line cutting.
   `execution_class: decision`.
   Prereqs: η.
 
-- **ω — PRD close.** Status → terminal token, landed leaf ids, AS-AUTHORED freeze paragraph and
+- **ω #8504 — PRD close.** Status → terminal token, landed leaf ids, AS-AUTHORED freeze paragraph and
   LIVE / AS-AUTHORED map, matching header on the capability manifest (overlay "PRD terminal status").
   **LEAF signal:** the committed header. Prereqs: **every** other leaf, ι / κ / λ / μ / ν included (overlay
   rule; a `cancelled` sibling counts as satisfied). The PRD stays non-terminal until each bookmark is
