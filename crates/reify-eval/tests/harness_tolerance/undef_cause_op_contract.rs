@@ -503,3 +503,61 @@ fn a_length_mass_is_diagnosed_and_records_the_dimensioned_arg_cause() {
         })
     );
 }
+
+/// Inline for the same reason as [`MASS_DIMENSION_SOURCE`].
+const PLANE_DIMENSION_SOURCE: &str = "structure def PlaneDim {
+  let wrong = plane_xy(2kg)
+  let right = plane_xy(2mm)
+}";
+
+/// The I5 cause is recorded for ANY builtin classifier's
+/// `DimensionedArgRejected`, not only the dynamics ones: a geometry builtin's
+/// rejected `offset` records that code too.
+#[test]
+fn a_mass_plane_offset_records_the_dimensioned_arg_cause() {
+    use reify_core::Severity;
+
+    let module = compile_source_with_stdlib(PLANE_DIMENSION_SOURCE);
+    let errors = collect_errors(&module.diagnostics);
+    assert!(
+        errors.is_empty(),
+        "PlaneDim must compile without errors: {errors:#?}"
+    );
+
+    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+    engine.set_capture_undef_causes(true);
+    let result = engine.eval(&module);
+
+    let rejections: Vec<&str> = result
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.severity == Severity::Error && d.code == Some(DiagnosticCode::DimensionedArgRejected)
+        })
+        .map(|d| d.message.as_str())
+        .collect();
+    assert!(
+        matches!(rejections.as_slice(), [m] if m.starts_with("plane_xy: offset argument expects Length")),
+        "one plane_xy offset rejection, got {rejections:#?}"
+    );
+
+    let causes = engine.undef_causes();
+    let wrong = ValueCellId::new("PlaneDim", "wrong");
+    assert!(
+        matches!(
+            causes.get(&wrong),
+            Some(UndefCause::OpContractFailed {
+                code: DiagnosticCode::DimensionedArgRejected,
+                ..
+            })
+        ),
+        "expected OpContractFailed {{ DimensionedArgRejected }}, got {:?}",
+        causes.get(&wrong)
+    );
+    let right = ValueCellId::new("PlaneDim", "right");
+    assert!(
+        causes.get(&right).is_none(),
+        "the 2 mm twin records no cause, got {:?}",
+        causes.get(&right)
+    );
+}

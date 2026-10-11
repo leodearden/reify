@@ -1019,8 +1019,8 @@ fn joint_compliance(
 }
 
 /// A joint's kind with its `(stiffness, damping)` specs, or `None` for a kind
-/// that carries no compliance. Only 1-DOF joints reach the compliance bridge,
-/// and the 1-DOF flexure kinds are exactly revolute and prismatic.
+/// that carries no compliance. Only joints with a one-column motion subspace
+/// reach the compliance bridge, and those are exactly revolute and prismatic.
 fn compliance_specs(joint: &BTreeMap<Value, Value>) -> Option<(&str, ArgSpec, ArgSpec)> {
     match map_str(joint, "kind")? {
         kind @ "revolute" => Some((kind, rotational_stiffness_spec(), rotational_damping_spec())),
@@ -3573,6 +3573,40 @@ mod tests {
         assert_eq!(c.damping, None, "Option(None) damping is absent");
         let bare_damping = joint_map("revolute", vec![("damping", Value::Real(3.5))]);
         assert!(matches!(joint_compliance(&bare_damping, None), Ok(Some(_))));
+    }
+
+    /// The RNEA applies compliance to exactly the joints whose motion subspace
+    /// has one column, so every such kind needs compliance specs: without
+    /// them its `spring_rate`/`damping` would be dropped silently.
+    #[test]
+    fn every_one_dof_joint_kind_has_compliance_specs() {
+        let axis = |x: f64, y: f64, z: f64| {
+            Value::Vector(vec![Value::Real(x), Value::Real(y), Value::Real(z)])
+        };
+        for &kind in crate::joints::JOINT_KINDS {
+            let joint = joint_map(
+                kind,
+                vec![
+                    ("axis", axis(0.0, 0.0, 1.0)),
+                    ("axis_x", axis(1.0, 0.0, 0.0)),
+                    ("axis_y", axis(0.0, 1.0, 0.0)),
+                ],
+            );
+            let columns = motion_subspace_columns(&joint);
+            assert!(
+                columns.is_some() || !crate::joints::DRIVING_JOINT_KINDS.contains(&kind),
+                "the fixture must give the driving kind {kind} a motion subspace"
+            );
+            let one_dof = columns.is_some_and(|c| c.len() == 1);
+            let Value::Map(m) = &joint else {
+                unreachable!("joint_map builds a Map");
+            };
+            assert_eq!(
+                compliance_specs(m).is_some(),
+                one_dof,
+                "{kind}: compliance specs exist exactly for a 1-DOF kind"
+            );
+        }
     }
 
     #[test]

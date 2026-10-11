@@ -1994,7 +1994,8 @@ fn interp_render(value: &Value) -> String {
 fn emit_undef_builtin_diagnostics(name: &str, args: &[Value], result: &Value, ctx: &EvalContext) {
     // The classifiers run when EITHER sink is attached: the undef-cause capture
     // pass (`record_op_contract_failures`) re-evaluates with a cause sink and no
-    // diagnostics sink, and it is the pass that records the I5 cause below.
+    // diagnostics sink, and it is the pass that records the I5 cause below. With
+    // capture on, an Undef builtin cell is therefore classified once per pass.
     if !matches!(result, Value::Undef) || (ctx.diagnostics.is_none() && ctx.undef_causes.is_none())
     {
         return;
