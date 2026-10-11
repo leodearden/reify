@@ -1,0 +1,16 @@
+// Test fixture for task 7486: end-to-end pin of task 7016's `List<Geometry>`
+// Rule-4 arm. Kernel-free by design, like morph_derived_let.ri, so its guard
+// runs in every build profile. `items` is a Param-kind LEAF of
+// `List<Geometry>` whose value changes on a pure `width` tick. Why its
+// default is a list literal rather than `adjacent_faces(...)` or `auto`:
+// the doc on morph_arm_e2e.rs's
+// stage_a_admits_dimensional_tick_with_param_list_geometry_leaf_from_compiled_module.
+
+structure MorphParamListGeometry {
+    param width: Length = 10mm
+    param depth: Length = 10mm
+    param height: Length = 10mm
+
+    let body = box(width, depth, height)
+    param items: List<Geometry> = [body]
+}
