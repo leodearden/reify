@@ -241,15 +241,13 @@ fn sweep_with_history_preserves_caps_for_a_correctly_posed_profile() {
     );
 }
 
-/// The four facts an author needs, plus the reason. A degenerate-pose error
-/// that names only the failure leaves them nowhere to go, and one that says
-/// only "pose the profile normal to the tangent" sends them straight into a
-/// SECOND, unrelated compile error — measured: an inline
+/// The four facts an author needs, plus the reason and a paste-able fix. A
+/// degenerate-pose error that names only the failure leaves them nowhere to
+/// go. The example is spelled inline because inline is legal: since #6188 the
+/// compiler's profile precondition sees through a transform, and the inline
 /// `sweep(translate(rotate(circle(3mm), 1,0,0, -90deg), 24mm,0mm,0mm),
-/// helix(24mm, 7mm, 63mm))` is rejected by the compiler's profile
-/// precondition, while the identical NAMED-BINDING spelling realizes at
-/// 3.836681796674759e-5. So the named binding is a required part of the
-/// advice, not a stylistic aside.
+/// helix(24mm, 7mm, 63mm))` realizes at 3.836681796674759e-5 m³, identical to
+/// the `let`-bound spelling.
 ///
 /// Asserted as a word SET, never as an exact string: the facts are pinned
 /// while the wording stays editable.
@@ -276,7 +274,7 @@ fn degenerate_pose_error_carries_every_fact_the_author_needs() {
         ("the corrective action", "pose the profile normal"),
         ("what to pose it against", "start tangent"),
         ("the measured tangent", "start tangent (1.000000,"),
-        ("the named-binding requirement", "bind the posed profile"),
+        ("a paste-able inline example", "sweep(rotate("),
     ] {
         assert!(
             msg.contains(needle),

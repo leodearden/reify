@@ -46,6 +46,8 @@
 //! Two further rungs bound the guard's scope rather than its band: rung 6 holds
 //! `pipe()`, which orients its own section and must be untouched, and rung 7
 //! pins that a CURVE profile is already refused one layer up, by the compiler.
+//! Rung 8 holds the refusal's own advice: the inline posed spelling it suggests
+//! compiles and realizes.
 //!
 //! Sources are embedded inline rather than read from disk, so this file adds no
 //! entry to `_RUST_COUPLED_RI_FIXTURES` (`scripts/verify.sh`).
@@ -288,9 +290,18 @@ fn the_refusal_reaches_the_user_with_every_fact_intact() {
             "encloses nothing",
             "pose the profile normal",
             "start tangent (1.000000,",
-            "bind the posed profile",
+            "sweep(rotate(",
         ],
         "in-plane spine, as the author sees it",
+    );
+    assert!(
+        !rung
+            .realize_errors
+            .iter()
+            .any(|m| m.contains("rejected as a sweep profile")),
+        "the refusal must not claim an inline posed profile is rejected; rung 8 \
+         realizes one. Got: {:?}",
+        rung.realize_errors
     );
 }
 
@@ -437,5 +448,26 @@ fn curve_profile_is_refused_by_the_compiler() {
         &rung.compile_errors,
         &["profile", "Surface"],
         "curve profile",
+    );
+}
+
+/// Rung 8 — the refusal's advice must be followable as written. It suggests an
+/// INLINE posed profile, `sweep(rotate(<profile>, …), path)`; the compiler's
+/// profile precondition sees through the transform to the Closed ∧ Planar
+/// section (#6188), and the pose puts the section normal along the +Y spine.
+#[test]
+fn an_inline_posed_profile_realizes() {
+    const SOURCE: &str = r#"structure S {
+    let b = sweep(rotate(rectangle(20mm, 20mm), 1.0, 0.0, 0.0, -90deg), line_segment(0mm, 0mm, 0mm, 0mm, 200mm, 0mm))
+    let v = volume(b)
+}
+"#;
+    let Some(rung) = rung(SOURCE) else {
+        return;
+    };
+    assert_admitted(
+        &rung,
+        PROFILE_AREA_M2 * 0.200,
+        "inline posed profile along a +Y spine",
     );
 }
