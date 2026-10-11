@@ -28,6 +28,7 @@ import sqlite3
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from datetime import datetime, timedelta
 from fractions import Fraction
 from pathlib import Path
@@ -471,6 +472,43 @@ class CliTests(unittest.TestCase):
         self.assertIn("RECORD NOT WRITTEN", stderr)
         self.assertEqual(stdout, "")
         self.assertEqual(blocker.read_text(), "not a directory\n")
+
+    def test_an_internal_failure_is_a_defect_exit_5_not_a_protocol_violation(self):
+        out_dir = self._out_dir("defect-out")
+        with mock.patch.object(e3_model, "era_split", side_effect=KeyError("era-split bug")):
+            code, stdout, stderr = run_cli(cli_argv(self.unmet, out_dir))
+        self.assertEqual(code, 5)
+        self.assertIn("E3 ANALYSIS DEFECT", stderr)
+        self.assertIn("era-split bug", stderr)
+        self.assertNotIn("PROTOCOL VIOLATION", stderr)
+        self.assertEqual(stdout, "")
+        self.assertFalse(out_dir.exists())
+
+    def test_an_instant_without_an_offset_or_unparseable_is_a_usage_error(self):
+        for as_of in ("2026-10-10T20:00:00", "yesterday"):
+            with self.subTest(as_of=as_of):
+                out_dir = self._out_dir("bad-as-of-out")
+                code, _, stderr = run_cli(cli_argv(self.unmet, out_dir, as_of=as_of))
+                self.assertEqual(code, 2)
+                self.assertIn("--as-of", stderr)
+                self.assertFalse(out_dir.exists())
+
+    def test_live_read_under_an_unregistered_project_root_is_a_usage_error(self):
+        opened = []
+        out_dir = self._out_dir("elsewhere-live-out")
+        code, _, stderr = run_cli(live_argv(self.unmet, out_dir) + ["--project-root", "/elsewhere"],
+                                  open_task_store=opened.append)
+        self.assertEqual(code, 2)
+        self.assertIn("--project-root /elsewhere", stderr)
+        self.assertNotIn("PROTOCOL VIOLATION", stderr)
+        self.assertEqual(opened, [])
+        self.assertFalse(out_dir.exists())
+
+    def test_replay_takes_project_root_as_a_path_default_only(self):
+        out_dir = self._out_dir("elsewhere-replay-out")
+        code, _, stderr = run_cli(cli_argv(self.unmet, out_dir) + ["--project-root", "/elsewhere"])
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual((out_dir / "report.txt").read_text(), self.unmet_run[1])
 
     def test_default_out_dir_is_inside_the_analysis_results(self):
         as_of = datetime(2026, 10, 10, 20, 0, tzinfo=UTC)

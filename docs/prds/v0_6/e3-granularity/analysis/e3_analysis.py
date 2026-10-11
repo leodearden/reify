@@ -27,7 +27,8 @@ directory and renamed into place, and an existing record is never
 overwritten.
 
 Exit codes: 0 ok; 1 a pre-registered invariant is violated; 2 usage; 3 a
-data source is unreadable; 4 the record could not be written. Nothing is
+data source is unreadable; 4 the record could not be written; 5 a defect in
+this script, i.e. any other failure (its traceback is printed). Nothing is
 left behind unless the exit code is 0.
 
 The legacy reify_task_size_analysis.py beside this file is the parent
@@ -40,17 +41,18 @@ import os
 import shutil
 import sqlite3
 import sys
+import traceback
 from dataclasses import dataclass, fields, is_dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from enum import Enum
 from fractions import Fraction
 from pathlib import Path
 
 import e3_model as model
-from e3_protocol import E3, Arm, ProtocolViolation, format_ids
+from e3_protocol import E3, UTC, Arm, ProtocolViolation, format_ids
 from e3_sources import (
     SourceError, fetch_task_snapshot, fused_memory_url, open_fused_memory, read_runs_db,
-    read_task_merges, read_task_snapshot, write_task_snapshot,
+    read_task_merges, read_task_snapshot, utc_timestamp, write_task_snapshot,
 )
 
 ANALYSIS_DIR = Path(__file__).resolve().parent
@@ -59,14 +61,17 @@ REPORT_NAME = "report.txt"
 ENDPOINTS_NAME = "endpoints.json"
 SNAPSHOT_NAME = "tasks-snapshot.json"
 ENDPOINTS_SCHEMA = "e3-endpoints/1"
-EXIT_OK, EXIT_PROTOCOL, EXIT_USAGE, EXIT_SOURCE, EXIT_RECORD = 0, 1, 2, 3, 4
+EXIT_OK, EXIT_PROTOCOL, EXIT_USAGE, EXIT_SOURCE, EXIT_RECORD, EXIT_DEFECT = 0, 1, 2, 3, 4, 5
 SOURCE_PARSE_FAILURES = (OSError, ValueError, KeyError, TypeError, sqlite3.Error)
 DEFECT_ESCAPE_WINDOW = timedelta(days=30)
-UTC = timezone.utc
 
 
 class UsageError(Exception):
     """The invocation asks for something the analysis refuses to do."""
+
+
+class RecordNotWritten(Exception):
+    """The record could not be written; nothing was left behind."""
 
 
 def default_out_dir(as_of):
@@ -132,7 +137,9 @@ def _parser(protocol):
     parser = argparse.ArgumentParser(
         prog="e3_analysis.py",
         description="Pre-registered E3 §7 analysis: stop-rule probe, censoring, endpoints.")
-    parser.add_argument("--project-root", default=protocol.project_root)
+    parser.add_argument("--project-root", default=protocol.project_root,
+                        help="the checkout whose runs.db and repo are the defaults; a live "
+                             "task-store read admits only the registered project root")
     parser.add_argument("--runs-db", type=Path,
                         help="default: <project-root>/data/orchestrator/runs.db")
     parser.add_argument("--repo", type=Path, help="default: <project-root>")
@@ -152,12 +159,10 @@ def _parser(protocol):
 
 def _instant(option, text):
     try:
-        moment = datetime.fromisoformat(text)
-    except ValueError as error:
-        raise UsageError(f"{option} {text!r} is not ISO 8601: {error}") from error
-    if moment.tzinfo is None:
-        raise UsageError(f"{option} {text!r} carries no UTC offset")
-    return moment.astimezone(UTC)
+        return utc_timestamp(text)
+    except (ValueError, SourceError) as error:
+        raise UsageError(f"{option} needs an ISO 8601 instant with a UTC offset: {error}") \
+            from error
 
 
 def _as_of(text):
@@ -195,11 +200,15 @@ def _load_snapshot(args, repo, protocol, open_task_store):
     if args.tasks_snapshot is not None:
         return _read_source(f"task snapshot {args.tasks_snapshot}",
                             lambda: read_task_snapshot(args.tasks_snapshot)), False
+    if args.project_root != protocol.project_root:
+        raise UsageError(f"--project-root {args.project_root} is not the registered project "
+                         f"root {protocol.project_root}, the one a live read keys the task "
+                         "store by")
     url = args.fused_memory_url or _read_source(
         "fused-memory url", lambda: fused_memory_url(repo / ".mcp.json"))
     fetched_at = datetime.now(UTC).replace(microsecond=0)
     return _read_source(f"fused-memory task store {url}", lambda: fetch_task_snapshot(
-        open_task_store(url), args.project_root, protocol.snapshot_candidate_ids(),
+        open_task_store(url), protocol.project_root, protocol.snapshot_candidate_ids(),
         fetched_at)), True
 
 
@@ -239,7 +248,7 @@ def main(argv=None, protocol=E3, open_task_store=open_fused_memory):
     default opens a fused-memory MCP session."""
     args = _parser(protocol).parse_args(argv)
     try:
-        analysis, live_snapshot, out_dir = _compute(args, protocol, open_task_store)
+        report = _run(args, protocol, open_task_store)
     except UsageError as error:
         print(f"e3_analysis: {error}", file=sys.stderr)
         return EXIT_USAGE
@@ -249,17 +258,35 @@ def main(argv=None, protocol=E3, open_task_store=open_fused_memory):
     except SourceError as error:
         print(f"E3 DATA SOURCE UNREADABLE: {error}", file=sys.stderr)
         return EXIT_SOURCE
-    report = render_report(analysis)
-    try:
-        _write_outputs(out_dir, report, to_json(analysis), live_snapshot)
-    except OSError as error:
+    except RecordNotWritten as error:
         print(f"E3 RECORD NOT WRITTEN: {error}", file=sys.stderr)
         return EXIT_RECORD
+    except Exception:
+        print("E3 ANALYSIS DEFECT: a failure outside every documented one, so a bug in this "
+              "script, not a protocol finding:", file=sys.stderr)
+        traceback.print_exc()
+        return EXIT_DEFECT
     print(report, end="")
     return EXIT_OK
 
 
+def _run(args, protocol, open_task_store):
+    """Compute, render and write the record; returns the report to print."""
+    analysis, live_snapshot, out_dir = _compute(args, protocol, open_task_store)
+    report = render_report(analysis)
+    _write_outputs(out_dir, report, to_json(analysis), live_snapshot)
+    return report
+
+
 def _write_outputs(out_dir, report, document, live_snapshot):
+    """Write the record, raising RecordNotWritten when the filesystem refuses."""
+    try:
+        _stage_then_rename(out_dir, report, document, live_snapshot)
+    except OSError as error:
+        raise RecordNotWritten(str(error)) from error
+
+
+def _stage_then_rename(out_dir, report, document, live_snapshot):
     """Write the record into a staging sibling, then rename it into place
     (onto an absent or empty out_dir), so a failure leaves no partial record."""
     out_dir.parent.mkdir(parents=True, exist_ok=True)
