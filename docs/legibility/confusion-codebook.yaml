@@ -7351,6 +7351,12 @@ entries:
     origin_phase: implement
     manifested_phase: implement
     evidence_quote: 'Read({"__unparsedToolInput": {"raw": "{\"file_path\": \".../ty.rs\", \"offset\": 185, 210, \"limit\": 25}\"}}) -> InputValidationError: Read was called with input that could not be parsed as JSON.'
+  - date: '2026-10-09'
+    project: reify
+    session: 503d058a-2cc9-4687-8917-1ee456557ca1
+    origin_phase: unknown
+    manifested_phase: verify
+    note: Read was called with an invented `from` parameter alongside `offset` and `limit`, which the tool rejected with InputValidationError. This is the same family as misusing Read's range parameters. The agent was verifying a completed task's claim when it happened.
 - id: entry-cand-20260725-6
   title: Per-lane task-meta iterations.jsonl missing at expected path
   severity: medium
@@ -8243,6 +8249,12 @@ entries:
     origin_phase: implement
     manifested_phase: unknown
     note: Guard trip 'blocked:' at turn 167 consistent with anti-chaining guard detecting attempted sleep+poll chain in orchestrated-task context
+  - date: '2026-10-05'
+    project: reify
+    session: 0a523b73-a458-45ef-8d57-23395ed767fe
+    origin_phase: unknown
+    manifested_phase: ops
+    note: At turn 1458 a 'sleep 30; ls ...' chain was blocked by the guard, which said to use Monitor with an until-loop or run_in_background.
 - id: entry-cand-20260719-7
   title: Warm-lane task bootstrap missing plan.json
   severity: medium
@@ -8853,6 +8865,12 @@ entries:
     origin_phase: unknown
     manifested_phase: architect
     note: Cross-repo fused-memory get_task() timeout from reify task to dark-factory MCP server. Generic 'The operation timed out' message with no server-side diagnostic context caused architect to misattribute the issue, requiring task rerouting. Evidence explicitly cites this entry from session c455234a; current session demonstrates the same codebook pattern manifesting in wrong-repo misidentification and task refiling.
+  - date: '2026-10-04'
+    project: reify
+    session: beb280d5-dc25-4451-9d0a-49fd18150d21
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: mcp__fused-memory__get_task was called three times with identical arguments (id 7890, project_root /home/leo/src/reify) in an /unblock session. This fits the fused-memory get_task failure and identical-retry pattern. The digest does not show the error text, so a timeout is inferred and not confirmed.
 - id: entry-cand-20260823-13
   title: Redundant duplicate full-suite test invocation to extract two derived metrics
   severity: medium
@@ -8983,6 +9001,18 @@ entries:
     origin_phase: unknown
     manifested_phase: verify
     note: Agent invoked grep_search (turns 17, 19, 21, 23) — non-existent tool; harness has Grep, not grep_search
+  - date: '2026-10-04'
+    project: reify
+    session: 58acb476-d48e-4c9a-930c-206dd5405c4f
+    origin_phase: unknown
+    manifested_phase: verify
+    note: Agent called grep_search three times (turns 17, 19, 21), each returning 'No such tool available', instead of using the harness's Grep tool.
+  - date: '2026-10-06'
+    project: reify
+    session: 96ed8312-4abc-4e45-a6af-7e1993092a27
+    origin_phase: unknown
+    manifested_phase: implement
+    note: Agent called grep_search, glob_search and git_log, none of which exist in the harness. Each call returned 'No such tool available'. These are the same hallucinated generic tool names the entry describes (grep_search), plus glob_search and git_log.
 - id: entry-cand-20260918-12
   title: add_memory MCP call times out and is retried with an identical payload, risking a duplicate write
   severity: medium
@@ -9047,6 +9077,12 @@ entries:
     origin_phase: implement
     manifested_phase: implement
     evidence_quote: '{"file_path": "/home/leo/src/warm-lanes/worktrees/_lane-1/scripts/seed-warm-lane.sh", "offset": 1, 200}'
+  - date: '2026-10-04'
+    project: reify
+    session: dcdc65b0-2654-4fa6-8584-db3411c35293
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: 'The Read call''s JSON arguments were malformed. A stray empty element (`"offset": 1, , "limit": 130`) made the input unparseable, so the harness returned an InputValidationError. This is the same class as the existing entry, malformed Read arguments, though the defect here is a doubled comma rather than a trailing positional value. The digest does not show which task phase this was.'
 - id: entry-cand-20260827-16
   title: Multi-line python3 -c script flattened to one line inside a compound Bash command, producing a misleading IndentationError
   severity: medium
@@ -9227,6 +9263,12 @@ entries:
     origin_phase: unknown
     manifested_phase: implement
     note: Census verification session confirms this entry is still active. Cluster describes ad-hoc diagnostic scripts assuming plan.json steps carry 'step_type' field universally. This session's error neighborhoods (turns 29-160) show failed verification attempts with jq type errors and parse failures attempting to inspect the same schema heterogeneity.
+  - date: '2026-10-08'
+    project: reify
+    session: 50231b7d-9144-4672-a543-69be5659c139
+    origin_phase: unknown
+    manifested_phase: verify
+    note: 'Related schema-assumption error: the StructuredOutput batch at turn 41 omitted the required ''input'' property on tool_calls/3, so it was rejected by schema validation.'
 - id: entry-cand-20260909-13
   title: Agent invokes hallucinated generic tool names (read_file, git_log) absent from its actual toolset
   severity: medium
@@ -9270,6 +9312,12 @@ entries:
     origin_phase: unknown
     manifested_phase: verify
     note: Agent invoked git_log (turn 25) — non-existent tool absent from harness toolset
+  - date: '2026-10-04'
+    project: reify
+    session: de158ad2-77b9-417a-b592-eb5246b9a90f
+    origin_phase: unknown
+    manifested_phase: verify
+    note: Agent called hallucinated tool names grep_search, glob_search and git_log, which are absent from the toolset; the errors read 'No such tool available'.
 - id: entry-cand-20260914-18
   title: Safety justification for a timeout ceiling bump assumes a guard env var applies uniformly across roles, missing role-scoped gating logic
   severity: medium
@@ -9561,6 +9609,12 @@ entries:
     origin_phase: unknown
     manifested_phase: recon
     note: 'The digest''s ''User Corrections'' section contains a ''Task ID: 7435 ... Block reason: Architect reported task unactionable'' block, which is an injected task-block notification rather than a user correction. This matches the mislabeling pattern in this entry. Origin phase is not supported by the digest, so it is unknown.'
+  - date: '2026-10-07'
+    project: reify
+    session: eca22d92-0d0b-43f6-ad58-94f745d27379
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: The only 'User Correction' (turn 63) is an injected 'New Escalation for Task 7423' notification (esc-7423-14, post_merge_verify), not a human correction. The digest mislabels it.
 - id: entry-cand-20260813-11
   title: Agent assumes earlier &&-chained command executed despite the whole chain being rejected upfront by an eval syntax error
   severity: medium
@@ -9774,6 +9828,12 @@ entries:
     origin_phase: unknown
     manifested_phase: prd
     evidence_quote: 'mcp__fused-memory__add_memory({"agent_id": "claude-interactive-prd-5429-residuals", "category": "observations_and_summaries", "content": "Session 2026-08-20 (enum-shadow-coherence PRD authoring): the #5429 \"local enum shadows pre...) -> The operation timed out.'
+  - date: '2026-10-05'
+    project: reify
+    session: 678e9e7c-2559-4716-98b4-a1dfd78d762f
+    origin_phase: unknown
+    manifested_phase: ops
+    note: fused-memory add_memory call timed out (turn 535, 'The operation timed out.'); the digest shows no diagnostic detail or retry evidence beyond the timeout itself.
 - id: entry-cand-20260918-15
   title: git boolean-predicate exit code chained via && misread as tool_error
   severity: medium
@@ -10044,6 +10104,18 @@ entries:
     origin_phase: unknown
     manifested_phase: verify
     note: Agent called grep_search at turn 19, which is hallucinated; harness provides only Read/Grep tools
+  - date: '2026-10-04'
+    project: reify
+    session: 58acb476-d48e-4c9a-930c-206dd5405c4f
+    origin_phase: unknown
+    manifested_phase: verify
+    note: Same pattern of non-existent tool name (grep_search) used instead of the actual Grep tool; the identical call recurred across multiple turns.
+  - date: '2026-10-08'
+    project: reify
+    session: 50231b7d-9144-4672-a543-69be5659c139
+    origin_phase: unknown
+    manifested_phase: verify
+    note: Agent called non-existent grep_search and git_log tools (turns 17, 19, 21) instead of the harness's Read/Grep tools.
 - id: entry-cand-20260812-11
   title: fused-memory resolve_ticket times out repeatedly, retried with varying ticket IDs instead of diagnosing a systemic failure
   severity: medium
@@ -10069,6 +10141,18 @@ entries:
     origin_phase: unknown
     manifested_phase: architect
     note: A fused-memory MCP call (submit_task) timed out twice in a row at turns 336 and 342 with what appears to be an identical payload, instead of diagnosing a systemic failure. This is similar to the resolve_ticket repeated-timeout pattern, though the tool and the retry variation differ.
+  - date: '2026-10-05'
+    project: reify
+    session: 0a523b73-a458-45ef-8d57-23395ed767fe
+    origin_phase: unknown
+    manifested_phase: ops
+    note: fused-memory resolve_ticket timed out three times with different ticket IDs (turns 736, 1005, 1236), with no diagnosis of a systemic failure.
+  - date: '2026-10-10'
+    project: reify
+    session: 9f81e3db-19a9-4ede-ac48-0cdf013f3bb5
+    origin_phase: unknown
+    manifested_phase: ops
+    note: 'mcp__escalation__get_pending_escalations({"compact": true, "level": 2}) timed out and was re-issued 9 times with identical arguments. Timeouts at turns 204 and 496 are shown. The agent kept retrying instead of diagnosing a systemic MCP timeout or switching approach.'
 - id: entry-cand-20260906-9
   title: add_memory content payload leaks raw MCP tool-call envelope markup, triggering rejection
   severity: medium
@@ -10101,7 +10185,7 @@ entries:
   status: open
   origin_phase: unknown
   manifested_phase: unknown
-  filing: withheld
+  filing: filed
   sightings:
   - date: '2026-09-26'
     project: reify
@@ -10127,6 +10211,20 @@ entries:
     origin_phase: unknown
     manifested_phase: unknown
     note: A guessed docs path was probed with stderr suppressed, and the nonexistent path surfaced only as a bare exit 2 from ls after a 2>/dev/null grep.
+- id: entry-cand-20261006-7
+  title: Extracting a shell function from a test file via sed and eval inside bash -c trips the dangerous-removal approval check
+  severity: low
+  severity_reason: The extraction is only a convenience for running one helper. The whole script still runs normally, so the cost is contained.
+  status: open
+  origin_phase: unknown
+  manifested_phase: unknown
+  sightings:
+  - date: '2026-10-06'
+    project: reify
+    session: bd4e18dd-55c4-449c-9512-c9259e93e13f
+    origin_phase: unknown
+    manifested_phase: unknown
+    evidence_quote: This command passes a shell -c script that runs rm, and Claude Code could not check the script for dangerous removals. Approve only if you have read the script.
 candidates:
 - id: cand-20260715-1
   title: Autonomous escalation watcher in non-DF project loses script context and env setup
@@ -26459,3 +26557,127 @@ candidates:
     origin_phase: unknown
     manifested_phase: unknown
     evidence_quote: '(turn 108) mcp__plan-tools__add_plan_step({"description": "Remove duplicate test and repoint citations by path", "step_type": "impl", "task_id": "7464"}) -> 2 validation errors for call[add_plan_step] ... (turn 112) mcp__plan-tools__add_plan_step({"description": "Remove duplicate test and repoint citations by path", "step_id": "step-1", "type": "impl"}) -> 2 validation errors for call[add_plan_step]'
+- id: cand-20261005-5
+  title: Branch-existence check uses a task/<id> ref that does not exist locally, so the landed-check gives a misleading 'not landed'
+  cause: The agent ran `git merge-base --is-ancestor task/8241 main && echo LANDED || echo not landed`. The ref task/8241 did not exist (the branch was likely deleted or never created locally). The resulting exit 128 fell through to the `||` branch and printed '8241 not landed', which conflates an invalid ref with a real not-ancestor answer. The same command's `git log` output showed commit 0fd82a812f '(#8241)' on main, which contradicts the printed verdict.
+  area: git landing-status checks via ancestry on task branch refs
+  first_seen: '2026-10-05'
+  disposition: rejected
+  sightings:
+  - date: '2026-10-05'
+    project: reify
+    session: 0a523b73-a458-45ef-8d57-23395ed767fe
+    origin_phase: unknown
+    manifested_phase: merge
+    evidence_quote: 'fatal: Not a valid object name task/8241
+
+      8241 not landed'
+- id: cand-20261004-5
+  title: Glob tool's ripgrep search times out at 20s when rooted at a whole warm-lane worktree
+  cause: A Glob with a narrow pattern (docs/prds/v0_6/*silent*) was rooted at the warm-lane worktree root, and the underlying ripgrep walk did not finish within 20 seconds. The error text says the search may have matched files, so a timeout cannot be told apart from 'no matches'. The agent has to guess whether the file is absent or the search was incomplete, and may wrongly conclude a PRD file does not exist. A narrower path such as docs/prds/v0_6 would avoid the walk, but the agent did not scope the search to it.
+  area: agent tooling / warm-lane worktree file discovery
+  first_seen: '2026-10-04'
+  disposition: rejected
+  sightings:
+  - date: '2026-10-04'
+    project: reify
+    session: ee329127-a72b-4d42-b4e2-197a24ee900d
+    origin_phase: unknown
+    manifested_phase: unknown
+    evidence_quote: 'Glob({"path": "/home/leo/src/warm-lanes/worktrees/_lane-5", "pattern": "docs/prds/v0_6/*silent*"}) -> Ripgrep search timed out after 20 seconds. The search may have matched files but did not complete in time.'
+- id: cand-20261008-4
+  title: git grep invoked with context flag (-A30) placed after the pattern and path, rejected with exit 128
+  cause: The agent assumed git grep accepts options after positional arguments, the way GNU grep permits interleaved flags. git grep requires all options before the pattern and path, so the call fails with 'option must come before non-option arguments'. The error costs a turn and delays the code inspection.
+  area: tooling/git-grep-argument-order
+  first_seen: '2026-10-08'
+  disposition: rejected
+  sightings:
+  - date: '2026-10-08'
+    project: reify
+    session: 00292940-6219-4f80-a578-131322ce6df3
+    origin_phase: unknown
+    manifested_phase: unknown
+    evidence_quote: 'git grep -n "pub fn decode_body" -A30 crates/reify-audit/src/mcp_wire.rs -> [exit 128] fatal: option ''-A30'' must come before non-option arguments'
+- id: cand-20261008-5
+  title: Warm-lane seed note advises --base-commit <main-HEAD>, which silently reuses stale build output when the base is behind main
+  cause: A note on seeding a warm lane tells the agent to pass --base-commit <main-HEAD>. When the base lags main, this keeps the old timestamps on changed sources, so cargo reuses stale build output and the GUI dev build can silently run outdated code. Only the agent's own reasoning caught the error. Neither the note nor the seed tooling flags the flag as unsafe.
+  area: warm-lane seeding (scripts/seed-warm-lane.sh) operational notes
+  first_seen: '2026-10-08'
+  disposition: rejected
+  sightings:
+  - date: '2026-10-08'
+    project: reify
+    session: c330430b-242e-4ddf-8050-1ead631318e3
+    origin_phase: ops
+    manifested_phase: ops
+    evidence_quote: 'The note said to pass `--base-commit <main-HEAD>` when seeding. That''s wrong when the base is behind main: changed sources would keep their old timestamps and cargo would reuse stale build output. I left the flag off, so the seed used the base''s own recorded commit.'
+- id: cand-20261010-2
+  title: Background task output file parsed with json.load assumes a single JSON document but contains extra data
+  cause: The agent read a background task's .output file with a one-shot python json.load, assuming the file holds exactly one JSON document. The file held extra trailing content, so parsing failed with JSONDecodeError 'Extra data'. The output-file format (single JSON versus appended or multi-part output) is undocumented, so the ad-hoc parser guesses at it. This costs the next agent a failed diagnostic step.
+  area: tooling/background-task-output
+  first_seen: '2026-10-10'
+  disposition: rejected
+  sightings:
+  - date: '2026-10-10'
+    project: reify
+    session: 9f81e3db-19a9-4ede-ac48-0cdf013f3bb5
+    origin_phase: unknown
+    manifested_phase: ops
+    evidence_quote: 'json.decoder.JSONDecodeError: Extra data: line 59 column 1 (char 3113)'
+- id: cand-20261007-5
+  title: Obsolete `tail -N` form with multiple file arguments errors out after both clippy runs had passed
+  cause: The agent chained several clippy invocations and then ran `tail -3` on more than one log file. GNU tail rejects the obsolete `-N` form in that context with 'option used in invalid context', so the compound command exited 1 even though both clippy runs returned rc=0. The nonzero exit makes a green result look like a failure and costs a retry turn, and it could hide a real clippy failure behind noise.
+  area: bash tool usage / log-tail idiom in verify commands
+  first_seen: '2026-10-07'
+  disposition: rejected
+  sightings:
+  - date: '2026-10-07'
+    project: reify
+    session: 69820923-6831-491e-a9e2-21e0659374de
+    origin_phase: implement
+    manifested_phase: implement
+    evidence_quote: 'clippy ts rc=0
+
+      clippy ht rc=0
+
+      tail: option used in invalid context -- 3'
+- id: cand-20261008-6
+  title: git grep context flag (-A6) placed after the pathspec separator, rejected with exit 128
+  cause: 'The agent appended a second `git grep` to a `;`-chained command and put the context option `-A6` after the `--` pathspec arguments. git requires options before non-option arguments, so it aborted with `fatal: option ''-A6'' must come before non-option arguments` and exit 128. The first grep''s output still printed, so the failure is easy to read as a partial result.'
+  area: 'agent shell tooling: git grep option ordering'
+  first_seen: '2026-10-08'
+  disposition: rejected
+  sightings:
+  - date: '2026-10-08'
+    project: reify
+    session: d0a29927-7fc3-459f-8d66-cc73149aeba0
+    origin_phase: unknown
+    manifested_phase: unknown
+    evidence_quote: 'fatal: option ''-A6'' must come before non-option arguments'
+- id: cand-20261004-6
+  title: Agent calls non-existent verification_complete tool to report verification verdict
+  cause: In a verification-request task the agent attempted to submit its result through a tool named verification_complete that is not in its toolset. The task prompt implies a structured result-submission mechanism, but no such tool is exposed, so the verdict cannot be delivered and the agent has no fallback path.
+  area: verification-request tooling / tool availability
+  first_seen: '2026-10-04'
+  disposition: rejected
+  sightings:
+  - date: '2026-10-04'
+    project: reify
+    session: 58acb476-d48e-4c9a-930c-206dd5405c4f
+    origin_phase: unknown
+    manifested_phase: verify
+    evidence_quote: 'verification_complete({"confidence": "0.93", "evidence": "[{\"file_path\":\"crates/reify-eval/tests/harness_mechanism/mechanism_modal_damping_e2e.rs\",\"line_range\":\"10-14\"...) -> <tool_use_error>Error: No such tool available: verification_complete</tool_use_error>'
+- id: cand-20261006-7
+  title: Extracting a shell function from a test file via sed and eval inside bash -c trips the dangerous-removal approval check
+  cause: The agent ran a function from tests/infra/test_verify_scope.sh by pulling it out with a sed range and eval-ing it inside a nested `bash -c`. The function body contains rm, so Claude Code could not statically vet the script and held the command for manual approval. A non-interactive agent cannot grant that approval, so the call stalls or errors. The test file exposes no directly invocable entry point for a single function, which pushes agents into this fragile sed/eval extraction.
+  area: tests/infra shell test harness invocability
+  first_seen: '2026-10-06'
+  disposition: promoted
+  sightings:
+  - date: '2026-10-06'
+    project: reify
+    session: bd4e18dd-55c4-449c-9512-c9259e93e13f
+    origin_phase: unknown
+    manifested_phase: unknown
+    evidence_quote: This command passes a shell -c script that runs rm, and Claude Code could not check the script for dangerous removals. Approve only if you have read the script.
+  promoted_to: entry-cand-20261006-7
