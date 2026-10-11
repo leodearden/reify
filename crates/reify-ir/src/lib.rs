@@ -82,6 +82,7 @@ pub use geometry::{
     LoftOpHistoryRecords, Mesh, ModEntry, Operation, ThreeMfOptions, ThreeMfWarning, write_3mf, write_stl_ascii, write_stl_binary,
     QueryCapability, QueryError, ReprKind, ResultFaceDescriptor, Role, StepSchema, SweepOpHistoryRecords, TessError,
     TopologyAttribute, TopologyAttributeTable, VolumeConnectivity, VolumeMesh, VoxelResolution, debug_assert_query_many_invariant,
+    unsupported_dense_sdf_ingest,
 };
 pub use indeterminate::{IndeterminateReason, StructuralReason, TransientReason};
 pub use kernel_validation::{

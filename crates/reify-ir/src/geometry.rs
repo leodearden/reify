@@ -3,6 +3,7 @@ use std::fmt;
 
 use reify_core::hash::ContentHash;
 use crate::boundary_attachment::BoundaryAssociation;
+use crate::dense_sdf::{DenseSdfGrid, ImplicitOptions};
 use crate::value::{SampledField, Value};
 
 /// Unique identifier for a geometry handle within a kernel session.
@@ -4537,6 +4538,15 @@ pub enum VoxelResolution {
     MinFeature(f64),
 }
 
+/// The error a kernel `K` returns for [`GeometryKernel::ingest_dense_sdf`] when
+/// it does not support dense SDF ingest — the one home of that message.
+pub fn unsupported_dense_sdf_ingest<K: ?Sized>() -> GeometryError {
+    GeometryError::OperationFailed(format!(
+        "{} does not ingest dense SDF grids",
+        std::any::type_name::<K>()
+    ))
+}
+
 /// Trait for geometry kernels. Lives in reify-types for dependency inversion —
 /// implemented in reify-kernel-occt, consumed by reify-eval via reify-geometry.
 pub trait GeometryKernel: Send + Sync {
@@ -4949,6 +4959,22 @@ pub trait GeometryKernel: Send + Sync {
     /// verbatim in a side-table disjoint from its voxel-grid handles.
     fn register_mesh_handle(&mut self, mesh: &Mesh) -> Result<GeometryHandle, GeometryError> {
         self.ingest_mesh(mesh)
+    }
+
+    /// Ingest a dense SDF sample grid as a Voxel-repr solid.
+    ///
+    /// The absence of an override is the not-supported contract (the
+    /// [`Self::ingest_mesh`] pattern). `OpenVdbKernel` overrides it under the
+    /// D-8 activation policy (`docs/prds/v0_6/implicit-solids.md`). Delegating
+    /// wrappers such as `reify_geometry::SingleKernelHolder` must forward it
+    /// rather than inherit this default.
+    fn ingest_dense_sdf(
+        &mut self,
+        grid: &DenseSdfGrid,
+        opts: &ImplicitOptions,
+    ) -> Result<GeometryHandle, GeometryError> {
+        let _ = (grid, opts);
+        Err(unsupported_dense_sdf_ingest::<Self>())
     }
 
     /// Optional best-effort `TopologyAttribute` propagation hook for non-OCCT
