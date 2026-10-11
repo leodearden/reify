@@ -577,16 +577,23 @@ fn export_via_mcp_context_refuses_a_module_declaring_an_unenforced_representatio
 ///
 /// The refusal must also leave the delta baseline untouched: the seam's
 /// `compute_delta` sits after the `?`, so a refused write commits no new state.
+///
+/// The design is loaded from a file and exported beside it because the seam confines
+/// export targets to the open design's directory, a check that precedes η.
 #[cfg(feature = "gui")]
 #[tokio::test]
 async fn reify_export_tool_refuses_a_module_declaring_an_unenforced_representation_bound() {
     use crate::debug_server::reify_export_on_engine_and_refresh_baseline;
 
-    let engine = Arc::new(Mutex::new(make_loaded_session_from(&bounded_bracket_source())));
+    let dir = tempfile::tempdir().unwrap();
+    let design = dir.path().join("bracket.ri");
+    std::fs::write(&design, bounded_bracket_source()).unwrap();
+    let mut session = make_session();
+    session.load_file(&design).expect("initial load");
+    let engine = Arc::new(Mutex::new(session));
     let last_state: std::sync::Mutex<Option<crate::types::GuiState>> =
         std::sync::Mutex::new(None);
 
-    let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("ai_bounded.step");
 
     let err = reify_export_on_engine_and_refresh_baseline(
