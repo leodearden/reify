@@ -60,7 +60,11 @@ fn canonical_spd_matrix_is_accepted() {
 
 #[test]
 fn non_square_matrix_is_rejected_with_its_shape() {
-    let t = [Triplet::new(0, 0, 1.0), Triplet::new(1, 1, 1.0), Triplet::new(2, 2, 1.0)];
+    let t = [
+        Triplet::new(0, 0, 1.0),
+        Triplet::new(1, 1, 1.0),
+        Triplet::new(2, 2, 1.0),
+    ];
     let k = SparseRowMat::try_new_from_triplets(3, 4, &t).expect("3x4 triplets");
     assert_eq!(
         SpdSystem::new(k).err(),
