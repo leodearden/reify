@@ -104,7 +104,6 @@ LET = {"torus": "t", "cone": "c", "fillet_blend": "f"}
 DATUM = re.compile(r"sampled facet deviation (\S+) m exceeds bound 1\.000e-6 m")
 TOKENS = ("NO-DATUM", "TIMEOUT", "SED-FAILED")
 
-
 def probe(cls, rhs, d, timeout_s=240):
     f = f"tests/prd-gate/fixtures/pnrg_envelope_{cls}.ri"
     src = subprocess.run(["git", "show", f"HEAD:{f}"],          # committed text, never the tree
@@ -125,18 +124,15 @@ def probe(cls, rhs, d, timeout_s=240):
     m = DATUM.search(p.stdout + p.stderr)            # `OK` and E_MODULE_PATH_MISMATCH land here
     return (m.group(1) if m else "NO-DATUM"), p.returncode, wall
 
-
 def ratio(a, d):
     if a in TOKENS: return "-"
     return str((Decimal(a) / (Decimal(d) / 1000)).quantize(Decimal("0.0001"), ROUND_HALF_UP))
-
 
 def job(line):
     cls, rhs, d, stage, rep, *t = line.rstrip("\n").split("\t")
     load = Path("/proc/loadavg").read_text().split()[0]
     a, rc, wall = probe(cls, rhs, d, int(t[0]) if t else 240)
     return "\t".join([stage, cls, rhs, d, a, ratio(a, d), str(rc), f"{wall:.1f}", load, rep])
-
 
 if __name__ == "__main__":
     jobs = [l for l in sys.stdin if l.strip() and not l.startswith("#")]
@@ -325,3 +321,240 @@ The relative step departs from the task's fixed 0.001 mm, which at `d` = 0.005 m
 `d`, far coarser than the ~0.1–0.4 % plateaus the main note's §1.5 and §1.6 measured. Rounding
 to 1e-5 mm makes the first cone bracket's steps alternate between 2e-5 and 3e-5 mm. Torus's
 1.0010 is a Stage-C target even without a bracket, because it reads ≥ 0.9995.
+---
+
+## 3. Stage B — the dense brackets
+
+The brackets §2 derived, 126 probes. A column is added, as in the main note's §1.5: the deficit
+**δ = d − a**, an integer count of `a`'s display quanta (1e-7 m at 0.3 mm, 1e-8 m at 0.04 mm,
+1e-9 m at 0.005 mm). "Lowest rung of a plateau" marks the smallest sampled `d` of a run of
+identical `a`; the plateau's true lower edge lies between it and the rung below.
+
+**Torus, (i) [0.290, 0.310] mm**:
+
+| d | a (m) | δ | a/d | note |
+|---|---|---|---|---|
+| 0.29 mm | 2.782e-4 | 118 | 0.9593 | spine rung |
+| 0.291 mm | 2.797e-4 | 113 | 0.9612 |  |
+| **0.292 mm** | 2.902e-4 | 18 | **0.9938** | lowest rung of a plateau; bracket max |
+| 0.293 mm | 2.902e-4 | 28 | 0.9904 |  |
+| 0.294 mm | 2.902e-4 | 38 | 0.9871 |  |
+| 0.295 mm | 2.918e-4 | 32 | 0.9892 | lowest rung of a plateau |
+| 0.296 mm | 2.918e-4 | 42 | 0.9858 |  |
+| 0.297 mm | 2.918e-4 | 52 | 0.9825 |  |
+| 0.298 mm | 2.934e-4 | 46 | 0.9846 | lowest rung of a plateau |
+| 0.299 mm | 2.934e-4 | 56 | 0.9813 |  |
+| 0.3 mm | 2.934e-4 | 66 | 0.9780 | published rung |
+| 0.301 mm | 2.950e-4 | 60 | 0.9801 | lowest rung of a plateau |
+| 0.302 mm | 2.950e-4 | 70 | 0.9768 |  |
+| 0.303 mm | 2.950e-4 | 80 | 0.9736 |  |
+| 0.304 mm | 2.966e-4 | 74 | 0.9757 | lowest rung of a plateau |
+| 0.305 mm | 2.966e-4 | 84 | 0.9725 |  |
+| 0.306 mm | 2.966e-4 | 94 | 0.9693 |  |
+| 0.307 mm | 2.966e-4 | 104 | 0.9661 |  |
+| 0.308 mm | 2.983e-4 | 97 | 0.9685 | lowest rung of a plateau |
+| 0.309 mm | 2.983e-4 | 107 | 0.9654 |  |
+| 0.31 mm | 2.983e-4 | 117 | 0.9623 |  |
+
+*Measured.* **A regular staircase.** `a` holds constant across runs of three or four rungs and
+steps up by 16–17 quanta between them, at transitions in (0.294, 0.295], (0.297, 0.298],
+(0.300, 0.301], (0.303, 0.304] and (0.307, 0.308] mm — every 0.003–0.004 mm across
+[0.292, 0.310] mm. The step into the 2.902e-4 plateau, between 0.291 and 0.292 mm, is larger
+(105 quanta). Within every plateau the ratio falls as `d` rises, so each peaks at its lowest
+rung. The published 0.3 mm is the **top** rung of the 2.934e-4 plateau, the lowest ratio on
+it. The bracket maximum, 0.9938 at 0.292 mm, stays below Stage A's 1.0010.
+
+**Cone, (i) [0.290, 0.310] mm**:
+
+| d | a (m) | δ | a/d | note |
+|---|---|---|---|---|
+| 0.29 mm | 2.787e-4 | 113 | 0.9610 | lowest rung of a plateau; spine rung |
+| 0.291 mm | 2.787e-4 | 123 | 0.9577 |  |
+| 0.292 mm | 2.848e-4 | 72 | 0.9753 | lowest rung of a plateau |
+| 0.293 mm | 2.848e-4 | 82 | 0.9720 |  |
+| 0.294 mm | 2.848e-4 | 92 | 0.9687 |  |
+| 0.295 mm | 2.848e-4 | 102 | 0.9654 |  |
+| 0.296 mm | 2.848e-4 | 112 | 0.9622 |  |
+| 0.297 mm | 2.848e-4 | 122 | 0.9589 |  |
+| **0.298 mm** | 2.911e-4 | 69 | **0.9768** | lowest rung of a plateau; bracket max |
+| 0.299 mm | 2.911e-4 | 79 | 0.9736 |  |
+| 0.3 mm | 2.911e-4 | 89 | 0.9703 | published rung |
+| 0.301 mm | 2.911e-4 | 99 | 0.9671 |  |
+| 0.302 mm | 2.911e-4 | 109 | 0.9639 |  |
+| 0.303 mm | 2.911e-4 | 119 | 0.9607 |  |
+| 0.304 mm | 2.911e-4 | 129 | 0.9576 |  |
+| 0.305 mm | 2.976e-4 | 74 | 0.9757 | lowest rung of a plateau |
+| 0.306 mm | 2.976e-4 | 84 | 0.9725 |  |
+| 0.307 mm | 2.976e-4 | 94 | 0.9694 |  |
+| 0.308 mm | 2.976e-4 | 104 | 0.9662 |  |
+| 0.309 mm | 2.976e-4 | 114 | 0.9631 |  |
+| 0.31 mm | 2.976e-4 | 124 | 0.9600 |  |
+
+*Measured.* **Wider plateaus, the same shape.** Four plateaus with steps of 61–65 quanta; the
+two lying wholly inside the bracket are six and seven rungs wide. The published 0.3 mm sits
+third on the 2.911e-4 plateau; that plateau's lowest rung, 0.298 mm, reads 0.9768.
+
+**Cone, (ii) [0.00475, 0.00525] mm**:
+
+| d | a (m) | δ | a/d | note |
+|---|---|---|---|---|
+| 0.00475 mm | 4.717e-6 | 33 | 0.9931 | beats Stage A |
+| 0.00478 mm | 4.743e-6 | 37 | 0.9923 | beats Stage A |
+| 0.0048 mm | 4.769e-6 | 31 | 0.9935 | beats Stage A |
+| 0.00483 mm | 4.796e-6 | 34 | 0.9930 | beats Stage A |
+| 0.00485 mm | 4.808e-6 | 42 | 0.9913 |  |
+| 0.00488 mm | 4.834e-6 | 46 | 0.9906 |  |
+| 0.0049 mm | 4.863e-6 | 37 | 0.9924 | beats Stage A |
+| 0.00493 mm | 4.891e-6 | 39 | 0.9921 |  |
+| 0.00495 mm | 4.906e-6 | 44 | 0.9911 |  |
+| 0.00498 mm | 4.944e-6 | 36 | 0.9928 | beats Stage A |
+| 0.005 mm | 4.961e-6 | 39 | 0.9922 | spine rung |
+| 0.00503 mm | 4.988e-6 | 42 | 0.9917 |  |
+| **0.00505 mm** | 5.018e-6 | 32 | **0.9937** | bracket max; beats Stage A |
+| 0.00508 mm | 5.045e-6 | 35 | 0.9931 | beats Stage A |
+| 0.0051 mm | 5.059e-6 | 41 | 0.9920 |  |
+| 0.00513 mm | 5.090e-6 | 40 | 0.9922 |  |
+| 0.00515 mm | 5.105e-6 | 45 | 0.9913 |  |
+| 0.00518 mm | 5.133e-6 | 47 | 0.9909 |  |
+| 0.0052 mm | 5.163e-6 | 37 | 0.9929 | beats Stage A |
+| 0.00523 mm | 5.193e-6 | 37 | 0.9929 | beats Stage A |
+| 0.00525 mm | 5.207e-6 | 43 | 0.9918 |  |
+
+**Cone, (ii) [0.0057, 0.0063] mm**:
+
+| d | a (m) | δ | a/d | note |
+|---|---|---|---|---|
+| **0.0057 mm** | 5.658e-6 | 42 | **0.9926** | bracket max; beats Stage A |
+| 0.00573 mm | 5.676e-6 | 54 | 0.9906 |  |
+| 0.00576 mm | 5.710e-6 | 50 | 0.9913 |  |
+| 0.00579 mm | 5.745e-6 | 45 | 0.9922 |  |
+| 0.00582 mm | 5.762e-6 | 58 | 0.9900 |  |
+| 0.00585 mm | 5.799e-6 | 51 | 0.9913 |  |
+| 0.00588 mm | 5.834e-6 | 46 | 0.9922 |  |
+| 0.00591 mm | 5.856e-6 | 54 | 0.9909 |  |
+| 0.00594 mm | 5.887e-6 | 53 | 0.9911 |  |
+| 0.00597 mm | 5.924e-6 | 46 | 0.9923 | beats Stage A |
+| 0.006 mm | 5.944e-6 | 56 | 0.9907 | spine rung |
+| 0.00603 mm | 5.980e-6 | 50 | 0.9917 |  |
+| 0.00606 mm | 5.998e-6 | 62 | 0.9898 |  |
+| 0.00609 mm | 6.036e-6 | 54 | 0.9911 |  |
+| 0.00612 mm | 6.075e-6 | 45 | 0.9926 | beats Stage A |
+| 0.00615 mm | 6.095e-6 | 55 | 0.9911 |  |
+| 0.00618 mm | 6.132e-6 | 48 | 0.9922 |  |
+| 0.00621 mm | 6.152e-6 | 58 | 0.9907 |  |
+| 0.00624 mm | 6.191e-6 | 49 | 0.9921 |  |
+| 0.00627 mm | 6.208e-6 | 62 | 0.9901 |  |
+| 0.0063 mm | 6.250e-6 | 50 | 0.9921 |  |
+
+*Measured.* **No plateau resolved.** No two adjacent rungs share `a`: each step is 20–30
+display quanta, and whatever structure `a` has here is finer than that. `a` rises with `d`
+irregularly. δ wanders over 31–47 quanta in the first bracket and 42–62 in the second, with no
+visible period, and is equal on one adjacent pair only (0.0052 and 0.00523 mm, 37 quanta), the
+one unit-slope pair in these brackets. **Thirteen rungs beat Stage A's 0.9922** — ten in the
+first bracket, three in the second — and the best, **0.9937 at 0.00505 mm**, lies 0.00005 mm
+from the spine rung it brackets.
+
+**Fillet blend, (i) [0.290, 0.310] mm**:
+
+| d | a (m) | δ | a/d | note |
+|---|---|---|---|---|
+| **0.29 mm** | 2.774e-4 | 126 | **0.9566** | lowest rung of a plateau; spine rung; bracket max |
+| 0.291 mm | 2.774e-4 | 136 | 0.9533 |  |
+| 0.292 mm | 2.774e-4 | 146 | 0.9500 |  |
+| 0.293 mm | 2.774e-4 | 156 | 0.9468 |  |
+| 0.294 mm | 2.774e-4 | 166 | 0.9435 |  |
+| 0.295 mm | 2.774e-4 | 176 | 0.9403 |  |
+| 0.296 mm | 2.774e-4 | 186 | 0.9372 |  |
+| 0.297 mm | 2.774e-4 | 196 | 0.9340 |  |
+| 0.298 mm | 2.774e-4 | 206 | 0.9309 |  |
+| 0.299 mm | 2.774e-4 | 216 | 0.9278 |  |
+| 0.3 mm | 2.774e-4 | 226 | 0.9247 | published rung |
+| 0.301 mm | 2.774e-4 | 236 | 0.9216 |  |
+| 0.302 mm | 2.296e-4 | 724 | 0.7603 | lowest rung of a plateau |
+| 0.303 mm | 2.296e-4 | 734 | 0.7578 |  |
+| 0.304 mm | 2.296e-4 | 744 | 0.7553 |  |
+| 0.305 mm | 2.296e-4 | 754 | 0.7528 |  |
+| 0.306 mm | 2.296e-4 | 764 | 0.7503 |  |
+| 0.307 mm | 2.296e-4 | 774 | 0.7479 |  |
+| 0.308 mm | 2.296e-4 | 784 | 0.7455 |  |
+| 0.309 mm | 2.296e-4 | 794 | 0.7430 |  |
+| 0.31 mm | 2.296e-4 | 804 | 0.7406 |  |
+
+*Measured.* **One plateau across most of the bracket, then a fall.** `a` = 2.774e-4 from 0.290
+to 0.301 mm, then **drops** by 478 quanta to 2.296e-4 at 0.302 mm and holds through 0.310 mm:
+a coarser request returns a smaller deviation, the non-monotonicity the main note's §1.5
+records on nurbs_surface. The bracket maximum is its lowest rung. The spine's 0.28 mm reads
+2.653e-4, so this plateau's lower edge lies in (0.28, 0.29] mm, outside the bracket; there
+the ratio could reach 2.774e-4 / 0.28 mm = 0.9907 (*derived* bound), above every fillet-blend
+reading so far.
+
+**Fillet blend, (ii) [0.038, 0.042] mm**:
+
+| d | a (m) | δ | a/d | note |
+|---|---|---|---|---|
+| 0.038 mm | 3.649e-5 | 151 | 0.9603 |  |
+| **0.0382 mm** | 3.753e-5 | 67 | **0.9825** | lowest rung of a plateau; bracket max; beats Stage A |
+| 0.0384 mm | 3.753e-5 | 87 | 0.9773 |  |
+| 0.0386 mm | 3.753e-5 | 107 | 0.9723 |  |
+| 0.0388 mm | 3.753e-5 | 127 | 0.9673 |  |
+| 0.039 mm | 3.817e-5 | 83 | 0.9787 |  |
+| 0.0392 mm | 3.816e-5 | 104 | 0.9735 | lowest rung of a plateau |
+| 0.0394 mm | 3.816e-5 | 124 | 0.9685 |  |
+| 0.0396 mm | 3.816e-5 | 144 | 0.9636 |  |
+| 0.0398 mm | 3.816e-5 | 164 | 0.9588 |  |
+| 0.04 mm | 3.925e-5 | 75 | 0.9813 | lowest rung of a plateau; spine rung |
+| 0.0402 mm | 3.925e-5 | 95 | 0.9764 |  |
+| 0.0404 mm | 3.925e-5 | 115 | 0.9715 |  |
+| 0.0406 mm | 3.925e-5 | 135 | 0.9667 |  |
+| 0.0408 mm | 3.994e-5 | 86 | 0.9789 |  |
+| 0.041 mm | 3.993e-5 | 107 | 0.9739 | lowest rung of a plateau |
+| 0.0412 mm | 3.993e-5 | 127 | 0.9692 |  |
+| 0.0414 mm | 3.993e-5 | 147 | 0.9645 |  |
+| 0.0416 mm | 3.993e-5 | 167 | 0.9599 |  |
+| 0.0418 mm | 3.179e-5 | 1001 | 0.7605 |  |
+| 0.042 mm | 4.110e-5 | 90 | 0.9786 |  |
+
+*Measured.* **Plateaus four rungs wide, about 2 % of `d`**, at 3.753e-5, 3.816e-5, 3.925e-5
+and 3.993e-5 m, then a trough at 0.0418 mm (3.179e-5, 0.7605). Twice the rung just below a
+plateau reads one quantum **above** it (0.039 mm at 3.817e-5; 0.0408 mm at 3.994e-5), so `a`
+falls by one quantum as `d` rises there. Within each plateau the ratio falls as `d` rises.
+**0.0382 mm reads 0.9825, beating Stage A's 0.9818** at 0.01 mm.
+
+**Shape across the three classes.** Wherever the step resolves it — all three (i) brackets
+and fillet blend's (ii) — the structure is the one the main note's §1.5 found on
+nurbs_surface: `a` piecewise-constant on plateaus, the ratio peaking at each plateau's lower
+edge, and `a` not monotone in `d`. Apart from the single cone pair above, no unit-slope
+segment was resolved. At 0.005 mm a 0.5 % step is too coarse to resolve plateaus at all.
+
+**Determinism.** 18 re-runs, 18 byte-identical `a`: each class's top-5 Stage-B rungs by ratio,
+plus each bracket's maximum not already among them (cone 0.298 and 0.0057 mm, fillet blend
+0.29 mm). No Stage-B rung reads ≥ 0.999. Load ran from 56 to 236 1-min loadavg across Stage B.
+
+**Skipped for cost** (§2): torus's two bracket-(ii) candidates (0.01 and 0.015 mm) and fillet
+blend's 0.01 mm. All three stay spine-only rungs.
+
+**Stage-C targets.** Per class, the top three candidates by ratio. Rungs reading ≥ 0.9995 are
+mandatory. A spine-only rung has no Stage-B neighbourhood, so its regime is unknown: Stage C
+first probes two neighbours on each side, at a fifth of the Stage-B step, and then searches
+the edge the neighbours point to.
+
+| class | target | reading | known structure | edge searched |
+|---|---|---|---|---|
+| torus | T1 0.01 mm | 1.0010 | spine-only; **mandatory** (≥ 0.9995) | classify first |
+| torus | T2 0.015 mm | 0.9993 | spine-only | classify first |
+| torus | T3 0.025 mm | 0.9992 | spine-only | classify first |
+| cone | C1 0.00505 mm | 0.9937 | no plateau at the Stage-B step | classify first |
+| cone | C2 0.0048 mm | 0.9935 | no plateau at the Stage-B step | classify first |
+| cone | C3 0.00508 mm | 0.9931 | no plateau at the Stage-B step | classify first |
+| fillet blend | F1 0.0382 mm | 0.9825 | plateau 3.753e-5, lower edge in (0.038, 0.0382] | lower |
+| fillet blend | F2 0.01 mm | 0.9818 | spine-only | classify first |
+| fillet blend | F3 0.04 mm | 0.9813 | plateau 3.925e-5, lower edge in (0.0398, 0.04] | lower |
+| fillet blend | F4 0.29 mm | 0.9566 | plateau 2.774e-4, lower edge in (0.28, 0.29] | lower |
+
+Two choices here go beyond the bare rule. **C3** ranks by the unrounded ratio: 0.00508 mm and
+0.00475 mm both print 0.9931, at 0.993110 and 0.993053. **F4 is a fourth fillet-blend
+target**: its derived edge bound, 0.9907, exceeds every measured fillet-blend ratio, so it is
+the one place a measured bound says this class could read higher. The Stage-A spot-checks that
+read ≥ 0.9995 (torus 0.012, cone 0.98 and 0.998) are not targets. Their display intervals
+already lie entirely above 1, so the ambiguity the mandatory rule exists to settle does not
+arise, and the regime coordinate is not walked here (§2).
