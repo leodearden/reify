@@ -89,8 +89,10 @@ impl SpdSolver {
     /// tier. `warm` seeds PCG and is ignored by Direct.
     ///
     /// # Panics
-    /// On a contract violation: `rhs` or `warm` not sized to the system, a
-    /// tolerance that is not finite and positive, or `max_iter == 0` on PCG.
+    /// On a contract violation: `rhs` or `warm` not sized to the system or
+    /// holding a non-finite entry, a tolerance that is not finite and
+    /// positive, or `max_iter == 0` on PCG. With these and `SpdSystem`'s
+    /// finite entries excluded, `NotPositiveDefinite` means indefiniteness.
     pub fn solve(
         &mut self,
         rhs: &[f64],
@@ -105,6 +107,7 @@ impl SpdSolver {
             "SpdSolver::solve: rhs.len() = {} but the system has {n} dofs",
             rhs.len()
         );
+        assert_all_finite("rhs", rhs);
         assert!(
             limits.tolerance.is_finite() && limits.tolerance > 0.0,
             "SpdSolver::solve: tolerance = {} must be finite and positive",
@@ -117,6 +120,7 @@ impl SpdSolver {
                 "SpdSolver::solve: warm.len() = {} but the system has {n} dofs",
                 warm.len()
             );
+            assert_all_finite("warm", warm);
         }
         if norm2_squared(rhs) == 0.0 {
             let iterations = match self.tier {
@@ -187,6 +191,17 @@ impl SpdSolver {
                 reuse,
             },
         }
+    }
+}
+
+/// # Panics
+/// If some entry of `values`, the argument `name`, is NaN or infinite.
+fn assert_all_finite(name: &str, values: &[f64]) {
+    if let Some(i) = values.iter().position(|v| !v.is_finite()) {
+        panic!(
+            "SpdSolver::solve: {name}[{i}] = {} must be finite",
+            values[i]
+        );
     }
 }
 

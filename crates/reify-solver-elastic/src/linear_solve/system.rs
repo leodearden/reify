@@ -22,6 +22,12 @@ pub enum SystemInvalid {
     },
     /// Some row is stored non-compressed, unsorted, or with a repeated column.
     NonCanonical,
+    /// The stored entry at `(row, col)` — the first in row-major order — is
+    /// NaN or infinite.
+    NonFiniteEntry {
+        row: usize,
+        col: usize,
+    },
     /// Row `dof` (the lowest such row) has no stored diagonal entry `> 0`.
     NonPositiveDiagonal {
         dof: usize,
@@ -30,8 +36,9 @@ pub enum SystemInvalid {
 
 impl SpdSystem {
     /// Validates `k`: square, then canonical CSR (compressed storage, column
-    /// indices strictly increasing in every row), then a stored positive
-    /// diagonal on every row. The first failing check is reported.
+    /// indices strictly increasing in every row), then every stored entry
+    /// finite, then a stored positive diagonal on every row. The first
+    /// failing check is reported.
     pub fn new(k: SparseRowMat<usize, f64>) -> Result<Self, SystemInvalid> {
         let (rows, cols) = (k.nrows(), k.ncols());
         if rows != cols {
@@ -46,7 +53,14 @@ impl SpdSystem {
         if symbolic.row_nnz().is_some() || !(0..rows).all(strictly_increasing) {
             return Err(SystemInvalid::NonCanonical);
         }
-        let vals = k_ref.val();
+        let vals = &k_ref.val()[..row_ptr[rows]];
+        if let Some(slot) = vals.iter().position(|v| !v.is_finite()) {
+            let row = row_ptr.partition_point(|&start| start <= slot) - 1;
+            return Err(SystemInvalid::NonFiniteEntry {
+                row,
+                col: col_idx[slot],
+            });
+        }
         let positive_diagonal = |i: usize| {
             find_in_row(col_idx, row_ptr[i], row_ptr[i + 1], i).is_some_and(|slot| vals[slot] > 0.0)
         };
@@ -86,6 +100,10 @@ impl fmt::Display for SystemInvalid {
                 f,
                 "stiffness matrix must be canonical CSR (compressed, column indices strictly \
                  increasing in every row)"
+            ),
+            Self::NonFiniteEntry { row, col } => write!(
+                f,
+                "stiffness matrix entries must be finite, but the entry at ({row}, {col}) is not"
             ),
             Self::NonPositiveDiagonal { dof } => write!(
                 f,

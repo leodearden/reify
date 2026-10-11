@@ -142,11 +142,72 @@ fn negative_diagonal_is_rejected() {
 }
 
 #[test]
-fn nan_diagonal_is_rejected() {
+fn nan_diagonal_is_a_non_finite_entry() {
     let k = with_diagonal([Some(4.0), Some(4.0), Some(4.0), Some(f64::NAN)]);
     assert_eq!(
         SpdSystem::new(k).err(),
-        Some(SystemInvalid::NonPositiveDiagonal { dof: 3 })
+        Some(SystemInvalid::NonFiniteEntry { row: 3, col: 3 })
+    );
+}
+
+#[test]
+fn infinite_diagonal_is_a_non_finite_entry() {
+    let k = with_diagonal([Some(4.0), Some(f64::INFINITY), Some(4.0), Some(4.0)]);
+    assert_eq!(
+        SpdSystem::new(k).err(),
+        Some(SystemInvalid::NonFiniteEntry { row: 1, col: 1 })
+    );
+}
+
+#[test]
+fn non_finite_off_diagonal_is_rejected_with_its_position() {
+    for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+        let k = csr_as_given(
+            3,
+            &[
+                vec![(0, 4.0), (1, -1.0)],
+                vec![(0, -1.0), (1, 4.0), (2, bad)],
+                vec![(1, -1.0), (2, 4.0)],
+            ],
+        );
+        assert_eq!(
+            SpdSystem::new(k).err(),
+            Some(SystemInvalid::NonFiniteEntry { row: 1, col: 2 }),
+            "{bad}"
+        );
+    }
+}
+
+#[test]
+fn first_non_finite_entry_in_row_major_order_is_named() {
+    let k = csr_as_given(
+        3,
+        &[
+            vec![(0, 4.0), (1, -1.0)],
+            vec![(0, -1.0), (1, 4.0), (2, f64::NAN)],
+            vec![(0, f64::NAN), (1, -1.0), (2, 4.0)],
+        ],
+    );
+    assert_eq!(
+        SpdSystem::new(k).err(),
+        Some(SystemInvalid::NonFiniteEntry { row: 1, col: 2 })
+    );
+}
+
+#[test]
+fn non_finite_entry_after_an_empty_row_names_its_own_row() {
+    let k = csr_as_given(
+        4,
+        &[
+            vec![(0, 4.0)],
+            vec![],
+            vec![],
+            vec![(0, f64::INFINITY), (3, 4.0)],
+        ],
+    );
+    assert_eq!(
+        SpdSystem::new(k).err(),
+        Some(SystemInvalid::NonFiniteEntry { row: 3, col: 0 })
     );
 }
 
@@ -172,6 +233,35 @@ fn shape_is_checked_before_canonical_form() {
     assert_eq!(
         SpdSystem::new(k).err(),
         Some(SystemInvalid::NotSquare { rows: 3, cols: 4 })
+    );
+}
+
+#[test]
+fn canonical_form_is_checked_before_finiteness() {
+    let k = csr_as_given(
+        3,
+        &[
+            vec![(0, 4.0), (1, f64::NAN)],
+            vec![(1, 4.0), (0, -1.0)],
+            vec![(2, 4.0)],
+        ],
+    );
+    assert_eq!(SpdSystem::new(k).err(), Some(SystemInvalid::NonCanonical));
+}
+
+#[test]
+fn finiteness_is_checked_before_the_diagonal() {
+    let k = csr_as_given(
+        3,
+        &[
+            vec![(0, 0.0), (1, -1.0)],
+            vec![(0, -1.0), (1, 4.0)],
+            vec![(1, f64::NAN), (2, 4.0)],
+        ],
+    );
+    assert_eq!(
+        SpdSystem::new(k).err(),
+        Some(SystemInvalid::NonFiniteEntry { row: 2, col: 1 })
     );
 }
 

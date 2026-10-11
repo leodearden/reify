@@ -1241,6 +1241,24 @@ fn a_wrong_length_rhs_is_a_contract_violation() {
     let _ = solve(&mut solver, &[1.0; 7], LIMITS, None);
 }
 
+#[test]
+#[should_panic(expected = "rhs[3] = NaN must be finite")]
+fn a_non_finite_rhs_is_a_contract_violation() {
+    let mut solver = prepared(&system(dense8()), LinearSolverChoice::Iterative);
+    let mut rhs = [1.0; 8];
+    rhs[3] = f64::NAN;
+    let _ = solve(&mut solver, &rhs, LIMITS, None);
+}
+
+#[test]
+#[should_panic(expected = "warm[5] = inf must be finite")]
+fn a_non_finite_warm_start_is_a_contract_violation() {
+    let mut solver = prepared(&system(dense8()), LinearSolverChoice::Iterative);
+    let mut warm = [0.0; 8];
+    warm[5] = f64::INFINITY;
+    let _ = solve(&mut solver, &[1.0; 8], LIMITS, Some(&warm));
+}
+
 // ---------------------------------------------------------------------------
 // Hooks for a detached factorisation worker (ι).
 // ---------------------------------------------------------------------------
