@@ -550,15 +550,9 @@ fn eval_dual_at(
                 finish_unary(value, &inner, |_| -1.0)
             }
             // `not` is Bool-valued: there is no scalar derivative to take.
-            UnOp::Not => refuse_or_constant(
-                expr,
-                ctx,
-                seeds,
-                env,
-                record,
-                path,
-                "unary `not` (Bool-valued)",
-            ),
+            UnOp::Not => {
+                refuse_or_constant(expr, ctx, seeds, env, record, path, "unary `not` (Bool-valued)")
+            }
         },
 
         CompiledExprKind::BinOp { op, left, right } => {
@@ -613,7 +607,12 @@ fn descend(
 ///
 /// The node is handed WHOLE to [`crate::eval_expr`], so no kink beneath it can
 /// be placed: a node whose subtree holds one records a single
-/// [`KinkKind::Unplaced`] entry at its own site instead.
+/// [`KinkKind::Unplaced`] entry at its own site instead.  A node constant in
+/// every seed records [`BranchChoice::OutcomeHash`], because the residual sees
+/// it only through its value.  A node that moves with the seeds records
+/// [`BranchChoice::Unresolved`], because its value moves continuously with
+/// them, and a row survives its refusal only through a parent that records its
+/// own selection.
 fn refuse_or_constant(
     expr: &CompiledExpr,
     ctx: &EvalContext,
@@ -626,7 +625,12 @@ fn refuse_or_constant(
     let value = crate::eval_expr(expr, ctx);
     let moves = seeds.depends_on_seed(expr) || env.carries_tangent(expr);
     if seeds.subtree_has_kink(expr) {
-        note(record, path, KinkKind::Unplaced, BranchChoice::OutcomeHash(value.content_hash()));
+        let choice = if moves {
+            BranchChoice::Unresolved
+        } else {
+            BranchChoice::OutcomeHash(value.content_hash())
+        };
+        note(record, path, KinkKind::Unplaced, choice);
     }
     if moves {
         seeds.note_refusal(NonDifferentiable::UnsupportedKind {

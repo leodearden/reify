@@ -36,8 +36,8 @@ use std::sync::atomic::AtomicBool;
 
 use reify_core::{ContentHash, DimensionVector, Type, ValueCellId};
 use reify_expr::{
-    BranchChoice, BranchEntry, BranchRecord, EvalContext, KinkKind, KinkSite, ReductionKind,
-    Seeds, Tangent, eval_dual, eval_expr,
+    BranchChoice, BranchEntry, BranchRecord, EvalContext, KinkKind, KinkSite, ReductionKind, Seeds,
+    Tangent, eval_dual, eval_expr,
 };
 use reify_ir::{
     BinOp, CompiledExpr, CompiledExprKind, CompiledMatchArm, CompiledPattern, FieldSourceKind,
@@ -1263,8 +1263,7 @@ fn a_kink_builtin_with_an_undef_operand_refuses_before_kink_dispatch_and_records
     // THAT IS THE CONTRACT, not an oversight, and the reason is reachability:
     // reify propagates `Undef` strictly, so an `Undef` operand makes the whole
     // residual `Undef` and `jacobian_row` returns `Err` — nothing ever READS
-    // this record.  The same argument `refuse_or_constant`'s doc makes for its
-    // refusing branch.  An entry here would be an entry for a row that does not
+    // this record.  An entry here would be an entry for a row that does not
     // exist.
     let expr = call("abs", vec![vref("u")]);
     let (v, t, rec) = run(&expr, &[("x", Value::Real(2.0))], &["x"]);
@@ -1586,9 +1585,8 @@ fn every_delegating_call_site_records_an_unplaced_entry_for_a_kink_it_encloses()
 #[test]
 fn an_unplaced_entry_reports_a_hidden_flip_and_only_a_hidden_flip() {
     let expr = x_plus_a_hidden_selection();
-    let at = |x: f64, p: bool| {
-        record_of(&expr, &[("x", Value::Real(x)), ("p", Value::Bool(p))], &["x"])
-    };
+    let at =
+        |x: f64, p: bool| record_of(&expr, &[("x", Value::Real(x)), ("p", Value::Bool(p))], &["x"]);
 
     let then_side = at(2.0, true);
     let else_side = at(2.0, false);
@@ -1631,7 +1629,11 @@ fn an_unplaced_entry_over_a_seed_dependent_node_is_stable_in_a_row_that_survives
             kind: KinkKind::Unplaced,
             choice: BranchChoice::Unresolved,
         },
-        BranchEntry { site: KinkSite::root(), kind: KinkKind::Max, choice: BranchChoice::Operand(1) },
+        BranchEntry {
+            site: KinkSite::root(),
+            kind: KinkKind::Max,
+            choice: BranchChoice::Operand(1),
+        },
     ];
     // Every x stays below 100, so `max` never flips: nothing λ may count moved.
     let records: Vec<BranchRecord> = [2.0, 3.0, 50.0]
