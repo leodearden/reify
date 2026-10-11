@@ -34,15 +34,26 @@ const ALLOW_TOKEN: &str = "plinecite:allow";
 
 const STDLIB_ROOT: &str = "crates/reify-compiler/stdlib/";
 
+/// The detector's own crate: self-match and fixture-provenance records.
+const EXCLUDED_PREFIXES: &[&str] = &["crates/reify-audit/"];
+
 /// The escalation anchor a cite may carry between its extension and its line
 /// number.
 const ESC_ANCHOR: &[u8] = b" esc-";
 
 /// Whether PLINECITE scans the tracked file `path` — the lane's single scope
-/// boundary.
+/// boundary: the bundled stdlib's `.ri` files, and every `.rs` under a
+/// crate's `src/` outside [`EXCLUDED_PREFIXES`].
 // G-allow: pub for the cross-crate real-tree smoke in tests/plinecite.rs; the production caller, check(), is same-file, and the orphan audit counts only cross-file call sites
 pub fn in_scope(path: &str) -> bool {
-    path.starts_with(STDLIB_ROOT) && path.ends_with(".ri")
+    let parts: Vec<&str> = path.split('/').collect();
+    let stdlib_ri = path.starts_with(STDLIB_ROOT) && path.ends_with(".ri");
+    let crate_src_rs = matches!(parts.as_slice(), ["crates", _, "src", _, ..])
+        && path.ends_with(".rs")
+        && !EXCLUDED_PREFIXES
+            .iter()
+            .any(|prefix| path.starts_with(prefix));
+    stdlib_ri || crate_src_rs
 }
 
 /// Every hard line cite and malformed allow marker in the tracked in-scope
