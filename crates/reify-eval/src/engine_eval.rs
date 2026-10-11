@@ -42,8 +42,8 @@ use crate::{
 };
 
 /// Resolve a sub-component's `structure_name` against the user module's
-/// templates first (module definitions shadow the prelude), then fall back to
-/// the engine's compiled stdlib prelude modules.
+/// templates and the engine's prelude modules, by the NS-P1 rule in
+/// [`reify_compiler::name_env`].
 ///
 /// Stdlib occurrence templates (e.g. `STLOutput`, `stdlib/io.ri`) live in
 /// `Engine::prelude` and are deliberately NOT merged into
@@ -56,15 +56,15 @@ use crate::{
 ///
 /// `pub(crate)` so the io-export δ occurrence-driven export driver
 /// ([`Engine::build_outputs`], `engine_build.rs`) resolves each `sub`'s
-/// occurrence template through the SAME module-first/prelude-fallback rule the
-/// evaluator uses — stdlib `Output` occurrence templates (`STLOutput` et al.)
-/// live in the prelude, not `CompiledModule::templates`.
+/// occurrence template through the SAME rule the evaluator uses — stdlib
+/// `Output` occurrence templates (`STLOutput` et al.) live in the prelude, not
+/// `CompiledModule::templates`.
 /// This is a thin `&CompiledModule` adapter over
-/// [`crate::unfold::find_template_in_scope`], which is the single source of
-/// truth for the module-first/prelude-fallback rule. `unfold.rs` cannot call
-/// this overload — its recursion carries `&[TopologyTemplate]`, not the owning
-/// `CompiledModule` — so the rule lives there and this delegates. Keep it that
-/// way: the two sites diverging is exactly the defect esc-5360-9 reported (the
+/// [`crate::unfold::find_template_in_scope`], the evaluator's one entry to that
+/// rule. `unfold.rs` cannot call this overload — its recursion carries
+/// `&[TopologyTemplate]`, not the owning `CompiledModule` — so this delegates
+/// there. Keep it that way: the two sites diverging is exactly the defect
+/// esc-5360-9 reported (the
 /// instance-scope nesting recursion resolved module-only, so a prelude-typed
 /// nested sub was silently skipped AND then falsely reported "not found in this
 /// module").
