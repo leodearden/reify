@@ -72,12 +72,15 @@ const HTTP_TIMEOUT_SECS: u64 = 60;
 #[derive(Debug)]
 pub enum LoadError {
     /// Transport-level failure — the endpoint never answered: connection
-    /// refused/reset, timeout, body read failure.
+    /// refused or reset, or a timeout, before any status line arrived.
     Http(String),
     /// The endpoint answered with a non-2xx HTTP status: reachable, but it
     /// refused the request (a live serve's `404 Invalid or expired session
     /// ID`, or a foreign HTTP service on the port).
     Status(String),
+    /// The endpoint answered with a 2xx status, but its body could not be
+    /// read whole: it broke off, timed out, or was not UTF-8.
+    Body(String),
     /// Protocol-level failure: malformed JSON-RPC envelope, missing expected
     /// fields, server-returned `error` payload, MUNCH decode failure.
     Protocol(String),
@@ -88,6 +91,7 @@ impl std::fmt::Display for LoadError {
         match self {
             LoadError::Http(m) => write!(f, "jcodemunch HTTP error: {m}"),
             LoadError::Status(m) => write!(f, "jcodemunch HTTP status error: {m}"),
+            LoadError::Body(m) => write!(f, "jcodemunch HTTP body error: {m}"),
             LoadError::Protocol(m) => write!(f, "jcodemunch protocol error: {m}"),
         }
     }
@@ -1394,7 +1398,7 @@ impl JcodemunchClient {
         response
             .into_reader()
             .read_to_string(&mut body)
-            .map_err(|e| LoadError::Http(format!("read body: {e}")))?;
+            .map_err(|e| LoadError::Body(format!("read body: {e}")))?;
 
         let value = crate::mcp_wire::decode_body(&ctype, &body)
             .map_err(|e| LoadError::Protocol(e.to_string()))?;
@@ -3955,8 +3959,8 @@ mod tests {
         /// exactly the PASS-shaped nothing this client's session handling
         /// exists to remove — a caller would read it as "the serve offers
         /// no such tool" rather than "the serve answered nonsense". Never
-        /// `Http` or `Status` either: the transport succeeded, the payload
-        /// did not.
+        /// `Http`, `Status` or `Body` either: the transport succeeded, the
+        /// payload did not.
         fn assert_list_tools_is_a_protocol_error(reply: ToolsListReply, what: &str) {
             let stub = RecordingStub::start_with_tools(reply);
             let client = JcodemunchClient::new(stub.url()).expect("handshake");

@@ -11,8 +11,9 @@ use crate::{JCodemunchOps, NoopJCodemunchOps};
 pub enum SeamUnavailable {
     /// The endpoint never answered: connection refused or reset, timeout.
     Unreachable { url: String, error: LoadError },
-    /// The endpoint answered, but not as a live MCP seam: a non-2xx status, or
-    /// a body that is not an MCP `InitializeResult`.
+    /// The endpoint answered, but not as a live MCP seam: a non-2xx status, a
+    /// body broken off mid-reply, or a body that is not an MCP
+    /// `InitializeResult`.
     HandshakeRefused { url: String, error: LoadError },
     /// The handshake succeeded but the §4.3 gate refused the index; `refusal`
     /// is its rendered message, carrying its `E_JC_INDEX_` marker when the
@@ -27,7 +28,9 @@ impl SeamUnavailable {
         let url = url.to_string();
         match error {
             LoadError::Http(_) => Self::Unreachable { url, error },
-            LoadError::Status(_) | LoadError::Protocol(_) => Self::HandshakeRefused { url, error },
+            LoadError::Status(_) | LoadError::Body(_) | LoadError::Protocol(_) => {
+                Self::HandshakeRefused { url, error }
+            }
         }
     }
 }
@@ -91,6 +94,10 @@ mod tests {
             ),
             (
                 LoadError::Status("POST: status code 404".into()),
+                "jcodemunch handshake refused at",
+            ),
+            (
+                LoadError::Body("read body: response body closed early".into()),
                 "jcodemunch handshake refused at",
             ),
             (

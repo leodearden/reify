@@ -91,8 +91,9 @@ pub const P1_CALL: &[&str] = &[P1_GET_CHANGED_SYMBOLS, P1_FIND_REFERENCES];
 pub const CONSTRUCTION_UNREACHABLE: &str = "reify-audit: jcodemunch unreachable at";
 
 /// The CONSTRUCTION fail-soft for an endpoint that ANSWERED but is not a live
-/// MCP seam: a non-2xx status (`LoadError::Status`) or a body that is not an
-/// MCP `InitializeResult` (`LoadError::Protocol`).
+/// MCP seam: a non-2xx status (`LoadError::Status`), a body broken off
+/// mid-reply (`LoadError::Body`), or a body that is not an MCP
+/// `InitializeResult` (`LoadError::Protocol`).
 #[allow(dead_code)]
 pub const CONSTRUCTION_HANDSHAKE_REFUSED: &str = "reify-audit: jcodemunch handshake refused at";
 

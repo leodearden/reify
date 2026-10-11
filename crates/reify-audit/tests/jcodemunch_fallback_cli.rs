@@ -15,7 +15,8 @@
 //!   `--no-jcodemunch` is a declared scope reduction and records nothing.
 //!
 //! Hermetic: the refusing endpoint is `common::net::unreachable_mcp_url()`,
-//! the answering ones are `common::mcp_mock` responders on ephemeral ports.
+//! the answering ones are `common::mcp_mock` and `common::truncated_reply`
+//! responders on ephemeral ports.
 //!
 //! User-observable signal:
 //!   `cargo test -p reify-audit --test jcodemunch_fallback_cli`
@@ -185,6 +186,21 @@ fn a_non_mcp_2xx_responder_is_labelled_handshake_refused() {
 #[test]
 fn a_foreign_http_service_answering_404_is_labelled_handshake_refused() {
     assert_handshake_refused(404, "not found");
+}
+
+/// An endpoint that answered 200 and then broke its body off was reachable:
+/// the operator should look at what is listening, not start a serve.
+#[test]
+fn a_reply_broken_off_mid_body_is_labelled_handshake_refused() {
+    let s = sandbox(&[]);
+    let url = common::truncated_reply::spawn_truncated_reply();
+    let out = s.run(&["--pattern", "P1", "--jcodemunch-url", &url]);
+    assert_construction_labelled(
+        &out,
+        CONSTRUCTION_HANDSHAKE_REFUSED,
+        CONSTRUCTION_UNREACHABLE,
+        &url,
+    );
 }
 
 /// One P1-eligible done task, so a P1 run with a live seam would have queried
