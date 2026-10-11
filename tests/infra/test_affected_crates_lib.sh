@@ -60,6 +60,11 @@
 #      hosts the gate; and a manifest whose crate resolves to no workspace
 #      package is exactly ALL, composing with task 6268's unresolvable-seed
 #      C5 arm
+#  20. (task 7491) OVERLAP-MIRROR-PARITY: scripts/reify_path_attribution.py,
+#      the Python mirror of this lib's per-path attribution (_is_global,
+#      _file_to_crate, _is_crate_manifest + _REIFY_DAG_GATE_CRATE), agrees
+#      with it on every tracked path plus a fixed boundary-probe list, and
+#      loads with no site-packages; plus a non-vacuity check on the bash side
 
 set -euo pipefail
 
@@ -552,6 +557,175 @@ _check_derived_subset_of_declared() {
 }
 assert "derived examples/*.ri reader crates ⊆ declared _RI_CORPUS_CRATES" \
     _check_derived_subset_of_declared
+
+# ---------------------------------------------------------------------------
+# OVERLAP-MIRROR-PARITY (task 7491): scripts/reify_path_attribution.py mirrors
+# this lib's per-path attribution for the merge-queue overlap detector
+# (scripts/reify_overlap_detector.py). Both sides classify one path set and
+# must emit identical records, one per attribute:
+#   <path>\tG          _is_global
+#   <path>\tS:<crate>  each non-empty line _file_to_crate prints (a seed)
+#   <path>\tU:<crate>  _is_crate_manifest -> _REIFY_DAG_GATE_CRATE (a union)
+#
+# The path set is every tracked path (so a new arm for a real tracked shape
+# reds here unprompted) plus probes for each arm's glob boundaries, including
+# shapes absent from the tree. Predicates are compared individually, not
+# through affected_crates(): the two closure models differ by design, and
+# precedence is the caller's business on both sides.
+#
+# Fork-free per path on the bash side (redirect + mapfile, never `$(...)`):
+# ~19x cheaper than per-path command substitution — 3.9s versus 73s over 4725
+# paths, measured at load average ~110 on 32 cores.
+# Needs no cargo. The Python side runs under `python3 -S`, so it proves the
+# mirror loads with no site-packages — the shape of the gate's interpreter.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- OVERLAP-MIRROR-PARITY: the Python attribution mirror agrees with this lib on every tracked path ---"
+
+_OVERLAP_MIRROR_PROBES=(
+    Cargo.toml Cargo.lock .cargo/config.toml tree-sitter-reify/grammar.js
+    rust-toolchain rust-toolchain.toml rust-toolchain-nightly/x
+    crates/foo/src/lib.rs crates/foo/ crates/foo crates//x
+    crates/Cargo.toml crates//Cargo.toml crates/a/b/Cargo.toml crates/foo/Cargo.toml
+    gui/src-tauri/Cargo.toml gui/src-tauri/src/main.rs gui/src/App.tsx
+    examples/foo.ri examples/auto/bearing_unsat.ri examples/.ri
+    examples/foo.gcode examples/README.md
+    docs/x.md README.md dark-factory-orchestrator.yaml
+    tests/infra/x.sh scripts/verify.sh some/unknown/place.zzz
+)
+
+_OVERLAP_MIRROR_DONE=""
+_OVERLAP_MIRROR_PATHS=0
+_OVERLAP_MIRROR_PY_RC=""
+_OVERLAP_MIRROR_PY_ERR=""
+_OVERLAP_MIRROR_BASH_RECORDS=0
+_OVERLAP_MIRROR_PY_RECORDS=0
+_OVERLAP_MIRROR_DIFF_RC=""
+_OVERLAP_MIRROR_DIFF=""
+_OVERLAP_MIRROR_G=0
+_OVERLAP_MIRROR_U=0
+_OVERLAP_MIRROR_S=0
+_OVERLAP_MIRROR_TRACKED_CRATE_PATHS=0
+_OVERLAP_MIRROR_CORPUS_MISSING=""
+
+# _overlap_mirror_bash_records <path-file> <scratch-file> — the bash side's
+# records, unsorted, on stdout.
+_overlap_mirror_bash_records() {
+    local path_file="$1" scratch="$2" p c
+    local -a crates
+    while IFS= read -r p; do
+        if _is_global "$p"; then
+            printf '%s\tG\n' "$p"
+        fi
+        _file_to_crate "$p" >"$scratch"
+        mapfile -t crates <"$scratch"
+        for c in "${crates[@]}"; do
+            if [ -n "$c" ]; then
+                printf '%s\tS:%s\n' "$p" "$c"
+            fi
+        done
+        if _is_crate_manifest "$p"; then
+            printf '%s\tU:%s\n' "$p" "$_REIFY_DAG_GATE_CRATE"
+        fi
+    done <"$path_file"
+}
+
+# _overlap_mirror_python_records <path-file> — the Python side's records,
+# unsorted, on stdout.
+_overlap_mirror_python_records() {
+    python3 -S -c '
+import sys
+sys.path.insert(0, sys.argv[1])
+import reify_path_attribution as rpa
+for line in sys.stdin:
+    p = line.rstrip("\n")
+    a = rpa.attribute(p)
+    if a.is_global:
+        print(f"{p}\tG")
+    for c in sorted(a.seed_crates):
+        print(f"{p}\tS:{c}")
+    for c in sorted(a.unioned_crates):
+        print(f"{p}\tU:{c}")
+' "$REPO_ROOT/scripts" <"$1"
+}
+
+# _count_lines <pattern> <file> — grep -c, but 0 rather than exit 1 on no match.
+_count_lines() {
+    grep -cE "$1" "$2" || true
+}
+
+_overlap_mirror_probe_once() {
+    [ -n "$_OVERLAP_MIRROR_DONE" ] && return 0
+    local dir
+    dir="$(mktemp -d "${TMPDIR:-/tmp}/reify-overlap-mirror.XXXXXX")" || return 1
+    git -C "$REPO_ROOT" ls-files >"$dir/tracked"
+    { cat "$dir/tracked"; printf '%s\n' "${_OVERLAP_MIRROR_PROBES[@]}"; } >"$dir/paths"
+    _OVERLAP_MIRROR_PATHS="$(wc -l <"$dir/paths")"
+
+    _overlap_mirror_bash_records "$dir/paths" "$dir/scratch" >"$dir/bash.raw"
+    LC_ALL=C sort "$dir/bash.raw" >"$dir/bash"
+    _overlap_mirror_python_records "$dir/paths" >"$dir/py.raw" 2>"$dir/py.err" \
+        && _OVERLAP_MIRROR_PY_RC=0 || _OVERLAP_MIRROR_PY_RC=$?
+    LC_ALL=C sort "$dir/py.raw" >"$dir/py"
+    _OVERLAP_MIRROR_PY_ERR="$(tail -n 5 "$dir/py.err")"
+
+    _OVERLAP_MIRROR_BASH_RECORDS="$(wc -l <"$dir/bash")"
+    _OVERLAP_MIRROR_PY_RECORDS="$(wc -l <"$dir/py")"
+    diff "$dir/bash" "$dir/py" >"$dir/diff" && _OVERLAP_MIRROR_DIFF_RC=0 || _OVERLAP_MIRROR_DIFF_RC=$?
+    _OVERLAP_MIRROR_DIFF="$(sed -n '1,40p' "$dir/diff")"
+
+    _OVERLAP_MIRROR_G="$(_count_lines $'\tG$' "$dir/bash")"
+    _OVERLAP_MIRROR_U="$(_count_lines $'\tU:' "$dir/bash")"
+    _OVERLAP_MIRROR_S="$(_count_lines $'\tS:' "$dir/bash")"
+    _OVERLAP_MIRROR_TRACKED_CRATE_PATHS="$(_count_lines '^crates/[^/]+/' "$dir/tracked")"
+    local c
+    for c in $_RI_CORPUS_CRATES; do
+        if [ "$(_count_lines "^examples/.*\.ri"$'\t'"S:$c\$" "$dir/bash")" -eq 0 ]; then
+            _OVERLAP_MIRROR_CORPUS_MISSING+=" $c"
+        fi
+    done
+
+    rm -rf "$dir"
+    _OVERLAP_MIRROR_DONE=1
+    return 0
+}
+
+# Emitted by every checker, per the _cold_cache_report convention below.
+_overlap_mirror_report() {
+    echo "paths=$_OVERLAP_MIRROR_PATHS bash records=$_OVERLAP_MIRROR_BASH_RECORDS python records=$_OVERLAP_MIRROR_PY_RECORDS python rc=$_OVERLAP_MIRROR_PY_RC"
+    echo "python stderr (tail): $_OVERLAP_MIRROR_PY_ERR"
+    echo "bash G=$_OVERLAP_MIRROR_G U=$_OVERLAP_MIRROR_U S=$_OVERLAP_MIRROR_S tracked crates/<name>/ paths=$_OVERLAP_MIRROR_TRACKED_CRATE_PATHS corpus readers with no examples/*.ri record:[$_OVERLAP_MIRROR_CORPUS_MISSING]"
+    echo "diff bash python (rc=$_OVERLAP_MIRROR_DIFF_RC, first 40 lines):"
+    printf '%s\n' "$_OVERLAP_MIRROR_DIFF"
+}
+
+_check_overlap_mirror_python_runs() {
+    _overlap_mirror_probe_once || return 1
+    _overlap_mirror_report
+    [ "$_OVERLAP_MIRROR_PY_RC" = "0" ] && [ "$_OVERLAP_MIRROR_PY_RECORDS" -gt 0 ]
+}
+assert "reify_path_attribution imports and classifies under plain python3 (no dark-factory venv needed)" \
+    _check_overlap_mirror_python_runs
+
+_check_overlap_mirror_records_equal() {
+    _overlap_mirror_probe_once || return 1
+    _overlap_mirror_report
+    [ "$_OVERLAP_MIRROR_PY_RC" = "0" ] && [ "$_OVERLAP_MIRROR_DIFF_RC" = "0" ]
+}
+assert "Python mirror attributes every tracked + probe path exactly as affected-crates-lib.sh does (global / seed crates / DAG-gate union)" \
+    _check_overlap_mirror_records_equal
+
+_check_overlap_mirror_not_vacuous() {
+    _overlap_mirror_probe_once || return 1
+    _overlap_mirror_report
+    [ "$_OVERLAP_MIRROR_G" -ge 1 ] \
+        && [ "$_OVERLAP_MIRROR_U" -ge 1 ] \
+        && [ -z "$_OVERLAP_MIRROR_CORPUS_MISSING" ] \
+        && [ "$_OVERLAP_MIRROR_TRACKED_CRATE_PATHS" -ge 1 ] \
+        && [ "$_OVERLAP_MIRROR_S" -ge "$_OVERLAP_MIRROR_TRACKED_CRATE_PATHS" ]
+}
+assert "OVERLAP-MIRROR-PARITY guard is not vacuous: the bash side emits global, union, every corpus reader's examples/*.ri seed, and a seed per tracked crate path" \
+    _check_overlap_mirror_not_vacuous
 
 # ---------------------------------------------------------------------------
 # GV-PREMISE (task 7427): the two crates the vitest-gate fixtures are built on.
