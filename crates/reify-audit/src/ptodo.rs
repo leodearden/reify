@@ -575,6 +575,67 @@ fn has_malformed_cite(line: &str) -> bool {
     false
 }
 
+/// §8.2 legacy `task NNNN` spelling as a RESOLVABLE cite: every `task N`,
+/// `task-N`, `task_N` or `tasks N` (case-insensitive, word-bounded on both
+/// sides, 1..=5 digits, id ≥ 1), yielded as `(head, end, id)` in source order —
+/// `head` the byte offset of the `t`, `end` one past the last digit. Consumed
+/// only by lane δ-C (PRD §8.2, §20).
+///
+/// [`has_malformed_cite`]'s pass 2 is the deliberately BROADER recogniser of a
+/// citation ATTEMPT (any digit, no right boundary, no length cap) and stays
+/// separate, so the marker lanes' `malformed-cite` verdicts are unaffected by
+/// this stricter contract.
+fn legacy_task_cite_occurrences(line: &str) -> impl Iterator<Item = (usize, usize, u32)> + '_ {
+    let bytes = line.as_bytes();
+    let mut i = 0;
+    std::iter::from_fn(move || {
+        while i < bytes.len() {
+            let head = i;
+            i += 1;
+            if let Some((end, id)) = legacy_task_cite_at(bytes, head) {
+                i = end;
+                return Some((head, end, id));
+            }
+        }
+        None
+    })
+}
+
+/// The legacy cite starting exactly at `head`, as `(end, id)`; see
+/// [`legacy_task_cite_occurrences`] for the grammar. Byte-level, so it never
+/// slices inside a multi-byte character.
+fn legacy_task_cite_at(bytes: &[u8], head: usize) -> Option<(usize, u32)> {
+    if head > 0 && is_word_byte(bytes[head - 1]) {
+        return None;
+    }
+    let mut sep = head + 4;
+    if !bytes.get(head..sep)?.eq_ignore_ascii_case(b"task") {
+        return None;
+    }
+    if bytes
+        .get(sep)
+        .is_some_and(|b| b.eq_ignore_ascii_case(&b's'))
+    {
+        sep += 1;
+    }
+    if !matches!(bytes.get(sep), Some(b' ' | b'-' | b'_')) {
+        return None;
+    }
+    let digits = sep + 1;
+    let end = digits
+        + bytes[digits..]
+            .iter()
+            .take_while(|b| b.is_ascii_digit())
+            .count();
+    if !(1..=5).contains(&(end - digits)) || bytes.get(end).is_some_and(|&b| is_word_byte(b)) {
+        return None;
+    }
+    let id = bytes[digits..end]
+        .iter()
+        .fold(0u32, |acc, &d| acc * 10 + u32::from(d - b'0'));
+    (id >= 1).then_some((end, id))
+}
+
 // -----------------------------------------------------------------------
 // G-allow owner-cite grammar
 // -----------------------------------------------------------------------
