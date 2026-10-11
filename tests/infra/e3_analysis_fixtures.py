@@ -7,8 +7,8 @@ fused-memory-shaped task snapshot, a temp runs.db carrying the live column
 names, and a temp git repo with fixed committer dates. Everything it writes
 goes under a caller-supplied temp directory.
 
-The analysis directory must already be on sys.path (test_e3_analysis.py puts
-it there) so e3_protocol imports by name.
+The analysis directory must already be on sys.path (each test_e3_*.py puts it
+there) so e3_protocol imports by name.
 """
 
 import json
@@ -19,10 +19,8 @@ from datetime import datetime, timedelta, timezone
 from fractions import Fraction
 from pathlib import Path
 
-from e3_protocol import Amendment, Arm, ArmPrd, EraEvent, Protocol
+from e3_protocol import UTC, Amendment, Arm, ArmPrd, EraEvent, Protocol
 from e3_sources import fetch_task_snapshot, write_task_snapshot
-
-UTC = timezone.utc
 
 MINI_PROJECT_ROOT = "/mini/reify"
 MINI_FREEZE_CUTOFF = datetime(2026, 8, 28, 7, 7, tzinfo=UTC)
@@ -30,6 +28,11 @@ MINI_ERA_BOUNDARY = datetime(2026, 9, 1, tzinfo=UTC)
 MINI_CARVE_OUTS = frozenset({150, 151})
 MINI_INFRASTRUCTURE = frozenset({900, 901})
 MINI_RETIRED = 110
+
+
+def at(day, hour, minute=0, second=0, month=9):
+    """A 2026 instant in UTC, in September unless month says otherwise."""
+    return datetime(2026, month, day, hour, minute, second, tzinfo=UTC)
 
 
 def coarse_slug(index):

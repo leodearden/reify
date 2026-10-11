@@ -5,14 +5,17 @@
 #
 # This wrapper is the member run_all.sh actually discovers: it globs
 # `test_*.sh` only, mirrored by classification_discovered_set in
-# run-all-classification-lib.sh. The real assertions live in the sibling .py;
-# without this file they would be silently never run, reading as coverage
-# while asserting nothing.
+# run-all-classification-lib.sh. The real assertions live in the three
+# stdlib-unittest .py suites it runs; without this file they would be
+# silently never run, reading as coverage while asserting nothing.
 #
 # Verifies that:
 #   1. python3 is on PATH
-#   2. tests/infra/test_e3_analysis.py (stdlib unittest) exits 0
-#   3. docs/prds/v0_6/e3-granularity/analysis/e3_analysis.py --help exits 0
+#   2. tests/infra/test_e3_sources.py exits 0 (the boundary readers)
+#   3. tests/infra/test_e3_model.py exits 0 (e3_stats and the §7 model)
+#   4. tests/infra/test_e3_analysis.py exits 0 (the registered protocol and
+#      the CLI)
+#   5. docs/prds/v0_6/e3-granularity/analysis/e3_analysis.py --help exits 0
 #      (CLI smoke)
 
 set -euo pipefail
@@ -32,6 +35,10 @@ echo "=== test_e3_analysis ==="
 assert "python3 is available" command -v python3
 
 # ── Unit tests ────────────────────────────────────────────────────────────
+assert "tests/infra/test_e3_sources.py exits 0" \
+    python3 "$SCRIPT_DIR/test_e3_sources.py"
+assert "tests/infra/test_e3_model.py exits 0" \
+    python3 "$SCRIPT_DIR/test_e3_model.py"
 assert "tests/infra/test_e3_analysis.py exits 0" \
     python3 "$SCRIPT_DIR/test_e3_analysis.py"
 
