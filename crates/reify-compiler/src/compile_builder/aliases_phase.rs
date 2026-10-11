@@ -13,7 +13,7 @@
 //! phase with `resolved_type: None`, and that is not a failure: structures,
 //! traits and enums are not compiled yet when this phase runs (the resolution
 //! name sets are built *after* it, by `build_resolution_names` and
-//! `enums_phase::build_resolution_enums_from_cache`), so their names cannot be
+//! `enums_phase::bind_resolution_enums`), so their names cannot be
 //! resolved here even in principle.
 //!
 //! Such an alias is instead resolved at each USE SITE, by the deferred arm of
@@ -200,7 +200,7 @@ pub(crate) fn phase_validate_pub_parametric_alias_defs(
     }
 
     let template_registry: HashMap<String, &TopologyTemplate> =
-        name_env::structure_registry(&ctx.templates, prelude_refs);
+        name_env::ctor_template_registry(&ctx.templates, prelude_refs);
 
     // Build trait registry (same composition as phase_pending_bound_checks).
     let trait_registry: HashMap<String, &CompiledTrait> =

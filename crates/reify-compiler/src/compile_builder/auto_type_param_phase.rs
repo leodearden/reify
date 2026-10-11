@@ -189,7 +189,7 @@ pub(crate) fn phase_auto_type_param_resolution(
     // equals the about-to-be-pushed-position in the local `sub_components` vec).
     let (rewrites, subst_pairs, monomorph_clones, structure_name_rewrites) = {
         let template_registry: HashMap<String, &TopologyTemplate> =
-            name_env::structure_registry(&ctx.templates, prelude);
+            name_env::ctor_template_registry(&ctx.templates, prelude);
         let trait_registry = build_trait_registry(&ctx.trait_defs, prelude);
         let functions = ctx.resolution_functions.as_slice();
         let diagnostics = &mut ctx.diagnostics;

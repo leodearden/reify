@@ -32,7 +32,7 @@ use crate::type_resolution::{
 /// This phase, called after `aliases_phase::phase_aliases` +
 /// `names_phase::build_resolution_names` (so `ctx.alias_registry`,
 /// `ctx.resolution_structure_names`, and `ctx.resolution_trait_names` are
-/// populated) and **before** [`build_resolution_enums_from_cache`] clones
+/// populated) and **before** [`bind_resolution_enums`] clones
 /// `ctx.enum_defs` into `ctx.resolution_enums` (the set threaded into
 /// `compile_expr`), rebuilds each variant's payload from the AST:
 ///   - `VariantPayload::Unit` (bare) stays `Unit`.
@@ -51,7 +51,7 @@ use crate::type_resolution::{
 ///
 /// `prelude` is the effective prelude (empty under `#no_prelude`) so a payload
 /// field may reference a prelude enum, exactly as a `param` type can. The enums
-/// in scope are the same NS-P1 binding `build_resolution_enums_from_cache`
+/// in scope are the same NS-P1 binding `bind_resolution_enums`
 /// produces.
 pub(crate) fn resolve_enum_variant_payloads(
     ctx: &mut CompilationCtx,
@@ -289,7 +289,7 @@ pub(crate) fn resolve_enum_variant_payloads(
 /// The enums `prelude` binds on its own (no local tier), one per name, in
 /// NS-P1 precedence order. Cached once by [`PreludeContext::new`] for the
 /// parser's enum-name seed.
-pub(crate) fn flatten_prelude_enum_defs(prelude: &[&CompiledModule]) -> Vec<EnumDef> {
+pub(crate) fn bind_prelude_enum_defs(prelude: &[&CompiledModule]) -> Vec<EnumDef> {
     name_env::bind::<EnumDef, _>(&[], prelude.iter().copied())
         .winners()
         .cloned()
@@ -299,10 +299,7 @@ pub(crate) fn flatten_prelude_enum_defs(prelude: &[&CompiledModule]) -> Vec<Enum
 /// Run phase-6: `ctx.resolution_enums` becomes every enum name bound by
 /// [`crate::name_env`] — module-local enums first, then the prelude winners —
 /// so each `.find(|e| e.name == n)` consumer binds the NS-P1 winner.
-pub(crate) fn build_resolution_enums_from_cache(
-    ctx: &mut CompilationCtx,
-    prelude: &[&CompiledModule],
-) {
+pub(crate) fn bind_resolution_enums(ctx: &mut CompilationCtx, prelude: &[&CompiledModule]) {
     ctx.resolution_enums = name_env::bind(&ctx.enum_defs, prelude.iter().copied())
         .winners()
         .cloned()

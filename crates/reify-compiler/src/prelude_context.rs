@@ -40,7 +40,7 @@
 use reify_ir::EnumDef;
 
 use crate::CompiledModule;
-use crate::compile_builder::enums_phase::flatten_prelude_enum_defs;
+use crate::compile_builder::enums_phase::bind_prelude_enum_defs;
 use crate::name_env;
 use crate::types::CompiledTypeAlias;
 
@@ -77,12 +77,12 @@ pub struct PreludeContext<'a> {
 impl<'a> PreludeContext<'a> {
     /// Construct a `PreludeContext` from a slice of prelude module references.
     ///
-    /// Computes `resolution_enums` once, via `flatten_prelude_enum_defs`.
+    /// Computes `resolution_enums` once, via `bind_prelude_enum_defs`.
     ///
     /// Use [`from_slice`](Self::from_slice) when you own the `CompiledModule`
     /// values (e.g. `&'static [CompiledModule]` from `load_stdlib()`).
     pub fn new(prelude: &[&'a CompiledModule]) -> Self {
-        let resolution_enums = flatten_prelude_enum_defs(prelude);
+        let resolution_enums = bind_prelude_enum_defs(prelude);
         // The prelude's own NS-P1 alias binding: winners are seeded, and every
         // shadowed pub alias is recorded for a collision warning naming the
         // winning module first.

@@ -857,7 +857,7 @@ pub(crate) fn phase_pending_bound_checks(ctx: &mut CompilationCtx, prelude: &[&C
     // a non-conforming ctor arg (e.g. `Beam(mat: PointLoad())` where
     // `mat : ElasticMaterial`) is silently admitted.
     let template_registry: HashMap<String, &TopologyTemplate> =
-        name_env::structure_registry(&ctx.templates, prelude);
+        name_env::ctor_template_registry(&ctx.templates, prelude);
 
     // Rebuild the trait registry (same composition as phase_entities).
     let trait_registry = build_trait_registry(&ctx.trait_defs, prelude);
@@ -989,7 +989,7 @@ pub(crate) fn phase_sub_override_autos(ctx: &mut CompilationCtx, prelude: &[&Com
     // Build a template registry covering prelude + local compiled templates,
     // identical composition to `phase_pending_bound_checks`.
     let template_registry: HashMap<String, &TopologyTemplate> =
-        name_env::structure_registry(&ctx.templates, prelude);
+        name_env::ctor_template_registry(&ctx.templates, prelude);
 
     let pending = std::mem::take(&mut ctx.pending_sub_override_autos);
 
@@ -1134,7 +1134,7 @@ pub(crate) fn phase_connect_auto_params(ctx: &mut CompilationCtx, prelude: &[&Co
     // Build a template registry covering prelude + local compiled templates,
     // identical composition to `phase_sub_override_autos`.
     let template_registry: HashMap<String, &TopologyTemplate> =
-        name_env::structure_registry(&ctx.templates, prelude);
+        name_env::ctor_template_registry(&ctx.templates, prelude);
 
     let pending = std::mem::take(&mut ctx.pending_connect_auto_params);
 
@@ -1329,7 +1329,7 @@ pub(crate) fn phase_connect_auto_params(ctx: &mut CompilationCtx, prelude: &[&Co
 pub(crate) fn phase_fn_arg_conformance(ctx: &mut CompilationCtx, prelude: &[&CompiledModule]) {
     // Build template registry (same composition as phase_pending_bound_checks).
     let template_registry: HashMap<String, &TopologyTemplate> =
-        name_env::structure_registry(&ctx.templates, prelude);
+        name_env::ctor_template_registry(&ctx.templates, prelude);
 
     // Build trait registry (same composition as phase_pending_bound_checks).
     let trait_registry = build_trait_registry(&ctx.trait_defs, prelude);

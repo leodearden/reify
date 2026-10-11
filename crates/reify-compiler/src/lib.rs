@@ -435,10 +435,12 @@ pub fn compile_with_prelude_checked(
 /// earlier prelude function claims. First-match-wins dispatch over the result
 /// therefore reaches the same function the key binds.
 ///
-/// A flat list carries no module origins, so no NS-P1 tiering happens here; the
-/// compiler builds its own table from the prelude MODULES with
-/// `compile_builder::functions_phase::build_resolution_functions`, which binds
-/// through [`name_env`].
+/// No production path calls this. A flat list carries no module origins, so it
+/// cannot apply NS-P1 tiering. The compiler builds its function table from the
+/// prelude MODULES through [`name_env`], in
+/// `compile_builder::functions_phase::build_resolution_functions`. Its one
+/// remaining caller is a reify-expr test
+/// (`find_matching_compiled_function_tests.rs`).
 pub fn merge_prelude_functions(
     user: &[CompiledFunction],
     prelude: &[CompiledFunction],
@@ -690,7 +692,7 @@ pub fn compile_with_prelude_context_checked_with_config(
     // (e.g. `NotConverged { reason: BudgetReason }`) resolves against the
     // enums in scope — local plus prelude, bound by `name_env` (task 2998).
     // `prelude_refs` is already empty under `#no_prelude`. MUST run before
-    // `build_resolution_enums_from_cache` so the resolved payloads land in
+    // `bind_resolution_enums` so the resolved payloads land in
     // `ctx.resolution_enums` (the set threaded into `compile_expr`, where
     // brace-form variant construction is field-set/type checked).
     compile_builder::enums_phase::resolve_enum_variant_payloads(
@@ -699,7 +701,7 @@ pub fn compile_with_prelude_context_checked_with_config(
         prelude_refs,
     );
 
-    compile_builder::enums_phase::build_resolution_enums_from_cache(&mut compile_ctx, prelude_refs);
+    compile_builder::enums_phase::bind_resolution_enums(&mut compile_ctx, prelude_refs);
 
     compile_builder::functions_phase::phase_functions(
         &mut compile_ctx,

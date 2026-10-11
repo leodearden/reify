@@ -23,8 +23,9 @@ use crate::types::TopologyTemplate;
 ///    [`compile_function`] with the registry, `ctx.resolution_enums`,
 ///    accumulated `ctx.functions`, and `ctx.alias_registry`.  When `fn_refs`
 ///    is empty this block is skipped — skeleton compilation would be wasted.
-///    The skeletons are the local tier of [`name_env::structure_registry`], so
-///    they shadow prelude templates of the same name.
+///    The skeletons are the local tier of
+///    [`name_env::ctor_template_registry`], so they shadow prelude templates of
+///    the same name.
 /// 2. (always) Build `ctx.resolution_functions` via
 ///    [`build_resolution_functions`]. User functions appear first so
 ///    first-match-wins dispatch shadows duplicate prelude entries.
@@ -59,7 +60,7 @@ pub(crate) fn phase_functions(
         // Same-module skeletons are the local tier: they shadow prelude
         // templates of the same name.
         let merged_registry: HashMap<String, &TopologyTemplate> =
-            name_env::structure_registry(&skeletons, prelude);
+            name_env::ctor_template_registry(&skeletons, prelude);
 
         // Compile user functions in source order.
         //

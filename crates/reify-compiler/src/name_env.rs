@@ -334,7 +334,7 @@ impl<'a, D: Definition> Bindings<'a, D> {
 /// kind, plus the prelude STRUCTURES that win their name. Derived from the
 /// unified binding, so a prelude occurrence that wins a name never lets a
 /// lower-precedence structure of that name through.
-pub(crate) fn structure_registry<'a>(
+pub(crate) fn ctor_template_registry<'a>(
     local: &'a [TopologyTemplate],
     prelude: &[&'a CompiledModule],
 ) -> HashMap<String, &'a TopologyTemplate> {
