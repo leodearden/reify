@@ -12,6 +12,7 @@
 
 use std::fs;
 
+use reify_ast::{Declaration, ParsedModule};
 use reify_compiler::CompiledModule;
 use reify_compiler::cfg::CfgSet;
 use reify_compiler::module_dag::{ModuleResolver, compile_entry_with_stdlib_cfg};
@@ -26,7 +27,8 @@ enum Setup {
     SingleFileWithStdlib,
     /// A tempdir project: `main.ri` plus `(module name, source)` siblings,
     /// compiled through `compile_entry_with_stdlib_cfg` (prelude = stdlib ++
-    /// followed imports); production `Engine`.
+    /// followed imports); production `Engine`. See [`parse_project_entry`]
+    /// for how the entry is parsed.
     Project(&'static [(&'static str, &'static str)]),
     /// `(dotted module path, source)` modules each compiled standalone and
     /// used, in this order, as BOTH the compile prelude and the `Engine`
@@ -128,7 +130,48 @@ fn rows() -> Vec<ParityRow> {
             loser_probe: "from_std",
             loser_error: "has no member",
         },
+        ParityRow {
+            // Boundary #2: std.ports.electrical declares
+            // `enum SignalKind { Analog, Digital, PWM, Differential }`. The local
+            // enum shadows it ENTIRELY, so a stdlib-only variant is unknown.
+            name: "(f) enum, local SignalKind beats the stdlib's",
+            setup: Setup::SingleFileWithStdlib,
+            entry: "enum SignalKind { Foo, Bar }\n\nstructure def Main {\n    let read = SignalKind.PROBE\n}\n",
+            winner_probe: "Foo",
+            winner_value: || enum_value("SignalKind", "Foo"),
+            loser_probe: "Analog",
+            loser_error: "unknown variant",
+        },
+        ParityRow {
+            name: "(g) enum, import tier beats the stdlib",
+            setup: Setup::Project(&[("a", "pub enum SignalKind { Foo }\n")]),
+            entry: "import a\n\nstructure def Main {\n    let read = SignalKind.PROBE\n}\n",
+            winner_probe: "Foo",
+            winner_value: || enum_value("SignalKind", "Foo"),
+            loser_probe: "Analog",
+            loser_error: "unknown variant",
+        },
+        ParityRow {
+            name: "(h) enum, user-import peers: first import wins",
+            setup: Setup::Project(&[
+                ("a", "pub enum Pick { Left }\n"),
+                ("b", "pub enum Pick { Right }\n"),
+            ]),
+            entry: "import a\nimport b\n\nstructure def Main {\n    let read = Pick.PROBE\n}\n",
+            winner_probe: "Left",
+            winner_value: || enum_value("Pick", "Left"),
+            loser_probe: "Right",
+            loser_error: "unknown variant",
+        },
     ]
+}
+
+fn enum_value(type_name: &str, variant: &str) -> Value {
+    Value::Enum {
+        type_name: type_name.to_string(),
+        variant: variant.to_string(),
+        payload: vec![],
+    }
 }
 
 /// A compiled entry plus the `Engine` that evaluates it under the row's prelude.
@@ -151,7 +194,7 @@ fn compile_row(row: &ParityRow, probe: &str) -> Compiled {
             for (name, import_source) in imports {
                 fs::write(dir.join(format!("{name}.ri")), import_source).expect("write import");
             }
-            let parsed = reify_compiler::parse_with_stdlib(&source, ModulePath::single("main"));
+            let parsed = parse_project_entry(&source, imports);
             assert!(
                 parsed.errors.is_empty(),
                 "[{}] entry parse errors: {:?}",
@@ -179,6 +222,25 @@ fn compile_row(row: &ParityRow, probe: &str) -> Compiled {
             }
         }
     }
+}
+
+/// Parse a project entry knowing the enum names of the stdlib AND of its
+/// imports. Production entry parsing (`parse_with_stdlib`) knows only the
+/// stdlib's, so an imported enum's `Pick.Left` would not parse as an enum
+/// access at all — a parser gap orthogonal to which definition binds, which is
+/// what these rows probe.
+fn parse_project_entry(source: &str, imports: &[(&str, &str)]) -> ParsedModule {
+    let mut enum_names: Vec<&'static str> = reify_compiler::stdlib_loader::load_stdlib_context()
+        .enum_names()
+        .collect();
+    for (name, import_source) in imports {
+        let parsed = reify_syntax::parse(import_source, ModulePath::single(*name));
+        enum_names.extend(parsed.declarations.iter().filter_map(|decl| match decl {
+            Declaration::Enum(e) => Some(&*Box::leak(e.name.clone().into_boxed_str())),
+            _ => None,
+        }));
+    }
+    reify_syntax::parse_with_prelude_enums(source, ModulePath::single("main"), &enum_names)
 }
 
 /// Compile each module standalone under its own path. Leaked because
@@ -264,5 +326,19 @@ fn compile_and_eval_bind_the_same_definition_for_every_fixture() {
         failures.is_empty(),
         "NS-P4 parity broken:\n{}",
         failures.join("\n")
+    );
+}
+
+/// The user-visible boundary #2 symptom, pinned directly: a local enum named
+/// like a stdlib enum must not have its own variants rejected.
+#[test]
+fn local_enum_variants_resolve_despite_a_same_named_stdlib_enum() {
+    let compiled = reify_test_support::compile_source_with_stdlib(
+        "enum SignalKind { Foo, Bar }\n\nstructure def Main {\n    let foo = SignalKind.Foo\n    let bar = SignalKind.Bar\n}\n",
+    );
+    let errors = errors_of(&compiled.diagnostics);
+    assert!(
+        errors.is_empty(),
+        "the local SignalKind must bind, not std.ports.electrical's; got {errors:?}"
     );
 }
