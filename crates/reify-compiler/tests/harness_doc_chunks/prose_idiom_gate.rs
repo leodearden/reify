@@ -129,13 +129,18 @@ fn prose_idiom_violations(chunks: &[(&str, &str)]) -> Vec<String> {
 // The real-corpus gate
 // ---------------------------------------------------------------------------
 
-/// The chunks, by stem, whose prose idioms are gated.
-const IDIOM_GATED_CHUNKS: &[&str] = &["geometry"];
+/// The chunks, by stem, whose prose idioms are gated: geometry.md and the two
+/// topics split out of it (#7344).
+const IDIOM_GATED_CHUNKS: &[&str] = &["geometry", "measurement", "topology"];
 
-/// The callee of an idiom each chunk's prose must yield. The geometry one sits in
-/// the Topology Selectors prose at the END of geometry.md, so reading it proves
-/// the extraction survived every fence and note above it.
-const SENTINELS: &[(&str, &str)] = &[("geometry", "adjacent_faces")];
+/// The callee of an idiom each chunk's prose must yield. Each sits near the END
+/// of its chunk, so reading it proves the extraction survived every fence and
+/// note above it.
+const SENTINELS: &[(&str, &str)] = &[
+    ("geometry", "intersects"),
+    ("measurement", "perimeter"),
+    ("topology", "adjacent_faces"),
+];
 
 /// Every prose idiom in a gated chunk compiles, its metavariables left unbound.
 /// Scope and limits: this module's doc.
