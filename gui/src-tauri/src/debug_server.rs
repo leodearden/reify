@@ -2838,8 +2838,9 @@ async fn handle_reify_update_source(
 /// **An explicit `file_path` must lie inside the open design's directory**
 /// (docs/debug-mcp-contract.md §"AI write tools"): [`confined_write_target`]
 /// checks it before the seam, with no engine lock held, and the RESOLVED path
-/// is what gets written. A `load_from_source` session has no design directory,
-/// so it refuses every explicit target too.
+/// is what gets written, provided the seam finds the same design still open. A
+/// `load_from_source` session has no design directory, so it refuses every
+/// explicit target too.
 ///
 /// **Pure I/O: this commits no new engine state.** It routes through
 /// [`write_on_engine_and_refresh_baseline`] anyway, so §6.2 invariant (a)
@@ -2888,6 +2889,15 @@ pub async fn reify_save_file_on_engine_and_refresh_baseline(
                     .to_string(),
             );
         }
+        // Likewise ahead of any write: a `reify_open_file` between
+        // `confined_write_target`'s lock and this one moved the root the
+        // target was checked against.
+        let explicit_target = explicit_target
+            .as_ref()
+            .map(|target| target.path_while_open(s.canonical_file_path()))
+            .transpose()
+            .map_err(|refusal| refusal.to_string())?
+            .map(str::to_owned);
         let active = s.canonical_file_path().map(|p| p.to_string_lossy().into_owned());
         let gs = s.build_gui_state()?;
         // Single-file model, exactly as the reify-mcp surface reads it.
@@ -2959,47 +2969,55 @@ async fn handle_reify_save_file(
 ///
 /// **`output_path` must lie inside the open design's directory**, checked by
 /// [`confined_write_target`] exactly as the save-as arm is; the RESOLVED path
-/// is what the kernel writes.
+/// is what the kernel writes, provided the seam finds the same design still
+/// open.
 pub async fn reify_export_on_engine_and_refresh_baseline(
     engine: &Arc<Mutex<EngineSession>>,
     last_state: &std::sync::Mutex<Option<crate::types::GuiState>>,
     format: &str,
     output_path: &str,
 ) -> Result<crate::types::GuiState, String> {
-    let output_path = confined_write_target(engine, output_path).await?;
+    let output_target = confined_write_target(engine, output_path).await?;
     let format = format.to_owned();
     write_on_engine_and_refresh_baseline(engine, last_state, move |s| {
+        let output_path = output_target
+            .path_while_open(s.canonical_file_path())
+            .map_err(|refusal| refusal.to_string())?;
         // Resolved BEFORE the export so an unknown spelling is refused without
         // the kernel ever being asked to write anything.
         let fmt = crate::commands::parse_export_format(&format)?;
-        s.export(fmt, std::path::Path::new(&output_path))?;
+        s.export(fmt, std::path::Path::new(output_path))?;
         s.build_gui_state()
     })
     .await
 }
 
-/// The resolved path an explicit AI write target names, or the refusal of a
-/// target outside the open design's directory (docs/debug-mcp-contract.md
+/// The target an explicit AI write names, confined to the open design's
+/// directory, or the refusal of a target outside it (docs/debug-mcp-contract.md
 /// §"AI write tools").
 ///
 /// Same shape as [`reify_update_source_on_engine_and_refresh_baseline`]'s
 /// active-file guard (#5193): the design file is read under a SHORT lock of its
-/// own and the check runs with no lock held, so a refusal returns before the
-/// seam and advances neither the engine nor the baseline.
+/// own and the check runs with no lock held, on a blocking thread because it
+/// resolves paths on the filesystem, so a refusal returns before the seam and
+/// advances neither the engine nor the baseline. The seam reads the path back
+/// through `ConfinedTarget::path_while_open` under its own lock, which refuses
+/// if another design was opened in between.
 async fn confined_write_target(
     engine: &Arc<Mutex<EngineSession>>,
     requested: &str,
-) -> Result<String, String> {
+) -> Result<crate::write_confinement::ConfinedTarget, String> {
     let design_file = run_on_engine(engine, |s| {
         Ok(s.canonical_file_path().map(|p| p.to_path_buf()))
     })
     .await?;
-    let resolved =
-        crate::write_confinement::confine_to_design_dir(design_file.as_deref(), requested)
-            .map_err(|refusal| refusal.to_string())?;
-    resolved.into_os_string().into_string().map_err(|resolved| {
-        format!("refusing {requested}: it resolves to a non-UTF-8 path {resolved:?}")
+    let requested = requested.to_owned();
+    tokio::task::spawn_blocking(move || {
+        crate::write_confinement::confine_to_design_dir(design_file.as_deref(), &requested)
     })
+    .await
+    .map_err(|e| format!("the write-target check did not complete: {e}"))?
+    .map_err(|refusal| refusal.to_string())
 }
 
 /// Export the realized geometry and return the reify-mcp result envelope

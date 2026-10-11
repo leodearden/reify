@@ -505,14 +505,19 @@ file. Every `reify_export` `output_path`, and every explicit `reify_save_file`
 new file through its existing parent directory. A dangling symlink is refused,
 and a session with no design file refuses every explicit target. The check
 reads the active file under a short engine lock of its own and runs with no
-lock held (#5193), ahead of the write seam, so a refusal writes nothing and
-advances neither the engine nor the delta baseline. The write then goes to the
-RESOLVED path, not the caller's spelling. The check and the write are separate
-filesystem operations, so a directory swapped for a symlink between them can
-still redirect the write. The rule binds every client of this unauthenticated
-localhost server, not only the sidecar, and `reify_open_file` moves the root
-with the active design. Rule: `gui/src-tauri/src/write_confinement.rs`
-(`confine_to_design_dir`, refusals typed as `WriteTargetRefusal`); seam call:
+lock held (#5193), on a blocking thread, ahead of the write seam, so a refusal
+writes nothing and advances neither the engine nor the delta baseline. The
+write then goes to the RESOLVED path, not the caller's spelling. The rule binds
+every client of this unauthenticated localhost server, not only the sidecar,
+and `reify_open_file` moves the root with the active design. A
+`reify_open_file` landing between the check's lock and the seam's is refused,
+not raced: the seam reads the resolved path back through
+`ConfinedTarget::path_while_open` under its own lock, which refuses unless the
+design file the target was checked against is still the open one. The check
+and the write are still separate filesystem operations, though, so a directory
+swapped for a symlink between them can redirect the write. Rule:
+`gui/src-tauri/src/write_confinement.rs` (`confine_to_design_dir` returning a
+`ConfinedTarget`, refusals typed as `WriteTargetRefusal`); seam call:
 `confined_write_target` in `debug_server.rs`. `handle_reify_export`'s envelope
 still echoes the caller's `output_path`.
 

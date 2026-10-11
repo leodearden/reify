@@ -24,6 +24,11 @@ pub enum WriteTargetRefusal {
         resolved: PathBuf,
         design_dir: PathBuf,
     },
+    DesignChanged {
+        requested: String,
+        confined_to: PathBuf,
+        now_open: Option<PathBuf>,
+    },
 }
 
 const RULE: &str = "AI write targets must lie inside the open design's directory";
@@ -56,18 +61,56 @@ impl fmt::Display for WriteTargetRefusal {
                 resolved.display(),
                 design_dir.display()
             ),
+            Self::DesignChanged {
+                requested,
+                confined_to,
+                now_open,
+            } => write!(
+                f,
+                "{RULE}: {requested} was checked against {}, but {} is open now",
+                confined_to.display(),
+                now_open
+                    .as_deref()
+                    .map_or_else(|| "no design".into(), Path::to_string_lossy)
+            ),
         }
     }
 }
 
 impl std::error::Error for WriteTargetRefusal {}
 
-/// The resolved path to write for `requested`, if it lies inside the directory
-/// of `design_file` once symlinks and `..` are resolved on both sides.
+/// A write target that resolved inside the directory of the design it was
+/// checked against. Its path is handed out only while that design is still the
+/// open one, so a design switched between the check and the write cannot move
+/// the root out from under it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConfinedTarget {
+    requested: String,
+    design_file: PathBuf,
+    resolved: String,
+}
+
+impl ConfinedTarget {
+    /// The resolved path to write, provided `open_design` is still the design
+    /// file this target was confined against.
+    pub fn path_while_open(&self, open_design: Option<&Path>) -> Result<&str, WriteTargetRefusal> {
+        if open_design == Some(self.design_file.as_path()) {
+            return Ok(&self.resolved);
+        }
+        Err(WriteTargetRefusal::DesignChanged {
+            requested: self.requested.clone(),
+            confined_to: self.design_file.clone(),
+            now_open: open_design.map(Path::to_path_buf),
+        })
+    }
+}
+
+/// `requested` as a [`ConfinedTarget`], if it lies inside the directory of
+/// `design_file` once symlinks and `..` are resolved on both sides.
 pub fn confine_to_design_dir(
     design_file: Option<&Path>,
     requested: &str,
-) -> Result<PathBuf, WriteTargetRefusal> {
+) -> Result<ConfinedTarget, WriteTargetRefusal> {
     let unresolvable = |reason: String| WriteTargetRefusal::Unresolvable {
         requested: requested.to_string(),
         reason,
@@ -92,7 +135,17 @@ pub fn confine_to_design_dir(
             design_dir,
         });
     }
-    Ok(resolved)
+    let resolved = resolved
+        .into_os_string()
+        .into_string()
+        .map_err(|resolved| {
+            unresolvable(format!("it resolves to a non-UTF-8 path {resolved:?}"))
+        })?;
+    Ok(ConfinedTarget {
+        requested: requested.to_string(),
+        design_file: design_file.to_path_buf(),
+        resolved,
+    })
 }
 
 fn design_dir_of(design_file: &Path) -> Result<PathBuf, String> {

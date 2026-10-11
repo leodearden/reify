@@ -1,5 +1,6 @@
 //! Tests for `crate::write_confinement::confine_to_design_dir`: AI write
-//! targets must resolve inside the open design's directory.
+//! targets must resolve inside the open design's directory, and stay writable
+//! only while that design is still open.
 
 use std::fs;
 use std::os::unix::fs::symlink;
@@ -43,7 +44,10 @@ impl Fixture {
     }
 
     fn confine(&self, requested: &Path) -> Result<PathBuf, WriteTargetRefusal> {
-        confine_to_design_dir(Some(&self.design_file), path_str(requested))
+        let target = confine_to_design_dir(Some(&self.design_file), path_str(requested))?;
+        target
+            .path_while_open(Some(&self.design_file))
+            .map(PathBuf::from)
     }
 
     fn assert_accepted(&self, requested: &Path) -> PathBuf {
@@ -105,9 +109,12 @@ fn a_design_dir_reached_through_a_symlink_is_accepted_on_both_sides() {
     assert_eq!(via_alias, f.design_dir().join("copy.ri"));
 
     let design_via_alias = alias.join("part.ri");
-    let resolved = confine_to_design_dir(Some(&design_via_alias), path_str(&f.in_dir("copy.ri")))
+    let target = confine_to_design_dir(Some(&design_via_alias), path_str(&f.in_dir("copy.ri")))
         .expect("a design file named through a symlink still roots its real directory");
-    assert_eq!(resolved, f.design_dir().join("copy.ri"));
+    let resolved = target
+        .path_while_open(Some(&design_via_alias))
+        .expect("the design it was checked against is still open");
+    assert_eq!(Path::new(resolved), f.design_dir().join("copy.ri"));
 }
 
 // --- Refused targets ---
@@ -199,10 +206,16 @@ fn a_missing_parent_directory_is_refused() {
 }
 
 #[test]
-fn a_path_with_no_file_name_is_refused() {
+fn a_new_path_with_no_file_name_is_refused() {
     let f = fixture();
-    let refusal = f.confine(&f.in_dir(".."));
-    assert!(refusal.is_err(), "{refusal:?}");
+    let refusal = f.confine(&f.in_dir("missing/.."));
+    assert!(
+        matches!(
+            &refusal,
+            Err(WriteTargetRefusal::Unresolvable { reason, .. }) if reason.contains("names no file")
+        ),
+        "{refusal:?}"
+    );
 }
 
 #[test]
@@ -220,5 +233,41 @@ fn an_outside_refusal_names_the_target_and_the_design_dir() {
     assert!(
         message.contains(path_str(&f.design_dir())),
         "message should name the design directory: {message}"
+    );
+}
+
+// --- A confined target outlives a design switch only as a refusal ---
+
+#[test]
+fn a_confined_target_is_refused_once_another_design_is_open() {
+    let f = fixture();
+    let target = confine_to_design_dir(Some(&f.design_file), path_str(&f.in_dir("copy.ri")))
+        .expect("copy.ri is inside the design dir");
+    let elsewhere = f.in_other("elsewhere.ri");
+
+    let refusal = target.path_while_open(Some(&elsewhere));
+
+    assert!(
+        matches!(refusal, Err(WriteTargetRefusal::DesignChanged { .. })),
+        "{refusal:?}"
+    );
+    let message = refusal.expect_err("refused").to_string();
+    assert!(
+        message.contains(path_str(&f.design_file)) && message.contains(path_str(&elsewhere)),
+        "message should name the design checked against and the one open now: {message}"
+    );
+}
+
+#[test]
+fn a_confined_target_is_refused_once_no_design_is_open() {
+    let f = fixture();
+    let target = confine_to_design_dir(Some(&f.design_file), path_str(&f.in_dir("copy.ri")))
+        .expect("copy.ri is inside the design dir");
+
+    let refusal = target.path_while_open(None);
+
+    assert!(
+        matches!(refusal, Err(WriteTargetRefusal::DesignChanged { .. })),
+        "{refusal:?}"
     );
 }
