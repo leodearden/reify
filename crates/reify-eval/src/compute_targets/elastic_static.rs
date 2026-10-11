@@ -10258,8 +10258,18 @@ mod tests {
     fn extract_loads_rejects_a_wrong_dimension_magnitude_at_each_load_position() {
         let cases = [
             ("PointLoad", "force", DimensionVector::LENGTH, "Force"),
-            ("PressureLoad", "magnitude", DimensionVector::FORCE, "Pressure"),
-            ("Gravity", "magnitude", DimensionVector::FORCE, "Acceleration"),
+            (
+                "PressureLoad",
+                "magnitude",
+                DimensionVector::FORCE,
+                "Pressure",
+            ),
+            (
+                "Gravity",
+                "magnitude",
+                DimensionVector::FORCE,
+                "Acceleration",
+            ),
         ];
         for (type_name, field, wrong, expected_name) in cases {
             let mut fields = vec![(field, gamma1_scalar(2.0, wrong))];
@@ -10289,9 +10299,13 @@ mod tests {
 
     #[test]
     fn material_density_gates_the_density_dimension() {
-        let material = |density: Value| gamma1_struct("Steel_AISI_1045", vec![("density", density)]);
+        let material =
+            |density: Value| gamma1_struct("Steel_AISI_1045", vec![("density", density)]);
         assert_eq!(
-            material_density(&material(gamma1_scalar(7850.0, DimensionVector::MASS_DENSITY))),
+            material_density(&material(gamma1_scalar(
+                7850.0,
+                DimensionVector::MASS_DENSITY
+            ))),
             Ok(7850.0)
         );
         assert_eq!(material_density(&material(Value::Real(7850.0))), Ok(7850.0));
@@ -10300,7 +10314,10 @@ mod tests {
         assert!(
             matches!(
                 &res,
-                Err(FeaValueShapeError::WrongDimension { expected: "Density", .. })
+                Err(FeaValueShapeError::WrongDimension {
+                    expected: "Density",
+                    ..
+                })
             ),
             "a PRESSURE density must be Err(WrongDimension), got {res:?}"
         );
@@ -10327,7 +10344,8 @@ mod tests {
             diagnostics.iter().any(|d| {
                 d.severity == reify_core::Severity::Error
                     && d.code == Some(DiagnosticCode::DimensionedArgRejected)
-                    && d.message.starts_with("solve_elastic_static_trampoline: loads:")
+                    && d.message
+                        .starts_with("solve_elastic_static_trampoline: loads:")
             }),
             "expected a DimensionedArgRejected Error naming loads, got {diagnostics:?}"
         );

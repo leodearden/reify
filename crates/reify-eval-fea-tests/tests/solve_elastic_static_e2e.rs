@@ -1717,7 +1717,9 @@ fn dimensioned_force_wrapper(
     let mut inputs = value_inputs.to_vec();
     if let Some(Value::List(loads)) = inputs.get_mut(4) {
         for load in loads.iter_mut() {
-            let Value::StructureInstance(data) = load else { continue };
+            let Value::StructureInstance(data) = load else {
+                continue;
+            };
             if data.type_name != "PointLoad" {
                 continue;
             }
@@ -1751,7 +1753,10 @@ fn gamma1_solve(engine: &mut reify_eval::Engine, label: &str) -> (Value, i64) {
         .iter()
         .filter(|d| d.severity == Severity::Error)
         .collect();
-    assert!(errors.is_empty(), "{label}: no Error diagnostics expected, got {errors:?}");
+    assert!(
+        errors.is_empty(),
+        "{label}: no Error diagnostics expected, got {errors:?}"
+    );
     let result = eval
         .values
         .get(&ValueCellId::new("Gamma1PointLoad", "result"))
@@ -1788,8 +1793,10 @@ fn gamma1_force_dimensioned_point_load_solves_identically_to_the_bare_spelling()
 
     FORCE_REWRITES.store(0, Ordering::SeqCst);
     let mut dimensioned_engine = make_simple_engine();
-    dimensioned_engine
-        .register_compute_fn("solver::elastic_static", dimensioned_force_wrapper as ComputeFn);
+    dimensioned_engine.register_compute_fn(
+        "solver::elastic_static",
+        dimensioned_force_wrapper as ComputeFn,
+    );
     let (dimensioned_mvm, dimensioned_iterations) =
         gamma1_solve(&mut dimensioned_engine, "FORCE-dimensioned");
     assert!(
