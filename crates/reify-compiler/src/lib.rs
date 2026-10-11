@@ -805,6 +805,16 @@ pub fn compile_with_prelude_context_checked_with_config(
     compile_builder::post_passes::phase_augment_composed_captures(&mut compile_ctx);
 
     let compiled_purposes = compile_builder::post_passes::phase_purposes(&mut compile_ctx, parsed);
+    // D-2: report every local definition that shadows a same-kind stdlib one.
+    // Runs once, after every kind is compiled and before the prelude's
+    // purposes are merged in; diagnostics only, so the hash is unaffected.
+    let stdlib_shadow_warnings = compile_builder::stdlib_shadow_lint::lint(
+        parsed,
+        &compile_ctx,
+        &compiled_purposes,
+        prelude_refs,
+    );
+    compile_ctx.diagnostics.extend(stdlib_shadow_warnings);
     // Merge is_pub prelude purposes (e.g. simulation_ready/design_review from
     // std.determinacy.purposes) into the user module's compiled_purposes.
     // Empty-safe: when #no_prelude is active, prelude_refs is &[] and the
