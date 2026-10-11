@@ -7,6 +7,10 @@ seam (PRD dark-factory/plans/two-layer-merge-queue-prd.md §5.1, task κ #4750).
 
 Run directly:  python3 scripts/test_reify_overlap_detector.py
 Run via infra:  tests/infra/test_reify_overlap_detector.sh
+
+Runs only where orchestrator.overlap_footprint imports (SKIPs otherwise), so
+rule parity with affected-crates-lib.sh is guarded in
+tests/infra/test_affected_crates_lib.sh instead.
 """
 
 import sys

@@ -34,7 +34,13 @@
 #
 # Sourced by:
 #   scripts/verify.sh           (Phase 2 narrowing)
-#   tests/infra/test_affected_crates_lib.sh  (drift catcher)
+#   tests/infra/test_affected_crates_lib.sh  (drift catcher, and the Python
+#                               mirror's parity guard)
+#
+# Mirrored by scripts/reify_path_attribution.py, for the merge-queue overlap
+# detector: _is_global, _file_to_crate, _RI_CORPUS_CRATES, _is_crate_manifest
+# and _REIFY_DAG_GATE_CRATE. Edit both sides together —
+# test_affected_crates_lib.sh's OVERLAP-MIRROR-PARITY reds a one-sided edit.
 
 # Source guard — prevent double-sourcing.
 if [ "${_REIFY_AFFECTED_CRATES_LIB_SOURCED:-}" = "1" ]; then
@@ -158,6 +164,7 @@ _is_crate_manifest() {
 #   crates/<name>/**  -> <name>
 #   gui/src-tauri/**  -> reify-gui
 #   examples/**/*.ri  -> _RI_CORPUS_CRATES (corpus seeds)
+# Python mirror: scripts/reify_path_attribution.py (see this file's header).
 _file_to_crate() {
     local path="$1"
     case "$path" in
