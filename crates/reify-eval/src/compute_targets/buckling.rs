@@ -1417,4 +1417,148 @@ mod tests {
              the resampler formula"
         );
     }
+
+    // ── task 6922 γ1: loads read through fea_loads; malformed inputs fail ─────
+
+    use crate::compute_targets::fea_value_shape::FeaValueShapeError;
+    use crate::{CancellationHandle, ComputeOutcome};
+
+    fn gamma1_struct(type_name: &str, fields: Vec<(&str, Value)>) -> Value {
+        Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: StructureTypeId(u32::MAX),
+            type_name: type_name.to_string(),
+            version: 1,
+            fields: fields
+                .into_iter()
+                .map(|(k, v)| (k.to_string(), v))
+                .collect(),
+        }))
+    }
+
+    fn gamma1_scalar(si_value: f64, dimension: DimensionVector) -> Value {
+        Value::Scalar {
+            si_value,
+            dimension,
+        }
+    }
+
+    fn gamma1_point_load(force: Value) -> Value {
+        gamma1_struct("PointLoad", vec![("force", force)])
+    }
+
+    #[test]
+    fn total_point_load_sums_bare_and_force_dimensioned_point_loads_only() {
+        let loads = Value::List(vec![
+            gamma1_point_load(Value::Real(600.0)),
+            gamma1_point_load(gamma1_scalar(400.0, DimensionVector::FORCE)),
+            gamma1_struct(
+                "Gravity",
+                vec![(
+                    "magnitude",
+                    gamma1_scalar(9.8, DimensionVector::ACCELERATION),
+                )],
+            ),
+            gamma1_struct("PressureLoad", vec![("magnitude", Value::Real(5.0e6))]),
+        ]);
+        assert_eq!(
+            super::total_point_load(&loads),
+            Ok(1000.0),
+            "only PointLoad forces sum, in either spelling"
+        );
+    }
+
+    #[test]
+    fn total_point_load_keeps_the_unit_sentinel_for_an_empty_or_zero_total() {
+        assert_eq!(super::total_point_load(&Value::List(vec![])), Ok(1.0));
+        assert_eq!(
+            super::total_point_load(&Value::List(vec![gamma1_point_load(Value::Real(0.0))])),
+            Ok(1.0)
+        );
+    }
+
+    #[test]
+    fn total_point_load_rejects_a_non_list_and_a_wrong_dimension_force() {
+        let non_list = super::total_point_load(&Value::Real(1.0));
+        assert!(
+            matches!(non_list, Err(FeaValueShapeError::ExpectedList { .. })),
+            "a non-List loads value must be Err(ExpectedList), got {non_list:?}"
+        );
+        let wrong = super::total_point_load(&Value::List(vec![gamma1_point_load(
+            gamma1_scalar(2.0, DimensionVector::LENGTH),
+        )]));
+        assert!(
+            matches!(
+                wrong,
+                Err(FeaValueShapeError::WrongDimension {
+                    expected: "Force",
+                    ..
+                })
+            ),
+            "a LENGTH force must be Err(WrongDimension), got {wrong:?}"
+        );
+    }
+
+    fn gamma1_buckling_inputs() -> Vec<Value> {
+        let len = |m: f64| gamma1_scalar(m, DimensionVector::LENGTH);
+        vec![
+            gamma1_struct(
+                "Steel_AISI_1045",
+                vec![
+                    (
+                        "youngs_modulus",
+                        gamma1_scalar(205.0e9, DimensionVector::PRESSURE),
+                    ),
+                    ("poisson_ratio", Value::Real(0.29)),
+                ],
+            ),
+            len(0.8),
+            len(0.02),
+            len(0.02),
+            Value::List(vec![gamma1_point_load(Value::Real(1000.0))]),
+            Value::List(vec![]),
+            Value::Undef,
+        ]
+    }
+
+    #[test]
+    fn solve_buckling_trampoline_fails_malformed_inputs_instead_of_panicking() {
+        let mut no_poisson = gamma1_buckling_inputs();
+        no_poisson[0] = gamma1_struct(
+            "Steel_AISI_1045",
+            vec![(
+                "youngs_modulus",
+                gamma1_scalar(205.0e9, DimensionVector::PRESSURE),
+            )],
+        );
+        let mut cases = vec![(no_poisson, "material")];
+        for (index, malformed, arg) in [
+            (4, Value::Real(1.0), "loads"),
+            (0, Value::Real(0.0), "material"),
+            (1, Value::Real(1.0), "length"),
+        ] {
+            let mut inputs = gamma1_buckling_inputs();
+            inputs[index] = malformed;
+            cases.push((inputs, arg));
+        }
+
+        for (inputs, arg) in cases {
+            let outcome = super::solve_buckling_trampoline(
+                &inputs,
+                &[],
+                &Value::Undef,
+                None,
+                &CancellationHandle::new(),
+            );
+            let ComputeOutcome::Failed { diagnostics, .. } = &outcome else {
+                unreachable!("a malformed {arg} must yield Failed, got {outcome:?}");
+            };
+            let prefix = format!("solve_buckling_trampoline: {arg}:");
+            assert!(
+                diagnostics.iter().any(|d| {
+                    d.severity == reify_core::Severity::Error && d.message.starts_with(&prefix)
+                }),
+                "a malformed {arg} must yield an Error starting {prefix:?}, got {diagnostics:?}"
+            );
+        }
+    }
 }
