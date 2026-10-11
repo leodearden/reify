@@ -211,9 +211,8 @@ const TWIST_LINEAR_DIM: DimensionVector = DimensionVector::LENGTH;
 /// co-dependent sites read it and they are 1000 lines apart:
 ///
 /// 1. the `transform_exp` EVAL gate, which rejects a non-admitted angular half; and
-/// 2. [`diagnose`]'s `transform_exp` arm, which now EXPLAINS exactly the rejection that
-///    eval gate performs (it used to defer to it in silence, when #6080 had not yet
-///    ruled), so a twist wrong in both halves is not mis-attributed to `linear`.
+/// 2. [`diagnose`]'s `transform_exp` arm, which EXPLAINS exactly the rejection that eval
+///    gate performs, so a twist wrong in both halves is not mis-attributed to `linear`.
 ///
 /// That agreement is only correct while both sites move together. Re-spelling the
 /// literal at both sites made it unenforced, and the failure is SILENT in the dangerous
@@ -241,11 +240,8 @@ const TWIST_ANGULAR_DIM: DimensionVector = DimensionVector::ANGLE;
 /// value that is not a 3-`Vector` of finite, single-dimension components. Eval maps
 /// that to `Value::Undef`; the classifier maps it to silence (no mis-attribution).
 ///
-/// The eval arm's `angular` lookup is deliberately still spelled inline: #6080 owns the
-/// angular half and will restructure that extraction along with its gate, so rewriting
-/// it here would only manufacture a merge conflict. [`diagnose`] does route its angular
-/// deferral through this helper, and that direction is fail-safe — a key-name drift
-/// makes the deferral decline to speak rather than speak wrongly.
+/// For [`diagnose`] a key-name drift is fail-safe: its angular deferral declines to speak
+/// rather than speak wrongly.
 fn decompose_twist_component(v: &Value, key: &str) -> Option<([f64; 3], DimensionVector)> {
     let map = match v {
         Value::Map(m) => m,
@@ -699,10 +695,9 @@ pub(crate) fn eval_geometry(name: &str, args: &[Value]) -> Option<Value> {
             // that const's doc for the co-dependence.
             //
             // The shape (Map + field key) is read through `decompose_twist_component`,
-            // the SAME helper the linear half and `diagnose` use — the restructure the
-            // helper's doc reserved for #6080. Every shape failure it folds into `None`
-            // (non-Map arg, missing key, not a 3-Vector, mixed or non-finite
-            // components) was already Undef here.
+            // the SAME helper the linear half and `diagnose` use. Every shape failure it
+            // folds into `None` (non-Map arg, missing key, not a 3-Vector, mixed or
+            // non-finite components) was already Undef here.
             let (ang_comps, ang_dim) = match decompose_twist_component(&args[0], "angular") {
                 Some(v) => v,
                 None => return Some(Value::Undef),
