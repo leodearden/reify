@@ -716,10 +716,12 @@ enum JcodemunchUse {
     },
     /// Only some of its passes query jcodemunch. Selecting it makes the run
     /// connect, but an unusable index never refuses it (its other passes do
-    /// not read the index); `unexamined` records the jcodemunch passes as
-    /// unexamined when the seam is unavailable, and is not optional.
+    /// not read the index). `unexamined` records the jcodemunch passes as
+    /// unexamined when the seam is unavailable, and is not optional; it
+    /// answers `None` when the sweep holds no task those passes would have
+    /// queried for.
     InSomePasses {
-        unexamined: fn(&str) -> Finding,
+        unexamined: fn(&AuditContext<'_>, &str) -> Option<Finding>,
     },
 }
 
@@ -735,13 +737,16 @@ impl Detector {
         pattern.map_or(self.in_default_sweep, |p| pattern_selects(p, self.token))
     }
 
-    /// The builder of the run-level finding that records this detector as
-    /// unexamined in a run whose jcodemunch seam was unavailable.
-    fn unexamined(&self) -> Option<fn(&str) -> Finding> {
+    /// The run-level finding that records this detector as unexamined in a
+    /// run whose jcodemunch seam was unavailable for `reason`, if it records
+    /// one.
+    fn unexamined(&self, ctx: &AuditContext<'_>, reason: &str) -> Option<Finding> {
         match self.jcodemunch {
-            JcodemunchUse::Never => None,
-            JcodemunchUse::Required { unexamined } => unexamined,
-            JcodemunchUse::InSomePasses { unexamined } => Some(unexamined),
+            JcodemunchUse::Never | JcodemunchUse::Required { unexamined: None } => None,
+            JcodemunchUse::Required {
+                unexamined: Some(build),
+            } => Some(build(reason)),
+            JcodemunchUse::InSomePasses { unexamined } => unexamined(ctx, reason),
         }
     }
 
@@ -1064,8 +1069,10 @@ fn main() -> ExitCode {
                 return ExitCode::from(TASKS_DB_ABSENT_EXIT);
             }
             findings.extend(run.findings);
-            if let (Some(reason), Some(unexamined)) = (seam.unavailable(), detector.unexamined()) {
-                findings.push(unexamined(&reason.to_string()));
+            if let Some(reason) = seam.unavailable()
+                && let Some(unexamined) = detector.unexamined(&ctx, &reason.to_string())
+            {
+                findings.push(unexamined);
             }
         }
         findings

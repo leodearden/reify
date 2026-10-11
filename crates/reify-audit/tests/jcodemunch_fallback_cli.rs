@@ -316,15 +316,47 @@ fn no_jcodemunch_records_nothing_unexamined() {
 // P5: only its H2 pass queries jcodemunch
 // -----------------------------------------------------------------------
 
-/// A done/merged task no runs.db event corroborates: P5's provenance pass
-/// reports it High whatever jcodemunch does.
+/// `task` with `metadata.files` spanning two crates, so H2 (cross-crate only)
+/// would query jcodemunch for it.
+fn spanning_two_crates(mut task: Value) -> Value {
+    task["files"] = json!(["crates/a/src/lib.rs", "crates/b/src/lib.rs"]);
+    task
+}
+
+/// A done/merged task no runs.db event corroborates, so P5's provenance pass
+/// reports it High whatever jcodemunch does; `files` decides whether H2 would
+/// examine it.
+fn phantom_done_task(task_id: &str, files: &[&str]) -> Value {
+    let mut task = task_json::task_fixture(task_id, "done", Some("merged"), Some("deadbeef"));
+    task["files"] = json!(files);
+    task
+}
+
+/// One phantom-done task H2 would examine.
 fn phantom_done_tasks() -> Vec<Value> {
-    vec![task_json::task_fixture(
-        "3242",
-        "done",
-        Some("merged"),
-        Some("deadbeef"),
-    )]
+    vec![spanning_two_crates(phantom_done_task("3242", &[]))]
+}
+
+/// P5's provenance pass still reported phantom-done `task_id` High.
+fn assert_phantom_done_reported(findings: &[Value], task_id: &str) {
+    assert!(
+        findings.iter().any(|f| f["pattern"] == "P5PhantomDone"
+            && f["severity"] == "High"
+            && f["task_id"] == task_id),
+        "P5's provenance pass must still report the phantom-done task: {:#}",
+        Value::Array(findings.to_vec())
+    );
+}
+
+/// No H2 unexamined record of either form.
+fn assert_no_h2_unexamined(findings: &[Value]) {
+    assert!(
+        !findings
+            .iter()
+            .any(|f| f["pattern"] == "P5LivePathUnexamined"),
+        "no swept task reaches H2, so H2 skipped nothing: {:#}",
+        Value::Array(findings.to_vec())
+    );
 }
 
 /// The findings array of a run that was not refused: P5's other passes never
@@ -345,18 +377,59 @@ fn p5_records_h2_unexamined_once_when_the_endpoint_never_answered() {
     let url = common::net::unreachable_mcp_url();
     let out = s.run(&["--pattern", "P5", "--jcodemunch-url", &url]);
     let findings = findings_of_an_unrefused_run(&out);
-    assert!(
-        findings.iter().any(|f| f["pattern"] == "P5PhantomDone"
-            && f["severity"] == "High"
-            && f["task_id"] == "3242"),
-        "P5's provenance pass must still report the phantom-done task: {:#}",
-        Value::Array(findings.clone())
-    );
+    assert_phantom_done_reported(&findings, "3242");
     assert_one_run_level_unexamined(
         &findings,
         "P5LivePathUnexamined",
         &format!("jcodemunch unreachable at '{url}'"),
     );
+}
+
+/// H2 examines cross-crate tasks only. A sweep holding none skipped nothing
+/// by running without jcodemunch, so its zero H2 findings are clean.
+#[test]
+fn p5_records_nothing_unexamined_when_no_swept_task_reaches_h2() {
+    let s = sandbox(&[phantom_done_task("3243", &["crates/a/src/lib.rs"])]);
+    let url = common::net::unreachable_mcp_url();
+    let out = s.run(&["--pattern", "P5", "--jcodemunch-url", &url]);
+    let findings = findings_of_an_unrefused_run(&out);
+    assert_phantom_done_reported(&findings, "3243");
+    assert_no_h2_unexamined(&findings);
+}
+
+/// A `--task` spot-check sweeps that task alone: a cross-crate task elsewhere
+/// in the corpus does not make H2's absence matter for a single-crate one.
+#[test]
+fn a_p5_spot_check_records_h2_unexamined_only_for_a_task_h2_examines() {
+    let s = sandbox(&[
+        spanning_two_crates(phantom_done_task("3242", &[])),
+        phantom_done_task("3243", &["crates/a/src/lib.rs"]),
+    ]);
+    let url = common::net::unreachable_mcp_url();
+    let reason = format!("jcodemunch unreachable at '{url}'");
+
+    let single_crate = s.run(&[
+        "--task",
+        "3243",
+        "--pattern",
+        "P5",
+        "--jcodemunch-url",
+        &url,
+    ]);
+    let findings = findings_of_an_unrefused_run(&single_crate);
+    assert_phantom_done_reported(&findings, "3243");
+    assert_no_h2_unexamined(&findings);
+
+    let cross_crate = s.run(&[
+        "--task",
+        "3242",
+        "--pattern",
+        "P5",
+        "--jcodemunch-url",
+        &url,
+    ]);
+    let findings = findings_of_an_unrefused_run(&cross_crate);
+    assert_one_run_level_unexamined(&findings, "P5LivePathUnexamined", &reason);
 }
 
 /// `--pattern P5` binds the LIVE seam, so H2 actually queries: the mock
@@ -367,9 +440,11 @@ fn p5_records_h2_unexamined_once_when_the_endpoint_never_answered() {
 fn p5_runs_h2_against_a_live_seam() {
     let s = sandbox(&[]);
     let live_head = s.commit_and_index(None);
-    let mut task = task_json::done_task_fixture("8001", &live_head, 1_700_000_000);
-    task["files"] = json!(["crates/a/src/lib.rs", "crates/b/src/lib.rs"]);
-    s.write_tasks(&[task]);
+    s.write_tasks(&[spanning_two_crates(task_json::done_task_fixture(
+        "8001",
+        &live_head,
+        1_700_000_000,
+    ))]);
     let mock = spawn_mock_mcp(|args| {
         if args.get("identifier").is_some() {
             Some(json!({"__rows__": []}))
@@ -429,7 +504,7 @@ fn p5_degrades_h2_rather_than_refusing_on_a_stale_index() {
 
 #[test]
 fn a_default_sweep_records_p1_and_p5_h2_unexamined_once_each() {
-    let s = sandbox(&p1_eligible_tasks());
+    let s = sandbox(&[p1_eligible_tasks(), phantom_done_tasks()].concat());
     let url = common::net::unreachable_mcp_url();
     let out = s.run(&["--jcodemunch-url", &url]);
     let findings = findings_of_an_unrefused_run(&out);

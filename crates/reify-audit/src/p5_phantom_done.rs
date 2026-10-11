@@ -178,6 +178,13 @@ enum CheckMode {
     PreDone,
 }
 
+impl CheckMode {
+    /// Whether [`check_task`] runs its passes on `meta` at all under this mode.
+    fn audits(self, meta: &TaskMetadata) -> bool {
+        self == CheckMode::PreDone || meta.status == "done"
+    }
+}
+
 /// Production SQL used by [`has_task_completed_event`] to corroborate a
 /// merged task's `task_completed` event in runs.db. Hoisted to a `pub const`
 /// so the integration test `p5::tests::runs_db_schema_pin` can pin the test
@@ -263,19 +270,20 @@ pub fn check_pre_done(ctx: &AuditContext, task_id: &str) -> Vec<Finding> {
 /// D-1 hot path stays constant-time rather than paying the O(n) iteration cost
 /// of this loop. Borrows the context (no clone of `task_metadata`).
 fn check_with_target(ctx: &AuditContext, target_task_id: Option<&str>) -> Vec<Finding> {
-    let mut findings = Vec::new();
+    swept_tasks(ctx, target_task_id)
+        .flat_map(|meta| check_task(ctx, meta, CheckMode::Sweep))
+        .collect()
+}
 
-    for meta in ctx.task_metadata.values() {
-        if let Some(target) = target_task_id
-            && meta.task_id != target
-        {
-            continue;
-        }
-
-        findings.extend(check_task(ctx, meta, CheckMode::Sweep));
-    }
-
-    findings
+/// The tasks [`check_with_target`] hands to [`check_task`]: every task in
+/// `ctx.task_metadata`, or only `target_task_id` when the caller names one.
+fn swept_tasks<'a>(
+    ctx: &'a AuditContext,
+    target_task_id: Option<&'a str>,
+) -> impl Iterator<Item = &'a TaskMetadata> {
+    ctx.task_metadata
+        .values()
+        .filter(move |meta| target_task_id.is_none_or(|target| meta.task_id == target))
 }
 
 /// Per-task pass set shared by [`check_pre_done`] (D-1 hot path, O(1) lookup)
@@ -292,7 +300,7 @@ fn check_task(ctx: &AuditContext, meta: &TaskMetadata, mode: CheckMode) -> Vec<F
     // ("in-progress"/"review"). Requiring `status == "done"` here made the gate
     // structurally unable to fire on the one transition it exists to guard —
     // every pre-done invocation returned `[]` unconditionally.
-    if mode == CheckMode::Sweep && meta.status != "done" {
+    if !mode.audits(meta) {
         return vec![];
     }
     // ONE `git check-ignore` fork per declared file for the whole task. Both
@@ -1616,9 +1624,9 @@ fn build_high_finding(meta: &TaskMetadata, missing: &[String], summary: &str) ->
 /// `NoopJCodemunchOps`, whose `get_changed_symbols` answers nothing, so a
 /// zero-finding H2 sweep was **vacuous**. A `--pattern P5` run (and a default
 /// sweep) now handshakes for H2 (the bin's `needs_jcodemunch`), and a run
-/// whose seam is unavailable records H2 as one run-level
-/// [`Pattern::P5LivePathUnexamined`] ([`live_path_run_unexamined`]) rather
-/// than reading as clean. `--pre-done` and `--no-jcodemunch` still bind the
+/// whose seam is unavailable, and which sweeps a task H2 would examine,
+/// records H2 as one run-level [`Pattern::P5LivePathUnexamined`]
+/// ([`live_path_run_unexamined`]) rather than reading as clean. `--pre-done` and `--no-jcodemunch` still bind the
 /// stub. H2 stays `Severity::Medium` (non-blocking for the D-1 hook) until a
 /// promotion meets `docs/prds/p5-h1-h2-live-corpus-fp-validation.md` §6: a
 /// non-vacuous live sweep with a measured FP rate ≤ 5%.
@@ -1629,16 +1637,9 @@ fn build_high_finding(meta: &TaskMetadata, missing: &[String], summary: &str) ->
 /// symbol with an unlocatable declaration — gets a stderr vacuous breadcrumb
 /// via [`h2_vacuous_breadcrumb`] (task 4144).
 fn check_live_path_stranded(ctx: &AuditContext, meta: &TaskMetadata) -> Vec<Finding> {
-    // Cross-crate gate: requires >=2 distinct crates/<name>/ roots.
-    if crate_root_count(&meta.files) < 2 {
-        return vec![];
-    }
-
-    let Some(commit) = meta.done_provenance.as_ref().and_then(|p| p.commit.as_deref()) else {
+    let Some((since_sha, until_sha)) = h2_range(meta) else {
         return vec![];
     };
-    let since_sha = format!("{commit}^1");
-    let until_sha = commit;
 
     let symbols = match ctx.jcodemunch.get_changed_symbols(&since_sha, until_sha) {
         Ok(symbols) => symbols,
@@ -1691,6 +1692,18 @@ fn check_live_path_stranded(ctx: &AuditContext, meta: &TaskMetadata) -> Vec<Find
     findings
 }
 
+/// The `get_changed_symbols` range `(since, until)` H2 queries for `meta`, or
+/// `None` when H2 does not examine it: a task whose `metadata.files` span
+/// fewer than two `crates/<name>/` roots (P1's single-crate domain), or one
+/// with no provenance commit.
+fn h2_range(meta: &TaskMetadata) -> Option<(String, &str)> {
+    if crate_root_count(&meta.files) < 2 {
+        return None;
+    }
+    let commit = meta.done_provenance.as_ref()?.commit.as_deref()?;
+    Some((format!("{commit}^1"), commit))
+}
+
 /// The finding for a cross-crate done task H2 could not examine because its
 /// `get_changed_symbols` query failed. Low, so it never moves the exit code,
 /// and worded so that the task's lack of `P5LivePathStranded` findings
@@ -1716,12 +1729,19 @@ fn live_path_unexamined(
     }
 }
 
-/// The finding for a run in which H2 had no usable jcodemunch session at all,
-/// so it examined no task: `reason` says why. Low, run-level (empty
+/// The finding for a sweep in which H2 had no usable jcodemunch session at
+/// all, so it examined no task: `reason` says why. Low, run-level (empty
 /// `task_id`), and worded so that the run's lack of `P5LivePathStranded`
 /// findings cannot be read as a clean result.
-pub fn live_path_run_unexamined(reason: &str) -> Finding {
-    Finding {
+///
+/// `None` when no task [`check`] sweeps is one H2 would have queried
+/// jcodemunch for (done, with an [`h2_range`]): its zero H2 findings are then
+/// clean whatever the seam, so a spot-check of a single-crate task records
+/// nothing.
+pub fn live_path_run_unexamined(ctx: &AuditContext, reason: &str) -> Option<Finding> {
+    let reaches_h2 = swept_tasks(ctx, ctx.target_task_id.as_deref())
+        .any(|meta| CheckMode::Sweep.audits(meta) && h2_range(meta).is_some());
+    reaches_h2.then(|| Finding {
         pattern: Pattern::P5LivePathUnexamined,
         severity: Severity::Low,
         task_id: String::new(),
@@ -1731,7 +1751,7 @@ pub fn live_path_run_unexamined(reason: &str) -> Finding {
              once jcodemunch answers"
         ),
         evidence: vec![],
-    }
+    })
 }
 
 /// Returns a `reify-audit:` prefixed stderr breadcrumb message when H2's

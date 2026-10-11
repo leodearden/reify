@@ -4983,8 +4983,9 @@ mod freshness_gate {
     /// corpus.
     ///
     /// The default sweep runs P2, P5, PTODO and PDSSENTINEL alongside P1, and
-    /// none of those four consult jcodemunch at all. Refusing the process here
-    /// would delete four working detectors' output over one stale index — and
+    /// only P5's H2 pass among them consults jcodemunch. Refusing the process
+    /// here would delete four working detectors' output over one stale index —
+    /// and
     /// §4.2 makes that the EXPECTED case, not an anomaly: identity is now
     /// per-checkout, so every task worktree derives an id nothing has indexed.
     /// A default `reify-audit --since <date>` from any warm lane with the
@@ -5036,24 +5037,6 @@ mod freshness_gate {
                 .is_some_and(|summary| summary.contains("E_JC_INDEX_STALE")),
             "the record must carry the index refusal; got {:#}",
             p1_unexamined[0]
-        );
-        let h2_unexamined: Vec<&serde_json::Value> = findings
-            .iter()
-            .filter(|f| f["pattern"].as_str() == Some("P5LivePathUnexamined"))
-            .collect();
-        assert_eq!(
-            h2_unexamined.len(),
-            1,
-            "exactly one run-level P5LivePathUnexamined; findings:\n{:#}",
-            serde_json::Value::Array(findings.clone())
-        );
-        assert_eq!(h2_unexamined[0]["task_id"].as_str(), Some(""));
-        assert!(
-            h2_unexamined[0]["summary"]
-                .as_str()
-                .is_some_and(|summary| summary.contains("E_JC_INDEX_STALE")),
-            "the record must carry the index refusal; got {:#}",
-            h2_unexamined[0]
         );
     }
 

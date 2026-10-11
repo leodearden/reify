@@ -206,7 +206,7 @@ Slice-2 deeper rendering (per-finding evidence expansion, links to task URLs) is
 
 | Combination | Effect |
 |---|---|
-| `--task <id> --pattern P5` | Spot-check task `<id>`, P5 only |
+| `--task <id> --pattern P5` | Spot-check task `<id>`, P5 only; dials jcodemunch for H2, which examines cross-crate tasks only (`--no-jcodemunch` stays offline) |
 | `--since <date> --pattern P1` | Window sweep from `<date>`, P1 only |
 | `--since <date> --pattern PTODO` | PTODO only, over the whole tree — `<date>` does not narrow it (Medium; deterministic, no jcodemunch) |
 | `--since <date> --pattern PDEAD` | Window sweep from `<date>`, PDEAD advisory only (Low/log) |
@@ -216,4 +216,4 @@ Slice-2 deeper rendering (per-finding evidence expansion, links to task URLs) is
 | `--task <id> --since <date>` | Both flags accepted; `AuditContext` receives both `target_task_id` and `window` (CLI source: `reify-audit.rs` lines 333–342). Whether detectors treat this as a strict scope intersection depends on the detector implementation — verify against the detector source or CLI `--help` if exact semantics matter. |
 | `--format markdown` | Adds markdown output to **any** of the above |
 
-**`--pre-done` is NOT composable from the skill.** It is reserved exclusively for the dark-factory D-1 pre-done hook (`REIFY_AUDIT_PREDONE_CMD`). The skill never passes `--pre-done` to the CLI. If a user asks to simulate a pre-done check, use `--task <id> --pattern P5` instead, which runs P5 in periodic-sweep (not blocking) mode.
+**`--pre-done` is NOT composable from the skill.** It is reserved exclusively for the dark-factory D-1 pre-done hook (`REIFY_AUDIT_PREDONE_CMD`). The skill never passes `--pre-done` to the CLI. If a user asks to simulate a pre-done check, use `--task <id> --pattern P5 --no-jcodemunch` instead, which runs P5 in periodic-sweep (not blocking) mode and, like the hook, never connects. Without `--no-jcodemunch` the run dials jcodemunch for P5's H2 pass, and a port that accepts but never replies costs the client's HTTP timeout (`HTTP_TIMEOUT_SECS` in `jcodemunch_client.rs`, 60 s) before H2 is skipped.
