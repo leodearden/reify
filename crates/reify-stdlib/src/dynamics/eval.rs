@@ -3249,7 +3249,7 @@ mod tests {
         };
         let plain_joint = eval_builtin("revolute", &[axis_y, range]);
         assert!(
-            joint_compliance(&plain_joint, Some(PI / 6.0)).is_none(),
+            matches!(joint_compliance(&plain_joint, Some(PI / 6.0)), Ok(None)),
             "a plain revolute joint (no compliant keys) must return None"
         );
     }
@@ -3260,6 +3260,8 @@ mod tests {
         use std::f64::consts::PI;
         let joint = make_compliant_revolute_joint(Some(2.0), None, PI / 12.0);
         let c = joint_compliance(&joint, Some(PI / 6.0))
+            .ok()
+            .flatten()
             .expect("compliant joint with position must return Some");
         assert!(
             (c.spring_rate.expect("spring_rate must be Some") - 2.0).abs() < 1e-12,
@@ -3277,7 +3279,7 @@ mod tests {
         use std::f64::consts::PI;
         let joint = make_compliant_revolute_joint(Some(2.0), None, PI / 12.0);
         assert!(
-            joint_compliance(&joint, None).is_none(),
+            matches!(joint_compliance(&joint, None), Ok(None)),
             "spring-only compliant joint (damping=None) without position must return None"
         );
     }
@@ -3297,6 +3299,8 @@ mod tests {
         );
         let joint = Value::Map(m);
         let c = joint_compliance(&joint, None)
+            .ok()
+            .flatten()
             .expect("damping-only joint must return Some even without position");
         assert!(c.spring_rate.is_none(), "spring_rate must be None");
         assert!(
@@ -3329,6 +3333,8 @@ mod tests {
         );
         let joint = Value::Map(m);
         let c = joint_compliance(&joint, Some(PI / 6.0))
+            .ok()
+            .flatten()
             .expect("Option-wrapped spring_rate must unwrap and return Some");
         assert!(
             (c.spring_rate.expect("spring_rate must be Some") - 2.0).abs() < 1e-12,
@@ -3364,7 +3370,10 @@ mod tests {
         );
         let joint = Value::Map(m);
         assert!(
-            joint_compliance(&joint, Some(std::f64::consts::PI / 6.0)).is_none(),
+            matches!(
+                joint_compliance(&joint, Some(std::f64::consts::PI / 6.0)),
+                Ok(None)
+            ),
             "malformed (NaN) neutral must make joint_compliance return None"
         );
     }
@@ -3395,6 +3404,8 @@ mod tests {
         );
         let joint = Value::Map(m);
         let c = joint_compliance(&joint, None)
+            .ok()
+            .flatten()
             .expect("damping-only joint with malformed neutral must still return Some");
         assert!(c.spring_rate.is_none(), "spring_rate must be None");
         assert!(
@@ -3402,6 +3413,135 @@ mod tests {
             "damping must be 3.5"
         );
         assert_eq!(c.neutral, 0.0, "neutral defaults to 0.0 when spring_rate absent");
+    }
+
+    // ── task 6922 ε: compliance reads are gated by joint kind ─────────────────
+
+    fn joint_map(kind: &str, fields: Vec<(&str, Value)>) -> Value {
+        let mut m = BTreeMap::new();
+        m.insert(
+            Value::String("kind".to_string()),
+            Value::String(kind.to_string()),
+        );
+        for (key, value) in fields {
+            m.insert(Value::String(key.to_string()), value);
+        }
+        Value::Map(m)
+    }
+
+    fn dimensioned(si_value: f64, dimension: DimensionVector) -> Value {
+        Value::Scalar {
+            si_value,
+            dimension,
+        }
+    }
+
+    /// The rejected path of `joint_compliance` on a one-field joint.
+    fn rejected_compliance_path(kind: &str, field: &str, value: Value) -> String {
+        match joint_compliance(&joint_map(kind, vec![(field, value)]), Some(0.1)) {
+            Err(rejection) => rejection.path,
+            Ok(_) => unreachable!("{kind}.{field} must be rejected"),
+        }
+    }
+
+    #[test]
+    fn joint_compliance_gates_spring_rate_by_joint_kind() {
+        use DimensionVector as DV;
+        for (kind, right, wrong) in [
+            ("revolute", DV::ROTATIONAL_STIFFNESS, DV::TRANSLATIONAL_STIFFNESS),
+            ("prismatic", DV::TRANSLATIONAL_STIFFNESS, DV::ROTATIONAL_STIFFNESS),
+        ] {
+            let joint = joint_map(kind, vec![("spring_rate", dimensioned(2.0, right))]);
+            let Ok(Some(c)) = joint_compliance(&joint, Some(0.1)) else {
+                unreachable!("{kind}: a {kind} spring rate must be accepted");
+            };
+            assert_eq!(c.spring_rate, Some(2.0), "{kind}: value unchanged");
+            assert_eq!(
+                rejected_compliance_path(kind, "spring_rate", dimensioned(2.0, wrong)),
+                format!("{kind}.spring_rate")
+            );
+        }
+    }
+
+    #[test]
+    fn joint_compliance_gates_damping_by_joint_kind() {
+        use DimensionVector as DV;
+        let joint = joint_map(
+            "revolute",
+            vec![("damping", dimensioned(3.5, DV::ROTATIONAL_DAMPING))],
+        );
+        let Ok(Some(c)) = joint_compliance(&joint, None) else {
+            unreachable!("a rotational damping must be accepted on a revolute joint");
+        };
+        assert_eq!(c.damping, Some(3.5));
+        assert_eq!(
+            rejected_compliance_path(
+                "revolute",
+                "damping",
+                dimensioned(3.5, DV::TRANSLATIONAL_DAMPING)
+            ),
+            "revolute.damping"
+        );
+        let prismatic = joint_map(
+            "prismatic",
+            vec![("damping", dimensioned(3.5, DV::TRANSLATIONAL_DAMPING))],
+        );
+        assert!(matches!(joint_compliance(&prismatic, None), Ok(Some(_))));
+    }
+
+    #[test]
+    fn joint_compliance_keeps_the_bare_and_none_spellings() {
+        let joint = joint_map(
+            "revolute",
+            vec![
+                ("spring_rate", Value::Real(2.0)),
+                ("damping", Value::Option(None)),
+            ],
+        );
+        let Ok(Some(c)) = joint_compliance(&joint, Some(0.1)) else {
+            unreachable!("a bare spring rate is the transitional legacy spelling");
+        };
+        assert_eq!(c.spring_rate, Some(2.0));
+        assert_eq!(c.damping, None, "Option(None) damping is absent");
+        let bare_damping = joint_map("revolute", vec![("damping", Value::Real(3.5))]);
+        assert!(matches!(joint_compliance(&bare_damping, None), Ok(Some(_))));
+    }
+
+    #[test]
+    fn diagnose_names_a_translational_spring_rate_on_a_revolute_joint() {
+        use crate::eval_builtin;
+
+        let Value::Map(mut joint) = make_compliant_revolute_joint(Some(2.0), None, 0.0) else {
+            unreachable!("make_compliant_revolute_joint returns a Map");
+        };
+        joint.insert(
+            Value::String("spring_rate".to_string()),
+            dimensioned(2.0, DimensionVector::TRANSLATIONAL_STIFFNESS),
+        );
+        let pm = eval_builtin("point_mass", &[dimensioned(1.0, DimensionVector::MASS)]);
+        let mech = eval_builtin(
+            "body",
+            &[eval_builtin("mechanism", &[]), pm, Value::Map(joint)],
+        );
+        let traj = motionless_trajectory(std::f64::consts::PI / 6.0);
+
+        let result = eval_dynamics("inverse_dynamics_lower", &[mech.clone(), traj.clone()])
+            .expect("inverse_dynamics_lower is a recognised intrinsic");
+        assert!(
+            matches!(result, Value::Undef),
+            "a wrong-dimension spring rate must not be read, got {result:?}"
+        );
+        let diagnostic = diagnose("inverse_dynamics_lower", &[mech, traj])
+            .expect("the rejected spring rate must be diagnosed");
+        assert_eq!(
+            diagnostic.code,
+            Some(DiagnosticCode::DimensionedArgRejected)
+        );
+        assert!(
+            diagnostic.message.contains("revolute.spring_rate"),
+            "got {:?}",
+            diagnostic.message
+        );
     }
 
     // ── step-3 RED: end-to-end compliance torque tests ────────────────────────
