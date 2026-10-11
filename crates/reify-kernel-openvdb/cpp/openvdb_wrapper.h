@@ -56,6 +56,24 @@ std::unique_ptr<OpenVdbGridHandle> mesh_to_volume_ffi(
     double half_width_voxels);
 
 // ---------------------------------------------------------------------------
+// Dense SDF → level set
+// ---------------------------------------------------------------------------
+
+/// Build a level-set FloatGrid from a dense block of SDF samples laid out
+/// X-outermost row-major (`data[(ix * ny + iy) * nz + iz]`), voxel (0,0,0)
+/// centred at world `origin`. Every voxel of the block is set ACTIVE with its
+/// value clamped to ±band_half_width, which is also the background (D-8 of
+/// docs/prds/v0_6/implicit-solids.md). Throws std::runtime_error on an empty
+/// axis, a size mismatch, a block over GRID_DENSIFY_MAX_VOXELS, or a
+/// non-finite / non-positive argument or sample.
+std::unique_ptr<OpenVdbGridHandle> dense_sdf_to_level_set_ffi(
+    rust::Slice<const float> data,
+    std::array<uint32_t, 3> dims,
+    std::array<double, 3> origin,
+    double voxel_size,
+    double band_half_width);
+
+// ---------------------------------------------------------------------------
 // Volume → Mesh (marching cubes)
 // ---------------------------------------------------------------------------
 

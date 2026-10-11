@@ -35,6 +35,17 @@ pub mod ffi {
             half_width_voxels: f64,
         ) -> Result<UniquePtr<OpenVdbGridHandle>>;
 
+        // Dense SDF → level-set FloatGrid. `data` is X-outermost row-major
+        // over `dims`, voxel (0,0,0) centred at `origin`; every voxel is set
+        // ACTIVE with its value clamped to ±band_half_width (D-8).
+        fn dense_sdf_to_level_set_ffi(
+            data: &[f32],
+            dims: [u32; 3],
+            origin: [f64; 3],
+            voxel_size: f64,
+            band_half_width: f64,
+        ) -> Result<UniquePtr<OpenVdbGridHandle>>;
+
         // Volume → Mesh (marching cubes): FloatGrid SDF → triangle soup.
         //
         // `iso_level`: isovalue (0.0 = zero level-set / SDF surface).
