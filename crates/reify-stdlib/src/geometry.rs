@@ -2386,16 +2386,8 @@ pub fn diagnose(name: &str, args: &[Value]) -> Option<reify_core::Diagnostic> {
             // Check the halves in EVAL'S OWN ORDER — angular, then linear — so the arm
             // blames the half eval actually rejected. Eval gates `angular` BEFORE
             // `linear`, so a twist wrong in both halves never reaches the linear gate,
-            // and blaming `linear` there would be a mis-attribution.
-            //
-            // #6126 upheld that invariant by SILENCE, because it did not own the
-            // angular gate and had nothing true to say about it — and documented the
-            // resulting hazard: the user acts on a `linear` message, makes `linear` a
-            // Length, is STILL Undef, and now gets NO diagnostic at all. #6080 owns the
-            // angular gate, so that hazard is now CLOSED rather than merely avoided:
-            // the arm names the angular half both times. This is exactly the
-            // substitution #6126's comment anticipated ("#6080 … will add its own arm
-            // to explain it").
+            // and blaming `linear` there would be a mis-attribution. The angular half
+            // is named whenever its dimension is wrong, whatever `linear` holds.
             //
             // `TWIST_ANGULAR_DIM` is read from the const rather than re-spelled, so the
             // gate and this arm cannot drift; see that const's doc and the
