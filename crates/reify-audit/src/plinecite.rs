@@ -12,19 +12,25 @@
 //! Every finding is [`Severity::Medium`], so the lane is report-only and
 //! exit-neutral. Kinds, carried as the summary prefix:
 //!
-//! - `line-cite:` — one per citing file and cite, at its first line;
+//! - `line-cite:` — one per citing file and cite, at its first line, unless
+//!   the committed ledger ([`crate::plinecite_baseline`]) holds that
+//!   `(file, cite)` row;
+//! - `stale-baseline-entry:` — a ledger row no live cite matches;
 //! - `allow-missing-reason:` — a `plinecite:allow` marker with no reason,
 //!   which exempts nothing;
-//! - `scope-empty:` — no tracked file is in [`in_scope`]: the run's only
-//!   finding, so a tree that was never read cannot report clean.
+//! - `scope-empty:` — no tracked file is in [`in_scope`] ([`ScopeEmpty`]):
+//!   the run's only finding, so a tree that was never read cannot report
+//!   clean.
 //!
 //! Rationale, scope, measured surface and the normative grammar:
 //! `docs/prds/reify-audit-stale-line-cite-detector.md`.
 
-use crate::plinecite_baseline::BASELINE_PATH;
+use crate::plinecite_baseline::{BASELINE_PATH, CiteRow, parse_baseline};
+use crate::ratchet_ledger::Ledger;
 use crate::scan_util::{allow_marker_body, find_word_boundary_token, is_word_byte};
 use crate::{AuditContext, EvidenceRef, Finding, Pattern, Severity};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+use std::fmt;
 
 /// The per-line escape hatch: `plinecite:allow — <reason>`.
 const ALLOW_TOKEN: &str = "plinecite:allow";
@@ -53,37 +59,95 @@ pub fn in_scope(path: &str) -> bool {
     stdlib_ri || crate_src_rs
 }
 
-/// Every hard line cite and malformed allow marker in the tracked in-scope
-/// files, sorted by `(category, name, path)`. An unreadable file is skipped.
+/// Every line cite the committed ledger lacks ([`Ledger::new_debt`]), one
+/// `stale-baseline-entry:` per row no live cite matches ([`Ledger::stale`]),
+/// and every malformed allow marker — sorted by `(category, name, path)`. An
+/// empty scope yields its one `scope-empty:` finding instead. An unreadable
+/// file is skipped.
 pub fn check(ctx: &AuditContext<'_>) -> Vec<Finding> {
-    let scanned: Vec<String> = ctx
-        .git
-        .ls_files()
-        .into_iter()
-        .filter(|path| in_scope(path))
-        .collect();
+    let Audit { scan, ledger } = match audit(ctx) {
+        Ok(audit) => audit,
+        Err(empty) => return vec![scope_empty(empty).finding],
+    };
+    let Scan {
+        mut findings,
+        mut debt,
+    } = scan;
+    findings.extend(ledger.new_debt().iter().filter_map(|row| debt.remove(row)));
+    findings.extend(ledger.stale().iter().map(stale_baseline_entry));
+    findings.sort_by(|a, b| a.key().cmp(&b.key()));
+    findings.into_iter().map(|k| k.finding).collect()
+}
+
+/// The live debt and the committed ledger, for the generator — the SAME
+/// derivation [`check`] settles, so a regenerated ledger is by construction
+/// one the ratchet accepts. Refuses an empty scope rather than deriving a
+/// ledger that would wipe the committed one.
+pub fn baseline_ledger(ctx: &AuditContext<'_>) -> Result<Ledger<CiteRow>, ScopeEmpty> {
+    audit(ctx).map(|audit| audit.ledger)
+}
+
+/// No tracked file is in PLINECITE's scope. A failed `git ls-files` reads
+/// this way, so [`check`] reports it and [`baseline_ledger`] refuses it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScopeEmpty;
+
+impl fmt::Display for ScopeEmpty {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "no tracked file is in PLINECITE's scope, so {BASELINE_PATH} cannot be \
+             settled — every committed row would read as stale; check that \
+             --project-root is the git worktree and that `git ls-files` succeeds there."
+        )
+    }
+}
+
+/// Every in-scope file scanned, plus the committed ledger its debt is settled
+/// against — the one computation behind [`check`] and [`baseline_ledger`].
+struct Audit {
+    scan: Scan,
+    ledger: Ledger<CiteRow>,
+}
+
+fn audit(ctx: &AuditContext<'_>) -> Result<Audit, ScopeEmpty> {
+    let tracked = ctx.git.ls_files();
+    let scanned: Vec<&String> = tracked.iter().filter(|path| in_scope(path)).collect();
     if scanned.is_empty() {
-        return vec![scope_empty().finding];
+        return Err(ScopeEmpty);
     }
     let mut scan = Scan::default();
-    for path in &scanned {
+    for path in scanned {
         if let Some(content) = ctx.read_relative(path) {
             scan.file(path, &content);
         }
     }
-    let mut keyed = scan.findings;
-    keyed.extend(scan.debt.into_values());
-    keyed.sort_by(|a, b| a.key().cmp(&b.key()));
-    keyed.into_iter().map(|k| k.finding).collect()
+    let ledger = Ledger {
+        live: scan.debt.keys().cloned().collect(),
+        committed: committed_baseline(ctx, &tracked),
+    };
+    Ok(Audit { scan, ledger })
 }
 
-/// The scanned files' findings, split by what a ledger row could absorb.
+/// The committed ledger's rows — none when the file is absent, untracked,
+/// unreadable or empty (an untracked copy is inert).
+fn committed_baseline(ctx: &AuditContext<'_>, tracked: &[String]) -> BTreeSet<CiteRow> {
+    if !tracked.iter().any(|path| path == BASELINE_PATH) {
+        return BTreeSet::new();
+    }
+    ctx.read_relative(BASELINE_PATH)
+        .map(|content| parse_baseline(&content))
+        .unwrap_or_default()
+}
+
+/// The scanned files' findings, split by what a ledger row can absorb.
 #[derive(Default)]
 struct Scan {
     /// Findings no ledger row absorbs: reasonless allow markers.
     findings: Vec<Keyed>,
-    /// Each `(path, cite)` pair's first-occurrence `line-cite:` finding.
-    debt: BTreeMap<(String, String), Keyed>,
+    /// Each `(path, cite)` row's first-occurrence `line-cite:` finding —
+    /// exactly what [`check`] reports against an empty ledger.
+    debt: BTreeMap<CiteRow, Keyed>,
 }
 
 impl Scan {
@@ -97,8 +161,12 @@ impl Scan {
                 self.findings.push(allow_missing_reason(path, line_no));
             }
             for cite in line_cites(line) {
+                let row = CiteRow {
+                    path: path.to_string(),
+                    cite: cite.to_string(),
+                };
                 self.debt
-                    .entry((path.to_string(), cite.to_string()))
+                    .entry(row)
                     .or_insert_with(|| line_cite(path, line_no, cite));
             }
         }
@@ -176,17 +244,29 @@ fn allow_missing_reason(path: &str, line: usize) -> Keyed {
     )
 }
 
-fn scope_empty() -> Keyed {
-    keyed(
-        "scope-empty",
-        BASELINE_PATH.to_string(),
-        BASELINE_PATH,
-        EvidenceRef::File {
-            path: BASELINE_PATH.to_string(),
-        },
-        "no tracked file is in PLINECITE's scope, so nothing was checked; check \
-         that --project-root is the git worktree and that `git ls-files` \
-         succeeds there",
+/// A finding about the ledger file itself rather than one citing line.
+fn ledger_finding(category: &'static str, name: String, detail: &str) -> Keyed {
+    let evidence = EvidenceRef::File {
+        path: BASELINE_PATH.to_string(),
+    };
+    keyed(category, name, BASELINE_PATH, evidence, detail)
+}
+
+fn scope_empty(empty: ScopeEmpty) -> Keyed {
+    ledger_finding("scope-empty", BASELINE_PATH.to_string(), &empty.to_string())
+}
+
+/// The finding for a committed row that absorbs nothing, named by the row's
+/// own text so the line to delete is the one quoted.
+fn stale_baseline_entry(row: &CiteRow) -> Keyed {
+    ledger_finding(
+        "stale-baseline-entry",
+        row.to_string(),
+        &format!(
+            "listed in {BASELINE_PATH} but matches no live cite, so it absorbs \
+             nothing; delete the line, or regenerate with \
+             `cargo run -p reify-audit --bin plinecite-baseline-gen`"
+        ),
     )
 }
 
