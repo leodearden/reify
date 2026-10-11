@@ -285,7 +285,7 @@ pub fn per_joint_jacobian_local(joint: &Value) -> Option<[f64; 6]> {
 /// for every joint kind `value_for_joint` handles (all seven JOINT_KINDS post
 /// KCC-γ widening).  Each column is the derivative w.r.t. free joint `i`'s
 /// motion variable, so every coupling of `chain[i]` in the chain moves with it
-/// ([`propagate_to_couplings`]).
+/// (`propagate_to_couplings`).
 ///
 /// Returns `None` if `eps <= 0`, any free index is out of range, the
 /// `chain.len() != values.len()`, or any `chain_transform` along the way

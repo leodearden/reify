@@ -560,7 +560,9 @@ where
 ///
 /// `chain_a` / `vals_a` is the reference side (held fixed for the solve).
 /// `chain_b` / `vals_b_initial` is the free side; the indices in `free_b`
-/// select which entries of `vals_b_initial` the solver moves.  `strategy`
+/// select which entries of `vals_b_initial` the solver moves.  A `chain_b`
+/// coupling whose parent occupies a free slot is re-derived from that slot
+/// every iterate (`loop_closure::propagate_to_couplings`).  `strategy`
 /// picks the initial guess: [`StartStrategy::WarmStart`] uses the supplied
 /// vector directly (must match `free_b.len()`); [`StartStrategy::Midpoint`]
 /// queries each free joint's `joint_range_midpoint` from `chain_b`.
@@ -728,6 +730,7 @@ pub fn solve_loop_closure(
             .ok()?;
             cursor += width;
             vals_b_scratch[i] = jv;
+            crate::loop_closure::propagate_to_couplings(&chain_b_vec, &mut vals_b_scratch, i);
         }
         let twist = crate::loop_closure::loop_residual_twist(
             &chain_a_vec,
