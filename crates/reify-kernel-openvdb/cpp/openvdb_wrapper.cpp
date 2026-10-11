@@ -507,4 +507,16 @@ rust::Vec<float> grid_densify_to_buffer(const OpenVdbGridHandle& h) {
     return buf;
 }
 
+// ---------------------------------------------------------------------------
+// TBB parallelism limit (test-fixtures scope only)
+// ---------------------------------------------------------------------------
+
+std::unique_ptr<TbbParallelismLimit> tbb_single_thread_limit_ffi() {
+    return std::make_unique<TbbParallelismLimit>();
+}
+
+size_t tbb_max_allowed_parallelism_ffi() {
+    return tbb::global_control::active_value(tbb::global_control::max_allowed_parallelism);
+}
+
 } // namespace reify_openvdb

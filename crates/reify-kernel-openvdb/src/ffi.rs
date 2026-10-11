@@ -102,5 +102,12 @@ pub mod ffi {
         // caller in `read_vdb_file` surfaces the exception as
         // `IngestError::FileReadError { detail: "grid too large: …" }`.
         fn grid_densify_to_buffer(h: &OpenVdbGridHandle) -> Result<Vec<f32>>;
+
+        // TBB single-thread limit: serves only the test-fixtures
+        // `tbb_scope` module (unconditional here because cfg-gating cxx
+        // bridge entries is awkward; the Rust surface is gated instead).
+        type TbbParallelismLimit;
+        fn tbb_single_thread_limit_ffi() -> UniquePtr<TbbParallelismLimit>;
+        fn tbb_max_allowed_parallelism_ffi() -> usize;
     }
 }

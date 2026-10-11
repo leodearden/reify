@@ -14,6 +14,7 @@
 #include <openvdb/tools/VolumeToMesh.h>
 #include <openvdb/tools/Interpolation.h>
 #include <openvdb/io/File.h>
+#include <tbb/global_control.h>
 
 #include <array>
 #include <cstddef>
@@ -162,5 +163,21 @@ rust::Vec<float> grid_densify_to_buffer(const OpenVdbGridHandle& h);
 /// 256M voxels = 1 GiB at 4 bytes/float. Any larger and we throw rather
 /// than allocate.
 constexpr int64_t GRID_DENSIFY_MAX_VOXELS = 256LL * 1024LL * 1024LL;
+
+// ---------------------------------------------------------------------------
+// TBB parallelism limit (test-fixtures scope only)
+// ---------------------------------------------------------------------------
+
+/// Holds TBB to one thread for as long as it lives (tbb::global_control is
+/// process-global and RAII-scoped). The value is hard-wired so no invalid
+/// thread count can cross the FFI.
+struct TbbParallelismLimit {
+    tbb::global_control control;
+
+    TbbParallelismLimit() : control(tbb::global_control::max_allowed_parallelism, 1) {}
+};
+
+std::unique_ptr<TbbParallelismLimit> tbb_single_thread_limit_ffi();
+size_t tbb_max_allowed_parallelism_ffi();
 
 } // namespace reify_openvdb
