@@ -54,6 +54,7 @@
 use reify_ir::Value;
 
 use crate::eval_builtin;
+use crate::joints::is_driving_joint;
 use crate::loop_closure_value::{JointKind, JointValue};
 
 /// Fold a chain of joint Maps into a single composed Transform.
@@ -505,10 +506,12 @@ pub type LoopClosureSolverInputs = (
 ///   * `vals_b_initial`  — initial-guess SI values for `chain_b`. Joints with
 ///     a direct binding entry use the bound value; otherwise they resolve
 ///     through the same `resolve_joint_value` ladder as `chain_a`
-///     (coupling → parent, `fixed` → `0.0` sentinel, else range midpoint).
-///   * `free_b`          — positions in `chain_b` whose joints are free
-///     (no direct binding entry AND not the 0-DOF `fixed` kind); the solver
-///     iterates these.
+///     (coupling → its parent's value, `fixed` → `0.0` sentinel, else range
+///     midpoint).
+///   * `free_b`          — positions in `chain_b` with no direct binding
+///     whose joint is a driving joint (`joints::is_driving_joint`): `fixed`
+///     and `coupling` contribute no free variable.  The solver iterates
+///     these.
 ///
 /// Returns `None` on:
 ///   * non-Map record,
@@ -579,20 +582,10 @@ pub fn extract_loop_closure_chains(
     // `append_body` produces: it means a hand-built chain_a carrying such a
     // link would still resolve.
     //
-    // **Caveat — an unbound `coupling` in chain_b is UNDER-CONSTRAINED.**
-    // `is_zero_dof_joint` answers for `JointKind::Fixed` alone, so an unbound
-    // coupling lands in `free_b` and Newton iterates it as an INDEPENDENT
-    // variable: its ratio/offset relative to its parent is ignored, and the
-    // parent-tracked value `resolve_joint_value` returns serves only as the
-    // initial seed.  `bind` / `dim` / `sweep` reject that same joint outright
-    // via `make_nondriving_joint_error` ("nondriving_joint", joints.rs); the
-    // closure path does not reject it, it merely fails to enforce the
-    // coupling relation.  Honouring the ratio needs the coupled value
-    // re-derived INSIDE each Newton step, which this resolver — which
-    // computes `vals_b_initial` once, before the solve — cannot express.
-    // Tracked as #7497; the behaviour above is PINNED by
-    // `extract_loop_closure_chains_iterates_an_unbound_coupling_in_path_b`,
-    // so closing that gap reds a named test rather than drifting silently.
+    // Free-variable membership is `joints::is_driving_joint`, so `fixed` and
+    // `coupling` never get a free variable.  A coupling's slot carries its
+    // parent's value; when that parent is itself free, the solver keeps the
+    // slot in step with it.
     let mut vals_b_initial = Vec::with_capacity(chain_b.len());
     let mut free_b: Vec<usize> = Vec::new();
     for (i, joint) in chain_b.iter().enumerate() {
@@ -616,7 +609,7 @@ pub fn extract_loop_closure_chains(
             // KIND, not by the resolved value: a genuinely free prismatic
             // whose range midpoint happens to be 0.0 must stay free, so
             // matching on `JointValue::Scalar(0.0)` would be wrong.
-            if !is_zero_dof_joint(joint) {
+            if is_driving_joint(joint) {
                 free_b.push(i);
             }
         }
@@ -627,8 +620,8 @@ pub fn extract_loop_closure_chains(
 
 /// Read a joint Map's declared `kind` as the typed [`JointKind`].
 ///
-/// SPOT for this module's kind DISCRIMINATION — [`is_zero_dof_joint`] and
-/// [`joint_range_midpoint`] both dispatch through it, so the fixed/coupling
+/// SPOT for this module's kind DISCRIMINATION — [`joint_range_midpoint`] and
+/// [`resolve_joint_value`] both dispatch through it, so the fixed/coupling
 /// split lives in one place rather than in scattered `== "fixed"` literals, and
 /// an added kind is a compile error in `joint_range_midpoint`'s typed match.
 ///
@@ -648,23 +641,6 @@ fn joint_kind(joint: &Value) -> Option<JointKind> {
         },
         _ => None,
     }
-}
-
-/// Returns `true` when `joint` is the 0-DOF [`JointKind::Fixed`] kind — a rigid
-/// link that contributes a transform to a chain but no free variable to the
-/// solver.
-///
-/// Read from the joint Map's declared `kind` rather than inferred from a
-/// resolved `JointValue::Scalar(0.0)`: the fixed sentinel and a genuinely
-/// free prismatic seeded at a 0.0 midpoint are indistinguishable by value.
-///
-/// `JointKind::Coupling` is deliberately NOT included, even though its DOF is
-/// derived rather than independent: excluding it from `free_b` would freeze it
-/// at its seed instead of tracking its parent, which is a different wrong
-/// answer, not a fix. See the coupling caveat in
-/// [`extract_loop_closure_chains`].
-fn is_zero_dof_joint(joint: &Value) -> bool {
-    matches!(joint_kind(joint), Some(JointKind::Fixed))
 }
 
 /// Strip the leading world sentinel from a path (`[world, j_1, ..., j_k]` →
@@ -2258,62 +2234,6 @@ mod tests {
             free_b.contains(&0),
             "the unbound prismatic jB is still free — free_b must contain index 0, \
              got {free_b:?}"
-        );
-    }
-
-    /// **Pins the coupling caveat (#7497), not an endorsement of it.** An
-    /// unbound `coupling` in `path_b` is UNDER-CONSTRAINED: `is_zero_dof_joint`
-    /// answers only for `JointKind::Fixed`, so the coupling lands in `free_b`
-    /// and Newton iterates it as an INDEPENDENT variable — its ratio and offset
-    /// relative to its parent are never enforced, and the parent-tracked value
-    /// `resolve_joint_value` returns serves only as the seed.
-    ///
-    /// Both halves are asserted so that closing #7497 reds this test
-    /// deliberately rather than changing the answer silently:
-    ///   * the seed TRACKS the bound parent (0.4 m), unscaled by the 2.0 ratio
-    ///     — `resolve_joint_value`'s coupling arm returns the parent's value
-    ///     verbatim, and it is a seed, not a constraint;
-    ///   * `free_b` CONTAINS the coupling's index.
-    ///
-    /// Excluding couplings from `free_b` instead would freeze one at its seed
-    /// rather than tracking its parent — a different wrong answer, not a fix —
-    /// so the real remedy re-derives the coupled value inside each Newton step.
-    #[test]
-    fn extract_loop_closure_chains_iterates_an_unbound_coupling_in_path_b() {
-        let j_a = eval_builtin("prismatic", &[axis_x_unit(), length_range_0_to_1m()]);
-        // The coupling's parent, bound — so the seed is demonstrably
-        // parent-derived rather than the coupling's own range midpoint.
-        let j_p = eval_builtin("prismatic", &[axis_y_unit(), length_range_0_to_1m()]);
-        let j_c = eval_builtin("couple", &[j_p.clone(), Value::Real(2.0)]);
-        let bindings = vec![
-            eval_builtin("bind", &[j_a.clone(), Value::length(0.5)]),
-            eval_builtin("bind", &[j_p.clone(), Value::length(0.4)]),
-        ];
-
-        let record = loop_closure_record(
-            vec![world_sentinel(), j_a.clone()],
-            vec![world_sentinel(), j_c.clone()],
-            j_a.clone(),
-        );
-
-        let (_chain_a, _vals_a, chain_b, vals_b_initial, free_b) =
-            super::extract_loop_closure_chains(&record, &bindings)
-                .expect("an unbound coupling in path_b must resolve through its parent");
-
-        assert_eq!(chain_b, vec![j_c.clone()]);
-        match &vals_b_initial[0] {
-            JointValue::Scalar(s) => assert!(
-                (s - 0.4).abs() < 1e-12,
-                "the coupling seeds from its BOUND parent (0.4), with the 2.0 \
-                 ratio not applied, got Scalar({s})"
-            ),
-            other => panic!("expected JointValue::Scalar(0.4), got {other:?}"),
-        }
-        assert_eq!(
-            free_b,
-            vec![0],
-            "under-constrained today (#7497): the coupling is iterated \
-             as an independent free variable, got {free_b:?}"
         );
     }
 

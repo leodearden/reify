@@ -853,7 +853,7 @@ fn dof_count_for_balance(kind: crate::loop_closure_value::JointKind) -> usize {
 ///   `{ kind: "fixed", origin: <pose> }` rigid link — the transform of the
 ///   closing edge's rigid TIE `parent --pose--> at` (task 7186). It
 ///   contributes its transform to the residual but NO free variable
-///   (`is_zero_dof_joint` keeps it out of `free_b`), so callers must not
+///   (non-driving joints never enter `free_b`), so callers must not
 ///   assume `chain_b.len()` equals the free-variable count. `chain_a` never
 ///   carries such a link.
 ///   `chain_b` is also guaranteed NON-EMPTY for a builder-produced record:
