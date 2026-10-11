@@ -1,3 +1,94 @@
+//! PLINECITE — hard line cites in source comments.
+//!
+//! A comment that cites code as `<file>.rs:<line>` or `<file>.ri:<line>`
+//! rots silently: any edit above the target moves it and nothing re-checks
+//! the number. PLINECITE reports each such cite so the author cites the
+//! enclosing symbol instead.
+//!
+//! It reports and never certifies. The grammar ([`line_cites`]) is
+//! deliberately decline-only: prose, line-wrapped and string-literal cites go
+//! unseen, so a clean run does not prove a file free of line cites.
+//!
+//! Rationale, measured surface and the normative grammar:
+//! `docs/prds/reify-audit-stale-line-cite-detector.md`.
+
+use crate::scan_util::is_word_byte;
+
+/// The escalation anchor a cite may carry between its extension and its line
+/// number.
+const ESC_ANCHOR: &[u8] = b" esc-";
+
+/// The hard cite tokens `line` carries, in line order; none unless `line` is
+/// a comment line. Each token runs from its stem through the first digit run
+/// of its line number. The grammar is pure: allow markers are the caller's
+/// business.
+fn line_cites(line: &str) -> Vec<&str> {
+    if !line.trim_start().starts_with("//") {
+        return Vec::new();
+    }
+    let bytes = line.as_bytes();
+    let mut cites = Vec::new();
+    let mut floor = 0;
+    let mut at = 0;
+    while at < bytes.len() {
+        match cite_at(bytes, at, floor) {
+            Some((start, end)) => {
+                cites.push(&line[start..end]);
+                floor = end;
+                at = end;
+            }
+            None => at += 1,
+        }
+    }
+    cites
+}
+
+/// The `(start, end)` byte span of the cite whose extension dot sits at
+/// `dot`, with its stem reaching back no further than `floor`. Every byte the
+/// span starts or ends next to is ASCII, so both offsets are char boundaries.
+fn cite_at(bytes: &[u8], dot: usize, floor: usize) -> Option<(usize, usize)> {
+    let extension = bytes.get(dot..dot + 3)?;
+    if extension != b".rs" && extension != b".ri" {
+        return None;
+    }
+    if dot == floor || !is_word_byte(bytes[dot - 1]) {
+        return None;
+    }
+    let end = line_number_end(bytes, dot + 3)?;
+    let mut start = dot;
+    while start > floor && is_stem_byte(bytes[start - 1]) {
+        start -= 1;
+    }
+    Some((start, end))
+}
+
+/// Past the first digit run of the line number that follows an extension
+/// ending at `after`: either `:<digits>` or ` esc-<id>:<digits>`.
+fn line_number_end(bytes: &[u8], after: usize) -> Option<usize> {
+    let rest = &bytes[after..];
+    let colon = if rest.starts_with(b":") {
+        after
+    } else if rest.starts_with(ESC_ANCHOR) {
+        let id_start = after + ESC_ANCHOR.len();
+        let id_end = run_end(bytes, id_start, |b| b.is_ascii_digit() || b == b'-');
+        (id_end > id_start && bytes.get(id_end) == Some(&b':')).then_some(id_end)?
+    } else {
+        return None;
+    };
+    let digits_start = colon + 1;
+    let digits_end = run_end(bytes, digits_start, |b| b.is_ascii_digit());
+    (digits_end > digits_start).then_some(digits_end)
+}
+
+fn is_stem_byte(b: u8) -> bool {
+    is_word_byte(b) || matches!(b, b'.' | b'/' | b'-')
+}
+
+/// The offset just past the run of `pred` bytes starting at `from`.
+fn run_end(bytes: &[u8], from: usize, pred: impl Fn(u8) -> bool) -> usize {
+    from + bytes[from..].iter().take_while(|&&b| pred(b)).count()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
