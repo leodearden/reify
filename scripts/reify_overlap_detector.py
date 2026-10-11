@@ -58,54 +58,13 @@ from orchestrator.overlap_footprint import (
     register_overlap_detector,
 )
 
+import reify_path_attribution as rpa
+
 # Project root: two directory levels above this file (scripts/ → reify/).
 _REIFY_ROOT = Path(__file__).resolve().parent.parent
 
 # ALL sentinel: this member means "overlaps with any non-empty footprint".
 _ALL = "\x00ALL\x00"
-
-
-def _is_global(path: str) -> bool:
-    """Return True for C4 workspace-global files (§5, affected-crates-lib.sh).
-
-    Mirrors ``_is_global()`` in ``scripts/affected-crates-lib.sh``.  If you
-    add a new global path here, add it there too (and vice versa).
-
-    Matches: root Cargo.toml, Cargo.lock, .cargo/**, tree-sitter-reify/**,
-    rust-toolchain, rust-toolchain.toml.
-
-    Note: bash uses the shell glob ``rust-toolchain*`` which would also match
-    hypothetical variants like ``rust-toolchain.custom``.  Python matches only
-    the two known concrete filenames; they agree on all real files in the repo.
-    """
-    if path in ("Cargo.toml", "Cargo.lock"):
-        return True
-    if path.startswith(".cargo/"):
-        return True
-    if path.startswith("tree-sitter-reify/"):
-        return True
-    if path in ("rust-toolchain", "rust-toolchain.toml"):
-        return True
-    return False
-
-
-def _file_to_crate(path: str) -> str | None:
-    """Map a crate-owned path to its crate name (§5 rules), or None.
-
-    Mirrors ``_file_to_crate()`` in ``scripts/affected-crates-lib.sh``.  If
-    you add a new crate location here, add it there too (and vice versa).
-
-      crates/<name>/**  →  <name>
-      gui/src-tauri/**  →  reify-gui
-    """
-    if path.startswith("crates/"):
-        rest = path[len("crates/"):]
-        slash = rest.find("/")
-        if slash > 0:
-            return rest[:slash]
-    if path.startswith("gui/src-tauri/"):
-        return "reify-gui"
-    return None
 
 
 def _reverse_closure(metadata: dict, seed_crate_names: set) -> set:
@@ -221,60 +180,55 @@ class CrateGraphOverlapDetector:
     def footprint(self, changed_paths: Sequence) -> Footprint:
         """Return the overlap footprint for the given changed paths.
 
-        Algorithm (final form):
         1. Any workspace-global path → _ALL sentinel (C4 fail-wide).
-        2. Partition remaining paths into crate-mapped seeds and unmapped.
-        3. Unmapped paths → ``path:<p>`` members (superset invariant).
-        4. Call metadata_loader; on any exception → _ALL sentinel (C5 fail-wide).
-        5. BFS reverse closure of seed crates → ``crate:<name>`` members.
+        2. A path that seeds no crate → a ``path:<p>`` member (superset
+           invariant); seed crates accumulate.
+        3. Reverse closure of the seeds → ``crate:<name>`` members; a loader
+           exception or an unresolvable seed → _ALL (C5 fail-wide).
+        4. Unioned crates (a manifest's DAG-gate crate) → ``crate:<name>``
+           members, outside the closure.
         """
-        paths = list(changed_paths)
+        attributions = {p: rpa.attribute(p) for p in changed_paths}
+        if any(a.is_global for a in attributions.values()):
+            return Footprint(members=frozenset({_ALL}))
+
         members: set = set()
-
-        # ── C4: global file → ALL sentinel (touches entire workspace) ────────
-        for p in paths:
-            if _is_global(p):
-                members.add(_ALL)
-                return Footprint(members=frozenset(members))
-
-        # ── Partition: crate-mapped seeds vs. unmapped raw paths ─────────────
         seed_crates: set = set()
-        for p in paths:
-            crate = _file_to_crate(p)
-            if crate is not None:
-                seed_crates.add(crate)
+        unioned_crates: set = set()
+        for path, attribution in attributions.items():
+            if attribution.seed_crates:
+                seed_crates |= attribution.seed_crates
             else:
-                # Non-crate / unmapped path: add as path: member so that the
-                # textual-conflict⇒overlap invariant holds for all file types
-                # (a pure crate-set would give empty for docs/**, violating §5.1).
-                members.add(f"path:{p}")
+                members.add(f"path:{path}")
+            unioned_crates |= attribution.unioned_crates
 
-        # ── Crate reverse closure; C5: cargo failure or unresolvable seed → ALL ─
         if seed_crates:
-            try:
-                if self._metadata_cache is None:
-                    with self._metadata_lock:
-                        if self._metadata_cache is None:
-                            self._metadata_cache = self._metadata_loader()
-                metadata = self._metadata_cache
-                closure = _reverse_closure(metadata, seed_crates)
-            except Exception:
-                members.add(_ALL)
-            else:
-                for crate_name in closure:
-                    members.add(f"crate:{crate_name}")
-                # _reverse_closure is INCLUSIVE: a seed name that maps to a
-                # workspace-member ID is returned in the closure.  Any name NOT
-                # in the closure either (a) is absent from packages/name_to_ids
-                # (new crate not yet in metadata) or (b) has an id in packages
-                # but is not in workspace_members (workspace-excluded).  In
-                # either case the reverse-dep blast radius is unbounded — fail
-                # wide via the _ALL sentinel (C5) to uphold the
-                # textual-conflict⇒overlap invariant (PRD §5.1).
-                if seed_crates - closure:
-                    members.add(_ALL)
-
+            members |= self._closure_members(seed_crates)
+        members |= {f"crate:{c}" for c in unioned_crates}
         return Footprint(members=frozenset(members))
+
+    def _closure_members(self, seed_crates: set) -> set:
+        """``crate:<name>`` for the seeds' reverse closure, or _ALL (C5)."""
+        try:
+            if self._metadata_cache is None:
+                with self._metadata_lock:
+                    if self._metadata_cache is None:
+                        self._metadata_cache = self._metadata_loader()
+            closure = _reverse_closure(self._metadata_cache, seed_crates)
+        except Exception:
+            return {_ALL}
+        members = {f"crate:{c}" for c in closure}
+        # _reverse_closure is INCLUSIVE: a seed name that maps to a
+        # workspace-member ID is returned in the closure.  Any name NOT
+        # in the closure either (a) is absent from packages/name_to_ids
+        # (new crate not yet in metadata) or (b) has an id in packages
+        # but is not in workspace_members (workspace-excluded).  In
+        # either case the reverse-dep blast radius is unbounded — fail
+        # wide via the _ALL sentinel (C5) to uphold the
+        # textual-conflict⇒overlap invariant (PRD §5.1).
+        if seed_crates - closure:
+            members.add(_ALL)
+        return members
 
     def overlaps(self, a: Footprint, b: Footprint) -> bool:
         """Return True iff footprints a and b overlap (re-verify required).
