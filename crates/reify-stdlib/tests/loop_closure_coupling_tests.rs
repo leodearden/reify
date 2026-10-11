@@ -5,7 +5,7 @@ use std::f64::consts::PI;
 
 use reify_ir::Value;
 use reify_stdlib::eval_builtin;
-use reify_stdlib::loop_closure::extract_loop_closure_chains;
+use reify_stdlib::loop_closure::{chain_jacobian_fd, extract_loop_closure_chains};
 use reify_stdlib::loop_closure_solver::{
     NewtonConfig, NewtonOutcome, StartStrategy, solve_loop_closure,
     solve_loop_closure_with_diagnostics,
@@ -266,4 +266,43 @@ fn solve_loop_closure_with_diagnostics_rejects_a_non_driving_joint_in_free_b() {
         &NewtonConfig::default(),
     );
     assert_non_driving_rejection(&report.outcome, "coupling via diagnostics");
+}
+
+/// The single FD column of `chain` w.r.t. slot 0, in `[ω; v]` twist order.
+fn only_jacobian_column(chain: &[Value]) -> [f64; 6] {
+    let values = [JointValue::Scalar(0.2), JointValue::Scalar(0.2)];
+    let columns =
+        chain_jacobian_fd(chain, &values, &[0], 1e-6).expect("the chain Jacobian must evaluate");
+    assert_eq!(columns.len(), 1, "one Scalar free joint gives one column");
+    columns[0]
+}
+
+fn assert_column_close(actual: [f64; 6], expected: [f64; 6], label: &str) {
+    assert!(
+        (0..6).all(|k| (actual[k] - expected[k]).abs() < SOLVE_TOL),
+        "{label}: expected {expected:?}, got {actual:?}"
+    );
+}
+
+#[test]
+fn chain_jacobian_fd_moves_a_coupling_with_its_free_parent() {
+    let j_p = prismatic_x(0.0, 1.0);
+    let j_c = couple_by_two(&j_p);
+    assert_column_close(
+        only_jacobian_column(&[j_p, j_c]),
+        [0.0, 0.0, 0.0, 3.0, 0.0, 0.0],
+        "jP's own travel plus twice it through the coupled slot",
+    );
+}
+
+#[test]
+fn chain_jacobian_fd_leaves_a_coupling_of_an_absent_parent_alone() {
+    let j_b = prismatic_x(0.0, 1.0);
+    let j_q = prismatic_x(0.0, 2.0);
+    let j_c = couple_by_two(&j_q);
+    assert_column_close(
+        only_jacobian_column(&[j_b, j_c]),
+        [0.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+        "a coupling of a joint outside the chain does not follow jB",
+    );
 }
