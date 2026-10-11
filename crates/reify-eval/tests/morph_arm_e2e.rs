@@ -730,6 +730,152 @@ fn stage_a_admits_dimensional_tick_with_derived_bool_let_from_compiled_module() 
     );
 }
 
+/// Task 7486: a purely DIMENSIONAL tick must stay Stage-A eligible when a
+/// `Param`-kind LEAF of type `List<Geometry>` differs. This pins task 7016's
+/// Rule-4 arm end to end, against a real compiled module and the eval-surface
+/// ValueMap that production Stage A reads.
+///
+/// Leaf scoping (task 6643) admits a differing DERIVED cell whatever its type.
+/// So for a `List<Geometry>` cell only a LEAF can exercise the 7016 arm, and
+/// only a leaf whose value actually differs on the eval surface.
+///
+/// MEASURED (architect probe, 2026-10-11, HEAD 1a89d3d850). Only the
+/// list-literal default reaches Stage A as a differing `List<Geometry>` leaf:
+/// - `param faces: List<Geometry> = adjacent_faces(body, top)` and
+///   `sub h = Holder(items: auto)` compile to the right leaf (`Param` /
+///   `Auto { free: false }`, `List(Geometry)`), but both hold `Value::Undef`
+///   on BOTH sides of the tick. Geometry-consumer builtins need a realized
+///   kernel, so they cannot resolve on the pure value-eval surface.
+/// - Under OCCT, the hydrated list exists only in `BuildResult::values`.
+///   `engine.snapshot()` still holds `Undef`, and so does the production morph
+///   arm, which hands Stage A the snapshot-derived map before the
+///   topology-selector post-process runs.
+/// - With the 7016 arm deleted from `classify_by_type`, both of those forms
+///   still returned `stage_a_eligible == true`. A test built on them could not
+///   fail.
+/// - The list literal `[body]` holds
+///   `List([GeometryHandle { kernel_handle: None, .. }])`. Its
+///   `upstream_values_hash` folds `width`, so it differs on the tick. With the
+///   arm deleted `stage_a_eligible` returned **false**; with it, **true**.
+///
+/// Rationale for the arm itself: `structural_classifier`'s
+/// `## Type::Geometry and Rule 4` and `### List<Geometry>` notes on
+/// `classify_cell`.
+#[test]
+fn stage_a_admits_dimensional_tick_with_param_list_geometry_leaf_from_compiled_module() {
+    use reify_compiler::ValueCellKind;
+    use reify_core::{Type, ValueCellId};
+    use reify_ir::Value;
+
+    let compiled = reify_test_support::parse_and_compile_with_stdlib(include_str!(
+        "fixtures/morph_param_list_geometry.ri"
+    ));
+
+    // Kernel-free engine: Stage A reads the eval-surface ValueMap, which no
+    // kernel populates, so nothing here may depend on OCCT or gmsh.
+    let mut engine = reify_eval::Engine::new(
+        Box::new(reify_test_support::mocks::MockConstraintChecker::new()),
+        None,
+    );
+
+    // (1) Cold evaluation → the "old" side.
+    engine.eval(&compiled);
+    let snapshot_before = engine
+        .snapshot()
+        .expect("eval() must establish an engine snapshot");
+    let graph_before = snapshot_before.graph.clone();
+    let values_before = value_map_of(snapshot_before);
+
+    // (2) PREMISES against the REAL compiled graph.
+    let items = ValueCellId::new("MorphParamListGeometry", "items");
+    let node = graph_before
+        .value_cells
+        .get(&items)
+        .expect(
+            "premise: the production compiler must emit `param items: List<Geometry>` as a \
+             value cell reaching the ValueMap",
+        )
+        .clone();
+    assert_eq!(
+        node.kind,
+        ValueCellKind::Param,
+        "premise: `items` must be a LEAF. Task 6643's leaf scoping admits a differing `Let` \
+         regardless of task 7016's arm, which would make this test vacuous"
+    );
+    assert_eq!(
+        node.cell_type,
+        Type::List(Box::new(Type::Geometry)),
+        "premise: `items` must be exactly List<Geometry>, the one type task 7016's arm adds"
+    );
+    assert!(
+        !graph_before.structure_controlling.contains(&items),
+        "premise: `items` must NOT be structure_controlling, or Rule 2 would decide instead \
+         of Rule 4"
+    );
+    assert!(
+        !graph_before
+            .collection_subs
+            .iter()
+            .any(|sub| sub.count_cell == items)
+            && !graph_before
+                .keyed_subs
+                .iter()
+                .any(|sub| sub.count_cell.as_ref() == Some(&items)),
+        "premise: `items` must NOT be a collection or keyed count cell, or Rule 3/3b would \
+         decide instead of Rule 4"
+    );
+    match values_before.get_or_undef(&items) {
+        Value::List(elems)
+            if !elems.is_empty()
+                && elems
+                    .iter()
+                    .all(|e| matches!(e, Value::GeometryHandle { .. })) => {}
+        other => panic!(
+            "premise: `items` must hold a non-empty List of GeometryHandles on the eval \
+             surface, got {other:?}. A param-default position gets no Selector -> \
+             List<Geometry> coercion, and kernel-bearing producers (adjacent_faces, `auto`) \
+             are Undef here, so neither can reach Stage A as a differing value"
+        ),
+    }
+
+    // (3) The dimensional tick: width 10mm → 10.5mm, driven at the numeric leaf.
+    engine
+        .edit_param(
+            ValueCellId::new("MorphParamListGeometry", "width"),
+            Value::length(0.0105),
+        )
+        .expect("edit_param must succeed against the MorphParamListGeometry.width Length param");
+    let snapshot_after = engine
+        .snapshot()
+        .expect("edit_param must leave an engine snapshot in place");
+    let graph_after = snapshot_after.graph.clone();
+    let values_after = value_map_of(snapshot_after);
+
+    // (4) The leaf really differs, and the shape gate does not short-circuit,
+    //     so the per-cell walk is what decides (5).
+    assert_ne!(
+        values_before.get_or_undef(&items),
+        values_after.get_or_undef(&items),
+        "premise: the List<Geometry> leaf must DIFFER across a purely dimensional tick (each \
+         handle's upstream_values_hash folds `width`), or the walk never reaches it"
+    );
+    assert_eq!(
+        reify_eval::realization_graph_shape_hash(&graph_before),
+        reify_eval::realization_graph_shape_hash(&graph_after),
+        "the graph shape must be unchanged, so `stage_a_eligible`'s short-circuit does not \
+         mask the per-cell rule this test is about"
+    );
+
+    // (5) The contract.
+    assert!(
+        reify_eval::stage_a_eligible(&graph_before, &graph_after, &values_before, &values_after),
+        "task 7016: a dimensional-only tick must be Stage-A eligible when a differing \
+         Param-kind List<Geometry> LEAF is present. The List<Geometry> arm of \
+         `classify_by_type` is the only thing that admits it; without the arm this returns \
+         false"
+    );
+}
+
 /// Task 6643, the VETO half: a compiler-synthesized `__guard_N`
 /// feature-suppression cell must still make a purely dimensional tick
 /// Stage-A INELIGIBLE — proved against a real compiled module.
