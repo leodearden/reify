@@ -392,7 +392,11 @@ fn r0_trampoline_rejects_a_bare_layer_height() {
     let ComputeOutcome::Failed { diagnostics, .. } = &outcome else {
         panic!("a bare layer_height must yield Failed, got {outcome:?}");
     };
-    assert_eq!(diagnostics.len(), 1, "exactly one diagnostic, got {diagnostics:?}");
+    assert_eq!(
+        diagnostics.len(),
+        1,
+        "exactly one diagnostic, got {diagnostics:?}"
+    );
     assert_eq!(diagnostics[0].severity, Severity::Error);
     assert_eq!(
         diagnostics[0].code,

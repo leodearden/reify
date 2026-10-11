@@ -50,17 +50,20 @@ use reify_ir::{OpaqueState, Value};
 
 use super::as_printed_material::{
     as_printed_field_value, field_int, field_real, field_scalar, field_vec3, orthotropic_material,
-    read_base_elastic, struct_data, structure,
+    read_base_elastic, rejected_outcome, struct_data, structure,
 };
 use super::MM_TO_M;
+use crate::arg_acceptance::{FieldRejection, length_spec};
 use crate::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
 
 /// `@optimized("fdm::as_printed_material_r0")` ComputeNode trampoline.
 ///
-/// Always returns [`ComputeOutcome::Completed`] with a `Value::Field { source:
+/// Returns [`ComputeOutcome::Completed`] with a `Value::Field { source:
 /// AsPrintedZones }`. Malformed G-code or a missing / malformed FDMProcess
 /// degrades honestly to a `Value::Undef`-lambda field (every sample returns
-/// `Undef`) rather than panicking — mirroring the R-fast `degraded_field`.
+/// `Undef`) rather than panicking — mirroring the R-fast `degraded_field`. A
+/// numeric FDMProcess field of the wrong dimension is
+/// [`ComputeOutcome::Failed`], exactly as on the R-fast rung.
 pub fn as_printed_material_r0_trampoline(
     value_inputs: &[Value],
     _realization_inputs: &[RealizationReadHandle],
@@ -68,35 +71,59 @@ pub fn as_printed_material_r0_trampoline(
     _prior_warm_state: Option<&OpaqueState>,
     _cancellation: &CancellationHandle,
 ) -> ComputeOutcome {
-    let field = build_r0_field(value_inputs).unwrap_or_else(degraded_field);
-    ComputeOutcome::Completed {
-        result: field,
-        new_warm_state: None,
-        cost_per_byte: None,
-        diagnostics: Vec::new(),
-        structured_detail: vec![],
+    match build_r0_field(value_inputs) {
+        Ok(field) => ComputeOutcome::Completed {
+            result: field.unwrap_or_else(degraded_field),
+            new_warm_state: None,
+            cost_per_byte: None,
+            diagnostics: Vec::new(),
+            structured_detail: vec![],
+        },
+        Err(rejection) => rejected_outcome(&rejection),
     }
 }
 
-/// Build the R0 `AsPrintedZones` material field, or `None` if any required input
-/// is missing / malformed (caller degrades to [`degraded_field`]).
-fn build_r0_field(value_inputs: &[Value]) -> Option<Value> {
+/// Build the R0 `AsPrintedZones` material field: `Ok(None)` if any required
+/// input is missing / malformed (caller degrades to [`degraded_field`]), `Err`
+/// if a numeric FDMProcess field has the wrong dimension.
+fn build_r0_field(value_inputs: &[Value]) -> Result<Option<Value>, FieldRejection> {
     // value_inputs = [gcode String, FDMProcess, AsPrintedOptions].
-    let gcode = match value_inputs.first()? {
-        Value::String(s) => s,
-        _ => return None,
+    let Some(process) = value_inputs.get(1).and_then(struct_data) else {
+        return Ok(None);
     };
-    // A hard toolpath parse error degrades to the Undef-lambda field.
-    let toolpath = parse_prusaslicer_gcode(gcode).ok()?;
-    let process = struct_data(value_inputs.get(1)?)?;
 
     // ── FDMProcess → BaseElastic + R0Options ───────────────────────────────────
-    let walls = field_int(process, "walls")?.max(0) as u32;
-    let top_bottom_layers = field_int(process, "top_bottom_layers")?.max(0) as u32;
-    let layer_height = field_scalar(process, "layer_height")?;
-    let build_direction = field_vec3(process, "build_direction")?;
+    // The dimension-checked reads run first, so a rejection never depends on
+    // whether the G-code parses.
+    let layer_height = field_scalar(process, "layer_height", &length_spec())?;
     let infill_density = field_real(process, "infill_density")?;
     let base = read_base_elastic(process)?;
+    let (
+        Some(Value::String(gcode)),
+        Some(layer_height),
+        Some(infill_density),
+        Some(base),
+        Some(walls),
+        Some(top_bottom_layers),
+        Some(build_direction),
+    ) = (
+        value_inputs.first(),
+        layer_height,
+        infill_density,
+        base,
+        field_int(process, "walls"),
+        field_int(process, "top_bottom_layers"),
+        field_vec3(process, "build_direction"),
+    )
+    else {
+        return Ok(None);
+    };
+    let walls = walls.max(0) as u32;
+    let top_bottom_layers = top_bottom_layers.max(0) as u32;
+    // A hard toolpath parse error degrades to the Undef-lambda field.
+    let Ok(toolpath) = parse_prusaslicer_gcode(gcode) else {
+        return Ok(None);
+    };
 
     // The build axis is the frame z-axis / weakest axis; degenerate → +Z.
     let build_unit = unit3(build_direction).unwrap_or([0.0, 0.0, 1.0]);
@@ -112,7 +139,9 @@ fn build_r0_field(value_inputs: &[Value]) -> Option<Value> {
     let regions = r0_region_materials(&toolpath, base, &opts);
 
     // ── Toolpath geometry → field AABB + line_width (mm→SI) ─────────────────────
-    let (aabb_min, aabb_max) = toolpath_aabb(&toolpath)?;
+    let Some((aabb_min, aabb_max)) = toolpath_aabb(&toolpath) else {
+        return Ok(None);
+    };
     // line_width derives from the measured wall bead width (already SI metres).
     let line_width = regions.wall.mean_width_m;
 
@@ -141,7 +170,7 @@ fn build_r0_field(value_inputs: &[Value]) -> Option<Value> {
         mat_skin,
         mat_infill,
     ]);
-    Some(as_printed_field_value(lambda))
+    Ok(Some(as_printed_field_value(lambda)))
 }
 
 /// Honest-degradation field: a well-typed `AsPrintedZones` field whose lambda is

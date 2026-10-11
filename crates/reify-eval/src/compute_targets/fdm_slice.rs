@@ -29,6 +29,7 @@ use reify_fdm::{
 use reify_ir::{OpaqueState, Value};
 
 use super::as_printed_material::{field_int, field_real, field_scalar, struct_data, structure};
+use crate::arg_acceptance::{FieldRejection, length_spec};
 use crate::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
 
 /// Marshal a [`Toolpath`] into a `Value::StructureInstance` named `"Toolpath"`
@@ -229,6 +230,17 @@ pub(crate) fn fdm_slice_dispatch(
     prior_warm_state: Option<&OpaqueState>,
     cancellation: &CancellationHandle,
 ) -> ComputeOutcome {
+    // A wrong-dimension FDMProcess field fails the node whether or not a slicer
+    // is installed.
+    let settings = match read_slice_settings(value_inputs) {
+        Ok(settings) => settings,
+        Err(rejection) => {
+            return ComputeOutcome::Failed {
+                diagnostics: vec![rejection.to_error("fdm_slice")],
+                structured_detail: vec![],
+            };
+        }
+    };
     let Some(bin) = slicer_bin else {
         return ComputeOutcome::Completed {
             result: degraded_toolpath_value(),
@@ -246,8 +258,7 @@ pub(crate) fn fdm_slice_dispatch(
         };
     };
 
-    // ── present-slicer path: compose settings, key the reslice cache, run ───────
-    let settings = read_slice_settings(value_inputs);
+    // ── present-slicer path: key the reslice cache on the settings, run ────────
     // A body realization handle is REQUIRED to key the reslice cache: the content
     // hash is the only distinguishing input between two bodies under identical
     // settings. Collapsing to a 0 sentinel when absent would alias distinct
@@ -333,19 +344,25 @@ const SLICE_CANCEL_GRACE: Duration = Duration::from_millis(500);
 /// Read the mechanically-relevant [`SliceSettings`] off the `FDMProcess` value
 /// (`value_inputs[1]`, mirroring the stdlib `fdm_slice(body, process, options)`
 /// arg order). Missing / `Undef` fields fall back to conventional defaults so a
-/// partial process still yields a deterministic, sliceable profile.
-fn read_slice_settings(value_inputs: &[Value]) -> SliceSettings {
+/// partial process still yields a deterministic, sliceable profile; a numeric
+/// field of the wrong dimension is an `Err`.
+fn read_slice_settings(value_inputs: &[Value]) -> Result<SliceSettings, FieldRejection> {
     let process = value_inputs.get(1).and_then(struct_data);
-    SliceSettings {
+    let layer_height_m = match process {
+        Some(p) => field_scalar(p, "layer_height", &length_spec())?,
+        None => None,
+    };
+    let infill_density = match process {
+        Some(p) => field_real(p, "infill_density")?,
+        None => None,
+    };
+    Ok(SliceSettings {
         // `field_scalar` yields the SI-metre magnitude of the `Length` field
         // (`0.2mm` -> 0.0002 m); `SliceSettings.layer_height` is documented in mm
         // and passed verbatim to PrusaSlicer `--layer-height` (which expects mm),
         // so convert m -> mm (×1000). The `.unwrap_or(0.2)` Undef fallback is
         // already mm, so the real-process and Undef paths now agree.
-        layer_height: process
-            .and_then(|p| field_scalar(p, "layer_height"))
-            .map(|m| m * 1000.0)
-            .unwrap_or(0.2),
+        layer_height: layer_height_m.map(|m| m * 1000.0).unwrap_or(0.2),
         // Undef-path fallbacks mirror the stdlib `FDMProcess` defaults
         // (walls = 3, top_bottom_layers = 4) so an Undef process yields the same
         // profile `FDMProcess()` would, all in one consistent (mm) unit system.
@@ -354,13 +371,11 @@ fn read_slice_settings(value_inputs: &[Value]) -> SliceSettings {
             .and_then(|p| field_int(p, "top_bottom_layers"))
             .unwrap_or(4)
             .max(0) as u32,
-        infill_density: process
-            .and_then(|p| field_real(p, "infill_density"))
-            .unwrap_or(0.2),
+        infill_density: infill_density.unwrap_or(0.2),
         infill_pattern: process
             .map(read_infill_pattern)
             .unwrap_or(InfillPattern::Gyroid),
-    }
+    })
 }
 
 /// Map the `FDMProcess.infill_pattern` enum value to an [`InfillPattern`];
