@@ -328,227 +328,6 @@ fn test_gating_predicates_converge_after_one_regeneration() {
     }
 }
 
-/// Find the Err(e) arm in source code using brace-depth tracking.
-/// Returns the slice from `Err(e) =>` through the arm's closing `}`.
-/// Tracks brace depth, skipping braces inside double-quoted string literals
-/// so that format strings like `format!("hint: '}}'")` don't fool the counter.
-fn find_err_arm_braced(source: &str) -> Option<&str> {
-    let err_start = source.find("Err(e) =>")?;
-    let after_arrow = &source[err_start..];
-
-    // Find the opening brace of the arm body.
-    let brace_offset = after_arrow.find('{')?;
-    let body_start = err_start + brace_offset;
-
-    let bytes = source.as_bytes();
-    let mut depth: usize = 0;
-    let mut i = body_start;
-
-    while i < bytes.len() {
-        match bytes[i] {
-            b'"' => {
-                // Skip string literal contents — braces inside strings don't count.
-                i += 1;
-                while i < bytes.len() {
-                    if bytes[i] == b'\\' {
-                        i += 2; // skip escaped character (e.g. \")
-                        continue;
-                    }
-                    if bytes[i] == b'"' {
-                        break; // closing quote
-                    }
-                    i += 1;
-                }
-            }
-            b'{' => depth += 1,
-            b'}' => {
-                depth -= 1;
-                if depth == 0 {
-                    return Some(&source[err_start..=i]);
-                }
-            }
-            _ => {}
-        }
-        i += 1;
-    }
-
-    None // unbalanced braces
-}
-
-/// Duplicates run_with_timeout logic from build.rs for testability.
-/// Returns Ok(()) on success, Err(message) on failure or timeout.
-fn run_with_timeout(cmd: &str, args: &[&str], timeout_secs: u64) -> Result<(), String> {
-    use std::time::{Duration, Instant};
-
-    let mut child = std::process::Command::new(cmd)
-        .args(args)
-        .spawn()
-        .map_err(|e| format!("Failed to spawn '{}': {}", cmd, e))?;
-
-    let deadline = Instant::now() + Duration::from_secs(timeout_secs);
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                if status.success() {
-                    return Ok(());
-                } else {
-                    return Err(format!(
-                        "'{}' failed with exit code {}",
-                        cmd,
-                        status.code().unwrap_or(-1)
-                    ));
-                }
-            }
-            Ok(None) => {
-                if Instant::now() >= deadline {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return Err(format!("'{}' timed out after {}s", cmd, timeout_secs));
-                }
-                std::thread::sleep(Duration::from_millis(100));
-            }
-            Err(e) => {
-                let _ = child.kill();
-                let _ = child.wait(); // Reap the process to prevent orphans.
-                return Err(format!("Error waiting for '{}': {}", cmd, e));
-            }
-        }
-    }
-}
-
-#[test]
-fn test_try_wait_error_path_kills_child() {
-    // Source-level regression guard: the Err(e) arm of try_wait() in run_with_timeout
-    // must contain child.kill() and child.wait() to prevent orphan processes on I/O errors.
-    let build_rs = std::fs::read_to_string(BUILD_RS)
-        .expect("should be able to read build.rs from tree-sitter-reify crate root");
-
-    // Extract the Err(e) arm using brace-depth tracking with string-literal awareness.
-    // This precisely captures the arm body without the fragility of a fixed-size window.
-    let err_arm = find_err_arm_braced(&build_rs)
-        .expect("build.rs should contain an Err(e) arm in try_wait match");
-
-    assert!(
-        err_arm.contains("child.kill()"),
-        "Err(e) arm of try_wait() must contain child.kill() to prevent orphan processes. \
-         Window: {}",
-        err_arm
-    );
-    assert!(
-        err_arm.contains("child.wait()"),
-        "Err(e) arm of try_wait() must contain child.wait() to reap the child process. \
-         Window: {}",
-        err_arm
-    );
-}
-
-#[test]
-fn test_err_arm_extraction_not_fooled_by_format_braces() {
-    // Synthetic source where child.kill()/child.wait() appear AFTER a format string with '}'.
-    // This demonstrates the fragility of the naive .find('}') approach and validates
-    // that find_err_arm_braced handles it correctly.
-    let source = r#"
-        match child.try_wait() {
-            Ok(Some(status)) => { return Ok(()); }
-            Ok(None) => { /* polling */ }
-            Err(e) => {
-                return Err(format!("Error: '{}'", e));
-                let _ = child.kill();
-                let _ = child.wait();
-            }
-        }
-    "#;
-
-    // The naive .find('}') approach finds the '}' inside the format string,
-    // not the arm's closing brace.
-    let err_start = source.find("Err(e) =>").unwrap();
-    let err_section = &source[err_start..];
-    let naive_end = err_section.find('}').unwrap();
-    let naive_slice = &err_section[..=naive_end];
-
-    // The naive approach misses child.kill() and child.wait() because they
-    // appear after the format string's '}'.
-    assert!(
-        !naive_slice.contains("child.kill()"),
-        "naive .find('}}') should NOT capture child.kill() — it stops at format string brace"
-    );
-
-    // The brace-depth tracker with string-literal awareness captures the full arm.
-    let braced = find_err_arm_braced(source).expect("should find Err(e) arm");
-    assert!(
-        braced.contains("child.kill()"),
-        "find_err_arm_braced should capture child.kill(). Got: {}",
-        braced
-    );
-    assert!(
-        braced.contains("child.wait()"),
-        "find_err_arm_braced should capture child.wait(). Got: {}",
-        braced
-    );
-}
-
-#[test]
-fn test_find_err_arm_braced_simple() {
-    // Simple match block with Err(e) arm — no format strings or nested braces.
-    let source = r#"
-        match child.try_wait() {
-            Ok(Some(status)) => { return Ok(()); }
-            Ok(None) => { /* polling */ }
-            Err(e) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(format!("error: {}", e));
-            }
-        }
-    "#;
-
-    let arm = find_err_arm_braced(source).expect("should find Err(e) arm in simple match block");
-
-    assert!(
-        arm.contains("child.kill()"),
-        "extracted arm should contain child.kill(). Got: {}",
-        arm
-    );
-    assert!(
-        arm.contains("child.wait()"),
-        "extracted arm should contain child.wait(). Got: {}",
-        arm
-    );
-}
-
-#[test]
-fn test_find_err_arm_braced_skips_format_braces() {
-    // Err(e) arm contains format!() with '}}' (Rust escaped brace) BEFORE child.kill()/child.wait().
-    // The '}}' in source text is two literal '}' characters — the naive brace counter
-    // decrements depth to 0 at the first '}', stopping before child.kill()/child.wait().
-    // A string-literal-aware tracker must skip braces inside "..." to extract the full arm.
-    let source = r#"
-        match child.try_wait() {
-            Ok(Some(status)) => { return Ok(()); }
-            Ok(None) => { /* polling */ }
-            Err(e) => {
-                let msg = format!("err={}, hint: '}}' escapes", e);
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(msg);
-            }
-        }
-    "#;
-
-    let arm = find_err_arm_braced(source).expect("should find Err(e) arm with format strings");
-
-    assert!(
-        arm.contains("child.kill()"),
-        "brace-depth tracker must not stop at format string braces. Got: {}",
-        arm
-    );
-    assert!(
-        arm.contains("child.wait()"),
-        "brace-depth tracker must capture full arm past format strings. Got: {}",
-        arm
-    );
-}
-
 #[test]
 fn test_out_dir_no_silent_fallback() {
     // Source-level regression guard: build.rs must NOT silently fall back to "." when
@@ -602,6 +381,51 @@ fn test_subprocess_timeout_kills_hung_process() {
         elapsed.as_secs() < 5,
         "should have killed hung process quickly, but took {:?}",
         elapsed
+    );
+}
+
+#[test]
+fn test_run_with_timeout_discards_child_stdout() {
+    let result = run_with_timeout("sh", &["-c", "[ /dev/fd/1 -ef /dev/null ]"], 10);
+    assert_eq!(
+        result,
+        Ok(()),
+        "child stdout must be discarded (/dev/null): cargo parses build-script \
+         stdout for `cargo:` directives, and a pipe nobody drains can deadlock"
+    );
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn test_run_with_timeout_inherits_child_stderr() {
+    let result = run_with_timeout("sh", &["-c", r#"[ /dev/fd/2 -ef "/proc/$PPID/fd/2" ]"#], 10);
+    assert_eq!(
+        result,
+        Ok(()),
+        "child stderr must be the build script's own stderr, so `tree-sitter \
+         generate` diagnostics stay visible"
+    );
+}
+
+#[test]
+fn test_run_with_timeout_reports_nonzero_exit_code() {
+    let err = run_with_timeout("sh", &["-c", "exit 3"], 10).unwrap_err();
+    assert!(
+        err.contains('3'),
+        "a failing child's error should carry its exit code 3, got: {}",
+        err
+    );
+}
+
+#[test]
+fn test_run_with_timeout_reports_spawn_failure() {
+    let missing = "reify-no-such-binary-8553";
+    let err = run_with_timeout(missing, &[], 10).unwrap_err();
+    assert!(
+        err.contains(missing),
+        "a spawn failure should name the binary '{}', got: {}",
+        missing,
+        err
     );
 }
 
@@ -1060,7 +884,6 @@ fn test_unix_permission_tests_have_root_guard() {
 fn test_readonly_guard_drop_logs_error() {
     // Source-level regression guard: ReadonlyGuard::drop must log errors from
     // set_permissions via eprintln! rather than silently discarding with `let _ =`.
-    // Follows the established source-level test pattern (test_try_wait_error_path_kills_child).
     //
     // Design decision: the two assertions below enforce a semantic (not syntactic) invariant:
     //   (1) errors must not be silently discarded (no `let _ = set_permissions`)
