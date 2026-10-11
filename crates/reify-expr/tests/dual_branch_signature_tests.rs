@@ -1606,23 +1606,19 @@ fn an_unplaced_entry_reports_a_hidden_flip_and_only_a_hidden_flip() {
     assert_eq!(then_side.signature_key(), moved.signature_key());
 }
 
-/// `max([x, if p then 10.0 else 20.0][0], 100.0)`: the IndexAccess IS `x`, so
-/// it moves with the seed and refuses a tangent, and `max` then discards that
+/// `max(list[0], 100.0)` for a `list` whose element 0 is `x`: the IndexAccess
+/// moves with the seed and refuses a tangent, and `max` then discards that
 /// refusal by selecting the constant operand.
-fn max_discarding_a_refused_hidden_selection() -> CompiledExpr {
+fn max_discarding_a_refused_index_access(list: CompiledExpr) -> CompiledExpr {
     call("max", vec![
-        CompiledExpr::index_access(
-            list_hiding_a_conditional(vref("x")),
-            literal(Value::Int(0)),
-            dimensionless(),
-        ),
+        CompiledExpr::index_access(list, literal(Value::Int(0)), dimensionless()),
         literal(Value::Real(100.0)),
     ])
 }
 
 #[test]
 fn an_unplaced_entry_over_a_seed_dependent_node_is_stable_in_a_row_that_survives_the_refusal() {
-    let expr = max_discarding_a_refused_hidden_selection();
+    let expr = max_discarding_a_refused_index_access(list_hiding_a_conditional(vref("x")));
     let expected = [
         BranchEntry {
             site: KinkSite::new(vec![0]),
@@ -1660,4 +1656,81 @@ fn an_unplaced_entry_over_a_seed_dependent_node_is_stable_in_a_row_that_survives
         );
         assert_eq!(records[0].signature_key(), later.signature_key());
     }
+}
+
+#[test]
+fn a_delegated_node_with_no_kink_beneath_it_records_no_unplaced_entry() {
+    // The same delegated, seed-dependent IndexAccess as above, without the
+    // Conditional: `max` records its own selection and nothing else.
+    let expr = max_discarding_a_refused_index_access(list_expr(vec![
+        vref("x"),
+        literal(Value::Real(2.0)),
+    ]));
+    let (v, t, rec) = run(&expr, &[("x", Value::Real(2.0))], &["x"]);
+    assert_eq!(v, Value::Real(100.0));
+    assert_eq!(row(&t, 1, "max over a refused operand"), vec![0.0]);
+    assert_single_entry(
+        &rec,
+        &[],
+        KinkKind::Max,
+        BranchChoice::Operand(1),
+        "IndexAccess over a kink-free list",
+    );
+}
+
+#[test]
+fn an_unplaced_entry_is_conservative_a_delegated_call_records_one_over_a_smooth_subtree() {
+    // A call is opaque to `subtree_has_kink`, so a delegated node that is or
+    // encloses one records an `Unplaced` entry with no kink beneath it.  That is
+    // the deliberate direction: the opposite error, a kink with no entry, is
+    // the one λ cannot detect.  Both routes a call is opaque by are pinned.
+    let cells = [("x", Value::Real(2.0)), ("c", Value::Real(0.0))];
+
+    // A `UserFunctionCall`: the intercepted family is the delegated node.
+    let recovered = binop(
+        BinOp::Add,
+        vref("x"),
+        user_fn_call(
+            "unwrap_or",
+            vec![
+                CompiledExpr::option_some(vref("c"), Type::Option(Box::new(dimensionless()))),
+                literal(Value::Real(5.0)),
+            ],
+            dimensionless(),
+        ),
+    );
+    let (v, t, rec) = run(&recovered, &cells, &["x"]);
+    assert_eq!(v, Value::Real(2.0));
+    assert_eq!(row(&t, 1, "unwrap_or"), vec![1.0]);
+    assert_single_entry(
+        &rec,
+        &[1],
+        KinkKind::Unplaced,
+        BranchChoice::OutcomeHash(Value::Real(0.0).content_hash()),
+        "`unwrap_or` over a smooth argument",
+    );
+
+    // An arity-1 builtin under a delegated IndexAccess.  Not delegated, the
+    // same `sin(c)` records nothing.
+    let sine = || call("sin", vec![vref("c")]);
+    let indexed = binop(
+        BinOp::Add,
+        vref("x"),
+        CompiledExpr::index_access(
+            list_expr(vec![sine()]),
+            literal(Value::Int(0)),
+            dimensionless(),
+        ),
+    );
+    let (v, _, rec) = run(&indexed, &cells, &["x"]);
+    assert_eq!(v, Value::Real(2.0));
+    assert_single_entry(
+        &rec,
+        &[1],
+        KinkKind::Unplaced,
+        BranchChoice::OutcomeHash(Value::Real(0.0).content_hash()),
+        "IndexAccess over `[sin(c)]`",
+    );
+    let (_, _, rec) = run(&binop(BinOp::Add, vref("x"), sine()), &cells, &["x"]);
+    assert!(rec.is_empty(), "`x + sin(c)` is smooth, got {:?}", rec.entries());
 }

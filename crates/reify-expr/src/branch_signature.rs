@@ -160,11 +160,14 @@ pub enum KinkKind {
     Round,
     Mod,
     FieldReduction(ReductionKind),
-    /// Not a PRD §7.7 kind: a node evaluated WHOLE by `eval_expr` encloses at
-    /// least one kink the dual traversal did not visit.
+    /// Not a PRD §7.7 kind: a node evaluated WHOLE by `eval_expr` MAY enclose a
+    /// kink the dual traversal did not visit.
     ///
-    /// The site is that enclosing node's own structural path, not any inner
-    /// kink's, and this one entry stands for every kink beneath it.
+    /// "May", because a call is opaque to the check that decides it: this entry
+    /// can stand for no kink at all, but a delegated node that does enclose one
+    /// never goes without it.  The site is that enclosing node's own structural
+    /// path, not any inner kink's, and this one entry stands for every kink
+    /// beneath it.
     Unplaced,
 }
 
@@ -274,8 +277,9 @@ pub struct BranchEntry {
 /// trustworthy, so a kink is recorded even when its tangent turns out to be
 /// zero or unavailable: "no entries" must mean "no kink", never "we did not
 /// look".  A node the traversal delegates whole contributes a single
-/// [`KinkKind::Unplaced`] entry for whatever kinks it encloses, so the
-/// statement holds through those nodes too.
+/// [`KinkKind::Unplaced`] entry whenever it may enclose a kink, so the
+/// statement holds through those nodes too.  The converse is deliberately
+/// weaker: an `Unplaced` entry may stand for no kink at all.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
 pub struct BranchRecord {
     entries: Vec<BranchEntry>,
