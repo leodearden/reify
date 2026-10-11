@@ -26,6 +26,7 @@ mod mcp_dispatch_tests;
 mod openvdb_kernel_tests;
 mod path_key_tests;
 mod screenshot_save_tests;
+mod sidecar_env_tests;
 mod tcp_port_tests;
 pub(crate) mod test_helpers;
 mod test_helpers_tests;
