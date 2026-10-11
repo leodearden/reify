@@ -12,6 +12,7 @@ import type {
   RawGuiState,
   ValueData,
   ConstraintData,
+  RawConstraintData,
   EvaluationStatus,
   EvalGeneration,
   PublishedState,
@@ -37,7 +38,7 @@ import type {
   DisplayDirective,
   AppearanceDirective,
 } from './types';
-import { convertRawMesh, convertRawGuiState, convertRawPublishedState } from './types';
+import { convertRawMesh, convertRawConstraint, convertRawGuiState, convertRawPublishedState } from './types';
 import type {
   OutboundMessage,
   TextDelta,
@@ -542,12 +543,21 @@ export async function onValueUpdate(
   });
 }
 
-/** Subscribe to constraint update events. */
+/**
+ * Subscribe to constraint update events. The verdict token is validated by
+ * convertRawConstraint.
+ *
+ * An out-of-set token throws out of this listener uncaught, so that delta is
+ * dropped and the store keeps the constraint's previous verdict until a
+ * whole-state snapshot replaces it; the snapshot path rejects the same token.
+ * This is deliberate: a bad token means the Rust contract broke, and skipping
+ * or normalising it here would hide that.
+ */
 export async function onConstraintUpdate(
   callback: (data: ConstraintData) => void,
 ): Promise<UnlistenFn> {
-  return listen<ConstraintData>('constraint-update', (event) => {
-    callback(event.payload);
+  return listen<RawConstraintData>('constraint-update', (event) => {
+    callback(convertRawConstraint(event.payload));
   });
 }
 
