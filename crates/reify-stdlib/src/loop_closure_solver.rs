@@ -571,6 +571,8 @@ where
 /// - any `free_b` index ≥ `chain_b.len()` (index addresses a non-existent joint);
 /// - any `free_b` index ≥ `vals_b_initial.len()` (index addresses a
 ///   non-existent initial value);
+/// - any `free_b` index addressing a non-driving joint (`fixed` or
+///   `coupling`), which has no free motion variable of its own;
 /// - [`StartStrategy::WarmStart`] vector length ≠ `free_b.len()`.
 ///
 /// Internally builds a residual+jacobian closure that calls
@@ -1338,7 +1340,8 @@ pub fn solve_loop_closure_with_diagnostics(
 /// the first failed check, or `None` if every input is well-formed.
 ///
 /// Checks: every `free_b` index addresses a valid joint in `chain_b` AND a
-/// valid initial value in `vals_b_initial`, the `WarmStart` vector length
+/// valid initial value in `vals_b_initial`, that joint is a driving joint
+/// (`joints::is_driving_joint`), the `WarmStart` vector length
 /// matches `free_b.len()`, and `Midpoint`'s joint-range lookup succeeds for
 /// each free joint.  The diagnostic wrapper short-circuits on DOF balance only
 /// AFTER this validation passes, so a structurally over-constrained AND
@@ -1363,6 +1366,21 @@ fn validate_loop_closure_inputs(
                 "free_b index {} out of range (vals_b_initial len {})",
                 i,
                 vals_b_initial.len()
+            ));
+        }
+        if !crate::joints::is_driving_joint(&chain_b[i]) {
+            let kind = match &chain_b[i] {
+                reify_ir::Value::Map(m) => {
+                    match m.get(&reify_ir::Value::String("kind".to_string())) {
+                        Some(reify_ir::Value::String(k)) => k.as_str(),
+                        _ => "<unknown>",
+                    }
+                }
+                _ => "<unknown>",
+            };
+            return Some(format!(
+                "free_b index {i} addresses a non-driving joint (kind {kind}) — fixed and \
+                 coupling joints have no free motion variable"
             ));
         }
     }
