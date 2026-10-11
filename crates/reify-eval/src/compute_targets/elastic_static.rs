@@ -228,6 +228,10 @@ use super::shell_solve::{
 
 // Task 2929: FEA diagnostic mapping glue.
 use super::fea_diagnostics::fea_diagnostic_to_core;
+use super::fea_loads::{
+    gravity_magnitude, load_items, material_density, point_load_force, pressure_load_magnitude,
+};
+use super::fea_value_shape::{FeaValueShapeError, failed_outcome};
 use reify_solver_elastic::{
     DegenerateTet, FeaFailure, classify_convergence, find_degenerate_tet, thin_body_advisory,
 };
@@ -525,15 +529,7 @@ pub fn solve_elastic_static_trampoline(
         ($result:expr, $arg:literal) => {
             match $result {
                 Ok(v) => v,
-                Err(e) => {
-                    return ComputeOutcome::Failed {
-                        diagnostics: vec![Diagnostic::error(format!(
-                            "solve_elastic_static_trampoline: {}: {e}",
-                            $arg
-                        ))],
-                        structured_detail: vec![],
-                    };
-                }
+                Err(e) => return failed_outcome("solve_elastic_static_trampoline", $arg, &e),
             }
         };
     }
@@ -556,22 +552,22 @@ pub fn solve_elastic_static_trampoline(
     // Two load kinds are bridged here (task 4264), read in a single pass by
     // `extract_loads`:
     //
-    //   PointLoad   — `force: Real` → scalar tip_force (a -Z resultant spread
-    //                 as a uniform traction over the tip face via
-    //                 apply_patch_resultant).
+    //   PointLoad   — `force` (FORCE, or the legacy bare Real) → tip_force
+    //                 (a resultant spread as a uniform traction over the tip
+    //                 face via apply_patch_resultant).
     //
-    //   PressureLoad — `magnitude: Real, face: String, direction: String` →
+    //   PressureLoad — `magnitude` (PRESSURE, or bare), `face`, `direction` →
     //                 face-traction assembled via apply_traction_load(f,
     //                 FaceOrder::P1Tri, …) into the same f vector.
     //                 Supported face selectors: x_min, x_max, y_min, y_max,
     //                 z_min, z_max. Unknown/empty face → silent no-op (v1).
     //
     // Both accumulate into disjoint targets and compose: a scene may mix
-    // PointLoad and PressureLoad in the same LoadCase.
-    let (tip_force, pressures, body_force) = gate_or_fail!(
-        extract_loads(&value_inputs[4], extract_density(&value_inputs[0])),
-        "loads"
-    );
+    // PointLoad and PressureLoad in the same LoadCase. Every magnitude is read
+    // by `fea_loads`, which rejects a wrong-dimension Scalar.
+    let density = gate_or_fail!(material_density(&value_inputs[0]), "material.density");
+    let (tip_force, pressures, body_force) =
+        gate_or_fail!(extract_loads(&value_inputs[4], density), "loads");
 
     // ── (3b) Shell-route dispatch (task 3594/δ) ──────────────────────────────
     //
@@ -680,7 +676,7 @@ pub fn solve_elastic_static_trampoline(
 
     // Heterogeneous-material + Gravity advisory (task ε/#4757).
     //
-    // `extract_density` returns 0.0 for any non-StructureInstance material value,
+    // `material_density` returns 0.0 for any non-StructureInstance material value,
     // so a Gravity load combined with an AsPrintedZones field silently produces
     // zero body-force (ρ=0 ⟹ ρ·g·V=0 for every element).  Emit a visible Warning
     // so the caller is not surprised by the zero body-force.
@@ -4408,76 +4404,6 @@ fn classify_material_as_printed_zones(lambda: &Value) -> Result<MaterialModel, F
     Ok(MaterialModel::Heterogeneous(field))
 }
 
-/// Errors produced by the FEA `Value`-shape leaf extractors/classifiers when
-/// the input does not match the expected shape (PRD compute-fea-hardening
-/// §C3).
-///
-/// This module's extract/classify helpers were migrated (tasks D2-D9) from
-/// "panic on malformed `Value`" to `Result<_, FeaValueShapeError>`. D9 (task
-/// 5087) completed the migration: every production call site in
-/// `solve_elastic_static_trampoline` now runs through that fn's
-/// validate-all-inputs gate, which `match`es each `Result` and returns
-/// `ComputeOutcome::Failed` with a diagnostic naming the offending arg on the
-/// first `Err`, instead of panicking. The transitional `FeaShimExt::fea_shim`
-/// bridging shim (D2-D8) has been removed.
-#[allow(dead_code)] // ExpectedStructureInstance is constructed by D3/D5/D7, not D2
-#[derive(Debug, Clone, PartialEq)]
-enum FeaValueShapeError {
-    /// Expected a `Value::StructureInstance`, got something else.
-    ExpectedStructureInstance { context: &'static str, got: String },
-    /// Expected a `Value::Scalar { .. }`, got something else.
-    ExpectedScalar { context: &'static str, got: String },
-    /// Expected a `Value::Real`, got something else.
-    ExpectedReal { context: &'static str, got: String },
-    /// Expected an ordered component sequence (`Value::List`/`Point`/`Vector`),
-    /// got something else, or the wrong arity.
-    ExpectedList { context: &'static str, got: String },
-    /// A required `StructureInstance` field was absent.
-    MissingField { context: &'static str, field: &'static str },
-    /// A present, defined `Value::Scalar` whose dimension is not the one this
-    /// reader position expects (task #7019). Distinct from `ExpectedScalar`,
-    /// which fires when the value is not a `Value::Scalar` at all: this
-    /// variant is for the wrong dimension on the RIGHT shape — e.g. a
-    /// LENGTH-dimensioned Scalar at a position that expects DIMENSIONLESS,
-    /// or vice versa. `expected` names the position's `ArgSpec::type_name`.
-    WrongDimension {
-        context: &'static str,
-        expected: &'static str,
-        got: String,
-    },
-}
-
-impl std::fmt::Display for FeaValueShapeError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            FeaValueShapeError::ExpectedStructureInstance { context, got } => write!(
-                f,
-                "expected Value::StructureInstance for {context}, got {got}"
-            ),
-            FeaValueShapeError::ExpectedScalar { context, got } => {
-                write!(f, "expected Value::Scalar for {context}, got {got}")
-            }
-            FeaValueShapeError::ExpectedReal { context, got } => {
-                write!(f, "expected Value::Real for {context}, got {got}")
-            }
-            FeaValueShapeError::ExpectedList { context, got } => write!(
-                f,
-                "expected a list-shaped Value (List/Point/Vector) for {context}, got {got}"
-            ),
-            FeaValueShapeError::MissingField { context, field } => {
-                write!(f, "missing field {field:?} for {context}")
-            }
-            FeaValueShapeError::WrongDimension {
-                context,
-                expected,
-                got,
-            } => {
-                write!(f, "expected {expected} for {context}, got {got}")
-            }
-        }
-    }
-}
-
 /// Shared arity + per-component extraction for
 /// `extract_point3_si`/`extract_vec3_si`, once the caller has matched `val`
 /// against `Value::Point`/`Value::Vector` and obtained the ordered component
@@ -5113,24 +5039,6 @@ fn extract_scalar_si(val: &Value) -> Result<f64, FeaValueShapeError> {
     }
 }
 
-/// Extract the `density` SI value (kg·m⁻³) from a material `Value::StructureInstance`.
-///
-/// Returns `0.0` when the material value is not a `StructureInstance`, or when
-/// the `density` field is absent or not a `Value::Scalar`.  This is intentionally
-/// non-panicking — every `ElasticMaterial` conformer declares `density`, so any
-/// missing/malformed density is a defensive fallback (matching `extract_loads`'
-/// silent-skip convention for unrecognised load items).
-fn extract_density(val: &Value) -> f64 {
-    let data = match val {
-        Value::StructureInstance(d) => d,
-        _ => return 0.0,
-    };
-    match data.fields.get("density") {
-        Some(Value::Scalar { si_value, .. }) => *si_value,
-        _ => 0.0,
-    }
-}
-
 /// Read a load's `direction` field into `[f64; 3]`, falling back to `[0, 0, -1]`
 /// (−Z) when the field is absent or mis-shaped.
 ///
@@ -5205,44 +5113,35 @@ type ExtractedLoads = ([f64; 3], Vec<PressureSpec>, [f64; 3]);
 /// - `body_force` — per-axis `[f64; 3]` accumulated gravity body-force vector
 ///   `Σ ρ·magnitude·direction` (N·m⁻³) over all `Gravity` items, where `ρ`
 ///   is the material density passed as `density`.  The caller obtains `density`
-///   from `extract_density(&value_inputs[0])`.
+///   from `material_density(&value_inputs[0])`.
 ///
 /// Returns `Err(FeaValueShapeError::ExpectedList)` if `val` is not a
-/// `Value::List`.
+/// `Value::List`, and the `fea_loads` reader's `Err` for a magnitude of the
+/// wrong dimension.
 /// A scene may mix `PointLoad`, `PressureLoad`, and `Gravity`; all accumulate
 /// into their respective targets in a single pass.
 fn extract_loads(val: &Value, density: f64) -> Result<ExtractedLoads, FeaValueShapeError> {
-    let items = match val {
-        Value::List(v) => v,
-        other => {
-            return Err(FeaValueShapeError::ExpectedList {
-                context: "extract_loads",
-                got: format!("{other:?}"),
-            });
-        }
-    };
+    let items = load_items(val, "extract_loads")?;
     let mut tip_force_vec = [0.0f64; 3];
     let mut pressures = Vec::new();
     let mut body_force = [0.0f64; 3];
     for item in items {
         if let Value::StructureInstance(data) = item {
             if data.type_name == "PointLoad" {
-                if let Some(Value::Real(f)) = data.fields.get("force") {
+                if let Some(force) = point_load_force(data)? {
                     let dir = read_direction_or_neg_z(data.fields.get("direction"))?;
                     for axis in 0..3 {
-                        tip_force_vec[axis] += f * dir[axis];
+                        tip_force_vec[axis] += force * dir[axis];
                     }
                 }
             } else if data.type_name == "PressureLoad" {
-                if let Some(spec) = parse_pressure_spec(data) {
+                if let Some(spec) = parse_pressure_spec(data)? {
                     pressures.push(spec);
                 }
             } else if data.type_name == "Gravity" {
                 // body_force_axis = ρ · magnitude · direction[axis]  (N·m⁻³)
-                let magnitude = match data.fields.get("magnitude") {
-                    Some(Value::Real(m)) => *m,
-                    Some(Value::Scalar { si_value, .. }) => *si_value,
-                    _ => continue,
+                let Some(magnitude) = gravity_magnitude(data)? else {
+                    continue;
                 };
                 let dir = read_direction_or_neg_z(data.fields.get("direction"))?;
                 for axis in 0..3 {
@@ -5307,8 +5206,9 @@ fn extract_pressure_face_name(v: &Value) -> Option<String> {
 /// [`extract_pressure_loads`] so the two extractors share one copy of the
 /// per-field (magnitude/face/direction) shape logic and cannot drift.
 ///
-/// Returns `None` (skips the load) when:
-/// - `magnitude` is absent or is neither `Value::Real` nor `Value::Scalar`;
+/// Returns `Err` when `magnitude` is present but not a pressure (see
+/// `fea_loads::pressure_load_magnitude`), and `Ok(None)` (skips the load) when:
+/// - `magnitude` is absent or `Undef`;
 /// - `face` is absent, or is the `= none` default (`Value::Option(None)`): a
 ///   `PressureLoad` with no face applies no traction, and this is skipped
 ///   *quietly* — it is the field's post-migration default, not an error;
@@ -5321,11 +5221,11 @@ fn extract_pressure_face_name(v: &Value) -> Option<String> {
 ///
 /// `direction` defaults to `"normal"` when absent or non-`String` (the only
 /// supported value in v1).
-fn parse_pressure_spec(data: &StructureInstanceData) -> Option<PressureSpec> {
-    let magnitude = match data.fields.get("magnitude") {
-        Some(Value::Real(m)) => *m,
-        Some(Value::Scalar { si_value, .. }) => *si_value,
-        _ => return None,
+fn parse_pressure_spec(
+    data: &StructureInstanceData,
+) -> Result<Option<PressureSpec>, FeaValueShapeError> {
+    let Some(magnitude) = pressure_load_magnitude(data)? else {
+        return Ok(None);
     };
     let face = match data.fields.get("face") {
         Some(face_val) => match extract_pressure_face_name(face_val) {
@@ -5345,20 +5245,20 @@ fn parse_pressure_spec(data: &StructureInstanceData) -> Option<PressureSpec> {
                          this pressure load",
                     );
                 }
-                return None;
+                return Ok(None);
             }
         },
-        None => return None,
+        None => return Ok(None),
     };
     let direction = match data.fields.get("direction") {
         Some(Value::String(s)) => s.clone(),
         _ => "normal".to_string(),
     };
-    Some(PressureSpec {
+    Ok(Some(PressureSpec {
         magnitude,
         face,
         direction,
-    })
+    }))
 }
 
 /// Extract all `PressureLoad` StructureInstances from a `Value::List`.
@@ -5381,7 +5281,7 @@ pub(crate) fn extract_pressure_loads(val: &Value) -> Vec<PressureSpec> {
     for item in items.iter() {
         if let Value::StructureInstance(data) = item
             && data.type_name == "PressureLoad"
-            && let Some(spec) = parse_pressure_spec(data)
+            && let Ok(Some(spec)) = parse_pressure_spec(data)
         {
             result.push(spec);
         }

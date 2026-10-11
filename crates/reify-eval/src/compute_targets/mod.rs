@@ -45,6 +45,10 @@ pub mod elastic_static;
 pub mod fdm_slice;
 // Task 2929: FEA diagnostic mapping — FeaFailure → reify_core::Diagnostic.
 pub mod fea_diagnostics;
+/// Task 6922 (γ1): the one reader of a load magnitude off an FEA load struct.
+mod fea_loads;
+/// Task 6922 (γ1): the FEA value-shape error shared by the FEA trampolines.
+mod fea_value_shape;
 pub mod form_find;
 pub mod multi_case;
 pub mod shell_solve;
