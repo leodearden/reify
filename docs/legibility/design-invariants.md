@@ -79,7 +79,8 @@ requires a census row in the same change.**
 | intra-crate module import cycles | module_scc_ratchet (INV-ARCH-1; reify-compiler excluded until S7 κ) | shipped |
 | code-less `Diagnostic::error`/`warning` sites | PDIAG | shipped |
 | PRD terminal-status markers | PPRDSTATUS (#6346) | chartered |
-| prose task-promises in doc comments | convention-only — PTODO-grammar-extension bookmark #7098 (filed by `result-field-vacuity-closure.md` ζ) | unenforced |
+| prose task-promises naming an owner (`owned by #N`, `deferred to task N`, `#N will …`, `until #N lands`) | PTODO lane δ-C → `orphaned` via the §19(b) cadenced liveness sweep (`reify-audit-ptodo-detector.md` §8.1, §20) | shipped |
+| prose task-promises outside δ-C's grammar (uncited "in a later task"; trailing `(task N)` on a future clause; promise split across lines) | convention-only — measured and declined (`reify-audit-ptodo-detector.md` §20) | unenforced |
 | whether a declared knob should exist at all | convention-only — deliberately unaudited (`trampoline-param-drop-closure.md` §11) | unenforced |
 
 ## INV-SF-1 `undef-has-provenance`
