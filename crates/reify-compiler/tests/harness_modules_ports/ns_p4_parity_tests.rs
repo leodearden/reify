@@ -187,26 +187,10 @@ fn compile_row(row: &ParityRow, probe: &str) -> Compiled {
             module: reify_test_support::compile_source_with_stdlib(&source),
             engine: reify_test_support::make_engine(),
         },
-        Setup::Project(imports) => {
-            let tmp = tempfile::tempdir().expect("tempdir");
-            let dir = tmp.path();
-            fs::write(dir.join("main.ri"), &source).expect("write main.ri");
-            for (name, import_source) in imports {
-                fs::write(dir.join(format!("{name}.ri")), import_source).expect("write import");
-            }
-            let parsed = parse_project_entry(&source, imports);
-            assert!(
-                parsed.errors.is_empty(),
-                "[{}] entry parse errors: {:?}",
-                row.name,
-                parsed.errors
-            );
-            let resolver = ModuleResolver::new(dir, dir.join("stdlib"));
-            Compiled {
-                module: compile_entry_with_stdlib_cfg(&parsed, &resolver, &CfgSet::default()),
-                engine: reify_test_support::make_engine(),
-            }
-        }
+        Setup::Project(imports) => Compiled {
+            module: compile_project(row.name, &source, imports),
+            engine: reify_test_support::make_engine(),
+        },
         Setup::SyntheticPrelude(modules) => {
             let prelude = synthetic_prelude(row.name, modules);
             let parsed = reify_syntax::parse(&source, ModulePath::single("main"));
@@ -222,6 +206,25 @@ fn compile_row(row: &ParityRow, probe: &str) -> Compiled {
             }
         }
     }
+}
+
+/// Write `entry` as `main.ri` plus its imports into a tempdir and compile it
+/// the way `reify check` does (prelude = stdlib ++ followed imports).
+fn compile_project(row: &str, entry: &str, imports: &[(&str, &str)]) -> CompiledModule {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let dir = tmp.path();
+    fs::write(dir.join("main.ri"), entry).expect("write main.ri");
+    for (name, import_source) in imports {
+        fs::write(dir.join(format!("{name}.ri")), import_source).expect("write import");
+    }
+    let parsed = parse_project_entry(entry, imports);
+    assert!(
+        parsed.errors.is_empty(),
+        "[{row}] entry parse errors: {:?}",
+        parsed.errors
+    );
+    let resolver = ModuleResolver::new(dir, dir.join("stdlib"));
+    compile_entry_with_stdlib_cfg(&parsed, &resolver, &CfgSet::default())
 }
 
 /// Parse a project entry knowing the enum names of the stdlib AND of its
@@ -277,27 +280,48 @@ fn errors_of(diagnostics: &[Diagnostic]) -> Vec<&str> {
         .collect()
 }
 
-/// Every way `row` breaks parity, or an empty list.
-fn parity_failures(row: &ParityRow) -> Vec<String> {
-    let mut failures = Vec::new();
+/// The compile-side half of every row: the winner's probe compiles clean and
+/// the loser's is rejected.
+struct CompileSide<'a> {
+    row: &'a str,
+    winner_probe: &'a str,
+    winner: &'a CompiledModule,
+    loser_probe: &'a str,
+    loser: &'a CompiledModule,
+    loser_error: &'a str,
+}
 
-    let winner = compile_row(row, row.winner_probe);
-    let errors = errors_of(&winner.module.diagnostics);
+fn compile_side_failures(side: CompileSide<'_>) -> Vec<String> {
+    let mut failures = Vec::new();
+    let errors = errors_of(&side.winner.diagnostics);
     if !errors.is_empty() {
         failures.push(format!(
-            "[{}] compile side: reading the winner's `{}` must compile clean, got {errors:?}",
-            row.name, row.winner_probe
+            "[{}] compile side: the winner's probe `{}` must compile clean, got {errors:?}",
+            side.row, side.winner_probe
         ));
     }
-
-    let loser = compile_row(row, row.loser_probe);
-    let loser_errors = errors_of(&loser.module.diagnostics);
-    if !loser_errors.iter().any(|m| m.contains(row.loser_error)) {
+    let loser_errors = errors_of(&side.loser.diagnostics);
+    if !loser_errors.iter().any(|m| m.contains(side.loser_error)) {
         failures.push(format!(
-            "[{}] compile side: reading the loser's `{}` must raise an Error containing {:?}, got {loser_errors:?}",
-            row.name, row.loser_probe, row.loser_error
+            "[{}] compile side: the loser's probe `{}` must raise an Error containing {:?}, got {loser_errors:?}",
+            side.row, side.loser_probe, side.loser_error
         ));
     }
+    failures
+}
+
+/// Every way `row` breaks parity, or an empty list.
+fn parity_failures(row: &ParityRow) -> Vec<String> {
+    let winner = compile_row(row, row.winner_probe);
+    let loser = compile_row(row, row.loser_probe);
+    let mut failures = compile_side_failures(CompileSide {
+        row: row.name,
+        winner_probe: row.winner_probe,
+        winner: &winner.module,
+        loser_probe: row.loser_probe,
+        loser: &loser.module,
+        loser_error: row.loser_error,
+    });
 
     let Compiled { module, mut engine } = winner;
     let result = engine.eval(&module);
@@ -340,5 +364,123 @@ fn local_enum_variants_resolve_despite_a_same_named_stdlib_enum() {
     assert!(
         errors.is_empty(),
         "the local SignalKind must bind, not std.ports.electrical's; got {errors:?}"
+    );
+}
+
+// ─── NS-P3: the remaining kinds, compile side ──────────────────────────────
+
+/// A compile-side-only row for a kind the evaluator never looks up by name.
+/// Always a project (prelude = stdlib ++ imports); `PROBE` as in [`ParityRow`].
+struct KindRow {
+    name: &'static str,
+    imports: &'static [(&'static str, &'static str)],
+    entry: &'static str,
+    winner_probe: &'static str,
+    loser_probe: &'static str,
+    loser_error: &'static str,
+}
+
+fn kind_rows() -> Vec<KindRow> {
+    vec![
+        KindRow {
+            name: "trait, user-import peers: first import wins",
+            imports: &[
+                ("a", "pub trait Shape {\n    param ax : Real\n}\n"),
+                ("b", "pub trait Shape {\n    param bx : Real\n}\n"),
+            ],
+            entry: "import a\nimport b\n\nstructure def S : Shape {\n    param PROBE : Real = 1.0\n}\n",
+            winner_probe: "ax",
+            loser_probe: "bx",
+            loser_error: "missing required member 'ax'",
+        },
+        KindRow {
+            // std.units declares `pub type Velocity = Length / Time`.
+            name: "type alias, import tier beats the stdlib",
+            imports: &[("a", "pub type Velocity = Length\n")],
+            entry: "import a\n\nstructure def Main {\n    param v : Velocity = PROBE\n}\n",
+            winner_probe: "3mm",
+            loser_probe: "3mm / 1s",
+            loser_error: "declared `Scalar[m]`",
+        },
+        KindRow {
+            // std.dynamics declares `ramp_profile(Real, Real, Real, Real) ->
+            // MotionTrajectory`; a's has the SAME param types, returns Real.
+            name: "function, import tier beats the stdlib",
+            imports: &[(
+                "a",
+                "pub fn ramp_profile(joint: Real, from: Real, to: Real, max_accel: Real) -> Real { joint }\n",
+            )],
+            entry: "import a\n\nstructure def Main {\n    param x : PROBE = ramp_profile(1.0, 2.0, 3.0, 4.0)\n}\n",
+            winner_probe: "Real",
+            loser_probe: "MotionTrajectory",
+            loser_error: "evaluates to `Real`",
+        },
+        KindRow {
+            // std.tolerancing declares `pub constraint def Conforms` with a
+            // required `tolerance` param; a's takes only `t`.
+            name: "constraint def, import tier beats the stdlib",
+            imports: &[(
+                "a",
+                "pub constraint def Conforms {\n    param t : Length\n    t > 0mm\n}\n",
+            )],
+            entry: "import a\n\nstructure def Main {\n    param t : Length = 5mm\n    constraint Conforms(PROBE)\n}\n",
+            winner_probe: "t: t",
+            loser_probe: "tolerance: t",
+            loser_error: "unknown argument 'tolerance'",
+        },
+    ]
+}
+
+fn kind_row_failures(row: &KindRow) -> Vec<String> {
+    let compile =
+        |probe: &str| compile_project(row.name, &row.entry.replace("PROBE", probe), row.imports);
+    compile_side_failures(CompileSide {
+        row: row.name,
+        winner_probe: row.winner_probe,
+        winner: &compile(row.winner_probe),
+        loser_probe: row.loser_probe,
+        loser: &compile(row.loser_probe),
+        loser_error: row.loser_error,
+    })
+}
+
+#[test]
+fn every_kind_binds_the_import_tier_first_wins_on_the_compile_side() {
+    let failures: Vec<String> = kind_rows().iter().flat_map(kind_row_failures).collect();
+    assert!(
+        failures.is_empty(),
+        "NS-P3 broken:\n{}",
+        failures.join("\n")
+    );
+}
+
+/// Purposes have no reference site to probe: the observable is which
+/// definition the entry's merged `compiled_purposes` carries. a's
+/// `design_review` takes TWO params; std.determinacy.purposes' takes one.
+#[test]
+fn purposes_bind_the_import_tier_over_the_stdlib() {
+    let module = compile_project(
+        "purpose, import tier beats the stdlib",
+        "import a\n\nstructure def Main {\n    param t : Length = 5mm\n}\n",
+        &[(
+            "a",
+            "pub purpose design_review(subject : Structure, witness : Structure) {\n    constraint forall p in subject.params: determined(p)\n}\n",
+        )],
+    );
+    let errors = errors_of(&module.diagnostics);
+    assert!(
+        errors.is_empty(),
+        "the project must compile clean, got {errors:?}"
+    );
+    let merged: Vec<usize> = module
+        .compiled_purposes
+        .iter()
+        .filter(|p| p.name == "design_review")
+        .map(|p| p.params.len())
+        .collect();
+    assert_eq!(
+        merged,
+        vec![2],
+        "exactly one design_review is merged, and it is import a's two-param one"
     );
 }
