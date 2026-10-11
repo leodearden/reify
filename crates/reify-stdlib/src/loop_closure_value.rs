@@ -180,6 +180,12 @@ impl JointKind {
     }
 }
 
+/// Total storage width of a flat buffer holding one `JointValue` per shape:
+/// the loop-closure Newton-state and warm-start width.
+pub(crate) fn flat_width(shapes: &[JointKind]) -> usize {
+    shapes.iter().map(JointKind::flat_len).sum()
+}
+
 /// Walk `shapes` in order and consume `kind.flat_len()` f64s from `dofs`
 /// per shape via [`JointValue::from_slice`].  Returns
 /// `Err(FlattenError::BufferTooShort)` on shortfall and

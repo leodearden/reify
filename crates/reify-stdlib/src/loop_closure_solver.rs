@@ -566,7 +566,8 @@ where
 /// coupling is not: it keeps its `vals_a` seed even when its parent is free
 /// on `chain_b` (both-chain unknowns are #8837).  `strategy`
 /// picks the initial guess: [`StartStrategy::WarmStart`] uses the supplied
-/// vector directly (must match `free_b.len()`); [`StartStrategy::Midpoint`]
+/// vector directly (its length must equal the flat Newton-state width,
+/// `flat_width` of the free joints' kinds); [`StartStrategy::Midpoint`]
 /// queries each free joint's `joint_range_midpoint` from `chain_b`.
 ///
 /// **`InvalidInput` contract** — the following are detected before the Newton
@@ -577,7 +578,8 @@ where
 ///   non-existent initial value);
 /// - any `free_b` index addressing a non-driving joint (`fixed` or
 ///   `coupling`), which has no free motion variable of its own;
-/// - [`StartStrategy::WarmStart`] vector length ≠ `free_b.len()`.
+/// - [`StartStrategy::WarmStart`] vector length ≠ the flat Newton-state width
+///   (`flat_width` of the free joints' kinds).
 ///
 /// Internally builds a residual+jacobian closure that calls
 /// [`crate::loop_closure::loop_residual_twist`] and
@@ -649,7 +651,7 @@ pub fn solve_loop_closure(
     let x0: Vec<f64> = match strategy {
         StartStrategy::WarmStart(v) => v.clone(),
         StartStrategy::Midpoint => {
-            let mut x = Vec::with_capacity(free_shapes.iter().map(|k| k.flat_len()).sum());
+            let mut x = Vec::with_capacity(crate::loop_closure_value::flat_width(&free_shapes));
             for &i in free_b {
                 // Validated above — joint_range_midpoint returns Some.
                 let mid = crate::loop_closure::joint_range_midpoint(&chain_b[i])
@@ -678,7 +680,7 @@ pub fn solve_loop_closure(
     // test in `crates/reify-constraints/tests/loop_closure_diagnostics_tests.rs`).
     let mut effective_config = config.clone();
     if effective_config.regularization_per_diag.is_empty() {
-        let total_width: usize = free_shapes.iter().map(|k| k.flat_len()).sum();
+        let total_width = crate::loop_closure_value::flat_width(&free_shapes);
         let mut reg = vec![0.0; total_width];
         let mut cursor = 0;
         for &k in &free_shapes {
@@ -706,9 +708,9 @@ pub fn solve_loop_closure(
     let free_shapes_proj = free_shapes_vec.clone();
 
     let closure = move |x: &[f64]| -> Option<(Vec<f64>, Vec<Vec<f64>>)> {
-        // Expected width = Σ free_shapes[k].flat_len().  The Newton state
-        // is the flat concatenation of per-free-joint storage payloads.
-        let expected_width: usize = free_shapes_vec.iter().map(|k| k.flat_len()).sum();
+        // The Newton state is the flat concatenation of per-free-joint
+        // storage payloads.
+        let expected_width = crate::loop_closure_value::flat_width(&free_shapes_vec);
         if x.len() != expected_width {
             return None;
         }
@@ -804,7 +806,7 @@ const SPHERE_TIKHONOV_DAMPING: f64 = 1e-8;
 /// are upstream-validated by `extract_loop_closure_chains` /
 /// `is_joint_value`, but a hand-built fixture might slip a malformed
 /// joint Map through).
-fn free_joint_shapes(
+pub(crate) fn free_joint_shapes(
     chain_b: &[reify_ir::Value],
     free_b: &[usize],
 ) -> Option<Vec<crate::loop_closure_value::JointKind>> {
@@ -1350,8 +1352,9 @@ pub fn solve_loop_closure_with_diagnostics(
 ///
 /// Checks: every `free_b` index addresses a valid joint in `chain_b` AND a
 /// valid initial value in `vals_b_initial`, that joint is not a recognised
-/// non-driving kind (`loop_closure::is_driving_kind`), the `WarmStart` vector length
-/// matches `free_b.len()`, and `Midpoint`'s joint-range lookup succeeds for
+/// non-driving kind (`loop_closure::is_driving_kind`), the `WarmStart` vector
+/// length equals the flat Newton-state width (`flat_width` of the free joints'
+/// kinds), and `Midpoint`'s joint-range lookup succeeds for
 /// each free joint.  The diagnostic wrapper short-circuits on DOF balance only
 /// AFTER this validation passes, so a structurally over-constrained AND
 /// malformed input surfaces `InvalidInput` (the more accurate signal) rather
@@ -1394,7 +1397,7 @@ fn validate_loop_closure_inputs(
             // single-DOF chain still validates as len == free_b.len() and a
             // multi-DOF chain validates against the wider Newton state.
             let expected: usize = match free_joint_shapes(chain_b, free_b) {
-                Some(shapes) => shapes.iter().map(|k| k.flat_len()).sum(),
+                Some(shapes) => crate::loop_closure_value::flat_width(&shapes),
                 None => {
                     return Some(
                         "free_b joint kind is unknown to JointKind::from_str".to_string(),
@@ -1403,7 +1406,7 @@ fn validate_loop_closure_inputs(
             };
             if v.len() != expected {
                 return Some(format!(
-                    "WarmStart length {} != free_b length {}",
+                    "WarmStart length {} != Newton state width {} (sum of JointKind::flat_len over free_b)",
                     v.len(),
                     expected,
                 ));

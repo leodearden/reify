@@ -27,7 +27,8 @@ use crate::joints::{is_driving_joint, is_joint_value, make_nondriving_joint_erro
 use crate::loop_closure::{extract_loop_closure_chains, joint_range_midpoint};
 use crate::loop_closure_solver::{
     NewtonConfig, NewtonOutcome, StartStrategy, closing_side_contains_closing_joint,
-    solve_loop_closure, solve_loop_closure_with_diagnostics, strip_world_sentinel,
+    free_joint_shapes, solve_loop_closure, solve_loop_closure_with_diagnostics,
+    strip_world_sentinel,
 };
 use crate::mechanism::is_world;
 use crate::resolve_body_mass;
@@ -373,35 +374,13 @@ pub(crate) fn eval_snapshot(name: &str, args: &[Value]) -> Option<Value> {
                         | NewtonOutcome::Singular { x, .. } => x,
                         NewtonOutcome::InvalidInput { .. } => return Some(Value::Undef),
                     };
-                    // KCC-γ step-12: Newton state width is the SUM of
-                    // per-free-joint flat_len values, not free_b.len().
-                    // Derive the per-free-joint shape descriptors so we can
-                    // unflatten the converged x into typed JointValues and
-                    // rehydrate the binding `Value` shapes per kind.
-                    let mut free_shapes: Vec<crate::loop_closure_value::JointKind> =
-                        Vec::with_capacity(free_b.len());
-                    for &i in &free_b {
-                        let kind_str = match &chain_b[i] {
-                            Value::Map(m) => match m
-                                .get(&Value::String("kind".to_string()))
-                            {
-                                Some(Value::String(s)) => s.as_str(),
-                                _ => return Some(Value::Undef),
-                            },
-                            _ => return Some(Value::Undef),
-                        };
-                        match crate::loop_closure_value::JointKind::from_str(kind_str) {
-                            Some(k) => free_shapes.push(k),
-                            None => return Some(Value::Undef),
-                        }
-                    }
-                    let expected_width: usize =
-                        free_shapes.iter().map(|k| k.flat_len()).sum();
-                    if x.len() != expected_width {
-                        // Defence-in-depth: solver contract guarantees this
-                        // length match for every non-InvalidInput outcome.
-                        return Some(Value::Undef);
-                    }
+                    // Per-free-joint shape descriptors, used to unflatten the
+                    // converged x into typed JointValues and rehydrate the
+                    // binding `Value` shapes per kind.
+                    let free_shapes = match free_joint_shapes(&chain_b, &free_b) {
+                        Some(s) => s,
+                        None => return Some(Value::Undef),
+                    };
 
                     // Collect this loop's converged free values as
                     // bare `Value::Real` leaves (SI units).  The dimensioned
