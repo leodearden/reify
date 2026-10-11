@@ -1255,7 +1255,9 @@ structure AnglePin {
     /// Regression guard: `update_source` with invalid content must not construct a
     /// new Engine and must leave prior valid state intact (files/compiled/engine
     /// unchanged).  The "invalid input preserves state" invariant is separately
-    /// tested via JSON-RPC in tests/mcp_integration.rs; this unit test adds a
+    /// tested via JSON-RPC in
+    /// `mcp_server_update_source_invalid_preserves_state`
+    /// (`tests/harness_cli_surface/mcp_integration.rs`); this unit test adds a
     /// fast in-process guard that also verifies the engine is never touched on
     /// parse failure.
     #[test]
