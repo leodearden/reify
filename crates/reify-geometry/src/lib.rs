@@ -1,4 +1,4 @@
-use reify_ir::{AttributeHistory, ExportError, ExportFormat, ExportOptions, ExportWarning, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, KernelAttributeHook, Mesh, QueryError, SampledField, TessError, Value, VoxelResolution};
+use reify_ir::{AttributeHistory, DenseSdfGrid, ExportError, ExportFormat, ExportOptions, ExportWarning, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, ImplicitOptions, KernelAttributeHook, Mesh, QueryError, SampledField, TessError, Value, VoxelResolution};
 
 /// A single-kernel holder that wraps an optional geometry kernel.
 ///
@@ -274,6 +274,17 @@ impl GeometryKernel for SingleKernelHolder {
         match self.kernel.as_mut() {
             Some(k) => k.ingest_mesh_at_resolution(mesh, resolution),
             None => Err(Self::no_mesh_kernel_error()),
+        }
+    }
+
+    fn ingest_dense_sdf(
+        &mut self,
+        grid: &DenseSdfGrid,
+        opts: &ImplicitOptions,
+    ) -> Result<GeometryHandle, GeometryError> {
+        match self.kernel.as_mut() {
+            Some(k) => k.ingest_dense_sdf(grid, opts),
+            None => Err(reify_ir::unsupported_dense_sdf_ingest::<Self>()),
         }
     }
 
