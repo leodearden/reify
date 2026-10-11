@@ -346,12 +346,10 @@ kernel diagnostic naming op kind and field (never a bare `expected numeric value
 - *Extension points (additive only, never a harness rewrite):* PRD 3 adds ANGLE-dimension
   allowlist entries; PRD 5 adds a **second universe**, DERIVED from every `reify-stdlib`
   `eval_builtin` match arm (PRD 5 decision 10), so these names illustrate it rather than bound
-  it: `plane_*`/`axis_*`/`point3`, the construction-datum constructors (`midplane`/
-  `axis_through`/`plane_through`/arity-2 `offset`/`frame_at`, LENGTH-gated at eval by task
-  6591), `prb_*`, joints/solver builtins. *Amended 2026-10-11 (task 7484):* the construction-datum
-  family was missing from this enumeration. It cannot join this guard's universe instead, because
-  the compiler pins `DATUM_CONSTRUCTOR_NAMES` disjoint from `GEOMETRY_FUNCTION_NAMES`; PRD 5 row
-  B11 makes its membership in the second universe a mechanical check.
+  it: `plane_*`/`axis_*`/`point3`, the construction-datum constructors, `prb_*`, joints/solver
+  builtins. *Amended 2026-10-11 (task 7484):* the construction-datum family was missing from this
+  enumeration; its members, and why it joins the second universe rather than this one, are stated
+  once in PRD 5 (`dimension-checked-readers.md`, Leg E's 2026-10-11 amendment, checked by row B11).
 
 **C6 — Migration contract (D7).** A leaf that adds a gate lands, in the same diff, every call-site
 migration its gate newly rejects, and leaves deliberate negative fixtures bare. No leaf asserts a

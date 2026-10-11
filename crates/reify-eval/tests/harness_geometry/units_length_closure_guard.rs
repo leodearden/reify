@@ -1067,15 +1067,13 @@ const OUT_OF_UNIVERSE: &[(&str, TaskCite, &str)] = &[
          GEOMETRY_FUNCTION_NAMES; PRD 5 adds them as a SECOND universe",
     ),
     (
-        "the construction-datum constructors (reify_compiler's \
-         DATUM_CONSTRUCTOR_NAMES): midplane / axis_through / plane_through / \
-         offset(arity 2) / frame_at / bbox",
+        "the rest of reify_compiler's DATUM_CONSTRUCTOR_NAMES (its plane_*/axis_* \
+         are the row above): midplane / axis_through / plane_through / \
+         offset(arity 2) / frame_at / bbox / bbox_size / bbox_center",
         TaskCite(5810),
-        "LENGTH-gated at eval (task 6591; bbox by task 6081), but literal arms of \
-         reify-stdlib's `eval_geometry`, not GEOMETRY_FUNCTION_NAMES members — \
-         the compiler pins DATUM_CONSTRUCTOR_NAMES disjoint from it — so they \
-         join through PRD 5's DERIVED second universe \
-         (dimension-checked-readers.md decision 10), not this one",
+        "absent from GEOMETRY_FUNCTION_NAMES; why, and how PRD 5's second \
+         universe covers them instead: dimension-checked-readers.md, Leg E's \
+         2026-10-11 amendment and row B11",
     ),
     (
         "the directional topology selectors' ANGLE `tol` (faces_by_normal, \
