@@ -2276,6 +2276,43 @@ mod tests {
     }
 
     // -------------------------------------------------------------------
+    // PLINECITE (task #6935) — hard line cites in source comments
+    // -------------------------------------------------------------------
+
+    /// PLINECITE is OPT-IN although it cannot move the exit code (Medium
+    /// only): new cites accrue weekly, so a pattern-less sweep would turn
+    /// every bare run into follow-up traffic.
+    #[test]
+    fn plinecite_is_opt_in_not_in_default_sweep() {
+        assert!(
+            !selects(pattern_flag::PLINECITE, None),
+            "PLINECITE must NOT run in the no-`--pattern` default sweep"
+        );
+        assert!(
+            selects(pattern_flag::PLINECITE, Some("PLINECITE")),
+            "PLINECITE must activate when --pattern PLINECITE is given"
+        );
+        assert!(
+            !selects(pattern_flag::PLINECITE, Some("P2")),
+            "PLINECITE must be excluded when a named non-PLINECITE pattern is given"
+        );
+    }
+
+    #[test]
+    fn needs_jcodemunch_plinecite_routes_false() {
+        assert!(
+            !needs_jcodemunch(&make_args(false, Some("PLINECITE"))),
+            "PLINECITE reads the tracked tree only; it must not open a jcodemunch \
+             connection"
+        );
+        assert!(
+            !jcodemunch_only_run_set(&make_args(false, Some("PLINECITE"))),
+            "a PLINECITE-only run must not reach jcodemunch_only_run_set's \
+             stale-index refusal (exit 125)"
+        );
+    }
+
+    // -------------------------------------------------------------------
     // --print-repo-id (task #6459)
     // -------------------------------------------------------------------
 
