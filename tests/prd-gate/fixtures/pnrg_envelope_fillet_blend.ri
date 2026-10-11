@@ -17,8 +17,8 @@
 //
 // Task #7463 walked this class densely — record:
 //   docs/notes/precision-envelope-dense-walk-torus-cone-fillet.md
-// (summary: the calibration note's §1.1).  a/d >= 0.9835 at fillet_r/feature =
-// 0.49 and d = 0.03816 mm, a LOWER BOUND — no measured interval reaches 1.
+// Current envelope value:
+//   docs/notes/precision-refine-envelope-calibration.md §1.1.
 //
 // NOT wired into any probe set or auto-run gate.
 

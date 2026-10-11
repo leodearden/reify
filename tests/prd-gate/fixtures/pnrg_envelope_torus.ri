@@ -16,13 +16,11 @@
 // committed spelling measures 5.665e-3.
 //
 // A spot value on this class is actively misleading, so the note tabulates the
-// envelope over the regime instead.  Task #7463's dense re-walk puts it ABOVE 1:
-// a/d = 1.0041 at minor/major = 0.02 and d = 0.00994 mm, a LOWER BOUND — the
-// ratio was still rising at the finest probe.  The default point above (0.567)
-// is a little over HALF of that — sampling this one point understates the
-// envelope ~1.8x.  Record:
+// envelope over the regime instead; the default point above sits well below
+// it.  Dense re-walk record (task #7463):
 //   docs/notes/precision-envelope-dense-walk-torus-cone-fillet.md
-// (summary: docs/notes/precision-refine-envelope-calibration.md §1.1).
+// Current envelope value:
+//   docs/notes/precision-refine-envelope-calibration.md §1.1.
 //
 // NOT wired into any probe set or auto-run gate.
 
