@@ -2968,6 +2968,59 @@ mod tests {
     }
 
     // -------------------------------------------------------------------
+    // §8.2 legacy `task NNNN` spelling as a resolvable cite (lane δ-C)
+    // -------------------------------------------------------------------
+
+    /// The `(head, end)` byte span of `needle`'s first occurrence in `line`,
+    /// so the expected offsets below are exact without being hand-counted.
+    fn span_of(line: &str, needle: &str) -> (usize, usize) {
+        let head = line.find(needle).expect("needle present in line");
+        (head, head + needle.len())
+    }
+
+    fn legacy_cites(line: &str) -> Vec<(usize, usize, u32)> {
+        legacy_task_cite_occurrences(line).collect()
+    }
+
+    #[test]
+    fn legacy_task_cite_positives() {
+        for (line, needle, id) in [
+            ("// cite task 4578.", "task 4578", 4578),
+            ("/// Task 4262 will add", "Task 4262", 4262),
+            ("/// RED until task-3512 step-2 lands", "task-3512", 3512),
+            ("// see task_4578 here", "task_4578", 4578),
+            ("// tasks 4578 and", "tasks 4578", 4578),
+            ("κ — task 4578", "task 4578", 4578),
+        ] {
+            let (head, end) = span_of(line, needle);
+            assert_eq!(legacy_cites(line), vec![(head, end, id)], "{line}");
+        }
+    }
+
+    #[test]
+    fn legacy_task_cites_yield_in_source_order() {
+        let line = "// deferred to task 3477, then task-3558";
+        let (h1, e1) = span_of(line, "task 3477");
+        let (h2, e2) = span_of(line, "task-3558");
+        assert_eq!(legacy_cites(line), vec![(h1, e1, 3477), (h2, e2, 3558)]);
+    }
+
+    #[test]
+    fn legacy_task_cite_negatives() {
+        for line in [
+            "multitask 4578",
+            "task_4578_regression",
+            "task #4578",
+            "task 123456",
+            "task 0",
+            "task δ",
+            "taskforce 12",
+        ] {
+            assert_eq!(legacy_cites(line), vec![], "{line}");
+        }
+    }
+
+    // -------------------------------------------------------------------
     // §8.3 phantom-tracking phrases (case-insensitive)
     // -------------------------------------------------------------------
 
