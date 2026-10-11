@@ -9,6 +9,8 @@
 | Section | Guarding test |
 |---------|--------------|
 | §0 Shipped tool surface + parity | `debugParity.test.ts` — tool_defs↔buildHandlers parity |
+| §0 AI write tools: the sidecar reaches reify-debug only when it is live | `gui/src/__tests__/sidecarReifyDebugGating.test.ts` — MCP entry, tool grant and prompt section; host side: `debug_listener_tests.rs` (liveness is a bound listener), `sidecar_env_tests.rs` (`REIFY_DEBUG_MCP_URL` only when live) |
+| §0 AI write tools: write targets confined to the design's directory | `write_confinement_tests.rs` — the rule; `debug_write_confinement_tests.rs` — both write seams enforce it, atomically |
 | §1 Tool-def → dispatch → handler wiring | [step-3] `debugContract.test.ts` — error-envelope + wiring |
 | §2 JSON error envelope | [step-3] same file |
 | §2d Image + trailing-text envelope | EMISSION: `debug_server.rs` `mcp_content_blocks_*` tests. DECODE: `rpc.test.ts` case 4b + `rpcEnvelope.test.ts`'s branch-3 fall-through case — the same success envelope through both JS decoders |
@@ -160,9 +162,21 @@ starvation.
 
 Five tools carry the **reify-mcp tool identities**
 (`crates/reify-mcp/src/tools/write.rs`) onto this surface, because the GUI's
-Claude sidecar reaches the reify-debug HTTP MCP server — not the reify-mcp
-registry — via the `mcp__reify-debug__*` allowlist in
-`gui/sidecar/src/session.ts`.
+Claude sidecar reaches the reify-debug HTTP MCP server, not the reify-mcp
+registry.
+
+**The sidecar reaches this surface only in `REIFY_DEBUG=1` launches** (ruling
+esc-7049-7). `gui/src-tauri/src/main.rs` binds the reify-debug listener only
+under `REIFY_DEBUG=1` (`debug_server::bind_debug_listener`), and the host sets
+`REIFY_DEBUG_MCP_URL` for the sidecar only when that bind succeeded, removing
+any inherited value otherwise (`claude_bridge::compute_sidecar_env`). Only
+then does the sidecar register the `reify-debug` MCP entry, grant
+`mcp__reify-debug__*` and render the system prompt's reify-debug tool section
+(`gui/sidecar/src/tool-surface.ts`, `buildSystemPrompt`). It always passes `--strict-mcp-config`, so neither
+`~/.claude.json` nor a project `.mcp.json` can supply a reify-debug server of
+its own. A release launch (`scripts/run-gui.sh`, `reify gui`) neither
+advertises nor registers the surface, and neither does a `REIFY_DEBUG=1` launch
+whose bind failed, for instance because another GUI holds the port.
 
 | Tool | Writes disk? | Routes to |
 |------|--------------|-----------|
@@ -475,10 +489,37 @@ refused rather than guessed:
   arms end in the same refusal.)
 - **Neither** an explicit target nor a session path — a `load_from_source`
   session, which has a buffer but no canonical path — is refused with
-  `"no active file to save; supply file_path …"`. Falling back to
-  `GuiState.files[0].path` there would write the stem-only `source_map` key
-  (`"part.ri"`) as a RELATIVE path into whatever CWD the GUI process happens
-  to have, and report `success: true`.
+  `"no active file to save: …"`. Falling back to `GuiState.files[0].path`
+  there would write the stem-only `source_map` key (`"part.ri"`) as a RELATIVE
+  path into whatever CWD the GUI process happens to have, and report
+  `success: true`. Naming a `file_path` does not rescue such a session: it has
+  no design directory, so the confinement rule below refuses every explicit
+  target too.
+
+**`reify_save_file` and `reify_export` write only inside the open design's
+directory.** The root is the canonical parent directory of the session's active
+file. Every `reify_export` `output_path`, and every explicit `reify_save_file`
+`file_path`, must be absolute and must resolve inside that root; a save with no
+`file_path` writes the active file itself, which is the design. Symlinks and
+`..` are resolved before the check: an existing target through its symlinks, a
+new file through its existing parent directory. A dangling symlink is refused,
+and a session with no design file refuses every explicit target. The check
+reads the active file under a short engine lock of its own and runs with no
+lock held (#5193), on a blocking thread, ahead of the write seam, so a refusal
+writes nothing and advances neither the engine nor the delta baseline. The
+write then goes to the RESOLVED path, not the caller's spelling. The rule binds
+every client of this unauthenticated localhost server, not only the sidecar,
+and `reify_open_file` moves the root with the active design. A
+`reify_open_file` landing between the check's lock and the seam's is refused,
+not raced: the seam reads the resolved path back through
+`ConfinedTarget::path_while_open` under its own lock, which refuses unless the
+design file the target was checked against is still the open one. The check
+and the write are still separate filesystem operations, though, so a directory
+swapped for a symlink between them can redirect the write. Rule:
+`gui/src-tauri/src/write_confinement.rs` (`confine_to_design_dir` returning a
+`ConfinedTarget`, refusals typed as `WriteTargetRefusal`); seam call:
+`confined_write_target` in `debug_server.rs`. `handle_reify_export`'s envelope
+still echoes the caller's `output_path`.
 
 **`reify_save_file` refuses a buffer the engine rejected.** It persists the
 SESSION's buffer, not a caller-supplied one — and `GuiState.files[0].content`
@@ -516,8 +557,9 @@ entry and therefore do **not** appear in `tools/list`.
   silently mask real drift.
 
 `gui/src/__tests__/sidecarPromptParity.test.ts` (task 7049) guards the in-app
-assistant's `SYSTEM_PROMPT` (`gui/sidecar/src/system-prompt.ts`) against the
-same registry:
+assistant's system prompt as rendered for a live server,
+`buildSystemPrompt({ reifyDebugLive: true })` (`gui/sidecar/src/system-prompt.ts`),
+against the same registry:
 - Every `mcp__reify-debug__<name>` the prompt names is served by `tool_defs()`.
 - Every `tool_defs()` tool is either advertised in the prompt's tool table
   (`ADVERTISED_DEBUG_TOOL_NAMES`) or listed in `NOT_ADVERTISED_TO_SIDECAR`.

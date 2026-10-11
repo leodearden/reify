@@ -6,6 +6,7 @@ import { createLineReader } from './ipc.js';
 import type { InboundMessage, OutboundMessage, SendMessage } from './types.js';
 import type { PermissionServer } from './permission-server.js';
 import { wrapClaudeArgs } from './sandbox.js';
+import { allowedTools, sidecarMcpServers } from './tool-surface.js';
 
 export interface SessionConfig {
   model: string;
@@ -44,6 +45,12 @@ export interface SessionConfig {
    * Defaults to `false` when omitted (e.g. in unit tests that do not set it).
    */
   landlockAvailable?: boolean;
+  /**
+   * The reify-debug MCP endpoint, set ONLY when the host reports its own reify-debug
+   * server live (REIFY_DEBUG_MCP_URL). Absent ⇒ no reify-debug MCP entry and no
+   * mcp__reify-debug__ grant.
+   */
+  reifyDebugMcpUrl?: string;
 }
 
 /**
@@ -51,34 +58,6 @@ export interface SessionConfig {
  * Exported so tests can reference it without hardcoding the string literal.
  */
 export const SPAWN_ERROR_LOG_PREFIX = '[sidecar] spawned claude error:';
-
-/**
- * Resolve the reify-debug MCP endpoint URL from the environment.
- *
- * Accepts only pure decimal digit strings (no whitespace, no trailing chars),
- * matching the Rust `parse_debug_port` contract in `debug_server.rs`.
- * Falls back to port 3939 for unset / empty / non-digit / out-of-range input.
- *
- * Cross-ref: `gui/test/visual/endpoint.ts` `resolveDebugPort` uses identical
- * validation logic; `gui/src-tauri/src/debug_server.rs` `parse_debug_port` is
- * the Rust source-of-truth.  Keep all three in lockstep if rules change.
- */
-function resolveReifyDebugUrl(env: NodeJS.ProcessEnv = process.env): string {
-  const raw = env['REIFY_DEBUG_PORT'];
-  // Strict digits-only — rejects whitespace-padded (" 4500 ") and trailing
-  // garbage ("4500x") that parseInt would silently accept.
-  const n = raw !== undefined && /^\d+$/.test(raw) ? parseInt(raw, 10) : NaN;
-  const port = Number.isFinite(n) && n >= 1 && n <= 65535 ? n : 3939;
-  return `http://127.0.0.1:${port}/mcp`;
-}
-
-/**
- * Tools Claude is allowed to use without per-call permission prompts.
- * Covers standard FS/shell tools plus all reify-debug MCP tools.
- * Using bypassPermissions+allowedTools is strictly tighter than
- * --dangerously-skip-permissions (which would allow everything).
- */
-export const ALLOWED_TOOLS = 'Read Edit Write Bash Glob Grep mcp__reify-debug__*';
 
 /**
  * Manages a Claude Code SDK session, dispatching inbound messages
@@ -320,22 +299,22 @@ export class SidecarSession {
     // Write the MCP config file lazily on the first invokeSdk call and cache it for the
     // session lifetime (mcpConfigTmpFile / mcpConfigTmpDir fields), so subsequent turns
     // avoid repeated mkdtemp+writeFile I/O. Cleanup happens in destroy().
-    // The config always includes the reify-debug entry (for GUI tooling); the
-    // reify-permission entry is added only when a permission server is configured.
+    // The reify-debug entry is present only when the host's server is live, and the
+    // reify-permission entry only when a permission server is configured.
     if (!this.mcpConfigTmpFile) {
       this.mcpConfigTmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'reify-mcp-'));
       this.mcpConfigTmpFile = path.join(this.mcpConfigTmpDir, 'mcp-config.json');
       const mcpConfig = {
-        mcpServers: {
-          'reify-debug': { type: 'http', url: resolveReifyDebugUrl() },
-          ...(this.config.permissionMcp
-            ? { 'reify-permission': { type: 'http', url: this.config.permissionMcp.url } }
-            : {}),
-        },
+        mcpServers: sidecarMcpServers({
+          reifyDebugMcpUrl: this.config.reifyDebugMcpUrl,
+          permissionUrl: this.config.permissionMcp?.url,
+        }),
       };
       fs.writeFileSync(this.mcpConfigTmpFile, JSON.stringify(mcpConfig));
     }
-    args.push('--mcp-config', this.mcpConfigTmpFile);
+    // --strict-mcp-config: load ONLY this file, never ~/.claude.json or a project
+    // .mcp.json, which can define a foreign reify-debug server (the reify repo's does).
+    args.push('--mcp-config', this.mcpConfigTmpFile, '--strict-mcp-config');
     if (this.config.permissionMcp) {
       args.push('--permission-prompt-tool', 'mcp__reify-permission__approve_tool');
     }
@@ -352,7 +331,7 @@ export class SidecarSession {
     // calls need no further confirmation prompt. The permission MCP (reify-permission) would only
     // become active if a future configuration uses a non-bypass permission mode.
     args.push('--permission-mode', 'bypassPermissions');
-    args.push('--allowed-tools', ALLOWED_TOOLS);
+    args.push('--allowed-tools', allowedTools(this.config.reifyDebugMcpUrl));
 
     // Read the landlock probe result that was settled at sidecar startup by
     // probeLandlockAsync() in index.ts. Defaults to false when the field is absent

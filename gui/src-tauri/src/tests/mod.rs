@@ -2,6 +2,8 @@ mod claude_bridge_tests;
 mod commands_tests;
 mod constraint_recheck_tests;
 mod debug_boundary_tests;
+mod debug_listener_tests;
+mod debug_write_confinement_tests;
 mod debug_write_tool_routing_fixtures;
 mod debug_write_tool_routing_tests;
 mod dev_url_tests;
@@ -25,11 +27,13 @@ mod mcp_dispatch_tests;
 mod openvdb_kernel_tests;
 mod path_key_tests;
 mod screenshot_save_tests;
+mod sidecar_env_tests;
 mod tcp_port_tests;
 pub(crate) mod test_helpers;
 mod test_helpers_tests;
 mod types_tests;
 mod watcher_tests;
+mod write_confinement_tests;
 
 use std::sync::{Arc, Mutex};
 

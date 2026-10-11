@@ -2189,10 +2189,10 @@ async fn handle_set_fea_case(
 //
 // These carry the reify-mcp tool identities (`crates/reify-mcp/src/tools/
 // write.rs`) onto the reify-debug MCP server, which is the surface the GUI's
-// Claude sidecar actually reaches (`gui/sidecar/src/session.ts`'s
-// `mcp__reify-debug__*` allowlist). The `reify_` prefix is deliberate (§12
-// Q1): it preserves those identities without clashing with the debug-native
-// bare names (`open_file`, `engine_state`, …).
+// Claude sidecar reaches in REIFY_DEBUG=1 launches (`gui/sidecar/src/session.ts`
+// grants `mcp__reify-debug__*` only while this server is live). The `reify_`
+// prefix is deliberate (§12 Q1): it preserves those identities without
+// clashing with the debug-native bare names (`open_file`, `engine_state`, …).
 //
 // FOUR of them route their engine mutation through
 // `write_on_engine_and_refresh_baseline`; the fifth, `reify_open_file`,
@@ -2835,6 +2835,13 @@ async fn handle_reify_update_source(
 /// stray-relative-file bug in its other spelling: it would answer
 /// `success: true` having written somewhere the caller cannot predict.
 ///
+/// **An explicit `file_path` must lie inside the open design's directory**
+/// (docs/debug-mcp-contract.md §"AI write tools"): [`confined_write_target`]
+/// checks it before the seam, with no engine lock held, and the RESOLVED path
+/// is what gets written, provided the seam finds the same design still open. A
+/// `load_from_source` session has no design directory, so it refuses every
+/// explicit target too.
+///
 /// **Pure I/O: this commits no new engine state.** It routes through
 /// [`write_on_engine_and_refresh_baseline`] anyway, so §6.2 invariant (a)
 /// holds for the four seam-routed write tools without a per-tool exception.
@@ -2860,6 +2867,11 @@ pub async fn reify_save_file_on_engine_and_refresh_baseline(
     last_state: &std::sync::Mutex<Option<crate::types::GuiState>>,
     file_path: Option<String>,
 ) -> Result<crate::types::GuiState, String> {
+    // Only a save-as target is confined: the active file IS the design.
+    let explicit_target = match file_path {
+        Some(requested) => Some(confined_write_target(engine, &requested).await?),
+        None => None,
+    };
     write_on_engine_and_refresh_baseline(engine, last_state, move |s| {
         // The write-back interlock, FIRST — ahead of `build_gui_state`, so the
         // refusal is atomic: no `save_file_impl`, and the seam short-circuits
@@ -2877,6 +2889,15 @@ pub async fn reify_save_file_on_engine_and_refresh_baseline(
                     .to_string(),
             );
         }
+        // Likewise ahead of any write: a `reify_open_file` between
+        // `confined_write_target`'s lock and this one moved the root the
+        // target was checked against.
+        let explicit_target = explicit_target
+            .as_ref()
+            .map(|target| target.path_while_open(s.canonical_file_path()))
+            .transpose()
+            .map_err(|refusal| refusal.to_string())?
+            .map(str::to_owned);
         let active = s.canonical_file_path().map(|p| p.to_string_lossy().into_owned());
         let gs = s.build_gui_state()?;
         // Single-file model, exactly as the reify-mcp surface reads it.
@@ -2884,7 +2905,7 @@ pub async fn reify_save_file_on_engine_and_refresh_baseline(
             .files
             .first()
             .ok_or_else(|| "No source loaded".to_string())?;
-        let target = match (&file_path, &active) {
+        let target = match (&explicit_target, &active) {
             (Some(explicit), _) => explicit.clone(),
             (None, Some(active)) => active.clone(),
             // No explicit target AND no session path — the `load_from_source`
@@ -2893,13 +2914,12 @@ pub async fn reify_save_file_on_engine_and_refresh_baseline(
             // the stem-only `source_map` key (`"part.ri"`) as a RELATIVE path
             // into whatever CWD the GUI process happens to have: an
             // unpredictable stray file, reported as `success: true`. REFUSE
-            // instead of guessing — the caller can always name a target
-            // explicitly.
+            // instead of guessing.
             (None, None) => {
                 return Err(
-                    "no active file to save; supply file_path (this session was loaded \
-                     from source, not from a file on disk, so there is no canonical \
-                     path to save back to)"
+                    "no active file to save: this session was loaded from source, not \
+                     from a file on disk, so there is no canonical path to save back to \
+                     (and no design directory a file_path could name)"
                         .to_string(),
                 );
             }
@@ -2946,22 +2966,58 @@ async fn handle_reify_save_file(
 /// **Pure I/O: this commits no new engine state** — see
 /// [`reify_save_file_on_engine_and_refresh_baseline`] for why it routes
 /// through the shared seam regardless.
+///
+/// **`output_path` must lie inside the open design's directory**, checked by
+/// [`confined_write_target`] exactly as the save-as arm is; the RESOLVED path
+/// is what the kernel writes, provided the seam finds the same design still
+/// open.
 pub async fn reify_export_on_engine_and_refresh_baseline(
     engine: &Arc<Mutex<EngineSession>>,
     last_state: &std::sync::Mutex<Option<crate::types::GuiState>>,
     format: &str,
     output_path: &str,
 ) -> Result<crate::types::GuiState, String> {
+    let output_target = confined_write_target(engine, output_path).await?;
     let format = format.to_owned();
-    let output_path = output_path.to_owned();
     write_on_engine_and_refresh_baseline(engine, last_state, move |s| {
+        let output_path = output_target
+            .path_while_open(s.canonical_file_path())
+            .map_err(|refusal| refusal.to_string())?;
         // Resolved BEFORE the export so an unknown spelling is refused without
         // the kernel ever being asked to write anything.
         let fmt = crate::commands::parse_export_format(&format)?;
-        s.export(fmt, std::path::Path::new(&output_path))?;
+        s.export(fmt, std::path::Path::new(output_path))?;
         s.build_gui_state()
     })
     .await
+}
+
+/// The target an explicit AI write names, confined to the open design's
+/// directory, or the refusal of a target outside it (docs/debug-mcp-contract.md
+/// §"AI write tools").
+///
+/// Same shape as [`reify_update_source_on_engine_and_refresh_baseline`]'s
+/// active-file guard (#5193): the design file is read under a SHORT lock of its
+/// own and the check runs with no lock held, on a blocking thread because it
+/// resolves paths on the filesystem, so a refusal returns before the seam and
+/// advances neither the engine nor the baseline. The seam reads the path back
+/// through `ConfinedTarget::path_while_open` under its own lock, which refuses
+/// if another design was opened in between.
+async fn confined_write_target(
+    engine: &Arc<Mutex<EngineSession>>,
+    requested: &str,
+) -> Result<crate::write_confinement::ConfinedTarget, String> {
+    let design_file = run_on_engine(engine, |s| {
+        Ok(s.canonical_file_path().map(|p| p.to_path_buf()))
+    })
+    .await?;
+    let requested = requested.to_owned();
+    tokio::task::spawn_blocking(move || {
+        crate::write_confinement::confine_to_design_dir(design_file.as_deref(), &requested)
+    })
+    .await
+    .map_err(|e| format!("the write-target check did not complete: {e}"))?
+    .map_err(|refusal| refusal.to_string())
 }
 
 /// Export the realized geometry and return the reify-mcp result envelope
@@ -3219,9 +3275,59 @@ pub fn debug_endpoint_url(port: u16) -> String {
     format!("http://127.0.0.1:{port}/mcp")
 }
 
+/// A reify-debug listener this process has bound on `127.0.0.1`; holding one
+/// is what makes the debug server live.
+pub struct BoundDebugListener {
+    listener: std::net::TcpListener,
+    port: u16,
+}
+
+impl BoundDebugListener {
+    /// Bind `127.0.0.1:port` now; `port` 0 binds an ephemeral port, reported by [`Self::port`].
+    pub fn bind(port: u16) -> Result<Self, String> {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", port))
+            .map_err(|e| format!("failed to bind debug server on 127.0.0.1:{port}: {e}"))?;
+        listener
+            .set_nonblocking(true)
+            .map_err(|e| format!("failed to make debug listener on :{port} non-blocking: {e}"))?;
+        let port = listener
+            .local_addr()
+            .map_err(|e| format!("failed to read debug listener address for :{port}: {e}"))?
+            .port();
+        Ok(Self { listener, port })
+    }
+
+    pub fn port(&self) -> u16 {
+        self.port
+    }
+
+    pub fn endpoint_url(&self) -> String {
+        debug_endpoint_url(self.port)
+    }
+}
+
+/// The bound listener when `debug_enabled` and the bind succeeds; `None` means
+/// the debug server is not live in this process.
+pub fn bind_debug_listener(debug_enabled: bool, port: u16) -> Option<BoundDebugListener> {
+    if !debug_enabled {
+        return None;
+    }
+    match BoundDebugListener::bind(port) {
+        Ok(listener) => Some(listener),
+        Err(e) => {
+            eprintln!(
+                "REIFY_DEBUG=1 but the debug server is NOT live on port {port} ({e}); \
+                 the in-app assistant will get no reify-debug tools"
+            );
+            None
+        }
+    }
+}
+
 // --- Server spawn ---
 
 pub async fn spawn_debug_server(
+    listener: BoundDebugListener,
     engine: Arc<Mutex<EngineSession>>,
     selection: Arc<RwLock<SelectionInfo>>,
     debug_bridge: Arc<DebugBridge>,
@@ -3246,12 +3352,11 @@ pub async fn spawn_debug_server(
         .route("/debug/{command}", post(handle_rest))
         .with_state(state);
 
-    let port = resolve_debug_port();
-    let listener = tokio::net::TcpListener::bind(format!("127.0.0.1:{port}"))
-        .await
-        .map_err(|e| format!("failed to bind debug server on :{port}: {e}"))?;
+    let endpoint = listener.endpoint_url();
+    let listener = tokio::net::TcpListener::from_std(listener.listener)
+        .map_err(|e| format!("failed to register debug listener for {endpoint}: {e}"))?;
 
-    tracing::info!("Debug server listening on {}", debug_endpoint_url(port));
+    tracing::info!("Debug server listening on {endpoint}");
 
     axum::serve(listener, app.into_make_service())
         .await
