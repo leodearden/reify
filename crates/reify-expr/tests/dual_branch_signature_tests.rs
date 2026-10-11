@@ -36,8 +36,8 @@ use std::sync::atomic::AtomicBool;
 
 use reify_core::{ContentHash, DimensionVector, Type, ValueCellId};
 use reify_expr::{
-    BranchChoice, BranchRecord, EvalContext, KinkKind, ReductionKind, Seeds, Tangent, eval_dual,
-    eval_expr,
+    BranchChoice, BranchEntry, BranchRecord, EvalContext, KinkKind, KinkSite, ReductionKind,
+    Seeds, Tangent, eval_dual, eval_expr,
 };
 use reify_ir::{
     BinOp, CompiledExpr, CompiledExprKind, CompiledMatchArm, CompiledPattern, FieldSourceKind,
@@ -1451,4 +1451,44 @@ fn comparisons_and_arithmetic_with_both_operands_determined_are_unchanged() {
         assert!(rec.is_empty(), "{op:?}: smooth arithmetic records no kink");
         assert!(!t.is_none(), "{op:?}: still carries a tangent");
     }
+}
+
+// ===========================================================================
+// Kinks ε cannot place: the Unplaced entry (task #7493)
+// ===========================================================================
+//
+// A node the dual traversal hands WHOLE to `eval_expr` never visits the kinks
+// beneath it, so it cannot name their sites.  It records one `Unplaced` entry
+// at its OWN site instead, which keeps "an empty record means no kink" true
+// through such nodes.
+
+fn unplaced_record(choice: BranchChoice) -> BranchRecord {
+    let mut record = BranchRecord::new();
+    record.push(BranchEntry { site: KinkSite::new(vec![1]), kind: KinkKind::Unplaced, choice });
+    record
+}
+
+#[test]
+fn an_unplaced_entry_s_outcome_hash_is_part_of_the_signature() {
+    let ten = || BranchChoice::OutcomeHash(Value::Real(10.0).content_hash());
+    let twenty = BranchChoice::OutcomeHash(Value::Real(20.0).content_hash());
+
+    let a = unplaced_record(ten());
+    let b = unplaced_record(ten());
+    assert_eq!(a, b, "the same outcome is the same entry");
+    assert_eq!(a.differs_from(&b), None, "the same outcome is no flip");
+    assert_eq!(a.signature_key(), b.signature_key(), "the same outcome is the same signature");
+
+    let flipped = unplaced_record(twenty);
+    assert_eq!(
+        a.differs_from(&flipped),
+        Some(KinkSite::new(vec![1])),
+        "a different outcome is a flip at the enclosing node's site"
+    );
+    assert_ne!(
+        a.signature_key(),
+        flipped.signature_key(),
+        "the outcome hash must reach the key: λ counts alternations BY KEY, so a payload \
+         hashed as its discriminant alone would make two signatures read as one"
+    );
 }
