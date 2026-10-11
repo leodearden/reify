@@ -691,6 +691,7 @@ fn debug_response(
 async fn claude_send_message(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
+    debug_mcp: tauri::State<'_, DebugMcpEndpoint>,
     text: String,
     context: Option<reify_gui::claude_bridge::MessageContext>,
 ) -> Result<String, String> {
@@ -725,6 +726,7 @@ async fn claude_send_message(
         .filter(|p| p.exists());
 
     let app_for_events = app.clone();
+    let debug_mcp_url = debug_mcp.0.clone();
 
     // Lazily spawn the sidecar (if not running) and wait for it to become ready.
     reify_gui::claude_bridge::ensure_sidecar_ready(
@@ -734,6 +736,7 @@ async fn claude_send_message(
             let app_c = app_for_events;
             let ws = workspace;
             let le = landlock_exec_path;
+            let url = debug_mcp_url;
             async move {
                 reify_gui::claude_bridge::spawn_sidecar_impl(
                     &path,
@@ -742,6 +745,7 @@ async fn claude_send_message(
                     },
                     &ws,
                     le.as_deref(),
+                    url.as_deref(),
                 )
                 .await
             }

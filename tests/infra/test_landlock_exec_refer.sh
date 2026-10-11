@@ -118,7 +118,7 @@
 #       ~/.claude grant in favour of a per-task CLAUDE_CONFIG_DIR, which
 #       reify's sidecar never sets (compute_sidecar_env in
 #       gui/src-tauri/src/claude_bridge.rs emits only REIFY_WORKSPACE /
-#       REIFY_LANDLOCK_EXEC / REIFY_DEBUG_PORT). So refreshing this vendored
+#       REIFY_LANDLOCK_EXEC / REIFY_DEBUG_MCP_URL). So refreshing this vendored
 #       file with a blind `cp` from dark-factory would leave the GUI sidecar's
 #       claude-CLI OAuth/session state read-only — a regression traded for a
 #       fix. This assertion goes RED the instant that happens.
