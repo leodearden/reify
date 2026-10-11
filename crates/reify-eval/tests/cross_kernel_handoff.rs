@@ -54,6 +54,9 @@
 //! kernel serialized a product body. Handle ids are kernel-local, so exporting
 //! the Manifold-owned terminal through the default (occt) kernel names an
 //! unrelated occt shape; the payload makes that defect self-describing.
+//! Likewise each counting kernel answers every `Distance` query with its own
+//! constant, so a test can read off which kernel served
+//! `distance_between_placed`.
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
@@ -79,10 +82,29 @@ fn write_owner_tagged_export(
         .map_err(|e| reify_ir::ExportError::IoError(e.to_string()))
 }
 
+/// The `Distance` the occt counting kernel answers for any pair of handles.
+const OCCT_DISTANCE_M: f64 = 0.001;
+/// The `Distance` the manifold counting kernel answers for any pair of handles.
+const MANIFOLD_DISTANCE_M: f64 = 0.002;
+
+/// Answer `Distance` with `distance`, naming the kernel that served it; every
+/// other query goes to `inner`.
+fn query_with_owner_tagged_distance(
+    inner: &MockGeometryKernel,
+    distance: f64,
+    q: &reify_ir::GeometryQuery,
+) -> Result<reify_ir::Value, reify_ir::QueryError> {
+    match q {
+        reify_ir::GeometryQuery::Distance { .. } => Ok(reify_ir::Value::Real(distance)),
+        _ => reify_ir::GeometryKernel::query(inner, q),
+    }
+}
+
 /// occt-like counting kernel: `execute` / `query` / `make_compound` delegate to
 /// an inner [`MockGeometryKernel`] (so `PrimitiveBox` → BRep solid handles),
-/// `export` writes `occt-export:<id>`, and `tessellate` bumps a shared counter
-/// before returning a trivial
+/// except that a `Distance` query answers [`OCCT_DISTANCE_M`]. `export` writes
+/// `occt-export:<id>`, and `tessellate` bumps a shared counter before
+/// returning a trivial
 /// single-triangle [`reify_ir::Mesh`] — the BRep→Mesh source projection the
 /// conversion executor drives for each prior-stage input handle. Mirrors the
 /// in-crate `CountingTessellateKernel` in `engine_build.rs::tests` (which is
@@ -101,7 +123,7 @@ impl reify_ir::GeometryKernel for CountingTessellateKernel {
     }
 
     fn query(&self, q: &reify_ir::GeometryQuery) -> Result<reify_ir::Value, reify_ir::QueryError> {
-        self.inner.query(q)
+        query_with_owner_tagged_distance(&self.inner, OCCT_DISTANCE_M, q)
     }
 
     fn export(
@@ -138,8 +160,9 @@ impl reify_ir::GeometryKernel for CountingTessellateKernel {
 /// returns a fresh handle (the BRep→Mesh target projection), and `execute`
 /// bumps a shared counter (the final cross-kernel `BooleanUnion` op runs here
 /// via the default `execute_with_history` → `execute` delegation). `query` /
-/// `tessellate` / `make_compound` delegate to an inner [`MockGeometryKernel`]
-/// and `export` writes `manifold-export:<id>`; only the union is ever routed
+/// `tessellate` / `make_compound` delegate to an inner [`MockGeometryKernel`],
+/// except that a `Distance` query answers [`MANIFOLD_DISTANCE_M`], and
+/// `export` writes `manifold-export:<id>`; only the union is ever routed
 /// here, so the `execute` counter is the `BooleanUnion`-on-Manifold count.
 /// Mirrors the in-crate `CountingManifoldKernel`.
 struct CountingManifoldKernel {
@@ -159,7 +182,7 @@ impl reify_ir::GeometryKernel for CountingManifoldKernel {
     }
 
     fn query(&self, q: &reify_ir::GeometryQuery) -> Result<reify_ir::Value, reify_ir::QueryError> {
-        self.inner.query(q)
+        query_with_owner_tagged_distance(&self.inner, MANIFOLD_DISTANCE_M, q)
     }
 
     fn export(
@@ -210,6 +233,17 @@ fn box_op() -> CompiledGeometryOp {
     }
 }
 
+/// A `PrimitiveSphere` solid op (radius 5 mm), advertised only by manifold.
+fn sphere_op() -> CompiledGeometryOp {
+    CompiledGeometryOp::Primitive {
+        kind: PrimitiveKind::Sphere,
+        args: vec![(
+            "radius".into(),
+            CompiledExpr::literal(mm(5.0), Type::length()),
+        )],
+    }
+}
+
 /// Build the `entity` template carrying ONE terminal realization whose ops are
 /// two BRep `PrimitiveBox` solids consumed by a `BooleanUnion`. The realization
 /// id is `(entity, index = 0)` and it is named `"body"` (caching requires a
@@ -253,7 +287,9 @@ struct KernelCallCounts {
 /// (BooleanUnion, Mesh). For demanded = Mesh / available = {BRep} the
 /// dispatcher yields plan { kernel: "manifold", conversions:
 /// [(Occt, BRep, Mesh)] } for the union, and PrimitiveBox at Mesh demand
-/// falls back to a BRep dispatch on occt (design_decision 3).
+/// falls back to a BRep dispatch on occt (design_decision 3). Manifold also
+/// advertises (PrimitiveSphere, BRep), so a sphere lives on manifold even under
+/// the BRep demand `distance_between_placed` realizes at.
 fn occt_manifold_engine() -> (Engine, KernelCallCounts) {
     let counts = KernelCallCounts {
         tessellate: Arc::new(Mutex::new(0)),
@@ -297,7 +333,10 @@ fn occt_manifold_engine() -> (Engine, KernelCallCounts) {
     registry.insert(
         "manifold".to_string(),
         CapabilityDescriptor {
-            supports: vec![(Operation::BooleanUnion, ReprKind::Mesh)],
+            supports: vec![
+                (Operation::BooleanUnion, ReprKind::Mesh),
+                (Operation::PrimitiveSphere, ReprKind::BRep),
+            ],
         },
     );
 
@@ -324,6 +363,31 @@ fn payload_text(geometry_output: &Option<Vec<u8>>) -> String {
         Some(bytes) => String::from_utf8_lossy(bytes).into_owned(),
         None => "<no geometry output>".to_string(),
     }
+}
+
+/// An `Assembly` placing one sub per `(sub name, part template)` pair. The
+/// parts are `UnionPart` (its terminal union lives on manifold under a Mesh
+/// demand), `SpherePart` (a lone sphere, which lives on manifold) and
+/// `BoxPart` (a lone box, which lives on occt).
+fn assembly_module(module_name: &str, subs: &[(&str, &str)]) -> CompiledModule {
+    let single_op_part = |name: &str, op: CompiledGeometryOp| {
+        TopologyTemplateBuilder::new(name)
+            .realization_named(name, 0, "body", vec![op])
+            .build()
+    };
+    let assembly = subs
+        .iter()
+        .fold(
+            TopologyTemplateBuilder::new("Assembly"),
+            |builder, &(sub, part)| builder.sub_component(sub, part, vec![]),
+        )
+        .build();
+    CompiledModuleBuilder::new(ModulePath::new(vec![module_name.to_string()]))
+        .template(assembly)
+        .template(union_realization_template("UnionPart"))
+        .template(single_op_part("SpherePart", sphere_op()))
+        .template(single_op_part("BoxPart", box_op()))
+        .build()
 }
 
 /// End-to-end build()-path pin for the cross-kernel conversion executor +
@@ -512,20 +576,10 @@ fn build_and_build_snapshot_export_the_cross_kernel_terminal_through_its_owner()
 /// occt shape that id happens to name.
 #[test]
 fn multi_body_export_with_mixed_owners_is_an_error_not_a_default_kernel_compound() {
-    let box_part = TopologyTemplateBuilder::new("BoxPart")
-        .realization_named("BoxPart", 0, "body", vec![box_op()])
-        .build();
-    let assembly = TopologyTemplateBuilder::new("Assembly")
-        .sub_component("u", "UnionPart", vec![])
-        .sub_component("b", "BoxPart", vec![])
-        .build();
-    let module = CompiledModuleBuilder::new(ModulePath::new(vec![
-        "test_cross_kernel_mixed_owner_export".to_string(),
-    ]))
-    .template(assembly)
-    .template(union_realization_template("UnionPart"))
-    .template(box_part)
-    .build();
+    let module = assembly_module(
+        "test_cross_kernel_mixed_owner_export",
+        &[("u", "UnionPart"), ("b", "BoxPart")],
+    );
     let (mut engine, _counts) = occt_manifold_engine();
 
     let build = engine.build(&module, ExportFormat::Stl);
@@ -555,5 +609,60 @@ fn multi_body_export_with_mixed_owners_is_an_error_not_a_default_kernel_compound
         errors[0].message.contains("manifold") && errors[0].message.contains("occt"),
         "the mixed-owner error must name both kernels; got: {}",
         errors[0].message
+    );
+}
+
+/// `distance_between_placed` must query the kernel that owns both placed
+/// bodies. Both spheres live on manifold; querying their ids on the default
+/// occt kernel would measure between unrelated occt shapes (task 6308).
+#[test]
+fn distance_between_placed_queries_the_kernel_that_owns_both_bodies() {
+    let module = assembly_module(
+        "test_cross_kernel_distance_through_owner",
+        &[("a", "SpherePart"), ("b", "SpherePart")],
+    );
+    let (mut engine, _counts) = occt_manifold_engine();
+
+    let distance = engine.distance_between_placed(
+        &module,
+        "Assembly.a#realization[0]",
+        "Assembly.b#realization[0]",
+    );
+
+    assert_eq!(
+        distance,
+        Some(MANIFOLD_DISTANCE_M),
+        "two manifold-owned bodies must be measured by manifold \
+         (occt answers {OCCT_DISTANCE_M}, manifold {MANIFOLD_DISTANCE_M})"
+    );
+}
+
+/// A distance query cannot span two kernels' id spaces, so bodies on two
+/// different kernels yield no distance rather than the default kernel's
+/// answer for an id it does not own.
+#[test]
+fn distance_between_placed_across_two_kernels_is_none_not_a_default_kernel_answer() {
+    let module = assembly_module(
+        "test_cross_kernel_distance_mixed_owners",
+        &[("s", "SpherePart"), ("b", "BoxPart")],
+    );
+    let (mut engine, _counts) = occt_manifold_engine();
+    let sphere = "Assembly.s#realization[0]";
+    let boxed = "Assembly.b#realization[0]";
+
+    assert_eq!(
+        (
+            engine.distance_between_placed(&module, sphere, sphere),
+            engine.distance_between_placed(&module, boxed, boxed),
+        ),
+        (Some(MANIFOLD_DISTANCE_M), Some(OCCT_DISTANCE_M)),
+        "precondition: each body must resolve on its own, the sphere on manifold \
+         and the box on occt"
+    );
+    assert_eq!(
+        engine.distance_between_placed(&module, sphere, boxed),
+        None,
+        "a manifold-owned and an occt-owned body must not be measured on one kernel \
+         (occt answers {OCCT_DISTANCE_M}, manifold {MANIFOLD_DISTANCE_M})"
     );
 }

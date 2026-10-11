@@ -5688,13 +5688,16 @@ impl Engine {
     ///
     /// Runs the same Phase-A realization execution and Phase-B
     /// `surface_export_bodies` walk as [`Self::build`], resolves the two placed
-    /// handles by `entity_path` (product bodies only: `default_visible == true`),
-    /// and issues `GeometryQuery::Distance{from, to}` via the default kernel.
+    /// bodies by `entity_path` (product bodies only: `default_visible == true`),
+    /// and issues `GeometryQuery::Distance{from, to}` via the kernel that owns
+    /// both of them.
     ///
     /// Returns `Some(d)` where `d` is the BRepExtrema minimum distance in metres,
     /// or `None` if either path is unresolvable, no geometry kernel is configured,
-    /// or the distance query fails (with a warning diagnostic). Consistent with the
-    /// `kernel_distance` error-handling convention.
+    /// the two bodies live on different kernels (a query cannot span two
+    /// kernel-local id spaces), or the distance query fails (with a warning
+    /// diagnostic). Consistent with the `kernel_distance` error-handling
+    /// convention.
     ///
     /// Uses the engine's `RealizationCache` — if `build()` was called first on the
     /// same module the Phase-A kernel ops are served from cache and this method
@@ -5876,16 +5879,16 @@ impl Engine {
             Some((path_a, path_b)),
         );
 
-        // Resolve the two product (default_visible == true) handles by entity_path.
-        let find_handle = |path: &str| -> Option<GeometryHandleId> {
+        // Resolve the two product (default_visible == true) bodies by entity_path.
+        let find_body = |path: &str| {
             export_bodies
                 .iter()
                 .find(|b| b.default_visible && b.entity_path == path)
-                .map(|b| b.handle_id)
         };
-        let handle_a = find_handle(path_a);
-        let handle_b = find_handle(path_b);
-        let (Some(from), Some(to)) = (handle_a, handle_b) else {
+        let (found_a, found_b) = (find_body(path_a), find_body(path_b));
+        let (Some(body_a), Some(body_b)) = (found_a, found_b) else {
+            let handle_a = found_a.map(|b| b.handle_id);
+            let handle_b = found_b.map(|b| b.handle_id);
             diagnostics.push(Diagnostic::warning(format!(
                 "distance_between_placed: could not resolve product handle(s) \
                  (path_a={path_a:?} → {handle_a:?}, path_b={path_b:?} → {handle_b:?})"
@@ -5893,15 +5896,25 @@ impl Engine {
             return None;
         };
 
-        // Issue GeometryQuery::Distance on the placed handles.
+        // Handle ids are kernel-local, so the query runs on the kernel that
+        // owns both bodies.
+        let owner_a = resolve_owning_kernel_name(&self.geometry_kernels, body_a.kernel, &name);
+        let owner_b = resolve_owning_kernel_name(&self.geometry_kernels, body_b.kernel, &name);
+        if owner_a != owner_b {
+            diagnostics.push(Diagnostic::warning(format!(
+                "distance_between_placed: {path_a:?} is owned by kernel {owner_a:?} and \
+                 {path_b:?} by kernel {owner_b:?}; a distance query cannot span two kernels"
+            )));
+            return None;
+        }
         let kernel = self
             .geometry_kernels
-            .get(name.as_str())
-            .expect("default kernel must remain in the map");
+            .get(owner_a)
+            .expect("an owning kernel name resolves to a key of the kernel map");
         crate::geometry_ops::kernel_distance(
             kernel.as_ref(),
-            from,
-            to,
+            body_a.handle_id,
+            body_b.handle_id,
             &mut diagnostics,
             "distance_between_placed",
         )
