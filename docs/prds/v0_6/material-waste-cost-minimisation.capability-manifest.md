@@ -230,7 +230,7 @@ M-WASTE ι [MILESTONE]: bookmark — continuous geometry-in-the-loop (the inner 
 
 | Capability | Evidence / binding | Verdict | Delivered check |
 |---|---|---|---|
-| `p2-geometry-dispatch-upstream` | producer-upstream — #6683 (P2 omicron, the GeometryDispatch trait; pending). Its wired hard dep #6583 is cancelled as a duplicate of the still-pending #5436, so its real gate is #5436 (reported to Leo, not this PRD's to fix). Edge #6683 -> ι wired at decompose. | **PASS** | — |
+| `p2-geometry-dispatch-upstream` | producer-upstream — #6683 (P2 omicron, the GeometryDispatch trait; pending). It depends on #6251 and on #5436 + #5483 for posed operands (re-pointed from the cancelled #6583 on 2026-09-21; *corrected 2026-10-11* — an earlier version of this row wrongly called that edge stale). Edge #6683 -> ι wired at decompose. | **PASS** | — |
 | `sweep-upstream` | producer-upstream — γ (the outer layer whose continuous refusal ι routes from). | **PASS** | — |
 | `decision-bookmark-charter` | producer-self — a decision bookmark (execution_class: decision): its deliverable is a /prd design session (arm B on GeometryDispatch, local-optimum honesty, content-addressed realisation memo, native-memory policy, finite-difference budget), never an implementation. No mechanical check. | **PASS** | manual: decision bookmark; dispositioned by expanding into its own PRD (done) or dropping (cancelled). |
 
@@ -403,6 +403,6 @@ Out-of-batch edges and their status when wired:
 | #5470 → γ, η | pending |
 | #6724 → δ | pending |
 | #8357 → η | pending |
-| #6683 → ι | pending; its real gate is #5436, because its wired dep #6583 is cancelled |
+| #6683 → ι | pending; it waits on #6251 and #5436 + #5483 (re-pointed from the cancelled #6583 on 2026-09-21) |
 | #6592 → μ, ν | pending |
 | #6657 → μ, ν | deferred, intended |

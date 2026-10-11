@@ -300,9 +300,10 @@ consumed by `reify-constraints` — `ComputeDispatch`'s shape) answering `reify_
 over already-realised bodies whose **pose** varies ("arm A only"). It names per-trial
 **re-realisation** — "M-WASTE's regime" — out of scope with this PRD as successor, and calls its
 trait "that loop's inner half". P2 is almost entirely pending (only ε #6672 landed); leaf ο #6683
-waits on most of P2 plus #6251, and its wired hard dep #6583 is **cancelled** as a duplicate of the
-still-pending #5436, so ο's real gate is #5436 and the wired edge is stale (reported to Leo
-2026-10-10; not this PRD's to fix). This PRD therefore builds the **outer** layer now and leaves
+waits on most of P2 plus #6251 and its posed-operand prerequisites #5436 + #5483 (re-pointed in the
+store on 2026-09-21 from #6583, which was cancelled as #5436's duplicate). *Corrected 2026-10-11:* an
+earlier version of this paragraph called that edge stale; it was not — P2's prose lagged the store,
+and was amended the same day. This PRD therefore builds the **outer** layer now and leaves
 the continuous inner layer (arm B on P2's trait) as bookmark ι.
 
 ### §2.6 — Grammar and language substrate (G3)
@@ -771,7 +772,7 @@ the overlay itself and coordinates).
 | `catalog-membership-constraint.md` | consumes | `constraint x in C` (#8355), membership domains (#8356), `discrete_set` sugar (#8357); `NoCatalogMemberFeasible` (#8356 D8) owns an **empty pre-geometry** enumeration over a catalog | that PRD | pending — #8357 hard upstream of η. `E_GEOMETRY_SWEEP_INFEASIBLE` is only for candidates that exist and are all rejected post-geometry |
 | `instantiation-value-flow.md` (#6631 pending, #6657 deferred) | coordinates | per-instance sub ctor-arg overlay for *solved* autos | that PRD owns solved-auto flow; **β** owns pin flow (pins are pre-seeded as concrete values, the path that already works) | no edge; β's B14 is the guard |
 | #6724 (P4 γ — eval-time diagnostics into the GUI) | consumes | a GUI eval-diagnostics field on `GuiState` | `solver-legibility-telemetry.md` | pending — hard upstream of δ |
-| `geometry-algebra-solver-unification.md` (P2) | produces-for (future); adjacent | `GeometryDispatch` (#6683) + a re-realisation arm = the inner layer; P2 δ #6671 / #6659 own typed per-constraint refusals | P2 owns the trait and the refusal enum; bookmark ι owns arm B's design; α's `E_GEOMETRY_COUPLED_CONTINUOUS` becomes this regime's cause in P2's refusal enum when #6671 lands | P2 pending; ι dep-gated on #6683. θ3 updates P2 §5 row and §10 successor line. (Reported to Leo, not fixed here: P2 ο's wired hard dep #6583 is cancelled as a duplicate of pending #5436, so that edge is stale.) |
+| `geometry-algebra-solver-unification.md` (P2) | produces-for (future); adjacent | `GeometryDispatch` (#6683) + a re-realisation arm = the inner layer; P2 δ #6671 / #6659 own typed per-constraint refusals | P2 owns the trait and the refusal enum; bookmark ι owns arm B's design; α's `E_GEOMETRY_COUPLED_CONTINUOUS` becomes this regime's cause in P2's refusal enum when #6671 lands | P2 pending; ι dep-gated on #6683, which itself waits on #6251 and #5436 + #5483 (re-pointed from the cancelled #6583 on 2026-09-21). θ3 updates P2 §5 row and §10 successor line. |
 | #5404 / #7308 / #5197 | adjacent | geometry-awaiting-solve diagnostics; `reify check` `error:`-at-exit-0 inventory; `OpContractViolation` mis-cause | those tasks | α asserts nothing they deliver |
 | `whole-model-objective-coupling.md` (M-WHOLE) | consumes (per candidate) | merged-cluster solves run unchanged inside each candidate; the classification pass runs in `build_merged_solver_problem` too | M-WHOLE | landed; θ3 adds the M-WASTE row status |
 | `continuous-cost-minimisation.md` (PRD 1) | consumes (per candidate) | the Money robustness floor composes in every candidate's residual solves; swept scopes are excluded from `detect_robustness_floor_applied` | PRD 1 | landed; θ3 corrects §5 row 3 / §10 (the non-existent `cache-input-cone-rekey.md`) |

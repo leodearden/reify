@@ -637,7 +637,7 @@ tasks:
   title: 'M-WASTE ι [MILESTONE]: bookmark — continuous geometry-in-the-loop (the inner layer)'
   capabilities:
   - name: p2-geometry-dispatch-upstream
-    binding: 'producer-upstream — #6683 (P2 omicron, the GeometryDispatch trait; pending). Its wired hard dep #6583 is cancelled as a duplicate of the still-pending #5436, so its real gate is #5436 (reported to Leo, not this PRD''s to fix). Edge #6683 -> ι wired at decompose.'
+    binding: 'producer-upstream — #6683 (P2 omicron, the GeometryDispatch trait; pending). It depends on #6251 and on #5436 + #5483 for posed operands (re-pointed from the cancelled #6583 on 2026-09-21; corrected 2026-10-11, an earlier version wrongly called that edge stale). Edge #6683 -> ι wired at decompose.'
     verdict: PASS
   - name: sweep-upstream
     binding: producer-upstream — γ (the outer layer whose continuous refusal ι routes from).
