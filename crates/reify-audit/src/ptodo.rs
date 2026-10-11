@@ -3631,15 +3631,28 @@ mod tests {
         assert_eq!(scan_file(line, SweptLang::Rust), vec![]);
     }
 
-    /// δ-B is `.rs`-only. Asserted through `scan_file` rather than
+    /// δ-B is `.rs`-only; δ-C is not. Asserted through `scan_file` rather than
     /// `classify_file`, because `classify_file` discards `Cited` entries and so
-    /// would report "nothing" even if the lane HAD fired — the assertion has to
+    /// would report "nothing" even if a lane HAD fired — the assertion has to
     /// be able to fail.
     #[test]
-    fn scan_file_delta_b_non_rust() {
-        let line = "// wiring is blocked on task #2947";
-        assert_eq!(scan_file(line, SweptLang::SlashComment), vec![]);
-        assert_eq!(classify_file(line, SweptLang::SlashComment), vec![]);
+    fn scan_file_delta_b_is_rust_only_delta_c_is_not() {
+        // `blocked on task #2947` is owner-position, so δ-C claims it in every
+        // `//`-comment language and in none other.
+        let owner = "// wiring is blocked on task #2947";
+        assert_eq!(scan_file(owner, SweptLang::HashComment), vec![]);
+        assert_eq!(
+            scan_file(owner, SweptLang::SlashComment),
+            vec![(1, LineClass::Cited(vec![2947]), owner.to_string())]
+        );
+        assert_eq!(classify_file(owner, SweptLang::SlashComment), vec![]);
+        // A deferral whose cite is NOT owner-position is δ-B's alone: Rust only.
+        let deferral = "// wiring is pending (see #2947)";
+        assert_eq!(scan_file(deferral, SweptLang::SlashComment), vec![]);
+        assert_eq!(
+            scan_file(deferral, SweptLang::Rust),
+            vec![(1, LineClass::Cited(vec![2947]), deferral.to_string())]
+        );
     }
 
     /// A repeated cite id on one line yields ONE id, not two. `resolve_liveness`
@@ -3682,6 +3695,160 @@ mod tests {
         ]
         .join("\n");
         assert_eq!(classify_file(&content, SweptLang::Rust), vec![]);
+    }
+
+    // -------------------------------------------------------------------
+    // §8.1 lane δ-C — owner-position task cites in ordinary comments
+    // -------------------------------------------------------------------
+
+    /// The `scan_file` result for a one-line `content` that arm (8) — or any
+    /// other `Cited` arm — claims with `ids`.
+    fn cited_line(line: &str, ids: &[u32]) -> Vec<(usize, LineClass, String)> {
+        vec![(1, LineClass::Cited(ids.to_vec()), line.trim().to_string())]
+    }
+
+    /// The `.ri` worked-case shapes, one per rule: (L), (S), (R).
+    #[test]
+    fn scan_file_delta_c_positives_slash_comment() {
+        for line in [
+            "// Growth of `Part` is owned by #4578.",
+            "//                          grows once task 4578 lands the registry.",
+            "/// Task 4578 will grow `Part` into a full structure.",
+        ] {
+            assert_eq!(
+                scan_file(line, SweptLang::SlashComment),
+                cited_line(line, &[4578]),
+                "{line}"
+            );
+        }
+    }
+
+    /// On Rust, the legacy spelling reaches lines δ-B cannot: neither carries
+    /// a canonical cite.
+    #[test]
+    fn scan_file_delta_c_positives_legacy_spelling_on_rust() {
+        for (line, id) in [
+            (
+                "// resolution semantics are deferred to task 3477/3558.",
+                3477,
+            ),
+            ("/// validation is owned by task 4092).", 4092),
+        ] {
+            assert!(
+                !has_canonical_cite(line),
+                "δ-B must not be able to claim: {line}"
+            );
+            assert_eq!(
+                scan_file(line, SweptLang::Rust),
+                cited_line(line, &[id]),
+                "{line}"
+            );
+        }
+    }
+
+    /// The payload is the OWNER cites only: a provenance cite sharing the
+    /// line never reaches β.
+    #[test]
+    fn scan_file_delta_c_mixed_line_yields_only_the_owner() {
+        let line = "// introduced by #4578; growth owned by #7097";
+        for lang in [SweptLang::Rust, SweptLang::SlashComment] {
+            assert_eq!(scan_file(line, lang), cited_line(line, &[7097]), "{lang:?}");
+        }
+    }
+
+    #[test]
+    fn scan_file_delta_c_dedups_canonical_and_legacy_cites() {
+        let line = "// owned by #4578 and Task 4578 will grow it";
+        assert_eq!(
+            scan_file(line, SweptLang::SlashComment),
+            cited_line(line, &[4578])
+        );
+    }
+
+    #[test]
+    fn scan_file_delta_c_negatives() {
+        for line in [
+            // Provenance.
+            "// introduced by #4578",
+            "// marker declared in this module (task 4578, per",
+            "// was a placeholder until #4578 renamed it",
+            // PRD-relative: canonical and legacy spellings share §8.2's bound.
+            "/// Diagnostic emission is owned by PRD task #10",
+            "// deferred to task 10",
+            // A trailing comment after code is out of scope.
+            "let x = 1; // owned by #4578",
+            // The `// G-allow:` register is delegated to its own lane.
+            "// G-allow: shared seam; owned by #4578 — no caller yet",
+            // The §6.8 escape.
+            "// owned by #4578 // ptodo:allow",
+        ] {
+            for lang in [SweptLang::Rust, SweptLang::SlashComment] {
+                assert_eq!(scan_file(line, lang), vec![], "{lang:?}: {line}");
+            }
+        }
+    }
+
+    /// `#`-comment languages are out of scope: `//` there is not a comment of
+    /// the file's own language (heredoc-embedded code, fixture data).
+    #[test]
+    fn scan_file_delta_c_skips_hash_comment_languages() {
+        for line in ["// owned by #4578", "# owned by #4578"] {
+            assert_eq!(scan_file(line, SweptLang::HashComment), vec![], "{line}");
+        }
+    }
+
+    /// δ-C is appended LAST: every earlier arm keeps its lines, and a line
+    /// still yields at most one entry.
+    #[test]
+    fn scan_file_delta_c_precedence() {
+        // Arm (3): same payload, owned by the marker lane, pushed once.
+        let marker = "// TODO(#4578): owned by #4578";
+        assert_eq!(
+            scan_file(marker, SweptLang::SlashComment),
+            cited_line(marker, &[4578])
+        );
+        // Arm (3): a marker with only a legacy cite stays malformed-cite.
+        let malformed = "// TODO: owned by task 4578";
+        assert_eq!(
+            scan_file(malformed, SweptLang::SlashComment),
+            vec![(
+                1,
+                LineClass::Structural(Kind::MalformedCite),
+                malformed.to_string()
+            )]
+        );
+        // Arm (7): on Rust δ-B wins, keeping its ALL-canonical-cites payload
+        // (δ-C alone would yield only the owner, #2947).
+        let delta_b = "/// introduced by #2330; wiring is blocked on task #2947";
+        assert_eq!(
+            scan_file(delta_b, SweptLang::Rust),
+            cited_line(delta_b, &[2330, 2947])
+        );
+        // Arm (6): an uncited phantom claim stays structural.
+        let phantom = "// tracked separately, owned by task 4578";
+        assert_eq!(
+            scan_file(phantom, SweptLang::SlashComment),
+            vec![(
+                1,
+                LineClass::Structural(Kind::PhantomTracking),
+                phantom.to_string()
+            )]
+        );
+    }
+
+    /// δ-C emits NO structural kind, so §8.3's taxonomy, `STRUCTURAL_KINDS`
+    /// and `fingerprint` are untouched by it.
+    #[test]
+    fn scan_file_delta_c_emits_no_structural_kind() {
+        let content = [
+            "// Growth of `Part` is owned by #4578.",
+            "// grows once task 4578 lands the registry.",
+            "/// Task 4578 will grow `Part` into a full structure.",
+            "// resolution semantics are deferred to task 3477/3558.",
+        ]
+        .join("\n");
+        assert_eq!(classify_file(&content, SweptLang::SlashComment), vec![]);
+        assert_eq!(scan_file(&content, SweptLang::SlashComment).len(), 4);
     }
 
     // -------------------------------------------------------------------
