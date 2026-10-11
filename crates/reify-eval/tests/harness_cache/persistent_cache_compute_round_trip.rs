@@ -35,7 +35,7 @@
 
 use reify_core::Severity;
 use reify_ir::Value;
-use reify_test_support::{make_simple_engine, parse_and_compile_with_stdlib};
+use reify_test_support::{make_simple_engine, parse_and_compile_with_stdlib, scalar_si};
 
 /// Cantilever smoke source (compile-time include for binary/source sync).
 fn cantilever_source() -> &'static str {
@@ -46,12 +46,12 @@ fn cantilever_source() -> &'static str {
 /// `Value::StructureInstance`.
 fn extract_max_von_mises(result: &Value) -> f64 {
     match result {
-        Value::StructureInstance(data) => {
-            match data.fields.get(&"max_von_mises".to_string()) {
-                Some(Value::Scalar { si_value, .. }) => *si_value,
-                other => panic!("max_von_mises must be Scalar, got: {:?}", other),
-            }
-        }
+        Value::StructureInstance(data) => scalar_si(
+            data.fields
+                .get(&"max_von_mises".to_string())
+                .expect("ElasticResult has no `max_von_mises` field"),
+            "max_von_mises",
+        ),
         other => panic!("result must be StructureInstance, got: {:?}", other),
     }
 }
