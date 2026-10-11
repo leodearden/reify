@@ -23,6 +23,17 @@
 #[allow(dead_code)]
 const EXPECTED_OUTPUTS: &[&str] = &["parser.c", "grammar.json", "node-types.json"];
 
+/// Compute a content hash of a file's bytes, returning a hex-encoded u64.
+/// Used for staleness detection — not for security.
+#[allow(dead_code)]
+fn content_hash(path: &std::path::Path) -> String {
+    let bytes = std::fs::read(path)
+        .unwrap_or_else(|e| panic!("Failed to read {} for hashing: {}", path.display(), e));
+    let mut hasher = std::hash::DefaultHasher::new();
+    std::hash::Hash::hash(&bytes, &mut hasher);
+    format!("{:016x}", std::hash::Hasher::finish(&hasher))
+}
+
 /// Report which `EXPECTED_OUTPUTS` are missing from `src_dir` after a generate.
 /// The build script panics on `Err`, so the message is what cargo prints.
 #[allow(dead_code)]

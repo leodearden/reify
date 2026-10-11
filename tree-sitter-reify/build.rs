@@ -5,18 +5,6 @@
 // replica was green while this file was wrong. One source, two include sites.
 include!("build_support.rs");
 
-use std::hash::{Hash, Hasher};
-
-/// Compute a content hash of a file's bytes, returning a hex-encoded u64.
-/// Used for staleness detection — not for security.
-fn content_hash(path: &std::path::Path) -> String {
-    let bytes = std::fs::read(path)
-        .unwrap_or_else(|e| panic!("Failed to read {} for hashing: {}", path.display(), e));
-    let mut hasher = std::hash::DefaultHasher::new();
-    bytes.hash(&mut hasher);
-    format!("{:016x}", hasher.finish())
-}
-
 /// Default timeout for tree-sitter generate subprocess (seconds).
 const GENERATE_TIMEOUT_SECS: u64 = 60;
 
