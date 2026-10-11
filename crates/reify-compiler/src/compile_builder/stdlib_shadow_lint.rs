@@ -57,6 +57,9 @@ fn report<'a, D: Reportable>(
     local: &'a [D],
     prelude: &[&'a CompiledModule],
 ) -> Vec<Diagnostic> {
+    if local.is_empty() {
+        return Vec::new();
+    }
     let bindings = name_env::bind(local, prelude.iter().copied());
     let mut reported = HashSet::new();
     let mut warnings = Vec::new();

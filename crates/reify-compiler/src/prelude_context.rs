@@ -1,9 +1,11 @@
 //! [`PreludeContext`] — an immutable, pre-built cache of prelude module data.
 //!
 //! Callers that compile many user modules against the same prelude (e.g.
-//! `compile_with_stdlib`) pay the cost of flattening prelude enum definitions
-//! and pub type alias lists only once — at `PreludeContext` construction time —
-//! rather than once per `compile_with_prelude` call.
+//! `compile_with_stdlib`) bind the prelude's own pub type aliases and its
+//! parser enum-name seed only once — at `PreludeContext` construction time —
+//! rather than once per `compile_with_prelude` call. The per-compile enum,
+//! template, trait and function tables are not cached here: each compile binds
+//! them afresh against its module's local definitions.
 //!
 //! # Cached fields
 //!
@@ -46,8 +48,8 @@ use crate::types::CompiledTypeAlias;
 
 /// An immutable, pre-built cache of prelude module data.
 ///
-/// Caches the prelude's bound `resolution_enums` and `pub_aliases` so they
-/// are computed only once (at construction) rather than on every compile call.
+/// Binds the prelude's own `resolution_enums` (the parser's enum-name seed) and
+/// `pub_aliases` once, at construction, rather than on every compile call.
 ///
 /// # Typical usage
 ///
