@@ -2,6 +2,7 @@ mod claude_bridge_tests;
 mod commands_tests;
 mod constraint_recheck_tests;
 mod debug_boundary_tests;
+mod debug_listener_tests;
 mod debug_write_tool_routing_fixtures;
 mod debug_write_tool_routing_tests;
 mod dev_url_tests;
