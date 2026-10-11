@@ -249,7 +249,12 @@ pub fn realization_graph_shape_hash(graph: &EvaluationGraph) -> ContentHash {
 /// only param-position type rejection is `Type::Keyed`, so
 /// `param faces: List<Geometry>` is a leaf — compiled clean by the shipped
 /// `boundary8_empty_list_geometry_is_clean` — and `sub h = Holder(items: auto)`
-/// reaches it as `Auto`.
+/// reaches it as `Auto`. That is true of the TYPE, but the set of leaves that
+/// actually reach Stage A's eval-surface ValueMap with a value that differs on
+/// a dimensional tick is narrower than the producer list above. It is measured,
+/// and pinned end to end, by `tests/morph_arm_e2e.rs`'s
+/// `stage_a_admits_dimensional_tick_with_param_list_geometry_leaf_from_compiled_module`;
+/// read that test's doc before relying on the producer list.
 ///
 /// #### A change to the list's LENGTH defers to Stage B
 ///
