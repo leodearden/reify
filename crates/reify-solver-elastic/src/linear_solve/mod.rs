@@ -3,6 +3,8 @@
 //! or by preconditioned CG. Contract: PRD
 //! `docs/prds/v0_6/elastic-static-solver-performance.md` §5 C1–C4.
 
+pub(crate) mod direct;
+pub mod fault_injection;
 mod outcome;
 mod policy;
 mod system;
