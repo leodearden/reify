@@ -4,14 +4,20 @@
  *
  * ENFORCED INVARIANT — while production demand is SELECTIVE:
  *
- *   viewport_state.meshCount === mesh_stats.meshes.length
- *                            === engine_state.meshes.length
+ *   viewport_state.meshCount === count(mesh_stats.meshes,   default_visible === true)
+ *                            === count(engine_state.meshes, default_visible === true)
  *
  * Task 5348 routed both debug reads (`engine_state`, `mesh_stats`) through
  * `build_gui_state_full_scene` so they report the whole realized scene rather
- * than only the currently-demanded subset — matching what the viewport actually
- * renders. `docs/debug-mcp-contract.md` asserts that consistency but nothing
- * enforced it; this module is the decision half of the gate that now does.
+ * than only the currently-demanded subset. That scene includes hidden-by-default
+ * (aux, consumed-intermediate) realizations the viewport never draws, so the
+ * comparison is over each read's `default_visible === true` partition (task
+ * 6752 added the flag; task 6498 moved the gate onto it). The hidden partition is
+ * floor-gated (`minHiddenBodies`), never compared: `viewport_state` cannot see
+ * hidden bodies, so nothing rendered can vouch for them, but an aux-bearing
+ * fixture whose hidden bodies vanished from the reads must not pass. Rationale
+ * and the legitimate breakers (eye toggles, views, DisplayOutput routing):
+ * `docs/debug-mcp-contract.md`, "Full realized scene".
  *
  * THE VACUITY TRAP (why `fullScope` is an input, not commentary): under
  * `full_scope == true`, `build_gui_state` and `build_gui_state_full_scene`
@@ -45,10 +51,27 @@ import { isInBandError } from "./rpcEnvelope.mjs";
 
 /**
  * Non-vacuity floor: the minimum `viewport_state.meshCount` a parity run must
- * observe for its three-way equality to mean anything. The committed
- * `gui/test/fixtures/large_assembly.ri` realizes well clear of this.
+ * observe for its three-way equality to mean anything. The live driver raises
+ * it per fixture to that fixture's known rendered body count.
  */
-export const MESH_COUNT_PARITY_MIN_BODIES = 2;
+export const MESH_COUNT_PARITY_MIN_RENDERED_BODIES = 2;
+
+/** Field labels for each debug read's two partitions, as records carry them. */
+const RENDERED_FIELD = "meshes[default_visible=true].length";
+const HIDDEN_FIELD = "meshes[default_visible=false].length";
+
+/**
+ * The two debug reads, each naming its two checker inputs. Every per-read gate
+ * iterates this table rather than repeating itself per tool.
+ */
+const DEBUG_READS = Object.freeze([
+  Object.freeze({ tool: "mesh_stats", rendered: "meshStatsRendered", hidden: "meshStatsHidden" }),
+  Object.freeze({
+    tool: "engine_state",
+    rendered: "engineStateRendered",
+    hidden: "engineStateHidden",
+  }),
+]);
 
 /**
  * Render a rejected value for a failure message without ever throwing.
@@ -143,12 +166,18 @@ export function formatFailures(failures) {
         const verb = f.observed === undefined ? "is missing or not" : "is not";
         return `${failurePath(f)} ${verb} ${want}: ${describeValue(f.observed)}`;
       }
-      case "degenerate":
-        return (
+      case "degenerate": {
+        const floor =
           `${failurePath(f)} is ${describeValue(f.observed)}, below the non-vacuity floor of ` +
-          `${describeValue(f.expected)} bodies — the model failed to load, or realized only part ` +
-          `of the fixture, and a three-way match over a truncated scene would pass trivially.`
-        );
+          `${describeValue(f.expected)} bodies — `;
+        return f.field === HIDDEN_FIELD
+          ? floor +
+              `the fixture's hidden-by-default (aux) bodies did not reach this debug read, and ` +
+              `rendered-count parity alone would pass a scene missing them.`
+          : floor +
+              `the model failed to load, or realized only part of the fixture, and a three-way ` +
+              `match over a truncated scene would pass trivially.`;
+      }
       case "parity":
         return (
           `${failurePath(f)} (${describeValue(f.observed)}) != viewport_state.meshCount ` +
@@ -167,13 +196,18 @@ export function formatFailures(failures) {
 
 /**
  * @typedef {object} MeshCountParityInputs
- * @property {unknown} viewportMeshCount  `viewport_state.meshCount` — the rendered-scene reference.
- * @property {unknown} meshStatsCount     `mesh_stats.meshes.length`.
- * @property {unknown} engineStateCount   `engine_state.meshes.length`.
- * @property {unknown} fullScope          `demand_dispatch.full_scope` — must be `false`.
- * @property {number} [minBodies]         Non-vacuity floor; anything that is not a
- *                                        non-negative integer falls back to
- *                                        MESH_COUNT_PARITY_MIN_BODIES.
+ * @property {unknown} viewportMeshCount    `viewport_state.meshCount` — the rendered-scene reference.
+ * @property {unknown} meshStatsRendered    `mesh_stats.meshes` entries with `default_visible === true`.
+ * @property {unknown} meshStatsHidden      `mesh_stats.meshes` entries with `default_visible === false`.
+ * @property {unknown} engineStateRendered  `engine_state.meshes` entries with `default_visible === true`.
+ * @property {unknown} engineStateHidden    `engine_state.meshes` entries with `default_visible === false`.
+ * @property {unknown} fullScope            `demand_dispatch.full_scope` — must be `false`.
+ * @property {number} [minRenderedBodies]   Floor on `viewportMeshCount`; anything that is
+ *                                          not a non-negative integer falls back to
+ *                                          MESH_COUNT_PARITY_MIN_RENDERED_BODIES.
+ * @property {number} [minHiddenBodies]     Floor on EACH read's hidden count. Omitted
+ *                                          means 0 (an aux-free fixture); present but
+ *                                          not a non-negative integer means 1.
  */
 
 /**
@@ -192,8 +226,11 @@ export function formatFailures(failures) {
  * `expected` is gate-specific, and each gate fixes its type:
  *   vacuity    → `false` (the only selective reading)
  *   shape      → an expectation TOKEN: 'non-negative-integer' | 'array' | 'boolean' | 'object'
- *   degenerate → the floor, a number; `observed` must be >= it
- *   parity     → the reference count (`viewport_state.meshCount`)
+ *   degenerate → the floor, a number; `observed` must be >= it (the viewport's
+ *                count against minRenderedBodies, or a read's hidden count
+ *                against minHiddenBodies)
+ *   parity     → the reference count (`viewport_state.meshCount`), against
+ *                which a read's default_visible === true count was compared
  *   outage     → absent; the tool failed, so nothing was expected of its value
  *
  * @typedef {object} MeshCountFailure
@@ -212,7 +249,7 @@ export function formatFailures(failures) {
  */
 
 /**
- * Evaluate the parity invariant and both non-vacuity preconditions.
+ * Evaluate the parity invariant and its non-vacuity preconditions.
  *
  * ALL gates are evaluated and every violation accumulated — this never
  * early-returns — so one failing live run reports the complete picture instead
@@ -232,11 +269,19 @@ export function checkMeshCountParity(inputs) {
   const src = /** @type {any} */ (
     inputs !== null && typeof inputs === "object" ? inputs : {}
   );
-  const { viewportMeshCount, meshStatsCount, engineStateCount, fullScope } = src;
+  const { viewportMeshCount, fullScope } = src;
   // A non-numeric floor must fall back, never pass through: `1 < null` is false,
-  // so a mistyped `minBodies` would SILENTLY DISABLE the degeneracy gate — the
+  // so a mistyped floor would SILENTLY DISABLE the degeneracy gate — the
   // failure mode that gate exists to catch, reintroduced by its own parameter.
-  const minBodies = isUsableCount(src.minBodies) ? src.minBodies : MESH_COUNT_PARITY_MIN_BODIES;
+  const minRenderedBodies = isUsableCount(src.minRenderedBodies)
+    ? src.minRenderedBodies
+    : MESH_COUNT_PARITY_MIN_RENDERED_BODIES;
+  const minHiddenBodies = hiddenBodyFloor(src.minHiddenBodies);
+  const reads = DEBUG_READS.map(({ tool, rendered, hidden }) => ({
+    tool,
+    rendered: src[rendered],
+    hidden: src[hidden],
+  }));
 
   /** @type {MeshCountFailure[]} */
   const failures = [];
@@ -257,56 +302,71 @@ export function checkMeshCountParity(inputs) {
   }
 
   // ── Gate 2: malformed counts ──────────────────────────────────────────────
-  // Checked before parity so an unusable value is reported once, as a shape
-  // problem, rather than twice as a confusing inequality against a reference.
+  // Checked before the floors and parity so an unusable value is reported once,
+  // as a shape problem, rather than again as a confusing comparison.
   const viewportUsable = isUsableCount(viewportMeshCount);
-  const meshStatsUsable = isUsableCount(meshStatsCount);
-  const engineStateUsable = isUsableCount(engineStateCount);
-
   if (!viewportUsable) {
     failures.push(shapeFailure("viewport_state", "meshCount", viewportMeshCount, COUNT));
   }
-  if (!meshStatsUsable) {
-    failures.push(shapeFailure("mesh_stats", "meshes.length", meshStatsCount, COUNT));
-  }
-  if (!engineStateUsable) {
-    failures.push(shapeFailure("engine_state", "meshes.length", engineStateCount, COUNT));
+  for (const { tool, rendered, hidden } of reads) {
+    if (!isUsableCount(rendered)) failures.push(shapeFailure(tool, RENDERED_FIELD, rendered, COUNT));
+    if (!isUsableCount(hidden)) failures.push(shapeFailure(tool, HIDDEN_FIELD, hidden, COUNT));
   }
 
   // ── Gate 3: degenerate scene ──────────────────────────────────────────────
-  if (viewportUsable && viewportMeshCount < minBodies) {
+  if (viewportUsable && viewportMeshCount < minRenderedBodies) {
     failures.push({
       gate: "degenerate",
       tool: "viewport_state",
       field: "meshCount",
       observed: viewportMeshCount,
-      expected: minBodies,
+      expected: minRenderedBodies,
     });
+  }
+  for (const { tool, hidden } of reads) {
+    if (isUsableCount(hidden) && hidden < minHiddenBodies) {
+      failures.push({
+        gate: "degenerate",
+        tool,
+        field: HIDDEN_FIELD,
+        observed: hidden,
+        expected: minHiddenBodies,
+      });
+    }
   }
 
   // ── Gate 4: parity ────────────────────────────────────────────────────────
-  // Each debug read is compared INDEPENDENTLY against the rendered-scene
-  // reference so a failing run localises which read drifted.
-  if (viewportUsable && meshStatsUsable && meshStatsCount !== viewportMeshCount) {
-    failures.push({
-      gate: "parity",
-      tool: "mesh_stats",
-      field: "meshes.length",
-      observed: meshStatsCount,
-      expected: viewportMeshCount,
-    });
-  }
-  if (viewportUsable && engineStateUsable && engineStateCount !== viewportMeshCount) {
-    failures.push({
-      gate: "parity",
-      tool: "engine_state",
-      field: "meshes.length",
-      observed: engineStateCount,
-      expected: viewportMeshCount,
-    });
+  // Each debug read's rendered partition is compared INDEPENDENTLY against the
+  // rendered-scene reference so a failing run localises which read drifted.
+  for (const { tool, rendered } of reads) {
+    if (viewportUsable && isUsableCount(rendered) && rendered !== viewportMeshCount) {
+      failures.push({
+        gate: "parity",
+        tool,
+        field: RENDERED_FIELD,
+        observed: rendered,
+        expected: viewportMeshCount,
+      });
+    }
   }
 
   return { ok: failures.length === 0, failures };
+}
+
+/**
+ * Normalise the hidden-body floor. Omitted means 0: an aux-free fixture has no
+ * hidden bodies to require. Present but unusable falls back to 1, never 0 —
+ * passing it through would disable the gate (`n < null` is false for every
+ * count), and 0 would do the same thing quietly. A caller that passes a hidden
+ * floor is asserting the fixture is aux-bearing; 1 is the weakest floor that
+ * keeps that assertion without throwing.
+ *
+ * @param {unknown} requested
+ * @returns {number}
+ */
+function hiddenBodyFloor(requested) {
+  if (requested === undefined) return 0;
+  return isUsableCount(requested) ? /** @type {number} */ (requested) : 1;
 }
 
 // ─── Payload extraction ──────────────────────────────────────────────────────
@@ -340,27 +400,46 @@ function usablePayload(payload, toolName, failures) {
 }
 
 /**
- * Read `<payload>.meshes.length` defensively.
+ * Count `<payload>.meshes` by each entry's `default_visible`, defensively.
+ *
+ * A flag that is not a boolean — including the `null` the Rust join emits when
+ * no entity-tree realization node matched — is ONE shape failure for the read,
+ * naming the first offending entry, and leaves both counts undefined: counting
+ * it on either side would blame the wrong layer.
  *
  * @param {Record<string, unknown> | null} payload
  * @param {string} toolName
  * @param {MeshCountFailure[]} failures
- * @returns {number | undefined}
+ * @returns {{rendered: number | undefined, hidden: number | undefined}}
  */
-function meshesLength(payload, toolName, failures) {
-  if (payload === null) return undefined;
+function partitionByDefaultVisible(payload, toolName, failures) {
+  const unread = { rendered: undefined, hidden: undefined };
+  if (payload === null) return unread;
   const meshes = payload["meshes"];
   if (!Array.isArray(meshes)) {
     failures.push(shapeFailure(toolName, "meshes", meshes, ARRAY));
-    return undefined;
+    return unread;
   }
-  return meshes.length;
+  let rendered = 0;
+  let hidden = 0;
+  for (const [i, entry] of meshes.entries()) {
+    const flag = entry !== null && typeof entry === "object" ? entry.default_visible : undefined;
+    if (typeof flag !== "boolean") {
+      failures.push(shapeFailure(toolName, `meshes[${i}].default_visible`, flag, BOOLEAN));
+      return unread;
+    }
+    if (flag) rendered += 1;
+    else hidden += 1;
+  }
+  return { rendered, hidden };
 }
 
 /**
  * @typedef {object} MeshCountExtraction
- * @property {{viewportMeshCount: number|undefined, meshStatsCount: number|undefined,
- *            engineStateCount: number|undefined, fullScope: boolean|undefined}} inputs
+ * @property {{viewportMeshCount: number|undefined,
+ *            meshStatsRendered: number|undefined, meshStatsHidden: number|undefined,
+ *            engineStateRendered: number|undefined, engineStateHidden: number|undefined,
+ *            fullScope: boolean|undefined}} inputs
  *           Flat shape accepted by {@link checkMeshCountParity}; a field is
  *           `undefined` exactly when its extraction failed.
  * @property {MeshCountFailure[]} failures Per-tool extraction problems — gate
@@ -374,14 +453,15 @@ function meshesLength(payload, toolName, failures) {
  * Shapes read (all verified against base — note the casing seam, the frontend
  * speaks camelCase and Rust speaks snake_case):
  *   `viewport_state`  → `{ meshCount, meshInfo: [{entityPath, …}], … }`  (bridge.ts)
- *   `mesh_stats`      → `{ meshes: [{entity_path, vertex_count, …}] }`   (commands.rs)
- *   `engine_state`    → `{ meshes: [{entity_path, …}], values, … }`      (commands.rs)
+ *   `mesh_stats`      → `{ meshes: [{entity_path, default_visible, …}] }`   (commands.rs)
+ *   `engine_state`    → `{ meshes: [{entity_path, default_visible, …}], … }` (commands.rs)
  *   `demand_dispatch` → `{ dispatch_by_realization, eval_set, full_scope }` (commands.rs)
  *
  * `viewport_state.meshCount` is `getSceneMeshes().size` — the VISIBILITY-FILTERED
  * scene map, `show`-state meshes only (meshManager.ts; bridge.ts reads it via
- * `vp.getMeshes()`), NOT the whole mesh registry. That filter is why the invariant
- * is conditional on every realized body being visible, as
+ * `vp.getMeshes()`), NOT the whole mesh registry. That filter is why the debug
+ * reads are partitioned by `default_visible` before comparison, and why the
+ * invariant assumes no user toggles or DisplayOutput routing, as
  * docs/debug-mcp-contract.md spells out. This field is the authoritative count
  * here; `meshInfo` is a per-mesh detail list and is NOT used as the count.
  *
@@ -417,12 +497,12 @@ export function extractMeshCountInputs(payloads) {
     }
   }
 
-  const meshStatsCount = meshesLength(
+  const meshStatsPartition = partitionByDefaultVisible(
     usablePayload(meshStats, "mesh_stats", failures),
     "mesh_stats",
     failures,
   );
-  const engineStateCount = meshesLength(
+  const engineStatePartition = partitionByDefaultVisible(
     usablePayload(engineState, "engine_state", failures),
     "engine_state",
     failures,
@@ -444,7 +524,14 @@ export function extractMeshCountInputs(payloads) {
   }
 
   return {
-    inputs: { viewportMeshCount, meshStatsCount, engineStateCount, fullScope },
+    inputs: {
+      viewportMeshCount,
+      meshStatsRendered: meshStatsPartition.rendered,
+      meshStatsHidden: meshStatsPartition.hidden,
+      engineStateRendered: engineStatePartition.rendered,
+      engineStateHidden: engineStatePartition.hidden,
+      fullScope,
+    },
     failures,
   };
 }
