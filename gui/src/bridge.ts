@@ -543,7 +543,16 @@ export async function onValueUpdate(
   });
 }
 
-/** Subscribe to constraint update events. The verdict token is validated by convertRawConstraint. */
+/**
+ * Subscribe to constraint update events. The verdict token is validated by
+ * convertRawConstraint.
+ *
+ * An out-of-set token throws out of this listener uncaught, so that delta is
+ * dropped and the store keeps the constraint's previous verdict until a
+ * whole-state snapshot replaces it; the snapshot path rejects the same token.
+ * This is deliberate: a bad token means the Rust contract broke, and skipping
+ * or normalising it here would hide that.
+ */
 export async function onConstraintUpdate(
   callback: (data: ConstraintData) => void,
 ): Promise<UnlistenFn> {
