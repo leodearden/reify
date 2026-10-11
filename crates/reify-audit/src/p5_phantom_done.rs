@@ -1735,7 +1735,7 @@ fn live_path_unexamined(
 /// findings cannot be read as a clean result.
 ///
 /// `None` when no task [`check`] sweeps is one H2 would have queried
-/// jcodemunch for (done, with an [`h2_range`]): its zero H2 findings are then
+/// jcodemunch for (done, with an `h2_range`): its zero H2 findings are then
 /// clean whatever the seam, so a spot-check of a single-crate task records
 /// nothing.
 pub fn live_path_run_unexamined(ctx: &AuditContext, reason: &str) -> Option<Finding> {
