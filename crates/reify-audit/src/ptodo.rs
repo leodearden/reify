@@ -18,6 +18,11 @@
 //!   ¬do_not_complete) suffices to track a marker. The lane degrades fail-soft
 //!   (§6.7): a missing/unreadable DB is skipped with a single stderr breadcrumb
 //!   while the structural lane still runs in full.
+//! - **Owner-position prose cites (lane δ-C)** — an ordinary `//` comment
+//!   naming a task as the owner of future work (`owned by #N`, `deferred to
+//!   task N`, `#N will …`, `until #N lands`) feeds that cite to β, while a
+//!   provenance mention (`introduced by #N`) stays silent. Grammar:
+//!   [`crate::ptodo_promise`]; PRD §8.1, §20.
 //!
 //! A single precedence-correct `scan_file` pass feeds both lanes so they
 //! never drift. Only file enumeration (`GitOps::ls_files`), content reads
@@ -27,6 +32,7 @@
 //! Reference: `docs/prds/reify-audit-ptodo-detector.md` §8 (normative grammar),
 //! §6.7 (liveness degradation contract).
 
+use crate::ptodo_promise::is_owner_position;
 use crate::scan_util::{contains_word, is_word_byte};
 use crate::{AuditContext, EvidenceRef, Finding, Pattern, Severity};
 use reify_test_support::ignore_hygiene::extract_ignore_reason;
@@ -1280,6 +1286,9 @@ enum LineClass {
 ///    and deferral prose, and is not a `// G-allow:` marker →
 ///    `Cited(on-line cites)`. Cite-ANCHORED: it emits no structural kind, so an
 ///    uncited deferral comment produces no entry.
+/// 8. lane δ-C (`//`-comment languages): an ordinary full-line `//` comment,
+///    not a `// G-allow:` marker → `Cited(owner-position cites)`, via
+///    [`promise_owner_cites`]; no entry when it has none. PRD §8.1, §20.
 fn scan_file(content: &str, lang: SweptLang) -> Vec<(usize, LineClass, String)> {
     let mut out = Vec::new();
     let mut prev: Option<&str> = None;
@@ -1454,6 +1463,19 @@ fn scan_file(content: &str, lang: SweptLang) -> Vec<(usize, LineClass, String)> 
             // (`deferred to PRD task #10`). Task #6087 rejected this lane at a
             // 48% false-positive rate; those two guards are what changed.
             out.push((line_no, LineClass::Cited(on_line_cites(line)), line.trim().to_string()));
+        } else if lang.has_slash_line_comments()
+            && line.trim_start().starts_with("//")
+            && g_allow_marker_body(line).is_none()
+        {
+            // (8) lane δ-C. Three choices a reader must not undo, for the
+            // reasons δ-B's (i)–(iv) give above: APPENDED LAST, so every
+            // earlier arm keeps its lines; CITE-ANCHORED, so it emits only
+            // `Cited` and never a structural kind; FULL-LINE `//` comments of
+            // a `//`-comment language only, with `// G-allow:` delegated.
+            let ids = promise_owner_cites(line);
+            if !ids.is_empty() {
+                out.push((line_no, LineClass::Cited(ids), line.trim().to_string()));
+            }
         }
 
         prev = Some(line);
@@ -1467,6 +1489,32 @@ fn scan_file(content: &str, lang: SweptLang) -> Vec<(usize, LineClass, String)> 
 /// same id twice would otherwise report it twice.
 fn on_line_cites(line: &str) -> Vec<u32> {
     let mut ids = extract_cites(line);
+    dedup_in_place(&mut ids);
+    ids
+}
+
+/// Lane δ-C's payload: the cites on `line` in owner position
+/// ([`is_owner_position`]), each id once, in source order. A cite is canonical
+/// ([`canonical_cite_occurrences`]) or the legacy `task N` spelling
+/// ([`legacy_task_cite_occurrences`]) above the same [`PRD_RELATIVE_MAX_ID`]
+/// bound, so one definition of "cite" serves every lane.
+fn promise_owner_cites(line: &str) -> Vec<u32> {
+    let bytes = line.as_bytes();
+    let canonical = canonical_cite_occurrences(line).map(|(at, id)| {
+        let digits = bytes[at + 1..]
+            .iter()
+            .take_while(|b| b.is_ascii_digit())
+            .count();
+        (at, at + 1 + digits, id)
+    });
+    let legacy = legacy_task_cite_occurrences(line).filter(|&(_, _, id)| id > PRD_RELATIVE_MAX_ID);
+    let mut spans: Vec<(usize, usize, u32)> = canonical.chain(legacy).collect();
+    spans.sort_by_key(|&(head, _, _)| head);
+    let mut ids: Vec<u32> = spans
+        .into_iter()
+        .filter(|&(head, end, _)| is_owner_position(line, head, end))
+        .map(|(_, _, id)| id)
+        .collect();
     dedup_in_place(&mut ids);
     ids
 }
