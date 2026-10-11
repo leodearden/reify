@@ -174,8 +174,9 @@ describe('constraint verdict wire contract — StatusBar counts the engine’s o
     const count = (status: string): string | null =>
       container.querySelector(`[data-status="${status}"]`)?.textContent ?? null;
 
-    // `constraintSummary` buckets anything it does not recognise as
-    // indeterminate, so a casing desync shows up here as 0 / 0 / 3.
+    // A casing or vocabulary desync never reaches this count: it throws at
+    // convertRawGuiState in this file's beforeAll, naming the token, which
+    // fails every case here.
     expect(count('satisfied')).toBe('1');
     expect(count('violated')).toBe('1');
     expect(count('indeterminate')).toBe('1');
@@ -191,9 +192,9 @@ describe('constraint verdict wire contract — the violated-first sort', () => {
     // cases above anchor on `data-testid="constraint-row-<node_id>"` instead of
     // asserting DOM order.
     //
-    // It doubles as a desync detector: STATUS_PRIORITY is keyed lower-case and
-    // falls back to `?? 1`, so under a PascalCase payload every row scores 1,
-    // the sort is a no-op, and this reads back in payload order instead.
+    // A casing or vocabulary desync never reaches this sort: it throws at
+    // convertRawGuiState in this file's beforeAll, naming the token, which
+    // fails every case here.
     const ids = [...renderPanel().querySelectorAll('[data-testid^="constraint-row-"]')].map((e) =>
       e.getAttribute('data-testid')?.replace('constraint-row-', ''),
     );

@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent } from '@solidjs/testing-library';
 import { ConstraintPanel } from '../panels/ConstraintPanel';
+import { CONSTRAINT_STATUSES } from '../types';
 import type { ConstraintData, ValueData } from '../types';
 
 function makeConstraint(overrides: Partial<ConstraintData> & { node_id: string }): ConstraintData {
@@ -500,7 +501,7 @@ describe('ConstraintPanel Ask Claude context menu', () => {
 
 describe('ConstraintPanel — status badge title', () => {
   it('each status badge has a non-empty, status-unique title', () => {
-    const statuses = ['satisfied', 'violated', 'indeterminate'] as const;
+    const statuses = CONSTRAINT_STATUSES;
     const constraints: Record<string, ConstraintData> = Object.fromEntries(
       statuses.map((s, i) => [`n${i + 1}`, makeConstraint({ node_id: `n${i + 1}`, status: s, expression: `x${i} > 0` })])
     );
