@@ -1677,3 +1677,133 @@ fn e2e_cantilever_gradient_curl_ri_accessor() {
         other => panic!("stress cell must be Value::Field, got: {:?}", other),
     }
 }
+
+// ── task 6922 γ1: a FORCE-dimensioned PointLoad applies the bare spelling's force ──
+//
+// PRD dimension-checked-readers boundary row B1, driven below the compiler:
+// `PointLoad.force` is still declared `Real` (γ2 #6941 retypes it), so a
+// dimensioned force cannot be spelled in `.ri` yet. The wrapper re-spells the
+// compiled bare force as the FORCE Scalar the retyped field will carry, and
+// the solve must come out IDENTICAL to the bare control solved in-process.
+// The control is not pinned to a literal: it drifts with unrelated solver
+// changes (esc-6922-1).
+
+const GAMMA1_POINT_LOAD_SOURCE: &str = r#"module gamma1_point_load_widening
+
+structure Gamma1PointLoad {
+    param length : Length = 1000mm
+    param width  : Length = 100mm
+    param height : Length = 100mm
+
+    let material = Steel_AISI_1045()
+    let tip_load = PointLoad(point: "tip", force: 1000.0)
+    let mount    = FixedSupport(target: "root")
+
+    let result = solve_elastic_static(
+        material, length, width, height, [tip_load], [mount], ElasticOptions()
+    )
+}
+"#;
+
+static FORCE_REWRITES: AtomicU32 = AtomicU32::new(0);
+
+fn dimensioned_force_wrapper(
+    value_inputs: &[Value],
+    realization_inputs: &[RealizationReadHandle],
+    options: &Value,
+    prior_warm_state: Option<&OpaqueState>,
+    cancellation: &CancellationHandle,
+) -> ComputeOutcome {
+    let mut inputs = value_inputs.to_vec();
+    if let Some(Value::List(loads)) = inputs.get_mut(4) {
+        for load in loads.iter_mut() {
+            let Value::StructureInstance(data) = load else { continue };
+            if data.type_name != "PointLoad" {
+                continue;
+            }
+            if let Some(force) = data.fields.get_mut("force")
+                && let Value::Real(newtons) = *force
+            {
+                *force = Value::Scalar {
+                    si_value: newtons,
+                    dimension: DimensionVector::FORCE,
+                };
+                FORCE_REWRITES.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+    }
+    reify_eval::compute_targets::elastic_static::solve_elastic_static_trampoline(
+        &inputs,
+        realization_inputs,
+        options,
+        prior_warm_state,
+        cancellation,
+    )
+}
+
+/// `(max_von_mises, iterations)` of `Gamma1PointLoad.result` on `engine`,
+/// after asserting the eval raised no Error diagnostic.
+fn gamma1_solve(engine: &mut reify_eval::Engine, label: &str) -> (Value, i64) {
+    let compiled = parse_and_compile_with_stdlib(GAMMA1_POINT_LOAD_SOURCE);
+    let eval = engine.eval(&compiled);
+    let errors: Vec<_> = eval
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "{label}: no Error diagnostics expected, got {errors:?}");
+    let result = eval
+        .values
+        .get(&ValueCellId::new("Gamma1PointLoad", "result"))
+        .cloned()
+        .unwrap_or_else(|| panic!("{label}: Gamma1PointLoad.result not found"));
+    let max_von_mises = extract_max_von_mises(&result)
+        .unwrap_or_else(|| panic!("{label}: no max_von_mises in {result:?}"));
+    let iterations = match extract_field(&result, "iterations") {
+        Some(Value::Int(n)) => n,
+        other => panic!("{label}: iterations must be Value::Int, got {other:?}"),
+    };
+    (max_von_mises, iterations)
+}
+
+#[test]
+fn gamma1_force_dimensioned_point_load_solves_identically_to_the_bare_spelling() {
+    let mut control_engine = make_simple_engine();
+    reify_eval::compute_targets::register_compute_fns(&mut control_engine);
+    let (control_mvm, control_iterations) = gamma1_solve(&mut control_engine, "bare control");
+
+    let Value::Scalar {
+        si_value: control_si,
+        dimension: control_dim,
+    } = control_mvm
+    else {
+        panic!("bare control: max_von_mises must be a Scalar, got {control_mvm:?}");
+    };
+    assert_eq!(control_dim, DimensionVector::PRESSURE);
+    assert!(
+        control_si > 0.0 && control_iterations > 0,
+        "anti-vacuity: the bare control must actually solve, got \
+         max_von_mises {control_si} Pa, iterations {control_iterations}"
+    );
+
+    FORCE_REWRITES.store(0, Ordering::SeqCst);
+    let mut dimensioned_engine = make_simple_engine();
+    dimensioned_engine
+        .register_compute_fn("solver::elastic_static", dimensioned_force_wrapper as ComputeFn);
+    let (dimensioned_mvm, dimensioned_iterations) =
+        gamma1_solve(&mut dimensioned_engine, "FORCE-dimensioned");
+    assert!(
+        FORCE_REWRITES.load(Ordering::SeqCst) >= 1,
+        "anti-vacuity: the wrapper must have re-spelled at least one PointLoad.force"
+    );
+
+    assert_eq!(
+        dimensioned_mvm, control_mvm,
+        "a FORCE-dimensioned PointLoad must solve to the bare control's \
+         max_von_mises (measured control: {control_si} Pa, {control_iterations} iterations)"
+    );
+    assert_eq!(
+        dimensioned_iterations, control_iterations,
+        "a FORCE-dimensioned PointLoad must take the bare control's iteration count"
+    );
+}

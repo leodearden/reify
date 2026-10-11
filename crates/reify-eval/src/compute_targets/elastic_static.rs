@@ -10164,7 +10164,7 @@ mod tests {
             fields: fields_a,
         }));
         assert!(
-            (extract_density(&material_a) - 7850.0).abs() < 1e-9,
+            (material_density(&material_a).unwrap() - 7850.0).abs() < 1e-9,
             "(a) well-formed material → density 7850.0"
         );
 
@@ -10177,15 +10177,15 @@ mod tests {
             fields: fields_b,
         }));
         assert_eq!(
-            extract_density(&material_b),
-            0.0,
+            material_density(&material_b),
+            Ok(0.0),
             "(b) absent density field → 0.0"
         );
 
         // (c) Non-StructureInstance value → 0.0
         assert_eq!(
-            extract_density(&Value::Real(42.0)),
-            0.0,
+            material_density(&Value::Real(42.0)),
+            Ok(0.0),
             "(c) non-StructureInstance → 0.0"
         );
     }
@@ -10290,6 +10290,146 @@ mod tests {
             body,
             [0.0, 0.0, 0.0],
             "unrecognized type_name must not contribute to body_force"
+        );
+    }
+
+    // ── task 6922 γ1: load magnitudes are dimension-checked, bare still read ──
+
+    fn gamma1_struct(type_name: &str, fields: Vec<(&str, Value)>) -> Value {
+        Value::StructureInstance(Box::new(StructureInstanceData {
+            type_name: type_name.to_string(),
+            type_id: StructureTypeId(u32::MAX),
+            version: 0,
+            fields: fields
+                .into_iter()
+                .map(|(k, v)| (k.to_string(), v))
+                .collect(),
+        }))
+    }
+
+    fn gamma1_scalar(si_value: f64, dimension: DimensionVector) -> Value {
+        Value::Scalar {
+            si_value,
+            dimension,
+        }
+    }
+
+    fn gamma1_tip_force(force: Value) -> [f64; 3] {
+        let loads = Value::List(vec![gamma1_struct("PointLoad", vec![("force", force)])]);
+        extract_loads(&loads, 0.0).unwrap().0
+    }
+
+    #[test]
+    fn extract_loads_reads_a_force_dimensioned_point_load_like_the_bare_spelling() {
+        let bare = gamma1_tip_force(Value::Real(1000.0));
+        assert_eq!(bare, [0.0, 0.0, -1000.0]);
+        assert_eq!(
+            gamma1_tip_force(gamma1_scalar(1000.0, DimensionVector::FORCE)),
+            bare,
+            "a FORCE Scalar must apply exactly the force the bare spelling does"
+        );
+        assert_eq!(gamma1_tip_force(Value::Int(1000)), bare);
+    }
+
+    #[test]
+    fn extract_loads_keeps_dimensioned_pressure_and_gravity_magnitudes() {
+        let pressure = gamma1_struct(
+            "PressureLoad",
+            vec![
+                ("magnitude", gamma1_scalar(5.0e6, DimensionVector::PRESSURE)),
+                ("face", Value::String("x_max".to_string())),
+            ],
+        );
+        let gravity = gamma1_struct(
+            "Gravity",
+            vec![(
+                "magnitude",
+                gamma1_scalar(9.8, DimensionVector::ACCELERATION),
+            )],
+        );
+        let (_, pressures, body) =
+            extract_loads(&Value::List(vec![pressure, gravity]), 1000.0).unwrap();
+        assert_eq!(pressures.len(), 1);
+        assert_eq!(pressures[0].magnitude, 5.0e6);
+        assert_eq!(body, [0.0, 0.0, -9800.0]);
+    }
+
+    #[test]
+    fn extract_loads_rejects_a_wrong_dimension_magnitude_at_each_load_position() {
+        let cases = [
+            ("PointLoad", "force", DimensionVector::LENGTH, "Force"),
+            ("PressureLoad", "magnitude", DimensionVector::FORCE, "Pressure"),
+            ("Gravity", "magnitude", DimensionVector::FORCE, "Acceleration"),
+        ];
+        for (type_name, field, wrong, expected_name) in cases {
+            let mut fields = vec![(field, gamma1_scalar(2.0, wrong))];
+            if type_name == "PressureLoad" {
+                fields.push(("face", Value::String("x_max".to_string())));
+            }
+            let loads = Value::List(vec![gamma1_struct(type_name, fields)]);
+            let res = extract_loads(&loads, 7850.0);
+            assert!(
+                matches!(
+                    &res,
+                    Err(FeaValueShapeError::WrongDimension { expected, .. })
+                        if *expected == expected_name
+                ),
+                "{type_name}.{field}: a wrong-dimension Scalar must be \
+                 Err(WrongDimension {{ expected: {expected_name:?} }}), got {res:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn extract_loads_skips_an_undef_or_absent_force_quietly() {
+        assert_eq!(gamma1_tip_force(Value::Undef), [0.0, 0.0, 0.0]);
+        let no_force = Value::List(vec![gamma1_struct("PointLoad", vec![])]);
+        assert_eq!(extract_loads(&no_force, 0.0).unwrap().0, [0.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn material_density_gates_the_density_dimension() {
+        let material = |density: Value| gamma1_struct("Steel_AISI_1045", vec![("density", density)]);
+        assert_eq!(
+            material_density(&material(gamma1_scalar(7850.0, DimensionVector::MASS_DENSITY))),
+            Ok(7850.0)
+        );
+        assert_eq!(material_density(&material(Value::Real(7850.0))), Ok(7850.0));
+        assert_eq!(material_density(&material(Value::Undef)), Ok(0.0));
+        let res = material_density(&material(gamma1_scalar(7850.0, DimensionVector::PRESSURE)));
+        assert!(
+            matches!(
+                &res,
+                Err(FeaValueShapeError::WrongDimension { expected: "Density", .. })
+            ),
+            "a PRESSURE density must be Err(WrongDimension), got {res:?}"
+        );
+    }
+
+    #[test]
+    fn trampoline_fails_a_wrong_dimension_force_with_the_dimensioned_arg_code() {
+        let mut value_inputs = shell9_valid_inputs();
+        value_inputs[4] = Value::List(vec![gamma1_struct(
+            "PointLoad",
+            vec![("force", gamma1_scalar(2.0, DimensionVector::LENGTH))],
+        )]);
+        let outcome = solve_elastic_static_trampoline(
+            &value_inputs,
+            &[],
+            &Value::Undef,
+            None,
+            &CancellationHandle::new(),
+        );
+        let ComputeOutcome::Failed { diagnostics, .. } = &outcome else {
+            unreachable!("a LENGTH force must fail the input gate, got {outcome:?}");
+        };
+        assert!(
+            diagnostics.iter().any(|d| {
+                d.severity == reify_core::Severity::Error
+                    && d.code == Some(DiagnosticCode::DimensionedArgRejected)
+                    && d.message.starts_with("solve_elastic_static_trampoline: loads:")
+            }),
+            "expected a DimensionedArgRejected Error naming loads, got {diagnostics:?}"
         );
     }
 
@@ -14420,7 +14560,8 @@ mod tests {
             ADAPTIVE_STEEL.youngs_modulus,
             ADAPTIVE_STEEL.poisson_ratio,
         );
-        extract_loads(&shell9_make_point_loads(1000.0), extract_density(&material))
+        let density = material_density(&material).expect("the steel density is dimensioned");
+        extract_loads(&shell9_make_point_loads(1000.0), density)
             .expect("a PointLoad list is a well-formed load list")
     }
 
