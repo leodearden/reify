@@ -48,7 +48,7 @@ fn extract_max_von_mises(result: &Value) -> f64 {
     match result {
         Value::StructureInstance(data) => scalar_si(
             data.fields
-                .get(&"max_von_mises".to_string())
+                .get("max_von_mises")
                 .expect("ElasticResult has no `max_von_mises` field"),
             "max_von_mises",
         ),
