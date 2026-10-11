@@ -5015,7 +5015,7 @@ fn isotropic_from_data(
 /// propagates this `Result` directly via `?`; `classify_material`'s own sole
 /// production call site is the validate-all-inputs gate (D9/task 5087) in
 /// `solve_elastic_static_trampoline`.
-fn extract_material(val: &Value) -> Result<IsotropicElastic, FeaValueShapeError> {
+pub(super) fn extract_material(val: &Value) -> Result<IsotropicElastic, FeaValueShapeError> {
     let data = match val {
         Value::StructureInstance(d) => d,
         other => {
@@ -5029,7 +5029,7 @@ fn extract_material(val: &Value) -> Result<IsotropicElastic, FeaValueShapeError>
 }
 
 /// Extract SI scalar value from `Value::Scalar { si_value, .. }`.
-fn extract_scalar_si(val: &Value) -> Result<f64, FeaValueShapeError> {
+pub(super) fn extract_scalar_si(val: &Value) -> Result<f64, FeaValueShapeError> {
     match val {
         Value::Scalar { si_value, .. } => Ok(*si_value),
         other => Err(FeaValueShapeError::ExpectedScalar {
