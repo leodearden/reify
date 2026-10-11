@@ -202,9 +202,9 @@ const LAPLACIAN_DISPLACEMENT_FRACTION: f64 = 0.05;
 /// handle yields `None`, degrading the next tick to an honest remesh rather
 /// than a silent misprojection.
 ///
-/// The eligibility-reject and quality-reject failure arms return a structured
-/// [`MorphFailure`]; their diagnostic counters (`record_ineligible` /
-/// `record_quality_remesh`) are wired by task 4744 step-10.
+/// The eligibility-reject and quality-reject arms each record one diagnostic
+/// bucket ([`record_ineligible`] / [`record_quality_remesh`]) before returning
+/// their structured [`MorphFailure`].
 pub fn compose_morph(
     source_mesh: &reify_ir::VolumeMesh,
     boundary: &BoundaryAssociation,
@@ -912,7 +912,7 @@ mod tests {
         });
     }
 
-    // ── compose_morph: Ineligible projection (re-homed from the deleted `morph` skeleton's tests) ──
+    // ── compose_morph: Ineligible projection ──
 
     #[test]
     fn compose_morph_stage_a_structural_change_returns_ineligible_and_records_structural_bucket() {
