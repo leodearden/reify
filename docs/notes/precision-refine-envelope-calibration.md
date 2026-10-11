@@ -175,6 +175,9 @@ returns 0.567 there, deterministically. Recorded as measured.
 local deflection budget rather than being starved by the planar bulk. This is the one
 class where the intuition "small feature ⇒ worse ratio" is backwards.
 
+Dense re-walk (task #7463): `docs/notes/precision-envelope-dense-walk-torus-cone-fillet.md` —
+supersedes the bold 0.3 mm values above where it says so.
+
 ### 1.4 The coarse floor — why a coarse-only sweep lies
 
 Every class shows a **floor** at coarse `d`: achieved stops falling because the
