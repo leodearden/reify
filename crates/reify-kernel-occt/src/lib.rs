@@ -499,11 +499,9 @@ fn validate_sweep_pose(
              |tangent . normal| = {abs_dot:.9}, i.e. {off_plane_deg:.3} \
              degrees off-plane, where at least {SWEEP_DEGENERATE_POSE_DEG} \
              degrees is required. Fix: pose the profile normal along that \
-             start tangent, and bind the posed profile with `let` before \
-             sweeping it — an inline transform is rejected as a sweep \
-             profile. The rotation that achieves it depends on the tangent \
-             above; for a +Y tangent it is `let p = rotate(circle(r), 1.0, \
-             0.0, 0.0, -90deg)` then `sweep(p, path)`."
+             start tangent. The rotation depends on the tangent above; for \
+             a +Y tangent it is `sweep(rotate(circle(r), 1.0, 0.0, 0.0, \
+             -90deg), path)`."
         )));
     }
     Ok(())
