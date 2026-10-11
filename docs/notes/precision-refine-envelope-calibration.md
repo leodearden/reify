@@ -64,9 +64,9 @@ Notation: `d` = requested `#precision`, `a` = achieved sampled facet deviation,
 |---|---|---|---|---|
 | loft | x-offset / `bottom_r`, `d` ‡ | **≥ 70.75** | `x/r` = 1.0, `d` = 0.06694 mm | **lower bound**, chaotic in `d`, budget-limited |
 | sphere | `d/R` | **2.079** | `d/R` = 3.12e-4 | supremum |
-| torus | `minor/major`, `d/minor` | 0.978 | 0.02, 0.015 | supremum |
-| cone | `top_r/bottom_r` | 0.970 | 0.8, `d/R` = 6e-4 | supremum |
-| fillet blend | `fillet_r/feature` | 0.925 | 0.49, `d/R` = 6e-4 | supremum |
+| torus | `minor/major`, `d/minor` ¶ | **≥ 1.0041** | 0.02, 4.97e-4 (`d` = 0.00994 mm) | **lower bound**, `K` > 1 |
+| cone | `top_r/bottom_r` ¶ | **≥ 1.0018** | 0.998, `d/R` = 1e-5 | **lower bound**, `K` > 1 |
+| fillet blend | `fillet_r/feature` ¶ | ≥ 0.9835 | 0.49, `d/R` = 7.8e-5 | **lower bound** |
 | nurbs surface | `d/span` † | **1.0010** | `d/span` = 1.4386e-4 | **lower bound**, `K` > 1 |
 | pipe | pipe_r / path curvature | 0.598 | `d/R` = 5e-2 | **lower bound** |
 | sweep | profile / path curvature | 0.534 | `d/R` = 1e-2 | **lower bound** |
@@ -81,11 +81,12 @@ weaker meaning than on any other row. The oscillation that made an earlier ladde
 `sup K = 0.996` wrong **has since been resolved** (§1.5, task #7128): it has no period —
 local maxima recur at irregular spacing — and `a` is piecewise-constant on plateaus
 ~1e-4 mm wide, with the ratio peaking at each plateau's **lower edge**. Bisecting those
-edges to 1e-5 mm pins **1.0010 at `d` = 0.14386 mm**, the one measurement in this note
-where achieved *exceeds* requested; the true ratio there lies in [1.000626, 1.001321),
-entirely above 1, so **`K` > 1 is established** for this class. What is still not proven
-is the *value*: a dense search raises a lower bound and cannot prove a supremum over a
-continuum, and only three plateau edges of the very many in [0.12, 0.18] mm were pinned
+edges to 1e-5 mm pins **1.0010 at `d` = 0.14386 mm**, the first measurement in this note
+where achieved *exceeds* requested (torus and cone have since joined it, ¶); the true ratio
+there lies in [1.000626, 1.001321), entirely above 1, so **`K` > 1 is established** for this
+class. What is still not proven is the *value*: a dense search raises a lower bound and
+cannot prove a supremum over a continuum, and only three plateau edges of the very many in
+[0.12, 0.18] mm were pinned
 (P1–P3; a fourth plateau was walked as a control, with its lower edge left unbracketed).
 So `lower bound` no longer means the structure is un-understood, and never meant a wall
 was hit — it means 1.0010 is a floor that further walking can only raise.
@@ -99,6 +100,19 @@ turnover is shown. The largest values sit at the fine end of the walked range, w
 rung costs minutes; one regime coordinate (the offset) was walked, at one top radius and one
 height. `K` > 16 is established — the true ratio at the headline `d` lies in [70.742,
 70.757) — but the value is a floor, and §3.1 consumes it as one. Full account: §1.6.
+
+¶ Re-walked densely by task #7463; the full record is
+`docs/notes/precision-envelope-dense-walk-torus-cone-fillet.md`. Until then these rows read
+0.978 / 0.970 / 0.925 `supremum`, each the finest rung of a coarse §1.3 `d`-walk, at 0.3 mm.
+Every one of those 0.3 mm rungs sat on a plateau's ratio-falling side, and all three ratios
+kept rising below 0.3 mm, so each row is now a `lower bound` under §1.5's turnover criterion:
+no spine shows a fall below its leader, and dense brackets and regime spot-checks exceed it.
+**Torus** crosses `K` = 1 at its regime point: eight pinned plateau edges near 0.01, 0.015
+and 0.025 mm lie entirely above 1, and 1.0041 at 0.00994 mm lies in [1.004074, 1.004176).
+**Cone** crosses only at a spot-checked coordinate: `top/bottom` = 0.998 reads 1.0018 at
+0.005 mm, in [1.0017, 1.0019), while the walked point, 0.8, stays at ≤ 0.9939. **Fillet
+blend** stays below 1 on every interval measured (best 0.9835 at 0.03816 mm). The regime
+coordinates were spot-checked at fine `d`, not walked.
 
 The deviation is **deterministic**: `torus(1000mm,100mm)` at `d`=10 mm returned
 `5.665e-3` on three consecutive runs. The ratios carry no run-to-run error.
@@ -146,7 +160,9 @@ Spot values are actively misleading on these classes, so each was walked.
 | a/d | *indet.* | 0.960 | 0.956 | 0.935 | 0.908 | 0.816 | 0.714 | 0.658 | 0.644 |
 
 `d`-walk at `top/bottom` = 0.8: 100 mm 0.135 (floor) · 20 mm 0.674 (floor) · 10 mm 0.908
-· 5 mm 0.880 · 3 mm 0.940 · 1 mm 0.954 · 0.6 mm 0.947 · **0.3 mm 0.970**.
+· 5 mm 0.880 · 3 mm 0.940 · 1 mm 0.954 · 0.6 mm 0.947 · **0.3 mm 0.970** ← finest rung of
+this walk — superseded by the #7463 dense walk (best 0.9939 at this point, walked down to
+0.00475 mm; 1.0018 at `top/bottom` = 0.998 and 0.005 mm; §1.1 ¶).
 
 The ratio climbs monotonically toward the cylinder limit — but that limit is
 *unreachable*: `cone(r, r, h)` is degenerate and yields `INDETERMINATE`, never a mesh.
@@ -158,9 +174,11 @@ The ratio climbs monotonically toward the cylinder limit — but that limit is
 | a/d | 0.972 | 0.845 | 0.624 | 0.567 | 0.508 | 0.501 | 0.490 |
 
 `d/minor_r` knife edge at minor = 20 mm: `d`= 40 mm 0.187 (floor) · 20 mm 0.375 (floor)
-· 10 mm 0.501 · 5 mm 0.522 · 2 mm 0.568 · 1 mm 0.635 · **0.3 mm 0.978**.
+· 10 mm 0.501 · 5 mm 0.522 · 2 mm 0.568 · 1 mm 0.635 · **0.3 mm 0.978** ← finest rung of this
+walk — superseded by the #7463 dense walk (1.0041 at 0.00994 mm; §1.1 ¶).
 
-PRD §2's 0.982 spot value sits right at this supremum. A pre-session probe recording
+PRD §2's 0.982 spot value sat right at that 0.3 mm reading. The #7463 dense walk takes this
+class above 1, so 0.982 no longer sits at the envelope. A pre-session probe recording
 0.2175 for `torus(1000mm,100mm)` @10 mm does **not** reproduce: the committed fixture
 returns 0.567 there, deterministically. Recorded as measured.
 
@@ -171,7 +189,8 @@ returns 0.567 there, deterministically. Recorded as measured.
 | a/d | 0.771 | 0.526 | 0.210 | 0.063 | 0.021 |
 
 `d`-walk at `r/feature` = 0.49: 20 mm 0.515 · 10 mm 0.771 · 3 mm 0.829 · 1 mm 0.725 ·
-**0.3 mm 0.925**. The ratio *falls* as the blend shrinks — the blend surface gets its own
+**0.3 mm 0.925** ← finest rung of this walk — superseded by the #7463 dense walk (0.9835 at
+0.03816 mm; §1.1 ¶). The ratio *falls* as the blend shrinks — the blend surface gets its own
 local deflection budget rather than being starved by the planar bulk. This is the one
 class where the intuition "small feature ⇒ worse ratio" is backwards.
 
@@ -1236,9 +1255,9 @@ the natural authoring case `B ≈ d0`, `n ≥ log2(K)`. **Derived** from the §1
 |---|---|---|
 | loft | ≥ 70.75 ‡ | ≥ **7** ‡ |
 | sphere | 2.079 | **2** |
-| torus | 0.978 | 0 |
-| cone | 0.970 | 0 |
-| fillet blend | 0.925 | 0 |
+| torus | ≥ 1.0041 ¶ | 1 ¶ |
+| cone | ≥ 1.0018 ¶ | 1 ¶ |
+| fillet blend | ≥ 0.9835 ¶ | 0 ¶ |
 | nurbs surface | ≥ 1.0010 † | 1 † |
 | sweep / pipe / spline | ≤ 0.598 * | 0 * |
 
@@ -1252,14 +1271,16 @@ datum — that was **7.7× headroom** (16 / 2.079). Against loft it is a **short
 16 / 70.75 = 0.23, i.e. K exceeds what cap 4 covers by at least **4.4×** (derived), and K is
 a floor. §3.3 is where that lands.
 
-Of the other classes, nurbs_surface is the one measured **above** the K = 1 boundary, and so
-the one whose `required n` is not 0: its best pinned value is 1.0010 (§1.1, §1.5), and the
-true ratio at that `d` is bounded in [1.000626, 1.001321) — an interval lying entirely above
-1, so the crossing is established rather than merely not excluded. Per the † note below that
-value is still a lower bound, so the true supremum can only be higher. Even so this changes
-nothing at the cap level: `n = 1` is nowhere near the cap-4 budget, and no plausible reading
-of this class's data approaches K ≈ 16 — all 69 probes of its dense walk lie within
-[0.9623, 1.0010], with no second branch like the sphere's ~2.07 tread.
+Of the other classes, three are measured **above** the K = 1 boundary, and so need `n = 1`
+rather than 0. nurbs_surface's best pinned value is 1.0010 (§1.1, §1.5), with the true ratio
+at that `d` bounded in [1.000626, 1.001321). Torus reads 1.0041 at its regime point, in
+[1.004074, 1.004176), and cone reads 1.0018 at `top/bottom` = 0.998, in [1.0017, 1.0019)
+(§1.1 ¶). Each interval lies entirely above 1, so each crossing is established rather than
+merely not excluded. Per the † and ¶ notes below, each value is still a lower bound, so the
+true supremum can only be higher. Even so this changes nothing at the cap level: `n = 1` is
+nowhere near the cap-4 budget, and no plausible reading of these classes' data approaches
+K ≈ 16. All 69 probes of nurbs_surface's dense walk lie within [0.9623, 1.0010], with no
+second branch like the sphere's ~2.07 tread, and no probe of #7463's 401 reads above 1.0041.
 
 \* Lower bounds only. The fine-`d` regime where the sphere reached its supremum was
 unaffordable for these three classes (§1.5, §2.1 caveat 1). The cap is justified by
@@ -1277,10 +1298,17 @@ prove a supremum over a continuum — so the true K can only be *higher* than 1.
 does not disturb the cap: `n = 1` is nowhere near the cap-4 budget, and no plausible
 reading of this class's data approaches K ≈ 16.
 
+¶ Lower bounds (task #7463; §1.1 ¶). Each class's ratio was still rising at the finest `d`
+its walk afforded, and its regime coordinate was spot-checked rather than walked. Torus and
+cone cross K = 1 with display intervals entirely above 1, which is what moves their
+`required n` from 0 to 1. Fillet blend's best interval lies below 1, so its `n = 0` is derived
+from a floor and is not shown safe.
+
 ‡ Lower bound for the reasons §1.6 gives: `a` is piecewise-constant in `d` with isolated
 spikes, the walk stopped where each rung costs minutes, and one regime coordinate of many was
 walked. `n = ⌈log2 70.75⌉ = 7` inherits the floor. The coaxial spelling is not this row: it
-is the cone class (§1.6), `n = 0`.
+is the cone class (§1.6). Its own walk reads K = 0.9210, so `n = 0`, while the cone row above
+puts the class at `n = 1`.
 
 **Cross-check: the K-bound model against halving chains (task #6318, measured).** §3.1's
 `n ≥ log2 K` says what a loop needs *if* `K` bounds `a/d` everywhere, so it is a worst case over `d` — and
@@ -1371,7 +1399,8 @@ worst measured class" was arithmetically right for the classes then measured. Th
 "the extra doubling is still cheap insurance against classes this session could not fully pin down" — named
 the risk that materialised: loft was the one class not yet measured, and its first datum is 34× the
 previous worst. The insurance was too small, not misplaced. (nurbs_surface, the other worked example, moved
-from 0.9975 to 1.0010 on denser walking, and that still stands.)
+from 0.9975 to 1.0010 on denser walking, and that still stands. Torus and cone have since moved the same way,
+from 0.978 and 0.970 to ≥ 1.0041 and ≥ 1.0018 on task #7463's dense walk; §1.1 ¶.)
 
 *What the measurements say about the actual loop, and what they do not* (**measured**; §3.1's chains).
 No chain exhausted the cap: every chain measured to completion converged, 3 of them only at the last attempt the cap allows (x = 500 mm, d0 = 0.9 mm; x = 500 mm, d0 = 0.8 mm; x = 500 mm, d0 = 0.4 mm), and the tightest passed its last attempt with `a/d` = 15.5 against the limit of 16 (x = 500 mm, d0 = 0.4 mm). So the cap held on every starting request sampled — but with no slack in the band
@@ -1388,7 +1417,9 @@ bound only, is a design question for PRD §4.2's owner and task γ1. No measurem
 
 *Costs at cap 4* (unchanged arithmetic): worst case ~6.0 min instead of ~2.9 min on the re-baselined sphere — a
 worst case reached only when **every** attempt fails. Every measured class except loft converges at
-`n = 0…2`; loft converged at `n ≤ 4` on every chain measured and has model `n ≥ 7`.
+`n = 0…2`; loft converged at `n ≤ 4` on every chain measured and has model `n ≥ 7`. Task #7463 moved torus
+and cone from `n = 0` to `n = 1` and left fillet blend at 0. That cannot move this decision: those classes
+need `n ≤ 1`, and the open question is loft's.
 
 Framing is PRD §4.2's and is unchanged: the loop is a **safety net, not a search engine**. Neither the halving
 factor nor the cap is a soundness constant — the verdict is always the measured one, and the cap bounds
@@ -1417,9 +1448,9 @@ expected values are continuous measurements that drift with OCCT and machine):
 | fixture | class |
 |---|---|
 | `tests/prd-gate/fixtures/pnrg_envelope_sphere.ri` | sphere — **anchor**, read its header first |
-| `tests/prd-gate/fixtures/pnrg_envelope_cone.ri` | cone |
-| `tests/prd-gate/fixtures/pnrg_envelope_torus.ri` | torus |
-| `tests/prd-gate/fixtures/pnrg_envelope_fillet_blend.ri` | fillet blend |
+| `tests/prd-gate/fixtures/pnrg_envelope_cone.ri` | cone — dense re-walk (#7463): `docs/notes/precision-envelope-dense-walk-torus-cone-fillet.md` |
+| `tests/prd-gate/fixtures/pnrg_envelope_torus.ri` | torus — dense re-walk (#7463): `docs/notes/precision-envelope-dense-walk-torus-cone-fillet.md` |
+| `tests/prd-gate/fixtures/pnrg_envelope_fillet_blend.ri` | fillet blend — dense re-walk (#7463): `docs/notes/precision-envelope-dense-walk-torus-cone-fillet.md` |
 | `tests/prd-gate/fixtures/pnrg_envelope_sweep.ri` | sweep |
 | `tests/prd-gate/fixtures/pnrg_envelope_pipe.ri` | pipe |
 | `tests/prd-gate/fixtures/pnrg_envelope_spline.ri` | spline |
@@ -1449,7 +1480,9 @@ done
 ```
 
 **A regime walk** — same loop, with a second `sed` expression rewriting the constructor,
-e.g. `s/torus\(1000mm, 100mm\)/torus(1000mm, 20mm)/`.
+e.g. `s/torus\(1000mm, 100mm\)/torus(1000mm, 20mm)/`. That `sed` also rewrites the torus
+header comment, which repeats the constructor text; the #7463 companion's harness (its §1.4)
+rewrites the whole `let` line exactly once instead.
 
 **A dense parallel walk** (task #7128) — what the plain ladder above does not cover. Three
 things differ once probes run concurrently and the ratios are read to 4 dp:
