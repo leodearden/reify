@@ -549,3 +549,16 @@ fn write_shell_stamps(src_dir: &std::path::Path, grammar_sha: &str) {
         );
     }
 }
+
+/// Write `$OUT_DIR/grammar_hash.stamp`: the exact bytes of `grammar_hash`, the
+/// `content_hash` of grammar.js — NOT the sha256 `.grammar_hash.stamp` that
+/// `write_shell_stamps` writes into `src/`.
+///
+/// Never fatal. A failed write leaves the next build regenerating rather than
+/// failing.
+#[allow(dead_code)]
+fn write_out_dir_grammar_stamp(stamp_path: &std::path::Path, grammar_hash: &str) {
+    if let Err(e) = std::fs::write(stamp_path, grammar_hash) {
+        eprintln!("warning: failed to write {}: {}", stamp_path.display(), e);
+    }
+}

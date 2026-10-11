@@ -276,9 +276,7 @@ fn main() {
         // Write the OUT_DIR stamp whether we regenerated or bypassed —
         // subsequent build-script invocations will hit the fast path in
         // `needs_generate` and skip everything.
-        std::fs::write(&stamp_path, &grammar_hash).unwrap_or_else(|e| {
-            eprintln!("warning: failed to write stamp file: {}", e);
-        });
+        write_out_dir_grammar_stamp(&stamp_path, &grammar_hash);
     }
 
     let mut c_config = cc::Build::new();
