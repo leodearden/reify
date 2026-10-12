@@ -104,6 +104,11 @@ impl TempWorkspace {
         fs::write(&path, contents).unwrap_or_else(|e| panic!("write {}: {e}", path.display()));
     }
 
+    fn remove(&self, rel: &str) {
+        let path = self.root().join(rel);
+        fs::remove_file(&path).unwrap_or_else(|e| panic!("remove {}: {e}", path.display()));
+    }
+
     fn baseline(&self, crates_json: &str) {
         self.write(
             "baseline.json",
@@ -135,6 +140,16 @@ fn assert_exit(out: &Output, expected: i32, context: &str) {
         out.status.code(),
         Some(expected),
         "{context}: expected exit {expected}\n{}",
+        describe(out)
+    );
+}
+
+/// Exit 2 — the inputs could not be trusted — with stderr naming `culprit`.
+fn assert_input_error(out: &Output, culprit: &str, context: &str) {
+    assert_exit(out, 2, context);
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains(culprit),
+        "{context}: expected stderr to name {culprit:?}\n{}",
         describe(out)
     );
 }
@@ -353,5 +368,105 @@ fn cfg_test_module_files_are_excluded_at_every_depth() {
         &out,
         0,
         "files of a cfg(test)-declared module, at the crate root and nested",
+    );
+}
+
+#[test]
+fn excluded_crates_are_not_measured_and_print_preserves_the_exclusion() {
+    let ws = TempWorkspace::new(&[("demo", "crates/demo"), ("skipped", "crates/skipped")]);
+    ws.write("crates/demo/src/a.rs", "pub struct A;\n");
+    ws.write("crates/skipped/src/a.rs", "use crate::b::B;\n");
+    ws.write("crates/skipped/src/b.rs", "use crate::a::A;\n");
+    ws.write(
+        "baseline.json",
+        r#"{"schema": 1, "excluded": {"skipped": "glob imports hide edges"}, "crates": {}}"#,
+    );
+
+    assert_exit(&ws.check(), 0, "an excluded crate's cycle is not measured");
+
+    let printed = ws.print();
+    assert_exit(&printed, 0, "print with an excluded crate");
+    let stdout = stdout_of(&printed);
+    assert!(
+        stdout.contains(r#""skipped": "glob imports hide edges""#),
+        "{}",
+        describe(&printed)
+    );
+    assert!(stdout.contains(r#""crates": {}"#), "{}", describe(&printed));
+}
+
+#[test]
+fn fails_closed_on_a_missing_or_unparseable_manifest() {
+    let missing = TempWorkspace::demo();
+    missing.baseline("{}");
+    missing.remove("Cargo.toml");
+    assert_input_error(
+        &missing.check(),
+        "Cargo.toml",
+        "check without a root manifest",
+    );
+    assert_input_error(
+        &missing.print(),
+        "Cargo.toml",
+        "print without a root manifest",
+    );
+
+    let unparseable = TempWorkspace::demo();
+    unparseable.baseline("{}");
+    unparseable.write("Cargo.toml", "[workspace\nmembers = [\n");
+    assert_input_error(
+        &unparseable.check(),
+        "Cargo.toml",
+        "check with an unparseable root manifest",
+    );
+}
+
+#[test]
+fn fails_closed_on_a_missing_or_malformed_baseline() {
+    let missing = TempWorkspace::demo();
+    assert_input_error(&missing.check(), "baseline.json", "no baseline file");
+
+    let cases = [
+        ("{not json", "baseline.json", "unparseable baseline"),
+        (
+            r#"{"schema": 2, "excluded": {}, "crates": {}}"#,
+            "schema",
+            "unknown baseline schema",
+        ),
+        (
+            r#"{"schema": 1, "excluded": {}, "crates": {"demo": [["a"]]}}"#,
+            "demo",
+            "an SCC row of fewer than two modules",
+        ),
+    ];
+    for (baseline, culprit, context) in cases {
+        let ws = TempWorkspace::demo();
+        ws.write("baseline.json", baseline);
+        assert_input_error(&ws.check(), culprit, context);
+    }
+}
+
+#[test]
+fn fails_closed_on_a_contradictory_baseline() {
+    let ghost = TempWorkspace::demo();
+    ghost.write(
+        "baseline.json",
+        r#"{"schema": 1, "excluded": {"ghost": "no such package"}, "crates": {}}"#,
+    );
+    assert_input_error(
+        &ghost.check(),
+        "ghost",
+        "excluding a package that is not a workspace member",
+    );
+
+    let both = TempWorkspace::demo();
+    both.write(
+        "baseline.json",
+        r#"{"schema": 1, "excluded": {"demo": "skip"}, "crates": {"demo": [["a", "b"]]}}"#,
+    );
+    assert_input_error(
+        &both.check(),
+        "demo",
+        "a package both excluded and baselined",
     );
 }
