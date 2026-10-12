@@ -572,6 +572,23 @@ fn fails_closed_when_the_lexer_ends_a_file_inside_a_comment() {
 }
 
 #[test]
+fn fails_closed_when_a_source_path_cannot_be_read() {
+    let ws = TempWorkspace::demo();
+    ws.write("crates/demo/src/a.rs", "pub struct A;\n");
+    ws.write(
+        "crates/demo/src/c.rs/README",
+        "a directory, not a source file\n",
+    );
+    ws.baseline("{}");
+
+    assert_input_error(
+        &ws.check(),
+        "c.rs",
+        "check over a `*.rs` path that is a directory",
+    );
+}
+
+#[test]
 fn workspace_module_sccs_match_the_committed_baseline() {
     let root = workspace_root();
     let out = run_tool([

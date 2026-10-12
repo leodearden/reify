@@ -87,12 +87,19 @@ MOD_ROOTS = CRATE_ROOTS | {"mod.rs"}
 
 # --- workspace and baseline -------------------------------------------------
 
-def read_text(path: Path, what: str) -> str:
+def read_bytes(path: Path, what: str) -> bytes:
     try:
-        return path.read_text(encoding="utf-8")
+        return path.read_bytes()
     except FileNotFoundError:
         raise InputError(f"{path}: missing {what}") from None
-    except (OSError, UnicodeDecodeError) as error:
+    except OSError as error:
+        raise InputError(f"{path}: unreadable {what}: {error.strerror}") from None
+
+
+def read_text(path: Path, what: str) -> str:
+    try:
+        return read_bytes(path, what).decode("utf-8")
+    except UnicodeDecodeError as error:
         raise InputError(f"{path}: unreadable {what}: {error}") from None
 
 
@@ -214,11 +221,15 @@ def lex_crate(files: Sequence[Path]) -> dict[Path, list[str]]:
     """Each file's lines as the shared lexer's production-code view."""
     if not files:
         return {}
-    result = subprocess.run(
-        ["bash", "-c", LEXER_SPAWN, "bash", str(LEXER_LIB), LEXER_DRIVER,
-         *map(str, files)],
-        capture_output=True, env={**os.environ, "LC_ALL": "C"},
-    )
+    expected = {path: raw_line_count(read_bytes(path, "source file")) for path in files}
+    try:
+        result = subprocess.run(
+            ["bash", "-c", LEXER_SPAWN, "bash", str(LEXER_LIB), LEXER_DRIVER,
+             *map(str, files)],
+            capture_output=True, env={**os.environ, "LC_ALL": "C"},
+        )
+    except OSError as error:
+        raise InputError(f"{LEXER_LIB.name}: could not start the lexer: {error}") from None
     if result.returncode != 0:
         raise InputError(
             f"{LEXER_LIB.name}: lexer exited {result.returncode}: "
@@ -239,10 +250,9 @@ def lex_crate(files: Sequence[Path]) -> dict[Path, list[str]]:
     lexed = {}
     for path in files:
         lines = by_name.get(str(path), [])
-        expected = raw_line_count(path.read_bytes())
-        if len(lines) != expected:
+        if len(lines) != expected[path]:
             raise InputError(
-                f"{path}: lexer emitted {len(lines)} lines for {expected}")
+                f"{path}: lexer emitted {len(lines)} lines for {expected[path]}")
         lexed[path] = lines
     return lexed
 
@@ -593,7 +603,7 @@ def main(argv: Sequence[str]) -> int:
     baseline_path = args.baseline or args.root / "scripts" / "module-scc-baseline.json"
     try:
         return run(args.command, args.root, baseline_path)
-    except InputError as error:
+    except (InputError, OSError) as error:
         print(f"assert-module-scc: {error}", file=sys.stderr)
         return Verdict.INPUT_ERROR
 
