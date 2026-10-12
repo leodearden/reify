@@ -2564,8 +2564,9 @@ describe('Editor LSP per-document versions (task 7118)', () => {
       expect(lastCallFor(calls, 'textDocument/didOpen', FILE1_URI)).toBeDefined();
     });
 
-    // A Location carries no version, so answering against pre-debounce text is
-    // undetectable downstream — the flush is the only protection references has.
+    // A Location carries no version, so the flush is what keeps the FIRST
+    // answer about the text on screen; the skew guard only catches edits made
+    // after the request went out.
     view.dispatch({ changes: { from: 0, insert: '// edit\n' } });
     expect(lastCallFor(calls, 'textDocument/didChange', FILE1_URI)).toBeUndefined();
 
@@ -2584,6 +2585,72 @@ describe('Editor LSP per-document versions (task 7118)', () => {
     expect(calls.findIndex((c) => c.method === 'textDocument/didChange')).toBeLessThan(
       calls.findIndex((c) => c.method === 'textDocument/references'),
     );
+  });
+
+  it('Shift+F12 re-asks for references, where the symbol now is, when the text changes under an in-flight answer', async () => {
+    const store = setupStore([file1]);
+    store.setActiveFile(file1.path);
+    // `width` sits at (1, 8); the edit below moves it to (2, 8). Distinct lines,
+    // so the stale answer can never pass for the fresh one.
+    const STALE = [
+      { uri: FILE1_URI, range: { start: { line: 1, character: 8 }, end: { line: 1, character: 13 } } },
+    ];
+    const FRESH = [
+      { uri: FILE1_URI, range: { start: { line: 2, character: 8 }, end: { line: 2, character: 13 } } },
+    ];
+    const calls = captureLspVersionCalls();
+    // Hold the FIRST references answer so a keystroke lands while it is in flight.
+    const recordAndAnswer = mockInvoke.getMockImplementation()!;
+    let answerFirst!: () => void;
+    const firstHeld = new Promise<void>((resolve) => {
+      answerFirst = resolve;
+    });
+    const askedAt: Array<{ line: number; character: number }> = [];
+    mockInvoke.mockImplementation(async (cmd: string, args: any) => {
+      const answer = recordAndAnswer(cmd, args);
+      if ((args as any)?.method !== 'textDocument/references') return answer;
+      askedAt.push(JSON.parse((args as any).params).position);
+      if (askedAt.length === 1) {
+        await firstHeld;
+        return JSON.stringify(STALE) as any;
+      }
+      return JSON.stringify(FRESH) as any;
+    });
+    const onShowReferences = vi.fn();
+
+    render(() => <Editor store={store} onShowReferences={onShowReferences} />);
+    const view = getEditorView(screen.getByTestId('editor-container'));
+    await vi.waitFor(() => {
+      expect(lastCallFor(calls, 'textDocument/didOpen', FILE1_URI)).toBeDefined();
+    });
+
+    // Nothing pending, so the question goes out at once, about version 1.
+    view.dispatch({ selection: { anchor: file1.content.indexOf('width') } });
+    view.contentDOM.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'F12', shiftKey: true, bubbles: true }),
+    );
+    await vi.waitFor(() => expect(askedAt).toHaveLength(1));
+
+    // Typed above the cursor while the answer is in flight; its debounced
+    // didChange has NOT gone out.
+    view.dispatch({ changes: { from: 0, insert: '// edit\n' } });
+    answerFirst();
+    await vi.waitFor(() => expect(onShowReferences).toHaveBeenCalled());
+
+    expect(askedAt).toEqual([
+      { line: 1, character: 8 },
+      { line: 2, character: 8 },
+    ]);
+    expect(onShowReferences).toHaveBeenCalledTimes(1);
+    expect(onShowReferences.mock.calls[0][0]).toEqual([
+      expect.objectContaining({ uri: FILE1_URI, line: 2, character: 8 }),
+    ]);
+
+    // The mid-flight edit reached the server as version 2 before it was re-asked.
+    const editSent = lastCallFor(calls, 'textDocument/didChange', FILE1_URI);
+    expect(editSent?.version).toBe(2);
+    const referencesAt = calls.flatMap((c, i) => (c.method === 'textDocument/references' ? [i] : []));
+    expect(calls.indexOf(editSent!)).toBeLessThan(referencesAt[1]);
   });
 
   it('a key held behind its flush does not run against a file switched to meanwhile', async () => {

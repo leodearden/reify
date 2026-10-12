@@ -25,6 +25,7 @@ import {
   type ApplyEditFn,
 } from './rename';
 import { createDocumentVersions } from './documentVersions';
+import type { VersionSkewGuard } from './versionSkew';
 import { findUsesCommand, type ReferenceResult } from './references';
 import { createNavHistory } from '../hooks/useNavHistory';
 import type { NavEntry } from '../hooks/useNavHistory';
@@ -171,10 +172,9 @@ export function Editor(props: EditorProps) {
    * Send the debounced didChange NOW, or null when the server is already current.
    *
    * Requests that must be answered against the text the user is looking at
-   * call this first — via onceServerIsCurrent, or as the rename guard's
-   * syncServer before each rename request. Without it the server answers from
-   * text up to EDITOR_DEBOUNCE_MS old while both sides still agree on the
-   * version number —
+   * call this first — via onceServerIsCurrent, or as the version-skew guard's
+   * syncServer. Without it the server answers from text up to
+   * EDITOR_DEBOUNCE_MS old while both sides still agree on the version number —
    * skew that no version comparison downstream can detect, because the stale
    * answer is stamped with the version the client itself last sent.
    *
@@ -430,14 +430,12 @@ export function Editor(props: EditorProps) {
       });
     };
 
-    // F2 rename, armed with the version-skew guard: the reader hands back the
-    // version last SENT for the document the server named, under the one key
-    // form both sides agree on, and every rename request (the re-issue
-    // included) first sends any didChange still pending.
-    const renameF2 = renameCommand(() => currentUri, lspClient, renameUi, applyEditFn, {
+    // Shared version-skew guard for position-based commands.
+    const versionSkewGuard: VersionSkewGuard = {
       currentVersion: (uri) => docVersions.current(versionKey(uri)),
       syncServer: flushPendingLspChange,
-    });
+    };
+    const renameF2 = renameCommand(() => currentUri, lspClient, renameUi, applyEditFn, versionSkewGuard);
 
     // Extract extensions into a shared variable for reuse when creating
     // fresh EditorState instances for newly opened files
@@ -497,6 +495,7 @@ export function Editor(props: EditorProps) {
               () => currentUri,
               lspClient,
               (r) => props.onShowReferences?.(r),
+              versionSkewGuard,
             ),
           ),
           preventDefault: true,
