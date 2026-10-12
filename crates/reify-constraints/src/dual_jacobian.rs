@@ -356,8 +356,10 @@ fn fold_dependent_duals(
             collisions.push(id.clone());
             continue;
         }
-        // The VALUE is already in `values` (folded by `build_trial_values`), so
-        // only the tangent is taken here.
+        // Each dependent cell is traversed TWICE per trial point (here and in
+        // `build_trial_values`' fold) and `dual.value` is dropped on purpose:
+        // the value comes only from the single fold authority (PRD §6.3) the
+        // cost surface and scorer read, so the dual evaluator is never a second.
         //
         // The cell is evaluated against the RUNNING overlay, so TANGENT chaining
         // composes for free.  Records do NOT nest, and the distinction matters:
