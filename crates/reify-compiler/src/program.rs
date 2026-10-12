@@ -20,7 +20,7 @@ use crate::CompiledModule;
 use crate::cfg::CfgSet;
 use crate::module_dag::{
     ModuleDag, ModuleResolver, ModuleSource, attach_module_path_diag, entry_module_name,
-    import_cfg_satisfied, is_std_import_path, merge_imported_pub_templates,
+    merge_imported_pub_templates,
 };
 
 /// One direct import of a program's entry, compiled.
@@ -83,21 +83,20 @@ pub fn compile_program(
 ) -> CompiledProgram {
     let entry_key = entry_module_name(entry_path);
     let parsed = crate::parse_with_stdlib(entry_source, ModulePath::single(entry_key));
-    let mut dag = ModuleDag::with_cfg(cfg.clone());
+    // Ambient stdlib visibility: every unit is parsed and compiled against the
+    // full cached stdlib, and no `std.*` import is walked at any depth.
+    let mut dag = ModuleDag::with_ambient_stdlib(cfg.clone());
 
-    // The FOLLOWED direct imports, computed once and shared by the compile loop,
-    // the prelude, the merge and the returned units so the gate cannot drift
-    // between them.
+    // The FOLLOWED direct imports, through the same gate the DAG walk applies
+    // inside each unit, computed once and shared by the compile loop, the
+    // prelude, the merge and the returned units so they cannot drift.
     let mut followed: Vec<&str> = Vec::new();
     for import in parsed.declarations.iter().filter_map(|decl| match decl {
         reify_ast::Declaration::Import(import) => Some(import),
         _ => None,
     }) {
         let path = import.path.as_str();
-        if !is_std_import_path(path)
-            && import_cfg_satisfied(import, cfg)
-            && !followed.contains(&path)
-        {
+        if dag.follows_import(import) && !followed.contains(&path) {
             followed.push(path);
         }
     }

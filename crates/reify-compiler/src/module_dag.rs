@@ -92,6 +92,62 @@ enum StdlibMode {
     Embedded,
 }
 
+/// How the standard library becomes visible to the units a [`ModuleDag`]
+/// compiles.
+///
+/// One axis with two regimes. Each variant decides three things together —
+/// whether a `std.*` import is followed, how a unit is parsed, and what it is
+/// compiled against — so no incoherent combination can be built (a unit seeded
+/// with the full stdlib that ALSO walked `std.*` would see embedded modules
+/// twice; one parsed without the stdlib enum names would mis-lower
+/// `Type.Variant` references to them).
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+enum StdlibVisibility {
+    /// `std.*` imports resolve through the DAG (filesystem first, embedded
+    /// fallback, [`StdlibMode`] all-or-nothing) and each unit sees only what it
+    /// imports. Used by `compile_project*` and the GUI's dirty-buffer bridge.
+    Imported,
+    /// The full stdlib is ambient: a `std`/`std.*` import is never followed at
+    /// any depth (PRD resolution-unification I4, an interim superseded by
+    /// stdlib-namespace N2/N3, #5500), and every unit is parsed and compiled
+    /// against the cached stdlib (#19). Used by
+    /// [`crate::program::compile_program`].
+    Ambient,
+}
+
+impl StdlibVisibility {
+    fn follows(self, import: &reify_ast::ImportDecl) -> bool {
+        match self {
+            Self::Imported => true,
+            Self::Ambient => !is_std_import_path(&import.path),
+        }
+    }
+
+    fn parse(self, source: &str, module_path: reify_core::ModulePath) -> reify_ast::ParsedModule {
+        match self {
+            Self::Imported => reify_syntax::parse(source, module_path),
+            Self::Ambient => crate::parse_with_stdlib(source, module_path),
+        }
+    }
+
+    /// Compile one unit against its direct imports. Import units always use the
+    /// compile-time stub checker; only a program's entry receives a real one.
+    fn compile_unit(
+        self,
+        parsed: &reify_ast::ParsedModule,
+        imports: &[&CompiledModule],
+    ) -> CompiledModule {
+        match self {
+            Self::Imported => crate::compile_with_prelude_refs(parsed, imports),
+            Self::Ambient => crate::compile_with_stdlib_and_imports_checked(
+                parsed,
+                imports,
+                &crate::compile_builder::auto_type_param_phase::CompileTimeIndeterminateChecker,
+            ),
+        }
+    }
+}
+
 /// The source text a user module was compiled from, keyed by its dotted
 /// module path.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -125,6 +181,8 @@ pub struct ModuleDag {
     /// Source of every module compiled from a file, keyed like `modules`.
     /// Embedded-stdlib modules have no entry.
     sources: HashMap<String, ModuleSource>,
+    /// How the stdlib becomes visible to the units this DAG compiles.
+    stdlib: StdlibVisibility,
 }
 
 /// Build an "invalid module path" [`Diagnostic`] vec.
@@ -276,6 +334,7 @@ impl ModuleDag {
             stdlib_mode: None,
             cfg: CfgSet::default(),
             sources: HashMap::new(),
+            stdlib: StdlibVisibility::Imported,
         }
     }
 
@@ -294,12 +353,32 @@ impl ModuleDag {
         Self { cfg, ..Self::new() }
     }
 
+    /// Construct a `ModuleDag` under `cfg` whose units see the full stdlib
+    /// ambiently and never walk a `std.*` import (see
+    /// [`StdlibVisibility::Ambient`]).
+    pub(crate) fn with_ambient_stdlib(cfg: CfgSet) -> Self {
+        Self {
+            cfg,
+            stdlib: StdlibVisibility::Ambient,
+            ..Self::new()
+        }
+    }
+
+    /// `true` iff this DAG follows `import`: its `#cfg(...)` predicates hold
+    /// and the stdlib-visibility policy walks it. The one import gate, shared
+    /// by the in-walk loop and by a program entry's direct imports.
+    pub(crate) fn follows_import(&self, import: &reify_ast::ImportDecl) -> bool {
+        import_cfg_satisfied(import, &self.cfg) && self.stdlib.follows(import)
+    }
+
     /// Compile a module and all its transitive dependencies.
     ///
     /// Performs DFS with cycle detection. Returns diagnostics on error.
     ///
     /// Imports with `#cfg(...)` predicates that are not satisfied by `self.cfg`
     /// are skipped entirely (not recursed into, not included in the prelude).
+    /// Under [`StdlibVisibility::Ambient`] `std.*` imports are skipped the same
+    /// way, so the precedence rules below apply to the `Imported` regime only.
     ///
     /// **Stdlib resolution precedence for `std.*` paths:**
     ///
@@ -364,6 +443,10 @@ impl ModuleDag {
         // compile_project_stdlib_unit_collision_mentions_stdlib, which places a
         // real units.ri under stdlib_root and expects the filesystem version to win.
         let is_std_path = module_path == "std" || module_path.starts_with("std.");
+        debug_assert!(
+            self.stdlib == StdlibVisibility::Imported || !is_std_path,
+            "a DAG with ambient stdlib visibility must never be asked to compile '{module_path}'"
+        );
 
         // `commit_fs_mode` is set to true in the Ok-and-std branch when we are
         // about to commit filesystem mode for the first time. We defer the actual
@@ -460,7 +543,7 @@ impl ModuleDag {
             ))]
         })?;
 
-        let parsed = reify_syntax::parse(
+        let parsed = self.stdlib.parse(
             &source,
             reify_core::ModulePath::from_dotted(module_path)
                 .map_err(|e| diag_invalid_path(module_path, e))?,
@@ -486,7 +569,7 @@ impl ModuleDag {
             let mut import_paths: Vec<String> = Vec::new();
             for decl in &parsed.declarations {
                 if let reify_ast::Declaration::Import(import) = decl {
-                    if !import_cfg_satisfied(import, &self.cfg) {
+                    if !self.follows_import(import) {
                         continue;
                     }
                     self.compile_module(&import.path, resolver)?;
@@ -507,7 +590,7 @@ impl ModuleDag {
                             .expect("invariant: import compiled before prelude collection")
                     })
                     .collect();
-                crate::compile_with_prelude_refs(&parsed, &preludes)
+                self.stdlib.compile_unit(&parsed, &preludes)
             };
             Ok(compiled)
         })();
@@ -812,10 +895,9 @@ pub(crate) fn entry_module_name(entry_path: &Path) -> &str {
 
 /// `true` iff `path` addresses the standard library (`std` or `std.*`).
 ///
-/// Such imports are skipped by [`crate::program::compile_program`]: the full
-/// stdlib is already seeded into the prelude via
-/// `stdlib_loader::load_stdlib_context()`, so resolving `std.*` through the DAG
-/// would be redundant work.
+/// Such imports are never followed under [`StdlibVisibility::Ambient`] (the
+/// regime [`crate::program::compile_program`] uses): the full stdlib is already
+/// seeded into every unit's prelude via `stdlib_loader::load_stdlib_context()`.
 pub(crate) fn is_std_import_path(path: &str) -> bool {
     path == "std" || path.starts_with("std.")
 }
