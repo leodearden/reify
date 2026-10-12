@@ -558,14 +558,16 @@ pub(crate) fn diff_realizations(
 /// `edit_param`'s debug-only realization invariant (γ, #4730): the edit may
 /// move a realization's content but never its identity, because the eviction
 /// set it computes has no removed term. Compares id SETS, so a same-count
-/// swap is caught; content moves are the classifier's business, not this
-/// check's.
+/// swap is caught.
 #[cfg(debug_assertions)]
-fn assert_realization_ids_unchanged(
-    prior: &PersistentMap<RealizationNodeId, crate::graph::RealizationNodeData>,
-    current: &PersistentMap<RealizationNodeId, crate::graph::RealizationNodeData>,
+fn assert_realization_ids_unchanged<'a>(
+    prior: impl IntoIterator<Item = &'a RealizationNodeId>,
+    current: impl IntoIterator<Item = &'a RealizationNodeId>,
 ) {
-    let (_changed, added, removed) = diff_nodes(prior, current, |n| n.content_hash);
+    let prior: HashSet<_> = prior.into_iter().collect();
+    let current: HashSet<_> = current.into_iter().collect();
+    let added: Vec<_> = current.difference(&prior).collect();
+    let removed: Vec<_> = prior.difference(&current).collect();
     assert!(
         added.is_empty() && removed.is_empty(),
         "edit_param must not add or remove a realization: its eviction set has no \
@@ -2977,7 +2979,7 @@ impl Engine {
             // value cells only, so no realization was removed and the removed
             // term is empty.
             #[cfg(debug_assertions)]
-            assert_realization_ids_unchanged(&prior_realizations, &graph.realizations);
+            assert_realization_ids_unchanged(prior_realizations.keys(), graph.realizations.keys());
             let seeds = realization_cone_seeds(&self.last_changed_realizations, false, graph);
             let cone = invalidate_realization_dirty_cone(
                 &mut self.cache,
@@ -8031,54 +8033,26 @@ structure GrowColl {
     /// pins do too.
     #[cfg(debug_assertions)]
     mod realization_id_check {
-        use reify_core::{ContentHash, RealizationNodeId, ValueCellId};
-        use reify_ir::PersistentMap;
+        use reify_core::RealizationNodeId;
 
-        use crate::graph::RealizationNodeData;
+        use super::super::assert_realization_ids_unchanged;
 
-        /// A realization map `{entity#0 → node}` whose node hashes derive from
-        /// `(entity, salt)`, so the same ids can carry moved content.
-        fn realizations_of(
-            entities: &[(&str, &str)],
-        ) -> PersistentMap<RealizationNodeId, RealizationNodeData> {
-            let mut map = PersistentMap::default();
-            for (entity, salt) in entities {
-                let id = RealizationNodeId::new(*entity, 0);
-                map.insert(
-                    id.clone(),
-                    RealizationNodeData {
-                        id: id.clone(),
-                        operations: vec![],
-                        content_hash: ContentHash::of_str(&format!("{id}:{salt}")),
-                        produced_repr: reify_ir::ReprKind::BRep,
-                        produced_kernel: None,
-                        geometry_cell: Some(ValueCellId::new(*entity, "body")),
-                        input_cone_hash: Some(cone_hash_of(salt)),
-                    },
-                );
-            }
-            map
-        }
-
-        fn cone_hash_of(salt: &str) -> [u8; 32] {
-            let mut cone = [0u8; 32];
-            cone[..16].copy_from_slice(&ContentHash::of_str(salt).0.to_le_bytes());
-            cone
+        fn ids(entities: &[&str]) -> Vec<RealizationNodeId> {
+            entities
+                .iter()
+                .map(|e| RealizationNodeId::new(*e, 0))
+                .collect()
         }
 
         #[test]
         #[should_panic(expected = "edit_param must not add or remove a realization")]
         fn edit_param_realization_check_rejects_a_same_count_swap() {
-            let prior = realizations_of(&[("A", "v1"), ("B", "v1")]);
-            let current = realizations_of(&[("A", "v1"), ("C", "v1")]);
-            super::super::assert_realization_ids_unchanged(&prior, &current);
+            assert_realization_ids_unchanged(&ids(&["A", "B"]), &ids(&["A", "C"]));
         }
 
         #[test]
-        fn edit_param_realization_check_accepts_the_same_ids_with_moved_content() {
-            let prior = realizations_of(&[("A", "v1"), ("B", "v1")]);
-            let current = realizations_of(&[("A", "v1"), ("B", "v2")]);
-            super::super::assert_realization_ids_unchanged(&prior, &current);
+        fn edit_param_realization_check_accepts_the_same_ids_in_another_order() {
+            assert_realization_ids_unchanged(&ids(&["A", "B"]), &ids(&["B", "A"]));
         }
     }
 }
