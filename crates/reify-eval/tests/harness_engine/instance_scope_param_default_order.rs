@@ -237,8 +237,8 @@ fn arg_supplied_param_contributes_no_default_expr_edge() {
 /// fixing — hence the declaration-order residue append.
 ///
 /// NON-VACUITY: this test is green both before and after the residue append, so
-/// it was verified by temporarily deleting the append from
-/// `params_in_dependency_order` and observing this test RED (both cells absent),
+/// it was verified by temporarily deleting the append from `phase1_walk`
+/// (unfold/phase1_walk.rs) and observing this test RED (both cells absent),
 /// then restoring it.
 ///
 /// The cycle is reported exactly ONCE, by template scope. `unfold.rs` stays
@@ -281,7 +281,7 @@ fn cyclic_param_defaults_are_still_committed_at_instance_scope() {
         1,
         "the param cycle must be reported exactly once, by template scope \
          (`circular dependency in template Cyc: [a, b]`). A second report means \
-         `params_in_dependency_order` grew its own diagnostic and is \
+         `phase1_walk` grew its own diagnostic and is \
          double-reporting a cycle template scope already owns. Got: {cycle_reports:?}"
     );
 }

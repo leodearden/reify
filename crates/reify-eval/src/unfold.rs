@@ -26,6 +26,10 @@ use optimized_instance_reuse::{
     resolve_optimized_instance_cell,
 };
 
+mod phase1_walk;
+
+use phase1_walk::{Phase1Step, phase1_walk};
+
 /// Single source of truth for sub-component template resolution: the user
 /// module's templates first (module definitions shadow the prelude), then the
 /// engine's compiled stdlib prelude modules.
@@ -1310,118 +1314,12 @@ fn eval_child_expr(
     reify_expr::eval_expr(expr, &ctx)
 }
 
-/// The Param cells of `child_template` in dependency order, so a default that
-/// reads a sibling param sees it already in `child_values`. Same
-/// [`extract_dependency_trace`] + [`topological_sort`] pair
-/// [`elaborate_child_lets_only`] uses for lets: `run_unified_pass_seeded` counts
-/// only in-seed predecessors, so a read naming a let, a global or another entity
-/// contributes no edge and needs no filtering here.
-///
-/// Two rules are invisible from the call site, and both are pinned by
-/// tests/harness_engine/instance_scope_param_default_order.rs:
-///
-/// - A param named by `args` contributes NO edge. Its `default_expr` is never
-///   evaluated — the arg is evaluated against the PARENT's `values`, the same
-///   scope asymmetry the `@optimized` wiring comment at the args arm calls out —
-///   so edges taken from it are INVENTED, and an invented 2-cycle (`param p = q
-///   param q = p` with `q` arg-supplied) would send both cells into the residue
-///   below, reproducing for arg-supplied instances the bug this ordering closes.
-/// - [`topological_sort`] (Kahn) reports a cycle by OMISSION, so omitted cells
-///   are APPENDED in declaration order rather than dropped: they commit as
-///   `Undef` today, and dropping them would delete cells that exist. The cycle
-///   is already reported once by template scope, so this site stays silent
-///   rather than double-reporting — the mistake [`phase15_cycle_members`]' doc
-///   comment was written to prevent.
-fn params_in_dependency_order<'t>(
-    child_template: &'t TopologyTemplate,
-    args: &[(String, reify_ir::CompiledExpr)],
-) -> Vec<&'t reify_compiler::ValueCellDecl> {
-    let param_cells: Vec<&reify_compiler::ValueCellDecl> = child_template
-        .value_cells
-        .iter()
-        .filter(|c| c.kind == ValueCellKind::Param)
-        .collect();
-
-    // This runs for EVERY param of EVERY instance, collection elements
-    // included, so the cheap exits come first: fewer than two params admits no
-    // edge at all and needs no expression walk, and below, no sibling read
-    // means declaration order is ALREADY a dependency order. Only the third
-    // path pays for [`topological_sort`], whose ready set is a
-    // `BTreeSet<DebugOrd>` that formats both operands on every comparison.
-    if param_cells.len() < 2 {
-        return param_cells;
-    }
-
-    // Borrowed, so the common path below allocates no `NodeId` at all.
-    let sibling_ids: HashSet<&ValueCellId> = param_cells.iter().map(|c| &c.id).collect();
-    // Two param cells of one template cannot share a member name. Fires loud in
-    // debug/test builds; in release a collision costs ordering only, because
-    // the residue below is keyed on the declaration INDEX rather than on node
-    // identity, so the shadowed cell stays unplaced and is still committed.
-    debug_assert_eq!(
-        sibling_ids.len(),
-        param_cells.len(),
-        "params_in_dependency_order: duplicate param member name in template {}",
-        child_template.name,
-    );
-
-    let traces_by_index: Vec<DependencyTrace> = param_cells
-        .iter()
-        .map(|cell| {
-            // The SAME predicate the loop body uses to pick the args arm, so the
-            // two sites cannot disagree about which params are arg-supplied.
-            if args.iter().any(|(name, _)| *name == cell.id.member) {
-                DependencyTrace::default()
-            } else {
-                cell.default_expr
-                    .as_ref()
-                    .map(extract_dependency_trace)
-                    .unwrap_or_default()
-            }
-        })
-        .collect();
-
-    let reads_a_sibling = traces_by_index
-        .iter()
-        .flat_map(|t| &t.reads)
-        .any(|r| sibling_ids.contains(&r));
-    if !reads_a_sibling {
-        return param_cells;
-    }
-
-    let nodes: Vec<NodeId> = param_cells
-        .iter()
-        .map(|c| NodeId::Value(c.id.clone()))
-        .collect();
-    let node_ids: HashSet<NodeId> = nodes.iter().cloned().collect();
-    let traces: HashMap<NodeId, DependencyTrace> =
-        nodes.iter().cloned().zip(traces_by_index).collect();
-
-    let sorted = topological_sort(&node_ids, &traces);
-    let mut placed = vec![false; param_cells.len()];
-    let mut ordered: Vec<&reify_compiler::ValueCellDecl> = Vec::with_capacity(param_cells.len());
-    for nid in &sorted {
-        // First not-yet-placed cell carrying this node id, so one sorted node
-        // consumes one declaration slot; see the `debug_assert_eq!` above.
-        let next = (0..param_cells.len()).find(|i| !placed[*i] && &nodes[*i] == nid);
-        if let Some(i) = next {
-            placed[i] = true;
-            ordered.push(param_cells[i]);
-        }
-    }
-    ordered.extend(
-        (0..param_cells.len())
-            .filter(|i| !placed[*i])
-            .map(|i| param_cells[i]),
-    );
-    ordered
-}
-
 /// Phase 1: Evaluate and store only the param cells for a child instance.
 ///
-/// Params are visited in dependency order ([`params_in_dependency_order`]), so a
-/// default that reads a sibling param — whatever order the two are declared in —
-/// sees that sibling already in `child_values`.
+/// Cells are visited in [`phase1_walk`] order, so a default that reads a sibling
+/// param or a sibling let, whatever order they are declared in, sees it already
+/// in scope. A let a default reads is evaluated as a scratch value only: it is
+/// never committed or returned here, and phase 2 commits it.
 ///
 /// Returns the template-scoped child_values map (params only) for use in phase 2.
 /// All param values are also written to the global `values`, `snapshot`, journal, and cache.
@@ -1441,6 +1339,8 @@ fn elaborate_child_params_only<'f>(
     optimized_names: &OptimizedNameIndex<'f>,
 ) -> ValueMap {
     let mut child_values = ValueMap::new();
+    // What defaults are evaluated against: `child_values` plus the scratch lets.
+    let mut scope = ValueMap::new();
     // runtime_sink is required by `cell_eval_ctx`; its contents are
     // discarded rather than surfaced — pre-migration this path never surfaced
     // eval-time diagnostics, and the `diagnostics` param added by the #6662
@@ -1448,7 +1348,23 @@ fn elaborate_child_params_only<'f>(
     // decline below), deliberately not a general drain for this sink.
     let runtime_sink = RefCell::new(Vec::new());
     let containment = NoContainment;
-    for cell in params_in_dependency_order(child_template, args) {
+    for step in phase1_walk(child_template, args) {
+        let cell = match step {
+            Phase1Step::Param(cell) => cell,
+            Phase1Step::ScratchLet { key, expr } => {
+                let v = eval_child_expr(
+                    &scope,
+                    expr,
+                    functions,
+                    meta_map,
+                    &snapshot.values,
+                    &runtime_sink,
+                    &containment,
+                );
+                scope.insert(key.clone(), v);
+                continue;
+            }
+        };
         let member = &cell.id.member;
         let scoped_id = ValueCellId::new(scoped_entity, member);
 
@@ -1471,6 +1387,7 @@ fn elaborate_child_params_only<'f>(
             // consistent value (Undef for now; the solver will resolve it).
             if let Some((val, _)) = snapshot.values.get(&scoped_id) {
                 child_values.insert(cell.id.clone(), val.clone());
+                scope.insert(cell.id.clone(), val.clone());
             }
             continue;
         }
@@ -1511,7 +1428,7 @@ fn elaborate_child_params_only<'f>(
                 child_template,
                 member,
                 || extract_dependency_trace(default_expr).reads,
-                &child_values,
+                &scope,
                 values,
             );
 
@@ -1531,10 +1448,10 @@ fn elaborate_child_params_only<'f>(
             // closes, the gate flips to true and this site starts reporting,
             // which is the point of wiring it now.
             //
-            // SIBLING READS. This loop walks `params_in_dependency_order`, so a
-            // default that reads a sibling PARAM finds it in `child_values`
-            // whatever order the two are declared in, and the gate no longer
-            // compares `None` (instance) against `Some(v)` (global) for a purely
+            // SIBLING READS. This loop walks `phase1_walk`, so a default that
+            // reads a sibling param or a sibling let finds it in `scope`,
+            // whatever order they are declared in, and the gate does not compare
+            // `None` (instance) against `Some(v)` (global) for a purely
             // positional reason. The Auto-precedence branch above does insert —
             // the snapshot's `Undef` placeholder — before its `continue`, so a
             // read of an Auto-OVERRIDDEN sibling sees `Some(Undef)` rather than
@@ -1542,13 +1459,7 @@ fn elaborate_child_params_only<'f>(
             // global value and declines. That is correct: the cell's value is
             // the solver's to resolve, not this loop's.
             //
-            // STILL OPEN: a default that reads a sibling LET. This whole
-            // function runs before `elaborate_child_lets_only`, so no ordering
-            // of params among themselves reaches it; closing it is the
-            // instance-scope analogue of task #4317's template-scope phase
-            // unification, tracked by #7511.
-            //
-            // All three are pinned by
+            // Both are pinned by
             // tests/harness_engine/instance_scope_param_default_order.rs, and
             // the `@optimized` arm additionally by
             // `instance_scope_optimized_param_default_reading_a_later_sibling_is_silent`
@@ -1569,7 +1480,7 @@ fn elaborate_child_params_only<'f>(
                 OptimizedInstanceResolution::Reuse(v) => v,
                 OptimizedInstanceResolution::NotOptimized
                 | OptimizedInstanceResolution::Unreusable { .. } => eval_child_expr(
-                    &child_values,
+                    &scope,
                     default_expr,
                     functions,
                     meta_map,
@@ -1583,6 +1494,7 @@ fn elaborate_child_params_only<'f>(
         };
 
         child_values.insert(cell.id.clone(), val.clone());
+        scope.insert(cell.id.clone(), val.clone());
 
         // TraceSource::GuardedGroup: the PRD (§0, §8) treats this
         // recursive-unfold path and engine_eval.rs's guarded-group param
