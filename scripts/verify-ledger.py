@@ -573,6 +573,87 @@ def claim_finalize(journal):
 
 
 # ---------------------------------------------------------------------------
+# sccache report (ruling D10): the counters are host-global windows, so a
+# delta is only read inside its concurrency bucket, the zero bucket first,
+# and a thin bucket is marked inconclusive.
+# ---------------------------------------------------------------------------
+
+
+def iter_ledger(ledger_dir, discarded):
+    path = Path(ledger_dir) / LEDGER_FILE
+    if not path.exists():
+        return
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        try:
+            record = json.loads(line)
+        except ValueError:
+            record = None
+        if isinstance(record, dict):
+            yield record
+        else:
+            discarded["malformed-record"] = discarded.get("malformed-record", 0) + 1
+
+
+def counter_totals(snapshot):
+    stats = snapshot["stats"]
+    return (
+        sum(stats["cache_hits"]["counts"].values()),
+        sum(stats["cache_misses"]["counts"].values()),
+        stats["requests_not_cacheable"],
+    )
+
+
+def sccache_sample(step):
+    """(bucket, (hits, misses, not_cacheable) deltas), a discard reason, or None if not a sample."""
+    pair = step.get("sccache")
+    if not isinstance(pair, dict):
+        return None
+    before, after = pair.get("before"), pair.get("after")
+    if not all(isinstance(side, dict) and "stats" in side for side in (before, after)):
+        return "sccache-unavailable"
+    try:
+        concurrency = step["concurrency"]
+        bucket = max(concurrency["before"]["other_verify_runs"], concurrency["after"]["other_verify_runs"])
+    except (KeyError, TypeError):
+        return "no-concurrency"
+    try:
+        deltas = tuple(a - b for a, b in zip(counter_totals(after), counter_totals(before)))
+    except (KeyError, TypeError, AttributeError):
+        return "unparseable-stats"
+    if any(delta < 0 for delta in deltas):
+        return "counter-reset"
+    return bucket, deltas
+
+
+def sccache_report(ledger_dir, min_samples):
+    discarded, totals = {}, {}
+    for record in iter_ledger(ledger_dir, discarded):
+        for step in record.get("steps") or []:
+            sample = sccache_sample(step) if isinstance(step, dict) else None
+            if isinstance(sample, str):
+                discarded[sample] = discarded.get(sample, 0) + 1
+            elif sample is not None:
+                bucket, deltas = sample
+                count, sums = totals.get(bucket, (0, (0, 0, 0)))
+                totals[bucket] = (count + 1, tuple(a + b for a, b in zip(sums, deltas)))
+    buckets = []
+    for bucket in sorted(totals):
+        samples, (hits, misses, not_cacheable) = totals[bucket]
+        buckets.append(
+            {
+                "concurrency": bucket,
+                "samples": samples,
+                "hits": hits,
+                "misses": misses,
+                "not_cacheable": not_cacheable,
+                "hit_rate": hits / (hits + misses) if hits + misses else None,
+                "conclusive": samples >= min_samples,
+            }
+        )
+    return {"min_samples": min_samples, "buckets": buckets, "discarded": discarded}
+
+
+# ---------------------------------------------------------------------------
 # Subcommands
 # ---------------------------------------------------------------------------
 
@@ -631,6 +712,10 @@ def cmd_boundary(args):
             append_event(args.journal, {"ev": "junit", "index": args.index, "at": at, **junit_report(args.junit)})
 
 
+def cmd_sccache_report(args):
+    sys.stdout.write(json.dumps(sccache_report(args.ledger_dir, args.min_samples), indent=2) + "\n")
+
+
 def build_parser():
     parser = argparse.ArgumentParser(prog="verify-ledger.py", description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="command", required=True)
@@ -668,6 +753,11 @@ def build_parser():
     finalize.add_argument("--ended-at", type=float, required=True)
     finalize.add_argument("--signal", default="")
     finalize.set_defaults(func=cmd_finalize)
+
+    report = sub.add_parser("sccache-report", help="sccache counter deltas bucketed by concurrency (read-only)")
+    report.add_argument("--ledger-dir", required=True)
+    report.add_argument("--min-samples", type=int, default=10)
+    report.set_defaults(func=cmd_sccache_report)
     return parser
 
 
