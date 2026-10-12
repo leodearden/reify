@@ -156,8 +156,12 @@ fn as_printed_trampoline_produces_as_printed_zones_field_with_distinct_zone_mate
 // ── task 6922 η: the as-printed readers reject a wrong dimension ─────────────
 
 fn run_r_fast(options: Value) -> ComputeOutcome {
+    run_r_fast_with(fdm_process(), options)
+}
+
+fn run_r_fast_with(process: Value, options: Value) -> ComputeOutcome {
     as_printed_material_r_fast_trampoline(
-        &[Value::Undef, fdm_process(), options],
+        &[Value::Undef, process, options],
         &[body_handle()],
         &Value::Undef,
         None,
@@ -169,7 +173,7 @@ fn run_r_fast(options: Value) -> ComputeOutcome {
 /// naming `path` (the code is the contract; the path is a naming check).
 fn assert_rejects(outcome: ComputeOutcome, path: &str) {
     let ComputeOutcome::Failed { diagnostics, .. } = &outcome else {
-        panic!("a wrong-dimension {path} must yield Failed, got {outcome:?}");
+        panic!("a refused {path} must yield Failed, got {outcome:?}");
     };
     assert_eq!(
         diagnostics.len(),
@@ -187,6 +191,27 @@ fn assert_rejects(outcome: ComputeOutcome, path: &str) {
         "the rejection must name {path:?}, got {:?}",
         diagnostic.message
     );
+}
+
+/// The infill zone's in-plane modulus of a `Completed` run with no diagnostics.
+fn infill_e_in_plane(outcome: ComputeOutcome) -> f64 {
+    match outcome {
+        ComputeOutcome::Completed {
+            result: Value::Field { lambda, .. },
+            diagnostics,
+            ..
+        } => {
+            assert!(
+                diagnostics.is_empty(),
+                "no diagnostics expected, got {diagnostics:?}"
+            );
+            let Value::List(items) = lambda.as_ref() else {
+                panic!("expected the 7-element zone payload, got {lambda:?}");
+            };
+            law_constant(&items[6], "e_in_plane")
+        }
+        other => panic!("expected Completed with a Field, got {other:?}"),
+    }
 }
 
 fn coupon_with_ex(ex: Value) -> Value {
@@ -207,28 +232,52 @@ fn as_printed_trampoline_rejects_a_length_coupon_modulus() {
 }
 
 #[test]
-fn as_printed_trampoline_applies_a_pressure_coupon_modulus_without_diagnostics() {
-    let infill_e_in_plane = |options: Value| match run_r_fast(options) {
-        ComputeOutcome::Completed {
-            result: Value::Field { lambda, .. },
-            diagnostics,
-            ..
-        } => {
-            assert!(
-                diagnostics.is_empty(),
-                "no diagnostics expected, got {diagnostics:?}"
-            );
-            let Value::List(items) = lambda.as_ref() else {
-                panic!("expected the 7-element zone payload, got {lambda:?}");
-            };
-            law_constant(&items[6], "e_in_plane")
-        }
-        other => panic!("expected Completed with a Field, got {other:?}"),
-    };
+fn as_printed_trampoline_rejects_a_non_numeric_line_width() {
+    let options = with_field(as_printed_options(), "line_width", Value::Bool(true));
+    assert_rejects(run_r_fast(options), "AsPrintedOptions.line_width");
+}
 
-    let baseline = infill_e_in_plane(as_printed_options());
+#[test]
+fn as_printed_trampoline_rejects_a_length_infill_density() {
+    let process = with_field(
+        fdm_process(),
+        "infill_density",
+        scalar(0.2, DimensionVector::LENGTH),
+    );
+    assert_rejects(
+        run_r_fast_with(process, as_printed_options()),
+        "FDMProcess.infill_density",
+    );
+}
+
+#[test]
+fn as_printed_trampoline_reads_a_bare_gibson_ashby_coefficient() {
+    let baseline = infill_e_in_plane(run_r_fast(as_printed_options()));
+    let coupon = with_field(
+        coupon_default(),
+        "infill_gibson_ashby_c",
+        Value::Option(Some(Box::new(Value::Real(2.0)))),
+    );
+    let overridden = infill_e_in_plane(run_r_fast(with_field(
+        as_printed_options(),
+        "coupon",
+        coupon,
+    )));
+    assert_ne!(
+        overridden, baseline,
+        "a bare dimensionless C must be read, not refused or ignored"
+    );
+}
+
+#[test]
+fn as_printed_trampoline_applies_a_pressure_coupon_modulus_without_diagnostics() {
+    let baseline = infill_e_in_plane(run_r_fast(as_printed_options()));
     let coupon = coupon_with_ex(scalar(2.0e9, DimensionVector::PRESSURE));
-    let overridden = infill_e_in_plane(with_field(as_printed_options(), "coupon", coupon));
+    let overridden = infill_e_in_plane(run_r_fast(with_field(
+        as_printed_options(),
+        "coupon",
+        coupon,
+    )));
     assert_eq!(
         overridden, 2.0e9,
         "the ex override sets the in-plane modulus"

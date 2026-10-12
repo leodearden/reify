@@ -41,8 +41,8 @@ use crate::mechanism::is_world;
 use reify_core::diagnostics::{Diagnostic, DiagnosticCode};
 use reify_core::dimension::DimensionVector;
 use reify_ir::arg_acceptance::{
-    Acceptance, ArgRejection, ArgSpec, FieldRejection, accept_arg_or_bare, length_spec, mass_spec,
-    moment_of_inertia_spec, rotational_damping_spec, rotational_stiffness_spec,
+    ArgRejection, ArgSpec, FieldRejection, length_spec, mass_spec, moment_of_inertia_spec,
+    read_arg_or_bare, rotational_damping_spec, rotational_stiffness_spec,
     translational_damping_spec, translational_stiffness_spec,
 };
 use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId, Value};
@@ -64,7 +64,7 @@ const REGISTRY_FREE_TYPE_ID: StructureTypeId = StructureTypeId(u32::MAX);
 /// `si_value` and DISCARDS the `DimensionVector` outright, so every `f64` this
 /// function returns is an undimensioned SI magnitude and the caller carries the
 /// dimensional meaning implicitly. A position whose dimension is chartered
-/// reads through [`dimensioned_cell`] instead; see [`compliance_cell_f64`] for
+/// reads through `read_arg_or_bare` instead; see [`compliance_cell_f64`] for
 /// the positions that deliberately stay erased (#6184).
 pub fn cell_f64(v: &Value) -> Option<f64> {
     match v {
@@ -75,21 +75,10 @@ pub fn cell_f64(v: &Value) -> Option<f64> {
     }
 }
 
-/// Read a numeric cell through `spec` (`accept_arg_or_bare`: a bare
-/// `Int`/`Real` is the transitional legacy spelling): `Ok(None)` for an
-/// unresolved or non-numeric cell, `Err` for a `Scalar` of the wrong dimension.
-fn dimensioned_cell(v: &Value, spec: &ArgSpec) -> Result<Option<f64>, ArgRejection> {
-    match accept_arg_or_bare(v, spec) {
-        Acceptance::Accepted(x) => Ok(Some(x)),
-        Acceptance::Rejected(rejection) if matches!(v, Value::Scalar { .. }) => Err(rejection),
-        Acceptance::Rejected(_) | Acceptance::Undefined => Ok(None),
-    }
-}
-
 /// Extract an `f64` from a **mass** value cell: a `Scalar{MASS}` or a bare
 /// number. A `Scalar` of any other dimension (`5 m`) is not a mass.
 fn cell_mass_f64(v: &Value) -> Option<f64> {
-    dimensioned_cell(v, &mass_spec()).ok().flatten()
+    read_arg_or_bare(v, &mass_spec()).ok().flatten()
 }
 
 /// Extract an `f64` from a joint-coordinate value cell: unwraps
@@ -108,7 +97,7 @@ fn cell_mass_f64(v: &Value) -> Option<f64> {
 /// is numerically correct.
 ///
 /// The constants of that term are NOT read here: `spring_rate` and `damping`
-/// go through [`dimensioned_cell`] with the joint kind's stiffness / damping
+/// go through `read_arg_or_bare` with the joint kind's stiffness / damping
 /// spec (PRD `dimension-checked-readers.md` §6 decision 5). Gating `q` would
 /// need the joint's declared coordinate dimension threaded to a site where
 /// `positions` carries a bare per-body value, which is #6941's territory.
@@ -349,12 +338,12 @@ fn vec3_from_value(v: &Value) -> Option<[f64; 3]> {
     Some([cell_f64(&c[0])?, cell_f64(&c[1])?, cell_f64(&c[2])?])
 }
 
-/// Three cells read through `spec`: `Ok(None)` if any is unresolved or
-/// non-numeric, `Err` on the first of the wrong dimension.
+/// Three cells read through `spec`: `Ok(None)` if any is unresolved, `Err` on
+/// the first one refused.
 fn dimensioned_row(cells: &[Value], spec: &ArgSpec) -> Result<Option<[f64; 3]>, ArgRejection> {
-    let x = dimensioned_cell(&cells[0], spec)?;
-    let y = dimensioned_cell(&cells[1], spec)?;
-    let z = dimensioned_cell(&cells[2], spec)?;
+    let x = read_arg_or_bare(&cells[0], spec)?;
+    let y = read_arg_or_bare(&cells[1], spec)?;
+    let z = read_arg_or_bare(&cells[2], spec)?;
     Ok(x.zip(y).zip(z).map(|((x, y), z)| [x, y, z]))
 }
 
@@ -364,7 +353,7 @@ type MassPropertiesSi = (f64, [f64; 3], [[f64; 3]; 3]);
 /// Read the three `MassProperties` fields through their specs — `mass` as a
 /// MASS, `com` as LENGTHs, `inertia` as MOMENT_OF_INERTIAs, each also taking
 /// the bare legacy spelling. `Ok(None)` for a malformed shape or an unresolved
-/// cell; `Err` names the first field holding a Scalar of the wrong dimension.
+/// cell; `Err` names the first field holding a cell its reader refuses.
 /// The one reader behind the `mass_properties` builtin, every consumer
 /// ([`mass_properties_from_value`]) and the `diagnose` classifier.
 fn read_mass_properties(
@@ -372,7 +361,7 @@ fn read_mass_properties(
     com: &Value,
     inertia: &Value,
 ) -> Result<Option<MassPropertiesSi>, (&'static str, ArgRejection)> {
-    let mass = dimensioned_cell(mass, &mass_spec()).map_err(|r| ("mass", r))?;
+    let mass = read_arg_or_bare(mass, &mass_spec()).map_err(|r| ("mass", r))?;
     let com = match vec3_cells(com) {
         Some(cells) => dimensioned_row(cells, &length_spec()).map_err(|r| ("com", r))?,
         None => None,
@@ -409,14 +398,14 @@ fn mass_properties_fields(v: &Value) -> Option<[&Value; 3]> {
 /// equivalent list-shaped and bare-number encodings a user-authored
 /// MassProperties may produce. Each field is dimension-checked by
 /// [`read_mass_properties`]; returns `None` for any non-MassProperties value, a
-/// malformed/absent field, or a field of the wrong dimension
-/// ([`mass_properties_rejection`] names which).
+/// malformed/absent field, or a refused field ([`mass_properties_rejection`]
+/// names which).
 pub fn mass_properties_from_value(v: &Value) -> Option<MassPropertiesSi> {
     let [mass, com, inertia] = mass_properties_fields(v)?;
     read_mass_properties(mass, com, inertia).ok().flatten()
 }
 
-/// The field of a `MassProperties` value whose dimension is wrong, named
+/// The field of a `MassProperties` value its reader refuses, named
 /// `MassProperties.<field>`, or `None` when every field reads.
 pub fn mass_properties_rejection(v: &Value) -> Option<FieldRejection> {
     let [mass, com, inertia] = mass_properties_fields(v)?;
@@ -476,7 +465,7 @@ pub fn resolve_body_mass(body: &Value) -> Option<Value> {
 /// the builtin returns `Value::Undef`. It consults the SAME readers the
 /// builtins use (PRD-5 §7 I1), so a field they refuse is the field it names:
 ///
-/// - `mass_properties` / `point_mass`: an argument of the wrong dimension
+/// - `mass_properties` / `point_mass`: a refused argument
 ///   (`mass_properties(2m, …)`) yields its `DimensionedArgRejected` Error.
 /// - `inverse_dynamics_lower` / `inverse_dynamics_at_snapshot_lower`: see
 ///   below.
@@ -487,8 +476,8 @@ pub fn resolve_body_mass(body: &Value) -> Option<Value> {
 /// cannot be resolved via [`resolve_body_mass`].
 ///
 /// A body whose mass DOES resolve but whose `MassProperties` field, or whose
-/// joint's `spring_rate` / `damping`, has the wrong dimension yields that
-/// field's `DimensionedArgRejected` Error instead (task 6922).
+/// joint's `spring_rate` / `damping`, is refused yields that field's
+/// `DimensionedArgRejected` Error instead (task 6922).
 ///
 /// Returns `None` for non-dynamics names, non-mechanism args[0], or fully-
 /// resolvable mechanisms (no spurious fire). Closing-edge bodies are excluded
@@ -510,7 +499,7 @@ pub fn diagnose(name: &str, args: &[Value]) -> Option<Diagnostic> {
             Some(rejection.to_error(name, field))
         }
         ("point_mass", [mass]) => {
-            let rejection = dimensioned_cell(mass, &mass_spec()).err()?;
+            let rejection = read_arg_or_bare(mass, &mass_spec()).err()?;
             Some(rejection.to_error(name, "mass"))
         }
         ("inverse_dynamics_lower" | "inverse_dynamics_at_snapshot_lower", _) => {
@@ -968,7 +957,7 @@ fn map_str<'a>(map: &'a BTreeMap<Value, Value>, key: &str) -> Option<&'a str> {
 /// `spring_rate` and `damping` are read through the joint KIND's specs (PRD
 /// `dimension-checked-readers.md` §6 decision 5): a revolute joint's must be
 /// rotational, a prismatic joint's translational, and a bare number is still
-/// the legacy spelling. A wrong dimension is `Err` naming `<kind>.<field>`;
+/// the legacy spelling. A refused value is `Err` naming `<kind>.<field>`;
 /// any other kind has no compliance.
 ///
 /// `position` is the current joint coordinate `q`, required to apply the
@@ -1034,7 +1023,7 @@ fn compliance_specs(joint: &BTreeMap<Value, Value>) -> Option<(&str, ArgSpec, Ar
 }
 
 /// A compliance constant through `spec`, unwrapping `Option`: absent, `none`,
-/// unresolved or non-finite → `Ok(None)`; a wrong dimension → `Err` naming
+/// unresolved or non-finite → `Ok(None)`; a refused value → `Err` naming
 /// `<kind>.<field>`.
 fn compliance_constant(
     joint: &BTreeMap<Value, Value>,
@@ -1049,7 +1038,7 @@ fn compliance_constant(
     let Some(value) = value else {
         return Ok(None);
     };
-    match dimensioned_cell(value, spec) {
+    match read_arg_or_bare(value, spec) {
         Ok(constant) => Ok(constant.filter(|c| c.is_finite())),
         Err(rejection) => Err(FieldRejection {
             path: format!("{kind}.{field}"),
@@ -3573,6 +3562,27 @@ mod tests {
         assert_eq!(c.damping, None, "Option(None) damping is absent");
         let bare_damping = joint_map("revolute", vec![("damping", Value::Real(3.5))]);
         assert!(matches!(joint_compliance(&bare_damping, None), Ok(Some(_))));
+    }
+
+    #[test]
+    fn a_non_numeric_compliance_constant_is_refused_not_dropped() {
+        let joint = joint_map("revolute", vec![("damping", Value::Bool(true))]);
+        let Err(rejection) = joint_compliance(&joint, None) else {
+            unreachable!("a Bool damping must be refused, not read as absent");
+        };
+        assert_eq!(rejection.path, "revolute.damping");
+    }
+
+    #[test]
+    fn diagnose_refuses_a_non_number_mass_like_a_wrong_dimension() {
+        let code = |mass: Value| diagnose("point_mass", &[mass]).map(|d| d.code);
+        for refused in [dimensioned(2.0, DimensionVector::LENGTH), Value::Bool(true)] {
+            assert_eq!(
+                code(refused),
+                Some(Some(DiagnosticCode::DimensionedArgRejected))
+            );
+        }
+        assert_eq!(code(dimensioned(2.0, DimensionVector::MASS)), None);
     }
 
     /// The RNEA applies compliance to exactly the joints whose motion subspace

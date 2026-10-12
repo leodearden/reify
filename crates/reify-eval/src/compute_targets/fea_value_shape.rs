@@ -11,7 +11,7 @@ use crate::ComputeOutcome;
 
 /// Why an FEA input `Value` does not have the shape its reader expects (PRD
 /// compute-fea-hardening §C3). The readers that produce it live in
-/// `elastic_static`, `fea_loads` and `buckling`.
+/// `elastic_static`, `fea_inputs`, `fea_loads` and `buckling`.
 #[derive(Debug, Clone, PartialEq)]
 pub(super) enum FeaValueShapeError {
     /// Expected a `Value::StructureInstance`, got something else.
@@ -28,12 +28,11 @@ pub(super) enum FeaValueShapeError {
         context: &'static str,
         field: &'static str,
     },
-    /// A present, defined `Value::Scalar` whose dimension is not the one this
-    /// reader position expects (task #7019). Distinct from `ExpectedScalar`,
-    /// which fires when the value is not a `Value::Scalar` at all: this
-    /// variant is for the wrong dimension on the RIGHT shape — e.g. a
-    /// LENGTH-dimensioned Scalar at a position that expects DIMENSIONLESS,
-    /// or vice versa. `expected` names the position's `ArgSpec::type_name`.
+    /// A present, defined value the position's `ArgSpec` refuses. `expected`
+    /// names the spec's `type_name`. Task #7019's component readers raise it
+    /// for a `Value::Scalar` of the wrong dimension only (any other value is
+    /// their `ExpectedScalar`); the `fea_loads` magnitudes raise it for every
+    /// value `read_arg_or_bare` refuses, a non-number included (task 6922).
     WrongDimension {
         context: &'static str,
         expected: &'static str,

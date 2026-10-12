@@ -92,7 +92,7 @@ use reify_solver_elastic::{
     resample_multi_nodal_to_grid, solve_buckling_kernel, solve_buckling_kernel_p2, tet_volume_p1,
 };
 
-use super::elastic_static::{extract_material, extract_scalar_si};
+use super::fea_inputs::{extract_material, extract_scalar_si};
 use super::fea_loads::{load_items, point_load_force};
 use super::fea_value_shape::{FeaValueShapeError, failed_outcome};
 use crate::{CancellationHandle, ComputeOutcome, RealizationReadHandle};

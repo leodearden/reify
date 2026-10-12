@@ -2,17 +2,18 @@
 //! `dimension-checked-readers.md` §7 I7), shared by the elastic-static and
 //! buckling trampolines.
 //!
-//! Every magnitude reads through `accept_arg_or_bare`: a `Scalar` must carry
+//! Every magnitude reads through `read_arg_or_bare`: a `Scalar` must carry
 //! its position's dimension, while a bare `Real`/`Int` is still read as the
 //! legacy undimensioned spelling until γ3 #5802 narrows it. An absent or
-//! `Undef` magnitude contributes nothing, quietly (PRD decision 2).
+//! `Undef` magnitude contributes nothing, quietly (PRD decision 2). Any value
+//! it refuses — a `Scalar` of another dimension or not a number at all — is a
+//! `WrongDimension`, coded `DimensionedArgRejected`.
 
 use reify_ir::{StructureInstanceData, Value};
 
 use super::fea_value_shape::FeaValueShapeError;
 use crate::arg_acceptance::{
-    Acceptance, ArgSpec, acceleration_spec, accept_arg_or_bare, density_spec, force_spec,
-    pressure_spec,
+    ArgSpec, acceleration_spec, density_spec, force_spec, pressure_spec, read_arg_or_bare,
 };
 
 /// The items of a `loads` list.
@@ -74,19 +75,9 @@ fn magnitude(
     let Some(value) = data.fields.get(field) else {
         return Ok(None);
     };
-    match accept_arg_or_bare(value, spec) {
-        Acceptance::Accepted(si) => Ok(Some(si)),
-        Acceptance::Undefined => Ok(None),
-        Acceptance::Rejected(rejection) if matches!(value, Value::Scalar { .. }) => {
-            Err(FeaValueShapeError::WrongDimension {
-                context,
-                expected: rejection.expected,
-                got: rejection.got,
-            })
-        }
-        Acceptance::Rejected(rejection) => Err(FeaValueShapeError::ExpectedScalar {
-            context,
-            got: rejection.got,
-        }),
-    }
+    read_arg_or_bare(value, spec).map_err(|rejection| FeaValueShapeError::WrongDimension {
+        context,
+        expected: rejection.expected,
+        got: rejection.got,
+    })
 }

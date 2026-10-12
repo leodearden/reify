@@ -646,6 +646,46 @@ pub fn accept_arg_or_bare(value: &crate::value::Value, spec: &ArgSpec) -> Accept
     }
 }
 
+/// [`accept_arg_or_bare`] as a reader's `Result`: `Ok(Some(si))` accepted,
+/// `Ok(None)` unresolved, `Err` refused.
+///
+/// The ONE refusal rule of the dimension-checked readers: every present value
+/// the position refuses — a number of the wrong dimension, or not a number at
+/// all — is an `Err`, never read as absent. It is one rejection reason (ruling
+/// A7), so [`ArgRejection::to_error`] codes it `DimensionedArgRejected` either
+/// way (INV-SF-6), exactly as the eval-side length chokepoint does.
+pub fn read_arg_or_bare(
+    value: &crate::value::Value,
+    spec: &ArgSpec,
+) -> Result<Option<f64>, ArgRejection> {
+    read_accepted(accept_arg_or_bare(value, spec))
+}
+
+/// [`accept_field`] as a reader's `Result`, under [`read_arg_or_bare`]'s
+/// refusal rule: `Ok(None)` when the field is absent, `none` or unresolved,
+/// `Err` naming `<Struct>.<key>` when it is refused.
+pub fn read_field(
+    data: &crate::value::StructureInstanceData,
+    key: &str,
+    spec: &ArgSpec,
+) -> Result<Option<f64>, FieldRejection> {
+    let Some(value) = data.fields.get(key).and_then(unwrap_options) else {
+        return Ok(None);
+    };
+    read_accepted(accept_arg(value, spec)).map_err(|rejection| FieldRejection {
+        path: format!("{}.{key}", data.type_name),
+        rejection,
+    })
+}
+
+fn read_accepted(acceptance: Acceptance) -> Result<Option<f64>, ArgRejection> {
+    match acceptance {
+        Acceptance::Accepted(si) => Ok(Some(si)),
+        Acceptance::Undefined => Ok(None),
+        Acceptance::Rejected(rejection) => Err(rejection),
+    }
+}
+
 // ── PRD 5 §7: the STRUCT-FIELD reader surface ────────────────────────────────
 
 /// The outcome of [`accept_field`] — [`Acceptance`] plus the one distinction a
@@ -730,14 +770,23 @@ pub fn accept_field(
 /// Unwrap any depth of `Value::Option` and delegate the rest to
 /// [`accept_arg`]. See [`accept_field`] for why the recursion is unbounded.
 fn accept_unwrapped(value: &crate::value::Value, spec: &ArgSpec) -> FieldAcceptance {
-    match value {
-        crate::value::Value::Option(None) => FieldAcceptance::Absent,
-        crate::value::Value::Option(Some(inner)) => accept_unwrapped(inner, spec),
-        other => match accept_arg(other, spec) {
+    match unwrap_options(value) {
+        None => FieldAcceptance::Absent,
+        Some(inner) => match accept_arg(inner, spec) {
             Acceptance::Accepted(si) => FieldAcceptance::Accepted(si),
             Acceptance::Undefined => FieldAcceptance::Undefined,
             Acceptance::Rejected(rej) => FieldAcceptance::Rejected(rej),
         },
+    }
+}
+
+/// The value under any depth of `Value::Option`; `None` for `Option(None)`.
+/// The one Option-unwrapping rule of [`accept_field`] and [`read_field`].
+fn unwrap_options(value: &crate::value::Value) -> Option<&crate::value::Value> {
+    match value {
+        crate::value::Value::Option(None) => None,
+        crate::value::Value::Option(Some(inner)) => unwrap_options(inner),
+        other => Some(other),
     }
 }
 
@@ -1083,16 +1132,15 @@ mod tests {
         let Acceptance::Rejected(rejection) = accept_arg(&Value::Real(0.4), &length_spec()) else {
             unreachable!("a bare Real at a LENGTH position must be Rejected");
         };
-        let expected_message =
-            rejection.message("as_printed_material", "AsPrintedOptions.line_width");
+        let expected_message = rejection.message("as_printed_material", "Options.line_width");
 
-        let arg_error = rejection.to_error("as_printed_material", "AsPrintedOptions.line_width");
+        let arg_error = rejection.to_error("as_printed_material", "Options.line_width");
         assert_eq!(arg_error.severity, Severity::Error);
         assert_eq!(arg_error.code, Some(DiagnosticCode::DimensionedArgRejected));
         assert_eq!(arg_error.message, expected_message);
 
         let field = FieldRejection {
-            path: "AsPrintedOptions.line_width".to_string(),
+            path: "Options.line_width".to_string(),
             rejection,
         };
         let field_error = field.to_error("as_printed_material");
@@ -1102,13 +1150,75 @@ mod tests {
             Some(DiagnosticCode::DimensionedArgRejected)
         );
         assert_eq!(field_error.message, expected_message);
-        assert!(
-            field_error.message.starts_with(
-                "as_printed_material: AsPrintedOptions.line_width argument expects Length, got Real"
-            ),
-            "got {:?}",
-            field_error.message
+    }
+
+    // ── read_arg_or_bare / read_field: one refusal rule for every reader ──────
+
+    #[test]
+    fn read_arg_or_bare_refuses_every_present_value_it_does_not_accept() {
+        use crate::value::Value;
+        use reify_core::DimensionVector as DV;
+
+        let mass = mass_spec();
+        assert_eq!(read_arg_or_bare(&Value::Real(2.0), &mass), Ok(Some(2.0)));
+        assert_eq!(read_arg_or_bare(&Value::Undef, &mass), Ok(None));
+        let length_mass = Value::Scalar {
+            si_value: 2.0,
+            dimension: DV::LENGTH,
+        };
+        for refused in [length_mass, Value::Bool(true)] {
+            assert!(
+                read_arg_or_bare(&refused, &mass).is_err(),
+                "{refused:?} must be refused, never read as absent"
+            );
+        }
+    }
+
+    #[test]
+    fn read_field_reads_absent_none_and_unwrapped_and_refuses_the_rest() {
+        use crate::value::Value;
+
+        let length = length_spec();
+        let options = |value: Value| steel_instance(&[("line_width", value)]);
+
+        assert_eq!(
+            read_field(&steel_instance(&[]), "line_width", &length),
+            Ok(None)
         );
+        assert_eq!(
+            read_field(&options(Value::Option(None)), "line_width", &length),
+            Ok(None)
+        );
+        assert_eq!(
+            read_field(
+                &options(Value::Option(Some(Box::new(Value::length(0.4e-3))))),
+                "line_width",
+                &length
+            ),
+            Ok(Some(0.4e-3))
+        );
+        for refused in [Value::Real(0.4), Value::Bool(true)] {
+            let Err(rejection) = read_field(&options(refused.clone()), "line_width", &length)
+            else {
+                unreachable!("{refused:?} at a LENGTH field must be refused");
+            };
+            assert_eq!(rejection.path, "Steel_AISI_1045.line_width");
+        }
+    }
+
+    /// One rejection reason (ruling A7): a non-number is refused with the same
+    /// coded Error as a number of the wrong dimension.
+    #[test]
+    fn a_non_number_renders_as_the_same_coded_rejection() {
+        use crate::value::Value;
+        use reify_core::{DiagnosticCode, Severity};
+
+        let rejection = read_arg_or_bare(&Value::Bool(true), &length_spec())
+            .expect_err("a Bool at a LENGTH position must be refused");
+        let error = rejection.to_error("translate", "dx");
+        assert_eq!(error.severity, Severity::Error);
+        assert_eq!(error.code, Some(DiagnosticCode::DimensionedArgRejected));
+        assert_eq!(error.message, rejection.message("translate", "dx"));
     }
 
 

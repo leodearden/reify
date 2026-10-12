@@ -15,6 +15,7 @@
 use reify_core::{DiagnosticCode, ValueCellId};
 use reify_eval::Engine;
 use reify_ir::UndefCause;
+use reify_ir::arg_acceptance::{Acceptance, ArgSpec, accept_arg, length_spec, mass_spec};
 use reify_test_support::{MockConstraintChecker, collect_errors, compile_source_with_stdlib};
 
 // ── Helper: load and compile the γ fixture ────────────────────────────────────
@@ -455,18 +456,13 @@ fn a_length_mass_is_diagnosed_and_records_the_dimensioned_arg_cause() {
         2,
         "one rejection per wrong cell, got {rejections:#?}"
     );
-    assert!(
-        rejections.iter().any(|m| {
-            m.starts_with("mass_properties: mass argument expects Mass, got Length Scalar")
-        }),
-        "got {rejections:#?}"
-    );
-    assert!(
-        rejections
-            .iter()
-            .any(|m| m.starts_with("point_mass: mass argument expects Mass, got Length Scalar")),
-        "got {rejections:#?}"
-    );
+    for builtin in ["mass_properties", "point_mass"] {
+        let expected = canonical_rejection(Value::length(2.0), &mass_spec(), builtin, "mass");
+        assert!(
+            rejections.contains(&expected.as_str()),
+            "{builtin}: expected {expected:?}, got {rejections:#?}"
+        );
+    }
 
     let causes = engine.undef_causes();
     for cell in ["wrong", "pm_wrong"] {
@@ -504,6 +500,20 @@ fn a_length_mass_is_diagnosed_and_records_the_dimensioned_arg_cause() {
     );
 }
 
+/// The message the shared reader renders for `value` at `spec`, so these tests
+/// assert which builtin and argument were named without restating the wording.
+fn canonical_rejection(
+    value: reify_ir::Value,
+    spec: &ArgSpec,
+    builtin: &str,
+    arg_name: &str,
+) -> String {
+    let Acceptance::Rejected(rejection) = accept_arg(&value, spec) else {
+        unreachable!("{value:?} must be rejected at {}", spec.type_name);
+    };
+    rejection.message(builtin, arg_name)
+}
+
 /// Inline for the same reason as [`MASS_DIMENSION_SOURCE`].
 const PLANE_DIMENSION_SOURCE: &str = "structure def PlaneDim {
   let wrong = plane_xy(2kg)
@@ -536,9 +546,15 @@ fn a_mass_plane_offset_records_the_dimensioned_arg_cause() {
         })
         .map(|d| d.message.as_str())
         .collect();
-    assert!(
-        matches!(rejections.as_slice(), [m] if m.starts_with("plane_xy: offset argument expects Length")),
-        "one plane_xy offset rejection, got {rejections:#?}"
+    let mass = reify_ir::Value::Scalar {
+        si_value: 2.0,
+        dimension: reify_core::DimensionVector::MASS,
+    };
+    let expected = canonical_rejection(mass, &length_spec(), "plane_xy", "offset");
+    assert_eq!(
+        rejections,
+        [expected.as_str()],
+        "one plane_xy offset rejection"
     );
 
     let causes = engine.undef_causes();
