@@ -626,7 +626,8 @@ silently.
 ## INV-ARCH-1 `module-sccs-only-shrink`
 
 **Rule**: Within a workspace crate, no strongly connected component of
-the top-level-module `crate::` import graph appears or grows. A shrink
+the top-level-module import graph (`crate::` paths, and `super::` chains
+that reach the crate root) appears or grows. A shrink
 or dissolution lowers the committed baseline in the same diff, so it is
 recorded, not silent. Universe, edges and production text: PRD
 `docs/prds/v0_6/dependency-invalidation-stratum.md` §5.1 (not restated
@@ -634,8 +635,15 @@ here). reify-compiler is excluded until S7 κ: its glob imports hide
 edges from the rule.
 
 **Checkable design question(s)**: Does this change add a `crate::<m>`
-reference from a module that `<m>` already reaches — does
-`python3 scripts/assert-module-scc.py check` print `GREW`? If it breaks
+reference to `<m>` from a module that `<m>` already reaches, so that an
+SCC appears, grows or merges? Does
+`python3 scripts/assert-module-scc.py check` print `GREW`? The ratchet
+tracks SCC membership, not edges. An import between two modules already
+in one baselined SCC is not flagged: `use crate::engine_eval::…` in
+`deps.rs` stays green, because both modules are in reify-eval's
+24-module SCC. To see the gate fire, add the edge from outside the SCC:
+the same line in `structural_query.rs`, a module the SCC reaches, reds
+as `GREW` naming `structural_query -> engine_eval`. If a change breaks
 a cycle, does the same diff lower the row with `print`? Does a
 predicate or type that a lower module needs live in an engine-phase
 module, forcing an upward import?

@@ -4,9 +4,11 @@ assert-module-scc.py — the intra-crate module-SCC ratchet (INV-ARCH-1).
 
 For every workspace crate, measure the strongly connected components of the
 graph whose nodes are the crate's top-level modules and whose edges are its
-production `crate::<module>` references, then compare them with the committed
-baseline. The rule (universe, edges, production text) is PRD
-docs/prds/v0_6/dependency-invalidation-stratum.md §5.1.
+production references to them: `crate::m`, a name m in a `crate::{…}` list,
+and the same after a `super::` chain that climbs to the crate root. Then
+compare them with the committed baseline. The rule (universe, edges,
+production text) is PRD docs/prds/v0_6/dependency-invalidation-stratum.md
+§5.1. Each src/bin/ target is a binary crate of its own and is not measured.
 
     check   exit 0 iff every crate's measured SCCs equal its baseline row
     print   write the current measurement to stdout in baseline format
@@ -14,21 +16,43 @@ docs/prds/v0_6/dependency-invalidation-stratum.md §5.1.
 Reading a failure:
     GREW <crate>: {a, b, …}   an SCC appeared, grew or merged. The indented
                               `path:line: u -> v` lines under it are the imports
-                              that close it; moving one of them breaks it.
+                              that close it (for a merge, only those that join
+                              the old SCCs); moving one of them breaks it.
     STALE <crate>: …          a baselined SCC shrank or dissolved. Lower the row
                               in the same diff, so the shrink is recorded.
+
+Only SCC membership is ratcheted, not edges: a new import between two modules
+already in one baselined SCC changes no SCC and is not flagged.
 
 Lowering the baseline (never redirect `print` onto the file it reads):
 
     python3 scripts/assert-module-scc.py print > /tmp/module-scc-baseline.json \\
         && mv /tmp/module-scc-baseline.json scripts/module-scc-baseline.json
 
+Production text leaves out an item whose cfg admits only test builds: `test`,
+`all(test, …)`, or an `any(…)` all of whose arms do. Feature names are blank
+in the lexed view, so `any(test, feature = "test-support")` counts as
+production here, although the test-module skipper in
+scripts/lib_rust_production_view.sh treats it as test-only. That is the loud
+direction: a possible false GREW, never a silent OK.
+
+Blind spots, where a real dependency is not measured:
+    - a module reached without a crate-root path: through a glob import
+      (`use crate::*`, or `use super::*` in a top-level file), or through a
+      path a macro writes (`$crate::m` counts in the defining file only);
+    - a production `#[path = "…"] mod m;`, whose file is attributed by its
+      location on disk rather than to m.
+reify-compiler is excluded for the first reason until S7 κ.
+
 The gate runs `check` from crates/reify-build-utils/tests/module_scc_ratchet.rs:
 always in the merge gate, but in a per-task lane only when reify-build-utils is
-affected — so run `check` yourself after moving imports.
+affected — so run `check` yourself after moving imports. Lexing goes through
+RUST_LEXER_AWK in scripts/lib_rust_production_view.sh, so after editing that
+lib, also run `cargo test -p reify-build-utils --test module_scc_ratchet`.
 
 Exit codes: 0 measurement matches the baseline; 1 ratchet violation (GREW or
-STALE); 2 an input could not be trusted (manifest, baseline or lexer).
+STALE); 2 an input could not be trusted (manifest, baseline, source file or
+lexer).
 """
 
 from __future__ import annotations
