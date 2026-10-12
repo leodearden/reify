@@ -392,29 +392,12 @@ fn validate_pipe_start_tangent(t: ffi::ffi::Point3) -> Result<(), GeometryError>
 /// the error text quotes the degrees, so the number a designer is told and the
 /// number they are measured against cannot drift apart.
 ///
-/// # Why 4 degrees, and why a band at all
-///
-/// The degeneracy is continuous, not a special case: OCCT reports `IsDone()`
-/// and returns a valid sliver solid down to 0.001 degrees off-plane, so an
-/// exact-coplanarity predicate is evadable by float noise and misses the
-/// realistic authoring mistake — a profile posed ALMOST in the spine's plane.
-///
-/// 4.0 is the arithmetic midpoint of the gap between the worst real victim and
-/// the nearest real keeper. Every in-tree `sweep` subject was measured (task
-/// #7248); `abs(t̂·n̂)` for each, against a floor of sin(4°) = 0.0697564737441253:
-///
-/// | subject | `abs(t̂·n̂)` | |
-/// |---|---|---|
-/// | `circle(100mm)` along a z=0 bezier (`pnrg_envelope_spline.ri`) | 0.000000000 | REJECT |
-/// | `circle(3mm)` along `helix(24mm, 7mm, 63mm)` (`helix_sweep_e2e.rs`) | 0.046370259 | REJECT |
-/// | `circle(0.4mm)` along `helix(2.15mm, 0.8mm, 10mm)` (`helix_sweep_dep_5342.ri`) | 0.059116871 | REJECT |
-/// | `circle(100mm)` along an `interp` spine (`pnrg_envelope_sweep.ri`) | 0.080458525 | admit |
-/// | the posed groove profile of `prj/printer_v01/dev_capstan.ri` | 0.998940251 | admit |
-///
-/// The three rejected subjects all produced a degenerate body — a flat ribbon,
-/// or a negative volume that `volume()` downgrades to Undef — and were reposed
-/// under the same task. The floor clears the worst of them by 18% and sits 15%
-/// below the nearest deliberately-posed keeper.
+/// It is a band rather than exact coplanarity because the degeneracy is
+/// continuous: OCCT builds a valid sliver solid down to 0.001 degrees
+/// off-plane, so an exact predicate is evadable by float noise.
+/// `crates/reify-eval/tests/harness_sweep/sweep_pose_guard_e2e.rs` pins the
+/// band on both sides: its rungs 2 and 2b straddle it at ±0.2 degrees, and
+/// rung 2c is the nearest real keeper.
 const SWEEP_DEGENERATE_POSE_DEG: f64 = 4.0;
 
 #[cfg(has_occt)]
@@ -450,22 +433,16 @@ fn unit_vector(v: ffi::ffi::Point3) -> Option<(f64, f64, f64)> {
 /// profile, which the compiler's Closed-and-Planar precondition does not
 /// inspect — that one sample describes no plane and `|t̂·n̂|` is not the
 /// quantity the refusal would be claiming to report.
-/// Failing closed would newly reject sweeps that realize today — a let-bound
-/// `line_segment` profile swept along a +Z spine produces a real 20mm × 200mm
-/// un-capped shell. That case IS a defect, but its remedy is the honest
-/// `BRepKind` stamp, which makes the result legibly a Shell, not a pose error
-/// naming a tolerance the shape has no normal to be measured against. Keeping the scope to
-/// "the profile has a normal, and it lies in the spine's plane" leaves the
-/// question of what counts as a valid profile with the compiler, which already
-/// owns it.
+///
+/// The fences that pin this fail-open scope are
+/// `sweep_with_history_fails_open_for_a_wire_profile` and
+/// `a_non_planar_face_profile_is_not_judged_on_pose`, in
+/// `crates/reify-kernel-occt/tests/harness_occt/sweep_pose_guard_integration.rs`.
 fn validate_sweep_pose(
     profile_shape: &ffi::ffi::OcctShape,
     path_shape: &ffi::ffi::OcctShape,
 ) -> Result<(), GeometryError> {
-    if !matches!(
-        ffi::ffi::shape_type_name(profile_shape).as_deref(),
-        Ok("Face")
-    ) {
+    if !matches!(brep_kind_of_shape(profile_shape), Ok(BRepKind::Face)) {
         return Ok(());
     }
     let profile_is_planar = ffi::ffi::face_surface_kind(profile_shape).is_ok_and(|kind| {
