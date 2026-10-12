@@ -14,9 +14,6 @@
 //! Nothing here duplicates a variable list: the *sanitized* set lives once in
 //! [`reify_audit::git_env::REPO_REDIRECT_VARS`], and the *poisoned* set lives
 //! once in [`hook_git_env`], which asserts it is a subset of the sanitized one.
-//! Poison only ever reaches a CHILD's environment: `std::env::set_var` is
-//! process-global, so a test that poisoned itself would race its siblings
-//! under `cargo test`'s thread-per-test model.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -125,7 +122,7 @@ fn hook_git_env(decoy: &DecoyRepo) -> Vec<(&'static str, PathBuf)> {
 /// Apply a hook's exported git environment, pointed at `decoy`, to `cmd`.
 ///
 /// Poisons the CHILD only. Callers must never touch their own process
-/// environment — see the module doc on `std::env::set_var`.
+/// environment — why: [`super::replay`]'s module doc, "Why a replay harness".
 #[allow(dead_code)]
 pub fn poison_with_hook_git_env<'a>(cmd: &'a mut Command, decoy: &DecoyRepo) -> &'a mut Command {
     for (name, value) in hook_git_env(decoy) {

@@ -762,7 +762,7 @@ mod cli {
     ///
     /// This must be a subprocess test, not a library one: `std::env::set_var`
     /// is process-global and would race sibling tests under `cargo test`'s
-    /// thread-per-test model (the same hazard `tests/common/git_env.rs`
+    /// thread-per-test model (the same hazard `tests/common/replay.rs`
     /// documents at length for `GIT_DIR`).
     #[test]
     fn pre_done_warn_only_env_downgrades_refusal_to_low() {
