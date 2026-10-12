@@ -773,9 +773,9 @@ _plan_record_parses() {
 # The LAST done entry rather than every done entry, because steps execute in
 # order and each commits atop the previous: if the deepest done commit is an
 # ancestor of the tip then every earlier one is too. Two git calls per lane,
-# which matters for a pool walked by a timer. Because `prerequisites` precedes
-# `steps` in the emitted document, plain document order already yields the
-# required traversal -- no separate array handling.
+# which matters for a pool walked unattended or repeatedly. Because
+# `prerequisites` precedes `steps` in the emitted document, plain document
+# order already yields the required traversal -- no separate array handling.
 #
 # awk, not jq/python3: this script declares no-jq/no-python3 as a design
 # property (see _record_scalar). awk is already used here for the df/du
