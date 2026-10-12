@@ -262,8 +262,91 @@ fn doc_view_captures_outer_and_inner_doc_comments_only() {
 
 const TEST_ITEMS: &[&str] = &["#[cfg(test)]"];
 
+/// An item being skipped: the nesting depth it began at, and whether its body
+/// brace has opened yet (an item without one ends at a `;` at that depth).
+struct CurrentItem {
+    start_depth: usize,
+    opened: bool,
+}
+
+struct ItemTracker {
+    depth: usize,
+    current: Option<CurrentItem>,
+}
+
+impl ItemTracker {
+    fn begin_item(&mut self) {
+        self.current = Some(CurrentItem {
+            start_depth: self.depth,
+            opened: false,
+        });
+    }
+
+    fn advance(&mut self, c: char) {
+        let depth = self.depth;
+        match c {
+            '{' => {
+                if let Some(item) = self.current.as_mut().filter(|item| item.start_depth == depth) {
+                    item.opened = true;
+                }
+                self.depth += 1;
+            }
+            '(' | '[' => self.depth += 1,
+            '}' | ')' | ']' => {
+                self.depth = depth.saturating_sub(1);
+                let ended = self.current.as_ref().is_some_and(|item| {
+                    item.opened && item.start_depth == self.depth
+                });
+                if ended {
+                    self.current = None;
+                }
+            }
+            ';' => {
+                let ended = self
+                    .current
+                    .as_ref()
+                    .is_some_and(|item| !item.opened && item.start_depth == depth);
+                if ended {
+                    self.current = None;
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Whether `code` begins an item named by `prefix`; a prefix ending in an
+/// identifier character must not be the start of a longer identifier.
+fn starts_item(code: &str, prefix: &str) -> bool {
+    let Some(rest) = code.trim_start().strip_prefix(prefix) else {
+        return false;
+    };
+    let ends_in_ident = prefix.chars().last().is_some_and(is_ident_char);
+    let continues_ident = rest.chars().next().is_some_and(is_ident_char);
+    !(ends_in_ident && continues_ident)
+}
+
+/// Marks every line of each item whose first code line starts with one of
+/// `item_prefixes`, through its closing brace (or its `;` for a braceless item).
 fn skipped_lines(lines: &[Line], item_prefixes: &[&str]) -> Vec<bool> {
-    vec![false; lines.len()]
+    let mut tracker = ItemTracker {
+        depth: 0,
+        current: None,
+    };
+    lines
+        .iter()
+        .map(|line| {
+            let starts_listed_item = item_prefixes
+                .iter()
+                .any(|prefix| starts_item(&line.code, prefix));
+            if tracker.current.is_none() && starts_listed_item {
+                tracker.begin_item();
+            }
+            let skipped = tracker.current.is_some();
+            line.code.chars().for_each(|c| tracker.advance(c));
+            skipped
+        })
+        .collect()
 }
 
 fn skipped_indices(source: &[&str], item_prefixes: &[&str]) -> Vec<usize> {
