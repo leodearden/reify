@@ -1225,3 +1225,54 @@ fn migrating_one_copy_without_lowering_the_baseline_is_red_for_every_row() {
         expect_red_containing(below, &["lower the baseline to 1"])
     });
 }
+
+// ── the real tree ────────────────────────────────────────────────────────────
+
+fn read_crate_tree() -> Vec<SourceFile> {
+    Vec::new()
+}
+
+/// The include / exclude entries (or census root) of `row` that prefix no file in `tree`.
+fn dangling_scope_entries(row: &Ratchet, tree: &[SourceFile]) -> Vec<&'static str> {
+    let entries: Vec<&'static str> = match &row.measure {
+        Measure::Occurrences(pattern) => pattern
+            .include
+            .iter()
+            .chain(pattern.exclude)
+            .copied()
+            .collect(),
+        Measure::DuplicateTopLevelFns { root } => vec![*root],
+    };
+    entries
+        .into_iter()
+        .filter(|entry| !tree.iter().any(|file| file.path.starts_with(entry)))
+        .collect()
+}
+
+#[test]
+fn every_ratchet_row_holds_at_its_committed_baseline() {
+    let tree = read_crate_tree();
+    for dir in ["src/", "tests/"] {
+        assert!(
+            tree.iter().any(|file| file.path.starts_with(dir)),
+            "the crate tree holds no file under {dir} ({} file(s) read)",
+            tree.len()
+        );
+    }
+    let mut failures = Vec::new();
+    for row in RATCHETS {
+        let dangling = dangling_scope_entries(row, &tree);
+        if !dangling.is_empty() {
+            failures.push(format!(
+                "{}: scope entries that match no file: {dangling:?}",
+                row.name
+            ));
+        }
+        failures.extend(check(row, &tree, row.baseline).err());
+    }
+    assert!(
+        failures.is_empty(),
+        "adoption ratchets out of step (docs/prds/v0_6/solver-crates-layering.md D20):\n{}",
+        failures.join("\n")
+    );
+}
