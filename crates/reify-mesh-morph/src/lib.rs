@@ -476,11 +476,20 @@ mod tests {
         values: &'a ValueMap,
         table: &'a TopologyAttributeTable,
     ) -> BRep<'a> {
+        brep_with_faces(graph, values, table, &[])
+    }
+
+    fn brep_with_faces<'a>(
+        graph: &'a EvaluationGraph,
+        values: &'a ValueMap,
+        table: &'a TopologyAttributeTable,
+        faces: &'a [GeometryHandleId],
+    ) -> BRep<'a> {
         BRep {
             graph,
             values,
             topology_attributes: table,
-            faces: &[],
+            faces,
             edges: &[],
             vertices: &[],
         }
@@ -798,22 +807,10 @@ mod tests {
             let mut new_table = TopologyAttributeTable::default();
             new_table.record(KernelHandle { kernel: KernelId::Occt, id: h(20) }, attr(Role::Cap(CapKind::Top), 0));
 
-            let old_brep = BRep {
-                graph: &old_graph,
-                values: &values,
-                topology_attributes: &old_table,
-                faces: &[h(10)],
-                edges: &[],
-                vertices: &[],
-            };
-            let new_brep = BRep {
-                graph: &new_graph,
-                values: &values,
-                topology_attributes: &new_table,
-                faces: &[h(20)],
-                edges: &[],
-                vertices: &[],
-            };
+            let old_faces = [h(10)];
+            let new_faces = [h(20)];
+            let old_brep = brep_with_faces(&old_graph, &values, &old_table, &old_faces);
+            let new_brep = brep_with_faces(&new_graph, &values, &new_table, &new_faces);
 
             // All four nodes attached to the (matching) face → all prescribed, so the
             // Laplacian quick-pass deforms by the tiny +x shift with no free interior
@@ -868,22 +865,10 @@ mod tests {
             new_table.record(KernelHandle { kernel: KernelId::Occt, id: h(20) }, attr(Role::Cap(CapKind::Top), 0));
             new_table.record(KernelHandle { kernel: KernelId::Occt, id: h(21) }, attr(Role::Cap(CapKind::Bottom), 1));
 
-            let old_brep = BRep {
-                graph: &old_graph,
-                values: &values,
-                topology_attributes: &old_table,
-                faces: &[h(10)],
-                edges: &[],
-                vertices: &[],
-            };
-            let new_brep = BRep {
-                graph: &new_graph,
-                values: &values,
-                topology_attributes: &new_table,
-                faces: &[h(20), h(21)],
-                edges: &[],
-                vertices: &[],
-            };
+            let old_faces = [h(10)];
+            let new_faces = [h(20), h(21)];
+            let old_brep = brep_with_faces(&old_graph, &values, &old_table, &old_faces);
+            let new_brep = brep_with_faces(&new_graph, &values, &new_table, &new_faces);
 
             let mut boundary = BoundaryAssociation::default();
             boundary.associate(0, NodeAttachment::OnFace(h(10)));
@@ -958,7 +943,7 @@ mod tests {
     #[test]
     fn compose_morph_stage_b_imported_geometry_returns_ineligible_naming_layer_error_and_records_naming_bucket() {
         with_diag_lock(|| {
-            // Identical graphs (Stage A passes); empty attribute tables with
+            // Identical graphs (Stage A passes); an empty attribute table with
             // non-empty face slices → Stage-B NamingLayerError { Face, Imported }.
             let id = ValueCellId::new("Part", "width");
             let old_graph = graph_with_cell(&id, Type::length());
@@ -966,25 +951,11 @@ mod tests {
             let mut values = ValueMap::new();
             values.insert(id, Value::length(0.05));
 
-            let old_table = TopologyAttributeTable::default();
-            let new_table = TopologyAttributeTable::default();
-
-            let old_brep = BRep {
-                graph: &old_graph,
-                values: &values,
-                topology_attributes: &old_table,
-                faces: &[h(10)],
-                edges: &[],
-                vertices: &[],
-            };
-            let new_brep = BRep {
-                graph: &new_graph,
-                values: &values,
-                topology_attributes: &new_table,
-                faces: &[h(20)],
-                edges: &[],
-                vertices: &[],
-            };
+            let table = TopologyAttributeTable::default();
+            let old_faces = [h(10)];
+            let new_faces = [h(20)];
+            let old_brep = brep_with_faces(&old_graph, &values, &table, &old_faces);
+            let new_brep = brep_with_faces(&new_graph, &values, &table, &new_faces);
 
             let mut boundary = BoundaryAssociation::default();
             boundary.associate(0, NodeAttachment::OnFace(h(10)));
@@ -1033,22 +1004,10 @@ mod tests {
             let mut new_table = TopologyAttributeTable::default();
             new_table.record(KernelHandle { kernel: KernelId::Occt, id: h(20) }, attr(Role::Cap(CapKind::Top), 0));
 
-            let old_brep = BRep {
-                graph: &old_graph,
-                values: &values,
-                topology_attributes: &old_table,
-                faces: &[h(10)],
-                edges: &[],
-                vertices: &[],
-            };
-            let new_brep = BRep {
-                graph: &new_graph,
-                values: &values,
-                topology_attributes: &new_table,
-                faces: &[h(20)],
-                edges: &[],
-                vertices: &[],
-            };
+            let old_faces = [h(10)];
+            let new_faces = [h(20)];
+            let old_brep = brep_with_faces(&old_graph, &values, &old_table, &old_faces);
+            let new_brep = brep_with_faces(&new_graph, &values, &new_table, &new_faces);
 
             let mut boundary = BoundaryAssociation::default();
             for n in 0..4u32 {
