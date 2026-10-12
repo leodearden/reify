@@ -19,9 +19,8 @@
 
 use reify_compiler::geometry_traits_inference::{
     EmptyLetEnv, GeomDim, GeometryTrait, InferredTraits, LetBindingEnv, combine_difference,
-    combine_intersection, combine_modify, combine_pattern, combine_transform,
-    combine_union, infer_primitive, infer_traits_for_expr, infer_traits_for_expr_in_env,
-    infer_traits_for_op,
+    combine_intersection, combine_modify, combine_pattern, combine_transform, combine_union,
+    infer_primitive, infer_traits_for_expr, infer_traits_for_expr_in_env, infer_traits_for_op,
 };
 use reify_compiler::{
     BooleanOp, CompiledGeometryOp, CurveKind, GeomRef, ModifyKind, PatternKind, PrimitiveKind,

@@ -884,9 +884,7 @@ pub fn try_infer_traits_for_function_call_in_env(
         "sweep_guided" => Some(sweep_in_env(SweepKind::SweepGuided, args, env)),
         "loft" => Some(sweep_in_env(SweepKind::Loft, args, env)),
         "loft_guided" => Some(sweep_in_env(SweepKind::LoftGuided, args, env)),
-        "pipe" | "zone_cylinder" | "zone_annulus" => {
-            Some(sweep_in_env(SweepKind::Pipe, args, env))
-        }
+        "pipe" | "zone_cylinder" | "zone_annulus" => Some(sweep_in_env(SweepKind::Pipe, args, env)),
 
         // ─── Curve constructors → curve() (1-D primitives) ──────────────
         "line_segment" | "arc" | "helix" | "interp" | "bezier" | "nurbs" => {

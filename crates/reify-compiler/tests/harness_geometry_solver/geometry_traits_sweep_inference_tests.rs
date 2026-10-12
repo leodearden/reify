@@ -3,8 +3,7 @@
 //! op-array `infer_traits_for_op` that resolves let-bound geometry).
 
 use reify_compiler::geometry_traits_inference::{
-    GeomDim, InferredTraits, combine_sweep, infer_traits_for_op,
-    try_infer_traits_for_function_call,
+    GeomDim, InferredTraits, combine_sweep, infer_traits_for_op, try_infer_traits_for_function_call,
 };
 use reify_compiler::{CompiledGeometryOp, CurveKind, GeomRef, ProfileKind, SweepKind};
 use reify_core::{ContentHash, DiagnosticCode, Type};
@@ -291,10 +290,8 @@ fn op_array_pipe_along_a_curve_path_infers_solid() {
 #[test]
 fn by_name_and_op_array_sweep_inference_agree_per_kind() {
     for (name, kind) in SWEEP_NAME_KINDS {
-        let op_array = infer_traits_for_op(&[
-            line_segment_op(),
-            sweep_op(kind, vec![GeomRef::Step(0)]),
-        ]);
+        let op_array =
+            infer_traits_for_op(&[line_segment_op(), sweep_op(kind, vec![GeomRef::Step(0)])]);
         assert_eq!(
             try_infer_traits_for_function_call(name, &[geometry_call("line_segment")]),
             Some(op_array),
