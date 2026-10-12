@@ -4488,6 +4488,12 @@ entries:
     origin_phase: unknown
     manifested_phase: unknown
     note: 'turn 70: .task/plan.json exists in ls output but cat fails with os error 2 (ENOENT), diagnostic of broken symlink to inaccessible target'
+  - date: '2026-10-11'
+    project: reify
+    session: 49c59438-7945-4854-bcd8-6f9711f8953c
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: Warm-lane .task/plan.json is a symlink whose target (.task-meta/_lane-15/plan.json) does not exist. The read fails with a bare 'No such file or directory' (exit 1), so the symlink indirection is the cause. Closest codebook entry; the digest does not show the phase.
 - id: entry-cand-20260722-4
   title: Escalation watcher re-attempts a path-scope-guarded cross-project operation after the guard already fired
   severity: medium
@@ -10211,6 +10217,12 @@ entries:
     origin_phase: unknown
     manifested_phase: unknown
     note: A guessed docs path was probed with stderr suppressed, and the nonexistent path surfaced only as a bare exit 2 from ls after a 2>/dev/null grep.
+  - date: '2026-10-11'
+    project: reify
+    session: e5c9921f-2b19-4e4b-a7c8-8bf138052369
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: Digest cites a probe of a guessed path (`ls scripts/legibility 2>/dev/null`) with stderr discarded, so the nonexistent path surfaced only as a bare exit code. The Not Found signal (turn 32, 'does not exist') fits the same shape. The session does not establish which phase produced the probe, so both phases are unknown.
 - id: entry-cand-20261006-7
   title: Extracting a shell function from a test file via sed and eval inside bash -c trips the dangerous-removal approval check
   severity: low
@@ -26681,3 +26693,29 @@ candidates:
     manifested_phase: unknown
     evidence_quote: This command passes a shell -c script that runs rm, and Claude Code could not check the script for dangerous removals. Approve only if you have read the script.
   promoted_to: entry-cand-20261006-7
+- id: cand-20261011-1
+  title: Plan file list omits a test that pins a refusal-ordering behavior a planned step changes, surfacing only at gated verify
+  cause: A planned step changes which check fires first in a shared export path. A gated test in a file outside the plan's file list asserts on the now-preempted error prefix, so the agent working from the plan cannot see the coupling and the break appears only in the full gated run.
+  area: tests
+  first_seen: '2026-10-11'
+  disposition: pending
+  sightings:
+  - date: '2026-10-11'
+    project: reify
+    session: 4869ad57-2f73-407b-888d-33b6e4feb087
+    origin_phase: unknown
+    manifested_phase: verify
+    evidence_quote: The plan's file list does not include gui/src-tauri/src/tests/commands_tests.rs, but that file has a gated test
+- id: cand-20261011-2
+  title: Stale test comment cites a completed future task, and hard-coded name checks miss a sibling list helper
+  cause: A test comment described names as pending addition by a task that had already finished, and the test hard-coded two of three members of LIST_HELPER_NAMES, so the omitted helper went unchecked and the comment misdirected readers about the code's state.
+  area: compiler tests (reify-compiler units.rs)
+  first_seen: '2026-10-11'
+  disposition: pending
+  sightings:
+  - date: '2026-10-11'
+    project: reify
+    session: a252cffe-ba05-4970-8d09-aecb8bad8064
+    origin_phase: unknown
+    manifested_phase: unknown
+    evidence_quote: 'the test comment says `single` and `flat_map` are "names that will be added by task 2699 but are not in scope for any other recognised family." That''s wrong twice over: #2699 is done, and both names are list helpers, listed in `LIST_HELPER_NAMES` in `list_helpers.rs`.'
