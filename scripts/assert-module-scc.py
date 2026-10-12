@@ -259,9 +259,45 @@ def lex_crate(files: Sequence[Path]) -> dict[Path, list[str]]:
 
 # --- edges --------------------------------------------------------------------
 
-EDGE_RE = re.compile(r"(?<![A-Za-z0-9_])crate\s*::\s*(\{|[A-Za-z_][A-Za-z0-9_]*)")
+ROOT_PATH_RE = re.compile(
+    r"(?<![A-Za-z0-9_])(crate\s*::|(?:super\s*::\s*)+)\s*(\{|[A-Za-z_][A-Za-z0-9_]*)")
+INLINE_MOD_RE = re.compile(r"(?<![A-Za-z0-9_])mod\s+[A-Za-z_][A-Za-z0-9_]*\s*\{")
 IDENT_RE = re.compile(r"\s*([A-Za-z_][A-Za-z0-9_]*)")
 LIST_SKIP = frozenset({"self", "super"})
+CLOSERS = {"[": re.compile(r"[\[\]]"), "{": re.compile(r"[{}]")}
+
+
+def matching_close(text: str, open_index: int) -> int | None:
+    """Offset of the bracket that closes the `[` or `{` at open_index."""
+    opener = text[open_index]
+    depth = 0
+    for match in CLOSERS[opener].finditer(text, open_index):
+        depth += 1 if match.group() == opener else -1
+        if depth == 0:
+            return match.start()
+    return None
+
+
+@dataclass(frozen=True)
+class Nesting:
+    """How far below the crate root each offset of one file sits: the file's
+    own module depth plus the inline `mod NAME { … }` blocks around it."""
+    file_depth: int
+    inline_spans: tuple[tuple[int, int], ...]
+
+    def depth_at(self, offset: int) -> int:
+        return self.file_depth + sum(start < offset < end
+                                     for start, end in self.inline_spans)
+
+
+def nesting(src: Path, path: Path, text: str) -> Nesting:
+    parts = path.relative_to(src).parts
+    file_depth = len(parts) - 1 if parts[-1] in MOD_ROOTS else len(parts)
+    spans = []
+    for match in INLINE_MOD_RE.finditer(text):
+        close = matching_close(text, match.end() - 1)
+        spans.append((match.end() - 1, len(text) if close is None else close))
+    return Nesting(file_depth, tuple(spans))
 
 
 def crate_list_names(text: str, open_brace: int) -> list[tuple[str, int]]:
@@ -283,19 +319,23 @@ def crate_list_names(text: str, open_brace: int) -> list[tuple[str, int]]:
     return names
 
 
-def referenced_modules(text: str) -> Iterable[tuple[str, int]]:
-    """(name, offset) of every `crate::name` and `crate::{name, …}` head."""
-    for match in EDGE_RE.finditer(text):
-        if match.group(1) == "{":
-            yield from crate_list_names(text, match.start(1))
+def referenced_modules(text: str, nesting: Nesting) -> Iterable[tuple[str, int]]:
+    """(name, offset) of every `crate::name` and `crate::{name, …}` head, and of
+    the same heads after a `super::` chain that climbs exactly to the crate root
+    (a shorter chain stays inside the file's own top-level module)."""
+    for match in ROOT_PATH_RE.finditer(text):
+        supers = match.group(1).count("super")
+        if supers and supers != nesting.depth_at(match.start()):
+            continue
+        if match.group(2) == "{":
+            yield from crate_list_names(text, match.start(2))
         else:
-            yield match.group(1), match.start(1)
+            yield match.group(2), match.start(2)
 
 
 # --- production text: test-only cfg items ----------------------------------------
 
 ATTRIBUTE_OR_BRACE_RE = re.compile(r"[{}]|#\s*\[")
-SQUARE_RE = re.compile(r"[\[\]]")
 CFG_ATTRIBUTE_RE = re.compile(r"\s*cfg\s*\((.*)\)\s*", re.DOTALL)
 CFG_CALL_RE = re.compile(r"(all|any|not)\((.*)\)", re.DOTALL)
 NEXT_ATTRIBUTE_RE = re.compile(r"\s*#\s*\[")
@@ -349,19 +389,10 @@ def cfg_implies_test(predicate: str) -> bool:
     return False
 
 
-def matching_square(text: str, open_index: int) -> int | None:
-    depth = 0
-    for match in SQUARE_RE.finditer(text, open_index):
-        depth += 1 if match.group() == "[" else -1
-        if depth == 0:
-            return match.start()
-    return None
-
-
 def item_head(text: str, pos: int) -> int:
     """Skip further outer attributes and a visibility, to the item's first word."""
     while (attribute := NEXT_ATTRIBUTE_RE.match(text, pos)) is not None:
-        close = matching_square(text, attribute.end() - 1)
+        close = matching_close(text, attribute.end() - 1)
         if close is None:
             return len(text)
         pos = close + 1
@@ -399,7 +430,7 @@ def scan_test_only(text: str) -> TestOnly:
         if match.group() in "{}":
             depth += 1 if match.group() == "{" else -1
             continue
-        close = matching_square(text, match.end() - 1)
+        close = matching_close(text, match.end() - 1)
         if close is None:
             continue
         pos = close + 1
@@ -467,7 +498,8 @@ def module_graph(root: Path, member: Member) -> Graph:
         for path in paths:
             starts = line_starts(lexed[path])
             site_path = path.relative_to(root).as_posix()
-            for target, offset in referenced_modules(texts[path]):
+            text_nesting = nesting(member.src, path, texts[path])
+            for target, offset in referenced_modules(texts[path], text_nesting):
                 if (target != module and target in modules
                         and not scans[path].covers(offset)):
                     edges.setdefault(target, []).append(

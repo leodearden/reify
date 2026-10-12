@@ -307,6 +307,78 @@ fn crate_brace_lists_contribute_only_their_top_level_names() {
 }
 
 #[test]
+fn super_paths_that_climb_to_the_crate_root_are_edges() {
+    let ws = TempWorkspace::demo();
+    ws.write("crates/demo/src/a.rs", "use super::b::B;\npub struct A;\n");
+    ws.write("crates/demo/src/b/mod.rs", "pub mod y;\npub struct B;\n");
+    ws.write(
+        "crates/demo/src/b/y.rs",
+        "use super::super::{a::A, c::C};\nuse super::B;\n",
+    );
+    ws.write(
+        "crates/demo/src/c.rs",
+        "mod inner {\n    use super::super::a::A;\n}\npub struct C;\n",
+    );
+    ws.baseline("{}");
+
+    let out = ws.check();
+    assert_exit(&out, 1, "a cycle closed only through super:: paths");
+    let stdout = stdout_of(&out);
+    assert!(
+        stdout.contains("GREW demo: {a, b, c}"),
+        "{}",
+        describe(&out)
+    );
+    assert_eq!(
+        closing_edges(&stdout),
+        ["a -> b", "b -> a", "b -> c", "c -> a"],
+        "{}",
+        describe(&out)
+    );
+    for (site, edge) in [
+        ("crates/demo/src/a.rs:1:", "a -> b"),
+        ("crates/demo/src/b/y.rs:1:", "b -> a"),
+        ("crates/demo/src/b/y.rs:1:", "b -> c"),
+        ("crates/demo/src/c.rs:2:", "c -> a"),
+    ] {
+        assert!(
+            has_line_with_all(&stdout, &[site, edge]),
+            "{site} {edge}\n{}",
+            describe(&out)
+        );
+    }
+}
+
+#[test]
+fn super_paths_that_stay_inside_their_top_level_module_are_not_edges() {
+    let ws = TempWorkspace::demo();
+    ws.write("crates/demo/src/a.rs", "use crate::e::E;\npub struct A;\n");
+    ws.write(
+        "crates/demo/src/e/mod.rs",
+        concat!(
+            "mod a;\n",
+            "mod inner {\n",
+            "    use super::a::Thing;\n",
+            "}\n",
+            "pub(super) fn visible() {}\n",
+            "pub struct E;\n",
+        ),
+    );
+    ws.write(
+        "crates/demo/src/e/a.rs",
+        "use super::super::e::E;\npub struct Thing;\n",
+    );
+    ws.baseline("{}");
+
+    let out = ws.check();
+    assert_exit(
+        &out,
+        0,
+        "super::a inside e's inline module names e::a, not the top-level a",
+    );
+}
+
+#[test]
 fn ratchet_reads_the_shared_lexers_view_so_comments_and_strings_add_no_edges() {
     let ws = TempWorkspace::demo();
     ws.write("crates/demo/src/a.rs", "use crate::b::B;\n");
