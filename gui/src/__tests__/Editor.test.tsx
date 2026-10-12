@@ -2587,15 +2587,16 @@ describe('Editor LSP per-document versions (task 7118)', () => {
     );
   });
 
-  it('Shift+F12 re-asks for references when the text changes under an in-flight answer, and shows only the fresh one', async () => {
+  it('Shift+F12 re-asks for references, where the symbol now is, when the text changes under an in-flight answer', async () => {
     const store = setupStore([file1]);
     store.setActiveFile(file1.path);
-    // Distinct lines, so the stale answer can never pass for the fresh one.
+    // `width` sits at (1, 8); the edit below moves it to (2, 8). Distinct lines,
+    // so the stale answer can never pass for the fresh one.
     const STALE = [
-      { uri: FILE1_URI, range: { start: { line: 0, character: 10 }, end: { line: 0, character: 17 } } },
+      { uri: FILE1_URI, range: { start: { line: 1, character: 8 }, end: { line: 1, character: 13 } } },
     ];
     const FRESH = [
-      { uri: FILE1_URI, range: { start: { line: 1, character: 10 }, end: { line: 1, character: 17 } } },
+      { uri: FILE1_URI, range: { start: { line: 2, character: 8 }, end: { line: 2, character: 13 } } },
     ];
     const calls = captureLspVersionCalls();
     // Hold the FIRST references answer so a keystroke lands while it is in flight.
@@ -2604,12 +2605,12 @@ describe('Editor LSP per-document versions (task 7118)', () => {
     const firstHeld = new Promise<void>((resolve) => {
       answerFirst = resolve;
     });
-    let referencesAsked = 0;
+    const askedAt: Array<{ line: number; character: number }> = [];
     mockInvoke.mockImplementation(async (cmd: string, args: any) => {
       const answer = recordAndAnswer(cmd, args);
       if ((args as any)?.method !== 'textDocument/references') return answer;
-      referencesAsked += 1;
-      if (referencesAsked === 1) {
+      askedAt.push(JSON.parse((args as any).params).position);
+      if (askedAt.length === 1) {
         await firstHeld;
         return JSON.stringify(STALE) as any;
       }
@@ -2624,20 +2625,25 @@ describe('Editor LSP per-document versions (task 7118)', () => {
     });
 
     // Nothing pending, so the question goes out at once, about version 1.
+    view.dispatch({ selection: { anchor: file1.content.indexOf('width') } });
     view.contentDOM.dispatchEvent(
       new KeyboardEvent('keydown', { key: 'F12', shiftKey: true, bubbles: true }),
     );
-    await vi.waitFor(() => expect(referencesAsked).toBe(1));
+    await vi.waitFor(() => expect(askedAt).toHaveLength(1));
 
-    // Typed while the answer is in flight; its debounced didChange has NOT gone out.
+    // Typed above the cursor while the answer is in flight; its debounced
+    // didChange has NOT gone out.
     view.dispatch({ changes: { from: 0, insert: '// edit\n' } });
     answerFirst();
     await vi.waitFor(() => expect(onShowReferences).toHaveBeenCalled());
 
-    expect(referencesAsked).toBe(2);
+    expect(askedAt).toEqual([
+      { line: 1, character: 8 },
+      { line: 2, character: 8 },
+    ]);
     expect(onShowReferences).toHaveBeenCalledTimes(1);
     expect(onShowReferences.mock.calls[0][0]).toEqual([
-      expect.objectContaining({ uri: FILE1_URI, line: 1, character: 10 }),
+      expect.objectContaining({ uri: FILE1_URI, line: 2, character: 8 }),
     ]);
 
     // The mid-flight edit reached the server as version 2 before it was re-asked.

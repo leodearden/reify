@@ -267,7 +267,7 @@ describe('findUsesCommand version-skew guard', () => {
     expect(onResults).not.toHaveBeenCalled();
   });
 
-  it('re-asks at the same position after a stale answer and shows only the fresh one', async () => {
+  it('re-asks after a stale answer and shows only the fresh one', async () => {
     const doc = makeVersionedDocument();
     const references = vi
       .fn()
@@ -288,6 +288,32 @@ describe('findUsesCommand version-skew guard', () => {
     expect(shownLines(onResults)).toEqual([[3, 6]]);
     expect(shownLines(onResults).flat()).not.toContain(2);
     expect(shownLines(onResults).flat()).not.toContain(5);
+  });
+
+  it('re-asks where the cursor has moved to, since the edit that made the answer stale can shift the symbol', async () => {
+    const doc = makeVersionedDocument();
+    const view = cursorView();
+    const references = vi
+      .fn()
+      .mockImplementationOnce(() => {
+        // A line inserted above the cursor: CodeMirror carries the cursor, and
+        // the symbol under it, down to line 4 (LSP line 3).
+        doc.typeSent();
+        Object.assign(view, {
+          state: makeMockView({ head: 25, lineAt: (_pos: number) => ({ number: 4, from: 20 }) }).state,
+        });
+        return Promise.resolve(STALE);
+      })
+      .mockResolvedValueOnce(FRESH);
+    const onResults = vi.fn();
+    const command = findUsesCommand(() => URI, { references }, onResults, doc.guard);
+
+    command(view);
+    await flushMacrotasks();
+
+    expect(references).toHaveBeenNthCalledWith(1, URI, 2, 5, true);
+    expect(references).toHaveBeenNthCalledWith(2, URI, 3, 5, true);
+    expect(shownLines(onResults)).toEqual([[3, 6]]);
   });
 
   it('treats an edit typed while the request was in flight, but not yet sent, as invalidating the answer', async () => {

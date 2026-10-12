@@ -67,6 +67,17 @@ function toReferenceResult(view: EditorView, location: Location): ReferenceResul
 }
 
 /**
+ * The cursor's 0-based LSP position, read afresh for every ask: a re-ask
+ * follows an edit, and CodeMirror maps the cursor, with the symbol under it,
+ * through every edit.
+ */
+function cursorPosition(view: EditorView): { line: number; character: number } {
+  const head = view.state.selection.main.head;
+  const line = view.state.doc.lineAt(head);
+  return { line: line.number - 1, character: head - line.from };
+}
+
+/**
  * Request references whose ranges still describe the text on screen: stale
  * when the document's version moved between the ask and the answer, re-asked
  * per askFresh. With no `guard` the single answer passes straight through.
@@ -94,8 +105,8 @@ async function resolveFreshLocations(
  * Create a CodeMirror Command for Shift+F12 "Find uses".
  *
  * Returns a `(view: EditorView) => boolean` suitable for use in keymap.of.
- * Reads the cursor position from view.state.selection.main.head, requests
- * references for it (includeDeclaration=true), maps Location[] → ReferenceResult[],
+ * Reads the cursor position from view.state.selection.main.head at each ask,
+ * requests references for it (includeDeclaration=true), maps Location[] → ReferenceResult[],
  * and calls `onResults`. Errors are swallowed (a warning is logged) so a failed
  * request never bubbles into CodeMirror; the command always returns true to
  * consume the key.
@@ -117,13 +128,13 @@ export function findUsesCommand(
   guard?: VersionSkewGuard,
 ): (view: EditorView) => boolean {
   return (view: EditorView): boolean => {
-    const head = view.state.selection.main.head;
-    const line = view.state.doc.lineAt(head);
-    const lspLine = line.number - 1;
-    const lspChar = head - line.from;
     const uri = uriGetter();
+    const askAtCursor = (): Promise<Location[]> => {
+      const { line, character } = cursorPosition(view);
+      return client.references(uri, line, character, true);
+    };
 
-    resolveFreshLocations(() => client.references(uri, lspLine, lspChar, true), view, uri, guard)
+    resolveFreshLocations(askAtCursor, view, uri, guard)
       .then((locations) => {
         // Checked after the LAST await, guard or not: Editor forgets the old
         // URI's version on a switch, which leaves the version comparison blind.
