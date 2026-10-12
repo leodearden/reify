@@ -10,7 +10,8 @@
 //   envelope(t) ∝ exp(-ζ₁·ω₁·t)
 //
 // where (ζ₁, ω₁ = 2π·f₁) are the fundamental mode's damping ratio and angular
-// frequency. The e2e test at crates/reify-eval/tests/modal_transient_e2e.rs
+// frequency. The e2e test at
+// crates/reify-eval-fea-tests/tests/modal_transient_e2e.rs
 // reads ζ₁ and ω₁ from THIS solve's own `result.modes[0]` and asserts the tip
 // series' measured decay constant matches ζ₁·ω₁ within 5%. Because the check is
 // self-referential, absolute frequency accuracy is irrelevant — so this fixture
@@ -39,16 +40,17 @@
 // auto-selects the exact Duhamel recurrence; ω₁·dt ≈ 0.056 keeps the discrete
 // peak-sampling error far below 5 %.
 //
-// Type-coercion notes (identical to cantilever_beam_modes.ri):
+// Type-coercion notes (same pattern as cantilever_beam_modes.ri):
 //   - FEAMaterialInput(material: mat) → mi.material (ElasticMaterial coercion).
 //   - boundary_conditions accepts the List<FixedSupport> value for its
 //     List<Support> param (structure ctors do not type-check args).
-//   - ModalOptions args bind BY NAME (task-4522's by-name ctor binder resolves
-//     each `name:` label against the declared params; only UNLABELLED args fill
-//     the remaining slots in declaration order). Every param is still spelled
-//     out because a MISSPELLED label is STILL bound leniently — appended as
-//     `__arg{i}`, leaving the real param at its default — under only an
-//     `E_CTOR_UNKNOWN_FIELD` Warning today (Error at δ).
+//   - ModalOptions args bind BY NAME (task 4522), so a MISSPELLED label is the
+//     hazard: the typo'd arg never claims its intended param — for `damping`,
+//     that loses the Rayleigh ζ₁ > 0 this fixture's decay envelope depends on.
+//     Every param is written out purely so a typo stays visible under review.
+//     What the compiler does with the typo'd arg, and how loudly it says so,
+//     are deliberately NOT restated here; both are pinned in
+//     `crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs::misspelled_ctor_label_is_diagnosed_but_still_leniently_appended`.
 
 structure CantileverStepResponse {
     // Geometry: 200 mm slender beam, 10 mm × 2 mm rectangular cross-section.
