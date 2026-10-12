@@ -45,11 +45,13 @@ use reify_core::{Diagnostic, DiagnosticCode, DiagnosticLabel, SourceSpan};
 /// Maximum combined recursion depth across the two compiler expression
 /// recursion entry points before the cap fires.
 ///
-/// This is the single expression-nesting bound for compilation: the pre-compile
+/// This is the single expression-nesting bound for compilation. The pre-compile
 /// lint walkers in `compile_builder` (`dot_chain_lint`, `shadow_lint`) stop
-/// silently past it, so the user-facing outcome is this guard's
-/// `E_EXPR_NESTING_TOO_DEEP` (pinned end to end by
+/// silently past it; for compiled expressions the user-facing outcome is this
+/// guard's `E_EXPR_NESTING_TOO_DEEP` (pinned end to end by
 /// `over_cap_nesting_through_public_compile_reports_too_deep_instead_of_panicking`).
+/// Those walkers recurse on the caller's raw stack with no `stacker` growth, so
+/// raising this value also raises their raw-stack recursion depth.
 ///
 /// Rationale: realistic designs nest at most a few dozen levels
 /// (`designs/litter_tray/bottom_deck_split.ri` ≈ 9 boolean levels), and even
@@ -74,6 +76,16 @@ pub(crate) const MAX_COMPILE_RECURSION_DEPTH: usize = 256;
 const _: () = assert!(
     MAX_COMPILE_RECURSION_DEPTH > 128,
     "MAX_COMPILE_RECURSION_DEPTH must exceed realistic-nesting headroom (128)"
+);
+
+/// Compile-time pin: the lint walkers recurse to this depth on an ungrown stack,
+/// and 256 is the depth the end-to-end test named on the constant shows they fit
+/// on a 2 MiB tokio worker. Re-measure them, or give them their own bound, before
+/// raising it.
+const _: () = assert!(
+    MAX_COMPILE_RECURSION_DEPTH <= 256,
+    "MAX_COMPILE_RECURSION_DEPTH is also the compile_builder lint walkers' raw-stack \
+     depth (no stacker growth); re-measure them or bound them separately before raising it"
 );
 
 /// `stacker::maybe_grow` red zone: if fewer than this many bytes of stack

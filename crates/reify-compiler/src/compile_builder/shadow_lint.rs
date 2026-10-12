@@ -567,7 +567,8 @@ fn walk_expr_depth(
     diagnostics: &mut Vec<Diagnostic>,
     depth: usize,
 ) {
-    // Past the shared cap the lint stops; compilation reports E_EXPR_NESTING_TOO_DEEP.
+    // Past the shared cap the lint stops silently; for compiled expressions the
+    // compiler's guard reports E_EXPR_NESTING_TOO_DEEP.
     if depth > MAX_COMPILE_RECURSION_DEPTH {
         return;
     }
@@ -868,32 +869,34 @@ mod tests {
     use crate::recursion_guard::MAX_COMPILE_RECURSION_DEPTH as CAP;
 
     /// The lint covers nesting up to the shared compile cap and stops silently
-    /// past it: a shadowing lambda wrapped so it sits AT the cap is reported,
-    /// one layer further it is skipped without panicking.
+    /// past it: a lambda shadowing an enclosing lambda's `x`, wrapped so it sits
+    /// AT the cap, is reported; one layer further it is skipped without panicking.
     #[test]
     fn shadowing_lambda_is_linted_at_the_nesting_cap_and_skipped_past_it() {
-        fn shadow_count_for_lambda_at_depth(depth: usize) -> usize {
-            let span = SourceSpan::empty(0);
-            let parent: Frame = HashMap::from([("x".to_string(), span)]);
-            let stack = FrameStack {
-                frame: &parent,
-                parent: None,
-            };
-            let mut expr = Expr {
+        fn lambda_over_x(body: Expr) -> Expr {
+            let span = body.span;
+            Expr {
                 kind: ExprKind::Lambda {
                     params: vec![reify_ast::LambdaParam {
                         name: "x".into(),
                         type_expr: None,
                         span,
                     }],
-                    body: Box::new(Expr {
-                        kind: ExprKind::Ident("x".into()),
-                        span,
-                    }),
+                    body: Box::new(body),
                 },
                 span,
-            };
-            for _ in 0..depth {
+            }
+        }
+
+        /// `|x| -(-(… (|x| x)))`: the outer lambda is the root at depth 0, so
+        /// `depth - 1` negations put the shadowing inner lambda at `depth`.
+        fn shadow_count_for_lambda_at_depth(depth: usize) -> usize {
+            let span = SourceSpan::empty(0);
+            let mut expr = lambda_over_x(Expr {
+                kind: ExprKind::Ident("x".into()),
+                span,
+            });
+            for _ in 1..depth {
                 expr = Expr {
                     kind: ExprKind::UnOp {
                         op: "-".into(),
@@ -902,8 +905,9 @@ mod tests {
                     span,
                 };
             }
+            let root = lambda_over_x(expr);
             let mut diagnostics: Vec<Diagnostic> = Vec::new();
-            walk_expr(&expr, Some(&stack), &mut diagnostics);
+            walk_expr(&root, None, &mut diagnostics);
             assert!(
                 diagnostics
                     .iter()

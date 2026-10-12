@@ -356,7 +356,8 @@ fn walk_expr(expr: &Expr, diagnostics: &mut Vec<Diagnostic>) {
 }
 
 fn walk_expr_depth(expr: &Expr, diagnostics: &mut Vec<Diagnostic>, depth: usize) {
-    // Past the shared cap the lint stops; compilation reports E_EXPR_NESTING_TOO_DEEP.
+    // Past the shared cap the lint stops silently; for compiled expressions the
+    // compiler's guard reports E_EXPR_NESTING_TOO_DEEP.
     if depth > MAX_COMPILE_RECURSION_DEPTH {
         return;
     }
