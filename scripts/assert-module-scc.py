@@ -44,6 +44,7 @@ import tomllib
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import IntEnum
+from itertools import accumulate
 from pathlib import Path
 
 
@@ -81,6 +82,7 @@ Graph = Mapping[str, Mapping[str, Sequence[Site]]]
 
 BASELINE_SCHEMA = 1
 CRATE_ROOTS = frozenset({"lib.rs", "main.rs"})
+MOD_ROOTS = CRATE_ROOTS | {"mod.rs"}
 
 
 # --- workspace and baseline -------------------------------------------------
@@ -209,6 +211,146 @@ def referenced_modules(text: str) -> Iterable[tuple[str, int]]:
             yield match.group(1), match.start(1)
 
 
+# --- production text: test-only cfg items ----------------------------------------
+
+ATTRIBUTE_OR_BRACE_RE = re.compile(r"[{}]|#\s*\[")
+SQUARE_RE = re.compile(r"[\[\]]")
+CFG_ATTRIBUTE_RE = re.compile(r"\s*cfg\s*\((.*)\)\s*", re.DOTALL)
+CFG_CALL_RE = re.compile(r"(all|any|not)\((.*)\)", re.DOTALL)
+NEXT_ATTRIBUTE_RE = re.compile(r"\s*#\s*\[")
+VISIBILITY_RE = re.compile(r"\s*pub\b(\s*\([^()]*\))?")
+ITEM_TOKEN_RE = re.compile(r"[()\[\]{};,]")
+ITEM_KEYWORDS = frozenset({
+    "mod", "fn", "struct", "enum", "union", "impl", "trait", "const", "static",
+    "use", "type", "extern", "macro_rules", "unsafe", "async",
+})
+
+
+@dataclass(frozen=True)
+class TestOnly:
+    """A file's test-only text: sorted [start, end) spans of cfg-test items,
+    and the names of test-only `mod NAME` declarations at its top level."""
+    spans: tuple[tuple[int, int], ...]
+    module_names: frozenset[str]
+
+    def covers(self, offset: int) -> bool:
+        index = bisect.bisect_right(self.spans, (offset, float("inf"))) - 1
+        return index >= 0 and offset < self.spans[index][1]
+
+
+def split_cfg_args(args: str) -> list[str]:
+    parts, depth, start = [], 0, 0
+    for index, char in enumerate(args):
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+        elif char == "," and depth == 0:
+            parts.append(args[start:index])
+            start = index + 1
+    parts.append(args[start:])
+    return [part for part in parts if part]
+
+
+def cfg_implies_test(predicate: str) -> bool:
+    """True when every build that satisfies the cfg predicate is a test build."""
+    squeezed = re.sub(r"\s+", "", predicate)
+    if squeezed == "test":
+        return True
+    call = CFG_CALL_RE.fullmatch(squeezed)
+    if call is None:
+        return False
+    operator, args = call.group(1), split_cfg_args(call.group(2))
+    if operator == "all":
+        return any(cfg_implies_test(arg) for arg in args)
+    if operator == "any":
+        return bool(args) and all(cfg_implies_test(arg) for arg in args)
+    return False
+
+
+def matching_square(text: str, open_index: int) -> int | None:
+    depth = 0
+    for match in SQUARE_RE.finditer(text, open_index):
+        depth += 1 if match.group() == "[" else -1
+        if depth == 0:
+            return match.start()
+    return None
+
+
+def item_head(text: str, pos: int) -> int:
+    """Skip further outer attributes and a visibility, to the item's first word."""
+    while (attribute := NEXT_ATTRIBUTE_RE.match(text, pos)) is not None:
+        close = matching_square(text, attribute.end() - 1)
+        if close is None:
+            return len(text)
+        pos = close + 1
+    visibility = VISIBILITY_RE.match(text, pos)
+    return visibility.end() if visibility else pos
+
+
+def item_end(text: str, head: int, is_item: bool) -> int:
+    """End of the attributed thing at head: after a depth-0 `;`, after the `}`
+    that closes its body, after a depth-0 `,` when it is not an item (a field,
+    variant, initialiser or arm), and never past its parent's closer."""
+    depth = 0
+    for match in ITEM_TOKEN_RE.finditer(text, head):
+        token = match.group()
+        if token in "([{":
+            depth += 1
+        elif token in ")]}":
+            if depth == 0:
+                return match.start()
+            depth -= 1
+            if depth == 0 and token == "}":
+                return match.end()
+        elif depth == 0 and (token == ";" or not is_item):
+            return match.end()
+    return len(text)
+
+
+def scan_test_only(text: str) -> TestOnly:
+    spans: list[tuple[int, int]] = []
+    module_names: set[str] = set()
+    depth = 0
+    pos = 0
+    while (match := ATTRIBUTE_OR_BRACE_RE.search(text, pos)) is not None:
+        pos = match.end()
+        if match.group() in "{}":
+            depth += 1 if match.group() == "{" else -1
+            continue
+        close = matching_square(text, match.end() - 1)
+        if close is None:
+            continue
+        pos = close + 1
+        cfg = CFG_ATTRIBUTE_RE.fullmatch(text, match.end(), close)
+        if cfg is None or not cfg_implies_test(cfg.group(1)):
+            continue
+        head = item_head(text, pos)
+        keyword = IDENT_RE.match(text, head)
+        word = keyword.group(1) if keyword else ""
+        if word == "mod" and depth == 0:
+            name = IDENT_RE.match(text, keyword.end())
+            if name is not None:
+                module_names.add(name.group(1))
+        pos = item_end(text, head, word in ITEM_KEYWORDS)
+        spans.append((match.start(), pos))
+    return TestOnly(tuple(spans), frozenset(module_names))
+
+
+def moddir(path: Path) -> Path:
+    """Where the out-of-line modules a file declares live."""
+    return path.parent if path.name in MOD_ROOTS else path.parent / path.stem
+
+
+def test_module_files(files: Iterable[Path], scans: Mapping[Path, TestOnly]) -> set[Path]:
+    """Files of every test-only module declaration, at any depth."""
+    roots = {moddir(path) / name for path, scan in scans.items()
+             for name in scan.module_names}
+    root_files = {root.parent / f"{root.name}.rs" for root in roots}
+    return {path for path in files
+            if path in root_files or not roots.isdisjoint(path.parents)}
+
+
 # --- one crate ------------------------------------------------------------------
 
 def top_level_module(src: Path, path: Path) -> str | None:
@@ -227,25 +369,28 @@ def module_files(src: Path, files: Iterable[Path]) -> dict[str, list[Path]]:
     return modules
 
 
-def line_of(line_starts: Sequence[int], offset: int) -> int:
-    return bisect.bisect_right(line_starts, offset)
+def line_starts(lines: Sequence[str]) -> list[int]:
+    return list(accumulate((len(line) + 1 for line in lines[:-1]), initial=0))
 
 
 def module_graph(root: Path, member: Member) -> Graph:
     files = sorted(member.src.rglob("*.rs"))
     lexed = lex_crate(files)
-    modules = module_files(member.src, files)
+    texts = {path: "\n".join(lines) for path, lines in lexed.items()}
+    scans = {path: scan_test_only(text) for path, text in texts.items()}
+    excluded = test_module_files(files, scans)
+    modules = module_files(member.src, (p for p in files if p not in excluded))
     graph: dict[str, dict[str, list[Site]]] = {}
     for module, paths in sorted(modules.items()):
         edges: dict[str, list[Site]] = {}
         for path in paths:
-            text = "\n".join(lexed[path])
-            line_starts = [0] + [i + 1 for i, c in enumerate(text) if c == "\n"]
+            starts = line_starts(lexed[path])
             site_path = path.relative_to(root).as_posix()
-            for target, offset in referenced_modules(text):
-                if target != module and target in modules:
+            for target, offset in referenced_modules(texts[path]):
+                if (target != module and target in modules
+                        and not scans[path].covers(offset)):
                     edges.setdefault(target, []).append(
-                        Site(site_path, line_of(line_starts, offset)))
+                        Site(site_path, bisect.bisect_right(starts, offset)))
         graph[module] = edges
     return graph
 
