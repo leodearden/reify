@@ -14,10 +14,10 @@
 
 use reify_compiler::CompiledModule;
 use reify_core::{Severity, ValueCellId};
-use reify_eval::Engine;
-use reify_ir::{DeterminacyState, Value};
+use reify_eval::{CancellationHandle, ComputeFn, ComputeOutcome, Engine, RealizationReadHandle};
+use reify_ir::{DeterminacyState, OpaqueState, Value};
 use reify_test_support::mocks::MockConstraintChecker;
-use reify_test_support::parse_and_compile;
+use reify_test_support::{make_simple_engine, parse_and_compile, parse_and_compile_with_stdlib};
 
 /// Build an Engine with an empty prelude for self-contained tests.
 fn fresh_engine() -> Engine {
@@ -560,6 +560,89 @@ fn recursive_level_param_reading_a_let_matches_template_and_feeds_the_next_level
     );
 
     assert_no_error_diagnostics(&result, "a recursive param reading a let");
+}
+
+/// Trampoline returning 777, never confusable with the `.ri` body's 42, so the
+/// observed value names which path ran.
+fn const777(
+    _value_inputs: &[Value],
+    _realization_inputs: &[RealizationReadHandle],
+    _options: &Value,
+    _prior_warm_state: Option<&OpaqueState>,
+    _cancellation: &CancellationHandle,
+) -> ComputeOutcome {
+    ComputeOutcome::Completed {
+        result: Value::Int(777),
+        new_warm_state: None,
+        cost_per_byte: None,
+        diagnostics: vec![],
+        structured_detail: vec![],
+    }
+}
+
+/// A phase-1 scratch let must resolve `@optimized` exactly as phase 2 commits
+/// it, so the param reading it sees the dispatched value. Phase 1.5's scratch
+/// arm is held to the same rule by
+/// `phase15_scratch_let_optimized_value_matches_phase2_commit`
+/// (tests/compute_dispatch_registry.rs).
+#[test]
+fn param_default_reading_an_optimized_let_sees_the_dispatched_value_at_instance_scope() {
+    let compiled = parse_and_compile_with_stdlib(
+        r#"
+        @optimized("test::const777")
+        fn zero_arg_777() -> Int {
+            42
+        }
+
+        structure OptLetMid {
+            let computed = zero_arg_777()
+            param p : Int = computed
+        }
+
+        structure OptLetTop {
+            sub mid = OptLetMid()
+        }
+        "#,
+    );
+    let mut engine = make_simple_engine();
+    engine.register_compute_fn("test::const777", const777 as ComputeFn);
+
+    let result = engine.eval(&compiled);
+
+    let template_p = ValueCellId::new("OptLetMid", "p");
+    let instance_p = ValueCellId::new("OptLetTop.mid", "p");
+
+    assert_eq!(
+        result
+            .values
+            .get(&ValueCellId::new("OptLetMid", "computed")),
+        Some(&Value::Int(777)),
+        "template scope dispatches the @optimized let"
+    );
+    assert_eq!(
+        result.values.get(&template_p),
+        Some(&Value::Int(777)),
+        "template scope's unified pass reads the dispatched let (#4317)"
+    );
+    assert_eq!(
+        result
+            .values
+            .get(&ValueCellId::new("OptLetTop.mid", "computed")),
+        Some(&Value::Int(777)),
+        "phase 2 commits the template's dispatched value (#6662)"
+    );
+    assert_eq!(
+        result.values.get(&instance_p),
+        result.values.get(&template_p),
+        "instance scope must agree with template scope at OptLetTop.mid.p"
+    );
+    assert_eq!(
+        result.values.get(&instance_p),
+        Some(&Value::Int(777)),
+        "OptLetTop.mid.p must be the dispatched 777. Int(42) means phase 1's \
+         scratch let body-inlined the `.ri` sentinel instead of going through \
+         `resolve_optimized_instance_cell`"
+    );
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
