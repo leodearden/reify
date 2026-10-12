@@ -18,40 +18,19 @@ Test classes are added incrementally per TDD step:
 """
 
 import functools
-import importlib.util
 import io
 import json
 import os
 import subprocess
-import sys
 import tempfile
 import unittest
 import unittest.mock
 from typing import Any
 
-# ---------------------------------------------------------------------------
-# Module loaders
-# ---------------------------------------------------------------------------
+from _pdv_test_support import _PDV_MJS, _REPO_ROOT, _load_pcc, _load_pdv, _reify_missing_fixture_stderr
 
-_SCRIPTS_DIR = os.path.dirname(os.path.abspath(__file__))
-_HARNESS_PATH = os.path.join(_SCRIPTS_DIR, "prd-decompose-verify.py")
-_ALPHA_PATH = os.path.join(_SCRIPTS_DIR, "prd-capability-check.py")
-
-# Load prd-decompose-verify.py as `pdv` (the module under test)
-_pdv_spec = importlib.util.spec_from_file_location("prd_decompose_verify", _HARNESS_PATH)
-pdv = importlib.util.module_from_spec(_pdv_spec)
-sys.modules["prd_decompose_verify"] = pdv
-_pdv_spec.loader.exec_module(pdv)
-
-# Load prd-capability-check.py as `pcc` (so tests can use α's types + constants)
-# pdv already loaded pcc into sys.modules; grab the registered instance.
-_pcc_spec = importlib.util.spec_from_file_location("prd_capability_check", _ALPHA_PATH)
-pcc = importlib.util.module_from_spec(_pcc_spec)
-if "prd_capability_check" not in sys.modules:
-    sys.modules["prd_capability_check"] = pcc
-    _pcc_spec.loader.exec_module(pcc)
-else:
-    pcc = sys.modules["prd_capability_check"]
+pdv = _load_pdv()
+pcc = _load_pcc()
 
 # ---------------------------------------------------------------------------
 # Repo-root helpers for skip-guards
@@ -85,22 +64,14 @@ def _run_node_module(source: str):
     return proc.returncode, proc.stdout, proc.stderr
 
 
-_REPO_ROOT = os.path.dirname(_SCRIPTS_DIR)
 _REIFY_RELEASE = os.path.join(_REPO_ROOT, "target", "release", "reify")
 _REIFY_DEBUG = os.path.join(_REPO_ROOT, "target", "debug", "reify")
 _REIFY_BUILT = os.path.isfile(_REIFY_RELEASE) or os.path.isfile(_REIFY_DEBUG)
 
-_FIXTURES_DIR = os.path.join(_REPO_ROOT, "tests", "prd-gate", "fixtures")
 _LEAF_FALSE = os.path.join(_REPO_ROOT, "tests", "prd-gate", "leaf-false-premise.json")
 _LEAF_TRUE = os.path.join(_REPO_ROOT, "tests", "prd-gate", "leaf-true-premise.json")
-_PDV_MJS = os.path.join(_SCRIPTS_DIR, "prd-decompose-verify.mjs")
 
 _LEAF_FIXTURE = "tests/prd-gate/fixtures/leaf.ri"
-
-
-def _reify_missing_fixture_stderr(fixture: str) -> str:
-    """reify's own rendering of a missing fixture, which names it (reify-cli main.rs)."""
-    return f"Error reading {fixture}: No such file or directory (os error 2)"
 
 
 # ---------------------------------------------------------------------------
