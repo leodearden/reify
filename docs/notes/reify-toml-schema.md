@@ -6,13 +6,9 @@ documentation lives in the `reify-config` crate rustdoc (`crates/reify-config/sr
 
 ## Status: parsed and validated, not loaded
 
-**No shipped binary loads a `reify.toml`.** `Manifest::load_from_path` and
-`Manifest::from_toml_str` have no production caller outside `reify-config`, and
-the only production `Engine::with_registered_kernels_and_manifest` call passes
-`None`. Every section below is parsed by `reify-config` and then ignored at
-runtime. The CLI cache reads `.reify/config.toml`, a different file. The
-authoritative statement is the rustdoc on `Manifest`; the sections below do not
-repeat it.
+**No shipped binary loads a `reify.toml`; the CLI cache reads
+`.reify/config.toml`, a different file.** The mechanism is stated once, in the
+rustdoc on `Manifest`; neither this note nor the sections below repeat it.
 
 ## `[kernels]`
 

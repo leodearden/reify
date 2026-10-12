@@ -2,9 +2,8 @@
 //!
 //! This crate owns the schema for the project pin described in the v0.2
 //! multi-kernel PRD ("Resolved design decisions (2026-04-28)" → "Project pin").
-//! Five workspace crates depend on it, but no shipped binary loads a
-//! `reify.toml`: see [`Manifest`] for the inert status that applies to every
-//! section below.
+//! No shipped binary loads a `reify.toml`: see [`Manifest`] for the inert
+//! status that applies to every section below.
 //!
 //! # Schema
 //!
