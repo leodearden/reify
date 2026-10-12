@@ -36,9 +36,15 @@ enum Scan {
     LineComment { doc: Option<String> },
 }
 
-fn lex(text: &str) -> Vec<Line> {
+/// The lines of `text` together with the lexer's state at the end of the text.
+fn lex_to_end(text: &str) -> (Vec<Line>, Carry) {
     let mut carry = Carry::Code;
-    text.lines().map(|raw| lex_line(&mut carry, raw)).collect()
+    let lines = text.lines().map(|raw| lex_line(&mut carry, raw)).collect();
+    (lines, carry)
+}
+
+fn lex(text: &str) -> Vec<Line> {
+    lex_to_end(text).0
 }
 
 fn lex_line(carry: &mut Carry, raw: &str) -> Line {
@@ -277,13 +283,17 @@ struct ItemTracker {
     current: Option<CurrentItem>,
 }
 
+fn bracket_step(c: char) -> isize {
+    match c {
+        '(' | '[' | '{' => 1,
+        ')' | ']' | '}' => -1,
+        _ => 0,
+    }
+}
+
 /// The ()[]{} nesting depth after `c`; an unmatched closer leaves it at zero.
 fn nesting_after(depth: usize, c: char) -> usize {
-    match c {
-        '(' | '[' | '{' => depth + 1,
-        ')' | ']' | '}' => depth.saturating_sub(1),
-        _ => depth,
-    }
+    depth.saturating_add_signed(bracket_step(c))
 }
 
 impl ItemTracker {
@@ -463,15 +473,41 @@ fn braces_inside_strings_and_comments_do_not_shift_depth() {
 
 // ── ratchet rows ─────────────────────────────────────────────────────────────
 
+/// A way the lexer can be shown to have lost track of a file: compilable Rust
+/// always ends outside every literal and comment, with ()[]{} nested to zero.
+#[derive(Debug, PartialEq)]
+enum LexDefect {
+    EndsInsideLiteralOrComment,
+    UnbalancedBrackets,
+}
+
 struct SourceFile {
     path: String,
     lines: Vec<Line>,
+    defect: Option<LexDefect>,
+}
+
+fn lex_defect(lines: &[Line], end: Carry) -> Option<LexDefect> {
+    if !matches!(end, Carry::Code) {
+        return Some(LexDefect::EndsInsideLiteralOrComment);
+    }
+    let mut depth: isize = 0;
+    for c in lines.iter().flat_map(|line| line.code.chars()) {
+        depth += bracket_step(c);
+        if depth < 0 {
+            break;
+        }
+    }
+    (depth != 0).then_some(LexDefect::UnbalancedBrackets)
 }
 
 fn source_file(path: &str, text: &str) -> SourceFile {
+    let (lines, end) = lex_to_end(text);
+    let defect = lex_defect(&lines, end);
     SourceFile {
         path: path.to_string(),
-        lines: lex(text),
+        lines,
+        defect,
     }
 }
 
@@ -1241,6 +1277,33 @@ fn migrating_one_copy_without_lowering_the_baseline_is_red_for_every_row() {
     });
 }
 
+// ── lexer health ─────────────────────────────────────────────────────────────
+
+#[test]
+fn a_file_the_lexer_cannot_follow_is_reported_as_defective() {
+    let defect_of = |text: &str| source_file("src/probe.rs", text).defect;
+    assert_eq!(
+        defect_of("let s = \"never closed;\nfn f() {}"),
+        Some(LexDefect::EndsInsideLiteralOrComment)
+    );
+    assert_eq!(
+        defect_of("fn f() {}\n/* never closed"),
+        Some(LexDefect::EndsInsideLiteralOrComment)
+    );
+    assert_eq!(
+        defect_of("fn f() {\n    let x = (1;\n}"),
+        Some(LexDefect::UnbalancedBrackets)
+    );
+    assert_eq!(
+        defect_of("fn f() {}\n}"),
+        Some(LexDefect::UnbalancedBrackets)
+    );
+    assert_eq!(
+        defect_of("fn f() { let s = \"}\"; let c = '{'; /* ) */ }"),
+        None
+    );
+}
+
 // ── the real tree ────────────────────────────────────────────────────────────
 
 fn collect_rs_files(dir: &Path, found: &mut Vec<PathBuf>) {
@@ -1315,6 +1378,14 @@ fn every_ratchet_row_holds_at_its_committed_baseline() {
         );
     }
     let mut failures = Vec::new();
+    for file in &tree {
+        if let Some(defect) = &file.defect {
+            failures.push(format!(
+                "{}: the lexer lost track of this file ({defect:?}), so copies in it could go uncounted",
+                file.path
+            ));
+        }
+    }
     for row in RATCHETS {
         let dangling = dangling_scope_entries(row, &tree);
         if !dangling.is_empty() {
