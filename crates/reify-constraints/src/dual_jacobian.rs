@@ -42,7 +42,7 @@ use reify_expr::{
     eval_dual_with_env, first_divergence, jacobian_row_with_env,
 };
 use reify_core::ValueCellId;
-use reify_ir::{AutoParam, CompiledExpr, CompiledFunction, ValueMap};
+use reify_ir::{AutoParam, CompiledExpr, ValueMap};
 
 use crate::solver::{TrialModel, build_trial_values, ctx_with};
 
@@ -135,12 +135,65 @@ impl std::fmt::Display for JacobianError {
 // useful than the `&dyn Error` a `source()` could hand back.
 impl std::error::Error for JacobianError {}
 
-/// Assemble the Jacobian of `residual_exprs` with respect to `auto_params`, at
-/// the trial point `x`.
+/// One solve's Jacobian inputs: the [`TrialModel`] every trial point is built
+/// from, and the seed set the residuals are differentiated against.
+///
+/// Built ONCE per solve and reused at every trial point.  The seed set is built
+/// here, from `trial.auto_params` in order, behind private fields, so the
+/// column contract — column `j` IS `auto_params[j]` — holds by construction: no
+/// caller can pair a trial model with a seed set for some other variable order.
+///
+/// Reuse is sound because the `depends_on_seed` / `subtree_has_kink` memos a
+/// [`Seeds`] owns are pure functions of `(subtree, seed set)` — structural
+/// only, with no dependence on the trial VALUES — so one seed set is valid at
+/// every point of a solve, and rebuilding it per point would throw away exactly
+/// the memos that stop a cold descent re-walking each node's subtree.  Its
+/// refusal slot is per TRAVERSAL and drained by each one, so nothing a call
+/// leaves behind reaches the next.
+///
+/// Not `Sync` (the memos are `RefCell`s): one model per solving thread.
+pub struct JacobianModel<'a> {
+    trial: TrialModel<'a>,
+    seeds: Seeds,
+}
+
+impl<'a> JacobianModel<'a> {
+    /// The Jacobian model of `trial`, seeded on its `auto_params` in order.
+    ///
+    /// # Panics
+    ///
+    /// If an `auto_params` id repeats.  A repeated id has no single column to
+    /// be, and the failure is silent rather than loud — [`Seeds`] keeps a
+    /// duplicate's FIRST column while `build_trial_values` keeps its LAST
+    /// value, so the derivative would be attributed to one column and taken at
+    /// the other point.  The ids are solve-invariant, so this is checked once,
+    /// here, rather than at every trial point.
+    pub fn new(trial: TrialModel<'a>) -> Self {
+        // A hard assert, unlike the value fold's drift backstop: there is no
+        // value-path sibling to stay quieter than, and the damage lands in
+        // release, where η runs.
+        if let Some(id) = repeated_auto_id(trial.auto_params) {
+            panic!(
+                "auto_params names {id:?} twice — column j IS auto_params[j], so a repeated id has \
+                 no single column to be: its derivative would be attributed to the FIRST column \
+                 while `build_trial_values` stands the solve at the LAST one's value"
+            );
+        }
+        // Seed columns in `auto_params` order — this IS the column order.
+        let columns: Vec<ValueCellId> = trial.auto_params.iter().map(|p| p.id.clone()).collect();
+        Self {
+            trial,
+            seeds: Seeds::new(&columns),
+        }
+    }
+}
+
+/// Assemble the Jacobian of `residual_exprs` with respect to the model's
+/// `auto_params`, at the trial point `x`.
 ///
 /// Column `j` of every row is `∂r/∂x_j` for `auto_params[j]` — the SAME
 /// positional mapping `build_trial_values` uses when it writes `x[i]` into
-/// `params[i]`, so a caller never has to reconcile two orderings.
+/// `auto_params[i]`, so a caller never has to reconcile two orderings.
 ///
 /// Derivatives are `d(SI)/d(SI)`: the dual carries `si_value` tangents, so a
 /// column needs no unit bookkeeping. Rescaling columns for conditioning is ζ's
@@ -148,12 +201,8 @@ impl std::error::Error for JacobianError {}
 ///
 /// # Panics
 ///
-/// `x` must be as long as `auto_params`, and `auto_params` ids must be UNIQUE:
-/// both are the positional column mapping, and a repeated id has no single
-/// column to be.  Checked rather than assumed because the failure is silent —
-/// [`Seeds`] keeps a duplicate's FIRST column while `build_trial_values` keeps
-/// its LAST value, so the derivative would be attributed to one column and
-/// taken at the other point.
+/// If `x` is not exactly as long as the model's `auto_params` — the positional
+/// check `build_trial_values` makes for every consumer of the mapping.
 ///
 /// # Errors
 ///
@@ -162,87 +211,15 @@ impl std::error::Error for JacobianError {}
 /// residual does not move when you move this variable", and asserting it when
 /// the truth is "we could not tell" leaves the solver believing it is already
 /// stationary in a direction it has never actually probed.
-#[allow(clippy::too_many_arguments)]
 pub fn residual_jacobian(
-    auto_params: &[AutoParam],
+    model: &JacobianModel<'_>,
     residual_exprs: &[CompiledExpr],
-    base_values: &ValueMap,
     x: &[f64],
-    dependent_cells: &[(ValueCellId, CompiledExpr)],
-    functions: &[CompiledFunction],
-    dispatch: Option<&dyn reify_ir::ComputeDispatch>,
 ) -> Result<Jacobian, JacobianError> {
-    // Seed columns in `auto_params` order — this IS the column order.
-    let columns: Vec<ValueCellId> = auto_params.iter().map(|p| p.id.clone()).collect();
-    residual_jacobian_with_seeds(
-        &Seeds::new(&columns),
-        auto_params,
-        residual_exprs,
-        base_values,
-        x,
-        dependent_cells,
-        functions,
-        dispatch,
-    )
-}
-
-/// [`residual_jacobian`] against a CALLER-OWNED seed set, so an iterating
-/// consumer can hoist it out of its loop.
-///
-/// η (#6675) calls this once per Gauss-Newton / Levenberg-Marquardt trial
-/// point with a seed set that is CONSTANT for the whole solve, and a `Seeds`
-/// owns the `depends_on_seed` / `subtree_has_kink` memos.  Those two predicates
-/// are pure functions of `(subtree, seed set)` — structural only, with no
-/// dependence on the trial VALUES — so one `Seeds` is sound across every point
-/// of a solve, and rebuilding it per point would throw away exactly the memos
-/// that stop a cold descent re-walking each node's subtree.
-///
-/// # Panics
-///
-/// On [`residual_jacobian`]'s two preconditions, and on a `seeds` that is not
-/// seeded on exactly `auto_params`, in order — a seed set is the column
-/// contract, so one that disagrees would label every column with another
-/// variable's name.
-#[allow(clippy::too_many_arguments)]
-pub fn residual_jacobian_with_seeds(
-    seeds: &Seeds,
-    auto_params: &[AutoParam],
-    residual_exprs: &[CompiledExpr],
-    base_values: &ValueMap,
-    x: &[f64],
-    dependent_cells: &[(ValueCellId, CompiledExpr)],
-    functions: &[CompiledFunction],
-    dispatch: Option<&dyn reify_ir::ComputeDispatch>,
-) -> Result<Jacobian, JacobianError> {
-    assert_eq!(
-        auto_params.len(),
-        x.len(),
-        "auto_params and x must have the same length — the mapping is positional"
-    );
-    // A hard assert, like its neighbour above and unlike the fold's drift
-    // backstop below: there is no value-path sibling to stay quieter than, and
-    // the damage lands in release, where η runs.
-    if let Some(id) = repeated_auto_id(auto_params) {
-        panic!(
-            "auto_params names {id:?} twice — column j IS auto_params[j], so a repeated id has \
-             no single column to be: its derivative would be attributed to the FIRST column \
-             while `build_trial_values` stands the solve at the LAST one's value"
-        );
-    }
-    assert!(
-        seeds.columns().len() == auto_params.len()
-            && seeds.columns().iter().zip(auto_params).all(|(c, p)| *c == p.id),
-        "seeds must be seeded on exactly `auto_params`, in order — every row is reported as \
-         ∂r/∂auto_params[j] in column j"
-    );
-
     // The same trial point the solver itself would stand on, built by the same
     // function, including the dependent-cell fold.
-    let values = build_trial_values(
-        &TrialModel { auto_params, base_values, dependent_cells, functions, dispatch },
-        x,
-    );
-    let ctx = ctx_with(&values, functions, dispatch);
+    let values = build_trial_values(&model.trial, x);
+    let ctx = ctx_with(&values, model.trial.functions, model.trial.dispatch);
 
     // The derivative sibling of the value fold `build_trial_values` just ran.
     // It hands back the dependent cells' own branch records as well as their
@@ -254,8 +231,7 @@ pub fn residual_jacobian_with_seeds(
     // is `solver::fold_dependent_cells`', which `build_trial_values` has just
     // run over this same slice with this same predicate.  The SKIP is the half
     // that matters here, and it is asserted directly in `mod tests`.
-    let (env, dependent_prelude, _collisions) =
-        fold_dependent_duals(&values, auto_params, dependent_cells, functions, dispatch, seeds);
+    let (env, dependent_prelude, _collisions) = fold_dependent_duals(&values, model);
 
     let mut rows = Vec::with_capacity(residual_exprs.len());
     let mut residuals = Vec::with_capacity(residual_exprs.len());
@@ -276,7 +252,7 @@ pub fn residual_jacobian_with_seeds(
         // is what to reach for if a cluster ever carries enough dependent-cell
         // kinks for those clones to show up next to the traversal itself.
         let mut record = dependent_prelude.clone();
-        match jacobian_row_with_env(expr, &ctx, seeds, &env, &mut record) {
+        match jacobian_row_with_env(expr, &ctx, &model.seeds, &env, &mut record) {
             Ok((value, row)) => {
                 residuals.push(value);
                 rows.push(row);
@@ -293,7 +269,7 @@ pub fn residual_jacobian_with_seeds(
 ///
 /// A linear scan, for the same reason `build_trial_values`' own collision guard
 /// is one: at the expected 1–3 autos (`WHOLE_MODEL_CLUSTER_DIM_CAP` = 12 is the
-/// ceiling) it beats building a set, and this runs once per trial point.
+/// ceiling) it beats building a set.
 fn repeated_auto_id(auto_params: &[AutoParam]) -> Option<&ValueCellId> {
     auto_params
         .iter()
@@ -345,12 +321,16 @@ fn repeated_auto_id(auto_params: &[AutoParam]) -> Option<&ValueCellId> {
 #[inline]
 fn fold_dependent_duals(
     values: &ValueMap,
-    auto_params: &[AutoParam],
-    dependent_cells: &[(ValueCellId, CompiledExpr)],
-    functions: &[CompiledFunction],
-    dispatch: Option<&dyn reify_ir::ComputeDispatch>,
-    seeds: &Seeds,
+    model: &JacobianModel<'_>,
 ) -> (DualEnv, BranchRecord, Vec<ValueCellId>) {
+    let TrialModel {
+        auto_params,
+        dependent_cells,
+        functions,
+        dispatch,
+        ..
+    } = model.trial;
+    let seeds = &model.seeds;
     let mut collisions = Vec::new();
     let mut env = DualEnv::new();
     let mut prelude = BranchRecord::new();
@@ -424,11 +404,11 @@ fn fold_dependent_duals(
 #[cfg(test)]
 mod tests {
     use reify_core::{DimensionVector, Type, ValueCellId};
-    use reify_expr::{Seeds, Tangent};
+    use reify_expr::Tangent;
     use reify_ir::{AutoParam, BinOp, Value, ValueMap};
     use reify_test_support::builders::expr::{binop, literal, value_ref_typed};
 
-    use super::{CompiledExpr, fold_dependent_duals, repeated_auto_id};
+    use super::{CompiledExpr, JacobianModel, TrialModel, fold_dependent_duals, repeated_auto_id};
 
     const ENT: &str = "part";
 
@@ -463,9 +443,27 @@ mod tests {
         values
     }
 
+    /// The model the fold reads: `params` and `dependent`, over `values` as the
+    /// base.  No functions, no dispatch.  `JacobianModel::new` checks only for a
+    /// repeated auto id, so a dependent cell colliding with an auto still builds
+    /// — that collision is the fold's to report.
+    fn model<'a>(
+        params: &'a [AutoParam],
+        values: &'a ValueMap,
+        dependent: &'a [(ValueCellId, CompiledExpr)],
+    ) -> JacobianModel<'a> {
+        JacobianModel::new(TrialModel {
+            auto_params: params,
+            base_values: values,
+            dependent_cells: dependent,
+            functions: &[],
+            dispatch: None,
+        })
+    }
+
     #[test]
     fn a_repeated_auto_param_is_detected_and_the_repeat_is_named() {
-        // The precondition `residual_jacobian_with_seeds` panics on, checked
+        // The precondition `JacobianModel::new` panics on, checked
         // here in both profiles: `Seeds` keeps a duplicate's FIRST column while
         // `build_trial_values` keeps its LAST value, so an unchecked repeat is
         // a derivative attributed to one column and taken at another point.
@@ -489,11 +487,9 @@ mod tests {
         let params = [auto("q")];
         let dependent = vec![(cell("q"), twice("q"))];
         let values = values_with(&[("q", 5.0)]);
-        let seeds = Seeds::new(&[cell("q")]);
 
-        let (env, _prelude, collisions) = fold_dependent_duals(
-            &values, &params, &dependent, &[], None, &seeds,
-        );
+        let (env, _prelude, collisions) =
+            fold_dependent_duals(&values, &model(&params, &values, &dependent));
 
         assert_eq!(collisions, vec![cell("q")], "the colliding id is reported, in stored order");
         assert!(
@@ -512,18 +508,15 @@ mod tests {
         // with it.
         let params = [auto("q")];
         let values = values_with(&[("q", 5.0), ("a", 3.0)]);
-        let seeds = Seeds::new(&[cell("q")]);
 
         // `d` sits at index 1 in both lists; only the entry BEFORE it differs.
         let with_collision = vec![(cell("q"), twice("q")), (cell("d"), twice("a"))];
         let without = vec![(cell("other"), twice("a")), (cell("d"), twice("a"))];
 
-        let (_e1, prelude_collided, collisions) = fold_dependent_duals(
-            &values, &params, &with_collision, &[], None, &seeds,
-        );
-        let (_e2, prelude_clean, none) = fold_dependent_duals(
-            &values, &params, &without, &[], None, &seeds,
-        );
+        let (_e1, prelude_collided, collisions) =
+            fold_dependent_duals(&values, &model(&params, &values, &with_collision));
+        let (_e2, prelude_clean, none) =
+            fold_dependent_duals(&values, &model(&params, &values, &without));
 
         assert_eq!(collisions, vec![cell("q")]);
         assert!(none.is_empty());
@@ -541,11 +534,9 @@ mod tests {
         let params = [auto("q")];
         let dependent = vec![(cell("b"), twice("q")), (cell("c"), twice("b"))];
         let values = values_with(&[("q", 5.0), ("b", 10.0)]);
-        let seeds = Seeds::new(&[cell("q")]);
 
-        let (env, _prelude, collisions) = fold_dependent_duals(
-            &values, &params, &dependent, &[], None, &seeds,
-        );
+        let (env, _prelude, collisions) =
+            fold_dependent_duals(&values, &model(&params, &values, &dependent));
 
         assert!(collisions.is_empty(), "the steady state reports nothing");
         assert_eq!(

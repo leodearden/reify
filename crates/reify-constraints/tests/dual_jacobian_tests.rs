@@ -509,7 +509,10 @@ fn a_residual_reading_a_derived_cell_gets_a_nonzero_column_for_the_auto_behind_i
     let residual = binop(BinOp::Sub, dref("line_cost"), num(12.0));
     let x = vec![5.0];
 
-    let jm = JacobianModel::new(TrialModel { dependent_cells: &dependent, ..model(&params, &base) });
+    let jm = JacobianModel::new(TrialModel {
+        dependent_cells: &dependent,
+        ..model(&params, &base)
+    });
     let j = residual_jacobian(&jm, std::slice::from_ref(&residual), &x)
         .expect("differentiable through the fold");
 
@@ -542,7 +545,10 @@ fn a_chain_of_dependent_cells_propagates_through_every_hop_in_stored_order() {
     let residual = binop(BinOp::Sub, dref("c"), num(90.0));
     let x = vec![5.0];
 
-    let jm = JacobianModel::new(TrialModel { dependent_cells: &dependent, ..model(&params, &base) });
+    let jm = JacobianModel::new(TrialModel {
+        dependent_cells: &dependent,
+        ..model(&params, &base)
+    });
     let j = residual_jacobian(&jm, std::slice::from_ref(&residual), &x)
         .expect("differentiable through both hops");
     assert_eq!(j.residuals[0], 10.0);
@@ -584,7 +590,10 @@ fn a_direct_and_a_derived_read_of_the_same_auto_sum_in_one_row() {
     );
     let x = vec![5.0];
 
-    let jm = JacobianModel::new(TrialModel { dependent_cells: &dependent, ..model(&params, &base) });
+    let jm = JacobianModel::new(TrialModel {
+        dependent_cells: &dependent,
+        ..model(&params, &base)
+    });
     let j = residual_jacobian(&jm, std::slice::from_ref(&residual), &x)
         .expect("differentiable");
     assert!(
@@ -604,7 +613,8 @@ fn an_empty_dependent_cells_list_leaves_the_non_clustered_path_bit_identical() {
     // fold against `jac(..)` would be comparing one call to the same call with
     // the same arguments, which can only fail under nondeterminism.
     let (params, residuals, base, x) = two_auto_model();
-    let empty = residual_jacobian(&JacobianModel::new(model(&params, &base)), &residuals, &x).unwrap();
+    let empty =
+        residual_jacobian(&JacobianModel::new(model(&params, &base)), &residuals, &x).unwrap();
 
     assert_eq!(empty.residuals, vec![0.0, 6.0], "sqrt(3²+4²)−5 = 0 and 3·4−6 = 6");
     assert!((empty.rows[0][0] - 0.6).abs() < 1e-12, "∂r0/∂w, got {:?}", empty.rows[0]);
@@ -660,7 +670,10 @@ fn a_non_differentiable_dependent_cell_refuses_only_the_rows_that_read_it() {
     let poisoned = binop(BinOp::Sub, dref("bad"), num(4.0));
     let x = vec![5.0];
 
-    let jm = JacobianModel::new(TrialModel { dependent_cells: &dependent, ..model(&params, &base) });
+    let jm = JacobianModel::new(TrialModel {
+        dependent_cells: &dependent,
+        ..model(&params, &base)
+    });
 
     // The clean residual alone is fine.
     let ok = residual_jacobian(&jm, std::slice::from_ref(&clean), &x)
@@ -713,7 +726,10 @@ fn a_poisoned_dependent_cell_does_not_leak_a_refusal_into_a_later_row() {
     let first = binop(BinOp::Sub, binop(BinOp::Mul, num(2.0), dref("q")), num(4.0));
     let second = binop(BinOp::Add, dref("q"), num(1.0));
 
-    let jm = JacobianModel::new(TrialModel { dependent_cells: &dependent, ..model(&params, &base) });
+    let jm = JacobianModel::new(TrialModel {
+        dependent_cells: &dependent,
+        ..model(&params, &base)
+    });
     let j = residual_jacobian(&jm, &[first, second], &[5.0])
         .expect("neither residual reads the poisoned cell, so neither may refuse");
     assert_eq!(j.rows[0], vec![2.0], "row 0 is ∂(2q−4)/∂q");
@@ -875,7 +891,10 @@ fn clamped_dependent_jac(x: f64) -> reify_constraints::Jacobian {
     )];
     let residual = binop(BinOp::Sub, dref("line_cost"), num(2.0));
     let base = ValueMap::new();
-    let jm = JacobianModel::new(TrialModel { dependent_cells: &dependent, ..model(&params, &base) });
+    let jm = JacobianModel::new(TrialModel {
+        dependent_cells: &dependent,
+        ..model(&params, &base)
+    });
     residual_jacobian(&jm, &[residual], &[x])
         .expect("a clamped derived cell is differentiable on either side of its bounds")
 }
@@ -952,7 +971,10 @@ fn flat_flip_jac(x: f64) -> reify_constraints::Jacobian {
     )];
     let residual = binop(BinOp::Sub, dref("tier"), num(150.0));
     let base = ValueMap::new();
-    let jm = JacobianModel::new(TrialModel { dependent_cells: &dependent, ..model(&params, &base) });
+    let jm = JacobianModel::new(TrialModel {
+        dependent_cells: &dependent,
+        ..model(&params, &base)
+    });
     residual_jacobian(&jm, &[residual], &[x])
         .expect("a piecewise-constant derived cell has an honest zero row")
 }
@@ -1000,7 +1022,10 @@ fn each_dependent_cells_kinks_sit_at_distinct_sites_in_stored_order() {
         call("clamp", vec![dref("q"), num(2.0), num(6.0)], dl()),
     );
     let base = ValueMap::new();
-    let jm = JacobianModel::new(TrialModel { dependent_cells: &dependent, ..model(&params, &base) });
+    let jm = JacobianModel::new(TrialModel {
+        dependent_cells: &dependent,
+        ..model(&params, &base)
+    });
     let j = residual_jacobian(&jm, &[residual], &[2.5])
         .expect("differentiable at an interior point of every bound");
 
