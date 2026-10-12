@@ -6,6 +6,7 @@
 //! copy, below it means the migrating leaf has to lower the baseline.
 
 use std::cmp::Ordering;
+use std::collections::BTreeMap;
 
 fn is_ident_char(c: char) -> bool {
     c.is_alphanumeric() || c == '_'
@@ -276,6 +277,15 @@ struct ItemTracker {
     current: Option<CurrentItem>,
 }
 
+/// The ()[]{} nesting depth after `c`; an unmatched closer leaves it at zero.
+fn nesting_after(depth: usize, c: char) -> usize {
+    match c {
+        '(' | '[' | '{' => depth + 1,
+        ')' | ']' | '}' => depth.saturating_sub(1),
+        _ => depth,
+    }
+}
+
 impl ItemTracker {
     fn begin_item(&mut self) {
         self.current = Some(CurrentItem {
@@ -284,34 +294,26 @@ impl ItemTracker {
         });
     }
 
+    fn end_item_when(&mut self, ends: impl Fn(&CurrentItem) -> bool) {
+        if self.current.as_ref().is_some_and(ends) {
+            self.current = None;
+        }
+    }
+
     fn advance(&mut self, c: char) {
-        let depth = self.depth;
+        let before = self.depth;
+        let after = nesting_after(before, c);
+        self.depth = after;
         match c {
             '{' => {
-                if let Some(item) = self.current.as_mut().filter(|item| item.start_depth == depth) {
+                if let Some(item) = self.current.as_mut().filter(|item| item.start_depth == before) {
                     item.opened = true;
                 }
-                self.depth += 1;
             }
-            '(' | '[' => self.depth += 1,
             '}' | ')' | ']' => {
-                self.depth = depth.saturating_sub(1);
-                let ended = self.current.as_ref().is_some_and(|item| {
-                    item.opened && item.start_depth == self.depth
-                });
-                if ended {
-                    self.current = None;
-                }
+                self.end_item_when(|item| item.opened && item.start_depth == after);
             }
-            ';' => {
-                let ended = self
-                    .current
-                    .as_ref()
-                    .is_some_and(|item| !item.opened && item.start_depth == depth);
-                if ended {
-                    self.current = None;
-                }
-            }
+            ';' => self.end_item_when(|item| !item.opened && item.start_depth == before),
             _ => {}
         }
     }
@@ -752,10 +754,116 @@ fn count_occurrences(pattern: &Pattern, files: &[SourceFile]) -> Vec<Hit> {
         .collect()
 }
 
+const TEST_ATTRIBUTE: &str = "#[test]";
+
+/// Splits the leading `#[..]` attributes off `code`; an attribute that does not
+/// close on this line takes the rest of it.
+fn split_attributes(code: &str) -> (Vec<&str>, &str) {
+    let mut attributes = Vec::new();
+    let mut rest = code.trim_start();
+    while rest.starts_with("#[") {
+        let end = attribute_end(rest).unwrap_or(rest.len());
+        attributes.push(&rest[..end]);
+        rest = rest[end..].trim_start();
+    }
+    (attributes, rest)
+}
+
+/// The byte offset just past the `]` closing the attribute that `text` opens.
+fn attribute_end(text: &str) -> Option<usize> {
+    let mut depth = 0;
+    for (offset, c) in text.char_indices().skip(1) {
+        depth = nesting_after(depth, c);
+        if depth == 0 {
+            return Some(offset + c.len_utf8());
+        }
+    }
+    None
+}
+
+/// The name of the fn that `code` declares, after any `pub`, `pub(..)`, `const`,
+/// `async`, `unsafe` and `extern ".."` modifiers (string contents are blanked).
+fn fn_name(code: &str) -> Option<&str> {
+    let mut rest = code.trim_start();
+    loop {
+        let (word, after) = rest.split_at(rest.find(|c| !is_ident_char(c)).unwrap_or(rest.len()));
+        rest = after.trim_start();
+        match word {
+            "fn" => break,
+            "pub" => rest = skip_visibility_scope(rest),
+            "extern" => rest = rest.strip_prefix("\"\"").unwrap_or(rest).trim_start(),
+            "const" | "async" | "unsafe" => {}
+            _ => return None,
+        }
+    }
+    let name_len = rest.find(|c| !is_ident_char(c)).unwrap_or(rest.len());
+    (name_len > 0).then(|| &rest[..name_len])
+}
+
+/// `rest` without a leading `(crate)` / `(in path)` visibility scope.
+fn skip_visibility_scope(rest: &str) -> &str {
+    rest.strip_prefix('(')
+        .and_then(|inner| inner.split_once(')'))
+        .map_or(rest, |(_, after)| after.trim_start())
+}
+
+/// The helper fns defined at nesting depth zero as `(name, 1-based line)`: not
+/// `#[test]` fns and not named `test_*`. Only lines that start at depth zero are
+/// read, so multi-line attributes and signatures never look like definitions.
+fn top_level_helpers(lines: &[Line]) -> Vec<(&str, usize)> {
+    let mut helpers = Vec::new();
+    let mut depth = 0;
+    let mut test_attribute_pending = false;
+    for (index, line) in lines.iter().enumerate() {
+        let starts_at_top_level = depth == 0;
+        depth = line.code.chars().fold(depth, nesting_after);
+        if !starts_at_top_level || line.code.trim().is_empty() {
+            continue;
+        }
+        let (attributes, rest) = split_attributes(&line.code);
+        test_attribute_pending |= attributes.contains(&TEST_ATTRIBUTE);
+        if rest.is_empty() {
+            continue;
+        }
+        let helper = fn_name(rest)
+            .filter(|name| !test_attribute_pending && !name.starts_with("test_"));
+        if let Some(name) = helper {
+            helpers.push((name, index + 1));
+        }
+        test_attribute_pending = false;
+    }
+    helpers
+}
+
+/// One hit per helper copy beyond the first, over the files under `root`: a name
+/// defined in several files is counted once per file, in path order.
+fn duplicate_top_level_fns(root: &str, files: &[SourceFile]) -> Vec<Hit> {
+    let mut definitions: BTreeMap<&str, BTreeMap<&str, usize>> = BTreeMap::new();
+    for file in files.iter().filter(|file| file.path.starts_with(root)) {
+        for (name, line) in top_level_helpers(&file.lines) {
+            let defined_in = definitions.entry(name).or_default();
+            defined_in.entry(file.path.as_str()).or_insert(line);
+        }
+    }
+    let mut hits = Vec::new();
+    for (name, defined_in) in &definitions {
+        let mut copies = defined_in.iter();
+        let Some((first_path, _)) = copies.next() else {
+            continue;
+        };
+        hits.extend(copies.map(|(path, &line)| Hit {
+            path: path.to_string(),
+            line,
+            text: format!("fn {name} (also in {first_path})"),
+        }));
+    }
+    hits
+}
+
 fn measure(how: &Measure, files: &[SourceFile]) -> Vec<Hit> {
     match how {
         Measure::Occurrences(pattern) => count_occurrences(pattern, files),
-        Measure::DuplicateTopLevelFns { .. } => Vec::new(),
+        Measure::DuplicateTopLevelFns { root } => duplicate_top_level_fns(root, files),
     }
 }
 
