@@ -326,11 +326,11 @@ fn render_input_value(value: &Value) -> String {
 /// the template cell moved. `elaborate_child_lets_only` — the one reuse site
 /// that commits a trace at all — now pushes `{child_template}.{member}` onto
 /// the committed trace's `reads`, so the existing dirty machinery invalidates
-/// the instance cell whenever the template cell is rewritten. The other two
-/// reuse sites need no counterpart: phase 1.5's scratch arm writes only the
-/// in-memory `overlay` (phase 2 owns the commit), and
-/// `elaborate_child_params_only` commits `DependencyTrace::default()` for EVERY
-/// param, reused or not.
+/// the instance cell whenever the template cell is rewritten. The other reuse
+/// sites need no counterpart: the SCRATCH sites (phase 1.5's `overlay` and
+/// phase 1's `scope`, both via `eval_scratch_let`) write only in-memory maps
+/// (phase 2 owns the commit), and `elaborate_child_params_only` commits
+/// `DependencyTrace::default()` for EVERY param, reused or not.
 ///
 /// What remains unpinned end to end is the narrower claim that the geometry
 /// case never reaches the reuse arm at all — BELIEVED so because a
@@ -343,7 +343,8 @@ fn render_input_value(value: &Value) -> String {
 /// by #7184.
 ///
 /// `instance_values` is this instance's map (`child_values` in phase 2, the
-/// running `overlay` in phase 1.5); `global_values` is the global map holding
+/// running `overlay` in phase 1.5, the running `scope` in phase 1);
+/// `global_values` is the global map holding
 /// the template-scope pass's results. Both are keyed template-scoped, so the
 /// same `ValueCellId` addresses the two scopes' copies of one cell.
 ///
@@ -377,6 +378,11 @@ fn render_input_value(value: &Value) -> String {
 /// * a SKIPPED sub (non-nestable / cycle cut / unresolvable) contributes to
 ///   NEITHER map: phase 2's BFS is seeded from `elaborated_sub_names`, which
 ///   excludes exactly the subs phase 1.5 skipped.
+///
+/// Phase 1's scratch `scope` is a third map, and it CAN decide differently,
+/// because it holds no sub-member projections. That is harmless: it is silent,
+/// and it mirrors template scope's unified pass, which also runs before sub
+/// elaboration.
 pub(super) fn resolve_optimized_instance_cell<R>(
     expr: &reify_ir::CompiledExpr,
     optimized_names: &OptimizedNameIndex<'_>,

@@ -706,55 +706,18 @@ fn elaborate_child_instance_nested<'t, 'f>(
             // let-eval scope, so the scratch value equals the value phase 2
             // will commit.
             Phase15Node::Let { key, expr } => {
-                // task #6662: the invariant above covers `@optimized` cells
-                // too, and ONLY because this arm resolves them the same way
-                // phase 2 does. Phase 2 commits the template's dispatched value
-                // for a reusable `@optimized` cell; if this arm body-inlined
-                // instead, the overlay would hold the `.ri` sentinel while the
-                // committed cell held the real value — and since the overlay is
-                // exactly what nested subs' ctor args are pre-evaluated
-                // against, a `sub sink = Leaf(seed: computed)` would silently
-                // receive the stale sentinel. That is a quieter instance of the
-                // defect #6662 exists to fix, which is why it routes through
-                // the SAME helper rather than a second copy of the rule.
-                //
-                // No diagnostic is emitted here: phase 2 is the authoritative
-                // site and sees the same cell, so reporting from both would
-                // double every warning. That justification holds ONLY because
-                // the two sites reach the same decision on the same cell — see
-                // `resolve_optimized_instance_cell`'s "Why the two instance maps
-                // reach the SAME decision" for the measured argument, and the
-                // parity tests it names.
-                //
-                // `node_traces` cannot supply `reads` here: it NORMALISES each
-                // read onto a phase-1.5 node key (dropping param reads, remapping
-                // cross-sub reads onto their sub node) so `topological_sort` can
-                // see the edges, which is the wrong set for a value comparison.
-                // The raw trace is what the gate needs — and it is passed as a
-                // CLOSURE so the tree walk happens only on the `@optimized`
-                // path; every other scratch let pays one hash lookup instead of
-                // a full `extract_dependency_trace`.
-                let v = match resolve_optimized_instance_cell(
-                    expr,
-                    optimized_names,
-                    child_template,
-                    &key.member,
-                    || extract_dependency_trace(expr).reads,
+                let v = eval_scratch_let(
                     &overlay,
+                    key,
+                    expr,
+                    child_template,
+                    optimized_names,
                     values,
-                ) {
-                    OptimizedInstanceResolution::Reuse(v) => v,
-                    OptimizedInstanceResolution::NotOptimized
-                    | OptimizedInstanceResolution::Unreusable { .. } => eval_child_expr(
-                        &overlay,
-                        expr,
-                        functions,
-                        meta_map,
-                        &snapshot.values,
-                        &arg_runtime_sink,
-                        &arg_containment,
-                    ),
-                };
+                    functions,
+                    meta_map,
+                    &snapshot.values,
+                    &arg_runtime_sink,
+                );
                 overlay.insert(key.clone(), v);
             }
             // Pre-evaluate the nested sub's constructor args HERE, in this
@@ -1314,6 +1277,60 @@ fn eval_child_expr(
     reify_expr::eval_expr(expr, &ctx)
 }
 
+/// The value of a SCRATCH let: one evaluated into a phase-local map (phase 1's
+/// `scope`, phase 1.5's `overlay`) so later cells can read it, and never
+/// committed. Phase 2 owns the commit.
+///
+/// A scratch value must equal what phase 2 commits, so an `@optimized` let is
+/// resolved through the same [`resolve_optimized_instance_cell`] gate phase 2
+/// uses (task #6662). Body-inlining instead would hand every reader the `.ri`
+/// sentinel while the committed cell held the dispatched value.
+///
+/// Silent: phase 2 sees the same cell and owns the decline report, so reporting
+/// here would double every warning. Phase 1.5's overlay reaches phase 2's
+/// decision, and phase 1's scope may not, harmlessly; both are argued under
+/// "Why the two instance maps reach the SAME decision" on
+/// [`resolve_optimized_instance_cell`].
+///
+/// The gate gets the RAW read trace, not phase 1.5's `node_traces`, which are
+/// normalised onto phase-1.5 node keys: the wrong set for a value comparison.
+/// It is a closure, so only an `@optimized` let pays for the expression walk.
+#[allow(clippy::too_many_arguments)]
+fn eval_scratch_let(
+    scope: &ValueMap,
+    key: &ValueCellId,
+    expr: &reify_ir::CompiledExpr,
+    child_template: &TopologyTemplate,
+    optimized_names: &OptimizedNameIndex<'_>,
+    global_values: &ValueMap,
+    functions: &[CompiledFunction],
+    meta_map: &HashMap<String, HashMap<String, String>>,
+    determinacy: &PersistentMap<ValueCellId, (Value, DeterminacyState)>,
+    runtime_sink: &RefCell<Vec<Diagnostic>>,
+) -> Value {
+    match resolve_optimized_instance_cell(
+        expr,
+        optimized_names,
+        child_template,
+        &key.member,
+        || extract_dependency_trace(expr).reads,
+        scope,
+        global_values,
+    ) {
+        OptimizedInstanceResolution::Reuse(v) => v,
+        OptimizedInstanceResolution::NotOptimized
+        | OptimizedInstanceResolution::Unreusable { .. } => eval_child_expr(
+            scope,
+            expr,
+            functions,
+            meta_map,
+            determinacy,
+            runtime_sink,
+            &NoContainment,
+        ),
+    }
+}
+
 /// Phase 1: Evaluate and store only the param cells for a child instance.
 ///
 /// Cells are visited in [`phase1_walk`] order, so a default that reads a sibling
@@ -1352,14 +1369,17 @@ fn elaborate_child_params_only<'f>(
         let cell = match step {
             Phase1Step::Param(cell) => cell,
             Phase1Step::ScratchLet { key, expr } => {
-                let v = eval_child_expr(
+                let v = eval_scratch_let(
                     &scope,
+                    key,
                     expr,
+                    child_template,
+                    optimized_names,
+                    values,
                     functions,
                     meta_map,
                     &snapshot.values,
                     &runtime_sink,
-                    &containment,
                 );
                 scope.insert(key.clone(), v);
                 continue;
