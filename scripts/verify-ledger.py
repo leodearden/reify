@@ -19,6 +19,8 @@ import os
 import re
 import subprocess
 import sys
+import xml.etree.ElementTree as ElementTree
+from datetime import datetime
 from pathlib import Path
 
 RECORD_SCHEMA = "reify.verify-run/1"
@@ -230,6 +232,163 @@ def read_run_all(journal, index):
 
 
 # ---------------------------------------------------------------------------
+# Boundary observations (taken at both edges of every cargo-bearing step)
+# ---------------------------------------------------------------------------
+
+VERIFY_ACTIONS = frozenset({"test", "lint", "typecheck", "all"})
+
+
+def sccache_snapshot():
+    """The daemon's raw stats object, or why there is none. Never a computed rate."""
+    wrapper = os.environ.get("RUSTC_WRAPPER", "")
+    if os.path.basename(wrapper) != "sccache":
+        return {"available": False, "reason": "rustc-wrapper-not-sccache"}
+    try:
+        proc = subprocess.run(
+            [wrapper, "--show-stats", "--stats-format=json"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return {"available": False, "reason": type(exc).__name__}
+    if proc.returncode != 0:
+        return {"available": False, "reason": f"exit-{proc.returncode}"}
+    try:
+        return json.loads(proc.stdout)
+    except ValueError:
+        return {"available": False, "reason": "unparseable-stats"}
+
+
+def proc_root():
+    return Path(os.environ.get("REIFY_VERIFY_LEDGER_PROC_ROOT") or "/proc")
+
+
+def read_process(pid_dir):
+    """(ppid, comm, argv) from <pid>/stat and <pid>/cmdline; None if it vanished."""
+    try:
+        stat_text = (pid_dir / "stat").read_text(encoding="utf-8", errors="replace")
+        cmdline = (pid_dir / "cmdline").read_bytes()
+    except OSError:
+        return None
+    open_paren, close_paren = stat_text.find("("), stat_text.rfind(")")
+    fields = stat_text[close_paren + 2 :].split()
+    if open_paren < 0 or close_paren < 0 or len(fields) < 2:
+        return None
+    argv = [arg.decode("utf-8", errors="replace") for arg in cmdline.split(b"\0")]
+    if argv and argv[-1] == "":
+        argv.pop()
+    return int(fields[1]), stat_text[open_paren + 1 : close_paren], argv
+
+
+def read_process_table(root):
+    table = {}
+    for name in os.listdir(root):
+        if name.isdigit():
+            process = read_process(root / name)
+            if process is not None:
+                table[int(name)] = process
+    return table
+
+
+def is_verify_run(argv):
+    if "--print-plan" in argv:
+        return False
+    for position, arg in enumerate(argv[:-1]):
+        if os.path.basename(arg) == "verify.sh" and argv[position + 1] in VERIFY_ACTIONS:
+            return True
+    return False
+
+
+def ancestry(table, pid):
+    """pid, its parent, ... up to the first pid outside the table (cycle-safe)."""
+    chain, seen = [], set()
+    while pid in table and pid not in seen:
+        seen.add(pid)
+        chain.append(pid)
+        pid = table[pid][0]
+    return chain
+
+
+def outermost_verify(table, chain):
+    roots = [pid for pid in chain if is_verify_run(table[pid][2])]
+    return roots[-1] if roots else None
+
+
+def concurrency_snapshot(self_pid):
+    root = proc_root()
+    table = read_process_table(root)
+    other_roots, cargo_in_other, cargo_outside, rustc_total = set(), 0, 0, 0
+    for pid, (_ppid, comm, _argv) in table.items():
+        if comm == "rustc":
+            rustc_total += 1
+        chain = ancestry(table, pid)
+        if self_pid in chain:
+            continue
+        verify_root = outermost_verify(table, chain)
+        if verify_root is not None:
+            other_roots.add(verify_root)
+        if comm == "cargo":
+            if verify_root is None:
+                cargo_outside += 1
+            else:
+                cargo_in_other += 1
+    return {
+        "other_verify_runs": len(other_roots),
+        "cargo_in_other_verifies": cargo_in_other,
+        "cargo_outside_verifies": cargo_outside,
+        "rustc_total": rustc_total,
+        "host": host_load(root),
+    }
+
+
+def first_float(path, prefix=""):
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    for line in text.splitlines():
+        if line.startswith(prefix):
+            token = line[len(prefix):].split()[0]
+            try:
+                return float(token.split("=", 1)[-1])
+            except ValueError:
+                return None
+    return None
+
+
+def host_load(root):
+    return {
+        "loadavg_1": first_float(root / "loadavg"),
+        "psi_cpu_some_avg10": first_float(root / "pressure" / "cpu", "some "),
+    }
+
+
+def junit_report(path):
+    """Root <testsuites> attributes of a nextest JUnit report, plus its mtime."""
+    try:
+        mtime = os.stat(path).st_mtime
+    except FileNotFoundError:
+        return {"path": path, "mtime": None}
+    report = {"path": path, "mtime": mtime}
+    try:
+        _event, element = next(ElementTree.iterparse(path, events=("start",)))
+        attrs = element.attrib
+        report["exec_started_at"] = datetime.fromisoformat(attrs["timestamp"]).timestamp()
+        report["exec_secs"] = float(attrs["time"])
+        for key in ("tests", "failures", "errors"):
+            report[key] = int(attrs[key]) if key in attrs else None
+    except (ElementTree.ParseError, KeyError, ValueError, StopIteration):
+        pass
+    return report
+
+
+def append_event(journal, event):
+    with open(journal_path(journal, "journal.jsonl"), "a", encoding="utf-8") as fh:
+        fh.write(json.dumps(event, separators=(",", ":")) + "\n")
+
+
+# ---------------------------------------------------------------------------
 # Record composition
 # ---------------------------------------------------------------------------
 
@@ -246,22 +405,67 @@ def new_step(entry, cmd):
     }
 
 
+def apply_step_begin(step, event):
+    step["began_at"] = event.get("at")
+
+
+def apply_step_end(step, event):
+    step["ended_at"] = event.get("at")
+    step["rc"] = event.get("rc")
+    if step["began_at"] is not None and step["ended_at"] is not None:
+        step["wall_secs"] = round(step["ended_at"] - step["began_at"], 6)
+
+
+def apply_snapshot(step, event):
+    edge = event.get("edge")
+    step.setdefault("sccache", {})[edge] = event.get("sccache")
+    step.setdefault("concurrency", {})[edge] = event.get("concurrency")
+
+
+def apply_junit(step, event):
+    step["_junit"] = event
+
+
+_EVENT_APPLIERS = {
+    "step_begin": apply_step_begin,
+    "step_end": apply_step_end,
+    "snapshot": apply_snapshot,
+    "junit": apply_junit,
+}
+
+
+def nextest_split(step, junit):
+    """Split one nextest step at the JUnit run start: build + test listing, execution, teardown."""
+    if junit.get("mtime") is None:
+        return {"available": False, "reason": "no-junit"}
+    if step["began_at"] is None or junit["mtime"] < step["began_at"]:
+        return {"available": False, "reason": "stale-junit"}
+    if junit.get("exec_started_at") is None or junit.get("exec_secs") is None:
+        return {"available": False, "reason": "unparseable-junit"}
+    exec_end = junit["exec_started_at"] + junit["exec_secs"]
+    post = None if step["ended_at"] is None else round(step["ended_at"] - exec_end, 6)
+    return {
+        "exec_started_at": junit["exec_started_at"],
+        "exec_secs": junit["exec_secs"],
+        "pre_exec_secs": round(junit["exec_started_at"] - step["began_at"], 6),
+        "post_exec_secs": post,
+        "tests": junit.get("tests"),
+        "failures": junit.get("failures"),
+        "errors": junit.get("errors"),
+    }
+
+
 def fold_steps(meta, events, journal):
     steps = [new_step(entry, entry["cmd"]) for entry in meta["plan"]]
     for event in events:
         index = event.get("index")
-        if not isinstance(index, int) or not 0 <= index < len(steps):
-            continue
-        step = steps[index]
-        kind = event.get("ev")
-        if kind == "step_begin":
-            step["began_at"] = event.get("at")
-        elif kind == "step_end":
-            step["ended_at"] = event.get("at")
-            step["rc"] = event.get("rc")
-            if step["began_at"] is not None and step["ended_at"] is not None:
-                step["wall_secs"] = round(step["ended_at"] - step["began_at"], 6)
+        applier = _EVENT_APPLIERS.get(event.get("ev"))
+        if applier and isinstance(index, int) and 0 <= index < len(steps):
+            applier(steps[index], event)
     for step in steps:
+        junit = step.pop("_junit", None)
+        if junit is not None:
+            step["nextest"] = nextest_split(step, junit)
         run_all = read_run_all(journal, step["index"])
         if run_all is not None:
             step["run_all"] = run_all
@@ -408,6 +612,25 @@ def cmd_finalize(args):
     append_record(args.ledger_dir, record)
 
 
+def cmd_boundary(args):
+    at = args.at
+    append_event(
+        args.journal,
+        {
+            "ev": "snapshot",
+            "index": args.index,
+            "edge": args.edge,
+            "at": at,
+            "sccache": sccache_snapshot(),
+            "concurrency": concurrency_snapshot(args.self_pid),
+        },
+    )
+    if args.edge == "after" and args.junit:
+        entry = read_meta(args.journal)["plan"][args.index]
+        if entry["nextest"]:
+            append_event(args.journal, {"ev": "junit", "index": args.index, "at": at, **junit_report(args.junit)})
+
+
 def build_parser():
     parser = argparse.ArgumentParser(prog="verify-ledger.py", description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="command", required=True)
@@ -428,6 +651,15 @@ def build_parser():
     begin.add_argument("--release-delta-skip", default="")
     begin.add_argument("--started-at", type=float, required=True)
     begin.set_defaults(func=cmd_run_begin)
+
+    boundary = sub.add_parser("boundary", help="snapshot sccache + concurrency at a cargo step edge")
+    boundary.add_argument("--journal", required=True)
+    boundary.add_argument("--index", type=int, required=True)
+    boundary.add_argument("--edge", choices=("before", "after"), required=True)
+    boundary.add_argument("--at", type=float, required=True)
+    boundary.add_argument("--self-pid", type=int, required=True)
+    boundary.add_argument("--junit", default="")
+    boundary.set_defaults(func=cmd_boundary)
 
     finalize = sub.add_parser("finalize", help="compose the run record and append it to the ledger (once)")
     finalize.add_argument("--journal", required=True)
