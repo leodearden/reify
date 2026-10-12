@@ -98,6 +98,11 @@ use crate::types::CompiledTypeAlias;
 ///     let compiled = compile_with_prelude_context(parsed, &ctx);
 /// }
 /// ```
+///
+/// [`extended`](Self::extended) derives a context from an existing one (e.g.
+/// the cached stdlib context plus a unit's direct imports) without
+/// re-flattening the base modules.
+#[derive(Clone)]
 pub struct PreludeContext<'a> {
     /// Borrowed references to the prelude modules.
     modules: Vec<&'a CompiledModule>,
@@ -114,6 +119,9 @@ pub struct PreludeContext<'a> {
     /// survives in `pub_aliases`; subsequent modules with the same pub alias name
     /// are recorded here for diagnostic emission by `compile_with_prelude_context`.
     collision_warnings: Vec<(String, String, String)>,
+    /// First module (by path) that declared each surviving pub alias name: the
+    /// first-wins dedup key behind `pub_aliases` and `collision_warnings`.
+    alias_first_module: HashMap<String, String>,
 }
 
 impl<'a> PreludeContext<'a> {
@@ -128,37 +136,54 @@ impl<'a> PreludeContext<'a> {
     /// Use [`from_slice`](Self::from_slice) when you own the `CompiledModule`
     /// values (e.g. `&'static [CompiledModule]` from `load_stdlib()`).
     pub fn new(prelude: &[&'a CompiledModule]) -> Self {
-        let resolution_enums = flatten_prelude_enum_defs(prelude);
-        // Build pub_aliases with first-wins deduplication across prelude modules.
-        // If two modules declare a pub alias with the same name, only the first
-        // survives in pub_aliases; the collision is recorded in collision_warnings
-        // for diagnostic emission at compile time.
-        let mut alias_first_module: HashMap<String, String> = HashMap::new();
-        let mut collision_warnings: Vec<(String, String, String)> = Vec::new();
-        let mut pub_aliases: Vec<CompiledTypeAlias> = Vec::new();
-        for m in prelude {
-            let module_path = m.path.to_string();
-            for a in &m.type_aliases {
-                if a.is_pub {
-                    if let Some(first_module) = alias_first_module.get(&a.name) {
-                        collision_warnings.push((
-                            a.name.clone(),
-                            first_module.clone(),
-                            module_path.clone(),
-                        ));
-                        // first-wins: skip this duplicate
-                    } else {
-                        alias_first_module.insert(a.name.clone(), module_path.clone());
-                        pub_aliases.push(a.clone());
-                    }
-                }
-            }
+        let empty = Self {
+            modules: Vec::new(),
+            resolution_enums: Vec::new(),
+            pub_aliases: Vec::new(),
+            collision_warnings: Vec::new(),
+            alias_first_module: HashMap::new(),
+        };
+        empty.absorbing(prelude)
+    }
+
+    /// A new context whose modules are this context's followed by `extra`.
+    ///
+    /// Reuses this context's already-built caches and folds in only `extra`,
+    /// so the result is identical to `PreludeContext::new(self.modules() ++
+    /// extra)`, including first-wins alias dedup and collision recording
+    /// across the base/extension boundary.
+    pub fn extended(&self, extra: &[&'a CompiledModule]) -> PreludeContext<'a> {
+        self.clone().absorbing(extra)
+    }
+
+    fn absorbing(mut self, modules: &[&'a CompiledModule]) -> Self {
+        for m in modules {
+            self.absorb(m);
         }
-        Self {
-            modules: prelude.to_vec(),
-            resolution_enums,
-            pub_aliases,
-            collision_warnings,
+        self
+    }
+
+    /// Append one prelude module: its ref, its enum definitions (source
+    /// order), and its pub aliases with first-wins deduplication. A pub alias
+    /// whose name an earlier module already declared is skipped and recorded
+    /// in `collision_warnings` for diagnostic emission at compile time.
+    fn absorb(&mut self, m: &'a CompiledModule) {
+        self.modules.push(m);
+        self.resolution_enums
+            .extend(flatten_prelude_enum_defs(std::slice::from_ref(&m)));
+        let module_path = m.path.to_string();
+        for a in m.type_aliases.iter().filter(|a| a.is_pub) {
+            if let Some(first_module) = self.alias_first_module.get(&a.name) {
+                self.collision_warnings.push((
+                    a.name.clone(),
+                    first_module.clone(),
+                    module_path.clone(),
+                ));
+            } else {
+                self.alias_first_module
+                    .insert(a.name.clone(), module_path.clone());
+                self.pub_aliases.push(a.clone());
+            }
         }
     }
 
