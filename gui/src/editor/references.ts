@@ -14,8 +14,7 @@
  * so the command is unit-testable without the Tauri bridge.
  *
  * An optional VersionSkewGuard keeps the panel from showing ranges computed
- * against text the user has since edited: a stale answer is re-asked once and
- * otherwise dropped (see resolveFreshLocations).
+ * against text the user has since edited (see resolveFreshLocations).
  */
 import type { EditorView } from '@codemirror/view';
 import { askFresh, versionsDisagree, type VersionSkewGuard } from './versionSkew';

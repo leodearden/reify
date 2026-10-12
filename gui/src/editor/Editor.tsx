@@ -173,9 +173,8 @@ export function Editor(props: EditorProps) {
    *
    * Requests that must be answered against the text the user is looking at
    * call this first — via onceServerIsCurrent, or as the version-skew guard's
-   * syncServer (rename and find uses). Without it the server answers from
-   * text up to EDITOR_DEBOUNCE_MS old while both sides still agree on the
-   * version number —
+   * syncServer. Without it the server answers from text up to
+   * EDITOR_DEBOUNCE_MS old while both sides still agree on the version number —
    * skew that no version comparison downstream can detect, because the stale
    * answer is stamped with the version the client itself last sent.
    *
@@ -431,12 +430,7 @@ export function Editor(props: EditorProps) {
       });
     };
 
-    // The version-skew guard both position-based commands share: the reader
-    // hands back the version last SENT for a document, under the one key form
-    // both sides agree on, and every guarded request first sends any didChange
-    // still pending. Rename compares the server's stamped versions; find uses
-    // compares the version at ask with the version at consumption. Both re-ask
-    // once on skew.
+    // Shared version-skew guard for position-based commands.
     const versionSkewGuard: VersionSkewGuard = {
       currentVersion: (uri) => docVersions.current(versionKey(uri)),
       syncServer: flushPendingLspChange,
@@ -494,8 +488,7 @@ export function Editor(props: EditorProps) {
           // through the CM keymap (not the global useKeyboardShortcuts handler,
           // which bails inside the contentEditable editor) because it needs the
           // live cursor; mirrors the F12 goto-definition precedent above.
-          // Waits for a pending didChange first (see onceServerIsCurrent); a
-          // stale answer is re-asked once (see references.ts).
+          // Waits for a pending didChange first (see onceServerIsCurrent).
           key: 'Shift-F12',
           run: onceServerIsCurrent(
             findUsesCommand(

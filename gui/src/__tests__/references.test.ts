@@ -362,7 +362,6 @@ describe('findUsesCommand version-skew guard', () => {
 
   it('passes the answer through for an untracked document, whose staleness is unknowable', async () => {
     const doc = makeVersionedDocument(undefined);
-    vi.mocked(doc.guard.currentVersion).mockReturnValue(undefined);
     const references = vi.fn().mockResolvedValue(STALE);
     const onResults = vi.fn();
     const command = findUsesCommand(() => URI, { references }, onResults, doc.guard);
@@ -372,6 +371,32 @@ describe('findUsesCommand version-skew guard', () => {
 
     expect(references).toHaveBeenCalledTimes(1);
     expect(onResults).toHaveBeenCalledTimes(1);
+  });
+
+  it('shows nothing, and throws nothing, when the re-ask after a stale answer fails', async () => {
+    const doc = makeVersionedDocument();
+    const failure = new Error('server went away');
+    const references = vi
+      .fn()
+      .mockImplementationOnce(() => {
+        doc.typeSent();
+        return Promise.resolve(STALE);
+      })
+      .mockRejectedValueOnce(failure);
+    const onResults = vi.fn();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const command = findUsesCommand(() => URI, { references }, onResults, doc.guard);
+
+    try {
+      expect(command(cursorView())).toBe(true);
+      await flushMacrotasks();
+
+      expect(references).toHaveBeenCalledTimes(2);
+      expect(onResults).not.toHaveBeenCalled();
+      expect(warn).toHaveBeenCalledWith(expect.any(String), failure);
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it('drops, without re-asking, an answer that arrives after a switch to another file (no guard)', async () => {
