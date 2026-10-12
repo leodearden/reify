@@ -87,31 +87,102 @@ MOD_ROOTS = CRATE_ROOTS | {"mod.rs"}
 
 # --- workspace and baseline -------------------------------------------------
 
-def read_toml(path: Path) -> dict:
-    return tomllib.loads(path.read_text(encoding="utf-8"))
+def read_text(path: Path, what: str) -> str:
+    try:
+        return path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        raise InputError(f"{path}: missing {what}") from None
+    except (OSError, UnicodeDecodeError) as error:
+        raise InputError(f"{path}: unreadable {what}: {error}") from None
+
+
+def read_toml(path: Path, what: str) -> dict:
+    try:
+        return tomllib.loads(read_text(path, what))
+    except tomllib.TOMLDecodeError as error:
+        raise InputError(f"{path}: unparseable {what}: {error}") from None
+
+
+def table(document: dict, key: str) -> dict:
+    value = document.get(key)
+    return value if isinstance(value, dict) else {}
 
 
 def workspace_members(root: Path) -> tuple[Member, ...]:
-    manifest = read_toml(root / "Cargo.toml")
+    """Every workspace member that has a src/ directory, sorted by package."""
+    manifest = root / "Cargo.toml"
+    entries = table(read_toml(manifest, "workspace manifest"), "workspace").get("members")
+    if not (isinstance(entries, list) and all(isinstance(e, str) for e in entries)):
+        raise InputError(f"{manifest}: no [workspace].members list of paths")
     members = []
-    for entry in manifest["workspace"]["members"]:
-        for member_dir in sorted(root.glob(entry)):
-            src = member_dir / "src"
-            if src.is_dir():
-                package = read_toml(member_dir / "Cargo.toml")["package"]["name"]
-                members.append(Member(package=package, src=src))
+    for entry in entries:
+        member_dirs = sorted(path for path in root.glob(entry) if path.is_dir())
+        if not member_dirs:
+            raise InputError(f"{manifest}: member {entry!r} matches no directory")
+        for member_dir in member_dirs:
+            package_manifest = member_dir / "Cargo.toml"
+            package = table(read_toml(package_manifest, "package manifest"),
+                            "package").get("name")
+            if not (isinstance(package, str) and package):
+                raise InputError(f"{package_manifest}: no [package].name")
+            if (member_dir / "src").is_dir():
+                members.append(Member(package=package, src=member_dir / "src"))
     return tuple(sorted(members, key=lambda m: m.package))
 
 
+def baseline_row(path: Path, crate: str, rows: object) -> SCCs:
+    where = f"{path}: crates[{crate!r}]"
+    if not isinstance(rows, list):
+        raise InputError(f"{where} must be a list of module lists")
+    sccs: list[frozenset[str]] = []
+    for row in rows:
+        if not (isinstance(row, list) and all(isinstance(m, str) for m in row)):
+            raise InputError(f"{where}: {row!r} is not a list of module names")
+        if len(row) < 2 or len(set(row)) != len(row):
+            raise InputError(f"{where}: {row!r} is not two or more distinct modules")
+        for earlier in sccs:
+            if earlier & set(row):
+                raise InputError(
+                    f"{where}: rows must be disjoint, but {braces(earlier & set(row))} "
+                    "is in two")
+        sccs.append(frozenset(row))
+    return frozenset(sccs)
+
+
 def load_baseline(path: Path) -> Baseline:
-    document = json.loads(path.read_text(encoding="utf-8"))
+    """The one home of baseline-shape validation; both subcommands call it."""
+    try:
+        document = json.loads(read_text(path, "baseline"))
+    except json.JSONDecodeError as error:
+        raise InputError(f"{path}: unparseable baseline: {error}") from None
+    if not isinstance(document, dict):
+        raise InputError(f"{path}: the baseline must be a JSON object")
+    schema = document.get("schema")
+    if type(schema) is not int or schema != BASELINE_SCHEMA:
+        raise InputError(f"{path}: schema must be {BASELINE_SCHEMA}, found {schema!r}")
+    excluded = document.get("excluded")
+    if not (isinstance(excluded, dict)
+            and all(isinstance(reason, str) and reason for reason in excluded.values())):
+        raise InputError(f"{path}: excluded must map each package to a non-empty reason")
+    crates = document.get("crates")
+    if not isinstance(crates, dict):
+        raise InputError(f"{path}: crates must map each package to its SCC rows")
     return Baseline(
-        excluded=dict(document["excluded"]),
-        crates={
-            crate: frozenset(frozenset(scc) for scc in rows)
-            for crate, rows in document["crates"].items()
-        },
+        excluded=dict(excluded),
+        crates={crate: baseline_row(path, crate, rows) for crate, rows in crates.items()},
     )
+
+
+def validate_against_workspace(baseline: Baseline, members: Sequence[Member]) -> None:
+    """A row for a removed crate is left to surface as STALE; these cannot."""
+    packages = {member.package for member in members}
+    for package in sorted(baseline.excluded):
+        if package not in packages:
+            raise InputError(f"the baseline excludes {package!r}, which is not a "
+                             "workspace package with a src/ directory")
+        if package in baseline.crates:
+            raise InputError(f"the baseline both excludes {package!r} and records "
+                             "SCCs for it")
 
 
 # --- lexing through the shared Rust lexer ------------------------------------
@@ -493,7 +564,9 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
 def run(command: str, root: Path, baseline_path: Path) -> Verdict:
     baseline = load_baseline(baseline_path)
     members = workspace_members(root)
-    graphs = {member.package: module_graph(root, member) for member in members}
+    validate_against_workspace(baseline, members)
+    graphs = {member.package: module_graph(root, member)
+              for member in members if member.package not in baseline.excluded}
     measured = {crate: tarjan_sccs(graph) for crate, graph in graphs.items()}
     if command == "print":
         sys.stdout.write(render_baseline(baseline.excluded, measured))
