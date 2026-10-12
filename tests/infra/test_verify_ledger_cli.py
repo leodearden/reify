@@ -200,5 +200,232 @@ class ClassifyTests(unittest.TestCase):
         self.assertEqual(entry, {"index": 0, "phase": "other", "cargo": False, "nextest": False})
 
 
+PREFLIGHT_LINE = 'export LD_LIBRARY_PATH="${REIFY_AMBIENT_LD_LIBRARY_PATH-}"; ./scripts/check-manifold-deps.sh'
+CLIPPY_LINE = "timeout --kill-after=60 45m nice -n 5 cargo clippy --workspace --all-targets -- -D warnings"
+PSI_LINE = 'export LD_LIBRARY_PATH="${REIFY_AMBIENT_LD_LIBRARY_PATH-}"; ./scripts/verify.sh psi-gate'
+DEBUG_NEXTEST_LINE = (
+    "timeout --kill-after=60 60m nice -n 5 cargo nextest run --workspace"
+    " --config-file /tmp/reify-nextest-occt.x 9<&-"
+)
+RELEASE_NEXTEST_LINE = (
+    "timeout --kill-after=60 90m nice -n 5 cargo nextest run -p reify-eval --release"
+    " --config-file /tmp/reify-nextest-occt.x 9<&-"
+)
+POSTFLIGHT_LINE = 'export LD_LIBRARY_PATH="${REIFY_AMBIENT_LD_LIBRARY_PATH-}"; ./scripts/tree-sitter-freshness.sh check'
+
+BASE_PLAN = [
+    PREFLIGHT_LINE,
+    CLIPPY_LINE,
+    PSI_LINE,
+    SEMAPHORE_ACQUIRE,
+    DEBUG_NEXTEST_LINE,
+    RELEASE_NEXTEST_LINE,
+    SEMAPHORE_RELEASE,
+    POSTFLIGHT_LINE,
+]
+BASE_PLAN_CARGO_INDICES = [1, 4, 5]
+
+
+def git_out(*args):
+    return subprocess.run(
+        ["git", *args],
+        cwd=str(REPO_ROOT),
+        env=hermetic_env(),
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    ).stdout.strip()
+
+
+class JournalFixture:
+    """A verify run's journal dir, written the way verify.sh writes it."""
+
+    def __init__(self, test, plan, release_delta_skip="0", lane_dir=None):
+        self.dir = Path(tempfile.mkdtemp(prefix="vl-journal-"))
+        test.addCleanup(shutil.rmtree, self.dir, True)
+        self.lane_dir = lane_dir or Path(tempfile.mkdtemp(prefix="vl-lane-"))
+        test.addCleanup(shutil.rmtree, self.lane_dir, True)
+        self.plan = plan
+        self.run_id = f"run-{os.getpid()}-{id(self)}"
+        (self.dir / "plan.nul").write_text("".join(line + "\0" for line in plan))
+        self.begin = run_tool(
+            "run-begin",
+            "--journal", str(self.dir),
+            "--run-id", self.run_id,
+            "--role", "merge",
+            "--role-raw", "merge",
+            "--action", "test",
+            "--profile", "both",
+            "--scope", "all",
+            "--repo-root", str(REPO_ROOT),
+            "--lane-dir", str(self.lane_dir),
+            "--release-delta-skip", release_delta_skip,
+            "--started-at", "1000.0",
+        )
+
+    def event(self, **fields):
+        with open(self.dir / "journal.jsonl", "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(fields) + "\n")
+
+    def run_steps(self, count, failing_rc=0):
+        for i in range(count):
+            self.event(ev="step_begin", index=i, at=1000.0 + 10 * i)
+            rc = failing_rc if i == count - 1 else 0
+            self.event(ev="step_end", index=i, at=1000.0 + 10 * i + 5, rc=rc)
+
+    def finalize(self, ledger_dir, exit_code, *extra):
+        return run_tool(
+            "finalize",
+            "--journal", str(self.dir),
+            "--ledger-dir", str(ledger_dir),
+            "--exit-code", str(exit_code),
+            "--ended-at", "2000.5",
+            *extra,
+        )
+
+
+def ledger_records(ledger_dir):
+    path = Path(ledger_dir) / "verify-runs.jsonl"
+    if not path.exists():
+        return []
+    return [json.loads(line) for line in path.read_text().splitlines()]
+
+
+class RecordTests(unittest.TestCase):
+    def setUp(self):
+        self.ledger = Path(tempfile.mkdtemp(prefix="vl-ledger-"))
+        self.addCleanup(shutil.rmtree, self.ledger, True)
+
+    def test_run_begin_prints_cargo_indices_and_writes_meta(self):
+        journal = JournalFixture(self, BASE_PLAN)
+        self.assertEqual(journal.begin.returncode, 0, journal.begin.stderr)
+        self.assertEqual(
+            [int(tok) for tok in journal.begin.stdout.split()], BASE_PLAN_CARGO_INDICES
+        )
+        self.assertTrue((journal.dir / "meta.json").is_file())
+
+    def test_failed_run_record(self):
+        journal = JournalFixture(self, BASE_PLAN)
+        journal.run_steps(5, failing_rc=1)
+        with open(journal.dir / "journal.jsonl", "a", encoding="utf-8") as fh:
+            fh.write('{"ev":"step_beg')  # a writer killed mid-line
+        proc = journal.finalize(self.ledger, 1)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout, "")
+
+        (record,) = ledger_records(self.ledger)
+        self.assertEqual(record["schema"], "reify.verify-run/1")
+        self.assertEqual(record["run_id"], journal.run_id)
+        for key, value in {
+            "role": "merge",
+            "role_raw": "merge",
+            "action": "test",
+            "profile": "both",
+            "scope": "all",
+            "lane": str(journal.lane_dir),
+            "exit_code": 1,
+            "verdict": "fail",
+            "signal": None,
+            "started_at": 1000.0,
+            "ended_at": 2000.5,
+        }.items():
+            with self.subTest(key=key):
+                self.assertEqual(record[key], value)
+        self.assertAlmostEqual(record["wall_secs"], 1000.5)
+        self.assertEqual(record["head"], git_out("rev-parse", "HEAD"))
+        self.assertEqual(record["tree_oid"], git_out("rev-parse", "HEAD:"))
+        self.assertEqual(record["branch"], git_out("rev-parse", "--abbrev-ref", "HEAD"))
+
+        steps = record["steps"]
+        self.assertEqual([s["index"] for s in steps], list(range(len(BASE_PLAN))))
+        self.assertEqual([s["cmd"] for s in steps], BASE_PLAN)
+        self.assertEqual(steps[1]["phase"], "clippy")
+        for step in steps[:5]:
+            self.assertLessEqual(step["began_at"], step["ended_at"])
+            self.assertAlmostEqual(step["wall_secs"], 5.0)
+        self.assertEqual([s["rc"] for s in steps[:5]], [0, 0, 0, 0, 1])
+        for step in steps[5:]:
+            for key in ("began_at", "ended_at", "wall_secs", "rc"):
+                self.assertIsNone(step[key])
+
+    def test_release_pass_decision(self):
+        cases = (
+            (BASE_PLAN, "0", "planned"),
+            ([PREFLIGHT_LINE, DEBUG_NEXTEST_LINE, RELEASE_SKIP_MARKER], "1", "skipped-delta-clean"),
+            ([PREFLIGHT_LINE, DEBUG_NEXTEST_LINE], "0", "absent"),
+        )
+        for plan, raw, decision in cases:
+            with self.subTest(decision=decision):
+                ledger = Path(tempfile.mkdtemp(prefix="vl-ledger-"))
+                self.addCleanup(shutil.rmtree, ledger, True)
+                journal = JournalFixture(self, plan, release_delta_skip=raw)
+                journal.finalize(ledger, 0)
+                (record,) = ledger_records(ledger)
+                self.assertEqual(
+                    record["release_pass"],
+                    {"decision": decision, "release_delta_skip_raw": raw},
+                )
+                self.assertEqual(record["verdict"], "pass")
+
+    def test_signal_recorded(self):
+        journal = JournalFixture(self, BASE_PLAN)
+        journal.event(ev="step_begin", index=0, at=1000.0)
+        journal.finalize(self.ledger, 143, "--signal", "TERM")
+        (record,) = ledger_records(self.ledger)
+        self.assertEqual(record["signal"], "TERM")
+        self.assertEqual(record["steps"][0]["began_at"], 1000.0)
+        self.assertIsNone(record["steps"][0]["ended_at"])
+
+    def test_finalize_is_once_only(self):
+        journal = JournalFixture(self, BASE_PLAN)
+        journal.finalize(self.ledger, 0)
+        second = journal.finalize(self.ledger, 0)
+        self.assertEqual(second.returncode, 0)
+        self.assertEqual(len(ledger_records(self.ledger)), 1)
+
+    def test_errors_log_folded_into_record(self):
+        journal = JournalFixture(self, BASE_PLAN)
+        (journal.dir / "errors.log").write_text("boom: snapshot failed\n")
+        journal.finalize(self.ledger, 0)
+        (record,) = ledger_records(self.ledger)
+        self.assertIn("boom: snapshot failed", record["instrument_errors"])
+
+    def test_unwritable_ledger_is_fail_open(self):
+        journal = JournalFixture(self, BASE_PLAN)
+        blocker = self.ledger / "a-file"
+        blocker.write_text("")
+        proc = journal.finalize(blocker / "ledger", 1)
+        self.assertEqual(proc.returncode, 0)
+        self.assertEqual(proc.stdout, "")
+
+    def test_concurrent_finalizes_append_intact_lines(self):
+        long_plan = BASE_PLAN + [f"echo {'x' * 400} {i}" for i in range(60)]
+        journals = [JournalFixture(self, long_plan) for _ in range(6)]
+        for journal in journals:
+            journal.run_steps(len(long_plan))
+        procs = [
+            subprocess.Popen(
+                [sys.executable, str(TOOL), "finalize",
+                 "--journal", str(journal.dir),
+                 "--ledger-dir", str(self.ledger),
+                 "--exit-code", "0",
+                 "--ended-at", "2000.5"],
+                env=hermetic_env(),
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            for journal in journals
+        ]
+        for proc in procs:
+            self.assertEqual(proc.wait(timeout=120), 0)
+        records = ledger_records(self.ledger)
+        self.assertEqual(
+            sorted(r["run_id"] for r in records), sorted(j.run_id for j in journals)
+        )
+        for record in records:
+            self.assertEqual(len(record["steps"]), len(long_plan))
+
+
 if __name__ == "__main__":
     unittest.main()
