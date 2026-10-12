@@ -527,7 +527,7 @@ subprojects:
       - "`reify test` counts Pass/Fail/Indeterminate and fails only on Fail — the trampoline+constraint seam; flip a constraint FALSE to tell a verdict from a shrug"
       - "An engineer gets live diagnostics, hover, F2 rename (version-stamped edits), Shift+F12 references and document symbols via LSP, in-process for the GUI"
       - "An LLM reads/modifies designs via MCP and looks up syntax in the language-reference chunks — those chunks are the highest-value doc surface; a stale chunk steers every design agent wrong"
-      - "reify.toml is parsed by reify-config and consumed by reify-eval (kernel pin, [warm_state] budget, [[node_overrides]] commitment policy), reify-compiler (auto-type-param config) and the CLI cache"
+      - "reify.toml is parsed and validated by reify-config but INERT: no shipped binary loads it, so its [kernels], [auto_type_params], [warm_state] and [[node_overrides]] sections have no runtime effect (the CLI cache reads .reify/config.toml, a different file); see docs/notes/reify-toml-schema.md"
       - "`reify doc <file>.ri` emits faithful Markdown/HTML/JSON reference output, including generic type params, with alphabetic meta-key ordering"
 
     what_working_means:
