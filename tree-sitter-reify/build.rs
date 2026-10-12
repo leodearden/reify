@@ -217,9 +217,7 @@ fn main() {
             let grammar_sha_before = sha256_of_path(grammar_path);
             run_tree_sitter_generate();
             // Verify all 3 output files were created.
-            if let Err(msg) = verify_outputs(src_dir) {
-                panic!("{msg}");
-            }
+            verify_outputs(src_dir).unwrap_or_else(|msg| panic!("{msg}"));
             // Re-attest what was just generated (`#6992`, Hole B). Before this,
             // build.rs could regenerate parser.c and leave
             // `src/.grammar_hash.stamp` describing the PREVIOUS grammar — so a

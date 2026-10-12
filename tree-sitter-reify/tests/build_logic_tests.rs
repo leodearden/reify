@@ -361,9 +361,31 @@ fn test_subprocess_timeout_kills_hung_process() {
     );
 }
 
+/// Whether this test binary's own descriptor `fd` is /dev/null, compared by
+/// device and inode exactly as the shell's `-ef` does. On /dev/null a
+/// discarded child descriptor and an inherited one are the same file, so the
+/// stdio probes below cannot tell them apart.
+#[cfg(target_os = "linux")]
+fn own_fd_is_dev_null(fd: u32) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    match (
+        std::fs::metadata(format!("/proc/self/fd/{fd}")),
+        std::fs::metadata("/dev/null"),
+    ) {
+        (Ok(own), Ok(null)) => own.dev() == null.dev() && own.ino() == null.ino(),
+        _ => false,
+    }
+}
+
 #[test]
 #[cfg(target_os = "linux")]
 fn test_run_with_timeout_discards_child_stdout() {
+    assert!(
+        !own_fd_is_dev_null(1),
+        "precondition: this test binary's own stdout is /dev/null, so a \
+         discarded and an inherited child stdout are indistinguishable; rerun \
+         without redirecting stdout to /dev/null"
+    );
     let result = run_with_timeout(
         "sh",
         &[
@@ -377,14 +399,19 @@ fn test_run_with_timeout_discards_child_stdout() {
         Ok(()),
         "child stdout must be discarded (/dev/null, not the build script's own \
          stdout): cargo parses build-script stdout for `cargo:` directives, and a \
-         pipe nobody drains can deadlock. Fails closed when this test binary's own \
-         stdout is /dev/null, where discarded and inherited are indistinguishable"
+         pipe nobody drains can deadlock"
     );
 }
 
 #[test]
 #[cfg(target_os = "linux")]
 fn test_run_with_timeout_inherits_child_stderr() {
+    assert!(
+        !own_fd_is_dev_null(2),
+        "precondition: this test binary's own stderr is /dev/null, so an \
+         inherited and a discarded child stderr are indistinguishable; rerun \
+         without redirecting stderr to /dev/null"
+    );
     let result = run_with_timeout(
         "sh",
         &[
@@ -397,8 +424,7 @@ fn test_run_with_timeout_inherits_child_stderr() {
         result,
         Ok(()),
         "child stderr must be the build script's own stderr, so `tree-sitter \
-         generate` diagnostics stay visible. Fails closed when this test binary's \
-         own stderr is /dev/null, where inherited and discarded are indistinguishable"
+         generate` diagnostics stay visible"
     );
 }
 
