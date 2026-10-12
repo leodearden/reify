@@ -912,8 +912,7 @@ fn filter_diagnostics_for_file_matches_either_spelling() {
 // shared seam so §6.2 invariant (a) holds UNIFORMLY across all five tools
 // and θ's structural anchor has no exceptions to enumerate.
 //
-// FAILS TO COMPILE until step-14 adds the two seams and
-// `crate::commands::parse_export_format`.
+// FAILS TO COMPILE until step-14 adds the two seams.
 
 #[tokio::test]
 async fn reify_save_file_writes_the_session_buffer() {
@@ -1313,12 +1312,12 @@ async fn reify_export_rejects_an_unknown_format() {
     let last_state: std::sync::Mutex<Option<crate::types::GuiState>> =
         std::sync::Mutex::new(Some(s0.clone()));
 
-    let out = dir.path().join("part.obj").to_string_lossy().into_owned();
-    let err = reify_export_on_engine_and_refresh_baseline(&engine, &last_state, "obj", &out)
+    let out = dir.path().join("part.dxf").to_string_lossy().into_owned();
+    let err = reify_export_on_engine_and_refresh_baseline(&engine, &last_state, "dxf", &out)
         .await
-        .expect_err("an unsupported format must be REFUSED");
+        .expect_err("an unknown format must be REFUSED");
     assert!(
-        err.contains("obj"),
+        err.contains("dxf"),
         "the refusal must name the format it does not know, got: {err}"
     );
     assert!(
@@ -1329,23 +1328,6 @@ async fn reify_export_rejects_an_unknown_format() {
         *last_state.lock().unwrap(),
         Some(s0),
         "a refused export must leave the baseline untouched"
-    );
-}
-
-#[test]
-fn parse_export_format_maps_the_shipped_spellings() {
-    // ONE map, shared with `commands::export_impl`, so the AI write tool
-    // and the Tauri command cannot drift on which spellings are accepted.
-    use reify_ir::ExportFormat;
-    assert_eq!(crate::commands::parse_export_format("step"), Ok(ExportFormat::Step));
-    assert_eq!(crate::commands::parse_export_format("stp"), Ok(ExportFormat::Step));
-    assert_eq!(crate::commands::parse_export_format("stl"), Ok(ExportFormat::Stl));
-
-    let err = crate::commands::parse_export_format("obj")
-        .expect_err("an unshipped spelling must be refused");
-    assert!(
-        err.contains("obj"),
-        "the refusal must name the offending format, got: {err}"
     );
 }
 

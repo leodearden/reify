@@ -14,6 +14,7 @@ mod engine_state_view_tests;
 mod engine_tests;
 mod eval_queue_tests;
 mod event_bus_tests;
+mod export_format_tests;
 mod gui_state_macro_tests;
 mod gui_state_parity_tests;
 mod kernel_status_tests;
