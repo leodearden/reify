@@ -1395,10 +1395,11 @@ VariantConstructionField {
 }
 
 // ── Quantifier expression ───────────────────────────────
-// grammar.js:1265-1273, `prec.right(0)` — the predicate swallows everything to
-// its right, so `forall v in vs : a and b` is `forall v in vs : (a and b)`,
-// never `(forall v in vs : a) and b`. That is why `quantifier` is one of the
-// two LOOSEST levels in the @precedence block.
+// grammar.js gives `quantifier_expression` TRAILING_BODY_PREC, below `implies`,
+// so the predicate extends past every keyword operator: `forall v in vs : a and
+// b` is `forall v in vs : (a and b)`, never `(forall v in vs : a) and b`. This
+// port matches by listing `quantifier` below `kwImplies` in the @precedence
+// block. Ruling: docs/reify-language-spec.md §16.
 //
 // Distinct from `ForallStatement` above by POSITION, not by marker: upstream
 // keeps them apart with the leading `connect`/`chain`/`constraint` its
@@ -1410,8 +1411,10 @@ QuantifierExpression {
 }
 
 // ── Lambda ──────────────────────────────────────────────
-// grammar.js:1222-1232, `prec.right(0)` — the body extends as far right as it
-// can, which is why `lambda` is the LOOSEST level in the @precedence block.
+// grammar.js gives `lambda_expression` TRAILING_BODY_PREC, below `implies`, so
+// the body extends past every keyword operator. This port matches by listing
+// `lambda` below `kwImplies` in the @precedence block. Ruling:
+// docs/reify-language-spec.md §16.
 //
 // THE `||` COLLISION, and the SECOND ARM that now settles it. A zero-parameter
 // lambda opens with the same two characters as the symbolic OR operator. No
@@ -1961,12 +1964,15 @@ ReservedWord {
   kwImplies @right,
   range @left,
   conditional @right,
-  // The two LOOSEST levels: grammar.js gives `lambda_expression` and
-  // `quantifier_expression` prec.right(0) alike, so each body swallows
-  // everything to its right — `|x| a + b * c` is `|x| (a + b * c)`, never
-  // `(|x| a) + b * c`, and `forall v in vs : a and b` binds the same way.
-  // They never compete with each other (different leading tokens), so their
-  // relative order here is arbitrary.
+  // The two LOOSEST levels. grammar.js gives `lambda_expression`,
+  // `quantifier_expression` and `conditional_expression` TRAILING_BODY_PREC,
+  // below `implies`, so each body extends past every keyword operator:
+  // `|x| a and b` is `|x| (a and b)`, never `(|x| a) and b`, and
+  // `forall v in vs : a and b` binds the same way. This port matches by listing
+  // `conditional`, `quantifier` and `lambda` below `kwImplies`. Ruling:
+  // docs/reify-language-spec.md §16. `quantifier` and `lambda` never compete
+  // with each other (different leading tokens), so their relative order here is
+  // arbitrary.
   quantifier @right,
   lambda @right
 }
