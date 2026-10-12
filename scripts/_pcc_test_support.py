@@ -137,6 +137,28 @@ def _require_grammar_substrate(test) -> None:
         test.skipTest(f"grammar substrate unavailable — {reason}; skip grammar e2e")
 
 
+_GRAMMAR_STATUS_CALLS_AT_IMPORT: dict[str, int] = {}
+
+
+def _snapshot_grammar_status_at_import(importer: str) -> None:
+    """Record how often _grammar_e2e_status had run when `importer` finished loading.
+
+    The rule: every partition that imports _grammar_e2e_status or
+    _require_grammar_substrate calls `_snapshot_grammar_status_at_import(__name__)`
+    as the LAST statement before its entry point.  The memo is shared by every
+    importer, so a single snapshot sees only the partitions loaded before it;
+    one per importer lets TestGrammarAvailabilityGuard pin that NO import spent
+    the substrate probe, whatever order unittest loaded them in.
+    """
+    info = _grammar_e2e_status.cache_info()
+    _GRAMMAR_STATUS_CALLS_AT_IMPORT[importer] = info.hits + info.misses
+
+
+def _grammar_status_calls_at_import() -> dict[str, int]:
+    """Every recorded snapshot, keyed by importer — a copy, so readers cannot mutate it."""
+    return dict(_GRAMMAR_STATUS_CALLS_AT_IMPORT)
+
+
 # ---------------------------------------------------------------------------
 # Measured tree-sitter cache-denial signature
 # ---------------------------------------------------------------------------

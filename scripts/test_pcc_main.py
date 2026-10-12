@@ -26,6 +26,7 @@ from _pcc_test_support import (
     _VALUE_CELLS_STDOUT,
     _patch_parser_c,
     _require_grammar_substrate,
+    _snapshot_grammar_status_at_import,
     _ts_stub_cache_denied,
     _ts_stub_clean,
     _ts_stub_not_executable,
@@ -1043,6 +1044,13 @@ class TestValueProbeReporting(_MainHarness, unittest.TestCase):
         rc, out, _ = self._e2e("ir", "absent", {"stderr_contains": "EvalError"})
         self.assertEqual(rc, 0, out)
         self.assertIn(f"[{pcc.PASS}]", out)
+
+
+# Snapshot taken after the whole module body has executed, so it records exactly
+# what IMPORT cost — read by TestGrammarAvailabilityGuard to pin that the
+# substrate probe stayed lazy.  Must remain the last statement before the
+# entry-point.
+_snapshot_grammar_status_at_import(__name__)
 
 
 if __name__ == "__main__":
