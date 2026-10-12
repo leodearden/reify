@@ -18,7 +18,7 @@
  * otherwise dropped (see resolveFreshLocations).
  */
 import type { EditorView } from '@codemirror/view';
-import { versionsDisagree, type VersionSkewGuard } from './versionSkew';
+import { askFresh, versionsDisagree, type VersionSkewGuard } from './versionSkew';
 import type { Location, LspClient } from './lspClient';
 
 /**
@@ -67,23 +67,9 @@ function toReferenceResult(view: EditorView, location: Location): ReferenceResul
 }
 
 /**
- * Request references whose ranges still describe the text on screen,
- * re-issuing ONCE on version skew.
- *
- * LSP `Location` is `{uri, range}` with no version field, so a
- * textDocument/references answer cannot be versioned at the protocol level, and
- * inventing an out-of-band channel would be protocol divergence (#7118). The
- * client therefore records the version it had SENT when it asked and compares
- * it with the version it holds when the answer arrives — purely client-side.
- *
- * The second `syncServer` is what makes an edit typed during the request, still
- * inside the didChange debounce, visible as a version bump; without it both
- * readings agree while the text on screen has moved.
- *
- * The re-issue is bounded at one, mirroring rename's resolveApplicableEdit: a
- * typing user can invalidate every answer, so a second stale answer is dropped
- * (null) rather than looped on. An empty Location[] is a fresh answer; only
- * null means stale. With no `guard` the single answer passes straight through.
+ * Request references whose ranges still describe the text on screen: stale
+ * when the document's version moved between the ask and the answer, re-asked
+ * per askFresh. With no `guard` the single answer passes straight through.
  */
 async function resolveFreshLocations(
   requestReferences: () => Promise<Location[]>,
@@ -92,14 +78,16 @@ async function resolveFreshLocations(
   guard?: VersionSkewGuard,
 ): Promise<Location[] | null> {
   if (!guard) return requestReferences();
-  const request = async (): Promise<Location[] | null> => {
-    await guard.syncServer(view);
-    const askedAt = guard.currentVersion(uri);
-    const locations = await requestReferences();
-    await guard.syncServer(view);
-    return versionsDisagree(askedAt, guard.currentVersion(uri)) ? null : locations;
-  };
-  return (await request()) ?? request();
+  const answer = await askFresh(
+    guard,
+    view,
+    async () => {
+      const askedAt = guard.currentVersion(uri);
+      return { askedAt, locations: await requestReferences() };
+    },
+    ({ askedAt }) => versionsDisagree(askedAt, guard.currentVersion(uri)),
+  );
+  return answer && answer.locations;
 }
 
 /**

@@ -39,3 +39,30 @@ export function versionsDisagree(
   if (held === null || held === undefined) return false;
   return stated !== held;
 }
+
+/**
+ * Ask until an answer describes the text on screen, asking at most twice.
+ *
+ * Every ask is bracketed by `syncServer`: before it, so the server answers
+ * about the text on screen; after it, so an edit typed while the answer was in
+ * flight has become a version bump by the time `isStale` judges. An answer
+ * `isStale` accepts, null included, is returned as is; a second stale answer
+ * yields null, since a typing user can invalidate every answer in turn.
+ */
+export async function askFresh<T>(
+  guard: VersionSkewGuard,
+  view: EditorView,
+  ask: () => Promise<T>,
+  isStale: (answer: T) => boolean,
+): Promise<T | null> {
+  const syncedAnswer = async (): Promise<T> => {
+    await guard.syncServer(view);
+    const answer = await ask();
+    await guard.syncServer(view);
+    return answer;
+  };
+  const first = await syncedAnswer();
+  if (!isStale(first)) return first;
+  const second = await syncedAnswer();
+  return isStale(second) ? null : second;
+}
