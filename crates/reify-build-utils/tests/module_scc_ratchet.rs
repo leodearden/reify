@@ -231,3 +231,127 @@ fn ratchet_reads_the_shared_lexers_view_so_comments_and_strings_add_no_edges() {
     let out = ws.check();
     assert_exit(&out, 0, "crate:: paths inside comments and strings");
 }
+
+#[test]
+fn b3_cfg_test_item_before_production_code_is_excluded_while_later_edges_count() {
+    let ws = TempWorkspace::demo();
+    ws.write("crates/demo/src/lib.rs", "mod a; mod b; mod c;\n");
+    ws.write(
+        "crates/demo/src/a.rs",
+        "use crate::b::B;\nuse crate::c::C;\npub struct A;\n",
+    );
+    ws.write(
+        "crates/demo/src/b.rs",
+        concat!(
+            "#[cfg(test)]\n",
+            "mod t {\n",
+            "    use crate::a::A;\n",
+            "    fn brace_noise() { let _ = '{'; let _ = \"}\"; }\n",
+            "}\n",
+            "pub struct B;\n",
+        ),
+    );
+    ws.write(
+        "crates/demo/src/c.rs",
+        concat!(
+            "#[cfg(test)]\n",
+            "mod t {\n",
+            "    use crate::a::A;\n",
+            "    fn brace_noise() { let _ = '{'; }\n",
+            "}\n",
+            "use crate::a::A;\n",
+            "pub struct C;\n",
+        ),
+    );
+    ws.baseline(r#"{"demo": [["a", "c"]]}"#);
+
+    let out = ws.check();
+    assert_exit(
+        &out,
+        0,
+        "a cfg(test) module before production code: excluded, later edges kept",
+    );
+}
+
+#[test]
+fn only_test_implying_cfg_predicates_exclude_an_item() {
+    let ws = TempWorkspace::demo();
+    ws.write(
+        "crates/demo/src/a.rs",
+        "use crate::d::D; use crate::e::E; use crate::f::F; use crate::g::Holder; pub struct A;\n",
+    );
+    ws.write(
+        "crates/demo/src/d.rs",
+        concat!(
+            "#[cfg(all(test, unix))]\n",
+            "use crate::a::A;\n",
+            "#[cfg(test)]\n",
+            "#[allow(dead_code)]\n",
+            "pub(crate) fn helper() -> crate::a::A { crate::a::A }\n",
+            "pub struct Holder {\n",
+            "    #[cfg(test)]\n",
+            "    probe: crate::a::A,\n",
+            "    pub keep: u8,\n",
+            "}\n",
+            "pub struct D;\n",
+        ),
+    );
+    ws.write(
+        "crates/demo/src/e.rs",
+        concat!(
+            "#[cfg(any(test, feature = \"fixtures\"))]\n",
+            "pub fn fixture() -> crate::a::A { crate::a::A }\n",
+            "pub struct E;\n",
+        ),
+    );
+    ws.write(
+        "crates/demo/src/f.rs",
+        "#[cfg(not(test))]\nuse crate::a::A;\npub struct F;\n",
+    );
+    ws.write(
+        "crates/demo/src/g.rs",
+        concat!(
+            "pub struct Holder {\n",
+            "    #[cfg(test)]\n",
+            "    probe: u8,\n",
+            "    pub keep: crate::a::A,\n",
+            "}\n",
+        ),
+    );
+    ws.baseline(r#"{"demo": [["a", "e", "f", "g"]]}"#);
+
+    let out = ws.check();
+    assert_exit(
+        &out,
+        0,
+        "test, all(test, …) and a test-only field are excluded; \
+         any(test, feature), not(test) and the field after it count",
+    );
+}
+
+#[test]
+fn cfg_test_module_files_are_excluded_at_every_depth() {
+    let ws = TempWorkspace::demo();
+    ws.write(
+        "crates/demo/src/lib.rs",
+        "mod a; mod b;\n#[cfg(test)]\nmod t;\n",
+    );
+    ws.write("crates/demo/src/t.rs", "use crate::a::A;\n");
+    ws.write(
+        "crates/demo/src/a.rs",
+        "use crate::t::T;\nuse crate::b::B;\npub struct A;\n",
+    );
+    ws.write(
+        "crates/demo/src/b.rs",
+        "pub struct B;\n#[cfg(test)]\nmod tests;\n",
+    );
+    ws.write("crates/demo/src/b/tests.rs", "use crate::a::A;\n");
+    ws.baseline("{}");
+
+    let out = ws.check();
+    assert_exit(
+        &out,
+        0,
+        "files of a cfg(test)-declared module, at the crate root and nested",
+    );
+}
