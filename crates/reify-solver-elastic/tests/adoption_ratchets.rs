@@ -452,3 +452,443 @@ fn braces_inside_strings_and_comments_do_not_shift_depth() {
     );
     assert_eq!(skipped, [0, 1, 2, 3, 4, 5, 6]);
 }
+
+// ── ratchet rows ─────────────────────────────────────────────────────────────
+
+struct SourceFile {
+    path: String,
+    lines: Vec<Line>,
+}
+
+fn source_file(path: &str, text: &str) -> SourceFile {
+    SourceFile {
+        path: path.to_string(),
+        lines: lex(text),
+    }
+}
+
+struct Hit {
+    path: String,
+    line: usize,
+    text: String,
+}
+
+fn hit_lines(hits: &[Hit]) -> String {
+    hits.iter()
+        .map(|hit| format!("  {}:{}: {}", hit.path, hit.line, hit.text))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+enum View {
+    Code,
+    CodeAndDocs,
+}
+
+/// A literal needle counted in the files under `include` (path prefixes; a
+/// directory ends in `/`) minus `exclude`, outside the `skip_items` items.
+struct Pattern {
+    needle: &'static str,
+    include: &'static [&'static str],
+    exclude: &'static [&'static str],
+    skip_items: &'static [&'static str],
+    view: View,
+    /// One inline copy of the needle on a single quote-free line.
+    seed: &'static str,
+}
+
+enum Measure {
+    Occurrences(Pattern),
+    DuplicateTopLevelFns { root: &'static str },
+}
+
+struct Ratchet {
+    name: &'static str,
+    /// Where copies belong instead: the PRD decision and the leaf that lowers the row.
+    home: &'static str,
+    baseline: usize,
+    measure: Measure,
+}
+
+const SRC: &[&str] = &["src/"];
+const SRC_AND_TESTS: &[&str] = &["src/", "tests/"];
+const NO_PATHS: &[&str] = &[];
+const WHOLE_FILE: &[&str] = &[];
+
+const RATCHETS: &[Ratchet] = &[
+    Ratchet {
+        name: "shell-assembly-upward-imports",
+        home: "elements/shell_frame.rs (solver-crates-layering D4, leaf β)",
+        baseline: 5,
+        measure: Measure::Occurrences(Pattern {
+            needle: "shell_assembly::",
+            include: &[
+                "src/elements/",
+                "src/geometric_stiffness/",
+                "src/shell_kinematics.rs",
+                "src/membrane_load.rs",
+            ],
+            exclude: NO_PATHS,
+            skip_items: TEST_ITEMS,
+            view: View::Code,
+            seed: "use crate::shell_assembly::plane_stress_d;",
+        }),
+    },
+    Ratchet {
+        name: "bubble-condensation-copies",
+        home: "the one guarded bubble-condensation fn (solver-crates-layering D6, leaf γ)",
+        baseline: 2,
+        measure: Measure::Occurrences(Pattern {
+            needle: "let det_bb =",
+            include: SRC,
+            exclude: NO_PATHS,
+            skip_items: TEST_ITEMS,
+            view: View::Code,
+            seed: "let det_bb = k00 * k11 - k01 * k10;",
+        }),
+    },
+    Ratchet {
+        name: "shear-correction-literal",
+        home: "ShellSection::SHEAR_CORRECTION (solver-crates-layering D5, leaf γ)",
+        baseline: 2,
+        measure: Measure::Occurrences(Pattern {
+            needle: "5.0 / 6.0",
+            include: SRC,
+            exclude: NO_PATHS,
+            skip_items: TEST_ITEMS,
+            view: View::Code,
+            seed: "const KAPPA: f64 = 5.0 / 6.0;",
+        }),
+    },
+    Ratchet {
+        name: "inline-shear-modulus",
+        home: "IsotropicElastic::shear_modulus (solver-crates-layering D5, leaf γ)",
+        baseline: 16,
+        measure: Measure::Occurrences(Pattern {
+            needle: "/ (2.0 * (1.0 + nu))",
+            include: SRC,
+            exclude: NO_PATHS,
+            skip_items: WHOLE_FILE,
+            view: View::Code,
+            seed: "let g = e / (2.0 * (1.0 + nu));",
+        }),
+    },
+    Ratchet {
+        name: "thickness-scaled-d-blocks",
+        home: "the shared scaled(d, s) helper (solver-crates-layering D6, leaf γ)",
+        baseline: 5,
+        measure: Measure::Occurrences(Pattern {
+            needle: "td[i][j] = ",
+            include: SRC,
+            exclude: NO_PATHS,
+            skip_items: TEST_ITEMS,
+            view: View::Code,
+            seed: "td[i][j] = t * d[i][j];",
+        }),
+    },
+    Ratchet {
+        name: "assembly-element-literals",
+        home: "AssemblyElement::new (solver-crates-layering D7, leaf δ)",
+        baseline: 38,
+        measure: Measure::Occurrences(Pattern {
+            needle: "AssemblyElement {",
+            include: SRC_AND_TESTS,
+            exclude: &["src/assembly/global.rs"],
+            skip_items: WHOLE_FILE,
+            view: View::Code,
+            seed: "let el = AssemblyElement { id: 0, connectivity: &c, k_e: &k };",
+        }),
+    },
+    Ratchet {
+        name: "element-stiffness-data-indexing",
+        home: "the ElementStiffness accessors (solver-crates-layering D8, leaf ε)",
+        baseline: 74,
+        measure: Measure::Occurrences(Pattern {
+            needle: ".data[",
+            include: SRC_AND_TESTS,
+            exclude: &["src/assembly/mod.rs", "src/resample.rs"],
+            skip_items: WHOLE_FILE,
+            view: View::Code,
+            seed: "let v = k_e.data[0];",
+        }),
+    },
+    Ratchet {
+        name: "member-force-delta-definitions",
+        home: "the membrane_load helper shared with tensegrity_load (solver-crates-layering D9, leaf ζ)",
+        baseline: 2,
+        measure: Measure::Occurrences(Pattern {
+            needle: "fn member_force_delta(",
+            include: SRC,
+            exclude: NO_PATHS,
+            skip_items: TEST_ITEMS,
+            view: View::Code,
+            seed: "fn member_force_delta(x: f64) -> f64 { x }",
+        }),
+    },
+    Ratchet {
+        name: "bar-axial-force-delta-definitions",
+        home: "the membrane_load helper shared with tensegrity_load (solver-crates-layering D9, leaf ζ)",
+        baseline: 2,
+        measure: Measure::Occurrences(Pattern {
+            needle: "fn bar_axial_force_delta(",
+            include: SRC,
+            exclude: NO_PATHS,
+            skip_items: TEST_ITEMS,
+            view: View::Code,
+            seed: "fn bar_axial_force_delta(x: f64) -> f64 { x }",
+        }),
+    },
+    Ratchet {
+        name: "grounding-diagonal-definitions",
+        home: "the membrane_load constant shared with tensegrity_load (solver-crates-layering D9, leaf ζ)",
+        baseline: 2,
+        measure: Measure::Occurrences(Pattern {
+            needle: "const GROUNDING_DIAGONAL:",
+            include: SRC,
+            exclude: NO_PATHS,
+            skip_items: TEST_ITEMS,
+            view: View::Code,
+            seed: "const GROUNDING_DIAGONAL: f64 = 1.0;",
+        }),
+    },
+    Ratchet {
+        name: "cable-sign-rule-arms",
+        home: "MemberKind::admits (solver-crates-layering D1, leaf η)",
+        baseline: 6,
+        measure: Measure::Occurrences(Pattern {
+            needle: "MemberKind::Cable =>",
+            include: SRC,
+            exclude: NO_PATHS,
+            skip_items: TEST_ITEMS,
+            view: View::Code,
+            seed: "MemberKind::Cable => qi > 0.0,",
+        }),
+    },
+    Ratchet {
+        name: "unchecked-anchor-partition",
+        home: "ForceDensityProblem construction (solver-crates-layering D1, leaf η)",
+        baseline: 3,
+        measure: Measure::Occurrences(Pattern {
+            needle: "is_anchor[a] = true",
+            include: SRC,
+            exclude: NO_PATHS,
+            skip_items: TEST_ITEMS,
+            view: View::Code,
+            seed: "is_anchor[a] = true;",
+        }),
+    },
+    Ratchet {
+        name: "mpc-row-literals",
+        home: "MpcRow::new (solver-crates-layering D10, leaf θ)",
+        baseline: 2,
+        measure: Measure::Occurrences(Pattern {
+            needle: "MpcRow {",
+            include: SRC_AND_TESTS,
+            exclude: NO_PATHS,
+            skip_items: &["impl MpcRow", "pub struct MpcRow"],
+            view: View::CodeAndDocs,
+            seed: "let r = MpcRow { dofs: vec![0], coeffs: vec![1.0], rhs: 0.0 };",
+        }),
+    },
+    Ratchet {
+        name: "duplicated-test-helpers",
+        home: "tests/common/fea_harness.rs (solver-crates-layering D11, leaf ι)",
+        baseline: 76,
+        measure: Measure::DuplicateTopLevelFns { root: "tests/" },
+    },
+];
+
+fn in_scope(path: &str, include: &[&str], exclude: &[&str]) -> bool {
+    false
+}
+
+fn measure(how: &Measure, files: &[SourceFile]) -> Vec<Hit> {
+    Vec::new()
+}
+
+fn check(ratchet: &Ratchet, files: &[SourceFile], baseline: usize) -> Result<(), String> {
+    Ok(())
+}
+
+// ── pattern-row self-tests ───────────────────────────────────────────────────
+
+fn pattern_rows() -> Vec<(&'static Ratchet, &'static Pattern)> {
+    RATCHETS
+        .iter()
+        .filter_map(|row| match &row.measure {
+            Measure::Occurrences(pattern) => Some((row, pattern)),
+            Measure::DuplicateTopLevelFns { .. } => None,
+        })
+        .collect()
+}
+
+/// Runs `verdict` on every pattern row and fails once, naming every row that returned `Err`.
+fn for_every_pattern_row(verdict: impl Fn(&Ratchet, &Pattern) -> Result<(), String>) {
+    let rows = pattern_rows();
+    assert!(!rows.is_empty(), "no pattern rows to test");
+    let failures: Vec<String> = rows
+        .iter()
+        .filter_map(|&(row, pattern)| {
+            verdict(row, pattern)
+                .err()
+                .map(|problem| format!("{}: {problem}", row.name))
+        })
+        .collect();
+    assert!(failures.is_empty(), "\n{}", failures.join("\n"));
+}
+
+fn file_under(prefix_entry: &str) -> String {
+    match prefix_entry.ends_with('/') {
+        true => format!("{prefix_entry}seeded.rs"),
+        false => prefix_entry.to_string(),
+    }
+}
+
+fn seed_path(pattern: &Pattern) -> String {
+    file_under(pattern.include[0])
+}
+
+fn out_of_scope_paths(pattern: &Pattern) -> Vec<String> {
+    let excluded = pattern.exclude.iter().map(|entry| file_under(entry));
+    let candidates = ["src/seeded.rs", "tests/seeded.rs", "benches/seeded.rs"]
+        .map(String::from)
+        .into_iter()
+        .filter(|path| !in_scope(path, pattern.include, pattern.exclude));
+    excluded.chain(candidates).collect()
+}
+
+fn skips_test_items(pattern: &Pattern) -> bool {
+    TEST_ITEMS
+        .iter()
+        .all(|item| pattern.skip_items.contains(item))
+}
+
+fn hits_in(row: &Ratchet, path: &str, text: &str) -> Vec<Hit> {
+    measure(&row.measure, &[source_file(path, text)])
+}
+
+fn expect_hit_count(hits: &[Hit], expected: usize) -> Result<(), String> {
+    match hits.len() == expected {
+        true => Ok(()),
+        false => Err(format!(
+            "expected {expected} hit(s), got {}:\n{}",
+            hits.len(),
+            hit_lines(hits)
+        )),
+    }
+}
+
+/// Hits for `pattern`'s seed in plain code (the control) followed by `tail`.
+fn hits_after_control(row: &Ratchet, pattern: &Pattern, tail: &str) -> Vec<Hit> {
+    let text = format!("{}\n{tail}", pattern.seed);
+    hits_in(row, &seed_path(pattern), &text)
+}
+
+#[test]
+fn every_pattern_row_seed_path_is_in_scope_and_seed_holds_one_needle() {
+    for_every_pattern_row(|_, pattern| {
+        let path = seed_path(pattern);
+        if !in_scope(&path, pattern.include, pattern.exclude) {
+            return Err(format!("seed path {path} is outside the row's scope"));
+        }
+        let needles = pattern.seed.matches(pattern.needle).count();
+        if needles != 1 || pattern.seed.contains(['\n', '"']) {
+            return Err(format!(
+                "the seed must be one quote-free line holding the needle once, not {needles}"
+            ));
+        }
+        Ok(())
+    });
+}
+
+#[test]
+fn every_pattern_row_flags_one_seeded_inline_copy() {
+    for_every_pattern_row(|row, pattern| {
+        let path = seed_path(pattern);
+        let hits = hits_in(row, &path, pattern.seed);
+        match hits.as_slice() {
+            [hit] if hit.path == path && hit.line == 1 => Ok(()),
+            _ => Err(format!(
+                "expected one hit at {path}:1, got {}:\n{}",
+                hits.len(),
+                hit_lines(&hits)
+            )),
+        }
+    });
+}
+
+#[test]
+fn every_pattern_row_counts_each_occurrence_on_a_line() {
+    for_every_pattern_row(|row, pattern| {
+        let doubled = format!("{} {}", pattern.seed, pattern.seed);
+        let hits = hits_in(row, &seed_path(pattern), &doubled);
+        expect_hit_count(&hits, 2)
+    });
+}
+
+#[test]
+fn every_pattern_row_ignores_copies_in_non_counted_positions() {
+    for_every_pattern_row(|row, pattern| {
+        let seed = pattern.seed;
+        let mut decoys = vec![
+            format!("// {seed}"),
+            format!("/* {seed} */"),
+            format!("const _S: &str = \"\n{seed}\n\";"),
+            format!("const _R: &str = r#\"{seed}\"#;"),
+        ];
+        for prefix in pattern.skip_items.iter().filter(|p| !TEST_ITEMS.contains(p)) {
+            decoys.push(format!("{prefix} {{\n{seed}\n}}"));
+        }
+        for decoy in &decoys {
+            expect_hit_count(&hits_after_control(row, pattern, decoy), 1)
+                .map_err(|problem| format!("decoy {decoy:?}: {problem}"))?;
+        }
+        for path in out_of_scope_paths(pattern) {
+            let files = [
+                source_file(&path, seed),
+                source_file(&seed_path(pattern), seed),
+            ];
+            expect_hit_count(&measure(&row.measure, &files), 1)
+                .map_err(|problem| format!("out-of-scope {path}: {problem}"))?;
+        }
+        Ok(())
+    });
+}
+
+#[test]
+fn every_pattern_row_applies_its_region_to_cfg_test_modules() {
+    for_every_pattern_row(|row, pattern| {
+        let gated = format!("#[cfg(test)]\nmod tests {{\n{}\n}}", pattern.seed);
+        let expected = if skips_test_items(pattern) { 1 } else { 2 };
+        expect_hit_count(&hits_after_control(row, pattern, &gated), expected)
+    });
+}
+
+#[test]
+fn every_pattern_row_applies_its_view_to_doc_comments() {
+    for_every_pattern_row(|row, pattern| {
+        let documented = format!("/// {}", pattern.seed);
+        let expected = match pattern.view {
+            View::Code => 1,
+            View::CodeAndDocs => 2,
+        };
+        expect_hit_count(&hits_after_control(row, pattern, &documented), expected)
+    });
+}
+
+#[test]
+fn needle_requires_a_left_identifier_boundary() {
+    let boundary_rows = pattern_rows()
+        .into_iter()
+        .filter(|(_, pattern)| pattern.needle.starts_with(is_ident_char))
+        .count();
+    assert!(boundary_rows > 0, "no row starts its needle with an identifier character");
+    for_every_pattern_row(|row, pattern| {
+        if !pattern.needle.starts_with(is_ident_char) {
+            return Ok(());
+        }
+        let glued_needle = format!("x{}", pattern.needle);
+        let glued = pattern.seed.replacen(pattern.needle, &glued_needle, 1);
+        expect_hit_count(&hits_after_control(row, pattern, &glued), 1)
+    });
+}
