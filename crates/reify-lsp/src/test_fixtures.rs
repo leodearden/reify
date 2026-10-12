@@ -10,8 +10,8 @@
 //! Declared from `analysis.rs` rather than the crate root, so the path is
 //! `crate::analysis::test_fixtures`.
 
-use reify_ast::ParsedModule;
-use reify_core::ModulePath;
+use reify_ast::{Declaration, MemberDecl, ParsedModule, SubDecl};
+use reify_core::{ModulePath, SourceSpan};
 
 /// One verified-parseable snippet per NAMED `Declaration` variant, paired with
 /// the name that variant declares — the shared fixture behind
@@ -93,4 +93,28 @@ pub(crate) fn parse_one_clean(source: &str, module: &str) -> ParsedModule {
         "fixture must hold exactly one declaration: {source}"
     );
     parsed
+}
+
+/// Build the name-token span `[start, start + text.len())`.
+pub(crate) fn span_of(start: usize, text: &str) -> SourceSpan {
+    SourceSpan::new(start as u32, (start + text.len()) as u32)
+}
+
+/// Locate the `MemberDecl::Sub` named `sub_name` among the parsed
+/// module's top-level structure members. Used to assert directly on an
+/// AST field (e.g. `index_domain.is_some()`) instead of on an interim
+/// parser diagnostic's wording, which is not the behavior under test and
+/// would break for an unrelated reason once that diagnostic is retired.
+pub(crate) fn find_sub<'a>(parsed: &'a ParsedModule, sub_name: &str) -> &'a SubDecl {
+    parsed
+        .declarations
+        .iter()
+        .find_map(|decl| match decl {
+            Declaration::Structure(s) => s.members.iter().find_map(|m| match m {
+                MemberDecl::Sub(sub) if sub.name == sub_name => Some(sub),
+                _ => None,
+            }),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("no `sub {sub_name}` found in parsed module"))
 }
