@@ -792,19 +792,25 @@ fn pattern_rows() -> Vec<(&'static Ratchet, &'static Pattern)> {
         .collect()
 }
 
-/// Runs `verdict` on every pattern row and fails once, naming every row that returned `Err`.
-fn for_every_pattern_row(verdict: impl Fn(&Ratchet, &Pattern) -> Result<(), String>) {
-    let rows = pattern_rows();
-    assert!(!rows.is_empty(), "no pattern rows to test");
-    let failures: Vec<String> = rows
+/// Runs `verdict` on every row and fails once, naming every row that returned `Err`.
+fn for_every_row(verdict: impl Fn(&Ratchet) -> Result<(), String>) {
+    let failures: Vec<String> = RATCHETS
         .iter()
-        .filter_map(|&(row, pattern)| {
-            verdict(row, pattern)
+        .filter_map(|row| {
+            verdict(row)
                 .err()
                 .map(|problem| format!("{}: {problem}", row.name))
         })
         .collect();
     assert!(failures.is_empty(), "\n{}", failures.join("\n"));
+}
+
+fn for_every_pattern_row(verdict: impl Fn(&Ratchet, &Pattern) -> Result<(), String>) {
+    assert!(!pattern_rows().is_empty(), "no pattern rows to test");
+    for_every_row(|row| match &row.measure {
+        Measure::Occurrences(pattern) => verdict(row, pattern),
+        Measure::DuplicateTopLevelFns { .. } => Ok(()),
+    });
 }
 
 fn file_under(prefix_entry: &str) -> String {
@@ -960,5 +966,154 @@ fn needle_requires_a_left_identifier_boundary() {
         let glued_needle = format!("x{}", pattern.needle);
         let glued = pattern.seed.replacen(pattern.needle, &glued_needle, 1);
         expect_hit_count(&hits_after_control(row, pattern, &glued), 1)
+    });
+}
+
+// ── duplicate-helper census self-tests ───────────────────────────────────────
+
+const CENSUS_ROOT: &str = "tests/";
+
+fn census_hits(files: &[(&str, &str)]) -> Vec<Hit> {
+    let tree: Vec<SourceFile> = files
+        .iter()
+        .map(|&(path, text)| source_file(path, text))
+        .collect();
+    measure(&Measure::DuplicateTopLevelFns { root: CENSUS_ROOT }, &tree)
+}
+
+fn hit_texts(hits: &[Hit]) -> Vec<&str> {
+    hits.iter().map(|hit| hit.text.as_str()).collect()
+}
+
+#[test]
+fn duplicate_census_flags_a_helper_defined_in_two_test_files() {
+    let hits = census_hits(&[
+        ("tests/a.rs", "fn seeded_helper() {}"),
+        ("tests/b.rs", "fn seeded_helper() {}"),
+    ]);
+    assert_eq!(hit_texts(&hits), ["fn seeded_helper (also in tests/a.rs)"]);
+    assert_eq!((hits[0].path.as_str(), hits[0].line), ("tests/b.rs", 1));
+}
+
+#[test]
+fn duplicate_census_reports_one_hit_per_extra_copy_and_counts_files_not_definitions() {
+    let three_files = census_hits(&[
+        ("tests/a.rs", "fn h() {}"),
+        ("tests/b.rs", "fn h() {}"),
+        ("tests/c.rs", "fn h() {}"),
+    ]);
+    assert_eq!(three_files.len(), 2);
+    let one_file = census_hits(&[("tests/a.rs", "fn h() {}\nfn h() {}")]);
+    assert_eq!(one_file.len(), 0);
+}
+
+#[test]
+fn duplicate_census_counts_a_local_redefinition_of_a_common_helper() {
+    let hits = census_hits(&[
+        ("tests/common/mod.rs", "pub fn canonical_x() {}"),
+        ("tests/a.rs", "fn canonical_x() {}"),
+    ]);
+    assert_eq!(hit_texts(&hits), ["fn canonical_x (also in tests/a.rs)"]);
+}
+
+#[test]
+fn duplicate_census_ignores_non_helper_definitions() {
+    let decoys = [
+        ("test attribute", "#[test]\nfn same_name() {}"),
+        ("test attribute on one line", "#[test] fn same_name() {}"),
+        ("test_ prefix", "fn test_same() {}"),
+        ("attribute stack", "#[test]\n#[should_panic]\nfn same_name() {}"),
+        (
+            "doc comment after the test attribute",
+            "#[test]\n/// documented\nfn same_name() {}",
+        ),
+        (
+            "multi-line cfg_attr after the test attribute",
+            "#[test]\n#[cfg_attr(\n    debug_assertions,\n    ignore = \"slow\"\n)]\nfn same_name() {}",
+        ),
+        (
+            "multi-line ignore string after the test attribute",
+            "#[test]\n#[ignore = \"first \\\n    second\"]\nfn same_name() {}",
+        ),
+        ("nested in a mod", "mod m {\n    fn same_name() {}\n}"),
+        ("method in an impl", "impl T {\n    fn same_name(&self) {}\n}"),
+        ("inside a string", "const S: &str = \"\nfn same_name() {}\n\";"),
+        ("inside comments", "// fn same_name() {}\n/* fn same_name() {} */"),
+    ];
+    for (label, decoy) in decoys {
+        let text = format!("fn control_helper() {{}}\n{decoy}");
+        let hits = census_hits(&[("tests/a.rs", &text), ("tests/b.rs", &text)]);
+        assert_eq!(
+            hit_texts(&hits),
+            ["fn control_helper (also in tests/a.rs)"],
+            "decoy: {label}"
+        );
+    }
+}
+
+#[test]
+fn duplicate_census_ignores_single_definitions_and_files_outside_its_root() {
+    let hits = census_hits(&[
+        ("tests/a.rs", "fn control_helper() {}\nfn solo() {}\nfn out_of_root() {}"),
+        ("tests/b.rs", "fn control_helper() {}"),
+        ("src/c.rs", "fn out_of_root() {}"),
+    ]);
+    assert_eq!(hit_texts(&hits), ["fn control_helper (also in tests/a.rs)"]);
+}
+
+#[test]
+fn duplicate_census_counts_every_fn_modifier_form() {
+    let signatures = [
+        "pub fn modded() {}",
+        "pub(crate) fn modded() {}",
+        "const fn modded() {}",
+        "async fn modded() {}",
+        "unsafe fn modded() {}",
+        "pub(crate) const unsafe fn modded() {}",
+        r#"extern "C" fn modded() {}"#,
+        "pub fn modded(\n    a: u32,\n    callback: fn(u32) -> u32,\n) -> u32 {\n    a\n}",
+    ];
+    for signature in signatures {
+        let hits = census_hits(&[("tests/a.rs", signature), ("tests/b.rs", signature)]);
+        assert_eq!(
+            hit_texts(&hits),
+            ["fn modded (also in tests/a.rs)"],
+            "signature: {signature}"
+        );
+    }
+}
+
+// ── BT14: every row is red for a re-added copy and for an unlowered baseline ─
+
+fn seeded_tree(row: &Ratchet, copies: usize) -> Vec<SourceFile> {
+    match &row.measure {
+        Measure::Occurrences(pattern) => {
+            let text = vec![pattern.seed; copies].join("\n");
+            vec![source_file(&seed_path(pattern), &text)]
+        }
+        Measure::DuplicateTopLevelFns { root } => (0..=copies)
+            .map(|index| source_file(&format!("{root}seeded_{index}.rs"), "fn seeded_helper() {}"))
+            .collect(),
+    }
+}
+
+fn expect_red_containing(verdict: Result<(), String>, fragments: &[&str]) -> Result<(), String> {
+    match verdict {
+        Err(message) if fragments.iter().all(|fragment| message.contains(fragment)) => Ok(()),
+        other => Err(format!(
+            "expected a red verdict containing {fragments:?}, got {other:?}"
+        )),
+    }
+}
+
+#[test]
+fn migrating_one_copy_without_lowering_the_baseline_is_red_for_every_row() {
+    for_every_row(|row| {
+        check(row, &seeded_tree(row, 2), 2)
+            .map_err(|red| format!("two copies at baseline 2 must hold, got: {red}"))?;
+        let above = check(row, &seeded_tree(row, 3), 2);
+        expect_red_containing(above, &["above its baseline", row.name])?;
+        let below = check(row, &seeded_tree(row, 1), 2);
+        expect_red_containing(below, &["lower the baseline to 1"])
     });
 }
