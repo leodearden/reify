@@ -645,6 +645,104 @@ fn param_default_reading_an_optimized_let_sees_the_dispatched_value_at_instance_
     );
 }
 
+/// A cycle through a param AND a let. `phase1_walk` appends the cycle's cells
+/// rather than dropping them, so the instance param is still committed, and
+/// stays silent, so template scope's report is the only one.
+///
+/// MEASURED on base b8e8c32a05: identical (both cells Undef, one diagnostic).
+/// NON-VACUITY: deleting the residue append in `phase1_walk` turns this RED
+/// with `CxHolder.a.p` absent.
+#[test]
+fn cross_kind_param_let_cycle_is_still_committed_once_reported_at_instance_scope() {
+    let mut engine = fresh_engine();
+    let module = compile_source(
+        "structure Cx { \
+            param p : Real = dbl + 1.0 \
+            let dbl = p * 2.0 \
+        } \
+        structure CxHolder { \
+            sub a = Cx() \
+        }",
+    );
+
+    let result = engine.eval(&module);
+
+    for member in ["p", "dbl"] {
+        assert_eq!(
+            result.values.get(&ValueCellId::new("CxHolder.a", member)),
+            Some(&Value::Undef),
+            "CxHolder.a.{member} must be PRESENT and Undef. `None` means the \
+             cycle's cells were dropped instead of appended to the walk"
+        );
+    }
+
+    let template_reports: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.message.starts_with("circular dependency in template Cx"))
+        .collect();
+    assert_eq!(
+        template_reports.len(),
+        1,
+        "the cross-kind cycle must be reported exactly once, by template scope. \
+         Got: {template_reports:?}"
+    );
+    let let_cycle_reports: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.message.contains("circular let-binding dependency"))
+        .collect();
+    assert!(
+        let_cycle_reports.is_empty(),
+        "phase 2's let-only graph holds no cycle here, so it must not report \
+         one. Got: {let_cycle_reports:?}"
+    );
+}
+
+/// SCOPE BOUNDARY. A param's scratch let sees no sub members, because template
+/// scope's unified pass also runs before sub elaboration and re-evaluates only
+/// LETS afterwards. So `p` agrees with the template, which is Undef today, while
+/// phase 2's `relay` sees the projected sub member.
+///
+/// MEASURED on base b8e8c32a05: `Mid.p` and `Outer.m.p` are both Undef. If
+/// template scope ever re-evaluates params after subs, this test REDs; phase 1
+/// must then follow, not be re-baselined.
+#[test]
+fn param_default_reading_a_let_over_a_nested_sub_member_agrees_with_template() {
+    let mut engine = fresh_engine();
+    let module = compile_source(
+        "structure Kid { \
+            param off : Int = 7 \
+        } \
+        structure Mid { \
+            sub k = Kid() \
+            let relay = self.k.off \
+            param p : Int = relay \
+        } \
+        structure Outer { \
+            sub m = Mid() \
+        }",
+    );
+
+    let result = engine.eval(&module);
+
+    assert_eq!(
+        result.values.get(&ValueCellId::new("Outer.m", "p")),
+        result.values.get(&ValueCellId::new("Mid", "p")),
+        "instance scope must agree with template scope at Outer.m.p"
+    );
+    assert_eq!(
+        result.values.get(&ValueCellId::new("Mid", "relay")),
+        Some(&Value::Int(7)),
+        "template scope's post-sub let pass sees self.k.off"
+    );
+    assert_eq!(
+        result.values.get(&ValueCellId::new("Outer.m", "relay")),
+        result.values.get(&ValueCellId::new("Mid", "relay")),
+        "phase 2 commits relay from the projected sub member"
+    );
+}
+
 // ──────────────────────────────────────────────────────────────────────────────
 // amendment: the Auto-precedence branch under the dependency-ordered loop
 // ──────────────────────────────────────────────────────────────────────────────

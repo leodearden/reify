@@ -90,7 +90,7 @@ pub(super) fn phase1_walk<'t>(
         .collect();
     // Two cells of one template cannot share a member name. In release a
     // collision costs ordering only: placement below is keyed on the
-    // declaration index, so the shadowed cell is still walked.
+    // declaration index, so a shadowed param is still walked and committed.
     debug_assert_eq!(
         index_of.len(),
         cells.len(),
@@ -175,4 +175,84 @@ fn params_only(cells: Vec<Phase1Step<'_>>) -> Vec<Phase1Step<'_>> {
         .into_iter()
         .filter(|step| matches!(step, Phase1Step::Param(_)))
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use reify_compiler::{CompiledModule, find_template};
+    use reify_core::Type;
+    use reify_ir::{CompiledExpr, Value};
+    use reify_test_support::parse_and_compile;
+
+    use super::{Phase1Step, phase1_walk};
+
+    /// The walk as `(kind, member)` pairs: which cells phase 1 evaluates, and in
+    /// what order.
+    fn walk_of(
+        module: &CompiledModule,
+        template: &str,
+        args: &[(String, CompiledExpr)],
+    ) -> Vec<(&'static str, String)> {
+        let template = find_template(&module.templates, template).expect("template compiled");
+        phase1_walk(template, args)
+            .into_iter()
+            .map(|step| match step {
+                Phase1Step::Param(cell) => ("param", cell.id.member.clone()),
+                Phase1Step::ScratchLet { key, .. } => ("let", key.member.clone()),
+            })
+            .collect()
+    }
+
+    fn steps(expected: &[(&'static str, &str)]) -> Vec<(&'static str, String)> {
+        expected
+            .iter()
+            .map(|(kind, member)| (*kind, member.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn a_let_no_param_reads_is_never_walked() {
+        let module = parse_and_compile(
+            "structure W { \
+                let unused = 5 \
+                param a : Int = 1 \
+                let used = a * 2 \
+                param b : Int = used \
+            }",
+        );
+        assert_eq!(
+            walk_of(&module, "W", &[]),
+            steps(&[("param", "a"), ("let", "used"), ("param", "b")]),
+        );
+    }
+
+    #[test]
+    fn arg_supplied_param_pulls_in_no_let() {
+        let module = parse_and_compile(
+            "structure W2 { \
+                let dbl = 2 \
+                param p : Int = dbl \
+            }",
+        );
+        let args = [(
+            "p".to_string(),
+            CompiledExpr::literal(Value::Int(9), Type::Int),
+        )];
+        assert_eq!(walk_of(&module, "W2", &args), steps(&[("param", "p")]));
+    }
+
+    #[test]
+    fn params_reading_no_sibling_keep_declaration_order() {
+        let module = parse_and_compile(
+            "structure W3 { \
+                param b : Int = 2 \
+                let l = b \
+                param a : Int = 1 \
+            }",
+        );
+        assert_eq!(
+            walk_of(&module, "W3", &[]),
+            steps(&[("param", "b"), ("param", "a")]),
+        );
+    }
 }
