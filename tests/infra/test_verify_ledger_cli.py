@@ -13,10 +13,13 @@ Schema and rationale: docs/notes/verify-instrumentation-ledger.md.
 import json
 import os
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -425,6 +428,268 @@ class RecordTests(unittest.TestCase):
         )
         for record in records:
             self.assertEqual(len(record["steps"]), len(long_plan))
+
+
+
+def sccache_stats(call):
+    """The `sccache --show-stats --stats-format=json` shape (sccache 0.14), counters keyed by call."""
+    return {
+        "stats": {
+            "compile_requests": 1000 + call,
+            "requests_not_cacheable": 300 + call,
+            "cache_hits": {"counts": {"Rust": 500 + 7 * call, "C/C++": 40}, "adv_counts": {"rust": 500 + 7 * call}},
+            "cache_misses": {"counts": {"Rust": 200 + call}, "adv_counts": {"rust": 200 + call}},
+            "cache_errors": {"counts": {}, "adv_counts": {}},
+        },
+        "cache_location": 'Local disk: "/tmp/sccache"',
+        "cache_size": 1234,
+        "max_cache_size": 5678,
+        "use_preprocessor_cache_mode": True,
+        "version": "0.14.0",
+        "basedirs": [],
+    }
+
+
+def write_executable(path, text):
+    path.write_text(text)
+    path.chmod(path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+
+
+def make_stub_sccache(test):
+    """A stub `sccache` whose Nth call prints sccache_stats(N)."""
+    bin_dir = Path(tempfile.mkdtemp(prefix="vl-stubbin-"))
+    test.addCleanup(shutil.rmtree, bin_dir, True)
+    counter = bin_dir / "calls"
+    counter.write_text("0")
+    write_executable(
+        bin_dir / "sccache",
+        f"""#!{sys.executable}
+import json, sys
+sys.path.insert(0, {str(Path(__file__).resolve().parent)!r})
+from test_verify_ledger_cli import sccache_stats
+counter = {str(counter)!r}
+n = int(open(counter).read()) + 1
+open(counter, "w").write(str(n))
+assert sys.argv[1:] == ["--show-stats", "--stats-format=json"], sys.argv
+print(json.dumps(sccache_stats(n)))
+""",
+    )
+    return bin_dir
+
+
+class FakeProc:
+    """A /proc-shaped tree: <pid>/{cmdline,stat,comm}, loadavg, pressure/cpu."""
+
+    def __init__(self, test):
+        self.root = Path(tempfile.mkdtemp(prefix="vl-proc-"))
+        test.addCleanup(shutil.rmtree, self.root, True)
+        (self.root / "loadavg").write_text("3.52 2.10 1.00 2/1234 5678\n")
+        (self.root / "pressure").mkdir()
+        (self.root / "pressure" / "cpu").write_text(
+            "some avg10=12.34 avg60=8.00 avg300=4.00 total=123456\n"
+            "full avg10=0.00 avg60=0.00 avg300=0.00 total=0\n"
+        )
+        (self.root / "self").mkdir()
+
+    def add(self, pid, ppid, comm, argv):
+        d = self.root / str(pid)
+        d.mkdir()
+        (d / "cmdline").write_bytes(b"".join(a.encode() + b"\0" for a in argv))
+        (d / "stat").write_text(f"{pid} ({comm}) S {ppid} {pid} {pid} 0 -1 4194560 0 0 0 0\n")
+        (d / "comm").write_text(comm + "\n")
+
+    def remove(self, pid):
+        shutil.rmtree(self.root / str(pid))
+
+
+SELF_PID = 100
+VERIFY_TEST_ARGV = ["bash", "./scripts/verify.sh", "test", "--scope", "all"]
+
+
+def populated_proc(test):
+    proc = FakeProc(test)
+    proc.add(1, 0, "systemd", ["/sbin/init"])
+    # this run: root, a forked subshell, its cargo (all excluded)
+    proc.add(SELF_PID, 1, "bash", VERIFY_TEST_ARGV)
+    proc.add(101, SELF_PID, "bash", VERIFY_TEST_ARGV)
+    proc.add(102, 101, "cargo", ["cargo", "nextest", "run", "--workspace"])
+    proc.add(103, 102, "rustc", ["rustc", "--crate-name", "a"])
+    # other run A: root under init, fork, cargo under the fork, a psi-gate child
+    proc.add(200, 1, "bash", ["bash", "./scripts/verify.sh", "test", "--scope", "branch"])
+    proc.add(201, 200, "bash", ["bash", "./scripts/verify.sh", "test", "--scope", "branch"])
+    proc.add(202, 201, "cargo", ["cargo", "build", "--release"])
+    proc.add(203, 200, "verify.sh", ["/bin/bash", "./scripts/verify.sh", "psi-gate"])
+    # other run B: launched by an orchestrator, absolute path, `all`
+    proc.add(50, 1, "python3", ["python3", "-m", "orchestrator"])
+    proc.add(300, 50, "bash", ["bash", "/w/lane/scripts/verify.sh", "all", "--profile", "both"])
+    proc.add(301, 300, "bash", ["bash", "/w/lane/scripts/verify.sh", "all", "--profile", "both"])
+    proc.add(302, 301, "cargo", ["cargo", "clippy", "--workspace"])
+    # a --print-plan oracle run is not a run
+    proc.add(400, 1, "bash", ["bash", "scripts/verify.sh", "test", "--print-plan"])
+    # an agent's cargo, outside any verify
+    proc.add(499, 1, "claude", ["claude", "--print"])
+    proc.add(500, 499, "cargo", ["cargo", "check"])
+    # rustc parented by the sccache daemon, and a comm carrying spaces
+    proc.add(600, 1, "sccache", ["sccache"])
+    proc.add(601, 600, "rustc", ["rustc", "--crate-name", "b"])
+    proc.add(700, 1, "tmux: server", ["tmux"])
+    return proc
+
+
+def boundary(journal, index, edge, env, junit=None, at=None):
+    args = [
+        "boundary",
+        "--journal", str(journal.dir),
+        "--index", str(index),
+        "--edge", edge,
+        "--at", str(at if at is not None else time.time()),
+        "--self-pid", str(SELF_PID),
+    ]
+    if junit is not None:
+        args += ["--junit", str(junit)]
+    proc = run_tool(*args, env=env)
+    if proc.returncode != 0 or proc.stdout:
+        raise AssertionError(f"boundary rc={proc.returncode} stdout={proc.stdout!r} stderr={proc.stderr}")
+
+
+def junit_xml(timestamp, secs, tests=12, failures=1):
+    return (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        f'<testsuites name="nextest-run" tests="{tests}" failures="{failures}" errors="0" '
+        f'uuid="u" timestamp="{timestamp}" time="{secs}">\n'
+        '    <testsuite name="a::b" tests="1" disabled="0" errors="0" failures="0">\n'
+        '        <testcase name="t" classname="a::b" timestamp="x" time="0.1"></testcase>\n'
+        "    </testsuite>\n"
+        "</testsuites>\n"
+    )
+
+
+CLIPPY_INDEX = 1
+DEBUG_NEXTEST_INDEX = 4
+
+
+class SnapshotTests(unittest.TestCase):
+    def setUp(self):
+        self.ledger = Path(tempfile.mkdtemp(prefix="vl-ledger-"))
+        self.addCleanup(shutil.rmtree, self.ledger, True)
+        self.proc = populated_proc(self)
+        self.journal = JournalFixture(self, BASE_PLAN)
+
+    def env(self, **overrides):
+        base = hermetic_env(REIFY_VERIFY_LEDGER_PROC_ROOT=str(self.proc.root))
+        base.pop("RUSTC_WRAPPER", None)
+        base.update(overrides)
+        return base
+
+    def finalized_step(self, index):
+        self.journal.finalize(self.ledger, 0)
+        (record,) = ledger_records(self.ledger)
+        self.assertEqual(record["instrument_errors"], [])
+        return record["steps"][index]
+
+    def test_sccache_raw_objects_at_both_edges(self):
+        stub = make_stub_sccache(self)
+        env = self.env(PATH=f"{stub}{os.pathsep}{os.environ['PATH']}", RUSTC_WRAPPER="sccache")
+        self.journal.event(ev="step_begin", index=CLIPPY_INDEX, at=1000.0)
+        boundary(self.journal, CLIPPY_INDEX, "before", env)
+        self.journal.event(ev="step_end", index=CLIPPY_INDEX, at=1100.0, rc=0)
+        boundary(self.journal, CLIPPY_INDEX, "after", env)
+
+        events = load_events(self.journal)
+        self.assertEqual([e["ev"] for e in events if e["ev"] == "snapshot"], ["snapshot", "snapshot"])
+        step = self.finalized_step(CLIPPY_INDEX)
+        self.assertEqual(step["sccache"], {"before": sccache_stats(1), "after": sccache_stats(2)})
+
+    def test_sccache_unavailable_without_sccache_wrapper(self):
+        for wrapper in (None, "/usr/bin/ccache"):
+            with self.subTest(wrapper=wrapper):
+                journal = JournalFixture(self, BASE_PLAN)
+                env = self.env() if wrapper is None else self.env(RUSTC_WRAPPER=wrapper)
+                boundary(journal, CLIPPY_INDEX, "before", env)
+                boundary(journal, CLIPPY_INDEX, "after", env)
+                ledger = Path(tempfile.mkdtemp(prefix="vl-ledger-"))
+                self.addCleanup(shutil.rmtree, ledger, True)
+                journal.finalize(ledger, 0)
+                (record,) = ledger_records(ledger)
+                step = record["steps"][CLIPPY_INDEX]
+                for edge in ("before", "after"):
+                    self.assertIs(step["sccache"][edge]["available"], False)
+                    self.assertTrue(step["sccache"][edge]["reason"])
+                    self.assertEqual(step["concurrency"][edge]["other_verify_runs"], 2)
+
+    def test_concurrency_counts_from_proc_scan(self):
+        boundary(self.journal, CLIPPY_INDEX, "before", self.env())
+        for pid in (302, 301, 300):
+            self.proc.remove(pid)
+        boundary(self.journal, CLIPPY_INDEX, "after", self.env())
+        step = self.finalized_step(CLIPPY_INDEX)
+        host = {"loadavg_1": 3.52, "psi_cpu_some_avg10": 12.34}
+        self.assertEqual(
+            step["concurrency"]["before"],
+            {
+                "other_verify_runs": 2,
+                "cargo_in_other_verifies": 2,
+                "cargo_outside_verifies": 1,
+                "rustc_total": 2,
+                "host": host,
+            },
+        )
+        self.assertEqual(
+            step["concurrency"]["after"],
+            {
+                "other_verify_runs": 1,
+                "cargo_in_other_verifies": 1,
+                "cargo_outside_verifies": 1,
+                "rustc_total": 2,
+                "host": host,
+            },
+        )
+
+    def test_host_fields_null_when_absent(self):
+        (self.proc.root / "pressure" / "cpu").unlink()
+        boundary(self.journal, CLIPPY_INDEX, "before", self.env())
+        step = self.finalized_step(CLIPPY_INDEX)
+        self.assertIsNone(step["concurrency"]["before"]["host"]["psi_cpu_some_avg10"])
+
+    def _nextest_step(self, junit_writer):
+        begin = time.time() - 50
+        self.journal.event(ev="step_begin", index=DEBUG_NEXTEST_INDEX, at=begin)
+        junit = Path(self.journal.dir) / "reify-confirm.xml"
+        junit_writer(junit, begin)
+        end = begin + 60
+        self.journal.event(ev="step_end", index=DEBUG_NEXTEST_INDEX, at=end, rc=0)
+        boundary(self.journal, DEBUG_NEXTEST_INDEX, "after", self.env(), junit=junit, at=end)
+        return begin, self.finalized_step(DEBUG_NEXTEST_INDEX)["nextest"]
+
+    def test_nextest_split_from_fresh_junit(self):
+        def write(path, begin):
+            exec_start = datetime.fromtimestamp(begin + 20, timezone(timedelta(hours=1)))
+            path.write_text(junit_xml(exec_start.isoformat(timespec="milliseconds"), "34.791"))
+
+        begin, nextest = self._nextest_step(write)
+        self.assertAlmostEqual(nextest["exec_started_at"], begin + 20, places=2)
+        self.assertAlmostEqual(nextest["exec_secs"], 34.791, places=3)
+        self.assertAlmostEqual(nextest["pre_exec_secs"], 20.0, places=2)
+        self.assertAlmostEqual(nextest["post_exec_secs"], 60 - 20 - 34.791, places=2)
+        self.assertEqual(nextest["tests"], 12)
+        self.assertEqual(nextest["failures"], 1)
+
+    def test_nextest_stale_junit(self):
+        def write(path, begin):
+            path.write_text(junit_xml("2020-01-01T00:00:00.000+00:00", "1.0"))
+            os.utime(path, (begin - 100, begin - 100))
+
+        _, nextest = self._nextest_step(write)
+        self.assertEqual(nextest, {"available": False, "reason": "stale-junit"})
+
+    def test_nextest_missing_junit(self):
+        _, nextest = self._nextest_step(lambda path, begin: None)
+        self.assertEqual(nextest, {"available": False, "reason": "no-junit"})
+
+
+def load_events(journal):
+    path = Path(journal.dir) / "journal.jsonl"
+    return [json.loads(line) for line in path.read_text().splitlines()]
 
 
 if __name__ == "__main__":
