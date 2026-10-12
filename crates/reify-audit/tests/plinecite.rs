@@ -11,10 +11,10 @@
 //!   pinned: the residual is debt meant to shrink, so a count is a time bomb
 //!   on every crate's comments.
 
-use reify_audit::plinecite_baseline::CiteRow;
+use reify_audit::plinecite_baseline::{BASELINE_HEADER, CiteRow, parse_baseline, render_baseline};
 use reify_audit::ratchet_ledger::Ledger;
 use reify_audit::{
-    AuditContext, EvidenceRef, Finding, MockGitOps, MockJCodemunchOps, Pattern, RealGitOps,
+    AuditContext, EvidenceRef, Finding, GitOps, MockGitOps, MockJCodemunchOps, Pattern, RealGitOps,
     Severity,
 };
 use rusqlite::Connection;
@@ -613,33 +613,85 @@ fn real_repo_plinecite_smoke() {
         "findings must be strictly ordered by (category, name, path): {keys:#?}"
     );
 
-    let known: BTreeSet<&str> = ["line-cite", "allow-missing-reason"].into();
     for f in &findings {
         assert_eq!(f.pattern, Pattern::PLineCite, "{f:#?}");
         assert_eq!(f.severity, Severity::Medium, "{f:#?}");
+        match category(f) {
+            "line-cite" | "allow-missing-reason" => assert_line_finding_well_formed(f),
+            "stale-baseline-entry" | "scope-empty" => assert_ledger_finding_well_formed(f),
+            other => panic!("unknown category {other:?}: {f:#?}"),
+        }
+    }
+}
+
+/// A finding about one citing line: its evidence is that in-scope line.
+fn assert_line_finding_well_formed(f: &Finding) {
+    let [EvidenceRef::FileLine { path, line, symbol }] = f.evidence.as_slice() else {
+        panic!("exactly one FileLine evidence expected: {f:#?}");
+    };
+    assert!(
+        reify_audit::plinecite::in_scope(path) && *line >= 1,
+        "evidence must be an in-scope line: {f:#?}"
+    );
+    assert_eq!(f.task_id, *path, "{f:#?}");
+    let handle = symbol.clone().unwrap_or_else(|| format!("{path}:{line}"));
+    assert_eq!(
+        name(f),
+        handle,
+        "the summary names the handle the evidence carries: {f:#?}"
+    );
+    assert_eq!(
+        symbol.is_some(),
+        category(f) == "line-cite",
+        "only a line cite names a cite: {f:#?}"
+    );
+}
+
+/// A finding about the ledger file as a whole: its evidence is the ledger.
+fn assert_ledger_finding_well_formed(f: &Finding) {
+    assert_eq!(f.task_id, LEDGER, "{f:#?}");
+    assert_eq!(
+        f.evidence,
+        vec![EvidenceRef::File {
+            path: LEDGER.to_string()
+        }],
+        "{f:#?}"
+    );
+}
+
+/// The committed ledger is tracked (an untracked one is inert), carries the
+/// generated preamble, is in the exact form the generator renders, and lists
+/// only in-scope paths with a cite each — properties of the committed file
+/// alone. Whether its rows still match live cites is NOT pinned: that reads
+/// every crate's comments, so it would red this crate's tests on any
+/// de-numbering elsewhere (the time-bomb rule `baseline_report_freshness.rs`
+/// records).
+#[test]
+fn committed_ledger_is_tracked_and_in_generated_form() {
+    let root = repo_root();
+    assert!(
+        RealGitOps::new(root.clone())
+            .ls_files()
+            .iter()
+            .any(|path| path == LEDGER),
+        "{LEDGER} must be git-tracked — an untracked ledger is inert"
+    );
+    let content = std::fs::read_to_string(root.join(LEDGER))
+        .unwrap_or_else(|e| panic!("{LEDGER} must be readable: {e}"));
+    assert!(
+        content.starts_with(BASELINE_HEADER),
+        "{LEDGER} must start with BASELINE_HEADER; regenerate it rather than hand-editing"
+    );
+    let rows = parse_baseline(&content);
+    assert_eq!(
+        render_baseline(&rows),
+        content,
+        "{LEDGER} must be in generated form (sorted, one row per line)"
+    );
+    for row in &rows {
         assert!(
-            known.contains(category(f)),
-            "unknown category (a scope-empty here means the real tree's \
-             in-scope corpus was not read): {f:#?}"
-        );
-        let [EvidenceRef::FileLine { path, line, symbol }] = f.evidence.as_slice() else {
-            panic!("exactly one FileLine evidence expected: {f:#?}");
-        };
-        assert!(
-            reify_audit::plinecite::in_scope(path) && *line >= 1,
-            "evidence must be an in-scope line: {f:#?}"
-        );
-        assert_eq!(f.task_id, *path, "{f:#?}");
-        let handle = symbol.clone().unwrap_or_else(|| format!("{path}:{line}"));
-        assert_eq!(
-            name(f),
-            handle,
-            "the summary names the handle the evidence carries: {f:#?}"
-        );
-        assert_eq!(
-            symbol.is_some(),
-            category(f) == "line-cite",
-            "only a line cite names a cite: {f:#?}"
+            reify_audit::plinecite::in_scope(&row.path) && !row.cite.is_empty(),
+            "every row is an in-scope path and a cite: {row:?}"
         );
     }
 }
