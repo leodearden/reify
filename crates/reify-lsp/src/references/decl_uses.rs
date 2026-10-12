@@ -73,7 +73,7 @@ pub(super) fn collect_decl_name_spans(source: &str, parsed: &ParsedModule, name:
 /// Both reference collectors share it: the home document walks every
 /// declaration, and an importing document walks the same set once its import
 /// exposes `name` under that same local name
-/// ([`collect_importer_decl_name_references`]). Sharing one fan-out is what
+/// (`cross_file::collect_importer_decl_name_references`). Sharing one fan-out is what
 /// keeps the two from disagreeing about what a use site is.
 pub(super) fn collect_decl_name_uses_in_decl(
     decl: &Declaration,
@@ -488,7 +488,7 @@ fn collect_type_name_uses_in_expr(
 /// POSITION within `ty`, recursing through the whole type expression.
 ///
 /// WHY THIS LIVES IN THE DECLARATION-NAME TRAVERSAL AND NOT IN
-/// `collect_uses`/`collect_idents_in_expr`. [`collect_references_at`] is a
+/// `collect_uses`/`collect_idents_in_expr`. `local::collect_references_at` is a
 /// VALUE-BINDING machine: it collects param/let/sub/port BINDINGS, collects
 /// uses, then keeps only the uses whose `resolve_use(...)` is the selected
 /// binding. A top-level declaration name is not a binding, so a type-position
@@ -504,7 +504,7 @@ fn collect_type_name_uses_in_expr(
 /// — the same forcing-function design as `analysis::decl_name_and_span`.
 ///
 /// SPAN PRECISION is the rename-safety property, because
-/// [`compute_rename_cross_file`] uses the reference set as its exact edit set.
+/// `cross_file::compute_rename_cross_file` uses the reference set as its exact edit set.
 /// A `Named` type's span is the NAME TOKEN exactly when it is a bare identifier
 /// (`lower_type_expr_node`'s bare-identifier arm spans just that node), but
 /// covers the whole `Box<T>` construct for the parameterized form

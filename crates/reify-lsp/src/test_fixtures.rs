@@ -27,7 +27,7 @@ use reify_core::{ModulePath, SourceSpan};
 ///   rows up BY NAME via `named_decl_snippet`, so renaming a row's declared name
 ///   panics there rather than silently shrinking its loop
 /// - `goto_def::tests::goto_def_cursor_on_declaration_name_resolves_for_every_kind`
-/// - `references::tests::cross_file_declaration_kind_admission_tracks_use_site_coverage`
+/// - `references::cross_file::tests::cross_file_declaration_kind_admission_tracks_use_site_coverage`
 ///
 /// ADDING A ROW is what a newly-named `Declaration` variant needs after its
 /// `decl_name_and_span` and `kind_index` arms: the loop consumers then cover it

@@ -104,7 +104,7 @@ pub fn collect_references(
 /// The thin LSP-facing wrapper over [`collect_references`] (task β, 4202). It
 /// takes an **already-resolved** [`ParsedModule`] — fed by the handler from the
 /// per-document parse cache (`DocumentState::parsed_module`, one parse per edit),
-/// mirroring [`compute_document_highlights`] — runs the scope-aware collection,
+/// mirroring `rename::compute_document_highlights` — runs the scope-aware collection,
 /// then maps each name-token [`SourceSpan`] to a [`Location`] via
 /// [`span_to_range`], paired with the document `uri`. Returns `None` when the
 /// cursor is not on an identifier that resolves to a local value-member binding
@@ -134,7 +134,7 @@ pub fn compute_references(
 /// Reference collection from an **already-resolved** cursor (`offset` + the
 /// identifier `word` under it).
 ///
-/// Factored out of [`collect_references`] so [`prepare_rename`] can reuse the
+/// Factored out of [`collect_references`] so `rename::prepare_rename` can reuse the
 /// `position_to_offset` + `find_word_at_offset` lookup it has already performed,
 /// instead of recomputing the cursor word a second time per request.
 pub(super) fn collect_references_at(

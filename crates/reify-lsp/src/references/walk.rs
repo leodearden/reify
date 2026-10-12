@@ -120,19 +120,19 @@ pub(super) fn keyed_entry_param_override_exprs(entry: &KeyedSubMemberEntry) -> i
 }
 
 /// Invoke `visit` once for each nested member-list scope that lives directly
-/// inside `member` — EXACTLY the member lists [`collect_uses`] descends into: a
+/// inside `member` — EXACTLY the member lists `local::collect_uses` descends into: a
 /// `GuardedGroup`'s `where` and `else` branches, a `Port` body, a `Sub`'s
 /// specialization body and each keyed block's overrides, a
 /// `MatchArmDeclGroup`'s per-arm member clusters, and a `Sketch` body.
 ///
-/// [`collect_bindings_in_scope`] uses this to recurse into nested bindings, while
+/// `local::collect_bindings_in_scope` uses this to recurse into nested bindings, while
 /// `collect_uses` recurses into the same lists (plus their member-level
 /// expressions) to collect uses. Keeping the two traversals reading off the same
 /// child-scope set is what stops a nested redeclaration from being invisible to
 /// binding resolution (the regression pinned by
 /// `collect_references_port_body_redeclaration_owns_its_scope`). The callback form
 /// avoids allocating a `Vec` of child slices per member; each visited slice is
-/// bounded by its own [`members_region`] when recursed.
+/// bounded by its own `local::members_region` when recursed.
 pub(super) fn for_each_child_scope(member: &MemberDecl, mut visit: impl FnMut(&[MemberDecl])) {
     match member {
         MemberDecl::GuardedGroup(g) => {
@@ -188,7 +188,7 @@ pub(super) fn for_each_child_scope(member: &MemberDecl, mut visit: impl FnMut(&[
 /// single-file value-reference foundation does not model, so collecting value
 /// uses there could produce false positives (Invariant 1). The TYPE-position
 /// walk does not inherit that restriction — a signature's types are not scoped
-/// by the function's params — so [`collect_decl_name_uses_in_members`] reaches a
+/// by the function's params — so `decl_uses::collect_decl_name_uses_in_members` reaches a
 /// `Fn` through its own arm instead of through this enumeration.
 ///
 /// The visitor is `&mut dyn FnMut` rather than a generic parameter because its
@@ -318,8 +318,8 @@ fn visit_connect_exprs(c: &ConnectDecl, visit: &mut dyn FnMut(&Expr)) {
 /// Enumerate every DIRECT sub-expression of `expr`, in source order.
 ///
 /// The crate's single exhaustive `ExprKind` child enumeration, shared by the two
-/// expression walkers that need it: [`collect_idents_in_expr`] (value uses) and
-/// [`collect_type_name_uses_in_expr`] (type positions on lambda params). The
+/// expression walkers that need it: `local::collect_idents_in_expr` (value uses) and
+/// `decl_uses::collect_type_name_uses_in_expr` (type positions on lambda params). The
 /// match is WILDCARD-FREE, so a new `ExprKind` variant is a compile error here
 /// rather than a silently-dropped subtree in both walkers at once.
 ///
@@ -327,7 +327,7 @@ fn visit_connect_exprs(c: &ConnectDecl, visit: &mut dyn FnMut(&Expr)) {
 /// expression carries — a member-access `.segment`, a qualified access's member,
 /// a match arm's patterns, a lambda's parameter list, a quantifier's binder —
 /// are not sub-expressions and are the visiting walker's own business (the
-/// lambda parameter list is exactly why [`collect_type_name_uses_in_expr`]
+/// lambda parameter list is exactly why `decl_uses::collect_type_name_uses_in_expr`
 /// inspects `expr` itself before delegating here).
 ///
 /// The visitor is `&mut dyn FnMut` rather than a generic parameter because both
