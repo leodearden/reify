@@ -5,20 +5,186 @@
 //! and the count must equal the row's committed baseline: above it is a re-added
 //! copy, below it means the migrating leaf has to lower the baseline.
 
+fn is_ident_char(c: char) -> bool {
+    c.is_alphanumeric() || c == '_'
+}
+
+/// One source line in two views: `code` has comments removed and string and
+/// char literal contents blanked; `doc` is the text of a `///` or `//!` line.
 struct Line {
     raw: String,
     code: String,
     doc: Option<String>,
 }
 
+/// What an unfinished construct at the end of a line carries into the next.
+#[derive(Clone, Copy)]
+enum Carry {
+    Code,
+    Str,
+    RawStr { hashes: usize },
+    Block { depth: usize },
+}
+
+enum Scan {
+    Advance(usize),
+    LineComment { doc: Option<String> },
+}
+
 fn lex(text: &str) -> Vec<Line> {
+    let mut carry = Carry::Code;
     text.lines()
-        .map(|raw| Line {
-            raw: raw.to_string(),
-            code: raw.to_string(),
-            doc: None,
-        })
+        .map(|raw| lex_line(&mut carry, raw))
         .collect()
+}
+
+fn lex_line(carry: &mut Carry, raw: &str) -> Line {
+    let chars: Vec<char> = raw.chars().collect();
+    let mut code = String::new();
+    let mut doc = None;
+    let mut at = 0;
+    while at < chars.len() {
+        let scan = match *carry {
+            Carry::Code => scan_code(carry, &chars, at, &mut code),
+            Carry::Str => scan_str(carry, &chars, at, &mut code),
+            Carry::RawStr { hashes } => scan_raw_str(carry, hashes, &chars, at, &mut code),
+            Carry::Block { depth } => scan_block(carry, depth, &chars, at),
+        };
+        match scan {
+            Scan::Advance(width) => at += width,
+            Scan::LineComment { doc: text } => {
+                doc = text;
+                break;
+            }
+        }
+    }
+    Line {
+        raw: raw.to_string(),
+        code,
+        doc,
+    }
+}
+
+fn starts_at(chars: &[char], at: usize, pattern: &str) -> bool {
+    pattern
+        .chars()
+        .enumerate()
+        .all(|(offset, c)| chars.get(at + offset) == Some(&c))
+}
+
+fn scan_code(carry: &mut Carry, chars: &[char], at: usize, code: &mut String) -> Scan {
+    if starts_at(chars, at, "//") {
+        return Scan::LineComment {
+            doc: doc_text(&chars[at + 2..]),
+        };
+    }
+    if starts_at(chars, at, "/*") {
+        *carry = Carry::Block { depth: 1 };
+        return Scan::Advance(2);
+    }
+    match chars[at] {
+        '"' => {
+            code.push('"');
+            *carry = Carry::Str;
+            Scan::Advance(1)
+        }
+        'r' => match raw_string_hashes(chars, at) {
+            Some(hashes) => {
+                code.push('"');
+                *carry = Carry::RawStr { hashes };
+                Scan::Advance(2 + hashes)
+            }
+            None => push_plain(code, 'r'),
+        },
+        '\'' => match char_literal_width(chars, at) {
+            Some(width) => {
+                code.push_str("' '");
+                Scan::Advance(width)
+            }
+            None => push_plain(code, '\''),
+        },
+        c => push_plain(code, c),
+    }
+}
+
+fn push_plain(code: &mut String, c: char) -> Scan {
+    code.push(c);
+    Scan::Advance(1)
+}
+
+/// The text after a `//` when it opens an outer (`///`) or inner (`//!`) doc comment.
+fn doc_text(after_slashes: &[char]) -> Option<String> {
+    let is_outer = after_slashes.first() == Some(&'/') && after_slashes.get(1) != Some(&'/');
+    let is_inner = after_slashes.first() == Some(&'!');
+    (is_outer || is_inner).then(|| after_slashes[1..].iter().collect())
+}
+
+/// The `#` count of a raw string opening (`r"`, `r#"`, `br"`) whose `r` sits at `at`.
+/// A raw identifier such as `r#type` is not an opening.
+fn raw_string_hashes(chars: &[char], at: usize) -> Option<usize> {
+    let before = |back: usize| at.checked_sub(back).map(|index| chars[index]);
+    let starts_a_token = match before(1) {
+        None => true,
+        Some(c) if !is_ident_char(c) => true,
+        Some('b' | 'c') => !before(2).is_some_and(is_ident_char),
+        Some(_) => false,
+    };
+    let hashes = chars[at + 1..].iter().take_while(|&&c| c == '#').count();
+    (starts_a_token && chars.get(at + 1 + hashes) == Some(&'"')).then_some(hashes)
+}
+
+/// The width of a char literal whose opening quote sits at `at`; `None` for a lifetime or label.
+fn char_literal_width(chars: &[char], at: usize) -> Option<usize> {
+    match chars.get(at + 1) {
+        Some('\\') => (at + 3..chars.len())
+            .find(|&index| chars[index] == '\'')
+            .map(|closing| closing + 1 - at),
+        Some(_) if chars.get(at + 2) == Some(&'\'') => Some(3),
+        _ => None,
+    }
+}
+
+fn scan_str(carry: &mut Carry, chars: &[char], at: usize, code: &mut String) -> Scan {
+    match chars[at] {
+        '\\' => Scan::Advance(2),
+        '"' => {
+            code.push('"');
+            *carry = Carry::Code;
+            Scan::Advance(1)
+        }
+        _ => Scan::Advance(1),
+    }
+}
+
+fn scan_raw_str(
+    carry: &mut Carry,
+    hashes: usize,
+    chars: &[char],
+    at: usize,
+    code: &mut String,
+) -> Scan {
+    let closes = chars[at] == '"' && (1..=hashes).all(|k| chars.get(at + k) == Some(&'#'));
+    if !closes {
+        return Scan::Advance(1);
+    }
+    code.push('"');
+    *carry = Carry::Code;
+    Scan::Advance(1 + hashes)
+}
+
+fn scan_block(carry: &mut Carry, depth: usize, chars: &[char], at: usize) -> Scan {
+    if starts_at(chars, at, "/*") {
+        *carry = Carry::Block { depth: depth + 1 };
+        return Scan::Advance(2);
+    }
+    if starts_at(chars, at, "*/") {
+        *carry = match depth {
+            1 => Carry::Code,
+            _ => Carry::Block { depth: depth - 1 },
+        };
+        return Scan::Advance(2);
+    }
+    Scan::Advance(1)
 }
 
 fn lexed_code(source_lines: &[&str]) -> Vec<String> {
