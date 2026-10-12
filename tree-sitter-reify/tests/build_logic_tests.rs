@@ -362,34 +362,52 @@ fn test_subprocess_timeout_kills_hung_process() {
 }
 
 #[test]
+#[cfg(target_os = "linux")]
 fn test_run_with_timeout_discards_child_stdout() {
-    let result = run_with_timeout("sh", &["-c", "[ /dev/fd/1 -ef /dev/null ]"], 10);
+    let result = run_with_timeout(
+        "sh",
+        &[
+            "-c",
+            r#"[ /dev/fd/1 -ef /dev/null ] && ! [ /dev/fd/1 -ef "/proc/$PPID/fd/1" ]"#,
+        ],
+        10,
+    );
     assert_eq!(
         result,
         Ok(()),
-        "child stdout must be discarded (/dev/null): cargo parses build-script \
-         stdout for `cargo:` directives, and a pipe nobody drains can deadlock"
+        "child stdout must be discarded (/dev/null, not the build script's own \
+         stdout): cargo parses build-script stdout for `cargo:` directives, and a \
+         pipe nobody drains can deadlock. Fails closed when this test binary's own \
+         stdout is /dev/null, where discarded and inherited are indistinguishable"
     );
 }
 
 #[test]
 #[cfg(target_os = "linux")]
 fn test_run_with_timeout_inherits_child_stderr() {
-    let result = run_with_timeout("sh", &["-c", r#"[ /dev/fd/2 -ef "/proc/$PPID/fd/2" ]"#], 10);
+    let result = run_with_timeout(
+        "sh",
+        &[
+            "-c",
+            r#"[ /dev/fd/2 -ef "/proc/$PPID/fd/2" ] && ! [ /dev/fd/2 -ef /dev/null ]"#,
+        ],
+        10,
+    );
     assert_eq!(
         result,
         Ok(()),
         "child stderr must be the build script's own stderr, so `tree-sitter \
-         generate` diagnostics stay visible"
+         generate` diagnostics stay visible. Fails closed when this test binary's \
+         own stderr is /dev/null, where inherited and discarded are indistinguishable"
     );
 }
 
 #[test]
 fn test_run_with_timeout_reports_nonzero_exit_code() {
-    let err = run_with_timeout("sh", &["-c", "exit 3"], 10).unwrap_err();
+    let err = run_with_timeout("sh", &["-c", "exit 97"], 10).unwrap_err();
     assert!(
-        err.contains('3'),
-        "a failing child's error should carry its exit code 3, got: {}",
+        err.contains("exit code 97"),
+        "a failing child's error should carry its exit code 97, got: {}",
         err
     );
 }

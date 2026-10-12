@@ -55,16 +55,8 @@ fn verify_outputs(src_dir: &std::path::Path) -> Result<(), String> {
 
 /// Run a command with a timeout. Returns Ok(()) on success, Err on failure/timeout.
 ///
-/// IMPORTANT: Child stdout is discarded (Stdio::null) for two reasons:
-///   1. Cargo parses build-script stdout line-by-line for "cargo:" directives.
-///      If the child emits anything to stdout, Cargo would misinterpret it.
-///   2. Using Stdio::piped() creates a deadlock risk: the parent only drains
-///      the pipe after try_wait() returns Some(status), but if the child writes
-///      \>64KB to stdout, the pipe buffer fills, the child blocks, and try_wait()
-///      returns Ok(None) indefinitely — a hard deadlock until the timeout fires.
-///
-/// tree-sitter generate writes its useful diagnostics to stderr, which is
-/// inherited directly (Stdio::inherit) and displayed by Cargo as-is.
+/// Stdio disposition rationale: see test_run_with_timeout_discards_child_stdout
+/// and test_run_with_timeout_inherits_child_stderr in tests/build_logic_tests.rs.
 #[allow(dead_code)]
 fn run_with_timeout(cmd: &str, args: &[&str], timeout_secs: u64) -> Result<(), String> {
     let mut child = std::process::Command::new(cmd)
