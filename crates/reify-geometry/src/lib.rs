@@ -1,4 +1,5 @@
-use reify_ir::{AttributeHistory, ExportError, ExportFormat, ExportOptions, ExportWarning, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, KernelAttributeHook, Mesh, QueryError, SampledField, TessError, Value, VoxelResolution};
+use reify_core::hash::ContentHash;
+use reify_ir::{AttributeHistory, ElementOrderTag, ExportError, ExportFormat, ExportOptions, ExportWarning, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, KernelAttributeHook, Mesh, QueryError, SampledField, TessError, Value, VolumeMesh, VoxelResolution};
 
 /// A single-kernel holder that wraps an optional geometry kernel.
 ///
@@ -51,10 +52,13 @@ impl SingleKernelHolder {
     /// that they agree. `type_name::<Self>()` resolves to `SingleKernelHolder`
     /// here exactly as it does in the trait default.
     fn no_mesh_kernel_error() -> GeometryError {
-        GeometryError::OperationFailed(format!(
-            "{} does not accept Mesh inputs",
-            std::any::type_name::<Self>()
-        ))
+        GeometryError::OperationFailed(Self::type_named_message("does not accept Mesh inputs"))
+    }
+
+    /// A no-kernel message prefixed with `type_name::<Self>()`, as the trait
+    /// defaults that name their kernel produce it.
+    fn type_named_message(tail: &str) -> String {
+        format!("{} {tail}", std::any::type_name::<Self>())
     }
 }
 
@@ -132,7 +136,7 @@ impl GeometryKernel for SingleKernelHolder {
         match self.kernel.as_mut() {
             Some(k) => k.make_compound(handles),
             None => Err(GeometryError::OperationFailed(
-                "no geometry kernel registered".to_string(),
+                "make_compound not supported by this kernel".into(),
             )),
         }
     }
@@ -277,10 +281,111 @@ impl GeometryKernel for SingleKernelHolder {
         }
     }
 
+    fn register_mesh_handle(&mut self, mesh: &Mesh) -> Result<GeometryHandle, GeometryError> {
+        match self.kernel.as_mut() {
+            Some(k) => k.register_mesh_handle(mesh),
+            None => Err(Self::no_mesh_kernel_error()),
+        }
+    }
+
     fn attribute_hook(&self) -> Option<&dyn KernelAttributeHook> {
         match self.kernel.as_ref() {
             Some(k) => k.attribute_hook(),
             None => None,
+        }
+    }
+
+    fn volume_mesh(&self, handle: GeometryHandleId) -> Result<VolumeMesh, QueryError> {
+        match self.kernel.as_ref() {
+            Some(k) => k.volume_mesh(handle),
+            None => Err(QueryError::QueryFailed(
+                "volume_mesh projection not supported by this kernel".into(),
+            )),
+        }
+    }
+
+    fn mesh_surface_to_volume(
+        &self,
+        surface: &Mesh,
+        element_order: ElementOrderTag,
+    ) -> Result<VolumeMesh, GeometryError> {
+        match self.kernel.as_ref() {
+            Some(k) => k.mesh_surface_to_volume(surface, element_order),
+            None => Err(GeometryError::OperationFailed(Self::type_named_message(
+                "does not produce volume meshes",
+            ))),
+        }
+    }
+
+    fn mesh_surface_to_volume_attributed(
+        &self,
+        surface: &Mesh,
+        element_order: ElementOrderTag,
+        face_anchors: &[(GeometryHandleId, [f64; 3])],
+        match_tolerance: f64,
+    ) -> Result<VolumeMesh, GeometryError> {
+        match self.kernel.as_ref() {
+            Some(k) => k.mesh_surface_to_volume_attributed(
+                surface,
+                element_order,
+                face_anchors,
+                match_tolerance,
+            ),
+            None => Err(GeometryError::OperationFailed(Self::type_named_message(
+                "does not produce attributed volume meshes",
+            ))),
+        }
+    }
+
+    fn store_volume_mesh(&self, vm: VolumeMesh) -> Result<GeometryHandleId, GeometryError> {
+        match self.kernel.as_ref() {
+            Some(k) => k.store_volume_mesh(vm),
+            None => Err(GeometryError::OperationFailed(Self::type_named_message(
+                "does not store volume meshes",
+            ))),
+        }
+    }
+
+    fn closest_point_on_shape(
+        &self,
+        handle: GeometryHandleId,
+        point: [f64; 3],
+    ) -> Result<[f64; 3], QueryError> {
+        match self.kernel.as_ref() {
+            Some(k) => k.closest_point_on_shape(handle, point),
+            None => Err(QueryError::QueryFailed(Self::type_named_message(
+                "does not support closest-point projection",
+            ))),
+        }
+    }
+
+    fn vertex_point(&self, handle: GeometryHandleId) -> Result<[f64; 3], QueryError> {
+        match self.kernel.as_ref() {
+            Some(k) => k.vertex_point(handle),
+            None => Err(QueryError::QueryFailed(Self::type_named_message(
+                "does not support vertex-position queries",
+            ))),
+        }
+    }
+
+    fn realize_mesh_from_voxel(
+        &self,
+        handle: GeometryHandleId,
+        iso_level: f64,
+        adaptive: bool,
+    ) -> Result<Mesh, GeometryError> {
+        match self.kernel.as_ref() {
+            Some(k) => k.realize_mesh_from_voxel(handle, iso_level, adaptive),
+            None => Err(GeometryError::OperationFailed(Self::type_named_message(
+                "does not support voxel surfacing (marching cubes)",
+            ))),
+        }
+    }
+
+    fn surface_options_content_hash(&self, iso_level: f64, adaptive: bool) -> ContentHash {
+        match self.kernel.as_ref() {
+            Some(k) => k.surface_options_content_hash(iso_level, adaptive),
+            None => ContentHash(0),
         }
     }
 }
