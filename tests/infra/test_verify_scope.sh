@@ -27,7 +27,8 @@
 #
 # SOURCE MODE: `source`-ing this file turns on set -euo pipefail, defines every
 # helper and returns before the first scenario. No fixture is built and no EXIT
-# trap is installed, so the caller owns cleanup (call `cleanup`). Pinned by
+# trap is installed, so the caller owns cleanup (call `cleanup`). Helpers act
+# only on fixtures their constructors built in this shell. Pinned by
 # tests/infra/test_verify_scope_source_mode.py.
 
 set -euo pipefail
@@ -69,11 +70,26 @@ export REIFY_RELEASE_DELTA_SKIP=0
 # scenario body, not here.
 # ===========================================================================
 
+# _require_fixture <var> <constructor-command> — succeed only if $<var> names a
+# directory a constructor of THIS shell registered in _TMPDIRS. Otherwise name
+# the calling helper, the variable, its value and the remedy, and return 1.
+_require_fixture() {
+    local _value="${!1:-}" _d
+    if [ -n "$_value" ]; then
+        for _d in "${_TMPDIRS[@]+"${_TMPDIRS[@]}"}"; do
+            if [ "$_d" = "$_value" ]; then return 0; fi
+        done
+    fi
+    printf "%s: \$%s is not a fixture this shell built (value: '%s'); run '%s' first\n" \
+        "${FUNCNAME[1]:-_require_fixture}" "$1" "$_value" "$2" >&2
+    return 1
+}
+
 # make_fixture VARNAME — create an isolated git repo with the three scripts
 # verify.sh needs, writing its path to the named variable.
 make_fixture() {
     local _var="$1" dir
-    dir="$(mktemp -d)"
+    dir="$(mktemp -d)" || return 1
     _TMPDIRS+=("$dir")
     mkdir -p "$dir/scripts"
     cp "$REPO_ROOT/scripts/verify.sh" "$dir/scripts/verify.sh"
@@ -103,7 +119,7 @@ make_fixture() {
     # (task #5154) — see tests/infra/copy_list_preflight_lib.sh for the parser
     # grammar and the transitive-closure rationale (generalizes the direct-only
     # grep this block used to run inline).
-    assert_source_closure_copied "$REPO_ROOT/scripts" "$dir/scripts" verify.sh || exit 1
+    assert_source_closure_copied "$REPO_ROOT/scripts" "$dir/scripts" verify.sh || return 1
     git -C "$dir" init -q
     git -C "$dir" config user.email "test@test.com"
     git -C "$dir" config user.name "Test"
@@ -121,6 +137,7 @@ make_fixture() {
 # than aborting the suite via set -euo pipefail.
 PLAN_OUT=""
 plan_for() {
+    _require_fixture FIX 'make_fixture FIX' || return 1
     local scope="$1"; shift
     local f
     for f in "$@"; do
@@ -152,6 +169,7 @@ refute() { ! "$@"; }
 # plan_for_staged_rename <src> <dst> — stage a rename in FIX_PGR, capture the
 # plan for --scope staged, then restore the index and worktree.
 plan_for_staged_rename() {
+    _require_fixture FIX_PGR 'make_fixture FIX_PGR' || return 1
     git -C "$FIX_PGR" mv "$1" "$2"
     capture_print_plan PLAN_OUT "${REIFY_PLAN_CAPTURE_RETRIES:-3}" \
         bash -c 'cd "$1" && exec bash scripts/verify.sh all --profile debug --scope staged --include-infra --print-plan' \
@@ -180,7 +198,7 @@ _pg_derive() { grep -v 'pg-drift:allow' | grep -o -E "$_PG_FIX_PAT" | sort -u; }
 # can resolve inside the fixture.
 make_branch_fixture() {
     local _var="$1" dir
-    dir="$(mktemp -d)"
+    dir="$(mktemp -d)" || return 1
     _TMPDIRS+=("$dir")
     mkdir -p "$dir/scripts"
     cp "$REPO_ROOT/scripts/verify.sh" "$dir/scripts/verify.sh"
@@ -210,7 +228,7 @@ make_branch_fixture() {
     # (task #5154) — see tests/infra/copy_list_preflight_lib.sh for the parser
     # grammar and the transitive-closure rationale (generalizes the direct-only
     # grep this block used to run inline).
-    assert_source_closure_copied "$REPO_ROOT/scripts" "$dir/scripts" verify.sh || exit 1
+    assert_source_closure_copied "$REPO_ROOT/scripts" "$dir/scripts" verify.sh || return 1
     git -C "$dir" init -q
     git -C "$dir" config user.email "test@test.com"
     git -C "$dir" config user.name "Test"
@@ -224,6 +242,7 @@ make_branch_fixture() {
 # given (new) files, capture verify.sh --scope branch --print-plan output
 # into PLAN_OUT, then restore main and delete the branch.
 plan_for_branch() {
+    _require_fixture FIX_B 'make_branch_fixture FIX_B' || return 1
     local f
     git -C "$FIX_B" checkout -q -b task-branch
     for f in "$@"; do
@@ -259,6 +278,7 @@ plan_for_branch() {
 # picking up the retry-on-incomplete-capture defense (task #4708) that the
 # cited B4P2 idiom already uses.
 plan_for_branch_env() {
+    _require_fixture FIX_B 'make_branch_fixture FIX_B' || return 1
     local env_assignment="$1"; shift
     local f
     git -C "$FIX_B" checkout -q -b task-branch
@@ -282,6 +302,7 @@ plan_for_branch_env() {
 # verify.sh --print-plan output into PLAN_OUT, then restore main and delete
 # the branch (mirrors plan_for_branch's own teardown, above).
 plan_for_branch_modify() {
+    _require_fixture FIX_MOD 'make_branch_fixture FIX_MOD' || return 1
     local f
     git -C "$FIX_MOD" checkout -q -b task-branch
     for f in "$@"; do printf 'grown\n' >> "$FIX_MOD/$f"; done
@@ -293,6 +314,7 @@ plan_for_branch_modify() {
 
 # plan_for_branch_delete <file...> — like plan_for_branch_modify, but each already-seeded file shows up as a D.
 plan_for_branch_delete() {
+    _require_fixture FIX_MOD 'make_branch_fixture FIX_MOD' || return 1
     local f
     git -C "$FIX_MOD" checkout -q -b task-branch
     for f in "$@"; do git -C "$FIX_MOD" rm -q "$f"; done
@@ -310,6 +332,7 @@ plan_for_branch_delete() {
 # append <mod-line> to <root> (the C1-required `#[path] mod` declaration) so
 # the root shows up as an `M`. Capture PLAN_OUT, restore main, delete branch.
 plan_for_branch_rename() {
+    _require_fixture FIX_MOD 'make_branch_fixture FIX_MOD' || return 1
     local src="$1" dst="$2" root="$3" mod_line="$4"
     git -C "$FIX_MOD" checkout -q -b task-branch
     mkdir -p "$FIX_MOD/$(dirname "$dst")"
@@ -326,6 +349,7 @@ plan_for_branch_rename() {
 # captures the typecheck-action plan into PLAN_OUT_NARROW_TC.
 PLAN_OUT_NARROW_TC=""
 plan_for_branch_narrowed() {
+    _require_fixture FIX_B 'make_branch_fixture FIX_B' || return 1
     local _override="$1"; shift
     local f
     git -C "$FIX_B" checkout -q -b task-branch
@@ -346,6 +370,7 @@ plan_for_branch_narrowed() {
 # Like plan_for but exports REIFY_AFFECTED_CRATES_OVERRIDE and passes --narrow.
 # Captures PLAN_OUT (all action) and PLAN_OUT_NARROW_TC (typecheck action).
 plan_for_staged_narrowed() {
+    _require_fixture FIX 'make_fixture FIX' || return 1
     local _override="$1"; shift
     local f
     for f in "$@"; do
@@ -364,6 +389,7 @@ plan_for_staged_narrowed() {
 # then capture the plan WITHOUT --include-infra (the real task-verify path).
 # Restores main and deletes the branch when done.
 plan_for_vs_change() {
+    _require_fixture FIX_VS 'make_branch_fixture FIX_VS' || return 1
     git -C "$FIX_VS" checkout -q -b task-branch
     echo "# task-4523 verify.sh-change simulation sentinel" >> "$FIX_VS/scripts/verify.sh"
     git -C "$FIX_VS" add scripts/verify.sh
@@ -376,6 +402,7 @@ plan_for_vs_change() {
 # plan_for_vs_change_incl — like plan_for_vs_change but passes --include-infra.
 # Reuses FIX_VS (restored to main by plan_for_vs_change above).
 plan_for_vs_change_incl() {
+    _require_fixture FIX_VS 'make_branch_fixture FIX_VS' || return 1
     git -C "$FIX_VS" checkout -q -b task-branch
     echo "# task-4523 verify.sh-change simulation sentinel (incl)" >> "$FIX_VS/scripts/verify.sh"
     git -C "$FIX_VS" add scripts/verify.sh
@@ -390,6 +417,7 @@ plan_for_vs_change_incl() {
 # copied in by make_branch_fixture), commit, and capture the selective
 # (no --include-infra) plan into PLAN_OUT. Mirrors plan_for_vs_change.
 plan_for_vs_map_append() {
+    _require_fixture FIX_VS 'make_branch_fixture FIX_VS' || return 1
     local _f="$1"
     git -C "$FIX_VS" checkout -q -b task-branch
     echo "# task-5125 map-coverage sentinel" >> "$FIX_VS/$_f"
@@ -404,6 +432,7 @@ plan_for_vs_map_append() {
 # CREATE a new file at a mapped path (not present in the fixture), commit,
 # and capture the selective (no --include-infra) plan into PLAN_OUT.
 plan_for_vs_map_new() {
+    _require_fixture FIX_VS 'make_branch_fixture FIX_VS' || return 1
     local _f="$1"
     git -C "$FIX_VS" checkout -q -b task-branch
     mkdir -p "$FIX_VS/$(dirname "$_f")"
@@ -445,6 +474,7 @@ verify_pipeline_map_globs_resolve() {
 # verify.sh:1272 (gated on DO_TEST=1 && SELECTED_INFRA_GLOBS!="" &&
 # INCLUDE_INFRA=0) is NOT suppressed by the wholesale --include-infra path.
 plan_for_noinfra() {
+    _require_fixture FIX 'make_fixture FIX' || return 1
     local scope="$1"; shift
     local f
     for f in "$@"; do
@@ -463,6 +493,7 @@ plan_for_noinfra() {
 # plan for --scope staged, then restore the index and worktree. Mirrors
 # plan_for_staged_rename above.
 plan_for_gec_rename() {
+    _require_fixture FIX_GECR 'make_fixture FIX_GECR' || return 1
     git -C "$FIX_GECR" mv "$1" "$2"
     capture_print_plan PLAN_OUT "${REIFY_PLAN_CAPTURE_RETRIES:-3}" \
         bash -c 'cd "$1" && exec bash scripts/verify.sh all --profile debug --scope staged --include-infra --print-plan' \
@@ -483,7 +514,7 @@ _check_scope_header() {
 # $_FW_FIRED) and execs the real git otherwise. Sets _FW_SHIM_DIR, _FW_FIRED
 # and _FW_ERR.
 make_rename_diff_fail_shim() {
-    _FW_SHIM_DIR="$(mktemp -d)"
+    _FW_SHIM_DIR="$(mktemp -d)" || return 1
     _TMPDIRS+=("$_FW_SHIM_DIR")
     _FW_FIRED="$_FW_SHIM_DIR/fired"
     _FW_ERR="$_FW_SHIM_DIR/stderr.log"
@@ -507,6 +538,8 @@ STUB_EOF
 # plan_for leaves on the suite's own stderr. PATH is PREPENDED, never
 # replaced, so grep/cut/sort stay resolvable inside verify.sh.
 _plan_for_staged_shimmed() {
+    _require_fixture FIX 'make_fixture FIX' || return 1
+    _require_fixture _FW_SHIM_DIR make_rename_diff_fail_shim || return 1
     local f
     for f in "$@"; do
         mkdir -p "$FIX/$(dirname "$f")"
