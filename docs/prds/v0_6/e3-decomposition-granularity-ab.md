@@ -529,6 +529,28 @@ Endpoint impact: the rows were already in both constituents' text ("file a fix t
 write its ε-format baseline row"). The only new obligation is one marker line and where it
 goes. Annotate #6908 and #6909; do not censor them.
 
+**(f) Standard-arm gate leaves named (2026-10-12; Leo ruling on esc-8455-1).** (a)(ii)
+excludes "the integration-gate and PRD-close leaves" from the standard-arm count without
+naming them, and every candidate has `task_kind` `normal`, so the set has to be a protocol
+constant. It is ratified as #8455 pinned it, each gate read from the arm PRD's own text:
+- **solver-driver-parity:** gate leaves δ #6693 ("Phase 2 — the flip (integration gate)") and
+  φ #6700 ("Phase 5 — the differential harness (second integration gate)"); close leaf #6704.
+- **geometry-algebra-solver-unification:** gate leaf ι #6677 ("Integration gate."); close
+  leaf #6687.
+- **driver-contract-implementation:** gate leaf χ #6805 ("it is the integration gate for this
+  PRD"); close leaf #6808.
+
+One reading is ratified with the set: solver-driver-parity's Phase 2 heading also covers
+ε #6692, but only δ #6693 is the flip, so #6692 counts as an ordinary standard leaf.
+
+The constant is `gate_leaves` and `close_leaf` in `e3-granularity/analysis/e3_protocol.py`,
+landed by #8455. This entry changes no figure reported at 2026-10-10 (the standard arm still
+has 1 qualifying landing, #6801). It fixes which later landings count toward (a)(ii).
+
+Recorded, not ruled: the (b)4 sensitivity run, as the script implements it, drops every task
+that carries an amendment record. That is the (c) ledger's rows plus #6898 (A5-R) and
+#6908/#6909 ((e)). It is descriptive and does not enter the stop rule.
+
 ## 11. Abort / rollback procedure
 
 If E3 must be aborted before coarse landings: set the 16 coarse tasks (#6898–#6913) and, if
