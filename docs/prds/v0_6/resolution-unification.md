@@ -440,12 +440,26 @@ resolve #5387 relationship per its live status (§6 row 2).
 1. **`compile_entry_with_stdlib_cfg_checked` wrapper retirement.** Keep the deprecated
    wrapper through P1 or delete immediately and fix all in-tree callers in β?
    **Suggested:** delete in β if callers are few (they are: CLI + tests); decide in β.
+   *Resolved 2026-10-12 (β, task 5516):* **deleted in β.** Both
+   `compile_entry_with_stdlib_cfg` and `compile_entry_with_stdlib_cfg_checked` are
+   gone; their callers — the CLI's `reify check` path plus three test files — call
+   `program::compile_program` directly. No deprecated wrapper was kept.
 2. **`reify doc` on a multi-file project** — should it eventually emit per-module
    sections from `CompiledProgram.imports`? **Suggested:** follow-up task filed when a
    consumer asks; `declared()`-only for now (D-12). Decide post-P1.
 3. **`CompiledImportUnit.origin` for embedded-stdlib fallback resolutions** — `None` vs
    a synthetic `embedded:` path for diagnostics. **Suggested:** `None` + diagnostic
    text says "embedded stdlib". Decide in β.
+   *Resolved 2026-10-12 (β, task 5516):* **`None`.** A re-homed diagnostic from a
+   unit with no source reads `in imported module '<key>' (embedded stdlib): …`, via
+   `program.rs`'s re-homing helper; under I4 only `std.*` resolves embedded, so the
+   branch is pinned by an in-file unit test rather than through `compile_program`.
+   Two related β shape records: `CompiledProgram.sources` is
+   `Vec<module_dag::ModuleSource>` (a named `{ module_key, path, source }` struct,
+   also the DAG's own record) rather than the §3.1 `(String, PathBuf, String)`
+   tuple; and β's I2 aggregation already surfaces the import side's module-path
+   diagnostics (`W_MODULE_DECL_MISSING` / `E_MODULE_PATH_MISMATCH`) at their
+   existing severities, so ξ owns only their wording and severity policy.
 4. **DefEnv function overload precedence** — `resolve_function` must compose with the
    existing signature-based overload table (`merge_functions` shadowing rules). Exact
    merge of "first-wins across modules" with "signature match within module" decided
