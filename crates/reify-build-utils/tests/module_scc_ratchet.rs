@@ -470,3 +470,23 @@ fn fails_closed_on_a_contradictory_baseline() {
         "a package both excluded and baselined",
     );
 }
+
+#[test]
+fn workspace_module_sccs_match_the_committed_baseline() {
+    let root = workspace_root();
+    let out = run_tool([
+        OsStr::new("check"),
+        OsStr::new("--root"),
+        root.as_os_str(),
+        OsStr::new("--baseline"),
+        root.join("scripts/module-scc-baseline.json").as_os_str(),
+    ]);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "the workspace module-SCC ratchet (INV-ARCH-1) is red. \
+         `python3 scripts/assert-module-scc.py --help` explains GREW and STALE \
+         and how to lower a baseline row.\n{}",
+        describe(&out)
+    );
+}
