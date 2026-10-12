@@ -687,6 +687,107 @@ class SnapshotTests(unittest.TestCase):
         self.assertEqual(nextest, {"available": False, "reason": "no-junit"})
 
 
+def stats_with(hits, misses, not_cacheable):
+    return {
+        "stats": {
+            "requests_not_cacheable": not_cacheable,
+            "cache_hits": {"counts": {"Rust": hits - 1, "C/C++": 1}, "adv_counts": {}},
+            "cache_misses": {"counts": {"Rust": misses}, "adv_counts": {}},
+        },
+        "version": "0.14.0",
+    }
+
+
+def conc(other_runs):
+    return {
+        "other_verify_runs": other_runs,
+        "cargo_in_other_verifies": 0,
+        "cargo_outside_verifies": 0,
+        "rustc_total": 0,
+        "host": {"loadavg_1": 1.0, "psi_cpu_some_avg10": 0.0},
+    }
+
+
+def sample_step(index, before_runs, after_runs, d_hits, d_misses, d_nc=0, before=None, after=None):
+    base_hits, base_misses, base_nc = 1000, 400, 50
+    return {
+        "index": index,
+        "phase": "clippy",
+        "sccache": {
+            "before": before or stats_with(base_hits, base_misses, base_nc),
+            "after": after or stats_with(base_hits + d_hits, base_misses + d_misses, base_nc + d_nc),
+        },
+        "concurrency": {"before": conc(before_runs), "after": conc(after_runs)},
+    }
+
+
+UNAVAILABLE = {"available": False, "reason": "rustc-wrapper-not-sccache"}
+
+
+class SccacheReportTests(unittest.TestCase):
+    def setUp(self):
+        self.ledger = Path(tempfile.mkdtemp(prefix="vl-ledger-"))
+        self.addCleanup(shutil.rmtree, self.ledger, True)
+        records = [
+            {"schema": "reify.verify-run/1", "run_id": "a", "steps": [
+                sample_step(0, 0, 0, 10, 0, d_nc=3),
+                sample_step(1, 0, 0, 5, 5),
+                {"index": 2, "phase": "preflight"},
+                sample_step(3, 1, 2, 4, 4, d_nc=1),
+            ]},
+            {"schema": "reify.verify-run/1", "run_id": "b", "steps": [
+                sample_step(0, 0, 0, 0, 0),
+                sample_step(1, 1, 1, 0, 0),
+                sample_step(2, 2, 0, 1, 3),
+                sample_step(3, 0, 0, 0, 0, before=UNAVAILABLE),
+                sample_step(4, 0, 0, 0, 0, after=UNAVAILABLE),
+                sample_step(5, 0, 0, -5, 2),
+            ]},
+        ]
+        lines = [json.dumps(r) for r in records] + ['{"schema": "reify.verify-run/1", "run_id": "trunc']
+        self.ledger_file = self.ledger / "verify-runs.jsonl"
+        self.ledger_file.write_text("\n".join(lines) + "\n")
+
+    def report(self, *extra):
+        before = self.ledger_file.read_bytes()
+        proc = run_tool("sccache-report", "--ledger-dir", str(self.ledger), *extra)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(self.ledger_file.read_bytes(), before)
+        self.assertEqual(sorted(p.name for p in self.ledger.iterdir()), ["verify-runs.jsonl"])
+        return json.loads(proc.stdout)
+
+    def test_buckets_zero_first_with_deltas(self):
+        report = self.report()
+        self.assertEqual(report["min_samples"], 10)
+        self.assertEqual(
+            report["buckets"],
+            [
+                {"concurrency": 0, "samples": 3, "hits": 15, "misses": 5, "not_cacheable": 3,
+                 "hit_rate": 0.75, "conclusive": False},
+                {"concurrency": 1, "samples": 1, "hits": 0, "misses": 0, "not_cacheable": 0,
+                 "hit_rate": None, "conclusive": False},
+                {"concurrency": 2, "samples": 2, "hits": 5, "misses": 7, "not_cacheable": 1,
+                 "hit_rate": 5 / 12, "conclusive": False},
+            ],
+        )
+
+    def test_discarded_pairs_are_counted(self):
+        self.assertEqual(
+            self.report()["discarded"],
+            {"sccache-unavailable": 2, "counter-reset": 1, "malformed-record": 1},
+        )
+
+    def test_min_samples_sets_conclusive(self):
+        buckets = self.report("--min-samples", "2")["buckets"]
+        self.assertEqual([b["conclusive"] for b in buckets], [True, False, True])
+
+    def test_empty_ledger(self):
+        empty = Path(tempfile.mkdtemp(prefix="vl-ledger-"))
+        self.addCleanup(shutil.rmtree, empty, True)
+        proc = run_tool("sccache-report", "--ledger-dir", str(empty))
+        self.assertEqual(json.loads(proc.stdout), {"min_samples": 10, "buckets": [], "discarded": {}})
+
+
 def load_events(journal):
     path = Path(journal.dir) / "journal.jsonl"
     return [json.loads(line) for line in path.read_text().splitlines()]
