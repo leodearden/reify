@@ -44,6 +44,7 @@ import tomllib
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import IntEnum
+from functools import cached_property
 from itertools import accumulate
 from pathlib import Path
 
@@ -213,15 +214,36 @@ END { if (NR > 0) _report_open(previous) }
 """
 
 
-def raw_line_count(data: bytes) -> int:
-    return data.count(b"\n") + (0 if not data or data.endswith(b"\n") else 1)
+@dataclass(frozen=True)
+class Source:
+    """One file, line for line: as written, and as the shared lexer's
+    production-code view (comments dropped, string contents blanked)."""
+    raw: tuple[str, ...]
+    lexed: tuple[str, ...]
+
+    @cached_property
+    def text(self) -> str:
+        return "\n".join(self.lexed)
+
+    @cached_property
+    def line_starts(self) -> list[int]:
+        return list(accumulate((len(line) + 1 for line in self.lexed[:-1]), initial=0))
+
+    def line_of(self, offset: int) -> int:
+        """The 1-based line of an offset into text."""
+        return bisect.bisect_right(self.line_starts, offset)
 
 
-def lex_crate(files: Sequence[Path]) -> dict[Path, list[str]]:
-    """Each file's lines as the shared lexer's production-code view."""
+def split_lines(data: bytes) -> tuple[str, ...]:
+    """The lines awk reads: no empty line after a final newline."""
+    lines = data.decode("utf-8", errors="replace").split("\n")
+    return tuple(lines[:-1] if lines[-1] == "" else lines)
+
+
+def lex_crate(files: Sequence[Path]) -> dict[Path, Source]:
     if not files:
         return {}
-    expected = {path: raw_line_count(read_bytes(path, "source file")) for path in files}
+    raw = {path: split_lines(read_bytes(path, "source file")) for path in files}
     try:
         result = subprocess.run(
             ["bash", "-c", LEXER_SPAWN, "bash", str(LEXER_LIB), LEXER_DRIVER,
@@ -247,14 +269,14 @@ def lex_crate(files: Sequence[Path]) -> dict[Path, list[str]]:
             raise InputError(f"{name}: lexer state unbalanced at EOF ({state})")
         else:
             raise InputError(f"unexpected lexer output record {record!r}")
-    lexed = {}
+    sources = {}
     for path in files:
-        lines = by_name.get(str(path), [])
-        if len(lines) != expected[path]:
+        lexed = by_name.get(str(path), [])
+        if len(lexed) != len(raw[path]):
             raise InputError(
-                f"{path}: lexer emitted {len(lines)} lines for {expected[path]}")
-        lexed[path] = lines
-    return lexed
+                f"{path}: lexer emitted {len(lexed)} lines for {len(raw[path])}")
+        sources[path] = Source(raw=raw[path], lexed=tuple(lexed))
+    return sources
 
 
 # --- edges --------------------------------------------------------------------
@@ -338,6 +360,8 @@ def referenced_modules(text: str, nesting: Nesting) -> Iterable[tuple[str, int]]
 ATTRIBUTE_OR_BRACE_RE = re.compile(r"[{}]|#\s*\[")
 CFG_ATTRIBUTE_RE = re.compile(r"\s*cfg\s*\((.*)\)\s*", re.DOTALL)
 CFG_CALL_RE = re.compile(r"(all|any|not)\((.*)\)", re.DOTALL)
+PATH_ATTRIBUTE_RE = re.compile(r'\s*path\s*=\s*""\s*')
+RAW_PATH_ATTRIBUTE_RE = re.compile(r'#\s*\[\s*path\s*=\s*"([^"\\]*)"\s*\]')
 NEXT_ATTRIBUTE_RE = re.compile(r"\s*#\s*\[")
 VISIBILITY_RE = re.compile(r"\s*pub\b(\s*\([^()]*\))?")
 ITEM_TOKEN_RE = re.compile(r"[()\[\]{};,]")
@@ -348,11 +372,19 @@ ITEM_KEYWORDS = frozenset({
 
 
 @dataclass(frozen=True)
+class TestModule:
+    """A test-only `mod NAME` declaration at a file's top level, with the
+    offset of its `#[path = …]` attribute's contents when it has one."""
+    name: str
+    path_attribute: int | None
+
+
+@dataclass(frozen=True)
 class TestOnly:
     """A file's test-only text: sorted [start, end) spans of cfg-test items,
-    and the names of test-only `mod NAME` declarations at its top level."""
+    and the test-only module declarations at its top level."""
     spans: tuple[tuple[int, int], ...]
-    module_names: frozenset[str]
+    modules: frozenset[TestModule]
 
     def covers(self, offset: int) -> bool:
         index = bisect.bisect_right(self.spans, (offset, float("inf"))) - 1
@@ -389,15 +421,22 @@ def cfg_implies_test(predicate: str) -> bool:
     return False
 
 
-def item_head(text: str, pos: int) -> int:
-    """Skip further outer attributes and a visibility, to the item's first word."""
+def outer_attributes(text: str, pos: int) -> tuple[list[tuple[int, int]], int]:
+    """The [start, end) contents of the run of outer attributes at pos, and
+    the offset just after the run."""
+    contents = []
     while (attribute := NEXT_ATTRIBUTE_RE.match(text, pos)) is not None:
         close = matching_close(text, attribute.end() - 1)
         if close is None:
-            return len(text)
+            break
+        contents.append((attribute.end(), close))
         pos = close + 1
-    visibility = VISIBILITY_RE.match(text, pos)
-    return visibility.end() if visibility else pos
+    return contents, pos
+
+
+def is_test_cfg(text: str, start: int, end: int) -> bool:
+    cfg = CFG_ATTRIBUTE_RE.fullmatch(text, start, end)
+    return cfg is not None and cfg_implies_test(cfg.group(1))
 
 
 def item_end(text: str, head: int, is_item: bool) -> int:
@@ -422,7 +461,7 @@ def item_end(text: str, head: int, is_item: bool) -> int:
 
 def scan_test_only(text: str) -> TestOnly:
     spans: list[tuple[int, int]] = []
-    module_names: set[str] = set()
+    modules: set[TestModule] = set()
     depth = 0
     pos = 0
     while (match := ATTRIBUTE_OR_BRACE_RE.search(text, pos)) is not None:
@@ -430,23 +469,26 @@ def scan_test_only(text: str) -> TestOnly:
         if match.group() in "{}":
             depth += 1 if match.group() == "{" else -1
             continue
-        close = matching_close(text, match.end() - 1)
-        if close is None:
+        contents, after = outer_attributes(text, match.start())
+        if not contents:
             continue
-        pos = close + 1
-        cfg = CFG_ATTRIBUTE_RE.fullmatch(text, match.end(), close)
-        if cfg is None or not cfg_implies_test(cfg.group(1)):
+        pos = after
+        if not any(is_test_cfg(text, start, end) for start, end in contents):
             continue
-        head = item_head(text, pos)
+        visibility = VISIBILITY_RE.match(text, after)
+        head = visibility.end() if visibility else after
         keyword = IDENT_RE.match(text, head)
         word = keyword.group(1) if keyword else ""
         if word == "mod" and depth == 0:
             name = IDENT_RE.match(text, keyword.end())
             if name is not None:
-                module_names.add(name.group(1))
+                path_attribute = next(
+                    (start for start, end in contents
+                     if PATH_ATTRIBUTE_RE.fullmatch(text, start, end)), None)
+                modules.add(TestModule(name.group(1), path_attribute))
         pos = item_end(text, head, word in ITEM_KEYWORDS)
         spans.append((match.start(), pos))
-    return TestOnly(tuple(spans), frozenset(module_names))
+    return TestOnly(tuple(spans), frozenset(modules))
 
 
 def moddir(path: Path) -> Path:
@@ -454,12 +496,30 @@ def moddir(path: Path) -> Path:
     return path.parent if path.name in MOD_ROOTS else path.parent / path.stem
 
 
-def test_module_files(files: Iterable[Path], scans: Mapping[Path, TestOnly]) -> set[Path]:
+def declared_path(path: Path, source: Source, offset: int) -> Path:
+    """The file a top-level `#[path = "…"]` at offset names, relative to the
+    declaring file's directory. The lexed view blanks the string, so the value
+    is read from the same raw line."""
+    line = source.line_of(offset)
+    value = RAW_PATH_ATTRIBUTE_RE.search(source.raw[line - 1])
+    if value is None:
+        raise InputError(f"{path}:{line}: unreadable #[path] on a test-only module")
+    return Path(os.path.normpath(path.parent / value.group(1)))
+
+
+def test_module_files(sources: Mapping[Path, Source],
+                      scans: Mapping[Path, TestOnly]) -> set[Path]:
     """Files of every test-only module declaration, at any depth."""
-    roots = {moddir(path) / name for path, scan in scans.items()
-             for name in scan.module_names}
-    root_files = {root.parent / f"{root.name}.rs" for root in roots}
-    return {path for path in files
+    roots: set[Path] = set()
+    root_files: set[Path] = set()
+    for path, scan in scans.items():
+        for module in scan.modules:
+            if module.path_attribute is None:
+                roots.add(moddir(path) / module.name)
+                root_files.add(moddir(path) / f"{module.name}.rs")
+            else:
+                root_files.add(declared_path(path, sources[path], module.path_attribute))
+    return {path for path in sources
             if path in root_files or not roots.isdisjoint(path.parents)}
 
 
@@ -481,29 +541,31 @@ def module_files(src: Path, files: Iterable[Path]) -> dict[str, list[Path]]:
     return modules
 
 
-def line_starts(lines: Sequence[str]) -> list[int]:
-    return list(accumulate((len(line) + 1 for line in lines[:-1]), initial=0))
+def crate_files(src: Path) -> list[Path]:
+    """The sources of the crate rooted in src/; each src/bin/ target is a
+    binary crate of its own, whose `crate::` is not this crate's."""
+    return sorted(path for path in src.rglob("*.rs")
+                  if path.relative_to(src).parts[0] != "bin")
 
 
 def module_graph(root: Path, member: Member) -> Graph:
-    files = sorted(member.src.rglob("*.rs"))
-    lexed = lex_crate(files)
-    texts = {path: "\n".join(lines) for path, lines in lexed.items()}
-    scans = {path: scan_test_only(text) for path, text in texts.items()}
-    excluded = test_module_files(files, scans)
+    files = crate_files(member.src)
+    sources = lex_crate(files)
+    scans = {path: scan_test_only(source.text) for path, source in sources.items()}
+    excluded = test_module_files(sources, scans)
     modules = module_files(member.src, (p for p in files if p not in excluded))
     graph: dict[str, dict[str, list[Site]]] = {}
     for module, paths in sorted(modules.items()):
         edges: dict[str, list[Site]] = {}
         for path in paths:
-            starts = line_starts(lexed[path])
+            source = sources[path]
             site_path = path.relative_to(root).as_posix()
-            text_nesting = nesting(member.src, path, texts[path])
-            for target, offset in referenced_modules(texts[path], text_nesting):
+            text_nesting = nesting(member.src, path, source.text)
+            for target, offset in referenced_modules(source.text, text_nesting):
                 if (target != module and target in modules
                         and not scans[path].covers(offset)):
                     edges.setdefault(target, []).append(
-                        Site(site_path, bisect.bisect_right(starts, offset)))
+                        Site(site_path, source.line_of(offset)))
         graph[module] = edges
     return graph
 

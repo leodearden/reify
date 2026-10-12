@@ -522,6 +522,64 @@ fn cfg_test_module_files_are_excluded_at_every_depth() {
 }
 
 #[test]
+fn path_attributed_test_modules_are_excluded_where_the_path_points() {
+    let ws = TempWorkspace::demo();
+    ws.write("crates/demo/src/a/mod.rs", "pub struct A;\n");
+    ws.write(
+        "crates/demo/src/b.rs",
+        concat!(
+            "use crate::a::A;\n",
+            "#[cfg(test)]\n",
+            "#[path = \"a/b_tests.rs\"]\n",
+            "mod tests;\n",
+            "pub struct B;\n",
+        ),
+    );
+    ws.write("crates/demo/src/a/b_tests.rs", "use crate::b::B;\n");
+    ws.write(
+        "crates/demo/src/c.rs",
+        concat!(
+            "use crate::a::A;\n",
+            "#[path = \"a/c_tests.rs\"]\n",
+            "#[cfg(test)]\n",
+            "mod tests;\n",
+            "pub struct C;\n",
+        ),
+    );
+    ws.write("crates/demo/src/a/c_tests.rs", "use crate::c::C;\n");
+    ws.baseline("{}");
+
+    let out = ws.check();
+    assert_exit(
+        &out,
+        0,
+        "a #[path] test module's file is test code wherever it lives, \
+         whichever side of the cfg its attribute sits",
+    );
+}
+
+#[test]
+fn src_bin_files_are_binary_crates_not_a_module_named_bin() {
+    let ws = TempWorkspace::demo();
+    ws.write(
+        "crates/demo/src/a.rs",
+        "use crate::bin::Tool;\npub struct A;\n",
+    );
+    ws.write(
+        "crates/demo/src/bin/tool.rs",
+        "use crate::a::A;\nfn main() {}\n",
+    );
+    ws.baseline("{}");
+
+    let out = ws.check();
+    assert_exit(
+        &out,
+        0,
+        "src/bin/tool.rs's crate:: is the binary's own root, so it adds no edge",
+    );
+}
+
+#[test]
 fn excluded_crates_are_not_measured_and_print_preserves_the_exclusion() {
     let ws = TempWorkspace::new(&[("demo", "crates/demo"), ("skipped", "crates/skipped")]);
     ws.write("crates/demo/src/a.rs", "pub struct A;\n");
