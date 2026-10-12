@@ -1657,7 +1657,8 @@ mod tests {
     use crate::test_fixtures::{
         angle_range_0_to_pi, axis_x_unit, axis_z_unit, body_world_transform,
         cylindrical_z_joint_centred, length_range_0_to_1m, offset_prismatic_x, offset_revolute_z,
-        planar_xy_joint, planar_xy_joint_centred, spherical_joint, two_link_offset_chain,
+        planar_xy_joint, planar_xy_joint_centred, single_loop_free_row, spherical_joint,
+        two_link_offset_chain,
     };
     use reify_ir::Value;
     use std::collections::BTreeMap;
@@ -4620,30 +4621,6 @@ mod tests {
             eval_builtin("bind", &[j_x, Value::angle(0.0)]),
         ]);
         (mech, bindings)
-    }
-
-    /// The single loop's `free_values` row of `snap`, panicking with `label`
-    /// when the snapshot is not a one-loop Snapshot Map of Real leaves.
-    fn single_loop_free_row(snap: &Value, label: &str) -> Vec<f64> {
-        let smap = match snap {
-            Value::Map(m) => m,
-            other => panic!("{label}: expected Snapshot Map, got {other:?}"),
-        };
-        let loops = match smap.get(&Value::String("free_values".to_string())) {
-            Some(Value::List(l)) => l,
-            other => panic!("{label}: free_values must be a List, got {other:?}"),
-        };
-        assert_eq!(loops.len(), 1, "{label}: exactly one loop closure expected");
-        match &loops[0] {
-            Value::List(row) => row
-                .iter()
-                .map(|leaf| match leaf {
-                    Value::Real(r) => *r,
-                    other => panic!("{label}: free_values leaf must be Real, got {other:?}"),
-                })
-                .collect(),
-            other => panic!("{label}: free_values[0] must be a List, got {other:?}"),
-        }
     }
 
     /// A cold snapshot over a multi-DOF free joint emits that joint's flat

@@ -512,7 +512,7 @@ mod tests {
     use crate::loop_closure_value::JointKind;
     use crate::test_fixtures::{
         angle_range_0_to_pi, axis_x_unit, axis_y_unit, axis_z_unit, length_range_0_to_1m,
-        planar_xy_joint, planar_xy_joint_centred,
+        planar_xy_joint, planar_xy_joint_centred, single_loop_free_row,
     };
     use reify_ir::Value;
 
@@ -1766,35 +1766,7 @@ mod tests {
         snaps
             .iter()
             .enumerate()
-            .map(|(i, snap)| {
-                let smap = match snap {
-                    Value::Map(m) => m,
-                    other => panic!("snap {i} must be a Map, got {:?}", other),
-                };
-                let fv = smap
-                    .get(&Value::String("free_values".to_string()))
-                    .unwrap_or_else(|| panic!("snap {i} must carry free_values"));
-                let outer = match fv {
-                    Value::List(l) => l,
-                    other => panic!("snap {i} free_values must be List, got {:?}", other),
-                };
-                assert_eq!(
-                    outer.len(),
-                    1,
-                    "snap {i} outer free_values must have one entry (one loop)"
-                );
-                let inner = match &outer[0] {
-                    Value::List(l) => l,
-                    other => panic!("snap {i} inner free_values must be List, got {:?}", other),
-                };
-                inner
-                    .iter()
-                    .map(|leaf| match leaf {
-                        Value::Real(r) => *r,
-                        other => panic!("snap {i} leaf must be Real, got {:?}", other),
-                    })
-                    .collect()
-            })
+            .map(|(i, snap)| single_loop_free_row(snap, &format!("snap {i}")))
             .collect()
     }
 
