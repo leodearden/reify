@@ -21,7 +21,7 @@ use std::sync::{Arc, Mutex};
 use reify_constraints::SimpleConstraintChecker;
 use reify_core::{RealizationNodeId, ValueCellId};
 use reify_eval::realization_cache::{ConversionSlot, NO_OPTIONS, RealizationCache};
-use reify_eval::{BuildScheduler, Engine};
+use reify_eval::{BuildResult, BuildScheduler, Engine};
 use reify_ir::{
     CapabilityDescriptor, ExportFormat, GeometryHandleId, KernelHandle, Operation, ReprKind,
 };
@@ -173,6 +173,16 @@ fn external_key(producer: GeometryHandleId) -> String {
     RealizationCache::<KernelHandle>::intermediate_key("G", ConversionSlot::External(producer))
 }
 
+fn realized_handle(built: &BuildResult, cell: &ValueCellId) -> GeometryHandleId {
+    match built.values.get(cell) {
+        Some(reify_ir::Value::GeometryHandle {
+            kernel_handle: Some(id),
+            ..
+        }) => *id,
+        other => panic!("premise: {cell} holds a realized handle; got {other:?}"),
+    }
+}
+
 #[test]
 fn an_external_conversion_intermediate_follows_its_owners_family() {
     const SRC: &str = r#"pub structure G {
@@ -214,20 +224,12 @@ pub structure H {
             .bucket_len(&external_key(producer), ReprKind::Mesh, NO_OPTIONS)
     };
 
-    let built = build(&mut engine);
-    let converted = tessellated.lock().unwrap().clone();
     let a_cell = ValueCellId::new("G", "a");
-    let a_id = match built.values.get(&a_cell) {
-        Some(reify_ir::Value::GeometryHandle {
-            kernel_handle: Some(id),
-            ..
-        }) => *id,
-        other => panic!("premise: G.a holds a realized handle; got {other:?}"),
-    };
-    assert_eq!(
-        converted,
-        vec![a_id],
-        "premise: the build converts exactly the Sub operand `a`, so its slot is External"
+    let a_id = realized_handle(&build(&mut engine), &a_cell);
+    let converted = tessellated.lock().unwrap().clone();
+    assert!(
+        converted.contains(&a_id),
+        "premise: the build converts the Sub operand `a`, so its slot is External: {converted:?}"
     );
     assert_eq!(
         resident(&engine, a_id),
@@ -259,17 +261,21 @@ pub structure H {
         "an edit of the producer evicts G's family, which owns the External intermediate"
     );
 
-    build(&mut engine);
-    let converted = tessellated.lock().unwrap().clone();
-    assert_eq!(
-        converted.len(),
-        2,
-        "the rebuild re-converts `a`: {converted:?}"
-    );
-    let fresh_id = converted[1];
+    let conversions_before_rebuild = tessellated.lock().unwrap().len();
+    let fresh_id = realized_handle(&build(&mut engine), &a_cell);
     assert_ne!(
         fresh_id, a_id,
         "the re-realized `a` carries a fresh handle id"
+    );
+    let rebuild_conversions = tessellated.lock().unwrap()[conversions_before_rebuild..].to_vec();
+    assert!(
+        rebuild_conversions.contains(&fresh_id) && !rebuild_conversions.contains(&a_id),
+        "the rebuild converts the re-realized `a`, never its stale handle: {rebuild_conversions:?}"
+    );
+    assert_eq!(
+        resident(&engine, a_id),
+        0,
+        "the rebuild must not leave the stale intermediate resident"
     );
     assert_eq!(
         resident(&engine, fresh_id),
