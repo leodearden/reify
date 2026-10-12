@@ -542,7 +542,7 @@ pub(crate) fn render_survey(run: &SurveyRun, inline: &SurveyRun, stamp: &SurveyS
     push_inline_limitation(&mut md, inline);
     md.push_str(
         "2. **`compile_with_stdlib` is the SINGLE-FILE path.** `reify check` instead uses\n\
-           `module_dag::compile_entry_with_stdlib_cfg_checked`, which follows `#cfg`-gated\n\
+           `program::compile_program`, which follows `#cfg`-gated\n\
            user imports and runs `SimpleConstraintChecker`. Multi-module corpus members\n\
            (the `examples/module_visibility/consumer.ri` class) therefore cannot resolve\n\
            standalone and appear above under *not surveyed* or *partially surveyed* with\n\

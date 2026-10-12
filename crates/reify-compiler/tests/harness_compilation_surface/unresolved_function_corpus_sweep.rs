@@ -43,11 +43,33 @@
 
 use std::path::{Path, PathBuf};
 
-use reify_compiler::module_dag::{ModuleResolver, compile_entry_with_stdlib_cfg};
+use reify_compiler::module_dag::ModuleResolver;
 use reify_compiler::parse_with_stdlib;
+use reify_compiler::program::compile_program;
 use reify_core::{DiagnosticCode, ModulePath, Severity};
 use reify_compiler::cfg::CfgSet;
+use reify_ir::{
+    ConstraintChecker, ConstraintDiagnostics, ConstraintInput, ConstraintResult, Satisfaction,
+};
 use reify_test_support::examples_corpus::discover_ri_files;
+
+/// A local always-indeterminate checker (same contract as the compiler's stub).
+struct Indeterminate;
+
+impl ConstraintChecker for Indeterminate {
+    fn check(&self, input: &ConstraintInput) -> Vec<ConstraintResult> {
+        input
+            .constraints
+            .iter()
+            .map(|(id, _)| ConstraintResult {
+                id: id.clone(),
+                satisfaction: Satisfaction::Indeterminate,
+                diagnostics: ConstraintDiagnostics::default(),
+                indeterminate_reason: None,
+            })
+            .collect()
+    }
+}
 
 /// Workspace root, resolved at compile time from this crate's manifest dir.
 const WORKSPACE_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
@@ -203,7 +225,7 @@ fn discover_corpus() -> Vec<PathBuf> {
 ///   and the rest of the FEA/dynamics/constants surface, every one of them a
 ///   real `pub fn` or `structure def` in `crates/reify-compiler/stdlib/`.
 ///
-/// [`compile_entry_with_stdlib_cfg`] is the one that does both — it is what
+/// [`compile_program`] is the one that does both — it is what
 /// `crates/reify-cli/src/main.rs` calls for `reify check` — so this sweep
 /// answers the same question a user's `reify check` would, which is exactly the
 /// question #5997 needs answered before it can turn these warnings into errors.
@@ -228,8 +250,8 @@ fn diagnostics_for(path: &Path) -> Option<Vec<reify_core::Diagnostic>> {
     // stdlib — but is passed truthfully rather than as a sentinel so the
     // resolver is constructed identically to the CLI's.
     let resolver = ModuleResolver::new(path.parent()?, Path::new(STDLIB_ROOT));
-    let compiled = compile_entry_with_stdlib_cfg(&parsed, &resolver, &CfgSet::default());
-    Some(compiled.diagnostics)
+    let program = compile_program(path, &source, &resolver, &CfgSet::default(), &Indeterminate);
+    Some(program.entry.diagnostics)
 }
 
 /// Walk the corpus and return every `UnresolvedFunction` violation, sorted.

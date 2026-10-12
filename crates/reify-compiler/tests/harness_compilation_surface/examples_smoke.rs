@@ -110,7 +110,7 @@ const SKIP_SET: &[(&str, &str)] = &[
         "conditional_compilation/main.ri",
         "Multi-file cfg-gated entry: `param p : Platform` in type position resolves only \
          through the #cfg(target)-gated import (platform_linux or platform_wasm), using the \
-         reify check cfg DAG (compile_entry_with_stdlib_cfg_checked). The single-file \
+         reify check cfg DAG (program::compile_program). The single-file \
          compile_with_stdlib bulk smoke path cannot follow gated imports, so `Platform` is an \
          unresolved-type Error there. The two-way symmetric behaviour (both --cfg target=linux \
          and --cfg target=wasm exit 0, each resolving the platform-correct Platform variant) \

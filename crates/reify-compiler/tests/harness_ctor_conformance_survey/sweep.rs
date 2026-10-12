@@ -41,7 +41,7 @@ pub(crate) struct SurveyRun {
     ///
     /// A separate bucket from `not_surveyed` on purpose: `compile_with_stdlib`
     /// is the SINGLE-FILE path (`reify check` instead uses
-    /// `module_dag::compile_entry_with_stdlib_cfg_checked`, which follows
+    /// `program::compile_program`, which follows
     /// `#cfg`-gated user imports), so every multi-module corpus member — the
     /// `examples/module_visibility/consumer.ri` class — lands here. Calling
     /// those "not surveyed" would understate coverage; calling them fully

@@ -55,6 +55,7 @@ pub mod module_dag;
 mod module_pragmas;
 mod orientation_signatures;
 pub mod prelude_context;
+pub mod program;
 pub(crate) mod recursion_guard;
 pub mod relation_signatures;
 mod scc;
@@ -286,6 +287,27 @@ pub fn compile_with_stdlib_checked(
     checker: &dyn ConstraintChecker,
 ) -> CompiledModule {
     compile_with_prelude_context_checked(parsed, stdlib_loader::load_stdlib_context(), checker)
+}
+
+/// Compile a user module against the full stdlib plus its direct user imports.
+///
+/// The single home of "user module against stdlib + direct imports", shared by
+/// the program entry and its import units. An import-free module compiles
+/// against the cached stdlib context itself, exactly the call
+/// [`compile_with_stdlib_checked`] makes; a module with imports compiles
+/// against a context [`PreludeContext::extended`] from it, so the stdlib is
+/// never re-flattened per unit.
+pub(crate) fn compile_with_stdlib_and_imports_checked(
+    parsed: &reify_ast::ParsedModule,
+    user_imports: &[&CompiledModule],
+    checker: &dyn ConstraintChecker,
+) -> CompiledModule {
+    let stdlib: &PreludeContext<'_> = stdlib_loader::load_stdlib_context();
+    if user_imports.is_empty() {
+        compile_with_prelude_context_checked(parsed, stdlib, checker)
+    } else {
+        compile_with_prelude_context_checked(parsed, &stdlib.extended(user_imports), checker)
+    }
 }
 
 /// Parse a source string with the stdlib's prelude enum names pre-seeded
