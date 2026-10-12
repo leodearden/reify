@@ -589,37 +589,15 @@ fn render_chain_text(root: &Expr, members_outer_to_inner: &[&str]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::recursion_guard::MAX_COMPILE_RECURSION_DEPTH as CAP;
     use reify_core::SourceSpan;
 
-    /// Table-driven depth-guard test: asserts that every structural-recursion arm
-    /// in `walk_expr_depth` correctly forwards `next = depth + 1` to child nodes.
-    ///
-    /// A regression that accidentally passes `depth` (unchanged) instead of `next`
-    /// in any single arm would silently truncate dot-chain lint coverage on that
-    /// subtree. This test loops over all `(variant, target-field)` pairs so that a
-    /// failing arm surfaces as a named `ArmKind` in the test output rather than a
-    /// generic "walked silently" failure.
-    ///
-    /// `MemberAccess` chain walk: the iterative `while let` loop in the
-    /// `MemberAccess` arm does NOT increment `depth` per chain segment (one Rust
-    /// frame regardless of chain length). However, the trailing
-    /// `walk_expr_depth(cursor, …, next)` call on the leaf root IS a
-    /// depth-forwarding site and IS covered here by `ArmKind::MemberAccessLeafRoot`.
-    /// Each wrap layer interleaves a non-MA `UnOp` wrapper so the chain walk
-    /// terminates at every layer, forcing the trailing recursion to run once per
-    /// layer. See `depth_per_layer` for the per-arm depth-increment accounting.
-    ///
-    /// Depth arithmetic: most arms contribute 1 to depth per layer, so
-    /// `MAX_EXPR_DEPTH + 1` (= 257) wraps suffice to trip the guard.
-    /// `MemberAccessLeafRoot` contributes 2 per layer (one from the MA trailing
-    /// recursion, one from the interleaved UnOp), so `MAX_EXPR_DEPTH / 2 + 1`
-    /// (= 129) wraps suffice. The `depth_per_layer` helper is the source of
-    /// truth; the wrap-count formula `MAX_EXPR_DEPTH / depth_per_layer(arm) + 1`
-    /// derives from it directly so adding a new arm with a different regime stays
-    /// consistent.
+    /// Every recursion arm of `walk_expr_depth` forwards `depth + 1`, and the
+    /// lint covers nesting up to the shared compile cap and stops silently past
+    /// it: a deep chain wrapped so it sits AT the cap is reported, one layer
+    /// further it is skipped. `depth_per_layer` gives each arm's wrap count.
     #[test]
-    #[cfg(debug_assertions)]
-    fn walk_expr_depth_panics_for_every_recursion_arm() {
+    fn deep_chain_is_linted_through_the_nesting_cap_and_skipped_past_it_for_every_arm() {
         #[derive(Debug, Clone, Copy)]
         enum ArmKind {
             UnOp,
@@ -923,7 +901,8 @@ mod tests {
         }
 
         // Returns how many levels of depth each wrap layer contributes.
-        // Used to compute the minimum wrap count needed to trip MAX_EXPR_DEPTH.
+        // Used to compute the wrap counts that place the leaf at the cap and
+        // just past it.
         //
         // The match is intentionally exhaustive (no wildcard): the compiler
         // rejects a new ArmKind variant until it is listed here, preventing
@@ -976,97 +955,58 @@ mod tests {
             }
         }
 
-        let span = SourceSpan::empty(0);
-        for arm in ALL_ARMS.iter().copied() {
-            // Sanity pass: a single-layer wrap must NOT panic. Guards against
-            // `wrap_in_arm` silently constructing a broken or depth-saturated
-            // AST, which would make the depth-saturation assertion below
-            // trivially vacuous (or erroneously attribute a construction panic
-            // to a missing `next` forward).
-            let shallow_wrapped = wrap_in_arm(arm, shallow_leaf(span), span);
-            let sanity = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                let mut diagnostics: Vec<Diagnostic> = Vec::new();
-                walk_expr(&shallow_wrapped, &mut diagnostics);
-            }));
-            assert!(
-                sanity.is_ok(),
-                "arm {:?} panicked on a single-layer (depth-1) wrap — \
-                 wrap_in_arm may construct a broken AST or a leaf-equivalent node",
-                arm
-            );
-
-            let mut expr = Expr {
-                kind: ExprKind::NumberLiteral {
-                    value: 0.0,
-                    is_real: false,
-                },
+        // `a.b.c.d.e`: chain length 5, one past DEEP_DOT_CHAIN_THRESHOLD.
+        fn deep_chain_leaf(span: SourceSpan) -> Expr {
+            let mut chain = Expr {
+                kind: ExprKind::Ident("a".to_string()),
                 span,
             };
-            for _ in 0..(MAX_EXPR_DEPTH / depth_per_layer(arm) + 1) {
+            for member in ["b", "c", "d", "e"] {
+                chain = Expr {
+                    kind: ExprKind::MemberAccess {
+                        object: Box::new(chain),
+                        member: member.to_string(),
+                    },
+                    span,
+                };
+            }
+            chain
+        }
+
+        fn deep_dot_chain_count_after_wrapping(arm: ArmKind, layers: usize) -> usize {
+            let span = SourceSpan::empty(0);
+            let mut expr = deep_chain_leaf(span);
+            for _ in 0..layers {
                 expr = wrap_in_arm(arm, expr, span);
             }
-            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                let mut diagnostics: Vec<Diagnostic> = Vec::new();
-                walk_expr(&expr, &mut diagnostics);
-            }));
-            match result {
-                Ok(_) => panic!(
-                    "arm {:?} did NOT trip MAX_EXPR_DEPTH guard — depth was not forwarded",
-                    arm
-                ),
-                Err(payload) => {
-                    let msg = if let Some(s) = payload.downcast_ref::<&str>() {
-                        s.to_string()
-                    } else if let Some(s) = payload.downcast_ref::<String>() {
-                        s.clone()
-                    } else {
-                        String::new()
-                    };
-                    assert!(
-                        msg.contains("MAX_EXPR_DEPTH"),
-                        "arm {:?} panicked but message {:?} did not mention MAX_EXPR_DEPTH",
-                        arm,
-                        msg
-                    );
-                    // Verify the panic fired at the expected depth boundary, not
-                    // via some unrelated pathway.  Each wrap layer contributes
-                    // `depth_per_layer(arm)` (= N) to depth; with
-                    // `MAX_EXPR_DEPTH / N + 1` wraps the first overflow call
-                    // lands at a depth in (MAX_EXPR_DEPTH, MAX_EXPR_DEPTH + N].
-                    // If `depth_per_layer` lies or the wrap shape is wrong, the
-                    // actual overflow depth would fall outside this window and
-                    // the assertion below would catch it even though the arm
-                    // 'panicked with MAX_EXPR_DEPTH' check above passed.
-                    let overflow_depth = parse_overflow_depth(&msg);
-                    assert!(
-                        overflow_depth > MAX_EXPR_DEPTH
-                            && overflow_depth <= MAX_EXPR_DEPTH + depth_per_layer(arm),
-                        "arm {:?} overflowed at depth {} — expected range ({}, {}]; \
-                         depth_per_layer or wrap shape may be inconsistent with \
-                         the walk_expr_depth implementation",
-                        arm,
-                        overflow_depth,
-                        MAX_EXPR_DEPTH,
-                        MAX_EXPR_DEPTH + depth_per_layer(arm)
-                    );
-                }
-            }
+            let mut diagnostics: Vec<Diagnostic> = Vec::new();
+            walk_expr(&expr, &mut diagnostics);
+            assert!(
+                diagnostics
+                    .iter()
+                    .all(|d| d.code == Some(DiagnosticCode::DeepDotChain)),
+                "arm {arm:?} with {layers} layers emitted a non-DeepDotChain diagnostic: \
+                 {diagnostics:?}"
+            );
+            diagnostics.len()
         }
-    }
 
-    fn parse_overflow_depth(msg: &str) -> usize {
-        msg.split("(depth = ")
-            .nth(1)
-            .and_then(|s| s.split(')').next())
-            .and_then(|s| s.parse().ok())
-            .expect("panic message must contain `(depth = N)` — format string drifted?")
-    }
-
-    #[test]
-    fn parse_overflow_depth_extracts_value_from_well_formed_panic_message() {
-        let msg = "dot_chain_lint walk_expr_depth exceeded MAX_EXPR_DEPTH = 256 (depth = 257); \
-                   dot-chain lint coverage truncated at this subtree";
-        assert_eq!(parse_overflow_depth(msg), 257);
+        for arm in ALL_ARMS.iter().copied() {
+            let layers_at_cap = CAP / depth_per_layer(arm);
+            assert_eq!(
+                deep_dot_chain_count_after_wrapping(arm, layers_at_cap),
+                1,
+                "arm {arm:?}: a deep chain {layers_at_cap} layers down sits at or \
+                 inside the cap and must be linted"
+            );
+            assert_eq!(
+                deep_dot_chain_count_after_wrapping(arm, layers_at_cap + 1),
+                0,
+                "arm {arm:?}: a deep chain {} layers down sits past the cap and must \
+                 be skipped — a non-zero count means this arm did not forward depth + 1",
+                layers_at_cap + 1
+            );
+        }
     }
 
     /// `render_chain_text` falls back to `_` for root variants that are
@@ -1077,8 +1017,9 @@ mod tests {
     /// Done as a unit test rather than an integration test because constructing
     /// a `BinOp`-rooted chain via parsed source depends on `parenthesized_expression`
     /// lowering specifics that are orthogonal to this task. The existing
-    /// `walk_expr_depth_panics_for_every_recursion_arm` test already builds
-    /// `Expr` trees by hand with `SourceSpan::empty(0)` — same pattern here.
+    /// `deep_chain_is_linted_through_the_nesting_cap_and_skipped_past_it_for_every_arm`
+    /// test already builds `Expr` trees by hand with `SourceSpan::empty(0)` —
+    /// same pattern here.
     #[test]
     fn render_chain_text_uses_underscore_for_other_root_variants() {
         let span = SourceSpan::empty(0);
