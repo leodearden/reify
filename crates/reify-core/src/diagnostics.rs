@@ -4832,6 +4832,18 @@ pub enum DiagnosticCode {
     ///
     /// Severity: Error.
     GeometryListFoldMixedArgs,
+    /// Origin: `crates/reify-compiler/src/module_dag.rs::ModuleDag::compile_module`
+    /// (task #5516, PRD resolution-unification I2).
+    ///
+    /// Emitted when a DAG-walked (imported) module fails to parse; one per
+    /// parse error. The entry still compiles, so the failure surfaces on the
+    /// importing entry, attributed to the imported file.
+    ///
+    /// Canonical message: `"parse error in imported module '<key>' at
+    /// <path>:<line>:<col>: <message>"`.
+    ///
+    /// Severity: Error.
+    ImportedModuleParseError,
 }
 
 /// A diagnostic message with location and optional labels.

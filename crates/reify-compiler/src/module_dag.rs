@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 use indexmap::IndexSet;
 
-use reify_core::{Diagnostic, DiagnosticLabel, ModulePathParseError, SourceSpan};
+use reify_core::{Diagnostic, DiagnosticCode, DiagnosticLabel, ModulePathParseError, SourceSpan};
 
 use crate::CompiledModule;
 use crate::cfg::{CfgSet, cfg_satisfied};
@@ -549,11 +549,21 @@ impl ModuleDag {
                 .map_err(|e| diag_invalid_path(module_path, e))?,
         );
 
+        // One coded, file-attributed Error per parse error: the failure surfaces
+        // on the importing entry, so it must name the file it came from.
         if !parsed.errors.is_empty() {
             return Err(parsed
-                .errors
-                .iter()
-                .map(|e| Diagnostic::error(e.message.clone()))
+                .render_errors(&source)
+                .into_iter()
+                .map(|located| {
+                    Diagnostic::error(format!(
+                        "parse error in imported module '{}' at {}:{}",
+                        module_path,
+                        fs_path.display(),
+                        located
+                    ))
+                    .with_code(DiagnosticCode::ImportedModuleParseError)
+                })
                 .collect());
         }
 

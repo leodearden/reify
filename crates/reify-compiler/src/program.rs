@@ -13,7 +13,7 @@
 
 use std::path::{Path, PathBuf};
 
-use reify_core::{Diagnostic, ModulePath};
+use reify_core::{Diagnostic, ModulePath, Severity, SourceSpan, byte_offset_to_line_col};
 use reify_ir::ConstraintChecker;
 
 use crate::CompiledModule;
@@ -62,7 +62,9 @@ pub struct CompiledProgram {
 /// forwarding, and a followed import that is missing or broken surfaces as
 /// `Error` diagnostics on the entry while the entry itself still compiles, so a
 /// caller's "any Error diagnostic, exit non-zero" policy handles every failure
-/// uniformly.
+/// uniformly. Every Error and Warning a compiled user module carries —
+/// transitive modules included — is re-homed onto the entry too, attributed to
+/// its file (see `rehome_imported`).
 ///
 /// **Entry/import checker asymmetry.** Only the entry's compile receives
 /// `checker`; import units are compiled with the compile-time stub checker,
@@ -122,6 +124,20 @@ pub fn compile_program(
 
     attach_module_path_diag(&mut entry, &parsed);
     entry.diagnostics.extend(import_error_diags);
+    // Walk the topological order, not just the direct imports, so a transitive
+    // unit's diagnostic is not swallowed one level down.
+    for key in &dag.topo_order {
+        if let Some(module) = dag.modules.get(key) {
+            let origin = dag.source(key);
+            entry.diagnostics.extend(
+                module
+                    .diagnostics
+                    .iter()
+                    .filter(|d| matches!(d.severity, Severity::Error | Severity::Warning))
+                    .map(|d| rehome_imported(d, key, origin)),
+            );
+        }
+    }
     let entry_origin = entry.path.0.join(".");
     merge_imported_pub_templates(&mut entry, &entry_origin, &compiled_imports);
 
@@ -152,5 +168,77 @@ pub fn compile_program(
         entry,
         imports,
         sources,
+    }
+}
+
+/// A copy of `diag`, raised while compiling the imported module `module_key`,
+/// fit to live on the entry.
+///
+/// `Diagnostic` carries no file, so the file travels in the message: it is
+/// prefixed `in imported module '<key>' (<path>:<line>:<col>)`, located by the
+/// first label that indexes the imported file, or `(<path>)` when none does,
+/// or `(embedded stdlib)` when the module has no source. Every label span is
+/// moved to the prelude sentinel, because it indexes the imported file and
+/// would otherwise mark a wrong offset in the entry. Severity, code and
+/// candidates are kept, so code-keyed consumers treat the copy exactly like
+/// the original.
+fn rehome_imported(
+    diag: &Diagnostic,
+    module_key: &str,
+    origin: Option<&ModuleSource>,
+) -> Diagnostic {
+    let location = match origin {
+        None => "embedded stdlib".to_string(),
+        Some(origin) => {
+            let path = origin.path.display();
+            let in_file = diag.labels.iter().find(|label| {
+                label.span != SourceSpan::prelude()
+                    && (label.span.start as usize) <= origin.source.len()
+            });
+            match in_file {
+                Some(label) => {
+                    let (line, col) =
+                        byte_offset_to_line_col(&origin.source, label.span.start as usize);
+                    format!("{path}:{line}:{col}")
+                }
+                None => path.to_string(),
+            }
+        }
+    };
+    let mut rehomed = diag.clone();
+    rehomed.message = format!(
+        "in imported module '{module_key}' ({location}): {}",
+        diag.message
+    );
+    for label in &mut rehomed.labels {
+        label.span = SourceSpan::prelude();
+    }
+    rehomed
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use reify_core::{DiagnosticCode, DiagnosticLabel};
+
+    /// While I4 holds only `std.*` resolves embedded, so `compile_program` never
+    /// reaches the no-source branch; this pins it directly.
+    #[test]
+    fn rehome_without_source_names_the_embedded_stdlib() {
+        let original = Diagnostic::warning("something odd")
+            .with_code(DiagnosticCode::ImportedModuleParseError)
+            .with_label(DiagnosticLabel::new(SourceSpan::new(3, 7), "here"));
+
+        let rehomed = rehome_imported(&original, "std.units", None);
+
+        assert_eq!(
+            rehomed.message,
+            "in imported module 'std.units' (embedded stdlib): something odd"
+        );
+        assert_eq!(rehomed.severity, original.severity);
+        assert_eq!(rehomed.code, original.code);
+        assert_eq!(rehomed.labels.len(), 1);
+        assert_eq!(rehomed.labels[0].span, SourceSpan::prelude());
+        assert_eq!(rehomed.labels[0].message, "here");
     }
 }

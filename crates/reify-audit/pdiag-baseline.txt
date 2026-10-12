@@ -53,7 +53,7 @@ crates/reify-compiler/src/geometry_modify.rs 4
 crates/reify-compiler/src/guards.rs 7
 crates/reify-compiler/src/ice.rs 1
 crates/reify-compiler/src/lib.rs 1
-crates/reify-compiler/src/module_dag.rs 11
+crates/reify-compiler/src/module_dag.rs 10
 crates/reify-compiler/src/module_pragmas.rs 37
 crates/reify-compiler/src/scc.rs 2
 crates/reify-compiler/src/stdlib_topo.rs 1
