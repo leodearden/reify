@@ -17,14 +17,19 @@ import fcntl
 import json
 import os
 import re
+import secrets
 import subprocess
 import sys
+import tempfile
+import time
 import xml.etree.ElementTree as ElementTree
 from datetime import datetime
 from pathlib import Path
 
 RECORD_SCHEMA = "reify.verify-run/1"
 LEDGER_FILE = "verify-runs.jsonl"
+SEED_STAMP_SCHEMA = "reify.lane-seed/1"
+SEED_STAMP_SUFFIX = ".seed-stamp.json"
 
 
 class Phase(enum.StrEnum):
@@ -573,6 +578,37 @@ def claim_finalize(journal):
 
 
 # ---------------------------------------------------------------------------
+# Lane seed stamp: <lane_dir>.seed-stamp.json, a SIBLING of the lane (beside
+# seed-warm-lane.sh's <lane_dir>.lock), so it survives the reseed of
+# <lane>/target and is invisible to lane enumerators that glob directories.
+# ---------------------------------------------------------------------------
+
+
+def seed_stamp_path(lane_dir):
+    return Path(os.path.realpath(lane_dir) + SEED_STAMP_SUFFIX)
+
+
+def write_seed_stamp(lane_dir, mode, started_at):
+    path = seed_stamp_path(lane_dir)
+    stamp = {
+        "schema": SEED_STAMP_SCHEMA,
+        "seed_id": secrets.token_hex(8),
+        "lane_dir": os.path.realpath(lane_dir),
+        "mode": mode,
+        "started_at": started_at,
+        "exited_at": time.time(),
+    }
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps(stamp) + "\n")
+        os.replace(tmp, path)
+    except BaseException:
+        os.unlink(tmp)
+        raise
+
+
+# ---------------------------------------------------------------------------
 # sccache report (ruling D10): the counters are host-global windows, so a
 # delta is only read inside its concurrency bucket, the zero bucket first,
 # and a thin bucket is marked inconclusive.
@@ -716,6 +752,10 @@ def cmd_sccache_report(args):
     sys.stdout.write(json.dumps(sccache_report(args.ledger_dir, args.min_samples), indent=2) + "\n")
 
 
+def cmd_seed_stamp(args):
+    write_seed_stamp(args.lane_dir, args.mode, args.started_at)
+
+
 def build_parser():
     parser = argparse.ArgumentParser(prog="verify-ledger.py", description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="command", required=True)
@@ -758,6 +798,12 @@ def build_parser():
     report.add_argument("--ledger-dir", required=True)
     report.add_argument("--min-samples", type=int, default=10)
     report.set_defaults(func=cmd_sccache_report)
+
+    seed = sub.add_parser("seed-stamp", help="atomically (re)write <lane_dir>.seed-stamp.json after a seed")
+    seed.add_argument("--lane-dir", required=True)
+    seed.add_argument("--mode", choices=("fresh-checkout", "reset-in-place"), required=True)
+    seed.add_argument("--started-at", type=float, required=True)
+    seed.set_defaults(func=cmd_seed_stamp)
     return parser
 
 

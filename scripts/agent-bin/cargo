@@ -22,6 +22,11 @@
 #   REIFY_CPU_ADMIT_PROC_PATH        — PSI source override (testing/non-Linux)
 #   REIFY_CPU_ADMIT_DISABLE          — set to 1 for total bypass (break-glass)
 #   DF_VERIFY_ROLE=merge             — merge bypass (forwarded to cpu-admit.sh)
+#
+# SEED → FIRST-BUILD START LOG (task 7424): in a seeded lane (one with a
+# <lane>.seed-stamp.json sibling) each heavy subcommand appends its start to
+# <lane>/target/.reify-cargo-starts.jsonl. A no-op until dark-factory prepends
+# scripts/agent-bin to agent PATH; see docs/notes/verify-instrumentation-ledger.md.
 
 set -euo pipefail
 
@@ -110,6 +115,28 @@ esac
 if [ "$_is_heavy" -eq 1 ] && [ -x "$CPU_ADMIT" ]; then
     REIFY_CPU_ADMIT_THRESHOLD="${REIFY_CPU_ADMIT_AGENT_THRESHOLD:-50}" \
         bash "$CPU_ADMIT" admit || true
+fi
+
+# ---------------------------------------------------------------------------
+# Start log: the seeded lane is the first ancestor d of the cwd with a
+# "$d.seed-stamp.json" sibling.  Every failure is swallowed silently (C-S2).
+# ---------------------------------------------------------------------------
+_seeded_lane_of_cwd() {
+    local d
+    d="$(pwd -P 2>/dev/null)" || return 1
+    while [ -n "$d" ] && [ "$d" != "/" ]; do
+        if [ -e "$d.seed-stamp.json" ]; then
+            printf '%s\n' "$d"
+            return 0
+        fi
+        d="${d%/*}"
+    done
+    return 1
+}
+
+if [ "$_is_heavy" -eq 1 ] && _lane="$(_seeded_lane_of_cwd)" && [ -d "$_lane/target" ]; then
+    { printf '{"started_at":%s,"subcommand":"%s"}\n' "${EPOCHREALTIME/,/.}" "$_subcmd" \
+        >> "$_lane/target/.reify-cargo-starts.jsonl"; } 2>/dev/null || true
 fi
 
 exec "$REAL_CARGO" "$@"
