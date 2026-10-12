@@ -247,20 +247,17 @@ tasks:
       no reachable site exists TODAY — MEASURED, not structural. This makes α''s §6.5
       item-4 count load-bearing and re-checkable; non-zero ⇒ migrate in β before γ.'
     verdict: PASS
-    # SUPERSEDED by task 5306 (δ, struct-ctor-conformance): the binding above is
-    # the as-authored decompose-time premise and is kept as a historical record.
-    # Its "Severity::Warning (unchanged at HEAD)" and "ctor entry PRINTS, exits 0"
-    # claims no longer describe main: CTOR_FIELD_CONFORMANCE_SEVERITY is now
-    # Severity::Error and a wrong-dimension ctor argument exits 1. The former grep
-    # check (pattern 'const CTOR_FIELD_CONFORMANCE_SEVERITY: Severity =
-    # Severity::Warning', expect: present) would stop matching, so it is retired
-    # rather than restated; the post-flip behaviour is owned by
-    # docs/prds/struct-ctor-field-type-conformance.md (D4) and
-    # docs/notes/ctor-conformance-flip-leaf-signals.md (task 7504).
     delivered_check:
       kind: manual
-      reason: superseded by the task 5306 severity flip (Warning -> Error); the
-        pre-delta premise is historical and has no live pattern to check.
+      reason: SUPERSEDED by task 5306, which flipped
+        CTOR_FIELD_CONFORMANCE_SEVERITY from Severity::Warning to Severity::Error.
+        The binding's "Severity::Warning (unchanged at HEAD)" and its
+        claim "ctor entry PRINTS, exits 0" are as-authored history with no live
+        pattern to check. The post-flip contract is decision D4 of
+        docs/prds/struct-ctor-field-type-conformance.md, pinned by
+        g_i2_cross_dimension_arg_at_dimensioned_slot_errors and
+        delta_promotes_the_five_headline_rows_with_code_severity_content_and_span in
+        crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs.
   - name: auto-and-undef-are-not-conformance-judged
     binding: 'UNLISTED PREMISE surfaced by the Adversary, load-bearing for the corpus
       gate. `auto`, `auto(free)` and `undef` produce NO conformance judgement at EITHER
