@@ -21,6 +21,7 @@ from _pcc_test_support import (
     _CACHE_DENIED_STDERR,
     _compute_grammar_e2e_status,
     _grammar_e2e_status,
+    _grammar_status_calls_at_import,
     _patch_parser_c,
     _ts_stub_cache_denied,
     _ts_stub_clean,
@@ -100,15 +101,25 @@ class TestGrammarAvailabilityGuard(unittest.TestCase):
         self.assertIn("parser.c", reason, "the skip message must name what is missing")
 
     def test_hermetic_import_spawns_no_substrate_probe(self):
-        """The behavioural half is LAZY — importing this module must not probe.
+        """The behavioural half is LAZY — importing a consumer must not probe.
 
-        Read from a snapshot taken at the END of the module body, so the pin is
-        on import itself and survives whatever tests have run by now.
+        Every partition that consumes _grammar_e2e_status or
+        _require_grammar_substrate records its own snapshot as the last
+        statement of its module body, so the pin is on the import of each of
+        them, in whatever order unittest loaded them, and survives whatever
+        tests have run by now.
         """
+        snapshots = _grammar_status_calls_at_import()
+        self.assertIn(
+            __name__, snapshots,
+            "this module's own tail snapshot is missing, so the pin is vacuous",
+        )
+        probed = {name: calls for name, calls in snapshots.items() if calls}
         self.assertEqual(
-            _GRAMMAR_STATUS_CALLS_AT_IMPORT, 0,
+            probed, {},
             "_grammar_e2e_status() must not be evaluated at import time; only "
-            "the grammar e2e should ever spend the subprocess",
+            "the grammar e2e should ever spend the subprocess (evaluated by the "
+            f"time these importers finished loading: {sorted(probed)})",
         )
 
 
