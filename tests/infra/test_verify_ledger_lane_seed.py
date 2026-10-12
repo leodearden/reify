@@ -494,7 +494,7 @@ class LaneForensicsTests(unittest.TestCase):
                 "phase": "clippy",
                 "exited_at": S + 120,
                 "rc": 0,
-                "seed_to_first_build_secs": 20.0,
+                "seed_to_first_build_secs": 120.0,
                 "basis": "verify-step-end",
             },
         )

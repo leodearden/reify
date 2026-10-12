@@ -30,6 +30,8 @@ RECORD_SCHEMA = "reify.verify-run/1"
 LEDGER_FILE = "verify-runs.jsonl"
 SEED_STAMP_SCHEMA = "reify.lane-seed/1"
 SEED_STAMP_SUFFIX = ".seed-stamp.json"
+AGENT_START_LOG = ".reify-cargo-starts.jsonl"
+FINGERPRINT_PROFILES = ("debug", "release")
 
 
 class Phase(enum.StrEnum):
@@ -532,6 +534,8 @@ def compose_record(meta, journal, exit_code, ended_at, signal):
         "lane": meta["lane_dir"],
     }
     record.update(git_identity(meta["repo_root"]))
+    steps = fold_steps(meta, load_journal(journal), journal)
+    errors = []
     record.update(
         {
             "started_at": meta["started_at"],
@@ -541,10 +545,11 @@ def compose_record(meta, journal, exit_code, ended_at, signal):
             "verdict": "pass" if exit_code == 0 else "fail",
             "signal": signal or None,
             "release_pass": release_pass_of(meta),
-            "steps": fold_steps(meta, load_journal(journal), journal),
+            "steps": steps,
+            "lane_seed": lane_seed_or_none(meta, steps, errors),
         }
     )
-    record["instrument_errors"] = read_instrument_errors(journal)
+    record["instrument_errors"] = read_instrument_errors(journal) + errors
     return record
 
 
@@ -606,6 +611,166 @@ def write_seed_stamp(lane_dir, mode, started_at):
     except BaseException:
         os.unlink(tmp)
         raise
+
+
+# ---------------------------------------------------------------------------
+# Lane seed forensics: the record's lane_seed block, read-only over the lane.
+# Seed → first build is timed from the stamp's exited_at (S) to the first
+# known cargo start after S: an agent start from the agent-bin/cargo log, or
+# this run's first cargo step. Cargo rewrites fingerprint files in place, so
+# a unit's last write is its newest FILE mtime (its dir mtime does not move).
+# ---------------------------------------------------------------------------
+
+
+def read_seed_stamp(lane_dir):
+    path = seed_stamp_path(lane_dir)
+    if not path.exists():
+        return None
+    stamp = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(stamp, dict):
+        raise ValueError(f"{path}: not a JSON object")
+    return stamp
+
+
+def is_number(value):
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def read_agent_starts(lane_dir, seed_at, errors):
+    path = Path(lane_dir) / "target" / AGENT_START_LOG
+    if not path.exists():
+        return []
+    starts = []
+    text = path.read_text(encoding="utf-8", errors="replace")
+    for lineno, line in enumerate(text.splitlines(), 1):
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+        except ValueError:
+            row = None
+        if not (isinstance(row, dict) and is_number(row.get("started_at")) and isinstance(row.get("subcommand"), str)):
+            errors.append(f"lane_seed: malformed agent start line {lineno} in {path}")
+        elif row["started_at"] > seed_at:
+            starts.append({"source": "agent", "started_at": row["started_at"], "subcommand": row["subcommand"]})
+    return starts
+
+
+def verify_starts(meta, steps, seed_at):
+    return [
+        {"source": "verify", "started_at": step["began_at"], "index": step["index"], "phase": step["phase"]}
+        for entry, step in zip(meta["plan"], steps)
+        if entry["cargo"] and step["began_at"] is not None and step["began_at"] > seed_at
+    ]
+
+
+def newest_file_mtime(unit_dir):
+    newest = None
+    with os.scandir(unit_dir) as entries:
+        for entry in entries:
+            if entry.is_file(follow_symlinks=False):
+                mtime = entry.stat(follow_symlinks=False).st_mtime
+                newest = mtime if newest is None else max(newest, mtime)
+    return newest
+
+
+def scan_fingerprints(target):
+    """{"<profile>/<unit>": newest file mtime or None} over every profile's .fingerprint dir."""
+    units = {}
+    for profile in FINGERPRINT_PROFILES:
+        root = Path(target) / profile / ".fingerprint"
+        if not root.is_dir():
+            continue
+        with os.scandir(root) as entries:
+            for entry in entries:
+                if entry.is_dir(follow_symlinks=False):
+                    units[f"{profile}/{entry.name}"] = newest_file_mtime(entry.path)
+    return units
+
+
+def write_span(mtimes):
+    return {
+        "units": len(mtimes),
+        "first_write_at": min(mtimes) if mtimes else None,
+        "last_write_at": max(mtimes) if mtimes else None,
+    }
+
+
+def since(at, start):
+    return None if at is None else round(at - start, 6)
+
+
+def agent_first_build(seed_at, first, later_starts, written):
+    end = later_starts[0]["started_at"] if later_starts else None
+    in_window = [m for m in written if m >= first["started_at"] and (end is None or m < end)]
+    last = max(in_window) if in_window else None
+    return {
+        "source": "agent",
+        "started_at": first["started_at"],
+        "window_end_at": end,
+        "ended_by": "next-cargo-start" if later_starts else "no-later-cargo-start",
+        "units_written": len(in_window),
+        "last_unit_write_at": last,
+        "seed_to_first_build_secs": since(last, seed_at),
+        "basis": "fingerprint-mtime",
+    }
+
+
+def verify_first_build(seed_at, first, step):
+    return {
+        "source": "verify",
+        "started_at": first["started_at"],
+        "index": first["index"],
+        "phase": first["phase"],
+        "exited_at": step["ended_at"],
+        "rc": step["rc"],
+        "seed_to_first_build_secs": since(step["ended_at"], seed_at),
+        "basis": "verify-step-end",
+    }
+
+
+def first_build_window(seed_at, starts, written, steps):
+    if not starts:
+        return None
+    first = starts[0]
+    if first["source"] == "agent":
+        return agent_first_build(seed_at, first, starts[1:], written)
+    return verify_first_build(seed_at, first, steps[first["index"]])
+
+
+def lane_seed_block(meta, steps, errors):
+    stamp = read_seed_stamp(meta["lane_dir"])
+    if stamp is None:
+        return None
+    seed_at = stamp["exited_at"]
+    starts = sorted(
+        read_agent_starts(meta["lane_dir"], seed_at, errors) + verify_starts(meta, steps, seed_at),
+        key=lambda start: start["started_at"],
+    )
+    units = scan_fingerprints(Path(meta["lane_dir"]) / "target")
+    written = sorted(m for m in units.values() if m is not None and m > seed_at)
+    first_start = starts[0]["started_at"] if starts else None
+    span = write_span(written)
+    return {
+        "seed": stamp,
+        "cargo_starts": starts,
+        "fingerprint": {
+            "units_total": len(units),
+            "units_written_since_seed": span["units"],
+            "first_write_at": span["first_write_at"],
+            "last_write_at": span["last_write_at"],
+        },
+        "unattributed_writes": write_span([m for m in written if first_start is None or m < first_start]),
+        "first_build": first_build_window(seed_at, starts, written, steps),
+    }
+
+
+def lane_seed_or_none(meta, steps, errors):
+    try:
+        return lane_seed_block(meta, steps, errors)
+    except Exception as exc:  # fail-open: a bad stamp or lane costs the block, never the record
+        errors.append(f"lane_seed: {type(exc).__name__}: {exc}")
+        return None
 
 
 # ---------------------------------------------------------------------------
