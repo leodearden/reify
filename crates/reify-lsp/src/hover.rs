@@ -386,7 +386,7 @@ pub(crate) const KEYWORD_DESCRIPTIONS: &[(&str, &str)] = &[
     ("connect", "Declares a connection between ports."),
     (
         "chain",
-        "Connects a sequence of occurrences, each one's output port to the next one's input port.",
+        "Connects a sequence of ports or occurrences in series; an occurrence's unique output/input port is inferred for each hop.",
     ),
     ("where", "Introduces additional type or value constraints."),
 ];
@@ -402,6 +402,8 @@ fn keyword_description(word: &str) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::analysis::test_fixtures::occurrences;
+    use crate::convert::offset_to_position;
     use tower_lsp::lsp_types::Url;
 
     fn test_uri() -> Url {
@@ -1008,11 +1010,14 @@ structure B {
     fn all_completion_keywords_have_hover_descriptions() {
         use std::collections::HashSet;
 
-        use crate::completion::{BODY_KEYWORDS, EXPR_KEYWORDS, TOP_LEVEL_KEYWORDS};
+        use crate::completion::{
+            BODY_KEYWORDS, CONTEXTUAL_BODY_KEYWORDS, EXPR_KEYWORDS, TOP_LEVEL_KEYWORDS,
+        };
 
         let completion_union: HashSet<&str> = TOP_LEVEL_KEYWORDS
             .iter()
             .chain(BODY_KEYWORDS.iter())
+            .chain(CONTEXTUAL_BODY_KEYWORDS.iter())
             .chain(EXPR_KEYWORDS.iter())
             .copied()
             .collect();
@@ -1712,5 +1717,66 @@ structure Bolt {
             md.contains("**type**"),
             "keyword hover should bold the keyword, got: {md}"
         );
+    }
+
+    // --- `chain`: a keyword only at the head of a body statement ---
+
+    /// The keyword hover is the last arm of `compute_hover_in_context`, reached
+    /// only after the member, entity, declaration and relation lookups all miss,
+    /// so hovering the `chain` of a real chain statement also pins that none of
+    /// them claims it first.
+    #[test]
+    fn hover_on_chain_keyword_of_chain_statement_shows_description() {
+        let source = "\
+trait FluidPort { param diameter : Length }
+occurrence def Pipe {
+    port inlet : in FluidPort { param diameter : Length = 25mm }
+    port outlet : out FluidPort { param diameter : Length = 25mm }
+}
+structure def Pipeline {
+    sub p1 = Pipe()
+    sub p2 = Pipe()
+    chain p1 -> p2
+}
+";
+        let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test"));
+        assert!(
+            parsed.errors.is_empty(),
+            "fixture must parse clean: {:?}",
+            parsed.errors
+        );
+        let keyword = occurrences(source, "chain")[0];
+        let md = hover_markdown(source, offset_to_position(source, keyword as u32))
+            .expect("hover on the 'chain' keyword must return Some");
+        assert!(
+            md.contains("**chain**"),
+            "keyword hover should bold the keyword, got: {md}"
+        );
+    }
+
+    /// `chain` is an ordinary identifier outside statement position, so a binding
+    /// that borrows the name hovers as that binding, at its declaration and at a
+    /// use, and never as the keyword.
+    #[test]
+    fn hover_on_binding_named_chain_shows_the_binding_not_the_keyword() {
+        let source = "structure def S {\n    param a : Length = 1mm\n    param b : Length = 2mm\n    let chain = a < b\n    constraint chain\n}\n";
+        let sites = occurrences(source, "chain");
+        assert_eq!(
+            sites.len(),
+            2,
+            "fixture should hold the declaration and one use of `chain`"
+        );
+        for site in sites {
+            let md = hover_markdown(source, offset_to_position(source, site as u32))
+                .expect("hover on a binding named 'chain' must return Some");
+            assert!(
+                md.contains("let chain"),
+                "should show the binding, got: {md}"
+            );
+            assert!(
+                !md.contains("**chain**"),
+                "must not show the keyword description, got: {md}"
+            );
+        }
     }
 }

@@ -157,6 +157,7 @@ pub fn compute_completions_in_context(
         }
         CursorContext::StructureBody { ref structure_name } => {
             push_keywords(&mut items, BODY_KEYWORDS);
+            push_keywords(&mut items, CONTEXTUAL_BODY_KEYWORDS);
             push_keywords(&mut items, EXPR_KEYWORDS);
             push_builtins(&mut items);
             push_type_names(&mut items);
@@ -469,9 +470,14 @@ pub(crate) const BODY_KEYWORDS: &[&str] = &[
     "maximize",
     "port",
     "connect",
-    "chain",
     "where",
 ];
+
+/// Statement keywords that the grammar reads as keywords only at the head of a
+/// body statement; anywhere else they stay ordinary identifiers
+/// (`let chain = a < b`). They complete beside [`BODY_KEYWORDS`] but are not
+/// reserved words, so, unlike that list, rename accepts them as new names.
+pub(crate) const CONTEXTUAL_BODY_KEYWORDS: &[&str] = &["chain"];
 
 /// Keywords valid inside expressions (conditions, values, operators).
 pub(crate) const EXPR_KEYWORDS: &[&str] =
@@ -1905,6 +1911,82 @@ mod tests {
         assert!(
             !keyword_labels.contains(&"import"),
             "body should NOT include 'import'"
+        );
+    }
+
+    fn keyword_labels(items: &[CompletionItem]) -> Vec<&str> {
+        items
+            .iter()
+            .filter(|i| i.kind == Some(CompletionItemKind::KEYWORD))
+            .map(|k| k.label.as_str())
+            .collect()
+    }
+
+    /// `chain` starts a body statement, so it completes where one can begin and
+    /// nowhere inside an expression.
+    #[test]
+    fn completion_offers_chain_keyword_where_a_body_statement_can_start() {
+        let source = reify_test_support::bracket_source();
+        // Line 6 is the empty line between params and lets, inside the body.
+        let in_body = compute_completions(source, &test_uri(), Position::new(6, 0));
+        assert!(
+            keyword_labels(&in_body).contains(&"chain"),
+            "a body statement position should include 'chain'"
+        );
+
+        let source = "structure Foo {\n    let x = \n}";
+        // Line 1, col 12 is after "    let x = " — inside the expression.
+        let in_expression = compute_completions(source, &test_uri(), Position::new(1, 12));
+        assert!(
+            !keyword_labels(&in_expression).contains(&"chain"),
+            "an expression position should NOT include 'chain'"
+        );
+    }
+
+    /// A contextual keyword is an identifier everywhere but at the head of a body
+    /// statement, so, unlike the reserved [`BODY_KEYWORDS`], it stays a legal
+    /// rename target. Both halves are checked: rename accepts the name, and the
+    /// parser reads the renamed buffer back clean.
+    #[test]
+    fn contextual_body_keywords_remain_legal_rename_targets() {
+        let source = "structure S {\n    param a: Length = 1mm\n    let total = a * 2\n    constraint total > 0mm\n}";
+        let parse = |text: &str| reify_syntax::parse(text, reify_core::ModulePath::single("test"));
+        let parsed = parse(source);
+        assert!(
+            parsed.errors.is_empty(),
+            "fixture must parse clean: {:?}",
+            parsed.errors
+        );
+        let on_total = crate::convert::offset_to_position(
+            source,
+            source.find("total").expect("fixture declares `total`") as u32,
+        );
+        let rename_to = |new_name: &str| {
+            crate::references::compute_rename(source, &parsed, &test_uri(), on_total, new_name)
+        };
+
+        assert!(
+            CONTEXTUAL_BODY_KEYWORDS.contains(&"chain"),
+            "`chain` is the contextual keyword this test exists for"
+        );
+        for keyword in CONTEXTUAL_BODY_KEYWORDS {
+            assert!(
+                rename_to(keyword).is_some(),
+                "renaming a binding to the contextual keyword `{keyword}` must be accepted"
+            );
+            let renamed = parse(&source.replace("total", keyword));
+            assert!(
+                renamed.errors.is_empty(),
+                "`{keyword}` must re-parse clean as an identifier: {:?}",
+                renamed.errors
+            );
+        }
+
+        // A reserved body keyword is still refused, so the acceptance above is
+        // down to the keyword being contextual and not to the cursor position.
+        assert!(
+            rename_to("let").is_none(),
+            "a reserved keyword must stay refused as a rename target"
         );
     }
 
