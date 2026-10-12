@@ -11145,6 +11145,121 @@ mod tests {
         );
     }
 
+    /// A [`super::TrialModel`] with no user functions and no compute dispatch —
+    /// the shape every `build_trial_values` test below needs.
+    fn trial_model<'a>(
+        base: &'a ValueMap,
+        params: &'a [reify_ir::AutoParam],
+        cells: &'a [(reify_core::ValueCellId, reify_ir::CompiledExpr)],
+    ) -> super::TrialModel<'a> {
+        super::TrialModel {
+            auto_params: params,
+            base_values: base,
+            dependent_cells: cells,
+            functions: &[],
+            dispatch: None,
+        }
+    }
+
+    /// `TrialModel::from_problem` must wire ALL of the problem's solve-invariant
+    /// inputs, `dependent_cells` included: a model that dropped them would hand
+    /// back `line_cost`'s stale base value (999.0) at every trial point.
+    #[test]
+    fn trial_model_from_problem_folds_the_problems_dependent_cells_at_the_trial_point() {
+        use super::{TrialModel, build_trial_values};
+        use reify_core::DimensionVector;
+        use reify_ir::Value;
+
+        let (auto_params, constraints, base, dependent_cells, objective) =
+            joint_drive_dependent_cell_fixture();
+        let q_id = auto_params[0].id.clone();
+        let line_cost_id = dependent_cells[0].0.clone();
+        let problem = ResolutionProblem {
+            auto_params,
+            constraints,
+            current_values: base.clone(),
+            objective: Some(objective),
+            functions: vec![].into(),
+            dependent_cells,
+        };
+        let model = TrialModel::from_problem(&problem, None);
+
+        let mut line_costs = Vec::new();
+        for q in [2.0_f64, 8.0_f64] {
+            let values = build_trial_values(&model, &[q]);
+
+            assert_eq!(
+                values.get(&q_id),
+                Some(&Value::Scalar {
+                    si_value: q,
+                    dimension: DimensionVector::DIMENSIONLESS,
+                }),
+                "the auto must hold the trial scalar with its declared dimension"
+            );
+            for (id, v) in base.iter() {
+                if id != &line_cost_id {
+                    assert_eq!(
+                        values.get(id),
+                        Some(v),
+                        "base-only cell {id:?} must pass through"
+                    );
+                }
+            }
+            assert_eq!(values.len(), base.len() + 1, "only the auto may be added");
+
+            // line_cost = unit_cost * q, with unit_cost = 0.5 USD in the fixture.
+            let want = 0.5 * q;
+            match values.get(&line_cost_id) {
+                Some(&Value::Scalar {
+                    si_value,
+                    dimension,
+                }) => {
+                    assert!(
+                        (si_value - want).abs() < 1e-12,
+                        "line_cost at q={q} must be recomputed as 0.5*q = {want}, got \
+                         {si_value} (999.0 means `from_problem` dropped the dependent cells)"
+                    );
+                    assert_eq!(dimension, DimensionVector::MONEY);
+                    line_costs.push(si_value);
+                }
+                other => panic!("expected a Scalar at line_cost, got {other:?}"),
+            }
+        }
+        assert_ne!(
+            line_costs[0], line_costs[1],
+            "the dependent cell must differ between the two trial points"
+        );
+    }
+
+    /// The x ↔ auto_params mapping is positional, so an `x` of the wrong
+    /// length names no point at all: it must be refused, not truncated to
+    /// whichever autos happen to have a coordinate.
+    #[test]
+    #[should_panic(expected = "the mapping is positional")]
+    fn build_trial_values_refuses_an_x_that_does_not_match_auto_params() {
+        use super::build_trial_values;
+        use reify_core::{Type, ValueCellId};
+        use reify_ir::AutoParam;
+
+        let params = vec![
+            AutoParam {
+                id: ValueCellId::new("Bracket", "thickness"),
+                param_type: Type::length(),
+                bounds: Some((0.001, 0.1)),
+                free: false,
+            },
+            AutoParam {
+                id: ValueCellId::new("Bracket", "angle"),
+                param_type: Type::angle(),
+                bounds: Some((0.0, std::f64::consts::PI)),
+                free: false,
+            },
+        ];
+        let base = ValueMap::new();
+
+        let _ = build_trial_values(&trial_model(&base, &params, &[]), &[0.005]);
+    }
+
     /// Assert two `ValueMap`s hold exactly the same keys bound to exactly the
     /// same values — the teeth behind BT-2's "byte-identical" claim (a
     /// per-key spot check would not catch an EXTRA key the fold inserted).
