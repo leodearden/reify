@@ -24,7 +24,8 @@ import {
   type RenameUi,
   type ApplyEditFn,
 } from './rename';
-import { createDocumentVersions, type VersionSkewGuard } from './documentVersions';
+import { createDocumentVersions } from './documentVersions';
+import type { VersionSkewGuard } from './versionSkew';
 import { findUsesCommand, type ReferenceResult } from './references';
 import { createNavHistory } from '../hooks/useNavHistory';
 import type { NavEntry } from '../hooks/useNavHistory';

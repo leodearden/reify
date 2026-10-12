@@ -15,7 +15,7 @@
  *    or opens the inline field via injected UI callbacks.
  */
 import type { EditorView } from '@codemirror/view';
-import { versionsDisagree, type DocumentVersionReader, type VersionSkewGuard } from './documentVersions';
+import { versionsDisagree, type DocumentVersionReader, type VersionSkewGuard } from './versionSkew';
 import type { PrepareRenameResult, Range, TextEdit, WorkspaceEdit } from './lspClient';
 import { lspRangeToCmRange } from './lspRange';
 

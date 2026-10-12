@@ -18,7 +18,7 @@
  * otherwise dropped (see resolveFreshLocations).
  */
 import type { EditorView } from '@codemirror/view';
-import { versionsDisagree, type VersionSkewGuard } from './documentVersions';
+import { versionsDisagree, type VersionSkewGuard } from './versionSkew';
 import type { Location, LspClient } from './lspClient';
 
 /**

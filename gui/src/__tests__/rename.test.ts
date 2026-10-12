@@ -14,7 +14,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { EditorView } from '@codemirror/view';
 import { applyWorkspaceEdit, applyTextEditsToString, applyWorkspaceEditAcrossFiles, renameCommand } from '../editor/rename';
 import type { RenameClient, RenameUi } from '../editor/rename';
-import type { VersionSkewGuard } from '../editor/documentVersions';
+import type { VersionSkewGuard } from '../editor/versionSkew';
 import type { WorkspaceEdit } from '../editor/lspClient';
 import { flushMacrotasks } from './test-utils';
 

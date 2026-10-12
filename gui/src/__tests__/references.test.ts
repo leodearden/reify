@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { EditorView } from '@codemirror/view';
 import { deferred, flushMacrotasks, withSuppressedRejections } from './test-utils';
 import type { Location, LspClient } from '../editor/lspClient';
-import type { VersionSkewGuard } from '../editor/documentVersions';
+import type { VersionSkewGuard } from '../editor/versionSkew';
 
 // Mock Tauri + CodeMirror modules so importing references.ts (which only needs
 // the EditorView / Location / LspClient *types*) never drags real DOM or Tauri
