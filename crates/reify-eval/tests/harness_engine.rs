@@ -156,3 +156,9 @@ mod discrete_default_on_e2e;
 // reason as #5417's and #5415's above.
 #[path = "harness_engine/indeterminate_reason_carrier_e2e.rs"]
 mod indeterminate_reason_carrier_e2e;
+// Task #5516's DefEnv skeleton pins land here for the same anti-re-accretion
+// reason as #5196's and #5360's above. They drive the read-only definition
+// environment the engine migrates onto in θ (#5522), over programs built by
+// `reify_compiler::program::compile_program`.
+#[path = "harness_engine/def_env_skeleton.rs"]
+mod def_env_skeleton;
