@@ -45,6 +45,12 @@ use reify_core::{Diagnostic, DiagnosticCode, DiagnosticLabel, SourceSpan};
 /// Maximum combined recursion depth across the two compiler expression
 /// recursion entry points before the cap fires.
 ///
+/// This is the single expression-nesting bound for compilation: the pre-compile
+/// lint walkers in `compile_builder` (`dot_chain_lint`, `shadow_lint`) stop
+/// silently past it, so the user-facing outcome is this guard's
+/// `E_EXPR_NESTING_TOO_DEEP` (pinned end to end by
+/// `over_cap_nesting_through_public_compile_reports_too_deep_instead_of_panicking`).
+///
 /// Rationale: realistic designs nest at most a few dozen levels
 /// (`designs/litter_tray/bottom_deck_split.ri` ≈ 9 boolean levels), and even
 /// the 8 MiB CLI main thread only fits ~55 fat debug frames today — so any
@@ -411,7 +417,7 @@ mod tests {
         );
         let other_errors: Vec<&Diagnostic> = diagnostics
             .iter()
-            .filter(|d| d.severity == reify_core::Severity::Error && !is_too_deep(*d))
+            .filter(|d| d.severity == reify_core::Severity::Error && !is_too_deep(d))
             .collect();
         assert!(
             other_errors.is_empty(),

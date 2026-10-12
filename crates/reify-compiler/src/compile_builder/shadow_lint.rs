@@ -47,14 +47,7 @@ use std::collections::HashMap;
 use reify_ast::{Expr, ExprKind, ParsedModule};
 use reify_core::{Diagnostic, DiagnosticCode, DiagnosticLabel, SourceSpan};
 
-/// Stack-safety bound on the structural recursion in [`walk_expr_depth`].
-///
-/// Mirrors the convention in `dot_chain_lint.rs`: 256 is generous (typical
-/// hand-written code never exceeds ~20). Exceeding the bound is treated as a
-/// "should never happen" invariant violation; debug builds panic for fuzzer
-/// visibility, release builds silently truncate so end-users never see an
-/// unactionable diagnostic.
-const MAX_EXPR_DEPTH: usize = 256;
+use crate::recursion_guard::MAX_COMPILE_RECURSION_DEPTH;
 
 /// A single lexical scope frame: names declared in this scope mapped to their
 /// declaration spans.
@@ -574,14 +567,8 @@ fn walk_expr_depth(
     diagnostics: &mut Vec<Diagnostic>,
     depth: usize,
 ) {
-    if depth > MAX_EXPR_DEPTH {
-        debug_assert!(
-            false,
-            "shadow_lint walk_expr_depth exceeded MAX_EXPR_DEPTH = {} (depth = {}); \
-             shadow lint coverage truncated at this subtree — likely upstream parser \
-             bug or fuzzer input producing pathologically deep AST",
-            MAX_EXPR_DEPTH, depth
-        );
+    // Past the shared cap the lint stops; compilation reports E_EXPR_NESTING_TOO_DEEP.
+    if depth > MAX_COMPILE_RECURSION_DEPTH {
         return;
     }
     let next = depth + 1;
