@@ -54,3 +54,65 @@ fn check_import_unit_using_stdlib_names_is_clean() {
         "stderr must carry no error; stderr: {stderr}"
     );
 }
+
+/// An import that compiles but carries an Error (PRD boundary #3, third shape)
+/// fails `reify check` — the unchanged "any compile Error, exit non-zero"
+/// policy — and the error line names the imported file and the cause.
+#[test]
+fn check_import_unit_error_fails_and_names_the_imported_file() {
+    let tmp = tempfile::tempdir().unwrap();
+    fs::write(
+        tmp.path().join("parts.ri"),
+        "module parts\npub structure def Part {\n    param q : Frobnicate = zorp()\n}\n",
+    )
+    .unwrap();
+    fs::write(
+        tmp.path().join("main.ri"),
+        "module main\nimport parts\nstructure def Rig {\n    sub p = Part()\n}\n",
+    )
+    .unwrap();
+    let main = tmp.path().join("main.ri");
+
+    let (status, stdout, stderr) = common::run_with_args(&["check", main.to_str().unwrap()]);
+
+    assert!(
+        !status.success(),
+        "reify check must exit non-zero; stdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stderr
+            .lines()
+            .any(|l| l.starts_with("error:") && l.contains("parts.ri") && l.contains("Frobnicate")),
+        "expected an `error:` line naming parts.ri and Frobnicate; stderr: {stderr}"
+    );
+}
+
+/// An import that fails to parse fails `reify check`, naming the broken file.
+#[test]
+fn check_import_parse_error_fails_and_names_the_broken_file() {
+    let tmp = tempfile::tempdir().unwrap();
+    fs::write(
+        tmp.path().join("broken.ri"),
+        "module broken\npub structure def B { param = }\n",
+    )
+    .unwrap();
+    fs::write(
+        tmp.path().join("main.ri"),
+        "module main\nimport broken\nstructure def Rig {\n    param r : Real = 1\n}\n",
+    )
+    .unwrap();
+    let main = tmp.path().join("main.ri");
+
+    let (status, stdout, stderr) = common::run_with_args(&["check", main.to_str().unwrap()]);
+
+    assert!(
+        !status.success(),
+        "reify check must exit non-zero; stdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stderr
+            .lines()
+            .any(|l| l.starts_with("error:") && l.contains("broken.ri")),
+        "expected an `error:` line naming broken.ri; stderr: {stderr}"
+    );
+}

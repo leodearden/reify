@@ -569,3 +569,232 @@ fn compile_program_cfg_gated_imports_are_inert() {
     );
     assert_eq!(import_keys(&program), vec!["mid"]);
 }
+
+// ─── task 5516 step-7: broken imports surface on the entry, attributed (I2) ──
+
+const HEALTHY_SRC: &str =
+    "module healthy\npub structure def Healthy {\n    param h : Real = 1\n}\n";
+
+/// Write `healthy.ri` plus `extra` siblings, compile `main_src` as `main`, and
+/// assert the entry still compiled: its own `Rig` and the healthy import's
+/// `Healthy` are both in the merged template list.
+fn compile_with_healthy_sibling(
+    dir: &Path,
+    extra: &[(&str, &str)],
+    main_src: &str,
+) -> CompiledProgram {
+    write(dir, "healthy.ri", HEALTHY_SRC);
+    for (name, src) in extra {
+        write(dir, name, src);
+    }
+    let program = compile_entry(dir, "main", main_src, &CfgSet::default());
+    let names = template_names(&program.entry);
+    assert!(
+        names.contains(&"Rig") && names.contains(&"Healthy"),
+        "the entry must still compile despite a broken import, got templates {names:?}"
+    );
+    program
+}
+
+fn rehomed_from<'m>(
+    entry: &'m CompiledModule,
+    module_key: &str,
+) -> Vec<&'m reify_core::Diagnostic> {
+    let prefix = format!("in imported module '{module_key}' (");
+    entry
+        .diagnostics
+        .iter()
+        .filter(|d| d.message.starts_with(&prefix))
+        .collect()
+}
+
+/// (a) A missing import file surfaces as an Error naming the module and the
+/// path that was tried.
+#[test]
+fn compile_program_missing_import_surfaces_error_naming_tried_path() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let program = compile_with_healthy_sibling(
+        dir.path(),
+        &[],
+        "module main\nimport nowhere\nimport healthy\nstructure def Rig {\n    sub h = Healthy()\n}\n",
+    );
+    let tried = dir.path().join("nowhere.ri").display().to_string();
+    assert!(
+        errors(&program.entry)
+            .iter()
+            .any(|m| m.contains("nowhere") && m.contains(&tried)),
+        "expected an Error naming `nowhere` and {tried}, got {:?}",
+        errors(&program.entry)
+    );
+}
+
+/// (b) An import that fails to parse surfaces one coded Error per parse error,
+/// naming the imported file and the parser's own line:col.
+#[test]
+fn compile_program_import_parse_error_is_coded_and_file_attributed() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let broken_src = "module broken\npub structure def B { param = }\n";
+    let program = compile_with_healthy_sibling(
+        dir.path(),
+        &[("broken.ri", broken_src)],
+        "module main\nimport broken\nimport healthy\nstructure def Rig {\n    sub h = Healthy()\n}\n",
+    );
+
+    let rendered = reify_compiler::parse_with_stdlib(broken_src, ModulePath::single("broken"))
+        .render_errors(broken_src);
+    assert!(
+        !rendered.is_empty(),
+        "precondition: broken.ri must fail to parse"
+    );
+    let broken_path = dir.path().join("broken.ri").display().to_string();
+    for line_col_message in &rendered {
+        let located = format!("{broken_path}:{line_col_message}");
+        assert!(
+            program.entry.diagnostics.iter().any(|d| {
+                d.severity == Severity::Error
+                    && d.code == Some(DiagnosticCode::ImportedModuleParseError)
+                    && d.message.contains(&located)
+            }),
+            "expected a coded ImportedModuleParseError containing {located:?}, got {:?}",
+            program.entry.diagnostics
+        );
+    }
+    assert!(!import_keys(&program).contains(&"broken"));
+    assert!(!source_keys(&program).contains(&"broken"));
+}
+
+/// (c) An import that parses and compiles but carries Error/Warning
+/// diagnostics has each of them re-homed onto the entry: same severity, code
+/// and candidates, the message prefixed with the imported module and its
+/// `file:line:col`, and every label moved to the prelude sentinel because its
+/// span indexes the imported file, not the entry.
+#[test]
+fn compile_program_rehomes_import_unit_diagnostics_onto_entry() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let parts_src =
+        "module parts\npub structure def Part {\n    param q : Frobnicate = zorp()\n}\n";
+    let program = compile_with_healthy_sibling(
+        dir.path(),
+        &[("parts.ri", parts_src)],
+        "module main\nimport parts\nimport healthy\nstructure def Rig {\n    sub p = Part()\n    sub h = Healthy()\n}\n",
+    );
+
+    let parts_unit = program
+        .imports
+        .iter()
+        .find(|u| u.import_path == "parts")
+        .expect("parts is a compiled import unit");
+    let originals: Vec<&reify_core::Diagnostic> = parts_unit
+        .module
+        .diagnostics
+        .iter()
+        .filter(|d| matches!(d.severity, Severity::Error | Severity::Warning))
+        .collect();
+    assert!(
+        originals.iter().any(|d| d.severity == Severity::Error),
+        "precondition: the parts unit must carry at least one Error, got {:?}",
+        parts_unit.module.diagnostics
+    );
+
+    let parts_path = dir.path().join("parts.ri").display().to_string();
+    let rehomed = rehomed_from(&program.entry, "parts");
+    for original in &originals {
+        let location = original
+            .labels
+            .iter()
+            .find(|l| l.span != SourceSpan::prelude())
+            .map(|l| {
+                let (line, col) =
+                    reify_core::byte_offset_to_line_col(parts_src, l.span.start as usize);
+                format!("{parts_path}:{line}:{col}")
+            })
+            .unwrap_or_else(|| parts_path.clone());
+        let copy = rehomed.iter().find(|d| {
+            d.severity == original.severity
+                && d.code == original.code
+                && d.candidates == original.candidates
+                && d.message.contains(&format!("({location})"))
+                && d.message.ends_with(&original.message)
+        });
+        let copy = copy.unwrap_or_else(|| {
+            panic!(
+                "no re-homed copy of {original:?} attributed to {location}; re-homed: {rehomed:?}"
+            )
+        });
+        assert!(
+            copy.labels.iter().all(|l| l.span == SourceSpan::prelude()),
+            "a re-homed label must not index the entry file: {copy:?}"
+        );
+    }
+    assert!(
+        rehomed.iter().any(|d| d.severity == Severity::Error),
+        "at least one re-homed copy must be an Error"
+    );
+    assert!(
+        rehomed.iter().all(|d| d.severity != Severity::Info),
+        "Info diagnostics are not re-homed: {rehomed:?}"
+    );
+}
+
+/// (d) A transitive import's Error is surfaced on the entry exactly once,
+/// attributed to its own file.
+#[test]
+fn compile_program_rehomes_transitive_import_errors_once() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let program = compile_with_healthy_sibling(
+        dir.path(),
+        &[
+            (
+                "mid.ri",
+                "module mid\nimport leaf\npub structure def Mid {\n    param m : Real = 1\n}\n",
+            ),
+            (
+                "leaf.ri",
+                "module leaf\npub structure def Leaf {\n    param z : Nope\n}\n",
+            ),
+        ],
+        "module main\nimport mid\nimport healthy\nstructure def Rig {\n    sub m = Mid()\n    sub h = Healthy()\n}\n",
+    );
+
+    let leaf_path = dir.path().join("leaf.ri").display().to_string();
+    let leaf_errors: Vec<&reify_core::Diagnostic> = rehomed_from(&program.entry, "leaf")
+        .into_iter()
+        .filter(|d| d.severity == Severity::Error && d.message.contains("Nope"))
+        .collect();
+    assert_eq!(
+        leaf_errors.len(),
+        1,
+        "the leaf Error must reach the entry exactly once, got {:?}",
+        program.entry.diagnostics
+    );
+    assert!(
+        leaf_errors[0].message.contains(&leaf_path),
+        "the leaf Error must be attributed to {leaf_path}: {:?}",
+        leaf_errors[0]
+    );
+}
+
+/// (e) A healthy import with a `module` declaration contributes nothing.
+#[test]
+fn compile_program_healthy_import_contributes_no_diagnostics() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let program = compile_with_healthy_sibling(
+        dir.path(),
+        &[],
+        "module main\nimport healthy\nstructure def Rig {\n    sub h = Healthy()\n}\n",
+    );
+    let healthy_unit = &program.imports[0].module;
+    assert!(
+        !healthy_unit
+            .diagnostics
+            .iter()
+            .any(|d| matches!(d.severity, Severity::Error | Severity::Warning)),
+        "precondition: the healthy unit must be clean, got {:?}",
+        healthy_unit.diagnostics
+    );
+    assert!(
+        rehomed_from(&program.entry, "healthy").is_empty(),
+        "a clean import must contribute nothing, got {:?}",
+        program.entry.diagnostics
+    );
+}
