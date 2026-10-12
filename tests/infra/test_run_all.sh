@@ -57,12 +57,18 @@ assert "run_all.sh is executable" \
 assert "load_tolerance_lib.sh file exists" \
     test -f "$LOAD_TOLERANCE_LIB"
 
+# Every Test below drives run_all.sh, and the pool Tests source
+# load_tolerance_lib.sh; Test 1 has already named the missing one, so stop here.
+if [ ! -f "$RUN_ALL" ] || [ ! -f "$LOAD_TOLERANCE_LIB" ]; then
+    test_summary
+    exit 1
+fi
+
 # -- Test 2: test_helpers.sh excluded from discovery ----------------------------
 # Use a temp dir containing only test_helpers.sh to verify it is excluded.
 echo ""
 echo "--- Test 2: test_helpers.sh excluded from discovery ---"
 
-if [ -f "$RUN_ALL" ]; then
     TMPDIR_T2="$(mktemp -d)"
     _TMPDIRS+=("$TMPDIR_T2")
     cp "$SCRIPT_DIR/test_helpers.sh" "$TMPDIR_T2/test_helpers.sh"
@@ -74,10 +80,6 @@ if [ -f "$RUN_ALL" ]; then
     else
         assert "test_helpers.sh not listed as a discovered test (got: $t2_output)" false
     fi
-else
-    assert "test_helpers.sh not listed as a discovered test (skipped - run_all.sh missing)" \
-        false
-fi
 
 # -- Test 3: test_*.sh files are discovered, test_helpers.sh excluded -----------
 # Use a temp dir with mock test_*.sh scripts and test_helpers.sh to verify
@@ -86,7 +88,6 @@ fi
 echo ""
 echo "--- Test 3: test_*.sh discovery (mock dir) ---"
 
-if [ -f "$RUN_ALL" ]; then
     TMPDIR_T3="$(mktemp -d)"
     _TMPDIRS+=("$TMPDIR_T3")
     printf '#!/usr/bin/env bash\nexit 0\n' > "$TMPDIR_T3/test_portable_sha256.sh"
@@ -126,17 +127,11 @@ if [ -f "$RUN_ALL" ]; then
     else
         assert "test_helpers.sh is NOT in discovered output (got: $t3_output)" false
     fi
-else
-    assert "test_portable_sha256.sh is discovered (skipped - run_all.sh missing)" false
-    assert "test_test_helpers.sh is discovered (skipped - run_all.sh missing)" false
-    assert "test_helpers.sh is NOT in discovered output (skipped - run_all.sh missing)" false
-fi
 
 # -- Test 4: exit-code aggregation using temp dir mock scripts ------------------
 echo ""
 echo "--- Test 4: exit-code aggregation ---"
 
-if [ -f "$RUN_ALL" ]; then
     # 4a: all-pass scenario — should exit 0
     TMPDIR_PASS="$(mktemp -d)"
     _TMPDIRS+=("$TMPDIR_PASS")
@@ -174,14 +169,6 @@ if [ -f "$RUN_ALL" ]; then
 
     assert "run_all.sh exits 0 when no test_*.sh files found" \
         test "$t4c_rc" -eq 0
-else
-    assert "run_all.sh exits 0 when all tests pass (skipped - run_all.sh missing)" \
-        false
-    assert "run_all.sh exits 1 when any test fails (skipped - run_all.sh missing)" \
-        false
-    assert "run_all.sh exits 0 when no test_*.sh files found (skipped - run_all.sh missing)" \
-        false
-fi
 
 # -- Test 5: verify.sh plan wiring (merge-tier gating, task 5125) --------------
 echo ""
@@ -229,7 +216,6 @@ assert "cleanup() function defined" \
 echo ""
 echo "--- Test 7: failed-test diagnostic naming in summary ---"
 
-if [ -f "$RUN_ALL" ]; then
     # 7a: mixed pass+fail — FAILED line names the failing test, not the passing one
     TMPDIR_T7A="$(mktemp -d)"
     _TMPDIRS+=("$TMPDIR_T7A")
@@ -285,19 +271,11 @@ if [ -f "$RUN_ALL" ]; then
     else
         assert "=== Summary: line still present in run_all.sh output (got: $t7c_out)" false
     fi
-else
-    assert "=== FAILED: line is emitted on partial failure (skipped - run_all.sh missing)" false
-    assert "=== FAILED: line names the failing test test_boom.sh (skipped - run_all.sh missing)" false
-    assert "=== FAILED: line does NOT name the passing test test_pass.sh (skipped - run_all.sh missing)" false
-    assert "no === FAILED: line emitted on all-pass (skipped - run_all.sh missing)" false
-    assert "=== Summary: line still present in run_all.sh output (skipped - run_all.sh missing)" false
-fi
 
 # -- Test 8: failure-path classifier marker (^FAILED <space-joined names>) ------
 echo ""
 echo "--- Test 8: failure-path classifier marker ---"
 
-if [ -f "$RUN_ALL" ]; then
     # 8a: forced single failure — classifier marker ^FAILED must be emitted.
     # Matches dark-factory verify.py pattern #7b `^FAILED\s` -> test_failure,
     # ranked before pattern #10 `tree-sitter generate` -> tree_sitter_generate_error.
@@ -344,13 +322,6 @@ if [ -f "$RUN_ALL" ]; then
     else
         assert "no ^FAILED line emitted on all-pass (failure-path only) (got: $t8b_out)" false
     fi
-else
-    assert "^FAILED classifier marker line is emitted on failure (skipped - run_all.sh missing)" false
-    assert "^FAILED line names the failing suite test_boom.sh (skipped - run_all.sh missing)" false
-    assert "run_all.sh still exits 1 with classifier marker (skipped - run_all.sh missing)" false
-    assert "=== FAILED: human-readable line still present alongside classifier marker (skipped - run_all.sh missing)" false
-    assert "no ^FAILED line emitted on all-pass (failure-path only) (skipped - run_all.sh missing)" false
-fi
 
 # -- Test 9: H2 concurrent pool -- concurrency, partition, contract, order ------
 # Proves tests/infra/run_all.sh parallelizes the `pool`-classified bucket under
@@ -360,7 +331,6 @@ fi
 echo ""
 echo "--- Test 9: H2 concurrent pool (concurrency/partition/contract/order) ---"
 
-if [ -f "$RUN_ALL" ] && [ -f "$LOAD_TOLERANCE_LIB" ]; then
     TMPDIR_T9="$(mktemp -d)"
     _TMPDIRS+=("$TMPDIR_T9")
 
@@ -543,18 +513,6 @@ MOCKBODY
     t9b_pool_exhausted="$(_h2t9_probe_count "$PROBE_POOL_T9" exhausted)"
     assert "T9b control: pool group under REIFY_RUN_ALL_POOL_CONCURRENCY=1 -- each of the 2 non-last members held its full exclusive window (exhausted: $t9b_pool_exhausted of 2)" \
         test "$t9b_pool_exhausted" -eq 2
-else
-    assert "T9a: pool group max-concurrency >= 2 (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-    assert "T9a: serial group max-concurrency == 1 (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-    assert "T9a control: serial group -- each of the 2 non-last members held its full exclusive window with no successor arriving (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-    assert "T9a: byte-exact Summary line (6 discovered, 1 failed) (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-    assert "T9a: ^FAILED classifier marker names test_pool_3.sh (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-    assert "T9a: === FAILED: human line names test_pool_3.sh (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-    assert "T9a: discovered-order headers match sorted order (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-    assert "T9a: run_all.sh exits 1 (one pool failure) (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-    assert "T9b: REIFY_RUN_ALL_POOL_CONCURRENCY=1 forces pool max-concurrency == 1 (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-    assert "T9b control: pool group under REIFY_RUN_ALL_POOL_CONCURRENCY=1 -- each of the 2 non-last members held its full exclusive window (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-fi
 
 # -- Test 10: H2 pool N observability (INFO line + knob echo) -------------------
 # Proves run_all.sh reports its resolved concurrency bound N via an
@@ -564,7 +522,6 @@ fi
 echo ""
 echo "--- Test 10: H2 pool N observability (INFO line) ---"
 
-if [ -f "$RUN_ALL" ] && [ -f "$LOAD_TOLERANCE_LIB" ]; then
     TMPDIR_T10="$(mktemp -d)"
     _TMPDIRS+=("$TMPDIR_T10")
     MANIFEST_T10="$TMPDIR_T10/classification.manifest"
@@ -601,10 +558,6 @@ if [ -f "$RUN_ALL" ] && [ -f "$LOAD_TOLERANCE_LIB" ]; then
     else
         assert "T10b: INFO line reports a positive-integer default N (got: $t10b_out)" false
     fi
-else
-    assert "T10a: INFO line reports N=7 with REIFY_RUN_ALL_POOL_CONCURRENCY=7 (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-    assert "T10b: INFO line reports a positive-integer default N (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-fi
 
 # -- Test 11: H2 PSI soft-gate (non-blocking + fail-open) -----------------------
 # Proves the pool's PSI gate is SOFT (paces spawns under sustained pressure
@@ -613,7 +566,6 @@ fi
 echo ""
 echo "--- Test 11: H2 PSI soft-gate ---"
 
-if [ -f "$RUN_ALL" ] && [ -f "$LOAD_TOLERANCE_LIB" ]; then
     TMPDIR_T11="$(mktemp -d)"
     _TMPDIRS+=("$TMPDIR_T11")
     MANIFEST_T11="$TMPDIR_T11/classification.manifest"
@@ -670,12 +622,6 @@ if [ -f "$RUN_ALL" ] && [ -f "$LOAD_TOLERANCE_LIB" ]; then
     else
         assert "T11b: no PSI backoff note when source is unreadable (fail-open, no gating) (got: $t11b_out)" false
     fi
-else
-    assert "T11a: run completes with both pool mocks under sustained PSI pressure (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-    assert "T11a: a PSI backoff/yield note is present (gate engaged) (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-    assert "T11b: run completes normally with an unreadable PSI source (fail-open) (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-    assert "T11b: no PSI backoff note when source is unreadable (fail-open, no gating) (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-fi
 
 # -- Test 12: H2 verify-pipeline full-gate routing ------------------------------
 # run_all.sh is the infra-test runner every verify invocation drives, but it
@@ -688,7 +634,6 @@ echo ""
 echo "--- Test 12: verify-pipeline-guard.sh routes run_all.sh to the full gate ---"
 
 GUARD_T12="$REPO_ROOT/scripts/verify-pipeline-guard.sh"
-if [ -f "$GUARD_T12" ]; then
     t12_rc=0
     bash "$GUARD_T12" requires-full-gate tests/infra/run_all.sh >/dev/null 2>&1 || t12_rc=$?
     assert "run_all.sh requires the full --scope all gate (exit 0)" \
@@ -696,10 +641,6 @@ if [ -f "$GUARD_T12" ]; then
 
     assert "verify-pipeline-guard.sh --list includes tests/infra/run_all.sh" \
         bash -c "bash '$GUARD_T12' --list | grep -qxF 'tests/infra/run_all.sh'"
-else
-    assert "run_all.sh requires the full --scope all gate (skipped - guard missing)" false
-    assert "verify-pipeline-guard.sh --list includes tests/infra/run_all.sh (skipped - guard missing)" false
-fi
 
 # -- Test 13: H3 REIFY_RUN_ALL_EXCLUDE_HOST_INFRA exclusion seam (pool path) ----
 # Proves the strict-1 flip-seam knob excludes the `host-exclusive` bucket from
@@ -710,7 +651,6 @@ fi
 echo ""
 echo "--- Test 13: H3 exclusion seam (pool path) ---"
 
-if [ -f "$RUN_ALL" ] && [ -f "$LOAD_TOLERANCE_LIB" ]; then
     TMPDIR_T13="$(mktemp -d)"
     _TMPDIRS+=("$TMPDIR_T13")
 
@@ -850,19 +790,6 @@ EOF
     else
         assert "T13g: knob=' 1 ' (whitespace) runs full set (got: $t13g_out)" false
     fi
-else
-    assert "T13a: pool path was actually taken (INFO: run_all.sh pool: N= present) (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-    assert "T13a: knob=1 excludes host-exclusive member (3 discovered) (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-    assert "T13a: knob=1 host-exclusive header absent (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-    assert "T13a: knob=1 run_all.sh exits 0 (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-    assert "T13b: knob unset runs full set (4 discovered) (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-    assert "T13b: knob unset host-exclusive header present (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-    assert "T13c: knob=0 runs full set (strict-1 negative) (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-    assert "T13d: knob=empty runs full set (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-    assert "T13e: knob=2 (garbage) runs full set (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-    assert "T13f: knob=true (garbage) runs full set (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-    assert "T13g: knob=' 1 ' (whitespace) runs full set (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-fi
 
 # -- Test 14: H3 exclusion also applies on the legacy all-serial fallback ------
 # Proves the exclusion seam is not pool-path-only: forcing the legacy
@@ -872,7 +799,6 @@ fi
 echo ""
 echo "--- Test 14: H3 exclusion seam (legacy fallback path) ---"
 
-if [ -f "$RUN_ALL" ]; then
     TMPDIR_T14="$(mktemp -d)"
     _TMPDIRS+=("$TMPDIR_T14")
 
@@ -938,14 +864,6 @@ EOF
     else
         assert "T14c: knob=0 + legacy fallback runs full set (got: $t14c_out)" false
     fi
-else
-    assert "T14a: knob=1 + legacy fallback excludes host-exclusive member (1 discovered) (skipped - run_all.sh missing)" false
-    assert "T14a: knob=1 + legacy fallback host-exclusive header absent (skipped - run_all.sh missing)" false
-    assert "T14a: knob=1 + legacy fallback run_all.sh exits 0 (skipped - run_all.sh missing)" false
-    assert "T14b: knob unset + legacy fallback runs full set (2 discovered) (skipped - run_all.sh missing)" false
-    assert "T14b: knob unset + legacy fallback host-exclusive header present (skipped - run_all.sh missing)" false
-    assert "T14c: knob=0 + legacy fallback runs full set (skipped - run_all.sh missing)" false
-fi
 
 # -- H9 shared fixture helpers (Tests 15-17) -------------------------------------
 # _mk_test_mock <path> <exit_code>: writes a minimal test_*.sh mock and
@@ -988,7 +906,6 @@ EOF
 echo ""
 echo "--- Test 15: H9 --scope host-infra (core: exact set, contract, knob-ignore) ---"
 
-if [ -f "$RUN_ALL" ]; then
     TMPDIR_T15="$(mktemp -d)"
     _TMPDIRS+=("$TMPDIR_T15")
 
@@ -1051,14 +968,6 @@ if [ -f "$RUN_ALL" ]; then
 
     assert "T15f: --scope host-infra + knob=1 still exits 0" \
         test "$t15d_rc" -eq 0
-else
-    assert "T15a: --scope host-infra headers are EXACTLY the host-exclusive set (skipped - run_all.sh missing)" false
-    assert "T15b: byte-exact Summary line (2 discovered, 0 failed) (skipped - run_all.sh missing)" false
-    assert "T15c: --scope host-infra exits 0 (skipped - run_all.sh missing)" false
-    assert "T15d: --scope host-infra ignores REIFY_RUN_ALL_EXCLUDE_HOST_INFRA=1 (still 2 discovered) (skipped - run_all.sh missing)" false
-    assert "T15e: --scope host-infra headers present despite exclusion knob=1 (skipped - run_all.sh missing)" false
-    assert "T15f: --scope host-infra + knob=1 still exits 0 (skipped - run_all.sh missing)" false
-fi
 
 # -- Test 16: H9 --scope host-infra -- failure contract + flock single-flight --
 # (a) A failing host-exclusive mock is named by both the bare `^FAILED `
@@ -1070,7 +979,6 @@ fi
 echo ""
 echo "--- Test 16: H9 --scope host-infra (failure contract + flock single-flight) ---"
 
-if [ -f "$RUN_ALL" ]; then
     TMPDIR_T16="$(mktemp -d)"
     _TMPDIRS+=("$TMPDIR_T16")
 
@@ -1161,17 +1069,6 @@ EOF
         bash -c 'grep -qi lane-x "$1"' -- "$_ERR_T16B"
 
     rm -f "$_ERR_T16B"
-else
-    assert "T16a: --scope host-infra with a failing member exits 1 (skipped - run_all.sh missing)" false
-    assert "T16b: ^FAILED classifier marker names test_hostx_boom.sh (skipped - run_all.sh missing)" false
-    assert "T16c: === FAILED: human line names test_hostx_boom.sh (skipped - run_all.sh missing)" false
-    assert "T16d: byte-exact Summary line (2 discovered, 1 failed) (skipped - run_all.sh missing)" false
-    assert "T16e: the pool member is NOT run under --scope host-infra (skipped - run_all.sh missing)" false
-    assert "T16f: --scope host-infra with a held Lane-X lock exits 75 fast (skipped - run_all.sh missing)" false
-    assert "T16g: no member is run when the Lane-X lock is held (skipped - run_all.sh missing)" false
-    assert "T16h: stderr contains an 'acquire' diagnostic (case-insensitive) (skipped - run_all.sh missing)" false
-    assert "T16i: stderr contains a 'Lane-X' diagnostic (case-insensitive) (skipped - run_all.sh missing)" false
-fi
 
 # -- Test 17: H9 exactly-once partition + hot-path-inert + scope validation -----
 # (a) The PRD's leaf signal: a knob=1 hot-path run (pool+serial) and a
@@ -1186,7 +1083,6 @@ fi
 echo ""
 echo "--- Test 17: H9 exactly-once partition + hot-path-inert ---"
 
-if [ -f "$RUN_ALL" ] && [ -f "$LOAD_TOLERANCE_LIB" ]; then
     TMPDIR_T17="$(mktemp -d)"
     _TMPDIRS+=("$TMPDIR_T17")
 
@@ -1267,18 +1163,11 @@ if [ -f "$RUN_ALL" ] && [ -f "$LOAD_TOLERANCE_LIB" ]; then
 
     assert "T17d: default run_all.sh (no --scope) exits 0 despite a held Lane-X lock" \
         test "$t17c_rc" -eq 0
-else
-    assert "T17a: knob=1 hot-path headers and --scope host-infra headers are disjoint (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-    assert "T17b: union of knob=1 hot-path + --scope host-infra headers == full discovered set (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-    assert "T17c: default run_all.sh (no --scope) completes with full count despite a held Lane-X lock (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-    assert "T17d: default run_all.sh (no --scope) exits 0 despite a held Lane-X lock (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-fi
 
 # -- Test 17 (continued): --scope value validation ------------------------------
 echo ""
 echo "--- Test 17 (continued): --scope value validation ---"
 
-if [ -f "$RUN_ALL" ]; then
     TMPDIR_T17V="$(mktemp -d)"
     _TMPDIRS+=("$TMPDIR_T17V")
 
@@ -1302,12 +1191,6 @@ if [ -f "$RUN_ALL" ]; then
     assert "T17h: bare --scope (no value) emits a 'scope' diagnostic on stderr" \
         bash -c 'grep -qi scope "$1"' -- "$_ERR_T17G"
     rm -f "$_ERR_T17G"
-else
-    assert "T17e: --scope bogus exits 64 (skipped - run_all.sh missing)" false
-    assert "T17f: --scope bogus emits a 'scope' diagnostic on stderr (skipped - run_all.sh missing)" false
-    assert "T17g: bare --scope (no value) exits 64 (skipped - run_all.sh missing)" false
-    assert "T17h: bare --scope (no value) emits a 'scope' diagnostic on stderr (skipped - run_all.sh missing)" false
-fi
 
 # -- Test 18: serial retry-once of failed pool members + FLAKY ledger ----------
 # (deflake, esc-4959-53/56/57 lineage): proves tests/infra/run_all.sh
@@ -1323,7 +1206,6 @@ fi
 echo ""
 echo "--- Test 18: serial retry-once + FLAKY ledger (deflake) ---"
 
-if [ -f "$RUN_ALL" ] && [ -f "$LOAD_TOLERANCE_LIB" ]; then
     TMPDIR_T18="$(mktemp -d)"
     _TMPDIRS+=("$TMPDIR_T18")
 
@@ -1480,23 +1362,6 @@ MOCKBODY
     else
         assert "T18c: all-pass run Summary carries NO flaky-retried clause (got: ${t11b_out:-<unset>})" false
     fi
-else
-    assert "T18a: run_all.sh exits 0 when a pool member passes on serial retry (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-    assert "T18a: FLAKY ledger line names test_flaky_pool.sh (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-    assert "T18a: both attempt markers are present (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-    assert "T18a: exactly one discovered-order header for the retried member (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-    assert "T18a: no ^FAILED classifier marker (flake is not misclassified as test_failure) (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-    assert "T18a: Summary line shows 0 failed (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-    assert "T18a: Summary line carries the flaky-retried count (byte-exact) (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-    assert "T18b/c: upstream captures t9a_out (Test 9a) and t11b_out (Test 11b) are present (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-    assert "T18b: deterministic fail-twice (test_pool_3.sh) emits NO === FLAKY line (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-    assert "T18b: deterministic fail-twice (test_pool_3.sh) still emits the ^FAILED classifier (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-    assert "T18b: deterministic fail-twice (test_pool_3.sh) still archives both attempt markers (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-    assert "T18b: deterministic fail-twice (test_pool_3.sh) Summary carries NO flaky-retried clause (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-    assert "T18c: reused output is a genuine Test-11b run (non-vacuity anchor) (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-    assert "T18c: all-pass run emits NO === FLAKY line (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-    assert "T18c: all-pass run Summary carries NO flaky-retried clause (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-fi
 
 # -- Test 19: pool discovery/partition-stage death emits a root-cause diagnostic
 # (task #5123, esc-5080-9): under fleet-wide host overload, run_all.sh's pool
@@ -1511,7 +1376,6 @@ fi
 echo ""
 echo "--- Test 19: pool discovery/partition-stage death diagnostic ---"
 
-if [ -f "$RUN_ALL" ] && [ -f "$LOAD_TOLERANCE_LIB" ]; then
     TMPDIR_T19="$(mktemp -d)"
     _TMPDIRS+=("$TMPDIR_T19")
 
@@ -1613,17 +1477,6 @@ if [ -f "$RUN_ALL" ] && [ -f "$LOAD_TOLERANCE_LIB" ]; then
 
     assert "T19h: normal pool run exits 0" \
         test "$t19h_rc" -eq 0
-else
-    assert "T19a: run_all.sh still exits nonzero on discovery/partition-stage death (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-    assert "T19b: discovery/partition guard marker is present (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-    assert "T19c: marker names the failing command (mktemp) (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-    assert "T19d: marker carries the exit code (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-    assert "T19e: diagnostic reports loadavg= (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-    assert "T19f: diagnostic surfaces the fixture PSI avg10 (95.00) (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-    assert "T19g: guard marker prints after the INFO line (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-    assert "T19h: normal pool run emits NO discovery/partition marker (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-    assert "T19h: normal pool run exits 0 (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-fi
 
 # -- Test 20: H2 Phase-1 bounded worker-pool throttle (wait -n) -----------------
 # Task #5129 (PRD docs/prds/run-all-pool-contention-tiering-fix.md §9 L1):
@@ -1639,7 +1492,6 @@ fi
 echo ""
 echo "--- Test 20: H2 Phase-1 bounded worker-pool throttle (wait -n) ---"
 
-if [ -f "$RUN_ALL" ] && [ -f "$LOAD_TOLERANCE_LIB" ]; then
     TMPDIR_T20="$(mktemp -d)"
     _TMPDIRS+=("$TMPDIR_T20")
 
@@ -1714,14 +1566,6 @@ EOF
 
     assert "T20f: run_all.sh exits 0 (all 6 pool members pass)" \
         test "$t20_rc" -eq 0
-else
-    assert "T20a: peak concurrent worker shells <= 2 (the throttle cap) (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-    assert "T20b: peak concurrent worker shells >= 2 (INV-3 at the worker-shell level) (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-    assert "T20c: mock CUR/MAX real-overlap counter shows max-concurrency >= 2 (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-    assert "T20d: REIFY_SLOT_EVENT_LOG contains an ACQUIRE entry (slot_acquire still the host-global gate, INV-1) (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-    assert "T20e: byte-exact Summary line (6 discovered, 0 failed) (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-    assert "T20f: run_all.sh exits 0 (all 6 pool members pass) (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-fi
 
 # -- Test 21: H2 Phase-1 fork-EAGAIN degrade-not-abort --------------------------
 # Task #5129 (PRD docs/prds/run-all-pool-contention-tiering-fix.md §9 L1,
@@ -1736,7 +1580,6 @@ fi
 echo ""
 echo "--- Test 21: H2 Phase-1 fork-EAGAIN degrade-not-abort ---"
 
-if [ -f "$RUN_ALL" ] && [ -f "$LOAD_TOLERANCE_LIB" ]; then
     TMPDIR_T21="$(mktemp -d)"
     _TMPDIRS+=("$TMPDIR_T21")
 
@@ -1841,17 +1684,6 @@ EOF
 
     assert "T21h: seam-off all-pass fixture exits 0" \
         test "$t21h_rc" -eq 0
-else
-    assert "T21a: run_all.sh exits 1 (suite completed, did not abort) (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-    assert "T21b: fork-EAGAIN degrade diagnostic names test_pool_2.sh (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-    assert "T21c: byte-exact Summary line (3 discovered, 1 failed) (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-    assert "T21d: ^FAILED classifier marker names test_pool_2.sh (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-    assert "T21e: === FAILED: human line names test_pool_2.sh (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-    assert "T21f: the other pool members ran and passed (test_pool_1.sh, test_pool_3.sh) (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-    assert "T21g: discovered-order headers match sorted order (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-    assert "T21h: seam-off all-pass fixture emits no fork-EAGAIN degrade marker (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-    assert "T21h: seam-off all-pass fixture exits 0 (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-fi
 
 # -- Test 22: H2 Phase-1 single-writer progress heartbeat -----------------------
 # Task 5130 (PRD docs/prds/run-all-pool-contention-tiering-fix.md §9 L2):
@@ -1866,7 +1698,6 @@ fi
 echo ""
 echo "--- Test 22: H2 Phase-1 single-writer progress heartbeat ---"
 
-if [ -f "$RUN_ALL" ] && [ -f "$LOAD_TOLERANCE_LIB" ]; then
     # Marker-safety token, assembled at runtime (mirrors
     # test_run_all_clock_marker_sanitize.sh's CP idiom) so THIS file's own
     # stdout (this comment / the assert description strings below) is never
@@ -1957,15 +1788,6 @@ EOF
     else
         assert "T22g: fast pool + high interval emits NO pool-progress line" true
     fi
-else
-    assert "T22a: stderr has >=1 pool-progress heartbeat line (slow pool, 1s cadence) (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-    assert "T22b: pool-progress line is on stderr, NOT stdout (INV-4 stream) (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-    assert "T22c: pool-progress output contains no @@REIFY_CLOCK_ token (marker-safe, INV-4) (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-    assert "T22d: every pool-progress line starts with 'INFO: ' (never --- Running: / FAILED / ===) (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-    assert "T22e: byte-exact Summary line intact (1 discovered, 0 failed) (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-    assert "T22f: run_all.sh exits 0 (slow pool member passes) (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-    assert "T22g: fast pool + high interval emits NO pool-progress line (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-fi
 
 # -- Test 23: FLAKY ledger persistence (task #5142) ------------------------------
 # Proves each `=== FLAKY (passed on serial retry): ... ===` emission (Phase 3,
@@ -1982,7 +1804,7 @@ fi
 echo ""
 echo "--- Test 23: FLAKY ledger persistence ---"
 
-if [ -f "$RUN_ALL" ] && [ -f "$LOAD_TOLERANCE_LIB" ] && command -v jq >/dev/null 2>&1; then
+if command -v jq >/dev/null 2>&1; then
     # -- 23a: FLAKY direction -- reuses Test 18a's counter-file mock verbatim
     # (invocation 1 exits 1, invocation 2+ exits 0), adding
     # REIFY_RUN_ALL_FLAKY_LEDGER pointed at a fresh temp path.
@@ -2200,30 +2022,14 @@ MOCKBODY
     else
         assert "T23d: a single occurrence (< N) emits NO chronic WARNING (non-vacuity lock) (got: $t23d_out)" false
     fi
-elif [ -f "$RUN_ALL" ] && [ -f "$LOAD_TOLERANCE_LIB" ]; then
-    # jq is missing but run_all.sh and load_tolerance_lib.sh are present:
+else
+    # jq is missing:
     # run_all.sh's own ledger writer/chronic-scan is itself jq-gated and
     # fails open in this exact case (INV-4), so these JSON-shape assertions
     # would false-fail rather than exercise a real defect. Genuinely SKIP
     # (no PASS/FAIL impact), mirroring the jq-guard idiom used for F10 in
     # test_relocate_worktrees_to_warm_lane.sh.
     echo "  SKIP: T23a/T23b/T23c/T23d (FLAKY ledger persistence) - jq not on PATH; run_all.sh's ledger writer fails open without jq"
-else
-    assert "T23a: run_all.sh exits 0 when a pool member passes on serial retry (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-    assert "T23a: ledger file exists after a flaky-pass run (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-    assert "T23a: ledger has exactly 1 line (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-    assert "T23a: ledger line is valid JSON (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-    assert "T23a: ledger .test field names test_flaky_pool.sh (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-    assert "T23a: ledger .ts/.role/.run_id are all non-empty (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-    assert "T23a: Summary line stays byte-exact (stdout contract regression lock) (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-    assert "T23b: run_all.sh exits 0 on an all-pass run (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-    assert "T23b: all-pass run writes NO ledger file (flake-triggered-only) (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-    assert "T23c: run_all.sh exits 0 despite a chronic-flaky WARNING (observability only, no hard-fail) (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-    assert "T23c: chronic-offender WARNING names test_flaky_pool.sh (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-    assert "T23c: Summary line stays byte-exact despite the chronic WARNING (stdout contract regression lock) (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-    assert "T23c: ledger has exactly 3 lines (2 pre-seeded + this run's append) (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-    assert "T23d: run_all.sh exits 0 on a single (sub-threshold) flaky occurrence (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-    assert "T23d: a single occurrence (< N) emits NO chronic WARNING (non-vacuity lock) (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
 fi
 
 # -- Test 24: pool slot_acquire wait emits a live clock-stop reason marker (task #5147) --
@@ -2241,7 +2047,6 @@ fi
 echo ""
 echo "--- Test 24: pool slot_acquire wait emits a live clock-stop reason marker ---"
 
-if [ -f "$RUN_ALL" ] && [ -f "$LOAD_TOLERANCE_LIB" ]; then
     TMPDIR_T24="$(mktemp -d)"
     _TMPDIRS+=("$TMPDIR_T24")
 
@@ -2313,13 +2118,6 @@ if [ -f "$RUN_ALL" ] && [ -f "$LOAD_TOLERANCE_LIB" ]; then
 
     assert "T24e: run_all.sh exits 0 (soft-admit past the wait deadline, member passes)" \
         test "$t24_rc" -eq 0
-else
-    assert "T24a: stderr contains a live @@REIFY_CLOCK_STOP@@ reason=test_slot_starvation marker (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-    assert "T24b: stderr does NOT contain the sanitized @@REIFY_QUOTED_CLOCK_STOP@@ form (marker rode the unsanitized parent stream) (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-    assert "T24c: STOP marker is on stderr, NOT stdout (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-    assert "T24d: byte-exact Summary line intact (1 discovered, 0 failed) (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-    assert "T24e: run_all.sh exits 0 (soft-admit past the wait deadline, member passes) (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-fi
 
 # -- Test 25: partial FAILED/INTERRUPTED marker on outer-timeout SIGTERM (task #5147) --
 # The merge-tier envelope wraps run_all.sh in `timeout --kill-after=60 30m`
@@ -2349,7 +2147,6 @@ fi
 echo ""
 echo "--- Test 25: partial FAILED/INTERRUPTED marker on outer-timeout SIGTERM ---"
 
-if [ -f "$RUN_ALL" ] && [ -f "$LOAD_TOLERANCE_LIB" ]; then
     # -- RED sub-case: mid-run SIGTERM ---------------------------------------
     TMPDIR_T25="$(mktemp -d)"
     _TMPDIRS+=("$TMPDIR_T25")
@@ -2547,18 +2344,6 @@ HANGBODY
 
     assert "T25h: GREEN regression -- normal path exits 0" \
         test "$t25b_rc" -eq 0
-else
-    assert "T25a: mid-run SIGTERM output contains an INTERRUPTED summary line (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-    assert "T25b: mid-run SIGTERM output has a '^FAILED ... (partial)' classifier line (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-    assert "T25c: the partial FAILED line names test_pool_boom.sh (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-    assert "T25d: run_all.sh did NOT exit 0 (interrupted mid-run) (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-    assert "T25 control: the hang member had started before SIGTERM fired (READY observed) -- the signal landed on a run still mid-flight (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-    assert "T25 control: the hang member held until the test released it, not until its own backstop (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-    assert "T25e: GREEN regression -- byte-exact Summary line on the normal (untouched) path (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-    assert "T25f: GREEN regression -- normal path emits no INTERRUPTED marker (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-    assert "T25g: GREEN regression -- normal path emits no (partial) marker (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-    assert "T25h: GREEN regression -- normal path exits 0 (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-fi
 
 # -- Test 26: INTERRUPTED-worktree marker (task #5261, PRD merge-gate-health.md W4e) --
 # Proves run_all.sh detects its OWN worktree (INFRA_DIR) being removed out
@@ -2577,7 +2362,6 @@ fi
 echo ""
 echo "--- Test 26: INTERRUPTED-worktree marker ---"
 
-if [ -f "$RUN_ALL" ] && [ -f "$LOAD_TOLERANCE_LIB" ]; then
     # -- 26a: POOL path -- the sole pool member nukes its own INFRA_DIR ------
     # Deterministic (no wall-clock/race): with exactly one pool member, the
     # Phase-1 `wait` join always completes only after this member (and its
@@ -2674,15 +2458,6 @@ MOCKBODY
 
     assert "T26c: GREEN regression -- armed-but-intact run exits 0" \
         test "$t26c_rc" -eq 0
-else
-    assert "T26a: POOL path -- worktree removal emits the line-anchored INTERRUPTED marker (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-    assert "T26a: POOL path -- worktree removal exits 99 (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-    assert "T26b: LEGACY path -- worktree removal between members emits the INTERRUPTED marker (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-    assert "T26b: LEGACY path -- worktree removal exits 99 (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-    assert "T26c: GREEN regression -- armed-but-intact run emits no INTERRUPTED marker (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-    assert "T26c: GREEN regression -- byte-exact Summary line when armed but intact (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-    assert "T26c: GREEN regression -- armed-but-intact run exits 0 (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-fi
 
 # -- Test 27: Phase-2.5 serial-retry + FLAKY ledger extended to
 # intra-run-serial members (task #5261, PRD merge-gate-health.md W5b) ----------
@@ -2699,7 +2474,6 @@ fi
 echo ""
 echo "--- Test 27: intra-run-serial serial-retry + FLAKY ledger ---"
 
-if [ -f "$RUN_ALL" ] && [ -f "$LOAD_TOLERANCE_LIB" ]; then
     # Each sub-case below gets its OWN temp INFRA_DIR (TMPDIR_T27A/B/D, mirroring
     # Test 23's per-sub-case isolation) -- discovery is a filesystem glob over
     # test_*.sh in INFRA_DIR, INDEPENDENT of which names a given injected
@@ -2861,24 +2635,6 @@ MOCKBODY
     else
         assert "T27d: FAILING host-exclusive member triggers no FLAKY/flaky-retried misclassification (got: $t27d_out)" false
     fi
-else
-    assert "T27a: run_all.sh exits 0 when an intra-run-serial member passes on serial retry (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-    assert "T27a: FLAKY line names test_flaky_serial.sh (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-    assert "T27a: both attempt markers are present, labeled serial (not concurrent pool) (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-    assert "T27a: attempt-1 label is truthful -- NOT 'concurrent pool' for an intra-run-serial member (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-    assert "T27a: exactly one discovered-order header for the retried member (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-    assert "T27a: no ^FAILED classifier marker (flake is not misclassified as test_failure) (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-    assert "T27a: Summary line carries the flaky-retried count (byte-exact) (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-    assert "T27b: deterministic fail-twice intra-run-serial member exits 1 (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-    assert "T27b: deterministic fail-twice still emits the ^FAILED classifier (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-    assert "T27b: deterministic fail-twice emits NO === FLAKY line (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-    assert "T27b: deterministic fail-twice Summary carries NO flaky-retried clause (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-    assert "T27b: deterministic fail-twice still archives both attempt markers (proves it WAS retried) (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-    assert "T27d: FAILING host-exclusive member run_all.sh exits 1 (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-    assert "T27d: FAILING host-exclusive member still emits the ^FAILED classifier (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-    assert "T27d: FAILING host-exclusive member is NOT retried (no attempt-2 archival) (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-    assert "T27d: FAILING host-exclusive member triggers no FLAKY/flaky-retried misclassification (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-fi
 
 # -- Test 27 (continued): ledger persistence for a flaky intra-run-serial
 # member (task #5261, W5b) -- jq-gated ------------------------------------
@@ -2889,7 +2645,7 @@ fi
 echo ""
 echo "--- Test 27 (continued): FLAKY ledger persistence for an intra-run-serial member ---"
 
-if [ -f "$RUN_ALL" ] && [ -f "$LOAD_TOLERANCE_LIB" ] && command -v jq >/dev/null 2>&1; then
+if command -v jq >/dev/null 2>&1; then
     TMPDIR_T27C="$(mktemp -d)"
     _TMPDIRS+=("$TMPDIR_T27C")
 
@@ -2950,14 +2706,8 @@ MOCKBODY
     else
         assert "T27c: ledger .test field names test_flaky_serial.sh (got: '$t27c_test_field')" false
     fi
-elif [ -f "$RUN_ALL" ] && [ -f "$LOAD_TOLERANCE_LIB" ]; then
-    echo "  SKIP: T27c (FLAKY ledger persistence for intra-run-serial member) - jq not on PATH; run_all.sh's ledger writer fails open without jq"
 else
-    assert "T27c: run_all.sh exits 0 when an intra-run-serial member passes on serial retry (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-    assert "T27c: ledger file exists after a flaky-pass run (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-    assert "T27c: ledger has exactly 1 line (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-    assert "T27c: ledger line is valid JSON (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
-    assert "T27c: ledger .test field names test_flaky_serial.sh (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    echo "  SKIP: T27c (FLAKY ledger persistence for intra-run-serial member) - jq not on PATH; run_all.sh's ledger writer fails open without jq"
 fi
 
 # -- Test 28: REIFY_RUN_ALL_MEMBER_SUBSET member-subset knob (task #5288; PRD
@@ -2975,7 +2725,6 @@ fi
 echo ""
 echo "--- Test 28: REIFY_RUN_ALL_MEMBER_SUBSET member-subset knob ---"
 
-if [ -f "$RUN_ALL" ]; then
     # -- 26a: subset="test_alpha.sh" -- alpha runs, beta reported skipped -------
     TMPDIR_T28A="$(mktemp -d)"
     _TMPDIRS+=("$TMPDIR_T28A")
@@ -3073,22 +2822,6 @@ if [ -f "$RUN_ALL" ]; then
 
     assert "T28c: knob unset -- exit reflects beta's failure (nonzero)" \
         test "$t26c_rc" -ne 0
-else
-    assert "T28a: alpha (named in subset) was actually invoked (sentinel exists) (skipped - run_all.sh missing)" false
-    assert "T28a: beta (not named) was NOT invoked (sentinel absent) (skipped - run_all.sh missing)" false
-    assert "T28a: output has a Running header for alpha (skipped - run_all.sh missing)" false
-    assert "T28a: alpha reported PASS (skipped - run_all.sh missing)" false
-    assert "T28a: beta reported SKIP (skipped - run_all.sh missing)" false
-    assert "T28a: output has NO Running header for beta (never invoked) (skipped - run_all.sh missing)" false
-    assert "T28a: run_all.sh exits 0 (skipped failing beta does not sink the run) (skipped - run_all.sh missing)" false
-    assert "T28a: Summary reports the member-subset-skipped count (skipped - run_all.sh missing)" false
-    assert "T28b: unmatched subset member 'test_ghost.sh' emits a stderr WARNING (skipped - run_all.sh missing)" false
-    assert "T28b: unmatched subset member does not sink the run (exits 0) (skipped - run_all.sh missing)" false
-    assert "T28c: knob unset -- alpha invoked (sentinel exists) (skipped - run_all.sh missing)" false
-    assert "T28c: knob unset -- beta invoked too (sentinel exists, branch inert) (skipped - run_all.sh missing)" false
-    assert "T28c: knob unset -- no SKIP line anywhere (skipped - run_all.sh missing)" false
-    assert "T28c: knob unset -- exit reflects beta's failure (nonzero) (skipped - run_all.sh missing)" false
-fi
 
 # -- Test 29: subset branch clock-marker sanitization (task #5288 pair 2; task
 # 4998 / esc-4791-52 class) -----------------------------------------------------
@@ -3105,7 +2838,6 @@ fi
 echo ""
 echo "--- Test 29: subset branch clock-marker sanitization ---"
 
-if [ -f "$RUN_ALL" ]; then
     T29_CP='@@REIFY_CLOCK_'
     T29_QP='@@REIFY_QUOTED_CLOCK_'
 
@@ -3141,12 +2873,6 @@ MARKEREOF
 
     assert "T29c: run_all.sh exits 0" \
         test "$t27_rc" -eq 0
-else
-    assert "T29a: subset branch output contains the sanitized QUOTED_CLOCK form (skipped - run_all.sh missing)" false
-    assert "T29b: subset branch output contains NO live CLOCK_STOP token (skipped - run_all.sh missing)" false
-    assert "T29c: the member still ran and passed (skipped - run_all.sh missing)" false
-    assert "T29c: run_all.sh exits 0 (skipped - run_all.sh missing)" false
-fi
 
 # -- Test 30: failed sub-test structured FAIL-detail re-emission in the --------
 # Summary block (task #5329, esc-5056-11 / esc-5053-13) -------------------------
@@ -3169,7 +2895,6 @@ fi
 echo ""
 echo "--- Test 30: failed sub-test structured FAIL-detail re-emission ---"
 
-if [ -f "$RUN_ALL" ]; then
     # -- 30a: non-retried `.out` site -- unclassified fail-safe-serial member,
     # canonical HARNESS_KLOC_CAP structured verdict + assert FAIL: lines ------
     TMPDIR_T30A="$(mktemp -d)"
@@ -3464,35 +3189,6 @@ MOCKEOF
 
     assert "T30h: run_all.sh exits 1 (named failing subset member sinks the run)" \
         test "$t30h_rc" -eq 1
-else
-    assert "T30a: pool path was actually taken (INFO: run_all.sh pool: N= present) (skipped - run_all.sh missing)" false
-    assert "T30a: FAILED-DETAIL delimiter present for test_kloc.sh (skipped - run_all.sh missing)" false
-    assert "T30a: structured HARNESS_KLOC_CAP FAIL line present verbatim in the Summary tail (skipped - run_all.sh missing)" false
-    assert "T30a: FAILED-DETAIL block appears after the === FAILED: line (skipped - run_all.sh missing)" false
-    assert "T30f: pool path was actually taken (INFO: run_all.sh pool: N= present) (skipped - run_all.sh missing)" false
-    assert "T30f: member was actually retried (attempt-2 archived, proves the .retry.out site is exercised) (skipped - run_all.sh missing)" false
-    assert "T30f: FAILED-DETAIL delimiter present for test_pool_kloc.sh (skipped - run_all.sh missing)" false
-    assert "T30f: structured HARNESS_KLOC_CAP FAIL (exceeds-cap) line present verbatim in the Summary tail (skipped - run_all.sh missing)" false
-    assert "T30f: run_all.sh exits 1 (deterministic fail-twice) (skipped - run_all.sh missing)" false
-    assert "T30b: pool path was actually taken (INFO: run_all.sh pool: N= present) (skipped - run_all.sh missing)" false
-    assert "T30b: FAILED-DETAIL block contains <=10 extracted FAIL lines (bounded; 12 truncated to 10, got: skipped) (skipped - run_all.sh missing)" false
-    assert "T30b: FAILED-DETAIL block contains a truncation indicator (omitted) (skipped - run_all.sh missing)" false
-    assert "T30c: pool path was actually taken (INFO: run_all.sh pool: N= present) (skipped - run_all.sh missing)" false
-    assert "T30c: no FAILED-DETAIL block emitted on all-pass (skipped - run_all.sh missing)" false
-    assert "T30d: pool path was actually taken (INFO: run_all.sh pool: N= present) (skipped - run_all.sh missing)" false
-    assert "T30d: === FAILED: line still present for a signal-less failing mock (skipped - run_all.sh missing)" false
-    assert "T30d: no FAILED-DETAIL block emitted for a signal-less failing mock (graceful no-op) (skipped - run_all.sh missing)" false
-    assert "T30g: pre-existing === FAILED: human line still present (additive regression) (skipped - run_all.sh missing)" false
-    assert "T30g: pre-existing ^FAILED classifier marker still present (additive regression) (skipped - run_all.sh missing)" false
-    assert "T30e: pool path was actually taken (INFO: run_all.sh pool: N= present) (skipped - run_all.sh missing)" false
-    assert "T30e: FAILED-DETAIL block contains the sanitized QUOTED_CLOCK form (skipped - run_all.sh missing)" false
-    assert "T30e: FAILED-DETAIL block contains NO live CLOCK_STOP token (skipped - run_all.sh missing)" false
-    assert "T30h: subset branch was actually taken (sibling reported SKIP) (skipped - run_all.sh missing)" false
-    assert "T30h: FAILED-DETAIL delimiter present for test_subset_kloc.sh (skipped - run_all.sh missing)" false
-    assert "T30h: structured HARNESS_KLOC_CAP FAIL line present verbatim in the Summary tail (skipped - run_all.sh missing)" false
-    assert "T30h: FAILED-DETAIL block appears after the === FAILED: line (skipped - run_all.sh missing)" false
-    assert "T30h: run_all.sh exits 1 (named failing subset member sinks the run) (skipped - run_all.sh missing)" false
-fi
 
 # -- Test 31: REIFY_RUN_ALL_SUBSET_COUNT_ONLY hermetic count-only probe (task
 # #5373) -----------------------------------------------------------------------
@@ -3512,7 +3208,6 @@ fi
 echo ""
 echo "--- Test 31: REIFY_RUN_ALL_SUBSET_COUNT_ONLY count-only probe ---"
 
-if [ -f "$RUN_ALL" ]; then
     # -- 31a: one present-and-named + one present-not-named + one named-but-
     #         absent => matched=1, and NO member is executed -------------------
     TMPDIR_T31A="$(mktemp -d)"
@@ -3584,17 +3279,6 @@ if [ -f "$RUN_ALL" ]; then
 
     assert "T31b: present member NOT executed under empty-subset count-only (sentinel absent)" \
         test ! -f "$TMPDIR_T31B/ran_present"
-else
-    assert "T31a: count-only token reports matched=1 (present-and-named counted, bogus dropped) (skipped - run_all.sh missing)" false
-    assert "T31a: count-only probe exits 0 (skipped - run_all.sh missing)" false
-    assert "T31a: named member was NOT executed (sentinel absent -- hermetic probe) (skipped - run_all.sh missing)" false
-    assert "T31a: unnamed member was NOT executed (sentinel absent) (skipped - run_all.sh missing)" false
-    assert "T31a: no '--- Running:' line (no member invoked) (skipped - run_all.sh missing)" false
-    assert "T31a: no stub body marker in output (no member body ran) (skipped - run_all.sh missing)" false
-    assert "T31b: empty subset under count-only reports matched=0 (skipped - run_all.sh missing)" false
-    assert "T31b: empty-subset count-only probe exits 0 (skipped - run_all.sh missing)" false
-    assert "T31b: present member NOT executed under empty-subset count-only (sentinel absent) (skipped - run_all.sh missing)" false
-fi
 
 # -- Summary --------------------------------------------------------------------
 test_summary
