@@ -3211,3 +3211,310 @@ structure def S {
         template.connections
     );
 }
+
+/// A `forall` constraint BODY error that never mentions the bound variable is
+/// reported ONCE per declaration, not once per collection element (task 7520,
+/// the constraint arm of task 7195).
+///
+/// MEASURED before the fix: 3 byte-identical `"unresolved name: undefined_thing"`
+/// errors, one per element, all labelled at the same span. AFTER: exactly 1.
+///
+/// The per-element constraints are asserted UNCHANGED on purpose, so a "stop at
+/// the first error" fix fails this half.
+#[test]
+fn forall_constraint_body_unresolved_name_reported_once_per_declaration() {
+    let source = r#"
+structure S {
+    forall v in [1, 2, 3]: constraint undefined_thing > 0
+}
+"#;
+    let module = compile_source(source);
+
+    let unresolved: Vec<&reify_core::Diagnostic> = module
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.code == Some(reify_core::DiagnosticCode::UnresolvedName)
+                && d.message == "unresolved name: undefined_thing"
+        })
+        .collect();
+    assert_eq!(
+        unresolved.len(),
+        1,
+        "expected the body's unresolved-name error exactly once per declaration \
+         (3 byte-identical copies before the fix, one per collection element), \
+         got {}: {:?}",
+        unresolved.len(),
+        module
+            .diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+
+    let surviving = unresolved[0];
+    assert_eq!(
+        surviving.severity,
+        reify_core::Severity::Error,
+        "expected the surviving diagnostic to stay Severity::Error, got {:?}",
+        surviving.severity
+    );
+    assert_eq!(
+        surviving.labels.len(),
+        1,
+        "expected exactly one label on the surviving diagnostic, got {:?}",
+        surviving.labels
+    );
+    let label_span = surviving.labels[0].span;
+    assert_eq!(
+        &source[label_span.start as usize..label_span.end as usize],
+        "undefined_thing",
+        "expected the surviving diagnostic's label to slice to the unresolved \
+         identifier, got span {:?}",
+        label_span
+    );
+
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("template S not found");
+    for i in 0..3 {
+        let expected_label = format!("forall@v[{}]", i);
+        assert!(
+            template
+                .constraints
+                .iter()
+                .any(|c| c.label.as_deref() == Some(expected_label.as_str())),
+            "expected a per-element constraint labelled {:?} despite the collapsed \
+             diagnostic. Labels present: {:?}",
+            expected_label,
+            template
+                .constraints
+                .iter()
+                .filter_map(|c| c.label.as_deref())
+                .collect::<Vec<_>>()
+        );
+    }
+}
+
+/// An error in the `where` clause of a `forall` constraint body is reported ONCE
+/// per declaration, not once per collection element (task 7520, the constraint
+/// arm of task 7195).
+///
+/// MEASURED before the fix: 3 byte-identical `"unresolved name: undefined_flag"`
+/// errors — the condition never mentions `v`, so each element's guard compiles to
+/// the same diagnostic. AFTER: exactly 1.
+///
+/// One single-constraint guarded group per element is asserted UNCHANGED.
+#[test]
+fn forall_constraint_body_where_clause_diagnostic_reported_once_per_declaration() {
+    let source = r#"
+structure S {
+    forall v in [1, 2, 3]: constraint v > 0 where undefined_flag
+}
+"#;
+    let module = compile_source(source);
+
+    let unresolved: Vec<&reify_core::Diagnostic> = module
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.code == Some(reify_core::DiagnosticCode::UnresolvedName)
+                && d.message == "unresolved name: undefined_flag"
+        })
+        .collect();
+    assert_eq!(
+        unresolved.len(),
+        1,
+        "expected the where clause's unresolved-name error exactly once per \
+         declaration (3 byte-identical copies before the fix, one per collection \
+         element), got {}: {:?}",
+        unresolved.len(),
+        module
+            .diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        unresolved[0].labels.len(),
+        1,
+        "expected exactly one label on the surviving diagnostic, got {:?}",
+        unresolved[0].labels
+    );
+    let label_span = unresolved[0].labels[0].span;
+    assert_eq!(
+        &source[label_span.start as usize..label_span.end as usize],
+        "undefined_flag",
+        "expected the surviving diagnostic's label to slice to the unresolved \
+         identifier, got span {:?}",
+        label_span
+    );
+
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("template S not found");
+    assert_eq!(
+        template.guarded_groups.len(),
+        3,
+        "expected one guarded group per forall element despite the collapsed \
+         diagnostic, got {}",
+        template.guarded_groups.len()
+    );
+}
+
+/// Validation errors from a `forall` constraint-INSTANTIATION body are reported
+/// ONCE per declaration, not once per collection element (task 7520, the
+/// constraint arm of task 7195).
+///
+/// `expand_constraint_inst` labels its unknown-definition and unknown-argument
+/// errors at `ci.span`, which substitution leaves unchanged, so every element
+/// rendered the same diagnostic. MEASURED before the fix: 3 byte-identical copies
+/// of each. AFTER: exactly 1 each.
+///
+/// Per-element artifacts are asserted UNCHANGED: `U` (an unknown argument does
+/// not stop emission) still emits one `MinThreshold#*:forall@w[i]` constraint per
+/// element, and `S` (no such definition) still emits none.
+#[test]
+fn forall_constraint_inst_body_validation_errors_reported_once_per_declaration() {
+    let source = r#"
+constraint def MinThreshold {
+    param value : Length
+    value > 0
+}
+structure S {
+    forall v in [1, 2, 3]: constraint NoSuchDef(value: v)
+}
+structure U {
+    forall w in [1, 2, 3]: constraint MinThreshold(value: w, bogus: w)
+}
+"#;
+    let module = compile_source(source);
+
+    let unknown_def: Vec<&reify_core::Diagnostic> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.message == "unknown constraint definition: NoSuchDef")
+        .collect();
+    assert_eq!(
+        unknown_def.len(),
+        1,
+        "expected the unknown-definition error exactly once per declaration \
+         (3 byte-identical copies before the fix, one per collection element), \
+         got {}: {:?}",
+        unknown_def.len(),
+        module
+            .diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        unknown_def[0]
+            .labels
+            .iter()
+            .map(|l| l.message.as_str())
+            .collect::<Vec<_>>(),
+        vec!["no constraint def named 'NoSuchDef'"],
+        "expected the surviving unknown-definition error to keep its single label"
+    );
+
+    let unknown_arg: Vec<&reify_core::Diagnostic> = module
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.message == "unknown argument 'bogus' in constraint instantiation of 'MinThreshold'"
+        })
+        .collect();
+    assert_eq!(
+        unknown_arg.len(),
+        1,
+        "expected the unknown-argument error exactly once per declaration \
+         (3 byte-identical copies before the fix, one per collection element), \
+         got {}: {:?}",
+        unknown_arg.len(),
+        module
+            .diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+
+    let template_u = module
+        .templates
+        .iter()
+        .find(|t| t.name == "U")
+        .expect("template U not found");
+    for i in 0..3 {
+        let element_suffix = format!(":forall@w[{}]", i);
+        assert!(
+            template_u.constraints.iter().any(|c| {
+                c.label.as_deref().is_some_and(|label| {
+                    label.starts_with("MinThreshold#") && label.ends_with(element_suffix.as_str())
+                })
+            }),
+            "expected a MinThreshold#*{} constraint despite the collapsed \
+             diagnostic. Labels present: {:?}",
+            element_suffix,
+            template_u
+                .constraints
+                .iter()
+                .filter_map(|c| c.label.as_deref())
+                .collect::<Vec<_>>()
+        );
+    }
+
+    let template_s = module
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("template S not found");
+    assert!(
+        !template_s
+            .constraints
+            .iter()
+            .any(|c| c.label.as_deref().is_some_and(|l| l.contains(":forall@"))),
+        "expected no forall-emitted constraint for the undefined definition, \
+         got labels {:?}",
+        template_s
+            .constraints
+            .iter()
+            .filter_map(|c| c.label.as_deref())
+            .collect::<Vec<_>>()
+    );
+}
+
+/// Anti-over-suppression half of the task-7520 contract: per-element body
+/// diagnostics that DIFFER are all reported.
+///
+/// MEASURED (before and after the fix): exactly 2 `UnresolvedName` errors,
+/// `"unresolved name: a"` and `"unresolved name: b"`. Substitution puts each list
+/// item's name into the body, so the two messages differ even though both come
+/// from the one `forall` declaration — the suppression key is the full rendered
+/// diagnostic, never the declaration alone.
+#[test]
+fn forall_constraint_distinct_per_element_diagnostics_are_all_reported() {
+    let source = r#"
+structure S {
+    forall v in [a, b]: constraint v > 0
+}
+"#;
+    let module = compile_source(source);
+
+    let mut unresolved: Vec<&str> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(reify_core::DiagnosticCode::UnresolvedName))
+        .map(|d| d.message.as_str())
+        .collect();
+    unresolved.sort_unstable();
+    assert_eq!(
+        unresolved,
+        vec!["unresolved name: a", "unresolved name: b"],
+        "expected exactly one unresolved-name error per list element — each \
+         differs from its sibling in the name it carries"
+    );
+}
