@@ -26,8 +26,11 @@ decision D6). A third family, the **declared-surface family**
 (INV-PD-1..2), plus the umbrella principle below, was appended
 2026-08-31 from the trampoline param-drop and result-field vacancy
 censuses (PRDs `docs/prds/v0_6/trampoline-param-drop-closure.md` and
-`docs/prds/v0_6/result-field-vacuity-closure.md`). Other invariant
-families may be appended later; keep slugs stable.
+`docs/prds/v0_6/result-field-vacuity-closure.md`). A fourth family, the
+**architecture family** (INV-ARCH-1), was appended 2026-10-12 from
+review-all program `review-all-reify-20261010`, stream S3 (PRD
+`docs/prds/v0_6/dependency-invalidation-stratum.md`, D11). Other
+invariant families may be appended later; keep slugs stable.
 
 ## The umbrella principle — `nothing-vacuous-and-unowned`
 
@@ -73,6 +76,7 @@ requires a census row in the same change.**
 | doc-chunk ↔ registry truth | PDOCCOVER | shipped |
 | `dimensionless_scalar()` reintroduction | PDSSENTINEL | shipped |
 | layer-rule imports | PLAYER | shipped |
+| intra-crate module import cycles | module_scc_ratchet (INV-ARCH-1; reify-compiler excluded until S7 κ) | shipped |
 | code-less `Diagnostic::error`/`warning` sites | PDIAG | shipped |
 | PRD terminal-status markers | PPRDSTATUS (#6346) | chartered |
 | prose task-promises in doc comments | convention-only — PTODO-grammar-extension bookmark #7098 (filed by `result-field-vacuity-closure.md` ζ) | unenforced |
@@ -611,6 +615,40 @@ restated here).
 **House pattern**: the tet-result `Undef`-for-unpopulated convention —
 buckling `pre_stress`, `degenerate_modal_result`'s `damping` — is C2′
 promoted to contract.
+
+## Architecture family (INV-ARCH-1)
+
+Layering inside a crate, the intra-crate twin of the crate-DAG gate
+(`scripts/assert-crate-dag.sh`): a crate's top-level modules may depend
+on one another, but no import cycle among them may appear or grow
+silently.
+
+## INV-ARCH-1 `module-sccs-only-shrink`
+
+**Rule**: Within a workspace crate, no strongly connected component of
+the top-level-module `crate::` import graph appears or grows. A shrink
+or dissolution lowers the committed baseline in the same diff, so it is
+recorded, not silent. Universe, edges and production text: PRD
+`docs/prds/v0_6/dependency-invalidation-stratum.md` §5.1 (not restated
+here). reify-compiler is excluded until S7 κ: its glob imports hide
+edges from the rule.
+
+**Checkable design question(s)**: Does this change add a `crate::<m>`
+reference from a module that `<m>` already reaches — does
+`python3 scripts/assert-module-scc.py check` print `GREW`? If it breaks
+a cycle, does the same diff lower the row with `print`? Does a
+predicate or type that a lower module needs live in an engine-phase
+module, forcing an upward import?
+
+**Evidence**: the 2026-10-12 landing measurement, which reproduces the
+PRD's dated workspace measurement — reify-eval holds a 24-module SCC
+and a 5-module one. The other crates' rows live in
+`scripts/module-scc-baseline.json`, not here.
+
+**Enforcement**: `crates/reify-build-utils/tests/module_scc_ratchet.rs`
+over `scripts/module-scc-baseline.json`. The merge gate always runs it;
+a per-task lane runs it only when reify-build-utils is affected (PRD
+D11).
 
 ## Census seam
 
