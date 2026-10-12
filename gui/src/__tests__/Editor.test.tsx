@@ -2686,16 +2686,7 @@ describe('Editor LSP per-document versions (task 7118)', () => {
     store.setActiveFile(file1.path);
     const calls = captureLspVersionCalls({ 'textDocument/references': [] });
     // Hold the flushed didChange unanswered so a file switch lands inside its window.
-    const recordAndAnswer = mockInvoke.getMockImplementation()!;
-    let answerDidChange!: () => void;
-    const didChangeAnswered = new Promise<void>((resolve) => {
-      answerDidChange = resolve;
-    });
-    mockInvoke.mockImplementation(async (cmd: string, args: any) => {
-      const answer = recordAndAnswer(cmd, args);
-      if ((args as any)?.method === 'textDocument/didChange') await didChangeAnswered;
-      return answer;
-    });
+    const answerDidChange = holdAnswersTo('textDocument/didChange');
 
     render(() => <Editor store={store} />);
     const view = getEditorView(screen.getByTestId('editor-container'));
@@ -2785,8 +2776,8 @@ describe('Editor LSP bootstrap racing a file switch or unmount (task 7512)', () 
     const { unmount } = render(() => <Editor store={store} />);
     unmount();
     answerInitialize();
-    await vi.waitFor(() => expect(calls.some((c) => c.method === 'initialized')).toBe(true));
-    for (let i = 0; i < 10; i++) await Promise.resolve();
+    // Cleanup's close is the queue's tail, so once it is out every earlier notification is too.
+    await vi.waitFor(() => expect(lastCallFor(calls, 'textDocument/didClose', FILE1_URI)).toBeDefined());
 
     // Whatever the bootstrap sent, the server is left holding nothing.
     expect(documentsLeftOpen(calls)).toEqual([]);
