@@ -4469,7 +4469,7 @@ mod tests {
             assert_eq!(
                 c_inner.len(),
                 w_inner.len(),
-                "per-loop free var count must agree cold↔warm"
+                "per-loop flat Newton-state width must agree cold↔warm"
             );
             for (c_v, w_v) in c_inner.iter().zip(w_inner.iter()) {
                 let c_f = match c_v {

@@ -120,7 +120,9 @@ impl Default for NewtonConfig {
 /// midpoint via [`crate::loop_closure::joint_range_midpoint`].
 #[derive(Debug, Clone)]
 pub enum StartStrategy {
-    /// Re-use a prior solution.  Vector length must match the free-variable count.
+    /// Re-use a prior solution: the flat Newton state, whose length is
+    /// [`flat_width`](crate::loop_closure_value::flat_width) of the free
+    /// joints' kinds.
     WarmStart(Vec<f64>),
     /// Initialise from each free joint's range midpoint.
     Midpoint,
