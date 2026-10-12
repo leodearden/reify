@@ -2718,10 +2718,10 @@ fi
 # shape via a dedicated branch (mirrors --scope host-infra: sets counters,
 # falls through to the shared Summary/FAILED/exit tail). Every other
 # discovered member is reported skipped -- acknowledged, never dropped from
-# discovery, and never counted as a failure. No classification-substrate
-# dependency (plain glob discovery), so these fixtures need no manifest and
-# no pool lock. Sentinel files (not just RESULT lines) prove a skipped
-# member was genuinely never invoked.
+# discovery, and never counted as a failure. Discovery is
+# classification_discovered_set, which reads no manifest, so these fixtures
+# need no manifest and no pool lock. Sentinel files (not just RESULT lines)
+# prove a skipped member was genuinely never invoked.
 echo ""
 echo "--- Test 28: REIFY_RUN_ALL_MEMBER_SUBSET member-subset knob ---"
 
@@ -3198,7 +3198,7 @@ assert "T30h: run_all.sh exits 1 (named failing subset member sinks the run)" \
 # silently drop (loud stderr WARNING, never run) inflates a raw word-count.
 # run_all.sh exposes its OWN matched count via a hermetic count-only probe:
 # REIFY_RUN_ALL_SUBSET_COUNT_ONLY=1 makes run_all.sh apply ONLY its
-# discovery-glob + subset-match predicate, print a single machine token
+# discovery + subset-match predicate, print a single machine token
 # `@@REIFY_RUN_ALL_SUBSET_MATCHED=<n>@@`, and exit 0 BEFORE running any member.
 # Asserts: (a) the token carries the matched (subset-intersect-present) count --
 # 1 present-and-named + 1 present-not-named + 1 named-but-absent => 1 -- and
@@ -3279,6 +3279,224 @@ assert "T31b: empty-subset count-only probe exits 0" \
 
 assert "T31b: present member NOT executed under empty-subset count-only (sentinel absent)" \
     test ! -f "$TMPDIR_T31B/ran_present"
+
+# -- Test 32: one discovery predicate (task #8678) -------------------------------
+# Every run path -- pool, legacy, member-subset, count-only and --scope
+# host-infra -- must see the SAME discovered members in the SAME (C-collated)
+# order, whatever the ambient locale. The fixture carries every shape a
+# predicate can disagree on: a test_*.sh directory, a symlinked member, a
+# dangling symlink, a failing test_helpers.sh (any path that ever runs it reds
+# its Summary), and mixed-case names that a collating locale orders
+# differently from C. 32k holds the classification-gate accessors to the same
+# collation, so pinning C on only some of the lib's sorts cannot pass.
+echo ""
+echo "--- Test 32: one discovery predicate -- pool, legacy, subset, count-only and host-infra agree ---"
+
+# A locale proven (by control) to collate test_a.sh before test_B.sh, unlike C.
+T32_LC=C
+if command -v locale >/dev/null 2>&1; then
+    while IFS= read -r _t32_loc; do
+        case "$_t32_loc" in
+            ''|C|C.*|POSIX) continue ;;
+        esac
+        if [ "$(printf 'test_B.sh\ntest_a.sh\n' | LC_ALL="$_t32_loc" sort | sed -n 1p)" = "test_a.sh" ]; then
+            T32_LC="$_t32_loc"
+            break
+        fi
+    done < <(locale -a 2>/dev/null || true)
+fi
+if [ "$T32_LC" = "C" ]; then
+    echo "  NOTE: no collating non-C locale on this host; the order leg is not locale-discriminating here"
+else
+    echo "  Test 32 collating locale: $T32_LC"
+fi
+
+TMPDIR_T32="$(mktemp -d)"
+_TMPDIRS+=("$TMPDIR_T32")
+T32_INFRA="$TMPDIR_T32/infra"
+mkdir "$T32_INFRA"
+_mk_test_mock "$T32_INFRA/test_alpha.sh" 0
+_mk_test_mock "$T32_INFRA/test_B.sh" 0
+_mk_test_mock "$T32_INFRA/test_a_b.sh" 0
+_mk_test_mock "$T32_INFRA/test_helpers.sh" 1
+mkdir "$T32_INFRA/test_dir.sh"
+_mk_test_mock "$TMPDIR_T32/linked_target.sh" 0
+ln -s "$TMPDIR_T32/linked_target.sh" "$T32_INFRA/test_linked.sh"
+ln -s "$TMPDIR_T32/no_such_target.sh" "$T32_INFRA/test_dangling.sh"
+
+t32_expected=$'test_B.sh\ntest_a_b.sh\ntest_alpha.sh\ntest_linked.sh'
+t32_expected_flat="${t32_expected//$'\n'/ }"
+
+MANIFEST_T32="$TMPDIR_T32/classification.manifest"
+cat > "$MANIFEST_T32" <<'EOF'
+test_alpha.sh pool
+test_linked.sh pool
+test_a_b.sh pool
+test_B.sh intra-run-serial
+EOF
+
+MANIFEST_T32_H9="$TMPDIR_T32/classification-h9.manifest"
+cat > "$MANIFEST_T32_H9" <<'EOF'
+test_alpha.sh host-exclusive
+test_helpers.sh host-exclusive
+test_dir.sh host-exclusive
+test_dangling.sh host-exclusive
+test_B.sh pool
+test_a_b.sh pool
+test_linked.sh pool
+EOF
+
+# (pool) default path.
+t32p_rc=0
+t32p_out="$(env -u REIFY_RUN_ALL_EXCLUDE_HOST_INFRA -u REIFY_RUN_ALL_MEMBER_SUBSET \
+    -u REIFY_RUN_ALL_SUBSET_COUNT_ONLY -u REIFY_RUN_ALL_CONTENT_SKIP \
+    -u REIFY_RUN_ALL_SKIP_STATE -u REIFY_RUN_ALL_POOL_DISABLE \
+    LC_ALL="$T32_LC" \
+    RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T32" \
+    REIFY_RUN_ALL_POOL_LOCK="$TMPDIR_T32/pool.lock" \
+    REIFY_RUN_ALL_POOL_PSI_DISABLE=1 \
+    bash "$RUN_ALL" "$T32_INFRA" 2>&1)" || t32p_rc=$?
+
+# (legacy) break-glass all-serial path.
+t32l_rc=0
+t32l_out="$(env -u REIFY_RUN_ALL_EXCLUDE_HOST_INFRA -u REIFY_RUN_ALL_MEMBER_SUBSET \
+    -u REIFY_RUN_ALL_SUBSET_COUNT_ONLY -u REIFY_RUN_ALL_CONTENT_SKIP \
+    -u REIFY_RUN_ALL_SKIP_STATE \
+    LC_ALL="$T32_LC" \
+    RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T32" \
+    REIFY_RUN_ALL_POOL_LOCK="$TMPDIR_T32/legacy.lock" \
+    REIFY_RUN_ALL_POOL_PSI_DISABLE=1 \
+    REIFY_RUN_ALL_POOL_DISABLE=1 \
+    bash "$RUN_ALL" "$T32_INFRA" 2>&1)" || t32l_rc=$?
+
+# (subset) every discovered member named.
+t32s_rc=0
+t32s_out="$(env -u REIFY_RUN_ALL_EXCLUDE_HOST_INFRA \
+    -u REIFY_RUN_ALL_SUBSET_COUNT_ONLY -u REIFY_RUN_ALL_CONTENT_SKIP \
+    -u REIFY_RUN_ALL_SKIP_STATE -u REIFY_RUN_ALL_POOL_DISABLE \
+    LC_ALL="$T32_LC" \
+    RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T32" \
+    REIFY_RUN_ALL_POOL_LOCK="$TMPDIR_T32/subset.lock" \
+    REIFY_RUN_ALL_POOL_PSI_DISABLE=1 \
+    REIFY_RUN_ALL_MEMBER_SUBSET="test_alpha.sh test_B.sh test_a_b.sh test_linked.sh" \
+    bash "$RUN_ALL" "$T32_INFRA" 2>&1)" || t32s_rc=$?
+
+# (count-only) the 4 members plus the three non-members, named.
+t32c_rc=0
+t32c_out="$(env -u REIFY_RUN_ALL_EXCLUDE_HOST_INFRA -u REIFY_RUN_ALL_CONTENT_SKIP \
+    -u REIFY_RUN_ALL_SKIP_STATE -u REIFY_RUN_ALL_POOL_DISABLE \
+    LC_ALL="$T32_LC" \
+    RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T32" \
+    REIFY_RUN_ALL_POOL_LOCK="$TMPDIR_T32/count.lock" \
+    REIFY_RUN_ALL_POOL_PSI_DISABLE=1 \
+    REIFY_RUN_ALL_SUBSET_COUNT_ONLY=1 \
+    REIFY_RUN_ALL_MEMBER_SUBSET="test_alpha.sh test_B.sh test_a_b.sh test_linked.sh test_helpers.sh test_dir.sh test_dangling.sh" \
+    bash "$RUN_ALL" "$T32_INFRA" 2>&1)" || t32c_rc=$?
+
+# (host-infra) H9 over a manifest that also declares non-members host-exclusive.
+LOCK_T32="$TMPDIR_T32/lane-x.lock"
+t32h_rc=0
+t32h_out="$(env -u REIFY_RUN_ALL_EXCLUDE_HOST_INFRA -u REIFY_RUN_ALL_MEMBER_SUBSET \
+    -u REIFY_RUN_ALL_SUBSET_COUNT_ONLY -u REIFY_RUN_ALL_CONTENT_SKIP \
+    -u REIFY_RUN_ALL_SKIP_STATE -u REIFY_RUN_ALL_POOL_DISABLE \
+    LC_ALL="$T32_LC" \
+    RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T32_H9" \
+    REIFY_RUN_ALL_POOL_LOCK="$TMPDIR_T32/host-infra.lock" \
+    REIFY_RUN_ALL_POOL_PSI_DISABLE=1 \
+    REIFY_LANE_X_FLOCK_LOCK="$LOCK_T32" \
+    bash "$RUN_ALL" --scope host-infra "$T32_INFRA" 2>&1)" || t32h_rc=$?
+rm -f "$LOCK_T32" "${LOCK_T32}.slot-1"
+
+t32p_headers="$(echo "$t32p_out" | grep -E '^--- Running: ' | sed -E 's/^--- Running: (.*) ---$/\1/')" || true
+t32l_headers="$(echo "$t32l_out" | grep -E '^--- Running: ' | sed -E 's/^--- Running: (.*) ---$/\1/')" || true
+t32s_headers="$(echo "$t32s_out" | grep -E '^--- Running: ' | sed -E 's/^--- Running: (.*) ---$/\1/')" || true
+t32h_headers="$(echo "$t32h_out" | grep -E '^--- Running: ' | sed -E 's/^--- Running: (.*) ---$/\1/')" || true
+t32p_flat="${t32p_headers//$'\n'/ }"
+t32l_flat="${t32l_headers//$'\n'/ }"
+t32s_flat="${t32s_headers//$'\n'/ }"
+t32h_flat="${t32h_headers//$'\n'/ }"
+t32p_summary="$(grep -E '^=== Summary: ' <<<"$t32p_out")" || true
+t32l_summary="$(grep -E '^=== Summary: ' <<<"$t32l_out")" || true
+t32s_summary="$(grep -E '^=== Summary: ' <<<"$t32s_out")" || true
+t32h_summary="$(grep -E '^=== Summary: ' <<<"$t32h_out")" || true
+t32c_token="$(grep -oE '@@REIFY_RUN_ALL_SUBSET_MATCHED=[0-9]+@@' <<<"$t32c_out")" || true
+
+if [[ "$t32p_out" == *"INFO: run_all.sh pool: N="* ]]; then
+    assert "T32a: pool leg took the pool path (INFO: run_all.sh pool: N= present)" true
+else
+    assert "T32a: pool leg took the pool path (INFO: run_all.sh pool: N= present) (got: $t32p_out)" false
+fi
+
+if [[ "$t32l_out" != *"INFO: run_all.sh pool: N="* ]]; then
+    assert "T32b: legacy leg did NOT take the pool path (no INFO: run_all.sh pool: N=)" true
+else
+    assert "T32b: legacy leg did NOT take the pool path (got: $t32l_out)" false
+fi
+
+if [ "$t32p_summary" = "=== Summary: 4 discovered, 0 failed ===" ] && [ "$t32p_rc" -eq 0 ]; then
+    assert "T32c: pool leg Summary is '4 discovered, 0 failed' and exits 0" true
+else
+    assert "T32c: pool leg Summary is '4 discovered, 0 failed' and exits 0 (got: '$t32p_summary', rc=$t32p_rc)" false
+fi
+
+if [ "$t32l_summary" = "=== Summary: 4 discovered, 0 failed ===" ] && [ "$t32l_rc" -eq 0 ]; then
+    assert "T32d: legacy leg Summary is '4 discovered, 0 failed' and exits 0" true
+else
+    assert "T32d: legacy leg Summary is '4 discovered, 0 failed' and exits 0 (got: '$t32l_summary', rc=$t32l_rc)" false
+fi
+
+if [ "$t32p_headers" = "$t32l_headers" ]; then
+    assert "T32e: pool and legacy legs run the same members in the same order" true
+else
+    assert "T32e: pool and legacy legs run the same members in the same order (got pool: $t32p_flat; legacy: $t32l_flat)" false
+fi
+
+if [ "$t32p_headers" = "$t32_expected" ]; then
+    assert "T32f: pool/legacy order is the C-collated discovered list under LC_ALL=$T32_LC" true
+else
+    assert "T32f: pool/legacy order is the C-collated discovered list under LC_ALL=$T32_LC (want: $t32_expected_flat; got: $t32p_flat)" false
+fi
+
+if [ "$t32s_summary" = "=== Summary: 4 discovered, 0 failed ===" ] && [ "$t32s_headers" = "$t32_expected" ]; then
+    assert "T32g: subset leg runs the discovered list in C order, '4 discovered, 0 failed'" true
+else
+    assert "T32g: subset leg runs the discovered list in C order, '4 discovered, 0 failed' (want: $t32_expected_flat; got: $t32s_flat; summary: '$t32s_summary')" false
+fi
+
+if [ "$t32c_token" = "@@REIFY_RUN_ALL_SUBSET_MATCHED=4@@" ] && [ "$t32c_rc" -eq 0 ] \
+    && [[ "$t32c_out" != *"--- Running:"* ]]; then
+    assert "T32h: count-only matches exactly the 4 discovered members, exits 0, runs nothing" true
+else
+    assert "T32h: count-only matches exactly the 4 discovered members, exits 0, runs nothing (got: '$t32c_token', rc=$t32c_rc)" false
+fi
+
+t32i_hits=""
+for _t32_name in test_helpers.sh test_dir.sh test_dangling.sh; do
+    if [[ "$t32p_out$t32l_out$t32s_out" == *"--- Running: $_t32_name ---"* ]]; then
+        t32i_hits+="$_t32_name "
+    fi
+done
+if [ -z "$t32i_hits" ]; then
+    assert "T32i: no path runs test_helpers.sh, a test_*.sh directory, or a dangling symlink" true
+else
+    assert "T32i: no path runs test_helpers.sh, a test_*.sh directory, or a dangling symlink (got: $t32i_hits)" false
+fi
+
+if [ "$t32h_headers" = "test_alpha.sh" ] && [ "$t32h_summary" = "=== Summary: 1 discovered, 0 failed ===" ] \
+    && [ "$t32h_rc" -eq 0 ]; then
+    assert "T32j: --scope host-infra runs host-exclusive INTERSECT discovered (test_alpha.sh only)" true
+else
+    assert "T32j: --scope host-infra runs host-exclusive INTERSECT discovered (test_alpha.sh only) (got: $t32h_flat; summary: '$t32h_summary', rc=$t32h_rc)" false
+fi
+
+t32k_rc=0
+t32k_out="$(LC_ALL="$T32_LC" bash -c 'source "$1"; classification_undeclared "$2" "$3"; classification_orphaned "$2" "$3"; classification_coverage_diff "$2" "$3"' \
+    _ "$SCRIPT_DIR/run-all-classification-lib.sh" "$MANIFEST_T32" "$T32_INFRA" 2>&1)" || t32k_rc=$?
+if [ -z "$t32k_out" ] && [ "$t32k_rc" -eq 0 ]; then
+    assert "T32k: classification undeclared/orphaned/coverage_diff agree with discovery under LC_ALL=$T32_LC" true
+else
+    assert "T32k: classification undeclared/orphaned/coverage_diff agree with discovery under LC_ALL=$T32_LC (got: $t32k_out, rc=$t32k_rc)" false
+fi
 
 # -- Summary --------------------------------------------------------------------
 test_summary
