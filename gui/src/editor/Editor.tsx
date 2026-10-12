@@ -221,6 +221,7 @@ export function Editor(props: EditorProps) {
     const file = props.store.state.openFiles.find((f) => f.path === activeFile);
     const doc = file?.content ?? '';
     currentUri = activeFile ? pathToUri(activeFile) : 'file:///untitled.ri';
+    const initialUri = currentUri;
 
     // Named cross-file navigate callback shared by reifyGotoDefinition (Ctrl+Click)
     // and gotoDefinitionCommand (F12). Extracted so both handlers use identical
@@ -654,17 +655,21 @@ export function Editor(props: EditorProps) {
     }
 
     // Initialize LSP, send 'initialized' notification, then open the document.
+    // This is the first link of fileOpsPromise, so every file-switch and cleanup
+    // notification queues behind it. The opened URI, text and version are the
+    // mount-time snapshot, and the didOpen is skipped after teardown like the
+    // switch chain's.
     // Pass the workspace root URI (directory of the active .ri file) so the
     // backend sets workspace_root and activates κ cross-file references/rename.
     // When no file is active, workspaceRootUriForFile returns undefined which
     // preserves the existing single-file fallback behaviour.
-    lspClient
+    const initialVersion = activeFile ? docVersions.next(versionKey(initialUri)) : undefined;
+    fileOpsPromise = lspClient
       .initialize(workspaceRootUriForFile(activeFile))
       .then(() => lspClient.initialized())
       .then(() => {
-        if (activeFile) {
-          return lspClient.didOpen(currentUri, doc, docVersions.next(versionKey(currentUri)));
-        }
+        if (destroyed || initialVersion === undefined) return;
+        return lspClient.didOpen(initialUri, doc, initialVersion);
       })
       .catch((_err: unknown) =>
         props.onError?.('LSP initialization failed — completions and diagnostics may be unavailable'),
