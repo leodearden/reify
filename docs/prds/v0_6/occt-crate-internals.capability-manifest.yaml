@@ -1,0 +1,282 @@
+prd: docs/prds/v0_6/occt-crate-internals.md
+schema_version: 1
+tasks:
+- label: α
+  title: 'occt-internals α: move public-surface tests out of lib.rs and handle.rs into tests/harness_occt*'
+  capabilities:
+  - name: handle-test-module-reaches-only-public-api
+    binding: 'record h14_measurements row for handle.rs (test module): "it reaches only `super::OcctKernelHandle` public API plus reify_ir; it can move to handle/tests.rs or tests/ without a private reach". Crate unchanged a030ee7528..8e6ffcac9d.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '^mod tests'
+      paths:
+      - crates/reify-kernel-occt/src/handle.rs
+      expect: absent
+  - name: harness-layout-contract-and-cap
+    binding: 'grep:tests/infra/test_harness_kloc_cap.sh CAP_LINES=20000 and the #[path] rule; harness_occt is 12,292 module lines and harness_occt_measurement 9,275 (wc at 8e6ffcac9d), so ~6-7k moved lines likely need a new harness unit.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: CAP_LINES=20000
+      paths:
+      - tests/infra/test_harness_kloc_cap.sh
+      expect: present
+  - name: test-count-instrument
+    binding: 'scripts/cargo-test-tally.py exists (CLAUDE.md pointer table) to count a run once from a captured file.'
+    verdict: PASS
+    delivered_check:
+      kind: path
+      paths:
+      - scripts/cargo-test-tally.py
+      expect: present
+- label: β
+  title: 'occt-internals β: one fixture API — in-file tests rebuilt on the test-fixtures constructors'
+  capabilities:
+  - name: public-fixture-constructors-exist
+    binding: 'grep:crates/reify-kernel-occt/src/lib.rs cfg(all(has_occt, feature = "test-fixtures")) impl OcctKernel carries 18 pub *_for_test fns (skeptic count), e.g. store_rect_face_for_test; Cargo.toml self-dev-dep enables test-fixtures for integration tests.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: pub fn store_rect_face_for_test
+      paths:
+      - crates/reify-kernel-occt/src/lib.rs
+      expect: present
+  - name: private-duplicate-fixture-api-deleted
+    binding: 'the cfg(all(test, has_occt)) impl OcctKernel''s store_raw is the private duplicate the finding names; its definition must be gone. Accepted gap: a renamed private helper evades the pattern; the f60 re-measurement in the leaf signal is the behavioural cover.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn store_raw
+      paths:
+      - crates/reify-kernel-occt/src
+      expect: absent
+- label: γ1
+  title: 'occt-internals γ1: OcctKernel::execute_with_history owns the op lowering; one argument decode in op_args.rs'
+  capabilities:
+  - name: kernel-owns-history-dispatcher
+    binding: 'premise (G6): git grep "fn execute_with_history" at 8e6ffcac9d hits handle.rs, stubs.rs, reify-ir, reify-geometry and test kernels only; the op match lives in OcctKernelHandle::spawn''s ExecuteWithHistory arm with distance/radius .as_f64() reads.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: pub fn execute_with_history
+      paths:
+      - crates/reify-kernel-occt/src/lib.rs
+      expect: present
+  - name: length-tripwire-observable-on-test-thread
+    binding: 'grep:crates/reify-ir/src/kernel_validation.rs pub fn arm_length_tripwire_assert (re-exported from reify_ir lib.rs) — a thread-local RAII arm; check_length_field panics with the canonical message under cfg(debug_assertions) when armed; the arm does not cross OcctKernelHandle''s worker thread, so the test drives OcctKernel in-process.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: pub fn arm_length_tripwire_assert
+      paths:
+      - crates/reify-ir/src/kernel_validation.rs
+      expect: present
+  - name: op-args-module-split
+    binding: 'record h14 row for lib.rs — extract_f64/extract_length_f64/validate_* + AXIS_MAG_SQ_MIN/ANGLE_ABS_MIN form a partition with symptom "none" (imports only reify_ir and crate::ffi::ffi::Point3).'
+    verdict: PASS
+    delivered_check:
+      kind: path
+      paths:
+      - crates/reify-kernel-occt/src/op_args.rs
+      expect: present
+  - name: adoption-ratchet-member
+    binding: 'INV candidate 5 checkable form names crates/reify-eval/tests/version_id_discipline_gate.rs as the shape; the ratchet is a new module in the existing harness_occt unit (no new binary, so no nextest/run_all registration).'
+    verdict: PASS
+    delivered_check:
+      kind: path
+      paths:
+      - crates/reify-kernel-occt/tests/harness_occt/inline_pattern_ratchet.rs
+      expect: present
+- label: γ2
+  title: 'occt-internals γ2: one decoder per history type, one sub-shape extractor, one selection mapper'
+  capabilities:
+  - name: one-sweep-history-decoder
+    binding: 'grep:crates/reify-kernel-occt/src/lib.rs fn decode_six_buffer_history already serves boolean and local-feature histories; sweep_op_history_face_modified has 3 production call sites (extrude/revolve/sweep_with_history).'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn decode_sweep_history
+      paths:
+      - crates/reify-kernel-occt/src
+      expect: present
+  - name: one-selection-mapper
+    binding: '"does not belong to" membership errors at 4-5 sites (fillet_edges, chamfer_edges, chamfer_asymmetric_edges, draft_faces, shell_solid_faces), two algorithms.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn map_selection_to_indices
+      paths:
+      - crates/reify-kernel-occt/src
+      expect: present
+  - name: one-subshape-extractor
+    binding: 'extract_edges/extract_faces/extract_vertices differ only in cache field, FFI getter and BRepKind (skeptic re-read).'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn extract_subshapes
+      paths:
+      - crates/reify-kernel-occt/src
+      expect: present
+- label: ζ
+  title: 'occt-internals ζ: every execute arm declares its result repr (ReprPolicy); one fillet/chamfer precondition'
+  capabilities:
+  - name: centroid-misroute-reproduces
+    binding: 'reify eval tests/prd-gate/fixtures/occt_internals_centroid_translated_profile.ri on target/debug/reify (built 2026-10-11; crate unchanged since a030ee7528) prints Probe.c_moved = point(0 m, 0 m, 0 m) and c_plain ~1e-19 m (square centred), so the expected post-fix value is point(0.01 m, 0 m, 0 m). Fixture parses (tree-sitter rc=0).'
+    verdict: PASS
+    delivered_check:
+      kind: path
+      paths:
+      - tests/prd-gate/fixtures/occt_internals_centroid_translated_profile.ri
+      expect: present
+  - name: guard-bypass-via-translate-reproduces
+    binding: 'reify eval tests/prd-gate/fixtures/occt_internals_fillet_translated_disjoint_union.ri: v_direct undef with "requires a BRepKind::Solid input shape, got Compound"; v_moved = 0.0000019511740277818842 m^3 (accepted). Rejection mechanism exists and fires (the direct arm), so the post-fix rejection is backed (G6 branch 4).'
+    verdict: PASS
+    delivered_check:
+      kind: path
+      paths:
+      - tests/prd-gate/fixtures/occt_internals_fillet_translated_disjoint_union.ri
+      expect: present
+  - name: extruded-wire-passes-guard-reproduces
+    binding: 'reify eval tests/prd-gate/fixtures/occt_internals_fillet_extruded_wire.ri: a = 0.0002 m^2, v = 0 m^3, vf undef with "OCCT make_fillet_with_history: There are no suitable edges for chamfer or fillet" (the guard admitted the Solid-stamped sheet). Post-fix kind (Shell vs Face) is not asserted, only the guard message.'
+    verdict: PASS
+    delivered_check:
+      kind: path
+      paths:
+      - tests/prd-gate/fixtures/occt_internals_fillet_extruded_wire.ri
+      expect: present
+  - name: repr-policy-type
+    binding: 'grep:crates/reify-kernel-occt/src/lib.rs fn brep_kind_of_shape + store_classified already used by the booleans and SweepGuided/LoftGuided.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: enum ReprPolicy
+      paths:
+      - crates/reify-kernel-occt/src
+      expect: present
+  - name: implicit-solid-store-deleted
+    binding: 'OcctKernel::store (the implicit-Solid helper behind the shared tail) must not exist. Accepted gap — a different helper hard-coding Solid evades this; BT-ζ1''s per-arm policy table is the behavioural cover.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn store\(&mut self, shape
+      paths:
+      - crates/reify-kernel-occt/src
+      expect: absent
+  - name: sweep-pose-guard-upstream
+    binding: 'producer:task-7248 upstream (pending; plain Sweep classifies on both entry points there). ζ depends on it; no DAG inversion.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'an external task dependency, wired by add_dependency at decompose time.'
+  - name: docs-truth-chunk-lines
+    binding: 'crates/reify-mcp/src/tools/chunks/geometry.md documents transforms and fillet(solid, ...) but says nothing about kind preservation; measurement.md documents centroid(solid). No reify fence added, so fence_gate counts are unchanged.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'the deliverable is two prose lines whose wording is the implementer''s; a grep would pin prose.'
+- label: ε
+  title: 'occt-internals ε: extract ShapeStore with a pub(crate) interface'
+  capabilities:
+  - name: get-shape-erasure-fix-upstream
+    binding: 'producer:task-7379 upstream (pending, carries fk-baae0532b743; adds shape_for_query and export/tess siblings). ε moves them into ShapeStore and holds the erasing idiom at 0 with a ratchet row.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'an external task dependency, wired by add_dependency at decompose time.'
+  - name: shape-store-type
+    binding: 'record h14 row for lib.rs — execute/query/fixtures partitions pass h13 only over "its own ShapeStore type with a pub(crate) interface in shape_store.rs".'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: pub\(crate\) struct ShapeStore
+      paths:
+      - crates/reify-kernel-occt/src/shape_store.rs
+      expect: present
+  - name: warm-state-disposition
+    binding: 'Q2 (lead ruling): (a) reduce to trait no-op, (b) re-home as ShapeStore persist/restore. The binding is made by the ruling, then this leaf.'
+    verdict: OPEN
+    delivered_check:
+      kind: manual
+      reason: 'shape depends on the Q2 ruling.'
+- label: ι
+  title: 'occt-internals ι: partition lib.rs over ShapeStore — execute.rs, history.rs, query.rs, fixtures.rs (h14)'
+  capabilities:
+  - name: partition-names-fixed-for-downstream
+    binding: 'PRD §3 names the files; S10''s typed-reply work (cross-reference) converts query() inside query.rs.'
+    verdict: PASS
+    delivered_check:
+      kind: path
+      paths:
+      - crates/reify-kernel-occt/src/execute.rs
+      - crates/reify-kernel-occt/src/query.rs
+      expect: present
+- label: θ
+  title: 'occt-internals θ: one closure request behind call<R>; handle.rs is transport; stub contract named'
+  capabilities:
+  - name: one-call-primitive
+    binding: 'grep:crates/reify-kernel-occt/src/handle.rs fn send_request_blocking / send_request_async already compress channel boilerplate (task 2512); the kernel lives on one OS thread created in spawn(), so a Box<dyn FnOnce(&mut OcctKernel) + Send> runs there with OcctKernel never crossing threads.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn call<
+      paths:
+      - crates/reify-kernel-occt/src/handle.rs
+      expect: present
+  - name: meshing-service-alpha-upstream
+    binding: 'producer:task-8284 upstream (in-progress; edits handle.rs/ffi.rs/lib.rs/cpp). θ depends on it.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'an external task dependency, wired by add_dependency at decompose time.'
+  - name: stub-doc-states-real-contract
+    binding: 'stubs.rs module doc claims "the same public API surface"; skeptic measured 24/50 and 16/33 and no production caller of the missing methods.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'the deliverable is a corrected doc paragraph; a grep over it would pin prose.'
+- label: δ
+  title: 'occt-internals δ: one cxx shared struct per op-history type replaces the flat accessors'
+  capabilities:
+  - name: cxx-vec-of-shared-struct-precedent
+    binding: 'grep:crates/reify-kernel-occt/src/ffi.rs StepTreeRecords carries Vec<StepProductRecord> / Vec<StepComponentRecord> across this bridge.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'products: Vec<StepProductRecord>'
+      paths:
+      - crates/reify-kernel-occt/src/ffi.rs
+      expect: present
+  - name: flat-accessors-retired
+    binding: '37 *_op_history_* accessor declarations today (boolean 8, local_feature 8, loft 9, sweep 12). Asserting the positive shared struct plus the absence of one representative flat accessor; the ratchet row (≤ 8 declarations) is the count cover.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn sweep_op_history_face_modified
+      paths:
+      - crates/reify-kernel-occt/src/ffi.rs
+      expect: absent
+  - name: typed-record-struct
+    binding: 'D8 names FfiHistoryRecord as the per-record shared struct.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: struct FfiHistoryRecord
+      paths:
+      - crates/reify-kernel-occt/src/ffi.rs
+      expect: present
+  - name: golden-parity-boundary-test
+    binding: 'contract C1 (BT-δ1 golden captured before the FFI edit, BT-δ2 parity after); serde_json is already a dev-dependency of the crate.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'the golden file name is the implementer''s.'
+- label: ω
+  title: 'occt-internals ω: PRD close — SHIPPED stamp with landed leaf ids'
+  capabilities:
+  - name: terminal-stamp
+    binding: 'overlay "PRD terminal status" decompose-close obligation; depends on every other leaf.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'the deliverable is the committed header.'

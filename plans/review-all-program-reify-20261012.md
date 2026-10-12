@@ -285,3 +285,107 @@ Rule: one stream edits a shared artefact; the others consume its filed leaf ids 
 | (none yet) | | | | |
 
 Trigger chain: filed per `skills/_shared/filing-the-trigger-chain.md` (interim form unless the §2 probe passes) when the first stream files; gate ids recorded here; `commit_planning` once this table is complete. Superseded chain: none (first run). Launched from: none (hand launch).
+## Lead amendments to the synthesis text (recorded, not relitigated)
+
+- S19: the per-member event channel is verify-tree wide and named `REIFY_VERIFY_EVENT_LOG` (heuristic 1), not `REIFY_RUN_ALL_EVENT_LOG`; every slot_emit_timeout caller writes a record; S18's Python verify passes the variable through.
+- S3: the predicate homes are three by purpose (expr_classify, realization_inputs, structural_query); the checkable rule is "no import into the measured SCC and only crates below reify-eval", since four of the nine predicates need reify_compiler/reify_expr.
+- Key reassignments: fk-030602c2fd62 (OCCT query() JSON replies) S11 → S10 (typed GeometryQuery reply leaf); fk-bb1ba38a6a46 (types.rs ALL arrays, weakened, previously unrouted) → S7 π; fk-c940cb1edad4 (ExecutionMode) → stamped on #8375/#8381 (elastic-static-solver-performance already deletes the axis; no leaf); fk-21c29ddc104d's verify.sh home → S18 (S22 θ keeps the classifier).
+- S27: the MCP context stays deleted per #6665 (Leo 2026-08-26); the single compile front end is resolution-unification §3.1 `compile_program` (#5516), which S27 γ consumes — the G4 row "reify_compiler compile entry points" is owned by resolution-unification β, S27 consumes.
+- S21/S22: no bash edits to scripts/verify.sh ahead of S18's Python rewrite; S18 carries the two apply_env / decide_scope adaptations as cross-references.
+- S15: "the chartered PVAC detector" means #7102 (result-field-vacuity-closure); S15 C4 is INV-PD-2's runtime half.
+- INV candidate 7 is INV-ARCH-1 (docs/invariants.md), tool and baseline built by S3 α with reify-compiler excluded until S7 κ; lockstep sites on reify: docs/invariants.md, docs/legibility/design-invariants.md, the program doc pointer, one CLAUDE.md Pointers line.
+- Post-S1 follow-up candidate (not filed): typed ValueCellId / InstancePath (S3 OQ-2 b, ~2,066 sites).
+- The G4 row "dark-factory merge queue's import of reify_overlap_detector" names a seam that does not exist (DF #1897 fell back to the default detector; no register_for_reify call): a dark-factory task to register it is a lead follow-up; S22 θ keeps importing the shared module.
+
+## Resolved decisions — pass 1 open questions (wave 1, ruled by the lead 2026-10-12 under the deliberation rulings; a seat that finds the code contradicts one returns it)
+
+### S3 — docs/prds/v0_6/dependency-invalidation-stratum.md
+- OQ-1 → (B): three homes by purpose (expr_classify, realization_inputs, structural_query); the checkable rule is "no import into the measured SCC, and only crates below reify-eval" — lead amendment of the ruling's "imports only reify_ir/reify_core" (impossible at main for 4 of 9).
+- OQ-2 → (c): (a) now (InstancePath is the grammar home; ValueCellId.entity stays String); (b) typed ValueCellId recorded in the program doc as a post-S1 follow-up candidate, not filed now.
+- OQ-3 → (i) α builds the only tool, baseline and INV-ARCH-1 row; (ii) S7's glob-removal leaf raises the reify-compiler rows as a named one-time exception in its commit (the tool stays simple).
+- OQ-4 → lockstep sites on reify: docs/invariants.md row (α), docs/legibility/design-invariants.md entry (G7/review read it), the program doc pointer; CLAUDE.md gets one Pointers line only.
+- OQ-5 → keep the {cache, deps} 2-cycle as a recorded residual; no ν.
+- OQ-6 → accept the --explain-undef behaviour changes with the pin test.
+
+### S7 — docs/prds/v0_6/compiler-module-namespace.md
+- Q1 INV-ARCH-1 tool owner → (a): S3 α builds it with reify-compiler excluded until S7 κ; S7 ξ adds the compiler rows (consistent with the S3 OQ-3 ruling).
+- Q2 fk-bb1ba38a6a46 (weakened, unfiled, unrouted) → (a): assign to S7 as π (strum::EnumCount on the 9 geometry-kind enums); program doc stream table amended.
+- Q3 fk-a9fb39978c17 reach → (a): ν does the sub_* record only; the disjointness and key-parity pairs are recorded as a follow-up candidate in the PRD, not widened.
+- Q4 κ at medium → confirmed (Contradictions ruling).
+- Q5 29 globs incl. 4 conformance/ ones → accepted; baseline 29.
+
+### S14 — docs/prds/v0_6/solver-crates-layering.md
+- Q1 fk-c940cb1edad4 (ExecutionMode) contradicts committed elastic-static-solver-performance (#8375/#8381 delete the axis) → (A): stamp x_finding_key fk-c940cb1edad4 onto #8375 and #8381 (update_task metadata, list form), disposition filed:8375; no leaf; the ruling's "one ExecutionMode enum" is superseded by that PRD (G6 stale premise) — recorded in the program doc.
+- Q2 GeometryError ownership → (A): κ adds BackendUnavailable in wave 1; S10 consumes it (cross-ref to S10).
+- Q3 floor↔core cycle → (A): constraints_witness and floor_infeasible_diagnostic both move to solver/core (PRD D17).
+
+### S11 — docs/prds/v0_6/occt-crate-internals.md
+- Q1 fk-030602c2fd62 (query() JSON replies) → (a): key moves to S10's typed-reply leaf (producer + eval parsers switch atomically there); S11 ι only moves query() into query.rs; program doc stream table amended (key reassigned S11 → S10).
+- Q2 OCCT warm start fk-69bd53399b08 → (a): reduce to the trait no-op (warm_state None, with_warm_state no-op), inventory registration stays, INV-GEO-3 OCCT arm reworded stateless; no consumer exists (heuristic 6).
+- Q3 ordering vs #7438 (OpControl) → (a): γ1 and θ land first; decomposition notes on #7438 that the control goes to execute_with_history inside the call closure; edge #7438 → θ.
+
+### S20 — docs/prds/v0_6/warm-lane-scripts-one-lock-one-env-one-oracle.md
+- Q1 lane_lock_acquire(mode, wait) → (a) mode = wait mode (0 / N / unlimited); exclusive always; shared stays lane_lock_probe.
+- Q2 --mount flags → (a) keep the flags meaning the worktrees dir, add the looks-like-mount warning; no DF flag-day.
+- Q3 manifest row → (a) L3 adds the row itself in today's format (overlay requires same-diff registration); S19 owns the format, not the rows.
+- Q4 golden record home → (a) canonical in DF regenerated by D5, vendored byte copy in reify with PROVENANCE.md (hermetic under /usr/bin/python3).
+- Q5 f133 premise (5 mark sites, DF marks via yaml touch) → (a) accept the two-phase L9/L10 design; L9 ALSO measures (c): if hooks/pre-merge-commit marks immediately before land.sh's --no-ff move, delete land.sh's own pre-mark instead of trapping it.
+- Q6 thin --reseed on seed exit 70 → propagate 70 unchanged (a lane-lock refusal is a distinct outcome, never mapped to the generic fault code).
+
+### S21 — docs/prds/v0_6/native-dep-table-and-loader-path.md
+- no open questions
+
+### S22 — docs/prds/v0_6/prd-probe-gate-typed-outcomes.md
+- R1 reify_overlap_detector unregistered in dark-factory (G4 row names a seam that does not exist) → (a): keep θ importing the shared module; LEAD FOLLOW-UP: file a dark-factory task "register_for_reify with project_id in the merge-queue overlap detection" (DF #1897 fell back to the default detector); program doc G4 row corrected.
+- R2 ι and the verify.sh home → (b): ι moves to S18 (consistent with the S21 ruling: no bash edits to verify.sh ahead of its Python rewrite); fk-21c29ddc104d lands on θ minus the verify.sh home, S18's planner imports reify_path_attribution.py; the verify-pipeline-paths.txt row is S18's.
+- R3 schema layering → (a) as drafted (α publishes what α decides; pdv publishes its own).
+- R4 refinements (a)(b)(c) → confirmed.
+
+### S19 — docs/prds/v0_6/run-all-runner-infra-harness.md
+- Q1 event-channel scope/name → (C): the channel is verify-tree wide (every slot_emit_timeout caller writes a record) and is named REIFY_VERIFY_EVENT_LOG for an accurate name (heuristic 1); lead amendment of the synthesis's REIFY_RUN_ALL_EVENT_LOG label, recorded in the program doc; C3 rule 4 holds and η deletes D-G outright; S18's Python verify passes the var through and appends slot_timeout records if it reimplements slot acquisition.
+- Q2 τ (verify_scope / semaphore partitions) → (A): ceded to S18; τ is NOT filed (nothing to cancel); S18's PRD carries the two partitions as cross-reference.
+- Q3 D7 → (A): h14 partition satellites are behaviour-preserving moves and stay bash; only new assertions are Python.
+- Premise correction accepted (fk-3cb220f9cc94: only test_tree_sitter_pipeline.sh runs a private harness).
+
+### S15 — docs/prds/v0_6/trampoline-decode-and-result-build.md
+- OQ1 PVAC wording vs result-field-vacuity-closure charter (#7102) → (a): S15 C4 is INV-PD-2's runtime half; #7102 stays the PVAC gate; program doc wording corrected ("the chartered PVAC detector" refers to #7102).
+- OQ2 PDROP overlap → (b): S15's decoders land first and #7079 attaches its declaration to them (edge #7079 → β reversed: β → #7079); #7080/#7084 remain their own tasks consuming β (edges β → #7080, β → #7084 added at pass 2) — β does not wait on unstarted tasks.
+- OQ3 declared defaults at runtime for PDROP C3 → (a): #7079 derives them from load_stdlib() templates; lead note on #7079; no production defaults table (D1 stands).
+- OQ4 user supports on the shell route → (a): S16 owns it (per-route solvers); γ only makes the drop loud; cross-ref to S16.
+- OQ5 fk-a28b1b57ed64 wider than recorded → confirmed: δ stays in S15 (fixes the two registry reads); the compiler placeholder unchanged; S1 untouched.
+
+### S9 — docs/prds/v0_6/compiler-declaration-passes.md
+- Q1 fk-60053402aba5 (#5499) and fk-6621fbaa0058 (#5425/#5430) → (a)+(b): stamp x_finding_key on #5499 and #5430 (dispositions filed:5499, filed:5430) AND add both as dependencies of π so S9 cannot close before they land; no new leaves.
+- Q2 f-number mislabels → confirmed; keys and statements govern.
+- Q3 relation_signatures ownership → (a) as written: S6 mints RelationKind; S9 λ owns the RelationSig rows; S8 reads them.
+- Q4 β on #5425 → (a) hard edge.
+- Q5 purpose-body parse error in reify-syntax inside γ → confirmed in S9 (no other stream owns ts_parser::lower_purpose_members).
+- Q6 S12 contract → S9 §5 is the contract; S12 names any extra need at its own decomposition.
+
+### S13 — docs/prds/v0_6/selector-resolution-factoring.md
+- Q1 θ owner → (a): drop θ from S13; fk-07c78c4ca710 is S8's and deferred #6010 already moves the helper map; S13 files no held leaf.
+- Q2 α₀ (delivered-check path widening in 11 other sidecars/task metadata) → (a): the pass-2 decompose session performs the three writes per check before filing (lead-sanctioned update_task writes on those tasks); not a leaf.
+- Q3 h14 partition membership → (a): accept PRD D4/D5 (code wins over the record's "none"; measured 4 cycles).
+- Q4 registry_drift_tests.rs path-only edits → (a): sanctioned for S13 β/γ.
+- Q5 three first-leaf walks → (b): leave as the PRD does.
+
+### S27 — docs/prds/v0_6/tooling-front-end.md
+- OQ1 MCP context vs #6665 (Leo 2026-08-26: delete `reify mcp-server` and mcp_context.rs) → (A): #6665 stands; δ is not filed; the MCP parts of fk-f5264d76e3ad and fk-5854202d4aed close by that deletion; ο lands at the reify-mcp transport level.
+- OQ2 compile_user_module vs resolution-unification §3.1 compile_program (#5516 β pending) → (A): compile_program is the one front end; γ moves AnalysisContext and the remaining LSP sites onto it and depends on #5516/#5520; the G4 owner row is re-pointed to resolution-unification β; S12's cross-reference becomes "layered under compile_program / CompiledProgram".
+- OQ3 β scope vs #6851 → (A): predicate moves to reify-eval, LSP consumes it, CLI exit policy unchanged (#5403's).
+- OQ4 reify.toml → (A): docs only.
+
+
+## Cross-reference lines (wave 1; applied by the lead, never by a seat)
+
+- **S3** → FILED row; INV candidate 7 → INV-ARCH-1 (α); amend #5023 and #4958 descriptions (completion transaction seeds dirty_cone); prd overlay G1 seam row §3.6 retired after ζ; S23 (architecture doc §3.5, freshness-4-variant PRD); S7 (baseline rows); every cycle-breaking stream lowers its baseline row in the same diff (table in the result); S8 (name-set predicates live in expr_classify.rs); S4 (consumes expr_classify/DependencyGraph/dirty_cone); S25 (set_observed_demand); S5 (direct compute-contract imports); next review-all instrument: brace-matched cfg(test) exclusion (second SCC is 5, not 3).
+- **S7** → S3 (exclusion until κ), S8 (depends on ε, θ, ι; sixth partition; operator_typing.rs), S9 (depends on β, θ; member_cell_decls.rs), S12 (satisfies_trait_bound stable), S6 (#8560 repoints), S5 (#8551 repoints), S27 (μ edits compile_with_prelude_context_checked_with_config body only); FILED row at medium.
+- **S14** → FILED row; elastic-static-solver-performance stamping; S4 (ν deletes engine_eval predicate mirrors; eval_ctx_with_meta site left to S4); S5 (compute_targets trampolines edited in wave 1 by S14; ShellFrame doc pointer); S16 (AssemblyElement::new only); S10 (BackendUnavailable consumed); S3/S7 (INV 7 baseline); S23 (θ/μ prose; S23 keeps the file:line rewrites in 5 files).
+- **S11** → S10 PRD (MockGeometryKernel mirrors ζ's ReprPolicy; typed-SI decode replaces extract_length_f64 at op_args.rs → depends on γ1; sub-trait accessors over θ's call<R>; typed GeometryQuery reply leaf carries fk-030602c2fd62 and depends on ι); decomposition notes: #8582 subsumed by ζ; #7379 → ε; #7248 → ζ; #8284 → θ, δ; #7688 optional → θ; #7438 → θ.
+- **S20** → FILED row text; seam row "dark-factory-orchestrator.yaml git.main_gate_mark_command/unmark_command + hooks/main-gate-lib.sh sentinel format | S20"; S23 Greek-letter aliases in gc comments; DF repatriation PRD must carry the new libs; LEAD FOLLOW-UP: scripts/lane-task-status.sh reads .taskmaster/tasks/tasks.db directly (forbidden by CLAUDE.md) — no finding covers it; file a mechanical task.
+- **S22** → G4 rows (overlap detector correction; new row reify_path_attribution.py | S22 | S18, overlap detector); S18 PRD (decide_scope reads attribute; fixture-list and gui-event-channels arms stay policy); pass 2: #8122 and #8178 cancelled as subsumed (reason names the subsuming leaf; the leaf carries their keys), #7491 → θ.
+- **S19** → program doc seam rows for S18/S19 split (S19 = run_all-emitted lines + @@REIFY_SLOT_TIMEOUT@@ family; S18 = verify.sh-emitted lines); S18 PRD (event records, shim passes the var; harness-layout-lib public names; plan_capture_lib untouched; the two partitions ceded); S23 PRD (35 crate headers repointed by θ — do not re-touch); S24 PRD (schema.rs include_str! of tasks_db_schema.sql); S20 PRD (μ₂ depends on lane-lock leaf; ν only gc fixtures); pass-2: add #7445 → α.
+- **S15** → G4 rows (stdlib_inputs decoders | S15 | S5, S16; result builders | S15 | S5, S16, #7100/#7101); S5 (move carries stdlib_inputs/builders; INV 4 .ri half is S5's); S16 (typed request from C1 decoders; one result builder = ε; shell-route supports); S10 (registry_free is the constructor the overlay fields extend); S6 (ο ordering); S8 (κ analysis diagnose registration; ξ moves fea::diagnose); S4 (no new EvalContext site); task notes #7079 #7100 #7101 #7081 #5802; #8524 #8559 subsumed by γ/θ.
+- **S9** → S27 (ν = all_value_cells; R4 row; ParseErrorKind::diagnostic_code adoption), S7 (ξ/ο deps; D3 module naming), S6 (RelationKind consumed by λ), S8 (reads RelationSig), S4 (ε deletes rewrite_port_placeholder; ζ SubOrigin matches), S23 (skip four prose pieces S9 rehomes); mechanical rows fk-60053402aba5 → filed:5499, fk-6621fbaa0058 → filed:5430, fk-75d9313c6ee6 → filed:8556.
+- **S13** → #8288 (nodes_for_faces moves), #6682 KEEP-UNTOUCHED list, #5658 stale delivered check (pre-existing; needs the three-write correction), S2 (placed_walk only), S4 (eval_ctx_with_meta sites relocated; PendingWarmSeedsGuard), S8/#6010, S10 (dispatch_* decoders → query.rs), S1 (lib.rs test mod line), S5 (CarriedTopology), S3 (INV-7 baseline).
+- **S27** → G4 row re-point; FILED subsumed #8447 #8557 #8336 #7720 (cancel as subsumed at decompose, keys carried); S12, S9 (ratchet rows), S1 (KNOWN_SITES moves with φ), S26 (LspMethod in generated types), S25 (dev_stdlib_root unless #5519 deletes the path), S18 (infra-tests manifest row moves with φ); task notes #6851 (panic re-verified; predicate home), #6695 (three sites not four), #6805 (add tooling_fe_stdlib_enum.ri to its corpus); stale rustdoc sentence on reify_compiler::compile (fix in γ).

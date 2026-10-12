@@ -1,0 +1,196 @@
+prd: docs/prds/v0_6/warm-lane-scripts-one-lock-one-env-one-oracle.md
+schema_version: 1
+tasks:
+- label: L1
+  title: 'warm-lane S20 L1: lane-lock API in lib_lane_lock.sh; seed/thin/gc acquire through it; --assume-lane-lock-held asserts'
+  capabilities:
+  - name: probe-substrate-exists
+    binding: 'scripts/lib_lane_lock.sh::lane_lock_probe at main 8e6ffcac9d — shared non-blocking read-only probe, IDLE for an absent file, BUSY only on -E 124 contention; sourced by warm-lane-audit.sh and warm-lane-lock-guard.sh only.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '^lane_lock_assert_held\(\) \{'
+      paths:
+      - scripts/lib_lane_lock.sh
+      expect: present
+  - name: df-holders-are-flock2-on-the-sibling-path
+    binding: 'dark-factory git_ops.py::_seed_warm_lane builds [flock -x -w 30 -E 124 <lane_dir>.lock] for SeedLaneLock.TAKE; HELD_BY_CALLER callers hold fcntl.flock(LOCK_EX); verify_cancel.py::lane_lock_path = lane_dir.with_name(name + ".lock"). A fresh-OFD flock(2) probe observes each as BUSY.'
+    verdict: PASS
+  - name: rc70-maps-to-fault
+    binding: 'dark-factory _seed_rc_to_unavailable maps 75/76/77/124/127 specially and every other non-zero to FAULT; seed-warm-lane.sh uses no exit 70 at main (exit codes 0,1,2,64,76 only).'
+    verdict: PASS
+  - name: seed-acquires-through-the-lib
+    binding: 'deliverable — seed no longer composes ${LANE_DIR}.lock itself.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'LANE_LOCK="\$\{LANE_DIR\}\.lock"'
+      paths:
+      - scripts/seed-warm-lane.sh
+      - scripts/thin-warm-lane.sh
+      expect: absent
+- label: L2
+  title: 'warm-lane S20 L2: REIFY_WARM_LANE_WORKTREES names the worktrees dir; retire four aliases'
+  capabilities:
+  - name: two-meanings-measured
+    binding: 'git grep REIFY_WARM_LANE_MOUNT at main: provision/preflight/seed/thin read it as the XFS mount; warm-lane-audit.sh (MOUNT=${REIFY_WARM_LANE_MOUNT:-}, _probe_live "$MOUNT/$name.lock") and warm-lane-lock-guard.sh (LOCK=${LOCK_PATH:-$MOUNT/$LANE.lock}) read it as the worktrees dir.'
+    verdict: PASS
+  - name: retired-names-have-no-production-setter
+    binding: 'systemd units pass --mount explicitly (reify-warm-lane-gc.service); orchestrator-reify.service.d/warm-lane.conf sets only REIFY_LANE_LEAK_STATUS_CMD; dark-factory orchestrator/src + shared: 0 hits for the four retired names.'
+    verdict: PASS
+  - name: lock-guard-reads-new-name
+    binding: deliverable
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: REIFY_WARM_LANE_WORKTREES
+      paths:
+      - scripts/warm-lane-lock-guard.sh
+      - scripts/warm-lane-audit.sh
+      - scripts/warm-lane-gc.sh
+      - scripts/warm-lane-gc-sweep.sh
+      - scripts/warm-lane-preflight.sh
+      expect: present
+- label: L3
+  title: 'warm-lane S20 L3: lib_task_status.sh owns the oracle contract; lib_lane_entry.sh owns the entry helpers'
+  capabilities:
+  - name: three-copies-measured
+    binding: 'oracle invocation "$cmd" "$id" 2>/dev/null | tr -d [:space:] in warm-lane-audit.sh::_task_status_raw, warm-lane-preflight.sh Check 6, warm-lane-degenerate-ref-check.sh::_ref_status; done|cancelled arms in the same three; _matches_glob/_is_git_worktree defined in both warm-lane-gc.sh and warm-lane-audit.sh.'
+    verdict: PASS
+  - name: lib-exists
+    binding: deliverable
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '^task_status_bucket\(\) \{'
+      paths:
+      - scripts/lib_task_status.sh
+      expect: present
+  - name: audit-copy-removed
+    binding: deliverable
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '^_task_status_raw\(\) \{'
+      paths:
+      - scripts/warm-lane-audit.sh
+      expect: absent
+- label: L4
+  title: 'warm-lane S20 L4: audit reads dark-factory records with python3 -I json; HEADROOM from one field list'
+  capabilities:
+  - name: interpreter-the-gate-reaches
+    binding: '/usr/bin/python3 = 3.12.3 on the host; reify CLAUDE.md names it as the gate interpreter; no test asserts the audit is python-free (git grep python3 in warm-lane-*.sh hits only two comments).'
+    verdict: PASS
+  - name: reader-exists
+    binding: deliverable
+    verdict: PASS
+    delivered_check:
+      kind: path
+      paths:
+      - scripts/warm_lane_records.py
+      expect: present
+  - name: awk-tokenizer-gone
+    binding: deliverable
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '^_plan_anchor\(\) \{'
+      paths:
+      - scripts/warm-lane-audit.sh
+      expect: absent
+- label: L5
+  title: 'warm-lane S20 L5: golden dark-factory records drive the audit; compact and reordered plan cases'
+  note: 'Companion dark_factory task D5 produces the golden content; external_task_id is stamped at decompose.'
+  capabilities:
+  - name: producer-serialisers-located
+    binding: 'dark-factory orchestrator/lane_lifecycle.py::LaneRecord.to_json = json.dumps(to_dict(), indent=2); LaneState has six values; plan.json written by orchestrator/mcp/plan_tools.py.'
+    verdict: PASS
+  - name: golden-records-checked-in
+    binding: deliverable
+    verdict: PASS
+    delivered_check:
+      kind: path
+      paths:
+      - tests/infra/fixtures/warm_lane_golden/plan.json
+      - tests/infra/fixtures/warm_lane_golden/lane-state.json
+      expect: present
+- label: L6
+  title: 'warm-lane S20 L6: _do_reclaim as per-entry functions behind one gate'
+  capabilities:
+  - name: shape-measured
+    binding: '_do_reclaim spans one function with preserved_count incremented at 10 sites, flock -n 8 gates in both passes, live_ref_present in both passes (re-read at 8e6ffcac9d; file unchanged since a030ee7528).'
+    verdict: PASS
+  - name: gate-helper-exists
+    binding: deliverable
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '^_with_entry_gate\(\) \{'
+      paths:
+      - scripts/warm-lane-gc.sh
+      expect: present
+- label: L7
+  title: 'warm-lane S20 L7: adopt filed #8541 (plain names in gc and sweep --help)'
+  task_id: 8541
+  capabilities:
+  - name: filed-task-covers-the-finding
+    binding: 'task 8541 metadata.x_finding_key = [fk-7dba1d7f3f47], files = [scripts/warm-lane-gc.sh, scripts/warm-lane-gc-sweep.sh], status pending at authoring.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: the deliverable is help prose; the leaf signal is the --help output containing no [α-ω], checked by the implementer, and a grep over the whole file would also hit comment-only aliases that are S23's.
+- label: L8
+  title: 'warm-lane S20 L8: seed-warm-lane.sh --capabilities'
+  note: 'Companion dark_factory task D8 switches _seed_script_supports to this output.'
+  capabilities:
+  - name: df-probe-is-substring
+    binding: 'dark-factory git_ops.py::_seed_script_supports returns flag in _seed_script_text(script, mtime_ns, size).'
+    verdict: PASS
+  - name: capabilities-arm
+    binding: deliverable
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '^ *--capabilities\)'
+      paths:
+      - scripts/seed-warm-lane.sh
+      expect: present
+- label: L9
+  title: 'warm-lane S20 L9: main-gate sentinel bound to the main tip (Phase A)'
+  capabilities:
+  - name: five-mark-sites
+    binding: 'hooks/pre-commit, hooks/pre-merge-commit, scripts/land.sh call main_gate_mark; dark-factory GitOps.advance_main and recover_red_main run dark-factory-orchestrator.yaml git.main_gate_mark_command (touch of the empty sentinel) and main_gate_unmark_command (rm -f).'
+    verdict: PASS
+  - name: enforce-is-on
+    binding: 'git config --bool --get reify.mainGate.enforce = true at authoring; an unmatched token therefore aborts the ref transaction.'
+    verdict: PASS
+  - name: df-mark-command-repointed
+    binding: deliverable
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'main_gate_mark_command: .*main-gate-mark\.sh mark'
+      paths:
+      - dark-factory-orchestrator.yaml
+      expect: present
+- label: L10
+  title: 'warm-lane S20 L10: delete the legacy unbound-sentinel arm (Phase B)'
+  capabilities:
+  - name: observation-gate
+    binding: 'start condition measured from reify-main-gate.log after the restart that loaded L9''s yaml: >= 20 consecutive sanctioned moves, zero legacy-unbound lines.'
+    verdict: OPEN
+    delivered_check:
+      kind: manual
+      reason: the precondition is a live-log observation the leaf itself performs; the code change is a deleted case arm best covered by the flipped B-matrix test.
+- label: L11
+  title: 'warm-lane S20 L11: PRD close'
+  capabilities:
+  - name: terminal-stamp
+    binding: deliverable — the SHIPPED header with landed ids on the PRD and this manifest.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'Status:\*\* SHIPPED'
+      paths:
+      - docs/prds/v0_6/warm-lane-scripts-one-lock-one-env-one-oracle.md
+      expect: present

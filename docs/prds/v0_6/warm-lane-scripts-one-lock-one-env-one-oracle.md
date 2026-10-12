@@ -1,0 +1,327 @@
+# Warm-lane scripts — one lane-lock owner, one worktrees env name, one status oracle
+
+**Milestone:** v0.6 · **Status:** active (authored, not yet decomposed) · **Authored:** 2026-10-12
+**Program:** `plans/review-all-program-reify-20261012.md`, stream **S20** (wave 1, agent, M/low).
+**Code anchors** verified against main `8e6ffcac9d` (2026-10-12). Main moves fast — cite-by-symbol; re-locate lines at implementation time. Finding anchors were verified at `a030ee7528`; `git diff a030ee7528..8e6ffcac9d` over every path this PRD names touches only comment prose in `scripts/seed-warm-lane.sh` (tasks 7410, the ACQUIRE MODES rename) and `scripts/warm-lane-audit.sh` (task 7525, timer wording). No symbol moved; the seed lock-path derivation now sits at about line 928, not 930.
+
+---
+
+## 1. Goal and consumers
+
+The warm-lane pool scripts state one protocol each in several places. This PRD gives each protocol one owner:
+
+1. **The per-lane mutex.** `scripts/lib_lane_lock.sh` owns the lock path, the exclusive acquire/release on one fixed FD, the shared probe it already has, and a new "is it held?" assertion. `seed-warm-lane.sh --assume-lane-lock-held` calls that assertion, so the cross-repo handshake with dark-factory is checked when it is used.
+2. **The worktrees directory name.** `REIFY_WARM_LANE_MOUNT` keeps one meaning, the XFS mount point. The new `REIFY_WARM_LANE_WORKTREES` names the worktrees dir. Its default is `$REIFY_WARM_LANE_MOUNT/worktrees`.
+3. **The backing-task status oracle.** `scripts/lib_task_status.sh` owns the invocation contract, the terminal predicate and the task-branch-to-id parse.
+4. **The dark-factory records the audit reads.** `warm-lane-audit.sh` reads `plan.json` and `.lane-state/<lane>.json` through `python3 -I` stdlib `json`. It is tested against golden records produced by dark-factory's own serialisers.
+5. **The main-gate sentinel.** The sentinel carries the main tip it sanctions. `hooks/reference-transaction` consumes it only when that tip equals the transaction's old sha.
+
+The PRD also covers three smaller items. `warm-lane-gc.sh::_do_reclaim` is factored into per-entry functions. `seed-warm-lane.sh --capabilities` replaces dark-factory's source-text grep. Greek-letter aliases leave the gc and sweep help text.
+
+**Consumers (G1).**
+
+| Mechanism | Consumer |
+|---|---|
+| `lane_lock_path` / `lane_lock_acquire` / `lane_lock_release` / `lane_lock_assert_held` | `seed-warm-lane.sh`, `thin-warm-lane.sh`, `warm-lane-gc.sh` (acquirers); `warm-lane-lock-guard.sh`, `warm-lane-audit.sh` (path only); dark-factory `GitOps._seed_warm_lane` (indirectly: its `--assume-lane-lock-held` is now verified) |
+| `REIFY_WARM_LANE_WORKTREES` | `warm-lane-audit.sh`, `warm-lane-lock-guard.sh`, `warm-lane-gc.sh`, `warm-lane-gc-sweep.sh`, `warm-lane-preflight.sh` Check 6; the operator recipe in `docs/notes/warm-lane-audit-runbook.md` |
+| `lib_task_status.sh` (`task_status_raw`, `task_status_bucket`, `task_branch_id`) and `lib_lane_entry.sh` (`lane_entry_matches_glob`, `lane_entry_is_git_worktree`) | `warm-lane-audit.sh`, `warm-lane-preflight.sh` Check 6, `warm-lane-degenerate-ref-check.sh`; `warm-lane-gc.sh` (entry helpers only) |
+| `scripts/warm_lane_records.py` | `warm-lane-audit.sh` (`_read_lane_assignment`, `_read_plan_sync`) |
+| golden records `tests/infra/fixtures/warm_lane_golden/` | `tests/infra/test_warm_lane_audit.sh`; refreshed from dark-factory `orchestrator/lane_lifecycle.py::LaneRecord.to_json` and `orchestrator/mcp/plan_tools.py`'s writer |
+| `seed-warm-lane.sh --capabilities` | dark-factory `git_ops.py::_seed_script_supports` |
+| tip-bound sentinel + `scripts/main-gate-mark.sh` | `hooks/reference-transaction`; marked by `hooks/pre-commit`, `hooks/pre-merge-commit`, `scripts/land.sh`, and dark-factory `advance_main` / `recover_red_main` via `dark-factory-orchestrator.yaml` `git.main_gate_mark_command` |
+
+What a user observes: an operator, a dark-factory agent, or the orchestrator itself gets a loud, specific outcome where today the scripts report a silently wrong answer. Each leaf in §8 names its signal.
+
+## 2. Findings closed
+
+| key | where | sev | verdict | leaf |
+|---|---|---|---|---|
+| fk-60aa699ea8ce | `scripts/seed-warm-lane.sh` lane-mutex protocol | medium | weakened | L1 |
+| fk-05e33a09a266 | `scripts/warm-lane-lock-guard.sh` `REIFY_WARM_LANE_MOUNT` two meanings | medium | confirmed | L2 |
+| fk-6fab601d98c2 | `scripts/warm-lane-audit.sh::_task_status_raw` three oracle copies | medium | confirmed | L3 |
+| fk-26e1e3d2eb67 | `scripts/warm-lane-audit.sh::_plan_anchor` hand-rolled JSON readers | medium | confirmed | L4 |
+| fk-4b80fe8f7de1 | `tests/infra/test_warm_lane_audit.sh::make_plan` producer-byte fixtures | medium | confirmed | L5 |
+| fk-cee9ca6b041a | `scripts/warm-lane-gc.sh::_do_reclaim` 337-line function | low | confirmed | L6 |
+| fk-7dba1d7f3f47 | `scripts/warm-lane-gc.sh::_usage` Greek aliases | low | confirmed | L7 (adopts filed #8541) |
+| fk-d30433df0ed6 | dark-factory flag-capability grep | low | confirmed | L8 |
+| fk-638f0a64b948 | `hooks/main-gate-lib.sh::main_gate_mark` unbound sentinel | medium | confirmed | L9 (L10 completes it) |
+
+**Weakened-finding re-read (fk-60aa699ea8ce).** The skeptic struck one clause: `lib_lane_lock.sh` *does* exist, as "the SINGLE tri-state warm-lane lock probe". It defines only `lane_lock_probe` and is sourced only by `warm-lane-audit.sh` and `warm-lane-lock-guard.sh`. The rest of the finding re-verifies at `8e6ffcac9d`:
+
+- There are six independent lock-path derivations: seed `LANE_LOCK="${LANE_DIR}.lock"`, thin `LANE_LOCK="${LANE_DIR}.lock"`, gc Pass 1 `lane_lock` and Pass 2 `orphan_lock` (`${WORKTREES_DIR}/${name}.lock`), lock-guard `LOCK="${LOCK_PATH:-$MOUNT/$LANE.lock}"`, and audit `_probe_live "$MOUNT/$name.lock"`.
+- Two FD numbers are used for the same lock: 9 in seed and thin, 8 in gc.
+- Under `--assume-lane-lock-held`, seed only clears `_should_acquire_lane_lock` and runs zero checks.
+
+This PRD therefore *extends* the existing library, per the ruling. It does not create a new one.
+
+## 3. Pre-conditions and substrate (G3), measured at `8e6ffcac9d`
+
+- `scripts/lib_lane_lock.sh::lane_lock_probe` takes a shared, non-blocking, read-only flock. It returns IDLE for an absent lock file, BUSY only on observed exclusive contention, and UNMEASURABLE otherwise. Hermetic coverage: `tests/infra/test_lane_lock_probe.py` (wrapper `.sh`, manifest row `pool`).
+- **The dark-factory lock holders all use flock(2) on `<lane_dir>.lock`.** `GitOps._seed_warm_lane` with `SeedLaneLock.TAKE` wraps seed in `flock -x -w 30 -E 124 <lane_dir>.lock`. `HELD_BY_CALLER` callers hold `fcntl.flock(LOCK_EX)`. `verify_cancel.py::lane_lock_path` is `lane_dir.with_name(lane_dir.name + '.lock')`. Both flags are passed only when `_seed_script_supports` finds the literal flag text anywhere in the lane's own copy of the script (`flag in _seed_script_text(...)`). A flock(2) probe opened on a *fresh* open-file description therefore observes every one of these holders as BUSY. That is what makes `lane_lock_assert_held` sound. In-repo holders behave the same way: thin holds FD 9 and gc holds FD 8 across their seed calls.
+- **`_seed_rc_to_unavailable` maps return codes as follows:** 75→DISK_PRESSURE, 76→BASE_ABSENT, 77→LANE_LOCK_CONTENDED, 124→LANE_LOCK_TIMEOUT, 127→absent, everything else→FAULT. The seed script does not use exit 70 today. A not-held refusal on 70 therefore lands in FAULT (blocked + L1) with no dark-factory change. That is the correct disposition for a broken handshake.
+- **The production setters of the worktrees-dir env names are tests only.** `reify-warm-lane-gc.service` runs `warm-lane-gc-sweep.sh --mount /home/leo/src/warm-lanes/worktrees`, an explicit flag. `orchestrator-reify.service.d/warm-lane.conf` sets only `REIFY_LANE_LEAK_STATUS_CMD`. Dark-factory source sets none of `REIFY_WARM_LANE_MOUNT`, `REIFY_WARM_LANE_GC_MOUNT`, `REIFY_WARM_LANE_GC_SWEEP_MOUNT` or `REIFY_LANE_LEAK_WORKTREES` (`git grep` over `orchestrator/src` and `shared`: 0 hits). Dark-factory passes the worktrees dir to audit and gc as the CLI flag `--mount <worktree_base>`, and that CLI contract is kept (D5). The lock-guard comment saying dark-factory "exports REIFY_WARM_LANE_MOUNT AMBIENTLY" has no producer at main and is corrected in L2. A **fourth** worktrees-dir env name exists that the finding did not count: `warm-lane-preflight.sh` Check 6 reads `REIFY_LANE_LEAK_WORKTREES` with default `$MOUNT/worktrees`.
+- **The status oracle has three consumer copies and one producer.** The copies are the audit's `_task_status_raw`/`_status_bucket`, preflight Check 6 inline, and degenerate-ref-check's `_ref_status` plus an inline `done|cancelled` arm. The producer is `scripts/lane-task-status.sh`, whose header also claims "byte-for-byte identical" consumers. `warm-lane-gc.sh` has zero `STATUS_CMD` references, so the audit header and the `_task_status_raw` comment naming gc as a consumer are stale.
+- `/usr/bin/python3` is 3.12.3 on this host. That is the interpreter the gate reaches (reify CLAUDE.md "Infra tests"). The audit's no-python3 stance is a comment, not a test. No test asserts its absence (`git grep python3 -- scripts/warm-lane-*.sh` hits only the two explanatory comments).
+- **Dark-factory serialisers.** `LaneRecord.to_json` is `json.dumps(self.to_dict(), indent=2)`, and `LaneState` has six values. `plan.json` is written by `orchestrator/mcp/plan_tools.py`.
+- **There are five main-gate mark sites, not three (G6 correction).** The finding counted pre-commit, pre-merge-commit and land.sh. At main, dark-factory `GitOps.advance_main` and `GitOps.recover_red_main` also mark, by running `dark-factory-orchestrator.yaml` `git.main_gate_mark_command` (`touch "$(git rev-parse --git-common-dir)/reify-main-gate-ok"`). They clear with `main_gate_unmark_command` (`rm -f …`). These two sites carry roughly 28 landings a day. **`reify.mainGate.enforce` is `true`** (`git config --bool --get`), so a format change that left those two sites writing an empty file would hard-abort every merge-queue landing. L9/L10 are sequenced around this (D9).
+- **Only 3 "must stay a literal" notes exist at main**, not the brief's 11: `seed-warm-lane.sh` `_usage` (one line), the parser note above `--distinct-lock-refusal-rc)`, and the `Q_H11_FLAG` note in `tests/infra/test_seed_warm_lane.sh`.
+- **Dark-factory ships its own copies** of gc, gc-sweep, thin, disk-guard, audit, degenerate-ref-check, provision, `lib_live_refs.sh`, `lib_portable.sh` and `lib_task_citation.sh` under `orchestrator/scripts/warm-lane/`. Resolution is project-first: `<project_root>/scripts/<name>` wins (`GitOps._resolve_warm_lane_script`). Reify's copies are therefore the ones that run for reify. The dark-factory copies are dark-factory's to re-sync (§7).
+
+## 4. Resolved design decisions
+
+**D1 — The lock API lives in `lib_lane_lock.sh`, beside `lane_lock_probe`.**
+
+| Function | Behaviour |
+|---|---|
+| `lane_lock_path <lane_dir>` | Prints `${lane_dir%/}.lock`. The only reify-side derivation. It matches dark-factory `lane_lock_path` byte for byte. |
+| `lane_lock_acquire <lane_dir> <wait>` | `<wait>` is `0` (non-blocking refuse), `N` (`flock -w N`) or `unlimited` (blocking). This covers seed's three wait modes. It opens `LANE_LOCK_FD` with `>` (creating the file, as every acquirer does today) and takes `flock -x`. Return values: **0** acquired; **75** refused (contended or deadline); **64** bad wait value; **1** open failure or missing flock. On a refusal it writes the existing `LANE_LOCK_CONTENDED: …` stderr line once, so the dark-factory-grepped marker has one home. Each caller maps the return code onto its own exit contract: seed keeps 75/77, thin 75, gc "preserve". |
+| `lane_lock_release` | Runs an explicit `flock -u` on `LANE_LOCK_FD`, then closes it. A no-op when the lock is not held. The seed EXIT trap calls it, preserving the task #5705 LANE-LOCK RELEASE CONTRACT. That block moves into the lib unchanged in substance, and seed keeps a one-line pointer. |
+| `lane_lock_assert_held <lane_dir>` | Runs `lane_lock_probe` on the derived path and returns 0 **only for BUSY**. IDLE (including an absent lock file) and UNMEASURABLE both fail closed, with `LANE_LOCK_ASSERT_DETAIL` set. It never creates the file (A1 carries over). |
+
+"Mode" in the ruling's `lane_lock_acquire(mode, wait)` is read as the wait mode. The only lock mode any caller takes is exclusive, and the shared mode is `lane_lock_probe`. A shared-acquire entry point with no caller is not built (h6). The question is returned to the lead (Open Q1).
+
+**D2 — One FD: `LANE_LOCK_FD=8`.** Seed and thin move from FD 9 to FD 8. gc already uses FD 8 for the lane lock and FD 9 for the shared gen lock in `_reseed_lane_pinned`. That is why seed's own FD-9 acquire would "clobber gc's FD-9 gen lock", per gc's own comment. A single constant ends the FD 8/9 split. The detached-children `_close_inherited_fds` mechanism closes FDs generically and is unaffected.
+
+**D3 — `--assume-lane-lock-held` is verified at use.** When the flag is passed, seed calls `lane_lock_assert_held "$LANE_DIR"` before any target mutation. On failure it prints `LANE_LOCK_NOT_HELD: <detail>` to stderr and **exits 70**. Dark-factory maps 70 to FAULT, which escalates instead of silently reseeding an unlocked lane. Accepted gap: a fresh-description probe proves that *some* process holds the lock exclusively, not that the caller does. A stranger holding it while dark-factory does not is not caught. The assertion closes the finding's named scenario, where dark-factory stops holding the lock but keeps passing the flag. Its next-change sentence, "seed reseeds unlocked", becomes a FAULT. Companion dark-factory task D1 adds the other face of the boundary test.
+
+**D4 — The worktrees dir has its own env name.** `REIFY_WARM_LANE_WORKTREES` defaults to `$REIFY_WARM_LANE_MOUNT/worktrees` when the mount is set. Five scripts read it: audit, lock-guard, gc (default for `--mount`, which already means the worktrees dir there and derives `--worktrees-dir` and `--base-target`), sweep (default `--mount`), and preflight Check 6. Four names retire: `REIFY_WARM_LANE_GC_MOUNT`, `REIFY_WARM_LANE_GC_WORKTREES_DIR`, `REIFY_WARM_LANE_GC_SWEEP_MOUNT` and `REIFY_LANE_LEAK_WORKTREES`. A script started with a retired name set to a non-empty value exits **2** and names the replacement. A silent ignore would be the same silent-wrong-answer class as the finding (h10). The sweep's hard-coded `/home/leo/src/warm-lanes/worktrees` default goes; the timer already passes `--mount`. `REIFY_WARM_LANE_MOUNT` keeps the XFS-mount meaning in provision, preflight, seed, thin, disk-guard, ensure-warm-base, relocate and seed-warm-base-initial. `dark-factory-orchestrator.yaml` `warm_lane_pool.substrate.mount_env` therefore stays correct as written.
+
+**D5 — CLI flags are a dark-factory contract and do not change.** Dark-factory passes `--mount <worktree_base>` to audit and gc (`_run_warm_lane_audit`, `_run_warm_lane_gc_reclaim`), so `--mount` keeps its per-script meaning. Lock-guard and audit gain one guard on their worktrees-dir input, whether from the flag or the env var. When the directory has a `worktrees/` child and no `*.lock` siblings, they print a warning that the value "looks like the XFS mount; pass the worktrees dir". This closes the silent-IDLE path through the CLI as well as through the env var. Renaming `--mount` is Open Q2.
+
+**D6 — Status-oracle contract.** `scripts/lib_task_status.sh` is pure, in the `lib_task_citation.sh` purity shape: every input is a parameter, it reads no globals and runs no git. It defines:
+
+| Function | Behaviour |
+|---|---|
+| `task_status_raw <cmd> <id>` | Runs `"$cmd" "$id" 2>/dev/null \| tr -d '[:space:]' \|\| true`. An empty cmd or id yields empty output. |
+| `task_status_bucket <raw>` | Maps to `terminal` (done, cancelled), `unknown` (empty) or `non-terminal` (anything else). |
+| `task_branch_id <branch>` | Prints NNNN for `task/NNNN` with NNNN purely numeric, otherwise nothing. |
+
+The audit's detached-HEAD `--contains` resolution stays in the audit, because it needs git. `_matches_glob` and `_is_git_worktree` move to `scripts/lib_lane_entry.sh` as `lane_entry_matches_glob` and `lane_entry_is_git_worktree`, sourced by gc and the audit. Every "mirrors … byte-for-byte" and "lifted verbatim" comment is deleted rather than reworded. `lane-task-status.sh`'s header names `lib_task_status.sh` as the consumer contract.
+
+**D7 — Dark-factory records are read as JSON, through one reader with explicit outcomes.** `scripts/warm_lane_records.py` uses stdlib only and is run as `python3 -I <script> <kind> <file>`. It has two kinds:
+
+| Kind | Output on success |
+|---|---|
+| `lane-state` | one line `state\ttask_id` |
+| `plan` | one line `task_id\tanchor_id\tanchor_commit` |
+
+The anchor is the last entry, iterating `prerequisites` then `steps` *by key*, whose `status == "done"` and whose `commit` is a non-empty string. It is independent of key order, indent and array order.
+
+| Exit | Meaning | Audit maps it to |
+|---|---|---|
+| 0 | parsed | the parsed fields |
+| 3 | unparseable: invalid JSON, a top level that is not an object, or a field of the wrong type | existing `unparseable-record` |
+| 4 | unreadable | existing `no-readable-record` / `-` paths |
+| 127, or python3 missing | reader unavailable | new UNKNOWN cause `reader-unavailable` |
+
+The audit never aborts (A3), and a missing interpreter is an attributed UNKNOWN, not `-`. Deleted: `_record_scalar`, `_plan_record_parses`, `_plan_anchor` (69-line awk) and both "no jq/python3 by design" notes. The raw→column `LaneState` mapping `case` stays in bash; it is the audit's own table.
+
+**D8 — HEADROOM has one ordered field list.** A single bash array of `name:VAR` pairs drives both the table `HEADROOM …` line and the JSON `headroom` object. The output is byte-identical to today for both formats. The existing append-never-interpose rule then means appending one array element.
+
+**D9 — The main-gate sentinel is bound to the tip it sanctions, rolled out in two phases.**
+
+- **Phase A (L9).** `main_gate_mark` writes `git rev-parse refs/heads/main`. New `scripts/main-gate-mark.sh mark|unmark` is the CLI for out-of-process markers. `unmark` deletes only a sentinel whose content equals the current tip it would have written. `reference-transaction` handles four cases:
+  - content == `_old`: sanctioned, consumed.
+  - non-empty and ≠ `_old`: stale. Discarded, logged `stale sentinel <sha> discarded`, then handled as no sentinel (UNSANCTIONED; aborts under ENFORCE).
+  - empty file: sanctioned but logged distinctly as `sanctioned (legacy unbound sentinel)`. This is the transition arm.
+  - absent: as today.
+
+  `land.sh` installs an EXIT trap that removes its own token by compare-and-delete. An unconditional `rm` could delete a dark-factory mark minted during land's hours-long gate. `dark-factory-orchestrator.yaml` `git.main_gate_mark_command` / `main_gate_unmark_command` become `scripts/main-gate-mark.sh mark` / `unmark`. The edit is accepted into the file at landing and takes effect at the next orchestrator restart, through `scripts/orchestrator-redeploy-restart.sh`, never `systemctl restart`. That gap is why the legacy arm exists.
+- **Phase B (L10).** The legacy-empty arm is deleted once the gate log shows the dark-factory sites writing bound tokens.
+
+Residual, stated honestly: a leftover bound token, for example from a commit aborted at the editor, still sanctions one raw fast-forward *from the same origin* until main next moves. Binding narrows the window from "until any later move" to "until main moves". No hook fires on an editor abort, so nothing narrower is reachable from a hook. A concurrent-marker race on the single shared file predates this PRD and is out of scope (§9).
+
+**D10 — Seed capabilities are data.** `seed-warm-lane.sh --capabilities` prints the optional flags its parser accepts, one per line, exact spelling (`--assume-lane-lock-held`, `--distinct-lock-refusal-rc`), from one array that the parser arms are tested against. It exits 0 and ignores other arguments. The "must stay a LITERAL" notes (3 at main) go. Companion dark-factory task D8 switches `_seed_script_supports` to exact-line membership in `--capabilities` output, cached by (path, mtime_ns, size) as today. It falls back to the legacy substring probe *only* when `--capabilities` exits non-zero, which happens on a lane checked out at a vintage before L8. The fallback has a retirement condition, named in D8.
+
+**D11 — Approach: bare B with two-way boundary tests on the two cross-repo seams.** The lock handshake gets L1 plus D1. The sentinel format gets L9's test matrix plus D9's dark-factory yaml wiring. The PRD meets none of the overlay's G5 high-stakes seams (FEA, ComputeNode, persistent-naming, multi-kernel, grammar), so a full B+H contract section is not warranted.
+
+**D12 — New tests are Python; existing bash members are extended in place.** The one new member is `tests/infra/test_lib_task_status.py` with its `.sh` wrapper and a `pool` row in `tests/infra/run-all-classification.manifest`, in the same diff (overlay drift-guard rule). All other coverage extends existing members: `test_lane_lock_probe.py`, `test_seed_warm_lane.sh`, `test_thin_warm_lane.sh`, `test_warm_lane_gc.sh`, `test_warm_lane_gc_sweep.sh`, `test_warm_lane_lock_guard.sh`, `test_warm_lane_audit.sh`, `test_warm_lane_preflight.sh`, `test_warm_lane_degenerate_ref.sh`, `test_reference_transaction_gate.sh` and `test_land_script.sh`. Each new or changed source path gets a `scripts/verify-pipeline-infra-tests.txt` row in the same diff. No new wall-clock upper bound is asserted in any Python member (reify CLAUDE.md, #7445).
+
+**Invariant candidate 5 (extract-with-ratchet) applies to L1 and L3.** Each names its ratchet member below.
+
+## 5. Contract and boundary-test sketch (the two cross-repo seams)
+
+| # | Scenario | Preconditions | Postcondition |
+|---|---|---|---|
+| B1 | reify face: flag passed, lock held | a separate process holds `flock -x` on `lane_lock_path` | seed proceeds; exit 0 |
+| B2 | reify face: flag passed, nobody holds | lock file present and unheld | seed exits 70, stderr has `LANE_LOCK_NOT_HELD:`, `target/` untouched |
+| B3 | reify face: flag passed, lock file absent | no `<lane>.lock` | seed exits 70; lock file NOT created |
+| B4 | dark-factory face (D1) | `_seed_warm_lane(TAKE)` and `(HELD_BY_CALLER)` run a stub seed that tries `flock -n -x` on `lane_lock_path(lane_dir)` on a fresh fd | the stub's attempt fails (lock observed held) in both modes |
+| B5 | sentinel: matched | mark on main at tip X; ff move X→Y | logged `sanctioned`, sentinel gone |
+| B6 | sentinel: gate passed, commit aborted | mark at X; no commit; main moves X→Y by a sanctioned path; then raw `update-ref` Y→Z | the raw move is `UNSANCTIONED` (aborts under ENFORCE); stale token discarded |
+| B7 | land.sh interrupted mid-gate | land.sh marks, gate killed by SIGINT/SIGTERM | no token remains; a token minted by another marker during the gate survives |
+| B8 | dark-factory face (yaml) | `scripts/main-gate-mark.sh mark` then a CAS `update-ref` from that tip | `sanctioned`; `unmark` after a failed CAS removes only its own token |
+| B9 | capabilities | `--capabilities` output | each listed flag is accepted by the parser (no `Unknown flag`), and every optional flag the parser accepts is listed |
+
+## 6. Cross-PRD relationship and seam owners (G4)
+
+| Shared artefact | Owner (program G4 table) | This PRD's relation |
+|---|---|---|
+| `scripts/lib_lane_lock.sh` (probe, path, acquire) | **S20** | edits (L1) |
+| dark-factory `git_ops.py::_seed_script_supports` / `_seed_warm_lane` | **S20** | dark-factory companions D1, D8 |
+| dark-factory `orchestrator/lane_lifecycle.py` and `mcp/plan_tools.py` serialisers (golden-record owner) | **S20** | dark-factory companion D5 (reads the serialisers, never edits them) |
+| `tests/infra/run-all-classification.manifest` rows for a new wrapper | **S19** | consumes: L3 adds one `pool` row in the existing format (Open Q3) |
+| `scripts/verify-pipeline-paths.txt` | **S18** | not edited. None of this PRD's paths require the full gate (`verify-pipeline-guard.sh requires-full-gate` exits 1 for every one). `scripts/verify-pipeline-infra-tests.txt` rows are added, and that file is not in the G4 table. |
+| `hooks/main-gate-lib.sh`, `hooks/reference-transaction`, `scripts/land.sh`, `dark-factory-orchestrator.yaml` `git.main_gate_*` | not listed (S20 by its finding) | edits (L9, L10) |
+| Comment prose (Greek aliases outside `_usage`, line cites in these scripts) | **S23** (wave 4) | not touched beyond what each leaf's edit necessarily rewrites |
+
+No leaf depends on a later-wave stream. **There are no held leaves.**
+
+## 7. Out of scope
+
+- **Dark-factory's vendored copies** under `orchestrator/scripts/warm-lane/`, and their re-sync. Those are dark-factory's (repatriation PRD). A cross-reference line goes to the lead: the copies will lack `lib_lane_lock.sh` acquire, `lib_task_status.sh`, `lib_lane_entry.sh` and `warm_lane_records.py`.
+- **Log-helper consolidation** (`info`/`hint` redefined in 8 of 11 files, three `hint` formats). It is in fk-6fab601d98c2's proposal but not in the ruled remedy or deletable list. It is not done, and the finding's oracle clause is closed by L3.
+- **Renaming CLI `--mount` flags** (Open Q2).
+- **Greek letters in comments** (S23). L7 changes operator-visible `--help` text only.
+- **`lane-task-status.sh`'s direct read-only `sqlite3` of `tasks.db`.** reify CLAUDE.md forbids reads while fused-memory is up. Not a finding of this run. Recorded as a cross-reference for the lead.
+- **The concurrent-marker race on the single sentinel file.** Two markers in flight, the first consume deletes the second's token. It predates this PRD and the ruling does not cover it.
+
+## 8. Decomposition plan
+
+Labels are PRD-local; task ids are assigned at decompose time. Every leaf carries `metadata.x_finding_key` (list), `x_finding_run = "review-all-reify-20261010"`, `source = "review-all"`, and `priority` = severity. Dark-factory companions (D*) are filed in project `dark_factory` via the shared fused-memory MCP and wired as `metadata.external_deps` from or to the reify leaf. They carry no `x_finding_key`, because the key lives on the reify leaf.
+
+**L1 — Lane-lock API in lib_lane_lock.sh; seed/thin/gc acquire through it; `--assume-lane-lock-held` asserts** · medium · keys [fk-60aa699ea8ce]
+
+- **Modules:** `scripts/lib_lane_lock.sh`, `scripts/seed-warm-lane.sh`, `scripts/thin-warm-lane.sh`, `scripts/warm-lane-gc.sh`, `scripts/warm-lane-lock-guard.sh` (path only), `scripts/warm-lane-audit.sh` (path only), tests above, `scripts/verify-pipeline-infra-tests.txt`.
+- **Work:**
+  - D1–D3. Seed and thin source the lib from `$SCRIPT_DIR`. A missing lib exits 2 with a directed message, mirroring gc's `lib_live_refs.sh` check.
+  - Fixtures that pass `--assume-lane-lock-held` without holding the lock (32 in `test_seed_warm_lane.sh`, 3 each in thin and gc) now hold one, or become the B2/B3 negatives.
+  - `test_seed_lane_lock_release_soak.sh`'s release-contract pointer follows the moved block.
+- **Signal:** B1–B3 pass in `test_seed_warm_lane.sh`. Seed run by hand with the flag on an unheld lane prints `LANE_LOCK_NOT_HELD:` and exits 70 with `target/` untouched. `test_lane_lock_probe.py` gains acquire/release/assert cases and stays green. All five scripts' suites stay green.
+- **Ratchet (INV candidate 5):** `test_lane_lock_probe.py` counts, over seed/thin/gc/lock-guard/audit, (a) lane-lock path constructions outside the lib (`\.lock"` built from a lane dir or name, excluding the `.gen.N.lock` sites in refresh and gc) and (b) `exec <n>>…lane…lock` opens outside the lib. Both must be **0**.
+- **Prereqs:** none.
+
+**L2 — `REIFY_WARM_LANE_WORKTREES` names the worktrees dir; retire four aliases** · medium · keys [fk-05e33a09a266]
+
+- **Modules:** audit, lock-guard, gc, gc-sweep, preflight scripts and their tests; `docs/notes/warm-lane-audit-runbook.md` (knob table and strandedness recipe); `docs/design/merge-verify-lane-dispatch-seam.md` (knob table row).
+- **Work:**
+  - D4 and the D5 looks-like-mount warning.
+  - Correct the lock-guard "dark-factory exports REIFY_WARM_LANE_MOUNT ambiently" comment.
+  - lock-guard and audit derive the path via `lane_lock_path "$WORKTREES/$LANE"`.
+- **Signal:** with only `REIFY_WARM_LANE_MOUNT=<xfs mount>` exported, as provision instructs, `warm-lane-lock-guard.sh check` on a held `_merge-verify` reports **BUSY (exit 3)**. Today it reports IDLE. `warm-lane-audit.sh` reports the real resident count, not 0. `warm-lane-gc.sh` started with `REIFY_WARM_LANE_GC_MOUNT=x` exits 2 naming `REIFY_WARM_LANE_WORKTREES`. These are new cases in `test_warm_lane_lock_guard.sh` / `test_warm_lane_audit.sh` / `test_warm_lane_gc.sh`.
+- **Prereqs:** L1 (shared files; lock-guard and audit call `lane_lock_path`).
+
+**L3 — lib_task_status.sh owns the oracle contract; lib_lane_entry.sh owns the entry helpers** · medium · keys [fk-6fab601d98c2]
+
+- **Modules:** new `scripts/lib_task_status.sh` and `scripts/lib_lane_entry.sh`; audit, preflight, degenerate-ref-check, gc, `lane-task-status.sh` (header only); new `tests/infra/test_lib_task_status.py` and `.sh`; one manifest row; infra-tests rows.
+- **Work:** D6. Delete the three inline copies, the two duplicated helper pairs, and the stale gc-consumer citations.
+- **Signal:** an oracle stub that prints `superseded` is classified identically by audit (`pin`/bucket), preflight Check 6 and degenerate-ref-check `--audit`. A three-consumer agreement case lives in `test_lib_task_status.py`, which drives all three CLIs. Each script's own suite stays green.
+- **Ratchet (INV candidate 5):** `test_lib_task_status.py` counts, over `scripts/warm-lane-*.sh`, (a) status-oracle invocations `"$<var>" "$<id>" 2>/dev/null | tr -d '[:space:]'` outside the lib, (b) `done|cancelled)` case arms outside the lib, and (c) definitions of `_matches_glob() {` / `_is_git_worktree() {`. All must be **0**.
+- **Prereqs:** L2 (both edit preflight Check 6 and the audit's arg block).
+
+**L4 — Audit reads dark-factory records with `python3 -I` json; HEADROOM from one field list** · medium · keys [fk-26e1e3d2eb67]
+
+- **Modules:** new `scripts/warm_lane_records.py`; `scripts/warm-lane-audit.sh`; `test_warm_lane_audit.sh`; the runbook's UNKNOWN-cause table (`reader-unavailable`); infra-tests row for the `.py` → `test_warm_lane_audit.sh`.
+- **Work:** D7 and D8.
+- **Signal:**
+  - A `plan.json` whose done step has `"commit"` *before* `"status"` reports its real `plan_sync` (OK/STRANDED). Today it reports `-` and drops out of `plan_stranded`.
+  - With `python3` removed from the audit's PATH, a lane with a plan reports `UNKNOWN` with cause `reader-unavailable` and exit 0.
+  - `--format json` `headroom` keys equal the table `HEADROOM` keys in order. That is a parity case. The existing suite stays green byte for byte.
+- **Prereqs:** L3 (same file, sequential edits).
+
+**L5 — Golden dark-factory records drive the audit; compact and reordered plan cases** · medium · keys [fk-4b80fe8f7de1]
+
+- **Modules:** new `tests/infra/fixtures/warm_lane_golden/{plan.json,lane-state.json,PROVENANCE.md}`; `test_warm_lane_audit.sh` (`make_plan`, `make_lane_state`, the `L_CASES` enum literals).
+- **Work:**
+  - Fixtures are derived from the golden records: field values substituted, not byte layout hand-copied. The `LaneState` literal list is read from the golden `lane-state.json` companion list that D5 emits.
+  - Add plan cases: compact (no indent), key-reordered entries, and `steps` emitted before `prerequisites`.
+- **Signal:** `test_warm_lane_audit.sh` runs the audit over the unmodified golden records and asserts the stranded/OK verdicts. The three new shape cases pass. A grep finds no comment in the suite stating a producer byte-layout fact (indent, key order, `prerequisites` precedes `steps`).
+- **Prereqs:** L4 (the layout-independent reader is what makes the shape cases pass), D5 (golden content).
+- **Companion D5 (dark_factory):** a dark-factory test serialises a fixed `LaneRecord` per `LaneState` member, and a fixed plan through `plan_tools`' writer. It asserts byte equality with dark-factory's canonical copy at `orchestrator/tests/fixtures/warm_lane_golden/`, and emits the `LaneState` value list. Its docstring names reify's vendored path as the refresh target. Signal: changing `LaneRecord.to_json`'s indent turns that dark-factory test red. Open Q4 covers where the canonical copy lives.
+
+**L6 — `_do_reclaim` as per-entry functions behind one gate** · low · keys [fk-cee9ca6b041a]
+
+- **Modules:** `scripts/warm-lane-gc.sh`, `test_warm_lane_gc.sh`.
+- **Work:**
+  - `_reset_lane <lane>` and `_remove_orphan <entry>` each print exactly one outcome token: `reset`, `reset_cold`, `removed`, `preserved`, `preserved_live_ref` or `skipped`.
+  - `_with_entry_gate <entry> <fn>` holds `lane_lock_acquire <entry> 0` and the `live_ref_present` check, in today's order per pass. Pass 2 keeps `_is_reclaimable` before the live-ref walk, inside `_remove_orphan`'s gate callback.
+  - One tally `case` per loop.
+  - The summary line `reclaim: reset=… removed=… preserved=… preserved_live_ref=… reset_cold=…` stays byte-identical.
+- **Signal:** a fixture pool that exercises every outcome path prints the expected summary line, and the existing `test_warm_lane_gc.sh` blocks stay green unchanged. The counter is incremented at exactly one site per outcome, checked by a count case in `test_warm_lane_gc.sh`.
+- **Prereqs:** L1 (uses `lane_lock_acquire`), L2 (same file).
+
+**L7 — Plain names in gc and sweep `--help`** · low · keys [fk-7dba1d7f3f47] · **subsumes filed task #8541**
+
+- No new task is filed. Decompose adopts #8541: it adds `consumer_ref` and the PRD path to its metadata, and wires it after L2 and L6, which rewrite the same `_usage` blocks.
+- **Signal:** `warm-lane-gc.sh --help` and `warm-lane-gc-sweep.sh --help` output contain no character in `[α-ω]` and name `seed-warm-lane.sh` / `warm-lane-disk-guard.sh` / `warm-lane-gc.sh reclaim` by file.
+
+**L8 — `seed-warm-lane.sh --capabilities`** · low · keys [fk-d30433df0ed6]
+
+- **Modules:** `scripts/seed-warm-lane.sh` (parser, `_usage`), `test_seed_warm_lane.sh` (`Q_H11_FLAG` note).
+- **Work:** D10. Delete the 3 literal notes.
+- **Signal:** `seed-warm-lane.sh --capabilities` prints exactly the two flag lines and exits 0. Boundary case B9 is green.
+- **Prereqs:** L1 (same parser region).
+- **Companion D8 (dark_factory):**
+  - `_seed_script_supports` uses `--capabilities` output with exact-line membership, with the legacy substring fallback only on a non-zero exit.
+  - A dark-factory test proves the old failure mode is closed: a stub script whose parser lacks the flag but whose comments mention it now answers False.
+  - Signal: that test is green.
+  - Retirement condition for the fallback: no lane's checked-out vintage lacks `--capabilities`. It is recorded in the code's docstring with the reify commit that introduced L8.
+  - Depends on L8 landing on reify main.
+
+**L9 — Main-gate sentinel bound to the main tip (Phase A)** · medium · keys [fk-638f0a64b948]
+
+- **Modules:** `hooks/main-gate-lib.sh`, `hooks/reference-transaction`, new `scripts/main-gate-mark.sh`, `scripts/land.sh`, `dark-factory-orchestrator.yaml` (`git.main_gate_mark_command`, `git.main_gate_unmark_command`), `test_reference_transaction_gate.sh`, `test_land_script.sh`, infra-tests rows.
+- **Work:** D9 Phase A. Read `test_hooks_armed_guard.sh`'s behavioural probe before editing, in case it marks the sentinel.
+- **Signal:** B5–B8 are green.
+  - After landing, a docs commit on main logs `sanctioned main move X -> Y`.
+  - A raw `git update-ref` that reuses a token minted before main last moved logs `UNSANCTIONED` and aborts, because ENFORCE is on.
+  - After the next orchestrator restart, merge-queue landings log `sanctioned`, not `sanctioned (legacy unbound sentinel)`.
+- **Deploy note for the decompose seat:** the yaml edit lands inert until a restart through `scripts/orchestrator-redeploy-restart.sh`. Commit first; a dirty restart crash-loops (reify CLAUDE.md "Deploying the orchestrator").
+- **Prereqs:** none.
+
+**L10 — Delete the legacy unbound-sentinel arm (Phase B)** · low · keys [] (completes fk-638f0a64b948)
+
+- **Work:** the empty-sentinel case becomes "no sentinel"; the B-matrix legacy case flips to UNSANCTIONED.
+- **Gate to start:** `reify-main-gate.log` shows ≥ 20 consecutive `sanctioned main move` lines *after* the orchestrator restart that loaded L9's yaml, and **zero** `legacy unbound sentinel` lines since that restart. The implementer measures this as the leaf's first step and stops with a blocker if it does not hold.
+- **Signal:** the legacy case in `test_reference_transaction_gate.sh` asserts UNSANCTIONED, and live merge-queue landings keep logging `sanctioned`.
+- **Prereqs:** L9.
+
+**L11 — PRD close** · low · keys []
+
+- **Work:** the decompose-close leaf from the overlay. Depends on L1–L10 (and #8541). Stamps `SHIPPED` with the landed ids, the AS-AUTHORED freeze paragraph and the LIVE/AS-AUTHORED map, on this PRD and its capability manifest.
+- **Signal:** the committed header.
+
+**Companion D1 (dark_factory) — handshake face of the boundary test**
+
+- **Work:** B4. Dark-factory runs a stub seed under `_seed_warm_lane` in `TAKE` and `HELD_BY_CALLER` modes. The stub attempts `flock -n -x` on a fresh fd and exits 70 if it gets the lock.
+- **Signal:** the test is green, and red if `lane_lock_flock` is emptied for `TAKE`.
+- **Prereqs:** L1 (for the shared exit-70 contract).
+
+DAG:
+
+```
+L1 → L2 → L3 → L4 → L5 ← D5
+L1 → L6
+L2 → L6
+L2 + L6 → #8541
+L1 → L8 → D8
+L1 → D1
+L9 → L10
+all → L11
+```
+
+## 9. G7 walk (advisory, author mode)
+
+| Invariant | Disposition |
+|---|---|
+| INV-SF-4 `indeterminate-attributable-transient` | Satisfied. D7 gives every reader failure an attributed UNKNOWN cause (`reader-unavailable`, `unparseable-record`), never `-`. |
+| INV-SF-5 `placeholders-owned-and-loud` | Satisfied. D3 and D4 turn silent passes (unverified flag, ignored retired env, IDLE on the wrong dir) into exits 70 and 2 or a warning. |
+| INV-SF-2 `error-severity-exits-nonzero` | Satisfied by D3 and D4. |
+| `nothing-vacuous-and-unowned` | The L10 gate is measured, not assumed, and the D8 fallback carries a named retirement condition. |
+
+No waivers.
+
+## 10. Open questions
+
+1. **`lane_lock_acquire(mode, wait)`: "mode" read as the wait mode** (D1). The options are (a) wait-mode only, the PRD default, with no unused shared acquire; or (b) add `shared|exclusive` with no shared caller. Return to the lead.
+2. **CLI `--mount` on audit, gc, lock-guard and sweep means the worktrees dir** (D5). The ruling names only env vars. Options:
+   - (a) keep, the PRD default, plus the looks-like-mount warning;
+   - (b) add `--worktrees-dir` everywhere as the canonical flag, keep `--mount` as a deprecated alias, and file a dark-factory companion to switch `_run_warm_lane_audit` and `_run_warm_lane_gc_reclaim`;
+   - (c) rename outright, which is a dark-factory flag-day.
+3. **S19 owns `run-all-classification.manifest` rows "for any new wrapper"**, while the overlay requires same-diff registration for a new `tests/infra/test_*.sh`. Options: (a) L3 adds its one `pool` row in today's format, consuming S19's seam (PRD default, no hold); (b) hold L3 on S19's leaf id (`x_seam_wait`), which is wave-internal.
+4. **Golden-record home** (D5/L5). Options:
+   - (a) canonical copy in dark-factory, regenerated by D5's test, vendored byte-copy in reify with `PROVENANCE.md` (PRD default). A schema change is caught dark-factory-side and refreshed by hand.
+   - (b) canonical in reify, with D5 asserting dark-factory output equals reify's file via a path into the reify checkout. That is a cross-repo path in a dark-factory test.
+   - (c) dark-factory exposes a CLI that prints the records, and the reify test calls it. That is non-hermetic: the gate's `/usr/bin/python3` lacks dark-factory's venv.
+5. **The f133 premise is wider than recorded** (§3: five mark sites incl. dark-factory's `main_gate_mark_command`, with ENFORCE on). D9's two-phase rollout and the yaml edit inside L9 go beyond the ruling's literal text ("sentinel carries the main tip … EXIT trap in land.sh"). Without the yaml edit the ruling as written would abort every merge-queue landing. Options: (a) accept D9 as authored; (b) keep the legacy-empty arm permanently (drop L10), which weakens "consumed only when it matches"; (c) also delete land.sh's pre-mark. `pre-merge-commit` already marks after the gate passes and immediately before land's `--no-ff` ref move, so land's own mark looks redundant, which would remove a mark site instead of trapping it.
+6. **Tactical, decide in L1:** whether thin's own refusal path also adopts exit 70 for a not-held seed it invoked, or maps seed's 70 to its documented generic-fault code.

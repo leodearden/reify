@@ -1,0 +1,275 @@
+# Machine-readable twin of compiler-module-namespace.capability-manifest.md
+# Every delivered_check below was confirmed red at main 8e6ffcac9d (2026-10-12).
+prd: docs/prds/v0_6/compiler-module-namespace.md
+schema_version: 1
+tasks:
+  - label: "α"
+    task_id: null
+    title: "Namespace ratchet member (glob re-exports and glob imports, exact baseline)"
+    capabilities:
+      - name: "namespace-ratchet-member-exists"
+        binding: "producer:α — new tests/infra member; counts measured at main (28 / 29)"
+        verdict: PASS
+        delivered_check:
+          kind: path
+          paths: ["tests/infra/test_compiler_namespace_ratchet.sh"]
+          expect: present
+  - label: "β"
+    task_id: null
+    title: "Explicit imports for guards/traits/forall_elaborate/geometry_list; break entity-guards cycle"
+    capabilities:
+      - name: "guards-glob-import-gone"
+        binding: "grep: guards.rs opens with use super::* at main"
+        verdict: PASS
+        delivered_check:
+          kind: grep
+          pattern: "^use super::\\*;"
+          paths: ["crates/reify-compiler/src/guards.rs", "crates/reify-compiler/src/traits.rs", "crates/reify-compiler/src/forall_elaborate.rs", "crates/reify-compiler/src/geometry_list.rs"]
+          expect: absent
+      - name: "member-cell-decls-module-declared"
+        binding: "producer:β — lower module both entity.rs and guards.rs import"
+        verdict: PASS
+        delivered_check:
+          kind: grep
+          pattern: "^(pub\\(crate\\) )?mod member_cell_decls;"
+          paths: ["crates/reify-compiler/src/lib.rs"]
+          expect: present
+  - label: "γ"
+    task_id: null
+    title: "Explicit imports for the eight-file slice; privatise termination helpers"
+    capabilities:
+      - name: "slice-glob-imports-gone"
+        binding: "grep: all eight files open with use super::* at main"
+        verdict: PASS
+        delivered_check:
+          kind: grep
+          pattern: "^use super::\\*;"
+          paths: ["crates/reify-compiler/src/coerce.rs", "crates/reify-compiler/src/datum_projection.rs", "crates/reify-compiler/src/diagnostics.rs", "crates/reify-compiler/src/geometry_boolean.rs", "crates/reify-compiler/src/geometry_curve.rs", "crates/reify-compiler/src/geometry_transform.rs", "crates/reify-compiler/src/ice.rs", "crates/reify-compiler/src/termination.rs"]
+          expect: absent
+  - label: "δ"
+    task_id: null
+    title: "type_compat.rs: explicit imports, delete overload facade, four-way split"
+    capabilities:
+      - name: "overload-facade-deleted"
+        binding: "grep: facade re-export present in type_compat.rs at main (#7338)"
+        verdict: PASS
+        delivered_check:
+          kind: grep
+          pattern: "use reify_core::overload::\\{type_carries_trait_object"
+          paths: ["crates/reify-compiler/src/type_compat.rs"]
+          expect: absent
+      - name: "type-compat-glob-import-gone"
+        binding: "grep: type_compat.rs opens with use super::* at main"
+        verdict: PASS
+        delivered_check:
+          kind: grep
+          pattern: "^use super::\\*;"
+          paths: ["crates/reify-compiler/src/type_compat.rs"]
+          expect: absent
+      - name: "overload-resolution-module-exists"
+        binding: "producer:δ — D6 partition"
+        verdict: PASS
+        delivered_check:
+          kind: path
+          paths: ["crates/reify-compiler/src/overload_resolution.rs"]
+          expect: present
+  - label: "ε"
+    task_id: null
+    title: "Move the builtin catalogue from units.rs to builtin_families.rs"
+    capabilities:
+      - name: "builtin-families-module-exists"
+        binding: "producer:ε — C2 seam for S8"
+        verdict: PASS
+        delivered_check:
+          kind: path
+          paths: ["crates/reify-compiler/src/builtin_families.rs"]
+          expect: present
+      - name: "units-rs-holds-no-name-tables"
+        binding: "grep: GEOMETRY_FUNCTION_NAMES defined in units.rs at main"
+        verdict: PASS
+        delivered_check:
+          kind: grep
+          pattern: "const GEOMETRY_FUNCTION_NAMES"
+          paths: ["crates/reify-compiler/src/units.rs"]
+          expect: absent
+  - label: "ζ"
+    task_id: null
+    title: "Explicit imports for the remaining shared modules and conformance/"
+    capabilities:
+      - name: "shared-module-glob-imports-gone"
+        binding: "grep: all eleven files carry a column-0 glob import at main"
+        verdict: PASS
+        delivered_check:
+          kind: grep
+          pattern: "^use (super|crate)::\\*;|^use checker::\\*;"
+          paths: ["crates/reify-compiler/src/annotations.rs", "crates/reify-compiler/src/connect.rs", "crates/reify-compiler/src/member_path.rs", "crates/reify-compiler/src/trait_requirements.rs", "crates/reify-compiler/src/functions.rs", "crates/reify-compiler/src/scope.rs", "crates/reify-compiler/src/geometry_modify.rs", "crates/reify-compiler/src/geometry.rs", "crates/reify-compiler/src/conformance/mod.rs", "crates/reify-compiler/src/conformance/sub_component_validation.rs", "crates/reify-compiler/src/conformance/checker.rs"]
+          expect: absent
+  - label: "η"
+    task_id: null
+    title: "Explicit imports for type_resolution.rs"
+    capabilities:
+      - name: "type-resolution-glob-import-gone"
+        binding: "grep: type_resolution.rs opens with use super::* at main"
+        verdict: PASS
+        delivered_check:
+          kind: grep
+          pattern: "^use super::\\*;"
+          paths: ["crates/reify-compiler/src/type_resolution.rs"]
+          expect: absent
+  - label: "θ"
+    task_id: null
+    title: "Explicit imports for expr.rs and entity.rs"
+    capabilities:
+      - name: "expr-entity-glob-imports-gone"
+        binding: "grep: expr.rs and entity.rs open with use super::* at main"
+        verdict: PASS
+        delivered_check:
+          kind: grep
+          pattern: "^use super::\\*;"
+          paths: ["crates/reify-compiler/src/expr.rs", "crates/reify-compiler/src/entity.rs"]
+          expect: absent
+  - label: "ι"
+    task_id: null
+    title: "expr.rs heuristic-14 partition, five of six (FunctionCall arm left to S8)"
+    capabilities:
+      - name: "member-access-module-exists"
+        binding: "producer:ι — helpers measured non-recursive"
+        verdict: PASS
+        delivered_check:
+          kind: path
+          paths: ["crates/reify-compiler/src/member_access.rs"]
+          expect: present
+      - name: "poison-helpers-left-expr-rs"
+        binding: "grep: make_poison_literal defined in expr.rs at main"
+        verdict: PASS
+        delivered_check:
+          kind: grep
+          pattern: "fn make_poison_literal\\("
+          paths: ["crates/reify-compiler/src/expr.rs"]
+          expect: absent
+  - label: "κ"
+    task_id: null
+    title: "Delete the 28 crate-root glob re-exports; deny clippy::wildcard_imports"
+    capabilities:
+      - name: "root-glob-reexports-deleted"
+        binding: "grep: 28 matches in lib.rs at main"
+        verdict: PASS
+        delivered_check:
+          kind: grep
+          pattern: "^pub\\(crate\\) use [a-z_]+::\\*;"
+          paths: ["crates/reify-compiler/src/lib.rs"]
+          expect: absent
+      - name: "wildcard-imports-lint-denied"
+        binding: "producer:κ — construction-time lint (D10); gate runs clippy -D warnings"
+        verdict: PASS
+        delivered_check:
+          kind: grep
+          pattern: "wildcard_imports"
+          paths: ["crates/reify-compiler/src/lib.rs"]
+          expect: present
+      - name: "lint-exemption-shape-verified"
+        binding: "clippy wildcard_imports exempts use super::* in cfg(test) modules by default; kappa re-verifies on the real tree"
+        verdict: OPEN
+        delivered_check:
+          kind: manual
+          reason: "lint behaviour on pub use types::* is confirmed by kappa's clippy run, not a grep"
+  - label: "λ"
+    task_id: null
+    title: "Type::children / any_descendant in reify-core; adoption ratchet member"
+    capabilities:
+      - name: "any-descendant-defined"
+        binding: "grep: no shared Type traversal in reify-core ty.rs at main"
+        verdict: PASS
+        delivered_check:
+          kind: grep
+          pattern: "fn any_descendant"
+          paths: ["crates/reify-core/src/ty.rs"]
+          expect: present
+      - name: "hand-walker-retired"
+        binding: "grep: type_carries_type_param recurses into Projection base by hand at main"
+        verdict: PASS
+        delivered_check:
+          kind: grep
+          pattern: "=> type_carries_type_param\\(base\\)"
+          paths: ["crates/reify-core/src/overload.rs"]
+          expect: absent
+      - name: "adoption-ratchet-member-exists"
+        binding: "INV candidate 5 — the ratchet member counting the superseded walker shape"
+        verdict: PASS
+        delivered_check:
+          kind: path
+          paths: ["tests/infra/test_type_walker_adoption_ratchet.sh"]
+          expect: present
+  - label: "μ"
+    task_id: null
+    title: "ResolutionCtx replaces the three thread-local resolution scopes"
+    capabilities:
+      - name: "thread-locals-gone"
+        binding: "grep: two thread_local! blocks in type_resolution.rs at main"
+        verdict: PASS
+        delivered_check:
+          kind: grep
+          pattern: "thread_local!"
+          paths: ["crates/reify-compiler/src/type_resolution.rs"]
+          expect: absent
+      - name: "resolution-ctx-defined"
+        binding: "producer:μ — C4"
+        verdict: PASS
+        delivered_check:
+          kind: grep
+          pattern: "struct ResolutionCtx"
+          paths: ["crates/reify-compiler/src/"]
+          expect: present
+      - name: "behaviour-pins-byte-identical"
+        binding: "fixture outputs recorded 2026-10-12 (alias cycle rc 1; enum in Option rc 0; member_enum_ctor rc 0; shadow_payload_binder rc 0)"
+        verdict: PASS
+        delivered_check:
+          kind: manual
+          reason: "byte-identical reify check output is judged by the gate's suites and the leaf's own run, not a grep"
+  - label: "ν"
+    task_id: null
+    title: "CompilationScope sub_* maps become one SubFacts record behind query methods"
+    capabilities:
+      - name: "sub-fields-private"
+        binding: "grep: eight pub(crate) sub_* fields in scope.rs at main"
+        verdict: PASS
+        delivered_check:
+          kind: grep
+          pattern: "^\\s+pub\\(crate\\) sub_[a-z_]+:"
+          paths: ["crates/reify-compiler/src/scope.rs"]
+          expect: absent
+  - label: "ξ"
+    task_id: null
+    title: "reify-compiler rows on the INV-ARCH-1 module-SCC ratchet"
+    capabilities:
+      - name: "scc-tool-owner"
+        binding: "no SCC tool on main; owner pending lead question 1 (recommended S3)"
+        verdict: OPEN
+        delivered_check:
+          kind: manual
+          reason: "baseline path is fixed by the tool's owner; bind a grep for reify-compiler in that baseline at decompose"
+  - label: "π"
+    task_id: null
+    title: "(conditional) strum::EnumCount on the nine geometry-kind enums"
+    note: "Filed only if the lead assigns fk-bb1ba38a6a46 to S7 (lead question 2)."
+    capabilities:
+      - name: "all-arrays-gone"
+        binding: "grep: nine const ALL arrays in types.rs at main"
+        verdict: PASS
+        delivered_check:
+          kind: grep
+          pattern: "const ALL: \\[Self;"
+          paths: ["crates/reify-compiler/src/types.rs"]
+          expect: absent
+  - label: "ω"
+    task_id: null
+    title: "PRD close: stamp SHIPPED with leaf ids and the AS-AUTHORED freeze"
+    capabilities:
+      - name: "terminal-status-stamped"
+        binding: "overlay PRD terminal status; Status line is draft at authoring"
+        verdict: PASS
+        delivered_check:
+          kind: grep
+          pattern: "^Status: \\*\\*SHIPPED"
+          paths: ["docs/prds/v0_6/compiler-module-namespace.md"]
+          expect: present

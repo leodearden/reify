@@ -1,0 +1,95 @@
+prd: docs/prds/v0_6/native-dep-table-and-loader-path.md
+schema_version: 1
+tasks:
+- label: α
+  task_id: null
+  title: 'native-dep table α: native-deps.toml as the single declaration (lib.rs + check-manifold-deps.sh read it; parity parsers deleted)'
+  capabilities:
+  - name: toml-decodable-in-build-graph
+    binding: capability→producer — workspace dependency toml = "0.8" (Cargo.toml) with toml 0.8.2 in Cargo.lock; serde is a workspace dep (derive feature added per crate). No new crate enters the lock. Probed 2026-10-12 against main 8e6ffcac9d.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: the deliverable file does not exist at decompose time; a presence grep on crates/reify-build-utils/native-deps.toml would false-RED dependents before α lands. α's own row-set unit test is the behavioural cover.
+  - name: bash-side-reader-available
+    binding: 'capability→producer — /usr/bin/python3 3.12.3; `python3 -I -c "import tomllib"` exits 0 (probe 2026-10-12). check-manifold-deps.sh is emitted via add_tool in scripts/verify.sh, so its child python runs on the scrubbed ambient loader path.'
+    verdict: PASS
+  - name: mirror-and-parsers-exist-today
+    binding: 'signal premise — tests/infra/test_occt_deps_preflight.sh defines _rust_dep_list, _rust_dep_scalar, _rust_snap_root, _rust_snap_map, _rust_native_dep_variants, _rust_occt_xde_toolkits; scripts/check-manifold-deps.sh carries # BEGIN {occt,gmsh,openvdb}-candidates blocks, OCCT_SNAP_ROOT and the sentinel-keyed case in dep_find_dir; crates/reify-kernel-occt/build.rs carries // BEGIN occt-xde-toolkits (git grep 2026-10-12).'
+    verdict: PASS
+  - name: kernel-suites-nonvacuous-baseline
+    binding: 'G6 — the silent-vacuity check compares per-crate passed counts from one captured run (scripts/cargo-test-tally.py) against main; has_occt/has_gmsh/has_openvdb all resolve on the dev host today (check-manifold-deps.sh [ok] lines). The floor is "equal to main and non-zero", not a literal number.'
+    verdict: PASS
+- label: β
+  task_id: null
+  title: 'native-dep table β: reify_build_utils::detect(dep) owns rerun, check-cfg and has_<dep>; find() private; 8 build.rs migrated'
+  capabilities:
+  - name: hand-written-cfg-sites-baseline
+    binding: 'signal premise — git grep over *build.rs at main 8e6ffcac9d: rustc-cfg=has_ 10, rustc-check-cfg=cfg(has_ 10, rerun-if-env-changed=(OCCT|GMSH|OPENVDB)_ 6, reify_build_utils::find( 10 (2026-10-12). Ratchet target 0 for all four.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'rustc-cfg=has_'
+      paths:
+      - crates/reify-eval/build.rs
+      - crates/reify-cli/build.rs
+      - crates/reify-kernel-conformance/build.rs
+      - crates/reify-mesh-morph/build.rs
+      - crates/reify-kernel-occt/build.rs
+      - crates/reify-kernel-gmsh/build.rs
+      - crates/reify-kernel-openvdb/build.rs
+      - gui/src-tauri/build.rs
+      expect: absent
+  - name: include-env-rerun-missing-today
+    binding: 'signal premise — find() (crates/reify-build-utils/src/lib.rs) reads include_env/lib_env without a rerun line; emit_rpath_for_bins/_for_tests declare lib_env only; reify-cli, reify-eval, reify-kernel-conformance, reify-mesh-morph, gui/src-tauri emit no *_INCLUDE_DIR rerun (read 2026-10-12). The `cargo build -v` dirty-reason signal therefore differs before vs after.'
+    verdict: PASS
+  - name: rerun-heuristic-posture-unchanged
+    binding: 'G6 — every crate gaining rerun-if-env-changed already emits a rerun-if-* directive (emit_rpath_* or its own rerun-if-changed), so cargo''s default package-scan heuristic is already off for each; gui/src-tauri without feature gui is re-checked at implementation (tauri_build) — named in PRD §3 item 7.'
+    verdict: PASS
+- label: γ
+  task_id: null
+  title: 'native-dep table γ: scripts/lib_native_ld_path.sh; lib_gui_launch.sh owns the OCCT dir prepend (pin last); runner + launchers + e2e smoke adopt it; loader-path note'
+  capabilities:
+  - name: workspace-bins-need-no-ld-library-path
+    binding: 'G6 — `env -u LD_LIBRARY_PATH ldd target/debug/reify` and `target/debug/reify-gui` (built 2026-10-11): 0 lines `not found`; RUNPATH leads /opt/reify-deps/tbb-pin then /opt/reify-deps/lib. Backs D6 (GUI and e2e smoke drop the deps dir).'
+    verdict: PASS
+  - name: cargo-target-class-needs-deps-dir
+    binding: 'G6 — target/debug/deps/reify_kernel_occt-<hash> lib-test binary: RUNPATH [/usr/lib/x86_64-linux-gnu] only, NEEDED libgmsh.so.4.15 + libopenvdb.so.13.0, both `not found` without LD_LIBRARY_PATH (probe 2026-10-12). Backs D5 keeping /opt/reify-deps/lib in the cargo-target class; deleting it would red reify-kernel-occt.'
+    verdict: PASS
+  - name: four-copies-exist-today
+    binding: 'signal premise — the git grep -E loader-prepend pattern of PRD D8 returns 7 lines outside lib_gui_launch.sh (.cargo/run-with-occt.sh x2, scripts/run-gui.sh, scripts/run-gui-dev.sh, gui/test/visual/lib_e2e_smoke.sh, scripts/verify.sh x2) at 8e6ffcac9d.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'SNAP_OCCT_LIB'
+      paths:
+      - scripts/run-gui.sh
+      - scripts/run-gui-dev.sh
+      - .cargo/run-with-occt.sh
+      expect: absent
+  - name: no-snap-on-dev-host
+    binding: 'G3 — /snap/freecad is absent on the dev host (ls 2026-10-12), so every snap-branch assertion is fixture-driven through the helper''s defaulted root variables; none relies on a live snap.'
+    verdict: PASS
+- label: δ
+  task_id: null
+  title: 'native-dep table δ: verify.sh apply_env derives its plan loader path from the cargo-target class'
+  capabilities:
+  - name: apply-env-computation-is-separable
+    binding: 'signal premise — scripts/verify.sh apply_env computes _PLAN_LD_LIBRARY_PATH from snap_lib/deps_lib after capturing REIFY_AMBIENT_LD_LIBRARY_PATH; the capture/export/add_tool scrub are separate statements guarded by tests/infra/test_verify_ld_library_path_scope.sh (read 2026-10-12). Only the two prepend lines change.'
+    verdict: PASS
+  - name: full-gate-route
+    binding: 'G3 — `scripts/verify-pipeline-guard.sh requires-full-gate scripts/verify.sh` exits 0 (2026-10-12): δ lands on the full gate by construction.'
+    verdict: PASS
+- label: ω
+  task_id: null
+  title: 'native-dep table ω: PRD close — ID backfill + terminal stamp + freeze'
+  capabilities:
+  - name: terminal-stamp
+    binding: process capability — overlay decompose-close obligations; no substrate.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: Status.*SHIPPED
+      paths:
+      - docs/prds/v0_6/native-dep-table-and-loader-path.md
+      expect: present
