@@ -141,7 +141,12 @@ Every PDOCCOVER finding then records `action_taken: "escalated"` with that one `
 
 **PCITE note:** both kinds are Medium, so PCITE never escalates and never moves the exit code. `fabricated-cite` files a follow-up with the §2 template; take `<name>` and `<path>` from the finding's `FileLine` evidence (`symbol` and `path`; `line` locates the row), never from the summary. The fix is to correct the manifest row, or — when the symbol legitimately lives outside this repo (dark-factory, OCCT) — to add `<!-- pcite:allow — <reason> -->` on that line. `allow-missing-reason` files `Add pcite:allow reason (PCITE allow-missing-reason at <path>:<line>)`, with `<path>` and `<line>` from the same evidence (its `symbol` is null).
 
-**PLINECITE note:** every kind is Medium, so PLINECITE never escalates and never moves the exit code. `line-cite` files ONE follow-up per citing file with the §2 template (`<path>` = `finding.task_id`), listing each cite from its `FileLine` evidence's `symbol`. The fix is to cite the enclosing symbol; a deliberate dated cite gets `plinecite:allow — <reason>` on its line.
+**PLINECITE note:** every kind is Medium, so PLINECITE never escalates and never moves the exit code. Per kind:
+
+- `line-cite` — ONE follow-up per citing file: group the run's `line-cite` findings by `finding.task_id` and file the §2 template once per group (`<path>` = `finding.task_id`), listing each cite from its `FileLine` evidence's `symbol`. The fix is to cite the enclosing symbol, after checking that the symbol greps in the target; a deliberate dated cite gets `plinecite:allow — <reason>` on its line. Never re-number: a re-pointed number is reported as new debt.
+- `stale-baseline-entry` — ONE follow-up per run, titled `Regenerate PLINECITE ledger`, quoting the shrink-only command `cargo run -p reify-audit --bin plinecite-baseline-gen -- --project-root . > crates/reify-audit/plinecite-baseline.txt`.
+- `allow-missing-reason` — one follow-up per finding, `Add plinecite:allow reason (PLINECITE allow-missing-reason at <path>:<line>)`, with `<path>` and `<line>` from its `FileLine` evidence (its `symbol` is null).
+- `scope-empty` — the run checked nothing, so its result is not a clean bill of health. File no follow-up; re-run with `--project-root` at the git worktree.
 
 **PPRDSTATUS note:** every PPRDSTATUS finding is High (both kinds are listed in `references/modes.md` §4), and they are raised as **one batched escalation per run** by running the escalation script, never by calling `escalate_info` here:
 
@@ -163,6 +168,7 @@ Every PDOCCOVER finding then records `action_taken: "escalated"` with that one `
 - `symbol_or_path` = the primary symbol or file path from `finding.evidence` (first evidence string; use `finding.summary` as fallback)
 - For PDCHECK, `symbol_or_path` is the `DeliveredCheck` evidence's `check_name` (always its first evidence entry), so two stale rows on one task stay distinct.
 - For PCITE, `symbol_or_path` comes from the `FileLine` evidence (always its only evidence entry): its `symbol` for `fabricated-cite`, and `<path>:<line>` for `allow-missing-reason`, whose `symbol` is null. Keying on the manifest path alone would collide two phantom cites in one manifest.
+- For PLINECITE `line-cite`, `symbol_or_path` is `finding.task_id`, the citing file, not the cite in its evidence: that matches the per-file grouping in §2, so one file's cites share one key.
 
 **The key is kind-agnostic:** `audit_cluster` is the PATTERN (`"PTODO"`), not the finding kind, so two PTODO findings on the same task+path collide on one key regardless of kind. No change is needed for the two inverse kinds — `task-cites-deleted-path` and `task-cites-renamed-path` are mutually exclusive by construction (a cited path either resolves to a rename target still tracked at HEAD, or it does not), so they can never both be emitted for the same task+path. Stated here so a future reader does not have to re-derive it.
 

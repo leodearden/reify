@@ -122,7 +122,14 @@ into trees that no longer exist, such as the deleted `crates/reify-types`.
 | Assertion-message string cites | 15 |
 | `.ri esc-<id>:<n>` cites anywhere | 0; #5861 removed the last one, and the form stays in the grammar |
 
-**Measured at landing:** _to be filled in when the ledger is seeded._
+**Measured at landing** (the #6935 branch over main 7def1f6e97, 2026-10-12):
+
+| Measure | Value |
+|---|---|
+| Seeded ledger rows | 744: 737 `crates/*/src` (path, cite) pairs, 7 stdlib pairs |
+| Citing files | 188 (185 `crates/*/src`, 3 stdlib), in 23 crates |
+| `reify-audit --pattern PLINECITE`, real tree | 0 findings, exit 0 |
+| Shrink-only regeneration over the seeded ledger | byte-identical |
 
 ## 6. Residual ledger
 
