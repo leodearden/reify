@@ -247,12 +247,20 @@ tasks:
       no reachable site exists TODAY — MEASURED, not structural. This makes α''s §6.5
       item-4 count load-bearing and re-checkable; non-zero ⇒ migrate in β before γ.'
     verdict: PASS
+    # SUPERSEDED by task 5306 (δ, struct-ctor-conformance): the binding above is
+    # the as-authored decompose-time premise and is kept as a historical record.
+    # Its "Severity::Warning (unchanged at HEAD)" and "ctor entry PRINTS, exits 0"
+    # claims no longer describe main: CTOR_FIELD_CONFORMANCE_SEVERITY is now
+    # Severity::Error and a wrong-dimension ctor argument exits 1. The former grep
+    # check (pattern 'const CTOR_FIELD_CONFORMANCE_SEVERITY: Severity =
+    # Severity::Warning', expect: present) would stop matching, so it is retired
+    # rather than restated; the post-flip behaviour is owned by
+    # docs/prds/struct-ctor-field-type-conformance.md (D4) and
+    # docs/notes/ctor-conformance-flip-leaf-signals.md (task 7504).
     delivered_check:
-      kind: grep
-      pattern: 'const CTOR_FIELD_CONFORMANCE_SEVERITY: Severity = Severity::Warning'
-      paths:
-      - crates/reify-compiler/src/conformance/mod.rs
-      expect: present
+      kind: manual
+      reason: superseded by the task 5306 severity flip (Warning -> Error); the
+        pre-delta premise is historical and has no live pattern to check.
   - name: auto-and-undef-are-not-conformance-judged
     binding: 'UNLISTED PREMISE surfaced by the Adversary, load-bearing for the corpus
       gate. `auto`, `auto(free)` and `undef` produce NO conformance judgement at EITHER
