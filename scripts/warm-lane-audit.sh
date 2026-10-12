@@ -5,7 +5,7 @@
 #
 # Part of PRD docs/prds/warm-lane-pool-sizing-lifecycle.md §9.1, §10 B1/B2.
 # Consumer: reify ζ (integration gate), dark-factory θ (soft-floor dispatch
-# throttle), the operator, and a health timer (§13 open-Q 3).
+# throttle), and the operator.
 #
 # Usage:
 #   scripts/warm-lane-audit.sh [--mount WORKTREES_DIR] [--format table|json] \
@@ -460,10 +460,11 @@ _record_text() {
 # `null`).
 #
 # No jq/python3 dependency by design: this script has none today (it even
-# hand-rolls _json_escape), runs from a systemd timer and from the disk-pressure
-# paths, and is forbidden from ever aborting -- a hard jq requirement would be a
-# new environmental failure mode for an advisory-only tool. Only two flat
-# top-level string scalars are ever needed (`state`, `task_id`).
+# hand-rolls _json_escape), is meant to run unattended (timer-friendly, PRD
+# §13 Q3) and runs from the disk-pressure paths, and is forbidden from ever
+# aborting -- a hard jq requirement would be a new environmental failure mode
+# for an advisory-only tool. Only two flat top-level string scalars are ever
+# needed (`state`, `task_id`).
 #
 # Two properties the regex depends on: the BARE double quote before <key> is
 # what makes it safe against a value CONTAINING the key text (json escapes any
@@ -777,9 +778,8 @@ _plan_record_parses() {
 # required traversal -- no separate array handling.
 #
 # awk, not jq/python3: this script declares no-jq/no-python3 as a design
-# property (see _record_scalar) because it runs from a systemd timer and the
-# disk-pressure paths and is forbidden from ever aborting. awk is already used
-# here for the df/du arithmetic, so this adds no dependency.
+# property (see _record_scalar). awk is already used here for the df/du
+# arithmetic, so this adds no dependency.
 #
 # A pending entry's commit is unquoted `null`, and the required quotes below
 # read that as empty -- the same property that makes _record_scalar report an
