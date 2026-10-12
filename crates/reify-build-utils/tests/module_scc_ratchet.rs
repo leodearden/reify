@@ -54,6 +54,15 @@ fn has_line_with_all(text: &str, needles: &[&str]) -> bool {
         .any(|line| needles.iter().all(|needle| line.contains(needle)))
 }
 
+/// The `u -> v` of every closing-import line listed under a GREW line.
+fn closing_edges(stdout: &str) -> Vec<&str> {
+    stdout
+        .lines()
+        .filter(|line| line.starts_with("  ") && line.contains(" -> "))
+        .filter_map(|line| line.rsplit(": ").next())
+        .collect()
+}
+
 struct TempWorkspace {
     dir: tempfile::TempDir,
 }
@@ -209,6 +218,75 @@ fn b2_stale_baseline_reds_and_print_lowers_it() {
         &ws.check(),
         0,
         "check after lowering the baseline with print",
+    );
+}
+
+#[test]
+fn merging_two_baselined_sccs_is_one_grew_listing_only_the_cross_scc_imports() {
+    let ws = TempWorkspace::demo();
+    ws.write("crates/demo/src/a.rs", "use crate::b::B;\npub struct A;\n");
+    ws.write(
+        "crates/demo/src/b.rs",
+        "use crate::a::A;\nuse crate::c::C;\npub struct B;\n",
+    );
+    ws.write("crates/demo/src/c.rs", "use crate::d::D;\npub struct C;\n");
+    ws.write(
+        "crates/demo/src/d.rs",
+        "use crate::c::C;\nuse crate::a::A;\npub struct D;\n",
+    );
+    ws.baseline(r#"{"demo": [["a", "b"], ["c", "d"]]}"#);
+
+    let out = ws.check();
+    assert_exit(&out, 1, "two baselined SCCs merged by b -> c and d -> a");
+    let stdout = stdout_of(&out);
+    assert!(
+        stdout.contains("GREW demo: {a, b, c, d}"),
+        "{}",
+        describe(&out)
+    );
+    assert_eq!(
+        closing_edges(&stdout),
+        ["b -> c", "d -> a"],
+        "only the imports that join the two old SCCs close the merge\n{}",
+        describe(&out)
+    );
+    assert!(
+        has_line_with_all(&stdout, &["crates/demo/src/b.rs:2:", "b -> c"]),
+        "{}",
+        describe(&out)
+    );
+    assert!(
+        has_line_with_all(&stdout, &["crates/demo/src/d.rs:2:", "d -> a"]),
+        "{}",
+        describe(&out)
+    );
+    assert!(
+        !stdout.lines().any(|line| line.starts_with("STALE ")),
+        "an old SCC swallowed by a GREW one is not also STALE\n{}",
+        describe(&out)
+    );
+}
+
+#[test]
+fn a_partly_shrunk_scc_is_stale_naming_what_remains() {
+    let ws = TempWorkspace::demo();
+    ws.write("crates/demo/src/a.rs", "use crate::b::B;\npub struct A;\n");
+    ws.write("crates/demo/src/b.rs", "use crate::a::A;\npub struct B;\n");
+    ws.write("crates/demo/src/c.rs", "use crate::a::A;\npub struct C;\n");
+    ws.baseline(r#"{"demo": [["a", "b", "c"]]}"#);
+
+    let out = ws.check();
+    assert_exit(&out, 1, "c left the baselined {a, b, c}");
+    let stdout = stdout_of(&out);
+    assert!(
+        stdout.contains("STALE demo: baseline {a, b, c} measured {a, b} — lower the baseline"),
+        "{}",
+        describe(&out)
+    );
+    assert!(
+        !stdout.lines().any(|line| line.starts_with("GREW ")),
+        "a shrink is not a growth\n{}",
+        describe(&out)
     );
 }
 
@@ -468,6 +546,28 @@ fn fails_closed_on_a_contradictory_baseline() {
         &both.check(),
         "demo",
         "a package both excluded and baselined",
+    );
+}
+
+#[test]
+fn fails_closed_when_the_lexer_ends_a_file_inside_a_comment() {
+    let ws = TempWorkspace::demo();
+    ws.write("crates/demo/src/a.rs", "pub struct A;\n");
+    ws.write(
+        "crates/demo/src/c.rs",
+        "/* unterminated\nuse crate::a::A;\n",
+    );
+    ws.baseline("{}");
+
+    assert_input_error(
+        &ws.check(),
+        "c.rs",
+        "check over a file whose lexer state is unbalanced at EOF",
+    );
+    assert_input_error(
+        &ws.print(),
+        "c.rs",
+        "print over a file whose lexer state is unbalanced at EOF",
     );
 }
 
