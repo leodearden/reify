@@ -218,6 +218,7 @@ test_run_all_clock_marker_sanitize.sh pool
 test_run_all_content_skip.sh pool
 test_run_all_pool_lock_host_global.sh pool
 test_run_all_tiering.sh pool
+test_run_all_timing.sh pool
 test_run_gui_scripts.sh pool
 test_run_offline_deep.sh pool
 test_rust_production_view_lib.sh pool
