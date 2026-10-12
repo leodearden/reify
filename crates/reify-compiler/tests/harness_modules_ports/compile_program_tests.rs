@@ -12,7 +12,7 @@ use reify_compiler::cfg::CfgSet;
 use reify_compiler::module_dag::{ModuleResolver, ModuleSource};
 use reify_compiler::program::{CompiledProgram, compile_program};
 use reify_compiler::{CompiledModule, check_module_path_decl, compile_with_stdlib_checked};
-use reify_core::{DiagnosticCode, ModulePath, Severity, SourceSpan};
+use reify_core::{DiagnosticCode, DimensionVector, ModulePath, Severity, SourceSpan, Type};
 use reify_ir::{
     ConstraintChecker, ConstraintDiagnostics, ConstraintInput, ConstraintResult, Satisfaction,
 };
@@ -381,4 +381,191 @@ fn compile_program_keeps_cross_import_collision_warning() {
         "expected one cross-import collision warning, got {:?}",
         program.entry.diagnostics
     );
+}
+
+fn errors(module: &CompiledModule) -> Vec<&str> {
+    module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .map(|d| d.message.as_str())
+        .collect()
+}
+
+fn is_std_key(key: &str) -> bool {
+    key == "std" || key.starts_with("std.")
+}
+
+// ─── task 5516 step-5: import units see the stdlib (#19) ───────────────────
+
+/// An imported module that uses stdlib units, traits and constructors.
+/// `ABS_Plastic`/`ElasticMaterial` come from std.materials.fea, the same
+/// pattern stdlib/fdm.ri uses.
+const PARTS_WITH_STDLIB_NAMES: &str = "module parts\n\
+pub structure def Bracket {\n\
+\x20   param w : Length = 10mm\n\
+\x20   param material : ElasticMaterial = ABS_Plastic()\n\
+}\n";
+
+/// Import units compile against the full stdlib, exactly like the entry
+/// (PRD #19): stdlib units, traits and constructors resolve inside them.
+#[test]
+fn compile_program_import_units_see_the_stdlib() {
+    let standalone = reify_compiler::compile_with_stdlib(&reify_compiler::parse_with_stdlib(
+        PARTS_WITH_STDLIB_NAMES,
+        ModulePath::single("parts"),
+    ));
+    assert!(
+        errors(&standalone).is_empty(),
+        "precondition: the parts fixture is legal against the stdlib, got {:?}",
+        errors(&standalone)
+    );
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    write(dir.path(), "parts.ri", PARTS_WITH_STDLIB_NAMES);
+    let main_src = "module main\nimport parts\nstructure def Rig {\n    sub b = Bracket()\n}\n";
+    let program = compile_entry(dir.path(), "main", main_src, &CfgSet::default());
+
+    assert_eq!(import_keys(&program), vec!["parts"]);
+    let parts = &program.imports[0].module;
+    assert!(
+        errors(parts).is_empty(),
+        "the import unit must compile against the stdlib, got {:?}",
+        errors(parts)
+    );
+    let bracket = parts
+        .templates
+        .iter()
+        .find(|t| t.name == "Bracket")
+        .expect("Bracket template in the import unit");
+    let w = bracket
+        .value_cells
+        .iter()
+        .find(|c| c.id.member == "w")
+        .expect("value cell `w` on Bracket");
+    assert_eq!(
+        w.cell_type,
+        Type::Scalar {
+            dimension: DimensionVector::LENGTH
+        },
+        "`param w : Length` must resolve to a Length quantity inside the import unit"
+    );
+    assert!(
+        errors(&program.entry).is_empty(),
+        "the entry must compile cleanly, got {:?}",
+        errors(&program.entry)
+    );
+}
+
+// ─── task 5516 step-5: std.* is never walked, at any depth (I4) ────────────
+
+/// No `std`/`std.*` import is DAG-walked, whether the entry or an import unit
+/// declares it (PRD I4). The resolver's stdlib_root holds a deliberately
+/// unparseable `units.ri` and no `nonexistent_typo.ri`, so any walk would fail
+/// with a diagnostic naming `units.ri` or the stdlib_root. An unknown `std.*`
+/// name may still draw the compiler's ordinary "import not resolved" Warning;
+/// what I4 rules out is resolving it through the DAG.
+#[test]
+fn compile_program_never_walks_std_imports_at_any_depth() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let stdlib_root = dir.path().join("stdlib");
+    fs::create_dir(&stdlib_root).expect("create stdlib_root");
+    write(
+        &stdlib_root,
+        "units.ri",
+        "pub structure def {{{ not reify\n",
+    );
+    write(
+        dir.path(),
+        "parts.ri",
+        "module parts\nimport std.nonexistent_typo\nimport std\npub structure def Part {\n    param q : Real = 1\n}\n",
+    );
+    let main_src =
+        "module main\nimport std.units\nimport parts\nstructure def Rig {\n    sub p = Part()\n}\n";
+
+    let program = compile_entry(dir.path(), "main", main_src, &CfgSet::default());
+
+    let stdlib_root_text = stdlib_root.display().to_string();
+    for d in &program.entry.diagnostics {
+        assert!(
+            !d.message.contains("units.ri") && !d.message.contains(&stdlib_root_text),
+            "no std.* import may be walked, but a diagnostic names the stdlib_root: {d:?}"
+        );
+        if d.severity == Severity::Error {
+            for needle in ["std.nonexistent_typo", "std.units"] {
+                assert!(
+                    !d.message.contains(needle),
+                    "no Error may come from walking {needle}: {d:?}"
+                );
+            }
+        }
+    }
+    assert!(
+        !import_keys(&program).into_iter().any(is_std_key),
+        "imports must hold no std module, got {:?}",
+        import_keys(&program)
+    );
+    assert!(
+        !source_keys(&program).into_iter().any(is_std_key),
+        "sources must hold no std module, got {:?}",
+        source_keys(&program)
+    );
+    assert_eq!(
+        import_keys(&program),
+        vec!["parts"],
+        "parts must compile despite its std.* imports"
+    );
+}
+
+// ─── task 5516 step-5: a cfg-gated import is inert (I3) ────────────────────
+
+/// A cfg-unsatisfied import is never resolved, compiled, merged or listed —
+/// at the entry and inside a followed import unit alike (PRD I3).
+#[test]
+fn compile_program_cfg_gated_imports_are_inert() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    write(
+        dir.path(),
+        "broken.ri",
+        "module broken\npub structure def BrokenThing { param = }\n",
+    );
+    write(
+        dir.path(),
+        "mid.ri",
+        "module mid\n#cfg(target = \"wasm\")\nimport ghost2\npub structure def Mid {\n    param m : Real = 1\n}\n",
+    );
+    let main_src = "module main\n\
+                    #cfg(target = \"wasm\")\nimport ghost\n\
+                    #cfg(target = \"wasm\")\nimport broken\n\
+                    import mid\n\
+                    structure def Rig {\n    sub m = Mid()\n}\n";
+    let linux = CfgSet {
+        target: Some("linux".to_string()),
+        ..Default::default()
+    };
+
+    let program = compile_entry(dir.path(), "main", main_src, &linux);
+
+    for message in errors(&program.entry) {
+        for needle in ["ghost", "broken", "ghost2"] {
+            assert!(
+                !message.contains(needle),
+                "a gated-out import must be inert, but an Error names {needle}: {message}"
+            );
+        }
+    }
+    for key in import_keys(&program)
+        .into_iter()
+        .chain(source_keys(&program))
+    {
+        assert!(
+            !["ghost", "broken", "ghost2"].contains(&key),
+            "a gated-out import must not be listed, found {key}"
+        );
+    }
+    assert!(
+        !template_names(&program.entry).contains(&"BrokenThing"),
+        "no template from a gated-out import may be merged"
+    );
+    assert_eq!(import_keys(&program), vec!["mid"]);
 }
