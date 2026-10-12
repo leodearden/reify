@@ -534,3 +534,131 @@ fn compile_with_prelude_context_parity_two_module_prelude_with_alias() {
 
     assert_compiled_module_parity(&actual, &expected, "two-module-prelude-with-alias");
 }
+
+// ─── task 5516 step-1: PreludeContext::extended parity ─────────────────────
+
+/// Compile one of the two inline prelude modules used by the `extended`
+/// parity tests. Both declare the same `pub type Shared` so the base/extension
+/// boundary carries a first-wins alias collision.
+fn compile_inline_prelude_module(name: &str, source: &str) -> CompiledModule {
+    let parsed = reify_syntax::parse(source, ModulePath::single(name));
+    assert!(
+        parsed.errors.is_empty(),
+        "{name}: parse errors: {:?}",
+        parsed.errors
+    );
+    let compiled = reify_compiler::compile(&parsed);
+    assert!(
+        !compiled
+            .diagnostics
+            .iter()
+            .any(|d| d.severity == reify_core::Severity::Error),
+        "{name}: prelude fixture must compile cleanly, got: {:?}",
+        compiled.diagnostics
+    );
+    compiled
+}
+
+fn extended_fixture_modules() -> (CompiledModule, CompiledModule) {
+    let a = compile_inline_prelude_module(
+        "ext_prelude_a",
+        "pub enum EA { X }\npub type Shared = Real\n",
+    );
+    let b = compile_inline_prelude_module(
+        "ext_prelude_b",
+        "pub enum EB { Y }\npub type Shared = Real\n",
+    );
+    (a, b)
+}
+
+fn enum_names_of<'c>(ctx: &'c PreludeContext<'_>) -> Vec<&'c str> {
+    ctx.resolution_enums()
+        .iter()
+        .map(|e| e.name.as_str())
+        .collect()
+}
+
+fn alias_names_of<'c>(ctx: &'c PreludeContext<'_>) -> Vec<&'c str> {
+    ctx.pub_aliases().iter().map(|a| a.name.as_str()).collect()
+}
+
+type DiagKey = (
+    reify_core::Severity,
+    Option<reify_core::DiagnosticCode>,
+    String,
+);
+
+fn diag_keys(module: &CompiledModule) -> Vec<DiagKey> {
+    module
+        .diagnostics
+        .iter()
+        .map(|d| (d.severity, d.code, d.message.clone()))
+        .collect()
+}
+
+/// `new(&[&A]).extended(&[&B])` is indistinguishable from `new(&[&A, &B])`:
+/// same module refs, same enum and alias caches in the same order, and the
+/// first-wins alias collision across the base/extension boundary still
+/// survives as exactly one Warning when a user module is compiled.
+#[test]
+fn extended_matches_new_over_concatenated_prelude() {
+    let (a, b) = extended_fixture_modules();
+    let base = PreludeContext::new(&[&a]);
+    let extended = base.extended(&[&b]);
+    let flat = PreludeContext::new(&[&a, &b]);
+
+    assert_eq!(extended.modules().len(), flat.modules().len());
+    for (i, (got, want)) in extended.modules().iter().zip(flat.modules()).enumerate() {
+        assert!(
+            std::ptr::eq(*got, *want),
+            "modules()[{i}] must be the same allocation in extended and flat contexts"
+        );
+    }
+
+    assert_eq!(enum_names_of(&extended), enum_names_of(&flat));
+    assert_eq!(enum_names_of(&extended), vec!["EA", "EB"]);
+
+    assert_eq!(alias_names_of(&extended), alias_names_of(&flat));
+    assert_eq!(
+        alias_names_of(&extended),
+        vec!["Shared"],
+        "first-wins: only one `Shared` survives across the base/extension boundary"
+    );
+
+    let user = reify_syntax::parse(
+        "structure def U { param x : Real = 1 }",
+        ModulePath::single("ext_user"),
+    );
+    assert!(user.errors.is_empty(), "parse errors: {:?}", user.errors);
+    let via_extended = diag_keys(&compile_with_prelude_context(&user, &extended));
+    let via_flat = diag_keys(&compile_with_prelude_context(&user, &flat));
+    assert_eq!(via_extended, via_flat);
+
+    let collision_warnings: Vec<&DiagKey> = via_extended
+        .iter()
+        .filter(|(severity, _, message)| {
+            *severity == reify_core::Severity::Warning
+                && message.contains("prelude pub alias 'Shared' declared in both")
+        })
+        .collect();
+    assert_eq!(
+        collision_warnings.len(),
+        1,
+        "exactly one cross-prelude `Shared` collision warning expected, got: {via_extended:?}"
+    );
+}
+
+/// Extending by nothing leaves the base context's modules, enums and aliases
+/// unchanged.
+#[test]
+fn extended_with_no_modules_preserves_base() {
+    let (a, _b) = extended_fixture_modules();
+    let base = PreludeContext::new(&[&a]);
+    let extended = base.extended(&[]);
+
+    assert_eq!(extended.modules().len(), 1);
+    assert!(std::ptr::eq(extended.modules()[0], &a));
+    assert_eq!(enum_names_of(&extended), enum_names_of(&base));
+    assert_eq!(alias_names_of(&extended), alias_names_of(&base));
+    assert_eq!(alias_names_of(&extended), vec!["Shared"]);
+}
