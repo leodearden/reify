@@ -38,13 +38,18 @@
 //!
 //! ```toml
 //! [[node_overrides]]
-//! node_id_pattern = "value"
+//! node_id_pattern = "compute"
 //! commitment_policy = "always_cancel_when_stale"
 //!
 //! [[node_overrides]]
 //! node_id_pattern = "Bracket.width"
 //! commitment_policy = "only_run_on_final_inputs"
 //! ```
+//!
+//! Pick a `commitment_policy` that differs from the selected node's default
+//! (see `docs/notes/reify-toml-schema.md` → "Precedence"), or the entry is a
+//! no-op: `compute` defaults to `commit_if_slow`, so the entry above changes
+//! the resolved policy, whereas `value` + `always_cancel_when_stale` would not.
 //!
 //! Two selector forms are supported:
 //! - **Kind selector** — exact NodeKind name (case-insensitive):
