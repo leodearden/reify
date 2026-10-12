@@ -5,6 +5,8 @@
 //! and the count must equal the row's committed baseline: above it is a re-added
 //! copy, below it means the migrating leaf has to lower the baseline.
 
+use std::cmp::Ordering;
+
 fn is_ident_char(c: char) -> bool {
     c.is_alphanumeric() || c == '_'
 }
@@ -699,15 +701,83 @@ const RATCHETS: &[Ratchet] = &[
 ];
 
 fn in_scope(path: &str, include: &[&str], exclude: &[&str]) -> bool {
-    false
+    let under = |prefix: &&str| path.starts_with(prefix);
+    include.iter().any(under) && !exclude.iter().any(under)
+}
+
+/// Non-overlapping occurrences of `needle` in `text`; a needle starting with an
+/// identifier character must not continue a longer identifier on its left.
+fn occurrences_in(text: &str, needle: &str) -> usize {
+    let needs_left_boundary = needle.starts_with(is_ident_char);
+    text.match_indices(needle)
+        .filter(|&(at, _)| {
+            let continues_identifier = text[..at].chars().next_back().is_some_and(is_ident_char);
+            !(needs_left_boundary && continues_identifier)
+        })
+        .count()
+}
+
+fn counted_occurrences(pattern: &Pattern, line: &Line) -> usize {
+    let in_code = occurrences_in(&line.code, pattern.needle);
+    let in_docs = match (&pattern.view, &line.doc) {
+        (View::CodeAndDocs, Some(doc)) => occurrences_in(doc, pattern.needle),
+        _ => 0,
+    };
+    in_code + in_docs
+}
+
+fn hits_in_file(pattern: &Pattern, file: &SourceFile) -> Vec<Hit> {
+    let skipped = skipped_lines(&file.lines, pattern.skip_items);
+    let mut hits = Vec::new();
+    for (index, line) in file.lines.iter().enumerate() {
+        if skipped[index] {
+            continue;
+        }
+        for _ in 0..counted_occurrences(pattern, line) {
+            hits.push(Hit {
+                path: file.path.clone(),
+                line: index + 1,
+                text: line.raw.trim().to_string(),
+            });
+        }
+    }
+    hits
+}
+
+fn count_occurrences(pattern: &Pattern, files: &[SourceFile]) -> Vec<Hit> {
+    files
+        .iter()
+        .filter(|file| in_scope(&file.path, pattern.include, pattern.exclude))
+        .flat_map(|file| hits_in_file(pattern, file))
+        .collect()
 }
 
 fn measure(how: &Measure, files: &[SourceFile]) -> Vec<Hit> {
-    Vec::new()
+    match how {
+        Measure::Occurrences(pattern) => count_occurrences(pattern, files),
+        Measure::DuplicateTopLevelFns { .. } => Vec::new(),
+    }
 }
 
+/// Strict ratchet: the measured count must equal `baseline`. Above it, a copy was
+/// added; below it, a leaf migrated copies and must lower the row in the same diff.
 fn check(ratchet: &Ratchet, files: &[SourceFile], baseline: usize) -> Result<(), String> {
-    Ok(())
+    let hits = measure(&ratchet.measure, files);
+    let (name, count) = (ratchet.name, hits.len());
+    match count.cmp(&baseline) {
+        Ordering::Equal => Ok(()),
+        Ordering::Greater => Err(format!(
+            "{name}: {count} is above its baseline {baseline}: an inline copy was added; \
+             route it through {}\n{}",
+            ratchet.home,
+            hit_lines(&hits)
+        )),
+        Ordering::Less => Err(format!(
+            "{name}: {count} is below its baseline {baseline}: \
+             lower the baseline to {count} in {}",
+            file!()
+        )),
+    }
 }
 
 // ── pattern-row self-tests ───────────────────────────────────────────────────
