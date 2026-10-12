@@ -33,18 +33,19 @@ def declared_functions(path):
     return set(FUNC_DEF.findall(Path(path).read_text()))
 
 
-def child_env(tmpdir, target=SUITE):
+def child_env(tmpdir, target=SUITE, extra_env=None):
     env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
     env["TMPDIR"] = str(tmpdir)
     env["_SM_TARGET"] = str(target)
+    env.update(extra_env or {})
     return env
 
 
-def run_sourced(target, snippet, *, cwd, tmpdir):
+def run_sourced(target, snippet, *, cwd, tmpdir, extra_env=None):
     return subprocess.run(
         ["bash", "-c", 'source "$_SM_TARGET"\n' + snippet],
         cwd=cwd,
-        env=child_env(tmpdir, target),
+        env=child_env(tmpdir, target, extra_env),
         capture_output=True,
         text=True,
     )
@@ -73,8 +74,10 @@ class SourcedSuiteTestCase(unittest.TestCase):
         self.tmpdir = self.make_tmpdir()
         self.cwd = self.make_tmpdir()
 
-    def source_suite(self, snippet):
-        return run_sourced(SUITE, snippet, cwd=self.cwd, tmpdir=self.tmpdir)
+    def source_suite(self, snippet, *, cwd=None, extra_env=None):
+        return run_sourced(
+            SUITE, snippet, cwd=cwd or self.cwd, tmpdir=self.tmpdir, extra_env=extra_env
+        )
 
     def describe(self, proc):
         return f"rc={proc.returncode}\nstdout: {proc.stdout!r}\nstderr: {proc.stderr!r}"
@@ -140,6 +143,100 @@ class SourceModeContractTest(SourcedSuiteTestCase):
 
         fixture.write_text("early() { :; }\n" + SOURCE_MODE_RETURN)
         self.assertEqual(unreachable_after_source(fixture, self.cwd, self.tmpdir), set())
+
+
+class FixtureRefusalTest(SourcedSuiteTestCase):
+    """A helper handed a directory no constructor built must refuse and touch nothing."""
+
+    FIXTURE_VARS = "FIX FIX_B FIX_MOD FIX_VS FIX_PGR FIX_GECR _FW_SHIM_DIR"
+
+    def git(self, repo, *args):
+        return subprocess.run(
+            ["git", "-C", str(repo), *args],
+            env=child_env(self.tmpdir),
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
+
+    def make_scratch_repo(self):
+        repo = self.make_tmpdir()
+        self.git(repo, "init", "-q", "-b", "main")
+        self.git(repo, "config", "user.email", "scratch@test.invalid")
+        self.git(repo, "config", "user.name", "Scratch")
+        (repo / "seeded.txt").write_text("seeded\n")
+        self.git(repo, "add", "seeded.txt")
+        self.git(repo, "commit", "-q", "-m", "seed")
+        (repo / "staged.txt").write_text("staged\n")
+        self.git(repo, "add", "staged.txt")
+        return repo
+
+    def snapshot(self, repo):
+        files = sorted(
+            str(p.relative_to(repo))
+            for p in repo.rglob("*")
+            if ".git" not in p.relative_to(repo).parts
+        )
+        return (
+            self.git(repo, "rev-parse", "HEAD"),
+            self.git(repo, "branch", "--list"),
+            self.git(repo, "status", "--porcelain=v1", "--untracked-files=all"),
+            files,
+        )
+
+    def test_every_plan_for_helper_refuses_a_directory_no_constructor_built(self):
+        helpers = sorted(
+            name
+            for name in declared_functions(SUITE)
+            if name.startswith(("plan_for", "_plan_for"))
+        )
+        for expected in ("plan_for", "plan_for_branch", "_plan_for_staged_shimmed"):
+            self.assertIn(expected, helpers)
+        snippet = (
+            f"for v in {self.FIXTURE_VARS}; do printf -v \"$v\" '%s' \"$PWD\"; done; "
+            '"$_SM_HELPER" seeded.txt moved.txt seeded.txt probe-line'
+        )
+        for helper in helpers:
+            with self.subTest(helper=helper):
+                repo = self.make_scratch_repo()
+                before = self.snapshot(repo)
+                proc = self.source_suite(
+                    snippet, cwd=repo, extra_env={"_SM_HELPER": helper}
+                )
+                self.assertNotEqual(proc.returncode, 0, self.describe(proc))
+                self.assertIn(helper, proc.stderr, self.describe(proc))
+                self.assertEqual(self.snapshot(repo), before, self.describe(proc))
+
+    def test_refusal_names_the_variable_and_its_constructor(self):
+        cases = {
+            "never-assigned": "plan_for_branch docs/probe.md",
+            "empty": 'FIX_B=""; plan_for_branch docs/probe.md',
+        }
+        for case, snippet in cases.items():
+            with self.subTest(case=case):
+                repo = self.make_scratch_repo()
+                before = self.snapshot(repo)
+                proc = self.source_suite(snippet, cwd=repo)
+                self.assertNotEqual(proc.returncode, 0, self.describe(proc))
+                self.assertIn("FIX_B", proc.stderr, self.describe(proc))
+                self.assertIn("make_branch_fixture FIX_B", proc.stderr, self.describe(proc))
+                self.assertEqual(self.snapshot(repo), before, self.describe(proc))
+
+    def test_shimmed_helper_requires_its_shim(self):
+        proc = self.source_suite(
+            "make_fixture FIX; printf 'FIXTURE=%s\\n' \"$FIX\"; "
+            "_plan_for_staged_shimmed crates/reify-doc/src/lib.rs"
+        )
+        self.assertNotEqual(proc.returncode, 0, self.describe(proc))
+        self.assertIn("_FW_SHIM_DIR", proc.stderr, self.describe(proc))
+        self.assertIn("make_rename_diff_fail_shim", proc.stderr, self.describe(proc))
+        fixture = fixture_path(proc.stdout)
+        self.assertIsNotNone(fixture, self.describe(proc))
+        self.assertEqual(
+            self.git(fixture, "diff", "--cached", "--name-only"),
+            "",
+            "the helper staged a file before refusing",
+        )
 
 
 if __name__ == "__main__":
