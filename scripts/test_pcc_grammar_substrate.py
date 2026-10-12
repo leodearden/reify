@@ -21,6 +21,7 @@ from _pcc_test_support import (
     _CACHE_DENIED_STDERR,
     _compute_grammar_e2e_status,
     _grammar_status_calls_at_import,
+    _grammar_status_importers,
     _patch_parser_c,
     _snapshot_grammar_status_at_import,
     _ts_stub_cache_denied,
@@ -113,6 +114,13 @@ class TestGrammarAvailabilityGuard(unittest.TestCase):
         self.assertIn(
             __name__, snapshots,
             "this module's own tail snapshot is missing, so the pin is vacuous",
+        )
+        unrecorded = _grammar_status_importers() - snapshots.keys()
+        self.assertEqual(
+            unrecorded, set(),
+            "these modules import _grammar_e2e_status or _require_grammar_substrate "
+            "but never call _snapshot_grammar_status_at_import(__name__) as the last "
+            f"statement of their module body, so this pin cannot see them: {sorted(unrecorded)}",
         )
         probed = {name: calls for name, calls in snapshots.items() if calls}
         self.assertEqual(

@@ -15,6 +15,7 @@ import os
 import shlex
 import sys
 import textwrap
+import types
 import unittest.mock
 
 
@@ -159,6 +160,23 @@ def _grammar_status_calls_at_import() -> dict[str, int]:
     return dict(_GRAMMAR_STATUS_CALLS_AT_IMPORT)
 
 
+def _grammar_status_importers() -> set[str]:
+    """Every loaded module the snapshot rule binds, this one excepted.
+
+    Found by identity in each module's globals rather than by name, so a
+    consumer that never recorded its snapshot is caught whatever it is called.
+    """
+    consumer_api = (_grammar_e2e_status, _require_grammar_substrate)
+    this_module = sys.modules[__name__]
+    return {
+        name
+        for name, module in list(sys.modules.items())
+        if isinstance(module, types.ModuleType)
+        and module is not this_module
+        and any(value is api for value in vars(module).values() for api in consumer_api)
+    }
+
+
 # ---------------------------------------------------------------------------
 # Measured tree-sitter cache-denial signature
 # ---------------------------------------------------------------------------
@@ -236,8 +254,8 @@ def _ts_stub_echo_cache(tmpdir: str, name: str = "ts_stub_echo_cache") -> str:
     environment is exactly what is NOT supposed to reach the child.  Echoing it
     back through stdout is the only way to measure it.
     """
-    return _write_ts_stub(tmpdir, name, """\
-        echo "XDG_CACHE_HOME=${XDG_CACHE_HOME:-<unset>}"
+    return _write_ts_stub(tmpdir, name, f"""\
+        echo "XDG_CACHE_HOME=${{XDG_CACHE_HOME:-{_UNSET_CACHE_MARKER}}}"
         exit 0
     """)
 
