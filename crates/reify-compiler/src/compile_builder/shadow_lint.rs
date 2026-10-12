@@ -874,3 +874,67 @@ fn push_shadow_diagnostic(
         )),
     );
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::recursion_guard::MAX_COMPILE_RECURSION_DEPTH as CAP;
+
+    /// The lint covers nesting up to the shared compile cap and stops silently
+    /// past it: a shadowing lambda wrapped so it sits AT the cap is reported,
+    /// one layer further it is skipped without panicking.
+    #[test]
+    fn shadowing_lambda_is_linted_at_the_nesting_cap_and_skipped_past_it() {
+        fn shadow_count_for_lambda_at_depth(depth: usize) -> usize {
+            let span = SourceSpan::empty(0);
+            let parent: Frame = HashMap::from([("x".to_string(), span)]);
+            let stack = FrameStack {
+                frame: &parent,
+                parent: None,
+            };
+            let mut expr = Expr {
+                kind: ExprKind::Lambda {
+                    params: vec![reify_ast::LambdaParam {
+                        name: "x".into(),
+                        type_expr: None,
+                        span,
+                    }],
+                    body: Box::new(Expr {
+                        kind: ExprKind::Ident("x".into()),
+                        span,
+                    }),
+                },
+                span,
+            };
+            for _ in 0..depth {
+                expr = Expr {
+                    kind: ExprKind::UnOp {
+                        op: "-".into(),
+                        operand: Box::new(expr),
+                    },
+                    span,
+                };
+            }
+            let mut diagnostics: Vec<Diagnostic> = Vec::new();
+            walk_expr(&expr, Some(&stack), &mut diagnostics);
+            assert!(
+                diagnostics
+                    .iter()
+                    .all(|d| d.code == Some(DiagnosticCode::Shadowing)),
+                "lambda at depth {depth} emitted a non-Shadowing diagnostic: {diagnostics:?}"
+            );
+            diagnostics.len()
+        }
+
+        assert_eq!(
+            shadow_count_for_lambda_at_depth(CAP),
+            1,
+            "a shadowing lambda at the cap must be linted"
+        );
+        assert_eq!(
+            shadow_count_for_lambda_at_depth(CAP + 1),
+            0,
+            "a shadowing lambda past the cap must be skipped"
+        );
+    }
+}

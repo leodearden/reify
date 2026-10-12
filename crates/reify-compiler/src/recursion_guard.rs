@@ -360,4 +360,62 @@ mod tests {
         );
         drop(guards);
     }
+
+    /// Over-cap nesting through the public pipeline reaches this guard's
+    /// `E_EXPR_NESTING_TOO_DEEP`, because the pre-compile lints stop silently at
+    /// the same cap instead of panicking first — and that error is the only one.
+    #[test]
+    fn over_cap_nesting_through_public_compile_reports_too_deep_instead_of_panicking() {
+        const NEST_DEPTH: usize = 300;
+        const {
+            assert!(
+                NEST_DEPTH > MAX_COMPILE_RECURSION_DEPTH,
+                "this test must overshoot the cap: the expected outcome is the \
+                 too-deep diagnostic, not a clean compile"
+            )
+        };
+
+        let mut expr = "1".to_string();
+        for _ in 0..NEST_DEPTH {
+            expr = format!("(1 + {expr})");
+        }
+        let source = format!("structure S {{\n    let x = {expr}\n}}");
+
+        // The recursive-descent parser is a separate, unguarded surface, so it
+        // gets a big stack of its own.
+        let parsed = std::thread::Builder::new()
+            .stack_size(64 * 1024 * 1024)
+            .spawn(move || reify_syntax::parse(&source, reify_core::ModulePath::single("test")))
+            .expect("spawn parse thread")
+            .join()
+            .expect("the parser must not crash on this depth with a big stack");
+        assert!(
+            parsed.errors.is_empty(),
+            "the nested source must parse cleanly, got: {:?}",
+            parsed.errors
+        );
+
+        // Compile on tokio's default 2 MiB worker stack — the GUI's condition.
+        let diagnostics = std::thread::Builder::new()
+            .stack_size(2 * 1024 * 1024)
+            .spawn(move || crate::compile(&parsed).diagnostics)
+            .expect("spawn 2 MiB compile thread")
+            .join()
+            .expect("over-cap nesting must not panic the compile thread");
+
+        let is_too_deep =
+            |d: &Diagnostic| d.code == Some(reify_core::DiagnosticCode::ExpressionNestingTooDeep);
+        assert!(
+            diagnostics.iter().any(is_too_deep),
+            "depth {NEST_DEPTH} is past the cap and must be refused, got: {diagnostics:?}"
+        );
+        let other_errors: Vec<&Diagnostic> = diagnostics
+            .iter()
+            .filter(|d| d.severity == reify_core::Severity::Error && !is_too_deep(*d))
+            .collect();
+        assert!(
+            other_errors.is_empty(),
+            "the too-deep refusal must not cascade into other errors, got: {other_errors:?}"
+        );
+    }
 }
