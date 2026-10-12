@@ -29,30 +29,14 @@
 use reify_ast::{Expr, ExprKind, MemberDecl, ParsedModule, walk_all_member_bodies};
 use reify_core::{Diagnostic, DiagnosticCode, DiagnosticLabel};
 
+use crate::recursion_guard::MAX_COMPILE_RECURSION_DEPTH;
+
 /// Maximum allowed chain length before the lint fires.
 ///
 /// A chain of length `N` is a root expression followed by `N - 1` `.field` hops
 /// (i.e., `N - 1` levels of `MemberAccess` wrapping). At threshold = 4, the
 /// chain `a.b.c.d` is OK; `a.b.c.d.e` (length 5) warns.
 pub(crate) const DEEP_DOT_CHAIN_THRESHOLD: usize = 4;
-
-/// Stack-safety bound on the structural recursion in [`walk_expr`].
-///
-/// The chain-counting `while let` loop in the `MemberAccess` arm is iterative
-/// and unbounded (a single chain of N segments is one frame). The exposure is
-/// the structural recursion through children of every other `ExprKind` variant
-/// — a deeply-nested `Conditional`/`BinOp`/`Lambda` tree, possibly synthesised
-/// by a fuzzer or a future parser bug, would burn one Rust frame per level.
-/// 256 is generous (typical hand-written code never exceeds ~20) and stops well
-/// short of overflowing default Rust stacks.
-///
-/// Exceeding this bound is treated as a "should never happen" invariant
-/// violation: in debug/test builds (i.e. when `debug_assertions` are enabled)
-/// `walk_expr_depth` fires a `debug_assert!(false, …)` so that fuzzers and the
-/// test suite catch a regression immediately via a panic. Release builds keep
-/// the existing silent-`return` fast-path — the `debug_assert!` compiles out —
-/// leaving production behaviour unchanged.
-const MAX_EXPR_DEPTH: usize = 256;
 
 /// Visit every expression-bearing position in `parsed` and emit a Warning for
 /// each maximal `MemberAccess` chain whose length exceeds
@@ -365,29 +349,15 @@ fn walk_annotations(annotations: &[reify_ast::Annotation], diagnostics: &mut Vec
 /// For non-`MemberAccess` expressions, recurse into every `Box<Expr>` /
 /// `Vec<Expr>` child.
 ///
-/// Recursion into expression children is bounded by [`MAX_EXPR_DEPTH`] for
-/// stack safety on pathological input (see the constant doc).
+/// Recursion into expression children is bounded by
+/// [`MAX_COMPILE_RECURSION_DEPTH`] for stack safety on pathological input.
 fn walk_expr(expr: &Expr, diagnostics: &mut Vec<Diagnostic>) {
     walk_expr_depth(expr, diagnostics, 0);
 }
 
 fn walk_expr_depth(expr: &Expr, diagnostics: &mut Vec<Diagnostic>, depth: usize) {
-    if depth > MAX_EXPR_DEPTH {
-        // Should never happen on real source: 256 is generous (typical hand-
-        // written code never exceeds ~20). Hitting this guard means a fuzzer
-        // input or upstream parser bug produced a pathologically deep AST and
-        // the dot-chain lint silently lost coverage on that subtree. Panic in
-        // debug/test builds so a regression bisects directly to this site;
-        // keep the silent `return` in release so end-users never see the
-        // unactionable diagnostic.
-        debug_assert!(
-            false,
-            "dot_chain_lint walk_expr_depth exceeded MAX_EXPR_DEPTH = {} (depth = {}); \
-             dot-chain lint coverage truncated at this subtree — likely \
-             upstream parser bug or fuzzer input producing pathologically \
-             deep AST",
-            MAX_EXPR_DEPTH, depth
-        );
+    // Past the shared cap the lint stops; compilation reports E_EXPR_NESTING_TOO_DEEP.
+    if depth > MAX_COMPILE_RECURSION_DEPTH {
         return;
     }
     let next = depth + 1;
