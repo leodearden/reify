@@ -7,6 +7,8 @@
 
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
+use std::fs;
+use std::path::{Path, PathBuf};
 
 fn is_ident_char(c: char) -> bool {
     c.is_alphanumeric() || c == '_'
@@ -36,9 +38,7 @@ enum Scan {
 
 fn lex(text: &str) -> Vec<Line> {
     let mut carry = Carry::Code;
-    text.lines()
-        .map(|raw| lex_line(&mut carry, raw))
-        .collect()
+    text.lines().map(|raw| lex_line(&mut carry, raw)).collect()
 }
 
 fn lex_line(carry: &mut Carry, raw: &str) -> Line {
@@ -306,7 +306,11 @@ impl ItemTracker {
         self.depth = after;
         match c {
             '{' => {
-                if let Some(item) = self.current.as_mut().filter(|item| item.start_depth == before) {
+                if let Some(item) = self
+                    .current
+                    .as_mut()
+                    .filter(|item| item.start_depth == before)
+                {
                     item.opened = true;
                 }
             }
@@ -519,88 +523,94 @@ const SRC_AND_TESTS: &[&str] = &["src/", "tests/"];
 const NO_PATHS: &[&str] = &[];
 const WHOLE_FILE: &[&str] = &[];
 
+/// A pattern over production code: no path excluded, `#[cfg(test)]` items
+/// skipped, code view only. Rows spell out only what differs from that.
+const fn production_pattern(
+    needle: &'static str,
+    include: &'static [&'static str],
+    seed: &'static str,
+) -> Pattern {
+    Pattern {
+        needle,
+        include,
+        exclude: NO_PATHS,
+        skip_items: TEST_ITEMS,
+        view: View::Code,
+        seed,
+    }
+}
+
 const RATCHETS: &[Ratchet] = &[
     Ratchet {
         name: "shell-assembly-upward-imports",
         home: "elements/shell_frame.rs (solver-crates-layering D4, leaf β)",
         baseline: 5,
-        measure: Measure::Occurrences(Pattern {
-            needle: "shell_assembly::",
-            include: &[
+        measure: Measure::Occurrences(production_pattern(
+            "shell_assembly::",
+            &[
                 "src/elements/",
                 "src/geometric_stiffness/",
                 "src/shell_kinematics.rs",
                 "src/membrane_load.rs",
             ],
-            exclude: NO_PATHS,
-            skip_items: TEST_ITEMS,
-            view: View::Code,
-            seed: "use crate::shell_assembly::plane_stress_d;",
-        }),
+            "use crate::shell_assembly::plane_stress_d;",
+        )),
     },
     Ratchet {
         name: "bubble-condensation-copies",
         home: "the one guarded bubble-condensation fn (solver-crates-layering D6, leaf γ)",
         baseline: 2,
-        measure: Measure::Occurrences(Pattern {
-            needle: "let det_bb =",
-            include: SRC,
-            exclude: NO_PATHS,
-            skip_items: TEST_ITEMS,
-            view: View::Code,
-            seed: "let det_bb = k00 * k11 - k01 * k10;",
-        }),
+        measure: Measure::Occurrences(production_pattern(
+            "let det_bb =",
+            SRC,
+            "let det_bb = k00 * k11 - k01 * k10;",
+        )),
     },
     Ratchet {
         name: "shear-correction-literal",
         home: "ShellSection::SHEAR_CORRECTION (solver-crates-layering D5, leaf γ)",
         baseline: 2,
-        measure: Measure::Occurrences(Pattern {
-            needle: "5.0 / 6.0",
-            include: SRC,
-            exclude: NO_PATHS,
-            skip_items: TEST_ITEMS,
-            view: View::Code,
-            seed: "const KAPPA: f64 = 5.0 / 6.0;",
-        }),
+        measure: Measure::Occurrences(production_pattern(
+            "5.0 / 6.0",
+            SRC,
+            "const KAPPA: f64 = 5.0 / 6.0;",
+        )),
     },
     Ratchet {
         name: "inline-shear-modulus",
         home: "IsotropicElastic::shear_modulus (solver-crates-layering D5, leaf γ)",
         baseline: 16,
         measure: Measure::Occurrences(Pattern {
-            needle: "/ (2.0 * (1.0 + nu))",
-            include: SRC,
-            exclude: NO_PATHS,
             skip_items: WHOLE_FILE,
-            view: View::Code,
-            seed: "let g = e / (2.0 * (1.0 + nu));",
+            ..production_pattern(
+                "/ (2.0 * (1.0 + nu))",
+                SRC,
+                "let g = e / (2.0 * (1.0 + nu));",
+            )
         }),
     },
     Ratchet {
         name: "thickness-scaled-d-blocks",
         home: "the shared scaled(d, s) helper (solver-crates-layering D6, leaf γ)",
         baseline: 5,
-        measure: Measure::Occurrences(Pattern {
-            needle: "td[i][j] = ",
-            include: SRC,
-            exclude: NO_PATHS,
-            skip_items: TEST_ITEMS,
-            view: View::Code,
-            seed: "td[i][j] = t * d[i][j];",
-        }),
+        measure: Measure::Occurrences(production_pattern(
+            "td[i][j] = ",
+            SRC,
+            "td[i][j] = t * d[i][j];",
+        )),
     },
     Ratchet {
         name: "assembly-element-literals",
         home: "AssemblyElement::new (solver-crates-layering D7, leaf δ)",
         baseline: 38,
         measure: Measure::Occurrences(Pattern {
-            needle: "AssemblyElement {",
-            include: SRC_AND_TESTS,
             exclude: &["src/assembly/global.rs"],
             skip_items: WHOLE_FILE,
-            view: View::Code,
-            seed: "let el = AssemblyElement { id: 0, connectivity: &c, k_e: &k };",
+            ..production_pattern(
+                "AssemblyElement {",
+                SRC_AND_TESTS,
+                "let el = AssemblyElement { id: 0, connectivity: &c, k_e: &k };",
+            )
         }),
     },
     Ratchet {
@@ -608,90 +618,73 @@ const RATCHETS: &[Ratchet] = &[
         home: "the ElementStiffness accessors (solver-crates-layering D8, leaf ε)",
         baseline: 74,
         measure: Measure::Occurrences(Pattern {
-            needle: ".data[",
-            include: SRC_AND_TESTS,
             exclude: &["src/assembly/mod.rs", "src/resample.rs"],
             skip_items: WHOLE_FILE,
-            view: View::Code,
-            seed: "let v = k_e.data[0];",
+            ..production_pattern(".data[", SRC_AND_TESTS, "let v = k_e.data[0];")
         }),
     },
     Ratchet {
         name: "member-force-delta-definitions",
         home: "the membrane_load helper shared with tensegrity_load (solver-crates-layering D9, leaf ζ)",
         baseline: 2,
-        measure: Measure::Occurrences(Pattern {
-            needle: "fn member_force_delta(",
-            include: SRC,
-            exclude: NO_PATHS,
-            skip_items: TEST_ITEMS,
-            view: View::Code,
-            seed: "fn member_force_delta(x: f64) -> f64 { x }",
-        }),
+        measure: Measure::Occurrences(production_pattern(
+            "fn member_force_delta(",
+            SRC,
+            "fn member_force_delta(x: f64) -> f64 { x }",
+        )),
     },
     Ratchet {
         name: "bar-axial-force-delta-definitions",
         home: "the membrane_load helper shared with tensegrity_load (solver-crates-layering D9, leaf ζ)",
         baseline: 2,
-        measure: Measure::Occurrences(Pattern {
-            needle: "fn bar_axial_force_delta(",
-            include: SRC,
-            exclude: NO_PATHS,
-            skip_items: TEST_ITEMS,
-            view: View::Code,
-            seed: "fn bar_axial_force_delta(x: f64) -> f64 { x }",
-        }),
+        measure: Measure::Occurrences(production_pattern(
+            "fn bar_axial_force_delta(",
+            SRC,
+            "fn bar_axial_force_delta(x: f64) -> f64 { x }",
+        )),
     },
     Ratchet {
         name: "grounding-diagonal-definitions",
         home: "the membrane_load constant shared with tensegrity_load (solver-crates-layering D9, leaf ζ)",
         baseline: 2,
-        measure: Measure::Occurrences(Pattern {
-            needle: "const GROUNDING_DIAGONAL:",
-            include: SRC,
-            exclude: NO_PATHS,
-            skip_items: TEST_ITEMS,
-            view: View::Code,
-            seed: "const GROUNDING_DIAGONAL: f64 = 1.0;",
-        }),
+        measure: Measure::Occurrences(production_pattern(
+            "const GROUNDING_DIAGONAL:",
+            SRC,
+            "const GROUNDING_DIAGONAL: f64 = 1.0;",
+        )),
     },
     Ratchet {
         name: "cable-sign-rule-arms",
         home: "MemberKind::admits (solver-crates-layering D1, leaf η)",
         baseline: 6,
-        measure: Measure::Occurrences(Pattern {
-            needle: "MemberKind::Cable =>",
-            include: SRC,
-            exclude: NO_PATHS,
-            skip_items: TEST_ITEMS,
-            view: View::Code,
-            seed: "MemberKind::Cable => qi > 0.0,",
-        }),
+        measure: Measure::Occurrences(production_pattern(
+            "MemberKind::Cable =>",
+            SRC,
+            "MemberKind::Cable => qi > 0.0,",
+        )),
     },
     Ratchet {
         name: "unchecked-anchor-partition",
         home: "ForceDensityProblem construction (solver-crates-layering D1, leaf η)",
         baseline: 3,
-        measure: Measure::Occurrences(Pattern {
-            needle: "is_anchor[a] = true",
-            include: SRC,
-            exclude: NO_PATHS,
-            skip_items: TEST_ITEMS,
-            view: View::Code,
-            seed: "is_anchor[a] = true;",
-        }),
+        measure: Measure::Occurrences(production_pattern(
+            "is_anchor[a] = true",
+            SRC,
+            "is_anchor[a] = true;",
+        )),
     },
     Ratchet {
         name: "mpc-row-literals",
         home: "MpcRow::new (solver-crates-layering D10, leaf θ)",
         baseline: 2,
         measure: Measure::Occurrences(Pattern {
-            needle: "MpcRow {",
-            include: SRC_AND_TESTS,
-            exclude: NO_PATHS,
             skip_items: &["impl MpcRow", "pub struct MpcRow"],
             view: View::CodeAndDocs,
-            seed: "let r = MpcRow { dofs: vec![0], coeffs: vec![1.0], rhs: 0.0 };",
+            ..production_pattern(
+                "MpcRow {",
+                SRC_AND_TESTS,
+                "let r = MpcRow { dofs: vec![0], coeffs: vec![1.0], rhs: 0.0 };",
+            )
         }),
     },
     Ratchet {
@@ -825,8 +818,8 @@ fn top_level_helpers(lines: &[Line]) -> Vec<(&str, usize)> {
         if rest.is_empty() {
             continue;
         }
-        let helper = fn_name(rest)
-            .filter(|name| !test_attribute_pending && !name.starts_with("test_"));
+        let helper =
+            fn_name(rest).filter(|name| !test_attribute_pending && !name.starts_with("test_"));
         if let Some(name) = helper {
             helpers.push((name, index + 1));
         }
@@ -1020,7 +1013,11 @@ fn every_pattern_row_ignores_copies_in_non_counted_positions() {
             format!("const _S: &str = \"\n{seed}\n\";"),
             format!("const _R: &str = r#\"{seed}\"#;"),
         ];
-        for prefix in pattern.skip_items.iter().filter(|p| !TEST_ITEMS.contains(p)) {
+        for prefix in pattern
+            .skip_items
+            .iter()
+            .filter(|p| !TEST_ITEMS.contains(p))
+        {
             decoys.push(format!("{prefix} {{\n{seed}\n}}"));
         }
         for decoy in &decoys {
@@ -1066,7 +1063,10 @@ fn needle_requires_a_left_identifier_boundary() {
         .into_iter()
         .filter(|(_, pattern)| pattern.needle.starts_with(is_ident_char))
         .count();
-    assert!(boundary_rows > 0, "no row starts its needle with an identifier character");
+    assert!(
+        boundary_rows > 0,
+        "no row starts its needle with an identifier character"
+    );
     for_every_pattern_row(|row, pattern| {
         if !pattern.needle.starts_with(is_ident_char) {
             return Ok(());
@@ -1130,7 +1130,10 @@ fn duplicate_census_ignores_non_helper_definitions() {
         ("test attribute", "#[test]\nfn same_name() {}"),
         ("test attribute on one line", "#[test] fn same_name() {}"),
         ("test_ prefix", "fn test_same() {}"),
-        ("attribute stack", "#[test]\n#[should_panic]\nfn same_name() {}"),
+        (
+            "attribute stack",
+            "#[test]\n#[should_panic]\nfn same_name() {}",
+        ),
         (
             "doc comment after the test attribute",
             "#[test]\n/// documented\nfn same_name() {}",
@@ -1144,9 +1147,18 @@ fn duplicate_census_ignores_non_helper_definitions() {
             "#[test]\n#[ignore = \"first \\\n    second\"]\nfn same_name() {}",
         ),
         ("nested in a mod", "mod m {\n    fn same_name() {}\n}"),
-        ("method in an impl", "impl T {\n    fn same_name(&self) {}\n}"),
-        ("inside a string", "const S: &str = \"\nfn same_name() {}\n\";"),
-        ("inside comments", "// fn same_name() {}\n/* fn same_name() {} */"),
+        (
+            "method in an impl",
+            "impl T {\n    fn same_name(&self) {}\n}",
+        ),
+        (
+            "inside a string",
+            "const S: &str = \"\nfn same_name() {}\n\";",
+        ),
+        (
+            "inside comments",
+            "// fn same_name() {}\n/* fn same_name() {} */",
+        ),
     ];
     for (label, decoy) in decoys {
         let text = format!("fn control_helper() {{}}\n{decoy}");
@@ -1162,7 +1174,10 @@ fn duplicate_census_ignores_non_helper_definitions() {
 #[test]
 fn duplicate_census_ignores_single_definitions_and_files_outside_its_root() {
     let hits = census_hits(&[
-        ("tests/a.rs", "fn control_helper() {}\nfn solo() {}\nfn out_of_root() {}"),
+        (
+            "tests/a.rs",
+            "fn control_helper() {}\nfn solo() {}\nfn out_of_root() {}",
+        ),
         ("tests/b.rs", "fn control_helper() {}"),
         ("src/c.rs", "fn out_of_root() {}"),
     ]);
@@ -1228,8 +1243,48 @@ fn migrating_one_copy_without_lowering_the_baseline_is_red_for_every_row() {
 
 // ── the real tree ────────────────────────────────────────────────────────────
 
+fn collect_rs_files(dir: &Path, found: &mut Vec<PathBuf>) {
+    let entries = fs::read_dir(dir)
+        .unwrap_or_else(|error| panic!("reading directory {}: {error}", dir.display()));
+    for entry in entries {
+        let path = entry
+            .unwrap_or_else(|error| panic!("listing {}: {error}", dir.display()))
+            .path();
+        if path.is_dir() {
+            collect_rs_files(&path, found);
+        } else if path.extension().and_then(|ext| ext.to_str()) == Some("rs") {
+            found.push(path);
+        }
+    }
+}
+
+/// `src/` and `tests/` of this crate: crate-relative `/`-separated paths, sorted;
+/// a file that cannot be read panics naming it.
 fn read_crate_tree() -> Vec<SourceFile> {
-    Vec::new()
+    let crate_root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut paths = Vec::new();
+    for dir in ["src", "tests"] {
+        collect_rs_files(&crate_root.join(dir), &mut paths);
+    }
+    let mut files: Vec<(String, PathBuf)> = paths
+        .into_iter()
+        .map(|path| {
+            let relative = path
+                .strip_prefix(crate_root)
+                .expect("found under the crate root");
+            let parts: Vec<_> = relative.iter().map(|part| part.to_string_lossy()).collect();
+            (parts.join("/"), path)
+        })
+        .collect();
+    files.sort();
+    files
+        .iter()
+        .map(|(relative, path)| {
+            let text = fs::read_to_string(path)
+                .unwrap_or_else(|error| panic!("reading {}: {error}", path.display()));
+            source_file(relative, &text)
+        })
+        .collect()
 }
 
 /// The include / exclude entries (or census root) of `row` that prefix no file in `tree`.
