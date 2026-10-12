@@ -17,6 +17,7 @@ trap cleanup EXIT
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 RUN_ALL="$SCRIPT_DIR/run_all.sh"
+LOAD_TOLERANCE_LIB="$SCRIPT_DIR/load_tolerance_lib.sh"
 ORCHESTRATOR_YAML="$REPO_ROOT/dark-factory-orchestrator.yaml"
 
 # Harness-global default (task #5142 review remediation): isolate the ENTIRE
@@ -43,15 +44,18 @@ source "$SCRIPT_DIR/slot_holder_handshake_lib.sh"
 
 echo "=== run_all.sh unit tests ==="
 
-# -- Test 1: run_all.sh exists and is executable --------------------------------
+# -- Test 1: suite prerequisites exist (run_all.sh, load_tolerance_lib.sh) ------
 echo ""
-echo "--- Test 1: run_all.sh exists and is executable ---"
+echo "--- Test 1: suite prerequisites exist (run_all.sh, load_tolerance_lib.sh) ---"
 
 assert "run_all.sh file exists" \
     test -f "$RUN_ALL"
 
 assert "run_all.sh is executable" \
     test -x "$RUN_ALL"
+
+assert "load_tolerance_lib.sh file exists" \
+    test -f "$LOAD_TOLERANCE_LIB"
 
 # -- Test 2: test_helpers.sh excluded from discovery ----------------------------
 # Use a temp dir containing only test_helpers.sh to verify it is excluded.
@@ -356,8 +360,7 @@ fi
 echo ""
 echo "--- Test 9: H2 concurrent pool (concurrency/partition/contract/order) ---"
 
-LOAD_TOLERANCE_LIB_T9="$SCRIPT_DIR/load_tolerance_lib.sh"
-if [ -f "$RUN_ALL" ] && [ -f "$LOAD_TOLERANCE_LIB_T9" ]; then
+if [ -f "$RUN_ALL" ] && [ -f "$LOAD_TOLERANCE_LIB" ]; then
     TMPDIR_T9="$(mktemp -d)"
     _TMPDIRS+=("$TMPDIR_T9")
 
@@ -405,7 +408,7 @@ EOF
         local _path="$1" _exit_code="$2" _group_dir="$3" _group_size="$4"
         {
             printf '#!/usr/bin/env bash\nset -euo pipefail\n'
-            printf 'source %q\n' "$LOAD_TOLERANCE_LIB_T9"
+            printf 'source %q\n' "$LOAD_TOLERANCE_LIB"
             printf 'GROUP_DIR=%q\nGROUP_SIZE=%q\n' "$_group_dir" "$_group_size"
             cat <<'MOCKBODY'
 LOCK="$GROUP_DIR/lock"
@@ -561,7 +564,7 @@ fi
 echo ""
 echo "--- Test 10: H2 pool N observability (INFO line) ---"
 
-if [ -f "$RUN_ALL" ] && [ -f "$LOAD_TOLERANCE_LIB_T9" ]; then
+if [ -f "$RUN_ALL" ] && [ -f "$LOAD_TOLERANCE_LIB" ]; then
     TMPDIR_T10="$(mktemp -d)"
     _TMPDIRS+=("$TMPDIR_T10")
     MANIFEST_T10="$TMPDIR_T10/classification.manifest"
@@ -610,7 +613,7 @@ fi
 echo ""
 echo "--- Test 11: H2 PSI soft-gate ---"
 
-if [ -f "$RUN_ALL" ] && [ -f "$LOAD_TOLERANCE_LIB_T9" ]; then
+if [ -f "$RUN_ALL" ] && [ -f "$LOAD_TOLERANCE_LIB" ]; then
     TMPDIR_T11="$(mktemp -d)"
     _TMPDIRS+=("$TMPDIR_T11")
     MANIFEST_T11="$TMPDIR_T11/classification.manifest"
@@ -707,7 +710,7 @@ fi
 echo ""
 echo "--- Test 13: H3 exclusion seam (pool path) ---"
 
-if [ -f "$RUN_ALL" ] && [ -f "$LOAD_TOLERANCE_LIB_T9" ]; then
+if [ -f "$RUN_ALL" ] && [ -f "$LOAD_TOLERANCE_LIB" ]; then
     TMPDIR_T13="$(mktemp -d)"
     _TMPDIRS+=("$TMPDIR_T13")
 
@@ -1183,7 +1186,7 @@ fi
 echo ""
 echo "--- Test 17: H9 exactly-once partition + hot-path-inert ---"
 
-if [ -f "$RUN_ALL" ] && [ -f "$LOAD_TOLERANCE_LIB_T9" ]; then
+if [ -f "$RUN_ALL" ] && [ -f "$LOAD_TOLERANCE_LIB" ]; then
     TMPDIR_T17="$(mktemp -d)"
     _TMPDIRS+=("$TMPDIR_T17")
 
@@ -1320,7 +1323,7 @@ fi
 echo ""
 echo "--- Test 18: serial retry-once + FLAKY ledger (deflake) ---"
 
-if [ -f "$RUN_ALL" ] && [ -f "$LOAD_TOLERANCE_LIB_T9" ]; then
+if [ -f "$RUN_ALL" ] && [ -f "$LOAD_TOLERANCE_LIB" ]; then
     TMPDIR_T18="$(mktemp -d)"
     _TMPDIRS+=("$TMPDIR_T18")
 
@@ -1508,7 +1511,7 @@ fi
 echo ""
 echo "--- Test 19: pool discovery/partition-stage death diagnostic ---"
 
-if [ -f "$RUN_ALL" ] && [ -f "$LOAD_TOLERANCE_LIB_T9" ]; then
+if [ -f "$RUN_ALL" ] && [ -f "$LOAD_TOLERANCE_LIB" ]; then
     TMPDIR_T19="$(mktemp -d)"
     _TMPDIRS+=("$TMPDIR_T19")
 
@@ -1636,7 +1639,7 @@ fi
 echo ""
 echo "--- Test 20: H2 Phase-1 bounded worker-pool throttle (wait -n) ---"
 
-if [ -f "$RUN_ALL" ] && [ -f "$LOAD_TOLERANCE_LIB_T9" ]; then
+if [ -f "$RUN_ALL" ] && [ -f "$LOAD_TOLERANCE_LIB" ]; then
     TMPDIR_T20="$(mktemp -d)"
     _TMPDIRS+=("$TMPDIR_T20")
 
@@ -1733,7 +1736,7 @@ fi
 echo ""
 echo "--- Test 21: H2 Phase-1 fork-EAGAIN degrade-not-abort ---"
 
-if [ -f "$RUN_ALL" ] && [ -f "$LOAD_TOLERANCE_LIB_T9" ]; then
+if [ -f "$RUN_ALL" ] && [ -f "$LOAD_TOLERANCE_LIB" ]; then
     TMPDIR_T21="$(mktemp -d)"
     _TMPDIRS+=("$TMPDIR_T21")
 
@@ -1863,7 +1866,7 @@ fi
 echo ""
 echo "--- Test 22: H2 Phase-1 single-writer progress heartbeat ---"
 
-if [ -f "$RUN_ALL" ] && [ -f "$LOAD_TOLERANCE_LIB_T9" ]; then
+if [ -f "$RUN_ALL" ] && [ -f "$LOAD_TOLERANCE_LIB" ]; then
     # Marker-safety token, assembled at runtime (mirrors
     # test_run_all_clock_marker_sanitize.sh's CP idiom) so THIS file's own
     # stdout (this comment / the assert description strings below) is never
@@ -1979,7 +1982,7 @@ fi
 echo ""
 echo "--- Test 23: FLAKY ledger persistence ---"
 
-if [ -f "$RUN_ALL" ] && [ -f "$LOAD_TOLERANCE_LIB_T9" ] && command -v jq >/dev/null 2>&1; then
+if [ -f "$RUN_ALL" ] && [ -f "$LOAD_TOLERANCE_LIB" ] && command -v jq >/dev/null 2>&1; then
     # -- 23a: FLAKY direction -- reuses Test 18a's counter-file mock verbatim
     # (invocation 1 exits 1, invocation 2+ exits 0), adding
     # REIFY_RUN_ALL_FLAKY_LEDGER pointed at a fresh temp path.
@@ -2197,7 +2200,7 @@ MOCKBODY
     else
         assert "T23d: a single occurrence (< N) emits NO chronic WARNING (non-vacuity lock) (got: $t23d_out)" false
     fi
-elif [ -f "$RUN_ALL" ] && [ -f "$LOAD_TOLERANCE_LIB_T9" ]; then
+elif [ -f "$RUN_ALL" ] && [ -f "$LOAD_TOLERANCE_LIB" ]; then
     # jq is missing but run_all.sh and load_tolerance_lib.sh are present:
     # run_all.sh's own ledger writer/chronic-scan is itself jq-gated and
     # fails open in this exact case (INV-4), so these JSON-shape assertions
@@ -2238,7 +2241,7 @@ fi
 echo ""
 echo "--- Test 24: pool slot_acquire wait emits a live clock-stop reason marker ---"
 
-if [ -f "$RUN_ALL" ] && [ -f "$LOAD_TOLERANCE_LIB_T9" ]; then
+if [ -f "$RUN_ALL" ] && [ -f "$LOAD_TOLERANCE_LIB" ]; then
     TMPDIR_T24="$(mktemp -d)"
     _TMPDIRS+=("$TMPDIR_T24")
 
@@ -2346,7 +2349,7 @@ fi
 echo ""
 echo "--- Test 25: partial FAILED/INTERRUPTED marker on outer-timeout SIGTERM ---"
 
-if [ -f "$RUN_ALL" ] && [ -f "$LOAD_TOLERANCE_LIB_T9" ]; then
+if [ -f "$RUN_ALL" ] && [ -f "$LOAD_TOLERANCE_LIB" ]; then
     # -- RED sub-case: mid-run SIGTERM ---------------------------------------
     TMPDIR_T25="$(mktemp -d)"
     _TMPDIRS+=("$TMPDIR_T25")
@@ -2413,7 +2416,7 @@ HANGBODY
     # Poll bound: a broken-infra backstop only. hang is held until the test
     # releases it, so it always outlives this poll. Worst case
     # 100 x 0.1s x CAP 8 = 80s < hang's own backstop, 600 x 0.2s = 120s.
-    source "$LOAD_TOLERANCE_LIB_T9"
+    source "$LOAD_TOLERANCE_LIB"
     t25_poll_attempts=$(load_tolerant_attempts 100)
 
     t25_wd=""
@@ -2574,7 +2577,7 @@ fi
 echo ""
 echo "--- Test 26: INTERRUPTED-worktree marker ---"
 
-if [ -f "$RUN_ALL" ] && [ -f "$LOAD_TOLERANCE_LIB_T9" ]; then
+if [ -f "$RUN_ALL" ] && [ -f "$LOAD_TOLERANCE_LIB" ]; then
     # -- 26a: POOL path -- the sole pool member nukes its own INFRA_DIR ------
     # Deterministic (no wall-clock/race): with exactly one pool member, the
     # Phase-1 `wait` join always completes only after this member (and its
@@ -2696,7 +2699,7 @@ fi
 echo ""
 echo "--- Test 27: intra-run-serial serial-retry + FLAKY ledger ---"
 
-if [ -f "$RUN_ALL" ] && [ -f "$LOAD_TOLERANCE_LIB_T9" ]; then
+if [ -f "$RUN_ALL" ] && [ -f "$LOAD_TOLERANCE_LIB" ]; then
     # Each sub-case below gets its OWN temp INFRA_DIR (TMPDIR_T27A/B/D, mirroring
     # Test 23's per-sub-case isolation) -- discovery is a filesystem glob over
     # test_*.sh in INFRA_DIR, INDEPENDENT of which names a given injected
@@ -2886,7 +2889,7 @@ fi
 echo ""
 echo "--- Test 27 (continued): FLAKY ledger persistence for an intra-run-serial member ---"
 
-if [ -f "$RUN_ALL" ] && [ -f "$LOAD_TOLERANCE_LIB_T9" ] && command -v jq >/dev/null 2>&1; then
+if [ -f "$RUN_ALL" ] && [ -f "$LOAD_TOLERANCE_LIB" ] && command -v jq >/dev/null 2>&1; then
     TMPDIR_T27C="$(mktemp -d)"
     _TMPDIRS+=("$TMPDIR_T27C")
 
@@ -2947,7 +2950,7 @@ MOCKBODY
     else
         assert "T27c: ledger .test field names test_flaky_serial.sh (got: '$t27c_test_field')" false
     fi
-elif [ -f "$RUN_ALL" ] && [ -f "$LOAD_TOLERANCE_LIB_T9" ]; then
+elif [ -f "$RUN_ALL" ] && [ -f "$LOAD_TOLERANCE_LIB" ]; then
     echo "  SKIP: T27c (FLAKY ledger persistence for intra-run-serial member) - jq not on PATH; run_all.sh's ledger writer fails open without jq"
 else
     assert "T27c: run_all.sh exits 0 when an intra-run-serial member passes on serial retry (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
