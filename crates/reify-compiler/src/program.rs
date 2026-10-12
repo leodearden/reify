@@ -89,19 +89,9 @@ pub fn compile_program(
     // full cached stdlib, and no `std.*` import is walked at any depth.
     let mut dag = ModuleDag::with_ambient_stdlib(cfg.clone());
 
-    // The FOLLOWED direct imports, through the same gate the DAG walk applies
-    // inside each unit, computed once and shared by the compile loop, the
-    // prelude, the merge and the returned units so they cannot drift.
-    let mut followed: Vec<&str> = Vec::new();
-    for import in parsed.declarations.iter().filter_map(|decl| match decl {
-        reify_ast::Declaration::Import(import) => Some(import),
-        _ => None,
-    }) {
-        let path = import.path.as_str();
-        if dag.follows_import(import) && !followed.contains(&path) {
-            followed.push(path);
-        }
-    }
+    // Computed once and shared by the compile loop, the prelude, the merge and
+    // the returned units, so they cannot drift.
+    let followed = followed_direct_imports(&parsed, &dag);
 
     // Collect, never early-return on, import failures: a broken import still
     // lets the entry compile, with the failure attached below.
@@ -124,20 +114,7 @@ pub fn compile_program(
 
     attach_module_path_diag(&mut entry, &parsed);
     entry.diagnostics.extend(import_error_diags);
-    // Walk the topological order, not just the direct imports, so a transitive
-    // unit's diagnostic is not swallowed one level down.
-    for key in &dag.topo_order {
-        if let Some(module) = dag.modules.get(key) {
-            let origin = dag.source(key);
-            entry.diagnostics.extend(
-                module
-                    .diagnostics
-                    .iter()
-                    .filter(|d| matches!(d.severity, Severity::Error | Severity::Warning))
-                    .map(|d| rehome_imported(d, key, origin)),
-            );
-        }
-    }
+    entry.diagnostics.extend(rehomed_unit_diagnostics(&dag));
     let entry_origin = entry.path.0.join(".");
     merge_imported_pub_templates(&mut entry, &entry_origin, &compiled_imports);
 
@@ -169,6 +146,42 @@ pub fn compile_program(
         imports,
         sources,
     }
+}
+
+/// The entry's followed direct imports, in declaration order, one per path:
+/// those `dag` follows, through the same gate it applies inside every unit.
+fn followed_direct_imports<'p>(
+    parsed: &'p reify_ast::ParsedModule,
+    dag: &ModuleDag,
+) -> Vec<&'p str> {
+    let mut followed: Vec<&str> = Vec::new();
+    for import in parsed.declarations.iter().filter_map(|decl| match decl {
+        reify_ast::Declaration::Import(import) => Some(import),
+        _ => None,
+    }) {
+        let path = import.path.as_str();
+        if dag.follows_import(import) && !followed.contains(&path) {
+            followed.push(path);
+        }
+    }
+    followed
+}
+
+/// Every Error and Warning carried by a unit `dag` compiled, re-homed for the
+/// entry. Walks the topological order, not just the direct imports, so a
+/// transitive unit's diagnostic is not swallowed one level down.
+fn rehomed_unit_diagnostics(dag: &ModuleDag) -> Vec<Diagnostic> {
+    dag.topo_order
+        .iter()
+        .filter_map(|key| dag.modules.get(key).map(|module| (key, module)))
+        .flat_map(|(key, module)| {
+            module
+                .diagnostics
+                .iter()
+                .filter(|d| matches!(d.severity, Severity::Error | Severity::Warning))
+                .map(move |d| rehome_imported(d, key, dag.source(key)))
+        })
+        .collect()
 }
 
 /// A copy of `diag`, raised while compiling the imported module `module_key`,
