@@ -1,6 +1,5 @@
-//! The sweep pose guard at the history-tracked plain-sweep entry point, its
-//! scope fences, and the derived `BRepKind` stamp on both plain-sweep entry
-//! points (task #7248).
+//! The sweep pose guard and the derived `BRepKind` stamp on both plain-sweep
+//! entry points, and the guard's scope fences (task #7248).
 //!
 //! `GeometryOp::Sweep` is NOT the entry point the eval layer reaches:
 //! `OcctKernelHandle`'s worker routes it to `OcctKernel::sweep_with_history`,
@@ -9,7 +8,8 @@
 //! about the `BRepKind` stamp (#5713).
 //!
 //! Pinned here:
-//! - the degenerate-pose refusal, and every fact it carries;
+//! - the degenerate-pose refusal on BOTH plain-sweep entry points, and every
+//!   fact it carries;
 //! - the guard's scope fences: it fails open for a wire profile and stays
 //!   silent on a curved face, but still judges a circle;
 //! - a correctly-posed sweep keeps its volume and its cap faces;
@@ -72,6 +72,35 @@ fn sweep_with_history_refuses_a_profile_posed_in_the_spine_plane() {
             "sweep_with_history accepted a profile posed in the spine's \
              plane; the guard is wired into only one of the two plain-sweep \
              entry points"
+        ),
+        Err(other) => panic!("expected OperationFailed, got {other:?}"),
+    }
+}
+
+/// The plain `execute` entry point must refuse the degenerate pose as well.
+///
+/// The eval layer never reaches this arm, but the handle's plain `Execute`
+/// request does, so a guard wired into `sweep_with_history` alone would leave
+/// it open.
+#[test]
+fn execute_refuses_a_profile_posed_in_the_spine_plane() {
+    if !OCCT_AVAILABLE {
+        eprintln!("skipping: OCCT not available");
+        return;
+    }
+    let mut kernel = OcctKernel::new();
+    let profile = pose_test_rect_profile(&mut kernel);
+    let path = pose_test_spine(&mut kernel, 0.200, 0.0);
+
+    match kernel.execute(&GeometryOp::Sweep { profile, path }) {
+        Err(GeometryError::OperationFailed(msg)) => assert!(
+            msg.contains("posed in the path's plane"),
+            "expected the degenerate-pose refusal, got: {msg}"
+        ),
+        Ok(_) => panic!(
+            "execute(GeometryOp::Sweep) accepted a profile posed in the \
+             spine's plane; the execute arm is the unguarded plain-sweep \
+             entry point"
         ),
         Err(other) => panic!("expected OperationFailed, got {other:?}"),
     }
