@@ -104,17 +104,16 @@ pub enum GeometryTrait {
 /// `crates/reify-compiler/stdlib/geometry_traits.ri`) and consumed by the
 /// profile-precondition check in `crates/reify-compiler/src/geometry.rs`.
 ///
-/// # Producer → dimension table (task α)
+/// # Producer → dimension table
 ///
 /// | Producer family                                              | `dimension` |
 /// |--------------------------------------------------------------|-------------|
 /// | curves (`line_segment`/`arc`/`helix`/`interp`/`bezier`/`nurbs`) | `Curve`  |
+/// | profile faces (`rectangle`/`circle`/`ellipse`/`polygon`/…), `nurbs_surface` | `Surface` |
 /// | primitives (`box`/`box_centered`/`cylinder`/`cylinder_centered`/`sphere`/`tube`) | `Solid` |
-/// | boolean / sweep / pattern / modify results                   | `Solid`     |
+/// | boolean / pattern / modify results                           | `Solid`     |
+/// | sweep results (see [`combine_sweep`])                        | lifts the section by one; `pipe`/`loft` → `Solid` |
 /// | transform (`translate`/`rotate`/`scale`/`rotate_around`)      | preserves operand |
-///
-/// `Surface` is reserved for the 2-D profile constructors that land in sibling
-/// tasks ζ/η (`rectangle`/`circle`/…); no task-α producer is a `Surface`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum GeomDim {
     /// A 1-D curve (a sweep/pipe *path*).
@@ -468,21 +467,50 @@ pub const fn combine_pattern(input: InferredTraits) -> InferredTraits {
 /// `first_operand` is the op's first geometry operand: the (first) section
 /// profile for every kind except `Pipe`, whose first operand is its PATH.
 ///
+/// A sweep raises its section's dimension by one: a swept curve is an
+/// un-capped, non-planar surface (OCCT builds a shell), a swept face a solid.
+/// `Pipe` sweeps a kernel-synthesised circle face, and `Loft` reduces every
+/// section to its wire and caps the result (ThruSections, isSolid=true), so
+/// both are solids whatever their operand; an open-wire loft is the residual
+/// this over-claims.
+///
 /// `ExtrudeInfinite` is unbounded whatever its profile, so it yields the
 /// [`InferredTraits::none`] flags. Every other kind inherits `bounded` and
 /// `connected` from the operand (a bounded, connected section swept along a
 /// finite path stays so). `convex` is always dropped: even a convex section
 /// swept along a curved path is non-convex in general.
 pub const fn combine_sweep(kind: SweepKind, first_operand: InferredTraits) -> InferredTraits {
+    let dimension = swept_dimension(kind, first_operand.dimension);
     match kind {
-        SweepKind::ExtrudeInfinite => InferredTraits::none(),
+        SweepKind::ExtrudeInfinite => InferredTraits {
+            dimension,
+            ..InferredTraits::none()
+        },
         _ => InferredTraits {
             bounded: first_operand.bounded,
             connected: first_operand.connected,
             convex: false,
-            dimension: GeomDim::Solid,
+            dimension,
             planar: false,
             closed: false,
+        },
+    }
+}
+
+/// The dimension of a `kind` sweep whose first operand has dimension `operand`.
+/// See [`combine_sweep`].
+const fn swept_dimension(kind: SweepKind, operand: GeomDim) -> GeomDim {
+    match kind {
+        SweepKind::Pipe | SweepKind::Loft => GeomDim::Solid,
+        SweepKind::Extrude
+        | SweepKind::ExtrudeSymmetric
+        | SweepKind::ExtrudeInfinite
+        | SweepKind::Revolve
+        | SweepKind::Sweep
+        | SweepKind::SweepGuided
+        | SweepKind::LoftGuided => match operand {
+            GeomDim::Curve => GeomDim::Surface,
+            GeomDim::Surface | GeomDim::Solid => GeomDim::Solid,
         },
     }
 }
