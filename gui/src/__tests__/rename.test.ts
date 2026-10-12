@@ -13,7 +13,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { EditorView } from '@codemirror/view';
 import { applyWorkspaceEdit, applyTextEditsToString, applyWorkspaceEditAcrossFiles, renameCommand } from '../editor/rename';
-import type { RenameClient, RenameSkewGuard, RenameUi } from '../editor/rename';
+import type { RenameClient, RenameUi } from '../editor/rename';
+import type { VersionSkewGuard } from '../editor/documentVersions';
 import type { WorkspaceEdit } from '../editor/lspClient';
 import { flushMacrotasks } from './test-utils';
 
@@ -560,7 +561,7 @@ function makeRenameDeps() {
   const syncServer = vi.fn((_view: EditorView): Promise<void> | null => null);
   const client = { prepareRename, rename } as unknown as RenameClient;
   const ui = { promptNewName, showCannotRename, showRenameFailed } as unknown as RenameUi;
-  const guard: RenameSkewGuard = { currentVersion, syncServer };
+  const guard: VersionSkewGuard = { currentVersion, syncServer };
   return {
     client,
     ui,
@@ -983,7 +984,7 @@ describe('renameCommand', () => {
     expect(applyEdit).not.toHaveBeenCalled();
   });
   // -------------------------------------------------------------------------
-  // version-skew guard (injected RenameSkewGuard) — step-13 tests
+  // version-skew guard (injected VersionSkewGuard) — step-13 tests
   // -------------------------------------------------------------------------
 
   const GUARD_TARGET = {

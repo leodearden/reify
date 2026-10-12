@@ -15,6 +15,7 @@
  *    or opens the inline field via injected UI callbacks.
  */
 import type { EditorView } from '@codemirror/view';
+import { versionsDisagree, type DocumentVersionReader, type VersionSkewGuard } from './documentVersions';
 import type { PrepareRenameResult, Range, TextEdit, WorkspaceEdit } from './lspClient';
 import { lspRangeToCmRange } from './lspRange';
 
@@ -128,34 +129,11 @@ function workspaceEditTargets(edit: WorkspaceEdit): WorkspaceEditTarget[] {
 }
 
 /**
- * Reads the version the client last SENT to the server for `uri`.
- *
- * `undefined` means the client never tracked that URI — not that it is at
- * version zero.
- */
-export type DocumentVersionReader = (uri: string) => number | undefined;
-
-/**
- * What renameCommand needs to tell an edit computed against the text on screen
- * from one computed against text the client has since moved past.
- */
-export interface RenameSkewGuard {
-  currentVersion: DocumentVersionReader;
-  /**
-   * Hand the server any local edit it has not received yet, or return null
-   * when it already has the text on screen. Awaited before EVERY rename
-   * request, the re-issue included, because the version comparison can only
-   * see edits that were sent.
-   */
-  syncServer(view: EditorView): Promise<void> | null;
-}
-
-/**
  * URIs whose edits were computed against a document version the client no
  * longer holds.
  *
- * A URI is stale only on DEMONSTRATED disagreement — both versions known and
- * different. Every other combination is not-stale by construction:
+ * Staleness is versionsDisagree's rule (demonstrated disagreement only). The
+ * two absent sides it treats as unknowable mean, for a rename:
  *
  *  - `version === null` — the server stated no version, either explicitly or by
  *    omitting the key (both normalise to `null` in workspaceEditTargets). It
@@ -170,19 +148,15 @@ export interface RenameSkewGuard {
  * This detects exactly the race it is named for: the server computed these
  * edits against version N, and the client has since sent M. It cannot see
  * local edits not yet sent, which is why every request is preceded by the
- * guard's `syncServer`; `lspRangeToCmRange`'s null-skip remains a last-resort
- * backstop.
+ * VersionSkewGuard's `syncServer`; `lspRangeToCmRange`'s null-skip remains a
+ * last-resort backstop.
  */
 function staleEditTargets(
   edit: WorkspaceEdit,
   currentVersion: DocumentVersionReader,
 ): string[] {
   return workspaceEditTargets(edit)
-    .filter(({ uri, version }) => {
-      if (version === null) return false;
-      const held = currentVersion(uri);
-      return held !== undefined && held !== version;
-    })
+    .filter(({ uri, version }) => versionsDisagree(version, currentVersion(uri)))
     .map(({ uri }) => uri);
 }
 
@@ -350,7 +324,7 @@ export type ApplyEditFn = (view: EditorView, edit: WorkspaceEdit, activeUri: str
 async function resolveApplicableEdit(
   requestRename: () => Promise<WorkspaceEdit | null>,
   view: EditorView,
-  guard?: RenameSkewGuard,
+  guard?: VersionSkewGuard,
 ): Promise<WorkspaceEdit | null> {
   const request = async (): Promise<WorkspaceEdit | null> => {
     await guard?.syncServer(view);
@@ -395,7 +369,7 @@ export function renameCommand(
   client: RenameClient,
   ui: RenameUi,
   applyEdit?: ApplyEditFn,
-  guard?: RenameSkewGuard,
+  guard?: VersionSkewGuard,
 ): (view: EditorView) => boolean {
   return (view: EditorView): boolean => {
     const head = view.state.selection.main.head;
