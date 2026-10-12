@@ -19,7 +19,7 @@
 
 use reify_compiler::geometry_traits_inference::{
     EmptyLetEnv, GeomDim, GeometryTrait, InferredTraits, LetBindingEnv, combine_difference,
-    combine_intersection, combine_modify, combine_pattern, combine_sweep, combine_transform,
+    combine_intersection, combine_modify, combine_pattern, combine_transform,
     combine_union, infer_primitive, infer_traits_for_expr, infer_traits_for_expr_in_env,
     infer_traits_for_op,
 };
@@ -565,34 +565,6 @@ fn combine_pattern_drops_connected_and_convex() {
     );
     assert_eq!(
         combine_pattern(InferredTraits::none()),
-        InferredTraits::none()
-    );
-}
-
-// ─── combine_sweep — Bounded+Connected from profile, Convex always dropped ──
-
-/// Sweep ops inherit Bounded and Connected from the profile (a bounded,
-/// connected profile swept along a finite path stays bounded and
-/// connected). Convex is always false: even a convex profile swept along
-/// a curved path produces a non-convex solid in general.
-#[test]
-fn combine_sweep_preserves_bounded_and_connected_drops_convex() {
-    assert_eq!(
-        combine_sweep(InferredTraits::all()),
-        InferredTraits::bounded_connected()
-    );
-    assert_eq!(
-        combine_sweep(InferredTraits::bounded_connected()),
-        InferredTraits::bounded_connected()
-    );
-}
-
-/// Sweep with an Unbounded profile yields an Unbounded sweep
-/// (extruding/lofting cannot bound an originally-unbounded profile).
-#[test]
-fn combine_sweep_with_unbounded_profile_is_none() {
-    assert_eq!(
-        combine_sweep(InferredTraits::none()),
         InferredTraits::none()
     );
 }

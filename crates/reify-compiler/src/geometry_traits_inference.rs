@@ -49,7 +49,7 @@
 //!
 //! | Construct               | Where it slots in                                   | `InferredTraits`                      |
 //! |-------------------------|-----------------------------------------------------|---------------------------------------|
-//! | `extrude_infinite(...)` | Dedicated `"extrude_infinite"` arm in `infer_traits_for_function_call_in_env` | `InferredTraits::none()` |
+//! | `extrude_infinite(...)` | `SweepKind::ExtrudeInfinite` arm of [`combine_sweep`], shared by both walkers | `InferredTraits::none()` flags |
 //!
 //! ## Unimplemented Unbounded primitives
 //!
@@ -73,7 +73,7 @@
 //! defeats the Bounded check.
 
 use crate::types::{
-    BooleanOp, CompiledGeometryOp, GeomRef, PrimitiveKind, ProfileKind, SurfaceKind,
+    BooleanOp, CompiledGeometryOp, GeomRef, PrimitiveKind, ProfileKind, SurfaceKind, SweepKind,
 };
 use reify_core::ValueCellId;
 use reify_ir::{CompiledExpr, CompiledExprKind};
@@ -169,7 +169,7 @@ impl InferredTraits {
     }
 
     /// All three flags cleared — used for sources that fail every check
-    /// (e.g. a future `extrude_infinite` primitive).
+    /// (e.g. `extrude_infinite`, see [`combine_sweep`]).
     pub const fn none() -> Self {
         Self {
             bounded: false,
@@ -346,12 +346,8 @@ impl InferredTraits {
 /// Connected+Convex but **not bounded** (`InferredTraits::unbounded_convex()`)
 /// — the first `Bounded=false` producer.
 ///
-/// # Future variants
-///
-/// When PRD `geometry-traits.md` adds `extrude_infinite`, extend this match to
-/// return `InferredTraits::none()` (or a tuned subset) for that kind. The
-/// exhaustive `match` will fail to compile against the un-updated arm, so the
-/// maintenance is localised.
+/// The match is exhaustive, so a new `PrimitiveKind` must state its traits
+/// here. (`extrude_infinite` is a `SweepKind`, handled by [`combine_sweep`].)
 pub const fn infer_primitive(kind: PrimitiveKind) -> InferredTraits {
     match kind {
         PrimitiveKind::Box
@@ -467,22 +463,27 @@ pub const fn combine_pattern(input: InferredTraits) -> InferredTraits {
     }
 }
 
-/// Sweep propagation rule (loft/extrude/revolve/sweep/extrude_symmetric/
-/// sweep_guided/loft_guided/pipe).
+/// Sweep propagation rule, shared by both inference walkers.
 ///
-/// `bounded` and `connected` are inherited from the **profile** (a
-/// bounded, connected profile swept along a finite path stays bounded
-/// and connected). `convex` is always dropped: even a convex profile
-/// swept along a curved path produces a non-convex solid in general.
-pub const fn combine_sweep(profile: InferredTraits) -> InferredTraits {
-    InferredTraits {
-        bounded: profile.bounded,
-        connected: profile.connected,
-        convex: false,
-        // A sweep result is a 3-D solid.
-        dimension: GeomDim::Solid,
-        planar: false,
-        closed: false,
+/// `first_operand` is the op's first geometry operand: the (first) section
+/// profile for every kind except `Pipe`, whose first operand is its PATH.
+///
+/// `ExtrudeInfinite` is unbounded whatever its profile, so it yields the
+/// [`InferredTraits::none`] flags. Every other kind inherits `bounded` and
+/// `connected` from the operand (a bounded, connected section swept along a
+/// finite path stays so). `convex` is always dropped: even a convex section
+/// swept along a curved path is non-convex in general.
+pub const fn combine_sweep(kind: SweepKind, first_operand: InferredTraits) -> InferredTraits {
+    match kind {
+        SweepKind::ExtrudeInfinite => InferredTraits::none(),
+        _ => InferredTraits {
+            bounded: first_operand.bounded,
+            connected: first_operand.connected,
+            convex: false,
+            dimension: GeomDim::Solid,
+            planar: false,
+            closed: false,
+        },
     }
 }
 
@@ -649,14 +650,13 @@ fn infer_op(
             combine_pattern(infer_geom_ref(target, ops, current_position))
         }
 
-        CompiledGeometryOp::Sweep { profiles, .. } => {
-            // Sweep inherits traits from the first profile (bounded, connected
-            // geometry swept along a finite path stays bounded and connected).
-            let profile = profiles
+        CompiledGeometryOp::Sweep { kind, profiles, .. } => {
+            // `profiles[0]` is the first geometry operand `combine_sweep` reads.
+            let first_operand = profiles
                 .first()
                 .map(|r| infer_geom_ref(r, ops, current_position))
                 .unwrap_or(InferredTraits::all());
-            combine_sweep(profile)
+            combine_sweep(*kind, first_operand)
         }
 
         // Curve constructors are 1-D primitives → GeomDim::Curve (preserving
@@ -844,22 +844,20 @@ pub fn try_infer_traits_for_function_call_in_env(
             Some(combine_pattern(t))
         }
 
-        // ─── extrude_infinite → Unbounded (task #3466) ──────────────────
-        // extrude_infinite always produces an unbounded solid regardless of its
-        // profile argument — the defining property of a semi-infinite or
-        // bi-infinite extrusion. Returns InferredTraits::none() (bounded=false,
-        // connected=false, convex=false) so the conformance walker emits
-        // E_GEOMETRY_UNBOUNDED whenever the result is placed at a `param g :
-        // Bounded` slot.
-        "extrude_infinite" => Some(InferredTraits::none()),
-
         // ─── Sweep combinators → recurse + combine_sweep ────────────────
+        // Each name maps to the SweepKind its geometry.rs lowering arm emits.
         // zone_cylinder and zone_annulus both lower to Pipe sweeps (axis-swept circles/annuli)
         // so they belong here. zone_profile is in the modify arm above.
-        "extrude" | "extrude_symmetric" | "revolve" | "revolve_full" | "sweep" | "sweep_guided"
-        | "loft" | "loft_guided" | "pipe" | "zone_cylinder" | "zone_annulus" => {
-            let t = first_geometry_arg_in_env(args, env);
-            Some(combine_sweep(t))
+        "extrude" => Some(sweep_in_env(SweepKind::Extrude, args, env)),
+        "extrude_symmetric" => Some(sweep_in_env(SweepKind::ExtrudeSymmetric, args, env)),
+        "extrude_infinite" => Some(sweep_in_env(SweepKind::ExtrudeInfinite, args, env)),
+        "revolve" | "revolve_full" => Some(sweep_in_env(SweepKind::Revolve, args, env)),
+        "sweep" => Some(sweep_in_env(SweepKind::Sweep, args, env)),
+        "sweep_guided" => Some(sweep_in_env(SweepKind::SweepGuided, args, env)),
+        "loft" => Some(sweep_in_env(SweepKind::Loft, args, env)),
+        "loft_guided" => Some(sweep_in_env(SweepKind::LoftGuided, args, env)),
+        "pipe" | "zone_cylinder" | "zone_annulus" => {
+            Some(sweep_in_env(SweepKind::Pipe, args, env))
         }
 
         // ─── Curve constructors → curve() (1-D primitives) ──────────────
@@ -935,6 +933,11 @@ fn first_geometry_arg_in_env(args: &[CompiledExpr], env: &dyn LetBindingEnv) -> 
         .find(|a| is_geometry_operand(a))
         .map(|a| infer_traits_for_expr_in_env(a, env))
         .unwrap_or(InferredTraits::all())
+}
+
+/// [`combine_sweep`] of `kind` over the call's first geometry operand.
+fn sweep_in_env(kind: SweepKind, args: &[CompiledExpr], env: &dyn LetBindingEnv) -> InferredTraits {
+    combine_sweep(kind, first_geometry_arg_in_env(args, env))
 }
 
 /// Fold `combine` across every geometry-typed argument with env threading

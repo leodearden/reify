@@ -2,7 +2,9 @@
 //! inference walkers (by-name `try_infer_traits_for_function_call` and the
 //! op-array `infer_traits_for_op` that resolves let-bound geometry).
 
-use reify_compiler::geometry_traits_inference::{InferredTraits, infer_traits_for_op};
+use reify_compiler::geometry_traits_inference::{
+    InferredTraits, combine_sweep, infer_traits_for_op,
+};
 use reify_compiler::{CompiledGeometryOp, GeomRef, ProfileKind, SweepKind};
 use reify_core::DiagnosticCode;
 use reify_test_support::compile_source_with_stdlib;
@@ -26,6 +28,36 @@ fn trait_slot_source(slot_trait: &str, top_lets: &str, g_arg: &str) -> String {
 }
 
 const EXTRUDE_INFINITE_OF_CIRCLE: &str = r#"extrude_infinite(circle(5mm), 0, 0, 1, "positive")"#;
+
+// ─── combine_sweep — Bounded+Connected from profile, Convex always dropped ──
+
+/// Sweep ops inherit Bounded and Connected from the profile (a bounded,
+/// connected profile swept along a finite path stays bounded and
+/// connected). Convex is always false: even a convex profile swept along
+/// a curved path produces a non-convex solid in general.
+#[test]
+fn combine_sweep_preserves_bounded_and_connected_drops_convex() {
+    assert_eq!(
+        combine_sweep(SweepKind::Extrude, InferredTraits::all()),
+        InferredTraits::bounded_connected()
+    );
+    assert_eq!(
+        combine_sweep(SweepKind::Extrude, InferredTraits::bounded_connected()),
+        InferredTraits::bounded_connected()
+    );
+}
+
+/// Sweep with an Unbounded profile yields an Unbounded sweep
+/// (extruding/lofting cannot bound an originally-unbounded profile).
+#[test]
+fn combine_sweep_with_unbounded_profile_is_none() {
+    assert_eq!(
+        combine_sweep(SweepKind::Extrude, InferredTraits::none()),
+        InferredTraits::none()
+    );
+}
+
+// ─── extrude_infinite — unbounded in both walkers ───────────────────────────
 
 #[test]
 fn op_array_extrude_infinite_of_a_bounded_profile_is_unbounded() {
