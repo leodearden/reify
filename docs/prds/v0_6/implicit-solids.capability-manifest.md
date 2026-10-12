@@ -549,3 +549,11 @@ Their capabilities are bound below against code by symbol and by producer edges;
 - `freeze-header-precedent` — existing-substrate — the headers of docs/prds/v0_6/data-carrying-enums.md and docs/prds/kernel-seam-contracts.md; reify-audit --pattern PPRDSTATUS reads the token. **PASS**. Check: none (binding only).
 - `terminal-status-token` — producer-self — the PRD's Status line carries SHIPPED / SUPERSEDED / WITHDRAWN. Line-start anchored to the header shape, scoped to the PRD alone. The PRD is untracked at the evidence base; its authored header does not match. **PASS**. Check: grep `^(> )?\*\*Status:?(\*\*)?:? *(\*\*)?(SHIPPED|Shipped|SUPERSEDED|Superseded|WITHDRAWN|Withdrawn)` present in `docs/prds/v0_6/implicit-solids.md`. Pre-delivery: absent today (rc=1).
 - `as-authored-freeze-and-manifest-header` — producer-self — the AS-AUTHORED paragraph, the LIVE vs AS-AUTHORED map, landed leaf IDs, and the matching header on this .capability-manifest.md. **PASS**. Check: manual — the committed headers are the deliverable.
+
+## Delivered-check path correction (2026-10-12, review-all S13 pass 2)
+
+PRD `docs/prds/v0_6/selector-resolution-factoring.md` splits `crates/reify-eval/src/geometry_ops.rs` into child modules under `crates/reify-eval/src/geometry_ops/` and moves `nodes_for_faces` onto `CarriedTopology` (`compute_targets/result_topology.rs`). The checks below had `paths` pinned to the pre-split file, so their match would leave the scanned path. Each `paths` list was widened in the `.yaml` twin and in the producer task's `metadata.delivered_checks` (the three writes). Every verdict at main `54222c4dcd` is unchanged.
+
+| leaf | check | path change |
+|---|---|---|
+| ι #8401 | `consumer-call-list-joined` (`"sdf_from_solid"`, present) | + `crates/reify-eval/src/geometry_ops/`, `crates/reify-eval/src/expr_classify.rs` (S3 β #8687 moves `is_geometry_consumer_call` there) |

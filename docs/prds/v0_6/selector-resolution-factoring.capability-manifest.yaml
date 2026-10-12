@@ -1,22 +1,12 @@
 # Machine-readable twin of selector-resolution-factoring.capability-manifest.md
-# (review-all S13, pass 1). task_id values stay null until commit_planning stamps them.
+# (review-all S13). Stamped by commit_planning at pass 2 (2026-10-12).
 # Every delivered_check below is NOT delivered at main 8e6ffcac9d (2026-10-12), checked by
 # git grep: correct polarity for a not-yet-started batch.
 prd: docs/prds/v0_6/selector-resolution-factoring.md
 schema_version: 1
 tasks:
-  - label: "S13-α₀"
-    task_id: null
-    title: "Widen delivered-check paths on files this PRD moves (planning artefact)"
-    capabilities:
-      - name: "affected-checks-enumerated"
-        binding: "probe — each kind:grep check pinned to geometry_ops.rs / topology_selectors.rs located against main 8e6ffcac9d; 11 move (PRD §7), #6745/#6171/#6168 stay in surface_subtree"
-        verdict: PASS
-        delivered_check:
-          kind: manual
-          reason: "the deliverable is three writes per check (sidecar, .md twin, producer metadata.delivered_checks); completeness is judged against the PRD §7 list, not greppable from this repo alone"
   - label: "S13-α"
-    task_id: null
+    task_id: 8747
     title: "selector_resolve module: one compose, NormalCone, one attribute-table walk; SCC dissolved"
     capabilities:
       - name: "one-composition-rule"
@@ -65,7 +55,7 @@ tasks:
           kind: manual
           reason: "production-region scoping and before/after byte identity are not expressible as one git grep (overlay rule 4: whole-file absent scans the in-file test module); the ratchet member and the reviewer cover it"
   - label: "S13-β"
-    task_id: null
+    task_id: 8748
     title: "geometry_ops lower layers: args, pose, query, kinematic children"
     capabilities:
       - name: "lower-layer-children-exist"
@@ -77,7 +67,7 @@ tasks:
           paths: ["crates/reify-eval/src/geometry_ops.rs"]
           expect: present
   - label: "S13-γ"
-    task_id: null
+    task_id: 8749
     title: "geometry_ops selector_eval/ child"
     capabilities:
       - name: "selector-eval-child-exists"
@@ -89,7 +79,7 @@ tasks:
           paths: ["crates/reify-eval/src/geometry_ops.rs"]
           expect: present
   - label: "S13-δ"
-    task_id: null
+    task_id: 8750
     title: "geometry_ops compile/ child, one family per file with its dispatch table"
     capabilities:
       - name: "compile-child-exists"
@@ -101,7 +91,7 @@ tasks:
           paths: ["crates/reify-eval/src/geometry_ops.rs"]
           expect: present
   - label: "S13-ε"
-    task_id: null
+    task_id: 8751
     title: "Seam tests that can only see seams; geometry_ops/tests.rs deleted; pub(crate) ratchet"
     capabilities:
       - name: "crate-level-seam-test-module"
@@ -128,7 +118,7 @@ tasks:
           script: "tests/infra/test_selector_resolution_ratchet.sh"
           timeout_secs: 120
   - label: "S13-ζ"
-    task_id: null
+    task_id: 8752
     title: "ValidatedSketch: typed operands, emitter matches on types, drift guards deleted"
     capabilities:
       - name: "validated-sketch-type"
@@ -151,12 +141,10 @@ tasks:
         binding: "grep — #6682's sketch-path-survives check greps the same symbol"
         verdict: PASS
         delivered_check:
-          kind: grep
-          pattern: "pub fn solve_sketch\\(system: &SketchSystem\\) -> SketchSolveResult"
-          paths: ["crates/reify-constraints/src/solvespace.rs"]
-          expect: present
+          kind: manual
+          reason: "a preservation property is green before and after this leaf (vacuous_present under the polarity gate); sketch_solve_tests.rs plus #6682's own sketch-path-survives check are the cover"
   - label: "S13-η"
-    task_id: null
+    task_id: 8753
     title: "WarmStatePool: no public path drops cost; cfg(test) field becomes a constructor parameter"
     capabilities:
       - name: "cost-dropping-wrappers-deleted"
@@ -175,18 +163,8 @@ tasks:
           pattern: "fn with_limits\\("
           paths: ["crates/reify-eval/src/warm_pool.rs"]
           expect: present
-  - label: "S13-θ"
-    task_id: null
-    title: "(HELD on S8) TopologySelectorHelper::from_name over S8's registry rows"
-    capabilities:
-      - name: "registry-rows-supply-selector-names"
-        binding: "producer: S8 reify-builtins typed selector intercept-kind column (wave 2, not filed) — x_seam_wait"
-        verdict: PASS
-        delivered_check:
-          kind: manual
-          reason: "held leaf; its check is authored when S8's row schema is filed (OPEN Q1 may drop this leaf)"
   - label: "S13-ι"
-    task_id: null
+    task_id: 8754
     title: "PRD close: stamp SHIPPED, freeze header, LIVE/AS-AUTHORED map"
     capabilities:
       - name: "terminal-stamp"

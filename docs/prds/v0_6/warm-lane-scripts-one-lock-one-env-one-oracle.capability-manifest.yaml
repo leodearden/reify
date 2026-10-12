@@ -2,6 +2,7 @@ prd: docs/prds/v0_6/warm-lane-scripts-one-lock-one-env-one-oracle.md
 schema_version: 1
 tasks:
 - label: L1
+  task_id: 8624
   title: 'warm-lane S20 L1: lane-lock API in lib_lane_lock.sh; seed/thin/gc acquire through it; --assume-lane-lock-held asserts'
   capabilities:
   - name: probe-substrate-exists
@@ -30,6 +31,7 @@ tasks:
       - scripts/thin-warm-lane.sh
       expect: absent
 - label: L2
+  task_id: 8635
   title: 'warm-lane S20 L2: REIFY_WARM_LANE_WORKTREES names the worktrees dir; retire four aliases'
   capabilities:
   - name: two-meanings-measured
@@ -52,6 +54,7 @@ tasks:
       - scripts/warm-lane-preflight.sh
       expect: present
 - label: L3
+  task_id: 8641
   title: 'warm-lane S20 L3: lib_task_status.sh owns the oracle contract; lib_lane_entry.sh owns the entry helpers'
   capabilities:
   - name: three-copies-measured
@@ -76,6 +79,7 @@ tasks:
       - scripts/warm-lane-audit.sh
       expect: absent
 - label: L4
+  task_id: 8647
   title: 'warm-lane S20 L4: audit reads dark-factory records with python3 -I json; HEADROOM from one field list'
   capabilities:
   - name: interpreter-the-gate-reaches
@@ -99,6 +103,7 @@ tasks:
       - scripts/warm-lane-audit.sh
       expect: absent
 - label: L5
+  task_id: 8709
   title: 'warm-lane S20 L5: golden dark-factory records drive the audit; compact and reordered plan cases'
   note: 'Companion dark_factory task D5 produces the golden content; external_task_id is stamped at decompose.'
   capabilities:
@@ -115,6 +120,7 @@ tasks:
       - tests/infra/fixtures/warm_lane_golden/lane-state.json
       expect: present
 - label: L6
+  task_id: 8668
   title: 'warm-lane S20 L6: _do_reclaim as per-entry functions behind one gate'
   capabilities:
   - name: shape-measured
@@ -140,6 +146,7 @@ tasks:
       kind: manual
       reason: the deliverable is help prose; the leaf signal is the --help output containing no [α-ω], checked by the implementer, and a grep over the whole file would also hit comment-only aliases that are S23's.
 - label: L8
+  task_id: 8670
   title: 'warm-lane S20 L8: seed-warm-lane.sh --capabilities'
   note: 'Companion dark_factory task D8 switches _seed_script_supports to this output.'
   capabilities:
@@ -156,6 +163,7 @@ tasks:
       - scripts/seed-warm-lane.sh
       expect: present
 - label: L9
+  task_id: 8671
   title: 'warm-lane S20 L9: main-gate sentinel bound to the main tip (Phase A)'
   capabilities:
   - name: five-mark-sites
@@ -174,6 +182,7 @@ tasks:
       - dark-factory-orchestrator.yaml
       expect: present
 - label: L10
+  task_id: 8713
   title: 'warm-lane S20 L10: delete the legacy unbound-sentinel arm (Phase B)'
   capabilities:
   - name: observation-gate
@@ -183,6 +192,7 @@ tasks:
       kind: manual
       reason: the precondition is a live-log observation the leaf itself performs; the code change is a deleted case arm best covered by the flipped B-matrix test.
 - label: L11
+  task_id: 8715
   title: 'warm-lane S20 L11: PRD close'
   capabilities:
   - name: terminal-stamp
@@ -194,3 +204,36 @@ tasks:
       paths:
       - docs/prds/v0_6/warm-lane-scripts-one-lock-one-env-one-oracle.md
       expect: present
+- label: D1
+  external_task_id: dark_factory:6854
+  title: 'reify S20 D1: boundary test — _seed_warm_lane TAKE and HELD_BY_CALLER really hold <lane_dir>.lock while seed runs'
+  note: 'dark-factory companion of L1 (boundary case B4); depends on reify:8624.'
+  capabilities:
+  - name: seed-lane-lock-modes-exist
+    binding: 'dark-factory git_ops.py::SeedLaneLock has TAKE / HELD_BY_CALLER / LEFT_TO_SCRIPT; _seed_warm_lane builds the outer flock only for TAKE.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: the deliverable is a dark-factory test; dark-factory's own verify asserts it, not this project's dispatch gate.
+- label: D5
+  external_task_id: dark_factory:6853
+  title: 'reify S20 D5: golden lane-state and plan.json records from the real serialisers'
+  note: 'dark-factory companion of L5; canonical golden copy (ruled Q4 a). reify:8709 depends on it.'
+  capabilities:
+  - name: serialisers-exist
+    binding: 'orchestrator/lane_lifecycle.py::LaneRecord.to_json and orchestrator/mcp/plan_tools.py writer exist at dark-factory 2178c2badb.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: the golden files live in the dark-factory repo; this project's grep checks cannot see them.
+- label: D8
+  external_task_id: dark_factory:6855
+  title: 'reify S20 D8: _seed_script_supports reads seed-warm-lane.sh --capabilities'
+  note: 'dark-factory companion of L8; depends on reify:8670.'
+  capabilities:
+  - name: substring-probe-today
+    binding: 'dark-factory git_ops.py::_seed_script_supports returns flag in _seed_script_text(...).'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: the change is in the dark-factory repo; dark-factory's verify asserts it.

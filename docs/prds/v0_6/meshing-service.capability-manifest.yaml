@@ -694,6 +694,7 @@ tasks:
       expect: present
       paths:
       - crates/reify-eval/src/topology_selectors.rs
+      - crates/reify-eval/src/compute_targets/result_topology.rs
   - name: gui-morph-reason-names-2953
     binding: 'producer-self (Q-e, BT11b) — the shipping GUI passes MorphRegistration::Unavailable
       { reason } naming #2953 (gui/src-tauri/src/engine.rs mentions 2953 nowhere today).

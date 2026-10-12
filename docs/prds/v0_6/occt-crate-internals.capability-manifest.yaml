@@ -2,6 +2,7 @@ prd: docs/prds/v0_6/occt-crate-internals.md
 schema_version: 1
 tasks:
 - label: α
+  task_id: 8648
   title: 'occt-internals α: move public-surface tests out of lib.rs and handle.rs into tests/harness_occt*'
   capabilities:
   - name: handle-test-module-reaches-only-public-api
@@ -17,31 +18,24 @@ tasks:
     binding: 'grep:tests/infra/test_harness_kloc_cap.sh CAP_LINES=20000 and the #[path] rule; harness_occt is 12,292 module lines and harness_occt_measurement 9,275 (wc at 8e6ffcac9d), so ~6-7k moved lines likely need a new harness unit.'
     verdict: PASS
     delivered_check:
-      kind: grep
-      pattern: CAP_LINES=20000
-      paths:
-      - tests/infra/test_harness_kloc_cap.sh
-      expect: present
+      kind: manual
+      reason: 'authoring-time premise that already holds at main (verified 2026-10-12); a mechanical check would be vacuous_present and gate nothing.'
   - name: test-count-instrument
     binding: 'scripts/cargo-test-tally.py exists (CLAUDE.md pointer table) to count a run once from a captured file.'
     verdict: PASS
     delivered_check:
-      kind: path
-      paths:
-      - scripts/cargo-test-tally.py
-      expect: present
+      kind: manual
+      reason: 'authoring-time premise that already holds at main (verified 2026-10-12); a mechanical check would be vacuous_present and gate nothing.'
 - label: β
+  task_id: 8659
   title: 'occt-internals β: one fixture API — in-file tests rebuilt on the test-fixtures constructors'
   capabilities:
   - name: public-fixture-constructors-exist
     binding: 'grep:crates/reify-kernel-occt/src/lib.rs cfg(all(has_occt, feature = "test-fixtures")) impl OcctKernel carries 18 pub *_for_test fns (skeptic count), e.g. store_rect_face_for_test; Cargo.toml self-dev-dep enables test-fixtures for integration tests.'
     verdict: PASS
     delivered_check:
-      kind: grep
-      pattern: pub fn store_rect_face_for_test
-      paths:
-      - crates/reify-kernel-occt/src/lib.rs
-      expect: present
+      kind: manual
+      reason: 'authoring-time premise that already holds at main (verified 2026-10-12); a mechanical check would be vacuous_present and gate nothing.'
   - name: private-duplicate-fixture-api-deleted
     binding: 'the cfg(all(test, has_occt)) impl OcctKernel''s store_raw is the private duplicate the finding names; its definition must be gone. Accepted gap: a renamed private helper evades the pattern; the f60 re-measurement in the leaf signal is the behavioural cover.'
     verdict: PASS
@@ -52,6 +46,7 @@ tasks:
       - crates/reify-kernel-occt/src
       expect: absent
 - label: γ1
+  task_id: 8652
   title: 'occt-internals γ1: OcctKernel::execute_with_history owns the op lowering; one argument decode in op_args.rs'
   capabilities:
   - name: kernel-owns-history-dispatcher
@@ -67,11 +62,8 @@ tasks:
     binding: 'grep:crates/reify-ir/src/kernel_validation.rs pub fn arm_length_tripwire_assert (re-exported from reify_ir lib.rs) — a thread-local RAII arm; check_length_field panics with the canonical message under cfg(debug_assertions) when armed; the arm does not cross OcctKernelHandle''s worker thread, so the test drives OcctKernel in-process.'
     verdict: PASS
     delivered_check:
-      kind: grep
-      pattern: pub fn arm_length_tripwire_assert
-      paths:
-      - crates/reify-ir/src/kernel_validation.rs
-      expect: present
+      kind: manual
+      reason: 'authoring-time premise that already holds at main (verified 2026-10-12); a mechanical check would be vacuous_present and gate nothing.'
   - name: op-args-module-split
     binding: 'record h14 row for lib.rs — extract_f64/extract_length_f64/validate_* + AXIS_MAG_SQ_MIN/ANGLE_ABS_MIN form a partition with symptom "none" (imports only reify_ir and crate::ffi::ffi::Point3).'
     verdict: PASS
@@ -89,6 +81,7 @@ tasks:
       - crates/reify-kernel-occt/tests/harness_occt/inline_pattern_ratchet.rs
       expect: present
 - label: γ2
+  task_id: 8666
   title: 'occt-internals γ2: one decoder per history type, one sub-shape extractor, one selection mapper'
   capabilities:
   - name: one-sweep-history-decoder
@@ -119,32 +112,27 @@ tasks:
       - crates/reify-kernel-occt/src
       expect: present
 - label: ζ
+  task_id: 8669
   title: 'occt-internals ζ: every execute arm declares its result repr (ReprPolicy); one fillet/chamfer precondition'
   capabilities:
   - name: centroid-misroute-reproduces
     binding: 'reify eval tests/prd-gate/fixtures/occt_internals_centroid_translated_profile.ri on target/debug/reify (built 2026-10-11; crate unchanged since a030ee7528) prints Probe.c_moved = point(0 m, 0 m, 0 m) and c_plain ~1e-19 m (square centred), so the expected post-fix value is point(0.01 m, 0 m, 0 m). Fixture parses (tree-sitter rc=0).'
     verdict: PASS
     delivered_check:
-      kind: path
-      paths:
-      - tests/prd-gate/fixtures/occt_internals_centroid_translated_profile.ri
-      expect: present
+      kind: manual
+      reason: 'authoring-time premise that already holds at main (verified 2026-10-12); a mechanical check would be vacuous_present and gate nothing.'
   - name: guard-bypass-via-translate-reproduces
     binding: 'reify eval tests/prd-gate/fixtures/occt_internals_fillet_translated_disjoint_union.ri: v_direct undef with "requires a BRepKind::Solid input shape, got Compound"; v_moved = 0.0000019511740277818842 m^3 (accepted). Rejection mechanism exists and fires (the direct arm), so the post-fix rejection is backed (G6 branch 4).'
     verdict: PASS
     delivered_check:
-      kind: path
-      paths:
-      - tests/prd-gate/fixtures/occt_internals_fillet_translated_disjoint_union.ri
-      expect: present
+      kind: manual
+      reason: 'authoring-time premise that already holds at main (verified 2026-10-12); a mechanical check would be vacuous_present and gate nothing.'
   - name: extruded-wire-passes-guard-reproduces
     binding: 'reify eval tests/prd-gate/fixtures/occt_internals_fillet_extruded_wire.ri: a = 0.0002 m^2, v = 0 m^3, vf undef with "OCCT make_fillet_with_history: There are no suitable edges for chamfer or fillet" (the guard admitted the Solid-stamped sheet). Post-fix kind (Shell vs Face) is not asserted, only the guard message.'
     verdict: PASS
     delivered_check:
-      kind: path
-      paths:
-      - tests/prd-gate/fixtures/occt_internals_fillet_extruded_wire.ri
-      expect: present
+      kind: manual
+      reason: 'authoring-time premise that already holds at main (verified 2026-10-12); a mechanical check would be vacuous_present and gate nothing.'
   - name: repr-policy-type
     binding: 'grep:crates/reify-kernel-occt/src/lib.rs fn brep_kind_of_shape + store_classified already used by the booleans and SweepGuided/LoftGuided.'
     verdict: PASS
@@ -176,6 +164,7 @@ tasks:
       kind: manual
       reason: 'the deliverable is two prose lines whose wording is the implementer''s; a grep would pin prose.'
 - label: ε
+  task_id: 8682
   title: 'occt-internals ε: extract ShapeStore with a pub(crate) interface'
   capabilities:
   - name: get-shape-erasure-fix-upstream
@@ -194,12 +183,16 @@ tasks:
       - crates/reify-kernel-occt/src/shape_store.rs
       expect: present
   - name: warm-state-disposition
-    binding: 'Q2 (lead ruling): (a) reduce to trait no-op, (b) re-home as ShapeStore persist/restore. The binding is made by the ruling, then this leaf.'
-    verdict: OPEN
+    binding: 'Q2 ruled (a) 2026-10-12: reduce OCCT warm start to the trait no-op; inventory registration stays; INV-GEO-3 OCCT arm reworded stateless. 0 production callers (record measurement). Accepted gap: the check proves the failure accessor is gone, not that the impl bodies are no-ops; the leaf signal (impl body read) is the cover.'
+    verdict: PASS
     delivered_check:
-      kind: manual
-      reason: 'shape depends on the Q2 ruling.'
+      kind: grep
+      pattern: fn warm_start_failures
+      paths:
+      - crates/reify-kernel-occt/src
+      expect: absent
 - label: ι
+  task_id: 8684
   title: 'occt-internals ι: partition lib.rs over ShapeStore — execute.rs, history.rs, query.rs, fixtures.rs (h14)'
   capabilities:
   - name: partition-names-fixed-for-downstream
@@ -212,6 +205,7 @@ tasks:
       - crates/reify-kernel-occt/src/query.rs
       expect: present
 - label: θ
+  task_id: 8672
   title: 'occt-internals θ: one closure request behind call<R>; handle.rs is transport; stub contract named'
   capabilities:
   - name: one-call-primitive
@@ -236,17 +230,15 @@ tasks:
       kind: manual
       reason: 'the deliverable is a corrected doc paragraph; a grep over it would pin prose.'
 - label: δ
+  task_id: 8676
   title: 'occt-internals δ: one cxx shared struct per op-history type replaces the flat accessors'
   capabilities:
   - name: cxx-vec-of-shared-struct-precedent
     binding: 'grep:crates/reify-kernel-occt/src/ffi.rs StepTreeRecords carries Vec<StepProductRecord> / Vec<StepComponentRecord> across this bridge.'
     verdict: PASS
     delivered_check:
-      kind: grep
-      pattern: 'products: Vec<StepProductRecord>'
-      paths:
-      - crates/reify-kernel-occt/src/ffi.rs
-      expect: present
+      kind: manual
+      reason: 'authoring-time premise that already holds at main (verified 2026-10-12); a mechanical check would be vacuous_present and gate nothing.'
   - name: flat-accessors-retired
     binding: '37 *_op_history_* accessor declarations today (boolean 8, local_feature 8, loft 9, sweep 12). Asserting the positive shared struct plus the absence of one representative flat accessor; the ratchet row (≤ 8 declarations) is the count cover.'
     verdict: PASS
@@ -272,6 +264,7 @@ tasks:
       kind: manual
       reason: 'the golden file name is the implementer''s.'
 - label: ω
+  task_id: 8688
   title: 'occt-internals ω: PRD close — SHIPPED stamp with landed leaf ids'
   capabilities:
   - name: terminal-stamp

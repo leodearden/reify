@@ -280,112 +280,39 @@ Rule: one stream edits a shared artefact; the others consume its filed leaf ids 
 
 ## FILED — program status
 
+Wave 1 (pass 2 completed 2026-10-12; every row returned by its seat, applied by the lead). Trigger-chain human gate: reify #8612 (deferred, planning_mode, interim form; `commit_planning` is the human's act once this table is complete for the whole program). Held leaves are released by the owning stream's session (S6: S9 λ #8741, S15 ο #8718; S1: S27 φ; S26: S27 λ). Dark-factory companions: #6853/#6854/#6855 (S20), #6856 (S19 ε).
+
 | stream | PRD | tasks (anchors) | held leaves | notes |
 |---|---|---|---|---|
-| (none yet) | | | | |
+| S3 | docs/prds/v0_6/dependency-invalidation-stratum.md | 8673 α (INV-ARCH-1 tool), 8687 β (predicates below the SCC), 8675 γ, 8691 δ, 8695 ε, 8699 ζ (high, gate-dep), 8677 η, 8701 θ, 8704 ι, 8680 κ, 8708 λ, 8710 μ | none | OQ-1..6 applied; reify-compiler excluded from the SCC baseline until S7 κ, S7 ξ adds the compiler rows; typed ValueCellId is a post-S1 candidate; #5023 and #4958 amended |
+| S7 | docs/prds/v0_6/compiler-module-namespace.md | 8613 α, 8615 β, 8617 γ, 8620 δ, 8622 ε, 8623 ζ, 8625 η, 8627 θ, 8631 ι, 8636 κ, 8638 λ, 8643 μ, 8650 ν, 8661 π, 8665 ω (+ adopted 8552, 8551, 8560) | 8657 ξ (waited on S3 α #8673; edge wired; released by the lead's commit_planning) | all medium except ω low; no gate-8612 deps; superseded and cancelled: #7338, #8321, #8006, #7986; μ waits on #6955, #5493 |
+| S9 | docs/prds/v0_6/compiler-declaration-passes.md | 8730 α, 8731 β (high, gate), 8732 γ, 8733 δ, 8734 ε, 8735 ζ, 8736 η, 8738 θ, 8739 ι, 8740 κ, 8741 λ, 8742 μ, 8743 ν (all_value_cells, S27 seam), 8744 ξ, 8745 ο, 8746 π | 8741 λ (x_seam_wait S6: RelationKind enum in reify-ir) | fk-60053402aba5 → filed:5499, fk-6621fbaa0058 → filed:5430 (keys stamped; π depends on both), fk-75d9313c6ee6 → filed:8556; β hard-depends on #5425; ξ on S7 8615/8627, ο on S7 8623 |
+| S11 | docs/prds/v0_6/occt-crate-internals.md | 8648 α, 8652 γ1, 8659 β, 8666 γ2, 8669 ζ (high), 8672 θ, 8676 δ, 8682 ε, 8684 ι, 8688 ω | none | ζ gate-dep of 8612; #8582 cancelled (subsumed by 8669); fk-030602c2fd62 reassigned to S10; fk-baae0532b743 stamped on #7379 (prerequisite of ε); #7438 and #7688 → 8672 |
+| S13 | docs/prds/v0_6/selector-resolution-factoring.md | 8747 α, 8748 β, 8749 γ, 8750 δ, 8751 ε, 8752 ζ, 8753 η, 8754 ι | none | θ dropped (→ S8/#6010); α₀ performed at pass 2 (delivered-check path corrections on #6179 #5779 #5780 #5781 #8401 #5439 #5745 #5747 #8288 + sidecar-only #5623 #5658; six other PRDs' sidecars + .md twins edited: angle-dimension-completion, angle-units-surface-convergence, implicit-solids, placement-relations-belt, units-length-gate-completion, meshing-service); #7381 cancelled as subsumed; α → #8673, β → #8687; no high leaves |
+| S14 | docs/prds/v0_6/solver-crates-layering.md | α 8614, β 8616, γ 8618, δ 8619, ε 8621, ζ 8626, η 8628 (high), θ 8629, ι 8630, κ 8632, λ 8637, μ 8640, ν 8645, ξ 8653 (high), ο 8656 (high), π 8658 (high), ρ 8660 (close) | none | gate deps 8628/8653/8656/8658; fk-c940cb1edad4 stamped on #8375/#8381 (filed:8375); #8528 adopted; #8581/#8449 cancelled (subsumed by ξ 8653); out-of-program edges #8375→δ,ζ,ι; #8528→γ; #6655/#7492/#7420→ξ |
+| S15 | docs/prds/v0_6/trampoline-decode-and-result-build.md | 8674 α (high, gate), 8679 β, 8683 γ, 8686 δ, 8690 ε, 8693 ζ, 8697 η, 8698 θ, 8702 ι, 8705 κ, 8706 λ, 8711 μ, 8714 ν, 8717 ξ, 8718 ο, 8720 π, 8722 ρ, 8724 σ | 8718 ο (x_seam_wait S6: dynamics/eval.rs MechanismTree and JointKind leaves) | subsumed+cancelled #8524 (→8683), #8559 (→8698); #7079/#7080/#7084 depend on 8679; upstream #6922 → α γ δ η ο, #6941 → α θ; C2 maps UnsupportedKind to the existing FeaLoadKindUnsupported |
+| S19 | docs/prds/v0_6/run-all-runner-infra-harness.md | 8678 α, 8681 β (high), 8685 γ (high, REIFY_VERIFY_EVENT_LOG), 8689 δ, 8692 ζ₁, 8694 η (high), 8696 ζ₂, 8700 θ (high), 8703 ι, 8707 κ, 8712 λ, 8716 μ, 8719 μ₂, 8721 ν, 8723 ξ, 8725 ο, 8726 π, 8727 ρ, 8728 σ, 8729 Ω; dark_factory:6856 (ε, high) | 8719 (S20 L1 #8624; edge wired; released by the lead) | adopts #8535/#8536/#8538; #7445 → 8678; η 8694 external_deps dark_factory:6856 (must land and deploy first); τ ceded to S18; gate 8612 ← 8681, 8685, 8694, 8700, dark_factory:6856 |
+| S20 | docs/prds/v0_6/warm-lane-scripts-one-lock-one-env-one-oracle.md | 8624 (L1), 8635, 8641, 8647, 8709, 8668, 8541 (adopted L7), 8670, 8671, 8713, 8715 (close); DF companions dark_factory:6853 (D5), 6854 (D1), 6855 (D8) | none | f133 mark sites corrected to 5 (DF yaml main_gate_mark_command repointed in L9, effective at next orchestrator restart); no high leaves so no gate-8612 deps; S19 μ₂ depends on L1 = 8624 |
+| S21 | docs/prds/v0_6/native-dep-table-and-loader-path.md | 8634 (α, high), 8646 (β), 8654 (γ), 8663 (ω close) | none | δ dropped per lead ruling (verify.sh share → S18 by cross-reference); #7623 cancelled, subsumed by 8646; #8105 now depends on 8654; gate 8612 depends on 8634 |
+| S22 | docs/prds/v0_6/prd-probe-gate-typed-outcomes.md | 8633 α, 8639 β, 8642 γ (high), 8644 δ (high), 8649 ε, 8651 ζ, 8655 η, 8662 θ (high), 8664 κ, 8667 λ | none | gate 8612 ← 8642, 8644, 8662; #8122 and #8178 cancelled as subsumed (by 8642, 8664); 8662 waits on in-flight #7491; ι moved to S18 per R2 |
+| S27 | docs/prds/v0_6/tooling-front-end.md | 8755–8765, 8767–8779 (24 leaves; high 8761 β, 8778 γ → gate 8612) | 8776 φ (S1: EngineConfig + KNOWN_SITES entry), 8777 λ (S26: generated TS wire types carrying LspMethod::ALL) | δ not filed (OQ1-A, #6665 stands); γ consumes #5516/#5520; ζ ← #8743, π ← #8742; subsumed and cancelled #8447, #8557, #8336, #7720, #8611; notes on #6665, #6851, #6695, #6805 |
 
-Trigger chain: filed per `skills/_shared/filing-the-trigger-chain.md` (interim form unless the §2 probe passes) when the first stream files; gate ids recorded here; `commit_planning` once this table is complete. Superseded chain: none (first run). Launched from: none (hand launch).
-## Lead amendments to the synthesis text (recorded, not relitigated)
+Waves 2–4 (S4 S5 S8 S12 S10 S25 S18; S1 S16 S26 S2; S23) and the spawn streams S24, S6: not yet authored — rows appended as their sessions return.
 
-- S19: the per-member event channel is verify-tree wide and named `REIFY_VERIFY_EVENT_LOG` (heuristic 1), not `REIFY_RUN_ALL_EVENT_LOG`; every slot_emit_timeout caller writes a record; S18's Python verify passes the variable through.
-- S3: the predicate homes are three by purpose (expr_classify, realization_inputs, structural_query); the checkable rule is "no import into the measured SCC and only crates below reify-eval", since four of the nine predicates need reify_compiler/reify_expr.
-- Key reassignments: fk-030602c2fd62 (OCCT query() JSON replies) S11 → S10 (typed GeometryQuery reply leaf); fk-bb1ba38a6a46 (types.rs ALL arrays, weakened, previously unrouted) → S7 π; fk-c940cb1edad4 (ExecutionMode) → stamped on #8375/#8381 (elastic-static-solver-performance already deletes the axis; no leaf); fk-21c29ddc104d's verify.sh home → S18 (S22 θ keeps the classifier).
-- S27: the MCP context stays deleted per #6665 (Leo 2026-08-26); the single compile front end is resolution-unification §3.1 `compile_program` (#5516), which S27 γ consumes — the G4 row "reify_compiler compile entry points" is owned by resolution-unification β, S27 consumes.
-- S21/S22: no bash edits to scripts/verify.sh ahead of S18's Python rewrite; S18 carries the two apply_env / decide_scope adaptations as cross-references.
-- S15: "the chartered PVAC detector" means #7102 (result-field-vacuity-closure); S15 C4 is INV-PD-2's runtime half.
-- INV candidate 7 is INV-ARCH-1 (docs/invariants.md), tool and baseline built by S3 α with reify-compiler excluded until S7 κ; lockstep sites on reify: docs/invariants.md, docs/legibility/design-invariants.md, the program doc pointer, one CLAUDE.md Pointers line.
-- Post-S1 follow-up candidate (not filed): typed ValueCellId / InstancePath (S3 OQ-2 b, ~2,066 sites).
-- The G4 row "dark-factory merge queue's import of reify_overlap_detector" names a seam that does not exist (DF #1897 fell back to the default detector; no register_for_reify call): a dark-factory task to register it is a lead follow-up; S22 θ keeps importing the shared module.
+## Pass-2 cross-reference lines (wave 1; applied or carried to the named stream's PRD by the lead)
 
-## Resolved decisions — pass 1 open questions (wave 1, ruled by the lead 2026-10-12 under the deliberation rulings; a seat that finds the code contradicts one returns it)
+- **S3** → INV candidate 7 → INV-ARCH-1 (α 8673); prd overlay G1 seam row §3.6 retired after 8699; S23 (architecture doc §3.5, freshness-4-variant PRD); S7 ξ (baseline excluded map, after κ and 8673); every cycle-breaking stream lowers its baseline row in the same diff; S8 (expr_classify.rs after 8687); S4 (depends on 8687, 8691, 8695); S25 (set_observed_demand after 8680); S5 (direct compute-contract imports after 8687); optional edge #8338 → 8701 (not added).
+- **S7** → S9 (entity/traits/forall/guards leaves depend on 8615, 8627; member_cell_decls.rs); S8 (builtin-table leaves depend on 8622; expr.rs leaves on 8627, 8631; sixth partition; operator_typing.rs after 8620); S3 (8673 keeps reify-compiler excluded; 8657 moves it in); S12 (satisfies_trait_bound stable); S6 (#8560 first); S5 (#8551 first); S27/resolution-unification β (8643 edits one body).
+- **S9** → S27 (ν 8743; R4 row in tests/infra/test_compiler_decl_pass_ratchets.py; ParseErrorKind::diagnostic_code from 8742); S12 (contract ids β 8731, γ 8732, μ 8742); S6 session releases 8741; S8 (RelationSig from 8741); S4 (8734 deletes rewrite_port_placeholder; 8735 SubOrigin recognisers); #8597 vs 8740 (no edge; rebase).
+- **S11** → S10 PRD (typed-SI decode at op_args.rs depends on 8652; sub-trait accessors over call<R> depend on 8672; typed GeometryQuery reply leaf carries fk-030602c2fd62 and depends on 8684; MockGeometryKernel mirrors ReprPolicy, depends on 8669).
+- **S13** → #8288 item 7, #6682 KEEP-UNTOUCHED, S3 (#8401 check scans expr_classify.rs; 8747 lowers the reify-eval baseline row), S2, S4, S8/#6010, S10, S1, S5 (as in pass 1).
+- **S14** → elastic-static-solver-performance (#8381 edits qoi.rs after μ 8640 moves its tests); S4 (ν 8645 leaves the eval_ctx_with_meta site); S5 (wave-1 trampoline edits; ShellFrame doc pointer); S16 (AssemblyElement::new after δ 8619); S10 (BackendUnavailable from κ 8632); S3 α baseline (β 8616, π 8658 shrink SCCs); S23 (θ 8629, μ 8640 own that prose).
+- **S15** → S6 session releases 8718 (add_dependency on its MechanismTree/JointKind leaves, commit_planning, re-stamp the S15 sidecar); optional edges not wired: #7100 → 8693, #7101 → 8690/8693/8697, #7081 → 8683.
+- **S19** → S18 PRD (the two verify-test partitions ceded, after 8694; Python verify passes REIFY_VERIFY_EVENT_LOG through and appends slot_timeout records if it reimplements slot acquisition); S20 (8624 and 8716/8721 touch the same test files, file locks serialize; 8719 depends on 8624).
+- **S20** → S19 μ₂ → 8624; G4 row "dark-factory-orchestrator.yaml git.main_gate_mark_command/unmark_command + hooks/main-gate-lib.sh sentinel format | S20"; DF #3074 lib_lane_state.sh SPOT question for the repatriation (noted).
+- **S21** → S18 PRD (apply_env from lib_native_ld_path.sh cargo-target class #8654; ratchet exemption 2→0; conditional native-deps.toml row in verify-pipeline-paths.txt); G4 row wording (table-driven dispatch); S23 (CLAUDE.md Native deps sentence + Pointers row current); #8269 edits the OCCT row after #8634.
+- **S22** → S18 PRD (decide_scope reads reify_path_attribution.py attribute in one batched call; fixture-list/gui-event-channels arms stay policy; B14 parity; S18 deletes affected-crates-lib.sh::reify_is_inert_path which 8662 keeps as a thin wrapper; S18 adds the module to verify-pipeline-paths.txt); G4 new row "scripts/reify_path_attribution.py | S22 (8662) | S18 planner, reify_overlap_detector"; lead follow-up DF register_for_reify task.
+- **S27** → S9/#8743 (R4 rows for reify-eval (8 chains) and reify-test-support (1) have no owning leaf → lead assigns to S4 at wave 2); S1 (wire EngineConfig leaf → 8776 and release; KNOWN_SITES entry moves in 8776's diff); S26 (wire TS-generation leaf → 8777 and release); S25 (engine.rs stdlib literal adopts dev_stdlib_root from 8769 unless #5519 deletes the path); S18 (8776 moves the infra-tests manifest row for main.rs).
 
-### S3 — docs/prds/v0_6/dependency-invalidation-stratum.md
-- OQ-1 → (B): three homes by purpose (expr_classify, realization_inputs, structural_query); the checkable rule is "no import into the measured SCC, and only crates below reify-eval" — lead amendment of the ruling's "imports only reify_ir/reify_core" (impossible at main for 4 of 9).
-- OQ-2 → (c): (a) now (InstancePath is the grammar home; ValueCellId.entity stays String); (b) typed ValueCellId recorded in the program doc as a post-S1 follow-up candidate, not filed now.
-- OQ-3 → (i) α builds the only tool, baseline and INV-ARCH-1 row; (ii) S7's glob-removal leaf raises the reify-compiler rows as a named one-time exception in its commit (the tool stays simple).
-- OQ-4 → lockstep sites on reify: docs/invariants.md row (α), docs/legibility/design-invariants.md entry (G7/review read it), the program doc pointer; CLAUDE.md gets one Pointers line only.
-- OQ-5 → keep the {cache, deps} 2-cycle as a recorded residual; no ν.
-- OQ-6 → accept the --explain-undef behaviour changes with the pin test.
+Lead follow-ups outside any stream: file a dark-factory task to register reify_overlap_detector with project_id (S22 R1); file a reify task for scripts/lane-task-status.sh reading tasks.db directly (S20); instrument debt: /hotspot-survey whole and /review --since none as their own attended runs.
 
-### S7 — docs/prds/v0_6/compiler-module-namespace.md
-- Q1 INV-ARCH-1 tool owner → (a): S3 α builds it with reify-compiler excluded until S7 κ; S7 ξ adds the compiler rows (consistent with the S3 OQ-3 ruling).
-- Q2 fk-bb1ba38a6a46 (weakened, unfiled, unrouted) → (a): assign to S7 as π (strum::EnumCount on the 9 geometry-kind enums); program doc stream table amended.
-- Q3 fk-a9fb39978c17 reach → (a): ν does the sub_* record only; the disjointness and key-parity pairs are recorded as a follow-up candidate in the PRD, not widened.
-- Q4 κ at medium → confirmed (Contradictions ruling).
-- Q5 29 globs incl. 4 conformance/ ones → accepted; baseline 29.
-
-### S14 — docs/prds/v0_6/solver-crates-layering.md
-- Q1 fk-c940cb1edad4 (ExecutionMode) contradicts committed elastic-static-solver-performance (#8375/#8381 delete the axis) → (A): stamp x_finding_key fk-c940cb1edad4 onto #8375 and #8381 (update_task metadata, list form), disposition filed:8375; no leaf; the ruling's "one ExecutionMode enum" is superseded by that PRD (G6 stale premise) — recorded in the program doc.
-- Q2 GeometryError ownership → (A): κ adds BackendUnavailable in wave 1; S10 consumes it (cross-ref to S10).
-- Q3 floor↔core cycle → (A): constraints_witness and floor_infeasible_diagnostic both move to solver/core (PRD D17).
-
-### S11 — docs/prds/v0_6/occt-crate-internals.md
-- Q1 fk-030602c2fd62 (query() JSON replies) → (a): key moves to S10's typed-reply leaf (producer + eval parsers switch atomically there); S11 ι only moves query() into query.rs; program doc stream table amended (key reassigned S11 → S10).
-- Q2 OCCT warm start fk-69bd53399b08 → (a): reduce to the trait no-op (warm_state None, with_warm_state no-op), inventory registration stays, INV-GEO-3 OCCT arm reworded stateless; no consumer exists (heuristic 6).
-- Q3 ordering vs #7438 (OpControl) → (a): γ1 and θ land first; decomposition notes on #7438 that the control goes to execute_with_history inside the call closure; edge #7438 → θ.
-
-### S20 — docs/prds/v0_6/warm-lane-scripts-one-lock-one-env-one-oracle.md
-- Q1 lane_lock_acquire(mode, wait) → (a) mode = wait mode (0 / N / unlimited); exclusive always; shared stays lane_lock_probe.
-- Q2 --mount flags → (a) keep the flags meaning the worktrees dir, add the looks-like-mount warning; no DF flag-day.
-- Q3 manifest row → (a) L3 adds the row itself in today's format (overlay requires same-diff registration); S19 owns the format, not the rows.
-- Q4 golden record home → (a) canonical in DF regenerated by D5, vendored byte copy in reify with PROVENANCE.md (hermetic under /usr/bin/python3).
-- Q5 f133 premise (5 mark sites, DF marks via yaml touch) → (a) accept the two-phase L9/L10 design; L9 ALSO measures (c): if hooks/pre-merge-commit marks immediately before land.sh's --no-ff move, delete land.sh's own pre-mark instead of trapping it.
-- Q6 thin --reseed on seed exit 70 → propagate 70 unchanged (a lane-lock refusal is a distinct outcome, never mapped to the generic fault code).
-
-### S21 — docs/prds/v0_6/native-dep-table-and-loader-path.md
-- no open questions
-
-### S22 — docs/prds/v0_6/prd-probe-gate-typed-outcomes.md
-- R1 reify_overlap_detector unregistered in dark-factory (G4 row names a seam that does not exist) → (a): keep θ importing the shared module; LEAD FOLLOW-UP: file a dark-factory task "register_for_reify with project_id in the merge-queue overlap detection" (DF #1897 fell back to the default detector); program doc G4 row corrected.
-- R2 ι and the verify.sh home → (b): ι moves to S18 (consistent with the S21 ruling: no bash edits to verify.sh ahead of its Python rewrite); fk-21c29ddc104d lands on θ minus the verify.sh home, S18's planner imports reify_path_attribution.py; the verify-pipeline-paths.txt row is S18's.
-- R3 schema layering → (a) as drafted (α publishes what α decides; pdv publishes its own).
-- R4 refinements (a)(b)(c) → confirmed.
-
-### S19 — docs/prds/v0_6/run-all-runner-infra-harness.md
-- Q1 event-channel scope/name → (C): the channel is verify-tree wide (every slot_emit_timeout caller writes a record) and is named REIFY_VERIFY_EVENT_LOG for an accurate name (heuristic 1); lead amendment of the synthesis's REIFY_RUN_ALL_EVENT_LOG label, recorded in the program doc; C3 rule 4 holds and η deletes D-G outright; S18's Python verify passes the var through and appends slot_timeout records if it reimplements slot acquisition.
-- Q2 τ (verify_scope / semaphore partitions) → (A): ceded to S18; τ is NOT filed (nothing to cancel); S18's PRD carries the two partitions as cross-reference.
-- Q3 D7 → (A): h14 partition satellites are behaviour-preserving moves and stay bash; only new assertions are Python.
-- Premise correction accepted (fk-3cb220f9cc94: only test_tree_sitter_pipeline.sh runs a private harness).
-
-### S15 — docs/prds/v0_6/trampoline-decode-and-result-build.md
-- OQ1 PVAC wording vs result-field-vacuity-closure charter (#7102) → (a): S15 C4 is INV-PD-2's runtime half; #7102 stays the PVAC gate; program doc wording corrected ("the chartered PVAC detector" refers to #7102).
-- OQ2 PDROP overlap → (b): S15's decoders land first and #7079 attaches its declaration to them (edge #7079 → β reversed: β → #7079); #7080/#7084 remain their own tasks consuming β (edges β → #7080, β → #7084 added at pass 2) — β does not wait on unstarted tasks.
-- OQ3 declared defaults at runtime for PDROP C3 → (a): #7079 derives them from load_stdlib() templates; lead note on #7079; no production defaults table (D1 stands).
-- OQ4 user supports on the shell route → (a): S16 owns it (per-route solvers); γ only makes the drop loud; cross-ref to S16.
-- OQ5 fk-a28b1b57ed64 wider than recorded → confirmed: δ stays in S15 (fixes the two registry reads); the compiler placeholder unchanged; S1 untouched.
-
-### S9 — docs/prds/v0_6/compiler-declaration-passes.md
-- Q1 fk-60053402aba5 (#5499) and fk-6621fbaa0058 (#5425/#5430) → (a)+(b): stamp x_finding_key on #5499 and #5430 (dispositions filed:5499, filed:5430) AND add both as dependencies of π so S9 cannot close before they land; no new leaves.
-- Q2 f-number mislabels → confirmed; keys and statements govern.
-- Q3 relation_signatures ownership → (a) as written: S6 mints RelationKind; S9 λ owns the RelationSig rows; S8 reads them.
-- Q4 β on #5425 → (a) hard edge.
-- Q5 purpose-body parse error in reify-syntax inside γ → confirmed in S9 (no other stream owns ts_parser::lower_purpose_members).
-- Q6 S12 contract → S9 §5 is the contract; S12 names any extra need at its own decomposition.
-
-### S13 — docs/prds/v0_6/selector-resolution-factoring.md
-- Q1 θ owner → (a): drop θ from S13; fk-07c78c4ca710 is S8's and deferred #6010 already moves the helper map; S13 files no held leaf.
-- Q2 α₀ (delivered-check path widening in 11 other sidecars/task metadata) → (a): the pass-2 decompose session performs the three writes per check before filing (lead-sanctioned update_task writes on those tasks); not a leaf.
-- Q3 h14 partition membership → (a): accept PRD D4/D5 (code wins over the record's "none"; measured 4 cycles).
-- Q4 registry_drift_tests.rs path-only edits → (a): sanctioned for S13 β/γ.
-- Q5 three first-leaf walks → (b): leave as the PRD does.
-
-### S27 — docs/prds/v0_6/tooling-front-end.md
-- OQ1 MCP context vs #6665 (Leo 2026-08-26: delete `reify mcp-server` and mcp_context.rs) → (A): #6665 stands; δ is not filed; the MCP parts of fk-f5264d76e3ad and fk-5854202d4aed close by that deletion; ο lands at the reify-mcp transport level.
-- OQ2 compile_user_module vs resolution-unification §3.1 compile_program (#5516 β pending) → (A): compile_program is the one front end; γ moves AnalysisContext and the remaining LSP sites onto it and depends on #5516/#5520; the G4 owner row is re-pointed to resolution-unification β; S12's cross-reference becomes "layered under compile_program / CompiledProgram".
-- OQ3 β scope vs #6851 → (A): predicate moves to reify-eval, LSP consumes it, CLI exit policy unchanged (#5403's).
-- OQ4 reify.toml → (A): docs only.
-
-
-## Cross-reference lines (wave 1; applied by the lead, never by a seat)
-
-- **S3** → FILED row; INV candidate 7 → INV-ARCH-1 (α); amend #5023 and #4958 descriptions (completion transaction seeds dirty_cone); prd overlay G1 seam row §3.6 retired after ζ; S23 (architecture doc §3.5, freshness-4-variant PRD); S7 (baseline rows); every cycle-breaking stream lowers its baseline row in the same diff (table in the result); S8 (name-set predicates live in expr_classify.rs); S4 (consumes expr_classify/DependencyGraph/dirty_cone); S25 (set_observed_demand); S5 (direct compute-contract imports); next review-all instrument: brace-matched cfg(test) exclusion (second SCC is 5, not 3).
-- **S7** → S3 (exclusion until κ), S8 (depends on ε, θ, ι; sixth partition; operator_typing.rs), S9 (depends on β, θ; member_cell_decls.rs), S12 (satisfies_trait_bound stable), S6 (#8560 repoints), S5 (#8551 repoints), S27 (μ edits compile_with_prelude_context_checked_with_config body only); FILED row at medium.
-- **S14** → FILED row; elastic-static-solver-performance stamping; S4 (ν deletes engine_eval predicate mirrors; eval_ctx_with_meta site left to S4); S5 (compute_targets trampolines edited in wave 1 by S14; ShellFrame doc pointer); S16 (AssemblyElement::new only); S10 (BackendUnavailable consumed); S3/S7 (INV 7 baseline); S23 (θ/μ prose; S23 keeps the file:line rewrites in 5 files).
-- **S11** → S10 PRD (MockGeometryKernel mirrors ζ's ReprPolicy; typed-SI decode replaces extract_length_f64 at op_args.rs → depends on γ1; sub-trait accessors over θ's call<R>; typed GeometryQuery reply leaf carries fk-030602c2fd62 and depends on ι); decomposition notes: #8582 subsumed by ζ; #7379 → ε; #7248 → ζ; #8284 → θ, δ; #7688 optional → θ; #7438 → θ.
-- **S20** → FILED row text; seam row "dark-factory-orchestrator.yaml git.main_gate_mark_command/unmark_command + hooks/main-gate-lib.sh sentinel format | S20"; S23 Greek-letter aliases in gc comments; DF repatriation PRD must carry the new libs; LEAD FOLLOW-UP: scripts/lane-task-status.sh reads .taskmaster/tasks/tasks.db directly (forbidden by CLAUDE.md) — no finding covers it; file a mechanical task.
-- **S22** → G4 rows (overlap detector correction; new row reify_path_attribution.py | S22 | S18, overlap detector); S18 PRD (decide_scope reads attribute; fixture-list and gui-event-channels arms stay policy); pass 2: #8122 and #8178 cancelled as subsumed (reason names the subsuming leaf; the leaf carries their keys), #7491 → θ.
-- **S19** → program doc seam rows for S18/S19 split (S19 = run_all-emitted lines + @@REIFY_SLOT_TIMEOUT@@ family; S18 = verify.sh-emitted lines); S18 PRD (event records, shim passes the var; harness-layout-lib public names; plan_capture_lib untouched; the two partitions ceded); S23 PRD (35 crate headers repointed by θ — do not re-touch); S24 PRD (schema.rs include_str! of tasks_db_schema.sql); S20 PRD (μ₂ depends on lane-lock leaf; ν only gc fixtures); pass-2: add #7445 → α.
-- **S15** → G4 rows (stdlib_inputs decoders | S15 | S5, S16; result builders | S15 | S5, S16, #7100/#7101); S5 (move carries stdlib_inputs/builders; INV 4 .ri half is S5's); S16 (typed request from C1 decoders; one result builder = ε; shell-route supports); S10 (registry_free is the constructor the overlay fields extend); S6 (ο ordering); S8 (κ analysis diagnose registration; ξ moves fea::diagnose); S4 (no new EvalContext site); task notes #7079 #7100 #7101 #7081 #5802; #8524 #8559 subsumed by γ/θ.
-- **S9** → S27 (ν = all_value_cells; R4 row; ParseErrorKind::diagnostic_code adoption), S7 (ξ/ο deps; D3 module naming), S6 (RelationKind consumed by λ), S8 (reads RelationSig), S4 (ε deletes rewrite_port_placeholder; ζ SubOrigin matches), S23 (skip four prose pieces S9 rehomes); mechanical rows fk-60053402aba5 → filed:5499, fk-6621fbaa0058 → filed:5430, fk-75d9313c6ee6 → filed:8556.
-- **S13** → #8288 (nodes_for_faces moves), #6682 KEEP-UNTOUCHED list, #5658 stale delivered check (pre-existing; needs the three-write correction), S2 (placed_walk only), S4 (eval_ctx_with_meta sites relocated; PendingWarmSeedsGuard), S8/#6010, S10 (dispatch_* decoders → query.rs), S1 (lib.rs test mod line), S5 (CarriedTopology), S3 (INV-7 baseline).
-- **S27** → G4 row re-point; FILED subsumed #8447 #8557 #8336 #7720 (cancel as subsumed at decompose, keys carried); S12, S9 (ratchet rows), S1 (KNOWN_SITES moves with φ), S26 (LspMethod in generated types), S25 (dev_stdlib_root unless #5519 deletes the path), S18 (infra-tests manifest row moves with φ); task notes #6851 (panic re-verified; predicate home), #6695 (three sites not four), #6805 (add tooling_fe_stdlib_enum.ri to its corpus); stale rustdoc sentence on reify_compiler::compile (fix in γ).

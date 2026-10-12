@@ -2,7 +2,7 @@ prd: docs/prds/v0_6/run-all-runner-infra-harness.md
 schema_version: 1
 tasks:
 - label: α
-  task_id: null
+  task_id: 8678
   title: 'run-all-runner α: discovery from classification_discovered_set only; adoption ratchet member; README partition rule'
   capabilities:
   - name: lib-discovery-function-exists
@@ -30,7 +30,7 @@ tasks:
       - tests/infra/adoption-ratchet.manifest
       expect: present
 - label: β
-  task_id: null
+  task_id: 8681
   title: 'run-all-runner β: one member runner and one result recorder across all four run_all.sh branches'
   capabilities:
   - name: six-spawn-five-fail-sites-today
@@ -58,21 +58,21 @@ tasks:
       kind: manual
       reason: byte-stability across four branches is a behavioural property asserted by B6, not a grep.
 - label: γ
-  task_id: null
-  title: 'run-all-runner γ: REIFY_RUN_ALL_EVENT_LOG JSON-lines channel (run_all records, slot_timeout record, member isolation, stdlib reader)'
+  task_id: 8685
+  title: 'run-all-runner γ: REIFY_VERIFY_EVENT_LOG verify-tree JSON-lines channel (run_all records, slot_timeout record, member isolation, stdlib reader)'
   capabilities:
   - name: channel-absent-today
-    binding: git grep REIFY_RUN_ALL_EVENT_LOG at 8e6ffcac9d matches only plans/ (no producer, no consumer) in reify and nothing in dark-factory.
+    binding: git grep REIFY_VERIFY_EVENT_LOG at 8e6ffcac9d matches only plans/ (no producer, no consumer) in reify and nothing in dark-factory.
     verdict: PASS
     delivered_check:
       kind: grep
-      pattern: REIFY_RUN_ALL_EVENT_LOG
+      pattern: REIFY_VERIFY_EVENT_LOG
       paths:
       - tests/infra/run_all.sh
       expect: present
   - name: slot-timeout-emitter-single-site
-    binding: grep:scripts/lib_slot_acquire.sh slot_emit_timeout — the one printf of @@REIFY_SLOT_TIMEOUT@@, called from slot_acquire's finite-WAIT deadline only; every wrapper (lib_test_semaphore, cargo-test-occt-gated, lib_lane_x_flock) and run_all's pool worker reach it. Extent of the record depends on OQ-1.
-    verdict: OPEN
+    binding: grep:scripts/lib_slot_acquire.sh slot_emit_timeout — the one printf of @@REIFY_SLOT_TIMEOUT@@, called from slot_acquire's finite-WAIT deadline only; every wrapper (lib_test_semaphore, cargo-test-occt-gated, lib_lane_x_flock) and run_all's pool worker reach it. Every caller in the verify tree writes the record (lead ruling R-1).
+    verdict: PASS
     delivered_check:
       kind: grep
       pattern: event_log_emit_slot_timeout
@@ -84,18 +84,18 @@ tasks:
     verdict: PASS
     delivered_check:
       kind: grep
-      pattern: -u REIFY_RUN_ALL_EVENT_LOG
+      pattern: -u REIFY_VERIFY_EVENT_LOG
       paths:
       - tests/infra/run_all.sh
       expect: present
   - name: stdlib-reader
-    binding: deliverable; tests/infra/run_all_events.py (python3 -I, stdlib json) + test_run_all_events.py + wrapper + manifest row.
+    binding: deliverable; tests/infra/verify_events.py (python3 -I, stdlib json) + test_verify_events.py + wrapper + manifest row.
     verdict: OPEN
     delivered_check:
       kind: grep
       pattern: import json
       paths:
-      - tests/infra/run_all_events.py
+      - tests/infra/verify_events.py
       expect: present
   - name: encoder-lib-registered-as-verify-pipeline
     binding: scripts/lib_event_log.sh is sourced transitively (verify.sh → lib_test_semaphore.sh → lib_slot_acquire.sh → lib_event_log.sh), so verify-pipeline-guard.sh auto-derivation misses it — same class as the existing lib_slot_acquire.sh row in scripts/verify-pipeline-paths.txt.
@@ -107,7 +107,7 @@ tasks:
       - scripts/verify-pipeline-paths.txt
       expect: present
 - label: δ
-  task_id: null
+  task_id: 8689
   title: 'run-all-runner δ: run_all.sh h14 partition into output, flaky-ledger and content-skip libs (args, not globals)'
   capabilities:
   - name: partition-record
@@ -120,9 +120,9 @@ tasks:
       - tests/infra/run_all_output_lib.sh
       expect: present
 - label: ε
-  task_id: null
+  external_task_id: dark_factory:6856
   title: 'run-all-runner ε (dark-factory): classifier, shadow FAILED parse and passed-suite redaction read the run_all event channel'
-  note: Filed in dark-factory's registry at decompose; reify leaves depend on it via metadata.external_deps. external_task_id is set once filed.
+  note: Filed in dark-factory's registry (dark_factory:6856); reify η (8694), Ω (8729) and gate 8612 depend on it via metadata.external_deps.
   capabilities:
   - name: classifier-is-text-only-today
     binding: dark-factory orchestrator/verify_classify.py::classify_failure(tool, rc, output, timed_out) — text only; _SLOT_TIMEOUT_SENTINEL_RE + three-basename allowlist; _has_fatal_slot_timeout_sentinel reads disposition=.
@@ -131,7 +131,7 @@ tasks:
       kind: manual
       reason: foreign-registry producer; its own verify asserts D1-D5.
 - label: ζ₁
-  task_id: null
+  task_id: 8692
   title: 'run-all-runner ζ₁: test_run_all.sh T19/T25 wait on the event seam, not run_all workdir internals'
   capabilities:
   - name: private-workdir-coupling-today
@@ -144,7 +144,7 @@ tasks:
       - tests/infra/test_run_all.sh
       expect: absent
 - label: η
-  task_id: null
+  task_id: 8694
   title: 'run-all-runner η: delete test_slot_timeout_marker.sh Sections D-G'
   capabilities:
   - name: analyzer-sections-today
@@ -166,13 +166,13 @@ tasks:
       - tests/infra/test_slot_timeout_marker.sh
       expect: absent
   - name: soundness-depends-on-dark-factory-rule-4
-    binding: producer:ε (external) — C3 rule 4 (channel present ⇒ text arms not consulted for SEMAPHORE_TIMEOUT). Without it, Section D's own preamble reason (cross-repo regex coupling) still holds. Extent also depends on OQ-1.
+    binding: producer:ε (external) — C3 rule 4 (channel present ⇒ text arms not consulted for SEMAPHORE_TIMEOUT). Without it, Section D's own preamble reason (cross-repo regex coupling) still holds.
     verdict: OPEN
     delivered_check:
       kind: manual
       reason: cross-repo precondition; verified by ε's D1 test, not a reify grep.
 - label: ζ₂
-  task_id: null
+  task_id: 8696
   title: 'run-all-runner ζ₂: test_run_all.sh h14 partition (6) with shared preamble lib'
   capabilities:
   - name: partition-record
@@ -185,7 +185,7 @@ tasks:
       - tests/infra/run_all_test_preamble_lib.sh
       expect: present
 - label: θ
-  task_id: null
+  task_id: 8700
   title: 'run-all-runner θ: harness-layout guard lib; test_harness_kloc_cap.sh h14 partition (4); contract to docs'
   capabilities:
   - name: rules-live-in-test-today
@@ -216,7 +216,7 @@ tasks:
       - tests/infra/test_harness_kloc_cap.sh
       expect: present
 - label: ι
-  task_id: null
+  task_id: 8703
   title: 'run-all-runner ι: wallclock_rust_guard_lib.sh; test_no_new_wallclock_rust_deadlines.sh h14 partition (3)'
   capabilities:
   - name: engine-reads-no-file-state
@@ -229,7 +229,7 @@ tasks:
       - tests/infra/wallclock_rust_guard_lib.sh
       expect: present
 - label: κ
-  task_id: null
+  task_id: 8707
   title: 'run-all-runner κ: cpu-gov ROW predicates single home in cpu_gov_instrument.py; test_cpu_load_governance.sh h14 partition (5)'
   capabilities:
   - name: dead-python-predicates-live-bash-copy
@@ -251,7 +251,7 @@ tasks:
       - tests/infra/test_cpu_gov_instrument.py
       expect: present
 - label: λ
-  task_id: null
+  task_id: 8712
   title: 'run-all-runner λ: PTODO hard-gate fixture helper with one tasks-schema source'
   capabilities:
   - name: schema-copies-today
@@ -283,7 +283,7 @@ tasks:
       - tests/infra/test_reify_audit_ptodo_orphan_hardgate.sh
       expect: present
 - label: μ
-  task_id: null
+  task_id: 8716
   title: 'run-all-runner μ: test_helpers.sh end-of-suite finalizers; seed-warm-lane shared base fixture and lock holders'
   capabilities:
   - name: no-finalizer-today
@@ -314,7 +314,7 @@ tasks:
       - tests/infra/test_seed_warm_lane.sh
       expect: absent
 - label: μ₂
-  task_id: null
+  task_id: 8719
   title: 'run-all-runner μ₂: test_seed_warm_lane.sh h14 partition (9)'
   capabilities:
   - name: partition-record
@@ -333,7 +333,7 @@ tasks:
       kind: manual
       reason: cross-PRD producer id unknown until S20 decomposes.
 - label: ν
-  task_id: null
+  task_id: 8721
   title: 'run-all-runner ν: test_warm_lane_gc.sh make_gc_fixture and _seed_stub_body adoption'
   capabilities:
   - name: helper-exists-inline-copies-remain
@@ -346,7 +346,7 @@ tasks:
       - tests/infra/test_warm_lane_gc.sh
       expect: present
 - label: ξ
-  task_id: null
+  task_id: 8723
   title: 'run-all-runner ξ: test_warm_lane_pool.sh h14 partition (4)'
   capabilities:
   - name: partition-record
@@ -359,7 +359,7 @@ tasks:
       - tests/infra/warm_lane_pool_harness_lib.sh
       expect: present
 - label: ο
-  task_id: null
+  task_id: 8725
   title: 'run-all-runner ο: test_tree_sitter_pipeline.sh onto test_helpers.sh; h14 partition (5)'
   capabilities:
   - name: private-harness-and-substring-discovery-today
@@ -381,7 +381,7 @@ tasks:
       - tests/infra/test_plan_capture_lib.sh
       expect: present
 - label: π
-  task_id: null
+  task_id: 8726
   title: 'run-all-runner π: delete test_test_helpers.sh source-shape and prose pins; h14 partition (3); test_run_all.sh Test 6'
   capabilities:
   - name: consumer-loop-today
@@ -403,7 +403,7 @@ tasks:
       - tests/infra/test_sync_ref_helpers.sh
       expect: present
 - label: ρ
-  task_id: null
+  task_id: 8727
   title: 'run-all-runner ρ: jobserver unit oracle to stdlib unittest; setup-dev checks moved'
   capabilities:
   - name: importlib-heredocs-today
@@ -416,7 +416,7 @@ tasks:
       - tests/infra/test_jobserver_balancer.sh
       expect: absent
 - label: σ
-  task_id: null
+  task_id: 8728
   title: 'run-all-runner σ: test_with_jcodemunch_serve.sh h14 partition (3)'
   capabilities:
   - name: lib-already-sourced
@@ -428,19 +428,8 @@ tasks:
       paths:
       - tests/infra/jcodemunch_pin_guard_lib.sh
       expect: present
-- label: τ
-  task_id: null
-  title: 'run-all-runner τ (HELD on S18): test_verify_scope.sh and test_verify_semaphore_e2e.sh h14 partitions'
-  note: x_seam_wait S18; OQ-2 recommends ceding to S18 and cancelling at decompose.
-  capabilities:
-  - name: contested-file-ownership
-    binding: S18 findings fk-d47473e4d8d8, fk-763b633b2775 (test_verify_scope.sh) and fk-7bc1c1449010 (test_verify_semaphore_e2e.sh) edit the same files; test_verify_semaphore_e2e.sh is a D_ROSTER member (D10).
-    verdict: OPEN
-    delivered_check:
-      kind: manual
-      reason: held pending the lead's OQ-2 ruling.
 - label: Ω
-  task_id: null
+  task_id: 8729
   title: 'run-all-runner Ω: PRD close — terminal stamp and freeze header'
   capabilities:
   - name: terminal-stamp

@@ -2,6 +2,7 @@ prd: docs/prds/v0_6/dependency-invalidation-stratum.md
 schema_version: 1
 tasks:
 - label: α
+  task_id: 8673
   title: 'dependency-invalidation-stratum α: module-SCC ratchet (INV-ARCH-1)'
   capabilities:
   - name: crate-dag-gate-precedent-exists
@@ -9,7 +10,7 @@ tasks:
     verdict: PASS
     delivered_check:
       kind: grep
-      pattern: assert-module-scc\.py
+      pattern: GREW
       paths:
       - crates/reify-build-utils/tests/module_scc_ratchet.rs
       expect: present
@@ -40,7 +41,26 @@ tasks:
       paths:
       - docs/invariants.md
       expect: present
+  - name: reify-compiler-excluded-until-s7
+    binding: 'OQ-3 ruling 2026-10-12: α measures every workspace crate except reify-compiler, recorded in the baseline excluded map; S7 ξ removes the exclusion and adds the compiler rows.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '"excluded"'
+      paths:
+      - scripts/module-scc-baseline.json
+      expect: present
+  - name: lockstep-design-invariants-entry
+    binding: 'OQ-4 ruling 2026-10-12: INV-ARCH-1 also gets an entry in docs/legibility/design-invariants.md (read by G7 and /review) and one CLAUDE.md Pointers line.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: INV-ARCH-1
+      paths:
+      - docs/legibility/design-invariants.md
+      expect: present
 - label: β
+  task_id: 8687
   title: 'dependency-invalidation-stratum β: move the nine predicates below the engine SCC'
   capabilities:
   - name: nine-predicates-exist-at-cited-homes
@@ -53,11 +73,11 @@ tasks:
       - crates/reify-eval/src
       expect: absent
   - name: reify-ir-core-only-imports-premise
-    binding: 'FALSE for 4 of 9 at 8e6ffcac9d: sub_refs_in_op / compute_realization_upstream_values_hash_from_ops
+    binding: 'RULED OQ-1 -> B (three homes; no import into the measured SCC, only crates below reify-eval). Original premise FALSE for 4 of 9 at 8e6ffcac9d: sub_refs_in_op / compute_realization_upstream_values_hash_from_ops
       need reify_compiler::CompiledGeometryOp and reify_expr::eval_expr; expand_solver_position_expr needs
       reify_compiler::{TopologyTemplate, CompiledTrait} and crate::structural_query; is_optimized_userfn_cell
       needs reify_expr::find_matching_compiled_function. Decision homed in β under OQ-1 (homes per D1).'
-    verdict: OPEN
+    verdict: PASS
   - name: structural-query-is-below-the-scc
     binding: 'modgraph over crates/reify-eval/src shows structural_query with zero crate:: edges (imports only reify_compiler, reify_core, reify_ir), so moving expand_solver_position_expr there adds no upward edge.'
     verdict: PASS
@@ -77,6 +97,7 @@ tasks:
       - crates/reify-eval/src/expr_classify.rs
       expect: present
 - label: γ
+  task_id: 8675
   title: 'dependency-invalidation-stratum γ: delete dead invalidation peers in cache.rs'
   capabilities:
   - name: peers-have-no-production-caller
@@ -91,6 +112,7 @@ tasks:
       - crates/reify-eval/src
       expect: absent
 - label: δ
+  task_id: 8691
   title: 'dependency-invalidation-stratum δ: one dependency walk (DependencyGraph)'
   capabilities:
   - name: three-walks-and-paired-sites
@@ -98,7 +120,7 @@ tasks:
     verdict: PASS
     delivered_check:
       kind: grep
-      pattern: build_from_graph_and_fields|build_trace_map_and_fields|struct DependencyMap
+      pattern: fn build_from_graph_and_fields|fn build_trace_map_and_fields|struct DependencyMap\b
       paths:
       - crates/reify-eval/src
       expect: absent
@@ -121,6 +143,7 @@ tasks:
       - crates/reify-eval/src/undef_tracer.rs
       expect: present
 - label: ε
+  task_id: 8695
   title: 'dependency-invalidation-stratum ε: one dirty-cone walker'
   capabilities:
   - name: callers-and-bodies
@@ -142,6 +165,7 @@ tasks:
       - crates/reify-eval/src
       expect: absent
 - label: ζ
+  task_id: 8699
   title: 'dependency-invalidation-stratum ζ: delete the freshness-only walk and gating (ruled)'
   capabilities:
   - name: walk-has-no-production-caller
@@ -173,6 +197,7 @@ tasks:
       - docs/invariants.md
       expect: present
 - label: η
+  task_id: 8677
   title: 'dependency-invalidation-stratum η: node constructors own the content hash'
   capabilities:
   - name: inline-hash-sites
@@ -201,6 +226,7 @@ tasks:
       kind: manual
       reason: 'the parity test''s file name is the implementer''s choice; λ''s differential rows re-cover it.'
 - label: θ
+  task_id: 8701
   title: 'dependency-invalidation-stratum θ: one Sub-operand resolver'
   capabilities:
   - name: mirror-and-resolver-exist
@@ -222,6 +248,7 @@ tasks:
       - crates/reify-eval/src
       expect: absent
 - label: ι
+  task_id: 8704
   title: 'dependency-invalidation-stratum ι: InstancePath, one grammar for instance paths'
   capabilities:
   - name: keyed-paths-land-in-entity
@@ -233,8 +260,8 @@ tasks:
       failure reproduced, so ι''s signal asserts the grammar property, not a fixed failure.'
     verdict: PASS
   - name: valuecellid-storage-scope
-    binding: 'carrying InstancePath inside ValueCellId touches ~2,066 ValueCellId::new sites across 16 crates; scope decided by the lead (OQ-2).'
-    verdict: OPEN
+    binding: 'RULED OQ-2 -> c: grammar home now, ValueCellId keeps String storage; carrying InstancePath inside ValueCellId touches ~2,066 ValueCellId::new sites across 16 crates; scope decided by the lead (OQ-2).'
+    verdict: PASS
   - name: grammar-home-present
     binding: 'post-delivery check.'
     verdict: PASS
@@ -245,6 +272,7 @@ tasks:
       - crates/reify-core/src/identity.rs
       expect: present
 - label: κ
+  task_id: 8680
   title: 'dependency-invalidation-stratum κ: one demand registry handle'
   capabilities:
   - name: dead-and-coupled-surface
@@ -266,6 +294,7 @@ tasks:
       - crates/reify-eval/src/demand.rs
       expect: present
 - label: λ
+  task_id: 8708
   title: 'dependency-invalidation-stratum λ: integration gate — warm==cold differential over the stratum'
   capabilities:
   - name: differential-harness-exists
@@ -275,6 +304,7 @@ tasks:
       kind: manual
       reason: 'the new rows'' names are the implementer''s; the signal is green rows plus the seeded-regression red recorded in the task.'
 - label: μ
+  task_id: 8710
   title: 'dependency-invalidation-stratum μ: PRD-close stamp'
   capabilities:
   - name: terminal-status-stamped
@@ -282,7 +312,7 @@ tasks:
     verdict: PASS
     delivered_check:
       kind: grep
-      pattern: 'Status:\*\* SHIPPED'
+      pattern: '^\*\*Status:\*\* SHIPPED'
       paths:
       - docs/prds/v0_6/dependency-invalidation-stratum.md
       expect: present

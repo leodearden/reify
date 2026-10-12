@@ -2,7 +2,7 @@ prd: docs/prds/v0_6/solver-crates-layering.md
 schema_version: 1
 tasks:
 - label: α
-  task_id: null
+  task_id: 8614
   title: 'solver-layering α: adoption-ratchet host for reify-solver-elastic'
   capabilities:
   - name: ratchet-host-shape-exists-in-repo
@@ -25,7 +25,7 @@ tasks:
       kind: manual
       reason: 'baseline numbers are committed inside the test file; their correctness is proven by the seeded self-tests and the real-tree run, not by a pattern.'
 - label: β
-  task_id: null
+  task_id: 8616
   title: 'solver-layering β: shell primitives below assembly (elements/shell_frame.rs)'
   capabilities:
   - name: shell-frame-module
@@ -61,7 +61,7 @@ tasks:
       - crates/reify-solver-elastic/src/geometric_stiffness/membrane.rs
       - crates/reify-solver-elastic/src/shell_kinematics.rs
 - label: γ
-  task_id: null
+  task_id: 8618
   title: 'solver-layering γ: ShellSection, one guarded condensation, scaled/packing helpers, DegenerateFormulation'
   capabilities:
   - name: section-type
@@ -119,7 +119,7 @@ tasks:
       kind: manual
       reason: 'numeric equivalence is asserted by the unchanged shell suites plus BT6, not a pattern.'
 - label: δ
-  task_id: null
+  task_id: 8619
   title: 'solver-layering δ: AssemblyElement::new validating constructor; one release check for both entry points'
   capabilities:
   - name: fields-private
@@ -142,7 +142,7 @@ tasks:
       kind: manual
       reason: 'dependency ordering, enforced by the add_dependency edge on #8375.'
 - label: ε
-  task_id: null
+  task_id: 8621
   title: 'solver-layering ε: private ElementStiffness storage; stride doc fixed'
   capabilities:
   - name: storage-private
@@ -162,7 +162,7 @@ tasks:
       kind: manual
       reason: 'scope measurement; the ratchet row in α carries the gate.'
 - label: ζ
-  task_id: null
+  task_id: 8626
   title: 'solver-layering ζ: tensegrity_load_analysis as a thin call of membrane_load_analysis'
   capabilities:
   - name: copied-helpers-gone
@@ -201,7 +201,7 @@ tasks:
       kind: manual
       reason: 'the equivalence is this leaf''s work product.'
 - label: η
-  task_id: null
+  task_id: 8628
   title: 'solver-layering η: ForceDensityProblem, MemberKind::admits, nested input errors, one fixed-point driver'
   capabilities:
   - name: problem-type
@@ -240,7 +240,7 @@ tasks:
       kind: manual
       reason: 'byte-stability is asserted by the existing goldens and e2e tests.'
 - label: θ
-  task_id: null
+  task_id: 8629
   title: 'solver-layering θ: private MpcRow fields; delete the literal smoke test and doctest; true module docs'
   capabilities:
   - name: fields-private
@@ -262,7 +262,7 @@ tasks:
       paths:
       - crates/reify-solver-elastic/src/lib.rs
 - label: ι
-  task_id: null
+  task_id: 8630
   title: 'solver-layering ι: one FEA harness in tests/common/fea_harness.rs; one conflict-checking dedup_bcs'
   capabilities:
   - name: harness-module
@@ -302,7 +302,7 @@ tasks:
       kind: manual
       reason: 'discovered by running the suites; this leaf owns the outcome.'
 - label: κ
-  task_id: null
+  task_id: 8632
   title: 'solver-layering κ: GeometryError::BackendUnavailable; structural routing in both map_geometry_error'
   capabilities:
   - name: typed-variant
@@ -333,7 +333,7 @@ tasks:
       kind: manual
       reason: 'a stub-build compile is run by the implementer; the gate host always has gmsh.'
 - label: λ
-  task_id: null
+  task_id: 8637
   title: 'solver-layering λ: TetSpatialIndex<''a> owns its mesh borrow and tol; TetShape<''a> carries its mesh'
   capabilities:
   - name: borrowing-index
@@ -346,7 +346,7 @@ tasks:
       paths:
       - crates/reify-solver-elastic/src/interpolation.rs
 - label: μ
-  task_id: null
+  task_id: 8640
   title: 'solver-layering μ: qoi.rs tests to tests/qoi.rs; reviewer prose out of production docs'
   capabilities:
   - name: test-file
@@ -369,7 +369,7 @@ tasks:
       paths:
       - crates/reify-solver-elastic/src/qoi.rs
 - label: ν
-  task_id: null
+  task_id: 8645
   title: 'solver-layering ν: one predicate home in reify-constraints; engine_eval mirrors deleted'
   capabilities:
   - name: slack-predicate-exported
@@ -410,7 +410,7 @@ tasks:
       paths:
       - crates/reify-constraints/tests/adoption_ratchets.rs
 - label: ξ
-  task_id: null
+  task_id: 8653
   title: 'solver-layering ξ: solver.rs lower layers (crate::trial, residual, bounds, derive)'
   capabilities:
   - name: trial-module
@@ -439,7 +439,7 @@ tasks:
       kind: manual
       reason: 'ordering, enforced by the dependency edges.'
 - label: ο
-  task_id: null
+  task_id: 8656
   title: 'solver-layering ο: solver.rs middle layers (cost, floor, core with witness); core renamed'
   capabilities:
   - name: core-module
@@ -462,7 +462,7 @@ tasks:
       paths:
       - crates/reify-constraints/src
 - label: π
-  task_id: null
+  task_id: 8658
   title: 'solver-layering π: solver.rs upper layers and api; tests to layer interfaces or the ConstraintSolver seam'
   capabilities:
   - name: inline-test-module-gone
@@ -484,7 +484,7 @@ tasks:
       paths:
       - crates/reify-constraints/src/solver/uniqueness.rs
 - label: ρ
-  task_id: null
+  task_id: 8660
   title: 'solver-layering ρ: PRD close'
   capabilities:
   - name: terminal-status

@@ -16,7 +16,7 @@ Every one of the 34 `kind: grep` checks was executed with `git grep -E` against 
 
 No `present` check points at a file that does not yet exist; each points at an existing file or directory, so `reify-audit --pattern PDCHECK` sees no dead pathspec. `manual` rows are excluded from the dispatch gate and name the behavioural test or upstream edge that enforces them.
 
-**Upstream-producer bindings.** Leaves α, γ, δ, η and ο build on **#6922**'s landed shape (pending, under review on `task/6922`). α and θ follow **#6941**, and β follows **#7079**, **#7080** and **#7084**. These are recorded as `producer:#NNNN upstream` and wired as real `add_dependency` edges at decompose, never as prose ordering.
+**Upstream-producer bindings.** Leaves α, γ, δ, η and ο build on **#6922**'s landed shape (pending, under review on `task/6922`). α and θ follow **#6941**. **#7079**, **#7080** and **#7084** depend on β, not the reverse (lead ruling OQ2 (b)). ο is held on S6 (`x_seam_wait`). These are recorded as `producer:#NNNN upstream` and wired as real `add_dependency` edges at decompose, never as prose ordering.
 
 **G6.** No leaf asserts a tuned numeric constant.
 
@@ -41,7 +41,7 @@ No `present` check points at a file that does not yet exist; each points at an e
 | β | `buckling-option-fallbacks-gone` | grep: extract_buckling_options restates BucklingOptions defaults at main | PASS | grep `fn extract_buckling_options` absent in `crates/reify-eval/src/compute_targets/buckling.rs` |
 | β | `shell-threshold-local-gone` | grep: shell_threshold = 0.2 restated as a Rust local in elastic_static at main | PASS | grep `let mut shell_threshold = 0\.2` absent in `crates/reify-eval/src/compute_targets/elastic_static.rs` |
 | β | `ctor-fills-defaults` | substrate: CompiledExprKind::StructureInstanceCtor.defaults fills every non-supplied param (reify_ir::expr); no production code hand-builds an options instance (all type_name: "ElasticOptions" constructions are #[cfg(test)]) | PASS | manual: substrate fact true at main; D1's premise |
-| β | `pdrop-mechanism-upstream` | producer:#7079 upstream (pending) — C1 declaration mechanism; #7080/#7084 honors land first (D2) | PASS | manual: upstream dependency; edges are the enforcement |
+| β | `pdrop-builds-on-beta` | consumer:#7079/#7080/#7084 downstream (lead ruling OQ2 (b), D2) — they depend on β; β honors nothing new and decodes today's read set | PASS | manual: downstream dependency edges are the enforcement |
 | γ | `modal-string-support-decode-gone` | grep: enum DeclaredSupport (type_name string decode) in modal_ops.rs at main | PASS | grep `enum DeclaredSupport` absent in `crates/reify-eval/src/modal_ops.rs` |
 | γ | `pressure-direction-typed` | producer:γ — PressureSpec.direction: String parsed and never read at main | PASS | grep `enum PressureDirection` present in `crates/reify-eval/src` |
 | γ | `pressure-direction-string-field-gone` | grep: pub(crate) direction: String on PressureSpec at main | PASS | grep `pub\(crate\) direction: String` absent in `crates/reify-eval/src/compute_targets/elastic_static.rs` |

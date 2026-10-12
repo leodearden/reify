@@ -1678,6 +1678,8 @@ tasks:
       expect: present
       paths:
       - crates/reify-eval/src/geometry_ops.rs
+      - crates/reify-eval/src/geometry_ops/
+      - crates/reify-eval/src/expr_classify.rs
   - name: frame-semantics
     binding: producer-self (critic M9, §7.7) — a FromSolid field is in the subject
       realization's authored (unplaced) frame; posing is the author's sdf_transform,

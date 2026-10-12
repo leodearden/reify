@@ -133,6 +133,7 @@ tasks:
       pattern: angle_spec\(\)
       paths:
       - crates/reify-eval/src/geometry_ops.rs
+      - crates/reify-eval/src/geometry_ops/
       expect: present
   - name: silent-accept-pre-state
     binding: 'rejection-check baseline — probe (2026-07-29): rotate / rotate_around
@@ -193,6 +194,7 @@ tasks:
       pattern: angle_spec\(\)
       paths:
       - crates/reify-eval/src/geometry_ops.rs
+      - crates/reify-eval/src/geometry_ops/
       expect: present
   - name: one-read-site-not-two
     binding: premise CORRECTION (PRD §11 Q4 refuted) AT DECOMPOSE — :1979 sat above
@@ -243,6 +245,9 @@ tasks:
       pattern: resolve_bare_angle
       paths:
       - crates/reify-eval/src/geometry_ops.rs
+      - crates/reify-eval/src/geometry_ops/
+      - ':(exclude,glob)crates/reify-eval/src/geometry_ops/**/tests.rs'
+      - ':(exclude,glob)crates/reify-eval/src/geometry_ops/**/tests/**'
       expect: absent
   - name: codeless-warning-is-live
     binding: 'rejection-check baseline + INV-SF-6 AT DECOMPOSE — probe: circular_pattern(b,0mm,0mm,0mm,0.0,0.0,1.0,4,360)
@@ -259,6 +264,9 @@ tasks:
       pattern: bare numeric angle
       paths:
       - crates/reify-eval/src/geometry_ops.rs
+      - crates/reify-eval/src/geometry_ops/
+      - ':(exclude,glob)crates/reify-eval/src/geometry_ops/**/tests.rs'
+      - ':(exclude,glob)crates/reify-eval/src/geometry_ops/**/tests/**'
       expect: absent
   - name: breakage-set-corrected
     binding: producer-extent (PRD said 3, actual 9) AT DECOMPOSE — inverting tests

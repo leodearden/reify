@@ -262,3 +262,11 @@ against code by symbol and by producer edges; the mechanical ones carry `deliver
 - `freeze-header-precedent` — existing-substrate — the headers of docs/prds/v0_6/data-carrying-enums.md (`**Status:** **SHIPPED (v0.6)**`) and docs/prds/kernel-seam-contracts.md (`**Status: SHIPPED.**`); reify-audit --pattern PPRDSTATUS reads the token. **PASS**. Check: none (binding only).
 - `terminal-status-token` — producer-self — the PRD's Status line carries SHIPPED / SUPERSEDED / WITHDRAWN. Line-start anchored to the header shape (both ratified forms, with or without the blockquote), scoped to the PRD alone, so the body's mentions of 'the terminal Status header' and this manifest's prose cannot match. The PRD is not on main yet (merge queue, task/8283); its authored header `> **Status:** active` does not match. **PASS**. Check: grep `^(> )?\*\*Status:?(\*\*)?:? *(\*\*)?(SHIPPED|Shipped|SUPERSEDED|Superseded|WITHDRAWN|Withdrawn)` present in `docs/prds/v0_6/meshing-service.md`. Pre-delivery: absent today (rc=1).
 - `as-authored-freeze-and-manifest-header` — producer-self — the AS-AUTHORED paragraph, the LIVE vs AS-AUTHORED map, landed leaf IDs, and the matching header on this .capability-manifest.md. **PASS**. Check: manual — the committed headers are the deliverable.
+
+## Delivered-check path correction (2026-10-12, review-all S13 pass 2)
+
+PRD `docs/prds/v0_6/selector-resolution-factoring.md` splits `crates/reify-eval/src/geometry_ops.rs` into child modules under `crates/reify-eval/src/geometry_ops/` and moves `nodes_for_faces` onto `CarriedTopology` (`compute_targets/result_topology.rs`). The checks below had `paths` pinned to the pre-split file, so their match would leave the scanned path. Each `paths` list was widened in the `.yaml` twin and in the producer task's `metadata.delivered_checks` (the three writes). Every verdict at main `54222c4dcd` is unchanged.
+
+| leaf | check | path change |
+|---|---|---|
+| ε #8288 | `topology-selectors-read-face-closure` (`face_closure_nodes\(`, present) | + `crates/reify-eval/src/compute_targets/result_topology.rs` (`nodes_for_faces` becomes `CarriedTopology::nodes_for_faces`) |

@@ -38,6 +38,7 @@ tasks:
       pattern: CURVATURE
       paths:
       - crates/reify-eval/src/geometry_ops.rs
+      - crates/reify-eval/src/geometry_ops/
       expect: present
   - name: no-corpus-migration
     binding: 'grep: zero `: Curvature` declarations in stdlib/examples/tests; zero

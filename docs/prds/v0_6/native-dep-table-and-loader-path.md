@@ -1,6 +1,6 @@
 # PRD — native-dep table and the loader-path decision (review-all S21)
 
-**Status:** draft — pass 1 of the review-all-reify-20261010 program (stream S21), awaiting the lead's rulings on §9 before commit and decompose.
+**Status:** ready to decompose — review-all-reify-20261010 program, stream S21. The lead's pass-1 rulings (2026-10-12) are applied: δ is dropped (the verify.sh share goes to S18), D8 extends the existing infra members, and the RUNPATH root fix is out of scope (§9).
 **Program:** `plans/review-all-program-reify-20261012.md`, stream **S21** (size S, risk low, mode agent, wave 1, no upstream seam). Ruling: §Resolved decisions → "Uncontested block" (native-deps.toml read by lib.rs and check-manifold-deps.sh; OCCT directory decision in lib_gui_launch.sh) and §Contradictions ("the OCCT directory decision joins lib_gui_launch.sh").
 **Findings closed:** `fk-ce79499430e2` (high), `fk-765ff49d2de5` (medium), `fk-e05e85e98f91` (medium). No mechanical filings exist for them (report §Mechanical filings: all three `open → this stream`).
 **Invariants established:** none promoted to this stream. Every extraction leaf names its adoption ratchet (program INV candidate 5, extract-with-ratchet). The existing CLAUDE.md native-deps invariant (one preflight arm per `NativeDep` variant) is kept and gets a by-construction enforcement (§4 D3).
@@ -149,28 +149,31 @@ These are measured facts. The design in §4 rests on them.
 
   This is the one behaviour change in the PRD. The evidence for it is above, and γ's signal includes a real smoke run.
 
-**D7 — The runner's and verify.sh's dir sets come from the helper's `cargo-target` class, and the facts are stated once.**
+**D7 — The runner's dir set comes from the helper's `cargo-target` class, verify.sh's will once S18 lands, and the facts are stated once.**
 - `.cargo/run-with-occt.sh` becomes "source the lib, prepend `cargo-target`, exec".
-- `verify.sh::apply_env` computes `_PLAN_LD_LIBRARY_PATH` from the same class. Its phase-boundary export, `REIFY_AMBIENT_LD_LIBRARY_PATH` capture and `add_tool` scrub are the scope contract that `test_verify_ld_library_path_scope.sh` guards. They are unchanged, because they are not a copy of the dir policy (§9 Q1 sequences this against S18).
+- **`scripts/verify.sh` is not edited by this PRD.** Lead ruling (program doc §Lead amendments: no bash edits to verify.sh ahead of S18's Python rewrite).
+  - S18's Python `apply_env` computes the plan loader path from this helper's `cargo-target` class (cross-reference carried in S18's PRD).
+  - The phase-boundary export, the `REIFY_AMBIENT_LD_LIBRARY_PATH` capture and the `add_tool` scrub are verify's own scope contract and stay S18's.
+  - Until S18 lands, verify.sh's two `_PLAN_LD_LIBRARY_PATH` prepend lines stay as they are, and so does `test_verify_ld_library_path_scope.sh`'s expected-value re-derivation of them.
 - **The new note.** `docs/notes/native-dep-loader-path.md` states once:
   - the two classes and why each exists (premise check 1, dated)
   - which packages bake which RUNPATH (`emit_rpath_for_bins` / `emit_rpath_for_tests` callers)
   - the LD_LIBRARY_PATH-outranks-DT_RUNPATH hazard
   - the 7.8-direct / 7.9-via-gmsh fact, by pointer to CLAUDE.md "Native deps"
 
-  The runner, the helper header, `reify-kernel-occt/build.rs`'s SONAME-pin comment and `verify.sh`'s apply_env comment point to it instead of restating it. CLAUDE.md's Pointers table gains one row.
+  The runner, the helper header and `reify-kernel-occt/build.rs`'s SONAME-pin comment point to it instead of restating it. S18's port re-points verify's apply_env comment. CLAUDE.md's Pointers table gains one row.
 - The false "No rpath is baked in" and "OCCT 7.9 is installed" sentences are deleted.
 
-**D8 — No new `tests/infra` member unless §9 Q2 rules otherwise.**
+**D8 — No new `tests/infra` member (lead ruling, §9 Q2).**
 - Helper behaviour and the loader-path ratchet go into existing members:
   - `test_run_gui_scripts.sh` for the GUI ordering and the class outputs
   - `test_verify_ld_library_path_scope.sh` for verify and the runner
 - This avoids adding a `run-all-classification.manifest` row, which is S19's seam (G4 table).
-- The loader-path ratchet (INV candidate 5) counts loader-path prepends in tracked `*.sh` files: lines matching `LD_LIBRARY_PATH="\$[A-Za-z_]+\$\{_?[A-Z_]*LD_LIBRARY_PATH:\+` (the `git grep -E` form), excluding `scripts/lib_native_ld_path.sh` and `scripts/lib_gui_launch.sh`. The baseline at main is **7**: runner ×2, run-gui.sh, run-gui-dev.sh, lib_e2e_smoke.sh, verify.sh ×2. γ takes it to 2, because verify.sh's two `_PLAN_LD_LIBRARY_PATH` lines are exempt until δ. δ takes it to 0.
+- The loader-path ratchet (INV candidate 5) counts loader-path prepends in tracked `*.sh` files: lines matching `LD_LIBRARY_PATH="\$[A-Za-z_]+\$\{_?[A-Z_]*LD_LIBRARY_PATH:\+` (the `git grep -E` form), excluding `scripts/lib_native_ld_path.sh` and `scripts/lib_gui_launch.sh`. The baseline at main is **7**: runner ×2, run-gui.sh, run-gui-dev.sh, lib_e2e_smoke.sh, verify.sh ×2. γ takes it to **2** and holds it there. verify.sh's two `_PLAN_LD_LIBRARY_PATH` lines are a named exemption that lasts until S18's Python rewrite deletes them. At that point S18 removes the exemption, which takes the count to 0.
 
 ## 5. Out of scope
 
-- **Making `reify-kernel-occt` (and any other package whose test binaries pick up gmsh/openvdb through dev-deps) emit RUNPATH for those deps.** That root fix would let the `cargo-target` class drop the conda prefix too. It needs a workspace-wide NEEDED-vs-RUNPATH scan this stream does not own. §9 Q3. Breadcrumb trigger: a non-Rust child of a cargo-run binary misbehaves under the conda prefix.
+- **Making `reify-kernel-occt` (and any other package whose test binaries pick up gmsh/openvdb through dev-deps) emit RUNPATH for those deps.** That root fix would let the `cargo-target` class drop the conda prefix too. It needs a workspace-wide NEEDED-vs-RUNPATH scan this stream does not own. Ruled out of scope (§9 Q3); the breadcrumb, with its measured premise and a follow-up leaf candidate, is at the end of §9.
 - **`libslvs` discovery in `reify-constraints/build.rs`** (pkg-config, outside `NativeDep`). It is named in the finding's next-change scenario, and no finding asks for it to join the table.
 - **Porting `check-manifold-deps.sh` or `test_occt_deps_preflight.sh` to Python.** The policy's port arm fires on a flake touch, not on this refactor. These leaves edit the existing bash members in place.
 - **The OCCT SONAME pin set and its `"7.8"` build.rs fallback literal.** Not mirrored with Rust beyond that fallback; unchanged.
@@ -181,13 +184,13 @@ These are measured facts. The design in §4 rests on them.
 |---|---|---|
 | `scripts/check-manifold-deps.sh` gate arms (INVARIANT: one arm per `NativeDep` variant) | **S21** (this PRD) | α moves the invariant's enforcement from a lexical parse to table-driven dispatch plus a Rust row-set test plus the behavioural per-row loop |
 | `scripts/lib_gui_launch.sh` ordering contract (pin step last) once it owns the OCCT dir prepend | **S21** | γ, D6 |
-| `scripts/verify.sh` (whole file is S18's port target; verify-pipeline file, full gate per landing) | **S18** (wave 2) | δ edits `apply_env`'s dir computation only (§9 Q1) |
-| `run-all-classification.manifest` rows for any new wrapper | **S19** | none by default (D8); §9 Q2 |
+| `scripts/verify.sh` (whole file is S18's port target; verify-pipeline file, full gate per landing) | **S18** (wave 2) | not edited here; S18's Python `apply_env` consumes the helper's `cargo-target` class (cross-reference in S18's PRD) |
+| `run-all-classification.manifest` rows for any new wrapper | **S19** | none (D8) |
 | `scripts/verify-pipeline-paths.txt` and the config-only fast path | **S18** | none: the table sits under a crate dir and the reader is `.py`. α re-runs the oracle on the final file set (§8 α) |
 | `scripts/verify-pipeline-infra-tests.txt` | unowned in the program table | α adds rows `crates/reify-build-utils/native-deps.toml` and `scripts/native_deps_table.py` → `tests/infra/test_occt_deps_preflight.sh`; γ adds `scripts/lib_native_ld_path.sh` → the two members D8 names |
 | CLAUDE.md "Native deps" bullets | unowned (S23 burns prose down in wave 4) | α rewrites the completeness-check sentence; γ adds the Pointers row |
 
-There is no later-wave dependency. The only coupling to a later wave is δ → S18, where S21 lands first and S18 ports the derived form.
+There is no later-wave dependency. The only coupling to a later wave is S18 consuming the γ helper: S21 lands first, and S18 removes γ's verify.sh ratchet exemption when its rewrite lands.
 
 ## 7. Boundary tests (G5 — bare B suffices)
 
@@ -235,7 +238,7 @@ G5 heuristic: the stakes are build-graph correctness and the merge gate, but eac
     - After `GMSH_INCLUDE_DIR=<other dir>`, `cargo build -p reify-eval -v` reports reify-eval's build script dirty on that env var. Today it does not.
     - The ratchet section is green at 0.
     - The per-crate passed counts for `reify-eval`, `reify-kernel-conformance` and `reify-mesh-morph` (one captured run, cargo-test-tally) equal main's.
-- **γ — one loader-path helper; GUI launch owns the OCCT dir** · priority medium · keys `fk-e05e85e98f91` · INV: extract-with-ratchet, ratchet member = the D8 loader-path prepend count in `tests/infra/test_verify_ld_library_path_scope.sh` (baseline 7 → 2, verify.sh's two lines exempt until δ).
+- **γ — one loader-path helper; GUI launch owns the OCCT dir** · priority medium · keys `fk-e05e85e98f91` · INV: extract-with-ratchet, ratchet member = the D8 loader-path prepend count in `tests/infra/test_verify_ld_library_path_scope.sh` (baseline 7 → 2; verify.sh's two lines are a named exemption until S18 lands).
   - **Deliverable:**
     - D5 `scripts/lib_native_ld_path.sh`
     - D6 `gui_launch_env_pin`; the run-gui.sh, run-gui-dev.sh and lib_e2e_smoke.sh §2a stanzas deleted
@@ -249,30 +252,22 @@ G5 heuristic: the stakes are build-graph correctness and the merge gate, but eac
     - One `gui/test/visual/run_find_uses_smoke.sh` run passes.
     - `cargo nextest run -p reify-kernel-occt` still loads (the `cargo-target` class keeps the deps dir, premise check 1).
     - The ratchet reads 2.
-- **δ — verify.sh derives its plan loader path from the helper** · priority low · keys none — it delivers the verify.sh share of `fk-e05e85e98f91`, which γ carries as its `x_finding_key` · INV: the γ ratchet's verify.sh exemption removed (→ 0) · depends on γ · full gate (verify-pipeline file).
-  - **Deliverable:**
-    - `apply_env`'s snap/deps computation replaced by the `cargo-target` class. The capture, export, scrub and their comments stay, re-pointed to the note.
-    - `test_verify_ld_library_path_scope.sh`'s expected-value re-implementation replaced by a call to the same helper.
-  - **Signal (G2):**
-    - `scripts/verify.sh --print-plan` emits a byte-identical `export LD_LIBRARY_PATH=` ENV line before and after on the dev host.
-    - `test_verify_ld_library_path_scope.sh` is green.
-    - The ratchet reads 0.
-- **ω — PRD close** · priority low · depends on α, β, γ, δ · process leaf per the overlay's decompose-close obligations.
+- **ω — PRD close** · priority low · depends on α, β, γ · process leaf per the overlay's decompose-close obligations.
   - **Deliverable:** task-id backfill, `Status: SHIPPED` freeze header with the LIVE/AS-AUTHORED map, and the matching manifest header.
   - **Signal:** the committed header.
 
-Each leaf carries `metadata.x_finding_key` (list), `x_finding_run = "review-all-reify-20261010"`, `source = "review-all"`. No new gate-resident test file is added (D8), so no drift-guard registration leaf is needed. If §9 Q2 rules for a new member, its wrapper and manifest row land in γ's own diff.
+Each leaf carries `metadata.x_finding_key` (list), `x_finding_run = "review-all-reify-20261010"`, `source = "review-all"`. No new gate-resident test file is added (D8), so no drift-guard registration leaf is needed.
 
-## 9. Open questions (for the lead before commit)
+## 9. Resolved pass-1 questions (lead rulings, 2026-10-12)
 
-1. **δ's sequencing against S18.** verify.sh is S18's whole port target. Nothing in the G4 table names verify.sh itself as a seam, and the brief lists "verify.sh's phase-scoped export" as S21-deletable.
-   - **(a) default:** δ lands in wave 1 before S18 starts, and S18 ports the derived form. Cost: one more full-gate landing.
-   - **(b)** Drop δ. Hand S18 a cross-reference line so its Python `apply_env` calls the helper's `cargo-target` class. γ's ratchet then keeps a verify.sh exemption until S18 lands.
+1. **verify.sh → (b).** δ is dropped. S18 rewrites verify.sh in Python, so bash edits before it would be wasted. S18's PRD carries the cross-reference: its `apply_env` calls `scripts/lib_native_ld_path.sh`'s `cargo-target` class. γ's ratchet names verify.sh's two prepend lines as an exemption until S18 lands.
+2. **Infra members → (a).** The existing members are extended (D8). No new wrapper, and no S19 dependency.
+3. **RUNPATH completeness → (a).** Out of scope (§5). The breadcrumb, with its measured premise, is below.
 
-   Note: "delete the export" is read as "delete verify.sh's own copy of the dir policy". The phase-scoped export and the scrub stay, because removing a belt-and-braces export needs per-plan-line evidence this PRD does not have.
-2. **New infra member vs existing members (D8).** CLAUDE.md says new infra tests are Python; S19 owns manifest rows for new wrappers.
-   - **(a) default:** extend `test_run_gui_scripts.sh` and `test_verify_ld_library_path_scope.sh`. No new row, no S19 dependency.
-   - **(b)** A new `tests/infra/test_native_ld_path.py` plus a `.sh` wrapper plus one manifest row, consuming S19's row format. This is cleaner per h6, at the cost of a same-wave cross-stream dependency.
-3. **Root-cause RUNPATH completeness (§5).**
-   - **(a) default:** out of scope, breadcrumbed.
-   - **(b)** Add a leaf: every package whose test binaries `NEED` a deps lib emits rpath for it, checked by a NEEDED-vs-RUNPATH scan, after which the `cargo-target` class can drop the conda prefix. This widens S21 past its ruled remedy.
+**Breadcrumb — RUNPATH completeness.**
+- **Premise** (measured 2026-10-12 against main `8e6ffcac9d`, binaries built 2026-10-11): the `reify-kernel-occt` lib-test binary has RUNPATH `[/usr/lib/x86_64-linux-gnu]` only. It `NEED`s `libgmsh.so.4.15` and `libopenvdb.so.13.0` through its dev-dependency on `reify-eval`, and both are `not found` without `LD_LIBRARY_PATH`.
+- **Follow-up leaf candidate.** Owner: `reify-build-utils`, the successor to S21 β.
+  - Every package whose test binaries `NEED` a deps lib emits rpath for it through `detect()`'s sibling `emit_rpath_for_tests`.
+  - A NEEDED-vs-RUNPATH scan over the built test binaries enforces this.
+  - The `cargo-target` class can then drop `/opt/reify-deps/lib`, and with it the conda prefix that every cargo-run child process inherits today.
+- **Trigger:** a non-Rust child of a cargo-run binary misbehaves under the conda prefix, or the next `/review-all` re-raises the hostile-prefix exposure.

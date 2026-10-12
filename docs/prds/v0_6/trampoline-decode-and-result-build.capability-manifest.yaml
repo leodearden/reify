@@ -4,7 +4,7 @@ prd: docs/prds/v0_6/trampoline-decode-and-result-build.md
 schema_version: 1
 tasks:
   - label: "α"
-    task_id: null
+    task_id: 8674
     title: "stdlib_inputs foundation (InputDecodeError, into_failed, ComputeInputMalformed); ElasticMaterial decoder in four trampolines; modal read_scalar_si and input-position silent zeros deleted; C6 ratchet member"
     capabilities:
       - name: "stdlib-inputs-module-declared"
@@ -68,8 +68,8 @@ tasks:
           kind: "manual"
           reason: "behavioural boundary test; no grep can assert one failure policy"
   - label: "β"
-    task_id: null
-    title: "Options decoders (ElasticOptions, ModalOptions, BucklingOptions); no Rust default literal; declared-unread params on #7079's declared-ignored set"
+    task_id: 8679
+    title: "Options decoders (ElasticOptions, ModalOptions, BucklingOptions); no Rust default literal; decoded read set unchanged; #7079 attaches its declaration afterwards"
     capabilities:
       - name: "eigen-knob-fallbacks-gone"
         binding: "grep: extract_eigen_knobs restates ModalOptions defaults (10, 1e-9, 200) at main"
@@ -101,14 +101,14 @@ tasks:
         delivered_check:
           kind: "manual"
           reason: "substrate fact true at main; D1's premise"
-      - name: "pdrop-mechanism-upstream"
-        binding: "producer:#7079 upstream (pending) — C1 declaration mechanism; #7080/#7084 honors land first (D2)"
+      - name: "pdrop-builds-on-beta"
+        binding: "consumer:#7079/#7080/#7084 downstream (lead ruling OQ2 (b), D2) — they depend on β; β honors nothing new and decodes today's read set"
         verdict: PASS
         delivered_check:
           kind: "manual"
-          reason: "upstream dependency; edges are the enforcement"
+          reason: "downstream dependency edges are the enforcement"
   - label: "γ"
-    task_id: null
+    task_id: 8683
     title: "Loads + supports decoders: LoadSpec, PressureDirection, SupportSpec; coded unresolvable-face and shell-route support-drop diagnostics"
     capabilities:
       - name: "modal-string-support-decode-gone"
@@ -142,7 +142,7 @@ tasks:
           kind: "manual"
           reason: "rejection must be observed firing by the D3 workflow, not grepped"
   - label: "δ"
-    task_id: null
+    task_id: 8686
     title: "StructureInstanceData::registry_free + REGISTRY_FREE; consts and Rust StructureTypeId(0) producers migrated; registry reads re-stamp by name"
     capabilities:
       - name: "registry-free-constructor"
@@ -170,7 +170,7 @@ tasks:
           paths: ["crates/reify-eval/src/lib.rs"]
           expect: "absent"
   - label: "ε"
-    task_id: null
+    task_id: 8690
     title: "ElasticResult builder pair used by both arms and the cache bridge; warm_started declared; C4 parity test"
     capabilities:
       - name: "warm-started-declared"
@@ -196,7 +196,7 @@ tasks:
           kind: "manual"
           reason: "substrate fact true at main"
   - label: "ζ"
-    task_id: null
+    task_id: 8693
     title: "ModalResult / Mode builders + typed decode; topology on the undeclared-write list (#7097); stale docstrings; parity tests"
     capabilities:
       - name: "modal-result-builder"
@@ -230,7 +230,7 @@ tasks:
           kind: "manual"
           reason: "liveness is checked by the C4 test's owner list, and by PVAC once #7102 lands"
   - label: "η"
-    task_id: null
+    task_id: 8697
     title: "MassProperties single owner in reify-stdlib dynamics::mass_props; reify-eval minters and parser deleted"
     capabilities:
       - name: "eval-minter-gone"
@@ -250,7 +250,7 @@ tasks:
           paths: ["crates/reify-eval/src/dynamics_psd.rs"]
           expect: "absent"
   - label: "θ"
-    task_id: null
+    task_id: 8698
     title: "Residual Value::as_f64 copies deleted; drifted tensegrity_crack::scalar_f64 given an explicit policy (subsumes #8559)"
     capabilities:
       - name: "appearance-copy-gone"
@@ -278,7 +278,7 @@ tasks:
           paths: ["gui/src-tauri/src/engine.rs"]
           expect: "absent"
   - label: "ι"
-    task_id: null
+    task_id: 8702
     title: "Modal DiagnosticCode per mnemonic; Info severity fix; substring assertions migrated"
     capabilities:
       - name: "truncation-note-coded"
@@ -296,7 +296,7 @@ tasks:
           kind: "manual"
           reason: "multi-line emission site; behavioural tests are the enforcement"
   - label: "κ"
-    task_id: null
+    task_id: 8705
     title: "Stress tensor symmetry checked once at the Value boundary; coded Error; shared is_symmetric_3x3"
     capabilities:
       - name: "shared-symmetry-predicate"
@@ -322,7 +322,7 @@ tasks:
           kind: "manual"
           reason: "rejection must be observed firing by the D3 workflow"
   - label: "λ"
-    task_id: null
+    task_id: 8706
     title: "shell_extract_compute_fn per-phase error mapping; one Failed point"
     capabilities:
       - name: "one-failed-point"
@@ -332,7 +332,7 @@ tasks:
           kind: "manual"
           reason: "count assertion lives in the C6 ratchet row, not a grep descriptor"
   - label: "μ"
-    task_id: null
+    task_id: 8711
     title: "SampledField 3D accessors; build_slab_sdf fixed; shell-extract grid module; reify-expr index helpers routed"
     capabilities:
       - name: "flat-index-accessor"
@@ -358,7 +358,7 @@ tasks:
           kind: "manual"
           reason: "relational numeric bound (G6): one voxel spacing is the grid's own resolution"
   - label: "ν"
-    task_id: null
+    task_id: 8714
     title: "validate_regular3d covers data length and axis geometry for every shell-extract entry point"
     capabilities:
       - name: "validation-variants-moved"
@@ -376,7 +376,7 @@ tasks:
           kind: "manual"
           reason: "behavioural boundary test"
   - label: "ξ"
-    task_id: null
+    task_id: 8717
     title: "SampledField::same_grid / with_data; fea grids_equal and metadata-copy literals routed; fea.rs partitioned"
     capabilities:
       - name: "same-grid-predicate"
@@ -404,7 +404,7 @@ tasks:
           paths: ["crates/reify-stdlib/src"]
           expect: "present"
   - label: "ο"
-    task_id: null
+    task_id: 8718
     title: "dynamics/eval.rs partitioned along its measured groups"
     capabilities:
       - name: "partition-shape"
@@ -414,7 +414,7 @@ tasks:
           kind: "manual"
           reason: "structural; the seat's partition table and the no-new-pub(super) rule are reviewed, not grepped"
   - label: "π"
-    task_id: null
+    task_id: 8720
     title: "INV candidate 4 (S15 half): INV-PD-2 names the C4 builder parity tests; census row"
     capabilities:
       - name: "inv-pd-2-row"
@@ -424,7 +424,7 @@ tasks:
           kind: "manual"
           reason: "prose row; asserting wording is forbidden (assert behaviour, not prose)"
   - label: "ρ"
-    task_id: null
+    task_id: 8722
     title: "Docs-truth: von_mises-family symmetric precondition; ElasticResult.warm_started; discoverability"
     capabilities:
       - name: "chunk-signatures-compile"
@@ -434,7 +434,7 @@ tasks:
           kind: "manual"
           reason: "docs-truth acceptance is a smoke compile plus findability review"
   - label: "σ"
-    task_id: null
+    task_id: 8724
     title: "PRD-close: terminal stamp"
     capabilities:
       - name: "terminal-stamp"

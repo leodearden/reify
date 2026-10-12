@@ -1,6 +1,6 @@
 # PRD: Tooling front end — one compile front end per surface, one LSP method table, one member-scope oracle
 
-**Milestone:** v0_6 · **Status:** draft — pass 1, awaiting lead rulings OQ1–OQ4 (§7) · **Approach:** B + H
+**Milestone:** v0_6 · **Status:** active — decomposed 2026-10-12 (pass 2); lead rulings OQ1–OQ4 applied (§7) · **Approach:** B + H
 
 Authored 2026-10-12 by the S27 `/prd` seat of program `review-all-reify-20261010`
 (`plans/review-all-program-reify-20261012.md`, stream **S27 Tooling front end**, wave 1,
@@ -50,10 +50,10 @@ After this PRD lands, a user observes:
   test that names the missing site, instead of compiling cleanly through a `_` arm or a
   hand-copied list.
 
-The compile-front-end outcome (one front end shared by CLI, LSP diagnostics, LSP
-`AnalysisContext` and — if it survives — the CLI MCP context) is the stream's high-severity
-goal; its exact shape is held for the lead's ruling on OQ1/OQ2 (§7) because two live,
-Leo-ratified records already own parts of it.
+The compile-front-end outcome is the stream's high-severity goal. Per the lead's rulings
+(§7): the one front end is resolution-unification's `compile_program` (#5516), which S27's γ
+brings the LSP's `AnalysisContext` and remaining LSP compile sites onto; the CLI MCP context
+is deleted by #6665 rather than migrated.
 
 ## §1 — Background: findings ledger
 
@@ -61,7 +61,7 @@ Every key the stream owns, with the leaf that closes it (§10). One key, one lea
 
 | key | anchor | sev | verdict | leaf |
 |---|---|---|---|---|
-| fk-f5264d76e3ad | `reify-cli mcp_context.rs::CliToolContext` — no single owner of the user-module front end | high | confirmed | γ (with β, δ contributing) |
+| fk-f5264d76e3ad | `reify-cli mcp_context.rs::CliToolContext` — no single owner of the user-module front end | high | confirmed | γ (β contributing; MCP part closed by #6665) |
 | fk-41819ea934bd | `reify-lsp diagnostics.rs::compute_diagnostics` — second, divergent pipeline | medium | confirmed | ε |
 | fk-b420a7695f68 | `diagnostics.rs::compute_diagnostics_with_state` — guarded members missing from value-cell walks | medium | confirmed | ζ |
 | fk-3a3ae797f979 | `references.rs::entity_members` — five wildcard member-list matches, no purpose-nested descent | medium | confirmed | η |
@@ -136,7 +136,7 @@ the same region (`module_dag.rs`, `lib.rs`). → **OQ2**.
 
 Four groups, each a small set of leaves:
 
-1. **Front end** (β, γ, δ; shape per OQ1/OQ2). The surfaces stop spelling parse → module
+1. **Front end** (β, γ; `compile_program` per OQ2-A). The surfaces stop spelling parse → module
    path → compile → module-path rule themselves; the eval-readiness question moves out of
    `reify-lsp`'s private `diagnostics::eval_guard` into `reify-eval`, the crate that owns
    the hazard, so every surface asks the same predicate and differs only in what it does
@@ -176,9 +176,11 @@ pub fn first_unrepresentable_cell(compiled: &CompiledModule) -> Option<Unreprese
 - `None` is the only answer that permits `Engine::eval`/`check` on that module from a
   surface that adopts it.
 
-### §4.2 Compile front end (γ; held for OQ2)
+### §4.2 Compile front end (γ) — `compile_program` (resolution-unification §3.1)
 
-Whatever shape OQ2 rules, the contract the surfaces rely on is:
+The producer is resolution-unification β (#5516): `compile_program(entry_path,
+entry_source, resolver, cfg, checker) -> CompiledProgram`. S27 adds no compile entry point.
+The contract the LSP relies on, and γ asserts from the consumer side:
 
 - one call per surface turns `(path or URI, source text, checker)` into the parsed module,
   the compiled module, and rendered parse errors; no surface derives a `ModulePath` from a
@@ -186,8 +188,13 @@ Whatever shape OQ2 rules, the contract the surfaces rely on is:
 - the module-path rule (`check_module_path_decl`) is applied inside that call, exactly once;
 - the checker is a parameter (CLI and LSP pass `SimpleConstraintChecker`), never a hidden
   default;
-- an already-parsed module can be supplied (the LSP's per-document parse cache feeds
-  `AnalysisContext::from_parsed`), so adopting the front end never costs a second parse.
+- `AnalysisContext` builds its module through `compile_program` with the same resolver
+  shape LSP diagnostics use after #5520, so hover/completion and diagnostics compile the
+  same program; whether `AnalysisContext` keeps reusing the per-document parse cache or
+  takes `compile_program`'s own parse is decided in γ against #5516's landed signature
+  (§12 Q6) — a second parse per request is acceptable only if measured cheap.
+- parse errors carry S9's `ParseErrorKind::diagnostic_code()` (#8742); reify-lsp's
+  `convert_parse_error` copies it onto the LSP diagnostic (π).
 
 ### §4.3 LspMethod (κ)
 
@@ -342,60 +349,32 @@ deliberately absent — it belongs to #6805 (§9).
    chunk text changes (ν changes only the registry's shape and its content is pinned
    byte-for-byte).
 
-## §7 — Lead rulings required before decomposition
+## §7 — Lead rulings (2026-10-12)
 
-**OQ1 — the CLI MCP context: delete (#6665) or route through the front end?**
-- (A, recommended) #6665 stands. γ covers CLI and LSP only; δ is not filed. The MCP
-  portion of fk-f5264d76e3ad (three no-prelude `compile` calls, three parse-error
-  policies, ungated `engine.eval`) and fk-5854202d4aed's `CliState.engine_construction_count`
-  are closed by the deletion; γ's hand-back records that. ο still lands, because #6665 keeps
-  the `reify-mcp` stdio transport; its signal becomes the transport's own stdio test instead
-  of `reify mcp-server`'s handshake, and with the subcommand gone the transport has no
-  shipped host (a question for whoever owns reify-mcp's future, not this stream).
-- (B) The S27 ruling supersedes #6665: #6665 is cancelled with a reason, δ routes
-  `load_file`/`update_source`/`open_file` through the front end and β's predicate, and the
-  three parse-error policies stay as they are (they are `ReifyToolContext` behaviour, S25's
-  contract). ο's signal is the `reify mcp-server` handshake.
+Recorded in the program doc §"Resolved decisions — pass 1 open questions" → S27. The
+options considered are in the pass-1 record; only the rulings are restated here.
 
-**OQ2 — `compile_user_module` vs resolution-unification's `compile_program`.**
-- (A, recommended) `compile_program` (#5516) is the one front end. S27 adds no compile
-  entry point; γ moves `AnalysisContext::from_parsed` and every remaining LSP compile site
-  onto it (accepting a cached parse per §4.2) and deletes `module_name_from_uri` plus the
-  inline copy in `compute_diagnostics_with_state`; γ depends on #5516 and #5520. The G4 row
-  "reify_compiler compile entry points … owner S27" is re-pointed to resolution-unification
-  β (#5516); S12's `CheckEnginePlan`/`MeasurementContext` layer under `compile_program`.
-  τ creates no `front_end.rs` (the CLI's `parse_and_compile*` leave main.rs through #5517 and
-  #5518).
-- (B) Layered: S27 lands a single-file `compile_user_module` in a new
-  `reify_compiler::front_end` module now; resolution-unification β is amended so
-  `compile_program` calls it per entry and its I1 equivalence pin is asserted against it.
-  Two owners in one region, strictly ordered (S27 first); the `pub mod` line in
-  reify-compiler `lib.rs` follows S7's migration order.
-- (C) S27 supersedes resolution-unification P1's API. Relitigates an active Leo-authored
-  PRD; not recommended.
-
-**OQ3 — β's scope against #6851.** #6851 (pending, medium) owns the root fix
-(make the cell representable in `phase_auto_type_param_resolution`); the CLI's shape-2 panic
-(§2.3) is its to close.
-- (A, recommended) β relocates the predicate to reify-eval and the LSP consumes it; no new
-  CLI behaviour (a valid uninstantiated generic must not change `reify check`'s exit code,
-  and that exit policy is #5403's). #6851 later makes the predicate always `None` and may
-  delete it.
-- (B) β also gates the CLI's eval paths with a Warning and skipped eval. Needs an exit-policy
-  ruling for "constraints not evaluated".
-- (C) β waits on #6851 and is dropped if #6851 removes the hazard.
-
-**OQ4 — confirm decision 4 (reify.toml inert, docs only).** Alternative: ξ also emits a
-coded Warning when a `reify.toml` sits beside the entry file, so a user who writes one finds
-out it is ignored (the `nothing-vacuous-and-unowned` umbrella of
-`docs/legibility/design-invariants.md`). Recommended: docs only now; the warning is the
-first leaf of whatever PRD gives reify.toml a consumer.
+- **OQ1 → (A).** #6665 stands: `reify mcp-server` and `crates/reify-cli/src/mcp_context.rs`
+  are deleted. δ is not filed. The MCP portion of fk-f5264d76e3ad (three no-prelude
+  `compile` calls, three parse-error policies, ungated `engine.eval`) and
+  fk-5854202d4aed's `CliState.engine_construction_count` close by that deletion, recorded on
+  #6665. ο lands at the `reify-mcp` stdio-transport level, which #6665 keeps.
+- **OQ2 → (A).** `compile_program` (#5516) is the one front end. γ moves
+  `AnalysisContext::from_parsed` and the remaining LSP compile sites onto it, deletes
+  `module_name_from_uri` and the inline copy in `compute_diagnostics_with_state`, and depends
+  on #5516 and #5520. The G4 row "reify_compiler compile entry points" is owned by
+  resolution-unification β; S12's `CheckEnginePlan`/`MeasurementContext` layer under
+  `compile_program`/`CompiledProgram`. τ creates no `front_end.rs`.
+- **OQ3 → (A).** β moves the predicate to reify-eval and the LSP consumes it. The CLI is
+  unchanged; its exit policy is #5403's and the shape-2 panic is #6851's.
+- **OQ4 → (A).** reify.toml: docs only (decision 4).
 
 ## §8 — Pre-conditions for activating
 
-- Lead rulings OQ1–OQ4 recorded in the program doc.
-- S9's `TopologyTemplate::all_value_cells()` leaf filed (ζ's hard dependency; same wave).
-- Under OQ2-A: #5516 and #5520 are γ's hard dependencies.
+- Lead rulings OQ1–OQ4 recorded in the program doc (done 2026-10-12).
+- S9 ν #8743 (`TopologyTemplate::all_value_cells()`) is ζ's hard dependency; S9 μ #8742
+  (`ParseErrorKind::diagnostic_code`) is π's.
+- #5516 and #5520 (resolution-unification β, ζ) are γ's hard dependencies.
 - α's wrapper takes a `tests/infra/run-all-classification.manifest` row in its own diff, in
   the format S19 owns.
 
@@ -403,39 +382,39 @@ first leaf of whatever PRD gives reify.toml a consumer.
 
 | other PRD / stream | direction | seam mechanism | owner | status |
 |---|---|---|---|---|
-| `resolution-unification.md` (#5516 β, #5517–#5520) | consumes (OQ2-A) / contested (OQ2-B) | `compile_program` / `CompiledProgram` | resolution-unification (OQ2-A) | OQ2 |
-| task #6665 | conflicts (OQ1) | deletion of `crates/reify-cli/src/mcp_context.rs`, `cmd_mcp_server` | #6665 (OQ1-A) | OQ1 |
+| `resolution-unification.md` (#5516 β, #5517–#5520) | consumes | `compile_program` / `CompiledProgram` | resolution-unification β (#5516) | γ depends on #5516, #5520 (OQ2-A) |
+| task #6665 | consumes | deletion of `crates/reify-cli/src/mcp_context.rs`, `cmd_mcp_server` | #6665 | closes the MCP parts of fk-f5264d76e3ad and fk-5854202d4aed (OQ1-A); υ orders after it |
 | `driver-contract-implementation.md` #6797 ο | adjacent | LSP module-header assertion | driver-contract | unchanged under OQ2-A |
 | `driver-contract-implementation.md` #6805 χ (extends #6700, #5521) | consumes | cross-driver diagnostic-set parity | driver-contract | γ adds `tooling_fe_stdlib_enum.ri` to its corpus via cross-reference, not a new harness |
 | `solver-driver-parity.md` #6695 η | adjacent | LSP engine construction sites | solver-driver-parity | ε makes `compute_diagnostics` a wrapper: three construction sites, not four |
-| task #6851 | adjacent | unrepresentable-cell root fix | #6851 | OQ3 |
-| S9 compiler declaration passes | consumes | `TopologyTemplate::all_value_cells()`; `else_members.iter()` ratchet | S9 | ζ depends on S9's leaf |
+| task #6851 | adjacent | unrepresentable-cell root fix | #6851 | β moves the predicate only (OQ3-A) |
+| S9 compiler declaration passes | consumes | `TopologyTemplate::all_value_cells()` (ν #8743); ratchet row R4 in `tests/infra/test_compiler_decl_pass_ratchets.py` (α #8730); `ParseErrorKind::diagnostic_code` (μ #8742) | S9 | ζ depends on #8743 and lowers R4's reify-lsp/reify-cli rows; π depends on #8742 |
 | S9 | adjacent | `MemberDecl` variants in reify-ast (S9) vs `Declaration::member_scopes` (η) | each its own | disjoint symbols in `decl.rs` |
 | S1 Engine state partition (wave 3) | consumes | `scripts/check-compute-trampoline-registration.sh` `KNOWN_SITES` path for the CLI Engine site | S1 | φ held |
 | S26 GUI frontend (wave 3) | consumes | generated TS wire types | S26 | λ held |
-| S25 GUI backend (wave 2) | produces for | `dev_stdlib_root`; `ReifyToolContext` (OQ1-B parse-error policies stay S25's) | S27 / S25 | cross-reference only |
-| S12 check surface (wave 2) | produces for | the compile front end S12 layers `CheckEnginePlan` under | S27 (OQ2-B) or resolution-unification (OQ2-A) | OQ2 |
+| S25 GUI backend (wave 2) | produces for | `dev_stdlib_root` | S27 | cross-reference only |
+| S12 check surface (wave 2) | adjacent | S12 layers `CheckEnginePlan` under `compile_program` | resolution-unification | OQ2-A |
 | S19 infra harness | consumes | `run-all-classification.manifest` row format | S19 | α adds its row |
 | S3 + S7 | consumes | INV candidate 7 SCC baseline | S3/S7 | partitions must not grow an SCC |
-| S7 compiler module namespace | consumes | reify-compiler `lib.rs` module/re-export block | S7 | only under OQ2-B |
 | S18 verify.sh | consumes | `scripts/verify-pipeline-infra-tests.txt` row naming `crates/reify-cli/src/main.rs` | S18 | φ moves the row with the code; full gate |
 
-G4 seams this stream owns per the program doc: "reify_compiler compile entry points … one
-owner for the front-end function" (contested by §2.2 → OQ2) and "gui lsp_bridge.rs
-lane_for_method and gui/src/editor/lspClient.ts (consumers of LspMethod)" (κ, λ).
+G4 seams this stream owns: "gui lsp_bridge.rs lane_for_method and gui/src/editor/lspClient.ts
+(consumers of LspMethod)" (κ, λ). "reify_compiler compile entry points" is re-pointed to
+resolution-unification β by OQ2-A; S27 consumes it.
 
 ## §10 — Decomposition plan
 
-Labels are Greek; task ids are assigned at decompose time. Every leaf carries
+Labels are Greek; task ids filed 2026-10-12 (pass 2). φ #8776 and λ #8777 are held (deferred, x_seam_wait) until S1 / S26 release them. Every leaf carries
 `metadata.x_finding_key` (list), `metadata.x_finding_run = "review-all-reify-20261010"`,
 `metadata.source = "review-all"`, priority = the highest severity among its keys.
 
 **Phase 0 — ratchet**
 
-- **α — Tooling front-end adoption ratchet member** *(intermediate → γ, η, κ, μ)*.
+- **α #8755 — Tooling front-end adoption ratchet member** *(intermediate → γ, η, κ, μ)*.
   `tests/infra/test_tooling_front_end_ratchet.py` (stdlib unittest, no wall-clock bound) +
   `test_tooling_front_end_ratchet.sh` wrapper + manifest row, same diff. One row per pattern
-  in decision 7, each with today's measured production-code count as baseline, counted over
+  in decision 7 (the guarded-member union is S9's R4 row in
+  `tests/infra/test_compiler_decl_pass_ratchets.py`, #8730 — not a second member), each with today's measured production-code count as baseline, counted over
   `scripts/lib_rust_production_view.sh`'s production view (no second Rust lexer). Reds when a
   count rises; a vacuity floor reds when a pattern matches nothing it should. Signal: green
   on main; a scratch extra copy of each pattern reds naming the row. Keys: none (INV-5
@@ -443,22 +422,24 @@ Labels are Greek; task ids are assigned at decompose time. Every leaf carries
 
 **Phase 1 — partitions (move-only)**
 
-- **χ — Partition `reify-lsp/src/analysis.rs`** into `decl_oracle.rs` (module_name_from_uri,
+- **χ #8756 — Partition `reify-lsp/src/analysis.rs`** into `decl_oracle.rs` (module_name_from_uri,
   enclosing_decl_at, decl_name_and_span, nested_structures, purpose_nested_decl_names,
   name_token_span; imported downward by analysis, goto_def, references, symbols),
   `symbols.rs` (document symbols), `analysis.rs` (AnalysisContext and its summaries), tests
   moved with their unit. Signal: LSP suite green with no test edited beyond its `use` lines;
   `git grep "use crate::analysis::{.*enclosing_decl_at"` empty. Keys: none. medium.
-- **ψ — Partition `reify-lsp/src/references.rs`** into `references/{mod.rs, walk.rs, local.rs,
+- **ψ #8757 — Partition `reify-lsp/src/references.rs`** into `references/{mod.rs, walk.rs, local.rs,
   rename.rs, decl_uses.rs, cross_file.rs}` per the record; `walk.rs` imports reify-ast only;
-  the mod root's `pub use` is the interface. Signal as χ. Keys: none. medium.
-- **τ — Partition `reify-cli/src/main.rs`, layer units** into `args.rs`, `check_verdict.rs`,
-  `report.rs`, `module_capabilities.rs` (and `front_end.rs` only under OQ2-B), tests moved
+  the mod root's `pub use` is the interface. Subsumes #8611 (its test-module move is the
+  degenerate case of moving tests with their layer; cancel with reason "subsumed by ψ").
+  Signal as χ. Keys: none. medium.
+- **τ #8758 — Partition `reify-cli/src/main.rs`, layer units** into `args.rs`, `check_verdict.rs`,
+  `report.rs`, `module_capabilities.rs` (no `front_end.rs`: OQ2-A), tests moved
   with their unit. Signal: CLI suite green; `main.rs` holds no `fn module_has_*`, no
   `CheckErrorAllowlist*`. Keys: none. medium.
-- **υ — Partition `reify-cli/src/main.rs`, commands** into `cmd/<name>.rs`; main.rs dispatches
-  only. After τ, and after OQ1 settles `cmd_mcp_server`. Keys: none. medium.
-- **φ — HELD on S1 — `reify-cli/src/engine_config.rs`** (register_compute_trampolines,
+- **υ #8775 — Partition `reify-cli/src/main.rs`, commands** into `cmd/<name>.rs`; main.rs dispatches
+  only. After τ and after #6665 deletes `cmd_mcp_server`. Keys: none. medium.
+- **φ #8776 — HELD on S1 — `reify-cli/src/engine_config.rs`** (register_compute_trampolines,
   configured_eval_engine). `x_seam_wait = {stream: S1, contract: "KNOWN_SITES entry for the
   CLI Engine site and S1's EngineConfig"}`. The diff moves the `KNOWN_SITES` path and the
   `scripts/verify-pipeline-infra-tests.txt` row with the code (verify-pipeline file: full
@@ -466,93 +447,98 @@ Labels are Greek; task ids are assigned at decompose time. Every leaf carries
 
 **Phase 2 — LSP internals**
 
-- **ε — One diagnostics pipeline; `DiagnosticsResult.check_result`** (§4.5). Ports the 18
+- **ε #8759 — One diagnostics pipeline; `DiagnosticsResult.check_result`** (§4.5). Ports the 18
   `compute_diagnostics` test callers and the ~56 private-field reads to the result; deletes
   the posture lock's stand-in probe engine. Signal: B6; `git grep -n "state\.engine\b"` over
   diagnostics tests empty. Keys: fk-41819ea934bd, fk-5854202d4aed. medium.
-- **ω — Partition `reify-lsp/src/diagnostics.rs`** into `diagnostics.rs` + `diagnostics/tests.rs`
+- **ω #8770 — Partition `reify-lsp/src/diagnostics.rs`** into `diagnostics.rs` + `diagnostics/tests.rs`
   using only the public result. After ε. Keys: none. medium.
-- **ζ — Guarded members in every LSP value-cell walk.** The freshness loop and the FEA
+- **ζ #8771 — Guarded members in every LSP value-cell walk.** The freshness loop and the FEA
   hint's `value_cell_exprs` map in `compute_diagnostics_with_state`, the three chains in
   analysis, and `eval_guard`'s stage-one scan all call S9's `all_value_cells()`; a bare
   `value_cells` read survives only where excluding guarded members is the point, and the
-  line says so. Signal: B7 (fixture authored by ζ; decompose D3 probes it). Depends: S9's
-  accessor leaf, χ. Keys: fk-b420a7695f68. medium.
-- **η — `Declaration::member_scopes()`** (§4.4) and the five lookups + outline through it.
+  line says so; ζ lowers the reify-lsp and reify-cli rows of S9's R4 ratchet
+  (`tests/infra/test_compiler_decl_pass_ratchets.py`) to 0. Signal: B7 (fixture authored by
+  ζ). Depends: #8743, χ. Keys: fk-b420a7695f68. medium.
+- **η #8772 — `Declaration::member_scopes()`** (§4.4) and the five lookups + outline through it.
   Signal: B2, B3. Ratchet row → 0. Depends: α, χ, ψ. Keys: fk-3a3ae797f979. medium.
-- **θ — Hover: exhaustive declaration dispatch, per-class renderers.** Split
+- **θ #8773 — Hover: exhaustive declaration dispatch, per-class renderers.** Split
   `compute_hover_in_context` into one function per symbol class; declaration-name hover
   through a wildcard-free match on `Declaration`; add Field, Purpose, Constraint, Joint;
   hover becomes a `NAMED_DECL_SNIPPETS` consumer. Signal: B1, B3. Depends: η. Keys:
   fk-d9b1ed83ed62. medium.
-- **κ — `LspMethod`** (§4.3) in reify-lsp, `handle_request` on the enum, `lane_for_method`
+- **κ #8760 — `LspMethod`** (§4.3) in reify-lsp, `handle_request` on the enum, `lane_for_method`
   and the routing tests on `ALL`; drop the "Breaking change" paragraph and correct the
   documented `Ok(Value)` list. Subsumes #8447 (cancel with reason "subsumed by κ"). Signal:
   B4. Ratchet row → 0 in reify-lsp and gui/src-tauri production code. Depends: α. Keys:
   fk-7b9fad8a5d00. medium.
-- **λ — HELD on S26 — `lspClient.ts` method type from the generated wire types.**
+- **λ #8777 — HELD on S26 — `lspClient.ts` method type from the generated wire types.**
   `x_seam_wait = {stream: S26, contract: "TS wire types generated from Rust, carrying
   LspMethod::ALL"}`. `lspRequest` takes the generated union, so a misspelt method fails
   `tsc`. Keys: none (the TS half of κ's key). low.
-- **ι — Every AnalysisContext-building handler through `BlockingWorkPlacement`.** hover and
+- **ι #8774 — Every AnalysisContext-building handler through `BlockingWorkPlacement`.** hover and
   completion move into `self.blocking_work.run`; `blocking_work_requests` derives from
   `LspMethod::runs_blocking_work`; the stale `server.rs:268-284` pointer in AnalysisContext's
   Send note becomes a symbol cite. didOpen/didChange per §12 Q2. Signal: B5. Depends: κ.
   Keys: fk-1a772d160168. medium.
-- **μ — One import resolver; stdlib root resolved once** (§4.7). Subsumes #8557 (cancel
+- **μ #8769 — One import resolver; stdlib root resolved once** (§4.7). Subsumes #8557 (cancel
   with reason "subsumed by μ"). The CLI's literal in `parse_and_compile_with_cfg` moves to
   `dev_stdlib_root`, unless OQ2-A's #5517 has already removed that function; the GUI literal
   is S25's (cross-reference). Signal: a handler-level cross-file test for goto-definition
   and prepareRename against an open dirty buffer; ratchet rows → 1 home literal and 1
   resolver. Depends: α. Keys: fk-74ce7cce677f. low.
-- **π — `AutoTypeParam*` family predicate** (§4.6); drops the "four codes" comment and the
-  "Behavioral note" prose. Signal: a `BoundedInfeasible` diagnostic now emits the
-  `reify_lsp::auto_type_param` trace event; the test iterates the family. Keys:
-  fk-3e8bf5666555. low.
+- **π #8762 — `AutoTypeParam*` family predicate** (§4.6); drops the "four codes" comment and the
+  "Behavioral note" prose. `convert_parse_error` also carries S9's
+  `ParseErrorKind::diagnostic_code()` onto the LSP diagnostic (S9's seam row: S9 produces,
+  S27 adopts). Signal: a `BoundedInfeasible` diagnostic now emits the
+  `reify_lsp::auto_type_param` trace event; the test iterates the family; an LSP parse-error
+  diagnostic carries a code. Depends: #8742. Keys: fk-3e8bf5666555. low.
 
-**Phase 3 — front end (rulings OQ1–OQ3)**
+**Phase 3 — front end**
 
-- **β — Eval-readiness predicate in reify-eval** (§4.1); `reify-lsp`'s `eval_guard` keeps
-  reporting and asks reify-eval. Scope per OQ3. Signal: B8. Contributes to fk-f5264d76e3ad
-  (closed by γ). high.
-- **γ — One compile front end for CLI, LSP diagnostics and AnalysisContext** — shape per
-  OQ2 (§4.2 is the shape-independent contract). Signal: `tooling_fe_stdlib_enum.ri` produces
-  the same diagnostic set through `reify check`, LSP diagnostics and hover's
-  AnalysisContext, asserted by extending #6805's corpus; the front-end ratchet rows → 0.
-  Depends: α, β, χ; under OQ2-A also #5516, #5520. Keys: fk-f5264d76e3ad. high.
-- **δ — CONDITIONAL (OQ1-B only): MCP context through the front end** — `load_file`,
-  `update_source`, `open_file` call the front end and β's predicate; `get_parameters` /
-  `set_parameter` use `all_value_cells()`; `engine_construction_count` leaves `CliState`.
-  Signal: `reify mcp-server tests/prd-gate/fixtures/tooling_fe_stdlib_enum.ri` →
-  `reify_get_diagnostics` returns `[]`. Under OQ1-A not filed. high.
+- **β #8761 — Eval-readiness predicate in reify-eval** (§4.1); `reify-lsp`'s `eval_guard` keeps
+  reporting and asks reify-eval. CLI unchanged (OQ3-A). Signal: B8. Contributes to
+  fk-f5264d76e3ad (closed by γ). high.
+- **γ #8778 — LSP onto `compile_program`: AnalysisContext and the remaining compile sites** (§4.2).
+  `AnalysisContext::from_parsed` and every LSP compile site still on
+  `compile_with_stdlib_checked` after #5520 build through `compile_program`;
+  `module_name_from_uri` and the inline copy in `compute_diagnostics_with_state` are
+  deleted; the stale "nine previously hard-coded units" sentence in the
+  `reify_compiler::compile` rustdoc is corrected. Signal: `tooling_fe_stdlib_enum.ri`
+  produces the same diagnostic set through `reify check`, LSP diagnostics and hover's
+  AnalysisContext, asserted by adding the fixture to #6805's corpus (no new harness); hover
+  on an importing entry shows the imported sub's values; the LSP front-end ratchet rows → 0.
+  Depends: α, β, χ, #5516, #5520. Keys: fk-f5264d76e3ad (the MCP part closes by #6665).
+  high.
+- **δ — not filed (OQ1-A).** The MCP context is deleted by #6665.
 
 **Phase 4 — registries**
 
-- **ν — Chunk table; fence gate through the public registry** (§4.6). Drops the 19-count
+- **ν #8763 — Chunk table; fence gate through the public registry** (§4.6). Drops the 19-count
   test and `TOPICS_ANCHOR`. Signal: B9; `reify_language_reference` output byte-identical for
   every topic. Keys: fk-2da836d68189. medium.
-- **ξ — reify.toml inert status stated once** (§4.6). Subsumes #8336 (its option (b);
+- **ξ #8764 — reify.toml inert status stated once** (§4.6). Subsumes #8336 (its option (b);
   cancel with reason "subsumed by ξ"). Signal: `review/briefing.yaml` and
   `docs/notes/reify-toml-schema.md` state the inert status; the reify-config rustdoc no
   longer says "no other workspace crate consumes it yet". Keys: fk-677d67cb2ac8. medium.
-- **ο — Typed JSON-RPC id; notifications get no reply** (§4.6). Signal: B10 through the
+- **ο #8765 — Typed JSON-RPC id; notifications get no reply** (§4.6). Signal: B10 through the
   stdio transport. Keys: fk-bed8cadb429f. low.
-- **ρ — One expression-text renderer; stdlib sources in the doc model** (§4.6); corrects
+- **ρ #8767 — One expression-text renderer; stdlib sources in the doc model** (§4.6); corrects
   the "Structures then Occurrences" and `cross_refs` docs. Signal: B12. Keys:
   fk-10941c98934e. low.
-- **σ — `NodeId: FromStr` as the inverse of `Display`; `inspect-node` round-trips** (§4.6).
+- **σ #8768 — `NodeId: FromStr` as the inverse of `Display`; `inspect-node` round-trips** (§4.6).
   Subsumes #7720 (cancel with reason "subsumed by σ"). Signal: B11 through
   `crates/reify-cli/tests/harness_cli/cli_inspect_node.rs`. Keys: fk-972b7d28a290. low.
 
 **Close**
 
-- **Ω — PRD close: terminal stamp.** Depends on every other filed leaf (cancelled siblings
+- **Ω #8779 — PRD close: terminal stamp.** Depends on every other filed leaf (cancelled siblings
   count as satisfied). Sets the Status token, names the landed leaf ids, adds the
   AS-AUTHORED paragraph and the LIVE/AS-AUTHORED map here and in the capability manifest.
   low.
 
 DAG summary: α → {γ, η, κ, μ}; χ → {ζ, η, γ}; ψ → η → θ; ε → ω; κ → {ι, λ}; τ → {υ, φ};
-β → γ; S9-accessor → ζ; S1 → φ; S26 → λ; every leaf → Ω. Drift-guard registrations ride in
+β → γ; #5516, #5520 → γ; #8743 → ζ; #8742 → π; #6665 → υ; S1 → φ; S26 → λ; every leaf → Ω. Drift-guard registrations ride in
 the diff of the leaf adding the test (α's manifest row; any new nextest entry).
 
 ## §11 — Out of scope
@@ -584,11 +570,14 @@ the diff of the leaf adding the test (α's manifest row; any new nextest entry).
    shape the existing declaration arms render.
 5. **Fixture registration.** A leaf whose Rust test reads a `tests/prd-gate/fixtures/tooling_fe_*.ri`
    registers it in `_RUST_COUPLED_RI_FIXTURES` in the same diff (PG-DRIFT).
+6. **AnalysisContext's parse (γ).** Reuse the per-document parse cache if `compile_program`
+   as landed by #5516 accepts a parsed entry; otherwise take its own parse and measure the
+   per-request cost against the cache. Decide in γ.
 
 ## Gate walk (author mode)
 
 - **G1** — every mechanism names a consumer: `LspMethod` → handle_request, lane_for_method,
-  routing tests, ι; `member_scopes` → five lookups + outline + θ; predicate → LSP (and δ);
+  routing tests, ι; `member_scopes` → five lookups + outline + θ; predicate → LSP;
   `check_result` → tests and ω; `CHUNKS` → `reify_language_reference` and the fence gate;
   `dev_stdlib_root` → LSP handlers and CLI; `ExprText` → three formatters; `NodeId: FromStr`
   → `inspect-node`; family predicate → `convert_diagnostic`. The front-end function's
@@ -612,5 +601,5 @@ the diff of the leaf adding the test (α's manifest row; any new nextest entry).
   text; γ does not change that (S12 / driver-contract μ territory) and records it.
   `undef-has-provenance`, `error-severity-exits-nonzero`, `indeterminate-attributable-transient`,
   `parse-is-value-faithful`: no hit. No waivers.
-- **META** — complete and coherent for every leaf outside Phase 3; Phase 3 is complete once
-  OQ1–OQ3 are ruled, because each option names its leaf shape.
+- **META** — complete and coherent: the rulings fix Phase 3's shape (γ consumes
+  `compile_program`; δ not filed; β moves the predicate only).

@@ -2,7 +2,7 @@ prd: docs/prds/v0_6/tooling-front-end.md
 schema_version: 1
 tasks:
 - label: α
-  task_id: null
+  task_id: 8755
   title: 'tooling-front-end α: adoption ratchet member for the extraction leaves (INV candidate 5)'
   capabilities:
   - name: ratchet-member-exists
@@ -14,7 +14,7 @@ tasks:
       - tests/infra/test_tooling_front_end_ratchet.py
       expect: present
 - label: χ
-  task_id: null
+  task_id: 8756
   title: 'tooling-front-end χ: partition reify-lsp analysis.rs (decl_oracle, symbols, analysis)'
   capabilities:
   - name: decl-oracle-module
@@ -26,11 +26,11 @@ tasks:
       - crates/reify-lsp/src/decl_oracle.rs
       expect: present
 - label: ψ
-  task_id: null
+  task_id: 8757
   title: 'tooling-front-end ψ: partition reify-lsp references.rs into references/{walk,local,rename,decl_uses,cross_file}'
   capabilities:
   - name: walk-leaf-module
-    binding: 'producer-self — unit list from the review record h14 entry for crates/reify-lsp/src/references.rs'
+    binding: 'producer-self — unit list from the review record h14 entry for crates/reify-lsp/src/references.rs; subsumes #8611'
     verdict: PASS
     delivered_check:
       kind: path
@@ -38,11 +38,11 @@ tasks:
       - crates/reify-lsp/src/references/walk.rs
       expect: present
 - label: τ
-  task_id: null
+  task_id: 8758
   title: 'tooling-front-end τ: partition reify-cli main.rs layer units (args, check_verdict, report, module_capabilities)'
   capabilities:
   - name: check-verdict-module
-    binding: 'producer-self — unit list from the review record h14 entry for crates/reify-cli/src/main.rs; front_end.rs only under OQ2-B'
+    binding: 'producer-self — unit list from the review record h14 entry for crates/reify-cli/src/main.rs; no front_end.rs (OQ2-A)'
     verdict: PASS
     delivered_check:
       kind: path
@@ -50,11 +50,11 @@ tasks:
       - crates/reify-cli/src/check_verdict.rs
       expect: present
 - label: υ
-  task_id: null
+  task_id: 8775
   title: 'tooling-front-end υ: partition reify-cli main.rs commands into cmd/<name>.rs'
   capabilities:
   - name: cmd-modules
-    binding: 'producer-self — after τ and after OQ1 settles cmd_mcp_server'
+    binding: 'producer-self — after τ and after #6665 deletes cmd_mcp_server'
     verdict: PASS
     delivered_check:
       kind: path
@@ -75,7 +75,7 @@ tasks:
       - crates/reify-cli/src/engine_config.rs
       expect: present
 - label: ε
-  task_id: null
+  task_id: 8759
   title: 'tooling-front-end ε: one LSP diagnostics pipeline; DiagnosticsResult carries check_result'
   capabilities:
   - name: result-carries-check-result
@@ -94,7 +94,7 @@ tasks:
       kind: manual
       reason: behavioural equivalence asserted by the leaf's own test (PRD §5 B6)
 - label: ω
-  task_id: null
+  task_id: 8770
   title: 'tooling-front-end ω: partition reify-lsp diagnostics.rs tests through the public result'
   capabilities:
   - name: tests-module
@@ -106,11 +106,11 @@ tasks:
       - crates/reify-lsp/src/diagnostics/tests.rs
       expect: present
 - label: ζ
-  task_id: null
+  task_id: 8771
   title: 'tooling-front-end ζ: guarded members in every LSP value-cell walk via all_value_cells()'
   capabilities:
   - name: accessor-substrate
-    binding: 'producer:S9 all_value_cells leaf (upstream, same wave) — accessor absent at main 8e6ffcac9d; hard dependency edge at decompose'
+    binding: 'producer:#8743 (S9 ν, upstream, real dependency edge) — accessor absent at main 8e6ffcac9d; ζ lowers the reify-lsp/reify-cli rows of S9 R4 (#8730 member)'
     verdict: PASS
     delivered_check:
       kind: grep
@@ -125,7 +125,7 @@ tasks:
       kind: manual
       reason: fixture is the leaf's own deliverable; D3 probes it at decompose
 - label: η
-  task_id: null
+  task_id: 8772
   title: 'tooling-front-end η: Declaration::member_scopes() and the five LSP member lookups through it'
   capabilities:
   - name: member-scopes-on-declaration
@@ -141,7 +141,7 @@ tasks:
     binding: 'grammar-fixture:tests/prd-gate/fixtures/tooling_fe_purpose_nested_members.ri parses (0 ERROR nodes), reify check exit 0'
     verdict: PASS
 - label: θ
-  task_id: null
+  task_id: 8773
   title: 'tooling-front-end θ: hover renders every named declaration kind through an exhaustive match'
   capabilities:
   - name: hover-names-joint
@@ -157,7 +157,7 @@ tasks:
     binding: 'grammar-fixture:tests/prd-gate/fixtures/tooling_fe_hover_decl_kinds.ri parses (0 ERROR nodes), reify check exit 0'
     verdict: PASS
 - label: κ
-  task_id: null
+  task_id: 8760
   title: 'tooling-front-end κ: LspMethod owns the method set, concurrency class and blocking-work placement'
   capabilities:
   - name: lsp-method-enum
@@ -190,7 +190,7 @@ tasks:
       kind: manual
       reason: held leaf; the generated file name is S26's to choose
 - label: ι
-  task_id: null
+  task_id: 8774
   title: 'tooling-front-end ι: hover and completion run through BlockingWorkPlacement'
   capabilities:
   - name: hover-placed
@@ -203,7 +203,7 @@ tasks:
       - crates/reify-lsp/src/server.rs
       expect: present
 - label: μ
-  task_id: null
+  task_id: 8769
   title: 'tooling-front-end μ: one import resolver; stdlib root resolved once (subsumes #8557)'
   capabilities:
   - name: dev-stdlib-root-home
@@ -216,7 +216,7 @@ tasks:
       - crates/reify-compiler/src
       expect: present
 - label: π
-  task_id: null
+  task_id: 8762
   title: 'tooling-front-end π: DiagnosticCode AutoTypeParam family predicate'
   capabilities:
   - name: family-predicate
@@ -228,10 +228,19 @@ tasks:
       paths:
       - crates/reify-core/src
       expect: present
+  - name: parse-error-code-adopted
+    binding: 'producer:#8742 (S9 μ, upstream) ParseErrorKind::diagnostic_code; convert_parse_error carries no code at main'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'diagnostic_code\(\)'
+      paths:
+      - crates/reify-lsp/src/convert.rs
+      expect: present
 - label: β
-  task_id: null
+  task_id: 8761
   title: 'tooling-front-end β: eval-readiness predicate homed in reify-eval'
-  note: 'scope per OQ3'
+  note: 'OQ3-A: predicate moves; LSP consumes; CLI unchanged'
   capabilities:
   - name: predicate-in-reify-eval
     binding: 'producer-self — predicate private to reify-lsp diagnostics::eval_guard at main'
@@ -246,32 +255,33 @@ tasks:
     binding: 'probe 2026-10-12: reify check tests/prd-gate/fixtures/tooling_fe_unrepresentable_generic.ri -> exit 101 debug panic naming Bearing.seal, zero compile diagnostics'
     verdict: PASS
 - label: γ
-  task_id: null
-  title: 'tooling-front-end γ: one compile front end for CLI, LSP diagnostics and AnalysisContext'
-  note: 'shape held for OQ2 (compile_program #5516 vs compile_user_module)'
+  task_id: 8778
+  title: 'tooling-front-end γ: LSP onto compile_program — AnalysisContext and the remaining compile sites'
+  note: 'OQ2-A: producer is resolution-unification β #5516; depends on #5516 and #5520'
   capabilities:
-  - name: front-end-shape
-    binding: 'ruling — OQ1/OQ2 decide the producer (resolution-unification #5516 or this leaf)'
-    verdict: OPEN
+  - name: analysis-context-on-compile-program
+    binding: 'producer:#5516 compile_program (upstream, real dependency edge); AnalysisContext::from_parsed calls compile_with_stdlib_checked at main 8e6ffcac9d'
+    verdict: PASS
     delivered_check:
-      kind: manual
-      reason: the descriptor depends on the OQ2 ruling
+      kind: grep
+      pattern: 'compile_program\('
+      paths:
+      - crates/reify-lsp/src/analysis.rs
+      expect: present
+  - name: module-name-derivation-gone
+    binding: 'producer-self — pub fn module_name_from_uri in reify-lsp at main'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'pub fn module_name_from_uri\('
+      paths:
+      - crates/reify-lsp/src
+      expect: absent
   - name: stdlib-enum-divergence
     binding: 'probe 2026-10-12: reify check tests/prd-gate/fixtures/tooling_fe_stdlib_enum.ri exit 0; reify mcp-server get_diagnostics -> unresolved type: InfillPattern'
     verdict: PASS
-- label: δ
-  task_id: null
-  title: 'tooling-front-end δ (CONDITIONAL, OQ1-B only): MCP context through the front end'
-  note: 'not filed under OQ1-A (#6665 deletes crates/reify-cli/src/mcp_context.rs)'
-  capabilities:
-  - name: mcp-context-disposition
-    binding: 'ruling — OQ1'
-    verdict: OPEN
-    delivered_check:
-      kind: manual
-      reason: exists only under OQ1-B
 - label: ν
-  task_id: null
+  task_id: 8763
   title: 'tooling-front-end ν: one chunk table; fence gate through the public registry'
   capabilities:
   - name: chunk-table
@@ -293,9 +303,9 @@ tasks:
       - crates/reify-compiler/tests/harness_doc_chunks/fence_gate.rs
       expect: absent
 - label: ξ
-  task_id: null
+  task_id: 8764
   title: 'tooling-front-end ξ: reify.toml inert status stated once (subsumes #8336)'
-  note: 'subject to OQ4'
+  note: 'OQ4-A: docs only'
   capabilities:
   - name: false-consumer-claim-gone
     binding: 'producer-self — reify-config lib.rs rustdoc claims no other crate consumes it; five crates depend on it'
@@ -307,7 +317,7 @@ tasks:
       - crates/reify-config/src
       expect: absent
 - label: ο
-  task_id: null
+  task_id: 8765
   title: 'tooling-front-end ο: typed JSON-RPC id; notifications produce no reply'
   capabilities:
   - name: optional-id
@@ -320,7 +330,7 @@ tasks:
       - crates/reify-mcp/src/jsonrpc.rs
       expect: present
 - label: ρ
-  task_id: null
+  task_id: 8767
   title: 'tooling-front-end ρ: one expression-text renderer; stdlib sources in the doc model'
   capabilities:
   - name: stdlib-sources-public
@@ -342,7 +352,7 @@ tasks:
       - crates/reify-doc/src
       expect: present
 - label: σ
-  task_id: null
+  task_id: 8768
   title: 'tooling-front-end σ: NodeId FromStr inverse of Display; inspect-node round-trips (subsumes #7720)'
   capabilities:
   - name: node-id-from-str
@@ -364,7 +374,7 @@ tasks:
       - crates/reify-cli/src/dev.rs
       expect: absent
 - label: Ω
-  task_id: null
+  task_id: 8779
   title: 'tooling-front-end Ω: PRD close — terminal stamp'
   capabilities:
   - name: terminal-stamp

@@ -20,13 +20,9 @@ Probes executed 2026-10-12 with `target/debug/reify` (built 2026-10-11 19:33):
 
 ---
 
-## α₀ — Widen delivered-check paths on files this PRD moves *(planning artefact)*
+## α₀ — not a leaf (lead ruling Q2)
 
-| Capability | Evidence | Verdict |
-|---|---|---|
-| The affected checks are exactly the 11 listed in PRD §7 | probe: each `kind: grep` check under `docs/prds/**/*.capability-manifest.yaml` whose `paths` names `geometry_ops.rs`/`topology_selectors.rs` was located against main. Those matching outside the placed_walk region (≥ the `root_template_indices` banner) move. #6745/#6171/#6168 match inside `surface_subtree` and stay. | PASS |
-| Widening is true before and after the move | git pathspec `crates/reify-eval/src/geometry_ops/` matches the child directory but not `geometry_ops.rs`, so listing both paths matches at both times | PASS |
-| #5658's check is already vacuous on main | probe: `git grep -E 'fn eval_all_args_to_f64' -- crates/reify-eval/src/geometry_ops.rs` → no match (the fn is `eval_all_args_to_values`); it is pre-existing and reported as a cross-reference, not widened | PASS (recorded) |
+Performed by the pass-2 decompose session (2026-10-12) as three writes per check: 11 checks, of which 9 also have producer-metadata copies. The record is PRD §7 and the "Delivered-check path correction" section of each affected `.md` twin. Every widened check replays with its verdict unchanged at `54222c4dcd`.
 
 ## α — `selector_resolve`: one compose, `NormalCone`, one table walk; SCC dissolved
 
@@ -80,7 +76,7 @@ Probes executed 2026-10-12 with `target/debug/reify` (built 2026-10-11 19:33):
 | `validate` has one caller | grep: `system.validate()?` in `SystemBuilder::add_sketch` only | PASS |
 | drift guards to delete | grep: `unresolved_entity_ref(` ×4 calls and `unresolved_constraint_ref(` ×5 calls in `solvespace.rs`, plus their 2 fn definitions | PASS |
 | corpus oracle exists | grep: `crates/reify-constraints/tests/sketch_solve_tests.rs`, 46 `#[test]`, 50 `solve_sketch` uses | PASS |
-| public seam unchanged | grep: `pub fn solve_sketch(system: &SketchSystem) -> SketchSolveResult`; #6682's `sketch-path-survives` check greps it | PASS |
+| public seam unchanged | grep: `pub fn solve_sketch(system: &SketchSystem) -> SketchSolveResult` is present before and after, so its sidecar check is `kind: manual` (a preservation check is vacuous under the polarity gate). #6682's `sketch-path-survives` check also greps it | PASS |
 
 ## η — `WarmStatePool`
 
@@ -91,12 +87,7 @@ Probes executed 2026-10-12 with `target/debug/reify` (built 2026-10-11 19:33):
 | the cost-carrying pair exists | grep: `pub fn checkout_with_lru_stamp_and_cost`, `pub fn donate_preserving_lru_with_cost` | PASS |
 | behavioural oracle | grep: `crates/reify-eval/tests/warm_state_donation.rs` | PASS |
 
-## θ — (HELD) `TopologySelectorHelper::from_name` over S8 rows
-
-| Capability | Evidence | Verdict |
-|---|---|---|
-| reify-builtins rows carry a typed selector intercept-kind column | producer: S8 (wave 2), not filed | HELD (`x_seam_wait`) |
-| two string maps exist today | grep: `fn symbolic_eval_helper_for_name` and the `"…" => TopologySelectorHelper::` arms in `try_eval_topology_selector` | PASS |
+## θ — dropped (lead ruling Q1; S8 / #6010 own `from_name`)
 
 ## ι — PRD close
 
