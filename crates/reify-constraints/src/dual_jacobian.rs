@@ -44,7 +44,7 @@ use reify_expr::{
 use reify_core::ValueCellId;
 use reify_ir::{AutoParam, CompiledExpr, CompiledFunction, ValueMap};
 
-use crate::solver::{build_trial_values, ctx_with};
+use crate::solver::{TrialModel, build_trial_values, ctx_with};
 
 /// A Jacobian evaluated at one trial point.
 ///
@@ -238,8 +238,10 @@ pub fn residual_jacobian_with_seeds(
 
     // The same trial point the solver itself would stand on, built by the same
     // function, including the dependent-cell fold.
-    let values =
-        build_trial_values(base_values, auto_params, x, dependent_cells, functions, dispatch);
+    let values = build_trial_values(
+        &TrialModel { auto_params, base_values, dependent_cells, functions, dispatch },
+        x,
+    );
     let ctx = ctx_with(&values, functions, dispatch);
 
     // The derivative sibling of the value fold `build_trial_values` just ran.
