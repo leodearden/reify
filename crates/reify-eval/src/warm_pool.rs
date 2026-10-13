@@ -1600,7 +1600,7 @@ mod tests {
     /// This test also positively pins that `cap` and `total_dropped` ARE present, so
     /// we're verifying the auto-trim warn and not some unrelated warn from the pool.
     ///
-    /// Uses [`WarmStatePool::with_test_events_cap`] to set the cap to 16, so only 17
+    /// Uses [`WarmStatePool::with_limits`] to set the cap to 16, so only 17
     /// donations are needed to trigger the trim rather than 65 537.  None of the
     /// existing auto-trim tests pin the warn's field schema, so this is the only test
     /// for the negative `current_len` assertion; there is nothing to fold it into.
@@ -1626,7 +1626,7 @@ mod tests {
         let (subscriber, capture) = warn_capturing_subscriber();
 
         tracing::subscriber::with_default(subscriber, || {
-            let mut pool = WarmStatePool::with_test_events_cap(TEST_CAP);
+            let mut pool = WarmStatePool::with_limits(None, TEST_CAP);
 
             // Donate TEST_CAP+1 events: the (TEST_CAP+1)-th push takes events.len()
             // to TEST_CAP+1 > TEST_CAP, firing exactly one auto-trim round and one warn.
@@ -1659,6 +1659,73 @@ mod tests {
              cap+1 before the drain — a constant derivable from `cap`, zero diagnostic \
              signal); got fields: {event_fields:?}"
         );
+    }
+
+    /// `with_limits`'s `events_cap` governs the debug-build tripwire: with a cap of 4
+    /// the 5th undrained push panics, where the default `MAX_BUFFERED_EVENTS` cap
+    /// would not.
+    #[test]
+    #[cfg(debug_assertions)]
+    fn with_limits_events_cap_governs_debug_tripwire() {
+        use std::panic::AssertUnwindSafe;
+
+        let mut pool = WarmStatePool::with_limits(Some(1024), 4);
+        assert_eq!(pool.budget_bytes(), Some(1024));
+
+        for i in 0..4 {
+            let node = NodeId::Value(ValueCellId::new("T", format!("n{i}")));
+            pool.donate(node, OpaqueState::new(0u8, 1));
+        }
+
+        let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
+            let node = NodeId::Value(ValueCellId::new("T", "n4"));
+            pool.donate(node, OpaqueState::new(0u8, 1));
+        }));
+
+        assert!(
+            result.is_err(),
+            "debug-build tripwire: expected debug_assert! panic on the 5th undrained push \
+             with events_cap = 4, but catch_unwind returned Ok"
+        );
+    }
+
+    /// `with_limits`'s `events_cap` governs the release-build auto-trim: with a cap of
+    /// 16, the 17th undrained push trims `16 / 2 == 8` of the oldest events.
+    #[test]
+    #[cfg(not(debug_assertions))]
+    fn with_limits_events_cap_governs_release_trim() {
+        const CAP: usize = 16;
+
+        let mut pool = WarmStatePool::with_limits(None, CAP);
+        assert_eq!(pool.budget_bytes(), None);
+
+        let mut last_node = NodeId::Value(ValueCellId::new("T", "n0"));
+        for i in 0..=CAP {
+            let node = NodeId::Value(ValueCellId::new("T", format!("n{i}")));
+            last_node = node.clone();
+            pool.donate(node, OpaqueState::new(0u8, 1));
+        }
+
+        assert_eq!(pool.dropped_events(), (CAP / 2) as u64);
+
+        let events = pool.drain_events();
+        assert_eq!(events.len(), CAP + 1 - CAP / 2);
+        assert_eq!(
+            events.last(),
+            Some(&WarmPoolEvent::Donated {
+                node_id: last_node,
+                size_bytes: 1,
+            }),
+            "auto-trim must keep the newest event"
+        );
+    }
+
+    /// Below 2, `events_cap / 2 == 0`: a release trim round would drop nothing and the
+    /// buffer would grow without bound, so construction rejects it.
+    #[test]
+    #[should_panic(expected = "events_cap")]
+    fn with_limits_rejects_events_cap_below_two() {
+        let _ = WarmStatePool::with_limits(None, 1);
     }
 
     // --- Task 2516 step-1: donate_preserving_lru / checkout_with_lru_stamp ---
