@@ -377,6 +377,18 @@ Rule: one stream edits a shared artefact; the others consume its filed leaf ids 
 - OQ3 β scope vs #6851 → (A): predicate moves to reify-eval, LSP consumes it, CLI exit policy unchanged (#5403's).
 - OQ4 reify.toml → (A): docs only.
 
+### S4 — docs/prds/v0_6/cell-eval-transaction-closure.md (wave 2, agent seat; ruled by the successor lead 2026-10-13 after an opus/xhigh critic and an opus/high fold-verifier; full record: the run scratch prd-results/S4.md)
+- OQ-1 → (B′): `ValueCellSeal` lives in cache.rs with a crate-visible `mint()`. A seal defined in cell_commit.rs would close cache ↔ cell_commit and red INV-ARCH-1 once #8687 lands. The construct-ratchet rows E8/E8b/E8c confine minting to cell_commit.rs, and every `&mut CacheStore` method that writes a `CachedResult` on a value node is sealed. INV-EVAL-1 → enforced(type+lint), completed by τ once the bare snapshot/values writes (E10/E10b) reach 0. **Lead amendment:** this replaces the deliberation ruling's literal `pub(super)` mechanism, which does not achieve its stated intent because `cache` is a crate-root module.
+- OQ-2 → (B): an `EvalEnv` built at the crate root carries the symbolic-selector hook, so cell_eval_ctx.rs never imports geometry_ops.
+- OQ-3 (premise corrected): edit_param's `invalidate_realization_dirty_cone` still donates to WarmStatePool, so the pool stays fed after δ deletes edit_source's topology-change donation. A pending `[MILESTONE] Warm source-edit successor` (← δ, ε) tracks the removed topology-change donation only.
+- OQ-4 → (A): π moves NodeId to node_id.rs and dissolves {cache, deps}. No re-export shim.
+- OQ-5 → (A): ζ ← #6690, #6699 ← ζ.
+- Design outcome of the critic/fold rounds:
+  - INV-EVAL-2 is enforced by type: θ introduces `CellEvalCtx`, `CellValue` and `eval_cell_guarded`, and τ closes the constructor set.
+  - Module-adding leaves import nothing in the post-#8687 residual SCC. E11 lints `Engine` mentions in the new modules, because module_scc_ratchet is blind to `Engine::` paths.
+  - The construct-ratchet rows E1–E11 are rows on #8730's `rust_construct_ratchet` engine.
+  - S24 Pointer grammar is used for the INV-EVAL flips. Owners recorded on #8821: EVAL-1 γ then τ, EVAL-2 τ, EVAL-3 κ.
+
 ## FILED — program status
 
 Wave 1 (pass 2 completed 2026-10-12; every row returned by its seat, applied by the lead). Trigger-chain human gate: reify #8612 (deferred, planning_mode, interim form; `commit_planning` is the human's act once this table is complete for the whole program). Held leaves are released by the owning stream's session (S6: S9 λ #8741, S15 ο #8718; S1: S27 φ; S26: S27 λ). Dark-factory companions: #6853/#6854/#6855 (S20), #6856 (S19 ε).
