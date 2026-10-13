@@ -4029,8 +4029,9 @@ impl Engine {
                 None
             } else {
                 // θ (task 4361): mirror build()'s Phase-B export walk — collect
-                // placed-product BRep handles via collect_export_bodies_walk, then
-                // export only the product (default_visible) bodies.  This replaces
+                // placed product bodies, each tagged with its owning kernel, via
+                // collect_export_bodies_walk, then export only the product
+                // (default_visible) bodies through export_product_bodies.  This replaces
                 // the old `*step_handles.last()` single-handle export that did not
                 // assemble a compound for multi-entity modules (the §6 export bug).
                 let export_bodies = Self::collect_export_bodies_walk(
@@ -5006,9 +5007,10 @@ impl Engine {
                 // calls `build_outputs` issues itself.
                 None
             } else {
-                // T7 (task 3905) Phase-B export walk: collect placed-product
-                // BRep handles via the containment-tree surfacing walk, then
-                // export only the product (default_visible == true) bodies.
+                // T7 (task 3905) Phase-B export walk: collect placed product
+                // bodies, each tagged with its owning kernel, via the
+                // containment-tree surfacing walk, then export only the product
+                // (default_visible == true) bodies through export_product_bodies.
                 // This replaces the old *step_handles.last() single-handle
                 // export that did not honor surfacing, composed transforms, or
                 // aux exclusion.

@@ -13006,10 +13006,11 @@ pub(crate) fn non_final_realization_indices(
         .collect()
 }
 
-/// T7 export walk (task 3905): collect placed-product BRep handles for STEP export.
+/// T7 export walk (task 3905): collect placed product bodies for Phase-B export.
 ///
 /// Thin wrapper over `walk_placed_realizations` that pushes each placed realization
-/// as an `ExportBody` (handle_id + entity_path + default_visible) without tessellating.
+/// as an `ExportBody` tagged with the kernel that owns it (handle_id + kernel +
+/// entity_path + default_visible) without tessellating.
 ///
 /// `skip` (indexed by `t_idx`) lists realization indices to exclude — every
 /// non-final intra-template realization (see [`non_final_realization_indices`]) —
