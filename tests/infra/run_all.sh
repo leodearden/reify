@@ -112,9 +112,9 @@
 #                                      only.md task beta, Sec 4.2/8). When
 #                                      non-empty, run_all.sh runs ONLY the
 #                                      named members -- a dedicated serial
-#                                      branch reusing the Phase-2.5 per-
-#                                      member serial-foreground-captured
-#                                      invoke shape, single attempt each (no
+#                                      branch on the serial stream runner
+#                                      (_ra_run_serial_member), single
+#                                      attempt each (no
 #                                      internal deflake retry: the subset run
 #                                      IS dark-factory's retry). Every OTHER
 #                                      discovered member is reported skipped
@@ -396,12 +396,9 @@ _RA_INTERRUPTED_EXIT_CODE=99
 # line-start so quoted-in-prose tokens never match from any project — belt-and-
 # braces; either layer alone closes the hole.)
 #
-# Scope: applied to the concurrent-pool re-emission sites below — the path every
-# per-task/merge verify actually drives (`verify.sh test ... --include-infra` ->
-# plain `bash run_all.sh` -> pool). The `--scope host-infra` (H9) and legacy
-# all-serial paths are not the DF clock-stop-parsed verify stream (H9 is the
-# off-hot-path Lane-X runner; legacy only runs when the pool substrate is absent),
-# and Layer 2's anchored matcher covers their quoted-marker case regardless.
+# Scope: every member's captured or streamed output, on every branch (pool
+# replay, member subset, --scope host-infra, legacy), plus the Summary
+# FAILED-DETAIL region -- all through the one $_RA_SANITIZE_SED chain below.
 _RA_CLOCK_SANITIZE='s/@@REIFY_CLOCK_/@@REIFY_QUOTED_CLOCK_/g'
 
 # Rule 2 (task #6389) -- the SLOT-TIMEOUT sentinel family, a SEPARATE variable
@@ -435,18 +432,10 @@ _RA_CLOCK_SANITIZE='s/@@REIFY_CLOCK_/@@REIFY_QUOTED_CLOCK_/g'
 # sentinel its ONLY classification route. Pinned behaviourally by
 # tests/infra/test_slot_timeout_marker.sh Section C (C1/C2/C5).
 #
-# Scope: identical to the clock rule, and stated as the set of SITES rather
-# than a single path, because there are two -- everything that re-emits
-# through the shared helpers below: the concurrent-pool Phase-3 replay, AND
-# the `REIFY_RUN_ALL_MEMBER_SUBSET` retry loop (the
-# "REIFY_RUN_ALL_MEMBER_SUBSET dedicated serial branch" below). Naming the
-# subset site explicitly matters more for this family than it did for the
-# clock one it borrows its phrasing from: that subset run IS dark-factory's
-# OWN retry (see the note at its call site) and therefore runs ON the
-# DF-parsed stream, so it is the path that most NEEDS the rule, not an
-# incidental extra a reader should have to infer. NOT the `--scope host-infra`
-# (H9) runner and NOT the legacy all-serial path -- neither re-emits through
-# these helpers at all.
+# Scope: identical to the clock rule -- every member's output on every
+# branch. That includes the `REIFY_RUN_ALL_MEMBER_SUBSET` run, which IS
+# dark-factory's OWN retry and so runs ON the DF-parsed stream: the path that
+# most NEEDS this rule.
 _RA_SLOT_SANITIZE='s/@@REIFY_SLOT_/@@REIFY_QUOTED_SLOT_/g'
 
 # Rule 3 (task #6389) -- dark-factory's OTHER slot anchor: the per-wrapper
@@ -486,21 +475,16 @@ _RA_SLOT_SANITIZE='s/@@REIFY_SLOT_/@@REIFY_QUOTED_SLOT_/g'
 # clock rule is: the real HG-2 shape is a multi-line capture whose continuation
 # can land at any column.
 #
-# ACCEPTED TRADE-OFF: a GENUINE starved acquire inside a pool MEMBER now loses
+# ACCEPTED TRADE-OFF: a GENUINE starved acquire inside a MEMBER now loses
 # both anchors from the re-emitted stream. That is the deliberate cost of a
 # systemic layer, and two things carry the load instead -- run_all's own fd-2
 # pool sentinel (below, never sanitized) stays the classifiable signal for the
 # runner's own starvation, and DF's failing-leg scoping means a member that
 # actually aborts on rc=75 still fails loudly with its own FAIL detail.
 #
-# Scope: the same as rules 1 and 2 -- the concurrent-pool Phase-3 replay and
-# the `REIFY_RUN_ALL_MEMBER_SUBSET` retry site (the
-# "REIFY_RUN_ALL_MEMBER_SUBSET dedicated serial branch" below, dark-factory's
-# own retry, on the DF-parsed stream), i.e. everything routed through the two
-# shared helpers below; NOT `--scope host-infra` (H9) and NOT the legacy
-# all-serial path. run_all's OWN H9 Lane-X acquire failure line uses basename
-# `run_all.sh`, which is outside DF's three-name allowlist, and is
-# deliberately untouched.
+# Scope: the same as rules 1 and 2 -- every member's output on every branch.
+# run_all's OWN H9 Lane-X acquire failure line uses basename `run_all.sh`,
+# which is outside DF's three-name allowlist, and is deliberately untouched.
 _RA_SLOT_BASENAME_SANITIZE='s/\(lib_test_semaphore\|cargo-test-occt-gated\|lib_lane_x_flock\)\.sh: failed to acquire /\1.sh[quoted]: failed to acquire /g'
 
 # THE APPLIED CHAIN, hoisted to exactly one definition (task #6389).
@@ -793,6 +777,39 @@ _ra_record_result() {
         _ra_fail_detail["$_name"]="$(cat "$_detail")"
     fi
     return 0
+}
+
+# _ra_serial_workdir_create -- the serial branches' scratch dir for member
+# captures and rc files, keyed by member basename; _ra_on_exit removes it. Its
+# prefix differs from the pool's `reify-run-all-pool.`, which callers glob.
+_ra_serial_workdir_create() {
+    _RA_SERIAL_WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/reify-run-all-serial.XXXXXX")"
+}
+
+# _ra_run_serial_member <workdir> <name>
+#   The policy every non-pool branch runs a member under: a worktree-gone
+#   check, the header, a live streamed run, the check again on rc 127 (bash's
+#   not-found exit, the direct symptom of a vanished worktree), then the
+#   verdict. The checks exit run_all, so this runs in the MAIN shell only.
+_ra_run_serial_member() {
+    local _wd="$1" _name="$2" _rc
+    _ra_interrupt_if_worktree_gone
+    _ra_emit_member_header "$_name"
+    _ra_run_member "$_name" "$_wd/$_name.out" "$_wd/$_name.rc" stream
+    _rc="$(_ra_read_rc "$_wd/$_name.rc")"
+    if [ "$_rc" -eq 127 ]; then
+        _ra_interrupt_if_worktree_gone
+    fi
+    _ra_record_result "$_name" "$_rc" "$_wd/$_name.out"
+}
+
+# _ra_record_subset_skip <name> -- the member-subset framing for a discovered
+# member it was not asked to run: acknowledged, never invoked, never a failure.
+_ra_record_subset_skip() {
+    echo ""
+    echo "--- Skipped (member-subset): $1 ---"
+    echo "  RESULT: SKIP ($1)"
+    member_subset_skipped+=("$1")
 }
 
 # _ra_on_exit -- the one EXIT handler: stops the pool's progress printer,
@@ -1585,7 +1602,8 @@ if [ "$SCOPE" = "host-infra" ]; then
     # runs EXACTLY the declared host-exclusive set (the INVERSE of H3's
     # exclusion) under the H8 Lane-X single-flight flock, serially in the
     # foreground -- host-exclusive tests do real burn/cgroup/reflink work and
-    # must never overlap, so no pool, no buffering. Deliberately IGNORES
+    # must never overlap, so no pool, no buffering: each member runs live
+    # under the serial policy (_ra_run_serial_member). Deliberately IGNORES
     # REIFY_RUN_ALL_EXCLUDE_HOST_INFRA (_ra_default_scope_members): this is
     # the runner meant to catch exactly the residue that knob moves off the
     # hot path, so the knob must never suppress it too. The flock lib is sourced/acquired
@@ -1620,98 +1638,44 @@ if [ "$SCOPE" = "host-infra" ]; then
         echo "ERROR: run_all.sh: --scope host-infra failed to acquire the Lane-X lock (rc=$_h9_flock_rc)" >&2
         exit "$_h9_flock_rc"
     fi
-    # Safety-net release on any exit path (normal/INT/TERM/HUP); the explicit
-    # release below is the primary path, this is a backstop.
-    trap 'lane_x_flock_release' EXIT
+    # Released explicitly below; _ra_on_exit releases it on any other exit.
+    _RA_LANE_X_HELD=1
 
+    discovered=${#_h9_members[@]}
+    _ra_serial_workdir_create
     for _h9_name in "${_h9_members[@]+"${_h9_members[@]}"}"; do
-        discovered=$((discovered + 1))
-        echo ""
-        echo "--- Running: $_h9_name ---"
-        _h9_child_rc=0
-        reify_git_env_scrub bash "$INFRA_DIR/$_h9_name" 9<&- || _h9_child_rc=$?
-        if [ "$_h9_child_rc" -eq 0 ]; then
-            echo "  RESULT: PASS ($_h9_name)"
-        else
-            echo "  RESULT: FAIL ($_h9_name)"
-            failures=$((failures + 1))
-            failed_names+=("$_h9_name")
-        fi
+        _ra_run_serial_member "$_RA_SERIAL_WORKDIR" "$_h9_name"
     done
 
     lane_x_flock_release
+    _RA_LANE_X_HELD=0
 elif [ "${#_ra_member_subset[@]}" -gt 0 ]; then
     # -------------------------------------------------------------------------
     # REIFY_RUN_ALL_MEMBER_SUBSET dedicated serial branch (task #5288; PRD
     # docs/prds/verify-retry-failed-only.md task beta, Sec 4.2/8): on a
     # merge-gate retry, dark-factory names the FAILED members from a prior
-    # attempt and this branch runs ONLY those -- reusing the Phase-2.5
-    # per-member serial-foreground-captured invoke shape -- reporting every
-    # OTHER discovered member as skipped (acknowledged, never invoked, never
-    # a failure). Mirrors the --scope host-infra branch's shape: a
-    # self-contained serial loop that sets discovered/failures/failed_names
-    # and falls through to the shared Summary/FAILED/exit tail below. It walks
-    # the full _ra_discovered list and decides run-vs-skip with
+    # attempt and this branch runs ONLY those, each live under the serial
+    # policy (_ra_run_serial_member), reporting every OTHER discovered member
+    # as skipped (acknowledged, never invoked, never a failure). It walks the
+    # full _ra_discovered list and decides run-vs-skip with
     # _ra_in_member_subset, the count-only probe's predicate; it never
     # consults REIFY_RUN_ALL_EXCLUDE_HOST_INFRA (subset mode is authoritative)
     # nor the pool/slot_acquire/PSI machinery. SINGLE attempt per named
     # member: the subset run IS dark-factory's retry, so an internal re-retry
-    # here would mask a real retry-time failure.
-    #
-    # Clock-marker sanitization (task #5288 pair 2; task 4998/esc-4791-52
-    # class): unlike --scope host-infra / legacy (off the DF-parsed verify
-    # stream), a subset retry runs ON it -- so each named member's output is
-    # captured to a reused temp file and re-emitted via _ra_emit_sanitized,
-    # exactly the concurrent-pool Phase-3 replay shape, instead of streaming
-    # directly to stdout.
+    # here would mask a real retry-time failure. It runs ON dark-factory's
+    # verify stream, which the one sanitizer chain covers as on every branch.
     # -------------------------------------------------------------------------
-    _ra_subset_tmp="$(mktemp "${TMPDIR:-/tmp}/reify-run-all-subset.XXXXXX")"
+    discovered=${#_ra_discovered[@]}
+    _ra_serial_workdir_create
     _ra_subset_matched=()
     for _ra_subset_base in "${_ra_discovered[@]+"${_ra_discovered[@]}"}"; do
-        discovered=$((discovered + 1))
         if _ra_in_member_subset "$_ra_subset_base"; then
             _ra_subset_matched+=("$_ra_subset_base")
-            echo ""
-            echo "--- Running: $_ra_subset_base ---"
-            _ra_subset_rc=0
-            # Hermetic-harness isolation, mirroring the DF_VERIFY_ROLE
-            # normalization above: a named member must run as a clean,
-            # normal, unfiltered run of ITSELF. Without `env -u`, a member
-            # that itself shells out to run_all.sh internally for its own
-            # fixture testing (e.g. this very file, or
-            # test_run_all_clock_marker_sanitize.sh) would inherit THIS
-            # invocation's REIFY_RUN_ALL_MEMBER_SUBSET value and misapply
-            # the SAME name filter to its own unrelated nested fixture
-            # dirs -- turning "run everything in my temp fixture" into
-            # "skip everything, nothing here is named test_x.sh" and
-            # corrupting that member's self-tests. The subset knob governs
-            # only the outer/top-level discovery, never a member's own
-            # nested invocations.
-            reify_git_env_scrub env -u REIFY_RUN_ALL_MEMBER_SUBSET \
-                bash "$INFRA_DIR/$_ra_subset_base" > "$_ra_subset_tmp" 2>&1 || _ra_subset_rc=$?
-            _ra_emit_sanitized "$_ra_subset_tmp" "$_ra_subset_base"
-            if [ "$_ra_subset_rc" -eq 0 ]; then
-                echo "  RESULT: PASS ($_ra_subset_base)"
-            else
-                echo "  RESULT: FAIL ($_ra_subset_base)"
-                failures=$((failures + 1))
-                failed_names+=("$_ra_subset_base")
-                # A subset retry runs ON dark-factory's clock-stop-parsed
-                # verify stream (see the Clock-marker sanitization note
-                # above), so its block reason should also carry the
-                # structured/assertion FAIL cause, same as the
-                # concurrent-pool Phase-3 sites (task #5331).
-                _ra_subset_detail="$(_ra_collect_fail_detail "$_ra_subset_tmp")"
-                [ -z "$_ra_subset_detail" ] || _ra_fail_detail["$_ra_subset_base"]="$_ra_subset_detail"
-            fi
+            _ra_run_serial_member "$_RA_SERIAL_WORKDIR" "$_ra_subset_base"
         else
-            echo ""
-            echo "--- Skipped (member-subset): $_ra_subset_base ---"
-            echo "  RESULT: SKIP ($_ra_subset_base)"
-            member_subset_skipped+=("$_ra_subset_base")
+            _ra_record_subset_skip "$_ra_subset_base"
         fi
     done
-    rm -f "$_ra_subset_tmp"
 
     # Unmatched subset entries: named in the knob but not present in
     # INFRA_DIR (typo/stale retry name) -- a loud stderr WARNING, never a
@@ -2152,39 +2116,19 @@ elif [ "$_H2_POOL_ACTIVE" -eq 1 ]; then
 else
     # -------------------------------------------------------------------------
     # Legacy all-serial fallback: the pool's members, in the pool's order, run
-    # one at a time.
+    # one at a time, each live under the serial policy (_ra_run_serial_member).
     # -------------------------------------------------------------------------
+    discovered=${#_ra_default_scope_members[@]}
+    _ra_serial_workdir_create
     for _ra_legacy_name in "${_ra_default_scope_members[@]+"${_ra_default_scope_members[@]}"}"; do
-        # W4e between-members check (task #5261): the member list was
-        # captured ONCE, before the branch chain, so a member removed mid-run
-        # by an earlier member is not skipped -- it FAILS with rc 127 below,
-        # like the pool. Checking here first turns a removed worktree into the
-        # single INTERRUPTED marker instead of N such failures.
-        _ra_interrupt_if_worktree_gone
-
-        discovered=$((discovered + 1))
-        echo ""
-        echo "--- Running: $_ra_legacy_name ---"
-        _ra_legacy_rc=0
-        reify_git_env_scrub bash "$INFRA_DIR/$_ra_legacy_name" || _ra_legacy_rc=$?
-        if [ "$_ra_legacy_rc" -eq 0 ]; then
-            echo "  RESULT: PASS ($_ra_legacy_name)"
-        else
-            # W4e on-127 check (task #5261): a "No such file or directory"
-            # exit from bash itself is the direct symptom of the worktree
-            # having vanished out from under this member's own invocation.
-            [ "$_ra_legacy_rc" -eq 127 ] && _ra_interrupt_if_worktree_gone
-            echo "  RESULT: FAIL ($_ra_legacy_name)"
-            failures=$((failures + 1))
-            failed_names+=("$_ra_legacy_name")
-        fi
+        _ra_run_serial_member "$_RA_SERIAL_WORKDIR" "$_ra_legacy_name"
     done
 fi
 
 # W4e final backstop (task #5261): covers a nuke on the very last member,
 # which no subsequent loop iteration would otherwise catch (there is no
-# "next" top-of-loop check to fire). Common to both the pool and legacy
-# paths -- placed once, here, immediately before the Summary block.
+# "next" top-of-loop check to fire). Common to every branch -- placed once,
+# here, immediately before the Summary block.
 _ra_interrupt_if_worktree_gone
 
 echo ""
@@ -2201,8 +2145,8 @@ if [ "${#failed_names[@]}" -gt 0 ]; then
     # Re-emit each failed member's bounded structured/assertion FAIL-detail
     # (task #5329) so the merge-gate block reason names the offending
     # file/reason verbatim -- see _ra_collect_fail_detail/_ra_emit_fail_detail
-    # above. No-op per-name when nothing was collected (e.g. legacy/H9 paths,
-    # or a signal-less failing test).
+    # above. No-op per-name when nothing was collected (a signal-less failing
+    # test).
     for _ra_fn in "${failed_names[@]}"; do
         _ra_emit_fail_detail "$_ra_fn"
     done
