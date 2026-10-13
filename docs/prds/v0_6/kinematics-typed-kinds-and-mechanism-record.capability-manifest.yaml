@@ -4,7 +4,7 @@ prd: docs/prds/v0_6/kinematics-typed-kinds-and-mechanism-record.md
 schema_version: 1
 tasks:
 - label: α
-  task_id: null
+  task_id: 8828
   title: Kinematics typed-dispatch ratchet member (C10)
   capabilities:
   - name: ratchet-member-registered
@@ -24,7 +24,7 @@ tasks:
       kind: manual
       reason: baseline numbers are α's own measurement; the member enforces them
 - label: β
-  task_id: null
+  task_id: 8829
   title: JointKind in reify-ir (C1)
   capabilities:
   - name: joint-kind-in-ir
@@ -43,7 +43,7 @@ tasks:
       kind: manual
       reason: dependency edge is the enforcement
 - label: γ
-  task_id: null
+  task_id: 8830
   title: RelationKind in reify-ir; RelationInstance.kind (C2)
   capabilities:
   - name: relation-kind-in-ir
@@ -65,7 +65,7 @@ tasks:
       - crates/reify-constraints/src/relate_solve.rs
       expect: present
 - label: δ
-  task_id: null
+  task_id: 8831
   title: Compiler and eval joint tables derive from JointKind
   capabilities:
   - name: ctor-table-derives
@@ -93,7 +93,7 @@ tasks:
       kind: manual
       reason: behavioural test; the test's existence is reviewed, not grepped
 - label: ε
-  task_id: null
+  task_id: 8832
   title: Typed transform primitives in geometry.rs
   capabilities:
   - name: typed-inverse
@@ -106,7 +106,7 @@ tasks:
       - crates/reify-stdlib/src/geometry.rs
       expect: present
 - label: ζ
-  task_id: null
+  task_id: 8833
   title: Delete per_joint_jacobian_local
   capabilities:
   - name: fn-gone
@@ -119,7 +119,7 @@ tasks:
       - crates/reify-stdlib/src/loop_closure.rs
       expect: absent
 - label: η
-  task_id: null
+  task_id: 8834
   title: JointPosition enum in kinematic.ri; Value::Enum display prints payload (C4)
   capabilities:
   - name: enum-declared
@@ -138,7 +138,7 @@ tasks:
       kind: manual
       reason: printed-output shape is asserted by the leaf's test, not a source grep
 - label: θ
-  task_id: null
+  task_id: 8835
   title: MechanismError table; world_parented_closure coded
   capabilities:
   - name: error-enum
@@ -151,7 +151,7 @@ tasks:
       - crates/reify-stdlib/src/mechanism.rs
       expect: present
 - label: ι
-  task_id: null
+  task_id: 8836
   title: Typed Joint + Joint::from_value (C3)
   capabilities:
   - name: joint-enum
@@ -164,7 +164,7 @@ tasks:
       - crates/reify-stdlib/src
       expect: present
 - label: κ
-  task_id: null
+  task_id: 8837
   title: Normalized loop-closure record (C5)
   capabilities:
   - name: record-module
@@ -217,7 +217,7 @@ tasks:
       - crates/reify-eval/src/modal_ops.rs
       expect: present
 - label: λ₀
-  task_id: null
+  task_id: 8838
   title: 'GUI on the typed forms: slider walker accepts JointPosition binds; joint descriptor via JointKind'
   capabilities:
   - name: gui-descriptor-on-kind
@@ -242,7 +242,7 @@ tasks:
       kind: manual
       reason: dependency edge is the enforcement
 - label: λ
-  task_id: null
+  task_id: 8839
   title: bindings.rs; bind takes JointPosition only (C4, R7)
   capabilities:
   - name: bindings-module
@@ -277,7 +277,7 @@ tasks:
       kind: manual
       reason: dependency edges are the enforcement
 - label: μ
-  task_id: null
+  task_id: 8840
   title: Codec + resolver SPOT; open-chain multi-DOF midpoint
   capabilities:
   - name: snapshot-copy-gone
@@ -305,7 +305,7 @@ tasks:
       kind: manual
       reason: behavioural (T6)
 - label: ν
-  task_id: null
+  task_id: 8841
   title: Named solver inputs + LoopClosureInputError
   capabilities:
   - name: input-error-enum
@@ -325,7 +325,7 @@ tasks:
       kind: manual
       reason: behavioural boundary test below the compiler
 - label: ξ
-  task_id: null
+  task_id: 8842
   title: Direct solve, SolveStatus, diagnostics_of, Bool is_singular
   capabilities:
   - name: wrapper-gone
@@ -354,7 +354,7 @@ tasks:
       kind: manual
       reason: behavioural (T13)
 - label: ο
-  task_id: null
+  task_id: 8843
   title: sweep through Joint
   capabilities:
   - name: sweep-kind-match-gone
@@ -367,7 +367,7 @@ tasks:
       - crates/reify-stdlib/src/sweep.rs
       expect: absent
 - label: π
-  task_id: null
+  task_id: 8844
   title: Per-joint free_values; Snapshot warm start; kinematic.ri declarations (C7)
   capabilities:
   - name: declaration
@@ -392,7 +392,7 @@ tasks:
       kind: manual
       reason: behavioural (T8)
 - label: ρ
-  task_id: null
+  task_id: 8845
   title: MechanismTree (C8)
   capabilities:
   - name: tree-module
@@ -411,7 +411,7 @@ tasks:
       kind: manual
       reason: dependency edge is the enforcement
 - label: σ₀
-  task_id: null
+  task_id: 8846
   title: 'Module edges one way: spatial math to the crate root; center-of-mass group to dynamics/com.rs'
   capabilities:
   - name: spatial-at-crate-root
@@ -439,7 +439,7 @@ tasks:
       kind: manual
       reason: the INV-ARCH-1 tool enforces the baseline
 - label: σ
-  task_id: null
+  task_id: 8847
   title: Dynamics on Joint; coupling refusal coded
   capabilities:
   - name: force-string-match-gone
@@ -452,7 +452,7 @@ tasks:
       - crates/reify-stdlib/src/dynamics
       expect: absent
 - label: τ
-  task_id: null
+  task_id: 8848
   title: trajectory/marshal.rs (move)
   capabilities:
   - name: marshal-module
@@ -465,7 +465,7 @@ tasks:
       - crates/reify-stdlib/src/trajectory/mod.rs
       expect: present
 - label: υ
-  task_id: null
+  task_id: 8849
   title: Typed Shaper; one input_shape implementation
   capabilities:
   - name: scanner-gone
@@ -487,7 +487,7 @@ tasks:
       - crates/reify-stdlib/src/trajectory
       expect: absent
 - label: φ
-  task_id: null
+  task_id: 8850
   title: TOTS DiagnosticCodes on the registered path
   capabilities:
   - name: codes-exist
@@ -509,7 +509,7 @@ tasks:
       - crates/reify-stdlib/src/trajectory/tots.rs
       expect: absent
 - label: χ
-  task_id: null
+  task_id: 8851
   title: 'HELD on S8: TOTS diagnostics on check/LSP'
   capabilities:
   - name: s8-typed-diagnose-column
@@ -519,7 +519,7 @@ tasks:
       kind: manual
       reason: held leaf; released by S8's session
 - label: ψ₁
-  task_id: null
+  task_id: 8852
   title: Kind-set and internal string dispatch retired; joints.rs split
   capabilities:
   - name: joint-kinds-const-gone
@@ -556,7 +556,7 @@ tasks:
       kind: manual
       reason: the ratchet member enforces the counts
 - label: ψ₂
-  task_id: null
+  task_id: 8853
   title: h14 partitions of loop_closure_solver.rs, snapshot.rs, loop_closure.rs
   capabilities:
   - name: newton-module
@@ -569,7 +569,7 @@ tasks:
       - crates/reify-stdlib/src
       expect: present
 - label: ψ₃
-  task_id: null
+  task_id: 8854
   title: h14 remainder of trajectory/trampoline.rs
   capabilities:
   - name: track-access-module
@@ -582,7 +582,7 @@ tasks:
       - crates/reify-stdlib/src/trajectory
       expect: present
 - label: ω₁
-  task_id: null
+  task_id: 8855
   title: Docs-truth
   capabilities:
   - name: docs-truth-four-items
@@ -592,7 +592,7 @@ tasks:
       kind: manual
       reason: docs-truth acceptance is a smoke compile plus findability review
 - label: ω₂
-  task_id: null
+  task_id: 8856
   title: PRD close
   capabilities:
   - name: terminal-stamp
