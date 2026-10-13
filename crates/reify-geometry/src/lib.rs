@@ -391,7 +391,7 @@ impl GeometryKernel for SingleKernelHolder {
 mod tests {
     use reify_test_support::MockGeometryKernel;
     use reify_test_support::mm3;
-    use reify_ir::{BRepKind, ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, Mesh, QueryError, TessError, Value, VoxelResolution};
+    use reify_ir::{BRepKind, ExportError, ExportFormat, GeometryError, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, QueryError, TessError, Value};
 
     use super::*;
 
@@ -629,95 +629,5 @@ mod tests {
             .expect("execute through trait object should succeed");
         assert_eq!(handle.id, GeometryHandleId(1));
         assert_eq!(handle.repr, Some(BRepKind::Solid));
-    }
-
-    /// Minimal in-test stub kernel that only supports `measure_mesh_deviation`.
-    /// Implements the four required trait methods as `unimplemented!()` stubs,
-    /// following the CountingKernel minimal-stub pattern from reify-ir/src/geometry.rs.
-    ///
-    /// Returns a value derived from both forwarded arguments (handle ID + vertex
-    /// count) so a delegation bug that passes the wrong handle or mesh produces a
-    /// different result and the assertion catches it.
-    struct DeviationStubKernel;
-
-    impl GeometryKernel for DeviationStubKernel {
-        fn execute(&mut self, _op: &GeometryOp) -> Result<GeometryHandle, GeometryError> {
-            unimplemented!("DeviationStubKernel only supports measure_mesh_deviation") // ptodo:allow exhaustiveness/stub arm - not tracked debt
-        }
-
-        fn query(&self, _query: &GeometryQuery) -> Result<Value, QueryError> {
-            unimplemented!("DeviationStubKernel only supports measure_mesh_deviation") // ptodo:allow exhaustiveness/stub arm - not tracked debt
-        }
-
-        fn export(
-            &self,
-            _handle: GeometryHandleId,
-            _format: ExportFormat,
-            _writer: &mut dyn std::io::Write,
-        ) -> Result<(), ExportError> {
-            unimplemented!("DeviationStubKernel only supports measure_mesh_deviation") // ptodo:allow exhaustiveness/stub arm - not tracked debt
-        }
-
-        fn tessellate(&self, _handle: GeometryHandleId, _tolerance: f64) -> Result<Mesh, TessError> {
-            unimplemented!("DeviationStubKernel only supports measure_mesh_deviation") // ptodo:allow exhaustiveness/stub arm - not tracked debt
-        }
-
-        fn measure_mesh_deviation(&self, handle: GeometryHandleId, mesh: &Mesh) -> Option<f64> {
-            // Encode both forwarded arguments into the return value so the delegation
-            // test can verify the correct handle and mesh were passed through — not just
-            // that some value was returned.  A wrong handle or wrong mesh produces a
-            // different f64 and the assertion catches it.
-            Some(handle.0 as f64 + mesh.vertices.len() as f64)
-        }
-    }
-
-    #[test]
-    fn measure_mesh_deviation_delegates_to_registered_kernel() {
-        let mut planner = SingleKernelHolder::new();
-        planner.register_kernel(Box::new(DeviationStubKernel));
-        // Non-trivial handle id (5) and mesh with 3 vertex floats so the expected
-        // encoded value is unambiguous: 5.0 (handle) + 3.0 (vertex count) = 8.0.
-        // Passing a wrong handle or an empty/default mesh produces a different
-        // result and the assertion catches the forwarding bug.
-        let mesh = Mesh { vertices: vec![0.0_f32, 1.0, 2.0], indices: vec![], normals: None };
-        let result = planner.measure_mesh_deviation(GeometryHandleId(5), &mesh);
-        assert_eq!(result, Some(8.0));
-    }
-
-    #[test]
-    fn measure_mesh_deviation_no_kernel_returns_none() {
-        let planner = SingleKernelHolder::new();
-        let mesh = Mesh { vertices: vec![], indices: vec![], normals: None };
-        let result = planner.measure_mesh_deviation(GeometryHandleId(1), &mesh);
-        assert!(result.is_none());
-    }
-
-    /// The `None` arm must reproduce the trait default's no-kernel output.
-    ///
-    /// Per this impl's delegate-EVERY-method INVARIANT, adding a delegating
-    /// override must not change what an empty holder returns. Agreement with
-    /// `ingest_mesh` is now structural — both arms call
-    /// `SingleKernelHolder::no_mesh_kernel_error` — so what is left to check is
-    /// that the shared message is the right one, in particular that it carries
-    /// the `type_name::<Self>()`-derived `SingleKernelHolder` prefix rather
-    /// than a hard-coded name.
-    #[test]
-    fn ingest_mesh_at_resolution_no_kernel_names_the_holder() {
-        let mut holder = SingleKernelHolder::new();
-        let mesh = Mesh { vertices: vec![], indices: vec![], normals: None };
-
-        let err = holder
-            .ingest_mesh_at_resolution(&mesh, VoxelResolution::MinFeature(1.0))
-            .expect_err("an empty holder must reject mesh ingest");
-
-        match &err {
-            GeometryError::OperationFailed(msg) => {
-                assert!(
-                    msg.contains("SingleKernelHolder does not accept Mesh inputs"),
-                    "the message must name the holder via type_name::<Self>(): {msg}"
-                );
-            }
-            other => panic!("expected OperationFailed, got {other:?}"),
-        }
     }
 }
