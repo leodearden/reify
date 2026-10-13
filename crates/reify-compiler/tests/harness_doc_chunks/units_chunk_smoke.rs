@@ -68,9 +68,10 @@ use reify_test_support::{LENGTH_SLOT_DIAGNOSTIC_MARKER, named_length_argument};
 use crate::callable_registries::{phantom_name_panic, registry_family};
 use crate::chunk_cite_gate::assert_cited_paths_resolve;
 use crate::chunk_io::{UNITS_CHUNK_PATH, read_chunk};
-use crate::chunk_markdown::tagged_fence_bodies;
+use crate::chunk_markdown::{section_body, tagged_fence_bodies};
 use crate::doc_forms::{callee_names, fence_call_forms};
 use crate::module_compile::{ModuleCompile, compile_module};
+use crate::oracle_xref_smoke::DESTINATION_TOPIC;
 
 /// Info string of the fences that MUST compile clean.
 const REIFY_TAG: &str = "reify";
@@ -585,6 +586,41 @@ fn cited_test_paths_in_the_units_chunk_resolve() {
         MINIMUM_FN_CITES,
         MINIMUM_RS_FILES,
         MINIMUM_RI_FILES,
+    );
+}
+
+/// Marker that OPENS the region holding units.md's pointer to the per-position
+/// catalogue in `geometry.md`. Matched byte-exactly on the trimmed line; an inert
+/// HTML comment so neither this chunk's wording nor `geometry.md`'s heading is
+/// pinned (the heading is free to be retitled).
+const LENGTH_ARGS_XREF_MARKER: &str = "<!-- LENGTH-ARGS-XREF -->";
+
+/// Panic text only; nothing matches on it.
+const LENGTH_ARGS_XREF_TITLE: &str = "length-argument catalogue cross-reference";
+
+/// units.md must keep routing a reader to the `geometry` chunk's catalogue of
+/// which argument of which constructor is length-semantic.
+///
+/// The pointer names the retrieval TOPIC, not `geometry.md`'s heading wording, so
+/// retitling that heading cannot strand it; what CAN strand it is losing the
+/// pointer or renaming the topic. `section_body` panics on an absent marker, so
+/// deleting the pointer is RED rather than vacuously green. Scope: this file's
+/// canonical scope statement — no prose is pinned beyond the backticked topic.
+#[test]
+fn units_chunk_points_at_the_geometry_length_argument_catalogue() {
+    let region = section_body(
+        &read_chunk(UNITS_CHUNK_PATH),
+        LENGTH_ARGS_XREF_MARKER,
+        UNITS_CHUNK_PATH,
+        LENGTH_ARGS_XREF_TITLE,
+    );
+
+    let topic_key = format!("`{DESTINATION_TOPIC}`");
+    assert!(
+        region.contains(&topic_key),
+        "{UNITS_CHUNK_PATH}'s `{LENGTH_ARGS_XREF_MARKER}` region never names the destination \
+         topic {topic_key} — a pointer that names no destination points nowhere. FIX: route \
+         the reader to the {topic_key} chunk, topic {topic_key} of `reify_language_reference`."
     );
 }
 

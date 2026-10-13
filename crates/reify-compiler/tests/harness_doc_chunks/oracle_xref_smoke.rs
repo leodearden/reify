@@ -110,7 +110,7 @@ const REQUIRED_ORACLE_CALL_FORMS: &[&str] = GEOMETRY_ORACLE_NAMES;
 ///
 /// Matched BACKTICKED (see [`xref_region_violations`]), because "geometry"
 /// unadorned is an ordinary noun these pointers use in prose.
-const DESTINATION_TOPIC: &str = "geometry";
+pub(crate) const DESTINATION_TOPIC: &str = "geometry";
 
 /// How many WORDS a cross-reference region may carry before it has stopped being
 /// a pointer and started being a copy.
