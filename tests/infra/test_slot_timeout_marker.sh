@@ -322,16 +322,17 @@ echo "--- A6: what run_all.sh's re-emission sanitizer does to this family (drift
 # definition is then parsed for the same names). run_all.sh currently uses the
 # hoisted form; the inline form is what it used when this guard was written.
 #
-# AND BOTH SITES, not one. run_all sanitizes in TWO places -- the per-member
-# replay (_ra_emit_sanitized) and the Summary FAILED region
+# AND EVERY SITE, not one. run_all sanitizes in THREE places -- the deferred
+# per-member replay (_ra_emit_sanitized), the live member stream
+# (_ra_sanitize_stream) and the Summary FAILED region
 # (_ra_collect_fail_detail, which is what verify.sh / DF's merge-gate block
 # reason quote verbatim). Reading only the first left exactly the false green
 # this assertion is otherwise designed to catch: a fourth rule wired into
-# _ra_emit_sanitized and forgotten at the collector would satisfy an
-# emit-only arity check while the collector shipped a gap, and Section H
-# asserts only the two SLOT rules' effects. A6e compares the two derived
-# lists directly, which is what makes "the two paths cannot drift" a
-# machine-checked property rather than a claim in a comment.
+# _ra_emit_sanitized and forgotten at another site would satisfy an
+# emit-only arity check while that site shipped a gap, and Section H
+# asserts only the two SLOT rules' effects. A6e and A6h compare each derived
+# list to the replay's directly, which is what makes "the sites cannot drift"
+# a machine-checked property rather than a claim in a comment.
 #
 # WHY THAT MATTERS, historically: this assertion used to extract exactly one
 # name, _RA_CLOCK_SANITIZE, and assert the sentinel survived it. Its comment
@@ -411,6 +412,14 @@ _a6_same_chain() {  # <emit-list> <detail-list>
 }
 assert "A6e: _ra_collect_fail_detail applies the SAME ordered rule chain as _ra_emit_sanitized (emit $A6_N_NAMES, collector $A6_N_DETAIL)" \
     _a6_same_chain "$A6_EMIT_NAMES" "$A6_DETAIL_NAMES"
+
+# A6h: the third site, the live stream the serial branches pipe each member
+# through. Same predicate as A6e, so an underivable stream body is RED rather
+# than equal-to-nothing.
+A6_STREAM_NAMES="$(_a6_rules_of _ra_sanitize_stream)"
+A6_N_STREAM="$(printf '%s\n' "$A6_STREAM_NAMES" | grep -c . || true)"
+assert "A6h: the live-stream sanitizer _ra_sanitize_stream applies the SAME ordered rule chain as _ra_emit_sanitized (emit $A6_N_NAMES, stream $A6_N_STREAM)" \
+    _a6_same_chain "$A6_EMIT_NAMES" "$A6_STREAM_NAMES"
 
 # A6b, PRESERVED VERBATIM IN INTENT: the CLOCK rule alone, extracted by its
 # exact name, still leaves this family untouched at column 0. It is what keeps
@@ -4143,9 +4152,8 @@ echo "=== H: run_all.sh neutralises the SLOT family in re-emitted member output 
 #
 # Shape mirrors tests/infra/test_run_all_clock_marker_sanitize.sh (the same pin
 # for the clock family): temp fixture dir + PRIVATE classification manifest +
-# the pool env knobs, with pool-path/fixture-ran preconditions asserted FIRST so
-# nothing here can pass vacuously via the legacy serial fallback (which this
-# sanitizer deliberately does not cover).
+# the pool env knobs, with pool-path/fixture-ran preconditions asserted FIRST,
+# because H drives the deferred-replay site specifically.
 #
 # RECURSION NOTE: run_all.sh is driven against a TEMP fixture dir only, never
 # the real tests/infra/ (this file is itself auto-discovered by the outer
@@ -4225,8 +4233,8 @@ RUN_ALL_CLASSIFICATION_MANIFEST="$TMPH/classification.manifest" \
     REIFY_RUN_ALL_POOL_PSI_DISABLE=1 \
     timeout 300 bash "$RUN_ALL" "$TMPH" > "$H_OUT" 2>&1 || true
 
-# H0 FIRST: without both of these, H1 could pass vacuously via the legacy
-# serial fallback (no pool re-emission at all, hence nothing to rewrite).
+# H0 FIRST: without both of these, H1 could pass on the legacy serial
+# fallback's live stream and never touch the deferred-replay site H pins.
 assert "H0a: the pool path was actually taken (INFO: run_all.sh pool: N= present)" \
     _has_text "$H_OUT" "INFO: run_all.sh pool: N="
 assert "H0b: the fixture member actually ran (the normal re-emit site)" \
