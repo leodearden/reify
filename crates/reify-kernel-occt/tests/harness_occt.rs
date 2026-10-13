@@ -39,12 +39,13 @@
 //! are retained VERBATIM on the moved submodules rather than hoisted to an outer `#[cfg]` on
 //! the `mod` declarations below — an inner `#![cfg(...)]` on a `#[path]`-loaded submodule
 //! compiles correctly in every cfg state and preserves the `<file>::<test>` module path, so
-//! hoisting would have bought nothing while costing error-prone body edits. The remaining 3
-//! files (dispatcher_integration, inventory_registration, warm_startable_registration) carry
-//! no crate-level cfg and compile/run without OCCT today. Accordingly THIS harness root is
-//! deliberately NOT `#![cfg(has_occt)]`-gated — gating it would drop those 3 modules' tests
-//! whenever `has_occt` is unset, a regression. All three stayed here through the #7466 split,
-//! so that reasoning is unchanged by it. Each module's own retained inner attribute reproduces
+//! hoisting would have bought nothing while costing error-prone body edits. The remaining 4
+//! files (dispatcher_integration, inline_pattern_ratchet, inventory_registration,
+//! warm_startable_registration) carry no crate-level cfg and compile/run without OCCT today.
+//! Accordingly THIS harness root is deliberately NOT `#![cfg(has_occt)]`-gated — gating it
+//! would drop those 4 modules' tests whenever `has_occt` is unset, a regression. Three of them
+//! stayed here through the #7466 split, and inline_pattern_ratchet is a pure source lint, so
+//! that reasoning is unchanged by either. Each module's own retained inner attribute reproduces
 //! the exact pre-consolidation compile matrix.
 
 #[path = "harness_occt/apply_transform_integration.rs"]
@@ -83,6 +84,8 @@ mod gtransform_tessellation_ordering_integration;
 mod half_space_integration;
 #[path = "harness_occt/helix_sweep_integration.rs"]
 mod helix_sweep_integration;
+#[path = "harness_occt/inline_pattern_ratchet.rs"]
+mod inline_pattern_ratchet;
 #[path = "harness_occt/interference_integration.rs"]
 mod interference_integration;
 #[path = "harness_occt/inventory_registration.rs"]
