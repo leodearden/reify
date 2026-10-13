@@ -879,10 +879,12 @@ _ra_discovery_diag() {
 }
 
 # ---------------------------------------------------------------------------
-# _ra_flaky_ledger_append <name>  (task #5142)
+# _ra_flaky_ledger_append <ledger> <infra-dir> <role> <run-id> <name>
+# (task #5142)
 #
-# Persists one JSONL line to the durable FLAKY ledger (_RA_FLAKY_LEDGER)
-# recording that <name> passed on the Phase-2.5 serial retry this run --
+# Persists one JSONL line to the durable FLAKY ledger <ledger> recording that
+# <name> passed on the Phase-2.5 serial retry in run <run-id>, with the
+# inbound verify <role> and the branch checked out at <infra-dir> --
 # otherwise the only trace of a "flaky" reclassification is the transient
 # `=== FLAKY ...` stdout line, which nothing archives or counts across runs.
 #
@@ -895,13 +897,13 @@ _ra_discovery_diag() {
 # reader opening the ledger itself.
 # ---------------------------------------------------------------------------
 _ra_flaky_ledger_append() {
-    local _name="$1"
+    local _ledger="$1" _infra_dir="$2" _role="$3" _run_id="$4" _name="$5"
     [ "${REIFY_RUN_ALL_FLAKY_LEDGER_DISABLE:-}" = "1" ] && return 0
     command -v jq >/dev/null 2>&1 || return 0
     command -v flock >/dev/null 2>&1 || return 0
 
     local _branch _task _line
-    _branch="$(reify_git_env_scrub git -C "$INFRA_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+    _branch="$(reify_git_env_scrub git -C "$_infra_dir" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
     [ -n "$_branch" ] || _branch="unknown"
     case "$_branch" in
         task/*) _task="${_branch#task/}" ;;
@@ -911,24 +913,23 @@ _ra_flaky_ledger_append() {
     _line="$(jq -cn \
         --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
         --arg test "$_name" \
-        --arg role "$_RA_INBOUND_ROLE" \
+        --arg role "$_role" \
         --arg task "$_task" \
         --arg branch "$_branch" \
-        --arg run_id "$_RA_RUN_ID" \
+        --arg run_id "$_run_id" \
         '{ts:$ts,test:$test,role:$role,task:$task,branch:$branch,run_id:$run_id}' 2>/dev/null || true)"
     [ -n "$_line" ] || return 0
 
-    mkdir -p "$(dirname "$_RA_FLAKY_LEDGER")" 2>/dev/null || true
-    ( flock 9 || exit 0; printf '%s\n' "$_line" >> "$_RA_FLAKY_LEDGER" ) 9>>"${_RA_FLAKY_LEDGER}.lock" 2>/dev/null || true
+    mkdir -p "$(dirname "$_ledger")" 2>/dev/null || true
+    ( flock 9 || exit 0; printf '%s\n' "$_line" >> "$_ledger" ) 9>>"${_ledger}.lock" 2>/dev/null || true
     return 0
 }
 
 # ---------------------------------------------------------------------------
-# _ra_flaky_chronic_check <name>  (task #5142)
+# _ra_flaky_chronic_check <ledger> <n> <m> <name>  (task #5142)
 #
-# Scans the durable FLAKY ledger (_RA_FLAKY_LEDGER) and, when <name> appears
-# in >=_ra_chronic_n of the last _ra_chronic_m DISTINCT recorded run_ids,
-# emits a loud `WARNING: chronic flaky member ...` line to STDERR. "Last M
+# Scans the durable FLAKY ledger <ledger> and, when <name> appears in >=<n>
+# of the last <m> DISTINCT recorded run_ids, emits a loud `WARNING: chronic flaky member ...` line to STDERR. "Last M
 # runs" = the last M distinct run_ids present in the ledger file, which is
 # append-only in chronological order -- a run with zero flaky members writes
 # no ledger line by design, so M is necessarily measured over recorded/
@@ -942,13 +943,13 @@ _ra_flaky_ledger_append() {
 # subsystem must never break the suite.
 # ---------------------------------------------------------------------------
 _ra_flaky_chronic_check() {
-    local _name="$1"
+    local _ledger="$1" _n="$2" _m="$3" _name="$4"
     [ "${REIFY_RUN_ALL_FLAKY_LEDGER_DISABLE:-}" = "1" ] && return 0
     command -v jq >/dev/null 2>&1 || return 0
-    [ -s "$_RA_FLAKY_LEDGER" ] || return 0
+    [ -s "$_ledger" ] || return 0
 
     local _count
-    _count="$(jq -r '[.run_id,.test]|@tsv' "$_RA_FLAKY_LEDGER" 2>/dev/null | awk -F'\t' -v name="$_name" -v m="$_ra_chronic_m" '
+    _count="$(jq -r '[.run_id,.test]|@tsv' "$_ledger" 2>/dev/null | awk -F'\t' -v name="$_name" -v m="$_m" '
         {
             if (!($1 in seen)) {
                 order[++n] = $1
@@ -971,9 +972,9 @@ _ra_flaky_chronic_check() {
     case "$_count" in
         ''|*[!0-9]*) return 0 ;;
     esac
-    [ "$_count" -ge "$_ra_chronic_n" ] || return 0
+    [ "$_count" -ge "$_n" ] || return 0
 
-    echo "WARNING: chronic flaky member $_name (flaky in $_count of last $_ra_chronic_m recorded runs; N=$_ra_chronic_n) -- run_all.sh serial retry-once is masking it; observability only, not hard-failing (policy deferred, task #5142)" >&2
+    echo "WARNING: chronic flaky member $_name (flaky in $_count of last $_m recorded runs; N=$_n) -- run_all.sh serial retry-once is masking it; observability only, not hard-failing (policy deferred, task #5142)" >&2
     return 0
 }
 
@@ -1143,20 +1144,26 @@ echo "=== Running all infra tests in: $INFRA_DIR ==="
 # byte-identical (git tree compare + worktree-clean) to its last-executed-
 # green main sha, so an unchanged member is not re-run every merge.
 #
+# Contract: _ra_skip_engine <infra-dir> <inbound-role> [member...] prints its
+# decision lines and returns the kept members, in input order, in
+# _RA_SKIP_KEPT. The verdict the post-run write needs stays in this section's
+# own state below, read only by _ra_skip_state_write <failures>.
+#
 # PRODUCTION-INERT two-key + state-path gate: the engine does NOTHING (no
-# decision lines, discovered list untouched) unless ALL of
+# decision lines, every member kept) unless ALL of
 #   REIFY_RUN_ALL_CONTENT_SKIP=1
-#   AND _RA_INBOUND_ROLE == merge   (the INBOUND role snapshot taken just
-#                                    before `export DF_VERIFY_ROLE=task`
-#                                    above — NOT the normalized DF_VERIFY_ROLE,
-#                                    which is always "task" from that export
-#                                    onward)
+#   AND <inbound-role> == merge     (the caller passes _RA_INBOUND_ROLE, the
+#                                    INBOUND role snapshot taken just before
+#                                    `export DF_VERIFY_ROLE=task` above — NOT
+#                                    the normalized DF_VERIFY_ROLE, which is
+#                                    always "task" from that export onward)
 #   AND REIFY_RUN_ALL_SKIP_STATE non-empty
 # hold. So every existing run_all invocation / fixture (none set these) is a
 # silent no-op, and activation is left to sibling task 5276 wiring the durable
 # state path. Integrated in the POOL path only (the merge tier runs the pool);
 # legacy/H9 paths and the background role never skip.
 # ===========================================================================
+_RA_SKIP_KEPT=()                 # result: the members the engine keeps, in input order
 declare -A _RA_SKIP_DECL=()      # member basename -> declared closure paths (space-sep)
 declare -A _RA_STATE_GREEN=()    # member -> last-executed-green main sha
 declare -A _RA_STATE_AT=()       # member -> last_executed_at (epoch seconds)
@@ -1169,8 +1176,8 @@ _RA_SKIP_ACTIVE=0                # 1 iff the two-key + state-path gate is satisf
 _RA_SKIP_GLOBAL_MERGES=0         # global merge counter read from the ledger
 _RA_SKIP_STATE_MISSING=0         # 1 iff the state path is set but the file is absent
 _RA_SKIP_STATE_BAD=0             # 1 iff the state file contains a malformed line
-_RA_SKIP_TOPLEVEL=""             # repo toplevel resolved from INFRA_DIR
-_RA_SKIP_INFRA_REL=""            # INFRA_DIR path relative to toplevel (trailing slash, or "")
+_RA_SKIP_TOPLEVEL=""             # repo toplevel resolved from <infra-dir>
+_RA_SKIP_INFRA_REL=""            # <infra-dir> path relative to toplevel (trailing slash, or "")
 _RA_SKIP_SPECS=()                # scratch: closure pathspecs for one member
 
 # _ra_skip_read_closures — populate _RA_SKIP_DECL from the closures manifest
@@ -1233,7 +1240,7 @@ _ra_skip_read_state() {
 
 # _ra_skip_closure_specs <member> — build _RA_SKIP_SPECS = declared closure
 # paths ∪ the six IMPLICIT closure members, all repo-relative (via the
-# INFRA_DIR-relative prefix, so a hermetic fixture whose infra dir IS the
+# <infra-dir>-relative prefix, so a hermetic fixture whose infra dir IS the
 # toplevel and the real merge both resolve correctly). Own-file is implicit,
 # so any change to the member's own source always invalidates its skip (K3).
 _ra_skip_closure_specs() {
@@ -1253,12 +1260,16 @@ _ra_skip_closure_specs() {
     )
 }
 
-# _ra_skip_engine — the driver. Called from the POOL path AFTER the H3
-# exclusion filter and BEFORE the pool/serial partition (mirroring H3's own
-# filter of _h2_discovered_list). Emits a per-member SKIP decision line for a
-# byte-identical mapped member and drops it from _h2_discovered_list so
-# `discovered` counts only executed members (exactly like H3 exclusion).
+# _ra_skip_engine <infra-dir> <inbound-role> [member...] — the driver. Called
+# from the POOL path AFTER the H3 exclusion filter and BEFORE the pool/serial
+# partition. Prints a per-member decision line and returns, in _RA_SKIP_KEPT,
+# the members in input order minus each byte-identical mapped one it skips,
+# so the caller's `discovered` counts only executed members (exactly like H3
+# exclusion). Every path sets _RA_SKIP_KEPT; inert and storm-escape keep all.
 _ra_skip_engine() {
+    local _infra_dir="$1" _role="$2"
+    shift 2
+    _RA_SKIP_KEPT=("$@")
     _RA_SKIP_ACTIVE=0
     _RA_SKIP_SKIPPED=()
     _RA_SKIP_MAPPED=()
@@ -1266,19 +1277,19 @@ _ra_skip_engine() {
 
     # Two-key + state-path inert gate. Any miss ⇒ silent no-op (feature off).
     [ "${REIFY_RUN_ALL_CONTENT_SKIP:-}" = "1" ] || return 0
-    [ "$_RA_INBOUND_ROLE" = "merge" ] || return 0
+    [ "$_role" = "merge" ] || return 0
     [ -n "${REIFY_RUN_ALL_SKIP_STATE:-}" ] || return 0
     _RA_SKIP_ACTIVE=1
 
-    _RA_SKIP_TOPLEVEL="$(reify_git_env_scrub git -C "$INFRA_DIR" rev-parse --show-toplevel 2>/dev/null || true)"
-    _RA_SKIP_INFRA_REL="$(reify_git_env_scrub git -C "$INFRA_DIR" rev-parse --show-prefix 2>/dev/null || true)"
+    _RA_SKIP_TOPLEVEL="$(reify_git_env_scrub git -C "$_infra_dir" rev-parse --show-toplevel 2>/dev/null || true)"
+    _RA_SKIP_INFRA_REL="$(reify_git_env_scrub git -C "$_infra_dir" rev-parse --show-prefix 2>/dev/null || true)"
     _ra_skip_read_closures
     _ra_skip_read_state
 
     # Storm-escape (fail-open, LOUD): the engine is ACTIVE (state path set) but
     # the state file is absent or contains a malformed line. Never guess or skip
     # on unknown state — emit exactly ONE loud line and run the FULL pool this
-    # run (discovered list untouched, no per-member decision lines). This is the
+    # run (every member kept, no per-member decision lines). This is the
     # flaky-ledger amnesia lesson: degrade loudly, not silently. An unset/empty
     # state path is a DIFFERENT case (feature simply off) already handled by the
     # inert gate above, which returns before this point.
@@ -1300,7 +1311,7 @@ _ra_skip_engine() {
     local _name _green _rc _wt _names _touch _at _merges_at _age _merges_since
     declare -A _skip_set=()
     local _skipped_any=0
-    for _name in "${_h2_discovered_list[@]+${_h2_discovered_list[@]}}"; do
+    for _name in "$@"; do
         # Unmapped: no closure row ⇒ never skips (fail-open) ⇒ RUN (unmapped).
         if [ -z "${_RA_SKIP_DECL[$_name]+x}" ]; then
             echo "RUN (unmapped): $_name"
@@ -1363,22 +1374,20 @@ _ra_skip_engine() {
         [ "${_skip_set[$_name]:-0}" = "1" ] || _RA_SKIP_EXEC_MAPPED+=("$_name")
     done
 
-    # Rebuild _h2_discovered_list without skipped members (H3-analogous; same
-    # portable empty-array guard as the H3 filter above).
+    # The kept list without skipped members (H3-analogous).
     if [ "$_skipped_any" -eq 1 ]; then
-        local _kept=()
-        for _name in "${_h2_discovered_list[@]+${_h2_discovered_list[@]}}"; do
-            [ "${_skip_set[$_name]:-0}" = "1" ] || _kept+=("$_name")
+        _RA_SKIP_KEPT=()
+        for _name in "$@"; do
+            [ "${_skip_set[$_name]:-0}" = "1" ] || _RA_SKIP_KEPT+=("$_name")
         done
-        _h2_discovered_list=()
-        [ "${#_kept[@]}" -gt 0 ] && _h2_discovered_list=("${_kept[@]}")
     fi
     return 0
 }
 
-# _ra_skip_state_write — post-run ledger advance (task 5273, step-12). Called
-# once from the exit path, and writes ONLY when the engine was ACTIVE and every
-# executed member passed (failures==0) — green shas advance only on all-pass.
+# _ra_skip_state_write <failures> — post-run ledger advance (task 5273,
+# step-12). Called once from the exit path, and writes ONLY when the engine was
+# ACTIVE and every executed member passed (<failures> is 0) — green shas
+# advance only on all-pass.
 # Executed mapped members (_RA_SKIP_EXEC_MAPPED) record green_sha=HEAD + a
 # refreshed timestamp + merges_at_last_exec=the bumped global counter; every
 # other prior ledger entry (skipped members, members not discovered this run)
@@ -1390,7 +1399,7 @@ _ra_skip_engine() {
 # ledger self-heals to a valid empty ledger (skipping resumes on a later run).
 _ra_skip_state_write() {
     [ "$_RA_SKIP_ACTIVE" = "1" ] || return 0
-    [ "$failures" -eq 0 ] || return 0
+    [ "$1" -eq 0 ] || return 0
     command -v flock >/dev/null 2>&1 || return 0
     local _state="${REIFY_RUN_ALL_SKIP_STATE:-}"
     [ -n "$_state" ] || return 0
@@ -1817,14 +1826,13 @@ elif [ "$_H2_POOL_ACTIVE" -eq 1 ]; then
     trap '_ra_discovery_diag "$?" "$LINENO" "$BASH_COMMAND"' ERR
 
     # -- Partition (pool vs serial; unclassified fail-safes serial) --
-    _h2_discovered_list=("${_ra_default_scope_members[@]+"${_ra_default_scope_members[@]}"}")
-
     # Content-addressed SKIP engine (task 5273): drop byte-identical mapped
-    # members from _h2_discovered_list here -- after the H3 exclusion filter,
-    # before the pool/serial partition -- so `discovered` and the pool/serial
-    # sets below all reflect only the members actually executed this run.
-    # Fully inert unless the two-key + state-path gate is satisfied.
-    _ra_skip_engine
+    # members here -- after the H3 exclusion filter, before the pool/serial
+    # partition -- so `discovered` and the pool/serial sets below all reflect
+    # only the members actually executed this run. Fully inert (every member
+    # kept) unless the two-key + state-path gate is satisfied.
+    _ra_skip_engine "$INFRA_DIR" "$_RA_INBOUND_ROLE" "${_ra_default_scope_members[@]+"${_ra_default_scope_members[@]}"}"
+    _h2_discovered_list=("${_RA_SKIP_KEPT[@]+"${_RA_SKIP_KEPT[@]}"}")
 
     declare -A _h2_is_pool=()
     while IFS= read -r _h2_name; do
@@ -2157,20 +2165,20 @@ if [ "${#flaky_names[@]}" -gt 0 ]; then
     # cross-run triage -- observability only, never touches exit code or
     # any stdout line above (_ra_flaky_ledger_append is fail-open).
     for _ra_flaky_name in "${flaky_names[@]}"; do
-        _ra_flaky_ledger_append "$_ra_flaky_name"
+        _ra_flaky_ledger_append "$_RA_FLAKY_LEDGER" "$INFRA_DIR" "$_RA_INBOUND_ROLE" "$_RA_RUN_ID" "$_ra_flaky_name"
     done
     # Chronic-offender scan (task #5142): append-all-THEN-scan-all so the
     # current run's just-appended lines are included in the window (a member
     # can cross the threshold on the very run that reports it). Stderr-only,
     # exit code untouched -- see _ra_flaky_chronic_check.
     for _ra_flaky_name in "${flaky_names[@]}"; do
-        _ra_flaky_chronic_check "$_ra_flaky_name"
+        _ra_flaky_chronic_check "$_RA_FLAKY_LEDGER" "$_ra_chronic_n" "$_ra_chronic_m" "$_ra_flaky_name"
     done
 fi
 
 # Post-run content-skip ledger advance (task 5273, step-12): green shas advance
 # only on an all-pass ACTIVE run; a no-op for every inert/failed run.
-_ra_skip_state_write
+_ra_skip_state_write "$failures"
 
 if [ "$failures" -eq 0 ]; then
     exit 0
