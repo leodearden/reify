@@ -320,11 +320,17 @@ owns both gradualism gates and the verdict. The pieces become private, and tests
 point.
 
 **D9. One `RelationSig` row per relation kind (λ).** A static table holds
-`{ kind: RelationKind, arity: Arity, operands: OperandPolicy, metric_slot, codim: Codim }`, where
-`Codim` is `Fixed { rot, trans }`, `ByDatum(fn)` or `CountOnly` (tangent). It is keyed by S6's
-`RelationKind`. `RELATION_FN_NAMES`, `is_relation_typed_fn`, `relation_delta_dof(_kinds)`,
-`relation_metric_slot`, `relation_operand_datum` and the arity-3 policy all derive from it, and the
-tests iterate it.
+`{ kind: RelationKind, arity: Arity, operands: OperandPolicy, metric_slot }`. It is keyed by S6's
+`RelationKind`. `RELATION_FN_NAMES`, `is_relation_typed_fn`, `relation_metric_slot`,
+`relation_operand_datum` and the arity-3 policy all derive from it, and the tests iterate it.
+
+*Lead amendment 2026-10-13 (codim seam, raised by S6's session):* the codimension has ONE home,
+geometry-algebra-solver-unification β #6669's `LoweringTable` (`Row.codim`, keyed by
+(RelationKind, DatumKind, DatumKind)), which that earlier PRD already owns together with the measured
+`individual_rank` half. `RelationSig` therefore carries no `codim` field. λ leaves
+`relation_delta_dof(_kinds)` computing as they do today, keyed on `RelationKind`; #6669 derives them
+from `Row.codim`. B13's rot + trans == ΔDOF clause moves to #6669's B4 ("the compiler's published
+codim and the solver's codim are the SAME FIELD").
 
 Builtin result typing and arity are also S8's reify-builtins row facts. λ keeps them in the row only
 as relation semantics ("which overload is a relation"), and S8's rows read `RelationSig` rather than
@@ -401,7 +407,7 @@ same files, which contract §8 step 2 exists to prevent.
 | B10 | phantom-default cases via source | each of the four same-name-loser shapes behind the skip sets, as `.ri` through `check_trait_conformance` | Same advertised and injected sets as main; no `check_phase_*` call in the test region. | η (pins), θ (stays green) |
 | B11 | acceptance sites agree | each deliberate divergence row, at a fn-call, a struct-ctor and a param-default site | Same accept/reject verdict at all three sites. | ι |
 | B12 | DOF gates | a joint with a `Type::Error` DOF; a joint with a non-kind DOF type; a joint whose body has `tangent` | No `E_JOINT_DOF_MISMATCH`; the non-kind case gets exactly one `E_ARG_TYPE_MISMATCH`. | κ |
-| B13 | relation table | iterate the `RelationSig` table | For every row, rot + trans == ΔDOF; the names derive from the table; the doc count matches. | λ |
+| B13 | relation table | iterate the `RelationSig` table | The names derive from the table; the doc count matches; R3 = 0. (The rot + trans == ΔDOF clause moved to #6669 B4 — lead amendment, D9.) | λ |
 | B14 | parse-error kind | a member-continuation source through `compile_project` (module_dag) | Diagnostic carries the mapped code and the original span; CLI `render_errors` text unchanged. | μ |
 | B15 | value-cell union | a template with guarded `where`/`else` members | `all_value_cells()` yields value_cells, then each group's members, then else_members. | ν |
 
@@ -472,9 +478,9 @@ New gate-resident tests carry their drift-guard registrations in the same diff (
 - **κ #8740 — One gated DOF entry point** *(leaf)*. Modules: joint_self_check.rs,
   compile_builder/entities_phase.rs. D8. Signal: B12; one `pub(crate)` item in the module; the
   entities_phase §(4) block is one call. Priority medium. Keys: fk-cc676a29f5d9.
-- **λ #8741 — `RelationSig` table keyed by `RelationKind`** *(leaf; HELD: `x_seam_wait = {stream: S6, contract: "RelationKind enum in reify-ir, parsed once by the compiler"}`, excluded from this batch's commit_planning — S6's session wires its RelationKind leaf as λ's dependency and releases it)*. Modules: relation_signatures.rs (and
+- **λ #8741 — `RelationSig` table keyed by `RelationKind`** *(leaf; was HELD on S6; released 2026-10-13 by S6's session with dependency S6 γ #8830 — RelationKind parsed at reify-eval relate_solve::relation_instance (S6 R4); λ keys on `RelationKind::from_name`)*. Modules: relation_signatures.rs (and
   its LSP callers' imports, if signatures move). D9. Signal: B13; R3 at 0; the tests iterate the
-  table. Deps: α, κ, S6 RelationKind leaf (held; S6 is not yet authored). Priority medium. Keys:
+  table. Deps: α, κ, S6 γ #8830. Priority medium. Keys:
   fk-cb941b3d058e.
 - **μ #8742 — `ParseErrorKind` on `ParseError`** *(leaf)*. Modules: reify-ast decl.rs; reify-syntax
   ts_parser.rs, member_continuation.rs; reify-compiler module_dag.rs; reify-core diagnostics.rs (new
