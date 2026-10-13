@@ -15,11 +15,12 @@ fn is_ident_char(c: char) -> bool {
 }
 
 /// One source line in two views: `code` has comments removed and string and
-/// char literal contents blanked; `doc` is the text of a `///` or `//!` line.
+/// char literal contents blanked; `doc` is the text of the doc comments on it,
+/// empty when there are none.
 struct Line {
     raw: String,
     code: String,
-    doc: Option<String>,
+    doc: String,
 }
 
 /// What an unfinished construct at the end of a line carries into the next.
@@ -28,12 +29,19 @@ enum Carry {
     Code,
     Str,
     RawStr { hashes: usize },
-    Block { depth: usize },
+    Block { depth: usize, kind: BlockKind },
+}
+
+/// Whether a block comment is documentation (`/** */`, `/*! */`) or a plain one.
+#[derive(Clone, Copy)]
+enum BlockKind {
+    Plain,
+    Doc,
 }
 
 enum Scan {
     Advance(usize),
-    LineComment { doc: Option<String> },
+    LineComment { doc: String },
 }
 
 /// The lines of `text` together with the lexer's state at the end of the text.
@@ -50,19 +58,19 @@ fn lex(text: &str) -> Vec<Line> {
 fn lex_line(carry: &mut Carry, raw: &str) -> Line {
     let chars: Vec<char> = raw.chars().collect();
     let mut code = String::new();
-    let mut doc = None;
+    let mut doc = String::new();
     let mut at = 0;
     while at < chars.len() {
         let scan = match *carry {
             Carry::Code => scan_code(carry, &chars, at, &mut code),
             Carry::Str => scan_str(carry, &chars, at, &mut code),
             Carry::RawStr { hashes } => scan_raw_str(carry, hashes, &chars, at, &mut code),
-            Carry::Block { depth } => scan_block(carry, depth, &chars, at),
+            Carry::Block { depth, kind } => scan_block(carry, depth, kind, &chars, at, &mut doc),
         };
         match scan {
             Scan::Advance(width) => at += width,
             Scan::LineComment { doc: text } => {
-                doc = text;
+                doc.push_str(&text);
                 break;
             }
         }
@@ -84,12 +92,13 @@ fn starts_at(chars: &[char], at: usize, pattern: &str) -> bool {
 fn scan_code(carry: &mut Carry, chars: &[char], at: usize, code: &mut String) -> Scan {
     if starts_at(chars, at, "//") {
         return Scan::LineComment {
-            doc: doc_text(&chars[at + 2..]),
+            doc: doc_text(&chars[at + 2..]).unwrap_or_default(),
         };
     }
     if starts_at(chars, at, "/*") {
-        *carry = Carry::Block { depth: 1 };
-        return Scan::Advance(2);
+        let (kind, opener_width) = block_opening(chars, at);
+        *carry = Carry::Block { depth: 1, kind };
+        return Scan::Advance(opener_width);
     }
     match chars[at] {
         '"' => {
@@ -126,6 +135,18 @@ fn doc_text(after_slashes: &[char]) -> Option<String> {
     let is_outer = after_slashes.first() == Some(&'/') && after_slashes.get(1) != Some(&'/');
     let is_inner = after_slashes.first() == Some(&'!');
     (is_outer || is_inner).then(|| after_slashes[1..].iter().collect())
+}
+
+/// The kind and width of the block comment whose `/*` sits at `at`: `/**` (but
+/// not `/***` or `/**/`) and `/*!` open outer and inner doc comments.
+fn block_opening(chars: &[char], at: usize) -> (BlockKind, usize) {
+    let is_outer = starts_at(chars, at, "/**") && !matches!(chars.get(at + 3), Some('*' | '/'));
+    let is_inner = starts_at(chars, at, "/*!");
+    if is_outer || is_inner {
+        (BlockKind::Doc, 3)
+    } else {
+        (BlockKind::Plain, 2)
+    }
 }
 
 /// The `#` count of a raw string opening (`r"`, `r#"`, `br"`) whose `r` sits at `at`.
@@ -181,17 +202,33 @@ fn scan_raw_str(
     Scan::Advance(1 + hashes)
 }
 
-fn scan_block(carry: &mut Carry, depth: usize, chars: &[char], at: usize) -> Scan {
+fn scan_block(
+    carry: &mut Carry,
+    depth: usize,
+    kind: BlockKind,
+    chars: &[char],
+    at: usize,
+    doc: &mut String,
+) -> Scan {
     if starts_at(chars, at, "/*") {
-        *carry = Carry::Block { depth: depth + 1 };
+        *carry = Carry::Block {
+            depth: depth + 1,
+            kind,
+        };
         return Scan::Advance(2);
     }
     if starts_at(chars, at, "*/") {
         *carry = match depth {
             1 => Carry::Code,
-            _ => Carry::Block { depth: depth - 1 },
+            _ => Carry::Block {
+                depth: depth - 1,
+                kind,
+            },
         };
         return Scan::Advance(2);
+    }
+    if matches!(kind, BlockKind::Doc) {
+        doc.push(chars[at]);
     }
     Scan::Advance(1)
 }
@@ -260,11 +297,29 @@ fn nested_block_comments_span_lines() {
 #[test]
 fn doc_view_captures_outer_and_inner_doc_comments_only() {
     let lines = lex(&["/// x", "//! y", "//// z", "// w"].join("\n"));
-    let docs: Vec<Option<&str>> = lines.iter().map(|line| line.doc.as_deref()).collect();
-    assert_eq!(docs, [Some(" x"), Some(" y"), None, None]);
+    let docs: Vec<&str> = lines.iter().map(|line| line.doc.as_str()).collect();
+    assert_eq!(docs, [" x", " y", "", ""]);
     for line in &lines {
         assert_eq!(line.code.trim(), "", "{:?}", line.raw);
     }
+}
+
+#[test]
+fn doc_view_captures_block_doc_comments_on_every_line_they_span() {
+    let lines = lex(&["/** a", " * b /* c */ d", " */ fn f() {} /*! e */"].join("\n"));
+    let docs: Vec<&str> = lines.iter().map(|line| line.doc.as_str()).collect();
+    assert_eq!(docs, [" a", " * b  c  d", "  e "]);
+    let code: Vec<&str> = lines.iter().map(|line| line.code.trim()).collect();
+    assert_eq!(code, ["", "", "fn f() {}"]);
+}
+
+#[test]
+fn plain_block_comments_are_not_doc_text() {
+    let lines = lex(&["/*** x */", "/**/ fn g() {}", "/* y */"].join("\n"));
+    for line in &lines {
+        assert_eq!(line.doc, "", "{:?}", line.raw);
+    }
+    assert_eq!(lines[1].code.trim(), "fn g() {}");
 }
 
 // ── item spans ───────────────────────────────────────────────────────────────
@@ -758,9 +813,9 @@ fn occurrences_in(text: &str, needle: &str) -> usize {
 
 fn counted_occurrences(pattern: &Pattern, line: &Line) -> usize {
     let in_code = occurrences_in(&line.code, pattern.needle);
-    let in_docs = match (&pattern.view, &line.doc) {
-        (View::CodeAndDocs, Some(doc)) => occurrences_in(doc, pattern.needle),
-        _ => 0,
+    let in_docs = match pattern.view {
+        View::Code => 0,
+        View::CodeAndDocs => occurrences_in(&line.doc, pattern.needle),
     };
     in_code + in_docs
 }
@@ -1092,12 +1147,22 @@ fn every_pattern_row_applies_its_region_to_cfg_test_modules() {
 #[test]
 fn every_pattern_row_applies_its_view_to_doc_comments() {
     for_every_pattern_row(|row, pattern| {
-        let documented = format!("/// {}", pattern.seed);
+        let seed = pattern.seed;
+        let documented = [
+            format!("/// {seed}"),
+            format!("//! {seed}"),
+            format!("/** {seed} */"),
+            format!("/*! {seed} */"),
+        ];
         let expected = match pattern.view {
             View::Code => 1,
             View::CodeAndDocs => 2,
         };
-        expect_hit_count(&hits_after_control(row, pattern, &documented), expected)
+        for comment in &documented {
+            expect_hit_count(&hits_after_control(row, pattern, comment), expected)
+                .map_err(|problem| format!("doc comment {comment:?}: {problem}"))?;
+        }
+        Ok(())
     });
 }
 
