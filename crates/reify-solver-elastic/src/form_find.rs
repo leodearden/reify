@@ -416,9 +416,16 @@ pub(crate) fn surface_indices_in_range(surfaces: &[(usize, usize, usize)], n: us
 /// FDM rank-1 update propagates to both surface and anisotropic paths
 /// automatically.
 ///
-/// Endpoints index `d` unchecked: callers run [`validate_members`] first.
+/// Endpoints must index real nodes: callers run [`validate_members`] first, and
+/// debug builds assert it here, naming the offending member.
 fn scatter_line_members(d: &mut Mat<f64>, members: &[(usize, usize)], q: &[f64]) {
+    let n = d.nrows();
     for (&(j, k), &qi) in members.iter().zip(q.iter()) {
+        debug_assert!(
+            j < n && k < n,
+            "member ({j}, {k}) indexes past the {n}×{n} force-density matrix; \
+             validate_members must run before scatter_line_members",
+        );
         d[(j, j)] += qi;
         d[(k, k)] += qi;
         d[(j, k)] -= qi;
