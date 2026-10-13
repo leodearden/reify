@@ -1629,7 +1629,7 @@ impl CacheStore {
     ///
     /// Delegates to [`derive_output_freshness_from_trace_with_cause`] and drops the
     /// cause, so the §7.2/§9.2 classification logic lives in exactly one place. See
-    /// that method for the full truth table.
+    /// [`derive_output_freshness_with_cause`] for the full truth table.
     ///
     /// Callers that hold the just-evaluated trace (e.g. the wire site in
     /// `evaluate_let_bindings`) should prefer this over
@@ -1649,7 +1649,7 @@ impl CacheStore {
     ///
     /// Delegates to [`derive_output_freshness_for_node_with_cause`] and drops the
     /// cause, so the §7.2/§9.2 classification logic lives in exactly one place. See
-    /// that method for the full truth table.
+    /// [`derive_output_freshness_with_cause`] for the full truth table.
     ///
     /// **Old-trace semantics:** this method reads the trace that was stored during the
     /// *prior* evaluation of `node_id`, not a freshly-computed one.  At the wire site in
@@ -1682,7 +1682,8 @@ impl CacheStore {
     /// [`CacheStore::pending_cause`].
     ///
     /// **Absent node fallback:** if `node_id` has no cache entry, returns
-    /// `(Final, None)` (consistent with the pure helper's empty-input case).
+    /// `(Final, None)` (consistent with [`derive_output_freshness_with_cause`]'s
+    /// empty-input case).
     ///
     /// See arch §9.2 lines 880-890 (Failed → Pending carve-out) and arch §7.2
     /// line 748 (Pending forwards the chain).
@@ -1807,6 +1808,20 @@ impl CacheStore {
 
 /// Derive output freshness from `still_refining` and the input freshnesses
 /// (arch §7.2 with the §9.2 carve-out).
+///
+/// Truth table (`docs/reify-implementation-architecture.md` §7.2 and §9.2):
+///
+/// | `still_refining` | any input Failed | any input Pending | any input Intermediate | output                                                   |
+/// |------------------|------------------|-------------------|------------------------|----------------------------------------------------------|
+/// | `true`           | –                | –                 | –                      | `Intermediate { generation }`                            |
+/// | `false`          | `true`           | –                 | –                      | `Pending { last_substantive: ResultRef::none() }` (§9.2) |
+/// | `false`          | `false`          | `true`            | –                      | `Pending { last_substantive: ResultRef::none() }` (§7.2) |
+/// | `false`          | `false`          | `false`           | `true`                 | `Intermediate { generation }`                            |
+/// | `false`          | `false`          | `false`           | `false` (all Final)    | `Final`                                                  |
+///
+/// Failed and Pending inputs are carved out of the §7.2 "any non-Final →
+/// Intermediate" rule: both produce a Pending output, so the downstream subtree
+/// is naturally quieted. They differ only in the chain root reported alongside it.
 ///
 /// Returns both the derived `Freshness` AND the upstream `NodeId` (if any) that
 /// drove the Pending output. The chain semantics are:
@@ -3678,7 +3693,7 @@ mod tests {
         );
     }
 
-    // --- derive_output_freshness tests (task #2328, step-1) ---
+    // --- derive_output_freshness_with_cause tests (task #2328, step-1) ---
 
     /// Freshness that `CacheStore::derive_output_freshness_for_node_with_cause`
     /// derives for an output let-cell whose cached trace reads one input cell
@@ -3834,7 +3849,7 @@ mod tests {
     // --- derive_output_freshness_for_node tests (task #2328, step-5) ---
 
     /// Verifies that derive_output_freshness_for_node walks the cached dependency_trace.reads
-    /// for a let-cell and delegates to derive_output_freshness correctly.
+    /// for a let-cell and delegates to derive_output_freshness_with_cause correctly.
     #[test]
     fn derive_output_freshness_for_node_walks_cached_dependency_trace() {
         use reify_core::VersionId;
@@ -3902,7 +3917,7 @@ mod tests {
         );
     }
 
-    // --- derive_output_freshness §9.2 carve-out (task #2330 step-5) ---
+    // --- derive_output_freshness_with_cause §9.2 carve-out (task #2330 step-5) ---
 
     /// Pins the §9.2 carve-out (rewritten from the §7.2 truth-table coverage of task
     /// #2328): Failed and Pending inputs now produce a Pending output rather than
