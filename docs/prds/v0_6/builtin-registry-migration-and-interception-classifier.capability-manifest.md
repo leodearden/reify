@@ -3,7 +3,7 @@
 Mechanizes G3 + G6 per leaf for `docs/prds/v0_6/builtin-registry-migration-and-interception-classifier.md`
 (program `review-all-reify-20261010`, stream S8). Drafted in author mode (pass 1), 2026-10-13.
 Machine-readable twin: `docs/prds/v0_6/builtin-registry-migration-and-interception-classifier.capability-manifest.yaml`
-(task ids `null` until `commit_planning` stamps them).
+(task ids stamped by `commit_planning` on 2026-10-13: S8-α1 #8888, S8-α2 #8889, S8-β1 #8890, S8-β2 #8891, S8-β3 #8892, S8-γ #8893, S8-δ1 #8894, S8-δ2 #8895, S8-ε #8896, S8-ζ #8897, S8-η #8898, S8-μ #8899, S8-ν1 #8900, S8-ν2 #8901, S8-ξ #8902, S8-ο #8903, S8-π #8904, S8-ρ #8905, S8-θ #8906, S8-ι #8907, S8-κ #8908, S8-λ #8909, S8-σ #8910, S8-τ #8911, S8-υ #8912, S8-φ #8913, S8-ω #8914).
 
 > **Code anchors** verified against main `a4a8862bcc` (2026-10-13); every S8 source path is
 > byte-identical to the program anchor `a030ee7528`. Cite-by-symbol throughout; every

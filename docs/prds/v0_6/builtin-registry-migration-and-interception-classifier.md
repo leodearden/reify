@@ -1,6 +1,6 @@
 # PRD: Builtin registry migration and one interception classifier — typed builtin outcomes, one call classifier, geometry calls typed Geometry
 
-Status: **active (pass 1)**. Authored 2026-10-13 by the S8 `/prd` session of program
+Status: **active (decomposed 2026-10-13)**. Leaves: S8-α1 #8888, S8-α2 #8889, S8-β1 #8890, S8-β2 #8891, S8-β3 #8892, S8-γ #8893, S8-δ1 #8894, S8-δ2 #8895, S8-ε #8896, S8-ζ #8897, S8-η #8898, S8-μ #8899, S8-ν1 #8900, S8-ν2 #8901, S8-ξ #8902, S8-ο #8903, S8-π #8904, S8-ρ #8905, S8-θ #8906, S8-ι #8907, S8-κ #8908, S8-λ #8909, S8-σ #8910, S8-τ #8911, S8-υ #8912, S8-φ #8913, S8-ω #8914. Adopted registry legs: β #6002, #6943, #6944, #6945, τ2 #6004, τ4 #6006, τ5 #6007, π #6012, ω #6014, λ #6015, ρ #6016. Authored 2026-10-13 by the S8 `/prd` session of program
 `review-all-reify-20261010` (program doc `plans/review-all-program-reify-20261012.md`, stream
 **S8 Builtin registry migration and one interception classifier**, wave 2, mode spawn, size L,
 risk medium). Shape: **B + H** (contracts §4, boundary-test sketch §5). Milestone: v0_6.
@@ -349,7 +349,8 @@ Compiler typing reads `codomain` (and the `Unavailable`/`Ambiguous` dispositions
 hints); `eval_datum_projection` reads `Value` bindings; reify-eval's self-datum path and S3's
 `expr_classify` feature-member set read the `SelfDatum`/`FeatureDatum` rows. A member typed but
 not evaluated becomes unrepresentable: every `Resolved` row names its binding. `Frame`'s
-`yz_plane`/`zx_plane` therefore evaluate; the normal stays a `Value::Vector` per #6100. The
+`yz_plane`/`zx_plane` evaluate (#6100 adds the arms first; the normal stays a `Value::Vector`),
+and the table makes a typed-but-unevaluated member unrepresentable from then on. The
 module imports `value` and must not be imported by it (reify-ir SCC row
 {boundary_attachment, expr, geometry, value} does not grow).
 
@@ -542,7 +543,7 @@ repo-root glob.
 | 9 | `tests/prd-gate/fixtures/s8_geometry_ctor_conformance.ri` (let-bound); `…/s8_geometry_ctor_conformance_inline.ri` | let-bound: silent, `Holder` fields hold geometry; inline: 2 errors naming `Real`, `origin` never rejected | let-bound: errors for `name`, `len` and `origin` naming `Geometry`; inline: `E_GeometryCallInValuePosition` | S8-η |
 | 10 | `tests/prd-gate/fixtures/s8_geometry_annotations.ri`, `…/s8_geometry_arith_cmp.ri` | `pr`, `ll`, `li`, unannotated `mk` silent; `box*2`, `box+1`, `box>0` silent at check; `constraint box > 0` exit-0 INDETERMINATE | `ParamDefaultTypeMismatch` / `LetAnnotationTypeMismatch`; `FnReturnTypeUnannotated` naming `Geometry`; ArithOperandKind / CmpOperandKind errors (`box + 1` stays silent, §9) | S8-η |
 | 11 | `examples/kinematic/counter_mass_balance.ri`; the 265-example corpus; `examples/half_space.ri` (#7505's widening control) | `snaps` typed `Real`; corpus diagnostics as measured | `snaps` typed `List<Snapshot>`, check + eval byte-identical; corpus byte-identical except `std_tolerancing_surface.ri`, whose inline constructor geometry is rebound with `let` (enumerated correction) | S8-η |
-| 12 | `tests/prd-gate/fixtures/s8_frame_datum_planes.ri` | `i_yz`, `i_zx`, `g_yz`, `g_zx` = `undef`; every `f_*` (from `self.x`/`self.z`) = `undef` | all planes and members evaluate on identity, `fi.*`-built and `self.*`-built frames | S8-θ |
+| 12 | `tests/prd-gate/fixtures/s8_frame_datum_planes.ri` | `i_yz`, `i_zx`, `g_yz`, `g_zx` = `undef`; every `f_*` (from `self.x`/`self.z`) = `undef` | all planes and members evaluate on identity, `fi.*`-built and `self.*`-built frames (by #6100); the C3 parity test pins it once the tables are one | #6100, S8-θ |
 | 13 | `tests/prd-gate/fixtures/s8_safety_factor_nonpositive_yield.ri` | `sf_neg = -2.5`, `sf_zero = 0` | coded `SafetyFactorNonPositiveYield` Error + `undef` for both; `sf_pos = 2.5`; field `sample` and `max` agree | S8-κ |
 | 14 | `examples/fea_multi_case_bracket.ri`; `solve_load_cases` nested in a constraint (dispatcher attached) | reify-expr copy runs; diagnostics duplicated across homes | `reify eval` output byte-identical; nested call returns the trampoline's result; `eval_solve_load_cases` absent | S8-λ |
 | 15 | LSP rename of a binding to `match`, `forall`, `unit` | accepted | refused (Reserved); a Contextual word follows the parse test | S8-σ |
@@ -569,6 +570,7 @@ Row 17 is part of every leaf's done-criteria.
 | S25 GUI backend | file lock | S8-ι edits the three `Value::Field` destructures in `gui/src-tauri/src/engine.rs`, which S25 partitions | S25 owns the file | cross-reference |
 | S5 analysis stratum | file lock | S8-λ edits a comment in `compute_targets/multi_case.rs` and the multi-case tests; S5 moves compute targets | — | none |
 | S4 cell-eval closure | file lock | S8-τ moves `EvalContext` into `reify-expr/src/context.rs` | — | none |
+| #6100 Frame datum projections (GAP 1, GAP 2) | consumes | missing Frame arms; native `self.<datum>` evaluation | #6100 | S8-θ ← #6100 |
 | #5425 geometry-position acceptance | ordering | edits `geometry.rs`, `geometry_traits_inference.rs`, `expr.rs`; S8-η changes the inline-call type it keys on | #5425 | none (file lock); details note on #5425 |
 | #8480 dual_eval partition | file overlap | partitions `dual_eval.rs` (kink tables, `NonDifferentiable`, `Seeds`); only `is_bounded_reduction_shaped` overlaps S8-ε | #8480 | none (file lock) |
 | #8558, #8549 (filed mechanicals) | referenced | expression-depth bound; Kleene left absorption | filed | none |
@@ -595,7 +597,7 @@ rule). Prereqs use the `←` convention.
 
 **Phase 1 — the typed outcome (foundation, then families).**
 
-- **S8-α1 — Typed builtin outcome; one settle point; every caller (no behaviour change).**
+- **S8-α1 #8888 — Typed builtin outcome; one settle point; every caller (no behaviour change).**
   Modules: reify-core `diagnostics.rs` (`Rejection`, `Advisory`), reify-ir `arg_acceptance.rs`
   (`From<ArgRejection>`), reify-stdlib `lib.rs` + `registry_dispatch.rs` (`eval_builtin` returns
   `BuiltinOutcome`; the 23 families wrapped as `Evaluated::legacy`), reify-expr `lib.rs` (settle
@@ -607,7 +609,7 @@ rule). Prereqs use the `←` convention.
   dispatch stage of `eval_builtin`). Consumer: S8-α2, β1, β2, γ, δ1, δ2,
   κ; S6 χ #8851; S12. Prereqs: none. Priority medium. Keys: none (foundation of
   fk-76e1dc7c434e).
-- **S8-α2 — Success-path advisories: dfm, flexure, snapshot.** Modules: reify-stdlib `dfm.rs`
+- **S8-α2 #8889 — Success-path advisories: dfm, flexure, snapshot.** Modules: reify-stdlib `dfm.rs`
   (a pure verdict function the builtin and the constraint path both call), `flexures/`,
   `snapshot.rs`/`dynamics/com.rs` (CoM fallback), reify-expr `lib.rs`
   (`emit_{flexure,dfm,snapshot}_diagnostics` deleted), reify-eval `engine_constraints.rs`
@@ -615,41 +617,48 @@ rule). Prereqs use the `←` convention.
   `tests/prd-gate/fixtures/`, ratchet rows `stdlib-post-hoc-diagnose-hook`,
   `expr-emit-diagnostics-fn`. Signal: §5 rows 1–3 byte-identical. Consumer: δ1. Prereqs ← S8-α1,
   #8846. Keys: none.
-- **S8-β1 — Geometry family: the 19 diagnosed names become rejections.** Modules: reify-stdlib
+- **S8-β1 #8890 — Geometry family: the 19 diagnosed names become rejections.** Modules: reify-stdlib
   `geometry.rs` (`diagnose`, `datum_fault_diagnostic`, `diagnose_bbox_corners` deleted; the
   rejecting arms return coded `Rejection`s built from the existing `DatumFault`/`AffineMapFault`
   classifiers); the ruling/escalation prose moves to the row `basis` or this PRD with a pointer.
   Signal: the 19 names' diagnostics byte-identical in message, now coded (`affine_scale` gains a
   code); ratchet `stdlib-post-hoc-diagnose-hook` −1, `stdlib-legacy-outcome` −1. Consumer:
   S8-β2. Prereqs ← S8-α1. Keys: none.
-- **S8-β2 — Geometry family: the 28 undiagnosed names gain coded rejections.** Modules:
-  reify-stdlib `geometry.rs`, reify-core `diagnostics.rs`. Signal: §5 row 4. Consumer: S8-β3,
-  υ. Prereqs ← S8-β1. **Keys: fk-7e3c3d10ae46. Subsumes #6697.**
-- **S8-β3 — Stdlib `geometry.rs` partition (3).** Modules: reify-stdlib `geometry.rs` → a
+- **S8-β2 #8891 — Geometry family: the 28 undiagnosed names gain coded rejections.** Modules:
+  reify-stdlib `geometry.rs`, `joints.rs` (only `transform_at`'s composition fault, which #6697
+  named; the rest of the joints family stays `legacy`), reify-core `diagnostics.rs`. Includes
+  `transform_compose`'s `ComposeFault` (#6697) and the non-shape faults of `project`,
+  `frame_to_frame` and `transform_inverse` (#8044). Signal: §5 row 4. Consumer: S8-β3, υ.
+  Prereqs ← S8-β1. **Keys: fk-7e3c3d10ae46. Subsumes #6697 and #8044** (#6697's other child,
+  #7738 — `eval_mul`'s inline Transform composition — stays its own task).
+- **S8-β3 #8892 — Stdlib `geometry.rs` partition (3).** Modules: reify-stdlib `geometry.rs` → a
   datum-construction module + the eval module; the test module moves to
-  `crates/reify-stdlib/tests/` through public seams. Signal: the moved tests green unchanged;
+  `crates/reify-stdlib/tests/` through public seams; the few tests that reach private helpers
+  (`construct_point_or_vector`, `make_point3`, `make_real_vec3`, `decompose_point3`, the
+  `classify_*` faults) stay a child module via `#[path]` (#7779's no-widening shape). Signal: the
+  moved tests green unchanged;
   `module_scc_ratchet` shows no new reify-stdlib row; §5 row 17. Prereqs ← S8-β2. Keys: none
   (ruled h14). **Subsumes #7779.** Same-diff: PLINECITE `--rename` once #8822 has landed.
-- **S8-γ — FEA, dynamics and analysis rejections.** Modules: reify-stdlib `fea/combine.rs`
+- **S8-γ #8893 — FEA, dynamics and analysis rejections.** Modules: reify-stdlib `fea/combine.rs`
   (`linear_combine`'s ten checks become its rejections; `fea::diagnose` deleted),
   `dynamics/eval.rs` (`inverse_dynamics_*`; the "best-effort attribution" goes), `analysis.rs`
   (#8705's `StressTensorAsymmetric` hook becomes a rejection). Signal: `reify eval` on the
   existing multi-load and dynamics fixtures that exercise those diagnostics — byte-identical
   messages, now coded at the rejecting arm; ratchet `stdlib-post-hoc-diagnose-hook` −3.
   Consumer: δ1. Prereqs ← S8-α1, #8705, #8717, #8845. **Keys: fk-eca29487b2c9.**
-- **S8-δ1 — Stackup, tolerancing, orientation rejections; the post-hoc axis deleted.** Modules:
+- **S8-δ1 #8894 — Stackup, tolerancing, orientation rejections; the post-hoc axis deleted.** Modules:
   reify-stdlib `stackup.rs`, `tolerancing.rs` (its two code-less Errors gain codes),
   `orientation.rs` (`orient_exp`), `lib.rs` (the `pub use … diagnose` re-exports), reify-expr
   `lib.rs` (`emit_undef_builtin_diagnostics` deleted). Signal: the three families' diagnostics
   byte-identical in message, now coded; ratchet `stdlib-post-hoc-diagnose-hook 0`,
   `expr-emit-diagnostics-fn 0`. Consumer: δ2, τ. Prereqs ← S8-α2, β1, γ. Keys: none.
-- **S8-δ2 — Sweep rejections.** Modules: reify-stdlib `sweep.rs` (the remaining silent exits
+- **S8-δ2 #8895 — Sweep rejections.** Modules: reify-stdlib `sweep.rs` (the remaining silent exits
   return coded rejections), reify-core `diagnostics.rs`. Signal: §5 row 5; ratchet
   `stdlib-legacy-outcome` −1. Consumer: υ. Prereqs ← S8-δ1, #8843. **Keys: fk-76e1dc7c434e.**
 
 **Phase 2 — one classifier.**
 
-- **S8-ε — Intercept column and `classify_call` (high).** Modules: reify-builtins `row.rs`,
+- **S8-ε #8896 — Intercept column and `classify_call` (high).** Modules: reify-builtins `row.rs`,
   `registry.rs` (`Intercept` column; `ExprIntercept` rows for the unconditionally intercepted
   names; `EvalBuiltin` rows carrying the column for the conditional ones — `fn_field`,
   `restrict`, the analysis names, `max`/`min`/`argmax`/`argmin` at both arities — with result
@@ -664,7 +673,7 @@ rule). Prereqs use the `←` convention.
   primal as `eval_expr`; adding an `InterceptKind` variant without arms fails to compile
   (documented recipe); ratchets `expr-name-guarded-intercept 0`, `dual-eval-intercept-mirror 1`.
   Consumer: ζ, τ. Prereqs ← #6002. Priority high (gate #8612). **Keys: fk-be87290e126e.**
-- **S8-ζ — Stdlib intrinsics stamped at compile time; one shadowing rule.** Modules:
+- **S8-ζ #8897 — Stdlib intrinsics stamped at compile time; one shadowing rule.** Modules:
   reify-builtins (`STDLIB_INTRINSICS`; rows for `filter` — `EnginePostProcess`, whose
   `structural_query.rs` name compare becomes an id match — and `cost` — `CompileOnly`, its
   compile-time rewrite), reify-ir `expr.rs` (`intrinsic` on `UserFunctionCall`), reify-compiler
@@ -678,7 +687,7 @@ rule). Prereqs use the `←` convention.
 
 **Phase 3 — compiler typing and dispatch.**
 
-- **S8-η — Geometry calls typed by kind; lowering-unreachable geometry calls are a coded error
+- **S8-η #8898 — Geometry calls typed by kind; lowering-unreachable geometry calls are a coded error
   (high).** Modules: reify-compiler `builtin_families.rs` (`geometry_fn_result_type`,
   `is_kinematic_sweep`), `expr.rs` (ladder arm 9; `E_GeometryCallInValuePosition`),
   `geometry.rs`, `conformance/mod.rs` (`arg_type_is_unverifiable` narrowed; 3 name sniffs
@@ -690,59 +699,62 @@ rule). Prereqs use the `←` convention.
   record the result in the task. The text enumerates #7505's `E_GEOMETRY_UNBOUNDED` widening on
   nested unbounded operands with `examples/half_space.ri` as the control. Signal: §5 rows 8–11.
   Consumer: #6944 (τ9 rows), #6007 (τ5 sweep typing), S8-μ, φ, υ, #6014. Prereqs ← #8622,
-  #8627, #8631. Priority high (gate #8612). **Keys: fk-5a6c2aff4589.**
-- **S8-μ — Geometry lowering keyed by the descriptor discriminant.** Modules: reify-compiler
+  #8627, #8631. Priority high (gate #8612). **Keys: fk-5a6c2aff4589. Subsumes #7505** (its
+  measured case — `sub x = Foo(g: translate(half_space(…), …))` at a `Bounded` param emitting no
+  `GeometryUnbounded` — becomes a row of η's signal).
+- **S8-μ #8899 — Geometry lowering keyed by the descriptor discriminant.** Modules: reify-compiler
   `geometry.rs` (`GeometryBuiltin::from_name`; router), `geometry_boolean.rs`,
   `geometry_curve.rs`, `geometry_transform.rs`, `geometry_modify.rs` (exhaustive matches; the
   four `unreachable!` and the inner `name → BooleanOp` match deleted). Signal: an alias or op
   added to a descriptor without a satellite arm fails to compile (recipe in the task);
   `git grep 'unreachable!(' -- crates/reify-compiler/src/geometry_{boolean,curve,transform,modify}.rs`
   empty; §5 row 17. Consumer: ν1, ξ. Prereqs ← #8617, #8623, S8-η. **Keys: fk-2e03b9202f6d.**
-- **S8-ν1 — Arg indices, profile preconditions and trait-inference arms from the descriptor.**
+- **S8-ν1 #8900 — Arg indices, profile preconditions and trait-inference arms from the descriptor.**
   Modules: reify-compiler `geometry.rs` (`geometry_arg_indices`, `check_profile_preconditions`
   read `parent_role` + the composite table; the silent default goes),
   `geometry_traits_inference.rs` (per-op arms keyed by `GeometryBuiltin`). Signal: the
   cross-check tests reduce to one descriptor-coverage test; a descriptor row without an
   arg-index disposition fails to compile; §5 row 17. Consumer: ν2. Prereqs ← S8-μ. Keys: none.
-- **S8-ν2 — Compiler `geometry.rs` partition (7).** Modules: reify-compiler `geometry.rs` → the
+- **S8-ν2 #8901 — Compiler `geometry.rs` partition (7).** Modules: reify-compiler `geometry.rs` → the
   seven h14 groups; `compile_geometry_call_inner` becomes one exhaustive `match GeometryBuiltin`
   whose arms call per-family lowering functions. Signal: each new file states its purpose in
   one sentence; no new reify-compiler SCC row once S7 ξ #8657 has added the compiler rows; §5
   row 17. Consumer: #6944. Prereqs ← S8-ν1. **Keys: fk-ea33d4b5d69d.** Same-diff: PLINECITE
   `--rename` once #8822 has landed.
-- **S8-ξ — Typed Modify arguments.** Modules: reify-compiler `types.rs` (`ModifyArgs`),
+- **S8-ξ #8902 — Typed Modify arguments.** Modules: reify-compiler `types.rs` (`ModifyArgs`),
   `geometry_modify.rs`, reify-eval `geometry_ops/compile/` modify family, `deps.rs`,
   `engine_build.rs`. Signal: no string-keyed lookup of a Modify argument remains in reify-eval
   (`git grep -E 'n == "(open_faces|thickness|third|radius|distance)"' -- crates/reify-eval/src`
   empty); a misspelt field fails to compile; §5 row 17 on the modify examples. Consumer:
   reify-eval modify compilers. Prereqs ← S8-μ, #8750, #8623. **Keys: fk-a494d2285710.**
-- **S8-ο — One parameterized-builtin-type table; one resolver per result kind.** Modules:
+- **S8-ο #8903 — One parameterized-builtin-type table; one resolver per result kind.** Modules:
   reify-compiler `type_resolution.rs`. Signal: ratchet `parameterized-type-twin 0`;
   `param v : Vector3<L>` through a generic alias (the subst path) classifies its dimension slot
   as the base path does (the task enumerates the behaviour change); §5 row 17. Consumer: #7736
   (may read the table). Prereqs ← #8625, #8643. **Keys: fk-d402f7243603.**
-- **S8-π — Operators parsed at the syntax boundary.** Modules: reify-ast `ast.rs`
+- **S8-π #8904 — Operators parsed at the syntax boundary.** Modules: reify-ast `ast.rs`
   (`BinOp`/`UnOp` moved in), reify-ir (re-export), reify-syntax `ts_parser.rs`, reify-compiler
   `operator_typing.rs`, `type_compat.rs` remnants, `type_resolution.rs`, `geometry.rs`,
   `expr.rs`, and every other `ExprKind::BinOp` matcher (reify-lsp, reify-test-support,
   reify-constraints, reify-eval, `gui/src-tauri` — the task lists them from `git grep`).
   Signal: ratchet `ast-operator-string-match 0`; `git grep 'fn resolve_binop'` empty; §5 row 17.
   Consumer: every operator consumer. Prereqs ← #8620. **Keys: fk-e187a67f4b32.**
-- **S8-ρ — Curvature face overload by type.** Modules: reify-compiler `builtin_families.rs`.
+- **S8-ρ #8905 — Curvature face overload by type.** Modules: reify-compiler `builtin_families.rs`.
   Signal: §5 row 16 (`reify check` on a fixture authored in the task). Prereqs ← #8622.
   Priority low. **Keys: fk-eeebffcc4a83.**
 
 **Phase 4 — satellite tables.**
 
-- **S8-θ — One datum-projection table in reify-ir (high).** Modules: reify-ir new
+- **S8-θ #8906 — One datum-projection table in reify-ir (high).** Modules: reify-ir new
   `datum_projection.rs`, reify-compiler `datum_projection.rs` (reads the table), reify-expr
   `lib.rs` (`eval_datum_projection`), reify-eval `geometry_ops.rs` self-datum path and S3's
   `expr_classify.rs` feature set. Signal: §5 row 12; the C3 parity test; ratchets
   `compiler-datum-member-table 0`, `eval-datum-member-table 0`. Consumer: compiler typing, eval,
-  reify-eval, τ. Prereqs ← #8687, #8617 (S7 γ rewrites `datum_projection.rs`'s imports).
-  Priority high (gate #8612). **Keys: fk-7bfe957c7f09. Subsumes #6100** (GAP 1, GAP 2 on
-  `self`-built frames, item 4's lockstep pin).
-- **S8-ι — `FieldPayload` typed variants.** Modules: reify-ir `value.rs`, reify-expr `lib.rs`
+  reify-eval, τ. Prereqs ← #8687, #8617 (S7 γ rewrites `datum_projection.rs`'s imports),
+  #6100 (it closes GAP 1, the missing `yz_plane`/`zx_plane` arms, and GAP 2 by evaluating
+  `self.<datum>` natively — #6130 and #7765 wait on that plan — so θ unifies the tables over the
+  fixed evaluator). Priority high (gate #8612). **Keys: fk-7bfe957c7f09.**
+- **S8-ι #8907 — `FieldPayload` typed variants.** Modules: reify-ir `value.rs`, reify-expr `lib.rs`
   (`sample_field_at`, `sample_as_printed_zones`), `analysis.rs`, `calculus.rs`,
   `field_reductions.rs`, `dual_eval.rs`, reify-eval `compute_targets/{mod,elastic_static,
   as_printed_material,as_printed_material_r0}.rs`, `engine_eval.rs`, `engine_build.rs`,
@@ -751,19 +763,19 @@ rule). Prereqs use the `←` convention.
   them from `git grep -l FieldSourceKind`). Signal: `git grep 'items.len() == 7'` empty in
   reify-expr; the as-printed and field-sampling examples byte-identical; the `Imported` doc row
   matches the type. Consumer: κ, τ. Prereqs ← #8717. **Keys: fk-561a5a490532.**
-- **S8-κ — One tensor-kernel table; non-positive yield rejected.** Modules: reify-expr
+- **S8-κ #8908 — One tensor-kernel table; non-positive yield rejected.** Modules: reify-expr
   `analysis.rs`, `field_reductions.rs`, reify-stdlib `analysis.rs` (`safety_factor`
   rejection), reify-core `diagnostics.rs`. Signal: §5 row 13; ratchet `tensor-kernel-twin 0`;
   `every_wrapper_kind_samples_to_its_reduction_extrema_at_their_arg_coordinates` stays green.
   Consumer: the next analysis kind, τ. Prereqs ← S8-ι, S8-α1, #8705. **Keys: fk-ecc0b4fb9d6b.
   Subsumes #7847.**
-- **S8-λ — One `solve_load_cases` home.** Modules: reify-expr `lib.rs`, `dual_eval.rs`,
+- **S8-λ #8909 — One `solve_load_cases` home.** Modules: reify-expr `lib.rs`, `dual_eval.rs`,
   reify-stdlib `fea/` stub arm, reify-eval `compute_targets/multi_case.rs` (the "mirrors"
   prose), the task-3005 smoke tests (rewritten onto a production-registered engine). The text
   enumerates both D10 behaviour changes and the constraint-path solve cost. Signal: §5 row 14;
   `git grep -E 'fn (eval_solve_load_cases|invoke_solve_elastic_static)'` empty. Consumer: ζ, τ.
   Prereqs ← #8717. **Keys: fk-a72f4510f36b.**
-- **S8-σ — One keyword table in reify-syntax.** Modules: reify-syntax (new `keywords.rs` +
+- **S8-σ #8910 — One keyword table in reify-syntax.** Modules: reify-syntax (new `keywords.rs` +
   parse test + spec-parity test), reify-lsp `references.rs`, `completion.rs`, reify-audit
   `pdoccover.rs` and `Cargo.toml`. Signal: §5 row 15 (rename refused, observed through the LSP
   rename harness on a real document); `reify-audit --pattern PDOCCOVER` output unchanged.
@@ -771,25 +783,25 @@ rule). Prereqs use the `←` convention.
 
 **Phase 5 — partition, docs, milestone, close.**
 
-- **S8-τ — reify-expr `lib.rs` partition (8).** Modules: reify-expr `lib.rs` → `context.rs`,
+- **S8-τ #8911 — reify-expr `lib.rs` partition (8).** Modules: reify-expr `lib.rs` → `context.rs`,
   `value_ops.rs`, `methods.rs`, `overload.rs`, `intercepts.rs`, `sampling.rs`, the core
   evaluator in `lib.rs`, tests to `crates/reify-expr/tests/` through public seams. Signal: no
   reify-expr row in `scripts/module-scc-baseline.json` (`module_scc_ratchet` green); each new
   file states its purpose in one sentence; §5 row 17. Prereqs ← S8-α2, δ1, ε, ζ, θ, ι, κ, λ.
   Keys: none (ruled h14). Same-diff: PLINECITE `--rename` once #8822 has landed.
-- **S8-υ — Docs-truth.** Modules: `crates/reify-mcp/src/tools/chunks/*.md` (geometry values and
+- **S8-υ #8912 — Docs-truth.** Modules: `crates/reify-mcp/src/tools/chunks/*.md` (geometry values and
   the bind-with-`let` rule; `W_UserFnShadowsBuiltin`; the new geometry-builtin and sweep
   rejection codes; `safety_factor`'s yield rule; Frame plane projections),
   `examples/best_practices/` exemplar "bind geometry with `let`, then pass it" + `INDEX.md` line,
   `.claude/skills/reify-design/SKILL.md` index line. Signal: every documented signature compiles
   as written in a smoke `.ri`; an author searching for "pass a shape to a function" finds the
   exemplar from the chunk index. Prereqs ← S8-η, ζ, κ, θ, σ, β2, δ2.
-- **S8-φ — [MILESTONE] PRD: hoist value-position geometry calls.** Not an implementation leaf
+- **S8-φ #8913 — [MILESTONE] PRD: hoist value-position geometry calls.** Not an implementation leaf
   (`execution_class: decision`). On dispatch it escalates for a human `/prd` session to author
   the hoisting PRD that replaces `E_GeometryCallInValuePosition` with evaluation and covers the
   unchanged positions in D6's table (function and lambda bodies) together with #5428 (session
   ruling Q4). Prereqs ← S8-η.
-- **S8-ω — PRD close.** Stamps this PRD's Status `SHIPPED` with the landed leaf ids, the
+- **S8-ω #8914 — PRD close.** Stamps this PRD's Status `SHIPPED` with the landed leaf ids, the
   AS-AUTHORED freeze paragraph and the LIVE/AS-AUTHORED map, the same header on the
   `.capability-manifest.md`, and the registry PRD's own terminal stamp. Signal: the committed
   headers. Prereqs ← every leaf above except S8-φ, plus registry λ #6015 and ρ #6016.
@@ -812,10 +824,11 @@ rule). Prereqs use the `←` convention.
 fk-2845dd9262b4.
 
 **Subsumed at decomposition** (cancelled with a reason naming the subsuming leaf, content ported
-first): #6697 ← S8-β2, #7779 ← S8-β3, #8578 ← S8-ζ, #6100 ← S8-θ, #7847 ← S8-κ, #8583 ← S8-σ.
-Re-checked at pass 2 with `get_task`; #7505 (trait inference skips placeholder-typed nested
-geometry calls) is a candidate for subsumption by S8-η, confirmed or left at pass 2. Details
-note on #5425: S8-η changes the inline geometry-call type its acceptance keys on.
+first; "X → Y" here means X is subsumed by Y): #6697 and #8044 → S8-β2, #7779 → S8-β3,
+#8578 → S8-ζ, #7505 → S8-η, #7847 → S8-κ, #8583 → S8-σ (confirmed at pass 2 with `get_task`
+and a dependents/children scan). #6100 is **not** subsumed: it carries a planned root-cause fix
+its dependents #6130 and #7765 wait on, so S8-θ ← #6100. Details note on #5425: S8-η changes the
+inline geometry-call type its acceptance keys on.
 
 Gate #8612 ← S8-ε, S8-η, S8-θ.
 

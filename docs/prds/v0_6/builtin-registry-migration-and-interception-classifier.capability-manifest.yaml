@@ -4,7 +4,7 @@ prd: docs/prds/v0_6/builtin-registry-migration-and-interception-classifier.md
 schema_version: 1
 tasks:
   - label: "S8-α1"
-    task_id: null
+    task_id: 8888
     title: "Typed builtin outcome; one settle point; every eval_builtin caller"
     capabilities:
       - name: "rejection-type-exists"
@@ -24,7 +24,7 @@ tasks:
           paths: ["crates/reify-stdlib/src/lib.rs"]
           expect: present
   - label: "S8-α2"
-    task_id: null
+    task_id: 8889
     title: "Success-path advisories for dfm, flexure and snapshot; three emit fns deleted"
     capabilities:
       - name: "both-path-emit-fns-deleted"
@@ -36,7 +36,7 @@ tasks:
           paths: ["crates/reify-expr/src"]
           expect: absent
   - label: "S8-β1"
-    task_id: null
+    task_id: 8890
     title: "Geometry family: the 19 diagnosed names become typed rejections"
     capabilities:
       - name: "geometry-diagnose-helpers-deleted"
@@ -48,7 +48,7 @@ tasks:
           paths: ["crates/reify-stdlib/src"]
           expect: absent
   - label: "S8-β2"
-    task_id: null
+    task_id: 8891
     title: "Geometry family: the 28 undiagnosed names gain coded rejections"
     capabilities:
       - name: "undiagnosed-geometry-names-coded"
@@ -58,7 +58,7 @@ tasks:
           kind: manual
           reason: one coded Error per call on the fixture is the assertion; no stable single-line grep expresses that every rejecting arm is coded
   - label: "S8-β3"
-    task_id: null
+    task_id: 8892
     title: "Stdlib geometry.rs partition (3); tests to crates/reify-stdlib/tests"
     capabilities:
       - name: "inline-test-module-moved-out"
@@ -70,7 +70,7 @@ tasks:
           paths: ["crates/reify-stdlib/src/geometry.rs"]
           expect: absent
   - label: "S8-γ"
-    task_id: null
+    task_id: 8893
     title: "FEA, dynamics and analysis rejections; their diagnose hooks deleted"
     capabilities:
       - name: "fea-dynamics-hook-reexports-deleted"
@@ -82,7 +82,7 @@ tasks:
           paths: ["crates/reify-stdlib/src/lib.rs"]
           expect: absent
   - label: "S8-δ1"
-    task_id: null
+    task_id: 8894
     title: "Stackup, tolerancing and orientation rejections; the post-hoc diagnose axis deleted"
     capabilities:
       - name: "post-undef-emit-fn-deleted"
@@ -102,7 +102,7 @@ tasks:
           paths: ["crates/reify-stdlib/src/lib.rs"]
           expect: absent
   - label: "S8-δ2"
-    task_id: null
+    task_id: 8895
     title: "Sweep rejections for the remaining silent exits"
     note: "Accepted gap: the grep proves the type is used in sweep.rs, not that every exit is coded; the fixture is the behavioural cover."
     capabilities:
@@ -115,7 +115,7 @@ tasks:
           paths: ["crates/reify-stdlib/src/sweep.rs"]
           expect: present
   - label: "S8-ε"
-    task_id: null
+    task_id: 8896
     title: "Intercept column on reify-builtins rows; classify_call read by eval_expr and dual_eval"
     capabilities:
       - name: "dual-eval-reduction-mirror-deleted"
@@ -135,7 +135,7 @@ tasks:
           paths: ["crates/reify-expr/src"]
           expect: present
   - label: "S8-ζ"
-    task_id: null
+    task_id: 8897
     title: "Stdlib intrinsics stamped at compile time; one shadowing rule (W_UserFnShadowsBuiltin)"
     capabilities:
       - name: "user-call-mirror-deleted"
@@ -163,7 +163,7 @@ tasks:
           paths: ["crates/reify-core/src/diagnostics.rs"]
           expect: present
   - label: "S8-η"
-    task_id: null
+    task_id: 8898
     title: "Geometry calls typed by kind; geometry passed where lowering does not reach is a coded error"
     capabilities:
       - name: "geometry-result-type-fn-exists"
@@ -183,7 +183,7 @@ tasks:
           paths: ["crates/reify-core/src/diagnostics.rs"]
           expect: present
   - label: "S8-μ"
-    task_id: null
+    task_id: 8899
     title: "Geometry lowering keyed by the descriptor discriminant; exhaustive satellites"
     capabilities:
       - name: "satellite-unreachable-arms-deleted"
@@ -195,7 +195,7 @@ tasks:
           paths: ["crates/reify-compiler/src/geometry_boolean.rs", "crates/reify-compiler/src/geometry_curve.rs", "crates/reify-compiler/src/geometry_transform.rs", "crates/reify-compiler/src/geometry_modify.rs"]
           expect: absent
   - label: "S8-ν1"
-    task_id: null
+    task_id: 8900
     title: "Arg indices, profile preconditions and trait-inference arms from the descriptor"
     capabilities:
       - name: "trait-inference-keyed-by-builtin"
@@ -207,7 +207,7 @@ tasks:
           paths: ["crates/reify-compiler/src/geometry_traits_inference.rs"]
           expect: present
   - label: "S8-ν2"
-    task_id: null
+    task_id: 8901
     title: "Compiler geometry.rs partition (7); one exhaustive match over GeometryBuiltin"
     capabilities:
       - name: "per-family-lowering"
@@ -217,7 +217,7 @@ tasks:
           kind: manual
           reason: structural (one exhaustive match calling per-family lowering functions); no single-line grep expresses it
   - label: "S8-ξ"
-    task_id: null
+    task_id: 8902
     title: "Typed Modify arguments (ModifyArgs) across compiler and eval"
     capabilities:
       - name: "modify-args-enum-exists"
@@ -229,7 +229,7 @@ tasks:
           paths: ["crates/reify-compiler/src/types.rs"]
           expect: present
   - label: "S8-ο"
-    task_id: null
+    task_id: 8903
     title: "One parameterized-builtin-type table; substitution as a parameter"
     capabilities:
       - name: "subst-twins-deleted"
@@ -241,7 +241,7 @@ tasks:
           paths: ["crates/reify-compiler/src/type_resolution.rs"]
           expect: absent
   - label: "S8-π"
-    task_id: null
+    task_id: 8904
     title: "Operators parsed to BinOp/UnOp at the syntax boundary"
     capabilities:
       - name: "ast-operator-is-typed"
@@ -253,7 +253,7 @@ tasks:
           paths: ["crates/reify-ast/src/ast.rs"]
           expect: absent
   - label: "S8-ρ"
-    task_id: null
+    task_id: 8905
     title: "Curvature face overload classifies faces by Selector(Face) type"
     capabilities:
       - name: "curvature-face-by-type"
@@ -263,7 +263,7 @@ tasks:
           kind: manual
           reason: the leaf's own fixture (curvature over an indexed face selector types the matrix form) is the assertion
   - label: "S8-θ"
-    task_id: null
+    task_id: 8906
     title: "One datum-projection table in reify-ir read by compiler, reify-expr and reify-eval"
     capabilities:
       - name: "datum-table-module-exists"
@@ -282,7 +282,7 @@ tasks:
           paths: ["crates/reify-eval/src"]
           expect: absent
   - label: "S8-ι"
-    task_id: null
+    task_id: 8907
     title: "FieldPayload typed variants replace (source, lambda)"
     capabilities:
       - name: "field-payload-enum-exists"
@@ -302,7 +302,7 @@ tasks:
           paths: ["crates/reify-expr/src/lib.rs"]
           expect: absent
   - label: "S8-κ"
-    task_id: null
+    task_id: 8908
     title: "One tensor-kernel table; non-positive yield rejected on every path"
     capabilities:
       - name: "hand-rolled-safety-factor-reduction-deleted"
@@ -322,7 +322,7 @@ tasks:
           paths: ["crates/reify-core/src/diagnostics.rs"]
           expect: present
   - label: "S8-λ"
-    task_id: null
+    task_id: 8909
     title: "One solve_load_cases home: the reify-expr re-implementation deleted"
     capabilities:
       - name: "reify-expr-multi-case-copy-deleted"
@@ -334,7 +334,7 @@ tasks:
           paths: ["crates/reify-expr/src"]
           expect: absent
   - label: "S8-σ"
-    task_id: null
+    task_id: 8910
     title: "One keyword table in reify-syntax read by the LSP rename gate and reify-audit"
     capabilities:
       - name: "keyword-table-module-exists"
@@ -353,7 +353,7 @@ tasks:
           paths: ["crates/reify-lsp/src/references.rs"]
           expect: absent
   - label: "S8-τ"
-    task_id: null
+    task_id: 8911
     title: "reify-expr lib.rs partition (8) along the h14 groups"
     capabilities:
       - name: "context-module-exists"
@@ -364,7 +364,7 @@ tasks:
           paths: ["crates/reify-expr/src/context.rs"]
           expect: present
   - label: "S8-υ"
-    task_id: null
+    task_id: 8912
     title: "Docs-truth: chunks, exemplar, cheatsheet index, discoverability"
     capabilities:
       - name: "docs-truth-delivered"
@@ -374,7 +374,7 @@ tasks:
           kind: manual
           reason: chunk text and the exemplar's compile are asserted by the leaf and examples_smoke
   - label: "S8-φ"
-    task_id: null
+    task_id: 8913
     title: "[MILESTONE] PRD: hoist value-position geometry calls"
     capabilities:
       - name: "hoisting-prd-authored"
@@ -384,7 +384,7 @@ tasks:
           kind: manual
           reason: a human-attended /prd session; no code deliverable
   - label: "S8-ω"
-    task_id: null
+    task_id: 8914
     title: "PRD close: terminal stamp on this PRD, its manifest and the registry PRD"
     capabilities:
       - name: "prd-stamped-shipped"
