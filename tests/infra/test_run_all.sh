@@ -2459,6 +2459,68 @@ fi
 assert "T26c: GREEN regression -- armed-but-intact run exits 0" \
     test "$t26c_rc" -eq 0
 
+# -- 26d/26e: --scope host-infra and member-subset -- the same two-member nuke
+# as 26b. The per-member check must fire BEFORE the second member is spawned:
+# no header for it, no rc-127 FAIL, just the marker. 26d keeps its manifest and
+# Lane-X lock OUTSIDE the nuked dir, so only the members' dir disappears.
+_mk_t26_nuke_fixture() {  # <dir>
+    touch "$1/run_all.sh"
+    cat > "$1/test_a_nuke.sh" <<'MOCKBODY'
+#!/usr/bin/env bash
+rm -rf "$NUKE_DIR"
+exit 0
+MOCKBODY
+    chmod +x "$1/test_a_nuke.sh"
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$1/test_b_second.sh"
+    chmod +x "$1/test_b_second.sh"
+}
+
+TMPDIR_T26D="$(mktemp -d)"
+_TMPDIRS+=("$TMPDIR_T26D")
+T26D_INFRA="$TMPDIR_T26D/infra"
+mkdir "$T26D_INFRA"
+_mk_t26_nuke_fixture "$T26D_INFRA"
+MANIFEST_T26D="$TMPDIR_T26D/classification.manifest"
+printf 'test_a_nuke.sh host-exclusive\ntest_b_second.sh host-exclusive\n' > "$MANIFEST_T26D"
+LOCK_T26D="$TMPDIR_T26D/lane-x.lock"
+
+t26d_rc=0
+t26d_out="$(env -u REIFY_RUN_ALL_EXCLUDE_HOST_INFRA -u REIFY_RUN_ALL_MEMBER_SUBSET \
+    -u REIFY_RUN_ALL_SUBSET_COUNT_ONLY -u REIFY_RUN_ALL_CONTENT_SKIP \
+    -u REIFY_RUN_ALL_SKIP_STATE -u REIFY_RUN_ALL_POOL_DISABLE \
+    RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T26D" \
+    REIFY_LANE_X_FLOCK_LOCK="$LOCK_T26D" \
+    NUKE_DIR="$T26D_INFRA" \
+    bash "$RUN_ALL" --scope host-infra "$T26D_INFRA" 2>&1)" || t26d_rc=$?
+rm -f "$LOCK_T26D" "${LOCK_T26D}.slot-1"
+
+TMPDIR_T26E="$(mktemp -d)"
+_TMPDIRS+=("$TMPDIR_T26E")
+_mk_t26_nuke_fixture "$TMPDIR_T26E"
+
+t26e_rc=0
+t26e_out="$(env -u REIFY_RUN_ALL_EXCLUDE_HOST_INFRA \
+    -u REIFY_RUN_ALL_SUBSET_COUNT_ONLY -u REIFY_RUN_ALL_CONTENT_SKIP \
+    -u REIFY_RUN_ALL_SKIP_STATE -u REIFY_RUN_ALL_POOL_DISABLE \
+    REIFY_RUN_ALL_MEMBER_SUBSET="test_a_nuke.sh test_b_second.sh" \
+    NUKE_DIR="$TMPDIR_T26E" \
+    bash "$RUN_ALL" "$TMPDIR_T26E" 2>&1)" || t26e_rc=$?
+
+for _t26_leg in d e; do
+    case "$_t26_leg" in
+        d) _t26_out="$t26d_out"; _t26_rc="$t26d_rc"; _t26_branch="HOST-INFRA" ;;
+        e) _t26_out="$t26e_out"; _t26_rc="$t26e_rc"; _t26_branch="SUBSET" ;;
+    esac
+    _t26_markers="$(grep -cE '^=== INTERRUPTED \(worktree removed\) ===$' <<<"$_t26_out")" || true
+    assert "T26$_t26_leg: $_t26_branch path -- worktree removal between members emits the INTERRUPTED marker once (got $_t26_markers)" \
+        test "$_t26_markers" -eq 1
+    assert "T26$_t26_leg: $_t26_branch path -- worktree removal exits 99 (got $_t26_rc)" \
+        test "$_t26_rc" -eq 99
+    _t26_second="$(grep -cF -- '--- Running: test_b_second.sh ---' <<<"$_t26_out")" || true
+    assert "T26$_t26_leg: $_t26_branch path -- the per-member check fires before the second member is spawned (second-member headers: $_t26_second)" \
+        test "$_t26_second" -eq 0
+done
+
 # -- Test 27: Phase-2.5 serial-retry + FLAKY ledger extended to
 # intra-run-serial members (task #5261, PRD merge-gate-health.md W5b) ----------
 # Phase 2.5 previously retried ONLY `pool`-bucket members, so an
@@ -3714,6 +3776,104 @@ for _t33_leg in pool legacy subset host-infra; do
         assert "T33g [$_t33_leg]: the member output is present in neutralized form (non-vacuity)" true
     else
         assert "T33g [$_t33_leg]: the member output is present in neutralized form (non-vacuity) (quoted slot $_t33_quoted_slot, clock $_t33_quoted_clock, lane-x $_t33_quoted_lanex)" false
+    fi
+done
+
+# -- Test 34: member spawn hygiene is uniform across branches (task #8681) ------
+# Every branch spawns a member with FD 9 closed and REIFY_RUN_ALL_MEMBER_SUBSET
+# unset. Each probe member FAILs if it inherited either. run_all.sh is started
+# with FD 9 already open (a command-scoped redirect, as a caller holding a lock
+# would leave it), and every leg but subset carries the subset knob SET: the
+# pool and legacy legs as whitespace-only, which keeps the default path, and
+# the host-infra leg as a real name, which --scope host-infra overrides.
+echo ""
+echo "--- Test 34: member spawn hygiene is uniform across branches ---"
+
+TMPDIR_T34="$(mktemp -d)"
+_TMPDIRS+=("$TMPDIR_T34")
+T34_INFRA="$TMPDIR_T34/infra"
+mkdir "$T34_INFRA"
+for _t34_name in test_p_pool.sh test_q_hx.sh; do
+    cat > "$T34_INFRA/$_t34_name" <<T34EOF
+#!/usr/bin/env bash
+bad=0
+if [ -e /proc/self/fd/9 ]; then
+    echo "  FAIL: $_t34_name inherited fd 9"
+    bad=1
+fi
+if [ -n "\${REIFY_RUN_ALL_MEMBER_SUBSET+x}" ]; then
+    echo "  FAIL: $_t34_name inherited REIFY_RUN_ALL_MEMBER_SUBSET"
+    bad=1
+fi
+exit \$bad
+T34EOF
+    chmod +x "$T34_INFRA/$_t34_name"
+done
+
+MANIFEST_T34="$TMPDIR_T34/classification.manifest"
+printf 'test_p_pool.sh pool\ntest_q_hx.sh host-exclusive\n' > "$MANIFEST_T34"
+
+# (pool) default path; the subset knob is set but whitespace-only.
+t34p_rc=0
+t34p_out="$(env -u REIFY_RUN_ALL_EXCLUDE_HOST_INFRA \
+    -u REIFY_RUN_ALL_SUBSET_COUNT_ONLY -u REIFY_RUN_ALL_CONTENT_SKIP \
+    -u REIFY_RUN_ALL_SKIP_STATE -u REIFY_RUN_ALL_POOL_DISABLE \
+    RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T34" \
+    REIFY_RUN_ALL_POOL_LOCK="$TMPDIR_T34/pool.lock" \
+    REIFY_RUN_ALL_POOL_PSI_DISABLE=1 \
+    REIFY_RUN_ALL_MEMBER_SUBSET=' ' \
+    bash "$RUN_ALL" "$T34_INFRA" 9>"$TMPDIR_T34/fd9.held" 2>&1)" || t34p_rc=$?
+
+# (legacy) the same, all-serial.
+t34l_rc=0
+t34l_out="$(env -u REIFY_RUN_ALL_EXCLUDE_HOST_INFRA \
+    -u REIFY_RUN_ALL_SUBSET_COUNT_ONLY -u REIFY_RUN_ALL_CONTENT_SKIP \
+    -u REIFY_RUN_ALL_SKIP_STATE \
+    RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T34" \
+    REIFY_RUN_ALL_POOL_LOCK="$TMPDIR_T34/legacy.lock" \
+    REIFY_RUN_ALL_POOL_PSI_DISABLE=1 \
+    REIFY_RUN_ALL_POOL_DISABLE=1 \
+    REIFY_RUN_ALL_MEMBER_SUBSET=' ' \
+    bash "$RUN_ALL" "$T34_INFRA" 9>"$TMPDIR_T34/fd9.held" 2>&1)" || t34l_rc=$?
+
+# (subset) both probes named.
+t34s_rc=0
+t34s_out="$(env -u REIFY_RUN_ALL_EXCLUDE_HOST_INFRA \
+    -u REIFY_RUN_ALL_SUBSET_COUNT_ONLY -u REIFY_RUN_ALL_CONTENT_SKIP \
+    -u REIFY_RUN_ALL_SKIP_STATE -u REIFY_RUN_ALL_POOL_DISABLE \
+    RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T34" \
+    REIFY_RUN_ALL_POOL_LOCK="$TMPDIR_T34/subset.lock" \
+    REIFY_RUN_ALL_POOL_PSI_DISABLE=1 \
+    REIFY_RUN_ALL_MEMBER_SUBSET="test_p_pool.sh test_q_hx.sh" \
+    bash "$RUN_ALL" "$T34_INFRA" 9>"$TMPDIR_T34/fd9.held" 2>&1)" || t34s_rc=$?
+
+# (host-infra) --scope host-infra takes precedence over the named subset.
+LOCK_T34="$TMPDIR_T34/lane-x.lock"
+t34h_rc=0
+t34h_out="$(env -u REIFY_RUN_ALL_EXCLUDE_HOST_INFRA \
+    -u REIFY_RUN_ALL_SUBSET_COUNT_ONLY -u REIFY_RUN_ALL_CONTENT_SKIP \
+    -u REIFY_RUN_ALL_SKIP_STATE -u REIFY_RUN_ALL_POOL_DISABLE \
+    RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T34" \
+    REIFY_RUN_ALL_POOL_LOCK="$TMPDIR_T34/host-infra.lock" \
+    REIFY_RUN_ALL_POOL_PSI_DISABLE=1 \
+    REIFY_RUN_ALL_MEMBER_SUBSET="test_q_hx.sh" \
+    REIFY_LANE_X_FLOCK_LOCK="$LOCK_T34" \
+    bash "$RUN_ALL" --scope host-infra "$T34_INFRA" 9>"$TMPDIR_T34/fd9.held" 2>&1)" || t34h_rc=$?
+rm -f "$LOCK_T34" "${LOCK_T34}.slot-1"
+
+for _t34_leg in pool legacy subset host-infra; do
+    case "$_t34_leg" in
+        pool) _t34_out="$t34p_out"; _t34_rc="$t34p_rc"; _t34_want="=== Summary: 2 discovered, 0 failed ===" ;;
+        legacy) _t34_out="$t34l_out"; _t34_rc="$t34l_rc"; _t34_want="=== Summary: 2 discovered, 0 failed ===" ;;
+        subset) _t34_out="$t34s_out"; _t34_rc="$t34s_rc"; _t34_want="=== Summary: 2 discovered, 0 failed ===" ;;
+        host-infra) _t34_out="$t34h_out"; _t34_rc="$t34h_rc"; _t34_want="=== Summary: 1 discovered, 0 failed ===" ;;
+    esac
+    _t34_summary="$(grep -E '^=== Summary: ' <<<"$_t34_out")" || true
+    _t34_failed="$(sed -n 's/^  RESULT: FAIL (\(.*\))$/\1/p' <<<"$_t34_out" | tr '\n' ' ')" || true
+    if [ "$_t34_rc" -eq 0 ] && [ "$_t34_summary" = "$_t34_want" ]; then
+        assert "T34 [$_t34_leg]: no member inherits fd 9 or REIFY_RUN_ALL_MEMBER_SUBSET ('$_t34_want', exit 0)" true
+    else
+        assert "T34 [$_t34_leg]: no member inherits fd 9 or REIFY_RUN_ALL_MEMBER_SUBSET ('$_t34_want', exit 0) (got rc=$_t34_rc, failing: $_t34_failed)" false
     fi
 done
 
