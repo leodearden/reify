@@ -528,12 +528,16 @@ fn braces_inside_strings_and_comments_do_not_shift_depth() {
 
 // ── ratchet rows ─────────────────────────────────────────────────────────────
 
-/// A way the lexer can be shown to have lost track of a file: compilable Rust
-/// always ends outside every literal and comment, with ()[]{} nested to zero.
+/// A way a file can be shown to be one the matcher cannot follow: compilable
+/// Rust always ends outside every literal and comment, with ()[]{} nested to
+/// zero; and a `cfg` naming `test` in any form but the bare `#[cfg(test)]` item
+/// gate (the only test gate the item tracker models) would change which lines
+/// count as production without any row noticing.
 #[derive(Debug, PartialEq)]
 enum LexDefect {
     EndsInsideLiteralOrComment,
     UnbalancedBrackets,
+    UnsupportedTestCfg { line: usize },
 }
 
 struct SourceFile {
@@ -553,7 +557,61 @@ fn lex_defect(lines: &[Line], end: Carry) -> Option<LexDefect> {
             break;
         }
     }
-    (depth != 0).then_some(LexDefect::UnbalancedBrackets)
+    if depth != 0 {
+        return Some(LexDefect::UnbalancedBrackets);
+    }
+    unsupported_test_cfg_line(lines).map(|line| LexDefect::UnsupportedTestCfg { line })
+}
+
+/// The 1-based line of the first `cfg(..)` attribute that names `test` other
+/// than as one of the `TEST_ITEMS` gates: `all(test, ..)` and `any(test, ..)`
+/// gate more or less than test code, `not(test)` gates production code, and an
+/// inner `#![cfg(test)]` gates a whole file, so none can be skipped as an item.
+fn unsupported_test_cfg_line(lines: &[Line]) -> Option<usize> {
+    let joined = lines
+        .iter()
+        .map(|line| line.code.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let code = TEST_ITEMS
+        .iter()
+        .fold(joined, |code, gate| code.replace(gate, ""));
+    code.match_indices("cfg")
+        .filter(|&(at, _)| opens_cfg_attribute(&code, at))
+        .find(|&(at, _)| arguments_name_test(&code[at + "cfg".len()..]))
+        .map(|(at, _)| code[..at].matches('\n').count() + 1)
+}
+
+/// Whether the `cfg` at `at` is the whole name of an attribute: `#[cfg`, `#![cfg`.
+fn opens_cfg_attribute(code: &str, at: usize) -> bool {
+    let before = code[..at].trim_end();
+    let name_continues = code[at + "cfg".len()..]
+        .chars()
+        .next()
+        .is_some_and(is_ident_char);
+    (before.ends_with("#[") || before.ends_with("#![")) && !name_continues
+}
+
+/// Whether the parenthesised arguments that open `after_name` contain the word `test`.
+fn arguments_name_test(after_name: &str) -> bool {
+    let Some(inside) = after_name.trim_start().strip_prefix('(') else {
+        return false;
+    };
+    group_body(inside)
+        .split(|c| !is_ident_char(c))
+        .any(|word| word == "test")
+}
+
+/// The text up to the bracket that closes the group whose opener was just consumed.
+fn group_body(after_opener: &str) -> &str {
+    let mut depth = 1;
+    for (offset, c) in after_opener.char_indices() {
+        depth = nesting_after(depth, c);
+        if depth == 0 {
+            return &after_opener[..offset];
+        }
+    }
+    after_opener
 }
 
 fn source_file(path: &str, text: &str) -> SourceFile {
@@ -1377,6 +1435,43 @@ fn a_file_the_lexer_cannot_follow_is_reported_as_defective() {
     );
 }
 
+#[test]
+fn a_test_gate_the_item_tracker_does_not_model_is_reported_as_defective() {
+    let defect_of = |text: &str| source_file("src/probe.rs", text).defect;
+    let unmodelled_gates = [
+        "#[cfg(all(test, unix))]",
+        "#[cfg(any(test, unix))]",
+        "#[cfg(not(test))]",
+        "#![cfg(test)]",
+        "#[cfg( test )]",
+        "#[cfg (test)]",
+        "#[cfg(\n    test\n)]",
+    ];
+    for gate in unmodelled_gates {
+        let text = format!("fn before() {{}}\n{gate}\nmod gated {{}}");
+        assert_eq!(
+            defect_of(&text),
+            Some(LexDefect::UnsupportedTestCfg { line: 2 }),
+            "gate: {gate:?}"
+        );
+    }
+    let followed_or_unrelated = [
+        "#[cfg(test)]\nmod tests {}",
+        "#[cfg(test)]\n#[allow(dead_code)]\nfn helper() {}",
+        "#[cfg(feature = \"test\")]\nfn f() {}",
+        "#[cfg(test_support)]\nfn f() {}",
+        "#[cfg(unix)]\nfn f() {}",
+        "#[cfg_attr(test, derive(Debug))]\nstruct S;",
+        "fn f() -> bool { cfg!(test) }",
+        "fn cfg(test: u32) {}",
+        "// #[cfg(not(test))]\nfn f() {}",
+        "const S: &str = \"#[cfg(not(test))]\";",
+    ];
+    for text in followed_or_unrelated {
+        assert_eq!(defect_of(text), None, "text: {text:?}");
+    }
+}
+
 // ── the real tree ────────────────────────────────────────────────────────────
 
 fn collect_rs_files(dir: &Path, found: &mut Vec<PathBuf>) {
@@ -1475,7 +1570,7 @@ fn every_ratchet_row_holds_at_its_committed_baseline() {
     for file in &tree {
         if let Some(defect) = &file.defect {
             failures.push(format!(
-                "{}: the lexer lost track of this file ({defect:?}), so copies in it could go uncounted",
+                "{}: the matcher cannot follow this file ({defect:?}), so a row could miscount it",
                 file.path
             ));
         }
