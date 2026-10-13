@@ -124,6 +124,26 @@ fn cases() -> Vec<(String, GeometryOp, Primitive)> {
         ));
     }
 
+    for (d1, d2) in [(-MM, MM), (MM, f64::NAN)] {
+        for edges in [vec![], vec![EDGE]] {
+            let mode = if edges.is_empty() { "all" } else { "curated" };
+            let typed_edges = edges.clone();
+            cases.push((
+                format!("asymmetric chamfer d1 {d1} d2 {d2}, {mode} edges"),
+                GeometryOp::ChamferAsymmetric {
+                    target: TARGET,
+                    edges,
+                    d1: Value::length(d1),
+                    d2: Value::length(d2),
+                },
+                Box::new(move |k| {
+                    k.chamfer_asymmetric_edges_with_history(TARGET, d1, d2, &typed_edges)
+                        .map(|r| r.0)
+                }),
+            ));
+        }
+    }
+
     cases
 }
 
