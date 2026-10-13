@@ -78,10 +78,12 @@ const _: () = assert!(
     "MAX_COMPILE_RECURSION_DEPTH must exceed realistic-nesting headroom (128)"
 );
 
-/// Compile-time pin: the lint walkers recurse to this depth on an ungrown stack,
-/// and 256 is the depth the end-to-end test named on the constant shows they fit
-/// on a 2 MiB tokio worker. Re-measure them, or give them their own bound, before
-/// raising it.
+/// Compile-time pin: the lint walkers recurse to this depth on an ungrown stack.
+/// At 256 they are measured to fit on a 2 MiB tokio worker stack in two ways: the
+/// end-to-end test named on the constant, which drives `BinOp` nesting through the
+/// real pipeline, and each lint's per-arm cap test, which drives every recursion
+/// arm of its walker from a fresh 2 MiB thread. Re-measure them, or give them
+/// their own bound, before raising it.
 const _: () = assert!(
     MAX_COMPILE_RECURSION_DEPTH <= 256,
     "MAX_COMPILE_RECURSION_DEPTH is also the compile_builder lint walkers' raw-stack \
@@ -244,6 +246,9 @@ pub(crate) fn recursion_too_deep_diagnostic(span: SourceSpan) -> Diagnostic {
     .with_code(DiagnosticCode::ExpressionNestingTooDeep)
     .with_label(DiagnosticLabel::new(span, "expression too deeply nested"))
 }
+
+#[cfg(test)]
+pub(crate) mod test_support;
 
 #[cfg(test)]
 mod tests {
@@ -413,13 +418,8 @@ mod tests {
             parsed.errors
         );
 
-        // Compile on tokio's default 2 MiB worker stack — the GUI's condition.
-        let diagnostics = std::thread::Builder::new()
-            .stack_size(2 * 1024 * 1024)
-            .spawn(move || crate::compile(&parsed).diagnostics)
-            .expect("spawn 2 MiB compile thread")
-            .join()
-            .expect("over-cap nesting must not panic the compile thread");
+        let diagnostics =
+            test_support::on_tokio_worker_stack(move || crate::compile(&parsed).diagnostics);
 
         let is_too_deep =
             |d: &Diagnostic| d.code == Some(reify_core::DiagnosticCode::ExpressionNestingTooDeep);

@@ -867,12 +867,15 @@ fn push_shadow_diagnostic(
 mod tests {
     use super::*;
     use crate::recursion_guard::MAX_COMPILE_RECURSION_DEPTH as CAP;
+    use crate::recursion_guard::test_support::{NestingArm, on_tokio_worker_stack};
 
-    /// The lint covers nesting up to the shared compile cap and stops silently
-    /// past it: a lambda shadowing an enclosing lambda's `x`, wrapped so it sits
-    /// AT the cap, is reported; one layer further it is skipped without panicking.
+    /// Every recursion arm of `walk_expr_depth` forwards both `depth + 1` and the
+    /// enclosing frames, and the lint covers nesting up to the shared compile cap
+    /// and stops silently past it: a lambda shadowing an enclosing lambda's `x`,
+    /// nested so it sits AT the cap, is reported; one layer further it is
+    /// skipped. Runs on a 2 MiB stack, the GUI's compile stack.
     #[test]
-    fn shadowing_lambda_is_linted_at_the_nesting_cap_and_skipped_past_it() {
+    fn shadowing_lambda_is_linted_at_the_nesting_cap_and_skipped_past_it_for_every_arm() {
         fn lambda_over_x(body: Expr) -> Expr {
             let span = body.span;
             Expr {
@@ -888,44 +891,45 @@ mod tests {
             }
         }
 
-        /// `|x| -(-(… (|x| x)))`: the outer lambda is the root at depth 0, so
-        /// `depth - 1` negations put the shadowing inner lambda at `depth`.
-        fn shadow_count_for_lambda_at_depth(depth: usize) -> usize {
-            let span = SourceSpan::empty(0);
-            let mut expr = lambda_over_x(Expr {
+        /// `|x| <layers of arm> (|x| x)`: the outer lambda is the root at depth 0,
+        /// so the layers start at depth 1 and the shadowing lambda sits below them.
+        fn shadow_count(arm: NestingArm, layers: usize) -> usize {
+            let shadowing = lambda_over_x(Expr {
                 kind: ExprKind::Ident("x".into()),
-                span,
+                span: SourceSpan::empty(0),
             });
-            for _ in 1..depth {
-                expr = Expr {
-                    kind: ExprKind::UnOp {
-                        op: "-".into(),
-                        operand: Box::new(expr),
-                    },
-                    span,
-                };
-            }
-            let root = lambda_over_x(expr);
+            let root = lambda_over_x(arm.nest(shadowing, layers));
             let mut diagnostics: Vec<Diagnostic> = Vec::new();
             walk_expr(&root, None, &mut diagnostics);
             assert!(
                 diagnostics
                     .iter()
                     .all(|d| d.code == Some(DiagnosticCode::Shadowing)),
-                "lambda at depth {depth} emitted a non-Shadowing diagnostic: {diagnostics:?}"
+                "arm {arm:?} with {layers} layers emitted a non-Shadowing diagnostic: \
+                 {diagnostics:?}"
             );
             diagnostics.len()
         }
 
-        assert_eq!(
-            shadow_count_for_lambda_at_depth(CAP),
-            1,
-            "a shadowing lambda at the cap must be linted"
-        );
-        assert_eq!(
-            shadow_count_for_lambda_at_depth(CAP + 1),
-            0,
-            "a shadowing lambda past the cap must be skipped"
-        );
+        on_tokio_worker_stack(|| {
+            for &arm in NestingArm::ALL {
+                let layers = arm.layers_within(CAP - 1);
+                assert_eq!(
+                    shadow_count(arm, layers),
+                    1,
+                    "arm {arm:?}: a shadowing lambda {layers} layers down sits at or \
+                     inside the cap and must be linted — zero means this arm lost the \
+                     enclosing frames or over-counted depth"
+                );
+                assert_eq!(
+                    shadow_count(arm, layers + 1),
+                    0,
+                    "arm {arm:?}: a shadowing lambda {} layers down sits past the cap \
+                     and must be skipped — a non-zero count means this arm did not \
+                     forward depth + 1",
+                    layers + 1
+                );
+            }
+        });
     }
 }

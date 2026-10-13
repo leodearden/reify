@@ -561,373 +561,18 @@ fn render_chain_text(root: &Expr, members_outer_to_inner: &[&str]) -> String {
 mod tests {
     use super::*;
     use crate::recursion_guard::MAX_COMPILE_RECURSION_DEPTH as CAP;
+    use crate::recursion_guard::test_support::{NestingArm, on_tokio_worker_stack};
     use reify_core::SourceSpan;
 
     /// Every recursion arm of `walk_expr_depth` forwards `depth + 1`, and the
     /// lint covers nesting up to the shared compile cap and stops silently past
-    /// it: a deep chain wrapped so it sits AT the cap is reported, one layer
-    /// further it is skipped. `depth_per_layer` gives each arm's wrap count.
+    /// it: a deep chain nested so it sits AT the cap is reported, one layer
+    /// further it is skipped. Runs on a 2 MiB stack, the GUI's compile stack.
     #[test]
     fn deep_chain_is_linted_through_the_nesting_cap_and_skipped_past_it_for_every_arm() {
-        #[derive(Debug, Clone, Copy)]
-        enum ArmKind {
-            UnOp,
-            BinOpLeft,
-            BinOpRight,
-            FunctionCallFirstArg,
-            ConditionalCondition,
-            ConditionalThen,
-            ConditionalElse,
-            ListLiteralFirst,
-            SetLiteralFirst,
-            MapLiteralFirstKey,
-            MapLiteralFirstValue,
-            IndexAccessObject,
-            IndexAccessIndex,
-            MatchScrutinee,
-            MatchFirstArmBody,
-            LambdaBody,
-            QuantifierCollection,
-            QuantifierPredicate,
-            AdHocSelectorBase,
-            AdHocSelectorFirstArg,
-            QualifiedAccessQualifier,
-            InstanceQualifiedAccessObject,
-            InstanceQualifiedAccessQualified,
-            RangeLower,
-            RangeUpper,
-            // Second-element entries for variadic arms: guards against a
-            // regression where only the first iteration of a for-loop forwards
-            // `next` while subsequent iterations capture the wrong variable.
-            FunctionCallSecondArg,
-            ListLiteralSecond,
-            SetLiteralSecond,
-            MapLiteralSecondKey,
-            MapLiteralSecondValue,
-            AdHocSelectorSecondArg,
-            MatchSecondArmBody,
-            // Covers the trailing `walk_expr_depth(cursor, …, next)` at the
-            // leaf-root recursion after the iterative MemberAccess chain walk.
-            MemberAccessLeafRoot,
-            // TraitMethodCall: object + first/second arg.
-            TraitMethodCallObject,
-            TraitMethodCallFirstArg,
-            TraitMethodCallSecondArg,
-            // TraitStaticCall: first/second arg (no object).
-            TraitStaticCallFirstArg,
-            TraitStaticCallSecondArg,
-        }
-
-        const ALL_ARMS: &[ArmKind] = &[
-            ArmKind::UnOp,
-            ArmKind::BinOpLeft,
-            ArmKind::BinOpRight,
-            ArmKind::FunctionCallFirstArg,
-            ArmKind::ConditionalCondition,
-            ArmKind::ConditionalThen,
-            ArmKind::ConditionalElse,
-            ArmKind::ListLiteralFirst,
-            ArmKind::SetLiteralFirst,
-            ArmKind::MapLiteralFirstKey,
-            ArmKind::MapLiteralFirstValue,
-            ArmKind::IndexAccessObject,
-            ArmKind::IndexAccessIndex,
-            ArmKind::MatchScrutinee,
-            ArmKind::MatchFirstArmBody,
-            ArmKind::LambdaBody,
-            ArmKind::QuantifierCollection,
-            ArmKind::QuantifierPredicate,
-            ArmKind::AdHocSelectorBase,
-            ArmKind::AdHocSelectorFirstArg,
-            ArmKind::QualifiedAccessQualifier,
-            ArmKind::InstanceQualifiedAccessObject,
-            ArmKind::InstanceQualifiedAccessQualified,
-            ArmKind::RangeLower,
-            ArmKind::RangeUpper,
-            ArmKind::FunctionCallSecondArg,
-            ArmKind::ListLiteralSecond,
-            ArmKind::SetLiteralSecond,
-            ArmKind::MapLiteralSecondKey,
-            ArmKind::MapLiteralSecondValue,
-            ArmKind::AdHocSelectorSecondArg,
-            ArmKind::MatchSecondArmBody,
-            ArmKind::MemberAccessLeafRoot,
-            ArmKind::TraitMethodCallObject,
-            ArmKind::TraitMethodCallFirstArg,
-            ArmKind::TraitMethodCallSecondArg,
-            ArmKind::TraitStaticCallFirstArg,
-            ArmKind::TraitStaticCallSecondArg,
-        ];
-
-        fn shallow_leaf(span: SourceSpan) -> Expr {
-            Expr {
-                kind: ExprKind::NumberLiteral {
-                    value: 0.0,
-                    is_real: false,
-                },
-                span,
-            }
-        }
-
-        fn wrap_in_arm(arm: ArmKind, leaf: Expr, span: SourceSpan) -> Expr {
-            use reify_ast::{MatchArm, QuantifierKind};
-            let kind = match arm {
-                ArmKind::UnOp => ExprKind::UnOp {
-                    op: "-".to_string(),
-                    operand: Box::new(leaf),
-                },
-                ArmKind::BinOpLeft => ExprKind::BinOp {
-                    op: "+".to_string(),
-                    left: Box::new(leaf),
-                    right: Box::new(shallow_leaf(span)),
-                },
-                ArmKind::BinOpRight => ExprKind::BinOp {
-                    op: "+".to_string(),
-                    left: Box::new(shallow_leaf(span)),
-                    right: Box::new(leaf),
-                },
-                ArmKind::FunctionCallFirstArg => ExprKind::FunctionCall {
-                    name: "f".to_string(),
-                    args: vec![leaf],
-                    arg_names: vec![None],
-                },
-                ArmKind::ConditionalCondition => ExprKind::Conditional {
-                    condition: Box::new(leaf),
-                    then_branch: Box::new(shallow_leaf(span)),
-                    else_branch: Box::new(shallow_leaf(span)),
-                },
-                ArmKind::ConditionalThen => ExprKind::Conditional {
-                    condition: Box::new(shallow_leaf(span)),
-                    then_branch: Box::new(leaf),
-                    else_branch: Box::new(shallow_leaf(span)),
-                },
-                ArmKind::ConditionalElse => ExprKind::Conditional {
-                    condition: Box::new(shallow_leaf(span)),
-                    then_branch: Box::new(shallow_leaf(span)),
-                    else_branch: Box::new(leaf),
-                },
-                ArmKind::ListLiteralFirst => ExprKind::ListLiteral(vec![leaf]),
-                ArmKind::SetLiteralFirst => ExprKind::SetLiteral(vec![leaf]),
-                ArmKind::MapLiteralFirstKey => {
-                    ExprKind::MapLiteral(vec![(leaf, shallow_leaf(span))])
-                }
-                ArmKind::MapLiteralFirstValue => {
-                    ExprKind::MapLiteral(vec![(shallow_leaf(span), leaf)])
-                }
-                ArmKind::IndexAccessObject => ExprKind::IndexAccess {
-                    object: Box::new(leaf),
-                    index: Box::new(shallow_leaf(span)),
-                },
-                ArmKind::IndexAccessIndex => ExprKind::IndexAccess {
-                    object: Box::new(shallow_leaf(span)),
-                    index: Box::new(leaf),
-                },
-                ArmKind::MatchScrutinee => ExprKind::Match {
-                    discriminant: Box::new(leaf),
-                    arms: vec![MatchArm {
-                        patterns: vec![],
-                        body: shallow_leaf(span),
-                        span,
-                    }],
-                },
-                ArmKind::MatchFirstArmBody => ExprKind::Match {
-                    discriminant: Box::new(shallow_leaf(span)),
-                    arms: vec![MatchArm {
-                        patterns: vec![],
-                        body: leaf,
-                        span,
-                    }],
-                },
-                ArmKind::LambdaBody => ExprKind::Lambda {
-                    params: vec![],
-                    body: Box::new(leaf),
-                },
-                ArmKind::QuantifierCollection => ExprKind::Quantifier {
-                    kind: QuantifierKind::ForAll,
-                    variable: "x".into(),
-                    variable_span: span,
-                    collection: Box::new(leaf),
-                    predicate: Box::new(shallow_leaf(span)),
-                },
-                ArmKind::QuantifierPredicate => ExprKind::Quantifier {
-                    kind: QuantifierKind::ForAll,
-                    variable: "x".into(),
-                    variable_span: span,
-                    collection: Box::new(shallow_leaf(span)),
-                    predicate: Box::new(leaf),
-                },
-                ArmKind::AdHocSelectorBase => ExprKind::AdHocSelector {
-                    base: Box::new(leaf),
-                    selector: "_".into(),
-                    args: vec![],
-                },
-                ArmKind::AdHocSelectorFirstArg => ExprKind::AdHocSelector {
-                    base: Box::new(shallow_leaf(span)),
-                    selector: "_".into(),
-                    args: vec![leaf],
-                },
-                ArmKind::QualifiedAccessQualifier => ExprKind::QualifiedAccess {
-                    qualifier: Box::new(leaf),
-                    member: "m".to_string(),
-                },
-                ArmKind::InstanceQualifiedAccessObject => ExprKind::InstanceQualifiedAccess {
-                    object: Box::new(leaf),
-                    qualified: Box::new(shallow_leaf(span)),
-                },
-                ArmKind::InstanceQualifiedAccessQualified => ExprKind::InstanceQualifiedAccess {
-                    object: Box::new(shallow_leaf(span)),
-                    qualified: Box::new(leaf),
-                },
-                ArmKind::RangeLower => ExprKind::Range {
-                    lower: Some(Box::new(leaf)),
-                    upper: Some(Box::new(shallow_leaf(span))),
-                    lower_inclusive: true,
-                    upper_inclusive: true,
-                },
-                ArmKind::RangeUpper => ExprKind::Range {
-                    lower: Some(Box::new(shallow_leaf(span))),
-                    upper: Some(Box::new(leaf)),
-                    lower_inclusive: true,
-                    upper_inclusive: true,
-                },
-                ArmKind::FunctionCallSecondArg => ExprKind::FunctionCall {
-                    name: "f".to_string(),
-                    args: vec![shallow_leaf(span), leaf],
-                    arg_names: vec![None, None],
-                },
-                ArmKind::ListLiteralSecond => ExprKind::ListLiteral(vec![shallow_leaf(span), leaf]),
-                ArmKind::SetLiteralSecond => ExprKind::SetLiteral(vec![shallow_leaf(span), leaf]),
-                ArmKind::MapLiteralSecondKey => ExprKind::MapLiteral(vec![
-                    (shallow_leaf(span), shallow_leaf(span)),
-                    (leaf, shallow_leaf(span)),
-                ]),
-                ArmKind::MapLiteralSecondValue => ExprKind::MapLiteral(vec![
-                    (shallow_leaf(span), shallow_leaf(span)),
-                    (shallow_leaf(span), leaf),
-                ]),
-                ArmKind::AdHocSelectorSecondArg => ExprKind::AdHocSelector {
-                    base: Box::new(shallow_leaf(span)),
-                    selector: "_".into(),
-                    args: vec![shallow_leaf(span), leaf],
-                },
-                ArmKind::MatchSecondArmBody => ExprKind::Match {
-                    discriminant: Box::new(shallow_leaf(span)),
-                    arms: vec![
-                        MatchArm {
-                            patterns: vec![],
-                            body: shallow_leaf(span),
-                            span,
-                        },
-                        MatchArm {
-                            patterns: vec![],
-                            body: leaf,
-                            span,
-                        },
-                    ],
-                },
-                // The UnOp interleave acts as a chain-walk terminator: the
-                // iterative `while let MemberAccess` loop ends at the UnOp,
-                // forcing the trailing `walk_expr_depth(cursor, …, next)` to
-                // run once per layer (not once per homogeneous MA chain).
-                ArmKind::MemberAccessLeafRoot => ExprKind::MemberAccess {
-                    object: Box::new(Expr {
-                        kind: ExprKind::UnOp {
-                            op: "-".to_string(),
-                            operand: Box::new(leaf),
-                        },
-                        span,
-                    }),
-                    member: "f".to_string(),
-                },
-                ArmKind::TraitMethodCallObject => ExprKind::TraitMethodCall {
-                    object: Box::new(leaf),
-                    trait_name: "T".to_string(),
-                    method: "m".to_string(),
-                    args: vec![],
-                },
-                ArmKind::TraitMethodCallFirstArg => ExprKind::TraitMethodCall {
-                    object: Box::new(shallow_leaf(span)),
-                    trait_name: "T".to_string(),
-                    method: "m".to_string(),
-                    args: vec![leaf],
-                },
-                ArmKind::TraitMethodCallSecondArg => ExprKind::TraitMethodCall {
-                    object: Box::new(shallow_leaf(span)),
-                    trait_name: "T".to_string(),
-                    method: "m".to_string(),
-                    args: vec![shallow_leaf(span), leaf],
-                },
-                ArmKind::TraitStaticCallFirstArg => ExprKind::TraitStaticCall {
-                    trait_name: "T".to_string(),
-                    method: "m".to_string(),
-                    args: vec![leaf],
-                },
-                ArmKind::TraitStaticCallSecondArg => ExprKind::TraitStaticCall {
-                    trait_name: "T".to_string(),
-                    method: "m".to_string(),
-                    args: vec![shallow_leaf(span), leaf],
-                },
-            };
-            Expr { kind, span }
-        }
-
-        // Returns how many levels of depth each wrap layer contributes.
-        // Used to compute the wrap counts that place the leaf at the cap and
-        // just past it.
-        //
-        // The match is intentionally exhaustive (no wildcard): the compiler
-        // rejects a new ArmKind variant until it is listed here, preventing
-        // the wrap-count formula from silently inheriting the wrong depth.
-        // After updating this match, also add the new variant to ALL_ARMS.
-        fn depth_per_layer(arm: ArmKind) -> usize {
-            match arm {
-                // Each MemberAccessLeafRoot layer contributes 2: one from the
-                // trailing `walk_expr_depth(cursor, …, next)` after the chain
-                // walk, and one from the interleaved UnOp's own recursion.
-                ArmKind::MemberAccessLeafRoot => 2,
-                // All other arms produce exactly one depth-increment per layer.
-                ArmKind::UnOp
-                | ArmKind::BinOpLeft
-                | ArmKind::BinOpRight
-                | ArmKind::FunctionCallFirstArg
-                | ArmKind::ConditionalCondition
-                | ArmKind::ConditionalThen
-                | ArmKind::ConditionalElse
-                | ArmKind::ListLiteralFirst
-                | ArmKind::SetLiteralFirst
-                | ArmKind::MapLiteralFirstKey
-                | ArmKind::MapLiteralFirstValue
-                | ArmKind::IndexAccessObject
-                | ArmKind::IndexAccessIndex
-                | ArmKind::MatchScrutinee
-                | ArmKind::MatchFirstArmBody
-                | ArmKind::LambdaBody
-                | ArmKind::QuantifierCollection
-                | ArmKind::QuantifierPredicate
-                | ArmKind::AdHocSelectorBase
-                | ArmKind::AdHocSelectorFirstArg
-                | ArmKind::QualifiedAccessQualifier
-                | ArmKind::InstanceQualifiedAccessObject
-                | ArmKind::InstanceQualifiedAccessQualified
-                | ArmKind::RangeLower
-                | ArmKind::RangeUpper
-                | ArmKind::FunctionCallSecondArg
-                | ArmKind::ListLiteralSecond
-                | ArmKind::SetLiteralSecond
-                | ArmKind::MapLiteralSecondKey
-                | ArmKind::MapLiteralSecondValue
-                | ArmKind::AdHocSelectorSecondArg
-                | ArmKind::MatchSecondArmBody
-                | ArmKind::TraitMethodCallObject
-                | ArmKind::TraitMethodCallFirstArg
-                | ArmKind::TraitMethodCallSecondArg
-                | ArmKind::TraitStaticCallFirstArg
-                | ArmKind::TraitStaticCallSecondArg => 1,
-            }
-        }
-
-        // `a.b.c.d.e`: chain length 5, one past DEEP_DOT_CHAIN_THRESHOLD.
-        fn deep_chain_leaf(span: SourceSpan) -> Expr {
+        /// `a.b.c.d.e`: chain length 5, one past DEEP_DOT_CHAIN_THRESHOLD.
+        fn deep_chain() -> Expr {
+            let span = SourceSpan::empty(0);
             let mut chain = Expr {
                 kind: ExprKind::Ident("a".to_string()),
                 span,
@@ -944,14 +589,9 @@ mod tests {
             chain
         }
 
-        fn deep_dot_chain_count_after_wrapping(arm: ArmKind, layers: usize) -> usize {
-            let span = SourceSpan::empty(0);
-            let mut expr = deep_chain_leaf(span);
-            for _ in 0..layers {
-                expr = wrap_in_arm(arm, expr, span);
-            }
+        fn deep_dot_chain_count(arm: NestingArm, layers: usize) -> usize {
             let mut diagnostics: Vec<Diagnostic> = Vec::new();
-            walk_expr(&expr, &mut diagnostics);
+            walk_expr(&arm.nest(deep_chain(), layers), &mut diagnostics);
             assert!(
                 diagnostics
                     .iter()
@@ -962,22 +602,24 @@ mod tests {
             diagnostics.len()
         }
 
-        for arm in ALL_ARMS.iter().copied() {
-            let layers_at_cap = CAP / depth_per_layer(arm);
-            assert_eq!(
-                deep_dot_chain_count_after_wrapping(arm, layers_at_cap),
-                1,
-                "arm {arm:?}: a deep chain {layers_at_cap} layers down sits at or \
-                 inside the cap and must be linted"
-            );
-            assert_eq!(
-                deep_dot_chain_count_after_wrapping(arm, layers_at_cap + 1),
-                0,
-                "arm {arm:?}: a deep chain {} layers down sits past the cap and must \
-                 be skipped — a non-zero count means this arm did not forward depth + 1",
-                layers_at_cap + 1
-            );
-        }
+        on_tokio_worker_stack(|| {
+            for &arm in NestingArm::ALL {
+                let layers = arm.layers_within(CAP);
+                assert_eq!(
+                    deep_dot_chain_count(arm, layers),
+                    1,
+                    "arm {arm:?}: a deep chain {layers} layers down sits at or inside \
+                     the cap and must be linted"
+                );
+                assert_eq!(
+                    deep_dot_chain_count(arm, layers + 1),
+                    0,
+                    "arm {arm:?}: a deep chain {} layers down sits past the cap and must \
+                     be skipped — a non-zero count means this arm did not forward depth + 1",
+                    layers + 1
+                );
+            }
+        });
     }
 
     /// `render_chain_text` falls back to `_` for root variants that are
