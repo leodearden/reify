@@ -1451,6 +1451,28 @@ mod tests {
         );
     }
 
+    // (d3) An anchor past `nodes` is infeasible input, not a panic (PRD §8.1). Every
+    // valid anchor is present too, so silently dropping index 5 would solve and fail here.
+    #[test]
+    fn out_of_range_anchor_index_is_dimension_mismatch() {
+        let nodes = vec![
+            [0.3, 0.2, 0.4],
+            [1.0, 0.0, 0.0],
+            [-1.0, 0.0, 0.0],
+            [0.0, 1.0, 1.0],
+            [0.0, -1.0, 1.0],
+        ];
+        let members = [(0, 1), (0, 2), (0, 3), (0, 4)];
+        let kinds = [MemberKind::Cable; 4];
+        let q = [1.0; 4];
+        let anchors = [1, 2, 3, 4, 5];
+
+        assert_eq!(
+            form_find_anchored(&nodes, &members, &kinds, &q, &anchors).unwrap_err(),
+            FormFindError::DimensionMismatch,
+        );
+    }
+
     // ── γ (task 4414): per-triangle cotangent-Laplacian (NFDM surface) stencil ──
 
     /// Tolerance for the closed-form cotangent-stencil identity. The local 3×3
@@ -1752,6 +1774,24 @@ mod tests {
         let members = vec![(5usize, 0usize)];
         let kinds = vec![MemberKind::Cable];
         let q = vec![1.0];
+
+        assert_eq!(
+            form_find_anchored_surfaces(&nodes, &members, &kinds, &q, &surfaces, &sigmas, &anchors)
+                .unwrap_err(),
+            FormFindError::DimensionMismatch,
+        );
+    }
+
+    // (c4) An anchor past `nodes` is infeasible input, not a panic (PRD §8.1). The tent's
+    // valid anchors stay, so silently dropping index 5 would solve and fail here.
+    #[test]
+    fn surfaces_out_of_range_anchor_index_is_dimension_mismatch() {
+        let (nodes, surfaces, mut anchors) = tent_membrane();
+        anchors.push(5);
+        let sigmas = vec![1.0; surfaces.len()];
+        let members: Vec<(usize, usize)> = vec![];
+        let kinds: Vec<MemberKind> = vec![];
+        let q: Vec<f64> = vec![];
 
         assert_eq!(
             form_find_anchored_surfaces(&nodes, &members, &kinds, &q, &surfaces, &sigmas, &anchors)
@@ -2420,6 +2460,24 @@ mod tests {
         let members = vec![(0usize, 5usize)];
         let kinds = vec![MemberKind::Cable];
         let q = vec![1.0_f64];
+        assert_eq!(
+            form_find_anchored_surfaces_aniso(
+                &nodes, &members, &kinds, &q, &surfaces, &prestress, &anchors
+            )
+            .unwrap_err(),
+            AnisoFormFindError::DimensionMismatch,
+        );
+    }
+
+    // (a4) An anchor past `nodes` is infeasible input, not a panic (PRD §8.1). The tent's
+    // valid anchors stay, so silently dropping index 5 would solve and fail here.
+    #[test]
+    fn aniso_solve_out_of_range_anchor_index_is_dimension_mismatch() {
+        let (nodes, surfaces, prestress, mut anchors) = tent_aniso_fixture();
+        anchors.push(5);
+        let members: Vec<(usize, usize)> = vec![];
+        let kinds: Vec<MemberKind> = vec![];
+        let q: Vec<f64> = vec![];
         assert_eq!(
             form_find_anchored_surfaces_aniso(
                 &nodes, &members, &kinds, &q, &surfaces, &prestress, &anchors
