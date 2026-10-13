@@ -454,6 +454,17 @@ mod tests {
         g
     }
 
+    /// The one-cell `Part.width` graph and its value map. Clone the graph for an
+    /// identical new side (Stage A passes) or hand it to [`diverged_graph`] for a
+    /// Stage-A structural change.
+    fn width_graph_and_values() -> (EvaluationGraph, ValueMap) {
+        let id = ValueCellId::new("Part", "width");
+        let graph = graph_with_cell(&id, Type::length());
+        let mut values = ValueMap::new();
+        values.insert(id, Value::length(0.05));
+        (graph, values)
+    }
+
     fn diverged_graph(base: &EvaluationGraph) -> EvaluationGraph {
         let mut g = base.clone();
         let rnid = RealizationNodeId::new("Extra", 0);
@@ -519,11 +530,8 @@ mod tests {
 
     #[test]
     fn eligible_returns_true_when_morph_eligible_yields_eligible() {
-        let id = ValueCellId::new("Part", "width");
-        let old_graph = graph_with_cell(&id, Type::length());
+        let (old_graph, values) = width_graph_and_values();
         let new_graph = old_graph.clone();
-        let mut values = ValueMap::new();
-        values.insert(id, Value::length(0.05));
         let table = TopologyAttributeTable::default();
         let old_brep = make_brep(&old_graph, &values, &table);
         let new_brep = make_brep(&new_graph, &values, &table);
@@ -532,11 +540,8 @@ mod tests {
 
     #[test]
     fn eligible_returns_false_on_stage_a_structural_change() {
-        let id = ValueCellId::new("Part", "width");
-        let old_graph = graph_with_cell(&id, Type::length());
+        let (old_graph, values) = width_graph_and_values();
         let new_graph = diverged_graph(&old_graph);
-        let mut values = ValueMap::new();
-        values.insert(id, Value::length(0.05));
         let table = TopologyAttributeTable::default();
         let old_brep = make_brep(&old_graph, &values, &table);
         let new_brep = make_brep(&new_graph, &values, &table);
@@ -796,11 +801,8 @@ mod tests {
         with_diag_lock(|| {
             // Eligible old/new BRep: identical graphs (Stage A passes) + one
             // matching Cap(Top) face each (Stage B yields face_to_face {h(10):h(20)}).
-            let id = ValueCellId::new("Part", "width");
-            let old_graph = graph_with_cell(&id, Type::length());
+            let (old_graph, values) = width_graph_and_values();
             let new_graph = old_graph.clone();
-            let mut values = ValueMap::new();
-            values.insert(id, Value::length(0.05));
 
             let mut old_table = TopologyAttributeTable::default();
             old_table.record(KernelHandle { kernel: KernelId::Occt, id: h(10) }, attr(Role::Cap(CapKind::Top), 0));
@@ -848,77 +850,46 @@ mod tests {
 
     // ── Step-9 (task 4744 β): compose_morph failure arms record one counter ───
 
-    #[test]
-    fn compose_morph_stage_b_count_mismatch_returns_ineligible_and_records_bijection_bucket() {
-        with_diag_lock(|| {
-            // old 1 face Cap(Top); new 2 faces Cap(Top)+Cap(Bottom) → Stage-B
-            // CountMismatch → Ineligible(BijectionFailure).
-            let id = ValueCellId::new("Part", "width");
-            let old_graph = graph_with_cell(&id, Type::length());
-            let new_graph = old_graph.clone();
-            let mut values = ValueMap::new();
-            values.insert(id, Value::length(0.05));
-
-            let mut old_table = TopologyAttributeTable::default();
-            old_table.record(KernelHandle { kernel: KernelId::Occt, id: h(10) }, attr(Role::Cap(CapKind::Top), 0));
-            let mut new_table = TopologyAttributeTable::default();
-            new_table.record(KernelHandle { kernel: KernelId::Occt, id: h(20) }, attr(Role::Cap(CapKind::Top), 0));
-            new_table.record(KernelHandle { kernel: KernelId::Occt, id: h(21) }, attr(Role::Cap(CapKind::Bottom), 1));
-
-            let old_faces = [h(10)];
-            let new_faces = [h(20), h(21)];
-            let old_brep = brep_with_faces(&old_graph, &values, &old_table, &old_faces);
-            let new_brep = brep_with_faces(&new_graph, &values, &new_table, &new_faces);
-
-            let mut boundary = BoundaryAssociation::default();
-            boundary.associate(0, NodeAttachment::OnFace(h(10)));
-
-            let source = single_tet_mesh();
-            let kernel = ShiftingKernel;
-            let options = MorphOptions::default();
-            let result = compose_morph(&source, &boundary, old_brep, new_brep, &kernel, &options);
-
-            assert!(
-                matches!(
-                    result,
-                    Err(MorphFailure::Ineligible(Reason::BijectionFailure(_)))
-                ),
-                "Stage-B count mismatch must be Ineligible(BijectionFailure), got: {result:?}"
-            );
-            // The matching diagnostic bucket is incremented exactly once.
-            assert_eq!(
-                diagnostics::snapshot().ineligible_bijection_failure, 1,
-                "compose_morph must record the bijection-failure ineligible bucket"
-            );
-            assert_eq!(
-                diagnostics::snapshot().morphed, 0,
-                "an ineligible edit must not record a morph"
-            );
-        });
+    /// Run [`compose_morph`] on an old/new BRep pair, everything else fixed: one
+    /// boundary node on face `h(10)`, the unit tet, [`ShiftingKernel`] and default
+    /// options. Each Ineligible-projection test below states only its BRep pair
+    /// and the `Reason` and diagnostic bucket it expects.
+    fn compose_ineligible(
+        old_brep: BRep,
+        new_brep: BRep,
+    ) -> Result<reify_ir::VolumeMesh, MorphFailure> {
+        let mut boundary = BoundaryAssociation::default();
+        boundary.associate(0, NodeAttachment::OnFace(h(10)));
+        compose_morph(
+            &single_tet_mesh(),
+            &boundary,
+            old_brep,
+            new_brep,
+            &ShiftingKernel,
+            &MorphOptions::default(),
+        )
     }
 
-    // ── compose_morph: Ineligible projection ──
+    fn assert_no_morph_recorded() {
+        assert_eq!(
+            diagnostics::snapshot().morphed,
+            0,
+            "a rejected edit must not record a morph"
+        );
+    }
 
     #[test]
     fn compose_morph_stage_a_structural_change_returns_ineligible_and_records_structural_bucket() {
         with_diag_lock(|| {
             // Diverged realization graphs → Stage-A StructuralChange.
-            let id = ValueCellId::new("Part", "width");
-            let old_graph = graph_with_cell(&id, Type::length());
+            let (old_graph, values) = width_graph_and_values();
             let new_graph = diverged_graph(&old_graph);
-            let mut values = ValueMap::new();
-            values.insert(id, Value::length(0.05));
             let table = TopologyAttributeTable::default();
-            let old_brep = make_brep(&old_graph, &values, &table);
-            let new_brep = make_brep(&new_graph, &values, &table);
 
-            let mut boundary = BoundaryAssociation::default();
-            boundary.associate(0, NodeAttachment::OnFace(h(10)));
-
-            let source = single_tet_mesh();
-            let kernel = ShiftingKernel;
-            let options = MorphOptions::default();
-            let result = compose_morph(&source, &boundary, old_brep, new_brep, &kernel, &options);
+            let result = compose_ineligible(
+                make_brep(&old_graph, &values, &table),
+                make_brep(&new_graph, &values, &table),
+            );
 
             assert!(
                 matches!(
@@ -932,11 +903,44 @@ mod tests {
                 1,
                 "compose_morph must record the structural-change ineligible bucket"
             );
-            assert_eq!(
-                diagnostics::snapshot().morphed,
-                0,
-                "an ineligible edit must not record a morph"
+            assert_no_morph_recorded();
+        });
+    }
+
+    #[test]
+    fn compose_morph_stage_b_count_mismatch_returns_ineligible_and_records_bijection_bucket() {
+        with_diag_lock(|| {
+            // old 1 face Cap(Top); new 2 faces Cap(Top)+Cap(Bottom) → Stage-B
+            // CountMismatch → Ineligible(BijectionFailure).
+            let (old_graph, values) = width_graph_and_values();
+            let new_graph = old_graph.clone();
+
+            let mut old_table = TopologyAttributeTable::default();
+            old_table.record(KernelHandle { kernel: KernelId::Occt, id: h(10) }, attr(Role::Cap(CapKind::Top), 0));
+            let mut new_table = TopologyAttributeTable::default();
+            new_table.record(KernelHandle { kernel: KernelId::Occt, id: h(20) }, attr(Role::Cap(CapKind::Top), 0));
+            new_table.record(KernelHandle { kernel: KernelId::Occt, id: h(21) }, attr(Role::Cap(CapKind::Bottom), 1));
+
+            let old_faces = [h(10)];
+            let new_faces = [h(20), h(21)];
+            let result = compose_ineligible(
+                brep_with_faces(&old_graph, &values, &old_table, &old_faces),
+                brep_with_faces(&new_graph, &values, &new_table, &new_faces),
             );
+
+            assert!(
+                matches!(
+                    result,
+                    Err(MorphFailure::Ineligible(Reason::BijectionFailure(_)))
+                ),
+                "Stage-B count mismatch must be Ineligible(BijectionFailure), got: {result:?}"
+            );
+            assert_eq!(
+                diagnostics::snapshot().ineligible_bijection_failure,
+                1,
+                "compose_morph must record the bijection-failure ineligible bucket"
+            );
+            assert_no_morph_recorded();
         });
     }
 
@@ -945,25 +949,16 @@ mod tests {
         with_diag_lock(|| {
             // Identical graphs (Stage A passes); an empty attribute table with
             // non-empty face slices → Stage-B NamingLayerError { Face, Imported }.
-            let id = ValueCellId::new("Part", "width");
-            let old_graph = graph_with_cell(&id, Type::length());
+            let (old_graph, values) = width_graph_and_values();
             let new_graph = old_graph.clone();
-            let mut values = ValueMap::new();
-            values.insert(id, Value::length(0.05));
-
             let table = TopologyAttributeTable::default();
+
             let old_faces = [h(10)];
             let new_faces = [h(20)];
-            let old_brep = brep_with_faces(&old_graph, &values, &table, &old_faces);
-            let new_brep = brep_with_faces(&new_graph, &values, &table, &new_faces);
-
-            let mut boundary = BoundaryAssociation::default();
-            boundary.associate(0, NodeAttachment::OnFace(h(10)));
-
-            let source = single_tet_mesh();
-            let kernel = ShiftingKernel;
-            let options = MorphOptions::default();
-            let result = compose_morph(&source, &boundary, old_brep, new_brep, &kernel, &options);
+            let result = compose_ineligible(
+                brep_with_faces(&old_graph, &values, &table, &old_faces),
+                brep_with_faces(&new_graph, &values, &table, &new_faces),
+            );
 
             assert!(
                 matches!(
@@ -981,11 +976,7 @@ mod tests {
                 1,
                 "compose_morph must record the naming-layer ineligible bucket"
             );
-            assert_eq!(
-                diagnostics::snapshot().morphed,
-                0,
-                "an ineligible edit must not record a morph"
-            );
+            assert_no_morph_recorded();
         });
     }
 
@@ -993,11 +984,8 @@ mod tests {
     fn compose_morph_quality_soft_fail_returns_quality_failure_and_records_soft_bucket() {
         with_diag_lock(|| {
             // Same eligible setup as the success path (one matching Cap(Top) face).
-            let id = ValueCellId::new("Part", "width");
-            let old_graph = graph_with_cell(&id, Type::length());
+            let (old_graph, values) = width_graph_and_values();
             let new_graph = old_graph.clone();
-            let mut values = ValueMap::new();
-            values.insert(id, Value::length(0.05));
 
             let mut old_table = TopologyAttributeTable::default();
             old_table.record(KernelHandle { kernel: KernelId::Occt, id: h(10) }, attr(Role::Cap(CapKind::Top), 0));
@@ -1034,10 +1022,7 @@ mod tests {
                 diagnostics::snapshot().remeshed_quality_soft_fail, 1,
                 "compose_morph must record the soft-fail remesh bucket"
             );
-            assert_eq!(
-                diagnostics::snapshot().morphed, 0,
-                "a quality reject must not record a morph"
-            );
+            assert_no_morph_recorded();
         });
     }
 
@@ -1071,11 +1056,8 @@ mod tests {
         with_diag_lock(|| {
             // Eligible old/new BRep: identical graphs (Stage A passes) + one matching
             // Cap(Top) face each (Stage B yields face_to_face {h(10):h(20)}).
-            let id = ValueCellId::new("Part", "width");
-            let old_graph = graph_with_cell(&id, Type::length());
+            let (old_graph, values) = width_graph_and_values();
             let new_graph = old_graph.clone();
-            let mut values = ValueMap::new();
-            values.insert(id, Value::length(0.05));
 
             let mut old_table = TopologyAttributeTable::default();
             old_table.record(KernelHandle { kernel: KernelId::Occt, id: h(10) }, attr(Role::Cap(CapKind::Top), 0));
@@ -1209,11 +1191,8 @@ mod tests {
 
     impl BijectionFixture {
         fn new() -> Self {
-            let id = ValueCellId::new("Part", "width");
-            let old_graph = graph_with_cell(&id, Type::length());
+            let (old_graph, values) = width_graph_and_values();
             let new_graph = old_graph.clone();
-            let mut values = ValueMap::new();
-            values.insert(id, Value::length(0.05));
 
             let mut old_table = TopologyAttributeTable::default();
             old_table.record(
