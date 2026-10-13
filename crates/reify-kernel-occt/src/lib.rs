@@ -3663,6 +3663,77 @@ impl OcctKernel {
         Ok(self.store(shape))
     }
 
+    /// The one op-to-history lowering: execute `op` and return the attribute
+    /// history its OCCT builder recorded.
+    ///
+    /// Extrude, Revolve, Sweep, Loft, Union, Difference, Intersection, Fillet
+    /// and Chamfer route to their `*_with_history` primitives (Fillet and
+    /// Chamfer to the all-edges or curated-edges form by `edges.is_empty()`),
+    /// decoding length fields exactly as [`Self::execute`] does. Every other op
+    /// runs through [`Self::execute`] with [`AttributeHistory::None`].
+    pub fn execute_with_history(
+        &mut self,
+        op: &GeometryOp,
+    ) -> Result<(GeometryHandle, AttributeHistory), GeometryError> {
+        match op {
+            GeometryOp::Extrude { profile, distance } => {
+                let d = extract_length_f64(distance, op, "distance")?;
+                self.extrude_with_history(*profile, d)
+                    .map(|(h, recs)| (h, AttributeHistory::Extrude(recs)))
+            }
+            GeometryOp::Revolve {
+                profile,
+                axis_origin,
+                axis_dir,
+                angle_rad,
+            } => self
+                .revolve_with_history(*profile, *axis_origin, *axis_dir, *angle_rad)
+                .map(|(h, recs)| (h, AttributeHistory::Revolve(recs))),
+            GeometryOp::Sweep { profile, path } => self
+                .sweep_with_history(*profile, *path)
+                .map(|(h, recs)| (h, AttributeHistory::Sweep(recs))),
+            GeometryOp::Loft { profiles } => self
+                .loft_with_history(profiles)
+                .map(|(h, recs)| (h, AttributeHistory::Loft(recs))),
+            GeometryOp::Union { left, right } => self
+                .boolean_fuse_with_history(*left, *right)
+                .map(|(h, recs)| (h, AttributeHistory::Boolean(recs))),
+            GeometryOp::Difference { left, right } => self
+                .boolean_cut_with_history(*left, *right)
+                .map(|(h, recs)| (h, AttributeHistory::Boolean(recs))),
+            GeometryOp::Intersection { left, right } => self
+                .boolean_common_with_history(*left, *right)
+                .map(|(h, recs)| (h, AttributeHistory::Boolean(recs))),
+            GeometryOp::Fillet {
+                target,
+                edges,
+                radius,
+            } => {
+                let r = extract_length_f64(radius, op, "radius")?;
+                let lowered = if edges.is_empty() {
+                    self.fillet_with_history(*target, r)
+                } else {
+                    self.fillet_edges_with_history(*target, r, edges)
+                };
+                lowered.map(|(h, recs)| (h, AttributeHistory::LocalFeature(recs)))
+            }
+            GeometryOp::Chamfer {
+                target,
+                edges,
+                distance,
+            } => {
+                let d = extract_length_f64(distance, op, "distance")?;
+                let lowered = if edges.is_empty() {
+                    self.chamfer_with_history(*target, d)
+                } else {
+                    self.chamfer_edges_with_history(*target, d, edges)
+                };
+                lowered.map(|(h, recs)| (h, AttributeHistory::LocalFeature(recs)))
+            }
+            _ => self.execute(op).map(|h| (h, AttributeHistory::None)),
+        }
+    }
+
     /// A shape's volume together with which arm produced it.
     ///
     /// `GeometryQuery::Volume` answers with the number alone, which leaves a
