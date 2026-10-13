@@ -62,7 +62,7 @@ pub enum FormFindError {
     /// Every node is anchored — there is no free node to solve for.
     EmptyFreeSet,
     /// Input arrays disagree in length (`members`, `kinds`, `q`), or a member
-    /// endpoint / surface triangle corner indexes past `nodes`.
+    /// endpoint / surface triangle corner / anchor indexes past `nodes`.
     DimensionMismatch,
     /// A surface triangle is degenerate (collinear / zero-area corners), so its
     /// cotangent weights `cot(θ) = (e_a·e_b)/(2·Area)` diverge as `2·Area → 0`.
@@ -106,7 +106,8 @@ pub struct FormFindSolve {
 /// indices.
 ///
 /// Returns the solved [`FormFindSolve`] on success, or a [`FormFindError`]
-/// describing why the input is infeasible.
+/// describing why the input is infeasible (e.g. a member endpoint or anchor
+/// index past `nodes`).
 pub fn form_find_anchored(
     nodes: &[[f64; 3]],
     members: &[(usize, usize)],
@@ -119,26 +120,12 @@ pub fn form_find_anchored(
     // ---- Up-front feasibility guards (PRD §8.1: infeasible input must yield a
     // clean diagnostic, never a silent wrong answer or a panic). ----
     validate_members(n, members, kinds, q)?;
+    let (free_indices, anchor_indices) = partition_anchors(n, anchors)?;
 
     // Force-density Laplacian D = CᵀQC for the line members (no surfaces on
     // this entry). Assembled by the shared `assemble_d` so the surface-aware
     // entry adds Σ_T σ_T·L_T into the identical matrix before the same solve.
     let d = assemble_d(n, members, q, &[], &[], nodes)?;
-
-    // Partition node indices into anchored A and free F (both ascending).
-    let mut is_anchor = vec![false; n];
-    for &a in anchors {
-        is_anchor[a] = true;
-    }
-    let free_indices: Vec<usize> = (0..n).filter(|&i| !is_anchor[i]).collect();
-    let anchor_indices: Vec<usize> = (0..n).filter(|&i| is_anchor[i]).collect();
-    let nf = free_indices.len();
-
-    // Every node anchored ⇒ no free DOF to solve for. Guard before assembling a
-    // 0×0 system (whose LU/solve is degenerate).
-    if nf == 0 {
-        return Err(FormFindError::EmptyFreeSet);
-    }
 
     // Reduced free-node system D_ff X_f = −D_fa X_a (prestress-only: no external
     // load term), solved once via the shared `solve_reduced` core (partition →
@@ -232,7 +219,7 @@ const MAX_SURFACE_ITERS: usize = 5000;
 ///
 /// # Errors
 /// - [`FormFindError::DimensionMismatch`] — `members`/`kinds`/`q` disagree, or
-///   a member endpoint or `surfaces` triangle corner indexes past `nodes`.
+///   a member endpoint, `surfaces` triangle corner or anchor indexes past `nodes`.
 /// - [`FormFindError::SurfaceCountMismatch`] — `surfaces`/`surface_stresses`
 ///   disagree.
 /// - [`FormFindError::SignViolation`] — a member violates its q-sign contract.
@@ -270,17 +257,7 @@ pub fn form_find_anchored_surfaces(
     if !surface_indices_in_range(surfaces, n) {
         return Err(FormFindError::DimensionMismatch);
     }
-
-    // Partition node indices into anchored A and free F (both ascending).
-    let mut is_anchor = vec![false; n];
-    for &a in anchors {
-        is_anchor[a] = true;
-    }
-    let free_indices: Vec<usize> = (0..n).filter(|&i| !is_anchor[i]).collect();
-    let anchor_indices: Vec<usize> = (0..n).filter(|&i| is_anchor[i]).collect();
-    if free_indices.is_empty() {
-        return Err(FormFindError::EmptyFreeSet);
-    }
+    let (free_indices, anchor_indices) = partition_anchors(n, anchors)?;
 
     // Iterate the cotangent fixed point. With no surfaces `D` is
     // geometry-independent, so a single solve is exact (the line-only case);
@@ -392,6 +369,32 @@ fn validate_members(
         }
     }
     Ok(())
+}
+
+/// Partition node indices `0..n` into `(free, anchored)`, both ascending.
+/// Rejects an anchor `≥ n` as `DimensionMismatch` (it would index past
+/// `is_anchor`) and an all-anchored network as `EmptyFreeSet`.
+fn partition_anchors(
+    n: usize,
+    anchors: &[usize],
+) -> Result<(Vec<usize>, Vec<usize>), FormFindError> {
+    if anchors.iter().any(|&a| a >= n) {
+        return Err(FormFindError::DimensionMismatch);
+    }
+
+    let mut is_anchor = vec![false; n];
+    for &a in anchors {
+        is_anchor[a] = true;
+    }
+    let free: Vec<usize> = (0..n).filter(|&i| !is_anchor[i]).collect();
+    let anchored: Vec<usize> = (0..n).filter(|&i| is_anchor[i]).collect();
+
+    // Every node anchored ⇒ no free DOF to solve for. Guard before assembling a
+    // 0×0 system (whose LU/solve is degenerate).
+    if free.is_empty() {
+        return Err(FormFindError::EmptyFreeSet);
+    }
+    Ok((free, anchored))
 }
 
 /// True when every surface triangle corner indexes a real node (`< n`).
@@ -644,7 +647,7 @@ pub struct AnisotropicSurfaceStress {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AnisoFormFindError {
     /// `members` / `kinds` / `q` disagree in length, or a member endpoint /
-    /// surface triangle corner indexes past `nodes`.
+    /// surface triangle corner / anchor indexes past `nodes`.
     DimensionMismatch,
     /// A member's force density violates its kind's sign contract.
     SignViolation,
@@ -681,7 +684,7 @@ pub struct AnisoFormFindSolve {
 }
 
 /// Map a [`FormFindError`] from the helpers the aniso entry shares with the
-/// isotropic one (`validate_members`, `solve_reduced`) to an
+/// isotropic one (`validate_members`, `partition_anchors`, `solve_reduced`) to an
 /// [`AnisoFormFindError`] at the aniso boundary. The surface-only variants cannot
 /// arise from them — the aniso entry checks those itself.
 fn map_ff_error(e: FormFindError) -> AnisoFormFindError {
@@ -736,7 +739,7 @@ fn assemble_d_aniso(
 ///
 /// # Errors
 /// - [`AnisoFormFindError::DimensionMismatch`] — `members`/`kinds`/`q` disagree,
-///   or a member endpoint or `surfaces` triangle corner indexes past `nodes`.
+///   or a member endpoint, `surfaces` triangle corner or anchor indexes past `nodes`.
 /// - [`AnisoFormFindError::SurfaceCountMismatch`] — `surfaces`/`surface_prestress` disagree.
 /// - [`AnisoFormFindError::SignViolation`] — a member violates its `q`-sign contract.
 /// - [`AnisoFormFindError::NonTensionSurfaceStress`] — `σ_w ≤ 0` or `σ_f ≤ 0`.
@@ -770,16 +773,7 @@ pub fn form_find_anchored_surfaces_aniso(
     if !surface_indices_in_range(surfaces, n) {
         return Err(AnisoFormFindError::DimensionMismatch);
     }
-
-    let mut is_anchor = vec![false; n];
-    for &a in anchors {
-        is_anchor[a] = true;
-    }
-    let free_indices: Vec<usize> = (0..n).filter(|&i| !is_anchor[i]).collect();
-    let anchor_indices: Vec<usize> = (0..n).filter(|&i| is_anchor[i]).collect();
-    if free_indices.is_empty() {
-        return Err(AnisoFormFindError::EmptyFreeSet);
-    }
+    let (free_indices, anchor_indices) = partition_anchors(n, anchors).map_err(map_ff_error)?;
 
     let mut current = nodes.to_vec();
     let mut converged = false;
