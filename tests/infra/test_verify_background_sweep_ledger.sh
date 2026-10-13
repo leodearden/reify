@@ -30,8 +30,10 @@
 # per run.
 #
 # CLASSIFIED `pool`: the only lane-shared state any run here touches is
-# tree-sitter-generate.sh, which is idempotent and flock-serialised, and the
-# ledger itself is a run-private scratch path in every assertion below.
+# tree-sitter-generate.sh, which is idempotent and flock-serialised; the ledger
+# is a run-private scratch path in every assertion below, and the tree-sitter
+# freshness guard is aimed at a run-private target (run_hermetic_typecheck),
+# not the lane's target/.
 
 set -euo pipefail
 
@@ -70,20 +72,37 @@ exit 0
 STUB_EOF
 chmod +x "$STUB_BIN/cargo"
 
-# run_verify <role> <stub-rc> <ledger-path> [extra verify args...] -> RUN_RC.
+# run_hermetic_typecheck [verify args...] -> RUN_RC — the ONE place this suite
+# executes verify.sh; callers pass the run's role, stub-cargo verdict, ledger
+# and main checkout as prefix assignments on the call. The tree-sitter
+# freshness leaves are aimed at a fresh empty target, UNCONDITIONALLY (an
+# inherited value must lose), so they are clean no-ops: a stale or unattested
+# archive in the lane's real target/, which the stub cargo can never rebuild,
+# cannot red the run, and `ensure` never bumps the lane's tracked tree-sitter
+# mtimes. Precedent: apply_hermetic_env in test_verify_semaphore_e2e.sh; the
+# no-op contract is pinned by test_freshness_target_dir_override_is_a_clean_noop
+# in test_tree_sitter_pipeline.sh.
 # `timeout` guards every run: this suite's whole premise is that the run
 # COMPLETES, so a stall is a failure to report, not a suite to hang.
-run_verify() {
-    local _role="$1" _stub_rc="$2" _ledger="$3"; shift 3
+run_hermetic_typecheck() {
+    local _ts_target
+    _ts_target="$(mktemp -d "$WORK/ts-freshness-target.XXXXXX")"
     RUN_RC=0
     (
         cd "$REPO_ROOT"
         PATH="$STUB_BIN:$PATH" \
-        REIFY_TEST_STUB_CARGO_RC="$_stub_rc" \
-        DF_VERIFY_ROLE="$_role" \
-        REIFY_BACKGROUND_SWEEP_LEDGER="$_ledger" \
+        REIFY_TS_FRESHNESS_TARGET_DIR="$_ts_target" \
         timeout 600 bash "$VERIFY_SH" typecheck "$@"
     ) >/dev/null 2>&1 || RUN_RC=$?
+}
+
+# run_verify <role> <stub-rc> <ledger-path> [extra verify args...] -> RUN_RC.
+run_verify() {
+    local _role="$1" _stub_rc="$2" _ledger="$3"; shift 3
+    REIFY_TEST_STUB_CARGO_RC="$_stub_rc" \
+    DF_VERIFY_ROLE="$_role" \
+    REIFY_BACKGROUND_SWEEP_LEDGER="$_ledger" \
+    run_hermetic_typecheck "$@"
 }
 
 # ledger_field <ledger> <line-no> <key> — the value of <key> in that record,
@@ -215,14 +234,7 @@ assert "C2: --print-plan appends nothing — it executes no checks, so it reache
     _ "$LEDGER"
 
 : > "$LEDGER"
-RUN_RC=0
-(
-    cd "$REPO_ROOT"
-    PATH="$STUB_BIN:$PATH" \
-    DF_VERIFY_ROLE=background \
-    REIFY_BACKGROUND_SWEEP_LEDGER="$LEDGER" \
-    timeout 600 bash "$VERIFY_SH" typecheck --bogus-zzz
-) >/dev/null 2>&1 || RUN_RC=$?
+DF_VERIFY_ROLE=background REIFY_BACKGROUND_SWEEP_LEDGER="$LEDGER" run_hermetic_typecheck --bogus-zzz
 
 assert "C3: an argument-validation exit-64 appends nothing — a rejected invocation is not a verdict about the tree" \
     bash -c '[ ! -s "$1" ]' \
@@ -288,15 +300,7 @@ echo "--- Block F: the default ledger path is resolved outside the running workt
 FAKE_MAIN="$WORK/fake-main-checkout"
 mkdir -p "$FAKE_MAIN"
 
-RUN_RC=0
-(
-    cd "$REPO_ROOT"
-    PATH="$STUB_BIN:$PATH" \
-    REIFY_TEST_STUB_CARGO_RC=0 \
-    DF_VERIFY_ROLE=background \
-    REIFY_MAIN_CHECKOUT="$FAKE_MAIN" \
-    timeout 600 bash "$VERIFY_SH" typecheck
-) >/dev/null 2>&1 || RUN_RC=$?
+REIFY_TEST_STUB_CARGO_RC=0 DF_VERIFY_ROLE=background REIFY_MAIN_CHECKOUT="$FAKE_MAIN" run_hermetic_typecheck
 
 assert "F1: with no explicit ledger path, the record lands under the MAIN CHECKOUT's data/orchestrator/ — the sweep's ephemeral worktree cannot take it with it" \
     bash -c '[ -n "$(find "$1/data/orchestrator" -type f -name "*.jsonl" 2>/dev/null | head -n1)" ]' \
