@@ -173,6 +173,7 @@ fn doc_parse_error_exits_one_with_stderr() {
         stderr.contains("Parse error:"),
         "stderr should contain 'Parse error:' for a parse failure, got: {stderr}"
     );
+    crate::cli_check::assert_parse_error_reports_fault_position(&stderr);
     assert_not_usage_error(&stderr);
     // No doc body should reach stdout when parsing fails.
     assert!(

@@ -1,5 +1,38 @@
 use crate::common;
 
+/// Assert that `stderr` carries a `Parse error: <line>:<col>: <message>` report whose line is
+/// where `bracket_parse_error.ri`'s `@@@` fault sits.
+///
+/// The fault line is derived from the fixture rather than hard-coded, so the check tracks the
+/// fixture if its layout changes. A bare `stderr.contains("Parse error")` passes identically
+/// whether the position is present or absent, which is what this helper exists to rule out.
+pub(crate) fn assert_parse_error_reports_fault_position(stderr: &str) {
+    let source = std::fs::read_to_string(common::fixture_path("bracket_parse_error.ri"))
+        .expect("fixture must be readable");
+    let fault_offset = source
+        .find("@@@")
+        .expect("fixture precondition: bracket_parse_error.ri must contain the `@@@` fault");
+    let fault_line = source[..fault_offset].matches('\n').count() + 1;
+
+    let positioned = stderr
+        .lines()
+        .filter_map(|line| line.strip_prefix("Parse error: "))
+        .any(|located| {
+            let mut fields = located.splitn(3, ':');
+            let line = fields.next().and_then(|f| f.parse::<usize>().ok());
+            let col = fields.next().and_then(|f| f.parse::<usize>().ok());
+            let message = fields.next();
+            line == Some(fault_line)
+                && col.is_some_and(|c| c >= 1)
+                && message.is_some_and(|m| m.starts_with(' ') && !m.trim().is_empty())
+        });
+    assert!(
+        positioned,
+        "stderr should contain `Parse error: {fault_line}:<col>: <message>` for the fixture's \
+         `@@@` fault on line {fault_line}, got: {stderr}"
+    );
+}
+
 #[test]
 fn check_valid_bracket_exits_success() {
     let (status, stdout, stderr) =
@@ -51,6 +84,7 @@ fn check_parse_error_exits_failure() {
         stderr.contains("Parse error"),
         "stderr should contain 'Parse error', got: {stderr}"
     );
+    assert_parse_error_reports_fault_position(&stderr);
 }
 
 #[test]

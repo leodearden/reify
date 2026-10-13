@@ -14,6 +14,7 @@ fn build_parse_error_exits_failure() {
         "stderr should contain 'Parse error', got: {}",
         result.stderr
     );
+    crate::cli_check::assert_parse_error_reports_fault_position(&result.stderr);
     assert!(
         !result.output_path.exists(),
         "no output file should be written on parse error"
