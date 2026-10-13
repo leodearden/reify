@@ -73,8 +73,9 @@ pub fn enclosing_decl_at(declarations: &[Declaration], offset: usize) -> Option<
 /// of a silent omission. This scan was the first in the crate to be written
 /// that way, after every wildcard-terminated one had silently dropped kinds as
 /// the parser grew them; #6972 finished the job, so the two rename/references
-/// oracles below are exhaustive too and a new variant is a compile error at all
-/// three.
+/// oracles, `goto_def::decl_name_span_in` and
+/// `references::classify_decl_name_in`, are exhaustive too and a new variant
+/// is a compile error at all three.
 ///
 /// The returned span is the whole declaration statement, NOT the name token —
 /// narrow it with [`name_token_span`] when a jump target is wanted.
