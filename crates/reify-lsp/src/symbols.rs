@@ -361,11 +361,7 @@ fn name_selection_range(source: &str, span: SourceSpan, name: &str) -> Range {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::decl_oracle::test_fixtures::{NAMED_DECL_SNIPPETS, parse_one_clean};
-
-    fn test_uri() -> Url {
-        Url::parse("file:///test.ri").unwrap()
-    }
+    use crate::decl_oracle::test_fixtures::{NAMED_DECL_SNIPPETS, parse_one_clean, test_uri};
 
     /// Map a parsed declaration to a dense index over the NAMED `Declaration`
     /// variants — a SECOND wildcard-free match, existing only so that adding a

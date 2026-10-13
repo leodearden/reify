@@ -526,12 +526,9 @@ pub fn format_value(value: &Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::decl_oracle::test_fixtures::test_uri;
     use reify_core::{DiagnosticCode, DimensionVector, Severity};
     use tower_lsp::lsp_types::Url;
-
-    fn test_uri() -> Url {
-        Url::parse("file:///test.ri").unwrap()
-    }
 
     /// BT8 forward (task #6798, PRD `driver-contract-implementation.md`
     /// leaf pi): `AnalysisContext::from_parsed` — the third and last LSP

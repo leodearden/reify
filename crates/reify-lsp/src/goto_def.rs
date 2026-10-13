@@ -546,11 +546,8 @@ fn admitted_decl_name_and_span(decl: &reify_ast::Declaration) -> Option<(&str, S
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::decl_oracle::test_fixtures::test_uri;
     use tower_lsp::lsp_types::Url;
-
-    fn test_uri() -> Url {
-        Url::parse("file:///test.ri").unwrap()
-    }
 
     /// Test helper: return the UTF-16 code unit count of the Nth line of `source`.
     ///

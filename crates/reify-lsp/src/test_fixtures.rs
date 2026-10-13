@@ -12,6 +12,13 @@
 
 use reify_ast::ParsedModule;
 use reify_core::ModulePath;
+use tower_lsp::lsp_types::Url;
+
+/// The URI a single-document test opens its source under; its module name is
+/// `test`.
+pub(crate) fn test_uri() -> Url {
+    Url::parse("file:///test.ri").unwrap()
+}
 
 /// One verified-parseable snippet per NAMED `Declaration` variant, paired with
 /// the name that variant declares — the shared fixture behind
