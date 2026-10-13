@@ -2183,8 +2183,8 @@ T25_OUT="$TMPDIR_T25/out.txt"
 t25_rc=0
 
 # run_all.sh's pool workdir (_H2_WORKDIR) is created via
-# `mktemp -d "${TMPDIR:-/tmp}/reify-run-all-pool.XXXXXX"` -- the ONLY use
-# of TMPDIR in run_all.sh (Test 19 relies on the same contract). Pointing
+# `mktemp -d "${TMPDIR:-/tmp}/reify-run-all-pool.XXXXXX"` -- the pool
+# path's ONLY use of TMPDIR (Test 19 relies on the same contract). Pointing
 # TMPDIR at a private, empty directory lets the harness below discover
 # the real workdir and poll for boom's ACTUAL `.rc` bookkeeping write --
 # the same authoritative state _ra_partial_failed_names itself scans --
@@ -2231,14 +2231,12 @@ while [ "$t25_i" -lt "$t25_poll_attempts" ]; do
             case "$_f" in
                 *.retry.rc) continue ;;
             esac
-            # Gate on nonzero CONTENT, not mere existence: run_all.sh
-            # opens each `.rc` file with `>` (truncate) and then writes
-            # the exit code as a separate step, so there is a narrow
-            # window where the file exists but reads empty. _ra_on_term's
-            # own _ra_partial_failed_names scan already treats an
-            # empty/unreadable read as rc=0 ("not failed"); mirror that
-            # read here so the poll can't hand off to SIGTERM on a
-            # half-written file and starve T25c's attribution.
+            # Gate on nonzero CONTENT, not mere existence. run_all.sh
+            # writes each `.rc` atomically (tmp+mv), so a visible file is
+            # never empty and this gate is belt-and-braces; it mirrors
+            # _ra_partial_failed_names, which treats an empty/unreadable
+            # read as rc=0 ("not failed"), so the poll can never hand off
+            # to SIGTERM on a file T25c's attribution would not count.
             if [ -s "$_f" ] && [ "$(cat "$_f" 2>/dev/null)" != 0 ]; then
                 t25_rc_file="$_f"
             fi
@@ -2888,12 +2886,12 @@ assert "T28c: knob unset -- exit reflects beta's failure (nonzero)" \
 # -- Test 29: subset branch clock-marker sanitization (task #5288 pair 2; task
 # 4998 / esc-4791-52 class) -----------------------------------------------------
 # The REIFY_RUN_ALL_MEMBER_SUBSET branch runs ON dark-factory's clock-stop-
-# parsed verify stream (it IS a merge-gate retry), unlike --scope host-infra
-# or the legacy fallback. A named member's re-emitted output must therefore
-# be neutralized through _ra_emit_sanitized exactly like the concurrent-pool
-# Phase-3 replay -- otherwise a quoted clock-marker token in a retried
-# member's own assertion text (e.g. a clock-stop test) could false-trigger a
-# STOP/START transition in dark-factory's parser. The marker prefix is
+# parsed verify stream (it IS a merge-gate retry). A named member's output
+# must therefore be neutralized through the same sanitizer chain as the
+# concurrent-pool Phase-3 replay -- otherwise a quoted clock-marker token in
+# a retried member's own assertion text (e.g. a clock-stop test) could
+# false-trigger a STOP/START transition in dark-factory's parser. The marker
+# prefix is
 # assembled at runtime (mirrors test_run_all_clock_marker_sanitize.sh's
 # CP/QP idiom) so THIS file's own stdout never becomes a leak source when
 # the real outer run_all.sh re-emits test_run_all.sh's own captured output.
