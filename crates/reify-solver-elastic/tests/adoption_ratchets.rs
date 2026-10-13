@@ -1329,8 +1329,12 @@ fn collect_rs_files(dir: &Path, found: &mut Vec<PathBuf>) {
     }
 }
 
-/// `src/` and `tests/` of this crate: crate-relative `/`-separated paths, sorted;
-/// a file that cannot be read panics naming it.
+/// This file's path under the crate root. The measured tree leaves it out, so
+/// its seeds, docs and generic helper names can never count toward a row.
+const HOST_PATH: &str = "tests/adoption_ratchets.rs";
+
+/// `src/` and `tests/` of this crate except the host: crate-relative
+/// `/`-separated paths, sorted; a file that cannot be read panics naming it.
 fn read_crate_tree() -> Vec<SourceFile> {
     let crate_root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let mut paths = Vec::new();
@@ -1346,6 +1350,7 @@ fn read_crate_tree() -> Vec<SourceFile> {
             let parts: Vec<_> = relative.iter().map(|part| part.to_string_lossy()).collect();
             (parts.join("/"), path)
         })
+        .filter(|(relative, _)| relative != HOST_PATH)
         .collect();
     files.sort();
     files
@@ -1356,6 +1361,22 @@ fn read_crate_tree() -> Vec<SourceFile> {
             source_file(relative, &text)
         })
         .collect()
+}
+
+#[test]
+fn the_measured_tree_leaves_out_the_host_file_itself() {
+    assert!(
+        file!().ends_with(HOST_PATH),
+        "HOST_PATH {HOST_PATH:?} does not name this file ({}): update the constant",
+        file!()
+    );
+    let on_disk = Path::new(env!("CARGO_MANIFEST_DIR")).join(HOST_PATH);
+    assert!(on_disk.is_file(), "{} is not a file", on_disk.display());
+    let tree = read_crate_tree();
+    assert!(
+        tree.iter().all(|file| file.path != HOST_PATH),
+        "the host would count its own seeds, docs and helper names"
+    );
 }
 
 /// The include / exclude entries (or census root) of `row` that prefix no file in `tree`.
