@@ -43,7 +43,7 @@ pub(crate) fn module_has_geometry(module: &reify_compiler::CompiledModule) -> bo
 /// Returns `true` when any template in the module carries at least one
 /// `RepresentationWithin(subject, bound)` constraint.
 ///
-/// Used by [`cmd_check`] to decide whether to route through the kernel-backed
+/// Used by `cmd_check` to decide whether to route through the kernel-backed
 /// `set_capture_repr_tol(true)` → `tessellate_realizations` → `check` path
 /// (so that `dispatch_constraints` can evaluate the assertion against the
 /// populated `achieved_repr_tol` map) or to stay on the existing lightweight
@@ -165,7 +165,7 @@ pub(crate) fn module_has_thickness_dfm_rule(module: &reify_compiler::CompiledMod
 /// which lowers to the runtime-IR `Operation::Surface` — engine_build.rs:1961).
 ///
 /// This is a STATIC pre-eval proxy mirroring [`module_has_thickness_dfm_rule`]'s
-/// routing-gate shape: [`cmd_build`] calls this BEFORE
+/// routing-gate shape: `cmd_build` calls this BEFORE
 /// `engine.ensure_openvdb_kernel()` so that non-isosurface modules keep the
 /// single-pick OCCT engine (alloc-cost contract, engine_admin.rs) and stay
 /// byte-identical (C2). Isosurface modules need OpenVDB registered because

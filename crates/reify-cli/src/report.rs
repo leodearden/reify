@@ -127,7 +127,7 @@ fn report_constraint_results(
 }
 
 /// Write the terminal summary for `reify check` and return the appropriate
-/// [`ExitCode`].
+/// [`ExitCode`](std::process::ExitCode).
 ///
 /// Replaces the two byte-identical terminal `match outcome` blocks in
 /// `cmd_check` (no-purpose path and `--purpose` path) with a single

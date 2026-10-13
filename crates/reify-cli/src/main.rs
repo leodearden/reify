@@ -203,7 +203,7 @@ fn main() -> ExitCode {
 /// the reason for rendering the whole list at once is documented.
 ///
 /// `out` is injected rather than written as `eprintln!`, matching
-/// [`report_constraint_results`] in report.rs: the position prefix is the whole point of the
+/// `report_constraint_results` in report.rs: the position prefix is the whole point of the
 /// rendering step, and a test that cannot read what was written can only assert that SOMETHING
 /// mentioning "Parse error" reached stderr — which passes just as well with the position gone.
 fn report_parse_errors(rendered: Vec<String>, out: &mut impl std::io::Write) -> ExitCode {
@@ -368,7 +368,7 @@ fn parse_and_compile_with_cfg(
 ///
 /// **Other `error:` lines.** Every other `Severity::Error` diagnostic makes
 /// `check` exit non-zero through [`check_gating_error`] unless a
-/// [`CHECK_ERROR_EXIT_ALLOWLIST`] entry excuses it.  The residual shapes across
+/// `check_verdict::CHECK_ERROR_EXIT_ALLOWLIST` entry excuses it.  The residual shapes across
 /// `examples/**/*.ri` are inventoried in #7308 (with the sweep command that
 /// measures them), which owns triaging them — never by adding allowlist
 /// entries.

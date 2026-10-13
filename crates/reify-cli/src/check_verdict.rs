@@ -197,7 +197,7 @@ pub(crate) fn merge_post_build_verdicts(
 /// [`CHECK_ERROR_EXIT_ALLOWLIST`] entry #4 (`FixPath`) holds that off; its fix
 /// belongs HERE — widening this helper's scope past `ConstraintIndeterminate`
 /// (#6048) — not in the gate.  Real violations still exit non-zero via
-/// `ConstraintOutcome::SomeViolated` in [`finish_check`].
+/// `ConstraintOutcome::SomeViolated` in `finish_check`.
 ///
 /// No exit code can move either way: `report_eval_output`'s outcome derives
 /// solely from `constraint_results`, never from the diagnostic list.  An empty
@@ -481,7 +481,7 @@ fn error_diagnostics(
 
 /// The ONE definition of "this diagnostic set carries an Error".
 ///
-/// Shared by [`cmd_eval`], `cmd_build` (as [`build_is_success`]' second
+/// Shared by `cmd_eval`, `cmd_build` (as [`build_is_success`]' second
 /// argument) and [`check_gating_error`] — PRD §7's "one shared helper also
 /// used by eval/build".
 ///
