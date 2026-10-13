@@ -690,7 +690,7 @@ impl LanguageServer for ReifyLanguageServer {
         // Reuse the per-document cached parse (one parse per edit).
         let text = doc.text.clone();
         let parsed = doc.parsed_module();
-        let symbols = crate::analysis::compute_document_symbols_from_parsed(&parsed, &text);
+        let symbols = crate::symbols::compute_document_symbols_from_parsed(&parsed, &text);
         Ok(Some(DocumentSymbolResponse::Nested(symbols)))
     }
 

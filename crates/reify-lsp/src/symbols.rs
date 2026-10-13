@@ -2,6 +2,362 @@
 //! parsed module: one symbol per named declaration, with members, enum
 //! variants and purpose-nested structures as its children.
 
+use reify_ast::{Declaration, ParsedModule};
+use reify_core::{ModulePath, SourceSpan};
+use tower_lsp::lsp_types::{DocumentSymbol, Range, SymbolKind, Url};
+
+use crate::convert::{offset_to_position, span_to_range};
+use crate::decl_oracle::{decl_name_and_span, module_name_from_uri, name_token_span};
+
+/// Compute a hierarchical [`DocumentSymbol`] tree for `source` (task 4207 η).
+///
+/// This is a purely SYNTACTIC outline: it parses the module via
+/// [`reify_compiler::parse_with_stdlib`] (the same prelude-aware parse used by
+/// goto-def) and walks `parsed.declarations` WITHOUT compiling or
+/// constraint-checking. It is deliberately kept distinct from the outline's
+/// semantic realization tree (`get_entity_tree`) per PRD design decision 5 —
+/// the symbol list reflects declaration structure, not evaluation.
+///
+/// EVERY named top-level declaration is a symbol; [`symbol_kind_for`] owns the
+/// per-kind mapping and is wildcard-free over all 14 `Declaration` variants.
+/// The skip set is exactly the three kinds that declare no name of their own —
+/// Import, Module and Default, the kinds [`decl_name_and_span`] answers `None`
+/// for. Before #6533 the skip set was instead whatever a `_ => {}` wildcard
+/// happened to catch, which is how Field, Purpose, Constraint, Unit and Joint
+/// were silently dropped as the parser grew them.
+// G-allow: LSP public API entry point; production caller uses the _in_context/_with_parsed/_from_parsed variant
+pub fn compute_document_symbols(source: &str, uri: &Url) -> Vec<DocumentSymbol> {
+    let module_name = module_name_from_uri(uri);
+    let parsed = reify_compiler::parse_with_stdlib(source, ModulePath::single(module_name));
+    compute_document_symbols_from_parsed(&parsed, source)
+}
+
+/// Compute the [`DocumentSymbol`] tree from a pre-built [`ParsedModule`].
+///
+/// Injectable core shared by the per-request wrapper [`compute_document_symbols`]
+/// (which parses internally) and the server's cache-fed path (which supplies the
+/// per-document cached parse — one parse per edit). Walks `parsed.declarations`
+/// WITHOUT compiling or constraint-checking; see [`compute_document_symbols`] for
+/// the declaration→symbol mapping.
+pub fn compute_document_symbols_from_parsed(
+    parsed: &ParsedModule,
+    source: &str,
+) -> Vec<DocumentSymbol> {
+    let mut symbols = Vec::new();
+    for decl in &parsed.declarations {
+        // Name and span come from `decl_name_and_span`, the crate's single home
+        // for "what name does this top-level declaration declare" — so the
+        // outline cannot drift from goto-def about either. `None` is the three
+        // kinds that declare no name of their own (Import, Module, Default),
+        // which are exactly the kinds with no meaningful outline label.
+        let Some((name, span)) = decl_name_and_span(decl) else {
+            continue;
+        };
+        symbols.push(make_symbol(
+            name,
+            symbol_kind_for(decl),
+            span_to_range(source, span),
+            name_selection_range(source, span, name),
+            children_or_none(symbol_children(source, decl)),
+        ));
+    }
+    symbols
+}
+
+/// Map a top-level declaration to its LSP [`SymbolKind`].
+///
+/// Wildcard-free over all 14 `Declaration` variants, and that is the
+/// load-bearing part: a new variant becomes a COMPILE ERROR here, forcing an
+/// explicit kind decision. The previous shape — one 14-arm match that computed
+/// kind, children, name and span together and ended in `_ => {}` — is how the
+/// outline silently lost Field, Purpose, Constraint, Unit and Joint as the
+/// parser grew them (#6533).
+///
+/// The three UNNAMED kinds are unreachable from
+/// [`compute_document_symbols_from_parsed`], which skips them on
+/// [`decl_name_and_span`]'s `None`. They still get explicit arms rather than a
+/// shared wildcard, so admitting one to the outline later is a decision made
+/// here rather than a default inherited by accident.
+fn symbol_kind_for(decl: &Declaration) -> SymbolKind {
+    match decl {
+        Declaration::Structure(_) => SymbolKind::STRUCT,
+        Declaration::Occurrence(_) => SymbolKind::CLASS,
+        Declaration::Trait(_) => SymbolKind::INTERFACE,
+        Declaration::Enum(_) => SymbolKind::ENUM,
+        Declaration::Function(_) => SymbolKind::FUNCTION,
+        // SymbolKind has no TypeAlias member; TYPE_PARAMETER is the conventional
+        // LSP mapping for a type alias (rust-analyzer maps its own
+        // SymbolKind::TypeAlias the same way). Task #6341.
+        Declaration::TypeAlias(_) => SymbolKind::TYPE_PARAMETER,
+        // A named mapping over a domain — the closest LSP analogue to a property.
+        Declaration::Field(_) => SymbolKind::PROPERTY,
+        // A named region enclosing other declarations, which is what NAMESPACE
+        // means in LSP — and [`symbol_children`] emits those enclosed
+        // declarations, so the container label is not an empty promise.
+        Declaration::Purpose(_) => SymbolKind::NAMESPACE,
+        // A named relation, not a value.
+        Declaration::Constraint(_) => SymbolKind::OPERATOR,
+        // A named fixed quantity.
+        Declaration::Unit(_) => SymbolKind::CONSTANT,
+        // A named parameterized construction.
+        Declaration::Joint(_) => SymbolKind::METHOD,
+        // Unreachable from the outline (see doc above); NULL is the LSP
+        // "no meaningful kind" value, never rendered.
+        Declaration::Import(_) => SymbolKind::NULL,
+        Declaration::Module(_) => SymbolKind::NULL,
+        Declaration::Default(_) => SymbolKind::NULL,
+    }
+}
+
+/// Build a declaration's child symbols.
+///
+/// Only the container kinds have any: structure/occurrence/trait expose their
+/// members, a purpose exposes both of its child regions, and an enum exposes
+/// its variants. Every other kind is a LEAF and returns empty, which
+/// [`children_or_none`] turns into `children: None` rather than `Some(vec![])`.
+///
+/// Deliberately a wildcard match, unlike [`symbol_kind_for`]: "has no children"
+/// is the right DEFAULT for a new declaration kind, whereas "has no symbol
+/// kind" is not — a new variant silently mapped to some arbitrary kind would
+/// never be noticed, while missing children show up as members absent from the
+/// outline.
+///
+/// That default is safe only while the kind's [`symbol_kind_for`] arm does not
+/// ADVERTISE children. A `purpose` maps to NAMESPACE — "a named region
+/// enclosing other declarations" — so falling through the wildcard rendered it
+/// as a container holding nothing while its params, lets and nested
+/// `structure def`s vanished from the outline entirely. It has an explicit arm
+/// for that reason, and so must any future kind mapped to a container
+/// `SymbolKind`.
+fn symbol_children(source: &str, decl: &Declaration) -> Vec<DocumentSymbol> {
+    match decl {
+        Declaration::Structure(s) => members_to_symbols(source, &s.members),
+        Declaration::Occurrence(o) => members_to_symbols(source, &o.members),
+        Declaration::Trait(t) => members_to_symbols(source, &t.members),
+        // A purpose is the one kind whose children live in TWO sibling vecs:
+        // `members` (param/let/constraint/minimize) and `structures`, which the
+        // parser keeps apart so `members` stays a pure `MemberDecl` list (task
+        // 4639). Both are rendered and then re-interleaved by span, so the
+        // outline reads in source order rather than vec order.
+        Declaration::Purpose(p) => {
+            let mut children = members_to_symbols(source, &p.members);
+            children.extend(p.structures.iter().map(|s| structure_def_symbol(source, s)));
+            children.sort_by_key(|s| (s.range.start.line, s.range.start.character));
+            children
+        }
+        // Each variant becomes an ENUM_MEMBER child. Named-payload variant
+        // fields (`Circle { radius: Length }`) are not expanded into
+        // grandchildren.
+        Declaration::Enum(e) => e
+            .variants
+            .iter()
+            .map(|v| {
+                make_symbol(
+                    &v.name,
+                    SymbolKind::ENUM_MEMBER,
+                    span_to_range(source, v.span),
+                    name_selection_range(source, v.span, &v.name),
+                    None,
+                )
+            })
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// Build the [`DocumentSymbol`] for a `structure def` that is NOT a top-level
+/// [`Declaration`] — today only the ones nested one level inside a `purpose`
+/// body.
+///
+/// STRUCT is the kind [`symbol_kind_for`] gives a top-level structure, and a
+/// purpose-nested one must not be labelled differently: the compiler registers
+/// it in the module-level structure namespace and compiles it into the same
+/// template table (the evidence is on [`crate::decl_oracle::purpose_nested_decl_names`]), and this
+/// crate's navigation already resolves the two alike. Nothing in the type
+/// system ties the two spellings of STRUCT together, so
+/// `tests::purpose_children_nest_members_and_nested_structures` compares this
+/// kind against the one a top-level structure fixture actually produces.
+fn structure_def_symbol(source: &str, s: &reify_ast::StructureDef) -> DocumentSymbol {
+    make_symbol(
+        &s.name,
+        SymbolKind::STRUCT,
+        span_to_range(source, s.span),
+        name_selection_range(source, s.span, &s.name),
+        children_or_none(members_to_symbols(source, &s.members)),
+    )
+}
+
+/// Convert a possibly-empty child list into the `children` field of a
+/// [`DocumentSymbol`]: `None` when there are no navigable members, `Some(_)`
+/// otherwise. Keeps leaf declarations as `children: None` rather than
+/// `Some(vec![])`.
+fn children_or_none(children: Vec<DocumentSymbol>) -> Option<Vec<DocumentSymbol>> {
+    if children.is_empty() {
+        None
+    } else {
+        Some(children)
+    }
+}
+
+/// Recursively convert a member list into child [`DocumentSymbol`]s (task 4207 η).
+///
+/// Mirrors the recursion shape of [`crate::analysis::count_members_recursive`] /
+/// [`reify_ast::find_named_member_span`]: `where`/`else` ([`reify_ast::MemberDecl::GuardedGroup`])
+/// and match-arm ([`reify_ast::MemberDecl::MatchArmDeclGroup`]) members are
+/// FLATTENED up to the owning declaration's children — no synthetic guard nodes —
+/// so guarded and match-arm params/lets stay discoverable for symbol-jump. Named
+/// members map as: param→FIELD, let→VARIABLE, sub→OBJECT, port→INTERFACE,
+/// sketch→NAMESPACE (body nested); subs, ports and sketches form true nested
+/// nodes (a sub's specialization body, a port's internal members and a sketch's
+/// body become grandchildren — a sketch body is block-scoped, so it is never
+/// flattened). Unlabeled constraints, connects, chains, minimize/maximize, and
+/// meta blocks have no stable identifier to jump to and are skipped.
+///
+/// Recursion is bounded by [`reify_ast::MAX_MEMBER_NESTING_DEPTH`] to prevent
+/// stack overflow on pathological input, matching the AST member-walk helpers.
+fn members_to_symbols(source: &str, members: &[reify_ast::MemberDecl]) -> Vec<DocumentSymbol> {
+    members_to_symbols_depth(source, members, 0)
+}
+
+fn members_to_symbols_depth(
+    source: &str,
+    members: &[reify_ast::MemberDecl],
+    depth: usize,
+) -> Vec<DocumentSymbol> {
+    use reify_ast::MemberDecl;
+    if depth > reify_ast::MAX_MEMBER_NESTING_DEPTH {
+        return Vec::new();
+    }
+    let mut symbols = Vec::new();
+    for member in members {
+        match member {
+            MemberDecl::Param(p) => symbols.push(make_symbol(
+                &p.name,
+                SymbolKind::FIELD,
+                span_to_range(source, p.span),
+                name_selection_range(source, p.span, &p.name),
+                None,
+            )),
+            MemberDecl::Let(l) => symbols.push(make_symbol(
+                &l.name,
+                SymbolKind::VARIABLE,
+                span_to_range(source, l.span),
+                name_selection_range(source, l.span, &l.name),
+                None,
+            )),
+            // where/else members flatten up to the owning declaration.
+            MemberDecl::GuardedGroup(g) => {
+                symbols.extend(members_to_symbols_depth(source, &g.members, depth + 1));
+                symbols.extend(members_to_symbols_depth(source, &g.else_members, depth + 1));
+            }
+            // match-arm members flatten up to the owning declaration.
+            MemberDecl::MatchArmDeclGroup(g) => {
+                for arm in &g.arms {
+                    symbols.extend(members_to_symbols_depth(
+                        source,
+                        std::slice::from_ref(&*arm.member),
+                        depth + 1,
+                    ));
+                }
+            }
+            // sub-components nest their specialization-body members (when the
+            // `sub` opens a `{ … }` body) as grandchildren; a bare `sub` is a leaf.
+            MemberDecl::Sub(s) => {
+                let body = s
+                    .body
+                    .as_ref()
+                    .map(|b| members_to_symbols_depth(source, b, depth + 1))
+                    .unwrap_or_default();
+                symbols.push(make_symbol(
+                    &s.name,
+                    SymbolKind::OBJECT,
+                    span_to_range(source, s.span),
+                    name_selection_range(source, s.span, &s.name),
+                    children_or_none(body),
+                ));
+            }
+            // ports nest their internal members as grandchildren.
+            MemberDecl::Port(port) => symbols.push(make_symbol(
+                &port.name,
+                SymbolKind::INTERFACE,
+                span_to_range(source, port.span),
+                name_selection_range(source, port.span, &port.name),
+                children_or_none(members_to_symbols_depth(source, &port.members, depth + 1)),
+            )),
+            // A sketch is a named region enclosing its own declarations; its
+            // body nests rather than flattening, because sketch-local names are
+            // not visible outside the block.
+            MemberDecl::Sketch(sketch) => symbols.push(make_symbol(
+                &sketch.name,
+                SymbolKind::NAMESPACE,
+                span_to_range(source, sketch.span),
+                name_selection_range(source, sketch.span, &sketch.name),
+                children_or_none(members_to_symbols_depth(source, &sketch.members, depth + 1)),
+            )),
+            // Constraints/connects/chains/minimize/maximize/meta/relate carry no
+            // identifier of their own to jump to; associated types and fns are
+            // named but not outlined as members.
+            _ => {}
+        }
+    }
+    symbols
+}
+
+/// Build a [`DocumentSymbol`] with every field set explicitly.
+///
+/// `lsp-types` 0.94 marks `DocumentSymbol.deprecated` as `#[deprecated]` and
+/// provides no `Default`, so the field cannot be omitted; centralizing the
+/// `#[allow(deprecated)]` here keeps the verify/clippy pipeline clean while
+/// every construction site stays a one-liner (PRD design decision 6).
+#[allow(deprecated)]
+fn make_symbol(
+    name: &str,
+    kind: SymbolKind,
+    range: Range,
+    selection_range: Range,
+    children: Option<Vec<DocumentSymbol>>,
+) -> DocumentSymbol {
+    DocumentSymbol {
+        name: name.to_string(),
+        detail: None,
+        kind,
+        tags: None,
+        deprecated: None,
+        range,
+        selection_range,
+        children,
+    }
+}
+
+/// Compute the `selection_range` (the name token) for a declaration whose full
+/// span is `span` and whose declared name is `name`.
+///
+/// Declaration AST nodes carry only `name: String` plus the full declaration
+/// span (no separate name-token span), so the name's byte offset must be
+/// recovered from the source — via [`name_token_span`], the crate's single
+/// name-token locator, which matches whole-word and only within the
+/// declaration's own span. LSP requires `selection_range ⊆ range` and ideally on
+/// the name token; [`name_token_span`]'s empty-span fallback (no whole-word
+/// match inside the span) degrades to `span.start` here, which still satisfies
+/// the subset invariant (defensive; should not happen for well-formed
+/// declarations).
+fn name_selection_range(source: &str, span: SourceSpan, name: &str) -> Range {
+    let token = name_token_span(source, span, name);
+    let name_offset = if token.is_empty() { span.start } else { token.start };
+    // Clamp the selection end to the declaration span's end so the LSP
+    // `selection_range ⊆ range` invariant holds even for degenerate or
+    // error-recovery spans shorter than the name. When the name is located
+    // the match already fits inside the span (`name_offset + name.len() ≤
+    // span.end`), so this clamp is a no-op there; it only constrains the
+    // `span.start` fallback, where `span.start + name.len()` could otherwise
+    // push the selection end past `span.end` (and thus past `range.end`).
+    let name_end = (name_offset + name.len() as u32).min(span.end);
+    Range {
+        start: offset_to_position(source, name_offset),
+        end: offset_to_position(source, name_end),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

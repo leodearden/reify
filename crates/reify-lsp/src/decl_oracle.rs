@@ -80,7 +80,7 @@ pub fn enclosing_decl_at(declarations: &[Declaration], offset: usize) -> Option<
 /// narrow it with [`name_token_span`] when a jump target is wanted.
 ///
 /// CONSUMERS — same-file go-to-definition (`goto_def::resolve_decl_name`, task
-/// 6388) and the document outline ([`compute_document_symbols_from_parsed`],
+/// 6388) and the document outline ([`crate::symbols::compute_document_symbols_from_parsed`],
 /// migrated onto this pair by #6972, which is what let that function drop its
 /// own wildcard). Both are READ-ONLY surfaces, where admitting a kind too
 /// generously costs precision, not correctness.
