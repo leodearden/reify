@@ -7,8 +7,6 @@
 
 #![cfg(has_occt)]
 
-use std::panic::{AssertUnwindSafe, catch_unwind};
-
 use reify_ir::{AttributeHistory, GeometryError, GeometryHandleId, GeometryOp, Value};
 use reify_kernel_occt::OcctKernel;
 
@@ -203,6 +201,8 @@ fn length_field_cases(value: Value) -> [(GeometryOp, &'static str); 3] {
 #[cfg(debug_assertions)]
 #[test]
 fn armed_tripwire_panics_on_history_path_with_canonical_message() {
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+
     for (op, field) in length_field_cases(Value::Real(1.0)) {
         let mut kernel = OcctKernel::new();
         let _g = reify_ir::arm_length_tripwire_assert();
