@@ -5,7 +5,9 @@
 //! crate's sources and holds it to a committed baseline. The rule is
 //! one-directional: live ≤ baseline. A new instance needs a visible baseline
 //! edit in the same diff; there is no allow-comment escape hatch. Later leaves
-//! (γ2, ε, θ, δ) add rows here.
+//! (γ2, ε, θ, δ) add rows here. Equal validation messages across entry points
+//! are a behavioural property, guarded by `op_args_entry_point_parity.rs`, not
+//! a row here.
 //!
 //! The production view comes from a whole-file lexer modelled on
 //! `crates/reify-builtins/tests/common/seed_name_scan.rs` (test-private to that
@@ -44,11 +46,6 @@ fn production_view(src: &str) -> ProductionView {
 }
 
 impl ProductionView {
-    /// A literal inside a masked item has been blanked out of `code`.
-    fn is_live(&self, lit: &StrLit) -> bool {
-        self.code[lit.start] != b' '
-    }
-
     /// `code` with string-literal contents blanked too, one entry per source
     /// line (index 0 is line 1).
     fn skeleton_lines(&self) -> Vec<String> {
@@ -65,18 +62,6 @@ impl ProductionView {
             .map(str::to_owned)
             .collect()
     }
-
-    /// The 1-based line of every occurrence of `needle` inside a live string
-    /// literal.
-    fn literal_hits(&self, needle: &str) -> Vec<usize> {
-        let mut lines = Vec::new();
-        for lit in self.literals.iter().filter(|lit| self.is_live(lit)) {
-            for (at, _) in lit.content.match_indices(needle) {
-                lines.push(line_of(&self.code, lit.content_start + at));
-            }
-        }
-        lines
-    }
 }
 
 /// Blank `bytes[a..b]` to spaces, keeping newlines.
@@ -87,10 +72,6 @@ fn blank(bytes: &mut [u8], a: usize, b: usize) {
             *byte = b' ';
         }
     }
-}
-
-fn line_of(code: &[u8], offset: usize) -> usize {
-    code[..offset].iter().filter(|&&b| b == b'\n').count() + 1
 }
 
 fn is_ident_byte(b: u8) -> bool {
@@ -704,64 +685,6 @@ fn row_ii_handle_as_f64_within_baseline() {
     );
 }
 
-// ── row (iii): per-op-family validation messages ────────────────────────────
-
-/// `(needle, baseline)`: each needle is a fragment of one op family's
-/// validation message, and has one home in `op_args.rs`.
-const ROW_III_MESSAGE_LITERALS: &[(&str, usize)] = &[
-    ("must be a finite positive value", 1),
-    ("distance must be finite", 1),
-    ("distance must not be zero", 1),
-    ("revolve axis_origin must be finite", 1),
-    ("revolve axis_dir must be finite", 1),
-    ("revolve angle must be finite", 1),
-    ("revolve angle must not be zero", 1),
-    ("revolve axis_dir must not be zero-length", 1),
-    ("Loft requires at least 2 profiles", 1),
-];
-
-/// One finding per occurrence of `needle` in a live string literal. A needle
-/// is matched within one physical line: one that spans a backslash
-/// continuation is not seen, which is why every needle is a short fragment.
-fn row_iii_scan(label: &str, src: &str, needle: &str) -> Vec<Finding> {
-    let source_lines: Vec<&str> = src.lines().collect();
-    production_view(src)
-        .literal_hits(needle)
-        .into_iter()
-        .map(|line| Finding {
-            file: label.to_owned(),
-            line,
-            text: source_lines[line - 1].trim().to_owned(),
-        })
-        .collect()
-}
-
-#[test]
-fn row_iii_each_op_family_message_literal_has_one_home() {
-    let sources = crate_sources();
-    let mut failures = Vec::new();
-    for &(needle, baseline) in ROW_III_MESSAGE_LITERALS {
-        let live: Vec<Finding> = sources
-            .iter()
-            .flat_map(|(label, src)| row_iii_scan(label, src, needle))
-            .collect();
-        if !within_baseline(live.len(), baseline) {
-            failures.push(format!(
-                "duplicate validation literal: {needle:?} live {} > baseline {baseline}; route \
-                 both entry points through the op_args validator:\n{}",
-                live.len(),
-                render(&live)
-            ));
-        } else if live.is_empty() {
-            failures.push(format!(
-                "{needle:?}: needle no longer matches its op_args.rs home; update this row in \
-                 the same diff"
-            ));
-        }
-    }
-    assert!(failures.is_empty(), "row (iii):\n{}", failures.join("\n"));
-}
-
 // ── self-tests: scanner ─────────────────────────────────────────────────────
 
 /// A synthetic source written as an indented raw string, minus its leading
@@ -807,7 +730,7 @@ fn f(r: f64) {
 "#,
     );
     assert_eq!(live_lines("lib.rs", src), vec![2]);
-    assert_eq!(production_view(src).literal_hits("//"), vec![2]);
+    assert!(code_text(src).contains("\"https://example.com\"; if !(r.is_finite()"));
 }
 
 #[test]
@@ -949,7 +872,7 @@ fn prod(r: f64) {
 "##,
     );
     assert_eq!(live_lines("lib.rs", src), vec![5]);
-    assert_eq!(production_view(src).literal_hits("#[cfg(test)]"), vec![2]);
+    assert!(code_text(src).contains("s.starts_with(\"#[cfg(test)]\")"));
 }
 
 // ── self-tests: row (i) ─────────────────────────────────────────────────────
@@ -1136,87 +1059,4 @@ fn row_ii_is_scoped_to_handle_rs() {
     let src = "fn decode(v: &Value) -> Option<f64> {\n    v.as_f64()\n}\n";
     assert_eq!(row_ii_count("src/handle.rs", src), 1);
     assert_eq!(row_ii_count("src/lib.rs", src), 0);
-}
-
-// ── self-tests: row (iii) ───────────────────────────────────────────────────
-
-const REVOLVE_ZERO: &str = "revolve angle must not be zero";
-
-fn row_iii_count(src: &str, needle: &str) -> usize {
-    row_iii_scan("lib.rs", src, needle).len()
-}
-
-#[test]
-fn row_iii_flags_a_duplicated_literal_and_clears_at_one_copy() {
-    let duplicated = snippet(
-        r#"
-fn execute_revolve(a: f64) -> Result<(), E> {
-    Err(failed(format!("revolve angle must not be zero, got {}", a)))
-}
-fn revolve_with_history(a: f64) -> Result<(), E> {
-    Err(failed(format!("revolve angle must not be zero, got {}", a)))
-}
-"#,
-    );
-    let hits = row_iii_scan("lib.rs", duplicated, REVOLVE_ZERO);
-    assert_eq!(hits.iter().map(|f| f.line).collect::<Vec<_>>(), vec![2, 5]);
-
-    let single = snippet(
-        r#"
-fn validate_revolve_params(a: f64) -> Result<(), E> {
-    Err(failed(format!("revolve angle must not be zero, got {}", a)))
-}
-"#,
-    );
-    assert_eq!(row_iii_count(single, REVOLVE_ZERO), 1);
-}
-
-#[test]
-fn row_iii_ignores_comments_and_test_code() {
-    let src = snippet(
-        r#"
-/// Fails with "revolve angle must not be zero, got {}".
-fn f() {
-    // "revolve angle must not be zero" was the old text
-}
-#[cfg(test)]
-mod tests {
-    fn t(m: &str) {
-        assert!(m.contains("revolve angle must not be zero"));
-    }
-}
-"#,
-    );
-    assert_eq!(row_iii_count(src, REVOLVE_ZERO), 0);
-}
-
-#[test]
-fn row_iii_matches_within_one_physical_line_of_a_continued_literal() {
-    let on_one_line = snippet(
-        r#"
-fn f() -> &'static str {
-    "the revolve: \
-     revolve angle must not be zero, got none"
-}
-"#,
-    );
-    assert_eq!(
-        row_iii_scan("lib.rs", on_one_line, REVOLVE_ZERO)
-            .iter()
-            .map(|f| f.line)
-            .collect::<Vec<_>>(),
-        vec![3]
-    );
-
-    // Accepted limitation: a needle broken across the continuation is not
-    // matched, so needles stay short single-line fragments.
-    let across_the_break = snippet(
-        r#"
-fn f() -> &'static str {
-    "revolve angle must \
-     not be zero, got none"
-}
-"#,
-    );
-    assert_eq!(row_iii_count(across_the_break, REVOLVE_ZERO), 0);
 }
