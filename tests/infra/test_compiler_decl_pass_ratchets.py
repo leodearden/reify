@@ -33,7 +33,7 @@ ROWS = (
     # D12 R2: "__connector_ string literals in production code.
     rcr.Row(row_id="R2",
             construct=re.compile('"__connector_'),
-            view=rcr.View.CODE_WITH_LITERALS,
+            view=rcr.View.STARTS_IN_CODE,
             paths=("crates/*/src/**/*.rs",),
             baseline=4, target=1, lowered_by="ζ #8735"),
     # D12 R3: per-relation arity checks.
@@ -134,18 +134,33 @@ class Views(TempRoot):
         self.assertEqual(result.count, 3)
         self.assertEqual(result.hits, ("src/a.rs:2", "src/a.rs:7", "src/a.rs:7"))
 
-    def test_code_with_literals_view_sees_strings_but_not_comments(self):
+    def test_starts_in_code_view_counts_literal_openers_only(self):
         self.write("src/a.rs", rust_fn(
             '    let a = "needle_x";',
             '    let b = r#"needle_y"#;',
             '    foo(); // "needle_z"',
             '    /// "needle_w"',
             "    let c = needle_v;",
+            '    foo(); /* "needle_u" */',
+            "    /* opened",
+            '    "needle_s" */ bar();',
+            '    let r = r#"first',
+            '    "needle_r" second"#;',
+            r'    let e = "\"needle_q\"";',
+            '    /* x */ let f = "needle_p";',
+            '    let g = "multi',
+            '    line"; let h = "needle_o";',
         ) + cfg_test_module('let d = "needle_t";'))
         result = self.evaluate_one(
-            demo_row('"needle_', "src/a.rs", view=rcr.View.CODE_WITH_LITERALS))
-        self.assertEqual(result.count, 2)
-        self.assertEqual(result.hits, ("src/a.rs:2", "src/a.rs:3"))
+            demo_row('"needle_', "src/a.rs", view=rcr.View.STARTS_IN_CODE))
+        self.assertEqual(result.hits,
+                         ("src/a.rs:2", "src/a.rs:3", "src/a.rs:13", "src/a.rs:15"))
+
+    def test_starts_in_code_view_counts_each_opener_on_a_line(self):
+        self.write("src/a.rs", rust_fn('    f("needle_a", "needle_b"); // "needle_c"'))
+        result = self.evaluate_one(
+            demo_row('"needle_', "src/a.rs", view=rcr.View.STARTS_IN_CODE))
+        self.assertEqual(result.hits, ("src/a.rs:2", "src/a.rs:2"))
 
 
 class Scope(TempRoot):
@@ -178,22 +193,26 @@ class Baseline(TempRoot):
     def result_at(self, baseline):
         return self.evaluate_one(
             demo_row(r"\bneedle\(", "src/a.rs", baseline=baseline, target=0,
-                     row_id="over-row", lowered_by="owner-x"))
+                     row_id="ratchet-row", lowered_by="owner-x"))
 
     def test_count_at_baseline_is_clean(self):
         result = self.result_at(2)
         self.assertEqual(result.count, 2)
         self.assertIsNone(result.violation)
 
-    def test_count_below_baseline_is_clean(self):
-        self.assertIsNone(self.result_at(5).violation)
+    def test_count_below_baseline_is_stale_naming_row_owner_and_new_count(self):
+        violation = self.result_at(5).violation
+        self.assertIsNotNone(violation)
+        for fragment in ("ratchet-row", "owner-x", "2 occurrence(s)", "below baseline 5"):
+            self.assertIn(fragment, violation)
 
     def test_count_above_baseline_names_row_owner_target_and_hits(self):
         violation = self.result_at(1).violation
         self.assertIsNotNone(violation)
-        for fragment in ("over-row", "2", "baseline 1", "target 0", "owner-x",
-                         "src/a.rs:2", "src/a.rs:4"):
+        for fragment in ("ratchet-row", "2 occurrence(s)", "baseline 1", "target 0",
+                         "owner-x", "src/a.rs:2", "src/a.rs:4"):
             self.assertIn(fragment, violation)
+        self.assertNotIn("below baseline", violation)
 
     def test_summary_reports_count_over_baseline_and_owner(self):
         summary = self.evaluate_one(
@@ -209,6 +228,17 @@ class LexFailure(TempRoot):
         with self.assertRaises(rcr.LexError) as caught:
             rcr.evaluate((demo_row(r"\bneedle\(", "src/broken.rs"),), self.root)
         self.assertIn("src/broken.rs", str(caught.exception))
+
+
+class RowIdentity(TempRoot):
+
+    def test_duplicate_row_id_is_rejected_naming_it(self):
+        self.write("src/a.rs", rust_fn("    needle();"))
+        twins = (demo_row(r"\bneedle\(", "src/a.rs", row_id="twin"),
+                 demo_row(r"\bother\(", "src/a.rs", row_id="twin"))
+        with self.assertRaises(ValueError) as caught:
+            rcr.evaluate(twins, self.root)
+        self.assertIn("'twin'", str(caught.exception))
 
 
 class RowInvariants(unittest.TestCase):
@@ -288,6 +318,9 @@ NOT_COUNTED = {
     "R2": (
         Case(rust_fn('    // mint "__connector_0"')),
         Case(rust_fn('    /// e.g. "__connector_0"')),
+        Case(rust_fn('    mint(); /* "__connector_0" */')),
+        Case(rust_fn('    let doc = r#"see', '    "__connector_0" here"#;')),
+        Case(rust_fn(r'    let quoted = "\"__connector_0\"";')),
         Case(rust_fn("    let p = __connector_prefix;")),
         Case(cfg_test_module('let n = "__connector_0";')),
         Case(rust_fn('    let n = "__connector_0";'), rel="crates/demo/tests/t.rs"),
@@ -301,7 +334,7 @@ NOT_COUNTED = {
 
 COUNTED = {
     "R1": (2, Case(rust_fn("    is_selector_expr(a); classify_geometry_list_let(b);"))),
-    "R2": (1, Case(rust_fn('    name.starts_with("__connector_");'))),
+    "R2": (2, Case(rust_fn('    /* c */ name.starts_with("__connector_") || f("__connector_");'))),
     "R3": (1, Case(rust_fn("    if args.len()==3 {}"))),
 }
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Count regex occurrences over the production view of Rust files against
-per-row baselines. The view is the one scripts/lib_rust_production_view.sh
+"""Count regex occurrences in the production code of Rust files against
+per-row baselines, read through the one lexer scripts/lib_rust_production_view.sh
 exports; tested by tests/infra/test_compiler_decl_pass_ratchets.py.
 """
 
@@ -9,14 +9,44 @@ from __future__ import annotations
 import os
 import re
 import subprocess
+from collections import Counter
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path, PurePosixPath
 
 LEXER_LIB = Path(__file__).resolve().parents[2] / "scripts" / "lib_rust_production_view.sh"
 
-_SPAWN = 'source "$1" && prog="$RUST_PRODUCTION_VIEW_AWK\n$2" && awk "$prog" "$3"'
-_DRIVER = '{ printf "%d\\t%d\\t%s\\n", FNR, length(comment_tail), code }'
+_SPAWN = 'source "$1" && prog="${!2}\n$3" && awk -v probes="$5" "$prog" "$4"'
+
+_PRODUCTION_DRIVER = '{ printf "%d\\t%s\\n", FNR, code }'
+
+_PROBE_DRIVER = r'''
+BEGIN {
+    n_probes = split(probes, probe_list, " ")
+    for (p = 1; p <= n_probes; p++) {
+        split(probe_list[p], probe_at, ":")
+        probe_cols[probe_at[1]] = probe_cols[probe_at[1]] " " probe_at[2]
+    }
+}
+function replay_to_line_start(   k) {
+    _lexer_reset()
+    for (k = 1; k <= n_since_balanced; k++) _strip_line(since_balanced[k])
+}
+FNR in probe_cols {
+    n_cols = split(probe_cols[FNR], line_cols, " ")
+    for (p = 1; p <= n_cols; p++) {
+        replay_to_line_start()
+        _strip_line(substr($0, 1, line_cols[p] - 1))
+        if (_lexer_open_state() == "" && comment_tail == "") print FNR ":" line_cols[p]
+    }
+    replay_to_line_start()
+}
+{
+    _strip_line($0)
+    if (_lexer_open_state() == "") n_since_balanced = 0
+    else since_balanced[++n_since_balanced] = $0
+}
+'''
 
 
 class LexError(RuntimeError):
@@ -24,8 +54,12 @@ class LexError(RuntimeError):
 
 
 class View(Enum):
+    """CODE matches the lexed line: comments dropped, literal contents blanked.
+    STARTS_IN_CODE matches the raw line and counts a match whose first byte the
+    lexer reads as production code, so a literal's opening quote counts and
+    text inside a comment or another literal does not."""
     CODE = "code"
-    CODE_WITH_LITERALS = "code_with_literals"
+    STARTS_IN_CODE = "starts_in_code"
 
 
 @dataclass(frozen=True)
@@ -74,11 +108,15 @@ class RowResult:
     @property
     def violation(self) -> str | None:
         row = self.row
-        head = f"construct ratchet: row {row.row_id} (lowered by {row.lowered_by})"
-        parts = [f"{head}: path '{glob}' matches no file" for glob in self.missing_paths]
+        prefix = f"construct ratchet: row {row.row_id} (lowered by {row.lowered_by})"
+        parts = [f"{prefix}: path '{glob}' matches no file" for glob in self.missing_paths]
+        measured = f"{prefix}: {self.count} occurrence(s)"
         if self.count > row.baseline:
-            parts.append(f"{head}: {self.count} occurrence(s), baseline {row.baseline} "
-                         f"(target {row.target}): {', '.join(self.hits)}")
+            parts.append(f"{measured}, baseline {row.baseline} (target {row.target}): "
+                         f"{', '.join(self.hits)}")
+        elif self.count < row.baseline:
+            parts.append(f"{measured}, below baseline {row.baseline} (target {row.target}); "
+                         f"lower the row's baseline to {self.count}")
         return "\n".join(parts) or None
 
     @property
@@ -88,31 +126,47 @@ class RowResult:
                 f"(target {row.target}, lowered by {row.lowered_by})")
 
 
-@dataclass(frozen=True)
-class _ProductionLine:
-    number: int
-    code: str
-    code_with_literals: str
-
-    def text(self, view: View) -> str:
-        return self.code if view is View.CODE else self.code_with_literals
-
-
-def _production_lines(path: Path, raw: bytes) -> tuple[_ProductionLine, ...]:
+def _run_lexer(path: Path, export: str, driver: str, probes: str = "") -> list[str]:
     proc = subprocess.run(
-        ["bash", "-c", _SPAWN, "bash", str(LEXER_LIB), _DRIVER, str(path)],
+        ["bash", "-c", _SPAWN, "bash", str(LEXER_LIB), export, driver, str(path), probes],
         capture_output=True, env={**os.environ, "LC_ALL": "C"})
     if proc.returncode != 0 or proc.stderr:
         raise LexError(f"{path}: shared lexer exited {proc.returncode}: "
                        f"{proc.stderr.decode('utf-8', 'replace').strip()}")
-    raw_lines = raw.split(b"\n")
-    lines = []
-    for record in proc.stdout.decode("utf-8", "replace").split("\n")[:-1]:
-        number, tail_len, code = record.split("\t", 2)
-        line = raw_lines[int(number) - 1]
-        literal_view = line[:len(line) - int(tail_len)].decode("utf-8", "replace")
-        lines.append(_ProductionLine(int(number), code, literal_view))
-    return tuple(lines)
+    return proc.stdout.decode("utf-8", "surrogateescape").split("\n")[:-1]
+
+
+@dataclass(frozen=True)
+class _SourceFile:
+    path: Path
+    lines: tuple[str, ...]
+    production_code: tuple[tuple[int, str], ...]
+
+    @classmethod
+    def lex(cls, path: Path, text: str) -> _SourceFile:
+        records = (record.split("\t", 1)
+                   for record in _run_lexer(path, "RUST_PRODUCTION_VIEW_AWK", _PRODUCTION_DRIVER))
+        return cls(path, tuple(text.split("\n")),
+                   tuple((int(number), code) for number, code in records))
+
+    def code_hits(self, construct: re.Pattern) -> list[int]:
+        return [number for number, code in self.production_code
+                for _ in construct.finditer(code)]
+
+    def starts_in_code_hits(self, construct: re.Pattern) -> list[int]:
+        candidates = [(number, _byte_column(self.lines[number - 1], match.start()))
+                      for number, _ in self.production_code
+                      for match in construct.finditer(self.lines[number - 1])]
+        if not candidates:
+            return []
+        probes = " ".join(f"{number}:{column}" for number, column in candidates)
+        in_code = {tuple(int(field) for field in record.split(":"))
+                   for record in _run_lexer(self.path, "RUST_LEXER_AWK", _PROBE_DRIVER, probes)}
+        return [number for number, column in candidates if (number, column) in in_code]
+
+
+def _byte_column(line: str, index: int) -> int:
+    return len(line[:index].encode("utf-8", "surrogateescape")) + 1
 
 
 def _scope(row: Row, root: Path) -> tuple[list[Path], tuple[str, ...]]:
@@ -127,21 +181,31 @@ def _scope(row: Row, root: Path) -> tuple[list[Path], tuple[str, ...]]:
 
 
 def _file_hits(row: Row, root: Path, path: Path,
-               lexed: dict[Path, tuple[_ProductionLine, ...]]) -> tuple[str, ...]:
-    raw = path.read_bytes()
-    if not row.construct.search(raw.decode("utf-8", "replace")):
+               lexed: dict[Path, _SourceFile]) -> tuple[str, ...]:
+    text = path.read_bytes().decode("utf-8", "surrogateescape")
+    if not row.construct.search(text):
         return ()
     if path not in lexed:
-        lexed[path] = _production_lines(path, raw)
+        lexed[path] = _SourceFile.lex(path, text)
+    source = lexed[path]
+    numbers = (source.code_hits(row.construct) if row.view is View.CODE
+               else source.starts_in_code_hits(row.construct))
     rel = path.relative_to(root).as_posix()
-    return tuple(f"{rel}:{line.number}"
-                 for line in lexed[path]
-                 for _ in row.construct.finditer(line.text(row.view)))
+    return tuple(f"{rel}:{number}" for number in numbers)
+
+
+def _reject_duplicate_ids(rows: tuple[Row, ...]) -> None:
+    duplicates = sorted(row_id for row_id, uses in Counter(row.row_id for row in rows).items()
+                        if uses > 1)
+    if duplicates:
+        raise ValueError(f"duplicate row_id(s): {', '.join(map(repr, duplicates))}")
 
 
 def evaluate(rows, root: Path) -> tuple[RowResult, ...]:
+    rows = tuple(rows)
+    _reject_duplicate_ids(rows)
     root = Path(root)
-    lexed: dict[Path, tuple[_ProductionLine, ...]] = {}
+    lexed: dict[Path, _SourceFile] = {}
     results = []
     for row in rows:
         paths, missing = _scope(row, root)
