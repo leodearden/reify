@@ -810,7 +810,7 @@ const RATCHETS: &[Ratchet] = &[
     Ratchet {
         name: "cable-sign-rule-arms",
         home: "MemberKind::admits (solver-crates-layering D1, leaf η)",
-        baseline: 6,
+        baseline: 4,
         measure: Measure::Occurrences(production_pattern(
             "MemberKind::Cable =>",
             SRC,
@@ -820,7 +820,7 @@ const RATCHETS: &[Ratchet] = &[
     Ratchet {
         name: "unchecked-anchor-partition",
         home: "ForceDensityProblem construction (solver-crates-layering D1, leaf η)",
-        baseline: 3,
+        baseline: 1,
         measure: Measure::Occurrences(production_pattern(
             "is_anchor[a] = true",
             SRC,
