@@ -559,8 +559,8 @@ const SRC_AND_TESTS: &[&str] = &["src/", "tests/"];
 const NO_PATHS: &[&str] = &[];
 const WHOLE_FILE: &[&str] = &[];
 
-/// A pattern over production code: no path excluded, `#[cfg(test)]` items
-/// skipped, code view only. Rows spell out only what differs from that.
+/// A pattern over production code: `#[cfg(test)]` items are skipped, so test
+/// modules never count. No path is excluded and only the code view is read.
 const fn production_pattern(
     needle: &'static str,
     include: &'static [&'static str],
@@ -573,6 +573,19 @@ const fn production_pattern(
         skip_items: TEST_ITEMS,
         view: View::Code,
         seed,
+    }
+}
+
+/// A pattern over whole files: no item is skipped, so `#[cfg(test)]` modules
+/// count along with every other line under `include`.
+const fn whole_file_pattern(
+    needle: &'static str,
+    include: &'static [&'static str],
+    seed: &'static str,
+) -> Pattern {
+    Pattern {
+        skip_items: WHOLE_FILE,
+        ..production_pattern(needle, include, seed)
     }
 }
 
@@ -616,14 +629,11 @@ const RATCHETS: &[Ratchet] = &[
         name: "inline-shear-modulus",
         home: "IsotropicElastic::shear_modulus (solver-crates-layering D5, leaf γ)",
         baseline: 16,
-        measure: Measure::Occurrences(Pattern {
-            skip_items: WHOLE_FILE,
-            ..production_pattern(
-                "/ (2.0 * (1.0 + nu))",
-                SRC,
-                "let g = e / (2.0 * (1.0 + nu));",
-            )
-        }),
+        measure: Measure::Occurrences(whole_file_pattern(
+            "/ (2.0 * (1.0 + nu))",
+            SRC,
+            "let g = e / (2.0 * (1.0 + nu));",
+        )),
     },
     Ratchet {
         name: "thickness-scaled-d-blocks",
@@ -641,8 +651,7 @@ const RATCHETS: &[Ratchet] = &[
         baseline: 38,
         measure: Measure::Occurrences(Pattern {
             exclude: &["src/assembly/global.rs"],
-            skip_items: WHOLE_FILE,
-            ..production_pattern(
+            ..whole_file_pattern(
                 "AssemblyElement {",
                 SRC_AND_TESTS,
                 "let el = AssemblyElement { id: 0, connectivity: &c, k_e: &k };",
@@ -655,8 +664,7 @@ const RATCHETS: &[Ratchet] = &[
         baseline: 74,
         measure: Measure::Occurrences(Pattern {
             exclude: &["src/assembly/mod.rs", "src/resample.rs"],
-            skip_items: WHOLE_FILE,
-            ..production_pattern(".data[", SRC_AND_TESTS, "let v = k_e.data[0];")
+            ..whole_file_pattern(".data[", SRC_AND_TESTS, "let v = k_e.data[0];")
         }),
     },
     Ratchet {
@@ -716,7 +724,7 @@ const RATCHETS: &[Ratchet] = &[
         measure: Measure::Occurrences(Pattern {
             skip_items: &["impl MpcRow", "pub struct MpcRow"],
             view: View::CodeAndDocs,
-            ..production_pattern(
+            ..whole_file_pattern(
                 "MpcRow {",
                 SRC_AND_TESTS,
                 "let r = MpcRow { dofs: vec![0], coeffs: vec![1.0], rhs: 0.0 };",
