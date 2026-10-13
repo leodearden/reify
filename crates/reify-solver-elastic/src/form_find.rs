@@ -1428,6 +1428,29 @@ mod tests {
         );
     }
 
+    // (d2) A member endpoint past `nodes` is infeasible input, not a panic in
+    // the `D` scatter (PRD §8.1: clean diagnostic). Index 5 is the FIRST invalid
+    // one for 5 nodes, in the END (k) position.
+    #[test]
+    fn out_of_range_member_index_is_dimension_mismatch() {
+        let nodes = vec![
+            [0.3, 0.2, 0.4],
+            [1.0, 0.0, 0.0],
+            [-1.0, 0.0, 0.0],
+            [0.0, 1.0, 1.0],
+            [0.0, -1.0, 1.0],
+        ];
+        let members = [(0, 1), (0, 2), (0, 3), (0, 5)];
+        let kinds = [MemberKind::Cable; 4];
+        let q = [1.0; 4];
+        let anchors = [1, 2, 3, 4];
+
+        assert_eq!(
+            form_find_anchored(&nodes, &members, &kinds, &q, &anchors).unwrap_err(),
+            FormFindError::DimensionMismatch,
+        );
+    }
+
     // ── γ (task 4414): per-triangle cotangent-Laplacian (NFDM surface) stencil ──
 
     /// Tolerance for the closed-form cotangent-stencil identity. The local 3×3
@@ -1711,6 +1734,24 @@ mod tests {
         let members: Vec<(usize, usize)> = vec![];
         let kinds: Vec<MemberKind> = vec![];
         let q: Vec<f64> = vec![];
+
+        assert_eq!(
+            form_find_anchored_surfaces(&nodes, &members, &kinds, &q, &surfaces, &sigmas, &anchors)
+                .unwrap_err(),
+            FormFindError::DimensionMismatch,
+        );
+    }
+
+    // (c3) A member endpoint past `nodes` is infeasible input, not a panic in
+    // the `D` scatter (PRD §8.1: clean diagnostic). The bad index is the START
+    // (j) endpoint; the line-only test above covers the END (k) one.
+    #[test]
+    fn surfaces_out_of_range_member_index_is_dimension_mismatch() {
+        let (nodes, surfaces, anchors) = tent_membrane();
+        let sigmas = vec![1.0; surfaces.len()];
+        let members = vec![(5usize, 0usize)];
+        let kinds = vec![MemberKind::Cable];
+        let q = vec![1.0];
 
         assert_eq!(
             form_find_anchored_surfaces(&nodes, &members, &kinds, &q, &surfaces, &sigmas, &anchors)
@@ -2364,6 +2405,24 @@ mod tests {
         assert_eq!(
             form_find_anchored_surfaces_aniso(
                 &nodes, &members, &kinds, &q, &surfaces, &pres, &anchors
+            )
+            .unwrap_err(),
+            AnisoFormFindError::DimensionMismatch,
+        );
+    }
+
+    // (a3) A member endpoint past `nodes` is infeasible input, not a panic in
+    // the `D` scatter (PRD §8.1: clean diagnostic). Mirrors the isotropic
+    // entry's guard; 5 is the first invalid index for the 5-node tent.
+    #[test]
+    fn aniso_solve_out_of_range_member_index_is_dimension_mismatch() {
+        let (nodes, surfaces, prestress, anchors) = tent_aniso_fixture();
+        let members = vec![(0usize, 5usize)];
+        let kinds = vec![MemberKind::Cable];
+        let q = vec![1.0_f64];
+        assert_eq!(
+            form_find_anchored_surfaces_aniso(
+                &nodes, &members, &kinds, &q, &surfaces, &prestress, &anchors
             )
             .unwrap_err(),
             AnisoFormFindError::DimensionMismatch,
