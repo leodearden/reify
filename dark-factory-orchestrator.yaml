@@ -197,6 +197,11 @@ verify_use_cgroup_scope: true
 # (per-test slow-timeout attribution so this can be tightened again) is task 5141.
 verify_clock_stop_enabled: true
 verify_clock_stop_heartbeat_idle_max: 600
+# 2026-10-14 (task 7673): serve the orchestrator-side verify admission slot in
+# arrival order instead of at random (dark-factory plans/verify-admission-fifo-prd.md,
+# task gamma). Reify has a single verify service class, so arrival order is the
+# whole policy: mean wait unchanged, tail bounded. Green-tier; revert to 'unordered'.
+verify_admission_order: arrival
 
 # Verification commands — thin delegations to scripts/verify.sh, the single
 # source of truth shared with the git hooks (hooks/project-checks +
