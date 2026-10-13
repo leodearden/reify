@@ -19,9 +19,11 @@
 #              (or a --scope flag with no value) is a usage error (exit 64).
 #              With no --scope, behavior is unchanged (pool/legacy below).
 #
-# Auto-discovery: all files matching test_*.sh in INFRA_DIR are discovered
-# and run as subshell invocations. test_helpers.sh is excluded by name
-# (it is a shared library, not a test runner).
+# Auto-discovery: classification_discovered_set (run-all-classification-lib.sh)
+# is the only discovery predicate -- regular files matching test_*.sh in
+# INFRA_DIR, minus test_helpers.sh (a shared library), LC_ALL=C sorted. Each
+# is run as a subshell invocation. The member subset, the H3 exclusion and the
+# host-infra bucket are filters over its output, never predicates of their own.
 #
 # Output: After the "=== Summary: N discovered, M failed ===" line, if any
 # tests failed, two lines are emitted:
@@ -61,9 +63,9 @@
 # the concurrent pool within a single run_all.sh invocation. Per-test output
 # is buffered and replayed in discovered (sorted) order so the exact output
 # contract above (headers/RESULT/Summary/FAILED) is unaffected by which tests
-# finish first. The pool activates only when its substrate (classification
-# lib, slot-acquire lib, cpu-admit lib, load-tolerance lib, flock) is present;
-# otherwise run_all.sh falls back to the legacy fully-serial for-loop.
+# finish first. The pool activates only when its substrate (slot-acquire lib,
+# cpu-admit lib, load-tolerance lib, flock) is present; otherwise run_all.sh
+# falls back to the legacy fully-serial loop over the same members.
 #
 # Discovery/partition diagnostic guard (task #5123, esc-5080-9): a scoped ERR
 # trap wraps the pool path's discovery -> partition -> workdir-setup block
@@ -133,10 +135,9 @@
 #                                      default.
 #   REIFY_RUN_ALL_SUBSET_COUNT_ONLY   set to EXACTLY "1" for a hermetic,
 #                                      NO-EXECUTION count-only probe (task
-#                                      5373): apply ONLY the member-subset
-#                                      match predicate (glob test_*.sh, skip
-#                                      test_helpers.sh, [ -f ] guard,
-#                                      REIFY_RUN_ALL_MEMBER_SUBSET membership),
+#                                      5373): count the discovered members
+#                                      (classification_discovered_set) that
+#                                      REIFY_RUN_ALL_MEMBER_SUBSET names,
 #                                      print a single machine token
 #                                      "@@REIFY_RUN_ALL_SUBSET_MATCHED=<n>@@"
 #                                      to stdout, and exit 0 BEFORE running any
@@ -1226,13 +1227,16 @@ _ra_skip_state_write() {
 
 # ---------------------------------------------------------------------------
 # H2 concurrent-pool substrate detection. The pool activates only when every
-# lib below is present AND flock is on PATH AND REIFY_RUN_ALL_POOL_DISABLE is
-# not set; otherwise run_all.sh falls back to the legacy all-serial for-loop
-# (byte-identical output/contract) so a missing/lagging substrate never
-# breaks discovery or execution.
+# pool lib below is present AND flock is on PATH AND REIFY_RUN_ALL_POOL_DISABLE
+# is not set; otherwise run_all.sh falls back to the legacy all-serial loop
+# (same output contract). The classification lib is not optional pool
+# substrate: it IS discovery, so it is hard-required on every path.
 # ---------------------------------------------------------------------------
 _H2_REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 _H2_CLASSIFICATION_LIB="$SCRIPT_DIR/run-all-classification-lib.sh"
+[ -f "$_H2_CLASSIFICATION_LIB" ] || { echo "ERROR: run_all.sh: discovery requires the classification lib at $_H2_CLASSIFICATION_LIB" >&2; exit 1; }
+# shellcheck source=tests/infra/run-all-classification-lib.sh
+source "$_H2_CLASSIFICATION_LIB"
 _H2_SLOT_ACQUIRE_LIB="$_H2_REPO_ROOT/scripts/lib_slot_acquire.sh"
 _H2_CPU_ADMIT_LIB="$_H2_REPO_ROOT/scripts/cpu-admit.sh"
 _H2_LOAD_TOLERANCE_LIB="$SCRIPT_DIR/load_tolerance_lib.sh"
@@ -1275,7 +1279,7 @@ if [ "${REIFY_RUN_ALL_POOL_DISABLE:-}" = "1" ]; then
     _H2_POOL_ACTIVE=0
 fi
 if [ "$_H2_POOL_ACTIVE" -eq 1 ]; then
-    if [ ! -f "$_H2_CLASSIFICATION_LIB" ] || [ ! -f "$_H2_SLOT_ACQUIRE_LIB" ] || \
+    if [ ! -f "$_H2_SLOT_ACQUIRE_LIB" ] || \
        [ ! -f "$_H2_CPU_ADMIT_LIB" ] || [ ! -f "$_H2_LOAD_TOLERANCE_LIB" ] || \
        ! command -v flock >/dev/null 2>&1; then
         _H2_POOL_ACTIVE=0
@@ -1283,8 +1287,6 @@ if [ "$_H2_POOL_ACTIVE" -eq 1 ]; then
 fi
 
 if [ "$_H2_POOL_ACTIVE" -eq 1 ]; then
-    # shellcheck disable=SC1090
-    source "$_H2_CLASSIFICATION_LIB"
     # shellcheck disable=SC1090
     source "$_H2_SLOT_ACQUIRE_LIB"
     # shellcheck disable=SC1090
@@ -1294,26 +1296,64 @@ if [ "$_H2_POOL_ACTIVE" -eq 1 ]; then
 fi
 
 # ---------------------------------------------------------------------------
-# H3 flip-seam (task 4925): REIFY_RUN_ALL_EXCLUDE_HOST_INFRA exclusion set.
-# Strict `= "1"` equality only -- unset/empty/"0"/garbage all leave
-# _h3_exclude empty, so the FULL discovered set runs unchanged (DA1:
-# strictly additive default; a malformed knob must never silently drop
-# host-infra coverage). Computed ONCE here, before the pool-vs-legacy
-# branch, so both paths below apply the identical exclusion set regardless
-# of pool activation / REIFY_RUN_ALL_POOL_DISABLE.
+# Discovery, ONCE, before the branch chain. classification_discovered_set is
+# the only discovery predicate; every branch below runs a filter over its
+# output: the H3 default scope (pool + legacy), the H9 host-exclusive bucket,
+# and the member subset (shared with the count-only probe).
 # ---------------------------------------------------------------------------
-declare -A _h3_exclude=()
-if [ "${REIFY_RUN_ALL_EXCLUDE_HOST_INFRA:-}" = "1" ] && [ -f "$_H2_CLASSIFICATION_LIB" ]; then
-    # shellcheck disable=SC1090
-    source "$_H2_CLASSIFICATION_LIB"
-    while IFS= read -r _h3_name; do
-        [ -n "$_h3_name" ] && _h3_exclude["$_h3_name"]=1
-    done < <(classification_bucket host-exclusive)
+
+# _ra_select_bucket <keep|drop> <bucket> [name...] -- print, in input order,
+# the names that are (keep) or are not (drop) declared in <bucket>.
+_ra_select_bucket() {
+    local _mode="$1" _bucket="$2" _want _name
+    shift 2
+    case "$_mode" in
+        keep) _want=1 ;;
+        drop) _want=0 ;;
+        *)
+            echo "ERROR: run_all.sh: _ra_select_bucket mode must be keep or drop (got '$_mode')" >&2
+            return 64
+            ;;
+    esac
+    local -A _declared=()
+    while IFS= read -r _name; do
+        [ -n "$_name" ] || continue
+        _declared["$_name"]=1
+    done < <(classification_bucket "$_bucket")
+    for _name in "$@"; do
+        [ "${_declared[$_name]:-0}" = "$_want" ] || continue
+        printf '%s\n' "$_name"
+    done
+}
+
+# _ra_in_member_subset <name> -- is <name> named by REIFY_RUN_ALL_MEMBER_SUBSET?
+_ra_in_member_subset() {
+    [ "${_ra_member_subset[$1]:-0}" = "1" ]
+}
+
+_ra_discovered=()
+while IFS= read -r _ra_name; do
+    [ -n "$_ra_name" ] || continue
+    _ra_discovered+=("$_ra_name")
+done < <(classification_discovered_set "$INFRA_DIR")
+
+# H3 flip-seam (task 4925): REIFY_RUN_ALL_EXCLUDE_HOST_INFRA set to EXACTLY
+# "1" drops the host-exclusive bucket from the members the pool and legacy
+# branches run. Unset/empty/"0"/garbage keep the FULL discovered set (DA1:
+# strictly additive default; a malformed knob must never silently drop
+# host-infra coverage).
+_ra_default_scope_members=()
+if [ "${REIFY_RUN_ALL_EXCLUDE_HOST_INFRA:-}" = "1" ]; then
+    while IFS= read -r _ra_name; do
+        _ra_default_scope_members+=("$_ra_name")
+    done < <(_ra_select_bucket drop host-exclusive "${_ra_discovered[@]+"${_ra_discovered[@]}"}")
+else
+    _ra_default_scope_members=("${_ra_discovered[@]+"${_ra_discovered[@]}"}")
 fi
 
 # ---------------------------------------------------------------------------
 # REIFY_RUN_ALL_MEMBER_SUBSET tokenization (task #5288): computed ONCE here,
-# before the branch chain, mirroring _h3_exclude immediately above. Unquoted
+# before the branch chain, like the discovery list above. Unquoted
 # expansion is deliberate -- it word-splits the space-delimited knob value;
 # empty tokens (leading/trailing/repeated whitespace) are skipped. An unset,
 # empty, or whitespace-only value yields an EMPTY set, so the branch below
@@ -1336,27 +1376,19 @@ done
 # matched count instead of a raw word-count that a stale/renamed basename --
 # the very case the member-subset branch below drops with a loud stderr
 # WARNING (search "not found in $INFRA_DIR") -- would silently inflate.
-# This block applies run_all.sh's OWN member-subset match predicate (glob
-# "$INFRA_DIR"/test_*.sh, [ -f ] guard, skip test_helpers.sh, membership in
-# _ra_member_subset), MIRRORING the member-subset run loop's predicate below
-# (search "REIFY_RUN_ALL_MEMBER_SUBSET dedicated serial branch", ~the
-# _ra_subset_file loop): the two predicates MUST stay in sync -- pinned by
-# test_run_all.sh Test 31 (matched=1 for one-valid-one-bogus) and the
-# end-to-end honesty assertion in test_verify_retry_failed_only.sh, both of
-# which fail if they ever disagree. It prints a single machine token and
-# exits 0 BEFORE the branch chain runs any member, so the fork stays hermetic
-# and keeps verify.sh's --print-plan oracle valid (count-only runs NO tests).
-# Gated ONLY on the knob = exactly "1"; any other value (unset/empty/"0"/
-# garbage) leaves the normal run paths below wholly untouched.
+# The probe and the member-subset branch share _ra_discovered and
+# _ra_in_member_subset, so their counts agree by construction. It prints a
+# single machine token and exits 0 BEFORE the branch chain runs any member,
+# so the fork stays hermetic and keeps verify.sh's --print-plan oracle valid
+# (count-only runs NO tests). Gated ONLY on the knob = exactly "1"; any other
+# value (unset/empty/"0"/garbage) leaves the normal run paths below wholly
+# untouched.
 # ---------------------------------------------------------------------------
 if [ "${REIFY_RUN_ALL_SUBSET_COUNT_ONLY:-}" = "1" ]; then
     _ra_co_matched=0
-    for _ra_co_file in "$INFRA_DIR"/test_*.sh; do
-        # If the glob matches nothing, the literal pattern string is returned — skip it.
-        [ -f "$_ra_co_file" ] || continue
-        _ra_co_base="$(basename "$_ra_co_file")"
-        [ "$_ra_co_base" = "test_helpers.sh" ] && continue
-        [ "${_ra_member_subset[$_ra_co_base]:-0}" = "1" ] && _ra_co_matched=$((_ra_co_matched + 1))
+    for _ra_name in "${_ra_discovered[@]+"${_ra_discovered[@]}"}"; do
+        _ra_in_member_subset "$_ra_name" || continue
+        _ra_co_matched=$((_ra_co_matched + 1))
     done
     echo "@@REIFY_RUN_ALL_SUBSET_MATCHED=${_ra_co_matched}@@"
     exit 0
@@ -1369,37 +1401,28 @@ if [ "$SCOPE" = "host-infra" ]; then
     # exclusion) under the H8 Lane-X single-flight flock, serially in the
     # foreground -- host-exclusive tests do real burn/cgroup/reflink work and
     # must never overlap, so no pool, no buffering. Deliberately IGNORES
-    # _h3_exclude / REIFY_RUN_ALL_EXCLUDE_HOST_INFRA: this is the runner
-    # meant to catch exactly the residue that knob moves off the hot path, so
-    # the knob must never suppress it too. The flock lib is sourced/acquired
+    # REIFY_RUN_ALL_EXCLUDE_HOST_INFRA (_ra_default_scope_members): this is
+    # the runner meant to catch exactly the residue that knob moves off the
+    # hot path, so the knob must never suppress it too. The flock lib is sourced/acquired
     # ONLY in this branch, so the default/pool/legacy hot paths below never
     # touch the Lane-X lock (H8's inert-on-hot-path safety property).
     # -------------------------------------------------------------------------
     _H9_LANE_X_FLOCK_LIB="$_H2_REPO_ROOT/scripts/lib_lane_x_flock.sh"
 
-    if [ ! -f "$_H2_CLASSIFICATION_LIB" ]; then
-        echo "ERROR: run_all.sh: --scope host-infra requires the classification lib at $_H2_CLASSIFICATION_LIB" >&2
-        exit 1
-    fi
     if [ ! -f "$_H9_LANE_X_FLOCK_LIB" ]; then
         echo "ERROR: run_all.sh: --scope host-infra requires the Lane-X flock lib at $_H9_LANE_X_FLOCK_LIB" >&2
         exit 1
     fi
 
     # shellcheck disable=SC1090
-    source "$_H2_CLASSIFICATION_LIB"
-    # shellcheck disable=SC1090
     source "$_H9_LANE_X_FLOCK_LIB"
 
-    # Members = the declared host-exclusive bucket INTERSECT files present in
-    # INFRA_DIR ([ -f ] guard mirrors run_all.sh's own discovery predicate),
-    # sorted for deterministic discovered-order output.
+    # Members = the declared host-exclusive bucket INTERSECT discovered, in
+    # discovered order.
     _h9_members=()
     while IFS= read -r _h9_name; do
-        [ -n "$_h9_name" ] || continue
-        [ -f "$INFRA_DIR/$_h9_name" ] || continue
         _h9_members+=("$_h9_name")
-    done < <(classification_bucket host-exclusive | sort)
+    done < <(_ra_select_bucket keep host-exclusive "${_ra_discovered[@]+"${_ra_discovered[@]}"}")
 
     # Acquire the Lane-X flock ONCE around the whole serial run (coarse
     # single-flight; PRD §4 #5). Capture the rc with `|| _h9_flock_rc=$?` --
@@ -1442,14 +1465,13 @@ elif [ "${#_ra_member_subset[@]}" -gt 0 ]; then
     # OTHER discovered member as skipped (acknowledged, never invoked, never
     # a failure). Mirrors the --scope host-infra branch's shape: a
     # self-contained serial loop that sets discovered/failures/failed_names
-    # and falls through to the shared Summary/FAILED/exit tail below. Plain
-    # glob discovery (test_*.sh minus test_helpers.sh, matching the legacy
-    # branch's own predicate/order) -- no classification-substrate
-    # dependency, so this branch never consults _h3_exclude/
-    # REIFY_RUN_ALL_EXCLUDE_HOST_INFRA (subset mode is authoritative) nor the
-    # pool/slot_acquire/PSI machinery. SINGLE attempt per named member: the
-    # subset run IS dark-factory's retry, so an internal re-retry here would
-    # mask a real retry-time failure.
+    # and falls through to the shared Summary/FAILED/exit tail below. It walks
+    # the full _ra_discovered list and decides run-vs-skip with
+    # _ra_in_member_subset, the count-only probe's predicate; it never
+    # consults REIFY_RUN_ALL_EXCLUDE_HOST_INFRA (subset mode is authoritative)
+    # nor the pool/slot_acquire/PSI machinery. SINGLE attempt per named
+    # member: the subset run IS dark-factory's retry, so an internal re-retry
+    # here would mask a real retry-time failure.
     #
     # Clock-marker sanitization (task #5288 pair 2; task 4998/esc-4791-52
     # class): unlike --scope host-infra / legacy (off the DF-parsed verify
@@ -1460,15 +1482,9 @@ elif [ "${#_ra_member_subset[@]}" -gt 0 ]; then
     # -------------------------------------------------------------------------
     _ra_subset_tmp="$(mktemp "${TMPDIR:-/tmp}/reify-run-all-subset.XXXXXX")"
     _ra_subset_matched=()
-    for _ra_subset_file in "$INFRA_DIR"/test_*.sh; do
-        # If glob matches nothing, the literal pattern string is returned — skip it.
-        [ -f "$_ra_subset_file" ] || continue
-
-        _ra_subset_base="$(basename "$_ra_subset_file")"
-        [ "$_ra_subset_base" = "test_helpers.sh" ] && continue
-
+    for _ra_subset_base in "${_ra_discovered[@]+"${_ra_discovered[@]}"}"; do
         discovered=$((discovered + 1))
-        if [ "${_ra_member_subset[$_ra_subset_base]:-0}" = "1" ]; then
+        if _ra_in_member_subset "$_ra_subset_base"; then
             _ra_subset_matched+=("$_ra_subset_base")
             echo ""
             echo "--- Running: $_ra_subset_base ---"
@@ -1650,29 +1666,7 @@ elif [ "$_H2_POOL_ACTIVE" -eq 1 ]; then
     trap '_ra_discovery_diag "$?" "$LINENO" "$BASH_COMMAND"' ERR
 
     # -- Discovery + partition (pool vs serial; unclassified fail-safes serial) --
-    _h2_discovered_list=()
-    while IFS= read -r _h2_name; do
-        [ -n "$_h2_name" ] && _h2_discovered_list+=("$_h2_name")
-    done < <(classification_discovered_set "$INFRA_DIR")
-
-    # H3: drop host-exclusive members from the discovered set when the
-    # flip-seam knob is engaged (_h3_exclude, computed above). Filtering here
-    # -- before the pool/serial partition -- makes `discovered` and the
-    # "=== Summary: N discovered ===" line drop by exactly the excluded
-    # count, with no other change to the partition/emit machinery below.
-    if [ "${#_h3_exclude[@]}" -gt 0 ]; then
-        _h3_kept=()
-        for _h2_name in "${_h2_discovered_list[@]}"; do
-            [ "${_h3_exclude[$_h2_name]:-0}" = "1" ] || _h3_kept+=("$_h2_name")
-        done
-        # Guard against expanding an empty array: "${_h3_kept[@]}" on a
-        # zero-element array raises 'unbound variable' under set -u on
-        # bash < 4.4 (fixed in bash 4.4+, but this script has no minimum
-        # bash-version gate). Only hit when the ENTIRE discovered set is
-        # host-exclusive; reassign explicitly to stay portable.
-        _h2_discovered_list=()
-        [ "${#_h3_kept[@]}" -gt 0 ] && _h2_discovered_list=("${_h3_kept[@]}")
-    fi
+    _h2_discovered_list=("${_ra_default_scope_members[@]+"${_ra_default_scope_members[@]}"}")
 
     # Content-addressed SKIP engine (task 5273): drop byte-identical mapped
     # members from _h2_discovered_list here -- after the H3 exclusion filter,
@@ -1806,7 +1800,7 @@ elif [ "$_H2_POOL_ACTIVE" -eq 1 ]; then
     # exactly one entry, so decrement by 1": _h2_pids accumulates every pid
     # ever spawned and is never pruned, so a throttled run hands `wait -n` a
     # growing mix of live and already-reaped pids. This repo pins no minimum
-    # bash version (see the note at the `_h3_kept` empty-array guard above),
+    # bash version (hence the `[@]+` empty-array guards on _ra_discovered),
     # and whether `wait -n <ids>` tolerates already-reaped ids in that list
     # and keeps blocking for a live one, vs. returning early the moment it
     # hits an id it no longer recognizes, is exactly the kind of edge case
@@ -2017,44 +2011,32 @@ elif [ "$_H2_POOL_ACTIVE" -eq 1 ]; then
     done
 else
     # -------------------------------------------------------------------------
-    # Legacy all-serial fallback (byte-identical to the pre-H2 behavior).
+    # Legacy all-serial fallback: the pool's members, in the pool's order, run
+    # one at a time.
     # -------------------------------------------------------------------------
-    for test_file in "$INFRA_DIR"/test_*.sh; do
-        # W4e between-members check (task #5261): this loop's iteration list
-        # was captured ONCE at glob-expansion time, so a member removed
-        # mid-loop by an earlier member just makes `[ -f ]` below silently
-        # `continue` past every remaining entry (a silent false success, not
-        # even a 127) -- checking here, before that guard, catches it instead.
+    for _ra_legacy_name in "${_ra_default_scope_members[@]+"${_ra_default_scope_members[@]}"}"; do
+        # W4e between-members check (task #5261): the member list was
+        # captured ONCE, before the branch chain, so a member removed mid-run
+        # by an earlier member is not skipped -- it FAILS with rc 127 below,
+        # like the pool. Checking here first turns a removed worktree into the
+        # single INTERRUPTED marker instead of N such failures.
         _ra_interrupt_if_worktree_gone
-
-        # If glob matches nothing, the literal pattern string is returned — skip it.
-        [ -f "$test_file" ] || continue
-
-        # Exclude test_helpers.sh — shared library, not a test runner.
-        basename="$(basename "$test_file")"
-        if [ "$basename" = "test_helpers.sh" ]; then
-            continue
-        fi
-
-        # H3: skip host-exclusive members when the flip-seam knob is engaged
-        # (_h3_exclude, computed above the pool-vs-legacy branch).
-        [ "${_h3_exclude[$basename]:-0}" = "1" ] && continue
 
         discovered=$((discovered + 1))
         echo ""
-        echo "--- Running: $basename ---"
+        echo "--- Running: $_ra_legacy_name ---"
         _ra_legacy_rc=0
-        reify_git_env_scrub bash "$test_file" || _ra_legacy_rc=$?
+        reify_git_env_scrub bash "$INFRA_DIR/$_ra_legacy_name" || _ra_legacy_rc=$?
         if [ "$_ra_legacy_rc" -eq 0 ]; then
-            echo "  RESULT: PASS ($basename)"
+            echo "  RESULT: PASS ($_ra_legacy_name)"
         else
             # W4e on-127 check (task #5261): a "No such file or directory"
             # exit from bash itself is the direct symptom of the worktree
             # having vanished out from under this member's own invocation.
             [ "$_ra_legacy_rc" -eq 127 ] && _ra_interrupt_if_worktree_gone
-            echo "  RESULT: FAIL ($basename)"
+            echo "  RESULT: FAIL ($_ra_legacy_name)"
             failures=$((failures + 1))
-            failed_names+=("$basename")
+            failed_names+=("$_ra_legacy_name")
         fi
     done
 fi

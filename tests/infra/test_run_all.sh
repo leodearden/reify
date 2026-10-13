@@ -679,8 +679,8 @@ t13a_out="$(RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T13" \
     bash "$RUN_ALL" "$TMPDIR_T13" 2>&1)" || t13a_rc=$?
 
 # Guard against false confidence: if the pool substrate were ever absent,
-# run_all.sh silently falls back to the legacy for-loop, which (via the
-# same shared _h3_exclude filter) would also print "3 discovered" --
+# run_all.sh silently falls back to the legacy loop, which (via the
+# same shared _ra_default_scope_members list) would also print "3 discovered" --
 # passing 13a below without ever exercising the pool-path filter code
 # (lines under the `if [ "$_H2_POOL_ACTIVE" -eq 1 ]` branch). Assert the
 # pool-path-only "INFO: run_all.sh pool: N=" marker is present so this
