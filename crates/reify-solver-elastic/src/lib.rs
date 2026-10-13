@@ -548,6 +548,9 @@ pub mod geometric_stiffness;
 pub mod interpolation;
 // Task 3868: κ — additive joint-stiffness kernel (PRD compliant-joints-flexures.md §7.2).
 pub mod joint_stiffness;
+// Task 8372/α: the tiered SPD linear-solve seam (PRD
+// docs/prds/v0_6/elastic-static-solver-performance.md §5 C1–C5).
+pub mod linear_solve;
 pub mod mass_matrix;
 pub mod material_field;
 pub mod math;
