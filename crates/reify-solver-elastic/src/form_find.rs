@@ -25,9 +25,10 @@
 //!
 //! # Sign convention
 //!
-//! Cables carry tension (`q > 0`), struts carry compression (`q < 0`). See the
-//! validation guards in [`form_find_anchored`] for the enforced contract; the
-//! free-standing eigenvalue/ratio form-finding variant is deferred to T1b.
+//! Cables carry tension (`q > 0`), struts carry compression (`q < 0`). See
+//! `validate_members`, which every anchored entry (e.g. [`form_find_anchored`])
+//! runs first, for the enforced contract; the free-standing eigenvalue/ratio
+//! form-finding variant is deferred to T1b.
 //!
 //! # Scope
 //!
@@ -60,7 +61,8 @@ pub enum FormFindError {
     SingularReducedStiffness,
     /// Every node is anchored — there is no free node to solve for.
     EmptyFreeSet,
-    /// Input arrays disagree in length (`members`, `kinds`, `q`).
+    /// Input arrays disagree in length (`members`, `kinds`, `q`), or a member
+    /// endpoint / surface triangle corner indexes past `nodes`.
     DimensionMismatch,
     /// A surface triangle is degenerate (collinear / zero-area corners), so its
     /// cotangent weights `cot(θ) = (e_a·e_b)/(2·Area)` diverge as `2·Area → 0`.
@@ -116,31 +118,7 @@ pub fn form_find_anchored(
 
     // ---- Up-front feasibility guards (PRD §8.1: infeasible input must yield a
     // clean diagnostic, never a silent wrong answer or a panic). ----
-
-    // `members`, `kinds`, and `q` describe the same member set in the same
-    // (struts-then-cables) order; disagreeing lengths mean the caller mis-built
-    // the problem, so reject before indexing them together below.
-    if members.len() != kinds.len() || members.len() != q.len() {
-        return Err(FormFindError::DimensionMismatch);
-    }
-
-    // Sign convention (PRD §4), enforced as a HARD per-member constraint:
-    // cables carry tension (q > 0), struts carry compression (q < 0). A
-    // violation is *infeasible input*, not something to silently coerce — the
-    // FD system would still factor and return a geometry, but it would be a
-    // sign-inconsistent (physically meaningless) one, so we surface a clean
-    // diagnostic instead of a silent wrong answer. The deferred T1b alternative
-    // is the free-standing eigenvalue/ratio search, which *solves for* a
-    // feasible q (and the self-stress mode) rather than taking q as given here.
-    for (&kind, &qi) in kinds.iter().zip(q.iter()) {
-        let sign_ok = match kind {
-            MemberKind::Cable => qi > 0.0,
-            MemberKind::Strut => qi < 0.0,
-        };
-        if !sign_ok {
-            return Err(FormFindError::SignViolation);
-        }
-    }
+    validate_members(n, members, kinds, q)?;
 
     // Force-density Laplacian D = CᵀQC for the line members (no surfaces on
     // this entry). Assembled by the shared `assemble_d` so the surface-aware
@@ -254,7 +232,7 @@ const MAX_SURFACE_ITERS: usize = 5000;
 ///
 /// # Errors
 /// - [`FormFindError::DimensionMismatch`] — `members`/`kinds`/`q` disagree, or
-///   a `surfaces` triangle corner indexes past `nodes`.
+///   a member endpoint or `surfaces` triangle corner indexes past `nodes`.
 /// - [`FormFindError::SurfaceCountMismatch`] — `surfaces`/`surface_stresses`
 ///   disagree.
 /// - [`FormFindError::SignViolation`] — a member violates its q-sign contract.
@@ -274,21 +252,9 @@ pub fn form_find_anchored_surfaces(
     let n = nodes.len();
 
     // ---- Feasibility guards (mirror the line contract; PRD §8.1). ----
-    if members.len() != kinds.len() || members.len() != q.len() {
-        return Err(FormFindError::DimensionMismatch);
-    }
+    validate_members(n, members, kinds, q)?;
     if surfaces.len() != surface_stresses.len() {
         return Err(FormFindError::SurfaceCountMismatch);
-    }
-    // Member sign contract: cables carry tension (q > 0), struts compression.
-    for (&kind, &qi) in kinds.iter().zip(q.iter()) {
-        let sign_ok = match kind {
-            MemberKind::Cable => qi > 0.0,
-            MemberKind::Strut => qi < 0.0,
-        };
-        if !sign_ok {
-            return Err(FormFindError::SignViolation);
-        }
     }
     // Surface tension contract: isotropic prestress σ must be strictly positive
     // (a slack / compressed membrane is infeasible — the surface analogue of the
@@ -387,6 +353,47 @@ pub fn form_find_anchored_surfaces(
     })
 }
 
+/// The member contract every anchored entry enforces before assembling `D`:
+/// `members`/`kinds`/`q` agree in length, every endpoint indexes a real node
+/// (`< n`; [`scatter_line_members`] writes `d[(j, k)]` unguarded), and every
+/// member satisfies its kind's force-density sign (cables `q > 0`, struts
+/// `q < 0`).
+fn validate_members(
+    n: usize,
+    members: &[(usize, usize)],
+    kinds: &[MemberKind],
+    q: &[f64],
+) -> Result<(), FormFindError> {
+    // `members`, `kinds`, and `q` describe the same member set in the same
+    // (struts-then-cables) order; disagreeing lengths mean the caller mis-built
+    // the problem, so reject before indexing them together below.
+    if members.len() != kinds.len() || members.len() != q.len() {
+        return Err(FormFindError::DimensionMismatch);
+    }
+
+    if members.iter().any(|&(j, k)| j >= n || k >= n) {
+        return Err(FormFindError::DimensionMismatch);
+    }
+
+    // Sign convention (PRD §4), enforced as a HARD per-member constraint: a
+    // violation is *infeasible input*, not something to silently coerce — the FD
+    // system would still factor and return a geometry, but a sign-inconsistent
+    // (physically meaningless) one, so we surface a clean diagnostic instead of
+    // a silent wrong answer. The deferred T1b alternative is the free-standing
+    // eigenvalue/ratio search, which *solves for* a feasible q (and the
+    // self-stress mode) rather than taking q as given here.
+    for (&kind, &qi) in kinds.iter().zip(q.iter()) {
+        let sign_ok = match kind {
+            MemberKind::Cable => qi > 0.0,
+            MemberKind::Strut => qi < 0.0,
+        };
+        if !sign_ok {
+            return Err(FormFindError::SignViolation);
+        }
+    }
+    Ok(())
+}
+
 /// True when every surface triangle corner indexes a real node (`< n`).
 ///
 /// [`assemble_d`], [`assemble_d_aniso`] and `form_find_free`'s
@@ -405,6 +412,8 @@ pub(crate) fn surface_indices_in_range(surfaces: &[(usize, usize, usize)], n: us
 /// Shared by [`assemble_d`] and [`assemble_d_aniso`] so a future change to the
 /// FDM rank-1 update propagates to both surface and anisotropic paths
 /// automatically.
+///
+/// Endpoints index `d` unchecked: callers run [`validate_members`] first.
 fn scatter_line_members(d: &mut Mat<f64>, members: &[(usize, usize)], q: &[f64]) {
     for (&(j, k), &qi) in members.iter().zip(q.iter()) {
         d[(j, j)] += qi;
@@ -634,7 +643,8 @@ pub struct AnisotropicSurfaceStress {
 /// which introduced `FreeFormError` as a separate enum for the same reason.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AnisoFormFindError {
-    /// `members` / `kinds` / `q` disagree in length.
+    /// `members` / `kinds` / `q` disagree in length, or a member endpoint /
+    /// surface triangle corner indexes past `nodes`.
     DimensionMismatch,
     /// A member's force density violates its kind's sign contract.
     SignViolation,
@@ -670,16 +680,17 @@ pub struct AnisoFormFindSolve {
     pub converged: bool,
 }
 
-/// Map a [`FormFindError`] from the shared `solve_reduced` core to an
-/// [`AnisoFormFindError`] at the aniso boundary. Only `SingularReducedStiffness`
-/// and `EmptyFreeSet` can arise from that function; the rest are pre-checked.
+/// Map a [`FormFindError`] from the helpers the aniso entry shares with the
+/// isotropic one (`validate_members`, `solve_reduced`) to an
+/// [`AnisoFormFindError`] at the aniso boundary. The surface-only variants cannot
+/// arise from them — the aniso entry checks those itself.
 fn map_ff_error(e: FormFindError) -> AnisoFormFindError {
     match e {
         FormFindError::SingularReducedStiffness => AnisoFormFindError::SingularReducedStiffness,
         FormFindError::EmptyFreeSet => AnisoFormFindError::EmptyFreeSet,
-        // Remaining variants are pre-checked above solve_reduced; map defensively.
         FormFindError::DimensionMismatch => AnisoFormFindError::DimensionMismatch,
         FormFindError::SignViolation => AnisoFormFindError::SignViolation,
+        // Surface-only variants: checked in the aniso entry itself; map defensively.
         FormFindError::DegenerateTriangle => AnisoFormFindError::DegenerateTriangle,
         FormFindError::NonTensionSurfaceStress => AnisoFormFindError::NonTensionSurfaceStress,
         FormFindError::SurfaceCountMismatch => AnisoFormFindError::SurfaceCountMismatch,
@@ -725,7 +736,7 @@ fn assemble_d_aniso(
 ///
 /// # Errors
 /// - [`AnisoFormFindError::DimensionMismatch`] — `members`/`kinds`/`q` disagree,
-///   or a `surfaces` triangle corner indexes past `nodes`.
+///   or a member endpoint or `surfaces` triangle corner indexes past `nodes`.
 /// - [`AnisoFormFindError::SurfaceCountMismatch`] — `surfaces`/`surface_prestress` disagree.
 /// - [`AnisoFormFindError::SignViolation`] — a member violates its `q`-sign contract.
 /// - [`AnisoFormFindError::NonTensionSurfaceStress`] — `σ_w ≤ 0` or `σ_f ≤ 0`.
@@ -744,20 +755,9 @@ pub fn form_find_anchored_surfaces_aniso(
 ) -> Result<AnisoFormFindSolve, AnisoFormFindError> {
     let n = nodes.len();
 
-    if members.len() != kinds.len() || members.len() != q.len() {
-        return Err(AnisoFormFindError::DimensionMismatch);
-    }
+    validate_members(n, members, kinds, q).map_err(map_ff_error)?;
     if surfaces.len() != surface_prestress.len() {
         return Err(AnisoFormFindError::SurfaceCountMismatch);
-    }
-    for (&kind, &qi) in kinds.iter().zip(q.iter()) {
-        let sign_ok = match kind {
-            MemberKind::Cable => qi > 0.0,
-            MemberKind::Strut => qi < 0.0,
-        };
-        if !sign_ok {
-            return Err(AnisoFormFindError::SignViolation);
-        }
     }
     for spec in surface_prestress {
         if spec.sigma_warp <= 0.0 || spec.sigma_weft <= 0.0 {
