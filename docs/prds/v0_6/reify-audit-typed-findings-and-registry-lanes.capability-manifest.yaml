@@ -2,7 +2,7 @@ prd: docs/prds/v0_6/reify-audit-typed-findings-and-registry-lanes.md
 schema_version: 1
 tasks:
 - label: α
-  task_id: null
+  task_id: 8806
   title: 'S24 α: partition reify-audit lib.rs into model.rs, git_ops.rs, jcodemunch_ops.rs behind a pub-use facade'
   note: h14 measurement (no finding key); record h14_measurements row for crates/reify-audit/src/lib.rs. Depends on #6935 and #7098 (rulings R3, R5).
   capabilities:
@@ -25,7 +25,7 @@ tasks:
       - crates/reify-audit/src/model.rs
       expect: present
 - label: β
-  task_id: null
+  task_id: 8807
   title: 'S24 β: AuditContext::new + builder; delete --since, TimeWindow, window, producer_branch and P2''s backlog guard'
   note: closes fk-0b1d530f0264 (high).
   capabilities:
@@ -72,7 +72,7 @@ tasks:
       kind: manual
       reason: behavioural (debug-build sweep); covered by β's CLI test, not greppable
 - label: γ1
-  task_id: null
+  task_id: 8808
   title: 'S24 γ1: typed Finding — Kind, Subject, detail, located constructors; byte-identical rendered summary; field-derived fingerprint and sort'
   note: in-crate half of fk-33f9891ad16c (key stamped on γ2); high.
   capabilities:
@@ -119,7 +119,7 @@ tasks:
       kind: manual
       reason: behavioural parity diff recorded in the commit; covered by γ1's parity tests
 - label: γ2
-  task_id: null
+  task_id: 8809
   title: 'S24 γ2: Finding wire contract — readers move to kind/subject; legacy task_id mirror deleted'
   note: closes fk-33f9891ad16c (high).
   capabilities:
@@ -158,7 +158,7 @@ tasks:
       - tests/infra/stub_escalation_mcp.py
       expect: present
 - label: δ
-  task_id: null
+  task_id: 8810
   title: 'S24 δ: fallible GitOps, TrackedFiles, dispatcher-owned enumeration'
   note: closes fk-c45888cf175b.
   capabilities:
@@ -199,7 +199,7 @@ tasks:
       - crates/reify-audit/src/bin/reify-audit.rs
       expect: present
 - label: ε
-  task_id: null
+  task_id: 8811
   title: 'S24 ε: one tasks.db handle (task_rows::TasksDb), derived DB degradation, cite_grammar module'
   note: closes fk-bdc845122da0; subsumes #8516.
   capabilities:
@@ -240,7 +240,7 @@ tasks:
       - crates/reify-audit/src/cite_grammar.rs
       expect: present
 - label: ζ
-  task_id: null
+  task_id: 8812
   title: 'S24 ζ: source_shape — one recogniser vocabulary with named policies; jcodemunch suppression and the orphan script adopt it'
   note: closes fk-ec468bfa673a; subsumes #7066.
   capabilities:
@@ -269,7 +269,7 @@ tasks:
       kind: manual
       reason: measured delta lives in the commit message; not greppable
 - label: η
-  task_id: null
+  task_id: 8813
   title: 'S24 η: P5 sweep corroboration as ordered rescue steps; one coverage predicate'
   note: closes fk-20ce222ff90c.
   capabilities:
@@ -292,7 +292,7 @@ tasks:
       - crates/reify-audit/src
       expect: absent
 - label: θ
-  task_id: null
+  task_id: 8814
   title: 'S24 θ: injective exit-code channel — High count saturates at 124'
   note: closes fk-31eb23b6b93f.
   capabilities:
@@ -315,7 +315,7 @@ tasks:
       - .claude/skills/audit/references/cli-invocation.md
       expect: absent
 - label: ι
-  task_id: null
+  task_id: 8815
   title: 'S24 ι: pre-done posture carried in AuditContext; both knobs'' effective values printed once per run'
   note: closes fk-ba93c26e42d1 (low, weakened).
   capabilities:
@@ -338,7 +338,7 @@ tasks:
       - crates/reify-audit/src/bin/reify-audit.rs
       expect: present
 - label: κ
-  task_id: null
+  task_id: 8816
   title: 'S24 κ: partition ptodo.rs — ptodo/g_allow.rs, ptodo/liveness.rs, core + entry'
   note: h14 measurement (no finding key); subsumes #8200.
   capabilities:
@@ -352,7 +352,7 @@ tasks:
       - crates/reify-audit/src/ptodo/g_allow.rs
       expect: present
 - label: λ
-  task_id: null
+  task_id: 8817
   title: 'S24 λ: partition pdoccover.rs — pdoccover/registry.rs, pdoccover/oracle.rs, entry'
   note: h14 measurement (no finding key).
   capabilities:
@@ -366,7 +366,7 @@ tasks:
       - crates/reify-audit/src/pdoccover/registry.rs
       expect: present
 - label: μ
-  task_id: null
+  task_id: 8818
   title: 'S24 μ: partition p5_phantom_done.rs along its 6-way partition'
   note: h14 measurement (no finding key).
   capabilities:
@@ -380,7 +380,7 @@ tasks:
       - crates/reify-audit/src/p5_phantom_done/corroboration.rs
       expect: present
 - label: ν
-  task_id: null
+  task_id: 8819
   title: 'S24 ν: integration tests through check()/check_with_stats over a shared RepoFixture; test-only pub items close'
   note: closes fk-422bbd7986a6.
   capabilities:
@@ -403,7 +403,7 @@ tasks:
       - crates/reify-audit/src
       expect: present
 - label: π
-  task_id: null
+  task_id: 8820
   title: 'S24 π: partition tests/cli.rs and tests/p5.rs along their measured partitions'
   note: h14 measurements (no finding key) for crates/reify-audit/tests/cli.rs and tests/p5.rs.
   capabilities:
@@ -476,7 +476,7 @@ tasks:
       - scripts/verify-pipeline-infra-tests.txt
       expect: present
 - label: ο
-  task_id: null
+  task_id: 8822
   title: 'S24 ο: PLINECITE merge-time ratchet over tracked code prose; INV-DOC-1 promoted'
   note: INV candidate 3 (no finding key of this stream); subsumes #8509 and #7302; depends on #6935 (ruling R1); not ordered after the held ξ (R4).
   capabilities:
@@ -508,7 +508,7 @@ tasks:
       - docs/invariants.md
       expect: present
 - label: ω
-  task_id: null
+  task_id: 8823
   title: 'S24 ω: PRD close — id backfill, terminal stamp, AS-AUTHORED freeze'
   note: decompose-close leaf (no key).
   capabilities:
