@@ -213,8 +213,9 @@ use std::collections::HashMap;
 
 #[cfg(has_occt)]
 use op_args::{
-    ANGLE_ABS_MIN, AXIS_MAG_SQ_MIN, extract_f64, extract_length_f64, validate_all_positive_finite,
-    validate_pipe_start_tangent, validate_positive_finite, validate_uv_finite,
+    AXIS_MAG_SQ_MIN, extract_f64, extract_length_f64, validate_all_positive_finite,
+    validate_extrude_distance, validate_loft_profile_count, validate_pipe_start_tangent,
+    validate_positive_finite, validate_revolve_params, validate_uv_finite,
 };
 
 #[cfg(has_occt)]
@@ -2073,19 +2074,7 @@ impl OcctKernel {
         profile_id: GeometryHandleId,
         distance: f64,
     ) -> Result<(GeometryHandle, SweepOpHistoryRecords), GeometryError> {
-        // DEFENSE-IN-DEPTH: mirror the GeometryOp::Extrude validation in
-        // `execute` so direct callers (integration tests, future inherent
-        // dispatchers) get the same descriptive errors.
-        if !distance.is_finite() {
-            return Err(GeometryError::OperationFailed(
-                "extrude distance must be finite".into(),
-            ));
-        }
-        if distance == 0.0 {
-            return Err(GeometryError::OperationFailed(
-                "extrude distance must not be zero".into(),
-            ));
-        }
+        validate_extrude_distance(distance, "extrude")?;
         let (result_shape, records) = {
             let profile_shape = self.get_shape(profile_id)?;
             let mut history = ffi::ffi::make_prism_with_history(profile_shape, 0.0, 0.0, distance)
@@ -2168,42 +2157,7 @@ impl OcctKernel {
         axis_dir: [f64; 3],
         angle_rad: f64,
     ) -> Result<(GeometryHandle, SweepOpHistoryRecords), GeometryError> {
-        // DEFENSE-IN-DEPTH: mirror the GeometryOp::Revolve validation in
-        // `execute` so direct callers (integration tests, future inherent
-        // dispatchers) get the same descriptive errors with stricter
-        // thresholds than the C++ FFI safety net.
-        if !axis_origin[0].is_finite() || !axis_origin[1].is_finite() || !axis_origin[2].is_finite()
-        {
-            return Err(GeometryError::OperationFailed(format!(
-                "revolve axis_origin must be finite: [{}, {}, {}]",
-                axis_origin[0], axis_origin[1], axis_origin[2]
-            )));
-        }
-        if !axis_dir[0].is_finite() || !axis_dir[1].is_finite() || !axis_dir[2].is_finite() {
-            return Err(GeometryError::OperationFailed(format!(
-                "revolve axis_dir must be finite: [{}, {}, {}]",
-                axis_dir[0], axis_dir[1], axis_dir[2]
-            )));
-        }
-        if !angle_rad.is_finite() {
-            return Err(GeometryError::OperationFailed(format!(
-                "revolve angle must be finite: {}",
-                angle_rad
-            )));
-        }
-        if angle_rad.abs() < ANGLE_ABS_MIN {
-            return Err(GeometryError::OperationFailed(format!(
-                "revolve angle must not be zero, got {}",
-                angle_rad
-            )));
-        }
-        let mag_sq = axis_dir[0].powi(2) + axis_dir[1].powi(2) + axis_dir[2].powi(2);
-        if mag_sq < AXIS_MAG_SQ_MIN {
-            return Err(GeometryError::OperationFailed(format!(
-                "revolve axis_dir must not be zero-length: [{}, {}, {}]",
-                axis_dir[0], axis_dir[1], axis_dir[2]
-            )));
-        }
+        validate_revolve_params(axis_origin, axis_dir, angle_rad)?;
         let (result_shape, records) = {
             let profile_shape = self.get_shape(profile_id)?;
             let mut history = ffi::ffi::make_revolve_with_history(
@@ -2383,14 +2337,7 @@ impl OcctKernel {
         &mut self,
         profile_ids: &[GeometryHandleId],
     ) -> Result<(GeometryHandle, LoftOpHistoryRecords), GeometryError> {
-        // DEFENSE-IN-DEPTH: mirror the GeometryOp::Loft validation in
-        // `execute` so direct callers (integration tests, future inherent
-        // dispatchers) get the same descriptive error before the FFI call.
-        if profile_ids.len() < 2 {
-            return Err(GeometryError::OperationFailed(
-                "Loft requires at least 2 profiles".into(),
-            ));
-        }
+        validate_loft_profile_count(profile_ids.len())?;
         let (result_shape, records) = {
             // Build an OcctShapeVec from the profile handles. Reuses the
             // same `new_shape_vec` / `shape_vec_push` builder pattern as
@@ -2824,11 +2771,7 @@ impl OcctKernel {
                 .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
             }
             GeometryOp::Loft { profiles } => {
-                if profiles.len() < 2 {
-                    return Err(GeometryError::OperationFailed(
-                        "Loft requires at least 2 profiles".into(),
-                    ));
-                }
+                validate_loft_profile_count(profiles.len())?;
                 let mut vec = ffi::ffi::new_shape_vec();
                 for &pid in profiles {
                     let shape = self.get_shape(pid)?;
@@ -3076,16 +3019,7 @@ impl OcctKernel {
             }
             GeometryOp::Extrude { profile, distance } => {
                 let dist = extract_length_f64(distance, op, "distance")?;
-                if !dist.is_finite() {
-                    return Err(GeometryError::OperationFailed(
-                        "extrude distance must be finite".into(),
-                    ));
-                }
-                if dist == 0.0 {
-                    return Err(GeometryError::OperationFailed(
-                        "extrude distance must not be zero".into(),
-                    ));
-                }
+                validate_extrude_distance(dist, "extrude")?;
                 let profile_shape = self.get_shape(*profile)?;
                 ffi::ffi::make_prism(profile_shape, 0.0, 0.0, dist)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
@@ -3096,47 +3030,7 @@ impl OcctKernel {
                 axis_dir,
                 angle_rad,
             } => {
-                // Revolve validation (Rust layer — DEFENSE-IN-DEPTH)
-                // This Rust layer validates inputs with stricter thresholds (AXIS_MAG_SQ_MIN=1e-12,
-                // ANGLE_ABS_MIN=1e-30) and produces descriptive error messages including parameter
-                // names and values. The C++ FFI layer (occt_wrapper.cpp) has its own validation
-                // with relaxed thresholds (1e-30 for mag_sq) as a safety net for any future code
-                // paths that may call FFI directly, bypassing this Rust layer.
-                if !axis_origin[0].is_finite()
-                    || !axis_origin[1].is_finite()
-                    || !axis_origin[2].is_finite()
-                {
-                    return Err(GeometryError::OperationFailed(format!(
-                        "revolve axis_origin must be finite: [{}, {}, {}]",
-                        axis_origin[0], axis_origin[1], axis_origin[2]
-                    )));
-                }
-                if !axis_dir[0].is_finite() || !axis_dir[1].is_finite() || !axis_dir[2].is_finite()
-                {
-                    return Err(GeometryError::OperationFailed(format!(
-                        "revolve axis_dir must be finite: [{}, {}, {}]",
-                        axis_dir[0], axis_dir[1], axis_dir[2]
-                    )));
-                }
-                if !angle_rad.is_finite() {
-                    return Err(GeometryError::OperationFailed(format!(
-                        "revolve angle must be finite: {}",
-                        angle_rad
-                    )));
-                }
-                if angle_rad.abs() < ANGLE_ABS_MIN {
-                    return Err(GeometryError::OperationFailed(format!(
-                        "revolve angle must not be zero, got {}",
-                        angle_rad
-                    )));
-                }
-                let mag_sq = axis_dir[0].powi(2) + axis_dir[1].powi(2) + axis_dir[2].powi(2);
-                if mag_sq < AXIS_MAG_SQ_MIN {
-                    return Err(GeometryError::OperationFailed(format!(
-                        "revolve axis_dir must not be zero-length: [{}, {}, {}]",
-                        axis_dir[0], axis_dir[1], axis_dir[2]
-                    )));
-                }
+                validate_revolve_params(*axis_origin, *axis_dir, *angle_rad)?;
                 let profile_shape = self.get_shape(*profile)?;
                 ffi::ffi::make_revolve(
                     profile_shape,
@@ -3186,16 +3080,7 @@ impl OcctKernel {
             }
             GeometryOp::ExtrudeSymmetric { profile, distance } => {
                 let dist = extract_length_f64(distance, op, "distance")?;
-                if !dist.is_finite() {
-                    return Err(GeometryError::OperationFailed(
-                        "extrude_symmetric distance must be finite".into(),
-                    ));
-                }
-                if dist == 0.0 {
-                    return Err(GeometryError::OperationFailed(
-                        "extrude_symmetric distance must not be zero".into(),
-                    ));
-                }
+                validate_extrude_distance(dist, "extrude_symmetric")?;
                 // Compose: prism the profile by the full distance, then
                 // translate by -distance/2 along the extrusion axis so the
                 // resulting solid's centroid (in z) aligns with the

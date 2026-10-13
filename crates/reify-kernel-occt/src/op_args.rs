@@ -124,6 +124,82 @@ fn is_positive_finite(v: f64) -> bool {
     v.is_finite() && v > 0.0
 }
 
+/// Validate an extrude distance: finite, then non-zero. `op_label` names the
+/// op in the message (`"extrude"`, `"extrude_symmetric"`).
+pub(crate) fn validate_extrude_distance(
+    distance: f64,
+    op_label: &str,
+) -> Result<(), GeometryError> {
+    if !distance.is_finite() {
+        return Err(GeometryError::OperationFailed(format!(
+            "{op_label} distance must be finite"
+        )));
+    }
+    if distance == 0.0 {
+        return Err(GeometryError::OperationFailed(format!(
+            "{op_label} distance must not be zero"
+        )));
+    }
+    Ok(())
+}
+
+/// Validate revolve parameters, in order: origin finite, axis finite, angle
+/// finite, angle non-zero ([`ANGLE_ABS_MIN`]), axis non-zero-length
+/// ([`AXIS_MAG_SQ_MIN`]).
+///
+/// Defense in depth: this Rust layer validates with stricter thresholds than
+/// the C++ FFI layer (`occt_wrapper.cpp`, 1e-30 for mag²) and names the
+/// parameter and its value in the message. The C++ checks stay as a safety net
+/// for any path that calls the FFI directly.
+pub(crate) fn validate_revolve_params(
+    axis_origin: [f64; 3],
+    axis_dir: [f64; 3],
+    angle_rad: f64,
+) -> Result<(), GeometryError> {
+    if !axis_origin.iter().all(|c| c.is_finite()) {
+        return Err(GeometryError::OperationFailed(format!(
+            "revolve axis_origin must be finite: [{}, {}, {}]",
+            axis_origin[0], axis_origin[1], axis_origin[2]
+        )));
+    }
+    if !axis_dir.iter().all(|c| c.is_finite()) {
+        return Err(GeometryError::OperationFailed(format!(
+            "revolve axis_dir must be finite: [{}, {}, {}]",
+            axis_dir[0], axis_dir[1], axis_dir[2]
+        )));
+    }
+    if !angle_rad.is_finite() {
+        return Err(GeometryError::OperationFailed(format!(
+            "revolve angle must be finite: {}",
+            angle_rad
+        )));
+    }
+    if angle_rad.abs() < ANGLE_ABS_MIN {
+        return Err(GeometryError::OperationFailed(format!(
+            "revolve angle must not be zero, got {}",
+            angle_rad
+        )));
+    }
+    let mag_sq = axis_dir[0].powi(2) + axis_dir[1].powi(2) + axis_dir[2].powi(2);
+    if mag_sq < AXIS_MAG_SQ_MIN {
+        return Err(GeometryError::OperationFailed(format!(
+            "revolve axis_dir must not be zero-length: [{}, {}, {}]",
+            axis_dir[0], axis_dir[1], axis_dir[2]
+        )));
+    }
+    Ok(())
+}
+
+/// Validate that a loft has at least two profile sections.
+pub(crate) fn validate_loft_profile_count(count: usize) -> Result<(), GeometryError> {
+    if count < 2 {
+        return Err(GeometryError::OperationFailed(
+            "Loft requires at least 2 profiles".into(),
+        ));
+    }
+    Ok(())
+}
+
 /// Validate that `u` and `v` are both finite (not NaN and not ±Inf).
 ///
 /// This is the shared NaN/Inf rejection idiom for surface differential FFI

@@ -556,6 +556,11 @@ fn crate_sources() -> Vec<(String, String)> {
         .collect()
 }
 
+/// The rule every row applies: live never exceeds the committed baseline.
+fn within_baseline(live: usize, baseline: usize) -> bool {
+    live <= baseline
+}
+
 // ── row (i): open-coded finite-positive checks ──────────────────────────────
 
 const ROW_I_BASELINE: usize = 0;
@@ -611,7 +616,7 @@ fn row_i_open_coded_finite_positive_checks_within_baseline() {
         row.exempt.extend(file_row.exempt);
     }
     assert!(
-        row.live.len() <= ROW_I_BASELINE,
+        within_baseline(row.live.len(), ROW_I_BASELINE),
         "row (i): {} open-coded finite-positive check(s) > baseline {ROW_I_BASELINE}. Route \
          through op_args::validate_positive_finite / validate_all_positive_finite; a new \
          instance needs a visible baseline edit:\n{}",
@@ -690,7 +695,7 @@ fn row_ii_handle_as_f64_within_baseline() {
         .flat_map(|(label, src)| row_ii_scan(label, src))
         .collect();
     assert!(
-        live.len() <= ROW_II_BASELINE,
+        within_baseline(live.len(), ROW_II_BASELINE),
         "row (ii): {} `.as_f64()` decode(s) in {ROW_II_FILE} production code > baseline \
          {ROW_II_BASELINE}. Decode in OcctKernel via op_args::extract_length_f64; a new \
          instance needs a visible baseline edit:\n{}",
@@ -740,7 +745,7 @@ fn row_iii_each_op_family_message_literal_has_one_home() {
             .iter()
             .flat_map(|(label, src)| row_iii_scan(label, src, needle))
             .collect();
-        if live.len() > baseline {
+        if !within_baseline(live.len(), baseline) {
             failures.push(format!(
                 "duplicate validation literal: {needle:?} live {} > baseline {baseline}; route \
                  both entry points through the op_args validator:\n{}",
