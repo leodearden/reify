@@ -776,11 +776,9 @@ impl<'a> PendingWarmSeedsGuard<'a> {
         self.map.insert(nid, (state, last_accessed, cost_per_byte));
     }
 
-    /// Insert a checked-out entry into the staging map, defaulting `cost_per_byte` to `0.0`.
-    ///
-    /// Back-compat wrapper around [`insert_with_cost`](Self::insert_with_cost).  Existing
-    /// call sites that obtained the stamp from `checkout_with_lru_stamp` (which discards
-    /// cost) continue to compile unchanged.
+    /// Test convenience: stage an entry with `cost_per_byte` `0.0` via
+    /// [`insert_with_cost`](Self::insert_with_cost).  Callers carrying a real cost
+    /// use `insert_with_cost` directly.
     #[cfg(test)]
     fn insert(
         &mut self,
@@ -799,16 +797,16 @@ impl<'a> PendingWarmSeedsGuard<'a> {
 
     /// Drain the staging map: route each entry to `cache.donate_warm_state`
     /// when the cache holds a matching entry, else re-donate to `self.pool`
-    /// **preserving the original `last_accessed` stamp**.
+    /// **preserving the original `last_accessed` stamp and `cost_per_byte`**.
     ///
     /// - **cache hit** → `cache.donate_warm_state(&nid, state)` (seeds the
     ///   cache's warm-state slot for the upcoming evaluation round).  The
     ///   `last_accessed` stamp is discarded on this path because the entry
     ///   leaves the pool; its LRU position no longer matters.
-    /// - **cache miss** → `pool.donate_preserving_lru(nid, state, stamp)`
+    /// - **cache miss** → `pool.donate_preserving_lru_with_cost(nid, state, stamp, cost)`
     ///   (re-donates the entry so it remains recoverable on a subsequent
     ///   topology event, preserving the original LRU ordering instead of
-    ///   refreshing the stamp to `Instant::now()`).
+    ///   refreshing the stamp to `Instant::now()`, and the original cost).
     ///
     /// After this method returns, `self.map` is empty, so the natural `Drop`
     /// is a no-op (no double-donation).  On any early-return / panic between
@@ -831,15 +829,15 @@ impl<'a> PendingWarmSeedsGuard<'a> {
 
 impl Drop for PendingWarmSeedsGuard<'_> {
     /// Re-donate all remaining staged entries back to the pool, preserving
-    /// each entry's original `last_accessed` stamp via
-    /// [`WarmStatePool::donate_preserving_lru`].
+    /// each entry's original `last_accessed` stamp and `cost_per_byte` via
+    /// [`WarmStatePool::donate_preserving_lru_with_cost`].
     ///
     /// This is the panic safety net: if `drain_into_cache_or_repool` was already
     /// called (success path), `self.map` is empty and this is a no-op.  Otherwise
     /// every surviving entry is re-donated so the pool can recover it on the next
     /// `edit_source` call.
     ///
-    /// Using `donate_preserving_lru` (rather than `donate`) ensures that an entry
+    /// Using `donate_preserving_lru_with_cost` (rather than `donate`) ensures that an entry
     /// which panics out between steps (4c) and (14b) does not unfairly reset its
     /// LRU clock — the entry returns to the pool with the same age it had when it
     /// was originally checked out.
@@ -857,17 +855,17 @@ impl Drop for PendingWarmSeedsGuard<'_> {
     /// # Double-panic note
     ///
     /// When the safety net fires, this `Drop` impl calls `tracing::warn!`
-    /// **before** calling `pool.donate_preserving_lru`.  Both are on the
+    /// **before** calling `pool.donate_preserving_lru_with_cost`.  Both are on the
     /// double-panic hot path: if `Drop` fires during stack-unwinding from
-    /// another panic, either the `warn!` dispatch or `donate_preserving_lru`
+    /// another panic, either the `warn!` dispatch or `donate_preserving_lru_with_cost`
     /// could theoretically panic, triggering an unconditional
     /// `std::process::abort`.
     ///
     /// `tracing::warn!` is unlikely to panic in well-behaved subscribers, but
     /// does dispatch (and may allocate) when a subscriber is attached — a
     /// buggy subscriber could in principle panic on the unwind path.
-    /// `donate_preserving_lru` only panics in debug builds when the events
-    /// buffer is at its cap (65 536 entries).  Both risks are documented here
+    /// `donate_preserving_lru_with_cost` only panics in debug builds when the events
+    /// buffer is at its cap (65 536 entries by default).  Both risks are documented here
     /// for completeness.
     ///
     /// # Test-context note
@@ -3627,7 +3625,7 @@ impl Engine {
         //      donate cost+state to the pool, then invalidate the cache
         //      entry. The reinsert half of the round-trip lands inside
         //      `run_compute_dispatch` (engine_compute.rs) via its
-        //      cache-miss → `warm_pool.checkout_with_lru_stamp` fallback.
+        //      cache-miss → `warm_pool.checkout` fallback.
         //      Collect ids into a Vec to drop the iter borrow on
         //      `eval_state.snapshot.graph.compute_nodes` before mutating
         //      `self.cache` inside the loop body.
@@ -4582,10 +4580,10 @@ impl Engine {
         //       variants gain edit-time cache entries the donate-back
         //       path simply stops triggering.
         //
-        //       The cache-miss re-donation now calls `donate_preserving_lru`
+        //       The cache-miss re-donation now calls `donate_preserving_lru_with_cost`
         //       (via `PendingWarmSeedsGuard::drain_into_cache_or_repool`),
-        //       preserving the entry's original `last_accessed` stamp from
-        //       step (4c).  This prevents a round-tripping entry from
+        //       preserving the entry's original `last_accessed` stamp and
+        //       `cost_per_byte` from step (4c).  This prevents a round-tripping entry from
         //       appearing "recently accessed" relative to entries that were
         //       never checked out, which would unfairly shield it from LRU
         //       eviction (reviewer suggestion S1, task 2516).
