@@ -34,7 +34,7 @@ use tower_lsp::lsp_types::{
     WorkspaceEdit,
 };
 
-use crate::analysis::{enclosing_decl_at, name_token_span};
+use crate::decl_oracle::{enclosing_decl_at, name_token_span};
 use crate::completion::{BODY_KEYWORDS, EXPR_KEYWORDS, TOP_LEVEL_KEYWORDS};
 use crate::convert::{find_word_at_offset, position_to_offset, span_to_range};
 
@@ -1524,7 +1524,7 @@ fn collect_decl_name_spans(source: &str, parsed: &ParsedModule, name: &str) -> V
 /// [`collect_decl_name_uses_in_members`]. The match is WILDCARD-FREE over all 14
 /// `Declaration` variants, so a new declaration kind is a compile error here
 /// rather than a silently uncollected use site — the same forcing-function
-/// design as `analysis::decl_name_and_span`.
+/// design as `decl_oracle::decl_name_and_span`.
 ///
 /// Both reference collectors share it: the home document walks every
 /// declaration, and an importing document walks the same set once its import
@@ -1957,7 +1957,7 @@ fn collect_type_name_uses_in_expr(
 ///
 /// The match is WILDCARD-FREE over all six `TypeExprKind` variants, so a new
 /// variant is a compile error here rather than a silently uncollected use site
-/// — the same forcing-function design as `analysis::decl_name_and_span`.
+/// — the same forcing-function design as `decl_oracle::decl_name_and_span`.
 ///
 /// SPAN PRECISION is the rename-safety property, because
 /// [`compute_rename_cross_file`] uses the reference set as its exact edit set.
@@ -2401,7 +2401,7 @@ fn classify_decl_name_in(parsed: &ParsedModule, name: &str) -> Option<RefSymbolK
         (decl_name == name).then_some(kind)
     });
     top_level.or_else(|| {
-        crate::analysis::purpose_nested_decl_names(parsed)
+        crate::decl_oracle::purpose_nested_decl_names(parsed)
             .any(|(nested, _)| nested == name)
             .then_some(RefSymbolKind::Structure)
     })
@@ -2643,7 +2643,7 @@ pub fn compute_rename_cross_file(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::analysis::test_fixtures::{NAMED_DECL_SNIPPETS, occurrences, parse_one_clean};
+    use crate::decl_oracle::test_fixtures::{NAMED_DECL_SNIPPETS, occurrences, parse_one_clean};
     use crate::convert::{offset_to_position, span_to_range};
     use reify_core::ModulePath;
 
@@ -5679,7 +5679,7 @@ structure Assembly {
     ///
     /// HISTORY — what this test used to assert, and why. #6388 made same-file
     /// go-to-definition resolve top-level declaration names UNIFORMLY across
-    /// all kinds, via its own scanner (`analysis::decl_name_and_span` +
+    /// all kinds, via its own scanner (`decl_oracle::decl_name_and_span` +
     /// `goto_def::decl_name_token`). It deliberately did NOT widen
     /// `goto_def::decl_name_span_in`, the home oracle feeding
     /// `collect_decl_name_spans`, `resolve_cross_file_home` step 2 and the

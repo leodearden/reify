@@ -3,10 +3,258 @@
 //! declares and where its name token sits. Read by analysis, goto-def,
 //! references and the document outline.
 
+use reify_ast::{Declaration, ParsedModule};
+use reify_core::SourceSpan;
+use tower_lsp::lsp_types::Url;
+
+use crate::convert::is_ident_byte;
+
+/// Fixtures and helpers shared by several modules' `tests`, in their own file
+/// so no production module carries test data. Declared here, next to the
+/// `decl_name_and_span` oracle whose per-kind table is the largest of them.
+#[cfg(test)]
+#[path = "test_fixtures.rs"]
+pub(crate) mod test_fixtures;
+
+/// Extract a module name from a file URI.
+///
+/// e.g., `file:///path/to/test.ri` → `"test"`.
+/// Returns `"unnamed"` if the URI has no path segments or the file
+/// doesn't end with `.ri`.
+pub fn module_name_from_uri(uri: &Url) -> &str {
+    uri.path_segments()
+        .and_then(|mut segs| segs.next_back())
+        .and_then(|name| name.strip_suffix(".ri"))
+        .unwrap_or("unnamed")
+}
+
+/// Return the declaration whose span contains `offset`,
+/// or `None` if the offset is outside all declarations.
+///
+/// This is a free function that operates on `&[Declaration]` directly, so it can
+/// be used by callers that only have a `ParsedModule` (e.g., goto-def) without
+/// needing a full `AnalysisContext`.
+pub fn enclosing_decl_at(declarations: &[Declaration], offset: usize) -> Option<&Declaration> {
+    let offset_u32 = offset as u32;
+    for decl in declarations {
+        let decl_span = match decl {
+            Declaration::Structure(s) => s.span,
+            Declaration::Occurrence(o) => o.span,
+            Declaration::Import(i) => i.span,
+            Declaration::Enum(e) => e.span,
+            Declaration::Function(f) => f.span,
+            Declaration::Trait(t) => t.span,
+            Declaration::Field(f) => f.span,
+            Declaration::Purpose(p) => p.span,
+            Declaration::Constraint(c) => c.span,
+            Declaration::Unit(u) => u.span,
+            Declaration::TypeAlias(t) => t.span,
+            Declaration::Default(d) => d.span,
+            Declaration::Module(m) => m.span,
+            // Grammar producer only (task α 4395). Joint bodies are not
+            // navigable by the LSP yet; included here so the exhaustive match
+            // stays complete. Semantics deferred to task β.
+            Declaration::Joint(j) => j.span,
+        };
+        if offset_u32 >= decl_span.start && offset_u32 < decl_span.end {
+            return Some(decl);
+        }
+    }
+    None
+}
+
+/// The name a top-level [`Declaration`] declares, paired with the
+/// declaration's own statement span — or `None` for the kinds that declare
+/// no name of their own.
+///
+/// The match is deliberately **exhaustive with no `_` wildcard arm**, and that
+/// is the load-bearing part of the design: a new `Declaration` variant becomes
+/// a COMPILE ERROR here, forcing an explicit named-vs-unnamed decision instead
+/// of a silent omission. This scan was the first in the crate to be written
+/// that way, after every wildcard-terminated one had silently dropped kinds as
+/// the parser grew them; #6972 finished the job, so the two rename/references
+/// oracles below are exhaustive too and a new variant is a compile error at all
+/// three.
+///
+/// The returned span is the whole declaration statement, NOT the name token —
+/// narrow it with [`name_token_span`] when a jump target is wanted.
+///
+/// CONSUMERS — same-file go-to-definition (`goto_def::resolve_decl_name`, task
+/// 6388) and the document outline ([`compute_document_symbols_from_parsed`],
+/// migrated onto this pair by #6972, which is what let that function drop its
+/// own wildcard). Both are READ-ONLY surfaces, where admitting a kind too
+/// generously costs precision, not correctness.
+///
+/// The deliberate NON-consumers are the two rename/references oracles,
+/// `goto_def::decl_name_span_in` and
+/// `references::classify_decl_name_in`. They answer a stricter question, and
+/// must keep answering it separately: they feed rename, whose edit set is the
+/// reference set, so admitting a kind whose USE SITES are not collected
+/// produces a rename that moves the declaration and leaves every use stale. A
+/// kind belongs there only once every use-site form for it is collected. Since
+/// #6539 ten of the eleven named kinds qualify; `Unit` does not, and cannot —
+/// its one use form is a literal suffix that carries no span. The argument and
+/// the measurement behind it live on the guard test
+/// `references::tests::cross_file_declaration_kind_admission_tracks_use_site_coverage`.
+pub(crate) fn decl_name_and_span(decl: &Declaration) -> Option<(&str, SourceSpan)> {
+    let named = match decl {
+        Declaration::Structure(s) => (s.name.as_str(), s.span),
+        Declaration::Occurrence(o) => (o.name.as_str(), o.span),
+        Declaration::Enum(e) => (e.name.as_str(), e.span),
+        Declaration::Function(f) => (f.name.as_str(), f.span),
+        Declaration::Trait(t) => (t.name.as_str(), t.span),
+        Declaration::Field(f) => (f.name.as_str(), f.span),
+        Declaration::Purpose(p) => (p.name.as_str(), p.span),
+        Declaration::Constraint(c) => (c.name.as_str(), c.span),
+        Declaration::Unit(u) => (u.name.as_str(), u.span),
+        Declaration::TypeAlias(t) => (t.name.as_str(), t.span),
+        Declaration::Joint(j) => (j.name.as_str(), j.span),
+        // Binds a path/entity, not a new name — goto-def's cross-file Phase 0
+        // owns the cursor-in-import case.
+        Declaration::Import(_) => return None,
+        // A dotted module path, not a declared name.
+        Declaration::Module(_) => return None,
+        // Binds an EXISTING type to a value; introduces no new name.
+        Declaration::Default(_) => return None,
+    };
+    Some(named)
+}
+
+/// The `structure def`s nested inside `decl`'s body, or an empty slice for a
+/// declaration kind that has no nested declaration region.
+///
+/// WILDCARD-FREE over all 14 `Declaration` variants, for the same reason
+/// [`decl_name_and_span`] is: "does this kind carry child DECLARATIONS?" is a
+/// per-kind question, and answering it with a `_` arm is how a kind that later
+/// grows one gets silently skipped. Today exactly one kind does — a `purpose`,
+/// whose `structure def` members are kept out of `PurposeDef.members` and
+/// collected into `PurposeDef.structures` (task 4639).
+fn nested_structures(decl: &Declaration) -> &[reify_ast::StructureDef] {
+    match decl {
+        Declaration::Purpose(p) => &p.structures,
+        Declaration::Structure(_)
+        | Declaration::Occurrence(_)
+        | Declaration::Enum(_)
+        | Declaration::Function(_)
+        | Declaration::Trait(_)
+        | Declaration::Field(_)
+        | Declaration::Constraint(_)
+        | Declaration::Unit(_)
+        | Declaration::TypeAlias(_)
+        | Declaration::Joint(_)
+        | Declaration::Import(_)
+        | Declaration::Module(_)
+        | Declaration::Default(_) => &[],
+    }
+}
+
+/// Every name declared by a `structure def` nested inside a `purpose` body,
+/// paired with that structure's own statement span — the companion to
+/// [`decl_name_and_span`] for the names that are NOT `Declaration`s.
+///
+/// WHY IT IS SEPARATE rather than folded into [`decl_name_and_span`]: that
+/// function's contract is precisely "the name a top-level `Declaration`
+/// declares", and its compile-error forcing function is keyed to the 14
+/// `Declaration` variants. A purpose-nested structure is not one of them, so
+/// folding it in would blur a well-defined purpose and buy nothing the
+/// wildcard-free [`nested_structures`] does not already give.
+///
+/// WHY NAVIGATION TREATS THESE AS FILE-WIDE: the compiler puts the name in the
+/// MODULE-LEVEL structure namespace. `compile_builder::pre_pass`'s
+/// `Declaration::Purpose` arm registers each through
+/// `record_or_report_duplicate(…, "structure")` — so it COLLIDES with a
+/// same-named top-level structure — and `compile_builder::entities_phase`
+/// compiles it into the same `ctx.templates` as a top-level structure, scoping
+/// only AMBIENT-DEFAULT resolution to the purpose. Its one documented
+/// limitation, that `structure_refs` omits them so no function-signature
+/// skeleton is built, is a skeleton gap rather than a visibility rule.
+///
+/// SINGLE-LEVEL, by construction and not by choice: the grammar allows
+/// `structure_definition` only one level under `purpose_member`, so there is no
+/// deeper nesting to recurse into. `compile_builder::entities_phase`'s Purpose
+/// arm is the INVARIANT OWNER and carries the same note against `grammar.js`;
+/// if the permitted nesting depth ever changes, that arm and this one move
+/// together.
+///
+/// The crate's single source of purpose-nested names: the same-file goto-def
+/// scan, the cross-file oracle and the rename classifier all read it, so they
+/// cannot drift into three independent descents — which is exactly how the
+/// per-kind rot this task exists to undo began.
+pub(crate) fn purpose_nested_decl_names(
+    parsed: &ParsedModule,
+) -> impl Iterator<Item = (&str, SourceSpan)> {
+    parsed
+        .declarations
+        .iter()
+        .flat_map(|decl| nested_structures(decl).iter().map(|s| (s.name.as_str(), s.span)))
+}
+
+/// Narrow a member-statement span down to the span of just its NAME identifier
+/// token.
+///
+/// Searches forward from `member_span.start`, **bounded by `member_span.end`**,
+/// for the first **whole-word** occurrence of `name` (a match whose neighbouring
+/// bytes are not identifier characters), returning
+/// `SourceSpan::new(name_start, name_start + name.len())`. Falls back to an empty
+/// span at `member_span.start` when `name` is not found *within the member span*
+/// — so a member whose own name token is unexpectedly absent never borrows a
+/// same-named token from a sibling member.
+///
+/// The declaration name always follows its leading keyword
+/// (`param`/`let`/`sub`/`port` for a member, `structure`/`fn`/`enum`/`trait`/
+/// `occurrence def` for a top-level declaration), so the first whole-word match
+/// is the declaration token. Whole-word matching guards against a longer
+/// identifier that merely contains `name` as a substring — a bare substring
+/// search finds the `a` of `param` and, worse, the `s` of `structure` before
+/// the `s` of `structure s`. The UTF-8 char-boundary snap mirrors
+/// `convert::offset_to_position`.
+///
+/// The crate's single name-token locator; no second implementation of this
+/// search exists. Consumers disagree only on how they treat the empty-span
+/// fallback, which is what makes that fallback the risky thing to change:
+/// `goto_def::decl_name_token` maps it to `None` (a zero-width jump target is
+/// useless), `name_selection_range` degrades it to the declaration start, and
+/// `references.rs` propagates it into the rename/references span set.
+pub fn name_token_span(source: &str, member_span: SourceSpan, name: &str) -> SourceSpan {
+    let mut start = (member_span.start as usize).min(source.len());
+    // Snap forward to a valid UTF-8 boundary if we landed mid-character.
+    while start < source.len() && !source.is_char_boundary(start) {
+        start += 1;
+    }
+    // Bound the search to the member's OWN span. Without this, a member whose
+    // name token is unexpectedly absent (e.g. a malformed/recovered AST node
+    // whose span does not actually contain the declared name) would match the
+    // first same-named whole word anywhere later in the source — silently
+    // borrowing a token from a sibling member. Clamping to `member_span.end`
+    // makes such a case fall through to the empty-span fallback instead.
+    let end = (member_span.end as usize).min(source.len()).max(start);
+
+    let bytes = source.as_bytes();
+    let name_len = name.len();
+    for (rel, _) in source[start..].match_indices(name) {
+        let abs = start + rel;
+        // Past the member span: `match_indices` yields ascending offsets, so once
+        // a match would extend beyond `end` every later match does too — stop.
+        if abs + name_len > end {
+            break;
+        }
+        // Whole-word check: neither the byte before nor the byte after the match
+        // may be an identifier character.
+        let prev_ok = abs == 0 || !is_ident_byte(bytes[abs - 1]);
+        let next = abs + name_len;
+        let next_ok = next >= bytes.len() || !is_ident_byte(bytes[next]);
+        if prev_ok && next_ok {
+            return SourceSpan::new(abs as u32, (abs + name_len) as u32);
+        }
+    }
+
+    SourceSpan::empty(member_span.start)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::test_fixtures::{NAMED_DECL_SNIPPETS, parse_one_clean};
+    use super::*;
     use reify_core::ModulePath;
 
     // --- module_name_from_uri tests ---

@@ -8,7 +8,7 @@ use reify_core::{
 use reify_ir::{Freshness, Satisfaction};
 use tower_lsp::lsp_types::{self, Url};
 
-use crate::analysis::module_name_from_uri;
+use crate::decl_oracle::module_name_from_uri;
 use crate::convert;
 
 /// The eval/check-pass containment guard shared by all three LSP production

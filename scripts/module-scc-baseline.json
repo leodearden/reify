@@ -64,12 +64,6 @@
         "log_capture"
       ]
     ],
-    "reify-lsp": [
-      [
-        "analysis",
-        "diagnostics"
-      ]
-    ],
     "reify-shell-extract": [
       [
         "medial",

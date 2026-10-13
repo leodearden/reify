@@ -7,18 +7,18 @@
 //! the verbatim copies it replaced had to be edited in lockstep on every
 //! grammar change.
 //!
-//! Declared from `analysis.rs` rather than the crate root, so the path is
-//! `crate::analysis::test_fixtures`.
+//! Declared from `decl_oracle.rs` rather than the crate root, so the path is
+//! `crate::decl_oracle::test_fixtures`.
 
 use reify_ast::ParsedModule;
 use reify_core::ModulePath;
 
 /// One verified-parseable snippet per NAMED `Declaration` variant, paired with
 /// the name that variant declares — the shared fixture behind
-/// [`crate::analysis::decl_name_and_span`]'s wildcard-free match.
+/// [`crate::decl_oracle::decl_name_and_span`]'s wildcard-free match.
 ///
 /// Consumers, each a per-kind loop over this table except where noted:
-/// - `analysis::tests::decl_name_and_span_returns_name_and_span_for_every_named_kind`
+/// - `decl_oracle::tests::decl_name_and_span_returns_name_and_span_for_every_named_kind`
 /// - `analysis::tests::named_decl_snippets_cover_every_named_kind` — also asserts
 ///   this table is row-for-row aligned with `OUTLINE_SYMBOL_KIND_BY_NAME`, so a
 ///   new row needs a per-kind `SymbolKind` verdict too
