@@ -126,7 +126,7 @@ The three controls above govern the **verify pipeline** (compile + test phases i
 | PSI admission | `cpu-admit.sh admit` (α via β) | per heavy `cargo` subcommand | `REIFY_CPU_ADMIT_AGENT_THRESHOLD` (CPU), `REIFY_CPU_ADMIT_MEM_FULL_THRESHOLD` (memfull, default-ON at 10 as of task 4911) |
 | Test×test count | held-slot semaphore (lib_test_semaphore.sh) | per verify test phase | `REIFY_TEST_SEMAPHORE_*` |
 
-Dark-factory ζ activates the agent-launch path by reading `dark-factory-orchestrator.yaml cpu_governance:` — the `DF_AGENT_CPU_GOVERN: 1` value signals that reify's primitives are wired. Reify ships α/β/γ; ζ does the wiring (cross-repo seam).
+Dark-factory ζ activates the agent-launch path from three keys of `dark-factory-orchestrator.yaml cpu_governance:` — `enabled`, `exec_path` (γ placement for agents, and `--role merge` placement for merge verify) and `shim_dir` (β on the agent PATH). Reify leaves `exec_path`/`shim_dir` unset, so the CPU-time-share and agent PSI-admission axes are **dormant** — OFF by Leo's ruling 2026-10-13; activation is task #5908. Reify ships α/β/γ; ζ does the wiring (cross-repo seam).
 
 ## Loader path — `REIFY_AMBIENT_LD_LIBRARY_PATH` and `add_tool()` (task 5730)
 
