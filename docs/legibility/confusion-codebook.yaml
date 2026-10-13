@@ -2,7 +2,7 @@
 # version 2. MERGER-OWNED FILE: written solely by scripts/legibility/codebook.py
 # (plans/confusion-reduction-prd.md §7.1/§7.3). Append-only, never hand-edited:
 # entries are never deleted (retire via status: retired); sightings/candidates
-# are appended by the deterministic merger's apply_coding_record(). Hand edits
+# are appended by the deterministic merger's apply_coding_records(). Hand edits
 # will be normalized/overwritten on the next merge.
 version: 2
 entries:
@@ -1525,6 +1525,12 @@ entries:
     origin_phase: unknown
     manifested_phase: unknown
     note: Session in warm-lane worktree (_lane-28) exhibits not_found signal; message '(turn 144) does not exist' consistent with iteration state assumed present but absent
+  - date: '2026-10-12'
+    project: reify
+    session: c10910ed-5ada-4dc0-a186-ddae64dd448a
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: Agent read .task/metadata.json and tailed .task/iterations.jsonl in a warm-lane worktree, assuming task-meta iteration state existed. Both files were absent (No such file or directory), surfacing as the not_found and tool_error signals.
 - id: entry-cand-20260720-3
   title: Sleep-chain polling of background task output blocked by guard
   severity: medium
@@ -4278,6 +4284,12 @@ entries:
     origin_phase: unknown
     manifested_phase: ops
     note: Bash watcher-rearm.sh (--timeout 3600, run_in_background) is re-issued identically about 65 times. The digest shows the identical re-issue but does not explicitly show the ceiling being hit.
+  - date: '2026-10-12'
+    project: reify
+    session: d57db0b8-02c7-47be-a586-6058925880c2
+    origin_phase: unknown
+    manifested_phase: ops
+    note: 'The agent re-issued the identical watcher-rearm.sh bounded-wait command (--level 1 --timeout 3600) after it hit its own CEILING (exit 124, WATCHER_REARM_OUTCOME: CEILING) at turns 113 and 121, with no change in arguments.'
 - id: entry-cand-20260726-8
   title: Warm-lane .task/plan.json symlink resolves to empty/unreadable target with no error surfaced
   severity: medium
@@ -7344,6 +7356,12 @@ entries:
     origin_phase: unknown
     manifested_phase: implement
     note: 'Orchestrated-task in warm-lane encounters five path-not-found errors (exit code 2: ''does not exist'', ''no such file or directory'', ''command not found'') across turns 24, 34, 123, 219, 252, consistent with undocumented .task-meta probing attempts in warm-lane context'
+  - date: '2026-10-12'
+    project: reify
+    session: e168d1f5-7d8e-48ad-a09e-7b93ec2fc824
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: Agent probes .task-meta/_lane-35/iterations.jsonl, a path the warm-lane layout does not document, and the wc call fails with 'No such file or directory' (exit 1 from the compound ls/wc command).
 - id: entry-cand-20260725-5
   title: Read tool offset param called with slice-range syntax
   severity: medium
@@ -8114,6 +8132,18 @@ entries:
     origin_phase: unknown
     manifested_phase: unknown
     note: Turn 34 probed the per-lane .task-meta/_lane-49/iterations.jsonl path; wc returned 'No such file or directory' while the sibling ls succeeded, so the expected per-lane iterations file is absent at that path.
+  - date: '2026-10-12'
+    project: reify
+    session: e168d1f5-7d8e-48ad-a09e-7b93ec2fc824
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: Per-lane iterations.jsonl is absent at the expected task-meta path for _lane-35, as seen in the wc error and the ls listing that contains no iterations.jsonl.
+  - date: '2026-10-12'
+    project: reify
+    session: e212688a-6923-4d05-b250-26b948b896ac
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: A tail call on the per-lane iterations.jsonl failed with 'No such file or directory' (path .task/iterations.jsonl, not the .task-meta/<lane>/ form in the entry). Phases are not supported by the digest.
 - id: entry-cand-20260727-8
   title: No cross-session visibility into which concurrent sessions own which blocked tasks
   severity: medium
@@ -9795,6 +9825,12 @@ entries:
     origin_phase: unknown
     manifested_phase: verify
     note: After `cd crates/reify-audit`, a later command used repo-relative paths (`crates/reify-audit/tests/...`, `crates/reify-audit/crates/reify-audit/`), which failed with 'did not match any files' and 'No such file or directory' (turn 689). This is a partial match to the nested-cwd path-guessing pattern. The digest does not show the origin phase, so it is set to unknown.
+  - date: '2026-10-12'
+    project: reify
+    session: 0c3c088c-8705-4cc7-adec-e22ce34973fb
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: Weak match. Session cwd is a nested warm-lane worktree (worktrees/_lane-3), and there are five not_found signals with 'no such file or directory' / 'does not exist' results. The digest does not show the attempted paths, so repeated repo-root-relative guessing is plausible but not confirmed. Phases are unknown because no phase-specific evidence is present.
 - id: entry-cand-20260909-14
   title: Agent invokes hallucinated 'read_file' tool with generic-agent param names instead of the harness's actual Read tool
   severity: medium
@@ -26719,3 +26755,42 @@ candidates:
     origin_phase: unknown
     manifested_phase: unknown
     evidence_quote: 'the test comment says `single` and `flat_map` are "names that will be added by task 2699 but are not in scope for any other recognised family." That''s wrong twice over: #2699 is done, and both names are list helpers, listed in `LIST_HELPER_NAMES` in `list_helpers.rs`.'
+- id: cand-20261012-1
+  title: Index-axis ordering mismatch between Rust reader and OpenVDB output (x-fastest vs X-outermost)
+  cause: 'The reader looks up the OpenVDB box centre using an x-fastest index, but OpenVDB writes X-outermost. The error is latent: it is harmless only because the box is symmetric, so an asymmetric input would silently read wrong values. The self-correction calls this the seventh reader-side instance of the same convention confusion.'
+  area: realization_read_api.rs / OpenVDB index ordering
+  first_seen: '2026-10-12'
+  disposition: pending
+  sightings:
+  - date: '2026-10-12'
+    project: reify
+    session: 2aeba867-80e7-491f-ae4f-699eb0c4e5d7
+    origin_phase: unknown
+    manifested_phase: unknown
+    evidence_quote: A seventh, reader-side instance. `realization_read_api.rs` looks up the OpenVDB box centre with an x-fastest index. That's wrong for OpenVDB's X-outermost output, but harmless today because the box is symmetric.
+- id: cand-20261012-2
+  title: rm of an unvalidated shell-variable path trips the dangerous-removal check and the removal is denied
+  cause: A cleanup command used `rm -f $S/$f.step` with unquoted, unguarded shell variables. If either variable is unset or empty, the path can expand toward the filesystem root, so the safety check denied the command. The agent could not complete its cleanup and had to fall back to a rewrite such as `"${S:?}"/"${f:?}".step`.
+  area: agent-tooling/shell-safety
+  first_seen: '2026-10-12'
+  disposition: pending
+  sightings:
+  - date: '2026-10-12'
+    project: reify
+    session: 0cc1aaa5-17f0-497f-abc2-2e371f6c75bb
+    origin_phase: unknown
+    manifested_phase: unknown
+    evidence_quote: 'Dangerous rm operation detected in `rm -f $S/$f.step`. The target ''$S/$f.step'' is a shell variable expansion: when $S or $f is unset or empty it becomes `/`, `/*` or a top-level path.'
+- id: cand-20261012-3
+  title: Verify failure labeled as lint/unknown_test_failure while the actual cause is a cargo dependency download failure
+  cause: 'The post-merge verify block reports ''lint issues [category: unknown_test_failure]'', but the underlying error is ''failed to download glam v0.14.0 / unable to get packages from source''. The category and the failure cause point at different problems, so a downstream agent can chase lint or test fixes instead of the registry or network fetch.'
+  area: verify
+  first_seen: '2026-10-12'
+  disposition: pending
+  sightings:
+  - date: '2026-10-12'
+    project: reify
+    session: e212688a-6923-4d05-b250-26b948b896ac
+    origin_phase: verify
+    manifested_phase: verify
+    evidence_quote: 'Failures: lint issues [category: unknown_test_failure] ... error: failed to download `glam v0.14.0` ... Caused by: unable to get packages from source'
