@@ -67,9 +67,10 @@
 # cpu-admit lib, load-tolerance lib, flock) is present; otherwise run_all.sh
 # falls back to the legacy fully-serial loop over the same members.
 #
-# Discovery/partition diagnostic guard (task #5123, esc-5080-9): a scoped ERR
-# trap wraps the pool path's discovery -> partition -> workdir-setup block
-# (before Phase 1 spawns anything) so a failure there prints an actionable
+# Partition diagnostic guard (task #5123, esc-5080-9): a scoped ERR trap
+# wraps the pool path's partition -> workdir-setup block (before Phase 1
+# spawns anything; discovery itself runs once, above the branch chain, outside
+# the trap) so a failure there prints an actionable
 # `ERROR: run_all.sh pool: ...` diagnostic -- failing command, exit code,
 # loadavg, PSI avg10 -- instead of dying silently right after the `INFO:
 # run_all.sh pool: N=` line, then re-raises the same exit code. See
@@ -638,8 +639,9 @@ _ra_emit_fail_detail() {
 # ---------------------------------------------------------------------------
 # _ra_discovery_diag <rc> <lineno> <bash_command>  (task #5123, esc-5080-9)
 #
-# ERR-trap handler scoped around the H2 pool discovery/partition/pool-workdir
-# block below. Under fleet-wide host overload that block was observed to die
+# ERR-trap handler scoped around the H2 pool partition/pool-workdir block
+# below (discovery runs once, above the branch chain, outside this scope).
+# Under fleet-wide host overload that block was observed to die
 # IMMEDIATELY after the "INFO: run_all.sh pool: N=" line with ZERO
 # diagnostic -- an unguarded command inside it returned nonzero under
 # `set -euo pipefail` and the script just exited, so the operator had no way
@@ -1660,12 +1662,13 @@ elif [ "$_H2_POOL_ACTIVE" -eq 1 ]; then
     # idiom. Only emitted on the pool path (not the all-serial fallback).
     echo "INFO: run_all.sh pool: N=${_H2_POOL_N} lock=${_H2_POOL_LOCK}" >&2
 
-    # Discovery/partition/pool-workdir-setup diagnostic guard (task #5123,
-    # esc-5080-9): scoped to exactly this block, cleared right after the
-    # workdir/EXIT-trap setup below -- see _ra_discovery_diag for why.
+    # Partition/pool-workdir-setup diagnostic guard (task #5123, esc-5080-9):
+    # scoped to exactly this block, cleared right after the workdir/EXIT-trap
+    # setup below -- see _ra_discovery_diag for why. Discovery ran once, above
+    # the branch chain; this block starts from its H3-filtered result.
     trap '_ra_discovery_diag "$?" "$LINENO" "$BASH_COMMAND"' ERR
 
-    # -- Discovery + partition (pool vs serial; unclassified fail-safes serial) --
+    # -- Partition (pool vs serial; unclassified fail-safes serial) --
     _h2_discovered_list=("${_ra_default_scope_members[@]+"${_ra_default_scope_members[@]}"}")
 
     # Content-addressed SKIP engine (task 5273): drop byte-identical mapped
@@ -1726,7 +1729,7 @@ elif [ "$_H2_POOL_ACTIVE" -eq 1 ]; then
     # docs/notes/orphaned-test-binary-reaper.md.
     trap '[ -n "${_h2_progress_pid:-}" ] && kill "$_h2_progress_pid" 2>/dev/null || true; rm -rf "$_H2_WORKDIR"' EXIT
 
-    # Discovery/partition/pool-workdir-setup guard ends here -- clear before
+    # Partition/pool-workdir-setup guard ends here -- clear before
     # the PSI-gate definition and Phases 1-3 so it never wraps them.
     trap - ERR
 
