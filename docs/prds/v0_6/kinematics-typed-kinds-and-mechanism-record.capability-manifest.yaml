@@ -1,0 +1,603 @@
+# Machine-readable twin of kinematics-typed-kinds-and-mechanism-record.capability-manifest.md
+# Every grep delivered_check below was confirmed RED at main e217c0f30b and again at b1a7be2982 (2026-10-13); every path exists.
+prd: docs/prds/v0_6/kinematics-typed-kinds-and-mechanism-record.md
+schema_version: 1
+tasks:
+- label: α
+  task_id: null
+  title: Kinematics typed-dispatch ratchet member (C10)
+  capabilities:
+  - name: ratchet-member-registered
+    binding: producer-self — tests/infra/test_kinematics_typed_dispatch_ratchet.{py,sh}; manifest row lands in the same diff (esc-4914-162)
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: test_kinematics_typed_dispatch_ratchet
+      paths:
+      - tests/infra/run-all-classification.manifest
+      expect: present
+  - name: baselines-measured
+    binding: 'measured at e217c0f30b by the critic/fold-check: joint-kind-string-dispatch ≈20 (C10 rule), internal-eval-builtin ≈26 (multi-line calls joined), record-key-literal 16, strip-world-sentinel
+      2; α re-measures every row at its own HEAD'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: baseline numbers are α's own measurement; the member enforces them
+- label: β
+  task_id: null
+  title: JointKind in reify-ir (C1)
+  capabilities:
+  - name: joint-kind-in-ir
+    binding: producer-self — reify-ir has no JointKind at main; reify-ir deps are reify-core + reify-ast and every consumer crate depends on reify-ir
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: pub enum JointKind
+      paths:
+      - crates/reify-ir/src
+      expect: present
+  - name: upstream-8545-flat-width
+    binding: producer:#8545 (in progress; branch task/8545 adds loop_closure_value::flat_width) — same file
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: dependency edge is the enforcement
+- label: γ
+  task_id: null
+  title: RelationKind in reify-ir; RelationInstance.kind (C2)
+  capabilities:
+  - name: relation-kind-in-ir
+    binding: producer-self — no RelationKind anywhere at main
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: pub enum RelationKind
+      paths:
+      - crates/reify-ir/src
+      expect: present
+  - name: instance-carries-kind
+    binding: 'grep: RelationInstance { name: String, operands, nominal_delta_dof } in reify-constraints relate_solve.rs; one construction site reify-eval relate_solve::relation_instance'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'kind: RelationKind'
+      paths:
+      - crates/reify-constraints/src/relate_solve.rs
+      expect: present
+- label: δ
+  task_id: null
+  title: Compiler and eval joint tables derive from JointKind
+  capabilities:
+  - name: ctor-table-derives
+    binding: 'grep: joint_signatures::joint_ctor_result_type is a 10-name string match at main'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: JointKind::from_ctor_name
+      paths:
+      - crates/reify-compiler/src/joint_signatures.rs
+      expect: present
+  - name: relate-mount-list-derives
+    binding: 'grep: relate_solve::is_motion_joint_cell_type hard-codes six nominal names at main'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: JointKind::from_nominal_type_name
+      paths:
+      - crates/reify-eval/src/relate_solve.rs
+      expect: present
+  - name: driving-cross-check
+    binding: 'behavioural: a compiler test pins kinematic.ri DrivingJoint conformance == JointKind::is_driving for ALL'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: behavioural test; the test's existence is reviewed, not grepped
+- label: ε
+  task_id: null
+  title: Typed transform primitives in geometry.rs
+  capabilities:
+  - name: typed-inverse
+    binding: 'grep: transform_inverse/transform_log/transform3_identity exist only as builtin arms at main (seat J §6)'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn transform_inverse\(
+      paths:
+      - crates/reify-stdlib/src/geometry.rs
+      expect: present
+- label: ζ
+  task_id: null
+  title: Delete per_joint_jacobian_local
+  capabilities:
+  - name: fn-gone
+    binding: 'grep: 0 production callers; 10 dedicated tests + 2 oracle uses'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn per_joint_jacobian_local\(
+      paths:
+      - crates/reify-stdlib/src/loop_closure.rs
+      expect: absent
+- label: η
+  task_id: null
+  title: JointPosition enum in kinematic.ri; Value::Enum display prints payload (C4)
+  capabilities:
+  - name: enum-declared
+    binding: 'grammar-fixture: tests/prd-gate/fixtures/s6_joint_position_enum_substrate.ri — named-field variants, bare heads, Map keyed by joint, match: reify eval exit 0, ang = 0.785 rad'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: enum JointPosition
+      paths:
+      - crates/reify-compiler/stdlib/kinematic.ri
+      expect: present
+  - name: payload-display
+    binding: 'measured: the same fixture prints got = JointPosition::RevolutePosition (no payload) at main'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: printed-output shape is asserted by the leaf's test, not a source grep
+- label: θ
+  task_id: null
+  title: MechanismError table; world_parented_closure coded
+  capabilities:
+  - name: error-enum
+    binding: 'grep: engine_eval::detect_mechanism_errors hard-codes duplicate_solid; fixture tests/prd-gate/fixtures/s6_mechanism_errors.ri shows world_parented_closure as an undef note only'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: enum MechanismError
+      paths:
+      - crates/reify-stdlib/src/mechanism.rs
+      expect: present
+- label: ι
+  task_id: null
+  title: Typed Joint + Joint::from_value (C3)
+  capabilities:
+  - name: joint-enum
+    binding: producer-self; depends on β (JointKind), ε (typed primitives), ζ (no per_joint_jacobian_local signal contract)
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: enum Joint \{
+      paths:
+      - crates/reify-stdlib/src
+      expect: present
+- label: κ
+  task_id: null
+  title: Normalized loop-closure record (C5)
+  capabilities:
+  - name: record-module
+    binding: producer-self — the three parsers and two strip_world_sentinel copies exist at main
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: mod loop_closure_record
+      paths:
+      - crates/reify-stdlib/src/lib.rs
+      expect: present
+  - name: extract-parser-gone
+    binding: 'grep: loop_closure::extract_loop_closure_chains at main'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn extract_loop_closure_chains\(
+      paths:
+      - crates/reify-stdlib/src
+      expect: absent
+  - name: classifier-parser-gone
+    binding: 'grep: loop_closure_solver::mechanism_loop_closure_chains at main (zero production consumers)'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn mechanism_loop_closure_chains\(
+      paths:
+      - crates/reify-stdlib/src
+      expect: absent
+  - name: shared-prefix-defect
+    binding: fixtures tests/prd-gate/fixtures/s6_shared_carriage_tie.ri (fv [[0.5, 0.501]], armA 0.8 m vs armB 1.001 m, false singular), s6_brace_through_snapshot.ri (fv [[0.5, 0.5005]], B at 1.0005 m,
+      singular), s6_ring_through_snapshot.ri, s6_corexy_tie_orientation.ri (orientation A carriage (0.21213, 0.07071) m; orientation B (0.0005, 0) m silently)
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: behavioural (T1-T5, T21); the e2e tests are the cover
+  - name: upstreams
+    binding: 'producer:#7497 (pending, branch task/7497), #8545 (in progress), #8560 (shim removal), #6922 (dynamics/eval.rs); θ for MechanismError'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: dependency edges are the enforcement
+  - name: modal-ops-on-reader
+    binding: 'grep: reify-eval modal_ops.rs reads "loop_closures" by string at 2 production sites'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: is_closed_chain
+      paths:
+      - crates/reify-eval/src/modal_ops.rs
+      expect: present
+- label: λ₀
+  task_id: null
+  title: 'GUI on the typed forms: slider walker accepts JointPosition binds; joint descriptor via JointKind'
+  capabilities:
+  - name: gui-descriptor-on-kind
+    binding: 'grep: gui/src-tauri/src/engine.rs::extract_joint_descriptor string match with _ => FixedNoMotion at main'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'JointKind::'
+      paths:
+      - gui/src-tauri/src/engine.rs
+      expect: present
+  - name: slider-walker-enum-form
+    binding: 'grep: collect_snapshot_bind_pairs matches bind(Ident, Ident|QuantityLiteral|NumberLiteral) only at main'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'behavioural (T22): GUI engine test over an enum-form bind'
+  - name: upstream-7456
+    binding: 'producer:#7456 (pending, high) — non-literal enum payloads (variant_construct.rs rejects `RevolutePosition { angle: a }` today)'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: dependency edge is the enforcement
+- label: λ
+  task_id: null
+  title: bindings.rs; bind takes JointPosition only (C4, R7)
+  capabilities:
+  - name: bindings-module
+    binding: 'grep: make_binding lives in snapshot.rs (pub(crate) for dynamics) at main; λ also extracts typed snapshot::snapshot_of and converts sweep''s eval_builtin("bind")/("snapshot") calls'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: mod bindings
+      paths:
+      - crates/reify-stdlib/src/lib.rs
+      expect: present
+  - name: dynamics-no-snapshot-path
+    binding: 'grep: dynamics/eval.rs::snapshot_for_sample calls crate::snapshot::make_binding at main'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: crate::snapshot::make_binding\(
+      paths:
+      - crates/reify-stdlib/src/dynamics
+      expect: absent
+  - name: corpus-migration-extent
+    binding: 'measured: 34 bind( lines in 11 tracked .ri files (prj/printer_v01/printer.ri x21), 0 list/orientation-valued; 81 Rust eval_builtin("bind") sites; 13 embedded .ri calls in 6 Rust test files;
+      gui engine_tests x23 + commands_tests x1; docs/reify-stdlib-reference.md §13'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: migration completeness is the examples/e2e suite staying green
+  - name: upstreams
+    binding: 'producer:#7456 (non-literal payloads; 21 of 34 .ri bind lines are non-literal), #8745 (conformance joint-bound partition)'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: dependency edges are the enforcement
+- label: μ
+  task_id: null
+  title: Codec + resolver SPOT; open-chain multi-DOF midpoint
+  capabilities:
+  - name: snapshot-copy-gone
+    binding: 'grep: snapshot::wrap_jointvalue_for_joint (identical body to loop_closure::value_for_joint) at main'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn wrap_jointvalue_for_joint\(
+      paths:
+      - crates/reify-stdlib/src
+      expect: absent
+  - name: raw-decode-gone
+    binding: 'grep: loop_closure::jointvalue_from_bound_value (dimension-blind as_f64) at main'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn jointvalue_from_bound_value\(
+      paths:
+      - crates/reify-stdlib/src
+      expect: absent
+  - name: midpoint-defect
+    binding: 'fixture tests/prd-gate/fixtures/s6_open_planar_midpoint.ri: s_planar_unbound = undef; s_planar_bound at (0.5 m, 0.5 m, rot pi/2)'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: behavioural (T6)
+- label: ν
+  task_id: null
+  title: Named solver inputs + LoopClosureInputError
+  capabilities:
+  - name: input-error-enum
+    binding: 'grep: LoopClosureSolverInputs is a positional 5-tuple alias at main; 3 ad hoc length checks'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: enum LoopClosureInputError
+      paths:
+      - crates/reify-stdlib/src
+      expect: present
+  - name: error-map-channel
+    binding: 'behavioural (T12): Rust boundary test, malformed record -> named LoopClosureInputError -> snapshot error Map -> coded diagnostic via θ''s engine scan, which ν makes recurse into List/Map values
+      (detect_error_map_diagnostics reads top-level cells only at main)'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: behavioural boundary test below the compiler
+- label: ξ
+  task_id: null
+  title: Direct solve, SolveStatus, diagnostics_of, Bool is_singular
+  capabilities:
+  - name: wrapper-gone
+    binding: 'grep: solve_loop_closure_with_diagnostics, single production caller snapshot.rs, behaviourally identical to the plain solve'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn solve_loop_closure_with_diagnostics\(
+      paths:
+      - crates/reify-stdlib/src
+      expect: absent
+  - name: one-producer
+    binding: producer-self — no diagnostics_of at main; engine_eval duplicates the singularity message
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn diagnostics_of
+      paths:
+      - crates/reify-stdlib/src
+      expect: present
+  - name: is-singular-undef
+    binding: 'fixture tests/prd-gate/fixtures/s6_loopclosure_declared_fields.ri: sing = undef for a non-singular snapshot; ξ declares and populates converged : Bool; T21 ξ half: the #7207 shape reports
+      converged = false'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: behavioural (T13)
+- label: ο
+  task_id: null
+  title: sweep through Joint
+  capabilities:
+  - name: sweep-kind-match-gone
+    binding: 'grep: sweep::driving_joint_kind + wrap_value_for_driving_joint with dead planar arms at main'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn driving_joint_kind\(
+      paths:
+      - crates/reify-stdlib/src/sweep.rs
+      expect: absent
+- label: π
+  task_id: null
+  title: Per-joint free_values; Snapshot warm start; kinematic.ri declarations (C7)
+  capabilities:
+  - name: declaration
+    binding: 'grep: kinematic.ri declares free_values : List<JointValue> (= Real) at main; runtime is per-loop flat rows'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: free_values[[:space:]]*:[[:space:]]*Map<Joint,[[:space:]]*JointPosition>
+      paths:
+      - crates/reify-compiler/stdlib/kinematic.ri
+      expect: present
+  - name: loopclosure-member
+    binding: 'fixture tests/prd-gate/fixtures/s6_loopclosure_closing_joint_member.ri: reify check exit 1 ''structure LoopClosure has no member closing_joint'''
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: behavioural (C7); a check fixture flips from exit 1 to exit 0
+  - name: warm-start-defect
+    binding: 'fixture tests/prd-gate/fixtures/s6_closed_planar_sweep_warmstart.ri: sweep_2 = undef (width fix is #8545, upstream of μ/ξ)'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: behavioural (T8)
+- label: ρ
+  task_id: null
+  title: MechanismTree (C8)
+  capabilities:
+  - name: tree-module
+    binding: producer-self; fixtures tests/prd-gate/fixtures/s6_idyn_open_after_closing.ri (ids 0,1,2 with 11.31 N) and s6_idyn_closed_flexure.ri (sample 1 tau_a 4.905 N vs open control -14.31 N)
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: struct MechanismTree
+      paths:
+      - crates/reify-stdlib/src/dynamics
+      expect: present
+  - name: upstream-6922
+    binding: producer:#6922 (pending; branch task/6922 active) rewrites dynamics/eval.rs readers
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: dependency edge is the enforcement
+- label: σ₀
+  task_id: null
+  title: 'Module edges one way: spatial math to the crate root; center-of-mass group to dynamics/com.rs'
+  capabilities:
+  - name: spatial-at-crate-root
+    binding: 'grep: joints.rs imports crate::dynamics::spatial::SpatialVector6 (joints->dynamics edge of the reify-stdlib SCC {dynamics, joints, mechanism, snapshot}); dynamics/spatial.rs has no crate imports'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: mod spatial
+      paths:
+      - crates/reify-stdlib/src/lib.rs
+      expect: present
+  - name: com-moves-to-dynamics
+    binding: 'grep: snapshot.rs imports crate::dynamics::eval::mass_properties_from_value for the center_of_mass group at main (SCC edge snapshot->dynamics)'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: mod com\b
+      paths:
+      - crates/reify-stdlib/src/dynamics/mod.rs
+      expect: present
+  - name: scc-row-lowered
+    binding: scripts/module-scc-baseline.json reify-stdlib row = [dynamics, joints, mechanism, snapshot] at main; scripts/assert-module-scc.py
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: the INV-ARCH-1 tool enforces the baseline
+- label: σ
+  task_id: null
+  title: Dynamics on Joint; coupling refusal coded
+  capabilities:
+  - name: force-string-match-gone
+    binding: 'grep: dynamics/eval.rs::joint_force_value 6-string match + _ => None at main; fixture tests/prd-gate/fixtures/s6_idyn_coupling.ri forces = undef'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn joint_force_value\(
+      paths:
+      - crates/reify-stdlib/src/dynamics
+      expect: absent
+- label: τ
+  task_id: null
+  title: trajectory/marshal.rs (move)
+  capabilities:
+  - name: marshal-module
+    binding: 'h14: trampoline.rs marshalling group (read_scalar_si..track_data_to_value)'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: mod marshal
+      paths:
+      - crates/reify-stdlib/src/trajectory/mod.rs
+      expect: present
+- label: υ
+  task_id: null
+  title: Typed Shaper; one input_shape implementation
+  capabilities:
+  - name: scanner-gone
+    binding: 'grep: tots.rs mod shaper_family_guard (~278-line text scanner) at main'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: mod shaper_family_guard
+      paths:
+      - crates/reify-stdlib/src/trajectory
+      expect: absent
+  - name: stand-in-solve-gone
+    binding: 'grep: input_shape.rs::run_tots (canonical stand-in model) at main; fixture tests/prd-gate/fixtures/s6_tots_infeasible.ri: eval optimal = undef, check ''All constraints satisfied'' (exit 0)'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn run_tots\(
+      paths:
+      - crates/reify-stdlib/src/trajectory
+      expect: absent
+- label: φ
+  task_id: null
+  title: TOTS DiagnosticCodes on the registered path
+  capabilities:
+  - name: codes-exist
+    binding: 'grep: no TrajectoryConstraintInfeasible in reify-core DiagnosticCode at main; infeasible becomes ComputeOutcome::Failed with the coded Error'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: TrajectoryConstraintInfeasible
+      paths:
+      - crates/reify-core/src/diagnostics.rs
+      expect: present
+  - name: code-str-gone
+    binding: 'grep: TotsOutcome::code_str, 0 production callers'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn code_str\(
+      paths:
+      - crates/reify-stdlib/src/trajectory/tots.rs
+      expect: absent
+- label: χ
+  task_id: null
+  title: 'HELD on S8: TOTS diagnostics on check/LSP'
+  capabilities:
+  - name: s8-typed-diagnose-column
+    binding: 'producer: S8 typed diagnose-hook column (wave 2, not yet authored); held via x_seam_wait'
+    verdict: OPEN
+    delivered_check:
+      kind: manual
+      reason: held leaf; released by S8's session
+- label: ψ₁
+  task_id: null
+  title: Kind-set and internal string dispatch retired; joints.rs split
+  capabilities:
+  - name: joint-kinds-const-gone
+    binding: 'grep: joints.rs pub(crate) const JOINT_KINDS at main'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: const JOINT_KINDS
+      paths:
+      - crates/reify-stdlib/src
+      expect: absent
+  - name: driving-kinds-const-gone
+    binding: 'grep: joints.rs pub(crate) const DRIVING_JOINT_KINDS at main'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: const DRIVING_JOINT_KINDS
+      paths:
+      - crates/reify-stdlib/src
+      expect: absent
+  - name: multi-dof-kinds-gone
+    binding: 'grep: loop_closure.rs test const MULTI_DOF_KINDS at main'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: const MULTI_DOF_KINDS
+      paths:
+      - crates/reify-stdlib/src
+      expect: absent
+  - name: ratchet-rows-zero
+    binding: 'α''s member: joint-kind-string-dispatch, joint-kinds-const, internal-eval-builtin rows at 0'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: the ratchet member enforces the counts
+- label: ψ₂
+  task_id: null
+  title: h14 partitions of loop_closure_solver.rs, snapshot.rs, loop_closure.rs
+  capabilities:
+  - name: newton-module
+    binding: 'h14: loop_closure_solver.rs numerics group (NewtonConfig..DIVERGENCE_LIMIT)'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: mod newton
+      paths:
+      - crates/reify-stdlib/src
+      expect: present
+- label: ψ₃
+  task_id: null
+  title: h14 remainder of trajectory/trampoline.rs
+  capabilities:
+  - name: track-access-module
+    binding: 'h14: trampoline.rs location/deviation accessor group'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: mod track_access
+      paths:
+      - crates/reify-stdlib/src/trajectory
+      expect: present
+- label: ω₁
+  task_id: null
+  title: Docs-truth
+  capabilities:
+  - name: docs-truth-four-items
+    binding: 'overlay docs-truth gate: chunk, exemplar + INDEX line, reify-design index line, discoverability'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: docs-truth acceptance is a smoke compile plus findability review
+- label: ω₂
+  task_id: null
+  title: PRD close
+  capabilities:
+  - name: terminal-stamp
+    binding: overlay decompose-close obligation
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: committed header; prose is not grepped
