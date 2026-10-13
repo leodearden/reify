@@ -1,0 +1,520 @@
+prd: docs/prds/v0_6/reify-audit-typed-findings-and-registry-lanes.md
+schema_version: 1
+tasks:
+- label: α
+  task_id: null
+  title: 'S24 α: partition reify-audit lib.rs into model.rs, git_ops.rs, jcodemunch_ops.rs behind a pub-use facade'
+  note: h14 measurement (no finding key); record h14_measurements row for crates/reify-audit/src/lib.rs. Depends on #6935 and #7098 (rulings R3, R5).
+  capabilities:
+  - name: model-module-declared
+    binding: the finding-shape partition moves to its own module; lib.rs declares it (PRD α)
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '^(pub )?mod model;'
+      paths:
+      - crates/reify-audit/src/lib.rs
+      expect: present
+  - name: finding-struct-lives-in-model
+    binding: Finding is defined in model.rs, not the crate root
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'pub struct Finding\b'
+      paths:
+      - crates/reify-audit/src/model.rs
+      expect: present
+- label: β
+  task_id: null
+  title: 'S24 β: AuditContext::new + builder; delete --since, TimeWindow, window, producer_branch and P2''s backlog guard'
+  note: closes fk-0b1d530f0264 (high).
+  capabilities:
+  - name: no-time-window-type
+    binding: TimeWindow is deleted (ruling); scoped to the definition construct
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'pub struct TimeWindow\b'
+      paths:
+      - crates/reify-audit/src
+      expect: absent
+  - name: no-since-parse-arm
+    binding: the bin's --since match arm is deleted; scoped to the arm construct, not the bare token (a test may assert it is unknown)
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '"--since" =>'
+      paths:
+      - crates/reify-audit/src/bin/reify-audit.rs
+      expect: absent
+  - name: builder-exists
+    binding: AuditContext gains a consuming builder (PRD §5.2)
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'fn with_tasks\('
+      paths:
+      - crates/reify-audit/src
+      expect: present
+  - name: skill-has-no-window-mode
+    binding: modes.md §3 window sweep is deleted
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'Window sweep mode'
+      paths:
+      - .claude/skills/audit/references/modes.md
+      expect: absent
+  - name: debug-default-sweep-does-not-panic
+    binding: B6 — P2 guard deleted; behaviour proven by a CLI test over >50 tasks in a debug build
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: behavioural (debug-build sweep); covered by β's CLI test, not greppable
+- label: γ1
+  task_id: null
+  title: 'S24 γ1: typed Finding — Kind, Subject, detail, located constructors; byte-identical rendered summary; field-derived fingerprint and sort'
+  note: in-crate half of fk-33f9891ad16c (key stamped on γ2); high.
+  capabilities:
+  - name: kind-module-exists
+    binding: every kind enum lives in the lower crate::kind module (PRD D1; closes the model<->detector cycle)
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'pub enum Kind\b'
+      paths:
+      - crates/reify-audit/src/kind.rs
+      expect: present
+  - name: subject-enum-exists
+    binding: Subject {Task, Path, Run} replaces task_id (PRD D2, §5.1)
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'pub enum Subject\b'
+      paths:
+      - crates/reify-audit/src
+      expect: present
+  - name: no-g-allow-line-reparse
+    binding: g_allow_finding_line (summary re-parse, release-mode line 0) is deleted
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'fn g_allow_finding_line\b'
+      paths:
+      - crates/reify-audit/src
+      expect: absent
+  - name: no-summary-prefix-test
+    binding: is_g_allow_finding's summary prefix test is gone; scoped to the construct
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'summary\.starts_with\("g-allow-"\)'
+      paths:
+      - crates/reify-audit/src
+      expect: absent
+  - name: summary-and-fingerprint-parity
+    binding: B1/B2 parity over every detector's fixtures and the live tree
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: behavioural parity diff recorded in the commit; covered by γ1's parity tests
+- label: γ2
+  task_id: null
+  title: 'S24 γ2: Finding wire contract — readers move to kind/subject; legacy task_id mirror deleted'
+  note: closes fk-33f9891ad16c (high).
+  capabilities:
+  - name: escalate-script-reads-subject
+    binding: pprdstatus-escalate.py no longer indexes finding["task_id"]
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'finding\["task_id"\]'
+      paths:
+      - scripts/pprdstatus-escalate.py
+      - scripts/docs-truth-sweep.py
+      expect: absent
+  - name: routing-reads-kind-field
+    binding: severity-routing.md no longer takes <kind> from finding.summary
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'kind` from `finding\.summary`|taxonomy kind from `finding\.summary`'
+      paths:
+      - .claude/skills/audit/references/severity-routing.md
+      expect: absent
+  - name: legacy-task-id-mirror-deleted
+    binding: the expand-phase task_id wire mirror written by γ1 is gone (D5)
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: a serde-derived mirror carries no "task_id" literal, so a grep cannot prove its absence; B5's γ2 half asserts no task_id key in the CLI's JSON
+  - name: stub-emits-subject
+    binding: the escalation stub synthesises the new wire shape
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '"subject"'
+      paths:
+      - tests/infra/stub_escalation_mcp.py
+      expect: present
+- label: δ
+  task_id: null
+  title: 'S24 δ: fallible GitOps, TrackedFiles, dispatcher-owned enumeration'
+  note: closes fk-c45888cf175b.
+  capabilities:
+  - name: tracked-files-type
+    binding: TrackedFiles cannot be built from a failure (PRD D8, §5.3)
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'pub struct TrackedFiles\b'
+      paths:
+      - crates/reify-audit/src
+      expect: present
+  - name: no-infallible-ls-files
+    binding: ls_files no longer returns a bare Vec
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'fn ls_files\(&self\) -> Vec<String>'
+      paths:
+      - crates/reify-audit/src
+      expect: absent
+  - name: infallible-p5-wrapper-deleted
+    binding: the unwrap_or_default sibling-commit wrapper is deleted (PRD D8)
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'fn task_referencing_commits\('
+      paths:
+      - crates/reify-audit/src
+      expect: absent
+  - name: tree-check-variant
+    binding: the dispatcher hands &TrackedFiles to tree detectors (PRD §5.4)
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'Check::Tree\('
+      paths:
+      - crates/reify-audit/src/bin/reify-audit.rs
+      expect: present
+- label: ε
+  task_id: null
+  title: 'S24 ε: one tasks.db handle (task_rows::TasksDb), derived DB degradation, cite_grammar module'
+  note: closes fk-bdc845122da0; subsumes #8516.
+  capabilities:
+  - name: tasks-db-handle-in-task-rows
+    binding: tasks_db_path/open_tasks_db leave ptodo for task_rows (PRD D10)
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'pub (enum|struct) TasksDb\b'
+      paths:
+      - crates/reify-audit/src/task_rows.rs
+      expect: present
+  - name: no-tasks-db-backed-variant
+    binding: Check::TasksDbBacked is replaced by a row declaration
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'Check::TasksDbBacked\('
+      paths:
+      - crates/reify-audit/src/bin/reify-audit.rs
+      expect: absent
+  - name: schema-probed-open
+    binding: TasksDb::open probes the schema so a non-tasks file is Unavailable (PRD D10, critic C2)
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'SELECT 1 FROM tasks'
+      paths:
+      - crates/reify-audit/src/task_rows.rs
+      expect: present
+  - name: cite-grammar-module
+    binding: the §8.2 cite grammar is a lower module imported by PTODO and PPRDSTATUS
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'fn canonical_cite_occurrences'
+      paths:
+      - crates/reify-audit/src/cite_grammar.rs
+      expect: present
+- label: ζ
+  task_id: null
+  title: 'S24 ζ: source_shape — one recogniser vocabulary with named policies; jcodemunch suppression and the orphan script adopt it'
+  note: closes fk-ec468bfa673a; subsumes #7066.
+  capabilities:
+  - name: one-g-allow-grammar
+    binding: g_allow_body is the one G-allow body grammar (PRD §5.6)
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'pub(\(crate\))? fn g_allow_body'
+      paths:
+      - crates/reify-audit/src/source_shape.rs
+      expect: present
+  - name: no-private-cfg-test-recognisers
+    binding: the four private cfg(test) recognisers are gone (adoption ratchet); scoped to fn definitions
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'fn (is_cfg_test_attr|is_test_cfg_attr)\b'
+      paths:
+      - crates/reify-audit/src
+      expect: absent
+  - name: live-finding-delta-recorded
+    binding: B9 — each detector's before/after live-tree finding counts in the commit
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: measured delta lives in the commit message; not greppable
+- label: η
+  task_id: null
+  title: 'S24 η: P5 sweep corroboration as ordered rescue steps; one coverage predicate'
+  note: closes fk-20ce222ff90c.
+  capabilities:
+  - name: one-verdict-renderer
+    binding: verdict-to-Finding is one function (PRD D12)
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'fn verdict_finding\b'
+      paths:
+      - crates/reify-audit/src
+      expect: present
+  - name: no-exact-coverage-predicate
+    binding: files_missing_from (exact membership, trailing-slash bug) is deleted
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'fn files_missing_from\b'
+      paths:
+      - crates/reify-audit/src
+      expect: absent
+- label: θ
+  task_id: null
+  title: 'S24 θ: injective exit-code channel — High count saturates at 124'
+  note: closes fk-31eb23b6b93f.
+  capabilities:
+  - name: saturates-at-124
+    binding: high_severity_exit_code is count.min(124) (PRD D13, §5.5)
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '\.min\(124\)'
+      paths:
+      - crates/reify-audit/src/bin/reify-audit.rs
+      expect: present
+  - name: no-125-disambiguation
+    binding: cli-invocation.md §3.1 (125 collision workaround) is deleted
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'Disambiguating exit code 125'
+      paths:
+      - .claude/skills/audit/references/cli-invocation.md
+      expect: absent
+- label: ι
+  task_id: null
+  title: 'S24 ι: pre-done posture carried in AuditContext; both knobs'' effective values printed once per run'
+  note: closes fk-ba93c26e42d1 (low, weakened).
+  capabilities:
+  - name: posture-type
+    binding: PreDonePosture resolved once by the bin (PRD D14)
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'enum PreDonePosture\b'
+      paths:
+      - crates/reify-audit/src
+      expect: present
+  - name: posture-line-printed
+    binding: every --pre-done run prints one effective-posture line
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'pre-done posture: refusal='
+      paths:
+      - crates/reify-audit/src/bin/reify-audit.rs
+      expect: present
+- label: κ
+  task_id: null
+  title: 'S24 κ: partition ptodo.rs — ptodo/g_allow.rs, ptodo/liveness.rs, core + entry'
+  note: h14 measurement (no finding key); subsumes #8200.
+  capabilities:
+  - name: g-allow-lane-module
+    binding: the G-allow lane lives in its own child module that imports nothing from its parent
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'fn resolve_g_allow_owner_liveness\b'
+      paths:
+      - crates/reify-audit/src/ptodo/g_allow.rs
+      expect: present
+- label: λ
+  task_id: null
+  title: 'S24 λ: partition pdoccover.rs — pdoccover/registry.rs, pdoccover/oracle.rs, entry'
+  note: h14 measurement (no finding key).
+  capabilities:
+  - name: registry-partition-module
+    binding: the registry partition moves to its own module
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'fn extract_registries\b'
+      paths:
+      - crates/reify-audit/src/pdoccover/registry.rs
+      expect: present
+- label: μ
+  task_id: null
+  title: 'S24 μ: partition p5_phantom_done.rs along its 6-way partition'
+  note: h14 measurement (no finding key).
+  capabilities:
+  - name: corroboration-is-a-lower-module
+    binding: the corroboration partition is the lower module the sweep and pre-done import
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'fn try_task_referencing_commits\b|struct AncestryCache\b'
+      paths:
+      - crates/reify-audit/src/p5_phantom_done/corroboration.rs
+      expect: present
+- label: ν
+  task_id: null
+  title: 'S24 ν: integration tests through check()/check_with_stats over a shared RepoFixture; test-only pub items close'
+  note: closes fk-422bbd7986a6.
+  capabilities:
+  - name: test-wrapper-deleted
+    binding: resolve_liveness, a wrapper that exists only for tests/ptodo.rs, is deleted
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'pub fn resolve_liveness\('
+      paths:
+      - crates/reify-audit/src
+      expect: absent
+  - name: shared-repo-fixture
+    binding: one crate-level fixture drives every working-tree detector's tests
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'pub struct RepoFixture\b'
+      paths:
+      - crates/reify-audit/src
+      expect: present
+- label: π
+  task_id: null
+  title: 'S24 π: partition tests/cli.rs and tests/p5.rs along their measured partitions'
+  note: h14 measurements (no finding key) for crates/reify-audit/tests/cli.rs and tests/p5.rs.
+  capabilities:
+  - name: http-loader-partition-file
+    binding: tests/cli.rs's http_loader module becomes its own test file (PRD π names the files)
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'fn sweep_via_http_loader_flattens_subtasks_and_detects_phantom\b'
+      paths:
+      - crates/reify-audit/tests/cli_http_loader.rs
+      expect: present
+- label: ξ
+  task_id: null
+  title: 'S24 ξ: PREGISTRY registry-status lane; registry row grammar; census derived from pattern_flag::TOKENS; INV-META-1 registry-status clause enforced'
+  note: closes fk-d668027f44f2; INV candidate 1 (INV-META-1); rulings R2, R4 — HELD leaf (x_seam_wait S4, S1, S10, S25), released by the lead.
+  capabilities:
+  - name: pattern-token
+    binding: PREGISTRY is a --pattern token with a DETECTORS row
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '"PREGISTRY"'
+      paths:
+      - crates/reify-audit/src/pattern_flag.rs
+      expect: present
+  - name: pointer-column
+    binding: docs/invariants.md rows carry the Pointer column (PRD §5.7)
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '^\| ID \| Invariant \| Enforcement \| Pointer \| Status \|'
+      paths:
+      - docs/invariants.md
+      expect: present
+  - name: inv-meta-1-enforced
+    binding: the INV-META-1 row flips in the same change that lands its checker
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '^\| INV-META-1 \|.*audit:PREGISTRY.*\| partial: enforced\(audit\) for registry status'
+      paths:
+      - docs/invariants.md
+      expect: present
+  - name: pregistry-gate-registered
+    binding: the gate wrapper has a run-all classification row in the same diff
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'test_reify_audit_pregistry\.sh'
+      paths:
+      - tests/infra/run-all-classification.manifest
+      expect: present
+  - name: plinecite-census-row
+    binding: PLINECITE (a TOKENS member since #6935) has its census row in ξ, so ξ lands green (critic C1)
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '\| audit:PLINECITE'
+      paths:
+      - docs/legibility/design-invariants.md
+      expect: present
+  - name: gate-on-docs-commit
+    binding: B16 — the registry docs map to the gate wrapper in the selective infra map
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '^docs/invariants\.md\s+tests/infra/test_reify_audit_pregistry\.sh'
+      paths:
+      - scripts/verify-pipeline-infra-tests.txt
+      expect: present
+- label: ο
+  task_id: null
+  title: 'S24 ο: PLINECITE merge-time ratchet over tracked code prose; INV-DOC-1 promoted'
+  note: INV candidate 3 (no finding key of this stream); subsumes #8509 and #7302; depends on #6935 (ruling R1); not ordered after the held ξ (R4).
+  capabilities:
+  - name: plinecite-gate-registered
+    binding: the gate test has a run-all classification row
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'test_reify_audit_plinecite\.sh'
+      paths:
+      - tests/infra/run-all-classification.manifest
+      expect: present
+  - name: rename-mode
+    binding: plinecite-baseline-gen carries a moved file's rows (PRD D16, critic C22)
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '"--rename"'
+      paths:
+      - crates/reify-audit/src/bin/plinecite-baseline-gen.rs
+      expect: present
+  - name: inv-doc-1-row
+    binding: INV-DOC-1 lands in docs/invariants.md with its pointer
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '^\| INV-DOC-1 \|.*audit:PLINECITE'
+      paths:
+      - docs/invariants.md
+      expect: present
+- label: ω
+  task_id: null
+  title: 'S24 ω: PRD close — id backfill, terminal stamp, AS-AUTHORED freeze'
+  note: decompose-close leaf (no key).
+  capabilities:
+  - name: terminal-stamp
+    binding: the committed header carries a terminal token and the landed leaf ids
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: docs header; reviewed by the close leaf's own signal
