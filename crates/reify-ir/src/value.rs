@@ -1142,7 +1142,7 @@ pub enum Value {
         body: Box<CompiledExpr>,
         captures: ValueMap,
     },
-    /// Rank-r tensor: recursive nesting of Vec<Value> (innermost elements are scalars).
+    /// Rank-r tensor: recursive nesting of `Vec<Value>` (innermost elements are scalars).
     Tensor(Vec<Value>),
     /// Geometric point with n components (all sharing the same dimension).
     Point(Vec<Value>),
@@ -1183,7 +1183,7 @@ pub enum Value {
         origin: Box<Value>,
         direction: Box<Value>,
     },
-    /// Dimensionless 3D unit vector; distinct from Vector3<Length> and Orientation.
+    /// Dimensionless 3D unit vector; distinct from `Vector3<Length>` and Orientation.
     ///
     /// Stores three inline dimensionless components (assumed unit-normalized),
     /// mirroring [`Value::Orientation`]'s inline-float layout. Produced by datum
