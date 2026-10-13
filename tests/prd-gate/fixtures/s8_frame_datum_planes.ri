@@ -1,0 +1,33 @@
+module s8_frame_datum_planes
+
+// S8 PRD: docs/prds/v0_6/builtin-registry-migration-and-interception-classifier.md
+// Leaf: theta (one datum-projection table).
+// Pins: Frame datum projections on an identity frame (frame3_identity) and on a
+// let-bound non-identity frame (frame_at) built two ways: from self.x / self.z
+// and from the identity frame's own .x / .z. The output records which projections
+// evaluate and which print undef.
+
+structure def S8FrameDatumPlanes {
+    let fi = frame3_identity()
+    let i_xy = fi.xy_plane
+    let i_yz = fi.yz_plane
+    let i_zx = fi.zx_plane
+    let i_o = fi.origin
+    let i_x = fi.x
+
+    let f = frame_at(point3(4mm, 5mm, 6mm), self.x, self.z)
+    let f_o = f.origin
+    let f_x = f.x
+    let f_z = f.z
+    let f_xy = f.xy_plane
+    let f_yz = f.yz_plane
+    let f_zx = f.zx_plane
+
+    let g = frame_at(point3(4mm, 5mm, 6mm), fi.x, fi.z)
+    let g_o = g.origin
+    let g_x = g.x
+    let g_z = g.z
+    let g_xy = g.xy_plane
+    let g_yz = g.yz_plane
+    let g_zx = g.zx_plane
+}
