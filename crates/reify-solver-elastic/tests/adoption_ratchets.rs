@@ -529,10 +529,8 @@ fn braces_inside_strings_and_comments_do_not_shift_depth() {
 // ── ratchet rows ─────────────────────────────────────────────────────────────
 
 /// A way a file can be shown to be one the matcher cannot follow: compilable
-/// Rust always ends outside every literal and comment, with ()[]{} nested to
-/// zero; and a `cfg` naming `test` in any form but the bare `#[cfg(test)]` item
-/// gate (the only test gate the item tracker models) would change which lines
-/// count as production without any row noticing.
+/// Rust ends outside every literal and comment with ()[]{} nested to zero, and
+/// the item tracker models one test gate only, the bare `#[cfg(test)]`.
 #[derive(Debug, PartialEq)]
 enum LexDefect {
     EndsInsideLiteralOrComment,
@@ -563,10 +561,9 @@ fn lex_defect(lines: &[Line], end: Carry) -> Option<LexDefect> {
     unsupported_test_cfg_line(lines).map(|line| LexDefect::UnsupportedTestCfg { line })
 }
 
-/// The 1-based line of the first `cfg(..)` attribute that names `test` other
-/// than as one of the `TEST_ITEMS` gates: `all(test, ..)` and `any(test, ..)`
-/// gate more or less than test code, `not(test)` gates production code, and an
-/// inner `#![cfg(test)]` gates a whole file, so none can be skipped as an item.
+/// The 1-based line of the first `cfg(..)` attribute naming `test` that is not
+/// one of the `TEST_ITEMS` gates. The tracker cannot evaluate `all(test, ..)`,
+/// `any(test, ..)` or `not(test)`, and an inner `#![cfg(test)]` gates a whole file.
 fn unsupported_test_cfg_line(lines: &[Line]) -> Option<usize> {
     let joined = lines
         .iter()
@@ -1438,7 +1435,7 @@ fn a_file_the_lexer_cannot_follow_is_reported_as_defective() {
 #[test]
 fn a_test_gate_the_item_tracker_does_not_model_is_reported_as_defective() {
     let defect_of = |text: &str| source_file("src/probe.rs", text).defect;
-    let unmodelled_gates = [
+    let unsupported_gates = [
         "#[cfg(all(test, unix))]",
         "#[cfg(any(test, unix))]",
         "#[cfg(not(test))]",
@@ -1447,7 +1444,7 @@ fn a_test_gate_the_item_tracker_does_not_model_is_reported_as_defective() {
         "#[cfg (test)]",
         "#[cfg(\n    test\n)]",
     ];
-    for gate in unmodelled_gates {
+    for gate in unsupported_gates {
         let text = format!("fn before() {{}}\n{gate}\nmod gated {{}}");
         assert_eq!(
             defect_of(&text),
@@ -1455,7 +1452,7 @@ fn a_test_gate_the_item_tracker_does_not_model_is_reported_as_defective() {
             "gate: {gate:?}"
         );
     }
-    let followed_or_unrelated = [
+    let supported_or_unrelated = [
         "#[cfg(test)]\nmod tests {}",
         "#[cfg(test)]\n#[allow(dead_code)]\nfn helper() {}",
         "#[cfg(feature = \"test\")]\nfn f() {}",
@@ -1467,7 +1464,7 @@ fn a_test_gate_the_item_tracker_does_not_model_is_reported_as_defective() {
         "// #[cfg(not(test))]\nfn f() {}",
         "const S: &str = \"#[cfg(not(test))]\";",
     ];
-    for text in followed_or_unrelated {
+    for text in supported_or_unrelated {
         assert_eq!(defect_of(text), None, "text: {text:?}");
     }
 }
@@ -1489,6 +1486,10 @@ fn collect_rs_files(dir: &Path, found: &mut Vec<PathBuf>) {
     }
 }
 
+fn crate_root() -> &'static Path {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+}
+
 /// This file's path under the crate root. The measured tree leaves it out, so
 /// its seeds, docs and generic helper names can never count toward a row.
 const HOST_PATH: &str = "tests/adoption_ratchets.rs";
@@ -1496,17 +1497,15 @@ const HOST_PATH: &str = "tests/adoption_ratchets.rs";
 /// `src/` and `tests/` of this crate except the host: crate-relative
 /// `/`-separated paths, sorted; a file that cannot be read panics naming it.
 fn read_crate_tree() -> Vec<SourceFile> {
-    let crate_root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let root = crate_root();
     let mut paths = Vec::new();
     for dir in ["src", "tests"] {
-        collect_rs_files(&crate_root.join(dir), &mut paths);
+        collect_rs_files(&root.join(dir), &mut paths);
     }
     let mut files: Vec<(String, PathBuf)> = paths
         .into_iter()
         .map(|path| {
-            let relative = path
-                .strip_prefix(crate_root)
-                .expect("found under the crate root");
+            let relative = path.strip_prefix(root).expect("found under the crate root");
             let parts: Vec<_> = relative.iter().map(|part| part.to_string_lossy()).collect();
             (parts.join("/"), path)
         })
@@ -1530,7 +1529,7 @@ fn the_measured_tree_leaves_out_the_host_file_itself() {
         "HOST_PATH {HOST_PATH:?} does not name this file ({}): update the constant",
         file!()
     );
-    let on_disk = Path::new(env!("CARGO_MANIFEST_DIR")).join(HOST_PATH);
+    let on_disk = crate_root().join(HOST_PATH);
     assert!(on_disk.is_file(), "{} is not a file", on_disk.display());
     let tree = read_crate_tree();
     assert!(
