@@ -65,7 +65,7 @@ pub struct WarmStatePool {
     ///
     /// # Bounding
     /// All mutations go through [`push_event`](Self::push_event), which enforces
-    /// [`MAX_BUFFERED_EVENTS`](Self::MAX_BUFFERED_EVENTS):
+    /// the pool's `events_cap` (default [`MAX_BUFFERED_EVENTS`](Self::MAX_BUFFERED_EVENTS)):
     /// - **Debug builds**: a `debug_assert!` fires at the cap, surfacing the
     ///   "engine never drains" scenario loudly during `cargo test`.
     /// - **Release builds**: the oldest half of the buffer is auto-trimmed and
@@ -91,27 +91,24 @@ pub struct WarmStatePool {
     /// Cumulative count of telemetry events silently dropped by the auto-trim
     /// safety net (release builds only).
     ///
-    /// Incremented by `MAX_BUFFERED_EVENTS / 2` on every trim round.  Exposed via
+    /// Incremented by `events_cap / 2` on every trim round.  Exposed via
     /// [`dropped_events`](Self::dropped_events) for diagnostic use (e.g. engine
     /// health checks or the diagnostic panel).  A non-zero value indicates that
     /// an embedder is not draining at its eval boundary.  Always `0` in normal
     /// steady-state operation (verified by `tests/warm_pool_drain_steady_state.rs`).
     dropped_events: u64,
-    /// Test-only override for the events buffer cap.
+    /// Cap on buffered telemetry events, enforced by [`push_event`](Self::push_event).
     ///
-    /// When `Some(n)`, [`push_event`](Self::push_event) uses `n` instead of
-    /// [`MAX_BUFFERED_EVENTS`](Self::MAX_BUFFERED_EVENTS).  This lets field-schema
-    /// tests (e.g. `auto_trim_warn_omits_invariant_current_len_field`) fire the
-    /// auto-trim warn with ~17 donations instead of 65 537, dramatically reducing
-    /// unnecessary allocations in tests that only care about the warn's field set.
-    ///
-    /// Only present in test builds; has no effect on production behaviour.
-    #[cfg(test)]
-    test_events_cap: Option<usize>,
+    /// [`MAX_BUFFERED_EVENTS`](Self::MAX_BUFFERED_EVENTS) unless the pool was built
+    /// with [`with_limits`](Self::with_limits); always `>= 2`.
+    events_cap: usize,
 }
 
 impl WarmStatePool {
-    /// Maximum number of buffered telemetry events before the cap enforcement fires.
+    /// Default cap on buffered telemetry events before the cap enforcement fires.
+    ///
+    /// Every constructor uses this cap except [`with_limits`](Self::with_limits),
+    /// which takes the cap as a parameter.
     ///
     /// # Rationale
     /// [`WarmStatePool::events`] is unbounded until the engine wires `drain_events()`
@@ -143,6 +140,21 @@ impl WarmStatePool {
 
     /// Create a new pool with an explicit budget (or `None` for unlimited).
     pub fn with_budget(budget_bytes: Option<usize>) -> Self {
+        Self::with_limits(budget_bytes, Self::MAX_BUFFERED_EVENTS)
+    }
+
+    /// Create a new pool with an explicit budget (or `None` for unlimited) and an
+    /// explicit cap on buffered telemetry events.
+    ///
+    /// # Panics
+    /// If `events_cap < 2`: each release-build auto-trim round drops
+    /// `events_cap / 2` events, so a smaller cap would never shrink the buffer.
+    pub(crate) fn with_limits(budget_bytes: Option<usize>, events_cap: usize) -> Self {
+        assert!(
+            events_cap >= 2,
+            "WarmStatePool events_cap must be >= 2 so each auto-trim round drops \
+             cap/2 >= 1 events; got events_cap = {events_cap}"
+        );
         Self {
             pool: HashMap::new(),
             budget_bytes,
@@ -150,8 +162,7 @@ impl WarmStatePool {
             events: Vec::new(),
             auto_trim_warned: false,
             dropped_events: 0,
-            #[cfg(test)]
-            test_events_cap: None,
+            events_cap,
         }
     }
 
@@ -254,23 +265,6 @@ impl WarmStatePool {
     /// controlled env string without mutating the process environment.
     pub fn from_config_or_env(config: Option<u64>) -> Self {
         Self::from_config_or_env_value(config, std::env::var(BUDGET_ENV_VAR).ok().as_deref())
-    }
-
-    /// Create an unlimited pool with a test-only override for the events buffer cap.
-    ///
-    /// Intended for field-schema tests that need to trigger the auto-trim warn without
-    /// pushing [`MAX_BUFFERED_EVENTS`](Self::MAX_BUFFERED_EVENTS) (65 536) events.  With
-    /// `cap = 16`, for example, only 17 donations are needed to force one trim round.
-    ///
-    /// Note: the `debug_assert!` in [`push_event`](Self::push_event) fires at `cap` in
-    /// debug builds, so callers must remain gated `#[cfg(not(debug_assertions))]` — the
-    /// debug assertion still enforces the cap; only the *trim path* (release-only) is
-    /// exercised by tests using this constructor.
-    #[cfg(all(test, not(debug_assertions)))]
-    pub(crate) fn with_test_events_cap(cap: usize) -> Self {
-        let mut pool = Self::unlimited();
-        pool.test_events_cap = Some(cap);
-        pool
     }
 
     /// Store warm-start state for a node with an explicit cost-per-byte estimate.
@@ -462,40 +456,24 @@ impl WarmStatePool {
         }
     }
 
-    /// Returns the effective events buffer cap.
-    ///
-    /// In production builds this is always [`MAX_BUFFERED_EVENTS`](Self::MAX_BUFFERED_EVENTS).
-    /// In test builds it returns the test-only override when one has been set via
-    /// [`with_test_events_cap`](Self::with_test_events_cap), falling back to
-    /// `MAX_BUFFERED_EVENTS` otherwise.  Using this helper in [`push_event`](Self::push_event)
-    /// keeps the cap logic in one place and lets test fixtures fire the auto-trim path with
-    /// a tiny cap (~17 events) rather than 65 537.
-    #[inline]
-    fn events_cap_effective(&self) -> usize {
-        #[cfg(test)]
-        if let Some(n) = self.test_events_cap {
-            return n;
-        }
-        Self::MAX_BUFFERED_EVENTS
-    }
-
-    /// Append one telemetry event to the internal buffer, enforcing the cap.
+    /// Append one telemetry event to the internal buffer, enforcing the pool's
+    /// `events_cap` (default [`MAX_BUFFERED_EVENTS`](Self::MAX_BUFFERED_EVENTS)).
     ///
     /// # Cap enforcement (layered safety nets)
     ///
     /// **Debug builds** — a `debug_assert!` fires when the buffer is already at
-    /// [`MAX_BUFFERED_EVENTS`](Self::MAX_BUFFERED_EVENTS), causing a visible panic in
-    /// `cargo test`.  This surfaces "engine never drains" loudly during development.
+    /// `events_cap`, causing a visible panic in `cargo test`.  This surfaces
+    /// "engine never drains" loudly during development.
     ///
-    /// **Release builds** — when `events.len() > MAX_BUFFERED_EVENTS` the oldest half
+    /// **Release builds** — when `events.len() > events_cap` the oldest half
     /// is auto-trimmed, the [`dropped_events`](Self::dropped_events) counter is
-    /// incremented by `MAX_BUFFERED_EVENTS / 2`, and a single `tracing::warn!` (with
+    /// incremented by `events_cap / 2`, and a single `tracing::warn!` (with
     /// the running `total_dropped` field) is emitted per pool instance.
     ///
     /// All donate/evict event emissions must go through this helper so the cap logic
     /// lives in exactly one place.
     fn push_event(&mut self, ev: WarmPoolEvent) {
-        let cap = self.events_cap_effective();
+        let cap = self.events_cap;
         debug_assert!(
             self.events.len() < cap,
             "WarmStatePool events buffer hit cap of {} — an embedder is not draining at \
@@ -599,7 +577,8 @@ impl WarmStatePool {
     /// Total number of telemetry events silently dropped by the auto-trim safety net
     /// (release builds only; debug builds panic via `debug_assert!` instead).
     ///
-    /// Each auto-trim round drops `MAX_BUFFERED_EVENTS / 2` events; this counter
+    /// Each auto-trim round drops `events_cap / 2` events (`events_cap` defaults to
+    /// [`MAX_BUFFERED_EVENTS`](Self::MAX_BUFFERED_EVENTS)); this counter
     /// accumulates across all rounds since the pool was constructed.
     ///
     /// A non-zero value is a health signal: it means `drain_events()` is not being
@@ -1400,9 +1379,9 @@ mod tests {
         use std::panic::AssertUnwindSafe;
         // NOTE: This test performs MAX_BUFFERED_EVENTS (65 536) donations to fill the
         // buffer to the exact cap, then one more to trigger the debug_assert! panic.
-        // The count cannot be reduced without a test-only cap seam: the off-by-one
-        // boundary (len == MAX passes, len == MAX+1 fires) requires filling to the
-        // precise cap.  ~65 k HashMap inserts complete in ≲ 100 ms.  This test is
+        // It deliberately goes through `unlimited()` rather than `with_limits` to pin
+        // that the DEFAULT cap is MAX_BUFFERED_EVENTS (len == MAX passes, len == MAX+1
+        // fires).  ~65 k HashMap inserts complete in ≲ 100 ms.  This test is
         // gated #[cfg(debug_assertions)] and does not run in the release test pass.
 
         // Build a pool with effectively unlimited memory budget so LRU eviction
