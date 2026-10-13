@@ -1707,7 +1707,7 @@ mod tests {
         let _ = WarmStatePool::with_limits(None, 1);
     }
 
-    // --- Task 2516 step-1: donate_preserving_lru / checkout_with_lru_stamp ---
+    // --- Task 2516 step-1: donate_preserving_lru_with_cost / checkout_with_lru_stamp_and_cost ---
     //
     // These tests pin the LRU-preserving round-trip API added in response to
     // reviewer suggestion S1 (see task 2516 analysis).  The (4c)→(14b) cache-miss
@@ -1716,21 +1716,22 @@ mod tests {
     // round-tripped entry look "recently accessed" and thus less likely to be
     // evicted than genuinely-old entries already in the pool.
 
-    /// `donate_preserving_lru` must re-insert the entry using the *provided*
+    /// `donate_preserving_lru_with_cost` must re-insert the entry using the *provided*
     /// `last_accessed` Instant, not a fresh `Instant::now()`.
     ///
     /// Setup: budget=250; donate A then B (with a sleep between to guarantee
     /// A's timestamp is strictly older than B's).  Round-trip A through
-    /// `checkout_with_lru_stamp` + `donate_preserving_lru`.  Donating C (100
-    /// bytes) forces exactly one eviction (200+100=300 > 250).  Because A's
-    /// preserved stamp is older than B's, A must be the LRU victim — not B.
+    /// `checkout_with_lru_stamp_and_cost` + `donate_preserving_lru_with_cost`.
+    /// Donating C (100 bytes) forces exactly one eviction (200+100=300 > 250).
+    /// Every entry carries cost 0.0, so the LRU tiebreak decides: because A's
+    /// preserved stamp is older than B's, A must be the victim — not B.
     ///
-    /// If `donate_preserving_lru` incorrectly called `Instant::now()`, A's stamp
-    /// would become newer than B's (set during the sleep window), causing B to be
-    /// evicted instead, and the assertion `pool.checkout(&node_a).is_none()` would
+    /// If `donate_preserving_lru_with_cost` incorrectly called `Instant::now()`, A's
+    /// stamp would become newer than B's (set during the sleep window), causing B to
+    /// be evicted instead, and the assertion `pool.checkout(&node_a).is_none()` would
     /// fail.
     #[test]
-    fn donate_preserving_lru_does_not_refresh_access_time() {
+    fn donate_preserving_lru_with_cost_does_not_refresh_access_time() {
         use std::time::Duration;
 
         let mut pool = WarmStatePool::new(250);
@@ -1750,11 +1751,11 @@ mod tests {
         // used = 200, budget = 250.
 
         // Round-trip A: checkout preserving the stamp, then re-donate preserving it.
-        let (a_state, a_stamp) = pool
-            .checkout_with_lru_stamp(&node_a)
+        let (a_state, a_stamp, a_cost) = pool
+            .checkout_with_lru_stamp_and_cost(&node_a)
             .expect("A must be in the pool before round-trip");
         // A is now removed from pool; used = 100.
-        pool.donate_preserving_lru(node_a.clone(), a_state, a_stamp);
+        pool.donate_preserving_lru_with_cost(node_a.clone(), a_state, a_stamp, a_cost);
         // A is back in pool with its *original* (older) stamp; used = 200.
 
         // Donate C: 200+100=300 > 250 → exactly one eviction needed.
@@ -1765,7 +1766,7 @@ mod tests {
         assert!(
             pool.checkout(&node_a).is_none(),
             "A must be evicted: its preserved (original) stamp is older than B's; \
-             if donate_preserving_lru called Instant::now() instead, B would be \
+             if donate_preserving_lru_with_cost called Instant::now() instead, B would be \
              evicted here and this assertion would succeed on the wrong entry"
         );
         assert!(
@@ -1778,30 +1779,34 @@ mod tests {
         );
     }
 
-    /// `checkout_with_lru_stamp` returns both the `OpaqueState` and an `Instant`
+    /// `checkout_with_lru_stamp_and_cost` returns the `OpaqueState`, an `Instant`
     /// that was captured at donation time (bounded between `before` and `after`
-    /// the donate call).
+    /// the donate call), and the donated `cost_per_byte`.
     ///
-    /// Pins the return-type contract for the new method: the caller receives
-    /// `(OpaqueState, Instant)` so it can later pass the stamp to
-    /// `donate_preserving_lru` without losing the original LRU ordering.
+    /// Pins the return-type contract: the caller receives `(OpaqueState, Instant, f64)`
+    /// so it can later pass the stamp and cost to `donate_preserving_lru_with_cost`
+    /// without losing the original LRU ordering or the cost.
     #[test]
-    fn checkout_with_lru_stamp_returns_state_and_original_instant() {
+    fn checkout_with_lru_stamp_and_cost_returns_state_original_instant_and_cost() {
         let mut pool = WarmStatePool::new(1024);
         let node_x = NodeId::Value(ValueCellId::new("T", "x"));
 
         let before = std::time::Instant::now();
-        pool.donate(node_x.clone(), OpaqueState::new(42i32, 8));
+        pool.donate_with_cost(node_x.clone(), OpaqueState::new(42i32, 8), 0.75);
         let after = std::time::Instant::now();
 
-        let (state, stamp) = pool
-            .checkout_with_lru_stamp(&node_x)
+        let (state, stamp, cost) = pool
+            .checkout_with_lru_stamp_and_cost(&node_x)
             .expect("X must be in the pool after donate");
 
         assert_eq!(
             state.downcast::<i32>(),
             Some(42),
-            "checkout_with_lru_stamp must return the donated state"
+            "checkout_with_lru_stamp_and_cost must return the donated state"
+        );
+        assert_eq!(
+            cost, 0.75,
+            "checkout_with_lru_stamp_and_cost must return the donated cost_per_byte"
         );
         assert!(
             stamp >= before,
@@ -1820,16 +1825,17 @@ mod tests {
         // Entry must have been consumed (take semantics).
         assert!(
             pool.checkout(&node_x).is_none(),
-            "checkout_with_lru_stamp must have take-semantics: second call returns None"
+            "checkout_with_lru_stamp_and_cost must have take-semantics: second call returns None"
         );
     }
 
     // --- Task 2456: emit Evicted on same-key overwrite ---
 
-    /// `donate_preserving_lru` emits overwrite-Evicted symmetrically via `insert_entry`.
+    /// `donate_preserving_lru_with_cost` emits overwrite-Evicted symmetrically via
+    /// `insert_entry`.
     ///
     /// Donate Y via `donate(Y, state)`, drain, then call
-    /// `donate_preserving_lru(Y, state2, some_stamp)` directly (without checkout)
+    /// `donate_preserving_lru_with_cost(Y, state2, some_stamp, 0.0)` directly (without checkout)
     /// to trigger the overwrite path — assert `[Evicted{Y,50}, Donated{Y,80}]`.
     ///
     /// Guards the design decision "localize the change to insert_entry" — all three
@@ -1838,7 +1844,7 @@ mod tests {
     /// covered transitively by `donate_same_node_emits_evicted_then_donated_on_overwrite`
     /// (which calls `donate`, a thin wrapper around `donate_with_cost`).
     #[test]
-    fn donate_preserving_lru_emits_overwrite_evicted() {
+    fn donate_preserving_lru_with_cost_emits_overwrite_evicted() {
         let mut pool = WarmStatePool::new(1024);
         let node_y = NodeId::Value(ValueCellId::new("T", "y"));
         let stamp = std::time::Instant::now();
@@ -1846,8 +1852,8 @@ mod tests {
         pool.donate(node_y.clone(), OpaqueState::new(0u8, 50));
         pool.drain_events(); // clear setup
 
-        // Call donate_preserving_lru directly on an already-present key.
-        pool.donate_preserving_lru(node_y.clone(), OpaqueState::new(0u8, 80), stamp);
+        // Call donate_preserving_lru_with_cost directly on an already-present key.
+        pool.donate_preserving_lru_with_cost(node_y.clone(), OpaqueState::new(0u8, 80), stamp, 0.0);
         let events = pool.drain_events();
 
         assert_eq!(
@@ -1862,7 +1868,7 @@ mod tests {
                     size_bytes: 80,
                 },
             ],
-            "donate_preserving_lru same-key overwrite must emit Evicted then Donated"
+            "donate_preserving_lru_with_cost same-key overwrite must emit Evicted then Donated"
         );
     }
 
