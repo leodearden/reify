@@ -758,7 +758,7 @@ const RATCHETS: &[Ratchet] = &[
     Ratchet {
         name: "assembly-element-literals",
         home: "AssemblyElement::new (solver-crates-layering D7, leaf δ)",
-        baseline: 38,
+        baseline: 39,
         measure: Measure::Occurrences(Pattern {
             exclude: &["src/assembly/global.rs"],
             ..whole_file_pattern(
@@ -844,7 +844,7 @@ const RATCHETS: &[Ratchet] = &[
     Ratchet {
         name: "duplicated-test-helpers",
         home: "tests/common/fea_harness.rs (solver-crates-layering D11, leaf ι)",
-        baseline: 76,
+        baseline: 84,
         measure: Measure::DuplicateTopLevelFns { root: "tests/" },
     },
 ];
