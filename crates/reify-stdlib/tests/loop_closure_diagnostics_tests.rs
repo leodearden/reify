@@ -16,7 +16,7 @@
 //! is exercised in `crates/reify-types/src/diagnostics.rs`'s inline test
 //! module — these tests focus on producer-side semantics.
 
-use reify_constraints::{
+use reify_stdlib::loop_closure_solver::{
     LoopClosureReport, NewtonConfig, NewtonOutcome, StartStrategy,
     solve_loop_closure_with_diagnostics,
 };
