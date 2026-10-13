@@ -3498,5 +3498,224 @@ else
     assert "T32k: classification undeclared/orphaned/coverage_diff agree with discovery under LC_ALL=$T32_LC (got: $t32k_out, rc=$t32k_rc)" false
 fi
 
+# -- Test 33: one output contract across all four branches (task #8681, B6) -----
+# Pool, legacy and member-subset must frame the same members identically --
+# headers, verdicts, Summary, FAILED markers and FAILED-DETAIL -- and that
+# framing must equal a literal golden, so all branches drifting together is
+# RED too. --scope host-infra runs only the host-exclusive members, so it is
+# held to the same golden over that set. Every branch must also neutralize
+# member slot/clock tokens and wrapper deadline lines on BOTH member streams.
+# The failing member is host-exclusive, so no branch retries it: the pool's
+# retry framing is pool-only and stays pinned by T18/T27/T30f.
+#
+# SELF-POLLUTION: the captures hold live tokens until every branch sanitizes,
+# so live tokens are assembled at runtime (the T29 idiom) and every failure
+# below reports counts and branch names only, never a capture.
+echo ""
+echo "--- Test 33: one output contract across pool, legacy, subset and host-infra ---"
+
+T33_SP='@@REIFY_SLOT_'
+T33_CP='@@REIFY_CLOCK_'
+T33_QSP='@@REIFY_QUOTED_SLOT_'
+T33_QCP='@@REIFY_QUOTED_CLOCK_'
+
+TMPDIR_T33="$(mktemp -d)"
+_TMPDIRS+=("$TMPDIR_T33")
+T33_INFRA="$TMPDIR_T33/infra"
+mkdir "$T33_INFRA"
+
+cat > "$T33_INFRA/test_a_pool_pass.sh" <<T33EOF
+#!/usr/bin/env bash
+echo "  PASS: a quotes ${T33_SP}TIMEOUT@@ reason=fixture"
+echo "${T33_CP}STOP@@ reason=fixture" >&2
+exit 0
+T33EOF
+cat > "$T33_INFRA/test_b_hx_fail.sh" <<T33EOF
+#!/usr/bin/env bash
+echo "${T33_SP}TIMEOUT@@ reason=fixture slots=1 waited=0 disposition=fatal lock=/tmp/x"
+echo "lib_lane_x_flock.sh: failed to acquire Lane-X lock within 1s (LOCK=/tmp/m)" >&2
+echo "  FAIL: b-detail quotes ${T33_SP}TIMEOUT@@ reason=fixture"
+exit 1
+T33EOF
+cat > "$T33_INFRA/test_c_hx_pass.sh" <<T33EOF
+#!/usr/bin/env bash
+echo "${T33_CP}START@@ reason=fixture"
+echo "lib_test_semaphore.sh: failed to acquire test slot within 0s (LOCK=/tmp/l, N=1)" >&2
+exit 0
+T33EOF
+chmod +x "$T33_INFRA"/test_*.sh
+
+MANIFEST_T33="$TMPDIR_T33/classification.manifest"
+cat > "$MANIFEST_T33" <<'EOF'
+test_a_pool_pass.sh pool
+test_b_hx_fail.sh host-exclusive
+test_c_hx_pass.sh host-exclusive
+EOF
+
+# (pool) default path.
+t33p_rc=0
+t33p_out="$(env -u REIFY_RUN_ALL_EXCLUDE_HOST_INFRA -u REIFY_RUN_ALL_MEMBER_SUBSET \
+    -u REIFY_RUN_ALL_SUBSET_COUNT_ONLY -u REIFY_RUN_ALL_CONTENT_SKIP \
+    -u REIFY_RUN_ALL_SKIP_STATE -u REIFY_RUN_ALL_POOL_DISABLE \
+    RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T33" \
+    REIFY_RUN_ALL_POOL_LOCK="$TMPDIR_T33/pool.lock" \
+    REIFY_RUN_ALL_POOL_PSI_DISABLE=1 \
+    REIFY_RUN_ALL_POOL_CONCURRENCY=2 \
+    bash "$RUN_ALL" "$T33_INFRA" 2>&1)" || t33p_rc=$?
+
+# (legacy) break-glass all-serial path.
+t33l_rc=0
+t33l_out="$(env -u REIFY_RUN_ALL_EXCLUDE_HOST_INFRA -u REIFY_RUN_ALL_MEMBER_SUBSET \
+    -u REIFY_RUN_ALL_SUBSET_COUNT_ONLY -u REIFY_RUN_ALL_CONTENT_SKIP \
+    -u REIFY_RUN_ALL_SKIP_STATE \
+    RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T33" \
+    REIFY_RUN_ALL_POOL_LOCK="$TMPDIR_T33/legacy.lock" \
+    REIFY_RUN_ALL_POOL_PSI_DISABLE=1 \
+    REIFY_RUN_ALL_POOL_CONCURRENCY=2 \
+    REIFY_RUN_ALL_POOL_DISABLE=1 \
+    bash "$RUN_ALL" "$T33_INFRA" 2>&1)" || t33l_rc=$?
+
+# (subset) every member named.
+t33s_rc=0
+t33s_out="$(env -u REIFY_RUN_ALL_EXCLUDE_HOST_INFRA \
+    -u REIFY_RUN_ALL_SUBSET_COUNT_ONLY -u REIFY_RUN_ALL_CONTENT_SKIP \
+    -u REIFY_RUN_ALL_SKIP_STATE -u REIFY_RUN_ALL_POOL_DISABLE \
+    RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T33" \
+    REIFY_RUN_ALL_POOL_LOCK="$TMPDIR_T33/subset.lock" \
+    REIFY_RUN_ALL_POOL_PSI_DISABLE=1 \
+    REIFY_RUN_ALL_POOL_CONCURRENCY=2 \
+    REIFY_RUN_ALL_MEMBER_SUBSET="test_a_pool_pass.sh test_b_hx_fail.sh test_c_hx_pass.sh" \
+    bash "$RUN_ALL" "$T33_INFRA" 2>&1)" || t33s_rc=$?
+
+# (host-infra) the host-exclusive members, under a private Lane-X lock.
+LOCK_T33="$TMPDIR_T33/lane-x.lock"
+t33h_rc=0
+t33h_out="$(env -u REIFY_RUN_ALL_EXCLUDE_HOST_INFRA -u REIFY_RUN_ALL_MEMBER_SUBSET \
+    -u REIFY_RUN_ALL_SUBSET_COUNT_ONLY -u REIFY_RUN_ALL_CONTENT_SKIP \
+    -u REIFY_RUN_ALL_SKIP_STATE -u REIFY_RUN_ALL_POOL_DISABLE \
+    RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T33" \
+    REIFY_RUN_ALL_POOL_LOCK="$TMPDIR_T33/host-infra.lock" \
+    REIFY_RUN_ALL_POOL_PSI_DISABLE=1 \
+    REIFY_RUN_ALL_POOL_CONCURRENCY=2 \
+    REIFY_LANE_X_FLOCK_LOCK="$LOCK_T33" \
+    bash "$RUN_ALL" --scope host-infra "$T33_INFRA" 2>&1)" || t33h_rc=$?
+rm -f "$LOCK_T33" "${LOCK_T33}.slot-1"
+
+# _t33_project: the framing lines of a run_all capture, in order -- headers,
+# verdicts, attempt delimiters, Summary and FAILED markers, plus every
+# FAILED-DETAIL block whole.
+_t33_project() {
+    awk '
+        /^--- FAILED-DETAIL: / { in_detail = 1 }
+        in_detail { print; if (/^--- END FAILED-DETAIL: /) in_detail = 0; next }
+        /^--- Running: |^  RESULT: |^--- attempt |^=== Summary: |^=== FAILED: |^FAILED / { print }
+    ' <<<"$1"
+}
+
+# _t33_count <haystack> <needle>: occurrences of needle, by bash substring.
+_t33_count() {
+    local _hay="$1" _needle="$2" _n=0
+    while [[ "$_hay" == *"$_needle"* ]]; do
+        _hay="${_hay#*"$_needle"}"
+        _n=$((_n + 1))
+    done
+    echo "$_n"
+}
+
+_t33_nlines() {
+    if [ -z "$1" ]; then echo 0; else printf '%s\n' "$1" | wc -l | tr -d ' '; fi
+}
+
+t33p_proj="$(_t33_project "$t33p_out")"
+t33l_proj="$(_t33_project "$t33l_out")"
+t33s_proj="$(_t33_project "$t33s_out")"
+t33h_proj="$(_t33_project "$t33h_out")"
+
+t33_tail_b_c="$(printf '%s\n' \
+    '--- Running: test_b_hx_fail.sh ---' \
+    '  RESULT: FAIL (test_b_hx_fail.sh)' \
+    '--- Running: test_c_hx_pass.sh ---' \
+    '  RESULT: PASS (test_c_hx_pass.sh)')"
+t33_failed_tail="$(printf '%s\n' \
+    '=== FAILED: test_b_hx_fail.sh ===' \
+    'FAILED test_b_hx_fail.sh' \
+    '--- FAILED-DETAIL: test_b_hx_fail.sh ---' \
+    "  FAIL: b-detail quotes ${T33_QSP}TIMEOUT@@ reason=fixture" \
+    '--- END FAILED-DETAIL: test_b_hx_fail.sh ---')"
+t33_golden="$(printf '%s\n' \
+    '--- Running: test_a_pool_pass.sh ---' \
+    '  RESULT: PASS (test_a_pool_pass.sh)' \
+    "$t33_tail_b_c" \
+    '=== Summary: 3 discovered, 1 failed ===' \
+    "$t33_failed_tail")"
+t33_golden_h9="$(printf '%s\n' \
+    "$t33_tail_b_c" \
+    '=== Summary: 2 discovered, 1 failed ===' \
+    "$t33_failed_tail")"
+
+t33p_n="$(_t33_nlines "$t33p_proj")"
+t33l_n="$(_t33_nlines "$t33l_proj")"
+t33s_n="$(_t33_nlines "$t33s_proj")"
+t33h_n="$(_t33_nlines "$t33h_proj")"
+t33_golden_n="$(_t33_nlines "$t33_golden")"
+t33_golden_h9_n="$(_t33_nlines "$t33_golden_h9")"
+
+if [[ "$t33p_out" == *"INFO: run_all.sh pool: N="* ]] && [[ "$t33l_out" != *"INFO: run_all.sh pool: N="* ]]; then
+    assert "T33a: the pool leg took the pool path and the legacy leg did not" true
+else
+    assert "T33a: the pool leg took the pool path and the legacy leg did not" false
+fi
+
+if [ "$t33p_proj" = "$t33l_proj" ] && [ "$t33p_proj" = "$t33s_proj" ]; then
+    assert "T33b: pool, legacy and subset frame the members byte-identically" true
+else
+    assert "T33b: pool, legacy and subset frame the members byte-identically (projection lines: pool $t33p_n, legacy $t33l_n, subset $t33s_n)" false
+fi
+
+if [ "$t33p_proj" = "$t33_golden" ]; then
+    assert "T33c: the pool framing equals the literal golden" true
+else
+    assert "T33c: the pool framing equals the literal golden (projection lines: pool $t33p_n, golden $t33_golden_n)" false
+fi
+
+if [ "$t33h_proj" = "$t33_golden_h9" ]; then
+    assert "T33d: the host-infra framing equals the golden over its host-exclusive members" true
+else
+    assert "T33d: the host-infra framing equals the golden over its host-exclusive members (projection lines: host-infra $t33h_n, golden $t33_golden_h9_n)" false
+fi
+
+if [ "$t33p_rc" -eq 1 ] && [ "$t33l_rc" -eq 1 ] && [ "$t33s_rc" -eq 1 ] && [ "$t33h_rc" -eq 1 ]; then
+    assert "T33e: every branch exits 1 for the one failing member" true
+else
+    assert "T33e: every branch exits 1 for the one failing member (pool $t33p_rc, legacy $t33l_rc, subset $t33s_rc, host-infra $t33h_rc)" false
+fi
+
+for _t33_leg in pool legacy subset host-infra; do
+    case "$_t33_leg" in
+        pool) _t33_out="$t33p_out" ;;
+        legacy) _t33_out="$t33l_out" ;;
+        subset) _t33_out="$t33s_out" ;;
+        host-infra) _t33_out="$t33h_out" ;;
+    esac
+    _t33_live_slot="$(_t33_count "$_t33_out" "$T33_SP")"
+    _t33_live_clock="$(_t33_count "$_t33_out" "$T33_CP")"
+    _t33_live_lanex="$(_t33_count "$_t33_out" "lib_lane_x_flock.sh: failed to acquire ")"
+    _t33_live_sem="$(_t33_count "$_t33_out" "lib_test_semaphore.sh: failed to acquire ")"
+    _t33_quoted_slot="$(_t33_count "$_t33_out" "${T33_QSP}TIMEOUT@@")"
+    _t33_quoted_clock="$(_t33_count "$_t33_out" "$T33_QCP")"
+    _t33_quoted_lanex="$(_t33_count "$_t33_out" "lib_lane_x_flock.sh[quoted]: failed to acquire")"
+    if [ "$_t33_live_slot" -eq 0 ] && [ "$_t33_live_clock" -eq 0 ] \
+        && [ "$_t33_live_lanex" -eq 0 ] && [ "$_t33_live_sem" -eq 0 ]; then
+        assert "T33f [$_t33_leg]: no live slot or clock token and no live wrapper deadline line survives" true
+    else
+        assert "T33f [$_t33_leg]: no live slot or clock token and no live wrapper deadline line survives (live slot $_t33_live_slot, clock $_t33_live_clock, lane-x $_t33_live_lanex, semaphore $_t33_live_sem)" false
+    fi
+    if [ "$_t33_quoted_slot" -gt 0 ] && [ "$_t33_quoted_clock" -gt 0 ] && [ "$_t33_quoted_lanex" -gt 0 ]; then
+        assert "T33g [$_t33_leg]: the member output is present in neutralized form (non-vacuity)" true
+    else
+        assert "T33g [$_t33_leg]: the member output is present in neutralized form (non-vacuity) (quoted slot $_t33_quoted_slot, clock $_t33_quoted_clock, lane-x $_t33_quoted_lanex)" false
+    fi
+done
+
 # -- Summary --------------------------------------------------------------------
 test_summary
