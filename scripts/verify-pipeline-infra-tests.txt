@@ -51,6 +51,9 @@ scripts/flake-density-report.py    tests/infra/test_flake_density_report.sh
 # pair at the bottom of this file. Without this row a --scope branch diff
 # touching only the .py selects no infra test at all.
 tests/infra/test_flake_density_report.py    tests/infra/test_flake_density_report.sh
+# Task 8678: the adoption-ratchet data table and engine select its wrapper.
+tests/infra/adoption-ratchet.manifest    tests/infra/test_infra_adoption_ratchet.sh
+tests/infra/adoption_ratchet.py    tests/infra/test_infra_adoption_ratchet.sh
 # Task 8455: the E3 §7 analysis modules and their suite select its wrapper.
 docs/prds/v0_6/e3-granularity/analysis/e3_protocol.py    tests/infra/test_e3_analysis.sh
 docs/prds/v0_6/e3-granularity/analysis/e3_stats.py    tests/infra/test_e3_analysis.sh

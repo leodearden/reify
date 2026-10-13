@@ -1,0 +1,18 @@
+# tests/infra/adoption-ratchet.manifest — adoption-ratchet rows (PRD
+# docs/prds/v0_6/run-all-runner-infra-harness.md §3 D9), evaluated by
+# tests/infra/adoption_ratchet.py and gated by test_infra_adoption_ratchet.sh.
+#
+# Row: pattern-id | ERE | path | ceiling | owner leaf
+#   - columns are separated by ' | ' (space, pipe, space); the ERE is every
+#     column between the pattern-id and the last three, taken verbatim, so it
+#     may itself contain '|';
+#   - the ERE is the subset POSIX ERE and Python re agree on: no [[:class:]]
+#     brackets and no backreferences;
+#   - only code lines count: a line whose first non-blank character is '#'
+#     never counts;
+#   - path is a repo-root-relative glob and must match at least one file;
+#   - the ratchet reds only when a count EXCEEDS its ceiling;
+#   - a leaf that extracts a construct adds its row at the post-extraction
+#     count and names the row in its done-criteria.
+# Measure: python3 tests/infra/adoption_ratchet.py
+inline-discovery-loop | for [A-Za-z_][A-Za-z0-9_]* in "?\$[{]?[A-Za-z_][A-Za-z0-9_]*[}]?"?/test_\*\.sh | tests/infra/run_all.sh | 0 | α #8678

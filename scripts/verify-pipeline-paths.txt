@@ -184,6 +184,13 @@ tests/infra/run_all.sh
 #   entry immediately above.
 tests/infra/run-all-ambient-vars.manifest
 #
+# tests/infra/adoption-ratchet.manifest: the adoption-ratchet rows (task
+#   #8678, PRD run-all-runner-infra-harness §3 D9) read only by
+#   tests/infra/adoption_ratchet.py. A ledger-only edit (a raised ceiling, a
+#   new row) must route to the full --scope all gate so the ratchet re-runs
+#   against it, mirroring run-all-ambient-vars.manifest immediately above.
+tests/infra/adoption-ratchet.manifest
+#
 # scripts/check-nan-safe-ordering.sh / scripts/check-compute-trampoline-
 #   registration.sh (task 6243): the two INV-FEA lint gates, hand-registered
 #   here before the emitted-gate clause existed. Both are emitted-not-sourced
