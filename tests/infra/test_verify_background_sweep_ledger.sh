@@ -100,6 +100,19 @@ PY
 # Exported: every assertion runs its predicate in a `bash -c` child.
 export -f ledger_field
 
+# make_stale_ts_target <dir> — a fake cargo build tree holding ONE
+# libtree_sitter_reify.a whose stamp attests bytes that are not the sources on
+# disk: what a stale seeded lane archive looks like to
+# scripts/tree-sitter-freshness.sh. There is deliberately no cargo run marker
+# beside it, so liveness is undeterminable and the guard asserts on the archive
+# (fail-closed) instead of demoting it to dormant.
+make_stale_ts_target() {
+    local _out="$1/release/build/tree-sitter-reify-0000000000000000/out"
+    mkdir -p "$_out"
+    : > "$_out/libtree_sitter_reify.a"
+    printf '%064d  %s\n' 0 src/parser.c > "$_out/tree_sitter_inputs.stamp"
+}
+
 # ===========================================================================
 # Block A — a COMPLETED background run is recorded, once, as parseable data.
 # ===========================================================================
@@ -304,5 +317,39 @@ assert "F3: the default path is NOT relative to the running worktree — no ledg
 
 assert "F4: resolving the default path did not change the run's exit code" \
     test "$RUN_RC" -eq 0
+
+# ===========================================================================
+# Block G — the verdict must not depend on the LANE's tree-sitter archive.
+# verify.sh's `ensure` and `check` leaves read whatever libtree_sitter_reify.a
+# the target they are aimed at holds, and a stub cargo never rebuilds it, so a
+# stale seeded archive reds an otherwise passing run (A4/A5/A9/D3/E1/F4 at
+# once). The stale condition is built HERE and handed in through the INHERITED
+# environment, so the property is pinned in every lane without touching the
+# lane's real target/.
+# ===========================================================================
+echo ""
+echo "--- Block G: a stale tree-sitter archive cannot red a passing background run ---"
+
+STALE_TS_TARGET="$WORK/stale-ts-target"
+make_stale_ts_target "$STALE_TS_TARGET"
+
+: > "$LEDGER"
+REIFY_TS_FRESHNESS_TARGET_DIR="$STALE_TS_TARGET" run_verify background 0 "$LEDGER"
+
+assert "G1: a passing background run still exits 0 when the inherited environment aims the tree-sitter freshness guard at a STALE archive — the suite's verdict must not depend on the lane's target/" \
+    test "$RUN_RC" -eq 0
+
+# Non-vacuity, after G1's run: that run's tree-sitter-generate.sh leaf
+# guarantees the generated src/parser.c exists, and without it `check` also
+# exits 1 but for another reason ("input is missing"), so the guard's STALE
+# wording is asserted and not the exit code alone.
+G2_OUT="$WORK/g2-freshness-check.out"
+G2_RC=0
+REIFY_TS_FRESHNESS_TARGET_DIR="$STALE_TS_TARGET" \
+    bash "$REPO_ROOT/scripts/tree-sitter-freshness.sh" check >"$G2_OUT" 2>&1 || G2_RC=$?
+
+assert "G2: and that fixture really is a STALE archive to the guard, so G1 is not vacuous" \
+    bash -c '[ "$1" -ne 0 ] && grep -q STALE "$2"' \
+    _ "$G2_RC" "$G2_OUT"
 
 test_summary
