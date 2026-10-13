@@ -589,8 +589,7 @@ structure def Gravity : Load {
 //                           tightened in task 3641).
 //   ShellStress.mid       — mid-surface (neutral-plane) stress layer
 //                           (Field<Point3<Length>, Tensor<2,3,Pressure>>;
-//                           tightened in task 3641). For tet results all
-//                           three ShellStress channels are equal.
+//                           tightened in task 3641).
 //   ShellStress.bottom    — bottom-surface stress layer
 //                           (Field<Point3<Length>, Tensor<2,3,Pressure>>;
 //                           tightened in task 3641).
@@ -607,13 +606,10 @@ structure def Gravity : Load {
 // "Persistent-naming for derived mid-surface entities"); at the stdlib level T16
 // declares the shapes and the alias/dispatch semantics are wired by the engine.
 //
-// Rust runtime container: `crates/reify-solver-elastic/src/shell_result.rs`
-// houses the `ShellStress` struct with three fields (top/mid/bottom) and a
-// `homogeneous(field)` constructor for tet results (sets all three channels
-// to field; no `frame` field on `ShellStress` — `frame` lives on
-// `ElasticResult`, as listed above). Engine-integration tasks T18-T20 call
-// `homogeneous` for tet elements and use direct struct initialisation for
-// shell elements.
+// Producer: `shell_element_stress` recovers shell layers and
+// `flatten_shell_channels` packs them (`crates/reify-solver-elastic/src/shell_result.rs`);
+// reify-eval's `shell_channels_to_value` wraps them into `ShellStress`. Tet
+// results leave `shell_channels` Undef.
 //
 // See `docs/prds/v0_4/structural-analysis-shells.md` § "Stress through
 // thickness" for the full design rationale.
