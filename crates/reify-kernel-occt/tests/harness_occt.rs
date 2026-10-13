@@ -102,6 +102,8 @@ mod nurbs_surface_integration;
 mod offset_solid_integration;
 #[path = "harness_occt/offset_surface_integration.rs"]
 mod offset_surface_integration;
+#[path = "harness_occt/op_args_entry_point_parity.rs"]
+mod op_args_entry_point_parity;
 #[path = "harness_occt/pattern_differential_integration.rs"]
 mod pattern_differential_integration;
 #[path = "harness_occt/pattern_single_pass_counter.rs"]
