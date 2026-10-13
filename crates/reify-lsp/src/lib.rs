@@ -9,6 +9,7 @@ pub mod blocking_work;
 pub mod bridge;
 pub mod completion;
 pub mod convert;
+pub mod decl_oracle;
 pub mod diagnostics;
 pub mod document;
 pub mod goto_def;
