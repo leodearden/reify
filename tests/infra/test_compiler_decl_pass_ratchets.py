@@ -21,6 +21,29 @@ sys.path.insert(0, str(INFRA_DIR))
 
 import rust_construct_ratchet as rcr  # noqa: E402
 
+ROWS = (
+    # D12 R1: re-runs of the three let-kind predicates.
+    rcr.Row(row_id="R1",
+            construct=re.compile(
+                r"(?<!fn )\b(?:is_geometry_let|classify_geometry_list_let|is_selector_expr)\("),
+            view=rcr.View.CODE,
+            paths=("crates/reify-compiler/src/entity.rs",
+                   "crates/reify-compiler/src/guards.rs"),
+            baseline=17, target=1, lowered_by="β #8731"),
+    # D12 R2: "__connector_ string literals in production code.
+    rcr.Row(row_id="R2",
+            construct=re.compile('"__connector_'),
+            view=rcr.View.CODE_WITH_LITERALS,
+            paths=("crates/*/src/**/*.rs",),
+            baseline=4, target=1, lowered_by="ζ #8735"),
+    # D12 R3: per-relation arity checks.
+    rcr.Row(row_id="R3",
+            construct=re.compile(r"args\.len\(\)\s*==\s*3(?![0-9])"),
+            view=rcr.View.CODE,
+            paths=("crates/reify-compiler/src/relation_signatures.rs",),
+            baseline=10, target=0, lowered_by="λ #8741"),
+)
+
 FIXTURE_LINES = {
     "R1": "    is_geometry_let(&value, functions, &known, &selectors);",
     "R2": '    let name = format!("__connector_{}", index);',
