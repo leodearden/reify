@@ -5,7 +5,16 @@ Shell meta-tests for reify's infrastructure scripts (`scripts/lib_portable.sh`,
 
 ## Auto-discovery
 
-`run_all.sh` discovers and runs every file matching `test_*.sh` in this directory.
+`run_all.sh` discovers through ONE predicate, `classification_discovered_set` in
+[`run-all-classification-lib.sh`](run-all-classification-lib.sh): regular files
+(symlinks followed) matching `test_*.sh` in this directory, minus
+`test_helpers.sh`, sorted with `LC_ALL=C`. Every branch consumes it — the pool,
+legacy `REIFY_RUN_ALL_POOL_DISABLE=1`, `REIFY_RUN_ALL_MEMBER_SUBSET` and
+`--scope host-infra` — and so does the `REIFY_RUN_ALL_SUBSET_COUNT_ONLY` probe.
+The member subset, the H3 exclusion and the host-exclusive bucket are filters
+over its output, so native `test_*.py` discovery (#7445) is a change to that
+one function. The adoption-ratchet row `inline-discovery-loop` holds
+`run_all.sh` at zero inline discovery loops (see "Adoption ratchet" below).
 To add a new meta-test, create `test_<name>.sh` — it will be picked up automatically
 on the next `run_all.sh` invocation and in CI.
 
@@ -59,6 +68,13 @@ task #7445. The deadline-capable-suite derivation
 two together, so a ported member keeps its roster place and its
 non-vacuity check. Making `test_*.py` discovery native — which would retire
 this wrapper idiom — is task #7445.
+
+**Moves are not authorship (D7).** New *assertions* are Python (stdlib
+`unittest` + `.sh` wrapper + manifest row). A satellite that *receives*
+existing bash blocks from an h14 partition stays bash: that is a
+behaviour-preserving move, not new authorship, consistent with the policy's
+"no scheduled mass migration". See PRD
+`docs/prds/v0_6/run-all-runner-infra-harness.md` §3 D7 and the migration policy.
 
 ## Shared test helpers
 
@@ -452,6 +468,22 @@ the findings and never the baseline, and fails if the scan collapses toward
 zero.  Its bounds are conservative lower bounds on *the instrument working*,
 not targets for the tree.
 
+## Adoption ratchet (`adoption-ratchet.manifest`)
+
+`test_infra_adoption_ratchet.sh` counts the code lines matching each row's ERE
+in [`adoption-ratchet.manifest`](adoption-ratchet.manifest) and reds only when
+a count EXCEEDS its ceiling — one-directional, like the cited-test-path
+ratchet. The row grammar lives in the manifest header. Measure with
+`python3 tests/infra/adoption_ratchet.py`. Each extraction leaf of PRD
+`docs/prds/v0_6/run-all-runner-infra-harness.md` adds its row at its
+post-extraction count.
+
+## Verify event channel
+
+`REIFY_VERIFY_EVENT_LOG` is the planned JSON-lines verify event channel. Its
+contract is PRD `docs/prds/v0_6/run-all-runner-infra-harness.md` §4 (C1–C4);
+leaf γ (#8685) fills this section in. Nothing reads or writes it yet.
+
 ## Assert behaviour, not source prose
 
 An infra assertion's subject is something the code **does**: an exit code,
@@ -531,7 +563,12 @@ ignores INT and QUIT (measured `SigIgn` `…06`).
 
 | File | Purpose |
 |------|---------|
-| `run_all.sh` | Discovery runner — runs all `test_*.sh` files |
+| `run_all.sh` | Discovery runner — runs every member `classification_discovered_set` returns |
+| `run-all-classification-lib.sh` | Shared library: the discovery predicate (`classification_discovered_set`) and the manifest bucket accessors |
+| `adoption_ratchet.py` | Adoption-ratchet engine and report CLI |
+| `adoption-ratchet.manifest` | Adoption-ratchet rows (grammar in its header) |
+| `test_infra_adoption_ratchet.sh` | Regression guard: no adoption-ratchet row exceeds its ceiling |
+| `test_infra_adoption_ratchet.py` | Its stdlib-unittest body, driving `adoption_ratchet.py` |
 | `test_helpers.sh` | Shared library: `assert()` and `test_summary()` |
 | `cited-test-path-lib.sh` | Shared library: cited-test-path scan, resolve and fingerprint derivation |
 | `cited-test-path-baseline.manifest` | Grandfather baseline for the cited-test-path ratchet |
