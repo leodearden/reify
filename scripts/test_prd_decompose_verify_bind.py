@@ -5,13 +5,16 @@ and value-assertion-kind tests for scripts/prd-decompose-verify.py.
 """
 
 import json
+import os
+import sys
 import unittest
 from typing import Any
 
-from _pdv_test_support import _load_pcc, _load_pdv
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from _pdv_test_support import load_pcc, load_pdv
 
-pdv = _load_pdv()
-pcc = _load_pcc()
+pdv = load_pdv()
+pcc = load_pcc()
 
 
 # ---------------------------------------------------------------------------

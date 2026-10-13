@@ -7,15 +7,17 @@ and report-format tests for scripts/prd-decompose-verify.py.
 import io
 import json
 import os
+import sys
 import tempfile
 import unittest
 import unittest.mock
 from typing import Any
 
-from _pdv_test_support import _PDV_MJS, _load_pcc, _load_pdv, _reify_missing_fixture_stderr
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from _pdv_test_support import PDV_MJS, load_pcc, load_pdv, reify_missing_fixture_stderr
 
-pdv = _load_pdv()
-pcc = _load_pcc()
+pdv = load_pdv()
+pcc = load_pcc()
 
 _LEAF_FIXTURE = "tests/prd-gate/fixtures/leaf.ri"
 
@@ -532,7 +534,7 @@ class TestFixtureAbsent(unittest.TestCase):
     def test_observed_enoent_stderr_is_not_a_falsification(self):
         """reify's 'Error reading <fixture>: ... (os error 2)' → fixture-absent."""
         rec = self._result("fixture-absent cap",
-                           stderr=_reify_missing_fixture_stderr(_LEAF_FIXTURE))
+                           stderr=reify_missing_fixture_stderr(_LEAF_FIXTURE))
         bv = pdv.synthesize_batch({"prover": [rec], "adversary": []})
         self.assertNotIn("fixture-absent cap", bv.blocking)
         self.assertFalse(bv.blocks)
@@ -610,7 +612,7 @@ class TestFixtureAbsent(unittest.TestCase):
     def test_fixture_absent_record_counts_as_executed(self):
         """The probe DID run — it just could not find its fixture."""
         rec = self._result("fixture-absent cap",
-                           stderr=_reify_missing_fixture_stderr(_LEAF_FIXTURE))
+                           stderr=reify_missing_fixture_stderr(_LEAF_FIXTURE))
         bv = pdv.synthesize_batch({"prover": [rec], "adversary": []})
         self.assertEqual(bv.executed, 1)
         self.assertEqual(bv.total, 1)
@@ -618,7 +620,7 @@ class TestFixtureAbsent(unittest.TestCase):
     def test_fixture_absent_is_named_in_its_own_report_section(self):
         """The capability stays visible, under a fixture-absent label."""
         rec = self._result("fixture-absent cap",
-                           stderr=_reify_missing_fixture_stderr(_LEAF_FIXTURE))
+                           stderr=reify_missing_fixture_stderr(_LEAF_FIXTURE))
         bv = pdv.synthesize_batch({"prover": [rec], "adversary": []})
         self.assertIn("fixture-absent cap", bv.report)
         self.assertIn("FIXTURE ABSENT", bv.report)
@@ -626,7 +628,7 @@ class TestFixtureAbsent(unittest.TestCase):
     def test_fixture_absent_is_not_counted_as_malformed(self):
         """The two categories are distinct: one ran without a target, one never ran."""
         rec = self._result("fixture-absent cap",
-                           stderr=_reify_missing_fixture_stderr(_LEAF_FIXTURE))
+                           stderr=reify_missing_fixture_stderr(_LEAF_FIXTURE))
         bv = pdv.synthesize_batch({"prover": [rec], "adversary": []})
         self.assertEqual(bv.malformed, [])
 
@@ -745,7 +747,7 @@ class TestFixtureAbsentErrnoAnchoring(unittest.TestCase):
         spelling is the perror shape, `<program>: <path>: <strerror>`.
         """
         spellings = (
-            ("paren", _reify_missing_fixture_stderr(_LEAF_FIXTURE)),
+            ("paren", reify_missing_fixture_stderr(_LEAF_FIXTURE)),
             ("bare-errno-eos", f"failed to open input {_LEAF_FIXTURE}: os error 2"),
             ("phrase-only", f"cat: {_LEAF_FIXTURE}: No such file or directory"),
         )
@@ -820,7 +822,7 @@ class TestFixtureAbsentNamesTheProbeTarget(unittest.TestCase):
     def test_enoent_about_a_different_file_blocks(self):
         self._assert_blocks(self._result(
             "other file cap",
-            _reify_missing_fixture_stderr("tests/prd-gate/fixtures/helper_lib.ri")))
+            reify_missing_fixture_stderr("tests/prd-gate/fixtures/helper_lib.ri")))
 
     def test_bare_errno_without_a_path_blocks(self):
         self._assert_blocks(self._result("bare errno cap", "failed to spawn: os error 2"))
@@ -838,7 +840,7 @@ class TestFixtureAbsentNamesTheProbeTarget(unittest.TestCase):
         self._assert_blocks(self._result(
             "split lines cap",
             f"warning: in {_LEAF_FIXTURE}: unused parameter\n"
-            + _reify_missing_fixture_stderr("tests/prd-gate/fixtures/other.ri")))
+            + reify_missing_fixture_stderr("tests/prd-gate/fixtures/other.ri")))
 
     def test_argv_without_an_argument_blocks(self):
         self._assert_blocks(self._result(
@@ -848,7 +850,7 @@ class TestFixtureAbsentNamesTheProbeTarget(unittest.TestCase):
     def test_enoent_line_after_warnings_is_fixture_absent(self):
         rec = self._result(
             "warned absent cap",
-            "warning: W_X: something\n" + _reify_missing_fixture_stderr(_LEAF_FIXTURE))
+            "warning: W_X: something\n" + reify_missing_fixture_stderr(_LEAF_FIXTURE))
         self.assertEqual(pdv.classify_record(rec), pdv.CAT_FIXTURE_ABSENT)
 
     def test_longer_path_ending_in_the_fixture_name_blocks(self):
@@ -856,12 +858,12 @@ class TestFixtureAbsentNamesTheProbeTarget(unittest.TestCase):
         for other in ("tests/prd-gate/fixtures/subleaf.ri", "/other/leaf.ri"):
             with self.subTest(other=other):
                 self._assert_blocks(self._result(
-                    f"suffix {other} cap", _reify_missing_fixture_stderr(other),
+                    f"suffix {other} cap", reify_missing_fixture_stderr(other),
                     command=["reify", "check", "leaf.ri"]))
 
     def test_fixture_delimited_as_a_whole_token_is_fixture_absent(self):
         for label, stderr in (
-            ("reify", _reify_missing_fixture_stderr("leaf.ri")),
+            ("reify", reify_missing_fixture_stderr("leaf.ri")),
             ("perror", "cat: leaf.ri: No such file or directory"),
             ("quoted", "can't open file 'leaf.ri': [Errno 2] No such file or directory"),
             ("backticked", "failed to read `leaf.ri` (os error 2)"),
@@ -970,7 +972,7 @@ class TestHarnessErrorAlwaysBlocks(unittest.TestCase):
         If the prompt's fallback stops saying `command: [], exit_code: -1`, the
         tests above stop testing the shape that actually reaches the harness.
         """
-        with open(_PDV_MJS, encoding="utf-8") as fh:
+        with open(PDV_MJS, encoding="utf-8") as fh:
             src = fh.read()
         self.assertIn('verdict: "HARNESS_ERROR"', src,
                       "the Prover prompt no longer documents a HARNESS_ERROR fallback")
@@ -1029,7 +1031,7 @@ class TestHarnessErrorAlwaysBlocks(unittest.TestCase):
         """The carve-out still applies where its rationale applies — to a probe."""
         rec = dict(
             self._executed("missing deliverable cap", "FAIL",
-                           stderr=_reify_missing_fixture_stderr(_LEAF_FIXTURE)),
+                           stderr=reify_missing_fixture_stderr(_LEAF_FIXTURE)),
             command=["reify", "check", _LEAF_FIXTURE])
         bv = pdv.synthesize_batch({"prover": [rec], "adversary": []})
         self.assertFalse(bv.blocks)
@@ -1104,7 +1106,7 @@ class TestEvidenceBlockIsShared(unittest.TestCase):
         """The drift that motivated the extraction."""
         bv = pdv.synthesize_batch({"prover": [self._rec(
             "fixture-absent cap", "FAIL",
-            _reify_missing_fixture_stderr("f.ri"))], "adversary": []})
+            reify_missing_fixture_stderr("f.ri"))], "adversary": []})
         self.assertEqual(bv.fixture_absent, ["fixture-absent cap"])
         self.assertIn(f"  stdout:    {self._STDOUT}", bv.report)
 
@@ -1128,7 +1130,7 @@ class TestEvidenceBlockIsShared(unittest.TestCase):
                                     1, self._STDOUT, "stderr text")
         for stderr, category in (
             ("type mismatch: expected axis", "blocking"),
-            (_reify_missing_fixture_stderr("f.ri"), "fixture-absent"),
+            (reify_missing_fixture_stderr("f.ri"), "fixture-absent"),
         ):
             with self.subTest(category=category):
                 bv = pdv.synthesize_batch({"prover": [

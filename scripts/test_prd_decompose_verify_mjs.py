@@ -10,10 +10,12 @@ import functools
 import json
 import os
 import subprocess
+import sys
 import tempfile
 import unittest
 
-from _pdv_test_support import _PDV_MJS
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from _pdv_test_support import PDV_MJS
 
 
 # ---------------------------------------------------------------------------
@@ -63,8 +65,8 @@ class TestMjsSyntaxValidity(unittest.TestCase):
     def test_mjs_file_exists(self):
         """scripts/prd-decompose-verify.mjs must exist."""
         self.assertTrue(
-            os.path.isfile(_PDV_MJS),
-            f"scripts/prd-decompose-verify.mjs not found at {_PDV_MJS}",
+            os.path.isfile(PDV_MJS),
+            f"scripts/prd-decompose-verify.mjs not found at {PDV_MJS}",
         )
 
     @unittest.skipUnless(_NODE_ON_PATH, "node not on PATH; skip .mjs syntax check")
@@ -78,7 +80,7 @@ class TestMjsSyntaxValidity(unittest.TestCase):
         node --check that wrapped form. This mirrors the Workflow harness which wraps
         the script body in an async function before evaluating it.
         """
-        with open(_PDV_MJS) as fh:
+        with open(PDV_MJS) as fh:
             src = fh.read()
         stripped = src.replace("export const meta", "const meta")
         wrapped = f"async function __wf() {{\n{stripped}\n}}"
@@ -117,7 +119,7 @@ class TestMjsInjectedGlobalsContract(unittest.TestCase):
 
     def _harness_source(self) -> str:
         """Build the Node.js ESM harness script source."""
-        mjs_abs = _PDV_MJS.replace("\\", "\\\\")
+        mjs_abs = PDV_MJS.replace("\\", "\\\\")
         return f"""\
 // Faithful mock of the Workflow tool's injected globals.
 // ONLY globals the Workflow tool injects are set — tmp_file and shell are NOT.
@@ -545,7 +547,7 @@ class _HeadSliceHelperMixin:
         raise NotImplementedError
 
     def _harness_source(self) -> str:
-        mjs_abs = _PDV_MJS.replace("\\", "\\\\")
+        mjs_abs = PDV_MJS.replace("\\", "\\\\")
         helper = self._helper_name()
         return f"""\
 import {{ readFileSync }} from "node:fs";
@@ -886,7 +888,7 @@ class TestMjsResultsSchema(unittest.TestCase):
     _VERDICT_ENUM = ["PASS", "FAIL", "UNPROVABLE", "HARNESS_ERROR"]
 
     def _harness_source(self) -> str:
-        mjs_abs = _PDV_MJS.replace("\\", "\\\\")
+        mjs_abs = PDV_MJS.replace("\\", "\\\\")
         return f"""\
 import {{ readFileSync }} from "node:fs";
 
@@ -1064,7 +1066,7 @@ def _mjs_scenario_source(leaves_js: str, responses_js: str) -> str:
     The harness records every phase the .mjs actually invokes, so a test can
     assert on stages that were SKIPPED as well as on the returned verdict.
     """
-    mjs_abs = _PDV_MJS.replace("\\", "\\\\")
+    mjs_abs = PDV_MJS.replace("\\", "\\\\")
     return f"""\
 import {{ readFileSync }} from "node:fs";
 

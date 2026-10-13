@@ -8,25 +8,27 @@ with this one in a single unittest invocation from tests/infra/test_prd_decompos
 import io
 import json
 import os
+import sys
 import tempfile
 import unittest
 import unittest.mock
 
-from _pdv_test_support import _REPO_ROOT, _load_pcc, _load_pdv, _reify_missing_fixture_stderr
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from _pdv_test_support import REPO_ROOT, load_pcc, load_pdv, reify_missing_fixture_stderr
 
-pdv = _load_pdv()
-pcc = _load_pcc()
+pdv = load_pdv()
+pcc = load_pcc()
 
 # ---------------------------------------------------------------------------
 # Repo-root helpers for skip-guards
 # ---------------------------------------------------------------------------
 
-_REIFY_RELEASE = os.path.join(_REPO_ROOT, "target", "release", "reify")
-_REIFY_DEBUG = os.path.join(_REPO_ROOT, "target", "debug", "reify")
+_REIFY_RELEASE = os.path.join(REPO_ROOT, "target", "release", "reify")
+_REIFY_DEBUG = os.path.join(REPO_ROOT, "target", "debug", "reify")
 _REIFY_BUILT = os.path.isfile(_REIFY_RELEASE) or os.path.isfile(_REIFY_DEBUG)
 
-_LEAF_FALSE = os.path.join(_REPO_ROOT, "tests", "prd-gate", "leaf-false-premise.json")
-_LEAF_TRUE = os.path.join(_REPO_ROOT, "tests", "prd-gate", "leaf-true-premise.json")
+_LEAF_FALSE = os.path.join(REPO_ROOT, "tests", "prd-gate", "leaf-false-premise.json")
+_LEAF_TRUE = os.path.join(REPO_ROOT, "tests", "prd-gate", "leaf-true-premise.json")
 
 
 # ---------------------------------------------------------------------------
@@ -230,7 +232,7 @@ class TestMainCLI(unittest.TestCase):
         """An executed FAIL whose probe could not find its target file."""
         return self._result_record(
             capability, "FAIL", exit_code=1,
-            stderr=_reify_missing_fixture_stderr("/fixture.ri"),
+            stderr=reify_missing_fixture_stderr("/fixture.ri"),
         )
 
     def test_synthesize_only_evidence_free_fails_exits_0(self):
@@ -474,7 +476,7 @@ class TestUserObservableSignal(unittest.TestCase):
                 {"capability": "fixture-absent cap", "probe_kind": "ir", "verdict": "FAIL",
                  "command": ["reify", "eval", "tests/prd-gate/fixtures/not-yet.ri"],
                  "exit_code": 1, "stdout": "",
-                 "stderr": _reify_missing_fixture_stderr(
+                 "stderr": reify_missing_fixture_stderr(
                      "tests/prd-gate/fixtures/not-yet.ri")},
             ],
             "adversary": [
