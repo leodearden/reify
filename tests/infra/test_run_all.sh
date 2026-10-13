@@ -2183,8 +2183,8 @@ T25_OUT="$TMPDIR_T25/out.txt"
 t25_rc=0
 
 # run_all.sh's pool workdir (_H2_WORKDIR) is created via
-# `mktemp -d "${TMPDIR:-/tmp}/reify-run-all-pool.XXXXXX"` -- the ONLY use
-# of TMPDIR in run_all.sh (Test 19 relies on the same contract). Pointing
+# `mktemp -d "${TMPDIR:-/tmp}/reify-run-all-pool.XXXXXX"` -- the pool
+# path's ONLY use of TMPDIR (Test 19 relies on the same contract). Pointing
 # TMPDIR at a private, empty directory lets the harness below discover
 # the real workdir and poll for boom's ACTUAL `.rc` bookkeeping write --
 # the same authoritative state _ra_partial_failed_names itself scans --
@@ -2231,14 +2231,12 @@ while [ "$t25_i" -lt "$t25_poll_attempts" ]; do
             case "$_f" in
                 *.retry.rc) continue ;;
             esac
-            # Gate on nonzero CONTENT, not mere existence: run_all.sh
-            # opens each `.rc` file with `>` (truncate) and then writes
-            # the exit code as a separate step, so there is a narrow
-            # window where the file exists but reads empty. _ra_on_term's
-            # own _ra_partial_failed_names scan already treats an
-            # empty/unreadable read as rc=0 ("not failed"); mirror that
-            # read here so the poll can't hand off to SIGTERM on a
-            # half-written file and starve T25c's attribution.
+            # Gate on nonzero CONTENT, not mere existence. run_all.sh
+            # writes each `.rc` atomically (tmp+mv), so a visible file is
+            # never empty and this gate is belt-and-braces; it mirrors
+            # _ra_partial_failed_names, which treats an empty/unreadable
+            # read as rc=0 ("not failed"), so the poll can never hand off
+            # to SIGTERM on a file T25c's attribution would not count.
             if [ -s "$_f" ] && [ "$(cat "$_f" 2>/dev/null)" != 0 ]; then
                 t25_rc_file="$_f"
             fi
@@ -2458,6 +2456,68 @@ fi
 
 assert "T26c: GREEN regression -- armed-but-intact run exits 0" \
     test "$t26c_rc" -eq 0
+
+# -- 26d/26e: --scope host-infra and member-subset -- the same two-member nuke
+# as 26b. The per-member check must fire BEFORE the second member is spawned:
+# no header for it, no rc-127 FAIL, just the marker. 26d keeps its manifest and
+# Lane-X lock OUTSIDE the nuked dir, so only the members' dir disappears.
+_mk_t26_nuke_fixture() {  # <dir>
+    touch "$1/run_all.sh"
+    cat > "$1/test_a_nuke.sh" <<'MOCKBODY'
+#!/usr/bin/env bash
+rm -rf "$NUKE_DIR"
+exit 0
+MOCKBODY
+    chmod +x "$1/test_a_nuke.sh"
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$1/test_b_second.sh"
+    chmod +x "$1/test_b_second.sh"
+}
+
+TMPDIR_T26D="$(mktemp -d)"
+_TMPDIRS+=("$TMPDIR_T26D")
+T26D_INFRA="$TMPDIR_T26D/infra"
+mkdir "$T26D_INFRA"
+_mk_t26_nuke_fixture "$T26D_INFRA"
+MANIFEST_T26D="$TMPDIR_T26D/classification.manifest"
+printf 'test_a_nuke.sh host-exclusive\ntest_b_second.sh host-exclusive\n' > "$MANIFEST_T26D"
+LOCK_T26D="$TMPDIR_T26D/lane-x.lock"
+
+t26d_rc=0
+t26d_out="$(env -u REIFY_RUN_ALL_EXCLUDE_HOST_INFRA -u REIFY_RUN_ALL_MEMBER_SUBSET \
+    -u REIFY_RUN_ALL_SUBSET_COUNT_ONLY -u REIFY_RUN_ALL_CONTENT_SKIP \
+    -u REIFY_RUN_ALL_SKIP_STATE -u REIFY_RUN_ALL_POOL_DISABLE \
+    RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T26D" \
+    REIFY_LANE_X_FLOCK_LOCK="$LOCK_T26D" \
+    NUKE_DIR="$T26D_INFRA" \
+    bash "$RUN_ALL" --scope host-infra "$T26D_INFRA" 2>&1)" || t26d_rc=$?
+rm -f "$LOCK_T26D" "${LOCK_T26D}.slot-1"
+
+TMPDIR_T26E="$(mktemp -d)"
+_TMPDIRS+=("$TMPDIR_T26E")
+_mk_t26_nuke_fixture "$TMPDIR_T26E"
+
+t26e_rc=0
+t26e_out="$(env -u REIFY_RUN_ALL_EXCLUDE_HOST_INFRA \
+    -u REIFY_RUN_ALL_SUBSET_COUNT_ONLY -u REIFY_RUN_ALL_CONTENT_SKIP \
+    -u REIFY_RUN_ALL_SKIP_STATE -u REIFY_RUN_ALL_POOL_DISABLE \
+    REIFY_RUN_ALL_MEMBER_SUBSET="test_a_nuke.sh test_b_second.sh" \
+    NUKE_DIR="$TMPDIR_T26E" \
+    bash "$RUN_ALL" "$TMPDIR_T26E" 2>&1)" || t26e_rc=$?
+
+for _t26_leg in d e; do
+    case "$_t26_leg" in
+        d) _t26_out="$t26d_out"; _t26_rc="$t26d_rc"; _t26_branch="HOST-INFRA" ;;
+        e) _t26_out="$t26e_out"; _t26_rc="$t26e_rc"; _t26_branch="SUBSET" ;;
+    esac
+    _t26_markers="$(grep -cE '^=== INTERRUPTED \(worktree removed\) ===$' <<<"$_t26_out")" || true
+    assert "T26$_t26_leg: $_t26_branch path -- worktree removal between members emits the INTERRUPTED marker once (got $_t26_markers)" \
+        test "$_t26_markers" -eq 1
+    assert "T26$_t26_leg: $_t26_branch path -- worktree removal exits 99 (got $_t26_rc)" \
+        test "$_t26_rc" -eq 99
+    _t26_second="$(grep -cF -- '--- Running: test_b_second.sh ---' <<<"$_t26_out")" || true
+    assert "T26$_t26_leg: $_t26_branch path -- the per-member check fires before the second member is spawned (second-member headers: $_t26_second)" \
+        test "$_t26_second" -eq 0
+done
 
 # -- Test 27: Phase-2.5 serial-retry + FLAKY ledger extended to
 # intra-run-serial members (task #5261, PRD merge-gate-health.md W5b) ----------
@@ -2826,12 +2886,12 @@ assert "T28c: knob unset -- exit reflects beta's failure (nonzero)" \
 # -- Test 29: subset branch clock-marker sanitization (task #5288 pair 2; task
 # 4998 / esc-4791-52 class) -----------------------------------------------------
 # The REIFY_RUN_ALL_MEMBER_SUBSET branch runs ON dark-factory's clock-stop-
-# parsed verify stream (it IS a merge-gate retry), unlike --scope host-infra
-# or the legacy fallback. A named member's re-emitted output must therefore
-# be neutralized through _ra_emit_sanitized exactly like the concurrent-pool
-# Phase-3 replay -- otherwise a quoted clock-marker token in a retried
-# member's own assertion text (e.g. a clock-stop test) could false-trigger a
-# STOP/START transition in dark-factory's parser. The marker prefix is
+# parsed verify stream (it IS a merge-gate retry). A named member's output
+# must therefore be neutralized through the same sanitizer chain as the
+# concurrent-pool Phase-3 replay -- otherwise a quoted clock-marker token in
+# a retried member's own assertion text (e.g. a clock-stop test) could
+# false-trigger a STOP/START transition in dark-factory's parser. The marker
+# prefix is
 # assembled at runtime (mirrors test_run_all_clock_marker_sanitize.sh's
 # CP/QP idiom) so THIS file's own stdout never becomes a leak source when
 # the real outer run_all.sh re-emits test_run_all.sh's own captured output.
@@ -3497,6 +3557,412 @@ if [ -z "$t32k_out" ] && [ "$t32k_rc" -eq 0 ]; then
 else
     assert "T32k: classification undeclared/orphaned/coverage_diff agree with discovery under LC_ALL=$T32_LC (got: $t32k_out, rc=$t32k_rc)" false
 fi
+
+# -- Test 33: one output contract across all four branches (task #8681, B6) -----
+# Pool, legacy and member-subset must frame the same members identically --
+# headers, verdicts, Summary, FAILED markers and FAILED-DETAIL -- and that
+# framing must equal a literal golden, so all branches drifting together is
+# RED too. --scope host-infra runs only the host-exclusive members, so it is
+# held to the same golden over that set. Every branch must also neutralize
+# member slot/clock tokens and wrapper deadline lines on BOTH member streams.
+# The failing member is host-exclusive, so no branch retries it: the pool's
+# retry framing is pool-only and stays pinned by T18/T27/T30f.
+#
+# SELF-POLLUTION: the captures hold live tokens until every branch sanitizes,
+# so live tokens are assembled at runtime (the T29 idiom) and every failure
+# below reports counts and branch names only, never a capture.
+echo ""
+echo "--- Test 33: one output contract across pool, legacy, subset and host-infra ---"
+
+T33_SP='@@REIFY_SLOT_'
+T33_CP='@@REIFY_CLOCK_'
+T33_QSP='@@REIFY_QUOTED_SLOT_'
+T33_QCP='@@REIFY_QUOTED_CLOCK_'
+
+TMPDIR_T33="$(mktemp -d)"
+_TMPDIRS+=("$TMPDIR_T33")
+T33_INFRA="$TMPDIR_T33/infra"
+mkdir "$T33_INFRA"
+
+cat > "$T33_INFRA/test_a_pool_pass.sh" <<T33EOF
+#!/usr/bin/env bash
+echo "  PASS: a quotes ${T33_SP}TIMEOUT@@ reason=fixture"
+echo "${T33_CP}STOP@@ reason=fixture" >&2
+exit 0
+T33EOF
+cat > "$T33_INFRA/test_b_hx_fail.sh" <<T33EOF
+#!/usr/bin/env bash
+echo "${T33_SP}TIMEOUT@@ reason=fixture slots=1 waited=0 disposition=fatal lock=/tmp/x"
+echo "lib_lane_x_flock.sh: failed to acquire Lane-X lock within 1s (LOCK=/tmp/m)" >&2
+echo "  FAIL: b-detail quotes ${T33_SP}TIMEOUT@@ reason=fixture"
+exit 1
+T33EOF
+cat > "$T33_INFRA/test_c_hx_pass.sh" <<T33EOF
+#!/usr/bin/env bash
+echo "${T33_CP}START@@ reason=fixture"
+echo "lib_test_semaphore.sh: failed to acquire test slot within 0s (LOCK=/tmp/l, N=1)" >&2
+exit 0
+T33EOF
+chmod +x "$T33_INFRA"/test_*.sh
+
+MANIFEST_T33="$TMPDIR_T33/classification.manifest"
+cat > "$MANIFEST_T33" <<'EOF'
+test_a_pool_pass.sh pool
+test_b_hx_fail.sh host-exclusive
+test_c_hx_pass.sh host-exclusive
+EOF
+
+# (pool) default path.
+t33p_rc=0
+t33p_out="$(env -u REIFY_RUN_ALL_EXCLUDE_HOST_INFRA -u REIFY_RUN_ALL_MEMBER_SUBSET \
+    -u REIFY_RUN_ALL_SUBSET_COUNT_ONLY -u REIFY_RUN_ALL_CONTENT_SKIP \
+    -u REIFY_RUN_ALL_SKIP_STATE -u REIFY_RUN_ALL_POOL_DISABLE \
+    RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T33" \
+    REIFY_RUN_ALL_POOL_LOCK="$TMPDIR_T33/pool.lock" \
+    REIFY_RUN_ALL_POOL_PSI_DISABLE=1 \
+    REIFY_RUN_ALL_POOL_CONCURRENCY=2 \
+    bash "$RUN_ALL" "$T33_INFRA" 2>&1)" || t33p_rc=$?
+
+# (legacy) break-glass all-serial path.
+t33l_rc=0
+t33l_out="$(env -u REIFY_RUN_ALL_EXCLUDE_HOST_INFRA -u REIFY_RUN_ALL_MEMBER_SUBSET \
+    -u REIFY_RUN_ALL_SUBSET_COUNT_ONLY -u REIFY_RUN_ALL_CONTENT_SKIP \
+    -u REIFY_RUN_ALL_SKIP_STATE \
+    RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T33" \
+    REIFY_RUN_ALL_POOL_LOCK="$TMPDIR_T33/legacy.lock" \
+    REIFY_RUN_ALL_POOL_PSI_DISABLE=1 \
+    REIFY_RUN_ALL_POOL_CONCURRENCY=2 \
+    REIFY_RUN_ALL_POOL_DISABLE=1 \
+    bash "$RUN_ALL" "$T33_INFRA" 2>&1)" || t33l_rc=$?
+
+# (subset) every member named.
+t33s_rc=0
+t33s_out="$(env -u REIFY_RUN_ALL_EXCLUDE_HOST_INFRA \
+    -u REIFY_RUN_ALL_SUBSET_COUNT_ONLY -u REIFY_RUN_ALL_CONTENT_SKIP \
+    -u REIFY_RUN_ALL_SKIP_STATE -u REIFY_RUN_ALL_POOL_DISABLE \
+    RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T33" \
+    REIFY_RUN_ALL_POOL_LOCK="$TMPDIR_T33/subset.lock" \
+    REIFY_RUN_ALL_POOL_PSI_DISABLE=1 \
+    REIFY_RUN_ALL_POOL_CONCURRENCY=2 \
+    REIFY_RUN_ALL_MEMBER_SUBSET="test_a_pool_pass.sh test_b_hx_fail.sh test_c_hx_pass.sh" \
+    bash "$RUN_ALL" "$T33_INFRA" 2>&1)" || t33s_rc=$?
+
+# (host-infra) the host-exclusive members, under a private Lane-X lock.
+LOCK_T33="$TMPDIR_T33/lane-x.lock"
+t33h_rc=0
+t33h_out="$(env -u REIFY_RUN_ALL_EXCLUDE_HOST_INFRA -u REIFY_RUN_ALL_MEMBER_SUBSET \
+    -u REIFY_RUN_ALL_SUBSET_COUNT_ONLY -u REIFY_RUN_ALL_CONTENT_SKIP \
+    -u REIFY_RUN_ALL_SKIP_STATE -u REIFY_RUN_ALL_POOL_DISABLE \
+    RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T33" \
+    REIFY_RUN_ALL_POOL_LOCK="$TMPDIR_T33/host-infra.lock" \
+    REIFY_RUN_ALL_POOL_PSI_DISABLE=1 \
+    REIFY_RUN_ALL_POOL_CONCURRENCY=2 \
+    REIFY_LANE_X_FLOCK_LOCK="$LOCK_T33" \
+    bash "$RUN_ALL" --scope host-infra "$T33_INFRA" 2>&1)" || t33h_rc=$?
+rm -f "$LOCK_T33" "${LOCK_T33}.slot-1"
+
+# _t33_project: the framing lines of a run_all capture, in order -- headers,
+# verdicts, attempt delimiters, Summary and FAILED markers, plus every
+# FAILED-DETAIL block whole.
+_t33_project() {
+    awk '
+        /^--- FAILED-DETAIL: / { in_detail = 1 }
+        in_detail { print; if (/^--- END FAILED-DETAIL: /) in_detail = 0; next }
+        /^--- Running: |^  RESULT: |^--- attempt |^=== Summary: |^=== FAILED: |^FAILED / { print }
+    ' <<<"$1"
+}
+
+# _t33_count <haystack> <needle>: occurrences of needle, by bash substring.
+_t33_count() {
+    local _hay="$1" _needle="$2" _n=0
+    while [[ "$_hay" == *"$_needle"* ]]; do
+        _hay="${_hay#*"$_needle"}"
+        _n=$((_n + 1))
+    done
+    echo "$_n"
+}
+
+_t33_nlines() {
+    if [ -z "$1" ]; then echo 0; else printf '%s\n' "$1" | wc -l | tr -d ' '; fi
+}
+
+t33p_proj="$(_t33_project "$t33p_out")"
+t33l_proj="$(_t33_project "$t33l_out")"
+t33s_proj="$(_t33_project "$t33s_out")"
+t33h_proj="$(_t33_project "$t33h_out")"
+
+t33_tail_b_c="$(printf '%s\n' \
+    '--- Running: test_b_hx_fail.sh ---' \
+    '  RESULT: FAIL (test_b_hx_fail.sh)' \
+    '--- Running: test_c_hx_pass.sh ---' \
+    '  RESULT: PASS (test_c_hx_pass.sh)')"
+t33_failed_tail="$(printf '%s\n' \
+    '=== FAILED: test_b_hx_fail.sh ===' \
+    'FAILED test_b_hx_fail.sh' \
+    '--- FAILED-DETAIL: test_b_hx_fail.sh ---' \
+    "  FAIL: b-detail quotes ${T33_QSP}TIMEOUT@@ reason=fixture" \
+    '--- END FAILED-DETAIL: test_b_hx_fail.sh ---')"
+t33_golden="$(printf '%s\n' \
+    '--- Running: test_a_pool_pass.sh ---' \
+    '  RESULT: PASS (test_a_pool_pass.sh)' \
+    "$t33_tail_b_c" \
+    '=== Summary: 3 discovered, 1 failed ===' \
+    "$t33_failed_tail")"
+t33_golden_h9="$(printf '%s\n' \
+    "$t33_tail_b_c" \
+    '=== Summary: 2 discovered, 1 failed ===' \
+    "$t33_failed_tail")"
+
+t33p_n="$(_t33_nlines "$t33p_proj")"
+t33l_n="$(_t33_nlines "$t33l_proj")"
+t33s_n="$(_t33_nlines "$t33s_proj")"
+t33h_n="$(_t33_nlines "$t33h_proj")"
+t33_golden_n="$(_t33_nlines "$t33_golden")"
+t33_golden_h9_n="$(_t33_nlines "$t33_golden_h9")"
+
+if [[ "$t33p_out" == *"INFO: run_all.sh pool: N="* ]] && [[ "$t33l_out" != *"INFO: run_all.sh pool: N="* ]]; then
+    assert "T33a: the pool leg took the pool path and the legacy leg did not" true
+else
+    assert "T33a: the pool leg took the pool path and the legacy leg did not" false
+fi
+
+if [ "$t33p_proj" = "$t33l_proj" ] && [ "$t33p_proj" = "$t33s_proj" ]; then
+    assert "T33b: pool, legacy and subset frame the members byte-identically" true
+else
+    assert "T33b: pool, legacy and subset frame the members byte-identically (projection lines: pool $t33p_n, legacy $t33l_n, subset $t33s_n)" false
+fi
+
+if [ "$t33p_proj" = "$t33_golden" ]; then
+    assert "T33c: the pool framing equals the literal golden" true
+else
+    assert "T33c: the pool framing equals the literal golden (projection lines: pool $t33p_n, golden $t33_golden_n)" false
+fi
+
+if [ "$t33h_proj" = "$t33_golden_h9" ]; then
+    assert "T33d: the host-infra framing equals the golden over its host-exclusive members" true
+else
+    assert "T33d: the host-infra framing equals the golden over its host-exclusive members (projection lines: host-infra $t33h_n, golden $t33_golden_h9_n)" false
+fi
+
+if [ "$t33p_rc" -eq 1 ] && [ "$t33l_rc" -eq 1 ] && [ "$t33s_rc" -eq 1 ] && [ "$t33h_rc" -eq 1 ]; then
+    assert "T33e: every branch exits 1 for the one failing member" true
+else
+    assert "T33e: every branch exits 1 for the one failing member (pool $t33p_rc, legacy $t33l_rc, subset $t33s_rc, host-infra $t33h_rc)" false
+fi
+
+for _t33_leg in pool legacy subset host-infra; do
+    case "$_t33_leg" in
+        pool) _t33_out="$t33p_out" ;;
+        legacy) _t33_out="$t33l_out" ;;
+        subset) _t33_out="$t33s_out" ;;
+        host-infra) _t33_out="$t33h_out" ;;
+    esac
+    _t33_live_slot="$(_t33_count "$_t33_out" "$T33_SP")"
+    _t33_live_clock="$(_t33_count "$_t33_out" "$T33_CP")"
+    _t33_live_lanex="$(_t33_count "$_t33_out" "lib_lane_x_flock.sh: failed to acquire ")"
+    _t33_live_sem="$(_t33_count "$_t33_out" "lib_test_semaphore.sh: failed to acquire ")"
+    _t33_quoted_slot="$(_t33_count "$_t33_out" "${T33_QSP}TIMEOUT@@")"
+    _t33_quoted_clock="$(_t33_count "$_t33_out" "$T33_QCP")"
+    _t33_quoted_lanex="$(_t33_count "$_t33_out" "lib_lane_x_flock.sh[quoted]: failed to acquire")"
+    if [ "$_t33_live_slot" -eq 0 ] && [ "$_t33_live_clock" -eq 0 ] \
+        && [ "$_t33_live_lanex" -eq 0 ] && [ "$_t33_live_sem" -eq 0 ]; then
+        assert "T33f [$_t33_leg]: no live slot or clock token and no live wrapper deadline line survives" true
+    else
+        assert "T33f [$_t33_leg]: no live slot or clock token and no live wrapper deadline line survives (live slot $_t33_live_slot, clock $_t33_live_clock, lane-x $_t33_live_lanex, semaphore $_t33_live_sem)" false
+    fi
+    if [ "$_t33_quoted_slot" -gt 0 ] && [ "$_t33_quoted_clock" -gt 0 ] && [ "$_t33_quoted_lanex" -gt 0 ]; then
+        assert "T33g [$_t33_leg]: the member output is present in neutralized form (non-vacuity)" true
+    else
+        assert "T33g [$_t33_leg]: the member output is present in neutralized form (non-vacuity) (quoted slot $_t33_quoted_slot, clock $_t33_quoted_clock, lane-x $_t33_quoted_lanex)" false
+    fi
+done
+
+# -- Test 34: member spawn hygiene is uniform across branches (task #8681) ------
+# Every branch spawns a member with FD 9 closed and REIFY_RUN_ALL_MEMBER_SUBSET
+# unset. Each probe member FAILs if it inherited either. run_all.sh is started
+# with FD 9 already open (a command-scoped redirect, as a caller holding a lock
+# would leave it), and every leg but subset carries the subset knob SET: the
+# pool and legacy legs as whitespace-only, which keeps the default path, and
+# the host-infra leg as a real name, which --scope host-infra overrides.
+echo ""
+echo "--- Test 34: member spawn hygiene is uniform across branches ---"
+
+TMPDIR_T34="$(mktemp -d)"
+_TMPDIRS+=("$TMPDIR_T34")
+T34_INFRA="$TMPDIR_T34/infra"
+mkdir "$T34_INFRA"
+for _t34_name in test_p_pool.sh test_q_hx.sh; do
+    cat > "$T34_INFRA/$_t34_name" <<T34EOF
+#!/usr/bin/env bash
+bad=0
+if [ -e /proc/self/fd/9 ]; then
+    echo "  FAIL: $_t34_name inherited fd 9"
+    bad=1
+fi
+if [ -n "\${REIFY_RUN_ALL_MEMBER_SUBSET+x}" ]; then
+    echo "  FAIL: $_t34_name inherited REIFY_RUN_ALL_MEMBER_SUBSET"
+    bad=1
+fi
+exit \$bad
+T34EOF
+    chmod +x "$T34_INFRA/$_t34_name"
+done
+
+MANIFEST_T34="$TMPDIR_T34/classification.manifest"
+printf 'test_p_pool.sh pool\ntest_q_hx.sh host-exclusive\n' > "$MANIFEST_T34"
+
+# (pool) default path; the subset knob is set but whitespace-only.
+t34p_rc=0
+t34p_out="$(env -u REIFY_RUN_ALL_EXCLUDE_HOST_INFRA \
+    -u REIFY_RUN_ALL_SUBSET_COUNT_ONLY -u REIFY_RUN_ALL_CONTENT_SKIP \
+    -u REIFY_RUN_ALL_SKIP_STATE -u REIFY_RUN_ALL_POOL_DISABLE \
+    RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T34" \
+    REIFY_RUN_ALL_POOL_LOCK="$TMPDIR_T34/pool.lock" \
+    REIFY_RUN_ALL_POOL_PSI_DISABLE=1 \
+    REIFY_RUN_ALL_MEMBER_SUBSET=' ' \
+    bash "$RUN_ALL" "$T34_INFRA" 9>"$TMPDIR_T34/fd9.held" 2>&1)" || t34p_rc=$?
+
+# (legacy) the same, all-serial.
+t34l_rc=0
+t34l_out="$(env -u REIFY_RUN_ALL_EXCLUDE_HOST_INFRA \
+    -u REIFY_RUN_ALL_SUBSET_COUNT_ONLY -u REIFY_RUN_ALL_CONTENT_SKIP \
+    -u REIFY_RUN_ALL_SKIP_STATE \
+    RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T34" \
+    REIFY_RUN_ALL_POOL_LOCK="$TMPDIR_T34/legacy.lock" \
+    REIFY_RUN_ALL_POOL_PSI_DISABLE=1 \
+    REIFY_RUN_ALL_POOL_DISABLE=1 \
+    REIFY_RUN_ALL_MEMBER_SUBSET=' ' \
+    bash "$RUN_ALL" "$T34_INFRA" 9>"$TMPDIR_T34/fd9.held" 2>&1)" || t34l_rc=$?
+
+# (subset) both probes named.
+t34s_rc=0
+t34s_out="$(env -u REIFY_RUN_ALL_EXCLUDE_HOST_INFRA \
+    -u REIFY_RUN_ALL_SUBSET_COUNT_ONLY -u REIFY_RUN_ALL_CONTENT_SKIP \
+    -u REIFY_RUN_ALL_SKIP_STATE -u REIFY_RUN_ALL_POOL_DISABLE \
+    RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T34" \
+    REIFY_RUN_ALL_POOL_LOCK="$TMPDIR_T34/subset.lock" \
+    REIFY_RUN_ALL_POOL_PSI_DISABLE=1 \
+    REIFY_RUN_ALL_MEMBER_SUBSET="test_p_pool.sh test_q_hx.sh" \
+    bash "$RUN_ALL" "$T34_INFRA" 9>"$TMPDIR_T34/fd9.held" 2>&1)" || t34s_rc=$?
+
+# (host-infra) --scope host-infra takes precedence over the named subset.
+LOCK_T34="$TMPDIR_T34/lane-x.lock"
+t34h_rc=0
+t34h_out="$(env -u REIFY_RUN_ALL_EXCLUDE_HOST_INFRA \
+    -u REIFY_RUN_ALL_SUBSET_COUNT_ONLY -u REIFY_RUN_ALL_CONTENT_SKIP \
+    -u REIFY_RUN_ALL_SKIP_STATE -u REIFY_RUN_ALL_POOL_DISABLE \
+    RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T34" \
+    REIFY_RUN_ALL_POOL_LOCK="$TMPDIR_T34/host-infra.lock" \
+    REIFY_RUN_ALL_POOL_PSI_DISABLE=1 \
+    REIFY_RUN_ALL_MEMBER_SUBSET="test_q_hx.sh" \
+    REIFY_LANE_X_FLOCK_LOCK="$LOCK_T34" \
+    bash "$RUN_ALL" --scope host-infra "$T34_INFRA" 9>"$TMPDIR_T34/fd9.held" 2>&1)" || t34h_rc=$?
+rm -f "$LOCK_T34" "${LOCK_T34}.slot-1"
+
+for _t34_leg in pool legacy subset host-infra; do
+    case "$_t34_leg" in
+        pool) _t34_out="$t34p_out"; _t34_rc="$t34p_rc"; _t34_want="=== Summary: 2 discovered, 0 failed ===" ;;
+        legacy) _t34_out="$t34l_out"; _t34_rc="$t34l_rc"; _t34_want="=== Summary: 2 discovered, 0 failed ===" ;;
+        subset) _t34_out="$t34s_out"; _t34_rc="$t34s_rc"; _t34_want="=== Summary: 2 discovered, 0 failed ===" ;;
+        host-infra) _t34_out="$t34h_out"; _t34_rc="$t34h_rc"; _t34_want="=== Summary: 1 discovered, 0 failed ===" ;;
+    esac
+    _t34_summary="$(grep -E '^=== Summary: ' <<<"$_t34_out")" || true
+    _t34_failed="$(sed -n 's/^  RESULT: FAIL (\(.*\))$/\1/p' <<<"$_t34_out" | tr '\n' ' ')" || true
+    if [ "$_t34_rc" -eq 0 ] && [ "$_t34_summary" = "$_t34_want" ]; then
+        assert "T34 [$_t34_leg]: no member inherits fd 9 or REIFY_RUN_ALL_MEMBER_SUBSET ('$_t34_want', exit 0)" true
+    else
+        assert "T34 [$_t34_leg]: no member inherits fd 9 or REIFY_RUN_ALL_MEMBER_SUBSET ('$_t34_want', exit 0) (got rc=$_t34_rc, failing: $_t34_failed)" false
+    fi
+done
+
+# -- Test 35: a streamed member's block holds its background writers (#8681) ---
+# The serial branches stream each member through a pipe, so a member's block
+# closes only when every process holding its stdout has closed it. A child the
+# member left running in the background, still writing to the inherited
+# stdout, therefore lands inside that member's block: after its header, before
+# its verdict and before the next member's header. run_all waits for that child
+# instead of attributing its output to a later member.
+echo ""
+echo "--- Test 35: a streamed member's block holds its background writers ---"
+
+TMPDIR_T35="$(mktemp -d)"
+_TMPDIRS+=("$TMPDIR_T35")
+T35_INFRA="$TMPDIR_T35/infra"
+mkdir "$T35_INFRA"
+T35_LATE="T35 late line from a background holder of the member's stdout"
+cat > "$T35_INFRA/test_a_holder.sh" <<T35EOF
+#!/usr/bin/env bash
+( sleep 1; echo "$T35_LATE" ) &
+exit 0
+T35EOF
+cat > "$T35_INFRA/test_b_next.sh" <<'T35EOF'
+#!/usr/bin/env bash
+exit 0
+T35EOF
+chmod +x "$T35_INFRA"/test_*.sh
+
+MANIFEST_T35="$TMPDIR_T35/classification.manifest"
+printf 'test_a_holder.sh host-exclusive\ntest_b_next.sh host-exclusive\n' > "$MANIFEST_T35"
+
+# (legacy) break-glass all-serial path.
+t35l_rc=0
+t35l_out="$(env -u REIFY_RUN_ALL_EXCLUDE_HOST_INFRA -u REIFY_RUN_ALL_MEMBER_SUBSET \
+    -u REIFY_RUN_ALL_SUBSET_COUNT_ONLY -u REIFY_RUN_ALL_CONTENT_SKIP \
+    -u REIFY_RUN_ALL_SKIP_STATE \
+    RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T35" \
+    REIFY_RUN_ALL_POOL_LOCK="$TMPDIR_T35/legacy.lock" \
+    REIFY_RUN_ALL_POOL_PSI_DISABLE=1 \
+    REIFY_RUN_ALL_POOL_DISABLE=1 \
+    bash "$RUN_ALL" "$T35_INFRA" 2>&1)" || t35l_rc=$?
+
+# (subset) both members named.
+t35s_rc=0
+t35s_out="$(env -u REIFY_RUN_ALL_EXCLUDE_HOST_INFRA \
+    -u REIFY_RUN_ALL_SUBSET_COUNT_ONLY -u REIFY_RUN_ALL_CONTENT_SKIP \
+    -u REIFY_RUN_ALL_SKIP_STATE -u REIFY_RUN_ALL_POOL_DISABLE \
+    RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T35" \
+    REIFY_RUN_ALL_POOL_LOCK="$TMPDIR_T35/subset.lock" \
+    REIFY_RUN_ALL_POOL_PSI_DISABLE=1 \
+    REIFY_RUN_ALL_MEMBER_SUBSET="test_a_holder.sh test_b_next.sh" \
+    bash "$RUN_ALL" "$T35_INFRA" 2>&1)" || t35s_rc=$?
+
+# (host-infra) both members are host-exclusive, under a private Lane-X lock.
+LOCK_T35="$TMPDIR_T35/lane-x.lock"
+t35h_rc=0
+t35h_out="$(env -u REIFY_RUN_ALL_EXCLUDE_HOST_INFRA -u REIFY_RUN_ALL_MEMBER_SUBSET \
+    -u REIFY_RUN_ALL_SUBSET_COUNT_ONLY -u REIFY_RUN_ALL_CONTENT_SKIP \
+    -u REIFY_RUN_ALL_SKIP_STATE -u REIFY_RUN_ALL_POOL_DISABLE \
+    RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T35" \
+    REIFY_RUN_ALL_POOL_LOCK="$TMPDIR_T35/host-infra.lock" \
+    REIFY_RUN_ALL_POOL_PSI_DISABLE=1 \
+    REIFY_LANE_X_FLOCK_LOCK="$LOCK_T35" \
+    bash "$RUN_ALL" --scope host-infra "$T35_INFRA" 2>&1)" || t35h_rc=$?
+rm -f "$LOCK_T35" "${LOCK_T35}.slot-1"
+
+# _t35_line_of <output> <exact-line> -> the first line number holding it, or 0.
+_t35_line_of() {
+    awk -v want="$2" '$0 == want { print NR; found = 1; exit } END { if (!found) print 0 }' <<<"$1"
+}
+
+for _t35_leg in legacy subset host-infra; do
+    case "$_t35_leg" in
+        legacy) _t35_out="$t35l_out"; _t35_rc="$t35l_rc" ;;
+        subset) _t35_out="$t35s_out"; _t35_rc="$t35s_rc" ;;
+        host-infra) _t35_out="$t35h_out"; _t35_rc="$t35h_rc" ;;
+    esac
+    _t35_header="$(_t35_line_of "$_t35_out" "--- Running: test_a_holder.sh ---")"
+    _t35_late="$(_t35_line_of "$_t35_out" "$T35_LATE")"
+    _t35_verdict="$(_t35_line_of "$_t35_out" "  RESULT: PASS (test_a_holder.sh)")"
+    _t35_next="$(_t35_line_of "$_t35_out" "--- Running: test_b_next.sh ---")"
+    if [ "$_t35_rc" -eq 0 ] && [ "$_t35_header" -gt 0 ] \
+        && [ "$_t35_header" -lt "$_t35_late" ] \
+        && [ "$_t35_late" -lt "$_t35_verdict" ] \
+        && [ "$_t35_verdict" -lt "$_t35_next" ]; then
+        assert "T35 [$_t35_leg]: a background child's late output lands between its member's header and verdict" true
+    else
+        assert "T35 [$_t35_leg]: a background child's late output lands between its member's header and verdict (rc=$_t35_rc; line of header $_t35_header, late output $_t35_late, verdict $_t35_verdict, next header $_t35_next)" false
+    fi
+done
 
 # -- Summary --------------------------------------------------------------------
 test_summary
