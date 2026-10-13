@@ -99,7 +99,7 @@ Within a wave, reify-eval streams land in the order S3 → S4 → S1 → S2; com
 | scripts/lib_lane_lock.sh (one owner for probe, path and acquire) | S20 | — |
 | scripts/check-manifold-deps.sh gate arms (INVARIANT: one arm per NativeDep variant, pinned by test_occt_deps_preflight.sh) | S21 | — |
 | scripts/lib_gui_launch.sh ordering contract (pin step last) once it also owns the OCCT dir prepend | S21 | — |
-| dark-factory merge queue's import of reify_overlap_detector (needs DF's orchestrator package) | S22 | — |
+| dark-factory rebase re-verify gate ← reify merge-independence command (`merge_rebase_independence_cmd`; replaces the never-wired reify_overlap_detector import, retired by #8886 — R1 reversed 2026-10-12) | dark_factory #6943 / reify #8887 (held for Leo) | — |
 | the Enumerator/Synthesize prompts (schema text in prose) | S22 | — |
 | reify-audit line-cite lane: PLINECITE (#6935 → S24 ο #8822; NOT a PCITE extension, S24 ruling R1) — invariant candidate 3's lane; S23 burns down its ledger | S24 (#8822) | S23 |
 | docs/invariants.md Pointer column + design-invariants census Gate grammar (S24 PRD §5.7) | S24 (#8821) | every stream that flips a registry status |
@@ -338,7 +338,7 @@ Rule: one stream edits a shared artefact; the others consume its filed leaf ids 
 - no open questions
 
 ### S22 — docs/prds/v0_6/prd-probe-gate-typed-outcomes.md
-- R1 reify_overlap_detector unregistered in dark-factory (G4 row names a seam that does not exist) → (a): keep θ importing the shared module; LEAD FOLLOW-UP: file a dark-factory task "register_for_reify with project_id in the merge-queue overlap detection" (DF #1897 fell back to the default detector); program doc G4 row corrected.
+- R1 reify_overlap_detector unregistered in dark-factory (G4 row names a seam that does not exist) → (a): keep θ importing the shared module; LEAD FOLLOW-UP: file a dark-factory task "register_for_reify with project_id in the merge-queue overlap detection" (DF #1897 fell back to the default detector); program doc G4 row corrected. **REVERSED by Leo 2026-10-12** (interactive /team investigation): retire the detector instead (#8886, after #7491; θ #8662 amended to stop touching it; #8515 cancelled). The crate-closure idea moves to dark-factory's rebase re-verify gate: a generic hook (dark_factory #6943) plus the removal of DF's unused registry (dark_factory #6944), and reify's merge-independence command (#8887, held for Leo). No register_for_reify task is filed.
 - R2 ι and the verify.sh home → (b): ι moves to S18 (consistent with the S21 ruling: no bash edits to verify.sh ahead of its Python rewrite); fk-21c29ddc104d lands on θ minus the verify.sh home, S18's planner imports reify_path_attribution.py; the verify-pipeline-paths.txt row is S18's.
 - R3 schema layering → (a) as drafted (α publishes what α decides; pdv publishes its own).
 - R4 refinements (a)(b)(c) → confirmed.
@@ -428,7 +428,7 @@ Not yet filed: S10, S12, S18, S25, S5, S8, S1, S16, S2, S26, S23.
 - **S22** → S18 PRD (decide_scope reads reify_path_attribution.py attribute in one batched call; fixture-list/gui-event-channels arms stay policy; B14 parity; S18 deletes affected-crates-lib.sh::reify_is_inert_path which 8662 keeps as a thin wrapper; S18 adds the module to verify-pipeline-paths.txt); G4 new row "scripts/reify_path_attribution.py | S22 (8662) | S18 planner, reify_overlap_detector"; lead follow-up DF register_for_reify task.
 - **S27** → S9/#8743 (R4 rows for reify-eval (8 chains) and reify-test-support (1) have no owning leaf → lead assigns to S4 at wave 2); S1 (wire EngineConfig leaf → 8776 and release; KNOWN_SITES entry moves in 8776's diff); S26 (wire TS-generation leaf → 8777 and release); S25 (engine.rs stdlib literal adopts dev_stdlib_root from 8769 unless #5519 deletes the path); S18 (8776 moves the infra-tests manifest row for main.rs).
 
-Lead follow-ups outside any stream: file a dark-factory task to register reify_overlap_detector with project_id (S22 R1); file a reify task for scripts/lane-task-status.sh reading tasks.db directly (S20); instrument debt: /hotspot-survey whole and /review --since none as their own attended runs.
+Lead follow-ups outside any stream: ~~file a dark-factory task to register reify_overlap_detector with project_id (S22 R1)~~ superseded 2026-10-12 by R1's reversal (#8886, dark_factory #6943/#6944, #8887); file a reify task for scripts/lane-task-status.sh reading tasks.db directly (S20); instrument debt: /hotspot-survey whole and /review --since none as their own attended runs.
 
 ## Pass-1 cross-reference lines (wave 1, restored 2026-10-13; still binding where a later pass-2 line does not supersede them)
 
