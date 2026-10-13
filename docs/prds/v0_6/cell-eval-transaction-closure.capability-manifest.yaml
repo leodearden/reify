@@ -2,6 +2,7 @@ prd: docs/prds/v0_6/cell-eval-transaction-closure.md
 schema_version: 1
 tasks:
 - label: α
+  task_id: 8858
   title: 'cell-eval-transaction-closure α: cell-eval transaction ratchet member on the shared rust_construct_ratchet engine'
   capabilities:
   - name: engine-on-8730
@@ -19,6 +20,7 @@ tasks:
     binding: 'Dated counts at a4a8862bcc (PRD §10): E1 62 (61 + the call inside cell_eval_ctx), E2 3 (incl. the builder body in lib.rs), E3 15 call lines (production view), E4 8, E5 70 crate-wide, E6 9, E7 11 activation shapes; α commits the engine measurement, not these numbers.'
     verdict: PASS
 - label: β
+  task_id: 8859
   title: 'cell-eval-transaction-closure β: typed commit leg on the eval journal'
   capabilities:
   - name: skip-leg-is-a-string-today
@@ -37,6 +39,7 @@ tasks:
     binding: cell_commit imports journal; typing the Started event with TraceSource inside journal.rs would add journal -> cell_commit and close a new module cycle, so TraceSource and CacheLegKind live in journal.rs (PRD D4).
     verdict: PASS
 - label: ν
+  task_id: 8860
   title: 'cell-eval-transaction-closure ν: h14 partition of engine_eval.rs'
   capabilities:
   - name: partition-symbols-located
@@ -51,6 +54,7 @@ tasks:
     binding: 'S3 β #8687, S14 ν #8645 and S9 ζ #8735 edit the same symbols first and are pending; ν depends on all three.'
     verdict: PASS
 - label: γ
+  task_id: 8861
   title: 'cell-eval-transaction-closure γ: sealed value-cell write (seal in cache.rs, minted by cell_commit); the commit primitive covers every shape (INV-EVAL-1)'
   capabilities:
   - name: write-api-is-pub
@@ -93,6 +97,7 @@ tasks:
       paths:
       - crates/reify-eval/src/
 - label: δ
+  task_id: 8862
   title: 'cell-eval-transaction-closure δ: delete Engine::edit_source'
   capabilities:
   - name: no-production-caller
@@ -108,6 +113,7 @@ tasks:
     binding: 'Premise corrected (OQ-3 re-ruled): engine_edit invalidate_realization_dirty_cone, reached from edit_param realization eviction, calls warm_pool.donate_with_cost, so the pool stays fed after δ. edit_source contributes only the topology-change donation (donate_warm_state_and_invalidate, checkout_added_warm_seeds, PendingWarmSeedsGuard), which δ deletes citing the pending milestone MS filed in this batch.'
     verdict: PASS
 - label: ε
+  task_id: 8863
   title: 'cell-eval-transaction-closure ε: edit_param as phase methods over an EditTransaction'
   capabilities:
   - name: edit-param-shape
@@ -120,6 +126,7 @@ tasks:
       paths:
       - crates/reify-eval/src/engine_edit.rs
 - label: η
+  task_id: 8864
   title: 'cell-eval-transaction-closure η: one per-cell elaboration primitive for template and instance scope'
   capabilities:
   - name: no-containment-null-object
@@ -163,6 +170,7 @@ tasks:
     binding: '#8348 probe: eval_cached body-inlines a registered @optimized let; with η it dispatches like eval, and with the LSP empty registry emits the NoRegisteredComputeTrampoline warning (declared, pinned by B16).'
     verdict: PASS
 - label: θ
+  task_id: 8866
   title: 'cell-eval-transaction-closure θ: CellEvalCtx, CellValue and the panic boundary: the cell step types'
   capabilities:
   - name: cell-eval-ctx-type
@@ -184,6 +192,7 @@ tasks:
       paths:
       - crates/reify-eval/src/cell_eval_ctx.rs
 - label: ι
+  task_id: 8865
   title: 'cell-eval-transaction-closure ι: one activate_guarded_group'
   capabilities:
   - name: override-not-consulted-post-solve
@@ -208,6 +217,7 @@ tasks:
     binding: 'Probe 2026-10-13: reify eval tests/prd-gate/fixtures/cell_eval_guarded_param_runtime_diag.ri prints S.xs = undef and exits 0; post-ι it prints the generate error and exits 1.'
     verdict: PASS
 - label: ζ
+  task_id: 8867
   title: 'cell-eval-transaction-closure ζ: one solve write-back with explicit policy'
   capabilities:
   - name: six-arms-today
@@ -226,6 +236,7 @@ tasks:
     binding: 'solver-driver-parity β #6690 (problem builder) and κ #6699 (entry point) are pending and edit the same arms; ruled OQ-5 (A): #6690 -> ζ -> #6699.'
     verdict: PASS
 - label: κ
+  task_id: 8868
   title: 'cell-eval-transaction-closure κ: post-pass detectors with declared applicability (INV-EVAL-3)'
   capabilities:
   - name: one-registered-detector
@@ -253,6 +264,7 @@ tasks:
     binding: 'eval: registry 6848 -> annotation 6865 -> coupling..robustness -> five value-scans; eval_cached: value-scans 9448-9469 before registry 9486 and annotation 9506 (critic M3, read at a4a8862bcc). κ adopts eval order and pins the eval_cached and edit-path changes.'
     verdict: PASS
 - label: λ
+  task_id: 8869
   title: 'cell-eval-transaction-closure λ: DiagnosticCodes for uncoded engine_eval diagnostics; the three test counters go'
   capabilities:
   - name: counters-exist
@@ -268,6 +280,7 @@ tasks:
     binding: crates/reify-audit/pdiag-baseline.txt carries the row crates/reify-eval/src/engine_eval.rs 21; λ targets the sum over engine_eval.rs and the files ν, ι, κ, ζ moved those constructors into, since a pure move regenerates rows.
     verdict: PASS
 - label: μ
+  task_id: 8870
   title: 'cell-eval-transaction-closure μ: R4 else_members rows for reify-eval and reify-test-support'
   capabilities:
   - name: r4-row-pending
@@ -280,6 +293,7 @@ tasks:
     binding: crates/reify-test-support/src/builders/topology.rs interleaves each guarded group members with its constraints in the template content hash, which must stay byte-identical to the compiler hash; graph.rs::from_templates needs per-group structure. Such chains go to the row allowlist with a reason, not through all_value_cells.
     verdict: PASS
 - label: σ
+  task_id: 8871
   title: 'cell-eval-transaction-closure σ: remaining value-cell sites onto cell_eval_ctx'
   capabilities:
   - name: residual-sites-listed
@@ -289,6 +303,7 @@ tasks:
       kind: manual
       reason: E1 in tests/infra/test_cell_eval_transaction_ratchets.py equals exactly the non-cell residue τ moves; checked by the ratchet member, not a grep.
 - label: τ
+  task_id: 8872
   title: 'cell-eval-transaction-closure τ: closed constructor set, base builder private; INV-EVAL-2 enforced, INV-EVAL-1 completed'
   capabilities:
   - name: base-builder-in-lib
@@ -313,6 +328,7 @@ tasks:
     binding: 'S13 β/γ/δ #8748-#8750 move the 12 geometry_ops builder calls into child modules unchanged and ε #8751 deletes geometry_ops/tests.rs; all pending, τ depends on #8750 and #8751.'
     verdict: PASS
 - label: ξ
+  task_id: 8873
   title: 'cell-eval-transaction-closure ξ: h14 partition of engine_edit.rs'
   capabilities:
   - name: partition-symbols-located
@@ -324,6 +340,7 @@ tasks:
       paths:
       - crates/reify-eval/src/graph_diff.rs
 - label: ο
+  task_id: 8874
   title: 'cell-eval-transaction-closure ο: h14 partition of unfold.rs'
   capabilities:
   - name: partition-symbols-located
@@ -335,6 +352,7 @@ tasks:
       paths:
       - crates/reify-eval/src/unfold/instance.rs
 - label: π
+  task_id: 8875
   title: 'cell-eval-transaction-closure π: h14 partition of cache.rs'
   capabilities:
   - name: partition-symbols-located
@@ -354,6 +372,7 @@ tasks:
       paths:
       - crates/reify-eval/src/node_id.rs
 - label: ρ
+  task_id: 8876
   title: 'cell-eval-transaction-closure ρ: h14 partition of persistent_cache.rs; engine_hash_algo tests beside their subject'
   capabilities:
   - name: hash-algo-tests-misfiled
@@ -369,6 +388,7 @@ tasks:
     binding: 'persistent_cache.rs re-export shims are deleted by S7 #8551 (pending); ρ depends on it.'
     verdict: PASS
 - label: υ
+  task_id: 8877
   title: 'cell-eval-transaction-closure υ: integration gate: one transaction across cold, warm and edit'
   capabilities:
   - name: differential-harness-exists
@@ -378,6 +398,7 @@ tasks:
       kind: manual
       reason: υ rows green on main and each reds against a seeded single-site regression during authoring; recorded in the commit.
 - label: ω
+  task_id: 8878
   title: 'cell-eval-transaction-closure ω: PRD close'
   capabilities:
   - name: terminal-status-stamped

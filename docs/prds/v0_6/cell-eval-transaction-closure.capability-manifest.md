@@ -1,6 +1,6 @@
 # Capability manifest — cell-eval-transaction-closure
 
-PRD: `docs/prds/v0_6/cell-eval-transaction-closure.md`. Machine-readable twin: `cell-eval-transaction-closure.capability-manifest.yaml` (schema: dark-factory `shared.capability_manifest.CapabilityManifestDoc`, 21 task blocks, 54 capabilities). Task ids are stamped by `commit_planning` at decompose; none exist yet. The milestone MS (§9) is not a leaf and has no block.
+PRD: `docs/prds/v0_6/cell-eval-transaction-closure.md`. Machine-readable twin: `cell-eval-transaction-closure.capability-manifest.yaml` (schema: dark-factory `shared.capability_manifest.CapabilityManifestDoc`, 21 task blocks, 54 capabilities). Task ids stamped by `commit_planning` 2026-10-13: α #8858, β #8859, ν #8860, γ #8861, δ #8862, ε #8863, η #8864, ι #8865, θ #8866, ζ #8867, κ #8868, λ #8869, μ #8870, σ #8871, τ #8872, ξ #8873, ο #8874, π #8875, ρ #8876, υ #8877, ω #8878. The milestone MS (§9) is not a leaf and has no block.
 
 **Code anchors** verified against main `a4a8862bcc` (2026-10-13). Cite-by-symbol; re-locate lines at implementation time.
 
