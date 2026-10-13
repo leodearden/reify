@@ -1,3 +1,270 @@
+//! Static, pre-eval capability probes over a compiled module that pick a command's
+//! engine route, plus the exported-artifact triangle counters `cmd_build` prints.
+
+/// Returns `true` if the compiled module contains geometry — i.e. any template
+/// has a realization with at least one geometry operation, OR any value cell
+/// is typed `reify_core::Type::Geometry`.
+///
+/// Two compile-time signals are OR'd (no kernel required):
+///
+/// * **(a) Realization with ops** — any template has a realization with at
+///   least one geometry operation. This is the exact signal used by
+///   `engine_build.rs`'s `had_realization_ops` gate internally.
+///
+/// * **(b) `Type::Geometry` value cell** — any template has a value cell
+///   typed [`reify_core::Type::Geometry`]. This clause is intentionally
+///   conservative/defensive: a module with only (b) true (e.g. a structure
+///   that exposes a `Solid`-typed parameter without a realization op) is
+///   still routed through `with_registered_kernel + build()`. In that
+///   sub-case `build()` will skip the geometry pipeline (no ops → no
+///   handles) and geometry-query cells stay `undef`, but the routing is
+///   harmless: the kernel block is a no-op without ops and the broader gate
+///   future-proofs detection for geometry-forwarding structures.
+///
+/// Both signals are present for `examples/spec-shape-physical.ri` (the
+/// `box(...)` realization op + the `geometry : Solid` cell) and absent for
+/// all existing non-geometry eval fixtures.
+///
+/// Used by `cmd_eval` to decide whether to route through the kernel-backed
+/// `Engine::with_registered_kernel + build()` path (so that geometry-query
+/// value cells such as `mass`/`centroid` are resolved by
+/// `run_post_processes`/`post_process_geometry_queries`) or to stay on the
+/// existing lightweight `Engine::new(None) + eval()` path for plain numeric
+/// modules.
+pub(crate) fn module_has_geometry(module: &reify_compiler::CompiledModule) -> bool {
+    module.templates.iter().any(|t| {
+        t.realizations.iter().any(|r| !r.operations.is_empty())
+            || t.value_cells
+                .iter()
+                .any(|vc| vc.cell_type == reify_core::Type::Geometry)
+    })
+}
+
+/// Returns `true` when any template in the module carries at least one
+/// `RepresentationWithin(subject, bound)` constraint.
+///
+/// Used by [`cmd_check`] to decide whether to route through the kernel-backed
+/// `set_capture_repr_tol(true)` → `tessellate_realizations` → `check` path
+/// (so that `dispatch_constraints` can evaluate the assertion against the
+/// populated `achieved_repr_tol` map) or to stay on the existing lightweight
+/// `Engine::new(None)+check()` path for modules with no such assertion.
+///
+/// # Delegation (task #6170)
+///
+/// The walk itself lives in
+/// [`reify_eval::tolerance_combine::module_declares_representation_within`],
+/// which is defined as `!compute_representation_bounds(module).is_empty()` — so
+/// this predicate and the C-BOUND bound table are the same traversal rather than
+/// two that must be kept in sync. It reaches the canonical recognition gate (UFC
+/// name + arity + arg0 ValueRef:StructureRef + arg1 Literal Scalar LENGTH
+/// finite≥0) that the engine's dispatch interception also uses.
+///
+/// This CLI-local name is retained (rather than inlining the call) so
+/// `cmd_check`'s routing reads unchanged.
+///
+/// # Not the export-refusal gate
+///
+/// Both export-refusal sites — `cmd_build`'s `-o` arm in main.rs, and
+/// `Engine::build_outputs_with_result` in the engine — need the bound TABLE
+/// rather than a boolean, because the refusal names the unenforced bound. They
+/// therefore call
+/// [`reify_eval::tolerance_combine::unenforced_representation_bound_diagnostic`]
+/// instead of this predicate; its `None` case is exactly this function returning
+/// `false`, so all three sites still share one traversal.
+///
+/// Non-assertion modules: this function returns `false` and `cmd_check` keeps
+/// the existing path verbatim (C2 — byte-identical behavior for all existing
+/// `reify check` inputs).
+pub(crate) fn module_has_representation_within(module: &reify_compiler::CompiledModule) -> bool {
+    reify_eval::tolerance_combine::module_declares_representation_within(module)
+}
+
+/// Returns `true` when `module` contains at least one template whose
+/// [`reify_compiler::TopologyTemplate::trait_bounds`] includes `"DFMRule"`.
+///
+/// This gate keys on the `: DFMRule` trait declaration as a deliberate static
+/// *proxy* for the engine's duck-typed DFM rule recognition.  The engine's
+/// `measure_dfm_rules` (engine_constraints.rs) discovers DFM rules entirely by
+/// duck-typing on field shape via `dfm_rule_spec` — it requires a
+/// `severity : DFMSeverity` enum field, an `applies_to` struct instance carrying
+/// an overhang/draft angle scalar, and a `subject` field — and does **not**
+/// reference `trait_bounds` or `satisfies_trait_bound`.  The two predicates are
+/// intentionally different: this gate is a static pre-eval check on declarations
+/// (no evaluated values are available at routing time), whereas the engine's
+/// recognition fires at measurement time on evaluated field shapes.
+///
+/// **Accepted limitation:** a structure that duck-types as a DFM rule (matching
+/// `dfm_rule_spec`) but omits the `: DFMRule` declaration would make this gate
+/// return `false`, silently keeping the lightweight `Engine::new(None)`+`check()`
+/// path, never calling `build()`, and therefore leaving `realization_handles`
+/// unpopulated — `measure_dfm_rules` would emit nothing.  By convention all DFM
+/// rule structures in the stdlib and user code declare `: DFMRule` explicitly, so
+/// this case is out of scope for the routing gate.
+///
+/// `DFMRule` is a terminal stdlib trait (process.ri: `trait DFMRule {}`; no
+/// refinements, no subtraits), so a direct name-equality match (`b == "DFMRule"`)
+/// is exact.  A `: DFMRule` conformer is always compiled to a top-level
+/// `module.templates` entry regardless of instantiation site, so scanning
+/// templates catches both of `measure_dfm_rules`' discovery sources (A:
+/// top-level templates; B: sub-component instances).
+///
+/// When `true`, `cmd_check` routes through the kernel-backed
+/// `build(ExportFormat::Step)`-before-`check` path so that
+/// `realization_handles` is populated with live B-rep handles — `measure_dfm_rules`
+/// reads `self.realization_handles` to set each rule's `subject_handle`, and
+/// skips any rule where `subject_handle.is_none()` (the handle is only present
+/// after `build()`).  The C1 no-kernel no-op (the `default_kernel_name` None
+/// guard in `measure_dfm_rules` fires when OCCT is absent, emitting nothing)
+/// and C2 byte-identical behavior for non-DFM modules are both preserved.
+pub(crate) fn module_has_dfm_rule(module: &reify_compiler::CompiledModule) -> bool {
+    module
+        .templates
+        .iter()
+        .any(|t| t.trait_bounds.iter().any(|b| b == "DFMRule"))
+}
+
+/// Returns `true` when `module` has both a `DFMRule` conformer AND at least
+/// one template that declares a `min_feature_size : Length` value cell.
+///
+/// This is a STATIC pre-eval proxy for the engine's runtime `dfm_thickness_spec`
+/// (engine_constraints.rs, which requires `applies_to.min_feature_size` to be
+/// of type `Length` at eval time).  `min_feature_size : Length` is declared on
+/// the `Subtracting`, `Adding`, and `Parting` process traits (process.ri:55,
+/// 69, 98); a conformer's template carries it as a `ValueCellDecl` with
+/// `cell_type == Type::Scalar { dimension: DimensionVector::LENGTH }` (ty.rs:81).
+///
+/// `Forming` (draft-only: `draft_angle : Angle`, no `min_feature_size`) returns
+/// `false` → `ensure_openvdb_kernel` is NOT called → alloc-cost optimization
+/// preserved (the voxelization path is never needed for draft/overhang checks).
+///
+/// Accepted limitation: over-acquires OpenVDB in a contrived module that
+/// combines a `min_feature_size` process conformer with a `DFMRule` applying
+/// to a DIFFERENT process that is Forming-only.  Cost-only (wasted allocation),
+/// never a wrong diagnostic; never under-acquires for realistic single-process
+/// fixtures.  Mirrors the accepted-limitation note on `module_has_dfm_rule`.
+///
+/// `cmd_check` calls this BEFORE `engine.ensure_openvdb_kernel()` so that
+/// non-thickness modules (Forming/overhang/draft) and non-DFM modules keep
+/// the single-pick OCCT engine (engine_admin.rs:754-760 alloc-cost contract).
+pub(crate) fn module_has_thickness_dfm_rule(module: &reify_compiler::CompiledModule) -> bool {
+    module_has_dfm_rule(module)
+        && module.templates.iter().any(|t| {
+            t.value_cells.iter().any(|vc| {
+                vc.id.member == "min_feature_size"
+                    && matches!(
+                        &vc.cell_type,
+                        reify_core::Type::Scalar { dimension }
+                            if *dimension == reify_core::DimensionVector::LENGTH
+                    )
+            })
+        })
+}
+
+/// Returns `true` when `module` contains at least one realization operation
+/// that is `CompiledGeometryOp::Isosurface` (the `isosurface(...)` builtin,
+/// which lowers to the runtime-IR `Operation::Surface` — engine_build.rs:1961).
+///
+/// This is a STATIC pre-eval proxy mirroring [`module_has_thickness_dfm_rule`]'s
+/// routing-gate shape: [`cmd_build`] calls this BEFORE
+/// `engine.ensure_openvdb_kernel()` so that non-isosurface modules keep the
+/// single-pick OCCT engine (alloc-cost contract, engine_admin.rs) and stay
+/// byte-identical (C2). Isosurface modules need OpenVDB registered because
+/// the operand's Mesh→Voxel voxelize stage and the terminal Voxel→Mesh
+/// marching-cubes stage (task γ/5001) both dispatch to the openvdb kernel.
+///
+/// Note: `CompiledGeometryOp::Surface { kind: SurfaceKind, .. }` (free-form
+/// `nurbs_surface` construction) is a DISTINCT variant from `Isosurface` —
+/// this predicate matches only the latter.
+pub(crate) fn module_has_isosurface(module: &reify_compiler::CompiledModule) -> bool {
+    module.templates.iter().any(|t| {
+        t.realizations.iter().any(|r| {
+            r.operations
+                .iter()
+                .any(|op| matches!(op, reify_compiler::CompiledGeometryOp::Isosurface { .. }))
+        })
+    })
+}
+
+/// Parses the exported triangle count directly from a binary STL byte
+/// buffer's fixed-width header field: 80-byte header + `u32` triangle count
+/// (bytes 80..84, little-endian) + 50 bytes/triangle. `write_stl_binary`
+/// (reify-ir/src/geometry.rs) is the sole `Stl` writer in every kernel
+/// (occt/manifold) — including multi-body compound exports — so this header
+/// field is authoritative for any bytes produced by
+/// `engine.build(_, ExportFormat::Stl)`. Returns `0` if `data` is shorter
+/// than 84 bytes (defensive; a real binary-STL export always has the full
+/// header). See [`threemf_triangle_count`] for the `ExportFormat::ThreeMF`
+/// counterpart and `triangle_count_tests` below for coverage.
+pub(crate) fn stl_triangle_count(data: &[u8]) -> usize {
+    match data.get(80..84) {
+        Some(count_bytes) => {
+            u32::from_le_bytes(count_bytes.try_into().expect("slice is exactly 4 bytes")) as usize
+        }
+        None => 0,
+    }
+}
+
+/// Parses the exported triangle count directly from `ThreeMF` bytes by
+/// counting `<triangle ` element occurrences in the raw archive. `write_3mf`
+/// (reify-ir/src/geometry.rs) pins every ZIP part to
+/// `CompressionMethod::Stored`, specifically so the `3D/3dmodel.model` XML
+/// appears literally in `data` — its doc comment sanctions substring-counting
+/// `<triangle ` on raw bytes "without a zip reader", and
+/// `write_3mf_box_produces_valid_3mf_package` pins the identical
+/// `.matches("<triangle ").count()` technique against the unzipped XML.
+///
+/// Reading straight from `data` (rather than a fresh `tessellate_realizations`
+/// walk) keeps this authoritative for whatever was actually written: the OCCT
+/// kernel's `ThreeMF` export re-tessellates at its own hardcoded
+/// `DEFAULT_STL_TESSELLATION_TOLERANCE` (0.1), not
+/// `Engine::DEFAULT_TESSELLATION_TOLERANCE` (0.0001), so a tessellation
+/// re-walk is not guaranteed to agree with what was actually exported (amend:
+/// reviewer_comprehensive correctness_consistency finding). See
+/// `triangle_count_tests` below for coverage.
+///
+/// This is a package-wide total, not a single-mesh count: if `data` ever
+/// contained more than one `<mesh>` part, this would sum `<triangle ` across
+/// all of them (and across any other archive section where the substring
+/// happened to appear). Every export this CLI drives today writes exactly one
+/// mesh part, so `Triangles: N` is the exported mesh's count in practice; this
+/// is an acceptable semantic for a diagnostic print, not a correctness bug.
+pub(crate) fn threemf_triangle_count(data: &[u8]) -> usize {
+    const NEEDLE: &[u8] = b"<triangle ";
+    data.windows(NEEDLE.len()).filter(|w| *w == NEEDLE).count()
+}
+
+/// Returns `true` when `module` carries a *geometric* `Conforms` instance — one
+/// whose compiled [`reify_compiler::CompiledConstraint::arg_bindings`] include an
+/// explicit `actual` binding (η/4480).
+///
+/// This is the CLI counterpart of the engine's own `has_geometric_conforms`
+/// fast-path inside `Engine::measure_gdt_conformance`: both key on the presence
+/// of an `"actual"` arg-binding on a template (or guarded-group) constraint.
+/// `Conforms`'s predicate body never references `actual`, so the binding captured
+/// at instantiation is the only static trace of geometric intent — a *scalar*
+/// `Conforms` (whose `actual` fell to its `nominal()` default) is NOT detected,
+/// so `cmd_check` keeps its scalar verdict byte-identical (B4). The two gates are
+/// deliberately the same predicate so the routing decision cannot drift from the
+/// pass's own no-op check.
+///
+/// When `true`, `cmd_check` routes through the kernel-backed
+/// `build(ExportFormat::Step)`-before-`check` path so that `realization_handles`
+/// is populated with live B-rep handles for the pass — a `MaxDeviation` query is
+/// `BRepOnly`, and only `build()` (not `tessellate_realizations`) populates that
+/// map. When `false`, the existing RepresentationWithin and lightweight paths are
+/// kept verbatim (C2).
+pub(crate) fn module_has_geometric_conforms(module: &reify_compiler::CompiledModule) -> bool {
+    module.templates.iter().any(|t| {
+        let top = t.constraints.iter();
+        let guarded = t
+            .guarded_groups
+            .iter()
+            .flat_map(|g| g.constraints.iter().chain(g.else_constraints.iter()));
+        top.chain(guarded)
+            .any(|c| c.arg_bindings.iter().any(|(n, _)| n == "actual"))
+    })
+}
+
 #[cfg(test)]
 mod eval_geometry_gate_tests {
     use super::module_has_geometry;
