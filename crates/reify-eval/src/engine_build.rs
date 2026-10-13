@@ -3018,7 +3018,9 @@ fn plan_output_repr(
 /// through the kernel that OWNS them — one body directly, several as a
 /// compound assembled on that kernel. Bodies owned by different kernels cannot
 /// form one compound (a compound takes ids in a single kernel's id space), so
-/// that case is an Error diagnostic and no geometry.
+/// that case is an Error diagnostic and no geometry, in every format. Mesh
+/// formats could instead tessellate each body on its owner and merge the
+/// meshes; that is task #8916.
 fn export_product_bodies(
     geometry_kernels: &mut BTreeMap<String, Box<dyn GeometryKernel>>,
     default_kernel_name: &str,
