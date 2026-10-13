@@ -322,17 +322,18 @@ echo "--- A6: what run_all.sh's re-emission sanitizer does to this family (drift
 # definition is then parsed for the same names). run_all.sh currently uses the
 # hoisted form; the inline form is what it used when this guard was written.
 #
-# AND EVERY SITE, not one. run_all sanitizes in THREE places -- the deferred
-# per-member replay (_ra_emit_sanitized), the live member stream
-# (_ra_sanitize_stream) and the Summary FAILED region
-# (_ra_collect_fail_detail, which is what verify.sh / DF's merge-gate block
-# reason quote verbatim). Reading only the first left exactly the false green
-# this assertion is otherwise designed to catch: a fourth rule wired into
-# _ra_emit_sanitized and forgotten at another site would satisfy an
-# emit-only arity check while that site shipped a gap, and Section H
-# asserts only the two SLOT rules' effects. A6e and A6h compare each derived
-# list to the replay's directly, which is what makes "the sites cannot drift"
-# a machine-checked property rather than a claim in a comment.
+# AND BOTH CAPTURED-OUTPUT SITES, not one. run_all sanitizes captured output
+# in TWO places -- the per-member replay (_ra_emit_sanitized) and the Summary
+# FAILED region (_ra_collect_fail_detail, which is what verify.sh / DF's
+# merge-gate block reason quote verbatim). Reading only the first left exactly
+# the false green this assertion is otherwise designed to catch: a fourth rule
+# wired into _ra_emit_sanitized and forgotten at the collector would satisfy
+# an emit-only arity check while the collector shipped a gap, and Section H
+# asserts only the two SLOT rules' effects. A6e compares the two derived
+# lists directly, which is what makes "the two paths cannot drift" a
+# machine-checked property rather than a claim in a comment. The serial
+# branches' live stream is held to every rule behaviourally, on real run_all
+# output, by test_run_all.sh T33f/T33g.
 #
 # WHY THAT MATTERS, historically: this assertion used to extract exactly one
 # name, _RA_CLOCK_SANITIZE, and assert the sentinel survived it. Its comment
@@ -412,14 +413,6 @@ _a6_same_chain() {  # <emit-list> <detail-list>
 }
 assert "A6e: _ra_collect_fail_detail applies the SAME ordered rule chain as _ra_emit_sanitized (emit $A6_N_NAMES, collector $A6_N_DETAIL)" \
     _a6_same_chain "$A6_EMIT_NAMES" "$A6_DETAIL_NAMES"
-
-# A6h: the third site, the live stream the serial branches pipe each member
-# through. Same predicate as A6e, so an underivable stream body is RED rather
-# than equal-to-nothing.
-A6_STREAM_NAMES="$(_a6_rules_of _ra_sanitize_stream)"
-A6_N_STREAM="$(printf '%s\n' "$A6_STREAM_NAMES" | grep -c . || true)"
-assert "A6h: the live-stream sanitizer _ra_sanitize_stream applies the SAME ordered rule chain as _ra_emit_sanitized (emit $A6_N_NAMES, stream $A6_N_STREAM)" \
-    _a6_same_chain "$A6_EMIT_NAMES" "$A6_STREAM_NAMES"
 
 # A6b, PRESERVED VERBATIM IN INTENT: the CLOCK rule alone, extracted by its
 # exact name, still leaves this family untouched at column 0. It is what keeps

@@ -497,10 +497,11 @@ _RA_SLOT_BASENAME_SANITIZE='s/\(lib_test_semaphore\|cargo-test-occt-gated\|lib_l
 # would agree only by inspection -- a fourth rule wired into one site and
 # forgotten at another would leave that one quietly unsanitized, and nothing
 # would notice. One shared array makes that drift STRUCTURALLY impossible
-# rather than merely tested-for, and tests/infra/test_slot_timeout_marker.sh
-# A6 resolves each site's chain through THIS definition (A6a) and asserts the
-# derived, ordered rule lists are identical (A6e, A6h) -- so re-inlining a
-# divergent chain at any site is RED, not merely discouraged.
+# rather than merely tested-for. tests/infra/test_slot_timeout_marker.sh A6
+# resolves the replay's and the collector's chains through THIS definition
+# (A6a) and asserts their derived, ordered rule lists are identical (A6e); the
+# live stream is held to every rule on real run_all output by
+# test_run_all.sh T33f/T33g.
 #
 # Still separate `-e` expressions rather than one combined script: each rule
 # stays independently readable, independently commented, and independently
@@ -554,7 +555,7 @@ _ra_emit_sanitized() {
 #
 # Prints a failed member's structured/assertion FAIL lines, extracted from its
 # captured output file, for the Summary block's FAILED region to re-emit
-# (_ra_run_member stores them in the capture's fail-detail sidecar), letting
+# (_ra_run_member stores them in the out file's fail-detail sidecar), letting
 # verify.sh/dark-factory's merge-gate block reason name the offending
 # file/reason verbatim instead of falling back to commit-overlap heuristics.
 #
@@ -572,8 +573,8 @@ _ra_emit_sanitized() {
 # into a block reason. It applies the SAME $_RA_SANITIZE_SED array as
 # _ra_emit_sanitized and _ra_sanitize_stream -- one definition, shared by every
 # application site -- so they cannot drift by construction rather than by
-# inspection; that they share it is pinned by test_slot_timeout_marker.sh
-# A6e/A6h, and the resulting
+# inspection; that this collector and _ra_emit_sanitized share it is pinned by
+# test_slot_timeout_marker.sh A6e, and the resulting
 # behaviour by H3 (slot family) and test_run_all.sh's T30e (clock family). The
 # collector's own grep anchors are a SEPARATE contract from the sanitizer and
 # are deliberately untouched.
@@ -630,7 +631,7 @@ _ra_emit_fail_detail() {
 #                                    re-emits later;
 #   _ra_record_result                the one RESULT: PASS/FAIL verdict.
 # A run's outcome crosses back from a pool worker subshell through files: the
-# rc file and the capture's fail-detail sidecar.
+# rc file and the out file's fail-detail sidecar.
 # ---------------------------------------------------------------------------
 
 # _ra_spawn_member <name> -- the ONE member spawn line. Every member gets the
@@ -666,36 +667,38 @@ _ra_read_rc() {
     fi
 }
 
-# _ra_fail_detail_file <capture> -- the path of a capture's fail-detail sidecar.
+# _ra_fail_detail_file <out-file> -- the path of an out file's fail-detail sidecar.
 _ra_fail_detail_file() {
     printf '%s\n' "$1.detail"
 }
 
-# _ra_run_member <name> <capture> <rc-file> <capture|stream>
-#   capture: runs the member silently, both streams into <capture>.
+# _ra_run_member <name> <out-file> <rc-file> <capture|stream>
+#   capture: runs the member silently, both streams into <out-file>.
 #   stream: runs it live, both streams merged and sanitized on the way to
-#   stdout, tee'd RAW into <capture> (the fail-detail collector and the slot
-#   breadcrumb read raw bytes).
+#   stdout, tee'd RAW into <out-file> (the fail-detail collector and the slot
+#   breadcrumb read raw bytes). It returns only once every process holding
+#   the member's stdout has closed it, so a background child's late output
+#   stays inside the member's block, at the cost of waiting for that child.
 #   Then writes the fail-detail sidecar (rc != 0) and, LAST, the rc file, so a
 #   reader that sees the rc also sees the detail. Returns 0 whatever the
 #   member did; the verdict is the rc file's.
 _ra_run_member() {
     if [ "$#" -ne 4 ]; then
-        echo "ERROR: run_all.sh: _ra_run_member: usage: <name> <capture> <rc-file> <capture|stream> (got $# args)" >&2
+        echo "ERROR: run_all.sh: _ra_run_member: usage: <name> <out-file> <rc-file> <capture|stream> (got $# args)" >&2
         return 64
     fi
-    local _name="$1" _capture="$2" _rc_file="$3" _mode="$4" _rc=0 _ps=()
+    local _name="$1" _out_file="$2" _rc_file="$3" _mode="$4" _rc=0 _ps=()
     case "$_mode" in
         capture)
-            _ra_spawn_member "$_name" > "$_capture" 2>&1 || _rc=$?
+            _ra_spawn_member "$_name" > "$_out_file" 2>&1 || _rc=$?
             ;;
         stream)
             # The member's own status, never the pipeline's: under pipefail a
             # tee or sed failure would otherwise flip the verdict.
-            _ra_spawn_member "$_name" 2>&1 | tee "$_capture" 9<&- | _ra_sanitize_stream 9<&- \
+            _ra_spawn_member "$_name" 2>&1 | tee "$_out_file" 9<&- | _ra_sanitize_stream 9<&- \
                 && _ps=("${PIPESTATUS[@]}") || _ps=("${PIPESTATUS[@]}")
             _rc="${_ps[0]}"
-            _ra_note_slot_rewrite "$_capture" "$_name"
+            _ra_note_slot_rewrite "$_out_file" "$_name"
             ;;
         *)
             echo "ERROR: run_all.sh: _ra_run_member: mode must be capture or stream (got '$_mode')" >&2
@@ -703,9 +706,9 @@ _ra_run_member() {
             ;;
     esac
     local _detail
-    _detail="$(_ra_fail_detail_file "$_capture")"
+    _detail="$(_ra_fail_detail_file "$_out_file")"
     if [ "$_rc" -ne 0 ]; then
-        _ra_collect_fail_detail "$_capture" > "$_detail" || true
+        _ra_collect_fail_detail "$_out_file" > "$_detail" || true
     else
         rm -f "$_detail"
     fi
@@ -719,14 +722,14 @@ _ra_emit_member_header() {
     echo "--- Running: $1 ---"
 }
 
-# _ra_replay_member <name> <capture> [--retried <attempt-1-capture> <attempt-1-label>]
+# _ra_replay_member <name> <out-file> [--retried <attempt-1-out-file> <attempt-1-label>]
 #   Re-emits a captured run, sanitized. A retried member archives BOTH
 #   attempts under its one header, between `--- attempt N` delimiters that do
 #   not match `^--- Running: `, so the one-header-per-member contract holds.
 #   The attempt-1 label says where that attempt ran: 'concurrent pool', or
 #   'serial' for an intra-run-serial member's Phase-2 run.
 _ra_replay_member() {
-    local _name="${1:-}" _capture="${2:-}"
+    local _name="${1:-}" _out_file="${2:-}"
     if [ "$#" -eq 5 ] && [ "$3" = "--retried" ]; then
         case "$5" in
             'concurrent pool'|serial) ;;
@@ -739,20 +742,20 @@ _ra_replay_member() {
         _ra_emit_sanitized "$4" "$_name"
         echo "--- attempt 2 (serial retry) ---"
     elif [ "$#" -ne 2 ]; then
-        echo "ERROR: run_all.sh: _ra_replay_member: usage: <name> <capture> [--retried <attempt-1-capture> <attempt-1-label>] (got $# args)" >&2
+        echo "ERROR: run_all.sh: _ra_replay_member: usage: <name> <out-file> [--retried <attempt-1-out-file> <attempt-1-label>] (got $# args)" >&2
         return 64
     fi
-    _ra_emit_sanitized "$_capture" "$_name"
+    _ra_emit_sanitized "$_out_file" "$_name"
 }
 
-# _ra_record_result <name> <rc> <capture> [--retried]
+# _ra_record_result <name> <rc> <out-file> [--retried]
 #   Prints the member's verdict and records it: a PASS after a serial retry is
-#   flaky, a FAIL counts and takes the capture's fail detail (if any) into the
+#   flaky, a FAIL counts and takes the out file's fail detail (if any) into the
 #   Summary FAILED region.
 _ra_record_result() {
-    local _name="${1:-}" _rc="${2:-}" _capture="${3:-}" _retried="${4:-}"
+    local _name="${1:-}" _rc="${2:-}" _out_file="${3:-}" _retried="${4:-}"
     if [ "$#" -lt 3 ] || [ "$#" -gt 4 ] || { [ -n "$_retried" ] && [ "$_retried" != "--retried" ]; }; then
-        echo "ERROR: run_all.sh: _ra_record_result: usage: <name> <rc> <capture> [--retried] (got: $*)" >&2
+        echo "ERROR: run_all.sh: _ra_record_result: usage: <name> <rc> <out-file> [--retried] (got: $*)" >&2
         return 64
     fi
     if ! [[ "$_rc" =~ ^[0-9]+$ ]]; then
@@ -772,7 +775,7 @@ _ra_record_result() {
     failures=$((failures + 1))
     failed_names+=("$_name")
     local _detail
-    _detail="$(_ra_fail_detail_file "$_capture")"
+    _detail="$(_ra_fail_detail_file "$_out_file")"
     if [ -s "$_detail" ]; then
         _ra_fail_detail["$_name"]="$(cat "$_detail")"
     fi
@@ -780,7 +783,7 @@ _ra_record_result() {
 }
 
 # _ra_serial_workdir_create -- the serial branches' scratch dir for member
-# captures and rc files, keyed by member basename; _ra_on_exit removes it. Its
+# out and rc files, keyed by member basename; _ra_on_exit removes it. Its
 # prefix differs from the pool's `reify-run-all-pool.`, which callers glob.
 _ra_serial_workdir_create() {
     _RA_SERIAL_WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/reify-run-all-serial.XXXXXX")"

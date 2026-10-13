@@ -3875,5 +3875,94 @@ for _t34_leg in pool legacy subset host-infra; do
     fi
 done
 
+# -- Test 35: a streamed member's block holds its background writers (#8681) ---
+# The serial branches stream each member through a pipe, so a member's block
+# closes only when every process holding its stdout has closed it. A child the
+# member left running in the background, still writing to the inherited
+# stdout, therefore lands inside that member's block: after its header, before
+# its verdict and before the next member's header. run_all waits for that child
+# instead of attributing its output to a later member.
+echo ""
+echo "--- Test 35: a streamed member's block holds its background writers ---"
+
+TMPDIR_T35="$(mktemp -d)"
+_TMPDIRS+=("$TMPDIR_T35")
+T35_INFRA="$TMPDIR_T35/infra"
+mkdir "$T35_INFRA"
+T35_LATE="T35 late line from a background holder of the member's stdout"
+cat > "$T35_INFRA/test_a_holder.sh" <<T35EOF
+#!/usr/bin/env bash
+( sleep 1; echo "$T35_LATE" ) &
+exit 0
+T35EOF
+cat > "$T35_INFRA/test_b_next.sh" <<'T35EOF'
+#!/usr/bin/env bash
+exit 0
+T35EOF
+chmod +x "$T35_INFRA"/test_*.sh
+
+MANIFEST_T35="$TMPDIR_T35/classification.manifest"
+printf 'test_a_holder.sh host-exclusive\ntest_b_next.sh host-exclusive\n' > "$MANIFEST_T35"
+
+# (legacy) break-glass all-serial path.
+t35l_rc=0
+t35l_out="$(env -u REIFY_RUN_ALL_EXCLUDE_HOST_INFRA -u REIFY_RUN_ALL_MEMBER_SUBSET \
+    -u REIFY_RUN_ALL_SUBSET_COUNT_ONLY -u REIFY_RUN_ALL_CONTENT_SKIP \
+    -u REIFY_RUN_ALL_SKIP_STATE \
+    RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T35" \
+    REIFY_RUN_ALL_POOL_LOCK="$TMPDIR_T35/legacy.lock" \
+    REIFY_RUN_ALL_POOL_PSI_DISABLE=1 \
+    REIFY_RUN_ALL_POOL_DISABLE=1 \
+    bash "$RUN_ALL" "$T35_INFRA" 2>&1)" || t35l_rc=$?
+
+# (subset) both members named.
+t35s_rc=0
+t35s_out="$(env -u REIFY_RUN_ALL_EXCLUDE_HOST_INFRA \
+    -u REIFY_RUN_ALL_SUBSET_COUNT_ONLY -u REIFY_RUN_ALL_CONTENT_SKIP \
+    -u REIFY_RUN_ALL_SKIP_STATE -u REIFY_RUN_ALL_POOL_DISABLE \
+    RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T35" \
+    REIFY_RUN_ALL_POOL_LOCK="$TMPDIR_T35/subset.lock" \
+    REIFY_RUN_ALL_POOL_PSI_DISABLE=1 \
+    REIFY_RUN_ALL_MEMBER_SUBSET="test_a_holder.sh test_b_next.sh" \
+    bash "$RUN_ALL" "$T35_INFRA" 2>&1)" || t35s_rc=$?
+
+# (host-infra) both members are host-exclusive, under a private Lane-X lock.
+LOCK_T35="$TMPDIR_T35/lane-x.lock"
+t35h_rc=0
+t35h_out="$(env -u REIFY_RUN_ALL_EXCLUDE_HOST_INFRA -u REIFY_RUN_ALL_MEMBER_SUBSET \
+    -u REIFY_RUN_ALL_SUBSET_COUNT_ONLY -u REIFY_RUN_ALL_CONTENT_SKIP \
+    -u REIFY_RUN_ALL_SKIP_STATE -u REIFY_RUN_ALL_POOL_DISABLE \
+    RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T35" \
+    REIFY_RUN_ALL_POOL_LOCK="$TMPDIR_T35/host-infra.lock" \
+    REIFY_RUN_ALL_POOL_PSI_DISABLE=1 \
+    REIFY_LANE_X_FLOCK_LOCK="$LOCK_T35" \
+    bash "$RUN_ALL" --scope host-infra "$T35_INFRA" 2>&1)" || t35h_rc=$?
+rm -f "$LOCK_T35" "${LOCK_T35}.slot-1"
+
+# _t35_line_of <output> <exact-line> -> the first line number holding it, or 0.
+_t35_line_of() {
+    awk -v want="$2" '$0 == want { print NR; found = 1; exit } END { if (!found) print 0 }' <<<"$1"
+}
+
+for _t35_leg in legacy subset host-infra; do
+    case "$_t35_leg" in
+        legacy) _t35_out="$t35l_out"; _t35_rc="$t35l_rc" ;;
+        subset) _t35_out="$t35s_out"; _t35_rc="$t35s_rc" ;;
+        host-infra) _t35_out="$t35h_out"; _t35_rc="$t35h_rc" ;;
+    esac
+    _t35_header="$(_t35_line_of "$_t35_out" "--- Running: test_a_holder.sh ---")"
+    _t35_late="$(_t35_line_of "$_t35_out" "$T35_LATE")"
+    _t35_verdict="$(_t35_line_of "$_t35_out" "  RESULT: PASS (test_a_holder.sh)")"
+    _t35_next="$(_t35_line_of "$_t35_out" "--- Running: test_b_next.sh ---")"
+    if [ "$_t35_rc" -eq 0 ] && [ "$_t35_header" -gt 0 ] \
+        && [ "$_t35_header" -lt "$_t35_late" ] \
+        && [ "$_t35_late" -lt "$_t35_verdict" ] \
+        && [ "$_t35_verdict" -lt "$_t35_next" ]; then
+        assert "T35 [$_t35_leg]: a background child's late output lands between its member's header and verdict" true
+    else
+        assert "T35 [$_t35_leg]: a background child's late output lands between its member's header and verdict (rc=$_t35_rc; line of header $_t35_header, late output $_t35_late, verdict $_t35_verdict, next header $_t35_next)" false
+    fi
+done
+
 # -- Summary --------------------------------------------------------------------
 test_summary
