@@ -650,6 +650,55 @@ fn production_view_of_lib_rs_keeps_execute_and_masks_mod_tests() {
     );
 }
 
+// ── row (ii): numeric decode in the handle ──────────────────────────────────
+
+const ROW_II_BASELINE: usize = 0;
+
+/// The actor shell the row watches: it forwards ops, it does not decode them.
+const ROW_II_FILE: &str = "handle.rs";
+
+/// One finding per `.as_f64()` in the production view of `handle.rs`.
+fn row_ii_scan(label: &str, src: &str) -> Vec<Finding> {
+    if basename(label) != ROW_II_FILE {
+        return Vec::new();
+    }
+    let source_lines: Vec<&str> = src.lines().collect();
+    let mut findings = Vec::new();
+    for (idx, line) in production_view(src).skeleton_lines().iter().enumerate() {
+        for _ in line.matches(".as_f64()") {
+            findings.push(Finding {
+                file: label.to_owned(),
+                line: idx + 1,
+                text: source_lines[idx].trim().to_owned(),
+            });
+        }
+    }
+    findings
+}
+
+#[test]
+fn row_ii_handle_as_f64_within_baseline() {
+    let sources = crate_sources();
+    assert!(
+        sources
+            .iter()
+            .any(|(label, _)| basename(label) == ROW_II_FILE),
+        "row (ii): src/{ROW_II_FILE} is gone; move the row with it in the same diff"
+    );
+    let live: Vec<Finding> = sources
+        .iter()
+        .flat_map(|(label, src)| row_ii_scan(label, src))
+        .collect();
+    assert!(
+        live.len() <= ROW_II_BASELINE,
+        "row (ii): {} `.as_f64()` decode(s) in {ROW_II_FILE} production code > baseline \
+         {ROW_II_BASELINE}. Decode in OcctKernel via op_args::extract_length_f64; a new \
+         instance needs a visible baseline edit:\n{}",
+        live.len(),
+        render(&live)
+    );
+}
+
 // ── self-tests: scanner ─────────────────────────────────────────────────────
 
 /// A synthetic source written as an indented raw string, minus its leading
@@ -967,4 +1016,61 @@ mod tests {
 "#,
     );
     assert_eq!(live_lines("lib.rs", src), Vec::<usize>::new());
+}
+
+// ── self-tests: row (ii) ────────────────────────────────────────────────────
+
+fn row_ii_count(label: &str, src: &str) -> usize {
+    row_ii_scan(label, src).len()
+}
+
+#[test]
+fn row_ii_flags_a_handle_decode_and_clears_once_forwarded() {
+    let decoding = snippet(
+        r#"
+fn serve(kernel: &mut OcctKernel, radius: &Value) {
+    match radius.as_f64() {
+        Some(r) => kernel.fillet(r),
+        None => fail(),
+    }
+}
+"#,
+    );
+    assert_eq!(row_ii_count("src/handle.rs", decoding), 1);
+
+    let forwarding = snippet(
+        r#"
+fn serve(kernel: &mut OcctKernel, op: GeometryOp, reply: Sender<R>) {
+    let _ = reply.send(kernel.execute_with_history(&op));
+}
+"#,
+    );
+    assert_eq!(row_ii_count("src/handle.rs", forwarding), 0);
+}
+
+#[test]
+fn row_ii_ignores_comments_strings_and_test_code() {
+    let src = snippet(
+        r#"
+/// Never call `.as_f64()` here.
+fn serve() {
+    // radius.as_f64() was the old decode
+    let _hint = "use .as_f64() in the kernel";
+}
+#[cfg(all(test, has_occt))]
+mod tests {
+    fn t(v: &Value) -> Option<f64> {
+        v.as_f64()
+    }
+}
+"#,
+    );
+    assert_eq!(row_ii_count("src/handle.rs", src), 0);
+}
+
+#[test]
+fn row_ii_is_scoped_to_handle_rs() {
+    let src = "fn decode(v: &Value) -> Option<f64> {\n    v.as_f64()\n}\n";
+    assert_eq!(row_ii_count("src/handle.rs", src), 1);
+    assert_eq!(row_ii_count("src/lib.rs", src), 0);
 }

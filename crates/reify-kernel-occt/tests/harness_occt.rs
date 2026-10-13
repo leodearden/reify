@@ -70,6 +70,8 @@ mod dispatcher_integration;
 mod draft_integration;
 #[path = "harness_occt/empty_shape_consumer_guard_integration.rs"]
 mod empty_shape_consumer_guard_integration;
+#[path = "harness_occt/execute_with_history_lowering.rs"]
+mod execute_with_history_lowering;
 #[path = "harness_occt/extrude_integration.rs"]
 mod extrude_integration;
 #[path = "harness_occt/extrude_with_history_integration.rs"]
