@@ -3,7 +3,7 @@
 //! The comment block at `cmd_check`'s sub-path (b) declares twice that the
 //! ordering `merge_post_build_verdicts` → `drop_falsified_indeterminate_
 //! diagnostics` → `merge_build_diagnostics` is LOAD-BEARING, but every other
-//! test in this file exercises the three helpers in ISOLATION, and the
+//! check_verdict test module exercises the three helpers in ISOLATION, and the
 //! integration lock uses a fixture where `check()` resolves the constraint on
 //! its own — so `merge_post_build_verdicts` performs no upgrade and the
 //! ordering dependency is never exercised end to end.  A future refactor could
