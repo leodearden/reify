@@ -2637,10 +2637,6 @@ impl OcctKernel {
             } => {
                 let d1 = extract_length_f64(d1, op, "d1")?;
                 let d2 = extract_length_f64(d2, op, "d2")?;
-                validate_all_positive_finite(
-                    &[d1, d2],
-                    "asymmetric chamfer distances must be finite positive values",
-                )?;
                 // Asymmetric chamfer always routes to the per-edge primitive
                 // (empty `edges` = all-edges, enumerated inside the kernel
                 // wrapper). `chamfer_asymmetric_edges_with_history` stores the
