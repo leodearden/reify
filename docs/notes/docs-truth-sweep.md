@@ -47,7 +47,7 @@ PCITE is what #6233 eventually landed as (via #6931).
 - **PLINECITE** (landed by #6935). It fails the membership criterion: its
   corpus is source comments with `docs/` excluded, and a syntactic line cite is
   a finding in the very diff that writes it. That is merge-gate-shaped, not
-  sweep-shaped; merge-time enforcement is #8509. Rationale:
+  sweep-shaped; merge-time enforcement is #8822. Rationale:
   `docs/prds/reify-audit-stale-line-cite-detector.md` §8.
 
 **Adding a member is one `FamilyMember` row** in the sweep's `FAMILY`: the token,

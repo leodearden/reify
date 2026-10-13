@@ -39,7 +39,7 @@ A convention alone has measurably not held:
 | Severity | Medium, report-only. Never moves the exit code. | §7 |
 | Consumer | Opt-in `/audit --pattern PLINECITE`. Not in the default sweep, not in the docs-truth sweep. | §8 |
 | Escape hatch | Same-line `plinecite:allow — <reason>`; a reasonless marker is itself reported. | §4 |
-| Merge-time gate | Deferred to #8509 (filed as agent-followup-6935). | §7 |
+| Merge-time gate | Deferred to #8822 (S24 ο), which subsumed the agent-followup #8509. | §7 |
 
 ## 3. Syntactic, not semantic
 
@@ -101,7 +101,7 @@ matcher to close these gaps is rejected for the reason 593aaeb4f0 gives.
 | `crates/*/tests/`, benches, `build.rs` | out | Tests carry deliberate dated-evidence cites, such as the Citation-convention header in `objective_seed_parking_triage.rs`. |
 | `crates/*/src/**.ri` | out | The src arm is `.rs` only. |
 | `examples/`, prd-gate fixtures, other `.ri` | out | Non-stdlib `.ri` de-numbering is owned by #8305. |
-| `scripts/`, `gui/` | out | `scripts/` is #7302's unique scope. |
+| `scripts/`, `gui/` | out | #8822 widens the scope to `scripts/`, `hooks/` and `gui/` (it subsumed #7302). |
 
 **Widening re-derived.** The widening was specified against a design that did
 not yet exist. Re-checked with the detector in hand, the design is the one
@@ -180,7 +180,7 @@ grammar.
 **The shape-appropriate future gate is merge-time.** A hard cite is a finding
 in the very diff that writes it, so the place to stop one is that diff's merge.
 Deciding and building that, either as a ledger-ratchet gate or as a
-Medium-to-High flip, is #8509.
+Medium-to-High flip, is #8822.
 
 ## 8. Consumers
 
@@ -205,13 +205,13 @@ Medium-to-High flip, is #8509.
   task graph. Disjoint corpus.
 - **The docs-truth sweep** (#6347) aggregates prose-doc detectors. PLINECITE is
   excluded on its membership criterion (§8).
-- **#7302**, the semantic `path:LINE` guard, overlaps `crates/*/src`; its
-  unique scope is `scripts/`.
+- **#7302**, the semantic `path:LINE` guard, was cancelled. #8822 subsumes it
+  with a syntactic widening rather than the semantic design §3 rejects.
 - **#8305** de-numbers the stdlib residual and non-example `.ri` files. Its
   stdlib rows leave PLINECITE's ledger as stale rows when it lands.
 
 ## 10. Follow-ups
 
-- #8509: decide and build merge-time enforcement.
+- #8822: merge-time ratchet gate, widened scope and cite targets, `--rename`.
 - The ledger shrinks as cites are de-numbered; regenerate it with the default,
   shrink-only generator.
