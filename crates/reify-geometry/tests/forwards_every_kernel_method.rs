@@ -54,36 +54,27 @@ fn trait_method_names() -> BTreeSet<String> {
 }
 
 /// Records every method invoked on it, and answers each with a value that is
-/// not the trait default's and, where cheap, is derived from its arguments, so
-/// a forward that drops the call, substitutes the default, or passes the
-/// wrong argument changes the observed output.
+/// not the trait default's and is derived from its arguments, so a forward
+/// that drops the call, substitutes the default, or passes the wrong argument
+/// changes the observed output.
 struct RecordingKernel {
     log: Arc<Mutex<Vec<&'static str>>>,
-    resolutions: Arc<Mutex<Vec<VoxelResolution>>>,
 }
 
-type RecordingKernelWithLogs = (
-    RecordingKernel,
-    Arc<Mutex<Vec<&'static str>>>,
-    Arc<Mutex<Vec<VoxelResolution>>>,
-);
-
 impl RecordingKernel {
-    fn new() -> RecordingKernelWithLogs {
+    fn new() -> (Self, Arc<Mutex<Vec<&'static str>>>) {
         let log = Arc::new(Mutex::new(Vec::new()));
-        let resolutions = Arc::new(Mutex::new(Vec::new()));
-        (
-            Self {
-                log: log.clone(),
-                resolutions: resolutions.clone(),
-            },
-            log,
-            resolutions,
-        )
+        (Self { log: log.clone() }, log)
     }
 
     fn record(&self, name: &'static str) {
         self.log.lock().unwrap().push(name);
+    }
+
+    /// An answer for a method whose success type has no room for its
+    /// arguments: the error message echoes them verbatim.
+    fn echoed(method: &str, args: &dyn std::fmt::Debug) -> GeometryError {
+        GeometryError::OperationFailed(format!("{method} {args:?}"))
     }
 
     fn solid(id: u64) -> GeometryHandle {
@@ -120,17 +111,17 @@ impl KernelAttributeHook for RecordingKernel {
 }
 
 impl GeometryKernel for RecordingKernel {
-    fn execute(&mut self, _op: &GeometryOp) -> Result<GeometryHandle, GeometryError> {
+    fn execute(&mut self, op: &GeometryOp) -> Result<GeometryHandle, GeometryError> {
         self.record("execute");
-        Ok(Self::solid(1))
+        Err(Self::echoed("execute", op))
     }
 
     fn execute_with_history(
         &mut self,
-        _op: &GeometryOp,
+        op: &GeometryOp,
     ) -> Result<(GeometryHandle, AttributeHistory), GeometryError> {
         self.record("execute_with_history");
-        Ok((Self::solid(2), AttributeHistory::None))
+        Err(Self::echoed("execute_with_history", op))
     }
 
     fn reset(&mut self) {
@@ -220,9 +211,9 @@ impl GeometryKernel for RecordingKernel {
         )))
     }
 
-    fn execute_split(&mut self, _op: &GeometryOp) -> Result<Vec<GeometryHandleId>, GeometryError> {
+    fn execute_split(&mut self, op: &GeometryOp) -> Result<Vec<GeometryHandleId>, GeometryError> {
         self.record("execute_split");
-        Ok(vec![GeometryHandleId(13), GeometryHandleId(14)])
+        Err(Self::echoed("execute_split", op))
     }
 
     fn make_compound(
@@ -230,7 +221,7 @@ impl GeometryKernel for RecordingKernel {
         handles: &[GeometryHandleId],
     ) -> Result<GeometryHandle, GeometryError> {
         self.record("make_compound");
-        Ok(Self::solid(20 + handles.len() as u64))
+        Err(Self::echoed("make_compound", &handles))
     }
 
     fn ingest_mesh(&mut self, mesh: &Mesh) -> Result<GeometryHandle, GeometryError> {
@@ -240,12 +231,14 @@ impl GeometryKernel for RecordingKernel {
 
     fn ingest_mesh_at_resolution(
         &mut self,
-        _mesh: &Mesh,
+        mesh: &Mesh,
         resolution: VoxelResolution,
     ) -> Result<GeometryHandle, GeometryError> {
         self.record("ingest_mesh_at_resolution");
-        self.resolutions.lock().unwrap().push(resolution);
-        Ok(Self::solid(1))
+        Err(Self::echoed(
+            "ingest_mesh_at_resolution",
+            &(resolution, &mesh.vertices),
+        ))
     }
 
     fn register_mesh_handle(&mut self, mesh: &Mesh) -> Result<GeometryHandle, GeometryError> {
@@ -496,7 +489,7 @@ fn differing(left: &[(&'static str, String)], right: &[(&'static str, String)]) 
 
 #[test]
 fn harness_calls_every_trait_method_exactly_once() {
-    let (mut kernel, _log, _resolutions) = RecordingKernel::new();
+    let (mut kernel, _log) = RecordingKernel::new();
     let called = labels(&call_every_method(&mut kernel));
 
     let called_set: BTreeSet<String> = called.iter().map(|s| s.to_string()).collect();
@@ -518,7 +511,7 @@ fn harness_calls_every_trait_method_exactly_once() {
 
 #[test]
 fn recording_kernel_answers_differ_from_trait_defaults() {
-    let (mut kernel, _log, _resolutions) = RecordingKernel::new();
+    let (mut kernel, _log) = RecordingKernel::new();
     let recorded = call_every_method(&mut kernel);
     let defaults = call_every_method(&mut Unregistered);
 
@@ -538,12 +531,12 @@ fn recording_kernel_answers_differ_from_trait_defaults() {
 
 #[test]
 fn holder_forwards_every_method_to_inner_kernel() {
-    let (inner, holder_log, _resolutions) = RecordingKernel::new();
+    let (inner, holder_log) = RecordingKernel::new();
     let mut holder = SingleKernelHolder::new();
     holder.register_kernel(Box::new(inner));
     let through_holder = call_every_method(&mut holder);
 
-    let (mut bare, bare_log, _resolutions) = RecordingKernel::new();
+    let (mut bare, bare_log) = RecordingKernel::new();
     let direct = call_every_method(&mut bare);
 
     let expected = labels(&direct);
@@ -587,45 +580,5 @@ fn empty_holder_reproduces_every_trait_default() {
         "an empty SingleKernelHolder must return exactly the trait default's output \
          (left: empty holder, right: trait default):\n{}",
         mismatched.join("\n")
-    );
-}
-
-/// The resolution request itself must reach the inner kernel VERBATIM.
-///
-/// `holder_forwards_every_method_to_inner_kernel` proves the call reaches the
-/// inner kernel's `ingest_mesh_at_resolution`, but not that the `VoxelResolution`
-/// it carries is the caller's. With the trait default, the request would be
-/// silently downgraded to `VoxelResolution::HonestFloor` — the sub-voxel-feature
-/// failure task 6560 exists to close, arriving as a quietly coarser grid rather
-/// than as an error.
-#[test]
-fn ingest_mesh_at_resolution_delegates_the_request_verbatim() {
-    let (kernel, log, resolutions) = RecordingKernel::new();
-    let mut holder = SingleKernelHolder::new();
-    holder.register_kernel(Box::new(kernel));
-
-    let mesh = Mesh {
-        vertices: vec![],
-        indices: vec![],
-        normals: None,
-    };
-    let handle = holder
-        .ingest_mesh_at_resolution(&mesh, VoxelResolution::MinFeature(1.0))
-        .expect("holder must propagate the inner kernel's Ok(handle)");
-    assert_eq!(handle.id, GeometryHandleId(1));
-
-    assert_eq!(
-        *resolutions.lock().unwrap(),
-        vec![VoxelResolution::MinFeature(1.0)],
-        "the inner kernel must receive the caller's VoxelResolution verbatim"
-    );
-
-    let recorded = log.lock().unwrap();
-    assert_eq!(
-        *recorded,
-        vec!["ingest_mesh_at_resolution"],
-        "the holder must delegate ingest_mesh_at_resolution directly; a \
-         recorded `ingest_mesh` means it fell through the trait default and \
-         silently downgraded the request to VoxelResolution::HonestFloor"
     );
 }
