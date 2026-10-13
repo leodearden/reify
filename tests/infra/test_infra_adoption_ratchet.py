@@ -90,6 +90,11 @@ class ParseManifest(unittest.TestCase):
             "uncompilable ERE": "bad-ere | ( | a.sh | 0 | o",
             "POSIX bracket class": "posix-class | foo[[:space:]]bar | a.sh | 0 | o",
             "backreference": r"backref | (a)\1 | a.sh | 0 | o",
+            "class shorthand": r"shorthand | foo\d+ | a.sh | 0 | o",
+            "word-boundary anchor": r"boundary | \bfoo | a.sh | 0 | o",
+            "backslash inside brackets": r"bracket-escape | [\.]sh | a.sh | 0 | o",
+            "extension group": "ext-group | (?:foo)bar | a.sh | 0 | o",
+            "lazy quantifier": "lazy | fo*?o | a.sh | 0 | o",
             "duplicate id": "good-row | y | a.sh | 0 | o",
             "empty owner": "no-owner | x | a.sh | 0 |  ",
             "absolute path": "abs-path | x | /etc/passwd | 0 | o",
@@ -98,6 +103,13 @@ class ParseManifest(unittest.TestCase):
         for label, row_line in cases.items():
             with self.subTest(label):
                 self.assert_rejected(row_line)
+
+    def test_portable_constructs_are_accepted(self):
+        for ere in (r"\$[{]?x[}]?", r"test_\*\.sh", "[.]sh", "[]a]", r"a\\d",
+                    r"\(?x", "a{2,3}", "(foo|bar)+"):
+            with self.subTest(ere):
+                (row,) = parse(f"portable | {ere} | a.sh | 0 | o\n")
+                self.assertEqual(row.pattern.pattern, ere)
 
     def test_zero_rows_is_rejected(self):
         with self.assertRaises(ar.ManifestError) as caught:
@@ -196,20 +208,35 @@ class RealManifest(TempRoot):
             with self.subTest(shape):
                 self.assertIsNotNone(pattern.search(shape))
 
+    def test_discovery_row_matches_every_other_glob_form(self):
+        pattern = self.discovery_row().pattern
+        for shape in ('for f in "$INFRA_DIR/test_"*.sh; do',
+                      "for f in \"$INFRA_DIR\"/test_'*'.sh; do",
+                      'compgen -G "$INFRA_DIR/test_*.sh"',
+                      "find \"$INFRA_DIR\" -maxdepth 1 -name 'test_*.sh'",
+                      'ls "$INFRA_DIR"/test_*.sh',
+                      'done < <(find "$INFRA_DIR" -name "test_*.sh" | sort)',
+                      '    test_*.sh) members+=("$name") ;;'):
+            with self.subTest(shape):
+                self.assertIsNotNone(pattern.search(shape))
+
     def test_discovery_row_ignores_the_lib_producer(self):
         pattern = self.discovery_row().pattern
         self.assertIsNone(pattern.search('done < <(classification_discovered_set "$INFRA_DIR")'))
 
-    def test_re_adding_an_inline_loop_reds_the_row(self):
+    def test_re_adding_inline_discovery_reds_the_row(self):
         row = self.discovery_row()
         target = self.root / "tests/infra/run_all.sh"
         target.parent.mkdir(parents=True)
-        shutil.copyfile(REPO_ROOT / "tests/infra/run_all.sh", target)
-        with target.open("a") as fh:
-            fh.write('for x in "$INFRA_DIR"/test_*.sh; do :; done\n')
-        (result,) = ar.evaluate((row,), self.root)
-        self.assertEqual(result.count, 1)
-        self.assertIsNotNone(result.violation)
+        for added in ('for x in "$INFRA_DIR"/test_*.sh; do :; done\n',
+                      'mapfile -t members < <(compgen -G "$INFRA_DIR/test_*.sh")\n'):
+            with self.subTest(added):
+                shutil.copyfile(REPO_ROOT / "tests/infra/run_all.sh", target)
+                with target.open("a") as fh:
+                    fh.write(added)
+                (result,) = ar.evaluate((row,), self.root)
+                self.assertEqual(result.count, 1)
+                self.assertIsNotNone(result.violation)
 
 
 class LiveTree(unittest.TestCase):

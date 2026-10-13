@@ -6,8 +6,11 @@
 #   - columns are separated by ' | ' (space, pipe, space); the ERE is every
 #     column between the pattern-id and the last three, taken verbatim, so it
 #     may itself contain '|';
-#   - the ERE is the subset POSIX ERE and Python re agree on: no [[:class:]]
-#     brackets and no backreferences;
+#   - the engine reads the ERE with Python re, and it must read the same as a
+#     POSIX ERE so `git grep -E` can locate a hit: the engine rejects an
+#     escape before a letter or digit (\d, \b, a backreference), a backslash
+#     inside [...], a [:class:] / [.coll.] / [=equiv=] bracket, a (?...)
+#     group and a lazy or possessive quantifier;
 #   - only code lines count: a line whose first non-blank character is '#'
 #     never counts;
 #   - path is a repo-root-relative glob and must match at least one file;
@@ -15,4 +18,7 @@
 #   - a leaf that extracts a construct adds its row at the post-extraction
 #     count and names the row in its done-criteria.
 # Measure: python3 tests/infra/adoption_ratchet.py
-inline-discovery-loop | for [A-Za-z_][A-Za-z0-9_]* in "?\$[{]?[A-Za-z_][A-Za-z0-9_]*[}]?"?/test_\*\.sh | tests/infra/run_all.sh | 0 | α #8678
+# inline-discovery-loop: discovery's one home is classification_discovered_set,
+# so no run_all.sh code line spells a test_* glob -- a for loop, compgen -G,
+# find -name or ls alike.
+inline-discovery-loop | test_["']?[*] | tests/infra/run_all.sh | 0 | α #8678

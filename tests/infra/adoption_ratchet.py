@@ -19,8 +19,6 @@ DEFAULT_ROOT = Path(__file__).resolve().parents[2]
 _SEPARATOR = " | "
 _PATTERN_ID = re.compile(r"[a-z0-9][a-z0-9-]*")
 _CEILING = re.compile(r"[0-9]+")
-_POSIX_CLASS = re.compile(r"\[:[a-z]+:\]")
-_BACKREFERENCE = re.compile(r"\\[1-9]")
 
 
 class ManifestError(ValueError):
@@ -58,6 +56,42 @@ class RowResult:
         return None
 
 
+def _bracket_end(ere: str, start: int) -> int:
+    i = start + 1
+    if ere[i:i + 1] == "^":
+        i += 1
+    if ere[i:i + 1] == "]":
+        i += 1
+    close = ere.find("]", i)
+    return len(ere) if close < 0 else close + 1
+
+
+def _non_portable_construct(ere: str) -> str | None:
+    """Name the first construct POSIX ERE and Python re read differently."""
+    i = 0
+    while i < len(ere):
+        char, following = ere[i], ere[i + 1:i + 2]
+        if char == "\\":
+            if following.isalnum():
+                return f"the escape \\{following} (a class shorthand, anchor or backreference)"
+            i += 2
+        elif char == "[":
+            end = _bracket_end(ere, i)
+            body = ere[i + 1:end]
+            if "\\" in body:
+                return "a backslash inside [...]"
+            if any(f"[{mark}" in body for mark in ":.="):
+                return "a POSIX [:class:], [.coll.] or [=equiv=] bracket"
+            i = end
+        elif char == "(" and following == "?":
+            return "a (?...) group"
+        elif char in "*+?}" and following in {"?", "+"}:
+            return "a lazy or possessive quantifier"
+        else:
+            i += 1
+    return None
+
+
 def _parse_row(line: str, where: str, line_no: int) -> Row:
     parts = line.split(_SEPARATOR)
     if len(parts) < 5:
@@ -69,12 +103,10 @@ def _parse_row(line: str, where: str, line_no: int) -> Row:
     path_glob, ceiling, owner = (part.strip() for part in parts[-3:])
     if not _PATTERN_ID.fullmatch(pattern_id):
         raise ManifestError(f"{where}: pattern-id {pattern_id!r} is not kebab-case")
-    if _POSIX_CLASS.search(ere):
+    construct = _non_portable_construct(ere)
+    if construct:
         raise ManifestError(
-            f"{where}: ERE uses a POSIX [:class:] bracket, which Python re misreads")
-    if _BACKREFERENCE.search(ere):
-        raise ManifestError(
-            f"{where}: ERE uses a backreference, outside the POSIX ERE / Python re subset")
+            f"{where}: ERE uses {construct}, which POSIX ERE and Python re read differently")
     try:
         pattern = re.compile(ere)
     except re.error as exc:

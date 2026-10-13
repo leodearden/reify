@@ -14,7 +14,8 @@ legacy `REIFY_RUN_ALL_POOL_DISABLE=1`, `REIFY_RUN_ALL_MEMBER_SUBSET` and
 The member subset, the H3 exclusion and the host-exclusive bucket are filters
 over its output, so native `test_*.py` discovery (#7445) is a change to that
 one function. The adoption-ratchet row `inline-discovery-loop` holds
-`run_all.sh` at zero inline discovery loops (see "Adoption ratchet" below).
+`run_all.sh` at zero code lines spelling a `test_*` glob (see "Adoption
+ratchet" below).
 To add a new meta-test, create `test_<name>.sh` — it will be picked up automatically
 on the next `run_all.sh` invocation and in CI.
 
