@@ -16,14 +16,16 @@
 //! is exercised in `crates/reify-types/src/diagnostics.rs`'s inline test
 //! module — these tests focus on producer-side semantics.
 
-use reify_stdlib::loop_closure_solver::{
-    LoopClosureReport, NewtonConfig, NewtonOutcome, StartStrategy,
-    solve_loop_closure_with_diagnostics,
-};
-use reify_stdlib::eval_builtin;
-use reify_stdlib::loop_closure_value::JointValue;
 use reify_core::{Diagnostic, DiagnosticCode, Severity};
 use reify_ir::Value;
+use reify_stdlib::{
+    eval_builtin,
+    loop_closure_solver::{
+        LoopClosureReport, NewtonConfig, NewtonOutcome, StartStrategy,
+        solve_loop_closure_with_diagnostics,
+    },
+    loop_closure_value::JointValue,
+};
 
 // ── Test fixtures (mirrors the inline helpers in loop_closure.rs) ──────
 
