@@ -302,9 +302,11 @@ fn fourbar_example_source() -> String {
 /// the post-seam joint values that do carry the correct origin.
 #[test]
 fn relate_mounted_fourbar_closed_loop_closes_with_relate_origin() {
-    use reify_constraints::{JointValue, NewtonConfig, NewtonOutcome, StartStrategy,
-                            solve_loop_closure};
     use reify_stdlib::loop_closure::loop_residual_twist;
+    use reify_stdlib::loop_closure_solver::{
+        NewtonConfig, NewtonOutcome, StartStrategy, solve_loop_closure,
+    };
+    use reify_stdlib::loop_closure_value::JointValue;
 
     if !reify_kernel_occt::OCCT_AVAILABLE {
         eprintln!(

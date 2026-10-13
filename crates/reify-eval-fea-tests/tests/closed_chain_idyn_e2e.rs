@@ -37,12 +37,13 @@
 //! `MassProperties` solid and needs no `GeometryKernel`, so a
 //! `MockGeometryKernel` suffices (mirrors `rigid_body_dynamics_e2e.rs`).
 
-use reify_constraints::{
-    JointValue, NewtonConfig, NewtonOutcome, StartStrategy, solve_loop_closure,
-};
 use reify_core::ValueCellId;
 use reify_ir::{ExportFormat, Value};
 use reify_stdlib::loop_closure::{loop_residual_jacobian_by_joint, loop_residual_twist};
+use reify_stdlib::loop_closure_solver::{
+    NewtonConfig, NewtonOutcome, StartStrategy, solve_loop_closure,
+};
+use reify_stdlib::loop_closure_value::JointValue;
 use reify_test_support::{
     MockGeometryKernel, collect_errors, errors_only, parse_and_compile_with_stdlib,
 };
