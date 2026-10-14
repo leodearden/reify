@@ -1,19 +1,28 @@
 //! Compile-vs-eval overload-resolution parity test (task #5992).
 //!
-//! Ties together the two independently-authored implementations of ONE
-//! predicate — "which user function does this call select?" — so they cannot
-//! silently drift:
-//! - **compile side**: `resolve_function_overload`
-//!   (`crates/reify-compiler/src/type_compat.rs:1162`) — a `matches` tier of
-//!   per-param disjuncts, narrowed by two tie-break tiers (`exact_matches`,
-//!   then `head_matches` / `heads_unifiable`), classified into
-//!   `Resolved` / `NoMatch` / `Ambiguous`.
-//! - **eval side**: `find_matching_compiled_function`
-//!   (`crates/reify-expr/src/lib.rs:1809`) — the same three tiers in the same
-//!   priority order (exact, then head, then wildcard), resolved first-match-
-//!   wins within each and yielding `Option<&CompiledFunction>`. The head tier
-//!   is the newest of the three (#5685); before it landed, this file's
-//!   exemption ledger carried a `"head-tier"` row for its absence.
+//! Two resolvers answer "which user function does this call select?":
+//! - **compile side**: `reify_compiler::type_compat::resolve_function_overload`,
+//!   which classifies the surviving candidates into `Resolved` / `NoMatch` /
+//!   `Ambiguous`;
+//! - **eval side**: `reify_expr::find_matching_compiled_function`, which
+//!   returns the first surviving candidate as an `Option<&CompiledFunction>`.
+//!
+//! The per-SLOT tier predicates are one definition both call,
+//! `reify_core::overload::{slot_matches_wildcard_tier, slot_matches_head_tier}`,
+//! pinned by reify-core's own unit tests. What each resolver still implements
+//! independently is the per-CANDIDATE composition over them:
+//! - the name + arity gate;
+//! - `is_generic` = `!type_params.is_empty()`;
+//! - exact → head → wildcard priority, an empty tier falling through to the
+//!   next-broader one;
+//! - tier 2 applied as a filter over tier 3's survivors, never standalone
+//!   (tier 2 is not a subset of tier 3);
+//! - set classification (`Resolved` / `Ambiguous` / `NoMatch`) versus
+//!   first-match-wins.
+//!
+//! A drift in any of these is invisible to per-slot tests and to either
+//! side's single-sided tests. Driving both resolvers over one table, here, is
+//! the only place that composition is pinned two-sidedly.
 //!
 //! ## Contract
 //!
@@ -38,9 +47,9 @@
 //! `docs/invariants.md` is already `enforced(test)` for a different subject.)
 //! When the two resolvers drift in the accept direction, the failure is
 //! SILENT rather than diagnosed: the compiler resolves the call fine, then
-//! `eval_user_function_call` (`crates/reify-expr/src/lib.rs:1943`) fails to
-//! find the same function and returns a bare `Value::Undef` carrying NO
-//! `UndefCause` (`:1963`) — an undiagnosed hole, not an error message.
+//! `reify_expr`'s `eval_user_function_call` fails to find the same function
+//! and returns a bare `Value::Undef` carrying NO `UndefCause` — an
+//! undiagnosed hole, not an error message.
 //!
 //! This has already happened once for real: esc-4093-152, where the
 //! compile-side trait-object wildcard applied to every candidate but the
@@ -54,13 +63,14 @@
 //! `pub(crate)`, unreachable from an integration test (a separate external
 //! crate). This test reaches the resolver through the `test-support`-gated
 //! `reify_compiler::__resolve_function_overload_for_parity_test` shim, which
-//! mirrors `__infer_mul_div_result_for_parity_test` (`lib.rs:180`); the
-//! self-pull dev-dependency that activates `feature = "test-support"` for
-//! the `harness_langcore` integration-test target this module belongs to
-//! already exists (`Cargo.toml`), so no manifest change was needed. The
-//! eval-side `find_matching_compiled_function` is already `pub`.
+//! mirrors `reify_compiler::__infer_mul_div_result_for_parity_test`; the
+//! self-pull dev-dependency in reify-compiler's `Cargo.toml` activates
+//! `feature = "test-support"` for the `harness_langcore` integration-test
+//! target this module belongs to. The eval-side
+//! `find_matching_compiled_function` is already `pub`.
 //!
-//! Modelled on `crates/reify-compiler/tests/mul_div_static_runtime_parity.rs`
+//! Modelled on
+//! `crates/reify-compiler/tests/harness_type_checking/mul_div_static_runtime_parity.rs`
 //! (INV-COMP-3 β3), whose table + shared-engine + exemption-ledger shape this
 //! reuses by pattern (sibling integration-test crates cannot import each
 //! other's `tests/` modules).
@@ -68,19 +78,17 @@
 //! ## Deferred alternative
 //!
 //! Parity-by-test is the *detection* fix, not the *durable* one. The durable
-//! fix is algorithm dedup: a SINGLE shared resolver both crates call, so
-//! there is no second implementation to drift. That needs a crate seam
-//! visible to both `reify-compiler` and `reify-expr` (the predicate helpers
-//! `type_carries_trait_object` / `type_carries_type_param` /
-//! `type_carries_dim_param` are today independently duplicated across the two
-//! crates as well — `type_compat.rs:417/459/647` vs
-//! `reify-expr/src/lib.rs:1332/1372/1465`). Introducing that seam is a
-//! scope-level decision rather than a bug fix, and is a candidate for the
-//! Wave-3 scope discussion in `docs/prds/v0_6/builtin-signature-registry.md`;
-//! task #5689 is the filed hoist-to-reify-core follow-up, and eval's own
-//! resolver says the same at `reify-expr/src/lib.rs:1887`.
-//! Until such a seam exists, driving BOTH resolvers over one table is what
-//! catches predicate drift and resolver drift alike, with no new machinery.
+//! fix is algorithm dedup, and its per-slot half has landed (#5689,
+//! `reify_core::overload`). What remains deferred is ONE per-candidate
+//! resolver both crates call, leaving the composition above no second
+//! implementation to drift. Its blocker is the seam recorded in
+//! `reify_core::overload`'s "Why the API is per-SLOT" section:
+//! `CompiledFunction` lives in `reify-ir`, which depends on `reify-core`, and
+//! the two callers hold `&[Type]` vs `&[CompiledExpr]` — so that resolver
+//! would have to live in `reify-ir` or be generic over a candidate view. That
+//! is a scope-level decision, a candidate for the Wave-3 scope discussion in
+//! `docs/prds/v0_6/builtin-signature-registry.md` (#5068). Until it is made,
+//! this table is what catches composition drift.
 
 #![cfg(feature = "test-support")]
 
@@ -104,12 +112,13 @@ fn stub_body() -> CompiledFnBody {
 
 /// Build a minimal `CompiledFunction`.
 ///
-/// Mirrors `type_compat.rs:2340`'s in-crate `make_fn` plus a `type_params`
-/// argument, because genericity is load-bearing on BOTH sides here: the
-/// type-param and dim-param wildcards are gated on `!type_params.is_empty()`,
-/// while the trait-object wildcard is not. Only EMPTINESS of `type_params` is
-/// consulted by either resolver, so the `bounds` / `default` fields of each
-/// `reify_ir::TypeParam` are left empty — they cannot affect a row's outcome.
+/// Mirrors the in-crate `make_fn` in `type_compat.rs`'s tests plus a
+/// `type_params` argument, because genericity is load-bearing on BOTH sides
+/// here: the type-param and dim-param wildcards are gated on
+/// `!type_params.is_empty()`, while the trait-object wildcard is not. Only
+/// EMPTINESS of `type_params` is consulted by either resolver, so the
+/// `bounds` / `default` fields of each `reify_ir::TypeParam` are left empty —
+/// they cannot affect a row's outcome.
 fn make_fn(name: &str, params: Vec<(&str, Type)>, type_params: Vec<&str>) -> CompiledFunction {
     let params: Vec<(String, Type)> = params
         .into_iter()
@@ -186,8 +195,32 @@ fn smoke_exact_concrete_overload_agrees() {
 
 // ── Ledger machinery + shared assertion engine ──────────────────────────────
 
-/// Per-row expectation. `Diverge` names the responsible disjunct/tier so the
-/// exemption ledger above the tables can be read alongside the row.
+/// Per-row expectation, classified identically by both engines: agree +
+/// `Agree` and differ + `Diverge` pass; differ + `Agree` is UNLEDGERED; agree +
+/// `Diverge` is STALE. `Diverge` names its exemption-ledger entry so the
+/// ledger above the tables can be read alongside the row.
+///
+/// # TEETH
+///
+/// Both engines panic rather than merely reporting, and the ledger is
+/// load-bearing in BOTH directions. Proven by temporary mutation, not by a
+/// committed failing assertion — both recipes below were run manually, each
+/// confirmed to panic, then reverted:
+///
+/// (a) UNLEDGERED fires: flip a ledgered row (e.g. the trait-object-pair
+///     `"ambiguity-model"` selection row) to `Expect::Agree` and re-run. Its
+///     table driver goes RED with "UNLEDGERED ... divergence", proving a NEW
+///     drift cannot slip in undocumented.
+///
+/// (b) STALE fires: flip a clean row (e.g. `concrete exact: f(Int) <- Int`,
+///     or the `exact-wins (concrete first)` selection row) to
+///     `Expect::Diverge { ledger: "bogus" }` and re-run. Its driver goes RED
+///     with "STALE ledger row 'bogus' — the two resolvers now AGREE",
+///     proving a ledger entry cannot outlive the drift it documents.
+///
+/// (b) is what makes this file self-cleaning: it has retired real ledger
+/// entries on landing, by the test failing rather than by anyone remembering
+/// (see this file's git log).
 #[derive(Debug, Clone)]
 enum Expect {
     /// The two resolvers must reach the same answer.
@@ -259,34 +292,7 @@ fn classify_accept_reject_parity(row: &Row) -> Result<(), String> {
 
 /// Panicking single-row form of the accept/reject engine.
 ///
-/// # TEETH
-///
-/// Both engines panic rather than merely reporting, and the ledger is
-/// load-bearing in BOTH directions. Proven by temporary mutation, not by a
-/// committed failing assertion — both recipes below were run manually while
-/// authoring this file, each confirmed to panic, then reverted:
-///
-/// (a) UNLEDGERED fires: flip a ledgered row (e.g. the `"D4"` row
-///     `D4 bare: f(Int) <- TypeParam(T)`, or the `"ambiguity-model"`
-///     selection row) to `Expect::Agree` and re-run. Its table driver goes
-///     RED with "UNLEDGERED ... divergence", proving a NEW drift cannot slip
-///     in undocumented.
-///
-/// (b) STALE fires: flip a clean row (e.g. `concrete exact: f(Int) <- Int`,
-///     or the `exact-wins (concrete first)` selection row) to
-///     `Expect::Diverge { ledger: "bogus" }` and re-run. Its driver goes RED
-///     with "STALE ledger row 'bogus' — the two resolvers now AGREE",
-///     proving a ledger entry cannot outlive the drift it documents.
-///
-/// (b) is what makes this file self-cleaning: when #5686 lands the two `"D4"`
-/// rows start agreeing and go RED as STALE, so the ledger entry is removed by
-/// the test failing, not by anyone remembering.
-///
-/// That is not a prediction — it has already happened once here. #5685 landed
-/// the eval-side head-narrowing tier while this file was in flight; the
-/// `"head-tier"` row started agreeing, `multi_candidate_selection_parity` went
-/// RED as STALE, and the entry was retired (see the RETIRED note in the
-/// exemption ledger). Recipe (b) is the mechanism that caught it.
+/// Its teeth — both directions of the ledger — are documented on [`Expect`].
 fn assert_accept_reject_parity(row: &Row) {
     if let Err(msg) = classify_accept_reject_parity(row) {
         panic!("{msg}");
@@ -300,27 +306,6 @@ fn assert_accept_reject_parity(row: &Row) {
 // naming the responsible disjunct/tier; an undocumented divergence panics
 // UNLEDGERED, and an entry whose rows have started agreeing panics STALE, so
 // this block cannot drift out of sync with the tables in either direction.
-//
-// ── RETIRED: "head-tier" — the ledger's self-cleaning half, demonstrated ────
-//
-// This block once carried a second temporary entry. Compile-side
-// `resolve_function_overload` narrows `matches` twice — by `exact_matches`,
-// then by `head_matches` / `heads_unifiable` — which discriminates two
-// GENERIC overloads differing only by constructor head; eval-side
-// `find_matching_compiled_function` had an exact pass and a wildcard pass and
-// nothing else, so `Option<T>` vs `Result<T,E>` selected DIFFERENT functions
-// on the two sides. Task #5685 (now landed) added the missing eval-side
-// head-narrowing tier, and the entry was retired.
-//
-// It is recorded here rather than deleted outright because of HOW it was
-// retired: not by anyone remembering, but by the STALE arm. #5685 landed
-// while this file was in flight, the head-tier row started agreeing, and
-// `multi_candidate_selection_parity` plus its anti-vacuity companion went RED
-// with a message naming the exact remedy. That is the self-cleaning property
-// working end-to-end on a real landing, and it is the reason the four-arm
-// engine is worth its extra arm. The row itself is KEPT (reclassified to
-// `Expect::Agree`) and its companion repurposed into a positive parity pin,
-// so retiring the entry cost no coverage.
 //
 // ── "ambiguity-model" — architecturally PERMANENT, not a bug ────────────────
 //
@@ -430,9 +415,9 @@ fn single_candidate_accept_reject_parity() {
 }
 
 /// Positive two-sided pin for type-param-carrying ARGS against a concrete
-/// param — the shape that, until #5686, compile accepted and eval rejected.
+/// param.
 ///
-/// Both sides now apply one tier-3 predicate,
+/// Both sides apply one tier-3 predicate,
 /// `reify_core::overload::slot_matches_wildcard_tier`, whose arg side
 /// distinguishes two cases, asserted first-hand on each side:
 /// - a BARE user type-param arg (`T`, task-4232 γ) wildcards, so a generic fn
@@ -569,34 +554,7 @@ fn classify_selection_parity(row: &SelectionRow) -> Result<(), String> {
 
 /// Panicking single-row form of the selection-identity engine.
 ///
-/// # TEETH
-///
-/// Both engines panic rather than merely reporting, and the ledger is
-/// load-bearing in BOTH directions. Proven by temporary mutation, not by a
-/// committed failing assertion — both recipes below were run manually while
-/// authoring this file, each confirmed to panic, then reverted:
-///
-/// (a) UNLEDGERED fires: flip a ledgered row (e.g. the `"D4"` row
-///     `D4 bare: f(Int) <- TypeParam(T)`, or the `"ambiguity-model"`
-///     selection row) to `Expect::Agree` and re-run. Its table driver goes
-///     RED with "UNLEDGERED ... divergence", proving a NEW drift cannot slip
-///     in undocumented.
-///
-/// (b) STALE fires: flip a clean row (e.g. `concrete exact: f(Int) <- Int`,
-///     or the `exact-wins (concrete first)` selection row) to
-///     `Expect::Diverge { ledger: "bogus" }` and re-run. Its driver goes RED
-///     with "STALE ledger row 'bogus' — the two resolvers now AGREE",
-///     proving a ledger entry cannot outlive the drift it documents.
-///
-/// (b) is what makes this file self-cleaning: when #5686 lands the two `"D4"`
-/// rows start agreeing and go RED as STALE, so the ledger entry is removed by
-/// the test failing, not by anyone remembering.
-///
-/// That is not a prediction — it has already happened once here. #5685 landed
-/// the eval-side head-narrowing tier while this file was in flight; the
-/// `"head-tier"` row started agreeing, `multi_candidate_selection_parity` went
-/// RED as STALE, and the entry was retired (see the RETIRED note in the
-/// exemption ledger). Recipe (b) is the mechanism that caught it.
+/// Its teeth — both directions of the ledger — are documented on [`Expect`].
 fn assert_selection_parity(row: &SelectionRow) {
     if let Err(msg) = classify_selection_parity(row) {
         panic!("{msg}");
@@ -614,10 +572,10 @@ fn selection_rows() -> Vec<SelectionRow> {
 
     vec![
         // ── Exact-match-wins tie-break: BOTH sides implement it ──────────────
-        // Compile discards wildcard matches via `exact_matches`; eval's pass-1
-        // finds the exact candidate before the wildcard pass runs. Both
-        // declaration orders are listed so the row cannot be satisfied by
-        // accident through eval's first-match-wins.
+        // Compile discards wildcard matches via `exact_matches`; eval's tier 1
+        // returns the first exact candidate wherever it appears in table order
+        // (one fused scan). Both declaration orders are listed so the row
+        // cannot be satisfied by accident through eval's first-match-wins.
         SelectionRow {
             label: "exact-wins (generic first): [h<T>(T), h(Int)] <- Int",
             fns: vec![make_fn("h", vec![("x", tp("T"))], vec!["T"]),
@@ -643,20 +601,12 @@ fn selection_rows() -> Vec<SelectionRow> {
             expect: Expect::Agree,
         },
 
-        // ── Head tier (the #5685 shape, now AGREEING) ────────────────────────
-        // Declaration order is LOAD-BEARING and stays so even though this row
-        // is now clean: the Option overload MUST be listed first, or eval's
-        // first-match-wins would pick the Result one for the wrong reason and
-        // the row would agree vacuously, pinning nothing.
-        //
-        // Compile: both enter `matches`; `exact` is empty; `head_matches` keeps
-        // ONLY the Result candidate — `heads_unifiable(Option<T>, Result<..>)`
-        // is false via its catch-all, while
-        // `heads_unifiable(Result<T,E>, Result<Int,String>)` is true by
-        // same-name/same-arity recursion over `(TypeParam(_), _) => true`
-        // leaves. Eval now runs the same discrimination in its own `head` tier
-        // (#5685), selected via `first_head.or(first_wildcard)`, so it reaches
-        // index 1 too rather than falling back on table order.
+        // ── Head tier: two GENERIC overloads differing only by constructor
+        //    head. Both pass tier 3; both sides narrow via tier 2
+        //    (`slot_matches_head_tier`) to the Result candidate alone.
+        //    Declaration order is LOAD-BEARING: the Option overload is listed
+        //    FIRST, so index 1 is reachable only through tier 2 — with Result
+        //    first, first-match-wins would reach it without tier 2 at all. ───
         SelectionRow {
             label: "head-tier: [unwrap_or<T>(Option<T>,T), unwrap_or<T,E>(Result<T,E>,T)] <- (Result<Int,String>, Int)",
             fns: vec![make_fn("unwrap_or", vec![("o", option_of(tp("T"))), ("d", tp("T"))], vec!["T"]),
@@ -752,22 +702,13 @@ fn multi_candidate_selection_parity() {
     );
 }
 
-/// Positive parity pin for the head tier — the strongest row in this file,
-/// because it is the one that has already caught a real divergence.
+/// Positive two-sided pin for the head tier: two GENERIC overloads,
+/// `unwrap_or<T>(Option<T>, T)` and `unwrap_or<T,E>(Result<T,E>, T)`, called
+/// with a `Result` subject. Both pass tier 3, so only tier 2
+/// (`slot_matches_head_tier`, applied as a filter on both sides) separates
+/// them; each side is asserted first-hand to select index 1.
 ///
-/// Formerly the anti-vacuity guard for a `"head-tier"` ledger row: compile
-/// discriminated `Option<T>` from `Result<T,E>` by constructor head while
-/// eval had no head tier and fell back on declaration order, so both sides
-/// "accepted" and ran DIFFERENT function bodies. Task #5685 landed the
-/// eval-side head-narrowing tier, this test went RED on its own premise
-/// assert, and the ledger entry was retired.
-///
-/// It is REPURPOSED rather than deleted, so the coverage survives the fix:
-/// the shape that used to diverge is now pinned as an explicit AGREEMENT,
-/// both sides asserted first-hand to select index 1. Deleting it would have
-/// left the very shape #5685 fixed unguarded against re-divergence.
-///
-/// The `Option`-first declaration order remains load-bearing (see
+/// The `Option`-first declaration order is load-bearing (see
 /// `selection_rows`): with `Result` first, eval's first-match-wins would
 /// reach index 0... but so would a head tier, so the row could pass without
 /// the head tier existing at all. Option-first is what makes index 1 provable
@@ -813,9 +754,9 @@ fn head_tier_selection_agrees_both_sides_select_result_overload() {
         index_of(&fns, selected),
         1,
         "head-tier: eval side must select the Result overload (index 1), not the \
-         first-declared Option one — if this is 0, the eval-side head-narrowing \
-         tier landed by #5685 has regressed and compile/eval now run DIFFERENT \
-         function bodies for the same call"
+         first-declared Option one — if this is 0, find_matching_compiled_function's \
+         tier 2 (slot_matches_head_tier screened through tier 3) has regressed and \
+         compile/eval now run DIFFERENT function bodies for the same call"
     );
 
     // ...and only then: the engine classifies the row as agreeing.
@@ -830,10 +771,10 @@ fn head_tier_selection_agrees_both_sides_select_result_overload() {
 
 /// Anti-vacuity guard for the "ambiguity-model" ledger row.
 ///
-/// Unlike the other two ledger entries this one is PERMANENT, so this test
-/// pins a deliberate architectural asymmetry rather than a countdown to a
-/// fix: compile classifies three ways and reports `Ambiguous` as a
-/// diagnostic; eval is an `Option` lookup with no ambiguity concept.
+/// The ledger's only entry, and PERMANENT, so this test pins a deliberate
+/// architectural asymmetry rather than a countdown to a fix: compile
+/// classifies three ways and reports `Ambiguous` as a diagnostic; eval is an
+/// `Option` lookup with no ambiguity concept.
 #[test]
 fn ambiguity_model_divergence_is_genuine_and_ledgered() {
     let trait_obj = |n: &str| Type::TraitObject(n.to_string());
