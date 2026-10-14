@@ -5,6 +5,8 @@ S25). Machine-readable twin: `gui-backend-engine-modules-events-tool-contract.ca
 (task ids stamped at `commit_planning`). Binds each leaf's signal to substrate evidence (G3 + G6
 mechanized). No leaf is held.
 
+**Task ids** (stamped 2026-10-14 by `commit_planning`): α #8937, β #8938, γ #8939, δ #8940, ε #8941, ζ #8942, η #8943, θ #8944, ι #8945, κ #8946, λ #8947, μ #8948, ν #8949, ξ #8950, ο #8951, σ #8952, π #8953, ρ #8954, τ #8955, ω #8956.
+
 **Code anchors** verified against main `b1a7be2982` (2026-10-13), unchanged on every S25 path at
 `cf59570562` (2026-10-14). Cite-by-symbol; re-locate lines at implementation time.
 

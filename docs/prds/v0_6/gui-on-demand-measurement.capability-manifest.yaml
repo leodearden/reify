@@ -263,9 +263,11 @@ tasks:
     verdict: PASS
     delivered_check:
       kind: grep
-      pattern: fn demand_dispatch_on_engine\(
+      pattern: fn demand_dispatch_on_engine\(|fn demand_dispatch_json
       paths:
       - gui/src-tauri/src/debug_server.rs
+      - gui/src-tauri/src/debug_protocol.rs
+      - gui/src-tauri/src/commands.rs
       expect: present
   - name: constraint-payload-has-two-construction-paths
     binding: 'PASS-WITH-AMENDMENT (A8). ConstraintData (gui/src-tauri/src/types.rs)

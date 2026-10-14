@@ -1,6 +1,6 @@
 # PRD: GUI backend — engine.rs modules, one session event sink, debug writes on the EvalQueue, one AI tool contract
 
-**Milestone:** v0_6 · **Status:** active — authored 2026-10-13/14 (pass 1); rulings OQ1–OQ5 applied (§7); critic pass applied · **Approach:** B + H
+**Milestone:** v0_6 · **Status:** active — authored 2026-10-13/14; decomposed 2026-10-14 (pass 2): α #8937 … τ #8955, ω #8956 close (ids in §10 and the sidecar); rulings OQ1–OQ5 applied (§7) · **Approach:** B + H
 
 Authored 2026-10-13 by the S25 `/prd` session of program `review-all-reify-20261010`
 (`plans/review-all-program-reify-20261012.md`, stream **S25 GUI backend**, wave 2, mode spawn,
@@ -952,7 +952,7 @@ D3, D12, D13's module, D19, D20; subsumptions #8595, #8600, #7471, #7722, #7071,
 
 ## §10 — Decomposition plan
 
-Labels Greek; task ids assigned at decompose (pass 2). Every leaf carries
+Labels Greek; task ids filed 2026-10-14 (pass 2); no held leaf. Gate #8612 depends on ε #8941 and ο #8951. Every leaf carries
 `metadata.x_finding_key` (list), `metadata.x_finding_run = "review-all-reify-20261010"`,
 `metadata.source = "review-all"`, priority = the highest severity among its keys (medium where it
 carries none), `grammar_confirmed = true`. "Rows" names the Appendix A ratchet rows the leaf adds
@@ -964,19 +964,19 @@ moved or renamed symbol named by a `docs/invariants.md` Pointer has its Pointer 
 **Phase 1 — engine.rs partition (move-only; each: GUI suite green with tests moved, no test body
 edited beyond `use` lines; no shim; tracing targets verbatim)**
 
-- **α — `engine/units.rs`, `keys.rs`, `line_col.rs`, `write_atomic.rs`, `persistent_cache.rs`**
+- **α #8937 — `engine/units.rs`, `keys.rs`, `line_col.rs`, `write_atomic.rs`, `persistent_cache.rs`**
   and their tests (engine_tests unit 3 + the line-offset sections of unit 4); the `reify_core`
   re-export shim deleted, 17 test refs repointed. Subsumes **#8595**. Depends: #8680. Signal:
   `cargo test -p reify-gui` and `scripts/gui-test.sh` green;
   `git grep -n "fn parse_value_string_for_cell" gui/src-tauri/src/engine.rs` empty. Keys: none
   (contributes to fk-05311be442e6). medium.
-- **β — `engine/fea_channels.rs`** + its tests (~30 from unit 7 + the integration block).
+- **β #8938 — `engine/fea_channels.rs`** + its tests (~30 from unit 7 + the integration block).
   Subsumes **#8600**. Depends: α. medium.
-- **γ — `engine/display_routing.rs` (with `impl MergedTraitDefs`, inline style tests) and
+- **γ #8939 — `engine/display_routing.rs` (with `impl MergedTraitDefs`, inline style tests) and
   `engine/entity_tree.rs`** + tests. Depends: β. medium.
-- **δ — `engine/mechanism.rs` (with `scalar_to_f64`, `pub(super)`) and `engine/tensegrity.rs`**
+- **δ #8940 — `engine/mechanism.rs` (with `scalar_to_f64`, `pub(super)`) and `engine/tensegrity.rs`**
   + tests. Depends: γ. medium.
-- **ε — `engine/projection.rs` (unit 2 + the expression printer)** + tests; `engine.rs` holds only
+- **ε #8941 — `engine/projection.rs` (unit 2 + the expression printer)** + tests; `engine.rs` holds only
   the session core (§4.1); `engine_tests.rs` holds only session-core tests, split by concern if its
   residual exceeds the h14 alarm (measurement recorded in the task). Signal: as α, plus
   `git grep -nE "^(pub(\(crate\))? )?fn (build_values|apply_fea_channels|collect_display_routing)" gui/src-tauri/src/engine.rs`
@@ -984,48 +984,48 @@ edited beyond `use` lines; no shim; tracing targets verbatim)**
 
 **Phase 2 — session internals**
 
-- **ζ — one `reload()`; `CompiledSource`; one compile-error filter** (§4.2). B2/B2' RED first.
+- **ζ #8942 — one `reload()`; `CompiledSource`; one compile-error filter** (§4.2). B2/B2' RED first.
   Rows `gui-reload-pipeline`. Depends: none (OQ4). Keys: **fk-2dcacd59c79d**. medium.
-- **η — one post-tessellation builder `assemble_gui_state`; the case switch keeps routing and
+- **η #8943 — one post-tessellation builder `assemble_gui_state`; the case switch keeps routing and
   appearance** (§4.3). B1/B1' RED first on the committed fixture (registered in the rust-coupled
   fixture list in the same diff; a verify-pipeline file, so full gate). Rows `gui-state-literal`.
   Signal also debug-MCP observable: on the fixture, `set_fea_case overload` then `engine_state`
   shows the same panes as before. Depends: ε. Keys: **fk-b28eb5276628**. medium.
-- **θ — closed-set wire fields as serde enums (per-variant renames); typed overlay and recheck**
+- **θ #8944 — closed-set wire fields as serde enums (per-variant renames); typed overlay and recheck**
   (§4.4). B3/B3'. Deletes the `constraintVerdictTokens` scraper; interim `as_wire_str()` at the
   three `mcp_context.rs` readers. Subsumes **#7471** (Rust half). Rows
   `gui-dto-status-string-compare-root`, `-modules`. Depends: ε. Keys: **fk-995c30a8a446**. medium.
-- **ι — typed result views; one finish mapping** (§4.5). Rows `gui-value-type-name-test-root`,
+- **ι #8945 — typed result views; one finish mapping** (§4.5). Rows `gui-value-type-name-test-root`,
   `-modules`, `gui-value-field-get-root`, `-modules`, `gui-finish-mapping-copy`. Breadcrumb to
   #8690. Depends: β, γ, δ, ε. Keys: **fk-55213deb2362** (low). low.
-- **κ — mechanism descriptor through S6's `MechanismTree` and `JointKind`** (§4.5). Rows
+- **κ #8946 — mechanism descriptor through S6's `MechanismTree` and `JointKind`** (§4.5). Rows
   `gui-mechanism-map-key-root`, `-modules` (ceiling 0). Depends: ι, **#8845**, **#8838**,
   **#8839**. Keys: none (contributes to fk-55213deb2362). low.
 
 **Phase 3 — one session event sink**
 
-- **λ — `SessionEvents`, one install, `CommitReceipt`, `#![deny(unused_must_use)]`** (§4.6).
+- **λ #8947 — `SessionEvents`, one install, `CommitReceipt`, `#![deny(unused_must_use)]`** (§4.6).
   B4/B4'. Rows `gui-session-event-setter` (ceiling 0). Updates `docs/gui-event-channels.md`
   inventory. Depends: ζ. Keys: **fk-4ecb76174487**. medium.
-- **μ — `fea_diagnostics`/`fea_convergence` onto deltas; `diffed whole_opt` arm** (§4.6). B5.
+- **μ #8948 — `fea_diagnostics`/`fea_convergence` onto deltas; `diffed whole_opt` arm** (§4.6). B5.
   Depends: λ, η. Keys: **fk-08fd82603d2b**. medium.
 
 **Phase 4 — one AI tool contract**
 
-- **ν — reify-mcp typed request/response, schema and `ToolClass` per tool** (§4.10). BT8. Rows
+- **ν #8949 — reify-mcp typed request/response, schema and `ToolClass` per tool** (§4.10). BT8. Rows
   `mcp-hand-parsed-params` (ceiling 0). Subsumes **#7722**, **#7071**. Signal: over
   `McpServer::handle_message`, `tools/call reify_save_file {"file_path": 120}` returns `isError`
   with serde's type error instead of saving the active file; `tools/list` shows the unit-literal
   grammar and the filter `enum`s. Depends: **#6665**. Keys: none (contributes to
   fk-bb84d4272cfd). medium.
-- **ξ — host behaviours on `TauriToolContext<'e>`; `delegated_tool_job`** (§4.10 host, placement
+- **ξ #8950 — host behaviours on `TauriToolContext<'e>`; `delegated_tool_job`** (§4.10 host, placement
   rows 2–7, 9 host half, 11, 13, 15). BT2/BT2'/BT3 against the real host over `ManualQueue`;
   `mcp_tool_call_evaluation` moved onto `delegated_tool_job`; INV-GUI-3 mechanism cell. Subsumes
   **#7181**. Signal (intermediate; the user-facing half arrives with ο): the host behaviour tests
   green with the engine and fixtures real, and the existing debug write-tool tests unchanged (ξ
   copies the guard and path helpers into the host and edits no `debug_server.rs` code, so it needs
   no #6964). Depends: ν. Keys: none (contributes to fk-bb84d4272cfd). medium.
-- **ο — the debug server delegates the five `reify_*` tools; stamped evaluation; `mcp_tool_call`
+- **ο #8951 — the debug server delegates the five `reify_*` tools; stamped evaluation; `mcp_tool_call`
   deleted; the INV-GUI-2 scanner retired** (§4.8 ο rows, §4.9 INV-GUI-2 interim, §4.10). Adds
   `Stamped<T>` and the stamped evaluation kind to `eval_queue.rs` (+ `eval_queue_tests.rs`);
   rewrites `tool_defs`'s five `reify_*` rows to copy `registry.tool(name)`; keeps five literal
@@ -1040,16 +1040,16 @@ edited beyond `use` lines; no shim; tracing targets verbatim)**
   and `engine_status.generation` advances by one; `reify_save_file {"file_path": "/tmp/x.ri"}` is
   refused with the confinement rule; the GUI's `evaluation-status` toggles around an AI write.
   Depends: ξ, **#6964**. Keys: **fk-bb84d4272cfd** (high, gate-dep #8612), **fk-58f6f0d58857**.
-- **σ — MCP wire enums; `ValueCellKind::keyword()`; typed filters** (§4.11). BT9. Depends: ν, θ,
+- **σ #8952 — MCP wire enums; `ValueCellKind::keyword()`; typed filters** (§4.11). BT9. Depends: ν, θ,
   ξ, ε. Keys: **fk-cc4329a75e3e**. medium.
 
 **Phase 5 — debug writes on the queue**
 
-- **π — `QueuedEngine` (`queued_engine.rs`), `FrontendPort`, `until_generation`** (§4.7). BT10;
+- **π #8953 — `QueuedEngine` (`queued_engine.rs`), `FrontendPort`, `until_generation`** (§4.7). BT10;
   `ScriptedFrontend` test double. Rows `debug-nested-submit`. Signal: `wait_for_idle({until_generation:
   g})` over debug MCP returns `{ok, generation ≥ g}`; `assert-module-scc.py check` green. Depends:
   ο, **#6964**. Keys: none (contributes to fk-7212abff873d). medium.
-- **ρ — every debug engine access through `QueuedEngine`; open funnel, `set_fea_case` and reads
+- **ρ #8954 — every debug engine access through `QueuedEngine`; open funnel, `set_fea_case` and reads
   rewired; gui-state-sync D7 superseded** (§4.7, §4.8 ρ rows). BT4–BT5', the vitest handler tests.
   Deletes the helpers listed as ρ's in §4.8 and corrects the `EvalProgress.outstanding` doc;
   switches the open funnel and `reify_open_file` pushes to `published`.
@@ -1061,7 +1061,7 @@ edited beyond `use` lines; no shim; tracing targets verbatim)**
   `engine_status` reports `queue_outstanding: 1`; the visual harness's `set_fea_case` →
   `wait_for_idle` → screenshot scenarios stay green. Depends: π, μ, **#6964**. Keys:
   **fk-7212abff873d**, **fk-c4da71a0014e**, **fk-484c81d71180**. medium.
-- **τ — typed debug tool table and committed JSON export; regex-over-Rust parity retired**
+- **τ #8955 — typed debug tool table and committed JSON export; regex-over-Rust parity retired**
   (§4.9). BT7/BT7'. Rows `debug-tool-name-regex-src`, `debug-tool-name-regex-visual`. Signal:
   `tools/list` equals the committed `gui/src-tauri/debug-tools.json` row for row, and renaming a
   tool without regenerating reds `debug_tools_export_is_current` in the ordinary workspace pass;
@@ -1070,13 +1070,16 @@ edited beyond `use` lines; no shim; tracing targets verbatim)**
 
 **Close**
 
-- **ω — PRD close stamp.** Depends on every other leaf (a cancelled sibling counts as satisfied).
+- **ω #8956 — PRD close stamp.** Depends on every other leaf (a cancelled sibling counts as satisfied).
   Deliverable: the terminal Status marker naming the landed leaf ids, the AS-AUTHORED paragraph and
   LIVE/AS-AUTHORED map here and in the capability manifest (overlay "PRD terminal status"). low.
 
 Edges added at decompose onto tasks outside the batch (their premise changes): #7716 and #8574 ←
 ρ; #8074, #5101 and #7615 ← ο; #6843 ← θ. File-collision-only tasks (#6552, #8137, #8471, #7857,
-#6407, #6442, #8185, #7892, #7835, #6564, #8298, #6905, #8907, S6 λ₀/λ) are left to file locks.
+#6407, #6442, #8185, #7892, #7835, #6564, #8298, #6905, #8907, #6519, #6961, #8286, S6 λ₀/λ) are
+left to file locks. Subsumed and cancelled at filing (reason names the leaf): #8595 → α, #8600 → β,
+#7471 → θ (TS half → S26), #7722 and #7071 → ν, #7181 → ξ, #7854 → ρ. Notes appended to #8821
+(S25 owner map: INV-GUI-2 → ρ #8954), #6964, #5519, #6905 and #6843.
 
 ## §11 — Out of scope
 

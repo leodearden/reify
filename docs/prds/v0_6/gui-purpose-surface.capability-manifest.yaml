@@ -208,6 +208,7 @@ tasks:
       pattern: PurposeReflectiveAggregation
       paths:
       - gui/src-tauri/src/engine.rs
+      - gui/src-tauri/src/engine/projection.rs
       expect: present
   - name: generation-counter-consumed-not-rebuilt
     binding: 'DAG-direction — #6742 (pending) owns EngineSession.generation per its
@@ -246,6 +247,8 @@ tasks:
       pattern: 'name: "set_purpose"'
       paths:
       - gui/src-tauri/src/debug_server.rs
+      - gui/src-tauri/src/debug_protocol.rs
+      - gui/src-tauri/src/debug_tools.rs
       expect: present
   - name: end-to-end-tool-pattern-exists
     binding: 'grep: set_fea_case supplies ToolDef + dispatch arm + handler + run_on_engine
@@ -256,6 +259,7 @@ tasks:
       pattern: handle_set_fea_case
       paths:
       - gui/src-tauri/src/debug_server.rs
+      - gui/src-tauri/src/debug_protocol.rs
       expect: present
   - name: delta-baseline-refresh-mandatory
     binding: 'grep: set_fea_case_on_engine_and_refresh_baseline wraps compute_delta(last_state,
@@ -263,9 +267,10 @@ tasks:
     verdict: PASS
     delivered_check:
       kind: grep
-      pattern: compute_delta
+      pattern: compute_delta|SnapshotPublisher
       paths:
       - gui/src-tauri/src/debug_server.rs
+      - gui/src-tauri/src/eval_queue.rs
       expect: present
   - name: engine-work-leaves-tokio
     binding: 'grep: run_on_engine spawns on a large stack because OCCT panics inside
@@ -273,9 +278,11 @@ tasks:
     verdict: PASS
     delivered_check:
       kind: grep
-      pattern: fn run_on_engine
+      pattern: fn run_on_engine|pub struct QueuedEngine
       paths:
       - gui/src-tauri/src/debug_server.rs
+      - gui/src-tauri/src/debug_protocol.rs
+      - gui/src-tauri/src/queued_engine.rs
       expect: present
   - name: four-registration-guards-satisfied
     binding: capability→producer (this leaf) — PURE_ENGINE_SIDE allowlist, KNOWN_DEBUG_TOOL_NAMES,

@@ -2,7 +2,7 @@ prd: docs/prds/v0_6/gui-backend-engine-modules-events-tool-contract.md
 schema_version: 1
 tasks:
 - label: α
-  task_id: null
+  task_id: 8937
   title: 'gui-backend α: engine/units.rs, keys.rs, line_col.rs, write_atomic.rs, persistent_cache.rs (move-only)'
   capabilities:
   - name: units-module
@@ -23,7 +23,7 @@ tasks:
       paths:
       - gui/src-tauri/src/engine.rs
 - label: β
-  task_id: null
+  task_id: 8938
   title: 'gui-backend β: engine/fea_channels.rs (move-only)'
   capabilities:
   - name: fea-channels-module
@@ -44,7 +44,7 @@ tasks:
       paths:
       - gui/src-tauri/src/engine.rs
 - label: γ
-  task_id: null
+  task_id: 8939
   title: 'gui-backend γ: engine/display_routing.rs and engine/entity_tree.rs (move-only)'
   capabilities:
   - name: display-routing-module
@@ -65,7 +65,7 @@ tasks:
       paths:
       - gui/src-tauri/src/engine.rs
 - label: δ
-  task_id: null
+  task_id: 8940
   title: 'gui-backend δ: engine/mechanism.rs (with scalar_to_f64) and engine/tensegrity.rs (move-only)'
   capabilities:
   - name: mechanism-module
@@ -86,7 +86,7 @@ tasks:
       paths:
       - gui/src-tauri/src/engine.rs
 - label: ε
-  task_id: null
+  task_id: 8941
   title: 'gui-backend ε: engine/projection.rs; engine.rs holds the session core only (closes fk-05311be442e6)'
   capabilities:
   - name: projection-module
@@ -107,7 +107,7 @@ tasks:
       paths:
       - gui/src-tauri/src/engine.rs
 - label: ζ
-  task_id: null
+  task_id: 8942
   title: 'gui-backend ζ: one EngineSession::reload(); CompiledSource; one compile-error filter'
   capabilities:
   - name: reload-present
@@ -129,7 +129,7 @@ tasks:
       paths:
       - gui/src-tauri/src
 - label: η
-  task_id: null
+  task_id: 8943
   title: 'gui-backend η: one post-tessellation GuiState builder; case switch keeps routing and appearance'
   capabilities:
   - name: builder-present
@@ -145,7 +145,7 @@ tasks:
     binding: tests/prd-gate/fixtures/s25_case_switch_display_routing.ri — tree-sitter parse --quiet exit 0, 0 ERROR/MISSING; reify check exit 0 "All constraints satisfied." (2026-10-13). Lands with the PRD, so it carries no delivered check (green on arrival).
     verdict: PASS
 - label: θ
-  task_id: null
+  task_id: 8944
   title: 'gui-backend θ: closed-set wire fields as serde enums (per-variant renames, wire-identical); typed overlay and recheck'
   capabilities:
   - name: constraint-status-enum
@@ -176,7 +176,7 @@ tasks:
       paths:
       - gui/src-tauri/src/types.rs
 - label: ι
-  task_id: null
+  task_id: 8945
   title: 'gui-backend ι: typed result views; one finish mapping'
   capabilities:
   - name: result-views-module
@@ -188,7 +188,7 @@ tasks:
       - gui/src-tauri/src/engine/result_views.rs
       expect: present
 - label: κ
-  task_id: null
+  task_id: 8946
   title: 'gui-backend κ: mechanism descriptor through S6 MechanismTree and JointKind'
   capabilities:
   - name: mechanism-map-keys-gone
@@ -202,7 +202,7 @@ tasks:
       - gui/src-tauri/src/engine.rs
       - gui/src-tauri/src/engine/mechanism.rs
 - label: λ
-  task_id: null
+  task_id: 8947
   title: 'gui-backend λ: one SessionEvents sink installed once; CommitReceipt; #![deny(unused_must_use)]'
   capabilities:
   - name: session-events-present
@@ -233,7 +233,7 @@ tasks:
       paths:
       - gui/src-tauri/src/lib.rs
 - label: μ
-  task_id: null
+  task_id: 8948
   title: 'gui-backend μ: fea_diagnostics / fea_convergence onto deltas; diffed whole_opt arm'
   capabilities:
   - name: emitter-reason-gone
@@ -255,7 +255,7 @@ tasks:
       paths:
       - gui/src-tauri/src/gui_state_schema.rs
 - label: ν
-  task_id: null
+  task_id: 8949
   title: 'gui-backend ν: reify-mcp typed request/response, schema and ToolClass per tool'
   capabilities:
   - name: tool-class-present
@@ -289,7 +289,7 @@ tasks:
       paths:
       - crates/reify-mcp/src/types.rs
 - label: ξ
-  task_id: null
+  task_id: 8950
   title: 'gui-backend ξ: host behaviours on TauriToolContext; delegated_tool_job'
   capabilities:
   - name: produced-state-present
@@ -311,7 +311,7 @@ tasks:
       paths:
       - gui/src-tauri/src/mcp_context.rs
 - label: ο
-  task_id: null
+  task_id: 8951
   title: 'gui-backend ο: debug server delegates the five reify_* tools; stamped evaluation; mcp_tool_call deleted; INV-GUI-2 scanner retired'
   capabilities:
   - name: debug-reimplementations-gone
@@ -352,7 +352,7 @@ tasks:
       paths:
       - gui/src-tauri/src/eval_queue.rs
 - label: σ
-  task_id: null
+  task_id: 8952
   title: 'gui-backend σ: MCP wire enums; ValueCellKind::keyword(); typed filters'
   capabilities:
   - name: mcp-constraint-status-enum
@@ -383,7 +383,7 @@ tasks:
       paths:
       - crates/reify-compiler/src/types.rs
 - label: π
-  task_id: null
+  task_id: 8953
   title: 'gui-backend π: QueuedEngine (queued_engine.rs), FrontendPort, until_generation'
   capabilities:
   - name: queued-engine-present
@@ -405,7 +405,7 @@ tasks:
       paths:
       - gui/src-tauri/src/debug.rs
 - label: ρ
-  task_id: null
+  task_id: 8954
   title: 'gui-backend ρ: every debug engine access through QueuedEngine; gui-state-sync D7 superseded'
   capabilities:
   - name: run-on-engine-gone
@@ -438,7 +438,7 @@ tasks:
       paths:
       - gui/src/debug/bridge.ts
 - label: τ
-  task_id: null
+  task_id: 8955
   title: 'gui-backend τ: typed debug tool table and committed JSON export; regex-over-Rust parity retired'
   capabilities:
   - name: tool-route-present
@@ -477,7 +477,7 @@ tasks:
       paths:
       - gui/src/__tests__/debugParity.test.ts
 - label: ω
-  task_id: null
+  task_id: 8956
   title: 'gui-backend ω: PRD close stamp'
   capabilities:
   - name: terminal-status
