@@ -2,11 +2,12 @@
 //! `crates/reify-audit/plinecite-baseline.txt` — driven as a real binary over
 //! hermetic, staged git repos.
 //!
-//! The binary owns only its flags and the choice between `Ledger::kept()` and
-//! the full live debt; the row derivation is `plinecite::baseline_ledger` and
-//! the bytes are `plinecite_baseline::render_baseline`. What is pinned here is
-//! what the binary alone can break: stdout purity, the exit-code contract, and
-//! that growth needs `--admit-new`.
+//! The flags and the choice between `Ledger::kept()` and the full live debt
+//! are the shared `ratchet_ledger::regenerator` driver's; the row derivation
+//! is `plinecite::baseline_ledger` and the bytes are
+//! `plinecite_baseline::render_baseline`. What is pinned here is what the
+//! driver can break: stdout purity, the exit-code contract, and that growth
+//! needs `--admit-new`.
 
 use reify_audit::plinecite_baseline::{BASELINE_PATH, CiteRow, render_baseline};
 use reify_audit::{AuditContext, Finding, MockJCodemunchOps, RealGitOps};

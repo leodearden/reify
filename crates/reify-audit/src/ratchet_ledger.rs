@@ -1,9 +1,32 @@
-//! The set algebra every committed-ratchet ledger shares: live debt the
-//! ledger already holds is kept, live debt it lacks is new, and a committed
-//! row no live debt matches is stale. It knows nothing about a ledger file's
-//! row grammar or about how a detector finds its debt.
+//! What every committed-ratchet ledger shares: the set algebra — live debt
+//! the ledger already holds is kept, live debt it lacks is new, and a
+//! committed row no live debt matches is stale — and the rule that only a
+//! git-tracked ledger file is read ([`committed_rows`]). It knows nothing
+//! about a ledger file's row grammar or about how a detector finds its debt.
+//! [`regenerator`] is the driver each lane's `*-baseline-gen` binary shares.
 
+pub mod regenerator;
+
+use crate::AuditContext;
 use std::collections::BTreeSet;
+
+/// The rows of the committed ledger file at `path`, read with the lane's own
+/// `parse` — none when the file is absent from `tracked`, unreadable or
+/// empty. An untracked copy is inert, so a stray local ledger never absorbs
+/// debt.
+pub fn committed_rows<R: Ord>(
+    ctx: &AuditContext<'_>,
+    tracked: &[String],
+    path: &str,
+    parse: fn(&str) -> BTreeSet<R>,
+) -> BTreeSet<R> {
+    if !tracked.iter().any(|tracked_path| tracked_path == path) {
+        return BTreeSet::new();
+    }
+    ctx.read_relative(path)
+        .map(|content| parse(&content))
+        .unwrap_or_default()
+}
 
 /// Live debt (what a detector finds today) against committed debt (the
 /// ledger file). The three views are disjoint: `kept ∪ new_debt == live` and

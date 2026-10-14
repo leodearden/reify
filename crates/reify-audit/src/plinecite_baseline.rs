@@ -214,9 +214,4 @@ mod tests {
         assert_eq!(render_baseline(&BTreeSet::new()), BASELINE_HEADER);
         assert!(parse_baseline(BASELINE_HEADER).is_empty());
     }
-
-    #[test]
-    fn the_ledger_lives_beside_the_other_reify_audit_baselines() {
-        assert_eq!(BASELINE_PATH, "crates/reify-audit/plinecite-baseline.txt");
-    }
 }

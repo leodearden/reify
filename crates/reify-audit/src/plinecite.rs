@@ -26,10 +26,10 @@
 //! `docs/prds/reify-audit-stale-line-cite-detector.md`.
 
 use crate::plinecite_baseline::{BASELINE_PATH, CiteRow, parse_baseline};
-use crate::ratchet_ledger::Ledger;
+use crate::ratchet_ledger::{Ledger, committed_rows};
 use crate::scan_util::{allow_marker_body, find_word_boundary_token, is_word_byte};
 use crate::{AuditContext, EvidenceRef, Finding, Pattern, Severity};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::fmt;
 
 /// The per-line escape hatch: `plinecite:allow — <reason>`.
@@ -49,14 +49,22 @@ const ESC_ANCHOR: &[u8] = b" esc-";
 /// crate's `src/` outside `EXCLUDED_PREFIXES`.
 // G-allow: pub for the cross-crate real-tree smoke in tests/plinecite.rs; the production caller, check(), is same-file, and the orphan audit counts only cross-file call sites
 pub fn in_scope(path: &str) -> bool {
-    let parts: Vec<&str> = path.split('/').collect();
-    let stdlib_ri = path.starts_with(STDLIB_ROOT) && path.ends_with(".ri");
-    let crate_src_rs = matches!(parts.as_slice(), ["crates", _, "src", _, ..])
-        && path.ends_with(".rs")
+    let stdlib_ri = path.ends_with(".ri") && path.starts_with(STDLIB_ROOT);
+    let crate_src_rs = path.ends_with(".rs")
         && !EXCLUDED_PREFIXES
             .iter()
-            .any(|prefix| path.starts_with(prefix));
+            .any(|prefix| path.starts_with(prefix))
+        && is_under_a_crate_src(path);
     stdlib_ri || crate_src_rs
+}
+
+/// Whether `path` is `crates/<crate>/src/<rest>`, at any depth under `src/`.
+fn is_under_a_crate_src(path: &str) -> bool {
+    let mut parts = path.splitn(4, '/');
+    matches!(
+        [parts.next(), parts.next(), parts.next(), parts.next()],
+        [Some("crates"), Some(_), Some("src"), Some(_)]
+    )
 }
 
 /// Every line cite the committed ledger lacks ([`Ledger::new_debt`]), one
@@ -124,20 +132,9 @@ fn audit(ctx: &AuditContext<'_>) -> Result<Audit, ScopeEmpty> {
     }
     let ledger = Ledger {
         live: scan.debt.keys().cloned().collect(),
-        committed: committed_baseline(ctx, &tracked),
+        committed: committed_rows(ctx, &tracked, BASELINE_PATH, parse_baseline),
     };
     Ok(Audit { scan, ledger })
-}
-
-/// The committed ledger's rows — none when the file is absent, untracked,
-/// unreadable or empty (an untracked copy is inert).
-fn committed_baseline(ctx: &AuditContext<'_>, tracked: &[String]) -> BTreeSet<CiteRow> {
-    if !tracked.iter().any(|path| path == BASELINE_PATH) {
-        return BTreeSet::new();
-    }
-    ctx.read_relative(BASELINE_PATH)
-        .map(|content| parse_baseline(&content))
-        .unwrap_or_default()
 }
 
 /// The scanned files' findings, split by what a ledger row can absorb.
