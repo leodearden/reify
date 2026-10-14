@@ -64,7 +64,7 @@ This PRD therefore *extends* the existing library, per the ruling. It does not c
 - `/usr/bin/python3` is 3.12.3 on this host. That is the interpreter the gate reaches (reify CLAUDE.md "Infra tests"). The audit's no-python3 stance is a comment, not a test. No test asserts its absence (`git grep python3 -- scripts/warm-lane-*.sh` hits only the two explanatory comments).
 - **Dark-factory serialisers.** `LaneRecord.to_json` is `json.dumps(self.to_dict(), indent=2)`, and `LaneState` has six values. `plan.json` is written by `orchestrator/mcp/plan_tools.py`.
 - **There are five main-gate mark sites, not three (G6 correction).** The finding counted pre-commit, pre-merge-commit and land.sh. At main, dark-factory `GitOps.advance_main` and `GitOps.recover_red_main` also mark, by running `dark-factory-orchestrator.yaml` `git.main_gate_mark_command` (`touch "$(git rev-parse --git-common-dir)/reify-main-gate-ok"`). They clear with `main_gate_unmark_command` (`rm -f …`). These two sites carry roughly 28 landings a day. **`reify.mainGate.enforce` is `true`** (`git config --bool --get`), so a format change that left those two sites writing an empty file would hard-abort every merge-queue landing. L9/L10 are sequenced around this (D9).
-- **Only 3 "must stay a literal" notes exist at main**, not the brief's 11: `seed-warm-lane.sh` `_usage` (one line), the parser note above `--distinct-lock-refusal-rc)`, and the `Q_H11_FLAG` note in `tests/infra/test_seed_warm_lane.sh`.
+- **Only 3 "must stay a literal" notes exist at main**, not the brief's 11: `seed-warm-lane.sh` `_usage` (one line), the parser note above `--distinct-lock-refusal-rc)`, and the `Q11_FLAG` note in `tests/infra/test_seed_warm_lane.sh`.
 - **Dark-factory ships its own copies** of gc, gc-sweep, thin, disk-guard, audit, degenerate-ref-check, provision, `lib_live_refs.sh`, `lib_portable.sh` and `lib_task_citation.sh` under `orchestrator/scripts/warm-lane/`. Resolution is project-first: `<project_root>/scripts/<name>` wins (`GitOps._resolve_warm_lane_script`). Reify's copies are therefore the ones that run for reify. The dark-factory copies are dark-factory's to re-sync (§7).
 
 ## 4. Resolved design decisions
@@ -248,7 +248,7 @@ Labels are PRD-local; task ids were backfilled at decompose (2026-10-12). Every 
 
 **L8 — `seed-warm-lane.sh --capabilities`** · low · keys [fk-d30433df0ed6] · **#8670**
 
-- **Modules:** `scripts/seed-warm-lane.sh` (parser, `_usage`), `test_seed_warm_lane.sh` (`Q_H11_FLAG` note).
+- **Modules:** `scripts/seed-warm-lane.sh` (parser, `_usage`), `test_seed_warm_lane.sh` (`Q11_FLAG` note).
 - **Work:** D10. Delete the 3 literal notes.
 - **Signal:** `seed-warm-lane.sh --capabilities` prints exactly the two flag lines and exits 0. Boundary case B9 is green.
 - **Prereqs:** L1 (same parser region).

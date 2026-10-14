@@ -755,7 +755,7 @@ assert "continuation: an FD-9 operand on a continued line is not an acquire" \
     _scans_clean "$TMPWORK/neg_continuation.sh"
 
 # Real-tree control — and the sharpest one available, because this is the very
-# suite that pins the #5705 fix.  Its H7b setup opens FD 9 at top level (:2870)
+# suite that pins the #5705 fix.  Its Q7b setup opens FD 9 at top level (:2870)
 # and then asserts over it across a continuation (:2871-2872), has detached
 # forks downstream at :2929, :2954, :3009, :3068 and :4046, and carries no
 # code-level release.

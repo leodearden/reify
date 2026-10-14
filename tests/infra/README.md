@@ -259,8 +259,8 @@ the `LANE-LOCK RELEASE CONTRACT` block at the flock acquire in
 and a copy in this file would be one more site to update in lockstep.
 
 The permanent regression guards are hermetic and live in
-`test_seed_warm_lane.sh` — `H4b`/`H4e` (structural release marker) and `H7b`
-(an inherited FD 9 is never unlocked), plus **`H4c`**, which forks a live
+`test_seed_warm_lane.sh` — `Q4b`/`Q4e` (structural release marker) and `Q7b`
+(an inherited FD 9 is never unlocked), plus **`Q4c`**, which forks a live
 holder of a dup of seed's lane-lock FD and asserts the lock reads back free
 anyway; that last one is the only guard that fails if the release runs but has
 no effect.  This soak is the instrument for re-measuring the rate if the
@@ -297,7 +297,7 @@ allow-listed**, because flagging either would be actively harmful:
   requires a *local* open, so a file that merely inherits the descriptor is
   never considered and the guard is incapable of advising a release it has no
   right to advise.  (Whence `scripts/seed-warm-lane.sh` installs its release
-  trap *inside* the branch that opened the FD; `test_seed_warm_lane.sh`'s `H7b`
+  trap *inside* the branch that opened the FD; `test_seed_warm_lane.sh`'s `Q7b`
   pins that.)
 
 The all-clear is only worth as much as the instrument, so three liveness
