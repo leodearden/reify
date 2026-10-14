@@ -193,7 +193,7 @@ Machine-readable twin: `docs/prds/v0_6/builtin-registry-migration-and-intercepti
 | Capability | Evidence | Verdict |
 |---|---|---|
 | grammar has no reserved-word API | `tree-sitter-reify/grammar.js` declares no `word:` rule | PASS (the table carries `Reserved`/`Contextual`, pinned by a parse test) |
-| delivered | `path` `crates/reify-syntax/src/keywords.rs` present; `crate::completion::\{BODY_KEYWORDS` absent in `crates/reify-lsp/src/references.rs` | — |
+| delivered | `path` `crates/reify-syntax/src/keywords.rs` present; `crate::completion::\{BODY_KEYWORDS` absent in `crates/reify-lsp/src/references/` | — |
 
 ### S8-τ — reify-expr `lib.rs` partition
 | delivered | `path` `crates/reify-expr/src/context.rs` present | — |
