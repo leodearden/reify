@@ -330,6 +330,13 @@ fn build_realized(
         "expected no Error diagnostics from the {label} build — a tessellation or \
          mesher failure on this fixture's geometry would surface here. got: {errors:?}"
     );
+    assert!(
+        build_result
+            .geometry_output
+            .as_ref()
+            .is_some_and(|bytes| !bytes.is_empty()),
+        "the {label} build must export the body's STEP geometry"
+    );
 
     (engine, build_result)
 }
