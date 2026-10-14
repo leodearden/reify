@@ -713,77 +713,40 @@ pub(crate) fn elaborate_forall_connect(
                 // compile-time silent-skip + info-diagnostic (task 2629 follow-up).
                 match &decl.body {
                     ForallConnectBody::Connect(cd) => {
-                        // Build the placeholder element AST (`<sub_name>[0]`) and
-                        // substitute every expression-bearing position.
-                        let coll_span = decl.collection.span;
-                        let placeholder = reify_ast::Expr {
-                            kind: reify_ast::ExprKind::IndexAccess {
-                                object: Box::new(reify_ast::Expr {
-                                    kind: reify_ast::ExprKind::Ident(sub_name.clone()),
-                                    span: coll_span,
-                                }),
-                                index: Box::new(reify_ast::Expr {
-                                    kind: reify_ast::ExprKind::NumberLiteral {
-                                        value: 0.0,
-                                        is_real: false,
-                                    },
-                                    span: coll_span,
-                                }),
-                            },
-                            span: coll_span,
-                        };
-                        let mut bindings: HashMap<String, reify_ast::Expr> = HashMap::new();
-                        bindings.insert(decl.variable.clone(), placeholder);
-
-                        let left_substituted = substitute_expr(&cd.left.expr, &bindings);
-                        let right_substituted = substitute_expr(&cd.right.expr, &bindings);
-
-                        // Resolve each substituted side to a flat port-name
-                        // string. `resolve_port_name` understands:
-                        //   * bare `Ident` ("air_channel")
-                        //   * `Ident.member` ("v.inlet" → "vents[0].inlet")
-                        //   * `Ident[N].member` ("vents[0].inlet")
-                        //   * `Ident[N]` ("vents[0]")
-                        //   * `AdHocSelector` patterns
-                        // Anything outside this set (e.g. a doubly-nested
-                        // MemberAccess like `vents[0].inner.a` produced by
-                        // substituting `v.inner.a`) returns None.
-                        //
-                        // On the deferred path `compile_connection` is NEVER
-                        // invoked, so no resolved-path error can fire here.
-                        // Silently skipping would leave the user with no
-                        // connections and no diagnostic — task 2717 adds an
-                        // info diagnostic that labels the offending side(s)
-                        // so users can locate the unsupported expression.
-                        let left_resolved = resolve_port_name(&left_substituted);
-                        let right_resolved = resolve_port_name(&right_substituted);
-                        let (left_port_template, right_port_template) =
-                            match (left_resolved, right_resolved) {
-                                (Some(l), Some(r)) => (l, r),
-                                (left, right) => {
-                                    let mut diag = Diagnostic::info(
-                                        "forall connect with unsupported port shape over \
+                        // Parse each endpoint as written, before any
+                        // substitution, so the bound variable stays distinct
+                        // from a source-written `<sub>[0]`. The deferred path
+                        // never reaches `compile_connection`, so an endpoint
+                        // outside the grammar gets this info diagnostic
+                        // rather than a resolved-path error.
+                        let left = PortPath::parse(&cd.left.expr, Some(&decl.variable));
+                        let right = PortPath::parse(&cd.right.expr, Some(&decl.variable));
+                        let (left, right) = match (left, right) {
+                            (Some(l), Some(r)) => (l, r),
+                            (left, right) => {
+                                let mut diag = Diagnostic::info(
+                                    "forall connect with unsupported port shape over \
                                      deferred-count collections will not re-elaborate \
                                      at runtime (task 2717; not yet supported by \
                                      deferred-count re-elaboration)",
-                                    )
-                                    .with_label(DiagnosticLabel::new(decl.span, "forall connect"));
-                                    if left.is_none() {
-                                        diag = diag.with_label(DiagnosticLabel::new(
-                                            cd.left.expr.span,
-                                            "left port shape not supported",
-                                        ));
-                                    }
-                                    if right.is_none() {
-                                        diag = diag.with_label(DiagnosticLabel::new(
-                                            cd.right.expr.span,
-                                            "right port shape not supported",
-                                        ));
-                                    }
-                                    diagnostics.push(diag);
-                                    return;
+                                )
+                                .with_label(DiagnosticLabel::new(decl.span, "forall connect"));
+                                if left.is_none() {
+                                    diag = diag.with_label(DiagnosticLabel::new(
+                                        cd.left.expr.span,
+                                        "left port shape not supported",
+                                    ));
                                 }
-                            };
+                                if right.is_none() {
+                                    diag = diag.with_label(DiagnosticLabel::new(
+                                        cd.right.expr.span,
+                                        "right port shape not supported",
+                                    ));
+                                }
+                                diagnostics.push(diag);
+                                return;
+                            }
+                        };
 
                         // task-2690 amendment: surface the connector-spec drop.
                         //
@@ -824,6 +787,25 @@ pub(crate) fn elaborate_forall_connect(
                         // capturing here means the data is ready for a future
                         // task to wire connector-spec-aware runtime emission
                         // without re-doing the substitution work.
+                        let coll_span = decl.collection.span;
+                        let placeholder = reify_ast::Expr {
+                            kind: reify_ast::ExprKind::IndexAccess {
+                                object: Box::new(reify_ast::Expr {
+                                    kind: reify_ast::ExprKind::Ident(sub_name.clone()),
+                                    span: coll_span,
+                                }),
+                                index: Box::new(reify_ast::Expr {
+                                    kind: reify_ast::ExprKind::NumberLiteral {
+                                        value: 0.0,
+                                        is_real: false,
+                                    },
+                                    span: coll_span,
+                                }),
+                            },
+                            span: coll_span,
+                        };
+                        let mut bindings: HashMap<String, reify_ast::Expr> = HashMap::new();
+                        bindings.insert(decl.variable.clone(), placeholder);
                         let params_substituted: Vec<(String, CompiledExpr)> = cd
                             .params
                             .iter()
@@ -847,9 +829,9 @@ pub(crate) fn elaborate_forall_connect(
                             count_cell,
                             span: decl.span,
                             body: CompiledForallBody::Connect {
-                                left_port_template,
+                                left,
                                 operator: cd.operator,
-                                right_port_template,
+                                right,
                                 connector_type: cd.connector_type.clone(),
                                 params: params_substituted,
                                 port_mappings: cd.port_mappings.clone(),

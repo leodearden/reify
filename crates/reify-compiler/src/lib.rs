@@ -54,6 +54,7 @@ mod member_path;
 pub mod module_dag;
 mod module_pragmas;
 mod orientation_signatures;
+mod port_path;
 pub mod prelude_context;
 pub(crate) mod recursion_guard;
 pub mod relation_signatures;
@@ -77,6 +78,7 @@ pub use annotations::materialize::{
 };
 pub use compile_builder::pre_pass::check_module_path_decl;
 pub use entity::satisfies_trait_bound;
+pub use port_path::{ElementIndex, PortPath, PortRoot};
 pub use prelude_context::PreludeContext;
 pub use type_compat::{implicitly_converts_to, type_compatible};
 pub use types::*;
