@@ -851,6 +851,12 @@ pub(crate) fn propagate_to_couplings(chain: &[Value], values: &mut [JointValue],
     }
 }
 
+/// Whether `joint`'s slot moves with `target`'s motion variable: it is `target`
+/// itself, or a coupling of it, whose slot carries its parent's value.
+fn moves_with(joint: &Value, target: &Value) -> bool {
+    joint == target || coupling_parent(joint) == Some(target)
+}
+
 /// Compute the loop-closure residual Jacobian with respect to caller-supplied
 /// tree-joint targets by central-difference of the full two-chain residual.
 ///
@@ -863,7 +869,15 @@ pub(crate) fn propagate_to_couplings(chain: &[Value], values: &mut [JointValue],
 /// is applied **everywhere that joint appears in either chain** (located by
 /// structural `Value::Eq`) so that a joint shared between chain_a and chain_b
 /// (a world-rooted prefix joint) is perturbed consistently in both chains,
-/// yielding the correct total derivative.
+/// yielding the correct total derivative.  Every slot coupled to the target
+/// is perturbed with it, in either chain, because a coupling's slot carries
+/// its parent's value: as in [`chain_jacobian_fd`], a column is the derivative
+/// w.r.t. the target's motion variable.
+///
+/// A target is expected to be a driving joint.  A coupling target is perturbed
+/// as given, as though it were independent.  `closed_chain_inverse_dynamics`
+/// never passes one: a coupling body has no motion subspace, so that solve is
+/// undef before it gets here, and #8847 makes that a coded refusal.
 ///
 /// The closing joint is **not** excluded from `target_joints`. In the
 /// parent-conflict shape it IS a spanning-tree `at` joint — its
@@ -890,9 +904,9 @@ pub(crate) fn propagate_to_couplings(chain: &[Value], values: &mut [JointValue],
 /// - `target_joints`: the ordered list of tree `at` joints to differentiate
 ///   w.r.t.  Each single-DOF joint contributes one `[f64; 6]` column;
 ///   multi-DOF joints contribute `JointValue::as_f64_slice().len()` columns.
-///   A joint **absent from both chains** contributes a zero column (it has no
-///   perturbation site — the resulting constraint Jacobian column is genuinely
-///   zero for that coordinate).
+///   A joint that **neither chain carries**, itself or through a coupling,
+///   contributes a zero column (it has no perturbation site — the resulting
+///   constraint Jacobian column is genuinely zero for that coordinate).
 /// - `eps`: central-difference step size.  Must be positive and finite.
 ///
 /// # Returns
@@ -923,18 +937,18 @@ pub fn loop_residual_jacobian_by_joint(
 
     for target in target_joints {
         // Determine the storage width for this target by scanning either chain
-        // for a matching joint (same structural value).  If absent from both,
-        // the width defaults to 1 (scalar single-DOF fallback); the resulting
+        // for a slot that moves with it.  If neither chain carries it, the
+        // width defaults to 1 (scalar single-DOF fallback); the resulting
         // zero perturbation produces a zero column regardless.
         let width: usize = chain_a
             .iter()
             .zip(vals_a.iter())
-            .find_map(|(j, v)| if j == target { Some(v.as_f64_slice().len()) } else { None })
+            .find_map(|(j, v)| moves_with(j, target).then(|| v.as_f64_slice().len()))
             .or_else(|| {
                 chain_b
                     .iter()
                     .zip(vals_b.iter())
-                    .find_map(|(j, v)| if j == target { Some(v.as_f64_slice().len()) } else { None })
+                    .find_map(|(j, v)| moves_with(j, target).then(|| v.as_f64_slice().len()))
             })
             .unwrap_or(1);
 
@@ -944,16 +958,16 @@ pub fn loop_residual_jacobian_by_joint(
             let mut vb_plus = vals_b.to_vec();
             let mut vb_minus = vals_b.to_vec();
 
-            // Perturb every occurrence of `target` in chain_a.
+            // Perturb every slot of chain_a that moves with `target`.
             for (i, j) in chain_a.iter().enumerate() {
-                if j == target {
+                if moves_with(j, target) {
                     perturb_storage_component(&mut va_plus[i], c, eps);
                     perturb_storage_component(&mut va_minus[i], c, -eps);
                 }
             }
-            // Perturb every occurrence of `target` in chain_b.
+            // Perturb every slot of chain_b that moves with `target`.
             for (i, j) in chain_b.iter().enumerate() {
-                if j == target {
+                if moves_with(j, target) {
                     perturb_storage_component(&mut vb_plus[i], c, eps);
                     perturb_storage_component(&mut vb_minus[i], c, -eps);
                 }

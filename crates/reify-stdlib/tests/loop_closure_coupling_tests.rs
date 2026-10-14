@@ -6,7 +6,8 @@ use std::f64::consts::PI;
 use reify_ir::Value;
 use reify_stdlib::eval_builtin;
 use reify_stdlib::loop_closure::{
-    chain_jacobian_fd, extract_loop_closure_chains, loop_residual_twist,
+    chain_jacobian_fd, extract_loop_closure_chains, loop_residual_jacobian_by_joint,
+    loop_residual_twist,
 };
 use reify_stdlib::loop_closure_solver::{
     NewtonConfig, NewtonOutcome, StartStrategy, solve_loop_closure,
@@ -350,6 +351,56 @@ fn chain_jacobian_fd_leaves_a_coupling_of_an_absent_parent_alone() {
         only_jacobian_column(&[j_b, j_c]),
         [0.0, 0.0, 0.0, 1.0, 0.0, 0.0],
         "a coupling of a joint outside the chain does not follow jB",
+    );
+}
+
+/// The single `loop_residual_jacobian_by_joint` column for `target`, with
+/// every slot of both chains at 0.2.
+fn only_residual_column(chain_a: &[Value], chain_b: &[Value], target: &Value) -> [f64; 6] {
+    let vals_a = vec![JointValue::Scalar(0.2); chain_a.len()];
+    let vals_b = vec![JointValue::Scalar(0.2); chain_b.len()];
+    let columns = loop_residual_jacobian_by_joint(
+        chain_a,
+        &vals_a,
+        chain_b,
+        &vals_b,
+        std::slice::from_ref(target),
+        1e-6,
+    )
+    .expect("the loop Jacobian must evaluate");
+    assert_eq!(columns.len(), 1, "one Scalar target gives one column");
+    columns[0]
+}
+
+#[test]
+fn loop_residual_jacobian_by_joint_moves_a_coupling_with_its_target() {
+    let j_p = prismatic_x(0.0, 1.0);
+    let j_c = couple_by_two(&j_p);
+    assert_column_close(
+        only_residual_column(&[prismatic_x(0.0, 2.0)], &[j_p.clone(), j_c], &j_p),
+        [0.0, 0.0, 0.0, 3.0, 0.0, 0.0],
+        "jP's own travel plus twice it through the coupled slot",
+    );
+}
+
+#[test]
+fn loop_residual_jacobian_by_joint_moves_a_coupling_on_the_other_chain() {
+    let j_p = prismatic_x(0.0, 1.0);
+    let j_c = couple_by_two(&j_p);
+    assert_column_close(
+        only_residual_column(&[j_c], &[j_p.clone()], &j_p),
+        [0.0, 0.0, 0.0, -1.0, 0.0, 0.0],
+        "jP on the closing side minus twice it through the reference-side coupling",
+    );
+}
+
+#[test]
+fn loop_residual_jacobian_by_joint_reaches_a_target_carried_only_by_its_coupling() {
+    let j_q = prismatic_x(0.0, 1.0);
+    assert_column_close(
+        only_residual_column(&[prismatic_x(0.0, 2.0)], &[couple_by_two(&j_q)], &j_q),
+        [0.0, 0.0, 0.0, 2.0, 0.0, 0.0],
+        "jQ is on neither chain but moves the residual through its coupling",
     );
 }
 
