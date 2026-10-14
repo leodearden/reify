@@ -229,13 +229,9 @@ impl Default for AutoTypeParamsConfig {
 
 /// Parsed project manifest.
 ///
-/// **Inert today:** no shipped binary loads a `reify.toml`.
-/// [`Manifest::load_from_path`] and [`Manifest::from_toml_str`] have no
-/// production caller outside this crate, and the only production
-/// `Engine::with_registered_kernels_and_manifest` call passes `None`. Every
-/// section (`[kernels]`, `[auto_type_params]`, `[warm_state]`,
-/// `[[node_overrides]]`) is therefore parsed and validated but ignored at
-/// runtime; the per-section docs point here rather than restating this.
+/// **Inert today:** no shipped binary loads a `reify.toml`. Every section
+/// (`[kernels]`, `[auto_type_params]`, `[warm_state]`, `[[node_overrides]]`)
+/// is parsed and validated but ignored at runtime.
 ///
 /// Carries the set of pinned kernels declared by the project. The map is a
 /// `BTreeMap` so iteration order is deterministic and stable across runs —
