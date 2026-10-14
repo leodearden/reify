@@ -4302,7 +4302,6 @@ dependencies = [
  "reify-kernel-occt",
  "reify-kernel-openvdb",
  "reify-lsp",
- "reify-mcp",
  "reify-mesh-morph",
  "reify-runtime",
  "reify-stdlib",
