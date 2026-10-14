@@ -867,6 +867,11 @@ impl OcctKernel {
     }
 
     /// Look up a shape by handle ID.
+    ///
+    /// Callers returning `QueryError`, `ExportError` or `TessError` propagate
+    /// with `?`: reify-ir's `From<GeometryError>` impls keep
+    /// `InvalidReference` as the only `InvalidHandle` and carry every other
+    /// cause through.
     fn get_shape(&self, id: GeometryHandleId) -> Result<&ffi::ffi::OcctShape, GeometryError> {
         let ptr = self
             .shapes
@@ -932,9 +937,7 @@ impl OcctKernel {
         // immutable borrow of `self` (via get_shape) drops before we mutate
         // self via store_with_repr.
         let materialized: Vec<cxx::UniquePtr<ffi::ffi::OcctShape>> = {
-            let shape = self
-                .get_shape(handle)
-                .map_err(|_| QueryError::InvalidHandle(handle))?;
+            let shape = self.get_shape(handle)?;
             let vec =
                 ffi::ffi::get_edges(shape).map_err(|e| QueryError::QueryFailed(e.to_string()))?;
             let len = ffi::ffi::shape_vec_len(&vec);
@@ -979,9 +982,7 @@ impl OcctKernel {
             return Ok(cached.clone());
         }
         let materialized: Vec<cxx::UniquePtr<ffi::ffi::OcctShape>> = {
-            let shape = self
-                .get_shape(handle)
-                .map_err(|_| QueryError::InvalidHandle(handle))?;
+            let shape = self.get_shape(handle)?;
             let vec =
                 ffi::ffi::get_faces(shape).map_err(|e| QueryError::QueryFailed(e.to_string()))?;
             let len = ffi::ffi::shape_vec_len(&vec);
@@ -1038,9 +1039,7 @@ impl OcctKernel {
             return Ok(cached.clone());
         }
         let materialized: Vec<cxx::UniquePtr<ffi::ffi::OcctShape>> = {
-            let shape = self
-                .get_shape(handle)
-                .map_err(|_| QueryError::InvalidHandle(handle))?;
+            let shape = self.get_shape(handle)?;
             let vec = ffi::ffi::get_vertices(shape)
                 .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
             let len = ffi::ffi::shape_vec_len(&vec);
@@ -1231,12 +1230,8 @@ impl OcctKernel {
         a: GeometryHandleId,
         b: GeometryHandleId,
     ) -> Result<bool, QueryError> {
-        let s1 = self
-            .get_shape(a)
-            .map_err(|_| QueryError::InvalidHandle(a))?;
-        let s2 = self
-            .get_shape(b)
-            .map_err(|_| QueryError::InvalidHandle(b))?;
+        let s1 = self.get_shape(a)?;
+        let s2 = self.get_shape(b)?;
         ffi::ffi::shapes_intersect(s1, s2).map_err(|e| QueryError::QueryFailed(e.to_string()))
     }
 
@@ -1254,12 +1249,8 @@ impl OcctKernel {
         b: GeometryHandleId,
         t_rel: &crate::Transform3,
     ) -> Result<bool, QueryError> {
-        let s1 = self
-            .get_shape(a)
-            .map_err(|_| QueryError::InvalidHandle(a))?;
-        let s2 = self
-            .get_shape(b)
-            .map_err(|_| QueryError::InvalidHandle(b))?;
+        let s1 = self.get_shape(a)?;
+        let s2 = self.get_shape(b)?;
         queries::interferes_with_transform(s1, s2, t_rel)
     }
 
@@ -1277,12 +1268,8 @@ impl OcctKernel {
         a: GeometryHandleId,
         b: GeometryHandleId,
     ) -> Result<f64, QueryError> {
-        let s1 = self
-            .get_shape(a)
-            .map_err(|_| QueryError::InvalidHandle(a))?;
-        let s2 = self
-            .get_shape(b)
-            .map_err(|_| QueryError::InvalidHandle(b))?;
+        let s1 = self.get_shape(a)?;
+        let s2 = self.get_shape(b)?;
         ffi::ffi::min_clearance(s1, s2).map_err(|e| QueryError::QueryFailed(e.to_string()))
     }
 
@@ -1300,12 +1287,8 @@ impl OcctKernel {
         b: GeometryHandleId,
         t_rel: &crate::Transform3,
     ) -> Result<f64, QueryError> {
-        let s1 = self
-            .get_shape(a)
-            .map_err(|_| QueryError::InvalidHandle(a))?;
-        let s2 = self
-            .get_shape(b)
-            .map_err(|_| QueryError::InvalidHandle(b))?;
+        let s1 = self.get_shape(a)?;
+        let s2 = self.get_shape(b)?;
         queries::distance_with_transform(s1, s2, t_rel)
     }
 
@@ -1399,9 +1382,7 @@ impl OcctKernel {
         py: f64,
         pz: f64,
     ) -> Result<[f64; 3], QueryError> {
-        let s = self
-            .get_shape(handle)
-            .map_err(|_| QueryError::InvalidHandle(handle))?;
+        let s = self.get_shape(handle)?;
         let p = ffi::ffi::closest_point_on_shape(s, px, py, pz)
             .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
         Ok([p.x, p.y, p.z])
@@ -1420,9 +1401,7 @@ impl OcctKernel {
     /// `TopoDS_Vertex` or the OCCT call fails. Return type is `[f64; 3]` for
     /// the same stub-build reason as `closest_point_on_shape`.
     pub fn vertex_point(&self, handle: GeometryHandleId) -> Result<[f64; 3], QueryError> {
-        let s = self
-            .get_shape(handle)
-            .map_err(|_| QueryError::InvalidHandle(handle))?;
+        let s = self.get_shape(handle)?;
         let p =
             ffi::ffi::vertex_point(s).map_err(|e| QueryError::QueryFailed(e.to_string()))?;
         Ok([p.x, p.y, p.z])
@@ -1458,12 +1437,8 @@ impl OcctKernel {
         face_a: GeometryHandleId,
         face_b: GeometryHandleId,
     ) -> Result<f64, QueryError> {
-        let s1 = self
-            .get_shape(face_a)
-            .map_err(|_| QueryError::InvalidHandle(face_a))?;
-        let s2 = self
-            .get_shape(face_b)
-            .map_err(|_| QueryError::InvalidHandle(face_b))?;
+        let s1 = self.get_shape(face_a)?;
+        let s2 = self.get_shape(face_b)?;
         ffi::ffi::surface_angle(s1, s2).map_err(|e| QueryError::QueryFailed(e.to_string()))
     }
 
@@ -1490,9 +1465,7 @@ impl OcctKernel {
         u: f64,
         v: f64,
     ) -> Result<[f64; 3], QueryError> {
-        let s = self
-            .get_shape(handle)
-            .map_err(|_| QueryError::InvalidHandle(handle))?;
+        let s = self.get_shape(handle)?;
         validate_uv_finite(u, v)?;
         let p = ffi::ffi::surface_normal_at(s, u, v)
             .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
@@ -1526,9 +1499,7 @@ impl OcctKernel {
         py: f64,
         pz: f64,
     ) -> Result<[f64; 3], QueryError> {
-        let s = self
-            .get_shape(handle)
-            .map_err(|_| QueryError::InvalidHandle(handle))?;
+        let s = self.get_shape(handle)?;
         let p = ffi::ffi::surface_normal_at_point(s, px, py, pz)
             .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
         Ok([p.x, p.y, p.z])
@@ -1562,9 +1533,7 @@ impl OcctKernel {
         u: f64,
         v: f64,
     ) -> Result<Curvature, QueryError> {
-        let s = self
-            .get_shape(handle)
-            .map_err(|_| QueryError::InvalidHandle(handle))?;
+        let s = self.get_shape(handle)?;
         validate_uv_finite(u, v)?;
         let c =
             ffi::ffi::curvature_at(s, u, v).map_err(|e| QueryError::QueryFailed(e.to_string()))?;
@@ -1600,9 +1569,7 @@ impl OcctKernel {
         py: f64,
         pz: f64,
     ) -> Result<f64, QueryError> {
-        let s = self
-            .get_shape(handle)
-            .map_err(|_| QueryError::InvalidHandle(handle))?;
+        let s = self.get_shape(handle)?;
         if !px.is_finite() || !py.is_finite() || !pz.is_finite() {
             return Err(QueryError::QueryFailed(
                 "curve_curvature_at: query point coordinates must be finite".into(),
@@ -1654,9 +1621,7 @@ impl OcctKernel {
         pz: f64,
         tolerance: f64,
     ) -> Result<bool, QueryError> {
-        let s = self
-            .get_shape(handle)
-            .map_err(|_| QueryError::InvalidHandle(handle))?;
+        let s = self.get_shape(handle)?;
         ffi::ffi::point_on_shape(s, px, py, pz, tolerance)
             .map_err(|e| QueryError::QueryFailed(e.to_string()))
     }
@@ -1685,9 +1650,7 @@ impl OcctKernel {
         pz: f64,
         tolerance: f64,
     ) -> Result<bool, QueryError> {
-        let s = self
-            .get_shape(handle)
-            .map_err(|_| QueryError::InvalidHandle(handle))?;
+        let s = self.get_shape(handle)?;
         ffi::ffi::contains_solid(s, px, py, pz, tolerance)
             .map_err(|e| QueryError::QueryFailed(e.to_string()))
     }
@@ -1712,12 +1675,8 @@ impl OcctKernel {
         right: GeometryHandleId,
         tolerance: f64,
     ) -> Result<bool, QueryError> {
-        let s_left = self
-            .get_shape(left)
-            .map_err(|_| QueryError::InvalidHandle(left))?;
-        let s_right = self
-            .get_shape(right)
-            .map_err(|_| QueryError::InvalidHandle(right))?;
+        let s_left = self.get_shape(left)?;
+        let s_right = self.get_shape(right)?;
         ffi::ffi::geo_equiv_topo_sample(s_left, s_right, tolerance, reify_ir::DEFAULT_GEO_EQUIV_SAMPLE_COUNT)
             .map_err(|e| QueryError::QueryFailed(e.to_string()))
     }
@@ -3925,9 +3884,7 @@ impl OcctKernel {
         &self,
         id: GeometryHandleId,
     ) -> Result<VolumeMeasurement, QueryError> {
-        let shape = self
-            .get_shape(id)
-            .map_err(|_| QueryError::InvalidHandle(id))?;
+        let shape = self.get_shape(id)?;
         ffi::ffi::query_volume_measurement(shape)
             .map_err(|e| QueryError::QueryFailed(e.to_string()))
     }
@@ -3935,17 +3892,13 @@ impl OcctKernel {
     pub fn query(&self, query: &GeometryQuery) -> Result<Value, QueryError> {
         match query {
             GeometryQuery::Volume(id) => {
-                let shape = self
-                    .get_shape(*id)
-                    .map_err(|_| QueryError::InvalidHandle(*id))?;
+                let shape = self.get_shape(*id)?;
                 let vol = ffi::ffi::query_volume(shape)
                     .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
                 Ok(Value::Real(vol))
             }
             GeometryQuery::SurfaceArea(id) => {
-                let shape = self
-                    .get_shape(*id)
-                    .map_err(|_| QueryError::InvalidHandle(*id))?;
+                let shape = self.get_shape(*id)?;
                 let area = ffi::ffi::query_area(shape)
                     .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
                 Ok(Value::Real(area))
@@ -3959,9 +3912,7 @@ impl OcctKernel {
                 // preserving existing semantics validated by tests like
                 // `center_of_mass_on_non_solid_wire_returns_origin` and
                 // `sweep_guided_orientation_differs_from_plain_sweep`.
-                let shape = self
-                    .get_shape(*id)
-                    .map_err(|_| QueryError::InvalidHandle(*id))?;
+                let shape = self.get_shape(*id)?;
                 let pt = if self.repr_of(*id) == Some(BRepKind::Face) {
                     ffi::ffi::query_face_centroid(shape)
                         .map_err(|e| QueryError::QueryFailed(e.to_string()))?
@@ -3973,9 +3924,7 @@ impl OcctKernel {
                 Ok(Value::String(centroid_json(pt)))
             }
             GeometryQuery::BoundingBox(id) => {
-                let shape = self
-                    .get_shape(*id)
-                    .map_err(|_| QueryError::InvalidHandle(*id))?;
+                let shape = self.get_shape(*id)?;
                 let bb = ffi::ffi::query_bbox(shape)
                     .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
                 Ok(Value::String(format!(
@@ -3984,20 +3933,14 @@ impl OcctKernel {
                 )))
             }
             GeometryQuery::Distance { from, to } => {
-                let s1 = self
-                    .get_shape(*from)
-                    .map_err(|_| QueryError::InvalidHandle(*from))?;
-                let s2 = self
-                    .get_shape(*to)
-                    .map_err(|_| QueryError::InvalidHandle(*to))?;
+                let s1 = self.get_shape(*from)?;
+                let s2 = self.get_shape(*to)?;
                 let dist = ffi::ffi::query_distance(s1, s2)
                     .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
                 Ok(Value::Real(dist))
             }
             GeometryQuery::MomentOfInertia { handle, axis } => {
-                let shape = self
-                    .get_shape(*handle)
-                    .map_err(|_| QueryError::InvalidHandle(*handle))?;
+                let shape = self.get_shape(*handle)?;
                 let moi = ffi::ffi::query_moment_of_inertia(shape, axis[0], axis[1], axis[2])
                     .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
                 Ok(Value::Real(moi))
@@ -4005,17 +3948,13 @@ impl OcctKernel {
             // For uniform-density solids, the center of mass equals the geometric centroid.
             // density is intentionally ignored here (see GeometryQuery::CenterOfMass doc).
             GeometryQuery::CenterOfMass { handle, density: _ } => {
-                let shape = self
-                    .get_shape(*handle)
-                    .map_err(|_| QueryError::InvalidHandle(*handle))?;
+                let shape = self.get_shape(*handle)?;
                 let pt = ffi::ffi::query_centroid(shape)
                     .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
                 Ok(Value::String(centroid_json(pt)))
             }
             GeometryQuery::InertiaTensor { handle, density } => {
-                let shape = self
-                    .get_shape(*handle)
-                    .map_err(|_| QueryError::InvalidHandle(*handle))?;
+                let shape = self.get_shape(*handle)?;
                 let t = ffi::ffi::query_inertia_tensor(shape, *density)
                     .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
                 Ok(Value::List(vec![
@@ -4037,9 +3976,7 @@ impl OcctKernel {
                 ]))
             }
             GeometryQuery::AdjacentFaces { shape, face_index } => {
-                let s = self
-                    .get_shape(*shape)
-                    .map_err(|_| QueryError::InvalidHandle(*shape))?;
+                let s = self.get_shape(*shape)?;
                 let idx_u32: u32 = (*face_index).try_into().map_err(|_| {
                     QueryError::QueryFailed(format!(
                         "adjacent_faces: face_index {} exceeds u32::MAX",
@@ -4060,9 +3997,7 @@ impl OcctKernel {
                 face_a,
                 face_b,
             } => {
-                let s = self
-                    .get_shape(*shape)
-                    .map_err(|_| QueryError::InvalidHandle(*shape))?;
+                let s = self.get_shape(*shape)?;
                 let a_u32: u32 = (*face_a).try_into().map_err(|_| {
                     QueryError::QueryFailed(format!(
                         "shared_edges: face_a {} exceeds u32::MAX",
@@ -4082,65 +4017,49 @@ impl OcctKernel {
                 ))
             }
             GeometryQuery::IsWatertight(id) => {
-                let shape = self
-                    .get_shape(*id)
-                    .map_err(|_| QueryError::InvalidHandle(*id))?;
+                let shape = self.get_shape(*id)?;
                 let v = ffi::ffi::is_watertight(shape)
                     .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
                 Ok(Value::Bool(v))
             }
             GeometryQuery::IsManifold(id) => {
-                let shape = self
-                    .get_shape(*id)
-                    .map_err(|_| QueryError::InvalidHandle(*id))?;
+                let shape = self.get_shape(*id)?;
                 let v = ffi::ffi::is_manifold(shape)
                     .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
                 Ok(Value::Bool(v))
             }
             GeometryQuery::IsOrientable(id) => {
-                let shape = self
-                    .get_shape(*id)
-                    .map_err(|_| QueryError::InvalidHandle(*id))?;
+                let shape = self.get_shape(*id)?;
                 let v = ffi::ffi::is_orientable(shape)
                     .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
                 Ok(Value::Bool(v))
             }
             GeometryQuery::IsClosed(id) => {
-                let shape = self
-                    .get_shape(*id)
-                    .map_err(|_| QueryError::InvalidHandle(*id))?;
+                let shape = self.get_shape(*id)?;
                 let v = ffi::ffi::is_closed(shape)
                     .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
                 Ok(Value::Bool(v))
             }
             GeometryQuery::IsConnected(id) => {
-                let shape = self
-                    .get_shape(*id)
-                    .map_err(|_| QueryError::InvalidHandle(*id))?;
+                let shape = self.get_shape(*id)?;
                 let v = ffi::ffi::is_connected(shape)
                     .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
                 Ok(Value::Bool(v))
             }
             GeometryQuery::IsBounded(id) => {
-                let shape = self
-                    .get_shape(*id)
-                    .map_err(|_| QueryError::InvalidHandle(*id))?;
+                let shape = self.get_shape(*id)?;
                 let v = ffi::ffi::is_bounded(shape)
                     .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
                 Ok(Value::Bool(v))
             }
             GeometryQuery::EdgeLength(id) => {
-                let shape = self
-                    .get_shape(*id)
-                    .map_err(|_| QueryError::InvalidHandle(*id))?;
+                let shape = self.get_shape(*id)?;
                 let len = ffi::ffi::query_edge_length(shape)
                     .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
                 Ok(Value::Real(len))
             }
             GeometryQuery::EdgeTangent(id) => {
-                let shape = self
-                    .get_shape(*id)
-                    .map_err(|_| QueryError::InvalidHandle(*id))?;
+                let shape = self.get_shape(*id)?;
                 let t = ffi::ffi::query_edge_tangent(shape)
                     .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
                 // Encode as the same JSON-string format as Centroid /
@@ -4158,9 +4077,7 @@ impl OcctKernel {
                 Ok(Value::String(format!("{{\"x\":{x},\"y\":{y},\"z\":{z}}}")))
             }
             GeometryQuery::FaceSurfaceKind(id) => {
-                let shape = self
-                    .get_shape(*id)
-                    .map_err(|_| QueryError::InvalidHandle(*id))?;
+                let shape = self.get_shape(*id)?;
                 // FFI returns a canonical name string from OCCT's GeomAbs_*
                 // enumeration (`"Plane"` / `"Cylinder"` / …). Decoded
                 // downstream by `FaceSurfaceKind::try_from_str` in
@@ -4170,9 +4087,7 @@ impl OcctKernel {
                 Ok(Value::String(name))
             }
             GeometryQuery::EdgeCurveKind(id) => {
-                let shape = self
-                    .get_shape(*id)
-                    .map_err(|_| QueryError::InvalidHandle(*id))?;
+                let shape = self.get_shape(*id)?;
                 // FFI returns a canonical name string from OCCT's GeomAbs_*
                 // enumeration (`"Line"` / `"Circle"` / …). Decoded
                 // downstream by `EdgeCurveKind::try_from_str` in
@@ -4182,9 +4097,7 @@ impl OcctKernel {
                 Ok(Value::String(name))
             }
             GeometryQuery::AncestorFacesOfEdge { shape, edge_index } => {
-                let s = self
-                    .get_shape(*shape)
-                    .map_err(|_| QueryError::InvalidHandle(*shape))?;
+                let s = self.get_shape(*shape)?;
                 let idx_u32: u32 = (*edge_index).try_into().map_err(|_| {
                     QueryError::QueryFailed(format!(
                         "ancestor_faces_of_edge: edge_index {} exceeds u32::MAX",
@@ -4281,25 +4194,19 @@ impl OcctKernel {
             // projected datum Value per the GeomAbs `kind` byte. Edge +
             // tolerance dispatch land in steps 4 and 10.
             GeometryQuery::FaceAnalyticDatum(id) => {
-                let shape = self
-                    .get_shape(*id)
-                    .map_err(|_| QueryError::InvalidHandle(*id))?;
+                let shape = self.get_shape(*id)?;
                 let d = ffi::ffi::face_analytic_datum(shape)
                     .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
                 analytic_surface_datum_to_value(&d)
             }
             GeometryQuery::EdgeAnalyticDatum(id) => {
-                let shape = self
-                    .get_shape(*id)
-                    .map_err(|_| QueryError::InvalidHandle(*id))?;
+                let shape = self.get_shape(*id)?;
                 let d = ffi::ffi::edge_analytic_datum(shape)
                     .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
                 analytic_curve_datum_to_value(&d)
             }
             GeometryQuery::ShapeLocalTolerance(id) => {
-                let shape = self
-                    .get_shape(*id)
-                    .map_err(|_| QueryError::InvalidHandle(*id))?;
+                let shape = self.get_shape(*id)?;
                 let tol = ffi::ffi::shape_local_tolerance(shape)
                     .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
                 Ok(Value::length(tol))
@@ -4320,9 +4227,7 @@ impl OcctKernel {
     /// - `QueryError::QueryFailed` — if the shape is not a face, has no
     ///   underlying surface, or yields a degenerate normal.
     fn face_outward_unit_normal(&self, id: GeometryHandleId) -> Result<[f64; 3], QueryError> {
-        let s = self
-            .get_shape(id)
-            .map_err(|_| QueryError::InvalidHandle(id))?;
+        let s = self.get_shape(id)?;
         let p =
             ffi::ffi::query_face_normal(s).map_err(|e| QueryError::QueryFailed(e.to_string()))?;
         Ok([p.x, p.y, p.z])
@@ -4498,9 +4403,7 @@ impl OcctKernel {
         handle: GeometryHandleId,
         mesh: &Mesh,
     ) -> Result<f64, QueryError> {
-        let shape = self
-            .get_shape(handle)
-            .map_err(|_| QueryError::InvalidHandle(handle))?;
+        let shape = self.get_shape(handle)?;
 
         let tess_result = ffi::ffi::TessResult {
             vertices: mesh.vertices.clone(),
