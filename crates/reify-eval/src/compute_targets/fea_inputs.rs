@@ -53,22 +53,18 @@ pub(super) fn real_field(
 }
 
 /// Read `youngs_modulus`/`poisson_ratio` off an already-destructured
-/// `StructureInstanceData` into `IsotropicElastic`. The data-taking core
-/// behind `extract_material` (below), and behind `law_from_value`'s
-/// isotropic fallback arm, which already holds the law's destructured
-/// `&StructureInstanceData` and calls straight in here — taking a second,
-/// independently-matched `&Value` there instead (as the pre-amendment
-/// `extract_material(law_val)` call did) would let a future caller pass a
-/// `law_data`/`val` pair describing two DIFFERENT `StructureInstance`s with
-/// no error, silently reading the wrong one's fields (task #7210 review
-/// round 2 suggestion 1).
+/// `StructureInstanceData` into `IsotropicElastic`. The core behind
+/// [`extract_material`] and behind `law_from_value`'s isotropic fallback,
+/// which already holds the law's destructured data; taking the data rather
+/// than a second `&Value` means no caller can pass a pair describing two
+/// different instances.
 ///
-/// Note (task #5081 review round 3, suggestion 2): `scalar_si_field` accepts
-/// any `Value::Scalar` for `youngs_modulus` regardless of its `dimension`
-/// (e.g. a length or dimensionless scalar would be silently accepted as a
-/// pressure). This is pre-existing behavior, not a D3 regression — dimension
-/// checking is deferred to a later D-step, if/when the `FeaValueShapeError`
-/// taxonomy grows a variant for it.
+/// `youngs_modulus` is read DIMENSION-BLIND: `scalar_si_field` takes the
+/// `si_value` of a `Value::Scalar` of any dimension, so a LENGTH scalar is
+/// read as pascals. This reader is outside the reader table of
+/// `docs/prds/v0_6/dimension-checked-readers.md`; gating it is follow-up
+/// ticket `tkt_0RVSW4XAXWVR0RAHCG3QTCRYM8`. `poisson_ratio` accepts only a
+/// bare `Value::Real`.
 pub(super) fn isotropic_from_data(
     data: &StructureInstanceData,
 ) -> Result<IsotropicElastic, FeaValueShapeError> {
@@ -82,14 +78,12 @@ pub(super) fn isotropic_from_data(
 
 /// Extract `IsotropicElastic` from a `Value::StructureInstance` carrying
 /// `youngs_modulus: Scalar<Pressure>` and `poisson_ratio: Real`. Thin
-/// `&Value`-destructuring wrapper around `isotropic_from_data`.
+/// `&Value`-destructuring wrapper around `isotropic_from_data`, returning
+/// `Err(FeaValueShapeError)` rather than panicking on a malformed `Value`.
 ///
-/// PRD compute-fea-hardening D3: Result-ified leaf extractor. Returns
-/// `Err(FeaValueShapeError)` instead of panicking on a malformed `Value`;
-/// the sole call site (`classify_material`'s isotropic fallback, D7) now
-/// propagates this `Result` directly via `?`; `classify_material`'s own sole
-/// production call site is the validate-all-inputs gate (D9/task 5087) in
-/// `solve_elastic_static_trampoline`.
+/// Read by both FEA trampolines' input gates: `solve_elastic_static` through
+/// `classify_material`'s isotropic fallback, and `solve_buckling` through
+/// `read_buckling_inputs`.
 pub(super) fn extract_material(val: &Value) -> Result<IsotropicElastic, FeaValueShapeError> {
     let data = match val {
         Value::StructureInstance(d) => d,

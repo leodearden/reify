@@ -75,10 +75,12 @@ pub fn cell_f64(v: &Value) -> Option<f64> {
     }
 }
 
-/// Extract an `f64` from a **mass** value cell: a `Scalar{MASS}` or a bare
-/// number. A `Scalar` of any other dimension (`5 m`) is not a mass.
-fn cell_mass_f64(v: &Value) -> Option<f64> {
-    read_arg_or_bare(v, &mass_spec()).ok().flatten()
+/// Read `point_mass`'s **mass** argument: a `Scalar{MASS}` or a bare number.
+/// `Ok(None)` for an unresolved cell; `Err` for a cell the mass reader refuses
+/// (a `Scalar` of any other dimension, `5 m`, is not a mass). The one reader
+/// behind the `point_mass` builtin and its `diagnose` classifier.
+fn cell_mass_f64(v: &Value) -> Result<Option<f64>, ArgRejection> {
+    read_arg_or_bare(v, &mass_spec())
 }
 
 /// Extract an `f64` from a joint-coordinate value cell: unwraps
@@ -499,7 +501,7 @@ pub fn diagnose(name: &str, args: &[Value]) -> Option<Diagnostic> {
             Some(rejection.to_error(name, field))
         }
         ("point_mass", [mass]) => {
-            let rejection = read_arg_or_bare(mass, &mass_spec()).err()?;
+            let rejection = cell_mass_f64(mass).err()?;
             Some(rejection.to_error(name, "mass"))
         }
         ("inverse_dynamics_lower" | "inverse_dynamics_at_snapshot_lower", _) => {
@@ -624,9 +626,8 @@ fn eval_point_mass(args: &[Value]) -> Value {
     if args.len() != 1 {
         return Value::Undef;
     }
-    let mass = match cell_mass_f64(&args[0]) {
-        Some(m) => m,
-        None => return Value::Undef,
+    let Ok(Some(mass)) = cell_mass_f64(&args[0]) else {
+        return Value::Undef;
     };
     make_mass_properties(mass, [0.0, 0.0, 0.0], [[0.0; 3]; 3])
 }
