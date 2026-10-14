@@ -48,7 +48,7 @@ SCRIPT="$REPO_ROOT/scripts/seed-warm-lane.sh"
 # shellcheck source=tests/infra/test_helpers.sh
 source "$SCRIPT_DIR/test_helpers.sh"
 
-# slot_holder_handshake_lib.sh — holder_wait_until_waiter_queued, the causal barrier H5d/H9 use.
+# slot_holder_handshake_lib.sh — holder_wait_until_waiter_queued, the causal barrier Q5d/Q9 use.
 [ -f "$SCRIPT_DIR/slot_holder_handshake_lib.sh" ] || { echo "ERROR: slot_holder_handshake_lib.sh not found at $SCRIPT_DIR/slot_holder_handshake_lib.sh"; exit 1; }
 source "$SCRIPT_DIR/slot_holder_handshake_lib.sh"
 
@@ -195,7 +195,7 @@ _TMPDIRS+=("$STUB_DIR")
 # unaffected. _HELPER_LANES_FILE is kept SEPARATE from _REAL_LANES_FILE (task
 # 5609) rather than merged into it: R3's offender message names the call
 # convention ("run_helper_real lane dir was bare /tmp"), and R4 asserts specific
-# run_helper_real lanes are present in _REAL_LANES_FILE as an H5d/H9
+# run_helper_real lanes are present in _REAL_LANES_FILE as a Q5d/Q9
 # subshell-visibility coverage signal — merging the two streams would make R3's
 # message wrong for half its inputs and let a run_helper lane silently satisfy
 # R4's coverage check.
@@ -207,7 +207,7 @@ _HELPER_LANES_FILE="$_LANE_ROOT/.helper-lanes"
 # _REAL_STUB_ROOT: a single per-run parent for every per-invocation PATH stub
 # dir run_helper_real mints (task #5633). WHY a per-run root registered here,
 # rather than `_TMPDIRS+=("$real_stub_dir")` inside run_helper_real itself:
-# two call sites — H5d (Q_LANE8) and H9 (Q_LANE11) — invoke run_helper_real
+# two call sites — Q5d (Q_LANE8) and Q9 (Q_LANE11) — invoke run_helper_real
 # from inside a backgrounded ( ... ) & subshell, where a bash array append is
 # discarded the instant the subshell exits — the exact hazard already
 # documented above for _LANE_ROOT (and, for file-backed state, for
@@ -364,7 +364,7 @@ run_helper_real() {
     # REAL_STUB_DIR: publish this invocation's stub dir as a plain global,
     # like OUT/ERR_OUT/RC below — set immediately after mktemp so it is
     # correct even if a later assertion in this function body were to abort.
-    # Only observable for calls made from the MAIN shell; H5d/H9's
+    # Only observable for calls made from the MAIN shell; Q5d/Q9's
     # backgrounded ( ... ) & calls discard it like any other plain-variable
     # write made inside a subshell (same hazard as _TMPDIRS, documented
     # above). Task #5633 code review: that also means a plain unset/reset
@@ -372,14 +372,14 @@ run_helper_real() {
     # shell either -- a subshell's writes (including unsetting) never
     # propagate out, so the two backgrounded call sites instead reset
     # REAL_STUB_DIR to empty in the MAIN shell, immediately before
-    # backgrounding (see H5d/H9 below), which is the only place such a reset
+    # backgrounding (see Q5d/Q9 below), which is the only place such a reset
     # can actually take effect.
     REAL_STUB_DIR="$real_stub_dir"
     # cp stub that physically copies src to dest (no --reflink needed for tests)
     cat > "$real_stub_dir/cp" << 'REAL_STUB_EOF'
 #!/usr/bin/env bash
 echo "cp $*" >> "${REIFY_TEST_CALLS_FILE:-/dev/null}"
-# REIFY_TEST_FD9_SQUATTER=1 (task #5705, H4c): fork a long-lived child that
+# REIFY_TEST_FD9_SQUATTER=1 (task #5705, Q4c): fork a long-lived child that
 # DELIBERATELY inherits every descriptor open in this stub -- including seed's
 # lane-lock FD 9 -- and never closes any of them. That is the one thing seed's
 # own `{ rm -rf ...; } 9<&- &` jobs only do TRANSIENTLY (their 9<&- runs in the
@@ -460,13 +460,13 @@ REAL_SLEEP_RM_STUB_EOF
     # NOTE: stdout is captured via a real FILE (OUT_FILE), NOT command
     # substitution ($(...)). A file redirect has no EOF-on-all-writers
     # semantics: this returns as soon as the direct `bash "$SCRIPT"` child
-    # exits, like a plain `wait`, letting H4 observe seed's own exit
+    # exits, like a plain `wait`, letting Q4 observe seed's own exit
     # independently of ANY detached grandchild this script forks -- present
     # or future. $(...) does not have that property: a backgrounded child of
     # $SCRIPT that inherited stdout (fd 1) would keep a pipe's write end
     # open, so $(...) would block until THAT descendant also exited (the
     # classic bash "command substitution hangs on a background job"
-    # pitfall) -- masking exactly the FD-hygiene bug Block Q/H4 exists to
+    # pitfall) -- masking exactly the FD-hygiene bug Block Q's Q4 exists to
     # catch: with a pipe, the probe below would never run until the leaking
     # background rm had already exited on its own, so the lock would always
     # read back FREE regardless of whether seed itself leaked FD 9.
@@ -496,7 +496,7 @@ REAL_SLEEP_RM_STUB_EOF
     # REIFY_TEST_PIN_RESEED_TRASH/REIFY_TEST_SLEEP_RESEED_TRASH_RM stub and
     # genuinely deleted the trash the stub exists to pin (the intermittent
     # I14g / M-setup failures #5633 fixes).
-    # WHY NOT wait for the grandchild instead: H4 (below) and Block Q/H5d/H9
+    # WHY NOT wait for the grandchild instead: Q4 (below) and Block Q's Q5d/Q9
     # deliberately require this helper to return the instant the DIRECT child
     # exits, as already documented at the OUT_FILE-vs-command-substitution
     # NOTE above — waiting here would serialise every caller on a detached
@@ -3835,7 +3835,7 @@ assert "T3: _calls_file_has_trash_rm discriminates -- times out on a calls file 
 # grandchild is a fresh `bash -c`, which always does a cold PATH search.
 # Both are genuine PATH-resolution hazards this control's shape can trigger;
 # the warm-hash variant is instead exercised incidentally by the real seed
-# invocations above (I14, M, H4) rather than reproduced synthetically here.
+# invocations above (I14, M, Q4) rather than reproduced synthetically here.
 _t4_control() {
     local mode="$1"
     local stub area trash go pid_file done_marker
@@ -4817,7 +4817,7 @@ assert "V16 (non-vacuity, caller stdin really wired): under REIFY_WARM_LANE_RESE
     _v_fd_target_is "$V_FDLOG_SYNC" "$V_TRASH_GLOB_SYNC" 0 "$V_STDIN_REAL"
 
 # ── V5-V7: the orphan-sweep arm (:1083) ─────────────────────────────────────
-# Reuses the H4e orphan-trash plant recipe (:2553-2565) — a FRESH lane with a
+# Reuses Q4e's orphan-trash plant recipe — a FRESH lane with a
 # non-empty target/ (a precondition: the orphan sweep lives inside the same
 # `if [ -d "$LANE_TARGET" ] && [ -n "$(ls -A ...)" ]` block as the
 # rename-to-trash it accompanies) plus a pre-planted `<lane>.999999` orphan
@@ -4847,7 +4847,7 @@ set -e
 
 assert "V5-fixture: seed exits 0 (orphan-sweep fixture sanity)" test "$V5_RC" -eq 0
 
-assert "V7 (non-vacuity, sweep really fired): captured output names the swept orphan entry (mirrors H4e's assert at :2571)" \
+assert "V7 (non-vacuity, sweep really fired): captured output names the swept orphan entry (mirrors Q4e's fixture assert)" \
     grep -q "Sweeping orphaned trash entry" "$V_SINK3"
 
 assert "V5 (RED, the defect): the detached orphan-sweep rm's fd 1 is NOT the caller's pipe" \
@@ -5003,7 +5003,7 @@ assert "V8: scripts/seed-warm-lane.sh has ZERO detached (bare-&) jobs lacking a 
 # "flock is NOT re-entrant" comment, next to --assume-lane-lock-held's own
 # flag parsing, names the convention: "thin --reseed on FD 9, gc reclaim on
 # FD 8"). One lane with a NON-EMPTY target/ AND a pre-planted `<lane>.999999`
-# orphan (H4e recipe, :2553-2565) fires BOTH detach sites in ONE run,
+# orphan (Q4e recipe) fires BOTH detach sites in ONE run,
 # mirroring the real caller shape rather than two synthetic ones.
 #
 # Disambiguating the two entries in the SHARED fdlog: the orphan's suffix is
@@ -5057,7 +5057,7 @@ assert "V9-fixture (site fired): the reseed-trash rename entry was logged" \
     _wait_until 10 _v_fdlog_has_entry "$V_FDLOG3" "$V_TRASH_GLOB3" "$V_ORPHAN_PATH3"
 assert "V9-fixture (site fired): the orphan-sweep entry was logged" \
     _wait_until 10 _v_fdlog_has_entry "$V_FDLOG3" "$V_ORPHAN_GLOB3"
-assert "V9-fixture (non-vacuity, sweep really fired): captured output names the swept orphan entry (mirrors H4e's assert at :2571)" \
+assert "V9-fixture (non-vacuity, sweep really fired): captured output names the swept orphan entry (mirrors Q4e's fixture assert)" \
     grep -q "Sweeping orphaned trash entry" "$V_SINK4"
 
 assert "V9 (RED, the defect): the detached RESEED-TRASH rm's fd inventory holds no descriptor onto the caller's lane-lock file" \
@@ -5322,7 +5322,7 @@ assert "R0f: returned path is nested under the per-run lane root (_LANE_ROOT), w
 # called from inside run_helper/run_helper_real after every invocation
 # throughout the file, so this observes every prior Block's fixtures too.
 # State is file-backed (see _TRASH_HITS_FILE above) so appends made from
-# inside a backgrounded subshell (H5d/H9) are not silently discarded. The
+# inside a backgrounded subshell (Q5d/Q9) are not silently discarded. The
 # checker itself is _assert_no_shared_trash_use, promoted into
 # tests/infra/test_helpers.sh (task 5612) and pinned to that home by R7. ────
 assert "R1: no seed invocation in this suite wrote into the machine-shared $_SHARED_TRASH_DIR" \
@@ -5360,20 +5360,20 @@ assert "R3: every run_helper_real lane dir had a private parent (never bare /tmp
 
 # ── R4: end-to-end coverage — the structural detector must have observed the
 # two run_helper_real invocations made from inside a backgrounded ( ... ) &
-# subshell: H5d's Q_LANE8 and H9's Q_LANE11. These are the ONLY two such
+# subshell: Q5d's Q_LANE8 and Q9's Q_LANE11. These are the ONLY two such
 # sites in the file — every other `( ... ) &` in Block Q is a
 # `( flock -x 9 && touch ... && sleep 300 ) 9>"$LOCK" &` lock-holder, not a
 # seed run. $Q_LANE8/$Q_LANE11 are assigned in the MAIN shell (Block Q, in
-# the H5d/H9 fixture setup, before their respective backgrounded subshells)
+# the Q5d/Q9 fixture setup, before their respective backgrounded subshells)
 # via make_isolated_lane, so both are in scope here. Asserted against
 # _REAL_LANES_FILE, the observation log every run_helper_real invocation
-# appends to via _note_real_lane (including from inside H5d/H9's backgrounded
+# appends to via _note_real_lane (including from inside Q5d/Q9's backgrounded
 # subshells, now that the log is file-backed rather than an array). The
 # ${_REAL_LANES_FILE:-/nonexistent} fallback is defensive only — it keeps this
 # a plain assert FAILURE rather than an unbound-variable abort under set -u if
 # the variable were ever undefined. grep -Fxq matches the lane path literally
 # and as a whole line. ───────────────────────────────────────────────────────
-assert "R4: the structural detector observed the run_helper_real invocations made from inside a backgrounded subshell (H5d/H9)" \
+assert "R4: the structural detector observed the run_helper_real invocations made from inside a backgrounded subshell (Q5d/Q9)" \
     bash -c 'grep -Fxq -- "$2" "$1" && grep -Fxq -- "$3" "$1"' _ "${_REAL_LANES_FILE:-/nonexistent}" "$Q_LANE8" "$Q_LANE11"
 
 # ── R6: regression guard — no run_helper (as opposed to run_helper_real)
@@ -5514,12 +5514,12 @@ _SHARED_TRASH_DIR="$_SHARED_TRASH_DIR_SAVED"
 
 # ── R5: mechanism guard — a recorder append made from inside a backgrounded
 # ( ... ) & subshell must be visible to the parent shell. Drives the REAL
-# _note_shared_trash_use recorder through the exact H5d/H9 shape (a subshell
+# _note_shared_trash_use recorder through the exact Q5d/Q9 shape (a subshell
 # that sets ERR_OUT and calls the recorder, backgrounded, then waited on) with
 # a synthetic ERR_OUT rather than a second real seed run: R2 above already
 # covers "real seed → detector fires" end-to-end, so R5 only needs to prove
 # storage survives a subshell. This is the durable companion to R4 — R4 could
-# go vacuous if H5d/H9 were ever un-backgrounded (it would then silently test
+# go vacuous if Q5d/Q9 were ever un-backgrounded (it would then silently test
 # nothing while still passing), but R5 constructs its own subshell, so it
 # always exercises the subshell-visibility property directly. ──────────────
 : > "$_TRASH_HITS_FILE"
