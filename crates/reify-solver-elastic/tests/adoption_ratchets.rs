@@ -388,10 +388,20 @@ impl ItemTracker {
     }
 }
 
-/// Whether `code` begins an item named by `prefix`; a prefix ending in an
-/// identifier character must not be the start of a longer identifier.
+/// Whether `code` begins an item named by `prefix`: the prefix opens the item or
+/// is one of the attributes in front of it (`#[allow(dead_code)] #[cfg(test)] mod t {`).
 fn starts_item(code: &str, prefix: &str) -> bool {
-    let Some(rest) = code.trim_start().strip_prefix(prefix) else {
+    let (attributes, item) = split_attributes(code);
+    attributes
+        .into_iter()
+        .chain([item])
+        .any(|part| starts_with_name(part, prefix))
+}
+
+/// Whether `text` starts with `prefix`; a prefix ending in an identifier
+/// character must not be the start of a longer identifier.
+fn starts_with_name(text: &str, prefix: &str) -> bool {
+    let Some(rest) = text.strip_prefix(prefix) else {
         return false;
     };
     let ends_in_ident = prefix.chars().last().is_some_and(is_ident_char);
@@ -478,6 +488,35 @@ fn cfg_test_mod_with_stacked_attributes_skips_to_its_closing_brace() {
 }
 
 #[test]
+fn cfg_test_behind_another_attribute_on_its_line_skips_its_item() {
+    let skipped = skipped_indices(
+        &[
+            "#[allow(dead_code)] #[cfg(test)] mod t {",
+            "    fn a() { if x { } }",
+            "}",
+            "fn after() {}",
+        ],
+        TEST_ITEMS,
+    );
+    assert_eq!(skipped, [0, 1, 2]);
+}
+
+#[test]
+fn named_item_behind_an_attribute_on_its_line_is_skipped_but_not_a_longer_name() {
+    let skipped = skipped_indices(
+        &[
+            "#[derive(Debug)] pub struct MpcRow {",
+            "    dofs: Vec<usize>,",
+            "}",
+            "#[derive(Debug)] pub struct MpcRowBuilder {",
+            "}",
+        ],
+        &["pub struct MpcRow"],
+    );
+    assert_eq!(skipped, [0, 1, 2]);
+}
+
+#[test]
 fn semicolon_inside_brackets_does_not_end_a_gated_item() {
     let skipped = skipped_indices(
         &[
@@ -529,13 +568,15 @@ fn braces_inside_strings_and_comments_do_not_shift_depth() {
 // ── ratchet rows ─────────────────────────────────────────────────────────────
 
 /// A way a file can be shown to be one the matcher cannot follow: compilable
-/// Rust ends outside every literal and comment with ()[]{} nested to zero, and
-/// the item tracker models one test gate only, the bare `#[cfg(test)]`.
+/// Rust ends outside every literal and comment with ()[]{} nested to zero, the
+/// item tracker models one test gate only, the bare `#[cfg(test)]`, and a test
+/// item's body is in the same file.
 #[derive(Debug, PartialEq)]
 enum LexDefect {
     EndsInsideLiteralOrComment,
     UnbalancedBrackets,
     UnsupportedTestCfg { line: usize },
+    OutOfLineTestModule { line: usize },
 }
 
 struct SourceFile {
@@ -558,7 +599,31 @@ fn lex_defect(lines: &[Line], end: Carry) -> Option<LexDefect> {
     if depth != 0 {
         return Some(LexDefect::UnbalancedBrackets);
     }
-    unsupported_test_cfg_line(lines).map(|line| LexDefect::UnsupportedTestCfg { line })
+    unsupported_test_cfg_line(lines)
+        .map(|line| LexDefect::UnsupportedTestCfg { line })
+        .or_else(|| {
+            out_of_line_test_module_line(lines).map(|line| LexDefect::OutOfLineTestModule { line })
+        })
+}
+
+/// The 1-based line of the first `mod name;` inside a `TEST_ITEMS` item. Its body
+/// is another file, which every production row would read as production code.
+fn out_of_line_test_module_line(lines: &[Line]) -> Option<usize> {
+    let skipped = skipped_lines(lines, TEST_ITEMS);
+    lines
+        .iter()
+        .zip(skipped)
+        .position(|(line, skipped)| skipped && declares_out_of_line_module(&line.code))
+        .map(|index| index + 1)
+}
+
+/// Whether `code` declares a module without a body: `mod name;`.
+fn declares_out_of_line_module(code: &str) -> bool {
+    let (_, item) = split_attributes(code);
+    after_item_keyword(item, "mod").is_some_and(|after_keyword| {
+        let after_name = &after_keyword[leading_identifier(after_keyword).len()..];
+        after_name.trim_start().starts_with(';')
+    })
 }
 
 /// The 1-based line of the first `cfg(..)` attribute naming `test` that is not
@@ -936,23 +1001,32 @@ fn attribute_end(text: &str) -> Option<usize> {
     None
 }
 
-/// The name of the fn that `code` declares, after any `pub`, `pub(..)`, `const`,
-/// `async`, `unsafe` and `extern ".."` modifiers (string contents are blanked).
-fn fn_name(code: &str) -> Option<&str> {
+/// The identifier at the start of `text`; empty when it starts with anything else.
+fn leading_identifier(text: &str) -> &str {
+    &text[..text.find(|c| !is_ident_char(c)).unwrap_or(text.len())]
+}
+
+/// The text after the `keyword` that `code` declares, past any `pub`, `pub(..)`,
+/// `const`, `async`, `unsafe` and `extern ".."` modifiers (string contents are blanked).
+fn after_item_keyword<'a>(code: &'a str, keyword: &str) -> Option<&'a str> {
     let mut rest = code.trim_start();
     loop {
-        let (word, after) = rest.split_at(rest.find(|c| !is_ident_char(c)).unwrap_or(rest.len()));
-        rest = after.trim_start();
+        let word = leading_identifier(rest);
+        rest = rest[word.len()..].trim_start();
         match word {
-            "fn" => break,
+            _ if word == keyword => return Some(rest),
             "pub" => rest = skip_visibility_scope(rest),
             "extern" => rest = rest.strip_prefix("\"\"").unwrap_or(rest).trim_start(),
             "const" | "async" | "unsafe" => {}
             _ => return None,
         }
     }
-    let name_len = rest.find(|c| !is_ident_char(c)).unwrap_or(rest.len());
-    (name_len > 0).then(|| &rest[..name_len])
+}
+
+/// The name of the fn that `code` declares.
+fn fn_name(code: &str) -> Option<&str> {
+    let name = leading_identifier(after_item_keyword(code, "fn")?);
+    (!name.is_empty()).then_some(name)
 }
 
 /// `rest` without a leading `(crate)` / `(in path)` visibility scope.
@@ -1207,9 +1281,17 @@ fn every_pattern_row_ignores_copies_in_non_counted_positions() {
 #[test]
 fn every_pattern_row_applies_its_region_to_cfg_test_modules() {
     for_every_pattern_row(|row, pattern| {
-        let gated = format!("#[cfg(test)]\nmod tests {{\n{}\n}}", pattern.seed);
+        let seed = pattern.seed;
+        let gated_modules = [
+            format!("#[cfg(test)]\nmod tests {{\n{seed}\n}}"),
+            format!("#[allow(dead_code)] #[cfg(test)] mod tests {{\n{seed}\n}}"),
+        ];
         let expected = if skips_test_items(pattern) { 1 } else { 2 };
-        expect_hit_count(&hits_after_control(row, pattern, &gated), expected)
+        for gated in &gated_modules {
+            expect_hit_count(&hits_after_control(row, pattern, gated), expected)
+                .map_err(|problem| format!("gated module {gated:?}: {problem}"))?;
+        }
+        Ok(())
     });
 }
 
@@ -1521,6 +1603,44 @@ fn a_test_gate_the_item_tracker_does_not_model_is_reported_as_defective() {
         "const S: &str = \"#[cfg(not(test))]\";",
     ];
     for text in supported_or_unrelated {
+        assert_eq!(defect_of(text), None, "text: {text:?}");
+    }
+}
+
+#[test]
+fn a_module_declared_out_of_line_inside_a_test_item_is_reported_as_defective() {
+    let defect_of = |text: &str| source_file("src/probe.rs", text).defect;
+    // Each module follows a one-line `fn before() {}`; the number is the line of its `mod`.
+    let out_of_line_modules = [
+        ("#[cfg(test)]\nmod tests;", 3),
+        ("#[cfg(test)] mod tests;", 2),
+        ("#[cfg(test)]\npub(crate) mod tests;", 3),
+        ("#[cfg(test)]\n#[path = \"other.rs\"]\nmod tests;", 4),
+        ("#[cfg(test)]\n/// documented\nmod tests;", 4),
+        ("#[allow(dead_code)] #[cfg(test)] mod tests;", 2),
+        ("mod outer {\n    #[cfg(test)]\n    mod tests;\n}", 4),
+        ("#[cfg(test)]\nmod tests {\n    mod nested;\n}", 4),
+    ];
+    for (module, mod_line) in out_of_line_modules {
+        let text = format!("fn before() {{}}\n{module}");
+        assert_eq!(
+            defect_of(&text),
+            Some(LexDefect::OutOfLineTestModule { line: mod_line }),
+            "module: {module:?}"
+        );
+    }
+    let followable = [
+        "#[cfg(test)]\nmod tests {}",
+        "#[cfg(test)]\nmod tests {\n    mod inline {}\n}",
+        "#[cfg(test)]\nuse crate::tests;",
+        "#[cfg(test)]\nconst TESTS: u32 = 1;",
+        "#[cfg(test)]\nfn tests() {}\nmod ungated;",
+        "mod ungated;",
+        "#[cfg(unix)]\nmod unix_only;",
+        "// #[cfg(test)]\n// mod tests;",
+        "const S: &str = \"#[cfg(test)] mod tests;\";",
+    ];
+    for text in followable {
         assert_eq!(defect_of(text), None, "text: {text:?}");
     }
 }
