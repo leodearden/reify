@@ -35,10 +35,6 @@ fn no_args_shows_help_with_all_commands() {
         stderr.contains("gui"),
         "help text should mention 'gui' command, got: {stderr}"
     );
-    assert!(
-        stderr.contains("mcp-server"),
-        "help text should mention 'mcp-server' command, got: {stderr}"
-    );
 }
 
 #[test]
@@ -61,6 +57,47 @@ fn help_text_mentions_gui_debug_subcommand() {
     assert!(
         stderr.contains("gui-debug"),
         "help text should mention 'gui-debug' subcommand, got: {stderr}"
+    );
+}
+
+/// `reify mcp-server` was deleted by #6665 (zero consumers, broken since
+/// 2026-03). A future headless host belongs over the unified
+/// `compile_program` entry (#5516), not a resurrection of this subcommand.
+#[test]
+fn mcp_server_subcommand_is_rejected_as_unknown() {
+    let output = Command::new(env!("CARGO_BIN_EXE_reify"))
+        .args(["mcp-server"])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .expect("failed to execute reify binary");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(
+        !output.status.success(),
+        "reify mcp-server should exit non-zero, got stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("Unknown command: mcp-server"),
+        "reify mcp-server should be reported as an unknown command, got: {stderr}"
+    );
+
+    let help = Command::new(env!("CARGO_BIN_EXE_reify"))
+        .args(["--help"])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .expect("failed to execute reify binary");
+
+    let stdout = String::from_utf8_lossy(&help.stdout);
+
+    assert!(help.status.success(), "reify --help should exit zero");
+    assert!(
+        !stdout.contains("mcp-server"),
+        "help text should not advertise the removed 'mcp-server' command, got: {stdout}"
     );
 }
 
