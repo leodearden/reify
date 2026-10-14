@@ -376,13 +376,35 @@ class RecordTests(unittest.TestCase):
         (record,) = ledger_records(self.ledger)
         self.assertIn("boom: snapshot failed", record["instrument_errors"])
 
-    def test_unwritable_ledger_is_fail_open(self):
+    def test_unwritable_ledger_is_fail_open_and_reported_on_stderr(self):
+        # verify.sh deletes the journal right after finalize, so stderr is the only
+        # place a failed finalize, and the journal errors its record would carry, survive.
         journal = JournalFixture(self, BASE_PLAN)
+        (journal.dir / "errors.log").write_text("boundary: OSError: snapshot failed\n")
         blocker = self.ledger / "a-file"
         blocker.write_text("")
         proc = journal.finalize(blocker / "ledger", 1)
         self.assertEqual(proc.returncode, 0)
         self.assertEqual(proc.stdout, "")
+        lines = proc.stderr.splitlines()
+        self.assertEqual(len(lines), 2, proc.stderr)
+        self.assertTrue(lines[0].startswith("verify-ledger.py: finalize: "), lines[0])
+        self.assertIn("NotADirectoryError", lines[0])
+        self.assertTrue(lines[1].startswith("verify-ledger.py: "), lines[1])
+        self.assertTrue(lines[1].endswith("boundary: OSError: snapshot failed"), lines[1])
+
+    def test_finalize_without_meta_reports_on_stderr(self):
+        journal = Path(tempfile.mkdtemp(prefix="vl-journal-"))
+        self.addCleanup(shutil.rmtree, journal, True)
+        proc = run_tool(
+            "finalize", "--journal", str(journal), "--ledger-dir", str(self.ledger),
+            "--exit-code", "0", "--ended-at", "1.0",
+        )
+        self.assertEqual(proc.returncode, 0)
+        self.assertTrue(proc.stderr.startswith("verify-ledger.py: finalize: "), proc.stderr)
+        self.assertIn("FileNotFoundError", proc.stderr)
+        self.assertFalse((journal / "errors.log").exists())
+        self.assertEqual(ledger_records(self.ledger), [])
 
     def test_concurrent_finalizes_append_intact_lines(self):
         long_plan = BASE_PLAN + [f"echo {'x' * 400} {i}" for i in range(60)]

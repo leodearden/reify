@@ -996,7 +996,7 @@ def build_parser():
     finalize.add_argument("--exit-code", type=int, required=True)
     finalize.add_argument("--ended-at", type=float, required=True)
     finalize.add_argument("--signal", default="")
-    finalize.set_defaults(func=cmd_finalize)
+    finalize.set_defaults(func=cmd_finalize, consumes_journal=True)
 
     harness = sub.add_parser("harness-ancestor", help="print the argv of the nearest infra-harness ancestor, if any")
     harness.add_argument("--self-pid", type=int, required=True)
@@ -1015,17 +1015,40 @@ def build_parser():
     return parser
 
 
+def append_journal_error(journal, line):
+    """True once `line` is in the journal's errors.log."""
+    if not journal or not os.path.isdir(journal):
+        return False
+    try:
+        with open(journal_path(journal, "errors.log"), "a", encoding="utf-8") as fh:
+            fh.write(line + "\n")
+    except OSError:
+        return False
+    return True
+
+
+def unrecorded_journal_errors(journal):
+    try:
+        return read_instrument_errors(journal)
+    except OSError:
+        return []
+
+
 def record_instrument_error(args, exc):
+    """To the journal's errors.log while the journal outlives the command, else stderr.
+
+    finalize consumes its journal (verify.sh deletes it next), so a failed
+    finalize reports on stderr, with the journal errors its unwritten record
+    would have carried.
+    """
     line = f"{args.command}: {type(exc).__name__}: {exc}"
     journal = getattr(args, "journal", None)
-    try:
-        if journal and os.path.isdir(journal):
-            with open(journal_path(journal, "errors.log"), "a", encoding="utf-8") as fh:
-                fh.write(line + "\n")
-            return
-    except OSError:
-        pass
-    sys.stderr.write(f"verify-ledger.py: {line}\n")
+    if getattr(args, "consumes_journal", False):
+        sys.stderr.write(f"verify-ledger.py: {line} (no ledger record written)\n")
+        for pending in unrecorded_journal_errors(journal):
+            sys.stderr.write(f"verify-ledger.py: unrecorded instrument error: {pending}\n")
+    elif not append_journal_error(journal, line):
+        sys.stderr.write(f"verify-ledger.py: {line}\n")
 
 
 def main(argv=None):

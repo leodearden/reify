@@ -3227,8 +3227,9 @@ _record_background_verdict() {
 # Verify instrumentation ledger (task 7424). scripts/verify-ledger.py owns the
 # phase taxonomy, the observations and the record; this group only writes
 # numeric step events and calls it. Every _vl_* function is a no-op unless
-# _vl_init activated the run, and none can change the plan, the output or the
-# exit code. Schema and activation rules: docs/notes/verify-instrumentation-ledger.md.
+# _vl_init activated the run, and none can change the plan, stdout or the exit
+# code; a failed finalize reports on stderr. Schema and activation rules:
+# docs/notes/verify-instrumentation-ledger.md.
 # ---------------------------------------------------------------------------
 _VL_ACTIVE=0
 _VL_DIR=""
@@ -3322,7 +3323,8 @@ _vl_finalize() {
         TERM) _rc=143 ;;
         HUP) _rc=129 ;;
     esac
-    _vl_py finalize --journal "$_VL_DIR" --ledger-dir "$_VL_LEDGER_DIR" --exit-code "$_rc" \
+    # stderr stays verify.sh's: the journal, errors.log included, is deleted next.
+    _vl_tool finalize --journal "$_VL_DIR" --ledger-dir "$_VL_LEDGER_DIR" --exit-code "$_rc" \
         --ended-at "${EPOCHREALTIME/,/.}" --signal "$_signal" >/dev/null
     rm -rf "$_VL_DIR" 2>/dev/null || true
     return 0

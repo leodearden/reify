@@ -73,11 +73,16 @@ resolved against that process's cwd (`verify-ledger.py harness-ancestor`). A
 suite that wants a record passes its own `REIFY_VERIFY_LEDGER_DIR`, as the
 ledger's own suites do.
 
-Every instrument is fail-open. A failure lands in the record's
-`instrument_errors`, or on stderr if no journal exists. It never changes the
-plan, the output or the exit code. A verify that a sandboxed agent starts by
-hand runs inside the agent's landlock write-set. Where that set excludes the
-main checkout, the append fails open and the run leaves no record.
+Every instrument is fail-open: it never changes the plan, stdout or the exit
+code. A failure lands in the record's `instrument_errors`. A failure no record
+can carry goes to verify.sh's stderr as a `verify-ledger.py:` line instead.
+That covers a failed finalize: an unwritable ledger, a crash composing the
+record, or a missing `meta.json` after a failed run-begin. verify.sh deletes
+the journal right after finalize, so a failed finalize reports there along
+with the journal errors its unwritten record would have carried. A verify
+that a sandboxed agent starts by hand runs inside the agent's landlock
+write-set. Where that set excludes the main checkout, the append fails and the
+run leaves that stderr line instead of a record.
 
 | Knob | Meaning |
 |---|---|

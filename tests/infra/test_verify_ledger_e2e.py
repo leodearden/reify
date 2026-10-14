@@ -212,13 +212,16 @@ class VerifyLedgerE2ETests(unittest.TestCase):
         self.assertEqual(with_ledger.stdout, without.stdout)
         self.assertFalse(ledger.exists() and any(ledger.iterdir()))
 
-    def test_e_unwritable_ledger_changes_nothing(self):
+    def test_e_unwritable_ledger_keeps_exit_code_and_reports_on_stderr(self):
         blocker = self.vehicle.work / "not-a-dir"
         blocker.write_text("")
         run = self.vehicle.run(blocker / "ledger")
         self.assertEqual(run.returncode, 0, run.stderr)
         self.assertEqual(executor_trace(run.stderr), executor_trace(self.pass_run.stderr))
-        self.assertNotIn("verify-ledger", run.stdout + run.stderr)
+        reported = [line for line in run.stderr.splitlines() if line.startswith("verify-ledger.py: ")]
+        self.assertEqual(len(reported), 1, run.stderr)
+        self.assertTrue(reported[0].startswith("verify-ledger.py: finalize: "), reported[0])
+        self.assertNotIn("verify-ledger", run.stdout)
         self.assertNotIn("verify-ledger", self.pass_run.stdout + self.pass_run.stderr)
 
     def test_f_default_ledger_refuses_a_run_beneath_an_infra_suite(self):
