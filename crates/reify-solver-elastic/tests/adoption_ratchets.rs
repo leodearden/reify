@@ -1107,16 +1107,20 @@ fn measure(how: &Measure, files: &[SourceFile]) -> Vec<Hit> {
 
 /// Strict ratchet: the measured count must equal the row's `baseline`. Above it, a
 /// copy was added; below it, a leaf migrated copies and must lower the row in the
-/// same diff.
+/// same diff. A row's home does not exist until its leaf lands, so a genuinely new
+/// copy that cannot use it yet raises the baseline instead.
 fn check(ratchet: &Ratchet, files: &[SourceFile]) -> Result<(), String> {
     let hits = measure(&ratchet.measure, files);
-    let (name, baseline, count) = (ratchet.name, ratchet.baseline, hits.len());
+    let (name, home, baseline) = (ratchet.name, ratchet.home, ratchet.baseline);
+    let count = hits.len();
     match count.cmp(&baseline) {
         Ordering::Equal => Ok(()),
         Ordering::Greater => Err(format!(
             "{name}: {count} is above its baseline {baseline}: an inline copy was added; \
-             route it through {}\n{}",
-            ratchet.home,
+             route it through {home}\n\
+             (if that home is not extracted yet, a genuinely new copy may raise the baseline \
+             to {count} in {}, with the reason in the commit message)\n{}",
+            file!(),
             hit_lines(&hits)
         )),
         Ordering::Less => Err(format!(
@@ -1545,7 +1549,15 @@ fn migrating_one_copy_without_lowering_the_baseline_is_red_for_every_row() {
         check(&at_two, &seeded_tree(row, 2))
             .map_err(|red| format!("two copies at baseline 2 must hold, got: {red}"))?;
         let above = check(&at_two, &seeded_tree(row, 3));
-        expect_red_containing(above, &["above its baseline", row.name])?;
+        expect_red_containing(
+            above,
+            &[
+                "above its baseline",
+                row.name,
+                row.home,
+                "raise the baseline to 3",
+            ],
+        )?;
         let below = check(&at_two, &seeded_tree(row, 1));
         expect_red_containing(below, &["lower the baseline to 1"])
     });
