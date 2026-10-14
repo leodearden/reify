@@ -7013,69 +7013,114 @@ mod tests {
         }
     }
 
+    /// The `OperationFailed` cause `get_shape` reports for a corrupted handle.
+    fn get_shape_cause(kernel: &OcctKernel, h: GeometryHandleId) -> String {
+        match kernel.get_shape(h) {
+            Err(GeometryError::OperationFailed(msg)) => msg,
+            Err(other) => panic!("get_shape({h:?}): expected OperationFailed, got {other:?}"),
+            Ok(_) => panic!("get_shape({h:?}): expected OperationFailed, got Ok"),
+        }
+    }
+
+    /// One handle of each corrupted-but-present kind — IsNull topology and a
+    /// null `UniquePtr` — paired with the cause `get_shape` reports for it.
+    fn corrupted_handles(kernel: &mut OcctKernel) -> Vec<(GeometryHandleId, String)> {
+        let null_topology = kernel.store_raw(ffi::ffi::make_null_shape_for_test());
+        let null_pointer = GeometryHandleId(4000);
+        kernel.insert_null_shape(null_pointer.0);
+        [null_topology, null_pointer]
+            .into_iter()
+            .map(|h| (h, get_shape_cause(kernel, h)))
+            .collect()
+    }
+
+    fn assert_query_cause<T: std::fmt::Debug>(r: Result<T, QueryError>, cause: &str, what: &str) {
+        match r {
+            Err(QueryError::QueryFailed(m)) if m == cause => {}
+            other => panic!("{what}: expected QueryFailed({cause:?}), got {other:?}"),
+        }
+    }
+
     /// Structural boundary guard: a NON-null `OcctShape` wrapping null (IsNull)
-    /// topology must be rejected at `get_shape`, and every production query
-    /// path that flows through `get_shape` must therefore return `Err` — never
-    /// a hardware SIGSEGV.
+    /// topology must be rejected at `get_shape`, and every query path that
+    /// flows through `get_shape` must report that rejection's cause as
+    /// `QueryFailed` — never a hardware SIGSEGV, and never `InvalidHandle`,
+    /// which is reserved for an id the kernel does not hold.
     ///
     /// The input is `make_null_shape_for_test()` — a default-constructed
     /// `OcctShape` whose `.shape` is a null `TopoDS_Shape`. It passes
-    /// `get_shape`'s existing null-`UniquePtr` check (the pointer is non-null)
-    /// but, pre-fix, dereferences to null topology: `query_volume`'s
-    /// `ShapeType()` fallback then SIGSEGVs.
-    ///
-    /// RED (pre-fix): `get_shape` returns `Ok(&null_shape)`, so the assertion
-    /// below fails on the `Ok(_)` arm. GREEN (after the get_shape IsNull
-    /// guard): `get_shape` returns `Err(OperationFailed)` and all four queries
-    /// return `Err`.
+    /// `get_shape`'s null-`UniquePtr` check (the pointer is non-null) but
+    /// dereferences to null topology, on which `query_volume`'s `ShapeType()`
+    /// fallback would SIGSEGV were `get_shape` not to refuse it.
     ///
     /// MUST run under `cargo nextest run` (process-per-test isolation) so any
-    /// pre-fix crash is contained as a single failing test, not a suite abort.
+    /// crash is contained as a single failing test, not a suite abort.
     #[test]
     fn get_shape_rejects_null_topology_and_queries_return_err() {
         let mut kernel = OcctKernel::new();
         let h = kernel.store_raw(ffi::ffi::make_null_shape_for_test());
+        let good_box = make_box_20_10_5(&mut kernel);
 
         // Structural chokepoint: get_shape refuses null/empty topology loudly.
-        match kernel.get_shape(h) {
-            Err(GeometryError::OperationFailed(msg)) => {
-                let low = msg.to_lowercase();
-                assert!(
-                    low.contains("null") || low.contains("empty"),
-                    "error should mention null/empty topology, got: {msg}"
-                );
-            }
-            Err(other) => panic!("expected OperationFailed, got {:?}", other),
-            Ok(_) => panic!("expected error for null-topology shape, got Ok"),
-        }
+        let cause = get_shape_cause(&kernel, h);
+        let low = cause.to_lowercase();
+        assert!(
+            low.contains("null") || low.contains("empty"),
+            "error should mention null/empty topology, got: {cause}"
+        );
 
-        // Every production query path routes through get_shape, so each must
-        // now return Err (never SIGSEGV). Volume is the guaranteed crash vector.
-        assert!(
-            kernel.query(&GeometryQuery::Volume(h)).is_err(),
-            "Volume query on null-topology shape must return Err, not crash/Ok"
+        // Every query path routes through get_shape, so each reports its
+        // cause (never SIGSEGV). Volume is the guaranteed crash vector.
+        assert_query_cause(kernel.query(&GeometryQuery::Volume(h)), &cause, "Volume");
+        assert_query_cause(kernel.volume_measurement(h), &cause, "volume_measurement");
+        assert_query_cause(kernel.query(&GeometryQuery::Centroid(h)), &cause, "Centroid");
+        assert_query_cause(kernel.query(&GeometryQuery::BoundingBox(h)), &cause, "BoundingBox");
+        assert_query_cause(
+            kernel.query(&GeometryQuery::InertiaTensor {
+                handle: h,
+                density: 1000.0,
+            }),
+            &cause,
+            "InertiaTensor",
         );
-        assert!(
-            kernel.volume_measurement(h).is_err(),
-            "volume_measurement on null-topology shape must return Err, not crash/Ok"
-        );
-        assert!(
-            kernel.query(&GeometryQuery::Centroid(h)).is_err(),
-            "Centroid query on null-topology shape must return Err"
-        );
-        assert!(
-            kernel.query(&GeometryQuery::BoundingBox(h)).is_err(),
-            "BoundingBox query on null-topology shape must return Err"
-        );
-        assert!(
-            kernel
-                .query(&GeometryQuery::InertiaTensor {
-                    handle: h,
-                    density: 1000.0,
-                })
-                .is_err(),
-            "InertiaTensor query on null-topology shape must return Err"
-        );
+        assert_query_cause(kernel.extract_faces(h), &cause, "extract_faces");
+        assert_query_cause(kernel.shapes_intersect(h, good_box), &cause, "shapes_intersect");
+
+        // Contrast: an id the kernel does not hold is the invalid-handle case.
+        match kernel.query(&GeometryQuery::Volume(GeometryHandleId(999))) {
+            Err(QueryError::InvalidHandle(id)) => assert_eq!(id, GeometryHandleId(999)),
+            other => panic!("unknown handle: expected InvalidHandle(999), got {other:?}"),
+        }
+    }
+
+    /// Both corrupted-handle kinds report `get_shape`'s cause through the
+    /// query entry points, not `InvalidHandle`.
+    #[test]
+    fn queries_on_a_corrupted_handle_report_the_cause() {
+        let mut kernel = OcctKernel::new();
+        let good_box = make_box_20_10_5(&mut kernel);
+        for (h, cause) in corrupted_handles(&mut kernel) {
+            assert_query_cause(
+                kernel.query(&GeometryQuery::Volume(h)),
+                &cause,
+                &format!("Volume({h:?})"),
+            );
+            assert_query_cause(
+                kernel.volume_measurement(h),
+                &cause,
+                &format!("volume_measurement({h:?})"),
+            );
+            assert_query_cause(
+                kernel.extract_edges(h),
+                &cause,
+                &format!("extract_edges({h:?})"),
+            );
+            assert_query_cause(
+                kernel.shapes_intersect(good_box, h),
+                &cause,
+                &format!("shapes_intersect(box, {h:?})"),
+            );
+        }
     }
 
     /// Defense-in-depth: each OCCT geometry-query FFI entry point must reject a
