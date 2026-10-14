@@ -7070,6 +7070,33 @@ mod tests {
         }
     }
 
+    /// `execute_split` reports exactly what `get_shape` found: an unknown
+    /// target is `InvalidReference`, a corrupted one its `OperationFailed`
+    /// cause — never a corrupted handle mislabelled as unknown.
+    #[test]
+    fn execute_split_reports_the_get_shape_cause() {
+        let split = |target| GeometryOp::Split {
+            target,
+            plane_origin: [0.0; 3],
+            plane_normal: [0.0, 0.0, 1.0],
+        };
+        let mut kernel = OcctKernel::new();
+
+        match kernel.execute_split(&split(GeometryHandleId(999))) {
+            Err(GeometryError::InvalidReference(id)) => assert_eq!(id, GeometryHandleId(999)),
+            other => panic!("unknown target: expected InvalidReference(999), got {other:?}"),
+        }
+
+        for (h, cause) in corrupted_handles(&mut kernel) {
+            match kernel.execute_split(&split(h)) {
+                Err(GeometryError::OperationFailed(m)) if m == cause => {}
+                other => panic!(
+                    "execute_split({h:?}): expected OperationFailed({cause:?}), got {other:?}"
+                ),
+            }
+        }
+    }
+
     /// Defense-in-depth: each OCCT geometry-query FFI entry point must reject a
     /// null-topology shape with a catchable `Err` — never a hardware SIGSEGV —
     /// even when called DIRECTLY, bypassing the `get_shape` boundary guard.
