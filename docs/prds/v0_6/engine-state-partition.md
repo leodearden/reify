@@ -1,6 +1,6 @@
 # PRD — Engine state partition (reify-eval): one constructor, sub-structs by lifetime class
 
-**Status:** authored pass 1, 2026-10-14 — review-all program `review-all-reify-20261010`, stream **S1** (wave 3, spawn mode, size L, risk high; `plans/review-all-program-reify-20261012.md`). Leo ruled R1–R4 in-session (§11). An adversarial critic pass (fable/high: 2 blockers, 6 majors, 14 minors, each verified in code or in the task record) is folded, and an opus/high fold-verifier's second pass (5 partial resolutions, 14 new defects, 2 of them blockers) is folded on top (§11 fold record). Not yet decomposed. v0_6. Approach **B + H** (§5 contract, §6 two-way boundary tests; rationale D15).
+**Status:** decomposed 2026-10-14 (pass 2): α #9036, β #9037, γ₁ #9038, γ₂ #9039, δ₁ #9040, δ₂ #9041, δ₃ #9042, ε #9043, ζ #9044, η #9045, θ #9046, ι #9047, κ₁ #9048, κ₂ #9049, λ #9050, μ #9051, ω #9052. Subsumed and cancelled: #7038 (→ ζ #9044). Released: S27 φ #8776 (← γ₁, γ₂). Out-of-batch edges: #8564 ← ζ; gate #8612 ← γ₁, γ₂, ε, λ. Authored pass 1, 2026-10-14 — review-all program `review-all-reify-20261010`, stream **S1** (wave 3, spawn mode, size L, risk high; `plans/review-all-program-reify-20261012.md`). Leo ruled R1–R4 in-session (§11). An adversarial critic pass (fable/high: 2 blockers, 6 majors, 14 minors, each verified in code or in the task record) is folded, and an opus/high fold-verifier's second pass (5 partial resolutions, 14 new defects, 2 of them blockers) is folded on top (§11 fold record). v0_6. Approach **B + H** (§5 contract, §6 two-way boundary tests; rationale D15).
 **Invariants owned:** **INV-FEA-1** — `proposed` → `enforced(type+lint+test)` (leaf γ₂). Its registry row names `Engine::new_production`, which does not exist. `register_production_compute_fns` (reshaped by S5 κ₁ #8999) and this PRD's one constructor implement it. **INV-BUILD-1** — stays enforced; its mechanism is corrected from the 68-field `reset_per_build_state` destructure to `PerBuildState::reset(BuildSurface)` over PerBuildState's own fields plus a surface-sequence test (leaf ε). This stream is the single owner of both status cells (program G4). Each flip writes resolving pointers in S24's grammar (`reify-audit-typed-findings-and-registry-lanes.md` §5.7): inline in the Enforcement cell before S24 ξ #8821 lands, in the Pointer column after it (§5.11). Every leaf that extracts a construct names its row in `tests/infra/adoption-ratchet.manifest` (program invariant candidate 5). Every new module stays outside the engine module SCC (INV-ARCH-1).
 **Finding keys closed (13):** fk-800d61acd5d0, fk-ba15d44904cb, fk-d8fd9ed9be89, fk-cb6c853cb648, fk-e9536a3edbe7, fk-8250a05a9a10, fk-fb8cf3e787b9, fk-d2c64e9d3868, fk-4fa7bda0085b, fk-4db43199eda2, fk-06103e5f06eb, the prior-instrument canonical `language-pipeline|crates/reify-eval/src/lib.rs::engine|h11`, and fk-3aeb721eaaa6, which is filed as #8564 and is referenced, not re-filed. §9 assigns each key to exactly one closing leaf, or to the filed task #8564. A leaf that only contributes to a key carries it as `x_finding_part`.
 **Code anchors** verified against main `988f4522b9` (2026-10-14). Since the review anchor `a030ee7528`, #6308 (export and terminal-owner routing, `kernel_owner.rs`), S3 γ #8675 (dead `cache.rs`/`deps.rs` peers) and #8753 have landed. No S1 symbol changed in substance, and every count below was re-measured at `988f4522b9` by this session's scout seats (§10, rules inline). Cite-by-symbol; re-locate lines at implementation time. Line numbers appear only in the dated §10.
@@ -552,7 +552,7 @@ No test reaches a sub-struct's private state.
 
 **Before and after #8821.** Before #8821 lands, the pointers sit inline in the Enforcement cell. After it lands, they move to the Pointer column and the `pending-owner:` tag is deleted in the flipping diff.
 
-**#8821's owner map.** FEA-1 → γ₂, BUILD-1 → ε.
+**#8821's owner map** (recorded on #8821, 2026-10-14). FEA-1 → γ₂ #9039, BUILD-1 → ε #9043.
 
 ### 5.12 The registration lint (`KNOWN_SITES`; S1 owns, S5 carve-out)
 
@@ -673,7 +673,7 @@ The `\|` in this table escapes the markdown pipe; the ERE in the manifest uses a
 
 ## 9. Decomposition plan
 
-Labels are Greek; task ids are assigned at decompose. Each leaf names its keys, invariant, ratchet rows, dependencies and signal.
+Labels are Greek; task ids were assigned at decompose (2026-10-14) and are backfilled into each leaf heading. Each leaf names its keys, invariant, ratchet rows, dependencies and signal.
 
 **Shared done criteria (every leaf).**
 - **INV-ARCH-1 (D5).** A new module imports nothing in the residual engine SCC, names no `Engine` (its `engine-free-*` row at 0), and `module_scc_ratchet` stays green with no `GREW`; a shrink lowers the baseline.
@@ -682,7 +682,7 @@ Labels are Greek; task ids are assigned at decompose. Each leaf names its keys, 
 - **Drift-guard registrations.** A new gate-resident test carries its nextest and wall-clock registrations in its own diff. A new reify-eval integration test is a module of an existing harness (for example `tests/harness_engine/`), never a new standalone binary, because reify-eval is in the harness-layout gate's `_HL_CRATES`.
 - **The INV-id each leaf cites**, with its enforcement mechanism.
 
-- **α — EngineConfig resolved once; one layered cache resolver; the GUI uses the persistent cache.**
+- **α #9036 — EngineConfig resolved once; one layered cache resolver; the GUI uses the persistent cache.**
   - **Work.**
     - Add `engine_config.rs` per §5.2, with `BuildScheduler` moved into it (D5).
     - Add `reify_config::ConfigSources` and `resolve_cache_layered`, moved down from `reify-cli/src/cache.rs`; the CLI calls them.
@@ -694,19 +694,19 @@ Labels are Greek; task ids are assigned at decompose. Each leaf names its keys, 
   - **Signal.** B-α1, B-α2, B-α3; the existing `configured_eval_engine_wires_cache_dir` and `cache_dir_cli_override_replaces_configured_dir` green; row `engine-env-read` at 1; `engine-free-engine-config` at 0.
   - **Keys.** fk-4fa7bda0085b. Medium.
   - **Deps.** #8687, #8862, #8869, #8872, #8937.
-- **β — Registration posture; `Registrations`; severity reads the posture.**
+- **β #9037 — Registration posture; `Registrations`; severity reads the posture.**
   - **Work.** Add `registrations.rs` per §5.4; the collaborators, registries and hooks move into `Registrations`; `soft_no_trampoline_diagnostic` reads the posture; `Engine::posture()`.
   - **Signal.** B-β1, B-β2; rows `compute-posture-inferred` and `engine-free-registrations` at 0.
   - **Keys.** none (`x_finding_part` fk-06103e5f06eb, closed by γ₂). Medium.
   - **Deps.** α, #8999.
-- **γ₁ — The one constructor; every production front end; explicit kernels.**
+- **γ₁ #9038 — The one constructor; every production front end; explicit kernels.**
   - **The constructor.** Add `engine_inputs.rs`, `Engine::new(EngineInputs)` and `Engine::config(&self) -> &EngineConfig` per §5.1 (α already adds `config()`). Every production site moves to its preset: the CLI (with `cmd_check`'s single plan-driven site after #9022/#9023), the LSP, the GUI and `test_runner`. `EngineSession::new(EngineInputs)` replaces the GUI's constructor pair.
   - **Kernels.**
     - Each kernel crate exports its registration item.
     - Add `KernelSet::from_registrations` and the member-only `ensure` (D6); the front ends build `KernelSet` from those items.
     - Delete: the CLI and GUI anchors; the registry constructors; `pick_lexmin_brep_kernel(_in)`; `with_test_kernels_and_registry`; `test_registry_override` (and its cfg pairs in engine_build).
   - **Legacy test constructors.**
-    - Add `features = ["test-instrumentation"]` to the reify-eval dev-dependency of reify-cli, reify-compiler and reify-mesh-morph.
+    - Make the feature reachable from every test that constructs an engine (§3): add it to reify-compiler's existing reify-eval dev-dependency; add a `[dev-dependencies] reify-eval = { workspace = true, features = ["test-instrumentation"] }` entry to reify-cli and reify-mesh-morph; add `reify-eval/test-instrumentation` to reify-test-support's `eval-helpers` feature.
     - Then rename three Engine items with a scripted token rename, and gate them `cfg(any(test, feature = "test-instrumentation"))`: the old `Engine::new(checker, kernel)` → `Engine::legacy_test_new`; `with_prelude` → `legacy_test_with_prelude`; the `Engine::with_solver` builder (about 165 chained test calls) → `legacy_test_with_solver`.
     - The rename covers test files and `crates/reify-test-support/src`.
     - The GUI's test constructor `EngineSession::new(checker, kernel)` (304 test calls) is renamed the same way to a `cfg(test)` `EngineSession::legacy_test_new`, so the workspace test build stays green until δ₂.
@@ -715,24 +715,24 @@ Labels are Greek; task ids are assigned at decompose. Each leaf names its keys, 
   - **Signal.** B-γ2, B-γ3; B-β1 still green; rows `engine-legacy-ctor`, `engine-global-registry-read`, `kernel-link-anchor-cli`/`-gui` and `engine-free-engine-inputs` at target; the workspace test build is green.
   - **Keys.** fk-4db43199eda2. **High.**
   - **Deps.** α, β, #8992, #8993, #8957, #8937, #9022, #9023.
-- **γ₂ — The registration lint declares every production site; INV-FEA-1.**
-  - **Work.** Rewrite the lint's positive pass and its infra test per §5.12, add the infra-test map rows, and flip INV-FEA-1 (§5.11).
+- **γ₂ #9039 — The registration lint declares every production site; INV-FEA-1.**
+  - **Work.** Rewrite the lint's positive pass and its infra test per §5.12. Add the infra-test map rows, and the `path|EngineInputs::hermetic` rows for the test-support files γ₁ converted (`realization_read_test_support.rs`). Flip INV-FEA-1 (§5.11).
   - **Signal.** B-γ1; `test_compute_trampoline_registration_wired.sh` green with its new red cases; INV-FEA-1 reads `enforced(type+lint+test)` with resolving pointers.
   - **Keys.** fk-06103e5f06eb. INV: INV-FEA-1. **High.**
   - **Deps.** γ₁. Full gate (verify-pipeline files).
-- **δ₁ — reify-eval tests build through `EngineInputs::hermetic()` (R1).**
+- **δ₁ #9040 — reify-eval tests build through `EngineInputs::hermetic()` (R1).**
   - **Work.** A script quoted in the commit message, and re-run on any rebase, rewrites reify-eval's `Engine::legacy_test_new(c, k)` / `legacy_test_with_prelude(c, k, p)` calls (≈ 1,095 sites, src test modules and `tests/`) into `Engine::new(EngineInputs::hermetic()…)` with `.with_checker` / `.with_kernel` / `.with_prelude` / `.with_solver`.
-  - **Hand-migrated.** Construction-adjacent `set_build_scheduler` / `set_mesh_contract_mode` / `set_max_unfold_*` / `set_persistent_cache_dir` / `set_warm_state_budget` calls become `.with_config` overrides. Files converted outside the engine modules (`realization_read_test_support.rs`, `geometry_ops/tests.rs`) get their `KNOWN_SITES` hermetic rows.
+  - **Hand-migrated.** Construction-adjacent `set_build_scheduler` / `set_mesh_contract_mode` / `set_max_unfold_*` / `set_persistent_cache_dir` / `set_warm_state_budget` calls become `.with_config` overrides. Files converted outside the engine modules (`geometry_ops/tests.rs` and any other reify-eval test-support file) get their `KNOWN_SITES` hermetic rows.
   - **Deleted.** The 17 reify-eval test anchors and the reify-eval `Cargo.toml` dead-strip prose.
   - **Signal.** B-δ1; reify-eval suites green; rows `engine-legacy-test-ctor-eval` and `kernel-link-anchor-eval-tests` at 0.
   - **Keys.** none (ruling R1). Medium.
   - **Deps.** γ₁.
-- **δ₂ — GUI tests build through the hermetic preset.**
+- **δ₂ #9041 — GUI tests build through the hermetic preset.**
   - **Work.** The same script migrates gui/src-tauri's ≈ 304 `EngineSession::legacy_test_new` test calls and the GUI's `legacy_test_*` engine calls to `EngineSession::new(EngineInputs::hermetic()…)`, then deletes `EngineSession::legacy_test_new`.
   - **Signal.** GUI suites green; row `engine-legacy-test-ctor-gui` at 0.
   - **Keys.** none. Medium.
   - **Deps.** γ₁.
-- **δ₃ — The remaining crates; the legacy constructors are deleted.**
+- **δ₃ #9042 — The remaining crates; the legacy constructors are deleted.**
   - **Work.**
     - Migrate reify-lsp, reify-eval-fea-tests, reify-compiler, reify-cli, reify-mesh-morph and reify-test-support (library helpers in `helpers.rs` and `fixtures.rs`).
     - Delete `legacy_test_new`, `legacy_test_with_prelude`, `legacy_test_with_solver` and the gated `set_persistent_cache_dir` / `set_max_unfold_*` / `set_warm_state_budget`.
@@ -741,7 +741,7 @@ Labels are Greek; task ids are assigned at decompose. Each leaf names its keys, 
   - **Signal.** workspace suites green; row `engine-legacy-test-ctor-rest` at 0; `git grep -n 'fn legacy_test_' -- crates` empty.
   - **Keys.** none. Medium.
   - **Deps.** δ₁, δ₂.
-- **ε — `PerBuildState` with `reset(surface)`; INV-BUILD-1.**
+- **ε #9043 — `PerBuildState` with `reset(surface)`; INV-BUILD-1.**
   - **Work.**
     - Add `per_build_state.rs` per §5.5, with `BuildSurface` moved there.
     - Delete `reset_per_build_state` and its destructure.
@@ -751,17 +751,17 @@ Labels are Greek; task ids are assigned at decompose. Each leaf names its keys, 
   - **Signal.** B-ε1; rows `per-build-reset-site`, `reset-per-build-state` and `engine-free-per-build-state` at 0; INV-BUILD-1 reads `enforced(type+test)` with resolving pointers.
   - **Keys.** none (`x_finding_part` fk-800d61acd5d0, closed by λ). INV: INV-BUILD-1. **High.**
   - **Deps.** γ₁, #8862, #8869, #8872, #9017, #9021.
-- **ζ — Undef causes beside the snapshot; `EvalArtifacts`; Snapshot docs (R4).**
+- **ζ #9044 — Undef causes beside the snapshot; `EvalArtifacts`; Snapshot docs (R4).**
   - **Work.** Add `eval_artifacts.rs` per §5.6, with the declared-cell set captured at eval. Re-classify on `eval_cached` and `edit_param`. Wire #7038's capture. Delete `set_capture_undef_causes`. Correct the Snapshot docs.
   - **Signal.** B-ζ1, B-ζ2, B-ζ3; rows `undef-cause-field`, `undef-capture-setter`(-gui) and `engine-free-eval-artifacts` at 0.
   - **Keys.** fk-8250a05a9a10, fk-d2c64e9d3868. Subsumes #7038. INV: INV-SF-1 (correct provenance, not a status flip). Medium.
   - **Deps.** γ₁, #8691, #8862.
-- **η — `PurposeState`: one map; activation includes the rebuild.**
+- **η #9045 — `PurposeState`: one map; activation includes the rebuild.**
   - **Work.** Add `purpose_state.rs` per §5.7. The engine_eval re-injection becomes `reload` + `activate`. The stale γ doc is deleted.
   - **Signal.** B-η1, B-η2; rows `parallel-purpose-map`, `purpose-rebuild-pair` and `engine-free-purpose-state` at 0.
   - **Keys.** fk-fb8cf3e787b9. Medium.
   - **Deps.** ζ, #8862.
-- **θ — Per-call outputs return on the result.**
+- **θ #9046 — Per-call outputs return on the result.**
   - **Work.** Implement §5.9:
     - add `EvalPass` and `DispatchAttribution`;
     - delete the five fields and their getters;
@@ -771,12 +771,12 @@ Labels are Greek; task ids are assigned at decompose. Each leaf names its keys, 
   - **Signal.** B-θ1, B-θ2, B-θ3; rows `last-call-getter` and `dispatched-entity-proxy` at 0.
   - **Keys.** fk-e9536a3edbe7. Medium.
   - **Deps.** γ₁, #8944, #8937.
-- **ι — `Instrumentation` and `EngineProbe` (R2, the read half).**
+- **ι #9047 — `Instrumentation` and `EngineProbe` (R2, the read half).**
   - **Work.** Implement §5.10: delete the always-present counters from Engine; `probe()` and `fault_injection()` replace the read and fault accessors; the remaining test `set_build_scheduler` / `set_mesh_contract_mode` calls become config overrides.
   - **Signal.** B-ι1; rows `engine-gated-accessor` and `engine-free-instrumentation` at 0; suites green; the regression floor (B-λ1's example set) is byte-identical.
   - **Keys.** fk-d8fd9ed9be89. Medium.
   - **Deps.** θ, δ₃.
-- **κ₁ — Raw-mutator burn-down I: compute-dispatch tests.**
+- **κ₁ #9048 — Raw-mutator burn-down I: compute-dispatch tests.**
   - **Scope.** The `cache_store_mut` / `warm_pool_mut` sites in the compute-dispatch tests:
     - in-crate: `engine_compute.rs` (42) and `compute_persist.rs` (8);
     - integration: `cancellation_compute_dispatch.rs`, `material_field_cancellation.rs`, `input_shape_tots_compute_node.rs`, `zv_shaped_ramp_db_reduction.rs`, `harness_fea_solver_e2e/tensegrity_pavilion_e2e.rs`;
@@ -785,7 +785,7 @@ Labels are Greek; task ids are assigned at decompose. Each leaf names its keys, 
   - **Signal.** row `raw-state-mutator` lowered to the measured remainder; suites green; the regression floor is byte-identical on the FEA/modal examples; per-site dispositions in the commit.
   - **Keys.** none (`x_finding_part` fk-cb6c853cb648, closed by κ₂). Medium.
   - **Deps.** ι, #8699.
-- **κ₂ — Raw-mutator burn-down II; the mutators are deleted.**
+- **κ₂ #9049 — Raw-mutator burn-down II; the mutators are deleted.**
   - **Scope.** The rest:
     - freshness, geometry-handle, topology-selector, forall, commit-migration, opaque-state and warm-state-donation tests;
     - the in-crate `engine_admin` / `engine_eval` tests;
@@ -795,12 +795,12 @@ Labels are Greek; task ids are assigned at decompose. Each leaf names its keys, 
   - **Signal.** `raw-state-mutator`(-gui) at 0; the accessors are gone; suites green; the regression floor is byte-identical.
   - **Keys.** fk-cb6c853cb648. Medium.
   - **Deps.** κ₁.
-- **λ — `EngineCaches`, `EngineLineage`, `HostInputs`; Engine holds only sub-structs.**
+- **λ #9050 — `EngineCaches`, `EngineLineage`, `HostInputs`; Engine holds only sub-structs.**
   - **Work.** Implement §5.8 and the struct of §5.3, including the homes for #9021's fields. Re-key `version_id_discipline_gate.rs`'s allowlist to `lineage.rs`. The 701-line Engine field doc becomes one doc per sub-struct.
   - **Signal.** B-λ1; `pub struct Engine` has exactly the ten sub-struct fields of §5.3; `version_id_discipline_gate` green; rows `engine-free-engine-caches`, `engine-free-lineage` and `engine-free-host-inputs` at 0.
   - **Keys.** fk-800d61acd5d0, `language-pipeline|crates/reify-eval/src/lib.rs::engine|h11`. **High.**
   - **Deps.** ε, ζ, η, θ, ι, κ₂, #8680, #9021.
-- **μ — h14 partitions of engine_admin.rs and lib.rs.**
+- **μ #9051 — h14 partitions of engine_admin.rs and lib.rs.**
   - **engine_admin.rs.** `kernel_pin_diagnostics` → `engine_config.rs`; `sweep_persistent_cache_at_startup` → the post-#8876 persistent-cache module; `populate_structure_registry` / `module_has_auto_cells` → `lineage.rs`; undef tracing → `eval_artifacts.rs`; tests move with their unit.
   - **lib.rs.** `EngineError`, `value_type_kind_matches` and its tests → `value_kind.rs`; the result structs and their codes → `results.rs`. `Engine` stays at the crate root.
   - **Signal.**
@@ -809,12 +809,12 @@ Labels are Greek; task ids are assigned at decompose. Each leaf names its keys, 
     - B-λ1 still byte-identical.
   - **Keys.** fk-ba15d44904cb. Medium.
   - **Deps.** λ, #9007, #8864, #8691, #8699, #8876.
-- **ω — PRD close.** Set the terminal Status stamp, the AS-AUTHORED freeze and the LIVE map, plus the matching manifest header (overlay "PRD terminal status").
+- **ω #9052 — PRD close.** Set the terminal Status stamp, the AS-AUTHORED freeze and the LIVE map, plus the matching manifest header (overlay "PRD terminal status").
   - **Signal.** The committed header.
   - **Deps.** every leaf.
 
 **Out-of-batch edges.**
-- S27 φ #8776 ← γ₁, γ₂ (released by this stream).
+- S27 φ #8776 ← γ₁ #9038, γ₂ #9039 (released by this stream; its description reworded to what S1 delivers).
 - #8564 ← ζ.
 - #7038 is cancelled as subsumed by ζ.
 - The gate #8612 depends on γ₁, γ₂, ε and λ.

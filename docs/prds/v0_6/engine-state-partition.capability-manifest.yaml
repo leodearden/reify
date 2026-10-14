@@ -2,7 +2,7 @@ prd: docs/prds/v0_6/engine-state-partition.md
 schema_version: 1
 tasks:
 - label: α
-  task_id: null
+  task_id: 9036
   title: 'engine-state-partition α: EngineConfig resolved once; one layered cache resolver; the GUI uses the persistent cache'
   capabilities:
   - name: knob-parsers-are-pure
@@ -42,7 +42,7 @@ tasks:
       kind: manual
       reason: GUI behaviour (same resolved dir as the CLI; a second session hits) is asserted by B-α1 and B-α2, not a grep.
 - label: β
-  task_id: null
+  task_id: 9037
   title: 'engine-state-partition β: Registration posture; Registrations sub-struct; the no-trampoline severity reads the posture'
   capabilities:
   - name: severity-inferred-today
@@ -66,7 +66,7 @@ tasks:
       paths:
       - crates/reify-eval/src/registrations.rs
 - label: γ₁
-  task_id: null
+  task_id: 9038
   title: 'engine-state-partition γ₁: the one constructor Engine::new(EngineInputs); every production front end; explicit kernels'
   capabilities:
   - name: kernel-set-upstream
@@ -112,7 +112,7 @@ tasks:
     binding: producer:task-9022 (S12 ζ1) and producer:task-9023 (S12 ζ2) collapse cmd_check to one CheckEnginePlan-driven site; γ₁ depends on both and migrates that site.
     verdict: PASS
 - label: γ₂
-  task_id: null
+  task_id: 9039
   title: 'engine-state-partition γ₂: the registration lint declares every production construction site; INV-FEA-1'
   capabilities:
   - name: lint-pins-three-sites
@@ -135,7 +135,7 @@ tasks:
       paths:
       - docs/invariants.md
 - label: δ₁
-  task_id: null
+  task_id: 9040
   title: 'engine-state-partition δ₁: reify-eval tests build through EngineInputs::hermetic() (R1)'
   capabilities:
   - name: test-sites-measured
@@ -152,7 +152,7 @@ tasks:
       paths:
       - crates/reify-eval/tests
 - label: δ₂
-  task_id: null
+  task_id: 9041
   title: 'engine-state-partition δ₂: GUI tests build through the hermetic preset'
   capabilities:
   - name: gui-session-tests
@@ -165,7 +165,7 @@ tasks:
       paths:
       - gui/src-tauri/src/tests
 - label: δ₃
-  task_id: null
+  task_id: 9042
   title: 'engine-state-partition δ₃: remaining crates migrate; legacy test constructors deleted'
   capabilities:
   - name: legacy-ctor-deleted
@@ -179,7 +179,7 @@ tasks:
       paths:
       - crates/reify-compiler
 - label: ε
-  task_id: null
+  task_id: 9043
   title: 'engine-state-partition ε: PerBuildState with reset(surface); INV-BUILD-1 mechanism corrected'
   capabilities:
   - name: reset-destructures-68
@@ -213,7 +213,7 @@ tasks:
       (S12 ε1) and producer:task-9021 (S12 ε3: reload clears handles; kernel generation + engine identity) are upstream of ε.'
     verdict: PASS
 - label: ζ
-  task_id: null
+  task_id: 9044
   title: 'engine-state-partition ζ: undef causes beside the snapshot (R4); EvalArtifacts; Snapshot docs; subsumes #7038'
   capabilities:
   - name: only-eval-writes-causes
@@ -241,7 +241,7 @@ tasks:
       paths:
       - crates/reify-eval/src/eval_artifacts.rs
 - label: η
-  task_id: null
+  task_id: 9045
   title: 'engine-state-partition η: PurposeState — one map; activation includes the rebuild'
   capabilities:
   - name: parallel-maps
@@ -263,7 +263,7 @@ tasks:
       paths:
       - crates/reify-eval/src/purpose_state.rs
 - label: θ
-  task_id: null
+  task_id: 9046
   title: 'engine-state-partition θ: per-call outputs return on EvalResult / CheckResult / BuildResult / TessellateResult'
   capabilities:
   - name: last-getters-read-by-gui
@@ -289,7 +289,7 @@ tasks:
     binding: producer:task-8937 (S25 α module split) and producer:task-8944 (S25 θ rewrites surface_geometry_derived_cells); θ depends on both.
     verdict: PASS
 - label: ι
-  task_id: null
+  task_id: 9047
   title: 'engine-state-partition ι: Instrumentation and EngineProbe (R2 read half)'
   capabilities:
   - name: gated-accessors
@@ -311,7 +311,7 @@ tasks:
       paths:
       - crates/reify-eval/src/instrumentation.rs
 - label: κ₁
-  task_id: null
+  task_id: 9048
   title: 'engine-state-partition κ₁: raw-mutator burn-down I — compute-dispatch tests'
   capabilities:
   - name: compute-test-seeding
@@ -325,7 +325,7 @@ tasks:
       paths:
       - crates/reify-eval/src/engine_compute.rs
 - label: κ₂
-  task_id: null
+  task_id: 9049
   title: 'engine-state-partition κ₂: raw-mutator burn-down II; cache_store_mut, warm_pool_mut, snapshot_mut deleted'
   capabilities:
   - name: mutators-exist
@@ -338,7 +338,7 @@ tasks:
       paths:
       - crates/reify-eval/src
 - label: λ
-  task_id: null
+  task_id: 9050
   title: 'engine-state-partition λ: EngineCaches, EngineLineage, HostInputs; Engine holds only sub-structs'
   capabilities:
   - name: remaining-fields
@@ -355,7 +355,7 @@ tasks:
     binding: producer:task-8680 (S3 κ, in progress) adds set_observed_demand, and producer:task-9021 (S12 ε3) adds the engine identity and kernel generation λ homes; λ depends on both.
     verdict: PASS
 - label: μ
-  task_id: null
+  task_id: 9051
   title: 'engine-state-partition μ: h14 partitions of engine_admin.rs and lib.rs'
   capabilities:
   - name: partition-symbols
@@ -368,7 +368,7 @@ tasks:
       - crates/reify-eval/src/value_kind.rs
       - crates/reify-eval/src/results.rs
 - label: ω
-  task_id: null
+  task_id: 9052
   title: 'engine-state-partition ω: PRD close'
   capabilities:
   - name: terminal-stamp
