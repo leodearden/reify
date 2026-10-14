@@ -2638,7 +2638,7 @@ kill "$Q_SQPID4C" 2>/dev/null || true
 # A pre-seeded ORPHANED trash entry (<lane-basename>.<pid> under the lane's own
 # private dirname(LANE)/.reseed-trash) makes the orphan sweep fire, so a real
 # detached child is forked before the abort; REIFY_TEST_SLEEP_RESEED_TRASH_RM=1
-# keeps that child alive past the probe below. An Q4e-fixture assert pins that
+# keeps that child alive past the probe below. A Q4e-fixture assert pins that
 # the sweep really ran, so the shape being tested cannot silently stop
 # reproducing if the sweep's entry naming ever changes.
 #

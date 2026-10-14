@@ -755,10 +755,11 @@ assert "continuation: an FD-9 operand on a continued line is not an acquire" \
     _scans_clean "$TMPWORK/neg_continuation.sh"
 
 # Real-tree control — and the sharpest one available, because this is the very
-# suite that pins the #5705 fix.  Its Q7b setup opens FD 9 at top level (:2870)
-# and then asserts over it across a continuation (:2871-2872), has detached
-# forks downstream at :2929, :2954, :3009, :3068 and :4046, and carries no
-# code-level release.
+# suite that pins the #5705 fix.  Its Q7b setup opens FD 9 at top level
+# (`exec 9>"$Q_LOCK12B"`) and then asserts over it across a continuation (the
+# Q7b-setup assert's `flock -n 9` operand), has detached forks downstream (the
+# Q9 and Q10 lock squatters and seed run, `_q_hold_lane_lock`, R5's subshell),
+# and carries no code-level release.
 assert "real tree: tests/infra/test_seed_warm_lane.sh is CLEAN" \
     _scans_clean "$REPO_ROOT/tests/infra/test_seed_warm_lane.sh"
 
