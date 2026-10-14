@@ -17,8 +17,11 @@ use reify_ir::{
 /// Maximum iterations for Nelder-Mead.
 const MAX_ITERS: u64 = 5000;
 
-/// Residual threshold below which we consider constraints satisfied.
-const FEASIBILITY_THRESHOLD: f64 = 1e-12;
+/// Absolute acceptance slack for INEQUALITY rows, and the bound under which
+/// the early exit treats a seed as already solved. EQUALITY rows are accepted
+/// by the `==` verdict itself (`reify_expr::eval_eq`, i.e.
+/// `reify_core::scalar_tolerance`; task #6653), see [`RowResidual`].
+const FEASIBILITY_THRESHOLD: f64 = reify_core::scalar_tolerance::DEFAULT_ABSOLUTE_FLOOR;
 
 /// Penalty weight for constraint violations when optimizing an objective.
 /// Large enough to strongly enforce constraints while allowing the objective
@@ -49,8 +52,8 @@ const FEASIBLE_OPT_ITERS_PER_DIM: u64 = 500;
 /// Because the cost is quadratic in the linear residual `d`, a cost-SD floor of `S`
 /// corresponds to a **linear residual floor** of approximately `√S`. To guarantee
 /// that the linear residual (`max_constraint_residual`, compared against
-/// `FEASIBILITY_THRESHOLD = 1e-12` at the final feasibility check) can actually reach
-/// the threshold, we need:
+/// `FEASIBILITY_THRESHOLD = 1e-12` for inequality rows and at the early exit) can
+/// actually reach the threshold, we need:
 ///
 /// ```text
 ///   √(NM_SD_TOLERANCE) ≲ FEASIBILITY_THRESHOLD   →   NM_SD_TOLERANCE ≲ 1e-24
@@ -549,10 +552,61 @@ fn extract_initial_point(
         .collect()
 }
 
+/// The raw residual of a constraint row at a candidate point, plus whether the
+/// solver ACCEPTS the row there. `accepted` is never inferred from
+/// `magnitude`: equality rows are accepted by the `==` verdict
+/// (`reify_expr::eval_eq`), inequality rows within [`FEASIBILITY_THRESHOLD`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct RowResidual {
+    magnitude: f64,
+    accepted: bool,
+}
+
+impl RowResidual {
+    fn accepted(magnitude: f64) -> Self {
+        Self {
+            magnitude,
+            accepted: true,
+        }
+    }
+
+    fn rejected(magnitude: f64) -> Self {
+        Self {
+            magnitude,
+            accepted: false,
+        }
+    }
+
+    /// A NaN magnitude (from a NaN operand) is not a violation, exactly as the
+    /// pre-#6653 `f64::max` fold treated it: inequality acceptance is unchanged.
+    fn inequality(magnitude: f64) -> Self {
+        Self {
+            magnitude,
+            accepted: magnitude.is_nan() || magnitude <= FEASIBILITY_THRESHOLD,
+        }
+    }
+
+    /// Both rows must hold (`And`, and every constraint of a set).
+    fn all(self, other: Self) -> Self {
+        Self {
+            magnitude: self.magnitude.max(other.magnitude),
+            accepted: self.accepted && other.accepted,
+        }
+    }
+
+    /// Either row suffices (`Or`).
+    fn any(self, other: Self) -> Self {
+        Self {
+            magnitude: self.magnitude.min(other.magnitude),
+            accepted: self.accepted || other.accepted,
+        }
+    }
+}
+
 /// Compute the absolute (L1) residual for a single comparison expression.
 ///
-/// Returns the absolute distance by which the constraint is violated,
-/// or 0.0 if satisfied. No squaring, no epsilon offset. Used for
+/// The magnitude is the absolute distance by which the comparison misses, or
+/// 0.0 for a satisfied inequality. No squaring, no epsilon offset. Used for
 /// accurate feasibility checking (not for optimization cost).
 fn comparison_residual(
     op: BinOp,
@@ -561,48 +615,27 @@ fn comparison_residual(
     values: &ValueMap,
     functions: &[CompiledFunction],
     dispatch: Option<&dyn reify_ir::ComputeDispatch>,
-) -> f64 {
-    let lhs = reify_expr::eval_expr(left, &ctx_with(values, functions, dispatch)).as_f64();
-    let rhs = reify_expr::eval_expr(right, &ctx_with(values, functions, dispatch)).as_f64();
+) -> RowResidual {
+    let ctx = ctx_with(values, functions, dispatch);
+    let lv = reify_expr::eval_expr(left, &ctx);
+    let rv = reify_expr::eval_expr(right, &ctx);
+    let (Some(l), Some(r)) = (lv.as_f64(), rv.as_f64()) else {
+        return RowResidual::rejected(1.0);
+    };
 
-    match (lhs, rhs) {
-        (Some(l), Some(r)) => match op {
-            BinOp::Gt => {
-                if l > r {
-                    0.0
-                } else {
-                    r - l
-                }
-            }
-            BinOp::Ge => {
-                if l >= r {
-                    0.0
-                } else {
-                    r - l
-                }
-            }
-            BinOp::Lt => {
-                if l < r {
-                    0.0
-                } else {
-                    l - r
-                }
-            }
-            BinOp::Le => {
-                if l <= r {
-                    0.0
-                } else {
-                    l - r
-                }
-            }
-            BinOp::Eq => {
-                let d = (l - r).abs();
-                if d < 1e-15 { 0.0 } else { d }
-            }
-            BinOp::Ne if (l - r).abs() > 1e-15 => 0.0,
-            _ => 1.0,
+    match op {
+        BinOp::Gt => RowResidual::inequality(if l > r { 0.0 } else { r - l }),
+        BinOp::Ge => RowResidual::inequality(if l >= r { 0.0 } else { r - l }),
+        BinOp::Lt => RowResidual::inequality(if l < r { 0.0 } else { l - r }),
+        BinOp::Le => RowResidual::inequality(if l <= r { 0.0 } else { l - r }),
+        BinOp::Eq => RowResidual {
+            magnitude: (l - r).abs(),
+            accepted: reify_expr::eval_eq(&lv, &rv) == Value::Bool(true),
         },
-        _ => 1.0,
+        BinOp::Ne if reify_expr::eval_eq(&lv, &rv) == Value::Bool(false) => {
+            RowResidual::accepted(0.0)
+        }
+        _ => RowResidual::rejected(1.0),
     }
 }
 
@@ -620,10 +653,11 @@ fn comparison_violation(
     functions: &[CompiledFunction],
     dispatch: Option<&dyn reify_ir::ComputeDispatch>,
 ) -> f64 {
-    let lhs = reify_expr::eval_expr(left, &ctx_with(values, functions, dispatch)).as_f64();
-    let rhs = reify_expr::eval_expr(right, &ctx_with(values, functions, dispatch)).as_f64();
+    let ctx = ctx_with(values, functions, dispatch);
+    let lv = reify_expr::eval_expr(left, &ctx);
+    let rv = reify_expr::eval_expr(right, &ctx);
 
-    match (lhs, rhs) {
+    match (lv.as_f64(), rv.as_f64()) {
         (Some(l), Some(r)) => match op {
             // For l > r: violation when l <= r, magnitude = (r - l)
             BinOp::Gt => {
@@ -662,7 +696,7 @@ fn comparison_violation(
                 let d = l - r;
                 if d.abs() < 1e-15 { 0.0 } else { d.powi(2) }
             }
-            BinOp::Ne if (l - r).abs() > 1e-15 => 0.0,
+            BinOp::Ne if reify_expr::eval_eq(&lv, &rv) == Value::Bool(false) => 0.0,
             // Not a comparison
             _ => 1.0,
         },
@@ -674,46 +708,42 @@ fn comparison_violation(
 /// Compute the absolute (L1) residual for a single constraint expression.
 ///
 /// Same decomposition structure as `constraint_violation` but returns
-/// absolute residual values. For And composites, returns the max of
-/// sub-residuals (both must hold). For Or, returns the min (one suffices).
+/// absolute residual values. An And composite needs both sub-rows
+/// ([`RowResidual::all`]); an Or composite needs one ([`RowResidual::any`]).
 fn constraint_residual(
     expr: &CompiledExpr,
     values: &ValueMap,
     functions: &[CompiledFunction],
     dispatch: Option<&dyn reify_ir::ComputeDispatch>,
-) -> f64 {
+) -> RowResidual {
     match &expr.kind {
-        CompiledExprKind::BinOp { op, left, right } => {
-            match op {
-                BinOp::Gt | BinOp::Ge | BinOp::Lt | BinOp::Le | BinOp::Eq | BinOp::Ne => {
-                    comparison_residual(*op, left, right, values, functions, dispatch)
-                }
-                BinOp::And => {
-                    // AND: worst case (max) of sub-residuals
-                    let lr = constraint_residual(left, values, functions, dispatch);
-                    let rr = constraint_residual(right, values, functions, dispatch);
-                    lr.max(rr)
-                }
-                BinOp::Or => {
-                    // OR: best case (min) of sub-residuals
-                    let lr = constraint_residual(left, values, functions, dispatch);
-                    let rr = constraint_residual(right, values, functions, dispatch);
-                    lr.min(rr)
-                }
-                _ => match reify_expr::eval_expr(expr, &ctx_with(values, functions, dispatch)) {
-                    Value::Bool(true) => 0.0,
-                    Value::Bool(false) => 1.0,
-                    Value::Undef => 10.0,
-                    _ => 1.0,
-                },
+        CompiledExprKind::BinOp { op, left, right } => match op {
+            BinOp::Gt | BinOp::Ge | BinOp::Lt | BinOp::Le | BinOp::Eq | BinOp::Ne => {
+                comparison_residual(*op, left, right, values, functions, dispatch)
             }
-        }
-        _ => match reify_expr::eval_expr(expr, &ctx_with(values, functions, dispatch)) {
-            Value::Bool(true) => 0.0,
-            Value::Bool(false) => 1.0,
-            Value::Undef => 10.0,
-            _ => 1.0,
+            BinOp::And => constraint_residual(left, values, functions, dispatch)
+                .all(constraint_residual(right, values, functions, dispatch)),
+            BinOp::Or => constraint_residual(left, values, functions, dispatch)
+                .any(constraint_residual(right, values, functions, dispatch)),
+            _ => boolean_row_residual(expr, values, functions, dispatch),
         },
+        _ => boolean_row_residual(expr, values, functions, dispatch),
+    }
+}
+
+/// Residual of a row the solver cannot decompose into a comparison: its
+/// evaluated truth value, with an undefined row weighted heaviest.
+fn boolean_row_residual(
+    expr: &CompiledExpr,
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+    dispatch: Option<&dyn reify_ir::ComputeDispatch>,
+) -> RowResidual {
+    match reify_expr::eval_expr(expr, &ctx_with(values, functions, dispatch)) {
+        Value::Bool(true) => RowResidual::accepted(0.0),
+        Value::Bool(false) => RowResidual::rejected(1.0),
+        Value::Undef => RowResidual::rejected(10.0),
+        _ => RowResidual::rejected(1.0),
     }
 }
 
@@ -770,19 +800,19 @@ fn constraint_violation(
 
 /// Compute the maximum absolute residual across all constraints (L1 feasibility).
 ///
-/// Returns the worst-case per-constraint absolute residual. Zero means
-/// all constraints are satisfied. Used for binary feasibility decisions
+/// The magnitude is the worst-case per-constraint absolute residual; the set
+/// is accepted only when every row is. Used for binary feasibility decisions
 /// instead of sum-of-squares (which can mask small violations).
 fn max_constraint_residual(
     constraints: &[(ConstraintNodeId, CompiledExpr)],
     values: &ValueMap,
     functions: &[CompiledFunction],
     dispatch: Option<&dyn reify_ir::ComputeDispatch>,
-) -> f64 {
+) -> RowResidual {
     constraints
         .iter()
         .map(|(_, expr)| constraint_residual(expr, values, functions, dispatch))
-        .fold(0.0_f64, f64::max)
+        .fold(RowResidual::accepted(0.0), RowResidual::all)
 }
 
 /// Compute the total violation across all constraints.
@@ -1152,8 +1182,7 @@ fn constraints_witness(
     dispatch: Option<&dyn reify_ir::ComputeDispatch>,
 ) -> Option<ValueMap> {
     let satisfies_target = |values: &ValueMap| {
-        max_constraint_residual(target, values, &problem.functions, dispatch)
-            <= FEASIBILITY_THRESHOLD
+        max_constraint_residual(target, values, &problem.functions, dispatch).accepted
     };
 
     // ── rung 1: a point the caller already holds (free) ──────────────────────
@@ -3035,12 +3064,18 @@ fn solve_core_with_sd_tolerance(
     // immediately below, and (2) the fallback objective validation when the
     // optimizer drifts infeasible (see `eval_objective_set(&trial_values, …)`).
     // Do not inline into the feasibility check.
-    let initially_feasible = max_constraint_residual(
+    let initial_residual = max_constraint_residual(
         &effective_constraints,
         &trial_values,
         &problem.functions,
         dispatch,
-    ) <= FEASIBILITY_THRESHOLD;
+    );
+    // Tighter than acceptance on purpose: a seed whose equality rows are merely
+    // within tolerance is still solved, because returning it would let
+    // `verify_uniqueness` compare it against a re-solve converged ~1e-16 away
+    // and report a false `ConstraintNonUnique`.
+    let initially_feasible =
+        initial_residual.accepted && initial_residual.magnitude <= FEASIBILITY_THRESHOLD;
 
     // Synthesise a default centrality (Chebyshev-centre) objective when the scope has
     // inequality constraints but no explicit user objective (PRD η).  The synthetic
@@ -3197,13 +3232,14 @@ fn solve_core_with_sd_tolerance(
         &problem.functions,
         dispatch,
     );
-    let final_max_residual = max_constraint_residual(
+    let final_residual = max_constraint_residual(
         &effective_constraints,
         &final_values,
         &problem.functions,
         dispatch,
     );
-    if final_max_residual > FEASIBILITY_THRESHOLD {
+    let final_max_residual = final_residual.magnitude;
+    if !final_residual.accepted {
         // If the initial point was feasible but the optimizer drifted infeasible
         // while chasing an objective, fall back to the initial feasible values
         // rather than reporting a false Infeasible.
@@ -7529,7 +7565,7 @@ mod tests {
             Type::length(),
         );
         let values = ValueMap::new();
-        let res = comparison_residual(BinOp::Gt, &l_expr, &r_expr, &values, &[], None);
+        let res = comparison_residual(BinOp::Gt, &l_expr, &r_expr, &values, &[], None).magnitude;
         assert!(
             (res - 1e-7).abs() < 1e-12,
             "Gt violated by 1e-7 should have residual ~1e-7, got {:.2e}",
@@ -7558,7 +7594,7 @@ mod tests {
             Type::length(),
         );
         let values = ValueMap::new();
-        let res = comparison_residual(BinOp::Ge, &l_expr, &r_expr, &values, &[], None);
+        let res = comparison_residual(BinOp::Ge, &l_expr, &r_expr, &values, &[], None).magnitude;
         assert_eq!(res, 0.0, "Ge with l==r should be satisfied (residual=0)");
     }
 
@@ -7584,7 +7620,7 @@ mod tests {
             Type::length(),
         );
         let values = ValueMap::new();
-        let res = comparison_residual(BinOp::Lt, &l_expr, &r_expr, &values, &[], None);
+        let res = comparison_residual(BinOp::Lt, &l_expr, &r_expr, &values, &[], None).magnitude;
         assert!(
             (res - 0.005).abs() < 1e-15,
             "Lt violated by 0.005 should have residual 0.005, got {}",
@@ -7613,7 +7649,7 @@ mod tests {
             Type::length(),
         );
         let values = ValueMap::new();
-        let res = comparison_residual(BinOp::Le, &l_expr, &r_expr, &values, &[], None);
+        let res = comparison_residual(BinOp::Le, &l_expr, &r_expr, &values, &[], None).magnitude;
         assert_eq!(res, 0.0, "Le with l<r should be satisfied");
     }
 
@@ -7638,7 +7674,7 @@ mod tests {
             Type::length(),
         );
         let values = ValueMap::new();
-        let res = comparison_residual(BinOp::Eq, &l_expr, &r_expr, &values, &[], None);
+        let res = comparison_residual(BinOp::Eq, &l_expr, &r_expr, &values, &[], None).magnitude;
         assert!(
             (res - 1e-6).abs() < 1e-12,
             "Eq with difference 1e-6 should have residual 1e-6, got {:.2e}",
@@ -7672,7 +7708,7 @@ mod tests {
             },
         );
 
-        let res = constraint_residual(&expr, &values, &[], None);
+        let res = constraint_residual(&expr, &values, &[], None).magnitude;
         assert!(
             (res - 1e-7).abs() < 1e-12,
             "single Gt constraint_residual should delegate correctly, got {:.2e}",
@@ -7725,7 +7761,7 @@ mod tests {
             },
         );
 
-        let res = constraint_residual(&and_expr, &values, &[], None);
+        let res = constraint_residual(&and_expr, &values, &[], None).magnitude;
         // max(1e-7, 1e-5) = 1e-5
         assert!(
             (res - 1e-5).abs() < 1e-10,
@@ -7779,7 +7815,7 @@ mod tests {
             },
         );
 
-        let res = constraint_residual(&or_expr, &values, &[], None);
+        let res = constraint_residual(&or_expr, &values, &[], None).magnitude;
         assert_eq!(res, 0.0, "Or with one satisfied should return 0.0");
     }
 
@@ -7836,7 +7872,7 @@ mod tests {
             },
         );
 
-        let res = max_constraint_residual(&constraints, &values, &[], None);
+        let res = max_constraint_residual(&constraints, &values, &[], None).magnitude;
         assert!(
             (res - 1e-5).abs() < 1e-10,
             "should return worst violation ~1e-5, got {:.2e}",
@@ -7871,7 +7907,7 @@ mod tests {
             },
         );
 
-        let res = max_constraint_residual(&constraints, &values, &[], None);
+        let res = max_constraint_residual(&constraints, &values, &[], None).magnitude;
         assert_eq!(res, 0.0, "all satisfied should return 0.0");
     }
 
@@ -7881,7 +7917,7 @@ mod tests {
 
         let constraints = vec![];
         let values = ValueMap::new();
-        let res = max_constraint_residual(&constraints, &values, &[], None);
+        let res = max_constraint_residual(&constraints, &values, &[], None).magnitude;
         assert_eq!(res, 0.0, "empty constraints should return 0.0");
     }
 
@@ -7894,13 +7930,13 @@ mod tests {
         let values = ValueMap::new();
 
         let t = CompiledExpr::literal(Value::Bool(true), Type::Bool);
-        assert_eq!(constraint_residual(&t, &values, &[], None,), 0.0);
+        assert_eq!(constraint_residual(&t, &values, &[], None,).magnitude, 0.0);
 
         let f = CompiledExpr::literal(Value::Bool(false), Type::Bool);
-        assert_eq!(constraint_residual(&f, &values, &[], None,), 1.0);
+        assert_eq!(constraint_residual(&f, &values, &[], None,).magnitude, 1.0);
 
         let u = CompiledExpr::literal(Value::Undef, Type::Bool);
-        assert_eq!(constraint_residual(&u, &values, &[], None,), 10.0);
+        assert_eq!(constraint_residual(&u, &values, &[], None,).magnitude, 10.0);
     }
 
     #[test]
@@ -7913,7 +7949,7 @@ mod tests {
         let l_expr = CompiledExpr::literal(Value::Undef, Type::Bool);
         let r_expr = CompiledExpr::literal(Value::Undef, Type::Bool);
         let values = ValueMap::new();
-        let res = comparison_residual(BinOp::Gt, &l_expr, &r_expr, &values, &[], None);
+        let res = comparison_residual(BinOp::Gt, &l_expr, &r_expr, &values, &[], None).magnitude;
         assert_eq!(res, 1.0, "Non-numeric inputs should give residual 1.0");
     }
 
