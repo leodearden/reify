@@ -1,0 +1,17 @@
+// S6 PRD evidence (docs/prds/v0_6/kinematics-typed-kinds-and-mechanism-record.md): coupling body in inverse dynamics (T16)
+// Before-image measured at main e217c0f30b (2026-10-13); outputs recorded in the capability manifest.
+module s6_idyn_coupling
+
+// Probe: an open chain with a coupling body through trajectory inverse dynamics.
+structure def CouplingIdyn {
+    let mp_a = MassProperties(mass: 2kg, com: point3(0mm, 0mm, 0mm), inertia: [[0.1, 0.0, 0.0], [0.0, 0.1, 0.0], [0.0, 0.0, 0.1]], origin: Frame3(origin: vec3(0mm, 0mm, 0mm), x_axis: vec3(0, 0, 0), y_axis: vec3(0, 0, 0), z_axis: vec3(0, 0, 0)))
+    let mp_b = MassProperties(mass: 3kg, com: point3(0mm, 0mm, 0mm), inertia: [[0.2, 0.0, 0.0], [0.0, 0.2, 0.0], [0.0, 0.0, 0.2]], origin: Frame3(origin: vec3(0mm, 0mm, 0mm), x_axis: vec3(0, 0, 0), y_axis: vec3(0, 0, 0), z_axis: vec3(0, 0, 0)))
+    let j_x = prismatic(vec3(1, 0, 0), 0mm .. 1000mm)
+    let j_c = couple(j_x, -1.0)
+    let m0 = mechanism()
+    let m1 = body(m0, mp_a, j_x)
+    let m = body(m1, mp_b, j_c)
+    let sample = TrajectorySample(t: 0s, values: [0.3, 0.3], vels: [0.0, 0.0], accels: [0.0, 0.0])
+    let traj = MotionTrajectory(mechanism: 0.0, samples: [sample])
+    let forces = inverse_dynamics(m, traj)
+}

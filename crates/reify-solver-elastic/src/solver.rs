@@ -522,7 +522,7 @@ fn solve_cg_impl(
     // The Deterministic and Parallel paths share a single CG loop implementation
     // (`cg_loop`); the difference is purely which SpMV/dot/norm² closures are
     // passed in. Determinism-comment ownership stays with the primitive functions.
-    match mode {
+    let run = match mode {
         SolverMode::Deterministic => {
             let (u, r) = build_initial_u_r(f, initial_guess, |p, out| spmv_seq(k, p, out));
             cg_loop(
@@ -552,7 +552,42 @@ fn solve_cg_impl(
                 progress,
             )
         }
-    }
+    };
+    run.into_cg_result()
+}
+
+/// Jacobi-preconditioned CG on the deterministic primitives, ending in a
+/// typed [`CgEnd`] rather than a panic or a bare `converged` flag: the
+/// `linear_solve` seam's interim iterative tier.
+///
+/// Requires `‖f‖ ≠ 0` (the seam owns the zero-RHS rule) and a stored
+/// non-zero diagonal on every row (`SpdSystem` guarantees it).
+pub(crate) fn jacobi_pcg_seq(
+    k: &SparseRowMat<usize, f64>,
+    f: &[f64],
+    initial_guess: Option<&[f64]>,
+    tolerance: f64,
+    max_iter: usize,
+    progress: &mut dyn FnMut(usize, f64) -> CgIterationControl,
+) -> CgRun {
+    let f_norm_sq = norm2_squared(f);
+    assert!(
+        f_norm_sq != 0.0,
+        "jacobi_pcg_seq: f must be non-zero; the caller owns the zero-RHS rule",
+    );
+    let inv_diag = extract_diag_jacobi(k);
+    let (u, r) = build_initial_u_r(f, initial_guess, |p, out| spmv_seq(k, p, out));
+    cg_loop(
+        u,
+        r,
+        &inv_diag,
+        tolerance * tolerance * f_norm_sq,
+        max_iter,
+        |p, out| spmv_seq(k, p, out),
+        dot,
+        norm2_squared,
+        Some(progress),
+    )
 }
 
 /// Build the initial `(u, r)` pair for the CG iteration based on the
@@ -670,7 +705,7 @@ fn dot(a: &[f64], b: &[f64]) -> f64 {
 }
 
 /// Squared Euclidean norm `‖v‖²` using pairwise-tree summation, without allocation.
-fn norm2_squared(v: &[f64]) -> f64 {
+pub(crate) fn norm2_squared(v: &[f64]) -> f64 {
     pairwise_tree_sum_fn(0, v.len(), &|i| v[i] * v[i])
 }
 
@@ -721,7 +756,7 @@ fn extract_diag_jacobi(k: &SparseRowMat<usize, f64>) -> Vec<f64> {
 /// Uses [`pairwise_tree_sum_fn`] for each row's dot product to give
 /// O(log nnz_per_row) error growth and deterministic reduction order,
 /// **without allocating an intermediate buffer per row**.
-fn spmv_seq(k: &SparseRowMat<usize, f64>, p: &[f64], out: &mut [f64]) {
+pub(crate) fn spmv_seq(k: &SparseRowMat<usize, f64>, p: &[f64], out: &mut [f64]) {
     let (sym, vals) = k.parts();
     let row_ptr = sym.row_ptr();
     let col_idx = sym.col_idx();
@@ -906,6 +941,49 @@ fn norm2_squared_parallel(v: &[f64], threads: usize) -> f64 {
     pairwise_tree_sum(&partials)
 }
 
+/// How a [`cg_loop`] run ended.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum CgEnd {
+    /// The recurrence residual met the tolerance (possibly before iterating).
+    Converged,
+    /// The progress callback returned [`CgIterationControl::Cancel`].
+    Cancelled,
+    /// `max_iter` iterations ran without converging.
+    CapReached,
+    /// `p·Kp = pkp` was not positive (or NaN) at 1-based `iteration`.
+    NonPositiveCurvature { iteration: usize, pkp: f64 },
+}
+
+/// The final iterate of a [`cg_loop`] run, the iterations it completed, and
+/// how it ended.
+#[derive(Debug)]
+pub(crate) struct CgRun {
+    pub(crate) u: Vec<f64>,
+    pub(crate) iterations: usize,
+    pub(crate) end: CgEnd,
+}
+
+impl CgRun {
+    /// The public `solve_cg*` result; a non-positive curvature panics, as
+    /// those entry points always have.
+    fn into_cg_result(self) -> CgResult {
+        let converged = match self.end {
+            CgEnd::Converged => true,
+            CgEnd::Cancelled | CgEnd::CapReached => false,
+            CgEnd::NonPositiveCurvature { iteration, pkp } => panic!(
+                "CG: p·Kp = {pkp} ≤ 0 at iteration {}; K must be positive-definite \
+                 and p must be a non-zero direction. This indicates a degenerate system.",
+                iteration - 1,
+            ),
+        };
+        CgResult {
+            u: Arc::new(self.u),
+            iterations: self.iterations,
+            converged,
+        }
+    }
+}
+
 /// Core Jacobi-preconditioned CG iteration, parameterised by mode-specific
 /// SpMV, dot, and norm² implementations.
 ///
@@ -918,7 +996,7 @@ fn norm2_squared_parallel(v: &[f64], threads: usize) -> f64 {
 ///
 /// # Arguments
 ///
-/// - `u` — initial iterate (consumed and returned in `CgResult.u`); cold
+/// - `u` — initial iterate (consumed and returned in `CgRun.u`); cold
 ///   start passes `vec![0.0; n]`, warm start passes `u₀.to_vec()`.
 /// - `r` — initial residual `f − K·u`; cold start passes `f.to_vec()`,
 ///   warm start passes `f − K·u₀` (one extra SpMV at the dispatch site).
@@ -945,7 +1023,7 @@ fn cg_loop<S, D, N>(
     dot_fn: D,
     norm2sq_fn: N,
     mut progress: Option<&mut dyn FnMut(usize, f64) -> CgIterationControl>,
-) -> CgResult
+) -> CgRun
 where
     S: Fn(&[f64], &mut [f64]),
     D: Fn(&[f64], &[f64]) -> f64,
@@ -971,10 +1049,10 @@ where
     // should NOT "fix" this apparent inconsistency: it reflects the real
     // numerical state of the system at u₀, not a bug.
     if norm2sq_fn(&r) < tol_sq {
-        return CgResult {
-            u: Arc::new(u),
+        return CgRun {
+            u,
             iterations: 0,
-            converged: true,
+            end: CgEnd::Converged,
         };
     }
 
@@ -998,11 +1076,16 @@ where
 
         // α = (r_k · z_k) / (p_k · Kp)
         let pkp = dot_fn(&p, &kp);
-        assert!(
-            pkp > 0.0,
-            "CG: p·Kp = {pkp} ≤ 0 at iteration {iter}; K must be positive-definite \
-             and p must be a non-zero direction. This indicates a degenerate system.",
-        );
+        if pkp <= 0.0 || pkp.is_nan() {
+            return CgRun {
+                u,
+                iterations: iter,
+                end: CgEnd::NonPositiveCurvature {
+                    iteration: iter + 1,
+                    pkp,
+                },
+            };
+        }
         let alpha = rz / pkp;
 
         // u_{k+1} = u_k + α p_k
@@ -1030,18 +1113,18 @@ where
         if let Some(ref mut cb) = progress
             && cb(iter + 1, r_norm_sq.sqrt()) == CgIterationControl::Cancel
         {
-            return CgResult {
-                u: Arc::new(u),
+            return CgRun {
+                u,
                 iterations: iter + 1,
-                converged: false,
+                end: CgEnd::Cancelled,
             };
         }
 
         if r_norm_sq < tol_sq {
-            return CgResult {
-                u: Arc::new(u),
+            return CgRun {
+                u,
                 iterations: iter + 1,
-                converged: true,
+                end: CgEnd::Converged,
             };
         }
 
@@ -1062,10 +1145,10 @@ where
     }
 
     // Cap-out without convergence.
-    CgResult {
-        u: Arc::new(u),
+    CgRun {
+        u,
         iterations: max_iter,
-        converged: false,
+        end: CgEnd::CapReached,
     }
 }
 

@@ -965,18 +965,18 @@ if [ -n "$_should_acquire_lane_lock" ]; then
     # flock -n immediate refusal and the flock -w queue timeout share ONE code):
     #   75 (EX_TEMPFAIL) by DEFAULT -- unchanged from before #5568.
     #   77 (EX_NOPERM)   under --distinct-lock-refusal-rc.
-    # (Tests: Block Q H11a/H11b, H12a/H12b.)
+    # (Tests: Block Q Q11a/Q11b, Q12a/Q12b.)
     LANE_LOCK_REFUSAL_RC=75
     if [ -n "$DISTINCT_LOCK_REFUSAL_RC" ]; then
         LANE_LOCK_REFUSAL_RC=77
     fi
     # The flag is ACCEPTED-BUT-INERT, never a usage error, wherever no refusal
     # is reachable (--assume-lane-lock-held, --record-base, WAIT=unlimited), so
-    # a caller may pass it unconditionally. (H11d/H11e/H11f pin the inert
+    # a caller may pass it unconditionally. (Q11d/Q11e/Q11f pin the inert
     # paths; contrast --assume-lane-lock-held + --lane-lock, which IS a usage
     # error because those two contradict each other.) The `LANE_LOCK_CONTENDED:`
     # stderr prefix both arms emit is INDEPENDENT of this flag -- always on.
-    # (Tests: Block Q H13.)
+    # (Tests: Block Q Q13.)
     # ═════════════════════════════════════════════════════════════════════════
 
     LANE_LOCK_WAIT="${REIFY_WARM_LANE_LANE_LOCK_WAIT:-0}"
@@ -1069,7 +1069,7 @@ if [ -n "$_should_acquire_lane_lock" ]; then
     # abort in the mid-run find walks / the _assert_delta_newer_than_build_
     # outputs post-condition are all DOWNSTREAM of the orphan sweep that has
     # already forked a detached child, so they carry the identical race.
-    # (test_seed_warm_lane.sh H4e pins that failure-path coverage.)
+    # (test_seed_warm_lane.sh Q4e pins that failure-path coverage.)
     #
     # SIGNAL COVERAGE -- what "every exit path" does and does not include:
     # an EXIT trap covers signal death too, for TERM/INT/HUP. That is not an
@@ -1104,7 +1104,7 @@ if [ -n "$_should_acquire_lane_lock" ]; then
     # `flock -u 9` would release the CALLER's lock, strictly worse than the bug
     # being fixed. Installing inside this branch makes that structurally
     # impossible rather than conditionally avoided: on the inheritance path the
-    # trap does not exist at all. (H7b pins it.)
+    # trap does not exist at all. (Q7b pins it.)
     #
     # Ordering note: the $LANE_LOCK_REFUSAL_RC refusal paths above do their own `exec 9>&-`
     # and error out BEFORE this line, so they never reach the trap and there is
@@ -1126,11 +1126,11 @@ if [ -n "$_should_acquire_lane_lock" ]; then
         exec 9>&- || true
         # STRUCTURAL RELEASE MARKER (technique S, docs/prds/
         # infra-test-wallclock-deflake.md §2): proves this path ran without a
-        # timing assertion. test_seed_warm_lane.sh's H4b/H4e grep the literal
+        # timing assertion. test_seed_warm_lane.sh's Q4b/Q4e grep the literal
         # phrase "explicit flock -u before exit" -- keep it verbatim. STDERR
         # only, via info(): STDOUT is seed's machine-readable contract with
-        # acquire_lane (exactly "<lane_dir>/target", pinned by H7; asserted
-        # EMPTY on the fail-closed path by H3), so nothing may be added to it.
+        # acquire_lane (exactly "<lane_dir>/target", pinned by Q7; asserted
+        # EMPTY on the fail-closed path by Q3), so nothing may be added to it.
         info "Lane lock released (explicit flock -u before exit): $LANE_LOCK" || true
         return $_rc
     }

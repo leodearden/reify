@@ -87,6 +87,15 @@ implementation** and confirming the port catches each mutant. In the one port
 done so far, one of five mutants was *missed* on the first pass and the
 assertion had to be strengthened. That is the entire argument for doing this.
 
+### Partition satellites are moves, not authorship
+
+A satellite that *receives* existing bash blocks from an h14 partition stays
+bash: relocating a block is behaviour-preserving, not new authorship, so Arm 1
+does not apply to it and no scheduled mass migration follows from it. Only new
+assertions are Python. Source: PRD
+`docs/prds/v0_6/run-all-runner-infra-harness.md` §3 D7, confirmed by lead
+ruling R-3 (§9).
+
 ---
 
 ## Why — the evidence
@@ -217,12 +226,14 @@ it is wrapped: wrapping it while red would land a red gate member.
 ### `run_all.sh` discovery is deliberately unchanged — and what that costs
 
 Teaching discovery to glob `test_*.py` was considered and rejected **for task
-7430 only**: it means editing a predicate duplicated at `run_all.sh:1347`,
-`:1456` and `:2013` plus `classification_discovered_set`
-(`run-all-classification-lib.sh:177`), changing the manifest grammar, and
-re-satisfying four bidirectional asserts in `test_run_all_classification.sh` —
-a large blast radius on load-bearing verify-pipeline artifacts, inside a task
-whose purpose was *reducing* infra-gate reds.
+7430 only**: it meant editing a discovery predicate then duplicated across
+`run_all.sh`'s branches, changing the manifest grammar, and re-satisfying four
+bidirectional asserts in `test_run_all_classification.sh` — a large blast
+radius on load-bearing verify-pipeline artifacts, inside a task whose purpose
+was *reducing* infra-gate reds. Since task #8678 the predicate has ONE home,
+`classification_discovered_set` in `run-all-classification-lib.sh`, consumed by
+every `run_all.sh` branch, so #7445's discovery half is a one-function change
+plus the manifest grammar and those classification asserts.
 
 That deferral has four measured costs. All are real; none is hidden — though
 cost 4 below *was*, and how it stayed off this list is part of its entry:

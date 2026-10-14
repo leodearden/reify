@@ -75,7 +75,7 @@ No `present` check points at a file that does not yet exist; each points at an e
 | ξ | `same-grid-predicate` | producer:ξ | PASS | grep `pub fn same_grid` present in `crates/reify-ir/src/value.rs` |
 | ξ | `grids-equal-gone` | grep: fea::grids_equal duplicates grid_metadata_eq at main | PASS | grep `fn grids_equal` absent in `crates/reify-stdlib/src` |
 | ξ | `fea-partitioned` | producer:ξ — fea.rs is one 6,617-line file at main | PASS | grep `mod envelope` present in `crates/reify-stdlib/src` |
-| ο | `partition-shape` | h14: seven measured groups; precondition S6's MechanismTree extraction (fk-38811e6f7300) | PASS | manual: structural; the seat's partition table and the no-new-pub(super) rule are reviewed, not grepped |
+| ο | `partition-shape` | h14: seven measured groups; preconditions wired by the S6 session 2026-10-13: S6 ρ #8845 (MechanismTree, fk-38811e6f7300), σ #8847 (dynamics on Joint), λ #8839 (bindings move) | PASS | manual: structural; the seat's partition table and the no-new-pub(super) rule are reviewed, not grepped |
 | π | `inv-pd-2-row` | docs: design-invariants.md INV-PD-2 enforcement names only reify-audit --pattern PVAC at main | PASS | manual: prose row; asserting wording is forbidden (assert behaviour, not prose) |
 | ρ | `chunk-signatures-compile` | docs-truth: every documented signature compiles in a smoke .ri (overlay docs-truth gate item 1) | PASS | manual: docs-truth acceptance is a smoke compile plus findability review |
 | σ | `terminal-stamp` | PRD-close: SHIPPED header with landed leaf ids + AS-AUTHORED freeze + LIVE/AS-AUTHORED map | PASS | manual: committed header is the signal |
