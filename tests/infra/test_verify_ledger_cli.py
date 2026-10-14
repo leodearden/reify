@@ -22,33 +22,15 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from verify_ledger_env import hermetic_env  # noqa: E402  (imported after sys.path manipulation)
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 TOOL = REPO_ROOT / "scripts" / "verify-ledger.py"
 
 SEMAPHORE_ACQUIRE = "@@SEMAPHORE_ACQUIRE@@"
 SEMAPHORE_RELEASE = "@@SEMAPHORE_RELEASE@@"
 RELEASE_SKIP_MARKER = "echo 'RELEASE-PASS: skipped (delta-clean)'"
-
-# Ambient state a nesting verify / run_all can hand this suite; each would
-# change the plan the real verify.sh prints (role, delta-skip, re-entrancy).
-_SCRUBBED_ENV = (
-    "DF_VERIFY_ROLE",
-    "REIFY_INFRA_SUITE_ACTIVE",
-    "REIFY_RELEASE_DELTA_SKIP",
-    "REIFY_VERIFY_RUN_ID",
-    "REIFY_RUN_ALL_TIMING_OUT",
-)
-
-
-def hermetic_env(**overrides):
-    env = {
-        k: v
-        for k, v in os.environ.items()
-        if not k.startswith("GIT_") and k not in _SCRUBBED_ENV
-    }
-    env.update(overrides)
-    return env
-
 
 def print_plan(args, role, cwd=REPO_ROOT):
     """Non-comment lines of the REAL verify.sh --print-plan for `args`."""

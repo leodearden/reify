@@ -27,10 +27,14 @@ import os
 import shutil
 import stat
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from verify_ledger_env import hermetic_env  # noqa: E402  (imported after sys.path manipulation)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SEED = REPO_ROOT / "scripts" / "seed-warm-lane.sh"
@@ -310,22 +314,9 @@ VERIFY_STARTS = [
     {"source": "verify", "started_at": S + 130, "index": 2, "phase": "debug_nextest"},
 ]
 
-# Ambient state a nesting verify / run_all hands this suite. REIFY_VERIFY_RUN_ID
-# in particular would mark the verify run below as nested, so nothing would record.
-_SCRUBBED_VERIFY_ENV = (
-    "DF_VERIFY_ROLE",
-    "REIFY_INFRA_SUITE_ACTIVE",
-    "REIFY_VERIFY_RUN_ID",
-    "REIFY_RUN_ALL_TIMING_OUT",
-    "REIFY_VERIFY_LEDGER_DIR",
-    "REIFY_VERIFY_LEDGER_LANE_DIR",
-)
-
-
 def run_tool(*args):
-    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
     return subprocess.run(
-        ["python3", str(TOOL), *args], env=env, capture_output=True, text=True, timeout=120
+        ["python3", str(TOOL), *args], env=hermetic_env(), capture_output=True, text=True, timeout=120
     )
 
 
@@ -526,13 +517,8 @@ class LaneForensicsTests(unittest.TestCase):
         stubs.mkdir()
         for name in ("cargo", "sccache"):
             write_executable(stubs / name, "#!/usr/bin/env bash\nexit 0\n")
-        env = {
-            k: v
-            for k, v in os.environ.items()
-            if not k.startswith("GIT_") and k not in _SCRUBBED_VERIFY_ENV
-        }
         cargo_home_bin = Path.home() / ".cargo" / "bin"
-        env.update(
+        env = hermetic_env(
             PATH=f"{stubs}{os.pathsep}{cargo_home_bin}{os.pathsep}{os.environ['PATH']}",
             DF_VERIFY_ROLE="task",
             REIFY_PSI_GATE_DISABLE="1",

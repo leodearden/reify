@@ -15,13 +15,16 @@ docs/notes/verify-instrumentation-ledger.md.
 """
 
 import json
-import os
 import shutil
 import stat
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from verify_ledger_env import hermetic_env  # noqa: E402  (imported after sys.path manipulation)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 RUN_ALL = REPO_ROOT / "tests" / "infra" / "run_all.sh"
@@ -48,15 +51,15 @@ echo "member flaky attempt"
 """
 
 # Ambient run_all knobs the gate hands its pool members (this suite is one);
-# each would change which path or members the fixture run takes.
-_SCRUBBED_ENV = (
+# each would change which path or members the fixture run takes. The timing
+# path and the ledger's run id are in verify_ledger_env's scrub.
+_RUN_ALL_KNOBS = (
     "REIFY_RUN_ALL_EXCLUDE_HOST_INFRA",
     "REIFY_RUN_ALL_CONTENT_SKIP",
     "REIFY_RUN_ALL_SKIP_STATE",
     "REIFY_RUN_ALL_MEMBER_SUBSET",
     "REIFY_RUN_ALL_POOL_DISABLE",
     "REIFY_RUN_ALL_POOL_FORK_FAIL_MEMBER",
-    "REIFY_RUN_ALL_TIMING_OUT",
 )
 
 
@@ -83,7 +86,7 @@ class Fixture:
         (self.state / "flaky-count").unlink(missing_ok=True)
         for dump in self.state.glob("*.env"):
             dump.unlink()
-        env = {k: v for k, v in os.environ.items() if k not in _SCRUBBED_ENV}
+        env = {k: v for k, v in hermetic_env().items() if k not in _RUN_ALL_KNOBS}
         env.update(
             RUN_ALL_CLASSIFICATION_MANIFEST=str(self.manifest),
             REIFY_RUN_ALL_POOL_LOCK=str(self.root / "pool.lock"),

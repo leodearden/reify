@@ -19,9 +19,13 @@ import os
 import shutil
 import stat
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from verify_ledger_env import hermetic_env  # noqa: E402  (imported after sys.path manipulation)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -45,18 +49,6 @@ echo "$n" > "$STUB_STATE/sccache_calls"
 printf '{"stats":{"requests_not_cacheable":%d,"cache_hits":{"counts":{"Rust":%d},"adv_counts":{}},"cache_misses":{"counts":{"Rust":%d},"adv_counts":{}}},"version":"stub"}\\n' "$n" "$((100 + n))" "$((50 + n))"
 """
 
-# Ambient state a nesting verify / run_all hands this suite. REIFY_VERIFY_RUN_ID
-# in particular would mark every run below as nested, so nothing would record.
-_SCRUBBED_ENV = (
-    "DF_VERIFY_ROLE",
-    "REIFY_INFRA_SUITE_ACTIVE",
-    "REIFY_VERIFY_RUN_ID",
-    "REIFY_RUN_ALL_TIMING_OUT",
-    "REIFY_VERIFY_LEDGER_DIR",
-    "REIFY_VERIFY_LEDGER_LANE_DIR",
-)
-
-
 def write_executable(path, text):
     path.write_text(text)
     path.chmod(path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
@@ -79,13 +71,8 @@ class StubbedVerify:
         shutil.rmtree(self.work, ignore_errors=True)
 
     def env(self, ledger_dir, **overrides):
-        env = {
-            k: v
-            for k, v in os.environ.items()
-            if not k.startswith("GIT_") and k not in _SCRUBBED_ENV
-        }
         cargo_home_bin = Path.home() / ".cargo" / "bin"
-        env.update(
+        env = hermetic_env(
             PATH=f"{self.bin}{os.pathsep}{cargo_home_bin}{os.pathsep}{os.environ['PATH']}",
             DF_VERIFY_ROLE="task",
             REIFY_PSI_GATE_DISABLE="1",
