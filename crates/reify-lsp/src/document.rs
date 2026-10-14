@@ -6,7 +6,7 @@ use reify_ast::ParsedModule;
 use reify_core::ModulePath;
 use tower_lsp::lsp_types::Url;
 
-use crate::analysis::module_name_from_uri;
+use crate::decl_oracle::module_name_from_uri;
 
 /// State of a single open document.
 pub struct DocumentState {
