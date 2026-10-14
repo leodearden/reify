@@ -1,15 +1,22 @@
-//! Every entry point to an op family rejects the same invalid parameters with
-//! the same text: `OcctKernel::execute`, `OcctKernel::execute_with_history`
-//! and the family's typed `*_with_history` primitive. The contract is equality
-//! across entry points, not any particular wording.
+//! Every entry point to an op family decodes its arguments alike. Invalid
+//! parameters draw the same text from `OcctKernel::execute`,
+//! `OcctKernel::execute_with_history` and the family's typed `*_with_history`
+//! primitive. Valid ones draw equal records from both of `OcctKernelHandle`'s
+//! kernel-thread routes: its typed wrappers, which carry the bare `f64` they
+//! were given, and `execute_with_history`, which decodes the op's `Value`
+//! fields. The contract is equality across entry points, not any particular
+//! wording or record content.
 //!
 //! Validation precedes any handle lookup on every path, so unissued handles
-//! stand in for real geometry.
+//! stand in for real geometry in the rejection cases.
 
 #![cfg(has_occt)]
 
-use reify_ir::{GeometryError, GeometryHandle, GeometryHandleId, GeometryOp, Value};
-use reify_kernel_occt::OcctKernel;
+use reify_ir::{
+    AttributeHistory, GeometryError, GeometryHandle, GeometryHandleId, GeometryOp, GeometryQuery,
+    Value,
+};
+use reify_kernel_occt::{OcctKernel, OcctKernelHandle};
 
 const PROFILE: GeometryHandleId = GeometryHandleId(3);
 const TARGET: GeometryHandleId = GeometryHandleId(5);
@@ -165,6 +172,109 @@ fn invalid_parameters_yield_identical_errors_on_every_entry_point() {
         assert_eq!(
             via_primitive, via_execute,
             "{case}: typed primitive vs execute"
+        );
+    }
+}
+
+fn typed_result<R>(
+    case: &str,
+    result: Result<(GeometryHandleId, R), GeometryError>,
+) -> (GeometryHandleId, R) {
+    result.unwrap_or_else(|e| panic!("{case}: typed wrapper failed: {e:?}"))
+}
+
+/// Equal records alone would miss a mis-decoded length, which moves no
+/// topology; the result's volume does not.
+#[test]
+fn handle_typed_wrappers_and_execute_with_history_build_the_same_result() {
+    let kernel = OcctKernelHandle::spawn();
+    let build = |op: GeometryOp| match kernel.execute(&op) {
+        Ok(handle) => handle.id,
+        Err(e) => panic!("fixture {op:?} failed: {e:?}"),
+    };
+    let volume = |case: &str, id: GeometryHandleId| match kernel
+        .query(&GeometryQuery::Volume(id))
+        .map(|v| v.as_f64())
+    {
+        Ok(Some(volume)) => volume,
+        other => panic!("{case}: volume of {id:?} gave {other:?}"),
+    };
+    let square = || GeometryOp::RectangleProfile {
+        width: Value::length(10.0 * MM),
+        height: Value::length(10.0 * MM),
+    };
+    let profile = build(square());
+    let path = build(GeometryOp::LineSegment {
+        x1: 0.0,
+        y1: 0.0,
+        z1: 0.0,
+        x2: 0.0,
+        y2: 0.0,
+        z2: 20.0 * MM,
+    });
+    let raised = build(GeometryOp::Translate {
+        target: build(square()),
+        dx: 0.0,
+        dy: 0.0,
+        dz: 10.0 * MM,
+    });
+    let distance = 5.0 * MM;
+    let (axis_origin, axis_dir) = ([20.0 * MM, 0.0, 0.0], [0.0, 1.0, 0.0]);
+    let angle_rad = std::f64::consts::FRAC_PI_2;
+
+    let (extruded, extrude_records) =
+        typed_result("extrude", kernel.extrude_with_history(profile, distance));
+    let (revolved, revolve_records) = typed_result(
+        "revolve",
+        kernel.revolve_with_history(profile, axis_origin, axis_dir, angle_rad),
+    );
+    let (swept, sweep_records) = typed_result("sweep", kernel.sweep_with_history(profile, path));
+    let (lofted, loft_records) = typed_result("loft", kernel.loft_with_history(&[profile, raised]));
+    let cases = [
+        (
+            "extrude",
+            extruded,
+            AttributeHistory::Extrude(extrude_records),
+            GeometryOp::Extrude {
+                profile,
+                distance: Value::length(distance),
+            },
+        ),
+        (
+            "revolve",
+            revolved,
+            AttributeHistory::Revolve(revolve_records),
+            GeometryOp::Revolve {
+                profile,
+                axis_origin,
+                axis_dir,
+                angle_rad,
+            },
+        ),
+        (
+            "sweep",
+            swept,
+            AttributeHistory::Sweep(sweep_records),
+            GeometryOp::Sweep { profile, path },
+        ),
+        (
+            "loft",
+            lofted,
+            AttributeHistory::Loft(loft_records),
+            GeometryOp::Loft {
+                profiles: vec![profile, raised],
+            },
+        ),
+    ];
+    for (case, typed_id, typed_history, op) in cases {
+        let (handle, history) = kernel
+            .execute_with_history(&op)
+            .unwrap_or_else(|e| panic!("{case}: execute_with_history failed: {e:?}"));
+        assert_eq!(history, typed_history, "{case}: records");
+        assert_eq!(
+            volume(case, handle.id),
+            volume(case, typed_id),
+            "{case}: volume"
         );
     }
 }
