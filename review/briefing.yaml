@@ -509,7 +509,7 @@ subprojects:
   tooling:
     purpose: >
       User-facing tools: the CLI (check, test, build, run/eval, report, doc,
-      lsp, gui, gui-debug, explain, dev, mcp-server, cache), an LSP server
+      lsp, gui, gui-debug, explain, dev, cache), an LSP server
       with cross-file rename/references/goto-def and workspace-wide doc
       indexing, an MCP server exposing read/write/navigation tools plus the
       language-reference chunks that design agents read, the reify.toml
@@ -535,8 +535,6 @@ subprojects:
     key_decisions:
       - decision: "`check` is conditionally kernel-backed (task 5748, check-diagnostic-truthfulness PRD) via realize_for_check, never build()"
         why: "Otherwise geometry-dependent constraints silently degraded to Indeterminate. The export walk and provenance diagnostics still never run on check."
-      - decision: "CliToolContext does not support geometry export — reify_export always errors in headless mode"
-        why: "Export needs the kernel initialised as in build; the tool exists for the GUI's MCP context."
       - decision: "NotificationSink decouples diagnostic publication from transport; language-reference chunks are include_str!'d into the binary"
         why: "Same server on stdio, embedded in Tauri, or recording in tests. A .md chunk under crates/ is therefore CODE for landing purposes."
       - decision: "Doc-build is non-editorial: structured extraction only"
