@@ -206,9 +206,6 @@ fn intersects_face_coincident_cubes_distance_is_zero() {
 ///
 /// `unit_cube_mesh([0,0,0])` spans `[0,1]³`.  The point `(0.5, 0.5, 0.5)`
 /// is the centroid — clearly inside.
-///
-/// **RED (step 3)**: `query()` returns `Err(STUB_MSG)` for the `Contains`
-/// arm until step 4 wires it.
 #[test]
 fn contains_interior_point_returns_true() {
     let mut kernel = ManifoldKernel::new();
@@ -234,8 +231,6 @@ fn contains_interior_point_returns_true() {
 /// Exterior point (far outside) must be classified as not contained.
 ///
 /// Point `(5.0, 5.0, 5.0)` is well outside `[0,1]³`.
-///
-/// **RED (step 3)**: same stub issue; becomes GREEN in step 4.
 #[test]
 fn contains_exterior_point_returns_false() {
     let mut kernel = ManifoldKernel::new();
@@ -307,9 +302,6 @@ fn contains_exterior_2crossing_ray_returns_false() {
 ///
 /// Both are `unit_cube_mesh([0,0,0])` → same topology counts and same vertex
 /// positions.  `geo_equiv` must return `true`.
-///
-/// **RED (step 5)**: `query()` returns `Err(STUB_MSG)` for the `GeoEquiv`
-/// arm until step 6 wires it.
 #[test]
 fn geo_equiv_identical_cubes_returns_true() {
     let mut kernel = ManifoldKernel::new();
@@ -335,8 +327,6 @@ fn geo_equiv_identical_cubes_returns_true() {
 ///
 /// `unit_cube_mesh([0,0,0])` vs `unit_cube_mesh([10,0,0])` — same topology
 /// counts but all vertex positions differ by 10 in x, far exceeding `1e-6`.
-///
-/// **RED (step 5)**: same stub issue; becomes GREEN in step 6.
 #[test]
 fn geo_equiv_translated_cube_returns_false() {
     let mut kernel = ManifoldKernel::new();
@@ -366,8 +356,6 @@ fn geo_equiv_translated_cube_returns_false() {
 /// each per-vertex Euclidean distance (≈ 1e-4) is below the threshold, so
 /// `geo_equiv` must return `true`.  This exercises a real sub-tolerance
 /// per-vertex difference, not a degenerate bit-identical case.
-///
-/// **RED (step 5)**: same stub issue; becomes GREEN in step 6.
 #[test]
 fn geo_equiv_within_tolerance_perturbation_returns_true() {
     let mut kernel = ManifoldKernel::new();
@@ -740,9 +728,6 @@ fn parse_bbox(s: &str) -> [f64; 6] {
 ///   along that spanned axis;
 /// - the 6 diagonals each span exactly two axes by 1.0;
 /// - the partition counts are exactly 12 + 6 = 18.
-///
-/// RED (step-7): `ManifoldKernel::query` returns `Err(QueryFailed(STUB_MSG))`
-/// for `EdgeTangent`/`BoundingBox`. GREEN is step-8.
 #[test]
 fn query_sub_edge_tangent_and_bbox_unit_cube() {
     let mut kernel = ManifoldKernel::new();
@@ -856,9 +841,6 @@ fn query_int_list(kernel: &ManifoldKernel, q: &GeometryQuery) -> Vec<i64> {
 /// the unit cube) — they are NOT affected by task-4262's coplanar coalescing
 /// of `extract_faces` from 12 handles to 6.  This test is intentionally
 /// decoupled from `extract_faces` to remain GREEN after that semantic change.
-///
-/// RED (step-9): `query()` returns `Err(QueryFailed(STUB_MSG))` for
-/// `AdjacentFaces`. GREEN is step-10.
 #[test]
 fn query_adjacent_faces_unit_cube_exactly_three_neighbours() {
     let mut kernel = ManifoldKernel::new();
@@ -919,9 +901,6 @@ fn query_adjacent_faces_unit_cube_exactly_three_neighbours() {
 ///   three shared indices are triangle 0's own 3 distinct edges;
 /// - (b) `face_a == face_b` returns an empty list (design decision);
 /// - (c) a non-adjacent triangle shares no edge (empty list).
-///
-/// RED (step-11): `query()` returns `Err(QueryFailed(STUB_MSG))` for
-/// `SharedEdges`. GREEN is step-12.
 ///
 /// `SharedEdges` indexes **raw mesh triangles** (0..12) — unaffected by
 /// task-4262's coplanar coalescing of `extract_faces`.  This test is
@@ -1034,9 +1013,6 @@ fn query_center_of_mass(
 /// so the 1e-9 tolerance is derived, not tuned. Density is ignored
 /// (uniform-density centroid == geometric centroid, matching OCCT), pinned by
 /// querying ρ=1 vs ρ=100.
-///
-/// RED (step-13): `query()` returns `Err(QueryFailed(STUB_MSG))` for
-/// `CenterOfMass`. GREEN is step-14.
 #[test]
 fn query_center_of_mass_unit_cube() {
     let mut kernel = ManifoldKernel::new();
@@ -1105,9 +1081,6 @@ fn query_inertia_tensor(
 /// on the cube's `{0,1}` vertices, so the 1e-9 tolerances are derived. Pins:
 /// (a) diagonal == ρ/6; (b) off-diagonal ≈ 0; (c) symmetry; (d) linear density
 /// scaling (ρ=1 is exactly half the ρ=2 tensor — density is a pure multiplier).
-///
-/// RED (step-15): `query()` returns `Err(QueryFailed(STUB_MSG))` for
-/// `InertiaTensor`. GREEN is step-16.
 // 3×3 matrix assertions read most clearly with explicit (i, j) indices —
 // especially the transpose access `t[j][i]` in the symmetry check, which an
 // `.iter().enumerate()` rewrite cannot express cleanly. The sibling OCCT
