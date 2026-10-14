@@ -5,7 +5,7 @@
 //! and the count must equal the row's committed baseline: above it is a re-added
 //! copy, below it means the migrating leaf has to lower the baseline.
 
-use std::cmp::Ordering;
+use std::cmp::{Ordering, Reverse};
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -653,7 +653,12 @@ struct Pattern {
 
 enum Measure {
     Occurrences(Pattern),
-    DuplicateTopLevelFns { root: &'static str },
+    /// Helper fns defined in several files under `root`; a definition under
+    /// `shared_dir` is the copy the other files duplicate.
+    DuplicateTopLevelFns {
+        root: &'static str,
+        shared_dir: &'static str,
+    },
 }
 
 struct Ratchet {
@@ -845,7 +850,10 @@ const RATCHETS: &[Ratchet] = &[
         name: "duplicated-test-helpers",
         home: "tests/common/fea_harness.rs (solver-crates-layering D11, leaf ι)",
         baseline: 84,
-        measure: Measure::DuplicateTopLevelFns { root: "tests/" },
+        measure: Measure::DuplicateTopLevelFns {
+            root: "tests/",
+            shared_dir: "tests/common/",
+        },
     },
 ];
 
@@ -982,9 +990,12 @@ fn top_level_helpers(lines: &[Line]) -> Vec<(&str, usize)> {
     helpers
 }
 
-/// One hit per helper copy beyond the first, over the files under `root`: a name
-/// defined in several files is counted once per file, in path order.
-fn duplicate_top_level_fns(root: &str, files: &[SourceFile]) -> Vec<Hit> {
+/// One hit per helper copy beyond the kept one, over the files under `root`: a
+/// name defined in several files is counted once per file. The kept copy is the
+/// first under `shared_dir`, so a local redefinition of a shared helper is the
+/// copy and never the shared one; with none, it is the first in path order.
+/// Every hit names the kept copy.
+fn duplicate_top_level_fns(root: &str, shared_dir: &str, files: &[SourceFile]) -> Vec<Hit> {
     let mut definitions: BTreeMap<&str, BTreeMap<&str, usize>> = BTreeMap::new();
     for file in files.iter().filter(|file| file.path.starts_with(root)) {
         for (name, line) in top_level_helpers(&file.lines) {
@@ -994,14 +1005,15 @@ fn duplicate_top_level_fns(root: &str, files: &[SourceFile]) -> Vec<Hit> {
     }
     let mut hits = Vec::new();
     for (name, defined_in) in &definitions {
-        let mut copies = defined_in.iter();
-        let Some((first_path, _)) = copies.next() else {
+        let mut copies: Vec<_> = defined_in.iter().collect();
+        copies.sort_by_key(|(path, _)| Reverse(path.starts_with(shared_dir)));
+        let Some((&(kept, _), extra_copies)) = copies.split_first() else {
             continue;
         };
-        hits.extend(copies.map(|(path, &line)| Hit {
+        hits.extend(extra_copies.iter().map(|&(path, &line)| Hit {
             path: path.to_string(),
             line,
-            text: format!("fn {name} (also in {first_path})"),
+            text: format!("fn {name} (also in {kept})"),
         }));
     }
     hits
@@ -1010,7 +1022,9 @@ fn duplicate_top_level_fns(root: &str, files: &[SourceFile]) -> Vec<Hit> {
 fn measure(how: &Measure, files: &[SourceFile]) -> Vec<Hit> {
     match how {
         Measure::Occurrences(pattern) => count_occurrences(pattern, files),
-        Measure::DuplicateTopLevelFns { root } => duplicate_top_level_fns(root, files),
+        Measure::DuplicateTopLevelFns { root, shared_dir } => {
+            duplicate_top_level_fns(root, shared_dir, files)
+        }
     }
 }
 
@@ -1244,13 +1258,19 @@ fn needle_requires_a_left_identifier_boundary() {
 // ── duplicate-helper census self-tests ───────────────────────────────────────
 
 const CENSUS_ROOT: &str = "tests/";
+const CENSUS_SHARED_DIR: &str = "tests/common/";
+const SHARED_FILE: &str = "tests/common/mod.rs";
 
 fn census_hits(files: &[(&str, &str)]) -> Vec<Hit> {
     let tree: Vec<SourceFile> = files
         .iter()
         .map(|&(path, text)| source_file(path, text))
         .collect();
-    measure(&Measure::DuplicateTopLevelFns { root: CENSUS_ROOT }, &tree)
+    let census = Measure::DuplicateTopLevelFns {
+        root: CENSUS_ROOT,
+        shared_dir: CENSUS_SHARED_DIR,
+    };
+    measure(&census, &tree)
 }
 
 fn hit_texts(hits: &[Hit]) -> Vec<&str> {
@@ -1274,18 +1294,54 @@ fn duplicate_census_reports_one_hit_per_extra_copy_and_counts_files_not_definiti
         ("tests/b.rs", "fn h() {}"),
         ("tests/c.rs", "fn h() {}"),
     ]);
-    assert_eq!(three_files.len(), 2);
+    assert_eq!(hit_texts(&three_files), ["fn h (also in tests/a.rs)"; 2]);
     let one_file = census_hits(&[("tests/a.rs", "fn h() {}\nfn h() {}")]);
     assert_eq!(one_file.len(), 0);
 }
 
 #[test]
-fn duplicate_census_counts_a_local_redefinition_of_a_common_helper() {
+fn duplicate_census_reports_the_local_redefinition_not_the_shared_helper() {
+    for local in ["tests/a.rs", "tests/z.rs"] {
+        let hits = census_hits(&[
+            (SHARED_FILE, "pub fn canonical_x() {}"),
+            (local, "fn canonical_x() {}"),
+        ]);
+        assert_eq!(
+            hit_texts(&hits),
+            [format!("fn canonical_x (also in {SHARED_FILE})")],
+            "local file: {local}"
+        );
+        assert_eq!((hits[0].path.as_str(), hits[0].line), (local, 1));
+    }
+}
+
+#[test]
+fn duplicate_census_keeps_the_shared_copy_and_reports_every_other_file() {
     let hits = census_hits(&[
-        ("tests/common/mod.rs", "pub fn canonical_x() {}"),
+        ("tests/z.rs", "fn canonical_x() {}"),
+        (SHARED_FILE, "pub fn canonical_x() {}"),
         ("tests/a.rs", "fn canonical_x() {}"),
     ]);
-    assert_eq!(hit_texts(&hits), ["fn canonical_x (also in tests/a.rs)"]);
+    let reported: Vec<&str> = hits.iter().map(|hit| hit.path.as_str()).collect();
+    assert_eq!(reported, ["tests/a.rs", "tests/z.rs"]);
+    let names_shared_copy = format!("fn canonical_x (also in {SHARED_FILE})");
+    assert_eq!(hit_texts(&hits), [names_shared_copy.as_str(); 2]);
+}
+
+#[test]
+fn duplicate_census_keeps_the_first_of_several_shared_copies() {
+    let hits = census_hits(&[
+        (SHARED_FILE, "pub fn canonical_x() {}"),
+        ("tests/common/extra.rs", "pub fn canonical_x() {}"),
+        ("tests/a.rs", "fn canonical_x() {}"),
+    ]);
+    let mut reported: Vec<&str> = hits.iter().map(|hit| hit.path.as_str()).collect();
+    reported.sort();
+    assert_eq!(reported, ["tests/a.rs", SHARED_FILE]);
+    assert_eq!(
+        hit_texts(&hits),
+        ["fn canonical_x (also in tests/common/extra.rs)"; 2]
+    );
 }
 
 #[test]
@@ -1378,7 +1434,7 @@ fn seeded_tree(row: &Ratchet, copies: usize) -> Vec<SourceFile> {
             let text = vec![pattern.seed; copies].join("\n");
             vec![source_file(&seed_path(pattern), &text)]
         }
-        Measure::DuplicateTopLevelFns { root } => (0..=copies)
+        Measure::DuplicateTopLevelFns { root, .. } => (0..=copies)
             .map(|index| source_file(&format!("{root}seeded_{index}.rs"), "fn seeded_helper() {}"))
             .collect(),
     }
@@ -1538,7 +1594,8 @@ fn the_measured_tree_leaves_out_the_host_file_itself() {
     );
 }
 
-/// The include / exclude entries (or census root) of `row` that prefix no file in `tree`.
+/// The include / exclude entries (or census root and shared dir) of `row` that
+/// prefix no file in `tree`.
 fn dangling_scope_entries(row: &Ratchet, tree: &[SourceFile]) -> Vec<&'static str> {
     let entries: Vec<&'static str> = match &row.measure {
         Measure::Occurrences(pattern) => pattern
@@ -1547,12 +1604,31 @@ fn dangling_scope_entries(row: &Ratchet, tree: &[SourceFile]) -> Vec<&'static st
             .chain(pattern.exclude)
             .copied()
             .collect(),
-        Measure::DuplicateTopLevelFns { root } => vec![*root],
+        Measure::DuplicateTopLevelFns { root, shared_dir } => vec![*root, *shared_dir],
     };
     entries
         .into_iter()
         .filter(|entry| !tree.iter().any(|file| file.path.starts_with(entry)))
         .collect()
+}
+
+#[test]
+fn a_census_shared_dir_that_matches_no_file_is_reported_as_dangling() {
+    let tree = [source_file("tests/a.rs", "fn h() {}")];
+    let census_with = |shared_dir| Ratchet {
+        name: "probe",
+        home: "nowhere",
+        baseline: 0,
+        measure: Measure::DuplicateTopLevelFns {
+            root: "tests/",
+            shared_dir,
+        },
+    };
+    assert!(dangling_scope_entries(&census_with("tests/"), &tree).is_empty());
+    assert_eq!(
+        dangling_scope_entries(&census_with("tests/common/"), &tree),
+        ["tests/common/"]
+    );
 }
 
 #[test]
