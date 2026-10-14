@@ -56,7 +56,7 @@ pub(crate) fn read_tet_connectivity(
 /// (the same table over a wider element family) and the `match` in each of
 /// [`crate::through_thickness`] and [`crate::fill_metrics`]. Collapsing those
 /// belongs next to the `reify_ir` element-order type that owns the fact, not
-/// here.
+/// here; #8972 does it.
 fn tet_element_spec(element_order: ElementOrderTag) -> (i32, usize) {
     match element_order {
         ElementOrderTag::P1 => (4, 4),

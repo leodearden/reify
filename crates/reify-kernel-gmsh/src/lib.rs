@@ -81,7 +81,7 @@ pub mod log_capture;
 // Tet-mesh readback validation shared by the three tet meshers — only compiled
 // when has_gmsh is set (it reads through `crate::ffi`, itself has_gmsh-gated).
 #[cfg(has_gmsh)]
-pub mod tet_readback;
+pub(crate) mod tet_readback;
 
 // Real kernel (FFI-backed) — only compiled when has_gmsh is set.
 #[cfg(has_gmsh)]

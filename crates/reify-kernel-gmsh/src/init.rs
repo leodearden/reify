@@ -16,10 +16,7 @@
 //! back when the mesher breaks (`mesh_generate_with_recovery`) and refusing
 //! to keep going when it cannot be put back ([`lock`]).
 //!
-//! [`crate::tet_readback::read_tet_connectivity`] is that recovery's companion
-//! on the way out: a broken mesher's characteristic output is an EMPTY element
-//! buffer, so all three tet meshers read their tets back through one shared,
-//! checked call.
+//! Readback-side companion: `crate::tet_readback`.
 //!
 //! Only compiled when `cfg(has_gmsh)` is set by `build.rs`.
 
