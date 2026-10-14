@@ -3,10 +3,14 @@
 //! An op, query or export format the manifold kernel does not handle is
 //! rejected with an error whose message names the rejected variant and the
 //! kernel, so a reader can attribute the failure without a debugger.
+//!
+//! The rejected ops and queries are B-rep-only, which a mesh kernel cannot
+//! answer by construction. A mesh-answerable variant could be implemented
+//! later, and this contract would then fail for a reason unrelated to it.
 
 use reify_ir::{
     ExportError, ExportFormat, ExportOptions, GeometryError, GeometryHandleId, GeometryKernel,
-    GeometryOp, GeometryQuery, QueryError, Value,
+    GeometryOp, GeometryQuery, QueryCapability, QueryError, Value,
 };
 use reify_kernel_manifold::ManifoldKernel;
 
@@ -22,18 +26,17 @@ fn assert_names_variant_and_kernel(msg: &str, token: &str) {
 }
 
 #[test]
-fn execute_rejects_non_boolean_op_naming_its_kind() {
+fn execute_rejects_edge_selecting_op_naming_its_kind() {
     let ops = [
-        GeometryOp::Box {
-            width: Value::Real(1.0),
-            height: Value::Real(1.0),
-            depth: Value::Real(1.0),
-        },
-        GeometryOp::Translate {
+        GeometryOp::Fillet {
             target: GeometryHandleId(1),
-            dx: 0.0,
-            dy: 0.0,
-            dz: 0.0,
+            edges: vec![GeometryHandleId(2)],
+            radius: Value::Real(0.1),
+        },
+        GeometryOp::Chamfer {
+            target: GeometryHandleId(1),
+            edges: vec![GeometryHandleId(2)],
+            distance: Value::Real(0.1),
         },
     ];
     for op in ops {
@@ -51,13 +54,19 @@ fn execute_rejects_non_boolean_op_naming_its_kind() {
 }
 
 #[test]
-fn query_rejects_unanswered_variant_naming_its_kind() {
+fn query_rejects_brep_only_variant_naming_its_kind() {
     let queries = [
-        GeometryQuery::Volume(GeometryHandleId(1)),
-        GeometryQuery::Centroid(GeometryHandleId(1)),
+        GeometryQuery::EdgeLength(GeometryHandleId(1)),
+        GeometryQuery::ShapeLocalTolerance(GeometryHandleId(1)),
     ];
     let kernel = ManifoldKernel::new();
     for query in queries {
+        assert_eq!(
+            query.capability_kind(),
+            QueryCapability::BRepOnly,
+            "{} is no longer B-rep-only; pick another rejected query",
+            query.kind_name()
+        );
         match kernel.query(&query) {
             Err(QueryError::QueryFailed(msg)) => {
                 assert_names_variant_and_kernel(&msg, query.kind_name())

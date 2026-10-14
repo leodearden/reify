@@ -397,7 +397,8 @@ impl GeometryKernel for ManifoldKernel {
                 let result = l.intersection(r);
                 Ok(self.store(result))
             }
-            // Primitives reach this kernel via ingest_mesh; only booleans execute natively.
+            // Only booleans execute natively; primitives arrive via ingest_mesh,
+            // and every other op is rejected.
             other => Err(GeometryError::OperationFailed(format!(
                 "unsupported op {} on manifold kernel",
                 other.kind_name()
