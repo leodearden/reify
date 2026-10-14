@@ -1100,9 +1100,7 @@ impl OcctKernel {
         // Collect UniquePtr<OcctShape> pieces in a scope that ends the
         // immutable borrow on `self` before we call `store_with_repr`.
         let materialized: Vec<cxx::UniquePtr<ffi::ffi::OcctShape>> = {
-            let shape = self
-                .get_shape(target)
-                .map_err(|_| GeometryError::OperationFailed(format!("unknown handle {target:?}")))?;
+            let shape = self.get_shape(target)?;
             let vec = ffi::ffi::split_shape(shape, ox, oy, oz, nx, ny, nz)
                 .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
             let len = ffi::ffi::shape_vec_len(&vec);
