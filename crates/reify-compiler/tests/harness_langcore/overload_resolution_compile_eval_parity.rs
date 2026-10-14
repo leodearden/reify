@@ -336,6 +336,11 @@ fn assert_accept_reject_parity(row: &Row) {
 // be "fixed" by teaching eval about ambiguity — that would add a runtime
 // concept whose only job is to re-detect what the compiler already rejected.
 //
+// The class is reached by ANY wildcard admitting two or more survivors that
+// no narrower tier separates — a trait-object pair, or a bare user type-param
+// arg over concrete overloads (the selection row "ambiguity: bare user
+// type-param arg over two concrete overloads").
+//
 // Deliberately carries NO task cite: it is permanent, so there is no owner to
 // cite and no fix that would ever close it.
 
@@ -349,6 +354,8 @@ fn single_candidate_rows() -> Vec<Row> {
     let tp        = |n: &str| Type::TypeParam(n.to_string());
     let sp        = |n: &str| Type::ScalarParam(n.to_string());
     let result_of = |args: Vec<Type>| Type::Applied { name: "Result".to_string(), args };
+    let ph        = |n: &str| Type::unbound_placeholder(n);
+    let list_of   = |t: Type| Type::List(Box::new(t));
 
     vec![
         // ── Concrete exact match / plain rejects ─────────────────────────────
@@ -382,6 +389,25 @@ fn single_candidate_rows() -> Vec<Row> {
         //    `reify_core::overload::slot_matches_wildcard_tier`). ─────────────
         Row { label: "D4 bare user type-param arg: f(Int) <- T accepts",                  params: vec![("x", Type::Int)], type_params: vec![], call_name: "f", arg_types: vec![tp("T")],                           expect: Expect::Agree },
         Row { label: "C-4 headed type-param arg, head mismatch: f(Int) <- Result<T,E> rejects", params: vec![("x", Type::Int)], type_params: vec![], call_name: "f", arg_types: vec![result_of(vec![tp("T"), tp("E")])], expect: Expect::Agree },
+
+        // ── R1 placeholder arg (an undetermined generic-enum type argument):
+        //    no arg-side admission; only a param-side wildcard accepts it. ────
+        Row { label: "R1 bare placeholder arg vs concrete: f(Int) <- ?T rejects",            params: vec![("x", Type::Int)],          type_params: vec![],    call_name: "f", arg_types: vec![ph("T")], expect: Expect::Agree },
+        Row { label: "R1 bare placeholder arg vs generic: f<T>(T) <- ?T accepts",            params: vec![("x", tp("T"))],            type_params: vec!["T"], call_name: "f", arg_types: vec![ph("T")], expect: Expect::Agree },
+        Row { label: "R1 bare placeholder arg vs trait-obj: f(TraitObject A) <- ?T accepts", params: vec![("x", trait_obj("A"))],     type_params: vec![],    call_name: "f", arg_types: vec![ph("T")], expect: Expect::Agree },
+
+        // ── C-4 headed args: admitted only where heads unify. The candidate is
+        //    non-generic, so tier 2 is EMPTY and acceptance requires the
+        //    empty-tier fall-through to tier 3 on both sides. ──────────────────
+        Row { label: "C-4 placeholder slot, same head: f(Result<Length,String>) <- Result<Length,?E> accepts", params: vec![("r", result_of(vec![Type::length(), Type::String]))], type_params: vec![], call_name: "f", arg_types: vec![result_of(vec![Type::length(), ph("E")])], expect: Expect::Agree },
+        Row { label: "C-4 headed user type-param arg, inner mismatch: f(List<Int>) <- List<T> rejects",         params: vec![("l", list_of(Type::Int))],                             type_params: vec![], call_name: "f", arg_types: vec![list_of(tp("T"))],                         expect: Expect::Agree },
+
+        // ── Tier 2 is a FILTER over tier 3, never a standalone pass:
+        //    heads_unifiable's erased-subject arm admits this pair at tier 2,
+        //    tier 3 rejects it, so a resolver running tier 2 standalone would
+        //    ACCEPT (counterexample source: reify_core::overload's
+        //    `slot_matches_head_tier_is_not_a_subset_of_the_wildcard_tier`). ──
+        Row { label: "tier 2 is a filter: generic f<T>(Result<Int,String>) <- Enum(Result) rejects", params: vec![("r", result_of(vec![Type::Int, Type::String]))], type_params: vec!["T"], call_name: "f", arg_types: vec![Type::Enum("Result".to_string())], expect: Expect::Agree },
     ]
 }
 
@@ -584,6 +610,7 @@ fn selection_rows() -> Vec<SelectionRow> {
     let result_of = |args: Vec<Type>| Type::Applied { name: "Result".to_string(), args };
     let list_of   = |t: Type| Type::List(Box::new(t));
     let option_of = |t: Type| Type::Option(Box::new(t));
+    let ph        = |n: &str| Type::unbound_placeholder(n);
 
     vec![
         // ── Exact-match-wins tie-break: BOTH sides implement it ──────────────
@@ -639,6 +666,49 @@ fn selection_rows() -> Vec<SelectionRow> {
             expect: Expect::Agree,
         },
 
+        // ── Mixed set: tier 2 drops a head-mismatched GENERIC candidate and so
+        //    promotes a non-generic one declared after it. Declaration order is
+        //    LOAD-BEARING: the generic is listed FIRST, so a first-match-wins
+        //    resolver without tier 2 would pick index 0. Two-sided twin of
+        //    reify-expr's eval-only
+        //    `mixed_set_head_mismatched_generic_yields_to_non_generic_trait_object`.
+        SelectionRow {
+            label: "mixed set: [g<T>(Option<T>), g(TraitObject X)] <- Result<Int,String>",
+            fns: vec![make_fn("g", vec![("x", option_of(tp("T")))], vec!["T"]),
+                      make_fn("g", vec![("x", trait_obj("X"))], vec![])],
+            call_name: "g",
+            arg_types: vec![result_of(vec![Type::Int, Type::String])],
+            expect: Expect::Agree,
+        },
+
+        // ── Head tier drops a NON-generic candidate whose heads unify only
+        //    through an R1 placeholder slot: both candidates pass tier 3, only
+        //    the generic passes tier 2. Declaration order is LOAD-BEARING: the
+        //    concrete candidate is listed FIRST, so index 1 is reachable only
+        //    through tier 2. ─────────────────────────────────────────────────
+        SelectionRow {
+            label: "head tier drops a non-generic placeholder-unified candidate: [f(Result<Length,String>), f<T,E>(Result<T,E>)] <- Result<Length,?E>",
+            fns: vec![make_fn("f", vec![("r", result_of(vec![Type::length(), Type::String]))], vec![]),
+                      make_fn("f", vec![("r", result_of(vec![tp("T"), tp("E")]))], vec!["T", "E"])],
+            call_name: "f",
+            arg_types: vec![result_of(vec![Type::length(), ph("E")])],
+            expect: Expect::Agree,
+        },
+
+        // ── A bare R1 placeholder arg is admitted only by the generic's
+        //    param-side wildcard. Declaration order is LOAD-BEARING: the
+        //    concrete candidate is listed FIRST, so a resolver granting the
+        //    placeholder arg-side admission would pick index 0 (or report
+        //    Ambiguous). ──────────────────────────────────────────────────────
+        SelectionRow {
+            label: "bare placeholder selects only the generic: [f(Int), f<T>(T)] <- ?T",
+            fns: vec![make_fn("f", vec![("x", Type::Int)], vec![]),
+                      make_fn("f", vec![("x", tp("T"))], vec!["T"])],
+            call_name: "f",
+            arg_types: vec![ph("T")],
+            expect: Expect::Agree,
+        },
+
         // ── Ambiguity model ──────────────────────────────────────────────────
         // Two trait-object overloads both wildcard-match; compile reports
         // `Ambiguous` (a call-site diagnostic), eval has no ambiguity concept.
@@ -648,6 +718,17 @@ fn selection_rows() -> Vec<SelectionRow> {
                       make_fn("g", vec![("x", trait_obj("B"))], vec![])],
             call_name: "g",
             arg_types: vec![Type::StructureRef("X".to_string())],
+            expect: Expect::Diverge { ledger: "ambiguity-model" },
+        },
+        // A bare user type-param arg wildcards against BOTH concrete overloads
+        // (tier 3's arg side) and tier 2's bare-user-`TypeParam` disjunct keeps
+        // both, so compile reports `Ambiguous`; eval takes the first.
+        SelectionRow {
+            label: "ambiguity: bare user type-param arg over two concrete overloads: [f(Int), f(String)] <- T",
+            fns: vec![make_fn("f", vec![("x", Type::Int)], vec![]),
+                      make_fn("f", vec![("x", Type::String)], vec![])],
+            call_name: "f",
+            arg_types: vec![tp("T")],
             expect: Expect::Diverge { ledger: "ambiguity-model" },
         },
     ]
