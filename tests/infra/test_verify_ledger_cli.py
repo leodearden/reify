@@ -577,10 +577,10 @@ class HarnessAncestorTests(unittest.TestCase):
 
     def test_nearest_harness_ancestor_is_printed(self):
         harnesses = {
-            "bash suite": (["bash", "tests/infra/test_verify_confirm_failed.sh"], "/w/lane"),
+            "bash suite": (["/bin/bash", "tests/infra/test_verify_confirm_failed.sh"], "/w/lane"),
             "python suite": (["python3", "/w/lane/tests/infra/test_verify_ledger_e2e.py"], "/"),
-            "run_all": (["bash", "/w/lane/tests/infra/run_all.sh"], "/"),
-            "cwd-relative suite": (["bash", "test_verify_scope.sh"], "/w/lane/tests/infra"),
+            "run_all": (["/bin/bash", "/w/lane/tests/infra/run_all.sh"], "/"),
+            "cwd-relative suite": (["/bin/bash", "test_verify_scope.sh"], "/w/lane/tests/infra"),
         }
         for pid, (name, (argv, cwd)) in enumerate(harnesses.items(), start=10):
             with self.subTest(harness=name):
