@@ -1,0 +1,485 @@
+prd: docs/prds/v0_6/gui-backend-engine-modules-events-tool-contract.md
+schema_version: 1
+tasks:
+- label: α
+  task_id: null
+  title: 'gui-backend α: engine/units.rs, keys.rs, line_col.rs, write_atomic.rs, persistent_cache.rs (move-only)'
+  capabilities:
+  - name: units-module
+    binding: 'producer-self — unit list from the review record h14 entry for gui/src-tauri/src/engine.rs, corrected per PRD §2.2 (keys split out); subsumes #8595'
+    verdict: PASS
+    delivered_check:
+      kind: path
+      paths:
+      - gui/src-tauri/src/engine/units.rs
+      expect: present
+  - name: value-input-cluster-moved
+    binding: producer-self — 1 match in engine.rs at cf59570562
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn parse_value_string_for_cell
+      expect: absent
+      paths:
+      - gui/src-tauri/src/engine.rs
+- label: β
+  task_id: null
+  title: 'gui-backend β: engine/fea_channels.rs (move-only)'
+  capabilities:
+  - name: fea-channels-module
+    binding: 'producer-self — 15 items, imports downward only (R1a); subsumes #8600'
+    verdict: PASS
+    delivered_check:
+      kind: path
+      paths:
+      - gui/src-tauri/src/engine/fea_channels.rs
+      expect: present
+  - name: fea-channels-moved
+    binding: producer-self — 1 match in engine.rs at cf59570562
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn apply_fea_channels
+      expect: absent
+      paths:
+      - gui/src-tauri/src/engine.rs
+- label: γ
+  task_id: null
+  title: 'gui-backend γ: engine/display_routing.rs and engine/entity_tree.rs (move-only)'
+  capabilities:
+  - name: display-routing-module
+    binding: producer-self — with impl MergedTraitDefs and the inline display_style_extract_tests
+    verdict: PASS
+    delivered_check:
+      kind: path
+      paths:
+      - gui/src-tauri/src/engine/display_routing.rs
+      expect: present
+  - name: display-routing-moved
+    binding: producer-self — 1 match in engine.rs at cf59570562
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn collect_display_routing
+      expect: absent
+      paths:
+      - gui/src-tauri/src/engine.rs
+- label: δ
+  task_id: null
+  title: 'gui-backend δ: engine/mechanism.rs (with scalar_to_f64) and engine/tensegrity.rs (move-only)'
+  capabilities:
+  - name: mechanism-module
+    binding: 'producer-self — scalar_to_f64 moves with it (pub(super)); #8698''s check is widened to follow it (PRD §8, lead)'
+    verdict: PASS
+    delivered_check:
+      kind: path
+      paths:
+      - gui/src-tauri/src/engine/mechanism.rs
+      expect: present
+  - name: mechanism-moved
+    binding: producer-self — 1 match in engine.rs at cf59570562
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn extract_joints_from_mechanism
+      expect: absent
+      paths:
+      - gui/src-tauri/src/engine.rs
+- label: ε
+  task_id: null
+  title: 'gui-backend ε: engine/projection.rs; engine.rs holds the session core only (closes fk-05311be442e6)'
+  capabilities:
+  - name: projection-module
+    binding: producer-self — unit 2 of the record plus the expression printer
+    verdict: PASS
+    delivered_check:
+      kind: path
+      paths:
+      - gui/src-tauri/src/engine/projection.rs
+      expect: present
+  - name: projection-moved
+    binding: producer-self — 1 match in engine.rs at cf59570562
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn build_values
+      expect: absent
+      paths:
+      - gui/src-tauri/src/engine.rs
+- label: ζ
+  task_id: null
+  title: 'gui-backend ζ: one EngineSession::reload(); CompiledSource; one compile-error filter'
+  capabilities:
+  - name: reload-present
+    binding: producer-self — 0 matches at cf59570562; behaviour cover B2 (load_from_compiled resets like commit_state, RED first)
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn reload\(
+      expect: present
+      paths:
+      - gui/src-tauri/src/engine.rs
+  - name: compiled-source-present
+    binding: producer-self — 0 matches at cf59570562
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: struct CompiledSource
+      expect: present
+      paths:
+      - gui/src-tauri/src
+- label: η
+  task_id: null
+  title: 'gui-backend η: one post-tessellation GuiState builder; case switch keeps routing and appearance'
+  capabilities:
+  - name: builder-present
+    binding: producer-self — 0 matches at cf59570562; behaviour cover B1/B1' on tests/prd-gate/fixtures/s25_case_switch_display_routing.ri
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn assemble_gui_state
+      expect: present
+      paths:
+      - gui/src-tauri/src/engine.rs
+  - name: case-switch-fixture
+    binding: tests/prd-gate/fixtures/s25_case_switch_display_routing.ri — tree-sitter parse --quiet exit 0, 0 ERROR/MISSING; reify check exit 0 "All constraints satisfied." (2026-10-13). Lands with the PRD, so it carries no delivered check (green on arrival).
+    verdict: PASS
+- label: θ
+  task_id: null
+  title: 'gui-backend θ: closed-set wire fields as serde enums (per-variant renames, wire-identical); typed overlay and recheck'
+  capabilities:
+  - name: constraint-status-enum
+    binding: 'producer-self — 0 matches at cf59570562; subsumes #7471 (Rust half)'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: enum ConstraintStatus
+      expect: present
+      paths:
+      - gui/src-tauri/src/types.rs
+  - name: satisfaction-token-gone
+    binding: producer-self — 1 match at cf59570562
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn satisfaction_token
+      expect: absent
+      paths:
+      - gui/src-tauri/src
+  - name: format-determinacy-gone
+    binding: producer-self — 1 match at cf59570562
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn format_determinacy
+      expect: absent
+      paths:
+      - gui/src-tauri/src/types.rs
+- label: ι
+  task_id: null
+  title: 'gui-backend ι: typed result views; one finish mapping'
+  capabilities:
+  - name: result-views-module
+    binding: 'producer-self — after β γ δ; ElasticResult breadcrumb to S15 ε #8690'
+    verdict: PASS
+    delivered_check:
+      kind: path
+      paths:
+      - gui/src-tauri/src/engine/result_views.rs
+      expect: present
+- label: κ
+  task_id: null
+  title: 'gui-backend κ: mechanism descriptor through S6 MechanismTree and JointKind'
+  capabilities:
+  - name: mechanism-map-keys-gone
+    binding: 'producer-self — 3 matches in engine.rs at cf59570562 (get_mechanism_descriptors, is_world_sentinel, extract_joint_descriptor); δ moves two into engine/mechanism.rs, which the paths include; depends on S6 #8845, #8838, #8839'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: Value::String\("kind"
+      expect: absent
+      paths:
+      - gui/src-tauri/src/engine.rs
+      - gui/src-tauri/src/engine/mechanism.rs
+- label: λ
+  task_id: null
+  title: 'gui-backend λ: one SessionEvents sink installed once; CommitReceipt; #![deny(unused_must_use)]'
+  capabilities:
+  - name: session-events-present
+    binding: producer-self — 0 matches at cf59570562
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: trait SessionEvents
+      expect: present
+      paths:
+      - gui/src-tauri/src
+  - name: fea-diagnostics-emitter-gone
+    binding: producer-self — 1 match at cf59570562
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: trait FeaDiagnosticsEmitter
+      expect: absent
+      paths:
+      - gui/src-tauri/src
+  - name: deny-unused-must-use
+    binding: 'producer-self — 0 matches at cf59570562 (critic C1-05: the attribute does not exist today)'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^#!\[deny\(unused_must_use\)\]
+      expect: present
+      paths:
+      - gui/src-tauri/src/lib.rs
+- label: μ
+  task_id: null
+  title: 'gui-backend μ: fea_diagnostics / fea_convergence onto deltas; diffed whole_opt arm'
+  capabilities:
+  - name: emitter-reason-gone
+    binding: producer-self — 1 match (the full_reload_only reason) at cf59570562
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fea-diagnostics-changed emitter
+      expect: absent
+      paths:
+      - gui/src-tauri/src/types.rs
+  - name: whole-opt-arm-present
+    binding: producer-self — 0 matches at cf59570562
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: whole_opt
+      expect: present
+      paths:
+      - gui/src-tauri/src/gui_state_schema.rs
+- label: ν
+  task_id: null
+  title: 'gui-backend ν: reify-mcp typed request/response, schema and ToolClass per tool'
+  capabilities:
+  - name: tool-class-present
+    binding: 'producer-self — 0 matches at cf59570562; subsumes #7722, #7071; depends #6665'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^pub enum ToolClass
+      expect: present
+      paths:
+      - crates/reify-mcp/src/registry.rs
+  - name: hand-parsed-params-gone
+    binding: producer-self — 17 matches at cf59570562
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: params\["
+      expect: absent
+      paths:
+      - crates/reify-mcp/src/tools/read.rs
+      - crates/reify-mcp/src/tools/write.rs
+      - crates/reify-mcp/src/tools/navigation.rs
+      - crates/reify-mcp/src/tools/reference.rs
+  - name: update-result-gone
+    binding: producer-self — 1 match at cf59570562
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: pub struct UpdateResult
+      expect: absent
+      paths:
+      - crates/reify-mcp/src/types.rs
+- label: ξ
+  task_id: null
+  title: 'gui-backend ξ: host behaviours on TauriToolContext; delegated_tool_job'
+  capabilities:
+  - name: produced-state-present
+    binding: 'producer-self — 0 matches at cf59570562; subsumes #7181'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn take_produced_state
+      expect: present
+      paths:
+      - gui/src-tauri/src/mcp_context.rs
+  - name: delegated-job-present
+    binding: producer-self — 0 matches at cf59570562
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn delegated_tool_job
+      expect: present
+      paths:
+      - gui/src-tauri/src/mcp_context.rs
+- label: ο
+  task_id: null
+  title: 'gui-backend ο: debug server delegates the five reify_* tools; stamped evaluation; mcp_tool_call deleted; INV-GUI-2 scanner retired'
+  capabilities:
+  - name: debug-reimplementations-gone
+    binding: 'producer-self — 22 matches in debug_server.rs at cf59570562 (debug_protocol.rs is created by #6964, a dependency); the delegation arm is named handle_delegated so it cannot match'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: handle_reify_
+      expect: absent
+      paths:
+      - gui/src-tauri/src/debug_server.rs
+      - gui/src-tauri/src/debug_protocol.rs
+  - name: mcp-tool-call-gone
+    binding: producer-self — 1 match at cf59570562
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn mcp_tool_call\(
+      expect: absent
+      paths:
+      - gui/src-tauri/src/main.rs
+  - name: scanner-retired
+    binding: producer-self — 1 match at cf59570562
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^mod debug_write_tool_routing_tests;
+      expect: absent
+      paths:
+      - gui/src-tauri/src/tests/mod.rs
+  - name: stamped-present
+    binding: producer-self — 0 matches at cf59570562
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: pub struct Stamped
+      expect: present
+      paths:
+      - gui/src-tauri/src/eval_queue.rs
+- label: σ
+  task_id: null
+  title: 'gui-backend σ: MCP wire enums; ValueCellKind::keyword(); typed filters'
+  capabilities:
+  - name: mcp-constraint-status-enum
+    binding: producer-self — 0 matches at cf59570562
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^pub enum ConstraintStatus
+      expect: present
+      paths:
+      - crates/reify-mcp/src/types.rs
+  - name: severity-typed
+    binding: producer-self — 1 match at cf59570562 (DiagnosticInfo only; reify_core::Diagnostic is S12's)
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'severity: String'
+      expect: absent
+      paths:
+      - crates/reify-core/src/diagnostics.rs
+  - name: keyword-present
+    binding: producer-self — 0 matches at cf59570562
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: pub fn keyword
+      expect: present
+      paths:
+      - crates/reify-compiler/src/types.rs
+- label: π
+  task_id: null
+  title: 'gui-backend π: QueuedEngine (queued_engine.rs), FrontendPort, until_generation'
+  capabilities:
+  - name: queued-engine-present
+    binding: producer-self — 0 matches across gui/src-tauri/src at cf59570562; own module so no {eval_queue, engine_activity} SCC (critic C1-02)
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^pub struct QueuedEngine
+      expect: present
+      paths:
+      - gui/src-tauri/src/queued_engine.rs
+  - name: frontend-port-present
+    binding: producer-self — 0 matches at cf59570562
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^pub trait FrontendPort
+      expect: present
+      paths:
+      - gui/src-tauri/src/debug.rs
+- label: ρ
+  task_id: null
+  title: 'gui-backend ρ: every debug engine access through QueuedEngine; gui-state-sync D7 superseded'
+  capabilities:
+  - name: run-on-engine-gone
+    binding: 'producer-self — 12 matches in debug_server.rs at cf59570562; subsumes #7854'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: run_on_engine\(
+      expect: absent
+      paths:
+      - gui/src-tauri/src/debug_server.rs
+      - gui/src-tauri/src/debug_protocol.rs
+  - name: baseline-side-effect-gone
+    binding: producer-self — 6 matches in debug_server.rs at cf59570562
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: compute_delta\(
+      expect: absent
+      paths:
+      - gui/src-tauri/src/debug_server.rs
+      - gui/src-tauri/src/debug_protocol.rs
+  - name: full-state-push-gone
+    binding: producer-self — 3 matches at cf59570562
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: apply_gui_state
+      expect: absent
+      paths:
+      - gui/src/debug/bridge.ts
+- label: τ
+  task_id: null
+  title: 'gui-backend τ: typed debug tool table and committed JSON export; regex-over-Rust parity retired'
+  capabilities:
+  - name: tool-route-present
+    binding: producer-self — 0 matches across gui/src-tauri/src at cf59570562
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^pub enum ToolRoute
+      expect: present
+      paths:
+      - gui/src-tauri/src/debug_tools.rs
+  - name: export-committed
+    binding: producer-self — regenerate-and-diff test BT7
+    verdict: PASS
+    delivered_check:
+      kind: path
+      paths:
+      - gui/src-tauri/debug-tools.json
+      expect: present
+  - name: source-regex-reader-gone
+    binding: producer-self — 1 match at cf59570562
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: readDebugServerSource
+      expect: absent
+      paths:
+      - gui/src/__tests__/toolDefNames.ts
+  - name: dispatch-arm-regex-gone
+    binding: producer-self — 3 matches at cf59570562
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: extractDispatchArmNames
+      expect: absent
+      paths:
+      - gui/src/__tests__/debugParity.test.ts
+- label: ω
+  task_id: null
+  title: 'gui-backend ω: PRD close stamp'
+  capabilities:
+  - name: terminal-status
+    binding: producer-self — the committed header (overlay "PRD terminal status"); no delivered check (a docs edit)
+    verdict: PASS
