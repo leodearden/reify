@@ -2715,23 +2715,275 @@ pub(crate) fn check_expr_mechanism_joint_bound(
 mod tests {
     use super::*;
 
+    /// Everything one `check_trait_conformance` call produced for its conformer.
+    ///
+    /// `injected_cells` and `injected_constraints` are the call's value-cell and
+    /// constraint out-params. They start empty, so they hold ONLY what conformance
+    /// injected from trait defaults — never the conformer's own members.
+    struct ConformanceRun {
+        diagnostics: Vec<Diagnostic>,
+        injected_cells: Vec<ValueCellDecl>,
+        injected_constraints: Vec<CompiledConstraint>,
+        assoc_fns: Vec<CompiledAssocFn>,
+    }
+
+    /// Run `check_trait_conformance` for `structure_def` against `traits`.
+    ///
+    /// The ONE in-test call site of `check_trait_conformance`: [`run_conformance`],
+    /// [`run_conformance_with_assoc_fns`] and [`conform_source`] all funnel through
+    /// here, so the scaffolding (scope, out-params, registries, the 16-argument call
+    /// itself) is written once and a future signature change is edited once.
+    fn conform(
+        traits: &[CompiledTrait],
+        structure_def: &reify_ast::StructureDef,
+        enum_defs: &[reify_ir::EnumDef],
+        structure_names: &HashSet<String>,
+    ) -> ConformanceRun {
+        let entity_ref = EntityDefRef::from(structure_def);
+        let trait_registry: HashMap<String, &CompiledTrait> =
+            traits.iter().map(|t| (t.name.clone(), t)).collect();
+        let trait_names: HashSet<String> = trait_registry.keys().cloned().collect();
+        let mut scope = CompilationScope::new(&structure_def.name);
+        let mut value_cells: Vec<ValueCellDecl> = vec![];
+        let mut constraints: Vec<CompiledConstraint> = vec![];
+        let mut constraint_index = 0u32;
+        let functions: &[CompiledFunction] = &[];
+        let alias_registry = TypeAliasRegistry::new();
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let mut assoc_fns: Vec<CompiledAssocFn> = vec![];
+        let mut assoc_types: Vec<CompiledAssocType> = vec![];
+
+        check_trait_conformance(
+            &entity_ref,
+            &trait_registry,
+            structure_names,
+            &trait_names,
+            &mut scope,
+            &mut value_cells,
+            &mut constraints,
+            &mut constraint_index,
+            enum_defs,
+            functions,
+            &alias_registry,
+            // task 4497: empty placeholder table — these conformance unit tests
+            // exercise trait-default behavior, not ambient injection (the real
+            // file-level table is threaded from entities_phase in step-10).
+            &AmbientDefaults::default(),
+            // task 4639: file scope (no enclosing purpose) for unit tests.
+            None,
+            &mut diagnostics,
+            &mut assoc_fns,
+            &mut assoc_types,
+        );
+
+        ConformanceRun {
+            diagnostics,
+            injected_cells: value_cells,
+            injected_constraints: constraints,
+            assoc_fns,
+        }
+    }
+
     /// Run `check_trait_conformance` against the given traits and structure, returning all
     /// diagnostics emitted.
     ///
-    /// Thin wrapper over [`run_conformance_with_assoc_fns`] that discards the
-    /// populated assoc-fn table — the two differ ONLY in whether they surface
-    /// that table, so the shared ~20-line scaffolding (scope/value_cells/
-    /// constraints init, registry construction, alias_registry, the 13-arg call
-    /// itself) lives in exactly one place and a future signature change to
-    /// `check_trait_conformance` is edited once. Each test only needs to build
-    /// its trait and structure fixtures and then assert on the returned
-    /// `Vec<Diagnostic>`.
+    /// For hand-built fixtures that only need to assert on the returned
+    /// `Vec<Diagnostic>`; reach for [`conform_source`] when the fixture can be
+    /// written as `.ri` source.
     fn run_conformance(
         traits: &[CompiledTrait],
         structure_def: &reify_ast::StructureDef,
         enum_defs: &[reify_ir::EnumDef],
     ) -> Vec<Diagnostic> {
-        run_conformance_with_assoc_fns(traits, structure_def, enum_defs).0
+        conform(traits, structure_def, enum_defs, &HashSet::new()).diagnostics
+    }
+
+    /// Sibling of [`run_conformance`] that also surfaces the populated assoc-fn
+    /// table so the table-population tests can assert on its contents.
+    fn run_conformance_with_assoc_fns(
+        traits: &[CompiledTrait],
+        structure_def: &reify_ast::StructureDef,
+        enum_defs: &[reify_ir::EnumDef],
+    ) -> (Vec<Diagnostic>, Vec<CompiledAssocFn>) {
+        let run = conform(traits, structure_def, enum_defs, &HashSet::new());
+        (run.diagnostics, run.assoc_fns)
+    }
+
+    /// Parse `source`, compile its traits as production does, and run
+    /// `check_trait_conformance` for its one conformer.
+    ///
+    /// The conformer is the single `structure def` that declares trait bounds;
+    /// `source` must contain exactly one. Diagnostics from compiling the traits come
+    /// first, then those from conformance — the same two emitters a full compile
+    /// runs, without the duplicates `entity.rs` re-emits, so exact diagnostic counts
+    /// stay meaningful.
+    ///
+    /// Fixture conventions:
+    /// - Trait bounds are `+`-separated (`structure def S : A + B {}`); the comma
+    ///   form is a parse error.
+    /// - A trait sub requirement carries parens (`sub mount = Hole()`); without them
+    ///   the member is silently dropped from the trait body.
+    fn conform_source(source: &str) -> ConformanceRun {
+        let parsed =
+            reify_syntax::parse(source, reify_core::ModulePath::single("conformance_test"));
+        assert!(
+            parsed.errors.is_empty(),
+            "parse errors in conformance fixture: {:?}\n{source}",
+            parsed.errors
+        );
+
+        let mut trait_decls: Vec<&reify_ast::TraitDecl> = vec![];
+        let mut structure_defs: Vec<&reify_ast::StructureDef> = vec![];
+        let mut enum_names: Vec<&str> = vec![];
+        for declaration in &parsed.declarations {
+            match declaration {
+                reify_ast::Declaration::Trait(t) => trait_decls.push(t),
+                reify_ast::Declaration::Structure(s) => structure_defs.push(s),
+                reify_ast::Declaration::Enum(e) => enum_names.push(&e.name),
+                _ => {}
+            }
+        }
+        let trait_names: HashSet<String> = trait_decls.iter().map(|t| t.name.clone()).collect();
+        let structure_names: HashSet<String> =
+            structure_defs.iter().map(|s| s.name.clone()).collect();
+        let enum_defs = enum_table(&enum_names);
+        let alias_registry = TypeAliasRegistry::new();
+
+        let mut trait_diagnostics: Vec<Diagnostic> = vec![];
+        let traits: Vec<CompiledTrait> = trait_decls
+            .iter()
+            .map(|t| {
+                crate::traits::compile_trait(
+                    t,
+                    &enum_defs,
+                    &alias_registry,
+                    &structure_names,
+                    &trait_names,
+                    &mut trait_diagnostics,
+                )
+            })
+            .collect();
+
+        let mut conformers = structure_defs.iter().filter(|s| !s.trait_bounds.is_empty());
+        let conformer = conformers
+            .next()
+            .expect("conformance fixture must declare a structure with trait bounds");
+        assert!(
+            conformers.next().is_none(),
+            "conformance fixture must declare exactly one structure with trait bounds:\n{source}"
+        );
+
+        let mut run = conform(&traits, conformer, &enum_defs, &structure_names);
+        run.diagnostics.splice(0..0, trait_diagnostics);
+        run
+    }
+
+    /// The cells conformance injected for `member`, in injection order.
+    fn injected_named<'a>(run: &'a ConformanceRun, member: &str) -> Vec<&'a ValueCellDecl> {
+        run.injected_cells
+            .iter()
+            .filter(|cell| cell.id.member == member)
+            .collect()
+    }
+
+    // --- B10: how same-name trait defaults collide (PRD
+    // docs/prds/v0_6/compiler-declaration-passes.md §6) ---
+    //
+    // Characterization pins. Each fixes the two sets a restructure of the
+    // conformance phases must reproduce: the ADVERTISED set (which defaults can
+    // satisfy a `param` requirement) and the INJECTED set (the cells conformance
+    // adds to the conformer).
+
+    /// Pass 1, annotated-`let` loser: `A`'s `param x` claims the scope slot first, so
+    /// `B`'s annotated `let x` is neither injected nor allowed to double-count, and
+    /// the Param default is what satisfies `C`'s `param x` requirement.
+    #[test]
+    fn annotated_trait_let_losing_to_same_name_param_is_neither_injected_nor_double_counted() {
+        let run = conform_source(
+            r"
+            trait A { param x : Real = 1.0 }
+            trait B { let x : Real = 2.0 }
+            trait C { param x : Real }
+            structure def S : A + B + C {}
+            ",
+        );
+
+        assert!(
+            run.diagnostics.is_empty(),
+            "C's `param x` must be satisfied by A's Param default; got: {:?}",
+            run.diagnostics
+        );
+        let injected = injected_named(&run, "x");
+        assert_eq!(
+            injected.len(),
+            1,
+            "exactly one cell named `x` must be injected; got: {:?}",
+            run.injected_cells
+        );
+        assert_eq!(injected[0].kind, ValueCellKind::Param);
+        assert_eq!(injected[0].cell_type, Type::dimensionless_scalar());
+        assert!(
+            run.injected_constraints.is_empty(),
+            "no trait declares a constraint; got: {:?}",
+            run.injected_constraints
+        );
+    }
+
+    /// Pass 1, `param` loser: `B`'s annotated `let x` is bound before `A`'s `param x`,
+    /// so the Let wins the slot. The Param is then neither injected nor advertised,
+    /// which leaves `C`'s `param x` requirement unsatisfied.
+    #[test]
+    fn param_losing_to_same_name_annotated_trait_let_is_neither_injected_nor_advertised() {
+        let run = conform_source(
+            r"
+            trait A { param x : Real = 1.0 }
+            trait B { let x : Real = 2.0 }
+            trait C { param x : Real }
+            structure def S : B + A + C {}
+            ",
+        );
+
+        assert_eq!(
+            run.diagnostics.len(),
+            1,
+            "expected only C's unsatisfied requirement; got: {:?}",
+            run.diagnostics
+        );
+        assert_eq!(
+            run.diagnostics[0].code,
+            Some(DiagnosticCode::MissingRequiredMember)
+        );
+        assert!(
+            run.diagnostics[0].message.contains("'x'"),
+            "diagnostic should name the member 'x'; got: {}",
+            run.diagnostics[0].message
+        );
+        let injected = injected_named(&run, "x");
+        assert_eq!(
+            injected.len(),
+            1,
+            "exactly one cell named `x` must be injected; got: {:?}",
+            run.injected_cells
+        );
+        assert_eq!(injected[0].kind, ValueCellKind::Let);
+        assert!(
+            run.injected_constraints.is_empty(),
+            "no trait declares a constraint; got: {:?}",
+            run.injected_constraints
+        );
+
+        let control = conform_source(
+            r"
+            trait A { param x : Real = 1.0 }
+            trait C { param x : Real }
+            structure def S : A + C {}
+            ",
+        );
+        assert!(
+            control.diagnostics.is_empty(),
+            "without the Let trait, A's default alone must satisfy C; got: {:?}",
+            control.diagnostics
+        );
     }
 
     /// RED (task 3939 δ, step-3): a required associated function that the
@@ -3095,54 +3347,6 @@ mod tests {
             annotations: vec![],
             pragmas: vec![],
         }
-    }
-
-    /// Sibling of [`run_conformance`] that also surfaces the populated assoc-fn
-    /// table so the table-population tests can assert on its contents.
-    fn run_conformance_with_assoc_fns(
-        traits: &[CompiledTrait],
-        structure_def: &reify_ast::StructureDef,
-        enum_defs: &[reify_ir::EnumDef],
-    ) -> (Vec<Diagnostic>, Vec<CompiledAssocFn>) {
-        let entity_ref = EntityDefRef::from(structure_def);
-        let trait_registry: HashMap<String, &CompiledTrait> =
-            traits.iter().map(|t| (t.name.clone(), t)).collect();
-        let trait_names: HashSet<String> = trait_registry.keys().cloned().collect();
-        let structure_names: HashSet<String> = HashSet::new();
-        let mut scope = CompilationScope::new(&structure_def.name);
-        let mut value_cells: Vec<ValueCellDecl> = vec![];
-        let mut constraints: Vec<CompiledConstraint> = vec![];
-        let mut constraint_index = 0u32;
-        let functions: &[CompiledFunction] = &[];
-        let alias_registry = TypeAliasRegistry::new();
-        let mut diagnostics: Vec<Diagnostic> = vec![];
-        let mut assoc_fns: Vec<CompiledAssocFn> = vec![];
-        let mut assoc_types: Vec<CompiledAssocType> = vec![];
-
-        check_trait_conformance(
-            &entity_ref,
-            &trait_registry,
-            &structure_names,
-            &trait_names,
-            &mut scope,
-            &mut value_cells,
-            &mut constraints,
-            &mut constraint_index,
-            enum_defs,
-            functions,
-            &alias_registry,
-            // task 4497: empty placeholder table — these conformance unit tests
-            // exercise trait-default behavior, not ambient injection (the real
-            // file-level table is threaded from entities_phase in step-10).
-            &AmbientDefaults::default(),
-            // task 4639: file scope (no enclosing purpose) for unit tests.
-            None,
-            &mut diagnostics,
-            &mut assoc_fns,
-            &mut assoc_types,
-        );
-
-        (diagnostics, assoc_fns)
     }
 
     /// RED (task 3939 δ, step-7a): a trait's default-providing assoc fn is
