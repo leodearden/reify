@@ -5,7 +5,8 @@ Owns everything scripts/verify.sh, tests/infra/run_all.sh and
 scripts/seed-warm-lane.sh record about a verify run: the phase taxonomy of
 plan lines, the per-run journal and the record composed from it, the sccache
 and concurrency snapshots taken at cargo step boundaries, the nextest JUnit
-build/execution split, the lane seed stamp, and the append-only JSONL ledger.
+build/execution split, the lane seed stamp, the infra-harness ancestry check
+the default ledger applies, and the append-only JSONL ledger.
 Callers only write numeric timing events and invoke these subcommands; they
 never interpret a command line themselves. Schema, activation rules and
 consumer rules: docs/notes/verify-instrumentation-ledger.md.
@@ -320,6 +321,38 @@ def ancestry(table, pid):
 def outermost_verify(table, chain):
     roots = [pid for pid in chain if is_verify_run(table[pid][2])]
     return roots[-1] if roots else None
+
+
+# reify's infra harness: a tests/infra/ suite or run_all.sh. A verify.sh run
+# beneath one is test traffic, which verify.sh's default ledger refuses.
+HARNESS_SCRIPT = re.compile(r"(^|/)tests/infra/(run_all\.sh|test_[^/]+\.(sh|py))$")
+
+
+def process_cwd(pid_dir):
+    try:
+        return os.readlink(pid_dir / "cwd")
+    except OSError:
+        return ""
+
+
+def is_harness(argv, cwd):
+    return any(HARNESS_SCRIPT.search(os.path.normpath(os.path.join(cwd, arg))) for arg in argv if arg)
+
+
+def harness_ancestor(self_pid):
+    """argv of the nearest process at or above self_pid that is reify's infra harness, or None."""
+    root = proc_root()
+    pid, seen = self_pid, set()
+    while pid not in seen:
+        seen.add(pid)
+        process = read_process(root / str(pid))
+        if process is None:
+            return None
+        ppid, _comm, argv = process
+        if is_harness(argv, process_cwd(root / str(pid))):
+            return argv
+        pid = ppid
+    return None
 
 
 def concurrency_snapshot(self_pid):
@@ -913,6 +946,12 @@ def cmd_boundary(args):
             append_event(args.journal, {"ev": "junit", "index": args.index, "at": at, **junit_report(args.junit)})
 
 
+def cmd_harness_ancestor(args):
+    argv = harness_ancestor(args.self_pid)
+    if argv is not None:
+        sys.stdout.write(json.dumps(argv) + "\n")
+
+
 def cmd_sccache_report(args):
     sys.stdout.write(json.dumps(sccache_report(args.ledger_dir, args.min_samples), indent=2) + "\n")
 
@@ -958,6 +997,10 @@ def build_parser():
     finalize.add_argument("--ended-at", type=float, required=True)
     finalize.add_argument("--signal", default="")
     finalize.set_defaults(func=cmd_finalize)
+
+    harness = sub.add_parser("harness-ancestor", help="print the argv of the nearest infra-harness ancestor, if any")
+    harness.add_argument("--self-pid", type=int, required=True)
+    harness.set_defaults(func=cmd_harness_ancestor)
 
     report = sub.add_parser("sccache-report", help="sccache counter deltas bucketed by concurrency (read-only)")
     report.add_argument("--ledger-dir", required=True)

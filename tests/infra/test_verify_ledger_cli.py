@@ -473,12 +473,14 @@ class FakeProc:
         )
         (self.root / "self").mkdir()
 
-    def add(self, pid, ppid, comm, argv):
+    def add(self, pid, ppid, comm, argv, cwd=None):
         d = self.root / str(pid)
         d.mkdir()
         (d / "cmdline").write_bytes(b"".join(a.encode() + b"\0" for a in argv))
         (d / "stat").write_text(f"{pid} ({comm}) S {ppid} {pid} {pid} 0 -1 4194560 0 0 0 0\n")
         (d / "comm").write_text(comm + "\n")
+        if cwd is not None:
+            (d / "cwd").symlink_to(cwd)
 
     def remove(self, pid):
         shutil.rmtree(self.root / str(pid))
@@ -516,6 +518,51 @@ def populated_proc(test):
     proc.add(601, 600, "rustc", ["rustc", "--crate-name", "b"])
     proc.add(700, 1, "tmux: server", ["tmux"])
     return proc
+
+
+class HarnessAncestorTests(unittest.TestCase):
+    """verify.sh's default (production) ledger refuses a run beneath reify's infra harness."""
+
+    def setUp(self):
+        self.proc = FakeProc(self)
+        self.proc.add(1, 0, "systemd", ["/sbin/init"])
+
+    def ancestor(self, self_pid):
+        run = run_tool(
+            "harness-ancestor", "--self-pid", str(self_pid),
+            env=hermetic_env(REIFY_VERIFY_LEDGER_PROC_ROOT=str(self.proc.root)),
+        )
+        self.assertEqual((run.returncode, run.stderr), (0, ""))
+        return json.loads(run.stdout) if run.stdout else None
+
+    def test_nearest_harness_ancestor_is_printed(self):
+        harnesses = {
+            "bash suite": (["bash", "tests/infra/test_verify_confirm_failed.sh"], "/w/lane"),
+            "python suite": (["python3", "/w/lane/tests/infra/test_verify_ledger_e2e.py"], "/"),
+            "run_all": (["bash", "/w/lane/tests/infra/run_all.sh"], "/"),
+            "cwd-relative suite": (["bash", "test_verify_scope.sh"], "/w/lane/tests/infra"),
+        }
+        for pid, (name, (argv, cwd)) in enumerate(harnesses.items(), start=10):
+            with self.subTest(harness=name):
+                self.proc.add(pid, 1, "x", argv, cwd=cwd)
+                self.proc.add(pid + 100, pid, "bash", ["/bin/bash", "-c", "./scripts/verify.sh test"])
+                self.proc.add(pid + 200, pid + 100, "bash", VERIFY_TEST_ARGV, cwd="/w/lane")
+                self.assertEqual(self.ancestor(pid + 200), argv)
+
+    def test_production_ancestry_has_none(self):
+        self.proc.add(50, 1, "python3", ["python3", "-m", "orchestrator"], cwd="/w/df")
+        self.proc.add(51, 50, "bash", ["/bin/bash", "-c", "./scripts/verify.sh test --include-infra"], cwd="/w/lane")
+        self.proc.add(52, 51, "bash", VERIFY_TEST_ARGV, cwd="/w/lane")
+        self.assertIsNone(self.ancestor(52))
+
+    def test_a_test_script_outside_tests_infra_is_not_the_harness(self):
+        self.proc.add(60, 1, "bash", ["bash", "/tmp/ra-fixture/infra/test_pool_a.sh"], cwd="/tmp")
+        self.proc.add(61, 60, "bash", VERIFY_TEST_ARGV, cwd="/w/lane")
+        self.assertIsNone(self.ancestor(61))
+
+    def test_a_vanished_parent_ends_the_walk(self):
+        self.proc.add(71, 70, "bash", VERIFY_TEST_ARGV, cwd="/w/lane")
+        self.assertIsNone(self.ancestor(71))
 
 
 def boundary(journal, index, edge, env, junit=None, at=None):

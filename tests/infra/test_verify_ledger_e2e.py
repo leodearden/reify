@@ -221,6 +221,13 @@ class VerifyLedgerE2ETests(unittest.TestCase):
         self.assertNotIn("verify-ledger", run.stdout + run.stderr)
         self.assertNotIn("verify-ledger", self.pass_run.stdout + self.pass_run.stderr)
 
+    def test_f_default_ledger_refuses_a_run_beneath_an_infra_suite(self):
+        main = self.vehicle.work / "main-checkout"
+        main.mkdir()
+        run = self.vehicle.run(None, REIFY_MAIN_CHECKOUT=str(main))
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertFalse((main / "data" / "verify-logs" / "verify-runs.jsonl").exists())
+
 
 if __name__ == "__main__":
     unittest.main()

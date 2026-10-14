@@ -369,7 +369,9 @@
 #   REIFY_VERIFY_LEDGER_DIR      — where a top-level EXECUTED run appends its
 #                                  one JSON record, to verify-runs.jsonl
 #                                  (default: <main checkout>/data/verify-logs,
-#                                  resolved like REIFY_BACKGROUND_SWEEP_LEDGER).
+#                                  resolved like REIFY_BACKGROUND_SWEEP_LEDGER;
+#                                  the default refuses a run beneath a
+#                                  tests/infra suite or run_all.sh).
 #   REIFY_VERIFY_LEDGER_LANE_DIR — the lane whose seed stamp the record reads
 #                                  (default: this checkout).
 #   REIFY_VERIFY_RUN_ID          — exported by a recording run to its whole
@@ -3234,16 +3236,26 @@ _VL_LEDGER_DIR=""
 _VL_EXIT_RC=""
 declare -A _VL_SNAPSHOT=()
 
-_vl_py() {
-    LD_LIBRARY_PATH="${REIFY_AMBIENT_LD_LIBRARY_PATH-}" python3 "$SCRIPT_DIR/verify-ledger.py" "$@" 2>>"$_VL_DIR/errors.log" || true
+# _vl_tool: stderr is the caller's. _vl_py: stderr goes to the run's journal.
+_vl_tool() {
+    LD_LIBRARY_PATH="${REIFY_AMBIENT_LD_LIBRARY_PATH-}" python3 "$SCRIPT_DIR/verify-ledger.py" "$@" || true
 }
 
+_vl_py() {
+    _vl_tool "$@" 2>>"$_VL_DIR/errors.log" || true
+}
+
+# The production ledger refuses a run beneath reify's infra harness, however
+# the suite was launched. An explicit REIFY_VERIFY_LEDGER_DIR is a deliberate
+# private ledger and still records.
 _vl_ledger_dir() {
     if [ -n "${REIFY_VERIFY_LEDGER_DIR:-}" ]; then
         printf '%s' "$REIFY_VERIFY_LEDGER_DIR"
         return 0
     fi
-    local _main=""
+    local _harness="" _main=""
+    _harness="$(_vl_tool harness-ancestor --self-pid "$$" 2>/dev/null)"
+    [ -z "$_harness" ] || return 1
     _main="$(_main_checkout_dir)" || return 1
     printf '%s' "$_main/data/verify-logs"
 }

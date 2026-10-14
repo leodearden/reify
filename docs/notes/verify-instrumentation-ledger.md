@@ -56,12 +56,22 @@ A run records only when **all** of the following hold:
 - it is an executed plan; `--print-plan` never records;
 - it is **top-level**: `REIFY_VERIFY_RUN_ID` is unset on entry;
 - `python3` and `scripts/verify-ledger.py` are present;
-- a ledger directory resolves.
+- a ledger directory resolves: `REIFY_VERIFY_LEDGER_DIR`, or the default,
+  which refuses a run beneath reify's infra harness (below).
 
 A recording run exports `REIFY_VERIFY_RUN_ID` to its whole process tree. Any
 verify.sh started beneath it inherits the id, counts as **nested**, and
-records nothing. This covers infra tests that execute verify.sh with stub
-cargo, so they never pollute the production ledger.
+records nothing. That covers the infra suites the gate runs.
+
+A suite run by hand (`bash tests/infra/test_x.sh`, or
+`bash tests/infra/run_all.sh`) has no recording run above it. Many suites
+execute verify.sh for real with stub cargo, and their runs carry whatever role
+the suite stamped, so the **default** ledger also refuses any run that has
+reify's infra harness among its ancestors. The harness is a process whose
+argv names `tests/infra/run_all.sh` or a `tests/infra/test_*.sh` / `.py`,
+resolved against that process's cwd (`verify-ledger.py harness-ancestor`). A
+suite that wants a record passes its own `REIFY_VERIFY_LEDGER_DIR`, as the
+ledger's own suites do.
 
 Every instrument is fail-open. A failure lands in the record's
 `instrument_errors`, or on stderr if no journal exists. It never changes the
@@ -71,11 +81,11 @@ main checkout, the append fails open and the run leaves no record.
 
 | Knob | Meaning |
 |---|---|
-| `REIFY_VERIFY_LEDGER_DIR` | Ledger directory (default `<main checkout>/data/verify-logs`). |
+| `REIFY_VERIFY_LEDGER_DIR` | Ledger directory (default `<main checkout>/data/verify-logs`, which refuses a run beneath the infra harness). |
 | `REIFY_VERIFY_LEDGER_LANE_DIR` | Lane whose seed stamp the record reads (default: the running checkout). |
 | `REIFY_VERIFY_RUN_ID` | Internal. Inheriting it marks a run as nested. |
 | `REIFY_RUN_ALL_TIMING_OUT` | Internal. Exported around each plan step; `run_all.sh` consumes it, unsets it, and writes its timing there. |
-| `REIFY_VERIFY_LEDGER_PROC_ROOT` | Test hook: the `/proc` the concurrency scan reads. |
+| `REIFY_VERIFY_LEDGER_PROC_ROOT` | Test hook: the `/proc` the concurrency scan and the harness check read. |
 
 While a run is in flight, its journal lives in
 `${TMPDIR:-/tmp}/reify-verify-journal.XXXXXX`. Finalize runs once, from
