@@ -125,6 +125,24 @@ class ClassifyTests(unittest.TestCase):
                 self.assertIn(phase, by_phase)
                 self.assertEqual(by_phase[phase], {flags})
 
+    def test_real_plans_never_fall_back(self):
+        # PHASE_RULES re-parses verify.sh's plan text, so a reshaped line must
+        # red here rather than degrade silently to a fallback phase.
+        plans = {("merge", "all --profile both --scope all"): (self.merge_lines, self.merge_entries)}
+        for role, args in (
+            ("background", "all --profile both --scope all"),
+            ("task", "all --profile both --scope all"),
+            ("task", "test --scope all --include-infra"),
+            ("task", "lint"),
+            ("task", "typecheck"),
+        ):
+            lines = print_plan(args.split(), role=role)
+            plans[(role, args)] = (lines, classify(lines))
+        for (role, args), (lines, entries) in plans.items():
+            for entry in entries:
+                with self.subTest(role=role, args=args, line=lines[entry["index"]][:120]):
+                    self.assertNotIn(entry["phase"], ("other", "cargo_other"))
+
     def test_marker_tokens_classified_exactly(self):
         phases = {
             self.merge_lines[e["index"]]: e["phase"] for e in self.merge_entries
