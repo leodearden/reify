@@ -4,6 +4,10 @@
 //! Each row counts the inline copies of a primitive that a later leaf extracts,
 //! and the count must equal the row's committed baseline: above it is a re-added
 //! copy, below it means the migrating leaf has to lower the baseline.
+//!
+//! These rows are not `tests/infra/adoption-ratchet.manifest` rows: that engine
+//! reds only above a ceiling, so a migrated copy would go unrecorded, and it
+//! matches line by line, so it cannot skip `#[cfg(test)]` items or string contents.
 
 use std::cmp::{Ordering, Reverse};
 use std::collections::BTreeMap;
