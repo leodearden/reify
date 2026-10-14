@@ -9,7 +9,7 @@ use reify_ast::{
 use reify_core::SourceSpan;
 use tower_lsp::lsp_types::{Location, Position, Range, Url};
 
-use crate::analysis::{enclosing_decl_at, name_token_span};
+use crate::decl_oracle::{enclosing_decl_at, name_token_span};
 use crate::convert::{find_word_at_offset, position_to_offset, span_to_range};
 
 use super::walk::{

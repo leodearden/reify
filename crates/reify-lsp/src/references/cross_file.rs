@@ -16,7 +16,7 @@ use reify_ast::{Declaration, ImportKind, ParsedModule};
 use reify_core::SourceSpan;
 use tower_lsp::lsp_types::{Location, Position, TextEdit, Url, WorkspaceEdit};
 
-use crate::analysis::name_token_span;
+use crate::decl_oracle::name_token_span;
 use crate::convert::{find_word_at_offset, position_to_offset, span_to_range};
 
 use super::decl_uses::{
@@ -385,7 +385,7 @@ fn classify_decl_name_in(parsed: &ParsedModule, name: &str) -> Option<RefSymbolK
         (decl_name == name).then_some(kind)
     });
     top_level.or_else(|| {
-        crate::analysis::purpose_nested_decl_names(parsed)
+        crate::decl_oracle::purpose_nested_decl_names(parsed)
             .any(|(nested, _)| nested == name)
             .then_some(RefSymbolKind::Structure)
     })

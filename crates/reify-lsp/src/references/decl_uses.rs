@@ -10,7 +10,7 @@ use reify_ast::{
 };
 use reify_core::SourceSpan;
 
-use crate::analysis::name_token_span;
+use crate::decl_oracle::name_token_span;
 
 use super::walk::{for_each_child_scope, for_each_direct_subexpr, for_each_member_direct_expr};
 
@@ -68,7 +68,7 @@ pub(super) fn collect_decl_name_spans(source: &str, parsed: &ParsedModule, name:
 /// [`collect_decl_name_uses_in_members`]. The match is WILDCARD-FREE over all 14
 /// `Declaration` variants, so a new declaration kind is a compile error here
 /// rather than a silently uncollected use site — the same forcing-function
-/// design as `analysis::decl_name_and_span`.
+/// design as `decl_oracle::decl_name_and_span`.
 ///
 /// Both reference collectors share it: the home document walks every
 /// declaration, and an importing document walks the same set once its import
@@ -501,7 +501,7 @@ fn collect_type_name_uses_in_expr(
 ///
 /// The match is WILDCARD-FREE over all six `TypeExprKind` variants, so a new
 /// variant is a compile error here rather than a silently uncollected use site
-/// — the same forcing-function design as `analysis::decl_name_and_span`.
+/// — the same forcing-function design as `decl_oracle::decl_name_and_span`.
 ///
 /// SPAN PRECISION is the rename-safety property, because
 /// `cross_file::compute_rename_cross_file` uses the reference set as its exact edit set.

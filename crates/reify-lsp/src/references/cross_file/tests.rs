@@ -1,5 +1,5 @@
 use super::*;
-use crate::analysis::test_fixtures::{NAMED_DECL_SNIPPETS, occurrences, parse_one_clean, span_of};
+use crate::decl_oracle::test_fixtures::{NAMED_DECL_SNIPPETS, occurrences, parse_one_clean, span_of};
 use crate::convert::offset_to_position;
 use reify_ast::MemberDecl;
 use reify_core::ModulePath;
@@ -539,7 +539,7 @@ fn prepare_rename_cross_file_refuses_keyword_type_and_unresolved() {
 ///
 /// HISTORY — what this test used to assert, and why. #6388 made same-file
 /// go-to-definition resolve top-level declaration names UNIFORMLY across
-/// all kinds, via its own scanner (`analysis::decl_name_and_span` +
+/// all kinds, via its own scanner (`decl_oracle::decl_name_and_span` +
 /// `goto_def::decl_name_token`). It deliberately did NOT widen
 /// `goto_def::decl_name_span_in`, the home oracle feeding
 /// `collect_decl_name_spans`, `resolve_cross_file_home` step 2 and the

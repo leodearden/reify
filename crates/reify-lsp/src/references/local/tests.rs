@@ -1,5 +1,5 @@
 use super::*;
-use crate::analysis::test_fixtures::{find_sub, occurrences, span_of};
+use crate::decl_oracle::test_fixtures::{find_sub, occurrences, span_of};
 use crate::convert::offset_to_position;
 use reify_core::ModulePath;
 
