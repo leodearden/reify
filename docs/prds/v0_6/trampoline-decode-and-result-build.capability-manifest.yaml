@@ -151,7 +151,7 @@ tasks:
         delivered_check:
           kind: "grep"
           pattern: "pub fn registry_free"
-          paths: ["crates/reify-ir/src/value.rs"]
+          paths: ["crates/reify-ir/src"]
           expect: "present"
       - name: "private-consts-gone"
         binding: "grep: 5 production const REGISTRY_FREE_TYPE_ID copies at main"
@@ -270,12 +270,12 @@ tasks:
           paths: ["crates/reify-eval/src/bom_report.rs"]
           expect: "absent"
       - name: "gui-copy-gone"
-        binding: "grep: gui engine.rs scalar_to_f64 at main"
+        binding: "grep: gui engine.rs scalar_to_f64 at main (path widened to gui/src-tauri/src 2026-10-14: S25 δ #8940 moves the copy into engine/mechanism.rs and engine/tensegrity.rs)"
         verdict: PASS
         delivered_check:
           kind: "grep"
           pattern: "fn scalar_to_f64"
-          paths: ["gui/src-tauri/src/engine.rs"]
+          paths: ["gui/src-tauri/src"]
           expect: "absent"
   - label: "ι"
     task_id: 8702
@@ -341,7 +341,7 @@ tasks:
         delivered_check:
           kind: "grep"
           pattern: "pub fn flat_index_3d"
-          paths: ["crates/reify-ir/src/value.rs"]
+          paths: ["crates/reify-ir/src"]
           expect: "present"
       - name: "medial-walk-cycle-broken"
         binding: "grep: walk_direction imports medial::{normalize3, sample_at_index} while medial imports walk_direction at main"
@@ -385,7 +385,7 @@ tasks:
         delivered_check:
           kind: "grep"
           pattern: "pub fn same_grid"
-          paths: ["crates/reify-ir/src/value.rs"]
+          paths: ["crates/reify-ir/src"]
           expect: "present"
       - name: "grids-equal-gone"
         binding: "grep: fea::grids_equal duplicates grid_metadata_eq at main"

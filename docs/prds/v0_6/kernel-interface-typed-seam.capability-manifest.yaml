@@ -4,7 +4,7 @@ prd: docs/prds/v0_6/kernel-interface-typed-seam.md
 schema_version: 1
 tasks:
 - label: α₁
-  task_id: null
+  task_id: 8930
   title: 'kernel-interface α₁: geometry_id.rs breaks the reify-ir value<->geometry SCC'
   capabilities:
   - name: scc-reproduces
@@ -30,7 +30,7 @@ tasks:
       paths:
       - crates/reify-ir/src/geometry_id.rs
 - label: α₂
-  task_id: null
+  task_id: 8931
   title: 'kernel-interface α₂: geometry.rs becomes geometry/ (mesh, error, export, volume_mesh) with a path-preserving facade'
   capabilities:
   - name: mesh-error-cycle
@@ -72,7 +72,7 @@ tasks:
       paths:
       - crates/reify-ir/src/geometry/mesh.rs
 - label: α₃
-  task_id: null
+  task_id: 8932
   title: 'kernel-interface α₃: geometry/ upper strata (handle, capability, op, query, naming, kernel)'
   capabilities:
   - name: registration-placement
@@ -90,7 +90,7 @@ tasks:
       paths:
       - crates/reify-ir/src/geometry/kernel.rs
 - label: α₄
-  task_id: null
+  task_id: 8933
   title: 'kernel-interface α₄: value.rs becomes value/ (sampled_field, selector, display_number, eval_status); subsumes #8790'
   capabilities:
   - name: selector-cycle
@@ -115,7 +115,7 @@ tasks:
       paths:
       - crates/reify-ir/src/value/mod.rs
 - label: α₅
-  task_id: null
+  task_id: 8934
   title: 'kernel-interface α₅: typed StructureInstanceData overlays (annotations, source_span)'
   capabilities:
   - name: overlay-keys-today
@@ -141,7 +141,7 @@ tasks:
       paths:
       - crates/reify-ir/src
 - label: β₁
-  task_id: null
+  task_id: 8935
   title: 'kernel-interface β₁: native deps fail closed; the OCCT/gmsh/OpenVDB stub arms are deleted (R5); subsumes #8532'
   capabilities:
   - name: no-live-consumer
@@ -199,7 +199,7 @@ tasks:
       - crates/reify-mesh-morph/build.rs
       - gui/src-tauri/build.rs
 - label: β₂
-  task_id: null
+  task_id: 8936
   title: 'kernel-interface β₂: sweep always-true native cfg gates and *_AVAILABLE guards (kernel and support crates)'
   capabilities:
   - name: counts
@@ -230,7 +230,7 @@ tasks:
       - crates/reify-kernel-gmsh/Cargo.toml
       - crates/reify-kernel-openvdb/Cargo.toml
 - label: β₃
-  task_id: null
+  task_id: 8957
   title: 'kernel-interface β₃: sweep always-true native cfg gates and *_AVAILABLE guards (reify-eval, front ends, the rest); the constants go'
   capabilities:
   - name: readers-today
@@ -259,7 +259,7 @@ tasks:
       paths:
       - crates/reify-kernel-occt/src
 - label: γ
-  task_id: null
+  task_id: 8958
   title: 'kernel-interface γ: crate strata assertion over every workspace package'
   capabilities:
   - name: coverage-today
@@ -277,7 +277,7 @@ tasks:
       paths:
       - scripts/crate-strata.json
 - label: δ₁
-  task_id: null
+  task_id: 8959
   title: 'kernel-interface δ₁: split assert_kernel_contract! into core, taxonomy modes and a B-rep extension'
   capabilities:
   - name: arms-today
@@ -296,7 +296,7 @@ tasks:
       paths:
       - crates/reify-test-support/src/kernel_assertions/core.rs
 - label: δ₂
-  task_id: null
+  task_id: 8960
   title: 'kernel-interface δ₂: the contract core instantiated on Fidget, Manifold, OpenVDB and Gmsh'
   capabilities:
   - name: instantiations-today
@@ -328,7 +328,7 @@ tasks:
       paths:
       - crates/reify-kernel-manifold/tests/kernel_contract.rs
 - label: δ₃
-  task_id: null
+  task_id: 8961
   title: 'kernel-interface δ₃: strict dangling-handle taxonomy (GeometryQuery::primary_handle; Fidget, Manifold, OpenVDB)'
   capabilities:
   - name: divergences-today
@@ -348,7 +348,7 @@ tasks:
       paths:
       - crates/reify-ir/src
 - label: δ₄
-  task_id: null
+  task_id: 8962
   title: 'kernel-interface δ₄: MockGeometryKernel strict_handles() under the contract; INV-GEO-4 flips'
   capabilities:
   - name: mock-accepts-dangling
@@ -367,7 +367,7 @@ tasks:
       paths:
       - crates/reify-test-support/tests/mock_kernel_contract.rs
 - label: δ₆
-  task_id: null
+  task_id: 8963
   title: 'kernel-interface δ₆: shared test-double building blocks (AllErrorKernel, ObservingKernel<K>)'
   capabilities:
   - name: doubles-census
@@ -385,7 +385,7 @@ tasks:
       paths:
       - crates/reify-test-support/src/kernel_doubles.rs
 - label: δ₇
-  task_id: null
+  task_id: 8964
   title: 'kernel-interface δ₇: migrate the bespoke GeometryKernel test doubles onto the shared blocks'
   capabilities:
   - name: replaceable-rule
@@ -395,7 +395,7 @@ tasks:
       kind: manual
       reason: the adoption-ratchet rows δ₆ lands are the mechanical cover; ceilings are the ledger's measured residual
 - label: ε₁
-  task_id: null
+  task_id: 8965
   title: 'kernel-interface ε₁: capability sub-traits and accessors beside the flat GeometryKernel methods'
   capabilities:
   - name: override-pattern
@@ -436,7 +436,7 @@ tasks:
       paths:
       - crates/reify-ir/src
 - label: ε₂
-  task_id: null
+  task_id: 8966
   title: 'kernel-interface ε₂: required core methods and accessors, forwarding macros and the delegation lint (INV-GEO-5 partial)'
   capabilities:
   - name: masking-proxies
@@ -464,7 +464,7 @@ tasks:
       paths:
       - crates/reify-geometry/tests/kernel_wrappers_forward_every_capability.rs
 - label: ε₃
-  task_id: null
+  task_id: 8967
   title: 'kernel-interface ε₃: topology extraction and multi-body leave the flat trait; the kernel_calls facade'
   capabilities:
   - name: call-sites
@@ -482,7 +482,7 @@ tasks:
       paths:
       - crates/reify-ir/src/kernel_calls.rs
 - label: ε₄
-  task_id: null
+  task_id: 8968
   title: 'kernel-interface ε₄: mesh, voxel and volume-mesh capabilities leave the flat trait'
   capabilities:
   - name: receivers
@@ -493,7 +493,7 @@ tasks:
       kind: manual
       reason: behaviour-neutral move; the ε₂ lint and the BT-ε1 harness are the cover
 - label: ε₅
-  task_id: null
+  task_id: 8969
   title: 'kernel-interface ε₅: probe, history, batch query, optioned export and topology tessellation leave the flat trait (INV-GEO-5 complete)'
   capabilities:
   - name: closest-point-duplicate
@@ -512,7 +512,7 @@ tasks:
       paths:
       - crates/reify-ir/src
 - label: ζ₁
-  task_id: null
+  task_id: 8970
   title: 'kernel-interface ζ₁: ValidatedMesh carries tol, weld and waiver; two entry points; one function per obligation'
   capabilities:
   - name: entry-points-today
@@ -531,7 +531,7 @@ tasks:
       paths:
       - crates/reify-ir/src
 - label: ζ₂
-  task_id: null
+  task_id: 8971
   title: 'kernel-interface ζ₂: the five mesh-consuming capability methods take &ValidatedMesh; one front door; posture in the witness (R3)'
   capabilities:
   - name: six-raw-mesh-methods
@@ -566,7 +566,7 @@ tasks:
       paths:
       - crates/reify-eval/src
 - label: ζ₃
-  task_id: null
+  task_id: 8972
   title: 'kernel-interface ζ₃: ElementOrderTag owns the element-order degree and tet-stride tables'
   capabilities:
   - name: copies-today
@@ -597,7 +597,7 @@ tasks:
       paths:
       - crates/reify-ir/src
 - label: ζ₄
-  task_id: null
+  task_id: 8973
   title: 'kernel-interface ζ₄: MarchingCubes output passes the mesh front door (measured first)'
   capabilities:
   - name: mc-unmeasured
@@ -617,7 +617,7 @@ tasks:
       paths:
       - crates/reify-eval/src
 - label: η₁
-  task_id: null
+  task_id: 8974
   title: 'kernel-interface η₁: GeometryKernel::query returns QueryReply (transitional Untyped)'
   capabilities:
   - name: untyped-today
@@ -642,7 +642,7 @@ tasks:
       paths:
       - crates/reify-ir/src
 - label: η₂
-  task_id: null
+  task_id: 8975
   title: 'kernel-interface η₂: point and direction replies typed'
   capabilities:
   - name: xyz-parsers-today
@@ -661,7 +661,7 @@ tasks:
       paths:
       - crates/reify-eval/src
 - label: η₃
-  task_id: null
+  task_id: 8976
   title: 'kernel-interface η₃: bounding-box reply typed; the JSON tokenizers and the axis byte tag go'
   capabilities:
   - name: tokenizers-today
@@ -697,7 +697,7 @@ tasks:
       paths:
       - crates/reify-test-support/src
 - label: η₄
-  task_id: null
+  task_id: 8977
   title: 'kernel-interface η₄: surface/curve kind replies typed; the kind enums name themselves'
   capabilities:
   - name: kind-copies
@@ -723,7 +723,7 @@ tasks:
       paths:
       - crates/reify-ir/src
 - label: η₅
-  task_id: null
+  task_id: 8978
   title: 'kernel-interface η₅: the remaining query replies typed'
   capabilities:
   - name: dual-shape-drift
@@ -733,7 +733,7 @@ tasks:
       kind: manual
       reason: the η₆ reply-kind contract and the oracle are the cover
 - label: η₆
-  task_id: null
+  task_id: 8979
   title: 'kernel-interface η₆: delete QueryReply::Untyped; the reply-kind contract in the core suite'
   capabilities:
   - name: reply-kind-contract
@@ -746,7 +746,7 @@ tasks:
       paths:
       - crates/reify-test-support/src
 - label: θ₁
-  task_id: null
+  task_id: 8980
   title: 'kernel-interface θ₁: Length and Angle newtypes; the primitives family typed'
   capabilities:
   - name: no-newtype-today
@@ -777,7 +777,7 @@ tasks:
       paths:
       - crates/reify-ir/src/quantity.rs
 - label: θ₂
-  task_id: null
+  task_id: 8981
   title: 'kernel-interface θ₂: modify, sweep and profile families typed; SweptKind'
   capabilities:
   - name: sweep-classifier-decodes
@@ -796,7 +796,7 @@ tasks:
       paths:
       - crates/reify-eval/src/sweep_classifier.rs
 - label: θ₃
-  task_id: null
+  task_id: 8982
   title: 'kernel-interface θ₃: pattern family typed; the length tripwire and second classifier are retired; subsumes #8795'
   capabilities:
   - name: false-rationale
@@ -818,7 +818,7 @@ tasks:
       - crates/reify-kernel-occt/src
       - crates/reify-kernel-fidget/src
 - label: θ₄
-  task_id: null
+  task_id: 8983
   title: 'kernel-interface θ₄: bare-f64 length/angle GeometryOp fields typed; the justification guard'
   capabilities:
   - name: f64-surface
@@ -837,7 +837,7 @@ tasks:
       paths:
       - crates/reify-ir/tests
 - label: θ₅
-  task_id: null
+  task_id: 8985
   title: 'kernel-interface θ₅: dimensionless positions are dimension-checked (scale factor, pattern counts, directions)'
   capabilities:
   - name: scale-probe
@@ -887,7 +887,7 @@ tasks:
       paths:
       - crates/reify-eval/src
 - label: ι₁
-  task_id: null
+  task_id: 8987
   title: 'kernel-interface ι₁: KNOWN_V02_KERNELS derived from KernelId; typed kernel pragma'
   capabilities:
   - name: pragma-probe
@@ -906,7 +906,7 @@ tasks:
       paths:
       - crates/reify-core/src/kernel.rs
 - label: ι₂
-  task_id: null
+  task_id: 8989
   title: 'kernel-interface ι₂: OCCT declares the ops it executes; descriptor completeness test'
   capabilities:
   - name: undeclared-ops
@@ -934,7 +934,7 @@ tasks:
       paths:
       - crates/reify-kernel-conformance/tests/descriptor_completeness.rs
 - label: ι₃
-  task_id: null
+  task_id: 8992
   title: 'kernel-interface ι₃: KernelSet keyed by KernelId; the default-kernel sentinel goes'
   capabilities:
   - name: sentinel-mode
@@ -968,7 +968,7 @@ tasks:
       paths:
       - crates/reify-eval/src
 - label: ι₄
-  task_id: null
+  task_id: 8993
   title: 'kernel-interface ι₄: dispatcher::select for ops over the set''s own descriptors'
   capabilities:
   - name: boolean-stl-probe
@@ -994,7 +994,7 @@ tasks:
       paths:
       - crates/reify-eval/src/dispatcher.rs
 - label: ι₅
-  task_id: null
+  task_id: 8995
   title: 'kernel-interface ι₅: handle-served requests go to the owning kernel (INV-GEO-2 consumer clause)'
   capabilities:
   - name: silent-fallback
@@ -1020,7 +1020,7 @@ tasks:
       paths:
       - crates/reify-eval/src
 - label: ι₆
-  task_id: null
+  task_id: 8998
   title: 'kernel-interface ι₆: CapabilityDescriptor declares queries, exports and projections; the hard-coded kernel arms become rows'
   capabilities:
   - name: conversions-already-rows
@@ -1048,7 +1048,7 @@ tasks:
       paths:
       - crates/reify-eval/src
 - label: ω
-  task_id: null
+  task_id: 9000
   title: 'kernel-interface ω: PRD close (SHIPPED stamp, freeze header, manifest header)'
   capabilities:
   - name: terminal-stamp

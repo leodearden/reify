@@ -69,7 +69,7 @@ tasks:
       pattern: fn tessellate_with_topology\b
       expect: present
       paths:
-      - crates/reify-ir/src/geometry.rs
+      - crates/reify-ir/src
   - name: occt-implements-side-channel
     binding: producer-self (C2) — the OCCT kernel implements it through a new OcctRequest
       variant on OcctKernelHandle.

@@ -6,6 +6,8 @@ PRD: `docs/prds/v0_6/kernel-interface-typed-seam.md`. Machine-readable twin: `do
 
 Premise rows hold now. Deliverable rows are "not yet" by construction, and each mechanical check is RED at authoring time in the non-vacuous direction: an `absent` check sees its pattern present today, a `present` check sees it absent (verified by the generator's polarity pass).
 
+**Stamped 2026-10-14 by `commit_planning`:** α₁ #8930, α₂ #8931, α₃ #8932, α₄ #8933, α₅ #8934, β₁ #8935, β₂ #8936, β₃ #8957, γ #8958, δ₁ #8959, δ₂ #8960, δ₃ #8961, δ₄ #8962, δ₆ #8963, δ₇ #8964, ε₁ #8965, ε₂ #8966, ε₃ #8967, ε₄ #8968, ε₅ #8969, ζ₁ #8970, ζ₂ #8971, ζ₃ #8972, ζ₄ #8973, η₁ #8974, η₂ #8975, η₃ #8976, η₄ #8977, η₅ #8978, η₆ #8979, θ₁ #8980, θ₂ #8981, θ₃ #8982, θ₄ #8983, θ₅ #8985, ι₁ #8987, ι₂ #8989, ι₃ #8992, ι₄ #8993, ι₅ #8995, ι₆ #8998, ω #9000. The polarity gate reported nine `absent_overbroad` warnings, none blocking. Six match lines in `crates/reify-ir/src/geometry.rs` or `value.rs`, which the warned leaf itself splits (α₂, α₅ via α₄) or sits transitively after the split of (ε₅, ζ₁, η₄ after α₂). Three are on the broad-sweep leaves β₂/β₃, which declare `files: []` by design, so every match is in the sweep's own footprint.
+
 | leaf | capability | binding (evidence) | verdict | delivered_check |
 |---|---|---|---|---|
 | α₁ | scc-reproduces | scripts/assert-module-scc.py print at main 274a212e0a (2026-10-13): reify-ir row [[boundary_attachment, expr, geometry, value], [completeness, ranked]]; value.rs imports geometry::{Role, FeatureId, GeometryHandleId, FaceSurfaceKind, EdgeCurveKind}; geometry.rs imports value::{SampledField, Value}. | PASS | manual |
