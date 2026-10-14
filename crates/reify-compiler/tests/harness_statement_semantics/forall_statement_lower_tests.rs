@@ -129,6 +129,30 @@ fn assert_no_forall_connect_emissions(template: &reify_compiler::TopologyTemplat
     );
 }
 
+/// Assert that no `Severity::Info` diagnostic cites a task (`task <digit>` or
+/// `#<digit>`): an info diagnostic states what happens to the user's model,
+/// not which task owns the limitation.
+fn assert_no_task_citation(module: &reify_compiler::CompiledModule) {
+    fn cites_task(message: &str) -> bool {
+        let digit_after = |end: usize| message.as_bytes().get(end).is_some_and(u8::is_ascii_digit);
+        message
+            .match_indices("task ")
+            .any(|(i, m)| digit_after(i + m.len()))
+            || message.match_indices('#').any(|(i, _)| digit_after(i + 1))
+    }
+    for d in module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == reify_core::Severity::Info)
+    {
+        assert!(
+            !cites_task(&d.message),
+            "info diagnostic must state current behaviour without citing a task, got: {:?}",
+            d.message
+        );
+    }
+}
+
 /// Build the boilerplate source fixture for the three unsupported-port-shape
 /// tests, interpolating `left` and `right` into the connect line.
 ///
@@ -201,6 +225,7 @@ fn assert_unsupported_port_shape_diagnostic(source: &str, structure_name: &str, 
     use reify_core::Severity;
 
     let module = compile_source(source);
+    assert_no_task_citation(&module);
 
     // (a) No errors.
     let errors = errors_only(&module);
@@ -777,7 +802,7 @@ structure S {
 /// it is discoverable.
 ///
 /// The reviewer's preferred Option (a) treatment: deferred + where-clause is
-/// in the same "future scope" bucket as Instantiation and Chain.
+/// alongside Instantiation and Chain: not re-elaborated at runtime.
 ///
 /// Pins:
 /// (a) `errors_only(&module).is_empty()` — info diagnostics are not errors.
@@ -816,6 +841,7 @@ structure S {
 }
 "#;
     let module = compile_source(source);
+    assert_no_task_citation(&module);
 
     // (a) No errors — info diagnostics must not surface as errors.
     let errors = errors_only(&module);
@@ -888,9 +914,9 @@ structure S {
 /// (a) `errors_only(&module).is_empty()` — info diagnostics are not errors.
 /// (b) Zero `forall@*`-labelled CompiledConstraints in `template.constraints`.
 /// (c) `template.forall_templates.is_empty()` — the Instantiation body
-///     must NOT push a runtime template (task 2690 / future scope).
-/// (d) Exactly one `Diagnostic::info` mentioning the limitation, with a
-///     stable substring tying it to the future-scope task.
+///     must NOT push a runtime template.
+/// (d) Exactly one `Diagnostic::info` stating the body is "not re-elaborated
+///     at runtime", naming the construct.
 #[test]
 fn forall_constraint_inst_body_over_undef_count_collection_sub_skips_capture_with_info_diagnostic()
 {
@@ -912,6 +938,7 @@ structure S {
 }
 "#;
     let module = compile_source(source);
+    assert_no_task_citation(&module);
 
     // (a) No errors.
     let errors = errors_only(&module);
@@ -949,23 +976,23 @@ structure S {
     assert!(
         template.forall_templates.is_empty(),
         "expected zero CompiledForallTemplates for deferred-count forall \
-         with constraint-inst body (Instantiation is task 2690 future scope), \
+         with constraint-inst body (Instantiation is not re-elaborated at runtime), \
          got {} entries",
         template.forall_templates.len()
     );
 
-    // (d) Exactly one info diagnostic with stable substring "future scope".
+    // (d) Exactly one info diagnostic with stable substring "not re-elaborated at runtime".
     let info_diags: Vec<&reify_core::Diagnostic> = module
         .diagnostics
         .iter()
         .filter(|d| d.severity == Severity::Info)
-        .filter(|d| d.message.contains("future scope"))
+        .filter(|d| d.message.contains("not re-elaborated at runtime"))
         .filter(|d| d.message.contains("constraint-instantiation"))
         .collect();
     assert_eq!(
         info_diags.len(),
         1,
-        "expected exactly 1 info diagnostic mentioning 'future scope' and \
+        "expected exactly 1 info diagnostic mentioning 'not re-elaborated at runtime' and \
          'constraint-instantiation' for the deferred-count forall with inst \
          body, got {}: {:?}",
         info_diags.len(),
@@ -1005,8 +1032,8 @@ structure S {
 ///     `connector_type.is_none()`,
 ///     `params.is_empty()`,
 ///     `port_mappings.is_empty()`.
-/// (f) The OLD info diagnostic ("task 2690 future scope" + "forall connect")
-///     is GONE.
+/// (f) No "not re-elaborated at runtime" info diagnostic for the forall
+///     connect — it is captured.
 #[test]
 fn forall_connect_over_undef_count_collection_sub_captures_runtime_template() {
     use reify_ast::ConnectOp;
@@ -1126,13 +1153,13 @@ structure def S {
         .diagnostics
         .iter()
         .filter(|d| d.severity == Severity::Info)
-        .filter(|d| d.message.contains("future scope"))
+        .filter(|d| d.message.contains("not re-elaborated at runtime"))
         .filter(|d| d.message.contains("forall connect"))
         .collect();
     assert_eq!(
         info_diags.len(),
         0,
-        "expected zero 'task 2690 future scope' info diagnostics for forall \
+        "expected zero 'not re-elaborated at runtime' info diagnostics for forall \
          connect (now captured), got {}: {:?}",
         info_diags.len(),
         module
@@ -1293,6 +1320,7 @@ structure def S {
 }
 "#;
     let module = compile_source(source);
+    assert_no_task_citation(&module);
 
     // (a) No errors.
     let errors = errors_only(&module);
@@ -1413,7 +1441,8 @@ structure def S {
 /// (b) Zero CompiledConnections (deferred-count → silent-skip).
 /// (c) `template.forall_templates.is_empty()` — Chain body never
 ///     captures a runtime template.
-/// (d) Exactly one `Diagnostic::info` mentioning the future-scope task.
+/// (d) Exactly one `Diagnostic::info` stating the chain is "not re-elaborated
+///     at runtime".
 #[test]
 fn forall_chain_over_undef_count_collection_sub_skips_capture_with_info_diagnostic() {
     use reify_core::Severity;
@@ -1433,6 +1462,7 @@ structure def S {
 }
 "#;
     let module = compile_source(source);
+    assert_no_task_citation(&module);
 
     // (a) No errors.
     let errors = errors_only(&module);
@@ -1455,22 +1485,22 @@ structure def S {
     assert!(
         template.forall_templates.is_empty(),
         "expected zero CompiledForallTemplates for deferred-count forall \
-         chain (future scope), got {} entries",
+         chain (not re-elaborated at runtime), got {} entries",
         template.forall_templates.len()
     );
 
-    // (d) Exactly one info diagnostic mentioning future scope and chain.
+    // (d) Exactly one info diagnostic stating the chain is not re-elaborated.
     let info_diags: Vec<&reify_core::Diagnostic> = module
         .diagnostics
         .iter()
         .filter(|d| d.severity == Severity::Info)
-        .filter(|d| d.message.contains("future scope"))
+        .filter(|d| d.message.contains("not re-elaborated at runtime"))
         .filter(|d| d.message.contains("forall chain"))
         .collect();
     assert_eq!(
         info_diags.len(),
         1,
-        "expected exactly 1 info diagnostic mentioning 'future scope' and \
+        "expected exactly 1 info diagnostic mentioning 'not re-elaborated at runtime' and \
          'forall chain' for the deferred-count forall chain, got {}: {:?}",
         info_diags.len(),
         module
