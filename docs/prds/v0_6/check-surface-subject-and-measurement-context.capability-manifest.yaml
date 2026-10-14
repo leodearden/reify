@@ -2,7 +2,7 @@ prd: docs/prds/v0_6/check-surface-subject-and-measurement-context.md
 schema_version: 1
 tasks:
 - label: α
-  task_id: null
+  task_id: 9015
   title: 'check-surface α: check-surface ratchet member on the shared rust_construct_ratchet engine'
   capabilities:
   - name: engine-on-8730
@@ -23,7 +23,7 @@ tasks:
       paths:
       - tests/infra/test_check_surface_ratchets.py
 - label: ι
-  task_id: null
+  task_id: 9016
   title: 'check-surface ι: dispatch_constraints is one peel-bucket-weave path'
   capabilities:
   - name: five-exits-today
@@ -46,7 +46,7 @@ tasks:
       before ι and guards regrowth after.
     verdict: OPEN
 - label: ε1
-  task_id: null
+  task_id: 9017
   title: 'check-surface ε1: Engine::check takes an explicit MeasurementContext; measure / capture_measurement /
     unmeasured_context'
   capabilities:
@@ -95,7 +95,7 @@ tasks:
       with no entry keeps today''s arm-2/3 wording (fold-verifier N2, N8).'
     verdict: PASS
 - label: μ
-  task_id: null
+  task_id: 9018
   title: 'check-surface μ: trait conformance through satisfies_trait_bound over one registry (module shadows prelude)'
   capabilities:
   - name: compiler-fn-public
@@ -120,7 +120,7 @@ tasks:
       legally declare trait Buy; μ resolves fixed stdlib targets by identity (B9).
     verdict: PASS
 - label: λ
-  task_id: null
+  task_id: 9019
   title: 'check-surface λ: tolerance_combine.rs partition; typed OutputFormat/STEPVersion decoder'
   capabilities:
   - name: five-groups
@@ -144,7 +144,7 @@ tasks:
       paths:
       - crates/reify-eval/src/output_spec.rs
 - label: ε2
-  task_id: null
+  task_id: 9020
   title: 'check-surface ε2: the achieved representation-deviation table has a typed key'
   capabilities:
   - name: one-caller
@@ -162,7 +162,7 @@ tasks:
       paths:
       - crates/reify-eval/src
 - label: ε3
-  task_id: null
+  task_id: 9021
   title: 'check-surface ε3: a measurement is valid only for the content it measured (hash + kernel generation)'
   capabilities:
   - name: reload-keeps-stale-handles
@@ -187,7 +187,7 @@ tasks:
       zero placeholders so measured entries carry real hashes (fold-verifier N9).
     verdict: OPEN
 - label: ζ1
-  task_id: null
+  task_id: 9022
   title: 'check-surface ζ1: one CheckEnginePlan for cmd_check; module_has_* detectors in reify-eval'
   capabilities:
   - name: detectors-are-cli-private
@@ -216,13 +216,16 @@ tasks:
       paths:
       - crates/reify-eval/src/module_capabilities.rs
 - label: ζ2
-  task_id: null
+  task_id: 9023
   title: 'check-surface ζ2: reify check --purpose measures RepresentationWithin, geometric Conforms and DFM'
   capabilities:
   - name: purpose-path-never-measures
-    binding: the --purpose branch calls check_constraints_with_values, which never reaches measure_gdt_conformance
+    binding: 'the --purpose branch calls check_constraints_with_values, which never reaches measure_gdt_conformance
       / measure_dfm_rules (both called only from Engine::check, which walks module.templates and misses purpose-injected
-      constraints) (critic B3).
+      constraints) (critic B3). Lead probe 2026-10-14 (target/debug/reify built 2026-10-12, OCCT): a CurvedBall
+      RepresentationWithin(subject, 1um) fixture prints VIOLATED (sampled deviation 6.006e-2 m) without --purpose
+      and INDETERMINATE (undefined inputs: CurvedBallCheck.subject) under --purpose ok_basic=CurvedBallCheck, so
+      B5 is red today.'
     verdict: PASS
   - name: measured-values-pass
     binding: Engine::check_with_values_measured runs the measure passes over a given active set.
@@ -248,7 +251,7 @@ tasks:
       a binding-changes-geometry case.
     verdict: PASS
 - label: β
-  task_id: null
+  task_id: 9024
   title: 'check-surface β: constraint diagnostics carry a structured subject; supersession compares ids (INV-SF-6)'
   capabilities:
   - name: diagnostic-is-non-exhaustive
@@ -291,7 +294,7 @@ tasks:
       paths:
       - crates/reify-cli/src
 - label: γ
-  task_id: null
+  task_id: 9025
   title: 'check-surface γ: LSP diagnostics select by code and subject; compute_diagnostics_with_state is stage functions'
   capabilities:
   - name: skip-set-today
@@ -312,7 +315,7 @@ tasks:
       paths:
       - crates/reify-lsp/src/diagnostics.rs
 - label: η
-  task_id: null
+  task_id: 9026
   title: 'check-surface η: one GD&T context per check'
   capabilities:
   - name: duplicated-views
@@ -332,7 +335,7 @@ tasks:
       paths:
       - crates/reify-eval/src
 - label: θ
-  task_id: null
+  task_id: 9027
   title: 'check-surface θ: typed DFM verdict; one rule header; dfm_spec.rs'
   capabilities:
   - name: verdict-fn-from-s8
@@ -357,7 +360,7 @@ tasks:
       paths:
       - crates/reify-eval/src/dfm_spec.rs
 - label: δ
-  task_id: null
+  task_id: 9028
   title: 'check-surface δ: one DiagnosticInfo projection in reify-core; hot reload is a DiagnosticCode'
   capabilities:
   - name: no-constructor-today
@@ -391,7 +394,7 @@ tasks:
       DiagnosticInfo.severity; δ ← #8952; row C10 names engine.rs and engine/projection.rs.'
     verdict: PASS
 - label: κ
-  task_id: null
+  task_id: 9029
   title: 'check-surface κ: one guard-branch predicate (guard_branch.rs)'
   capabilities:
   - name: three-copies
@@ -411,12 +414,13 @@ tasks:
       paths:
       - crates/reify-eval/src/guard_branch.rs
 - label: π
-  task_id: null
+  task_id: 9030
   title: 'check-surface π: shadowing a prelude trait is a compile Error (StdlibNameShadowed)'
   capabilities:
   - name: shadowing-silent-today
     binding: 'probe 2026-10-14: a module `trait Buy { param lead_time_days }` with `Bolt : Buy` passes reify check
-      (rc 0) and yields a purchased BOM line; `trait Physical` rebinds stdlib Rigid : Physical.'
+      (rc 0) and yields a purchased BOM line; `trait Physical` rebinds stdlib Rigid : Physical. Re-probed by the
+      lead 2026-10-14 on target/debug/reify: rc 0, ''All constraints satisfied.'''
     verdict: PASS
   - name: lint-upstream
     binding: '#5493 (stdlib-namespace α, pending; branch task/5493) adds compile_builder/stdlib_shadow_lint.rs and
@@ -436,7 +440,7 @@ tasks:
       paths:
       - crates
 - label: ν
-  task_id: null
+  task_id: 9031
   title: 'check-surface ν: engine_constraints.rs partition close (supersession.rs)'
   capabilities:
   - name: partition-symbols-located
@@ -452,7 +456,7 @@ tasks:
       paths:
       - crates/reify-eval/src/supersession.rs
 - label: ω
-  task_id: null
+  task_id: 9032
   title: 'check-surface ω: PRD close — terminal status stamp'
   capabilities:
   - name: terminal-status-stamped

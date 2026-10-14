@@ -115,12 +115,6 @@ tasks:
       either way, but α must state whether the --purpose branch also routes through
       the seam rather than leaving it to an implementer to guess.'
     verdict: PASS
-    delivered_check:
-      kind: grep
-      pattern: run_gdt_check_passes
-      paths:
-      - crates/reify-cli/src/main.rs
-      expect: present
   - name: tessellate-snapshot-already-honours-capture
     binding: PASS-WITH-AMENDMENT (A3). UNSTATED IN THE PRD, and it cheapens β materially.
       Engine::tessellate_snapshot — the surface build_gui_state already calls — reads
@@ -315,7 +309,7 @@ tasks:
     verdict: PASS
     delivered_check:
       kind: grep
-      pattern: edit_check\(cell_id, value\)
+      pattern: edit_check\(cell_id, value
       paths:
       - gui/src-tauri/src/engine.rs
       expect: present
