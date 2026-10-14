@@ -28,6 +28,7 @@ use reify_ir::{ElementOrderTag, ExportError, ExportFormat, GeometryError, Geomet
 use crate::auto_size::{AutoSizeConfig, auto_mesh_size_from_features};
 use crate::ffi;
 use crate::init;
+use crate::tet_readback;
 
 // ---------------------------------------------------------------------------
 // GmshKernel
@@ -228,7 +229,7 @@ pub(crate) struct TetReadback {
 /// reported building — precisely the failure whose explanation is in the
 /// captured stream and not in the last-error line — so the caller folds this
 /// span into that stream at its own single seam. `entry_point` prefixes every
-/// error, as it does in [`init::read_tet_connectivity`].
+/// error, as it does in [`tet_readback::read_tet_connectivity`].
 pub(crate) fn read_back_tet_mesh(
     _guard: &init::GmshGuard,
     entry_point: &str,
@@ -248,7 +249,7 @@ pub(crate) fn read_back_tet_mesh(
             node_tags.len() * 3,
         )));
     }
-    let elem_node_tags = init::read_tet_connectivity(entry_point, element_order)?;
+    let elem_node_tags = tet_readback::read_tet_connectivity(entry_point, element_order)?;
 
     // Build (gmsh_tag → 0-based local idx) by sorting node tags and
     // assigning indices in tag order. Vertices are emitted in the same

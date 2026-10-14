@@ -305,7 +305,7 @@ fn read_back_plane_mesh(
 }
 
 /// Reject a readback holding no elements at all — the 2D form of the
-/// emptiness rejection `init::read_tet_connectivity` applies to the three tet
+/// emptiness rejection `tet_readback::read_tet_connectivity` applies to the three tet
 /// meshers.
 ///
 /// Gmsh can report a successful generate and hold nothing, and a
