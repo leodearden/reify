@@ -435,49 +435,78 @@ fn single_candidate_accept_reject_parity() {
     );
 }
 
-/// Anti-vacuity guard for the "D4" ledger row.
+/// Positive two-sided pin for type-param-carrying ARGS against a concrete
+/// param — the shape that, until #5686, compile accepted and eval rejected.
 ///
-/// The ledger only earns its keep if the divergence it documents is REAL
-/// right now — a ledger row covering a case that never diverged would pass
-/// silently forever. So assert the two sides' behaviour FIRST-HAND before
-/// asserting that the engine accepts the row as ledgered.
+/// Both sides now apply one tier-3 predicate,
+/// `reify_core::overload::slot_matches_wildcard_tier`, whose arg side
+/// distinguishes two cases, asserted first-hand on each side:
+/// - a BARE user type-param arg (`T`, task-4232 γ) wildcards, so a generic fn
+///   body may pass a `T`-typed value to a concrete-param callee;
+/// - a HEADED arg carrying a type param (`Result<T,E>`) admits only where the
+///   heads unify (PRD C-4, #8014), so it does not reach an `Int` param.
 #[test]
-fn d4_arg_side_type_param_divergence_is_genuine_and_ledgered() {
+fn type_param_carrying_args_resolve_identically_on_both_sides() {
     let fns = vec![make_fn("f", vec![("x", Type::Int)], vec![])];
-    let arg_ty = Type::TypeParam("T".to_string());
+    let bare = Type::TypeParam("T".to_string());
+    let headed = Type::Applied {
+        name: "Result".to_string(),
+        args: vec![
+            Type::TypeParam("T".to_string()),
+            Type::TypeParam("E".to_string()),
+        ],
+    };
 
-    // Compile side ACCEPTS: `type_carries_type_param(arg_ty)` fires, and the
-    // head tier's bare-`TypeParam` arm keeps the sole candidate.
-    let verdict = reify_compiler::__resolve_function_overload_for_parity_test(
-        "f",
-        std::slice::from_ref(&arg_ty),
-        &fns,
-    );
     assert_eq!(
-        verdict,
+        reify_compiler::__resolve_function_overload_for_parity_test(
+            "f",
+            std::slice::from_ref(&bare),
+            &fns
+        ),
         ParityOverloadVerdict::Resolved { index: 0 },
-        "D4 premise: compile side must still RESOLVE `f(x: Int)` called with a \
-         `TypeParam` arg — if this fails, #5686 or a related change altered the \
-         compile side and the D4 ledger row needs re-deriving, not deleting"
+        "bare type-param arg: compile side must RESOLVE `f(x: Int)` called with `T` — \
+         if not, the shared tier-3 arg side, \
+         reify_core::overload::slot_matches_wildcard_tier, has regressed or \
+         resolve_function_overload stopped calling it"
     );
+    let selected = find_matching_compiled_function(&fns, "f", &[arg(bare.clone())]).expect(
+        "bare type-param arg: eval returns None again — the shared tier-3 arg side, \
+         reify_core::overload::slot_matches_wildcard_tier, has regressed or \
+         find_matching_compiled_function stopped calling it",
+    );
+    assert_eq!(index_of(&fns, selected), 0);
 
-    // Eval side REJECTS: its wildcard pass has no arg-side disjunct.
+    assert_eq!(
+        reify_compiler::__resolve_function_overload_for_parity_test(
+            "f",
+            std::slice::from_ref(&headed),
+            &fns
+        ),
+        ParityOverloadVerdict::NoMatch,
+        "headed type-param arg: compile side must REJECT `f(x: Int)` called with \
+         `Result<T,E>` — if it resolves, the C-4 heads-unify gate on the arg side \
+         of slot_matches_wildcard_tier (#8014) has regressed"
+    );
     assert!(
-        find_matching_compiled_function(&fns, "f", &[arg(arg_ty.clone())]).is_none(),
-        "D4 premise: eval side must still return None — if this now resolves, \
-         #5686 has landed: delete the D4 ledger row and reclassify both D4 rows \
-         to Expect::Agree"
+        find_matching_compiled_function(&fns, "f", &[arg(headed.clone())]).is_none(),
+        "headed type-param arg: eval side must REJECT `f(x: Int)` called with \
+         `Result<T,E>` — if it resolves, the C-4 heads-unify gate on the arg side \
+         of slot_matches_wildcard_tier (#8014) has regressed"
     );
 
-    // ...and only then: the engine classifies the ledgered row as OK.
-    assert_accept_reject_parity(&Row {
-        label: "D4 bare (companion)",
-        params: vec![("x", Type::Int)],
-        type_params: vec![],
-        call_name: "f",
-        arg_types: vec![arg_ty],
-        expect: Expect::Diverge { ledger: "D4" },
-    });
+    for (label, arg_ty) in [
+        ("bare type-param arg (companion)", bare),
+        ("headed type-param arg (companion)", headed),
+    ] {
+        assert_accept_reject_parity(&Row {
+            label,
+            params: vec![("x", Type::Int)],
+            type_params: vec![],
+            call_name: "f",
+            arg_types: vec![arg_ty],
+            expect: Expect::Agree,
+        });
+    }
 }
 
 // ── Axis 2: selection identity over MULTI-candidate overload sets ───────────
