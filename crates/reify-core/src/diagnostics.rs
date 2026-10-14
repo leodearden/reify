@@ -55,8 +55,9 @@ impl SourceSpan {
     /// - Both `reify_types::byte_offset_to_line_col` and the GUI/LSP fast path
     ///   (`gui::engine::offset_to_line_col_fast`) short-circuit the prelude
     ///   sentinel ([`SourceSpan::PRELUDE_SENTINEL_OFFSET`]) to `(1, 1)` — the
-    ///   same "no user-file location" fallback used by `mcp_context::get_diagnostics`
-    ///   when no labels are present.  This prevents a `debug_assert` panic
+    ///   same "no user-file location" fallback the GUI's `diagnostics_to_info`
+    ///   (`gui/src-tauri/src/engine.rs`) uses when no labels are present.  This
+    ///   prevents a `debug_assert` panic
     ///   (debug builds) and a silent past-last-line mis-report (release builds).
     /// - Ad-hoc offset converters that do **not** route through one of those
     ///   helpers (e.g. `reify_lsp::convert::offset_to_position`) apply

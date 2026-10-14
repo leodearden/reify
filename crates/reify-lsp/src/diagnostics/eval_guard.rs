@@ -90,8 +90,6 @@ fn stage_one_scanned_cells(
 /// and the user is told what happened — by the compile-stage diagnostics
 /// where the module has any, and by [`SkippedEval::diagnostic`] on the
 /// compile-clean shapes where it has none (see "## Blast radius" below).
-/// `crates/reify-cli/src/mcp_context.rs`'s ungated `engine.eval` sites
-/// remain #6851's to fix.
 ///
 /// ## Why the graph, and not the compile diagnostics
 ///
