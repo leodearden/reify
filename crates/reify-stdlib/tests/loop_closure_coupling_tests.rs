@@ -388,7 +388,7 @@ fn loop_residual_jacobian_by_joint_moves_a_coupling_on_the_other_chain() {
     let j_p = prismatic_x(0.0, 1.0);
     let j_c = couple_by_two(&j_p);
     assert_column_close(
-        only_residual_column(&[j_c], &[j_p.clone()], &j_p),
+        only_residual_column(&[j_c], std::slice::from_ref(&j_p), &j_p),
         [0.0, 0.0, 0.0, -1.0, 0.0, 0.0],
         "jP on the closing side minus twice it through the reference-side coupling",
     );
