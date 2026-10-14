@@ -512,6 +512,13 @@ mod tests {
         GeometryHandleId(n)
     }
 
+    fn occt_handle(n: u64) -> KernelHandle {
+        KernelHandle {
+            kernel: KernelId::Occt,
+            id: h(n),
+        }
+    }
+
     fn feat() -> FeatureId {
         FeatureId::realization("Feature", 0)
     }
@@ -796,38 +803,110 @@ mod tests {
         f();
     }
 
-    #[test]
-    fn compose_morph_eligible_small_displacement_preserves_connectivity_and_records_morphed() {
-        with_diag_lock(|| {
-            // Eligible old/new BRep: identical graphs (Stage A passes) + one
-            // matching Cap(Top) face each (Stage B yields face_to_face {h(10):h(20)}).
+    /// Eligible old/new `BRep` fixture pair: identical graphs (Stage A passes)
+    /// and one matching `Cap(Top)` face each, which Stage B pairs `h(10) -> h(20)`
+    /// by `TopologyAttribute` equality. [`Self::cap_face_and_side_edge`] adds a
+    /// matching `Side` edge pair `h(30) -> h(40)`.
+    struct BijectionFixture {
+        old_graph: EvaluationGraph,
+        new_graph: EvaluationGraph,
+        values: ValueMap,
+        old_table: TopologyAttributeTable,
+        new_table: TopologyAttributeTable,
+        // Owned so the `BRep` borrows below outlive the accessor call.
+        old_faces: [GeometryHandleId; 1],
+        new_faces: [GeometryHandleId; 1],
+        old_edges: Vec<GeometryHandleId>,
+        new_edges: Vec<GeometryHandleId>,
+    }
+
+    impl BijectionFixture {
+        fn cap_face() -> Self {
             let (old_graph, values) = width_graph_and_values();
             let new_graph = old_graph.clone();
 
             let mut old_table = TopologyAttributeTable::default();
-            old_table.record(KernelHandle { kernel: KernelId::Occt, id: h(10) }, attr(Role::Cap(CapKind::Top), 0));
+            old_table.record(occt_handle(10), attr(Role::Cap(CapKind::Top), 0));
             let mut new_table = TopologyAttributeTable::default();
-            new_table.record(KernelHandle { kernel: KernelId::Occt, id: h(20) }, attr(Role::Cap(CapKind::Top), 0));
+            new_table.record(occt_handle(20), attr(Role::Cap(CapKind::Top), 0));
 
-            let old_faces = [h(10)];
-            let new_faces = [h(20)];
-            let old_brep = brep_with_faces(&old_graph, &values, &old_table, &old_faces);
-            let new_brep = brep_with_faces(&new_graph, &values, &new_table, &new_faces);
-
-            // All four nodes attached to the (matching) face → all prescribed, so the
-            // Laplacian quick-pass deforms by the tiny +x shift with no free interior
-            // nodes (a shape-preserving translation: connectivity-identical, quality-safe).
-            let mut boundary = BoundaryAssociation::default();
-            for n in 0..4u32 {
-                boundary.associate(n, NodeAttachment::OnFace(h(10)));
+            Self {
+                old_graph,
+                new_graph,
+                values,
+                old_table,
+                new_table,
+                old_faces: [h(10)],
+                new_faces: [h(20)],
+                old_edges: Vec::new(),
+                new_edges: Vec::new(),
             }
+        }
 
+        fn cap_face_and_side_edge() -> Self {
+            let mut fixture = Self::cap_face();
+            fixture
+                .old_table
+                .record(occt_handle(30), attr(Role::Side, 0));
+            fixture
+                .new_table
+                .record(occt_handle(40), attr(Role::Side, 0));
+            fixture.old_edges.push(h(30));
+            fixture.new_edges.push(h(40));
+            fixture
+        }
+
+        fn old_brep(&self) -> BRep<'_> {
+            BRep {
+                graph: &self.old_graph,
+                values: &self.values,
+                topology_attributes: &self.old_table,
+                faces: &self.old_faces,
+                edges: &self.old_edges,
+                vertices: &[],
+            }
+        }
+
+        fn new_brep(&self) -> BRep<'_> {
+            BRep {
+                graph: &self.new_graph,
+                values: &self.values,
+                topology_attributes: &self.new_table,
+                faces: &self.new_faces,
+                edges: &self.new_edges,
+                vertices: &[],
+            }
+        }
+    }
+
+    /// Boundary association attaching all four [`single_tet_mesh`] nodes to the
+    /// fixture's old `Cap(Top)` face `h(10)`: every node is prescribed, so the
+    /// Laplacian quick-pass applies [`ShiftingKernel`]'s tiny `+x` shift with no
+    /// free interior nodes (a shape-preserving translation: connectivity-identical,
+    /// quality-safe).
+    fn all_nodes_on_cap_face() -> BoundaryAssociation {
+        let mut boundary = BoundaryAssociation::default();
+        for n in 0..4u32 {
+            boundary.associate(n, NodeAttachment::OnFace(h(10)));
+        }
+        boundary
+    }
+
+    #[test]
+    fn compose_morph_eligible_small_displacement_preserves_connectivity_and_records_morphed() {
+        with_diag_lock(|| {
+            let fixture = BijectionFixture::cap_face();
             let source = single_tet_mesh();
-            let kernel = ShiftingKernel;
-            let options = MorphOptions::default();
 
-            let morphed = compose_morph(&source, &boundary, old_brep, new_brep, &kernel, &options)
-                .expect("eligible small-displacement morph should succeed");
+            let morphed = compose_morph(
+                &source,
+                &all_nodes_on_cap_face(),
+                fixture.old_brep(),
+                fixture.new_brep(),
+                &ShiftingKernel,
+                &MorphOptions::default(),
+            )
+            .expect("eligible small-displacement morph should succeed");
 
             // Connectivity preserved: identical tet_indices (the defining property of morph).
             assert_eq!(
@@ -916,10 +995,10 @@ mod tests {
             let new_graph = old_graph.clone();
 
             let mut old_table = TopologyAttributeTable::default();
-            old_table.record(KernelHandle { kernel: KernelId::Occt, id: h(10) }, attr(Role::Cap(CapKind::Top), 0));
+            old_table.record(occt_handle(10), attr(Role::Cap(CapKind::Top), 0));
             let mut new_table = TopologyAttributeTable::default();
-            new_table.record(KernelHandle { kernel: KernelId::Occt, id: h(20) }, attr(Role::Cap(CapKind::Top), 0));
-            new_table.record(KernelHandle { kernel: KernelId::Occt, id: h(21) }, attr(Role::Cap(CapKind::Bottom), 1));
+            new_table.record(occt_handle(20), attr(Role::Cap(CapKind::Top), 0));
+            new_table.record(occt_handle(21), attr(Role::Cap(CapKind::Bottom), 1));
 
             let old_faces = [h(10)];
             let new_faces = [h(20), h(21)];
@@ -983,27 +1062,7 @@ mod tests {
     #[test]
     fn compose_morph_quality_soft_fail_returns_quality_failure_and_records_soft_bucket() {
         with_diag_lock(|| {
-            // Same eligible setup as the success path (one matching Cap(Top) face).
-            let (old_graph, values) = width_graph_and_values();
-            let new_graph = old_graph.clone();
-
-            let mut old_table = TopologyAttributeTable::default();
-            old_table.record(KernelHandle { kernel: KernelId::Occt, id: h(10) }, attr(Role::Cap(CapKind::Top), 0));
-            let mut new_table = TopologyAttributeTable::default();
-            new_table.record(KernelHandle { kernel: KernelId::Occt, id: h(20) }, attr(Role::Cap(CapKind::Top), 0));
-
-            let old_faces = [h(10)];
-            let new_faces = [h(20)];
-            let old_brep = brep_with_faces(&old_graph, &values, &old_table, &old_faces);
-            let new_brep = brep_with_faces(&new_graph, &values, &new_table, &new_faces);
-
-            let mut boundary = BoundaryAssociation::default();
-            for n in 0..4u32 {
-                boundary.associate(n, NodeAttachment::OnFace(h(10)));
-            }
-
-            let source = single_tet_mesh();
-            let kernel = ShiftingKernel;
+            let fixture = BijectionFixture::cap_face();
             // An impossibly high scaled-Jacobian floor (> the valid [-1, 1] range)
             // makes every morphed element trip the soft-fail metric → guaranteed
             // QualityVerdict::SoftFail, independent of the deformation magnitude.
@@ -1011,7 +1070,14 @@ mod tests {
                 quality_floor_min_scaled_jacobian: 2.0,
                 ..MorphOptions::default()
             };
-            let result = compose_morph(&source, &boundary, old_brep, new_brep, &kernel, &options);
+            let result = compose_morph(
+                &single_tet_mesh(),
+                &all_nodes_on_cap_face(),
+                fixture.old_brep(),
+                fixture.new_brep(),
+                &ShiftingKernel,
+                &options,
+            );
 
             assert!(
                 matches!(result, Err(MorphFailure::QualitySoftFail(_))),
@@ -1035,9 +1101,9 @@ mod tests {
     /// installed impl wraps `req.kernel` in a [`KernelProjector`] and drives the
     /// step-8 [`compose_morph`] composition.
     ///
-    /// Mirrors the `compose_morph` success-path fixture (one matching `Cap(Top)`
-    /// face each, the `ShiftingKernel`'s tiny `+x` shift, the single unit tet),
-    /// but built as `reify_eval::BRepSnapshot`s — the `MorphRequest` snapshot
+    /// Uses the `compose_morph` success-path fixture ([`BijectionFixture::cap_face`],
+    /// the `ShiftingKernel`'s tiny `+x` shift, the single unit tet), but wraps the
+    /// BRep pair as `reify_eval::BRepSnapshot`s — the `MorphRequest` snapshot
     /// type — rather than the `reify_mesh_morph::BRep` alias.
     ///
     /// No process-global counter assertion here (the counter increment is
@@ -1054,42 +1120,25 @@ mod tests {
         // `with_diag_lock`'s doc comment above), or it can corrupt one of
         // those tests' reset-then-assert windows.
         with_diag_lock(|| {
-            // Eligible old/new BRep: identical graphs (Stage A passes) + one matching
-            // Cap(Top) face each (Stage B yields face_to_face {h(10):h(20)}).
-            let (old_graph, values) = width_graph_and_values();
-            let new_graph = old_graph.clone();
-
-            let mut old_table = TopologyAttributeTable::default();
-            old_table.record(KernelHandle { kernel: KernelId::Occt, id: h(10) }, attr(Role::Cap(CapKind::Top), 0));
-            let mut new_table = TopologyAttributeTable::default();
-            new_table.record(KernelHandle { kernel: KernelId::Occt, id: h(20) }, attr(Role::Cap(CapKind::Top), 0));
-
-            let old_faces = [h(10)];
-            let new_faces = [h(20)];
+            let fixture = BijectionFixture::cap_face();
             let old_brep = BRepSnapshot {
-                graph: &old_graph,
-                values: &values,
-                topology_attributes: &old_table,
-                faces: &old_faces,
-                edges: &[],
+                graph: &fixture.old_graph,
+                values: &fixture.values,
+                topology_attributes: &fixture.old_table,
+                faces: &fixture.old_faces,
+                edges: &fixture.old_edges,
                 vertices: &[],
             };
             let new_brep = BRepSnapshot {
-                graph: &new_graph,
-                values: &values,
-                topology_attributes: &new_table,
-                faces: &new_faces,
-                edges: &[],
+                graph: &fixture.new_graph,
+                values: &fixture.values,
+                topology_attributes: &fixture.new_table,
+                faces: &fixture.new_faces,
+                edges: &fixture.new_edges,
                 vertices: &[],
             };
 
-            // All four nodes on the matching face → all prescribed → the Laplacian
-            // quick-pass applies the tiny +x shift (a shape-preserving translation).
-            let mut boundary = BoundaryAssociation::default();
-            for n in 0..4u32 {
-                boundary.associate(n, NodeAttachment::OnFace(h(10)));
-            }
-
+            let boundary = all_nodes_on_cap_face();
             let source = single_tet_mesh();
             let kernel = ShiftingKernel;
 
@@ -1173,94 +1222,6 @@ mod tests {
         }
     }
 
-    /// Old/new `BRep` fixture pair with a face bijection `h(10) -> h(20)` and an
-    /// edge bijection `h(30) -> h(40)`. Stage A passes (identical graphs) and
-    /// Stage B pairs both kinds by `TopologyAttribute` equality.
-    struct BijectionFixture {
-        old_graph: EvaluationGraph,
-        new_graph: EvaluationGraph,
-        values: ValueMap,
-        old_table: TopologyAttributeTable,
-        new_table: TopologyAttributeTable,
-        // Owned so the `BRep` borrows below outlive the accessor call.
-        old_faces: [GeometryHandleId; 1],
-        new_faces: [GeometryHandleId; 1],
-        old_edges: [GeometryHandleId; 1],
-        new_edges: [GeometryHandleId; 1],
-    }
-
-    impl BijectionFixture {
-        fn new() -> Self {
-            let (old_graph, values) = width_graph_and_values();
-            let new_graph = old_graph.clone();
-
-            let mut old_table = TopologyAttributeTable::default();
-            old_table.record(
-                KernelHandle {
-                    kernel: KernelId::Occt,
-                    id: h(10),
-                },
-                attr(Role::Cap(CapKind::Top), 0),
-            );
-            old_table.record(
-                KernelHandle {
-                    kernel: KernelId::Occt,
-                    id: h(30),
-                },
-                attr(Role::Side, 0),
-            );
-            let mut new_table = TopologyAttributeTable::default();
-            new_table.record(
-                KernelHandle {
-                    kernel: KernelId::Occt,
-                    id: h(20),
-                },
-                attr(Role::Cap(CapKind::Top), 0),
-            );
-            new_table.record(
-                KernelHandle {
-                    kernel: KernelId::Occt,
-                    id: h(40),
-                },
-                attr(Role::Side, 0),
-            );
-
-            Self {
-                old_graph,
-                new_graph,
-                values,
-                old_table,
-                new_table,
-                old_faces: [h(10)],
-                new_faces: [h(20)],
-                old_edges: [h(30)],
-                new_edges: [h(40)],
-            }
-        }
-
-        fn old_brep(&self) -> BRep<'_> {
-            BRep {
-                graph: &self.old_graph,
-                values: &self.values,
-                topology_attributes: &self.old_table,
-                faces: &self.old_faces,
-                edges: &self.old_edges,
-                vertices: &[],
-            }
-        }
-
-        fn new_brep(&self) -> BRep<'_> {
-            BRep {
-                graph: &self.new_graph,
-                values: &self.values,
-                topology_attributes: &self.new_table,
-                faces: &self.new_faces,
-                edges: &self.new_edges,
-                vertices: &[],
-            }
-        }
-    }
-
     /// Boundary association for [`single_tet_mesh`] leaving node 3 FREE. Node 3
     /// sits at (0, 0, 1) while the centroid of its three topological
     /// neighbours is (1/3, 1/3, 0) — maximally irregular, which is exactly
@@ -1285,7 +1246,7 @@ mod tests {
     fn compose_morph_no_op_tick_on_an_irregular_mesh_returns_ok_unchanged_and_records_one_morphed()
     {
         with_diag_lock(|| {
-            let fixture = BijectionFixture::new();
+            let fixture = BijectionFixture::cap_face_and_side_edge();
             let source = single_tet_mesh();
             let before = diagnostics::snapshot();
 
@@ -1337,7 +1298,7 @@ mod tests {
     fn compose_morph_returns_a_mesh_whose_boundary_is_the_source_association_rekeyed_to_the_new_brep()
      {
         with_diag_lock(|| {
-            let fixture = BijectionFixture::new();
+            let fixture = BijectionFixture::cap_face_and_side_edge();
             let source = single_tet_mesh();
             let boundary = irregular_boundary();
 
