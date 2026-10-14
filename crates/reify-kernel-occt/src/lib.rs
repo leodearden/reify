@@ -1714,10 +1714,23 @@ impl OcctKernel {
     }
 
     /// Apply `BRepFilletAPI_MakeFillet` to every edge of `shape_id` with the
+    /// given `radius`, recording no history. `radius` must be a finite,
+    /// strictly positive number.
+    fn fillet_all_edges(
+        &mut self,
+        shape_id: GeometryHandleId,
+        radius: f64,
+    ) -> Result<GeometryHandle, GeometryError> {
+        validate_positive_finite(radius, "fillet radius")?;
+        let filleted = ffi::ffi::fillet_all_edges(self.get_shape(shape_id)?, radius)
+            .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+        Ok(self.store(filleted))
+    }
+
+    /// Apply `BRepFilletAPI_MakeFillet` to every edge of `shape_id` with the
     /// given `radius`, returning the modified-result handle alongside the
     /// per-parent face/edge Modified/Generated/Deleted history records.
     ///
-    /// Mirrors the defense-in-depth validation of the `GeometryOp::Fillet` arm:
     /// `radius` must be a finite, strictly positive number. Result handle is
     /// registered with `BRepKind::Solid`.
     ///
@@ -1729,8 +1742,6 @@ impl OcctKernel {
         shape_id: GeometryHandleId,
         radius: f64,
     ) -> Result<(GeometryHandle, LocalFeatureOpHistoryRecords), GeometryError> {
-        // DEFENSE-IN-DEPTH: mirror the GeometryOp::Fillet validation in `execute`
-        // so direct callers get the same descriptive errors.
         validate_positive_finite(radius, "fillet radius")?;
         self.run_local_feature_with_history(shape_id, |shape| {
             ffi::ffi::make_fillet_with_history(shape, radius)
@@ -1920,10 +1931,23 @@ impl OcctKernel {
     }
 
     /// Apply `BRepFilletAPI_MakeChamfer` to every edge of `shape_id` with the
+    /// given `distance`, recording no history. `distance` must be a finite,
+    /// strictly positive number.
+    fn chamfer_all_edges(
+        &mut self,
+        shape_id: GeometryHandleId,
+        distance: f64,
+    ) -> Result<GeometryHandle, GeometryError> {
+        validate_positive_finite(distance, "chamfer distance")?;
+        let chamfered = ffi::ffi::chamfer_all_edges(self.get_shape(shape_id)?, distance)
+            .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+        Ok(self.store(chamfered))
+    }
+
+    /// Apply `BRepFilletAPI_MakeChamfer` to every edge of `shape_id` with the
     /// given `distance`, returning the modified-result handle alongside the
     /// per-parent face/edge Modified/Generated/Deleted history records.
     ///
-    /// Mirrors the defense-in-depth validation of the `GeometryOp::Chamfer` arm:
     /// `distance` must be a finite, strictly positive number. Result handle is
     /// registered with `BRepKind::Solid`.
     ///
@@ -1935,8 +1959,6 @@ impl OcctKernel {
         shape_id: GeometryHandleId,
         distance: f64,
     ) -> Result<(GeometryHandle, LocalFeatureOpHistoryRecords), GeometryError> {
-        // DEFENSE-IN-DEPTH: mirror the GeometryOp::Chamfer validation in `execute`
-        // so direct callers get the same descriptive errors.
         validate_positive_finite(distance, "chamfer distance")?;
         self.run_local_feature_with_history(shape_id, |shape| {
             ffi::ffi::make_chamfer_with_history(shape, distance)
@@ -2587,23 +2609,14 @@ impl OcctKernel {
                 radius,
             } => {
                 let r = extract_length_f64(radius, op, "radius")?;
-                validate_positive_finite(r, "fillet radius")?;
-                if edges.is_empty() {
-                    // 2-arg / empty-selection back-compat: fillet ALL edges
-                    // (unchanged path). Yields a shape stored after the match.
-                    let shape = self.get_shape(*target)?;
-                    ffi::ffi::fillet_all_edges(shape, r)
-                        .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+                // Empty `edges` = all edges (2-arg back-compat). The curated
+                // primitive's history is not surfaced through execute().
+                return if edges.is_empty() {
+                    self.fillet_all_edges(*target, r)
                 } else {
-                    // Curated per-edge selection: fillet only the chosen edges.
-                    // `fillet_edges_with_history` stores the Solid result and
-                    // returns its handle (mirroring the Wire/Face early-return
-                    // arms below); the history is captured for the
-                    // persistent-naming seam but not surfaced through execute().
-                    let (handle, _history) =
-                        self.fillet_edges_with_history(*target, r, edges)?;
-                    return Ok(handle);
-                }
+                    self.fillet_edges_with_history(*target, r, edges)
+                        .map(|(handle, _history)| handle)
+                };
             }
             GeometryOp::Chamfer {
                 target,
@@ -2611,23 +2624,14 @@ impl OcctKernel {
                 distance,
             } => {
                 let d = extract_length_f64(distance, op, "distance")?;
-                validate_positive_finite(d, "chamfer distance")?;
-                if edges.is_empty() {
-                    // 2-arg / empty-selection back-compat: chamfer ALL edges
-                    // (unchanged path). Yields a shape stored after the match.
-                    let shape = self.get_shape(*target)?;
-                    ffi::ffi::chamfer_all_edges(shape, d)
-                        .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+                // Empty `edges` = all edges (2-arg back-compat). The curated
+                // primitive's history is not surfaced through execute().
+                return if edges.is_empty() {
+                    self.chamfer_all_edges(*target, d)
                 } else {
-                    // Curated per-edge selection: chamfer only the chosen edges.
-                    // `chamfer_edges_with_history` stores the Solid result and
-                    // returns its handle (mirroring the Fillet arm); the history
-                    // is captured for the persistent-naming seam but not surfaced
-                    // through execute().
-                    let (handle, _history) =
-                        self.chamfer_edges_with_history(*target, d, edges)?;
-                    return Ok(handle);
-                }
+                    self.chamfer_edges_with_history(*target, d, edges)
+                        .map(|(handle, _history)| handle)
+                };
             }
             GeometryOp::ChamferAsymmetric {
                 target,
