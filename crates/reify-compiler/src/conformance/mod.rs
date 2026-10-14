@@ -2986,6 +2986,110 @@ mod tests {
         );
     }
 
+    /// Pass 2, unannotated-`let` loser whose slot was claimed in Pass 1: `A`'s
+    /// `param x` owns the scope slot, so `B`'s unannotated `let x` is dropped without
+    /// being injected — and without the "not cached" internal error that would flag the
+    /// Pass-2 and injection guards drifting apart. Bound order must not matter, because
+    /// Pass 1 runs over every default before Pass 2 does. The Bool `let` makes a
+    /// wrongly injected Let visibly distinct from the Real `param`.
+    #[test]
+    fn unannotated_trait_let_losing_to_same_name_param_is_not_injected() {
+        let traits = r"
+            trait A { param x : Real = 1.0 }
+            trait B { let x = true }
+        ";
+        for bounds in ["A + B", "B + A"] {
+            let run = conform_source(&format!("{traits} structure def S : {bounds} {{}}"));
+
+            assert!(
+                run.diagnostics.is_empty(),
+                "`S : {bounds}`: expected no diagnostics; got: {:?}",
+                run.diagnostics
+            );
+            let injected = injected_named(&run, "x");
+            assert_eq!(
+                injected.len(),
+                1,
+                "`S : {bounds}`: exactly one cell named `x` must be injected; got: {:?}",
+                run.injected_cells
+            );
+            assert_eq!(injected[0].kind, ValueCellKind::Param, "`S : {bounds}`");
+        }
+    }
+
+    /// Pass 2, unannotated-`let` loser whose name the conformer itself declares: `S`'s
+    /// own `param x` overrides `B`'s unannotated `let x`, so conformance injects and
+    /// advertises nothing for it. The `param` uses Bool, the let's inferred type, so
+    /// the conformer-collision rule has nothing to object to.
+    #[test]
+    fn structure_member_overriding_unannotated_trait_let_injects_nothing() {
+        let run = conform_source(
+            r"
+            trait B { let x = true }
+            structure def S : B { param x : Bool = true }
+            ",
+        );
+
+        assert!(
+            run.diagnostics.is_empty(),
+            "expected no diagnostics; got: {:?}",
+            run.diagnostics
+        );
+        assert!(
+            injected_named(&run, "x").is_empty(),
+            "the conformer's own `x` must win; got injected: {:?}",
+            run.injected_cells
+        );
+    }
+
+    /// Pass 2, compile error: `let a = b` fails on the unresolved `b`. The root cause is
+    /// reported exactly once and `a` is not injected. `a` is also poisoned in scope, so
+    /// the dependent `let c = a` compiles silently against the poison instead of
+    /// cascading into a second "unresolved name" — which is how `c` still gets injected.
+    #[test]
+    fn trait_let_with_compile_error_reports_root_cause_once_and_is_not_injected() {
+        let run = conform_source(
+            r"
+            trait T {
+                let a = b
+                let c = a
+            }
+            structure def S : T {}
+            ",
+        );
+
+        let errors: Vec<_> = run
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Error)
+            .collect();
+        assert_eq!(
+            errors.len(),
+            1,
+            "expected only the root-cause error, with no cascade for `c`; got: {:?}",
+            run.diagnostics
+        );
+        assert_eq!(errors[0].code, Some(DiagnosticCode::UnresolvedName));
+        assert!(
+            errors[0].message.contains("unresolved name: b"),
+            "the root cause is the unresolved `b`; got: {}",
+            errors[0].message
+        );
+        assert!(
+            injected_named(&run, "a").is_empty(),
+            "`a` failed to compile and must not be injected; got: {:?}",
+            run.injected_cells
+        );
+        let injected_c = injected_named(&run, "c");
+        assert_eq!(
+            injected_c.len(),
+            1,
+            "`c` compiles against the poisoned `a` and is injected once; got: {:?}",
+            run.injected_cells
+        );
+        assert_eq!(injected_c[0].kind, ValueCellKind::Let);
+    }
+
     /// RED (task 3939 δ, step-3): a required associated function that the
     /// conforming structure does not provide must surface an
     /// `E_TRAIT_FN_NOT_SATISFIED` (`DiagnosticCode::TraitFnNotSatisfied`)
