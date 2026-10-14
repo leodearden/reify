@@ -572,9 +572,7 @@ assert "derived examples/*.ri reader crates ⊆ declared _RI_CORPUS_CRATES" \
 # through affected_crates(): the two closure models differ by design, and
 # precedence is the caller's business on both sides.
 #
-# Fork-free per path on the bash side (redirect + mapfile, never `$(...)`):
-# ~19x cheaper than per-path command substitution — 3.9s versus 73s over 4725
-# paths, measured at load average ~110 on 32 cores.
+# The bash side stays fork-free per path: redirect + mapfile, never `$(...)`.
 # Needs no cargo. The Python side runs under `python3 -S`, so it proves the
 # mirror loads with no site-packages — the shape of the gate's interpreter.
 # ---------------------------------------------------------------------------
