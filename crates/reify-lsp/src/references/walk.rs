@@ -1,14 +1,28 @@
-//! The AST traversal skeleton shared by every reference walker: a member's
-//! direct expressions, the nested member scopes it opens, and an expression's
-//! direct sub-expressions. Imports `reify_ast` only.
+//! The AST traversal skeleton shared by every reference walker: an entity
+//! declaration's member body, a member's direct expressions, the nested member
+//! scopes it opens, and an expression's direct sub-expressions. Imports
+//! `reify_ast` only.
 //!
 //! Field-set rationale is centralized in `sub_direct_exprs`'s doc comment —
 //! see it for why, rather than restating it at each call site.
 
 use reify_ast::{
-    ConnectDecl, Expr, ExprKind, ForallConnectBody, ForallConstraintBody, KeyedSubMemberEntry,
-    MemberDecl, StringPart, SubDecl, WhereClause,
+    ConnectDecl, Declaration, Expr, ExprKind, ForallConnectBody, ForallConstraintBody,
+    KeyedSubMemberEntry, MemberDecl, StringPart, SubDecl, WhereClause,
 };
+
+/// Return the value-bearing member list of an entity declaration
+/// (structure / occurrence / trait / purpose), or `None` for declaration kinds
+/// that carry no member body. Mirrors the member extraction in `goto_def`.
+pub(super) fn entity_members(decl: &Declaration) -> Option<&[MemberDecl]> {
+    match decl {
+        Declaration::Structure(s) => Some(&s.members),
+        Declaration::Occurrence(o) => Some(&o.members),
+        Declaration::Trait(t) => Some(&t.members),
+        Declaration::Purpose(p) => Some(&p.members),
+        _ => None,
+    }
+}
 
 /// Exhaustively enumerate every direct (non-nested-scope) expression carried
 /// by a `SubDecl` — constructor args, specialization param overrides, the
@@ -16,15 +30,10 @@ use reify_ast::{
 /// #5579), the inline `at … where { }` relate-block relations (task δ 4384),
 /// and the `where` guard condition.
 ///
-/// Both [`for_each_member_direct_expr`] (the shared member-expression
-/// enumeration every use walker composes with) and the `MemberDecl::Sub` arm of
-/// `cursor_on_member_segment` (`.member`-segment refusal) consume this instead
-/// of re-listing `SubDecl`'s fields themselves, so the two scanners
-/// cannot drift apart the way they already have twice — `relate_relations`
-/// (task δ 4384) and `index_domain` (#5481/#5579) were each added to
-/// `collect_uses`' sub walk without a matching guard clause in
-/// `cursor_on_member_segment`, silently letting a `.member` segment on that
-/// field mis-resolve to an unrelated same-named binding instead of refusing.
+/// This is the one listing of `SubDecl`'s expression-bearing fields. Every
+/// scanner that needs a sub's direct expressions — [`for_each_member_direct_expr`]
+/// among them — reads it rather than re-listing the fields, so no field can be
+/// walked by one scanner and silently missed by another.
 ///
 /// The `let SubDecl { .. } = s` pattern below names every field with no `..`,
 /// so adding a new field to `SubDecl` is a compile error here, forcing a
@@ -32,16 +41,14 @@ use reify_ast::{
 /// expression, or extend the `_`-bound list with a one-line reason if it
 /// isn't — as `index_binder` already is (it mirrors the existing
 /// `ExprKind::Quantifier` `variable`/`variable_span` precedent: a
-/// binder-introducing field is deliberately not itself a use site here; see
-/// the "Known limitation" doc comment on `collect_idents_in_expr`).
+/// binder-introducing field is a binding site, not itself a use site).
 ///
-/// Excludes `body` and `keyed_members.overrides`: both consumers reach them
-/// separately, via [`for_each_child_scope`], since they open a
-/// nested member scope rather than being a direct expression of this `sub`.
-/// Each keyed entry's OWN direct expression (`param_overrides`) is not a
-/// `SubDecl`-level field, so it is not part of this iterator either — it is
-/// walked by both consumers via [`keyed_entry_param_override_exprs`] at the
-/// same keyed-block recursion site instead (see that function's doc comment).
+/// Excludes `body` and `keyed_members.overrides`: both open a nested member
+/// scope rather than being a direct expression of this `sub`, so they are
+/// reached through [`for_each_child_scope`]. Each keyed entry's OWN direct
+/// expression (`param_overrides`) is not a `SubDecl`-level field, so it is not
+/// part of this iterator either — [`keyed_entry_param_override_exprs`]
+/// enumerates it, for walking at the same keyed-block site.
 pub(super) fn sub_direct_exprs(s: &SubDecl) -> impl Iterator<Item = &Expr> {
     let SubDecl {
         // Identifiers, flags, and span/cache metadata below — never expressions.
@@ -54,14 +61,14 @@ pub(super) fn sub_direct_exprs(s: &SubDecl) -> impl Iterator<Item = &Expr> {
         // other member kind's `where` (which routes through
         // `visit_where_condition`) — see this function's doc comment.
         where_clause,
-        // Nested member scope, not a direct expression — both consumers
-        // recurse into it separately at depth + 1 (see doc comment above).
+        // Nested member scope, not a direct expression — reached through
+        // `for_each_child_scope` (see doc comment above).
         body: _,
         spec_param_overrides,
-        // Nested member scope, not a direct expression — both consumers
-        // recurse into it separately at depth + 1, walking each entry's
-        // `overrides` member list AND `param_overrides` expressions (see
-        // doc comment above and `keyed_entry_param_override_exprs`).
+        // Nested member scope, not a direct expression — each entry's
+        // `overrides` member list is reached through `for_each_child_scope`
+        // and its `param_overrides` expressions through
+        // `keyed_entry_param_override_exprs` (see doc comment above).
         keyed_members: _,
         is_aux: _,
         is_priv: _,
@@ -103,15 +110,17 @@ pub(super) fn sub_direct_exprs(s: &SubDecl) -> impl Iterator<Item = &Expr> {
 /// `sub_direct_exprs` — see its doc comment. The exhaustive `let
 /// KeyedSubMemberEntry { .. } = entry` below (no `..`) gives this the same
 /// compile-error tripwire: a new expression-bearing field added to
-/// `KeyedSubMemberEntry` cannot silently go unwalked by both consumers again
-/// (task #5579 amendment — this is what closed that exact gap for
-/// `param_overrides` itself).
-pub(super) fn keyed_entry_param_override_exprs(entry: &KeyedSubMemberEntry) -> impl Iterator<Item = &Expr> {
+/// `KeyedSubMemberEntry` is a compile error here rather than an expression no
+/// scanner walks (task #5579 amendment — `param_overrides` itself was once
+/// exactly that gap).
+pub(super) fn keyed_entry_param_override_exprs(
+    entry: &KeyedSubMemberEntry,
+) -> impl Iterator<Item = &Expr> {
     let KeyedSubMemberEntry {
         key: _,
-        // Nested member scope, not a direct expression — both consumers
-        // recurse into it separately as a nested member scope, exactly as
-        // `sub_direct_exprs` excludes `SubDecl::body`.
+        // Nested member scope, not a direct expression — reached through
+        // `for_each_child_scope`, exactly as `sub_direct_exprs` excludes
+        // `SubDecl::body`.
         overrides: _,
         param_overrides,
         span: _,
@@ -120,19 +129,16 @@ pub(super) fn keyed_entry_param_override_exprs(entry: &KeyedSubMemberEntry) -> i
 }
 
 /// Invoke `visit` once for each nested member-list scope that lives directly
-/// inside `member` — EXACTLY the member lists `local::collect_uses` descends into: a
-/// `GuardedGroup`'s `where` and `else` branches, a `Port` body, a `Sub`'s
-/// specialization body and each keyed block's overrides, a
+/// inside `member`: a `GuardedGroup`'s `where` and `else` branches, a `Port`
+/// body, a `Sub`'s specialization body and each keyed block's overrides, a
 /// `MatchArmDeclGroup`'s per-arm member clusters, and a `Sketch` body.
 ///
-/// `local::collect_bindings_in_scope` uses this to recurse into nested bindings, while
-/// `collect_uses` recurses into the same lists (plus their member-level
-/// expressions) to collect uses. Keeping the two traversals reading off the same
-/// child-scope set is what stops a nested redeclaration from being invisible to
-/// binding resolution (the regression pinned by
-/// `collect_references_port_body_redeclaration_owns_its_scope`). The callback form
-/// avoids allocating a `Vec` of child slices per member; each visited slice is
-/// bounded by its own `local::members_region` when recursed.
+/// Every walker that descends into nested scopes — binding registration and use
+/// collection alike — reads its child set from here, so no two walkers can
+/// disagree about which member lists are scopes. That disagreement is what once
+/// left a nested redeclaration invisible to binding resolution (the regression
+/// pinned by `collect_references_port_body_redeclaration_owns_its_scope`). The
+/// callback form avoids allocating a `Vec` of child slices per member.
 pub(super) fn for_each_child_scope(member: &MemberDecl, mut visit: impl FnMut(&[MemberDecl])) {
     match member {
         MemberDecl::GuardedGroup(g) => {
@@ -154,10 +160,10 @@ pub(super) fn for_each_child_scope(member: &MemberDecl, mut visit: impl FnMut(&[
             }
         }
         // A `sketch { … }` body is a nested scope (constrained-2d-sketch α, task
-        // 5506). This arm is the single place both `collect_uses` and
-        // `collect_bindings_in_scope` learn that; rustc does not flag its
-        // absence (the `_ => {}` below swallows a new variant), and without it
-        // every use inside a sketch body is invisible to references/rename.
+        // 5506). This arm is the single place every scope-descending walker
+        // learns that; rustc does not flag its absence (the `_ => {}` below
+        // swallows a new variant), and without it every use inside a sketch
+        // body is invisible to references/rename.
         // Pinned by `collect_references_reach_into_a_sketch_body_which_owns_its_scope`.
         MemberDecl::Sketch(s) => visit(s.members.as_slice()),
         _ => {}
@@ -174,11 +180,10 @@ pub(super) fn for_each_child_scope(member: &MemberDecl, mut visit: impl FnMut(&[
 ///
 /// The member half of this module's two-part traversal skeleton: this function
 /// yields a member's own expressions, [`for_each_child_scope`] yields the nested
-/// member lists it opens, and each member walker here is one of the two composed
-/// with a visitor. One enumeration rather than one per walker is what stops a
-/// newly-added expression-bearing field from being walked by one scanner and
-/// silently missed by another — the drift [`sub_direct_exprs`]' doc comment
-/// records having already happened twice.
+/// member lists it opens, and a member walker composes the two with a visitor.
+/// One enumeration rather than one per walker is what stops a newly-added
+/// expression-bearing field from being walked by one scanner and silently
+/// missed by another.
 ///
 /// The match is WILDCARD-FREE, so a new `MemberDecl` variant is a compile error
 /// here rather than a silently unwalked expression.

@@ -3,8 +3,8 @@
 //! `.member`-segment refusal.
 
 use reify_ast::{
-    Declaration, Expr, ExprKind, ForallConnectBody, ForallConstraintBody, MAX_MEMBER_NESTING_DEPTH,
-    MemberDecl, ParsedModule, StringPart,
+    Expr, ExprKind, ForallConnectBody, ForallConstraintBody, MAX_MEMBER_NESTING_DEPTH, MemberDecl,
+    ParsedModule, StringPart,
 };
 use reify_core::SourceSpan;
 use tower_lsp::lsp_types::{Location, Position, Range, Url};
@@ -13,7 +13,7 @@ use crate::decl_oracle::{enclosing_decl_at, name_token_span};
 use crate::convert::{find_word_at_offset, position_to_offset, span_to_range};
 
 use super::walk::{
-    for_each_child_scope, for_each_direct_subexpr, for_each_member_direct_expr,
+    entity_members, for_each_child_scope, for_each_direct_subexpr, for_each_member_direct_expr,
     keyed_entry_param_override_exprs, sub_direct_exprs,
 };
 
@@ -210,19 +210,6 @@ pub(super) fn collect_references_at(
         declaration,
         references,
     })
-}
-
-/// Return the value-bearing member list of an entity declaration
-/// (structure / occurrence / trait / purpose), or `None` for declaration kinds
-/// that carry no member body. Mirrors the member extraction in `goto_def`.
-pub(super) fn entity_members(decl: &Declaration) -> Option<&[MemberDecl]> {
-    match decl {
-        Declaration::Structure(s) => Some(&s.members),
-        Declaration::Occurrence(o) => Some(&o.members),
-        Declaration::Trait(t) => Some(&t.members),
-        Declaration::Purpose(p) => Some(&p.members),
-        _ => None,
-    }
 }
 
 // ─── Member-segment detection helpers ────────────────────────────────────────

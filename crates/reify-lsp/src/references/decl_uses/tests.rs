@@ -1,5 +1,5 @@
 use super::*;
-use super::super::local::entity_members;
+use super::super::walk::entity_members;
 use crate::decl_oracle::test_fixtures::{occurrences, span_of};
 use reify_core::ModulePath;
 
