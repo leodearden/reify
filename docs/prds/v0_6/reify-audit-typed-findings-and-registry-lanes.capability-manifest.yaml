@@ -417,7 +417,7 @@ tasks:
       - crates/reify-audit/tests/cli_http_loader.rs
       expect: present
 - label: ξ
-  task_id: null
+  task_id: 8821
   title: 'S24 ξ: PREGISTRY registry-status lane; registry row grammar; census derived from pattern_flag::TOKENS; INV-META-1 registry-status clause enforced'
   note: closes fk-d668027f44f2; INV candidate 1 (INV-META-1); rulings R2, R4 — HELD leaf (x_seam_wait S4, S1, S10, S25), released by the lead.
   capabilities:
