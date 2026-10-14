@@ -12,7 +12,9 @@
 //! The production view comes from a whole-file lexer modelled on
 //! `crates/reify-builtins/tests/common/seed_name_scan.rs` (test-private to that
 //! crate, so ported rather than called). Enclosing-fn scoping follows
-//! `crates/reify-eval/tests/version_id_discipline_gate.rs`.
+//! `crates/reify-eval/tests/version_id_discipline_gate.rs`. Folding this lexer
+//! and its siblings onto one shared production view in `reify-test-support`,
+//! leaving only the rows here, is task #8796.
 
 use std::path::{Path, PathBuf};
 
@@ -555,10 +557,82 @@ struct RowI {
     exempt: Vec<Finding>,
 }
 
-/// `.is_finite()` together with a strict-positivity comparison against zero.
-/// Non-negativity (`>= 0.0`) is not this row.
+/// An `is_finite` call together with a strict-positivity comparison against a
+/// float zero, in either operand order and any literal spelling (`0.0`, `0.`,
+/// `0f64`, `0.0_f64`): `r > 0`, `0 < r`, or the negated `r <= 0`, `0 >= r`.
+/// Non-negativity (`r >= 0.0`, `0.0 <= r`) is not this row.
+///
+/// The row reads one statement at a time, so a check split across two
+/// statements, or spelt through another predicate (`is_sign_positive`,
+/// `partial_cmp`), is not seen: it holds the open-coded comparison at its
+/// baseline, it does not ban every way of writing the predicate.
 fn is_open_coded_finite_positive(window: &str) -> bool {
-    window.contains(".is_finite()") && (window.contains("> 0.0") || window.contains("<= 0.0"))
+    has_ident(window, "is_finite") && compares_strictly_with_float_zero(window)
+}
+
+fn has_ident(text: &str, ident: &str) -> bool {
+    let bytes = text.as_bytes();
+    text.match_indices(ident).any(|(at, _)| {
+        let end = at + ident.len();
+        starts_token(bytes, at) && bytes.get(end).is_none_or(|&b| !is_ident_byte(b))
+    })
+}
+
+/// One past the end of the float literal starting at `at` when it is a zero
+/// (`0.0`, `0.`, `0f64`, `0.0_f64`), or `None`. An integer `0`, a range `0..`,
+/// a method call `0.max(…)` and a non-zero value are not.
+fn float_zero_literal_end(bytes: &[u8], at: usize) -> Option<usize> {
+    let digits_end = |from: usize| {
+        from + bytes[from..]
+            .iter()
+            .take_while(|&&b| b.is_ascii_digit() || b == b'_')
+            .count()
+    };
+    let mut end = digits_end(at);
+    let has_fraction = bytes.get(end) == Some(&b'.')
+        && bytes
+            .get(end + 1)
+            .is_none_or(|&b| !(b == b'.' || b == b'_' || b.is_ascii_alphabetic()));
+    if has_fraction {
+        end = digits_end(end + 1);
+    }
+    let is_zero = bytes[at..end]
+        .iter()
+        .all(|&b| matches!(b, b'0' | b'_' | b'.'));
+    let has_suffix = bytes[end..].starts_with(b"f64") || bytes[end..].starts_with(b"f32");
+    if has_suffix {
+        end += 3;
+    }
+    let token_ends = bytes.get(end).is_none_or(|&b| !is_ident_byte(b));
+    ((has_fraction || has_suffix) && is_zero && token_ends).then_some(end)
+}
+
+/// `r > 0`, `0 < r`, `r <= 0` or `0 >= r` for some float zero, read with
+/// whitespace removed. `=>` and `->` are not comparisons.
+fn compares_strictly_with_float_zero(window: &str) -> bool {
+    let compact: Vec<u8> = window
+        .bytes()
+        .filter(|b| !b.is_ascii_whitespace())
+        .collect();
+    let zero_literals = (0..compact.len())
+        .filter(|&at| compact[at] == b'0' && starts_token(&compact, at))
+        .filter(|&at| at == 0 || compact[at - 1] != b'.')
+        .filter_map(|at| float_zero_literal_end(&compact, at).map(|end| (at, end)));
+    for (at, end) in zero_literals {
+        let (before, after) = (&compact[..at], &compact[end..]);
+        let zero_on_right = (before.ends_with(b">")
+            && !before.ends_with(b"=>")
+            && !before.ends_with(b"->")
+            && !before.ends_with(b">>"))
+            || before.ends_with(b"<=");
+        let zero_on_left =
+            (after.starts_with(b"<") && !after.starts_with(b"<=") && !after.starts_with(b"<<"))
+                || after.starts_with(b">=");
+        if zero_on_right || zero_on_left {
+            return true;
+        }
+    }
+    false
 }
 
 fn row_i_scan(label: &str, src: &str) -> RowI {
@@ -944,6 +1018,49 @@ fn cone(x: f64) {
 "#,
     );
     assert_eq!(live_lines("lib.rs", non_negative), Vec::<usize>::new());
+}
+
+/// `expr` as the one statement of a fn body, on line 2.
+fn statement_snippet(expr: &str) -> String {
+    format!("fn f(r: f64, n: usize, k: usize) {{\n    let _ = {expr};\n}}\n")
+}
+
+#[test]
+fn row_i_flags_every_zero_spelling_in_either_operand_order() {
+    for expr in [
+        "r.is_finite() && 0.0 < r",
+        "r.is_finite() && r > 0f64",
+        "r.is_finite() && r > 0.",
+        "r.is_finite() && r>0.0_f64",
+        "!r.is_finite() || 0.0 >= r",
+        "f64::is_finite(r) && r > 0.0",
+    ] {
+        assert_eq!(
+            live_lines("lib.rs", &statement_snippet(expr)),
+            vec![2],
+            "{expr}"
+        );
+    }
+}
+
+#[test]
+fn row_i_ignores_non_negativity_non_zero_bounds_and_non_comparisons() {
+    for expr in [
+        "r.is_finite() && 0.0 <= r",
+        "r.is_finite() && r > 0.5",
+        "r.is_finite() && r > 10.0",
+        "r.is_finite() && n > 0",
+        "r.is_finite() && (0..n).contains(&k)",
+        "r.is_finite() && 0.max(n) < k",
+        "match r.is_finite() { true => 0.0, false => 1.0 }",
+        "r.is_finite_and_positive() && r > 0.0",
+    ] {
+        assert_eq!(
+            live_lines("lib.rs", &statement_snippet(expr)),
+            Vec::<usize>::new(),
+            "{expr}"
+        );
+    }
 }
 
 #[test]
