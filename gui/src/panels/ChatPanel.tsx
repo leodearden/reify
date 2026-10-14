@@ -6,6 +6,7 @@ import { SystemMessage } from './chat/SystemMessage';
 import { ContextPicker, type ContextType } from './chat/ContextPicker';
 import { ContextChip } from './chat/ContextChip';
 import { PermissionPrompt } from './chat/PermissionPrompt';
+import type { ConstraintData } from '../types';
 import styles from './ChatPanel.module.css';
 
 export interface AttachedContext {
@@ -26,7 +27,7 @@ export interface ChatPanelProps {
     decidePermission: (requestId: string, decision: PermissionDecision) => void;
   };
   selectedEntity?: string;
-  engineConstraints?: Array<{ expression?: string; status?: string }>;
+  engineConstraints?: readonly Pick<ConstraintData, 'expression' | 'status'>[];
   diagnostics?: string[];
   activeFile?: string;
 }
@@ -94,9 +95,7 @@ export const ChatPanel: Component<ChatPanelProps> = (props) => {
           break;
         case 'constraints':
           if (props.engineConstraints) {
-            ctx.constraints = props.engineConstraints.map(
-              (c) => c.expression ?? 'unknown'
-            );
+            ctx.constraints = props.engineConstraints.map((c) => c.expression);
           }
           break;
         case 'file':

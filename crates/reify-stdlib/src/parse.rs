@@ -1,39 +1,60 @@
 //! Fallible string→quantity parse ops (task #4535): `parse_length` /
 //! `parse_length_r`. Pure `String -> Value` builtins (no `EvalContext`), so
-//! they live in their own `eval_builtin` sub-dispatcher rather than in
-//! `reify-expr`'s context-needing intercepts.
+//! they are bound by `eval_builtin` rather than by `reify-expr`'s
+//! context-needing intercepts.
+//!
+//! Since registry α (task #6001) this module holds KERNELS ONLY — the
+//! `eval_parse(name, args)` string matcher that used to front them is gone,
+//! and each kernel is reached through the exhaustive `EvalBuiltinId` match in
+//! `crate::registry_dispatch`.
 
 use reify_core::DimensionVector;
 use reify_ir::Value;
 
-/// Evaluate a `parse_*` builtin. Returns `None` when `name` is not one of
-/// this sub-dispatcher's names, or when `args` doesn't match the expected
-/// shape (a single `Value::String`) — the "this sub-dispatcher declines"
-/// signal that lets `eval_builtin`'s dispatch chain fall through to its own
-/// `Value::Undef` default, mirroring the other `eval_*` sub-dispatchers'
-/// `Option<Value>` contract.
-pub(crate) fn eval_parse(name: &str, args: &[Value]) -> Option<Value> {
-    match name {
-        "parse_length" => {
-            let s = single_string_arg(args)?;
-            Some(Value::Option(parse_length_value(s).ok().map(Box::new)))
-        }
-        "parse_length_r" => {
-            let s = single_string_arg(args)?;
-            Some(match parse_length_value(s) {
-                Ok(value) => Value::Enum {
-                    type_name: "Result".to_string(),
-                    variant: "Ok".to_string(),
-                    payload: vec![("value".to_string(), value)],
-                },
-                Err(err) => Value::Enum {
-                    type_name: "Result".to_string(),
-                    variant: "Err".to_string(),
-                    payload: vec![("error".to_string(), Value::String(err.reason(s)))],
-                },
-            })
-        }
-        _ => None,
+/// `parse_length(s) -> Option<Length>`, registered as
+/// `EvalBuiltinId::ParseLength` (`crates/reify-builtins/src/registry.rs`).
+///
+/// Reached only through `registry_dispatch::dispatch`, so by the time this
+/// runs the name has already been resolved and the arity already checked by
+/// `reify_builtins::lookup`.
+///
+/// ## The arg-shape asymmetry (registry α, PRD §7.3(3))
+///
+/// Before the registry swap, the enclosing `eval_parse(name, args)` conflated
+/// two different declines into one `None`: "not one of my names" and "wrong
+/// arg shape" (a non-`Value::String` argument, via `single_string_arg`'s `?`).
+/// `eval_builtin`'s chain turned either into its terminal `Value::Undef`.
+///
+/// Once the name is an `EvalBuiltinId` the unknown-name branch no longer
+/// exists here, so the arg-shape decline must be spelled explicitly as
+/// `Value::Undef`. That is behaviour-preserving — `Undef` is exactly what the
+/// old fall-through produced — but it is a real code change, not a rename.
+pub(crate) fn parse_length(args: &[Value]) -> Value {
+    match single_string_arg(args) {
+        Some(s) => Value::Option(parse_length_value(s).ok().map(Box::new)),
+        None => Value::Undef,
+    }
+}
+
+/// `parse_length_r(s) -> Result<Length, String>`, registered as
+/// `EvalBuiltinId::ParseLengthR`. Builds the PRELUDE `Result<T,E>` shape of
+/// task #4035 verbatim. Declines a wrong arg shape with `Value::Undef` for
+/// the reason documented on [`parse_length`].
+pub(crate) fn parse_length_r(args: &[Value]) -> Value {
+    let Some(s) = single_string_arg(args) else {
+        return Value::Undef;
+    };
+    match parse_length_value(s) {
+        Ok(value) => Value::Enum {
+            type_name: "Result".to_string(),
+            variant: "Ok".to_string(),
+            payload: vec![("value".to_string(), value)],
+        },
+        Err(err) => Value::Enum {
+            type_name: "Result".to_string(),
+            variant: "Err".to_string(),
+            payload: vec![("error".to_string(), Value::String(err.reason(s)))],
+        },
     }
 }
 
@@ -140,15 +161,22 @@ mod tests {
     use reify_core::DimensionVector;
     use reify_ir::Value;
 
-    use super::*;
+    // Registry α: `eval_parse` no longer exists — the family's entry point is
+    // now the public `eval_builtin`, which resolves the name through
+    // `reify_builtins::lookup` and lands in `registry_dispatch::dispatch`.
+    // Re-pointing these tests there keeps them exercising the SAME kernels
+    // through the path a `.ri` author actually takes. That also emptied the
+    // `use super::*;` glob these tests used to need — every remaining name
+    // they reference is either public (`eval_builtin`) or imported above.
+    use crate::eval_builtin;
 
-    /// Assert `result` is `Some(Value::Option(Some(Scalar)))` with the given
+    /// Assert `result` is `Value::Option(Some(Scalar))` with the given
     /// SI value (1e-9 tolerance — `Value`'s `PartialEq` is bit-exact, and
     /// `12mm` parsed as `12.0 * 0.001` is not guaranteed bit-identical to a
     /// hand-written `0.012` literal) and `DimensionVector::LENGTH`.
-    fn assert_parses_to_length(result: Option<Value>, expected_si: f64) {
+    fn assert_parses_to_length(result: Value, expected_si: f64) {
         match result {
-            Some(Value::Option(Some(boxed))) => match *boxed {
+            Value::Option(Some(boxed)) => match *boxed {
                 Value::Scalar {
                     si_value,
                     dimension,
@@ -161,50 +189,50 @@ mod tests {
                 }
                 other => panic!("expected Value::Scalar inside Some(..), got {other:?}"),
             },
-            other => panic!("expected Some(Value::Option(Some(Scalar))), got {other:?}"),
+            other => panic!("expected Value::Option(Some(Scalar)), got {other:?}"),
         }
     }
 
-    fn assert_parses_to_none(result: Option<Value>) {
+    fn assert_parses_to_none(result: Value) {
         assert!(
-            matches!(result, Some(Value::Option(None))),
-            "expected Some(Value::Option(None)), got {result:?}"
+            matches!(result, Value::Option(None)),
+            "expected Value::Option(None), got {result:?}"
         );
     }
 
     #[test]
     fn parse_length_recognizes_millimetres() {
-        let result = eval_parse("parse_length", &[Value::String("12mm".to_string())]);
+        let result = eval_builtin("parse_length", &[Value::String("12mm".to_string())]);
         assert_parses_to_length(result, 0.012);
     }
 
     #[test]
     fn parse_length_recognizes_metres_with_internal_space() {
-        let result = eval_parse("parse_length", &[Value::String("3.5 m".to_string())]);
+        let result = eval_builtin("parse_length", &[Value::String("3.5 m".to_string())]);
         assert_parses_to_length(result, 3.5);
     }
 
     #[test]
     fn parse_length_recognizes_centimetres() {
-        let result = eval_parse("parse_length", &[Value::String("2.5cm".to_string())]);
+        let result = eval_builtin("parse_length", &[Value::String("2.5cm".to_string())]);
         assert_parses_to_length(result, 0.025);
     }
 
     #[test]
     fn parse_length_trims_surrounding_whitespace_for_inches() {
-        let result = eval_parse("parse_length", &[Value::String(" 1in ".to_string())]);
+        let result = eval_builtin("parse_length", &[Value::String(" 1in ".to_string())]);
         assert_parses_to_length(result, 0.0254);
     }
 
     #[test]
     fn parse_length_returns_inner_none_for_malformed_input() {
-        let result = eval_parse("parse_length", &[Value::String("bogus".to_string())]);
+        let result = eval_builtin("parse_length", &[Value::String("bogus".to_string())]);
         assert_parses_to_none(result);
     }
 
     #[test]
     fn parse_length_returns_inner_none_for_unknown_unit() {
-        let result = eval_parse("parse_length", &[Value::String("5xyz".to_string())]);
+        let result = eval_builtin("parse_length", &[Value::String("5xyz".to_string())]);
         assert_parses_to_none(result);
     }
 
@@ -212,7 +240,7 @@ mod tests {
     fn parse_length_returns_inner_none_for_recognized_non_length_unit() {
         // "kg" is a recognized built-in unit, but its dimension is Mass, not
         // Length — a units-mismatch, distinct from a malformed/unknown unit.
-        let result = eval_parse("parse_length", &[Value::String("12kg".to_string())]);
+        let result = eval_builtin("parse_length", &[Value::String("12kg".to_string())]);
         assert_parses_to_none(result);
     }
 
@@ -225,25 +253,25 @@ mod tests {
 
     #[test]
     fn parse_length_recognizes_negative_sign_prefixed_millimetres() {
-        let result = eval_parse("parse_length", &[Value::String("-5mm".to_string())]);
+        let result = eval_builtin("parse_length", &[Value::String("-5mm".to_string())]);
         assert_parses_to_length(result, -0.005);
     }
 
     #[test]
     fn parse_length_recognizes_positive_sign_prefixed_millimetres() {
-        let result = eval_parse("parse_length", &[Value::String("+5mm".to_string())]);
+        let result = eval_builtin("parse_length", &[Value::String("+5mm".to_string())]);
         assert_parses_to_length(result, 0.005);
     }
 
     #[test]
     fn parse_length_recognizes_leading_dot_metres() {
-        let result = eval_parse("parse_length", &[Value::String(".5m".to_string())]);
+        let result = eval_builtin("parse_length", &[Value::String(".5m".to_string())]);
         assert_parses_to_length(result, 0.5);
     }
 
     #[test]
     fn parse_length_recognizes_zero_millimetres() {
-        let result = eval_parse("parse_length", &[Value::String("0mm".to_string())]);
+        let result = eval_builtin("parse_length", &[Value::String("0mm".to_string())]);
         assert_parses_to_length(result, 0.0);
     }
 
@@ -259,7 +287,7 @@ mod tests {
     fn parse_length_returns_inner_none_for_unsigned_exponent_scientific_notation() {
         // "1e3mm": splits into num_part="1", unit_part="e3mm" (unrecognized
         // unit) — None, NOT 1000mm.
-        let result = eval_parse("parse_length", &[Value::String("1e3mm".to_string())]);
+        let result = eval_builtin("parse_length", &[Value::String("1e3mm".to_string())]);
         assert_parses_to_none(result);
     }
 
@@ -267,17 +295,20 @@ mod tests {
     fn parse_length_returns_inner_none_for_signed_exponent_scientific_notation() {
         // "1.0e-2m": splits into num_part="1.0", unit_part="e-2m"
         // (unrecognized unit) — None, NOT 0.01m.
-        let result = eval_parse("parse_length", &[Value::String("1.0e-2m".to_string())]);
+        let result = eval_builtin("parse_length", &[Value::String("1.0e-2m".to_string())]);
         assert_parses_to_none(result);
     }
 
     #[test]
-    fn eval_parse_does_not_handle_a_non_string_arg() {
-        // Wrong arg shape ⇒ this sub-dispatcher declines (returns `None`, not
-        // `Some(Value::Undef)`), leaving `eval_builtin`'s chain to fall
-        // through to its own `Value::Undef` default.
-        let result = eval_parse("parse_length", &[Value::Real(12.0)]);
-        assert_eq!(result, None);
+    fn parse_length_does_not_handle_a_non_string_arg() {
+        // The registry-α asymmetry, pinned. `lookup("parse_length", 1)`
+        // resolves (the arity IS declared), so the call reaches the kernel and
+        // the WRONG ARG SHAPE is what declines — now spelled explicitly as
+        // `Value::Undef` rather than as the `None` that used to fall through
+        // to `eval_builtin`'s terminal `Undef`. Same observable, different
+        // layer. See the doc-comment on `parse_length`.
+        let result = eval_builtin("parse_length", &[Value::Real(12.0)]);
+        assert!(result.is_undef(), "expected Value::Undef, got {result:?}");
     }
 
     // ── parse_length_r (step-5 RED / step-6 GREEN) ───────────────────────────
@@ -287,17 +318,17 @@ mod tests {
     // "error", _)]}` (see result_prelude_enum_tests.rs). Pinning the exact
     // "value"/"error" field names here means a divergent payload shape fails.
 
-    /// Assert `result` is `Some(Value::Enum{type_name:"Result",
-    /// variant:"Ok", payload:[("value", Scalar)]})` with the given SI value
+    /// Assert `result` is `Value::Enum{type_name:"Result",
+    /// variant:"Ok", payload:[("value", Scalar)]}` with the given SI value
     /// (1e-9 tolerance, same rationale as `assert_parses_to_length`) and
     /// `DimensionVector::LENGTH`.
-    fn assert_ok_length(result: Option<Value>, expected_si: f64) {
+    fn assert_ok_length(result: Value, expected_si: f64) {
         match result {
-            Some(Value::Enum {
+            Value::Enum {
                 type_name,
                 variant,
                 payload,
-            }) => {
+            } => {
                 assert_eq!(type_name, "Result", "enum type_name");
                 assert_eq!(variant, "Ok", "constructed variant");
                 assert_eq!(
@@ -322,22 +353,22 @@ mod tests {
                     ),
                 }
             }
-            other => panic!("expected Some(Value::Enum{{Result::Ok}}), got {other:?}"),
+            other => panic!("expected Value::Enum{{Result::Ok}}, got {other:?}"),
         }
     }
 
-    /// Assert `result` is `Some(Value::Enum{type_name:"Result",
-    /// variant:"Err", payload:[("error", Value::String(_))]})` and return the
+    /// Assert `result` is `Value::Enum{type_name:"Result",
+    /// variant:"Err", payload:[("error", Value::String(_))]}` and return the
     /// extracted reason string so callers can also pin its CONTENT (reviewer
     /// suggestion #1, task #4535 amendment round 2) — shape alone can't
     /// distinguish a `Malformed` reason from a `WrongDimension` one.
-    fn assert_err_reason(result: Option<Value>) -> String {
+    fn assert_err_reason(result: Value) -> String {
         match result {
-            Some(Value::Enum {
+            Value::Enum {
                 type_name,
                 variant,
                 payload,
-            }) => {
+            } => {
                 assert_eq!(type_name, "Result", "enum type_name");
                 assert_eq!(variant, "Err", "constructed variant");
                 assert_eq!(
@@ -353,19 +384,19 @@ mod tests {
                     ),
                 }
             }
-            other => panic!("expected Some(Value::Enum{{Result::Err}}), got {other:?}"),
+            other => panic!("expected Value::Enum{{Result::Err}}, got {other:?}"),
         }
     }
 
     #[test]
     fn parse_length_r_recognizes_millimetres_as_ok() {
-        let result = eval_parse("parse_length_r", &[Value::String("12mm".to_string())]);
+        let result = eval_builtin("parse_length_r", &[Value::String("12mm".to_string())]);
         assert_ok_length(result, 0.012);
     }
 
     #[test]
     fn parse_length_r_returns_err_for_malformed_input() {
-        let result = eval_parse("parse_length_r", &[Value::String("bogus".to_string())]);
+        let result = eval_builtin("parse_length_r", &[Value::String("bogus".to_string())]);
         let reason = assert_err_reason(result);
         assert!(
             reason.to_lowercase().contains("could not parse"),
@@ -378,7 +409,7 @@ mod tests {
         // Reviewer suggestion #2 (task #4535 amendment round 2): the
         // Malformed message should quote the TRIMMED input, not echo the
         // raw untrimmed string with its surrounding whitespace.
-        let result = eval_parse("parse_length_r", &[Value::String(" bogus ".to_string())]);
+        let result = eval_builtin("parse_length_r", &[Value::String(" bogus ".to_string())]);
         let reason = assert_err_reason(result);
         assert!(
             reason.contains("'bogus'"),
@@ -397,7 +428,7 @@ mod tests {
         // Reviewer suggestion #1 (task #4535 amendment round 2): pin the
         // REASON TEXT so a regression collapsing `WrongDimension` into
         // `Malformed` (or swapping the branch) fails, not just the shape.
-        let result = eval_parse("parse_length_r", &[Value::String("12kg".to_string())]);
+        let result = eval_builtin("parse_length_r", &[Value::String("12kg".to_string())]);
         let reason = assert_err_reason(result);
         assert!(
             reason.to_lowercase().contains("mass"),

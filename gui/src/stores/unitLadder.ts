@@ -57,6 +57,27 @@ export function convertToUnit(siValue: number, siScale: number): number {
  * addendum L3): those format the MAGNITUDE, not the unit, and are explicitly
  * out of scope. This is a pure glyph substitution with no exceptions, so it
  * must only ever be handed a unit label.
+ *
+ * SOURCE OF TRUTH: `gui/src-tauri/src/engine.rs::normalize_unit_label` is
+ * this function's same-shape Rust twin — the same total substitution over
+ * the same two glyphs — and its doc block is the canonical account of the
+ * cross-language contract: two mirror-image goldens, one per side (this
+ * file's test block is the TypeScript one), that leave an accidental
+ * one-sided drift uncaught.
+ *
+ * `reify_core::display_units::ascii_label_spelling`
+ * (crates/reify-core/src/display_units.rs) separately owns contract C2's
+ * underlying U+00B2/U+00B3 mapping rule (it returns `Option<String>`, a
+ * different shape). Both describe the curated ladders served to this file
+ * over the `get_unit_ladders` Tauri command; the duplication itself is
+ * unavoidable because TypeScript cannot call across the language boundary.
+ *
+ * The gate that fires when the curated alphabet grows a glyph — e.g. the
+ * `·` separator half, leaf κ of
+ * docs/prds/v0_6/angle-units-surface-convergence.md (#5784) — is
+ * `curated_unit_labels_carry_no_glyph_outside_the_shared_normalizer_alphabet`
+ * (gui/src-tauri/src/tests/engine_tests.rs), which sweeps the live tables
+ * and names this function in its failure message.
  */
 export function normalizeUnitLabel(label: string): string {
   return label.replace(/²/g, '^2').replace(/³/g, '^3');
@@ -137,7 +158,7 @@ export const BASE_UNIT_DIMENSIONS: readonly string[] = ['Length', 'Angle'];
  *
  * WHAT "ADVERTISED" NOW MEANS — the gap this used to document is CLOSED
  * (task #5757). Until then the commit path — `handleSetParameter` (App.tsx) ->
- * `bridge.setParameter` -> `EngineSession::set_parameter` ->
+ * `bridge.setParameter` -> `EngineSession::commit_parameter` ->
  * `parse_value_string` (both in gui/src-tauri/src/engine.rs) — matched a
  * hard-coded five-entry suffix table whose entries were exactly
  * {@link BASE_UNIT_LABELS}, so every curated label outside that floor was
@@ -270,30 +291,18 @@ export const NUMBER_RE = new RegExp(`^(${QUANTITY_NUMBER})$`);
  *
  * THE BACKEND IS THE AUTHORITATIVE GATE: `parse_value_string_for_cell` in
  * `gui/src-tauri/src/engine.rs` refuses a `Value::Int`/`Value::Real` only for a
- * dimension its `LADDER_COVERAGE` table records, and does so for every caller
- * of `set_parameter` — including `MechanismPanel`, which reaches
- * `handleSetParameter` without passing through `PropertyEditor`'s gate. This
+ * dimension its `LADDER_COVERAGE` table records, and does so on BOTH cadences —
+ * `preview_parameter` and `commit_parameter` share the one parse — for every
+ * caller, including `MechanismPanel`, which reaches `handleSetParameter`
+ * without passing through `PropertyEditor`'s gate. This
  * predicate exists to make the refusal INLINE, keeping the typed text on screen
  * for correction instead of discarding it behind an async error toast.
  *
- * THE TWO ENDS KEY ON DIFFERENT FACTS, and the residual gap runs ONE way and IS
- * reachable from this panel. The backend reads the cell's DECLARED type; this
- * reads `ValueData.dimension`, which `format_determined_cell` derives from the
- * cell's CURRENT VALUE via `display_scalar` — the empty string for `Undef`,
- * `Option(None)`, or any non-Scalar. For a Scalar-valued cell the two coincide.
- *
- * The live case is a `none`-valued `Option<Length>`: `display_scalar` returns
- * `None`, the dimension serialises as `''`, this gate admits the bare number,
- * and the backend — which unwraps `Type::Option` before gating — refuses it
- * behind exactly the async toast this predicate exists to avoid. The user still
- * gets the actionable "expects Length, got the bare number '120'" rather than a
- * generic type error, so the outcome is correct and only the INLINE-ness is
- * lost. An `Option(Some(80mm))` cell surfaces `'Length'` and is gated inline as
- * usual, so the divergence is confined to the `none` state.
- *
- * Closing it properly means surfacing the DECLARED dimension on `ValueData` as a
- * field of its own, so both ends read one fact; until then it is recorded here
- * rather than claimed away.
+ * BOTH ENDS READ ONE FACT. Callers pass `ValueData.declared_dimension`, which
+ * the backend derives from the same declared cell type
+ * `parse_value_string_for_cell` gates on (`declared_scalar_dimension`), so a
+ * `none`-valued `Option<Length>` cell is gated inline exactly as the engine
+ * gates it (task #6962).
  *
  * IT FAILS OPEN ONLY BELOW THE FLOOR. With `ladders` undefined or empty — the
  * `get_unit_ladders` fetch not resolved, or failed — nothing beyond

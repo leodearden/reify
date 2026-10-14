@@ -10,8 +10,8 @@
 // geometry_query_result_type("length") and geometry_query_result_type("perimeter")
 // in crates/reify-compiler/src/units.rs (KGQ-α registration chain).
 //
-// Pre-Phase-3 runtime note (engine_build.rs:3942-3949):
-//   post_process_topology_selectors iterates value cells once and does NOT
+// Pre-Phase-3 runtime note (crates/reify-eval/src/engine_build.rs):
+//   `post_process_topology_selectors` iterates value cells once and does NOT
 //   chain through intermediate cells. `an_edge = single(edges(curve_box))` and
 //   `a_face = single(faces(surf_box))` evaluate to Value::Undef at DSL eval time
 //   because the selector→sub-handle cells are not hydrated before the pass runs.

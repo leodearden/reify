@@ -42,20 +42,69 @@ mode-superposition transient response. Concretely:
 // examples/modal/printer_gantry_modes.ri
 let gantry = printer_gantry_part();
 let bcs = [
-    FixedSupport(at: gantry_mount_left),
-    FixedSupport(at: gantry_mount_right),
+    PinnedSupport(at: gantry_mount_left),
+    PinnedSupport(at: gantry_mount_right),
 ];
 
 let modes = modal_analysis(gantry, ModalOptions(
     n_modes: 10,
     boundary_conditions: bcs,
-    damping: RayleighDamping(alpha: 0.0, beta: 1e-4),
+    damping: RayleighDamping(alpha: 0.0Hz, beta: 0.0001s),
 ));
 
 // modes : ModalResult — List<Mode> ordered by frequency
 let f1 = modes.modes[0].frequency;
-report("first mode = " ++ show(f1));   // expected ~120 Hz
+report("first mode = " ++ show(f1));   // expected ~53 Hz (pin-pin; ~120 Hz if the mounts were clamped)
 ```
+
+Boundary-condition realization is **per named face and kind-aware** (task
+6663): what a support constrains on its target face is decided by the
+support's `type_name`, and — for `PinnedSupport` — by which face it targets
+and how many other named faces the model carries. This path only reads
+`StructureInstance`-valued entries from `boundary_conditions`; the
+Map-valued builtins `RollerSupport`/`DisplacementSupport` are not
+`StructureInstance`s and are not read by this path at all — they
+constrain nothing here and do not count toward the face tally below.
+Every StructureInstance support kind other than `PinnedSupport`
+(`FixedSupport` included) always clamps all three translational DOFs on
+every mesh node of its named face. `PinnedSupport` pins only the
+transverse (Z) DOF, and only on a beam-axis end face (`x_min`/`x_max`) of
+a model whose supports name at least one other DISTINCT recognized face;
+a lone `PinnedSupport`, or one on a non-end face (`y_min`/`z_max`/...),
+clamps all three DOFs instead — the same `PinnedOnTetEquivalentToFixed`
+realization a pinned face gets on any tet body elsewhere in the system
+(on shells, pinned leaves the rotational DOFs free instead). That
+discriminator counts DISTINCT RECOGNIZED faces (the six names
+`x_min`..`z_max`), not raw support count: two supports naming the same
+face collapse to one, and a support whose target names no recognized
+face votes on nothing.
+
+Dropping that scoping — pinning the transverse DOF on every named face
+unconditionally — is not a simplification: it would turn
+`[PinnedSupport("x_min")]` and `[PinnedSupport("y_min"),
+PinnedSupport("y_max")]` into ≈0 Hz mechanisms reported under a mere
+Warning, which is exactly the regression the scoping guards against.
+Because the realization reads a count the author never wrote on the
+support, every pinned beam-end face also carries an
+`I_ModalPinnedFaceRealization` Info diagnostic naming what it was realized
+as and why.
+
+The gantry above rests on its two end mounts rather than being welded to
+them, so both are `PinnedSupport`. (The `at:` face selector shown above
+is the aspirational v0.4 Part-based spelling — v0.3 has no `Part`
+topology or `printer_gantry_part()` builtin, so `support_targets` cannot
+resolve it; the landed fixture, `examples/modal/printer_gantry_modes.ri`,
+spells the same mounts `PinnedSupport(target: "x_min")` /
+`PinnedSupport(target: "x_max")`, which is what actually names the two
+recognized faces and triggers what follows.) Because *both* beam-axis end
+faces are named and every support naming one is `PinnedSupport`, this is
+the simply-supported (pin-pin) special case: the two end faces are
+realized with the minimal neutral-axis anchors needed to remove
+rigid-body motion, on top of the per-face transverse pin, with no change
+to that existing pin-pin realization. Spelling the same two mounts as
+`FixedSupport` instead would describe a genuinely different, stiffer
+clamped-clamped gantry (a ≈2.27× higher fundamental for a uniform beam)
+— not this resting-mount configuration.
 
 ```reify
 // examples/modal/transient_step_response.ri
@@ -178,7 +227,7 @@ structure def Mode {
     param participation_mass : Real         // effective modal mass along
                                             //   a reference direction (set
                                             //   at modal_analysis call time)
-    param damping_ratio    : Real           // ζ_i = (αω_i² + β)/(2ω_i)
+    param damping_ratio    : Real           // ζ_i = (α + β·ω_i²)/(2·ω_i)
                                             //   for Rayleigh; 0 for undamped
 }
 
@@ -212,8 +261,8 @@ structure def NoDamping : DampingDescriptor {
 }
 
 structure def RayleighDamping : DampingDescriptor {
-    param alpha : Real    // mass-proportional coefficient (1/s)
-    param beta  : Real    // stiffness-proportional coefficient (s)
+    param alpha : Frequency    // mass-proportional coefficient
+    param beta  : Time         // stiffness-proportional coefficient
 }
 ```
 
@@ -222,6 +271,12 @@ Per-mode damping ratio derived from Rayleigh parameters:
 ```
 ζ_i = (α + β·ω_i²) / (2·ω_i)
 ```
+
+`ω_i` is the ANGULAR frequency in rad/s (= 2π·`Mode.frequency`), so both
+coefficients are consumed on the rad/s scale: a caller reading cycles/s must
+scale α by 2π and β by 1/2π. The convention lives in ω and moves α and β
+symmetrically, which is why the declared pair stays the SI typing implied by
+C = α·M + β·K (α = s⁻¹, β = s) rather than α being typed `AngularVelocity`.
 
 This preserves mode-shape orthogonality (the decoupled modal ODEs stay
 1D-second-order), so transient response stays in real arithmetic.
@@ -249,6 +304,14 @@ six-knob shape, swapped semantics of `sigma` (shift-invert origin in
 frequency space rather than buckling-load space). Validation runs at
 ctor: `n_modes >= 1`, `tol > 0`, `max_iters >= 1`,
 `reference_direction.norm() > 0`.
+
+> **The shift shipped as `shift_frequency : Frequency = 0Hz` (task #6097), and four other knobs drifted from this sketch.** The shipped declaration is `structure def ModalOptions` in `crates/reify-compiler/stdlib/modal_analysis.ri`. The `sigma : Frequency` above shipped first as `sigma : Real` in eigenvalue (λ) space, and is now `shift_frequency : Frequency = 0Hz` (Leo, 2026-08-31, superseding the 2026-08-07 Frequency² ruling): the author writes Hz and the solver shifts to λ = (2π·shift_frequency)² via `frequency_hz_to_eigenvalue`. It is honored on the FEA `modal_analysis` path (#7261) and warned-and-dropped (`W_ModalOptionUnsupported`) on the lumped `mechanism_modal_analysis` path pending #7263. The `BucklingOptions` naming mirror the paragraph above leans on is deliberately broken: σ is λ-space notation, and `BucklingOptions.sigma` remains a dimensionless load factor. Two costs are accepted. First, near is not near: shift-invert picks the λ nearest σ, and a window symmetric in λ is skewed in Hz, biased low (at 100 Hz a 90 Hz mode is 4π²·1900 ≈ 75009 away in λ and a 110 Hz mode 4π²·2100 ≈ 82905 away, so the solver prefers 90 Hz). Second, squaring erases the sign, so a negative-λ shift is no longer expressible; that narrows the old λ-space `sigma` contract but loses no observable capability, because `eigenvalue_to_frequency_hz` already clamps λ ≤ 0 to 0 Hz. The other drifts:
+> - `element_order : ElementOrder = ElementOrder.P1` exists (task 4066) and is absent above.
+> - `reference_direction` ships as `Vector3<Dimensionless>`, not `Vec3`, and is DEFAULTLESS — no `-Z_HAT` default; the trampoline's degenerate-input fallback is +Z (`[0, 0, 1]`).
+> - `damping` ships DEFAULTLESS, not `// default: NoDamping`.
+> - `n_modes` ships with default 10.
+>
+> So the "six-knob shape" is eight params, and `reference_direction.norm() > 0` is handled at the trampoline (a zero-norm direction falls back to +Z), not validated at ctor.
 
 ## §5 — Contract: Transient response
 
@@ -317,12 +380,19 @@ structure def DisplacementTimeHistory {
 // per-node-per-time matrix unless queried):
 fn displacement_at(history: DisplacementTimeHistory,
                    location: LocationId,
-                   direction: Vec3) -> List<Real>
+                   direction: Vec3) -> List<Length>
 ```
 
 The lazy reconstruction avoids materializing the (n_nodes × n_times)
 matrix when only a handful of locations are queried — typical for
 input-shaping iteration.
+
+`mode_coords` above stays `List<List<Real>>`: an isolated modal
+coordinate ξ_i carries units kg^1/2·m (mass-normalized mode shapes
+Φ_i carry kg^-1/2), and Reify's dimension grammar has no SI-root
+extension to express that. `displacement_at`'s reconstruction product
+Φ_i·ξ_i, however, is plain metres — the mass units cancel — so the
+accessor's return type is `Length`, not `Real`.
 
 ### §5.3 — Per-mode ODE solution
 

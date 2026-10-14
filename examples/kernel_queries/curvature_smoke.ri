@@ -73,7 +73,9 @@ structure def CurvatureSmoke {
     let k_surf_face  = curvature(faces(s)[0], pt_s)
 
     // Matrix-op consumer: transpose(Matrix<2,2,Curvature>) → Matrix<2,2,Curvature>.
-    // Compile-type: Matrix<2,2,Curvature> (math_signatures.rs:256-258).
-    // Eval: Value::Undef (transpose(Undef) → Undef; reify-stdlib matrix.rs:145-157).
+    // Compile-type: Matrix<2,2,Curvature> (the `"transpose"` arm of
+    // `math_fn_result_type`, reify-compiler math_signatures.rs).
+    // Eval: Value::Undef (transpose(Undef) → Undef; the `"transpose"` arm of
+    // `eval_matrix`, reify-stdlib matrix.rs).
     let k_surf_face_t = transpose(k_surf_face)
 }

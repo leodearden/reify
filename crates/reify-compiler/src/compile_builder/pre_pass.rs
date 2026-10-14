@@ -15,16 +15,51 @@ use crate::annotations::is_known_module_pragma;
 use crate::compile_builder::ctx::CompilationCtx;
 use crate::type_resolution::convert_type_params;
 
-/// Forward every entry in `parsed.errors` as a warning diagnostic on `ctx`.
+/// Forward every entry in `parsed.errors` as an ERROR diagnostic on `ctx`.
 ///
-/// Parse errors are reported as warnings (not errors) because the parser has
-/// already produced a (partial) tree — compilation continues best-effort and
-/// any hard failures surface as errors from the phase that can't resolve the
-/// malformed declaration.
+/// INV-SF-7 `parse-is-value-faithful` (docs/legibility/design-invariants.md), task #5392.
+/// A `ParseError` means the CST carried an ERROR or MISSING node, so the lowered AST no
+/// longer corresponds to the source: a declaration may have been dropped, or two statements
+/// fused into one. Any value computed from such a module is untrustworthy, and the danger is
+/// precisely that it is not obviously wrong — a call whose target vanished can resolve to a
+/// same-named prelude fn and return a plausible number, or fall through to undef.
+///
+/// These were warnings, on the reasoning that the parser had produced a partial tree and
+/// later phases would raise errors for anything they could not resolve. Measured, that does
+/// not hold: a fn-body `let` missing its `;` collapses the whole declaration, every later
+/// phase resolves happily against what remains, and the module compiles "clean" with a
+/// different answer.
+///
+/// What the severity buys, stated only as far as it is measured. It ALIGNS the single-module
+/// path with the module-DAG path, which already returns `Diagnostic::error` and refuses
+/// (`module_dag.rs`'s parse-error arms), so the same malformed source is no longer refused
+/// when imported and accepted when compiled alone; and it is real defence-in-depth for
+/// LIBRARY consumers that hand a parse-error-bearing `ParsedModule` straight to `compile*`.
+///
+/// It changes no in-tree PRODUCTION behaviour. The surfaces that PUBLISH these diagnostics
+/// all gate on `parsed.errors` and return BEFORE compiling — `reify-cli`'s two entry points,
+/// `mcp_context.rs`'s three, `gui/src-tauri/src/engine.rs`, and the only `reify-lsp` entry the
+/// running server publishes from, `diagnostics.rs::compute_diagnostics_with_state` (called at
+/// `server.rs:196`/`238`). Those gates are LOAD-BEARING, not made redundant by this severity:
+/// each converts the parse errors itself, so removing one would start showing an editor user
+/// every parse error twice — once converted there, once again as `parse error: …` from here.
+///
+/// Two `reify-lsp` entry points compile UNGATED, and a new caller must supply its own gate
+/// rather than assume one:
+///
+/// - `diagnostics.rs::compute_diagnostics`, the stateless sibling, converts every parse error
+///   and then calls `compile_with_stdlib` with no early return, so each parse error now
+///   appears twice at ERROR severity where it was previously error + warning. Nothing in the
+///   running server calls it (its callers are that crate's own tests and
+///   `reify-lsp/tests/lifecycle.rs`), so the reach is reify-lsp's public API.
+/// - `analysis.rs::AnalysisContext::from_parsed` compiles ungated and IS live — hover
+///   (`server.rs:283`) and completion (`server.rs:379`) both build a context through it. It
+///   is invisible today only because those providers read `compiled.templates` /
+///   `type_aliases` and never `compiled.diagnostics`.
 pub(crate) fn forward_parse_errors(ctx: &mut CompilationCtx, parsed: &ParsedModule) {
     for err in &parsed.errors {
         ctx.diagnostics.push(
-            Diagnostic::warning(format!("parse error: {}", err.message))
+            Diagnostic::error(format!("parse error: {}", err.message))
                 .with_label(DiagnosticLabel::new(err.span, "parse error")),
         );
     }
@@ -64,7 +99,8 @@ pub(crate) fn effective_prelude<'a>(
 ///
 /// Returns `None` if the declared path matches the expected path (spec §7.1: correct).
 /// Returns `Some(Diagnostic::warning(...))` if `declared` is `None` (W_MODULE_DECL_MISSING).
-/// Returns `Some(Diagnostic::error(...))` if `declared` is `Some` but doesn't match (E_MODULE_PATH_MISMATCH).
+/// Returns `Some(Diagnostic::error(...))` if `declared` is `Some` but doesn't match
+/// (E_MODULE_PATH_MISMATCH); the error names the declaration that fixes it.
 ///
 /// This is a pure helper so it can be unit-tested without a full compilation context.
 /// Re-exported from the crate root so `reify-cli` can call it via `reify_compiler::check_module_path_decl`.
@@ -75,17 +111,24 @@ pub fn check_module_path_decl(
     match declared {
         None => Some(Diagnostic::warning(format!(
             "W_MODULE_DECL_MISSING: file has no top-of-file `module` declaration; \
-             expected `module {}` (spec \u{00a7}7.1)",
-            expected.0.join(".")
+             expected `{}` (spec \u{00a7}7.1)",
+            module_declaration(expected)
         ))),
         Some(d) if d != expected => Some(Diagnostic::error(format!(
             "E_MODULE_PATH_MISMATCH: declared module path '{}' does not match \
-             expected path '{}' (derived from file location)",
+             expected path '{}' (derived from file location); declare `{}` instead \
+             (spec \u{00a7}7.1)",
             d.0.join("."),
-            expected.0.join(".")
+            expected.0.join("."),
+            module_declaration(expected)
         ))),
         Some(_) => None,
     }
+}
+
+/// The source spelling of a top-of-file declaration of `path`, e.g. `module sub.dep`.
+fn module_declaration(path: &ModulePath) -> String {
+    format!("module {}", path.0.join("."))
 }
 
 /// References into `parsed.declarations` collected by [`collect_decl_refs`],
@@ -228,6 +271,11 @@ mod tests {
             "message should contain 'W_MODULE_DECL_MISSING', got: {}",
             diag.message
         );
+        assert!(
+            diag.message.contains("module foo"),
+            "message should name the expected declaration 'module foo', got: {}",
+            diag.message
+        );
     }
 
     #[test]
@@ -240,7 +288,7 @@ mod tests {
     #[test]
     fn mismatched_decl_returns_error_with_both_paths() {
         let declared = ModulePath::from_dotted("a.b.c").unwrap();
-        let expected = ModulePath::single("foo");
+        let expected = ModulePath::from_dotted("sub.dep").unwrap();
         let diag = check_module_path_decl(Some(&declared), &expected)
             .expect("should return Some(diag) for mismatch");
         assert_eq!(diag.severity, Severity::Error);
@@ -255,8 +303,13 @@ mod tests {
             diag.message
         );
         assert!(
-            diag.message.contains("foo"),
-            "message should name the expected path 'foo', got: {}",
+            diag.message.contains("'sub.dep'"),
+            "message should name the expected path 'sub.dep', got: {}",
+            diag.message
+        );
+        assert!(
+            diag.message.contains("module sub.dep"),
+            "message should name the corrective declaration 'module sub.dep', got: {}",
             diag.message
         );
     }

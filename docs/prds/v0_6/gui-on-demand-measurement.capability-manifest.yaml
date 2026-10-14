@@ -198,7 +198,19 @@ tasks:
       _MIN_FEATURE, and "Conforms VIOLATED: measured deviation X mm exceeds the Y
       mm tolerance zone"). β must add a structured channel or explicitly scope v1
       to verdict-only for those two kinds — parsing diagnostic prose is not acceptable
-      as the parity-gate surface.'
+      as the parity-gate surface. RESOLVED 2026-08-28 (Leo): the STRUCTURED CHANNEL,
+      for all three kinds; the v1 verdict-only scope-cut is rejected. REFINED 2026-09-01
+      (A5-R): the carrier must be DIMENSION-BEARING — deviation and min-wall/min-feature
+      are Lengths, overhang and draft are Angles, so an undifferentiated Option<f64>
+      is the INV-AD-4 rad=1 erasure; use Value::Scalar { si_value, dimension } or a
+      typed per-kind enum on the StructuredComputeDetail precedent, never a bare f64.
+      HOME (solver-legibility-telemetry §8.1 item 2): a SIBLING field on ConstraintCheckEntry,
+      never a payload on Satisfaction, whose content_hash feeds the incremental cache
+      key; no dependency edge to that PRD ε #6722 in either direction, and whichever
+      lands second extends the first shape. Scope cuts: achieved_repr_tol subsumption
+      OUT (occurrence-keyed vs ConstraintNodeId-keyed); diagnostic-string-derived-from-record
+      OUT (contests C5). Under E3 the amendment lives on coarse task #6898 and is
+      mirrored to retired leaf #6741. Full text: the .md twin, "A5 resolution log".'
     verdict: PASS
     delivered_check:
       kind: grep

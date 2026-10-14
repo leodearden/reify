@@ -33,7 +33,7 @@
 
 use reify_core::{DimensionVector, Severity, ValueCellId};
 use reify_ir::{StructureInstanceData, Value};
-use reify_test_support::{make_simple_engine, parse_and_compile_with_stdlib};
+use reify_test_support::{assert_dimensioned, make_simple_engine, parse_and_compile_with_stdlib};
 
 // ── Path constants ────────────────────────────────────────────────────────────
 //
@@ -51,49 +51,6 @@ const TOTS_OPTIMAL_PTP_EXAMPLE: &str = concat!(
 );
 
 // ── Shared helpers ────────────────────────────────────────────────────────────
-
-/// Assert that `v` is a dimensioned `Value::Scalar` with exactly `expected_si`
-/// in SI base units and exactly `expected_dim`.
-///
-/// `si_value` is compared for exact equality on purpose: every value pinned
-/// through this helper is LITERAL-derived (a unit literal in a `.ri` ctor arg
-/// converted to SI at parse time), not solver-derived, so there is no float
-/// jitter to tolerate. Solver-derived quantities get an explicit tolerance at
-/// their own call site instead.
-///
-/// The panic messages name the observed variant so a bare-`Real` regression —
-/// i.e. an un-migrated or re-bared ctor arg — reads clearly instead of as a
-/// generic match failure.
-fn assert_dimensioned(v: &Value, expected_si: f64, expected_dim: DimensionVector, what: &str) {
-    match v {
-        Value::Scalar {
-            si_value,
-            dimension,
-        } => {
-            assert_eq!(
-                *dimension, expected_dim,
-                "{what}: wrong dimension — expected {expected_dim:?}, got {dimension:?}. \
-                 The ctor arg parsed as a dimensioned Scalar but carries the wrong unit."
-            );
-            assert_eq!(
-                *si_value, expected_si,
-                "{what}: wrong SI magnitude — expected {expected_si}, got {si_value}. \
-                 These are literal-derived values; a change here means the migrated \
-                 unit literal does not denote the same physical quantity."
-            );
-        }
-        Value::Real(r) => panic!(
-            "{what}: still a BARE Value::Real({r}) — expected a dimensioned \
-             Value::Scalar {{ si_value: {expected_si}, dimension: {expected_dim:?} }}. \
-             This ctor arg has not been migrated to a unit literal (task 5758 / PRD \
-             docs/prds/v0_6/dimensioned-construction-strictness.md §11 β)."
-        ),
-        other => panic!(
-            "{what}: expected a dimensioned Value::Scalar {{ si_value: {expected_si}, \
-             dimension: {expected_dim:?} }}, got {other:?}"
-        ),
-    }
-}
 
 /// Read a named field out of a `StructureInstance`'s field map, panicking with
 /// the available field names if it is absent.

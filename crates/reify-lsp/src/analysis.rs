@@ -1,27 +1,15 @@
 use std::sync::Arc;
 
-use reify_compiler::{CompiledModule, EntityKind, ValueCellKind};
+use reify_compiler::{CompiledModule, CompiledTypeAlias, CompiledUnit, EntityKind, ValueCellKind};
 use reify_constraints::SimpleConstraintChecker;
 use reify_eval::CheckResult;
 use reify_ast::{Declaration, ParsedModule};
 pub use reify_ast::{MemberSpanInfo, find_named_member_span};
 use reify_core::{ModulePath, SourceSpan, Type, ValueCellId};
 use reify_ir::Value;
-use tower_lsp::lsp_types::{DocumentSymbol, Range, SymbolKind, Url};
+use tower_lsp::lsp_types::Url;
 
-use crate::convert::{is_ident_byte, offset_to_position, span_to_range};
-
-/// Extract a module name from a file URI.
-///
-/// e.g., `file:///path/to/test.ri` → `"test"`.
-/// Returns `"unnamed"` if the URI has no path segments or the file
-/// doesn't end with `.ri`.
-pub fn module_name_from_uri(uri: &Url) -> &str {
-    uri.path_segments()
-        .and_then(|mut segs| segs.next_back())
-        .and_then(|name| name.strip_suffix(".ri"))
-        .unwrap_or("unnamed")
-}
+use crate::decl_oracle::{enclosing_decl_at, module_name_from_uri};
 
 /// Information about a member declaration (param, let, or auto).
 pub struct MemberInfo<'a> {
@@ -77,8 +65,8 @@ impl AnalysisContext {
     pub fn new(source: &str, uri: &Url) -> Self {
         let module_name = module_name_from_uri(uri);
         // Prelude-aware parse so stdlib enum references like `CorrosionClass.C5`
-        // disambiguate to `EnumAccess`; pairs with `compile_with_stdlib` in
-        // `from_parsed`. See task 2525.
+        // disambiguate to `EnumAccess`; pairs with `compile_with_stdlib_checked`
+        // in `from_parsed`. See task 2525.
         let parsed = reify_compiler::parse_with_stdlib(source, ModulePath::single(module_name));
         Self::from_parsed(Arc::new(parsed))
     }
@@ -91,10 +79,20 @@ impl AnalysisContext {
     /// the same `Arc<ParsedModule>` to every request for a given document
     /// version, so hover and completion compile + check the cached parse instead
     /// of re-parsing. [`AnalysisContext::new`] delegates here after parsing.
+    ///
+    /// **Real constraint checker (task #6798, PRD `driver-contract-implementation.md`
+    /// leaf pi).** The compile stage below uses the real `SimpleConstraintChecker`
+    /// — matching `reify check`'s `parse_and_compile` and the GUI's
+    /// `compile_single_file_with_stdlib` instead of the compile-time
+    /// `CompileTimeIndeterminateChecker` stub — so hover/completion/goto-def/symbols
+    /// see the same `auto:` candidate-feasibility verdicts the CLI does. Full
+    /// rationale: `crate::diagnostics::compute_diagnostics_with_state`'s "##
+    /// Compile-time checker" doc section.
     pub fn from_parsed(parsed: Arc<ParsedModule>) -> Self {
         // `&parsed` (`&Arc<ParsedModule>`) deref-coerces to the `&ParsedModule`
         // the compiler expects.
-        let compiled = reify_compiler::compile_with_stdlib(&parsed);
+        let compiled =
+            reify_compiler::compile_with_stdlib_checked(&parsed, &SimpleConstraintChecker);
         let checker = SimpleConstraintChecker;
         let mut engine = reify_eval::Engine::new(Box::new(checker), None);
         // Enable undef-cause capture BEFORE `check` so the post-eval snapshot
@@ -104,6 +102,65 @@ impl AnalysisContext {
         // byte-identical whether or not capture is on — all existing tests
         // continue to pass.
         engine.set_capture_undef_causes(true);
+
+        // Containment (root cause owned by task **#6851**): a FAILED `auto:`
+        // type-parameter resolution — and, per that predicate's
+        // "## Blast radius", two shapes with no `auto:` clause at all — leave
+        // an unsubstituted `Type::TypeParam` value cell that panics
+        // `engine.check` in debug builds. See
+        // `crate::diagnostics::eval_guard::first_unrepresentable_cell`'s doc
+        // comment for the mechanism. Skip the eval/check pass and hand back an
+        // empty `CheckResult`. On the `auto:` shapes `compiled.diagnostics`
+        // already carries the user-visible `E_AUTO_TYPE_PARAM_*` error, so
+        // hover / completion / goto-def / symbols still surface the real
+        // problem; on the compile-clean ones it carries nothing, which is what
+        // the editor-visible report below is for. Path-qualified deliberately,
+        // so the cross-module borrow of the guard is visible at the call
+        // site.
+        //
+        // BEHAVIOUR: hover and completion over such a file show no computed
+        // values, because `check_result.values` is empty. That is the correct
+        // degradation — today's alternative is a debug-build crash of the whole
+        // LSP process, and in release builds (where
+        // `assert_value_cell_types_representable` is elided) a silently wrong
+        // `TypeKindMismatch`/`Undef`.
+        //
+        // `skip_reason` names the offending cell in the server log (throttled
+        // — this constructor runs per hover / completion / goto-def / symbols
+        // request). The EDITOR-visible half of the report is not pushed here:
+        // this site owns no diagnostics list, and `check_result.diagnostics`
+        // must stay empty so
+        // `tests::auto_resolution_failure_does_not_panic_analysis_context` can
+        // still tell a SKIPPED eval pass from a run-and-recovered one. It is
+        // delivered instead by `compute_diagnostics_with_state`, which the
+        // server runs over the same document on open and on every change, so
+        // any file whose AnalysisContext degrades here also carries the
+        // file-level Warning from `SkippedEval::diagnostic`. Rendering the
+        // offender in the hover panel itself would mean editing `hover.rs`,
+        // outside this task's file scope.
+        //
+        // The five-field literal is spelled out rather than reaching for a
+        // `Default` derive on `reify_eval::CheckResult` (which it does not
+        // have): adding one would widen this leaf's file set beyond the PRD's
+        // "Modules: `reify-lsp`" scope into a hot shared crate, whereas the
+        // explicit literal turns any future `CheckResult` field addition into a
+        // loud compile error in exactly the place that must then decide what
+        // the skipped-eval value should be.
+        if crate::diagnostics::eval_guard::skip_reason(&compiled).is_some() {
+            return Self {
+                parsed,
+                compiled,
+                check_result: CheckResult {
+                    values: Default::default(),
+                    constraint_results: Vec::new(),
+                    diagnostics: Vec::new(),
+                    resolved_params: Default::default(),
+                    structured_detail: Vec::new(),
+                },
+                engine,
+            };
+        }
+
         let check_result = engine.check(&compiled);
 
         Self {
@@ -207,7 +264,8 @@ impl AnalysisContext {
         None
     }
 
-    /// Look up the doc comment for a top-level entity (structure, fn, trait, or enum) by name.
+    /// Look up the doc comment for a top-level entity (structure, fn, trait, enum, or
+    /// type alias) by name.
     ///
     /// Returns `None` if the entity has no doc comment or doesn't exist.
     pub fn find_entity_doc(&self, name: &str) -> Option<&str> {
@@ -224,10 +282,45 @@ impl AnalysisContext {
                 }
                 reify_ast::Declaration::Trait(t) if t.name == name => return t.doc.as_deref(),
                 reify_ast::Declaration::Enum(e) if e.name == name => return e.doc.as_deref(),
+                reify_ast::Declaration::TypeAlias(t) if t.name == name => return t.doc.as_deref(),
                 _ => {}
             }
         }
         None
+    }
+
+    /// Look up a user-declared type alias by name in the compiled module.
+    ///
+    /// Scoped to the OPEN DOCUMENT's own declarations: `TypeAliasRegistry::into_compiled`
+    /// (reify-compiler type_resolution.rs) excludes prelude-seeded aliases, so stdlib
+    /// aliases never appear here and no LSP surface built on this can leak them.
+    ///
+    /// `resolved_type` being `None` on the returned entry is expected and
+    /// non-exceptional, not an error: the alias DFS runs before structures and traits
+    /// are compiled and passes empty structure/trait name sets, so an entity-named
+    /// alias (`type F = Fit`, see #6259) and every parameterized alias resolve to
+    /// `None` while still compiling clean. Task #6341.
+    pub fn find_type_alias(&self, name: &str) -> Option<&CompiledTypeAlias> {
+        self.compiled.type_aliases.iter().find(|a| a.name == name)
+    }
+
+    /// Look up a user-declared unit by name in the compiled module.
+    ///
+    /// Scoped to the OPEN DOCUMENT's own declarations, the same way
+    /// [`Self::find_type_alias`] is, and for a directly verifiable reason:
+    /// `compile_builder/units_phase.rs` seeds every stdlib prelude unit into
+    /// `ctx.unit_registry` and pushes only the module's OWN `unit` declarations
+    /// onto `compiled_units`, so no LSP surface built on this can leak a stdlib
+    /// unit.
+    ///
+    /// `None` here is expected and non-exceptional, not an error: a module-local
+    /// unit whose name duplicates a prelude unit is rejected with "duplicate unit
+    /// declaration ... already defined in stdlib prelude" and never pushed, so the
+    /// declaration exists in the AST while the compiled entry does not. Callers
+    /// must degrade (render the signature alone) rather than treat it as a bug.
+    /// Task #6500.
+    pub fn find_unit(&self, name: &str) -> Option<&CompiledUnit> {
+        self.compiled.units.iter().find(|u| u.name == name)
     }
 
     /// Return value cell members for a specific structure/occurrence: (name, kind, type).
@@ -386,41 +479,6 @@ impl AnalysisContext {
     }
 }
 
-/// Return the declaration whose span contains `offset`,
-/// or `None` if the offset is outside all declarations.
-///
-/// This is a free function that operates on `&[Declaration]` directly, so it can
-/// be used by callers that only have a `ParsedModule` (e.g., goto-def) without
-/// needing a full `AnalysisContext`.
-pub fn enclosing_decl_at(declarations: &[Declaration], offset: usize) -> Option<&Declaration> {
-    let offset_u32 = offset as u32;
-    for decl in declarations {
-        let decl_span = match decl {
-            Declaration::Structure(s) => s.span,
-            Declaration::Occurrence(o) => o.span,
-            Declaration::Import(i) => i.span,
-            Declaration::Enum(e) => e.span,
-            Declaration::Function(f) => f.span,
-            Declaration::Trait(t) => t.span,
-            Declaration::Field(f) => f.span,
-            Declaration::Purpose(p) => p.span,
-            Declaration::Constraint(c) => c.span,
-            Declaration::Unit(u) => u.span,
-            Declaration::TypeAlias(t) => t.span,
-            Declaration::Default(d) => d.span,
-            Declaration::Module(m) => m.span,
-            // Grammar producer only (task α 4395). Joint bodies are not
-            // navigable by the LSP yet; included here so the exhaustive match
-            // stays complete. Semantics deferred to task β.
-            Declaration::Joint(j) => j.span,
-        };
-        if offset_u32 >= decl_span.start && offset_u32 < decl_span.end {
-            return Some(decl);
-        }
-    }
-    None
-}
-
 /// Recursively count Param, Let, and Constraint members, including those
 /// nested inside `GuardedGroup.members` and `GuardedGroup.else_members`.
 ///
@@ -465,380 +523,296 @@ pub fn format_value(value: &Value) -> String {
     value.format_hover()
 }
 
-/// Compute a hierarchical [`DocumentSymbol`] tree for `source` (task 4207 η).
-///
-/// This is a purely SYNTACTIC outline: it parses the module via
-/// [`reify_compiler::parse_with_stdlib`] (the same prelude-aware parse used by
-/// goto-def) and walks `parsed.declarations` WITHOUT compiling or
-/// constraint-checking. It is deliberately kept distinct from the outline's
-/// semantic realization tree (`get_entity_tree`) per PRD design decision 5 —
-/// the symbol list reflects declaration structure, not evaluation.
-///
-/// Top-level declarations map to symbols as: structure→STRUCT,
-/// occurrence→CLASS, trait→INTERFACE, enum→ENUM, fn→FUNCTION. All other
-/// top-level declarations (import/unit/type-alias/constraint-def/field/
-/// purpose/module) are not navigable symbols and are skipped.
-// G-allow: LSP public API entry point; production caller uses the _in_context/_with_parsed/_from_parsed variant
-pub fn compute_document_symbols(source: &str, uri: &Url) -> Vec<DocumentSymbol> {
-    let module_name = module_name_from_uri(uri);
-    let parsed = reify_compiler::parse_with_stdlib(source, ModulePath::single(module_name));
-    compute_document_symbols_from_parsed(&parsed, source)
-}
-
-/// Compute the [`DocumentSymbol`] tree from a pre-built [`ParsedModule`].
-///
-/// Injectable core shared by the per-request wrapper [`compute_document_symbols`]
-/// (which parses internally) and the server's cache-fed path (which supplies the
-/// per-document cached parse — one parse per edit). Walks `parsed.declarations`
-/// WITHOUT compiling or constraint-checking; see [`compute_document_symbols`] for
-/// the declaration→symbol mapping.
-pub fn compute_document_symbols_from_parsed(
-    parsed: &ParsedModule,
-    source: &str,
-) -> Vec<DocumentSymbol> {
-    let mut symbols = Vec::new();
-    for decl in &parsed.declarations {
-        match decl {
-            Declaration::Structure(s) => {
-                symbols.push(make_symbol(
-                    &s.name,
-                    SymbolKind::STRUCT,
-                    span_to_range(source, s.span),
-                    name_selection_range(source, s.span, &s.name),
-                    children_or_none(members_to_symbols(source, &s.members)),
-                ));
-            }
-            Declaration::Occurrence(o) => {
-                symbols.push(make_symbol(
-                    &o.name,
-                    SymbolKind::CLASS,
-                    span_to_range(source, o.span),
-                    name_selection_range(source, o.span, &o.name),
-                    children_or_none(members_to_symbols(source, &o.members)),
-                ));
-            }
-            Declaration::Trait(t) => {
-                symbols.push(make_symbol(
-                    &t.name,
-                    SymbolKind::INTERFACE,
-                    span_to_range(source, t.span),
-                    name_selection_range(source, t.span, &t.name),
-                    children_or_none(members_to_symbols(source, &t.members)),
-                ));
-            }
-            Declaration::Enum(e) => {
-                // Each variant becomes an ENUM_MEMBER child. Named-payload
-                // variant fields (`Circle { radius: Length }`) are not expanded
-                // into grandchildren for this task.
-                let variants = e
-                    .variants
-                    .iter()
-                    .map(|v| {
-                        make_symbol(
-                            &v.name,
-                            SymbolKind::ENUM_MEMBER,
-                            span_to_range(source, v.span),
-                            name_selection_range(source, v.span, &v.name),
-                            None,
-                        )
-                    })
-                    .collect();
-                symbols.push(make_symbol(
-                    &e.name,
-                    SymbolKind::ENUM,
-                    span_to_range(source, e.span),
-                    name_selection_range(source, e.span, &e.name),
-                    children_or_none(variants),
-                ));
-            }
-            Declaration::Function(f) => {
-                symbols.push(make_symbol(
-                    &f.name,
-                    SymbolKind::FUNCTION,
-                    span_to_range(source, f.span),
-                    name_selection_range(source, f.span, &f.name),
-                    None,
-                ));
-            }
-            // All other top-level declarations are not navigable symbols:
-            // Import, Unit, TypeAlias, Constraint (ConstraintDef), Field,
-            // Purpose, and Module have no stable jump target and are skipped.
-            _ => {}
-        }
-    }
-    symbols
-}
-
-/// Convert a possibly-empty child list into the `children` field of a
-/// [`DocumentSymbol`]: `None` when there are no navigable members, `Some(_)`
-/// otherwise. Keeps leaf declarations as `children: None` rather than
-/// `Some(vec![])`.
-fn children_or_none(children: Vec<DocumentSymbol>) -> Option<Vec<DocumentSymbol>> {
-    if children.is_empty() {
-        None
-    } else {
-        Some(children)
-    }
-}
-
-/// Recursively convert a member list into child [`DocumentSymbol`]s (task 4207 η).
-///
-/// Mirrors the recursion shape of [`count_members_recursive`] /
-/// [`find_named_member_span`]: `where`/`else` ([`reify_ast::MemberDecl::GuardedGroup`])
-/// and match-arm ([`reify_ast::MemberDecl::MatchArmDeclGroup`]) members are
-/// FLATTENED up to the owning declaration's children — no synthetic guard nodes —
-/// so guarded and match-arm params/lets stay discoverable for symbol-jump. Named
-/// members map as: param→FIELD, let→VARIABLE, sub→OBJECT, port→INTERFACE; subs
-/// and ports form true nested nodes (a sub's specialization body and a port's
-/// internal members become grandchildren). Unlabeled constraints, connects,
-/// chains, minimize/maximize, and meta blocks have no stable identifier to jump
-/// to and are skipped.
-///
-/// Recursion is bounded by [`reify_ast::MAX_MEMBER_NESTING_DEPTH`] to prevent
-/// stack overflow on pathological input, matching the AST member-walk helpers.
-fn members_to_symbols(source: &str, members: &[reify_ast::MemberDecl]) -> Vec<DocumentSymbol> {
-    members_to_symbols_depth(source, members, 0)
-}
-
-fn members_to_symbols_depth(
-    source: &str,
-    members: &[reify_ast::MemberDecl],
-    depth: usize,
-) -> Vec<DocumentSymbol> {
-    use reify_ast::MemberDecl;
-    if depth > reify_ast::MAX_MEMBER_NESTING_DEPTH {
-        return Vec::new();
-    }
-    let mut symbols = Vec::new();
-    for member in members {
-        match member {
-            MemberDecl::Param(p) => symbols.push(make_symbol(
-                &p.name,
-                SymbolKind::FIELD,
-                span_to_range(source, p.span),
-                name_selection_range(source, p.span, &p.name),
-                None,
-            )),
-            MemberDecl::Let(l) => symbols.push(make_symbol(
-                &l.name,
-                SymbolKind::VARIABLE,
-                span_to_range(source, l.span),
-                name_selection_range(source, l.span, &l.name),
-                None,
-            )),
-            // where/else members flatten up to the owning declaration.
-            MemberDecl::GuardedGroup(g) => {
-                symbols.extend(members_to_symbols_depth(source, &g.members, depth + 1));
-                symbols.extend(members_to_symbols_depth(source, &g.else_members, depth + 1));
-            }
-            // match-arm members flatten up to the owning declaration.
-            MemberDecl::MatchArmDeclGroup(g) => {
-                for arm in &g.arms {
-                    symbols.extend(members_to_symbols_depth(
-                        source,
-                        std::slice::from_ref(&*arm.member),
-                        depth + 1,
-                    ));
-                }
-            }
-            // sub-components nest their specialization-body members (when the
-            // `sub` opens a `{ … }` body) as grandchildren; a bare `sub` is a leaf.
-            MemberDecl::Sub(s) => {
-                let body = s
-                    .body
-                    .as_ref()
-                    .map(|b| members_to_symbols_depth(source, b, depth + 1))
-                    .unwrap_or_default();
-                symbols.push(make_symbol(
-                    &s.name,
-                    SymbolKind::OBJECT,
-                    span_to_range(source, s.span),
-                    name_selection_range(source, s.span, &s.name),
-                    children_or_none(body),
-                ));
-            }
-            // ports nest their internal members as grandchildren.
-            MemberDecl::Port(port) => symbols.push(make_symbol(
-                &port.name,
-                SymbolKind::INTERFACE,
-                span_to_range(source, port.span),
-                name_selection_range(source, port.span, &port.name),
-                children_or_none(members_to_symbols_depth(source, &port.members, depth + 1)),
-            )),
-            // Constraints/connects/chains/minimize/maximize/meta are not emitted
-            // here — they have no stable identifier to jump to.
-            _ => {}
-        }
-    }
-    symbols
-}
-
-/// Build a [`DocumentSymbol`] with every field set explicitly.
-///
-/// `lsp-types` 0.94 marks `DocumentSymbol.deprecated` as `#[deprecated]` and
-/// provides no `Default`, so the field cannot be omitted; centralizing the
-/// `#[allow(deprecated)]` here keeps the verify/clippy pipeline clean while
-/// every construction site stays a one-liner (PRD design decision 6).
-#[allow(deprecated)]
-fn make_symbol(
-    name: &str,
-    kind: SymbolKind,
-    range: Range,
-    selection_range: Range,
-    children: Option<Vec<DocumentSymbol>>,
-) -> DocumentSymbol {
-    DocumentSymbol {
-        name: name.to_string(),
-        detail: None,
-        kind,
-        tags: None,
-        deprecated: None,
-        range,
-        selection_range,
-        children,
-    }
-}
-
-/// Compute the `selection_range` (the name token) for a declaration whose full
-/// span is `span` and whose declared name is `name`.
-///
-/// Declaration AST nodes carry only `name: String` plus the full declaration
-/// span (no separate name-token span), so the name's byte offset must be
-/// recovered from the source. LSP requires `selection_range ⊆ range` and ideally
-/// on the name token; this performs a *word-boundary* search bounded to the
-/// declaration's own span, falling back to `span.start` when the name cannot be
-/// located (defensive; should not happen for well-formed declarations).
-fn name_selection_range(source: &str, span: SourceSpan, name: &str) -> Range {
-    let name_offset = find_name_offset_in_span(source, span, name);
-    // Clamp the selection end to the declaration span's end so the LSP
-    // `selection_range ⊆ range` invariant holds even for degenerate or
-    // error-recovery spans shorter than the name. When the name is located
-    // the match already fits inside the span (`name_offset + name.len() ≤
-    // span.end`), so this clamp is a no-op there; it only constrains the
-    // `span.start` fallback, where `span.start + name.len()` could otherwise
-    // push the selection end past `span.end` (and thus past `range.end`).
-    let name_end = (name_offset + name.len() as u32).min(span.end);
-    Range {
-        start: offset_to_position(source, name_offset),
-        end: offset_to_position(source, name_end),
-    }
-}
-
-/// Find the byte offset of `name` as a *whole identifier* within
-/// `[span.start, span.end)`, returning `span.start` if no word-boundary match
-/// is found.
-///
-/// A naive substring search is unsafe — e.g. the member name `a` would match
-/// inside the `param` keyword — so a match must have non-identifier neighbours
-/// (or a source boundary) on both sides. Search bounds are clamped to the
-/// source length and snapped forward to UTF-8 character boundaries, mirroring
-/// the safety pattern in `convert::offset_to_position` and
-/// `goto_def::find_name_offset_in_decl`.
-fn find_name_offset_in_span(source: &str, span: SourceSpan, name: &str) -> u32 {
-    if name.is_empty() {
-        return span.start;
-    }
-    let len = source.len();
-    let mut start = (span.start as usize).min(len);
-    let mut end = (span.end as usize).min(len);
-    // Snap both ends forward to valid UTF-8 boundaries so the slice is valid
-    // even when tree-sitter error-recovery spans land mid-character.
-    while start < len && !source.is_char_boundary(start) {
-        start += 1;
-    }
-    while end < len && !source.is_char_boundary(end) {
-        end += 1;
-    }
-    if start >= end {
-        return span.start;
-    }
-
-    let hay = &source[start..end];
-    let bytes = source.as_bytes();
-    let name_len = name.len();
-    let mut search_from = 0usize;
-    while search_from < hay.len() {
-        let Some(rel) = hay[search_from..].find(name) else {
-            break;
-        };
-        let abs = start + search_from + rel; // absolute byte offset of the match
-        // Left and right neighbours must be non-identifier bytes (or source
-        // boundaries) for this to be a whole-word match.
-        let left_ok = abs == 0 || !is_ident_byte(bytes[abs - 1]);
-        let right = abs + name_len;
-        let right_ok = right >= len || !is_ident_byte(bytes[right]);
-        if left_ok && right_ok {
-            return abs as u32;
-        }
-        search_from += rel + 1;
-    }
-    span.start
-}
-
-/// Narrow a member-statement span down to the span of just its NAME identifier
-/// token.
-///
-/// Searches forward from `member_span.start`, **bounded by `member_span.end`**,
-/// for the first **whole-word** occurrence of `name` (a match whose neighbouring
-/// bytes are not identifier characters), returning
-/// `SourceSpan::new(name_start, name_start + name.len())`. Falls back to an empty
-/// span at `member_span.start` when `name` is not found *within the member span*
-/// — so a member whose own name token is unexpectedly absent never borrows a
-/// same-named token from a sibling member.
-///
-/// The declaration name always follows its leading keyword
-/// (`param`/`let`/`sub`/`port`), so the first whole-word match is the declaration
-/// token. Whole-word matching (rather than the bare substring search in
-/// `goto_def::find_name_offset_in_decl`) guards against a longer identifier that
-/// merely contains `name` as a substring. The UTF-8 char-boundary snap mirrors
-/// `convert::offset_to_position`.
-///
-/// Reused by `references.rs` for the declaration name-token span, the
-/// `include_declaration` token, and the prepare/compute-rename declaration path.
-pub fn name_token_span(source: &str, member_span: SourceSpan, name: &str) -> SourceSpan {
-    let mut start = (member_span.start as usize).min(source.len());
-    // Snap forward to a valid UTF-8 boundary if we landed mid-character.
-    while start < source.len() && !source.is_char_boundary(start) {
-        start += 1;
-    }
-    // Bound the search to the member's OWN span. Without this, a member whose
-    // name token is unexpectedly absent (e.g. a malformed/recovered AST node
-    // whose span does not actually contain the declared name) would match the
-    // first same-named whole word anywhere later in the source — silently
-    // borrowing a token from a sibling member. Clamping to `member_span.end`
-    // makes such a case fall through to the empty-span fallback instead.
-    let end = (member_span.end as usize).min(source.len()).max(start);
-
-    let bytes = source.as_bytes();
-    let name_len = name.len();
-    for (rel, _) in source[start..].match_indices(name) {
-        let abs = start + rel;
-        // Past the member span: `match_indices` yields ascending offsets, so once
-        // a match would extend beyond `end` every later match does too — stop.
-        if abs + name_len > end {
-            break;
-        }
-        // Whole-word check: neither the byte before nor the byte after the match
-        // may be an identifier character.
-        let prev_ok = abs == 0 || !is_ident_byte(bytes[abs - 1]);
-        let next = abs + name_len;
-        let next_ok = next >= bytes.len() || !is_ident_byte(bytes[next]);
-        if prev_ok && next_ok {
-            return SourceSpan::new(abs as u32, (abs + name_len) as u32);
-        }
-    }
-
-    SourceSpan::empty(member_span.start)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reify_core::DimensionVector;
+    use crate::decl_oracle::test_fixtures::test_uri;
+    use reify_core::{DiagnosticCode, DimensionVector, Severity};
     use tower_lsp::lsp_types::Url;
 
-    fn test_uri() -> Url {
-        Url::parse("file:///test.ri").unwrap()
+    /// BT8 forward (task #6798, PRD `driver-contract-implementation.md`
+    /// leaf pi): `AnalysisContext::from_parsed` — the third and last LSP
+    /// production compile site — must agree with `reify check`'s
+    /// real-checker verdict on a CONSTANT `auto:` constraint, not the
+    /// compile-time stub's. Reuses
+    /// [`crate::diagnostics::auto_type_param_fixtures::BT8_CONSTANT_CONSTRAINT_SRC`] rather than
+    /// duplicating the fixture, so the two forward tests cannot drift
+    /// apart.
+    ///
+    /// Anti-vacuity guard first, via the shared
+    /// [`crate::diagnostics::auto_type_param_fixtures::assert_bt8_fixture_still_diverges`] helper:
+    /// assert the stub and the real checker still genuinely diverge on the
+    /// fixture before asserting `AnalysisContext` matches the real one. The
+    /// guard is extracted into that one shared function rather than
+    /// duplicated here and in
+    /// `diagnostics::tests::lsp_constant_constraint_agrees_with_reify_check_real_checker`,
+    /// so the two call sites cannot drift apart. If a future compiler
+    /// change collapses AMBIGUOUS/NO_CANDIDATE into the same verdict, the
+    /// guard fails loudly instead of the `AnalysisContext` assertion below
+    /// passing vacuously.
+    ///
+    /// Asserts against the typed `reify_core::DiagnosticCode` (not the LSP
+    /// wire string) because `AnalysisContext` holds the raw
+    /// `CompiledModule`, one layer below `convert::convert_diagnostic`.
+    #[test]
+    fn analysis_context_uses_real_constraint_checker() {
+        let src = crate::diagnostics::auto_type_param_fixtures::BT8_CONSTANT_CONSTRAINT_SRC;
+
+        // --- Anti-vacuity guard: the fixture must still genuinely diverge ---
+        crate::diagnostics::auto_type_param_fixtures::assert_bt8_fixture_still_diverges();
+
+        // --- AnalysisContext (the site under test) ---
+        let ctx = AnalysisContext::new(src, &test_uri());
+        let observed: Vec<(Severity, Option<DiagnosticCode>, &str)> = ctx
+            .compiled
+            .diagnostics
+            .iter()
+            .map(|d| (d.severity, d.code, d.message.as_str()))
+            .collect();
+        let has_no_candidate = ctx.compiled.diagnostics.iter().any(|d| {
+            d.severity == Severity::Error
+                && d.code == Some(DiagnosticCode::AutoTypeParamNoCandidate)
+        });
+        let has_ambiguous = ctx
+            .compiled
+            .diagnostics
+            .iter()
+            .any(|d| d.code == Some(DiagnosticCode::AutoTypeParamAmbiguous));
+        assert!(
+            has_no_candidate && !has_ambiguous,
+            "BT8 forward (AnalysisContext::from_parsed): must agree with \
+             `reify check`'s real-checker AutoTypeParamNoCandidate verdict \
+             on a constant constraint, not the compile-time stub's \
+             AutoTypeParamAmbiguous; got (severity, code, message) \
+             triples: {:#?}",
+            observed
+        );
+    }
+
+    /// Containment regression lock for the THIRD LSP production entry point,
+    /// `AnalysisContext::from_parsed`, which backs hover, completion,
+    /// goto-definition and document-symbols.
+    ///
+    /// A failed `auto:` type-parameter resolution leaves the `param seal : T`
+    /// member carrying `cell_type = Type::TypeParam("T")` into the evaluation
+    /// graph, where `reify-eval`'s `#[cfg(debug_assertions)]`
+    /// `assert_value_cell_types_representable` PANICS. Measured at HEAD before
+    /// the guard: `AnalysisContext::new` panicked at
+    /// `crates/reify-eval/src/engine_eval.rs:210` with "unrepresentable
+    /// cell_type: value cell `Assembly.b.seal` has cell_type TypeParam(\"T\")".
+    /// Which cell the assertion names first is not load-bearing. Root cause is
+    /// owned by task **#6851**; this is the LSP-side containment.
+    ///
+    /// Reuses [`crate::diagnostics::auto_type_param_fixtures::AUTO_FAIL_UNSUBSTITUTED_TYPEPARAM_SRC`]
+    /// rather than duplicating the source string, for the same anti-drift
+    /// reason `BT8_CONSTANT_CONSTRAINT_SRC` is shared across its two forward
+    /// tests.
+    ///
+    /// **Reaching the assertions AT ALL is half the contract** — without the
+    /// guard the constructor panics before it can return, so "the test ran to
+    /// completion" IS the no-panic assertion. Do not add `#[should_panic]` or
+    /// a `catch_unwind` wrapper; that would invert the contract.
+    ///
+    /// **Two fixtures, one body.** The `param seal : T` member is exercised
+    /// both plain and inside a GUARDED group, mirroring
+    /// `diagnostics::tests::auto_resolution_failure_does_not_panic_diagnostics_entry_points`
+    /// — this entry point is affected identically, because all three share the
+    /// one containment predicate. A guarded member lives in
+    /// `CompiledGuardedGroup::members`, never in
+    /// `TopologyTemplate::value_cells`, and was measured to slip past that
+    /// predicate's stage-1 absence proof and panic. Parameterised over a table
+    /// rather than copied, so the two shapes' contracts cannot drift apart;
+    /// every assertion below is load-bearing for both.
+    #[test]
+    fn auto_resolution_failure_does_not_panic_analysis_context() {
+        use crate::diagnostics::auto_type_param_fixtures as fixtures;
+
+        // Each fixture carries its OWN anti-vacuity guard: both claim "stub
+        // clean, real checker fails resolution", but each names its own
+        // fixture when that stops being true.
+        let cases: [(&str, &str, fn()); 2] = [
+            (
+                "plain member",
+                fixtures::AUTO_FAIL_UNSUBSTITUTED_TYPEPARAM_SRC,
+                fixtures::assert_auto_fail_fixture_is_newly_reachable,
+            ),
+            (
+                "guarded-group member",
+                fixtures::GUARDED_GROUP_AUTO_FAIL_TYPEPARAM_SRC,
+                fixtures::assert_guarded_group_fixture_is_newly_reachable,
+            ),
+        ];
+
+        for (shape, src, assert_fixture_is_newly_reachable) in cases {
+            // --- Anti-vacuity guard: stub clean, real checker fails resolution ---
+            assert_fixture_is_newly_reachable();
+
+            // --- AnalysisContext (the site under test) ---
+            let ctx = AnalysisContext::new(src, &test_uri());
+            let observed: Vec<(Severity, Option<DiagnosticCode>, &str)> = ctx
+                .compiled
+                .diagnostics
+                .iter()
+                .map(|d| (d.severity, d.code, d.message.as_str()))
+                .collect();
+            assert!(
+                ctx.compiled
+                    .diagnostics
+                    .iter()
+                    .any(|d| d.severity == Severity::Error
+                        && d.code == Some(DiagnosticCode::AutoTypeParamNoCandidate)),
+                "containment (AnalysisContext::from_parsed, {shape}): a failed \
+                 `auto:` resolution must still surface the compile-stage \
+                 AutoTypeParamNoCandidate error, so hover/completion/goto-def \
+                 report the real problem. Reaching this assertion at all means \
+                 the eval/check pass was correctly skipped rather than panicking \
+                 on the unsubstituted TypeParam cell (task #6851). Observed \
+                 (severity, code, message) triples: {:#?}",
+                observed
+            );
+
+            // Pin that the eval/check pass was SKIPPED, not run-and-recovered.
+            // Without this, a future change that "fixes" the panic by making eval
+            // tolerant of unrepresentable cells would silently satisfy the
+            // assertion above while re-introducing exactly the cell #6851 is about
+            // into the engine. This assertion is what keeps the test about
+            // CONTAINMENT rather than about absence-of-crash.
+            assert!(
+                ctx.check_result.constraint_results.is_empty()
+                    && ctx.check_result.diagnostics.is_empty(),
+                "containment (AnalysisContext::from_parsed, {shape}): the \
+                 eval/check pass must be SKIPPED on a failed `auto:` resolution, \
+                 leaving an empty CheckResult — a populated one means the \
+                 unsubstituted TypeParam graph reached the engine after all (task \
+                 #6851). Got constraint_results: {:#?}, diagnostics: {:#?}",
+                ctx.check_result.constraint_results,
+                ctx.check_result.diagnostics
+            );
+        }
+    }
+
+    /// Containment at this entry point on the two COMPILE-CLEAN shapes, the
+    /// mirror of
+    /// `crate::diagnostics::tests::compile_clean_unrepresentable_graph_is_contained_and_reported`.
+    ///
+    /// `auto_resolution_failure_does_not_panic_analysis_context` above pins
+    /// containment on fixtures that also carry an `AutoTypeParamNoCandidate`
+    /// Error. These two carry no compile diagnostic at all — a generic
+    /// structure merely DECLARED, and an explicit `Bearing<GasketSeal>()`
+    /// instantiation — yet their graphs carry a `TypeParam` cell all the same,
+    /// so `engine.check` would panic here on valid `.ri` the compiler
+    /// accepted. Reaching the assertions AT ALL is that half of the contract.
+    ///
+    /// Also pins the eval pass as SKIPPED rather than run-and-recovered, for
+    /// the same reason the sibling test does: a future change making eval
+    /// tolerant of unrepresentable cells would otherwise satisfy "it did not
+    /// panic" while feeding the engine exactly the cell task #6851 is about.
+    #[test]
+    fn compile_clean_unrepresentable_graph_yields_empty_check_result() {
+        use crate::diagnostics::auto_type_param_fixtures as fixtures;
+
+        fixtures::assert_compile_clean_typeparam_fixtures_carry_no_error();
+
+        for (shape, src) in [
+            (
+                "declared-only generic",
+                fixtures::DECLARED_ONLY_GENERIC_TYPEPARAM_SRC,
+            ),
+            (
+                "explicit generic instantiation",
+                fixtures::EXPLICIT_GENERIC_INSTANTIATION_TYPEPARAM_SRC,
+            ),
+        ] {
+            let ctx = AnalysisContext::new(src, &test_uri());
+
+            assert!(
+                ctx.check_result.constraint_results.is_empty()
+                    && ctx.check_result.diagnostics.is_empty()
+                    && ctx.check_result.values.is_empty(),
+                "containment (AnalysisContext::from_parsed, {shape}): the \
+                 eval/check pass must be SKIPPED on a graph carrying an \
+                 unrepresentable cell, even though this document compiles \
+                 CLEAN — a populated CheckResult means that graph reached the \
+                 engine after all, which panics in debug builds and yields a \
+                 wrong TypeKindMismatch/Undef in release (task #6851). Got \
+                 constraint_results: {:#?}, diagnostics: {:#?}",
+                ctx.check_result.constraint_results,
+                ctx.check_result.diagnostics
+            );
+
+            // The user-facing consequence is not silent: `compute_diagnostics`
+            // over the SAME document — which the server runs on open and on
+            // every change — carries the file-level Warning naming the
+            // offending cell. Asserted in full by the sibling test named
+            // above; probed here so the two halves of the degradation stay
+            // wired together at this entry point too.
+            assert!(
+                crate::diagnostics::compute_diagnostics(src, &test_uri())
+                    .iter()
+                    .any(|d| d.code
+                        == Some(tower_lsp::lsp_types::NumberOrString::String(
+                            "EvalSkippedUnrepresentableCell".to_string()
+                        ))),
+                "containment (AnalysisContext::from_parsed, {shape}): hover and \
+                 completion show no computed values for this document, so the \
+                 diagnostics path over the same document must tell the user \
+                 why. Without it this entry point degrades mutely on a file \
+                 that compiles clean."
+            );
+        }
+    }
+
+    /// The containment guard's NARROWNESS at the THIRD production entry
+    /// point, `AnalysisContext::from_parsed` — which backs hover, completion,
+    /// goto-definition and document-symbols.
+    ///
+    /// This site's degradation is quieter than `diagnostics.rs`'s and so needs
+    /// its own lock: skipping the eval/check pass here empties
+    /// `check_result.values`, and hover/completion then show NO computed values
+    /// for the whole document, with no EDITOR-visible error to explain why
+    /// (only a server-log line naming the offending cell). Under the
+    /// `AutoTypeParam*` diagnostic-code proxy this guard replaced, a single
+    /// failing `auto:` clause did exactly that even when the failure was
+    /// provably safe to evaluate.
+    ///
+    /// `UNUSED_TYPEPARAM_AUTO_FAIL_WITH_EVAL_DIAGS_SRC` leaves `T` UNUSED in
+    /// `Bearing`'s body, so the failed resolution creates no `TypeParam`-typed
+    /// cell and there is nothing for `assert_value_cell_types_representable`
+    /// to panic on. Anti-vacuity: assert the fixture still genuinely FAILS
+    /// `auto:` resolution, or "the values survived" is trivially true.
+    ///
+    /// Deliberately the mirror of, not a duplicate of,
+    /// `auto_resolution_failure_does_not_panic_analysis_context`: that one
+    /// pins the guard FIRING (empty `CheckResult`) on the shape that needs
+    /// containment, this one pins it NOT firing on the shape that does not.
+    #[test]
+    fn failed_auto_resolution_with_unused_type_param_still_populates_check_values() {
+        use crate::diagnostics::auto_type_param_fixtures::UNUSED_TYPEPARAM_AUTO_FAIL_WITH_EVAL_DIAGS_SRC;
+
+        let ctx = AnalysisContext::new(UNUSED_TYPEPARAM_AUTO_FAIL_WITH_EVAL_DIAGS_SRC, &test_uri());
+
+        assert!(
+            ctx.compiled
+                .diagnostics
+                .iter()
+                .any(|d| d.severity == Severity::Error
+                    && d.code == Some(DiagnosticCode::AutoTypeParamNoCandidate)),
+            "anti-vacuity: the fixture must still FAIL `auto:` resolution, or \
+             this test no longer exercises the containment guard at all. \
+             compiled diagnostics: {:#?}",
+            ctx.compiled.diagnostics
+        );
+
+        assert!(
+            !ctx.check_result.values.is_empty(),
+            "over-fire (AnalysisContext::from_parsed): a failed `auto:` \
+             resolution whose type parameter is UNUSED leaves no \
+             unrepresentable cell, so the eval/check pass is safe and MUST \
+             run — an empty `check_result.values` means hover and completion \
+             silently show no computed values for the whole document. \
+             constraint_results: {:#?}",
+            ctx.check_result.constraint_results
+        );
     }
 
     /// Minimal source that references two stdlib symbols (Rigid trait, Material struct).
@@ -853,26 +827,6 @@ mod tests {
     param geometry: Solid = box(10mm, 20mm, 30mm)
     param material: Material = Material(name: "steel", density: 7850kg/m^3, youngs_modulus: 200GPa)
 }"#;
-
-    // --- module_name_from_uri tests ---
-
-    #[test]
-    fn module_name_from_uri_extracts_test() {
-        let uri = Url::parse("file:///test.ri").unwrap();
-        assert_eq!(module_name_from_uri(&uri), "test");
-    }
-
-    #[test]
-    fn module_name_from_uri_nested_path() {
-        let uri = Url::parse("file:///path/to/bracket.ri").unwrap();
-        assert_eq!(module_name_from_uri(&uri), "bracket");
-    }
-
-    #[test]
-    fn module_name_from_uri_no_ri_suffix() {
-        let uri = Url::parse("file:///test.txt").unwrap();
-        assert_eq!(module_name_from_uri(&uri), "unnamed");
-    }
 
     // --- AnalysisContext construction tests ---
 
@@ -1331,6 +1285,66 @@ mod tests {
             "/// A joint process.\noccurrence def Joint {\n    param diameter: Length = 10mm\n}";
         let ctx = AnalysisContext::new(source, &test_uri());
         assert_eq!(ctx.find_entity_doc("Joint"), Some("A joint process."));
+    }
+
+    /// Task #6341: `doc` lives only on the parsed `reify_ast::TypeAliasDecl` —
+    /// `CompiledTypeAlias` has no doc field — so `find_entity_doc` is the only
+    /// path by which an alias doc can reach hover.
+    #[test]
+    fn find_entity_doc_returns_doc_for_type_alias() {
+        let source = "/// Speed of travel.\ntype Speed = Length / Time\n";
+        let ctx = AnalysisContext::new(source, &test_uri());
+        assert_eq!(ctx.find_entity_doc("Speed"), Some("Speed of travel."));
+    }
+
+    #[test]
+    fn find_entity_doc_returns_none_for_undocumented_type_alias() {
+        let source = "type Speed = Length / Time\n";
+        let ctx = AnalysisContext::new(source, &test_uri());
+        assert_eq!(ctx.find_entity_doc("Speed"), None);
+    }
+
+    // --- task #6341: compiled type-alias lookup ---
+
+    #[test]
+    fn find_type_alias_returns_compiled_entry() {
+        let source = "type Speed = Length / Time\n";
+        let ctx = AnalysisContext::new(source, &test_uri());
+        let alias = ctx
+            .find_type_alias("Speed")
+            .expect("Speed must be present in compiled.type_aliases");
+        assert_eq!(alias.name, "Speed");
+        assert_eq!(
+            alias.resolved_type.as_ref().map(|t| t.to_string()),
+            Some("Scalar[m\u{b7}s^-1]".to_string())
+        );
+    }
+
+    #[test]
+    fn find_type_alias_returns_none_for_unknown_name() {
+        let source = "type Speed = Length / Time\n";
+        let ctx = AnalysisContext::new(source, &test_uri());
+        assert!(ctx.find_type_alias("NoSuchAlias").is_none());
+    }
+
+    /// No-leakage contract: `TypeAliasRegistry::into_compiled` filters prelude-seeded
+    /// names, so a document that declares no aliases has an EMPTY `type_aliases` —
+    /// even though `Rate` is a real stdlib prelude alias. Every LSP surface built on
+    /// this accessor is therefore scoped to the open document. Task #6341.
+    #[test]
+    fn find_type_alias_returns_none_for_stdlib_alias() {
+        let source = reify_test_support::bracket_source();
+        let ctx = AnalysisContext::new(source, &test_uri());
+        assert!(
+            ctx.compiled.type_aliases.is_empty(),
+            "a document declaring no aliases must have no compiled aliases, got: {:?}",
+            ctx.compiled
+                .type_aliases
+                .iter()
+                .map(|a| a.name.as_str())
+                .collect::<Vec<_>>()
+        );
+        assert!(ctx.find_type_alias("Rate").is_none());
     }
 
     #[test]
@@ -2027,79 +2041,6 @@ mod tests {
         );
     }
 
-    // --- enclosing_decl_at free function tests ---
-
-    #[test]
-    fn enclosing_decl_at_returns_structure_for_offset_inside() {
-        let source = "structure A {\n    param x: Length = 5mm\n}\nstructure B {\n    param y: Bool = true\n}";
-        let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-        // Offset inside A: 'x' in "param x: Length = 5mm"
-        let a_x_offset = source.find("param x").unwrap() + 6;
-        let decl = enclosing_decl_at(&parsed.declarations, a_x_offset);
-        assert!(decl.is_some(), "offset inside A should return Some");
-        match decl.unwrap() {
-            reify_ast::Declaration::Structure(s) => assert_eq!(s.name, "A"),
-            other => panic!("expected Structure A, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn enclosing_decl_at_returns_correct_structure_for_second_decl() {
-        let source = "structure A {\n    param x: Length = 5mm\n}\nstructure B {\n    param y: Bool = true\n}";
-        let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-        // Offset inside B: 'y' in "param y: Bool = true"
-        let b_y_offset = source.find("param y").unwrap() + 6;
-        let decl = enclosing_decl_at(&parsed.declarations, b_y_offset);
-        assert!(decl.is_some(), "offset inside B should return Some");
-        match decl.unwrap() {
-            reify_ast::Declaration::Structure(s) => assert_eq!(s.name, "B"),
-            other => panic!("expected Structure B, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn enclosing_decl_at_returns_occurrence() {
-        let source = "occurrence def Joint {\n    param diameter: Length = 10mm\n}";
-        let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-        let offset = source.find("diameter").unwrap();
-        let decl = enclosing_decl_at(&parsed.declarations, offset);
-        assert!(
-            decl.is_some(),
-            "offset inside occurrence should return Some"
-        );
-        match decl.unwrap() {
-            reify_ast::Declaration::Occurrence(o) => assert_eq!(o.name, "Joint"),
-            other => panic!("expected Occurrence Joint, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn enclosing_decl_at_returns_none_between_declarations() {
-        let source = "structure A {\n    param x: Length = 5mm\n}\nstructure B {\n    param y: Bool = true\n}";
-        let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-        // Offset between A and B (the newline between them)
-        let between_offset = source.find("\nstructure B").unwrap();
-        let decl = enclosing_decl_at(&parsed.declarations, between_offset);
-        assert!(
-            decl.is_none(),
-            "offset between declarations should return None"
-        );
-    }
-
-    #[test]
-    fn enclosing_decl_at_returns_none_for_offset_past_end() {
-        let source = "structure A {\n    param x: Length = 5mm\n}";
-        let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-        let decl = enclosing_decl_at(&parsed.declarations, source.len() + 100);
-        assert!(decl.is_none(), "offset past end should return None");
-    }
-
-    #[test]
-    fn enclosing_decl_at_empty_declarations() {
-        let decl = enclosing_decl_at(&[], 0);
-        assert!(decl.is_none(), "empty declarations should return None");
-    }
-
     // --- depth-limit tests for find_named_member_span ---
 
     /// Build a member tree with `depth` levels of GuardedGroup nesting,
@@ -2184,385 +2125,6 @@ mod tests {
             "AnalysisContext: stdlib source should compile without errors; \
              got: {errors:?}"
         );
-    }
-
-    // --- compute_document_symbols tests (task 4207 η) ---
-
-    #[test]
-    fn compute_document_symbols_single_structure_top_level() {
-        use tower_lsp::lsp_types::SymbolKind;
-        let source = "structure Bracket { param width: Length = 80mm }";
-        let symbols = compute_document_symbols(source, &test_uri());
-        assert_eq!(
-            symbols.len(),
-            1,
-            "should return exactly one top-level symbol for one structure"
-        );
-        let bracket = &symbols[0];
-        assert_eq!(bracket.name, "Bracket");
-        assert_eq!(bracket.kind, SymbolKind::STRUCT);
-        // range covers the full declaration, which starts on line 0.
-        assert_eq!(bracket.range.start.line, 0);
-        // selection_range is the "Bracket" name token: line 0, chars 10..17
-        // ("structure " is 10 chars; "Bracket" is 7 chars).
-        assert_eq!(bracket.selection_range.start.line, 0);
-        assert_eq!(bracket.selection_range.start.character, 10);
-        assert_eq!(bracket.selection_range.end.line, 0);
-        assert_eq!(bracket.selection_range.end.character, 17);
-    }
-
-    /// Regression (task 4207 η amendment): `name_selection_range` must preserve
-    /// the LSP `selection_range ⊆ range` invariant even for a degenerate span
-    /// shorter than the name. Here the span is 2 bytes wide but the name is 7
-    /// bytes, so the word-boundary search fails and the `span.start` fallback
-    /// runs; without the end-clamp the selection end would be `0 + 7 = 7`,
-    /// pushing `selection_range.end` past `range.end`.
-    #[test]
-    fn name_selection_range_clamps_end_to_span_for_degenerate_span() {
-        let source = "Bracket";
-        let span = SourceSpan::new(0, 2);
-        let sel = name_selection_range(source, span, "Bracket");
-        let range = span_to_range(source, span);
-        assert!(
-            (sel.start.line, sel.start.character) >= (range.start.line, range.start.character),
-            "selection_range.start {:?} must be >= range.start {:?}",
-            sel.start,
-            range.start,
-        );
-        assert!(
-            (sel.end.line, sel.end.character) <= (range.end.line, range.end.character),
-            "selection_range.end {:?} must be clamped within range.end {:?}",
-            sel.end,
-            range.end,
-        );
-    }
-
-    /// Assert `sym.selection_range` lies within `sym.range` and covers exactly
-    /// `sym.name` in `source`. Shared across the document-symbol tests.
-    fn assert_selection_on_name(source: &str, sym: &DocumentSymbol) {
-        let r = &sym.range;
-        let sr = &sym.selection_range;
-        assert!(
-            (sr.start.line, sr.start.character) >= (r.start.line, r.start.character),
-            "selection_range.start {:?} should be >= range.start {:?} for {}",
-            sr.start,
-            r.start,
-            sym.name
-        );
-        assert!(
-            (sr.end.line, sr.end.character) <= (r.end.line, r.end.character),
-            "selection_range.end {:?} should be <= range.end {:?} for {}",
-            sr.end,
-            r.end,
-            sym.name
-        );
-        let start = crate::convert::position_to_offset(source, sr.start);
-        let end = crate::convert::position_to_offset(source, sr.end);
-        assert_eq!(
-            &source[start..end],
-            sym.name,
-            "selection_range should cover the name token for {}",
-            sym.name
-        );
-    }
-
-    #[test]
-    fn compute_document_symbols_members_as_children() {
-        use tower_lsp::lsp_types::SymbolKind;
-        let source = reify_test_support::bracket_source();
-        let symbols = compute_document_symbols(source, &test_uri());
-        assert_eq!(symbols.len(), 1, "bracket_source has one structure");
-        let bracket = &symbols[0];
-        assert_eq!(bracket.name, "Bracket");
-
-        let children = bracket
-            .children
-            .as_ref()
-            .expect("Bracket should have children");
-        // 5 params + 2 lets = 7 named members; the 3 unlabeled constraints
-        // are NOT navigable symbols and must be excluded.
-        assert_eq!(
-            children.len(),
-            7,
-            "expected 7 named members (constraints excluded), got: {:?}",
-            children.iter().map(|c| c.name.as_str()).collect::<Vec<_>>()
-        );
-
-        // Source order: the 5 params, then volume, then body.
-        let expected: [(&str, SymbolKind); 7] = [
-            ("width", SymbolKind::FIELD),
-            ("height", SymbolKind::FIELD),
-            ("thickness", SymbolKind::FIELD),
-            ("fillet_radius", SymbolKind::FIELD),
-            ("hole_diameter", SymbolKind::FIELD),
-            ("volume", SymbolKind::VARIABLE),
-            ("body", SymbolKind::VARIABLE),
-        ];
-        for (child, (name, kind)) in children.iter().zip(expected.iter()) {
-            assert_eq!(&child.name, name, "child name/order mismatch");
-            assert_eq!(child.kind, *kind, "child {name} kind mismatch");
-            assert!(
-                child.children.is_none() || child.children.as_ref().unwrap().is_empty(),
-                "leaf member {name} should have no children"
-            );
-            assert_selection_on_name(source, child);
-        }
-    }
-
-    #[test]
-    fn compute_document_symbols_occurrence_and_trait() {
-        use tower_lsp::lsp_types::SymbolKind;
-
-        // --- occurrence → CLASS with param FIELD + let VARIABLE children ---
-        let occ_source =
-            "occurrence def Joint {\n    param diameter: Length = 10mm\n    let radius = diameter / 2\n}";
-        let occ_symbols = compute_document_symbols(occ_source, &test_uri());
-        assert_eq!(occ_symbols.len(), 1, "one occurrence → one top-level symbol");
-        let joint = &occ_symbols[0];
-        assert_eq!(joint.name, "Joint");
-        assert_eq!(joint.kind, SymbolKind::CLASS);
-        assert_selection_on_name(occ_source, joint);
-        let occ_children = joint
-            .children
-            .as_ref()
-            .expect("Joint should have children");
-        assert_eq!(occ_children.len(), 2, "Joint has diameter + radius");
-        assert_eq!(occ_children[0].name, "diameter");
-        assert_eq!(occ_children[0].kind, SymbolKind::FIELD);
-        assert_eq!(occ_children[1].name, "radius");
-        assert_eq!(occ_children[1].kind, SymbolKind::VARIABLE);
-        for c in occ_children {
-            assert_selection_on_name(occ_source, c);
-        }
-
-        // --- trait → INTERFACE with param FIELD child ---
-        let trait_source = "trait Rigid {\n    param mass: Length = 5mm\n}";
-        let trait_symbols = compute_document_symbols(trait_source, &test_uri());
-        assert_eq!(trait_symbols.len(), 1, "one trait → one top-level symbol");
-        let rigid = &trait_symbols[0];
-        assert_eq!(rigid.name, "Rigid");
-        assert_eq!(rigid.kind, SymbolKind::INTERFACE);
-        assert_selection_on_name(trait_source, rigid);
-        let trait_children = rigid
-            .children
-            .as_ref()
-            .expect("Rigid should have children");
-        assert_eq!(trait_children.len(), 1, "Rigid has mass");
-        assert_eq!(trait_children[0].name, "mass");
-        assert_eq!(trait_children[0].kind, SymbolKind::FIELD);
-        assert_selection_on_name(trait_source, &trait_children[0]);
-    }
-
-    #[test]
-    fn compute_document_symbols_enum_variants() {
-        use tower_lsp::lsp_types::SymbolKind;
-        let source = "enum Shape { Point, Circle { radius: Length } }";
-        let symbols = compute_document_symbols(source, &test_uri());
-        assert_eq!(symbols.len(), 1, "one enum → one top-level symbol");
-        let shape = &symbols[0];
-        assert_eq!(shape.name, "Shape");
-        assert_eq!(shape.kind, SymbolKind::ENUM);
-        assert_selection_on_name(source, shape);
-
-        let variants = shape
-            .children
-            .as_ref()
-            .expect("Shape should have variant children");
-        assert_eq!(variants.len(), 2, "Shape has Point + Circle in source order");
-        assert_eq!(variants[0].name, "Point");
-        assert_eq!(variants[0].kind, SymbolKind::ENUM_MEMBER);
-        assert_eq!(variants[1].name, "Circle");
-        assert_eq!(variants[1].kind, SymbolKind::ENUM_MEMBER);
-        for v in variants {
-            // range covers the variant span; selection_range sits on the name.
-            assert_selection_on_name(source, v);
-            assert!(
-                v.children.is_none() || v.children.as_ref().unwrap().is_empty(),
-                "variant {} should have no grandchildren in this task",
-                v.name
-            );
-        }
-    }
-
-    #[test]
-    fn compute_document_symbols_fn_and_excludes_non_symbol_decls() {
-        use tower_lsp::lsp_types::SymbolKind;
-        let source = "import std.math\nunit meter : Length\nfn area(w: Length) -> Length { w }";
-        let symbols = compute_document_symbols(source, &test_uri());
-        // import + unit are NOT navigable symbols; only the fn is.
-        assert_eq!(
-            symbols.len(),
-            1,
-            "only the fn should be a symbol (import + unit excluded), got: {:?}",
-            symbols.iter().map(|s| s.name.as_str()).collect::<Vec<_>>()
-        );
-        let area = &symbols[0];
-        assert_eq!(area.name, "area");
-        assert_eq!(area.kind, SymbolKind::FUNCTION);
-        assert!(
-            area.children.is_none() || area.children.as_ref().unwrap().is_empty(),
-            "fn is a leaf symbol (params are not surfaced as children)"
-        );
-        assert_selection_on_name(source, area);
-    }
-
-    #[test]
-    fn compute_document_symbols_sub_port_and_guarded() {
-        use tower_lsp::lsp_types::SymbolKind;
-        let source = r#"structure Assembly {
-    param cond : Bool = true
-    sub motor = Motor()
-    port intake : MechPort { param d : Length = 5mm }
-    where cond {
-        param guarded_x : Length = 1mm
-    }
-}"#;
-        let symbols = compute_document_symbols(source, &test_uri());
-        assert_eq!(symbols.len(), 1, "one structure → one top-level symbol");
-        let assembly = &symbols[0];
-        assert_eq!(assembly.name, "Assembly");
-        let children = assembly
-            .children
-            .as_ref()
-            .expect("Assembly should have children");
-        let find = |name: &str| children.iter().find(|c| c.name == name);
-
-        // sub motor → OBJECT
-        let motor = find("motor").expect("motor sub should be a child symbol");
-        assert_eq!(motor.kind, SymbolKind::OBJECT);
-        assert_selection_on_name(source, motor);
-
-        // port intake → INTERFACE, with port-internal param d → FIELD grandchild
-        let intake = find("intake").expect("intake port should be a child symbol");
-        assert_eq!(intake.kind, SymbolKind::INTERFACE);
-        assert_selection_on_name(source, intake);
-        let intake_children = intake
-            .children
-            .as_ref()
-            .expect("intake port should have internal members");
-        let d = intake_children
-            .iter()
-            .find(|c| c.name == "d")
-            .expect("port-internal param d should be a grandchild");
-        assert_eq!(d.kind, SymbolKind::FIELD);
-        assert_selection_on_name(source, d);
-
-        // where-block param guarded_x flattened as a direct child of the structure
-        let guarded = find("guarded_x").expect("guarded_x should be flattened as a direct child");
-        assert_eq!(guarded.kind, SymbolKind::FIELD);
-        assert_selection_on_name(source, guarded);
-    }
-
-    // --- step-11: injectable document-symbol core over a shared ParsedModule ---
-
-    /// `compute_document_symbols_from_parsed`, fed a `ParsedModule` built once
-    /// by the caller, must yield the same symbol tree as the
-    /// `compute_document_symbols` wrapper (which parses internally) — proving
-    /// the cache-fed core is output-equivalent to the per-request path.
-    #[test]
-    fn compute_document_symbols_from_parsed_matches_wrapper() {
-        // Multi-declaration source spanning every navigable symbol kind plus
-        // members, so the equivalence covers names, kinds, ranges, and the
-        // nested children tree — not just the top-level list.
-        let source = r#"structure Bracket {
-    param width : Length = 80mm
-    sub motor = Motor()
-}
-occurrence def Joint {
-    param diameter : Length = 10mm
-}
-trait Rigid {
-    param mass : Length = 5mm
-}
-enum Shape { Circle, Square }
-fn area(w: Length) -> Length { w }"#;
-        let uri = test_uri();
-
-        let parsed = reify_compiler::parse_with_stdlib(
-            source,
-            ModulePath::single(module_name_from_uri(&uri)),
-        );
-
-        let via_parsed = compute_document_symbols_from_parsed(&parsed, source);
-        let via_wrapper = compute_document_symbols(source, &uri);
-
-        assert!(
-            !via_parsed.is_empty(),
-            "multi-declaration source should yield symbols"
-        );
-        assert_eq!(
-            via_parsed, via_wrapper,
-            "from-parsed document symbols must match the wrapper (names/kinds/ranges/children)"
-        );
-    }
-
-    // --- name_token_span tests (step-1) ---
-    //
-    // `name_token_span(source, member_span, name)` narrows a member-statement
-    // span down to the span of just the NAME identifier token. Expected offsets
-    // are derived from `source.find` so the assertions stay fixture-robust.
-
-    #[test]
-    fn name_token_span_param_width_covers_just_the_name() {
-        let source = "param width: Length = 80mm";
-        let member_span = SourceSpan::new(0, source.len() as u32);
-        let span = name_token_span(source, member_span, "width");
-        let start = source.find("width").unwrap() as u32;
-        let end = start + "width".len() as u32;
-        assert_eq!(span, SourceSpan::new(start, end));
-        assert_eq!(&source[span.start as usize..span.end as usize], "width");
-    }
-
-    #[test]
-    fn name_token_span_let_volume_covers_just_the_name() {
-        let source = "let volume = width * height * thickness";
-        let member_span = SourceSpan::new(0, source.len() as u32);
-        let span = name_token_span(source, member_span, "volume");
-        let start = source.find("volume").unwrap() as u32;
-        let end = start + "volume".len() as u32;
-        assert_eq!(span, SourceSpan::new(start, end));
-        assert_eq!(&source[span.start as usize..span.end as usize], "volume");
-    }
-
-    #[test]
-    fn name_token_span_indented_guarded_param_covers_just_the_name() {
-        // A guarded member's statement span begins at the indented `param`
-        // keyword. name_token_span must still land on the identifier token,
-        // searching forward from the (non-zero) member-span start.
-        let source = "        param guarded_x : Length = 5mm";
-        let decl_start = source.find("param").unwrap() as u32;
-        let member_span = SourceSpan::new(decl_start, source.len() as u32);
-        let span = name_token_span(source, member_span, "guarded_x");
-        let start = source.find("guarded_x").unwrap() as u32;
-        let end = start + "guarded_x".len() as u32;
-        assert_eq!(span, SourceSpan::new(start, end));
-        assert_eq!(
-            &source[span.start as usize..span.end as usize],
-            "guarded_x"
-        );
-    }
-
-    #[test]
-    fn name_token_span_absent_name_falls_back_within_member_not_sibling() {
-        // The member span covers ONLY the first statement (`param alpha …`), which
-        // does NOT contain the name `beta`. `beta` appears only in the LATER
-        // sibling statement. name_token_span must fall back to an empty span at the
-        // member start rather than borrowing the sibling's `beta` token — a
-        // malformed/recovered node whose span lacks its own name must not match a
-        // same-named token elsewhere in the source.
-        let source = "param alpha: Length = 1mm\nlet beta = alpha";
-        let member_end = source.find('\n').unwrap() as u32; // end of `param alpha …`
-        let member_span = SourceSpan::new(0, member_end);
-
-        let span = name_token_span(source, member_span, "beta");
-        assert_eq!(
-            span,
-            SourceSpan::empty(0),
-            "name absent from the member span must fall back to empty, not borrow \
-             the sibling `beta` token at {:?}",
-            source.find("beta"),
-        );
-        assert!(span.is_empty(), "fallback span must be empty");
     }
 
     // ── undef_cause_line tests ─────────────────────────────────────────────────

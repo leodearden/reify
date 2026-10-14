@@ -1,0 +1,21 @@
+module getar_result_arg_mismatch_assign_silent
+
+// PRD `docs/prds/v0_6/generic-enum-type-arg-retention.md` — leaf γ RED
+// before-image (soundness hole S-2). MEASURED 2026-09-29 with
+// target/debug/reify built 2026-09-25 (main 300910857b):
+//   `reify check` EXIT 0, "All constraints satisfied.";
+//   `reify eval`  EXIT 0, prints `W.a = Result::Ok`, `W.b = Result::Ok`,
+//   `W.n = 0.005 m`.
+// `b` is declared `Result<Force, String>` and initialised from a
+// `Result<Length, String>`. The ctor-conformance enum branch compares enum
+// NAMES only (`base_enum_name` in crates/reify-compiler/src/type_compat.rs),
+// so the Applied-vs-Applied argument mismatch passes, and the match binder
+// `x` is typed Force while holding a Length: `n : Force = 0.005 m`.
+// EXPECTED after γ: `reify check` EXIT 1, an ArgTypeMismatch-class diagnostic
+// naming Result<Force, String> vs Result<Length, String> on `b`.
+
+structure def W {
+    param a : Result<Length, String> = Ok { value: 5mm }
+    param b : Result<Force, String> = a
+    let n : Force = match b { Ok { value: x } => x, Err { error: e } => 1N }
+}

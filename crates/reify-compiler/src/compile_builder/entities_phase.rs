@@ -55,7 +55,8 @@ use crate::type_resolution::{
 };
 use crate::types::{
     CompiledConstraintDef, CompiledField, CompiledForallBody, CompiledGeometryOp, CompiledImport,
-    CompiledTrait, EntityKind, TopologyTemplate, ValueCellDecl, ValueCellKind, Visibility,
+    CompiledTrait, EntityKind, PreludeRegistries, TopologyTemplate, ValueCellDecl, ValueCellKind,
+    Visibility,
 };
 use crate::units::UnitRegistry;
 use reify_core::ValueCellId;
@@ -98,11 +99,20 @@ pub(crate) fn phase_entities(
     // because `phase_functions`/`phase_traits` run earlier and must agree with this
     // phase on what the name means (esc-5429-1). See
     // `enums_phase::build_local_enum_shadow_set`.
-    let structure_names: HashSet<String> = ctx
+    //
+    // task 5867: split out the LOCAL half first. `structure_names` is the union
+    // (local ∪ prelude) its own consumers want, but sub-target resolution needs
+    // to know which names the module OWNS — see `PreludeRegistries::
+    // local_entity_names` and property 1 of `find_template_with_prelude`.
+    let local_entity_names: HashSet<String> = ctx
         .seen_entity_names
         .iter()
         .filter(|(_, (_, kind))| *kind == "structure" || *kind == "occurrence")
         .map(|(name, _)| name.clone())
+        .collect();
+    let structure_names: HashSet<String> = local_entity_names
+        .iter()
+        .cloned()
         .chain(
             prelude
                 .iter()
@@ -118,18 +128,55 @@ pub(crate) fn phase_entities(
     // matches ImportDecl.path (see task 2226).
     let mut resolved_import_paths: Option<HashSet<String>> = None;
 
-    // task 3540 (SIR-α): prelude `structure def` templates, keyed by name, so
-    // the expression-lowering site can recognise `Foo()` as a structure
-    // constructor (esc-3540-177 RULING 1). Built once here (immutable borrow
-    // of `prelude` for the loop); `compile_entity` merges in local
-    // already-compiled structure-defs. Occurrences are excluded — only
-    // structure-defs are constructible via the ctor path.
-    let prelude_template_registry: HashMap<String, &TopologyTemplate> = prelude
+    // task 5867: prelude templates keyed by name for SUB-TARGET resolution
+    // (`types::find_template_with_prelude`), which the `Sub` pre-passes in
+    // `entity.rs` consult to populate `sub_member_types` /
+    // `sub_realization_names` / `sub_structure_traits` / `sub_assoc_fn_keys`.
+    //
+    // This one carries NO `EntityKind` filter, and must not: sub targets may be
+    // occurrences — `sub o = STLOutput(…)` is a shipped shape (reify-cli's
+    // `output_driver_*.ri` fixtures). MEASURED: resolving sub targets against
+    // the Structure-filtered map below leaves `let res = self.o.resolution`
+    // typed `Type::Error` with a bogus `RealizationDecl`.
+    let prelude_sub_target_registry: HashMap<String, &TopologyTemplate> = prelude
         .iter()
         .flat_map(|m| m.templates.iter())
-        .filter(|t| t.entity_kind == EntityKind::Structure)
         .map(|t| (t.name.clone(), t))
         .collect();
+
+    // task 3540 (SIR-α): prelude `structure def` templates, keyed by name, so
+    // the expression-lowering site can recognise `Foo()` as a structure
+    // constructor (esc-3540-177 RULING 1). `compile_entity` merges in local
+    // already-compiled structure-defs. Occurrences are excluded — only
+    // structure-defs are constructible via the ctor path.
+    //
+    // DERIVED from the unfiltered map above rather than re-walking `prelude`,
+    // so the subset relationship is structural instead of conventional (and one
+    // pass over the prelude plus one set of name clones is saved). The two
+    // differ only if the prelude ever held a `structure def X` AND an
+    // `occurrence def X`: filter-then-collect would keep the structure, whereas
+    // this derivation inherits the unfiltered map's last-wins dedup. The entity
+    // namespace is unified (spec §4.2.1) only WITHIN a module, so the two can
+    // diverge in principle once `prelude` carries user modules (compile_project
+    // / ModuleDag) as well as the stdlib. MEASURED on the tree: the stdlib
+    // declares no name twice at all, and repo-wide exactly one entity name is
+    // spelled both ways (`Pipe`, structure in examples/m9_constraint_def.ri,
+    // occurrence in examples/m5_connect_chain.ri) — two files with no import
+    // edge between them, so they are never in one prelude. The two maps are
+    // therefore identical today.
+    let prelude_template_registry: HashMap<String, &TopologyTemplate> = prelude_sub_target_registry
+        .iter()
+        .filter(|(_, t)| t.entity_kind == EntityKind::Structure)
+        .map(|(k, v)| (k.clone(), *v))
+        .collect();
+
+    // One bundle for the entity-compile recursion, so the two same-typed maps
+    // cannot be transposed at a call site (they are read by field name).
+    let prelude_registries = PreludeRegistries {
+        ctor: &prelude_template_registry,
+        sub_target: &prelude_sub_target_registry,
+        local_entity_names: &local_entity_names,
+    };
 
     // ── Ambient-default file-scope pre-pass (ambient-default-material task B) ──
     // Build the file-level `AmbientDefaults` table BEFORE the entity-compile loop
@@ -174,7 +221,7 @@ pub(crate) fn phase_entities(
                         &mut ctx.pending_connect_auto_params,
                         &mut ctx.diagnostics,
                         &mut ctx.templates,
-                        &prelude_template_registry,
+                        &prelude_registries,
                     );
                 }
             }
@@ -238,7 +285,7 @@ pub(crate) fn phase_entities(
                         &mut ctx.pending_connect_auto_params,
                         &mut ctx.diagnostics,
                         &mut ctx.templates,
-                        &prelude_template_registry,
+                        &prelude_registries,
                     );
                 }
             }
@@ -283,7 +330,7 @@ pub(crate) fn phase_entities(
                             &mut ctx.pending_connect_auto_params,
                             &mut ctx.diagnostics,
                             &mut ctx.templates,
-                            &prelude_template_registry,
+                            &prelude_registries,
                         );
                     }
                 }
@@ -768,7 +815,10 @@ fn compile_entity_decl(
     pending_connect_auto_params: &mut Vec<PendingConnectAutoParam>,
     diagnostics: &mut Vec<Diagnostic>,
     templates: &mut Vec<TopologyTemplate>,
-    prelude_template_registry: &HashMap<String, &TopologyTemplate>,
+    // task 5867: the prelude-derived lookup tables, bundled — see
+    // `types::PreludeRegistries` for why they travel as one named-field value
+    // rather than as adjacent same-typed positional parameters.
+    prelude_registries: &PreludeRegistries<'_, '_>,
 ) {
     let template = compile_entity(
         &entity_ref,
@@ -790,7 +840,7 @@ fn compile_entity_decl(
         pending_connect_auto_params,
         diagnostics,
         templates,
-        prelude_template_registry,
+        prelude_registries,
     );
     templates.push(template);
 }
@@ -1568,8 +1618,12 @@ fn check_expr_fn_calls(
 }
 
 /// Walk `expr` and its descendants; for every `StructureInstanceCtor` node call
-/// `check_trait_arg_conformance` on each named arg whose declared param type is
-/// `List<TraitObject(...)>`, a bare `StructureRef(_)`, or a `Type::Vector { .. }`.
+/// `check_trait_arg_conformance` on each named or positionally bound arg, EXCEPT
+/// one bound to a bare `Type::TraitObject` field (the D6 exemption, see the loop).
+///
+/// Since task 5302 every other field type goes through the shared conformance
+/// walker, at `CTOR_FIELD_CONFORMANCE_SEVERITY` (`Error` since δ, task 5306).
+/// The user-facing rules are `docs/reify-language-spec.md` §4.9.
 ///
 /// This closes the gap left by `phase_pending_bound_checks`: that phase only
 /// queues `TraitArgConformance` checks for sub-component declarations (entity.rs
@@ -1577,26 +1631,6 @@ fn check_expr_fn_calls(
 /// `StructureInstanceCtor` expressions and were not checked.  By walking the
 /// compiled expression tree here we cover them with the same
 /// `check_trait_arg_conformance` logic that sub-components use.
-///
-/// **Scope: `List<TraitObject>`, `StructureRef`, and `Type::Vector` params.**
-/// Bare `TraitObject` params (e.g. `ConstitutiveLawInput.law : ConstitutiveLaw`)
-/// are intentionally excluded — those are either already covered by the
-/// fn-call/sub-component paths, or are deliberate type-coercion escape hatches
-/// (e.g. `ConstitutiveLawInput`).  Extending this walk to bare `TraitObject`
-/// params would regress those escape-hatch call sites, so it is deliberately
-/// out of scope here.
-///
-/// `StructureRef` params (task-4584): bare nominal params like `part : Part` are
-/// now also routed through `check_trait_arg_conformance` → `walk_param_against_arg`
-/// → `walk_param_against_arg_type` StructureRef arm, which emits
-/// `TypeNotConformingToStructureRef` for concrete type mismatches.
-///
-/// `Type::Vector` params (task-4622): vector params like `axis : Vector3<Length>`
-/// are routed through `check_trait_arg_conformance` → `walk_param_against_arg`
-/// → `walk_param_against_arg_type` Vector arm, which emits
-/// `TypeNotConformingToVector` for non-vector args (bare scalars).  The check
-/// is shape-based (not `type_compatible`) so a dimensionless `vec3(…)` arg is
-/// accepted for a `Vector3<Length>` param (loose-quantity rule).
 fn check_expr_struct_ctor_args(
     expr: &CompiledExpr,
     // task 5465 (family 4 + amendment): the templates/traits/enums trio,
@@ -1631,19 +1665,26 @@ fn check_expr_struct_ctor_args(
             return;
         };
         for (arg_name, compiled_arg) in ordered_args {
-            // task 5302 (struct-ctor-conformance α): check ALL named params EXCEPT
-            // a bare `Type::TraitObject(_)`. This generalizes the original 4584
-            // 4-family allowlist (List<TraitObject> / StructureRef / Vector /
-            // Selector) to every concrete field type, routed through the shared
-            // conformance walker at Warning severity (CTOR_FIELD_CONFORMANCE_SEVERITY).
+            // task 5302 (struct-ctor-conformance α): check ALL params EXCEPT a bare
+            // `Type::TraitObject(_)`, at CTOR_FIELD_CONFORMANCE_SEVERITY.
             //
-            // Bare TraitObject params stay EXEMPT here (D6): they are deliberate
-            // type-coercion escape hatches (e.g. `ConstitutiveLawInput.law :
-            // ConstitutiveLaw`) and are already covered by the fn-call / sub-
-            // component paths. REVISIT this exemption once those escape-hatch call
-            // sites are migrated — see docs/prds/struct-ctor-field-type-conformance.md; at that
-            // point the `!matches!(… TraitObject …)` guard can be dropped so bare
-            // trait params are checked too.
+            // Bare TraitObject params stay EXEMPT here (PRD
+            // docs/prds/struct-ctor-field-type-conformance.md, D6): they were
+            // deliberate type-coercion escape hatches, the original being
+            // `ConstitutiveLawInput.law : ConstitutiveLaw` (that shim was retired in
+            // task 4442).
+            //
+            // SCOPE: only this expression-position path is exempt. `sub x = T(…)`
+            // and `sub x : T { … }` go through `PendingBoundCheck::TraitArgConformance`,
+            // which DOES check bare trait params — compare
+            // `sub_component_arg_for_trait_typed_param_rejects_non_conforming_struct`
+            // (harness_traits/trait_typed_param_tests.rs) with
+            // `boundary9_bare_trait_param_value_cell_is_exempt`. Authors see the
+            // exemption in docs/reify-language-spec.md §4.9.
+            //
+            // REVISIT once no escape-hatch call site relies on it (measuring that is
+            // #7957): drop the `!matches!(… TraitObject …)` guard so bare trait
+            // params are checked here too.
             let should_check = template
                 .value_cells
                 .iter()

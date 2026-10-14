@@ -19,6 +19,14 @@ use crate::termination::check_recursive_termination;
 use crate::traits::compile_purpose;
 use crate::types::{CompiledField, CompiledFieldSource, CompiledPurpose, TopologyTemplate};
 
+/// The `E_OBJECTIVE_INERT` pass (DIC γ, task #5417). Its own module because it
+/// is one self-contained decision with a large proof obligation list and a unit
+/// suite to match, and it shares nothing with the passes above; re-exported
+/// here so every phase `lib.rs` calls is spelled the same way.
+mod inert_objective;
+
+pub(crate) use inert_objective::phase_inert_objective_check;
+
 /// Phase-12 post-compilation: detect recursive sub-component cycles via
 /// DFS on the template reference graph, verify recursive structures have
 /// valid termination conditions, and remix `is_recursive` into each

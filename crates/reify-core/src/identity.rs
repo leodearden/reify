@@ -131,9 +131,105 @@ impl ValueCellId {
     }
 }
 
+/// Renders as `"<entity>.<member>"`.
+///
+/// This rendering is LOSSY whenever either half already contains a `'.'`,
+/// because the joined string no longer says where the boundary was. Three live
+/// families hit that case, and they disagree about which dot is the separator:
+///
+/// * INSTANCE PATHS carry the dots in the ENTITY half (`Rig.bolts` +
+///   `line_cost`).
+/// * PORT COMPOSITE MEMBERS carry a dot in the MEMBER half (`Bracket` +
+///   `mount.width`).
+/// * KEYED MEMBERS carry the key in the MEMBER half (`Widget` +
+///   `vents["intake"]`), so a key containing a dot lands there too.
+///
+/// `ValueCellId::new("Rig.bolts", "line_cost")` and
+/// `ValueCellId::new("Rig", "bolts.line_cost")` are distinct cells that render
+/// to the identical string, so Display is not injective and NO positional split
+/// inverts it. [`FromStr`](std::str::FromStr) is therefore only a PARTIAL
+/// inverse: it round-trips the unambiguous single-dot case and refuses the rest
+/// rather than guessing. Do not hand-roll a split — route through it.
 impl fmt::Display for ValueCellId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}.{}", self.entity, self.member)
+    }
+}
+
+/// Error returned by [`ValueCellId`]'s [`FromStr`](std::str::FromStr) impl when
+/// the input does not name exactly one `(entity, member)` pair under the
+/// `"<entity>.<member>"` Display grammar.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ValueCellIdParseError {
+    /// The input contained no `'.'` separator at all.
+    MissingSeparator,
+    /// The entity segment (before the first `'.'`) was empty.
+    EmptyEntity,
+    /// The member segment (after the first `'.'`) was empty.
+    EmptyMember,
+    /// The member segment still contained a `'.'`, so the input admits more
+    /// than one `(entity, member)` reading and cannot say which cell is meant.
+    /// See [`ValueCellId`]'s [`Display`](fmt::Display) docs for the three
+    /// families that collide here.
+    ///
+    /// KNOWN LIMITATION: the refusal is SYNTACTIC, decided from the string
+    /// alone, so it also refuses an id that a lookup against a compiled cell
+    /// set could resolve to exactly one cell (e.g. `Widget` + `vents["a.b"]`).
+    /// #7717 tracks making such cells addressable.
+    Ambiguous,
+}
+
+impl fmt::Display for ValueCellIdParseError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ValueCellIdParseError::MissingSeparator => {
+                write!(f, "expected '<entity>.<member>'")
+            }
+            ValueCellIdParseError::EmptyEntity => {
+                write!(f, "value cell id has an empty entity segment")
+            }
+            ValueCellIdParseError::EmptyMember => {
+                write!(f, "value cell id has an empty member segment")
+            }
+            ValueCellIdParseError::Ambiguous => write!(
+                f,
+                "ambiguous value cell id: the remaining '.' admits more than \
+                 one (entity, member) reading, so the id cannot say which cell \
+                 is meant"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for ValueCellIdParseError {}
+
+impl std::str::FromStr for ValueCellId {
+    type Err = ValueCellIdParseError;
+
+    /// Parse the `"<entity>.<member>"` Display grammar back into a
+    /// [`ValueCellId`].
+    ///
+    /// This is a PARTIAL inverse of [`fmt::Display`], not an exact one: that
+    /// rendering is not injective (see its docs), so only an id with EXACTLY
+    /// one `'.'` names a single cell. Anything with a second dot is refused as
+    /// [`Ambiguous`](ValueCellIdParseError::Ambiguous) rather than split on a
+    /// guessed boundary. No identifier charset is imposed otherwise — hyphens,
+    /// brackets and quotes all round-trip, so the keyed-member form
+    /// `Widget.vents["intake"]` parses.
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let (entity, member) = s
+            .split_once('.')
+            .ok_or(ValueCellIdParseError::MissingSeparator)?;
+        if entity.is_empty() {
+            return Err(ValueCellIdParseError::EmptyEntity);
+        }
+        if member.is_empty() {
+            return Err(ValueCellIdParseError::EmptyMember);
+        }
+        if member.contains('.') {
+            return Err(ValueCellIdParseError::Ambiguous);
+        }
+        Ok(ValueCellId::new(entity, member))
     }
 }
 
@@ -667,5 +763,134 @@ mod tests {
         assert!("a[b#realization[0]".parse::<RealizationNodeId>().is_err());
         assert!("a/b#realization[0]".parse::<RealizationNodeId>().is_err());
         assert!("a]b#realization[0]".parse::<RealizationNodeId>().is_err());
+    }
+
+    // ── ValueCellId::from_str (FromStr) ──────────────────────────────
+    //
+    // The PARTIAL inverse of the `"<entity>.<member>"` Display grammar. Only the
+    // unambiguous single-dot case is addressable as a string; see the
+    // non-injectivity test below for why no positional split can do better.
+
+    #[test]
+    fn value_cell_id_from_str_roundtrips_unambiguous_ids() {
+        // Every shape a real mint site produces with exactly one dot in the
+        // rendered string must survive Display → parse unchanged.
+        let cases = [
+            ValueCellId::new("Bracket", "width"),
+            // FIELD_ENTITY_PREFIX form: fields are top-level, not members.
+            ValueCellId::new(FIELD_ENTITY_PREFIX, "gravity"),
+            // Compiler-synthesized member, minted by `compile_block_guard` in
+            // reify-compiler/src/guards.rs.
+            ValueCellId::new("Part", "__guard_0"),
+            // No strict identifier charset, mirroring
+            // `realization_node_id_from_str_hyphenated_entity_roundtrips`.
+            ValueCellId::new("my-part_2", "hole_diameter"),
+            // Keyed member, minted by `keyed_member_cell` in reify-ir/src/value.rs
+            // and asserted by its `keyed_member_cell_carries_key_in_nodeid_path`
+            // test. Brackets and quotes must round-trip: the rendered id still
+            // has exactly one dot.
+            ValueCellId::new("Widget", r#"vents["intake"]"#),
+        ];
+        for id in cases {
+            let parsed: ValueCellId = id
+                .to_string()
+                .parse()
+                .unwrap_or_else(|e| panic!("{id} must round-trip, got {e}"));
+            assert_eq!(parsed, id, "{id} must round-trip unchanged");
+        }
+    }
+
+    #[test]
+    fn value_cell_id_from_str_rejects_missing_separator() {
+        for s in ["", "width"] {
+            assert_eq!(
+                s.parse::<ValueCellId>(),
+                Err(ValueCellIdParseError::MissingSeparator),
+                "{s:?} has no '.' separator, so it names no (entity, member) pair"
+            );
+        }
+    }
+
+    #[test]
+    fn value_cell_id_display_is_not_injective_so_dotted_members_are_refused() {
+        // THE load-bearing property. Three live id families all render into the
+        // same `<entity>.<member>` string shape, and they disagree about where
+        // the split belongs:
+        //
+        //   1. INSTANCE PATHS put the dots in the ENTITY half
+        //      (`Rig.bolts` + `line_cost`). Splitting these needs the LAST dot.
+        //   2. PORT COMPOSITE MEMBERS put a dot in the MEMBER half
+        //      (`Bracket` + `mount.width`). Splitting these needs the FIRST dot.
+        //   3. KEYED MEMBERS put the key in the MEMBER half
+        //      (`Widget` + `vents["a.b"]`). A dotted key needs the FIRST dot
+        //      too, and a last-dot split would cut INSIDE the quoted key.
+        //
+        // So `rsplit_once('.')` is not "the correct inverse" of Display: it
+        // would fix family 1 and break families 2 and 3. No positional split
+        // can be right, because Display is NOT INJECTIVE — two distinct cells
+        // render to one identical string, and the information needed to choose
+        // between them is simply not present in that string:
+        let instance_path = ValueCellId::new("Rig.bolts", "line_cost");
+        let port_composite = ValueCellId::new("Rig", "bolts.line_cost");
+        assert_ne!(
+            instance_path, port_composite,
+            "these are two DIFFERENT cells"
+        );
+        assert_eq!(
+            instance_path.to_string(),
+            port_composite.to_string(),
+            "… yet they render to ONE string, so no parser can tell them apart"
+        );
+
+        // The only correct answer for that one string is therefore to refuse,
+        // naming ambiguity as the reason rather than silently picking either
+        // family's split.
+        assert_eq!(
+            instance_path.to_string().parse::<ValueCellId>(),
+            Err(ValueCellIdParseError::Ambiguous)
+        );
+    }
+
+    #[test]
+    fn value_cell_id_from_str_rejects_keyed_member_with_dotted_key() {
+        // A key carrying a dot pushes a second dot into the member half, so the
+        // keyed-member form stops being addressable as a string …
+        //
+        // This is a CAPABILITY LOSS pinned deliberately, not a latent bug being
+        // ratified: the entity half here is undotted, so this id does name one
+        // cell and a cell-set lookup could recover it. See the KNOWN LIMITATION
+        // on `ValueCellIdParseError::Ambiguous` and #7717 — if that refusal is
+        // ever lifted, this assertion is the one that must change with it.
+        let dotted_key = ValueCellId::new("Widget", r#"vents["a.b"]"#);
+        assert_eq!(
+            dotted_key.to_string().parse::<ValueCellId>(),
+            Err(ValueCellIdParseError::Ambiguous),
+            "a dot inside the key makes the id ambiguous"
+        );
+        // … while its undotted sibling still round-trips. Without this contrast
+        // the test above would also pass a parser that refused every keyed
+        // member outright.
+        let plain_key = ValueCellId::new("Widget", r#"vents["intake"]"#);
+        assert_eq!(
+            plain_key.to_string().parse::<ValueCellId>(),
+            Ok(plain_key.clone()),
+            "an undotted key must still round-trip"
+        );
+    }
+
+    #[test]
+    fn value_cell_id_from_str_rejects_empty_entity() {
+        assert_eq!(
+            ".width".parse::<ValueCellId>(),
+            Err(ValueCellIdParseError::EmptyEntity)
+        );
+    }
+
+    #[test]
+    fn value_cell_id_from_str_rejects_empty_member() {
+        assert_eq!(
+            "Bracket.".parse::<ValueCellId>(),
+            Err(ValueCellIdParseError::EmptyMember)
+        );
     }
 }

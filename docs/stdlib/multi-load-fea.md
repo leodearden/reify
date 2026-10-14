@@ -64,7 +64,7 @@ let within_yield = peak_stress < yield_limit     // Bool
 
 *(Verbatim from [`examples/multi_load_bracket.ri`](../../examples/multi_load_bracket.ri),
 validated by
-[`crates/reify-compiler/tests/multi_load_bracket_example_tests.rs`](../../crates/reify-compiler/tests/multi_load_bracket_example_tests.rs)
+[`crates/reify-compiler/tests/harness_diagnostics_robustness/multi_load_bracket_example_tests.rs`](../../crates/reify-compiler/tests/harness_diagnostics_robustness/multi_load_bracket_example_tests.rs)
 and
 [`crates/reify-eval/tests/harness_fea_solver_e2e/multi_load_bracket_e2e.rs`](../../crates/reify-eval/tests/harness_fea_solver_e2e/multi_load_bracket_e2e.rs).)*
 

@@ -11,7 +11,9 @@ bug-hotspot survey (`docs/notes/bug-hotspot-survey-2026-07-05.md`) per Leo's dir
 - Every registry entry names its enforcement mechanism: **type** (unrepresentable by
   construction), **test** (CI-gated), **lint/gate** (grep/audit-enforced), or **doc+test**
   (documented posture pinned by a locking test).
-- Status values: `proposed` → `enforced(<mechanism>)`. Flip status in the same change that
+- Status values: `proposed` → `enforced(<mechanism>)`, or
+  `partial: enforced(<mechanism>) for <scope>, proposed for <rest>` when an invariant's
+  coverage lands one entry point at a time. Flip status in the same change that
   lands the enforcement.
 - Enforcement posture (Leo, 2026-07-06): **fail-closed is the end-state everywhere.**
   Rollout per invariant: contract spec → one-shot warn-mode corpus sweep to batch-enumerate
@@ -37,12 +39,13 @@ bug-hotspot survey (`docs/notes/bug-hotspot-survey-2026-07-05.md`) per Leo's dir
 | INV-COMP-2 | Builtin names are registered in exactly one place (disjointness by construction, not by test suite) | test interim (cross-registry drift test) → type (unified registry, Wave 3) | enforced(test) | compiler-type-hygiene |
 | INV-COMP-3 | Static operator/result types match the runtime truth table | test (table-driven `infer_binop_type` + static-vs-runtime parity test) | enforced(test) | compiler-type-hygiene |
 | INV-GUI-1 | Every GuiState field has a declared sync mechanism (diffed or explicitly full-reload-only) | lint interim (field-coverage test) → type (derive, compile error on unclassified field) | proposed | gui-state-sync |
-| INV-GUI-2 | Every engine-mutation entry point (GUI command, debug server, MCP/AI tools) flows through the same delta choke-point | test (architecture test) + routing | proposed | gui-state-sync (core + GUI/debug/watcher); ai-native-editing (AI/MCP entry point) |
+| INV-GUI-2 | Every engine-mutation entry point (GUI command, debug server, MCP/AI tools) flows through the same delta choke-point | test (architecture test) + routing. AI/MCP half: `gui/src-tauri/src/tests/debug_write_tool_routing_tests.rs`, structural and fail-closed (default-ASSERT, no read-only exemptions, non-vacuity floors) with a `REIFY_INV_GUI_2_BYPASS=1` break-glass. GUI/debug/FS-watcher half has NO structural guard. Coverage boundary and what the gate does/does not reach: `docs/debug-mcp-contract.md` → "Two seams, ONE stated exception" | partial: enforced(test) for AI/MCP, proposed for GUI/debug/watcher | gui-state-sync (core + GUI/debug/watcher); ai-native-editing (AI/MCP entry point) |
 | INV-GUI-3 | The `.ri` source is the canonical truth of the design for all mutations: every value-changing mutation (GUI slider/edit-box, AI/MCP `reify_set_parameter`/`reify_update_source`) writes back to `.ri` source; no mutation leaves a divergent engine-only live value | type+test (single source-write-back path used by all value mutations; test asserts `.ri` reflects the mutation and there is no ephemeral-only durable path) | proposed | ai-native-editing (+ user-slider durable-edit fix) |
 | INV-FEA-1 | Every production engine declares its registration posture; full registration has one constructor | type+test (`Engine::new_production`; grep architecture test; locking tests for deliberate opt-outs incl. LSP) | proposed | compute-fea-hardening |
 | INV-FEA-2 | The compute-dispatch boundary converts panics to structured Failed outcomes | type+test (catch_unwind wrapper; per-arg Undef regression tests) | proposed | compute-fea-hardening |
 | INV-FEA-3 | NaN never enters an ordering | lint+test (`f64::total_cmp`/finite-guards; grep gate on `partial_cmp(...).unwrap_or` scoped to the FEA numeric solve path — NOT all numeric crates: deliberately-excluded set, per-site census and widening trigger in `docs/prds/compute-fea-hardening.md` "Resolved design decision 9") | proposed | compute-fea-hardening |
 | INV-DIM-1 | Angle is primitive; the differential and tensor algebra is quotient-pure; every angle reading of a geometric ratio is an explicit named crossing carrying η = 1 rad (normative text: `docs/legibility/design-invariants.md` INV-AD-1..4) | doc+test (test half owned by sibling leaves: the rotational-closure exemplar, leaf δ, dep #5844; the curvature literal + `CURVATURE_DIM` duplicate-const drift pins, leaf α) | proposed | angle-dimension-completion |
+| INV-ARCH-1 | No intra-crate module SCC grows; measured SCCs shrink and the shrink is recorded | test (module_scc_ratchet over scripts/module-scc-baseline.json) | partial: enforced(test) for every workspace crate except reify-compiler, proposed for reify-compiler (excluded until S7 κ) | dependency-invalidation-stratum |
 | INV-META-1 | Tasks cite the INV they serve; every INV names its enforcement mechanism | audit (extend reify-audit / review checklists) | proposed | (registry itself) |
 
 Related existing enforcement precedents in this repo (patterns to copy, cited in the survey):

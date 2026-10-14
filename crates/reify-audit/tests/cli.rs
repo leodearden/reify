@@ -6,15 +6,20 @@
 //! User-observable signal:
 //!   `cargo test -p reify-audit --test cli`
 
-use std::io::{BufRead, BufReader, Read, Write};
-use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::net::TcpStream;
 use std::path::Path;
 use std::process::Command;
-use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
-use std::thread;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 use std::time::Duration;
 
 mod common;
+
+use common::mcp_mock::{
+    Framing, MockServer, ResultShape, spawn_mock_mcp, spawn_mock_mcp_on, spawn_mock_mcp_shaped,
+};
 
 /// The per-call fail-soft breadcrumb literals, shared with
 /// `tests/jcodemunch_live.rs`.
@@ -41,6 +46,39 @@ use task_json::{done_task_fixture, task_fixture};
 // -----------------------------------------------------------------------
 // Fixture helpers
 // -----------------------------------------------------------------------
+
+/// [`task_fixture`] with a caller-controlled `files` list.
+///
+/// [`task_fixture`] hardcodes `files: ["crates/reify-audit/src/lib.rs"]`, which
+/// is tracked on main and therefore always corroborates. The pre-done landing
+/// tests need the declared deliverable set to be the variable under test.
+fn task_fixture_with_files(
+    task_id: &str,
+    status: &str,
+    kind: Option<&str>,
+    commit: Option<&str>,
+    files: &[&str],
+) -> serde_json::Value {
+    let mut v = task_fixture(task_id, status, kind, commit);
+    v["files"] = serde_json::json!(files);
+    v
+}
+
+/// Absolute path to this workspace's git repository root.
+///
+/// `CARGO_MANIFEST_DIR` is `<root>/crates/reify-audit`, so two levels up is the
+/// worktree root. Tests that exercise `path_tracked_on` must point
+/// `--project-root` at a REAL git repo — a bare `tempfile::tempdir()` is not one,
+/// so every `git ls-tree` there fails and `path_tracked_on` fail-safes to
+/// `false` for every path, which would make an "absent from main" assertion
+/// vacuously true.
+fn repo_root() -> std::path::PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .canonicalize()
+        .expect("canonicalize repo root from CARGO_MANIFEST_DIR/../..")
+}
 
 /// Write tasks.json with the given task fixtures to `dir/tasks.json`.
 fn write_tasks_json(dir: &Path, tasks: &[serde_json::Value]) -> std::path::PathBuf {
@@ -210,6 +248,248 @@ mod cli {
         }
     }
 
+    /// `--print-repo-id` must print exactly the same identity
+    /// `reify_audit::jcodemunch_index::resolve_repo_id` derives in-process —
+    /// this is the single derivation task #6459 collapses onto, replacing
+    /// `scripts/jcodemunch-index-reify.sh`'s independent bash re-derivation.
+    /// Exercised against a real tempdir (not a nonexistent path) so the CLI
+    /// path is proven end to end, including its own `Path::new` + stdout
+    /// round trip, not just the pure derivation function in isolation.
+    #[test]
+    fn print_repo_id_matches_resolve_repo_id_derivation() {
+        let tmp = tempfile::tempdir().expect("create tempdir");
+        let project_root = tmp.path();
+
+        let bin = env!("CARGO_BIN_EXE_reify-audit");
+        let out = Command::new(bin)
+            .args(["--print-repo-id", "--project-root"])
+            .arg(project_root)
+            .output()
+            .expect("failed to invoke reify-audit --print-repo-id");
+
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "--print-repo-id must exit 0; got {:?}\nstdout: {}\nstderr: {}",
+            out.status.code(),
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+
+        let printed = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        let expected = reify_audit::jcodemunch_index::resolve_repo_id(project_root);
+        assert_eq!(
+            printed, expected,
+            "--print-repo-id must print exactly what resolve_repo_id derives"
+        );
+    }
+
+    /// `--jcodemunch-repo` overrides the derived identity for
+    /// `--print-repo-id` too — the same override precedence `main` applies
+    /// when constructing the real jcodemunch seam.
+    #[test]
+    fn print_repo_id_honours_jcodemunch_repo_override() {
+        let tmp = tempfile::tempdir().expect("create tempdir");
+
+        let bin = env!("CARGO_BIN_EXE_reify-audit");
+        let out = Command::new(bin)
+            .args(["--print-repo-id", "--project-root"])
+            .arg(tmp.path())
+            .args(["--jcodemunch-repo", "leodearden/reify"])
+            .output()
+            .expect("failed to invoke reify-audit --print-repo-id");
+
+        assert_eq!(out.status.code(), Some(0));
+        let printed = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        assert_eq!(printed, "leodearden/reify");
+    }
+
+    /// One run of `scripts/jcodemunch-index-reify.sh --dry-run`.
+    ///
+    /// `--dry-run` is the hermetic mode: it prints the summary and the argv it
+    /// WOULD run, then exits, so no uvx, sqlite3 or network is involved. A
+    /// tempdir `CODE_INDEX_PATH` keeps the host store (and its config.jsonc)
+    /// out of the run entirely.
+    fn run_index_script(
+        project_root: &Path,
+        code_index: &Path,
+        repo_id_bin: &Path,
+    ) -> std::process::Output {
+        let script = repo_root().join("scripts/jcodemunch-index-reify.sh");
+        Command::new("bash")
+            .arg(&script)
+            .args(["--dry-run", "--project-root"])
+            .arg(project_root)
+            .env("REIFY_JC_REPO_ID_BIN", repo_id_bin)
+            .env("CODE_INDEX_PATH", code_index)
+            .output()
+            .unwrap_or_else(|e| panic!("failed to invoke {}: {e}", script.display()))
+    }
+
+    /// A successful `--dry-run`, as its `(repo-id, repo-id-from)` summary pair
+    /// plus the whole run's stderr.
+    ///
+    /// stderr is RETURNED rather than only quoted into panic messages because
+    /// the degradation warnings are themselves part of the contract: the
+    /// found-but-failed case is only distinguishable from a cold checkout
+    /// because the script says so out loud.
+    fn index_script_repo_id(
+        project_root: &Path,
+        code_index: &Path,
+        repo_id_bin: &Path,
+    ) -> (String, String, String) {
+        let out = run_index_script(project_root, code_index, repo_id_bin);
+        let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+        let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "--dry-run must exit 0; got {:?}\nstdout:\n{stdout}\nstderr:\n{stderr}",
+            out.status.code()
+        );
+
+        let field = |name: &str| -> String {
+            let prefix = format!("jcodemunch-index-reify: {name} ");
+            stdout
+                .lines()
+                .find_map(|l| l.strip_prefix(&prefix))
+                .map(|v| v.trim().to_string())
+                .unwrap_or_else(|| {
+                    panic!("no `{name}` summary line in:\n{stdout}\nstderr:\n{stderr}")
+                })
+        };
+        (field("repo-id"), field("repo-id-from"), stderr)
+    }
+
+    /// An executable stub standing in for `reify-audit --print-repo-id` that
+    /// exits 0 having printed `line`.
+    ///
+    /// Drives the script's malformed-identity refusals, which are otherwise
+    /// unreachable: the real binary can only ever print a well-formed id, so a
+    /// producer that answers 0 with something else has to be fabricated.
+    fn fake_repo_id_producer(dir: &Path, name: &str, line: &str) -> std::path::PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let path = dir.join(name);
+        std::fs::write(&path, format!("#!/bin/sh\nprintf '%s\\n' '{line}'\n"))
+            .expect("write fake repo-id producer");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+            .expect("chmod fake repo-id producer");
+        path
+    }
+
+    /// The two producers of jcodemunch's repo identity must agree.
+    ///
+    /// `scripts/jcodemunch-index-reify.sh` prefers this binary's
+    /// `--print-repo-id` (the single Rust derivation) and keeps an inline bash
+    /// pipeline for a cold checkout. Which one answers is AMBIENT — it depends
+    /// on whether `target/{release,debug}/reify-audit` happens to exist — so
+    /// the script's own suite silently covers a different branch run to run and
+    /// never covers both. This drives BOTH branches over each root below and
+    /// asserts the printed identity is byte-identical, which is the
+    /// cross-language contract task #6459 is actually about.
+    ///
+    /// SHAPED ROOTS, not one tempdir. `basename`/`Path::file_name()` and
+    /// `basename`/`sha1` agree trivially on an ordinary path, so a single
+    /// point proves almost nothing about the bash half of the formula. `/` is
+    /// the measured counter-example: `basename -- /` prints `/` while
+    /// `Path('/').name` is empty, which shipped as a real divergence
+    /// (`local//-<sha8>` against `local/-<sha8>`) until the script special-
+    /// cased it. A name containing a space covers the quoting half.
+    ///
+    /// Non-vacuous by construction: `repo-id-from` is asserted too, so a leg
+    /// that silently fell back to bash when it was supposed to be exercising
+    /// the binary fails here rather than agreeing with itself.
+    #[test]
+    fn index_script_repo_id_agrees_between_the_rust_and_bash_producers() {
+        let tmp = tempfile::tempdir().expect("create tempdir");
+        let code_index = tmp.path().join("code-index");
+        let bin = Path::new(env!("CARGO_BIN_EXE_reify-audit"));
+        // A path that cannot exec forces the cold-checkout branch.
+        let absent = tmp.path().join("no-such-reify-audit");
+
+        let ordinary = tmp.path().join("some-project");
+        let spaced = tmp.path().join("has space");
+        for dir in [&ordinary, &spaced] {
+            std::fs::create_dir(dir).expect("create project root");
+        }
+
+        for project_root in [ordinary.as_path(), spaced.as_path(), Path::new("/")] {
+            let (rust_id, rust_from, rust_err) =
+                index_script_repo_id(project_root, &code_index, bin);
+            assert!(
+                rust_from.contains("--print-repo-id"),
+                "the binary leg must be answered by reify-audit for {}; \
+                 got repo-id-from `{rust_from}`",
+                project_root.display()
+            );
+            assert!(
+                !rust_err.contains("WARNING"),
+                "the binary leg answered, so nothing should warn about degradation; \
+                 got stderr:\n{rust_err}"
+            );
+
+            let (bash_id, bash_from, bash_err) =
+                index_script_repo_id(project_root, &code_index, &absent);
+            assert!(
+                bash_from.contains("inline bash fallback"),
+                "the fallback leg must be answered by the inline pipeline for {}; \
+                 got repo-id-from `{bash_from}`",
+                project_root.display()
+            );
+            // The degradation must be SAID, not merely taken: a cold checkout
+            // and a broken binary both end up here, and only the warning tells
+            // them apart. 127 is the shell's status for an unexecutable path.
+            assert!(
+                bash_err.contains("WARNING") && bash_err.contains("exited 127"),
+                "the fallback leg must warn, naming the producer's exit status; \
+                 got stderr:\n{bash_err}"
+            );
+
+            assert_eq!(
+                rust_id, bash_id,
+                "the Rust and bash producers derived different identities for {} \
+                 — the gate would then probe an identity the indexer never wrote",
+                project_root.display()
+            );
+        }
+    }
+
+    /// A producer that exits 0 with an identity the DB path cannot express is
+    /// refused, not silently written to a nonexistent directory.
+    ///
+    /// Both shapes are reachable through `REIFY_JC_REPO_ID_BIN`, and the
+    /// slashed one was reachable through the bash fallback too, via
+    /// `--project-root /`. `local/?*` alone does not catch it: `?*` matches
+    /// `/-abc` happily, and `$CODE_INDEX_DIR/local-/-abc.db` then names a file
+    /// under a directory that does not exist.
+    #[test]
+    fn index_script_refuses_a_repo_id_it_cannot_turn_into_a_db_path() {
+        let tmp = tempfile::tempdir().expect("create tempdir");
+        let code_index = tmp.path().join("code-index");
+        let project_root = tmp.path().join("some-project");
+        std::fs::create_dir(&project_root).expect("create project root");
+
+        for (name, line, expected) in [
+            ("slashed", "local//-42099b4a", "contains a slash"),
+            ("not-local", "leodearden/reify", "malformed"),
+        ] {
+            let producer = fake_repo_id_producer(tmp.path(), name, line);
+            let out = run_index_script(&project_root, &code_index, &producer);
+            let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+
+            assert_ne!(
+                out.status.code(),
+                Some(0),
+                "a producer printing `{line}` must be refused, not accepted\nstderr:\n{stderr}"
+            );
+            assert!(
+                stderr.contains(expected) && stderr.contains(line),
+                "the refusal must name the offending id `{line}` and say `{expected}`; \
+                 got stderr:\n{stderr}"
+            );
+        }
+    }
+
     /// `--task <id> --pre-done` on a done/merged task with an empty `events`
     /// table should produce a P5PhantomDone High finding and exit non-zero.
     #[test]
@@ -269,6 +549,411 @@ mod cli {
             stdout.contains("3242"),
             "stdout summary must mention task 3242\nstdout: {}",
             stdout
+        );
+    }
+
+    /// The pre-done gate must REFUSE a done-flip whose declared deliverable is
+    /// absent from main, in the state the hook ACTUALLY sees: pre-transition
+    /// status and no persisted `done_provenance`.
+    ///
+    /// Why that is the real state: fused-memory's `task_interceptor.py` fires
+    /// the hook at step "2d" BEFORE the write, so the live `get_task` returns
+    /// "in-progress"/"review" (never "done"), and `done_provenance` is only
+    /// accumulated in the interceptor's in-memory `audit_fields` — it is not
+    /// persisted until after the hook returns. The upstream hook template
+    /// (`middleware/pre_done_hook.py`) substitutes only `{id}`, with no env
+    /// injection and no stdin, so the subprocess receives no task state beyond
+    /// the id. A gate that requires either signal is structurally unable to
+    /// fire on the transition it exists to guard.
+    ///
+    /// The control tasks pin the other two directions: a task with no declared
+    /// deliverable (research / ops / escalation work) must never be refused,
+    /// and a task whose deliverable IS on main must pass cleanly.
+    ///
+    /// Control (c) is what makes (a) non-vacuous. `path_tracked_on` fail-safes
+    /// to `false` on ANY git error, so (a)'s refusal would still be asserted if
+    /// `git ls-tree main` were broken for every path in this environment
+    /// (missing `main` ref, sanitised `GIT_DIR`, shallow checkout) — and (b)
+    /// returns before any git call at all. (c) fails loudly the moment real git
+    /// stops resolving `main`, which is the property `repo_root()`'s doc
+    /// comment claims but nothing previously pinned.
+    #[test]
+    fn pre_done_gate_refuses_unlanded_task_without_provenance() {
+        let tmp = tempfile::tempdir().expect("create tempdir");
+        let dir = tmp.path();
+        let root = repo_root();
+
+        let tasks = vec![
+            // (a) unlanded deliverable — must be refused.
+            task_fixture_with_files(
+                "63451",
+                "in-progress",
+                None,
+                None,
+                &["crates/reify-audit-ghost/src/lib.rs"],
+            ),
+            // (b) control: no declared deliverable — must flip freely.
+            task_fixture_with_files("63452", "in-progress", None, None, &[]),
+            // (c) positive control: a deliverable that IS tracked on main.
+            task_fixture_with_files(
+                "63453",
+                "in-progress",
+                None,
+                None,
+                &["crates/reify-audit/src/lib.rs"],
+            ),
+        ];
+        let tasks_file = write_tasks_json(dir, &tasks);
+        let runs_db = write_empty_runs_db(dir);
+
+        let bin = env!("CARGO_BIN_EXE_reify-audit");
+        let run = |task_id: &str| {
+            Command::new(bin)
+                .args([
+                    "--task",
+                    task_id,
+                    "--pre-done",
+                    "--tasks-file",
+                    tasks_file.to_str().unwrap(),
+                    "--runs-db",
+                    runs_db.to_str().unwrap(),
+                    "--project-root",
+                    root.to_str().unwrap(),
+                ])
+                .output()
+                .expect("invoke reify-audit --pre-done")
+        };
+
+        // (a) The refusal.
+        let out = run("63451");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let findings = parse_findings_from_stderr(&stderr);
+        let p5_high = findings.iter().find(|f| {
+            f["pattern"].as_str() == Some("P5PhantomDone")
+                && f["severity"].as_str() == Some("High")
+                && f["task_id"].as_str() == Some("63451")
+        });
+        assert!(
+            p5_high.is_some(),
+            "pre-done gate must emit P5PhantomDone/High/63451 for a deliverable \
+             absent from main; got:\n{:#}",
+            serde_json::Value::Array(findings.clone())
+        );
+        let code = out.status.code().unwrap_or(1);
+        assert!(
+            code >= 1,
+            "pre-done gate must exit non-zero (refusing the done-flip); got {}\n\
+             stdout: {}\nstderr: {}",
+            code,
+            String::from_utf8_lossy(&out.stdout),
+            stderr
+        );
+
+        // (b) The control: no deliverable declared → nothing to corroborate.
+        let out = run("63452");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let findings = parse_findings_from_stderr(&stderr);
+        assert!(
+            findings.is_empty(),
+            "a task with an empty metadata.files must never be refused; got:\n{:#}",
+            serde_json::Value::Array(findings.clone())
+        );
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "empty-files control must exit 0\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&out.stdout),
+            stderr
+        );
+
+        // (c) The positive control: this file is tracked on main, so the
+        // healthy-flip leg must close the gate WITHOUT reaching any rescue.
+        // If real git ever stops resolving `main` here, this is the assertion
+        // that fails — which is precisely what keeps (a) honest.
+        let out = run("63453");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let findings = parse_findings_from_stderr(&stderr);
+        assert!(
+            findings.is_empty(),
+            "a deliverable tracked on main must pass the pre-done gate cleanly — a \
+             finding here means `git ls-tree {} -- crates/reify-audit/src/lib.rs` did \
+             not resolve, which would also make case (a)'s refusal vacuous; got:\n{:#}",
+            "main",
+            serde_json::Value::Array(findings.clone())
+        );
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "tracked-on-main control must exit 0\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&out.stdout),
+            stderr
+        );
+    }
+
+    /// `REIFY_AUDIT_PREDONE_WARN_ONLY` is scoped to the pre-done landing
+    /// refusal ONLY — it must never mute a sweep High.
+    ///
+    /// The break-glass exists so an operator can soak a fail-closed gate
+    /// without a red-tier fused-memory restart. If it leaked into the sweep it
+    /// would become a general P5 mute, silently disarming the phantom-done
+    /// detector for every task on the box that inherits the env var.
+    #[test]
+    fn pre_done_warn_only_env_does_not_mute_sweep_high() {
+        let tmp = tempfile::tempdir().expect("create tempdir");
+        let dir = tmp.path();
+
+        // A done/merged task with an empty `events` table: the classic sweep
+        // High, reached through the provenance path, not the pre-done leg.
+        let tasks = vec![task_fixture("3242", "done", Some("merged"), Some("deadbeef"))];
+        let tasks_file = write_tasks_json(dir, &tasks);
+        let runs_db = write_empty_runs_db(dir);
+
+        let bin = env!("CARGO_BIN_EXE_reify-audit");
+        let out = Command::new(bin)
+            .args([
+                "--task",
+                "3242",
+                "--pattern",
+                "P5",
+                "--no-jcodemunch",
+                "--tasks-file",
+                tasks_file.to_str().unwrap(),
+                "--runs-db",
+                runs_db.to_str().unwrap(),
+                "--project-root",
+                dir.to_str().unwrap(),
+            ])
+            .env("REIFY_AUDIT_PREDONE_WARN_ONLY", "1")
+            .output()
+            .expect("invoke reify-audit sweep with the break-glass set");
+
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let findings = parse_findings_from_stderr(&stderr);
+        let high = findings.iter().find(|f| {
+            f["pattern"].as_str() == Some("P5PhantomDone")
+                && f["severity"].as_str() == Some("High")
+                && f["task_id"].as_str() == Some("3242")
+        });
+        assert!(
+            high.is_some(),
+            "the pre-done break-glass must not downgrade a SWEEP High — that would \
+             make it a general P5 mute; got:\n{:#}",
+            serde_json::Value::Array(findings.clone())
+        );
+        assert!(
+            out.status.code().unwrap_or(0) >= 1,
+            "a sweep High must still exit non-zero with the break-glass set; got {:?}\n\
+             stdout: {}\nstderr: {}",
+            out.status.code(),
+            String::from_utf8_lossy(&out.stdout),
+            stderr
+        );
+    }
+
+    /// `REIFY_AUDIT_PREDONE_WARN_ONLY=1` makes the pre-done refusal advisory:
+    /// the finding is still emitted, at Low, and the exit code drops to 0.
+    ///
+    /// Why the hatch exists: this gate is fail-closed production infrastructure
+    /// that had never emitted a finding before this task. Without an escape
+    /// hatch, an operator hit by a misfire must edit
+    /// `~/.config/systemd/user/fused-memory.service` and restart fused-memory —
+    /// a red-tier restart under a dirty-start guard. Mirrors the house
+    /// `REIFY_MAIN_GATE_BYPASS` / `REIFY_STASH_GUARD_BYPASS` convention.
+    ///
+    /// This must be a subprocess test, not a library one: `std::env::set_var`
+    /// is process-global and would race sibling tests under `cargo test`'s
+    /// thread-per-test model (the same hazard `tests/common/git_env.rs`
+    /// documents at length for `GIT_DIR`).
+    #[test]
+    fn pre_done_warn_only_env_downgrades_refusal_to_low() {
+        let tmp = tempfile::tempdir().expect("create tempdir");
+        let dir = tmp.path();
+        let root = repo_root();
+
+        let tasks = vec![task_fixture_with_files(
+            "63451",
+            "in-progress",
+            None,
+            None,
+            &["crates/reify-audit-ghost/src/lib.rs"],
+        )];
+        let tasks_file = write_tasks_json(dir, &tasks);
+        let runs_db = write_empty_runs_db(dir);
+
+        let bin = env!("CARGO_BIN_EXE_reify-audit");
+        let run = |warn_only: bool| {
+            let mut cmd = Command::new(bin);
+            cmd.args([
+                "--task",
+                "63451",
+                "--pre-done",
+                "--tasks-file",
+                tasks_file.to_str().unwrap(),
+                "--runs-db",
+                runs_db.to_str().unwrap(),
+                "--project-root",
+                root.to_str().unwrap(),
+            ]);
+            if warn_only {
+                cmd.env("REIFY_AUDIT_PREDONE_WARN_ONLY", "1");
+            } else {
+                cmd.env_remove("REIFY_AUDIT_PREDONE_WARN_ONLY");
+            }
+            cmd.output().expect("invoke reify-audit --pre-done")
+        };
+
+        // Break-glass active: advisory.
+        let out = run(true);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let findings = parse_findings_from_stderr(&stderr);
+        let low = findings.iter().find(|f| {
+            f["pattern"].as_str() == Some("P5PhantomDone")
+                && f["task_id"].as_str() == Some("63451")
+        });
+        let low = low.unwrap_or_else(|| {
+            panic!(
+                "warn-only must PRESERVE the finding, only drop its blocking effect; \
+                 got:\n{:#}",
+                serde_json::Value::Array(findings.clone())
+            )
+        });
+        assert_eq!(
+            low["severity"].as_str(),
+            Some("Low"),
+            "warn-only must downgrade the refusal to Low; got:\n{:#}",
+            low
+        );
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "warn-only must exit 0 (the exit code counts Highs)\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&out.stdout),
+            stderr
+        );
+
+        // Default is ARMED.
+        let out = run(false);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let findings = parse_findings_from_stderr(&stderr);
+        let high = findings.iter().find(|f| {
+            f["pattern"].as_str() == Some("P5PhantomDone")
+                && f["severity"].as_str() == Some("High")
+                && f["task_id"].as_str() == Some("63451")
+        });
+        assert!(
+            high.is_some(),
+            "without the env var the gate must stay ARMED (High); got:\n{:#}",
+            serde_json::Value::Array(findings.clone())
+        );
+        assert!(
+            out.status.code().unwrap_or(1) >= 1,
+            "armed default must exit non-zero; got {:?}",
+            out.status.code()
+        );
+    }
+
+    /// The pre-done gate must ACCEPT a task whose declared deliverable was
+    /// RENAMED away by its own landing commit.
+    ///
+    /// This is the end-to-end half of
+    /// `changed_paths_in_commit_reports_both_sides_of_a_rename`: that test pins
+    /// the seam's return value, this one pins the GATE's verdict — the thing
+    /// that was actually broken. A seam-only guard would still let a future
+    /// change reintroduce the false refusal somewhere between the seam and
+    /// `check_pre_done_landing`.
+    ///
+    /// The shape mirrors the reported reproduction exactly: `a/old.rs` on main,
+    /// a branch that `git mv`s it to `a/new.rs`, merged `--no-ff`, and a task
+    /// declaring BOTH paths with no `done_provenance`. `a/old.rs` is not tracked
+    /// on main (it was renamed away), so the deletion/rename rescue is the only
+    /// leg that can corroborate it, and with rename detection on the landing
+    /// commit's delta reports `a/new.rs` alone — producing
+    /// `[High] P5PhantomDone task=9911: … neither tracked on main nor covered by
+    /// a task-referencing commit's own delta` with evidence
+    /// `MetadataFiles { entries: ["a/old.rs"] }` and exit 1.
+    ///
+    /// Two fixture details are load-bearing. The merge subject must reference
+    /// the id with non-digit neighbours (`task/9911 ` — a `/` and a space) or
+    /// the digit-boundary filter in `task_referencing_commits` drops the hit and
+    /// the test would go red for the wrong reason. And `--project-root` must be
+    /// the temp repo — a REAL git repo, per `repo_root()`'s doc comment — or
+    /// every `git ls-tree` fails, `path_tracked_on` fail-safes to `false` for
+    /// `a/new.rs` too, and the scenario stops being a rename scenario.
+    #[test]
+    fn pre_done_gate_accepts_rename_task_via_landing_commit() {
+        let repo_tmp = tempfile::tempdir().expect("create repo tempdir");
+        let repo = repo_tmp.path();
+        let run = |args: &[&str]| {
+            let status = common::git_env::git_cmd(repo)
+                .args(args)
+                .status()
+                .expect("git command failed to spawn");
+            assert!(status.success(), "git {:?} exited {:?}", args, status.code());
+        };
+
+        run(&["init", "--initial-branch=main"]);
+        run(&["config", "user.email", "test@example.com"]);
+        run(&["config", "user.name", "Test"]);
+        run(&["config", "commit.gpgsign", "false"]);
+
+        std::fs::create_dir_all(repo.join("a")).expect("create a/");
+        std::fs::write(repo.join("a/old.rs"), "fn task() {}\n").expect("write a/old.rs");
+        run(&["add", "."]);
+        run(&["commit", "-m", "base: add a/old.rs"]);
+
+        run(&["checkout", "-b", "feat"]);
+        run(&["mv", "a/old.rs", "a/new.rs"]);
+        run(&["commit", "-m", "feat: move old.rs to new.rs"]);
+        run(&["checkout", "main"]);
+        run(&["merge", "--no-ff", "-m", "Merge task/9911 into main", "feat"]);
+
+        // tasks.json and runs.db live OUTSIDE the repo so the fixture repo's
+        // tree stays exactly the two commits above.
+        let data_tmp = tempfile::tempdir().expect("create data tempdir");
+        let dir = data_tmp.path();
+        let tasks = vec![task_fixture_with_files(
+            "9911",
+            "in-progress",
+            None,
+            None,
+            &["a/old.rs", "a/new.rs"],
+        )];
+        let tasks_file = write_tasks_json(dir, &tasks);
+        let runs_db = write_empty_runs_db(dir);
+
+        let bin = env!("CARGO_BIN_EXE_reify-audit");
+        let out = Command::new(bin)
+            .args([
+                "--task",
+                "9911",
+                "--pre-done",
+                "--tasks-file",
+                tasks_file.to_str().unwrap(),
+                "--runs-db",
+                runs_db.to_str().unwrap(),
+                "--project-root",
+                repo.to_str().unwrap(),
+            ])
+            .output()
+            .expect("invoke reify-audit --task 9911 --pre-done");
+
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let findings = parse_findings_from_stderr(&stderr);
+        let p5 = findings
+            .iter()
+            .find(|f| f["pattern"].as_str() == Some("P5PhantomDone"));
+        assert!(
+            p5.is_none(),
+            "a deliverable renamed away by the task's own landing commit must not be \
+             refused — the rename really did touch both paths; got:\n{:#}",
+            serde_json::Value::Array(findings.clone())
+        );
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "the rename flip must exit 0\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&out.stdout),
+            stderr
         );
     }
 
@@ -397,6 +1082,7 @@ mod cli {
                 "2026-05-01",
                 "--pattern",
                 "P5",
+                "--no-jcodemunch",
                 "--tasks-file",
                 tasks_file.to_str().unwrap(),
                 "--runs-db",
@@ -678,6 +1364,85 @@ mod cli {
         );
     }
 
+    /// End-to-end regression for the same defect
+    /// `real_git_ops::try_is_gitignored_answers_for_a_leading_dash_path` pins
+    /// at the seam: a `metadata.files` entry beginning with `-` must not
+    /// silence the gitignore filter for the rest of the run.
+    ///
+    /// Deliberately a REAL git repo, not the non-git tempdir the two
+    /// breadcrumb tests above use: there every `check-ignore` exits 128 and the
+    /// filter is legitimately unavailable, so the defect cannot show. Here git
+    /// is healthy, and the only thing that can make the second entry read as
+    /// "not ignored" is the FIRST entry having latched the instance.
+    ///
+    /// `files` is a Vec iterated in order, so the leading-dash entry is probed
+    /// first by construction.
+    #[test]
+    fn leading_dash_metadata_file_does_not_suppress_gitignored_finding() {
+        let tmp = tempfile::tempdir().expect("create tempdir");
+        let dir = tmp.path();
+
+        // A committed .gitignore plus a genuinely-ignored build artefact.
+        std::fs::write(dir.join(".gitignore"), "build/generated.rs\n").expect("write .gitignore");
+        std::fs::create_dir_all(dir.join("build")).expect("create build dir");
+        std::fs::write(dir.join("build/generated.rs"), "// generated\n")
+            .expect("write generated.rs");
+
+        let tasks = vec![task_fixture_with_files(
+            "7113",
+            "in-progress",
+            None,
+            None,
+            &["--weird-file", "build/generated.rs"],
+        )];
+        let tasks_file = write_tasks_json(dir, &tasks);
+        let runs_db = write_empty_runs_db(dir);
+        git_init_commit_all(dir);
+
+        let bin = env!("CARGO_BIN_EXE_reify-audit");
+        let out = Command::new(bin)
+            .args([
+                "--task",
+                "7113",
+                "--pre-done",
+                "--tasks-file",
+                tasks_file.to_str().unwrap(),
+                "--runs-db",
+                runs_db.to_str().unwrap(),
+                "--project-root",
+                dir.to_str().unwrap(),
+            ])
+            .output()
+            .expect("invoke reify-audit --task 7113 --pre-done");
+
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            !stderr.contains("reify-audit: git check-ignore exited"),
+            "a leading-dash declared entry must be passed to git as a path, so a \
+             HEALTHY repo emits no check-ignore breadcrumb at all; full \
+             stderr:\n{stderr}"
+        );
+
+        let findings = parse_findings_from_stderr(&stderr);
+        let gitignored = findings.iter().find(|f| {
+            f["pattern"].as_str() == Some("P5MetadataFilesGitignored")
+                && f["task_id"].as_str() == Some("7113")
+        });
+        assert!(
+            gitignored.is_some(),
+            "the genuinely-gitignored second entry must still be flagged after a \
+             leading-dash first entry; findings:\n{:#}",
+            serde_json::Value::Array(findings.clone())
+        );
+        assert!(
+            serde_json::to_string(gitignored.unwrap())
+                .expect("serialize finding")
+                .contains("build/generated.rs"),
+            "the finding must name the ignored entry; got:\n{:#}",
+            gitignored.unwrap()
+        );
+    }
+
     /// Duplicate flags follow last-wins semantics.
     ///
     /// The pre-done hook wrapper (`scripts/reify-audit-predone-wrapper.sh`)
@@ -772,70 +1537,6 @@ mod cli {
             findings.is_empty(),
             "--pattern P1 --no-jcodemunch must yield zero findings; got:\n{:#}",
             serde_json::Value::Array(findings)
-        );
-    }
-
-    /// P1 with an unreachable jcodemunch endpoint fails soft to Noop:
-    /// exits 0, produces zero findings, and emits a fallback breadcrumb.
-    ///
-    /// The old contract (exit 125) is inverted: jcodemunch is an optional
-    /// substrate, so an unreachable endpoint degrades P1 to zero findings
-    /// while still running P2/P5. Exit 125 is reserved for genuine arg/IO
-    /// misconfiguration (e.g. unreadable tasks-file, bad runs-db).
-    #[test]
-    fn p1_unreachable_jcodemunch_fails_soft_to_noop() {
-        let tmp = tempfile::tempdir().expect("create tempdir");
-        let dir = tmp.path();
-
-        let tasks = vec![task_fixture("1", "pending", None, None)];
-        let tasks_file = write_tasks_json(dir, &tasks);
-        let runs_db = write_empty_runs_db(dir);
-
-        let unreachable_url = common::net::unreachable_mcp_url();
-
-        let bin = env!("CARGO_BIN_EXE_reify-audit");
-        let out = Command::new(bin)
-            .args([
-                "--pattern", "P1",
-                "--jcodemunch-url", &unreachable_url,
-                "--tasks-file", tasks_file.to_str().unwrap(),
-                "--runs-db", runs_db.to_str().unwrap(),
-                "--project-root", dir.to_str().unwrap(),
-            ])
-            .output()
-            .expect("invoke reify-audit --pattern P1 unreachable jcodemunch");
-
-        let stderr = String::from_utf8_lossy(&out.stderr);
-        assert_eq!(
-            out.status.code(),
-            Some(0),
-            "--pattern P1 with unreachable jcodemunch must fail-soft to exit 0; got {:?}\nstdout: {}\nstderr: {}",
-            out.status.code(),
-            String::from_utf8_lossy(&out.stdout),
-            stderr
-        );
-
-        // Zero findings (P1 degrades to Noop).
-        let findings = parse_findings_from_stderr(&stderr);
-        assert!(
-            findings.is_empty(),
-            "P1 with unreachable jcodemunch must produce zero findings; got:\n{:#}",
-            serde_json::Value::Array(findings)
-        );
-
-        // Fallback breadcrumb must appear on stderr, pinned to the endpoint
-        // under test. Loose substrings will not do: the binary independently
-        // emits "tasks.db unreachable at ... advisory lanes degraded", so a
-        // bare `contains("unreachable")`/`contains("degrad")` is satisfied
-        // whether or not the jcodemunch arm ever ran.
-        let breadcrumb = format!("jcodemunch unreachable at '{unreachable_url}'");
-        assert!(
-            stderr.contains(&breadcrumb),
-            "stderr must contain the fail-soft breadcrumb `{breadcrumb}`; stderr:\n{stderr}"
-        );
-        assert!(
-            stderr.contains("P1 degraded to zero findings"),
-            "stderr breadcrumb must describe the fail-soft degradation; stderr:\n{stderr}"
         );
     }
 
@@ -1097,6 +1798,18 @@ mod cli {
             out.status.code(),
             String::from_utf8_lossy(&out.stderr)
         );
+        // The hot path never binds a seam it needed, so it never records a
+        // fallback.
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let findings = parse_findings_from_stderr(&stderr);
+        assert!(
+            !findings.iter().any(|f| matches!(
+                f["pattern"].as_str(),
+                Some("P1TaskUnexamined" | "P5LivePathUnexamined")
+            )),
+            "--pre-done must record nothing as unexamined; findings:\n{:#}",
+            serde_json::Value::Array(findings)
+        );
     }
 
     /// `--pattern PDEAD --no-jcodemunch` exits 0 with an empty findings array.
@@ -1259,6 +1972,60 @@ mod cli {
     /// `layer_violations_from_wire` → `player::check` → `Finding{pattern:PLayerViolation, ...}`.
     #[test]
     fn player_dispatch_forwards_canned_layer_violation() {
+        assert_one_canned_layer_violation(&run_player_with_canned_violation(Framing::Json));
+    }
+
+    /// SSE sibling of `player_dispatch_forwards_canned_layer_violation`: the
+    /// same canned violation and the same assertions, with the mock answering
+    /// `initialize` and `tools/call` as `text/event-stream` frames. Proves the
+    /// jcodemunch client decodes SSE-framed replies end-to-end, not just the
+    /// fused-memory client the `http_loader` SSE tests cover.
+    #[test]
+    fn player_dispatch_via_sse_forwards_canned_layer_violation() {
+        assert_one_canned_layer_violation(&run_player_with_canned_violation(Framing::Sse));
+    }
+
+    /// A jcodemunch `initialize` reply whose SSE `data:` payload is not JSON
+    /// is refused at construction, so the run fail-softs to zero findings and
+    /// exit 0 — and the breadcrumb names the decode refusal itself.
+    ///
+    /// The handshake-refused label alone would be a weak green: any non-MCP
+    /// reply prints the same prefix. "SSE data parse" is what proves the
+    /// malformed payload was refused rather than skipped. The empty findings
+    /// array doubles as the never-reached-`tools/call` guard: had the canned
+    /// responder been reached, its violation would surface as a finding.
+    #[test]
+    fn player_via_sse_malformed_data_fails_soft_with_the_data_parse_breadcrumb() {
+        let out = run_player_with_canned_violation(Framing::SseMalformedData);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "a malformed SSE `initialize` reply must fail soft (exit 0), not refuse; \
+             got {:?}\nstderr: {stderr}",
+            out.status.code(),
+        );
+        assert!(
+            stderr.contains(breadcrumbs::CONSTRUCTION_HANDSHAKE_REFUSED),
+            "expected the handshake-refused construction breadcrumb; stderr: {stderr}"
+        );
+        assert!(
+            stderr.contains("SSE data parse"),
+            "expected the breadcrumb to name the SSE data-parse refusal; stderr: {stderr}"
+        );
+        let findings = parse_findings_from_stderr(&stderr);
+        assert!(
+            findings.is_empty(),
+            "a refused handshake must never reach `tools/call`; got findings:\n{:#}",
+            serde_json::Value::Array(findings)
+        );
+    }
+
+    /// Run `--pattern PLAYER` against a mock jcodemunch speaking `framing`,
+    /// whose `get_layer_violations` answers one canned
+    /// `crates/reify-cli` → `crates/reify-kernel` violation.
+    fn run_player_with_canned_violation(framing: Framing) -> std::process::Output {
         let tmp = tempfile::tempdir().expect("create tempdir");
         let dir = tmp.path();
 
@@ -1280,7 +2047,7 @@ mod cli {
         let tasks_file = write_tasks_json(dir, &[]);
         let runs_db = write_empty_runs_db(dir);
 
-        let mock = spawn_mock_mcp(|_args| {
+        let mock = spawn_mock_mcp_shaped(framing, ResultShape::StructuredContent, |_args| {
             Some(serde_json::json!({
                 "violations": [{
                     "from": "crates/reify-cli",
@@ -1313,7 +2080,12 @@ mod cli {
             .expect("invoke reify-audit --pattern PLAYER with mock jcodemunch");
 
         mock.stop();
+        out
+    }
 
+    /// Exactly one `PLayerViolation/Low` finding, carrying the canned
+    /// violation of [`run_player_with_canned_violation`] directionally.
+    fn assert_one_canned_layer_violation(out: &std::process::Output) {
         // PLayerViolation is Severity::Low → high_severity_exit_code == 0.
         assert_eq!(
             out.status.code(),
@@ -1353,41 +2125,6 @@ mod cli {
             Some("crates/reify-cli"),
             "finding evidence[0] must point at from_file; got:\n{:#}",
             f["evidence"]
-        );
-    }
-
-    /// `--pattern P5` with an unreachable jcodemunch URL must NOT exit 125 —
-    /// P5 never contacts jcodemunch.
-    #[test]
-    fn sweep_pattern_p5_skips_jcodemunch() {
-        let tmp = tempfile::tempdir().expect("create tempdir");
-        let dir = tmp.path();
-
-        let tasks = vec![task_fixture("77", "pending", None, None)];
-        let tasks_file = write_tasks_json(dir, &tasks);
-        let runs_db = write_empty_runs_db(dir);
-
-        let unreachable_url = common::net::unreachable_mcp_url();
-
-        let bin = env!("CARGO_BIN_EXE_reify-audit");
-        let out = Command::new(bin)
-            .args([
-                "--pattern", "P5",
-                "--jcodemunch-url", &unreachable_url,
-                "--tasks-file", tasks_file.to_str().unwrap(),
-                "--runs-db", runs_db.to_str().unwrap(),
-                "--project-root", dir.to_str().unwrap(),
-            ])
-            .output()
-            .expect("invoke reify-audit --pattern P5 with closed jcodemunch url");
-
-        assert_ne!(
-            out.status.code(),
-            Some(125),
-            "--pattern P5 must not contact jcodemunch (exit 125 would mean it did); \
-             got {:?}\nstderr: {}",
-            out.status.code(),
-            String::from_utf8_lossy(&out.stderr)
         );
     }
 
@@ -2084,267 +2821,391 @@ mod cli {
             "override DB is present → no degradation; stderr:\n{stderr}"
         );
     }
-}
 
-// -----------------------------------------------------------------------
-// HTTP-loader test harness (--fused-memory-url path)
-// -----------------------------------------------------------------------
-//
-// These tests exercise the production loader path (no --tasks-file). A tiny
-// blocking HTTP server stands in for fused-memory; it speaks just enough of
-// MCP streamable-HTTP to answer `initialize`, `notifications/initialized`,
-// and a single `tools/call get_task` per session.
-//
-// "Just enough" now includes assigning a session id: the `initialize`
-// response carries an `Mcp-Session-Id` header (see [`MOCK_SESSION_ID`]),
-// because `JcodemunchClient` treats an initialize response with no
-// server-assigned session as a hard `Protocol` failure. The mock answers
-// the header but does not police it — see
-// [`write_response_with_session`] for why enforcement is off the table.
+    // -------------------------------------------------------------------
+    // PDIAG — codes-mandatory ratchet (INV-SF-6, task #5405)
+    //
+    // SELF-MATCH DISCIPLINE. Every literal `Diagnostic::error(` /
+    // `Diagnostic::warning(` / `pdiag:allow` token lives in the fixture
+    // FILES under `tests/fixtures/pdiag/`, never in this source. This file is
+    // doubly out of PDIAG's own sweep (a `tests` path segment AND the
+    // `crates/reify-audit/` scope exclusion), so nothing here could go RED
+    // today — but `test_reify_audit_ptodo.sh` keeps the same discipline
+    // explicitly, and a detector whose tests seed its own corpus is one
+    // scope change away from ratcheting against itself.
+    // -------------------------------------------------------------------
 
-/// Read a complete HTTP/1.1 request from `stream` and return its body as a
-/// JSON Value. Assumes Content-Length is present (which `ureq` always sets
-/// for `send_json`). Returns `None` on EOF / parse failure.
-fn read_request_body(stream: &mut TcpStream) -> Option<serde_json::Value> {
-    let mut reader = BufReader::new(stream.try_clone().ok()?);
-    let mut content_length = 0usize;
-    loop {
-        let mut line = String::new();
-        if reader.read_line(&mut line).ok()? == 0 {
-            return None;
+    /// `reify-audit --pattern PDIAG` over the fixture tree.
+    ///
+    /// The fixture root becomes the project root, so the fixtures' tracked
+    /// paths (`crates/reify-eval/src/…`, `crates/reify-compiler/src/…`) land
+    /// inside the sweep. No `pdiag-baseline.txt` is lifted, so the manifest is
+    /// EMPTY — deliberately the fail-loud direction: every code-less file
+    /// surfaces as a `NewFile` High rather than passing vacuously.
+    ///
+    /// Five claims, in order of what would break first:
+    ///
+    /// 1. `--pattern PDIAG` is ACCEPTED. Exit 125 (`ERROR_EXIT`) is the
+    ///    unknown-`--pattern` arg-parse failure, so asserting `!= 125` is the
+    ///    literal "the detector is reachable from the binary" claim.
+    /// 2. The exit code is the count of High FINDINGS — one per code-less
+    ///    file, not one per site. The fixture tree holds 6 code-less sites
+    ///    across 4 files, so exit 4 (not 6) is what pins the ratchet as
+    ///    per-file.
+    /// 3. The coded, escaped and out-of-scope fixtures contribute NOTHING.
+    /// 4. `scenario06_escape_leak.rs` is counted. It holds one unreviewed
+    ///    code-less site immediately above a reviewed opt-out, so it is the
+    ///    end-to-end proof that an opt-out cannot reach backwards over the
+    ///    site above it — the hard-gate bypass no other test in this suite saw.
+    /// 5. `scenario07_code_absorption.rs` is counted, TWICE over. It holds one
+    ///    code-less site directly ABOVE a coded one and one to the LEFT of a
+    ///    coded one on a single line, so it is the end-to-end proof that a
+    ///    NEIGHBOURING constructor's code cannot absorb a brand-new site —
+    ///    the other bypass no other fixture sees, and the only one reachable
+    ///    without an opt-out anywhere in the file. Its summary is asserted to
+    ///    name BOTH code-less lines, so the two halves are distinguished here
+    ///    rather than one of them passing on the other's back.
+    ///
+    /// RED until the dispatch arm and the `--pattern` token validator are
+    /// wired in `src/bin/reify-audit.rs`; until then every assertion fails on
+    /// the arg error.
+    #[test]
+    fn pdiag_fixture_tree_hard_gates_code_less_files_and_suppresses_the_rest() {
+        // Repo dir holds ONLY the committed fixtures (so ls-files is exactly
+        // the fixture set); the tasks-file/runs-db live in a separate aux dir
+        // so they are never tracked and never enumerated by the sweep.
+        let repo = tempfile::tempdir().expect("create repo tempdir");
+        let aux = tempfile::tempdir().expect("create aux tempdir");
+
+        let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/pdiag");
+        copy_dir_recursive(&fixtures, repo.path());
+        git_init_commit_all(repo.path());
+
+        let tasks_file = write_tasks_json(aux.path(), &[]);
+        let runs_db = write_empty_runs_db(aux.path());
+
+        let bin = env!("CARGO_BIN_EXE_reify-audit");
+        let out = Command::new(bin)
+            .args([
+                "--pattern",
+                "PDIAG",
+                "--no-jcodemunch",
+                "--project-root",
+                repo.path().to_str().unwrap(),
+                "--tasks-file",
+                tasks_file.to_str().unwrap(),
+                "--runs-db",
+                runs_db.to_str().unwrap(),
+            ])
+            .output()
+            .expect("invoke reify-audit --pattern PDIAG on fixture tree");
+
+        let stderr = String::from_utf8_lossy(&out.stderr);
+
+        // (1) The token is a known --pattern value.
+        assert_ne!(
+            out.status.code(),
+            Some(125),
+            "`--pattern PDIAG` must be an accepted token, not an arg-parse error \
+             (125 = ERROR_EXIT)\nstderr: {stderr}"
+        );
+
+        // (2) Exit code = High-severity finding count = one per code-less FILE.
+        assert_eq!(
+            out.status.code(),
+            Some(4),
+            "PDIAG fixture sweep must exit 4 — one NewFile High per code-less file \
+             (scenario01 has 1 site, scenario05 has 2, scenario06 has 1 unreviewed site \
+             above its reviewed escape, scenario07 has 2 sites a neighbouring \
+             constructor's code used to absorb; 6 sites but 4 files)\nstderr: {stderr}"
+        );
+
+        let findings = parse_findings_from_stderr(&stderr);
+        assert_eq!(
+            findings.len(),
+            4,
+            "PDIAG fixture sweep must emit exactly 4 findings; got:\n{:#}",
+            serde_json::Value::Array(findings.clone())
+        );
+
+        for f in &findings {
+            assert_eq!(
+                f["pattern"].as_str(),
+                Some("PDiag"),
+                "every fixture finding must be PDiag; got:\n{f:#}"
+            );
+            assert_eq!(
+                f["severity"].as_str(),
+                Some("High"),
+                "a NewFile verdict is the hard gate — it must be High; got:\n{f:#}"
+            );
         }
-        if line == "\r\n" || line == "\n" {
-            break;
-        }
-        if let Some(rest) = line.to_ascii_lowercase().strip_prefix("content-length:") {
-            content_length = rest.trim().parse().ok()?;
-        }
-    }
-    if content_length == 0 {
-        return Some(serde_json::Value::Null);
-    }
-    let mut buf = vec![0u8; content_length];
-    reader.read_exact(&mut buf).ok()?;
-    serde_json::from_slice(&buf).ok()
-}
 
-/// The session id this mock assigns on `initialize`.
-///
-/// `JcodemunchClient` requires the server to assign one — an `initialize`
-/// response with no `Mcp-Session-Id` header is a hard `Protocol` failure —
-/// so without this the mock would no longer stand in for a live seam at
-/// all. Deliberately not 32 lowercase hex, so it can never be confused
-/// with a client-minted id.
-const MOCK_SESSION_ID: &str = "mock-mcp-session";
+        // (3) Exactly the code-less files, keyed by path. Membership is
+        // asserted as a set, so the coded / escaped / `tests`-segment fixtures
+        // being absent is the same assertion as these being present.
+        let mut keyed: Vec<&str> =
+            findings.iter().filter_map(|f| f["task_id"].as_str()).collect();
+        keyed.sort_unstable();
+        assert_eq!(
+            keyed,
+            vec![
+                "crates/reify-compiler/src/scenario05_codeless_pair.rs",
+                "crates/reify-eval/src/scenario01_codeless.rs",
+                "crates/reify-eval/src/scenario06_escape_leak.rs",
+                "crates/reify-eval/src/scenario07_code_absorption.rs",
+            ],
+            "only the code-less swept files may be keyed — the coded, escaped and \
+             `tests`-segment fixtures must each contribute nothing, while scenario06 \
+             and scenario07 MUST be keyed: scenario06's unreviewed site sits inside the \
+             forward window of the reviewed opt-out below it, and scenario07's two sites \
+             sit where a neighbouring constructor's code used to reach them. Either \
+             absorption is a silent INV-SF-6 hard-gate bypass\nstderr: {stderr}"
+        );
 
-fn write_response(stream: &mut TcpStream, status: u16, body: &[u8]) {
-    write_response_with_session(stream, status, None, body)
-}
+        // (5) Both of scenario07's sites are named, so a fix that closed only
+        // one half of the probe cannot pass here on the other half's back.
+        // `format_site_lines` spells them into the High summary.
+        let absorption = findings
+            .iter()
+            .find(|f| {
+                f["task_id"].as_str() == Some("crates/reify-eval/src/scenario07_code_absorption.rs")
+            })
+            .expect("scenario07 must be keyed");
+        let summary = absorption["summary"].as_str().unwrap_or_default();
+        assert!(
+            summary.contains("at lines 19, 23"),
+            "scenario07's summary must name BOTH code-less lines — 19 (the site above \
+             a coded one) and 23 (the site left of a coded one on one line); got: \
+             {summary:?}"
+        );
 
-/// As [`write_response`], but additionally emits an `Mcp-Session-Id`
-/// response header when `session` is `Some`.
-///
-/// Only the `initialize` arm needs it: assigning the session is the
-/// server's job, and every later request carries the id back on the
-/// request side. The mock deliberately does NOT *enforce* the contract
-/// (no 404 on an inbound id, no 400 on a missing one) — the same responder
-/// backs the `--fused-memory-url` loader tests, and `fused_memory_client`
-/// still mints its own id and sends it on `initialize`, so enforcement
-/// would turn all of those red. The jcodemunch-side contract is locked
-/// gate-resident by the hermetic unit tests in `jcodemunch_client.rs`,
-/// which assert the request headers directly.
-fn write_response_with_session(
-    stream: &mut TcpStream,
-    status: u16,
-    session: Option<&str>,
-    body: &[u8],
-) {
-    let status_text = match status {
-        200 => "OK",
-        202 => "Accepted",
-        _ => "OK",
-    };
-    let mut header = format!(
-        "HTTP/1.1 {status} {status_text}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n",
-        body.len()
-    );
-    if let Some(session) = session {
-        header.push_str(&format!("Mcp-Session-Id: {session}\r\n"));
-    }
-    header.push_str("\r\n");
-    let _ = stream.write_all(header.as_bytes());
-    let _ = stream.write_all(body);
-}
-
-/// Handle returned by [`spawn_mock_mcp`]. Carries the bound `SocketAddr`
-/// directly so the stop helper doesn't need to re-parse the URL (a brittle
-/// approach that hangs the test runner forever if the URL shape ever
-/// changes).
-struct MockServer {
-    url: String,
-    addr: SocketAddr,
-    stop: Arc<AtomicBool>,
-    handle: Option<thread::JoinHandle<()>>,
-}
-
-/// Spawn a one-shot mock MCP server on an OS-assigned ephemeral port.
-/// `task_responder` is given the `tools/call` arguments and returns the
-/// JSON-RPC `result` value to send back (or `None` to return an error
-/// envelope). Returns a [`MockServer`] handle; the caller calls
-/// [`MockServer::stop`] (or lets it drop) to tear down.
-///
-/// Thin wrapper over [`spawn_mock_mcp_on`], which takes an already-bound
-/// listener so a caller can place the responder at a *chosen* address.
-fn spawn_mock_mcp<F>(task_responder: F) -> MockServer
-where
-    F: Fn(&serde_json::Value) -> Option<serde_json::Value> + Send + Sync + 'static,
-{
-    let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
-    spawn_mock_mcp_on(listener, task_responder)
-}
-
-/// Spawn a one-shot mock MCP server on an ALREADY-BOUND `listener`, deriving
-/// the advertised `addr`/`url` from `listener.local_addr()`. Lets a caller
-/// stand a real MCP responder at a specific address (e.g. to play the
-/// adversary in a port-recycling regression lock) rather than at whatever
-/// ephemeral port the OS hands out.
-///
-/// The accept loop uses a short `set_nonblocking` poll so it wakes
-/// periodically to check the stop flag even without a wakeup connection —
-/// that way a stop request can't hang the test runner.
-fn spawn_mock_mcp_on<F>(listener: TcpListener, task_responder: F) -> MockServer
-where
-    F: Fn(&serde_json::Value) -> Option<serde_json::Value> + Send + Sync + 'static,
-{
-    let addr = listener.local_addr().expect("local_addr");
-    let url = format!("http://127.0.0.1:{}/mcp/", addr.port());
-    let stop = Arc::new(AtomicBool::new(false));
-    let stop_clone = Arc::clone(&stop);
-    let responder = Arc::new(task_responder);
-
-    // Non-blocking accept with a short poll so the accept loop wakes
-    // regularly enough to notice the stop flag even if the wakeup
-    // connection in `stop()` never lands.
-    listener
-        .set_nonblocking(true)
-        .expect("set_nonblocking on mock listener");
-
-    let handle = thread::spawn(move || {
-        loop {
-            if stop_clone.load(Ordering::Relaxed) {
-                return;
-            }
-            let mut stream = match listener.accept() {
-                Ok((s, _)) => s,
-                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                    thread::sleep(Duration::from_millis(10));
-                    continue;
-                }
-                Err(_) => {
-                    // Backoff for non-WouldBlock errors (e.g. EMFILE on
-                    // a constrained CI box) so the accept loop doesn't
-                    // peg a CPU until the test's overall timeout.
-                    thread::sleep(Duration::from_millis(10));
-                    continue;
-                }
-            };
-            // Restore blocking semantics on the accepted stream so the
-            // BufReader inside read_request_body() doesn't busy-loop.
-            let _ = stream.set_nonblocking(false);
-            let body = match read_request_body(&mut stream) {
-                Some(b) => b,
-                None => continue,
-            };
-            let method = body
-                .get("method")
-                .and_then(|m| m.as_str())
-                .unwrap_or("")
-                .to_string();
-            let req_id = body.get("id").cloned();
-
-            match method.as_str() {
-                "initialize" => {
-                    let resp = serde_json::json!({
-                        "jsonrpc": "2.0",
-                        "id": req_id,
-                        "result": {
-                            "protocolVersion": "2024-11-05",
-                            "capabilities": {},
-                            "serverInfo": {"name": "mock-mcp", "version": "0.1"}
-                        }
-                    });
-                    write_response_with_session(
-                        &mut stream,
-                        200,
-                        Some(MOCK_SESSION_ID),
-                        resp.to_string().as_bytes(),
-                    );
-                }
-                "notifications/initialized" => {
-                    write_response(&mut stream, 202, b"");
-                }
-                "tools/call" => {
-                    let args = body
-                        .get("params")
-                        .and_then(|p| p.get("arguments"))
-                        .cloned()
-                        .unwrap_or(serde_json::Value::Null);
-                    let resp_value = match responder(&args) {
-                        Some(structured) => serde_json::json!({
-                            "jsonrpc": "2.0",
-                            "id": req_id,
-                            "result": {"structuredContent": structured, "content": []}
-                        }),
-                        None => serde_json::json!({
-                            "jsonrpc": "2.0",
-                            "id": req_id,
-                            "error": {"code": -32000, "message": "task not found"}
-                        }),
-                    };
-                    write_response(&mut stream, 200, resp_value.to_string().as_bytes());
-                }
-                _ => {
-                    write_response(&mut stream, 200, b"{}");
-                }
-            }
-        }
-    });
-
-    MockServer {
-        url,
-        addr,
-        stop,
-        handle: Some(handle),
-    }
-}
-
-impl MockServer {
-    fn url(&self) -> &str {
-        &self.url
-    }
-
-    /// Signal the accept loop to exit and join the thread. Uses the bound
-    /// `SocketAddr` directly (no URL parsing) — a stop request will always
-    /// reach the loop, plus the loop's own non-blocking poll guarantees it
-    /// wakes even if the wakeup connection is dropped.
-    fn stop(mut self) {
-        self.stop.store(true, Ordering::Relaxed);
-        // Best-effort wakeup; the non-blocking accept poll is the safety
-        // net so this can fail without hanging the test.
-        let _ = TcpStream::connect_timeout(&self.addr, Duration::from_millis(200));
-        if let Some(handle) = self.handle.take() {
-            let _ = handle.join();
+        // Every hard-gate summary must route the reader to the policy doc;
+        // `tests/infra/test_reify_audit_pdiag.sh` greps for the same string.
+        for f in &findings {
+            let summary = f["summary"].as_str().unwrap_or_default();
+            assert!(
+                summary.contains("docs/notes/diagnostic-severity-policy.md"),
+                "a High finding must cite the remediation doc; got: {summary:?}"
+            );
         }
     }
-}
 
-impl Drop for MockServer {
-    fn drop(&mut self) {
-        // Idempotent shutdown if the test never called `.stop()` (e.g. on
-        // panic). Mirrors `stop()` minus the join — we let the thread
-        // tear down on its own to avoid blocking the drop path.
-        self.stop.store(true, Ordering::Relaxed);
-        let _ = TcpStream::connect_timeout(&self.addr, Duration::from_millis(50));
+    /// PDIAG is OPT-IN: a bare sweep with no `--pattern` must NOT run it.
+    ///
+    /// Load-bearing, not stylistic. `reify-audit`'s exit code IS the
+    /// High-severity finding count, and PDIAG's `Exceeded`/`NewFile` verdicts
+    /// are High by design. Joining the default sweep (the `is_none_or` shape
+    /// P1/P2/P5/PTODO use) would make every bare `reify-audit` invocation —
+    /// the /audit skill, `test_reify_audit_predone_wrapper.sh`, anything else
+    /// that omits `--pattern` — start exiting nonzero the moment this
+    /// ratchet drifted, coupling unrelated infra to it. So the predicate is
+    /// `is_some_and`, mirroring PDEAD/PUNTESTED/PLAYER.
+    #[test]
+    fn pdiag_does_not_join_the_default_all_detector_sweep() {
+        let repo = tempfile::tempdir().expect("create repo tempdir");
+        let aux = tempfile::tempdir().expect("create aux tempdir");
+
+        let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/pdiag");
+        copy_dir_recursive(&fixtures, repo.path());
+        git_init_commit_all(repo.path());
+
+        let tasks_file = write_tasks_json(aux.path(), &[]);
+        let runs_db = write_empty_runs_db(aux.path());
+
+        let bin = env!("CARGO_BIN_EXE_reify-audit");
+        let out = Command::new(bin)
+            .args([
+                "--since",
+                "1970-01-01",
+                "--no-jcodemunch",
+                "--project-root",
+                repo.path().to_str().unwrap(),
+                "--tasks-file",
+                tasks_file.to_str().unwrap(),
+                "--runs-db",
+                runs_db.to_str().unwrap(),
+            ])
+            .output()
+            .expect("invoke reify-audit with no --pattern on the PDIAG fixture tree");
+
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let findings = parse_findings_from_stderr(&stderr);
+        assert!(
+            findings.iter().all(|f| f["pattern"].as_str() != Some("PDiag")),
+            "a bare sweep must not run PDIAG — its High findings would move the exit code \
+             for every consumer that omits --pattern; got:\n{:#}",
+            serde_json::Value::Array(findings.clone())
+        );
+    }
+
+    /// Build the incremental-ratchet fixture source: the committed header
+    /// followed by `n` copies of the committed single-site block, each copy's
+    /// `__N__` placeholder replaced by its index.
+    ///
+    /// Both halves live in `tests/fixtures/pdiag_ratchet/` rather than inline
+    /// here, so the swept anchor token never appears in this source
+    /// (SELF-MATCH DISCIPLINE, as above). One copy is one code-less site, so
+    /// the file's code-less count is exactly `n`.
+    fn pdiag_ratchet_source(n: u32) -> String {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/pdiag_ratchet");
+        let header = std::fs::read_to_string(dir.join("header.rs.template"))
+            .expect("read pdiag_ratchet/header.rs.template");
+        let block = std::fs::read_to_string(dir.join("site_block.rs.template"))
+            .expect("read pdiag_ratchet/site_block.rs.template");
+        let mut out = header;
+        for i in 0..n {
+            out.push_str(&block.replace("__N__", &i.to_string()));
+        }
+        out
+    }
+
+    /// The ratchet's load-bearing direction: a file ALREADY in the committed
+    /// baseline that gains ONE more code-less site turns the gate RED.
+    ///
+    /// This is PRD §8 boundary row 8 end to end, and no other test reaches it.
+    /// The fixture-tree sweep above only exercises `NewFile` against an EMPTY
+    /// baseline — it would still pass if the ratchet compared presence rather
+    /// than counts. Here the manifest is the REAL committed
+    /// `pdiag-baseline.txt`, lifted verbatim into a throwaway repo, and the
+    /// only thing that changes between the two halves is one extra site in one
+    /// already-baselined file.
+    ///
+    /// Both halves matter and neither alone is sufficient:
+    ///
+    /// - Half 1 (live == baseline) must exit 0. Without it, half 2's non-zero
+    ///   exit would be unattributable — a detector that flagged the file
+    ///   unconditionally would pass half 2 for entirely the wrong reason.
+    /// - Half 2 (live == baseline + 1) must exit 1 with exactly one High.
+    ///
+    /// The ~65 other baseline rows have no file in the fixture tree, so they
+    /// surface as `OrphanRow` verdicts — deliberately Medium, hence
+    /// exit-neutral, which is itself worth pinning: if slack verdicts were
+    /// High, every opportunistic fix and every file deletion would become
+    /// merge-blocking, and half 1 would not exit 0.
+    #[test]
+    fn pdiag_ratchet_fires_when_a_baselined_file_gains_one_more_code_less_site() {
+        let repo = tempfile::tempdir().expect("create repo tempdir");
+        let aux = tempfile::tempdir().expect("create aux tempdir");
+
+        // Lift the REAL committed manifest — not a synthetic stand-in, so the
+        // test also fails if the shipped manifest stops parsing.
+        let baseline_text = std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("pdiag-baseline.txt"),
+        )
+        .expect("read the committed crates/reify-audit/pdiag-baseline.txt");
+        let baseline = reify_audit::pdiag::parse_baseline(&baseline_text)
+            .expect("the committed pdiag-baseline.txt must parse");
+
+        // Any row proves the claim; the first is simply deterministic. Reading
+        // the path and count out of the manifest (rather than hard-coding one)
+        // keeps this test alive as rows shrink under opportunistic migration.
+        let (path, allowed) = baseline
+            .iter()
+            .next()
+            .map(|(p, c)| (p.clone(), *c))
+            .expect(
+                "the committed pdiag-baseline.txt has no rows, so there is no already-baselined \
+                 file to overrun — if the backlog genuinely reached zero, rewrite this test \
+                 against a synthetic one-row manifest rather than deleting it",
+            );
+
+        let manifest = repo.path().join("crates/reify-audit/pdiag-baseline.txt");
+        std::fs::create_dir_all(manifest.parent().unwrap()).expect("create manifest dir");
+        std::fs::write(&manifest, &baseline_text).expect("write lifted manifest");
+
+        // The source file lands at the row's own repo-relative path, so the
+        // detector matches it to that row. `parse_baseline` rejects any row
+        // outside `is_swept_path`, so the path is in-scope by construction.
+        let src = repo.path().join(&path);
+        std::fs::create_dir_all(src.parent().unwrap()).expect("create source dir");
+        std::fs::write(&src, pdiag_ratchet_source(allowed)).expect("write at-baseline source");
+
+        git_init_commit_all(repo.path());
+
+        let tasks_file = write_tasks_json(aux.path(), &[]);
+        let runs_db = write_empty_runs_db(aux.path());
+
+        let bin = env!("CARGO_BIN_EXE_reify-audit");
+        let run = || {
+            Command::new(bin)
+                .args([
+                    "--pattern",
+                    "PDIAG",
+                    "--no-jcodemunch",
+                    "--project-root",
+                    repo.path().to_str().unwrap(),
+                    "--tasks-file",
+                    tasks_file.to_str().unwrap(),
+                    "--runs-db",
+                    runs_db.to_str().unwrap(),
+                ])
+                .output()
+                .expect("invoke reify-audit --pattern PDIAG on the ratchet fixture")
+        };
+
+        // --- half 1: exactly at the baseline row → no verdict → exit 0 ------
+        let at = run();
+        let at_stderr = String::from_utf8_lossy(&at.stderr);
+        assert_eq!(
+            at.status.code(),
+            Some(0),
+            "{path} at exactly its baseline allowance of {allowed} must produce NO High finding \
+             (the ~{} other rows are exit-neutral OrphanRow Mediums)\nstderr: {at_stderr}",
+            baseline.len().saturating_sub(1)
+        );
+
+        // --- half 2: one more site → Exceeded → exit 1 ----------------------
+        // Only the file's CONTENT changes; `git ls-files` reads the index, so
+        // the path stays tracked without re-adding.
+        std::fs::write(&src, pdiag_ratchet_source(allowed + 1))
+            .expect("write one-over-baseline source");
+
+        let over = run();
+        let over_stderr = String::from_utf8_lossy(&over.stderr);
+        assert_eq!(
+            over.status.code(),
+            Some(1),
+            "{path} going from {allowed} to {} code-less site(s) must be exactly one High \
+             (Exceeded) → exit 1\nstderr: {over_stderr}",
+            allowed + 1
+        );
+
+        let findings = parse_findings_from_stderr(&over_stderr);
+        let highs: Vec<&serde_json::Value> = findings
+            .iter()
+            .filter(|f| f["severity"].as_str() == Some("High"))
+            .collect();
+        assert_eq!(
+            highs.len(),
+            1,
+            "exactly one High — the overrun file, and nothing else; got:\n{:#}",
+            serde_json::Value::Array(findings.clone())
+        );
+
+        let high = highs[0];
+        assert_eq!(
+            high["pattern"].as_str(),
+            Some("PDiag"),
+            "the overrun finding must be PDiag; got:\n{high:#}"
+        );
+        assert_eq!(
+            high["task_id"].as_str(),
+            Some(path.as_str()),
+            "the overrun finding must be keyed by the offending path; got:\n{high:#}"
+        );
+
+        // A hard gate that names neither the file nor the remedy is a dead
+        // end; `tests/infra/test_reify_audit_pdiag.sh` greps for the same doc.
+        let summary = high["summary"].as_str().unwrap_or_default();
+        assert!(
+            summary.contains(path.as_str()),
+            "the Exceeded summary must name the offending file; got: {summary:?}"
+        );
+        assert!(
+            summary.contains("docs/notes/diagnostic-severity-policy.md"),
+            "the Exceeded summary must cite the remediation doc; got: {summary:?}"
+        );
     }
 }
 
@@ -2403,6 +3264,216 @@ mod http_loader {
         let stderr = String::from_utf8_lossy(&out.stderr);
         let findings = parse_findings_from_stderr(&stderr);
         assert!(findings.is_empty(), "expected zero findings; got {:#}", serde_json::Value::Array(findings));
+    }
+
+    /// SSE-framed counterpart to `pre_done_via_http_loader_corroborated_exits_zero`.
+    /// Proves what the JSON sibling does not: the full three-POST MCP
+    /// handshake and the `get_task` `structuredContent` decode complete
+    /// when the server answers `Content-Type: text/event-stream` instead
+    /// of `application/json` — i.e. `mcp_wire::decode_body`'s
+    /// `contains("text/event-stream")` branch is exercised through
+    /// `FusedMemoryClient::post` end-to-end via the real binary.
+    ///
+    /// Also locks the session-id-on-every-POST contract on this same run
+    /// (folded in here rather than kept as its own test — a second full
+    /// three-POST handshake against the real binary would buy nothing
+    /// these assertions can't ride on this one's): `mcp-session-id` must
+    /// ride EVERY POST of the three-leg handshake (`initialize`,
+    /// `notifications/initialized`, `tools/call`) with one stable value
+    /// per session — the "handshake completing with `mcp-session-id`
+    /// attached to every POST" item. `notifications/initialized` is the
+    /// interesting leg: it is a 202 with an empty body, and this is the
+    /// only assertion in the suite proving the header rides that leg too.
+    /// Also asserts the `Accept: application/json, text/event-stream`
+    /// request header `post()` sets rides every POST — the precondition
+    /// for a real server ever choosing SSE framing in the first place.
+    ///
+    /// Deliberately does NOT assert the session-id value is the
+    /// client-minted 32-hex id, and does NOT assert it differs from
+    /// `MOCK_SESSION_ID` — per the plan's design decision,
+    /// `FusedMemoryClient` mints its own id and never adopts the
+    /// server's (unlike `JcodemunchClient` since #6106), and freezing
+    /// "must be client-minted" here would veto a legitimate future
+    /// alignment of the two clients. Presence-on-every-POST plus
+    /// one-id-per-session is exactly the contract locked here.
+    #[test]
+    fn pre_done_via_http_loader_sse_corroborated_exits_zero() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path();
+        let runs_db = write_empty_runs_db(dir);
+        // Seed the runs.db corroboration leg.
+        insert_completed_event(&runs_db, "9998");
+
+        let mock = spawn_mock_mcp_shaped(Framing::Sse, ResultShape::StructuredContent, |args| {
+            assert_eq!(args.get("id").and_then(|v| v.as_str()), Some("9998"));
+            // Files=[] → P5's git-diff check trivially passes; the runs.db
+            // task_completed event corroborates the done-flip.
+            Some(serde_json::json!({
+                "id": "9998",
+                "title": "Mock task 9998",
+                "status": "done",
+                "updatedAt": "2026-05-16T07:39:04Z",
+                "metadata": {
+                    "files": [],
+                    "done_provenance": {"kind": "merged", "commit": "cafebabe", "note": null}
+                }
+            }))
+        });
+        let observed = mock.observed_handle();
+
+        let bin = env!("CARGO_BIN_EXE_reify-audit");
+        let out = Command::new(bin)
+            .args([
+                "--task",
+                "9998",
+                "--pre-done",
+                "--fused-memory-url",
+                mock.url(),
+                "--runs-db",
+                runs_db.to_str().unwrap(),
+                "--project-root",
+                dir.to_str().unwrap(),
+            ])
+            .output()
+            .expect("invoke reify-audit");
+
+        // `stop()` JOINS the accept thread, so `observed` is race-free to
+        // read from this point on.
+        mock.stop();
+
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "corroborated task via SSE must exit 0; stdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let findings = parse_findings_from_stderr(&stderr);
+        assert!(
+            findings.is_empty(),
+            "expected zero findings; got {:#}",
+            serde_json::Value::Array(findings)
+        );
+
+        let requests = observed.lock().unwrap_or_else(|e| e.into_inner());
+        assert!(
+            requests.len() >= 3,
+            "expected at least 3 observed POSTs (initialize, notifications/initialized, tools/call); got {}",
+            requests.len()
+        );
+        let methods: std::collections::HashSet<&str> =
+            requests.iter().map(|r| r.rpc_method.as_str()).collect();
+        for expected in ["initialize", "notifications/initialized", "tools/call"] {
+            assert!(
+                methods.contains(expected),
+                "expected observed methods to contain {expected:?}; got {methods:?}"
+            );
+        }
+
+        let session_ids: Vec<&str> = requests
+            .iter()
+            .map(|req| {
+                req.header("mcp-session-id").unwrap_or_else(|| {
+                    panic!(
+                        "request for JSON-RPC method {:?} missing mcp-session-id header",
+                        req.rpc_method
+                    )
+                })
+            })
+            .collect();
+        for (req, sid) in requests.iter().zip(session_ids.iter()) {
+            assert!(
+                !sid.is_empty(),
+                "mcp-session-id must be non-empty on every POST; rpc_method={}",
+                req.rpc_method
+            );
+        }
+        let first = session_ids[0];
+        assert!(
+            session_ids.iter().all(|sid| *sid == first),
+            "expected one stable session id across the whole session; got {session_ids:?}"
+        );
+
+        for req in requests.iter() {
+            assert_eq!(
+                req.header("accept"),
+                Some("application/json, text/event-stream"),
+                "expected the SSE-advertising Accept header on every POST \
+                 (the precondition for a real server ever choosing SSE \
+                 framing); rpc_method={}",
+                req.rpc_method
+            );
+        }
+    }
+
+    /// SSE-framed `content[0].text` fallback lock. Unlike its neighbours,
+    /// this test has NO JSON sibling to sit beside: the mock's `tools/call`
+    /// arm has always emitted `{"structuredContent": ..., "content": []}`,
+    /// and `structuredContent` always wins in `call_tool`, so its
+    /// `result.content[].text` fallback branch was unreachable through
+    /// this mock under EITHER framing before this test — this is the
+    /// first coverage of that branch, period.
+    ///
+    /// The mock emits a `tools/call` result with no `structuredContent`
+    /// key and a single `content` entry
+    /// `{"type":"text","text": <task serialized as a JSON STRING>}` — note
+    /// `text` is a JSON *string containing* serialized JSON, not a nested
+    /// object, since that is the shape `from_str(text)` expects and the
+    /// easiest thing to get wrong.
+    #[test]
+    fn pre_done_via_http_loader_sse_content_text_fallback() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path();
+        let runs_db = write_empty_runs_db(dir);
+        insert_completed_event(&runs_db, "9997");
+
+        let mock = spawn_mock_mcp_shaped(Framing::Sse, ResultShape::ContentText, |args| {
+            assert_eq!(args.get("id").and_then(|v| v.as_str()), Some("9997"));
+            Some(serde_json::json!({
+                "id": "9997",
+                "title": "Mock task 9997",
+                "status": "done",
+                "updatedAt": "2026-05-16T07:39:04Z",
+                "metadata": {
+                    "files": [],
+                    "done_provenance": {"kind": "merged", "commit": "cafebabe", "note": null}
+                }
+            }))
+        });
+
+        let bin = env!("CARGO_BIN_EXE_reify-audit");
+        let out = Command::new(bin)
+            .args([
+                "--task",
+                "9997",
+                "--pre-done",
+                "--fused-memory-url",
+                mock.url(),
+                "--runs-db",
+                runs_db.to_str().unwrap(),
+                "--project-root",
+                dir.to_str().unwrap(),
+            ])
+            .output()
+            .expect("invoke reify-audit");
+
+        mock.stop();
+
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "content[0].text fallback must decode identically to structuredContent; stdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let findings = parse_findings_from_stderr(&stderr);
+        assert!(
+            findings.is_empty(),
+            "expected zero findings; got {:#}",
+            serde_json::Value::Array(findings)
+        );
     }
 
     /// Pre-done via HTTP loader: a done/merged task with files but no
@@ -2491,6 +3562,196 @@ mod http_loader {
         );
     }
 
+    /// SSE-framed counterpart to `pre_done_via_http_loader_missing_task_exits_125`.
+    /// Proves the centralised JSON-RPC error-envelope check in `post()`
+    /// — HTTP 200 carrying a top-level `{"error":{...}}` surfaces as
+    /// `LoadError::Protocol` — fires identically when the envelope
+    /// arrives inside a `data:` frame rather than as a bare JSON body.
+    ///
+    /// Asserts BOTH `post()`'s own distinctive `"JSON-RPC error"` text
+    /// AND the `get_task` tool-name breadcrumb `call_tool` decorates
+    /// Protocol errors with — `get_task` alone is not enough, since an
+    /// SSE-decode failure (e.g. "no SSE data line in response") would
+    /// ALSO exit 125 and get the same `get_task:` decoration, which
+    /// would let this test pass green even if SSE decoding never
+    /// actually reached the error envelope.
+    #[test]
+    fn pre_done_via_http_loader_sse_error_envelope_exits_125() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path();
+        let runs_db = write_empty_runs_db(dir);
+
+        let mock =
+            spawn_mock_mcp_shaped(Framing::Sse, ResultShape::StructuredContent, |_args| None);
+
+        let bin = env!("CARGO_BIN_EXE_reify-audit");
+        let out = Command::new(bin)
+            .args([
+                "--task",
+                "9995",
+                "--pre-done",
+                "--fused-memory-url",
+                mock.url(),
+                "--runs-db",
+                runs_db.to_str().unwrap(),
+                "--project-root",
+                dir.to_str().unwrap(),
+            ])
+            .output()
+            .expect("invoke reify-audit");
+
+        mock.stop();
+
+        assert_eq!(
+            out.status.code(),
+            Some(125),
+            "missing task via SSE must exit 125; stderr: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            stderr.contains("get_task"),
+            "stderr should breadcrumb the tool name via call_tool's Protocol \
+             decoration; got: {stderr}"
+        );
+        assert!(
+            stderr.contains("JSON-RPC error"),
+            "stderr should carry post()'s own JSON-RPC error-envelope text, \
+             proving the failure is the error envelope and not merely an \
+             SSE-decode failure that also happens to exit 125; got: {stderr}"
+        );
+    }
+
+    /// Negative SSE lock: a data-less SSE frame (e.g. a keep-alive or
+    /// comment-only chunk, no `data:` line at all) on the `initialize`
+    /// leg must be refused rather than silently treated as an empty or
+    /// successful response. Exercises the "no SSE data line in response"
+    /// refusal `post()` gets from `mcp_wire::decode_body` — one of the SSE
+    /// branch's two failure modes; see
+    /// [`pre_done_via_http_loader_sse_malformed_data_exits_125`] below for
+    /// the other (a `data:` line whose payload isn't valid JSON).
+    #[test]
+    fn pre_done_via_http_loader_sse_no_data_line_exits_125() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path();
+        let runs_db = write_empty_runs_db(dir);
+
+        // `initialize` fails to decode before any later leg is ever sent,
+        // so this responder must never run. A panic inside the mock's
+        // accept thread would NOT by itself fail this test —
+        // `MockServer::stop()` discards the accept thread's join result —
+        // so the guard here is this flag, read back after `stop()` (which
+        // joins the thread and is therefore the race-free read barrier).
+        let reached = Arc::new(AtomicBool::new(false));
+        let reached_clone = Arc::clone(&reached);
+        let mock = spawn_mock_mcp_shaped(
+            Framing::SseNoData,
+            ResultShape::StructuredContent,
+            move |_args| {
+                reached_clone.store(true, Ordering::Relaxed);
+                None
+            },
+        );
+
+        let bin = env!("CARGO_BIN_EXE_reify-audit");
+        let out = Command::new(bin)
+            .args([
+                "--task",
+                "9994",
+                "--pre-done",
+                "--fused-memory-url",
+                mock.url(),
+                "--runs-db",
+                runs_db.to_str().unwrap(),
+                "--project-root",
+                dir.to_str().unwrap(),
+            ])
+            .output()
+            .expect("invoke reify-audit");
+
+        mock.stop();
+
+        assert!(
+            !reached.load(Ordering::Relaxed),
+            "tools/call must never be reached — the handshake fails while \
+             decoding `initialize`"
+        );
+        assert_eq!(
+            out.status.code(),
+            Some(125),
+            "data-less SSE frame must exit 125; stderr: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            stderr.contains("no SSE data line"),
+            "stderr should breadcrumb the missing-data-line refusal; got: {stderr}"
+        );
+    }
+
+    /// Negative SSE lock: an SSE `data:` line whose payload is not valid
+    /// JSON must be refused rather than silently treated as an empty or
+    /// successful response. Exercises the "SSE data parse" refusal
+    /// `post()` gets from `mcp_wire::decode_body` — the SSE branch's other
+    /// failure mode, sibling to
+    /// [`pre_done_via_http_loader_sse_no_data_line_exits_125`] above.
+    #[test]
+    fn pre_done_via_http_loader_sse_malformed_data_exits_125() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path();
+        let runs_db = write_empty_runs_db(dir);
+
+        // `initialize` fails to decode before any later leg is ever sent,
+        // so this responder must never run — see the sibling no-data-line
+        // test above for why a bare in-thread `panic!()` would not by
+        // itself fail this test.
+        let reached = Arc::new(AtomicBool::new(false));
+        let reached_clone = Arc::clone(&reached);
+        let mock = spawn_mock_mcp_shaped(
+            Framing::SseMalformedData,
+            ResultShape::StructuredContent,
+            move |_args| {
+                reached_clone.store(true, Ordering::Relaxed);
+                None
+            },
+        );
+
+        let bin = env!("CARGO_BIN_EXE_reify-audit");
+        let out = Command::new(bin)
+            .args([
+                "--task",
+                "9993",
+                "--pre-done",
+                "--fused-memory-url",
+                mock.url(),
+                "--runs-db",
+                runs_db.to_str().unwrap(),
+                "--project-root",
+                dir.to_str().unwrap(),
+            ])
+            .output()
+            .expect("invoke reify-audit");
+
+        mock.stop();
+
+        assert!(
+            !reached.load(Ordering::Relaxed),
+            "tools/call must never be reached — the handshake fails while \
+             decoding `initialize`"
+        );
+        assert_eq!(
+            out.status.code(),
+            Some(125),
+            "malformed SSE data line must exit 125; stderr: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            stderr.contains("SSE data parse"),
+            "stderr should breadcrumb the SSE data-parse refusal; got: {stderr}"
+        );
+    }
+
     /// Sweep path via HTTP loader: `--since` (no `--pre-done`) routes
     /// through `get_tasks` + `collect_tasks_recursive` and must flatten
     /// subtasks before handing them to the detectors. This guards the
@@ -2550,6 +3811,7 @@ mod http_loader {
             .args([
                 "--since", "2026-05-01",
                 "--pattern", "P5",
+                "--no-jcodemunch",
                 "--fused-memory-url", mock.url(),
                 "--runs-db", runs_db.to_str().unwrap(),
                 "--project-root", dir.to_str().unwrap(),
@@ -2730,6 +3992,64 @@ mod http_loader {
             "stderr should breadcrumb the malformed-tasks reason; got: {stderr}"
         );
     }
+
+    /// SSE-framed counterpart to `sweep_via_http_loader_malformed_tasks_payload_exits_125`.
+    /// Proves the `missing or non-array \`tasks\` field` refusal in
+    /// `FusedMemoryClient::get_tasks` is reached identically under SSE
+    /// framing — i.e. the framing change cannot silently downgrade a
+    /// malformed corpus into a healthy-looking exit 0.
+    ///
+    /// Asserts the refusal's own distinctive text (`"missing or
+    /// non-array"`), not just the `get_tasks`/`tasks` breadcrumb —
+    /// `"tasks"` is a substring of `"get_tasks"`, so a bare
+    /// `contains("get_tasks") && contains("tasks")` check is satisfied by
+    /// ANY Protocol error mentioning the tool name, including an
+    /// SSE-decode failure that never reached this refusal at all.
+    #[test]
+    fn sweep_via_http_loader_sse_malformed_tasks_payload_exits_125() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path();
+        let runs_db = write_empty_runs_db(dir);
+
+        // Responder returns an empty object — well-formed envelope,
+        // missing `tasks` field. Same shape as the JSON sibling, just
+        // delivered as an SSE `data:` frame.
+        let mock = spawn_mock_mcp_shaped(Framing::Sse, ResultShape::StructuredContent, |_args| {
+            Some(serde_json::json!({}))
+        });
+
+        let bin = env!("CARGO_BIN_EXE_reify-audit");
+        let out = Command::new(bin)
+            .args([
+                "--since",
+                "1970-01-01",
+                "--fused-memory-url",
+                mock.url(),
+                "--runs-db",
+                runs_db.to_str().unwrap(),
+                "--project-root",
+                dir.to_str().unwrap(),
+            ])
+            .output()
+            .expect("invoke reify-audit");
+
+        mock.stop();
+
+        assert_eq!(
+            out.status.code(),
+            Some(125),
+            "malformed get_tasks payload via SSE must exit 125; stderr: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            stderr.contains("missing or non-array"),
+            "stderr should carry get_tasks()'s own missing/non-array `tasks` \
+             refusal text, proving the sweep actually reached that check \
+             rather than failing for an unrelated (e.g. SSE-decode) reason; \
+             got: {stderr}"
+        );
+    }
 }
 
 // -----------------------------------------------------------------------
@@ -2751,6 +4071,7 @@ mod freshness_gate {
     use crate::common::index_fixture::{
         expected_repo_id, index_db_path, init_git_repo_with_one_commit, write_index_db,
     };
+    use crate::common::mcp_mock::{InitializeReply, MockConfig, spawn_mock_mcp_configured};
 
     const BOGUS_SHA: &str = "0123456789abcdef0123456789abcdef01234567";
 
@@ -3143,16 +4464,16 @@ mod freshness_gate {
     }
 
     /// B7 — detectors that never touch jcodemunch must be unaffected by a
-    /// stale index. `needs_jcodemunch` is false for a P2/P5-only run, so no
-    /// client is constructed and the gate is unreachable. A gate that fired
-    /// here would turn every P2/P5 sweep red on any machine with a stale
+    /// stale index. `needs_jcodemunch` is false for a P2/PDSSENTINEL-only run,
+    /// so no client is constructed and the gate is unreachable. A gate that
+    /// fired here would turn every such sweep red on any machine with a stale
     /// corpus it never consults.
     #[test]
     fn b7_non_jcodemunch_patterns_ignore_a_stale_index() {
         let s = scenario();
         write_index_db(&s.index_dir, &s.repo_id, Some(BOGUS_SHA), 12);
 
-        let out = s.run("P2,P5", &[]);
+        let out = s.run("P2,PDSSENTINEL", &[]);
         let stderr = String::from_utf8_lossy(&out.stderr);
 
         assert_eq!(out.status.code(), Some(0), "stderr:\n{stderr}");
@@ -3200,6 +4521,70 @@ mod freshness_gate {
         );
     }
 
+    /// BOUNDARY B3 — a responder that assigns a session id but answers
+    /// `initialize` with a body that is not an MCP `InitializeResult` (here a
+    /// bare `{}`) is not a live seam, so the binary must take the
+    /// CONSTRUCTION fail-soft exactly as it does for a serve that is down.
+    ///
+    /// No index is written, on purpose. Had the handshake been accepted, the
+    /// §4.3 gate would find no index under this jcodemunch-only run set and
+    /// refuse with `E_JC_INDEX_EMPTY` / exit 125. So the absence of every
+    /// `E_JC_INDEX_` marker, next to the handshake-refused breadcrumb, is what
+    /// shows construction failed rather than being admitted.
+    #[test]
+    fn non_mcp_initialize_responder_takes_the_construction_fail_soft() {
+        let s = scenario();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+        let config = MockConfig {
+            initialize: InitializeReply::Raw {
+                status: 200,
+                body: "{}",
+            },
+            ..MockConfig::default()
+        };
+        let mock = spawn_mock_mcp_configured(listener, config, |_args| None);
+        let mock_url = mock.url().to_string();
+        let out = s.run("PLAYER", &["--jcodemunch-url", &mock_url]);
+        mock.stop();
+        let stderr = String::from_utf8_lossy(&out.stderr);
+
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "a non-MCP initialize reply must fail-soft like a down serve, not \
+             refuse; stderr:\n{stderr}"
+        );
+        assert!(
+            stderr.contains(&format!(
+                "{} '{}'",
+                breadcrumbs::CONSTRUCTION_HANDSHAKE_REFUSED,
+                mock_url
+            )),
+            "the handshake must have been REJECTED, taking the handshake-refused \
+             construction breadcrumb; stderr:\n{stderr}"
+        );
+        assert!(
+            !stderr.contains(breadcrumbs::CONSTRUCTION_UNREACHABLE),
+            "the responder ANSWERED, so it must not be labelled unreachable; \
+             stderr:\n{stderr}"
+        );
+        assert!(
+            !stderr.contains("E_JC_INDEX_"),
+            "the §4.3 gate must not have run: it only runs after a successful \
+             handshake; stderr:\n{stderr}"
+        );
+        assert!(
+            stderr_has_parseable_findings_array(&stderr),
+            "a fail-soft run still emits its findings array; stderr:\n{stderr}"
+        );
+        let findings = parse_findings_from_stderr(&stderr);
+        assert!(
+            findings.is_empty(),
+            "the degraded seam answers nothing, so PLAYER has nothing to \
+             report; got {findings:?}\nstderr:\n{stderr}"
+        );
+    }
+
     /// Overwrite `tasks_file` with ONE P1-eligible done task pinned to
     /// `commit`, replacing whatever `scenario()` put there.
     ///
@@ -3242,8 +4627,8 @@ mod freshness_gate {
     /// Exit 0 (the seam fail-softs, it does not refuse); no `E_JC_INDEX_`
     /// marker (the §4.3 gate ADMITTED the run, so a detector really did
     /// execute and the breadcrumb the caller asserts on is reachable); no
-    /// `jcodemunch unreachable at` (the handshake SUCCEEDED, so this is the
-    /// PER-CALL layer and not the CONSTRUCTION one).
+    /// `breadcrumbs::CONSTRUCTION` label (the handshake SUCCEEDED, so this is
+    /// the PER-CALL layer and not the CONSTRUCTION one).
     ///
     /// Shared by all three `per_call_fail_soft_*` tests rather than written
     /// three times over — the shape `jcodemunch_live.rs::assert_live_leg`
@@ -3264,12 +4649,14 @@ mod freshness_gate {
              detector ever ran and the per-call breadcrumb is unreachable; \
              stderr:\n{stderr}"
         );
-        assert!(
-            !stderr.contains("jcodemunch unreachable at"),
-            "the handshake must have SUCCEEDED, or this would be the \
-             CONSTRUCTION fail-soft layer rather than the PER-CALL one; \
-             stderr:\n{stderr}"
-        );
+        for label in breadcrumbs::CONSTRUCTION {
+            assert!(
+                !stderr.contains(label),
+                "the handshake must have SUCCEEDED, or this would be the \
+                 CONSTRUCTION fail-soft layer (`{label}`) rather than the \
+                 PER-CALL one; stderr:\n{stderr}"
+            );
+        }
     }
 
     /// PER-CALL FAIL-SOFT — the vacuous pass that survives every other check.
@@ -3354,11 +4741,17 @@ mod freshness_gate {
     /// `Err` arm is one edit and both consumers move.
     ///
     /// `find_references` is NOT asserted HERE, and could not be: this
-    /// responder errors every tool, so `get_changed_symbols` returns no
-    /// symbol, so `p1_producer_orphan::check`'s `for symbol in ...` loop —
-    /// which is where the `find_references` call lives — never runs its body. That is a property of THIS responder, not of the harness —
+    /// responder errors every tool, so `get_changed_symbols` errors and
+    /// `p1_producer_orphan::check` records the task as unexamined and moves
+    /// on before its per-symbol loop, where the `find_references` call
+    /// lives. That is a property of THIS responder, not of the harness —
     /// the sibling below (`per_call_fail_soft_on_p1s_second_call`) dispatches
     /// on the arguments to reach it.
+    ///
+    /// The findings array is what makes this run distinguishable from a clean
+    /// one. The failed query surfaces as one Low `P1TaskUnexamined` for the
+    /// task it left unexamined, so the run still exits 0 but no longer reads
+    /// as "P1 found nothing".
     #[test]
     fn per_call_fail_soft_on_the_p1_pair() {
         let s = scenario();
@@ -3372,10 +4765,28 @@ mod freshness_gate {
 
         assert_admitted_after_a_successful_handshake(&out, &stderr);
         let findings = parse_findings_from_stderr(&stderr);
+        assert_eq!(
+            findings.len(),
+            1,
+            "the failed get_changed_symbols must surface as exactly one \
+             finding; got {findings:?}\nstderr:\n{stderr}"
+        );
+        let finding = &findings[0];
+        assert_eq!(finding["pattern"], "P1TaskUnexamined", "got {finding:?}");
+        assert_eq!(
+            finding["severity"], "Low",
+            "Low keeps the exit code neutral; got {finding:?}"
+        );
+        assert_eq!(
+            finding["task_id"], "synthetic-per-call-p1",
+            "got {finding:?}"
+        );
         assert!(
-            findings.is_empty(),
-            "get_changed_symbols returned Vec::new(), so P1 has nothing to \
-             report; got {findings:?}\nstderr:\n{stderr}"
+            finding["summary"]
+                .as_str()
+                .unwrap_or_default()
+                .contains(&s.live_head),
+            "the summary must name the range left unexamined; got {finding:?}"
         );
 
         assert!(
@@ -3391,9 +4802,9 @@ mod freshness_gate {
     /// PER-CALL FAIL-SOFT, P1's SECOND call — the anti-rot lock for
     /// `breadcrumbs::P1_FIND_REFERENCES`.
     ///
-    /// The sibling above errors EVERY tool, so `get_changed_symbols` returns
-    /// nothing and `find_references` is never reached. That is a limitation of
-    /// that responder, not of the mock: `spawn_mock_mcp`'s closure receives
+    /// The sibling above errors EVERY tool, so its `get_changed_symbols`
+    /// errors, P1 records the task as unexamined, and `find_references` is
+    /// never reached. That is a limitation of that responder, not of the mock: `spawn_mock_mcp`'s closure receives
     /// the `tools/call` arguments, and the two calls are trivially
     /// distinguishable — `get_changed_symbols` sends
     /// `{repo, since_sha, until_sha}` while `find_references` sends
@@ -3486,6 +4897,66 @@ mod freshness_gate {
         );
     }
 
+    /// The `Err`-arm breadcrumbs of `RealJCodemunchOps::get_untested_symbols`
+    /// and `::get_layer_violations`. Each has one consumer, the lock below it,
+    /// so they live here rather than in `breadcrumbs.rs`, which holds only
+    /// literals the live capstone also reads (its `P1_CALL` doc excludes these).
+    const PUNTESTED_GET_UNTESTED_SYMBOLS: &str = "jcodemunch get_untested_symbols:";
+    const PLAYER_GET_LAYER_VIOLATIONS: &str = "jcodemunch get_layer_violations:";
+
+    /// Runs one jcodemunch-only `pattern` after a successful handshake against
+    /// a responder that errors every `tools/call`, and asserts the PER-CALL
+    /// fail-soft shape: admitted, an empty but PRESENT findings array, and
+    /// `breadcrumb` on stderr.
+    ///
+    /// The index is FRESH because both callers' run sets are jcodemunch-only,
+    /// so a stale or empty index would exit 125 before any `tools/call`.
+    fn assert_per_call_fail_soft(pattern: &str, breadcrumb: &str) {
+        let s = scenario();
+        write_index_db(&s.index_dir, &s.repo_id, Some(&s.live_head), 7);
+
+        let mock = spawn_mock_mcp(|_args| None);
+        let out = s.run(pattern, &["--jcodemunch-url", mock.url()]);
+        mock.stop();
+        let stderr = String::from_utf8_lossy(&out.stderr);
+
+        assert_admitted_after_a_successful_handshake(&out, &stderr);
+        assert!(
+            stderr_has_parseable_findings_array(&stderr),
+            "{pattern} must still print a findings array — an absent one must \
+             not pass for an empty one; stderr:\n{stderr}"
+        );
+        let findings = parse_findings_from_stderr(&stderr);
+        assert!(
+            findings.is_empty(),
+            "the errored op returns Vec::new(), so {pattern}'s array must be \
+             empty; got {findings:?}\nstderr:\n{stderr}"
+        );
+        assert!(
+            stderr.contains(breadcrumb),
+            "the real binary must emit `{breadcrumb}`, the only signal that \
+             tells this empty run from a clean one. If that Err arm's \
+             `eprintln!` was reworded, update the const in freshness_gate.\
+             \nstderr:\n{stderr}"
+        );
+    }
+
+    /// PER-CALL FAIL-SOFT, PUNTESTED — locks the `Err` arm of
+    /// `RealJCodemunchOps::get_untested_symbols` against the real binary.
+    /// HERMETIC and gate-resident.
+    #[test]
+    fn per_call_fail_soft_on_puntested() {
+        assert_per_call_fail_soft("PUNTESTED", PUNTESTED_GET_UNTESTED_SYMBOLS);
+    }
+
+    /// PER-CALL FAIL-SOFT, PLAYER — locks the `Err` arm of
+    /// `RealJCodemunchOps::get_layer_violations` against the real binary.
+    /// HERMETIC and gate-resident.
+    #[test]
+    fn per_call_fail_soft_on_player() {
+        assert_per_call_fail_soft("PLAYER", PLAYER_GET_LAYER_VIOLATIONS);
+    }
+
     /// `--no-jcodemunch` PRECEDENCE — the explicit escape hatch bypasses the
     /// seam entirely, so it must bypass the gate too. An escape hatch that
     /// still hard-failed on index state would not be an escape hatch.
@@ -3512,8 +4983,9 @@ mod freshness_gate {
     /// corpus.
     ///
     /// The default sweep runs P2, P5, PTODO and PDSSENTINEL alongside P1, and
-    /// none of those four consult jcodemunch at all. Refusing the process here
-    /// would delete four working detectors' output over one stale index — and
+    /// only P5's H2 pass among them consults jcodemunch. Refusing the process
+    /// here would delete four working detectors' output over one stale index —
+    /// and
     /// §4.2 makes that the EXPECTED case, not an anomaly: identity is now
     /// per-checkout, so every task worktree derives an id nothing has indexed.
     /// A default `reify-audit --since <date>` from any warm lane with the
@@ -3542,14 +5014,29 @@ mod freshness_gate {
             "the non-jcodemunch detectors must still emit their findings; stderr:\n{stderr}"
         );
         // Degraded, not silent: the marker keeps the condition machine-
-        // detectable, and the breadcrumb names what was lost.
+        // detectable, and P1 records itself unexamined for this run.
         assert!(
             stderr.contains("E_JC_INDEX_STALE"),
             "the degraded sweep must still carry the marker; stderr:\n{stderr}"
         );
+        let findings = parse_findings_from_stderr(&stderr);
+        let p1_unexamined: Vec<&serde_json::Value> = findings
+            .iter()
+            .filter(|f| f["pattern"].as_str() == Some("P1TaskUnexamined"))
+            .collect();
+        assert_eq!(
+            p1_unexamined.len(),
+            1,
+            "exactly one run-level P1TaskUnexamined; findings:\n{:#}",
+            serde_json::Value::Array(findings.clone())
+        );
+        assert_eq!(p1_unexamined[0]["task_id"].as_str(), Some(""));
         assert!(
-            stderr.contains("degraded to zero findings"),
-            "the breadcrumb must name what was lost; stderr:\n{stderr}"
+            p1_unexamined[0]["summary"]
+                .as_str()
+                .is_some_and(|summary| summary.contains("E_JC_INDEX_STALE")),
+            "the record must carry the index refusal; got {:#}",
+            p1_unexamined[0]
         );
     }
 

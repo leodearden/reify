@@ -114,14 +114,18 @@ fn engine_with_registered_kernel_picks_occt_for_brep_box_build() {
     let checker = reify_constraints::SimpleConstraintChecker;
     let mut engine = reify_eval::Engine::with_registered_kernel(Box::new(checker));
 
-    // STEP rather than STL: OCCT's `OcctKernelHandle::export` returns
-    // `unsupported export format: Stl` for `ExportFormat::Stl` (see
+    // STEP rather than STL: STEP is OCCT's BRep-native export format, so it is
+    // what this inventory pin should round-trip through — we rely on the
+    // `> 0 bytes` assertion below to confirm the registered factory was invoked
+    // and the kernel produced real output.
+    //
+    // NOT because STL is unsupported: `OcctKernelHandle::export` HAS since been
+    // wired for `ExportFormat::Stl` (see the comment on
     // `export_unsupported_format_returns_error` in
-    // `crates/reify-kernel-occt/src/handle.rs:1301`). STEP is the only
-    // BRep-native export format OCCT supports; the round-trip pin needs
-    // a format that actually round-trips, so we use STEP and rely on the
-    // `> 0 bytes` assertion below to confirm the registered factory was
-    // invoked and the kernel produced real output.
+    // `crates/reify-kernel-occt/src/handle.rs`, which now uses `Obj` to pin the
+    // unsupported-format contract), and reify-eval's
+    // `harness_engine::export_unit_regime_e2e` drives STL through this same
+    // handle end to end.
     let result = engine.build(&compiled, ExportFormat::Step);
 
     let output = result.geometry_output.unwrap_or_else(|| {
@@ -156,9 +160,6 @@ fn engine_with_registered_kernel_picks_occt_for_brep_box_build() {
 /// via `eprintln!` so stub-mode CI produces an observable signal.
 #[test]
 fn engine_with_registered_kernel_emits_one_selection_event() {
-    // Inoculate against tracing's per-callsite Interest cache — see
-    // `prime_tracing_callsite_cache` in reify-test-support for why.
-    reify_test_support::prime_tracing_callsite_cache();
     if !reify_kernel_occt::OCCT_AVAILABLE {
         eprintln!(
             "skipping engine_with_registered_kernel_emits_one_selection_event: \

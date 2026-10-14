@@ -5,7 +5,17 @@ Shell meta-tests for reify's infrastructure scripts (`scripts/lib_portable.sh`,
 
 ## Auto-discovery
 
-`run_all.sh` discovers and runs every file matching `test_*.sh` in this directory.
+`run_all.sh` discovers through ONE predicate, `classification_discovered_set` in
+[`run-all-classification-lib.sh`](run-all-classification-lib.sh): regular files
+(symlinks followed) matching `test_*.sh` in this directory, minus
+`test_helpers.sh`, sorted with `LC_ALL=C`. Every branch consumes it — the pool,
+legacy `REIFY_RUN_ALL_POOL_DISABLE=1`, `REIFY_RUN_ALL_MEMBER_SUBSET` and
+`--scope host-infra` — and so does the `REIFY_RUN_ALL_SUBSET_COUNT_ONLY` probe.
+The member subset, the H3 exclusion and the host-exclusive bucket are filters
+over its output, so native `test_*.py` discovery (#7445) is a change to that
+one function. The adoption-ratchet row `inline-discovery-loop` holds
+`run_all.sh` at zero code lines spelling a `test_*` glob (see "Adoption
+ratchet" below).
 To add a new meta-test, create `test_<name>.sh` — it will be picked up automatically
 on the next `run_all.sh` invocation and in CI.
 
@@ -27,6 +37,45 @@ splitting them across commits leaves an intermediate commit red, and the
 failure surfaces at that first gate entry, far from this README. The
 executable bit is *not* required: every runner path invokes the file via
 `bash <file>`.
+
+### Python members need a `.sh` wrapper — `test_*.py` is NOT discovered
+
+Discovery matches **`test_*.sh` only**. A `test_<name>.py` dropped in this
+directory matches no glob, takes no manifest row, and is **never executed** —
+it reads as coverage while asserting nothing, and no gate will tell you.
+(`scripts/test_legibility_reify_config.py` is the live casualty: no wrapper, no
+runner, red today.)
+
+New infra tests are nevertheless authored in **Python** — see
+[the migration policy](../../docs/notes/infra-test-bash-to-python-migration-policy.md)
+for the rule, the evidence, and why pytest is never used. A Python member runs
+via a thin `test_<name>.sh` wrapper:
+
+```bash
+assert "python3 is available" command -v python3
+assert "test_<name>.py exits 0" python3 "$SCRIPT_DIR/test_<name>.py"
+```
+
+**The wrapper is the discovered file and the wrapper is what takes the
+`run-all-classification.manifest` row** — not the `.py`. Copy any of
+`test_sn_gate.sh`, `test_prd_capability_check.sh`,
+`test_prd_decompose_verify.sh` or `test_reify_overlap_detector.sh`.
+
+One thing a `.py` still drops out from under, `.sh`-scoped by construction:
+the wall-clock upper-bound ratchet (`test_no_new_wallclock_upper_bounds.sh`),
+task #7445. The deadline-capable-suite derivation
+(`test_slot_timeout_marker.sh` Sections F and G) no longer does — since task
+#7626 it follows a delegating wrapper into its `.py` sibling and reads the
+two together, so a ported member keeps its roster place and its
+non-vacuity check. Making `test_*.py` discovery native — which would retire
+this wrapper idiom — is task #7445.
+
+**Moves are not authorship (D7).** New *assertions* are Python (stdlib
+`unittest` + `.sh` wrapper + manifest row). A satellite that *receives*
+existing bash blocks from an h14 partition stays bash: that is a
+behaviour-preserving move, not new authorship, consistent with the policy's
+"no scheduled mass migration". See PRD
+`docs/prds/v0_6/run-all-runner-infra-harness.md` §3 D7 and the migration policy.
 
 ## Shared test helpers
 
@@ -98,17 +147,84 @@ tells the guard to skip it.  The reason should cite WHY the wall-clock
 magnitude is load-safe (exit code, marker, etc.) so the exemption is
 auditable.
 
-**Current blessed survivors** (as of task #5257):
+**Current blessed survivors** (as of task #6247):
 - `test_occt_flock_gate.sh` Tests 14 & 22: exit-75 + stderr pattern (`_ELAPSED*` operand)
 - `test_find_uses_smoke_runner.sh` ARM A liveness guard: rc!=0 + the `E2E_SMOKE_LAUNCHER_DEATH phase=readiness` marker (`_t4_elapsed` operand). Since task #5596 this assert runs once per e2e smoke runner (six in total), all sharing that one operand name and annotation.
-- `test_lane_x_flock.sh` flock-timing guard (`_ELAPSED18_MS` operand)
+- `test_mesh_count_parity_smoke_runner.sh` liveness guard: rc!=0 + the launcher-death message (`_mcp_elapsed` operand)
 
-These four retain their `wallclock:allow` escapes: each carries a real
-`elapsed` / `ELAPSED` / `_MS` time-measurement signal and is still (correctly)
-flagged.  The six `nextest` / `occt` config-constant `-lt 3600` pass-level
-ceilings that task #5257 de-annotated are **not** survivors — after the
-condition-(3) tightening they carry no time-measurement signal and pass
-un-flagged without an escape.
+Each retains its `wallclock:allow` escape: each carries a real `elapsed` /
+`ELAPSED` time-measurement signal and is still (correctly) flagged.  The six
+`nextest` / `occt` config-constant `-lt 3600` pass-level ceilings that task
+#5257 de-annotated are **not** survivors — after the condition-(3) tightening
+they carry no time-measurement signal and pass un-flagged without an escape.
+
+Task #6247 removed `test_lane_x_flock.sh`'s `_ELAPSED18_MS` flock-timing
+ceiling, which used to be the fourth entry: Test 18 now reads concurrency off
+an interval log instead of off the clock, so it needs no escape.
+
+**Nothing enforces this list** — the guard reads only the inline tokens, so the
+list is refreshed BY HAND whenever an escape is added or removed.  `grep -rn
+'wallclock:allow' tests/infra/*.sh` is the authority; this list exists to record
+*why* each survivor is blessed, which the token alone cannot say.
+
+## Bare holder-grace sleep guard (`holder-sleep:allow`)
+
+`test_no_bare_holder_sleep_grace.sh` is the sibling static guard (task #6247,
+PRD `infra-test-wallclock-deflake.md` D4).  Where the wall-clock guard flags an
+*assertion* that reads the clock, this one flags a *fixed sleep standing in for
+a barrier* — the idiom `sleep 0.2  # give holder time to acquire`.
+
+That sleep guesses at a duration on both sides at once.  It can be **outrun**:
+the holder is not holding yet, the code under test takes the uncontended path,
+and the assertions about contention pass vacuously or fail for the wrong reason.
+Where the holder is itself self-timed it can also be **overrun**: the grace eats
+into the hold, so the contention window shrinks below what the assertions need.
+`slot_holder_handshake_lib.sh` closes the first side with a causal barrier
+(`holder_wait_until_held`, `holder_wait_for_marker`, or
+`holder_wait_until_waiter_queued` when the contended party is a blocked
+*waiter* rather than the holder) and the second with a test-released holder
+(`holder_spawn_gated` / `holder_release`).
+
+A `sleep <number>` statement is flagged iff it carries no `holder-sleep:allow`
+token and either:
+
+1. **lexeme** — its own inline comment, or the comment line directly above it,
+   names what it is waiting for (`holder`, `grace`, `give ... time to`,
+   `let ... acquire`).  The comment is the admission: the author knew what the
+   causal event was and slept for a guessed interval instead of waiting for it.
+2. **structural** — it falls within three lines after a backgrounded `flock -x`
+   holder spawn with no loop keyword in between, which catches the same idiom
+   stripped of its comment.
+
+**A barrier's own poll loop is legal and is not flagged.**  A poll loop sleeps
+between probes by construction; clause 1 needs an admission in a comment and
+clause 2 exempts any window containing `while` / `until` / `done`, so every
+barrier implementation — including `slot_holder_handshake_lib.sh`'s own — passes
+un-flagged.  A self-timed holder body such as `( flock -x 9; sleep 45 )` is also
+never a candidate: there the sleep is the HOLD, not a grace.
+
+### Opting out: `holder-sleep:allow`
+
+Annotate a deliberate survivor on the sleep line, or on the comment directly
+above it:
+
+```bash
+sleep 0.3  # holder-sleep:allow — one-sided: the check below can only
+           # false-FAIL, never false-pass, since the holder holds until killed
+```
+
+The reason should say why the fixed interval cannot produce a false PASS, so
+the exemption is auditable.
+
+**Current blessed survivors** (as of task #7359):
+- `test_jobserver_balancer.sh` Block 19b: a kernel-reap grace after `kill -9`,
+  not a holder handshake at all — nothing holds a lock across it.  It matches
+  clause 1 on the lone word *grace*, which is exactly the lexeme over-reach the
+  escape exists for.
+
+**Nothing enforces this list**, for the same reason as `wallclock:allow` above:
+`grep -rn 'holder-sleep:allow' tests/infra/*.sh` is the authority, and this
+list is refreshed BY HAND whenever an escape is added or removed.
 
 ## Opt-in soak: seed lane-lock release (`REIFY_RUN_SEED_LANE_LOCK_SOAK`)
 
@@ -143,8 +259,8 @@ the `LANE-LOCK RELEASE CONTRACT` block at the flock acquire in
 and a copy in this file would be one more site to update in lockstep.
 
 The permanent regression guards are hermetic and live in
-`test_seed_warm_lane.sh` — `H4b`/`H4e` (structural release marker) and `H7b`
-(an inherited FD 9 is never unlocked), plus **`H4c`**, which forks a live
+`test_seed_warm_lane.sh` — `Q4b`/`Q4e` (structural release marker) and `Q7b`
+(an inherited FD 9 is never unlocked), plus **`Q4c`**, which forks a live
 holder of a dup of seed's lane-lock FD and asserts the lock reads back free
 anyway; that last one is the only guard that fails if the release runs but has
 no effect.  This soak is the instrument for re-measuring the rate if the
@@ -181,7 +297,7 @@ allow-listed**, because flagging either would be actively harmful:
   requires a *local* open, so a file that merely inherits the descriptor is
   never considered and the guard is incapable of advising a release it has no
   right to advise.  (Whence `scripts/seed-warm-lane.sh` installs its release
-  trap *inside* the branch that opened the FD; `test_seed_warm_lane.sh`'s `H7b`
+  trap *inside* the branch that opened the FD; `test_seed_warm_lane.sh`'s `Q7b`
   pins that.)
 
 The all-clear is only worth as much as the instrument, so three liveness
@@ -211,12 +327,255 @@ held-after-exit rates are **not repeated here** — same reason as the soak
 section above: they live in the `LANE-LOCK RELEASE CONTRACT` block at the flock
 acquire in `scripts/seed-warm-lane.sh`.
 
+## Self-referential fd-probe guard (`fdprobe:allow`)
+
+Inside `$(...)`, backticks or `<(...)`, fd 1 **is** the pipe bash uses to
+capture the construct's output. So `$(readlink /proc/self/fd/1)` reads back
+`pipe:*` whatever the probed process really inherited: `/proc/self` is the
+`readlink` process itself, running inside the capture. `$BASHPID` spelled
+*inside* the substitution expands to the substitution subshell's PID, so
+`/proc/$BASHPID/fd/1` there is equally vacuous, as are the aliases `/dev/fd/1`
+and `/proc/thread-self/fd/1`. Census origin: codebook entry
+`entry-cand-20260818-22` — task #6219's Block V in `test_seed_warm_lane.sh`
+measured a memory-prescribed probe reading `pipe:*` unconditionally, fix or no
+fix. The correct idiom captures the PID **outside** any substitution:
+
+```bash
+_pid=$BASHPID
+fd1=$(readlink "/proc/$_pid/fd/1")
+```
+
+fd 0 and fd 2 are not flagged: a command substitution inherits them, so
+`test_run_gui_scripts.sh`'s `$(readlink /proc/self/fd/0 ...)` probe is
+correct. One caution the guard does **not** enforce: a probe must not redirect
+the fd it reads — `$(readlink /proc/self/fd/2 2>/dev/null)` reads `/dev/null`.
+
+`scripts/check-fd-probe-self-reference.py` flags a non-comment line on which a
+path naming the current process's fd 1 sits inside such a span; its
+`SELF_FD1` regex is the one list of spellings. The corpus is
+`git ls-files -- '*.sh' 'hooks/*'`, shared with the flock guard above. A line
+carrying `fdprobe:allow` is exempt.
+
+**Scope, honestly.** Spans are line-local, so a `$(` split across lines is not
+followed. Span ends are found by counting parentheses without regard to
+quoting, so a quoted `)` truncates a span:
+`$(echo ")"; readlink /proc/self/fd/1)` is missed. Not covered: a probe inside
+a function whose *caller* wrapped it in `$(...)`, a probe reaching fd 1
+through a pipeline or its own redirect, and bash embedded in `.py` files (a
+line scanner cannot tell code from docstring). `/dev/stdout` is deliberately
+not a `SELF_FD1` spelling: inside a substitution it is an idiomatic *write*
+target (`$(curl -so /dev/stdout ...)`) that a spelling scan cannot tell from a
+probe, so the vacuous `$(readlink -f /dev/stdout)` goes unflagged. The corpus
+is code only: the machine-written mention corpus
+(`docs/legibility/confusion-codebook.yaml`, `plans/confusion-census-*.md`)
+quotes the banned spelling but is structurally outside it, so
+`docs/legibility/landing-contract.md` §5 trigger 2 (a mention-corpus exclusion
+plus a `--scope staged` selector) does not apply.
+
+Premise, detection cases and the all-clear's liveness controls:
+`test_fd_probe_self_reference.py`.
+
+## Cited test-path resolution (`cited-test-path-baseline.manifest`)
+
+`test_cited_test_paths_resolve.sh` guards a single contract: **prose that
+names a `crates/<crate>/tests/**/*.rs` file must name a path that still
+resolves.**  The `harness_<subsystem>/` consolidation moved test units
+wholesale, and every doc comment, `.ri` prose block, corpus fixture and README
+citing a moved unit went stale at once — commit `276d32f025` was a 123-file
+manual cleanup with no gate behind it, so the next consolidation would reopen
+the same hole.  This gate closes the root cause.
+
+Derivation lives **only** in `cited-test-path-lib.sh`, which both the gate and
+the baseline generator source.  The scan is **extension-agnostic by
+construction** — there is no allowlist, just `git grep` over every tracked
+file — because the stale citations measured when the gate was written spanned
+8 extensions across `crates/`, `examples/`, `docs/`, `tests/`,
+`tree-sitter-reify/`, `gui/` and `.claude/`.
+
+### What is flagged
+
+A cited path is reported when it is **not** a tracked file **and** its
+basename resolves to some other tracked path under the **same crate's** tests
+tree — i.e. the citation is *repointable*.  The record carries the suggested
+target; when a basename resolves to more than one candidate the record is
+marked `ambiguous:<N>` and lists them all, rather than guessing one.
+
+**Scope limit, stated rather than left to inference:** a citation whose
+basename resolves to *nothing* is **not** reported.  That covers a genuinely
+DELETED test and synthetic fixture paths such as `crates/foo/tests/bar.rs`.
+Repointing those is impossible and a guessed target would be noise, so they
+are out of charter.  This gate does **not** tell you every citation is live —
+only that no citation is stale *in the repointable sense*.
+
+### What is excluded: mention, not use
+
+A file is excluded from the scan when the citation shape appears in it as the
+gate's own *subject matter* rather than as a reference a reader is meant to
+follow — repointing a mention falsifies the record carrying it, so a finding
+against one is never actionable.  The list lives in
+`cited_test_path_exclusions()` and has two kinds of member.
+
+The gate's own three artifacts (the baseline, the lib, the gate) are excluded
+**structurally** — the baseline is ~300 rows each ending in a stale cited path,
+so without exclusion regenerating it would fold it into itself.
+
+`docs/legibility/confusion-codebook.yaml` is excluded **contingently**.  It is
+dark-factory's agent-confusion registry; its `cause:` / `evidence_quote:` /
+sighting `note:` fields record agents handed a path that did not exist, so the
+stale path *is* the payload.  All 16 citation occurrences in it were measured
+as mention-not-use when the exclusion was added.  **Re-audit trigger:** the
+codebook's schema is open-world, and the v1 vocabulary its merger still admits
+includes remediation-shaped `fix` / `fix_where` fields — unpopulated today, but
+they *would* carry live references.  If either starts being written, revisit
+the exclusion.  The vacuity floor cannot signal this for you: the codebook is
+~0.83% of the citation corpus, far below anything the floor's bounds resolve.
+
+### Fingerprint grammar
+
+Baseline rows are `<containing-file> :: <cited-path>`.  Line numbers **and**
+the suggested target are deliberately erased, so moving a citation within its
+file — or a later change to where its basename resolves — does not spuriously
+red the ratchet.  Same shape as `crates/reify-audit/ptodo-baseline.txt`.
+
+### Regenerating the baseline
+
+```bash
+bash tests/infra/test_cited_test_paths_resolve.sh --emit-baseline \
+    > tests/infra/cited-test-path-baseline.manifest
+```
+
+`--list` prints the live scan records (file, cited path, verdict, target)
+human-readably without touching the manifest.
+
+### The ratchet is ONE-DIRECTIONAL
+
+The gate asserts `live ⊆ baseline` and nothing more.  Rows may be removed
+freely as citations are repointed, and **removing a row never reds the gate** —
+the manifest is a *shrinking grandfather list*, not a lockstep mirror of the
+tree.  The converse (`comm -13`) is deliberately absent for the reason
+`test_reify_audit_ptodo.sh` records for ptodo: asserting it turns every
+citation fix into a red build, punishing exactly the cleanup the gate exists
+to encourage.  The accepted cost is that a grandfathered row may sit in the
+baseline indefinitely, with no forcing function to drain it.
+
+### Two independent signals
+
+The gate reports a **ratchet** and a **vacuity floor** as two separate
+asserts, never collapsed into one.  `comm -23` can only ever say "no NEW
+fingerprints", and the empty set is a subset of everything — so a regex typo
+or a wrong repo root would leave the ratchet permanently and invisibly green.
+The floor observes the **corpus** (index units and citation occurrences), never
+the findings and never the baseline, and fails if the scan collapses toward
+zero.  Its bounds are conservative lower bounds on *the instrument working*,
+not targets for the tree.
+
+## Adoption ratchet (`adoption-ratchet.manifest`)
+
+`test_infra_adoption_ratchet.sh` counts the code lines matching each row's ERE
+in [`adoption-ratchet.manifest`](adoption-ratchet.manifest) and reds only when
+a count EXCEEDS its ceiling — one-directional, like the cited-test-path
+ratchet. The row grammar lives in the manifest header. Measure with
+`python3 tests/infra/adoption_ratchet.py`. Each extraction leaf of PRD
+`docs/prds/v0_6/run-all-runner-infra-harness.md` adds its row at its
+post-extraction count.
+
+## Verify event channel
+
+`REIFY_VERIFY_EVENT_LOG` is the planned JSON-lines verify event channel. Its
+contract is PRD `docs/prds/v0_6/run-all-runner-infra-harness.md` §4 (C1–C4);
+leaf γ (#8685) fills this section in. Nothing reads or writes it yet.
+
+## Assert behaviour, not source prose
+
+An infra assertion's subject is something the code **does**: an exit code,
+stdout/stderr, a constructed argv, files written, process state. It is never
+the natural-language text of a script or test: a comment, header or docstring,
+another test's description label, or the *absence* of phrasing or literals
+that a past review round removed. Such a pin is wrong in both directions.
+Rewording a comment reds the gate with no regression, and a real regression
+outside the comment (a flag leaking into a non-comment string) stays green.
+Census origin: `docs/legibility/confusion-codebook.yaml` entry
+`entry-cand-20260813-12`.
+
+**The tell** is a needle assembled from fragments (`'ex''it'`, `printf '%s'`
+pieces, `_FRAG1`/`_FRAG2`) so the check does not match its own file. Split
+literals *are* legitimate as the self-match-safety convention of a **construct
+lint**: a lint whose subject has a runtime consequence, and whose hermetic
+fixtures prove that it both flags and clears. This README's own guards are the
+examples: the wall-clock upper-bound guard, the bare holder-grace sleep guard,
+the lock-held-across-a-detached-fork guard and the self-referential fd-probe
+guard. Split literals that pin prose, or the file's own edit history, are the
+anti-pattern.
+
+**Review feedback about a comment** is fixed in the comment, with no test.
+Test-first applies to behaviour.
+
+**A real guarantee visible only in source** is tested by driving the behaviour,
+plus a hermetic fixture that must fail (a sensitivity pin). Worked example:
+`test_sync_comments_grep.sh`'s sourcing-returns-control probe replaced a pin on
+a Section 3 comment ("sourcing must stay non-fatal"). The comment pin could not
+see a top-level `exit 0`, which would let every Section 3 assert pass
+vacuously. The probe fails on it, and its `exit 0` fixture proves that.
+
+**Scope.** The rule covers comments and prose inside scripts and tests. It does
+not cover referential-integrity checks (`test_cited_test_paths_resolve.sh`) or
+doc-truth gates over operator documentation (the E-SKILL/E-CLI rows of
+`test_jcodemunch_index_units.sh`). Those are separate contracts.
+
+## Whole-tree gates and unattended writers of `main`
+
+Dark-factory's legibility jobs commit machine-written files straight to `main`,
+unattended, so a `run_all.sh` pool gate that scans inert paths repo-wide must
+exclude the machine-written confusion corpus
+(`docs/legibility/confusion-codebook.yaml`) and needs a `--scope staged`
+selector.  Why, and the existing instances:
+[`docs/legibility/landing-contract.md`](../../docs/legibility/landing-contract.md)
+§3; when to re-check them: §5.
+
+## Signals ignored on entry (nohup, bare `&`)
+
+A non-interactive bash cannot trap or reset a signal that was `SIG_IGN` when it
+started: `trap '…' SIG` returns 0 and installs nothing, and `trap -p SIG` keeps
+printing `trap -- '' SIG<SIG>`. The disposition is inherited by every
+descendant. `nohup` ignores HUP, and a bare `cmd &` from a shell without job
+control ignores INT and QUIT. `run_all.sh`'s own pool form `( … ) &` was
+measured NOT to leak it (child `SigIgn` 0), so the gate is unaffected. An
+operator or agent who backgrounds a sweep with `nohup` or a bare `&` is
+affected. Diagnose with `grep SigIgn /proc/self/status`, where bit (sig−1) is
+set per ignored signal: `…01` under nohup, `…06` under a bare `&`.
+
+A suite that probes trap behaviour owns two jobs:
+
+- **Construct** the disposition its probe child needs with
+  `env --default-signal=SIG child` (GNU coreutils ≥ 8.31). Scope it to that
+  child, never to the suite: a suite with HUP reset is killable by the very
+  hangup it was nohup'd against.
+- **Detect** the residual case in the probe itself (no reset on this host, or a
+  wrapper that re-ignores it) and report a loud `SKIP`, never a contract `FAIL`.
+
+Worked example: `test_nextest_absent_lib.sh` arm 10c, pinned hermetically by
+arms 10i–10l. `set -m` (`test_with_jcodemunch_serve.sh`) is a narrower tool:
+it avoids bash's OWN async-INT ignore for a child the suite launches, but
+cannot undo a disposition the suite inherited. To background a sweep, use the
+harness's own backgrounding or `( setsid cmd ) &`; a bare `setsid cmd &` still
+ignores INT and QUIT (measured `SigIgn` `…06`).
+
 ## Files
 
 | File | Purpose |
 |------|---------|
-| `run_all.sh` | Discovery runner — runs all `test_*.sh` files |
+| `run_all.sh` | Discovery runner — runs every member `classification_discovered_set` returns |
+| `run-all-classification-lib.sh` | Shared library: the discovery predicate (`classification_discovered_set`) and the manifest bucket accessors |
+| `adoption_ratchet.py` | Adoption-ratchet engine and report CLI |
+| `adoption-ratchet.manifest` | Adoption-ratchet rows (grammar in its header) |
+| `test_infra_adoption_ratchet.sh` | Regression guard: no adoption-ratchet row exceeds its ceiling |
+| `test_infra_adoption_ratchet.py` | Its stdlib-unittest body, driving `adoption_ratchet.py` |
 | `test_helpers.sh` | Shared library: `assert()` and `test_summary()` |
+| `cited-test-path-lib.sh` | Shared library: cited-test-path scan, resolve and fingerprint derivation |
+| `cited-test-path-baseline.manifest` | Grandfather baseline for the cited-test-path ratchet |
+| `test_cited_test_paths_resolve.sh` | Regression guard: prose citing a `crates/*/tests/**.rs` path that no longer resolves |
+| `test_fd_probe_self_reference.sh` | Regression guard: a /proc probe of the current process's fd 1 inside a command substitution (reads the capture pipe) |
+| `test_fd_probe_self_reference.py` | Its stdlib-unittest body, driving `scripts/check-fd-probe-self-reference.py` |
 | `test_flock_detached_fork_guard.sh` | Regression guard: a locally-opened flock FD held across a detached `&` fork with no `flock -u` release |
 | `test_no_new_wallclock_upper_bounds.sh` | Regression guard: static-grep for new wall-clock upper-bound asserts |
 | `test_npm_ci_hardening.sh` | Tests npm ci guard conventions in dark-factory-orchestrator.yaml |

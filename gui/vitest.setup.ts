@@ -18,6 +18,12 @@
 // an empty DOMRectList-like, getBoundingClientRect returns a zero-sized DOMRect.
 // This is the standard CodeMirror-in-jsdom workaround and benefits every future
 // CM-measuring test, not just this task's.
+//
+// jsdom also lacks document.elementFromPoint (no layout engine), which the
+// debug bridge's hit-testing tools call; the stub below returns null, i.e.
+// "nothing hit", so every element reads as not hit-testable — consistent with
+// the all-zero rects jsdom reports. It is configurable/writable so a test can
+// vi.spyOn it and vi.restoreAllMocks() reverts to this stub.
 
 function zeroRect(): DOMRect {
   const rect = {
@@ -62,4 +68,12 @@ if (rangeProto) {
       return zeroRect();
     };
   }
+}
+
+if (typeof document !== 'undefined' && typeof document.elementFromPoint !== 'function') {
+  Object.defineProperty(document, 'elementFromPoint', {
+    configurable: true,
+    writable: true,
+    value: (): Element | null => null,
+  });
 }

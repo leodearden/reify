@@ -141,7 +141,21 @@ pub(crate) fn relation_fn_result_type(name: &str, args: &[CompiledExpr]) -> Opti
 ///   `perpendicular` pins 1.
 /// - Named compounds publish their summed-body nominal codim: `concentric` = a
 ///   coincident axis (4); `flush` = a coincident plane (3); `offset` = parallel
-///   (2) + on (1) = 3; `tangent` = 2.
+///   (2) + on (1) = 3.
+/// - `tangent` is OPERAND-CONDITIONAL (task 5540): its codimension is a property
+///   of the operand type PAIR, dispatched through [`tangent_combo`]:
+///
+///   | combo             | operand types              | ΔDOF |
+///   |-------------------|----------------------------|------|
+///   | cylinder/cylinder | `(Axis, Axis)`             | 1    |
+///   | cylinder/plane    | `(Axis, Plane)`/`(Plane, Axis)` | 2 |
+///   | sphere/plane      | `(Point, Plane)`/`(Plane, Point)` | 1 |
+///   | sphere/sphere     | `(Point, Point)`           | 1    |
+///
+///   No blanket value satisfies all four: cylinder/plane pins the axis
+///   perpendicular to the plane normal AND offsets it by the radius (2), while
+///   the other three pin only a centre distance (1). The pre-5540 blanket `2`
+///   was right for cylinder/plane alone.
 pub(crate) fn relation_delta_dof(name: &str, args: &[CompiledExpr]) -> Option<u32> {
     let arg_ty = |i: usize| args.get(i).map(|a: &CompiledExpr| &a.result_type);
     match name {
@@ -181,12 +195,121 @@ pub(crate) fn relation_delta_dof(name: &str, args: &[CompiledExpr]) -> Option<u3
         // removes no DOF. Mirrors the `relation_fn_result_type` /
         // `relation_operand_datum` arity gates so all four offset arms agree.
         "offset" => (args.len() == 3).then_some(3),
-        "tangent" => Some(2),
+        // `tangent` dispatches on the operand type PAIR (task 5540). Reads only
+        // slots 0 and 1 and ignores arity, so the arity-2 unit fixtures stay
+        // meaningful; the trailing radius slots are policed separately in
+        // `check_relation_arg_types`.
+        "tangent" => Some(tangent_combo(arg_ty(0)?, arg_ty(1)?)?.delta_dof()),
         // fasten = coincident over Frame: locks all 6 DOF (η, task 4387).
         "fasten" => match arg_ty(0)? {
             Type::Frame(_) => Some(6),
             _ => None,
         },
+        _ => None,
+    }
+}
+
+/// The four curated tangency combinations, classified from the operand type PAIR
+/// (geometric-relations tangent, task 5540).
+///
+/// A tangency is a property of the two SURFACES, and each surface reaches the
+/// relation as its projected datum: a cylindrical face projects to its central
+/// `Axis`, a spherical face to its centre `Point`, a planar face to its `Plane`.
+/// So the operand pair — not the name — determines both the codimension and the
+/// residual form.
+///
+/// Radii do NOT travel with the operands: the kernel's analytic-surface
+/// projection discards them, so this task carries them as trailing `Scalar`
+/// operands (`tangent(a, b, r)` / `tangent(a, b, r1, r2)`). The surface-carried
+/// `<HasAxis & HasRadius>` form is sibling task #5588.
+///
+/// `reify-constraints` carries the twin of this classifier over `Value` (it
+/// drives the residual dispatch). The two cannot be shared: reify-constraints is
+/// a kernel-free numeric crate that does not depend on reify-compiler, and
+/// [`relation_delta_dof`] is `pub(crate)`. The anti-drift guard is stronger than
+/// table equality — the tangent e2e asserts each combo's MEASURED residual rank
+/// equals the ΔDOF published here, which also catches a residual that is present
+/// but rank-deficient.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TangentCombo {
+    /// `(Axis, Axis)` — two cylinders; the centre distance is pinned.
+    CylCyl,
+    /// `(Axis, Plane)` / `(Plane, Axis)` — a cylinder on a plane.
+    CylPlane,
+    /// `(Point, Plane)` / `(Plane, Point)` — a sphere on a plane.
+    SpherePlane,
+    /// `(Point, Point)` — two spheres; the centre separation is pinned.
+    SphereSphere,
+}
+
+impl TangentCombo {
+    /// The codimension this combo removes — the single home of the count table
+    /// that [`relation_delta_dof`] publishes.
+    ///
+    /// `CylPlane` is 2 and the rest are 1: a cylinder tangent to a plane must be
+    /// PARALLEL to it (1 rotational row) as well as offset by its radius (1
+    /// translational row). Without the rotational row the cylinder could tilt out
+    /// of tangency at exactly zero residual.
+    pub(crate) fn delta_dof(self) -> u32 {
+        match self {
+            TangentCombo::CylPlane => 2,
+            TangentCombo::CylCyl | TangentCombo::SpherePlane | TangentCombo::SphereSphere => 1,
+        }
+    }
+
+    /// How many operands a `tangent` call in this combo takes: two datums plus
+    /// one radius per CURVED surface. A plane has no radius, so the plane combos
+    /// take 3 and the curved/curved combos take 4.
+    fn arity(self) -> usize {
+        match self {
+            TangentCombo::CylPlane | TangentCombo::SpherePlane => 3,
+            TangentCombo::CylCyl | TangentCombo::SphereSphere => 4,
+        }
+    }
+
+    /// The combo's reader-facing signature, listed by the unsupported-combo
+    /// diagnostic so it teaches the vocabulary rather than only rejecting.
+    fn describe(self) -> &'static str {
+        match self {
+            TangentCombo::CylCyl => "cylinder/cylinder tangent(Axis, Axis, r1, r2)",
+            TangentCombo::CylPlane => "cylinder/plane tangent(Axis, Plane, r)",
+            TangentCombo::SpherePlane => "sphere/plane tangent(Point, Plane, r)",
+            TangentCombo::SphereSphere => "sphere/sphere tangent(Point, Point, r1, r2)",
+        }
+    }
+}
+
+/// Every supported tangency combo, in the order the diagnostic lists them.
+const TANGENT_COMBOS: [TangentCombo; 4] = [
+    TangentCombo::CylCyl,
+    TangentCombo::CylPlane,
+    TangentCombo::SpherePlane,
+    TangentCombo::SphereSphere,
+];
+
+/// The four supported tangency signatures, comma-separated — appended to the
+/// unsupported-combo diagnostic so it names the vocabulary the author can reach
+/// for, rather than only saying no.
+fn tangent_supported_combos() -> String {
+    TANGENT_COMBOS
+        .iter()
+        .map(|c| c.describe())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Classify a `tangent` call's first two operand types into one of the four
+/// curated combos, or `None` for a pair with no well-defined tangency (two
+/// planes never touch; a `Direction` carries no position; a `Frame` is not a
+/// surface datum).
+pub(crate) fn tangent_combo(a: &Type, b: &Type) -> Option<TangentCombo> {
+    match (a, b) {
+        (Type::Axis, Type::Axis) => Some(TangentCombo::CylCyl),
+        (Type::Axis, Type::Plane) | (Type::Plane, Type::Axis) => Some(TangentCombo::CylPlane),
+        (Type::Point { .. }, Type::Plane) | (Type::Plane, Type::Point { .. }) => {
+            Some(TangentCombo::SpherePlane)
+        }
+        (Type::Point { .. }, Type::Point { .. }) => Some(TangentCombo::SphereSphere),
         _ => None,
     }
 }
@@ -360,8 +483,9 @@ pub fn relation_contract_for_call(
 //                    `DatumProjectionUnavailable`/`Ambiguous` codes).
 //   (c) CURATION   — only unconditionally-well-defined signatures exist; a
 //                    `distance` call on a `Plane` is redirected to `offset`.
-// PRD decision-6 gradualism: a `Type::Error` (poison) or `Type::TypeParam`
-// (unresolved) slot is skipped silently.
+// PRD decision-6 gradualism: a `Type::Error` (poison), `Type::TypeParam`
+// (unresolved), or `Type::ScalarParam` (known-scalar, unresolved dimension)
+// slot is skipped silently.
 
 /// The datum kind a relation's operands must project to (the §3.3 lift target).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -404,8 +528,16 @@ fn relation_metric_slot(name: &str) -> Option<(usize, DimensionVector, &'static 
 /// form; their arity-2 DERIVE forms are geometry queries and return `None` here
 /// (so the relation checker is a no-op for them). `coincident`/`on`/`tangent`
 /// are intentionally `None`: `coincident` is kind-generic (any same-kind datum
-/// pair), `on` mixes operand kinds (Point + host), and `tangent` is surface-
-/// conditional — none has a single fixed operand datum to police in γ.
+/// pair), `on` mixes operand kinds (Point + host), and `tangent`'s legality is a
+/// property of the operand PAIR — none has a single fixed operand datum to
+/// police in γ.
+///
+/// `tangent` is nonetheless NOT unpoliced: [`check_tangent_operands`] polices it
+/// pair-wise (task 5540), classifying both slots at once through
+/// [`tangent_combo`] and emitting `TangentOperandsUnsupported`. That pair-
+/// conditional table cannot be expressed as a single [`ExpectedDatum`] policed
+/// across both slots — `(Axis, Plane)` is legal and `(Plane, Plane)` is not, so
+/// no per-slot expectation classifies them correctly.
 fn relation_operand_datum(name: &str, args: &[CompiledExpr]) -> Option<ExpectedDatum> {
     match name {
         // Orientation primitives (arity-2): operands are directions.
@@ -470,12 +602,28 @@ pub(crate) fn check_relation_arg_types(
         && let Some(metric) = compiled_args.get(idx)
     {
         match &metric.result_type {
-            // Gradualism: poison / unresolved pass silently.
-            Type::Error | Type::TypeParam(_) => {}
+            // Gradualism: poison / unresolved pass silently. `ScalarParam` is
+            // known-scalar-but-unresolved-dimension (per `Type::ScalarParam`'s
+            // own doc) — the same "known kind, unresolved detail" bucket as
+            // `TypeParam`. Generic fn bodies compile exactly once from the AST
+            // def; a call site only substitutes `Q` into the RETURN type and
+            // never re-checks the body, so this arm DROPS the dimension
+            // comparison for good rather than deferring it to a later
+            // re-check that never happens — accepted gradualism per PRD
+            // decision-6.
+            Type::Error | Type::TypeParam(_) | Type::ScalarParam(_) => {}
             // Dimensioned scalar: mismatch only when the dimension differs.
             Type::Scalar { dimension } if *dimension == expected_dim => {}
             other => emit_unit_mismatch(name, type_name, other, call_span, diagnostics),
         }
+    }
+
+    // (a′) TANGENT PAIR layer — `tangent`'s legality is a property of the operand
+    // PAIR, so it is policed here rather than through `relation_operand_datum`
+    // (which maps a name to ONE expected datum policed across both slots and
+    // cannot express `(Axis, Plane)` legal / `(Plane, Plane)` not).
+    if name == "tangent" {
+        check_tangent_operands(compiled_args, call_span, diagnostics);
     }
 
     // (b) KIND/PROJECTION + (c) CURATION layers — operand slots 0 and 1.
@@ -513,6 +661,140 @@ pub(crate) fn check_relation_arg_types(
             }
         }
     }
+}
+
+/// Police a `tangent` call: classify the operand PAIR into one of the four
+/// curated combos, then check that the call carries exactly the radii that combo
+/// requires and that each radius slot is a `Length`.
+///
+/// This is the compile-time gate that removes tangent's silent no-solve. An
+/// operand shape the residual layer does not handle contributes ZERO Jacobian
+/// rows, which `partition_driving_set` files as redundant with a 0 rank
+/// contribution and post-solve verification reads as residual `0.0` — the
+/// tangency is wholly ignored yet reported satisfied. The residual layer cannot
+/// distinguish "unhandled" from "satisfied", so the rejection has to live here;
+/// with this arm its unsupported branch is unreachable from `.ri`.
+///
+/// Gradualism (PRD decision-6): a `Type::Error` (poison) or `Type::TypeParam`
+/// (unresolved) OPERAND (slots 0/1) passes silently, matching the other
+/// policing layers. The trailing RADIUS slots additionally skip
+/// `Type::ScalarParam` (known-scalar, unresolved dimension) — a strictly wider
+/// set than the operand-pair guard, because a radius is a unit check (family
+/// already known to be scalar) while an operand is a datum-kind check (a
+/// scalar is never a legitimate datum); see the comment at the operand-pair
+/// guard below.
+fn check_tangent_operands(
+    compiled_args: &[CompiledExpr],
+    call_span: SourceSpan,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let (Some(a), Some(b)) = (compiled_args.first(), compiled_args.get(1)) else {
+        // A call too short to name an operand pair has no classifiable combo.
+        // Arity errors for a 0/1-arg call are reported by the arity checker; but
+        // a `tangent(a)` that reached here would otherwise be silently accepted,
+        // so name the shortfall explicitly.
+        emit_tangent_unsupported(
+            compiled_args.first().map(|e| &e.result_type),
+            compiled_args.get(1).map(|e| &e.result_type),
+            call_span,
+            diagnostics,
+        );
+        return;
+    };
+    let (ta, tb) = (&a.result_type, &b.result_type);
+
+    // Gradualism: an already-poisoned or unresolved operand is skipped silently
+    // (anti-cascade — the resolver has already diagnosed it).
+    //
+    // Deliberately narrower than the radius-slot skip-set below: this set does
+    // NOT include `Type::ScalarParam`. These slots feed `tangent_combo`, which
+    // classifies Axis/Plane/Point datum pairs — a scalar is never a legitimate
+    // operand here, so adding `ScalarParam` would suppress a REAL
+    // `TangentOperandsUnsupported`. Do not "fix" this asymmetry to match the
+    // radius loop; the two slots police different questions (datum kind vs.
+    // physical dimension).
+    if matches!(ta, Type::Error | Type::TypeParam(_))
+        || matches!(tb, Type::Error | Type::TypeParam(_))
+    {
+        return;
+    }
+
+    let Some(combo) = tangent_combo(ta, tb) else {
+        emit_tangent_unsupported(Some(ta), Some(tb), call_span, diagnostics);
+        return;
+    };
+
+    // Arity: two datums + one radius per CURVED surface. A wrong count cannot be
+    // repaired by inference — a single radius on a cylinder/cylinder call cannot
+    // say which surface it belongs to — so it is an error, not a warning.
+    let expected_arity = combo.arity();
+    if compiled_args.len() != expected_arity {
+        let radii = expected_arity - 2;
+        let msg = format!(
+            "tangent: {} takes {expected_arity} arguments ({radii} radius \
+             {}, one per curved surface), got {}",
+            combo.describe(),
+            if radii == 1 { "operand" } else { "operands" },
+            compiled_args.len()
+        );
+        let label = format!(
+            "expected {expected_arity} arguments, got {}",
+            compiled_args.len()
+        );
+        diagnostics.push(
+            Diagnostic::error(msg)
+                .with_code(DiagnosticCode::TangentOperandsUnsupported)
+                .with_label(DiagnosticLabel::new(call_span, label)),
+        );
+        return;
+    }
+
+    // UNIT layer for the radius slots. Reported as `ArgTypeMismatch` (the code
+    // every other metric slot uses) rather than the combo code, so a wrong
+    // dimension and an unsupported geometry pairing stay distinguishable. Each
+    // trailing slot is checked — a checker that looked only at slot 2 would let
+    // `tangent(a, b, 5mm, 30deg)` through.
+    for radius in compiled_args.iter().skip(2) {
+        match &radius.result_type {
+            // Gradualism: poison / unresolved pass silently. `ScalarParam` is
+            // known-scalar-but-unresolved-dimension — same bucket as the
+            // metric-slot arm in `check_relation_arg_types` above, and DROPPED
+            // for the same reason: fn bodies compile once, so there is no
+            // later re-check to defer to (see that arm's comment for why).
+            // Not to be confused with the narrower operand-pair guard earlier
+            // in this function.
+            Type::Error | Type::TypeParam(_) | Type::ScalarParam(_) => {}
+            Type::Scalar { dimension } if *dimension == DimensionVector::LENGTH => {}
+            other => emit_unit_mismatch("tangent", "Length", other, call_span, diagnostics),
+        }
+    }
+}
+
+/// Emit the `TangentOperandsUnsupported` diagnostic for an operand pair with no
+/// well-defined tangency, NAMING BOTH operand kinds (through
+/// [`format_relation_arg_ty`], so the vocabulary matches the rest of the relation
+/// family) and LISTING the four supported combos.
+fn emit_tangent_unsupported(
+    a: Option<&Type>,
+    b: Option<&Type>,
+    call_span: SourceSpan,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let render = |t: Option<&Type>| {
+        t.map(format_relation_arg_ty)
+            .unwrap_or_else(|| "<missing>".to_string())
+    };
+    let (na, nb) = (render(a), render(b));
+    let msg = format!(
+        "tangent: no tangency between `{na}` and `{nb}`; supported: {}",
+        tangent_supported_combos()
+    );
+    let label = format!("no tangency between `{na}` and `{nb}`");
+    diagnostics.push(
+        Diagnostic::error(msg)
+            .with_code(DiagnosticCode::TangentOperandsUnsupported)
+            .with_label(DiagnosticLabel::new(call_span, label)),
+    );
 }
 
 /// Emit a B10 unit-layer `ArgTypeMismatch` for a metric slot whose dimension is
@@ -966,7 +1248,119 @@ mod tests {
             ),
             Some(3)
         );
-        assert_eq!(relation_delta_dof("tangent", &aa), Some(2));
+        // `tangent` is operand-conditional (task 5540): the (Axis, Axis)
+        // cylinder/cylinder combo pins only the centre distance ⇒ codim 1. It is
+        // NOT the blanket 2 the pre-5540 table published — see
+        // `relation_delta_dof_tangent_is_operand_conditional` for the full table.
+        assert_eq!(relation_delta_dof("tangent", &aa), Some(1));
+    }
+
+    // ── tangent: operand-conditional ΔDOF (task 5540) ─────────────────────────
+    //
+    // No single blanket count satisfies tangent: cylinder/plane is codim 2 (the
+    // axis must be perpendicular to the plane normal AND offset by the radius),
+    // while the other three combos pin only a centre distance ⇒ codim 1. The
+    // count therefore dispatches on the operand type PAIR.
+
+    /// The full amended ΔDOF table, in both operand orders where the combo is
+    /// asymmetric. Cylinder operands arrive as `Axis` (the kernel projects a
+    /// cylindrical face to its central axis) and sphere operands as `Point` (a
+    /// spherical face projects to its centre).
+    #[test]
+    fn relation_delta_dof_tangent_is_operand_conditional() {
+        let pt = || arg(Type::point3(Type::length()));
+        // cylinder/cylinder — centre distance only.
+        assert_eq!(
+            relation_delta_dof("tangent", &[arg(Type::Axis), arg(Type::Axis)]),
+            Some(1),
+            "tangent(Axis, Axis) is cylinder/cylinder: centre distance only ⇒ 1"
+        );
+        // cylinder/plane — perpendicularity + offset, in both orders.
+        assert_eq!(
+            relation_delta_dof("tangent", &[arg(Type::Axis), arg(Type::Plane)]),
+            Some(2),
+            "tangent(Axis, Plane) is cylinder/plane: axis⊥normal + offset ⇒ 2"
+        );
+        assert_eq!(
+            relation_delta_dof("tangent", &[arg(Type::Plane), arg(Type::Axis)]),
+            Some(2),
+            "tangent(Plane, Axis) is the same combo in the reversed order ⇒ 2"
+        );
+        // sphere/plane — signed centre-to-plane distance, in both orders.
+        assert_eq!(
+            relation_delta_dof("tangent", &[pt(), arg(Type::Plane)]),
+            Some(1),
+            "tangent(Point, Plane) is sphere/plane: centre-to-plane distance ⇒ 1"
+        );
+        assert_eq!(
+            relation_delta_dof("tangent", &[arg(Type::Plane), pt()]),
+            Some(1),
+            "tangent(Plane, Point) is the same combo in the reversed order ⇒ 1"
+        );
+        // sphere/sphere — centre separation.
+        assert_eq!(
+            relation_delta_dof("tangent", &[pt(), pt()]),
+            Some(1),
+            "tangent(Point, Point) is sphere/sphere: centre separation ⇒ 1"
+        );
+    }
+
+    /// An operand shape outside the four curated tangency combos now returns
+    /// `None` rather than the pre-5540 blanket `Some(2)`. Two planes have no
+    /// tangency, two directions carry no position, a `Frame` is not a tangency
+    /// operand, and a 1-arg call cannot name a pair at all.
+    #[test]
+    fn relation_delta_dof_tangent_uncurated_is_none() {
+        assert_eq!(
+            relation_delta_dof("tangent", &[arg(Type::Direction), arg(Type::Direction)]),
+            None
+        );
+        assert_eq!(
+            relation_delta_dof("tangent", &[arg(Type::Plane), arg(Type::Plane)]),
+            None,
+            "two planes have no tangency (parallel planes never touch)"
+        );
+        assert_eq!(
+            relation_delta_dof("tangent", &[arg(Type::Frame(3)), arg(Type::Frame(3))]),
+            None
+        );
+        assert_eq!(
+            relation_delta_dof("tangent", &[arg(Type::Geometry), arg(Type::Geometry)]),
+            None
+        );
+        // A call too short to name an operand PAIR has no classifiable combo.
+        assert_eq!(relation_delta_dof("tangent", &[arg(Type::Axis)]), None);
+        assert_eq!(relation_delta_dof("tangent", &[]), None);
+    }
+
+    /// Reviewer-coupling pin: making the COUNT operand-conditional must not make
+    /// the KIND SPLIT decidable. `joint_self_check::body_has_undecidable_kind_split`
+    /// fires exactly on `count.is_some() && kinds.is_none()`, so every supported
+    /// tangency combo must keep that shape — otherwise the joint self-check's
+    /// gradualism carve-out silently stops firing for tangent.
+    #[test]
+    fn relation_delta_dof_tangent_count_known_kinds_still_undecidable() {
+        let pt = || arg(Type::point3(Type::length()));
+        let combos: Vec<Vec<CompiledExpr>> = vec![
+            vec![arg(Type::Axis), arg(Type::Axis)],
+            vec![arg(Type::Axis), arg(Type::Plane)],
+            vec![arg(Type::Plane), arg(Type::Axis)],
+            vec![pt(), arg(Type::Plane)],
+            vec![arg(Type::Plane), pt()],
+            vec![pt(), pt()],
+        ];
+        for args in &combos {
+            assert!(
+                relation_delta_dof("tangent", args).is_some(),
+                "tangent must publish a COUNT for every supported combo"
+            );
+            assert_eq!(
+                relation_delta_dof_kinds("tangent", args),
+                None,
+                "tangent's rot/trans split stays nominally undecidable — \
+                 body_has_undecidable_kind_split gates on kinds.is_none()"
+            );
+        }
     }
 
     // ── ΔDOF kind split: relation_delta_dof_kinds (task 4396 β) ───────────────
@@ -1210,6 +1604,11 @@ mod tests {
     /// `angle(Axis, Axis, Length)` — the metric must be an `Angle`; a `Length`
     /// metric is a B10 unit error (`ArgTypeMismatch` naming "Angle"). The `Axis`
     /// operands lift to `Direction`, so the metric mismatch is the ONLY diagnostic.
+    ///
+    /// Also doubles as the metric-slot anti-over-broadening guard for the
+    /// `ScalarParam` gradualism skip-set below (see the GRADUALISM section):
+    /// this concrete wrong-dimension case must keep failing, or that widened
+    /// arm has collapsed into "skip all scalars".
     #[test]
     fn check_unit_angle_with_length_metric_is_mismatch() {
         let args = [arg(Type::Axis), arg(Type::Axis), arg(Type::length())];
@@ -1417,6 +1816,195 @@ mod tests {
         let tp = || arg(Type::TypeParam("T".to_string()));
         check_relation_arg_types("distance", &[tp(), tp(), tp()], span(), &mut d3);
         assert!(d3.is_empty(), "TypeParam args must be skipped, got: {d3:?}");
+    }
+
+    /// `Type::ScalarParam` — a `Scalar<Q>` metric inside a generic fn signature
+    /// (`fn f<Q: Dimension>(..., theta: Scalar<Q>) ...`) has a KNOWN family (it is
+    /// a scalar) but an UNRESOLVED dimension. Fn bodies compile once and are
+    /// never re-checked once `Q` is bound, so the unit layer's dimension
+    /// comparison is dropped rather than deferred — the same "known kind,
+    /// unresolved detail" bucket `TypeParam` gradualism already covers.
+    /// Exercises the metric slot for all three metric-DRIVE relation names.
+    #[test]
+    fn check_gradualism_scalar_param_metric_slot_passes_silently() {
+        // angle: Axis/Axis operands + Scalar<Q> metric.
+        let mut d1 = Vec::new();
+        check_relation_arg_types(
+            "angle",
+            &[
+                arg(Type::Axis),
+                arg(Type::Axis),
+                arg(Type::ScalarParam("Q".to_string())),
+            ],
+            span(),
+            &mut d1,
+        );
+        assert!(
+            d1.is_empty(),
+            "angle metric ScalarParam(Q) must be skipped, got: {d1:?}"
+        );
+
+        // distance: Point3<Length>/Point3<Length> operands + Scalar<Q> metric.
+        let pt = || arg(Type::point3(Type::length()));
+        let mut d2 = Vec::new();
+        check_relation_arg_types(
+            "distance",
+            &[pt(), pt(), arg(Type::ScalarParam("Q".to_string()))],
+            span(),
+            &mut d2,
+        );
+        assert!(
+            d2.is_empty(),
+            "distance metric ScalarParam(Q) must be skipped, got: {d2:?}"
+        );
+
+        // offset: Plane/Plane operands + Scalar<Q> metric.
+        let mut d3 = Vec::new();
+        check_relation_arg_types(
+            "offset",
+            &[
+                arg(Type::Plane),
+                arg(Type::Plane),
+                arg(Type::ScalarParam("Q".to_string())),
+            ],
+            span(),
+            &mut d3,
+        );
+        assert!(
+            d3.is_empty(),
+            "offset metric ScalarParam(Q) must be skipped, got: {d3:?}"
+        );
+    }
+
+    /// `Type::ScalarParam` in `tangent`'s radius slots — driven through the
+    /// public `check_relation_arg_types("tangent", ...)` entry point so the test
+    /// exercises the real call path into `check_tangent_operands`. Covers every
+    /// radius arity `tangent_combo` allows, including a MIXED concrete/ScalarParam
+    /// pair (the case the radius loop's `.skip(2)` iteration exists to catch — a
+    /// checker that looked only at slot 2 would miss a ScalarParam at slot 3).
+    #[test]
+    fn check_gradualism_scalar_param_tangent_radius_passes_silently() {
+        let sp = || arg(Type::ScalarParam("Q".to_string()));
+
+        // cylinder/plane: one radius.
+        let mut d1 = Vec::new();
+        check_relation_arg_types(
+            "tangent",
+            &[arg(Type::Axis), arg(Type::Plane), sp()],
+            span(),
+            &mut d1,
+        );
+        assert!(
+            d1.is_empty(),
+            "tangent(Axis, Plane, ScalarParam) must be skipped, got: {d1:?}"
+        );
+
+        // cylinder/cylinder: two radii, both ScalarParam.
+        let mut d2 = Vec::new();
+        check_relation_arg_types(
+            "tangent",
+            &[arg(Type::Axis), arg(Type::Axis), sp(), sp()],
+            span(),
+            &mut d2,
+        );
+        assert!(
+            d2.is_empty(),
+            "tangent(Axis, Axis, ScalarParam, ScalarParam) must be skipped, got: {d2:?}"
+        );
+
+        // cylinder/cylinder: MIXED radii — one concrete Length, one ScalarParam.
+        let mut d3 = Vec::new();
+        check_relation_arg_types(
+            "tangent",
+            &[arg(Type::Axis), arg(Type::Axis), arg(Type::length()), sp()],
+            span(),
+            &mut d3,
+        );
+        assert!(
+            d3.is_empty(),
+            "tangent(Axis, Axis, Length, ScalarParam) must be skipped, got: {d3:?}"
+        );
+
+        // sphere/plane: one radius.
+        let pt = || arg(Type::point3(Type::length()));
+        let mut d4 = Vec::new();
+        check_relation_arg_types("tangent", &[pt(), arg(Type::Plane), sp()], span(), &mut d4);
+        assert!(
+            d4.is_empty(),
+            "tangent(Point, Plane, ScalarParam) must be skipped, got: {d4:?}"
+        );
+    }
+
+    /// Anti-over-broadening negative guard: a CONCRETE wrong-dimension radius must
+    /// STILL emit `ArgTypeMismatch` even after `ScalarParam` joins the tangent
+    /// radius-slot skip-set.
+    #[test]
+    fn check_gradualism_scalar_param_tangent_radius_still_rejects_concrete_wrong_dimension() {
+        let args = [arg(Type::Axis), arg(Type::Plane), arg(Type::angle())];
+        let mut diags = Vec::new();
+        check_relation_arg_types("tangent", &args, span(), &mut diags);
+        assert_eq!(
+            diags.len(),
+            1,
+            "expected exactly 1 diagnostic, got: {diags:?}"
+        );
+        assert_eq!(diags[0].code, Some(DiagnosticCode::ArgTypeMismatch));
+    }
+
+    /// Anti-over-broadening negative guard, operand layer: pins the deliberate
+    /// asymmetry documented at `check_tangent_operands`'s operand-pair
+    /// gradualism guard — that guard's skip-set is narrower than the radius
+    /// loop's and does NOT include `ScalarParam`, because a scalar is never a
+    /// legitimate `tangent` datum. A `ScalarParam` fed into operand slot 0
+    /// must still draw `TangentOperandsUnsupported`. Without this test, a
+    /// future "harmonise the two skip-sets" edit that adds `ScalarParam` to
+    /// that guard would suppress a real diagnostic and the suite would stay
+    /// green.
+    #[test]
+    fn check_gradualism_scalar_param_tangent_operand_still_rejects() {
+        let args = [
+            arg(Type::ScalarParam("Q".to_string())),
+            arg(Type::Plane),
+            arg(Type::length()),
+        ];
+        let mut diags = Vec::new();
+        check_relation_arg_types("tangent", &args, span(), &mut diags);
+        assert_eq!(
+            diags.len(),
+            1,
+            "expected exactly 1 diagnostic, got: {diags:?}"
+        );
+        assert_eq!(
+            diags[0].code,
+            Some(DiagnosticCode::TangentOperandsUnsupported)
+        );
+    }
+
+    /// Anti-over-broadening negative guard, operand layer (KIND/PROJECTION):
+    /// the sibling of the guard above for `check_relation_arg_types`'s own
+    /// operand-datum loop (§3.2 layer (b)), which is likewise deliberately
+    /// narrower than the metric-slot skip-set and does not include
+    /// `ScalarParam`. A `ScalarParam` operand can never lift to a
+    /// `Direction`/`Axis`/`Plane`/`Point` datum, so it must still draw
+    /// `DatumProjectionUnavailable`.
+    #[test]
+    fn check_gradualism_scalar_param_angle_operand_still_rejects() {
+        let args = [
+            arg(Type::ScalarParam("Q".to_string())),
+            arg(Type::Axis),
+            arg(Type::angle()),
+        ];
+        let mut diags = Vec::new();
+        check_relation_arg_types("angle", &args, span(), &mut diags);
+        assert_eq!(
+            diags.len(),
+            1,
+            "expected exactly 1 diagnostic, got: {diags:?}"
+        );
+        assert_eq!(
+            diags[0].code,
+            Some(DiagnosticCode::DatumProjectionUnavailable)
+        );
     }
 
     // Arity-gating + unknown-name no-ops — the checker must not fire spuriously.

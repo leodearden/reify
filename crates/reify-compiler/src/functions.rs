@@ -1,5 +1,6 @@
 use super::*;
 
+use crate::fn_return_check::{FnOwner, reconcile_fn_return};
 use crate::types::TopologyTemplate;
 
 /// Push the appropriate unresolved-type diagnostic for a fn signature position.
@@ -39,6 +40,25 @@ fn push_signature_type_error(
     }
 }
 
+/// Merge a module's declared `fn` names and structure names into the ONE
+/// callable vocabulary read by the terminal first-arg fallback.
+///
+/// Rationale, and why the two inputs stay separate upstream:
+/// [`crate::scope::CompilationScope::declared_callable_names`].
+///
+/// Called once per PHASE, not once per function: the result is a module
+/// invariant, and every scope built below merely borrows it.
+pub(crate) fn declared_callable_names(
+    declared_fn_names: &HashSet<String>,
+    structure_names: &HashSet<String>,
+) -> HashSet<String> {
+    declared_fn_names
+        .iter()
+        .chain(structure_names.iter())
+        .cloned()
+        .collect()
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn compile_function(
     fn_def: &reify_ast::FnDef,
@@ -47,6 +67,7 @@ pub(crate) fn compile_function(
     alias_registry: &TypeAliasRegistry,
     structure_names: &HashSet<String>,
     trait_names: &HashSet<String>,
+    declared_callable_names: &HashSet<String>,
     prelude_template_registry: Option<&HashMap<String, &TopologyTemplate>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<CompiledFunction> {
@@ -156,6 +177,10 @@ pub(crate) fn compile_function(
     if let Some(reg) = prelude_template_registry {
         neutral_scope.set_template_registry(reg);
     }
+    // Neutral for VALUE bindings, not for the module's declared vocabulary: a
+    // default like `= helper(1.0)` compiles against the same partially-grown
+    // `functions` table as the body below, so it must be answered the same way.
+    neutral_scope.declared_callable_names = Some(declared_callable_names);
     let param_defaults: Vec<Option<CompiledExpr>> = fn_def
         .params
         .iter()
@@ -274,7 +299,9 @@ pub(crate) fn compile_function(
                     }
                 }
             }
-            None => Type::dimensionless_scalar(), // default return type
+            // An un-annotated return type defaults to `Real`; `reconcile_fn_return`
+            // reports a body that contradicts that default.
+            None => Type::dimensionless_scalar(),
         }
     };
 
@@ -291,6 +318,10 @@ pub(crate) fn compile_function(
     if let Some(reg) = prelude_template_registry {
         scope.set_template_registry(reg);
     }
+    // The module's declared callable vocabulary — see
+    // `CompilationScope::declared_callable_names` for why this body needs it.
+    // Borrowed, never merged here: `phase_functions` builds it once.
+    scope.declared_callable_names = Some(declared_callable_names);
     for (name, ty) in &params {
         scope.register(name, ty.clone());
     }
@@ -370,7 +401,7 @@ pub(crate) fn compile_function(
     let annotations = lower_annotations(&fn_def.annotations, diagnostics);
     validate_annotations(&annotations, "function", diagnostics);
 
-    Some(CompiledFunction {
+    let compiled = CompiledFunction {
         name: fn_def.name.clone(),
         doc: fn_def.doc.clone(),
         is_pub: fn_def.is_pub,
@@ -385,7 +416,9 @@ pub(crate) fn compile_function(
         annotations,
         optimized_target: opt_target,
         type_params: convert_type_params(&fn_def.type_params),
-    })
+    };
+    reconcile_fn_return(fn_def, FnOwner::Free, &compiled, diagnostics);
+    Some(compiled)
 }
 
 /// Rewrite bare `Identifier(x)` references to conformer members into `self.x`
@@ -639,9 +672,22 @@ pub(crate) fn compile_assoc_function(
         params.push((p.name.clone(), ty));
     }
 
+    // Only the STRUCTURE half of the callable vocabulary here — see
+    // `CompilationScope::declared_callable_names`. The absent fn half is a
+    // decision, not an omission: conformance runs after `phase_functions`, so
+    // the `functions` table these bodies resolve against is already COMPLETE
+    // and a call to any declared fn resolves instead of falling through.
+    // Pinned from both sides by `assoc_fn_calling_a_declared_fn_stays_clean`
+    // and `genuinely_undeclared_callee_in_an_assoc_fn_body_still_warns`.
+    //
+    // Borrowed outright rather than merged with an empty fn set: the merge
+    // would reproduce `structure_names` byte-for-byte at every call.
+    let declared_callables = Some(structure_names);
+
     // Compile default expressions in a neutral scope (definition-time semantics,
     // matching `compile_function`). The `self` receiver never carries a default.
-    let neutral_scope = CompilationScope::new(&fn_def.name);
+    let mut neutral_scope = CompilationScope::new(&fn_def.name);
+    neutral_scope.declared_callable_names = declared_callables;
     let param_defaults: Vec<Option<CompiledExpr>> = fn_def
         .params
         .iter()
@@ -682,6 +728,7 @@ pub(crate) fn compile_assoc_function(
     // Body scope with all params (including the `self` receiver) registered so a
     // body that names `self` resolves against the conformer type.
     let mut scope = CompilationScope::new(&fn_def.name);
+    scope.declared_callable_names = declared_callables;
     for (name, ty) in &params {
         scope.register(name, ty.clone());
     }
@@ -746,7 +793,7 @@ pub(crate) fn compile_assoc_function(
     let annotations = lower_annotations(&fn_def.annotations, diagnostics);
     validate_annotations(&annotations, "function", diagnostics);
 
-    Some(CompiledFunction {
+    let compiled = CompiledFunction {
         name: fn_def.name.clone(),
         doc: fn_def.doc.clone(),
         is_pub: fn_def.is_pub,
@@ -761,7 +808,9 @@ pub(crate) fn compile_assoc_function(
         annotations,
         optimized_target: opt_target,
         type_params: convert_type_params(&fn_def.type_params),
-    })
+    };
+    reconcile_fn_return(fn_def, FnOwner::Conformer, &compiled, diagnostics);
+    Some(compiled)
 }
 
 /// Resolve a type name in field context. Unlike resolve_type_name, unresolved

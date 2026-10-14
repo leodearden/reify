@@ -23,10 +23,12 @@ tasks:
     verdict: PASS
     delivered_check:
       kind: grep
-      pattern: dependent_cells:\s*Vec::new\(\)
+      # #7739. Accepted gap: proves the field init, not the fold contents; behavioural cover is
+      # crates/reify-constraints/tests/joint_drive_per_trial_recompute.rs (`single_component_subproblem_still_receives_the_full_dependent_cells_list`).
+      pattern: dependent_cells:\s*sub_dependent_cells
       paths:
       - crates/reify-constraints/src/registry.rs
-      expect: absent
+      expect: present
   - name: let-indirection-baseline-bug-real
     binding: 'signal premise — probe 2026-07-24: reify eval fixtures/discrete_let_cont.ri
       exit 0, W_UNDERDETERMINED "not touched by any constraint", all undef'
@@ -110,7 +112,8 @@ tasks:
       reason: post-wiring solve asserted by γ tests + ε harness e2e
 - label: δ
   task_id: 5470
-  title: 'PRD2 δ: discrete domain channel — Int bound-mining + discrete_set → AutoParam.domain'
+  title: 'PRD2 δ: discrete domain channel — AutoParam.domain + Int bound-mining + Enum
+    declared domain + discreteness routing'
   capabilities:
   - name: int-arm-needs-only-bounds
     binding: substrate — cpsat.rs build_variable_domain Int arm + MAX_INT_DOMAIN=1000;
@@ -121,25 +124,29 @@ tasks:
       kind: manual
       reason: mining behaviour asserted by δ tests (B7); message-string absence checks
         would be brittle
-  - name: solver-hints-cross-ir-seam
-    binding: 'capability→producer (this leaf) — gap verified (M-008 re-check 2026-07-24):
-      ValueCellDecl.solver_hints types.rs:1125 compiler-side only; zero SolverHint
-      refs in reify-ir/reify-constraints/reify-eval src'
+  - name: autoparam-is-discrete-in-ir
+    binding: 'producer-self (re-scoped 2026-10-08, esc-5470-5) — AutoParam.domain: Option<DiscreteDomain>
+      (hard, producer-agnostic) and AutoParam::is_discrete() defined once in reify-ir.
+      Replaces solver-hints-cross-ir-seam: hints no longer cross the IR seam (discrete_set
+      is sugar for `x in C`, docs/prds/v0_6/catalog-membership-constraint.md γ #8357).
+      Matches #5470 metadata.delivered_checks.'
     verdict: PASS
     delivered_check:
       kind: grep
-      pattern: solver_hint
+      pattern: fn is_discrete
       paths:
       - crates/reify-ir/src
       expect: present
-  - name: stdlib-catalog-surface-validates
-    binding: 'substrate probe 2026-07-24 — structure def + standard_bolt_lengths:
-      reify check exit 0; local-let catalog REJECTED exit 1 ("unknown selector kind")
-      → v1 stdlib-only (PRD §2.3/§9); catalogs at crates/reify-compiler/stdlib/standard_stock.ri'
+  - name: enum-declared-domain-cold-and-warm
+    binding: 'producer-self (2026-10-08, #5470 ruling M) — an Enum auto''s domain is its
+      declared unit variants, built by one shared helper that every AutoParam builder calls
+      (build_solver_problem, build_merged_solver_problem, engine_edit.rs edit_param / edit_source);
+      PRD §5 B7b.'
     verdict: PASS
     delivered_check:
       kind: manual
-      reason: probe-captured compile behaviour; δ e2e asserts the wired resolution
+      reason: behavioural — cold eval and warm edit_param tests on discrete_enum_auto.ri
+        with `s != Supplier.Acme`
   - name: int-auto-baseline-failure
     binding: 'signal premise — probe: discrete_int_auto.ri exit 1 "not uniquely determined"
       + undef'
@@ -153,8 +160,8 @@ tasks:
     + harness e2e'
   capabilities:
   - name: producers-all-upstream
-    binding: DAG-direction — ε ← {γ, δ} ← β ← α; no capability owed by a downstream
-      task (anti-inversion)
+    binding: DAG-direction — ε ← {γ, δ} ← β ← α, and (2026-10-08) ε ← catalog-membership
+      γ #8357; no capability owed by a downstream task (anti-inversion)
     verdict: PASS
     delivered_check:
       kind: manual
@@ -187,7 +194,10 @@ tasks:
     verdict: PASS
     delivered_check:
       kind: manual
-      reason: post-fix (up=true, t≈3.0, BestFound) asserted by ζ tests B9/B10
+      reason: 'post-fix asserted by ζ tests B9/B10 — amended 2026-09-28 (Leo, esc-5472-2):
+        up=true, score(up=true) < score(up=false), BestFound, no residual failure;
+        t not asserted until #6678 lands, t=6.5 never pinned; t≈3.06 on the Money twin
+        (B10)'
   - name: inner-solve-machinery-landed
     binding: substrate — DimensionalSolver + robustness floor solver.rs:487 (#4789)
       + cost_robustness_tradeoff (#4791); floor composes by construction on the inner
@@ -197,13 +207,19 @@ tasks:
       kind: manual
       reason: landed substrate fact; composition asserted by B10
   - name: expected-optimum-hand-checked
-    binding: 'floor:none — combinatorial+linear: up=true ⇒ min t = 3.0 < up=false
-      branch 5.0; solver-tolerance assertion only, no accuracy-bound premise (G6 branch
-      1 N/A)'
+    binding: 'RE-SCOPED 2026-09-28 (Leo, esc-5472-2) — the arithmetic optimum (up=true,
+      t=3.0) is right, but the unchanged DimensionalSolver does not reach it: pinned
+      leaves give up=true→t=6.5, up=false→t=7.5 (seed-box midpoints, #6756; root fix
+      #6678 κ, not a ζ prereq). The leaf ordering survives, so the premise is now the
+      discrete choice up=true with score(up=true) < score(up=false); t is not asserted
+      until #6678 lands. Original binding (FAILED as a solver-reach premise): floor:none
+      — combinatorial+linear: up=true ⇒ min t = 3.0 < up=false branch 5.0; solver-tolerance
+      assertion only, no accuracy-bound premise (G6 branch 1 N/A)'
     verdict: PASS
     delivered_check:
       kind: manual
-      reason: arithmetic identity recorded in the manifest
+      reason: arithmetic identity recorded in the manifest; solver-reach premise re-scoped
+        by esc-5472-2 (B9 asserts the discrete choice, not t)
 - label: η
   task_id: 5473
   title: 'PRD2 η: companion docs — spec deferred-capabilities row + F-result/M-WHOLE

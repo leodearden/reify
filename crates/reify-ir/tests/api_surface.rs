@@ -9,6 +9,19 @@
 //!
 //! Compile-time guarantees that reify-ir's public API exposes the listed symbols
 //! via both flat and module-path spellings.
+//!
+//! # Two tiers — the contract, and the PROVISIONAL section
+//!
+//! Everything above the `PROVISIONAL SURFACE` banner near the end of this file
+//! is the contract: reify-ir MUST export it, and removing or narrowing one of
+//! those items is an API break that has to be argued as such.
+//!
+//! Items BELOW that banner are explicitly **not** part of the contract. They
+//! are surfaces widened ahead of a consumer that has not landed yet, recorded
+//! here so the widening is at least visible and its behavioural shape is
+//! not silently wrong. Narrowing one back is a normal private-helper edit, not
+//! an API break — the correct response is to DELETE its block here, not to
+//! treat this file's failure as a regression to be worked around.
 
 // ── annotation (flat form) ───────────────────────────────────────────────────
 use reify_ir::{Annotation, AnnotationArg, AnnotationArgValue, has_test_annotation};
@@ -125,6 +138,15 @@ use reify_ir::geometry::{
     debug_assert_query_many_invariant as debug_assert_query_many_invariant_mod,
 };
 
+// ── indeterminate (flat form) ────────────────────────────────────────────────
+use reify_ir::{IndeterminateReason, StructuralReason, TransientReason};
+
+// ── indeterminate (module-path form) ─────────────────────────────────────────
+use reify_ir::indeterminate::{
+    IndeterminateReason as IndeterminateReasonMod, StructuralReason as StructuralReasonMod,
+    TransientReason as TransientReasonMod,
+};
+
 // ── kernel_validation (flat form) ────────────────────────────────────────────
 use reify_ir::{
     BOX_DIMENSIONS_MUST_BE_FINITE_POSITIVE, SPHERE_RADIUS_MUST_BE_FINITE_POSITIVE,
@@ -185,11 +207,16 @@ use reify_ir::traits::{
 };
 
 // ── ri_literal (flat form) ───────────────────────────────────────────────────
-use reify_ir::{RiLiteralError, value_to_ri_literal, value_to_ri_literal_with_unit};
+use reify_ir::{
+    RiLiteralError, UnitScope, value_to_ri_literal, value_to_ri_literal_in_scope,
+    value_to_ri_literal_with_unit,
+};
 
 // ── ri_literal (module-path form) ────────────────────────────────────────────
 use reify_ir::ri_literal::{
-    RiLiteralError as RiLiteralErrorMod, value_to_ri_literal as value_to_ri_literal_mod,
+    RiLiteralError as RiLiteralErrorMod, UnitScope as UnitScopeMod,
+    value_to_ri_literal as value_to_ri_literal_mod,
+    value_to_ri_literal_in_scope as value_to_ri_literal_in_scope_mod,
     value_to_ri_literal_with_unit as value_to_ri_literal_with_unit_mod,
 };
 
@@ -241,9 +268,18 @@ use reify_ir::ranked::{
     RankedSolveResult as RankedSolveResultMod,
 };
 
+// ── completeness (flat form) ─────────────────────────────────────────────────
+use reify_ir::{Completeness, PartialReason};
+
+// ── completeness (module-path form) ──────────────────────────────────────────
+use reify_ir::completeness::{
+    Completeness as CompletenessMod,
+    PartialReason as PartialReasonMod,
+};
+
 // ── cross-crate deps ─────────────────────────────────────────────────────────
 use reify_ast::{Expr, ExprKind};
-use reify_core::SourceSpan;
+use reify_core::{DimensionVector, SourceSpan};
 
 // =============================================================================
 // Surface assertions
@@ -548,6 +584,16 @@ fn geometry_types_in_scope() {
 }
 
 #[test]
+fn indeterminate_types_in_scope() {
+    let _: fn() -> Option<IndeterminateReason> = || None;
+    let _: fn() -> Option<TransientReason> = || None;
+    let _: fn() -> Option<StructuralReason> = || None;
+    let _: fn() -> Option<IndeterminateReasonMod> = || None;
+    let _: fn() -> Option<TransientReasonMod> = || None;
+    let _: fn() -> Option<StructuralReasonMod> = || None;
+}
+
+#[test]
 fn kernel_validation_constants() {
     assert!(!BOX_DIMENSIONS_MUST_BE_FINITE_POSITIVE.is_empty());
     assert!(!SPHERE_RADIUS_MUST_BE_FINITE_POSITIVE.is_empty());
@@ -665,6 +711,24 @@ fn value_types_in_scope() {
     // function.
     assert!(quaternion_is_finite(1.0, 0.0, 0.0, 0.0));
     assert!(quaternion_is_finite_mod(1.0, 0.0, 0.0, 0.0));
+
+    // Value::kind_name (task #6466): exhaustive discriminant-name method,
+    // hoisted so reify-ir/ri_literal.rs and reify-constraints delegate to
+    // one table instead of each spelling out their own.
+    //
+    // Reachability + signature only. The fn-pointer coercion pins the exact
+    // shape (`&Value -> &'static str`), so a return-type change to `String`
+    // reds here. Asserting the same call through `ValueMod` would be
+    // tautological — `ValueMod` is proven identical to `Value` by the
+    // type-identity assertions above — and the name TABLE is pinned
+    // variant-by-variant by `kind_name_is_pinned_for_every_variant` in
+    // reify-ir/src/value.rs, not here.
+    let _: fn(&Value) -> &'static str = Value::kind_name;
+    let bb: Value = Value::BoundingBox {
+        min: Box::new(Value::Undef),
+        max: Box::new(Value::Undef),
+    };
+    assert_eq!(bb.kind_name(), "BoundingBox");
 }
 
 #[test]
@@ -693,6 +757,18 @@ fn ranked_types_in_scope() {
     let _: fn() -> Option<OptimalityStatusMod> = || None;
     let _: fn() -> Option<RankedCandidateMod> = || None;
     let _: fn() -> Option<RankedSolveResultMod> = || None;
+}
+
+/// `Completeness` / `PartialReason` are CONTRACT: the completeness verdict is the
+/// vocabulary every producer and every consumer of a ranked solve speaks
+/// (solution-set-completeness §3.1), and `RankedSolveResult::Ranked` already
+/// carries one, so the shape is load-bearing cross-crate from task α onward.
+#[test]
+fn completeness_types_in_scope() {
+    let _: fn() -> Option<Completeness> = || None;
+    let _: fn() -> Option<PartialReason> = || None;
+    let _: fn() -> Option<CompletenessMod> = || None;
+    let _: fn() -> Option<PartialReasonMod> = || None;
 }
 
 /// S1 RED — §7.1 IR contract: widened EnumVariantDef / VariantPayload /
@@ -812,4 +888,113 @@ fn ri_literal_flat_and_module_path() {
         e,
         RiLiteralError::UnsupportedValueKind { kind: "Undef" }
     );
+
+    // The opt-in COMPOUND regime (task #6400), in both spellings. The
+    // `UnitScope` argument is what a caller must consciously supply to assert
+    // the target module's registry seeds the SI base symbols, so its
+    // reachability is part of the contract, not incidental.
+    //
+    // The annotation below is load-bearing: it fails to compile if the scope
+    // parameter is dropped, reordered, or widened to a non-`Copy` handle.
+    let in_scope: fn(&Value, Option<&str>, UnitScope) -> Result<String, RiLiteralError> =
+        value_to_ri_literal_in_scope;
+    let area = Value::Scalar {
+        si_value: 2.5,
+        dimension: reify_core::DimensionVector::AREA,
+    };
+    let seeded = in_scope(&area, None, UnitScope::SiBaseUnitsSeeded);
+    assert!(seeded.is_ok(), "AREA must be emittable under SiBaseUnitsSeeded");
+    assert_eq!(
+        value_to_ri_literal_in_scope_mod(&area, None, UnitScopeMod::SiBaseUnitsSeeded),
+        seeded
+    );
+    // …and the shipped scope is unchanged.
+    assert_eq!(
+        in_scope(&area, None, UnitScope::BareBuiltinsOnly),
+        value_to_ri_literal(&area)
+    );
+    assert_eq!(UnitScope::BareBuiltinsOnly, UnitScopeMod::BareBuiltinsOnly);
+}
+
+
+// ═════════════════════════════════════════════════════════════════════════════
+// PROVISIONAL SURFACE — NOT part of the pinned contract above.
+//
+// Everything below is a surface widened ahead of a consumer that has not
+// landed. It is recorded here so the widening is visible and its behavioural
+// shape is not silently wrong — NOT to freeze it. Narrowing one of these items
+// back is a normal private-helper edit, not an API break: delete its `use`
+// lines and its test together and move on. Do not migrate an item up into the
+// contract without an explicit decision that its shape has settled.
+// ═════════════════════════════════════════════════════════════════════════════
+
+use reify_ir::dimension_unit_label;
+use reify_ir::value::dimension_unit_label as dimension_unit_label_mod;
+
+/// PROVISIONAL (see the banner above). Task λ (#5788) §11 Q2:
+/// `dimension_unit_label` is reachable CROSS-CRATE, in both spellings, and
+/// returns contract C2's ASCII exponent alphabet.
+///
+/// §11 Q2 offered two resolutions — widen to `pub` (its suggested one) or keep
+/// it private and assert S3 structurally — and delegated the choice to λ/μ. λ
+/// took the suggested one, so task μ can observe S3 directly instead of through
+/// a structural proxy.
+///
+/// Task #6674 landed the first real call site — `Value`'s `Display` impl, which
+/// sources the `reify eval` cell's unit label from this function — so the
+/// SIGNATURE is no longer unexercised. That consumer is IN-CRATE, so it says
+/// nothing about the part this file actually records: the CROSS-CRATE `pub`
+/// widening λ made for μ still has no non-test caller outside the crate. This
+/// therefore stays below the banner rather than moving into the contract — it
+/// remains a visibility RECORD, not a stability promise, and narrowing back to
+/// `pub(crate)` would still be a normal edit.
+///
+/// WHY the record has to live in an integration test at all. This is a
+/// *visibility* assertion, and visibility is only observable from OUTSIDE the
+/// crate — an in-crate `#[cfg(test)] mod tests` can call a private `fn` and
+/// would pass vacuously no matter what the item's visibility said. `tests/`
+/// compiles as a separate crate, so the two `use` lines above are the
+/// assertion: while `dimension_unit_label` was a private top-level `fn` in
+/// `value.rs`, neither resolved and this file failed to BUILD with E0603. That
+/// build failure was the RED.
+///
+/// Both spellings are recorded because lib.rs exports each module as `pub mod`
+/// AND re-exports its symbols at the crate root — recording only one would let
+/// the other rot silently.
+#[test]
+fn dimension_unit_label_reachable_cross_crate_with_ascii_labels() {
+    assert_eq!(dimension_unit_label(&DimensionVector::AREA), "m^2");
+    assert_eq!(dimension_unit_label(&DimensionVector::VOLUME), "m^3");
+
+    // Both spellings name the same function.
+    assert_eq!(
+        dimension_unit_label(&DimensionVector::AREA),
+        dimension_unit_label_mod(&DimensionVector::AREA)
+    );
+}
+
+use reify_ir::SolutionSet;
+use reify_ir::completeness::SolutionSet as SolutionSetMod;
+
+/// PROVISIONAL (see the banner above). `SolutionSet` lands with the
+/// solution-set-completeness carrier at task α (#6706), but **nothing consumes it
+/// yet**: `RankedSolveResult::Ranked` carries a bare `completeness` field, not a
+/// `SolutionSet`, and the first real consumers are ζ #6711 → #6902 (box-based basin
+/// identity, which supplies the deduplicated `solutions` this struct's
+/// `proven_count`/`unique` presuppose) and PRD 2 θ #5474 (rendering the composed
+/// verdict).
+///
+/// It is recorded here rather than in the contract precisely because of that gap:
+/// the widening should be VISIBLE — this file exists to make an
+/// exported-ahead-of-its-consumer surface legible — without being frozen before a
+/// call site has exercised it. If ζ finds the pairing wants a different shape,
+/// narrowing it back is a normal edit: delete these two `use` lines and this test.
+///
+/// Both spellings are recorded because lib.rs exports the module as `pub mod` AND
+/// re-exports the symbol at the crate root; recording only one would let the other
+/// rot silently.
+#[test]
+fn solution_set_provisional_surface() {
+    let _: fn() -> Option<SolutionSet> = || None;
+    let _: fn() -> Option<SolutionSetMod> = || None;
 }

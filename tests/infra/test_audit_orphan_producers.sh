@@ -40,14 +40,19 @@ echo "=== audit-orphan-producers.sh collision-detection tests ==="
 # ---------------------------------------------------------------------------
 FIXTURE="$(mktemp -d)"
 # FIXTURE2 (a second, isolated fixture tree for the genuinely-malformed
-# case below) is declared here but only mktemp'd where it is built, further
-# down. ONE trap covers both dirs -- bash EXIT traps do not stack (see
+# case below) and STUB (the audit copies of the shared-lexer wiring section)
+# are declared here but only mktemp'd where they are built, further down.
+# ONE trap covers every dir -- bash EXIT traps do not stack (see
 # tests/infra/test_helpers.sh's own commentary on this), so a second
 # `trap ... EXIT` here would silently replace this one instead of adding
-# to it. cleanup() reads $FIXTURE2 at EXIT time (not at definition time),
-# so it sees whatever mktemp assigns it later; the `-n` guard skips
-# removal while it is still empty, and while set -u is active.
-cleanup() { rm -rf "$FIXTURE"; [ -n "${FIXTURE2:-}" ] && rm -rf "$FIXTURE2"; }
+# to it. cleanup() reads $FIXTURE2 and $STUB at EXIT time (not at definition
+# time), so it sees whatever mktemp assigns them later; the `-n` guards skip
+# removal while they are still empty, and while set -u is active.
+cleanup() {
+    rm -rf "$FIXTURE"
+    [ -n "${FIXTURE2:-}" ] && rm -rf "$FIXTURE2"
+    [ -n "${STUB:-}" ] && rm -rf "$STUB"
+}
 trap cleanup EXIT
 
 git -C "$FIXTURE" init -q
@@ -65,10 +70,18 @@ pub mod dangling_raw;
 pub mod dangling_comment;
 pub mod dangling_char;
 pub mod dangling_multiline;
+pub mod dangling_cstr;
 pub mod lifetime_wired;
 pub mod stmt_trailing_comment;
 pub mod comment_header_target;
 pub mod comment_header_probe;
+pub mod cfg_comment_target;
+pub mod cfg_comment_probe;
+pub mod cfg_block_comment_target;
+pub mod cfg_block_comment_probe;
+pub mod cfg_marker_guard;
+pub mod cfg_string_target;
+pub mod cfg_string_probe;
 
 // Private driver — provides a genuine bare-call token for `wired`.
 fn drive_wired() -> i32 { wired() }
@@ -226,6 +239,23 @@ mod comment_tests {
 pub fn after_nested_comment_guard() -> i32 { 1 }
 RUST
 
+# dangling_cstr.rs — same defect, but the unbalanced `{` sits inside a
+# C-string RAW literal (`cr#"..."#`): grammar the retired Python lexer lacked,
+# so its `"` closed the literal early and the `{` counted as code.
+cat > "$FIXTURE/crates/reify-fixture/src/dangling_cstr.rs" <<'RUST'
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn t() {
+        let s = cr#"a"{"#;
+        assert!(!s.is_empty());
+    }
+}
+
+// G-allow: hermetic fixture
+pub fn after_cstr_guard() -> i32 { 1 }
+RUST
+
 # lifetime_wired.rs — negative guard.  A genuinely-called pub fn whose own
 # signature carries lifetime syntax and no `#[cfg(test)]` at all.  Paired
 # with the drive_lifetime_wired() caller in lib.rs; see assert_not_orphan
@@ -280,6 +310,91 @@ mod tests {
 }
 RUST
 
+# cfg_comment_probe.rs / cfg_comment_target.rs -- a `#[cfg(test)]` that is
+# only MENTIONED inside a `//` line comment, mirroring the real-world shape
+# at crates/reify-eval/src/geometry_ops.rs that hid `capability_kind`: an
+# `#[allow(dead_code)]` whose trailing comment explains the allow by naming
+# the attribute.  Pre-fix the mask-START test read RAW line text, so the
+# comment opened a cfg(test) mask, the skip loop landed on the `pub fn`
+# below it, and the brace walk masked that function whole -- hiding BOTH the
+# producer and the call it makes.  Two files (not one) for the same reason
+# the comment_header_* pair above needs two; see that fixture's comment on
+# `external = total - per_file[same_file]`.  No G-allow marker on either:
+# post-fix the probe is a genuine zero-caller orphan, and the target's only
+# caller is the probe.  The probe's body is deliberately NOT a one-liner: the
+# caller-counting pass blanks each candidate's own DECLARATION line (so a name
+# cannot count itself as its own caller), which would swallow a call sharing
+# that line and leave the target an orphan no matter what the mask does.
+cat > "$FIXTURE/crates/reify-fixture/src/cfg_comment_target.rs" <<'RUST'
+pub fn cfg_comment_target() -> i32 { 11 }
+RUST
+
+cat > "$FIXTURE/crates/reify-fixture/src/cfg_comment_probe.rs" <<'RUST'
+#[allow(dead_code)] // used in #[cfg(test)] and by downstream tasks
+pub fn cfg_comment_probe() -> i32 {
+    cfg_comment_target()
+}
+RUST
+
+# cfg_block_comment_probe.rs / cfg_block_comment_target.rs -- the same
+# MENTION, one line further out of reach: interior to a multi-line `/* ... */`
+# BLOCK comment.  Distinct from the `//` pair above on both halves of the
+# mechanism.  The stripper blanks the mention from its cross-line
+# `block_comment` state, carried in from a PREVIOUS line, rather than from a
+# `//` it can see on the line itself; and the mask's skip loop cannot
+# recognise the comment's continuation lines from raw text at all -- its
+# prefix checks know only `//` and `#[` -- so it reaches them through the
+# code view, the same path the comment_header_* pair above pins from the
+# opposite direction.  Pre-fix the mention opened a mask, the skip loop
+# walked the rest of the comment, landed on the `pub fn` below and masked it
+# whole, taking its cross-file call with it.  Two files, no G-allow marker on
+# either, and the call kept off the declaration line: all for the reasons
+# spelled out on the cfg_comment_* pair.
+cat > "$FIXTURE/crates/reify-fixture/src/cfg_block_comment_target.rs" <<'RUST'
+pub fn cfg_block_comment_target() -> i32 { 12 }
+RUST
+
+cat > "$FIXTURE/crates/reify-fixture/src/cfg_block_comment_probe.rs" <<'RUST'
+/* History: this helper used to live
+   behind #[cfg(test)], and the note is
+   kept now that it is production code. */
+pub fn cfg_block_comment_probe() -> i32 {
+    cfg_block_comment_target()
+}
+RUST
+
+# cfg_marker_guard.rs -- a `// G-allow:` marker whose own REASON TEXT names
+# `#[cfg(test)]`.  A marker that explains a cfg(test) interaction masked the
+# very fn it annotates, so the opt-out silently became a disappearance.
+# Asserted with assert_allowed rather than assert_not_orphan: only the
+# former separates "correctly allow-listed" from "invisible because a mask
+# swallowed it" (see that helper's own comment), which is exactly the
+# pre-fix/post-fix difference pinned here.  One file suffices -- membership
+# in allowed[] does not depend on any caller.
+cat > "$FIXTURE/crates/reify-fixture/src/cfg_marker_guard.rs" <<'RUST'
+// G-allow: hermetic fixture; marker text mentions #[cfg(test)]
+pub fn cfg_marker_guard() -> i32 { 1 }
+RUST
+
+# cfg_string_probe.rs / cfg_string_target.rs -- `#[cfg(test)]` inside a
+# STRING LITERAL, the other half of the corpus occurrences (a tool that
+# greps for the attribute naturally holds it as a pattern constant).
+# Pre-fix the const line started a mask whose skip loop landed on the `pub
+# fn` directly below and block-masked it, taking the cross-file call with
+# it.  The `pub const` is not itself a candidate (PUB_FN_RE requires `fn`),
+# so it contributes the trigger and nothing else.  Two files for the
+# cross-file accounting reason documented on the comment_header_* pair.
+cat > "$FIXTURE/crates/reify-fixture/src/cfg_string_target.rs" <<'RUST'
+pub fn cfg_string_target() -> i32 { 13 }
+RUST
+
+cat > "$FIXTURE/crates/reify-fixture/src/cfg_string_probe.rs" <<'RUST'
+pub const MARKER_PATTERN: &str = "#[cfg(test)]";
+pub fn cfg_string_probe() -> i32 {
+    cfg_string_target()
+}
+RUST
+
 # ---------------------------------------------------------------------------
 # Second, isolated fixture: a GENUINELY unbalanced #[cfg(test)] block (a
 # real missing `}` in code, not inside a literal, so no stripper can
@@ -303,8 +418,8 @@ RUST
 # unterminated_string_before_cfg_test.rs -- a DIFFERENT failure mode from
 # unterminated.rs above: here the brace count is never even reached. A
 # string literal earlier in the file (in ordinary, non-cfg(test) code)
-# never closes, so strip_literals_and_comments()'s "string" state carries
-# to EOF and every code-view line from that point on is entirely blank.
+# never closes, so the shared lexer's "string" state carries to EOF and
+# every code-view line from that point on is entirely blank.
 # When mask_cfg_test then reaches the #[cfg(test)] below, its item-header
 # test (BLOCK_KW_RE on the blank code view) finds no block keyword, so
 # is_block is False, only the `mod tests {` line itself gets masked, and
@@ -340,10 +455,12 @@ RUST
 # Helpers
 # ---------------------------------------------------------------------------
 
-# Run the audit against the fixture and emit JSON to stdout.
-audit_json() {
-    ( cd "$FIXTURE" && bash "$AUDIT" --format json --quiet --scope 'crates/reify-*/src' )
+# audit_json_via SCRIPT — run the audit at SCRIPT against the fixture and
+# emit JSON to stdout. audit_json runs the real audit.
+audit_json_via() {
+    ( cd "$FIXTURE" && bash "$1" --format json --quiet --scope 'crates/reify-*/src' )
 }
+audit_json() { audit_json_via "$AUDIT"; }
 
 # assert_orphan NAME — succeeds iff NAME appears in orphans[] with callers==0.
 assert_orphan() {
@@ -382,10 +499,12 @@ PY
 # assert_allowed NAME — succeeds iff NAME appears EXACTLY ONCE in allowed[]
 # with callers==0.  Distinguishes "correctly allow-listed" from "invisible
 # because a cfg(test) mask swallowed it", which assert_not_orphan cannot.
-assert_allowed() {
-    local name="$1"
+# assert_allowed_via SCRIPT NAME asks the same of the audit at SCRIPT.
+assert_allowed() { assert_allowed_via "$AUDIT" "$1"; }
+assert_allowed_via() {
+    local script="$1" name="$2"
     local json
-    json="$(audit_json)"
+    json="$(audit_json_via "$script")"
     python3 - "$json" "$name" <<'PY'
 import json, sys
 data = json.loads(sys.argv[1])
@@ -507,8 +626,44 @@ assert "after_multiline_raw_guard (dangling { inside a raw string spanning multi
 assert "after_nested_comment_guard (dangling { inside a nested block comment) is allow-listed, not swallowed" \
     assert_allowed after_nested_comment_guard
 
+assert "after_cstr_guard (dangling { inside a C-string RAW literal cr#\"…\"#) is allow-listed, not swallowed" \
+    assert_allowed after_cstr_guard
+
 assert "comment_header_target (block comment between #[cfg(test)] and its item header) is flagged orphan, not hidden by the leaked test body" \
     assert_orphan comment_header_target
+
+# ---------------------------------------------------------------------------
+# cfg(test) attribute detection: literal/comment-aware mask START
+#
+# The section above pins what happens INSIDE a mask (where it ends); this one
+# pins whether a mask should have started at all.  In all four shapes the
+# attribute is merely MENTIONED -- in a line comment, inside a multi-line
+# block comment, in a marker's reason text, in a string literal -- and none
+# of them should open a mask.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- cfg(test) attribute detection: literal/comment-aware mask START ---"
+
+assert "cfg_comment_probe (#[cfg(test)] only mentioned in a line comment above it) is flagged orphan, not swallowed by a spurious mask" \
+    assert_orphan cfg_comment_probe
+
+assert "cfg_comment_target (its sole caller sits under that spurious mask) is not orphan" \
+    assert_not_orphan cfg_comment_target
+
+assert "cfg_block_comment_probe (#[cfg(test)] only mentioned inside a multi-line block comment above it) is flagged orphan, not swallowed by a spurious mask" \
+    assert_orphan cfg_block_comment_probe
+
+assert "cfg_block_comment_target (its sole caller sits under that spurious mask) is not orphan" \
+    assert_not_orphan cfg_block_comment_target
+
+assert "cfg_marker_guard (G-allow reason text mentions #[cfg(test)]) is allow-listed, not swallowed" \
+    assert_allowed cfg_marker_guard
+
+assert "cfg_string_probe (#[cfg(test)] inside a string literal above it) is flagged orphan, not swallowed by a spurious mask" \
+    assert_orphan cfg_string_probe
+
+assert "cfg_string_target (its sole caller sits under that spurious mask) is not orphan" \
+    assert_not_orphan cfg_string_target
 
 # ---------------------------------------------------------------------------
 # EOF self-check: a genuinely unclosed cfg(test) mask warns on stderr
@@ -543,6 +698,84 @@ assert "unterminated string literal (lexer state still open at EOF) warns on std
 
 assert "well-formed shared fixture triggers no lexer-state-open warning (no false positives)" \
     assert_stderr_lacks "$FIXTURE" "literal/comment lexer state"
+
+# ---------------------------------------------------------------------------
+# Shared-lexer wiring and failure modes (task 6202). The audit's code view
+# comes from the SIBLING scripts/lib_rust_production_view.sh, proven with
+# audit copies beside stub libs. Every way that lexer can fail to deliver is
+# exit 3 ("could not run") with an EMPTY stdout, so no partial JSON ever
+# reaches reify_test_support::run_orphan_audit.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- shared-lexer wiring and failure modes ---"
+
+STUB="$(mktemp -d)"
+mkdir -p "$STUB/ident/scripts" "$STUB/nolib/scripts" "$STUB/doubled/scripts" "$STUB/awk-fail"
+cp "$AUDIT" "$STUB/ident/scripts/"
+cp "$AUDIT" "$STUB/nolib/scripts/"
+cp "$AUDIT" "$STUB/doubled/scripts/"
+# ident: a lexer that blanks nothing, i.e. the raw-text view.
+cat > "$STUB/ident/scripts/lib_rust_production_view.sh" <<'STUB_LIB'
+RUST_LEXER_AWK='function _strip_line(line) { carried_in = 0; comment_tail = ""; return line }
+function _lexer_open_state() { return "" }
+function _lexer_reset() { }'
+STUB_LIB
+# doubled: a lexer that breaks row alignment (two rows per source line).
+cat > "$STUB/doubled/scripts/lib_rust_production_view.sh" <<'STUB_LIB'
+RUST_LEXER_AWK='function _strip_line(line) { carried_in = 0; comment_tail = ""; return line "\n" line }
+function _lexer_open_state() { return "" }
+function _lexer_reset() { }'
+STUB_LIB
+printf '#!/bin/sh\nexit 1\n' > "$STUB/awk-fail/awk"
+chmod +x "$STUB/awk-fail/awk"
+
+# assert_swallowed_via SCRIPT NAME — the audit at SCRIPT ran (its stdout
+# parses as JSON) and NAME is in NEITHER orphans[] nor allowed[]: a mask hid it.
+assert_swallowed_via() {
+    local script="$1" name="$2"
+    local json
+    json="$(audit_json_via "$script")"
+    python3 - "$json" "$name" <<'PY'
+import json, sys
+data = json.loads(sys.argv[1])
+name = sys.argv[2]
+seen = any(r["name"] == name for key in ("orphans", "allowed") for r in data.get(key, []))
+sys.exit(1 if seen else 0)
+PY
+}
+
+# exits_3_silently PATTERN CMD... — CMD exits EXACTLY 3 with an EMPTY stdout
+# and a stderr matching the extended regex PATTERN. rc, stdout and stderr are
+# captured separately.
+exits_3_silently() {
+    local pattern="$1"
+    shift
+    local out err rc=0 ok=0
+    out="$(mktemp)"
+    err="$(mktemp)"
+    "$@" >"$out" 2>"$err" || rc=$?
+    if [ "$rc" -ne 3 ]; then echo "expected exit 3, got $rc"; ok=1; fi
+    if [ -s "$out" ]; then echo "expected an empty stdout, got $(wc -c <"$out") bytes"; ok=1; fi
+    if ! grep -qE -- "$pattern" "$err"; then echo "stderr does not match /$pattern/:"; cat "$err"; ok=1; fi
+    rm -f "$out" "$err"
+    return "$ok"
+}
+
+assert "b1: an audit copy beside a lexer that blanks nothing swallows after_str_guard — masking follows the sibling lib" \
+    assert_swallowed_via "$STUB/ident/scripts/audit-orphan-producers.sh" after_str_guard
+
+assert "b2: an audit copy with NO sibling lib exits 3 with an empty stdout, naming lib_rust_production_view.sh" \
+    exits_3_silently 'lib_rust_production_view\.sh' \
+        audit_json_via "$STUB/nolib/scripts/audit-orphan-producers.sh"
+
+assert "b3: a failing awk makes the real audit exit 3 (not 0, not 1) with an empty stdout, naming awk" \
+    exits_3_silently 'awk.*fail' \
+        env "PATH=$STUB/awk-fail:$PATH" \
+        bash -c 'cd "$1" && bash "$2" --format json --quiet --scope "crates/reify-*/src"' _ "$FIXTURE" "$AUDIT"
+
+assert "b4: a lexer that breaks row alignment makes the audit exit 3 with an empty stdout, naming a fixture file" \
+    exits_3_silently 'crates/reify-fixture/src/' \
+        audit_json_via "$STUB/doubled/scripts/audit-orphan-producers.sh"
 
 # ---------------------------------------------------------------------------
 test_summary

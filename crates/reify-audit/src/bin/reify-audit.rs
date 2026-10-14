@@ -8,7 +8,13 @@
 //! - `reify-audit --task <id> --pre-done`  P5 only; exit non-zero on detection.
 //! - `reify-audit --task <id>`             Spot-check, all three detectors.
 //! - `reify-audit --since <iso-date>`      Window sweep, all three detectors.
-//! - `--pattern P1|P2|P5|PDEAD|PUNTESTED|PLAYER|PTODO|PDSSENTINEL|PDOCCOVER`  Restrict which detector(s) run; comma-separated for multi-detector union (e.g. `--pattern P1,P2,P5`).
+//! - `--pattern <token>[,<token>…]`  Restrict which detector(s) run; comma-separated for multi-detector union (e.g. `--pattern P1,P2,P5`). The token vocabulary is [`reify_audit::pattern_flag::TOKENS`].
+//!   `PDIAG` is the INV-SF-6 codes-mandatory ratchet — opt-in only, and one of
+//!   the restricted detectors that move the exit code (see
+//!   `docs/notes/diagnostic-severity-policy.md`).
+//!   `PPRDSTATUS` is PRD status-prose drift — opt-in only, High, and raised to
+//!   the escalation queue by `scripts/pprdstatus-escalate.py`. A run of it
+//!   alone refuses an empty task corpus with 125.
 //!
 //! ## Output
 //!
@@ -19,7 +25,8 @@
 //! |-----------|---------|
 //! | 0         | No High-severity findings |
 //! | 1–254     | Count of High-severity findings (capped at 254) |
-//! | 125       | Infrastructure/setup error (arg parse, IO, serialization) |
+//! | 125       | Infrastructure/setup error (arg parse, IO, serialization, empty task corpus for a corpus-only run set) |
+//! | 255       | `--require-tasks-db` and the PTODO lanes cannot use the task DB at the resolved path |
 //!
 //! Exit code 125 is reserved for errors so it never collides with a
 //! finding-count result — callers (D-1 hook, T-5 skill) can branch on
@@ -50,47 +57,22 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+// `NoopJCodemunchOps` — the inert stub this bin binds, through
+// `jcodemunch_seam::Seam`, whenever a run has no live seam — lives in the
+// library, where its doc records the call sites. It used to be copy-pasted
+// into this bin and both `*-baseline-gen` bins; this bin and
+// `pdiag-baseline-gen` now bind the library's, while `ptodo-baseline-gen`
+// still carries its own (see that doc). The library's `MockJCodemunchOps`
+// remains test-only via the `test-support` feature.
 use reify_audit::{
-    AuditContext, ChangedSymbol, DeadSymbol, Finding, JCodemunchOps, LayerViolation, RealGitOps,
-    Severity, SymbolReference, TaskMetadata, TimeWindow, UntestedSymbol,
+    AuditContext, Finding, RealGitOps, Severity, TaskMetadata, TimeWindow,
     fused_memory_client::FusedMemoryClient,
     jcodemunch_client::RealJCodemunchOps,
     jcodemunch_index,
+    jcodemunch_seam::{Seam, SeamUnavailable},
+    p1_producer_orphan, p2_consumer_stub, p5_phantom_done, pattern_flag, pcite, pdcheck,
+    pdead_dead_code, pdiag, pdoccover, pdssentinel, player, pprdstatus, ptodo, puntested,
 };
-
-// -----------------------------------------------------------------------
-// NoopJCodemunchOps — inert stub for non-P1 runs and --no-jcodemunch
-// -----------------------------------------------------------------------
-
-/// Inert no-op implementation of [`JCodemunchOps`].
-///
-/// Used in two cases:
-/// 1. `--no-jcodemunch` explicit escape hatch (offline/test mode — P1
-///    runs but produces zero findings without opening any socket).
-/// 2. Detector runs that don't need jcodemunch (P5/pre-done, P2-only) —
-///    `needs_jcodemunch` returns false, so no connection is ever attempted.
-///
-/// Never escapes this bin file; the library's `MockJCodemunchOps` remains
-/// test-only via the `test-support` feature.
-struct NoopJCodemunchOps;
-
-impl JCodemunchOps for NoopJCodemunchOps {
-    fn get_changed_symbols(&self, _since_sha: &str, _until_sha: &str) -> Vec<ChangedSymbol> {
-        vec![]
-    }
-    fn find_references(&self, _symbol: &ChangedSymbol) -> Vec<SymbolReference> {
-        vec![]
-    }
-    fn get_dead_code(&self, _min_confidence: f64) -> Vec<DeadSymbol> {
-        vec![]
-    }
-    fn get_untested_symbols(&self, _min_confidence: f64) -> Vec<UntestedSymbol> {
-        vec![]
-    }
-    fn get_layer_violations(&self) -> Vec<LayerViolation> {
-        vec![]
-    }
-}
 
 // -----------------------------------------------------------------------
 // Usage / help
@@ -103,7 +85,12 @@ fn print_usage(out: &mut dyn Write) {
     let _ = writeln!(out, "  --task <id>              Spot-check a single task (all detectors)");
     let _ = writeln!(out, "  --pre-done               With --task: run P5 pre-done check only");
     let _ = writeln!(out, "  --since <iso-date>       Window sweep from ISO date (all detectors)");
-    let _ = writeln!(out, "  --pattern P1|P2|P5|PDEAD|PUNTESTED|PLAYER|PTODO|PDSSENTINEL|PDOCCOVER Restrict to detector(s); comma-separated for union (e.g. --pattern P1,P2,P5)");
+    let _ = writeln!(
+        out,
+        "  --pattern {} Restrict to detector(s); comma-separated for union (e.g. --pattern P1,P2,P5)",
+        pattern_flag::TOKENS.join("|")
+    );
+    let _ = writeln!(out, "                           PDIAG: INV-SF-6 codes-mandatory ratchet (opt-in; see docs/notes/diagnostic-severity-policy.md)");
     let _ = writeln!(out, "  --tasks-file <path>      JSON array of TaskMetadata (overrides live loader; for tests)");
     let _ = writeln!(out, "  --fused-memory-url <url> MCP endpoint (default: $FUSED_MEMORY_URL or http://localhost:8002/mcp)");
     let _ = writeln!(out, "  --runs-db <path>         SQLite runs.db path (default: data/orchestrator/runs.db)");
@@ -111,11 +98,31 @@ fn print_usage(out: &mut dyn Write) {
     let _ = writeln!(out, "  --jcodemunch-url <url>   jcodemunch MCP endpoint for P1 (default: $JCODEMUNCH_URL or http://127.0.0.1:8901/mcp)");
     let _ = writeln!(out, "  --jcodemunch-repo <id>   jcodemunch repo identifier (default: derived per-path, e.g. local/<basename>-<sha1[..8]>)");
     let _ = writeln!(out, "  --jcodemunch-index-dir <path> jcodemunch index directory for the freshness gate (default: $JCODEMUNCH_INDEX_DIR, else $CODE_INDEX_PATH, else $HOME/.code-index)");
-    let _ = writeln!(out, "  --no-jcodemunch          Use inert stub (offline/test); P1 yields nothing, no connection");
+    let _ = writeln!(out, "  --no-jcodemunch          Use inert stub (offline/test): P1 and P5's H2 pass yield nothing;");
+    let _ = writeln!(out, "                           no connection, and no unexamined finding is recorded");
+    let _ = writeln!(out, "  --require-tasks-db       Refuse (exit 255, naming the resolved path) when the PTODO lanes");
+    let _ = writeln!(out, "                           cannot use the task DB, instead of degrading them; the run set");
+    let _ = writeln!(out, "                           must include PTODO (else exit 125)");
+    let _ = writeln!(out, "  --print-repo-id          Print the derived (or --jcodemunch-repo-overridden) jcodemunch");
+    let _ = writeln!(out, "                           repo id for --project-root, then exit (no task/git/runs-db work)");
     let _ = writeln!(out, "  --help, -h               Show this help");
     let _ = writeln!(out, "  --version, -V            Print version");
     let _ = writeln!(out);
     let _ = writeln!(out, "Conflicts: --pre-done cannot be combined with --pattern or --since.");
+    let _ = writeln!(out);
+    let _ = writeln!(out, "--pre-done landing gate:");
+    let _ = writeln!(out, "  Refuses the done-flip when a declared, non-gitignored metadata.files");
+    let _ = writeln!(out, "  entry is neither tracked on main nor covered by a task-referencing");
+    let _ = writeln!(out, "  commit's own delta. Provenance-free: the hook fires before the write");
+    let _ = writeln!(out, "  and receives only the task id.");
+    let _ = writeln!(out, "  REIFY_AUDIT_PREDONE_WARN_ONLY=1  Break-glass: downgrade that refusal to");
+    let _ = writeln!(out, "                                   Low, making the gate advisory (exit 0).");
+    let _ = writeln!(out, "                                   The finding is still emitted, prefixed");
+    let _ = writeln!(out, "                                   '[warn-only]'. Default is ARMED.");
+    let _ = writeln!(out, "                                   Caveat: the dark-factory hook shows a");
+    let _ = writeln!(out, "                                   subprocess's stderr only on non-zero");
+    let _ = writeln!(out, "                                   exit, so warn-only is SILENT there.");
+    let _ = writeln!(out, "                                   Soak by running this binary directly.");
     let _ = writeln!(out);
     let _ = writeln!(out, "Tasks source:");
     let _ = writeln!(out, "  By default, tasks are loaded live from the fused-memory MCP server.");
@@ -127,7 +134,10 @@ fn print_usage(out: &mut dyn Write) {
     let _ = writeln!(out, "  stdout: human-readable summary");
     let _ = writeln!(out, "  exit 0:    no High-severity findings");
     let _ = writeln!(out, "  exit 1-254: count of High-severity findings (capped at 254)");
-    let _ = writeln!(out, "  exit 125:  infrastructure/setup error (arg parse, IO failure, MCP unreachable)");
+    let _ = writeln!(out, "  exit 125:  infrastructure/setup error (arg parse, IO failure, MCP unreachable,");
+    let _ = writeln!(out, "             empty task corpus when every selected detector needs it)");
+    let _ = writeln!(out, "  exit 255:  --require-tasks-db and the PTODO lanes cannot use the task DB at the");
+    let _ = writeln!(out, "             resolved path");
     let _ = writeln!(out);
     let _ = writeln!(out, "Note: --tasks-file must be a JSON array of TaskMetadata objects");
     let _ = writeln!(out, "(all 9 fields required: task_id, status, files, done_provenance,");
@@ -182,6 +192,43 @@ fn enforce_index_freshness(args: &Args, git: &RealGitOps, repo_id: &str) -> Resu
 }
 
 // -----------------------------------------------------------------------
+// §6.7 amendment — the opt-in task-DB precondition
+// -----------------------------------------------------------------------
+
+/// The refusal message for a task DB at `path` the PTODO lanes cannot use.
+/// One renderer, so the fast-path and the outcome refusal read alike.
+fn tasks_db_refusal(path: &Path, cause: &str) -> String {
+    format!(
+        "--require-tasks-db: task DB unusable at '{}' — {cause}; refusing rather \
+         than letting the DB-backed lanes report a vacuous clean (point \
+         REIFY_PTODO_TASKS_DB or --project-root at a tasks.db)",
+        path.display()
+    )
+}
+
+/// The fast path: refuse a task DB that cannot even be opened before any
+/// task load or detector, so the common misconfiguration costs milliseconds.
+/// Returns the rendered refusal on `Err`.
+///
+/// Not the authority. A file that is not a tasks DB opens here and only fails
+/// inside the lanes; [`tasks_db_requirement_unmet`] enforces against that
+/// outcome. Resolves and opens through the calls `ptodo::check_with_stats`
+/// uses, so `REIFY_PTODO_TASKS_DB` is honoured alike.
+fn enforce_tasks_db_opens(project_root: &Path) -> Result<(), String> {
+    let path = ptodo::tasks_db_path(project_root);
+    ptodo::open_tasks_db(&path)
+        .map(drop)
+        .map_err(|e| tasks_db_refusal(&path, &e.to_string()))
+}
+
+/// The authority: whether a `--require-tasks-db` run's detector degraded its
+/// DB-backed lanes, judged by what the run itself reports
+/// ([`ptodo::ScanStats::tasks_db`]) rather than by a separate probe.
+fn tasks_db_requirement_unmet(args: &Args, run: &DetectorRun) -> bool {
+    args.require_tasks_db && run.tasks_db == Some(ptodo::TasksDbMode::Absent)
+}
+
+// -----------------------------------------------------------------------
 // Exit-code convention
 // -----------------------------------------------------------------------
 
@@ -191,6 +238,14 @@ fn enforce_index_freshness(args: &Args, git: &RealGitOps, repo_id: &str) -> Resu
 /// D-1 hook and T-5 skill should branch on `exit == ERROR_EXIT` to detect
 /// misconfigured invocations separately from finding counts.
 const ERROR_EXIT: u8 = 125;
+
+/// `--require-tasks-db`'s refusal when the PTODO lanes cannot use the task DB.
+///
+/// Dedicated: outside the 1–254 High-count band, and distinct from
+/// [`ERROR_EXIT`], which PRD §6.7 forbids for DB absence. Its consumer is
+/// dark-factory 5796's cadenced sweep, which must tell a misconfigured DB
+/// path from a clean run without parsing stderr.
+const TASKS_DB_ABSENT_EXIT: u8 = 255;
 
 /// Count High-severity findings and clamp to u8.
 ///
@@ -214,7 +269,7 @@ struct Args {
     pre_done: bool,
     since: Option<String>,
     /// Validated comma-separated detector token list (e.g. `"P1,P2,P5"`).
-    /// Each token is one of `P1`, `P2`, `P5`, `PDEAD`, `PUNTESTED`.
+    /// Each token is a member of [`pattern_flag::TOKENS`].
     /// `None` means no restriction — all default-sweep detectors run.
     /// Use `pattern_selects(val, token)` to test membership.
     pattern: Option<String>,
@@ -268,9 +323,19 @@ struct Args {
     /// override, so the gate can be pointed at a different store than the
     /// indexer without disturbing `CODE_INDEX_PATH` for co-running tools.
     jcodemunch_index_dir: String,
-    /// When true, bind `NoopJCodemunchOps` even for P1 runs. Preserves
-    /// hermetic test behaviour and provides an offline escape hatch.
+    /// When true, bind `NoopJCodemunchOps` for every jcodemunch-backed pass: a
+    /// declared scope reduction, so no unexamined finding is recorded.
+    /// Preserves hermetic test behaviour and provides an offline escape hatch.
     no_jcodemunch: bool,
+    /// `--print-repo-id`: print the jcodemunch repo identity for
+    /// `--project-root` to stdout and exit, touching none of the
+    /// task/runs-db/git machinery below.
+    print_repo_id: bool,
+    /// `--require-tasks-db`: opt-in. When set, a task DB the PTODO lanes
+    /// cannot use at the `ptodo::tasks_db_path`-resolved path is a refusal
+    /// ([`TASKS_DB_ABSENT_EXIT`]) rather than the §6.7 fail-soft. Valid only
+    /// for a run set that reads the DB ([`run_set_reads_tasks_db`]).
+    require_tasks_db: bool,
 }
 
 fn parse_args(argv: &[String]) -> Result<Args, String> {
@@ -318,6 +383,8 @@ fn parse_args(argv: &[String]) -> Result<Args, String> {
             }
         });
     let mut no_jcodemunch = false;
+    let mut print_repo_id = false;
+    let mut require_tasks_db = false;
 
     // NOTE: Last-wins semantics for duplicate flags.
     // When a flag appears more than once (e.g. the pre-done hook wrapper passes
@@ -363,14 +430,10 @@ fn parse_args(argv: &[String]) -> Result<Args, String> {
                                 .to_string(),
                         );
                     }
-                    if !matches!(
-                        tok,
-                        "P1" | "P2" | "P5" | "PDEAD" | "PUNTESTED" | "PLAYER" | "PTODO"
-                            | "PDSSENTINEL" | "PDOCCOVER"
-                    ) {
+                    if !pattern_flag::TOKENS.contains(&tok) {
                         return Err(format!(
-                            "unknown --pattern value '{}'; expected P1, P2, P5, PDEAD, PUNTESTED, PLAYER, PTODO, PDSSENTINEL, or PDOCCOVER",
-                            tok
+                            "unknown --pattern value '{tok}'; expected one of: {}",
+                            pattern_flag::TOKENS.join(", ")
                         ));
                     }
                 }
@@ -430,6 +493,12 @@ fn parse_args(argv: &[String]) -> Result<Args, String> {
             "--no-jcodemunch" => {
                 no_jcodemunch = true;
             }
+            "--print-repo-id" => {
+                print_repo_id = true;
+            }
+            "--require-tasks-db" => {
+                require_tasks_db = true;
+            }
             other => {
                 return Err(format!("unknown flag '{}'", other));
             }
@@ -450,6 +519,8 @@ fn parse_args(argv: &[String]) -> Result<Args, String> {
         jcodemunch_repo,
         jcodemunch_index_dir,
         no_jcodemunch,
+        print_repo_id,
+        require_tasks_db,
     })
 }
 
@@ -537,41 +608,24 @@ fn pattern_selects(pattern: &str, token: &str) -> bool {
     pattern.split(',').map(str::trim).any(|t| t == token)
 }
 
-/// Return true when at least one jcodemunch-backed detector (P1) is in the
-/// run set for the given args.
-///
-/// Returns true when the selected pattern(s) require a live jcodemunch server.
-/// Currently: no pattern (all detectors include P1), P1, PDEAD, PUNTESTED, or PLAYER.
-/// P2/P5 run without jcodemunch; pre_done always skips it.
-///
-/// The connect decision (RealJCodemunchOps vs NoopJCodemunchOps) is separated
-/// from the per-detector dispatch predicates (run_p1, run_pdead, …) so that
-/// adding PDEAD here does not accidentally make P1 run on `--pattern PDEAD`.
+/// Return true when at least one selected detector queries jcodemunch, so the
+/// run needs a live client. `--pre-done` never connects: it runs inside
+/// fused-memory's write lock under a hard timeout, and at hook time H2 has no
+/// persisted provenance to query anyway.
 fn needs_jcodemunch(args: &Args) -> bool {
-    if args.pre_done {
-        return false;
-    }
-    args.pattern.as_deref().is_none_or(|p| {
-        pattern_selects(p, "P1")
-            || pattern_selects(p, "PDEAD")
-            || pattern_selects(p, "PUNTESTED")
-            || pattern_selects(p, "PLAYER")
-    })
+    !args.pre_done
+        && selected_detectors(args.pattern.as_deref()).any(|detector| detector.jcodemunch.queries())
 }
 
-/// The detectors that cannot produce a finding without querying jcodemunch.
-/// Kept beside [`needs_jcodemunch`], whose `--pattern` arm must stay the same
-/// set: one lists the tokens, the other decides whether a client is needed.
-const JCODEMUNCH_BACKED: [&str; 4] = ["P1", "PDEAD", "PUNTESTED", "PLAYER"];
-
-/// Return true when EVERY detector selected by `--pattern` is
-/// jcodemunch-backed, i.e. a refusal costs the run nothing it could still
-/// have delivered.
+/// Return true when EVERY detector selected by `--pattern` requires
+/// jcodemunch ([`JcodemunchUse::Required`]), i.e. a refusal costs the run
+/// nothing it could still have delivered.
 ///
 /// This is the blast-radius boundary for the §4.3 gate. `needs_jcodemunch` is
-/// true for the pattern-less DEFAULT sweep, which also runs P2, P5, PTODO and
-/// PDSSENTINEL — none of which consult jcodemunch at all. Refusing the whole
-/// process there would kill five working detectors over one unusable corpus,
+/// true for the pattern-less DEFAULT sweep, which also runs P2, PTODO and
+/// PDSSENTINEL — none of which consult jcodemunch at all — and P5, which
+/// consults it in its H2 pass only. Refusing the whole process there would
+/// kill four working detectors and P5's other passes over one unusable corpus,
 /// and §4.2 makes that the EXPECTED case rather than an anomaly: identity is
 /// now per-checkout, so every warm-lane/task worktree derives an id nothing
 /// has indexed. A default sweep from any such worktree with the serve up would
@@ -579,66 +633,265 @@ const JCODEMUNCH_BACKED: [&str; 4] = ["P1", "PDEAD", "PUNTESTED", "PLAYER"];
 ///
 /// So the refusal is scoped: an all-jcodemunch run set has nothing to salvage
 /// and hard-refuses (the §4.3 contract, and what B4/B5/B6 pin); a mixed or
-/// default run set degrades the jcodemunch-backed detectors to the Noop seam
-/// and keeps going, which is exactly the shape the unreachable-serve fail-soft
-/// already has. Either way the corpus is never queried.
+/// default run set degrades the jcodemunch-backed passes to the Noop seam,
+/// records them as unexamined, and keeps going, which is exactly the shape
+/// the unreachable-serve fail-soft already has. Either way the corpus is never
+/// queried.
 ///
 /// `false` for a pattern-less run: the default sweep is mixed by definition.
 fn jcodemunch_only_run_set(args: &Args) -> bool {
-    args.pattern
-        .as_deref()
-        .is_some_and(|p| p.split(',').map(str::trim).all(|t| JCODEMUNCH_BACKED.contains(&t)))
+    args.pattern.is_some()
+        && selected_detectors(args.pattern.as_deref())
+            .all(|detector| matches!(detector.jcodemunch, JcodemunchUse::Required { .. }))
 }
 
-/// Opt-in dispatch predicate for PDEAD: true only when `PDEAD` is in the
-/// comma-separated `--pattern` set (not part of the default all-detector sweep).
-fn run_pdead(args: &Args) -> bool {
-    args.pattern.as_deref().is_some_and(|p| pattern_selects(p, "PDEAD"))
-}
-
-/// Opt-in dispatch predicate for PUNTESTED: true only when `PUNTESTED` is in the
-/// comma-separated `--pattern` set (not part of the default all-detector sweep).
-fn run_puntested(args: &Args) -> bool {
-    args.pattern.as_deref().is_some_and(|p| pattern_selects(p, "PUNTESTED"))
-}
-
-/// Opt-in dispatch predicate for PLAYER: true only when `PLAYER` is in the
-/// comma-separated `--pattern` set (not part of the default all-detector sweep).
-fn run_player(args: &Args) -> bool {
-    args.pattern.as_deref().is_some_and(|p| pattern_selects(p, "PLAYER"))
-}
-
-/// Default-sweep dispatch predicate for PTODO (ε: added to the no-`--pattern`
-/// default all-detector sweep, mirroring run_p1/run_p2/run_p5). True when no
-/// `--pattern` is given OR when `PTODO` is in the comma-separated set. PTODO
-/// emits Medium findings; exit code = High-severity count, so it is
-/// exit-neutral / warn-first by construction (PRD §6.5). PTODO is the
-/// *structural* TODO-tracking lane — deterministic grep + read-only sqlite,
-/// never contacts jcodemunch — intentionally absent from `needs_jcodemunch`.
-fn run_ptodo(args: &Args) -> bool {
-    args.pattern.as_deref().is_none_or(|p| pattern_selects(p, "PTODO"))
-}
-
-/// Default-sweep dispatch predicate for PDSSENTINEL (task #4650). True when no
-/// `--pattern` is given OR when `PDSSENTINEL` is in the comma-separated set.
-/// Mirrors `run_ptodo`: advisory / Medium severity, exit-neutral, structural
-/// (working-tree fs reads + ls_files only — never contacts jcodemunch).
-fn run_dssentinel(args: &Args) -> bool {
-    args.pattern.as_deref().is_none_or(|p| pattern_selects(p, "PDSSENTINEL"))
-}
-
-/// Opt-in dispatch predicate for PDOCCOVER (task #5478): true only when
-/// `PDOCCOVER` is in the comma-separated `--pattern` set.
+/// Return true when EVERY detector selected by `--pattern` refuses an empty
+/// task corpus, so a refusal costs the run nothing it could still have
+/// delivered: the blast-radius boundary [`jcodemunch_only_run_set`] draws for
+/// an unusable index, drawn for an empty corpus.
 ///
-/// Structural like PTODO and PDSSENTINEL — working-tree `ls_files` + fs reads,
-/// never jcodemunch — but `is_some_and` rather than `is_none_or`, so it stays
-/// OUT of the default all-detector sweep. PDOCCOVER findings are High, and the
-/// exit code is the High-severity count, so a detector that currently reports
-/// ~80 undocumented names would turn every default audit run non-zero. It joins
-/// the default sweep when #5480 seeds `pdoccover-baseline.txt` and the residual
-/// count is zero — the same warn-first-then-ratchet path PTODO took.
-fn run_pdoccover(args: &Args) -> bool {
-    args.pattern.as_deref().is_some_and(|p| pattern_selects(p, "PDOCCOVER"))
+/// `false` for a pattern-less run: the default sweep is mixed by definition.
+fn task_corpus_only_run_set(args: &Args) -> bool {
+    args.pattern.is_some()
+        && selected_detectors(args.pattern.as_deref())
+            .all(|detector| detector.refuses_empty_task_corpus)
+}
+
+/// Return true when the run set includes a detector that reads the task DB,
+/// so `--require-tasks-db` has a lane to guard. `--pre-done` runs P5 alone.
+fn run_set_reads_tasks_db(args: &Args) -> bool {
+    !args.pre_done && selected_detectors(args.pattern.as_deref()).any(Detector::reads_tasks_db)
+}
+
+/// One detector a sweep can dispatch. Every fact the binary knows about a
+/// detector is a field of its row, so selection, the jcodemunch connect
+/// decision and the check it runs cannot drift apart.
+struct Detector {
+    /// The [`pattern_flag`] token that selects it.
+    token: &'static str,
+    /// Whether a pattern-less run includes it. The exit code is the
+    /// High-severity count and every bare `reify-audit` invocation runs this
+    /// sweep, so a detector whose High findings track a standing backlog or a
+    /// drifting baseline (PDIAG, PDOCCOVER, PDCHECK) stays opt-in: in the
+    /// sweep it would turn those invocations non-zero for reasons unrelated
+    /// to the work under audit.
+    in_default_sweep: bool,
+    /// Whether it treats an empty task corpus as a setup error rather than a
+    /// clean result. A run of nothing else refuses an empty corpus with 125
+    /// before printing any findings array ([`task_corpus_only_run_set`]); in a
+    /// mixed run [`run_detector`] skips it with a "skipped" breadcrumb. Either
+    /// way no caller can read the unchecked detector as clean.
+    refuses_empty_task_corpus: bool,
+    check: Check,
+    /// Whether it queries jcodemunch, and how a run whose seam was unavailable
+    /// records it.
+    jcodemunch: JcodemunchUse,
+}
+
+/// How a [`Detector`] runs. Whether it reads the task DB and how it reports
+/// that its DB-backed lanes ran are one fact, so they are one variant.
+#[derive(Clone, Copy)]
+enum Check {
+    /// Reads no task DB.
+    Plain(fn(&AuditContext<'_>) -> Vec<Finding>),
+    /// Reads the task DB, and reports in [`ptodo::ScanStats::tasks_db`]
+    /// whether its DB-backed lanes ran or degraded.
+    TasksDbBacked(fn(&AuditContext<'_>) -> (Vec<Finding>, ptodo::ScanStats)),
+}
+
+/// How a [`Detector`] uses jcodemunch. Whether it queries the seam and how it
+/// records a run in which the seam was unavailable are one fact, so they are
+/// one variant.
+#[derive(Clone, Copy)]
+enum JcodemunchUse {
+    Never,
+    /// It cannot produce a finding without querying jcodemunch. Selecting it
+    /// makes the run connect ([`needs_jcodemunch`]), and a run of nothing else
+    /// hard-refuses an unusable index ([`jcodemunch_only_run_set`]), so a
+    /// structural detector marked `Required` would exit 125 on every stale
+    /// index while never reading it. `unexamined` builds the run-level finding
+    /// recording it as unexamined when the seam is unavailable.
+    Required {
+        unexamined: Option<fn(&str) -> Finding>,
+    },
+    /// Only some of its passes query jcodemunch. Selecting it makes the run
+    /// connect, but an unusable index never refuses it (its other passes do
+    /// not read the index). `unexamined` records the jcodemunch passes as
+    /// unexamined when the seam is unavailable, and is not optional; it
+    /// answers `None` when the sweep holds no task those passes would have
+    /// queried for.
+    InSomePasses {
+        unexamined: fn(&AuditContext<'_>, &str) -> Option<Finding>,
+    },
+}
+
+impl JcodemunchUse {
+    fn queries(self) -> bool {
+        !matches!(self, JcodemunchUse::Never)
+    }
+}
+
+impl Detector {
+    /// `None` is the pattern-less default sweep.
+    fn selected_by(&self, pattern: Option<&str>) -> bool {
+        pattern.map_or(self.in_default_sweep, |p| pattern_selects(p, self.token))
+    }
+
+    /// The run-level finding that records this detector as unexamined in a
+    /// run whose jcodemunch seam was unavailable for `reason`, if it records
+    /// one.
+    fn unexamined(&self, ctx: &AuditContext<'_>, reason: &str) -> Option<Finding> {
+        match self.jcodemunch {
+            JcodemunchUse::Never | JcodemunchUse::Required { unexamined: None } => None,
+            JcodemunchUse::Required {
+                unexamined: Some(build),
+            } => Some(build(reason)),
+            JcodemunchUse::InSomePasses { unexamined } => unexamined(ctx, reason),
+        }
+    }
+
+    fn reads_tasks_db(&self) -> bool {
+        matches!(self.check, Check::TasksDbBacked(_))
+    }
+}
+
+/// Every detector a sweep can dispatch, one row per [`pattern_flag::TOKENS`]
+/// member in the same (`--help`) order, which is the order their findings are
+/// emitted in.
+#[rustfmt::skip]
+const DETECTORS: &[Detector] = &[
+    Detector { token: pattern_flag::P1,          in_default_sweep: true,  refuses_empty_task_corpus: false, check: Check::Plain(p1_producer_orphan::check),       jcodemunch: JcodemunchUse::Required { unexamined: Some(p1_producer_orphan::run_unexamined) } },
+    Detector { token: pattern_flag::P2,          in_default_sweep: true,  refuses_empty_task_corpus: false, check: Check::Plain(p2_consumer_stub::check),         jcodemunch: JcodemunchUse::Never },
+    Detector { token: pattern_flag::P5,          in_default_sweep: true,  refuses_empty_task_corpus: false, check: Check::Plain(p5_phantom_done::check),          jcodemunch: JcodemunchUse::InSomePasses { unexamined: p5_phantom_done::live_path_run_unexamined } },
+    Detector { token: pattern_flag::PDEAD,       in_default_sweep: false, refuses_empty_task_corpus: false, check: Check::Plain(pdead_dead_code::check),          jcodemunch: JcodemunchUse::Required { unexamined: None } },
+    Detector { token: pattern_flag::PUNTESTED,   in_default_sweep: false, refuses_empty_task_corpus: false, check: Check::Plain(puntested::check),                jcodemunch: JcodemunchUse::Required { unexamined: None } },
+    Detector { token: pattern_flag::PLAYER,      in_default_sweep: false, refuses_empty_task_corpus: false, check: Check::Plain(player::check),                   jcodemunch: JcodemunchUse::Required { unexamined: None } },
+    Detector { token: pattern_flag::PTODO,       in_default_sweep: true,  refuses_empty_task_corpus: false, check: Check::TasksDbBacked(ptodo::check_with_stats), jcodemunch: JcodemunchUse::Never },
+    Detector { token: pattern_flag::PDSSENTINEL, in_default_sweep: true,  refuses_empty_task_corpus: false, check: Check::Plain(pdssentinel::check),              jcodemunch: JcodemunchUse::Never },
+    Detector { token: pattern_flag::PDIAG,       in_default_sweep: false, refuses_empty_task_corpus: false, check: Check::Plain(pdiag::check),                    jcodemunch: JcodemunchUse::Never },
+    Detector { token: pattern_flag::PDOCCOVER,   in_default_sweep: false, refuses_empty_task_corpus: false, check: Check::Plain(pdoccover::check),                jcodemunch: JcodemunchUse::Never },
+    Detector { token: pattern_flag::PDCHECK,     in_default_sweep: false, refuses_empty_task_corpus: false, check: Check::Plain(pdcheck::check),                  jcodemunch: JcodemunchUse::Never },
+    Detector { token: pattern_flag::PCITE,       in_default_sweep: false, refuses_empty_task_corpus: false, check: Check::Plain(pcite::check),                    jcodemunch: JcodemunchUse::Never },
+    Detector { token: pattern_flag::PPRDSTATUS,  in_default_sweep: false, refuses_empty_task_corpus: true,  check: Check::Plain(pprdstatus::check),               jcodemunch: JcodemunchUse::Never },
+];
+
+/// What one detector run produced.
+struct DetectorRun {
+    findings: Vec<Finding>,
+    /// Whether a [`Check::TasksDbBacked`] detector's DB-backed lanes ran;
+    /// `None` for one that reads no task DB or was not run.
+    tasks_db: Option<ptodo::TasksDbMode>,
+}
+
+/// Run one detector. A detector that refuses an empty task corpus is not run
+/// on one: the breadcrumb marks its zero findings as unchecked.
+fn run_detector(detector: &Detector, ctx: &AuditContext<'_>) -> DetectorRun {
+    if detector.refuses_empty_task_corpus && ctx.task_metadata.is_empty() {
+        eprintln!(
+            "reify-audit: {} skipped — the task corpus is empty; \
+             this is NOT a clean bill of health",
+            detector.token
+        );
+        return DetectorRun {
+            findings: Vec::new(),
+            tasks_db: None,
+        };
+    }
+    match detector.check {
+        Check::Plain(check) => DetectorRun {
+            findings: check(ctx),
+            tasks_db: None,
+        },
+        Check::TasksDbBacked(check) => {
+            let (findings, stats) = check(ctx);
+            DetectorRun {
+                findings,
+                tasks_db: Some(stats.tasks_db),
+            }
+        }
+    }
+}
+
+/// The [`DETECTORS`] rows a run with this `--pattern` value dispatches, in
+/// row order.
+fn selected_detectors(pattern: Option<&str>) -> impl Iterator<Item = &'static Detector> {
+    DETECTORS
+        .iter()
+        .filter(move |detector| detector.selected_by(pattern))
+}
+
+/// The jcodemunch repo identity this invocation acts on: `--jcodemunch-repo`
+/// when given, otherwise derived from `--project-root` per §4.2. One function,
+/// so the identity `--print-repo-id` PRINTS and the identity the gate
+/// INTERROGATES cannot apply that precedence differently.
+fn effective_repo_id(args: &Args) -> String {
+    args.jcodemunch_repo
+        .clone()
+        .unwrap_or_else(|| jcodemunch_index::resolve_repo_id(Path::new(&args.project_root)))
+}
+
+// -----------------------------------------------------------------------
+// The jcodemunch seam a run binds
+// -----------------------------------------------------------------------
+
+/// Decide the seam this run binds. `Err` is the §4.3 refusal of a run set in
+/// which nothing survives an unusable index ([`jcodemunch_only_run_set`]):
+/// the caller exits [`ERROR_EXIT`] before printing any findings array.
+///
+/// The gate fires only after a SUCCESSFUL handshake, i.e. when a live serve is
+/// genuinely about to be queried. With no serve there is no corpus to be
+/// misled by, so gating earlier would turn the unreachable fail-soft into an
+/// exit 125 on every machine where jcodemunch is legitimately absent.
+fn bind_jcodemunch(args: &Args, git: &RealGitOps, repo_id: &str) -> Result<Seam, String> {
+    if args.no_jcodemunch {
+        return Ok(Seam::OptedOut);
+    }
+    if !needs_jcodemunch(args) {
+        return Ok(Seam::NotNeeded);
+    }
+    let ops = match RealJCodemunchOps::new(
+        args.jcodemunch_url.clone(),
+        repo_id,
+        PathBuf::from(&args.project_root),
+    ) {
+        Ok(ops) => ops,
+        Err(error) => {
+            return Ok(Seam::Unavailable(SeamUnavailable::from_handshake(
+                &args.jcodemunch_url,
+                error,
+            )));
+        }
+    };
+    match enforce_index_freshness(args, git, repo_id) {
+        Ok(()) => Ok(Seam::Live(ops)),
+        Err(refusal) if jcodemunch_only_run_set(args) => Err(refusal),
+        Err(refusal) => Ok(Seam::Unavailable(SeamUnavailable::IndexUnusable {
+            refusal,
+        })),
+    }
+}
+
+/// The one stderr line for a run whose seam is unavailable: why, which of the
+/// selected detectors ran without jcodemunch, and the remedy for that cause.
+fn seam_unavailable_breadcrumb(reason: &SeamUnavailable, pattern: Option<&str>) -> String {
+    let degraded: Vec<&str> = selected_detectors(pattern)
+        .filter(|detector| detector.jcodemunch.queries())
+        .map(|detector| detector.token)
+        .collect();
+    let remedy = match reason {
+        SeamUnavailable::Unreachable { .. } | SeamUnavailable::HandshakeRefused { .. } => {
+            "pass --no-jcodemunch to skip them deliberately"
+        }
+        SeamUnavailable::IndexUnusable { .. } => {
+            "re-index, or select only jcodemunch-backed detectors (e.g. --pattern P1) \
+             to make this a hard refusal"
+        }
+    };
+    format!(
+        "reify-audit: {reason} — {} ran without jcodemunch; every other selected \
+         detector still runs ({remedy})",
+        degraded.join(", ")
+    )
 }
 
 // -----------------------------------------------------------------------
@@ -671,6 +924,15 @@ fn main() -> ExitCode {
         }
     };
 
+    // A standalone info mode, like --help/--version: it needs only
+    // --project-root, so it returns before any task load, runs.db open or git
+    // op. Why the derivation lives here rather than in bash, and who consumes
+    // it: scripts/jcodemunch-index-reify.sh, "one derivation, not two".
+    if args.print_repo_id {
+        println!("{}", effective_repo_id(&args));
+        return ExitCode::SUCCESS;
+    }
+
     // --pre-done requires --task.
     if args.pre_done && args.task_id.is_none() {
         eprintln!("reify-audit: error: --pre-done requires --task");
@@ -684,6 +946,24 @@ fn main() -> ExitCode {
     if args.pre_done && args.since.is_some() {
         eprintln!("reify-audit: error: --pre-done cannot be combined with --since");
         return ExitCode::from(ERROR_EXIT);
+    }
+
+    // A flag with no lane to guard would read as "the DB requirement held".
+    if args.require_tasks_db && !run_set_reads_tasks_db(&args) {
+        eprintln!(
+            "reify-audit: error: --require-tasks-db guards the PTODO task-DB lanes, \
+             and this run set does not include PTODO"
+        );
+        return ExitCode::from(ERROR_EXIT);
+    }
+
+    // Before any task load, runs.db open, git op, jcodemunch connect or
+    // detector, so a refusal costs milliseconds and emits no findings JSON.
+    if args.require_tasks_db
+        && let Err(msg) = enforce_tasks_db_opens(Path::new(&args.project_root))
+    {
+        eprintln!("reify-audit: {msg}");
+        return ExitCode::from(TASKS_DB_ABSENT_EXIT);
     }
 
     // Load tasks: JSON-file fixture (tests) OR live fused-memory MCP (prod).
@@ -708,6 +988,18 @@ fn main() -> ExitCode {
         },
     };
 
+    // Returns before any findings array is serialized, so the refusal emits no
+    // parseable JSON on stderr: the /audit skill's exit-125 disambiguator and
+    // scripts/pprdstatus-escalate.py both read that as "nothing was checked".
+    if task_metadata.is_empty() && task_corpus_only_run_set(&args) {
+        eprintln!(
+            "reify-audit: the task corpus is empty and every selected detector \
+             needs it; refusing rather than reporting an unchecked run as clean \
+             (check --project-root and --fused-memory-url, or --tasks-file)"
+        );
+        return ExitCode::from(ERROR_EXIT);
+    }
+
     // Open runs.db.
     let conn = match rusqlite::Connection::open(&args.runs_db) {
         Ok(c) => c,
@@ -723,86 +1015,21 @@ fn main() -> ExitCode {
     // Resolve the jcodemunch repo identity ONCE, before the seam is
     // constructed, so the identity queried and the identity gated cannot
     // diverge. `--jcodemunch-repo` overrides; otherwise derive per §4.2.
-    let jcodemunch_repo_id = args
-        .jcodemunch_repo
-        .clone()
-        .unwrap_or_else(|| jcodemunch_index::resolve_repo_id(Path::new(&args.project_root)));
+    let jcodemunch_repo_id = effective_repo_id(&args);
 
-    // Construct jcodemunch seam:
-    // - Noop for --no-jcodemunch, P5/pre-done, and P2-only runs (never connects).
-    // - Real for P1/PDEAD runs; if the serve is unreachable, fail-soft to Noop
-    //   so P2/P5 still run and P1 degrades to zero findings. Exit 125 is
-    //   reserved for genuine arg/IO misconfiguration, not an optional substrate.
-    let jcodemunch: Box<dyn JCodemunchOps> =
-        if args.no_jcodemunch || !needs_jcodemunch(&args) {
-            Box::new(NoopJCodemunchOps)
-        } else {
-            match RealJCodemunchOps::new(
-                args.jcodemunch_url.clone(),
-                jcodemunch_repo_id.clone(),
-                PathBuf::from(&args.project_root),
-            ) {
-                Ok(r) => {
-                    // §4.3 freshness precondition. This is the ONLY place the
-                    // gate fires, and the placement is the load-bearing part:
-                    // a jcodemunch-backed detector is in the run set,
-                    // --no-jcodemunch was absent, AND the handshake actually
-                    // succeeded — so a live serve is genuinely about to be
-                    // queried. It runs before `ctx` is built and therefore
-                    // before any detector `check()`.
-                    //
-                    // Deliberately NOT earlier. §4.3's harm model is false
-                    // orphans produced FROM a stale corpus; with the serve
-                    // down there is no corpus to be misled by (the Err arm
-                    // below already fail-softs to zero findings), so there is
-                    // nothing to refuse. Gating before the connection attempt
-                    // would convert that documented fail-soft into a hard exit
-                    // 125 on every machine where jcodemunch is legitimately
-                    // absent — an outage on a healthy path. Constructing the
-                    // client is not "a detector query", so gating a successful
-                    // construction satisfies §4.3 literally while preserving
-                    // the fail-soft.
-                    match enforce_index_freshness(&args, &git, &jcodemunch_repo_id) {
-                        Ok(()) => Box::new(r),
-                        // Nothing in the run set survives a refusal, so refuse
-                        // the process. Returns BEFORE any findings array is
-                        // serialized, so the refusal emits no parseable JSON on
-                        // stderr — which is what lets the /audit skill's
-                        // existing exit-125 disambiguator classify this as an
-                        // infra error rather than 125 High findings.
-                        Err(msg) if jcodemunch_only_run_set(&args) => {
-                            eprintln!("reify-audit: {msg}");
-                            return ExitCode::from(ERROR_EXIT);
-                        }
-                        // Mixed or default sweep: the corpus is still never
-                        // queried (Noop answers every jcodemunch call with
-                        // nothing), but P2/P5/PTODO/PDSSENTINEL keep running
-                        // and the run still emits its findings array. The
-                        // breadcrumb carries the marker token, so the condition
-                        // is machine-detectable rather than silent — the same
-                        // contract the unreachable-serve fail-soft has.
-                        Err(msg) => {
-                            eprintln!(
-                                "reify-audit: {msg} — jcodemunch-backed detectors \
-                                degraded to zero findings; the rest of the sweep \
-                                still runs (use --pattern P1 to make this a hard \
-                                refusal)"
-                            );
-                            Box::new(NoopJCodemunchOps)
-                        }
-                    }
-                }
-                Err(e) => {
-                    eprintln!(
-                        "reify-audit: jcodemunch unreachable at '{}': {} — \
-                        P1 degraded to zero findings; P2/P5 still run \
-                        (pass --no-jcodemunch to silence)",
-                        args.jcodemunch_url, e
-                    );
-                    Box::new(NoopJCodemunchOps)
-                }
-            }
-        };
+    let seam = match bind_jcodemunch(&args, &git, &jcodemunch_repo_id) {
+        Ok(seam) => seam,
+        Err(refusal) => {
+            eprintln!("reify-audit: {refusal}");
+            return ExitCode::from(ERROR_EXIT);
+        }
+    };
+    if let Some(reason) = seam.unavailable() {
+        eprintln!(
+            "{}",
+            seam_unavailable_breadcrumb(reason, args.pattern.as_deref())
+        );
+    }
 
     // Build window (for --since).
     let window = args.since.as_ref().map(|s| TimeWindow {
@@ -810,13 +1037,11 @@ fn main() -> ExitCode {
         until: None,
     });
 
-    // Build context.  Box<dyn JCodemunchOps>::as_ref() coerces to
-    // &dyn JCodemunchOps, satisfying the borrowed seam; the Box outlives ctx.
     let ctx = AuditContext {
         project_root: PathBuf::from(&args.project_root),
         conn: &conn,
         git: &git,
-        jcodemunch: jcodemunch.as_ref(),
+        jcodemunch: seam.ops(),
         task_metadata,
         target_task_id: args.task_id.clone(),
         window,
@@ -830,61 +1055,27 @@ fn main() -> ExitCode {
         let task_id = args.task_id.as_deref().expect("pre_done requires task_id");
         reify_audit::p5_phantom_done::check_pre_done(&ctx, task_id)
     } else {
-        // Spot-check or window sweep: run selected detectors.
-        // run_p1 is DECOUPLED from needs_jcodemunch: needs_jcodemunch now also
-        // covers PDEAD (which needs the live server), but run_p1 must not fire
-        // on `--pattern PDEAD`. Each detector has its own explicit predicate.
-        let run_p1 = args.pattern.as_deref().is_none_or(|p| pattern_selects(p, "P1"));
-        let run_p2 = args.pattern.as_deref().is_none_or(|p| pattern_selects(p, "P2"));
-        let run_p5 = args.pattern.as_deref().is_none_or(|p| pattern_selects(p, "P5"));
-        // PDEAD, PUNTESTED, and PLAYER are opt-in only — not part of the default all-detector sweep.
-        // PTODO joined the default sweep in ε (run_ptodo uses is_none_or, mirroring P1/P2/P5).
-        let run_pdead = run_pdead(&args);
-        let run_puntested = run_puntested(&args);
-        let run_player = run_player(&args);
-        let run_ptodo = run_ptodo(&args);
-
-        let mut all = Vec::new();
-        if run_p1 {
-            all.extend(reify_audit::p1_producer_orphan::check(&ctx));
+        // Spot-check or window sweep: every detector this run selects.
+        let mut findings = Vec::new();
+        for detector in selected_detectors(args.pattern.as_deref()) {
+            let run = run_detector(detector, &ctx);
+            // Before any findings array is serialized, like the fast path.
+            if tasks_db_requirement_unmet(&args, &run) {
+                let path = ptodo::tasks_db_path(&ctx.project_root);
+                eprintln!(
+                    "reify-audit: {}",
+                    tasks_db_refusal(&path, "it opened, but the lanes degraded on it")
+                );
+                return ExitCode::from(TASKS_DB_ABSENT_EXIT);
+            }
+            findings.extend(run.findings);
+            if let Some(reason) = seam.unavailable()
+                && let Some(unexamined) = detector.unexamined(&ctx, &reason.to_string())
+            {
+                findings.push(unexamined);
+            }
         }
-        if run_p2 {
-            all.extend(reify_audit::p2_consumer_stub::check(&ctx));
-        }
-        if run_p5 {
-            all.extend(reify_audit::p5_phantom_done::check(&ctx));
-        }
-        if run_pdead {
-            all.extend(reify_audit::pdead_dead_code::check(&ctx));
-        }
-        if run_puntested {
-            all.extend(reify_audit::puntested::check(&ctx));
-        }
-        if run_player {
-            all.extend(reify_audit::player::check(&ctx));
-        }
-        // PTODO structural lane: ls_files enumeration + working-tree fs reads.
-        // Needs neither jcodemunch (needs_jcodemunch=false → NoopJCodemunchOps)
-        // nor a live task DB (structural lane ignores task_metadata).
-        if run_ptodo {
-            all.extend(reify_audit::ptodo::check(&ctx));
-        }
-        // PDSSENTINEL structural lane: ds-sentinel reintroduction guard.
-        // Same structural-lane posture as PTODO (working-tree reads only).
-        let run_dssentinel = run_dssentinel(&args);
-        if run_dssentinel {
-            all.extend(reify_audit::pdssentinel::check(&ctx));
-        }
-        // PDOCCOVER structural lane: bidirectional registry↔chunk name drift.
-        // Same working-tree-reads-only posture as PTODO and PDSSENTINEL, but
-        // OPT-IN — High-severity findings drive the exit code and the corpus
-        // still carries a known backlog, so it stays out of the default sweep
-        // until #5480 seeds the ratchet baseline.
-        let run_pdoccover = run_pdoccover(&args);
-        if run_pdoccover {
-            all.extend(reify_audit::pdoccover::check(&ctx));
-        }
-        all
+        findings
     };
 
     // Emit JSON findings on stderr. Scope the lock so it's dropped before any
@@ -996,6 +1187,10 @@ mod tests {
         // (JCODEMUNCH_URL / JCODEMUNCH_INDEX_DIR fallbacks) so we do not
         // assert their exact values here.
         assert!(!args.no_jcodemunch);
+        assert!(
+            !args.require_tasks_db,
+            "--require-tasks-db is opt-in; the default keeps the §6.7 fail-soft"
+        );
         assert!(
             args.jcodemunch_repo.is_none(),
             "no --jcodemunch-repo must leave the id UNSET so it is derived \
@@ -1143,6 +1338,41 @@ mod tests {
         );
     }
 
+    #[test]
+    fn usage_text_lists_require_tasks_db() {
+        let mut buf: Vec<u8> = Vec::new();
+        print_usage(&mut buf);
+        let usage = String::from_utf8(buf).expect("usage text is UTF-8");
+        assert!(
+            usage.contains("--require-tasks-db"),
+            "--help must list --require-tasks-db; got:\n{usage}"
+        );
+        assert!(
+            usage.contains("255"),
+            "--help must document the dedicated refusal exit code; got:\n{usage}"
+        );
+    }
+
+    #[test]
+    fn require_tasks_db_needs_ptodo_in_the_run_set() {
+        for pattern in [None, Some("PTODO"), Some("P1,PTODO")] {
+            assert!(
+                run_set_reads_tasks_db(&make_args(false, pattern)),
+                "{pattern:?} selects PTODO, the task-DB reader"
+            );
+        }
+        for pattern in [Some("P1"), Some("P2,P5,PDSSENTINEL")] {
+            assert!(
+                !run_set_reads_tasks_db(&make_args(false, pattern)),
+                "{pattern:?} selects no task-DB reader"
+            );
+        }
+        assert!(
+            !run_set_reads_tasks_db(&make_args(true, None)),
+            "--pre-done runs P5 alone"
+        );
+    }
+
     // -------------------------------------------------------------------
     // needs_jcodemunch
     // -------------------------------------------------------------------
@@ -1162,7 +1392,14 @@ mod tests {
             jcodemunch_repo: None,
             jcodemunch_index_dir: String::new(),
             no_jcodemunch: false,
+            print_repo_id: false,
+            require_tasks_db: false,
         }
+    }
+
+    /// Whether a run with this `--pattern` value dispatches `token`'s detector.
+    fn selects(token: &str, pattern: Option<&str>) -> bool {
+        selected_detectors(pattern).any(|detector| detector.token == token)
     }
 
     #[test]
@@ -1180,8 +1417,8 @@ mod tests {
         assert!(needs_jcodemunch(&make_args(false, Some("P1"))));
         // P2-only → false
         assert!(!needs_jcodemunch(&make_args(false, Some("P2"))));
-        // P5-only → false
-        assert!(!needs_jcodemunch(&make_args(false, Some("P5"))));
+        // P5-only → true (its H2 pass queries jcodemunch)
+        assert!(needs_jcodemunch(&make_args(false, Some("P5"))));
         // PDEAD explicitly → true (needs live jcodemunch server)
         assert!(needs_jcodemunch(&make_args(false, Some("PDEAD"))));
     }
@@ -1198,26 +1435,22 @@ mod tests {
     /// Guard: PDEAD and PUNTESTED are opt-in only — neither may run in the
     /// default (no --pattern) all-detector sweep.  A future refactor that
     /// accidentally folds either into the default run will trip this test.
-    ///
-    /// Tests the actual `run_pdead`/`run_puntested` dispatch predicates rather
-    /// than just the fixture construction, so a real change to the dispatch
-    /// logic would be caught.
     #[test]
     fn pdead_and_puntested_not_in_default_sweep() {
         assert!(
-            !run_pdead(&make_args(false, None)),
+            !selects(pattern_flag::PDEAD, None),
             "PDEAD must be opt-in only (not part of the default sweep)"
         );
         assert!(
-            run_pdead(&make_args(false, Some("PDEAD"))),
+            selects(pattern_flag::PDEAD, Some("PDEAD")),
             "PDEAD must activate when --pattern PDEAD is given"
         );
         assert!(
-            !run_puntested(&make_args(false, None)),
+            !selects(pattern_flag::PUNTESTED, None),
             "PUNTESTED must be opt-in only (not part of the default sweep)"
         );
         assert!(
-            run_puntested(&make_args(false, Some("PUNTESTED"))),
+            selects(pattern_flag::PUNTESTED, Some("PUNTESTED")),
             "PUNTESTED must activate when --pattern PUNTESTED is given"
         );
     }
@@ -1247,17 +1480,15 @@ mod tests {
     }
 
     /// Guard: PLAYER is opt-in only — must not run in the default (no --pattern)
-    /// all-detector sweep. Tests the actual `run_player` dispatch predicate rather
-    /// than just the fixture construction, so a real change to the dispatch logic
-    /// would be caught (e.g. accidentally folding PLAYER into the default sweep).
+    /// all-detector sweep.
     #[test]
     fn player_not_in_default_sweep() {
         assert!(
-            !run_player(&make_args(false, None)),
+            !selects(pattern_flag::PLAYER, None),
             "PLAYER must be opt-in only (not part of the default sweep)"
         );
         assert!(
-            run_player(&make_args(false, Some("PLAYER"))),
+            selects(pattern_flag::PLAYER, Some("PLAYER")),
             "PLAYER must activate when --pattern PLAYER is given"
         );
     }
@@ -1316,9 +1547,9 @@ mod tests {
             err.contains("'BOGUS'"),
             "error must name the offending token 'BOGUS' (with surrounding quotes); got: {err}"
         );
-        // Per-token containment (not the exact connecting prose) so adding a
-        // future detector token or reordering the list does not break the test.
-        for tok in ["P1", "P2", "P5", "PDEAD", "PUNTESTED", "PLAYER", "PTODO"] {
+        // Every vocabulary token, by containment rather than the exact
+        // connecting prose, so reordering the list does not break the test.
+        for &tok in pattern_flag::TOKENS {
             assert!(
                 err.contains(tok),
                 "error must list known token {tok}; got: {err}"
@@ -1328,6 +1559,88 @@ mod tests {
         // that echoes the input but still names BOGUS would be equally valid.
         // The positive assertions above (token named + known-token list) are
         // the meaningful contract.
+    }
+
+    /// `parse_args` accepts exactly the `--pattern` vocabulary,
+    /// `pattern_flag::TOKENS`: every member alone and in the full union, and
+    /// nothing outside it.
+    #[test]
+    fn parse_args_accepts_exactly_the_pattern_flag_vocabulary() {
+        let tokens = pattern_flag::TOKENS;
+        assert!(
+            !tokens.is_empty(),
+            "the --pattern vocabulary must not be empty"
+        );
+        let distinct: std::collections::HashSet<&str> = tokens.iter().copied().collect();
+        assert_eq!(
+            distinct.len(),
+            tokens.len(),
+            "the --pattern vocabulary must not repeat a token; got {tokens:?}"
+        );
+
+        for &tok in tokens {
+            let args = parse_args(&["--pattern".to_string(), tok.to_string()])
+                .unwrap_or_else(|e| panic!("--pattern {tok} must parse; got: {e}"));
+            assert_eq!(
+                args.pattern.as_deref(),
+                Some(tok),
+                "--pattern {tok} must be stored as given"
+            );
+        }
+
+        let union = tokens.join(",");
+        if let Err(e) = parse_args(&["--pattern".to_string(), union.clone()]) {
+            panic!("the full union --pattern {union} must parse; got: {e}");
+        }
+
+        let err = unwrap_err(parse_args(&["--pattern".to_string(), "PNOPE".to_string()]));
+        assert!(
+            err.contains("'PNOPE'"),
+            "a token outside the vocabulary must be rejected by name; got: {err}"
+        );
+    }
+
+    /// `main` dispatches through `DETECTORS` alone, so this is what stops an
+    /// accepted `--pattern` token from running nothing: one row per token, in
+    /// `--help` order, and `--pattern <token>` selecting that row and no other.
+    #[test]
+    fn every_pattern_token_selects_exactly_its_own_detector() {
+        let row_tokens: Vec<&str> = DETECTORS.iter().map(|detector| detector.token).collect();
+        assert_eq!(
+            row_tokens,
+            pattern_flag::TOKENS,
+            "DETECTORS must hold one row per --pattern token, in --help order"
+        );
+        for &token in pattern_flag::TOKENS {
+            let selected: Vec<&str> = selected_detectors(Some(token))
+                .map(|detector| detector.token)
+                .collect();
+            assert_eq!(
+                selected,
+                [token],
+                "--pattern {token} must select exactly its own row"
+            );
+        }
+    }
+
+    /// The pattern-less sweep is what every bare `reify-audit` invocation, and
+    /// the /audit skill, runs. The skill documents exactly these five.
+    #[test]
+    fn default_sweep_is_exactly_p1_p2_p5_ptodo_pdssentinel() {
+        let swept: Vec<&str> = selected_detectors(None)
+            .map(|detector| detector.token)
+            .collect();
+        assert_eq!(
+            swept,
+            [
+                pattern_flag::P1,
+                pattern_flag::P2,
+                pattern_flag::P5,
+                pattern_flag::PTODO,
+                pattern_flag::PDSSENTINEL,
+            ],
+            "the no-`--pattern` default sweep must run exactly these detectors, in row order"
+        );
     }
 
     /// Trailing or leading commas (`--pattern P1,` / `--pattern ,P2`) produce
@@ -1355,8 +1668,12 @@ mod tests {
     #[test]
     fn needs_jcodemunch_comma_pattern_routing() {
         assert!(
-            !needs_jcodemunch(&make_args(false, Some("P2,P5"))),
-            "P2,P5 must not need jcodemunch"
+            needs_jcodemunch(&make_args(false, Some("P2,P5"))),
+            "P2,P5 must need jcodemunch (P5's H2 pass queries it)"
+        );
+        assert!(
+            !needs_jcodemunch(&make_args(false, Some("P2,PDSSENTINEL"))),
+            "P2,PDSSENTINEL must not need jcodemunch"
         );
         assert!(
             needs_jcodemunch(&make_args(false, Some("P2,P1"))),
@@ -1372,6 +1689,25 @@ mod tests {
         );
     }
 
+    /// Only a run set in which every detector REQUIRES jcodemunch refuses an
+    /// unusable index. P5 queries it in one pass only, so a run including P5
+    /// always has passes to salvage.
+    #[test]
+    fn jcodemunch_only_run_set_excludes_a_partial_user() {
+        for pattern in ["P1", "P1,PDEAD"] {
+            assert!(
+                jcodemunch_only_run_set(&make_args(false, Some(pattern))),
+                "{pattern} is all-jcodemunch"
+            );
+        }
+        for pattern in ["P5", "P1,P5"] {
+            assert!(
+                !jcodemunch_only_run_set(&make_args(false, Some(pattern))),
+                "{pattern} includes P5, whose other passes never read the index"
+            );
+        }
+    }
+
     /// The opt-in detectors PDEAD/PUNTESTED must be enabled when their token
     /// appears anywhere in a comma-separated `--pattern`, and stay off when
     /// absent or when no `--pattern` is given (they are not part of the default
@@ -1382,32 +1718,32 @@ mod tests {
     fn opt_in_detectors_selected_via_comma_list() {
         // PDEAD reached as a non-leading token in a comma list.
         assert!(
-            run_pdead(&make_args(false, Some("P2,PDEAD"))),
+            selects(pattern_flag::PDEAD, Some("P2,PDEAD")),
             "P2,PDEAD must enable PDEAD"
         );
         assert!(
-            !run_pdead(&make_args(false, Some("P2,P5"))),
+            !selects(pattern_flag::PDEAD, Some("P2,P5")),
             "P2,P5 must not enable PDEAD (token absent)"
         );
         assert!(
-            !run_pdead(&make_args(false, None)),
+            !selects(pattern_flag::PDEAD, None),
             "no --pattern must not enable PDEAD (opt-in only)"
         );
 
         // PUNTESTED reached as a non-leading token in a comma list.
         assert!(
-            run_puntested(&make_args(false, Some("P2,PUNTESTED"))),
+            selects(pattern_flag::PUNTESTED, Some("P2,PUNTESTED")),
             "P2,PUNTESTED must enable PUNTESTED"
         );
         assert!(
-            !run_puntested(&make_args(false, Some("P1,PDEAD"))),
+            !selects(pattern_flag::PUNTESTED, Some("P1,PDEAD")),
             "P1,PDEAD must not enable PUNTESTED (token absent)"
         );
 
         // A mixed opt-in list must enable BOTH opt-in detectors at once.
         assert!(
-            run_pdead(&make_args(false, Some("PDEAD,PUNTESTED")))
-                && run_puntested(&make_args(false, Some("PDEAD,PUNTESTED"))),
+            selects(pattern_flag::PDEAD, Some("PDEAD,PUNTESTED"))
+                && selects(pattern_flag::PUNTESTED, Some("PDEAD,PUNTESTED")),
             "PDEAD,PUNTESTED must enable both opt-in detectors"
         );
     }
@@ -1445,20 +1781,20 @@ mod tests {
     }
 
     /// ε: PTODO is now part of the no-`--pattern` default all-detector sweep,
-    /// mirroring P1/P2/P5. Tests the actual `run_ptodo` dispatch predicate:
-    /// default (None) → true; explicit PTODO → true; non-PTODO pattern → false.
+    /// mirroring P1/P2/P5: default (None) → true; explicit PTODO → true;
+    /// non-PTODO pattern → false.
     #[test]
     fn ptodo_in_default_sweep() {
         assert!(
-            run_ptodo(&make_args(false, None)),
+            selects(pattern_flag::PTODO, None),
             "PTODO must run in the no-`--pattern` default sweep"
         );
         assert!(
-            run_ptodo(&make_args(false, Some("PTODO"))),
+            selects(pattern_flag::PTODO, Some("PTODO")),
             "PTODO must activate when --pattern PTODO is given"
         );
         assert!(
-            !run_ptodo(&make_args(false, Some("P2"))),
+            !selects(pattern_flag::PTODO, Some("P2")),
             "PTODO must be excluded when a named non-PTODO pattern is given"
         );
     }
@@ -1466,9 +1802,9 @@ mod tests {
     /// PTODO must be selectable as a non-leading token in a comma-separated
     /// `--pattern` list (mirrors `opt_in_detectors_selected_via_comma_list`).
     #[test]
-    fn run_ptodo_selected_via_comma_list() {
+    fn ptodo_selected_via_comma_list() {
         assert!(
-            run_ptodo(&make_args(false, Some("P2,PTODO"))),
+            selects(pattern_flag::PTODO, Some("P2,PTODO")),
             "P2,PTODO must enable PTODO"
         );
     }
@@ -1479,7 +1815,7 @@ mod tests {
     // PDSSENTINEL is the ds-sentinel reintroduction guard (task #4650).
     // Like PTODO it is *structural* — reads the working tree via ls_files + fs,
     // never contacts jcodemunch. Unlike opt-in PDEAD/PUNTESTED/PLAYER, it
-    // is part of the default all-detector sweep (is_none_or, mirrors run_ptodo).
+    // is part of the default all-detector sweep, like PTODO.
     // -------------------------------------------------------------------
 
     /// `--pattern PDSSENTINEL` must be accepted and stored.
@@ -1503,21 +1839,21 @@ mod tests {
         );
     }
 
-    /// PDSSENTINEL participates in the no-`--pattern` default sweep (is_none_or,
-    /// mirroring run_ptodo). Default (None) → true; explicit PDSSENTINEL → true;
+    /// PDSSENTINEL participates in the no-`--pattern` default sweep, like
+    /// PTODO. Default (None) → true; explicit PDSSENTINEL → true;
     /// a non-PDSSENTINEL named pattern (e.g. P2) → false.
     #[test]
     fn pdssentinel_in_default_sweep() {
         assert!(
-            run_dssentinel(&make_args(false, None)),
+            selects(pattern_flag::PDSSENTINEL, None),
             "PDSSENTINEL must run in the no-`--pattern` default sweep"
         );
         assert!(
-            run_dssentinel(&make_args(false, Some("PDSSENTINEL"))),
+            selects(pattern_flag::PDSSENTINEL, Some("PDSSENTINEL")),
             "PDSSENTINEL must activate when --pattern PDSSENTINEL is given"
         );
         assert!(
-            !run_dssentinel(&make_args(false, Some("P2"))),
+            !selects(pattern_flag::PDSSENTINEL, Some("P2")),
             "PDSSENTINEL must be excluded when a named non-PDSSENTINEL pattern is given"
         );
     }
@@ -1525,9 +1861,9 @@ mod tests {
     /// PDSSENTINEL must be selectable as a non-leading token in a comma-separated
     /// `--pattern` list.
     #[test]
-    fn run_dssentinel_selected_via_comma_list() {
+    fn pdssentinel_selected_via_comma_list() {
         assert!(
-            run_dssentinel(&make_args(false, Some("P1,PDSSENTINEL"))),
+            selects(pattern_flag::PDSSENTINEL, Some("P1,PDSSENTINEL")),
             "P1,PDSSENTINEL must enable PDSSENTINEL"
         );
     }
@@ -1547,13 +1883,11 @@ mod tests {
     //
     // PDOCCOVER is the bidirectional registry↔chunk name-drift detector. Like
     // PTODO and PDSSENTINEL it is *structural* — working-tree reads via
-    // ls_files + fs, never contacts jcodemunch. UNLIKE them it is OPT-IN
-    // (is_some_and, mirroring PDEAD/PUNTESTED/PLAYER): the chunk corpus has a
-    // known backlog of undocumented names, so until #5480 seeds
-    // pdoccover-baseline.txt the detector would add ~80 High findings to every
-    // default sweep. High severity feeds the exit code, so joining the default
-    // sweep now would turn every audit run non-zero. It joins the sweep when
-    // the baseline lands, not before.
+    // ls_files + fs, never contacts jcodemunch. UNLIKE them it is OPT-IN,
+    // for PDIAG's reason: its verdicts are High and feed the exit code, and
+    // they ratchet against a committed ledger (pdoccover-baseline.txt), so in
+    // the default sweep a drifting ledger would turn every bare audit run
+    // non-zero. The hard gate is tests/infra/test_reify_audit_pdoccover.sh.
     // -------------------------------------------------------------------
 
     /// `--pattern PDOCCOVER` must be accepted and stored.
@@ -1581,23 +1915,22 @@ mod tests {
     }
 
     /// PDOCCOVER is OPT-IN — the assertion inverted relative to
-    /// `run_ptodo`/`run_dssentinel`. Default (None) → FALSE; explicit
+    /// PTODO/PDSSENTINEL. Default (None) → FALSE; explicit
     /// PDOCCOVER → true; a named non-PDOCCOVER pattern → false.
     #[test]
     fn pdoccover_is_opt_in_not_in_default_sweep() {
         assert!(
-            !run_pdoccover(&make_args(false, None)),
+            !selects(pattern_flag::PDOCCOVER, None),
             "PDOCCOVER must NOT run in the no-`--pattern` default sweep: its \
-             findings are High severity and the corpus has a known backlog, so \
-             joining the sweep before #5480 seeds the baseline would make every \
-             audit run exit non-zero"
+             findings are High severity and ratchet against a committed ledger, \
+             so a drifting ledger would make every bare audit run exit non-zero"
         );
         assert!(
-            run_pdoccover(&make_args(false, Some("PDOCCOVER"))),
+            selects(pattern_flag::PDOCCOVER, Some("PDOCCOVER")),
             "PDOCCOVER must activate when --pattern PDOCCOVER is given"
         );
         assert!(
-            !run_pdoccover(&make_args(false, Some("P2"))),
+            !selects(pattern_flag::PDOCCOVER, Some("P2")),
             "PDOCCOVER must be excluded when a named non-PDOCCOVER pattern is given"
         );
     }
@@ -1606,9 +1939,9 @@ mod tests {
     /// comma-separated `--pattern` list — token-set membership, not a prefix
     /// match.
     #[test]
-    fn run_pdoccover_selected_via_comma_list() {
+    fn pdoccover_selected_via_comma_list() {
         assert!(
-            run_pdoccover(&make_args(false, Some("P1,PDOCCOVER"))),
+            selects(pattern_flag::PDOCCOVER, Some("P1,PDOCCOVER")),
             "P1,PDOCCOVER must enable PDOCCOVER"
         );
     }
@@ -1634,6 +1967,341 @@ mod tests {
         assert!(
             usage.contains("PDOCCOVER"),
             "--help must list PDOCCOVER among the --pattern values; got:\n{usage}"
+        );
+    }
+    // -------------------------------------------------------------------
+    // PDIAG CLI-wiring tests (task #5405)
+    //
+    // PDIAG is the INV-SF-6 codes-mandatory ratchet. Like PTODO/PDSSENTINEL/
+    // PDOCCOVER it is *structural* — `ls_files` enumeration plus working-tree
+    // reads, no jcodemunch and no task DB. Like PDEAD/PUNTESTED/PLAYER/
+    // PDOCCOVER it is opt-in (its verdicts are High and feed the exit code);
+    // that half is covered end-to-end by `tests/cli.rs::
+    // pdiag_does_not_join_the_default_all_detector_sweep`. What is pinned HERE
+    // is the pair every other detector has beside it, and which PDIAG lacked:
+    // the arg token, and the offline posture.
+    // -------------------------------------------------------------------
+
+    /// `--pattern PDIAG` must be accepted and stored — including as a
+    /// NON-LEADING comma token, which is the shape `pattern_selects` exists to
+    /// handle and the one a naive `starts_with` would get wrong.
+    #[test]
+    fn parse_args_accepts_pdiag_pattern() {
+        let args = parse_args(&["--pattern".to_string(), "PDIAG".to_string()])
+            .unwrap_or_else(|e| panic!("--pattern PDIAG must parse successfully; got: {e}"));
+        assert_eq!(
+            args.pattern.as_deref(),
+            Some("PDIAG"),
+            "parsed pattern must be Some(\"PDIAG\")"
+        );
+
+        let unioned = parse_args(&["--pattern".to_string(), "P1,PDIAG".to_string()])
+            .unwrap_or_else(|e| panic!("--pattern P1,PDIAG must parse successfully; got: {e}"));
+        assert!(
+            selects(pattern_flag::PDIAG, unioned.pattern.as_deref()),
+            "PDIAG must activate as a trailing comma token in a union pattern"
+        );
+        assert!(
+            !selects(pattern_flag::PDIAG, Some("P2")),
+            "PDIAG must stay off for a named non-PDIAG pattern"
+        );
+    }
+
+    /// PDIAG is structural — it must NOT require jcodemunch.
+    ///
+    /// The claim is asserted in `Pattern::PDiag`'s docs, but both PDIAG
+    /// integration tests pass `--no-jcodemunch`, so nothing else would go red
+    /// if a future edit marked PDIAG's row as querying jcodemunch. That
+    /// regression is not cosmetic: via `jcodemunch_only_run_set` a
+    /// jcodemunch-backed PDIAG would hard-refuse with exit 125 on a stale
+    /// index, turning the merge gate red for a detector that never reads the
+    /// index.
+    #[test]
+    fn needs_jcodemunch_pdiag_routes_false() {
+        assert!(
+            !needs_jcodemunch(&make_args(false, Some("PDIAG"))),
+            "PDIAG enumerates via ls_files and reads the working tree; it must \
+             not open a jcodemunch connection"
+        );
+        assert!(
+            !jcodemunch_only_run_set(&make_args(false, Some("PDIAG"))),
+            "a PDIAG-only run must not reach jcodemunch_only_run_set's \
+             stale-index refusal (exit 125)"
+        );
+    }
+
+    // -------------------------------------------------------------------
+    // PDCHECK (task #7550) — delivered_checks dead-path lane
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn parse_args_accepts_pdcheck_pattern() {
+        let args = parse_args(&["--pattern".to_string(), "PDCHECK".to_string()])
+            .unwrap_or_else(|e| panic!("--pattern PDCHECK must parse successfully; got: {e}"));
+        assert_eq!(
+            args.pattern.as_deref(),
+            Some("PDCHECK"),
+            "parsed pattern must be Some(\"PDCHECK\")"
+        );
+    }
+
+    /// The token must work as a NON-LEADING member of a comma-separated union,
+    /// not just alone — validation is per token, selection is set membership.
+    #[test]
+    fn parse_args_accepts_pdcheck_in_comma_list() {
+        let args = parse_args(&["--pattern".to_string(), "P1,PDCHECK".to_string()])
+            .expect("--pattern P1,PDCHECK must parse successfully");
+        let val = args.pattern.as_deref().expect("pattern must be Some");
+        let tokens: Vec<&str> = val.split(',').map(str::trim).collect();
+        assert!(tokens.contains(&"PDCHECK"), "tokens must contain PDCHECK; got: {tokens:?}");
+        assert!(
+            selects(pattern_flag::PDCHECK, Some("P1,PDCHECK")),
+            "P1,PDCHECK must enable PDCHECK"
+        );
+    }
+
+    /// An accepted-but-undiscoverable pattern is a usability bug: the error
+    /// message at the validator is the only place a user learns the vocabulary.
+    #[test]
+    fn parse_args_unknown_pattern_lists_pdcheck() {
+        let err = unwrap_err(parse_args(&["--pattern".to_string(), "BOGUS".to_string()]));
+        assert!(
+            err.contains("PDCHECK"),
+            "error must list PDCHECK as a valid pattern; got: {err}"
+        );
+    }
+
+    /// `--help` must list PDCHECK on the `--pattern` line, for the same
+    /// discoverability reason.
+    #[test]
+    fn usage_text_lists_pdcheck() {
+        let mut buf: Vec<u8> = Vec::new();
+        print_usage(&mut buf);
+        let usage = String::from_utf8(buf).expect("usage text is UTF-8");
+        assert!(
+            usage.contains("PDCHECK"),
+            "--help must list PDCHECK on the --pattern line; got:\n{usage}"
+        );
+    }
+
+    /// PDCHECK is OPT-IN. The no-`--pattern` case being FALSE is the
+    /// load-bearing assertion: `delivered-check-unsatisfiable-path` is High by
+    /// design and the exit code is the High-severity count, so joining the
+    /// default sweep would turn `scripts/reify-audit-predone-wrapper.sh`, the
+    /// /audit skill and verify non-zero.
+    #[test]
+    fn pdcheck_is_opt_in_not_in_default_sweep() {
+        assert!(
+            !selects(pattern_flag::PDCHECK, None),
+            "PDCHECK must NOT run in the no-`--pattern` default sweep: its High \
+             findings drive the exit code, so every bare `reify-audit` \
+             invocation would start exiting non-zero"
+        );
+        assert!(
+            selects(pattern_flag::PDCHECK, Some("PDCHECK")),
+            "PDCHECK must activate when --pattern PDCHECK is given"
+        );
+        assert!(
+            !selects(pattern_flag::PDCHECK, Some("P2")),
+            "PDCHECK must be excluded when a named non-PDCHECK pattern is given"
+        );
+    }
+
+    /// PDCHECK is `ls_files` plus a read-only sqlite open — never the
+    /// jcodemunch serve, so it must not force a connect.
+    #[test]
+    fn needs_jcodemunch_pdcheck_routes_false() {
+        assert!(
+            !needs_jcodemunch(&make_args(false, Some("PDCHECK"))),
+            "PDCHECK reads the tracked-file list and .taskmaster/tasks/tasks.db; \
+             it must not open a jcodemunch connection"
+        );
+        assert!(
+            !jcodemunch_only_run_set(&make_args(false, Some("PDCHECK"))),
+            "a PDCHECK-only run must not reach jcodemunch_only_run_set's \
+             stale-index refusal (exit 125)"
+        );
+    }
+
+    // -------------------------------------------------------------------
+    // PCITE (task #6931) — capability-manifest cite lane
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn parse_args_accepts_pcite_pattern() {
+        let args = parse_args(&["--pattern".to_string(), "PCITE".to_string()])
+            .unwrap_or_else(|e| panic!("--pattern PCITE must parse successfully; got: {e}"));
+        assert_eq!(
+            args.pattern.as_deref(),
+            Some("PCITE"),
+            "parsed pattern must be Some(\"PCITE\")"
+        );
+    }
+
+    #[test]
+    fn parse_args_accepts_pcite_in_comma_list() {
+        let args = parse_args(&["--pattern".to_string(), "P1,PCITE".to_string()])
+            .expect("--pattern P1,PCITE must parse successfully");
+        let val = args.pattern.as_deref().expect("pattern must be Some");
+        let tokens: Vec<&str> = val.split(',').map(str::trim).collect();
+        assert!(tokens.contains(&"PCITE"), "tokens must contain PCITE; got: {tokens:?}");
+        assert!(
+            selects(pattern_flag::PCITE, Some("P1,PCITE")),
+            "P1,PCITE must enable PCITE"
+        );
+    }
+
+    #[test]
+    fn parse_args_unknown_pattern_lists_pcite() {
+        let err = unwrap_err(parse_args(&["--pattern".to_string(), "BOGUS".to_string()]));
+        assert!(
+            err.contains("PCITE"),
+            "error must list PCITE as a valid pattern; got: {err}"
+        );
+    }
+
+    #[test]
+    fn usage_text_lists_pcite() {
+        let mut buf: Vec<u8> = Vec::new();
+        print_usage(&mut buf);
+        let usage = String::from_utf8(buf).expect("usage text is UTF-8");
+        assert!(
+            usage.contains("PCITE"),
+            "--help must list PCITE on the --pattern line; got:\n{usage}"
+        );
+    }
+
+    /// PCITE is OPT-IN although it cannot move the exit code (Medium only):
+    /// it reads every tracked non-prose file to build its oracle, and its
+    /// residual is legitimately non-zero, so a pattern-less sweep must not
+    /// pay for it or route its follow-ups unasked.
+    #[test]
+    fn pcite_is_opt_in_not_in_default_sweep() {
+        assert!(
+            !selects(pattern_flag::PCITE, None),
+            "PCITE must NOT run in the no-`--pattern` default sweep"
+        );
+        assert!(
+            selects(pattern_flag::PCITE, Some("PCITE")),
+            "PCITE must activate when --pattern PCITE is given"
+        );
+        assert!(
+            !selects(pattern_flag::PCITE, Some("P2")),
+            "PCITE must be excluded when a named non-PCITE pattern is given"
+        );
+    }
+
+    #[test]
+    fn needs_jcodemunch_pcite_routes_false() {
+        assert!(
+            !needs_jcodemunch(&make_args(false, Some("PCITE"))),
+            "PCITE reads the tracked tree only; it must not open a jcodemunch \
+             connection"
+        );
+        assert!(
+            !jcodemunch_only_run_set(&make_args(false, Some("PCITE"))),
+            "a PCITE-only run must not reach jcodemunch_only_run_set's \
+             stale-index refusal (exit 125)"
+        );
+    }
+
+    // -------------------------------------------------------------------
+    // PPRDSTATUS (task #6932) — PRD status-prose drift
+    // -------------------------------------------------------------------
+
+    /// Accepted alone, and as a NON-LEADING member of a comma-separated union.
+    #[test]
+    fn parse_args_accepts_pprdstatus_pattern() {
+        let args = parse_args(&["--pattern".to_string(), "PPRDSTATUS".to_string()])
+            .unwrap_or_else(|e| panic!("--pattern PPRDSTATUS must parse successfully; got: {e}"));
+        assert_eq!(args.pattern.as_deref(), Some(pattern_flag::PPRDSTATUS));
+
+        let args = parse_args(&["--pattern".to_string(), "P1,PPRDSTATUS".to_string()])
+            .unwrap_or_else(|e| panic!("--pattern P1,PPRDSTATUS must parse successfully; got: {e}"));
+        assert_eq!(args.pattern.as_deref(), Some("P1,PPRDSTATUS"));
+        assert!(
+            selects(pattern_flag::PPRDSTATUS, Some("P1,PPRDSTATUS")),
+            "P1,PPRDSTATUS must enable PPRDSTATUS"
+        );
+    }
+
+    /// PPRDSTATUS is OPT-IN: its High findings track a standing backlog of
+    /// PRD prose, and the exit code is the High-severity count, so joining the
+    /// default sweep would turn every bare `reify-audit` invocation non-zero.
+    #[test]
+    fn pprdstatus_is_opt_in_not_in_default_sweep() {
+        assert!(
+            !selects(pattern_flag::PPRDSTATUS, None),
+            "PPRDSTATUS must NOT run in the no-`--pattern` default sweep"
+        );
+        assert!(
+            selects(pattern_flag::PPRDSTATUS, Some("PPRDSTATUS")),
+            "PPRDSTATUS must activate when --pattern PPRDSTATUS is given"
+        );
+        assert!(
+            !selects(pattern_flag::PPRDSTATUS, Some("P2")),
+            "PPRDSTATUS must be excluded when a named non-PPRDSTATUS pattern is given"
+        );
+    }
+
+    /// PPRDSTATUS reads the loaded task corpus, `ls_files` and the working
+    /// tree — never the jcodemunch serve.
+    #[test]
+    fn needs_jcodemunch_pprdstatus_routes_false() {
+        assert!(
+            !needs_jcodemunch(&make_args(false, Some("PPRDSTATUS"))),
+            "PPRDSTATUS must not open a jcodemunch connection"
+        );
+        assert!(
+            !jcodemunch_only_run_set(&make_args(false, Some("PPRDSTATUS"))),
+            "a PPRDSTATUS-only run must not reach jcodemunch_only_run_set's \
+             stale-index refusal (exit 125)"
+        );
+    }
+
+    /// An empty task corpus refuses a PPRDSTATUS-only run and nothing wider:
+    /// a mixed or pattern-less run keeps its other detectors running.
+    #[test]
+    fn empty_task_corpus_refusal_is_scoped_to_a_pprdstatus_only_run() {
+        assert!(
+            task_corpus_only_run_set(&make_args(false, Some("PPRDSTATUS"))),
+            "a PPRDSTATUS-only run must refuse an empty task corpus"
+        );
+        for pattern in [None, Some("P5"), Some("P5,PPRDSTATUS")] {
+            assert!(
+                !task_corpus_only_run_set(&make_args(false, pattern)),
+                "--pattern {pattern:?} must not refuse an empty task corpus"
+            );
+        }
+    }
+
+    // -------------------------------------------------------------------
+    // --print-repo-id (task #6459)
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn parse_args_accepts_print_repo_id() {
+        let args = parse_args(&["--print-repo-id".to_string()])
+            .unwrap_or_else(|e| panic!("--print-repo-id must parse successfully; got: {e}"));
+        assert!(args.print_repo_id);
+    }
+
+    #[test]
+    fn parse_args_empty_defaults_print_repo_id_false() {
+        let args = parse_args(&[]).unwrap_or_else(|e| panic!("empty argv must parse: {e}"));
+        assert!(!args.print_repo_id, "--print-repo-id must default to off");
+    }
+
+    /// An accepted-but-undiscoverable flag is a usability bug — same
+    /// discoverability guard as `usage_text_lists_jcodemunch_index_dir`.
+    #[test]
+    fn usage_text_lists_print_repo_id() {
+        let mut buf: Vec<u8> = Vec::new();
+        print_usage(&mut buf);
+        let usage = String::from_utf8(buf).expect("usage text is UTF-8");
+        assert!(
+            usage.contains("--print-repo-id"),
+            "--help must list --print-repo-id; got:\n{usage}"
         );
     }
 }

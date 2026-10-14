@@ -7,6 +7,7 @@
 //! keep resolving `Declaration`, `ExprKind`, etc. until PRD task η's follow-up
 //! sweeps the reify-syntax test suite to import from `reify_ast` directly.
 
+pub mod member_continuation;
 mod ts_parser;
 
 // TRANSIENT: re-export all AST types so `use reify_syntax::*` in integration tests
@@ -71,9 +72,8 @@ pub fn parse(source: &str, module_path: ModulePath) -> ParsedModule {
 /// triggering the reify-syntax ↔ reify-test-support dev-dep double-instantiation
 /// (E0308).  It is a test-support helper and is not part of the parser's
 /// production API.
-// Test-support helper kept in-crate to avoid the reify-syntax↔reify-test-support
-// dev-dep cycle; not intended as a general parser API.
 #[doc(hidden)]
+// G-allow: doc-hidden test-support helper kept in-crate to avoid the reify-syntax↔reify-test-support dev-dep cycle; its cross-crate caller is crates/reify-compiler/tests/harness_statement_semantics/parse_with_stdlib_tests.rs, a tests/ file this audit excludes
 pub fn visit_structure_member_root_exprs<F: FnMut(&reify_ast::Expr)>(
     module: &reify_ast::ParsedModule,
     mut visit: F,

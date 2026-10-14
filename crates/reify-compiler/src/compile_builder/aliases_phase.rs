@@ -5,6 +5,32 @@
 //! the `resolving` cycle-detection set stay phase-local because they are
 //! only consumed inside this phase.
 //!
+//! # Not every alias is resolved here (task 6259)
+//!
+//! "Resolve every alias" above means *attempt* every alias. An alias whose
+//! body names an ENTITY — `type AL = SomeEnum` / `= SomeStructureDef` /
+//! `= SomeOccurrenceDef` / `= SomeTrait` — deliberately comes out of this
+//! phase with `resolved_type: None`, and that is not a failure: structures,
+//! traits and enums are not compiled yet when this phase runs (the resolution
+//! name sets are built *after* it, by `build_resolution_names` and
+//! `enums_phase::build_resolution_enums_from_cache`), so their names cannot be
+//! resolved here even in principle.
+//!
+//! Such an alias is instead resolved at each USE SITE, by the deferred arm of
+//! `type_resolution::resolve_type_expr_with_aliases_kinded`, which reads the
+//! raw body retained in `TypeAliasEntry::type_expr` (stored unconditionally by
+//! `resolve_alias_dfs` for every alias, parametric or not) at a point where all
+//! four namespaces are in scope. This is the same deferral the parametric-alias
+//! path already uses, extended to the non-parametric-but-unresolved case.
+//!
+//! That is why this phase does NOT need — and must not be "fixed" to take —
+//! the structure / trait / enum name sets: doing so would require reordering
+//! `phase_aliases` against the names and enums phases, whose ordering
+//! constraints are load-bearing. A `resolved_type: None` entry leaving this
+//! phase is therefore not, on its own, evidence of an ill-formed alias, which
+//! is also why there is no definition-site "cannot resolve this body"
+//! diagnostic here.
+//!
 //! # Prelude seeding
 //!
 //! When `prelude_aliases` is non-empty, pub aliases from the prelude are
@@ -128,7 +154,10 @@ pub(crate) fn phase_aliases(
 ///
 /// Iterates `ctx.alias_registry.iter()` (user-declared aliases only, excluding
 /// prelude-seeded entries), filters to `is_pub && !type_params.is_empty()`,
-/// and calls `validate_pub_parametric_alias_def_site` for each.
+/// and calls `validate_pub_parametric_alias_def_site` for each.  That filter
+/// runs FIRST and an empty result returns immediately, so a module with no
+/// `pub` parametric alias of its own — nearly every module — builds none of
+/// the registries or name sets below.
 ///
 /// **Call site:** immediately after `phase_pending_bound_checks` in `lib.rs`,
 /// where `ctx.alias_registry`, `ctx.resolution_structure_names`,
@@ -140,6 +169,13 @@ pub(crate) fn phase_aliases(
 /// already-built `trait_registry` (prelude + local), which contains the same
 /// complete set of names.
 ///
+/// **Note on enum names:** there is no `ctx.resolution_enum_names` field to
+/// read — the name set is derived here from `ctx.resolution_enums`, the
+/// prelude ++ local `Vec<EnumDef>` that `enums_phase::build_resolution_enums_
+/// from_cache` populates well before this phase's `lib.rs` call site.  Without
+/// this fourth namespace the guard rejects `pub type G<T> = Option<SomeEnum>`
+/// at its own definition site for a plainly declared name (#6477).
+///
 /// Builds the template registry (prelude structures + local templates) and
 /// trait registry (same composition as `phase_pending_bound_checks`) so the
 /// def-site param-bound check (case b) has access to required-bound metadata.
@@ -147,6 +183,27 @@ pub(crate) fn phase_validate_pub_parametric_alias_defs(
     ctx: &mut CompilationCtx,
     prelude_refs: &[&CompiledModule],
 ) {
+    // Collect the entries to validate FIRST — both to release the immutable
+    // `ctx.alias_registry` borrow before `ctx.diagnostics` is borrowed mutably
+    // below, and because an empty collection means every registry and name set
+    // built after this point would be discarded unused.
+    //
+    // Empty is the overwhelmingly common case, not a corner: `alias_registry.
+    // iter()` skips prelude-seeded entries, so this holds only the module's own
+    // `pub` PARAMETRIC aliases — a population the repo-wide survey behind
+    // `parametric_alias_population_regression` puts at two across all of
+    // stdlib. Returning here retires four sets of String clones over the full
+    // prelude alias/trait/enum population per module compile.
+    let entries_to_validate: Vec<_> = ctx
+        .alias_registry
+        .iter()
+        .filter(|e| e.is_pub && !e.type_params.is_empty())
+        .cloned()
+        .collect();
+    if entries_to_validate.is_empty() {
+        return;
+    }
+
     // Build template registry (prelude structures first, then local override).
     let template_registry: HashMap<String, &TopologyTemplate> = prelude_refs
         .iter()
@@ -166,12 +223,13 @@ pub(crate) fn phase_validate_pub_parametric_alias_defs(
     // trait_registry already contains the same complete prelude + local set.
     let trait_names_for_guard: HashSet<String> = trait_registry.keys().cloned().collect();
 
-    // Collect the entries to validate before mutably borrowing `ctx.diagnostics`.
-    let entries_to_validate: Vec<_> = ctx
-        .alias_registry
+    // Derive the set of known enum names the same way, from ctx.resolution_enums
+    // (prelude ++ local) — the only enum-name source available here, as there is
+    // no ctx.resolution_enum_names field.
+    let enum_names_for_guard: HashSet<String> = ctx
+        .resolution_enums
         .iter()
-        .filter(|e| e.is_pub && !e.type_params.is_empty())
-        .cloned()
+        .map(|e| e.name.clone())
         .collect();
 
     for entry in &entries_to_validate {
@@ -180,6 +238,7 @@ pub(crate) fn phase_validate_pub_parametric_alias_defs(
             &ctx.alias_registry,
             &ctx.resolution_structure_names,
             &trait_names_for_guard,
+            &enum_names_for_guard,
             &template_registry,
             &trait_registry,
             &mut ctx.diagnostics,

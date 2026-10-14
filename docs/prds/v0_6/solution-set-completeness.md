@@ -56,7 +56,7 @@ Reify already has one honest instance of this, on the discrete side: `SolveAllRe
 
 | Rung | Multiplicity source | Engine | Verdict reachable | Owner |
 |---|---|---|---|---|
-| 1 | **Declared** discrete (`Int` / `Enum` / `discrete_set` domains) | CP-SAT backtracker | `Exhaustive` when enumeration completes | **PRD 2** (`discrete-cost-minimisation.md`) — β #5468 landed, γ #5469, δ #5470, ζ #5472 pending. **Adopted, not duplicated.** |
+| 1 | **Declared** discrete (`Int` / `Enum` / `discrete_set` domains) | CP-SAT backtracker | `Exhaustive` when enumeration completes | **PRD 2** (`discrete-cost-minimisation.md`) — β #5468 landed, γ #5469, δ #5470, ζ #5472 pending. **Adopted, not duplicated.** *(2026-10-08: `discrete_set` domains moved to `docs/prds/v0_6/catalog-membership-constraint.md` — catalog membership is the constraint `x in C`, with `discrete_set` as sugar; δ #5470 keeps the domain channel.)* |
 | 2 | **Undeclared**, interval-representable, bounded, small | box branch-and-bound over #6655's HC4 propagator | `Exhaustive` / `Refuted` | **this PRD** |
 | 3 | **Undeclared**, beyond rung 2's envelope | the same subdivision, truncated: surviving boxes seed the existing Nelder-Mead multistart | `Partial{reason}` only | **this PRD** |
 
@@ -136,7 +136,7 @@ Consequences for this PRD, both deliberate:
 
 Three substrate facts the design deliberately does **not** rely on, each probe-confirmed absent:
 
-- `@solver_hint("discrete_set", …)` parses and kind-validates but has **zero solve-time readers** (audit finding M-008; probe: a hint-annotated auto minimised against a stock set resolves to `13.2mm`, not a catalogue member). Wiring it is PRD 2 δ **#5470**.
+- `@solver_hint("discrete_set", …)` parses and kind-validates but has **zero solve-time readers** (audit finding M-008; probe: a hint-annotated auto minimised against a stock set resolves to `13.2mm`, not a catalogue member). Wiring it is PRD 2 δ **#5470**. *(2026-10-08: no longer δ's — `discrete_set` becomes sugar for `constraint x in C` in `docs/prds/v0_6/catalog-membership-constraint.md` β #8356 / γ #8357, Leo esc-5470-5.)*
 - `param s : SomeEnum = auto` parses and compiles, then reaches the continuous solver and fails with `solve failed: infeasible` at residual `1.00e0`. Enum domains are PRD 2's.
 - `minimize … where …` parses; the guard is **silently discarded** — a constant-false guard changes nothing, with no error and no warning. That is **#6647**, already filed; this PRD does not touch objectives' guard semantics.
 
@@ -461,7 +461,7 @@ Walked against `docs/legibility/design-invariants.md` (reify's normative list: t
 - The `solutions()` language surface, purposes-as-solve-scopes, and any solution-set *value* type in the language → PRD 2 bookmark **θ #5474**.
 - The mixed discrete×continuous outer loop → PRD 2 **ζ #5472**. MINLP / SCIP / `russcip` remain rejected (M-WHOLE §3.1, binding).
 - The HC4 propagator and the whole-box pre-solve refutation → **#6655** (this PRD consumes both).
-- CP-SAT registry population, `Int` bound-mining, `discrete_set` wiring → PRD 2 **γ #5469** / **δ #5470**.
+- CP-SAT registry population, `Int` bound-mining, `discrete_set` wiring → PRD 2 **γ #5469** / **δ #5470**. *(2026-10-08: `discrete_set` wiring → `docs/prds/v0_6/catalog-membership-constraint.md`.)*
 - **Integrality for `Int` autos.** `param n : Int = auto(free)` resolves to `3.3` with the type annotation erased and no diagnostic. Real defect, adjacent, not this PRD — §10.
 - **Enum autos reaching a solver at all** (`solve failed: infeasible` at residual `1.00e0` today) → PRD 2.
 - `@solver_hint` consumption of any kind → PRD 2 δ / `solver-hint-payloads.md`.
@@ -482,7 +482,7 @@ Each is a real defect surfaced by this PRD's groundwork probes, verified at the 
 1. **`Int` autos are silently relaxed to reals.** `param n : Int = auto` → `n = 6.999999999999999 dimensionless` (type erased, then adjudicated *violated*); `auto(free)` + `n >= 3` → `3.3`. No integrality projection, no diagnostic.
 2. **`reify build` hard-fails on a top-level `auto` param** — `argument 'height' for cylinder is unresolved (Undef)` — where `check`'s no-solve posture is at least documented. Possibly subsumed by #6631; check before filing.
 3. **An inequality-only strict `auto` with no upper bound parks at the `10 m` default-box corner with no warning.** #6655's derived box changes the value; the *silence* is the separate defect.
-4. **`maximize` against a `<= 40mm` bound returns `24mm`**; `minimize` against `>= 8mm` returns `8.8mm`. Objectives look soft-penalised rather than bound-seeking. Needs triage before it is called a bug.
+4. **`maximize` against a `<= 40mm` bound returns `24mm`**; `minimize` against `>= 8mm` returns `8.8mm`. Objectives look soft-penalised rather than bound-seeking. Needs triage before it is called a bug. *(Triaged 2026-08-28 by #6756: **it is a bug** — a correctness defect, not a tolerance one, because the objective's *sense* has no effect on the answer; mechanism = the silent seed-fallback, not soft-penalisation. **Wording —** the reported `24mm` needs a **two-sided** `8mm..40mm` shape; a genuinely one-sided `<= 40mm` returns `36mm`. So this is one defect, not two. **No new fix task:** loudness → #6654 arm 3; the `floor_applied` clamp gate → #5711; the 5e-7 root cause → #6678. Full verdict, the mechanism chain, the probe table and the boundary with item 3: `docs/notes/objective-seed-parking-triage-2026-08-27.md`.)*
 5. **The merged-cluster free-auto warning fans one cluster-wide flag out to every free auto in the cluster**, so it can name a parameter that is not the culprit. β fixes the code-less half; the fan-out is a separate correctness question.
 6. **Top-level disjunction semantics (owned, deferred).** P2 leaf δ **#6671** mints `E_SOLVER_DISJUNCTION_UNSUPPORTED` and names P3 as the owner of what a top-level `Or` should *mean*; today it silently becomes `min(violation_left, violation_right)`, which picks a branch without saying so — the same dishonesty this PRD exists to remove, one level up. §3.3's subdivision is structurally the right answer (each disjunct is a branch, and the union of their solution sets is the model's). Not scoped as a leaf because the diagnostic cannot fire until P2 lands and there is no author-facing disjunction surface to serve yet. File gated on P2 δ #6671.
 

@@ -1,0 +1,14 @@
+module occt_internals_centroid_translated_profile
+
+// PRD evidence fixture: docs/prds/v0_6/occt-crate-internals.md, leaf ζ (ReprPolicy).
+// A translated 20 mm square profile is still a face, so its centroid is the
+// face centroid moved by the translation. Measured on main 8e6ffcac9d
+// (2026-10-12, target/debug/reify): c_moved = point(0 m, 0 m, 0 m), because
+// the OCCT Translate arm stamps BRepKind::Solid and Centroid takes the volume
+// path. After ζ: c_moved = point(0.01 m, 0 m, 0 m) within float noise.
+structure def Probe {
+    let plain = rectangle(20mm, 20mm)
+    let moved = translate(rectangle(20mm, 20mm), 10mm, 0mm, 0mm)
+    let c_plain = centroid(plain)
+    let c_moved = centroid(moved)
+}

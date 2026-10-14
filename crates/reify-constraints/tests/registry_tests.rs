@@ -691,6 +691,7 @@ fn solve_ranked_registry_propagates_k_candidates_ordered_best_first() {
         RankedSolveResult::Ranked {
             candidates,
             optimality,
+            ..
         } => {
             // NOTE (reviewer_comprehensive amend, task δ #5016 review pass 2):
             // this `>= 2` assertion is load-bearing on the INTENTIONAL non-dedup
@@ -837,6 +838,97 @@ fn solve_ranked_registry_cross_merges_independent_component_into_every_candidate
             }
         }
         other => panic!("expected Ranked, got {:?}", other),
+    }
+}
+
+/// CHARACTERIZATION GUARD (task #5721 item 1) — every per-component
+/// sub-problem inherits the FULL `current_values`, with no per-component
+/// filter of any kind.
+///
+/// `SolverRegistry::solve_inner` builds each component's sub-problem from a
+/// `..problem.clone()` spread. It USED TO also rebuild `current_values` cell by
+/// cell into a fresh `ValueMap` under a comment claiming to "Filter
+/// current_values to only this component's params"; that comment misdescribed
+/// the code, because the loop copied EVERY entry, so the rebuild was an exact
+/// — and strictly more expensive — reproduction of what the spread already
+/// supplies (`ValueMap` is a persistent `im::HashMap`, so the spread's clone is
+/// O(1) structural sharing rather than n inserts + 2n key/value clones). Both
+/// the rebuild and that comment were removed by task #5721 item 1; the spread
+/// is now the sole source of each sub-problem's `current_values`.
+///
+/// This test pins the observable contract that deletion relied on: with the
+/// fixture decomposing into an objective component {x,y} and a genuinely
+/// independent component {z}, BOTH sub-problems must still see all three
+/// cells — the {z} component sees x and y, and the {x,y} component sees z.
+/// It was GREEN both before and after the rebuild was deleted; that is exactly
+/// what makes the deletion provably a no-op.
+///
+/// The pass-through is not incidental, it is load-bearing: the #5720
+/// per-component `dependent_cells` filter is justified in registry.rs on the
+/// explicit premise that every cell of `problem.current_values` reaches every
+/// component, so each retained dependent expression stays evaluable.
+///
+/// If a FUTURE task legitimately introduces a REAL per-component
+/// `current_values` filter, this test is expected to fail. Update it
+/// deliberately alongside that change — and re-check the #5720 filter's
+/// premise while doing so — rather than deleting it.
+#[test]
+fn every_component_sub_problem_inherits_the_full_current_values() {
+    let (problem, x_id, y_id, z_id) = two_param_objective_plus_independent_component();
+
+    // Capture the originals before the solve so the assertions compare against
+    // the problem's own seeded values rather than restating literals.
+    let expected: Vec<(reify_core::ValueCellId, Value)> = [&x_id, &y_id, &z_id]
+        .into_iter()
+        .map(|id| {
+            (
+                id.clone(),
+                problem
+                    .current_values
+                    .get(id)
+                    .unwrap_or_else(|| panic!("fixture must seed current_values for {id:?}"))
+                    .clone(),
+            )
+        })
+        .collect();
+
+    // `registry.solve()` runs `solve_inner` with `want_optimality = false`, so
+    // EVERY component — objective-bearing or not — goes through the plain
+    // `solver.solve()` arm and is captured by the spy.
+    let spy = MultiCallSpyConstraintSolver::new(vec![
+        SolveResult::Solved { values: std::collections::HashMap::new(), unique: false },
+        SolveResult::Solved { values: std::collections::HashMap::new(), unique: false },
+    ]);
+    let captured = spy.captured_problems();
+    let registry = SolverRegistry::new(Box::new(spy));
+
+    let _ = registry.solve(&problem);
+
+    let captured_guard = captured.lock().unwrap();
+    assert_eq!(
+        captured_guard.len(),
+        2,
+        "fixture must decompose into exactly 2 components ({{x,y}} + independent {{z}}); \
+         got {} sub-problem(s)",
+        captured_guard.len()
+    );
+
+    for (i, sub) in captured_guard.iter().enumerate() {
+        let own: Vec<_> = sub.auto_params.iter().map(|ap| ap.id.clone()).collect();
+        for (id, want) in &expected {
+            let got = sub.current_values.get(id).unwrap_or_else(|| {
+                panic!(
+                    "sub-problem[{i}] (autos {own:?}) is missing current_values entry {id:?}: \
+                     `current_values` must reach every component WHOLE, with no per-component \
+                     filter — the #5720 `dependent_cells` filter is justified on that premise"
+                )
+            });
+            assert_eq!(
+                got, want,
+                "sub-problem[{i}] (autos {own:?}) altered current_values entry {id:?}: \
+                 expected {want:?}, got {got:?}"
+            );
+        }
     }
 }
 
@@ -1091,6 +1183,300 @@ fn production_registry_routes_geometric_to_solvespace() {
     let registry = SolverRegistry::production();
     let (x_id, y_id, problem) = pt_pt_distance_problem();
     assert_solved_distance_10mm(registry.solve(&problem), &x_id, &y_id);
+}
+
+// ---- PRD2 γ (task #5469): production() installs the discrete solvers ----
+//
+// Logical components go to `CpSatSolver`; CrossDomain components go to the
+// fallback, which answers an all-discrete component with CP-SAT and anything
+// else with `DimensionalSolver` (PRD2 §4.1). Driven through the public factory.
+
+/// `N2.up<i>`, one of the balance's six Bool autos.
+fn up_id(i: usize) -> reify_core::ValueCellId {
+    vcid("N2", &format!("up{i}"))
+}
+
+fn real_lit(v: f64) -> CompiledExpr {
+    literal(Value::Real(v))
+}
+
+/// The PRD2 §5 n2 hexagon balance in its let-indirected shape: six Bool autos
+/// `N2.up<i>`, each naming a force `N2.f<i> = if up<i> then 1.0 else -1.0`
+/// through a dependent cell, and three equilibrium constraints over the forces.
+///
+/// Exactly two models. The sum and the vertical balance force
+/// f2+f3 = f5+f6 = f1+f4 = 0, and the horizontal balance then leaves
+/// 2·f1 + f2 − f5 = 0: (T,F,T,F,T,F) and (F,T,F,T,F,T). Every sum is exact in
+/// f64 for ±1 operands.
+fn bool_balance_problem(free: bool, objective: Option<ObjectiveSense>) -> ResolutionProblem {
+    let f = |i: usize| value_ref_typed("N2", &format!("f{i}"), Type::dimensionless_scalar());
+    let add = |l, r| binop(BinOp::Add, l, r);
+    let sub = |l, r| binop(BinOp::Sub, l, r);
+    let half = |e| binop(BinOp::Mul, real_lit(0.5), e);
+
+    let sum = (2..=6).fold(f(1), |acc, i| add(acc, f(i)));
+    let vertical = binop(
+        BinOp::Mul,
+        real_lit(0.8660254),
+        sub(sub(add(f(2), f(3)), f(5)), f(6)),
+    );
+    let horizontal = add(
+        sub(
+            sub(sub(add(f(1), half(f(2))), half(f(3))), f(4)),
+            half(f(5)),
+        ),
+        half(f(6)),
+    );
+
+    ResolutionProblem {
+        auto_params: (1..=6)
+            .map(|i| AutoParam {
+                id: up_id(i),
+                param_type: Type::Bool,
+                bounds: None,
+                free,
+            })
+            .collect(),
+        constraints: (0u32..)
+            .zip([sum, vertical, horizontal])
+            .map(|(k, e)| (cnid("N2", k), eq(e, real_lit(0.0))))
+            .collect(),
+        current_values: ValueMap::new(),
+        objective: objective.map(|sense| ObjectiveSet::single(sense, f(1))),
+        functions: vec![].into(),
+        dependent_cells: (1..=6)
+            .map(|i| {
+                let up = value_ref_typed("N2", &format!("up{i}"), Type::Bool);
+                let force = conditional_expr(up, real_lit(1.0), real_lit(-1.0));
+                (vcid("N2", &format!("f{i}")), force)
+            })
+            .collect(),
+    }
+}
+
+/// The six `N2.up<i>` of a balance solution, each required to be an exact Bool.
+fn balance_bools(values: &std::collections::HashMap<reify_core::ValueCellId, Value>) -> [bool; 6] {
+    std::array::from_fn(|k| match values.get(&up_id(k + 1)) {
+        Some(Value::Bool(up)) => *up,
+        other => panic!(
+            "N2.up{} must resolve to an exact Bool; got {other:?}",
+            k + 1
+        ),
+    })
+}
+
+/// The three equilibrium equations hold EXACTLY for these bools.
+fn assert_balanced(ups: [bool; 6]) {
+    let [f1, f2, f3, f4, f5, f6] = ups.map(|up| if up { 1.0 } else { -1.0 });
+    assert_eq!(f1 + f2 + f3 + f4 + f5 + f6, 0.0, "force sum for {ups:?}");
+    assert_eq!(
+        0.8660254 * (f2 + f3 - f5 - f6),
+        0.0,
+        "vertical balance for {ups:?}"
+    );
+    assert_eq!(
+        f1 + 0.5 * f2 - 0.5 * f3 - f4 - 0.5 * f5 + 0.5 * f6,
+        0.0,
+        "horizontal balance for {ups:?}"
+    );
+}
+
+/// The domain of the problem's single component — the non-vacuity check that
+/// a test really exercises the registry slot it names.
+fn sole_component_domain(problem: &ResolutionProblem) -> reify_ir::ConstraintDomain {
+    let components = reify_constraints::decompose_into_components(
+        &problem.auto_params,
+        &problem.constraints,
+        None,
+        &problem.dependent_cells,
+    );
+    assert_eq!(components.len(), 1, "expected exactly one component");
+    components[0].domain
+}
+
+/// Strict Bool autos `L.<member>` under `constraints`.
+fn strict_bool_problem(members: &[&str], constraints: Vec<CompiledExpr>) -> ResolutionProblem {
+    ResolutionProblem {
+        auto_params: members
+            .iter()
+            .map(|m| AutoParam {
+                id: vcid("L", m),
+                param_type: Type::Bool,
+                bounds: None,
+                free: false,
+            })
+            .collect(),
+        constraints: (0u32..)
+            .zip(constraints)
+            .map(|(k, c)| (cnid("L", k), c))
+            .collect(),
+        current_values: ValueMap::new(),
+        objective: None,
+        functions: vec![].into(),
+        dependent_cells: Vec::new(),
+    }
+}
+
+fn logical_ref(member: &str) -> CompiledExpr {
+    value_ref_typed("L", member, Type::Bool)
+}
+
+fn bool_lit(b: bool) -> CompiledExpr {
+    literal(Value::Bool(b))
+}
+
+/// B3. The Bool reach sits behind dependent cells, so the balance is a
+/// CrossDomain component: it is answered by the fallback slot, and must come
+/// back as exact balancing Bools.
+#[test]
+fn production_registry_solves_the_let_indirected_bool_balance_with_exact_bools() {
+    let problem = bool_balance_problem(true, None);
+    assert_eq!(
+        sole_component_domain(&problem),
+        reify_ir::ConstraintDomain::CrossDomain,
+        "precondition: the let-indirected balance must reach the CrossDomain slot"
+    );
+
+    let result = SolverRegistry::production().solve(&problem);
+    let SolveResult::Solved { values, unique } = &result else {
+        panic!("expected the balance to solve through production(); got {result:?}");
+    };
+    assert_balanced(balance_bools(values));
+    assert!(
+        !unique,
+        "the balance has exactly two models, so it is not unique"
+    );
+}
+
+#[test]
+fn production_registry_routes_a_pure_bool_logical_component_to_cpsat() {
+    let problem = strict_bool_problem(
+        &["a", "b"],
+        vec![
+            eq(logical_ref("a"), bool_lit(true)),
+            ne(logical_ref("a"), logical_ref("b")),
+        ],
+    );
+    assert_eq!(
+        sole_component_domain(&problem),
+        reify_ir::ConstraintDomain::Logical,
+        "precondition: a pure-Bool component must reach the Logical slot"
+    );
+
+    match SolverRegistry::production().solve(&problem) {
+        SolveResult::Solved { values, unique } => {
+            assert_eq!(values.get(&vcid("L", "a")), Some(&Value::Bool(true)));
+            assert_eq!(values.get(&vcid("L", "b")), Some(&Value::Bool(false)));
+            assert!(unique, "exactly one model, proven by complete enumeration");
+        }
+        other => panic!("expected the Logical component to solve; got {other:?}"),
+    }
+}
+
+/// B4 at the registry seam only: an honest `unique: false` from one component
+/// survives the merge with a unique one. Whether a strict auto then warns or
+/// errors is the engine's policy (#6554), not the registry's.
+#[test]
+fn production_registry_keeps_a_multi_model_bool_component_non_unique_through_the_merge() {
+    let c_is_true = eq(logical_ref("c"), bool_lit(true));
+
+    let two_models = strict_bool_problem(
+        &["a", "b", "c"],
+        vec![ne(logical_ref("a"), logical_ref("b")), c_is_true.clone()],
+    );
+    match SolverRegistry::production().solve(&two_models) {
+        SolveResult::Solved { unique, .. } => {
+            assert!(
+                !unique,
+                "a != b has two models; the merge must not hide that"
+            )
+        }
+        other => panic!("expected Solved; got {other:?}"),
+    }
+
+    let one_model = strict_bool_problem(
+        &["a", "b", "c"],
+        vec![
+            eq(logical_ref("a"), bool_lit(true)),
+            eq(logical_ref("b"), bool_lit(false)),
+            c_is_true,
+        ],
+    );
+    match SolverRegistry::production().solve(&one_model) {
+        SolveResult::Solved { unique, .. } => {
+            assert!(unique, "every component has exactly one model")
+        }
+        other => panic!("expected Solved; got {other:?}"),
+    }
+}
+
+/// B5 at the registry seam: the objective picks WHICH balance model comes
+/// back, and flipping its sense flips the configuration.
+#[test]
+fn production_registry_ranks_the_bool_balance_by_its_objective() {
+    for (sense, expected_up1) in [
+        (ObjectiveSense::Minimize, false),
+        (ObjectiveSense::Maximize, true),
+    ] {
+        let problem = bool_balance_problem(true, Some(sense));
+        match SolverRegistry::production().solve_ranked(&problem) {
+            RankedSolveResult::Ranked {
+                candidates,
+                optimality,
+                completeness,
+            } => {
+                assert!(
+                    matches!(optimality, reify_ir::OptimalityStatus::ProvenOptimal),
+                    "{sense:?}: complete enumeration must prove optimality; got {optimality:?}"
+                );
+                assert_eq!(
+                    completeness,
+                    reify_ir::Completeness::not_attempted(),
+                    "{sense:?}: BT13 + C2 interim: CP-SAT's ProvenOptimal beside \
+                     not_attempted() is retired by #6903 (see cpsat.rs's scored tail)"
+                );
+                let ups = balance_bools(&candidates[0].values);
+                assert_balanced(ups);
+                assert_eq!(ups[0], expected_up1, "{sense:?} f1 picks N2.up1");
+                assert_eq!(
+                    candidates[0].objective_score,
+                    Some(-1.0),
+                    "{sense:?}: the best f1 scores -1 once normalised to minimisation"
+                );
+            }
+            other => panic!("{sense:?}: expected a ranking; got {other:?}"),
+        }
+    }
+}
+
+/// B11 (PRD2 D4): CP-SAT searches the autos in the order it receives them, so
+/// a multi-model component is only reproducible if that order is declaration
+/// order. The balance's two models differ in `up1`; true-first search in
+/// declaration order finds (T,F,T,F,T,F). Many in-process solves are needed
+/// because a hash-ordered leak picks each model about half the time.
+#[test]
+fn production_registry_resolves_a_multi_model_bool_component_identically_every_time() {
+    const DECLARATION_ORDER_FIRST_MODEL: [bool; 6] = [true, false, true, false, true, false];
+    const SOLVES: usize = 16;
+
+    let registry = SolverRegistry::production();
+    let problem = bool_balance_problem(true, None);
+    let observed: Vec<[bool; 6]> = (0..SOLVES)
+        .map(|_| match registry.solve(&problem) {
+            SolveResult::Solved { values, .. } => balance_bools(&values),
+            other => panic!("expected the balance to solve; got {other:?}"),
+        })
+        .collect();
+
+    let deviating = observed
+        .iter()
+        .filter(|ups| **ups != DECLARATION_ORDER_FIRST_MODEL)
+        .count();
+    assert_eq!(
+        deviating, 0,
+        "{deviating}/{SOLVES} solves did not return the declaration-order model \
+         {DECLARATION_ORDER_FIRST_MODEL:?}; observed {observed:?}"
+    );
 }
 
 /// Mixed dimensional + geometric constraints solved through SolverRegistry.
@@ -2023,4 +2409,107 @@ fn registry_forwards_compute_dispatch_to_inner_solver() {
              is Undef for every t without the hook; got {other:?}"
         ),
     }
+}
+
+// ---- BT13: the registry ranked lift does not opt in either (#6706) ----
+
+/// BT13 (solution-set-completeness): the registry's ranked lift reports
+/// `Partial { NotAttempted }`. The registry still conjoins per-component
+/// `unique`; replacing that conjunction with the §3.5 `Completeness` meet is
+/// ι/#6903's work, and this test is what will red when it lands — deliberately,
+/// since that is the change of meaning.
+///
+/// One entry point suffices: `solve_ranked` is `solve_ranked_with_dispatch(p,
+/// None)`, and the lift has a single `Ranked` construction site.
+///
+/// The optimality field is bound with `..`; this test does not touch that axis.
+#[test]
+fn registry_ranked_reports_not_attempted() {
+    use reify_ir::{Completeness, PartialReason};
+
+    let registry = SolverRegistry::new(Box::new(DimensionalSolver));
+    let (problem, _x_id, _y_id) = two_param_interior_quadratic_problem_via_registry();
+
+    match registry.solve_ranked(&problem) {
+        RankedSolveResult::Ranked {
+            candidates,
+            completeness,
+            ..
+        } => {
+            assert_eq!(
+                completeness,
+                Completeness::Partial {
+                    reason: PartialReason::NotAttempted
+                },
+                "the registry lift does not establish the solution set"
+            );
+            assert!(!completeness.permits_proven_optimal(), "C2");
+            assert!(!candidates.is_empty(), "I2 — Ranked carries >= 1 candidate");
+        }
+        other => panic!("expected Ranked, got {other:?}"),
+    }
+}
+
+/// LOCK (task #5469), GREEN on write by design: `production()`'s CrossDomain
+/// fallback must forward `dispatch` on its continuous arm. The trait default
+/// drops it, which would leave `stress(t)` `Undef` and the solve `Infeasible`.
+///
+/// The `&& true` conjunct is what makes the component CrossDomain. It is
+/// spelled as a conjunct, not `== true`, because DimensionalSolver sums a
+/// conjunction's residuals but scores a Bool equality as a flat 0/1 step it
+/// cannot descend.
+#[test]
+fn production_registry_forwards_compute_dispatch_through_the_cross_domain_fallback() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let (t_id, mut problem) = fea_binding_problem();
+    let (id, stress_below_limit) = problem.constraints.pop().expect("one constraint");
+    problem
+        .constraints
+        .push((id, and(stress_below_limit, literal(Value::Bool(true)))));
+    assert_eq!(
+        sole_component_domain(&problem),
+        reify_ir::ConstraintDomain::CrossDomain,
+        "precondition: `stress(t) < 4 && true` must reach the CrossDomain slot"
+    );
+    let registry = SolverRegistry::production();
+    let assert_interior = |t: Option<f64>, what: &str| {
+        let t = t.unwrap_or_else(|| panic!("{what}: t must resolve to a number"));
+        assert!(
+            t > 0.001 && t < 1.0,
+            "{what}: expected an interior t; got {t}"
+        );
+    };
+
+    let mock = CountingDispatch {
+        calls: AtomicUsize::new(0),
+        k: 1.0,
+    };
+    match registry.solve_with_dispatch(&problem, Some(&mock)) {
+        SolveResult::Solved { values, .. } => assert_interior(
+            values.get(&t_id).and_then(Value::as_f64),
+            "solve_with_dispatch",
+        ),
+        other => panic!("expected Solved with the dispatch hook forwarded; got {other:?}"),
+    }
+    assert!(
+        mock.calls.load(Ordering::SeqCst) > 0,
+        "the hook must be reached"
+    );
+
+    let mock_ranked = CountingDispatch {
+        calls: AtomicUsize::new(0),
+        k: 1.0,
+    };
+    match registry.solve_ranked_with_dispatch(&problem, Some(&mock_ranked)) {
+        RankedSolveResult::Ranked { candidates, .. } => assert_interior(
+            candidates[0].values.get(&t_id).and_then(Value::as_f64),
+            "solve_ranked_with_dispatch",
+        ),
+        other => panic!("expected Ranked with the dispatch hook forwarded; got {other:?}"),
+    }
+    assert!(
+        mock_ranked.calls.load(Ordering::SeqCst) > 0,
+        "the hook must be reached on the ranked path"
+    );
 }

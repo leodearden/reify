@@ -6,9 +6,11 @@
 ///      each individual invariant was exercised and passed.
 ///
 /// This is the integration gate for task η of
-/// docs/prds/core-ast-ir-layering.md. It is intentionally RED until the
-/// cutover in step-4 lands (step-2 wires the script; the script exits nonzero
-/// while reify-types is still present; step-4 removes reify-types → GREEN).
+/// docs/prds/core-ast-ir-layering.md.
+///
+/// `scripts/affected-crates-lib.sh` names this crate in `_REIFY_DAG_GATE_CRATE`
+/// so a per-crate manifest diff pulls this gate into a narrowed, task-scoped
+/// verify. Moving this gate to another crate means updating that constant.
 #[test]
 fn workspace_dag_invariant_via_assert_script() {
     use std::path::Path;

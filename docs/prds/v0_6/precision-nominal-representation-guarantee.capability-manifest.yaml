@@ -613,24 +613,24 @@ tasks:
     bound layout'
   capabilities:
   - name: corpus-compile-gate-exists
-    binding: crates/reify-compiler/tests/examples_smoke.rs auto-compiles examples/best_practices/,
+    binding: crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs auto-compiles examples/best_practices/,
       so the exemplar's signal is a real CI gate rather than a promise.
     verdict: PASS
     delivered_check:
       kind: grep
       pattern: best_practices
       paths:
-      - crates/reify-compiler/tests/examples_smoke.rs
+      - crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs
       expect: present
   - name: index-consistency-test-exists-by-the-cited-name
-    binding: crates/reify-compiler/tests/examples_smoke.rs:548 fn best_practices_index_matches_corpus_directory().
+    binding: crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs:548 fn best_practices_index_matches_corpus_directory().
       The signal is bound to a test that EXISTS, not to a script that might.
     verdict: PASS
     delivered_check:
       kind: grep
       pattern: fn best_practices_index_matches_corpus_directory
       paths:
-      - crates/reify-compiler/tests/examples_smoke.rs
+      - crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs
       expect: present
   - name: three-index-sites-exist
     binding: examples/best_practices/INDEX.md present; .claude/skills/reify-design/SKILL.md

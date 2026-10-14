@@ -35,6 +35,21 @@
 # emitting the plan), so the outcome line reports a distinct "PLAN OK" dry
 # -run marker rather than "PASS" for that case — a reader of only the
 # stderr summary must not mistake a plan emission for a real test pass.
+#
+# THE ONE EXCEPTION, AND WHY IT IS NOT LIKE THE OTHERS (task 7423). Under a
+# forwarded `--confirm-failed` the outcome line is suppressed entirely, because
+# under that flag STDERR IS NOT A SAFE CHANNEL AT ALL. dark-factory spawns the
+# confirmation run with stdout=PIPE and stderr=STDOUT — the two streams MERGED —
+# and parses every non-blank line of the result as one confirmed-still-failing
+# test ID. The outcome line would therefore arrive as a bogus test id, and DF's
+# fingerprint/dedup path would file a fix task literally named
+# `==> offline deep-test lane: FAIL (exit 100)`.
+#
+# So the "all wrapper chatter goes to stderr" promise above is a --print-plan
+# stdout-purity guarantee only; it buys nothing under --confirm-failed, where
+# the caller has deliberately collapsed the distinction between the streams.
+# The exit code still propagates verbatim, which is the whole of what this
+# wrapper owes that caller.
 
 set -euo pipefail
 
@@ -45,24 +60,30 @@ cd "$REPO_ROOT"
 export DF_VERIFY_ROLE=offline
 
 is_print_plan=0
+is_confirm_failed=0
 for _arg in "$@"; do
-    if [ "$_arg" = "--print-plan" ]; then
-        is_print_plan=1
-        break
-    fi
+    case "$_arg" in
+        --print-plan)     is_print_plan=1 ;;
+        --confirm-failed) is_confirm_failed=1 ;;
+    esac
 done
 
 rc=0
 "$SCRIPT_DIR/verify.sh" test "$@" || rc=$?
 
-if [ "$rc" -eq 0 ]; then
-    if [ "$is_print_plan" -eq 1 ]; then
-        echo "==> offline deep-test lane: PLAN OK (dry run — no tests executed)" >&2
+# Silent under --confirm-failed: see the header's "THE ONE EXCEPTION" note —
+# the caller merges stderr into stdout and reads each line as a test id, so
+# there is no channel here on which to be helpful.
+if [ "$is_confirm_failed" -eq 0 ]; then
+    if [ "$rc" -eq 0 ]; then
+        if [ "$is_print_plan" -eq 1 ]; then
+            echo "==> offline deep-test lane: PLAN OK (dry run — no tests executed)" >&2
+        else
+            echo "==> offline deep-test lane: PASS" >&2
+        fi
     else
-        echo "==> offline deep-test lane: PASS" >&2
+        echo "==> offline deep-test lane: FAIL (exit $rc)" >&2
     fi
-else
-    echo "==> offline deep-test lane: FAIL (exit $rc)" >&2
 fi
 
 exit "$rc"

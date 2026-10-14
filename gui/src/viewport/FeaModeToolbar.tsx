@@ -59,6 +59,17 @@ export interface FeaModeToolbarProps {
    */
   maxValue?: number | null;
   /**
+   * Display-ready unit of the active scalar channel (e.g. `'Pa'`, `'rad'`),
+   * supplied by the parent (Viewport) from `channelUnit(meshes, channel)`
+   * (task #6185). Rendered as a suffix on the max readout, so a Pa channel
+   * reads `max vonMises: 1.23e+6 Pa`.
+   *
+   * Omitted or `null` renders no unit and leaves the readout byte-identical to
+   * its pre-tag form — `channelUnit` returns null for untagged channels and
+   * for meshes that disagree, so that is the common path.
+   */
+  unitLabel?: string | null;
+  /**
    * A-posteriori convergence status of the active FEA case (task 3001).
    * When `converged === false`, a warning badge shows `reason`. Omitted or
    * `converged === true` renders no badge.
@@ -229,6 +240,7 @@ export const FeaModeToolbar: Component<FeaModeToolbarProps> = (props) => {
               style={{ 'font-size': '11px', color: '#b0c4de' }}
             >
               max {props.store.state.channel}: {formatScalar(props.maxValue!)}
+              {props.unitLabel ? ` ${props.unitLabel}` : ''}
             </div>
           </Show>
 

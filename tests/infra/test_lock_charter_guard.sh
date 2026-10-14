@@ -706,8 +706,17 @@ fi
 # .csv files (measured: `git ls-files '*.csv' | wc -l` -> 0); the evidence lived
 # in dark-factory's corpus (plans/evidence/scheduler-scoring-2026-08-06/*.csv).
 # Cycle 10 defends against reify-corpus-driven drift only — a NEW tracked reify
-# extension landing with no allowlist entry, i.e. the #5726 shape.  The
-# cross-source half (γ's skipped Tier-2 comparison, esc-6067-2) stays open.
+# extension landing with no allowlist entry, i.e. the #5726 shape.  At the time
+# #6067 was filed, the cross-source half (γ's Tier-2 comparison) was also open:
+# a path-resolution bug dropped that test at collection, so it skipped on every
+# run (esc-6067-2).  MEASURED 2026-08-27 (#6856): that half is no longer open —
+# dark-factory tasks 3843/4080 re-armed BOTH of γ's Tier-2 cross-source guards
+# on a layout-independent resolver, and fresh -rs plus injected-drift runs
+# confirm both the extension and extensionless comparisons now run and fire.
+# Cycle 10 here still only covers the reify-corpus direction; the
+# cross-source direction is covered from γ's side, not by this file — see the
+# "Cross-repo seam: γ" header note in scripts/lock-charter-guard.sh for the
+# current-state detail, deliberately not restated here.
 #
 # LAST-dot extraction is the filter rule.  The extension side, unlike the
 # extensionless side, can surface non-extension tokens, and the answer is not a

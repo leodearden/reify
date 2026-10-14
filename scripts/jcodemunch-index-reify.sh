@@ -42,12 +42,29 @@
 
 set -euo pipefail
 
+# Self-location, so the sibling lib resolves regardless of CWD: the guard suite
+# invokes this script by ABSOLUTE PATH from REPO_ROOT, and operators run it from
+# anywhere.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# The invocation triple — JC_PIN, JC_PYTHON, JC_IDENTITY_ENV — has ONE
+# definition site (#6454). The existence check is not boilerplate: without it a
+# missing or renamed lib surfaces as an unbound-variable failure deep inside
+# argv construction below, which reads as a bug in THIS script rather than as a
+# missing file.
+if [ ! -f "$SCRIPT_DIR/lib_jcodemunch_pin.sh" ]; then
+    echo "jcodemunch-index-reify.sh: ERROR — scripts/lib_jcodemunch_pin.sh not found next to jcodemunch-index-reify.sh" >&2
+    exit 1
+fi
+# shellcheck source=scripts/lib_jcodemunch_pin.sh
+source "$SCRIPT_DIR/lib_jcodemunch_pin.sh"
+
 # The canonical checkout whose index identity this script exists to maintain.
 DEFAULT_PROJECT_ROOT="/home/leo/src/reify"
 
 usage() {
     cat <<'USAGE'
-Usage: scripts/jcodemunch-index-reify.sh [--project-root DIR] [--dry-run] [--check-only]
+Usage: scripts/jcodemunch-index-reify.sh [--project-root DIR] [--dry-run] [--check-only] [--print-repo-id]
 
 Runs one bounded `watch --once` jcodemunch index pass over the canonical reify
 checkout, then asserts the resulting index is present, non-empty, and not
@@ -59,6 +76,10 @@ silently truncated by the max_folder_files cap.
   --dry-run           Print the exact indexer argv that would be run, exit 0.
   --check-only        Skip the indexer; run identity resolution and the index
                       assertions against the already-present DB only.
+  --print-repo-id     Print the index identity this script would index for
+                      --project-root (local/<basename>-<sha1[:8]>), then exit 0.
+                      Runs no indexer and reads no config or DB. Exclusive
+                      with --dry-run and --check-only.
   -h, --help          Show this help and exit.
 
 Refusal markers (stderr, always non-zero exit):
@@ -72,6 +93,7 @@ USAGE
 PROJECT_ROOT="$DEFAULT_PROJECT_ROOT"
 DRY_RUN=0
 CHECK_ONLY=0
+PRINT_REPO_ID=0
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -81,6 +103,7 @@ while [ "$#" -gt 0 ]; do
         --project-root=*) PROJECT_ROOT="${1#*=}"; shift ;;
         --dry-run)    DRY_RUN=1; shift ;;
         --check-only) CHECK_ONLY=1; shift ;;
+        --print-repo-id) PRINT_REPO_ID=1; shift ;;
         -h|--help)    usage; exit 0 ;;
         *)
             echo "jcodemunch-index-reify.sh: unknown argument '$1'" >&2
@@ -90,8 +113,17 @@ while [ "$#" -gt 0 ]; do
     esac
 done
 
+if [ "$PRINT_REPO_ID" -eq 1 ] && { [ "$DRY_RUN" -eq 1 ] || [ "$CHECK_ONLY" -eq 1 ]; }; then
+    echo "jcodemunch-index-reify.sh: --print-repo-id cannot be combined with --dry-run or --check-only" >&2
+    usage >&2
+    exit 64
+fi
+
 say() { printf 'jcodemunch-index-reify: %s\n' "$*"; }
 die() { printf 'jcodemunch-index-reify: %s\n' "$*" >&2; exit 1; }
+# Non-fatal degradation. stderr, like die/refuse, so it can never be mistaken
+# for one of the machine-read summary fields on stdout.
+warn() { printf 'jcodemunch-index-reify: WARNING: %s\n' "$*" >&2; }
 
 # ── Identity resolution ──────────────────────────────────────────────────────
 #
@@ -120,6 +152,19 @@ sha1_hex() {
     fi
 }
 
+# derive_repo_id_inline <resolved-root> — the formula above, in bash, for a
+# checkout with no reify-audit built yet.
+derive_repo_id_inline() {
+    local name sha
+    name="$(basename -- "$1")"
+    # `basename -- /` prints `/`, but `Path('/').name` (and the Rust side) is empty.
+    if [ "$name" = "/" ]; then
+        name=""
+    fi
+    sha="$(sha1_hex "$1" | cut -c1-8)" || return
+    printf 'local/%s-%s\n' "$name" "$sha"
+}
+
 # Expand a leading `~` ourselves: the path may arrive quoted (from a config or
 # another script), in which case the caller's shell never expanded it, and
 # readlink -f would resolve a literal './~' relative to cwd.
@@ -130,8 +175,94 @@ esac
 PROJECT_ROOT="$(readlink -f -- "$PROJECT_ROOT")" \
     || die "could not resolve --project-root to an absolute path"
 
-REPO_NAME="$(basename -- "$PROJECT_ROOT")-$(sha1_hex "$PROJECT_ROOT" | cut -c1-8)"
-REPO_ID="local/$REPO_NAME"
+# ── One derivation, not two (task #6459) ─────────────────────────────────────
+#
+# The formula above is implemented once, in Rust (jcodemunch_index.rs::
+# resolve_repo_id, exposed as `reify-audit --print-repo-id`), the same
+# derivation the gate probes. Producers, first answer wins:
+#   1. $REIFY_JC_REPO_ID_BIN, when set;
+#   2. the newer of target/{release,debug}/reify-audit in the checkout this
+#      script lives in (not $PROJECT_ROOT, which may be another tree);
+#   3. derive_repo_id_inline, so a cold checkout still resolves an identity.
+# The one that answered is reported as `repo-id-from`. The inline copy is held
+# to the Rust one by cli.rs::index_script_repo_id_agrees_between_the_rust_and_bash_producers.
+
+# pick_repo_id_bin — the reify-audit to ask, or nothing on a cold checkout.
+pick_repo_id_bin() {
+    if [ -n "${REIFY_JC_REPO_ID_BIN:-}" ]; then
+        printf '%s\n' "$REIFY_JC_REPO_ID_BIN"
+        return 0
+    fi
+    local own_root rel dbg
+    own_root="$(git -C "$(dirname -- "${BASH_SOURCE[0]}")" rev-parse --show-toplevel 2>/dev/null)" \
+        || return 0
+    rel="$own_root/target/release/reify-audit"
+    dbg="$own_root/target/debug/reify-audit"
+    # Newer wins, not release: dev/test builds debug, and a stale release
+    # build still answers --print-repo-id with exit 0.
+    if [ -x "$rel" ] && { [ ! -x "$dbg" ] || [ "$rel" -nt "$dbg" ]; }; then
+        printf '%s\n' "$rel"
+    elif [ -x "$dbg" ]; then
+        printf '%s\n' "$dbg"
+    fi
+}
+
+# repo_id_bin_origin <bin> — how <bin> was chosen and when it was built.
+repo_id_bin_origin() {
+    local how="binary built in this checkout"
+    if [ -n "${REIFY_JC_REPO_ID_BIN:-}" ]; then
+        how="env REIFY_JC_REPO_ID_BIN"
+    fi
+    if [ -e "$1" ]; then
+        how="$how, built $(date -r "$1" '+%Y-%m-%dT%H:%M:%S' 2>/dev/null || printf 'at an unreadable mtime')"
+    fi
+    printf '%s\n' "$how"
+}
+
+# ask_repo_id_bin <bin> <resolved-root> — <bin>'s --print-repo-id answer, or a
+# warning and non-zero exit when it gave none. Only stdout is captured, so the
+# child's own diagnostics reach the operator verbatim.
+ask_repo_id_bin() {
+    local id rc=0
+    id="$("$1" --print-repo-id --project-root "$2")" || rc=$?
+    if [ "$rc" -eq 0 ] && [ -n "$id" ]; then
+        printf '%s\n' "$id"
+        return 0
+    fi
+    if [ "$rc" -eq 0 ]; then
+        warn "'$1' --print-repo-id exited 0 but printed no repo id"
+    else
+        warn "'$1' --print-repo-id exited $rc (any diagnostics of its own are above)"
+    fi
+    warn "the single Rust derivation did NOT answer; the identity below comes from this script's inline fallback instead"
+    return 1
+}
+
+REPO_ID_BIN="$(pick_repo_id_bin)"
+if [ -z "$REPO_ID_BIN" ]; then
+    REPO_ID="$(derive_repo_id_inline "$PROJECT_ROOT")"
+    REPO_ID_SOURCE="inline bash fallback (no reify-audit binary found)"
+elif REPO_ID="$(ask_repo_id_bin "$REPO_ID_BIN" "$PROJECT_ROOT")"; then
+    REPO_ID_SOURCE="$REPO_ID_BIN --print-repo-id ($(repo_id_bin_origin "$REPO_ID_BIN"))"
+else
+    REPO_ID="$(derive_repo_id_inline "$PROJECT_ROOT")"
+    REPO_ID_SOURCE="inline bash fallback ($(repo_id_bin_origin "$REPO_ID_BIN") '$REPO_ID_BIN' did not answer)"
+fi
+case "$REPO_ID" in
+    # A slash in the NAME half cannot round-trip through `local-<name>.db`, and
+    # `local/?*` alone would let `local//-abc` through.
+    local/*/*) die "resolved a jcodemunch repo id whose name contains a slash, '$REPO_ID', from $REPO_ID_SOURCE — it has no representable local-<name>.db path" ;;
+    local/?*) ;;
+    *) die "resolved a malformed jcodemunch repo id '$REPO_ID' (expected local/<name>) from $REPO_ID_SOURCE" ;;
+esac
+
+# Consumed by scripts/smoke-jcodemunch-serve.sh for its default identity.
+if [ "$PRINT_REPO_ID" -eq 1 ]; then
+    printf '%s\n' "$REPO_ID"
+    exit 0
+fi
+
+REPO_NAME="${REPO_ID#local/}"
 CODE_INDEX_DIR="${CODE_INDEX_PATH:-$HOME/.code-index}"
 DB_PATH="$CODE_INDEX_DIR/local-$REPO_NAME.db"
 
@@ -165,8 +296,36 @@ resolve_file_cap() {
         # strict JSON parser. Only comments that START a line (after optional
         # whitespace) or follow whitespace are stripped, so a `//` inside a
         # value (a URL, an ignore pattern) is left alone.
+        #
+        # THAT ALONE IS NOT ENOUGH (task 6486). jcodemunch's own generated
+        # config.jsonc template (config.py::generate_template at the pinned
+        # 1.108.54) also uses JSONC's other departure from strict JSON: a
+        # trailing comma before a closing `]`/`}`, e.g. its live "languages"
+        # array ends `"rust",\n  ],`. jq rejects that too ("Expected another
+        # array element"), so a config carrying it still failed to parse even
+        # after comments were stripped — measured against the real template
+        # generated by the pinned package, not a synthetic strict-JSON
+        # fixture, which is exactly what let this slip through originally.
+        # The second sed slurps the whole (comment-stripped) file into one
+        # pattern space (`:a;N;$!ba`) so the `,` and its closing bracket can
+        # be matched across the newline between them, then drops any comma
+        # that is followed only by whitespace and a `]` or `}`.
+        #
+        # NOT STRING-AWARE, BY MEASUREMENT RATHER THAN BY DESIGN (task 6486
+        # review pass). Both passes are plain text rewrites with no notion of
+        # JSON string boundaries, so a comma INSIDE a string value that
+        # happens to be followed only by whitespace and a `]`/`}` — e.g. an
+        # extra_ignore_patterns entry "src/{a,b,}" or a prose value
+        # "note": "x, } y" — would be silently rewritten too. That cannot
+        # change this function's OUTPUT: the only thing read below is the
+        # single numeric `.max_folder_files` key, never a string value the
+        # stripper might mangle, and both the live host config and the real
+        # 1.108.54 template parse to the correct cap through this pipeline
+        # (measured). Revisit this if the pipeline is ever reused to read a
+        # string-valued key.
         local stripped from_config
-        stripped="$(sed -e 's|^[[:space:]]*//.*$||' -e 's|[[:space:]]//[^"]*$||' "$CONFIG_JSONC")"
+        stripped="$(sed -e 's|^[[:space:]]*//.*$||' -e 's|[[:space:]]//[^"]*$||' "$CONFIG_JSONC" \
+            | sed -e ':a' -e 'N' -e '$!ba' -e 's/,\([[:space:]]*[]}]\)/\1/g')"
 
         if ! from_config="$(printf '%s\n' "$stripped" | jq -r '.max_folder_files // empty' 2>/dev/null)"; then
             # A config.jsonc that exists but will not parse is an operator
@@ -194,6 +353,7 @@ esac
 
 say "project-root  $PROJECT_ROOT"
 say "repo-id       $REPO_ID"
+say "repo-id-from  $REPO_ID_SOURCE"
 say "db-path       $DB_PATH"
 say "file-cap      $FILE_CAP ($FILE_CAP_SOURCE)"
 
@@ -405,32 +565,26 @@ headroom_note() {
 # The BARE one-shot form and nothing more. All three flags re-verified on the
 # `watch` subparser at the pinned 1.108.54 (server.py:6326-6369):
 #
-#     uvx --from jcodemunch-mcp==1.108.54 jcodemunch-mcp watch <root> --once --no-ai-summaries
+#     env JCODEMUNCH_GIT_ROOT_IDENTITY=0 uvx --python <JC_PYTHON> --from <JC_PIN> \
+#         jcodemunch-mcp watch <root> --once --no-ai-summaries
 #
-# The pin is 1.108.54 because PRD §8 records that 1.108.27 is no longer on
-# PyPI. An unpinned invocation would silently follow upstream into a version
-# whose flags and schema this script has not been verified against.
+# Placeholders, not values: the interpreter and the pin come from the lib (see
+# below), and an illustration that restated them would drift on the next bump
+# with nothing cross-checking it — which is how this example came to omit
+# `--python` entirely while the argv had carried it for a release. δ's sibling
+# example in scripts/with-jcodemunch-serve.sh has the identical shape.
 #
 # NOTHING is ever appended to this array — see the `--paths-from` ban in the
 # header (PRD §4.4). In particular the `index` subcommand is never used: it is
 # the only subparser that accepts --paths-from at all (server.py:6505).
-JC_PIN="jcodemunch-mcp==1.108.54"
-
-# THE INTERPRETER IS PART OF THE PIN (esc-6107-4). `--from jcodemunch-mcp==…`
-# alone is only HALF a pin: it fixes the package and leaves the interpreter
-# floating, and uvx defaults to the newest interpreter uv manages — on this host
-# cpython-3.14.0+freethreaded. Measured 2026-08-13, the bare form fails outright:
 #
-#   × Failed to download and build `tree-sitter-embedded-template==0.25.0`
-#   ╰─▶ The built wheel … is not compatible with the current Python 3.14t
-#
-# i.e. a transitive dep of the PINNED jcodemunch-mcp publishes no 3.14t-compatible
-# wheel, so the primitive could not run AT ALL on the canonical checkout. Pinning
-# the minor keeps resolution reproducible as newer interpreters land on the host.
-# 3.13 is chosen because it is what `python3` already resolves to here (3.13.9)
-# and it resolved and ran clean at this exact package pin.
-JC_PYTHON="3.13"
-
+# THE PIN AND THE INTERPRETER COME FROM THE LIB. `scripts/lib_jcodemunch_pin.sh`,
+# sourced at the top of this file, defines JC_PIN and JC_PYTHON — there and
+# nowhere else (#6454). Its header carries the PIN-BUMP CHECKLIST and the
+# provenance of both values, including the measurement that authorises the
+# interpreter. Do NOT restate any of it here: the guard suites cross-check this
+# script's CONSTRUCTED argv against the lib, but nothing cross-checks this
+# COMMENT against it, so a second copy of a measurement record drifts unseen.
 # ── THE IDENTITY LEVER IS PART OF THE INVOCATION (esc-6107-6/-7) ─────────────
 #
 # `local/<basename>-<sha1>` is NOT what jcodemunch resolves by default. At the
@@ -460,40 +614,12 @@ JC_PYTHON="3.13"
 #      env var as the fix. PRD §4.2's "collides across reify's 239 worktrees"
 #      is a LIVE hazard, not the stale one §3 calls it.
 #
-# PIN-BUMP CHECKLIST: this env var is accepted but DEPRECATED upstream — the
-# package logs "will be removed in v2.0. Use config.jsonc instead." A bump past
-# v2.0 must re-establish the lever in config.jsonc before landing, or the
-# identity silently reverts to `leodearden/reify` and every gate below starts
-# interrogating a path nothing writes.
-#
-# THE KEY IS `"git_root_identity": false` — NOT `"identity_mode": "local"`.
-# Two line numbers, because a bumper needs both: `config.py:384` is the shipped
-# DEFAULT that actually has to be flipped (`"git_root_identity": True`, the same
-# line cited above), and `config.py:474` is its CONFIG_TYPES entry
-# (`"git_root_identity": bool`) — the map a key must appear in to survive the
-# load at all. Following :474 alone lands a reader on a type table, not on the
-# lever.
-#
-# `"identity_mode"` is a trap worth naming rather than merely omitting: the
-# shipped config template ADVERTISES it (config.py:1872-1896, where it is even
-# presented as the PREFERRED spelling and `git_root_identity` as its deprecated
-# alias), yet at the pinned 1.108.54 it appears in neither DEFAULTS nor
-# CONFIG_TYPES. So a bump that reached for the advertised key would look
-# configured while the identity had already reverted.
-#
-# It fails closed, but NOT invisibly — the distinction is worth having, because
-# one half of it is a cheap check:
-#   - On the LOAD path it is dropped with no error and no log line
-#     (config.py:708, `# Ignore unknown keys silently`).
-#   - `validate_config` DOES flag it: "Config key 'identity_mode' is not
-#     recognized (unknown key)" (config.py:1194), reachable from the CLI as
-#     `jcodemunch-mcp config --check` (server.py:6042).
-# So ADD `config --check` to this checklist: run it against the config.jsonc a
-# bump introduces, and an unrecognised key is named before it can silently
-# revert the identity. It is the only signal upstream gives here.
-#
-# All of the above re-verified first-hand against the PINNED 1.108.54 wheel, not
-# a neighbouring release.
+# PIN-BUMP CHECKLIST: consolidated into `scripts/lib_jcodemunch_pin.sh` (#6454)
+# — the v2.0 deprecation of this env var, the `"git_root_identity": false`
+# successor with BOTH config.py cites, the `"identity_mode"` trap and the
+# `jcodemunch-mcp config --check` instruction. Everything ABOVE this line is
+# β-specific and deliberately stays here: it is why the per-path identity is
+# worth forcing for the INDEXER, which is not the lib's business.
 #
 # NOT SUFFICIENT ON ITS OWN: `resolve_index_identity` returns an ALREADY-EXISTING
 # git-identity index (git_root.py:174-178) BEFORE it ever consults the configured
@@ -511,9 +637,10 @@ JC_PYTHON="3.13"
 # being inert it will carry a `source_root`, which is exactly what the hijack
 # diagnostic keys on.
 #
-# Carried as an explicit `env` prefix rather than an `export` so that --dry-run
-# prints a command that actually reproduces this behaviour when pasted.
-JC_IDENTITY_ENV=(env JCODEMUNCH_GIT_ROOT_IDENTITY=0)
+# JC_IDENTITY_ENV — the `env JCODEMUNCH_GIT_ROOT_IDENTITY=0` argv prefix — is
+# defined in the lib, as an ARRAY, and spliced into INDEXER_ARGV below. Carried
+# as an explicit prefix rather than an `export` so that --dry-run prints a
+# command that actually reproduces this behaviour when pasted.
 
 INDEXER_CMD=(uvx --python "$JC_PYTHON" --from "$JC_PIN" jcodemunch-mcp)
 if [ -n "${REIFY_JC_INDEXER_CMD:-}" ]; then

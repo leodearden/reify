@@ -261,7 +261,8 @@ fn rank_single_objective_score_is_the_folded_objective() {
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-// BT-10 — `cost_robustness_tradeoff` is a THIRD, unconverted scoring site
+// BT-11 (PRD §7; renumbered from a §7-collision by task #5764) —
+// `cost_robustness_tradeoff` is a THIRD, unconverted scoring site
 // ════════════════════════════════════════════════════════════════════════════
 //
 // `solve_cost_robustness_tradeoff` materialises its two ANCHOR-SCORING maps
@@ -439,7 +440,7 @@ fn robustness_reference_t() -> f64 {
     solve_tradeoff_t(&reference, &t_id)
 }
 
-/// BT-10 (a), PRIMARY — a cost-dominant λ and a robustness-dominant λ must
+/// BT-11 (a), PRIMARY — a cost-dominant λ and a robustness-dominant λ must
 /// produce MATERIALLY different solutions.
 ///
 /// RED before the fix: both anchor-scoring maps read `line_cost` unfolded, so
@@ -479,7 +480,7 @@ fn tradeoff_cost_axis_is_live_across_lambda() {
     );
 }
 
-/// BT-10 (b), SECONDARY — pin the DIRECTION of the blend, so a future
+/// BT-11 (b), SECONDARY — pin the DIRECTION of the blend, so a future
 /// regression that makes the axes merely differ (rather than differ correctly)
 /// still fails.
 ///

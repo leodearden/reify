@@ -4,8 +4,9 @@
 //! are reachable via the SIR-α lowering path and that their engineering
 //! defaults round-trip through member-access expressions as `Value::Scalar`.
 //!
-//! Also contains the `reify eval` CLI golden test for
-//! `examples/materials_starter_library.ri` (the wave-2 user-observable signal).
+//! The `reify eval` CLI golden for `examples/materials_starter_library.ri`
+//! (the wave-2 user-observable signal) moved to
+//! `crates/reify-cli/tests/harness_cli/cli_materials_starter_library_golden.rs` (#5718).
 //!
 //! PRD reference: docs/prds/v0_3/structural-analysis-fea.md §8 SIR-β-mat,
 //! GR-019 (cluster C-16 Material starter library).
@@ -152,94 +153,6 @@ fn abs_plastic_field_read_round_trip() {
     assert_material_round_trip("ABS_Plastic", "AbsFixture");
 }
 
-// ── CLI golden test ───────────────────────────────────────────────────────────
-
-/// `reify eval examples/materials_starter_library.ri` must print inspectable
-/// structure-shaped values (not `undef`) for all three wave-2 materials, and
-/// its stdout must match the committed golden. Regenerate with
-/// `REIFY_REGENERATE_GOLDEN=1`.
-///
-/// `CARGO_BIN_EXE_reify` is only injected for `reify-cli`'s own integration
-/// tests, so this cross-crate test drives the pre-built `reify` binary
-/// directly. It deliberately does NOT use `cargo run`: even when the binary
-/// is already compiled, `cargo run` re-fingerprints the entire workspace
-/// before exec, and under high build concurrency that overhead can push the
-/// test suite past its time budget (esc-4340-32, exit 124). `cargo test -p
-/// reify-cli` builds all `[[bin]]` targets, including `reify`, so the binary
-/// is present at `<target>/debug/reify`. The cargo runner
-/// (`.cargo/run-with-occt.sh`) exports `LD_LIBRARY_PATH` into this test
-/// process's environment, which the spawned child inherits, so OCCT shared
-/// libraries resolve without going through cargo.
-#[test]
-fn cli_reify_eval_prints_inspectable_material_values() {
-    let manifest = env!("CARGO_MANIFEST_DIR"); // .../crates/reify-eval
-    let workspace_root = std::path::Path::new(manifest)
-        .ancestors()
-        .nth(2)
-        .expect("workspace root is two levels above crates/reify-eval")
-        .to_path_buf();
-    let example = workspace_root.join("examples/materials_starter_library.ri");
-    let golden = std::path::Path::new(manifest).join("tests/golden/materials_starter_library.txt");
-
-    let target_dir = std::env::var_os("CARGO_TARGET_DIR")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| workspace_root.join("target"));
-    let reify_bin = target_dir.join("debug").join("reify");
-    let output = std::process::Command::new(&reify_bin)
-        .current_dir(&workspace_root)
-        .arg("eval")
-        .arg(&example)
-        .output()
-        .unwrap_or_else(|e| {
-            panic!(
-                "failed to spawn pre-built reify binary at {}: {e}; \
-                 is it built? run `cargo test -p reify-cli`",
-                reify_bin.display()
-            )
-        });
-
-    assert!(
-        output.status.success(),
-        "`reify eval` exited non-zero.\nstdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
-    let stdout = String::from_utf8(output.stdout).expect("stdout must be valid UTF-8");
-
-    if std::env::var("REIFY_REGENERATE_GOLDEN").is_ok() {
-        std::fs::write(&golden, &stdout).expect("failed to write golden file");
-        return;
-    }
-
-    let expected = std::fs::read_to_string(&golden).expect(
-        "golden crates/reify-eval/tests/golden/materials_starter_library.txt missing; \
-         run once with REIFY_REGENERATE_GOLDEN=1",
-    );
-    assert_eq!(
-        stdout, expected,
-        "`reify eval examples/materials_starter_library.ri` stdout drifted from the golden; \
-         re-run with REIFY_REGENERATE_GOLDEN=1 to update"
-    );
-    // Defence-in-depth: assert the committed golden itself names all three
-    // materials. Checked against `expected` (not `stdout`) so the intent is
-    // explicit — this fires if someone regenerated the golden against a
-    // regressed binary before the `assert_eq` above is reached.
-    assert!(
-        expected.contains("Aluminium_6061_T6 {"),
-        "committed golden must mention Aluminium_6061_T6 — golden may have been \
-         regenerated against a regressed binary; re-run with REIFY_REGENERATE_GOLDEN=1 \
-         after fixing the regression.\ngolden:\n{expected}"
-    );
-    assert!(
-        expected.contains("Titanium_Ti6Al4V {"),
-        "committed golden must mention Titanium_Ti6Al4V — golden may have been \
-         regenerated against a regressed binary; re-run with REIFY_REGENERATE_GOLDEN=1 \
-         after fixing the regression.\ngolden:\n{expected}"
-    );
-    assert!(
-        expected.contains("ABS_Plastic {"),
-        "committed golden must mention ABS_Plastic — golden may have been \
-         regenerated against a regressed binary; re-run with REIFY_REGENERATE_GOLDEN=1 \
-         after fixing the regression.\ngolden:\n{expected}"
-    );
-}
+// The `reify eval` CLI golden (cli_reify_eval_prints_inspectable_material_values)
+// now lives in crates/reify-cli/tests/harness_cli/cli_materials_starter_library_golden.rs,
+// where cargo guarantees a freshly built `reify` binary (#5718).

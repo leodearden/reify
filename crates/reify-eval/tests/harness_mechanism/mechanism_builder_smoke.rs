@@ -200,9 +200,16 @@ fn mechanism_builder_closed_chain_records_loop_closure_e2e() {
         "loop_closure entry kind should be 'loop_closure'"
     );
 
-    // Pin path_a = [world, j_a, j_x] and path_b = [world, j_b, j_x] using
-    // the actual joint Values resolved from the eval result. Mirrors the
+    // Pin path_a = [world, j_a, j_x] and path_b = [world, j_b] using the
+    // actual joint Values resolved from the eval result. Mirrors the
     // unit-test path-pinning idiom in mechanism.rs::tests.
+    //
+    // The two paths are deliberately ASYMMETRIC: the closing joint j_x is
+    // composed on path_a only (task 7186 defect A). Appending it to both
+    // sides made the residual log(inv(T_a) . T_b) = log(inv(A).inv(X).Y.A),
+    // which CONJUGATES the closure into the closing joint's base frame
+    // instead of cancelling. This is the e2e twin of
+    // mechanism.rs::parent_conflict_path_b_omits_closing_joint.
     let j_a = get_value(v, "j_a");
     let j_b = get_value(v, "j_b");
     let j_x = get_value(v, "j_x");
@@ -230,7 +237,8 @@ fn mechanism_builder_closed_chain_records_loop_closure_e2e() {
     );
     assert_eq!(
         path_b,
-        &vec![world, j_b.clone(), j_x.clone()],
-        "loop_closure path_b should be [world, j_b, j_x]"
+        &vec![world, j_b.clone()],
+        "loop_closure path_b should be [world, j_b] — the closing joint j_x \
+         is composed on path_a only (task 7186 defect A)"
     );
 }

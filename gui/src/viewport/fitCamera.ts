@@ -25,28 +25,34 @@
  *    maximum, the camera is placed far enough back to frame the assembly
  *    correctly for any aspect ratio.
  *
- * 3. Explicit padding factor (DEFAULT_FIT_PADDING ≈ 1.1)
- *    A small multiplicative padding ensures the assembly never touches the
- *    frame edges, giving a natural margin for the elongated rod/tendon
- *    assemblies typical in Reify projects.  The exact constant can be tuned
- *    without breaking the test suite, which asserts qualitative containment
- *    (strict inside-frame margin + not-a-speck) rather than the exact value.
+ * 3. The framing distance itself lives in orbitDistance.ts
+ *    `fittedDistanceFor` owns the padding constant and the two-half-angle
+ *    trigonometry (decision 2 above); this module keeps only the three-specific
+ *    work — box → bounding-sphere radius, and repositioning.
  *
  * 4. Preserved view direction
  *    The camera is repositioned along its existing view direction vector, so
  *    the orientation the user last set (pan/orbit) is retained.  Only the
  *    distance changes.
+ *
+ * 5. Framing also sets the orbit distance floor
+ *    `controls.minDistance = orbitFloorFor(distance)`, from the same `distance`
+ *    the camera is placed at (docs/debug-mcp-contract.md §6 point 3).  The write
+ *    sits AFTER the degenerate-box early return, so a degenerate box mutates no
+ *    controls state, minDistance included.
  */
 
 import { Vector3 } from 'three';
 import type { Box3, PerspectiveCamera } from 'three';
-
-const DEFAULT_FIT_PADDING = 1.1;
+import { fittedDistanceFor, orbitFloorFor } from './orbitDistance';
 
 export interface FitCameraOptions {
-  /** OrbitControls (or any object with a copyable Vector3 `target`). */
-  controls?: { target: { copy: (v: Vector3) => void } };
-  /** Multiplicative padding around the bounding sphere (default 1.1). */
+  /**
+   * OrbitControls (or any object with a copyable Vector3 `target`).  `minDistance`
+   * is written, not read, so a caller may omit it.
+   */
+  controls?: { target: { copy: (v: Vector3) => void }; minDistance?: number };
+  /** Multiplicative padding around the bounding sphere (default DEFAULT_FIT_PADDING). */
   padding?: number;
 }
 
@@ -79,23 +85,7 @@ export function fitCameraToBox(
   // Guard against empty / degenerate boxes.
   if (!(radius > 0)) return;
 
-  const padding = options?.padding ?? DEFAULT_FIT_PADDING;
-
-  // Vertical FOV in radians.
-  const vFov = (camera.fov * Math.PI) / 180;
-
-  // Horizontal FOV derived from the vertical FOV and the aspect ratio.
-  // When aspect < 1 (tall/narrow pane), hFov < vFov — the horizontal
-  // constraint is tighter and fitW dominates.
-  const aspect = camera.aspect ?? 1;
-  const hFov = 2 * Math.atan(Math.tan(vFov / 2) * aspect);
-
-  // Candidate distances: how far back must the camera be for the sphere to
-  // fit inside the vertical / horizontal half-angles respectively?
-  const fitH = radius / Math.sin(vFov / 2);
-  const fitW = radius / Math.sin(hFov / 2);
-
-  const distance = padding * Math.max(fitH, fitW);
+  const distance = fittedDistanceFor(radius, camera.fov, camera.aspect ?? 1, options?.padding);
 
   // Reposition along the current view direction, preserving orientation.
   // Refresh world matrix first so getWorldDirection reads current state — callers
@@ -109,6 +99,10 @@ export function fitCameraToBox(
   camera.lookAt(center);
   camera.updateProjectionMatrix();
 
-  // Sync OrbitControls target so it orbits around the framed assembly.
-  options?.controls?.target.copy(center);
+  // Sync OrbitControls state to the framed assembly: the target it orbits around,
+  // and the floor on how close the user may then get to it (design decision 5).
+  if (options?.controls) {
+    options.controls.target.copy(center);
+    options.controls.minDistance = orbitFloorFor(distance);
+  }
 }

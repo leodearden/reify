@@ -5,27 +5,41 @@
 // rank-deficient at the modeled configuration.
 //
 // Four-bar framing: four bodies (solidA, solidB, solidC, solidD) form ONE
-// closed loop, closed by a single redundant edge.  solidA and solidB each
-// hang directly off world (via j_a and j_b respectively); solidC re-anchors
-// j_x on top of solidA's frame (spanning-tree edge); solidD re-anchors the
-// SAME j_x on top of solidB's frame (closing edge) — this is the loop's
-// closing joint pair: j_x / j_b.  Binding only j_a leaves both j_b and j_x
-// free, and both act along the SAME +X axis, so their finite-difference
-// Jacobian columns are identical → rank-1 JᵀJ → NewtonOutcome::Singular.
+// closed loop, closed by a single redundant edge.  solidA hangs directly off
+// world via j_x (the spanning-tree edge for what will become the closing
+// joint); solidB hangs directly off world via j_a; solidC stacks j_b on top
+// of solidB's frame, giving the closing side a TWO-DEEP walk; solidD
+// re-anchors the SAME j_x onto j_b, solidC's own `at` (closing edge) — this
+// is the loop's closing joint pair: j_x / j_b.
 //
-// j_a/j_b/j_x use three DIFFERENT ranges (rather than three identical
+// Free variables come from the CLOSING side only: extract_loop_closure_chains
+// resolves every joint on chain_a and iterates none of them.  The record here
+// is path_a = [world, j_x] against path_b = [world, j_a, j_b], so binding j_x
+// leaves j_a and j_b as the two free variables, and both act along the SAME
+// +X axis, so their finite-difference Jacobian columns are identical → rank-1
+// JᵀJ → NewtonOutcome::Singular.
+//
+// INVARIANT this fixture pins: the two identical Jacobian columns come from
+// TWO genuinely distinct collinear +X prismatics on the closing side (j_a and
+// j_b — a two-deep walk), never from one joint composed twice.  A closing
+// joint present on both recorded paths would manufacture a false rank
+// deficiency, so keep the closing side two joints deep if this fixture is ever
+// re-homed.
+//
+// j_x/j_a/j_b use three DIFFERENT ranges (rather than three identical
 // prismatic(vec3(1,0,0), 0mm .. 1000mm) calls) so that:
 //   1. Their Values are structurally distinct — identical-range joints
 //      would be byte-identical Value::Maps that alias in joint_parents,
 //      collapsing the intended 2-free-joint/1-loop-closure topology into a
 //      spurious second closure.
-//   2. The Newton closure residual is non-zero at the starting guess — j_b's
-//      range (0..2100mm, midpoint 1050mm) never collides with j_a's range
-//      (0..1000mm), so Newton must actually invert the rank-deficient
-//      Jacobian rather than converging trivially at iteration 0.
+//   2. The Newton closure residual is non-zero at the starting guess — the
+//      free side starts at midpoint(j_a) + midpoint(j_b) = 1050mm + 1250mm
+//      = 2300mm, which never collides with j_x's range (0..1000mm), so
+//      Newton must actually invert the rank-deficient Jacobian rather than
+//      converging trivially at iteration 0.
 //
 // Topology mirrors
-// crates/reify-eval/tests/kinematic_singularity_snapshot_e2e.rs::SINGULAR_SOURCE
+// crates/reify-eval/tests/harness_fea_solver_e2e/kinematic_singularity_snapshot_e2e.rs::SINGULAR_SOURCE
 // (task 3580's proven end-to-end fixture for this exact solver code path).
 //
 // MAINTENANCE: this body/joint wiring is a deliberate duplicate of
@@ -46,18 +60,22 @@
 //
 // PRD ref: docs/prds/v0_3/kinematic-constraints-completion.md (KCC-iota, task 3848)
 structure def FourBarSingular {
-    let j_a = prismatic(vec3(1, 0, 0), 0mm .. 1000mm)
-    let j_b = prismatic(vec3(1, 0, 0), 0mm .. 2100mm)
-    let j_x = prismatic(vec3(1, 0, 0), 0mm .. 3000mm)
+    let j_x = prismatic(vec3(1, 0, 0), 0mm .. 1000mm)
+    let j_a = prismatic(vec3(1, 0, 0), 0mm .. 2100mm)
+    let j_b = prismatic(vec3(1, 0, 0), 0mm .. 2500mm)
 
     let m0 = mechanism()
-    let m1 = body(m0, "solidA", j_a)
-    let m2 = body(m1, "solidB", j_b)
-    let m3 = body(m2, "solidC", j_x, j_a)
+    let m1 = body(m0, "solidA", j_x)
+    let m2 = body(m1, "solidB", j_a)
+    let m3 = body(m2, "solidC", j_b, j_a)
     let m4 = body(m3, "solidD", j_x, j_b)
 
-    // Loop joint pair: j_x (spanning-tree edge, anchored via solidC on top
-    // of j_a's frame) / j_b (closing edge, re-anchored via solidD) — the
-    // redundant closing edge that makes this loop singular.
-    let snap = snapshot(m4, [bind(j_a, 500mm)])
+    // Loop joint pair.  j_x is the CLOSING joint: it appears as `at` twice —
+    // once on solidA (the spanning-tree edge straight to world) and again on
+    // solidD (the closing edge, re-anchoring it onto j_b) — and is composed
+    // exactly once, at chain_a's tail.  j_b is the closing edge's PARENT and
+    // chain_b's terminal; it is solidC's own `at`, parented to j_a, so it
+    // rides j_a's frame.  j_x is the bound driver; j_a and j_b are the two
+    // free, collinear +X variables the closing side hands to Newton.
+    let snap = snapshot(m4, [bind(j_x, 500mm)])
 }

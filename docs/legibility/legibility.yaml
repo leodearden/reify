@@ -8,6 +8,7 @@
 # this config as the primitive; dark_factory θ′ deploys the trickle timer
 # that reads it (see reify CLAUDE.md's "reify ships the primitive,
 # dark-factory wires the invocation" pattern).
+# What those jobs may land on main, and who validates it: docs/legibility/landing-contract.md.
 project_id: reify
 project_root: /home/leo/src/reify
 escalation_port: 8100

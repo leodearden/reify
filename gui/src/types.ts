@@ -26,6 +26,29 @@ export interface MeshAppearance {
 }
 
 /** Tessellated mesh data for 3D rendering (typed arrays for WebGL). */
+/**
+ * Per-channel unit / signedness tag for one `MeshData.scalar_channels` entry.
+ *
+ * Twin of `ScalarChannelTag` in `gui/src-tauri/src/types.rs` (task #6185).
+ * Unit and signedness are orthogonal facts, not one derived from the other: a
+ * `rad` channel need not be signed (an unwrapped magnitude is not), and a `Pa`
+ * channel can be (principal / normal stress).
+ *
+ * ## Load-bearing contract for `signed: true` channels
+ *
+ * A signed channel must NOT use the Rust-side `SCALAR_CHANNEL_OOB_SENTINEL`
+ * (`-1.0`) to mark out-of-bounds vertices: `-1.0` is a legal value there, and
+ * NaN is barred from the wire by the Rust finite-value guard, so no
+ * discriminator exists that a consumer could use. Its producer supplies an
+ * in-band finite value at OOB vertices, or omits the channel.
+ */
+export interface ScalarChannelTag {
+  /** Display-ready SI unit symbol, e.g. `'Pa'`, `'rad'`. */
+  unit: string;
+  /** Whether this channel's values may legitimately be negative. */
+  signed: boolean;
+}
+
 export interface MeshData {
   entity_path: string;
   /**
@@ -41,6 +64,13 @@ export interface MeshData {
    * The renderer (MeshManager) aliases this buffer directly into a
    * `BufferAttribute` — callers must not mutate the `Uint32Array` after
    * passing it to `sync()`.
+   *
+   * The alias is bidirectional in principle, so the renderer holds up the other
+   * half of the contract: it does not mutate this buffer either, and in
+   * particular preserves face order. That is why the BVH is built in
+   * three-mesh-bvh's indirect mode (see `BVH_OPTIONS` in
+   * `viewport/meshManager.ts`) — the default builder permutes the index array
+   * in place, desynchronising every per-face side array below (#6813).
    */
   indices: Uint32Array;
   /**
@@ -58,6 +88,15 @@ export interface MeshData {
    */
   scalar_channels?: Record<string, Float32Array>;
   /**
+   * Per-channel unit/dimension tags for `scalar_channels` entries.
+   * Mirrors `scalar_channel_tags: HashMap<String, ScalarChannelTag>` in the
+   * Rust `MeshData` struct (task #6185). Sparse: a channel with no entry is
+   * untagged, and consumers treat it exactly as before this map existed — the
+   * legend shows no unit and the colormap range treats it as unsigned. Absent
+   * when the Rust side serializes an empty map.
+   */
+  scalar_channel_tags?: Record<string, ScalarChannelTag>;
+  /**
    * Packed displaced vertex positions produced by the FEA deformation field.
    * Same layout as `vertices` (`[x0, y0, z0, x1, y1, z1, ...]`). Absent for
    * non-FEA meshes; present but unused by the renderer until task G3 wires it
@@ -73,12 +112,16 @@ export interface MeshData {
    * Per-face element kind for shell-extract meshes (task 3597).
    * Byte-value enum: `0` = tet face, `1` = shell triangle.
    * Length equals `indices.length / 3` (one byte per face).
+   * Positionally keyed to `indices` face order — entry `f` describes the face
+   * at `indices[3f .. 3f+2]`, and the renderer preserves that order (#6813).
    * Omitted from the wire when absent (`None` on the Rust side).
    */
   element_kind?: Uint8Array;
   /**
    * Per-face stable region labels for shell-extract meshes (task 3597).
    * One `u32` label per face; length equals `indices.length / 3`.
+   * Positionally keyed to `indices` face order — entry `f` labels the face at
+   * `indices[3f .. 3f+2]`, and the renderer preserves that order (#6813).
    * Labels are stable across incremental re-tessellations within a single
    * eval generation. Omitted from the wire when absent.
    */
@@ -87,6 +130,10 @@ export interface MeshData {
    * Per-face element id mapping each surface face back to its originating
    * volume element id, or the per-face shell element id for shell bodies
    * (task #4883). One `u32` per face; length equals `indices.length / 3`.
+   * Positionally keyed to `indices` face order — entry `f` maps the face at
+   * `indices[3f .. 3f+2]`, and the renderer preserves that order, so a
+   * `faceIndex` from a raycast against the rendered geometry indexes this array
+   * directly (#6813).
    * Absent (`undefined`) when the Rust side serializes `None` — field omitted
    * from the wire. When present, the FEA diagnostic overlay uses this to
    * outline only the faces whose element id appears in `ProblemElements.ids`
@@ -122,6 +169,13 @@ export interface RawMeshData {
    * Absent when the Rust backend serializes an empty map (`skip_serializing_if`).
    */
   scalar_channels?: Record<string, number[]>;
+  /**
+   * Per-channel unit/dimension tags from the IPC wire (task #6185).
+   * Plain JSON (strings + booleans) — no typed-array conversion needed, so
+   * `convertRawMesh` passes it straight through like `appearance`.
+   * Absent when the Rust backend serializes an empty map.
+   */
+  scalar_channel_tags?: Record<string, ScalarChannelTag>;
   /**
    * Packed displaced vertex positions as raw number array from the IPC wire.
    * Absent when `displaced_positions` is `None` on the Rust side.
@@ -192,6 +246,9 @@ export function convertRawMesh(raw: RawMeshData): MeshData {
   if (raw.element_index !== undefined) {
     result.element_index = new Uint32Array(raw.element_index);
   }
+  if (raw.scalar_channel_tags !== undefined) {
+    result.scalar_channel_tags = raw.scalar_channel_tags;
+  }
   if (raw.appearance !== undefined) {
     result.appearance = raw.appearance;
   }
@@ -233,7 +290,7 @@ export interface ValueData {
    */
   last_substantive_value?: string | null;
   /**
-   * Canonical dimension name for this cell's value (e.g. `"Volume"`,
+   * Canonical dimension name for this cell's VALUE (e.g. `"Volume"`,
    * `"Length"`), from `DimensionVector::canonical_name()`. Empty string /
    * absent for non-scalar, dimensionless, or composed-dimension values
    * (task #5199: drives the Parameters panel's per-cell unit picker — only
@@ -251,6 +308,13 @@ export interface ValueData {
    * the IPC wire (task #5199 engine_state decision: additive-only).
    */
   si_value?: number | null;
+  /**
+   * Mirrors Rust `ValueData.declared_dimension` (task #6962): the canonical
+   * dimension the cell's DECLARED type requires; `''` / absent = none. Drives
+   * the input gate, unit alphabet and edit-seed unit. `dimension` stays the
+   * value's own and drives the picker.
+   */
+  declared_dimension?: string;
 }
 
 /** One selectable display unit within a {@link DimensionLadder} (task #5199). */
@@ -289,13 +353,51 @@ export interface DimensionLadder {
 /** Canonical dimension name -> its selectable unit ladder, as returned by `get_unit_ladders`. */
 export type UnitLadderMap = Record<string, UnitOption[]>;
 
+/** The closed set of constraint verdict tokens; `ConstraintStatus` derives from it. */
+export const CONSTRAINT_STATUSES = ['satisfied', 'violated', 'indeterminate'] as const;
+export type ConstraintStatus = (typeof CONSTRAINT_STATUSES)[number];
+
 /** Status and label of a constraint node. */
 export interface ConstraintData {
   node_id: string;
   expression: string;
-  status: string;
+  /**
+   * The closed lower-case verdict token. The contract (sole producer,
+   * consumers, closedness) is canonical on the same field in
+   * `gui/src-tauri/src/types.rs`. `convertRawConstraint` checks it at the wire
+   * boundary, and `./__tests__/constraintVerdictParity.test.ts` pins it two-way.
+   *
+   * The Rust producer still emits a hand-mapped `String`; #7471 (a
+   * serde-derived enum) retires the source-scraping pin in
+   * `./__tests__/constraintVerdictTokens.ts`.
+   */
+  status: ConstraintStatus;
   label: string | null;
   parameter_ids: string[];
+}
+
+/** Wire-format constraint as received from Tauri IPC: the verdict token is unchecked. */
+export type RawConstraintData = Omit<ConstraintData, 'status'> & { status: string };
+
+function isConstraintStatus(token: string): token is ConstraintStatus {
+  return (CONSTRAINT_STATUSES as readonly string[]).includes(token);
+}
+
+/**
+ * Check a wire-format constraint's verdict token by exact match (no case
+ * folding, no trimming). An out-of-set token can only mean the Rust contract
+ * broke, so it throws rather than being dropped or normalised.
+ */
+export function convertRawConstraint(raw: RawConstraintData): ConstraintData {
+  const { status } = raw;
+  if (!isConstraintStatus(status)) {
+    const accepted = CONSTRAINT_STATUSES.map((token) => JSON.stringify(token)).join(' | ');
+    throw new Error(
+      `ConstraintData.status must be exactly one of ${accepted}; ` +
+        `constraint ${raw.node_id} carried ${JSON.stringify(status)}`,
+    );
+  }
+  return { ...raw, status };
 }
 
 /** A diagnostic produced during compilation or tessellation. */
@@ -556,7 +658,7 @@ export interface GuiState {
 export interface RawGuiState {
   meshes: RawMeshData[];
   values: ValueData[];
-  constraints: ConstraintData[];
+  constraints: RawConstraintData[];
   files: FileData[];
   tessellation_diagnostics: DiagnosticInfo[];
   /** Compile-time diagnostics (warnings, errors) from the Reify compiler. */
@@ -600,7 +702,7 @@ export function convertRawGuiState(raw: RawGuiState): GuiState {
   return {
     meshes: raw.meshes.map(convertRawMesh),
     values: raw.values,
-    constraints: raw.constraints,
+    constraints: raw.constraints.map(convertRawConstraint),
     files: raw.files,
     tessellation_diagnostics: raw.tessellation_diagnostics,
     compile_diagnostics: raw.compile_diagnostics,
@@ -617,6 +719,35 @@ export function convertRawGuiState(raw: RawGuiState): GuiState {
 export interface EvaluationStatus {
   phase: 'idle' | 'evaluating' | 'resolving';
   progress?: number;
+}
+
+/**
+ * Payload for the `eval-generation` Tauri event channel (task 7853): an edit or
+ * evaluation of `generation` is about to run. Mirrors
+ * `gui/src-tauri/src/types.rs::EvalGeneration`.
+ */
+export interface EvalGeneration {
+  generation: number;
+}
+
+/**
+ * A whole-state command reply: `state` is exactly the snapshot the backend
+ * published under `generation`. Mirrors `gui/src-tauri/src/eval_queue.rs::PublishedState`.
+ */
+export interface PublishedState {
+  generation: number;
+  state: GuiState;
+}
+
+/** Wire-format {@link PublishedState} as received from Tauri IPC. */
+export interface RawPublishedState {
+  generation: number;
+  state: RawGuiState;
+}
+
+/** Convert a wire-format published state's GUI state to typed arrays. */
+export function convertRawPublishedState(raw: RawPublishedState): PublishedState {
+  return { generation: raw.generation, state: convertRawGuiState(raw.state) };
 }
 
 /** Type aliases for event update payloads (same shape as base types). */
@@ -711,7 +842,10 @@ export interface EntityTreeNode {
   display_name?: string | null;
   /** Whether this entity has at least one realization (tessellatable geometry). */
   has_mesh: boolean;
-  /** Heuristic: member is named `"geometry"` AND parent template has `"Physical"` in `trait_bounds`. */
+  /** Member is named `"geometry"` AND the parent template's trait bounds
+   *  equal-or-transitively-refine `Physical` — resolved against the merged
+   *  module + prelude trait defs, so `: Rigid` matches via `Rigid : Physical`
+   *  while a lookalike name such as `PhysicalMock` does not. */
   trait_geometry: boolean;
   /**
    * Freshness state of the backing node (arch §7.1 lines 716-728).
@@ -758,6 +892,11 @@ export interface EntityTreeNode {
  * `driving_param_cell_id` and `current_value_si` on `JointDescriptor`
  * are backward-compat mirrors populated only for `param_bound` joints;
  * they are `null` for `literal_bound`, `coupling_derived`, and `fixed_no_motion`.
+ *
+ * Only `param_bound` has a write target, so it alone is scrubbable. `literal_bound` is read-only:
+ * `synth_param_name` is a reserved name, not a cell id; `initial_value_si` is null when no literal
+ * value is known (unbound, or a literal the engine cannot resolve); `scrubbable` is a vestigial
+ * always-false slot the panel never reads.
  */
 export type JointBinding =
   | { kind: 'param_bound'; param_cell_id: string; current_value_si: number | null }

@@ -24,7 +24,8 @@
 /* IMPORTANT: enum order MUST match the grammar.js externals array order.
  * grammar.js externals: [_unit_expr_start(0), _unit_mul_op(1), _unit_div_op(2),
  *                         _auto_token(3), _auto_reservation_sentinel(4),
- *                         _radix_literal(5)] */
+ *                         _radix_literal(5), _string_content(6),
+ *                         _selector_at(7)] */
 enum TokenType {
   UNIT_EXPR_START,            /* index 0 — zero-width quantity-literal gate    */
   UNIT_MUL_OP,                /* index 1 — '*' inside unit_expr                */
@@ -43,11 +44,11 @@ enum TokenType {
                                *   - section C of auto_binding_sites_grammar_tests.rs
                                */
   RADIX_LITERAL,              /* index 5 — 0x.../0b... integer literal          */
-  /* STRING_CONTENT: index 6 — content-run token for interpolated strings.
-   * ENUM-ORDER INVARIANT: must remain LAST — appending preserves all prior
-   * indices and matches the externals array order in grammar.js.
-   * See: grammar.js `externals` array comment and STRING_CONTENT scan block. */
   STRING_CONTENT,             /* index 6 — literal bytes between `"`, `{`, `}` */
+  /* SELECTOR_AT: index 7 — the ad_hoc_selector `@`, same line as its base.
+   * ENUM-ORDER INVARIANT: must remain LAST — appending preserves all prior
+   * indices and matches the externals array order in grammar.js. */
+  SELECTOR_AT,
 };
 
 void *tree_sitter_reify_external_scanner_create(void) {
@@ -120,9 +121,9 @@ static bool is_bin_digit(int32_t c) {
  *  2. lexer->lookahead is NOT a whitespace character.               [invariant B]
  *  3. lexer->lookahead is a valid unit-start character: [A-Za-z_(]  [invariant C]
  *
- * Emit UNIT_MUL_OP ('*') or UNIT_DIV_OP ('/') iff:
+ * Emit UNIT_MUL_OP ('*' or U+00B7) or UNIT_DIV_OP ('/') iff:
  *  1. The parser is requesting the respective token.
- *  2. lexer->lookahead is '*' (for MUL) or '/' (for DIV).
+ *  2. lexer->lookahead is '*' or U+00B7 (for MUL) or '/' (for DIV).
  *  3. The character AFTER the operator is a valid unit-start character.
  *
  * The one-character lookahead in UNIT_MUL_OP / UNIT_DIV_OP prevents the
@@ -241,15 +242,37 @@ bool tree_sitter_reify_external_scanner_scan(void *payload, TSLexer *lexer,
 
   int32_t c = lexer->lookahead;
 
-  /* ── UNIT_MUL_OP: '*' immediately followed by a unit-start character ──────
+  /* ── UNIT_MUL_OP: '*' or U+00B7 immediately followed by a unit-start char ─
    *
-   * Only emit when the character after '*' can start a unit_expr, so that
-   * `5kg * m` (space before '*') and `5kg*1` ('1' is not unit-start) do not
-   * greedily consume the '*' as a unit operator.
+   * Only emit when the character after the operator can start a unit_expr, so
+   * that `5kg * m` (space before the operator) and `5kg*1` ('1' is not
+   * unit-start) do not greedily consume it as a unit operator.
+   *
+   * TWO SPELLINGS, ONE TOKEN (task #5784; PRD
+   * docs/prds/v0_6/angle-units-surface-convergence.md §5 C2 / §3.8 D5,
+   * ratified decision 7a): ASCII '*' and U+00B7 MIDDLE DOT — the SI-conventional
+   * multiply — both emit UNIT_MUL_OP and are gated identically by the
+   * `is_unit_start` post-check below.  `Display for DimensionVector` joins
+   * base-unit parts with U+00B7, so accepting it is what makes `reify eval`
+   * output (`7850 kg·m^-3`) readable back in.
+   *
+   * The test is on the CODEPOINT 0xB7, NOT on the lead byte of its two-byte UTF-8
+   * encoding: `tree_sitter/parser.h` declares `int32_t lookahead`, so tree-sitter
+   * hands an external scanner DECODED codepoints — that lead byte is never
+   * observable here, and one unmodified `lexer->advance()` consumes the whole
+   * two-byte codepoint.  (The PRD's byte-pair formulation is superseded; the
+   * lead-byte branch it specifies was measured dead.  Do not reintroduce it —
+   * this task's capability manifest greps scanner.c to assert it is absent.)
+   *
+   * No `·`-specific rejection logic is needed: the single `is_unit_start`
+   * post-check already rejects `5N·3`, `5N· m`, `5N · m` and a bare `5 · 3`,
+   * measured as such before this widening landed.  `·` is in neither
+   * `is_unit_start` nor `immediate_identifier`, so it can never start or extend
+   * a unit name and there is no general `·` operator in Reify.
    */
-  if (valid_symbols[UNIT_MUL_OP] && c == '*') {
-    lexer->advance(lexer, false); /* consume '*' */
-    lexer->mark_end(lexer);      /* token = '*' */
+  if (valid_symbols[UNIT_MUL_OP] && (c == '*' || c == 0xB7)) {
+    lexer->advance(lexer, false); /* consume '*' or U+00B7 (whole codepoint) */
+    lexer->mark_end(lexer);      /* token = the operator character */
     if (is_unit_start(lexer->lookahead)) {
       lexer->result_symbol = UNIT_MUL_OP;
       return true;
@@ -331,6 +354,40 @@ bool tree_sitter_reify_external_scanner_scan(void *payload, TSLexer *lexer,
       return true;
     }
     /* Whitespace or non-unit-start: fall through to AUTO_TOKEN check. */
+  }
+
+  /* ── SELECTOR_AT: the ad_hoc_selector `@`, only on its base's line ────────
+   *
+   * Refused when a newline separates the `@` from the base expression, so the
+   * internal lexer's `@` (annotation start) takes it instead.  A non-`@`
+   * lookahead FALLS THROUGH: RADIX_LITERAL and AUTO_TOKEN below re-read the
+   * lookahead and still work after this whitespace skip.  Placed after the
+   * UNIT_* blocks, which test the un-advanced `c`.
+   *
+   * Blind spot: when a block comment opens the `@`'s line, the internal lexer
+   * lexes it as an extra, and the next scan starts after it, past the line
+   * break.  Skipping comments here cannot fix that, because a refusal resets
+   * the lexer and the comment is lexed again.
+   * crates/reify-syntax/src/member_continuation.rs clause 7 reports the layout.
+   */
+  if (valid_symbols[SELECTOR_AT]) {
+    bool crossed_newline = false;
+    while (lexer->lookahead == ' ' || lexer->lookahead == '\t' ||
+           lexer->lookahead == '\n' || lexer->lookahead == '\r') {
+      if (lexer->lookahead == '\n' || lexer->lookahead == '\r') {
+        crossed_newline = true;
+      }
+      lexer->advance(lexer, true);
+    }
+    if (lexer->lookahead == '@') {
+      if (crossed_newline) {
+        return false;
+      }
+      lexer->advance(lexer, false);
+      lexer->mark_end(lexer);
+      lexer->result_symbol = SELECTOR_AT;
+      return true;
+    }
   }
 
   /* ── RADIX_LITERAL: 0x.../0b... integer literals ──────────────────────────

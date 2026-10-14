@@ -45,10 +45,17 @@
 
 use super::*;
 
+// The compiler's single entry point into the builtin-signature registry
+// (task #6001 α). Named explicitly rather than reached via `super::*` because
+// `builtin_registry` is deliberately NOT glob-re-exported in `lib.rs` — one
+// module, one call site, one seam. `registry_owns` is that same seam's cheap
+// name-only precheck — see the ladder arm below for why the call site needs it.
+use crate::builtin_registry::{registry_owns, registry_result_type};
 use crate::datum_projection::{
     datum_projection_result_type, datum_projection_unavailable_hint, DatumProjectionResolution,
     DATUM_PROJECTION_MEMBERS,
 };
+use reify_core::overload::slot_matches_wildcard_tier;
 
 /// Return a `CompiledExpr` poison literal (`Value::Undef, Type::Error`) for
 /// use at any producer site that emits a `Severity::Error` diagnostic.
@@ -294,6 +301,32 @@ fn receiver_structure_name(scope: &CompilationScope, sub_name: &str) -> Option<S
     }
     None
 }
+
+/// The four **determinacy predicate** intrinsics — the single source of truth
+/// for the `determinacy_kind` dispatch in the `NoUserFunctions` ladder below.
+///
+/// Unlike every other ladder family, this vocabulary has no `*_signatures.rs`
+/// module and no `*_result_type` resolver: the names are transformed into
+/// `DeterminacyPredicateKind` nodes inline. Promoting the list to a slice
+/// (task #5371) is what lets `unresolved_function::is_known_builtin` see the
+/// family at all, so a call to `determined(x)` is not reported as an
+/// unresolved function.
+///
+/// **Maintenance contract**: adding a name here REQUIRES a parallel arm in the
+/// `determinacy_kind` dispatch below AND a new `DeterminacyPredicateKind`
+/// variant. The dispatch *reads* this slice as its membership gate, so a name
+/// cannot enter the vocabulary without appearing here. The reverse direction
+/// is covered by exhaustiveness, not a test: an entry here with no `match` arm
+/// falls to `_ => None` and the predicate silently becomes an ordinary
+/// function call — so treat a new entry as incomplete until its arm exists.
+///
+/// Case-sensitive: Reify function names are snake_case.
+pub(crate) const DETERMINACY_PREDICATE_NAMES: &[&str] = &[
+    "determined",
+    "undetermined",
+    "constrained",
+    "partially_determined",
+];
 
 /// The Option/Map recovery combinators whose `dflt` argument type must unify
 /// with the subject's element type (contract C-3,
@@ -1288,6 +1321,57 @@ fn build_user_function_call_expr(
         result_type: return_type,
         content_hash,
     }
+}
+
+/// The type a call to `callee` yields once unification over `arg_types` binds
+/// its type parameters (task 4231 β); a non-generic callee keeps its declared
+/// `return_type` (INV-6/D10). `arg_types` may be a strict prefix of
+/// `callee.params` (a default-padded call): trailing defaulted slots bind
+/// nothing, since a slot carrying a type parameter has no valid default
+/// (`FnParamDefaultTypeMismatch` at the definition). `Err` is the diagnostic
+/// to poison the call with: a double-binding (`E_FALLBACK_TYPE` for the
+/// recovery combinators, contract C-3 in `docs/prds/v0_6/result-and-fallback.md`;
+/// else `E_FN_TYPE_ARG_CONFLICT`) or a BARE unbound type-/dimension-param
+/// result. A NESTED unbound param such as `Field<D, Real>` is tolerated: an
+/// enclosing call pins it (B5).
+fn instantiate_call_return_type(
+    callee: &CompiledFunction,
+    call_name: &str,
+    arg_types: &[Type],
+    call_span: SourceSpan,
+) -> Result<Type, Diagnostic> {
+    if callee.type_params.is_empty() {
+        return Ok(callee.return_type.clone());
+    }
+    let mut subst: std::collections::HashMap<String, Type> = std::collections::HashMap::new();
+    for ((_, declared), arg_ty) in callee.params.iter().zip(arg_types.iter()) {
+        if let Err(conflict) = type_compat::unify(declared, arg_ty, &mut subst) {
+            let (code, prefix) = if is_fallback_combinator(call_name) {
+                (DiagnosticCode::FallbackType, "E_FALLBACK_TYPE: ")
+            } else {
+                (DiagnosticCode::FnTypeArgConflict, "")
+            };
+            let message = format!(
+                "{}conflicting type arguments for type parameter \
+                 '{}' in call to '{}': {} vs {}",
+                prefix, conflict.param, call_name, conflict.existing, conflict.incoming
+            );
+            return Err(Diagnostic::error(message)
+                .with_code(code)
+                .with_label(DiagnosticLabel::new(call_span, "conflicting type argument")));
+        }
+    }
+    let substituted = type_resolution::substitute_type_params(&callee.return_type, &subst);
+    if matches!(substituted, Type::TypeParam(_) | Type::ScalarParam(_)) {
+        return Err(Diagnostic::error(format!(
+            "cannot infer type argument(s) for generic call to '{}': \
+             result type is undetermined",
+            call_name
+        ))
+        .with_code(DiagnosticCode::FnTypeArgUnresolved)
+        .with_label(DiagnosticLabel::new(call_span, "unresolved type argument")));
+    }
+    Ok(substituted)
 }
 
 /// Compile an `Expr` from the AST into a `CompiledExpr`, with guard context.
@@ -3118,85 +3202,12 @@ fn compile_expr_guarded_with_expected_inner(
                     if let Some(msg) = deprecation_message(&matched_fn.annotations) {
                         emit_deprecation_warning("function", name, msg, expr.span, diagnostics);
                     }
-                    // Generic call (task 4231 β): infer type arguments by unifying
-                    // each declared param type against the concrete arg type, then
-                    // substitute the bound type parameters into the return type.
-                    // Non-generic fns (empty type_params) keep the exact
-                    // return_type.clone() path bit-for-bit unchanged (INV-6/D10).
-                    let result_type = if matched_fn.type_params.is_empty() {
-                        matched_fn.return_type.clone()
-                    } else {
-                        let mut subst: std::collections::HashMap<String, Type> =
-                            std::collections::HashMap::new();
-                        for ((_, declared), arg_ty) in
-                            matched_fn.params.iter().zip(arg_types.iter())
+                    let result_type =
+                        match instantiate_call_return_type(matched_fn, name, &arg_types, expr.span)
                         {
-                            // A type-param double-binding to two different types is
-                            // a call-site type-argument conflict (PRD D2 / §4.2).
-                            // For recovery combinators (unwrap_or / or_default /
-                            // fallback / get_or — the default-must-match-element
-                            // family), emit E_FALLBACK_TYPE + mnemonic (contract
-                            // C-3, PRD docs/prds/v0_6/result-and-fallback.md).
-                            // For all other generic fns, emit E_FN_TYPE_ARG_CONFLICT
-                            // bit-for-bit unchanged.  Both paths poison the call via
-                            // make_poison_literal (D3: result_type = Type::Error
-                            // inference sentinel, not a payload).
-                            if let Err(conflict) = type_compat::unify(declared, arg_ty, &mut subst)
-                            {
-                                let (code, prefix) = if is_fallback_combinator(name) {
-                                    (DiagnosticCode::FallbackType, "E_FALLBACK_TYPE: ")
-                                } else {
-                                    (DiagnosticCode::FnTypeArgConflict, "")
-                                };
-                                let message = format!(
-                                    "{}conflicting type arguments for type parameter \
-                                     '{}' in call to '{}': {} vs {}",
-                                    prefix,
-                                    conflict.param,
-                                    name,
-                                    conflict.existing,
-                                    conflict.incoming
-                                );
-                                return make_poison_literal(
-                                    diagnostics,
-                                    Diagnostic::error(message)
-                                        .with_code(code)
-                                        .with_label(DiagnosticLabel::new(
-                                            expr.span,
-                                            "conflicting type argument",
-                                        )),
-                                );
-                            }
-                        }
-                        let substituted = type_resolution::substitute_type_params(
-                            &matched_fn.return_type,
-                            &subst,
-                        );
-                        // A BARE top-level unbound type-param or dimension-param
-                        // means nothing pinned the result type (e.g. `make<T>() -> T`
-                        // called as `make()`, or `mk<Q: Dimension>(k: Real) -> Scalar<Q>`
-                        // called as `mk(3.0)` — Q undetermined): the call yields a
-                        // wholly-undetermined type → error + poison (task ζ / D8).
-                        // A NESTED unbound param (e.g. `Field<TypeParam(D), Real>`)
-                        // is TOLERATED — it is pinned by an enclosing call (B5,
-                        // PRD §8 / D3-decision).
-                        if matches!(substituted, Type::TypeParam(_) | Type::ScalarParam(_)) {
-                            return make_poison_literal(
-                                diagnostics,
-                                Diagnostic::error(format!(
-                                    "cannot infer type argument(s) for generic call to '{}': \
-                                     result type is undetermined",
-                                    name
-                                ))
-                                .with_code(DiagnosticCode::FnTypeArgUnresolved)
-                                .with_label(DiagnosticLabel::new(
-                                    expr.span,
-                                    "unresolved type argument",
-                                )),
-                            );
-                        }
-                        substituted
-                    };
+                            Ok(result_type) => result_type,
+                            Err(diagnostic) => return make_poison_literal(diagnostics, diagnostic),
+                        };
                     build_user_function_call_expr(name, compiled_args, result_type)
                 }
                 OverloadResolution::Ambiguous(candidates) => {
@@ -3227,7 +3238,6 @@ fn compile_expr_guarded_with_expected_inner(
                     if let Some((padded_fn, default_exprs)) =
                         try_default_padding(&named_candidates, &arg_types)
                     {
-                        let result_type = padded_fn.return_type.clone();
                         // Deprecation check: mirror the Resolved arm — warn if the
                         // padded function is @deprecated.
                         if let Some(msg) = deprecation_message(&padded_fn.annotations) {
@@ -3239,6 +3249,12 @@ fn compile_expr_guarded_with_expected_inner(
                                 diagnostics,
                             );
                         }
+                        let result_type = match instantiate_call_return_type(
+                            padded_fn, name, &arg_types, expr.span,
+                        ) {
+                            Ok(result_type) => result_type,
+                            Err(diagnostic) => return make_poison_literal(diagnostics, diagnostic),
+                        };
                         let mut padded_args = compiled_args;
                         padded_args.extend(default_exprs);
                         return build_user_function_call_expr(name, padded_args, result_type);
@@ -3257,7 +3273,12 @@ fn compile_expr_guarded_with_expected_inner(
                         if let Some(msg) = deprecation_message(&matched_fn.annotations) {
                             emit_deprecation_warning("function", name, msg, expr.span, diagnostics);
                         }
-                        let result_type = matched_fn.return_type.clone();
+                        let result_type = match instantiate_call_return_type(
+                            matched_fn, name, &arg_types, expr.span,
+                        ) {
+                            Ok(result_type) => result_type,
+                            Err(diagnostic) => return make_poison_literal(diagnostics, diagnostic),
+                        };
                         let coerced_args: Vec<CompiledExpr> = compiled_args
                             .into_iter()
                             .zip(matched_fn.params.iter())
@@ -3279,6 +3300,14 @@ fn compile_expr_guarded_with_expected_inner(
                     // mismatch, tag with SelectorKindMismatch so both the composition
                     // path (BT1, units.rs) and the param-binding path (BT6) carry the
                     // same DiagnosticCode. Message and label are unchanged.
+                    //
+                    // task 5476 (PRD placeholder-type-eradication-ratchet §3.3 /
+                    // INV-SF-6): the GENERAL no-match — everything the 4581 predicate
+                    // does not claim — carries NoMatchingOverload
+                    // (E_NO_MATCHING_OVERLOAD). The selector branch above keeps
+                    // priority; this only fills in the previously-untagged else.
+                    // Message and label stay byte-identical in both branches, so only
+                    // the code distinguishes them.
                     let base_diag = Diagnostic::error(format!(
                         "no matching overload for {}({}), candidates: {}",
                         name,
@@ -3296,7 +3325,7 @@ fn compile_expr_guarded_with_expected_inner(
                     ) {
                         base_diag.with_code(DiagnosticCode::SelectorKindMismatch)
                     } else {
-                        base_diag
+                        base_diag.with_code(DiagnosticCode::NoMatchingOverload)
                     };
                     make_poison_literal(diagnostics, diag)
                 }
@@ -3321,6 +3350,16 @@ fn compile_expr_guarded_with_expected_inner(
                     //                             narrowed from original spec to
                     //                             distinguish from Auto (which is
                     //                             covered by constrained())
+                    //
+                    // `DETERMINACY_PREDICATE_NAMES` exists so
+                    // `unresolved_function::is_known_builtin` can see this
+                    // vocabulary — it is the one ladder family that lives as a
+                    // bare `match` here rather than as a name slice in a
+                    // `*_signatures.rs` module. It is deliberately NOT consulted
+                    // as a guard: the arms below already encode membership
+                    // exactly, and gating on the slice would make an arm added
+                    // here without a slice entry silently dead rather than
+                    // merely invisible to the closed-world union.
                     let determinacy_kind = match name.as_str() {
                         "determined" => Some(DeterminacyPredicateKind::Determined),
                         "undetermined" => Some(DeterminacyPredicateKind::Undetermined),
@@ -3381,15 +3420,19 @@ fn compile_expr_guarded_with_expected_inner(
                     // `infer_list_helper_return_type` → `is_dynamics_query` →
                     // `is_dynamics_constructor` → `is_affine_map_constructor` →
                     // `is_math_typed_fn` → `is_joint_typed_fn` →
-                    // `is_analysis_typed_fn` → `fea_envelope_result_type` (#4629 W2) →
-                    // `is_field_op` → `is_parse_typed_fn` →
-                    // `is_orientation_typed_fn` (task 5344) →
+                    // `is_flexure_typed_fn` (task #5476) →
+                    // `registry_result_type` (the builtin-signature registry,
+                    // task #6001 α — one arm replacing the former
+                    // `is_analysis_typed_fn` and `is_parse_typed_fn` arms) →
+                    // `fea_envelope_result_type` (#4629 W2) →
+                    // `is_field_op` → `is_orientation_typed_fn` (task 5344) →
                     // first-arg fallback. The five geometry-name families plus the
                     // RBD-β `is_dynamics_query` family (task 3829), the task-4278
                     // `is_dynamics_constructor` family, the std.fields α
-                    // `is_field_op` family (task 4219), and the #4629 W2
-                    // `fea_envelope_result_type` family are pinned disjoint in
-                    // `units.rs::tests::*_are_disjoint_from_other_families`,
+                    // `is_field_op` family (task 4219), the #4629 W2
+                    // `fea_envelope_result_type` family, and the task-#5476
+                    // `is_flexure_typed_fn` family are pinned disjoint in
+                    // `units.rs::tests::builtin_name_families_are_pairwise_disjoint`,
                     // so within this arm the ordering is unobservable — no name can
                     // satisfy two predicates. `selector_composition_result_type` is
                     // arg-aware (returns None for CSG non-selector operands) so CSG
@@ -3609,7 +3652,7 @@ fn compile_expr_guarded_with_expected_inner(
                         // at eval time. Uniform `StructureRef("MassProperties")`
                         // result (mirrors the `is_dynamics_query` arm above).
                         // Pinned disjoint from all sibling families by
-                        // `dynamics_constructor_names_are_disjoint_from_other_families`.
+                        // `builtin_name_families_are_pairwise_disjoint`.
                         Type::StructureRef("MassProperties".to_string())
                     } else if is_affine_map_constructor(name) {
                         // affine_scale / affine_shear_* / affine_translate /
@@ -3686,8 +3729,7 @@ fn compile_expr_guarded_with_expected_inner(
                         // variant with a best-effort `n` when the shape is not
                         // statically determinable. Both slices are pinned disjoint
                         // from the geometry/dynamics families AND from each other
-                        // (units.rs `math_typed_fn_names_are_disjoint_from_other_families`
-                        // + `math_operation_fn_names_are_disjoint_from_other_families`),
+                        // (units.rs `builtin_name_families_are_pairwise_disjoint`),
                         // so this arm's position in the ladder is unobservable.
                         // NOTE: `determinant(AffineMap)` → Real is served by the
                         // earlier `affine_map_algebra_result_type` arm above, so
@@ -3714,24 +3756,88 @@ fn compile_expr_guarded_with_expected_inner(
                         // families by the units.rs disjointness test, so this
                         // arm's position in the ladder is unobservable.
                         joint_ctor_result_type(name, &compiled_args)
-                    } else if is_analysis_typed_fn(name) {
-                        // FEA stress-analysis reduction family (FEA-5, task
-                        // 2884): von_mises / principal_stresses / max_shear /
-                        // safety_factor / stress_invariants. These are pure
-                        // eval-builtins dispatched by name in
-                        // `reify_stdlib::eval_builtin` (analysis.rs). Setting
-                        // their result types here PREVENTS the first-arg Tensor
-                        // drift in the fallback below — e.g.
-                        // `von_mises(stress)` would otherwise mis-type as
-                        // `Tensor<Pressure>` instead of `Scalar<Pressure>`.
+                    } else if is_flexure_typed_fn(name) {
+                        // PRB flexure constructor family (placeholder-ratchet α,
+                        // PRD docs/prds/v0_6/placeholder-type-eradication-ratchet.md
+                        // §3.2, task #5476). All 13 prb_* ctors set the cell type
+                        // up-front to the nominal StructureRef("FlexureJoint") so
+                        // `flexure_compliance(joint: FlexureJoint)` matches a real
+                        // ctor result and REJECTS every bare literal through the
+                        // exact-equality overload filter (type_compat.rs).
                         //
-                        // The call STAYS a `FunctionCall` (eval untouched, name-
-                        // dispatched to existing Rust kernels).  The family is
-                        // pinned disjoint from all sibling families by the
-                        // `analysis_fn_names_are_disjoint_from_other_families`
-                        // test in `units.rs`, so this arm's position in the
-                        // ladder is unobservable.
-                        analysis_fn_result_type(name, &compiled_args)
+                        // Falling through to the first-arg fallback instead
+                        // mis-types a flexure joint as its first geometric
+                        // argument's type — e.g. Scalar[LENGTH] from
+                        // notch_radius — which is exactly the placeholder PRD §2
+                        // names as the root cause: it made a bare `5mm`
+                        // statically indistinguishable from a real joint.
+                        //
+                        // Runtime stays Value::Map (esc-3845-91): StructureRef is
+                        // a representable cell type and value_type_kind_matches is
+                        // not enforced on let-cells. These cells already carry the
+                        // first-arg Scalar[LENGTH] mismatch today, so StructureRef
+                        // is strictly more correct. PRD §7.1's rejection of the
+                        // typed-joints migration is NOT reopened.
+                        //
+                        // Unlike the joint arm above, this family is name- AND
+                        // argument-agnostic — all 13 map to the one marker type,
+                        // so there is no Coupling-style args-aware branch. That
+                        // is why the resolver is a ZERO-ARG `flexure_joint_type()`
+                        // rather than the joint family's `(name, args)` shape:
+                        // neither would be consulted, and a signature that
+                        // accepts them would imply a dispatch that does not
+                        // exist.
+                        //
+                        // The family is pinned disjoint from all sibling families
+                        // by the units.rs disjointness test, so this arm's
+                        // position in the ladder is unobservable. The one hard
+                        // requirement is that it precede the first-arg fallback.
+                        flexure_joint_type()
+                    } else if registry_owns(name)
+                        && let Some(t) = registry_result_type(
+                            name,
+                            &compiled_args
+                                .iter()
+                                .map(|a| a.result_type.clone())
+                                .collect::<Vec<_>>(),
+                        )
+                    {
+                        // ── The builtin-signature registry (task #6001 α) ──────
+                        //
+                        // ONE arm replacing the two family arms this ladder
+                        // used to carry, `is_analysis_typed_fn` (here) and
+                        // `is_parse_typed_fn` (formerly ~75 lines below). Both
+                        // families' signatures are now rows in
+                        // `reify-builtins`, and `builtin_registry` is this
+                        // crate's single entry point into that table; the
+                        // answers are the ones the deleted arms gave, byte for
+                        // byte, since α moves the source of truth and corrects
+                        // nothing (PRD §7.3(6)).
+                        //
+                        // Folding parse into the analysis POSITION is
+                        // unobservable: `units.rs`'s
+                        // `builtin_name_families_are_pairwise_disjoint`
+                        // pins every row name absent from every legacy sibling
+                        // family slice, so at most one arm can ever claim a
+                        // given name.
+                        //
+                        // `registry_owns` guards the `Vec<Type>` projection,
+                        // which allocates and deep-clones every argument type
+                        // on an arm reached by nearly every call in a program.
+                        // It is `registry_result_type`'s own precondition, so
+                        // this is a cost change, not a behaviour change —
+                        // pinned by `harness_builtin_registry`'s
+                        // `registry_owns_is_exactly_registry_result_type_s_precondition`.
+                        // The projection itself is needed because
+                        // `reify-builtins` cannot see `reify-ir` (PRD decision
+                        // 3), so arg TYPES cross the boundary, not
+                        // `CompiledExpr`s.
+                        //
+                        // `None` means "not a registry row", so unseeded names
+                        // fall through to the arms below exactly as before —
+                        // I-REG-3's pre-ω carve-out. The call stays a
+                        // `FunctionCall`: eval is untouched.
+                        t
                     } else if is_fea_envelope_query(name) {
                         // FEA multi-load-case envelope builtins (task #4629 W2):
                         //   envelope_von_mises / envelope_max_principal →
@@ -3756,7 +3862,7 @@ fn compile_expr_guarded_with_expected_inner(
                         // which is the same set `fea_envelope_result_type` matches
                         // on — so the `expect` is infallible here.
                         // The family is pinned disjoint from all sibling families
-                        // by `fea_envelope_names_are_disjoint_from_other_families`
+                        // by `builtin_name_families_are_pairwise_disjoint`
                         // in `units.rs`, so arm position is unobservable.
                         fea_envelope_result_type(name).expect(
                             "is_fea_envelope_query guarantees fea_envelope_result_type is Some",
@@ -3787,35 +3893,9 @@ fn compile_expr_guarded_with_expected_inner(
                         // laplacian lives in `reify-expr`; fn_field/from_samples/
                         // restrict/compose arrive in tasks β/γ/δ.  The FIELD_OP
                         // family is pinned disjoint from all sibling families
-                        // (units.rs `field_op_names_are_disjoint_from_other_families`),
+                        // (units.rs `builtin_name_families_are_pairwise_disjoint`),
                         // so this arm's position in the ladder is unobservable.
                         t
-                    } else if is_parse_typed_fn(name) {
-                        // Fallible string→quantity parse builtins (task #4535):
-                        //   parse_length(String)   → Option<Length>
-                        //   parse_length_r(String) → the PRELUDE Result<T,E>
-                        //     (dependency task #4035, reused — NOT redeclared),
-                        //     registered as Type::Enum("Result").
-                        //
-                        // Pure eval-builtins (reify_stdlib::parse::eval_parse,
-                        // dispatched via reify-expr's fallthrough to
-                        // reify_stdlib::eval_builtin — no reify-expr production
-                        // change) — the result type is arg-INDEPENDENT, unlike
-                        // the math-linalg family above. Without this arm both
-                        // names would fall through to the first-arg `String`
-                        // fallback below, breaking the consumer's
-                        // `match{Some/None}`/`{Ok/Err}` type-check and the
-                        // eval-time `value_type_kind_matches` guard (the eval'd
-                        // value is a real `Value::Option`/`Value::Enum`, never a
-                        // `Value::String`). The family is pinned disjoint from
-                        // all sibling families by the `units.rs`
-                        // `parse_fn_names_are_disjoint_from_other_families`
-                        // disjointness test (amendment: reviewer suggestion
-                        // #3 — the exhaustive check lives there, mirroring
-                        // every other family, rather than in
-                        // `parse_signatures.rs`'s own two-name spot-check), so
-                        // this arm's position in the ladder is unobservable.
-                        parse_fn_result_type(name)
                     } else if is_orientation_typed_fn(name) {
                         // Orientation / transform / frame constructor family
                         // (task 5344) — 18 names, each with a FIXED nominal
@@ -3848,21 +3928,184 @@ fn compile_expr_guarded_with_expected_inner(
                         // units.rs disjointness test, so this arm's position in
                         // the ladder is unobservable.
                         orientation_typed_fn_result_type(name)
+                    } else if is_orientation_euler_fn(name) {
+                        // Euler DECOMPOSER (task #6082):
+                        // orient_to_euler(Orientation<3>, EulerConvention)
+                        //   → List<Angle>, the 3-element Value::List of ANGLE
+                        //   scalars eval actually returns. Typing it so is what
+                        //   lets the result flow into a `List<Angle>` parameter.
+                        //
+                        // Its CONSTRUCTOR counterpart orient_euler is NOT in
+                        // this family — it is a fixed-nominal-type producer
+                        // already typed Orientation(3) by the #5344 arm above,
+                        // so that arm wins and this one never sees it. The two
+                        // slices are pinned disjoint in units.rs
+                        // (`builtin_name_families_are_pairwise_disjoint`),
+                        // which also makes this arm's ladder position
+                        // unobservable.
+                        //
+                        // Rationale for the module split, and why neither name
+                        // may be declared as a bodied `.ri pub fn` instead:
+                        // see orientation_signatures.rs.
+                        orientation_euler_result_type(name)
                     } else {
+                        // TERMINAL FIRST-ARG FALLBACK — the open end of the
+                        // ladder. Any callee no arm above claimed is typed as
+                        // its first argument (or Real when zero-arg).
+                        //
+                        // Task #5371 closes the WORLD here without touching the
+                        // TYPING. Three outcomes, and exactly one holds of any
+                        // one call; `DiagnosticCode::UnresolvedFunction` and
+                        // its sibling `BuiltinArgShapeUnrecognized` carry the
+                        // full account of the split and of the silent third
+                        // state:
+                        //
+                        //   1. the name is in NO family and the module does not
+                        //      declare it        -> W_UNRESOLVED_FUNCTION
+                        //   2. the name IS a builtin whose arg-aware resolver
+                        //      declined the shape -> W_BUILTIN_ARG_SHAPE
+                        //   3. the module declares it but this body cannot yet
+                        //      resolve it         -> silence
+                        //
+                        // Outcome 3 is why the push below asks a second
+                        // question of `scope`; see
+                        // `CompilationScope::declared_callable_names`.
+                        //
+                        // Warn-mode-first is deliberate: no corpus can break on
+                        // a diagnostic alone, and the typing at every one of the
+                        // three is byte-identical to the pre-#5371 answer.
+                        //
+                        // Durable track: docs/prds/v0_6/builtin-signature-registry.md.
+                        // #5997 flips this Warning to Error behind a break-glass
+                        // env knob; #6014 (registry ω) DELETES this whole
+                        // fallback, the `FIRST_ARG_TYPED_NAMES` allowlist and the
+                        // legacy zero-arg warning with it.
+                        //
+                        // ARG-SHAPE is resolved FIRST. Three ladder arms above
+                        // are ARG-AWARE — `infer_list_helper_return_type`,
+                        // `affine_map_algebra_result_type`, `field_op_result_type`
+                        // — and return `None` when the name is theirs but the
+                        // argument SHAPE is not, deliberately, to preserve
+                        // anti-cascade. At this site that `None` is
+                        // indistinguishable from "not my name", so the call
+                        // arrived here and was typed from arg0 with no
+                        // diagnostic at all: measured pre-#5371, `single(42)`
+                        // and `sample(42, 7)` compiled clean as `Int`. That is
+                        // a worse failure than the unknown-name case, because
+                        // the user wrote a REAL builtin and got no hint its
+                        // contract was missed. Reaching this arm while the name
+                        // is still in one of the three families is, by
+                        // construction, the "known name, declined shape"
+                        // signal — those arms are the only route by which the
+                        // names are claimed — which is what lets a name-only
+                        // lookup diagnose an arg shape, and why
+                        // `arg_shape_expectation` is sound at this site ONLY.
+                        //
+                        // Emitting here rather than inside the three resolvers
+                        // keeps them pure `Option`-returning functions with no
+                        // `&mut Vec<Diagnostic>` threaded through `units.rs` and
+                        // `list_helpers.rs`.
+                        let arg_shape_expected =
+                            crate::unresolved_function::arg_shape_expectation(name);
+                        if let Some(expected) = arg_shape_expected {
+                            diagnostics.push(
+                                Diagnostic::warning(format!(
+                                    "builtin '{name}' does not recognise this argument shape"
+                                ))
+                                .with_code(DiagnosticCode::BuiltinArgShapeUnrecognized)
+                                .with_label(DiagnosticLabel::new(
+                                    expr.span,
+                                    format!(
+                                        "'{name}' expects {expected}; these arguments do not \
+                                         match, so its return type was inferred from the first \
+                                         argument instead"
+                                    ),
+                                )),
+                            );
+                        }
+
+                        // `is_known_builtin` answers "is this a BUILTIN?", and
+                        // answers it correctly; a user `fn` is not one. Reading
+                        // its `false` as "exists nowhere" is only sound when
+                        // this body's vocabulary was complete, and in a fn body
+                        // it is not. That is a DIFFERENT question — "does this
+                        // module declare it?" — so it is asked separately rather
+                        // than by threading module state into the pure name
+                        // predicate. Rationale:
+                        // `CompilationScope::declared_callable_names`.
+                        let known = crate::unresolved_function::is_known_builtin(name);
+                        let declared_here = scope
+                            .declared_callable_names
+                            .is_some_and(|declared| declared.contains(name));
+                        // A third route to a real callee: a function-TYPED value
+                        // applied by bare name, e.g. `fn apply(f: (Real) -> Real)
+                        // -> Real = f(1.0)`. `f` is an ordinary value binding, so
+                        // it is in `names` and NOT in the module's declared
+                        // vocabulary, and no arm above claims a call whose callee
+                        // is a local of `Type::Function`. Withholding here keeps
+                        // the predicate honest for the higher-order combinators
+                        // the stdlib already declares (`map_or`, `map_err`),
+                        // whose bodies are stubs today and so hide the route from
+                        // the corpus sweep — but not from #5997's Error flip.
+                        let bound_as_a_function = scope
+                            .names
+                            .get(name)
+                            .is_some_and(|(_, ty, _)| matches!(ty, Type::Function { .. }));
+                        // Mutually exclusive with the arg-shape warning above
+                        // without needing a guard: all three arg-aware families
+                        // contribute production slices to `is_known_builtin`'s
+                        // union, so `arg_shape_expected.is_some()` implies
+                        // `known`. Pinned by
+                        // `mis_shaped_known_builtins_are_never_reported_unresolved`.
+                        if !known && !declared_here && !bound_as_a_function {
+                            diagnostics.push(
+                                Diagnostic::warning(format!("unresolved function: {name}"))
+                                    .with_code(DiagnosticCode::UnresolvedFunction)
+                                    .with_label(DiagnosticLabel::new(
+                                        expr.span,
+                                        format!(
+                                            "no builtin or user function named '{name}' is in scope"
+                                        ),
+                                    )),
+                            );
+                        }
                         compiled_args
                             .first()
                             .map(|a| a.result_type.clone())
                             .unwrap_or_else(|| {
-                                diagnostics.push(
-                                    Diagnostic::warning(format!(
-                                        "cannot infer return type of zero-arg function '{}', defaulting to Real",
-                                        name
-                                    ))
-                                    .with_label(DiagnosticLabel::new(
-                                        expr.span,
-                                        "zero-arg function: return type inferred as Real",
-                                    )),
-                                );
+                                // Zero-arg. The legacy warning is TRUE only for
+                                // a name the compiler actually knows (e.g.
+                                // `world`, a real zero-arg builtin still
+                                // awaiting its registry row). For an unknown
+                                // name, or for a mis-shaped call to a known one,
+                                // it is noise stacked on the stronger claim
+                                // already made above — one defect, one line.
+                                //
+                                // It is therefore SILENT for a zero-arg callee
+                                // the module declares but this body cannot yet
+                                // resolve, which is strictly wider than the
+                                // pre-#5371 silence; `BuiltinArgShapeUnrecognized`
+                                // records that widening as an explicit
+                                // precondition on #5997, and
+                                // `forward_referenced_sibling_emits_neither_warning`
+                                // pins it in both arities.
+                                //
+                                // INTERIM SHAPE, not a design: #6014 (registry ω)
+                                // deletes this legacy warning outright along with
+                                // the fallback, and its cases become
+                                // E_UnresolvedFunction.
+                                if known && arg_shape_expected.is_none() {
+                                    diagnostics.push(
+                                        Diagnostic::warning(format!(
+                                            "cannot infer return type of zero-arg function '{}', defaulting to Real",
+                                            name
+                                        ))
+                                        .with_label(DiagnosticLabel::new(
+                                            expr.span,
+                                            "zero-arg function: return type inferred as Real",
+                                        )),
+                                    );
+                                }
                                 Type::dimensionless_scalar()
                             })
                     };
@@ -3888,6 +4131,93 @@ fn compile_expr_guarded_with_expected_inner(
             }
         }
         reify_ast::ExprKind::MemberAccess { object, member } => {
+            // ── task #5385: constant-fold `<geometry-list let>.count` ──────────
+            //
+            // A geometry-list let (`let holes = generate(3, |i| cylinder(…))`)
+            // has no ordinary evaluable value: it lowers to N sibling
+            // `RealizationDecl`s, and its cell's Value is authoritative only
+            // AFTER `post_process_geometry_handle_cells` regroups their handles
+            // into a list. Ordinary value cells evaluate BEFORE that pass, so a
+            // `MethodCall` node here would read the pre-hydration list and
+            // `count`'s `any(is_undef)` guard would collapse it to `Undef` —
+            // trading one silent undef for another.
+            //
+            // The element count is statically known by construction, so fold it
+            // instead. The folded value is exactly the number of list-bound
+            // realizations emitted for that let (both come from the same
+            // `GeometryListShape`), so the two can never disagree.
+            //
+            // SHADOWING (review esc-5385-3): `geometry_list_elements` is
+            // inherited verbatim by every derived scope (lambda body, quantifier
+            // predicate, match arm with payload binders), each of which
+            // registers its binder in `names` only. Gate the fold on the name
+            // still resolving to THIS entity's list let, or a binder that
+            // shadows one is silently folded to the OUTER list's length.
+            //
+            // BOTH SPELLINGS (review esc-5385-7). `self.holes.count` names the
+            // same let as `holes.count` and is the form examples/ actually uses
+            // (`self.members.count`, `self.children.count`). Folding only the
+            // bare `Ident` receiver left the `self.`-qualified alias falling
+            // through to the ordinary aggregation path, where it reads the
+            // pre-hydration `List([Undef; n])` placeholder and yields `Undef`
+            // with no diagnostic — the exact silent-undef this fold exists to
+            // remove, reachable by adding four characters.
+            //
+            // The `self.` arm reuses the same `geometry_list_binding_is_live`
+            // gate, which is deliberately CONSERVATIVE for it: inside a lambda
+            // whose param shadows `holes`, `self.holes` is unambiguous but the
+            // gate still declines, so the fold is skipped rather than made
+            // wrong. Skipping costs an `Undef` on a path that is already
+            // `Undef` today; folding through a shadowed lookup would cost a
+            // silently-wrong constant.
+            //
+            // WIRED CONSUMERS (review esc-5385-3): this `.count` fold and the
+            // `union_all` / `intersection_all` expansion in geometry_boolean.rs
+            // are the ONLY reads of a geometry-list let that resolve at COMPILE
+            // time. Every other use — `holes[0]`, iteration, `size(holes)`,
+            // passing `holes` to a user function or list helper — compiles to
+            // an ordinary value-cell expression with no diagnostic, and those
+            // cells evaluate BEFORE `post_process_geometry_handle_cells`
+            // regroups the sibling realization handles into the list cell, so
+            // they read the pre-hydration placeholder and yield `Undef`. The
+            // full CLI build/tessellate pass does recompute, so this is a
+            // single-pass (`Engine::eval`) seam rather than a user-visible
+            // silent undef; it is pinned by
+            // `indexing_a_geometry_list_reads_the_pre_hydration_placeholder`
+            // (crates/reify-eval/tests/generate_eval.rs). Closing it properly
+            // is the eval-side `UndefCause`-provenance half, task #5402 —
+            // deliberately NOT a compile-time rejection here, which would risk
+            // refusing programs the full pipeline resolves correctly.
+            // The count is read from `geometry_list_elements[name].len()` — the
+            // ONE source of truth, the elements pass 1 actually unrolled and the
+            // emission loop actually emits a realization for. A separately-stored
+            // length was removed as a drift risk (review esc-5385-7).
+            let geometry_list_count_receiver: Option<&str> = if member == "count" {
+                match &object.kind {
+                    reify_ast::ExprKind::Ident(list_name) => Some(list_name.as_str()),
+                    reify_ast::ExprKind::MemberAccess {
+                        object: receiver,
+                        member: list_name,
+                    } if scope.is_entity_scope
+                        && matches!(
+                            &receiver.kind,
+                            reify_ast::ExprKind::Ident(n) if n == "self"
+                        ) =>
+                    {
+                        Some(list_name.as_str())
+                    }
+                    _ => None,
+                }
+            } else {
+                None
+            };
+            if let Some(list_name) = geometry_list_count_receiver
+                && scope.geometry_list_binding_is_live(list_name)
+                && let Some(elements) = scope.geometry_list_elements.get(list_name)
+            {
+                return CompiledExpr::literal(Value::Int(elements.len() as i64), Type::Int);
+            }
+
             // ── compiler-type-hygiene ε1: PART A — name-directed pre-pass ───────
             //
             // Everything from here down to the `compile_expr_guarded` call that
@@ -5329,9 +5659,11 @@ fn compile_expr_guarded_with_expected_inner(
             }
         }
         reify_ast::ExprKind::Auto { .. } => {
-            // Auto expressions should not appear inside compile_expr — they are
-            // handled at the param compilation level. If we reach here, emit an
-            // Undef literal as a safe fallback.
+            // Every binding site reads `auto` via `extract_auto_free` before it
+            // compiles any expression, so reaching this arm means `auto` appeared
+            // outside a binding site. The Undef literal is the anti-cascade
+            // fallback for that case; E_AUTO_NOT_AT_BINDING_SITE covers the
+            // reachable operand positions before they get here.
             CompiledExpr::literal(Value::Undef, Type::dimensionless_scalar())
         }
         reify_ast::ExprKind::Conditional {
@@ -6039,15 +6371,21 @@ fn compile_expr_guarded_with_expected_inner(
             // (4)+(5) Validate (trait, method) and resolve the return type via
             //         overload resolution against the arg types threaded in scope.
             //         A absent trait/method ⇒ E_TRAIT_METHOD_UNKNOWN (anti-cascade
-            //         poison). When multiple sigs exist, resolve the one whose non-self
-            //         params best match the compiled arg types using a subset of
-            //         `resolve_function_overload`'s semantics: trait-object params as
-            //         wildcards, type-param/dim-param params as wildcards (param-side
-            //         wildcard is unconditional — `CompiledAssocFnSig` does not track
-            //         `type_params`, but non-generic assoc fns always have concrete
-            //         resolved params so the unconditional check is safe in practice),
-            //         type-param-carrying args as wildcards (D4), exact-match tiebreak,
-            //         NO Int→Real. (ε #3943; amendment for reviewer suggestions §1+§2)
+            //         poison). Resolution is tier 3
+            //         (`reify_core::overload::slot_matches_wildcard_tier`) plus the
+            //         exact-match tie-break; no head tier, NO Int→Real. (ε #3943)
+            //
+            //         `is_generic` is held OPEN (#6505): `CompiledAssocFnSig` records
+            //         no type-param list, and a sig's type-param scope is fn-level ∪
+            //         trait-level (entity.rs's default-fn re-resolution when filling
+            //         `trait_assoc_fn_overloads`), so the free-fn
+            //         `!f.type_params.is_empty()` notion would misclassify a
+            //         trait-generic method as non-generic. Holding it open cannot widen
+            //         a non-generic sig: TypeParam/ScalarParam leaves only resolve from
+            //         a non-empty type-param scope. Pinned by
+            //         `dispatch_trait_generic_{type,dim}_param_slot_is_a_wildcard` and
+            //         `dispatch_concrete_param_slot_rejects_mismatched_arg` in
+            //         tests/harness_traits/trait_assoc_fn_overload_tests.rs.
             let overloads = scope
                 .trait_assoc_fn_overloads
                 .get(trait_name.as_str())
@@ -6105,18 +6443,18 @@ fn compile_expr_guarded_with_expected_inner(
                     if arg_types.contains(&Type::Error) {
                         return propagate_poison();
                     }
+                    let genericity_unrecorded_so_held_open = true;
                     let matches: Vec<&CompiledAssocFnSig> = sigs
                         .iter()
                         .filter(|sig| {
                             sig.params.len() == arg_types.len()
                                 && sig.params.iter().zip(arg_types.iter()).all(
                                     |(param_ty, arg_ty)| {
-                                        // Wildcard hierarchy (see block comment above):
-                                        type_carries_trait_object(param_ty)
-                                            || type_carries_type_param(param_ty)
-                                            || type_carries_dim_param(param_ty)
-                                            || type_carries_type_param(arg_ty)
-                                            || param_ty == arg_ty
+                                        slot_matches_wildcard_tier(
+                                            param_ty,
+                                            arg_ty,
+                                            genericity_unrecorded_so_held_open,
+                                        )
                                     },
                                 )
                         })
@@ -6321,7 +6659,12 @@ fn compile_expr_guarded_with_expected_inner(
                             diagnostics,
                         );
                     }
-                    let result_type = matched_fn.return_type.clone();
+                    let result_type = match instantiate_call_return_type(
+                        matched_fn, &symbol, &arg_types, expr.span,
+                    ) {
+                        Ok(result_type) => result_type,
+                        Err(diagnostic) => return make_poison_literal(diagnostics, diagnostic),
+                    };
                     build_user_function_call_expr(&symbol, compiled_args, result_type)
                 }
                 OverloadResolution::Ambiguous(candidates) => {
@@ -8485,7 +8828,7 @@ pub structure Rack {
     /// - `prismatic` (driving kind) → StructureRef("Prismatic")
     /// - `couple` (coupling kind) → StructureRef("Coupling")
     /// - `bind` (JointBinding) → StructureRef("JointBinding")
-    /// - `joint_jacobian` (Twist) → StructureRef("Twist")
+    /// - `joint_jacobian` (Jacobian column) → StructureRef("JacobianColumn")
     ///
     /// Mirrors `body_mass_props_resolves_to_function_call_returning_mass_properties`.
     /// RED until step-6 wires the `is_joint_typed_fn` arm into the ladder.
@@ -8533,8 +8876,12 @@ pub structure Rack {
         );
         // JointBinding → JointBinding.
         check("bind", 2, Type::StructureRef("JointBinding".to_string()));
-        // Twist / joint Jacobian → Twist.
-        check("joint_jacobian", 1, Type::StructureRef("Twist".to_string()));
+        // Joint Jacobian → JacobianColumn (task 6102: dpose/dq, not a Twist).
+        check(
+            "joint_jacobian",
+            1,
+            Type::StructureRef("JacobianColumn".to_string()),
+        );
     }
 
     /// `TraitStaticCall` dispatch arm (task η 3945) — after the placeholder is
@@ -10065,6 +10412,90 @@ structure S {
             Type::Int,
             "`[1, 2, 3].sum` must resolve to the List's element type (Int), got: {:?}",
             get_let_expr(&m, "y").result_type
+        );
+    }
+
+    /// The GENERAL `OverloadResolution::NoMatch` poison Error carries
+    /// `DiagnosticCode::NoMatchingOverload` (`E_NO_MATCHING_OVERLOAD`), and its
+    /// rendered message is byte-identical to the pre-#5476 text.
+    ///
+    /// A nominal (structure-typed) param called with a bare dimensioned literal
+    /// is the plainest general no-match: it is not a `Selector`→`Selector` kind
+    /// mismatch, so it must take the `else` branch of the NoMatch arm's code
+    /// conditional. The verbatim message assertion is the mechanical form of the
+    /// task's "message text unchanged" contract — a future edit that improves the
+    /// wording has to come here and say so, rather than silently breaking every
+    /// consumer that greps the string.
+    ///
+    /// PRD `docs/prds/v0_6/placeholder-type-eradication-ratchet.md` §3.3 /
+    /// INV-SF-6 (task #5476).
+    #[test]
+    fn no_matching_overload_error_carries_no_matching_overload_code() {
+        use reify_test_support::compile_source;
+
+        let source = r#"
+structure def Marker { }
+pub fn takes_marker(m: Marker) -> Real { 1.0 }
+structure def Probe { let x = takes_marker(5mm) }
+"#;
+        let compiled = compile_source(source);
+        let err = the_one_error(&compiled.diagnostics);
+
+        assert_eq!(
+            err.code,
+            Some(DiagnosticCode::NoMatchingOverload),
+            "the general no-match poison Error must carry NoMatchingOverload, got: {:?}",
+            err
+        );
+        assert_eq!(
+            err.message,
+            "no matching overload for takes_marker(Scalar[m]), \
+             candidates: takes_marker(Marker) -> Real",
+            "the NoMatch message text must be unchanged by the code tagging"
+        );
+    }
+
+    /// Non-clobber guard for the code added above: when the no-match is
+    /// specifically a wrong-kind `Selector`→`Selector` param mismatch,
+    /// `coerce::is_selector_kind_mismatch_nomatch` holds and the diagnostic keeps
+    /// `DiagnosticCode::SelectorKindMismatch` — it must NOT be overwritten with
+    /// `NoMatchingOverload`.
+    ///
+    /// `edges(b)` is `Selector(Edge)`; `f`'s param is `FaceSelector` =
+    /// `Selector(Face)`. Same arity, non-generic, every other param equal — the
+    /// exact shape `is_selector_kind_mismatch_nomatch` looks for. This pins the
+    /// task 4581 / esc-4120-17 BT1↔BT6 code-uniformity contract, which is what
+    /// makes the composition path (`units.rs`) and this param-binding path report
+    /// one code. GREEN before #5476 and must stay GREEN after.
+    #[test]
+    fn selector_kind_mismatch_nomatch_keeps_its_own_code() {
+        use reify_test_support::compile_source_with_stdlib;
+
+        let source = r#"module test.selector_kind_nomatch
+pub fn takes_face(f: FaceSelector) -> Real { 1.0 }
+structure def Probe {
+    let b = box(10mm, 10mm, 10mm)
+    let x = takes_face(edges(b))
+}
+"#;
+        let compiled = compile_source_with_stdlib(source);
+        let nomatch: Vec<_> = compiled
+            .diagnostics
+            .iter()
+            .filter(|d| d.message.starts_with("no matching overload for takes_face"))
+            .collect();
+        assert_eq!(
+            nomatch.len(),
+            1,
+            "expected exactly one no-match diagnostic for takes_face, got: {:?}",
+            compiled.diagnostics
+        );
+        assert_eq!(
+            nomatch[0].code,
+            Some(DiagnosticCode::SelectorKindMismatch),
+            "a wrong-kind Selector→Selector no-match must KEEP SelectorKindMismatch \
+             and must not be clobbered with NoMatchingOverload, got: {:?}",
+            nomatch[0]
         );
     }
 }

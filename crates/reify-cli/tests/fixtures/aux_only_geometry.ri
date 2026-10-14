@@ -1,0 +1,36 @@
+module aux_only_geometry
+
+// aux_only_geometry.ri — task 5748, esc-5748-6 regression fixture.
+//
+// A module whose ONLY realized bodies are `aux` (PRD sub-placement-and-surfacing
+// §2.2: "construction input, not product"). It is geometry-bearing, so
+// `module_has_geometry` is true and `reify check` routes it through the
+// kernel-backed realization arm — but it has no product body, so the Phase-B
+// product-export walk finds `product_bodies.len() == 0` and emits
+//
+//     error: all realized bodies are aux; no product geometry to export
+//
+// That diagnostic is EXPORT-ONLY (reify-eval engine_build.rs, the
+// `emit_geometry_output` arm). It is correct for `reify build`, which is asked
+// to write an artifact and cannot. It is a FALSE error for `reify check`, which
+// writes nothing and is only asked whether the constraints hold.
+//
+// esc-5748-6: while `cmd_check` called `engine.build(...)`, D2's diagnostic
+// merge surfaced that line on check's stderr for every geometry-bearing module
+// with no product body. `cmd_check` now calls `realize_for_check`, which skips
+// the export walk entirely, so the line cannot be produced on this path.
+//
+// Constraints here are trivially satisfied, so the ONLY thing under test is the
+// absence of the export-only diagnostic.
+
+structure AuxOnly {
+    param blank_len   : Length = 20mm
+    param blank_width : Length = 10mm
+    param blank_high  : Length = 5mm
+
+    // Construction/tooling bodies only — no `param geometry : Solid` product.
+    aux let blank = box(blank_len, blank_width, blank_high)
+    aux let tool  = cylinder(3mm, 30mm)
+
+    constraint blank_len > blank_width
+}

@@ -5,8 +5,9 @@
  * Task 3229: verify compile_diagnostics is copied by convertRawGuiState.
  */
 import { describe, it, expect } from 'vitest';
-import { convertRawMesh, convertRawGuiState } from '../types';
-import type { RawMeshData, RawGuiState, DiagnosticInfo, FeaDiagnosticInfo, FeaConvergenceInfo } from '../types';
+import { convertRawMesh, convertRawGuiState, CONSTRAINT_STATUSES } from '../types';
+import type { RawMeshData, RawGuiState, RawConstraintData, DiagnosticInfo, FeaDiagnosticInfo, FeaConvergenceInfo } from '../types';
+import { makeRawConstraint } from './constraintFixtures';
 
 describe('convertRawMesh', () => {
   it('converts scalar_channels number[] → Float32Array when present', () => {
@@ -242,6 +243,57 @@ describe('convertRawMesh', () => {
     };
     const mesh = convertRawMesh(raw);
     expect(mesh.appearance).toBeUndefined();
+  });
+});
+
+describe('convertRawMesh \u2014 scalar_channel_tags (task #6185)', () => {
+  it('carries the per-channel unit/dimension tags through as a plain object', () => {
+    const raw: RawMeshData = {
+      entity_path: 'FEA.body',
+      vertices: [0, 0, 0, 1, 0, 0, 0, 1, 0],
+      indices: [0, 1, 2],
+      normals: null,
+      scalar_channels: { vonMises: [10, 20, 30], testRotation: [-0.5, 0, 0.25] },
+      scalar_channel_tags: {
+        vonMises: { unit: 'Pa', signed: false },
+        testRotation: { unit: 'rad', signed: true },
+      },
+    };
+
+    const mesh = convertRawMesh(raw);
+
+    // Plain pass-through \u2014 NOT a typed array, unlike scalar_channels itself.
+    expect(mesh.scalar_channel_tags).toEqual({
+      vonMises: { unit: 'Pa', signed: false },
+      testRotation: { unit: 'rad', signed: true },
+    });
+  });
+
+  it('leaves scalar_channel_tags undefined when absent from raw payload', () => {
+    const raw: RawMeshData = {
+      entity_path: 'Plain.body',
+      vertices: [0, 0, 0, 1, 0, 0, 0, 1, 0],
+      indices: [0, 1, 2],
+      normals: null,
+      scalar_channels: { vonMises: [10, 20, 30] },
+    };
+
+    const mesh = convertRawMesh(raw);
+    expect(mesh.scalar_channel_tags).toBeUndefined();
+  });
+
+  it('preserves a negative value in a signed channel through Float32Array conversion', () => {
+    const raw: RawMeshData = {
+      entity_path: 'FEA.body',
+      vertices: [0, 0, 0, 1, 0, 0, 0, 1, 0],
+      indices: [0, 1, 2],
+      normals: null,
+      scalar_channels: { testRotation: [-0.5, 0, 0.25] },
+      scalar_channel_tags: { testRotation: { unit: 'rad', signed: true } },
+    };
+
+    const mesh = convertRawMesh(raw);
+    expect(mesh.scalar_channels!.testRotation[0]).toBe(-0.5);
   });
 });
 
@@ -625,5 +677,47 @@ describe('convertRawGuiState', () => {
     };
     const state = convertRawGuiState(raw);
     expect(state.fea_convergence).toBeNull();
+  });
+});
+
+describe('convertRawGuiState — constraint verdict tokens', () => {
+  function stateWith(constraint: RawConstraintData): RawGuiState {
+    return {
+      meshes: [],
+      values: [],
+      constraints: [constraint],
+      files: [],
+      tessellation_diagnostics: [],
+      compile_diagnostics: [],
+    };
+  }
+
+  function errorThrownBy(fn: () => unknown): Error | undefined {
+    try {
+      fn();
+    } catch (e) {
+      return e as Error;
+    }
+    return undefined;
+  }
+
+  it.each(CONSTRAINT_STATUSES)('passes the in-contract token %j through unchanged', (token) => {
+    const raw = makeRawConstraint(token);
+    const state = convertRawGuiState(stateWith(raw));
+    expect(state.constraints).toHaveLength(1);
+    expect(state.constraints[0]).toStrictEqual(raw);
+  });
+
+  // 'Satisfied' is the exact historical drift (the Rust enum variant name):
+  // the boundary rejects it rather than lower-casing it.
+  it.each(['Satisfied', 'VIOLATED', 'unknown', ''])('rejects the out-of-contract token %j by name', (token) => {
+    const raw = makeRawConstraint(token);
+    const error = errorThrownBy(() => convertRawGuiState(stateWith(raw)));
+    expect(error).toBeInstanceOf(Error);
+    expect(error?.message).toContain(JSON.stringify(token));
+    expect(error?.message).toContain(raw.node_id);
+    for (const accepted of CONSTRAINT_STATUSES) {
+      expect(error?.message).toContain(accepted);
+    }
   });
 });

@@ -26,8 +26,9 @@
 //! genuinely-zero column (an unconstrained DOF) from an O(1) gradient entry.
 
 use reify_constraints::relate_solve::{
-    FrameUnknown, Operand, Pose, RelateTolerance, RelationInstance, max_relation_residual,
-    partition_driving_set, pose_from_frame, solve_frame,
+    FrameUnknown, Operand, Pose, RelateTolerance, RelationInstance, ResidualUnit,
+    comparable_datum_operands, max_relation_residual, partition_driving_set, pose_from_frame,
+    solve_frame, static_relation_residuals,
 };
 use reify_ir::{SolveResult, Value};
 
@@ -909,5 +910,1110 @@ fn fasten_solve_grounds_sub_to_identity() {
         resid <= tol.solver_convergence(),
         "solved residual {resid} must be ≤ solver convergence {}",
         tol.solver_convergence()
+    );
+}
+
+// ── task 5540 step-5 RED: tangent residuals + rank ───────────────────────────
+//
+// `tangent` is the one curated relation `residual_dispatch` has no arm for: it
+// falls through the catch-all and contributes ZERO rows. That is not a loud gap
+// but a SILENT one — no rows ⇒ `partition_driving_set` files the relation as
+// redundant with `rank_contribution: 0`, and `max_relation_residual` reads 0.0,
+// so a tangency request is wholly ignored yet reported satisfied. These units pin
+// the four residual forms and their exact codimensions so the gap cannot reopen.
+//
+// Radii travel as trailing `Length` scalar operands (`tangent(a, b, r)` /
+// `tangent(a, b, r1, r2)`), reusing the metric-operand plumbing `distance` /
+// `offset` / `angle` already run — the surface-carried `<HasAxis & HasRadius>`
+// form is sibling task #5588's, not this one's. Sign convention: the target
+// separation is `|r1 + r2|`, so two positive radii mean EXTERNAL tangency and a
+// negative second radius means INTERNAL (`|r1 − |r2||`), with no branch.
+//
+// Every scenario is placed to be exactly satisfied at `Pose::identity()` per the
+// module convention above, so the expected values are exact closed forms.
+//
+// RED until step-6 adds the `"tangent"` arm (and the multi-scalar plumbing the
+// two-radius combos need): today every assertion below reads residual 0.0 / rank 0.
+
+/// A trailing radius operand — a bare `Length` scalar with no owning sub, exactly
+/// the shape `build_relation_instances` pushes for a metric argument.
+fn radius(r: f64) -> Operand {
+    Operand {
+        sub: None,
+        datum: Value::length(r),
+    }
+}
+
+/// A `tangent` relation over `operands`, carrying the γ-published ΔDOF for its
+/// combo (1 for cyl/cyl, sphere/plane and sphere/sphere; 2 for cyl/plane).
+fn tangent(operands: Vec<Operand>, nominal_delta_dof: u32) -> RelationInstance {
+    relation("tangent", operands, nominal_delta_dof)
+}
+
+/// The exact-algebra tolerance for a residual closed form. Unlike the rank
+/// tolerance [`TOL`] (which absorbs finite-difference noise in the Jacobian),
+/// residual evaluation is straight-line arithmetic on the operand values, so the
+/// only slack needed is float round-off.
+const EXACT: f64 = 1e-12;
+
+/// The moving sub used by every tangent scenario.
+fn tangent_unknown() -> FrameUnknown {
+    unknown("m", false)
+}
+
+/// Residual of a single relation at the identity witness.
+fn resid_at_identity(rel: &RelationInstance) -> f64 {
+    max_relation_residual(std::slice::from_ref(rel), &tangent_unknown(), &Pose::identity())
+}
+
+/// The measured individual Jacobian rank of a single relation at identity — the
+/// geometry's own codimension, cross-checked against the published ΔDOF.
+fn measured_rank(rel: &RelationInstance) -> u32 {
+    partition_driving_set(
+        std::slice::from_ref(rel),
+        &tangent_unknown(),
+        &Pose::identity(),
+        TOL,
+    )
+    .per_relation[0]
+        .individual_rank
+}
+
+/// cylinder/cylinder `tangent(axis_a, axis_b, r1, r2)` is ONE row:
+/// `line_line_distance(a, b) − |r1 + r2|`. Two parallel `+z` axes separated
+/// perpendicularly by exactly `r1 + r2 = 12 mm` are tangent (residual 0); widening
+/// the separation to 20 mm leaves the exact excess `20 − 12 = 8 mm`.
+///
+/// Measuring LINE distance (not origin-to-origin) is what keeps an axial slide
+/// along the cylinders out of the metric, matching `distance` over axes.
+#[test]
+fn tangent_cyl_cyl_residual_is_line_distance_minus_summed_radii() {
+    let (r1, r2) = (0.005, 0.007);
+    let touching = tangent(
+        vec![
+            datum("m", axis((0.0, 0.0, 0.0), (0.0, 0.0, 1.0))),
+            datum("anchor", axis((r1 + r2, 0.0, 0.0), (0.0, 0.0, 1.0))),
+            radius(r1),
+            radius(r2),
+        ],
+        1,
+    );
+    let got = resid_at_identity(&touching);
+    assert!(
+        got < EXACT,
+        "two parallel cylinders whose axes are {} m apart with radii {r1} + {r2} are \
+         externally tangent ⇒ residual 0; got {got}",
+        r1 + r2
+    );
+
+    // An axial slide of 0.5 m along both axes must not move the residual — the
+    // metric is the perpendicular line distance, not the origin separation.
+    let slid = tangent(
+        vec![
+            datum("m", axis((0.0, 0.0, 0.0), (0.0, 0.0, 1.0))),
+            datum("anchor", axis((r1 + r2, 0.0, 0.5), (0.0, 0.0, 1.0))),
+            radius(r1),
+            radius(r2),
+        ],
+        1,
+    );
+    let got = resid_at_identity(&slid);
+    assert!(
+        got < EXACT,
+        "an axial slide along parallel cylinder axes must not couple into the tangency \
+         metric (perpendicular line distance); got {got}"
+    );
+
+    // Pulled apart to 20 mm: the residual is the exact 8 mm excess.
+    let apart = tangent(
+        vec![
+            datum("m", axis((0.0, 0.0, 0.0), (0.0, 0.0, 1.0))),
+            datum("anchor", axis((0.020, 0.0, 0.0), (0.0, 0.0, 1.0))),
+            radius(r1),
+            radius(r2),
+        ],
+        1,
+    );
+    let got = resid_at_identity(&apart);
+    let want = 0.020 - (r1 + r2);
+    assert!(
+        (got - want).abs() < EXACT,
+        "separation 0.020 m against a {} m tangency target leaves residual {want}; got {got}",
+        r1 + r2
+    );
+}
+
+/// A NEGATIVE radius selects INTERNAL tangency without a branch: the target
+/// separation is `|r1 + r2|`, which for `r2 < 0` collapses to `|r1 − |r2||` — the
+/// small cylinder running inside the large one. A 20 mm cylinder with an 8 mm
+/// cylinder inside it touches when the axes are 12 mm apart, and the SAME geometry
+/// read with both radii positive would demand 28 mm.
+#[test]
+fn tangent_cyl_cyl_negative_radius_encodes_internal_tangency() {
+    let (r_big, r_small) = (0.020, 0.008);
+    let internal = tangent(
+        vec![
+            datum("m", axis((0.0, 0.0, 0.0), (0.0, 0.0, 1.0))),
+            datum("anchor", axis((r_big - r_small, 0.0, 0.0), (0.0, 0.0, 1.0))),
+            radius(r_big),
+            radius(-r_small),
+        ],
+        1,
+    );
+    let got = resid_at_identity(&internal);
+    assert!(
+        got < EXACT,
+        "a negative second radius means INTERNAL tangency: |r1 + r2| = |{r_big} − {r_small}| \
+         = {} m, which the {} m axis separation meets exactly ⇒ residual 0; got {got}",
+        r_big - r_small,
+        r_big - r_small
+    );
+
+    // The same geometry with both radii POSITIVE is the external form, which wants
+    // 28 mm — proving the sign genuinely selects the branch rather than being
+    // absorbed by an `.abs()` on each radius.
+    let external = tangent(
+        vec![
+            datum("m", axis((0.0, 0.0, 0.0), (0.0, 0.0, 1.0))),
+            datum("anchor", axis((r_big - r_small, 0.0, 0.0), (0.0, 0.0, 1.0))),
+            radius(r_big),
+            radius(r_small),
+        ],
+        1,
+    );
+    let got = resid_at_identity(&external);
+    let want = (r_big - r_small) - (r_big + r_small);
+    assert!(
+        (got - want.abs()).abs() < EXACT,
+        "with both radii positive the same {} m separation is short of the {} m external \
+         target by {want}; got {got}",
+        r_big - r_small,
+        r_big + r_small
+    );
+}
+
+/// cylinder/plane `tangent(axis, plane, r)` is TWO rows — the axis/normal
+/// perpendicularity and the SIGNED axis-origin-to-plane offset minus `r`. A `+x`
+/// axis floating 5 mm above the `z = 0` plane with `r = 5 mm` satisfies both;
+/// raising it to 9 mm leaves exactly the 4 mm offset error in row 2 while row 1
+/// stays 0.
+#[test]
+fn tangent_cyl_plane_residual_has_perpendicularity_and_signed_offset_rows() {
+    let r = 0.005;
+    let seated = tangent(
+        vec![
+            datum("m", axis((0.0, 0.0, r), (1.0, 0.0, 0.0))),
+            datum("anchor", plane((0.0, 0.0, 0.0), (0.0, 0.0, 1.0))),
+            radius(r),
+        ],
+        2,
+    );
+    let got = resid_at_identity(&seated);
+    assert!(
+        got < EXACT,
+        "a +x cylinder axis {r} m above the z=0 plane with radius {r} rests on it ⇒ both \
+         rows 0; got {got}"
+    );
+
+    // Lifted to 9 mm with the SAME (parallel) orientation: row 1 stays 0, so the max
+    // residual is exactly row 2's 4 mm offset error.
+    let lifted = tangent(
+        vec![
+            datum("m", axis((0.0, 0.0, 0.009), (1.0, 0.0, 0.0))),
+            datum("anchor", plane((0.0, 0.0, 0.0), (0.0, 0.0, 1.0))),
+            radius(r),
+        ],
+        2,
+    );
+    let got = resid_at_identity(&lifted);
+    let want = 0.009 - r;
+    assert!(
+        (got - want).abs() < EXACT,
+        "a parallel axis at 0.009 m with radius {r} overshoots tangency by {want}; got {got}"
+    );
+
+    // A centre BELOW the plane is NOT tangent from above: the offset row is SIGNED,
+    // so `−r` against a `+r` request reads `−2r`, not 0. An `.abs()` form (as
+    // `distance_residual` uses) would wrongly report this satisfied.
+    let below = tangent(
+        vec![
+            datum("m", axis((0.0, 0.0, -r), (1.0, 0.0, 0.0))),
+            datum("anchor", plane((0.0, 0.0, 0.0), (0.0, 0.0, 1.0))),
+            radius(r),
+        ],
+        2,
+    );
+    let got = resid_at_identity(&below);
+    assert!(
+        (got - 2.0 * r).abs() < EXACT,
+        "the cylinder/plane offset row must be SIGNED so the radius sign picks the side \
+         of the plane: an axis at −{r} against a +{r} request reads {}, not 0; got {got}",
+        2.0 * r
+    );
+}
+
+/// REGRESSION GUARD for the failure the ΔDOF table exists to prevent: a cylinder
+/// TILTED out of parallel but still at the right distance would sit at exactly zero
+/// residual if the cylinder/plane form carried only the offset row. Row 1 (the
+/// perpendicularity of the axis direction against the plane normal) is what makes
+/// this codimension 2 rather than 1.
+///
+/// The axis is tilted 45° in the xz-plane with its origin still `r` above the plane,
+/// so the offset row is exactly 0 and the whole residual IS row 1: `dot(û, n̂)` for
+/// a 45° axis is `1/√2`. Asserting that exact value also pins the normalization —
+/// an un-normalized `dot((1,0,1), (0,0,1))` would read 1.
+#[test]
+fn tangent_cyl_plane_tilted_axis_at_correct_distance_is_not_satisfied() {
+    let r = 0.005;
+    let tilted = tangent(
+        vec![
+            // Deliberately NON-unit direction: (1,0,1) has norm √2.
+            datum("m", axis((0.0, 0.0, r), (1.0, 0.0, 1.0))),
+            datum("anchor", plane((0.0, 0.0, 0.0), (0.0, 0.0, 1.0))),
+            radius(r),
+        ],
+        2,
+    );
+    let got = resid_at_identity(&tilted);
+    let want = 1.0 / 2.0_f64.sqrt();
+    assert!(
+        (got - want).abs() < EXACT,
+        "a 45°-tilted cylinder at the correct {r} m offset must NOT read satisfied — the \
+         perpendicularity row is dot(û, n̂) = {want} for a UNIT-normalized axis direction \
+         (an un-normalized dot would read 1.0); got {got}"
+    );
+}
+
+/// sphere/plane `tangent(centre, plane, r)` is ONE row: the SIGNED
+/// centre-to-plane offset minus `r`. A centre 5 mm above the `z = 0` plane with
+/// `r = 5 mm` is tangent; the mirrored centre 5 mm BELOW is not — an absolute-value
+/// form would wrongly accept it, which is the whole reason the row is signed.
+#[test]
+fn tangent_sphere_plane_residual_is_signed_not_absolute() {
+    let r = 0.005;
+    let resting = tangent(
+        vec![
+            datum("m", point3(0.0, 0.0, r)),
+            datum("anchor", plane((0.0, 0.0, 0.0), (0.0, 0.0, 1.0))),
+            radius(r),
+        ],
+        1,
+    );
+    let got = resid_at_identity(&resting);
+    assert!(
+        got < EXACT,
+        "a sphere centre {r} m above the z=0 plane with radius {r} rests on it ⇒ residual 0; \
+         got {got}"
+    );
+
+    let mirrored = tangent(
+        vec![
+            datum("m", point3(0.0, 0.0, -r)),
+            datum("anchor", plane((0.0, 0.0, 0.0), (0.0, 0.0, 1.0))),
+            radius(r),
+        ],
+        1,
+    );
+    let got = resid_at_identity(&mirrored);
+    assert!(
+        (got - 2.0 * r).abs() < EXACT,
+        "the sphere/plane row must be SIGNED: a centre at −{r} against a +{r} request reads \
+         {}, not the 0 an `.abs()` form would give; got {got}",
+        2.0 * r
+    );
+}
+
+/// A NEGATIVE sphere radius selects the FAR side of the plane: the signed row
+/// `dot(c − o, n̂) − r` is satisfied at `c·n̂ = r`, so `r = −5 mm` places the centre
+/// 5 mm BELOW the plane. This is the same sign convention the cylinder combos use,
+/// and it stays differentiable through zero.
+#[test]
+fn tangent_sphere_plane_negative_radius_lands_on_the_far_side() {
+    let r = 0.005;
+    let far_side = tangent(
+        vec![
+            datum("m", point3(0.0, 0.0, -r)),
+            datum("anchor", plane((0.0, 0.0, 0.0), (0.0, 0.0, 1.0))),
+            radius(-r),
+        ],
+        1,
+    );
+    let got = resid_at_identity(&far_side);
+    assert!(
+        got < EXACT,
+        "a negative radius selects the far side of the plane: centre at −{r} with r = −{r} \
+         ⇒ residual 0; got {got}"
+    );
+
+    // Contrast: the NEAR-side centre against the same negative request is off by 2r.
+    // Without this the satisfied case above would also hold for a form that ignored
+    // the radius sign entirely (or produced no rows at all).
+    let near_side = tangent(
+        vec![
+            datum("m", point3(0.0, 0.0, r)),
+            datum("anchor", plane((0.0, 0.0, 0.0), (0.0, 0.0, 1.0))),
+            radius(-r),
+        ],
+        1,
+    );
+    let got = resid_at_identity(&near_side);
+    assert!(
+        (got - 2.0 * r).abs() < EXACT,
+        "r = −{r} requests the far side, so a centre at +{r} is off by {}; got {got}",
+        2.0 * r
+    );
+}
+
+/// sphere/sphere `tangent(a, b, r1, r2)` is ONE row:
+/// `‖pa − pb‖ − |r1 + r2|`. Centres 12 mm apart with radii 5 mm + 7 mm are
+/// externally tangent; pushed to 20 mm the residual is the exact 8 mm excess.
+#[test]
+fn tangent_sphere_sphere_residual_is_centre_distance_minus_summed_radii() {
+    let (r1, r2) = (0.005, 0.007);
+    let touching = tangent(
+        vec![
+            datum("m", point3(0.0, 0.0, 0.0)),
+            datum("anchor", point3(r1 + r2, 0.0, 0.0)),
+            radius(r1),
+            radius(r2),
+        ],
+        1,
+    );
+    let got = resid_at_identity(&touching);
+    assert!(
+        got < EXACT,
+        "centres {} m apart with radii {r1} + {r2} are externally tangent ⇒ residual 0; got {got}",
+        r1 + r2
+    );
+
+    let apart = tangent(
+        vec![
+            datum("m", point3(0.0, 0.0, 0.0)),
+            datum("anchor", point3(0.020, 0.0, 0.0)),
+            radius(r1),
+            radius(r2),
+        ],
+        1,
+    );
+    let got = resid_at_identity(&apart);
+    let want = 0.020 - (r1 + r2);
+    assert!(
+        (got - want).abs() < EXACT,
+        "centre separation 0.020 m against a {} m tangency target leaves residual {want}; \
+         got {got}",
+        r1 + r2
+    );
+}
+
+/// The plane combos must be operand-order symmetric: `tangent(axis, plane, r)` and
+/// `tangent(plane, axis, r)` denote the same tangency, and the type-side classifier
+/// accepts both orders — so the residual must too. `tangent_residual` reads its
+/// operands POSITIONALLY (like `on_residual`), which is exactly where an
+/// order-blind implementation silently produces the wrong rows.
+#[test]
+fn tangent_plane_combos_are_operand_order_symmetric() {
+    let r = 0.005;
+    let cyl_plane_reversed = tangent(
+        vec![
+            datum("anchor", plane((0.0, 0.0, 0.0), (0.0, 0.0, 1.0))),
+            datum("m", axis((0.0, 0.0, r), (1.0, 0.0, 0.0))),
+            radius(r),
+        ],
+        2,
+    );
+    let got = resid_at_identity(&cyl_plane_reversed);
+    assert!(
+        got < EXACT,
+        "tangent(plane, axis, r) is the same relation as tangent(axis, plane, r) ⇒ \
+         residual 0 for a seated cylinder; got {got}"
+    );
+    assert_eq!(
+        measured_rank(&cyl_plane_reversed),
+        2,
+        "the reversed cylinder/plane order must still measure codimension 2"
+    );
+
+    let sphere_plane_reversed = tangent(
+        vec![
+            datum("anchor", plane((0.0, 0.0, 0.0), (0.0, 0.0, 1.0))),
+            datum("m", point3(0.0, 0.0, r)),
+            radius(r),
+        ],
+        1,
+    );
+    let got = resid_at_identity(&sphere_plane_reversed);
+    assert!(
+        got < EXACT,
+        "tangent(plane, centre, r) is the same relation as tangent(centre, plane, r) ⇒ \
+         residual 0 for a resting sphere; got {got}"
+    );
+    assert_eq!(
+        measured_rank(&sphere_plane_reversed),
+        1,
+        "the reversed sphere/plane order must still measure codimension 1"
+    );
+}
+
+/// DOF accounting — each combo's MEASURED Jacobian rank at a satisfying witness
+/// must equal the ΔDOF `relation_delta_dof` publishes for it: cyl/cyl 1,
+/// cyl/plane 2, sphere/plane 1, sphere/sphere 1.
+///
+/// This is the drift guard between the two `TangentCombo` classifiers — the
+/// type-side one in `reify-compiler` (which publishes the count) and the
+/// value-side one here (which produces the rows). They cannot share code
+/// (`reify-constraints` is kernel- and compiler-free), so the binding check is
+/// this end-to-end one: rows measured, not tables compared. A relation whose rank
+/// is 0 is the silent no-solve this task exists to remove.
+#[test]
+fn tangent_measured_rank_matches_the_published_delta_dof_table() {
+    let (r1, r2) = (0.005, 0.007);
+    let cases: Vec<(&str, RelationInstance, u32)> = vec![
+        (
+            "cylinder/cylinder",
+            tangent(
+                vec![
+                    datum("m", axis((0.0, 0.0, 0.0), (0.0, 0.0, 1.0))),
+                    datum("anchor", axis((r1 + r2, 0.0, 0.0), (0.0, 0.0, 1.0))),
+                    radius(r1),
+                    radius(r2),
+                ],
+                1,
+            ),
+            1,
+        ),
+        (
+            "cylinder/plane",
+            tangent(
+                vec![
+                    datum("m", axis((0.0, 0.0, r1), (1.0, 0.0, 0.0))),
+                    datum("anchor", plane((0.0, 0.0, 0.0), (0.0, 0.0, 1.0))),
+                    radius(r1),
+                ],
+                2,
+            ),
+            2,
+        ),
+        (
+            "sphere/plane",
+            tangent(
+                vec![
+                    datum("m", point3(0.0, 0.0, r1)),
+                    datum("anchor", plane((0.0, 0.0, 0.0), (0.0, 0.0, 1.0))),
+                    radius(r1),
+                ],
+                1,
+            ),
+            1,
+        ),
+        (
+            "sphere/sphere",
+            tangent(
+                vec![
+                    datum("m", point3(0.0, 0.0, 0.0)),
+                    datum("anchor", point3(r1 + r2, 0.0, 0.0)),
+                    radius(r1),
+                    radius(r2),
+                ],
+                1,
+            ),
+            1,
+        ),
+    ];
+
+    for (label, rel, want) in cases {
+        // Precondition: the witness genuinely satisfies the relation, so the rank is
+        // measured at the tangency configuration and not at an arbitrary pose.
+        let resid = resid_at_identity(&rel);
+        assert!(
+            resid < EXACT,
+            "{label}: the witness must satisfy the relation before its rank is meaningful; \
+             residual {resid}"
+        );
+
+        let part = partition_driving_set(
+            std::slice::from_ref(&rel),
+            &tangent_unknown(),
+            &Pose::identity(),
+            TOL,
+        );
+        let measured = part.per_relation[0].individual_rank;
+        assert_eq!(
+            measured, want,
+            "{label}: measured codimension must equal the published ΔDOF {want}; got {measured} \
+             (0 means the relation contributes NO Jacobian rows — the silent no-solve)"
+        );
+        assert_eq!(
+            part.per_relation[0].nominal_delta_dof,
+            Some(want),
+            "{label}: the carried nominal ΔDOF must agree with the measured rank"
+        );
+        assert_eq!(
+            part.driving,
+            vec![0],
+            "{label}: a rank-{want} tangency must be DRIVING, never filed as redundant"
+        );
+        assert_eq!(
+            part.spent, want,
+            "{label}: spent DOF must be the combo's codimension {want}"
+        );
+    }
+}
+
+// ── static (ZERO-AUTO) relation residuals — DIC α (task 5415), step-1 ────────
+//
+// `static_relation_residuals` is the witness primitive for relate scopes with NO
+// `at auto` sub: nothing moves, so there is no pose to solve for, only a verdict
+// to render on the datums as they already sit.
+//
+// ## Why this cannot be `max_relation_residual(rels, &sentinel, &identity)`
+//
+// THE degeneracy these tests exist to pin. `relation_residual` marks an operand
+// "moving" iff `op.sub == unknown.sub`, and `pick_ab` then resolves
+//
+//     a = first MOVING operand, else datums.first()
+//     b = first NON-MOVING operand, else datums.last()
+//
+// With a sentinel unknown naming no real sub, NOTHING is moving — so `a` falls
+// through to `datums[0]` and `b` resolves to the first non-moving operand, which
+// is ALSO `datums[0]`. The relation is compared against ITSELF, and the damage
+// runs in both directions:
+//
+//   * `concentric`/`flush`/`coincident`/`fasten`/`parallel` → identically 0.0,
+//     i.e. exactly the false green this task exists to kill; and
+//   * `perpendicular` → `d·d` = 1.0, `antiparallel` → 2.0, `distance`/`offset` →
+//     `|d|`, `angle` → `1 − cos θ` — false VIOLATIONS on correct models.
+//
+// Only `on`/`tangent`, which read `datums` positionally, survive it. So the
+// tests below deliberately cover one relation from each degeneracy direction:
+// (a)/(b)/(e) would read as satisfied under the naive form, (c)/(c') would read
+// as violated.
+//
+// ## Why the return type is a row VECTOR, not a collapsed `f64`
+//
+// (d) is the reason. An EMPTY row vector ("no residual model for this
+// name/operand-kind combination") and an all-zero row vector ("measured, and
+// satisfied") are different facts, and the caller must be able to tell them
+// apart: the first is UNVERIFIABLE and must be said out loud, the second is
+// silent. A `-> f64` signature can only render both as 0.0, which would trade the
+// false green for a quieter one (INV-SF-3).
+
+/// The `dic_relate_static_violated` offset, in metres — the plate's datums sit
+/// here while the bushing's sit at the origin. Taken from the committed fixture
+/// `docs/prds/v0_6/fixtures/dic_relate_static_violated.ri` (`30mm, 20mm, 5mm`),
+/// not invented for the test.
+const VIOLATED_OFFSET: (f64, f64, f64) = (0.030, 0.020, 0.005);
+
+/// (a) The B1 shape: `concentric` over two axes separated by the fixture's
+/// (30, 20, 5) mm split must measure a residual of **0.03 m**, not zero.
+///
+/// This is the anti-`pick_ab` test in the false-GREEN direction. The naive
+/// sentinel-unknown implementation returns exactly 0.0 here and would report the
+/// PRD's deliberately-violated fixture as satisfied.
+///
+/// The expected 0.03 is DERIVED, not observed. `axis_coincidence_residual`
+/// returns `[ûa·e1, ûa·e2, off·e1, off·e2]` in the ANCHOR's tangent frame; for
+/// the anchor direction `+z` that frame is exactly `e1 = (0,−1,0)`,
+/// `e2 = (1,0,0)`. With `off = oa − ob = (−0.03, −0.02, −0.005)` the four rows
+/// are `[0, 0, 0.02, −0.03]`, so the max magnitude is the x-split, 0.03 m. The
+/// z-split does not appear: an axis constrains only the two components
+/// PERPENDICULAR to itself, and sliding along `+z` is not a coincidence error.
+///
+/// Against `RelateTolerance::kernel_default().assertion()` = 1e-5 m that is a
+/// 3000× margin — the verdict is not sensitive to the tolerance's exact value.
+#[test]
+fn static_residuals_measure_the_gap_between_two_offset_axes() {
+    let rel = relation(
+        "concentric",
+        vec![
+            datum("bush", axis((0.0, 0.0, 0.0), (0.0, 0.0, 1.0))),
+            datum("plate", axis(VIOLATED_OFFSET, (0.0, 0.0, 1.0))),
+        ],
+        4,
+    );
+
+    let rows = static_relation_residuals(&rel);
+    assert!(
+        !rows.is_empty(),
+        "concentric over two Axis operands has a residual model; an empty row \
+         vector would mean UNVERIFIABLE, which is a different (and here wrong) \
+         verdict from violated"
+    );
+
+    let max = rows.iter().fold(0.0_f64, |m, r| m.max(r.value.abs()));
+    assert!(
+        (max - 0.03).abs() < 1e-9,
+        "the measured residual must be the 30 mm x-split of the fixture's \
+         datums, 0.03 m; got {max} from rows {rows:?}. A measured 0.0 means the \
+         relation was compared against ITSELF — the `pick_ab` degeneracy that \
+         makes a zero-auto relate block a silent no-op."
+    );
+}
+
+/// (b) The B2 shape: `concentric` over two BIT-IDENTICAL axes measures exactly
+/// zero on every row.
+///
+/// This mirrors `dic_relate_static_ok.ri`, whose two structures are built from
+/// the identical `translate(...)` expression — so `resolve_operands`, which keys
+/// realized datums by `(structure, member)`, hands both operands bit-identical
+/// f64s.
+///
+/// The exactness is asserted rather than an epsilon because it is derivable, and
+/// derivable in two separate ways: the two POSITION rows are `off = oa − ob` with
+/// `oa` and `ob` bitwise equal, so they are exactly `±0.0`; and for the `+z`
+/// direction the anchor tangent frame is exactly `(0,−1,0)`/`(1,0,0)`, both of
+/// which have a zero z-component, so the two TILT rows are exact zeros too.
+///
+/// The operative bound for the caller is of course the far looser assertion
+/// tolerance (1e-5 m); this test pins the stronger true statement, so that a
+/// future change which introduces float noise here surfaces as a question rather
+/// than silently eating margin.
+#[test]
+fn static_residuals_are_exactly_zero_for_bit_identical_axes() {
+    let colocated = axis(VIOLATED_OFFSET, (0.0, 0.0, 1.0));
+    let rel = relation(
+        "concentric",
+        vec![
+            datum("bush", colocated.clone()),
+            datum("plate", colocated),
+        ],
+        4,
+    );
+
+    let rows = static_relation_residuals(&rel);
+    assert!(
+        !rows.is_empty(),
+        "a satisfied relation must still MEASURE — an empty row vector means \
+         unverifiable, not satisfied"
+    );
+    for (i, r) in rows.iter().enumerate() {
+        assert_eq!(
+            r.value, 0.0,
+            "row {i} of {rows:?} must be exactly zero for bit-identical operands"
+        );
+    }
+}
+
+/// (c) The anti-`pick_ab` test in the false-VIOLATION direction:
+/// `perpendicular` over two genuinely perpendicular unit `Direction`s on
+/// DISTINCT subs must measure ~0.
+///
+/// `perpendicular`'s residual is `dot(a, b)`, so the naive sentinel-unknown form
+/// — which collapses `a` and `b` onto the same operand — returns `d·d` = **1.0**,
+/// a confident violation of a correct model. The bound is 1e-12 rather than exact
+/// only because the operands need not be axis-aligned in general; for these two
+/// the dot is exactly 0.
+#[test]
+fn static_residuals_do_not_self_compare_perpendicular_directions() {
+    let rel = relation(
+        "perpendicular",
+        vec![
+            datum("m", dir(0.0, 0.0, 1.0)),
+            datum("a", dir(1.0, 0.0, 0.0)),
+        ],
+        1,
+    );
+
+    let rows = static_relation_residuals(&rel);
+    assert!(
+        !rows.is_empty(),
+        "perpendicular over two Directions has a residual model"
+    );
+    let max = rows.iter().fold(0.0_f64, |m, r| m.max(r.value.abs()));
+    assert!(
+        max <= 1e-12,
+        "two genuinely perpendicular directions must measure as SATISFIED; got \
+         {max} from rows {rows:?}. A measured 1.0 is the `pick_ab` self-compare \
+         (`d·d`), i.e. a false violation on a correct model."
+    );
+}
+
+/// (c′) The same false-violation direction for `antiparallel`, whose residual is
+/// the unit difference `â − sign·b̂`. Self-comparing yields `â + â`, norm **2.0**.
+#[test]
+fn static_residuals_do_not_self_compare_antiparallel_directions() {
+    let rel = relation(
+        "antiparallel",
+        vec![
+            datum("m", dir(0.0, 0.0, 1.0)),
+            datum("a", dir(0.0, 0.0, -1.0)),
+        ],
+        2,
+    );
+
+    let rows = static_relation_residuals(&rel);
+    assert!(
+        !rows.is_empty(),
+        "antiparallel over two Directions has a residual model"
+    );
+    let max = rows.iter().fold(0.0_f64, |m, r| m.max(r.value.abs()));
+    assert!(
+        max <= 1e-12,
+        "two genuinely antiparallel directions must measure as SATISFIED; got \
+         {max} from rows {rows:?}. A measured 2.0 is the `pick_ab` self-compare."
+    );
+}
+
+/// (d1) UNVERIFIABLE, source 1: an uncurated relation name contributes no
+/// residual rows, and that must surface as an EMPTY vector rather than as a
+/// zero-valued one.
+///
+/// `residual_dispatch`'s catch-all arm returns no rows for a name it does not
+/// model. Collapsing that to `0.0` would report an unmodelled relation as
+/// satisfied — the same class of silent failure the compile-time
+/// `E_TANGENT_OPERANDS_UNSUPPORTED` gate exists to prevent one layer up.
+#[test]
+fn static_residuals_are_empty_for_an_uncurated_relation_name() {
+    let rel = relation(
+        "wibbly",
+        vec![
+            datum("bush", axis((0.0, 0.0, 0.0), (0.0, 0.0, 1.0))),
+            datum("plate", axis(VIOLATED_OFFSET, (0.0, 0.0, 1.0))),
+        ],
+        1,
+    );
+
+    assert!(
+        static_relation_residuals(&rel).is_empty(),
+        "an uncurated relation name has no residual model, so the row vector must \
+         be EMPTY (⇒ unverifiable). Any zero-valued row would read as satisfied."
+    );
+}
+
+/// (d2) UNVERIFIABLE, source 2: an operand that did not realize to a datum
+/// (`Value::Undef`) leaves the relation with fewer than two datums to compare.
+///
+/// This case is sharper than it looks, and is why the implementation cannot
+/// simply nominate a witness and call through. With ONE datum operand surviving,
+/// `pick_ab` resolves `a` and `b` to that same lone datum and `concentric`
+/// returns four exact zeros — a *fully confident* "satisfied" verdict derived
+/// from a relation half of whose inputs are missing. Requiring two datum operands
+/// is what makes this honest.
+#[test]
+fn static_residuals_are_empty_when_an_operand_did_not_realize() {
+    let rel = relation(
+        "concentric",
+        vec![
+            datum("bush", Value::Undef),
+            datum("plate", axis(VIOLATED_OFFSET, (0.0, 0.0, 1.0))),
+        ],
+        4,
+    );
+
+    assert!(
+        static_relation_residuals(&rel).is_empty(),
+        "a relation with only ONE realized datum cannot be verified, so the row \
+         vector must be EMPTY. Comparing the lone datum against itself yields \
+         four exact zeros — a confident false green built from missing input."
+    );
+}
+
+/// (e) Both operands on ONE sub (`concentric(a.x, a.y)`) still measures the two
+/// DISTINCT datums rather than self-comparing.
+///
+/// This is the case where nominating "the first datum operand's sub" as the
+/// witness makes EVERY operand moving, so `pick_ab` finds no non-moving operand
+/// and falls back to `datums.last()`. That fallback is correct here — last is a
+/// genuinely different operand from first — which is why the guard is on the
+/// datum COUNT (≥ 2) and not on the subs being distinct.
+#[test]
+fn static_residuals_compare_two_datums_of_the_same_sub() {
+    let rel = relation(
+        "concentric",
+        vec![
+            datum("a", axis((0.0, 0.0, 0.0), (0.0, 0.0, 1.0))),
+            datum("a", axis((0.030, 0.0, 0.0), (0.0, 0.0, 1.0))),
+        ],
+        4,
+    );
+
+    let rows = static_relation_residuals(&rel);
+    let max = rows.iter().fold(0.0_f64, |m, r| m.max(r.value.abs()));
+    assert!(
+        (max - 0.03).abs() < 1e-9,
+        "two datums of the SAME sub must still be compared against each other; \
+         got {max} from rows {rows:?} (0.0 means the first datum was compared \
+         against itself)"
+    );
+}
+
+// ── Residual-row units (the fabricated-length guard) ─────────────────────────
+//
+// A residual row vector is NOT dimensionally homogeneous. Before every row
+// carried its `ResidualUnit`, the static-verification renderer took `max |row|`
+// and printed it through `fmt_mm`, so any relation whose dominant row is
+// angular/dimensionless reported a length that does not exist. These pin the
+// UNIT of each row at its source, which is what the renderer now dispatches on.
+
+/// `parallel` measures a unit-vector difference: three PURE NUMBERS. A renderer
+/// that reads these as metres states a fabricated length.
+#[test]
+fn parallel_residual_rows_are_dimensionless() {
+    // 90° apart — maximally violated for a parallel demand.
+    let rel = relation(
+        "parallel",
+        vec![
+            datum("m", dir(1.0, 0.0, 0.0)),
+            datum("a", dir(0.0, 1.0, 0.0)),
+        ],
+        2,
+    );
+
+    let rows = static_relation_residuals(&rel);
+    assert!(!rows.is_empty(), "parallel over two Directions has a residual model");
+    assert!(
+        rows.iter().all(|r| r.unit == ResidualUnit::Dimensionless),
+        "every row of a direction-alignment residual is a pure number; got {rows:?}"
+    );
+}
+
+/// `perpendicular` measures a dot product — likewise a pure number, and the
+/// violated magnitude here (1.0 for two parallel directions) is precisely the
+/// value that used to render as "off by 1000 mm".
+#[test]
+fn perpendicular_residual_row_is_dimensionless() {
+    let rel = relation(
+        "perpendicular",
+        vec![
+            datum("m", dir(1.0, 0.0, 0.0)),
+            datum("a", dir(1.0, 0.0, 0.0)),
+        ],
+        1,
+    );
+
+    let rows = static_relation_residuals(&rel);
+    assert_eq!(rows.len(), 1, "perpendicular contributes one dot-product row");
+    assert_eq!(
+        rows[0].unit,
+        ResidualUnit::Dimensionless,
+        "a dot product has no length reading; got {rows:?}"
+    );
+}
+
+/// `angle` measures `dot(â, b̂) − cos θ` — a cosine difference, not a length.
+#[test]
+fn angle_residual_row_is_dimensionless() {
+    let mut rel = relation(
+        "angle",
+        vec![
+            datum("m", dir(1.0, 0.0, 0.0)),
+            datum("a", dir(0.0, 1.0, 0.0)),
+        ],
+        1,
+    );
+    // The demanded angle rides as a trailing scalar (non-datum) operand.
+    rel.operands.push(Operand {
+        sub: None,
+        datum: Value::Real(0.0),
+    });
+
+    let rows = static_relation_residuals(&rel);
+    assert_eq!(rows.len(), 1, "angle contributes one cosine-difference row");
+    assert_eq!(
+        rows[0].unit,
+        ResidualUnit::Dimensionless,
+        "a cosine difference has no length reading; got {rows:?}"
+    );
+}
+
+/// `concentric` is the MIXED case that makes a per-relation-family split
+/// insufficient: two dimensionless tilt rows followed by two metre rows, in that
+/// order. A pair of axes that are CO-LOCATED but TILTED therefore has its
+/// dominant row in the dimensionless block — the exact shape that used to print a
+/// fabricated millimetre figure.
+#[test]
+fn concentric_residual_rows_are_tilt_then_length() {
+    let rel = relation(
+        "concentric",
+        vec![
+            // Same origin, 45° apart: the position rows are exactly zero and the
+            // tilt rows dominate.
+            datum("bush", axis((0.0, 0.0, 0.0), (1.0, 0.0, 1.0))),
+            datum("plate", axis((0.0, 0.0, 0.0), (0.0, 0.0, 1.0))),
+        ],
+        4,
+    );
+
+    let rows = static_relation_residuals(&rel);
+    let units: Vec<ResidualUnit> = rows.iter().map(|r| r.unit).collect();
+    assert_eq!(
+        units,
+        vec![
+            ResidualUnit::Dimensionless,
+            ResidualUnit::Dimensionless,
+            ResidualUnit::Length,
+            ResidualUnit::Length,
+        ],
+        "axis-coincidence is 2 tilt rows then 2 position rows; got {rows:?}"
+    );
+
+    let dominant = rows
+        .iter()
+        .copied()
+        .reduce(|m, r| if r.value.abs() > m.value.abs() { r } else { m })
+        .expect("non-empty");
+    assert_eq!(
+        dominant.unit,
+        ResidualUnit::Dimensionless,
+        "co-located but tilted axes are violated in TILT, so the dominant row \
+         carries no length reading; got {rows:?}"
+    );
+}
+
+/// `fasten` (coincident over Frame) is the other mixed form: three metre origin
+/// rows then three RADIAN orientation rows.
+#[test]
+fn frame_coincidence_rows_are_length_then_angle() {
+    let identity_q = (1.0, 0.0, 0.0, 0.0);
+    let rel = relation(
+        "fasten",
+        vec![
+            datum("m", frame((0.010, 0.0, 0.0), identity_q)),
+            datum("a", frame((0.0, 0.0, 0.0), identity_q)),
+        ],
+        6,
+    );
+
+    let rows = static_relation_residuals(&rel);
+    let units: Vec<ResidualUnit> = rows.iter().map(|r| r.unit).collect();
+    assert_eq!(
+        units,
+        vec![
+            ResidualUnit::Length,
+            ResidualUnit::Length,
+            ResidualUnit::Length,
+            ResidualUnit::Angle,
+            ResidualUnit::Angle,
+            ResidualUnit::Angle,
+        ],
+        "frame-coincidence is 3 origin-delta rows then 3 orientation-delta rows; \
+         got {rows:?}"
+    );
+}
+
+// ── Per-unit assertion rungs + scale-free dimensionless rows (DIC α amendment) ──
+//
+// A residual row vector is not dimensionally homogeneous, so ONE rung cannot judge
+// all of it. The zero-auto static verifier compares each row against the rung for
+// its own unit; these pin the rungs’ derivation and the one residual form whose
+// row was not scale-free until now.
+
+/// The three assertion rungs derive from the SAME base length, so an edit to the
+/// hierarchy moves all three together rather than leaving two hand-picked epsilons
+/// behind.
+///
+/// The angular rung is the angle that displaces a feature at the documented 1 m
+/// reference radius by exactly the length rung; the dimensionless rung is its sine,
+/// because every dimensionless form here measures the sine of a misalignment
+/// between two unit directions. At the kernel default the three therefore coincide
+/// to within float noise — which is the point: the numbers agreeing is a
+/// CONSEQUENCE of the derivation, not the licence to compare radians against metres
+/// that the single-rung code was taking.
+#[test]
+fn assertion_rungs_are_derived_per_unit_from_one_base_length() {
+    let tol = RelateTolerance::kernel_default();
+
+    assert_eq!(
+        tol.assertion_angle(),
+        tol.assertion() / 1.0,
+        "the angular rung is the length rung over the 1 m reference radius"
+    );
+    assert_eq!(
+        tol.assertion_dimensionless(),
+        tol.assertion_angle().sin(),
+        "the dimensionless rung is the sine of the angular one"
+    );
+    assert!(
+        tol.assertion_dimensionless() < tol.assertion_angle(),
+        "sin θ < θ for θ > 0, so the dimensionless rung is never the looser of the two"
+    );
+    assert!(
+        tol.kernel_local() <= tol.solver_convergence() && tol.solver_convergence() <= tol.assertion(),
+        "the length hierarchy is unchanged by the per-unit rungs"
+    );
+}
+
+/// A geometrically EXACT `perpendicular` measures zero however long its operands’
+/// direction vectors are.
+///
+/// The residual is `dot(a, b)`, which is the sine of the misalignment only for UNIT
+/// operands — and `dir_of` reads whatever direction vector realization produced.
+/// Unnormalized, the pair below reads `10 × 10 = 100`: six orders of magnitude past
+/// any assertion rung, on geometry that is exactly right. The solve path never
+/// noticed (its zero set is magnitude-invariant), but the static verifier compares
+/// the row against a fixed rung and fails the BUILD, so the scale sensitivity had
+/// to go. `angle` already normalized for the same reason.
+#[test]
+fn perpendicular_residual_is_scale_free_in_its_operands() {
+    let exact = |da: (f64, f64, f64), db: (f64, f64, f64)| {
+        let rel = relation(
+            "perpendicular",
+            vec![datum("m", vec3(da.0, da.1, da.2)), datum("a", vec3(db.0, db.1, db.2))],
+            1,
+        );
+        static_relation_residuals(&rel)
+    };
+
+    let unit_rows = exact((1.0, 0.0, 0.0), (0.0, 0.0, 1.0));
+    let scaled_rows = exact((10.0, 0.0, 0.0), (0.0, 0.0, 10.0));
+    assert_eq!(
+        unit_rows.len(),
+        1,
+        "perpendicular contributes exactly one dimensionless row; got {unit_rows:?}"
+    );
+    assert_eq!(
+        scaled_rows, unit_rows,
+        "scaling either operand must not move the residual — an exact \
+         perpendicular reads zero at every magnitude; got {scaled_rows:?}"
+    );
+
+    // And a genuinely misaligned pair still reads its SINE, not a scaled one: 30°
+    // off perpendicular is sin 30° = 0.5 whatever the operand lengths.
+    let misaligned = exact((10.0, 0.0, 0.0), (5.0, 0.0, 8.660_254_037_844_387));
+    assert!(
+        (misaligned[0].value - 0.5).abs() < 1e-12,
+        "a 30° misalignment reads sin 30° = 0.5 independently of operand scale; \
+         got {misaligned:?}"
+    );
+}
+
+/// `comparable_datum_operands` is the arity `static_relation_residuals` guards on,
+/// exposed so a caller can say WHICH source of an empty row vector it hit.
+///
+/// The two are pinned together here because the zero-auto verifier reports a
+/// DIFFERENT reason for each (“only one operand to compare” vs. “no residual model
+/// for these operand kinds”), and a reason that disagrees with the guard that
+/// actually fired is a confidently wrong “why” on a diagnostic whose entire value
+/// is its why.
+#[test]
+fn comparable_datum_operands_is_the_arity_the_residual_guard_applies() {
+    let identity_q = (1.0, 0.0, 0.0, 0.0);
+    let lone = relation(
+        "fasten",
+        vec![datum("m", frame((0.010, 0.0, 0.0), identity_q))],
+        6,
+    );
+    assert_eq!(
+        comparable_datum_operands(&lone), 1,
+        "one Frame operand — the `ground(sub)` desugar’s shape once `self.frame` \
+         has dropped out"
+    );
+    assert!(
+        static_relation_residuals(&lone).is_empty(),
+        "below two datum operands there is no pair to compare, so no rows"
+    );
+
+    let pair = relation(
+        "fasten",
+        vec![
+            datum("m", frame((0.010, 0.0, 0.0), identity_q)),
+            datum("a", frame((0.0, 0.0, 0.0), identity_q)),
+        ],
+        6,
+    );
+    assert_eq!(comparable_datum_operands(&pair), 2);
+    assert!(
+        !static_relation_residuals(&pair).is_empty(),
+        "`fasten` over two Frames IS modelled — the empty vector above is an arity \
+         verdict, not a missing residual model"
     );
 }

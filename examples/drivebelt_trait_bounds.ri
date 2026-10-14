@@ -18,7 +18,7 @@
 //       BorosilicateGlass : OpticallyCharacterized (§6.5 root trait)
 //       TitaniumImplant : Biocompatible + CorrosionResistant (§6.6 both traits)
 //
-// This file is auto-discovered by crates/reify-compiler/tests/examples_smoke.rs
+// This file is auto-discovered by crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs
 // (walks examples/*.ri) and the dedicated integration test at
 // crates/reify-eval/tests/drivebelt_trait_bounds.rs.
 

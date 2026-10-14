@@ -899,6 +899,146 @@ assert "hD10b: stderr names the fourth-bundler hit as file:line (not some other 
     bash -c "bash '$GATE' --repo-root '$FIX' 2>&1 >/dev/null | grep -qE 'crates/reify-foo/src/lib\.rs:[0-9]+'"
 
 # ===========================================================================
+# hC — compound test cfg gates arm the test-module skipper (task #6242).
+# Arming rule: scripts/lib_rust_production_view.sh. Both passes are pinned.
+# ===========================================================================
+echo ""
+echo "--- (hC): compound test cfg gates arm the test-module skipper ---"
+
+HC_ANY='#[cfg(any(test, feature = "test-support"))]'
+HC_ALL='#[cfg(all(test, has_occt))]'
+
+# reify-foo's lib.rs: a production no-op, then a module gated by the any()
+# attribute in $1 whose fn hand-rolls both halves on lines 6-7 (hC1/hC4/hC6).
+hc_any_module() {
+    cat <<RS
+pub fn nothing() {}
+
+$1
+pub mod test_support {
+    pub fn engine_for_tests(engine: &mut reify_eval::Engine) {
+        reify_eval::compute_targets::register_compute_fns(&mut engine);
+        reify_eval::register_shell_extract_compute_fns(&mut engine);
+    }
+}
+RS
+}
+
+# hC1 — negative pass, any(test, …): the test-support module's half-calls are exempt.
+write_baseline
+mkdir -p "$FIX/crates/reify-foo/src"
+hc_any_module "$HC_ANY" > "$FIX/crates/reify-foo/src/lib.rs"
+stage
+assert "hC1: half-calls inside a '#[cfg(any(test, …))] pub mod' are NOT flagged" \
+    _exits_with 0 bash "$GATE" --repo-root "$FIX"
+
+# hC2 — negative pass, all(test, …) with an interposed attribute: exempt.
+write_baseline
+mkdir -p "$FIX/crates/reify-foo/src"
+cat > "$FIX/crates/reify-foo/src/lib.rs" <<RS
+pub fn nothing() {}
+
+$HC_ALL
+#[allow(clippy::needless_range_loop)]
+mod tests {
+    #[test]
+    fn builds_an_engine() {
+        let mut engine = reify_eval::Engine::new();
+        reify_eval::compute_targets::register_compute_fns(&mut engine);
+        reify_eval::register_shell_extract_compute_fns(&mut engine);
+    }
+}
+RS
+stage
+assert "hC2: half-calls inside a '#[cfg(all(test, …))]' + '#[allow]' mod are NOT flagged" \
+    _exits_with 0 bash "$GATE" --repo-root "$FIX"
+
+# hC3 — positive pass, vacuous-pin direction: a compound-gated module naming
+# the Enabled variant does not satisfy engine.rs's production pin.
+for hc_attr in "$HC_ANY" "$HC_ALL"; do
+    write_baseline
+    cat > "$FIX/gui/src-tauri/src/engine.rs" <<RS
+fn from_engine(engine: &mut reify_eval::Engine) {
+    let morph = reify_eval::MorphRegistration::Unavailable { reason: "gui feature off" };
+    engine.register_production_compute_fns(morph);
+}
+
+$hc_attr
+mod tests {
+    #[test]
+    fn names_the_enabled_variant() {
+        let _ = reify_eval::MorphRegistration::Enabled(reify_mesh_morph::register_morph_producer);
+    }
+}
+RS
+    stage
+    assert "hC3: a '$hc_attr mod' mention of MorphRegistration::Enabled( does NOT satisfy the production variant pin" \
+        _exits_with 1 bash "$GATE" --repo-root "$FIX"
+    assert "hC3: ...stderr names the engine.rs VARIANT-PIN violation" \
+        bash -c "bash '$GATE' --repo-root '$FIX' 2>&1 >/dev/null | grep -qF 'gui/src-tauri/src/engine.rs: does not pass the required'"
+done
+
+# hC4 — release control: hC1's module, then a production bundler on lines
+# 11-16; its half-call at line 13 is flagged, the in-module one at line 6 is not.
+write_baseline
+mkdir -p "$FIX/crates/reify-foo/src"
+{
+    hc_any_module "$HC_ANY"
+    cat <<'RS'
+
+pub fn build_engine() -> reify_eval::Engine {
+    let mut engine = reify_eval::Engine::new();
+    reify_eval::compute_targets::register_compute_fns(&mut engine);
+    reify_eval::register_shell_extract_compute_fns(&mut engine);
+    engine
+}
+RS
+} > "$FIX/crates/reify-foo/src/lib.rs"
+stage
+assert "hC4: a production bundler after a '#[cfg(any(test, …))] pub mod' is flagged" \
+    _exits_with 1 bash "$GATE" --repo-root "$FIX"
+assert "hC4: ...stderr names the production half-call (lib.rs:13)" \
+    bash -c "bash '$GATE' --repo-root '$FIX' 2>&1 >/dev/null | grep -qF 'crates/reify-foo/src/lib.rs:13:'"
+assert "hC4: ...and not the in-module one (lib.rs:6)" \
+    bash -c "! bash '$GATE' --repo-root '$FIX' 2>&1 >/dev/null | grep -qF 'crates/reify-foo/src/lib.rs:6:'"
+
+# hC5 — mod-required rule kept: a compound-gated bare `use` arms nothing, so
+# the production bundler below it is flagged at its half-call on line 6.
+for hc_attr in "$HC_ANY" "$HC_ALL"; do
+    write_baseline
+    mkdir -p "$FIX/crates/reify-foo/src"
+    cat > "$FIX/crates/reify-foo/src/lib.rs" <<RS
+$hc_attr
+use reify_eval::compute_targets;
+
+pub fn build_engine() -> reify_eval::Engine {
+    let mut engine = reify_eval::Engine::new();
+    reify_eval::compute_targets::register_compute_fns(&mut engine);
+    reify_eval::register_shell_extract_compute_fns(&mut engine);
+    engine
+}
+RS
+    stage
+    assert "hC5: a bare '$hc_attr use …;' does not swallow the next production bundler" \
+        _exits_with 1 bash "$GATE" --repo-root "$FIX"
+    assert "hC5: ...stderr names its half-call (lib.rs:6)" \
+        bash -c "bash '$GATE' --repo-root '$FIX' 2>&1 >/dev/null | grep -qF 'crates/reify-foo/src/lib.rs:6:'"
+done
+
+# hC6 — negative pass: any(test, X) with X reachable in a production build
+# does NOT arm, so the module's half-call on line 6 is flagged, not skipped.
+for hc_attr in '#[cfg(any(test, feature = "gui"))]' '#[cfg(any(test, target_endian = "big"))]'; do
+    write_baseline
+    mkdir -p "$FIX/crates/reify-foo/src"
+    hc_any_module "$hc_attr" > "$FIX/crates/reify-foo/src/lib.rs"
+    stage
+    assert "hC6: half-calls inside a '$hc_attr pub mod' ARE flagged" \
+        _exits_with 1 bash "$GATE" --repo-root "$FIX"
+    assert "hC6: ...stderr names the in-module half-call (lib.rs:6)" \
+        bash -c "bash '$GATE' --repo-root '$FIX' 2>&1 >/dev/null | grep -qF 'crates/reify-foo/src/lib.rs:6:'"
+done
+
+# ===========================================================================
 # hE — THE INLINE ESCAPE IS A *COMMENT* CONCEPT.
 #
 # `// trampoline-registration:allow` declares an intentional direct half-call.
@@ -1237,6 +1377,41 @@ assert "hF4: _code_has's early exit produces NO 'lexer state unbalanced' warning
 assert "hF4: the REAL tree produces no 'lexer state unbalanced' warning either" \
     bash -c "! bash '$GATE' --repo-root '$REPO_ROOT' 2>&1 >/dev/null | grep -q 'lexer state unbalanced'"
 
+# hW — the lexer comes from the SIBLING scripts/lib_rust_production_view.sh
+# (task 6202), not a stale embedded copy: a gate copy beside a raw-$0 stub lib
+# follows the stub, and a gate copy with no lib beside it cannot scan.
+echo ""
+echo "--- (hW): the gate's lexer comes from the sibling shared lib ---"
+mkdir -p "$DET_TMP/stub-lib-scripts" "$DET_TMP/no-lib-scripts"
+cat > "$DET_TMP/stub-lib-scripts/lib_rust_production_view.sh" <<'STUB'
+RUST_PRODUCTION_VIEW_AWK='{ code = $0; comment_tail = ""; c = code; n_open = gsub(/[{]/, "x", c); c = code; n_close = gsub(/[}]/, "x", c); depth += n_open - n_close }'
+STUB
+cp "$GATE" "$DET_TMP/stub-lib-scripts/"
+cp "$GATE" "$DET_TMP/no-lib-scripts/"
+HW_STUB_GATE="$DET_TMP/stub-lib-scripts/check-compute-trampoline-registration.sh"
+HW_NOLIB_GATE="$DET_TMP/no-lib-scripts/check-compute-trampoline-registration.sh"
+write_baseline
+mkdir -p "$FIX/crates/reify-foo/src"
+cat > "$FIX/crates/reify-foo/src/lib.rs" <<'RS'
+/// Never call register_compute_fns( directly; use the bundler.
+pub fn documented() {}
+RS
+stage
+assert "hW1: positive control — the real gate keeps a rustdoc mention of a half green" \
+    _exits_with 0 bash "$GATE" --repo-root "$FIX"
+assert "hW1: a gate copy beside a raw-\$0 stub lib exits 1 — the verdict follows the sibling lib" \
+    _exits_with 1 bash "$HW_STUB_GATE" --repo-root "$FIX"
+assert "hW1: ...and the line it flags is the rustdoc mention" \
+    bash -c "bash '$HW_STUB_GATE' --repo-root '$FIX' 2>&1 >/dev/null | grep -q 'crates/reify-foo/src/lib\.rs:1:'"
+write_baseline
+stage
+assert "hW2: a gate copy with NO sibling lib exits 2 (could not scan), never 1" \
+    _exits_with 2 bash "$HW_NOLIB_GATE" --repo-root "$FIX"
+assert "hW2: ...and its stderr names lib_rust_production_view.sh" \
+    bash -c "bash '$HW_NOLIB_GATE' --repo-root '$FIX' 2>&1 >/dev/null | grep -q 'lib_rust_production_view.sh'"
+assert "hW3: the lib resolves relative to the gate script, not the CWD (run from /)" \
+    _exits_with 0 bash -c "cd / && bash '$GATE' --repo-root '$FIX'"
+
 # ===========================================================================
 # Part B — verify.sh's TEST plan EXECUTES the gui-feature-gated suite.
 #
@@ -1280,9 +1455,10 @@ assert "b0: the offline-role plan still carries a 'cargo (test|nextest run)' lin
 # _gui_feature_pass_lines <plan> — the gui-feature TEST-EXECUTION lines of
 # <plan>: a `cargo test` / `cargo nextest run` line carrying BOTH `-p reify-gui`
 # AND `--features gui`.  The COMBINATION is the discriminator: the pre-existing
-# lint-side `cargo check -p reify-gui --features gui --tests` at verify.sh:2223
-# carries `--features gui` too, so `--features gui` alone would be satisfied by
-# a compile-check that executes nothing.
+# lint-side `cargo check -p reify-gui --features gui --tests` (verify.sh
+# build_plan's "gui-feature compile-check" block) carries `--features gui`
+# too, so `--features gui` alone would be satisfied by a compile-check that
+# executes nothing.
 _gui_feature_pass_lines() {
     printf '%s\n' "$1" \
         | grep -E 'cargo (test|nextest run)' \
@@ -1390,9 +1566,10 @@ else
 fi
 
 # -- (b7): emitted INSIDE the semaphore bracket --------------------------------
-# verify.sh:1853-1862 records that MEMORY is the binding constraint on this host
-# and the held slot's whole-block serialization is the only implicit bound on
-# concurrent RSS-heavy link waves.  Independently re-asserted by
+# verify.sh's comment above `add "@@SEMAPHORE_ACQUIRE@@"` in add_test_passes
+# records that MEMORY is the binding constraint on this host and the held
+# slot's whole-block serialization is the only implicit bound on concurrent
+# RSS-heavy link waves.  Independently re-asserted by
 # test_verify_semaphore_wiring.sh (1o).
 echo ""
 echo "--- (b7): the gui-feature pass falls BETWEEN the ACQUIRE and RELEASE markers ---"
@@ -1446,26 +1623,43 @@ echo "--- (b10): still emitted for --scope branch when the change is under gui/s
 [ -f "$SCRIPT_DIR/copy_list_preflight_lib.sh" ] || { echo "ERROR: copy_list_preflight_lib.sh not found at $SCRIPT_DIR/copy_list_preflight_lib.sh"; exit 1; }
 source "$SCRIPT_DIR/copy_list_preflight_lib.sh"
 
+# _make_plan_fixture <dir> — build a hermetic throwaway repo that can run
+# `verify.sh --print-plan` without a cargo workspace, and leave it on a `main`
+# branch whose base commit holds exactly the scripts verify.sh sources.
+#
+# ONE copy of the bootstrap, called by all three fixtures below (b10's BR_FIX,
+# b13's ST_FIX, b15's IN_FIX) — they differ only in what they stage or commit on
+# TOP of this base, which stays at each call site. SPOT: the `.sh` half of the
+# copy list is drift-guarded by assert_source_closure_copied, but the DATA
+# dependencies (occt-touching-crates.txt, release-sensitive-crates.txt,
+# .config/nextest.toml) are not, so a new one added to verify.sh in three places
+# would fail opaquely in whichever copy was missed.
+_make_plan_fixture() {
+    local _dir="$1" _f
+    mkdir -p "$_dir/scripts" "$_dir/.config"
+    for _f in verify.sh occt-scope-lib.sh occt-touching-crates.txt release-scope-lib.sh \
+              release-sensitive-crates.txt affected-crates-lib.sh lib_test_semaphore.sh \
+              lib_slot_acquire.sh lib_clock_stop.sh cpu-admit.sh lib_proc_reaper.sh \
+              lib_git_env_scrub.sh lib_main_checkout.sh \
+              gen-nextest-config.sh heavy-test-filter-lib.sh; do
+        cp "$REPO_ROOT/scripts/$_f" "$_dir/scripts/$_f"
+    done
+    cp "$REPO_ROOT/.config/nextest.toml" "$_dir/.config/nextest.toml"
+    chmod +x "$_dir/scripts/verify.sh"
+    # Preflight: fail loudly if verify.sh's TRANSITIVE source closure gained a lib
+    # that this copy list misses — otherwise the callers' 2>/dev/null swallows it
+    # and their assertions fail opaquely (task #5154).
+    assert_source_closure_copied "$REPO_ROOT/scripts" "$_dir/scripts" verify.sh || return 1
+    git -C "$_dir" init -q
+    git -C "$_dir" config user.email test@invalid.local
+    git -C "$_dir" config user.name test
+    git -C "$_dir" add scripts .config
+    git -C "$_dir" commit -q -m base
+    git -C "$_dir" branch -M main
+}
+
 BR_FIX="$DET_TMP/branch-fixture"
-mkdir -p "$BR_FIX/scripts" "$BR_FIX/.config"
-for _f in verify.sh occt-scope-lib.sh occt-touching-crates.txt release-scope-lib.sh \
-          release-sensitive-crates.txt affected-crates-lib.sh lib_test_semaphore.sh \
-          lib_slot_acquire.sh lib_clock_stop.sh cpu-admit.sh lib_proc_reaper.sh \
-          gen-nextest-config.sh heavy-test-filter-lib.sh; do
-    cp "$REPO_ROOT/scripts/$_f" "$BR_FIX/scripts/$_f"
-done
-cp "$REPO_ROOT/.config/nextest.toml" "$BR_FIX/.config/nextest.toml"
-chmod +x "$BR_FIX/scripts/verify.sh"
-# Preflight: fail loudly if verify.sh's TRANSITIVE source closure gained a lib
-# that this copy list misses — otherwise the 2>/dev/null below swallows it and
-# the branch assertion fails opaquely (task #5154).
-assert_source_closure_copied "$REPO_ROOT/scripts" "$BR_FIX/scripts" verify.sh || exit 1
-git -C "$BR_FIX" init -q
-git -C "$BR_FIX" config user.email test@invalid.local
-git -C "$BR_FIX" config user.name test
-git -C "$BR_FIX" add scripts .config
-git -C "$BR_FIX" commit -q -m base
-git -C "$BR_FIX" branch -M main
+_make_plan_fixture "$BR_FIX" || exit 1
 git -C "$BR_FIX" checkout -q -b task-branch
 mkdir -p "$BR_FIX/gui/src-tauri/src"
 printf 'fn main() {}\n' > "$BR_FIX/gui/src-tauri/src/engine.rs"
@@ -1567,29 +1761,14 @@ assert "b11: still emitted EXACTLY ONCE, not once per affected crate (got $N_MAN
 echo ""
 echo "--- (b13): narrowed on --scope staged (no --narrow) as well as --scope branch ---"
 
-# ST_FIX — a SECOND hermetic throwaway repo, built with b10's idiom.  BR_FIX is
-# deliberately NOT reused: its change is COMMITTED on task-branch, so its staged
-# diff is empty.  `--scope staged` reads `git diff --cached`, and an empty staged
+# ST_FIX — a SECOND hermetic throwaway repo, from the shared _make_plan_fixture
+# bootstrap.  BR_FIX is deliberately NOT reused: its change is COMMITTED on
+# task-branch, so its staged diff is empty.  `--scope staged` reads `git diff --cached`, and an empty staged
 # diff yields RUN_RUST=0 and zero test passes, which would make every assertion
 # below vacuously green.  The reify-doc file is therefore left in the INDEX,
 # uncommitted.
 ST_FIX="$DET_TMP/staged-fixture"
-mkdir -p "$ST_FIX/scripts" "$ST_FIX/.config"
-for _f in verify.sh occt-scope-lib.sh occt-touching-crates.txt release-scope-lib.sh \
-          release-sensitive-crates.txt affected-crates-lib.sh lib_test_semaphore.sh \
-          lib_slot_acquire.sh lib_clock_stop.sh cpu-admit.sh lib_proc_reaper.sh \
-          gen-nextest-config.sh heavy-test-filter-lib.sh; do
-    cp "$REPO_ROOT/scripts/$_f" "$ST_FIX/scripts/$_f"
-done
-cp "$REPO_ROOT/.config/nextest.toml" "$ST_FIX/.config/nextest.toml"
-chmod +x "$ST_FIX/scripts/verify.sh"
-assert_source_closure_copied "$REPO_ROOT/scripts" "$ST_FIX/scripts" verify.sh || exit 1
-git -C "$ST_FIX" init -q
-git -C "$ST_FIX" config user.email test@invalid.local
-git -C "$ST_FIX" config user.name test
-git -C "$ST_FIX" add scripts .config
-git -C "$ST_FIX" commit -q -m base
-git -C "$ST_FIX" branch -M main
+_make_plan_fixture "$ST_FIX" || exit 1
 # STAGED, never committed — this is what `git diff --cached` must see.
 mkdir -p "$ST_FIX/crates/reify-doc/src"
 printf 'pub fn touched() {}\n' > "$ST_FIX/crates/reify-doc/src/lib.rs"
@@ -1690,8 +1869,8 @@ N_STAGED="$(_gui_pass_count "$P_N_STAGED")"
 assert "b14: closure unavailable (ALL sentinel) on --scope staged still emits — C5 fail-wide (got $N_STAGED)" \
     test "$N_STAGED" -eq 1
 # The count alone cannot tell "the closure was COMPUTED and came back ALL" apart
-# from "the closure was never computed on this tier at all": both take arm 2 and
-# both yield 1.  Every other staged case here is driven through
+# from "the closure was never computed on this tier at all": both take verify.sh's
+# FAIL-WIDE arm and both yield 1.  Every other staged case here is driven through
 # REIFY_AFFECTED_CRATES_OVERRIDE, which short-circuits the
 # CHANGED_FILES_RAW -> affected_crates() branch entirely, so this is the ONLY
 # capture that exercises that wiring on the staged tier — an implementation that
@@ -1707,8 +1886,8 @@ assert "b14: the staged closure is actually COMPUTED (header carries closure=ALL
 
 # Glob-bearing override: the split is an UNQUOTED expansion, so with pathname
 # expansion live `*` expands against the fixture CWD into its directory entries
-# (`crates scripts`) rather than collapsing — neither is reify-gui, so arm 3
-# silently narrowed the pass AWAY.  Measured at 0 emitted passes with
+# (`crates scripts`) rather than collapsing — neither is reify-gui, so the
+# MEMBERSHIP arm silently narrowed the pass AWAY.  Measured at 0 emitted passes with
 # `closure=*` in the header before the `set -f` + crate-name-grammar guard.  A
 # malformed knob must fail WIDE on this shape exactly as it does on "   ".
 P_G_STAGED=""
@@ -1720,7 +1899,10 @@ assert "b14: a glob-bearing affected-crates override fails WIDE, never globs aga
     test "$G_STAGED" -eq 1
 
 # A token that cannot BE a cargo package name (here a path fragment) means the
-# knob is malformed, not that the closure excludes reify-gui — arm 2, not arm 3.
+# knob is malformed, not that the closure excludes reify-gui — verify.sh's
+# FAIL-WIDE arm, not its MEMBERSHIP one.  (Arms are cited by NAME, never by
+# ordinal: this suite's ordinals went stale once when task 6268 inserted
+# COMPUTED-EMPTY ahead of the membership test.)
 P_P_STAGED=""
 _staged_gui_plan P_P_STAGED 'crates/reify-doc'
 assert "b14: path-fragment override staged-scope plan capture is complete" \
@@ -1734,6 +1916,82 @@ assert "b14: scope=all plan capture is complete" \
 A_DOC="$(_gui_pass_count "$P_A_DOC")"
 assert "b14: the merge gate (scope=all) emits it unconditionally, even under a reify-doc-only override (got $A_DOC)" \
     test "$A_DOC" -eq 1
+
+# -- (b15): a COMPUTED-EMPTY closure narrows the pass away ---------------------
+# b14's fail-wide family covers every closure the run could NOT derive.  This is
+# the opposite shape and the one b14 deliberately cannot reach: a closure the run
+# DID derive, from this run's own changed-file list, which came back holding no
+# crate at all.  A tests/infra-only diff is that shape and is extremely common
+# here — affected-crates-lib.sh maps tests/infra/* to no crate, while
+# decide_scope's conservative `*)` catch-all still sets RUN_RUST=1 — so before
+# task 6268 it paid the `--features gui` tauri + webkit2gtk + OCCT
+# feature-unification link (20m42s cold / ~137s warm, shared with no other pass)
+# for a diff whose closure provably contains zero crates.
+#
+# IN_FIX — a THIRD hermetic throwaway repo, from the shared _make_plan_fixture
+# bootstrap, then finished with b13's ST_FIX idiom for the same reason: the
+# changed file is left in the INDEX, never committed, so `git diff --cached` is
+# non-empty and no assertion below can go vacuously green.
+# The staged path is deliberately `tests/infra/foo.sh` and NOT a `test_*.sh`
+# name — that keeps it clear of the run-all classification-manifest drift guard,
+# which is a plan LINE and so never executes under --print-plan, but which a
+# future reader should not have to re-derive.
+#
+# The capture runs with NO REIFY_AFFECTED_CRATES_OVERRIDE (`env -u`, b14's
+# discipline): an override is a substitute for the derivation and never carries
+# the from-diff licence, so this is the only way to reach a genuinely
+# COMPUTED-EMPTY closure.  It never shells out to `cargo metadata` — the
+# tests/infra-only file list short-circuits at affected_crates()'s
+# `${#direct[@]} -eq 0` early return, BEFORE _reverse_closure — which is exactly
+# why the shape is reproducible in this workspace-less fixture.
+echo ""
+echo "--- (b15): a COMPUTED-EMPTY affected-crate closure narrows the pass away ---"
+
+IN_FIX="$DET_TMP/infra-only-fixture"
+_make_plan_fixture "$IN_FIX" || exit 1
+# STAGED, never committed — what `git diff --cached` must see.
+mkdir -p "$IN_FIX/tests/infra"
+printf '#!/usr/bin/env bash\necho placeholder\n' > "$IN_FIX/tests/infra/foo.sh"
+git -C "$IN_FIX" add tests
+
+P_IN_STAGED=""
+capture_print_plan P_IN_STAGED "${REIFY_PLAN_CAPTURE_RETRIES:-3}" \
+    env -u REIFY_AFFECTED_CRATES_OVERRIDE \
+    bash -c 'cd "$1" && exec bash scripts/verify.sh all --profile debug --scope staged --include-infra --print-plan' \
+    _ "$IN_FIX" || true
+
+assert "b15: computed-empty staged-scope plan capture is complete" \
+    plan_capture_complete "$P_IN_STAGED"
+
+# Anti-vacuity positive control, doubling as the decision that the OTHER passes
+# do NOT follow: a computed-empty closure keeps NARROW_ACTIVE=0, so cargo check /
+# clippy / the workspace nextest pass stay at --workspace.  Its presence also
+# proves RUN_RUST=1, i.e. that test passes were emitted at all — without it a
+# gui-feature count of 0 would be satisfied by a fixture that produced no test
+# passes whatsoever.
+assert "b15: the computed-empty staged plan is a real full-workspace plan (carries 'cargo clippy --workspace')" \
+    bash -c 'printf "%s\n" "$1" | grep -qF -- "cargo clippy --workspace"' _ "$P_IN_STAGED"
+
+# The DISCRIMINATING assertion, and the reason the narrowing header needs a
+# from-diff field at all: no count assertion can tell "the closure was computed
+# and came back EMPTY" apart from "the closure was never computed on this tier",
+# because both leave `closure=` empty.  That is the same vacuity b14's
+# `affected= closure=ALL` header assertion closes for the ALL case — without
+# this, a b15 count of 0 would be satisfied by an implementation that simply
+# stopped computing the closure on the staged tier.  Asserting the exact tail
+# also pins the APPEND-ONLY shape of the header (test_verify_scope.sh greps
+# `NARROW_ACTIVE=0 affected=ALL` unanchored and plan_capture_lib.sh matches
+# `NARROW_ACTIVE=([0-9]+)`; both survive a trailing append, neither survives a
+# reordering).
+assert "b15: the staged closure is COMPUTED and EMPTY (header carries closure= with the from-diff licence)" \
+    bash -c 'printf "%s\n" "$1" | grep -qF -- "NARROW_ACTIVE=0 affected= closure= from_diff=1"' _ "$P_IN_STAGED"
+
+# The headline.  A closure the run derived from its own diff and which holds no
+# crate at all proves reify-gui is unaffected, so the feature-unification link
+# must not be paid — the mirror of b13's S_DOC, reached without an override.
+IN_STAGED="$(_gui_pass_count "$P_IN_STAGED")"
+assert "b15: a COMPUTED-EMPTY closure on --scope staged does NOT emit the gui-feature pass (got $IN_STAGED)" \
+    test "$IN_STAGED" -eq 0
 
 # -- (b12): --test-threads reaches the gui-feature pass ------------------------
 # `verify.sh --test-threads=N` caps test-execution parallelism.  The cargo-test

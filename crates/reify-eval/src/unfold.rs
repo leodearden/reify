@@ -17,6 +17,15 @@ use crate::eval_ctx_with_meta;
 use crate::journal::EventJournal;
 use crate::snapshot::Snapshot;
 
+/// Instance-scope reuse of a template's already-dispatched `@optimized` value —
+/// the gate, its decline report, and the shape probe they share (task #6662).
+pub(crate) mod optimized_instance_reuse;
+
+use optimized_instance_reuse::{
+    OptimizedInstanceResolution, OptimizedNameIndex, report_optimized_instance_decline,
+    resolve_optimized_instance_cell,
+};
+
 /// Single source of truth for sub-component template resolution: the user
 /// module's templates first (module definitions shadow the prelude), then the
 /// engine's compiled stdlib prelude modules.
@@ -192,6 +201,14 @@ pub(crate) fn unfold_recursive_sub<'t>(
 
     // Pre-evaluate args in the local context (so child uses current level's param values, not top-level).
     // Use the arg expression's declared result_type for the literal wrapper.
+    //
+    // task #6662 deliberately does NOT apply `resolve_optimized_instance_cell`
+    // here or to the guard eval above: both are ctor-ARG / guard pre-evaluation
+    // in the PARENT's scope, not cell evaluation in the child's, so the
+    // helper's read comparison (which assumes both maps are keyed in the child
+    // template's scope) would compare the wrong maps. The cells these args feed
+    // reach the authoritative `@optimized` resolution downstream, via
+    // `elaborate_child_lets_only`.
     let concrete_args: Vec<(String, reify_ir::CompiledExpr)> = sub
         .args
         .iter()
@@ -213,6 +230,12 @@ pub(crate) fn unfold_recursive_sub<'t>(
     // function entry avoids wasting budget on guard-false or depth-limited returns.
     *node_budget -= 1;
 
+    // ONE `@optimized`-name index for this recursion LEVEL's two phase calls.
+    // It is not threaded across levels: `unfold_recursive_sub` is `pub(crate)`
+    // and called from `engine_eval.rs`, so adding a parameter to the recursive
+    // entry point needs the hoist tracked by #7267.
+    let optimized_names = OptimizedNameIndex::new(functions);
+
     // Phase 1 (top-down): Set params for next_entity so the next recursion level
     // can evaluate its guard using the child's param values.
     let child_values = elaborate_child_params_only(
@@ -226,6 +249,8 @@ pub(crate) fn unfold_recursive_sub<'t>(
         &next_entity,
         &concrete_args,
         meta_map,
+        diagnostics,
+        &optimized_names,
     );
 
     // Phase 2 (recurse): Unfold ALL of child_template's recursive subs at the next level
@@ -313,6 +338,7 @@ pub(crate) fn unfold_recursive_sub<'t>(
         templates,
         prelude,
         diagnostics,
+        &optimized_names,
     );
 }
 
@@ -375,6 +401,10 @@ pub(crate) fn elaborate_child_instance<'t>(
     templates: &'t [TopologyTemplate],
     prelude: &'t [CompiledModule],
 ) {
+    // ONE `@optimized`-name index for this whole instance TREE — phase 1,
+    // phase 1.5, phase 2 and every nested-sub recursion level below them share
+    // it. See [`OptimizedNameIndex`] for the cost this does and does not remove.
+    let optimized_names = OptimizedNameIndex::new(functions);
     elaborate_child_instance_nested(
         values,
         snapshot,
@@ -390,6 +420,7 @@ pub(crate) fn elaborate_child_instance<'t>(
         templates,
         prelude,
         &mut Vec::new(),
+        &optimized_names,
     );
 }
 
@@ -464,10 +495,10 @@ pub(crate) fn elaborate_child_instance<'t>(
 /// still owns the authoritative let commits, and the recursive path via
 /// `unfold_recursive_sub` reaches it unchanged.
 #[allow(clippy::too_many_arguments)]
-fn elaborate_child_instance_nested<'t>(
+fn elaborate_child_instance_nested<'t, 'f>(
     values: &mut ValueMap,
     snapshot: &mut Snapshot,
-    functions: &[CompiledFunction],
+    functions: &'f [CompiledFunction],
     journal: &mut EventJournal,
     cache: &mut CacheStore,
     version_id: u64,
@@ -479,6 +510,7 @@ fn elaborate_child_instance_nested<'t>(
     templates: &'t [TopologyTemplate],
     prelude: &'t [CompiledModule],
     ancestors: &mut Vec<&'t str>,
+    optimized_names: &OptimizedNameIndex<'f>,
 ) {
     let mut child_values = elaborate_child_params_only(
         values,
@@ -491,6 +523,8 @@ fn elaborate_child_instance_nested<'t>(
         scoped_entity,
         args,
         meta_map,
+        diagnostics,
+        optimized_names,
     );
 
     // Phase 1.5 (leaves-first, dependency-ordered): elaborate the child
@@ -668,15 +702,55 @@ fn elaborate_child_instance_nested<'t>(
             // let-eval scope, so the scratch value equals the value phase 2
             // will commit.
             Phase15Node::Let { key, expr } => {
-                let v = eval_child_expr(
-                    &overlay,
+                // task #6662: the invariant above covers `@optimized` cells
+                // too, and ONLY because this arm resolves them the same way
+                // phase 2 does. Phase 2 commits the template's dispatched value
+                // for a reusable `@optimized` cell; if this arm body-inlined
+                // instead, the overlay would hold the `.ri` sentinel while the
+                // committed cell held the real value — and since the overlay is
+                // exactly what nested subs' ctor args are pre-evaluated
+                // against, a `sub sink = Leaf(seed: computed)` would silently
+                // receive the stale sentinel. That is a quieter instance of the
+                // defect #6662 exists to fix, which is why it routes through
+                // the SAME helper rather than a second copy of the rule.
+                //
+                // No diagnostic is emitted here: phase 2 is the authoritative
+                // site and sees the same cell, so reporting from both would
+                // double every warning. That justification holds ONLY because
+                // the two sites reach the same decision on the same cell — see
+                // `resolve_optimized_instance_cell`'s "Why the two instance maps
+                // reach the SAME decision" for the measured argument, and the
+                // parity tests it names.
+                //
+                // `node_traces` cannot supply `reads` here: it NORMALISES each
+                // read onto a phase-1.5 node key (dropping param reads, remapping
+                // cross-sub reads onto their sub node) so `topological_sort` can
+                // see the edges, which is the wrong set for a value comparison.
+                // The raw trace is what the gate needs — and it is passed as a
+                // CLOSURE so the tree walk happens only on the `@optimized`
+                // path; every other scratch let pays one hash lookup instead of
+                // a full `extract_dependency_trace`.
+                let v = match resolve_optimized_instance_cell(
                     expr,
-                    functions,
-                    meta_map,
-                    &snapshot.values,
-                    &arg_runtime_sink,
-                    &arg_containment,
-                );
+                    optimized_names,
+                    child_template,
+                    &key.member,
+                    || extract_dependency_trace(expr).reads,
+                    &overlay,
+                    values,
+                ) {
+                    OptimizedInstanceResolution::Reuse(v) => v,
+                    OptimizedInstanceResolution::NotOptimized
+                    | OptimizedInstanceResolution::Unreusable { .. } => eval_child_expr(
+                        &overlay,
+                        expr,
+                        functions,
+                        meta_map,
+                        &snapshot.values,
+                        &arg_runtime_sink,
+                        &arg_containment,
+                    ),
+                };
                 overlay.insert(key.clone(), v);
             }
             // Pre-evaluate the nested sub's constructor args HERE, in this
@@ -745,6 +819,7 @@ fn elaborate_child_instance_nested<'t>(
                     templates,
                     prelude,
                     ancestors,
+                    optimized_names,
                 );
 
                 // Project the freshly-committed nested cells into the overlay
@@ -864,6 +939,7 @@ fn elaborate_child_instance_nested<'t>(
         templates,
         prelude,
         diagnostics,
+        optimized_names,
     );
 
     // Never-silent-undef: any child let the loop above knowingly starved must
@@ -1234,15 +1310,126 @@ fn eval_child_expr(
     reify_expr::eval_expr(expr, &ctx)
 }
 
+/// The Param cells of `child_template` in dependency order, so a default that
+/// reads a sibling param sees it already in `child_values`. Same
+/// [`extract_dependency_trace`] + [`topological_sort`] pair
+/// [`elaborate_child_lets_only`] uses for lets: `run_unified_pass_seeded` counts
+/// only in-seed predecessors, so a read naming a let, a global or another entity
+/// contributes no edge and needs no filtering here.
+///
+/// Two rules are invisible from the call site, and both are pinned by
+/// tests/harness_engine/instance_scope_param_default_order.rs:
+///
+/// - A param named by `args` contributes NO edge. Its `default_expr` is never
+///   evaluated — the arg is evaluated against the PARENT's `values`, the same
+///   scope asymmetry the `@optimized` wiring comment at the args arm calls out —
+///   so edges taken from it are INVENTED, and an invented 2-cycle (`param p = q
+///   param q = p` with `q` arg-supplied) would send both cells into the residue
+///   below, reproducing for arg-supplied instances the bug this ordering closes.
+/// - [`topological_sort`] (Kahn) reports a cycle by OMISSION, so omitted cells
+///   are APPENDED in declaration order rather than dropped: they commit as
+///   `Undef` today, and dropping them would delete cells that exist. The cycle
+///   is already reported once by template scope, so this site stays silent
+///   rather than double-reporting — the mistake [`phase15_cycle_members`]' doc
+///   comment was written to prevent.
+fn params_in_dependency_order<'t>(
+    child_template: &'t TopologyTemplate,
+    args: &[(String, reify_ir::CompiledExpr)],
+) -> Vec<&'t reify_compiler::ValueCellDecl> {
+    let param_cells: Vec<&reify_compiler::ValueCellDecl> = child_template
+        .value_cells
+        .iter()
+        .filter(|c| c.kind == ValueCellKind::Param)
+        .collect();
+
+    // This runs for EVERY param of EVERY instance, collection elements
+    // included, so the cheap exits come first: fewer than two params admits no
+    // edge at all and needs no expression walk, and below, no sibling read
+    // means declaration order is ALREADY a dependency order. Only the third
+    // path pays for [`topological_sort`], whose ready set is a
+    // `BTreeSet<DebugOrd>` that formats both operands on every comparison.
+    if param_cells.len() < 2 {
+        return param_cells;
+    }
+
+    // Borrowed, so the common path below allocates no `NodeId` at all.
+    let sibling_ids: HashSet<&ValueCellId> = param_cells.iter().map(|c| &c.id).collect();
+    // Two param cells of one template cannot share a member name. Fires loud in
+    // debug/test builds; in release a collision costs ordering only, because
+    // the residue below is keyed on the declaration INDEX rather than on node
+    // identity, so the shadowed cell stays unplaced and is still committed.
+    debug_assert_eq!(
+        sibling_ids.len(),
+        param_cells.len(),
+        "params_in_dependency_order: duplicate param member name in template {}",
+        child_template.name,
+    );
+
+    let traces_by_index: Vec<DependencyTrace> = param_cells
+        .iter()
+        .map(|cell| {
+            // The SAME predicate the loop body uses to pick the args arm, so the
+            // two sites cannot disagree about which params are arg-supplied.
+            if args.iter().any(|(name, _)| *name == cell.id.member) {
+                DependencyTrace::default()
+            } else {
+                cell.default_expr
+                    .as_ref()
+                    .map(extract_dependency_trace)
+                    .unwrap_or_default()
+            }
+        })
+        .collect();
+
+    let reads_a_sibling = traces_by_index
+        .iter()
+        .flat_map(|t| &t.reads)
+        .any(|r| sibling_ids.contains(&r));
+    if !reads_a_sibling {
+        return param_cells;
+    }
+
+    let nodes: Vec<NodeId> = param_cells
+        .iter()
+        .map(|c| NodeId::Value(c.id.clone()))
+        .collect();
+    let node_ids: HashSet<NodeId> = nodes.iter().cloned().collect();
+    let traces: HashMap<NodeId, DependencyTrace> =
+        nodes.iter().cloned().zip(traces_by_index).collect();
+
+    let sorted = topological_sort(&node_ids, &traces);
+    let mut placed = vec![false; param_cells.len()];
+    let mut ordered: Vec<&reify_compiler::ValueCellDecl> = Vec::with_capacity(param_cells.len());
+    for nid in &sorted {
+        // First not-yet-placed cell carrying this node id, so one sorted node
+        // consumes one declaration slot; see the `debug_assert_eq!` above.
+        let next = (0..param_cells.len()).find(|i| !placed[*i] && &nodes[*i] == nid);
+        if let Some(i) = next {
+            placed[i] = true;
+            ordered.push(param_cells[i]);
+        }
+    }
+    ordered.extend(
+        (0..param_cells.len())
+            .filter(|i| !placed[*i])
+            .map(|i| param_cells[i]),
+    );
+    ordered
+}
+
 /// Phase 1: Evaluate and store only the param cells for a child instance.
+///
+/// Params are visited in dependency order ([`params_in_dependency_order`]), so a
+/// default that reads a sibling param — whatever order the two are declared in —
+/// sees that sibling already in `child_values`.
 ///
 /// Returns the template-scoped child_values map (params only) for use in phase 2.
 /// All param values are also written to the global `values`, `snapshot`, journal, and cache.
 #[allow(clippy::too_many_arguments)]
-fn elaborate_child_params_only(
+fn elaborate_child_params_only<'f>(
     values: &mut ValueMap,
     snapshot: &mut Snapshot,
-    functions: &[CompiledFunction],
+    functions: &'f [CompiledFunction],
     journal: &mut EventJournal,
     cache: &mut CacheStore,
     version_id: u64,
@@ -1250,20 +1437,18 @@ fn elaborate_child_params_only(
     scoped_entity: &str,
     args: &[(String, reify_ir::CompiledExpr)],
     meta_map: &HashMap<String, HashMap<String, String>>,
+    diagnostics: &mut Vec<Diagnostic>,
+    optimized_names: &OptimizedNameIndex<'f>,
 ) -> ValueMap {
     let mut child_values = ValueMap::new();
     // runtime_sink is required by `cell_eval_ctx`; its contents are
-    // discarded rather than surfaced — this fn has no `diagnostics` param to
-    // drain into, and pre-migration this path never surfaced eval-time
-    // diagnostics either.
+    // discarded rather than surfaced — pre-migration this path never surfaced
+    // eval-time diagnostics, and the `diagnostics` param added by the #6662
+    // amendment carries ONE specific report (the `@optimized` param-default
+    // decline below), deliberately not a general drain for this sink.
     let runtime_sink = RefCell::new(Vec::new());
     let containment = NoContainment;
-
-    for cell in &child_template.value_cells {
-        if cell.kind != ValueCellKind::Param {
-            continue;
-        }
-
+    for cell in params_in_dependency_order(child_template, args) {
         let member = &cell.id.member;
         let scoped_id = ValueCellId::new(scoped_entity, member);
 
@@ -1301,15 +1486,98 @@ fn elaborate_child_params_only(
                 &containment,
             )
         } else if let Some(ref default_expr) = cell.default_expr {
-            eval_child_expr(
-                &child_values,
+            // task #6662: same `@optimized` resolution as the two let sites,
+            // applied to a param whose DEFAULT is the call. Deliberately NOT
+            // applied to the explicit-arg arm above: an explicit ctor arg is by
+            // construction an instance-specific input, and it is evaluated in
+            // the PARENT's scope (`values`), so the helper's read comparison —
+            // which assumes both maps are keyed in the CHILD template's scope —
+            // would be comparing the wrong maps there.
+            //
+            // Measured on this branch: template scope does not lower an
+            // `@optimized` param default to a ComputeNode either (only
+            // let-cells are lowered), so the template cell holds the same
+            // body-inlined sentinel and the helper returns `Reuse(sentinel)` —
+            // instance and template agree, silently and correctly. Wiring it
+            // here is what makes instance scope inherit a future template-scope
+            // param fix with no further change.
+            // The read trace is materialised lazily: a param default that is
+            // not an `@optimized` call — the common case, and one that runs for
+            // EVERY param of EVERY instance, collection elements included —
+            // never walks the expression tree here.
+            let resolution = resolve_optimized_instance_cell(
                 default_expr,
-                functions,
-                meta_map,
-                &snapshot.values,
-                &runtime_sink,
-                &containment,
-            )
+                optimized_names,
+                child_template,
+                member,
+                || extract_dependency_trace(default_expr).reads,
+                &child_values,
+                values,
+            );
+
+            // This site reports its OWN declines. The lets site's "phase 2 is
+            // the authoritative site and sees the same cell" justification for
+            // staying silent does NOT cover a param: `elaborate_child_lets_only`
+            // filters on `c.kind == ValueCellKind::Let`, so a Param cell is
+            // never seen there and a decline here would otherwise be reported by
+            // nobody — contradicting #6662's "the decline is LOUD" contract.
+            //
+            // Today this is provably silent rather than merely quiet: template
+            // scope lowers only LET cells to ComputeNodes, so
+            // `report_optimized_instance_decline`'s registered-target gate —
+            // which asks whether a ComputeNode names this template cell — is
+            // false for every param default, and both scopes body-inline in
+            // agreement. When the template-scope param-default gap (#6750)
+            // closes, the gate flips to true and this site starts reporting,
+            // which is the point of wiring it now.
+            //
+            // SIBLING READS. This loop walks `params_in_dependency_order`, so a
+            // default that reads a sibling PARAM finds it in `child_values`
+            // whatever order the two are declared in, and the gate no longer
+            // compares `None` (instance) against `Some(v)` (global) for a purely
+            // positional reason. The Auto-precedence branch above does insert —
+            // the snapshot's `Undef` placeholder — before its `continue`, so a
+            // read of an Auto-OVERRIDDEN sibling sees `Some(Undef)` rather than
+            // the evaluated default, and the gate compares that against the
+            // global value and declines. That is correct: the cell's value is
+            // the solver's to resolve, not this loop's.
+            //
+            // STILL OPEN: a default that reads a sibling LET. This whole
+            // function runs before `elaborate_child_lets_only`, so no ordering
+            // of params among themselves reaches it; closing it is the
+            // instance-scope analogue of task #4317's template-scope phase
+            // unification, tracked by #7511.
+            //
+            // All three are pinned by
+            // tests/harness_engine/instance_scope_param_default_order.rs, and
+            // the `@optimized` arm additionally by
+            // `instance_scope_optimized_param_default_reading_a_later_sibling_is_silent`
+            // (tests/compute_dispatch_registry.rs).
+            if let OptimizedInstanceResolution::Unreusable { target, cause } = &resolution {
+                report_optimized_instance_decline(
+                    diagnostics,
+                    snapshot,
+                    child_template,
+                    member,
+                    scoped_entity,
+                    target,
+                    cause,
+                );
+            }
+
+            match resolution {
+                OptimizedInstanceResolution::Reuse(v) => v,
+                OptimizedInstanceResolution::NotOptimized
+                | OptimizedInstanceResolution::Unreusable { .. } => eval_child_expr(
+                    &child_values,
+                    default_expr,
+                    functions,
+                    meta_map,
+                    &snapshot.values,
+                    &runtime_sink,
+                    &containment,
+                ),
+            }
         } else {
             Value::Undef
         };
@@ -1369,10 +1637,10 @@ fn elaborate_child_params_only(
 /// iterates the correct template's value_cells. When enqueuing children, the entity's
 /// template's sub_components determine child sub names and their target templates.
 #[allow(clippy::too_many_arguments)]
-fn elaborate_child_lets_only<'t>(
+fn elaborate_child_lets_only<'t, 'f>(
     values: &mut ValueMap,
     snapshot: &mut Snapshot,
-    functions: &[CompiledFunction],
+    functions: &'f [CompiledFunction],
     journal: &mut EventJournal,
     cache: &mut CacheStore,
     version_id: u64,
@@ -1384,6 +1652,7 @@ fn elaborate_child_lets_only<'t>(
     templates: &'t [TopologyTemplate],
     prelude: &'t [CompiledModule],
     diagnostics: &mut Vec<Diagnostic>,
+    optimized_names: &OptimizedNameIndex<'f>,
 ) {
     // runtime_sink is required by `cell_eval_ctx`; its contents are
     // discarded rather than appended to `diagnostics` above — pre-migration
@@ -1555,26 +1824,112 @@ fn elaborate_child_lets_only<'t>(
         };
         let member = &child_cell_id.member;
 
-        let val = eval_child_expr(
-            &child_values,
+        // task #6662: an `@optimized` cell's value comes from the compute
+        // dispatch registry, which only template scope has. When this
+        // instance's inputs are value-identical to the template's, reuse the
+        // template's already-dispatched value instead of body-inlining the
+        // `.ri` function's sentinel. This is the AUTHORITATIVE instance-scope
+        // let commit, so it is the site that decides the committed value.
+        // `child_let_traces` already holds `extract_dependency_trace(expr)` for
+        // exactly this `NodeId` (built above, consumed by `take_trace` below),
+        // so the gate borrows it rather than walking the expression again.
+        // The `unwrap_or_default` is unreachable (both maps are built from
+        // `child_let_cells`) and only keeps the borrow total.
+        let no_reads: Vec<ValueCellId> = Vec::new();
+        let reads: &[ValueCellId] = child_let_traces
+            .get(&child_node_id)
+            .map(|t| t.reads.as_slice())
+            .unwrap_or(&no_reads);
+        let resolution = resolve_optimized_instance_cell(
             expr,
-            functions,
-            meta_map,
-            &snapshot.values,
-            &runtime_sink,
-            &containment,
+            optimized_names,
+            child_template,
+            member,
+            || reads,
+            &child_values,
+            values,
         );
+
+        // Emitted from THIS site only. Phase 1.5's scratch arm sees the same
+        // cell, so reporting from both would double every warning; phase 2 is
+        // the authoritative committing site, so it owns the report.
+        // `report_optimized_instance_decline` owns both the registered-target
+        // gate and the per-template-cell dedupe — see its doc comment; in
+        // particular it is what keeps the plain `reify check` shape (no
+        // trampolines registered at all) silent.
+        if let OptimizedInstanceResolution::Unreusable { target, cause } = &resolution {
+            report_optimized_instance_decline(
+                diagnostics,
+                snapshot,
+                child_template,
+                member,
+                scoped_entity,
+                target,
+                cause,
+            );
+        }
+
+        // Whether this cell's value was COPIED from the template cell decides
+        // whether the committed trace needs the extra read edge below; captured
+        // before the `match` consumes `resolution`.
+        let reused_from_template = matches!(resolution, OptimizedInstanceResolution::Reuse(_));
+
+        let val = match resolution {
+            OptimizedInstanceResolution::Reuse(v) => v,
+            // Unreusable falls through to body-inlining, unchanged from
+            // pre-#6662 behaviour — only the silence is removed.
+            OptimizedInstanceResolution::NotOptimized
+            | OptimizedInstanceResolution::Unreusable { .. } => eval_child_expr(
+                &child_values,
+                expr,
+                functions,
+                meta_map,
+                &snapshot.values,
+                &runtime_sink,
+                &containment,
+            ),
+        };
         child_values.insert(child_cell_id.clone(), val.clone());
 
         let scoped_id = ValueCellId::new(scoped_entity, member);
 
         // sorted_child_lets and child_let_traces are built from the same key set, so remove() cannot fail.
-        let trace = take_trace(
+        let mut trace = take_trace(
             &mut child_let_traces,
             &child_node_id,
             "sorted_child_lets",
             "child_let_traces",
         );
+
+        // On the `Reuse` arm the committed value did NOT come from evaluating
+        // `expr`: it was copied verbatim from
+        // `{child_template}.{member}`. The raw `extract_dependency_trace(expr)`
+        // trace records the call's ARG reads and says nothing about the cell the
+        // value actually came from, and `dirty.rs`'s `compute_eval_set` /
+        // `topological_sort` drive incremental re-evaluation off exactly these
+        // traces — so without this edge NOTHING marks the reused instance cell
+        // dirty when the template cell is later rewritten. That is the concrete
+        // mechanism behind the KNOWN LIMITATION — STALENESS note on
+        // `resolve_optimized_instance_cell`: not merely "a snapshot was taken",
+        // but "a snapshot was taken and no dependency edge recorded it".
+        // Recording the edge lets the existing dirty machinery invalidate this
+        // cell whenever the template cell moves (e.g.
+        // `Engine::redispatch_geometry_consuming_compute_nodes`, which writes
+        // only the template-scoped `output_value_cells[0]`).
+        //
+        // Amending the trace HERE is order-safe: `child_let_traces` was already
+        // consumed by `topological_sort` above (the `sorted_child_lets` /
+        // `sorted.len() < nodes.len()` cycle signal is computed before this
+        // loop starts), so the added read cannot perturb instance-scope
+        // evaluation order or the cycle report. The edge is template→instance
+        // and can introduce no cycle: template-scope cells are compiled in the
+        // template's own scope and never read an instance-scoped id.
+        if reused_from_template {
+            let template_cell = ValueCellId::new(&child_template.name, member);
+            if !trace.reads.contains(&template_cell) {
+                trace.reads.push(template_cell);
+            }
+        }
 
         // Same TraceSource::GuardedGroup provenance as the Site 1 commit
         // above.

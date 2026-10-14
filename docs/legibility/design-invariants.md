@@ -22,8 +22,65 @@ refuse) stays correct — but must always leave an observable trace.
 A second family, the **angle-crossing family** (INV-AD-1..4), was
 appended 2026-08-10 from the angle-dimension-completion chartering
 investigation (PRD `docs/prds/v0_6/angle-dimension-completion.md`,
-decision D6). Other invariant families may be appended later; keep
-slugs stable.
+decision D6). A third family, the **declared-surface family**
+(INV-PD-1..2), plus the umbrella principle below, was appended
+2026-08-31 from the trampoline param-drop and result-field vacancy
+censuses (PRDs `docs/prds/v0_6/trampoline-param-drop-closure.md` and
+`docs/prds/v0_6/result-field-vacuity-closure.md`). A fourth family, the
+**architecture family** (INV-ARCH-1), was appended 2026-10-12 from
+review-all program `review-all-reify-20261010`, stream S3 (PRD
+`docs/prds/v0_6/dependency-invalidation-stratum.md`, D11). Other
+invariant families may be appended later; keep slugs stable.
+
+## The umbrella principle — `nothing-vacuous-and-unowned`
+
+> Nothing should exist vacuously and unowned. Ever. Anywhere.
+> — Leo, ratified 2026-08-31.
+
+**Vacuous = declared-but-inert** — no machine reads or dispatches on
+it. NOT empty: `NoDamping {}` / `FlexureJoint {}` are empty but
+load-bearing (nominal type-tag dispatch, the ratified marker idiom of
+`placeholder-type-eradication-ratchet.md`); the pre-closure `Part` was
+empty AND inert. The banned state is the **conjunction** vacuous ∧
+unowned — vacuous-with-a-live-owner is legitimate staged work, and IS
+an allowlist entry in whichever gate covers the surface.
+
+**Three exits per finding, no fourth state:** wire it / delete it /
+allowlist-with-live-owner.
+
+**Checkable design question(s)**: Does this feature declare anything —
+a field, param, type, knob, hook, config key — that no machine reads
+or dispatches on, and if so, which live task owns wiring or deleting
+it? Does it add a new *declarable surface* on which vacuity can
+accumulate — and if so, which detector gates it, or is its census row
+below added marked convention-only?
+
+**The census obligation.** Enforcement must be visible, never
+presumed: every declarable surface is either detector-gated or
+honestly marked convention-only. Unenforced invariants decay in this
+repo (measured twice at the infra layer: the rerere re-armer, the
+hooksPath clobber — see `CLAUDE.md` "Warm lanes"). The Status column
+is mutable by design as detectors land; each owning PRD's close leaf
+refreshes its row. **Adding a detector or a new declarable surface
+requires a census row in the same change.**
+
+| Surface | Gate | Status |
+|---|---|---|
+| trampoline-consumed `structure_def` params | PDROP (`trampoline-param-drop-closure.md`) | chartered |
+| result fields + engine-attached undeclared fields | PVAC (`result-field-vacuity-closure.md`) | chartered |
+| placeholder-typed public signatures | PTYPE (`placeholder-type-eradication-ratchet.md`) | chartered |
+| TODO/stub/ignore owners | PTODO | shipped |
+| dead public symbols | PDEAD | shipped |
+| untested symbols | PUNTESTED | shipped |
+| producer-orphan symbols | P1 | shipped |
+| doc-chunk ↔ registry truth | PDOCCOVER | shipped |
+| `dimensionless_scalar()` reintroduction | PDSSENTINEL | shipped |
+| layer-rule imports | PLAYER | shipped |
+| intra-crate module import cycles | module_scc_ratchet (INV-ARCH-1; reify-compiler excluded until S7 κ) | shipped |
+| code-less `Diagnostic::error`/`warning` sites | PDIAG | shipped |
+| PRD terminal-status markers | PPRDSTATUS (#6346) | chartered |
+| prose task-promises in doc comments | convention-only — PTODO-grammar-extension bookmark #7098 (filed by `result-field-vacuity-closure.md` ζ) | unenforced |
+| whether a declared knob should exist at all | convention-only — deliberately unaudited (`trampoline-param-drop-closure.md` §11) | unenforced |
 
 ## INV-SF-1 `undef-has-provenance`
 
@@ -91,12 +148,20 @@ never take effect, do they find out at compile time?
 
 **Evidence**: `relate` on a scope with no `at auto` sub returns
 `RelateSolution::default()` — relations neither solved nor verified
-(`crates/reify-eval/src/relate_solve.rs`, zero-auto early return); Bool
-autos fall back to the continuous DimensionalSolver because
-`SolverRegistry::production()` leaves the Logical slot None while
-`cpsat.rs` sits unregistered (`crates/reify-constraints/src/registry.rs`);
-minimize over Bool autos builds zero objective components and never
-solves; DFM rules with unrealized handles are "silently skipped".
+(`crates/reify-eval/src/relate_solve.rs`, zero-auto early return); DFM
+rules with unrealized handles are "silently skipped". The 2026-07-24
+census also found Bool autos falling back to the continuous
+DimensionalSolver (CP-SAT unregistered) and minimize over Bool autos
+never consulted — both discharged: #5468 (PRD2 β) gave `CpSatSolver`
+its `solve_ranked` argmin override, and #5469 (PRD2 γ) made
+`SolverRegistry::production()` install `CpSatSolver` (Logical slot)
+and `DiscreteFirstFallback` (CrossDomain fallback), so an all-discrete
+component is enumerated by CP-SAT in both shipped binaries and its
+objective picks the configuration. The live successor on that seam: a
+STRICT `auto` over a multi-model all-discrete component resolves
+silently — CP-SAT reports `unique: false` but no diagnostic reaches
+the user (#6554; see `verdict_from_enumeration` in
+`crates/reify-constraints/src/cpsat.rs`).
 
 **House pattern**: the #5014 collateral-observability diagnostic (names a
 whole unresolved cluster when a merged solve is skipped); the relate
@@ -185,12 +250,20 @@ systematically, and force message-substring hacks downstream.
 without a code? Does any consumer it adds match on message text where a
 code should exist?
 
-**Evidence**: 362 `Diagnostic::error/warning` ctor sites in reify-eval,
-67 with codes; the CLI's `E_DFM_` message-prefix escalation exists only
+**Evidence**: the 2026-07-24 census counted 362
+`Diagnostic::error/warning` ctor sites in reify-eval, 67 with codes —
+the live successor measurement is the per-file code-less-site ratchet
+in `crates/reify-audit/pdiag-baseline.txt` (broader scope: all swept
+crate `src/` trees, test paths excluded), not a re-count of this same
+ratio; the CLI's `E_DFM_` message-prefix escalation exists only
 because co-resident Error diagnostics are code-less.
 
 **House pattern**: `DiagnosticCode` registry + typed-code test assertions
-(tasks 2255, 3416 flipped substring tests to code identity).
+(tasks 2255, 3416 flipped substring tests to code identity); the PDIAG
+detector (`reify-audit --pattern PDIAG`, ratcheted against
+`crates/reify-audit/pdiag-baseline.txt`, remediation recipe in
+`docs/notes/diagnostic-severity-policy.md` §3, hard-gated by
+`tests/infra/test_reify_audit_pdiag.sh`) as the enforcement substrate.
 
 ## INV-SF-7 `parse-is-value-faithful`
 
@@ -216,7 +289,16 @@ same seam yields four outcomes (correct / silently wrong / undef /
 parse-error-at-wrong-line) depending on adjacent tokens. #5492's corpus
 red on main is suspected drift of the same seam. Ratified by Leo
 2026-07-25 (seam review); #5392 is the enforcement vehicle for the
-fn-body seam.
+fn-body seam, and #7094 for the member-body seam — the structure,
+occurrence, trait, purpose, relate, constraint-def and guarded-block
+bodies, whose separator-free `repeat(...)` lets a member absorb the
+next line. #7094's mechanism is the post-parse check in
+`crates/reify-syntax/src/member_continuation.rs`, which reports the join
+as a hard parse error. That check is deliberately scoped to trees that
+parsed CLEANLY: this invariant targets the SILENT join, so once the
+grammar has itself errored on a source, the recovered member spans are
+the parser's guesses rather than the author's layout and a second
+diagnostic over them can only mislead.
 
 ## Angle-crossing family (INV-AD-1..4)
 
@@ -267,9 +349,9 @@ Angle producer is a named site, never a bare quotient.
 (`crates/reify-stdlib/src/orientation.rs:203`) as the ruled-pending
 exemplar (#6080) — a 2·atan2 arc-measure primitive, not a quotient, not
 yet Angle-tagged at eval; and #6164's `ElasticResult.rotation` = curl/2
-channel, cited as RULED, PENDING (#6164) — confirmed absent from
-`crates/reify-compiler/stdlib/solver_elastic.ri` today, so never
-describe it as shipped.
+channel, shipped (merge 850fd36f36) as `param rotation` in
+`crates/reify-compiler/stdlib/solver_elastic.ri`, wrapped by
+`sampled_rotation_field` in `crates/reify-eval/src/compute_targets/mod.rs`.
 
 ## INV-AD-2 `quotient-pure-derivative-algebra`
 
@@ -311,9 +393,12 @@ no in-language tensor component access (`IndexAccess` and member access
 both reject tensors), so a named extractor is structurally forced, not
 merely a style preference.
 
-**House pattern**: `ElasticResult.shear_angles` (chartered, PRD leaf σ)
-beside `.rotation`, both built on the `sampled_curl_field` mechanics
-(`crates/reify-eval/src/compute_targets/mod.rs:166`).
+**House pattern**: `ElasticResult.shear_angles` (shipped, PRD leaf σ,
+#6183) beside `.rotation`: named `Vector3<Angle>` channels derived from the
+`gradient` / `curl` Sampled Fields at wrap time
+(`sampled_shear_angles_field` / `shear_angles_sf_from_gradient` in
+`crates/reify-eval/src/compute_targets/mod.rs`), while `gradient` keeps its
+single `Tensor<2,3,Real>` quantity slot.
 
 ## INV-AD-4 `boundaries-declare-angle-convention`
 
@@ -360,8 +445,8 @@ status:
 | `orient_log` / rotation vectors | return type (2·atan2 primitive) | #6080 | ruled, pending |
 | geometry `angle`, `angle_between_surfaces` queries | return type | query typing | shipped |
 | geometry `curvature` query | return type (dθ/ds primitive) | angle-dimension-completion leaf α | chartered |
-| `ElasticResult.rotation` = curl/2 | named channel | #6164 | ruled, pending |
-| `ElasticResult.shear_angles` | named channel | angle-dimension-completion leaf σ | chartered |
+| `ElasticResult.rotation` = curl/2 | named channel | #6164 | shipped |
+| `ElasticResult.shear_angles` | named channel | angle-dimension-completion leaf σ | shipped (σ, #6183) |
 | MOI kernel seam (∫ρr²dV → rotational inertia) | deliberate rad⁻² tag at `dispatch_inertia_tensor` | #5825 ruling, #5844 implementation | ruled, pending |
 | joint-DOF unwrap; unit literals (`45deg`, `1rad`) | literal/decode sites | unit-literal lowering + joint-DOF decode sites | shipped |
 | hand-rolled `.ri` crossings | `expr * 1rad` (and `expr / 1rad` to leave) | unit arithmetic (probed) | shipped, undocumented (corpus example → leaf γ) |
@@ -461,6 +546,117 @@ work is chartered by this family; those siblings are cited by name
 only — their contracts are not restated here. The enforcement
 *direction* this doctrine cites is strict dimension equality
 (units-length-gate-completion D11, #5747).
+
+## Declared-surface family (INV-PD-1..2)
+
+The input and output halves of one contract: a declared surface either
+does what it declares, or names the live task that owns making it do
+so. Both are instances of the umbrella principle above; both are
+declared-not-inferred (inference cannot see indirection — the
+esc-6739-1 aliasing blind spot) and both make owner liveness a gate
+failure mode, not a convention.
+
+## INV-PD-1 `declared-param-reaches-kernel`
+
+**Rule**: Every `param` declared on a structure a trampoline consumes
+is *honored* (its value reaches the kernel and changes the result),
+*declared-ignored* with a live owning task (setting it to a
+non-default value is `E_PARAM_NOT_HONORED`, carrying the owner), or
+*not_applicable* with a one-line reason (`W_PARAM_NOT_APPLICABLE`).
+The three sets are disjoint and their union equals the
+`structure_def`'s param set. Enforcement: `reify-audit --pattern
+PDROP`, which also reds on dead/absent owners.
+
+**Checkable design question(s)**: Does this feature add or consume a
+`structure_def` param its trampoline does not read — and if so, which
+bucket does it declare, and which live task owns the honor? Can a
+caller set a knob and get a plausible-but-wrong number with exit 0?
+
+**Evidence**: the 2026-08-31 drop census — ten answer-changing drops
+(`solve_buckling` discarding required `supports`; `ElasticOptions.max_iter`
+declared 1000, hardcoded 2000; a `force_limit` read on a field no
+`.ri` structure declares; …). Normative contract, census and
+decomposition: `docs/prds/v0_6/trampoline-param-drop-closure.md`
+(C1–C4 there; not restated here).
+
+**House pattern**: #4149's `buckling_unsupported_option_diagnostics` /
+`DiagnosticCode::BucklingOptionUnsupported` — complete within
+`BucklingOptions`, the shape PDROP universalizes.
+
+## INV-PD-2 `result-fields-populated-or-owned`
+
+**Rule**: Every field a Rust producer writes into a `.ri`-declared
+result structure is *populated* (real, sampleable, non-sentinel value
+on the production path), *degraded* (the honest `Undef` form plus a
+recorded reason), or *allowlisted* with a live owning task. The three
+sets are disjoint and their union equals the `structure_def`'s
+declared field set; a written-but-undeclared field is itself a
+finding. A degraded field holds `Undef` (with an `UndefCause` where
+the channel exists, INV-SF-1) — never a plausible well-formed fake.
+Enforcement: `reify-audit --pattern PVAC`, which also reds on
+dead/absent owners.
+
+**Checkable design question(s)**: Does this feature declare a result
+field its producer leaves empty or sentinel — and if so, which bucket,
+and which live task owns populating it? Does it write a field the
+`.ri` does not declare? Can a reader mistake a degraded value for a
+computed one (well-formed empty instead of `Undef`)?
+
+**Evidence**: the 2026-08-31 vacancy census — `ModalResult.part`
+populated by `placeholder_part()` (a well-formed zero-field fake) with
+zero readers and its growth promise citing done #4578; the undeclared
+engine-attached `ModalResult.topology`, always `Undef` on the dims
+path; `mechanism_modal`'s `shape = []` / `participation_mass = 0`
+(flipped to honest `Undef` by #7012; reason recorded at the
+producer). Normative contract, census and decomposition:
+`docs/prds/v0_6/result-field-vacuity-closure.md` (C1′–C4′ there; not
+restated here).
+
+**House pattern**: the tet-result `Undef`-for-unpopulated convention —
+buckling `pre_stress`, `degenerate_modal_result`'s `damping` — is C2′
+promoted to contract.
+
+## Architecture family (INV-ARCH-1)
+
+Layering inside a crate, the intra-crate twin of the crate-DAG gate
+(`scripts/assert-crate-dag.sh`): a crate's top-level modules may depend
+on one another, but no import cycle among them may appear or grow
+silently.
+
+## INV-ARCH-1 `module-sccs-only-shrink`
+
+**Rule**: Within a workspace crate, no strongly connected component of
+the top-level-module import graph (`crate::` paths, and `super::` chains
+that reach the crate root) appears or grows. A shrink
+or dissolution lowers the committed baseline in the same diff, so it is
+recorded, not silent. Universe, edges and production text: PRD
+`docs/prds/v0_6/dependency-invalidation-stratum.md` §5.1 (not restated
+here). reify-compiler is excluded until S7 κ: its glob imports hide
+edges from the rule.
+
+**Checkable design question(s)**: Does this change add a `crate::<m>`
+reference to `<m>` from a module that `<m>` already reaches, so that an
+SCC appears, grows or merges? Does
+`python3 scripts/assert-module-scc.py check` print `GREW`? The ratchet
+tracks SCC membership, not edges. An import between two modules already
+in one baselined SCC is not flagged: `use crate::engine_eval::…` in
+`deps.rs` stays green, because both modules are in reify-eval's
+24-module SCC. To see the gate fire, add the edge from outside the SCC:
+the same line in `structural_query.rs`, a module the SCC reaches, reds
+as `GREW` naming `structural_query -> engine_eval`. If a change breaks
+a cycle, does the same diff lower the row with `print`? Does a
+predicate or type that a lower module needs live in an engine-phase
+module, forcing an upward import?
+
+**Evidence**: the 2026-10-12 landing measurement, which reproduces the
+PRD's dated workspace measurement — reify-eval holds a 24-module SCC
+and a 5-module one. The other crates' rows live in
+`scripts/module-scc-baseline.json`, not here.
+
+**Enforcement**: `crates/reify-build-utils/tests/module_scc_ratchet.rs`
+over `scripts/module-scc-baseline.json`. The merge gate always runs it;
+a per-task lane runs it only when reify-build-utils is affected (PRD
+D11).
 
 ## Census seam
 

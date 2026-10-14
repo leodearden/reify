@@ -11,6 +11,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
+import { readFileSync } from 'node:fs';
 import type { PermissionServer, PermissionServerTestHooks } from '../permission-server.js';
 
 // --- Module mocks (hoisted by vitest) ---
@@ -681,5 +682,79 @@ describe('main() startup landlock probe (task 3281)', () => {
       if (origLe === undefined) delete process.env.REIFY_LANDLOCK_EXEC;
       else process.env.REIFY_LANDLOCK_EXEC = origLe;
     }
+  });
+});
+
+describe('main() reify-debug surface follows REIFY_DEBUG_MCP_URL (task 7816)', () => {
+  const LIVE_URL = 'http://127.0.0.1:4555/mcp';
+
+  beforeEach(() => {
+    vi.mocked(createPermissionServer).mockReturnValue(makePermissionServerMock());
+    vi.mocked(spawn).mockReset();
+    vi.mocked(wrapClaudeArgs).mockReset();
+    vi.mocked(wrapClaudeArgs).mockImplementation((args, _ws, le) =>
+      le ? { cmd: 'python3', args: [le, ...args] } : { cmd: 'claude', args: [...args] }
+    );
+    vi.mocked(probeLandlockAsync).mockReset();
+    vi.mocked(probeLandlockAsync).mockResolvedValue(false);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  interface SpawnedSurface {
+    systemPrompt: string;
+    mcpServers: Record<string, { url?: string }>;
+    allowedTools: string;
+  }
+
+  /** Run main() under `debugMcpUrl`, send one message, and read what the claude child was given. */
+  async function spawnedSurface(debugMcpUrl: string | undefined): Promise<SpawnedSurface> {
+    const saved = process.env.REIFY_DEBUG_MCP_URL;
+    if (debugMcpUrl === undefined) delete process.env.REIFY_DEBUG_MCP_URL;
+    else process.env.REIFY_DEBUG_MCP_URL = debugMcpUrl;
+    try {
+      let resolveSurface!: (s: SpawnedSurface) => void;
+      const surface = new Promise<SpawnedSurface>((resolve) => {
+        resolveSurface = resolve;
+      });
+      vi.mocked(spawn).mockImplementation(((_cmd: string, args: string[]) => {
+        const valueOf = (flag: string) => args[args.indexOf(flag) + 1];
+        resolveSurface({
+          systemPrompt: valueOf('--system-prompt'),
+          mcpServers: JSON.parse(readFileSync(valueOf('--mcp-config'), 'utf-8')).mcpServers,
+          allowedTools: valueOf('--allowed-tools'),
+        });
+        return makeIdleProcess();
+      }) as any);
+
+      const input = new PassThrough();
+      const output = new PassThrough();
+      const mainPromise = main(input, output);
+      await waitForMessage(output, (m) => m.type === 'ready');
+      input.write(JSON.stringify({ type: 'send_message', id: 'msg-7816', text: 'hello' }) + '\n');
+      const result = await surface;
+      input.end();
+      await mainPromise;
+      return result;
+    } finally {
+      if (saved === undefined) delete process.env.REIFY_DEBUG_MCP_URL;
+      else process.env.REIFY_DEBUG_MCP_URL = saved;
+    }
+  }
+
+  it('live: the prompt, the MCP config and the grant all carry reify-debug', async () => {
+    const surface = await spawnedSurface(LIVE_URL);
+    expect(surface.systemPrompt).toContain('mcp__reify-debug__');
+    expect(surface.mcpServers['reify-debug']?.url).toBe(LIVE_URL);
+    expect(surface.allowedTools).toContain('mcp__reify-debug__*');
+  });
+
+  it('not live: none of the three carries reify-debug', async () => {
+    const surface = await spawnedSurface(undefined);
+    expect(surface.systemPrompt).not.toContain('mcp__reify-debug__');
+    expect(surface.mcpServers).not.toHaveProperty('reify-debug');
+    expect(surface.allowedTools).not.toContain('mcp__reify-debug__');
   });
 });

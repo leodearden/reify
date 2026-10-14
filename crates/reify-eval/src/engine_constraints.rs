@@ -13,10 +13,12 @@ use reify_core::{
 use reify_expr::{EvalContext, eval_expr};
 use reify_ir::{
     CompiledExpr, CompiledFunction, ConstraintDiagnostics, ConstraintInput,
-    ConstraintResult, DeterminacyState, GeometryHandleId, KernelHandle, OptimizedImplInput,
-    PersistentMap, Satisfaction, StructureInstanceData, StructureTypeId, Value, ValueMap,
+    ConstraintResult, DeterminacyState, GeometryHandleId, IndeterminateReason, KernelHandle,
+    OptimizedImplInput, PersistentMap, ReprKind, Satisfaction, StructureInstanceData,
+    StructureTypeId, TransientReason, Value, ValueMap,
 };
 
+use crate::graph::EvaluationGraph;
 use crate::topology_selectors;
 use crate::{CheckResult, ConstraintCheckEntry, Engine, EngineError};
 
@@ -283,6 +285,113 @@ pub struct GdtCallout {
     pub zone_shape: Option<String>,
 }
 
+/// A constraint whose Indeterminate verdict a re-check made definite, with that
+/// constraint's own label-rewritten diagnostics. Produced only by
+/// [`Engine::upgrade_indeterminate_verdicts`]; `entry().satisfaction` is never
+/// [`Satisfaction::Indeterminate`].
+#[derive(Debug, Clone)]
+pub struct ConstraintUpgrade {
+    entry: ConstraintCheckEntry,
+    diagnostics: Vec<Diagnostic>,
+    /// The checker's `constraint {subject} indeterminate` claim this upgrade
+    /// makes false, or `None` when a constraint that stayed open shares the
+    /// subject. A claim names its constraint only by subject, and compiler
+    /// labels are unique per entity, not per module.
+    superseded_claim: Option<String>,
+}
+
+impl ConstraintUpgrade {
+    /// `settled_subject` is the constraint's diagnostic subject when no open
+    /// constraint shares it, else `None`.
+    fn new(result: ConstraintResult, label: Option<&str>, settled_subject: Option<&str>) -> Self {
+        debug_assert_ne!(
+            result.satisfaction,
+            Satisfaction::Indeterminate,
+            "ConstraintUpgrade: an upgrade must carry a definite verdict ({})",
+            result.id,
+        );
+        let superseded_claim =
+            settled_subject.map(|subject| format!("constraint {subject} indeterminate"));
+        let (entry, diagnostics) = Engine::labeled_entry(result, label);
+        Self {
+            entry,
+            diagnostics,
+            superseded_claim,
+        }
+    }
+
+    pub fn entry(&self) -> &ConstraintCheckEntry {
+        &self.entry
+    }
+
+    pub fn diagnostics(&self) -> &[Diagnostic] {
+        &self.diagnostics
+    }
+}
+
+/// Replace each upgraded constraint's superseded Indeterminate claim in
+/// `diagnostics` with that upgrade's fresh diagnostics (appended in upgrade
+/// order).
+///
+/// A `ConstraintIndeterminate` diagnostic is retracted only when every
+/// constraint that bears its subject was upgraded. A shared subject whose other
+/// holder stayed open, or a message off the checker grammar, is KEPT: a wrongly
+/// dropped line is lost output, a wrongly kept one merely redundant. (The match
+/// is textual until #7991 gives these diagnostics a structured subject.)
+/// `Engine::build`'s 4229 re-check does the same retract-and-carry-over for its
+/// own upgrades.
+pub fn replace_superseded_constraint_diagnostics(
+    diagnostics: &mut Vec<Diagnostic>,
+    upgrades: &[ConstraintUpgrade],
+) {
+    let superseded_claims: Vec<&str> = upgrades
+        .iter()
+        .filter_map(|u| u.superseded_claim.as_deref())
+        .collect();
+    if !superseded_claims.is_empty() {
+        diagnostics.retain(|d| {
+            d.code != Some(DiagnosticCode::ConstraintIndeterminate)
+                || !superseded_claims
+                    .iter()
+                    .any(|claim| d.message.starts_with(claim))
+        });
+    }
+    diagnostics.extend(upgrades.iter().flat_map(|u| u.diagnostics.iter().cloned()));
+}
+
+/// How a checker message names a constraint once [`Engine::labeled_diagnostics`]
+/// has run: by its label when it has one, else by its id.
+fn diagnostic_subject<'a>(id: &ConstraintNodeId, label: Option<&'a str>) -> Cow<'a, str> {
+    match label {
+        Some(label) => Cow::Borrowed(label),
+        None => Cow::Owned(id.to_string()),
+    }
+}
+
+/// The `subjects` of a batch of upgrades that no constraint left open in
+/// `graph` still bears, i.e. those whose every holder is in the batch.
+fn settled_subjects<'s>(graph: &EvaluationGraph, subjects: &'s [Cow<'_, str>]) -> HashSet<&'s str> {
+    let mut upgraded_holders: HashMap<&str, usize> = HashMap::new();
+    for subject in subjects {
+        *upgraded_holders.entry(subject).or_default() += 1;
+    }
+    let mut graph_holders: HashMap<&str, usize> = HashMap::new();
+    for (_, cnode) in graph.constraints.iter() {
+        let subject = diagnostic_subject(&cnode.id, cnode.label.as_deref());
+        if let Some((&key, _)) = upgraded_holders.get_key_value(subject.as_ref()) {
+            *graph_holders.entry(key).or_default() += 1;
+        }
+    }
+    upgraded_holders
+        .into_iter()
+        .filter(|(subject, upgraded)| graph_holders.get(subject) == Some(upgraded))
+        .map(|(subject, _)| subject)
+        .collect()
+}
+
+/// Each re-checked constraint's result paired with its node's label.
+type LabeledConstraintResults<'a> = Vec<(ConstraintResult, Option<&'a str>)>;
+
 impl Engine {
     /// Dispatch a batch of constraints to either their registered optimized
     /// implementation or the language-level `ConstraintChecker`, preserving
@@ -310,6 +419,41 @@ impl Engine {
     /// other.  The fast-path early-return (no registered impls, no
     /// RepresentationWithin) is preserved so non-assertion modules incur zero
     /// overhead (C2).
+    ///
+    /// ## Surfaces that do not measure (task-6169 ζ, C-SURFACE 1)
+    ///
+    /// `achieved_repr_tol` being empty does NOT imply "no RepresentationWithin
+    /// in this batch" — it also covers every surface that never measured at
+    /// all (`reify build`, which never calls `set_capture_repr_tol`; and
+    /// stub-mode `reify check`, where tessellation cannot run).  Gating the
+    /// fast path on the map alone therefore sent live assertions to the
+    /// language-level checker, which has no access to the map and blamed the
+    /// operand kinds for an Indeterminate that is really a property of the
+    /// surface.  The guard now also requires that no entry in the batch is a
+    /// RepresentationWithin *shape*, so such an entry always reaches the peel
+    /// below and is answered engine-side.
+    ///
+    /// The added conjunct is free on both hot paths:
+    /// - `entries.iter().any(..)` allocates nothing, and
+    ///   [`crate::tolerance_combine::match_representation_within_shape`]
+    ///   rejects at Gate 2 on `expr.kind` or on the
+    ///   `function_name != "RepresentationWithin"` compare — strictly before
+    ///   its only allocation (`name.clone()`, reachable solely after the name
+    ///   AND arity gates pass).  A non-assertion module thus pays an O(n) scan
+    ///   of enum discriminants and str compares, strictly cheaper than the
+    ///   `map(..).collect()` that immediately follows inside the body it
+    ///   guards, and then takes the identical path.
+    /// - `&&` short-circuits, so a measuring surface (non-empty map) never
+    ///   evaluates the scan at all.
+    ///
+    /// Reusing the canonical recogniser rather than a local copy of Gate 2 is
+    /// deliberate: the fast-path predicate and the peel's own gates are
+    /// literally the same function, so a future IR variant added to Gate 2
+    /// cannot leave a real RepresentationWithin silently taking the fast path
+    /// again.  Over-approximation is safe by construction — a false positive
+    /// merely costs the (already-existing) peel allocation and yields an
+    /// identical result, since a non-matching entry falls into `rest` and
+    /// reaches the same checker in the same order.
     pub(crate) fn dispatch_constraints<'a>(
         &self,
         entries: Vec<(ConstraintNodeId, &'a CompiledExpr, Option<&'a str>)>,
@@ -322,15 +466,27 @@ impl Engine {
         }
 
         // ── Fast path for non-assertion modules (C2) ──────────────────────────
-        // When `achieved_repr_tol` is empty (no tessellation has run) AND no
-        // optimised impls are registered, we know no entry can be a live
-        // `RepresentationWithin` assertion — skip the pre-pass entirely and use
-        // the original zero-allocation path.  This covers the universal
-        // non-assertion case: every `reify check` call on a module without
-        // `RepresentationWithin` constraints, where `cmd_check` never calls
-        // `set_capture_repr_tol` / `tessellate_realizations` and the map stays
-        // empty.
-        if self.achieved_repr_tol.is_empty() && self.optimization_registry.is_empty() {
+        // Taken only when this batch provably contains no `RepresentationWithin`
+        // assertion and no optimised impl is registered — then the pre-pass can
+        // be skipped entirely for the original zero-allocation path.  This
+        // covers the universal non-assertion case: every `reify check` /
+        // `reify build` call on a module without `RepresentationWithin`
+        // constraints, where the map is empty because nothing ever asked for a
+        // measurement.
+        //
+        // The third conjunct is what makes the first two sound (task-6169 ζ,
+        // C-SURFACE 1): an empty `achieved_repr_tol` also describes a surface
+        // that never measured, so on its own it cannot distinguish "no
+        // assertion here" from "an assertion nobody measured".  Scanning for
+        // the shape settles that directly, and costs nothing on either hot path
+        // — see this method's doc comment for the allocation and
+        // short-circuiting argument.
+        if self.achieved_repr_tol.is_empty()
+            && self.optimization_registry.is_empty()
+            && !entries.iter().any(|(_, expr, _)| {
+                crate::tolerance_combine::match_representation_within_shape(expr).is_some()
+            })
+        {
             let constraints: Vec<(ConstraintNodeId, &CompiledExpr)> = entries
                 .into_iter()
                 .map(|(id, expr, _target)| (id, expr))
@@ -345,12 +501,14 @@ impl Engine {
         }
 
         // ── RepresentationWithin interception ─────────────────────────────────
-        // Reached only when `achieved_repr_tol` is non-empty (a tessellation
-        // ran) or an optimised impl is registered.  Peel RepresentationWithin
-        // entries off the batch before bucketing so that they never reach the
-        // language-level ConstraintChecker (which has no access to
-        // self.achieved_repr_tol).  Each matched entry is evaluated engine-side;
-        // unmatched entries go to the existing paths.
+        // Reached when `achieved_repr_tol` is non-empty (a tessellation ran),
+        // or an optimised impl is registered, or this batch carries a
+        // RepresentationWithin shape on a surface that never measured (ζ).
+        //
+        // Peel RepresentationWithin entries off the batch before bucketing so
+        // that they never reach the language-level ConstraintChecker (which has
+        // no access to self.achieved_repr_tol).  Each matched entry is evaluated
+        // engine-side; unmatched entries go to the existing paths.
         //
         // Two-vector approach avoids a second allocation pass: we collect
         // `rest` in-order so the original (id, expr, target) tuples remain
@@ -368,14 +526,108 @@ impl Engine {
                 values,
                 &self.achieved_repr_tol,
             ) {
+                // ── Operand-definedness outranks surface attribution ──────────
+                //
+                // The peel claims a RepresentationWithin on SHAPE alone, but an
+                // `Indeterminate` engine answer carries no information about the
+                // constraint — it only says "this surface produced no achieved
+                // deviation for the subject".  When a leaf operand is *genuinely
+                // undefined*, that is not the reason the user needs: the
+                // language-level checker already has a strictly better-attributed
+                // one — `undefined inputs: <cell>` — naming the very cell that
+                // must be bound.  Speaking about the surface instead would
+                // discard a correct cause and hand the user a two-hop dead end
+                // (`reify build` → "run `reify check`" → "check that the subject
+                // declares a realization", when the subject was never bound at
+                // all), which is the same INV-SF-4 misattribution class ζ exists
+                // to remove, merely relocated a third time.
+                //
+                // So decline the entry: push it to `rest` and let it reach the
+                // checker exactly as it did before ζ.  The definedness predicate
+                // is [`reify_constraints::has_undefined_leaf`] — the same
+                // function `classify_undef`'s has-undef branch is built on
+                // (task 6480 factored it out of reify-constraints so both
+                // crates call one implementation instead of keeping
+                // independently-maintained copies) — so "declined here" ⇔
+                // "the checker will say `undefined inputs`" by construction —
+                // this can never route an entry into the `operator undefined
+                // for these operand kinds` branch that ζ eliminates.
+                //
+                // Only the `Indeterminate` arm is declined.  A `Satisfied` /
+                // `Violated` engine answer is a real measurement (reached via
+                // `resolve_repr_tol_key`'s deliberately hydration-INDEPENDENT
+                // type-name scan, which resolves without the subject cell being
+                // populated), and must not be thrown away just because the cell
+                // is unhydrated.
+                Some((Satisfaction::Indeterminate, _))
+                    if reify_constraints::has_undefined_leaf(expr, values) =>
+                {
+                    rest.push((i, id, expr, target));
+                }
                 Some((satisfaction, diag_opt)) => {
                     // Engine-side result from the achieved-repr-tol map.
+                    let mut messages: Vec<Diagnostic> = diag_opt.into_iter().collect();
+
+                    // C-SURFACE (1): say *why* we cannot answer, and point at
+                    // the surface that can (INV-SF-4), with a machine-readable
+                    // code (INV-SF-6).  Severity is Info, not Warning or Error
+                    // — this is the routine outcome of running `reify build` on
+                    // any bounded module, and nothing is wrong with the design.
+                    //
+                    // The `is_empty()` gate is load-bearing: it is exactly the
+                    // condition the old fast-path guard tested, so this is a
+                    // one-for-one swap of a misattributed Warning for an
+                    // attributable Info — no other constraint gains or loses a
+                    // diagnostic.  In particular the C1 case (tessellation ran,
+                    // but this subject's key is unresolvable) keeps its existing
+                    // silent Indeterminate, which is what keeps `reify check`
+                    // output unchanged — for a DEFINED subject.  An UNBOUND one
+                    // never reaches this arm: the decline arm above it fires
+                    // first regardless of `achieved_repr_tol`, pushing the entry
+                    // to `rest` so the checker attributes the real cause.  That
+                    // is the one shape whose `reify check` output does differ
+                    // from pre-ζ (silent Indeterminate -> `undefined inputs`),
+                    // and it is deliberate: gating the decline on `is_empty()`
+                    // would restore the silence only by reinstating the
+                    // misattribution ζ removes.  Pinned by
+                    // `measuring_surface_with_unbound_subject_still_attributes_the_undefined_input`.
+                    //
+                    // That gate is MODULE-wide rather than per-subject, so a
+                    // module which measures at least one subject still leaves an
+                    // unmeasurable sibling with a bare Indeterminate.  Narrowing
+                    // it to "this subject's key did not resolve" needs a new
+                    // signal out of `eval_representation_within` and inverts the
+                    // regression guard
+                    // `measuring_surface_indeterminate_carries_no_attribution_diagnostic`,
+                    // so it is deliberately out of scope here and filed as
+                    // follow-up ticket tkt_0RSR81KF1TYDY8PDANNHQZCFV2.
+                    //
+                    // Which REMEDY the reason names is a pure function of two
+                    // engine fields with no loop-local input — see
+                    // [`Engine::unmeasured_reason`] for the three-cause taxonomy
+                    // and why the arms are ordered as they are.  `id` is embedded
+                    // in the text so `labeled_diagnostics` can substitute a
+                    // user-facing label, exactly as the language-level checker's
+                    // message does.
+                    //
+                    // The RECORDED reason, unlike the diagnostic, is set on every
+                    // Indeterminate (R1), the C1 case included.
+                    let indeterminate_reason = (satisfaction == Satisfaction::Indeterminate)
+                        .then(|| self.representation_within_indeterminate_reason());
+                    if let Some(reason) = &indeterminate_reason
+                        && self.achieved_repr_tol.is_empty()
+                    {
+                        messages.push(
+                            Diagnostic::info(format!("constraint {id} indeterminate: {reason}"))
+                                .with_code(DiagnosticCode::ConstraintIndeterminate),
+                        );
+                    }
+
                     rw_slots[i] = Some(ConstraintResult {
                         id,
                         satisfaction,
-                        diagnostics: ConstraintDiagnostics {
-                            messages: diag_opt.into_iter().collect(),
-                        },
+                        diagnostics: ConstraintDiagnostics { messages },
+                        indeterminate_reason,
                     });
                     any_rw = true;
                 }
@@ -579,6 +831,197 @@ impl Engine {
             .collect();
         (constraint_results, dispatch_diagnostics)
     }
+    /// The reason a `RepresentationWithin` Indeterminate records — and its
+    /// diagnostic states — on a run whose `achieved_repr_tol` is empty
+    /// (task-6169 ζ, C-SURFACE 1).
+    ///
+    /// A pure function of two engine properties, because an empty map has THREE
+    /// distinct causes and each has a different fix:
+    ///   1. **No kernel able to tessellate the subject is registered** — this
+    ///      run cannot measure anything at all (a stub-mode binary, whichever
+    ///      subcommand asked) → the remedy is a kernel.
+    ///   2. **Capable kernel present, capture OFF** — nobody ever asked for a
+    ///      measurement on this surface (`reify build`, `reify eval`) → the
+    ///      remedy is `reify check`.
+    ///   3. **Capable kernel present, capture ON, still nothing measured** —
+    ///      tessellation ran (or would have) but produced no achieved deviation
+    ///      for THIS subject.
+    ///
+    /// Kernel capability is tested FIRST, ahead of `capture_repr_tol`, so the
+    /// remedy handed to the user is always TERMINAL.  Testing capture first
+    /// sent a stub-mode `reify build` into arm 2 — "run `reify check`" — whose
+    /// only answer on that same binary is arm 1's "build with OCCT": a two-hop
+    /// dead end, and a milder instance of the very defect class C-SURFACE 1
+    /// exists to remove.
+    ///
+    /// ## Why capability, not `default_kernel_name.is_none()`
+    ///
+    /// An earlier revision discriminated on `default_kernel_name.is_none()`.
+    /// That is **never true on any shipped binary**, so arm 1 was dead code on
+    /// exactly the surfaces it was written for.  `reify-kernel-manifold`'s
+    /// `inventory::submit!` is UNCONDITIONAL (no `cfg` gate — its `manifold3d`
+    /// dep compiles its own C++ tree, so there is no "manifold absent" case),
+    /// and `crates/reify-cli/src/main.rs`'s `extern crate reify_kernel_manifold
+    /// as _;` states verbatim that the `"manifold"` key is always present in
+    /// the binary's registry.  `pick_lexmin_brep_kernel` ends in
+    /// `.or_else(|| registered.values().next())`, so a stub-mode (no-OCCT)
+    /// binary still gets `default_kernel_name == Some("manifold")` — a
+    /// Mesh-only kernel that cannot tessellate the B-rep subject.  The old test
+    /// coverage passed only because `Engine::new(checker, None)` (unit tests)
+    /// is the sole shape that reaches an empty registry.
+    ///
+    /// So the question arm 1 must actually ask is not "is *a* kernel
+    /// registered" but "is a kernel that can produce the measurement
+    /// registered".  OCCT is the only BRep producer in the workspace
+    /// (`reify-kernel-occt`'s submit is `cfg(has_occt)`-gated; manifold claims
+    /// Mesh only, openvdb Voxel/Mesh), so `supports_any_repr(ReprKind::BRep)`
+    /// over this engine's own kernels is an exact test for "this binary was
+    /// built with OCCT".
+    ///
+    /// Capability is read off the static registry keyed by this engine's own
+    /// `geometry_kernels` names, because `GeometryKernel` is a behavioural
+    /// trait with no descriptor accessor — see
+    /// [`Engine::has_repr_capable_kernel`].  Kernel-absence is still read as a
+    /// fact about the BINARY rather than merely this engine because every
+    /// surface that both dispatches constraints and can carry a
+    /// `RepresentationWithin` builds its engine with
+    /// `Engine::with_registered_kernel` (`cmd_check`'s assertion branch,
+    /// `cmd_build`, the GUI session); `eval()` never dispatches constraints, so
+    /// the CLI's deliberately kernel-free `eval` engines cannot reach here.
+    ///
+    /// Emitting arm 2's remedy unconditionally would also put "run `reify
+    /// check`" into the diagnostics of the pre-`check()` pass inside
+    /// `tessellate_realizations` (engine_build.rs), which runs before the map is
+    /// populated and is therefore precisely a surface that DOES measure.
+    ///
+    /// Arm 3 is deliberately CAUSE-NEUTRAL and mentions neither `kernel` nor
+    /// `OCCT`.  Blaming the kernel there would be a false statement — one is
+    /// demonstrably registered — and exactly the INV-SF-4 misattribution this
+    /// task exists to remove, merely relocated from the operand kinds to the
+    /// kernel.  With a kernel present the engine genuinely cannot tell whether
+    /// the subject declares no realization at all, or declares one whose
+    /// type-name scan key could not be resolved, so it states the observable
+    /// fact and points at the actionable check rather than asserting a cause it
+    /// has not established.
+    fn unmeasured_reason(&self) -> &'static str {
+        if !self.has_repr_capable_kernel() {
+            "this run does not measure representation tolerance because no \
+             geometry kernel able to tessellate the subject is registered; \
+             such a geometry kernel is required — build with OCCT to evaluate \
+             this RepresentationWithin bound"
+        } else if !self.capture_repr_tol {
+            "this evaluation surface does not measure representation tolerance \
+             (no tessellation ran, so no achieved deviation exists for the \
+             subject); run `reify check` to evaluate this RepresentationWithin \
+             bound"
+        } else {
+            "no realization of the subject was tessellated on this run, so no \
+             achieved deviation exists for it and this run does not measure \
+             representation tolerance; check that the subject declares a \
+             realization"
+        }
+    }
+
+    /// The reason recorded on a `RepresentationWithin` Indeterminate decided by
+    /// the engine. An empty `achieved_repr_tol` has the causes of
+    /// [`Engine::unmeasured_reason`]; a non-empty one means this surface DID
+    /// measure, just not this subject, so the reason names no kernel and no
+    /// other surface.
+    fn representation_within_indeterminate_reason(&self) -> IndeterminateReason {
+        let detail = if self.achieved_repr_tol.is_empty() {
+            self.unmeasured_reason()
+        } else {
+            "this run recorded no achieved representation deviation for the subject"
+        };
+        IndeterminateReason::Transient(TransientReason::MeasurementUnavailable {
+            detail: detail.to_string(),
+        })
+    }
+
+    /// Whether this engine holds a geometry kernel that can produce the
+    /// representation measurement a `RepresentationWithin` bound needs — i.e.
+    /// one claiming at least one `(_, ReprKind::BRep)` pair.
+    ///
+    /// This is the arm-1 discriminator of [`Engine::unmeasured_reason`]; see
+    /// that method's "Why capability, not `default_kernel_name.is_none()`"
+    /// section for why kernel PRESENCE is the wrong question (manifold
+    /// registers unconditionally, so no shipped binary has an empty registry).
+    ///
+    /// ## Why the answer is RECORDED at construction, not looked up here
+    ///
+    /// `self.geometry_kernels` is a `BTreeMap<String, Box<dyn GeometryKernel>>`
+    /// and [`reify_ir::GeometryKernel`] is a purely behavioural trait
+    /// (`execute` / `execute_with_history` / `query`) with no capability
+    /// accessor — the descriptor lives on the `KernelRegistration` record, not
+    /// on the kernel object.  Keying the static registry by this engine's own
+    /// kernel NAMES looks like it asks the capability question about the
+    /// kernels THIS engine holds, but it does NOT on any shipped binary:
+    /// [`Engine::with_registered_kernel`] — the constructor every production
+    /// constraint-dispatching surface uses (reify-cli `cmd_check` /
+    /// `cmd_build`, the GUI `EngineSession`) — forwards through
+    /// `Engine::with_prelude`, which files the picked adapter under the
+    /// synthetic `Engine::DEFAULT_KERNEL_NAME` key, NEVER under its real
+    /// registry name.  That key resolves to `None` in the registry, so a
+    /// lookup-only implementation hands back the benefit-of-the-doubt `true`
+    /// unconditionally and arm 1 of [`Engine::unmeasured_reason`] is dead on
+    /// exactly the surfaces it was written for (task 6169 review round).
+    ///
+    /// So the inventory-driven constructors record the picked registration's
+    /// declared capability into `Engine::repr_capable_kernel` while they still
+    /// hold it, and this method reads that first.  One `Engine` field is what
+    /// that costs; the lookup shape cannot be made to work from here.
+    ///
+    /// ## An UNRECORDED kernel is not evidence of INcapacity
+    ///
+    /// When nothing was recorded (`repr_capable_kernel == None`) a kernel whose
+    /// name is absent from the static registry counts as capable.  The only
+    /// shape that produces one is `Engine::new` /
+    /// `with_prelude` with a caller-supplied `Some(kernel)`, which inserts
+    /// under the synthetic `Engine::DEFAULT_KERNEL_NAME` key documented to
+    /// collide with no real adapter name — a unit-test seam, never a CLI or
+    /// GUI surface (both build via `with_registered_kernel`, which DOES
+    /// record).  Such an adapter
+    /// has DECLARED nothing, so reading it as incapable would have the engine
+    /// assert a fact it has not established — the same INV-SF-4 sin ζ removes.
+    /// The rule is therefore: judge a kernel by the capabilities it declared,
+    /// and give one that declared none the benefit of the doubt.  Concretely
+    /// this keeps `Engine::new(checker, Some(stub))` standing in for a
+    /// measurement-capable `reify build` engine in tests that must run in both
+    /// kernel modes.
+    ///
+    /// An EMPTY `geometry_kernels` still yields `false` on both paths (the
+    /// recorded path stores `false` when the picker yielded nothing) — there
+    /// is no adapter to extend any benefit to — preserving the stub-mode semantics the
+    /// previous discriminator had for `Engine::new(checker, None)`.
+    ///
+    /// ## Cost
+    ///
+    /// `(reg.descriptor)()` allocates a fresh `CapabilityDescriptor` per
+    /// examined kernel, exactly as `pick_lexmin_brep_kernel` does.  That is
+    /// acceptable here for the same reason it is there — and more so: this runs
+    /// only on the cold path where a `RepresentationWithin` already came back
+    /// Indeterminate with an empty map, never on the C2 hot path, which returns
+    /// before any of this.
+    fn has_repr_capable_kernel(&self) -> bool {
+        // Construction-recorded answer wins: the inventory-driven constructors
+        // are the only sites that hold the `KernelRegistration` the capability
+        // is declared on, and `with_registered_kernel` (the constructor EVERY
+        // production surface uses) files its pick under the synthetic
+        // `DEFAULT_KERNEL_NAME`, which no registry lookup can resolve.
+        if let Some(capable) = self.repr_capable_kernel {
+            return capable;
+        }
+        // Fallback: the caller-supplied-kernel seam (`Engine::new` /
+        // `with_prelude` with `Some(kernel)`), which records nothing. An
+        // adapter that declared nothing gets the benefit of the doubt; an
+        // EMPTY map still yields `false` (no adapter to extend it to).
+        let registry = crate::kernel_registry::registry();
+        self.geometry_kernels.keys().any(|name| {
+            registry
+                .get(name.as_str())
+                .is_none_or(|reg| (reg.descriptor)().supports_any_repr(ReprKind::BRep))
+        })
+    }
 
     /// Replace occurrences of the raw ConstraintNodeId string in diagnostic
     /// messages with a human-readable label, when a label is present.
@@ -677,14 +1120,33 @@ impl Engine {
         result: ConstraintResult,
         label: Option<&str>,
     ) {
+        let (entry, msgs) = Self::labeled_entry(result, label);
+        diagnostics.extend(msgs);
+        constraint_results.push(entry);
+    }
+
+    /// Split a `ConstraintResult` into its `ConstraintCheckEntry` and its
+    /// diagnostic messages, label-rewritten by [`Self::labeled_diagnostics`].
+    fn labeled_entry(
+        result: ConstraintResult,
+        label: Option<&str>,
+    ) -> (ConstraintCheckEntry, Vec<Diagnostic>) {
+        debug_assert!(
+            result.indeterminate_reason.is_none()
+                || result.satisfaction == Satisfaction::Indeterminate,
+            "constraint {} records an indeterminate reason on a {:?} verdict",
+            result.id,
+            result.satisfaction,
+        );
         let mut msgs = result.diagnostics.messages;
         Self::labeled_diagnostics(&mut msgs, &result.id, label);
-        diagnostics.extend(msgs);
-        constraint_results.push(ConstraintCheckEntry {
+        let entry = ConstraintCheckEntry {
             id: result.id,
             label: label.map(|s| s.to_string()),
             satisfaction: result.satisfaction,
-        });
+            indeterminate_reason: result.indeterminate_reason,
+        };
+        (entry, msgs)
     }
 
     /// Incrementally re-evaluate and check constraints after changing a parameter.
@@ -701,9 +1163,23 @@ impl Engine {
         &self,
         values: &ValueMap,
     ) -> Result<(Vec<ConstraintCheckEntry>, Vec<Diagnostic>), EngineError> {
+        let (results, mut diagnostics) = self.recheck_active_constraints(values, |_| true)?;
         let mut constraint_results = Vec::new();
-        let mut diagnostics = Vec::new();
+        for (result, label) in results {
+            Self::push_constraint_result(&mut diagnostics, &mut constraint_results, result, label);
+        }
+        Ok((constraint_results, diagnostics))
+    }
 
+    /// Re-dispatch the snapshot graph's active constraints that pass `include`
+    /// against `values` (overlaid with the active purpose let-cells). Returns
+    /// each result paired with its node's label, in graph order, plus the
+    /// dispatch-level diagnostics.
+    fn recheck_active_constraints(
+        &self,
+        values: &ValueMap,
+        mut include: impl FnMut(&ConstraintNodeId) -> bool,
+    ) -> Result<(LabeledConstraintResults<'_>, Vec<Diagnostic>), EngineError> {
         let state = self
             .eval_state
             .as_ref()
@@ -738,53 +1214,105 @@ impl Engine {
             .constraints
             .iter()
             .map(|(_, cnode)| cnode)
-            .filter(|cnode| active_ids.contains(&cnode.id))
+            .filter(|cnode| active_ids.contains(&cnode.id) && include(&cnode.id))
             .collect();
 
-        if !constraint_nodes.is_empty() {
-            let entries: Vec<_> = constraint_nodes
-                .iter()
-                .map(|cnode| {
-                    (
-                        cnode.id.clone(),
-                        &cnode.expr,
-                        cnode.optimized_target.as_deref(),
-                    )
-                })
-                .collect();
+        if constraint_nodes.is_empty() {
+            return Ok((Vec::new(), Vec::new()));
+        }
+        let entries: Vec<_> = constraint_nodes
+            .iter()
+            .map(|cnode| {
+                (
+                    cnode.id.clone(),
+                    &cnode.expr,
+                    cnode.optimized_target.as_deref(),
+                )
+            })
+            .collect();
 
-            let (results, dispatch_diags) = self.dispatch_constraints(
-                entries,
-                &effective_values,
-                &self.functions,
-                Some(&state.snapshot.values),
-            );
-            diagnostics.extend(dispatch_diags);
-            // Task 846.3: `zip` silently truncates to the shorter iterator, so
-            // a length mismatch must be caught BEFORE the loop runs. These are
-            // debug-only checks — the invariants already hold today, but future
-            // refactors of `dispatch_constraints` could desync the two sequences.
-            debug_assert_eq!(
-                results.len(),
-                constraint_nodes.len(),
-                "check_constraints_with_values: results/constraint_nodes length mismatch",
-            );
-            for (result, cnode) in results.into_iter().zip(constraint_nodes.iter()) {
+        let (results, dispatch_diags) = self.dispatch_constraints(
+            entries,
+            &effective_values,
+            &self.functions,
+            Some(&state.snapshot.values),
+        );
+        // Task 846.3: `zip` silently truncates to the shorter iterator, so
+        // a length mismatch must be caught BEFORE the loop runs. These are
+        // debug-only checks — the invariants already hold today, but future
+        // refactors of `dispatch_constraints` could desync the two sequences.
+        debug_assert_eq!(
+            results.len(),
+            constraint_nodes.len(),
+            "recheck_active_constraints: results/constraint_nodes length mismatch",
+        );
+        let labeled = results
+            .into_iter()
+            .zip(constraint_nodes)
+            .map(|(result, cnode)| {
                 debug_assert_eq!(
                     result.id, cnode.id,
-                    "check_constraints_with_values: result.id must match cnode.id \
+                    "recheck_active_constraints: result.id must match cnode.id \
                      — dispatch_constraints reordered results or constraint_nodes changed",
                 );
-                Self::push_constraint_result(
-                    &mut diagnostics,
-                    &mut constraint_results,
-                    result,
-                    cnode.label.as_deref(),
-                );
-            }
-        }
+                (result, cnode.label.as_deref())
+            })
+            .collect();
+        Ok((labeled, dispatch_diags))
+    }
 
-        Ok((constraint_results, diagnostics))
+    /// Re-check only the `is_candidate` constraints against `values`, returning
+    /// an upgrade for each one whose verdict is now definite (a verdict that
+    /// stays Indeterminate is omitted — this never downgrades).
+    ///
+    /// A geometric Conforms (explicit `actual`) is never dispatched: its verdict
+    /// belongs to [`Self::measure_gdt_conformance`], and the language-level
+    /// predicate never reads `actual`, so it would call an unmeasured part
+    /// Satisfied (C1). Dispatch-level diagnostics are dropped: no single
+    /// constraint owns them.
+    pub fn upgrade_indeterminate_verdicts(
+        &self,
+        module: &CompiledModule,
+        values: &ValueMap,
+        mut is_candidate: impl FnMut(&ConstraintNodeId) -> bool,
+    ) -> Result<Vec<ConstraintUpgrade>, EngineError> {
+        let geometric: HashSet<&ConstraintNodeId> = module
+            .templates
+            .iter()
+            .flat_map(template_constraints)
+            .filter(|c| is_geometric_conforms(c))
+            .map(|c| &c.id)
+            .collect();
+        let (results, _dispatch_diags) = self
+            .recheck_active_constraints(values, |id| is_candidate(id) && !geometric.contains(id))?;
+        let definite: LabeledConstraintResults<'_> = results
+            .into_iter()
+            .filter(|(result, _)| result.satisfaction != Satisfaction::Indeterminate)
+            .collect();
+        if definite.is_empty() {
+            return Ok(Vec::new());
+        }
+        let subjects: Vec<Cow<str>> = definite
+            .iter()
+            .map(|(result, label)| diagnostic_subject(&result.id, *label))
+            .collect();
+        let graph = &self
+            .eval_state
+            .as_ref()
+            .ok_or(EngineError::NotInitialized)?
+            .snapshot
+            .graph;
+        let settled = settled_subjects(graph, &subjects);
+        Ok(definite
+            .into_iter()
+            .zip(&subjects)
+            .map(|((result, label), subject)| {
+                let settled_subject = settled
+                    .contains(subject.as_ref())
+                    .then_some(subject.as_ref());
+                ConstraintUpgrade::new(result, label, settled_subject)
+            })
+            .collect())
     }
 
     /// Check constraints using the current snapshot values, without re-calling eval().
@@ -1521,15 +2049,11 @@ impl Engine {
     ) {
         // Fast no-op for non-GD&T modules (B4 / C2): keep every module without an
         // explicit-`actual` Conforms byte-identical and allocation-free.
-        let has_geometric_conforms = module.templates.iter().any(|t| {
-            let top = t.constraints.iter();
-            let guarded = t
-                .guarded_groups
-                .iter()
-                .flat_map(|g| g.constraints.iter().chain(g.else_constraints.iter()));
-            top.chain(guarded)
-                .any(|c| c.arg_bindings.iter().any(|(n, _)| n == "actual"))
-        });
+        let has_geometric_conforms = module
+            .templates
+            .iter()
+            .flat_map(template_constraints)
+            .any(is_geometric_conforms);
         if !has_geometric_conforms {
             return;
         }
@@ -1617,10 +2141,7 @@ impl Engine {
             let mut work = Vec::new();
             for template in &module.templates {
                 for c in Self::collect_active_constraints(template, values) {
-                    // η detection signal: an EXPLICIT `actual` binding. The Conforms
-                    // predicate never references `actual`, so this binding (not the
-                    // body) is the only trace of geometric intent.
-                    if !c.arg_bindings.iter().any(|(n, _)| n == "actual") {
+                    if !is_geometric_conforms(c) {
                         continue;
                     }
                     let binding = |name: &str| {
@@ -1746,23 +2267,18 @@ impl Engine {
             .and_then(|n| self.geometry_kernels.get(n));
 
         for w in work {
-            let (satisfaction, diag): (Satisfaction, Option<Diagnostic>) = match w.resolution {
-                GdtConformanceResolution::Indeterminate(reason) => (
-                    Satisfaction::Indeterminate,
-                    Some(gdt_indeterminate_diag(w.span, &reason)),
-                ),
+            let (satisfaction, reason, diag) = match w.resolution {
+                GdtConformanceResolution::Indeterminate(detail) => gdt_unmeasured(w.span, detail),
                 GdtConformanceResolution::Resolved {
                     actual,
                     feature,
                     zone_m,
                 } => match &kernel {
-                    None => (
-                        Satisfaction::Indeterminate,
-                        Some(gdt_indeterminate_diag(
-                            w.span,
-                            "no geometry kernel available to measure the `actual` deviation \
-                             against the nominal feature",
-                        )),
+                    None => gdt_unmeasured(
+                        w.span,
+                        "no geometry kernel available to measure the `actual` deviation \
+                         against the nominal feature"
+                            .to_string(),
                     ),
                     Some(k) => {
                         let query = reify_ir::GeometryQuery::MaxDeviation {
@@ -1773,23 +2289,17 @@ impl Engine {
                         match k.query(&query) {
                             Ok(reply) => match measured_deviation_m(&reply) {
                                 Some(measured_m) => gdt_verdict(zone_m, measured_m, w.span),
-                                None => (
-                                    Satisfaction::Indeterminate,
-                                    Some(gdt_indeterminate_diag(
-                                        w.span,
-                                        &format!(
-                                            "geometry kernel returned an unusable MaxDeviation \
-                                             reply ({reply:?})"
-                                        ),
-                                    )),
+                                None => gdt_unmeasured(
+                                    w.span,
+                                    format!(
+                                        "geometry kernel returned an unusable MaxDeviation \
+                                         reply ({reply:?})"
+                                    ),
                                 ),
                             },
-                            Err(err) => (
-                                Satisfaction::Indeterminate,
-                                Some(gdt_indeterminate_diag(
-                                    w.span,
-                                    &format!("geometry kernel MaxDeviation query failed: {err}"),
-                                )),
+                            Err(err) => gdt_unmeasured(
+                                w.span,
+                                format!("geometry kernel MaxDeviation query failed: {err}"),
                             ),
                         }
                     }
@@ -1799,13 +2309,14 @@ impl Engine {
             // Weave: OVERRIDE the matching entry in caller order; push if absent
             // (defensive — the scalar path normally pre-populates it).
             if let Some(entry) = constraint_results.iter_mut().find(|e| e.id == w.id) {
-                entry.satisfaction = satisfaction;
+                entry.set_verdict(satisfaction, reason);
             } else {
-                constraint_results.push(ConstraintCheckEntry {
-                    id: w.id.clone(),
-                    label: Some("Conforms".to_string()),
+                constraint_results.push(ConstraintCheckEntry::new(
+                    w.id.clone(),
+                    Some("Conforms".to_string()),
                     satisfaction,
-                });
+                    reason,
+                ));
             }
             if let Some(d) = diag {
                 diagnostics.push(d);
@@ -2080,6 +2591,23 @@ impl Engine {
 
 // ── η/4480 GD&T conformance pass helpers ─────────────────────────────────────
 
+/// Every constraint a template declares, guard-blind: top-level, then each
+/// guarded group's `constraints` and `else_constraints`.
+fn template_constraints(t: &TopologyTemplate) -> impl Iterator<Item = &CompiledConstraint> {
+    let guarded = t
+        .guarded_groups
+        .iter()
+        .flat_map(|g| g.constraints.iter().chain(g.else_constraints.iter()));
+    t.constraints.iter().chain(guarded)
+}
+
+/// η detection signal: an EXPLICIT `actual` binding. The Conforms predicate
+/// never references `actual`, so this binding (not the body) is the only trace
+/// of geometric intent.
+fn is_geometric_conforms(c: &CompiledConstraint) -> bool {
+    c.arg_bindings.iter().any(|(n, _)| n == "actual")
+}
+
 /// Tessellation deflection forwarded to [`reify_ir::GeometryQuery::MaxDeviation`]'s
 /// `tolerance` by [`Engine::measure_gdt_conformance`]. Mirrors
 /// `geometry_ops::MAX_DEVIATION_TESSELLATION_TOLERANCE_M` (= 0.0001 m) and
@@ -2126,18 +2654,15 @@ fn measured_deviation_m(reply: &Value) -> Option<f64> {
 /// else Violated with a diagnostic carrying the measured magnitude + zone width
 /// (both in mm). Mirrors the shipped scalar predicate `effective_tolerance_zone(...)
 /// >= measured_deviation`.
-fn gdt_verdict(
-    zone_m: f64,
-    measured_m: f64,
-    span: SourceSpan,
-) -> (Satisfaction, Option<Diagnostic>) {
+fn gdt_verdict(zone_m: f64, measured_m: f64, span: SourceSpan) -> GdtOutcome {
     if zone_m >= measured_m {
-        return (Satisfaction::Satisfied, None);
+        return (Satisfaction::Satisfied, None, None);
     }
     let measured_mm = measured_m * 1e3;
     let zone_mm = zone_m * 1e3;
     (
         Satisfaction::Violated,
+        None,
         Some(
             Diagnostic::error(format!(
                 "Conforms VIOLATED: measured deviation {measured_mm:.4} mm exceeds the \
@@ -2149,16 +2674,24 @@ fn gdt_verdict(
     )
 }
 
-/// Build the Indeterminate diagnostic for a geometric Conforms that could not be
-/// measured (missing kernel, unrealizable handle, kernel error). Warning, not
-/// error — Indeterminate never fails the check (C1).
-fn gdt_indeterminate_diag(span: SourceSpan, reason: &str) -> Diagnostic {
-    Diagnostic::warning(format!("Conforms INDETERMINATE: {reason}"))
+/// A woven geometric-Conforms verdict: the satisfaction, the reason recorded
+/// when it is Indeterminate, and the diagnostic reporting it.
+type GdtOutcome = (Satisfaction, Option<IndeterminateReason>, Option<Diagnostic>);
+
+/// The Indeterminate outcome for a geometric Conforms that could not be
+/// measured (missing kernel, unrealizable handle, kernel error). The warning is
+/// rendered from the recorded reason; Warning, not error — Indeterminate never
+/// fails the check (C1).
+fn gdt_unmeasured(span: SourceSpan, detail: String) -> GdtOutcome {
+    let reason =
+        IndeterminateReason::Transient(TransientReason::MeasurementUnavailable { detail });
+    let diagnostic = Diagnostic::warning(format!("Conforms INDETERMINATE: {reason}"))
         .with_code(DiagnosticCode::ConstraintIndeterminate)
         .with_label(DiagnosticLabel::new(
             span,
             "geometric conformance could not be measured",
-        ))
+        ));
+    (Satisfaction::Indeterminate, Some(reason), Some(diagnostic))
 }
 
 /// Extract a `Value::Enum` variant string from a `StructureInstanceData.fields` map.
@@ -2773,8 +3306,8 @@ mod gdt_conformance_tests {
     use reify_core::DimensionVector;
     use reify_core::identity::{RealizationNodeId, ValueCellId};
     use reify_ir::{
-        CompiledExprKind, GeometryHandleId, PersistentMap, Satisfaction, StructureInstanceData,
-        StructureTypeId, Value, ValueMap,
+        CompiledExprKind, GeometryHandleId, IndeterminateReason, PersistentMap, Satisfaction,
+        StructureInstanceData, StructureTypeId, TransientReason, Value, ValueMap,
     };
     use reify_test_support::{MockGeometryKernel, parse_and_compile_with_stdlib};
 
@@ -2910,6 +3443,7 @@ structure def Probe {
             id: node_id.clone(),
             label,
             satisfaction: Satisfaction::Satisfied,
+            indeterminate_reason: None,
         }];
         let mut diags = Vec::new();
         engine.measure_gdt_conformance(&module, &values, &mut results, &mut diags);
@@ -2954,10 +3488,16 @@ structure def Probe {
         );
         let mut engine = Engine::new(Box::new(SimpleConstraintChecker), Some(Box::new(mock)));
 
+        // The scalar path's Indeterminate, with the reason it recorded, is the
+        // entry the geometric verdict upgrades.
+        let scalar_reason = IndeterminateReason::Transient(TransientReason::UndefInputs {
+            cells: vec![ref_cell(conforms, "actual")],
+        });
         let mut results = vec![ConstraintCheckEntry {
             id: node_id,
             label: None,
             satisfaction: Satisfaction::Indeterminate,
+            indeterminate_reason: Some(scalar_reason),
         }];
         let mut diags = Vec::new();
         engine.measure_gdt_conformance(&module, &values, &mut results, &mut diags);
@@ -2966,6 +3506,10 @@ structure def Probe {
             results[0].satisfaction,
             Satisfaction::Satisfied,
             "measured 0mm within the 0.1mm zone → Satisfied"
+        );
+        assert_eq!(
+            results[0].indeterminate_reason, None,
+            "an upgraded verdict must not keep the scalar path's stale reason"
         );
         assert!(
             !diags.iter().any(|d| d.message.contains("VIOLATED")),
@@ -2990,6 +3534,7 @@ structure def Probe {
             id: node_id,
             label: None,
             satisfaction: Satisfaction::Satisfied,
+            indeterminate_reason: None,
         }];
         let mut diags = Vec::new();
         engine.measure_gdt_conformance(&module, &values, &mut results, &mut diags);
@@ -3000,15 +3545,53 @@ structure def Probe {
             "no kernel → Indeterminate (never a false Violated)"
         );
         assert_ne!(results[0].satisfaction, Satisfaction::Violated);
+        let detail = measurement_unavailable_detail(&results[0]);
+        assert!(
+            detail.to_lowercase().contains("kernel"),
+            "the recorded reason must name the missing kernel: {detail}"
+        );
         let msg = diags
             .iter()
             .map(|d| d.message.as_str())
             .find(|m| m.contains("INDETERMINATE"))
             .unwrap_or_else(|| panic!("expected an INDETERMINATE diagnostic, got: {diags:#?}"));
-        assert!(
-            msg.to_lowercase().contains("kernel"),
-            "Indeterminate diagnostic must name the missing kernel: {msg}"
+        assert_eq!(
+            msg,
+            format!("Conforms INDETERMINATE: {detail}"),
+            "the warning is rendered from the recorded reason"
         );
+    }
+
+    /// The defensive push-if-absent arm records the same reason as the
+    /// override arm: an appended Indeterminate entry is never reasonless.
+    #[test]
+    fn explicit_actual_no_kernel_appended_entry_records_its_reason() {
+        let module = parse_and_compile_with_stdlib(GEOMETRIC_SOURCE);
+        let conforms = find_conforms(&module);
+        let values = geometric_values(conforms, GeometryHandleId(202), GeometryHandleId(101));
+        let mut engine = Engine::new(Box::new(SimpleConstraintChecker), None);
+
+        let mut results = Vec::new();
+        let mut diags = Vec::new();
+        engine.measure_gdt_conformance(&module, &values, &mut results, &mut diags);
+
+        assert_eq!(results.len(), 1, "the absent entry is appended");
+        assert_eq!(results[0].label.as_deref(), Some("Conforms"));
+        assert_eq!(results[0].satisfaction, Satisfaction::Indeterminate);
+        let detail = measurement_unavailable_detail(&results[0]);
+        assert!(
+            detail.to_lowercase().contains("kernel"),
+            "the recorded reason must name the missing kernel: {detail}"
+        );
+    }
+
+    fn measurement_unavailable_detail(entry: &ConstraintCheckEntry) -> &str {
+        match &entry.indeterminate_reason {
+            Some(IndeterminateReason::Transient(TransientReason::MeasurementUnavailable {
+                detail,
+            })) => detail,
+            other => panic!("expected a MeasurementUnavailable reason, got {other:?}"),
+        }
     }
 
     /// (d) A Conforms with NO explicit actual: the pass must leave its scalar
@@ -3031,6 +3614,7 @@ structure def Probe {
             id: node_id,
             label: Some("Conforms".to_string()),
             satisfaction: Satisfaction::Satisfied,
+            indeterminate_reason: None,
         }];
         let mut diags = Vec::new();
         engine.measure_gdt_conformance(&module, &ValueMap::new(), &mut results, &mut diags);
@@ -3174,6 +3758,564 @@ structure def Probe {
         assert!(
             pos(&geometric_id) < pos(&scalar_id) && pos(&scalar_id) < pos(&ordinary_id),
             "weave must preserve caller (declaration) order"
+        );
+    }
+}
+
+#[cfg(test)]
+mod unmeasured_reason_capability_tests {
+    use reify_constraints::SimpleConstraintChecker;
+
+    use crate::Engine;
+
+    /// The shipped stub-mode shape, isolated to the ONE axis on which a
+    /// CAPABILITY test differs from a PRESENCE test: a registered kernel that
+    /// cannot produce a BRep tessellation and that IS this engine's
+    /// `default_kernel_name`.
+    ///
+    /// Every no-OCCT CLI/GUI binary is in exactly this shape —
+    /// `reify-kernel-manifold`'s `inventory::submit!` is unconditional, so
+    /// `pick_lexmin_brep_kernel`'s `.or_else(|| registered.values().next())`
+    /// fallback hands a stub binary `default_kernel_name == Some("manifold")`
+    /// — and it is unreachable through any public `Engine` constructor in this
+    /// crate's test binary: `with_registered_kernel{,s}` consult the LIVE
+    /// registry, which on an OCCT build always yields OCCT. Hence a unit test
+    /// that sets the field directly rather than an integration test.
+    ///
+    /// `"openvdb"` stands in for the CLI's `"manifold"`. reify-eval links no
+    /// manifold adapter, so `"manifold"` is absent from THIS binary's registry
+    /// and would take [`Engine::has_repr_capable_kernel`]'s deliberate
+    /// benefit-of-the-doubt path for kernels that declared nothing. OpenVDB is
+    /// registered here and declares Voxel/Mesh only: the same "registered, but
+    /// cannot produce the measurement" fact, expressed with a kernel this
+    /// binary actually holds.
+    ///
+    /// ## Why this gate is load-bearing
+    ///
+    /// It is the only test in this task's suite that is RED against the
+    /// previous `default_kernel_name.is_none()` discriminator on an OCCT
+    /// build. That predicate read a `Some` default as "a kernel can measure",
+    /// so with capture ON it selected arm 3 — "check that the subject declares
+    /// a realization" — blaming the subject for a kernel's missing capability.
+    /// The suite's other non-measuring cases all reach their incapable kernel
+    /// set via `Engine::new(_, None)`, whose `default_kernel_name` is `None`;
+    /// the old predicate routed those to arm 1 as well, so they pass under
+    /// BOTH discriminators and cannot catch a regression here.
+    #[test]
+    fn registered_non_brep_default_kernel_is_not_measurement_capable() {
+        let mut engine = Engine::new(Box::new(SimpleConstraintChecker), None);
+        if !engine.ensure_openvdb_kernel() {
+            eprintln!(
+                "skipping stub-mode capability gate: OpenVDB is absent from this \
+                 binary's inventory registry (cfg(not(has_openvdb)))"
+            );
+            return;
+        }
+        // The axis under test: the Mesh-only adapter is not merely present, it
+        // is what the lex-min picker would hand a stub-mode binary.
+        engine.default_kernel_name =
+            Some(crate::kernel_registry::openvdb_kernel_name().to_string());
+        // Capture ON, so `capture_repr_tol` cannot be what selects the arm.
+        engine.set_capture_repr_tol(true);
+
+        assert!(
+            !engine.has_repr_capable_kernel(),
+            "a kernel declaring no (_, ReprKind::BRep) pair cannot produce the \
+             measurement, however the lex-min picker selected it as default"
+        );
+
+        let reason = engine.unmeasured_reason();
+        assert!(
+            reason.contains("geometry kernel"),
+            "INV-SF-4: the missing CAPABILITY is the established cause and is \
+             what must be named. Got: {reason:?}"
+        );
+        assert!(
+            !reason.contains("check that the subject declares a realization"),
+            "arm 3 blames the subject for a kernel's missing capability — the \
+             misattribution class ζ exists to remove, merely relocated. Got: {reason:?}"
+        );
+        assert!(
+            !reason.contains("reify check"),
+            "arm 2 sends a stub-mode run to a subcommand whose binary has no \
+             capable kernel either — the two-hop dead end. Got: {reason:?}"
+        );
+    }
+}
+
+// ── Indeterminate-verdict upgrade (task 6979) ────────────────────────────────
+//
+// Black-box tests of `Engine::upgrade_indeterminate_verdicts` against the real
+// `SimpleConstraintChecker`, driven WITHOUT a geometry kernel so a geometric
+// Conforms is deterministically Indeterminate after `check()`.
+#[cfg(test)]
+mod indeterminate_upgrade_tests {
+    use reify_constraints::SimpleConstraintChecker;
+    use reify_core::{
+        ConstraintNodeId, Diagnostic, DiagnosticCode, DimensionVector, Severity, ValueCellId,
+    };
+    use reify_ir::{Satisfaction, Value, ValueMap};
+    use reify_test_support::parse_and_compile_with_stdlib;
+
+    use crate::{ConstraintUpgrade, Engine, replace_superseded_constraint_diagnostics};
+
+    const GEOMETRIC_AND_OPEN_SOURCE: &str = r#"
+structure def Probe {
+    param tol : Flatness = Flatness(tolerance_value: 0.1mm, feature: box(1mm, 1mm, 1mm))
+    param act : Geometry = box(1mm, 1mm, 1mm)
+    param slack : Length = auto
+    constraint Conforms(tolerance: tol, measured_deviation: 0mm, feature_departure: 0mm, actual: act)
+    constraint slack > 0.1mm
+}
+"#;
+
+    const THREE_OPEN_SOURCE: &str = r#"
+structure def Probe {
+    param a : Length = auto
+    param b : Length = auto
+    param c : Length = auto
+    constraint a < 1mm
+    constraint b > 0mm
+    constraint c > 0mm
+}
+"#;
+
+    fn probe_constraints(
+        module: &reify_compiler::CompiledModule,
+    ) -> &[reify_compiler::CompiledConstraint] {
+        &module
+            .templates
+            .iter()
+            .find(|t| t.name == "Probe")
+            .expect("Probe template")
+            .constraints
+    }
+
+    fn with_lengths(values: &ValueMap, cells: &[(&str, f64)]) -> ValueMap {
+        with_entity_lengths(values, "Probe", cells)
+    }
+
+    fn with_entity_lengths(values: &ValueMap, entity: &str, cells: &[(&str, f64)]) -> ValueMap {
+        let mut v = values.clone();
+        for (member, si_value) in cells {
+            v.insert(
+                ValueCellId::new(entity, *member),
+                Value::Scalar {
+                    si_value: *si_value,
+                    dimension: DimensionVector::LENGTH,
+                },
+            );
+        }
+        v
+    }
+
+    fn satisfaction_of(
+        entries: &[crate::ConstraintCheckEntry],
+        id: &ConstraintNodeId,
+    ) -> Satisfaction {
+        entries
+            .iter()
+            .find(|e| &e.id == id)
+            .unwrap_or_else(|| panic!("constraint {id} missing from {entries:#?}"))
+            .satisfaction
+    }
+
+    fn upgrade_for<'a>(
+        upgrades: &'a [ConstraintUpgrade],
+        id: &ConstraintNodeId,
+    ) -> Option<&'a ConstraintUpgrade> {
+        upgrades.iter().find(|u| &u.entry().id == id)
+    }
+
+    fn assert_all_definite(upgrades: &[ConstraintUpgrade]) {
+        for u in upgrades {
+            assert_ne!(
+                u.entry().satisfaction,
+                Satisfaction::Indeterminate,
+                "an upgrade is never Indeterminate: {:?}",
+                u.entry()
+            );
+        }
+    }
+
+    #[test]
+    fn upgrade_never_adopts_a_language_level_verdict_for_a_geometric_conforms() {
+        let module = parse_and_compile_with_stdlib(GEOMETRIC_AND_OPEN_SOURCE);
+        let constraints = probe_constraints(&module);
+        let geometric_id = constraints
+            .iter()
+            .find(|c| c.arg_bindings.iter().any(|(n, _)| n == "actual"))
+            .expect("geometric Conforms (explicit actual)")
+            .id
+            .clone();
+        let slack_id = constraints
+            .iter()
+            .find(|c| c.arg_bindings.is_empty())
+            .expect("slack constraint (no arg bindings)")
+            .id
+            .clone();
+
+        let mut engine = Engine::new(Box::new(SimpleConstraintChecker), None);
+        let checked = engine.check(&module);
+        assert_eq!(
+            satisfaction_of(&checked.constraint_results, &geometric_id),
+            Satisfaction::Indeterminate,
+            "precondition: no kernel, so the measure pass leaves the geometric Conforms Indeterminate"
+        );
+        assert_eq!(
+            satisfaction_of(&checked.constraint_results, &slack_id),
+            Satisfaction::Indeterminate,
+            "precondition: no solver, so `slack` stays Undef"
+        );
+
+        let values = with_lengths(&checked.values, &[("slack", 0.005)]);
+        let (language_level, _) = engine
+            .check_constraints_with_values(&values)
+            .expect("language-level re-check");
+        assert_eq!(
+            satisfaction_of(&language_level, &geometric_id),
+            Satisfaction::Satisfied,
+            "non-vacuity: the language-level predicate calls the unmeasured Conforms Satisfied"
+        );
+
+        let upgrades = engine
+            .upgrade_indeterminate_verdicts(&module, &values, |_| true)
+            .expect("upgrade re-check");
+        assert_all_definite(&upgrades);
+        assert_eq!(
+            upgrade_for(&upgrades, &slack_id).map(|u| u.entry().satisfaction),
+            Some(Satisfaction::Satisfied),
+            "the now-determined slack constraint is upgraded: {upgrades:#?}"
+        );
+        assert!(
+            upgrade_for(&upgrades, &geometric_id).is_none(),
+            "a geometric Conforms verdict belongs to the measure pass (C1), never the \
+             language-level predicate: {upgrades:#?}"
+        );
+    }
+
+    #[test]
+    fn upgrade_dispatches_only_candidates_and_carries_each_constraints_own_diagnostics() {
+        let module = parse_and_compile_with_stdlib(THREE_OPEN_SOURCE);
+        let constraints = probe_constraints(&module);
+        let [a_id, b_id, c_id] = [0, 1, 2].map(|i| constraints[i].id.clone());
+
+        let mut engine = Engine::new(Box::new(SimpleConstraintChecker), None);
+        let checked = engine.check(&module);
+        for id in [&a_id, &b_id, &c_id] {
+            assert_eq!(
+                satisfaction_of(&checked.constraint_results, id),
+                Satisfaction::Indeterminate,
+                "precondition: every auto param stays Undef without a solver"
+            );
+        }
+        let values = with_lengths(&checked.values, &[("a", 0.005), ("b", 0.005)]);
+
+        let upgrades = engine
+            .upgrade_indeterminate_verdicts(&module, &values, |_| true)
+            .expect("upgrade re-check");
+        assert_all_definite(&upgrades);
+        assert_eq!(
+            upgrades.len(),
+            2,
+            "a and b become definite, c does not: {upgrades:#?}"
+        );
+
+        let a = upgrade_for(&upgrades, &a_id).expect("a upgraded");
+        assert_eq!(a.entry().satisfaction, Satisfaction::Violated);
+        assert_eq!(
+            a.diagnostics().len(),
+            1,
+            "a carries exactly its own diagnostic"
+        );
+        assert_eq!(
+            a.diagnostics()[0].code,
+            Some(DiagnosticCode::ConstraintViolated)
+        );
+
+        let b = upgrade_for(&upgrades, &b_id).expect("b upgraded");
+        assert_eq!(b.entry().satisfaction, Satisfaction::Satisfied);
+        assert!(
+            b.diagnostics().is_empty(),
+            "a satisfied constraint says nothing"
+        );
+
+        assert!(
+            upgrade_for(&upgrades, &c_id).is_none(),
+            "c is still Indeterminate"
+        );
+
+        let only_b = engine
+            .upgrade_indeterminate_verdicts(&module, &values, |id| *id == b_id)
+            .expect("candidate-filtered re-check");
+        assert_all_definite(&only_b);
+        assert_eq!(
+            only_b.len(),
+            1,
+            "only the candidate is dispatched: {only_b:#?}"
+        );
+        assert_eq!(only_b[0].entry().id, b_id);
+    }
+
+    /// Eleven constraints so the open ones sit at `[1]` and `[10]`: the id of
+    /// `[10]` shares the `Probe#constraint[1` prefix with `[1]`.
+    const ELEVEN_SOURCE: &str = r#"
+structure def Probe {
+    param a : Length = auto
+    param b : Length = auto
+    param k : Length = 1mm
+    constraint k > 0mm
+    constraint a < 1mm
+    constraint k < 2mm
+    constraint k >= 1mm
+    constraint k <= 1mm
+    constraint k > 0.1mm
+    constraint k < 3mm
+    constraint k > 0.2mm
+    constraint k < 4mm
+    constraint k > 0.3mm
+    constraint b > 0mm
+}
+"#;
+
+    fn fingerprint(d: &Diagnostic) -> (Severity, String, Option<DiagnosticCode>) {
+        (d.severity, d.message.clone(), d.code)
+    }
+
+    fn indeterminate_claims(diags: &[Diagnostic]) -> Vec<&Diagnostic> {
+        diags
+            .iter()
+            .filter(|d| d.code == Some(DiagnosticCode::ConstraintIndeterminate))
+            .collect()
+    }
+
+    /// The ConstraintIndeterminate diagnostics naming `subject` as a whole word,
+    /// independent of the checker's sentence around it.
+    fn claims_naming<'a>(diags: &'a [Diagnostic], subject: &str) -> Vec<&'a Diagnostic> {
+        indeterminate_claims(diags)
+            .into_iter()
+            .filter(|d| d.message.split_whitespace().any(|word| word == subject))
+            .collect()
+    }
+
+    fn claim_of<'a>(
+        diags: &'a [Diagnostic],
+        entries: &[crate::ConstraintCheckEntry],
+        id: &ConstraintNodeId,
+    ) -> &'a Diagnostic {
+        let entry = entries.iter().find(|e| &e.id == id).expect("checked entry");
+        let subject = entry.label.clone().unwrap_or_else(|| id.to_string());
+        match claims_naming(diags, &subject)[..] {
+            [claim] => claim,
+            ref hits => panic!("want one claim naming `{subject}`, got {hits:#?}"),
+        }
+    }
+
+    #[test]
+    fn replacement_retracts_only_the_upgraded_constraints_stale_claim_and_appends_its_fresh_diagnostics()
+     {
+        let module = parse_and_compile_with_stdlib(ELEVEN_SOURCE);
+        let constraints = probe_constraints(&module);
+        assert_eq!(constraints.len(), 11, "fixture declares eleven constraints");
+        let (a_id, b_id) = (constraints[1].id.clone(), constraints[10].id.clone());
+
+        let mut engine = Engine::new(Box::new(SimpleConstraintChecker), None);
+        let checked = engine.check(&module);
+        assert_eq!(
+            indeterminate_claims(&checked.diagnostics).len(),
+            2,
+            "precondition: only the two open constraints claim indeterminacy: {:#?}",
+            checked.diagnostics
+        );
+        let a_claim = claim_of(&checked.diagnostics, &checked.constraint_results, &a_id);
+        let b_claim = claim_of(&checked.diagnostics, &checked.constraint_results, &b_id);
+        assert_ne!(fingerprint(a_claim), fingerprint(b_claim));
+
+        let indeterminate: Vec<_> = checked
+            .constraint_results
+            .iter()
+            .filter(|e| e.satisfaction == Satisfaction::Indeterminate)
+            .map(|e| e.id.clone())
+            .collect();
+        let values = with_lengths(&checked.values, &[("a", 0.005)]);
+        let upgrades = engine
+            .upgrade_indeterminate_verdicts(&module, &values, |id| indeterminate.contains(id))
+            .expect("upgrade re-check");
+        assert_eq!(upgrades.len(), 1, "only a became definite: {upgrades:#?}");
+        assert_eq!(upgrades[0].entry().id, a_id);
+        assert_eq!(upgrades[0].entry().satisfaction, Satisfaction::Violated);
+        let fresh: Vec<_> = upgrades[0].diagnostics().iter().map(fingerprint).collect();
+        assert!(
+            fresh
+                .iter()
+                .any(|(_, _, code)| *code == Some(DiagnosticCode::ConstraintViolated)),
+            "the upgrade carries a fresh ConstraintViolated diagnostic: {fresh:#?}"
+        );
+
+        let mut diags = checked.diagnostics.clone();
+        replace_superseded_constraint_diagnostics(&mut diags, &upgrades);
+
+        let remaining: Vec<_> = indeterminate_claims(&diags)
+            .into_iter()
+            .map(fingerprint)
+            .collect();
+        assert_eq!(
+            remaining,
+            vec![fingerprint(b_claim)],
+            "exactly b's untouched claim survives the retraction of a's"
+        );
+        for f in &fresh {
+            assert_eq!(
+                diags.iter().filter(|d| fingerprint(d) == *f).count(),
+                1,
+                "fresh diagnostic {f:?} appears exactly once in {diags:#?}"
+            );
+        }
+        assert_eq!(
+            diags.len(),
+            checked.diagnostics.len() - 1 + upgrades[0].diagnostics().len()
+        );
+        let expected: Vec<_> = checked
+            .diagnostics
+            .iter()
+            .map(fingerprint)
+            .filter(|f| *f != fingerprint(a_claim))
+            .chain(fresh.iter().cloned())
+            .collect();
+        assert_eq!(
+            diags.iter().map(fingerprint).collect::<Vec<_>>(),
+            expected,
+            "every other diagnostic survives in its original relative order, \
+             followed by the upgrade's fresh diagnostics"
+        );
+    }
+
+    /// Two structures instantiating one constraint def: compiler labels are
+    /// scoped per entity, so both constraints carry the label `MinWall#0[0]`.
+    const SHARED_LABEL_SOURCE: &str = r#"
+constraint def MinWall {
+    param wall: Length
+    wall > 2mm
+}
+structure def A {
+    param a : Length = auto
+    constraint MinWall(wall: a)
+}
+structure def B {
+    param b : Length = auto
+    constraint MinWall(wall: b)
+}
+"#;
+
+    const SHARED_LABEL: &str = "MinWall#0[0]";
+
+    /// Check [`SHARED_LABEL_SOURCE`], assert both constraints share the label and
+    /// both claim indeterminacy, then upgrade what `cells` settles.
+    fn shared_label_upgrade(
+        cells: &[(&str, &str, f64)],
+    ) -> (crate::CheckResult, Vec<ConstraintUpgrade>) {
+        let module = parse_and_compile_with_stdlib(SHARED_LABEL_SOURCE);
+        let mut engine = Engine::new(Box::new(SimpleConstraintChecker), None);
+        let checked = engine.check(&module);
+        let labels: Vec<_> = checked
+            .constraint_results
+            .iter()
+            .map(|e| (e.label.as_deref(), e.satisfaction))
+            .collect();
+        assert_eq!(
+            labels,
+            vec![(Some(SHARED_LABEL), Satisfaction::Indeterminate); 2],
+            "precondition: two open constraints share one label"
+        );
+        assert_eq!(
+            claims_naming(&checked.diagnostics, SHARED_LABEL).len(),
+            2,
+            "precondition: each claims indeterminacy under the shared label: {:#?}",
+            checked.diagnostics
+        );
+        let values = cells
+            .iter()
+            .fold(checked.values.clone(), |v, (entity, member, si)| {
+                with_entity_lengths(&v, entity, &[(member, *si)])
+            });
+        let upgrades = engine
+            .upgrade_indeterminate_verdicts(&module, &values, |_| true)
+            .expect("upgrade re-check");
+        (checked, upgrades)
+    }
+
+    #[test]
+    fn replacement_keeps_a_shared_label_claim_while_another_holder_stays_open() {
+        let (checked, upgrades) = shared_label_upgrade(&[("A", "a", 0.001)]);
+        assert_eq!(
+            upgrades.len(),
+            1,
+            "only A's constraint settled: {upgrades:#?}"
+        );
+        assert_eq!(upgrades[0].entry().label.as_deref(), Some(SHARED_LABEL));
+        assert_eq!(upgrades[0].entry().satisfaction, Satisfaction::Violated);
+        assert!(
+            !upgrades[0].diagnostics().is_empty(),
+            "non-vacuity: A's violation carries a fresh diagnostic"
+        );
+
+        let mut diags = checked.diagnostics.clone();
+        replace_superseded_constraint_diagnostics(&mut diags, &upgrades);
+        assert_eq!(
+            claims_naming(&diags, SHARED_LABEL)
+                .into_iter()
+                .map(fingerprint)
+                .collect::<Vec<_>>(),
+            claims_naming(&checked.diagnostics, SHARED_LABEL)
+                .into_iter()
+                .map(fingerprint)
+                .collect::<Vec<_>>(),
+            "B's claim is still true and the text cannot tell it from A's, so both stay"
+        );
+        assert_eq!(
+            diags.len(),
+            checked.diagnostics.len() + upgrades[0].diagnostics().len(),
+            "A's fresh diagnostics are still appended: {diags:#?}"
+        );
+    }
+
+    #[test]
+    fn replacement_retracts_a_shared_label_claim_once_every_holder_is_upgraded() {
+        let (checked, upgrades) = shared_label_upgrade(&[("A", "a", 0.005), ("B", "b", 0.001)]);
+        assert_eq!(upgrades.len(), 2, "both constraints settled: {upgrades:#?}");
+
+        let mut diags = checked.diagnostics.clone();
+        replace_superseded_constraint_diagnostics(&mut diags, &upgrades);
+        let surviving = claims_naming(&diags, SHARED_LABEL);
+        assert!(
+            surviving.is_empty(),
+            "no constraint bearing the label is open, so every claim naming it is stale: \
+             {surviving:#?}"
+        );
+        let fresh: usize = upgrades.iter().map(|u| u.diagnostics().len()).sum();
+        assert!(fresh > 0, "non-vacuity: B's constraint is violated");
+        assert_eq!(diags.len(), checked.diagnostics.len() - 2 + fresh);
+    }
+
+    #[test]
+    fn replacement_with_no_upgrades_is_a_no_op() {
+        let module = parse_and_compile_with_stdlib(ELEVEN_SOURCE);
+        let mut engine = Engine::new(Box::new(SimpleConstraintChecker), None);
+        let checked = engine.check(&module);
+        assert!(
+            !checked.diagnostics.is_empty(),
+            "non-vacuity: diagnostics to keep"
+        );
+
+        let mut diags = checked.diagnostics.clone();
+        replace_superseded_constraint_diagnostics(&mut diags, &[]);
+        assert_eq!(
+            diags.iter().map(fingerprint).collect::<Vec<_>>(),
+            checked
+                .diagnostics
+                .iter()
+                .map(fingerprint)
+                .collect::<Vec<_>>()
         );
     }
 }

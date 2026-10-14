@@ -1,0 +1,10 @@
+{
+  "probes": [
+    {
+      "capability": "POST (leaf gamma landed, S-2): assigning a Result<Length,String> value to a Result<Force,String> param is REJECTED — the args-aware enum-compat oracle replaces base_enum_name's name-only tolerance in the ctor-conformance enum branch. PRE (2026-09-29): exit 0, 'All constraints satisfied.', match binder typed Force holds 0.005 m. Requires a binary built after #5306 (ctor conformance at Error severity).",
+      "probe_kind": "check",
+      "fixture": "tests/prd-gate/fixtures/getar_result_arg_mismatch_assign_silent.ri",
+      "expected": { "observation": "present", "match": { "exit_code": 1, "stderr_contains": "argument 'b' has type" } }
+    }
+  ]
+}

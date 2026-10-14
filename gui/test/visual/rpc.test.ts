@@ -234,6 +234,38 @@ describe("parseRpcResponse vs normalizeRpcEnvelope — the documented divergence
     expect(normalizeRpcEnvelope(envelope)).toEqual({ payload: null });
   });
 
+  it("4b. §2d SUCCESS two-block envelope: the image to the harness, the trailing text to the driver", () => {
+    // The §2d envelope (docs/debug-mcp-contract.md): an `element_screenshot` that
+    // matched more than one element APPENDS its pane diagnostics after the image,
+    // with no `isError` flag. Every other two-block case — case 3 above, and the
+    // sibling in ./rpcEnvelope.test.ts — sets isError:true and so exercises the
+    // §2b fold; this is the one that reaches the SUCCESS branches of both
+    // decoders, and it is the case that gives the positional/`.find` split in
+    // case 4 teeth on a real wire shape rather than a one-block synthetic.
+    //
+    // The two verdicts disagree ON PURPOSE. Why, and why an IMAGE-targeted
+    // `.find` would NOT be caught here: docs/debug-mcp-contract.md §2 "JS-side
+    // decoders" → "The §2d divergence — canonical statement", the single home of
+    // that rationale. Not restated here, so this comment cannot drift from it.
+    //
+    // What this case buys: under the TEXT-targeted rewrite that section warns
+    // against, case 4b is the SOLE failure across rpc.test.ts + rpcEnvelope
+    // .test.ts.
+    const envelope = {
+      result: {
+        // `isError` deliberately ABSENT — this is a success envelope.
+        content: [
+          { type: "image", data: "iVBORw0KGgo=", mimeType: "image/png" },
+          { type: "text", text: '{"viewportId":"design-main","matchCount":2}' },
+        ],
+      },
+    };
+    expect(parseRpcResponse(envelope)).toEqual({ ok: true, value: { data: "iVBORw0KGgo=" } });
+    expect(normalizeRpcEnvelope(envelope)).toEqual({
+      payload: { viewportId: "design-main", matchCount: 2 },
+    });
+  });
+
   it("5. text block with no `text` field: an error to the harness, `null` to the driver", () => {
     const envelope = { result: { content: [{ type: "text" }] } };
     expect(parseRpcResponse(envelope)).toEqual({

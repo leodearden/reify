@@ -1,0 +1,25 @@
+module getar_wildcard_headed_arg_silent
+
+// PRD `docs/prds/v0_6/generic-enum-type-arg-retention.md` — leaf β RED
+// before-image (soundness hole S-4, pre-existing). MEASURED 2026-09-29:
+//   target/debug/reify   (2026-09-25): check EXIT 0, eval EXIT 0, `W.v = Result::Ok`
+//   target/release/reify (2026-09-01): check EXIT 0, eval EXIT 0, `W.v = undef`
+// `fl` takes a Length; the argument is `or_else(Ok{..}, Ok{..})`, whose static
+// type is the leaky `Applied{Result,[T,E]}` (unify's doc comment names this
+// chain). Tier 3 of the overload ladder, `slot_matches_wildcard_tier` in
+// crates/reify-core/src/overload.rs, carries the D4 disjunct
+// `type_carries_type_param(arg_ty)`: ANY argument whose type contains a
+// TypeParam anywhere matches EVERY candidate, and tier 3 is the only gate a
+// candidate must pass. So a Result value is passed as a Length.
+// Contrast `fl(Ok { value: 5mm })` (bare `Enum("Result")`, no type param):
+// rejected today with "no matching overload". After δ that argument would
+// carry a placeholder arg too and fall through the same hole — which is why
+// β must NARROW tier 3 for HEADED type-param-carrying args (heads must
+// unify) rather than add a disjunct.
+// EXPECTED after β: `reify check` EXIT 1, "no matching overload for fl(".
+
+fn fl(x: Length) -> Length { x }
+
+structure def W {
+    let v = fl(or_else(Ok { value: 5mm }, Ok { value: 6mm }))
+}

@@ -23,9 +23,10 @@
 # throws away far more than the grammar row. Measured probe_kind counts:
 #   tests/prd-gate/corpus-probe-set.json                 1 grammar + 2 check
 #   tests/prd-gate/compiler-type-hygiene-probe-set.json  1 grammar + 6 check
-# CHECK-kind probes do not touch the grammar substrate at all: build_command()
-# sends them to `reify check <fixture>`, and only GRAMMAR-kind probes run
-# `tree-sitter parse` with cwd=<repo_root>/tree-sitter-reify. So a whole-script
+# NON-GRAMMAR probes do not touch the grammar substrate at all: build_command()
+# sends `check` to `reify check <fixture>` and `ir`/`value` to `reify eval
+# <fixture>`, and only GRAMMAR-kind probes run `tree-sitter parse` with
+# cwd=<repo_root>/tree-sitter-reify. So a whole-script
 # skip would silently drop 2 and 6 perfectly runnable rows — trading a spurious
 # RED for a silent coverage hole in exactly the sandboxed roles this guard
 # exists to serve. This library therefore drops the grammar ROWS and keeps
@@ -67,7 +68,7 @@
 # this one, so both preflights read uniformly):
 #   GRAMMAR_SUBSTRATE_OK        1 when a grammar probe can run here, else 0
 #   GRAMMAR_SUBSTRATE_REASON    operator-facing reason (on unusable), prefix-stripped
-#   PRD_GATE_KEPT_COUNT         check-kind probes retained by the filter
+#   PRD_GATE_KEPT_COUNT         non-grammar-kind probes retained by the filter
 #   PRD_GATE_DROPPED_COUNT      grammar-kind probes dropped by the filter
 #   PRD_GATE_PROBE_SET          the probe-set path the caller should use
 #   PRD_GATE_SUBSTRATE_STATUS   per-run memo of the preflight answer (see below)
@@ -323,7 +324,7 @@ PYEOF
 # prd_gate_loud_substrate_skip <gate_label> <dropped> <kept> <reason>
 #
 # Emits a bannered notice that <dropped> grammar-kind row(s) did NOT run, that
-# <kept> check-kind row(s) DID, and why. Always returns 0: a partial run on an
+# <kept> non-grammar-kind row(s) DID, and why. Always returns 0: a partial run on an
 # unusable substrate is a legitimate, expected outcome — this only makes the
 # degradation impossible to miss rather than silent.
 #

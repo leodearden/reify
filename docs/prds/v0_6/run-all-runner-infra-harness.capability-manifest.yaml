@@ -1,0 +1,443 @@
+prd: docs/prds/v0_6/run-all-runner-infra-harness.md
+schema_version: 1
+tasks:
+- label: α
+  task_id: 8678
+  title: 'run-all-runner α: discovery from classification_discovered_set only; adoption ratchet member; README partition rule'
+  capabilities:
+  - name: lib-discovery-function-exists
+    binding: grep:tests/infra/run-all-classification-lib.sh classification_discovered_set — defined, glob test_*.sh, skips non-files, excludes test_helpers.sh; called by run_all.sh pool branch only (re-read at 8e6ffcac9d).
+    verdict: PASS
+  - name: inline-discovery-loops-removed
+    binding: 'at 8e6ffcac9d run_all.sh carries three inline loops (count-only probe, member-subset branch, legacy branch) each with the test_helpers.sh skip; the legacy one is `for test_file in "$INFRA_DIR"/test_*.sh`. Delivered when no for-loop over "$INFRA_DIR"/test_*.sh remains. Accepted gap: a loop over a differently-named dir variable escapes this grep; the adoption-ratchet row inline-discovery-loop (comment-stripped) is the behavioural-lint cover.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: for [A-Za-z_]+ in "\$INFRA_DIR"/test_\*\.sh
+      paths:
+      - tests/infra/run_all.sh
+      expect: absent
+  - name: pool-disable-knob-exists-for-legacy-pin
+    binding: grep:tests/infra/run_all.sh REIFY_RUN_ALL_POOL_DISABLE — forces the legacy serial path, so a fixture test can compare legacy vs pool discovery.
+    verdict: PASS
+  - name: adoption-ratchet-member
+    binding: deliverable of this leaf (new stdlib-unittest member + .sh wrapper + manifest row, D9); absent at 8e6ffcac9d.
+    verdict: OPEN
+    delivered_check:
+      kind: grep
+      pattern: inline-discovery-loop
+      paths:
+      - tests/infra/adoption-ratchet.manifest
+      expect: present
+- label: β
+  task_id: 8681
+  title: 'run-all-runner β: one member runner and one result recorder across all four run_all.sh branches'
+  capabilities:
+  - name: six-spawn-five-fail-sites-today
+    binding: 'grep at 8e6ffcac9d: reify_git_env_scrub bash|env spawn sites in H9, subset, pool phase 1/2/2.5, legacy = 6; non-comment `RESULT: FAIL` echoes = 5. Premise of the ratchet ceilings (1 and 1).'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^_ra_run_member\(\) \{
+      paths:
+      - tests/infra/run_all.sh
+      expect: present
+  - name: recorder-exists
+    binding: deliverable; D1 _ra_record_result.
+    verdict: OPEN
+    delivered_check:
+      kind: grep
+      pattern: ^_ra_record_result\(\) \{
+      paths:
+      - tests/infra/run_all.sh
+      expect: present
+  - name: framing-consumed-by-dark-factory
+    binding: 'dark-factory orchestrator/verify_classify.py::_redact_passed_suite_blocks keys on `--- Running: <name> ---` / `  RESULT: (PASS|FAIL|SKIP) (<name>)`; merge_lane/shadow.py::_RUN_ALL_FAILED_MARKER_RE parses `FAILED <names>`. C1 keeps both byte-stable; B6 is the reify-side cover.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: byte-stability across four branches is a behavioural property asserted by B6, not a grep.
+- label: γ
+  task_id: 8685
+  title: 'run-all-runner γ: REIFY_VERIFY_EVENT_LOG verify-tree JSON-lines channel (run_all records, slot_timeout record, member isolation, stdlib reader)'
+  capabilities:
+  - name: channel-absent-today
+    binding: git grep REIFY_VERIFY_EVENT_LOG at 8e6ffcac9d matches only plans/ (no producer, no consumer) in reify and nothing in dark-factory.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: REIFY_VERIFY_EVENT_LOG
+      paths:
+      - tests/infra/run_all.sh
+      expect: present
+  - name: slot-timeout-emitter-single-site
+    binding: grep:scripts/lib_slot_acquire.sh slot_emit_timeout — the one printf of @@REIFY_SLOT_TIMEOUT@@, called from slot_acquire's finite-WAIT deadline only; every wrapper (lib_test_semaphore, cargo-test-occt-gated, lib_lane_x_flock) and run_all's pool worker reach it. Every caller in the verify tree writes the record (lead ruling R-1).
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: event_log_emit_slot_timeout
+      paths:
+      - scripts/lib_slot_acquire.sh
+      expect: present
+  - name: member-unset-precedent
+    binding: grep:tests/infra/run_all.sh `env -u REIFY_RUN_ALL_MEMBER_SUBSET` — existing per-member un-injection idiom D4 extends; un-injection is not an injection, so run-all-ambient-vars.manifest needs no row (run_all_injected_env_keys diffs injected KEYS).
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: -u REIFY_VERIFY_EVENT_LOG
+      paths:
+      - tests/infra/run_all.sh
+      expect: present
+  - name: stdlib-reader
+    binding: deliverable; tests/infra/verify_events.py (python3 -I, stdlib json) + test_verify_events.py + wrapper + manifest row.
+    verdict: OPEN
+    delivered_check:
+      kind: grep
+      pattern: import json
+      paths:
+      - tests/infra/verify_events.py
+      expect: present
+  - name: encoder-lib-registered-as-verify-pipeline
+    binding: scripts/lib_event_log.sh is sourced transitively (verify.sh → lib_test_semaphore.sh → lib_slot_acquire.sh → lib_event_log.sh), so verify-pipeline-guard.sh auto-derivation misses it — same class as the existing lib_slot_acquire.sh row in scripts/verify-pipeline-paths.txt.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^scripts/lib_event_log\.sh$
+      paths:
+      - scripts/verify-pipeline-paths.txt
+      expect: present
+- label: δ
+  task_id: 8689
+  title: 'run-all-runner δ: run_all.sh h14 partition into output, flaky-ledger and content-skip libs (args, not globals)'
+  capabilities:
+  - name: partition-record
+    binding: plans/review-all-reify-20261010.json h14_measurements[tests/infra/run_all.sh] — 5 groups, stays_whole false; symptoms name the globals (_ra_fail_detail, _RA_FAIL_DETAIL_MAX, _RA_INBOUND_ROLE, _RA_RUN_ID, _h2_discovered_list, failures) that must move or become arguments.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^_ra_emit_sanitized\(\)
+      paths:
+      - tests/infra/run_all_output_lib.sh
+      expect: present
+- label: ε
+  external_task_id: dark_factory:6856
+  title: 'run-all-runner ε (dark-factory): classifier, shadow FAILED parse and passed-suite redaction read the run_all event channel'
+  note: Filed in dark-factory's registry (dark_factory:6856); reify η (8694), Ω (8729) and gate 8612 depend on it via metadata.external_deps.
+  capabilities:
+  - name: classifier-is-text-only-today
+    binding: dark-factory orchestrator/verify_classify.py::classify_failure(tool, rc, output, timed_out) — text only; _SLOT_TIMEOUT_SENTINEL_RE + three-basename allowlist; _has_fatal_slot_timeout_sentinel reads disposition=.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: foreign-registry producer; its own verify asserts D1-D5.
+- label: ζ₁
+  task_id: 8692
+  title: 'run-all-runner ζ₁: test_run_all.sh T19/T25 wait on the event seam, not run_all workdir internals'
+  capabilities:
+  - name: private-workdir-coupling-today
+    binding: test_run_all.sh T25 globs reify-run-all-pool.* under a private TMPDIR and reads *.rc skipping *.retry.rc (re-read at 8e6ffcac9d, Test 19/25 headers present).
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: reify-run-all-pool\.
+      paths:
+      - tests/infra/test_run_all.sh
+      expect: absent
+- label: η
+  task_id: 8694
+  title: 'run-all-runner η: delete test_slot_timeout_marker.sh Sections D-G'
+  capabilities:
+  - name: analyzer-sections-today
+    binding: test_slot_timeout_marker.sh section banners at 8e6ffcac9d — D, E, F, G present (3,413 lines at a030ee7528); D_ROSTER, D_MEMBERS, G_MEMBERS arrays present.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^D_ROSTER=\(
+      paths:
+      - tests/infra/test_slot_timeout_marker.sh
+      expect: absent
+  - name: private-harness-ratchet-to-zero
+    binding: 'premise correction — the file already sources test_helpers.sh at 8e6ffcac9d; its only PASS=0 is the E4_RAW_EMITTER heredoc (Section E positive control), deleted with Section E.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: E4_RAW_EMITTER
+      paths:
+      - tests/infra/test_slot_timeout_marker.sh
+      expect: absent
+  - name: soundness-depends-on-dark-factory-rule-4
+    binding: producer:ε (external) — C3 rule 4 (channel present ⇒ text arms not consulted for SEMAPHORE_TIMEOUT). Without it, Section D's own preamble reason (cross-repo regex coupling) still holds.
+    verdict: OPEN
+    delivered_check:
+      kind: manual
+      reason: cross-repo precondition; verified by ε's D1 test, not a reify grep.
+- label: ζ₂
+  task_id: 8696
+  title: 'run-all-runner ζ₂: test_run_all.sh h14 partition (6) with shared preamble lib'
+  capabilities:
+  - name: partition-record
+    binding: h14_measurements[tests/infra/test_run_all.sh] — 6 groups; LOAD_TOLERANCE_LIB_T9 and the REIFY_RUN_ALL_FLAKY_LEDGER isolation export go to a shared preamble. Hostile ambient loop in test_run_all_ambient_isolation.sh drives the real test_run_all.sh (run_all_ambient_isolation_lib.sh header) — coverage must follow the split.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: LOAD_TOLERANCE_LIB
+      paths:
+      - tests/infra/run_all_test_preamble_lib.sh
+      expect: present
+- label: θ
+  task_id: 8700
+  title: 'run-all-runner θ: harness-layout guard lib; test_harness_kloc_cap.sh h14 partition (4); contract to docs'
+  capabilities:
+  - name: rules-live-in-test-today
+    binding: test_harness_kloc_cap.sh defines harness_layout_violations … harness_warn_ratchet_violations (re-read at 8e6ffcac9d; only comment-cite edits since a030ee7528). scripts/check-harness-baseline-registration.sh sources only harness-layout-lib.sh.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^harness_layout_violations\(\)
+      paths:
+      - tests/infra/harness-layout-guard-lib.sh
+      expect: present
+  - name: diff-gate-sources-guard-lib
+    binding: deliverable.
+    verdict: OPEN
+    delivered_check:
+      kind: grep
+      pattern: harness-layout-guard-lib\.sh
+      paths:
+      - scripts/check-harness-baseline-registration.sh
+      expect: present
+  - name: contract-doc-home
+    binding: deliverable; docs/contributor/ exists.
+    verdict: OPEN
+    delivered_check:
+      kind: grep
+      pattern: harness-layout-contract
+      paths:
+      - tests/infra/test_harness_kloc_cap.sh
+      expect: present
+- label: ι
+  task_id: 8703
+  title: 'run-all-runner ι: wallclock_rust_guard_lib.sh; test_no_new_wallclock_rust_deadlines.sh h14 partition (3)'
+  capabilities:
+  - name: engine-reads-no-file-state
+    binding: h14 record — the 12 engine functions read no top-level state (roots and baseline are arguments); downward imports only.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^_detect_rust_wallclock_deadline\(\)
+      paths:
+      - tests/infra/wallclock_rust_guard_lib.sh
+      expect: present
+- label: κ
+  task_id: 8707
+  title: 'run-all-runner κ: cpu-gov ROW predicates single home in cpu_gov_instrument.py; test_cpu_load_governance.sh h14 partition (5)'
+  capabilities:
+  - name: dead-python-predicates-live-bash-copy
+    binding: cpu_gov_instrument.py defines slowdown_within_bound and psi_below_band (no caller outside _selftest); test_cpu_load_governance.sh defines _row3_within_bound used by the live ROW3 verdict (re-read at 8e6ffcac9d).
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^_row3_within_bound\(\)
+      paths:
+      - tests/infra/test_cpu_load_governance.sh
+      expect: absent
+  - name: instrument-unittest
+    binding: deliverable; new stdlib unittest + wrapper + manifest row.
+    verdict: OPEN
+    delivered_check:
+      kind: grep
+      pattern: unittest
+      paths:
+      - tests/infra/test_cpu_gov_instrument.py
+      expect: present
+- label: λ
+  task_id: 8712
+  title: 'run-all-runner λ: PTODO hard-gate fixture helper with one tasks-schema source'
+  capabilities:
+  - name: schema-copies-today
+    binding: CREATE TABLE tasks ×5 in test_reify_audit_ptodo.sh, ×1 in test_lane_task_status.sh; canonical crates/reify-audit/tests/common/schema.rs::TASKS_DB_SCHEMA raw string (8e6ffcac9d).
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: CREATE TABLE tasks
+      paths:
+      - tests/infra/test_reify_audit_ptodo.sh
+      - tests/infra/test_lane_task_status.sh
+      expect: absent
+  - name: rust-reads-shared-sql
+    binding: deliverable (D12).
+    verdict: OPEN
+    delivered_check:
+      kind: grep
+      pattern: include_str!\(.*tasks_db_schema\.sql
+      paths:
+      - crates/reify-audit/tests/common/schema.rs
+      expect: present
+  - name: every-sentinel-consumed
+    binding: today only HARDGATE_C/D have a consumer (test_reify_audit_ptodo_orphan_hardgate.sh).
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: HARDGATE_G_PASSED
+      paths:
+      - tests/infra/test_reify_audit_ptodo_orphan_hardgate.sh
+      expect: present
+- label: μ
+  task_id: 8716
+  title: 'run-all-runner μ: test_helpers.sh end-of-suite finalizers; seed-warm-lane shared base fixture and lock holders'
+  capabilities:
+  - name: no-finalizer-today
+    binding: test_helpers.sh test_summary prints Results and exits; no hook; the warm-lane facility deliberately installs no EXIT trap (bash traps do not stack).
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^test_register_finalizer\(\)
+      paths:
+      - tests/infra/test_helpers.sh
+      expect: present
+  - name: base-constructor
+    binding: deliverable.
+    verdict: OPEN
+    delivered_check:
+      kind: grep
+      pattern: ^_make_base\(\)
+      paths:
+      - tests/infra/test_seed_warm_lane.sh
+      expect: present
+  - name: shared-handshake-primitive-exists
+    binding: tests/infra/slot_holder_handshake_lib.sh holder_wait_for_marker — already adopted by test_warm_lane_gc.sh and test_warm_lane_pool.sh.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^_wait_for_reader_lock\(\)
+      paths:
+      - tests/infra/test_seed_warm_lane.sh
+      expect: absent
+- label: μ₂
+  task_id: 8719
+  title: 'run-all-runner μ₂: test_seed_warm_lane.sh h14 partition (9)'
+  capabilities:
+  - name: partition-record
+    binding: h14_measurements[tests/infra/test_seed_warm_lane.sh] — 9 groups; EPOCH_2020 into harness; R4 moves with Q, R6a with I.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: EPOCH_2020
+      paths:
+      - tests/infra/seed_warm_lane_harness_lib.sh
+      expect: present
+  - name: s20-lane-lock-surface
+    binding: producer:S20 lane-lock leaf (lib_lane_lock.sh lane_lock_path / lane_lock_acquire) — same wave, real dependency edge at decompose.
+    verdict: OPEN
+    delivered_check:
+      kind: manual
+      reason: cross-PRD producer id unknown until S20 decomposes.
+- label: ν
+  task_id: 8721
+  title: 'run-all-runner ν: test_warm_lane_gc.sh make_gc_fixture and _seed_stub_body adoption'
+  capabilities:
+  - name: helper-exists-inline-copies-remain
+    binding: _seed_stub_body defined in test_warm_lane_gc.sh; 12 of 20 STUB_EOF heredocs are identical inline copies (record measurement, reproduced by skeptic).
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^make_gc_fixture\(\)
+      paths:
+      - tests/infra/test_warm_lane_gc.sh
+      expect: present
+- label: ξ
+  task_id: 8723
+  title: 'run-all-runner ξ: test_warm_lane_pool.sh h14 partition (4)'
+  capabilities:
+  - name: partition-record
+    binding: h14_measurements[tests/infra/test_warm_lane_pool.sh] — harness lib, PG → test_refresh_warm_base.sh (exists), FC stub farm, e2e core.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^detect_substrate\(\)
+      paths:
+      - tests/infra/warm_lane_pool_harness_lib.sh
+      expect: present
+- label: ο
+  task_id: 8725
+  title: 'run-all-runner ο: test_tree_sitter_pipeline.sh onto test_helpers.sh; h14 partition (5)'
+  capabilities:
+  - name: private-harness-and-substring-discovery-today
+    binding: test_tree_sitter_pipeline.sh defines PASS_COUNT/FAIL_COUNT and discovers cases via declare -F | awk '/test_/'; run_all.sh _ra_collect_fail_detail ERE matches neither 'ASSERTION FAILED' nor 'RUN … FAIL'.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: declare -F \| awk
+      paths:
+      - tests/infra/test_tree_sitter_pipeline.sh
+      expect: absent
+  - name: plan-capture-test-home-exists
+    binding: tests/infra/test_plan_capture_lib.sh exists (S18 owns plan_capture_lib.sh; this leaf only moves a test into its existing test file).
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: retries_on_truncation
+      paths:
+      - tests/infra/test_plan_capture_lib.sh
+      expect: present
+- label: π
+  task_id: 8726
+  title: 'run-all-runner π: delete test_test_helpers.sh source-shape and prose pins; h14 partition (3); test_run_all.sh Test 6'
+  capabilities:
+  - name: consumer-loop-today
+    binding: test_test_helpers.sh lines ~622-1372 hold 89 check() calls over CONSUMERS + sync_comments_test.sh + sync_ref_helpers.sh (record; partition symbols include the CONSUMERS loop).
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^CONSUMERS=
+      paths:
+      - tests/infra/test_test_helpers.sh
+      expect: absent
+  - name: sync-ref-own-test
+    binding: deliverable; tests/infra/sync_ref_helpers.sh exists, no own test today.
+    verdict: OPEN
+    delivered_check:
+      kind: grep
+      pattern: sync_ref_helpers\.sh
+      paths:
+      - tests/infra/test_sync_ref_helpers.sh
+      expect: present
+- label: ρ
+  task_id: 8727
+  title: 'run-all-runner ρ: jobserver unit oracle to stdlib unittest; setup-dev checks moved'
+  capabilities:
+  - name: importlib-heredocs-today
+    binding: test_jobserver_balancer.sh — 13 spec_from_file_location heredocs, 4 mod._transfer_burst calls; scripts/jobserver-balancer.py defines _transfer_burst and decide.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: spec_from_file_location
+      paths:
+      - tests/infra/test_jobserver_balancer.sh
+      expect: absent
+- label: σ
+  task_id: 8728
+  title: 'run-all-runner σ: test_with_jcodemunch_serve.sh h14 partition (3)'
+  capabilities:
+  - name: lib-already-sourced
+    binding: test_with_jcodemunch_serve.sh already sources tests/infra/jcodemunch_pin_guard_lib.sh (h14 record).
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^require_nonempty\(\)
+      paths:
+      - tests/infra/jcodemunch_pin_guard_lib.sh
+      expect: present
+- label: Ω
+  task_id: 8729
+  title: 'run-all-runner Ω: PRD close — terminal stamp and freeze header'
+  capabilities:
+  - name: terminal-stamp
+    binding: deliverable; overlay "PRD terminal status" three-value vocabulary.
+    verdict: OPEN
+    delivered_check:
+      kind: grep
+      pattern: 'Status:\*\* SHIPPED'
+      paths:
+      - docs/prds/v0_6/run-all-runner-infra-harness.md
+      expect: present

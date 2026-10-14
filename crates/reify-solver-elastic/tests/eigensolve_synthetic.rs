@@ -22,8 +22,16 @@
 
 use faer::{Mat, Side};
 use faer::sparse::{SparseRowMat, Triplet};
-use reify_solver_elastic::eigensolve::{EigenSolverOptions, solve_eigen_dense, solve_eigen_shift_invert};
-use reify_solver_elastic::{lanczos_shift_invert, SparseStiffnessOp, SparseMetricOp};
+use reify_solver_elastic::eigensolve::test_support::{
+    graded_diagonal_b_pencil, indefinite_b_pencil, laplacian_lambdas, laplacian_pencil,
+};
+use reify_solver_elastic::eigensolve::{
+    EigenSolverOptions, EigenSolverResult, solve_eigen_dense, solve_eigen_shift_invert,
+};
+use reify_solver_elastic::{
+    LanczosMetric, SparseFactorRef, SparseMetricOp, SparseStiffnessOp, SplitCholesky,
+    lanczos_shift_invert, lanczos_shift_invert_in_metric,
+};
 
 // ---------------------------------------------------------------------------
 // Fixture-A helpers
@@ -81,34 +89,18 @@ fn dense_recovers_known_spectrum_on_5x5_diagonal_pair() {
 // Fixture-B helpers: 50-DOF 1D-Laplacian pair
 // ---------------------------------------------------------------------------
 
-/// Build K = tridiag(-1, 2, -1) (50×50 Dirichlet Laplacian) and B = I (50×50).
+/// Fixture B: K = tridiag(-1, 2, -1) (50×50 Dirichlet Laplacian), B = I.
+const FIXTURE_B_N: usize = 50;
+
+/// Fixture B, from the crate's shared test-support seam — one definition of the
+/// pencil and its closed form across every site that drives them.
 fn fixture_b() -> (SparseRowMat<usize, f64>, SparseRowMat<usize, f64>) {
-    let n = 50usize;
-    let mut k_trips = Vec::with_capacity(3 * n - 2);
-    for i in 0..n {
-        k_trips.push(Triplet::new(i, i, 2.0));
-        if i > 0 {
-            k_trips.push(Triplet::new(i, i - 1, -1.0));
-        }
-        if i + 1 < n {
-            k_trips.push(Triplet::new(i, i + 1, -1.0));
-        }
-    }
-    let b_trips: Vec<Triplet<usize, usize, f64>> =
-        (0..n).map(|i| Triplet::new(i, i, 1.0)).collect();
-    let k = SparseRowMat::try_new_from_triplets(n, n, &k_trips).unwrap();
-    let b = SparseRowMat::try_new_from_triplets(n, n, &b_trips).unwrap();
-    (k, b)
+    laplacian_pencil(FIXTURE_B_N)
 }
 
-/// Closed-form smallest 5 eigenvalues of the 50-DOF Laplacian (Kφ = λBφ = λφ).
-/// λ_k = 2(1 − cos(kπ/51)) for k=1..=5.
+/// Closed-form smallest 5 eigenvalues of fixture B (Kφ = λBφ = λφ).
 fn fixture_b_expected_5() -> [f64; 5] {
-    let n = 50usize;
-    std::array::from_fn(|i| {
-        let k = (i + 1) as f64;
-        2.0 * (1.0 - f64::cos(k * std::f64::consts::PI / (n as f64 + 1.0)))
-    })
+    laplacian_lambdas(FIXTURE_B_N)
 }
 
 // ---------------------------------------------------------------------------
@@ -227,14 +219,9 @@ fn dense_recovers_closed_form_on_50dof_laplacian() {
 // eigenvalues and (b) the dense path, to 1e-8 (PRD §13 "8 digits").
 // ---------------------------------------------------------------------------
 
-/// Closed-form smallest 5 eigenvalues of the 80-DOF Laplacian (Kφ = λBφ = λφ).
-/// λ_k = 2(1 − cos(kπ/81)) for k=1..=5.
+/// Closed-form smallest 5 eigenvalues of fixture C (Kφ = λBφ = λφ).
 fn fixture_c_expected_5() -> [f64; 5] {
-    let n = 80usize;
-    std::array::from_fn(|i| {
-        let k = (i + 1) as f64;
-        2.0 * (1.0 - f64::cos(k * std::f64::consts::PI / (n as f64 + 1.0)))
-    })
+    laplacian_lambdas(FIXTURE_C_N)
 }
 
 // NOTE: this test requires the root Cargo.toml profile overrides added in
@@ -298,22 +285,13 @@ fn shift_invert_and_dense_agree_on_80dof_synthetic_pair() {
 // Fixture-C helpers: 80-DOF Laplacian (n > 64 so Lanczos actually runs)
 // ---------------------------------------------------------------------------
 
-/// Build K = tridiag(-1,2,-1) (80×80) and B = I (80×80).
+/// Fixture C: K = tridiag(-1,2,-1) (80×80), B = I, from the shared seam.
 /// n=80 > 64 so faer's effective_max_dim = min(max(32,64,10),80) = 64 < 80:
 /// partial_self_adjoint_eigen runs the Lanczos loop without the dense fallback.
+const FIXTURE_C_N: usize = 80;
+
 fn fixture_c() -> (SparseRowMat<usize, f64>, SparseRowMat<usize, f64>) {
-    let n = 80usize;
-    let mut k_trips = Vec::with_capacity(3 * n - 2);
-    for i in 0..n {
-        k_trips.push(Triplet::new(i, i, 2.0));
-        if i > 0 { k_trips.push(Triplet::new(i, i - 1, -1.0)); }
-        if i + 1 < n { k_trips.push(Triplet::new(i, i + 1, -1.0)); }
-    }
-    let b_trips: Vec<Triplet<usize, usize, f64>> =
-        (0..n).map(|i| Triplet::new(i, i, 1.0)).collect();
-    let k = SparseRowMat::try_new_from_triplets(n, n, &k_trips).unwrap();
-    let b = SparseRowMat::try_new_from_triplets(n, n, &b_trips).unwrap();
-    (k, b)
+    laplacian_pencil(FIXTURE_C_N)
 }
 
 // ---------------------------------------------------------------------------
@@ -362,6 +340,10 @@ fn shift_invert_reports_non_convergence_when_max_iters_too_low() {
         result.eigenvectors.ncols(),
         result.eigenvalues.len(),
         "eigenvectors width must equal the number of returned eigenvalues",
+    );
+    assert_eq!(
+        result.residual_check_failures, 0,
+        "non-convergence is a shortfall, not a residual-check failure",
     );
     // Must not panic — absence of panic IS the no-panic assertion.
 }
@@ -608,7 +590,7 @@ fn lanczos_shift_invert_recovers_modal_eigenpairs_on_uniform_mass_laplacian() {
     let llt = k.sp_cholesky(Side::Lower).expect("K must be SPD");
 
     // Build generic operator pair.
-    let k_op = SparseStiffnessOp { llt: &llt, n };
+    let k_op = SparseStiffnessOp { factor: SparseFactorRef::Cholesky(&llt), n };
     let m_op = SparseMetricOp { m: m.as_ref() };
 
     let opts = EigenSolverOptions {
@@ -677,7 +659,10 @@ fn lanczos_shift_invert_panics_on_dimension_mismatch() {
     }
     let k = SparseRowMat::try_new_from_triplets(n_k, n_k, &k_trips).unwrap();
     let llt = k.sp_cholesky(Side::Lower).expect("K must be SPD");
-    let k_op = SparseStiffnessOp { llt: &llt, n: n_k };
+    let k_op = SparseStiffnessOp {
+        factor: SparseFactorRef::Cholesky(&llt),
+        n: n_k,
+    };
 
     // M = I (79×79) — dimension deliberately mismatched with k_op.n()=80.
     let m_trips: Vec<Triplet<usize, usize, f64>> =
@@ -712,7 +697,7 @@ fn lanczos_shift_invert_panics_on_zero_n_modes() {
     }
     let k = SparseRowMat::try_new_from_triplets(n, n, &k_trips).unwrap();
     let llt = k.sp_cholesky(Side::Lower).expect("K must be SPD");
-    let k_op = SparseStiffnessOp { llt: &llt, n };
+    let k_op = SparseStiffnessOp { factor: SparseFactorRef::Cholesky(&llt), n };
 
     let m_trips: Vec<Triplet<usize, usize, f64>> =
         (0..n).map(|i| Triplet::new(i, i, 1.0)).collect();
@@ -739,7 +724,7 @@ fn lanczos_shift_invert_panics_on_non_finite_tol() {
     }
     let k = SparseRowMat::try_new_from_triplets(n, n, &k_trips).unwrap();
     let llt = k.sp_cholesky(Side::Lower).expect("K must be SPD");
-    let k_op = SparseStiffnessOp { llt: &llt, n };
+    let k_op = SparseStiffnessOp { factor: SparseFactorRef::Cholesky(&llt), n };
 
     let m_trips: Vec<Triplet<usize, usize, f64>> =
         (0..n).map(|i| Triplet::new(i, i, 1.0)).collect();
@@ -766,7 +751,7 @@ fn lanczos_shift_invert_panics_on_zero_max_iters() {
     }
     let k = SparseRowMat::try_new_from_triplets(n, n, &k_trips).unwrap();
     let llt = k.sp_cholesky(Side::Lower).expect("K must be SPD");
-    let k_op = SparseStiffnessOp { llt: &llt, n };
+    let k_op = SparseStiffnessOp { factor: SparseFactorRef::Cholesky(&llt), n };
 
     let m_trips: Vec<Triplet<usize, usize, f64>> =
         (0..n).map(|i| Triplet::new(i, i, 1.0)).collect();
@@ -776,4 +761,398 @@ fn lanczos_shift_invert_panics_on_zero_max_iters() {
     // Must panic: "EigenSolverOptions.max_iters = 0 is invalid; must be >= 1"
     let opts = EigenSolverOptions { n_modes: 5, tol: 1e-10, max_iters: 0, sigma: 0.0 };
     let _ = lanczos_shift_invert(&k_op, &m_op, opts);
+}
+
+// ---------------------------------------------------------------------------
+// Dense QZ on an indefinite-B pencil (#7602 concern 4)
+// ---------------------------------------------------------------------------
+
+/// The dense QZ path completes on the 136-DOF indefinite-B pencil.
+///
+/// A regression tripwire for a BUILD-PROFILE fault, not an algorithmic one:
+/// faer's generic QZ (`gevd_real`) is monomorphised in this crate, and its
+/// aggressive-early-deflation step relies on `usize` wrapping arithmetic that
+/// is correct in release but panics "attempt to subtract with overflow" under
+/// overflow-checks. This pencil reaches that step; the root `Cargo.toml` dev
+/// profile for `reify-solver-elastic` is what keeps it green.
+///
+/// The same pencil is the dense reference for the indefinite-B Lanczos tests,
+/// so a dense path that cannot solve it leaves those tests without a baseline.
+#[test]
+fn dense_solve_completes_on_the_indefinite_136dof_pencil() {
+    let (k, b) = indefinite_b_pencil(136);
+    let opts = EigenSolverOptions {
+        n_modes: 3,
+        tol: 1e-10,
+        max_iters: 1000,
+        sigma: 0.0,
+    };
+    let result = solve_eigen_dense(&k, &b, opts);
+
+    assert!(result.converged, "dense QZ must return all 3 requested modes");
+    assert_eq!(result.eigenvalues.len(), 3, "must return exactly 3 eigenvalues");
+    assert_eigen_residuals(
+        &k,
+        &b,
+        &result.eigenvalues,
+        &result.eigenvectors,
+        1e-10,
+        "dense 136 indefinite",
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Cholesky-symmetrized Lanczos core, driven directly (#7602)
+//
+// For a B that is not a multiple of the identity, `(K − σB)⁻¹B` is not
+// Euclidean-symmetric, so the core runs on S = G⁻¹[B + (σ − τ)B(K − σB)⁻¹B]G⁻ᵀ
+// for an SPD W = K − τB = G·Gᵀ instead. These drive both metric arms against
+// the dense QZ reference at the same σ.
+// ---------------------------------------------------------------------------
+
+/// `K − σB` for two TRIDIAGONAL operands, as a sparse row matrix over the
+/// tridiagonal pattern.
+fn shifted_tridiagonal_pencil(
+    k: &SparseRowMat<usize, f64>,
+    b: &SparseRowMat<usize, f64>,
+    sigma: f64,
+) -> SparseRowMat<usize, f64> {
+    let n = k.nrows();
+    let (k_dense, b_dense) = (k.to_dense(), b.to_dense());
+    let mut trips = Vec::with_capacity(3 * n - 2);
+    for i in 0..n {
+        for j in i.saturating_sub(1)..(i + 2).min(n) {
+            trips.push(Triplet::new(i, j, k_dense[(i, j)] - sigma * b_dense[(i, j)]));
+        }
+    }
+    SparseRowMat::try_new_from_triplets(n, n, &trips).unwrap()
+}
+
+fn metric_opts(n_modes: usize, sigma: f64) -> EigenSolverOptions {
+    EigenSolverOptions {
+        n_modes,
+        tol: 1e-10,
+        max_iters: 1000,
+        sigma,
+    }
+}
+
+/// The eigenvalues of `got` and `want` agree as MULTISETS: each sorted pair
+/// `(g, w)` is within `tolerance(g, w)`.
+fn assert_same_eigenvalue_multiset(
+    got: &[f64],
+    want: &[f64],
+    tolerance: impl Fn(f64, f64) -> f64,
+    label: &str,
+) {
+    assert_eq!(got.len(), want.len(), "{label}: eigenvalue count {got:?} vs {want:?}");
+    let sorted = |v: &[f64]| {
+        let mut v = v.to_vec();
+        v.sort_by(f64::total_cmp);
+        v
+    };
+    for (g, w) in sorted(got).into_iter().zip(sorted(want)) {
+        let bound = tolerance(g, w);
+        assert!(
+            (g - w).abs() <= bound,
+            "{label}: λ = {g} vs dense {w}, gap {:.3e} > bound {bound:.3e}; \
+             got {got:?}, dense {want:?}",
+            (g - w).abs(),
+        );
+    }
+}
+
+/// Relative agreement to `rel_tol`.
+fn relative(rel_tol: f64) -> impl Fn(f64, f64) -> f64 {
+    move |g, w| rel_tol * g.abs().max(w.abs())
+}
+
+/// Shift-invert accuracy scales with `|λ − σ|` (λ = σ + 1/μ), and a pure
+/// relative bound is ill-posed where a pencil has λ = 0 exactly, so σ-ladder
+/// comparisons use `1e-9·max(|a|, |b|, |a − σ|, 1e-12)`.
+fn mixed_near_shift(sigma: f64) -> impl Fn(f64, f64) -> f64 {
+    move |g, w| 1e-9 * g.abs().max(w.abs()).max((g - sigma).abs()).max(1e-12)
+}
+
+/// A direct solve through the metric core: the pencil, the options, and what
+/// came back.
+struct MetricCoreSolve {
+    label: &'static str,
+    k: SparseRowMat<usize, f64>,
+    b: SparseRowMat<usize, f64>,
+    opts: EigenSolverOptions,
+    result: EigenSolverResult,
+}
+
+/// Drive the metric core's `ShiftedPencil` arm with `w = K − σB` (σ = 0 ⇒ K).
+fn shifted_pencil_metric_solve(
+    label: &'static str,
+    (k, b): (SparseRowMat<usize, f64>, SparseRowMat<usize, f64>),
+    w: &SparseRowMat<usize, f64>,
+    opts: EigenSolverOptions,
+) -> MetricCoreSolve {
+    let g = SplitCholesky::try_new(w).expect("the metric must be SPD");
+    let result = lanczos_shift_invert_in_metric(
+        LanczosMetric::ShiftedPencil(&g),
+        &SparseMetricOp { m: b.as_ref() },
+        opts.clone(),
+    );
+    MetricCoreSolve { label, k, b, opts, result }
+}
+
+/// Drive the metric core's `Stiffness` arm: `W = K`, and the indefinite
+/// `K − σB` applied through LU.
+fn stiffness_metric_solve(
+    label: &'static str,
+    (k, b): (SparseRowMat<usize, f64>, SparseRowMat<usize, f64>),
+    opts: EigenSolverOptions,
+) -> MetricCoreSolve {
+    let lu = shifted_tridiagonal_pencil(&k, &b, opts.sigma).sp_lu().unwrap();
+    let g_k = SplitCholesky::try_new(&k).expect("K is SPD");
+    let shifted_inverse = SparseStiffnessOp {
+        factor: SparseFactorRef::Lu(&lu),
+        n: k.nrows(),
+    };
+    let result = lanczos_shift_invert_in_metric(
+        LanczosMetric::Stiffness {
+            k_factor: &g_k,
+            shifted_inverse: &shifted_inverse,
+        },
+        &SparseMetricOp { m: b.as_ref() },
+        opts.clone(),
+    );
+    MetricCoreSolve { label, k, b, opts, result }
+}
+
+/// σ = 0: `W = K` itself, `S = G⁻¹BG⁻ᵀ`.
+fn graded_metric_at_sigma_zero() -> MetricCoreSolve {
+    let pencil = graded_diagonal_b_pencil(80);
+    let k = pencil.0.clone();
+    shifted_pencil_metric_solve("graded σ=0 ShiftedPencil", pencil, &k, metric_opts(2, 0.0))
+}
+
+/// σ = 5e-4, below λ₁ ≈ 1.002e-3: `K − σB` is SPD and is the metric.
+fn graded_metric_below_lambda_one() -> MetricCoreSolve {
+    let pencil = graded_diagonal_b_pencil(80);
+    let opts = metric_opts(2, 5e-4);
+    let w = shifted_tridiagonal_pencil(&pencil.0, &pencil.1, opts.sigma);
+    shifted_pencil_metric_solve("graded σ=5e-4 ShiftedPencil", pencil, &w, opts)
+}
+
+/// σ = 0.5, above many modes: `K − σB` is indefinite, so `W = K`.
+fn graded_metric_above_a_mode() -> MetricCoreSolve {
+    stiffness_metric_solve(
+        "graded σ=0.5 Stiffness",
+        graded_diagonal_b_pencil(80),
+        metric_opts(2, 0.5),
+    )
+}
+
+/// The indefinite-B pencil at σ = 0.02, above its smallest positive mode
+/// (≈ 6.46e-4), through the `Stiffness` arm.
+fn indefinite_metric_above_a_mode() -> MetricCoreSolve {
+    stiffness_metric_solve(
+        "indefinite σ=0.02 Stiffness",
+        indefinite_b_pencil(136),
+        metric_opts(3, 0.02),
+    )
+}
+
+/// Every contract a metric-Lanczos result owes, measured against dense QZ.
+fn assert_metric_lanczos_matches_dense(solve: &MetricCoreSolve) {
+    let MetricCoreSolve { label, k, b, opts, result } = solve;
+    let n_modes = opts.n_modes;
+    assert!(
+        result.n_converged >= n_modes,
+        "{label}: n_converged = {} < {n_modes} — the Lanczos did not genuinely run",
+        result.n_converged,
+    );
+    assert!(result.converged, "{label}: must converge");
+    assert_eq!(
+        result.residual_check_failures, 0,
+        "{label}: every returned pair must verify",
+    );
+    assert_eq!(result.shift, opts.sigma, "{label}: the shift used must be σ");
+
+    let dense = solve_eigen_dense(k, b, opts.clone());
+    assert_same_eigenvalue_multiset(&result.eigenvalues, &dense.eigenvalues, relative(1e-9), label);
+    assert_eigen_residuals(k, b, &result.eigenvalues, &result.eigenvectors, 1e-10, label);
+
+    for col in 0..result.eigenvectors.ncols() {
+        let norm = result.eigenvectors.col(col).norm_l2();
+        assert!(
+            (norm - 1.0).abs() <= 1e-12,
+            "{label}: eigenvector column {col} has Euclidean norm {norm}, not 1",
+        );
+    }
+}
+
+#[test]
+fn metric_lanczos_shifted_pencil_at_sigma_zero_matches_dense_on_graded_b() {
+    assert_metric_lanczos_matches_dense(&graded_metric_at_sigma_zero());
+}
+
+#[test]
+fn metric_lanczos_shifted_pencil_below_lambda_one_matches_dense_on_graded_b() {
+    assert_metric_lanczos_matches_dense(&graded_metric_below_lambda_one());
+}
+
+#[test]
+fn metric_lanczos_stiffness_arm_above_a_mode_matches_dense_on_graded_b() {
+    assert_metric_lanczos_matches_dense(&graded_metric_above_a_mode());
+}
+
+#[test]
+fn metric_lanczos_stiffness_arm_matches_dense_on_indefinite_b() {
+    assert_metric_lanczos_matches_dense(&indefinite_metric_above_a_mode());
+}
+
+// ---------------------------------------------------------------------------
+// The sparse entry point dispatches B ≠ cI to the symmetrized operator (#7602)
+// ---------------------------------------------------------------------------
+
+/// SPD, non-identity B: σ from 0 to well inside the spectrum (n_modes = 2).
+const GRADED_SIGMA_LADDER: [f64; 6] = [0.0, 5e-4, 0.05, 0.5, 1.5, 2.5];
+/// Indefinite B (the buckling stand-in): shifts of both signs (n_modes = 3).
+const INDEFINITE_SIGMA_LADDER: [f64; 6] = [0.0, 1e-3, 0.02, -0.02, 0.2, -0.3];
+
+/// Hold every solve of a σ ladder to the dense reference at the same σ.
+fn assert_shift_invert_matches_dense_across(
+    k: &SparseRowMat<usize, f64>,
+    b: &SparseRowMat<usize, f64>,
+    n_modes: usize,
+    sigmas: &[f64],
+    label: &str,
+) {
+    for &sigma in sigmas {
+        let opts = metric_opts(n_modes, sigma);
+        let lanczos = solve_eigen_shift_invert(k, b, opts.clone());
+        let ctx = format!("{label} σ={sigma}");
+        assert!(
+            lanczos.n_converged > 0,
+            "{ctx}: must exercise Lanczos (n_converged > 0)",
+        );
+        assert!(lanczos.converged, "{ctx}: must converge");
+        assert_eq!(
+            lanczos.residual_check_failures, 0,
+            "{ctx}: every returned pair must verify",
+        );
+        let dense = solve_eigen_dense(k, b, opts);
+        assert_same_eigenvalue_multiset(
+            &lanczos.eigenvalues,
+            &dense.eigenvalues,
+            mixed_near_shift(sigma),
+            &ctx,
+        );
+        assert_eigen_residuals(k, b, &lanczos.eigenvalues, &lanczos.eigenvectors, 1e-10, &ctx);
+    }
+}
+
+#[test]
+fn shift_invert_matches_dense_on_graded_spd_b_across_a_sigma_ladder() {
+    let (k, b) = graded_diagonal_b_pencil(80);
+    assert_shift_invert_matches_dense_across(&k, &b, 2, &GRADED_SIGMA_LADDER, "graded");
+}
+
+#[test]
+fn shift_invert_matches_dense_on_indefinite_b_across_a_sigma_ladder() {
+    let (k, b) = indefinite_b_pencil(136);
+    assert_shift_invert_matches_dense_across(&k, &b, 3, &INDEFINITE_SIGMA_LADDER, "indefinite");
+}
+
+// ---------------------------------------------------------------------------
+// Post-solve residual verification (#7602): a non-eigenpair never reports
+// `converged = true`
+// ---------------------------------------------------------------------------
+
+/// The Euclidean core driven with a Cholesky of the row-major K.
+fn euclidean_core_solve(
+    k: &SparseRowMat<usize, f64>,
+    b: &SparseRowMat<usize, f64>,
+    opts: EigenSolverOptions,
+) -> EigenSolverResult {
+    let llt = k.sp_cholesky(Side::Lower).expect("K is SPD");
+    lanczos_shift_invert(
+        &SparseStiffnessOp {
+            factor: SparseFactorRef::Cholesky(&llt),
+            n: k.nrows(),
+        },
+        &SparseMetricOp { m: b.as_ref() },
+        opts,
+    )
+}
+
+/// The DEFECT CLASS itself: the Euclidean core handed a B ≠ cI returns Ritz
+/// pairs that are not eigenpairs (measured ‖Sy − μy‖ = 9.1e1, relative 0.36),
+/// and must say so rather than label them converged. The pairs are still
+/// RETURNED, so C2 selection is not silently changed.
+#[test]
+fn euclidean_core_misused_on_a_non_identity_b_reports_unverified_pairs() {
+    let (k, b) = graded_diagonal_b_pencil(80);
+    let misused = euclidean_core_solve(&k, &b, metric_opts(2, 0.0));
+    assert_eq!(misused.eigenvalues.len(), 2, "the pairs must still be returned");
+    assert_eq!(
+        misused.residual_check_failures, 2,
+        "both returned pairs fail the post-solve residual check",
+    );
+    assert!(!misused.converged, "unverified pairs must not report converged");
+
+    let (k_c, b_c) = fixture_c();
+    let control = euclidean_core_solve(&k_c, &b_c, metric_opts(2, 0.0));
+    assert!(control.converged, "B = I: the Euclidean core is valid and converges");
+    assert_eq!(control.residual_check_failures, 0, "B = I: every pair verifies");
+}
+
+/// `m` with every stored entry multiplied by `factor`.
+fn scaled(m: &SparseRowMat<usize, f64>, factor: f64) -> SparseRowMat<usize, f64> {
+    let m_ref = m.as_ref();
+    let mut trips = Vec::with_capacity(m.compute_nnz());
+    for i in 0..m.nrows() {
+        let columns = m_ref.symbolic().col_idx_of_row_raw(i);
+        for (&j, &value) in columns.iter().zip(m_ref.val_of_row(i)) {
+            trips.push(Triplet::new(i, j, factor * value));
+        }
+    }
+    SparseRowMat::try_new_from_triplets(m.nrows(), m.ncols(), &trips).unwrap()
+}
+
+/// `K × 1e10` puts λ near 1e7, so `|μ| = 1/|λ|` is near 1e-7: the scale of an
+/// SI-unit modal pencil, where `|μ|` sits at or below the default tol.
+const SI_UNIT_STIFFNESS_SCALE: f64 = 1e10;
+
+/// The defect class at SI-unit scale, with the DEFAULT tol of 1e-8. Every
+/// residual here is below `10·tol`, so a check with an absolute arm would pass
+/// these pairs however wrong they are. The check must be relative to the
+/// operator to catch them.
+#[test]
+fn euclidean_core_misused_at_si_unit_scale_still_reports_unverified_pairs() {
+    let opts = EigenSolverOptions {
+        n_modes: 2,
+        ..EigenSolverOptions::default()
+    };
+    let (k, b) = graded_diagonal_b_pencil(80);
+    let misused = euclidean_core_solve(&scaled(&k, SI_UNIT_STIFFNESS_SCALE), &b, opts.clone());
+    assert_eq!(misused.eigenvalues.len(), 2, "the pairs must still be returned");
+    assert_eq!(
+        misused.residual_check_failures, 2,
+        "both returned pairs fail the post-solve residual check at SI-unit scale too",
+    );
+    assert!(!misused.converged, "unverified pairs must not report converged");
+
+    let (k_c, b_c) = fixture_c();
+    let control = euclidean_core_solve(&scaled(&k_c, SI_UNIT_STIFFNESS_SCALE), &b_c, opts);
+    assert!(control.converged, "B = I at SI-unit scale: the Euclidean core converges");
+    assert_eq!(
+        control.residual_check_failures, 0,
+        "B = I at SI-unit scale: every pair verifies",
+    );
+}
+
+/// QZ computes the spectrum directly, so the dense path has no Ritz pairs to
+/// verify.
+#[test]
+fn dense_path_reports_no_residual_check_failures() {
+    let (k, b) = graded_diagonal_b_pencil(80);
+    let result = solve_eigen_dense(&k, &b, metric_opts(2, 0.0));
+    assert_eq!(result.residual_check_failures, 0);
 }
