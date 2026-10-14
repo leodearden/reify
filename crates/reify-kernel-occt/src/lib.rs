@@ -7026,6 +7026,59 @@ mod tests {
         }
     }
 
+    fn assert_export_cause<T: std::fmt::Debug>(
+        r: Result<T, ExportError>,
+        written: &[u8],
+        cause: &str,
+        what: &str,
+    ) {
+        match r {
+            Err(ExportError::FormatError(m)) if m == cause => {}
+            other => panic!("{what}: expected FormatError({cause:?}), got {other:?}"),
+        }
+        assert!(written.is_empty(), "{what}: wrote {} bytes before failing", written.len());
+    }
+
+    /// Export, tessellation and mesh-deviation of either corrupted-handle kind
+    /// report `get_shape`'s cause, through both export entry points and for
+    /// every format — not `InvalidHandle`, which means the id is unknown.
+    #[test]
+    fn export_and_tessellate_of_a_corrupted_handle_report_the_cause_not_invalid_handle() {
+        let mut kernel = OcctKernel::new();
+        for (h, cause) in corrupted_handles(&mut kernel) {
+            for format in [ExportFormat::Step, ExportFormat::Stl, ExportFormat::ThreeMF] {
+                let mut buf = Vec::new();
+                let r = kernel.export(h, format, &mut buf);
+                assert_export_cause(r, &buf, &cause, &format!("export({h:?}, {format:?})"));
+
+                let mut buf = Vec::new();
+                let r = kernel.export_with_options(h, format, &ExportOptions::default(), &mut buf);
+                assert_export_cause(
+                    r,
+                    &buf,
+                    &cause,
+                    &format!("export_with_options({h:?}, {format:?})"),
+                );
+            }
+            match kernel.tessellate(h, 0.1) {
+                Err(TessError::TessellationFailed(m)) if m == cause => {}
+                other => panic!(
+                    "tessellate({h:?}): expected TessellationFailed({cause:?}), got {other:?}"
+                ),
+            }
+            let empty_mesh = Mesh {
+                vertices: vec![],
+                indices: vec![],
+                normals: None,
+            };
+            assert_query_cause(
+                kernel.measure_mesh_deviation(h, &empty_mesh),
+                &cause,
+                &format!("measure_mesh_deviation({h:?})"),
+            );
+        }
+    }
+
     /// Defense-in-depth: each OCCT geometry-query FFI entry point must reject a
     /// null-topology shape with a catchable `Err` — never a hardware SIGSEGV —
     /// even when called DIRECTLY, bypassing the `get_shape` boundary guard.

@@ -3007,6 +3007,27 @@ mod tests {
         }
     }
 
+    /// Through the `GeometryKernel` seam production builds export from, an
+    /// unknown handle is `InvalidHandle` whatever the format.
+    #[test]
+    fn export_with_options_of_an_unknown_handle_reports_invalid_handle_for_every_format() {
+        use reify_ir::{ExportError, ExportFormat, ExportOptions, GeometryKernel};
+        let handle = super::OcctKernelHandle::spawn();
+        let kernel: &dyn GeometryKernel = &handle;
+        for format in [ExportFormat::Step, ExportFormat::Stl, ExportFormat::ThreeMF] {
+            let mut buf = Vec::new();
+            match kernel.export_with_options(
+                GeometryHandleId(999),
+                format,
+                &ExportOptions::default(),
+                &mut buf,
+            ) {
+                Err(ExportError::InvalidHandle(id)) => assert_eq!(id, GeometryHandleId(999)),
+                other => panic!("{format:?}: expected InvalidHandle(999), got {other:?}"),
+            }
+        }
+    }
+
     #[test]
     fn tessellate_invalid_handle_returns_error() {
         let handle = super::OcctKernelHandle::spawn();
