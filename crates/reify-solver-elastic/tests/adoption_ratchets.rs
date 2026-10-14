@@ -613,11 +613,11 @@ fn lex_defect(lines: &[Line], end: Carry) -> Option<LexDefect> {
 /// The 1-based line of the first `mod name;` inside a `TEST_ITEMS` item. Its body
 /// is another file, which every production row would read as production code.
 fn out_of_line_test_module_line(lines: &[Line]) -> Option<usize> {
-    let skipped = skipped_lines(lines, TEST_ITEMS);
+    let in_test_item = skipped_lines(lines, TEST_ITEMS);
     lines
         .iter()
-        .zip(skipped)
-        .position(|(line, skipped)| skipped && declares_out_of_line_module(&line.code))
+        .zip(in_test_item)
+        .position(|(line, inside)| inside && declares_out_of_line_module(&line.code))
         .map(|index| index + 1)
 }
 
