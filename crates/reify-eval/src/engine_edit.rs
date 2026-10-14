@@ -776,19 +776,6 @@ impl<'a> PendingWarmSeedsGuard<'a> {
         self.map.insert(nid, (state, last_accessed, cost_per_byte));
     }
 
-    /// Test convenience: stage an entry with `cost_per_byte` `0.0` via
-    /// [`insert_with_cost`](Self::insert_with_cost).  Callers carrying a real cost
-    /// use `insert_with_cost` directly.
-    #[cfg(test)]
-    fn insert(
-        &mut self,
-        nid: NodeId,
-        state: reify_ir::OpaqueState,
-        last_accessed: std::time::Instant,
-    ) {
-        self.insert_with_cost(nid, state, last_accessed, 0.0);
-    }
-
     /// Re-borrow the pool for callers that need `&mut WarmStatePool` while
     /// the guard is live (e.g. step (9)'s `donate_warm_state_and_invalidate`).
     fn pool_mut(&mut self) -> &mut WarmStatePool {
@@ -5727,10 +5714,11 @@ mod tests {
 
         {
             let mut pending = PendingWarmSeedsGuard::new(&mut pool);
-            pending.insert(
+            pending.insert_with_cost(
                 node_id.clone(),
                 OpaqueState::new(0xDEADBEEFu32, 16),
                 std::time::Instant::now(),
+                0.0,
             );
             // Guard goes out of scope here, triggering Drop — no drain called
         }
@@ -5774,15 +5762,17 @@ mod tests {
 
         {
             let mut pending = PendingWarmSeedsGuard::new(&mut pool);
-            pending.insert(
+            pending.insert_with_cost(
                 val_nid.clone(),
                 OpaqueState::new(0xAAu8, 100),
                 std::time::Instant::now(),
+                0.0,
             );
-            pending.insert(
+            pending.insert_with_cost(
                 con_nid.clone(),
                 OpaqueState::new(0xBBu8, 50),
                 std::time::Instant::now(),
+                0.0,
             );
             // Neither node has a cache entry → drain MUST re-donate both to pool.
             pending.drain_into_cache_or_repool(&mut cache);
@@ -5832,20 +5822,23 @@ mod tests {
 
         {
             let mut pending = PendingWarmSeedsGuard::new(&mut pool);
-            pending.insert(
+            pending.insert_with_cost(
                 val_nid.clone(),
                 OpaqueState::new(0xDEADu32, 8),
                 std::time::Instant::now(),
+                0.0,
             );
-            pending.insert(
+            pending.insert_with_cost(
                 con_nid.clone(),
                 OpaqueState::new(0xBEEFu32, 16),
                 std::time::Instant::now(),
+                0.0,
             );
-            pending.insert(
+            pending.insert_with_cost(
                 rea_nid.clone(),
                 OpaqueState::new(0xFEEDu32, 24),
                 std::time::Instant::now(),
+                0.0,
             );
             // No drain — Drop fires with all three entries
         }
@@ -5926,10 +5919,11 @@ mod tests {
 
         {
             let mut pending = PendingWarmSeedsGuard::new(&mut pool);
-            pending.insert(
+            pending.insert_with_cost(
                 nid.clone(),
                 OpaqueState::new(PAYLOAD, SIZE),
                 std::time::Instant::now(),
+                0.0,
             );
             // Cache HIT → state goes to cache, NOT to pool.
             pending.drain_into_cache_or_repool(&mut cache);
@@ -6153,7 +6147,12 @@ mod tests {
                 let mut pool = WarmStatePool::new(1024);
                 let nid = NodeId::Value(ValueCellId::new("T", "safety_net"));
                 let mut pending = PendingWarmSeedsGuard::new(&mut pool);
-                pending.insert(nid, OpaqueState::new(0xABu8, 8), std::time::Instant::now());
+                pending.insert_with_cost(
+                    nid,
+                    OpaqueState::new(0xABu8, 8),
+                    std::time::Instant::now(),
+                    0.0,
+                );
                 // Drop fires here with a non-empty map → safety net → must WARN.
             });
 
@@ -6178,7 +6177,12 @@ mod tests {
                 let mut cache = CacheStore::new();
                 let nid = NodeId::Value(ValueCellId::new("T", "inert_drop"));
                 let mut pending = PendingWarmSeedsGuard::new(&mut pool);
-                pending.insert(nid, OpaqueState::new(0xCDu8, 8), std::time::Instant::now());
+                pending.insert_with_cost(
+                    nid,
+                    OpaqueState::new(0xCDu8, 8),
+                    std::time::Instant::now(),
+                    0.0,
+                );
                 // Success path: drain empties the map.
                 pending.drain_into_cache_or_repool(&mut cache);
                 // Drop fires here with an empty map → no WARN.
@@ -6224,7 +6228,12 @@ mod tests {
             let mut pool = WarmStatePool::new(1024);
             let nid = NodeId::Value(ValueCellId::new("T", "count_field_test"));
             let mut pending = PendingWarmSeedsGuard::new(&mut pool);
-            pending.insert(nid, OpaqueState::new(0xAAu8, 8), std::time::Instant::now());
+            pending.insert_with_cost(
+                nid,
+                OpaqueState::new(0xAAu8, 8),
+                std::time::Instant::now(),
+                0.0,
+            );
             // Drop fires with a non-empty map → safety-net WARN must fire.
         });
 
