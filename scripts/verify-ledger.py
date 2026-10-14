@@ -817,15 +817,16 @@ def iter_ledger(ledger_dir, discarded):
     path = Path(ledger_dir) / LEDGER_FILE
     if not path.exists():
         return
-    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
-        try:
-            record = json.loads(line)
-        except ValueError:
-            record = None
-        if isinstance(record, dict):
-            yield record
-        else:
-            discarded["malformed-record"] = discarded.get("malformed-record", 0) + 1
+    with open(path, encoding="utf-8", errors="replace") as fh:
+        for line in fh:
+            try:
+                record = json.loads(line)
+            except ValueError:
+                record = None
+            if isinstance(record, dict):
+                yield record
+            else:
+                discarded["malformed-record"] = discarded.get("malformed-record", 0) + 1
 
 
 def counter_totals(snapshot):
