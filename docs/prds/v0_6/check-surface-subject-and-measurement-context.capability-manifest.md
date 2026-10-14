@@ -1,0 +1,76 @@
+# Capability manifest — check-surface-subject-and-measurement-context
+
+PRD: `docs/prds/v0_6/check-surface-subject-and-measurement-context.md`. Machine-readable twin: `check-surface-subject-and-measurement-context.capability-manifest.yaml` (schema: dark-factory `shared.capability_manifest.CapabilityManifestDoc`; 18 task blocks, 66 capabilities). Task ids: stamped by `commit_planning` at decompose.
+
+**Code anchors** verified against main `cef0d08edc` (2026-10-13; re-measured by the critic at `363f668fab` and the fold-verifier at `bfef2c32d4`). Cite-by-symbol; re-locate lines at implementation time.
+
+Verdicts: PASS = the binding held at authoring (read or probed this session, or reproduced by the critic or the fold-verifier); OPEN = the binding is the leaf's own deliverable, not yet built. No FAIL rows. Every mechanical `delivered_check` is red on main today (the construct is absent, or the superseded construct present) — verified with `git grep` at authoring — so none is green on the day it is written.
+
+| Leaf | Capability | Evidence (authoring) | Verdict | delivered_check |
+|---|---|---|---|---|
+| α | engine-on-8730 | S9 α #8730 lands tests/infra/rust_construct_ratchet.py (Row with baseline/target/STALE over scripts/lib_rust_production_view.sh; inline #[cfg(test)] modules skipped, external test files under src/ counted). α declares rows only; α ← #8730. | PASS | — |
+| α | rows-name-explicit-files | Every §8 row names explicit production files, never a directory glob (critic B5): S27 τ #8758 and ω #8770 move test literals into src/ test files that a glob would count. | PASS | — |
+| α | member-exists | stdlib unittest member + .sh wrapper + run-all-classification.manifest row in the same diff (overlay gate-test drift-guard registration). | OPEN | path `tests/infra/test_check_surface_ratchets.py` present |
+| ι | five-exits-today | dispatch_constraints at cef0d08edc has 5 constraint_checker.check calls, 5 ConstraintInput constructions, 5 returns plus the tail; no integration test drives a registry-plus-RepresentationWithin batch (scout C, critic CONFIRMED). | PASS | — |
+| ι | mixed-batch-test | ι adds the first mixed registry + RepresentationWithin batch test as a module of an existing reify-eval harness binary. | OPEN | grep `fn mixed_registry_and_representation_within_batch` present in `crates/reify-eval/tests` |
+| ι | checker-call-row | ι adds row C14 (constraint_checker.check( in engine_constraints.rs) at 1; 5 today, so the row reds before ι and guards regrowth after. | OPEN | — |
+| ε1 | check-reads-side-tables | 8 production reads of self.achieved_repr_tol / realization_handles / capture_repr_tol in engine_constraints.rs at cef0d08edc (row C6). | PASS | — |
+| ε1 | internal-checks-are-sources-of-record | reify build's RepresentationWithin attribution comes only from build_with_geometry_output's internal check (cli_representation_within::build_surface_reports_attributable_indeterminate); D6 keeps standalone surfaces on unmeasured_context(), nested-in-measure on PendingInPass (critic B1). | PASS | — |
+| ε1 | heavy-arm-needs-build-result | cmd_check keeps realize_for_check's BuildResult for merge_post_build_verdicts / drop_falsified_indeterminate_diagnostics / merge_build_diagnostics; measure returns it (critic B4). | PASS | — |
+| ε1 | attribution-by-capability | unmeasured_reason arm 1 fires on engines without a BRep-capable kernel, incl. stub-mode kernel-backed engines; unmeasured_context() derives the cause from has_repr_capable_kernel (critic M3). | PASS | — |
+| ε1 | test-seam | 23 uses of set_achieved_repr_tol_for_test become MeasurementContext::measured_for_test (feature test-instrumentation); measuring tests take measure's context (critic M9). | PASS | — |
+| ε1 | context-type | measurement.rs defines MeasurementContext and the posture. | OPEN | grep `pub struct MeasurementContext` present in `crates/reify-eval/src/measurement.rs` |
+| ε1 | posture-constructor | Engine::unmeasured_context is the only way a caller names an unmeasured posture. | OPEN | grep `pub fn unmeasured_context` present in `crates/reify-eval/src` |
+| ε1 | measure-request-realizes | MeasureRequest { realize, capture_repr_tol, openvdb }; measure returns build: Some iff it realized; on an engine without a BRep-capable kernel measure yields Unmeasured(NoCapableKernel), and a Measured context with no entry keeps today's arm-2/3 wording (fold-verifier N2, N8). | PASS | — |
+| μ | compiler-fn-public | reify_compiler::satisfies_trait_bound is pub and re-exported at the crate root; reify-eval already calls it (S7 C3 keeps the path stable). | PASS | — |
+| μ | shadowing-is-live | probe (critic): a module `trait Physical` shadowing the prelude compiles (rc 0); BOM/export/GUI let the prelude win, GD&T lets the module win — μ unifies on module-shadows-prelude (B9). | PASS | — |
+| μ | eval-copy-gone | definition-anchored. | OPEN | grep `pub fn conforms_to_trait` absent in `crates/reify-eval/src` |
+| μ | identity-not-name | satisfies_trait_bound and conforms_to_trait compare names; after strict imports (#5503) a module may legally declare trait Buy; μ resolves fixed stdlib targets by identity (B9). | PASS | — |
+| λ | five-groups | tolerance_combine.rs production 1-971 hosts five groups; engine_hash_algo.rs hashes the path; two test scans hard-code the sibling test path (scout C). | PASS | — |
+| λ | representation-within-module | the RepresentationWithin group moves out. | OPEN | path `crates/reify-eval/src/representation_within.rs` present |
+| λ | output-spec-module | the export-spec group moves out with a typed decoder and an io.ri parity test. | OPEN | path `crates/reify-eval/src/output_spec.rs` present |
+| ε2 | one-caller | realization_belongs_to's only production caller is resolve_repr_tol_key; typed occurrence equality preserves C-BOUND-2 (critic CONFIRMED). | PASS | — |
+| ε2 | string-predicate-gone | definition-anchored (the test fn realization_belongs_to_matches_only_marker_anchored_prefix would match a bare name). | OPEN | grep `fn realization_belongs_to\(` absent in `crates/reify-eval/src` |
+| ε3 | reload-keeps-stale-handles | reset_geometry_for_reload resets kernels and the realization cache and clears neither realization_handles nor achieved_repr_tol; EngineSession::export refills handles (scout B Q6). | PASS | — |
+| ε3 | hash-available | GeometryHandle carries upstream_values_hash ([u8; 32], reify-ir value.rs); some constructors write the zero placeholder (D7 fallback). | PASS | — |
+| ε3 | staleness-predicate | MeasurementContext::is_current(&engine) is the one staleness authority (#6898 γ reads it). | OPEN | grep `fn is_current\(` present in `crates/reify-eval/src/measurement.rs` |
+| ε3 | zero-hash-is-stale | an entry whose upstream_values_hash is the zero placeholder is always Stale; ε3 replaces production zero placeholders so measured entries carry real hashes (fold-verifier N9). | OPEN | — |
+| ζ1 | detectors-are-cli-private | module_has_* are private fns in the reify-cli binary (moving to module_capabilities.rs in S27 τ #8758); cmd_build / cmd_eval use module_has_geometry / module_has_isosurface, so the moved detectors stay public. | PASS | — |
+| ζ1 | thickness-is-a-conjunction | module_has_thickness_dfm_rule = module_has_dfm_rule && a LENGTH min_feature_size member; #6898 A1's alias claim is false (critic M8). | PASS | — |
+| ζ1 | plan-type | check_plan.rs defines the plan. | OPEN | grep `pub struct CheckEnginePlan` present in `crates/reify-eval/src/check_plan.rs` |
+| ζ1 | detectors-in-eval | the detectors move to reify-eval. | OPEN | path `crates/reify-eval/src/module_capabilities.rs` present |
+| ζ2 | purpose-path-never-measures | the --purpose branch calls check_constraints_with_values, which never reaches measure_gdt_conformance / measure_dfm_rules (both called only from Engine::check, which walks module.templates and misses purpose-injected constraints) (critic B3). | PASS | — |
+| ζ2 | measured-values-pass | Engine::check_with_values_measured runs the measure passes over a given active set. | OPEN | grep `fn check_with_values_measured` present in `crates/reify-eval/src` |
+| ζ2 | purpose-measures-cli | B5 in harness_cli cli_purpose.rs. | OPEN | grep `fn check_purpose_measures_representation_conforms_and_dfm` present in `crates/reify-cli/tests` |
+| ζ2 | measure-after-activation | the purpose branch today is realize_for_check -> activate_purpose* -> check_constraints_with_values; ζ2 activates first and measures after, so hashes are those of the bound values (fold-verifier N7); B5 has a binding-changes-geometry case. | PASS | — |
+| β | diagnostic-is-non-exhaustive | reify_core::Diagnostic is #[non_exhaustive] #[derive(Debug, Clone)]; its only struct literals are inside error/warning/info; the compile_fail,E0639 doctest gains `constraint: None` (critic m1). | PASS | — |
+| β | id-lost-at-flatten | ConstraintResult carries the id; push_constraint_result / labeled_entry flatten messages into a bare Vec<Diagnostic> — the one attachment point (critic M2). | PASS | — |
+| β | entity-suffix-collision-real | build_with_geometry_output's post-geometry merge uses d.message.contains(&needle) (needle = label or id); XFoo#constraint[1] contains Foo#constraint[1]; the record's [1]/[10] case is vacuous. | PASS | — |
+| β | false-pass-ordering | #7990 (pending): the geometric-Conforms warning survives today only because it is id-less; β ← #7990 so subjects never erase the symptom (critic B2); B10 pins it. | PASS | — |
+| β | claim-grammar-in-flight | #5404 (pending, branch task/5404 d7a01f1a24) renames INDETERMINACY_PREFIX to CONSTRAINT_CLAIM_PREFIX and adds VIOLATION_INFIX; β ← #5404 and deletes both claim kinds' text constants (critic M5). | PASS | — |
+| β | subject-type | ConstraintSubject { id, label } on Diagnostic.constraint. | OPEN | grep `pub struct ConstraintSubject` present in `crates/reify-core/src/diagnostics.rs` |
+| β | claim-text-constants-gone | both today's claim-grammar constants and #5404's (CONSTRAINT_CLAIM_PREFIX) are absent after β (row C2 at 0). | OPEN | grep `INDETERMINACY_PREFIX\|CONSTRAINT_CLAIM_PREFIX` absent in `crates/reify-cli/src` |
+| γ | skip-set-today | compute_diagnostics_with_state rebuilds `constraint {id\|label} violated` per Violated entry and filters by full-string equality; the checker already codes these ConstraintViolated (scout A Q4(d)). | PASS | — |
+| γ | explanatory-text-kept | the non-boolean ConstraintViolated message and GD&T measured-deviation verdicts must reach the editor (critic m6); β gives the non-boolean case ConstraintNonBooleanValue. | PASS | — |
+| γ | skip-set-gone | the construct, not the bare token (overlay rule 1); behavioural cover B2 and the four LSP pins. | OPEN | grep `let violated_messages` absent in `crates/reify-lsp/src/diagnostics.rs` |
+| η | duplicated-views | measure_gdt_conformance and enumerate_gdt_callouts each build a trait registry and template_by_name (8 insert lines); handle injection twice; stale :842-854 cite (scout C Q7). | PASS | — |
+| η | outcome-consumer-first | S8-α1 #8888 makes measure_gdt_conformance a BuiltinOutcome consumer; η ← #8888. | PASS | — |
+| η | gdt-context | one context built per check. | OPEN | grep `struct GdtContext` present in `crates/reify-eval/src` |
+| θ | verdict-fn-from-s8 | S8-α2 #8889 introduces one pure DFM verdict function returning diagnostics, called by the builtin and by measure_dfm_rules; θ ← #8889 types its return. | PASS | — |
+| θ | typed-verdict | DfmVerdict in reify-stdlib dfm.rs. | OPEN | grep `enum DfmVerdict` present in `crates/reify-stdlib/src/dfm.rs` |
+| θ | dfm-spec-module | P1 partition. | OPEN | path `crates/reify-eval/src/dfm_spec.rs` present |
+| δ | no-constructor-today | no From<&Diagnostic> / from_diagnostic for DiagnosticInfo; 3 production GUI literals; reify-core has strum (no runtime serde_json), so the code projects through IntoStaticStr (critic m2). | PASS | — |
+| δ | unresolved-source-is-projection | "unresolved-source" is set only when d.code is None on tessellation diagnostics positioned against an empty source; it becomes has_location false (critic M11). | PASS | — |
+| δ | constructor | the one projection. | OPEN | grep `pub fn from_diagnostic` present in `crates/reify-core/src/diagnostics.rs` |
+| δ | hot-reload-code | the hot-reload state is a DiagnosticCode. | OPEN | grep `HotReloadFailed` present in `crates/reify-core/src/diagnostics.rs` |
+| δ | s25-moves-projection | S25 ε #8941 moves diagnostics_to_info to gui/src-tauri/src/engine/projection.rs and σ #8952 retypes DiagnosticInfo.severity; δ ← #8952; row C10 names engine.rs and engine/projection.rs. | PASS | — |
+| κ | three-copies | collect_active_constraints, EvaluationGraph::active_constraint_ids and guard_inactive_members each match Bool(true) / Bool(false) / other (6 arms); seven member derivations are removed or collapsed by S4 δ #8862 and ι #8865 (κ ← both). | PASS | — |
+| κ | no-scc | guard_branch.rs imports only reify_ir::Value (critic CONFIRMED no SCC). | PASS | — |
+| κ | predicate-module | the leaf module. | OPEN | path `crates/reify-eval/src/guard_branch.rs` present |
+| π | shadowing-silent-today | probe 2026-10-14: a module `trait Buy { param lead_time_days }` with `Bolt : Buy` passes reify check (rc 0) and yields a purchased BOM line; `trait Physical` rebinds stdlib Rigid : Physical. | PASS | — |
+| π | lint-upstream | #5493 (stdlib-namespace α, pending; branch task/5493) adds compile_builder/stdlib_shadow_lint.rs and DiagnosticCode::StdlibNameShadowed at Warning; π ← #5493 and raises the trait arm to Error. | PASS | — |
+| π | corpus-collisions | 9 trait declarations in 8 examples/ files plus 2 G3 fixtures collide with prelude traits; π renames them in the same diff. | PASS | — |
+| π | rejection-test | B11 in a reify-compiler harness module plus harness_cli. | OPEN | grep `fn stdlib_trait_shadowing_is_an_error` present in `crates` |
+| ν | partition-symbols-located | record h14 P2 symbols (GdtCallout, ConstraintUpgrade, replace_superseded_constraint_diagnostics, diagnostic_subject, settled_subjects, LabeledConstraintResults) present at cef0d08edc; labeled_entry moves with them. | PASS | — |
+| ν | supersession-module | P2 partition. | OPEN | path `crates/reify-eval/src/supersession.rs` present |
+| ω | terminal-status-stamped | overlay closed terminal vocabulary; same header on the capability manifest. | OPEN | grep `^\*\*Status:\*\* SHIPPED` present in `docs/prds/v0_6/check-surface-subject-and-measurement-context.md` |

@@ -1,0 +1,466 @@
+prd: docs/prds/v0_6/check-surface-subject-and-measurement-context.md
+schema_version: 1
+tasks:
+- label: α
+  task_id: null
+  title: 'check-surface α: check-surface ratchet member on the shared rust_construct_ratchet engine'
+  capabilities:
+  - name: engine-on-8730
+    binding: 'S9 α #8730 lands tests/infra/rust_construct_ratchet.py (Row with baseline/target/STALE over scripts/lib_rust_production_view.sh;
+      inline #[cfg(test)] modules skipped, external test files under src/ counted). α declares rows only; α ← #8730.'
+    verdict: PASS
+  - name: rows-name-explicit-files
+    binding: 'Every §8 row names explicit production files, never a directory glob (critic B5): S27 τ #8758 and
+      ω #8770 move test literals into src/ test files that a glob would count.'
+    verdict: PASS
+  - name: member-exists
+    binding: stdlib unittest member + .sh wrapper + run-all-classification.manifest row in the same diff (overlay
+      gate-test drift-guard registration).
+    verdict: OPEN
+    delivered_check:
+      kind: path
+      expect: present
+      paths:
+      - tests/infra/test_check_surface_ratchets.py
+- label: ι
+  task_id: null
+  title: 'check-surface ι: dispatch_constraints is one peel-bucket-weave path'
+  capabilities:
+  - name: five-exits-today
+    binding: dispatch_constraints at cef0d08edc has 5 constraint_checker.check calls, 5 ConstraintInput constructions,
+      5 returns plus the tail; no integration test drives a registry-plus-RepresentationWithin batch (scout C, critic
+      CONFIRMED).
+    verdict: PASS
+  - name: mixed-batch-test
+    binding: ι adds the first mixed registry + RepresentationWithin batch test as a module of an existing reify-eval
+      harness binary.
+    verdict: OPEN
+    delivered_check:
+      kind: grep
+      pattern: fn mixed_registry_and_representation_within_batch
+      expect: present
+      paths:
+      - crates/reify-eval/tests
+  - name: checker-call-row
+    binding: ι adds row C14 (constraint_checker.check( in engine_constraints.rs) at 1; 5 today, so the row reds
+      before ι and guards regrowth after.
+    verdict: OPEN
+- label: ε1
+  task_id: null
+  title: 'check-surface ε1: Engine::check takes an explicit MeasurementContext; measure / capture_measurement /
+    unmeasured_context'
+  capabilities:
+  - name: check-reads-side-tables
+    binding: 8 production reads of self.achieved_repr_tol / realization_handles / capture_repr_tol in engine_constraints.rs
+      at cef0d08edc (row C6).
+    verdict: PASS
+  - name: internal-checks-are-sources-of-record
+    binding: reify build's RepresentationWithin attribution comes only from build_with_geometry_output's internal
+      check (cli_representation_within::build_surface_reports_attributable_indeterminate); D6 keeps standalone surfaces
+      on unmeasured_context(), nested-in-measure on PendingInPass (critic B1).
+    verdict: PASS
+  - name: heavy-arm-needs-build-result
+    binding: cmd_check keeps realize_for_check's BuildResult for merge_post_build_verdicts / drop_falsified_indeterminate_diagnostics
+      / merge_build_diagnostics; measure returns it (critic B4).
+    verdict: PASS
+  - name: attribution-by-capability
+    binding: unmeasured_reason arm 1 fires on engines without a BRep-capable kernel, incl. stub-mode kernel-backed
+      engines; unmeasured_context() derives the cause from has_repr_capable_kernel (critic M3).
+    verdict: PASS
+  - name: test-seam
+    binding: 23 uses of set_achieved_repr_tol_for_test become MeasurementContext::measured_for_test (feature test-instrumentation);
+      measuring tests take measure's context (critic M9).
+    verdict: PASS
+  - name: context-type
+    binding: measurement.rs defines MeasurementContext and the posture.
+    verdict: OPEN
+    delivered_check:
+      kind: grep
+      pattern: pub struct MeasurementContext
+      expect: present
+      paths:
+      - crates/reify-eval/src/measurement.rs
+  - name: posture-constructor
+    binding: Engine::unmeasured_context is the only way a caller names an unmeasured posture.
+    verdict: OPEN
+    delivered_check:
+      kind: grep
+      pattern: pub fn unmeasured_context
+      expect: present
+      paths:
+      - crates/reify-eval/src
+  - name: measure-request-realizes
+    binding: 'MeasureRequest { realize, capture_repr_tol, openvdb }; measure returns build: Some iff it realized;
+      on an engine without a BRep-capable kernel measure yields Unmeasured(NoCapableKernel), and a Measured context
+      with no entry keeps today''s arm-2/3 wording (fold-verifier N2, N8).'
+    verdict: PASS
+- label: μ
+  task_id: null
+  title: 'check-surface μ: trait conformance through satisfies_trait_bound over one registry (module shadows prelude)'
+  capabilities:
+  - name: compiler-fn-public
+    binding: reify_compiler::satisfies_trait_bound is pub and re-exported at the crate root; reify-eval already
+      calls it (S7 C3 keeps the path stable).
+    verdict: PASS
+  - name: shadowing-is-live
+    binding: 'probe (critic): a module `trait Physical` shadowing the prelude compiles (rc 0); BOM/export/GUI let
+      the prelude win, GD&T lets the module win — μ unifies on module-shadows-prelude (B9).'
+    verdict: PASS
+  - name: eval-copy-gone
+    binding: definition-anchored.
+    verdict: OPEN
+    delivered_check:
+      kind: grep
+      pattern: pub fn conforms_to_trait
+      expect: absent
+      paths:
+      - crates/reify-eval/src
+  - name: identity-not-name
+    binding: satisfies_trait_bound and conforms_to_trait compare names; after strict imports (#5503) a module may
+      legally declare trait Buy; μ resolves fixed stdlib targets by identity (B9).
+    verdict: PASS
+- label: λ
+  task_id: null
+  title: 'check-surface λ: tolerance_combine.rs partition; typed OutputFormat/STEPVersion decoder'
+  capabilities:
+  - name: five-groups
+    binding: tolerance_combine.rs production 1-971 hosts five groups; engine_hash_algo.rs hashes the path; two test
+      scans hard-code the sibling test path (scout C).
+    verdict: PASS
+  - name: representation-within-module
+    binding: the RepresentationWithin group moves out.
+    verdict: OPEN
+    delivered_check:
+      kind: path
+      expect: present
+      paths:
+      - crates/reify-eval/src/representation_within.rs
+  - name: output-spec-module
+    binding: the export-spec group moves out with a typed decoder and an io.ri parity test.
+    verdict: OPEN
+    delivered_check:
+      kind: path
+      expect: present
+      paths:
+      - crates/reify-eval/src/output_spec.rs
+- label: ε2
+  task_id: null
+  title: 'check-surface ε2: the achieved representation-deviation table has a typed key'
+  capabilities:
+  - name: one-caller
+    binding: realization_belongs_to's only production caller is resolve_repr_tol_key; typed occurrence equality
+      preserves C-BOUND-2 (critic CONFIRMED).
+    verdict: PASS
+  - name: string-predicate-gone
+    binding: definition-anchored (the test fn realization_belongs_to_matches_only_marker_anchored_prefix would match
+      a bare name).
+    verdict: OPEN
+    delivered_check:
+      kind: grep
+      pattern: fn realization_belongs_to\(
+      expect: absent
+      paths:
+      - crates/reify-eval/src
+- label: ε3
+  task_id: null
+  title: 'check-surface ε3: a measurement is valid only for the content it measured (hash + kernel generation)'
+  capabilities:
+  - name: reload-keeps-stale-handles
+    binding: reset_geometry_for_reload resets kernels and the realization cache and clears neither realization_handles
+      nor achieved_repr_tol; EngineSession::export refills handles (scout B Q6).
+    verdict: PASS
+  - name: hash-available
+    binding: GeometryHandle carries upstream_values_hash ([u8; 32], reify-ir value.rs); some constructors write
+      the zero placeholder (D7 fallback).
+    verdict: PASS
+  - name: staleness-predicate
+    binding: MeasurementContext::is_current(&engine) is the one staleness authority (#6898 γ reads it).
+    verdict: OPEN
+    delivered_check:
+      kind: grep
+      pattern: fn is_current\(
+      expect: present
+      paths:
+      - crates/reify-eval/src/measurement.rs
+  - name: zero-hash-is-stale
+    binding: an entry whose upstream_values_hash is the zero placeholder is always Stale; ε3 replaces production
+      zero placeholders so measured entries carry real hashes (fold-verifier N9).
+    verdict: OPEN
+- label: ζ1
+  task_id: null
+  title: 'check-surface ζ1: one CheckEnginePlan for cmd_check; module_has_* detectors in reify-eval'
+  capabilities:
+  - name: detectors-are-cli-private
+    binding: 'module_has_* are private fns in the reify-cli binary (moving to module_capabilities.rs in S27 τ #8758);
+      cmd_build / cmd_eval use module_has_geometry / module_has_isosurface, so the moved detectors stay public.'
+    verdict: PASS
+  - name: thickness-is-a-conjunction
+    binding: 'module_has_thickness_dfm_rule = module_has_dfm_rule && a LENGTH min_feature_size member; #6898 A1''s
+      alias claim is false (critic M8).'
+    verdict: PASS
+  - name: plan-type
+    binding: check_plan.rs defines the plan.
+    verdict: OPEN
+    delivered_check:
+      kind: grep
+      pattern: pub struct CheckEnginePlan
+      expect: present
+      paths:
+      - crates/reify-eval/src/check_plan.rs
+  - name: detectors-in-eval
+    binding: the detectors move to reify-eval.
+    verdict: OPEN
+    delivered_check:
+      kind: path
+      expect: present
+      paths:
+      - crates/reify-eval/src/module_capabilities.rs
+- label: ζ2
+  task_id: null
+  title: 'check-surface ζ2: reify check --purpose measures RepresentationWithin, geometric Conforms and DFM'
+  capabilities:
+  - name: purpose-path-never-measures
+    binding: the --purpose branch calls check_constraints_with_values, which never reaches measure_gdt_conformance
+      / measure_dfm_rules (both called only from Engine::check, which walks module.templates and misses purpose-injected
+      constraints) (critic B3).
+    verdict: PASS
+  - name: measured-values-pass
+    binding: Engine::check_with_values_measured runs the measure passes over a given active set.
+    verdict: OPEN
+    delivered_check:
+      kind: grep
+      pattern: fn check_with_values_measured
+      expect: present
+      paths:
+      - crates/reify-eval/src
+  - name: purpose-measures-cli
+    binding: B5 in harness_cli cli_purpose.rs.
+    verdict: OPEN
+    delivered_check:
+      kind: grep
+      pattern: fn check_purpose_measures_representation_conforms_and_dfm
+      expect: present
+      paths:
+      - crates/reify-cli/tests
+  - name: measure-after-activation
+    binding: the purpose branch today is realize_for_check -> activate_purpose* -> check_constraints_with_values;
+      ζ2 activates first and measures after, so hashes are those of the bound values (fold-verifier N7); B5 has
+      a binding-changes-geometry case.
+    verdict: PASS
+- label: β
+  task_id: null
+  title: 'check-surface β: constraint diagnostics carry a structured subject; supersession compares ids (INV-SF-6)'
+  capabilities:
+  - name: diagnostic-is-non-exhaustive
+    binding: 'reify_core::Diagnostic is #[non_exhaustive] #[derive(Debug, Clone)]; its only struct literals are
+      inside error/warning/info; the compile_fail,E0639 doctest gains `constraint: None` (critic m1).'
+    verdict: PASS
+  - name: id-lost-at-flatten
+    binding: ConstraintResult carries the id; push_constraint_result / labeled_entry flatten messages into a bare
+      Vec<Diagnostic> — the one attachment point (critic M2).
+    verdict: PASS
+  - name: entity-suffix-collision-real
+    binding: build_with_geometry_output's post-geometry merge uses d.message.contains(&needle) (needle = label or
+      id); XFoo#constraint[1] contains Foo#constraint[1]; the record's [1]/[10] case is vacuous.
+    verdict: PASS
+  - name: false-pass-ordering
+    binding: '#7990 (pending): the geometric-Conforms warning survives today only because it is id-less; β ← #7990
+      so subjects never erase the symptom (critic B2); B10 pins it.'
+    verdict: PASS
+  - name: claim-grammar-in-flight
+    binding: '#5404 (pending, branch task/5404 d7a01f1a24) renames INDETERMINACY_PREFIX to CONSTRAINT_CLAIM_PREFIX
+      and adds VIOLATION_INFIX; β ← #5404 and deletes both claim kinds'' text constants (critic M5).'
+    verdict: PASS
+  - name: subject-type
+    binding: ConstraintSubject { id, label } on Diagnostic.constraint.
+    verdict: OPEN
+    delivered_check:
+      kind: grep
+      pattern: pub struct ConstraintSubject
+      expect: present
+      paths:
+      - crates/reify-core/src/diagnostics.rs
+  - name: claim-text-constants-gone
+    binding: 'both today''s claim-grammar constants and #5404''s (CONSTRAINT_CLAIM_PREFIX) are absent after β (row
+      C2 at 0).'
+    verdict: OPEN
+    delivered_check:
+      kind: grep
+      pattern: INDETERMINACY_PREFIX|CONSTRAINT_CLAIM_PREFIX
+      expect: absent
+      paths:
+      - crates/reify-cli/src
+- label: γ
+  task_id: null
+  title: 'check-surface γ: LSP diagnostics select by code and subject; compute_diagnostics_with_state is stage functions'
+  capabilities:
+  - name: skip-set-today
+    binding: compute_diagnostics_with_state rebuilds `constraint {id|label} violated` per Violated entry and filters
+      by full-string equality; the checker already codes these ConstraintViolated (scout A Q4(d)).
+    verdict: PASS
+  - name: explanatory-text-kept
+    binding: the non-boolean ConstraintViolated message and GD&T measured-deviation verdicts must reach the editor
+      (critic m6); β gives the non-boolean case ConstraintNonBooleanValue.
+    verdict: PASS
+  - name: skip-set-gone
+    binding: the construct, not the bare token (overlay rule 1); behavioural cover B2 and the four LSP pins.
+    verdict: OPEN
+    delivered_check:
+      kind: grep
+      pattern: let violated_messages
+      expect: absent
+      paths:
+      - crates/reify-lsp/src/diagnostics.rs
+- label: η
+  task_id: null
+  title: 'check-surface η: one GD&T context per check'
+  capabilities:
+  - name: duplicated-views
+    binding: measure_gdt_conformance and enumerate_gdt_callouts each build a trait registry and template_by_name
+      (8 insert lines); handle injection twice; stale :842-854 cite (scout C Q7).
+    verdict: PASS
+  - name: outcome-consumer-first
+    binding: 'S8-α1 #8888 makes measure_gdt_conformance a BuiltinOutcome consumer; η ← #8888.'
+    verdict: PASS
+  - name: gdt-context
+    binding: one context built per check.
+    verdict: OPEN
+    delivered_check:
+      kind: grep
+      pattern: struct GdtContext
+      expect: present
+      paths:
+      - crates/reify-eval/src
+- label: θ
+  task_id: null
+  title: 'check-surface θ: typed DFM verdict; one rule header; dfm_spec.rs'
+  capabilities:
+  - name: verdict-fn-from-s8
+    binding: 'S8-α2 #8889 introduces one pure DFM verdict function returning diagnostics, called by the builtin
+      and by measure_dfm_rules; θ ← #8889 types its return.'
+    verdict: PASS
+  - name: typed-verdict
+    binding: DfmVerdict in reify-stdlib dfm.rs.
+    verdict: OPEN
+    delivered_check:
+      kind: grep
+      pattern: enum DfmVerdict
+      expect: present
+      paths:
+      - crates/reify-stdlib/src/dfm.rs
+  - name: dfm-spec-module
+    binding: P1 partition.
+    verdict: OPEN
+    delivered_check:
+      kind: path
+      expect: present
+      paths:
+      - crates/reify-eval/src/dfm_spec.rs
+- label: δ
+  task_id: null
+  title: 'check-surface δ: one DiagnosticInfo projection in reify-core; hot reload is a DiagnosticCode'
+  capabilities:
+  - name: no-constructor-today
+    binding: no From<&Diagnostic> / from_diagnostic for DiagnosticInfo; 3 production GUI literals; reify-core has
+      strum (no runtime serde_json), so the code projects through IntoStaticStr (critic m2).
+    verdict: PASS
+  - name: unresolved-source-is-projection
+    binding: '"unresolved-source" is set only when d.code is None on tessellation diagnostics positioned against
+      an empty source; it becomes has_location false (critic M11).'
+    verdict: PASS
+  - name: constructor
+    binding: the one projection.
+    verdict: OPEN
+    delivered_check:
+      kind: grep
+      pattern: pub fn from_diagnostic
+      expect: present
+      paths:
+      - crates/reify-core/src/diagnostics.rs
+  - name: hot-reload-code
+    binding: the hot-reload state is a DiagnosticCode.
+    verdict: OPEN
+    delivered_check:
+      kind: grep
+      pattern: HotReloadFailed
+      expect: present
+      paths:
+      - crates/reify-core/src/diagnostics.rs
+  - name: s25-moves-projection
+    binding: 'S25 ε #8941 moves diagnostics_to_info to gui/src-tauri/src/engine/projection.rs and σ #8952 retypes
+      DiagnosticInfo.severity; δ ← #8952; row C10 names engine.rs and engine/projection.rs.'
+    verdict: PASS
+- label: κ
+  task_id: null
+  title: 'check-surface κ: one guard-branch predicate (guard_branch.rs)'
+  capabilities:
+  - name: three-copies
+    binding: 'collect_active_constraints, EvaluationGraph::active_constraint_ids and guard_inactive_members each
+      match Bool(true) / Bool(false) / other (6 arms); seven member derivations are removed or collapsed by S4 δ
+      #8862 and ι #8865 (κ ← both).'
+    verdict: PASS
+  - name: no-scc
+    binding: guard_branch.rs imports only reify_ir::Value (critic CONFIRMED no SCC).
+    verdict: PASS
+  - name: predicate-module
+    binding: the leaf module.
+    verdict: OPEN
+    delivered_check:
+      kind: path
+      expect: present
+      paths:
+      - crates/reify-eval/src/guard_branch.rs
+- label: π
+  task_id: null
+  title: 'check-surface π: shadowing a prelude trait is a compile Error (StdlibNameShadowed)'
+  capabilities:
+  - name: shadowing-silent-today
+    binding: 'probe 2026-10-14: a module `trait Buy { param lead_time_days }` with `Bolt : Buy` passes reify check
+      (rc 0) and yields a purchased BOM line; `trait Physical` rebinds stdlib Rigid : Physical.'
+    verdict: PASS
+  - name: lint-upstream
+    binding: '#5493 (stdlib-namespace α, pending; branch task/5493) adds compile_builder/stdlib_shadow_lint.rs and
+      DiagnosticCode::StdlibNameShadowed at Warning; π ← #5493 and raises the trait arm to Error.'
+    verdict: PASS
+  - name: corpus-collisions
+    binding: 9 trait declarations in 8 examples/ files plus 2 G3 fixtures collide with prelude traits; π renames
+      them in the same diff.
+    verdict: PASS
+  - name: rejection-test
+    binding: B11 in a reify-compiler harness module plus harness_cli.
+    verdict: OPEN
+    delivered_check:
+      kind: grep
+      pattern: fn stdlib_trait_shadowing_is_an_error
+      expect: present
+      paths:
+      - crates
+- label: ν
+  task_id: null
+  title: 'check-surface ν: engine_constraints.rs partition close (supersession.rs)'
+  capabilities:
+  - name: partition-symbols-located
+    binding: record h14 P2 symbols (GdtCallout, ConstraintUpgrade, replace_superseded_constraint_diagnostics, diagnostic_subject,
+      settled_subjects, LabeledConstraintResults) present at cef0d08edc; labeled_entry moves with them.
+    verdict: PASS
+  - name: supersession-module
+    binding: P2 partition.
+    verdict: OPEN
+    delivered_check:
+      kind: path
+      expect: present
+      paths:
+      - crates/reify-eval/src/supersession.rs
+- label: ω
+  task_id: null
+  title: 'check-surface ω: PRD close — terminal status stamp'
+  capabilities:
+  - name: terminal-status-stamped
+    binding: overlay closed terminal vocabulary; same header on the capability manifest.
+    verdict: OPEN
+    delivered_check:
+      kind: grep
+      pattern: ^\*\*Status:\*\* SHIPPED
+      expect: present
+      paths:
+      - docs/prds/v0_6/check-surface-subject-and-measurement-context.md
