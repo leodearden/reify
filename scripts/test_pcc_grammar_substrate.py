@@ -7,11 +7,14 @@ Shared loader and helpers: scripts/_pcc_test_support.py; runner:
 tests/infra/test_prd_capability_check.sh.
 """
 
+import glob
 import os
 import shutil
 import signal
 import subprocess
+import sys
 import tempfile
+import textwrap
 import time
 import unittest
 import unittest.mock
@@ -19,11 +22,9 @@ import unittest.mock
 from _pcc_test_support import (
     pcc,
     _CACHE_DENIED_STDERR,
+    _SCRIPTS_DIR,
     _compute_grammar_e2e_status,
-    _grammar_status_calls_at_import,
-    _grammar_status_importers,
     _patch_parser_c,
-    _snapshot_grammar_status_at_import,
     _ts_stub_cache_denied,
     _ts_stub_clean,
     _ts_stub_forks_grandchild,
@@ -102,32 +103,41 @@ class TestGrammarAvailabilityGuard(unittest.TestCase):
         self.assertIn("parser.c", reason, "the skip message must name what is missing")
 
     def test_hermetic_import_spawns_no_substrate_probe(self):
-        """The behavioural half is LAZY — importing a consumer must not probe.
+        """The behavioural half is LAZY — importing the partitions must not probe.
 
-        Every partition that consumes _grammar_e2e_status or
-        _require_grammar_substrate records its own snapshot as the last
-        statement of its module body, so the pin is on the import of each of
-        them, in whatever order unittest loaded them, and survives whatever
-        tests have run by now.
+        Measured in a fresh interpreter that imports every test_pcc_*.py and
+        then reads the memo, so the pin covers each partition's whole module
+        body however it reaches the support module, and no test that already
+        ran in this process can have spent the memo first.
         """
-        snapshots = _grammar_status_calls_at_import()
+        partitions = sorted(
+            os.path.splitext(os.path.basename(path))[0]
+            for path in glob.glob(os.path.join(_SCRIPTS_DIR, "test_pcc_*.py"))
+        )
         self.assertIn(
-            __name__, snapshots,
-            "this module's own tail snapshot is missing, so the pin is vacuous",
+            os.path.splitext(os.path.basename(__file__))[0], partitions,
+            "the partition glob does not even find this file, so the pin is vacuous",
         )
-        unrecorded = _grammar_status_importers() - snapshots.keys()
-        self.assertEqual(
-            unrecorded, set(),
-            "these modules import _grammar_e2e_status or _require_grammar_substrate "
-            "but never call _snapshot_grammar_status_at_import(__name__) as the last "
-            f"statement of their module body, so this pin cannot see them: {sorted(unrecorded)}",
+        import_all_then_count = textwrap.dedent("""\
+            import importlib, sys
+            scripts_dir, *partitions = sys.argv[1:]
+            sys.path.insert(0, scripts_dir)
+            for partition in partitions:
+                importlib.import_module(partition)
+            from _pcc_test_support import _grammar_e2e_status
+            info = _grammar_e2e_status.cache_info()
+            print(info.hits + info.misses)
+        """)
+        child = subprocess.run(
+            [sys.executable, "-I", "-c", import_all_then_count, _SCRIPTS_DIR, *partitions],
+            capture_output=True, text=True,
         )
-        probed = {name: calls for name, calls in snapshots.items() if calls}
+        self.assertEqual(child.returncode, 0, child.stderr)
         self.assertEqual(
-            probed, {},
+            int(child.stdout), 0,
             "_grammar_e2e_status() must not be evaluated at import time; only "
-            "the grammar e2e should ever spend the subprocess (evaluated by the "
-            f"time these importers finished loading: {sorted(probed)})",
+            "the grammar e2e should ever spend the subprocess (imported: "
+            f"{partitions})",
         )
 
 
@@ -658,13 +668,6 @@ class TestGrammarSubstrateUsable(unittest.TestCase):
             usable, reason = self._call(stub)
             self.assertIsInstance(usable, bool)
             self.assertIsInstance(reason, str)
-
-
-# Snapshot taken after the whole module body has executed, so it records exactly
-# what IMPORT cost — read by TestGrammarAvailabilityGuard to pin that the
-# substrate probe stayed lazy.  Must remain the last statement before the
-# entry-point.
-_snapshot_grammar_status_at_import(__name__)
 
 
 if __name__ == "__main__":

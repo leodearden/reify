@@ -15,7 +15,6 @@ import os
 import shlex
 import sys
 import textwrap
-import types
 import unittest.mock
 
 
@@ -136,45 +135,6 @@ def _require_grammar_substrate(test) -> None:
     available, reason = _grammar_e2e_status()
     if not available:
         test.skipTest(f"grammar substrate unavailable — {reason}; skip grammar e2e")
-
-
-_GRAMMAR_STATUS_CALLS_AT_IMPORT: dict[str, int] = {}
-
-
-def _snapshot_grammar_status_at_import(importer: str) -> None:
-    """Record how often _grammar_e2e_status had run when `importer` finished loading.
-
-    The rule: every partition that imports _grammar_e2e_status or
-    _require_grammar_substrate calls `_snapshot_grammar_status_at_import(__name__)`
-    as the LAST statement before its entry point.  The memo is shared by every
-    importer, so a single snapshot sees only the partitions loaded before it;
-    one per importer lets TestGrammarAvailabilityGuard pin that NO import spent
-    the substrate probe, whatever order unittest loaded them in.
-    """
-    info = _grammar_e2e_status.cache_info()
-    _GRAMMAR_STATUS_CALLS_AT_IMPORT[importer] = info.hits + info.misses
-
-
-def _grammar_status_calls_at_import() -> dict[str, int]:
-    """Every recorded snapshot, keyed by importer — a copy, so readers cannot mutate it."""
-    return dict(_GRAMMAR_STATUS_CALLS_AT_IMPORT)
-
-
-def _grammar_status_importers() -> set[str]:
-    """Every loaded module the snapshot rule binds, this one excepted.
-
-    Found by identity in each module's globals rather than by name, so a
-    consumer that never recorded its snapshot is caught whatever it is called.
-    """
-    consumer_api = (_grammar_e2e_status, _require_grammar_substrate)
-    this_module = sys.modules[__name__]
-    return {
-        name
-        for name, module in list(sys.modules.items())
-        if isinstance(module, types.ModuleType)
-        and module is not this_module
-        and any(value is api for value in vars(module).values() for api in consumer_api)
-    }
 
 
 # ---------------------------------------------------------------------------
