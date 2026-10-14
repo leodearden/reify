@@ -8644,6 +8644,66 @@ fn resolve_index_usize(
     }
 }
 
+/// Kernel-aware `flat_map(list, |x| body)` over relational topology selectors,
+/// e.g. `flat_map(adjacent_faces(b, top), |f| shared_edges(top, f))`: binds each
+/// list element to the lambda param and concatenates the `List`s the body
+/// yields through [`try_eval_topology_selector`].
+///
+/// `None` means "not mine; keep the pure-eval value". It is returned unless the
+/// list arg is a `ValueRef` to a `List` or a call this function resolves to a
+/// `List`, the lambda has one param and a `FunctionCall` body, and every
+/// element's body resolves to a `List`. A `Selector`-valued list arg such as
+/// `faces(b)` is not supported. `Some(Undef)` only propagates a kernel failure
+/// the nested helper already reported.
+///
+/// It is reached from inside `try_eval_topology_selector` so both hydration
+/// ladders, a nested `flat_map` and the `single(...)` fallback share one entry.
+fn try_eval_topology_flat_map(
+    args: &[reify_ir::CompiledExpr],
+    named_steps: &HashMap<String, KernelHandle>,
+    values: &reify_ir::ValueMap,
+    kernel: &mut dyn reify_ir::GeometryKernel,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<reify_ir::Value> {
+    let [list_arg, lambda_arg] = args else {
+        return None;
+    };
+    let (param_id, body) = match &lambda_arg.kind {
+        reify_ir::CompiledExprKind::Lambda {
+            param_ids, body, ..
+        } if param_ids.len() == 1 => (&param_ids[0], body.as_ref()),
+        _ => return None,
+    };
+    if !matches!(body.kind, reify_ir::CompiledExprKind::FunctionCall { .. }) {
+        return None;
+    }
+    let items = match &list_arg.kind {
+        reify_ir::CompiledExprKind::ValueRef(id) => match values.get(id)? {
+            reify_ir::Value::List(items) => items.clone(),
+            _ => return None,
+        },
+        reify_ir::CompiledExprKind::FunctionCall { .. } => {
+            match try_eval_topology_selector(list_arg, named_steps, values, kernel, diagnostics)? {
+                reify_ir::Value::List(items) => items,
+                reify_ir::Value::Undef => return Some(reify_ir::Value::Undef),
+                _ => return None,
+            }
+        }
+        _ => return None,
+    };
+    let mut scope = values.clone();
+    let mut out = Vec::new();
+    for item in items {
+        scope.insert(param_id.clone(), item);
+        match try_eval_topology_selector(body, named_steps, &scope, kernel, diagnostics)? {
+            reify_ir::Value::List(sub) => out.extend(sub),
+            reify_ir::Value::Undef => return Some(reify_ir::Value::Undef),
+            _ => return None,
+        }
+    }
+    Some(reify_ir::Value::List(out))
+}
+
 pub(crate) fn try_eval_topology_selector(
     expr: &reify_ir::CompiledExpr,
     named_steps: &HashMap<String, KernelHandle>,
@@ -8656,6 +8716,13 @@ pub(crate) fn try_eval_topology_selector(
         reify_ir::CompiledExprKind::FunctionCall { function, args } => (function, args),
         _ => return None,
     };
+
+    // (1b) `flat_map` is a generic combinator, checked before the helper-name
+    // match (which would reject it); it claims the cell only when its lambda
+    // body resolves through this function.
+    if function.name == "flat_map" {
+        return try_eval_topology_flat_map(args, named_steps, values, kernel, diagnostics);
+    }
 
     // (2) Must be one of the recognised helper names.
     let helper = match function.name.as_str() {
