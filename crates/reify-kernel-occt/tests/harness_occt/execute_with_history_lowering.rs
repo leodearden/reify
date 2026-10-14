@@ -43,6 +43,8 @@ fn square_10mm(kernel: &mut OcctKernel) -> GeometryHandleId {
     )
 }
 
+type IsRecordKind = fn(&AttributeHistory) -> bool;
+
 #[test]
 fn history_lowering_routes_each_op_to_its_record_kind() {
     let mut kernel = OcctKernel::new();
@@ -81,7 +83,7 @@ fn history_lowering_routes_each_op_to_its_record_kind() {
     );
     let edge = kernel.extract_edges(a).expect("box edges")[0];
 
-    let cases: Vec<(GeometryOp, fn(&AttributeHistory) -> bool)> = vec![
+    let cases: Vec<(GeometryOp, IsRecordKind)> = vec![
         (
             GeometryOp::Extrude {
                 profile,
