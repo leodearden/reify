@@ -116,8 +116,9 @@ impl Severity {
     /// (`#[cfg(feature = "serde")]`) is pinned by a unit test.
     ///
     /// Note: `Display` intentionally keeps lowercase (`"error"`, `"warning"`,
-    /// `"info"`) for CLI/human-readable output. Do not change `Display` to
-    /// PascalCase — that would silently alter the MCP CLI wire format.
+    /// `"info"`) for CLI/human-readable output (`reify check`/`build` print
+    /// `{severity}: {message}`); the MCP wire uses `as_wire_str` alone. The CLI
+    /// MCP transport that once put `Display` on the wire (#2638) was deleted by #6665.
     #[inline]
     pub fn as_wire_str(self) -> &'static str {
         match self {

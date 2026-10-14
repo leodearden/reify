@@ -739,8 +739,8 @@ fn get_diagnostics_maps_warning_fields_to_diagnostic_info() {
 /// ("Bracket") and a full cell ID ("Bracket.width"), returning identical
 /// `(line, column, end_line, end_column)` tuples for both inputs.
 ///
-/// This mirrors the CLI-side test `mcp_server_get_source_location_accepts_template_name_and_cell_id`
-/// (step-5) and proves that both transports use the same unified semantics.
+/// Its CLI-side mirror was retired with `reify mcp-server` (#6665), so this is
+/// the only transport pin of the unified semantics.
 ///
 /// The test passes after step-4 (GUI engine refactor) because
 /// `EngineSession::get_source_location("Bracket")` now returns `Some` — before
