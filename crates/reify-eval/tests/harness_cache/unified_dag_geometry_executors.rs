@@ -1706,3 +1706,120 @@ fn unified_dag_chained_curated_chamfers_resolve_every_stage() {
     );
     positive_scalar(&result, "v");
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// task #7270: a curated fillet whose edges come from a `flat_map`-over-lambda
+// topology walk — the shape of examples/topology_selectors/fillet_top_edges.ri.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// The shipped example's walk on a box: the `+Z` face, its four side
+/// neighbours, and the edge each neighbour shares with it.
+const FLAT_MAP_FILLET_SOURCE: &str = r#"pub structure S {
+    let b = box(10mm, 10mm, 10mm)
+    let top = single(faces_by_normal(b, vec3(0.0, 0.0, 1.0), 1deg))
+    let top_edges = flat_map(adjacent_faces(b, top), |f| shared_edges(top, f))
+    let f = fillet(b, top_edges, 1mm)
+}"#;
+
+/// The four top-perimeter edges [`flat_map_topology_kernel`] hands back.
+const FLAT_MAP_TOP_EDGES: [u64; 4] = [60, 61, 62, 63];
+
+/// A box topology on parent handle 1 (the box is the first `execute`): faces
+/// 50..=55 with the `+Z` face 55 at index 5, whose side neighbours (indices
+/// 0..4) each share edge `60 + i` with it.
+fn flat_map_topology_kernel() -> MockGeometryKernel {
+    let parent = GeometryHandleId(1);
+    let faces: Vec<GeometryHandleId> = (50..=55).map(GeometryHandleId).collect();
+    let normals: [[f64; 3]; 6] = [
+        [1.0, 0.0, 0.0],
+        [-1.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0],
+        [0.0, -1.0, 0.0],
+        [0.0, 0.0, -1.0],
+        [0.0, 0.0, 1.0],
+    ];
+    let mut kernel = MockGeometryKernel::new()
+        .with_extracted_faces(parent, faces.clone())
+        .with_extracted_edges(parent, (60..=71).map(GeometryHandleId).collect())
+        .with_adjacent_faces_result(parent, 5, Value::List((0..4).map(Value::Int).collect()));
+    for (face, [x, y, z]) in faces.into_iter().zip(normals) {
+        let normal = format!("{{\"x\":{x:?},\"y\":{y:?},\"z\":{z:?}}}");
+        kernel = kernel
+            .with_face_normal_result(face, Value::String(normal))
+            .with_owner_body_result(face, parent);
+    }
+    for side in 0..4 {
+        let shared = Value::List(vec![Value::Int(side as i64)]);
+        kernel = kernel.with_shared_edges_result(parent, 5, side, shared);
+    }
+    kernel
+}
+
+/// The build raised no Error and dispatched exactly one Fillet, over
+/// [`FLAT_MAP_TOP_EDGES`].
+fn assert_flat_map_fillet_dispatched(result: &BuildResult, ops: &[GeometryOp]) {
+    let errors: Vec<&str> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .map(|d| d.message.as_str())
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "the flat_map-selector curated fillet must build with no Error diagnostic; \
+         errors={errors:#?}"
+    );
+    let fillet_edges: Vec<Vec<u64>> = ops
+        .iter()
+        .filter_map(|op| match op {
+            GeometryOp::Fillet { edges, .. } => {
+                let mut ids: Vec<u64> = edges.iter().map(|e| e.0).collect();
+                ids.sort_unstable();
+                Some(ids)
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        fillet_edges,
+        vec![FLAT_MAP_TOP_EDGES.to_vec()],
+        "exactly one Fillet must dispatch, over the four edges the flat_map walk \
+         collects; recorded ops={ops:?}"
+    );
+}
+
+/// `Engine::build` (the CLI's eval/check/build path) resolves the `flat_map`
+/// cell through the kernel, so the curated fillet dispatches over the four
+/// top-perimeter edges instead of failing on an Undef edge selector.
+#[test]
+fn unified_dag_curated_fillet_over_flat_map_lambda_selector_resolves_edges() {
+    let kernel = flat_map_topology_kernel();
+    let ops_ref = kernel.operations_ref();
+
+    let result = build_with_kernel_stdlib(
+        FLAT_MAP_FILLET_SOURCE,
+        BuildScheduler::UnifiedDag,
+        Box::new(kernel),
+    );
+
+    let top_edges = result
+        .values
+        .get(&reify_core::ValueCellId::new("S", "top_edges"));
+    match top_edges {
+        Some(Value::List(items)) => assert!(
+            items.len() == 4
+                && items
+                    .iter()
+                    .all(|v| matches!(v, Value::GeometryHandle { .. })),
+            "S.top_edges must be a List of 4 edge sub-handles, got {items:?}"
+        ),
+        other => panic!("S.top_edges must resolve to a List of edge handles, got {other:?}"),
+    }
+    let ops: Vec<GeometryOp> = ops_ref
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|r| r.op.clone())
+        .collect();
+    assert_flat_map_fillet_dispatched(&result, &ops);
+}
