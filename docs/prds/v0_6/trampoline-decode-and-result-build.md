@@ -322,6 +322,8 @@ Phase 1 is the foundation (α, δ, μ). Phase 2 is the vertical slice on one str
 | ρ #8722 | Docs-truth: `crates/reify-mcp/src/tools/chunks/functions.md` `von_mises` family documents the symmetric precondition and the error; `ElasticResult.warm_started` documented where ElasticResult fields are (the `.ri` doc block; chunk if one lists them); discoverability: an author who knows the goal ("why did my stress builtin error", "did my solve warm-start") reaches it from the chunk | reify-mcp chunks, stdlib `.ri` docs | every documented signature compiles in a smoke `.ri`; intent-level findability | ε, κ | — |
 | σ #8724 | PRD-close: terminal stamp | this PRD + manifest | committed `SHIPPED` header with landed leaf ids + AS-AUTHORED freeze + LIVE/AS-AUTHORED map | all above | — |
 
+**Creator of the C6 ratchet member (2026-10-13; Leo ruling on esc-8711-3).** The table above gives α #8674 the C6 member, its wrapper and its manifest row, but α waits on #6922/#6941 while μ #8711 and κ #8705 have no prerequisites and each add a row. So whichever of them dispatches first creates `tests/infra/test_trampoline_decode_ratchet.py`, its `.sh` wrapper and its manifest row (μ's plan does), and every later task extends it. κ #8705 now depends on μ #8711. α adds its rows to the existing member, and its `ratchet-member-registered` delivered check may already pass when α dispatches. That is expected, not a phantom done.
+
 **Docs-truth gate.** Item 1 is ρ and item 4 is folded into ρ. Item 2 (exemplar corpus) and item 3 (cheatsheet index line) are **not applicable**: no leaf introduces or alters an authoring idiom (diagnostics and one telemetry field only), so there is no corpus file for an index line to point at.
 
 **G7 walk (advisory at author time).**

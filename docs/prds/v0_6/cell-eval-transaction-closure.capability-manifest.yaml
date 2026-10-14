@@ -1,0 +1,412 @@
+prd: docs/prds/v0_6/cell-eval-transaction-closure.md
+schema_version: 1
+tasks:
+- label: α
+  task_id: 8858
+  title: 'cell-eval-transaction-closure α: cell-eval transaction ratchet member on the shared rust_construct_ratchet engine'
+  capabilities:
+  - name: engine-on-8730
+    binding: 'S9 α #8730 (in progress) lands tests/infra/rust_construct_ratchet.py on task/8730 (commit 3ffd876781 and amends): Row(row_id, construct, view, paths, baseline, target, lowered_by) over scripts/lib_rust_production_view.sh, red above baseline and STALE below it. α declares its rows on that engine and depends on #8730; no second engine (critic M10).'
+    verdict: PASS
+  - name: ratchet-member-shape-exists
+    binding: S9 compiler-declaration-passes D12 and S27 α define a stdlib-unittest tests/infra member counting constructs over scripts/lib_rust_production_view.sh, with a thin .sh wrapper and a run-all-classification.manifest row in the same diff (read at 717ceedb2b).
+    verdict: PASS
+    delivered_check:
+      kind: path
+      expect: present
+      paths:
+      - tests/infra/test_cell_eval_transaction_ratchets.py
+  - name: baselines-measured
+    binding: 'Dated counts at a4a8862bcc (PRD §10): E1 62 (61 + the call inside cell_eval_ctx), E2 3 (incl. the builder body in lib.rs), E3 15 call lines (production view), E4 8, E5 70 crate-wide, E6 9, E7 11 activation shapes; α commits the engine measurement, not these numbers.'
+    verdict: PASS
+- label: β
+  task_id: 8859
+  title: 'cell-eval-transaction-closure β: typed commit leg on the eval journal'
+  capabilities:
+  - name: skip-leg-is-a-string-today
+    binding: commit_cell_result_at appends |cache-skip=<reason> to the Started EventPayload::Custom; cache_divergence::cell_latest_commit_was_skip parses it with contains("cache-skip="); Completed.outcome on Skip is a placeholder EvalOutcome::Changed; CommitOutcome carries allow(dead_code) (read at 717ceedb2b).
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: CacheLegKind::Skipped
+      expect: present
+      paths:
+      - crates/reify-eval/src/cache_divergence.rs
+  - name: no-external-journal-consumer
+    binding: git grep for EventKind / EvalEvent over gui/src-tauri/src, reify-cli, reify-lsp, reify-mcp finds only notify::EventKind in the GUI watcher; the eval journal is reify-eval-internal.
+    verdict: PASS
+  - name: trace-source-move-avoids-cycle
+    binding: cell_commit imports journal; typing the Started event with TraceSource inside journal.rs would add journal -> cell_commit and close a new module cycle, so TraceSource and CacheLegKind live in journal.rs (PRD D4).
+    verdict: PASS
+- label: ν
+  task_id: 8860
+  title: 'cell-eval-transaction-closure ν: h14 partition of engine_eval.rs'
+  capabilities:
+  - name: partition-symbols-located
+    binding: The record h14 partition symbols for engine_eval P1 (cell-type invariants), P2 (field elaboration), P3 (solver problem), P5 (undef/contract recording), P7 (geometry revalidation) are all present at 717ceedb2b; P4 is κ and P6 is ι.
+    verdict: PASS
+    delivered_check:
+      kind: path
+      expect: present
+      paths:
+      - crates/reify-eval/src/solver_problem.rs
+  - name: upstream-moves-pending
+    binding: 'S3 β #8687, S14 ν #8645 and S9 ζ #8735 edit the same symbols first and are pending; ν depends on all three.'
+    verdict: PASS
+- label: γ
+  task_id: 8861
+  title: 'cell-eval-transaction-closure γ: sealed value-cell write (seal in cache.rs, minted by cell_commit); the commit primitive covers every shape (INV-EVAL-1)'
+  capabilities:
+  - name: write-api-is-pub
+    binding: cache.rs declares pub fn record_evaluation, record_evaluation_with_freshness, record_evaluation_propagating_freshness and pub fn put; engine_eval has 13 direct record_evaluation* production calls and engine_edit 1 (read at 717ceedb2b).
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: pub struct ValueCellSeal
+      expect: present
+      paths:
+      - crates/reify-eval/src/cache.rs
+  - name: seal-in-cache-avoids-cycle
+    binding: 'cell_commit.rs imports crate::cache; a seal defined in cell_commit.rs and named by cache.rs closes cache -> cell_commit -> cache. Critic simulation on the post-#8687 tree: GREW reify-eval {cache, cell_commit, deps, journal, warm_pool}. OQ-1 re-ruled (B prime): the seal lives in cache.rs with a crate-visible mint() pinned to cell_commit.rs by row E8.'
+    verdict: PASS
+  - name: compute-dispatch-writes-value-cells
+    binding: CacheStore::complete_compute_dispatch_atomically and begin_compute_dispatch (pub) write NodeId::Value outputs and placeholders inside cache.rs; production callers are in engine_compute::run_compute_dispatch (begin at engine_compute.rs:419); the @optimized let branch hand-writes values/snapshot/journal (critic M4, fold-verify M4). γ seals both; commit_compute_outputs commits all four legs with the cache leg Recorded, never Skip, so check_snapshot_cache_divergence keeps checking those cells (fold-verify NEW 3, B9).
+    verdict: PASS
+  - name: bare-snapshot-writes
+    binding: 22 production `snapshot.values.insert(` lines outside cell_commit.rs (engine_eval 15, engine_edit 4, engine_build 3) and 14 `snapshot_values.insert(` (engine_eval 12, engine_edit 2), read at a4a8862bcc; γ adds rows E10/E10b; INV-EVAL-1 stays partial until they reach 0 (τ completes it).
+    verdict: PASS
+  - name: journal-helpers-move
+    binding: record_subpath_started and record_eval_completed are free fns in engine_eval (16 call lines); γ moves them into cell_commit.rs so cell_elaboration.rs journals without an engine_eval import (fold-verify minor).
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn record_subpath_started
+      expect: present
+      paths:
+      - crates/reify-eval/src/cell_commit.rs
+  - name: pub-super-equals-pub-crate
+    binding: 'cache is declared `pub mod cache;` at the crate root, so pub(super) on CacheStore methods is crate-wide visibility and cannot make commit_cell_result the only writer; ruled OQ-1 (B prime): type seal plus lint row E8, INV-EVAL-1 type+lint.'
+    verdict: PASS
+  - name: primitive-gaps-named
+    binding: cell_commit.rs module doc lists the determinacy-preserving re-serve (reserve_preserving_determinacy_direct) and the failure-path shape as open gaps; γ closes both.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn reserve_preserving_determinacy_direct
+      expect: absent
+      paths:
+      - crates/reify-eval/src/
+- label: δ
+  task_id: 8862
+  title: 'cell-eval-transaction-closure δ: delete Engine::edit_source'
+  capabilities:
+  - name: no-production-caller
+    binding: '.edit_source( callers at 717ceedb2b: 14 integration-test files, engine_admin.rs in-file test, engine_edit.rs in-file tests; none in gui/src-tauri or other crates. Ruled deleted 2026-10-12.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: pub fn edit_source\(
+      expect: absent
+      paths:
+      - crates/reify-eval/src/engine_edit.rs
+  - name: warm-pool-keeps-a-donor
+    binding: 'Premise corrected (OQ-3 re-ruled): engine_edit invalidate_realization_dirty_cone, reached from edit_param realization eviction, calls warm_pool.donate_with_cost, so the pool stays fed after δ. edit_source contributes only the topology-change donation (donate_warm_state_and_invalidate, checkout_added_warm_seeds, PendingWarmSeedsGuard), which δ deletes citing the pending milestone MS filed in this batch.'
+    verdict: PASS
+- label: ε
+  task_id: 8863
+  title: 'cell-eval-transaction-closure ε: edit_param as phase methods over an EditTransaction'
+  capabilities:
+  - name: edit-param-shape
+    binding: 'edit_param is one function of 8 banner-delimited phases with 12 function-scope let mut locals (review record; at main only #8443 changed its realization-id check).'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: struct EditTransaction
+      expect: present
+      paths:
+      - crates/reify-eval/src/engine_edit.rs
+- label: η
+  task_id: 8864
+  title: 'cell-eval-transaction-closure η: one per-cell elaboration primitive for template and instance scope'
+  capabilities:
+  - name: no-containment-null-object
+    binding: unfold.rs defines struct NoContainment and constructs it 3 times; it makes 0 store_cell_replay_diagnostics calls (read at 717ceedb2b).
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: struct NoContainment
+      expect: absent
+      paths:
+      - crates/reify-eval/src/unfold.rs
+  - name: instance-scope-drops-diagnostic
+    binding: 'Probe 2026-10-13 (debug binary built 2026-10-12): reify eval tests/prd-gate/fixtures/cell_eval_instance_scope_runtime_diag.ri prints Top.c.xs = undef and exits 0; the expected post-η output adds error: generate: count must be a non-negative Int and exits 1.'
+    verdict: PASS
+    delivered_check:
+      kind: path
+      expect: present
+      paths:
+      - crates/reify-eval/src/cell_elaboration.rs
+  - name: param-default-drops-diagnostic
+    binding: 'Probe 2026-10-13: reify eval tests/prd-gate/fixtures/cell_eval_param_default_runtime_diag.ri prints S.xs = undef, exit 0; the control tests/prd-gate/fixtures/cell_eval_let_runtime_diag_control.ri prints the error and exits 1.'
+    verdict: PASS
+  - name: base-builder-move-would-grow-scc
+    binding: 'eval_ctx_with_meta installs crate::geometry_ops::try_eval_symbolic_topology_selector; cell_eval_ctx is outside every SCC today; ruled OQ-2 (B): EvalEnv built by a crate-root free fn eval_env keeps the selector hook out of cell_eval_ctx.rs.'
+    verdict: PASS
+  - name: validate-param-override-movable
+    binding: engine_admin::validate_param_override depends only on the crate root value_type_kind_matches (read at a4a8862bcc); it and ParamOverrideRejection move to a leaf param_override.rs, so cell_elaboration.rs and guarded_group.rs need no engine_admin import (critic M1).
+    verdict: PASS
+    delivered_check:
+      kind: path
+      expect: present
+      paths:
+      - crates/reify-eval/src/param_override.rs
+  - name: r3d-r3e-on-cached-miss
+    binding: 'eval_cached Param and Let cache-miss arms carry the R3d symbolic-selector fallback and the R3e minted_in_walk post-walk re-eval (critic M2: six hits in the eval_cached span); CellPass runs both on ColdFirst and CachedMiss, neither on ColdSubRerun or Instance.'
+    verdict: PASS
+  - name: cellhooks-mint
+    binding: 'Engine::mint_symbolic_geometry_handle_for_cell becomes a CellHooks method; Engine:: paths are invisible to module_scc_ratchet, so η adds row E11 (no `Engine` in the new modules, target 0).'
+    verdict: PASS
+  - name: lsp-warning-change-declared
+    binding: '#8348 probe: eval_cached body-inlines a registered @optimized let; with η it dispatches like eval, and with the LSP empty registry emits the NoRegisteredComputeTrampoline warning (declared, pinned by B16).'
+    verdict: PASS
+- label: θ
+  task_id: 8866
+  title: 'cell-eval-transaction-closure θ: CellEvalCtx, CellValue and the panic boundary: the cell step types'
+  capabilities:
+  - name: cell-eval-ctx-type
+    binding: docs/invariants.md names a CellEvalCtx that does not exist (S24 measurement); θ introduces it with CellValue, expr_ctx and eval_cell_guarded and retypes the commit value leg at every commit_cell_result(_at) caller (32 at main), the earliest leaf that needs them (fold-verify NEW 1).
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: pub\(crate\) struct CellEvalCtx
+      expect: present
+      paths:
+      - crates/reify-eval/src/cell_eval_ctx.rs
+  - name: boundary-is-per-site
+    binding: catch_unwind appears at 2 engine_eval production sites (the two cold Let arms) and 0 engine_edit production sites; set_panic_on_eval is read only by the cold evaluators (read at 717ceedb2b).
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn eval_cell_guarded
+      expect: present
+      paths:
+      - crates/reify-eval/src/cell_eval_ctx.rs
+- label: ι
+  task_id: 8865
+  title: 'cell-eval-transaction-closure ι: one activate_guarded_group'
+  capabilities:
+  - name: override-not-consulted-post-solve
+    binding: post_solver_re_eval_guard_cells takes no param_overrides and re-evaluates active Param members from default_expr; eval_guarded_group_param_cell consults param_overrides once (read at 717ceedb2b).
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn activate_guarded_group
+      expect: present
+      paths:
+      - crates/reify-eval/src/
+  - name: fifth-activation-spelling
+    binding: engine_edit reelaborate_guarded_group, called from edit_param guard phase, evaluates active members from default_expr, ignores param_overrides and writes values/snapshot bare (critic M7); ι retires it through GuardPhase::Edit.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn reelaborate_guarded_group\(
+      expect: absent
+      paths:
+      - crates/reify-eval/src/
+  - name: guarded-param-drops-diagnostic
+    binding: 'Probe 2026-10-13: reify eval tests/prd-gate/fixtures/cell_eval_guarded_param_runtime_diag.ri prints S.xs = undef and exits 0; post-ι it prints the generate error and exits 1.'
+    verdict: PASS
+- label: ζ
+  task_id: 8867
+  title: 'cell-eval-transaction-closure ζ: one solve write-back with explicit policy'
+  capabilities:
+  - name: six-arms-today
+    binding: 8 solve_with_dispatch / solve_ranked_with_dispatch production calls (engine_eval 6, engine_edit 2) across six arms; the engine_edit module doc carries the eight-leg roster (read at 717ceedb2b).
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn solve_and_write_back
+      expect: present
+      paths:
+      - crates/reify-eval/src/
+  - name: documented-divergences
+    binding: 'Skeptic note on fk-3ca766d13afa: 4 of 6 step gaps are recorded as deliberate in code and the merged-cluster entry-point divergence is pinned in tests/merged_cluster_solve.rs; ζ encodes them as policy values.'
+    verdict: PASS
+  - name: ordering-vs-solver-driver-parity
+    binding: 'solver-driver-parity β #6690 (problem builder) and κ #6699 (entry point) are pending and edit the same arms; ruled OQ-5 (A): #6690 -> ζ -> #6699.'
+    verdict: PASS
+- label: κ
+  task_id: 8868
+  title: 'cell-eval-transaction-closure κ: post-pass detectors with declared applicability (INV-EVAL-3)'
+  capabilities:
+  - name: one-registered-detector
+    binding: DetectorRegistry::with_builtins registers only MassPropertiesPsdDetector; five detect_* are hand-listed in eval and eval_cached; four run in eval only; run_materialization_annotation_post_pass is called from eval and eval_cached only (read at 717ceedb2b).
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn applies_to
+      expect: present
+      paths:
+      - crates/reify-eval/src/detectors.rs
+  - name: gui-uses-edit-check
+    binding: gui/src-tauri/src/engine.rs calls .edit_check(; edit_param runs no post-pass and edit_check runs only the registry.
+    verdict: PASS
+  - name: dangling-symbol
+    binding: 'No fn detect_scope_coupling exists in the workspace; engine_eval.rs still mentions it in prose. Asserted positively (overlay rule 3): the coupling block becomes a registered ScopeCouplingDetector with a declared applies_to.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: struct ScopeCouplingDetector
+      expect: present
+      paths:
+      - crates/reify-eval/src/detectors.rs
+  - name: order-differs-by-path
+    binding: 'eval: registry 6848 -> annotation 6865 -> coupling..robustness -> five value-scans; eval_cached: value-scans 9448-9469 before registry 9486 and annotation 9506 (critic M3, read at a4a8862bcc). κ adopts eval order and pins the eval_cached and edit-path changes.'
+    verdict: PASS
+- label: λ
+  task_id: 8869
+  title: 'cell-eval-transaction-closure λ: DiagnosticCodes for uncoded engine_eval diagnostics; the three test counters go'
+  capabilities:
+  - name: counters-exist
+    binding: last_param_override_type_kind_rejections, last_param_override_dimension_rejections and last_sub_component_unknown_structure_errors are referenced in engine_eval, lib, engine_admin, engine_build and three integration-test files (read at 717ceedb2b).
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: last_param_override_type_kind_rejections
+      expect: absent
+      paths:
+      - crates
+  - name: pdiag-row
+    binding: crates/reify-audit/pdiag-baseline.txt carries the row crates/reify-eval/src/engine_eval.rs 21; λ targets the sum over engine_eval.rs and the files ν, ι, κ, ζ moved those constructors into, since a pure move regenerates rows.
+    verdict: PASS
+- label: μ
+  task_id: 8870
+  title: 'cell-eval-transaction-closure μ: R4 else_members rows for reify-eval and reify-test-support'
+  capabilities:
+  - name: r4-row-pending
+    binding: 'S9 α #8730 (ratchet member, in progress) and ν #8743 (all_value_cells, pending) define and measure R4; tests/infra/test_compiler_decl_pass_ratchets.py does not exist at 717ceedb2b.'
+    verdict: OPEN
+    delivered_check:
+      kind: manual
+      reason: R4 rows for reify-eval and reify-test-support lowered in tests/infra/test_compiler_decl_pass_ratchets.py; the file and the row do not exist yet, so no mechanical check can be bound at authoring.
+  - name: hash-chains-are-not-unions
+    binding: crates/reify-test-support/src/builders/topology.rs interleaves each guarded group members with its constraints in the template content hash, which must stay byte-identical to the compiler hash; graph.rs::from_templates needs per-group structure. Such chains go to the row allowlist with a reason, not through all_value_cells.
+    verdict: PASS
+- label: σ
+  task_id: 8871
+  title: 'cell-eval-transaction-closure σ: remaining value-cell sites onto cell_eval_ctx'
+  capabilities:
+  - name: residual-sites-listed
+    binding: PRD §10 lists every eval_ctx_with_meta call by enclosing function at 717ceedb2b; σ migrates the value-cell sites η and ι do not absorb.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: E1 in tests/infra/test_cell_eval_transaction_ratchets.py equals exactly the non-cell residue τ moves; checked by the ratchet member, not a grep.
+- label: τ
+  task_id: 8872
+  title: 'cell-eval-transaction-closure τ: closed constructor set, base builder private; INV-EVAL-2 enforced, INV-EVAL-1 completed'
+  capabilities:
+  - name: base-builder-in-lib
+    binding: 'pub(crate) fn eval_ctx_with_meta<''a> is defined in crates/reify-eval/src/lib.rs; Engine::cell_eval_ctx carries cfg_attr(not(test), expect(dead_code)) (read at 717ceedb2b). Definition-anchored pattern: the in-file test eval_ctx_with_meta_resolves_meta_access would match a bare name.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn eval_ctx_with_meta<
+      expect: absent
+      paths:
+      - crates/reify-eval/src/
+  - name: inv-eval-2-row
+    binding: docs/invariants.md INV-EVAL-2 mechanism reads type (CellEvalCtx required-args constructor), status proposed; τ flips it to enforced(type+lint) with an S24-grammar pointer (item:crates/reify-eval/src/cell_eval_ctx.rs::CellEvalCtx; test:tests/infra/test_cell_eval_transaction_ratchets.sh) and does the four-site lockstep incl. one CLAUDE.md Pointers line.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^\| INV-EVAL-2 \|.*enforced\(type\+lint\)
+      expect: present
+      paths:
+      - docs/invariants.md
+  - name: geometry-ops-sites-relocated-first
+    binding: 'S13 β/γ/δ #8748-#8750 move the 12 geometry_ops builder calls into child modules unchanged and ε #8751 deletes geometry_ops/tests.rs; all pending, τ depends on #8750 and #8751.'
+    verdict: PASS
+- label: ξ
+  task_id: 8873
+  title: 'cell-eval-transaction-closure ξ: h14 partition of engine_edit.rs'
+  capabilities:
+  - name: partition-symbols-located
+    binding: engine_edit h14 P1 (pure helpers), P2 (graph diff), P3 (warm-pool/cache plumbing, minus δ deletions) symbols present at 717ceedb2b.
+    verdict: PASS
+    delivered_check:
+      kind: path
+      expect: present
+      paths:
+      - crates/reify-eval/src/graph_diff.rs
+- label: ο
+  task_id: 8874
+  title: 'cell-eval-transaction-closure ο: h14 partition of unfold.rs'
+  capabilities:
+  - name: partition-symbols-located
+    binding: unfold h14 P1 (find_template_in_scope, unfold_recursive_sub) and P2 (elaborate_child_instance*, phase-15 helpers) present at 717ceedb2b; P3 becomes η cell_elaboration.rs.
+    verdict: PASS
+    delivered_check:
+      kind: path
+      expect: present
+      paths:
+      - crates/reify-eval/src/unfold/instance.rs
+- label: π
+  task_id: 8875
+  title: 'cell-eval-transaction-closure π: h14 partition of cache.rs'
+  capabilities:
+  - name: partition-symbols-located
+    binding: 'cache h14 P1 (NodeId and conversions) and P3 (derive_output_freshness_with_cause) present at 717ceedb2b; P4 deleted by #8675 (landed).'
+    verdict: PASS
+    delivered_check:
+      kind: path
+      expect: present
+      paths:
+      - crates/reify-eval/src/freshness_derive.rs
+  - name: nodeid-move-vs-s3-oq5
+    binding: 'S3 OQ-5 kept the {cache, deps} 2-cycle as S3 residual; ruled OQ-4 (A): π moves NodeId to node_id.rs and lowers the row; with the seal in cache.rs no cache -> cell_commit edge exists.'
+    verdict: PASS
+    delivered_check:
+      kind: path
+      expect: present
+      paths:
+      - crates/reify-eval/src/node_id.rs
+- label: ρ
+  task_id: 8876
+  title: 'cell-eval-transaction-closure ρ: h14 partition of persistent_cache.rs; engine_hash_algo tests beside their subject'
+  capabilities:
+  - name: hash-algo-tests-misfiled
+    binding: 'persistent_cache.rs mod tests opens with 29 #[test] fns exercising engine_hash_algo; the crate already has their home, lib.rs `#[cfg(test)] mod engine_hash_tests;` (engine_hash_tests.rs, 9 tests); ρ moves the 29 there (critic minor).'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn compose_engine_version_hash_is_order_sensitive
+      expect: present
+      paths:
+      - crates/reify-eval/src/engine_hash_tests.rs
+  - name: shims-are-s7
+    binding: 'persistent_cache.rs re-export shims are deleted by S7 #8551 (pending); ρ depends on it.'
+    verdict: PASS
+- label: υ
+  task_id: 8877
+  title: 'cell-eval-transaction-closure υ: integration gate: one transaction across cold, warm and edit'
+  capabilities:
+  - name: differential-harness-exists
+    binding: crates/reify-eval/tests/common/differential.rs is included by the harness_cache differential binaries (read at 717ceedb2b).
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: υ rows green on main and each reds against a seeded single-site regression during authoring; recorded in the commit.
+- label: ω
+  task_id: 8878
+  title: 'cell-eval-transaction-closure ω: PRD close'
+  capabilities:
+  - name: terminal-status-stamped
+    binding: Overlay closed terminal vocabulary; the close leaf stamps SHIPPED with landed leaf ids.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^\*\*Status:\*\* SHIPPED
+      expect: present
+      paths:
+      - docs/prds/v0_6/cell-eval-transaction-closure.md

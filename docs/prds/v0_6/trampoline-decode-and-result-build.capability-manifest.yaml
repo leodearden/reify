@@ -408,7 +408,7 @@ tasks:
     title: "dynamics/eval.rs partitioned along its measured groups"
     capabilities:
       - name: "partition-shape"
-        binding: "h14: seven measured groups; precondition S6's MechanismTree extraction (fk-38811e6f7300)"
+        binding: "h14: seven measured groups; preconditions wired by the S6 session 2026-10-13: S6 ρ #8845 (MechanismTree, fk-38811e6f7300), σ #8847 (dynamics on Joint), λ #8839 (bindings move)"
         verdict: PASS
         delivered_check:
           kind: "manual"

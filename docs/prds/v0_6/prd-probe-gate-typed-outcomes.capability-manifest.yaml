@@ -192,8 +192,8 @@ tasks:
       expect: absent
 - label: θ
   task_id: 8662
-  title: 'S22 θ: one path classifier and one compile closure — affected-crates-lib.sh and the overlap detector read reify_path_attribution.py'
-  note: closes fk-21c29ddc104d minus the verify.sh home (S18, ruling R2); depends on in-flight #7491.
+  title: 'S22 θ: one path classifier and one compile closure — affected-crates-lib.sh and occt-scope-lib.sh read reify_path_attribution.py'
+  note: closes fk-21c29ddc104d minus the verify.sh home (S18, ruling R2); depends on in-flight #7491. Amended 2026-10-13 (R1 reversed by Leo 2026-10-12) — the detector is retired by #8886, so its capability is removed here, from the .md twin and from #8662's metadata.
   capabilities:
   - name: closure-lifted-into-module
     binding: producer:task-7491 supplies the module; θ adds compile_closure (PRD D10)
@@ -221,15 +221,6 @@ tasks:
       pattern: '^_file_to_crate\(\)'
       paths:
       - scripts/affected-crates-lib.sh
-      expect: absent
-  - name: detector-second-closure-deleted
-    binding: the detector uses compile_closure
-    verdict: PASS
-    delivered_check:
-      kind: grep
-      pattern: def _reverse_closure
-      paths:
-      - scripts/reify_overlap_detector.py
       expect: absent
 - label: κ
   task_id: 8664

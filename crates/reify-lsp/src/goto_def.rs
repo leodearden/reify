@@ -2,9 +2,8 @@ use reify_ast::ImportKind;
 use reify_core::{ModulePath, SourceSpan};
 use tower_lsp::lsp_types::{Location, Position, Range, Url};
 
-use crate::analysis::{
-    enclosing_decl_at, find_named_member_span, module_name_from_uri, name_token_span,
-};
+use crate::analysis::find_named_member_span;
+use crate::decl_oracle::{enclosing_decl_at, module_name_from_uri, name_token_span};
 use crate::convert::{find_word_at_offset, position_to_offset, span_to_range};
 
 /// Compute go-to-definition for the symbol at the given position.
@@ -144,7 +143,7 @@ pub fn compute_goto_definition_with_parsed(
 /// plus the `structure def`s nested one level inside a `purpose` body. The
 /// nested ones are not `Declaration`s (they live in `PurposeDef.structures`)
 /// but the compiler registers them in the MODULE-LEVEL structure namespace, so
-/// they are file-wide navigable; [`crate::analysis::purpose_nested_decl_names`]
+/// they are file-wide navigable; [`crate::decl_oracle::purpose_nested_decl_names`]
 /// carries that evidence and owns the descent. Pinned by
 /// `goto_def_resolves_a_purpose_nested_structure_file_wide`. And
 /// same-file only: cross-file goto-def runs [`decl_name_span_in`] instead. The
@@ -174,8 +173,8 @@ fn resolve_decl_name(
     let candidates = parsed
         .declarations
         .iter()
-        .filter_map(crate::analysis::decl_name_and_span)
-        .chain(crate::analysis::purpose_nested_decl_names(parsed));
+        .filter_map(crate::decl_oracle::decl_name_and_span)
+        .chain(crate::decl_oracle::purpose_nested_decl_names(parsed));
 
     for (name, span) in candidates {
         if name != word {
@@ -211,7 +210,7 @@ fn resolve_decl_name(
 /// [`decl_name_span_in`], which select a declaration by different kind lists but
 /// narrow its token the same way.
 ///
-/// Narrowing uses [`crate::analysis::name_token_span`] — whole-word, bounded to
+/// Narrowing uses [`crate::decl_oracle::name_token_span`] — whole-word, bounded to
 /// the declaration's own span, UTF-8-boundary-snapping. Its ZERO-WIDTH fallback
 /// (the name is absent within the span, e.g. a recovered AST node) becomes
 /// `None`: a zero-width `Location` is never a useful jump target, and an empty
@@ -383,7 +382,7 @@ pub(crate) fn find_declaration_name_span(source: &str, name: &str) -> Option<Sou
 
 /// Scan an already-parsed module for the name-token span of the declaration
 /// named `name`, returning the byte [`SourceSpan`] of just the NAME identifier
-/// (located via [`crate::analysis::name_token_span`], which matches
+/// (located via [`crate::decl_oracle::name_token_span`], which matches
 /// whole-word and only within the declaration's own span — a declaration span
 /// starts at its keyword, so an unbounded substring search finds the `s` of
 /// `structure` before the `s` of `structure s`).
@@ -414,7 +413,7 @@ pub(crate) fn find_declaration_name_span(source: &str, name: &str) -> Option<Sou
 /// is WILDCARD-FREE over all 14 [`reify_ast::Declaration`] variants, so a new
 /// declaration kind is a compile error rather than a silently unresolvable one.
 ///
-/// That makes this list narrower than [`crate::analysis::decl_name_and_span`],
+/// That makes this list narrower than [`crate::decl_oracle::decl_name_and_span`],
 /// the wildcard-free SAME-FILE source, by exactly one kind — but the two must
 /// still not be "unified", because they answer different questions: that one
 /// asks what a declaration is NAMED, this one asks whether renaming it is SAFE.
@@ -425,7 +424,7 @@ pub(crate) fn find_declaration_name_span(source: &str, name: &str) -> Option<Sou
 /// cross_file_declaration_kind_admission_tracks_use_site_coverage`.
 ///
 /// It also DESCENDS one level into purpose bodies, via
-/// [`crate::analysis::purpose_nested_decl_names`] — the crate's single source of
+/// [`crate::decl_oracle::purpose_nested_decl_names`] — the crate's single source of
 /// purpose-nested names, which also owns the single-level assumption and names
 /// its invariant owner in the compiler. That descent is sound here for the same
 /// reason any kind is admitted: a purpose-nested structure's use sites are
@@ -502,7 +501,7 @@ pub(crate) fn decl_name_span_in(
         .declarations
         .iter()
         .filter_map(admitted_decl_name_and_span)
-        .chain(crate::analysis::purpose_nested_decl_names(parsed));
+        .chain(crate::decl_oracle::purpose_nested_decl_names(parsed));
 
     for (decl_name, span) in candidates {
         if decl_name == name {
@@ -547,11 +546,8 @@ fn admitted_decl_name_and_span(decl: &reify_ast::Declaration) -> Option<(&str, S
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::decl_oracle::test_fixtures::test_uri;
     use tower_lsp::lsp_types::Url;
-
-    fn test_uri() -> Url {
-        Url::parse("file:///test.ri").unwrap()
-    }
 
     /// Test helper: return the UTF-16 code unit count of the Nth line of `source`.
     ///
@@ -984,8 +980,8 @@ mod tests {
     // --- task 6388: uniform same-file declaration-name resolution ---
 
     /// The snippet table and `occurrences` are SHARED, not mirrored — see
-    /// `crate::analysis::test_fixtures`.
-    use crate::analysis::test_fixtures::{NAMED_DECL_SNIPPETS, occurrences};
+    /// `crate::decl_oracle::test_fixtures`.
+    use crate::decl_oracle::test_fixtures::{NAMED_DECL_SNIPPETS, occurrences};
 
     /// Convert an LSP range back to the `[start, end)` byte range it covers.
     fn range_to_byte_range(source: &str, range: Range) -> (usize, usize) {
@@ -1333,7 +1329,7 @@ mod tests {
         // for the last two rows, a lexical-context oracle that this task's
         // declaration-name remit does not build; and every PARTIAL fix (say, a
         // `Declaration::Function`-only parameter check) reintroduces the
-        // wildcard per-kind allowlist that `analysis::decl_name_and_span`
+        // wildcard per-kind allowlist that `decl_oracle::decl_name_and_span`
         // exists to remove. Owner: #7607 — FLIP these assertions there rather
         // than deleting them; each row already names the target it should get.
         //
@@ -1904,10 +1900,10 @@ mod tests {
     fn enclosing_decl_at_integration_scoped_member_in_second_decl() {
         // Verify that using enclosing_decl_at from goto_def's context
         // correctly identifies the enclosing declaration for scoped member resolution.
-        use crate::analysis::enclosing_decl_at;
+        use crate::decl_oracle::enclosing_decl_at;
         let source = "structure A {\n    param x: Length = 5mm\n}\nstructure B {\n    param x: Bool = true\n    let y = x\n}";
         let uri = test_uri();
-        let module_name = crate::analysis::module_name_from_uri(&uri);
+        let module_name = crate::decl_oracle::module_name_from_uri(&uri);
         let parsed = reify_syntax::parse(source, reify_core::ModulePath::single(module_name));
 
         // Offset inside B's 'let y = x'
@@ -1928,10 +1924,10 @@ mod tests {
     fn enclosing_decl_at_integration_cursor_outside_returns_none() {
         // Cursor outside all declarations — enclosing_decl_at should return None,
         // and goto_def should fall back to searching all declarations.
-        use crate::analysis::enclosing_decl_at;
+        use crate::decl_oracle::enclosing_decl_at;
         let source = "structure A {\n    param x: Length = 5mm\n}\nx\nstructure B {\n    param y: Length = 20mm\n}";
         let uri = test_uri();
-        let module_name = crate::analysis::module_name_from_uri(&uri);
+        let module_name = crate::decl_oracle::module_name_from_uri(&uri);
         let parsed = reify_syntax::parse(source, reify_core::ModulePath::single(module_name));
 
         // Offset on 'x' standalone between declarations
@@ -1952,10 +1948,10 @@ mod tests {
     fn enclosing_decl_at_integration_missing_member_falls_back() {
         // Cursor in A on 'y', which doesn't exist in A but exists in B.
         // enclosing_decl_at finds A, but member not found → falls back.
-        use crate::analysis::enclosing_decl_at;
+        use crate::decl_oracle::enclosing_decl_at;
         let source = "structure A {\n    param x: Length = 5mm\n    let z = y\n}\nstructure B {\n    param y: Length = 20mm\n}";
         let uri = test_uri();
-        let module_name = crate::analysis::module_name_from_uri(&uri);
+        let module_name = crate::decl_oracle::module_name_from_uri(&uri);
         let parsed = reify_syntax::parse(source, reify_core::ModulePath::single(module_name));
 
         // Offset inside A
@@ -1989,7 +1985,7 @@ mod tests {
 
         let parsed = reify_compiler::parse_with_stdlib(
             source,
-            reify_core::ModulePath::single(crate::analysis::module_name_from_uri(&uri)),
+            reify_core::ModulePath::single(crate::decl_oracle::module_name_from_uri(&uri)),
         );
 
         let via_parsed = compute_goto_definition_with_parsed(&parsed, source, &uri, position);
@@ -2028,7 +2024,7 @@ mod tests {
 
         let parsed = reify_compiler::parse_with_stdlib(
             source,
-            reify_core::ModulePath::single(crate::analysis::module_name_from_uri(&uri)),
+            reify_core::ModulePath::single(crate::decl_oracle::module_name_from_uri(&uri)),
         );
 
         let via_parsed = compute_goto_definition_cross_file_with_parsed(

@@ -126,7 +126,7 @@ RelationSig table keyed by RelationKind
 | Capability | Evidence / binding | Verdict | Delivered check |
 |---|---|---|---|
 | `tables-on-main` | measured — RELATION_FN_NAMES doc "**9 names**" over a 10-entry slice; 10 `args.len() == 3` guards above #[cfg(test)]; the ΔDOF-sum test iterates its own curated list. | **PASS** | — |
-| `relation-kind-enum` | producer: S6 RelationKind leaf (stream S6, wave 1; id assigned by the lead in pass 2). Not on main (no RelationKind in crates/reify-ir/src today); the binding stays OPEN until that id is wired as a real dependency. | **OPEN** | — |
+| `relation-kind-enum` | producer:#8830 (S6 γ: RelationKind in reify-ir, RelationInstance.kind set at reify-eval relate_solve::relation_instance per S6 ruling R4). Wired as a real dependency of #8741 and λ released by the S6 session on 2026-10-13. | PASS | — |
 | `table-present` | producer-self — one RelationSig static table. | **PASS** | grep `struct RelationSig\b` present in `crates/reify-compiler/src` |
 
 ## μ — #8742

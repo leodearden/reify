@@ -10,7 +10,7 @@
 # from docs/prds/cpu-load-admission-control.md §7 L3b). Reify ships this
 # primitive; dark-factory wires the periodic invocation + dispatch-admission
 # cap/escalation action (out of scope here — cross-repo seam, mirrors the
-# verify-pipeline-guard / cpu_governance DF_AGENT_CPU_GOVERN pattern).
+# verify-pipeline-guard / cpu_governance pattern).
 #
 # Usage:
 #   scripts/fleet-load-detector.sh check [--ratio-threshold N]

@@ -55,7 +55,7 @@
 //! - `crates/reify-lsp/src/goto_def.rs`: `compute_goto_definition`,
 //!   `compute_goto_definition_cross_file`
 //! - `crates/reify-lsp/src/hover.rs`: `compute_hover`
-//! - `crates/reify-lsp/src/analysis.rs`: `compute_document_symbols`
+//! - `crates/reify-lsp/src/symbols.rs`: `compute_document_symbols`
 //!
 //! ## Test-support
 //!
@@ -433,7 +433,7 @@ fn lsp_public_api_shims_are_g_allow_marked() {
             "compute_hover",
         ),
         (
-            "crates/reify-lsp/src/analysis.rs",
+            "crates/reify-lsp/src/symbols.rs",
             "compute_document_symbols",
         ),
     ];

@@ -78,7 +78,6 @@ Evidence vocabulary: `grep:<file> <symbol>` (present on main) · `run:` (a comma
 | the stdlib attribution module exists | `producer:task-7491` (upstream, in flight on `task/7491`: `scripts/reify_path_attribution.py`, `attribute`, `PathAttribution`, stdlib-only, `/usr/bin/python3`-importable per its commit `7a519f2cf9`) | PASS (producer upstream; not yet on main) |
 | the closure θ lifts exists in one heredoc | `grep:scripts/occt-scope-lib.sh _REIFY_COMPILE_CLOSURE_PY=$(cat <<'PYEOF'` | PASS |
 | the bash ladder θ deletes exists (6 arms) | `grep:scripts/affected-crates-lib.sh _file_to_crate()`, `_is_global()`, `_is_crate_manifest()`, `_is_noncrate()` | PASS |
-| the detector's second closure exists | `grep:scripts/reify_overlap_detector.py def _reverse_closure` | PASS |
 | a module invoked from a sourced lib is NOT auto-registered as verify-pipeline | `grep:scripts/verify-pipeline-paths.txt NON-source-derivable` (only `source` lines and `add()`/`add_tool()` `*.sh` paths are derived). The row is S18's (ruling R2); θ's own diff touches `affected-crates-lib.sh`, so θ itself takes the full gate | PASS |
 | per-path forking is too slow | #7491 commit `be5edd1239`: 73 s per-path vs 3.9 s fork-free over 4,725 paths | PASS |
 
@@ -101,4 +100,4 @@ Evidence vocabulary: `grep:<file> <symbol>` (present on main) · `run:` (a comma
 
 ---
 
-**FAIL bindings:** none. **Rulings applied (pass 2):** R1 keep the detector importing the module; R2 the former ι and the paths row moved to S18; R3 layered schemas.
+**FAIL bindings:** none. **Rulings applied (pass 2):** R1 keep the detector importing the module (REVERSED by Leo 2026-10-12: the detector is retired by #8886, so θ's detector capability row was removed 2026-10-13, here, in the `.yaml` sidecar and in #8662's metadata); R2 the former ι and the paths row moved to S18; R3 layered schemas.

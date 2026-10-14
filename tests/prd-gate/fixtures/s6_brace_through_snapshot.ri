@@ -1,0 +1,16 @@
+// S6 PRD evidence (docs/prds/v0_6/kinematics-typed-kinds-and-mechanism-record.md): a BRACE closure —
+// body C ties joint j1 (mounted on world) to j2, which is mounted on j1's output (parent downstream of at).
+// The loop is j2 alone: T(j2) . pose must equal identity, so j2 is locked at 0. j1 is unbound and shared.
+// Before-image measured at main e217c0f30b (2026-10-13); outputs recorded in the capability manifest.
+module s6_brace_through_snapshot
+
+structure def Brace {
+    let j1 = prismatic(vec3(1, 0, 0), 0mm .. 1000mm)
+    let j2 = prismatic(vec3(1, 0, 0), 0mm .. 1001mm)
+    let m1 = body(mechanism(), "A", j1, world())
+    let m2 = body(m1, "B", j2, j1)
+    let m3 = body(m2, "C", j1, j2)
+    let lcs = m3.loop_closures
+    let s  = snapshot(m3, [])
+    let fv = s.free_values
+}
