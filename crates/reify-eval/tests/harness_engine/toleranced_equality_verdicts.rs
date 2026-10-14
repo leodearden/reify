@@ -235,3 +235,94 @@ pub structure Ord {
         result.diagnostics
     );
 }
+
+fn assert_no_error_diagnostics(result: &CheckResult) {
+    let errors: Vec<&Diagnostic> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "unexpected Error diagnostics: {errors:?}"
+    );
+}
+
+#[test]
+fn feasible_inequality_plus_equality_resolves_and_reports_satisfied() {
+    let result = check_with_production_solver(
+        "\
+module ineq_eq
+pub structure IneqEq {
+    param w : Length = auto
+    constraint w >= 8mm
+    constraint w == 10mm
+}
+",
+    );
+    assert_si_near(&result, "IneqEq", "w", 0.01, 1e-6);
+    assert_all_satisfied(&result, 2);
+    assert_no_error_diagnostics(&result);
+}
+
+#[test]
+fn angle_inequality_plus_equality_resolves_and_reports_satisfied() {
+    let result = check_with_production_solver(
+        "\
+module ang_ineq_eq
+pub structure AngIneqEq {
+    param t : Angle = auto
+    constraint t >= 10deg
+    constraint t == 30deg
+}
+",
+    );
+    assert_all_satisfied(&result, 2);
+    assert_no_error_diagnostics(&result);
+}
+
+#[test]
+fn mm3_volume_auto_reports_satisfied() {
+    let result = check_with_production_solver(
+        "\
+module vol_eq
+pub structure VolEq {
+    param v : Volume = auto
+    constraint v == 1000mm^3
+}
+",
+    );
+    assert_all_satisfied(&result, 1);
+}
+
+#[test]
+fn equality_conflict_beyond_tolerance_still_fails() {
+    let result = check_with_production_solver(
+        "\
+module eq_conflict
+pub structure EqConflict {
+    param w : Length = auto
+    constraint w == 10mm
+    constraint w == 10.1mm
+}
+",
+    );
+    let unsatisfiable: Vec<&Diagnostic> =
+        diagnostics_with_code(&result, DiagnosticCode::ConstraintUnsatisfiable)
+            .into_iter()
+            .filter(|d| d.severity == Severity::Error)
+            .collect();
+    assert!(
+        !unsatisfiable.is_empty(),
+        "a 1% equality conflict must raise a ConstraintUnsatisfiable Error; got {:?}",
+        result.diagnostics
+    );
+    for entry in &result.constraint_results {
+        assert_ne!(
+            entry.satisfaction,
+            Satisfaction::Satisfied,
+            "constraint {:?} must not be Satisfied",
+            entry.id
+        );
+    }
+}
