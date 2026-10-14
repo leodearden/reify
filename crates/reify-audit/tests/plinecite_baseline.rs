@@ -216,6 +216,54 @@ fn the_default_regeneration_only_shrinks() {
     );
 }
 
+/// `--write` regenerates the ledger in place — the shrink-only rows, and
+/// nothing on stdout.
+#[test]
+fn write_replaces_the_ledger_with_the_kept_rows() {
+    if !git_available("write_replaces_the_ledger_with_the_kept_rows") {
+        return;
+    }
+    let dir = ledger_fixture();
+
+    let out = run_generator(dir.path(), &["--write"]);
+
+    assert_eq!(out.status.code(), Some(0), "stderr:\n{}", stderr_of(&out));
+    assert!(out.stdout.is_empty(), "got:\n{}", stdout_of(&out));
+    let written =
+        std::fs::read_to_string(dir.path().join(BASELINE_PATH)).expect("the ledger is written");
+    assert_eq!(written, render_baseline(&[row("kept.rs:1")].into()));
+}
+
+/// Redirecting stdout into the ledger truncates it before the run reads its
+/// rows. A shrink-only render of the empty file would keep nothing and exit
+/// 0, wiping the ratchet — so the run must refuse, and render nothing.
+#[test]
+fn a_shrink_only_run_refuses_a_ledger_its_own_redirect_truncated() {
+    if !git_available("a_shrink_only_run_refuses_a_ledger_its_own_redirect_truncated") {
+        return;
+    }
+    let dir = ledger_fixture();
+    let ledger_file = dir.path().join(BASELINE_PATH);
+    let redirect = std::fs::File::create(&ledger_file).expect("truncating redirect");
+
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_plinecite-baseline-gen"));
+    cmd.arg("--project-root").arg(dir.path()).stdout(redirect);
+    reify_audit::git_env::sanitize(&mut cmd);
+    let out = cmd.output().expect("plinecite-baseline-gen spawns");
+
+    assert_eq!(out.status.code(), Some(3), "stderr:\n{}", stderr_of(&out));
+    assert_eq!(
+        std::fs::read_to_string(&ledger_file).expect("ledger readable"),
+        "",
+        "nothing may be rendered over a truncated ledger"
+    );
+    let stderr = stderr_of(&out);
+    assert!(
+        stderr.contains("--write") && stderr.contains("git checkout"),
+        "stderr must name the restore and the safe regeneration; got:\n{stderr}"
+    );
+}
+
 /// `--admit-new` ledgers ALL live debt, and the file it writes is exactly one
 /// the ratchet accepts — generation and enforcement are one derivation.
 #[test]

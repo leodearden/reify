@@ -144,7 +144,7 @@ Every PDOCCOVER finding then records `action_taken: "escalated"` with that one `
 **PLINECITE note:** every kind is Medium, so PLINECITE never escalates and never moves the exit code. Per kind:
 
 - `line-cite` — ONE follow-up per citing file: group the run's `line-cite` findings by `finding.task_id` and file the §2 template once per group (`<path>` = `finding.task_id`), listing each cite from its `FileLine` evidence's `symbol`. The fix is to cite the enclosing symbol, after checking that the symbol greps in the target; a deliberate dated cite gets `plinecite:allow — <reason>` on its line. Never re-number: a re-pointed number is reported as new debt.
-- `stale-baseline-entry` — ONE follow-up per run, titled `Regenerate PLINECITE ledger`, quoting the shrink-only command `cargo run -p reify-audit --bin plinecite-baseline-gen -- --project-root . > crates/reify-audit/plinecite-baseline.txt`.
+- `stale-baseline-entry` — ONE follow-up per run, titled `Regenerate PLINECITE ledger`, quoting the shrink-only command `cargo run -p reify-audit --bin plinecite-baseline-gen -- --project-root . --write` (never a stdout redirect into the ledger: the shell truncates it before the generator reads its rows).
 - `allow-missing-reason` — one follow-up per finding, `Add plinecite:allow reason (PLINECITE allow-missing-reason at <path>:<line>)`, with `<path>` and `<line>` from its `FileLine` evidence (its `symbol` is null).
 - `scope-empty` — the run checked nothing, so its result is not a clean bill of health. File no follow-up; re-run with `--project-root` at the git worktree.
 

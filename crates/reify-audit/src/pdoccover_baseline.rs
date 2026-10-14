@@ -30,8 +30,8 @@ pub const BASELINE_HEADER: &str = "\
 #                        stdlib source declares (fabricated-name)
 #
 # GENERATED — do not hand-edit. Regenerate with:
-#   cargo run -p reify-audit --bin pdoccover-baseline-gen -- --project-root . \\
-#     > crates/reify-audit/pdoccover-baseline.txt
+#   cargo run -p reify-audit --bin pdoccover-baseline-gen -- --project-root . --write
+# Never redirect its stdout into this file: the shell truncates it first.
 #
 # The default regeneration only DROPS stale rows. `--admit-new` is the only way
 # to add debt, and every row it adds must be justified in review; the real fix
