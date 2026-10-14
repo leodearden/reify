@@ -1079,7 +1079,7 @@ impl SystemBuilder {
         relation: TypedConstraint,
         wrkpl: Slvs_hEntity,
         sketch: &ValidatedSketch<'_>,
-        e: &EntityTable<Slvs_hEntity>,
+        slvs: &EntityTable<Slvs_hEntity>,
     ) {
         /// The "no entity" sentinel for the slots a given constraint leaves empty.
         const NONE: Slvs_hEntity = Slvs_hEntity(0);
@@ -1099,7 +1099,7 @@ impl SystemBuilder {
                         SLVS_C_WHERE_DRAGGED,
                         wrkpl,
                         0.0,
-                        e[at],
+                        slvs[at],
                         NONE,
                         NONE,
                         NONE,
@@ -1111,8 +1111,8 @@ impl SystemBuilder {
                     SLVS_C_POINTS_COINCIDENT,
                     wrkpl,
                     0.0,
-                    e[a],
-                    e[b],
+                    slvs[a],
+                    slvs[b],
                     NONE,
                     NONE,
                 );
@@ -1122,28 +1122,68 @@ impl SystemBuilder {
                     SLVS_C_PT_PT_DISTANCE,
                     wrkpl,
                     value,
-                    e[a],
-                    e[b],
+                    slvs[a],
+                    slvs[b],
                     NONE,
                     NONE,
                 );
             }
             TypedConstraint::Horizontal(line) => {
-                self.add_constraint_wrkpl(SLVS_C_HORIZONTAL, wrkpl, 0.0, NONE, NONE, e[line], NONE);
+                self.add_constraint_wrkpl(
+                    SLVS_C_HORIZONTAL,
+                    wrkpl,
+                    0.0,
+                    NONE,
+                    NONE,
+                    slvs[line],
+                    NONE,
+                );
             }
             TypedConstraint::Vertical(line) => {
-                self.add_constraint_wrkpl(SLVS_C_VERTICAL, wrkpl, 0.0, NONE, NONE, e[line], NONE);
+                self.add_constraint_wrkpl(
+                    SLVS_C_VERTICAL,
+                    wrkpl,
+                    0.0,
+                    NONE,
+                    NONE,
+                    slvs[line],
+                    NONE,
+                );
             }
             TypedConstraint::Parallel { a, b } => {
-                self.add_constraint_wrkpl(SLVS_C_PARALLEL, wrkpl, 0.0, NONE, NONE, e[a], e[b]);
+                self.add_constraint_wrkpl(
+                    SLVS_C_PARALLEL,
+                    wrkpl,
+                    0.0,
+                    NONE,
+                    NONE,
+                    slvs[a],
+                    slvs[b],
+                );
             }
             TypedConstraint::Perpendicular { a, b } => {
-                self.add_constraint_wrkpl(SLVS_C_PERPENDICULAR, wrkpl, 0.0, NONE, NONE, e[a], e[b]);
+                self.add_constraint_wrkpl(
+                    SLVS_C_PERPENDICULAR,
+                    wrkpl,
+                    0.0,
+                    NONE,
+                    NONE,
+                    slvs[a],
+                    slvs[b],
+                );
             }
             TypedConstraint::Angle { a, b, degrees } => {
                 // Degrees, not radians: `SLVS_C_ANGLE` reads `valA` in degrees,
                 // which is also the convention the legacy pattern route uses.
-                self.add_constraint_wrkpl(SLVS_C_ANGLE, wrkpl, degrees, NONE, NONE, e[a], e[b]);
+                self.add_constraint_wrkpl(
+                    SLVS_C_ANGLE,
+                    wrkpl,
+                    degrees,
+                    NONE,
+                    NONE,
+                    slvs[a],
+                    slvs[b],
+                );
             }
             TypedConstraint::Diameter { circle, value } => {
                 self.add_constraint_wrkpl(
@@ -1152,7 +1192,7 @@ impl SystemBuilder {
                     value,
                     NONE,
                     NONE,
-                    e[circle],
+                    slvs[circle],
                     NONE,
                 );
             }
@@ -1167,7 +1207,7 @@ impl SystemBuilder {
                     2.0 * value,
                     NONE,
                     NONE,
-                    e[circle],
+                    slvs[circle],
                     NONE,
                 );
             }
@@ -1176,14 +1216,22 @@ impl SystemBuilder {
                     SLVS_C_PT_ON_CIRCLE,
                     wrkpl,
                     0.0,
-                    e[pt],
+                    slvs[pt],
                     NONE,
-                    e[circle],
+                    slvs[circle],
                     NONE,
                 );
             }
             TypedConstraint::EqualRadius { a, b } => {
-                self.add_constraint_wrkpl(SLVS_C_EQUAL_RADIUS, wrkpl, 0.0, NONE, NONE, e[a], e[b]);
+                self.add_constraint_wrkpl(
+                    SLVS_C_EQUAL_RADIUS,
+                    wrkpl,
+                    0.0,
+                    NONE,
+                    NONE,
+                    slvs[a],
+                    slvs[b],
+                );
             }
             // Tangency, both arms.
             //
@@ -1203,8 +1251,8 @@ impl SystemBuilder {
                     0.0,
                     NONE,
                     NONE,
-                    e[arc],
-                    e[line],
+                    slvs[arc],
+                    slvs[line],
                     endpoint(at_end),
                     0,
                 );
@@ -1221,8 +1269,8 @@ impl SystemBuilder {
                     0.0,
                     NONE,
                     NONE,
-                    e[a],
-                    e[b],
+                    slvs[a],
+                    slvs[b],
                     endpoint(a_at_end),
                     endpoint(b_at_end),
                 );
@@ -1235,9 +1283,9 @@ impl SystemBuilder {
                     SLVS_C_PT_ON_LINE,
                     wrkpl,
                     0.0,
-                    e[pt],
+                    slvs[pt],
                     NONE,
-                    e[line],
+                    slvs[line],
                     NONE,
                 );
             }
@@ -1246,9 +1294,9 @@ impl SystemBuilder {
                     SLVS_C_AT_MIDPOINT,
                     wrkpl,
                     0.0,
-                    e[pt],
+                    slvs[pt],
                     NONE,
-                    e[line],
+                    slvs[line],
                     NONE,
                 );
             }
@@ -1260,9 +1308,9 @@ impl SystemBuilder {
                     SLVS_C_SYMMETRIC_LINE,
                     wrkpl,
                     0.0,
-                    e[a],
-                    e[b],
-                    e[about],
+                    slvs[a],
+                    slvs[b],
+                    slvs[about],
                     NONE,
                 );
             }
@@ -1273,8 +1321,8 @@ impl SystemBuilder {
                     0.0,
                     NONE,
                     NONE,
-                    e[a],
-                    e[b],
+                    slvs[a],
+                    slvs[b],
                 );
             }
         }
