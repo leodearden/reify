@@ -395,8 +395,8 @@ impl crate::Engine {
             .or_else(|| self.warm_pool.cost_per_byte_of(&compute_node))
             .unwrap_or(0.0);
         // Cache-miss → pool-hit fallback. Use `checkout` (which discards
-        // the LRU stamp internally) rather than `checkout_with_lru_stamp`
-        // + `.map(|(state, _)| state)`: the prior state is restored back
+        // the LRU stamp internally) rather than `checkout_with_lru_stamp_and_cost`
+        // + `.map(|(state, _, _)| state)`: the prior state is restored back
         // to the CACHE on Cancelled/Failed/unregistered (not back to the
         // pool), so the pool's original `last_accessed` stamp has no
         // downstream consumer here. The next engine_edit cycle that re-
@@ -2597,7 +2597,7 @@ mod tests {
     // in `warm_pool` and the cache Compute entry has been invalidated
     // (engine_edit.rs:2275-2303). At the next dispatch, run_compute_dispatch's
     // cache-miss → pool-hit fallback (engine_compute.rs:275-282) TAKES the
-    // prior out via `checkout_with_lru_stamp`, which REMOVES the pool entry.
+    // prior out via `checkout`, which REMOVES the pool entry.
     // So at the moment the trampoline returns Cancelled / Failed / unregistered:
     //   - The cache has NO Compute entry (engine_edit invalidated it).
     //   - The pool has NO entry (checkout took it).

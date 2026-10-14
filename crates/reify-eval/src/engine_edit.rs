@@ -776,21 +776,6 @@ impl<'a> PendingWarmSeedsGuard<'a> {
         self.map.insert(nid, (state, last_accessed, cost_per_byte));
     }
 
-    /// Insert a checked-out entry into the staging map, defaulting `cost_per_byte` to `0.0`.
-    ///
-    /// Back-compat wrapper around [`insert_with_cost`](Self::insert_with_cost).  Existing
-    /// call sites that obtained the stamp from `checkout_with_lru_stamp` (which discards
-    /// cost) continue to compile unchanged.
-    #[cfg(test)]
-    fn insert(
-        &mut self,
-        nid: NodeId,
-        state: reify_ir::OpaqueState,
-        last_accessed: std::time::Instant,
-    ) {
-        self.insert_with_cost(nid, state, last_accessed, 0.0);
-    }
-
     /// Re-borrow the pool for callers that need `&mut WarmStatePool` while
     /// the guard is live (e.g. step (9)'s `donate_warm_state_and_invalidate`).
     fn pool_mut(&mut self) -> &mut WarmStatePool {
@@ -799,16 +784,16 @@ impl<'a> PendingWarmSeedsGuard<'a> {
 
     /// Drain the staging map: route each entry to `cache.donate_warm_state`
     /// when the cache holds a matching entry, else re-donate to `self.pool`
-    /// **preserving the original `last_accessed` stamp**.
+    /// **preserving the original `last_accessed` stamp and `cost_per_byte`**.
     ///
     /// - **cache hit** → `cache.donate_warm_state(&nid, state)` (seeds the
     ///   cache's warm-state slot for the upcoming evaluation round).  The
     ///   `last_accessed` stamp is discarded on this path because the entry
     ///   leaves the pool; its LRU position no longer matters.
-    /// - **cache miss** → `pool.donate_preserving_lru(nid, state, stamp)`
+    /// - **cache miss** → `pool.donate_preserving_lru_with_cost(nid, state, stamp, cost)`
     ///   (re-donates the entry so it remains recoverable on a subsequent
     ///   topology event, preserving the original LRU ordering instead of
-    ///   refreshing the stamp to `Instant::now()`).
+    ///   refreshing the stamp to `Instant::now()`, and the original cost).
     ///
     /// After this method returns, `self.map` is empty, so the natural `Drop`
     /// is a no-op (no double-donation).  On any early-return / panic between
@@ -831,15 +816,15 @@ impl<'a> PendingWarmSeedsGuard<'a> {
 
 impl Drop for PendingWarmSeedsGuard<'_> {
     /// Re-donate all remaining staged entries back to the pool, preserving
-    /// each entry's original `last_accessed` stamp via
-    /// [`WarmStatePool::donate_preserving_lru`].
+    /// each entry's original `last_accessed` stamp and `cost_per_byte` via
+    /// [`WarmStatePool::donate_preserving_lru_with_cost`].
     ///
     /// This is the panic safety net: if `drain_into_cache_or_repool` was already
     /// called (success path), `self.map` is empty and this is a no-op.  Otherwise
     /// every surviving entry is re-donated so the pool can recover it on the next
     /// `edit_source` call.
     ///
-    /// Using `donate_preserving_lru` (rather than `donate`) ensures that an entry
+    /// Using `donate_preserving_lru_with_cost` (rather than `donate`) ensures that an entry
     /// which panics out between steps (4c) and (14b) does not unfairly reset its
     /// LRU clock — the entry returns to the pool with the same age it had when it
     /// was originally checked out.
@@ -857,17 +842,17 @@ impl Drop for PendingWarmSeedsGuard<'_> {
     /// # Double-panic note
     ///
     /// When the safety net fires, this `Drop` impl calls `tracing::warn!`
-    /// **before** calling `pool.donate_preserving_lru`.  Both are on the
+    /// **before** calling `pool.donate_preserving_lru_with_cost`.  Both are on the
     /// double-panic hot path: if `Drop` fires during stack-unwinding from
-    /// another panic, either the `warn!` dispatch or `donate_preserving_lru`
+    /// another panic, either the `warn!` dispatch or `donate_preserving_lru_with_cost`
     /// could theoretically panic, triggering an unconditional
     /// `std::process::abort`.
     ///
     /// `tracing::warn!` is unlikely to panic in well-behaved subscribers, but
     /// does dispatch (and may allocate) when a subscriber is attached — a
     /// buggy subscriber could in principle panic on the unwind path.
-    /// `donate_preserving_lru` only panics in debug builds when the events
-    /// buffer is at its cap (65 536 entries).  Both risks are documented here
+    /// `donate_preserving_lru_with_cost` only panics in debug builds when the events
+    /// buffer is at its cap (65 536 entries by default).  Both risks are documented here
     /// for completeness.
     ///
     /// # Test-context note
@@ -3627,7 +3612,7 @@ impl Engine {
         //      donate cost+state to the pool, then invalidate the cache
         //      entry. The reinsert half of the round-trip lands inside
         //      `run_compute_dispatch` (engine_compute.rs) via its
-        //      cache-miss → `warm_pool.checkout_with_lru_stamp` fallback.
+        //      cache-miss → `warm_pool.checkout` fallback.
         //      Collect ids into a Vec to drop the iter borrow on
         //      `eval_state.snapshot.graph.compute_nodes` before mutating
         //      `self.cache` inside the loop body.
@@ -4582,10 +4567,10 @@ impl Engine {
         //       variants gain edit-time cache entries the donate-back
         //       path simply stops triggering.
         //
-        //       The cache-miss re-donation now calls `donate_preserving_lru`
+        //       The cache-miss re-donation now calls `donate_preserving_lru_with_cost`
         //       (via `PendingWarmSeedsGuard::drain_into_cache_or_repool`),
-        //       preserving the entry's original `last_accessed` stamp from
-        //       step (4c).  This prevents a round-tripping entry from
+        //       preserving the entry's original `last_accessed` stamp and
+        //       `cost_per_byte` from step (4c).  This prevents a round-tripping entry from
         //       appearing "recently accessed" relative to entries that were
         //       never checked out, which would unfairly shield it from LRU
         //       eviction (reviewer suggestion S1, task 2516).
@@ -5729,10 +5714,11 @@ mod tests {
 
         {
             let mut pending = PendingWarmSeedsGuard::new(&mut pool);
-            pending.insert(
+            pending.insert_with_cost(
                 node_id.clone(),
                 OpaqueState::new(0xDEADBEEFu32, 16),
                 std::time::Instant::now(),
+                0.0,
             );
             // Guard goes out of scope here, triggering Drop — no drain called
         }
@@ -5776,15 +5762,17 @@ mod tests {
 
         {
             let mut pending = PendingWarmSeedsGuard::new(&mut pool);
-            pending.insert(
+            pending.insert_with_cost(
                 val_nid.clone(),
                 OpaqueState::new(0xAAu8, 100),
                 std::time::Instant::now(),
+                0.0,
             );
-            pending.insert(
+            pending.insert_with_cost(
                 con_nid.clone(),
                 OpaqueState::new(0xBBu8, 50),
                 std::time::Instant::now(),
+                0.0,
             );
             // Neither node has a cache entry → drain MUST re-donate both to pool.
             pending.drain_into_cache_or_repool(&mut cache);
@@ -5834,20 +5822,23 @@ mod tests {
 
         {
             let mut pending = PendingWarmSeedsGuard::new(&mut pool);
-            pending.insert(
+            pending.insert_with_cost(
                 val_nid.clone(),
                 OpaqueState::new(0xDEADu32, 8),
                 std::time::Instant::now(),
+                0.0,
             );
-            pending.insert(
+            pending.insert_with_cost(
                 con_nid.clone(),
                 OpaqueState::new(0xBEEFu32, 16),
                 std::time::Instant::now(),
+                0.0,
             );
-            pending.insert(
+            pending.insert_with_cost(
                 rea_nid.clone(),
                 OpaqueState::new(0xFEEDu32, 24),
                 std::time::Instant::now(),
+                0.0,
             );
             // No drain — Drop fires with all three entries
         }
@@ -5928,10 +5919,11 @@ mod tests {
 
         {
             let mut pending = PendingWarmSeedsGuard::new(&mut pool);
-            pending.insert(
+            pending.insert_with_cost(
                 nid.clone(),
                 OpaqueState::new(PAYLOAD, SIZE),
                 std::time::Instant::now(),
+                0.0,
             );
             // Cache HIT → state goes to cache, NOT to pool.
             pending.drain_into_cache_or_repool(&mut cache);
@@ -5966,25 +5958,25 @@ mod tests {
 
     /// `drain_into_cache_or_repool` cache-MISS arm: when the cache holds NO
     /// entry for a node, the staged warm-state is re-donated to the pool via
-    /// `pool.donate_preserving_lru(nid, state, stamp)` — preserving the
-    /// originally-staged `last_accessed` Instant rather than refreshing it
-    /// to `Instant::now()`.
+    /// `pool.donate_preserving_lru_with_cost(nid, state, stamp, cost)` — preserving
+    /// the originally-staged `last_accessed` Instant rather than refreshing it
+    /// to `Instant::now()`, and the originally-staged `cost_per_byte`.
     ///
     /// Pins `drain_into_cache_or_repool`'s cache-MISS arm:
     /// ```text
-    /// else { self.pool.donate_preserving_lru(nid, state, stamp); }
+    /// else { self.pool.donate_preserving_lru_with_cost(nid, state, stamp, cost); }
     /// ```
     ///
     /// After drain the pool holds exactly one entry — the re-donated state with
-    /// the original payload bytes AND the original LRU stamp — the cache has no
-    /// warm-state for the node, and the subsequent guard Drop is inert (map was
-    /// emptied by drain, so no double re-donation occurs).
+    /// the original payload bytes, the original LRU stamp AND the original cost —
+    /// the cache has no warm-state for the node, and the subsequent guard Drop is
+    /// inert (map was emptied by drain, so no double re-donation occurs).
     ///
     /// Sibling of `pending_warm_seeds_guard_drain_cache_hit_makes_drop_inert`
     /// (the cache-HIT counterpart); both together pin the binary `if cache.get(&nid).is_some()`
     /// dispatch in `drain_into_cache_or_repool`.
     #[test]
-    fn pending_warm_seeds_guard_drain_cache_miss_repools_with_lru_stamp() {
+    fn pending_warm_seeds_guard_drain_cache_miss_repools_with_lru_stamp_and_cost() {
         use super::PendingWarmSeedsGuard;
         use crate::cache::{CacheStore, NodeId};
         use crate::warm_pool::WarmStatePool;
@@ -5992,6 +5984,7 @@ mod tests {
 
         const PAYLOAD: u32 = 0xDEAD_BEEF;
         const SIZE: usize = 8;
+        const COST: f64 = 0.25;
 
         let mut pool = WarmStatePool::new(1024);
         let mut cache = CacheStore::new();
@@ -6004,14 +5997,15 @@ mod tests {
             "cache must be empty before drain so the MISS branch is taken"
         );
 
-        // Capture the exact stamp passed to `insert` so we can assert exact equality
-        // on the re-donated entry's `last_accessed` later.
+        // Capture the exact stamp passed to `insert_with_cost` so we can assert exact
+        // equality on the re-donated entry's `last_accessed` later.
         let stamp = std::time::Instant::now();
 
         {
             let mut pending = PendingWarmSeedsGuard::new(&mut pool);
-            pending.insert(nid.clone(), OpaqueState::new(PAYLOAD, SIZE), stamp);
-            // Cache MISS → state goes back to pool via `donate_preserving_lru(nid, state, stamp)`.
+            pending.insert_with_cost(nid.clone(), OpaqueState::new(PAYLOAD, SIZE), stamp, COST);
+            // Cache MISS → state goes back to pool via
+            // `donate_preserving_lru_with_cost(nid, state, stamp, cost)`.
             pending.drain_into_cache_or_repool(&mut cache);
             // Guard drops here with empty map → Drop is a no-op (no double re-donation).
         }
@@ -6039,9 +6033,10 @@ mod tests {
              (cache had no entry, so the MISS branch fired and routed to pool)"
         );
 
-        // (d) Pool entry must carry the original payload AND the original LRU stamp.
-        let (state, recovered_stamp) = pool
-            .checkout_with_lru_stamp(&nid)
+        // (d) Pool entry must carry the original payload, the original LRU stamp
+        //     AND the original cost.
+        let (state, recovered_stamp, recovered_cost) = pool
+            .checkout_with_lru_stamp_and_cost(&nid)
             .expect("cache-miss: pool must hold the re-donated entry");
         assert_eq!(
             state.downcast::<u32>(),
@@ -6051,7 +6046,12 @@ mod tests {
         assert_eq!(
             recovered_stamp, stamp,
             "cache-miss: re-donated entry's LRU stamp must EQUAL the originally-staged \
-             stamp (donate_preserving_lru must NOT refresh to Instant::now())"
+             stamp (donate_preserving_lru_with_cost must NOT refresh to Instant::now())"
+        );
+        assert_eq!(
+            recovered_cost, COST,
+            "cache-miss: re-donated entry's cost_per_byte must EQUAL the originally-staged \
+             cost (the drain must not reset it to 0.0)"
         );
     }
 
@@ -6077,25 +6077,30 @@ mod tests {
         let mut pool = WarmStatePool::new(1024);
         let node_id = NodeId::Value(ValueCellId::new("T", "panic_node"));
 
-        // Prime the pool with a known payload so we can verify recovery.
-        pool.donate(node_id.clone(), OpaqueState::new(0xCAFEu32, 4));
+        // Prime the pool with a known payload and cost so we can verify recovery.
+        pool.donate_with_cost(node_id.clone(), OpaqueState::new(0xCAFEu32, 4), 0.5);
 
         // Simulate step (4c): checkout → guard live → panic → Drop re-donates.
         // AssertUnwindSafe wraps the closure unconditionally, so &mut pool can
         // be captured directly without a raw-pointer indirection.
         let result = panic::catch_unwind(AssertUnwindSafe(|| {
             let mut guard = PendingWarmSeedsGuard::new(&mut pool);
-            let (state, stamp) = guard
+            let (state, stamp, cost) = guard
                 .pool_mut()
-                .checkout_with_lru_stamp(&node_id)
+                .checkout_with_lru_stamp_and_cost(&node_id)
                 .expect("state should be in pool before panic");
-            guard.insert(node_id.clone(), state, stamp);
+            guard.insert_with_cost(node_id.clone(), state, stamp, cost);
             // Simulate a panic inside edit_source between steps (4c) and (14b).
             panic!("simulated mid-edit panic");
         }));
         assert!(result.is_err(), "catch_unwind must catch the panic");
 
         // After the unwind, the guard's Drop must have re-donated the entry.
+        assert_eq!(
+            pool.cost_per_byte_of(&node_id),
+            Some(0.5),
+            "Drop re-donation must preserve cost_per_byte"
+        );
         let recovered = pool
             .checkout(&node_id)
             .expect("pool must contain the entry re-donated by guard Drop");
@@ -6142,7 +6147,12 @@ mod tests {
                 let mut pool = WarmStatePool::new(1024);
                 let nid = NodeId::Value(ValueCellId::new("T", "safety_net"));
                 let mut pending = PendingWarmSeedsGuard::new(&mut pool);
-                pending.insert(nid, OpaqueState::new(0xABu8, 8), std::time::Instant::now());
+                pending.insert_with_cost(
+                    nid,
+                    OpaqueState::new(0xABu8, 8),
+                    std::time::Instant::now(),
+                    0.0,
+                );
                 // Drop fires here with a non-empty map → safety net → must WARN.
             });
 
@@ -6167,7 +6177,12 @@ mod tests {
                 let mut cache = CacheStore::new();
                 let nid = NodeId::Value(ValueCellId::new("T", "inert_drop"));
                 let mut pending = PendingWarmSeedsGuard::new(&mut pool);
-                pending.insert(nid, OpaqueState::new(0xCDu8, 8), std::time::Instant::now());
+                pending.insert_with_cost(
+                    nid,
+                    OpaqueState::new(0xCDu8, 8),
+                    std::time::Instant::now(),
+                    0.0,
+                );
                 // Success path: drain empties the map.
                 pending.drain_into_cache_or_repool(&mut cache);
                 // Drop fires here with an empty map → no WARN.
@@ -6213,7 +6228,12 @@ mod tests {
             let mut pool = WarmStatePool::new(1024);
             let nid = NodeId::Value(ValueCellId::new("T", "count_field_test"));
             let mut pending = PendingWarmSeedsGuard::new(&mut pool);
-            pending.insert(nid, OpaqueState::new(0xAAu8, 8), std::time::Instant::now());
+            pending.insert_with_cost(
+                nid,
+                OpaqueState::new(0xAAu8, 8),
+                std::time::Instant::now(),
+                0.0,
+            );
             // Drop fires with a non-empty map → safety-net WARN must fire.
         });
 
@@ -6262,18 +6282,18 @@ mod tests {
     // -----------------------------------------------------------------------
 
     /// `drain_into_cache_or_repool` must re-donate cache-miss entries with
-    /// their *original* `last_accessed` stamp (via `donate_preserving_lru`),
+    /// their *original* `last_accessed` stamp (via `donate_preserving_lru_with_cost`),
     /// not a fresh `Instant::now()`.
     ///
-    /// Setup (budget = 300):
+    /// Setup (budget = 300; every entry carries cost 0.0 so the LRU tiebreak decides):
     /// 1. Donate X (100 bytes) at time T_X.
     /// 2. Sleep 2 ms so T_X is strictly older than any later timestamp.
-    /// 3. `checkout_with_lru_stamp(&X)` → `(x_state, x_stamp)`.
-    /// 4. Build a guard; `pending.insert(X, x_state, x_stamp)`.
+    /// 3. `checkout_with_lru_stamp_and_cost(&X)` → `(x_state, x_stamp, x_cost)`.
+    /// 4. Build a guard; `pending.insert_with_cost(X, x_state, x_stamp, x_cost)`.
     /// 5. Donate Y (100 bytes) directly to pool; Y's stamp is newer than T_X.
     ///    used_pool = 100 (only Y, since X was checked out).
     /// 6. `drain_into_cache_or_repool(&mut empty_cache)`: X has no cache entry,
-    ///    so it must be re-pooled via `donate_preserving_lru` preserving T_X.
+    ///    so it must be re-pooled via `donate_preserving_lru_with_cost` preserving T_X.
     ///    used_pool = 200 (X + Y).
     /// 7. Donate Z (200 bytes): 200+200=400 > 300 → evict exactly one entry.
     ///    X's stamp (T_X) < Y's stamp → X is the LRU victim.
@@ -6301,17 +6321,17 @@ mod tests {
         pool.donate(node_x.clone(), OpaqueState::new(0xAAu8, 100));
         std::thread::sleep(Duration::from_millis(15));
 
-        // Step 3: capture X's state and its original stamp.
-        let (x_state, x_stamp) = pool
-            .checkout_with_lru_stamp(&node_x)
+        // Step 3: capture X's state, its original stamp and its cost.
+        let (x_state, x_stamp, x_cost) = pool
+            .checkout_with_lru_stamp_and_cost(&node_x)
             .expect("X must be in pool");
         // pool is now empty (X checked out).
 
-        // Step 4: build guard and stage X with its original stamp.
+        // Step 4: build guard and stage X with its original stamp and cost.
         let mut cache = CacheStore::new();
         {
             let mut pending = PendingWarmSeedsGuard::new(&mut pool);
-            pending.insert(node_x.clone(), x_state, x_stamp);
+            pending.insert_with_cost(node_x.clone(), x_state, x_stamp, x_cost);
 
             // Step 5: donate Y directly (Y's stamp is fresh / newer than x_stamp).
             pending
@@ -6319,7 +6339,8 @@ mod tests {
                 .donate(node_y.clone(), OpaqueState::new(0xBBu8, 100));
             // pool holds Y (100 bytes); X is still in the guard's staging map.
 
-            // Step 6: drain — X has no cache entry → cache-miss → donate_preserving_lru.
+            // Step 6: drain — X has no cache entry → cache-miss →
+            // donate_preserving_lru_with_cost.
             pending.drain_into_cache_or_repool(&mut cache);
             // pool holds X (stamp = T_X) + Y (stamp > T_X), used = 200.
         }
@@ -6331,7 +6352,7 @@ mod tests {
         assert!(
             pool.checkout(&node_x).is_none(),
             "X must be evicted: its preserved stamp T_X is older than Y's; \
-             if drain used pool.donate() instead of donate_preserving_lru(), \
+             if drain used pool.donate() instead of donate_preserving_lru_with_cost(), \
              X would look fresh and Y would be evicted instead"
         );
         assert!(
@@ -6344,12 +6365,13 @@ mod tests {
         );
     }
 
-    /// The panic-path `Drop` must also re-donate using `donate_preserving_lru`
+    /// The panic-path `Drop` must also re-donate using `donate_preserving_lru_with_cost`
     /// (preserving the original stamp), not the plain `donate` that refreshes
     /// the LRU clock.
     ///
-    /// Same setup as `…drain_preserves_lru_stamp_for_repooled_entries` but the
-    /// guard is dropped during a panic unwind instead of calling `drain_…`.
+    /// Same setup as `…drain_preserves_lru_stamp_for_repooled_entries` (X staged via
+    /// `insert_with_cost`, every entry at cost 0.0) but the guard is dropped during
+    /// a panic unwind instead of calling `drain_…`.
     #[test]
     fn pending_warm_seeds_guard_drop_preserves_lru_stamp_on_panic() {
         use super::PendingWarmSeedsGuard;
@@ -6368,8 +6390,8 @@ mod tests {
         // 15 ms ensures strictly-ordered Instants on coarse-grained platforms.
         pool.donate(node_x.clone(), OpaqueState::new(0xAAu8, 100));
         std::thread::sleep(Duration::from_millis(15));
-        let (x_state, x_stamp) = pool
-            .checkout_with_lru_stamp(&node_x)
+        let (x_state, x_stamp, x_cost) = pool
+            .checkout_with_lru_stamp_and_cost(&node_x)
             .expect("X must be in pool");
 
         // Run the panic scenario: guard stages X then panics before drain.
@@ -6382,7 +6404,7 @@ mod tests {
             let result = panic::catch_unwind(AssertUnwindSafe(|| {
                 let pool_ref = unsafe { &mut *pool_ptr };
                 let mut guard = PendingWarmSeedsGuard::new(pool_ref);
-                guard.insert(nid_x.clone(), x_state, x_stamp);
+                guard.insert_with_cost(nid_x.clone(), x_state, x_stamp, x_cost);
                 // Donate Y directly so it has a newer stamp than x_stamp.
                 guard
                     .pool_mut()
@@ -6401,7 +6423,7 @@ mod tests {
         assert!(
             pool.checkout(&node_x).is_none(),
             "X must be evicted after Drop: its preserved stamp is older than Y's; \
-             if Drop used pool.donate() instead of donate_preserving_lru(), \
+             if Drop used pool.donate() instead of donate_preserving_lru_with_cost(), \
              X would look fresh and Y would be the LRU victim"
         );
         assert!(
