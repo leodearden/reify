@@ -301,37 +301,6 @@ fn assert_accept_reject_parity(row: &Row) {
 // UNLEDGERED, and an entry whose rows have started agreeing panics STALE, so
 // this block cannot drift out of sync with the tables in either direction.
 //
-// ── "D4" — type-param-carrying ARG as a compile-only wildcard ───────────────
-//
-// Compile-side `resolve_function_overload`'s `matches` tier applies FOUR
-// per-param disjuncts (type_compat.rs:1203-1208); the fourth,
-// `type_carries_type_param(arg_ty)` (task-4232 γ), lets a generic fn body pass
-// a `TypeParam`-typed value to a concrete-param callee without a spurious
-// NoMatch. Eval-side `find_matching_compiled_function`'s wildcard pass
-// (reify-expr/src/lib.rs:1834-1845) has only THREE disjuncts — there is no
-// arg-side counterpart at all.
-//
-// So `P_compile == P_eval || type_carries_type_param(arg_ty)`: for a
-// single-candidate overload set, D4 is the ONLY accept/reject divergence
-// class, which is why the other 14 rows in the table below are clean.
-//
-// Consequence when it fires: the compiler resolves the call, then
-// `eval_user_function_call` (reify-expr/src/lib.rs:1963) finds nothing and
-// returns a bare `Value::Undef` carrying NO `UndefCause` — the silent
-// INV-SF-1 miss path, not a diagnostic.
-//
-// This is TEMPORARY and OWNED. Adding the missing eval-side disjunct is
-// task #5686's fix; this task deliberately does NOT duplicate it — it pins
-// the divergence so it cannot widen or be forgotten. Covers both the bare
-// `TypeParam(T)` arg and the HEADED arg carrying a nested type param
-// (`Result<T,E>`), which reach `matches` by the same disjunct but differ in
-// the head tier: the bare form is kept by `head_matches`'s
-// `matches!(arg_ty, Type::TypeParam(_))` arm, while the headed form leaves
-// `head_matches` empty and falls through to `matches`.
-//
-// TODO(#5686): remove this ledger row and reclassify the two D4 rows to
-// Expect::Agree once the eval-side D4 disjunct lands.
-//
 // ── RETIRED: "head-tier" — the ledger's self-cleaning half, demonstrated ────
 //
 // This block once carried a second temporary entry. Compile-side
@@ -367,8 +336,8 @@ fn assert_accept_reject_parity(row: &Row) {
 // be "fixed" by teaching eval about ambiguity — that would add a runtime
 // concept whose only job is to re-detect what the compiler already rejected.
 //
-// Deliberately carries NO task cite: it is permanent, so a `TODO` here would
-// be an untracked PTODO with no owner and nothing to close it.
+// Deliberately carries NO task cite: it is permanent, so there is no owner to
+// cite and no fix that would ever close it.
 
 // ── Single-candidate accept/reject table ────────────────────────────────────
 
@@ -408,12 +377,11 @@ fn single_candidate_rows() -> Vec<Row> {
         // Erased subject: variant construction type-erases `Ok{..}` to `Enum("Result")`.
         Row { label: "generic f<T,E>(Result<T,E>) <- Enum(Result)", params: vec![("r", result_of(vec![tp("T"), tp("E")]))], type_params: vec!["T", "E"], call_name: "f", arg_types: vec![Type::Enum("Result".to_string())], expect: Expect::Agree },
 
-        // ── D4: type-param-carrying ARG as a compile-only wildcard ───────────
-        // Compile's `matches` tier has a fourth disjunct `type_carries_type_param(arg_ty)`
-        // that eval's wildcard pass has no counterpart for. Expected to be the
-        // ONLY accept/reject divergence class in this table.
-        Row { label: "D4 bare: f(Int) <- TypeParam(T)",           params: vec![("x", Type::Int)],                    type_params: vec![],    call_name: "f", arg_types: vec![tp("T")],                                      expect: Expect::Diverge { ledger: "D4" } },
-        Row { label: "D4 nested: f(Int) <- Result<T,E>",          params: vec![("x", Type::Int)],                    type_params: vec![],    call_name: "f", arg_types: vec![result_of(vec![tp("T"), tp("E")])],            expect: Expect::Diverge { ledger: "D4" } },
+        // ── Type-param-carrying ARG: a bare user `TypeParam` arg wildcards; a
+        //    headed one admits only where heads unify (normative text:
+        //    `reify_core::overload::slot_matches_wildcard_tier`). ─────────────
+        Row { label: "D4 bare user type-param arg: f(Int) <- T accepts",                  params: vec![("x", Type::Int)], type_params: vec![], call_name: "f", arg_types: vec![tp("T")],                           expect: Expect::Agree },
+        Row { label: "C-4 headed type-param arg, head mismatch: f(Int) <- Result<T,E> rejects", params: vec![("x", Type::Int)], type_params: vec![], call_name: "f", arg_types: vec![result_of(vec![tp("T"), tp("E")])], expect: Expect::Agree },
     ]
 }
 
