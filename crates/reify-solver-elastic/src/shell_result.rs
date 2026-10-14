@@ -3,9 +3,8 @@
 //
 // `shell_element_stress` recovers each element's top/mid/bottom Cauchy stress
 // in its local frame. `flatten_shell_channels` packs the per-element results
-// into neutral buffers, which reify-eval wraps into the DSL `ShellStress`
-// structure (std/solver/elastic) via `compute_targets/shell_solve.rs`
-// (`build_shell_channels`) and `elastic_static.rs` (`shell_channels_to_value`).
+// into neutral buffers; the DSL-facing shape of those layers is the stdlib
+// `ShellStress` structure (std/solver/elastic).
 
 use crate::constitutive::IsotropicElastic;
 use crate::shell_assembly::{ShellFrame, build_shell_frame, plane_stress_d};
