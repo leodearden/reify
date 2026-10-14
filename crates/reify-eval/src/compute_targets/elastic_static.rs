@@ -228,11 +228,11 @@ use super::shell_solve::{
 
 // Task 2929: FEA diagnostic mapping glue.
 use super::fea_diagnostics::fea_diagnostic_to_core;
-use super::fea_loads::{
-    gravity_magnitude, load_items, material_density, point_load_force, pressure_load_magnitude,
-};
 use super::fea_inputs::{
     extract_material, extract_scalar_si, isotropic_from_data, real_field, scalar_si_field,
+};
+use super::fea_loads::{
+    gravity_magnitude, load_items, material_density, point_load_force, pressure_load_magnitude,
 };
 use super::fea_value_shape::{FeaValueShapeError, failed_outcome};
 use reify_solver_elastic::{
