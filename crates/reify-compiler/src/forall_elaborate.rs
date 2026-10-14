@@ -26,12 +26,19 @@
 //!     for each key in `keyed_members` declaration order.
 //!
 //! Anything else (non-iterable, undef count, multi-hop indirection) emits
-//! zero decls. Re-elaboration on count change for deferred-count collection
-//! subs (task 2629; PRD criterion 7 second-half) is performed by
-//! `Engine::edit_param`'s collection count phase
-//! (`crates/reify-eval/src/engine_edit.rs` ~1392-1528), driven by the
-//! `forall_templates: Vec<CompiledForallTemplate>` captured here on
-//! `TopologyTemplate.forall_templates`.
+//! zero decls at compile time. A collection sub whose count is not yet known
+//! is `Deferred`: its per-element body is captured as a
+//! `CompiledForallTemplate` on `TopologyTemplate.forall_templates`, and
+//! `Engine::edit_param`'s collection-count phase (reify-eval
+//! `engine_edit.rs`) re-elaborates it whenever the count becomes known.
+//!
+//! Captured for runtime re-elaboration: `Constraint` bodies without a
+//! where-clause, and `Connect` bodies whose endpoints parse as a `PortPath`.
+//! A captured `Connect` drops its connector type and params at runtime, and
+//! says so in an info diagnostic. Not captured, each with one info
+//! diagnostic: where-clause constraint bodies, constraint-instantiation
+//! bodies, chain bodies, and connect endpoints outside the `PortPath`
+//! grammar.
 //!
 //! ## PRD criteria 6 and 7 contract
 //!
@@ -46,15 +53,14 @@
 //! **Criterion 7 first-half — undef count, compile time:** a collection sub
 //! whose count cell is missing or non-literal returns
 //! `ResolveForallOutcome::Deferred` from `resolve_forall_elements`. The
-//! callers emit zero decls and no diagnostics, and (task 2629) capture a
+//! callers emit zero decls and no error, and capture a
 //! `CompiledForallTemplate` describing the per-element body so the runtime
-//! can re-elaborate when the count later becomes known.
+//! can re-elaborate when the count later becomes known — or, for a body
+//! that is not captured, emit its one info diagnostic.
 //!
-//! **Criterion 7 second-half — runtime re-elaboration:** wired in
-//! `engine_edit.rs` per the link above. Only the `Constraint` body shape
-//! is supported there. `Connect` (tracked by task 2690), `Instantiation`,
-//! and `Chain` body shapes retain compile-time silent-skip semantics and
-//! emit an info diagnostic noting the follow-up task.
+//! **Criterion 7 second-half — runtime re-elaboration:** performed by
+//! `Engine::edit_param` for the captured body shapes listed above. The
+//! uncaptured shapes keep compile-time silent-skip semantics.
 //!
 //! **Duplicate diagnostics:** every diagnostic raised inside
 //! `elaborate_forall_connect`'s per-element loop goes through
@@ -68,6 +74,15 @@
 
 use super::*;
 use std::collections::HashMap;
+
+/// The info diagnostic for a deferred-count `forall` body that is not
+/// captured for runtime re-elaboration.
+fn not_re_elaborated_info(construct: &str, emits: &str) -> Diagnostic {
+    Diagnostic::info(format!(
+        "{construct} over a deferred-count collection is not re-elaborated at runtime: \
+         no per-element {emits} are emitted when the count becomes known"
+    ))
+}
 
 /// Outcome of resolving the collection expression of a statement-form `forall`.
 ///
@@ -468,14 +483,13 @@ pub(crate) fn elaborate_forall_constraint(
                     // has no guarded-group plumbing for per-element where
                     // clauses, so capturing here would silently drop the
                     // guard at re-emission time. Treat where-clause-bearing
-                    // bodies as "future scope" alongside Instantiation/Chain:
-                    // emit an info diagnostic and skip capture.
+                    // bodies like Instantiation/Chain: not re-elaborated at
+                    // runtime — emit an info diagnostic and skip capture.
                     if body_constraint.where_clause.is_some() {
                         diagnostics.push(
-                            Diagnostic::info(
-                                "forall constraint with where-clause over deferred-count \
-                                 collections will not re-elaborate at runtime \
-                                 (task 2629 future scope)",
+                            not_re_elaborated_info(
+                                "forall constraint with a where-clause",
+                                "constraints",
                             )
                             .with_label(DiagnosticLabel::new(
                                 decl.span,
@@ -522,11 +536,8 @@ pub(crate) fn elaborate_forall_constraint(
                 }
                 ForallConstraintBody::Instantiation(_) => {
                     diagnostics.push(
-                        Diagnostic::info(
-                            "forall constraint-instantiation over deferred-count collections \
-                         will not re-elaborate at runtime (task 2629 future scope)",
-                        )
-                        .with_label(DiagnosticLabel::new(decl.span, "deferred-count forall")),
+                        not_re_elaborated_info("forall constraint-instantiation", "constraints")
+                            .with_label(DiagnosticLabel::new(decl.span, "deferred-count forall")),
                     );
                 }
             }
@@ -705,12 +716,10 @@ pub(crate) fn elaborate_forall_connect(
                 count_cell,
                 sub_name,
             } => {
-                // task 2690: capture a runtime CompiledForallTemplate for the
-                // `Connect` body shape so `Engine::edit_param`'s collection-count
-                // phase can re-emit per-element connections when the count cell
-                // becomes known. Mirrors the Constraint-arm capture wiring at
-                // ~line 327 of this file. The `Chain` body shape retains
-                // compile-time silent-skip + info-diagnostic (task 2629 follow-up).
+                // Capture a runtime `CompiledForallTemplate` for the `Connect`
+                // body shape so `Engine::edit_param`'s collection-count phase
+                // can re-emit per-element connections once the count is known.
+                // A `Chain` body is not captured.
                 match &decl.body {
                     ForallConnectBody::Connect(cd) => {
                         // Parse each endpoint as written, before any
@@ -724,11 +733,9 @@ pub(crate) fn elaborate_forall_connect(
                         let (left, right) = match (left, right) {
                             (Some(l), Some(r)) => (l, r),
                             (left, right) => {
-                                let mut diag = Diagnostic::info(
-                                    "forall connect with unsupported port shape over \
-                                     deferred-count collections will not re-elaborate \
-                                     at runtime (task 2717; not yet supported by \
-                                     deferred-count re-elaboration)",
+                                let mut diag = not_re_elaborated_info(
+                                    "forall connect with an unsupported port shape",
+                                    "connections",
                                 )
                                 .with_label(DiagnosticLabel::new(decl.span, "forall connect"));
                                 if left.is_none() {
@@ -748,28 +755,20 @@ pub(crate) fn elaborate_forall_connect(
                             }
                         };
 
-                        // task-2690 amendment: surface the connector-spec drop.
-                        //
-                        // The runtime re-emission path in `engine_edit.rs` does
-                        // NOT replicate `compile_connection`'s connector-spec
-                        // handling: it does not auto-create a `connector_sub`
-                        // sub-component, does not validate connector params, and
-                        // does not generate a `frame_constraint`. For the simple
-                        // form (no `via T(args)`, no params) this is invisible.
-                        // For the rich form, the captured `connector_type` and
-                        // `params` are dropped at runtime — emit an info
-                        // diagnostic so users discover the limitation rather
-                        // than getting a silent semantic divergence vs. the
-                        // resolved (non-deferred) path. Mirrors the Chain-arm
-                        // info diagnostic shape just below.
+                        // The runtime re-emission in `engine_edit.rs` does not
+                        // replicate `compile_connection`'s connector-spec
+                        // handling: no `connector_sub`, no connector-param
+                        // validation, no `frame_constraint`. For the rich form
+                        // the captured `connector_type` and `params` are
+                        // dropped at runtime, so say so rather than diverge
+                        // silently from the resolved (non-deferred) path.
                         if cd.connector_type.is_some() || !cd.params.is_empty() {
                             diagnostics.push(
                                 Diagnostic::info(
-                                    "forall connect with `via T(args)` over deferred-count \
-                             collections: connector type and params are not \
-                             propagated by runtime re-elaboration; only the \
-                             port-to-port connection is materialised (task 2690 \
-                             future scope)",
+                                    "forall connect with `via T(args)` over a deferred-count \
+                                     collection: connector type and params are not \
+                                     propagated by runtime re-elaboration; only the \
+                                     port-to-port connection is materialised",
                                 )
                                 .with_label(DiagnosticLabel::new(
                                     decl.span,
@@ -778,15 +777,13 @@ pub(crate) fn elaborate_forall_connect(
                             );
                         }
 
-                        // Compile each substituted param expression once at
-                        // capture time. Mirrors the Constraint arm's
-                        // `compile_expr(&substituted_body, ...)` policy. The
-                        // result is captured on `CompiledForallBody::Connect`
-                        // for completeness even though `engine_edit.rs`'s
-                        // current re-emission drops it (see diagnostic above);
-                        // capturing here means the data is ready for a future
-                        // task to wire connector-spec-aware runtime emission
-                        // without re-doing the substitution work.
+                        // Compile each param with `v` bound to the `<sub>[0]`
+                        // placeholder, once at capture time — the Constraint
+                        // arm's `compile_expr(&substituted_body, ...)` policy.
+                        // The placeholder serves these params only; the
+                        // endpoints above were parsed unsubstituted. The
+                        // runtime re-emission drops the params (see the
+                        // diagnostic above).
                         let coll_span = decl.collection.span;
                         let placeholder = reify_ast::Expr {
                             kind: reify_ast::ExprKind::IndexAccess {
@@ -839,10 +836,11 @@ pub(crate) fn elaborate_forall_connect(
                         });
                     }
                     ForallConnectBody::Chain(_) => {
-                        diagnostics.push(Diagnostic::info(
-                        "forall chain over deferred-count collections will not re-elaborate \
-                         at runtime (task 2629 future scope)",
-                    ).with_label(DiagnosticLabel::new(decl.span, "deferred-count forall chain")));
+                        diagnostics.push(
+                            not_re_elaborated_info("forall chain", "connections").with_label(
+                                DiagnosticLabel::new(decl.span, "deferred-count forall chain"),
+                            ),
+                        );
                     }
                 }
                 return;
