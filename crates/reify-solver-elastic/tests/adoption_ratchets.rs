@@ -699,6 +699,7 @@ fn hit_lines(hits: &[Hit]) -> String {
         .join("\n")
 }
 
+#[derive(Clone, Copy)]
 enum View {
     Code,
     CodeAndDocs,
@@ -706,6 +707,7 @@ enum View {
 
 /// A literal needle counted in the files under `include` (path prefixes; a
 /// directory ends in `/`) minus `exclude`, outside the `skip_items` items.
+#[derive(Clone, Copy)]
 struct Pattern {
     needle: &'static str,
     include: &'static [&'static str],
@@ -716,6 +718,7 @@ struct Pattern {
     seed: &'static str,
 }
 
+#[derive(Clone, Copy)]
 enum Measure {
     Occurrences(Pattern),
     /// Helper fns defined in several files under `root`; a definition under
@@ -1102,11 +1105,12 @@ fn measure(how: &Measure, files: &[SourceFile]) -> Vec<Hit> {
     }
 }
 
-/// Strict ratchet: the measured count must equal `baseline`. Above it, a copy was
-/// added; below it, a leaf migrated copies and must lower the row in the same diff.
-fn check(ratchet: &Ratchet, files: &[SourceFile], baseline: usize) -> Result<(), String> {
+/// Strict ratchet: the measured count must equal the row's `baseline`. Above it, a
+/// copy was added; below it, a leaf migrated copies and must lower the row in the
+/// same diff.
+fn check(ratchet: &Ratchet, files: &[SourceFile]) -> Result<(), String> {
     let hits = measure(&ratchet.measure, files);
-    let (name, count) = (ratchet.name, hits.len());
+    let (name, baseline, count) = (ratchet.name, ratchet.baseline, hits.len());
     match count.cmp(&baseline) {
         Ordering::Equal => Ok(()),
         Ordering::Greater => Err(format!(
@@ -1534,11 +1538,15 @@ fn expect_red_containing(verdict: Result<(), String>, fragments: &[&str]) -> Res
 #[test]
 fn migrating_one_copy_without_lowering_the_baseline_is_red_for_every_row() {
     for_every_row(|row| {
-        check(row, &seeded_tree(row, 2), 2)
+        let at_two = Ratchet {
+            baseline: 2,
+            ..*row
+        };
+        check(&at_two, &seeded_tree(row, 2))
             .map_err(|red| format!("two copies at baseline 2 must hold, got: {red}"))?;
-        let above = check(row, &seeded_tree(row, 3), 2);
+        let above = check(&at_two, &seeded_tree(row, 3));
         expect_red_containing(above, &["above its baseline", row.name])?;
-        let below = check(row, &seeded_tree(row, 1), 2);
+        let below = check(&at_two, &seeded_tree(row, 1));
         expect_red_containing(below, &["lower the baseline to 1"])
     });
 }
@@ -1778,7 +1786,7 @@ fn every_ratchet_row_holds_at_its_committed_baseline() {
                 row.name
             ));
         }
-        failures.extend(check(row, &tree, row.baseline).err());
+        failures.extend(check(row, &tree).err());
     }
     assert!(
         failures.is_empty(),
