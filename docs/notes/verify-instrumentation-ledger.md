@@ -204,7 +204,9 @@ directories.
 `{started_at, subcommand}` to `<lane>/target/.reify-cargo-starts.jsonl` for
 heavy subcommands (`build test nextest check clippy bench doc build-std`)
 when the cwd is inside a stamped lane. It appends after PSI admission and
-before the `exec`. The log lives in `target/`, so a reseed discards it.
+before the `exec`. The log lives in `target/`, so a reseed discards it. The
+shim is not on agents' PATH while agent CPU governance is off, so the log stays
+empty today (see Consumer rules → Seed → first build).
 
 **The block.** Finalize reads the lane but never writes, renames or deletes
 anything in it.
@@ -262,21 +264,30 @@ anything in it.
 
 - **Take the FIRST record per `seed_id`.** Every later verify in that lane
   repeats the same `seed` object, because the block is non-destructive.
-- **The agent's first cargo is observable only once dark-factory prepends
-  `scripts/agent-bin` to agent PATH.** Today it does not: reify's
-  `cpu_governance` yaml block sets no `exec_path` or `shim_dir`. Wiring them
-  **also switches on agent PSI admission and cgroup governance**, a behaviour
-  change that is a Leo decision and outside this task.
-- **Until then**, `first_build` is verify-observed (`basis:
-  "verify-step-end"`), and the agent's earlier build shows up only as
-  `unattributed_writes`. In that state, `unattributed_writes.last_write_at −
-  seed.exited_at` is the closest proxy for the tax.
+- **The agent's first cargo is not observable, by ruling.** Leo's 2026-10-13
+  ruling on esc-7424-14: reify's agent CPU governance stays **OFF**, so
+  `cpu_governance.exec_path` and `shim_dir` will not be set, and
+  `scripts/agent-bin/cargo` is not on agents' PATH. Its start log stays inert,
+  though exec-transparent, until activation. Activation is owned by #5908,
+  which is blocked on dark_factory:3394.
+- **So an agent's first build appears ONLY as a bounded-but-unattributed
+  window**: `unattributed_writes`, spanning `[seed.exited_at, first known
+  cargo start)`. `first_build` is verify-observed (`basis:
+  "verify-step-end"`), and `unattributed_writes.last_write_at −
+  seed.exited_at` is the closest proxy for the agent's tax.
+- **An unattributed window is NEVER zero agent cost.** A `basis:
+  "verify-step-end"` `first_build` in a lane whose
+  `unattributed_writes.units > 0` is not the lane's first build. Report such
+  seeds separately, bounded by the unattributed span, instead of folding them
+  into the verify-first figure.
 - **`units_written: 0`** means the first observed cargo wrote no fingerprint.
   Read `fingerprint.units_written_since_seed` and `last_write_at` for the
   lane-wide picture.
 - **For D6:** the ledger records wall seconds, not CPU. The study's
   core-equivalent multiplies by the build's job count (`-j 8`), which is an
   upper bound.
+- **D6's "≥ 1 time-averaged core" figure carries the unattributed-window
+  limitation above.** Every E2/D6 write-up must say so.
 
 ## Known blind spots
 
