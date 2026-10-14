@@ -49,11 +49,11 @@ use reify_fdm::{
 use reify_ir::{OpaqueState, Value};
 
 use super::as_printed_material::{
-    AS_PRINTED_MATERIAL, as_printed_field_value, field_int, field_real, field_vec3,
+    AS_PRINTED_MATERIAL, as_printed_field_value, field_int, field_real, field_scalar, field_vec3,
     orthotropic_material, read_base_elastic, struct_data, structure,
 };
 use super::{MM_TO_M, rejected_input_outcome};
-use crate::arg_acceptance::{FieldRejection, length_spec, read_field};
+use crate::arg_acceptance::{FieldRejection, length_spec};
 use crate::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
 
 /// `@optimized("fdm::as_printed_material_r0")` ComputeNode trampoline.
@@ -95,7 +95,7 @@ fn build_r0_field(value_inputs: &[Value]) -> Result<Option<Value>, FieldRejectio
     // ── FDMProcess → BaseElastic + R0Options ───────────────────────────────────
     // The dimension-checked reads run first, so a rejection never depends on
     // whether the G-code parses.
-    let layer_height = read_field(process, "layer_height", &length_spec())?;
+    let layer_height = field_scalar(process, "layer_height", &length_spec())?;
     let infill_density = field_real(process, "infill_density")?;
     let base = read_base_elastic(process)?;
     let (

@@ -658,28 +658,7 @@ pub fn read_arg_or_bare(
     value: &crate::value::Value,
     spec: &ArgSpec,
 ) -> Result<Option<f64>, ArgRejection> {
-    read_accepted(accept_arg_or_bare(value, spec))
-}
-
-/// [`accept_field`] as a reader's `Result`, under [`read_arg_or_bare`]'s
-/// refusal rule: `Ok(None)` when the field is absent, `none` or unresolved,
-/// `Err` naming `<Struct>.<key>` when it is refused.
-pub fn read_field(
-    data: &crate::value::StructureInstanceData,
-    key: &str,
-    spec: &ArgSpec,
-) -> Result<Option<f64>, FieldRejection> {
-    let Some(value) = data.fields.get(key).and_then(unwrap_options) else {
-        return Ok(None);
-    };
-    read_accepted(accept_arg(value, spec)).map_err(|rejection| FieldRejection {
-        path: format!("{}.{key}", data.type_name),
-        rejection,
-    })
-}
-
-fn read_accepted(acceptance: Acceptance) -> Result<Option<f64>, ArgRejection> {
-    match acceptance {
+    match accept_arg_or_bare(value, spec) {
         Acceptance::Accepted(si) => Ok(Some(si)),
         Acceptance::Undefined => Ok(None),
         Acceptance::Rejected(rejection) => Err(rejection),
@@ -770,23 +749,14 @@ pub fn accept_field(
 /// Unwrap any depth of `Value::Option` and delegate the rest to
 /// [`accept_arg`]. See [`accept_field`] for why the recursion is unbounded.
 fn accept_unwrapped(value: &crate::value::Value, spec: &ArgSpec) -> FieldAcceptance {
-    match unwrap_options(value) {
-        None => FieldAcceptance::Absent,
-        Some(inner) => match accept_arg(inner, spec) {
+    match value {
+        crate::value::Value::Option(None) => FieldAcceptance::Absent,
+        crate::value::Value::Option(Some(inner)) => accept_unwrapped(inner, spec),
+        other => match accept_arg(other, spec) {
             Acceptance::Accepted(si) => FieldAcceptance::Accepted(si),
             Acceptance::Undefined => FieldAcceptance::Undefined,
             Acceptance::Rejected(rej) => FieldAcceptance::Rejected(rej),
         },
-    }
-}
-
-/// The value under any depth of `Value::Option`; `None` for `Option(None)`.
-/// The one Option-unwrapping rule of [`accept_field`] and [`read_field`].
-fn unwrap_options(value: &crate::value::Value) -> Option<&crate::value::Value> {
-    match value {
-        crate::value::Value::Option(None) => None,
-        crate::value::Value::Option(Some(inner)) => unwrap_options(inner),
-        other => Some(other),
     }
 }
 
@@ -1152,7 +1122,7 @@ mod tests {
         assert_eq!(field_error.message, expected_message);
     }
 
-    // ── read_arg_or_bare / read_field: one refusal rule for every reader ──────
+    // ── read_arg_or_bare: one refusal rule for every reader ──────────────────
 
     #[test]
     fn read_arg_or_bare_refuses_every_present_value_it_does_not_accept() {
@@ -1171,38 +1141,6 @@ mod tests {
                 read_arg_or_bare(&refused, &mass).is_err(),
                 "{refused:?} must be refused, never read as absent"
             );
-        }
-    }
-
-    #[test]
-    fn read_field_reads_absent_none_and_unwrapped_and_refuses_the_rest() {
-        use crate::value::Value;
-
-        let length = length_spec();
-        let options = |value: Value| steel_instance(&[("line_width", value)]);
-
-        assert_eq!(
-            read_field(&steel_instance(&[]), "line_width", &length),
-            Ok(None)
-        );
-        assert_eq!(
-            read_field(&options(Value::Option(None)), "line_width", &length),
-            Ok(None)
-        );
-        assert_eq!(
-            read_field(
-                &options(Value::Option(Some(Box::new(Value::length(0.4e-3))))),
-                "line_width",
-                &length
-            ),
-            Ok(Some(0.4e-3))
-        );
-        for refused in [Value::Real(0.4), Value::Bool(true)] {
-            let Err(rejection) = read_field(&options(refused.clone()), "line_width", &length)
-            else {
-                unreachable!("{refused:?} at a LENGTH field must be refused");
-            };
-            assert_eq!(rejection.path, "Steel_AISI_1045.line_width");
         }
     }
 

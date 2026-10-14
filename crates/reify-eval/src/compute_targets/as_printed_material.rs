@@ -51,7 +51,8 @@ use reify_ir::{
 
 use super::rejected_input_outcome;
 use crate::arg_acceptance::{
-    FieldRejection, density_spec, dimensionless_spec, length_spec, pressure_spec, read_field,
+    ArgSpec, FieldAcceptance, FieldRejection, accept_field, density_spec, dimensionless_spec,
+    length_spec, pressure_spec,
 };
 use crate::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
 
@@ -70,7 +71,7 @@ const REGISTRY_FREE_TYPE_ID: StructureTypeId = StructureTypeId(u32::MAX);
 /// panicking — matching the Undef-for-Field convention of the stdlib surface.
 /// A present numeric field the reader refuses — a number of the wrong dimension
 /// or a value that is not a number at all — is [`ComputeOutcome::Failed`] with
-/// that field's `DimensionedArgRejected` Error (`read_field`'s refusal rule).
+/// that field's `DimensionedArgRejected` Error (`field_scalar`'s refusal rule).
 pub fn as_printed_material_r_fast_trampoline(
     value_inputs: &[Value],
     realization_inputs: &[RealizationReadHandle],
@@ -110,10 +111,10 @@ fn build_as_printed_field(
 
     // Every dimension-checked read runs before the realization lookup, so a
     // rejection never depends on whether the body has realized yet.
-    let layer_height = read_field(process, "layer_height", &length_spec())?;
+    let layer_height = field_scalar(process, "layer_height", &length_spec())?;
     let infill_density = field_real(process, "infill_density")?;
     let base = read_base_elastic(process)?;
-    let line_width = read_field(options, "line_width", &length_spec())?;
+    let line_width = field_scalar(options, "line_width", &length_spec())?;
     let coupon = read_coupon(options)?;
 
     let (
@@ -270,13 +271,32 @@ pub(crate) fn struct_data(v: &Value) -> Option<&StructureInstanceData> {
     }
 }
 
-/// `read_field` at a dimensionless position (a bare `Real`/`Int` or a
+/// Read a numeric field's SI value through `spec`: `Ok(None)` when it is
+/// absent, `none` or unresolved; `Err` naming `<Struct>.<key>` for any present
+/// value the spec refuses — a number of the wrong dimension, or not a number at
+/// all.
+pub(crate) fn field_scalar(
+    data: &StructureInstanceData,
+    key: &str,
+    spec: &ArgSpec,
+) -> Result<Option<f64>, FieldRejection> {
+    match accept_field(data, key, spec) {
+        FieldAcceptance::Accepted(si) => Ok(Some(si)),
+        FieldAcceptance::Absent | FieldAcceptance::Undefined => Ok(None),
+        FieldAcceptance::Rejected(rejection) => Err(FieldRejection {
+            path: format!("{}.{key}", data.type_name),
+            rejection,
+        }),
+    }
+}
+
+/// [`field_scalar`] at a dimensionless position (a bare `Real`/`Int` or a
 /// dimensionless `Scalar`).
 pub(crate) fn field_real(
     data: &StructureInstanceData,
     key: &str,
 ) -> Result<Option<f64>, FieldRejection> {
-    read_field(data, key, &dimensionless_spec())
+    field_scalar(data, key, &dimensionless_spec())
 }
 
 /// Read an `Int` field; also accepts a `Real` (truncated).
@@ -322,9 +342,9 @@ pub(crate) fn read_base_elastic(
     let Some(material) = process.fields.get("material").and_then(struct_data) else {
         return Ok(None);
     };
-    let youngs_modulus = read_field(material, "youngs_modulus", &pressure_spec())?;
+    let youngs_modulus = field_scalar(material, "youngs_modulus", &pressure_spec())?;
     let poisson_ratio = field_real(material, "poisson_ratio")?;
-    let density = read_field(material, "density", &density_spec())?;
+    let density = field_scalar(material, "density", &density_spec())?;
     Ok(match (youngs_modulus, poisson_ratio, density) {
         (Some(youngs_modulus), Some(poisson_ratio), Some(density)) => Some(BaseElastic {
             youngs_modulus,
@@ -341,7 +361,7 @@ fn read_coupon(options: &StructureInstanceData) -> Result<CouponOverride, FieldR
     let Some(coupon) = options.fields.get("coupon").and_then(struct_data) else {
         return Ok(CouponOverride::default());
     };
-    let modulus = |key| read_field(coupon, key, &pressure_spec());
+    let modulus = |key| field_scalar(coupon, key, &pressure_spec());
     Ok(CouponOverride {
         ex: modulus("ex")?,
         ey: modulus("ey")?,
