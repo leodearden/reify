@@ -12,7 +12,9 @@ use reify_ir::{
     AutoParam, BinOp, CompiledExpr, ConstraintChecker, ConstraintInput, ConstraintSolver,
     ResolutionProblem, Satisfaction, SolveResult, Value, ValueMap,
 };
-use reify_test_support::{binop, cnid, eq, ge, literal, meters, mm, value_ref_typed, vcid};
+use reify_test_support::{
+    and, binop, cnid, eq, ge, literal, meters, mm, or, value_ref_typed, vcid,
+};
 
 const ENTITY: &str = "Part";
 const THIRTY_DEG_RAD: f64 = 0.5235987755982988;
@@ -233,4 +235,80 @@ fn mm3_volume_equality_is_never_stricter_than_before() {
         ValueMap::new(),
     ));
     assert_solved_near(&result, "v", 1e-6, 1e-12);
+}
+
+#[test]
+fn or_of_equalities_is_accepted_through_the_verdict() {
+    let length = Type::length();
+    let either_root = problem(
+        vec![auto("w", &length)],
+        vec![
+            ge(cell("w", &length), literal(mm(8.0))),
+            or(
+                eq(cell("w", &length), literal(mm(10.0))),
+                eq(cell("w", &length), literal(mm(30.0))),
+            ),
+        ],
+        ValueMap::new(),
+    );
+    let w = solved_si(&DimensionalSolver.solve(&either_root), "w");
+    assert!(
+        (w - 0.01).abs() <= 1e-6 || (w - 0.03).abs() <= 1e-6,
+        "w = {w:e}, expected 1e-2 or 3e-2 within 1e-6"
+    );
+    assert_checker_satisfies_the_solved_point(&either_root, "w >= 8mm; w == 10mm or w == 30mm");
+}
+
+#[test]
+fn and_composite_row_is_accepted_through_the_verdict() {
+    let length = Type::length();
+    let one_row = problem(
+        vec![auto("w", &length)],
+        vec![and(
+            ge(cell("w", &length), literal(mm(8.0))),
+            eq(cell("w", &length), literal(mm(10.0))),
+        )],
+        ValueMap::new(),
+    );
+    assert_solved_near(&DimensionalSolver.solve(&one_row), "w", 0.01, 1e-6);
+    assert_checker_satisfies_the_solved_point(&one_row, "w >= 8mm and w == 10mm");
+}
+
+#[test]
+fn or_of_equalities_missing_by_one_percent_stays_unsolved() {
+    let length = Type::length();
+    let pinned_w = || eq(cell("w", &length), literal(mm(10.0)));
+    let near_misses_of = |subject: &str| {
+        or(
+            eq(cell(subject, &length), literal(mm(10.1))),
+            eq(cell(subject, &length), literal(mm(9.9))),
+        )
+    };
+    let mut fixed_p = ValueMap::new();
+    fixed_p.insert(vcid(ENTITY, "p"), mm(10.0));
+    let cases = [
+        (
+            "w == 10mm; w == 10.1mm or w == 9.9mm",
+            problem(
+                vec![auto("w", &length)],
+                vec![pinned_w(), near_misses_of("w")],
+                ValueMap::new(),
+            ),
+        ),
+        (
+            "w == 10mm; p == 10.1mm or p == 9.9mm with p = 10mm",
+            problem(
+                vec![auto("w", &length)],
+                vec![pinned_w(), near_misses_of("p")],
+                fixed_p,
+            ),
+        ),
+    ];
+    for (label, unsatisfiable) in &cases {
+        let result = DimensionalSolver.solve(unsatisfiable);
+        assert!(
+            !matches!(result, SolveResult::Solved { .. }),
+            "{label} must not be Solved; got {result:?}"
+        );
+    }
 }
