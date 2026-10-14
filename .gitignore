@@ -41,6 +41,8 @@ data/queue/*.db*
 data/review-checkpoints/
 data/orchestrator/
 data/audit-runs/
+# verify instrumentation ledger + flaky ledger (machine-written; docs/notes/verify-instrumentation-ledger.md)
+data/verify-logs/
 gui/src-tauri/gen/
 orchestrator.log*
 review/reports/

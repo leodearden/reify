@@ -190,6 +190,9 @@ set -euo pipefail
 # of this file (the rerere disarm and the stash-guard liveness arm).
 _SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# Seed start, for the lane seed stamp written at the successful end of seed mode.
+_SEED_STARTED_AT="${EPOCHREALTIME/,/.}"
+
 # ── log helpers (all write to stderr) ────────────────────────────────────────
 info()  { printf '\033[1;34m[info]\033[0m  %s\n' "$*" >&2; }
 ok()    { printf '\033[1;32m[ok]\033[0m    %s\n' "$*" >&2; }
@@ -1776,6 +1779,20 @@ if [ -n "$FRESH_CHECKOUT" ] && [ -x "$_SCRIPT_DIR/hooks-armed-guard.sh" ]; then
     unset _hooks_arm_rc
 elif [ -n "$FRESH_CHECKOUT" ]; then
     warn "scripts/hooks-armed-guard.sh not executable — skipping the stash-guard liveness arm"
+fi
+
+# ── lane seed stamp (task 7424) ──────────────────────────────────────────────
+# Writes ${LANE_DIR}.seed-stamp.json, which the verify instrumentation ledger
+# reads to time seed → first build (docs/notes/verify-instrumentation-ledger.md).
+# Reached only by a seed that succeeded; a refused or failed seed leaves any
+# older stamp untouched. FAIL-OPEN like the two blocks above: telemetry never
+# fails an acquire. >/dev/null keeps this script's single-use stdout.
+if command -v python3 >/dev/null 2>&1 && [ -f "$_SCRIPT_DIR/verify-ledger.py" ]; then
+    if [ -n "$FRESH_CHECKOUT" ]; then _seed_mode="fresh-checkout"; else _seed_mode="reset-in-place"; fi
+    python3 "$_SCRIPT_DIR/verify-ledger.py" seed-stamp --lane-dir "$LANE_DIR" \
+        --mode "$_seed_mode" --started-at "$_SEED_STARTED_AT" >/dev/null \
+        || warn "lane seed stamp not written — seed continues"
+    unset _seed_mode
 fi
 
 ok "Warm lane seeded at $LANE_TARGET"

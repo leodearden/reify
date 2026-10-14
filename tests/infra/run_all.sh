@@ -218,6 +218,15 @@
 #                                      recorded run_ids to consider (task
 #                                      #5142; default 20). A malformed value
 #                                      fails OPEN to 20.
+#   REIFY_RUN_ALL_TIMING_OUT           Path of a JSONL file that receives this
+#                                      run's timing record (task 7424): one
+#                                      summary line naming the path taken
+#                                      and, on the pool path, per-phase
+#                                      begin/end and one line per member
+#                                      attempt. Consumed and UNSET at
+#                                      startup, so no member inherits it.
+#                                      Silent and fail-open. Schema:
+#                                      docs/notes/verify-instrumentation-ledger.md.
 
 set -euo pipefail
 
@@ -295,6 +304,10 @@ while [ "$#" -gt 0 ]; do
     esac
 done
 INFRA_DIR="${INFRA_DIR:-$SCRIPT_DIR}"
+
+_RA_TIMING_OUT="${REIFY_RUN_ALL_TIMING_OUT:-}"
+unset REIFY_RUN_ALL_TIMING_OUT
+_RA_PATH=""
 
 # --scope value validation: empty (default) selects the unchanged pool/legacy
 # behavior below; "host-infra" selects the H9 branch; any other non-empty
@@ -879,6 +892,84 @@ _ra_discovery_diag() {
     echo "ERROR: run_all.sh pool: host state at failure: loadavg=${_la} psi_cpu_avg10=${_avg10} (task #5123 discovery/partition guard)" >&2
 
     exit "$_rc"
+}
+
+# ---------------------------------------------------------------------------
+# Timing record (task 7424) -- written only when REIFY_RUN_ALL_TIMING_OUT was
+# set; silent and fail-open. Marks are epoch-second files in the pool
+# workdir, named so they never end in .rc (the progress printer counts *.rc).
+# Schema: docs/notes/verify-instrumentation-ledger.md.
+# ---------------------------------------------------------------------------
+_ra_mark() {
+    [ -n "$_RA_TIMING_OUT" ] || return 0
+    { printf '%s\n' "${EPOCHREALTIME/,/.}" > "$1"; } 2>/dev/null || true
+    return 0
+}
+
+# _ra_tv <file> -- sets _RA_TV to the number in a mark/rc file, else null.
+_ra_tv() {
+    _RA_TV=null
+    local _v=""
+    [ -f "$1" ] || return 0
+    IFS= read -r _v < "$1" 2>/dev/null || true
+    if [[ "$_v" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then _RA_TV="$_v"; fi
+    return 0
+}
+
+_ra_timing_phase() {
+    local _b _e
+    _ra_tv "$_H2_WORKDIR/phase-$1.begin"; _b="$_RA_TV"
+    _ra_tv "$_H2_WORKDIR/phase-$1.end"; _e="$_RA_TV"
+    printf '"%s":{"began_at":%s,"ended_at":%s}' "$1" "$_b" "$_e"
+}
+
+# _ra_timing_member <name> <phase> <queued-file|""> <start-file> <end-file> <rc-file>
+_ra_timing_member() {
+    local _q _s _e _r
+    _ra_tv "$3"; _q="$_RA_TV"
+    _ra_tv "$4"; _s="$_RA_TV"
+    _ra_tv "$5"; _e="$_RA_TV"
+    _ra_tv "$6"; _r="$_RA_TV"
+    printf '{"kind":"member","name":"%s","phase":"%s","queued_at":%s,"started_at":%s,"ended_at":%s,"rc":%s}\n' \
+        "$1" "$2" "$_q" "$_s" "$_e" "$_r"
+}
+
+_ra_timing_pool_lines() {
+    local _name _i _w="$_H2_WORKDIR"
+    printf '{"kind":"summary","path":"pool","run_id":"%s","phases":{' "$_RA_RUN_ID"
+    _ra_timing_phase pool; printf ','
+    _ra_timing_phase serial; printf ','
+    _ra_timing_phase retry
+    printf '},"totals":{"members":%d,"pool":%d,"serial":%d,"retried":%d}}\n' \
+        "${#_h2_discovered_list[@]}" "${#_h2_pool_members[@]}" "${#_h2_serial_members[@]}" "${#_h2_retried[@]}"
+    for _name in "${_h2_discovered_list[@]}"; do
+        [[ "$_name" =~ ^[A-Za-z0-9_.-]+$ ]] || continue
+        _i="${_h2_index_of[$_name]}"
+        if [ "${_h2_is_pool[$_name]:-0}" = "1" ]; then
+            _ra_timing_member "$_name" pool "$_w/$_i.tq" "$_w/$_i.ts" "$_w/$_i.te" "$_w/$_i.rc"
+        else
+            _ra_timing_member "$_name" serial "" "$_w/$_i.ts" "$_w/$_i.te" "$_w/$_i.rc"
+        fi
+        if [ "${_h2_retried[$_name]:-0}" = "1" ]; then
+            _ra_timing_member "$_name" retry "" "$_w/$_i.retry.ts" "$_w/$_i.retry.te" "$_w/$_i.retry.rc"
+        fi
+    done
+}
+
+# Writes the whole record to a sibling .tmp, then renames it into place.
+_ra_timing_write() {
+    [ -n "$_RA_TIMING_OUT" ] || return 0
+    local _tmp="$_RA_TIMING_OUT.tmp"
+    {
+        {
+            if [ "$_RA_PATH" = "pool" ]; then
+                _ra_timing_pool_lines
+            else
+                printf '{"kind":"summary","path":"%s","run_id":"%s"}\n' "$_RA_PATH" "$_RA_RUN_ID"
+            fi
+        } > "$_tmp" && mv -f "$_tmp" "$_RA_TIMING_OUT"
+    } 2>/dev/null || rm -f "$_tmp" 2>/dev/null || true
+    return 0
 }
 
 # ---------------------------------------------------------------------------
@@ -1609,6 +1700,7 @@ if [ "${REIFY_RUN_ALL_SUBSET_COUNT_ONLY:-}" = "1" ]; then
 fi
 
 if [ "$SCOPE" = "host-infra" ]; then
+    _RA_PATH=host-infra
     # -------------------------------------------------------------------------
     # H9 host-infra branch (docs/prds/run-all-host-infra-partition.md task H9):
     # runs EXACTLY the declared host-exclusive set (the INVERSE of H3's
@@ -1662,6 +1754,7 @@ if [ "$SCOPE" = "host-infra" ]; then
     lane_x_flock_release
     _RA_LANE_X_HELD=0
 elif [ "${#_ra_member_subset[@]}" -gt 0 ]; then
+    _RA_PATH=member-subset
     # -------------------------------------------------------------------------
     # REIFY_RUN_ALL_MEMBER_SUBSET dedicated serial branch (task #5288; PRD
     # docs/prds/verify-retry-failed-only.md task beta, Sec 4.2/8): on a
@@ -1706,6 +1799,7 @@ elif [ "${#_ra_member_subset[@]}" -gt 0 ]; then
         fi
     done
 elif [ "$_H2_POOL_ACTIVE" -eq 1 ]; then
+    _RA_PATH=pool
     # -------------------------------------------------------------------------
     # Concurrent pool path.
     # -------------------------------------------------------------------------
@@ -2014,6 +2108,7 @@ elif [ "$_H2_POOL_ACTIVE" -eq 1 ]; then
         disown 2>/dev/null || true
     fi
 
+    _ra_mark "$_H2_WORKDIR/phase-pool.begin"
     for _h2_name in "${_h2_pool_members[@]}"; do
         _h2_i="${_h2_index_of[$_h2_name]}"
 
@@ -2037,8 +2132,11 @@ elif [ "$_H2_POOL_ACTIVE" -eq 1 ]; then
             # Soft acquire: on deadline (75) proceed unslotted -- never skip a
             # test, never hang. slot_acquire itself already closes FD 9 on
             # every failed attempt, so no held-slot cleanup is needed here.
+            _ra_mark "$_H2_WORKDIR/${_h2_i}.tq"
             slot_acquire "$_H2_POOL_LOCK" "$_H2_POOL_N" "$_H2_POOL_WAIT" "$_H2_POOL_CLOCK_REASON" "$_H2_POOL_TIMEOUT_REASON" "$_H2_POOL_TIMEOUT_DISPOSITION" || _h2_slot_rc=$?
+            _ra_mark "$_H2_WORKDIR/${_h2_i}.ts"
             _ra_run_member "$_h2_name" "$_H2_WORKDIR/${_h2_i}.out" "$_H2_WORKDIR/${_h2_i}.rc" capture
+            _ra_mark "$_H2_WORKDIR/${_h2_i}.te"
             if [ "$_h2_slot_rc" -eq 0 ]; then
                 exec 9>&-
             fi
@@ -2050,6 +2148,7 @@ elif [ "$_H2_POOL_ACTIVE" -eq 1 ]; then
     if [ "${#_h2_pids[@]}" -gt 0 ]; then
         wait "${_h2_pids[@]}" 2>/dev/null || true
     fi
+    _ra_mark "$_H2_WORKDIR/phase-pool.end"
 
     # W4e primary check point (task #5261): _H2_WORKDIR lives under TMPDIR
     # (/tmp), so it survives an INFRA_DIR deletion and the Phase-1 join above
@@ -2070,11 +2169,15 @@ elif [ "$_H2_POOL_ACTIVE" -eq 1 ]; then
     fi
 
     # -- Phase 2: serial (foreground, one at a time, discovered order) -----------
+    _ra_mark "$_H2_WORKDIR/phase-serial.begin"
     for _h2_name in "${_h2_serial_members[@]}"; do
         _ra_interrupt_if_worktree_gone
         _h2_i="${_h2_index_of[$_h2_name]}"
+        _ra_mark "$_H2_WORKDIR/${_h2_i}.ts"
         _ra_run_member "$_h2_name" "$_H2_WORKDIR/${_h2_i}.out" "$_H2_WORKDIR/${_h2_i}.rc" capture
+        _ra_mark "$_H2_WORKDIR/${_h2_i}.te"
     done
+    _ra_mark "$_H2_WORKDIR/phase-serial.end"
 
     # -- Phase 2.5: serial retry-once of failed pool/intra-run-serial members
     # (deflake) --------------------------------------------------------------
@@ -2094,15 +2197,19 @@ elif [ "$_H2_POOL_ACTIVE" -eq 1 ]; then
     # keeps the exact existing FAILED contract. Exactly ONE retry per failed
     # eligible member; no slot_acquire/PSI gate (already serial).
     declare -A _h2_retried=()
+    _ra_mark "$_H2_WORKDIR/phase-retry.begin"
     for _h2_name in "${_h2_discovered_list[@]}"; do
         if [ "${_h2_is_pool[$_h2_name]:-0}" != "1" ] && [ "${_h2_is_intra_serial[$_h2_name]:-0}" != "1" ]; then
             continue
         fi
         _h2_i="${_h2_index_of[$_h2_name]}"
         [ "$(_ra_read_rc "$_H2_WORKDIR/${_h2_i}.rc")" -eq 0 ] && continue
+        _ra_mark "$_H2_WORKDIR/${_h2_i}.retry.ts"
         _ra_run_member "$_h2_name" "$_H2_WORKDIR/${_h2_i}.retry.out" "$_H2_WORKDIR/${_h2_i}.retry.rc" capture
+        _ra_mark "$_H2_WORKDIR/${_h2_i}.retry.te"
         _h2_retried["$_h2_name"]=1
     done
+    _ra_mark "$_H2_WORKDIR/phase-retry.end"
 
     # -- Phase 3: emit (discovered/sorted order -- preserves the output contract) --
     for _h2_name in "${_h2_discovered_list[@]}"; do
@@ -2125,6 +2232,7 @@ elif [ "$_H2_POOL_ACTIVE" -eq 1 ]; then
         fi
     done
 else
+    _RA_PATH=legacy-serial
     # -------------------------------------------------------------------------
     # Legacy all-serial fallback: the pool's members, in the pool's order, run
     # one at a time, each live under the serial policy (_ra_run_serial_member).
@@ -2135,6 +2243,7 @@ else
         _ra_run_serial_member "$_RA_SERIAL_WORKDIR" "$_ra_legacy_name"
     done
 fi
+_ra_timing_write
 
 # W4e final backstop (task #5261): covers a nuke on the very last member,
 # which no subsequent loop iteration would otherwise catch (there is no

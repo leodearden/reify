@@ -25,6 +25,9 @@
 #     content; changing it changes the nextest config used by all test passes.
 #   - .config/nextest.toml: nextest configuration; profile changes alter which
 #     tests are run and how.
+#   - scripts/verify-ledger.py: invoked (not sourced) by verify.sh's executor
+#     at run-begin, cargo step boundaries and _verify_cleanup, so neither the
+#     source-line nor the emitted-gate auto-derivation covers it.
 #
 # NOTE: The sourced libs (occt-scope-lib.sh, release-scope-lib.sh,
 # affected-crates-lib.sh, lib_test_semaphore.sh, cpu-admit.sh) are NOT listed
@@ -112,6 +115,7 @@ scripts/occt-touching-crates.txt
 scripts/release-sensitive-crates.txt
 scripts/verify-pipeline-infra-tests.txt
 scripts/gen-nextest-config.sh
+scripts/verify-ledger.py
 #
 # scripts/confirm-failed-manifest.sh (task 7423): the ONE JUnit-report reader
 #   behind `--confirm-failed`. Both callers are inside the verify pipeline —

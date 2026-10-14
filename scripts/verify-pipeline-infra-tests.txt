@@ -771,3 +771,18 @@ hooks/main-gate-lib.sh    tests/infra/test_hooks_armed_guard.sh
 # an edit to it selects both suites.
 scripts/lib_worktree_hooks_pin.sh    tests/infra/test_hooks_armed_guard.sh
 scripts/lib_worktree_hooks_pin.sh    tests/infra/test_main_gate_worktree_config.sh
+# Task 7424: scripts/verify-ledger.py (the verify instrumentation ledger) is
+# pinned by three .py suites behind thin .sh wrappers, same pair shape. The two
+# verify-named wrappers are also selected by the scripts/verify.sh glob at the
+# top, and tests/infra/run_all.sh's test_run_all*.sh glob already selects the
+# run_all timing wrapper. seed-warm-lane.sh and agent-bin/cargo select the
+# lane-seed wrapper because its suite executes both for real.
+scripts/verify-ledger.py    tests/infra/test_verify_ledger_cli.sh
+scripts/verify-ledger.py    tests/infra/test_verify_ledger_e2e.sh
+scripts/verify-ledger.py    tests/infra/test_verify_ledger_lane_seed.sh
+tests/infra/test_verify_ledger_cli.py    tests/infra/test_verify_ledger_cli.sh
+tests/infra/test_verify_ledger_e2e.py    tests/infra/test_verify_ledger_e2e.sh
+tests/infra/test_verify_ledger_lane_seed.py    tests/infra/test_verify_ledger_lane_seed.sh
+tests/infra/test_run_all_timing.py    tests/infra/test_run_all_timing.sh
+scripts/seed-warm-lane.sh    tests/infra/test_verify_ledger_lane_seed.sh
+scripts/agent-bin/cargo    tests/infra/test_verify_ledger_lane_seed.sh
