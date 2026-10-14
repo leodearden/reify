@@ -10287,6 +10287,49 @@ mod tests {
         );
     }
 
+    /// A refused `density` fails the solve even when no `Gravity` load would
+    /// read it: a present value the reader refuses is never read as absent.
+    #[test]
+    fn trampoline_fails_a_wrong_dimension_density_without_a_gravity_load() {
+        let mut value_inputs = shell9_valid_inputs();
+        let Value::StructureInstance(material) = &mut value_inputs[0] else {
+            unreachable!("shell9_valid_inputs builds a StructureInstance material");
+        };
+        material.fields.insert(
+            "density".to_string(),
+            gamma1_scalar(7850.0, DimensionVector::PRESSURE),
+        );
+        let Value::List(loads) = &value_inputs[4] else {
+            unreachable!("shell9_valid_inputs builds a load list");
+        };
+        assert!(
+            loads.iter().all(|load| !matches!(
+                load,
+                Value::StructureInstance(d) if d.type_name == "Gravity"
+            )),
+            "anti-vacuity: the load list must carry no Gravity load"
+        );
+        let outcome = solve_elastic_static_trampoline(
+            &value_inputs,
+            &[],
+            &Value::Undef,
+            None,
+            &CancellationHandle::new(),
+        );
+        let ComputeOutcome::Failed { diagnostics, .. } = &outcome else {
+            unreachable!("a PRESSURE density must fail the input gate, got {outcome:?}");
+        };
+        assert!(
+            diagnostics.iter().any(|d| {
+                d.severity == reify_core::Severity::Error
+                    && d.code == Some(DiagnosticCode::DimensionedArgRejected)
+                    && d.message
+                        .starts_with("solve_elastic_static_trampoline: material.density:")
+            }),
+            "expected a DimensionedArgRejected Error naming material.density, got {diagnostics:?}"
+        );
+    }
+
     // ── task 4366: cancel short-circuit + cadence ─────────────────────────────
 
     /// step-1 RED (task 4366): when the progress closure returns

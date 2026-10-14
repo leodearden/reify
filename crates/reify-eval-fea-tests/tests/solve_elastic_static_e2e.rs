@@ -1686,7 +1686,9 @@ fn e2e_cantilever_gradient_curl_ri_accessor() {
 // compiled bare force as the FORCE Scalar the retyped field will carry, and
 // the solve must come out IDENTICAL to the bare control solved in-process.
 // The control is not pinned to a literal: it drifts with unrelated solver
-// changes (esc-6922-1).
+// changes (esc-6922-1). Both solves request `deterministic: true`, so their
+// bit-equality holds by the solver's contract, not by today's mesh staying
+// under the parallel-dispatch threshold.
 
 const GAMMA1_POINT_LOAD_SOURCE: &str = r#"module gamma1_point_load_widening
 
@@ -1700,7 +1702,8 @@ structure Gamma1PointLoad {
     let mount    = FixedSupport(target: "root")
 
     let result = solve_elastic_static(
-        material, length, width, height, [tip_load], [mount], ElasticOptions()
+        material, length, width, height, [tip_load], [mount],
+        ElasticOptions(deterministic: true)
     )
 }
 "#;
