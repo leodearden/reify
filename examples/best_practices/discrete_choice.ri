@@ -67,18 +67,13 @@ module discrete_choice
 // constraint written against a `Length` would not typecheck.
 //
 // SHARP EDGE — the resolved root is only approximately +-1
-// (-0.9999999999999973, not -1.0), and `==` here is exact float equality. The
-// solver's own residual tolerance accepts that at solve time, so this file
-// evaluates clean. But feeding `side` into a geometry consumer — e.g.
+// (-0.9999999999999973, not -1.0). `==` on Real/Scalar operands is toleranced
+// (a relative tolerance with a per-dimension absolute floor; see
+// docs/reify-language-spec.md §5.2), so `side * side == 1` holds at solve time
+// and in any post-solve re-check, including the one a geometry consumer such as
 //     let mount = translate(box(w,w,w), side * arm_len, 0mm, 0mm)
-// — adds a post-solve exact re-check of the same constraint, which the residual
-// does NOT survive: eval then reports "constraint ... violated" while still
-// resolving `side` to -0.999.... Measured directly: identical files with and
-// without that one geometry cell differ exactly in whether the violation is
-// reported. So keep the +-1 encoding on the value surface, and if a downstream
-// consumer needs the sign, give it a tolerance band rather than exact equality,
-// or use the Bool form above: it resolves `side` to exactly +-1.0, which
-// survives the post-solve exact re-check.
+// adds. If a downstream consumer needs `side` to be exactly +-1.0, use the Bool
+// form above.
 
 structure def DiscreteChoice {
     // THE IDIOM: one dimensionless free auto, one quadratic constraint.

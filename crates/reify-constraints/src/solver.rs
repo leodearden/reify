@@ -1149,7 +1149,7 @@ fn worst_unmet_floor_term(
 ///      evaluation to be told so again.  That is why rung 1 is live for the
 ///      ORIGINALS target only: the floored call comes from an emit site reached
 ///      exactly when the residual against `effective_constraints` ALREADY
-///      exceeds `FEASIBILITY_THRESHOLD`, so offering it that same point would be
+///      fails acceptance, so offering it that same point would be
 ///      a guaranteed-false re-computation of a value in hand.
 ///   2. one bounded FEASIBILITY-ONLY re-solve — floor off, objective dropped.
 ///      A Money objective steep relative to `PENALTY_WEIGHT` parks the floored
@@ -1314,8 +1314,8 @@ fn floor_infeasible_diagnostic(
     sd_tolerance: f64,
     dispatch: Option<&dyn reify_ir::ComputeDispatch>,
 ) -> reify_core::Diagnostic {
-    // `converged: None` — this function is reached only when `final_max_residual`
-    // against `effective_constraints` already exceeds `FEASIBILITY_THRESHOLD`, so
+    // `converged: None` — this function is reached only when the final residual
+    // against `effective_constraints` already fails acceptance, so
     // offering `final_values` as a floored candidate would re-derive a value
     // already in hand and known to fail.  Rung 1 is live for the ORIGINALS search
     // below, where the answer is genuinely unknown.
@@ -2908,7 +2908,7 @@ fn solve_core_with_sd_tolerance(
     // BEFORE the `initially_feasible` check.  A floor-infeasible box that is
     // feasible without the floor must be seen as infeasible at the initial-point
     // check, so the `initially_feasible` drift fallback below (in the
-    // `final_max_residual > FEASIBILITY_THRESHOLD` branch) does NOT mask the
+    // `!final_residual.accepted` branch) does NOT mask the
     // infeasibility by falling back to Solved.
     //
     // Gate on `problem.objective` money-ness AND [`SolveRegime::RobustnessFloor`]
@@ -3046,7 +3046,7 @@ fn solve_core_with_sd_tolerance(
         // `bounds: None` shape `effective_bounds` is only
         // `default_bounds_for(Length) = [1µm, 10m]`, so without this box nothing
         // snaps the penalty minimiser's finite undershoot past the strict bound
-        // back: `final_max_residual` exceeds `FEASIBILITY_THRESHOLD`, the
+        // back: the strict-bound row fails acceptance, the
         // `initially_feasible` fallback below fires, and the blend reports THE
         // SEED. Pinned by
         // `gamma_anchor_lambdas_are_seed_invariant_without_explicit_bounds`.
@@ -9110,7 +9110,7 @@ mod tests {
     /// and `undefined_objective_at_fallback_triggers_no_progress`, covering all three
     /// branches of the objective-validation tail of `solve_core_with_sd_tolerance`:
     /// the `initially_feasible` drift fallback in the
-    /// `final_max_residual > FEASIBILITY_THRESHOLD` branch (its undefined-objective
+    /// `!final_residual.accepted` branch (its undefined-objective
     /// and Solved arms) plus the post-solve objective check at the solution point.
     #[test]
     fn defined_objective_at_fallback_returns_solved() {

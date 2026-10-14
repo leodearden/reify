@@ -1325,6 +1325,8 @@ a < b       a > b       a <= b      a >= b
 
 Equality is structural for value types, identity for structure references.
 
+`==` and `!=` on `Scalar<Q>` and `Real` operands are toleranced, not bit-exact: two values are equal when they differ by no more than the larger of a relative tolerance of the larger magnitude and an absolute floor chosen per dimension. The DimensionalSolver accepts equality constraints by the same rule, so a solved model never reports its own equalities violated. `Int`, `Bool`, `String` and enum equality stay exact, and ordering comparisons are never toleranced. The tolerance constants live in `crates/reify-core/src/scalar_tolerance.rs`.
+
 **Chained comparisons:** `a < b < c` desugars to `a < b and b < c`. Any comparison operators may chain.
 
 ```
