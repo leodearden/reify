@@ -824,27 +824,29 @@ fn free_joint_shapes(
     Some(out)
 }
 
-/// Manifold DOF count per joint kind, used by the over/under-constrained
-/// pre-check in `solve_loop_closure_with_diagnostics`.  Differs from
-/// `JointKind::flat_len` (storage width) for `Spherical` (3 manifold DOF
-/// vs 4 quaternion storage components), `Fixed` (0 DOF vs 1-element
-/// sentinel slot) and `Coupling` (0 DOF vs 1-element derived slot).
-///
-/// Returns 1 for Prismatic / Revolute, 0 for the non-driving Fixed /
-/// Coupling (neither has a free motion variable, and
-/// `validate_loop_closure_inputs` keeps both out of `free_b`), 2 for
-/// Cylindrical, 3 for Planar, 3 for Spherical.  Sum across `free_b`
-/// gives the kinematic free-DOF count that balances against the
-/// 6-component loop residual: `< 6` = over-constrained, `== 6` =
-/// well-posed, `> 6` = under-constrained.
+/// Free DOF a `free_b` joint of `kind` contributes to the over/under-constrained
+/// pre-check in `solve_loop_closure_with_diagnostics`: its [`motion_dof`] when
+/// it is a driving joint, none otherwise (a coupling's motion is its parent's).
+/// Summed across `free_b` it balances against the 6-component loop residual:
+/// `< 6` = over-constrained, `== 6` = well-posed, `> 6` = under-constrained.
 fn dof_count_for_balance(kind: crate::loop_closure_value::JointKind) -> usize {
+    if crate::loop_closure::is_driving_kind(kind) {
+        motion_dof(kind)
+    } else {
+        0
+    }
+}
+
+/// Manifold DOF of a joint's motion.  Differs from `JointKind::flat_len`
+/// (storage width) for `Spherical` (3 manifold DOF vs 4 quaternion storage
+/// components) and `Fixed` (0 DOF vs a 1-element sentinel slot).
+fn motion_dof(kind: crate::loop_closure_value::JointKind) -> usize {
     use crate::loop_closure_value::JointKind;
     match kind {
-        JointKind::Prismatic | JointKind::Revolute => 1,
-        JointKind::Fixed | JointKind::Coupling => 0,
+        JointKind::Prismatic | JointKind::Revolute | JointKind::Coupling => 1,
+        JointKind::Fixed => 0,
         JointKind::Cylindrical => 2,
-        JointKind::Planar => 3,
-        JointKind::Spherical => 3,
+        JointKind::Planar | JointKind::Spherical => 3,
     }
 }
 
@@ -1204,9 +1206,9 @@ pub fn solve_loop_closure_with_diagnostics(
 
     // KCC-γ step-12: count manifold DOF (`dof_count`) rather than free_b
     // slots so a 3-DOF planar joint balances correctly against the 6-component
-    // loop residual.  `dof_count_for_balance` returns 1/1/0/0/2/3/3 for
-    // prismatic/revolute/coupling/fixed/cylindrical/planar/spherical (manifold
-    // DOF; fixed is 0-DOF and does not contribute to free DOFs).
+    // loop residual.  `dof_count_for_balance` returns 1/1/2/3/3 for
+    // prismatic/revolute/cylindrical/planar/spherical (manifold DOF); the
+    // non-driving coupling and fixed contribute no free DOF.
     //
     // The "any multi-DOF joint present" discriminator distinguishes:
     //   - 1 prismatic vs 6 (1 < 6, single-DOF only) → over-constrained
@@ -1345,8 +1347,8 @@ pub fn solve_loop_closure_with_diagnostics(
 /// the first failed check, or `None` if every input is well-formed.
 ///
 /// Checks: every `free_b` index addresses a valid joint in `chain_b` AND a
-/// valid initial value in `vals_b_initial`, that joint is a driving joint
-/// (`joints::is_driving_joint`), the `WarmStart` vector length
+/// valid initial value in `vals_b_initial`, that joint is not a recognised
+/// non-driving kind (`loop_closure::is_driving_kind`), the `WarmStart` vector length
 /// matches `free_b.len()`, and `Midpoint`'s joint-range lookup succeeds for
 /// each free joint.  The diagnostic wrapper short-circuits on DOF balance only
 /// AFTER this validation passes, so a structurally over-constrained AND
@@ -1373,18 +1375,11 @@ fn validate_loop_closure_inputs(
                 vals_b_initial.len()
             ));
         }
-        if !crate::joints::is_driving_joint(&chain_b[i]) {
-            let kind = match &chain_b[i] {
-                reify_ir::Value::Map(m) => {
-                    match m.get(&reify_ir::Value::String("kind".to_string())) {
-                        Some(reify_ir::Value::String(k)) => k.as_str(),
-                        _ => "<unknown>",
-                    }
-                }
-                _ => "<unknown>",
-            };
+        if let Some(kind) = crate::loop_closure::joint_kind(&chain_b[i])
+            && !crate::loop_closure::is_driving_kind(kind)
+        {
             return Some(format!(
-                "free_b index {i} addresses a non-driving joint (kind {kind}) — fixed and \
+                "free_b index {i} addresses a non-driving joint (kind {kind:?}) — fixed and \
                  coupling joints have no free motion variable"
             ));
         }

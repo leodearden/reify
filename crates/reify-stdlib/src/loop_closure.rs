@@ -54,7 +54,6 @@
 use reify_ir::Value;
 
 use crate::eval_builtin;
-use crate::joints::is_driving_joint;
 use crate::loop_closure_value::{JointKind, JointValue};
 
 /// Fold a chain of joint Maps into a single composed Transform.
@@ -583,7 +582,7 @@ pub fn extract_loop_closure_chains(
     // `append_body` produces: it means a hand-built chain_a carrying such a
     // link would still resolve.
     //
-    // Free-variable membership is `joints::is_driving_joint`, so `fixed` and
+    // Free-variable membership is `is_driving_kind`, so `fixed` and
     // `coupling` never get a free variable.  A coupling's slot carries its
     // parent's value; when that parent is itself free, the solver keeps the
     // slot in step with it (`propagate_to_couplings`).
@@ -610,7 +609,7 @@ pub fn extract_loop_closure_chains(
             // KIND, not by the resolved value: a genuinely free prismatic
             // whose range midpoint happens to be 0.0 must stay free, so
             // matching on `JointValue::Scalar(0.0)` would be wrong.
-            if is_driving_joint(joint) {
+            if joint_kind(joint).is_some_and(is_driving_kind) {
                 free_b.push(i);
             }
         }
@@ -621,10 +620,11 @@ pub fn extract_loop_closure_chains(
 
 /// Read a joint Map's declared `kind` as the typed [`JointKind`].
 ///
-/// SPOT for this module's kind DISCRIMINATION — [`joint_range_midpoint`] and
-/// [`resolve_joint_value`] both dispatch through it, so the fixed/coupling
-/// split lives in one place rather than in scattered `== "fixed"` literals, and
-/// an added kind is a compile error in `joint_range_midpoint`'s typed match.
+/// SPOT for loop-closure kind DISCRIMINATION — [`joint_range_midpoint`],
+/// [`resolve_joint_value`], free-variable membership and the solver's input
+/// validation all dispatch through it, so the fixed/coupling split lives in one
+/// place rather than in scattered `== "fixed"` literals, and an added kind is a
+/// compile error in `joint_range_midpoint`'s typed match.
 ///
 /// It is NOT the SPOT for the per-kind VALUE encodings ([`value_for_joint`],
 /// [`jointvalue_from_bound_value`]): those match the kind string jointly with a
@@ -634,13 +634,32 @@ pub fn extract_loop_closure_chains(
 /// string [`JointKind::from_str`] does not recognise. All three collapse to the
 /// same "no typed kind" answer because every caller here handles an
 /// unrecognised joint exactly as it handles a recognised one it has no arm for.
-fn joint_kind(joint: &Value) -> Option<JointKind> {
+pub(crate) fn joint_kind(joint: &Value) -> Option<JointKind> {
     match joint {
         Value::Map(m) => match m.get(&Value::String("kind".to_string())) {
             Some(Value::String(s)) => JointKind::from_str(s),
             _ => None,
         },
         _ => None,
+    }
+}
+
+/// Whether a joint of `kind` has a motion variable of its own, and so may be a
+/// loop-closure free variable: a `coupling` takes its parent's motion and a
+/// `fixed` link has none.
+///
+/// The typed twin of `joints::is_driving_joint`, which gates `bind` / `dim` /
+/// `sweep`. It is not called from here because `joints` sits in a module cycle
+/// this module stays out of (`scripts/assert-module-scc.py`);
+/// `is_driving_kind_agrees_with_is_driving_joint` pins the two together.
+pub(crate) fn is_driving_kind(kind: JointKind) -> bool {
+    match kind {
+        JointKind::Prismatic
+        | JointKind::Revolute
+        | JointKind::Cylindrical
+        | JointKind::Planar
+        | JointKind::Spherical => true,
+        JointKind::Coupling | JointKind::Fixed => false,
     }
 }
 
@@ -2253,6 +2272,27 @@ mod tests {
             "the unbound prismatic jB is still free — free_b must contain index 0, \
              got {free_b:?}"
         );
+    }
+
+    /// The loop-closure solve and `bind` / `dim` / `sweep` agree on which
+    /// joint kinds drive, kind by kind.
+    #[test]
+    fn is_driving_kind_agrees_with_is_driving_joint() {
+        for &tag in crate::joints::JOINT_KINDS {
+            let kind = super::JointKind::from_str(tag)
+                .unwrap_or_else(|| panic!("JOINT_KINDS tag {tag:?} has no JointKind"));
+            let mut fields = std::collections::BTreeMap::new();
+            fields.insert(
+                Value::String("kind".to_string()),
+                Value::String(tag.to_string()),
+            );
+            let joint = Value::Map(fields);
+            assert_eq!(
+                super::is_driving_kind(kind),
+                crate::joints::is_driving_joint(&joint),
+                "kind {tag:?}"
+            );
+        }
     }
 
     /// A synthetic 0-DOF link evaluates to exactly its `origin` pose under

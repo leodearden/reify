@@ -1429,8 +1429,7 @@ pub(crate) const DRIVING_JOINT_KINDS: &[&str] =
 /// Used by `snapshot::eval_snapshot` (`bind` arm) and
 /// `sweep::eval_sweep` (`dim` / `sweep` / `sweep_grid` arms) to reject
 /// coupling and fixed joints before constructing a binding or sweep-dim Map.
-/// `loop_closure::extract_loop_closure_chains` uses it to decide which
-/// closing-side joints get a solver free variable.
+/// `loop_closure::is_driving_kind` is its typed twin for the loop-closure solve.
 ///
 /// Tied to [`DRIVING_JOINT_KINDS`] via `contains` so a future kind addition
 /// only needs to be made in the constant — the predicate follows automatically.
