@@ -562,7 +562,9 @@ where
 /// `chain_b` / `vals_b_initial` is the free side; the indices in `free_b`
 /// select which entries of `vals_b_initial` the solver moves.  A `chain_b`
 /// coupling whose parent occupies a free slot is re-derived from that slot
-/// every iterate (`loop_closure::propagate_to_couplings`).  `strategy`
+/// every iterate (`loop_closure::propagate_to_couplings`).  A `chain_a`
+/// coupling is not: it keeps its `vals_a` seed even when its parent is free
+/// on `chain_b` (both-chain unknowns are #8837).  `strategy`
 /// picks the initial guess: [`StartStrategy::WarmStart`] uses the supplied
 /// vector directly (must match `free_b.len()`); [`StartStrategy::Midpoint`]
 /// queries each free joint's `joint_range_midpoint` from `chain_b`.

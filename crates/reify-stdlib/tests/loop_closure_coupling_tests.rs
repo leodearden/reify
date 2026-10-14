@@ -483,3 +483,68 @@ fn snapshot_honours_coupling_ratio_when_parent_is_free() {
     assert_close(x_of(&snapshot, 3), 0.6, "sX at jA");
     assert_close(x_of(&snapshot, 4), 0.6, "closing body sD meets sX");
 }
+
+/// Case 3, a coupling on the reference side whose parent is free on the
+/// closing side: `2·jP = jA + jP` along X, which closes at jP = 0.3.
+///
+/// chain_a is held fixed for the solve, so jC keeps jP's seed (its 0.25 range
+/// midpoint) and Newton closes `2·0.25 = 0.3 + jP` instead, at jP = 0.2.
+/// snapshot then renders jC from the solved jP, so this loop renders open.
+/// This pins that known gap: making both chains' unbound joints unknowns is
+/// #8837 (R8), and landing it should red this test.
+///
+/// Body ids: 0 sA@jA, 1 sC@jC, 2 sX@jX (on jC), 3 sP@jP (on jA), 4 sD@jX (on
+/// jP) — the closing edge, `path_a = [world, jC, jX]`,
+/// `path_b = [world, jA, jP]`.
+#[test]
+fn a_reference_side_coupling_keeps_its_parents_seed_through_the_solve() {
+    let world = eval_builtin("world", &[]);
+    let j_a = prismatic_x(0.0, 1.0);
+    let j_p = prismatic_x(0.0, 0.5);
+    let j_c = couple_by_two(&j_p);
+    let j_x = revolute_z_0_to_pi();
+
+    let mut m = eval_builtin("mechanism", &[]);
+    m = body(m, "sA", &j_a, &world);
+    m = body(m, "sC", &j_c, &world);
+    m = body(m, "sX", &j_x, &j_c);
+    m = body(m, "sP", &j_p, &j_a);
+    m = body(m, "sD", &j_x, &j_p);
+    let bindings = vec![bind_len(&j_a, 0.3), bind_ang(&j_x, 0.0)];
+
+    let (chain_a, vals_a, chain_b, vals_b_initial, free_b) =
+        extract_loop_closure_chains(only_loop_closure(&m), &bindings)
+            .expect("the reference-side-coupling loop must extract");
+    assert_eq!(chain_a, vec![j_c, j_x]);
+    assert_eq!(chain_b, vec![j_a, j_p]);
+    match vals_a[0] {
+        JointValue::Scalar(v) => assert!(
+            (v - 0.25).abs() < 1e-12,
+            "jC's reference-side slot carries jP's midpoint 0.25, got {v}"
+        ),
+        ref other => panic!("coupling slot must be a Scalar, got {other:?}"),
+    }
+    assert_eq!(free_b, vec![1], "jP is free on the closing side");
+
+    let outcome = solve_loop_closure(
+        &chain_a,
+        &vals_a,
+        &chain_b,
+        &vals_b_initial,
+        &free_b,
+        &StartStrategy::Midpoint,
+        &NewtonConfig::default(),
+    );
+    match outcome {
+        NewtonOutcome::Converged { x, .. } => assert_close(
+            x[0],
+            0.2,
+            "jP closes against jC held at 2·0.25, not at the true closure 0.3 (#8837)",
+        ),
+        other => panic!("expected Converged, got {other:?}"),
+    }
+
+    let snapshot = eval_builtin("snapshot", &[m, Value::List(bindings)]);
+    assert_close(x_of(&snapshot, 2), 0.4, "sX at 2·jP, from the solved jP");
+    assert_close(x_of(&snapshot, 4), 0.5, "sD at jA + jP, off sX");
+}

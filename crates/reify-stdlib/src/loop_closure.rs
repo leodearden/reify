@@ -584,8 +584,11 @@ pub fn extract_loop_closure_chains(
     //
     // Free-variable membership is `is_driving_kind`, so `fixed` and
     // `coupling` never get a free variable.  A coupling's slot carries its
-    // parent's value; when that parent is itself free, the solver keeps the
-    // slot in step with it (`propagate_to_couplings`).
+    // parent's value; when that parent is free, the solver keeps chain_b's
+    // coupled slots in step with it (`propagate_to_couplings`).  chain_a is
+    // held fixed for the solve, so a chain_a coupling of a free chain_b joint
+    // keeps its parent's seed: making both chains' unbound joints unknowns is
+    // #8837 (R8).
     let mut vals_b_initial = Vec::with_capacity(chain_b.len());
     let mut free_b: Vec<usize> = Vec::new();
     for (i, joint) in chain_b.iter().enumerate() {
@@ -839,7 +842,8 @@ fn coupling_parent(joint: &Value) -> Option<&Value> {
 
 /// A coupling has no motion variable of its own: its slot carries its parent's
 /// (as in [`resolve_joint_value`] and snapshot's `value_for`), so when slot
-/// `driver` moves, every slot coupled to `chain[driver]` moves with it (#7497).
+/// `driver` moves, every slot of `chain` coupled to `chain[driver]` moves with
+/// it (#7497).  Slots of any other chain are untouched.
 pub(crate) fn propagate_to_couplings(chain: &[Value], values: &mut [JointValue], driver: usize) {
     let (Some(parent), Some(driven)) = (chain.get(driver), values.get(driver).cloned()) else {
         return;
