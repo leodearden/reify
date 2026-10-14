@@ -213,6 +213,9 @@ struct NonDrivingFreeSlot {
     vals_b_initial: Vec<JointValue>,
 }
 
+/// Builds the non-driving joint from the driver in the first slot.
+type NonDrivingFromDriver = fn(&Value) -> Value;
+
 fn non_driving_in_second_slot(non_driving: impl FnOnce(&Value) -> Value) -> NonDrivingFreeSlot {
     let j_p = prismatic_x(0.0, 1.0);
     let second = non_driving(&j_p);
@@ -236,7 +239,7 @@ fn assert_non_driving_rejection(outcome: &NewtonOutcome, label: &str) {
 
 #[test]
 fn solve_loop_closure_rejects_a_non_driving_joint_in_free_b() {
-    let cases: [(&str, fn(&Value) -> Value); 2] = [
+    let cases: [(&str, NonDrivingFromDriver); 2] = [
         ("coupling", couple_by_two),
         ("fixed", |_| eval_builtin("fixed", &[])),
     ];
