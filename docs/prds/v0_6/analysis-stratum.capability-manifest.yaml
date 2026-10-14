@@ -4,7 +4,7 @@ prd: docs/prds/v0_6/analysis-stratum.md
 schema_version: 1
 tasks:
   - label: "α"
-    task_id: null
+    task_id: 8984
     title: "Shared wire primitives in reify_core::persistent_cache (f64 slab codec, MAX_F64_ELEMENTS, check_len, severity pair); copies deleted; S5 ratchet member created"
     capabilities:
       - name: "core-f64-slab"
@@ -70,7 +70,7 @@ tasks:
           kind: "manual"
           reason: "existing behavioural tests are the enforcement"
   - label: "β"
-    task_id: null
+    task_id: 8986
     title: "Contract-owned StructuredComputeDetail::Fea(FeaDetail); From<FeaDiagnosticDetail> at the producer; dispatch.rs names no solver type"
     capabilities:
       - name: "contract-owned-fea-detail"
@@ -96,7 +96,7 @@ tasks:
           kind: "manual"
           reason: "behavioural tests are the enforcement"
   - label: "γ"
-    task_id: null
+    task_id: 8991
     title: "Delete the engine_compute and graph contract re-export shims; repoint 30 paths; move the six RealizationReadHandle tests into the contract crate"
     capabilities:
       - name: "engine-compute-shim-gone"
@@ -130,7 +130,7 @@ tasks:
           kind: "manual"
           reason: "dependency edges are the enforcement"
   - label: "δ"
-    task_id: null
+    task_id: 8988
     title: "One cancellation channel: CancellationHandle::child; dispatch argument and ComputeNodeData.running are a child of active_solve_cancel; solver_progress moves to the contract carrying the sink only; elastic_static polls the argument"
     capabilities:
       - name: "linked-child-handle"
@@ -180,7 +180,7 @@ tasks:
           kind: "manual"
           reason: "BT7 is the enforcement; no grep can assert an outcome"
   - label: "ε"
-    task_id: null
+    task_id: 8994
     title: "Descriptor registry in place: contract target module, rows in reify-eval's legacy table, generic persist/significance/completion/upstream paths, registered_compute_targets(), target-string-routing ratchet row"
     capabilities:
       - name: "descriptor-type"
@@ -256,7 +256,7 @@ tasks:
           kind: "manual"
           reason: "BT3 is the enforcement"
   - label: "ζ"
-    task_id: null
+    task_id: 8996
     title: "One shell projection codec (project only what decode rebuilds); persistence, fold hook and GUI view over it; engine_admin parser, classifier and stale G-allow deleted"
     capabilities:
       - name: "gui-parser-gone"
@@ -294,7 +294,7 @@ tasks:
           kind: "manual"
           reason: "BT9 is the enforcement"
   - label: "ι"
-    task_id: null
+    task_id: 8990
     title: "tensegrity_load .ri surface: structure def TensegrityLoadResult + @optimized(\"solver::tensegrity_load\") fn; builder parity; stdlib.md Tensegrity analysis section"
     capabilities:
       - name: "tensegrity-load-fn-declared"
@@ -334,7 +334,7 @@ tasks:
           kind: "manual"
           reason: "BT12 is the enforcement"
   - label: "η"
-    task_id: null
+    task_id: 8997
     title: "Identity and schema: RiSurface on every row; .ri parity test; ENGINE_INTERNAL_RESULT_TYPES + representative-dispatch walk; reify-lsp hand list deleted"
     capabilities:
       - name: "ri-surface-field"
@@ -368,7 +368,7 @@ tasks:
           kind: "manual"
           reason: "BT5 and BT6 are the enforcement"
   - label: "κ₁"
-    task_id: null
+    task_id: 8999
     title: "Create reify-analysis: shared foundation (cross-family helpers, stdlib_inputs, result_topology), transitional reify-eval edge, injection, version-hash composition, crate-DAG rows, test registration repoint"
     capabilities:
       - name: "workspace-member"
@@ -414,7 +414,7 @@ tasks:
           kind: "manual"
           reason: "dependency edges are the enforcement (program order S15 → S5)"
   - label: "κ₂"
-    task_id: null
+    task_id: 9001
     title: "Move the FDM family (as_printed_material, as_printed_material_r0, fdm_slice); R0 row RustOnly owned by #7087"
     capabilities:
       - name: "fdm-family-moved"
@@ -432,7 +432,7 @@ tasks:
           kind: "manual"
           reason: "regression floor"
   - label: "λ"
-    task_id: null
+    task_id: 9002
     title: "Move dynamics/trajectory (trampoline halves + cache keys); mass-props half stays as body_mass_props.rs; stdlib dynamics/trajectory trampoline.rs deleted"
     capabilities:
       - name: "trajectory-ops-moved"
@@ -464,7 +464,7 @@ tasks:
           kind: "manual"
           reason: "regression floor"
   - label: "μ"
-    task_id: null
+    task_id: 9003
     title: "Move modal (modal_ops, ModalCacheKey/TransientCacheKey, free_vibration); carried-mode selector resolver to reify-ir"
     capabilities:
       - name: "modal-ops-moved"
@@ -496,7 +496,7 @@ tasks:
           kind: "manual"
           reason: "regression floor"
   - label: "ν"
-    task_id: null
+    task_id: 9004
     title: "Move the FEA core; ElasticResult & co. out of the contract; contract drops reify-solver-elastic; BT1"
     capabilities:
       - name: "contract-drops-solver"
@@ -530,7 +530,7 @@ tasks:
           kind: "manual"
           reason: "the crate-DAG gate (crates/reify-build-utils/tests/crate_dag_assertion.rs) is the enforcement"
   - label: "ξ"
-    task_id: null
+    task_id: 9006
     title: "Move tensegrity/form-find (form_find, membrane_load, tensegrity_load, tensegrity_crack)"
     capabilities:
       - name: "tensegrity-family-moved"
@@ -548,7 +548,7 @@ tasks:
           kind: "manual"
           reason: "regression floor"
   - label: "ο"
-    task_id: null
+    task_id: 9007
     title: "Move shell-extract with the codec, GUI view fn and ENGINE_INTERNAL_RESULT_TYPES"
     capabilities:
       - name: "shell-extract-moved"
@@ -566,7 +566,7 @@ tasks:
           kind: "manual"
           reason: "boundary tests are the enforcement"
   - label: "π"
-    task_id: null
+    task_id: 9008
     title: "Retire the legacy table and the transitional edge; reify-eval drops reify-analysis (normal), reify-fdm, faer; INV-ARCH-1 row lowered; #4936 re-pointed"
     capabilities:
       - name: "compute-targets-module-gone"
@@ -584,7 +584,7 @@ tasks:
           kind: "manual"
           reason: "the crate-DAG gate and the ratchet row are the enforcement (faer stays a dev-dependency, so no Cargo.toml grep)"
   - label: "ρ"
-    task_id: null
+    task_id: 9009
     title: "Record: compute-node-contract.md §2/§4 amended, Phases 7–8 frozen; INV-PD-2 enforcement pointer; /prd overlay evidence paths"
     capabilities:
       - name: "contract-doc-amended"
@@ -600,7 +600,7 @@ tasks:
           kind: "manual"
           reason: "prose row; pointer only"
   - label: "σ"
-    task_id: null
+    task_id: 9010
     title: "PRD close: terminal stamp"
     capabilities:
       - name: "terminal-stamp"

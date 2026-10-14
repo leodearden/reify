@@ -6,6 +6,8 @@ All evidence was gathered against main `b1a7be2982` on 2026-10-13. Every path th
 
 This file is the human-readable twin of `docs/prds/v0_6/analysis-stratum.capability-manifest.yaml`. That file carries the same bindings plus their `delivered_check` descriptors, and validates against dark-factory's `CapabilityManifestDoc`. **Keep the two in sync by hand.** Correcting a check later takes three writes: the `.yaml` descriptor, this `.md` row, and the producer task's complete `metadata.delivered_checks` list.
 
+**Stamped 2026-10-14 by `commit_planning`:** α #8984, β #8986, γ #8991, δ #8988, ε #8994, ζ #8996, ι #8990, η #8997, κ₁ #8999, κ₂ #9001, λ #9002, μ #9003, ν #9004, ξ #9006, ο #9007, π #9008, ρ #9009, σ #9010. Every grep `delivered_check` was copied into its producer's `metadata.delivered_checks`. The polarity gate reported eleven `absent_overbroad` warnings, none blocking, all on move leaves that declare `files: []`. Each matched line is a `mod`/`pub mod`/`struct`/Cargo line that the move itself deletes.
+
 ## Verdict at author time
 
 All 45 `kind: grep` checks were executed with `git grep -E` against `HEAD` and confirmed **RED** at main:
