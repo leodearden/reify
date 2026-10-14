@@ -8291,6 +8291,12 @@ entries:
     origin_phase: unknown
     manifested_phase: ops
     note: At turn 1458 a 'sleep 30; ls ...' chain was blocked by the guard, which said to use Monitor with an until-loop or run_in_background.
+  - date: '2026-10-13'
+    project: reify
+    session: 5a2937d3-5044-4036-b7d5-6f253035bfcc
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: Bash `sleep 240; ls .../tasks/ | head` to wait for scout subagents was blocked by the anti-chaining sleep guard (turn 281). The guard message directs use of Monitor or run_in_background instead. Phase is not supported by the digest evidence.
 - id: entry-cand-20260719-7
   title: Warm-lane task bootstrap missing plan.json
   severity: medium
@@ -26794,3 +26800,16 @@ candidates:
     origin_phase: verify
     manifested_phase: verify
     evidence_quote: 'Failures: lint issues [category: unknown_test_failure] ... error: failed to download `glam v0.14.0` ... Caused by: unable to get packages from source'
+- id: cand-20261013-1
+  title: Agent guesses MCP add_plan_step argument names and retries with a different wrong schema
+  cause: The agent called mcp__plan-tools__add_plan_step with guessed argument names (task_id, type, files) instead of the tool's required schema (step_id, step_type). Each attempt produced pydantic missing_argument and unexpected_keyword_argument errors, and the retry changed the argument set without first checking the schema.
+  area: mcp-tooling
+  first_seen: '2026-10-13'
+  disposition: pending
+  sightings:
+  - date: '2026-10-13'
+    project: reify
+    session: f98e7531-109c-43de-8837-70021da34c64
+    origin_phase: unknown
+    manifested_phase: unknown
+    evidence_quote: 'mcp__plan-tools__add_plan_step({"description": "Add verify_admission_order: arrival to dark-factory-orchestrator.yaml", "files": "[\"dark-factory-orchestrator.yaml\"]", "step_id": "step-1", "type": "impl"}) -> 3 validation errors for call[add_plan_step] ... step_type Missing required argument ... type Unexpected keyword argument ... files Unexpected keyword argument'
