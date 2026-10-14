@@ -122,19 +122,20 @@ into trees that no longer exist, such as the deleted `crates/reify-types`.
 | Assertion-message string cites | 15 |
 | `.ri esc-<id>:<n>` cites anywhere | 0; #5861 removed the last one, and the form stays in the grammar |
 
-**Measured at landing** (the #6935 branch over main 7def1f6e97, 2026-10-12):
+**Measured at landing** (the #6935 branch over main 4a0d1687df, 2026-10-14):
 
 | Measure | Value |
 |---|---|
-| Seeded ledger rows | 744: 737 `crates/*/src` (path, cite) pairs, 7 stdlib pairs |
-| Citing files | 188 (185 `crates/*/src`, 3 stdlib), in 23 crates |
+| Seeded ledger rows | 742: 735 `crates/*/src` (path, cite) pairs, 7 stdlib pairs |
+| Citing files | 186 (183 `crates/*/src`, 3 stdlib), in 22 crates |
+| Re-seed after #8528 de-numbered 2 cites | shrink-only: 2 rows dropped, 0 admitted |
 | `reify-audit --pattern PLINECITE`, real tree | 0 findings, exit 0 |
 | Shrink-only regeneration over the seeded ledger | byte-identical |
 
 ## 6. Residual ledger
 
-About 744 pre-existing cites (737 src pairs plus 7 stdlib pairs) span 185+
-files in 22 crates. Sweeping them is per-site symbol research across many
+About 740 pre-existing cites (exact, dated counts: §5's landing table) span
+about 185 files in 22 crates. Sweeping them is per-site symbol research across many
 modules, out of scope here and lock-hostile. Reporting them raw would bury
 every new cite under hundreds of old ones. So the residual is a ratchet
 ledger, `crates/reify-audit/plinecite-baseline.txt`:

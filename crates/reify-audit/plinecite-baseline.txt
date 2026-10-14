@@ -228,7 +228,6 @@ crates/reify-compiler/stdlib/materials_fea.ri :: stdlib/geometry_traits.ri:84
 crates/reify-compiler/stdlib/materials_fea.ri :: trait_requirements.rs:152
 crates/reify-compiler/stdlib/materials_mechanical.ri :: examples/drivebelt_trait_bounds.ri:48
 crates/reify-compiler/stdlib/trajectory.ri :: units.ri:116
-crates/reify-compute-contract/src/elastic_result.rs :: solver_elastic.ri:325
 crates/reify-constraints/src/cpsat.rs :: constraint.rs:349
 crates/reify-constraints/src/cpsat.rs :: constraint.rs:564
 crates/reify-constraints/src/cpsat.rs :: ranked.rs:83
@@ -675,7 +674,6 @@ crates/reify-solver-elastic/src/result.rs :: assembly/tet.rs:244
 crates/reify-solver-elastic/src/result.rs :: result.rs:78
 crates/reify-solver-elastic/src/shell_assembly.rs :: crates/reify-compiler/stdlib/solver_elastic.ri:276
 crates/reify-solver-elastic/src/shell_boundary.rs :: crates/reify-eval/src/kernel_registry.rs:915
-crates/reify-solver-elastic/src/shell_result.rs :: crates/reify-compiler/stdlib/solver_elastic.ri:366
 crates/reify-solver-elastic/src/sweep.rs :: crates/reify-eval/src/kernel_registry.rs:915
 crates/reify-solver-elastic/src/sweep.rs :: mesher.rs:46
 crates/reify-solver-elastic/src/sweep.rs :: shell_boundary.rs:542
