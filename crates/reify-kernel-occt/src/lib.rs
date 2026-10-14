@@ -868,18 +868,16 @@ impl OcctKernel {
 
     /// Look up a shape by handle ID.
     ///
-    /// Callers returning `QueryError`, `ExportError` or `TessError` propagate
-    /// with `?`: reify-ir's `From<GeometryError>` impls keep
-    /// `InvalidReference` as the only `InvalidHandle` and carry every other
-    /// cause through.
+    /// Propagate with `?`; see reify-ir's `From<GeometryError>` impls for the
+    /// mapping.
     fn get_shape(&self, id: GeometryHandleId) -> Result<&ffi::ffi::OcctShape, GeometryError> {
         let ptr = self
             .shapes
             .get(&id.0)
             .ok_or(GeometryError::InvalidReference(id))?;
-        let shape = ptr
-            .as_ref()
-            .ok_or_else(|| GeometryError::OperationFailed("shape handle is null".into()))?;
+        let shape = ptr.as_ref().ok_or_else(|| {
+            GeometryError::OperationFailed(format!("shape handle {id:?} is null"))
+        })?;
         // Reject a NON-null wrapper around null (IsNull) topology. Such a shape
         // passes the null-UniquePtr check above yet dereferences to a null
         // TShape, which crashes the unguarded OCCT geometry-query FFI (e.g.
