@@ -452,9 +452,9 @@ impl SketchSystem {
     /// [`ValidatedSketch`] — every operand resolved to a typed reference — for a
     /// well-formed system.
     pub(crate) fn validate(&self) -> Result<ValidatedSketch<'_>, SketchBuildError> {
-        // Pass 1: ids are unique — and the index everything else resolves
-        // against.
-        let index = EntityIndex::new(&self.entities)?;
+        // Pass 1: ids are unique, and each entity is given its own reference —
+        // the index everything else resolves against.
+        let (index, declared) = EntityIndex::new(&self.entities)?;
 
         // Pass 2: each entity's own literals, then its defining slots.
         //
@@ -463,8 +463,7 @@ impl SketchSystem {
         // composite regardless of declaration order — so a forward-only check
         // would reject a line written above its own endpoints.
         let mut entities = Vec::with_capacity(self.entities.len());
-        let mut line_ends = Vec::new();
-        for def in &self.entities {
+        for (def, declared) in self.entities.iter().zip(declared) {
             // A non-finite seed is not caught downstream: `Slvs_Solve` accepts
             // NaN params and can return SLVS_RESULT_OKAY with NaN still in them,
             // which reads back as a fully-formed `Solved` carrying coordinates
@@ -478,34 +477,7 @@ impl SketchSystem {
                 }
             }
 
-            // Slots resolve in the order they are written: struct-expression
-            // fields evaluate left to right, so the first bad slot is reported.
-            let mut slots = DefiningPoints::new(&index, def.id);
-            let shape = match def.entity {
-                SketchEntity::Point { x, y } => TypedEntity::Point {
-                    at: slots.point(def.id)?,
-                    x,
-                    y,
-                },
-                SketchEntity::Line { start, end } => TypedEntity::Line {
-                    start: slots.point(start)?,
-                    end: slots.point(end)?,
-                },
-                SketchEntity::Circle { center, radius } => TypedEntity::Circle {
-                    center: slots.point(center)?,
-                    radius,
-                },
-                SketchEntity::Arc { center, start, end } => TypedEntity::Arc {
-                    center: slots.point(center)?,
-                    start: slots.point(start)?,
-                    end: slots.point(end)?,
-                },
-            };
-            slots.distinct()?;
-
-            if let TypedEntity::Line { start, end } = shape {
-                line_ends.push((start, end));
-            }
+            let shape = DefiningPoints::new(&index, def.id).resolve(declared)?;
             entities.push(ValidatedEntity { def, shape });
         }
 
@@ -537,94 +509,11 @@ impl SketchSystem {
                 }
             }
 
-            // As for entities, operands resolve in the order they are written.
-            let ops = Operands { index: &index, def };
-            let relation = match def.constraint {
-                SketchConstraint::Coincident { a, b } => TypedConstraint::Coincident {
-                    a: ops.point(a)?,
-                    b: ops.point(b)?,
-                },
-                SketchConstraint::PtOnLine { pt, line } => TypedConstraint::PtOnLine {
-                    pt: ops.point(pt)?,
-                    line: ops.line(line)?,
-                },
-                SketchConstraint::PtOnCircle { pt, circle } => TypedConstraint::PtOnCircle {
-                    pt: ops.point(pt)?,
-                    circle: ops.curve(circle)?,
-                },
-                SketchConstraint::Distance { a, b, value } => TypedConstraint::Distance {
-                    a: ops.point(a)?,
-                    b: ops.point(b)?,
-                    value,
-                },
-                SketchConstraint::Angle { a, b, degrees } => TypedConstraint::Angle {
-                    a: ops.line(a)?,
-                    b: ops.line(b)?,
-                    degrees,
-                },
-                SketchConstraint::Parallel { a, b } => TypedConstraint::Parallel {
-                    a: ops.line(a)?,
-                    b: ops.line(b)?,
-                },
-                SketchConstraint::Perpendicular { a, b } => TypedConstraint::Perpendicular {
-                    a: ops.line(a)?,
-                    b: ops.line(b)?,
-                },
-                SketchConstraint::Diameter { circle, value } => TypedConstraint::Diameter {
-                    circle: ops.curve(circle)?,
-                    value,
-                },
-                SketchConstraint::Radius { circle, value } => TypedConstraint::Radius {
-                    circle: ops.curve(circle)?,
-                    value,
-                },
-                SketchConstraint::EqualRadius { a, b } => TypedConstraint::EqualRadius {
-                    a: ops.curve(a)?,
-                    b: ops.curve(b)?,
-                },
-                SketchConstraint::ArcLineTangent { arc, line, at_end } => {
-                    TypedConstraint::ArcLineTangent {
-                        arc: ops.arc(arc)?,
-                        line: ops.line(line)?,
-                        at_end,
-                    }
-                }
-                SketchConstraint::CurveCurveTangent {
-                    a,
-                    a_at_end,
-                    b,
-                    b_at_end,
-                } => TypedConstraint::CurveCurveTangent {
-                    a: ops.arc(a)?,
-                    a_at_end,
-                    b: ops.arc(b)?,
-                    b_at_end,
-                },
-                SketchConstraint::Horizontal(line) => TypedConstraint::Horizontal(ops.line(line)?),
-                SketchConstraint::Vertical(line) => TypedConstraint::Vertical(ops.line(line)?),
-                SketchConstraint::SymmetricLine { a, b, about } => TypedConstraint::SymmetricLine {
-                    a: ops.point(a)?,
-                    b: ops.point(b)?,
-                    about: ops.line(about)?,
-                },
-                SketchConstraint::AtMidpoint { pt, line } => TypedConstraint::AtMidpoint {
-                    pt: ops.point(pt)?,
-                    line: ops.line(line)?,
-                },
-                SketchConstraint::EqualLengthLines { a, b } => TypedConstraint::EqualLengthLines {
-                    a: ops.line(a)?,
-                    b: ops.line(b)?,
-                },
-                SketchConstraint::Fix(anchor) => TypedConstraint::Fix(ops.point_or_line(anchor)?),
-            };
+            let relation = Operands { index: &index, def }.resolve()?;
             constraints.push(ValidatedConstraint { def, relation });
         }
 
-        Ok(ValidatedSketch {
-            entities,
-            constraints,
-            line_ends,
-        })
+        Ok(ValidatedSketch::new(entities, constraints))
     }
 }
 
@@ -655,31 +544,53 @@ pub(crate) enum AnchorRef {
     Line(LineRef),
 }
 
-/// A [`SketchEntity`] with its defining points resolved.
+/// A [`SketchEntity`] carrying its own reference, generic over how it names
+/// its defining points: by id as declared ([`DeclaredEntity`]), then as
+/// [`PointRef`]s once [`SketchSystem::validate`] has resolved them.
 ///
 /// Literals are carried by value, so emission never re-reads the declaration's
 /// untyped shape.
 #[derive(Debug, Clone, Copy)]
-pub(crate) enum TypedEntity {
-    /// `at` is this point's own reference, which is what composites name it by.
+pub(crate) enum TypedEntity<P = PointRef> {
+    /// A point names no other entity; `at` is what composites name it by.
     Point {
         at: PointRef,
         x: f64,
         y: f64,
     },
     Line {
-        start: PointRef,
-        end: PointRef,
+        this: LineRef,
+        start: P,
+        end: P,
     },
     Circle {
-        center: PointRef,
+        this: CurveRef,
+        center: P,
         radius: f64,
     },
+    /// Filed among the curves and among the arcs, so it has a rank in each.
     Arc {
-        center: PointRef,
-        start: PointRef,
-        end: PointRef,
+        curve: CurveRef,
+        arc: ArcRef,
+        center: P,
+        start: P,
+        end: P,
     },
+}
+
+/// An entity as [`EntityIndex::new`] ranked it: its own reference assigned, its
+/// defining points still the ids it was written with.
+type DeclaredEntity = TypedEntity<SketchEntityId>;
+
+impl<P> TypedEntity<P> {
+    fn kind(&self) -> SketchEntityKind {
+        match self {
+            TypedEntity::Point { .. } => SketchEntityKind::Point,
+            TypedEntity::Line { .. } => SketchEntityKind::Line,
+            TypedEntity::Circle { .. } => SketchEntityKind::Circle,
+            TypedEntity::Arc { .. } => SketchEntityKind::Arc,
+        }
+    }
 }
 
 /// A [`SketchConstraint`] with every operand resolved to the kind its slot
@@ -775,10 +686,12 @@ pub(crate) struct ValidatedConstraint<'a> {
 /// The rank rule, stated once: a reference is the declaration-order rank of its
 /// entity among the entities of its kind. The `k`-th point declared is point
 /// `k`; circles and arcs share the curve ranks, and an arc also has an arc rank
-/// among the arcs. [`Self::map_points`] and [`Self::map_entities`] are the only
-/// way to build a table those references index, and both file their entries
-/// by walking the declarations in that same order — so every lookup lands on
-/// the entity the reference was resolved from, and none can miss.
+/// among the arcs. [`EntityIndex::new`] is the only place a rank is assigned,
+/// and every entity carries its own. A table those references index is built
+/// only by a declaration-order walk that files each entry through [`file_at`],
+/// which checks the entry lands at its entity's own reference — so every
+/// lookup lands on the entity the reference was resolved from, and none can
+/// miss.
 ///
 /// Borrows the system it validated, so the system cannot change between
 /// validation and emission.
@@ -790,6 +703,20 @@ pub(crate) struct ValidatedSketch<'a> {
 }
 
 impl<'a> ValidatedSketch<'a> {
+    fn new(entities: Vec<ValidatedEntity<'a>>, constraints: Vec<ValidatedConstraint<'a>>) -> Self {
+        let mut line_ends = Vec::new();
+        for entity in &entities {
+            if let TypedEntity::Line { this, start, end } = entity.shape {
+                file_at(&mut line_ends, this.0, (start, end));
+            }
+        }
+        ValidatedSketch {
+            entities,
+            constraints,
+            line_ends,
+        }
+    }
+
     /// The constraints, in declaration order.
     pub(crate) fn constraints(&self) -> &[ValidatedConstraint<'a>] {
         &self.constraints
@@ -797,17 +724,13 @@ impl<'a> ValidatedSketch<'a> {
 
     /// One `f(x, y)` per point, in declaration order, indexed by [`PointRef`].
     pub(crate) fn map_points<T>(&self, mut f: impl FnMut(f64, f64) -> T) -> PointTable<T> {
-        PointTable(
-            self.entities
-                .iter()
-                .filter_map(|e| match e.shape {
-                    TypedEntity::Point { x, y, .. } => Some(f(x, y)),
-                    TypedEntity::Line { .. }
-                    | TypedEntity::Circle { .. }
-                    | TypedEntity::Arc { .. } => None,
-                })
-                .collect(),
-        )
+        let mut table = Vec::new();
+        for entity in &self.entities {
+            if let TypedEntity::Point { at, x, y } = entity.shape {
+                file_at(&mut table, at.0, f(x, y));
+            }
+        }
+        PointTable(table)
     }
 
     /// One `f(entity)` per entity, called in declaration order and filed under
@@ -825,12 +748,12 @@ impl<'a> ValidatedSketch<'a> {
         for entity in &self.entities {
             let value = f(entity);
             match entity.shape {
-                TypedEntity::Point { .. } => table.points.push(value),
-                TypedEntity::Line { .. } => table.lines.push(value),
-                TypedEntity::Circle { .. } => table.curves.push(value),
-                TypedEntity::Arc { .. } => {
-                    table.curves.push(value);
-                    table.arcs.push(value);
+                TypedEntity::Point { at, .. } => file_at(&mut table.points, at.0, value),
+                TypedEntity::Line { this, .. } => file_at(&mut table.lines, this.0, value),
+                TypedEntity::Circle { this, .. } => file_at(&mut table.curves, this.0, value),
+                TypedEntity::Arc { curve, arc, .. } => {
+                    file_at(&mut table.curves, curve.0, value);
+                    file_at(&mut table.arcs, arc.0, value);
                 }
             }
         }
@@ -901,29 +824,27 @@ impl<T> Index<ArcRef> for EntityTable<T> {
     }
 }
 
+/// Append `value` to a per-kind table as the entry for the entity ranked
+/// `rank`.
+///
+/// Checks the walk against the rank [`EntityIndex::new`] assigned: an entry
+/// misplaced by an earlier skipped or double-filed entity is caught at its
+/// push, not at a later lookup that would read some other entity's entry. A
+/// skipped last entity leaves the table short instead, so its lookup falls off
+/// the end rather than misreading.
+fn file_at<T>(table: &mut Vec<T>, rank: usize, value: T) {
+    debug_assert_eq!(
+        table.len(),
+        rank,
+        "rank rule broken: an entity EntityIndex::new ranked {rank} was filed at position {}",
+        table.len(),
+    );
+    table.push(value);
+}
+
 // ---------------------------------------------------------------------------
 // Resolving an id against the declarations
 // ---------------------------------------------------------------------------
-
-/// What an entity id was declared as, with its per-kind ranks.
-#[derive(Debug, Clone, Copy)]
-enum EntitySlot {
-    Point(PointRef),
-    Line(LineRef),
-    Circle(CurveRef),
-    Arc(CurveRef, ArcRef),
-}
-
-impl EntitySlot {
-    fn kind(self) -> SketchEntityKind {
-        match self {
-            EntitySlot::Point(_) => SketchEntityKind::Point,
-            EntitySlot::Line(_) => SketchEntityKind::Line,
-            EntitySlot::Circle(_) => SketchEntityKind::Circle,
-            EntitySlot::Arc(..) => SketchEntityKind::Arc,
-        }
-    }
-}
 
 /// A slot handed an id it does not take: what it wanted and what it got
 /// (`None` for an undeclared id). Turned into a [`SketchBuildError`] by
@@ -933,37 +854,57 @@ struct Misfit {
     found: Option<SketchEntityKind>,
 }
 
-/// Every declared entity id, and what it resolves to.
-struct EntityIndex(HashMap<SketchEntityId, EntitySlot>);
+/// Every declared entity id, and the entity it names.
+struct EntityIndex(HashMap<SketchEntityId, DeclaredEntity>);
 
 impl EntityIndex {
-    /// Index the declarations, assigning each entity its per-kind ranks in
-    /// declaration order (the rank rule of [`ValidatedSketch`]).
+    /// Give each entity its own reference — its per-kind ranks in declaration
+    /// order, the rank rule of [`ValidatedSketch`] — and index them by id.
+    ///
+    /// Returns the ranked entities in declaration order alongside the index.
     ///
     /// # Errors
     ///
     /// [`SketchBuildError::DuplicateEntity`] for the first id declared twice.
-    fn new(entities: &[SketchEntityDef]) -> Result<Self, SketchBuildError> {
+    fn new(entities: &[SketchEntityDef]) -> Result<(Self, Vec<DeclaredEntity>), SketchBuildError> {
         fn next(count: &mut usize) -> usize {
             *count += 1;
             *count - 1
         }
         let (mut points, mut lines, mut curves, mut arcs) = (0, 0, 0, 0);
-        let mut slots = HashMap::with_capacity(entities.len());
+        let mut by_id = HashMap::with_capacity(entities.len());
+        let mut declared = Vec::with_capacity(entities.len());
         for def in entities {
-            let slot = match def.entity {
-                SketchEntity::Point { .. } => EntitySlot::Point(PointRef(next(&mut points))),
-                SketchEntity::Line { .. } => EntitySlot::Line(LineRef(next(&mut lines))),
-                SketchEntity::Circle { .. } => EntitySlot::Circle(CurveRef(next(&mut curves))),
-                SketchEntity::Arc { .. } => {
-                    EntitySlot::Arc(CurveRef(next(&mut curves)), ArcRef(next(&mut arcs)))
-                }
+            let entity = match def.entity {
+                SketchEntity::Point { x, y } => TypedEntity::Point {
+                    at: PointRef(next(&mut points)),
+                    x,
+                    y,
+                },
+                SketchEntity::Line { start, end } => TypedEntity::Line {
+                    this: LineRef(next(&mut lines)),
+                    start,
+                    end,
+                },
+                SketchEntity::Circle { center, radius } => TypedEntity::Circle {
+                    this: CurveRef(next(&mut curves)),
+                    center,
+                    radius,
+                },
+                SketchEntity::Arc { center, start, end } => TypedEntity::Arc {
+                    curve: CurveRef(next(&mut curves)),
+                    arc: ArcRef(next(&mut arcs)),
+                    center,
+                    start,
+                    end,
+                },
             };
-            if slots.insert(def.id, slot).is_some() {
+            if by_id.insert(def.id, entity).is_some() {
                 return Err(SketchBuildError::DuplicateEntity { entity: def.id });
             }
+            declared.push(entity);
         }
-        Ok(EntityIndex(slots))
+        Ok((EntityIndex(by_id), declared))
     }
 
     /// Resolve `id` with `pick`, which accepts exactly the kinds `expected`
@@ -972,25 +913,25 @@ impl EntityIndex {
         &self,
         id: SketchEntityId,
         expected: SketchSlotKind,
-        pick: impl FnOnce(EntitySlot) -> Option<R>,
+        pick: impl FnOnce(DeclaredEntity) -> Option<R>,
     ) -> Result<R, Misfit> {
-        let slot = self.0.get(&id).copied();
-        slot.and_then(pick).ok_or(Misfit {
+        let entity = self.0.get(&id).copied();
+        entity.and_then(pick).ok_or(Misfit {
             expected,
-            found: slot.map(EntitySlot::kind),
+            found: entity.as_ref().map(TypedEntity::kind),
         })
     }
 
     fn point(&self, id: SketchEntityId) -> Result<PointRef, Misfit> {
-        self.fit(id, SketchSlotKind::Point, |slot| match slot {
-            EntitySlot::Point(at) => Some(at),
+        self.fit(id, SketchSlotKind::Point, |entity| match entity {
+            TypedEntity::Point { at, .. } => Some(at),
             _ => None,
         })
     }
 
     fn line(&self, id: SketchEntityId) -> Result<LineRef, Misfit> {
-        self.fit(id, SketchSlotKind::Line, |slot| match slot {
-            EntitySlot::Line(line) => Some(line),
+        self.fit(id, SketchSlotKind::Line, |entity| match entity {
+            TypedEntity::Line { this, .. } => Some(this),
             _ => None,
         })
     }
@@ -998,8 +939,8 @@ impl EntityIndex {
     /// A circle or an arc: libslvs treats an arc as a circle with two ends for
     /// the whole radius family and for point-on-circle.
     fn curve(&self, id: SketchEntityId) -> Result<CurveRef, Misfit> {
-        self.fit(id, SketchSlotKind::Curve, |slot| match slot {
-            EntitySlot::Circle(curve) | EntitySlot::Arc(curve, _) => Some(curve),
+        self.fit(id, SketchSlotKind::Curve, |entity| match entity {
+            TypedEntity::Circle { this: curve, .. } | TypedEntity::Arc { curve, .. } => Some(curve),
             _ => None,
         })
     }
@@ -1008,16 +949,16 @@ impl EntityIndex {
     /// full circle has none — libslvs would resolve point handles the circle
     /// entity does not carry.
     fn arc(&self, id: SketchEntityId) -> Result<ArcRef, Misfit> {
-        self.fit(id, SketchSlotKind::Arc, |slot| match slot {
-            EntitySlot::Arc(_, arc) => Some(arc),
+        self.fit(id, SketchSlotKind::Arc, |entity| match entity {
+            TypedEntity::Arc { arc, .. } => Some(arc),
             _ => None,
         })
     }
 
     fn point_or_line(&self, id: SketchEntityId) -> Result<AnchorRef, Misfit> {
-        self.fit(id, SketchSlotKind::PointOrLine, |slot| match slot {
-            EntitySlot::Point(at) => Some(AnchorRef::Point(at)),
-            EntitySlot::Line(line) => Some(AnchorRef::Line(line)),
+        self.fit(id, SketchSlotKind::PointOrLine, |entity| match entity {
+            TypedEntity::Point { at, .. } => Some(AnchorRef::Point(at)),
+            TypedEntity::Line { this, .. } => Some(AnchorRef::Line(this)),
             _ => None,
         })
     }
@@ -1041,6 +982,45 @@ impl<'i> DefiningPoints<'i> {
             named: [owner; 3],
             len: 0,
         }
+    }
+
+    /// Resolve `declared`'s defining slots, then refuse a repeat among them.
+    ///
+    /// Slots resolve in the order they are written: struct-expression fields
+    /// evaluate left to right, so the first bad slot is the one reported.
+    fn resolve(mut self, declared: DeclaredEntity) -> Result<TypedEntity, SketchBuildError> {
+        let shape = match declared {
+            TypedEntity::Point { at, x, y } => TypedEntity::Point { at, x, y },
+            TypedEntity::Line { this, start, end } => TypedEntity::Line {
+                this,
+                start: self.point(start)?,
+                end: self.point(end)?,
+            },
+            TypedEntity::Circle {
+                this,
+                center,
+                radius,
+            } => TypedEntity::Circle {
+                this,
+                center: self.point(center)?,
+                radius,
+            },
+            TypedEntity::Arc {
+                curve,
+                arc,
+                center,
+                start,
+                end,
+            } => TypedEntity::Arc {
+                curve,
+                arc,
+                center: self.point(center)?,
+                start: self.point(start)?,
+                end: self.point(end)?,
+            },
+        };
+        self.distinct()?;
+        Ok(shape)
     }
 
     /// Resolve a defining slot, which always takes a point.
@@ -1086,6 +1066,89 @@ struct Operands<'i, 'a> {
 }
 
 impl Operands<'_, '_> {
+    /// Resolve every operand to the kind its slot takes, in the order they are
+    /// written, so the first bad operand is the one reported.
+    fn resolve(&self) -> Result<TypedConstraint, SketchBuildError> {
+        Ok(match self.def.constraint {
+            SketchConstraint::Coincident { a, b } => TypedConstraint::Coincident {
+                a: self.point(a)?,
+                b: self.point(b)?,
+            },
+            SketchConstraint::PtOnLine { pt, line } => TypedConstraint::PtOnLine {
+                pt: self.point(pt)?,
+                line: self.line(line)?,
+            },
+            SketchConstraint::PtOnCircle { pt, circle } => TypedConstraint::PtOnCircle {
+                pt: self.point(pt)?,
+                circle: self.curve(circle)?,
+            },
+            SketchConstraint::Distance { a, b, value } => TypedConstraint::Distance {
+                a: self.point(a)?,
+                b: self.point(b)?,
+                value,
+            },
+            SketchConstraint::Angle { a, b, degrees } => TypedConstraint::Angle {
+                a: self.line(a)?,
+                b: self.line(b)?,
+                degrees,
+            },
+            SketchConstraint::Parallel { a, b } => TypedConstraint::Parallel {
+                a: self.line(a)?,
+                b: self.line(b)?,
+            },
+            SketchConstraint::Perpendicular { a, b } => TypedConstraint::Perpendicular {
+                a: self.line(a)?,
+                b: self.line(b)?,
+            },
+            SketchConstraint::Diameter { circle, value } => TypedConstraint::Diameter {
+                circle: self.curve(circle)?,
+                value,
+            },
+            SketchConstraint::Radius { circle, value } => TypedConstraint::Radius {
+                circle: self.curve(circle)?,
+                value,
+            },
+            SketchConstraint::EqualRadius { a, b } => TypedConstraint::EqualRadius {
+                a: self.curve(a)?,
+                b: self.curve(b)?,
+            },
+            SketchConstraint::ArcLineTangent { arc, line, at_end } => {
+                TypedConstraint::ArcLineTangent {
+                    arc: self.arc(arc)?,
+                    line: self.line(line)?,
+                    at_end,
+                }
+            }
+            SketchConstraint::CurveCurveTangent {
+                a,
+                a_at_end,
+                b,
+                b_at_end,
+            } => TypedConstraint::CurveCurveTangent {
+                a: self.arc(a)?,
+                a_at_end,
+                b: self.arc(b)?,
+                b_at_end,
+            },
+            SketchConstraint::Horizontal(line) => TypedConstraint::Horizontal(self.line(line)?),
+            SketchConstraint::Vertical(line) => TypedConstraint::Vertical(self.line(line)?),
+            SketchConstraint::SymmetricLine { a, b, about } => TypedConstraint::SymmetricLine {
+                a: self.point(a)?,
+                b: self.point(b)?,
+                about: self.line(about)?,
+            },
+            SketchConstraint::AtMidpoint { pt, line } => TypedConstraint::AtMidpoint {
+                pt: self.point(pt)?,
+                line: self.line(line)?,
+            },
+            SketchConstraint::EqualLengthLines { a, b } => TypedConstraint::EqualLengthLines {
+                a: self.line(a)?,
+                b: self.line(b)?,
+            },
+            SketchConstraint::Fix(anchor) => TypedConstraint::Fix(self.point_or_line(anchor)?),
+        })
+    }
+
     fn refuse(&self, entity: SketchEntityId, misfit: Misfit) -> SketchBuildError {
         match misfit.found {
             Some(found) => SketchBuildError::WrongEntityKind {

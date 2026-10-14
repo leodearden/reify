@@ -1003,7 +1003,7 @@ impl SystemBuilder {
                 handles.push_point(id, point.params.0, point.params.1);
                 point.entity
             }
-            TypedEntity::Line { start, end } => {
+            TypedEntity::Line { start, end, .. } => {
                 let (start, end) = (points[start], points[end]);
                 let eh = self.alloc.entity();
                 self.entities.push(Slvs_Entity::line_segment_2d(
@@ -1016,7 +1016,7 @@ impl SystemBuilder {
                 handles.push_line(id, start.params, end.params);
                 eh
             }
-            TypedEntity::Circle { center, radius } => {
+            TypedEntity::Circle { center, radius, .. } => {
                 let center = points[center];
                 // libslvs has no radius param: a circle points at a
                 // *distance entity*, which is what holds the param.
@@ -1038,7 +1038,9 @@ impl SystemBuilder {
                 handles.push_circle(id, center.params, rp);
                 eh
             }
-            TypedEntity::Arc { center, start, end } => {
+            TypedEntity::Arc {
+                center, start, end, ..
+            } => {
                 let (center, start, end) = (points[center], points[start], points[end]);
                 // No radius param of its own: an arc's radius is implied by
                 // centre→start, and libslvs supplies |c-s| = |c-e| itself.
