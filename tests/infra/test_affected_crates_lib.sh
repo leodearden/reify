@@ -603,7 +603,7 @@ _OVERLAP_MIRROR_DIFF_RC=""
 _OVERLAP_MIRROR_DIFF=""
 _OVERLAP_MIRROR_G=0
 _OVERLAP_MIRROR_U=0
-_OVERLAP_MIRROR_S=0
+_OVERLAP_MIRROR_CRATE_S=0
 _OVERLAP_MIRROR_TRACKED_CRATE_PATHS=0
 _OVERLAP_MIRROR_CORPUS_MISSING=""
 
@@ -675,7 +675,7 @@ _overlap_mirror_probe_once() {
 
     _OVERLAP_MIRROR_G="$(_count_lines $'\tG$' "$dir/bash")"
     _OVERLAP_MIRROR_U="$(_count_lines $'\tU:' "$dir/bash")"
-    _OVERLAP_MIRROR_S="$(_count_lines $'\tS:' "$dir/bash")"
+    _OVERLAP_MIRROR_CRATE_S="$(_count_lines '^crates/[^/]+/.*'$'\t''S:' "$dir/bash")"
     _OVERLAP_MIRROR_TRACKED_CRATE_PATHS="$(_count_lines '^crates/[^/]+/' "$dir/tracked")"
     local c
     for c in $_RI_CORPUS_CRATES; do
@@ -693,7 +693,7 @@ _overlap_mirror_probe_once() {
 _overlap_mirror_report() {
     echo "paths=$_OVERLAP_MIRROR_PATHS bash records=$_OVERLAP_MIRROR_BASH_RECORDS python records=$_OVERLAP_MIRROR_PY_RECORDS python rc=$_OVERLAP_MIRROR_PY_RC"
     echo "python stderr (tail): $_OVERLAP_MIRROR_PY_ERR"
-    echo "bash G=$_OVERLAP_MIRROR_G U=$_OVERLAP_MIRROR_U S=$_OVERLAP_MIRROR_S tracked crates/<name>/ paths=$_OVERLAP_MIRROR_TRACKED_CRATE_PATHS corpus readers with no examples/*.ri record:[$_OVERLAP_MIRROR_CORPUS_MISSING]"
+    echo "bash G=$_OVERLAP_MIRROR_G U=$_OVERLAP_MIRROR_U crates/<name>/ S=$_OVERLAP_MIRROR_CRATE_S tracked crates/<name>/ paths=$_OVERLAP_MIRROR_TRACKED_CRATE_PATHS corpus readers with no examples/*.ri record:[$_OVERLAP_MIRROR_CORPUS_MISSING]"
     echo "diff bash python (rc=$_OVERLAP_MIRROR_DIFF_RC, first 40 lines):"
     printf '%s\n' "$_OVERLAP_MIRROR_DIFF"
 }
@@ -721,7 +721,7 @@ _check_overlap_mirror_not_vacuous() {
         && [ "$_OVERLAP_MIRROR_U" -ge 1 ] \
         && [ -z "$_OVERLAP_MIRROR_CORPUS_MISSING" ] \
         && [ "$_OVERLAP_MIRROR_TRACKED_CRATE_PATHS" -ge 1 ] \
-        && [ "$_OVERLAP_MIRROR_S" -ge "$_OVERLAP_MIRROR_TRACKED_CRATE_PATHS" ]
+        && [ "$_OVERLAP_MIRROR_CRATE_S" -ge "$_OVERLAP_MIRROR_TRACKED_CRATE_PATHS" ]
 }
 assert "OVERLAP-MIRROR-PARITY guard is not vacuous: the bash side emits global, union, every corpus reader's examples/*.ri seed, and a seed per tracked crate path" \
     _check_overlap_mirror_not_vacuous
