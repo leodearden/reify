@@ -1823,3 +1823,87 @@ fn unified_dag_curated_fillet_over_flat_map_lambda_selector_resolves_edges() {
         .collect();
     assert_flat_map_fillet_dispatched(&result, &ops);
 }
+
+/// Compile `source` with the stdlib, `eval` it on a fresh UnifiedDag engine over
+/// `kernel`, then return `build_snapshot`'s result. `eval` is kernel-free, so
+/// the first realization `build_snapshot` executes gets handle 1.
+fn build_snapshot_under_unified_dag(source: &str, kernel: Box<dyn GeometryKernel>) -> BuildResult {
+    let compiled = compile_source_with_stdlib(source);
+    let mut engine = Engine::new(Box::new(SimpleConstraintChecker), Some(kernel));
+    engine.set_build_scheduler(BuildScheduler::UnifiedDag);
+    engine.eval(&compiled);
+    engine
+        .build_snapshot(&compiled, ExportFormat::Step)
+        .expect("eval_state present after eval()")
+}
+
+/// `Engine::build_snapshot` hydrates a named-let curated selector cell at its
+/// UnifiedDag slot, so the consuming fillet dispatches with resolved edges (the
+/// same program and seeding as `unified_dag_curated_fillet_resolves_edges_in_loop`).
+#[test]
+fn build_snapshot_resolves_named_let_curated_selector_under_unified_dag() {
+    let source = r#"pub structure S {
+    let b = box(10mm, 10mm, 10mm)
+    let e = edges_at_height(b, 5mm, 1mm)
+    let f = fillet(b, e, 2mm)
+}"#;
+    let parent = GeometryHandleId(1);
+    let edge_ids = [
+        GeometryHandleId(50),
+        GeometryHandleId(51),
+        GeometryHandleId(52),
+    ];
+    let flat_bbox_at_5mm = Value::String(
+        "{\"xmin\":0.0,\"ymin\":0.0,\"zmin\":0.005,\"xmax\":0.01,\"ymax\":0.01,\"zmax\":0.005}"
+            .into(),
+    );
+    let mut kernel = MockGeometryKernel::new().with_extracted_edges(parent, edge_ids.to_vec());
+    for id in edge_ids {
+        kernel = kernel.with_bbox_result(id, flat_bbox_at_5mm.clone());
+    }
+    let ops_ref = kernel.operations_ref();
+
+    let result = build_snapshot_under_unified_dag(source, Box::new(kernel));
+
+    let errors: Vec<&str> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .map(|d| d.message.as_str())
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "build_snapshot must resolve the named-let selector before the fillet \
+         dispatches; errors={errors:#?}"
+    );
+    let ops = ops_ref.lock().unwrap();
+    let curated_fillets = ops
+        .iter()
+        .filter(|r| matches!(&r.op, GeometryOp::Fillet { edges, .. } if !edges.is_empty()))
+        .count();
+    assert_eq!(
+        curated_fillets,
+        1,
+        "build_snapshot must dispatch exactly one curated Fillet with resolved edges; \
+         recorded ops={:?}",
+        ops.iter().map(|r| &r.op).collect::<Vec<_>>()
+    );
+}
+
+/// `Engine::build_snapshot` resolves the shipped example's flat_map-over-lambda
+/// edge cell under UnifiedDag, exactly as `Engine::build` does.
+#[test]
+fn build_snapshot_resolves_flat_map_lambda_curated_selector_under_unified_dag() {
+    let kernel = flat_map_topology_kernel();
+    let ops_ref = kernel.operations_ref();
+
+    let result = build_snapshot_under_unified_dag(FLAT_MAP_FILLET_SOURCE, Box::new(kernel));
+
+    let ops: Vec<GeometryOp> = ops_ref
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|r| r.op.clone())
+        .collect();
+    assert_flat_map_fillet_dispatched(&result, &ops);
+}
