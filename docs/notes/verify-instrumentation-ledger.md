@@ -26,28 +26,12 @@ overrides the directory. Writers are serialised by `flock` on the sibling
 line. `data/verify-logs/` is git-ignored. It also holds the flaky ledger and
 `run-all-skip-state.json`.
 
-The task asked for an artefact that dark-factory archives on pass. That
-cannot be done from reify's side. What was read in dark-factory at HEAD
-`329edd1a55`:
-
-- **The task-path attempt summary is archived on pass**
-  (`orchestrator/src/orchestrator/verify.py:3022-3049`,
-  `_archive_attempt_summary`). It carries only dark-factory's own
-  per-command rows.
-- **Per-label logs are archived only for archivable failure categories.**
-  `FailureCategory.PASSED` has `archive=False`
-  (`orchestrator/src/orchestrator/verify_categories.py:374`).
-- **A merge-lane pass archives nothing**, neither summary nor log
-  (`verify.py:7442`, `... and not passed`).
-- **There is no sidecar hook.** Only explicit log, summary, plan and JUnit
-  paths are copied. Dark-factory also passes verify no task id, attempt or
-  log dir; it passes only `DF_VERIFY_ROLE` and `verify_env`.
-
-So every instrument writes to this reify-owned ledger instead. It lives in the
-**main** checkout, not the running worktree, because every verify worktree is
-cleaned or deleted afterwards (the `_merge-verify` reseed, the `_mainsweep-*`
-teardown). The main checkout is resolved by `scripts/lib_main_checkout.sh`,
-the same resolution `REIFY_BACKGROUND_SWEEP_LEDGER` uses.
+Reify owns the ledger because dark-factory archives nothing from a passing
+verify that reify could extend. It lives in the **main** checkout, not the
+running worktree, because every verify worktree is cleaned or deleted
+afterwards (the `_merge-verify` reseed, the `_mainsweep-*` teardown). The main
+checkout is resolved by `scripts/lib_main_checkout.sh`, the same resolution
+`REIFY_BACKGROUND_SWEEP_LEDGER` uses.
 
 ## Activation
 
