@@ -3229,6 +3229,121 @@ mod tests {
         );
     }
 
+    // --- Default injection: what conformance adds to the conformer ---
+
+    /// A trait's `param` default and its unlabeled constraint, which the conformer does
+    /// not override, are both injected: one Param cell carrying the default expression,
+    /// and one constraint compiled against that cell.
+    #[test]
+    fn non_overridden_param_default_and_constraint_are_injected() {
+        let run = conform_source(
+            r"
+            trait T {
+                param x : Real = 1.0
+                constraint x > 0.0
+            }
+            structure def S : T {}
+            ",
+        );
+
+        assert!(
+            run.diagnostics.is_empty(),
+            "expected no diagnostics; got: {:?}",
+            run.diagnostics
+        );
+        assert_eq!(
+            run.injected_cells.len(),
+            1,
+            "expected exactly the `x` cell; got: {:?}",
+            run.injected_cells
+        );
+        let x = &run.injected_cells[0];
+        assert_eq!(x.id.member, "x");
+        assert_eq!(x.kind, ValueCellKind::Param);
+        assert_eq!(x.cell_type, Type::dimensionless_scalar());
+        assert!(
+            x.default_expr.is_some(),
+            "the trait's default expression must travel with the injected cell"
+        );
+        assert_eq!(
+            run.injected_constraints.len(),
+            1,
+            "the unlabeled constraint default must be injected; got: {:?}",
+            run.injected_constraints
+        );
+    }
+
+    /// An unannotated trait `let` is compiled against every annotated default, wherever
+    /// it is declared: `positive` reads `w` before `w` is declared, and still resolves.
+    /// Its injected cell carries the type inferred from the expression (Bool), not the
+    /// dimensionless-scalar fallback.
+    #[test]
+    fn unannotated_trait_let_sees_annotated_defaults_and_is_injected_with_inferred_type() {
+        let run = conform_source(
+            r"
+            trait T {
+                let positive = w > 0.0
+                param w : Real = 1.0
+            }
+            structure def S : T {}
+            ",
+        );
+
+        assert!(
+            run.diagnostics.is_empty(),
+            "expected no diagnostics; got: {:?}",
+            run.diagnostics
+        );
+        let w = injected_named(&run, "w");
+        assert_eq!(w.len(), 1, "got: {:?}", run.injected_cells);
+        assert_eq!(w[0].kind, ValueCellKind::Param);
+        assert_eq!(w[0].cell_type, Type::dimensionless_scalar());
+        let positive = injected_named(&run, "positive");
+        assert_eq!(positive.len(), 1, "got: {:?}", run.injected_cells);
+        assert_eq!(positive[0].kind, ValueCellKind::Let);
+        assert_eq!(
+            positive[0].cell_type,
+            Type::Bool,
+            "the injected let's type is inferred from `w > 0.0`"
+        );
+    }
+
+    /// An unannotated trait `let` whose expression compiles with only a warning is
+    /// still a success: the warning is reported, the cell is injected, and its type is
+    /// the one the warning says it defaulted to. An empty list literal warns "cannot
+    /// infer element type ... defaulting to Real".
+    #[test]
+    fn unannotated_trait_let_with_warning_only_compile_is_injected() {
+        let run = conform_source(
+            r"
+            trait T { let xs = [] }
+            structure def S : T {}
+            ",
+        );
+
+        assert!(
+            run.diagnostics
+                .iter()
+                .all(|d| d.severity != Severity::Error),
+            "a warning-only compile must not be treated as a failure; got: {:?}",
+            run.diagnostics
+        );
+        assert!(
+            run.diagnostics
+                .iter()
+                .any(|d| d.severity == Severity::Warning),
+            "the empty list literal must still warn; got: {:?}",
+            run.diagnostics
+        );
+        let xs = injected_named(&run, "xs");
+        assert_eq!(xs.len(), 1, "got: {:?}", run.injected_cells);
+        assert_eq!(xs[0].kind, ValueCellKind::Let);
+        assert_eq!(
+            xs[0].cell_type,
+            Type::List(Box::new(Type::dimensionless_scalar()))
+        );
+    }
+
     /// RED (task 3939 δ, step-3): a required associated function that the
     /// conforming structure does not provide must surface an
     /// `E_TRAIT_FN_NOT_SATISFIED` (`DiagnosticCode::TraitFnNotSatisfied`)
