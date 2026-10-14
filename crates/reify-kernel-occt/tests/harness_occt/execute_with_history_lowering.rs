@@ -43,18 +43,6 @@ fn square_10mm(kernel: &mut OcctKernel) -> GeometryHandleId {
     )
 }
 
-fn record_kind(history: &AttributeHistory) -> &'static str {
-    match history {
-        AttributeHistory::None => "None",
-        AttributeHistory::Extrude(_) => "Extrude",
-        AttributeHistory::Revolve(_) => "Revolve",
-        AttributeHistory::Sweep(_) => "Sweep",
-        AttributeHistory::Loft(_) => "Loft",
-        AttributeHistory::Boolean(_) => "Boolean",
-        AttributeHistory::LocalFeature(_) => "LocalFeature",
-    }
-}
-
 #[test]
 fn history_lowering_routes_each_op_to_its_record_kind() {
     let mut kernel = OcctKernel::new();
@@ -93,13 +81,13 @@ fn history_lowering_routes_each_op_to_its_record_kind() {
     );
     let edge = kernel.extract_edges(a).expect("box edges")[0];
 
-    let cases = [
+    let cases: Vec<(GeometryOp, fn(&AttributeHistory) -> bool)> = vec![
         (
             GeometryOp::Extrude {
                 profile,
                 distance: Value::length(5.0 * MM),
             },
-            "Extrude",
+            |h| matches!(h, AttributeHistory::Extrude(_)),
         ),
         (
             GeometryOp::Revolve {
@@ -108,25 +96,33 @@ fn history_lowering_routes_each_op_to_its_record_kind() {
                 axis_dir: [0.0, 1.0, 0.0],
                 angle_rad: std::f64::consts::FRAC_PI_2,
             },
-            "Revolve",
+            |h| matches!(h, AttributeHistory::Revolve(_)),
         ),
-        (GeometryOp::Sweep { profile, path }, "Sweep"),
+        (GeometryOp::Sweep { profile, path }, |h| {
+            matches!(h, AttributeHistory::Sweep(_))
+        }),
         (
             GeometryOp::Loft {
                 profiles: vec![profile, raised],
             },
-            "Loft",
+            |h| matches!(h, AttributeHistory::Loft(_)),
         ),
-        (GeometryOp::Union { left: a, right: b }, "Boolean"),
-        (GeometryOp::Difference { left: a, right: b }, "Boolean"),
-        (GeometryOp::Intersection { left: a, right: b }, "Boolean"),
+        (GeometryOp::Union { left: a, right: b }, |h| {
+            matches!(h, AttributeHistory::Boolean(_))
+        }),
+        (GeometryOp::Difference { left: a, right: b }, |h| {
+            matches!(h, AttributeHistory::Boolean(_))
+        }),
+        (GeometryOp::Intersection { left: a, right: b }, |h| {
+            matches!(h, AttributeHistory::Boolean(_))
+        }),
         (
             GeometryOp::Fillet {
                 target: a,
                 edges: vec![],
                 radius: Value::length(MM),
             },
-            "LocalFeature",
+            |h| matches!(h, AttributeHistory::LocalFeature(_)),
         ),
         (
             GeometryOp::Fillet {
@@ -134,7 +130,7 @@ fn history_lowering_routes_each_op_to_its_record_kind() {
                 edges: vec![edge],
                 radius: Value::length(MM),
             },
-            "LocalFeature",
+            |h| matches!(h, AttributeHistory::LocalFeature(_)),
         ),
         (
             GeometryOp::Chamfer {
@@ -142,7 +138,7 @@ fn history_lowering_routes_each_op_to_its_record_kind() {
                 edges: vec![],
                 distance: Value::length(MM),
             },
-            "LocalFeature",
+            |h| matches!(h, AttributeHistory::LocalFeature(_)),
         ),
         (
             GeometryOp::Chamfer {
@@ -150,7 +146,7 @@ fn history_lowering_routes_each_op_to_its_record_kind() {
                 edges: vec![edge],
                 distance: Value::length(MM),
             },
-            "LocalFeature",
+            |h| matches!(h, AttributeHistory::LocalFeature(_)),
         ),
         (
             GeometryOp::Box {
@@ -158,12 +154,12 @@ fn history_lowering_routes_each_op_to_its_record_kind() {
                 height: Value::length(10.0 * MM),
                 depth: Value::length(10.0 * MM),
             },
-            "None",
+            |h| matches!(h, AttributeHistory::None),
         ),
     ];
-    for (op, expected) in cases {
+    for (op, is_expected_kind) in cases {
         match kernel.execute_with_history(&op) {
-            Ok((_, history)) => assert_eq!(record_kind(&history), expected, "{op:?}"),
+            Ok((_, history)) => assert!(is_expected_kind(&history), "{op:?} gave {history:?}"),
             Err(e) => panic!("{op:?} failed: {e:?}"),
         }
     }
