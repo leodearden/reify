@@ -2676,42 +2676,7 @@ pub(crate) fn check_expr_mechanism_joint_bound(
 }
 
 #[cfg(test)]
-/// # Why these tests live here (and cannot move to `tests/*.rs`)
-///
-/// All four tests in this module call `pub(crate) check_trait_conformance` via
-/// `use super::*;`.  Rust integration-test binaries in `tests/*.rs` are separate
-/// crates and can only access `pub` (not `pub(crate)`) items, so none of these
-/// tests can be moved to an integration-test file without also making
-/// `check_trait_conformance` (and `MergeContext`, `collect_all_requirements`,
-/// `check_trait_arg_conformance`) part of the public API — a non-trivial
-/// architectural change that would require its own RFC-level task.
-///
-/// **Tests 1–2** (`check_trait_conformance_resolves_enum_typed_param_and_let`,
-/// `option_b_fix_blocks_phantom_let_entry_for_pass2_skipped_name`) hand-build
-/// `RequirementKind::Let` fixtures.  `RequirementKind::Let` is **not
-/// parser-reachable** from reify source today (see `trait_merge_tests.rs:282`
-/// and `let_type_disambiguation_tests.rs:234`), so there is no
-/// `compile_source(...)` string that produces this variant.  An integration-level
-/// rewrite is therefore impossible, not just inconvenient.
-///
-/// **Tests 3–4** (`enum_with_type_args_emits_error_diagnostic`,
-/// `unknown_named_type_with_type_args_produces_unresolved_diagnostic`) assert an
-/// **exact count of 1** on diagnostic substrings.  Under full-pipeline
-/// compilation the same diagnostics are also emitted from `entity.rs:329` and
-/// `traits.rs:36`, so a `compile_source`-based rewrite would see 2+ emissions
-/// and break the exact-count assertions.  Relaxing to `any(...)` would lose the
-/// path-specificity that makes these tests load-bearing (they pin that the
-/// `conformance/checker.rs` emission site in `check_phase_resolve_structure_members`
-/// fires in both debug and release builds).
-///
-/// **Closest integration-level sibling** that covers the *parser-reachable*
-/// scenarios:
-/// - `reject_unresolved_type_in_trait_conformance`
-///   (`tests/boundary1_consumer.rs:280`)
-///
-/// For full rationale and alternative paths (structural extraction,
-/// test-only feature-flag API, `src/conformance_tests.rs` sibling module)
-/// see the escalate_info record for task 2033.
+/// Conformance behaviour is pinned through `check_trait_conformance` (inline .ri via `conform_source`); rationale: docs/prds/v0_6/compiler-declaration-passes.md §2.4 / B10.
 mod tests {
     use super::*;
 
@@ -3710,10 +3675,6 @@ mod tests {
     /// RED (task 3939 δ, step-7a): a trait's default-providing assoc fn is
     /// injected into the conformer's assoc-fn table when the structure does NOT
     /// override it — `is_override == false`, keyed by `(trait, fn)`.
-    ///
-    /// Fails until step-8 wires `check_phase_resolve_assoc_fns` (today
-    /// `DefaultKind::Fn` defaults are dropped during the merge and no phase
-    /// populates the out-param, so the table is empty).
     #[test]
     fn default_assoc_fn_injected_into_table_when_not_overridden() {
         let shape = shape_with_default_fn("area", 1.0);
@@ -3809,7 +3770,7 @@ mod tests {
     /// default-providing assoc fn with a MISMATCHED signature must surface
     /// `TraitFnSignatureMismatch` and keep the wrongly-typed override OUT of the
     /// dispatch table. A default-only fn produces no `RequirementKind::Fn`, so
-    /// phase 5 never checks it — `check_phase_resolve_assoc_fns` is the sole
+    /// phase 5 never checks it — resolving the assoc-fn table is the sole
     /// validation site (PRD §5.4 exact-match-for-overrides). Before the
     /// amendment the bad override landed in the table with no diagnostic.
     #[test]
@@ -4058,8 +4019,8 @@ mod tests {
     ///
     /// When a cell_type annotation is present, the helper must return it unchanged
     /// regardless of what the inferred expression type is. This matches the behavior
-    /// at `check_phase_build_available_defaults_map` (site 1) where annotated Let
-    /// defaults bypass the inferred cache entirely.
+    /// at the advertisement site (site 1) where annotated Let defaults bypass the
+    /// inferred cache entirely.
     #[test]
     fn resolve_let_advertised_type_prefers_annotation_over_inferred() {
         let inferred = CompiledExpr::literal(Value::Real(0.0), Type::dimensionless_scalar());
@@ -4093,8 +4054,8 @@ mod tests {
     ///
     /// When neither a cell_type annotation nor an inferred expression is available,
     /// the helper returns `Type::Error` (anti-cascade poison). This arm should not be
-    /// reached in practice — the `debug_assert!` at the call site in
-    /// `check_phase_build_available_defaults_map` (checker.rs:766-772) catches drift;
+    /// reached in practice — the `debug_assert!` at the advertisement call site
+    /// (site 1) catches drift;
     /// the `Type::Error` fallback is defense in depth for release builds where the
     /// `debug_assert!` is a no-op (task 3749, tightening of the 3639 G-allow carve-out).
     #[test]
