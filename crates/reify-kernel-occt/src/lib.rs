@@ -6965,8 +6965,16 @@ mod tests {
         // cause (never SIGSEGV). Volume is the guaranteed crash vector.
         assert_query_cause(kernel.query(&GeometryQuery::Volume(h)), &cause, "Volume");
         assert_query_cause(kernel.volume_measurement(h), &cause, "volume_measurement");
-        assert_query_cause(kernel.query(&GeometryQuery::Centroid(h)), &cause, "Centroid");
-        assert_query_cause(kernel.query(&GeometryQuery::BoundingBox(h)), &cause, "BoundingBox");
+        assert_query_cause(
+            kernel.query(&GeometryQuery::Centroid(h)),
+            &cause,
+            "Centroid",
+        );
+        assert_query_cause(
+            kernel.query(&GeometryQuery::BoundingBox(h)),
+            &cause,
+            "BoundingBox",
+        );
         assert_query_cause(
             kernel.query(&GeometryQuery::InertiaTensor {
                 handle: h,
@@ -6976,7 +6984,11 @@ mod tests {
             "InertiaTensor",
         );
         assert_query_cause(kernel.extract_faces(h), &cause, "extract_faces");
-        assert_query_cause(kernel.shapes_intersect(h, good_box), &cause, "shapes_intersect");
+        assert_query_cause(
+            kernel.shapes_intersect(h, good_box),
+            &cause,
+            "shapes_intersect",
+        );
 
         // Contrast: an id the kernel does not hold is the invalid-handle case.
         match kernel.query(&GeometryQuery::Volume(GeometryHandleId(999))) {
@@ -7025,7 +7037,11 @@ mod tests {
             Err(ExportError::FormatError(m)) if m == cause => {}
             other => panic!("{what}: expected FormatError({cause:?}), got {other:?}"),
         }
-        assert!(written.is_empty(), "{what}: wrote {} bytes before failing", written.len());
+        assert!(
+            written.is_empty(),
+            "{what}: wrote {} bytes before failing",
+            written.len()
+        );
     }
 
     /// Export, tessellation and mesh-deviation of either corrupted-handle kind
