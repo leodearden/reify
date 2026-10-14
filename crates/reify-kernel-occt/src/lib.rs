@@ -4263,9 +4263,7 @@ impl OcctKernel {
         format: ExportFormat,
         writer: &mut dyn std::io::Write,
     ) -> Result<(), ExportError> {
-        let shape = self
-            .get_shape(handle)
-            .map_err(|_| ExportError::InvalidHandle(handle))?;
+        let shape = self.get_shape(handle)?;
 
         match format {
             ExportFormat::Step => {
@@ -4318,11 +4316,10 @@ impl OcctKernel {
         options: &ExportOptions,
         writer: &mut dyn std::io::Write,
     ) -> Result<Vec<ExportWarning>, ExportError> {
+        let shape = self.get_shape(handle)?;
+
         match format {
             ExportFormat::Step => {
-                let shape = self
-                    .get_shape(handle)
-                    .map_err(|_| ExportError::InvalidHandle(handle))?;
                 let result = ffi::ffi::export_step(shape, options.step_schema.as_str())
                     .map_err(|e| ExportError::FormatError(e.to_string()))?;
                 writer
@@ -4367,9 +4364,7 @@ impl OcctKernel {
     }
 
     pub fn tessellate(&self, handle: GeometryHandleId, tolerance: f64) -> Result<Mesh, TessError> {
-        let shape = self
-            .get_shape(handle)
-            .map_err(|_| TessError::InvalidHandle(handle))?;
+        let shape = self.get_shape(handle)?;
 
         let result = ffi::ffi::tessellate_shape(shape, tolerance)
             .map_err(|e| TessError::TessellationFailed(e.to_string()))?;
@@ -4800,9 +4795,7 @@ impl OcctKernel {
         schema: &str,
         fault: StepGuardFault,
     ) -> Result<StepGuardProbeResult, ExportError> {
-        let shape = self
-            .get_shape(handle)
-            .map_err(|_| ExportError::InvalidHandle(handle))?;
+        let shape = self.get_shape(handle)?;
         ffi::ffi::export_step_with_injected_fault_for_test(shape, schema, fault)
             .map_err(|e| ExportError::FormatError(e.to_string()))
     }
@@ -4840,9 +4833,7 @@ impl OcctKernel {
         schema: &str,
         fault: StepGuardFault,
     ) -> Result<StepGuardProbeResult, ExportError> {
-        let shape = self
-            .get_shape(handle)
-            .map_err(|_| ExportError::InvalidHandle(handle))?;
+        let shape = self.get_shape(handle)?;
         ffi::ffi::step_guard_probe_for_test(shape, schema, fault)
             .map_err(|e| ExportError::FormatError(e.to_string()))
     }
