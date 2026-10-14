@@ -205,6 +205,47 @@ fn snapshot_honours_coupling_ratio_when_parent_is_bound() {
     assert_close(x_of(&snapshot, 5), 0.5, "closing body sD meets sX");
 }
 
+/// The coupling's parent jQ is unbound and on neither path, so nothing in the
+/// solve moves it. The coupling slot therefore stays at jQ's range midpoint,
+/// the same value snapshot's `value_for` renders jC with. It is not a free
+/// variable that could absorb the loop's error.
+///
+/// Body ids: 0 sA@jA, 1 sC@jC, 2 sX@jX (on jA), 3 sD@jX (on jC) — the closing
+/// edge, `path_a = [world, jA, jX]`, `path_b = [world, jC]`.
+#[test]
+fn extraction_holds_a_coupling_of_an_off_path_parent_at_the_parents_midpoint() {
+    let world = eval_builtin("world", &[]);
+    let j_a = prismatic_x(0.0, 1.0);
+    let j_q = prismatic_x(0.0, 0.8);
+    let j_c = couple_by_two(&j_q);
+    let j_x = revolute_z_0_to_pi();
+
+    let mut m = eval_builtin("mechanism", &[]);
+    m = body(m, "sA", &j_a, &world);
+    m = body(m, "sC", &j_c, &world);
+    m = body(m, "sX", &j_x, &j_a);
+    m = body(m, "sD", &j_x, &j_c);
+    let bindings = vec![bind_len(&j_a, 0.5), bind_ang(&j_x, 0.0)];
+
+    let (_, _, chain_b, vals_b_initial, free_b) =
+        extract_loop_closure_chains(only_loop_closure(&m), &bindings)
+            .expect("the off-path-parent loop must extract");
+
+    assert_eq!(chain_b, vec![j_c]);
+    match vals_b_initial[0] {
+        JointValue::Scalar(v) => assert!(
+            (v - 0.4).abs() < 1e-12,
+            "the coupling slot carries jQ's range midpoint 0.4, got {v}"
+        ),
+        ref other => panic!("coupling slot must be a Scalar, got {other:?}"),
+    }
+    assert!(
+        free_b.is_empty(),
+        "a coupling gets no free variable even when its parent is off both paths, \
+         got {free_b:?}"
+    );
+}
+
 /// A closing side whose second slot is the non-driving joint under test.
 struct NonDrivingFreeSlot {
     chain_a: Vec<Value>,
