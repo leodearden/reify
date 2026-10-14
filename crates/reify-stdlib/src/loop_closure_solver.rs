@@ -827,10 +827,12 @@ fn free_joint_shapes(
 /// Manifold DOF count per joint kind, used by the over/under-constrained
 /// pre-check in `solve_loop_closure_with_diagnostics`.  Differs from
 /// `JointKind::flat_len` (storage width) for `Spherical` (3 manifold DOF
-/// vs 4 quaternion storage components) and `Fixed` (0 DOF vs 1-element
-/// sentinel slot).
+/// vs 4 quaternion storage components), `Fixed` (0 DOF vs 1-element
+/// sentinel slot) and `Coupling` (0 DOF vs 1-element derived slot).
 ///
-/// Returns 1 for Prismatic / Revolute / Coupling, 0 for Fixed, 2 for
+/// Returns 1 for Prismatic / Revolute, 0 for the non-driving Fixed /
+/// Coupling (neither has a free motion variable, and
+/// `validate_loop_closure_inputs` keeps both out of `free_b`), 2 for
 /// Cylindrical, 3 for Planar, 3 for Spherical.  Sum across `free_b`
 /// gives the kinematic free-DOF count that balances against the
 /// 6-component loop residual: `< 6` = over-constrained, `== 6` =
@@ -838,8 +840,8 @@ fn free_joint_shapes(
 fn dof_count_for_balance(kind: crate::loop_closure_value::JointKind) -> usize {
     use crate::loop_closure_value::JointKind;
     match kind {
-        JointKind::Prismatic | JointKind::Revolute | JointKind::Coupling => 1,
-        JointKind::Fixed => 0,
+        JointKind::Prismatic | JointKind::Revolute => 1,
+        JointKind::Fixed | JointKind::Coupling => 0,
         JointKind::Cylindrical => 2,
         JointKind::Planar => 3,
         JointKind::Spherical => 3,
@@ -1202,7 +1204,7 @@ pub fn solve_loop_closure_with_diagnostics(
 
     // KCC-γ step-12: count manifold DOF (`dof_count`) rather than free_b
     // slots so a 3-DOF planar joint balances correctly against the 6-component
-    // loop residual.  `dof_count_for_balance` returns 1/1/1/0/2/3/3 for
+    // loop residual.  `dof_count_for_balance` returns 1/1/0/0/2/3/3 for
     // prismatic/revolute/coupling/fixed/cylindrical/planar/spherical (manifold
     // DOF; fixed is 0-DOF and does not contribute to free DOFs).
     //
