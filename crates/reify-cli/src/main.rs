@@ -31,6 +31,7 @@ extern crate reify_kernel_manifold as _;
 extern crate reify_kernel_openvdb as _;
 
 mod args;
+mod artifact_triangles;
 mod cache;
 mod check_verdict;
 mod dev;
@@ -42,6 +43,7 @@ use args::{
     CHECK_USAGE, EXPLAIN_USAGE, PurposeActivation, build_cfg_set, doc_usage_error,
     parse_purpose_flag, parse_single_file_arg,
 };
+use artifact_triangles::{stl_triangle_count, threemf_triangle_count};
 use check_verdict::{
     ConstraintOutcome, build_is_success, check_gating_error, dedup_diagnostics,
     drop_falsified_indeterminate_diagnostics, has_error_diagnostic, merge_build_diagnostics,
@@ -49,8 +51,7 @@ use check_verdict::{
 };
 use module_capabilities::{
     module_has_dfm_rule, module_has_geometric_conforms, module_has_geometry, module_has_isosurface,
-    module_has_representation_within, module_has_thickness_dfm_rule, stl_triangle_count,
-    threemf_triangle_count,
+    module_has_representation_within, module_has_thickness_dfm_rule,
 };
 use reify_core::{ModulePath, Severity};
 use reify_ir::ExportFormat;
