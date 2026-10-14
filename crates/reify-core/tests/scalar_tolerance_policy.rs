@@ -30,7 +30,12 @@ fn assert_not_equal(a: f64, b: f64, dimension: DimensionVector, why: &str) {
 
 #[test]
 fn float_noise_compares_equal() {
-    assert_equal(0.12299999999999939, 0.123, LENGTH, "auto_probe solved x vs 123mm");
+    assert_equal(
+        0.12299999999999939,
+        0.123,
+        LENGTH,
+        "auto_probe solved x vs 123mm",
+    );
     assert_equal(
         0.018500000000000492 + 0.011499999999999684,
         0.03,
@@ -42,8 +47,18 @@ fn float_noise_compares_equal() {
 
 #[test]
 fn penalty_offset_residual_compares_equal_for_length() {
-    assert_equal(0.01, 0.01 + 5.0e-7, LENGTH, "ineq_eq penalty offset 1/(2*PENALTY_WEIGHT)");
-    assert_equal(0.01 + 5.0e-7, 0.01, LENGTH, "ineq_eq penalty offset, reversed");
+    assert_equal(
+        0.01,
+        0.01 + 5.0e-7,
+        LENGTH,
+        "ineq_eq penalty offset 1/(2*PENALTY_WEIGHT)",
+    );
+    assert_equal(
+        0.01 + 5.0e-7,
+        0.01,
+        LENGTH,
+        "ineq_eq penalty offset, reversed",
+    );
 }
 
 #[test]
@@ -52,13 +67,28 @@ fn one_percent_drift_is_not_equal() {
     assert_not_equal(1.0, 1.01, LENGTH, "1% drift at 1m");
     assert_not_equal(2.0, 2.02, MASS, "1% drift at 2kg");
     assert_not_equal(1.0, 1.01, DIMENSIONLESS, "1% drift at 1.0");
-    assert_not_equal(0.5235987755982988, 0.5288347633542818, ANGLE, "1% drift at 30deg");
+    assert_not_equal(
+        0.5235987755982988,
+        0.5288347633542818,
+        ANGLE,
+        "1% drift at 30deg",
+    );
 }
 
 #[test]
 fn relative_arm_scales_with_magnitude() {
-    assert_equal(1e6, 1e6 * (1.0 + 5e-10), DIMENSIONLESS, "5e-10 relative at 1e6");
-    assert_not_equal(1e6, 1e6 * (1.0 + 1e-8), DIMENSIONLESS, "1e-8 relative at 1e6");
+    assert_equal(
+        1e6,
+        1e6 * (1.0 + 5e-10),
+        DIMENSIONLESS,
+        "5e-10 relative at 1e6",
+    );
+    assert_not_equal(
+        1e6,
+        1e6 * (1.0 + 1e-8),
+        DIMENSIONLESS,
+        "1e-8 relative at 1e6",
+    );
 }
 
 #[test]
