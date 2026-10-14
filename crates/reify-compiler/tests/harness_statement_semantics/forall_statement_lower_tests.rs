@@ -999,8 +999,8 @@ structure S {
 ///     `collection_sub_name == "vents"`, and
 ///     `count_cell == ValueCellId::new("S","__count_vents")`.
 /// (e) Captured entry's body is `CompiledForallBody::Connect` with
-///     `left_port_template == "vents[0].inlet"`,
-///     `right_port_template == "air_channel"`,
+///     `left == PortPath { root: Element, members: ["inlet"] }`,
+///     `right == PortPath { root: Named("air_channel"), members: [] }`,
 ///     `operator == ConnectOp::Forward`,
 ///     `connector_type.is_none()`,
 ///     `params.is_empty()`,
@@ -1010,7 +1010,7 @@ structure S {
 #[test]
 fn forall_connect_over_undef_count_collection_sub_captures_runtime_template() {
     use reify_ast::ConnectOp;
-    use reify_compiler::CompiledForallBody;
+    use reify_compiler::{CompiledForallBody, PortPath, PortRoot};
     use reify_core::{Severity, ValueCellId};
 
     let source = r#"
@@ -1062,7 +1062,7 @@ structure def S {
     assert_eq!(ft.collection_sub_name, "vents");
     assert_eq!(ft.count_cell, ValueCellId::new("S", "__count_vents"));
 
-    // (e) Body shape: Connect with substituted port-name templates.
+    // (e) Body shape: Connect with typed endpoints.
     //
     // The fixture deliberately uses the simple form (no `via T(args...)`,
     // no explicit port-mappings) so this single test pins:
@@ -1074,20 +1074,28 @@ structure def S {
     // resolved (non-deferred) Connect arm, which is already tested.
     match &ft.body {
         CompiledForallBody::Connect {
-            left_port_template,
+            left,
             operator,
-            right_port_template,
+            right,
             connector_type,
             params,
             port_mappings,
         } => {
             assert_eq!(
-                left_port_template, "vents[0].inlet",
-                "expected left port template to be 'vents[0].inlet'"
+                *left,
+                PortPath {
+                    root: PortRoot::Element,
+                    members: vec!["inlet".into()],
+                },
+                "expected the left endpoint to be the element's `inlet` port"
             );
             assert_eq!(
-                right_port_template, "air_channel",
-                "expected right port template to be 'air_channel'"
+                *right,
+                PortPath {
+                    root: PortRoot::Named("air_channel".into()),
+                    members: vec![],
+                },
+                "expected the right endpoint to be the own port `air_channel`"
             );
             assert_eq!(
                 *operator,
@@ -1133,6 +1141,116 @@ structure def S {
             .map(|d| (d.severity, &d.message))
             .collect::<Vec<_>>()
     );
+}
+
+/// Compile `source`, assert it is error-free and captures exactly one forall
+/// template on `S`, and return that template's Connect endpoints.
+fn captured_connect_endpoints(
+    source: &str,
+) -> (reify_compiler::PortPath, reify_compiler::PortPath) {
+    let module = compile_source(source);
+    let errors = errors_only(&module);
+    assert!(
+        errors.is_empty(),
+        "expected no errors for deferred-count forall connect, got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("template S not found");
+    assert_eq!(
+        template.forall_templates.len(),
+        1,
+        "expected exactly 1 captured CompiledForallTemplate, got {}",
+        template.forall_templates.len()
+    );
+    match &template.forall_templates[0].body {
+        reify_compiler::CompiledForallBody::Connect { left, right, .. } => {
+            (left.clone(), right.clone())
+        }
+        other => panic!("expected CompiledForallBody::Connect, got {:?}", other),
+    }
+}
+
+/// A source-written literal index (`vents[0]`) is captured as a `Literal`
+/// root, distinct from the bound element, so materialising element `i` never
+/// rewrites it.
+#[test]
+fn forall_connect_over_undef_count_captures_literal_index_endpoint_as_literal_root() {
+    use reify_compiler::{ElementIndex, PortPath, PortRoot};
+
+    let source = r#"
+trait Air { param d : Length }
+structure def Vent {
+    port outlet : out Air { param d : Length = 5mm }
+    port inlet : in Air { param d : Length = 5mm }
+}
+structure def S {
+    sub vents : List<Vent>
+    param n : Int
+    constraint vents.count == n
+    forall v in vents: connect vents[0].outlet -> v.inlet
+}
+"#;
+    let (left, right) = captured_connect_endpoints(source);
+
+    assert_eq!(
+        left,
+        PortPath {
+            root: PortRoot::Literal {
+                sub: "vents".into(),
+                index: ElementIndex::Position(0),
+            },
+            members: vec!["outlet".into()],
+        }
+    );
+    assert_eq!(
+        right,
+        PortPath {
+            root: PortRoot::Element,
+            members: vec!["inlet".into()],
+        }
+    );
+    assert_eq!(left.at_element("vents", 2), "vents[0].outlet");
+    assert_eq!(right.at_element("vents", 2), "vents[2].inlet");
+}
+
+/// A keyed literal endpoint (`bays["intake"]`) is captured as a `Literal`
+/// root carrying the `MemberKey`, and renders with the keyed NodeId segment.
+#[test]
+fn forall_connect_over_undef_count_captures_keyed_literal_endpoint() {
+    use reify_compiler::{ElementIndex, PortPath, PortRoot};
+
+    let source = r#"
+trait Air { param d : Length }
+structure def Vent {
+    param area : Length = 1mm
+    port outlet : out Air { param d : Length = 5mm }
+    port inlet : in Air { param d : Length = 5mm }
+}
+structure def S {
+    sub vents : List<Vent>
+    sub bays : Keyed<Vent> { "intake" => { area = 5mm } }
+    param n : Int
+    constraint vents.count == n
+    forall v in vents: connect bays["intake"].outlet -> v.inlet
+}
+"#;
+    let (left, _right) = captured_connect_endpoints(source);
+
+    assert_eq!(
+        left,
+        PortPath {
+            root: PortRoot::Literal {
+                sub: "bays".into(),
+                index: ElementIndex::Key(reify_ir::MemberKey::new("intake")),
+            },
+            members: vec!["outlet".into()],
+        }
+    );
+    assert_eq!(left.at_element("vents", 1), "bays[\"intake\"].outlet");
 }
 
 /// task 2690 amendment (reviewer suggestion 2): pin the connector-spec drop
