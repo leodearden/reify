@@ -3,9 +3,10 @@ _pcc_test_support.py — shared, downward support for the scripts/test_pcc_*.py
 partitions of the scripts/prd-capability-check.py unittest suite.  It loads the
 hyphenated checker by path as `pcc` (the filename is not importable by name),
 and holds what more than one partition needs: the repo paths and value-cell
-constants, the grammar-e2e skip-guard, the measured cache-denial signature and
-the TREE_SITTER_BIN stub factories.  It imports no test file and defines no
-TestCase.  Run the suite through tests/infra/test_prd_capability_check.sh, or
+constants, the grammar-e2e skip-guard (with the un-memoized status it wraps),
+the measured cache-denial signature and the shared TREE_SITTER_BIN stub
+factories.  A fixture only one partition uses lives in that partition.  It
+imports no test file and defines no TestCase.  Run the suite through tests/infra/test_prd_capability_check.sh, or
 one partition at a time with `python3 scripts/test_pcc_<area>.py`.
 """
 
@@ -43,20 +44,13 @@ _VALUE_CELLS_FIXTURE = os.path.join(
     "tests", "prd-gate", "fixtures", "value_clean_eval_cells.ri"
 )
 
-# The three-line shape `reify eval` really prints for that fixture, and the
-# constraint the committed example holds its first cell to.  Named once here:
-# renaming the fixture or rewording a printed cell is then one edit, not five.
+# The three-line shape `reify eval` really prints for that fixture.  Named once
+# here: renaming the fixture or rewording a printed cell is then one edit, not five.
 _VALUE_CELLS_STDOUT = (
     "ValueCleanEvalCells.damping_ratio = 0.018\n"
     "ValueCleanEvalCells.degenerate_ratio = 0\n"
     "ValueCleanEvalCells.undef_ratio = undef\n"
 )
-
-_DAMPING_SPEC = {
-    "pattern": r"ValueCleanEvalCells\.damping_ratio = ([-+0-9.eE]+)",
-    "min": 0.01,
-    "max": 0.03,
-}
 
 
 # ---------------------------------------------------------------------------
@@ -156,9 +150,9 @@ _CACHE_DENIED_STDERR = (
 
 
 # ---------------------------------------------------------------------------
-# TREE_SITTER_BIN stub factories (module-level so both the grammar_substrate_usable()
-# unit tests and the --grammar-substrate-status CLI tests in TestMain share one
-# definition of "what a denied / clean / rejecting tree-sitter looks like").
+# TREE_SITTER_BIN stub factories used by more than one partition, so they all
+# share one definition of "what a denied / clean / wedged / unlaunchable
+# tree-sitter looks like".
 # ---------------------------------------------------------------------------
 
 def _write_ts_stub(tmpdir: str, name: str, body: str) -> str:
@@ -183,14 +177,6 @@ def _ts_stub_cache_denied(tmpdir: str, name: str = "ts_stub_denied") -> str:
         f.write(_CACHE_DENIED_STDERR)
     return _write_ts_stub(tmpdir, name, f"""\
         cat {shlex.quote(stderr_file)} >&2
-        exit 1
-    """)
-
-
-def _ts_stub_parse_error(tmpdir: str, name: str = "ts_stub_parse_error") -> str:
-    """Stub reproducing an ordinary grammar rejection: parse error, exit 1."""
-    return _write_ts_stub(tmpdir, name, """\
-        echo 'x.ri\t0 ms\t(ERROR [0, 0] - [3, 0])' >&2
         exit 1
     """)
 
@@ -229,26 +215,6 @@ def _ts_stub_hangs(tmpdir: str, name: str = "ts_stub_hangs", seconds: int = 5) -
     has to outlast that bound.
     """
     return _write_ts_stub(tmpdir, name, f"sleep {seconds}\n")
-
-
-def _ts_stub_forks_grandchild(
-    tmpdir: str, pidfile: str, name: str = "ts_stub_forks", seconds: int = 120
-) -> str:
-    """Stub that backgrounds a long sleeper, records its pid, then wedges itself.
-
-    Models the wedged tree-sitter the substrate bound is sized for: one that had
-    already forked `cc` for the cold-cache grammar compile.  The grandchild
-    inherits the probe's stdout/stderr pipes, so killing only the direct child
-    leaves it running and still holding them.
-
-    `seconds` outlasts any plausible test bound, so a sleeper found alive is a
-    real leak rather than a race with its own exit.
-    """
-    return _write_ts_stub(tmpdir, name, f"""\
-        sleep {seconds} &
-        echo $! > {shlex.quote(pidfile)}
-        sleep {seconds}
-    """)
 
 
 def _ts_stub_not_executable(tmpdir: str, name: str = "ts_stub_not_exec") -> str:

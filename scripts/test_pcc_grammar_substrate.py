@@ -9,6 +9,7 @@ tests/infra/test_prd_capability_check.sh.
 
 import glob
 import os
+import shlex
 import shutil
 import signal
 import subprocess
@@ -27,10 +28,9 @@ from _pcc_test_support import (
     _patch_parser_c,
     _ts_stub_cache_denied,
     _ts_stub_clean,
-    _ts_stub_forks_grandchild,
     _ts_stub_hangs,
     _ts_stub_not_executable,
-    _ts_stub_parse_error,
+    _write_ts_stub,
 )
 
 
@@ -352,6 +352,34 @@ class TestGrammarCacheDenialAnchoring(unittest.TestCase):
 # ---------------------------------------------------------------------------
 # 5894 step-3 (RED): grammar_substrate_usable() — behavioural substrate probe
 # ---------------------------------------------------------------------------
+
+def _ts_stub_parse_error(tmpdir: str, name: str = "ts_stub_parse_error") -> str:
+    """Stub reproducing an ordinary grammar rejection: parse error, exit 1."""
+    return _write_ts_stub(tmpdir, name, """\
+        echo 'x.ri\t0 ms\t(ERROR [0, 0] - [3, 0])' >&2
+        exit 1
+    """)
+
+
+def _ts_stub_forks_grandchild(
+    tmpdir: str, pidfile: str, name: str = "ts_stub_forks", seconds: int = 120
+) -> str:
+    """Stub that backgrounds a long sleeper, records its pid, then wedges itself.
+
+    Models the wedged tree-sitter the substrate bound is sized for: one that had
+    already forked `cc` for the cold-cache grammar compile.  The grandchild
+    inherits the probe's stdout/stderr pipes, so killing only the direct child
+    leaves it running and still holding them.
+
+    `seconds` outlasts any plausible test bound, so a sleeper found alive is a
+    real leak rather than a race with its own exit.
+    """
+    return _write_ts_stub(tmpdir, name, f"""\
+        sleep {seconds} &
+        echo $! > {shlex.quote(pidfile)}
+        sleep {seconds}
+    """)
+
 
 class TestGrammarSubstrateUsable(unittest.TestCase):
     """Pins pcc.grammar_substrate_usable() -> (bool, reason).

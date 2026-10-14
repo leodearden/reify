@@ -19,7 +19,6 @@ from typing import Any
 from _pcc_test_support import (
     pcc,
     _CACHE_DENIED_STDERR,
-    _DAMPING_SPEC,
     _EXAMPLE_PROBE_SET,
     _REPO_ROOT,
     _VALUE_CELLS_FIXTURE,
@@ -703,6 +702,14 @@ class TestMain(_MainHarness, unittest.TestCase):
 # ---------------------------------------------------------------------------
 # #6876 step-09 (RED): value-probe result legibility + the real-binary e2e
 # ---------------------------------------------------------------------------
+
+# The constraint the committed example holds the value-cells fixture's first cell to.
+_DAMPING_SPEC = {
+    "pattern": r"ValueCleanEvalCells\.damping_ratio = ([-+0-9.eE]+)",
+    "min": 0.01,
+    "max": 0.03,
+}
+
 
 class TestValueProbeReporting(_MainHarness, unittest.TestCase):
     """A value FAIL must say WHICH defect it found.
