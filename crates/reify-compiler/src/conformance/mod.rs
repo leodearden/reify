@@ -2886,6 +2886,31 @@ mod tests {
             .collect()
     }
 
+    /// Assert that `run` emitted exactly one diagnostic, carrying `code`, whose message
+    /// contains every one of `fragments`.
+    fn assert_sole_diagnostic(run: &ConformanceRun, code: DiagnosticCode, fragments: &[&str]) {
+        assert_eq!(
+            run.diagnostics.len(),
+            1,
+            "expected exactly one diagnostic; got: {:?}",
+            run.diagnostics
+        );
+        let diagnostic = &run.diagnostics[0];
+        assert_eq!(
+            diagnostic.code,
+            Some(code),
+            "wrong diagnostic code for: {}",
+            diagnostic.message
+        );
+        for fragment in fragments {
+            assert!(
+                diagnostic.message.contains(fragment),
+                "message should contain {fragment:?}; got: {}",
+                diagnostic.message
+            );
+        }
+    }
+
     // --- B10: how same-name trait defaults collide (PRD
     // docs/prds/v0_6/compiler-declaration-passes.md §6) ---
     //
@@ -3088,6 +3113,120 @@ mod tests {
             run.injected_cells
         );
         assert_eq!(injected_c[0].kind, ValueCellKind::Let);
+    }
+
+    // --- Requirement checks: what a conformer must provide (inline `.ri` through
+    // `conform_source`; each asserts the EXACT diagnostic count, which the narrow
+    // harness keeps meaningful) ---
+
+    /// A `param` requirement that neither the structure nor any trait default provides
+    /// is reported as a missing member.
+    #[test]
+    fn param_requirement_without_member_or_default_reports_missing_member() {
+        let run = conform_source(
+            r"
+            trait T { param w : Real }
+            structure def S : T {}
+            ",
+        );
+
+        assert_sole_diagnostic(&run, DiagnosticCode::MissingRequiredMember, &["'w'"]);
+    }
+
+    /// A `let` member is a computed slot, not a settable one, so it cannot satisfy a
+    /// `param` requirement. The diagnostic names the `param` slot the structure must
+    /// provide; the properly provided `width` produces nothing.
+    #[test]
+    fn let_member_does_not_satisfy_param_requirement() {
+        let run = conform_source(
+            r"
+            trait T {
+                param width : Real
+                param length : Real
+            }
+            structure def S : T {
+                param width : Real
+                let length : Real = 2.0
+            }
+            ",
+        );
+
+        assert_sole_diagnostic(
+            &run,
+            DiagnosticCode::MissingRequiredMember,
+            &["'length'", "`param` slot"],
+        );
+    }
+
+    /// A structure member whose type does not convert to the required type is a type
+    /// mismatch, however the trait chain's defaults look.
+    #[test]
+    fn param_member_of_wrong_type_reports_type_mismatch() {
+        let run = conform_source(
+            r"
+            trait T { param w : Real }
+            structure def S : T { param w : Bool }
+            ",
+        );
+
+        assert_sole_diagnostic(&run, DiagnosticCode::TypeMismatchForTraitMember, &["'w'"]);
+    }
+
+    /// With no member of its own, a `param` requirement can still be met by another
+    /// trait's default — but only when that default's type fits. A Bool default does
+    /// not satisfy a Real requirement.
+    #[test]
+    fn param_requirement_met_only_by_wrong_typed_default_reports_mismatch() {
+        let run = conform_source(
+            r"
+            trait A { param w : Real }
+            trait B { param w : Bool = true }
+            structure def S : A + B {}
+            ",
+        );
+
+        assert_sole_diagnostic(
+            &run,
+            DiagnosticCode::TypeMismatchForTraitMember,
+            &["available default", "'w'"],
+        );
+    }
+
+    /// A `sub` requirement the structure does not declare is reported by name.
+    #[test]
+    fn missing_required_sub_component_is_reported() {
+        let run = conform_source(
+            r"
+            structure def Hole {}
+            trait T { sub mount = Hole() }
+            structure def S : T {}
+            ",
+        );
+
+        assert_sole_diagnostic(
+            &run,
+            DiagnosticCode::MissingRequiredSubComponent,
+            &["'mount'"],
+        );
+    }
+
+    /// An enum-typed `param` requirement is satisfied by a structure `param` of the same
+    /// enum type: the member's annotation resolves through the enum table.
+    #[test]
+    fn enum_typed_param_requirement_is_satisfied_by_enum_typed_member() {
+        let run = conform_source(
+            r"
+            enum Polarity { In, Out }
+            trait T { param dir : Polarity }
+            structure def S : T { param dir : Polarity }
+            ",
+        );
+
+        assert!(
+            run.diagnostics.is_empty(),
+            "expected no diagnostics; got: {:?}",
+            run.diagnostics
+        );
     }
 
     /// RED (task 3939 δ, step-3): a required associated function that the
