@@ -17,7 +17,8 @@
 #   REIFY_CPU_ADMIT_AGENT_THRESHOLD  — agent-path PSI ceiling (default 50).
 #     Mapped onto REIFY_CPU_ADMIT_THRESHOLD so the agent path is tunable
 #     independently of verify.sh compile_gate's 85.  [wired in step-6]
-#   REIFY_CPU_ADMIT_MAX_WAIT         — timeout in seconds (default 300)
+#   REIFY_CPU_ADMIT_MAX_WAIT         — no effect here: admit mode holds without
+#     bound (task 4920); it is only requeue mode's deadline (see cpu-admit.sh).
 #   REIFY_CPU_ADMIT_POLL             — poll interval in seconds (default 5)
 #   REIFY_CPU_ADMIT_PROC_PATH        — PSI source override (testing/non-Linux)
 #   REIFY_CPU_ADMIT_DISABLE          — set to 1 for total bypass (break-glass)
@@ -25,8 +26,9 @@
 #
 # SEED → FIRST-BUILD START LOG (task 7424): in a seeded lane (one with a
 # <lane>.seed-stamp.json sibling) each heavy subcommand appends its start to
-# <lane>/target/.reify-cargo-starts.jsonl. A no-op until dark-factory prepends
-# scripts/agent-bin to agent PATH; see docs/notes/verify-instrumentation-ledger.md.
+# <lane>/target/.reify-cargo-starts.jsonl. Inert while reify's agent CPU
+# governance is off (this shim is not on agent PATH); activation is owned by
+# #5908. See docs/notes/verify-instrumentation-ledger.md.
 
 set -euo pipefail
 
