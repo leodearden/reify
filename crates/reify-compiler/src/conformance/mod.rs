@@ -2694,10 +2694,10 @@ mod tests {
 
     /// Run `check_trait_conformance` for `structure_def` against `traits`.
     ///
-    /// The ONE in-test call site of `check_trait_conformance`: [`run_conformance`],
-    /// [`run_conformance_with_assoc_fns`] and [`conform_source`] all funnel through
-    /// here, so the scaffolding (scope, out-params, registries, the 16-argument call
-    /// itself) is written once and a future signature change is edited once.
+    /// The ONE in-test call site of `check_trait_conformance`: [`run_conformance`] and
+    /// [`conform_source`] both funnel through here, so the scaffolding (scope,
+    /// out-params, registries, the 16-argument call itself) is written once and a
+    /// future signature change is edited once.
     fn conform(
         traits: &[CompiledTrait],
         structure_def: &reify_ast::StructureDef,
@@ -2749,29 +2749,17 @@ mod tests {
         }
     }
 
-    /// Run `check_trait_conformance` against the given traits and structure, returning all
-    /// diagnostics emitted.
+    /// Run `check_trait_conformance` for a hand-built `structure_def` against `traits`,
+    /// with no structure names in scope.
     ///
-    /// For hand-built fixtures that only need to assert on the returned
-    /// `Vec<Diagnostic>`; reach for [`conform_source`] when the fixture can be
-    /// written as `.ri` source.
+    /// For fixtures that need a hand-built AST or hand-compiled trait; reach for
+    /// [`conform_source`] when the fixture can be written as `.ri` source.
     fn run_conformance(
         traits: &[CompiledTrait],
         structure_def: &reify_ast::StructureDef,
         enum_defs: &[reify_ir::EnumDef],
-    ) -> Vec<Diagnostic> {
-        conform(traits, structure_def, enum_defs, &HashSet::new()).diagnostics
-    }
-
-    /// Sibling of [`run_conformance`] that also surfaces the populated assoc-fn
-    /// table so the table-population tests can assert on its contents.
-    fn run_conformance_with_assoc_fns(
-        traits: &[CompiledTrait],
-        structure_def: &reify_ast::StructureDef,
-        enum_defs: &[reify_ir::EnumDef],
-    ) -> (Vec<Diagnostic>, Vec<CompiledAssocFn>) {
-        let run = conform(traits, structure_def, enum_defs, &HashSet::new());
-        (run.diagnostics, run.assoc_fns)
+    ) -> ConformanceRun {
+        conform(traits, structure_def, enum_defs, &HashSet::new())
     }
 
     /// Parse `source`, compile its traits as `traits_phase` does, and run
@@ -2865,16 +2853,21 @@ mod tests {
             .collect()
     }
 
-    /// Assert that `run` emitted exactly one diagnostic, carrying `code`, whose message
-    /// contains every one of `fragments`.
-    fn assert_sole_diagnostic(run: &ConformanceRun, code: DiagnosticCode, fragments: &[&str]) {
+    /// The one diagnostic `run` emitted; fails if it emitted any other number.
+    fn sole_diagnostic(run: &ConformanceRun) -> &Diagnostic {
         assert_eq!(
             run.diagnostics.len(),
             1,
             "expected exactly one diagnostic; got: {:?}",
             run.diagnostics
         );
-        let diagnostic = &run.diagnostics[0];
+        &run.diagnostics[0]
+    }
+
+    /// Assert that `run` emitted exactly one diagnostic, carrying `code`, whose message
+    /// contains every one of `fragments`.
+    fn assert_sole_diagnostic(run: &ConformanceRun, code: DiagnosticCode, fragments: &[&str]) {
+        let diagnostic = sole_diagnostic(run);
         assert_eq!(
             diagnostic.code,
             Some(code),
@@ -3084,9 +3077,10 @@ mod tests {
         assert_eq!(injected_c[0].kind, ValueCellKind::Let);
     }
 
-    // --- Requirement checks: what a conformer must provide (inline `.ri` through
-    // `conform_source`; each asserts the EXACT diagnostic count, which the narrow
-    // harness keeps meaningful) ---
+    // --- Requirement checks and member annotations: what a conformer must provide,
+    // and how its own annotations resolve (inline `.ri` through `conform_source`;
+    // each asserts the EXACT diagnostic count, which the narrow harness keeps
+    // meaningful) ---
 
     /// A `param` requirement that neither the structure nor any trait default provides
     /// is reported as a missing member.
@@ -3196,6 +3190,47 @@ mod tests {
             "expected no diagnostics; got: {:?}",
             run.diagnostics
         );
+    }
+
+    /// A conformer `param` that gives a non-generic enum type arguments
+    /// (`Polarity<Real>`) is a user-facing error, reported once. It is a diagnostic
+    /// rather than a `debug_assert!`, so release builds surface it too.
+    #[test]
+    fn enum_with_type_args_emits_error_diagnostic() {
+        let run = conform_source(
+            r"
+            enum Polarity { In, Out }
+            trait T {}
+            structure def S : T { param dir : Polarity<Real> }
+            ",
+        );
+
+        // No diagnostic code identifies this error, so its message does.
+        let diagnostic = sole_diagnostic(&run);
+        assert!(
+            diagnostic
+                .message
+                .contains("enum `Polarity` does not accept type arguments"),
+            "wrong diagnostic: {}",
+            diagnostic.message
+        );
+    }
+
+    /// An unknown type name given type arguments (`NotAnEnum<Real>`) is one unresolved
+    /// type, even with an enum declared. It neither resolves silently nor draws the
+    /// enum-only "does not accept type arguments" error, which needs the name to be a
+    /// declared enum.
+    #[test]
+    fn unknown_named_type_with_type_args_produces_unresolved_diagnostic() {
+        let run = conform_source(
+            r"
+            enum Polarity { In, Out }
+            trait T {}
+            structure def S : T { param p : NotAnEnum<Real> }
+            ",
+        );
+
+        assert_sole_diagnostic(&run, DiagnosticCode::UnresolvedType, &["NotAnEnum"]);
     }
 
     // --- Default injection: what conformance adds to the conformer ---
@@ -3395,7 +3430,7 @@ mod tests {
             annotations: vec![],
         };
 
-        let diagnostics = run_conformance(&[shape], &structure_def, &[]);
+        let diagnostics = run_conformance(&[shape], &structure_def, &[]).diagnostics;
 
         let fn_not_satisfied: Vec<_> = diagnostics
             .iter()
@@ -3561,7 +3596,7 @@ mod tests {
             "Length",
         )]);
 
-        let diagnostics = run_conformance(&[shape], &structure_def, &[]);
+        let diagnostics = run_conformance(&[shape], &structure_def, &[]).diagnostics;
 
         let mismatch: Vec<_> = diagnostics
             .iter()
@@ -3606,7 +3641,7 @@ mod tests {
             "Real",
         )]);
 
-        let diagnostics = run_conformance(&[shape], &structure_def, &[]);
+        let diagnostics = run_conformance(&[shape], &structure_def, &[]).diagnostics;
 
         let mismatch: Vec<_> = diagnostics
             .iter()
@@ -3711,8 +3746,11 @@ mod tests {
         let shape = shape_with_default_fn("area", 1.0);
         let structure_def = structure_s_conforming_shape(vec![]); // no override
 
-        let (diagnostics, assoc_fns) =
-            run_conformance_with_assoc_fns(&[shape], &structure_def, &[]);
+        let ConformanceRun {
+            diagnostics,
+            assoc_fns,
+            ..
+        } = run_conformance(&[shape], &structure_def, &[]);
 
         // A default-providing fn imposes no requirement, so conformance is clean.
         assert!(
@@ -3760,8 +3798,8 @@ mod tests {
     fn override_assoc_fn_beats_default_in_table() {
         // Reference run: no override → the injected default body (1.0).
         let s_default = structure_s_conforming_shape(vec![]);
-        let (_d0, assoc_default) =
-            run_conformance_with_assoc_fns(&[shape_with_default_fn("area", 1.0)], &s_default, &[]);
+        let assoc_default =
+            run_conformance(&[shape_with_default_fn("area", 1.0)], &s_default, &[]).assoc_fns;
         assert_eq!(
             assoc_default.len(),
             1,
@@ -3773,8 +3811,8 @@ mod tests {
         let s_override = structure_s_conforming_shape(vec![reify_ast::MemberDecl::Fn(
             assoc_fn_def("area", vec![assoc_self_param()], "Real", 2.0),
         )]);
-        let (_d1, assoc_override) =
-            run_conformance_with_assoc_fns(&[shape_with_default_fn("area", 1.0)], &s_override, &[]);
+        let assoc_override =
+            run_conformance(&[shape_with_default_fn("area", 1.0)], &s_override, &[]).assoc_fns;
         assert_eq!(
             assoc_override.len(),
             1,
@@ -3815,7 +3853,11 @@ mod tests {
             "Length",
         )]);
 
-        let (diagnostics, assoc_fns) = run_conformance_with_assoc_fns(&[shape], &s_override, &[]);
+        let ConformanceRun {
+            diagnostics,
+            assoc_fns,
+            ..
+        } = run_conformance(&[shape], &s_override, &[]);
 
         let mismatch: Vec<_> = diagnostics
             .iter()
@@ -3863,7 +3905,11 @@ mod tests {
             "Nonexistent",
         )]);
 
-        let (diagnostics, assoc_fns) = run_conformance_with_assoc_fns(&[shape], &s_override, &[]);
+        let ConformanceRun {
+            diagnostics,
+            assoc_fns,
+            ..
+        } = run_conformance(&[shape], &s_override, &[]);
 
         let unresolved: Vec<_> = diagnostics
             .iter()
@@ -3898,147 +3944,6 @@ mod tests {
             "an errored / sig-mismatched required override must be kept out of the \
              assoc-fn table; got: {:?}",
             assoc_fns
-        );
-    }
-
-    /// Test that a `param` annotation with `EnumName<T>` (non-empty type_args) emits a
-    /// user-facing `Diagnostic::error` with the message
-    /// "enum `Polarity` does not accept type arguments".
-    ///
-    /// Unlike a `debug_assert!`, the diagnostic is emitted in both debug and release builds,
-    /// so this test validates the error is always surfaced to users regardless of build profile.
-    #[test]
-    fn enum_with_type_args_emits_error_diagnostic() {
-        // Polarity<Something> — non-empty type_args that should trigger the diagnostic
-        let bogus_type_arg = reify_ast::TypeExpr {
-            kind: reify_ast::TypeExprKind::Named {
-                name: "Something".to_string(),
-                type_args: vec![],
-            },
-            span: SourceSpan::empty(0),
-        };
-        let direction_with_args = reify_ast::TypeExpr {
-            kind: reify_ast::TypeExprKind::Named {
-                name: "Polarity".to_string(),
-                type_args: vec![bogus_type_arg],
-            },
-            span: SourceSpan::empty(0),
-        };
-
-        let enum_defs = vec![reify_ir::EnumDef {
-            name: "Polarity".to_string(),
-            variants: vec!["In".into(), "Out".into()],
-            doc: None,
-            type_params: vec![],
-        }];
-
-        let structure_def = reify_ast::StructureDef {
-            name: "S".to_string(),
-            doc: None,
-            is_pub: false,
-            type_params: vec![],
-            trait_bounds: vec![],
-            members: vec![reify_ast::MemberDecl::Param(reify_ast::ParamDecl {
-                name: "dir".to_string(),
-                doc: None,
-                is_priv: false,
-                type_expr: Some(direction_with_args),
-                default: None,
-                where_clause: None,
-                annotations: vec![],
-                span: SourceSpan::empty(0),
-                content_hash: ContentHash(0),
-            })],
-            span: SourceSpan::empty(0),
-            content_hash: ContentHash(0),
-            pragmas: vec![],
-            annotations: vec![],
-        };
-
-        let diagnostics = run_conformance(&[], &structure_def, &enum_defs);
-
-        // Expect exactly one diagnostic reporting the type-args error.
-        let type_args_errors: Vec<_> = diagnostics
-            .iter()
-            .filter(|d| d.message.contains("does not accept type arguments"))
-            .collect();
-        assert_eq!(
-            type_args_errors.len(),
-            1,
-            "Expected exactly one 'does not accept type arguments' diagnostic; got: {:?}",
-            diagnostics
-        );
-    }
-
-    /// A non-enum type name with non-empty type_args (e.g. `NotAnEnum<Something>`) should
-    /// produce exactly one "unresolved type" diagnostic — the same outcome as `NotAnEnum`
-    /// without type_args, because enum-resolution is gated on the name matching an enum.
-    ///
-    /// The positive assertion (`unresolved.len() == 1`) is the load-bearing check here:
-    /// it verifies that an unknown parameterized type name falls through to the
-    /// "unresolved type" diagnostic rather than silently resolving to `Type::dimensionless_scalar()` or
-    /// emitting a spurious "does not accept type arguments" error.
-    #[test]
-    fn unknown_named_type_with_type_args_produces_unresolved_diagnostic() {
-        // NotAnEnum<Something> — non-empty type_args but "NotAnEnum" is not in enum_defs
-        let bogus_type_arg = reify_ast::TypeExpr {
-            kind: reify_ast::TypeExprKind::Named {
-                name: "Something".to_string(),
-                type_args: vec![],
-            },
-            span: SourceSpan::empty(0),
-        };
-        let non_enum_with_args = reify_ast::TypeExpr {
-            kind: reify_ast::TypeExprKind::Named {
-                name: "NotAnEnum".to_string(),
-                type_args: vec![bogus_type_arg],
-            },
-            span: SourceSpan::empty(0),
-        };
-
-        let enum_defs = vec![reify_ir::EnumDef {
-            name: "Polarity".to_string(),
-            variants: vec!["In".into(), "Out".into()],
-            doc: None,
-            type_params: vec![],
-        }];
-
-        let structure_def = reify_ast::StructureDef {
-            name: "S".to_string(),
-            doc: None,
-            is_pub: false,
-            type_params: vec![],
-            trait_bounds: vec![],
-            members: vec![reify_ast::MemberDecl::Param(reify_ast::ParamDecl {
-                name: "p".to_string(),
-                doc: None,
-                is_priv: false,
-                type_expr: Some(non_enum_with_args),
-                default: None,
-                where_clause: None,
-                annotations: vec![],
-                span: SourceSpan::empty(0),
-                content_hash: ContentHash(0),
-            })],
-            span: SourceSpan::empty(0),
-            content_hash: ContentHash(0),
-            pragmas: vec![],
-            annotations: vec![],
-        };
-
-        // Should NOT panic — "NotAnEnum" is not in enum_defs, so the enum-match arm
-        // (where the debug_assert lives) is never taken.
-        let diagnostics = run_conformance(&[], &structure_def, &enum_defs);
-
-        // The unknown type produces an "unresolved type" diagnostic — not a panic.
-        let unresolved: Vec<_> = diagnostics
-            .iter()
-            .filter(|d| d.message.contains("unresolved type"))
-            .collect();
-        assert_eq!(
-            unresolved.len(),
-            1,
-            "Expected exactly one 'unresolved type' diagnostic"
         );
     }
 
