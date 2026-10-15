@@ -86,6 +86,7 @@ use crate::math_signatures::{
 };
 use crate::orientation_signatures::{ORIENTATION_DECOMPOSER_FN_NAMES, ORIENTATION_TYPED_FN_NAMES};
 use crate::relation_signatures::{RELATION_FN_NAMES, is_relation_shared_verb};
+use crate::trajectory_signatures::TRAJECTORY_SCALAR_INTRINSIC_NAMES;
 use crate::units::{
     AFFINE_ALGEBRA_NAMES, AFFINE_MAP_CONSTRUCTOR_NAMES, DATUM_CONSTRUCTOR_NAMES,
     DYNAMICS_CONSTRUCTOR_NAMES, DYNAMICS_QUERY_NAMES, FEA_ENVELOPE_NAMES, FIELD_OP_NAMES,
@@ -413,6 +414,7 @@ const BUILTIN_NAME_FAMILIES: &[(&str, &[&str])] = &[
     family_row!(ORIENTATION_TYPED_FN_NAMES),
     family_row!(ORIENTATION_DECOMPOSER_FN_NAMES),
     family_row!(FLEXURE_CTOR_FN_NAMES),
+    family_row!(TRAJECTORY_SCALAR_INTRINSIC_NAMES),
     // Resolver-only families, promoted to slices by #5371.
     family_row!(DATUM_CONSTRUCTOR_NAMES),
     family_row!(SELECTOR_COMPOSITION_NAMES),
@@ -584,6 +586,7 @@ mod tests {
             "orient_slerp",
             "orient_to_euler",
             "prb_cantilever_beam",
+            "peak_deviation_at",
             "midplane",
             "intersect",
             "flat_map",
