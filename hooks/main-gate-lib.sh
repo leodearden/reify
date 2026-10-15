@@ -46,6 +46,18 @@ main_gate_mark() {
     printf '%s\n' "$_tip" > "${_sentinel}.tmp.$$" && mv -f "${_sentinel}.tmp.$$" "$_sentinel"
 }
 
+# main_gate_unmark — compare-and-delete: remove the sentinel only when it holds
+# the token a mark would write now (cleanup after a failed CAS), never a token
+# bound to another tip. Always returns 0.
+main_gate_unmark() {
+    local _sentinel _tip
+    _sentinel="$(main_gate_sentinel)"
+    [ -e "$_sentinel" ] || return 0
+    _tip="$(main_gate_tip)" || return 0
+    [ "$(main_gate_token)" = "$_tip" ] && rm -f "$_sentinel"
+    return 0
+}
+
 # main_gate_token — print the sentinel's token: the main tip the mark was bound
 # to. Empty = a legacy unbound mark (transition arm, removed by L10 #8713).
 main_gate_token() {

@@ -1386,15 +1386,13 @@ git:
   persistent_offline_deep_worktree: true
   offline_lane_enabled: true
   offline_lane_infra_enabled: true
-  # Main-gate sanction handshake (task 4367 step 1; dark_factory:1678 wired the
-  # orchestrator side). advance_main runs main_gate_mark_command BEFORE its CAS
-  # update-ref, so the reify reference-transaction hook records the orchestrator
-  # merge worker's ~28 landings/day as `sanctioned` (not UNSANCTIONED) in
-  # reify-main-gate.log. The sentinel path matches hooks/main-gate-lib.sh.
-  # Enforcement stays OFF (warn-only) — this only populates the re-observe
-  # window (4367 step 3); the durable ENFORCE flip is 4367 step 4.
-  main_gate_mark_command: 'touch "$(git rev-parse --git-common-dir)/reify-main-gate-ok"'
-  main_gate_unmark_command: 'rm -f "$(git rev-parse --git-common-dir)/reify-main-gate-ok"'
+  # Main-gate sanction handshake: advance_main / recover_red_main run the mark before their CAS
+  # update-ref and the unmark after a failed one (`sh -c`, cwd=project_root). Token format and
+  # consume rules: hooks/main-gate-lib.sh, PRD docs/prds/v0_6/warm-lane-scripts-one-lock-one-env-one-oracle.md D9.
+  # Restart-only: applies at the next scripts/orchestrator-redeploy-restart.sh; until then the old
+  # `touch` writes an empty token, which the hook's legacy arm still sanctions (removed by #8713).
+  main_gate_mark_command: 'scripts/main-gate-mark.sh mark'
+  main_gate_unmark_command: 'scripts/main-gate-mark.sh unmark'
   # Warm-lane base location (DA3/DA4, task 4696 R3).
   # The gen-dir base lives at an XFS sibling of worktrees/ so DF's worktree prune
   # never touches it (it is OUTSIDE worktree_base).  Mount /home/leo/src/warm-lanes
