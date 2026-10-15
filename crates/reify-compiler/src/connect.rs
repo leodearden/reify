@@ -1,66 +1,9 @@
 use super::*;
 use std::collections::{HashMap, HashSet};
 
+/// The flat port name of a connect endpoint outside any `forall` binding.
 pub(crate) fn resolve_port_name(expr: &reify_ast::Expr) -> Option<String> {
-    match &expr.kind {
-        reify_ast::ExprKind::Ident(name) => Some(name.clone()),
-        reify_ast::ExprKind::MemberAccess { object, member } => match &object.kind {
-            reify_ast::ExprKind::Ident(obj_name) => Some(format!("{}.{}", obj_name, member)),
-            // Indexed sub-component port refs after `forall` substitution
-            // (task 2364): e.g. `vents[0].inlet` parses as
-            // `MemberAccess { object: IndexAccess { Ident("vents"),
-            //                                       NumberLiteral(0) },
-            //                 member: "inlet" }`. Format as the dotted-bracket
-            // string `"vents[0].inlet"` so the sub-member endpoint branches in
-            // `compile_connection` — which skip the own-entity `CompiledPort`
-            // lookup (`own_compiled_port` is `None` for them) and resolve the
-            // direction through `endpoint_direction` instead — flow unchanged.
-            reify_ast::ExprKind::IndexAccess {
-                object: inner,
-                index,
-            } => match (&inner.kind, &index.kind) {
-                (
-                    reify_ast::ExprKind::Ident(obj_name),
-                    reify_ast::ExprKind::NumberLiteral { value: n, .. },
-                ) => Some(format!("{}[{}].{}", obj_name, *n as i64, member)),
-                // Keyed sub-component port refs (task 3932 δ): e.g.
-                // `vents["intake"].inlet`. Format the key with {:?} (Debug)
-                // so the emitted segment `vents["intake"].inlet` is
-                // byte-identical to MemberKey::path_segment's output dotted
-                // with the port member name — the connection's right_port must
-                // match the scoped-entity NodeId that from_templates stamps.
-                (reify_ast::ExprKind::Ident(obj_name), reify_ast::ExprKind::StringLiteral(key)) => {
-                    Some(format!("{}[{:?}].{}", obj_name, key, member))
-                }
-                _ => None,
-            },
-            _ => None,
-        },
-        // Bare indexed sub-component (e.g. `vents[0]`) — also produced by
-        // `forall` substitution when the body references the bound var
-        // without dotting into a port. Returned as `"vents[0]"`. Currently
-        // only well-formed `Ident[NumberLiteral]` shapes are accepted; other
-        // index expressions (non-literal index, non-Ident object) return
-        // None so existing diagnostic behaviour is preserved.
-        reify_ast::ExprKind::IndexAccess { object, index } => {
-            match (&object.kind, &index.kind) {
-                (
-                    reify_ast::ExprKind::Ident(obj_name),
-                    reify_ast::ExprKind::NumberLiteral { value: n, .. },
-                ) => Some(format!("{}[{}]", obj_name, *n as i64)),
-                // Bare keyed sub-component ref (task 3932 δ): `vents["intake"]`.
-                // Format the key with {:?} (Debug) so the emitted segment is
-                // byte-identical to MemberKey::path_segment: `vents["intake"]`.
-                (reify_ast::ExprKind::Ident(obj_name), reify_ast::ExprKind::StringLiteral(key)) => {
-                    Some(format!("{}[{:?}]", obj_name, key))
-                }
-                _ => None,
-            }
-        }
-        // Ad-hoc selector: `port @ face("top")` — extract the base port name.
-        reify_ast::ExprKind::AdHocSelector { base, .. } => resolve_port_name(base),
-        _ => None,
-    }
+    PortPath::parse(expr, None)?.port_name()
 }
 
 /// Check if an expression is an ad-hoc selector.

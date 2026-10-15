@@ -189,54 +189,6 @@ pub(crate) fn deactivate_if_not_auto(
     }
 }
 
-/// Rewrite the FIRST occurrence of `<sub_name>[0]` → `<sub_name>[i]` in a
-/// flat port-name template.
-///
-/// Used by the forall-Connect runtime re-emission path (task 2690) to
-/// substitute the captured placeholder element index into each per-element
-/// `CompiledConnection`'s `left_port` / `right_port`.
-///
-/// # Single-replacement contract (task 2690 amendment)
-///
-/// The captured templates come from `connect.rs::resolve_port_name`, which
-/// returns a flat string with at most one bracketed index per side and bails
-/// on nested `IndexAccess`. We use `replacen(.., 1)` rather than `replace(..)`
-/// to bound the rewrite to exactly one occurrence, so that unrelated incidental
-/// repetitions of `<sub_name>[0]` elsewhere in the same template string are
-/// not silently rewritten.
-///
-/// # Substring-rewrite divergence
-///
-/// `resolve_port_name` flattens user-written `Ident[NumberLiteral].member`
-/// shapes into a plain dotted-bracket string before the template is captured.
-/// This means that a port expression such as `vents[0].foo` on the LEFT side
-/// of a forall-Connect body
-///
-/// ```text
-/// forall v in vents: connect vents[0].foo -> v.bar
-/// ```
-///
-/// produces the captured template `"vents[0].foo"`, where the `[0]` is a
-/// *user-written* literal — not the placeholder substituted at runtime.
-/// For `i > 0`, `replacen(.., 1)` rewrites that literal to `vents[i].foo`,
-/// diverging from the resolved (non-deferred) Connect path, where
-/// `compile_connection` runs independently per element and the LEFT-side
-/// literal stays `vents[0].foo` for every `i`. This is a known, vanishingly
-/// rare edge case; it is documented here rather than guarded against at
-/// runtime.
-///
-/// The compile-time placeholder element shape is `<sub>[0]` for the deferred
-/// capture path, mirroring the Constraint-arm's
-/// `<parent>.<sub>[0]` cell-id rewrite (see `engine_edit.rs` Constraint arm
-/// and `types.rs::CompiledForallBody::Connect` docstring). The substring is
-/// anchored on `sub_name` (not just `[0]`) to reduce the risk of accidentally
-/// rewriting a literal `[0]` elsewhere in the port name.
-pub(crate) fn rewrite_port_placeholder(template: &str, sub_name: &str, i: i64) -> String {
-    let placeholder = format!("{}[0]", sub_name);
-    let target = format!("{}[{}]", sub_name, i);
-    template.replacen(&placeholder, &target, 1)
-}
-
 /// Re-elaborate the active and inactive branches of a single guarded group
 /// given the already-computed guard value.
 ///
@@ -2492,7 +2444,6 @@ impl Engine {
                 // `<parent>.<sub>[i]` for `i ∈ 0..new_count`.
                 //
                 // Hook point named in `forall_elaborate.rs`'s contract block.
-                // ConnectBody re-emission is reserved for follow-up task 2690.
                 //
                 // `forall_templates` and the ledger were hoisted + realigned
                 // above the outer collection_subs loop; the loop body only
@@ -2550,9 +2501,9 @@ impl Engine {
                     // `forall_emitted[t_idx]` for symmetric drain-on-decrease.
                     match &t.body {
                         CompiledForallBody::Connect {
-                            left_port_template,
+                            left,
                             operator,
-                            right_port_template,
+                            right,
                             connector_type: _,
                             params: _,
                             port_mappings,
@@ -2570,46 +2521,23 @@ impl Engine {
                             //     from the Constraint arm's `forall:`
                             //     prefix, so existing label-filtering tests
                             //     don't mix arms.
-                            //   * Port-name `<sub>[0]` → `<sub>[i]` rewrite
-                            //     is a substring substitution: the captured
-                            //     templates are flat strings (per
-                            //     `connect.rs::resolve_port_name`), so
-                            //     there's no AST to walk. The substring is
-                            //     anchored on `coll_sub_name` to reduce the
-                            //     risk of accidentally rewriting a literal
-                            //     `[0]` elsewhere in the port name. The
-                            //     resolved (non-deferred) Connect path
-                            //     compiles each element directly through
-                            //     `compile_connection`; this runtime path
-                            //     trades that fidelity for not re-running
-                            //     `compile_connection` on every count edit
-                            //     — the same trade the Constraint arm makes
-                            //     for `compile_expr`.
+                            //   * Each endpoint is a typed `PortPath`;
+                            //     `at_element` renders the bound element as
+                            //     `<sub>[i]` and leaves a literal index as
+                            //     written. This path does not re-run
+                            //     `compile_connection` on every count edit —
+                            //     the same trade the Constraint arm makes for
+                            //     `compile_expr`.
                             //   * Synthetic compatibility constraint emits
                             //     `Bool::True` literal — direction-check
                             //     and `connector_sub`/`frame_constraint`
                             //     auto-creation are out of scope for this
                             //     task (per the task's "Out of scope" list).
-                            // Port-name `<sub>[0]` → `<sub>[i]` rewrite is
-                            // factored into `rewrite_port_placeholder` (top
-                            // of file); see its docstring for the
-                            // substring-rewrite edge-case discussion.
                             let cnid_entity = format!(
                                 "forall_connect:{}@{}.{}#{}",
                                 t.variable, t.parent_entity, t.collection_sub_name, t_idx,
                             );
                             for i in 0..new_count {
-                                let rewritten_left = rewrite_port_placeholder(
-                                    left_port_template,
-                                    &t.collection_sub_name,
-                                    i,
-                                );
-                                let rewritten_right = rewrite_port_placeholder(
-                                    right_port_template,
-                                    &t.collection_sub_name,
-                                    i,
-                                );
-
                                 let cnid = ConstraintNodeId::new(&cnid_entity, i as u32);
                                 let id_hash = ContentHash::of_str(&format!("{}", cnid));
                                 let label = format!("forall_connect@{}[{}]", t.variable, i);
@@ -2624,9 +2552,9 @@ impl Engine {
                                 };
                                 new_snapshot.graph.constraints.insert(cnid.clone(), node);
                                 new_snapshot.graph.connections.push(CompiledConnection {
-                                    left_port: rewritten_left,
+                                    left_port: left.at_element(&t.collection_sub_name, i),
                                     operator: *operator,
-                                    right_port: rewritten_right,
+                                    right_port: right.at_element(&t.collection_sub_name, i),
                                     connector_sub: None,
                                     compatibility_constraint: cnid.clone(),
                                     port_mappings: port_mappings.clone(),
