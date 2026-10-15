@@ -264,6 +264,29 @@ mod tests {
         );
     }
 
+    #[test]
+    fn examples_dir_follows_the_runtime_workspace_root_child() {
+        crate::workspace_root::reexec::in_child(|root| {
+            assert_eq!(super::examples_dir(), root.join("examples"));
+        });
+    }
+
+    /// Re-execs with the runtime `CARGO_MANIFEST_DIR` inside a fixture tree:
+    /// in a normal build the compile-time and runtime trees coincide, so only
+    /// a different runtime tree can tell them apart. `examples_dir` is a pure
+    /// path join, so the fixture needs no `examples/` directory.
+    #[test]
+    fn examples_dir_follows_the_runtime_workspace_root() {
+        use crate::workspace_root::reexec::{Launch, fixture_workspace, run_child};
+
+        let fixture = fixture_workspace("examples-corpus-runtime-root-");
+        run_child(
+            "examples_corpus::tests::examples_dir_follows_the_runtime_workspace_root_child",
+            fixture.path(),
+            Launch::ManifestDirEnv,
+        );
+    }
+
     /// `relative_to_examples_dir` produces the canonical skip-list key form for
     /// both top-level and nested paths.
     ///
