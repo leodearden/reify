@@ -15,7 +15,7 @@ pub(crate) const ROOT_MARKER: &str = "crates/reify-test-support/Cargo.toml";
 
 /// The nearest ancestor of `start` (inclusive) that holds [`ROOT_MARKER`], or
 /// `None` when no ancestor does.
-pub fn find_workspace_root(start: &Path) -> Option<PathBuf> {
+fn find_workspace_root(start: &Path) -> Option<PathBuf> {
     start
         .ancestors()
         .find(|dir| dir.join(ROOT_MARKER).is_file())
@@ -24,7 +24,7 @@ pub fn find_workspace_root(start: &Path) -> Option<PathBuf> {
 
 /// Neither runtime candidate lies inside a reify workspace.
 #[derive(Debug)]
-pub struct UnresolvedWorkspaceRoot {
+struct UnresolvedWorkspaceRoot {
     manifest_dir: Option<PathBuf>,
     cwd: Option<PathBuf>,
 }
@@ -60,8 +60,9 @@ fn resolve_workspace_root(
 ///
 /// # Panics
 ///
-/// Panics with [`UnresolvedWorkspaceRoot`]'s message when neither the runtime
-/// `CARGO_MANIFEST_DIR` nor the current directory lies inside a reify tree.
+/// Panics, naming the root marker and both candidate paths, when neither the
+/// runtime `CARGO_MANIFEST_DIR` nor the current directory lies inside a reify
+/// tree.
 pub fn workspace_root() -> &'static Path {
     static ROOT: OnceLock<PathBuf> = OnceLock::new();
     ROOT.get_or_init(|| {
