@@ -2774,8 +2774,15 @@ mod tests {
         (run.diagnostics, run.assoc_fns)
     }
 
-    /// Parse `source`, compile its traits as production does, and run
+    /// Parse `source`, compile its traits as `traits_phase` does, and run
     /// `check_trait_conformance` for its one conformer.
+    ///
+    /// Declarations are scanned by `collect_decl_refs`, the pre-pass a full compile
+    /// starts with, so the fixture's enums arrive with their declared variants and type
+    /// parameters. Variant payload fields stay unresolved (`enums_phase` resolves them
+    /// later in a full compile), so keep fixtures to unit variants. The world is
+    /// otherwise one module with no prelude: only builtin types such as `Real` and
+    /// `Bool` and the fixture's own declarations resolve.
     ///
     /// The conformer is the single `structure def` that declares trait bounds;
     /// `source` must contain exactly one. Diagnostics from compiling the traits come
@@ -2797,25 +2804,29 @@ mod tests {
             parsed.errors
         );
 
-        let mut trait_decls: Vec<&reify_ast::TraitDecl> = vec![];
-        let mut structure_defs: Vec<&reify_ast::StructureDef> = vec![];
-        let mut enum_names: Vec<&str> = vec![];
-        for declaration in &parsed.declarations {
-            match declaration {
-                reify_ast::Declaration::Trait(t) => trait_decls.push(t),
-                reify_ast::Declaration::Structure(s) => structure_defs.push(s),
-                reify_ast::Declaration::Enum(e) => enum_names.push(&e.name),
-                _ => {}
-            }
-        }
-        let trait_names: HashSet<String> = trait_decls.iter().map(|t| t.name.clone()).collect();
-        let structure_names: HashSet<String> =
-            structure_defs.iter().map(|s| s.name.clone()).collect();
-        let enum_defs = enum_table(&enum_names);
+        let mut scan_ctx = crate::compile_builder::ctx::CompilationCtx::new();
+        let decl_refs = crate::compile_builder::pre_pass::collect_decl_refs(&mut scan_ctx, &parsed);
+        assert!(
+            scan_ctx.diagnostics.is_empty(),
+            "declaration errors in conformance fixture: {:?}\n{source}",
+            scan_ctx.diagnostics
+        );
+        let enum_defs = scan_ctx.enum_defs;
+        let trait_names: HashSet<String> = decl_refs
+            .trait_refs
+            .iter()
+            .map(|t| t.name.clone())
+            .collect();
+        let structure_names: HashSet<String> = decl_refs
+            .structure_refs
+            .iter()
+            .map(|s| s.name.clone())
+            .collect();
         let alias_registry = TypeAliasRegistry::new();
 
         let mut trait_diagnostics: Vec<Diagnostic> = vec![];
-        let traits: Vec<CompiledTrait> = trait_decls
+        let traits: Vec<CompiledTrait> = decl_refs
+            .trait_refs
             .iter()
             .map(|t| {
                 crate::traits::compile_trait(
@@ -2829,7 +2840,10 @@ mod tests {
             })
             .collect();
 
-        let mut conformers = structure_defs.iter().filter(|s| !s.trait_bounds.is_empty());
+        let mut conformers = decl_refs
+            .structure_refs
+            .iter()
+            .filter(|s| !s.trait_bounds.is_empty());
         let conformer = conformers
             .next()
             .expect("conformance fixture must declare a structure with trait bounds");
@@ -2883,12 +2897,16 @@ mod tests {
     // conformance phases must reproduce: the ADVERTISED set (which defaults can
     // satisfy a `param` requirement) and the INJECTED set (the cells conformance
     // adds to the conformer).
+    //
+    // Only Param-keyed advertisements are pinned. A Let-keyed one is read solely by a
+    // `let` requirement (a trait `let` with no value), which the parser cannot express,
+    // so it is unobservable from source and a restructure need not reproduce it.
 
     /// Pass 1, annotated-`let` loser: `A`'s `param x` claims the scope slot first, so
-    /// `B`'s annotated `let x` is neither injected nor allowed to double-count, and
-    /// the Param default is what satisfies `C`'s `param x` requirement.
+    /// `B`'s annotated `let x` is not injected, and the Param default is what satisfies
+    /// `C`'s `param x` requirement.
     #[test]
-    fn annotated_trait_let_losing_to_same_name_param_is_neither_injected_nor_double_counted() {
+    fn annotated_trait_let_losing_to_same_name_param_is_not_injected() {
         let run = conform_source(
             r"
             trait A { param x : Real = 1.0 }
@@ -2933,21 +2951,7 @@ mod tests {
             ",
         );
 
-        assert_eq!(
-            run.diagnostics.len(),
-            1,
-            "expected only C's unsatisfied requirement; got: {:?}",
-            run.diagnostics
-        );
-        assert_eq!(
-            run.diagnostics[0].code,
-            Some(DiagnosticCode::MissingRequiredMember)
-        );
-        assert!(
-            run.diagnostics[0].message.contains("'x'"),
-            "diagnostic should name the member 'x'; got: {}",
-            run.diagnostics[0].message
-        );
+        assert_sole_diagnostic(&run, DiagnosticCode::MissingRequiredMember, &["'x'"]);
         let injected = injected_named(&run, "x");
         assert_eq!(
             injected.len(),
@@ -3008,9 +3012,9 @@ mod tests {
     }
 
     /// Pass 2, unannotated-`let` loser whose name the conformer itself declares: `S`'s
-    /// own `param x` overrides `B`'s unannotated `let x`, so conformance injects and
-    /// advertises nothing for it. The `param` uses Bool, the let's inferred type, so
-    /// the conformer-collision rule has nothing to object to.
+    /// own `param x` overrides `B`'s unannotated `let x`, so conformance injects nothing
+    /// for it. The `param` uses Bool, the let's inferred type, so the conformer-collision
+    /// rule has nothing to object to.
     #[test]
     fn structure_member_overriding_unannotated_trait_let_injects_nothing() {
         let run = conform_source(
@@ -3235,6 +3239,33 @@ mod tests {
             1,
             "the unlabeled constraint default must be injected; got: {:?}",
             run.injected_constraints
+        );
+    }
+
+    /// A trait `param` whose default names an enum variant is injected as an enum-typed
+    /// Param cell: the fixture's declared variants reach the compile of the default.
+    #[test]
+    fn enum_variant_param_default_is_injected_as_enum_typed_param() {
+        let run = conform_source(
+            r"
+            enum Polarity { In, Out }
+            trait T { param dir : Polarity = Polarity.In }
+            structure def S : T {}
+            ",
+        );
+
+        assert!(
+            run.diagnostics.is_empty(),
+            "expected no diagnostics; got: {:?}",
+            run.diagnostics
+        );
+        let dir = injected_named(&run, "dir");
+        assert_eq!(dir.len(), 1, "got: {:?}", run.injected_cells);
+        assert_eq!(dir[0].kind, ValueCellKind::Param);
+        assert_eq!(dir[0].cell_type, Type::Enum("Polarity".to_string()));
+        assert!(
+            dir[0].default_expr.is_some(),
+            "the variant default must travel with the injected cell"
         );
     }
 
