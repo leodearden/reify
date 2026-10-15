@@ -96,6 +96,10 @@ fn mcp_server_subcommand_is_rejected_as_unknown() {
 
     assert!(help.status.success(), "reify --help should exit zero");
     assert!(
+        stdout.contains("lsp"),
+        "reify --help should list the surviving commands on stdout, got: {stdout}"
+    );
+    assert!(
         !stdout.contains("mcp-server"),
         "help text should not advertise the removed 'mcp-server' command, got: {stdout}"
     );
