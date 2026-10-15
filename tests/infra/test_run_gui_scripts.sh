@@ -22,6 +22,8 @@ RUN_GUI="$REPO_ROOT/scripts/run-gui.sh"
 
 # Shared launch-environment helpers sourced by BOTH launchers (#7254).
 LIB_GUI_LAUNCH="$REPO_ROOT/scripts/lib_gui_launch.sh"
+# The loader-path helper lib_gui_launch.sh sources from its own dir (#8654).
+LIB_NATIVE_LD_PATH="$REPO_ROOT/scripts/lib_native_ld_path.sh"
 
 # Hermetic display axis (#7290). reify-gui is a GTK/WebKit app and both
 # launchers refuse to build with no display (lib_gui_launch.sh's
@@ -102,16 +104,6 @@ assert "scripts/run-gui.sh cargo build line includes '--release'" \
 
 assert "scripts/run-gui.sh cargo build line includes '--bin reify-gui'" \
     bash -c "grep 'cargo build -p reify-gui' '$RUN_GUI' | grep -q -- '--bin reify-gui'"
-
-# -- Test 6: LD_LIBRARY_PATH export for OCCT ----------------------------------
-echo ""
-echo "--- Test 6: LD_LIBRARY_PATH export for OCCT shared libraries ---"
-
-assert "scripts/run-gui.sh exports LD_LIBRARY_PATH" \
-    bash -c "grep -qE '^[[:space:]]*export LD_LIBRARY_PATH=' '$RUN_GUI'"
-
-assert "scripts/run-gui.sh LD_LIBRARY_PATH includes '/snap/freecad/current/usr/lib'" \
-    grep -qF '/snap/freecad/current/usr/lib' "$RUN_GUI"
 
 # -- Test 7: launches target/release/reify-gui --------------------------------
 echo ""
@@ -266,16 +258,6 @@ echo "--- Test 18: dev script sets REIFY_DEBUG=1 ---"
 assert "scripts/run-gui-dev.sh sets REIFY_DEBUG=1 (export or inline)" \
     bash -c "grep -qE '(export REIFY_DEBUG=1|REIFY_DEBUG=1[[:space:]]+target/)' '$RUN_GUI_DEV'"
 
-# -- Test 19: LD_LIBRARY_PATH OCCT export -----------------------------------
-echo ""
-echo "--- Test 19: dev script exports OCCT LD_LIBRARY_PATH ---"
-
-assert "scripts/run-gui-dev.sh exports LD_LIBRARY_PATH" \
-    bash -c "grep -qE '^[[:space:]]*export LD_LIBRARY_PATH=' '$RUN_GUI_DEV'"
-
-assert "scripts/run-gui-dev.sh LD_LIBRARY_PATH includes '/snap/freecad/current/usr/lib'" \
-    grep -qF '/snap/freecad/current/usr/lib' "$RUN_GUI_DEV"
-
 # -- Test 20: target/debug/reify-gui invocation, NOT exec ------------------
 echo ""
 echo "--- Test 20: dev script runs target/debug/reify-gui WITHOUT 'exec' ---"
@@ -358,9 +340,10 @@ assert "run-gui-dev.sh non-existent .ri error message mentions 'not found'" \
 #
 # scripts/lib_gui_launch.sh is copied alongside it for the same reason: both
 # launchers `source "$SCRIPT_DIR/lib_gui_launch.sh"`, so it must exist NEXT TO
-# the copy. Copying (rather than symlinking to the real one) keeps the fixture
-# self-contained and makes the source path resolve exactly as it does in a
-# real checkout.
+# the copy — and lib_gui_launch.sh in turn sources scripts/lib_native_ld_path.sh
+# from its own dir, so that is copied too. Copying (rather than symlinking to
+# the real one) keeps the fixture self-contained and makes the source path
+# resolve exactly as it does in a real checkout.
 #
 # WHY a cumulative array instead of a per-test `trap ... EXIT`: bash keeps ONE
 # EXIT trap per shell, so a second `trap 'rm -rf "$dir"' EXIT` silently
@@ -422,6 +405,7 @@ _mk_rungui_dev_fixture() {
     cp "$RUN_GUI_DEV" "$dir/scripts/run-gui-dev.sh"
     chmod +x "$dir/scripts/run-gui-dev.sh"
     cp "$LIB_GUI_LAUNCH" "$dir/scripts/lib_gui_launch.sh"
+    cp "$LIB_NATIVE_LD_PATH" "$dir/scripts/lib_native_ld_path.sh"
 
     # Stub: build-sidecar.sh — no-op so the script reaches the vite spawn.
     cat > "$dir/gui/sidecar/build-sidecar.sh" <<'SIDECAR_STUB'
@@ -443,6 +427,7 @@ _mk_rungui_fixture() {
     cp "$RUN_GUI" "$dir/scripts/run-gui.sh"
     chmod +x "$dir/scripts/run-gui.sh"
     cp "$LIB_GUI_LAUNCH" "$dir/scripts/lib_gui_launch.sh"
+    cp "$LIB_NATIVE_LD_PATH" "$dir/scripts/lib_native_ld_path.sh"
 
     cat > "$dir/gui/sidecar/build-sidecar.sh" <<'SIDECAR_STUB'
 #!/usr/bin/env bash
@@ -553,6 +538,33 @@ GUI_STUB
 _rgs_env_dump_get() {
     [ -f "$1" ] || return 0
     sed -n "s/^$2=//p" "$1" | head -1
+}
+
+# _rgs_mk_native_ld_roots <dir> — fixture roots for scripts/lib_native_ld_path.sh:
+# <dir>/fixture-snap (a dir) and <dir>/fixture-deps (holding libTKernel.so.7.9,
+# so the cargo-target class WOULD take it). A test points
+# REIFY_NATIVE_LD_SNAP_DIR / REIFY_NATIVE_LD_DEPS_DIR at them.
+_rgs_mk_native_ld_roots() {
+    mkdir -p "$1/fixture-snap" "$1/fixture-deps"
+    : > "$1/fixture-deps/libTKernel.so.7.9"
+}
+
+# _rgs_ld_entry_is <path> <n> <dir> — entry <n> (1-based) of the colon-separated
+# <path> is exactly <dir>.
+_rgs_ld_entry_is() {
+    local -a _e
+    IFS=: read -r -a _e <<< "$1"
+    [ "${_e[$2 - 1]-}" = "$3" ]
+}
+
+# _rgs_ld_lacks <path> <dir> — no entry of <path> is exactly <dir>.
+_rgs_ld_lacks() {
+    local -a _e
+    local _x
+    IFS=: read -r -a _e <<< "$1"
+    for _x in ${_e[@]+"${_e[@]}"}; do
+        [ "$_x" != "$2" ] || return 1
+    done
 }
 
 # -- Test 25: behavioral — vite-process-death early-exit branch ---------------
@@ -832,6 +844,13 @@ done
 _t28_inherited="/usr/lib/x86_64-linux-gnu:/opt/reify-deps/lib"
 
 if [ -d /opt/reify-deps/tbb-pin ]; then
+    # Fixture loader-path roots (#8654): the launchers must put the snap dir
+    # second, right behind the pin, and never the deps prefix.
+    _rgs_mktemp _t28_roots
+    _rgs_mk_native_ld_roots "$_t28_roots"
+    _t28_snap="$_t28_roots/fixture-snap"
+    _t28_deps="$_t28_roots/fixture-deps"
+
     # --- 28a: run-gui-dev.sh ---
     _rgs_mktemp _t28dev_tmpdir
     _t28dev_port=$(_rgs_free_port)
@@ -843,6 +862,8 @@ if [ -d /opt/reify-deps/tbb-pin ]; then
 
     _t28dev_out=$(DISPLAY=:99 \
         LD_LIBRARY_PATH="$_t28_inherited" \
+        REIFY_NATIVE_LD_SNAP_DIR="$_t28_snap" \
+        REIFY_NATIVE_LD_DEPS_DIR="$_t28_deps" \
         REIFY_VITE_PORT="$_t28dev_port" \
         _RGS_CURL_COUNTER="$_t28dev_tmpdir/curl-count" \
         _RGS_ENV_DUMP="$_t28dev_tmpdir/env-dump" \
@@ -855,6 +876,12 @@ if [ -d /opt/reify-deps/tbb-pin ]; then
 
     assert "run-gui-dev.sh: first LD_LIBRARY_PATH entry is exactly /opt/reify-deps/tbb-pin" \
         bash -c '[ "${1%%:*}" = /opt/reify-deps/tbb-pin ]' _ "$_t28dev_llp"
+
+    assert "run-gui-dev.sh: second LD_LIBRARY_PATH entry is exactly the fixture snap dir (got '$_t28dev_llp')" \
+        _rgs_ld_entry_is "$_t28dev_llp" 2 "$_t28_snap"
+
+    assert "run-gui-dev.sh: the fixture deps dir is in NO LD_LIBRARY_PATH entry — workspace-bin never carries the deps prefix (got '$_t28dev_llp')" \
+        _rgs_ld_lacks "$_t28dev_llp" "$_t28_deps"
 
     assert "run-gui-dev.sh: inherited /usr/lib/x86_64-linux-gnu is preserved" \
         bash -c 'printf "%s\n" "$1" | grep -qF /usr/lib/x86_64-linux-gnu' _ "$_t28dev_llp"
@@ -874,6 +901,8 @@ if [ -d /opt/reify-deps/tbb-pin ]; then
 
     _t28rel_out=$(DISPLAY=:99 \
         LD_LIBRARY_PATH="$_t28_inherited" \
+        REIFY_NATIVE_LD_SNAP_DIR="$_t28_snap" \
+        REIFY_NATIVE_LD_DEPS_DIR="$_t28_deps" \
         _RGS_ENV_DUMP="$_t28rel_tmpdir/env-dump" \
         PATH="$_t28rel_tmpdir/bin:$PATH" \
         bash "$_t28rel_tmpdir/scripts/run-gui.sh" "$_t28rel_tmpdir/test.ri" 2>&1) || true
@@ -884,6 +913,12 @@ if [ -d /opt/reify-deps/tbb-pin ]; then
 
     assert "run-gui.sh: first LD_LIBRARY_PATH entry is exactly /opt/reify-deps/tbb-pin" \
         bash -c '[ "${1%%:*}" = /opt/reify-deps/tbb-pin ]' _ "$_t28rel_llp"
+
+    assert "run-gui.sh: second LD_LIBRARY_PATH entry is exactly the fixture snap dir (got '$_t28rel_llp')" \
+        _rgs_ld_entry_is "$_t28rel_llp" 2 "$_t28_snap"
+
+    assert "run-gui.sh: the fixture deps dir is in NO LD_LIBRARY_PATH entry — workspace-bin never carries the deps prefix (got '$_t28rel_llp')" \
+        _rgs_ld_lacks "$_t28rel_llp" "$_t28_deps"
 
     assert "run-gui.sh: inherited /usr/lib/x86_64-linux-gnu is preserved" \
         bash -c 'printf "%s\n" "$1" | grep -qF /usr/lib/x86_64-linux-gnu' _ "$_t28rel_llp"
@@ -1293,6 +1328,55 @@ assert "run-gui-dev.sh: REIFY_GUI_SKIP_PREFLIGHT=1 does NOT bypass REIFY_VITE_PO
 
 assert "run-gui-dev.sh: REIFY_GUI_SKIP_PREFLIGHT=1 does NOT bypass REIFY_VITE_PORT validation (no npm)" \
     bash -c '! [ -e "$1" ]' _ "$_t34_tmpdir/npm-invoked"
+
+# -- Test 35: gui_launch_env_pin owns the whole launch loader path -----------
+echo ""
+echo "--- Test 35: gui_launch_env_pin yields <pin>:<workspace-bin dirs>:<inherited>, and a second call adds nothing ---"
+
+# The lib, not the launchers, makes every LD_LIBRARY_PATH mutation (#8654): the
+# workspace-bin dirs, then the tbb pin LAST so it leads. A nested launcher
+# (lib_e2e_smoke.sh pins, then runs run-gui-dev.sh, which pins again) must find
+# that result a fixed point. Same pin-dir host gate as Test 28's behavioural
+# half: the lib only prepends a pin dir that exists.
+if [ -d /opt/reify-deps/tbb-pin ]; then
+    _rgs_mktemp _t35_roots
+    _rgs_mk_native_ld_roots "$_t35_roots"
+    _t35_snap="$_t35_roots/fixture-snap"
+
+    # Prints the value after one call, then after a second call.
+    _t35_child='set -euo pipefail
+source "$1"
+gui_launch_env_pin >/dev/null
+first="$LD_LIBRARY_PATH"
+gui_launch_env_pin >/dev/null
+printf "%s\n%s" "$first" "$LD_LIBRARY_PATH"'
+
+    _t35_rc=0
+    _t35_out=$(env LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu \
+        REIFY_NATIVE_LD_SNAP_DIR="$_t35_snap" \
+        REIFY_NATIVE_LD_DEPS_DIR="$_t35_roots/fixture-deps" \
+        bash -c "$_t35_child" _ "$LIB_GUI_LAUNCH" 2>&1) || _t35_rc=$?
+    _t35_first="${_t35_out%%$'\n'*}"
+    _t35_second="${_t35_out#*$'\n'}"
+
+    assert "gui_launch_env_pin: one call yields exactly <pin>:<fixture snap>:<inherited> (rc $_t35_rc, got '$_t35_first')" \
+        test "$_t35_rc:$_t35_first" = "0:/opt/reify-deps/tbb-pin:$_t35_snap:/usr/lib/x86_64-linux-gnu"
+
+    assert "gui_launch_env_pin: a second call is a fixed point (first '$_t35_first', second '$_t35_second')" \
+        test "$_t35_second" = "$_t35_first"
+
+    _t35_rc=0
+    _t35_out=$(env LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu \
+        REIFY_NATIVE_LD_SNAP_DIR="$_t35_roots/absent" \
+        REIFY_NATIVE_LD_DEPS_DIR="$_t35_roots/fixture-deps" \
+        bash -c "$_t35_child" _ "$LIB_GUI_LAUNCH" 2>&1) || _t35_rc=$?
+    _t35_first="${_t35_out%%$'\n'*}"
+
+    assert "gui_launch_env_pin: with no snap dir, one call yields exactly <pin>:<inherited> (rc $_t35_rc, got '$_t35_first')" \
+        test "$_t35_rc:$_t35_first" = "0:/opt/reify-deps/tbb-pin:/usr/lib/x86_64-linux-gnu"
+else
+    echo "  SKIP: /opt/reify-deps/tbb-pin absent on this host — Test 35"
+fi
 
 # -- Test 32: suite invariant — hermetic DISPLAY pin survives every test -----
 echo ""
