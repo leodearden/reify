@@ -54,6 +54,10 @@ tests/infra/test_flake_density_report.py    tests/infra/test_flake_density_repor
 # Task 8678: the adoption-ratchet data table and engine select its wrapper.
 tests/infra/adoption-ratchet.manifest    tests/infra/test_infra_adoption_ratchet.sh
 tests/infra/adoption_ratchet.py    tests/infra/test_infra_adoption_ratchet.sh
+# Task 8613: the compiler-namespace ratchet's baseline, shared engine and suite select its wrapper.
+tests/infra/compiler-namespace-ratchet-baseline.txt    tests/infra/test_compiler_namespace_ratchet.sh
+tests/infra/source_count_ratchet.py    tests/infra/test_compiler_namespace_ratchet.sh
+tests/infra/test_compiler_namespace_ratchet.py    tests/infra/test_compiler_namespace_ratchet.sh
 # Task 8455: the E3 §7 analysis modules and their suite select its wrapper.
 docs/prds/v0_6/e3-granularity/analysis/e3_protocol.py    tests/infra/test_e3_analysis.sh
 docs/prds/v0_6/e3-granularity/analysis/e3_stats.py    tests/infra/test_e3_analysis.sh
