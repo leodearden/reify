@@ -53,8 +53,17 @@ class ScratchTree(unittest.TestCase):
     def src(self, rel, text):
         return self.write(f"{COMPILER_SRC}/{rel}", text)
 
+    BASELINE_REL = "tests/infra/compiler-namespace-ratchet-baseline.txt"
+
     def baseline(self, text):
-        return self.write("tests/infra/compiler-namespace-ratchet-baseline.txt", text)
+        return self.write(self.BASELINE_REL, text)
+
+    def append(self, rel, text):
+        path = self.root / COMPILER_SRC / rel
+        path.write_text(path.read_text(encoding="utf-8") + text, encoding="utf-8")
+
+    def report(self):
+        return namespace_ratchet(self.root, self.root / self.BASELINE_REL)
 
     def census(self):
         return scr.census(self.root, (self.root / COMPILER_SRC,), COUNTERS)
@@ -204,6 +213,110 @@ class CfgTestChildren(ScratchTree):
                 self.src("a.rs", block)
                 self.src("a/tests.rs", "use super::*;\n")
                 self.assert_counted("a/tests.rs")
+
+
+SEED_BASELINE = "# header comment\nglob_reexports 1\nglob_imports 1\n"
+
+
+class Verdicts(ScratchTree):
+    """The baseline is exact: growth and a stale row are both red."""
+
+    def seed(self):
+        self.src("lib.rs", "mod a;\nmod b;\npub use types::*;\npub(crate) use a::*;\n")
+        self.src("a.rs", "use super::*;\n")
+        self.src("b.rs", "use crate::x;\n")
+        self.baseline(SEED_BASELINE)
+
+    def single_violation(self):
+        violations = self.report().violations
+        self.assertEqual(len(violations), 1, violations)
+        return violations[0]
+
+    def assert_green(self):
+        report = self.report()
+        self.assertEqual(report.violations, (), "\n".join(report.violations))
+
+    def test_seed_is_green_and_reports_counts(self):
+        self.seed()
+        report = self.report()
+        self.assertEqual(report.violations, ())
+        self.assertEqual(report.count_lines, ("glob_reexports 1", "glob_imports 1"))
+
+    def test_added_glob_import_is_red_naming_every_counted_line(self):
+        self.seed()
+        self.append("b.rs", "use super::*;\n")
+        violation = self.single_violation()
+        for fragment in ("glob_imports", "2", "'glob_imports 1'",
+                         f"{COMPILER_SRC}/a.rs:1", f"{COMPILER_SRC}/b.rs:2"):
+            self.assertIn(fragment, violation)
+
+    def test_added_glob_reexport_is_red(self):
+        self.seed()
+        self.append("lib.rs", "pub(crate) use b::*;\n")
+        violation = self.single_violation()
+        self.assertIn("glob_reexports", violation)
+        self.assertIn(f"{COMPILER_SRC}/lib.rs:5", violation)
+
+    def test_allowlisted_line_outside_lib_rs_is_red(self):
+        self.seed()
+        self.append("a.rs", "pub use types::*;\n")
+        violation = self.single_violation()
+        self.assertIn("glob_reexports", violation)
+        self.assertIn(f"{COMPILER_SRC}/a.rs:2", violation)
+
+    def test_removed_glob_is_red_until_baseline_lowered_then_green(self):
+        self.seed()
+        self.assert_green()
+        self.append("b.rs", "use super::*;\n")
+        self.assertIn("glob_imports", self.single_violation())
+        self.src("b.rs", "use crate::x;\n")
+        self.assert_green()
+        self.src("a.rs", "fn f() {}\n")
+        violation = self.single_violation()
+        for fragment in ("'glob_imports 1'", f"{self.BASELINE_REL}:3", "'glob_imports 0'"):
+            self.assertIn(fragment, violation)
+        self.baseline("# header comment\nglob_reexports 1\nglob_imports 0\n")
+        self.assert_green()
+
+    def test_report_names_skipped_children(self):
+        self.seed()
+        self.append("a.rs", "#[cfg(test)]\nmod tests;\n")
+        self.src("a/tests.rs", "use super::*;\n")
+        report = self.report()
+        self.assertEqual(report.violations, ())
+        self.assertEqual(report.skipped, (child("a/tests.rs", "a.rs", 3),))
+
+    def test_baseline_input_errors_name_the_input(self):
+        path = self.root / self.BASELINE_REL
+        cases = {
+            "malformed count": ("# h\nglob_reexports 1\nglob_imports twenty\n", f"{path}:3"),
+            "extra field": ("# h\nglob_reexports 1\nglob_imports 1 extra\n", f"{path}:3"),
+            "negative count": ("# h\nglob_reexports 1\nglob_imports -1\n", f"{path}:3"),
+            "leading zero": ("# h\nglob_reexports 1\nglob_imports 01\n", f"{path}:3"),
+            "duplicate row": ("# h\nglob_reexports 1\nglob_imports 1\nglob_imports 1\n",
+                              f"{path}:4"),
+            "unknown counter": ("glob_reexports 1\nglob_imports 1\nglob_other 1\n", f"{path}:3"),
+            "missing counter row": ("# h\nglob_reexports 1\n", "glob_imports"),
+        }
+        self.seed()
+        for label, (text, fragment) in cases.items():
+            with self.subTest(label):
+                self.baseline(text)
+                with self.assertRaises(scr.RatchetInputError) as caught:
+                    self.report()
+                self.assertIn(str(path), str(caught.exception))
+                self.assertIn(fragment, str(caught.exception))
+        with self.subTest("missing baseline file"):
+            path.unlink()
+            with self.assertRaises(scr.RatchetInputError) as caught:
+                self.report()
+            self.assertIn(str(path), str(caught.exception))
+
+    def test_missing_source_root_names_it(self):
+        self.baseline(SEED_BASELINE)
+        with self.assertRaises(scr.RatchetInputError) as caught:
+            self.report()
+        self.assertIn(str(self.root / COMPILER_SRC), str(caught.exception))
 
 
 if __name__ == "__main__":
