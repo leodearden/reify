@@ -112,7 +112,7 @@ tasks:
     verdict: PASS
     delivered_check:
       kind: grep
-      pattern: kernel\.measure_mesh_deviation\(placed_id
+      pattern: kernel\.measure_mesh_deviation\(placed[._]id
       paths:
       - crates/reify-eval/src/geometry_ops.rs
       - crates/reify-eval/src/placed_walk.rs
@@ -124,7 +124,7 @@ tasks:
     verdict: PASS
     delivered_check:
       kind: grep
-      pattern: kernel\.tessellate\(placed_id, budget\)
+      pattern: kernel\.tessellate\(placed[._]id, budget\)
       paths:
       - crates/reify-eval/src/geometry_ops.rs
       - crates/reify-eval/src/placed_walk.rs
@@ -219,6 +219,7 @@ tasks:
       pattern: achieved_repr_tol\.clear\(\)
       paths:
       - crates/reify-eval/src/engine_build.rs
+      - crates/reify-eval/src/per_build_state.rs
       expect: present
 - label: γ2
   task_id: 6172

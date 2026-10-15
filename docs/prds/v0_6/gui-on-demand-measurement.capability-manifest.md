@@ -396,3 +396,12 @@ S18 (`docs/prds/v0_6/verify-structured-plan-and-role-table.md`, Leo ruling Q4) m
 ## S2 path widening (2026-10-15)
 
 The S2 realization-pipeline decompose (`docs/prds/v0_6/realization-pipeline-one-walk-typed-executor.md` §10.6, Leo ruling R5) moves the placed walk out of geometry_ops.rs into `crates/reify-eval/src/placed_walk.rs` (S2 γ #9156). `bt4-capture-is-observation-only-by-construction` (`achieved_repr_tol\.insert\(`, present) keeps its geometry_ops.rs path and gains `crates/reify-eval/src/placed_walk.rs`; three writes: the `.yaml`, this twin and #6745's `metadata.delivered_checks`. The verdict on today's tree is unchanged. The reset-destructure checks (`capture_repr_tol: _`, `achieved_repr_tol\.clear\(\)`) move with S1 ε #9043, not S2; they are S1's to widen.
+
+## S1 ε path widening (2026-10-15)
+
+S1 ε #9043 moves `Engine::reset_per_build_state` into `crates/reify-eval/src/per_build_state.rs` as `PerBuildState::reset(BuildSurface)`. The two reset-destructure checks keep `crates/reify-eval/src/engine_build.rs` (the code is there until #9043 lands) and gain `crates/reify-eval/src/per_build_state.rs`; pattern unchanged, verdict on today's tree unchanged. Three writes: the `.yaml`, this twin, and the producer tasks' `metadata.delivered_checks`.
+
+| check | pattern | added path | producer tasks |
+|---|---|---|---|
+| reset-choke-point-must-absorb-the-new-flag | `capture_repr_tol: _` | `crates/reify-eval/src/per_build_state.rs` | #6740, #6898 |
+| session-measurement-store-cannot-be-achieved-repr-tol | `achieved_repr_tol\.clear\(\)` | `crates/reify-eval/src/per_build_state.rs` | #6741, #6898 |

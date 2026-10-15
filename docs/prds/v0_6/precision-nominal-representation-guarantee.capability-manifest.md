@@ -384,3 +384,9 @@ The S2 realization-pipeline decompose (`docs/prds/v0_6/realization-pipeline-one-
 | documented-anti-pattern-is-real | `crates/reify-eval/src/realization_demand.rs` | `Self::effective_tessellation_tolerance` → `([A-Za-z_]+::)?effective_tessellation_tolerance` (it becomes a free fn) |
 | BT-7-as-written-mixes-the-two-export-modes, named-producer-does-not-cover-the-surface-the-signal-names | `crates/reify-eval/src/build_export.rs` (S2 ι₃ #9163) | — |
 | mode-A-refusal-must-not-regress-eval-or-check | — | `engine\.realize_for_check\(` → `engine\.(realize_for_check\|realize)\(` (S2 η renames the entry) |
+
+## S1 ε path widening (2026-10-15)
+
+S1 ε #9043 moves `Engine::reset_per_build_state` into `crates/reify-eval/src/per_build_state.rs` as `PerBuildState::reset(BuildSurface)`. `reset-choke-point-exists-for-repr-refine-log` (`achieved_repr_tol\.clear\(\)`, present) keeps `crates/reify-eval/src/engine_build.rs` and gains `crates/reify-eval/src/per_build_state.rs`; pattern unchanged, verdict on today's tree unchanged. Three writes: the `.yaml`, this twin, and the producer tasks' `metadata.delivered_checks` (#6171, #6923).
+
+Pattern correction (2026-10-15): `metric-wired-on-production-path-and-takes-no-tolerance-arg` and `tessellate-closure-holds-kernel-placedid-mesh-entitypath` (#6171, #6923) were corrected from the never-matching `placed_id` spelling to `placed[._]id` (`kernel\.measure_mesh_deviation\(placed[._]id`, `kernel\.tessellate\(placed[._]id, budget\)`); paths unchanged. The substrate verdict PASS was re-measured at main with git grep: count 1 each (`geometry_ops.rs:13212`, `:13197`).

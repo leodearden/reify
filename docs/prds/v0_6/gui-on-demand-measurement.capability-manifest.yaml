@@ -105,6 +105,7 @@ tasks:
       pattern: 'capture_repr_tol: _'
       paths:
       - crates/reify-eval/src/engine_build.rs
+      - crates/reify-eval/src/per_build_state.rs
       expect: present
   - name: cmd-check-purpose-branch-bypasses-the-kernel-arm
     binding: 'PASS-WITH-AMENDMENT (A2). UNSTATED IN THE PRD. cmd_check has a second
@@ -182,6 +183,7 @@ tasks:
       pattern: achieved_repr_tol\.clear\(\)
       paths:
       - crates/reify-eval/src/engine_build.rs
+      - crates/reify-eval/src/per_build_state.rs
       expect: present
   - name: measured-values-have-no-structured-channel
     binding: 'PASS-WITH-AMENDMENT (A5). FALSIFIES C-STATUS''s measured(verdict, values,
