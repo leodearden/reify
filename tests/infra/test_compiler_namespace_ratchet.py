@@ -178,6 +178,15 @@ class CfgTestChildren(ScratchTree):
         ))
         self.assertEqual(self.hits("glob_imports"), [])
 
+    def test_nested_cfg_test_child_is_skipped_once_naming_the_outermost(self):
+        self.src("a.rs", "#[cfg(test)]\nmod tests;\n")
+        self.src("a/tests/mod.rs", "#[cfg(test)]\nmod helpers;\n")
+        self.src("a/tests/helpers.rs", "use super::*;\n")
+        self.assertEqual(self.skipped(), (
+            child("a/tests/helpers.rs", "a.rs", 2),
+            child("a/tests/mod.rs", "a.rs", 2),
+        ))
+
     def test_indented_declaration_is_not_recognised(self):
         self.src("a.rs", "mod inner {\n    #[cfg(test)]\n    mod tests;\n}\n")
         self.src("a/inner/tests.rs", "use super::*;\n")
