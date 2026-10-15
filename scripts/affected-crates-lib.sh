@@ -30,10 +30,12 @@
 #   direct_crates_per_path <file>...
 #                              prints `<file>\t<route>` per file: the direct
 #                              route affected_crates' precedence gives that
-#                              file alone, before any closure.
+#                              file alone, before any closure. Consumed by
+#                              the B13 corpus parity check in
+#                              tests/infra/test_affected_crates_lib.sh.
 #   reify_is_inert_path <path> true iff the module reports the path inert
 #                              (docs/**, *.md, *.yaml, *.yml); verify.sh's
-#                              decide_scope wrapper until S18 deletes it.
+#                              decide_scope wrapper until #9056 deletes it.
 #
 # Unprefixed names are the declared interface. A leading underscore means
 # private to this file — do not add a consumer outside it without promoting
@@ -81,30 +83,39 @@ _load_attribution_records() {
     [ "${#_lar_records[@]}" -eq "$#" ]
 }
 
-# _affected_route <out-var> <is_global> <inert> <tree> <seed_crates> — set
-# <out-var> to affected_crates' route for one record: ALL, SEEDS or NONE. The
-# first matching rule wins (contract §3, "File→crate mapping precedence"):
-#   is_global                               -> ALL   (C4)
+# _routed_record <record> <route-var> <facts-var> — the one reader of an
+# `attribute` TSV record. Fills the associative array <facts-var> with the
+# record's fields: global, inert, tree, seeds, unioned and path. The two crate
+# sets are sorted, comma-joined, and `-` when empty. It also sets <route-var>
+# to affected_crates' route for the record: ALL, SEEDS or NONE. The first
+# matching rule wins (contract §3, "File→crate mapping precedence"):
+#   global                                  -> ALL   (C4)
 #   any seed crate                          -> SEEDS (attribution outranks inert)
 #   inert, or tree gui_src / tests_infra    -> NONE  (a known non-crate path)
 #   anything else                           -> ALL   (C5: unmappable)
 # Fork-free, so callers run it once per record.
-_affected_route() {
-    local -n _ar_route="$1"
-    if [ "$2" = 1 ]; then
-        _ar_route=ALL
-    elif [ "$5" != - ]; then
-        _ar_route=SEEDS
-    elif [ "$3" = 1 ] || [ "$4" = gui_src ] || [ "$4" = tests_infra ]; then
-        _ar_route=NONE
+_routed_record() {
+    local -n _rr_route="$2" _rr_facts="$3"
+    local global inert tree seeds unioned path
+    IFS=$'\t' read -r global inert tree seeds unioned path <<<"$1"
+    _rr_facts=([global]="$global" [inert]="$inert" [tree]="$tree"
+               [seeds]="$seeds" [unioned]="$unioned" [path]="$path")
+    if [ "$global" = 1 ]; then
+        _rr_route=ALL
+    elif [ "$seeds" != - ]; then
+        _rr_route=SEEDS
+    elif [ "$inert" = 1 ] || [ "$tree" = gui_src ] || [ "$tree" = tests_infra ]; then
+        _rr_route=NONE
     else
-        _ar_route=ALL
+        _rr_route=ALL
     fi
 }
 
 # _sorted_union <out-var> <crates> <crates> — the union of two of the module's
 # crate sets (sorted, comma-joined, `-` when empty) as one bytewise-sorted,
-# space-joined list. A fork-free merge.
+# space-joined list: direct_crates_per_path's crate column, sorted like the
+# corpus rows it is compared with. A fork-free merge, because B13 runs it over
+# every tracked path.
 _sorted_union() {
     local -n _su_out="$1"
     local LC_ALL=C IFS=' '
@@ -232,11 +243,16 @@ _emit_affected() {
 }
 
 # direct_crates_per_path <file>... — print `<file>\t<route>` per file, in argv
-# order: the route affected_crates' precedence (_affected_route) gives that
+# order: the route affected_crates' precedence (_routed_record) gives that
 # file on its own — ALL, empty, or the file's seed crates ∪ unioned crates
 # (bytewise-sorted, space-joined) — before any reverse closure. One module
 # call for the whole list. Returns non-zero, printing nothing, if the module
 # cannot classify the list.
+#
+# Its consumer is the B13 parity check in tests/infra/test_affected_crates_lib.sh,
+# which compares it with the pinned corpus tests/infra/affected-crates-direct-sets.tsv.
+# It is public so that check reads the precedence through the lib's interface
+# and never through _routed_record.
 direct_crates_per_path() {
     [ "$#" -gt 0 ] || return 0
     local -a records
@@ -244,16 +260,16 @@ direct_crates_per_path() {
         echo "affected-crates-lib.sh: reify_path_attribution.py attribute failed or returned a record count other than $#" >&2
         return 1
     }
-    local rec is_global inert tree seeds unioned path route crates
+    local -A facts=()
+    local rec route crates
     for rec in "${records[@]}"; do
-        IFS=$'\t' read -r is_global inert tree seeds unioned path <<<"$rec"
-        _affected_route route "$is_global" "$inert" "$tree" "$seeds"
+        _routed_record "$rec" route facts
         case "$route" in
             ALL)   crates=ALL ;;
             NONE)  crates="" ;;
-            SEEDS) _sorted_union crates "$seeds" "$unioned" ;;
+            SEEDS) _sorted_union crates "${facts[seeds]}" "${facts[unioned]}" ;;
         esac
-        printf '%s\t%s\n' "$path" "$crates"
+        printf '%s\t%s\n' "${facts[path]}" "$crates"
     done
 }
 
@@ -291,24 +307,24 @@ affected_crates() {
     # Accumulate the direct crate set and the unioned crates. Any ALL route
     # (C4 global, C5 unmappable) settles the answer.
     local -a direct=() unioned_crates=() crates
-    local rec is_global inert tree seeds unioned path route
+    local -A facts=()
+    local rec route
     for rec in "${records[@]}"; do
-        IFS=$'\t' read -r is_global inert tree seeds unioned path <<<"$rec"
-        _affected_route route "$is_global" "$inert" "$tree" "$seeds"
+        _routed_record "$rec" route facts
         case "$route" in
             ALL)
                 _emit_affected ALL
                 return 0
                 ;;
             SEEDS)
-                IFS=, read -r -a crates <<<"$seeds"
+                IFS=, read -r -a crates <<<"${facts[seeds]}"
                 direct+=("${crates[@]}")
                 ;;
         esac
         # Independent of the route: a manifest is also attributed to its own
         # crate, like any other file that crate owns.
-        if [ "$unioned" != - ]; then
-            IFS=, read -r -a crates <<<"$unioned"
+        if [ "${facts[unioned]}" != - ]; then
+            IFS=, read -r -a crates <<<"${facts[unioned]}"
             unioned_crates+=("${crates[@]}")
         fi
     done
@@ -348,14 +364,22 @@ affected_crates() {
 # *.yml). Contract: §3 "Inert paths are ONE list" in
 # docs/prds/verify-scope-contract.md.
 #
-# A thin wrapper for scripts/verify.sh's decide_scope, which pays one module
-# call per catch-all path until S18's planner reads the module directly and
-# deletes this. On a module failure it answers "not inert" — the fail-wide
-# direction for decide_scope.
+# A thin wrapper for scripts/verify.sh's decide_scope. On a module failure it
+# answers "not inert", the fail-wide direction for decide_scope.
+#
+# KNOWN COST: one module process per call. decide_scope calls this once for
+# each path that reaches its catch-all, so it pays one interpreter start per
+# path. That was measured at about 84 ms a call on an idle host and 104-155 ms
+# at load average 80, against about 0 for the bash `case` this replaced. One
+# `attribute` call over 2,000 paths takes about 0.1 s. #9056 batches
+# decide_scope's catch-all into a single call and deletes this wrapper.
+# Neither change happens here, because scripts/verify.sh is outside this
+# lib's remit.
 reify_is_inert_path() {
     local -a records
-    local is_global inert _rest
+    local -A facts=()
+    local route
     _load_attribution_records records "$1" || return 1
-    IFS=$'\t' read -r is_global inert _rest <<<"${records[0]}"
-    [ "$inert" = 1 ]
+    _routed_record "${records[0]}" route facts
+    [ "${facts[inert]}" = 1 ]
 }
