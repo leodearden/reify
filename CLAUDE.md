@@ -96,6 +96,7 @@ Every `TODO`/`FIXME`/`HACK` comment, `todo!()`/`unimplemented!()` stub, and bloc
 | Flaky-ledger accounting CLI (per-member counts; density needs `--total-runs`) | `scripts/flake-density-report.py --help` |
 | Counting a test run (passed / failed / binaries / did it finish): capture the run ONCE to a file and derive every number from that file — never re-run a suite for a second metric | `scripts/cargo-test-tally.py --help` |
 | Waiting for a merge to land (hosts, re-arm, exit-code verdicts) | `scripts/await-merge-landing.py --help` |
+| GUI vitest shared workers (isolate=false): project routing, per-file rebinding, test-author rules | `docs/notes/gui-vitest-shared-workers.md` |
 | Intra-crate module-SCC ratchet (INV-ARCH-1): reading GREW/STALE, lowering a baseline row | `scripts/assert-module-scc.py --help`; baseline `scripts/module-scc-baseline.json` |
 | Native-dep runtime loader path: the cargo-target / workspace-bin classes, which package bakes which RUNPATH, LD_LIBRARY_PATH-outranks-DT_RUNPATH | `docs/notes/native-dep-loader-path.md`; helper `scripts/lib_native_ld_path.sh` |
 | sccache / cross-worktree build-cache design | `~/.claude/plans/playful-hopping-nygaard.md` |
