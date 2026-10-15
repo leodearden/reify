@@ -860,4 +860,80 @@ _nlp_exec "$NLP_ABSENT" "$NLP_ABSENT" "$LD_AMBIENT_SENTINEL" "$NLP_FIX/repo/.car
 assert "H4: a runner copy with no scripts/lib_native_ld_path.sh beside it fails closed, naming the helper, and never runs its command (rc $_NLP_RC, stdout '$_NLP_OUT', stderr '$(_nlp_show "$_NLP_ERR")')" \
     _nlp_runner_failed_closed
 
+# ---------------------------------------------------------------------------
+# Section I: adoption ratchet — no hand-rolled LD_LIBRARY_PATH prepend outside
+# the loader-path helper (task 8654).
+#
+# A construct lint in the tests/infra/README.md sense: a prepend decides which
+# libraries every child process resolves, so a new one must go through
+# native_ld_path_prepend. The fixture repo proves the count both flags and
+# clears before it is trusted on the real tree.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Section I: no hand-rolled LD_LIBRARY_PATH prepend outside the loader-path helper ---"
+
+# verify.sh's two _PLAN_LD_LIBRARY_PATH lines are exempt until S18's Python rewrite deletes them; S18 then sets the count to 0.
+_LD_PREPEND_EXEMPT_PATH=scripts/verify.sh
+_LD_PREPEND_EXEMPT_COUNT=2
+
+# git with the ambient repository environment stripped: a hook-exported
+# GIT_INDEX_FILE outranks `git -C` (task 7106).
+_nlp_git() {
+    env -u GIT_DIR -u GIT_WORK_TREE -u GIT_COMMON_DIR -u GIT_INDEX_FILE git "$@"
+}
+
+# _count_ld_prepends <repo-root> — sets _LD_PREPEND_RC (git grep's rc: 0 match,
+# 1 none, >=2 error), _LD_PREPEND_TOTAL, and _LD_PREPEND_OFFENDERS (every
+# match outside the exempt path, one "path:line:text" per line).
+_LD_PREPEND_RC=0
+_LD_PREPEND_TOTAL=0
+_LD_PREPEND_OFFENDERS=""
+_count_ld_prepends() {
+    local _matches _line
+    _LD_PREPEND_RC=0
+    _matches="$(_nlp_git -C "$1" grep -nE 'LD_LIBRARY_PATH="\$[A-Za-z_]+\$\{_?[A-Z_]*LD_LIBRARY_PATH:\+' -- '*.sh' \
+        ':(exclude)scripts/lib_native_ld_path.sh' ':(exclude)scripts/lib_gui_launch.sh')" || _LD_PREPEND_RC=$?
+    _LD_PREPEND_TOTAL=0
+    _LD_PREPEND_OFFENDERS=""
+    while IFS= read -r _line; do
+        [ -n "$_line" ] || continue
+        _LD_PREPEND_TOTAL=$((_LD_PREPEND_TOTAL + 1))
+        case "$_line" in
+            "$_LD_PREPEND_EXEMPT_PATH":*) ;;
+            *) _LD_PREPEND_OFFENDERS="$_LD_PREPEND_OFFENDERS
+$_line" ;;
+        esac
+    done <<< "$_matches"
+}
+
+_ld_prepends_are() { [ "$_LD_PREPEND_RC" -le 1 ] && [ "$_LD_PREPEND_TOTAL" -eq "$1" ]; }
+
+# I1, sensitivity. The fixture line is generated from a format string so this
+# file never matches its own pattern.
+NLP_RATCHET_REPO="$NLP_FIX/ratchet-repo"
+_nlp_git init -q "$NLP_RATCHET_REPO"
+mkdir -p "$NLP_RATCHET_REPO/scripts"
+_nlp_prepend_line() { printf 'export LD_LIBRARY_PATH="$%s${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"\n' D; }
+_nlp_prepend_line > "$NLP_RATCHET_REPO/x.sh"
+_nlp_prepend_line > "$NLP_RATCHET_REPO/scripts/lib_gui_launch.sh"
+_nlp_git -C "$NLP_RATCHET_REPO" add -A
+_nlp_git -C "$NLP_RATCHET_REPO" -c user.name=t -c user.email=t@invalid -c core.hooksPath=/dev/null \
+    -c commit.gpgsign=false commit -q -m flag
+_count_ld_prepends "$NLP_RATCHET_REPO"
+assert "I1: the ratchet flags a hand-rolled prepend and honours the helper exclusion (want 1, got $_LD_PREPEND_TOTAL, git grep rc $_LD_PREPEND_RC)" \
+    _ld_prepends_are 1
+_nlp_git -C "$NLP_RATCHET_REPO" rm -q x.sh
+_nlp_git -C "$NLP_RATCHET_REPO" -c user.name=t -c user.email=t@invalid -c core.hooksPath=/dev/null \
+    -c commit.gpgsign=false commit -q -m clear
+_count_ld_prepends "$NLP_RATCHET_REPO"
+assert "I1: the ratchet clears once the prepend is gone (want 0, got $_LD_PREPEND_TOTAL, git grep rc $_LD_PREPEND_RC)" \
+    _ld_prepends_are 0
+
+# I2, the real tree.
+_count_ld_prepends "$REPO_ROOT"
+assert "I2: the only hand-rolled LD_LIBRARY_PATH prepends left are the $_LD_PREPEND_EXEMPT_COUNT exempt ones in $_LD_PREPEND_EXEMPT_PATH — route any other through native_ld_path_prepend (scripts/lib_native_ld_path.sh); total $_LD_PREPEND_TOTAL, git grep rc $_LD_PREPEND_RC, offenders:${_LD_PREPEND_OFFENDERS:- none}" \
+    _ld_prepends_are "$_LD_PREPEND_EXEMPT_COUNT"
+assert "I2: no hand-rolled LD_LIBRARY_PATH prepend outside $_LD_PREPEND_EXEMPT_PATH, lib_native_ld_path.sh and lib_gui_launch.sh:${_LD_PREPEND_OFFENDERS:- none}" \
+    test -z "$_LD_PREPEND_OFFENDERS"
+
 test_summary
