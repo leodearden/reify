@@ -417,6 +417,18 @@ Rule: one stream edits a shared artefact; the others consume its filed leaf ids 
   - The construct-ratchet rows E1–E11 are rows on #8730's `rust_construct_ratchet` engine.
   - S24 Pointer grammar is used for the INV-EVAL flips. Owners recorded on #8821: EVAL-1 γ then τ, EVAL-2 τ, EVAL-3 κ.
 
+### S23 — docs/prds/v0_6/prose-rehoming-and-symbol-citations.md (wave 4, agent seat; ruled by the successor lead 2026-10-15 after an opus/high critic; full record: the run scratch prd-results/S23.md)
+- Measured scope: ≈2,480 file:line occurrences in S24 ο #8822's widened PLINECITE scope (the deliberation's "~700" was pre-widening); the regenerated ledger is the binding population.
+- OQ-1 → (a): ε₁ (DiagnosticCode one-line docs) lands early with ratchet rows; it owns every `Origin:` line (#8868's diagnostics.rs half becomes a no-op).
+- OQ-2 → (b): δ₂ is prose-only; the SolverRegistry::solve_inner outcome struct / solve-mode enum go to #6903 as a note + x_finding_part fk-7fbe91c20e82.
+- OQ-3 → (a): #8540 keeps the sibling-script half behind S18 ζ #9112; lib_test_semaphore.sh's cites → α₂.
+- OQ-4 → (a): pointer-only token edits inside another stream's prose are allowed after that owner lands.
+- OQ-5 → (a): external pinned code is cited `<package>@<version> module.py::symbol`.
+- OQ-6: no registry-truth task — INV-EVAL-4/5 and INV-FEA-2's stale cells are already S24 ξ #8821's.
+- OQ-7 → (a): θ/ζ₅ residual sweeps wait on the close leaves of every touching stream, derived mechanically at pass 2.
+- OQ-8 → (a): #8305 owns every .ri cite.
+- Critic fold: nine vacuous phrase checks were re-anchored on single-line tokens (wrapped comments), and close-leaf edges were added (S8/S1/S6/S16/S10/S14/S19/S21).
+
 ## FILED — program status
 
 Wave 1 (pass 2 completed 2026-10-12; every row returned by its seat, applied by the lead). Trigger-chain human gate: reify #8612 (deferred, planning_mode, interim form; `commit_planning` is the human's act once this table is complete for the whole program). Held leaves are released by the owning stream's session (S6: S9 λ #8741, S15 ο #8718; S1: S27 φ; S26: S27 λ). Dark-factory companions: #6853/#6854/#6855 (S20), #6856 (S19 ε).
