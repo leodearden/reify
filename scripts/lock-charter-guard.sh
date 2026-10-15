@@ -217,6 +217,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # is PRD-normative, docs/prds/v0_6/spec-conformance-suite.md D3, so renaming it to dodge the
 # allowlist was not available).  γ mirrored it the same day (dark-factory 9b824da7db), so this
 # vector is converged again at 60 — see the header status note.
+# Widened 60 -> 61 on 2026-10-15 (#9058): `tsv` — reify-evidenced: #8662 landed the tracked
+# tests/infra/affected-crates-direct-sets.tsv (chosen deliberately, so not renamed), which
+# Cycle 10's live-corpus alarm flagged RED on main.  γ mirrors need `tsv` as a separate DF task.
 # A LIVE ALARM NOW GUARDS THIS LIST: Cycle 10 of tests/infra/test_lock_charter_guard.sh
 # sweeps the tracked corpus and goes RED if a tracked reify extension is missing here —
 # the standing signal a pin inside this repo (Cycle 4's CANONICAL_EXTS) cannot give, since
@@ -226,7 +229,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # and is deliberately not restated here — follow it rather than guessing, because this is
 # a SHARED α/γ vector and a unilateral α widening re-opens the seam divergence noted above.
 # ---------------------------------------------------------------------------
-_EXTS="c cc cjs conf cpp css csv cts cxx diff envrc example example-systemd-config gcode gitattributes gitignore gitkeep gitmodules golden grammar h hh hpp html icns ico jq js json jsonc jsonl jsx lock log manifest md mjs mts npmrc png py python-version ri rs scss service sh step stl svg template timer tombstones toml ts tsx txt typed yaml yml"
+_EXTS="c cc cjs conf cpp css csv cts cxx diff envrc example example-systemd-config gcode gitattributes gitignore gitkeep gitmodules golden grammar h hh hpp html icns ico jq js json jsonc jsonl jsx lock log manifest md mjs mts npmrc png py python-version ri rs scss service sh step stl svg template timer tombstones toml ts tsv tsx txt typed yaml yml"
 
 # ---------------------------------------------------------------------------
 # Canonical extensionless-basename allowlist (C-P1 clause (ii) — PRD §11 Q2;
