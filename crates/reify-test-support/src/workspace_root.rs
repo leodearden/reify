@@ -1,3 +1,77 @@
+//! The root of the reify tree that the RUNNING test process belongs to.
+//!
+//! It is resolved at run time, never through `env!("CARGO_MANIFEST_DIR")`: a
+//! compile-time bake in this LIB is not relinked by a warm-lane seed, so a
+//! seeded lane would keep the base worktree's path. See the
+//! "env!()-baked-path test/bench relink" block in `scripts/seed-warm-lane.sh`.
+
+use std::fmt;
+use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
+
+/// The layout fact that identifies a reify workspace root: this crate's own
+/// manifest, relative to it.
+pub(crate) const ROOT_MARKER: &str = "crates/reify-test-support/Cargo.toml";
+
+/// The nearest ancestor of `start` (inclusive) that holds [`ROOT_MARKER`], or
+/// `None` when no ancestor does.
+pub fn find_workspace_root(start: &Path) -> Option<PathBuf> {
+    start
+        .ancestors()
+        .find(|dir| dir.join(ROOT_MARKER).is_file())
+        .map(Path::to_path_buf)
+}
+
+/// Neither runtime candidate lies inside a reify workspace.
+#[derive(Debug)]
+pub struct UnresolvedWorkspaceRoot {
+    manifest_dir: Option<PathBuf>,
+    cwd: Option<PathBuf>,
+}
+
+impl fmt::Display for UnresolvedWorkspaceRoot {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "no ancestor of the runtime CARGO_MANIFEST_DIR ({:?}) or of the current \
+             directory ({:?}) holds {ROOT_MARKER}; cannot locate the reify workspace root",
+            self.manifest_dir, self.cwd
+        )
+    }
+}
+
+/// The resolution policy: the runtime `CARGO_MANIFEST_DIR` first, then the
+/// current directory.
+fn resolve_workspace_root(
+    manifest_dir: Option<&Path>,
+    cwd: Option<&Path>,
+) -> Result<PathBuf, UnresolvedWorkspaceRoot> {
+    [manifest_dir, cwd]
+        .into_iter()
+        .flatten()
+        .find_map(find_workspace_root)
+        .ok_or_else(|| UnresolvedWorkspaceRoot {
+            manifest_dir: manifest_dir.map(Path::to_path_buf),
+            cwd: cwd.map(Path::to_path_buf),
+        })
+}
+
+/// The workspace root of the running test process, resolved once.
+///
+/// # Panics
+///
+/// Panics with [`UnresolvedWorkspaceRoot`]'s message when neither the runtime
+/// `CARGO_MANIFEST_DIR` nor the current directory lies inside a reify tree.
+pub fn workspace_root() -> &'static Path {
+    static ROOT: OnceLock<PathBuf> = OnceLock::new();
+    ROOT.get_or_init(|| {
+        let manifest_dir = std::env::var_os("CARGO_MANIFEST_DIR").map(PathBuf::from);
+        let cwd = std::env::current_dir().ok();
+        resolve_workspace_root(manifest_dir.as_deref(), cwd.as_deref())
+            .unwrap_or_else(|e| panic!("{e}"))
+    })
+}
+
 /// Re-exec harness for wiring tests. In a normal build, the tree this crate was
 /// compiled in and the tree the test runs in are the same, so an in-process
 /// test cannot tell a compile-time bake from a run-time resolution. A parent
@@ -110,7 +184,11 @@ mod tests {
     /// the filesystem directly, not through the function under test.
     fn dir_outside_any_tree(prefix: &str) -> Option<tempfile::TempDir> {
         let dir = prefixed_tempdir(prefix);
-        if let Some(holder) = dir.path().ancestors().find(|d| d.join(ROOT_MARKER).is_file()) {
+        if let Some(holder) = dir
+            .path()
+            .ancestors()
+            .find(|d| d.join(ROOT_MARKER).is_file())
+        {
             eprintln!(
                 "skipping: temp dir {} sits inside a tree whose root {} holds {ROOT_MARKER}",
                 dir.path().display(),
@@ -146,7 +224,8 @@ mod tests {
         std::fs::write(&inner_marker, "")
             .unwrap_or_else(|e| panic!("write {}: {e}", inner_marker.display()));
         let start = inner.join(FIXTURE_CONSUMER);
-        std::fs::create_dir_all(&start).unwrap_or_else(|e| panic!("create {}: {e}", start.display()));
+        std::fs::create_dir_all(&start)
+            .unwrap_or_else(|e| panic!("create {}: {e}", start.display()));
 
         assert_eq!(find_workspace_root(&start), Some(inner));
     }
@@ -167,12 +246,16 @@ mod tests {
         let b_consumer = b.path().join(FIXTURE_CONSUMER);
 
         assert_eq!(
-            resolve_workspace_root(Some(&a_consumer), Some(&b_consumer)).ok().as_deref(),
+            resolve_workspace_root(Some(&a_consumer), Some(&b_consumer))
+                .ok()
+                .as_deref(),
             Some(a.path()),
             "a resolvable CARGO_MANIFEST_DIR wins over the cwd"
         );
         assert_eq!(
-            resolve_workspace_root(None, Some(&b_consumer)).ok().as_deref(),
+            resolve_workspace_root(None, Some(&b_consumer))
+                .ok()
+                .as_deref(),
             Some(b.path()),
             "an absent CARGO_MANIFEST_DIR falls back to the cwd"
         );
@@ -181,7 +264,9 @@ mod tests {
             return;
         };
         assert_eq!(
-            resolve_workspace_root(Some(no_marker.path()), Some(&b_consumer)).ok().as_deref(),
+            resolve_workspace_root(Some(no_marker.path()), Some(&b_consumer))
+                .ok()
+                .as_deref(),
             Some(b.path()),
             "an unresolvable CARGO_MANIFEST_DIR falls back to the cwd"
         );
@@ -205,7 +290,10 @@ mod tests {
             format!("{:?}", manifest_dir.path()),
             format!("{:?}", cwd.path()),
         ] {
-            assert!(message.contains(&needle), "message lacks {needle}: {message}");
+            assert!(
+                message.contains(&needle),
+                "message lacks {needle}: {message}"
+            );
         }
     }
 

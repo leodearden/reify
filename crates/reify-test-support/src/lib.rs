@@ -48,6 +48,7 @@ pub mod workspace_sweep;
 // - `mesh_fixtures`
 // - `rust_fixture_scan`
 // - `stl_bytes`
+// - `workspace_root`
 pub use builders::*;
 pub use ctor_conformance::*;
 pub use fixtures::*;
