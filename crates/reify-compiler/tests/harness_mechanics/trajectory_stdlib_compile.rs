@@ -968,6 +968,67 @@ fn profile_duration_fn_signature() {
     );
 }
 
+// ─── task 8119: scalar accessor bodies type as their declared returns ───────
+
+/// `profile_duration` and `peak_deviation` are one-call wrappers over the
+/// `profile_duration_at` / `peak_deviation_at` intrinsics. Each wrapper body
+/// must type as the wrapper's declared scalar return, so std/trajectory
+/// carries no `FnReturnTypeMismatch` — the precondition for #7007 raising
+/// that diagnostic to Error, which `build_stdlib_modules` refuses to load.
+#[test]
+fn scalar_accessor_bodies_type_as_their_declared_returns() {
+    let module = load_stdlib_module();
+    let cases = [
+        (
+            "profile_duration",
+            "profile_duration_at",
+            Type::Scalar {
+                dimension: DimensionVector::TIME,
+            },
+        ),
+        (
+            "peak_deviation",
+            "peak_deviation_at",
+            Type::Scalar {
+                dimension: DimensionVector::LENGTH,
+            },
+        ),
+    ];
+
+    for (wrapper, delegate, expected) in cases {
+        let func = get_function_in(module, wrapper);
+        assert_eq!(
+            func.return_type, expected,
+            "{wrapper} should declare return {expected:?}"
+        );
+
+        let body = &func.body.result_expr;
+        match &body.kind {
+            CompiledExprKind::FunctionCall { function, .. } => assert_eq!(
+                function.name, delegate,
+                "{wrapper}'s body should call {delegate}"
+            ),
+            other => panic!("{wrapper}'s body should be a call to {delegate}; got: {other:?}"),
+        }
+
+        assert_eq!(
+            body.result_type, expected,
+            "{wrapper}'s body `{delegate}(..)` types as {:?}, but {wrapper} declares {expected:?}",
+            body.result_type
+        );
+    }
+
+    let mismatches: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::FnReturnTypeMismatch))
+        .collect();
+    assert!(
+        mismatches.is_empty(),
+        "std/trajectory should carry no FnReturnTypeMismatch; got: {mismatches:?}"
+    );
+}
+
 // ─── step-29: Shaper marker trait ────────────────────────────────────────────
 
 /// `Shaper` is the marker trait for every input-shaper variant (PRD §5).
