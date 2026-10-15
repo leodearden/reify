@@ -1933,13 +1933,14 @@ PLAN_DEL_CRATE="$(cd "$FIX_DEL_CRATE" && bash scripts/verify.sh all --profile de
 # fixture cleanup below: with REIFY_AFFECTED_CRATES_OVERRIDE set, this
 # non-global crate deletion DOES narrow (NARROW_ACTIVE=1, affected=<crate>,
 # not ALL). The override bypasses affected_crates() entirely
-# (verify.sh:845-847), so this does NOT exercise affected-crates-lib.sh's
-# `_is_global` C4 short-circuit — it exists only to prove the ALL-vs-narrowed
+# (verify.sh:845-847), so this does NOT exercise affected_crates' C4
+# short-circuit on the module's `is_global` fact (scripts/
+# reify_path_attribution.py) — it exists only to prove the ALL-vs-narrowed
 # distinction is reachable in this suite at all. Without an override, every
 # real call into affected_crates() in this workspace-less fixture fails wide
 # to ALL (`cargo metadata` has no workspace to inspect — the C5 fallback), so
 # DEL-global-branch's "affected=ALL" below can't by itself distinguish the
-# deliberate `_is_global` short-circuit from that fixture-wide fallback. This
+# deliberate `is_global` short-circuit from that fixture-wide fallback. This
 # companion shows narrowing IS achievable for the identical
 # deleted-non-OCCT-crate input, which is what makes DEL-global-branch's
 # "deleted global defeats narrowing" claim meaningful.
