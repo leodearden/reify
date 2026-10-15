@@ -1196,9 +1196,9 @@ fn tool_defs() -> Vec<ToolDef> {
         // (`crates/reify-mcp/src/tools/write.rs`) onto the reify-debug
         // surface the GUI's Claude sidecar actually reaches. Schemas mirror
         // that registry — same property names, same `required` lists — so an
-        // AI client that learned a tool there can call it here unchanged. The
-        // one deliberate divergence is `reify_set_parameter`'s `value`, whose
-        // contract on THIS surface is a unit-bearing literal (§6.1 / §12 Q1).
+        // AI client that learned a tool there can call it here unchanged.
+        // `reify_set_parameter`'s `value` is a unit-bearing literal on both
+        // surfaces (§6.1 / §12 Q1).
         //
         // Each name has a named `dispatch_tool` arm, and every engine
         // mutation routes through `write_on_engine_and_refresh_baseline`.
