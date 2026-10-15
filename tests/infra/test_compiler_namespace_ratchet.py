@@ -273,7 +273,7 @@ class Verdicts(ScratchTree):
         self.assert_green()
         self.src("a.rs", "fn f() {}\n")
         violation = self.single_violation()
-        for fragment in ("'glob_imports 1'", f"{self.BASELINE_REL}:3", "'glob_imports 0'"):
+        for fragment in ("'glob_imports 1'", f"({self.BASELINE_REL}:3)", "'glob_imports 0'"):
             self.assertIn(fragment, violation)
         self.baseline("# header comment\nglob_reexports 1\nglob_imports 0\n")
         self.assert_green()

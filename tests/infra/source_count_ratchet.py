@@ -5,7 +5,8 @@ The engine behind the C7 ratchet members of PRD
 docs/prds/v0_6/compiler-module-namespace.md. Production files are every *.rs
 under a source root except the files of a column-0 `mod NAME;` whose attribute
 block directly above holds `#[cfg(test)]`; any other declaration shape counts as
-production. Each counter counts the raw production lines its pattern matches.
+production. Each counter counts the raw production lines its pattern matches,
+and a count above or below its baseline row is a violation.
 """
 
 from __future__ import annotations
@@ -52,6 +53,26 @@ class Census:
     skipped: tuple[CfgTestChild, ...]
 
 
+@dataclass(frozen=True)
+class BaselineRow:
+    name: str
+    count: int
+    line: int
+
+
+@dataclass(frozen=True)
+class Report:
+    counts: tuple[tuple[str, int], ...]
+    hits: Mapping[str, tuple[Site, ...]]
+    violations: tuple[str, ...]
+    skipped: tuple[CfgTestChild, ...]
+
+    @property
+    def count_lines(self) -> tuple[str, ...]:
+        return tuple(f"{name} {count}" for name, count in self.counts)
+
+
+ROW = re.compile(r"([a-z][a-z0-9_]*) (0|[1-9][0-9]*)")
 MOD_ROOTS = frozenset({"lib.rs", "main.rs", "mod.rs"})
 MOD_DECL = re.compile(r"^(pub(\([^)]*\))?\s+)?mod\s+([A-Za-z_][A-Za-z0-9_]*)\s*;")
 ATTRIBUTE_LINE = re.compile(r"^#\[.*\]\s*$")
@@ -147,3 +168,68 @@ def census(root: Path, src_roots: Sequence[Path], counters: Sequence[Counter]) -
                 sites[counter.name].extend(file_sites(rel, lines, counter))
     hits = {name: tuple(sorted(found)) for name, found in sites.items()}
     return Census(MappingProxyType(hits), skipped)
+
+
+def baseline_text(path: Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise RatchetInputError(f"{path}: cannot read: {exc}") from None
+
+
+def parse_row(path: Path, number: int, line: str, names: Sequence[str]) -> BaselineRow:
+    row = ROW.fullmatch(line)
+    if not row:
+        raise RatchetInputError(f"{path}:{number}: expected '<counter> <count>', got {line!r}")
+    if row.group(1) not in names:
+        raise RatchetInputError(f"{path}:{number}: unknown counter '{row.group(1)}'")
+    return BaselineRow(row.group(1), int(row.group(2)), number)
+
+
+def load_baseline(path: Path, names: Sequence[str]) -> dict[str, BaselineRow]:
+    rows: dict[str, BaselineRow] = {}
+    for number, raw in enumerate(baseline_text(path).split("\n"), start=1):
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        row = parse_row(path, number, line, names)
+        if row.name in rows:
+            raise RatchetInputError(
+                f"{path}:{number}: duplicate row for counter '{row.name}' "
+                f"(first at line {rows[row.name].line})")
+        rows[row.name] = row
+    for name in names:
+        if name not in rows:
+            raise RatchetInputError(f"{path}: no row for counter '{name}'")
+    return rows
+
+
+def display(path: Path, root: Path) -> str:
+    return path.relative_to(root).as_posix() if path.is_relative_to(root) else str(path)
+
+
+def verdict(row: BaselineRow, sites: Sequence[Site], baseline: str) -> str | None:
+    count, where = len(sites), f"{baseline}:{row.line}"
+    stated = f"baseline row '{row.name} {row.count}' ({where})"
+    if count > row.count:
+        every_line = "\n".join(f"  {site}" for site in sites)
+        return f"{row.name}: {count} counted, above {stated}; every counted line:\n{every_line}"
+    if count < row.count:
+        return (f"{row.name}: {count} counted, below {stated}: stale row; "
+                f"lower it to '{row.name} {count}' in the same diff")
+    return None
+
+
+def check(root: Path, src_roots: Sequence[Path], counters: Sequence[Counter],
+          baseline: Path) -> Report:
+    names = [counter.name for counter in counters]
+    rows = load_baseline(baseline, names)
+    found = census(root, src_roots, counters)
+    where = display(baseline, root)
+    verdicts = (verdict(rows[name], found.hits[name], where) for name in names)
+    return Report(
+        counts=tuple((name, len(found.hits[name])) for name in names),
+        hits=found.hits,
+        violations=tuple(violation for violation in verdicts if violation),
+        skipped=found.skipped,
+    )
