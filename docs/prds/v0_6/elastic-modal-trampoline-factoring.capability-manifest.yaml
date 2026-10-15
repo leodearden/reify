@@ -4,7 +4,7 @@ prd: docs/prds/v0_6/elastic-modal-trampoline-factoring.md
 schema_version: 1
 tasks:
 - label: α
-  task_id: null
+  task_id: 9085
   title: Retire stats.rs, the morph_stats RPC and eligible(); compose_morph the single public entry; eighth telemetry bucket
   capabilities:
   - name: stats-module-gone
@@ -68,7 +68,7 @@ tasks:
       kind: manual
       reason: 'hard edge α ← #8527; #8527''s own delivered checks enforce it'
 - label: β
-  task_id: null
+  task_id: 9092
   title: Per-build morph tally on BuildResult; typed engine-side morph outcome; CLI and e2e read the result
   capabilities:
   - name: build-result-tally
@@ -138,7 +138,7 @@ tasks:
       kind: manual
       reason: BT8 (two engines, independent tallies) is the behavioural cover
 - label: γ
-  task_id: null
+  task_id: 9086
   title: One value_size_estimate in reify_ir::warm; three copies deleted; ratchet row
   capabilities:
   - name: warm-estimator
@@ -178,7 +178,7 @@ tasks:
       kind: manual
       reason: a bare row token over tests/infra is satisfiable by a docstring; the ratchet member enforces its own rows
 - label: δ
-  task_id: null
+  task_id: 9087
   title: Delete worst_case_residual_fraction, its tests and audit pin; correct every false wiring claim
   capabilities:
   - name: helper-gone
@@ -212,7 +212,7 @@ tasks:
       kind: manual
       reason: regression floor; no value changes by construction (no production caller)
 - label: ε
-  task_id: null
+  task_id: 9088
   title: Delete InverseDynamicsRun.reused; poisoned-prior cache-hit test
   capabilities:
   - name: reused-field-gone
@@ -237,7 +237,7 @@ tasks:
       kind: manual
       reason: BT11 is the behavioural cover
 - label: ζ
-  task_id: null
+  task_id: 9089
   title: P2 promotion production home in reify_solver_elastic::p2_tet; test_support fixtures only; ratchet row
   capabilities:
   - name: p2-promotion-production
@@ -286,7 +286,7 @@ tasks:
       kind: manual
       reason: the ratchet member enforces its own rows
 - label: η
-  task_id: null
+  task_id: 9090
   title: sampled_channels.rs leaf in the FEA family
   capabilities:
   - name: sampled-channels-module
@@ -305,7 +305,7 @@ tasks:
       kind: manual
       reason: 'hard edge η ← #9004'
 - label: θ
-  task_id: null
+  task_id: 9093
   title: Elastic partition (directory module), AdaptiveSummary seam, shared test fixtures, stale allows removed
   capabilities:
   - name: adaptive-summary
@@ -348,7 +348,7 @@ tasks:
       kind: manual
       reason: 'hard edges θ ← #8374, #8248'
 - label: ι
-  task_id: null
+  task_id: 9094
   title: CantileverSolveRequest replaces the 14 positional parameters
   capabilities:
   - name: request-struct
@@ -376,7 +376,7 @@ tasks:
       kind: manual
       reason: BT6; every call passes one request
 - label: κ
-  task_id: null
+  task_id: 9102
   title: 'Explicit overload entries: five descriptor rows, three decoders, multi_case per-case typed requests'
   capabilities:
   - name: body-row
@@ -428,7 +428,7 @@ tasks:
       kind: manual
       reason: BT1
 - label: λ
-  task_id: null
+  task_id: 9118
   title: Route enum, one planner, per-route solvers, one build site
   capabilities:
   - name: route-planner
@@ -462,7 +462,7 @@ tasks:
       kind: manual
       reason: 'hard edge λ ← #8690; S15''s result-type-literal row'
 - label: μ
-  task_id: null
+  task_id: 9119
   title: Capability routing on the shell route; dims-support policy; FEA chunk
   capabilities:
   - name: shell-fallback-code
@@ -529,7 +529,7 @@ tasks:
       kind: manual
       reason: chunk fence gate + intent findability
 - label: ν
-  task_id: null
+  task_id: 9091
   title: Modal partition (directory module) along the measured partition
   capabilities:
   - name: modal-damping-module
@@ -560,7 +560,7 @@ tasks:
       kind: manual
       reason: S3's module-SCC tool
 - label: ξ
-  task_id: null
+  task_id: 9120
   title: Modal supports and damping seams; tests onto seams; modal reused_* flags deleted
   capabilities:
   - name: supports-seam
@@ -597,7 +597,7 @@ tasks:
       kind: manual
       reason: BT7
 - label: ο
-  task_id: null
+  task_id: 9121
   title: Structured box mesh and BoxFace vocabulary in reify-solver-elastic; adopted by modal, elastic and tests
   capabilities:
   - name: structured-box-mesh
@@ -660,7 +660,7 @@ tasks:
       kind: manual
       reason: BT9; the freudenthal-table-copy and box-face-literal ratchet rows
 - label: ω
-  task_id: null
+  task_id: 9122
   title: 'PRD close: terminal stamp'
   capabilities:
   - name: terminal-stamp
