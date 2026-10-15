@@ -186,7 +186,7 @@ pub enum Acceptance {
 
 /// Carried by [`Acceptance::Rejected`]; contains the information needed to
 /// format a `Severity::Warning` diagnostic via [`ArgRejection::message`].
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ArgRejection {
     /// Short description of the actual value type/dimension that was received.
     pub got: String,
@@ -205,8 +205,13 @@ impl ArgRejection {
     /// Example output:
     /// `"moment_of_inertia: density argument expects Density, got Real; pass a dimensioned Density literal such as \`7850kg/m^3\`"`
     pub fn message(&self, builtin: &str, arg_name: &str) -> String {
+        format!("{builtin}: {}", self.reason(arg_name))
+    }
+
+    /// [`ArgRejection::message`] without its `"{builtin}: "` prefix.
+    fn reason(&self, arg_name: &str) -> String {
         let base = format!(
-            "{builtin}: {arg_name} argument expects {expected}, got {got}",
+            "{arg_name} argument expects {expected}, got {got}",
             expected = self.expected,
             got = self.got
         );
@@ -226,15 +231,31 @@ impl ArgRejection {
 }
 
 /// A rejected struct field, named by its dotted path (`"<Struct>.<field>"`).
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct FieldRejection {
     pub path: String,
     pub rejection: ArgRejection,
 }
 
 impl FieldRejection {
+    /// The rejection of `<owner>.<field>`: the one place the dotted path (PRD
+    /// §11 open question 3) is spelled.
+    pub fn new(owner: &str, field: &str, rejection: ArgRejection) -> Self {
+        Self {
+            path: format!("{owner}.{field}"),
+            rejection,
+        }
+    }
+
     pub fn to_error(&self, builtin: &str) -> reify_core::Diagnostic {
         self.rejection.to_error(builtin, &self.path)
+    }
+}
+
+/// [`FieldRejection::to_error`]'s wording without the builtin prefix.
+impl std::fmt::Display for FieldRejection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.rejection.reason(&self.path))
     }
 }
 
@@ -740,19 +761,41 @@ pub fn accept_field(
     key: &str,
     spec: &ArgSpec,
 ) -> FieldAcceptance {
-    match data.fields.get(key) {
-        None => FieldAcceptance::Absent,
-        Some(value) => accept_unwrapped(value, spec),
+    accept_present_field(data.fields.get(key), spec, accept_arg)
+}
+
+/// A struct field read for a position that still takes the legacy bare
+/// spelling: [`accept_field`]'s absent and `Option` handling over
+/// [`accept_arg_or_bare`], with [`read_arg_or_bare`]'s refusal rule.
+///
+/// `field` is the looked-up value, `None` when the key is absent, so a
+/// `StructureInstance` field and a `Value::Map` entry read alike. `Ok(None)`
+/// for absent, `none` or unresolved; `Err` for any present value refused.
+pub fn read_field_or_bare(
+    field: Option<&crate::value::Value>,
+    spec: &ArgSpec,
+) -> Result<Option<f64>, ArgRejection> {
+    match accept_present_field(field, spec, accept_arg_or_bare) {
+        FieldAcceptance::Accepted(si) => Ok(Some(si)),
+        FieldAcceptance::Absent | FieldAcceptance::Undefined => Ok(None),
+        FieldAcceptance::Rejected(rejection) => Err(rejection),
     }
 }
 
-/// Unwrap any depth of `Value::Option` and delegate the rest to
-/// [`accept_arg`]. See [`accept_field`] for why the recursion is unbounded.
-fn accept_unwrapped(value: &crate::value::Value, spec: &ArgSpec) -> FieldAcceptance {
-    match value {
-        crate::value::Value::Option(None) => FieldAcceptance::Absent,
-        crate::value::Value::Option(Some(inner)) => accept_unwrapped(inner, spec),
-        other => match accept_arg(other, spec) {
+/// Classify a looked-up field through `accept`: a missing one is
+/// [`FieldAcceptance::Absent`], and any depth of `Value::Option` is unwrapped
+/// (see [`accept_field`] for why the recursion is unbounded).
+fn accept_present_field(
+    field: Option<&crate::value::Value>,
+    spec: &ArgSpec,
+    accept: fn(&crate::value::Value, &ArgSpec) -> Acceptance,
+) -> FieldAcceptance {
+    match field {
+        None | Some(crate::value::Value::Option(None)) => FieldAcceptance::Absent,
+        Some(crate::value::Value::Option(Some(inner))) => {
+            accept_present_field(Some(inner), spec, accept)
+        }
+        Some(other) => match accept(other, spec) {
             Acceptance::Accepted(si) => FieldAcceptance::Accepted(si),
             Acceptance::Undefined => FieldAcceptance::Undefined,
             Acceptance::Rejected(rej) => FieldAcceptance::Rejected(rej),
@@ -1109,10 +1152,7 @@ mod tests {
         assert_eq!(arg_error.code, Some(DiagnosticCode::DimensionedArgRejected));
         assert_eq!(arg_error.message, expected_message);
 
-        let field = FieldRejection {
-            path: "Options.line_width".to_string(),
-            rejection,
-        };
+        let field = FieldRejection::new("Options", "line_width", rejection);
         let field_error = field.to_error("as_printed_material");
         assert_eq!(field_error.severity, Severity::Error);
         assert_eq!(
@@ -1120,6 +1160,72 @@ mod tests {
             Some(DiagnosticCode::DimensionedArgRejected)
         );
         assert_eq!(field_error.message, expected_message);
+        assert_eq!(
+            format!("as_printed_material: {field}"),
+            expected_message,
+            "a FieldRejection displays the same wording, minus the builtin prefix"
+        );
+    }
+
+    // ── read_field_or_bare: the bare-tolerant struct-field reader ─────────────
+
+    /// The field-level twin of `read_arg_or_bare`: `accept_field`'s absent and
+    /// `Option` handling, plus the legacy bare spelling.
+    #[test]
+    fn read_field_or_bare_unwraps_option_and_takes_the_bare_spelling() {
+        use crate::value::Value;
+        use reify_core::DimensionVector as DV;
+
+        let force = force_spec();
+        let newtons = Value::Scalar {
+            si_value: 5.0,
+            dimension: DV::FORCE,
+        };
+        let some = |v: Value| Value::Option(Some(Box::new(v)));
+        assert_eq!(read_field_or_bare(None, &force), Ok(None));
+        assert_eq!(
+            read_field_or_bare(Some(&Value::Option(None)), &force),
+            Ok(None)
+        );
+        assert_eq!(
+            read_field_or_bare(Some(&some(Value::Undef)), &force),
+            Ok(None)
+        );
+        assert_eq!(read_field_or_bare(Some(&newtons), &force), Ok(Some(5.0)));
+        assert_eq!(
+            read_field_or_bare(Some(&some(some(newtons.clone()))), &force),
+            Ok(Some(5.0))
+        );
+        assert_eq!(
+            read_field_or_bare(Some(&some(Value::Int(5))), &force),
+            Ok(Some(5.0))
+        );
+
+        let metres = Value::Scalar {
+            si_value: 5.0,
+            dimension: DV::LENGTH,
+        };
+        for refused in [some(metres.clone()), metres, Value::Bool(true)] {
+            assert_eq!(
+                read_field_or_bare(Some(&refused), &force)
+                    .err()
+                    .map(|rejection| rejection.expected),
+                Some("Force"),
+                "{refused:?} must be refused, never read as absent"
+            );
+        }
+    }
+
+    #[test]
+    fn a_field_rejection_is_named_owner_dot_field() {
+        use crate::value::Value;
+
+        let rejection = read_field_or_bare(Some(&Value::Bool(true)), &force_spec())
+            .expect_err("a Bool at a FORCE field must be refused");
+        let expected_message = rejection.message("solve", "PointLoad.force");
+        let field = FieldRejection::new("PointLoad", "force", rejection);
+        assert_eq!(field.path, "PointLoad.force");
+        assert_eq!(field.to_error("solve").message, expected_message);
     }
 
     // ── read_arg_or_bare: one refusal rule for every reader ──────────────────

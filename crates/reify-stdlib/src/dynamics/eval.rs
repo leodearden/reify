@@ -42,7 +42,7 @@ use reify_core::diagnostics::{Diagnostic, DiagnosticCode};
 use reify_core::dimension::DimensionVector;
 use reify_ir::arg_acceptance::{
     ArgRejection, ArgSpec, FieldRejection, length_spec, mass_spec, moment_of_inertia_spec,
-    read_arg_or_bare, rotational_damping_spec, rotational_stiffness_spec,
+    read_arg_or_bare, read_field_or_bare, rotational_damping_spec, rotational_stiffness_spec,
     translational_damping_spec, translational_stiffness_spec,
 };
 use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId, Value};
@@ -66,6 +66,10 @@ const REGISTRY_FREE_TYPE_ID: StructureTypeId = StructureTypeId(u32::MAX);
 /// dimensional meaning implicitly. A position whose dimension is chartered
 /// reads through `read_arg_or_bare` instead; see [`compliance_cell_f64`] for
 /// the positions that deliberately stay erased (#6184).
+///
+/// `#[doc(hidden)]`: public only so `reify-eval` can share it, not advertised
+/// as crate API.
+#[doc(hidden)]
 pub fn cell_f64(v: &Value) -> Option<f64> {
     match v {
         Value::Int(n) => Some(*n as f64),
@@ -412,10 +416,7 @@ pub fn mass_properties_from_value(v: &Value) -> Option<MassPropertiesSi> {
 pub fn mass_properties_rejection(v: &Value) -> Option<FieldRejection> {
     let [mass, com, inertia] = mass_properties_fields(v)?;
     let (field, rejection) = read_mass_properties(mass, com, inertia).err()?;
-    Some(FieldRejection {
-        path: format!("MassProperties.{field}"),
-        rejection,
-    })
+    Some(FieldRejection::new("MassProperties", field, rejection))
 }
 
 // ── resolve_body_mass — single mass read-path (task 4278) ────────────────────
@@ -1032,20 +1033,9 @@ fn compliance_constant(
     field: &str,
     spec: &ArgSpec,
 ) -> Result<Option<f64>, FieldRejection> {
-    let mut value = map_get(joint, field);
-    while let Some(Value::Option(inner)) = value {
-        value = inner.as_deref();
-    }
-    let Some(value) = value else {
-        return Ok(None);
-    };
-    match read_arg_or_bare(value, spec) {
-        Ok(constant) => Ok(constant.filter(|c| c.is_finite())),
-        Err(rejection) => Err(FieldRejection {
-            path: format!("{kind}.{field}"),
-            rejection,
-        }),
-    }
+    let constant = read_field_or_bare(map_get(joint, field), spec)
+        .map_err(|rejection| FieldRejection::new(kind, field, rejection))?;
+    Ok(constant.filter(|c| c.is_finite()))
 }
 
 /// The `kind` discriminant of a joint `Value::Map` (e.g. `"revolute"`).

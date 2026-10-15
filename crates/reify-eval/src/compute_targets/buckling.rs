@@ -1395,45 +1395,26 @@ mod tests {
 
     // ── task 6922 γ1: loads read through fea_loads; malformed inputs fail ─────
 
+    use crate::arg_acceptance::FieldRejection;
+    use crate::compute_targets::as_printed_material::structure;
     use crate::compute_targets::fea_value_shape::FeaValueShapeError;
+    use crate::compute_targets::scalar;
     use crate::{CancellationHandle, ComputeOutcome};
 
-    fn gamma1_struct(type_name: &str, fields: Vec<(&str, Value)>) -> Value {
-        Value::StructureInstance(Box::new(StructureInstanceData {
-            type_id: StructureTypeId(u32::MAX),
-            type_name: type_name.to_string(),
-            version: 1,
-            fields: fields
-                .into_iter()
-                .map(|(k, v)| (k.to_string(), v))
-                .collect(),
-        }))
-    }
-
-    fn gamma1_scalar(si_value: f64, dimension: DimensionVector) -> Value {
-        Value::Scalar {
-            si_value,
-            dimension,
-        }
-    }
-
-    fn gamma1_point_load(force: Value) -> Value {
-        gamma1_struct("PointLoad", vec![("force", force)])
+    fn point_load(force: Value) -> Value {
+        structure("PointLoad", vec![("force", force)])
     }
 
     #[test]
     fn total_point_load_sums_bare_and_force_dimensioned_point_loads_only() {
         let loads = Value::List(vec![
-            gamma1_point_load(Value::Real(600.0)),
-            gamma1_point_load(gamma1_scalar(400.0, DimensionVector::FORCE)),
-            gamma1_struct(
+            point_load(Value::Real(600.0)),
+            point_load(scalar(400.0, DimensionVector::FORCE)),
+            structure(
                 "Gravity",
-                vec![(
-                    "magnitude",
-                    gamma1_scalar(9.8, DimensionVector::ACCELERATION),
-                )],
+                vec![("magnitude", scalar(9.8, DimensionVector::ACCELERATION))],
             ),
-            gamma1_struct("PressureLoad", vec![("magnitude", Value::Real(5.0e6))]),
+            structure("PressureLoad", vec![("magnitude", Value::Real(5.0e6))]),
         ]);
         assert_eq!(
             super::total_point_load(&loads),
@@ -1446,7 +1427,7 @@ mod tests {
     fn total_point_load_keeps_the_unit_sentinel_for_an_empty_or_zero_total() {
         assert_eq!(super::total_point_load(&Value::List(vec![])), Ok(1.0));
         assert_eq!(
-            super::total_point_load(&Value::List(vec![gamma1_point_load(Value::Real(0.0))])),
+            super::total_point_load(&Value::List(vec![point_load(Value::Real(0.0))])),
             Ok(1.0)
         );
     }
@@ -1458,37 +1439,32 @@ mod tests {
             matches!(non_list, Err(FeaValueShapeError::ExpectedList { .. })),
             "a non-List loads value must be Err(ExpectedList), got {non_list:?}"
         );
-        let length_force = gamma1_point_load(gamma1_scalar(2.0, DimensionVector::LENGTH));
+        let length_force = point_load(scalar(2.0, DimensionVector::LENGTH));
         let wrong = super::total_point_load(&Value::List(vec![length_force]));
         assert!(
             matches!(
-                wrong,
-                Err(FeaValueShapeError::WrongDimension {
-                    expected: "Force",
-                    ..
-                })
+                &wrong,
+                Err(FeaValueShapeError::Rejected(FieldRejection { path, rejection }))
+                    if path == "PointLoad.force" && rejection.expected == "Force"
             ),
-            "a LENGTH force must be Err(WrongDimension), got {wrong:?}"
+            "a LENGTH force must be Err(Rejected) naming PointLoad.force, got {wrong:?}"
         );
     }
 
-    fn gamma1_buckling_inputs() -> Vec<Value> {
-        let len = |m: f64| gamma1_scalar(m, DimensionVector::LENGTH);
+    fn buckling_inputs() -> Vec<Value> {
+        let len = |m: f64| scalar(m, DimensionVector::LENGTH);
         vec![
-            gamma1_struct(
+            structure(
                 "Steel_AISI_1045",
                 vec![
-                    (
-                        "youngs_modulus",
-                        gamma1_scalar(205.0e9, DimensionVector::PRESSURE),
-                    ),
+                    ("youngs_modulus", scalar(205.0e9, DimensionVector::PRESSURE)),
                     ("poisson_ratio", Value::Real(0.29)),
                 ],
             ),
             len(0.8),
             len(0.02),
             len(0.02),
-            Value::List(vec![gamma1_point_load(Value::Real(1000.0))]),
+            Value::List(vec![point_load(Value::Real(1000.0))]),
             Value::List(vec![]),
             Value::Undef,
         ]
@@ -1496,13 +1472,10 @@ mod tests {
 
     #[test]
     fn solve_buckling_trampoline_fails_malformed_inputs_instead_of_panicking() {
-        let mut no_poisson = gamma1_buckling_inputs();
-        no_poisson[0] = gamma1_struct(
+        let mut no_poisson = buckling_inputs();
+        no_poisson[0] = structure(
             "Steel_AISI_1045",
-            vec![(
-                "youngs_modulus",
-                gamma1_scalar(205.0e9, DimensionVector::PRESSURE),
-            )],
+            vec![("youngs_modulus", scalar(205.0e9, DimensionVector::PRESSURE))],
         );
         let mut cases = vec![(no_poisson, "material")];
         for (index, malformed, arg) in [
@@ -1510,7 +1483,7 @@ mod tests {
             (0, Value::Real(0.0), "material"),
             (1, Value::Real(1.0), "length"),
         ] {
-            let mut inputs = gamma1_buckling_inputs();
+            let mut inputs = buckling_inputs();
             inputs[index] = malformed;
             cases.push((inputs, arg));
         }

@@ -4909,12 +4909,12 @@ fn is_named_anisotropic_law(type_name: &str) -> bool {
 /// the isotropic shape — instead of just the field that happened to be
 /// missing or malformed, which alone gives no hint the `type_name` went
 /// unrecognised at all (task #7210 review round 2 suggestion 3). Stays
-/// inside the (six-variant as of task #7019) `FeaValueShapeError` taxonomy:
-/// `MissingField` and `WrongDimension` each get their own `reason` arm below
-/// (`WrongDimension`'s folds in `expected` alongside `got`, since it has no
-/// `field` to report); the rest have no `got: String` distinct enough to
-/// need one and re-emit as `ExpectedScalar`, whose `got` is already a
-/// free-form diagnostic string elsewhere in the FEA readers (see
+/// inside the `FeaValueShapeError` taxonomy: `MissingField`, `WrongDimension`
+/// and `Rejected` each get their own `reason` arm below (`WrongDimension`'s
+/// folds in `expected` alongside `got`, since it has no `field` to report;
+/// `Rejected` is the shared rejection wording); the rest have no `got: String`
+/// distinct enough to need one and re-emit as `ExpectedScalar`, whose `got` is
+/// already a free-form diagnostic string elsewhere in the FEA readers (see
 /// `fea_inputs::scalar_si_field`'s comment).
 fn annotate_law_type(err: FeaValueShapeError, type_name: &str) -> FeaValueShapeError {
     let reason = match err {
@@ -4922,6 +4922,7 @@ fn annotate_law_type(err: FeaValueShapeError, type_name: &str) -> FeaValueShapeE
         FeaValueShapeError::WrongDimension { expected, got, .. } => {
             format!("expected {expected}, got {got}")
         }
+        FeaValueShapeError::Rejected(field) => field.to_string(),
         FeaValueShapeError::ExpectedScalar { got, .. }
         | FeaValueShapeError::ExpectedReal { got, .. }
         | FeaValueShapeError::ExpectedStructureInstance { got, .. }
@@ -7710,7 +7711,7 @@ mod tests {
 
         let isolated = extract_pressure_loads(&loads);
         assert!(
-            matches!(isolated, Err(FeaValueShapeError::WrongDimension { .. })),
+            matches!(isolated, Err(FeaValueShapeError::Rejected(_))),
             "got {isolated:?}"
         );
         assert_eq!(
@@ -10131,57 +10132,51 @@ mod tests {
 
     // ── task 6922 γ1: load magnitudes are dimension-checked, bare still read ──
 
-    fn gamma1_struct(type_name: &str, fields: Vec<(&str, Value)>) -> Value {
-        Value::StructureInstance(Box::new(StructureInstanceData {
-            type_name: type_name.to_string(),
-            type_id: StructureTypeId(u32::MAX),
-            version: 0,
-            fields: fields
-                .into_iter()
-                .map(|(k, v)| (k.to_string(), v))
-                .collect(),
-        }))
-    }
+    use crate::arg_acceptance::{FieldRejection, density_spec, force_spec, read_field_or_bare};
+    use crate::compute_targets::as_printed_material::structure;
+    use crate::compute_targets::scalar;
 
-    fn gamma1_scalar(si_value: f64, dimension: DimensionVector) -> Value {
-        Value::Scalar {
-            si_value,
-            dimension,
-        }
-    }
-
-    fn gamma1_tip_force(force: Value) -> [f64; 3] {
-        let loads = Value::List(vec![gamma1_struct("PointLoad", vec![("force", force)])]);
+    fn point_load_tip_force(force: Value) -> [f64; 3] {
+        let loads = Value::List(vec![structure("PointLoad", vec![("force", force)])]);
         extract_loads(&loads, 0.0).unwrap().0
     }
 
     #[test]
     fn extract_loads_reads_a_force_dimensioned_point_load_like_the_bare_spelling() {
-        let bare = gamma1_tip_force(Value::Real(1000.0));
+        let bare = point_load_tip_force(Value::Real(1000.0));
         assert_eq!(bare, [0.0, 0.0, -1000.0]);
         assert_eq!(
-            gamma1_tip_force(gamma1_scalar(1000.0, DimensionVector::FORCE)),
+            point_load_tip_force(scalar(1000.0, DimensionVector::FORCE)),
             bare,
             "a FORCE Scalar must apply exactly the force the bare spelling does"
         );
-        assert_eq!(gamma1_tip_force(Value::Int(1000)), bare);
+        assert_eq!(point_load_tip_force(Value::Int(1000)), bare);
+    }
+
+    /// An `Option`-typed magnitude reads like any other struct field: `none`
+    /// is absent, `Some` is unwrapped.
+    #[test]
+    fn extract_loads_unwraps_an_option_wrapped_force() {
+        let some = |v: Value| Value::Option(Some(Box::new(v)));
+        assert_eq!(
+            point_load_tip_force(some(scalar(1000.0, DimensionVector::FORCE))),
+            [0.0, 0.0, -1000.0]
+        );
+        assert_eq!(point_load_tip_force(Value::Option(None)), [0.0, 0.0, 0.0]);
     }
 
     #[test]
     fn extract_loads_keeps_dimensioned_pressure_and_gravity_magnitudes() {
-        let pressure = gamma1_struct(
+        let pressure = structure(
             "PressureLoad",
             vec![
-                ("magnitude", gamma1_scalar(5.0e6, DimensionVector::PRESSURE)),
+                ("magnitude", scalar(5.0e6, DimensionVector::PRESSURE)),
                 ("face", Value::String("x_max".to_string())),
             ],
         );
-        let gravity = gamma1_struct(
+        let gravity = structure(
             "Gravity",
-            vec![(
-                "magnitude",
-                gamma1_scalar(9.8, DimensionVector::ACCELERATION),
-            )],
+            vec![("magnitude", scalar(9.8, DimensionVector::ACCELERATION))],
         );
         let (_, pressures, body) =
             extract_loads(&Value::List(vec![pressure, gravity]), 1000.0).unwrap();
@@ -10208,63 +10203,72 @@ mod tests {
             ),
         ];
         for (type_name, field, wrong, expected_name) in cases {
-            let mut fields = vec![(field, gamma1_scalar(2.0, wrong))];
+            let mut fields = vec![(field, scalar(2.0, wrong))];
             if type_name == "PressureLoad" {
                 fields.push(("face", Value::String("x_max".to_string())));
             }
-            let loads = Value::List(vec![gamma1_struct(type_name, fields)]);
+            let loads = Value::List(vec![structure(type_name, fields)]);
             let res = extract_loads(&loads, 7850.0);
             assert!(
                 matches!(
                     &res,
-                    Err(FeaValueShapeError::WrongDimension { expected, .. })
-                        if *expected == expected_name
+                    Err(FeaValueShapeError::Rejected(FieldRejection { path, rejection }))
+                        if *path == format!("{type_name}.{field}")
+                            && rejection.expected == expected_name
                 ),
                 "{type_name}.{field}: a wrong-dimension Scalar must be \
-                 Err(WrongDimension {{ expected: {expected_name:?} }}), got {res:?}"
+                 Err(Rejected) expecting {expected_name:?}, got {res:?}"
             );
         }
     }
 
     #[test]
     fn extract_loads_skips_an_undef_or_absent_force_quietly() {
-        assert_eq!(gamma1_tip_force(Value::Undef), [0.0, 0.0, 0.0]);
-        let no_force = Value::List(vec![gamma1_struct("PointLoad", vec![])]);
+        assert_eq!(point_load_tip_force(Value::Undef), [0.0, 0.0, 0.0]);
+        let no_force = Value::List(vec![structure("PointLoad", vec![])]);
         assert_eq!(extract_loads(&no_force, 0.0).unwrap().0, [0.0, 0.0, 0.0]);
     }
 
     #[test]
     fn material_density_gates_the_density_dimension() {
-        let material =
-            |density: Value| gamma1_struct("Steel_AISI_1045", vec![("density", density)]);
+        let material = |density: Value| structure("Steel_AISI_1045", vec![("density", density)]);
         assert_eq!(
-            material_density(&material(gamma1_scalar(
-                7850.0,
-                DimensionVector::MASS_DENSITY
-            ))),
+            material_density(&material(scalar(7850.0, DimensionVector::MASS_DENSITY))),
             Ok(7850.0)
         );
         assert_eq!(material_density(&material(Value::Real(7850.0))), Ok(7850.0));
         assert_eq!(material_density(&material(Value::Undef)), Ok(0.0));
-        let res = material_density(&material(gamma1_scalar(7850.0, DimensionVector::PRESSURE)));
+        let res = material_density(&material(scalar(7850.0, DimensionVector::PRESSURE)));
         assert!(
             matches!(
                 &res,
-                Err(FeaValueShapeError::WrongDimension {
-                    expected: "Density",
-                    ..
-                })
+                Err(FeaValueShapeError::Rejected(FieldRejection { path, rejection }))
+                    if path == "Steel_AISI_1045.density" && rejection.expected == "Density"
             ),
-            "a PRESSURE density must be Err(WrongDimension), got {res:?}"
+            "a PRESSURE density must be Err(Rejected) naming the density, got {res:?}"
         );
+    }
+
+    /// A bare `Real` density is read as kg·m⁻³, so it drives the gravity body
+    /// force rather than reading as zero.
+    #[test]
+    fn a_bare_real_density_drives_the_gravity_body_force() {
+        let material = structure("Steel_AISI_1045", vec![("density", Value::Real(7850.0))]);
+        let gravity = structure(
+            "Gravity",
+            vec![("magnitude", scalar(9.8, DimensionVector::ACCELERATION))],
+        );
+        let density = material_density(&material).unwrap();
+        let (_, _, body) = extract_loads(&Value::List(vec![gravity]), density).unwrap();
+        assert_eq!(body, [0.0, 0.0, -7850.0 * 9.8]);
     }
 
     #[test]
     fn trampoline_fails_a_wrong_dimension_force_with_the_dimensioned_arg_code() {
         let mut value_inputs = shell9_valid_inputs();
-        value_inputs[4] = Value::List(vec![gamma1_struct(
+        value_inputs[4] = Value::List(vec![structure(
             "PointLoad",
-            vec![("force", gamma1_scalar(2.0, DimensionVector::LENGTH))],
+            vec![("force", scalar(2.0, DimensionVector::LENGTH))],
         )]);
         let outcome = solve_elastic_static_trampoline(
             &value_inputs,
@@ -10276,14 +10280,17 @@ mod tests {
         let ComputeOutcome::Failed { diagnostics, .. } = &outcome else {
             unreachable!("a LENGTH force must fail the input gate, got {outcome:?}");
         };
+        let rejection =
+            read_field_or_bare(Some(&scalar(2.0, DimensionVector::LENGTH)), &force_spec())
+                .unwrap_err();
+        let expected = rejection.message("solve_elastic_static_trampoline", "PointLoad.force");
         assert!(
             diagnostics.iter().any(|d| {
                 d.severity == reify_core::Severity::Error
                     && d.code == Some(DiagnosticCode::DimensionedArgRejected)
-                    && d.message
-                        .starts_with("solve_elastic_static_trampoline: loads:")
+                    && d.message == expected
             }),
-            "expected a DimensionedArgRejected Error naming loads, got {diagnostics:?}"
+            "expected a DimensionedArgRejected Error {expected:?}, got {diagnostics:?}"
         );
     }
 
@@ -10297,7 +10304,7 @@ mod tests {
         };
         material.fields.insert(
             "density".to_string(),
-            gamma1_scalar(7850.0, DimensionVector::PRESSURE),
+            scalar(7850.0, DimensionVector::PRESSURE),
         );
         let Value::List(loads) = &value_inputs[4] else {
             unreachable!("shell9_valid_inputs builds a load list");
@@ -10319,14 +10326,26 @@ mod tests {
         let ComputeOutcome::Failed { diagnostics, .. } = &outcome else {
             unreachable!("a PRESSURE density must fail the input gate, got {outcome:?}");
         };
+        let rejection = read_field_or_bare(
+            Some(&scalar(7850.0, DimensionVector::PRESSURE)),
+            &density_spec(),
+        )
+        .unwrap_err();
+        let expected = rejection.message(
+            "solve_elastic_static_trampoline",
+            "IsotropicElastic.density",
+        );
+        assert!(
+            expected.contains(reify_core::units::DENSITY_MIGRATION_HINT),
+            "anti-vacuity: the shared wording carries the density migration hint"
+        );
         assert!(
             diagnostics.iter().any(|d| {
                 d.severity == reify_core::Severity::Error
                     && d.code == Some(DiagnosticCode::DimensionedArgRejected)
-                    && d.message
-                        .starts_with("solve_elastic_static_trampoline: material.density:")
+                    && d.message == expected
             }),
-            "expected a DimensionedArgRejected Error naming material.density, got {diagnostics:?}"
+            "expected a DimensionedArgRejected Error {expected:?}, got {diagnostics:?}"
         );
     }
 

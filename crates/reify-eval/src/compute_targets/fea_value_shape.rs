@@ -8,6 +8,7 @@ use reify_core::{Diagnostic, DiagnosticCode};
 
 use super::rejected_input_outcome;
 use crate::ComputeOutcome;
+use crate::arg_acceptance::FieldRejection;
 
 /// Why an FEA input `Value` does not have the shape its reader expects (PRD
 /// compute-fea-hardening §C3). The readers that produce it live in
@@ -28,16 +29,19 @@ pub(super) enum FeaValueShapeError {
         context: &'static str,
         field: &'static str,
     },
-    /// A present, defined value the position's `ArgSpec` refuses. `expected`
-    /// names the spec's `type_name`. Task #7019's component readers raise it
-    /// for a `Value::Scalar` of the wrong dimension only (any other value is
-    /// their `ExpectedScalar`); the `fea_loads` magnitudes raise it for every
-    /// value `read_arg_or_bare` refuses, a non-number included (task 6922).
+    /// A `Value::Scalar` component of the wrong dimension, raised by task
+    /// #7019's component readers (any other value is their `ExpectedScalar`).
+    /// `expected` names the spec's `type_name`.
     WrongDimension {
         context: &'static str,
         expected: &'static str,
         got: String,
     },
+    /// A present field value its reader's `ArgSpec` refuses, a non-number
+    /// included: the `fea_loads` magnitudes (task 6922). Rendered through
+    /// [`FieldRejection::to_error`], the wording every dimension-checked
+    /// reader shares.
+    Rejected(FieldRejection),
 }
 
 impl std::fmt::Display for FeaValueShapeError {
@@ -67,6 +71,7 @@ impl std::fmt::Display for FeaValueShapeError {
             } => {
                 write!(f, "expected {expected} for {context}, got {got}")
             }
+            FeaValueShapeError::Rejected(field) => write!(f, "{field}"),
         }
     }
 }
@@ -76,7 +81,7 @@ impl FeaValueShapeError {
     /// dimension is a `DimensionedArgRejected`; the shape faults carry none.
     pub(super) fn diagnostic_code(&self) -> Option<DiagnosticCode> {
         match self {
-            FeaValueShapeError::WrongDimension { .. } => {
+            FeaValueShapeError::WrongDimension { .. } | FeaValueShapeError::Rejected(_) => {
                 Some(DiagnosticCode::DimensionedArgRejected)
             }
             FeaValueShapeError::ExpectedStructureInstance { .. }
@@ -89,16 +94,23 @@ impl FeaValueShapeError {
 }
 
 /// The `Failed` outcome a trampoline's input gate returns for `err` at `arg`:
-/// one Error diagnostic, `"{trampoline}: {arg}: {err}"`, coded when the error
-/// has a code.
+/// one Error diagnostic, coded when the error has a code. A shape fault reads
+/// `"{trampoline}: {arg}: {err}"`; a field rejection names its own
+/// `<Struct>.<field>` path instead of `arg`, in the shared rejection wording.
 pub(super) fn failed_outcome(
     trampoline: &str,
     arg: &str,
     err: &FeaValueShapeError,
 ) -> ComputeOutcome {
-    let mut diagnostic = Diagnostic::error(format!("{trampoline}: {arg}: {err}"));
-    if let Some(code) = err.diagnostic_code() {
-        diagnostic = diagnostic.with_code(code);
-    }
+    let diagnostic = match err {
+        FeaValueShapeError::Rejected(field) => field.to_error(trampoline),
+        shape => {
+            let diagnostic = Diagnostic::error(format!("{trampoline}: {arg}: {shape}"));
+            match shape.diagnostic_code() {
+                Some(code) => diagnostic.with_code(code),
+                None => diagnostic,
+            }
+        }
+    };
     rejected_input_outcome(diagnostic)
 }

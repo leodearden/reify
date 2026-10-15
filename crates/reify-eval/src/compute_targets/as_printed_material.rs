@@ -283,10 +283,9 @@ pub(crate) fn field_scalar(
     match accept_field(data, key, spec) {
         FieldAcceptance::Accepted(si) => Ok(Some(si)),
         FieldAcceptance::Absent | FieldAcceptance::Undefined => Ok(None),
-        FieldAcceptance::Rejected(rejection) => Err(FieldRejection {
-            path: format!("{}.{key}", data.type_name),
-            rejection,
-        }),
+        FieldAcceptance::Rejected(rejection) => {
+            Err(FieldRejection::new(&data.type_name, key, rejection))
+        }
     }
 }
 
