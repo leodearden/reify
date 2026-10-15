@@ -55,6 +55,7 @@ use crate::datum_projection::{
     datum_projection_result_type, datum_projection_unavailable_hint, DatumProjectionResolution,
     DATUM_PROJECTION_MEMBERS,
 };
+use crate::trajectory_signatures::trajectory_scalar_intrinsic_result_type;
 use reify_core::overload::slot_matches_wildcard_tier;
 
 /// Return a `CompiledExpr` poison literal (`Value::Undef, Type::Error`) for
@@ -3421,6 +3422,7 @@ fn compile_expr_guarded_with_expected_inner(
                     // `is_dynamics_constructor` → `is_affine_map_constructor` →
                     // `is_math_typed_fn` → `is_joint_typed_fn` →
                     // `is_flexure_typed_fn` (task #5476) →
+                    // `trajectory_scalar_intrinsic_result_type` (task #8119) →
                     // `registry_result_type` (the builtin-signature registry,
                     // task #6001 α — one arm replacing the former
                     // `is_analysis_typed_fn` and `is_parse_typed_fn` arms) →
@@ -3794,6 +3796,10 @@ fn compile_expr_guarded_with_expected_inner(
                         // position in the ladder is unobservable. The one hard
                         // requirement is that it precede the first-arg fallback.
                         flexure_joint_type()
+                    } else if let Some(t) = trajectory_scalar_intrinsic_result_type(name) {
+                        // `profile_duration_at` / `peak_deviation_at` — see
+                        // trajectory_signatures.rs.
+                        t
                     } else if registry_owns(name)
                         && let Some(t) = registry_result_type(
                             name,
