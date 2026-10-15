@@ -76,6 +76,11 @@ export default defineConfig({
     // only when absent. Must be a global setupFile: per-test jsdom isolation
     // means an in-test polyfill can't reach other test files.
     setupFiles: ['./vitest.setup.ts'],
+    // @solidjs/testing-library registers afterEach(cleanup) when it is
+    // evaluated, which a shared-modules worker does only once. vitest.setup.ts
+    // registers cleanup for every file instead; switching the import-time hook
+    // off leaves that as the only registration (task 7642).
+    env: { STL_SKIP_AUTO_CLEANUP: 'true' },
     exclude: ['sidecar/**', 'node_modules/**'],
     transformMode: {
       web: [/\.[jt]sx?$/],
