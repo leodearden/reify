@@ -36,6 +36,12 @@ main_gate_mark() {
     : > "$(main_gate_sentinel)"
 }
 
+# main_gate_token — print the sentinel's token: the main tip the mark was bound
+# to. Empty = a legacy unbound mark (transition arm, removed by L10 #8713).
+main_gate_token() {
+    cat "$(main_gate_sentinel)" 2>/dev/null
+}
+
 # main_gate_log MSG — append a timestamped line to the audit log and echo it to
 # stderr. Failures to write the log never abort the caller.
 main_gate_log() {
