@@ -1170,11 +1170,13 @@ assert "CT-EXTLESS: extension-less staged path still emits the cited-test-path g
 # Scenario CT-CORPUS-DRIFT: the ANTI-ALLOWLIST ratchet — the analogue of
 # PT-DRIFT, for a selector that deliberately has NO set to mirror.
 #
-# select_cheap_ptodo_gate sits directly above select_cited_test_path_gate in
-# verify.sh and DOES filter by extension, so the standing hazard is a reader
-# who "helpfully" mirrors that filter here. It would be a coverage hole, not
-# an optimisation: the scan is extension-agnostic by construction, and says so
-# — cited_test_path_citations in tests/infra/cited-test-path-lib.sh (cited by
+# select_cheap_ptodo_gate sits earlier in verify.sh and DOES filter by
+# extension, so the standing hazard is a reader who "helpfully" mirrors that
+# filter into the trigger the staged gates share — most likely
+# select_staged_whole_tree_gate, where CT-EXTLESS and CANON-EXTLESS both catch
+# it. It would be a coverage hole, not an optimisation: the scan is
+# extension-agnostic by construction, and says so —
+# cited_test_path_citations in tests/infra/cited-test-path-lib.sh (cited by
 # FUNCTION NAME, not line, since a line cite into another file re-rots on
 # every edit to it), "NO EXTENSION FILTER. Extension-agnosticism is the
 # ABSENCE of a filter, not an allowlist".
@@ -1208,7 +1210,7 @@ while IFS= read -r _ct_ext; do
     # docs/* is a no-heavy-checks path arm for EVERY extension (Scenario 1),
     # which isolates the extension rule from path classification exactly as
     # PT-DRIFT's docs/pt_probe.<ext> does: a gate leaf seen here can only come
-    # from select_cited_test_path_gate's own (absent) extension test.
+    # from select_staged_whole_tree_gate's own (absent) extension test.
     plan_for staged "docs/ct_probe.$_ct_ext"
     assert "CT-CORPUS-DRIFT: docs/ct_probe.$_ct_ext -> cited-test-path gate leaf emitted (corpus-derived extension)" \
         plan_has 'tests/infra/test_cited_test_paths_resolve\.sh'

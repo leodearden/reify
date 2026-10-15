@@ -2614,8 +2614,8 @@ select_cited_test_path_gate
 # content, so no predicate over the staged set is sound — and a content
 # predicate would copy the test's PCRE (SPOT).
 #
-# COST: 0.56s-1.98s for the whole leaf over two runs, 2026-10-15; no cargo, no
-# npm. No selected_infra_leaf_env arm: (D) already FAILS a scan that cannot
+# COST: no cargo, no npm — what makes "any staged change" affordable as well as
+# correct. No selected_infra_leaf_env arm: (D) already FAILS a scan that cannot
 # run, and (A)'s PyYAML SKIP leaves (B) running, so there is no skip to forbid.
 # ---------------------------------------------------------------------------
 select_canonical_config_path_gate() {
