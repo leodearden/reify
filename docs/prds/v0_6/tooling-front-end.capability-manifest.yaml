@@ -179,7 +179,7 @@ tasks:
       - gui/src-tauri/src/lsp_bridge.rs
       expect: present
 - label: λ
-  task_id: null
+  task_id: 8777
   title: 'tooling-front-end λ (HELD on S26): lspClient.ts method type from generated wire types'
   note: 'x_seam_wait {stream: S26, contract: TS wire types generated from Rust carrying LspMethod::ALL}'
   capabilities:

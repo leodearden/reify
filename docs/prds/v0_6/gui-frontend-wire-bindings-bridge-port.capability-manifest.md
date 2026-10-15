@@ -7,6 +7,8 @@ substrate evidence (G3 + G6 mechanized). No leaf is held: every upstream produce
 #8939, #8941, #8944, #8946, #8947, #8948, #8954, #8955; S27 #8760) is a filed task wired as a real
 dependency.
 
+**Task ids** (stamped 2026-10-15 by `commit_planning`): α #9062, β #9063, γ #9064, δ #9065, ε #9066, ζ #9067, η #9068, θ #9069, ι #9070, κ #9071, λ #9072, μ #9073, χ #9074, ν #9075, ξ #9076, ο #9077, π #9078, ρ #9079, σ #9080, τ #9081, υ #9082, ω #9083.
+
 **Code anchors** verified against main `1b06f93151` (2026-10-14). Cite-by-symbol; re-locate lines
 at implementation time.
 

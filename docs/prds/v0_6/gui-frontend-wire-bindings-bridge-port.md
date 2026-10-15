@@ -1,6 +1,6 @@
 # PRD: GUI frontend — generated wire bindings, a typed bridge port, schema-validated debug handlers
 
-**Milestone:** v0_6 · **Status:** active — authored 2026-10-14/15 (pass 1; fable critic folded); decomposition pending · **Approach:** B + H
+**Milestone:** v0_6 · **Status:** active — authored 2026-10-14/15 (pass 1, `23390a9d75`); decomposed 2026-10-15 (pass 2): α #9062, β #9063, γ #9064, δ #9065, ε #9066, ζ #9067, η #9068, θ #9069, ι #9070, κ #9071, λ #9072, μ #9073, χ #9074, ν #9075, ξ #9076, ο #9077, π #9078, ρ #9079, σ #9080, τ #9081, υ #9082, ω #9083 (ω close); rulings OQ1–OQ7 (§7) · **Approach:** B + H
 
 Authored 2026-10-14 by the S26 `/team /prd` session of program `review-all-reify-20261010`
 (`plans/review-all-program-reify-20261012.md`, stream **S26 GUI frontend**, wave 3, mode spawn,
@@ -788,7 +788,7 @@ event idents; π's module order).
 
 ## §10 — Decomposition plan
 
-Labels Greek; task ids assigned at decompose. Every leaf carries `metadata.x_finding_key` (list),
+Labels Greek; task ids filed 2026-10-15 (pass 2); no held leaf. Every leaf carries `metadata.x_finding_key` (list),
 `metadata.x_finding_run = "review-all-reify-20261010"`, `metadata.source = "review-all"`, priority
 = the highest severity among its keys (medium where it carries none), `grammar_confirmed = true`.
 "Rows" names the Appendix A ratchet rows the leaf adds to `tests/infra/adoption-ratchet.manifest`
@@ -800,34 +800,34 @@ leaf that changes a wire type, command or event regenerates `gui/src/bindings.ts
 
 **Phase 0 — before generation**
 
-- **α — permission decisions reach the sidecar.** `claudePermissionDecision` sends `{decision:
+- **α #9062 — permission decisions reach the sidecar.** `claudePermissionDecision` sends `{decision:
   {…}}`; `claudeBridge.test.ts`'s flat-shape pin is corrected. B5 (TS half). Signal: in a GUI
   session a permission prompt's Allow unblocks the pending tool call (the command returns `Ok`);
   ι adds the IPC-level Rust test. Keys: none (found at authoring, §2.1). medium.
-- **β — one side-panel entry list.** §4.5. B6. Rows `side-panel-track-iife`. Signal: on
+- **β #9063 — one side-panel entry list.** §4.5. B6. Rows `side-panel-track-iife`. Signal: on
   `examples/buckling_column_smoke.ri` with chat open, after buckling frames arrive, debug MCP
   `get_layout_metrics` on the chat panel reports height ≥ 160 px and the side panel's children
   equal its tracks. Keys: **fk-2be83576bc8b** (high, gate-dep #8612).
-- **γ — one subscription set in `initApp`.** §4.5. B7. Rows `app-unsub-slot`. Signal: after an
+- **γ #9064 — one subscription set in `initApp`.** §4.5. B7. Rows `app-unsub-slot`. Signal: after an
   init failure and Retry, exactly one `debug-request` listener is live (App test over the real
   `initApp`), where today the retry leaks one. Keys: **fk-559caca373a7**. medium.
-- **δ — viewStateStore owns tree reactivity.** §4.5. B8, B8' (the esc-6045-1 App regression test
+- **δ #9065 — viewStateStore owns tree reactivity.** §4.5. B8, B8' (the esc-6045-1 App regression test
   kept, passing with no `treeGeneration`). Rows `tree-generation-app`, `tree-generation-stores`.
   Signal: the first post-mount visibility toggle reaches `syncDemand` and the DesignTree eye with
   no App-threaded counter. Keys: **fk-b2129b18b706**. medium.
-- **ε — one layout dimension table with `reset()`.** §4.7. B9. Rows `layout-default-import-debug`.
+- **ε #9066 — one layout dimension table with `reset()`.** §4.7. B9. Rows `layout-default-import-debug`.
   Signal: debug MCP `resize_panes {problemsHeight: 400}`, a collapse toggle, then
   `reset_app_state` → `get_local_storage('reify-panel-layout')` shows `problemsHeight: 160`,
   `problemsCollapsed: true`. Keys: **fk-c8938e374057**. medium.
-- **ζ — sidecar `invokeSdk` split; catch narrowed.** §4.9. B13. Rows `sidecar-args-literal`.
+- **ζ #9067 — sidecar `invokeSdk` split; catch narrowed.** §4.9. B13. Rows `sidecar-args-literal`.
   Signal: a stream-json event whose mapping throws reaches the chat as `claude-error` instead of a
   silently missing reply. Keys: **fk-39619f02ae9c**. medium.
-- **η — `is_geometry_value` on `EntityTreeNode`; no regex over Type Display.** §4.8. Rows
+- **η #9068 — `is_geometry_value` on `EntityTreeNode`; no regex over Type Display.** §4.8. Rows
   `type-name-regex`. Signal: in the GUI, a design whose `let` binds a Solid shows it hidden by
   default and a `Real` let shown (debug MCP `store_state` / DesignTree eye state);
   `engine_tests.rs`'s M5 flange consumed-intermediate pin stays green. Depends: S25 γ #8939.
   Keys: **fk-a03c96e5733d**. medium.
-- **θ — the backend validates parameter literals; `requires_unit` seeds the editor.** §4.8. B12,
+- **θ #9069 — the backend validates parameter literals; `requires_unit` seeds the editor.** §4.8. B12,
   B12', B12''. Rows `ts-quantity-grammar-stores`, `ts-quantity-grammar-panels`. Signal: in the GUI,
   `10` typed into a Length cell is refused inline with the backend's message, `5 mm` is accepted,
   and focusing a Length cell seeds `120mm`. Depends: S25 α #8937, ε #8941 (`build_values` moves to
@@ -836,7 +836,7 @@ leaf that changes a wire type, command or event regenerates `gui/src/bindings.ts
 
 **Phase 1 — the generated contract**
 
-- **ι — commands into the library; one Builder; `bindings.ts` for commands and their types; gate
+- **ι #9070 — commands into the library; one Builder; `bindings.ts` for commands and their types; gate
   test.** §4.1. B1, B1', B4 (phase-identity test), B5 (Rust half). Wraps `mcp_tool_call`'s `Value`
   if S25 ο has not deleted it (OQ5); deletes `get_active_fea_case`; records the reify-core compile
   delta (OQ6) and, in its task, that S25 θ's own chain is its only S25 wait. Signal:
@@ -844,7 +844,7 @@ leaf that changes a wire type, command or event regenerates `gui/src/bindings.ts
   fails after a scratch rename of a command argument; `scripts/gui-test.sh` typechecks the
   generated file; the GUI runs unchanged. Depends: S25 θ #8944; η, θ. Keys: none
   (contributes to fk-7262d24da57d). medium.
-- **κ — every event typed and registered once.** §4.2. B2, B3. Deletes `emit_typed` (and updates
+- **κ #9071 — every event typed and registered once.** §4.2. B2, B3. Deletes `emit_typed` (and updates
   any identifier list that names it, e.g. the INV-GUI-2 scanner's `PRIVATE_EMIT_IDENTIFIERS` if S25
   ο has not yet deleted that scanner). If `mcp_tool_call` still exists, its `navigate-to-source`
   emit closure (built for `mcp_context.rs::TauriToolContext`, an S25 file) stays an untyped string
@@ -856,7 +856,7 @@ leaf that changes a wire type, command or event regenerates `gui/src/bindings.ts
 
 **Phase 2 — adoption**
 
-- **λ — the TS side imports wire types from `bindings.ts`.** Deletes the hand mirrors in `types.ts`
+- **λ #9072 — the TS side imports wire types from `bindings.ts`.** Deletes the hand mirrors in `types.ts`
   (and its 24 `types.rs` prose mentions), `RawConstraintData`/`CONSTRAINT_STATUSES`/
   `convertRawConstraint`, the inline `import()` types; TS-only shapes move beside their consumers
   (D12) except the unions μ generates (`VisibilityState` stays put until μ replaces it, so its 76
@@ -867,21 +867,21 @@ leaf that changes a wire type, command or event regenerates `gui/src/bindings.ts
   whose glob matches no file fails the ratchet). Signal: `scripts/gui-test.sh` green with `git grep -c "types.rs"
   gui/src/types.ts` 0 (or the file gone); a scratch rename of a `ValueData` field in Rust fails
   `tsc` after regeneration. Depends: ι. Keys: **fk-7262d24da57d**, **fk-0b62433f5807**. medium.
-- **μ — remaining closed-set fields as wire enums; one `isActivePhase`.** §4.3. B11. Rows
+- **μ #9073 — remaining closed-set fields as wire enums; one `isActivePhase`.** §4.3. B11. Rows
   `phase-literal-app`, `-stores`, `-debug`, `-viewport`. Signal: debug MCP `wait_for_idle` during
   an evaluation waits and returns ok (no `engine_phase` error path remains); `tsc` fails on a
   scratch `phase === 'resolving'`. Depends: λ. Keys: none (contributes to fk-7262d24da57d). medium.
-- **χ — `JointDescriptor.kind`/`.dimension` as wire enums.** §4.3. Signal: MechanismPanel's
+- **χ #9074 — `JointDescriptor.kind`/`.dimension` as wire enums.** §4.3. Signal: MechanismPanel's
   prismatic/revolute rendering unchanged on the mechanism examples; `tsc` rejects a misspelt joint
   kind. Depends: λ, S25 κ #8946. low.
-- **ν — `LspMethod` in `bindings.ts`.** reify-lsp `specta` feature; per-variant serde renames equal
+- **ν #9075 — `LspMethod` in `bindings.ts`.** reify-lsp `specta` feature; per-variant serde renames equal
   `as_str`, pinned by a reify-lsp test over `ALL`; `.typ::<LspMethod>()`. B15. Releases S27 λ
   #8777. Signal: `bindings.ts` exports `LspMethod` with exactly `LspMethod::ALL`'s tokens. Depends:
   ι, S27 κ #8760. low.
 
 **Phase 3 — the port**
 
-- **ξ — `gui/src/bridge/` port modules over the bindings; `createBridge()`; one fake.** §4.4.
+- **ξ #9076 — `gui/src/bridge/` port modules over the bindings; `createBridge()`; one fake.** §4.4.
   Deletes `validatePayload`, `KEYS_*`, the seven shape guards and `gui/src/bridge.ts`;
   `gui/src/bridge/index.ts` also re-exports today's free functions bound to one default
   `createBridge()` instance, so the eight importing modules build unchanged until ο removes the
@@ -890,14 +890,14 @@ leaf that changes a wire type, command or event regenerates `gui/src/bindings.ts
   source. Signal: `scripts/gui-test.sh` green;
   no `invoke(`/`listen(` call in `gui/src/bridge/` outside the generated bindings it imports.
   Depends: κ, λ, α. Keys: none (contributes to fk-252aa009dcdc). medium.
-- **ο — App, engineStore and every IPC-touching descendant take the port.** §4.4. Deletes the 8
+- **ο #9077 — App, engineStore and every IPC-touching descendant take the port.** §4.4. Deletes the 8
   wholesale bridge mocks, `bridgeMockContract.ts`/`.test.ts`, `bridgeMockCoverage.test.ts`, the
   `viewPersistence` namespace import, `initApp`'s mock-defensive code. Rows `bridge-wholesale-mock`,
   `tauri-api-direct-app`, `-stores`, `-viewport`. Signal: `scripts/gui-test.sh` green with
   App.test.tsx's module-level `vi.mock` count down to the rendering stubs (viewport, editor, file
   tabs); a scratch new port member fails `tsc` in the fake until added. Depends: ξ, β, γ, δ. Keys:
   **fk-252aa009dcdc** (high, gate-dep #8612).
-- **π — App.tsx partitioned into `gui/src/app/`.** §4.5 (module order, per-module deps, `AppRefs`).
+- **π #9078 — App.tsx partitioned into `gui/src/app/`.** §4.5 (module order, per-module deps, `AppRefs`).
   Rows `phase-literal-app-modules`, `tauri-api-direct-app-modules`, `tauri-api-direct-app`
   re-checked at 0. Signal: `scripts/gui-test.sh`
   green with no test body edited beyond import lines; every module under ~1,500 lines; the import
@@ -905,12 +905,12 @@ leaf that changes a wire type, command or event regenerates `gui/src/bindings.ts
 
 **Phase 4 — the debug contract**
 
-- **ρ — frontend-facing rows of the debug tool table** (Leo OQ1): strengthened schemas on the
+- **ρ #9079 — frontend-facing rows of the debug tool table** (Leo OQ1): strengthened schemas on the
   frontend-routed rows, `frontend_schema` on the seven rewriting rows, `advertised: false` rows for
   the REST-only handlers (§4.6). Signal: `tools/list` shows the strengthened schemas (e.g.
   `dom_query.testId` `minLength: 1`); `debug-tools.json` regenerated; the exported table's
   `wait_for` row carries the predicate `oneOf`. Depends: S25 τ #8955. medium.
-- **σ — one dispatch-time validator; hand guards and casts gone.** §4.6. B10, B10'. Retires the
+- **σ #9080 — one dispatch-time validator; hand guards and casts gone.** §4.6. B10, B10'. Retires the
   BOUNDARY RULE comment, `TYPE_GUARDED_RESOLVER_TOOLS` and its per-copy rows; `initDebugBridge`
   takes the port's host slice (`onDebugRequest`, `debugResponse` over the generated
   `events.debugRequest` / `commands.debugResponse`), so ο's App test drives it through the fake.
@@ -918,12 +918,12 @@ leaf that changes a wire type, command or event regenerates `gui/src/bindings.ts
   `dom_query {"testId": 7}` → `{error: "testId must be a string"}`; `constructor` → unknown
   command; `wait_for {"predicate": {"kind": "nope"}}` refused before any polling; the visual
   harness green. Depends: ρ, ε, κ, ξ, S25 ρ #8954. Keys: **fk-e0f49abf4b34** (high, gate-dep #8612).
-- **τ — `buildHandlers` split into family modules over `resolve.ts` (move-only).** §4.6. h14
+- **τ #9081 — `buildHandlers` split into family modules over `resolve.ts` (move-only).** §4.6. h14
   measurement recorded. Subsumes **#8184**, **#7858**. No new rows (σ's rows glob
   `gui/src/debug/**/*.ts`). Signal: `scripts/gui-test.sh` and the visual harness green, no test
   body edited beyond imports; `gui/src/debug/bridge.ts` holds only `buildHandlers`' merge and
   `initDebugBridge`. Depends: σ. medium.
-- **υ — tool-name and fixture tables derived from `debug-tools.json`.** §4.6. B14. Deletes
+- **υ #9082 — tool-name and fixture tables derived from `debug-tools.json`.** §4.6. B14. Deletes
   `tauriSource.ts`. Rows `rust-source-reader-src`, `rust-source-reader-visual`. Signal: adding a
   row to the Rust table and regenerating updates `KNOWN_DEBUG_TOOL_NAMES` and the prompt-parity
   complement with no TS edit (assertions.test.ts, sidecarPromptParity green). Depends: ρ, S25 τ
@@ -931,7 +931,7 @@ leaf that changes a wire type, command or event regenerates `gui/src/bindings.ts
 
 **Close**
 
-- **ω — PRD close stamp.** Depends on every other leaf (a cancelled sibling counts as satisfied).
+- **ω #9083 — PRD close stamp.** Depends on every other leaf (a cancelled sibling counts as satisfied).
   Deliverable: the terminal Status marker naming the landed leaf ids, the AS-AUTHORED paragraph and
   LIVE/AS-AUTHORED map here and in the capability manifest (overlay "PRD terminal status"). low.
 

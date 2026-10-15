@@ -127,6 +127,7 @@ tasks:
       pattern: set_purpose
       paths:
       - gui/src-tauri/src/main.rs
+      - gui/src-tauri/src/tauri_commands.rs
       expect: present
   - name: engine-preserves-bindings-across-recompile
     binding: 'grep: Engine::eval snapshots active_purpose_bindings and re-applies
@@ -293,6 +294,7 @@ tasks:
       pattern: set_purpose
       paths:
       - gui/test/visual/assertions.ts
+      - gui/src-tauri/debug-tools.json
       expect: present
   - name: honest-failure-reporting-possible
     binding: capability→producer (upstream in-batch α) — without typed activation
@@ -361,6 +363,7 @@ tasks:
       pattern: fn get_entity_identity_map
       paths:
       - gui/src-tauri/src/main.rs
+      - gui/src-tauri/src/tauri_commands.rs
       expect: present
   - name: frontend-consumer-no-longer-fed-a-constant
     binding: signal premise — the sole production call site passes a hardcoded empty
@@ -371,6 +374,7 @@ tasks:
       pattern: regenerateAutoViews\(entityTree\(\), \[\]
       paths:
       - gui/src/App.tsx
+      - gui/src/app
       expect: absent
 - label: ζ
   task_id: 6835
