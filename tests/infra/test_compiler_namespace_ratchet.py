@@ -7,7 +7,6 @@ Contract: PRD docs/prds/v0_6/compiler-module-namespace.md §4 C7.
 
 from __future__ import annotations
 
-import re
 import sys
 import tempfile
 import unittest
@@ -25,10 +24,10 @@ BASELINE = INFRA_DIR / "compiler-namespace-ratchet-baseline.txt"
 COUNTERS = (
     scr.Counter(
         "glob_reexports",
-        re.compile(r"^pub(\([^)]*\))?\s+use\s[^;]*\*"),
+        r"^pub(\([^)]*\))?\s+use\s[^;]*\*",
         allowed=frozenset({(f"{COMPILER_SRC}/lib.rs", "pub use types::*;")}),
     ),
-    scr.Counter("glob_imports", re.compile(r"^use\s[^;]*\*")),
+    scr.Counter("glob_imports", r"^use\s[^;]*\*"),
 )
 
 
@@ -94,6 +93,18 @@ class CountingRules(ScratchTree):
     def test_glob_anywhere_before_the_first_semicolon_counts(self):
         self.src("a.rs", "use super::{*, x};\nuse std::ops::Mul; // a * b\n")
         self.assertEqual(self.hits("glob_imports"), [f"{COMPILER_SRC}/a.rs:1"])
+
+    def test_glob_on_a_continuation_line_counts_at_the_statement_start(self):
+        self.src("a.rs", "use crate::{\n    types::*,\n    Foo,\n};\n"
+                         "pub(crate) use crate::{\n    a::*,\n};\n")
+        self.assertEqual(self.hits("glob_imports"), [f"{COMPILER_SRC}/a.rs:1"])
+        self.assertEqual(self.hits("glob_reexports"), [f"{COMPILER_SRC}/a.rs:5"])
+
+    def test_multi_line_statement_ends_at_its_first_semicolon(self):
+        self.src("a.rs", "use crate::{\n    a,\n    b,\n};\nfn f(x: i32) -> i32 { x * 2 }\n"
+                         "pub use crate::{\n    c,\n};\nconst P: *const u8 = 0 as *const u8;\n")
+        self.assertEqual(self.hits("glob_imports"), [])
+        self.assertEqual(self.hits("glob_reexports"), [])
 
     def test_visibility_qualified_globs_are_reexports_not_imports(self):
         self.src("a.rs", "pub(crate) use a::*;\npub(super) use a::*;\n"
@@ -246,7 +257,7 @@ class Verdicts(ScratchTree):
         self.seed()
         self.append("b.rs", "use super::*;\n")
         violation = self.single_violation()
-        for fragment in ("glob_imports", "2", "'glob_imports 1'",
+        for fragment in ("glob_imports: 2 counted", "'glob_imports 1'",
                          f"{COMPILER_SRC}/a.rs:1", f"{COMPILER_SRC}/b.rs:2"):
             self.assertIn(fragment, violation)
 

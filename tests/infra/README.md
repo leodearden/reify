@@ -484,7 +484,9 @@ post-extraction count.
 `test_compiler_namespace_ratchet.sh` counts two constructs over non-test
 `crates/reify-compiler/src`: `glob_reexports`, visibility-qualified column-0
 glob re-exports minus `lib.rs`'s `pub use types::*;`, and `glob_imports`,
-unqualified column-0 glob imports. Files that a `#[cfg(test)]` `mod NAME;`
+unqualified column-0 glob imports. A `use` is matched through its first `;`
+and counted at its first line, so a glob on a continuation line of a braced
+`use` still counts. Files that a `#[cfg(test)]` `mod NAME;`
 declares are skipped, and each skip names its declaration. The baseline is
 exact: it reds on growth, naming every counted line, and on a stale row, naming
 the row to write, so a leaf that removes globs lowers its row in the same diff.

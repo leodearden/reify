@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Count line constructs in Rust production files against an exact baseline.
+"""Count source constructs in Rust production files against an exact baseline.
 
 The engine behind the C7 ratchet members of PRD
 docs/prds/v0_6/compiler-module-namespace.md. Production files are every *.rs
 under a source root except the files of a column-0 `mod NAME;` whose attribute
 block directly above holds `#[cfg(test)]`; any other declaration shape counts as
-production. Each counter counts the raw production lines its pattern matches,
-and a count above or below its baseline row is a violation.
+production. Each counter counts the production lines on which a match of its
+pattern starts, and a count above or below its baseline row is a violation.
 """
 
 from __future__ import annotations
@@ -22,16 +22,6 @@ class RatchetInputError(Exception):
     """An input the ratchet cannot trust; the message names the input."""
 
 
-@dataclass(frozen=True)
-class Counter:
-    name: str
-    pattern: re.Pattern[str]
-    allowed: frozenset[tuple[str, str]] = frozenset()
-
-    def counts(self, rel: str, line: str) -> bool:
-        return bool(self.pattern.search(line)) and (rel, line.strip()) not in self.allowed
-
-
 @dataclass(frozen=True, order=True)
 class Site:
     path: str
@@ -39,6 +29,24 @@ class Site:
 
     def __str__(self) -> str:
         return f"{self.path}:{self.line}"
+
+
+@dataclass(frozen=True)
+class Counter:
+    """`pattern` is searched MULTILINE over a file's whole text, so `^` anchors at
+    every line start and a match may run onto the lines that follow. `allowed`
+    holds (root-relative path, stripped text of the line a match starts on)."""
+
+    name: str
+    pattern: str
+    allowed: frozenset[tuple[str, str]] = frozenset()
+
+    def sites(self, rel: str, text: str) -> Iterator[Site]:
+        lines = text.split("\n")
+        for match in re.finditer(self.pattern, text, re.MULTILINE):
+            number = text.count("\n", 0, match.start()) + 1
+            if (rel, lines[number - 1].strip()) not in self.allowed:
+                yield Site(rel, number)
 
 
 @dataclass(frozen=True, order=True)
@@ -63,7 +71,6 @@ class BaselineRow:
 @dataclass(frozen=True)
 class Report:
     counts: tuple[tuple[str, int], ...]
-    hits: Mapping[str, tuple[Site, ...]]
     violations: tuple[str, ...]
     skipped: tuple[CfgTestChild, ...]
 
@@ -93,8 +100,8 @@ def relative(root: Path, path: Path) -> str:
     return path.relative_to(root).as_posix()
 
 
-def source_lines(path: Path) -> list[str]:
-    return path.read_text(encoding="utf-8", errors="replace").split("\n")
+def source_text(path: Path) -> str:
+    return path.read_text(encoding="utf-8", errors="replace")
 
 
 def rust_files(src: Path) -> list[Path]:
@@ -130,16 +137,16 @@ def cfg_test_declarations(lines: Sequence[str]) -> Iterator[tuple[str, int]]:
             yield declaration.group(3), index + 1
 
 
-def cfg_test_modules(root: Path, path: Path) -> Iterator[CfgTestModule]:
-    for name, line in cfg_test_declarations(source_lines(path)):
+def cfg_test_modules(root: Path, path: Path, text: str) -> Iterator[CfgTestModule]:
+    for name, line in cfg_test_declarations(text.split("\n")):
         yield CfgTestModule(moddir(path) / name, Site(relative(root, path), line))
 
 
-def cfg_test_children(root: Path, src: Path) -> tuple[CfgTestChild, ...]:
-    files = rust_files(src)
-    modules = [module for path in files for module in cfg_test_modules(root, path)]
+def cfg_test_children(root: Path, texts: Mapping[Path, str]) -> tuple[CfgTestChild, ...]:
+    modules = [module for path, text in texts.items()
+               for module in cfg_test_modules(root, path, text)]
     children = []
-    for file in files:
+    for file in texts:
         covering = [module for module in modules if module.covers(file)]
         if covering:
             outermost = min(covering, key=lambda module: len(module.directory.parts))
@@ -147,25 +154,16 @@ def cfg_test_children(root: Path, src: Path) -> tuple[CfgTestChild, ...]:
     return tuple(sorted(children))
 
 
-def production_files(root: Path, src: Path, skipped: Sequence[CfgTestChild]) -> list[Path]:
-    excluded = {child.path for child in skipped}
-    return [path for path in rust_files(src) if relative(root, path) not in excluded]
-
-
-def file_sites(rel: str, lines: Sequence[str], counter: Counter) -> Iterator[Site]:
-    for number, line in enumerate(lines, start=1):
-        if counter.counts(rel, line):
-            yield Site(rel, number)
-
-
 def census(root: Path, src_roots: Sequence[Path], counters: Sequence[Counter]) -> Census:
-    skipped = tuple(child for src in src_roots for child in cfg_test_children(root, src))
-    sites: dict[str, list[Site]] = {counter.name: [] for counter in counters}
-    for src in src_roots:
-        for path in production_files(root, src, skipped):
-            rel, lines = relative(root, path), source_lines(path)
+    texts = {path: source_text(path) for src in src_roots for path in rust_files(src)}
+    skipped = cfg_test_children(root, texts)
+    excluded = {child.path for child in skipped}
+    sites: dict[str, set[Site]] = {counter.name: set() for counter in counters}
+    for path, text in texts.items():
+        rel = relative(root, path)
+        if rel not in excluded:
             for counter in counters:
-                sites[counter.name].extend(file_sites(rel, lines, counter))
+                sites[counter.name].update(counter.sites(rel, text))
     hits = {name: tuple(sorted(found)) for name, found in sites.items()}
     return Census(MappingProxyType(hits), skipped)
 
@@ -229,7 +227,6 @@ def check(root: Path, src_roots: Sequence[Path], counters: Sequence[Counter],
     verdicts = (verdict(rows[name], found.hits[name], where) for name in names)
     return Report(
         counts=tuple((name, len(found.hits[name])) for name in names),
-        hits=found.hits,
         violations=tuple(violation for violation in verdicts if violation),
         skipped=found.skipped,
     )
