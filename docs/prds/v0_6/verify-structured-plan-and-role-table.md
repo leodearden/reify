@@ -1,6 +1,6 @@
 # PRD — verify: structured plan steps and one role table (review-all S18)
 
-**Status:** ready to decompose — review-all-reify-20261010 program, stream S18 (wave 2, spawn session). Leo ruled the open questions Q1–Q4 on 2026-10-14 and Q5 on 2026-10-15 (§12). A fable critic pass (24 findings) is folded in.
+**Status:** decomposed 2026-10-15 — tasks #9095–#9117 (22 leaves; ids in §10) and dark_factory #7006; review-all-reify-20261010 program, stream S18 (wave 2, spawn session). Leo ruled the open questions Q1–Q4 on 2026-10-14 and Q5 on 2026-10-15 (§12). A fable critic pass (24 findings) is folded in.
 **Program:** `plans/review-all-program-reify-20261012.md`, stream **S18** (size L, risk high, mode spawn, wave 2, no hard upstream seam). Ruling: §Resolved decisions → "S18 verify.sh: structured plan steps and one role table" (all-Python target; `scripts/verify.sh` becomes a one-line exec shim; the text projections stay byte-stable; a plan-parity test gates a one-commit cutover; `run_all.sh` stays out). Cross-references are folded in from §Lead amendments, from the pass-1/pass-2 rulings R2 (S22) and Q1/Q2 (S19), and from the S21/S22/S19/S27 cross-reference lines.
 **Findings closed:** 13 keys: `fk-507b17f8adc7` (high), `fk-21149d55fd41` (high), `fk-902a5ad9889e` (high), `fk-73c909381788`, `fk-03d27a868cfd`, `fk-b072e820e926`, `fk-fc5ee820d36e`, `fk-d47473e4d8d8`, `fk-6ccbfc296ee8`, `fk-7b476f26ad45`, `fk-763b633b2775`, `fk-3988a6996b82`, `fk-7bc1c1449010` (medium). None had a mechanical filing (report §Mechanical filings: all `open → this stream`). The key-index scan of all 8,890 reify tasks on 2026-10-14 found no task carrying any of them.
 **Invariants established:** none promoted to this stream. Every extraction leaf names its adoption-ratchet row (program INV candidate 5) in `tests/infra/adoption-ratchet.manifest`. The new declarable surfaces (knob registry, role/profile tables) get a census row (§4 D14, G7).
@@ -512,16 +512,16 @@ Every leaf touches verify-pipeline files, so each pays the full gate per landing
 
 "Python member" = stdlib unittest + `.sh` wrapper + `run-all-classification.manifest` row + `verify-pipeline-infra-tests.txt` rows (D14).
 
-- **α — Package skeleton, CLI, knob registry, role and profile tables** · high · keys `fk-21149d55fd41`, `fk-03d27a868cfd`.
+- **α #9095 — Package skeleton, CLI, knob registry, role and profile tables** · high · keys `fk-21149d55fd41`, `fk-03d27a868cfd`.
   - Scope: `scripts/verify.py`; `scripts/reify_verify/{__init__,cli,knobs,policy,queries}.py` (`--print-role-policy`, `--print-knobs`); usage text as data (D11); `docs/notes/verify-pipeline-knobs.md` gains every registry knob.
   - Tests: Python member `test_verify_policy.py`, which compares CLI validation messages and exit codes against bash for the whole argument-error corpus (the defect-5 divergence asserted). Plus the census row (D14).
   - Not wired: `scripts/verify.sh` is unchanged.
   - Signal: `python3 -I -B scripts/verify.py --print-role-policy` prints the D3 table, whose rows equal what today's plans show per role. `--help` ends at the last option.
-- **π — EXPECTED_CLEAN becomes JSON; corpus ledger in its own file** · medium · no own key; subsumes #7775.
+- **π #9096 — EXPECTED_CLEAN becomes JSON; corpus ledger in its own file** · medium · no own key; subsumes #7775.
   - Scope: `gui/src/__tests__/reifyGrammarCorpus.expected-clean.json`, `reifyGrammarCorpusLedger.test.ts`; `reifyGrammarCorpus.test.ts` loses the ledger; PG-DRIFT-GUI reads the JSON through `python3 -I` (no sed over TS); `verify-pipeline-paths.txt` row for the JSON.
   - Signal: `scripts/gui-test.sh -- src/__tests__/reifyGrammarCorpusLedger.test.ts` green with the same 405 pins; PG-DRIFT-GUI green.
   - Depends on #8476.
-- **β — Scope decision, selectors, narrowing** · medium · key `fk-73c909381788`.
+- **β #9097 — Scope decision, selectors, narrowing** · medium · key `fk-73c909381788`.
   - Scope: `scope`, `selection` and `narrowing` modules (D5, D6), and `--print-scope` (D11).
   - D15 `BashCall`s: `affected_crates` (one call over the path list), `occt_declared_set`, `harness_layout_consolidatable_crates`.
   - A Python member `test_verify_scope_record.py` tests the derivation behaviourally (B7) in B1's shared clone of the tree under test, through `--print-scope`. Scenarios cover an `.rs`-referenced fixture, a JSON-pinned fixture, an unreferenced one, and a `pg-drift:allow` control (critic K9).
@@ -530,18 +530,18 @@ Every leaf touches verify-pipeline files, so each pays the full gate per landing
   - Prose references to the two list names in tracked docs repointed to D6 (C §6.8 inventory); the `crates/**` doc comments move at ζ.
   - Signal: in B1's shared clone of the tree under test, staging an `.rs`-referenced prd-gate fixture, `python3 -I -B scripts/verify.py all --scope staged --print-scope` prints `"run_rust": 1` with no list edit. An unreferenced, unpinned fixture prints `"run_rust": 0, "run_gui": 0`.
   - Depends on α, π, #8662.
-- **γ1 — Typed plan model, renderers, non-test emitters, plan parity** · high · key `fk-507b17f8adc7`.
+- **γ1 #9098 — Typed plan model, renderers, non-test emitters, plan parity** · high · key `fk-507b17f8adc7`.
   - Scope: `plan`, `render`, `build` (all phases except the test region), and `environment` (D9).
   - D15 `BashCall`s: `lib_native_ld_path.sh`, `$HOME/.cargo/env`, the heavy filter, the git-env scrub prefix. The nextest probe and the `REIFY_INFRA_SUITE_ACTIVE` guard are in-process.
   - Delivers `--print-plan` and `--print-plan=json` for actions lint and typecheck, with every header and environment line.
   - Tests: Python member B1 `test_verify_plan_parity.py`, sharded by action group, running in a shared clone of the tree under test (D13). It covers the grid for lint/typecheck plus all header and environment lines. **Opens the port window.**
   - Signal: B1 green on every lint/typecheck scenario, and its message names the window rule when it reds.
   - Depends on α, β, #8654, #8919, #7424.
-- **γ2 — Test region: the one nextest emitter** · medium · key `fk-b072e820e926`.
+- **γ2 #9099 — Test region: the one nextest emitter** · medium · key `fk-b072e820e926`.
   - Scope: `nextest` (profile record, typed filter composition, `nextest_config_path` — override / print placeholder / memoised generate — the gui-feature pass built from the same emitter, the confirm wrapper); `build` test region (semaphore sentinels, release-delta decision through the `release_declared_set` / `release_delta_requires_pass` `BashCall`s, attempt sidecar, retry marker); B1 extended to test/all.
   - Signal: B1 green across the full D13 corpus. One `gen-nextest-config.sh` call site in the package. The gui-feature pass honours `REIFY_VERIFY_NEXTEST_CONFIG` (the divergence today's hand copy carries is fixed, with that scenario as B1's single listed plan divergence).
   - Depends on γ1.
-- **κ — `--print-gates` and the guard reads it** · medium · key `fk-fc5ee820d36e`; subsumes #7645.
+- **κ #9100 — `--print-gates` and the guard reads it** · medium · key `fk-fc5ee820d36e`; subsumes #7645.
   - Scope: `queries.print_gates` (D12): emitter-declared gate paths plus the planner inputs derived from the D15 registries.
   - Guard changes, all per D12:
     - `verify-pipeline-guard.sh` gains `_print_gates_cmd` and the `REIFY_VERIFY_PIPELINE_GUARD_PRINT_GATES` fixture override;
@@ -554,7 +554,7 @@ Every leaf touches verify-pipeline files, so each pays the full gate per landing
   - New Python member `tests/infra/test_verify_print_gates.py` (fold-verifier V8): every step `gate_path` in the B1 corpus is ⊆ `--print-gates`, and so is every `BashCall`/`DataFile` input.
   - Signal: with the workaround row gone, `bash scripts/verify-pipeline-guard.sh requires-full-gate scripts/gui-vitest-run.sh` still exits 0 (via `--print-gates`), and `--list` names that path exactly once. `requires-full-gate scripts/reify_verify/plan.py` exits 0.
   - Depends on γ2.
-- **ε — The executor** · high · no own key (the executor half of fk-507b17f8adc7's dispatch-on-kind).
+- **ε #9101 — The executor** · high · no own key (the executor half of fk-507b17f8adc7's dispatch-on-kind).
   - Scope: `execute` (kind dispatch, session-wide teardown, holder, signals, ledger via the `reify_main_checkout` `BashCall`), `confirm` (the separate non-fatal runner), `admission` (D10). Plus `lib_test_semaphore.sh --hold --admission-exempt` and `cpu_admit`'s explicit `_ca_exempt`.
   - Tests: executor parity B2, contract B6, role-lib parity B5.
   - Carries #7424's step-timing hook and #8919's unset (already ported by γ1/γ2 where they are plan text). `REIFY_VERIFY_EVENT_LOG` passes through.
@@ -563,11 +563,11 @@ Every leaf touches verify-pipeline files, so each pays the full gate per landing
     - On that farm, `python3 -I -B scripts/verify.py test --scope all` exits 124, and its last stderr line is `verify.sh: FAILED (exit 124): …`. Today's bash exits 1 on the same farm.
     - A run TERM'd during a `timeout`-wrapped step exits 143, and no process whose session id was that step's survives.
   - Depends on γ2, #8685, #7424.
-- **η1 — Role policy replaces the slow-priority shadow parsers** · high · key `fk-902a5ad9889e`.
+- **η1 #9103 — Role policy replaces the slow-priority shadow parsers** · high · key `fk-902a5ad9889e`.
   - Scope: new Python member `test_verify_role_policy.py`. K/L compare `--print-role-policy` rows with `.config/nextest.toml` read by `tomllib`. The 8 extractors, 5 seeders and the residual comment grammar (`_residual_role_documented`, `RESIDUAL_PAR_ANCHOR`) are deleted from `test_nextest_slow_priority.sh`. `test_occt_flock_gate.sh` T10's two `_resolve_timeout_knob` greps move to the same member.
   - Signal: `grep -c '_for_file()' tests/infra/test_nextest_slow_priority.sh` drops by 8. Changing a role's wall in `policy` reds the member with the role named.
   - Depends on γ2.
-- **η2 — The remaining source-reading greps become structured queries** · medium · no own key.
+- **η2 #9104 — The remaining source-reading greps become structured queries** · medium · no own key.
   - Scope: new Python member `test_verify_plan_structure.py` replaces the source greps in:
     - `test_verify_ld_library_path_scope.sh` (the `ld-ok` census → each `CARGO` step unscrubbed / `TOOL` step scrubbed; export-between-build-and-exec → executor ordering);
     - `test_verify_semaphore_wiring.sh`, `test_verify_test_threads.sh` 6d, `test_cargo_incremental_lane_decision.sh`, `test_jobserver_balancer.sh`, `test_cpu_admit.sh` W1, `test_verify_compile_gate.sh`;
@@ -578,19 +578,19 @@ Every leaf touches verify-pipeline files, so each pays the full gate per landing
   - Updates `test_verify_nextest_absent_suites.sh` counts in the same diff.
   - Signal: each listed file's source-reading construct is gone and has a named case in `test_verify_plan_structure.py`; mutating the corresponding planner behaviour (e.g. making one `TOOL` step unscrubbed) reds that case.
   - Depends on γ2, ε.
-- **θ — Typed plan field readers in plan_capture_lib** · medium · key `fk-d47473e4d8d8`; subsumes #7647.
+- **θ #9105 — Typed plan field readers in plan_capture_lib** · medium · key `fk-d47473e4d8d8`; subsumes #7647.
   - Scope: `plan_header_field <dump> <line-kind> <NAME>` (order-independent key=value token reader for the `# verify.sh plan`, `# scope decision`, `# narrowing` and `# heavy partition` lines — one parser at the boundary) and `plan_step_index <dump> <ERE>` for ordering claims. Adopted in `test_nextest_absent_lib.sh` and `test_tree_sitter_pipeline.sh` (`ts_offset_of` → step indices). The six stale line cites become symbol cites.
   - Ratchet row `ordered-scope-grep | RUN_RUST=[01] RUN_GUI=[01] | tests/infra/test_*.sh | <post-θ count> | θ`. The ERE uses a real bracket class: the escaped form matches nothing (fold-verifier V5). The count is 92 at authoring; ξ lowers it to 0.
   - Signal: inserting a new field at the front of the scope header in a fixture dump leaves every θ-adopted assertion green.
   - No S18 dependency: the readers parse today's header text (critic K21).
-- **θ2 — One capture form; nan_safe through it** · medium · key `fk-7b476f26ad45`; subsumes #8440.
+- **θ2 #9106 — One capture form; nan_safe through it** · medium · key `fk-7b476f26ad45`; subsumes #8440.
   - Scope: `test_nan_safe_ordering_guard_wired.sh` captures through `capture_print_plan` + `plan_capture_complete` with positive completeness checks; hD–hH trimmed to a wiring smoke (the lexer matrix stays in `test_rust_production_view_lib.py`). Ratchet row `raw-print-plan-capture | --print-plan[^|]*[|] *grep | tests/infra/test_*.sh | <post-θ2 count> | θ2`.
   - Signal: an empty capture now reds the file (mutation-validated).
-- **θ3 — Remaining raw captures** · low · no own key.
+- **θ3 #9107 — Remaining raw captures** · low · no own key.
   - Scope: the other raw `--print-plan |` captures move to `capture_print_plan`; ratchet ceiling → 0.
   - Signal: the ratchet row reads 0.
   - Depends on θ2.
-- **ι — `copy_verify_sandbox`** · medium · key `fk-763b633b2775`; subsumes #7002 and #7785.
+- **ι #9108 — `copy_verify_sandbox`** · medium · key `fk-763b633b2775`; subsumes #7002 and #7785.
   - Scope: `copy_list_preflight_lib.sh::copy_verify_sandbox <dest>` copies `derive_source_closure` plus a declared data-file list (occt/release crate lists, the infra map, `gen-nextest-config.sh`, `.config/nextest.toml`, the GUI-pins JSON) and asserts.
   - Adopted at every sandbox-building hand-copy site: `test_verify_scope.sh` ×2, `test_verify_throughput.sh`, `test_scope_boundary.sh`, `test_verify_release_delta_skip.sh`, `test_run_all_tiering.sh`, `test_verify_gui_feature_check.sh`, and ν's `_make_plan_fixture`.
   - Not adopted: `test_verify_pipeline_guard.sh`'s `_SYNTH_VERIFY`, a deliberate clause-3 fixture that ζ deletes (fold-verifier V3).
@@ -598,18 +598,18 @@ Every leaf touches verify-pipeline files, so each pays the full gate per landing
   - Ratchet row `verify-sandbox-hand-copy | cp "\$REPO_ROOT/scripts/verify\.sh" | tests/infra/test_*.sh | <post-ι count = the remaining _SYNTH_VERIFY line> | ι`. ζ lowers it to 0.
   - Signal: the ratchet reads its post-ι ceiling, with only `_SYNTH_VERIFY` left; adding a `source` line to a lib verify sources reds no sandbox suite.
   - Depends on #8476, ν, κ (κ deletes the 4b fixtures first).
-- **λ — `tree-sitter-generate.sh --check`** · medium · key `fk-7bc1c1449010`.
+- **λ #9109 — `tree-sitter-generate.sh --check`** · medium · key `fk-7bc1c1449010`.
   - Scope: a read-only `--check` (exit 0 iff `_stamp_is_current`, no lock, no write); `test_verify_semaphore_e2e.sh::ensure_tree_sitter_ready` calls it; the e2e fake fixtures are built by running the real script against a fixture grammar; stale line cites dropped.
   - Ratchet row `ts-stamp-predicate-copy | grammar_hash\.stamp | tests/infra/*semaphore_e2e*.sh | 0 | λ`. It is scoped to the e2e file and ο's later partitions (named `*semaphore_e2e*`). `test_tree_sitter_pipeline.sh` legitimately tests the generate script itself, and it is S19's (fold-verifier V4).
   - Signal: a lane whose `parser.c` is non-empty but unattested reads "stale" to both.
-- **μ — `test_occt_flock_gate.sh` split** · medium · key `fk-6ccbfc296ee8`; subsumes #7581.
+- **μ #9110 — `test_occt_flock_gate.sh` split** · medium · key `fk-6ccbfc296ee8`; subsumes #7581.
   - Scope: Tests 10–13/17/17b and T1–T18-BG move to `tests/infra/test_verify_timeout_knobs.sh` (bash, moved), with one merge-role capture helper carrying the `REIFY_RELEASE_DELTA_SKIP` pin (#7581); `occt_plan_grep_or_dump` moves into `plan_capture_lib.sh` as `plan_grep_or_dump`; Tests 5 and 7a (comment-only greps) deleted; `scripts/occt-touching-crates.txt` header corrected (the wrapper is no longer invoked by verify).
   - Signal: `test_occt_flock_gate.sh` contains no `--print-plan`; the new member is green.
   - Depends on η1.
-- **ν — Gui-feature test-pass contracts in their own member** · medium · key `fk-3988a6996b82`.
+- **ν #9111 — Gui-feature test-pass contracts in their own member** · medium · key `fk-3988a6996b82`.
   - Scope: Part B of `test_compute_trampoline_registration_wired.sh` → `tests/infra/test_verify_gui_feature_test_pass.sh` (bash, moved, one extra capture); Part B's false "today only COMPILE-checks" header fixed; cites by symbol.
   - Signal: the trampoline member's header and content describe INV-FEA-1 only; the new member is green.
-- **ζ — Cutover** · high · no own key.
+- **ζ #9112 — Cutover** · high · no own key.
   - Scope: the D1 shim replaces the bash body in one commit under the full gate. B1/B2 retired. Guard clauses 3/4a and the extractor deleted. `affected-crates-lib.sh::reify_is_inert_path` deleted. The loader ratchet's verify.sh exemption removed (2 → 0).
   - `copy_verify_sandbox`'s inventory becomes `--print-gates`' planner inputs. It applies `derive_source_closure` over each bash lib listed there, so transitively sourced libs (`lib_slot_acquire.sh`, `lib_clock_stop.sh`, `lib_event_log.sh`) are copied too (critic K23).
   - Also in the same commit:
@@ -625,27 +625,27 @@ Every leaf touches verify-pipeline files, so each pays the full gate per landing
     - `DF_VERIFY_ROLE=merge scripts/verify.sh all --profile both --scope all --print-plan` equals the last bash render byte for byte, apart from the listed divergences.
     - `requires-full-gate scripts/lib_test_semaphore.sh` still exits 0.
   - Depends on γ1, γ2, ε, η1, η2, ι, κ, #8654, #8662.
-- **ξ — `test_verify_scope.sh` h14 partition (6)** · medium · no own key; subsumes #8486.
+- **ξ #9113 — `test_verify_scope.sh` h14 partition (6)** · medium · no own key; subsumes #8486.
   - Scope: the record's six partitions over a `verify_scope_fixture_lib.sh` that also holds the PG-DRIFT/PG-DRIFT-GUI derivations GV-6 reads. #8486's heuristic-13 obstacle is fixed: the `plan_for*` helpers take the fixture as a parameter instead of reading scenario globals. The 89 ordered scope greps → `plan_header_field`; ratchet `ordered-scope-grep` → 0.
   - Signal: no file over 1,500 lines; same assertion total (the `test_verify_nextest_absent_suites.sh` S-row updated).
   - Depends on ζ, θ, ι, #8476.
-- **ο — `test_verify_semaphore_e2e.sh` h14 partition (4)** · medium · no own key.
+- **ο #9114 — `test_verify_semaphore_e2e.sh` h14 partition (4)** · medium · no own key.
   - Scope: the record's four partitions, named `test_verify_semaphore_e2e_<group>.sh` with the lib `verify_semaphore_e2e_lib.sh`, so λ's `*semaphore_e2e*` ratchet path keeps covering them. The tree-sitter group collapses into λ's `--check` call instead of moving. D_ROSTER/G_MEMBERS no longer apply after #8694.
   - Signal: no partition reaches back into the parent's globals; the suite's pass count is preserved.
   - Depends on λ, #8694.
-- **ρ — Single-line narrowing header** · low · no own key.
+- **ρ #9115 — Single-line narrowing header** · low · no own key.
   - Scope: the `# narrowing —` header joins its lists with commas (defect 7); `plan_count_noncomment_lines` consumers and θ's reader updated in the same diff.
   - Signal: a narrowed `--print-plan` has exactly one `# narrowing —` line and no bare continuation lines.
   - Depends on ζ.
-- **σ — Retire the bash Layer-A reaper functions** · low · no own key.
+- **σ #9116 — Retire the bash Layer-A reaper functions** · low · no own key.
   - Scope: `reaper_run_in_pgroup`, `reaper_teardown` and `reaper_kill_pgroup` have no consumer after ζ, so they are deleted with their `test_proc_reaper.sh` unit sections. `reap-orphans` (Layer B) stays.
   - Signal: `git grep -n 'reaper_run_in_pgroup' -- scripts tests` returns nothing.
   - Depends on ζ.
-- **ω — PRD close** · low · no own key.
+- **ω #9117 — PRD close** · low · no own key.
   - Scope: terminal stamp, ID backfill, AS-AUTHORED freeze of this PRD and its manifest. Clears any S18 priority override still set (§11 pins).
   - Signal: the committed header.
   - Depends on every leaf above.
-- **DF — dark-factory companion** · low (sidecar label `DF`, `external_task_id`).
+- **DF dark_factory #7006 — dark-factory companion** · low (sidecar label `DF`, `external_task_id: dark_factory:7006`).
   - Scope: `orchestrator/tests/test_verify_role_integration.py` reads `--print-plan=json` (`step.kind`, typed `prio_class`) instead of the text grammar; `sampler/metrics.py::_is_verify_sh` matches the entry script in `cmdline` (already blind today); DF comments citing `verify.sh:NNNN` repointed to symbols.
   - Signal: that DF test passes against a reify checkout at ζ or later. Its `scripts/verify.sh --print-plan=json test` invocation goes through the shim; its `bash <script>` PermissionError fallback keeps working.
   - External dependency on reify ζ (critic K4). The test invokes the shim path with action `test`, which needs γ2's test region and ζ's shim.

@@ -270,3 +270,9 @@ PRD `docs/prds/v0_6/selector-resolution-factoring.md` splits `crates/reify-eval/
 | leaf | check | path change |
 |---|---|---|
 | ε #8288 | `topology-selectors-read-face-closure` (`face_closure_nodes\(`, present) | + `crates/reify-eval/src/compute_targets/result_topology.rs` (`nodes_for_faces` becomes `CarriedTopology::nodes_for_faces`) |
+
+## Amendment 2026-10-15 — delivered checks widened for the S18 verify cutover
+
+S18 (`docs/prds/v0_6/verify-structured-plan-and-role-table.md`, Leo ruling Q4) moves `scripts/verify.sh`'s logic into `scripts/reify_verify/` and replaces the coupled fixture lists with a derived set and `gui/src/__tests__/reifyGrammarCorpus.expected-clean.json`. These checks were widened so they give the same verdict today and after the move (three writes: task metadata, the `.yaml` sidecar, this note):
+
+- `gate-prebuild-builds-the-worker`: paths now `scripts/verify.sh`, `scripts/reify_verify/`; pattern now `reify-mesh-worker`.

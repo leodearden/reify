@@ -385,3 +385,10 @@ filed task. Four invariants produced design additions rather than clean passes �
 | **G6** — premise validity | **PASS.** Every leaf's numeric/capability/rejection premise bound: the measured-verdict premises **probe-verified live on both polarities**; the refine-absence and GUI-never-measures vacuity halves grep-verified with positive controls; `has_openvdb` corrected from feature to cfg. **One anti-inversion repair (A14)** — ζ's BT-1 thickness row moved to its producer ε. No leaf asserts a numeric bound of its own, so branches 1 and 2 do not fire; the batch inherits precision-γ1's floor only where it inherits C-LOOP, which it does not. |
 | **G7** — design invariants | **PASS**, no waiver. Four design additions (INV-SF-2, INV-SF-4, INV-SF-5, INV-AD-4) written into their owning tasks. |
 | **Manifest** | **0 FAIL.** 58 bindings · 43 mechanical checks all executed at decompose · 16 binding amendments, each written verbatim into its filed task. |
+
+## Amendment 2026-10-15 — delivered checks widened for the S18 verify cutover
+
+S18 (`docs/prds/v0_6/verify-structured-plan-and-role-table.md`, Leo ruling Q4) moves `scripts/verify.sh`'s logic into `scripts/reify_verify/` and replaces the coupled fixture lists with a derived set and `gui/src/__tests__/reifyGrammarCorpus.expected-clean.json`. These checks were widened so they give the same verdict today and after the move (three writes: task metadata, the `.yaml` sidecar, this note):
+
+- `gui-src-tauri-tests-cannot-be-heavy-excluded`: paths now `tests/infra/test_compute_trampoline_registration_wired.sh`, `tests/infra/test_verify_gui_feature_test_pass.sh`; pattern now `gui-feature pass carries no`.
+- `new-ri-fixtures-need-rust-coupled-registration`: paths now `scripts/verify.sh`, `scripts/reify_verify/`; pattern now `_RUST_COUPLED_RI_FIXTURES|pg-drift:allow`.

@@ -1237,6 +1237,7 @@ tasks:
       expect: present
       paths:
       - scripts/verify.sh
+      - scripts/reify_verify/
   - name: gui-bundle-ships-the-worker
     binding: 'producer-self (C9) — the bundle step copies the worker into bundle.externalBin
       under its target-triple name. Accepted gap: an externalBin entry whose base

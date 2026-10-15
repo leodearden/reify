@@ -2,7 +2,7 @@ prd: docs/prds/v0_6/verify-structured-plan-and-role-table.md
 schema_version: 1
 tasks:
 - label: α
-  task_id: null
+  task_id: 9095
   title: 'S18 α: Python verify package — CLI, knob registry, role and profile tables, --print-role-policy / --print-knobs'
   capabilities:
   - name: stdlib-interpreter-on-both-verify-hosts
@@ -27,7 +27,7 @@ tasks:
       - scripts/reify_verify/policy.py
       expect: present
 - label: π
-  task_id: null
+  task_id: 9096
   title: 'S18 π: EXPECTED_CLEAN becomes a JSON data file; corpus drift ledger in its own test file'
   capabilities:
   - name: expected-clean-is-inline-ts-today
@@ -40,7 +40,7 @@ tasks:
       - gui/src/__tests__/reifyGrammarCorpus.test.ts
       expect: absent
 - label: β
-  task_id: null
+  task_id: 9097
   title: 'S18 β: scope decision record, infra selectors, narrowing — decide_scope over reify_path_attribution facts; Rust-coupled set derived; GUI pins from JSON'
   capabilities:
   - name: path-facts-substrate
@@ -65,7 +65,7 @@ tasks:
       - scripts/reify_verify/scope.py
       expect: present
 - label: γ1
-  task_id: null
+  task_id: 9098
   title: 'S18 γ1: typed plan model, text and JSON renderers, non-test emitters, plan-parity member (opens the port window)'
   capabilities:
   - name: loader-path-helper-substrate
@@ -93,7 +93,7 @@ tasks:
       - tests/infra/test_verify_plan_parity.py
       expect: present
 - label: γ2
-  task_id: null
+  task_id: 9099
   title: 'S18 γ2: test region — one nextest emitter (profile record, typed filters, nextest_config_path, gui-feature pass, confirm wrapper), parity over test/all'
   capabilities:
   - name: one-nextest-config-path
@@ -109,7 +109,7 @@ tasks:
     binding: 'G3 — cargo-nextest 0.9.136 (cargo nextest --version, 2026-10-14) unions multiple -E filters; the retry composer folds gate and retry expressions into one -E (scout A2 §3).'
     verdict: PASS
 - label: κ
-  task_id: null
+  task_id: 9100
   title: 'S18 κ: --print-gates (emitter-declared gate paths + planner inputs); verify-pipeline-guard reads it, clause 4b deleted'
   capabilities:
   - name: guard-reads-verify-source-today
@@ -131,7 +131,7 @@ tasks:
       - scripts/verify-pipeline-paths.txt
       expect: absent
 - label: ε
-  task_id: null
+  task_id: 9101
   title: 'S18 ε: Python executor — kind dispatch, process groups, semaphore holder, signals 143/130/129, ledger, --confirm-failed, psi/compile gate; executor parity'
   capabilities:
   - name: semaphore-lib-has-a-standalone-cli
@@ -159,7 +159,7 @@ tasks:
     binding: 'G3 — S19 γ #8685 adds REIFY_VERIFY_EVENT_LOG and the slot_timeout record in lib_slot_acquire.sh::slot_emit_timeout for every caller; not on main at 1b06f93151. Hard edge #8685 -> ε.'
     verdict: PASS
 - label: η1
-  task_id: null
+  task_id: 9103
   title: 'S18 η1: --print-role-policy replaces test_nextest_slow_priority.sh source extractors and seeded mutators'
   capabilities:
   - name: shadow-parsers-exist-today
@@ -172,7 +172,7 @@ tasks:
       - tests/infra/test_nextest_slow_priority.sh
       expect: absent
 - label: η2
-  task_id: null
+  task_id: 9104
   title: 'S18 η2: the remaining verify.sh source greps become structured queries (test_verify_plan_structure.py)'
   capabilities:
   - name: source-readers-inventoried
@@ -185,7 +185,7 @@ tasks:
       - tests/infra/test_verify_plan_structure.py
       expect: present
 - label: θ
-  task_id: null
+  task_id: 9105
   title: 'S18 θ: typed plan field readers in plan_capture_lib.sh (plan_header_field, plan_step_index); stale cites to symbols'
   capabilities:
   - name: no-typed-reader-today
@@ -198,7 +198,7 @@ tasks:
       - tests/infra/plan_capture_lib.sh
       expect: present
 - label: θ2
-  task_id: null
+  task_id: 9106
   title: 'S18 θ2: one capture form — nan_safe through capture_print_plan with completeness checks; lexer matrix trimmed; raw-capture ratchet'
   capabilities:
   - name: single-shot-capture-today
@@ -211,7 +211,7 @@ tasks:
       - tests/infra/test_nan_safe_ordering_guard_wired.sh
       expect: present
 - label: θ3
-  task_id: null
+  task_id: 9107
   title: 'S18 θ3: remaining raw --print-plan captures move to capture_print_plan (ratchet to 0)'
   capabilities:
   - name: raw-captures-counted
@@ -224,7 +224,7 @@ tasks:
       - tests/infra/adoption-ratchet.manifest
       expect: present
 - label: ι
-  task_id: null
+  task_id: 9108
   title: 'S18 ι: copy_verify_sandbox builds every verify sandbox; hand copy lists deleted'
   capabilities:
   - name: hand-lists-today
@@ -237,7 +237,7 @@ tasks:
       - tests/infra/copy_list_preflight_lib.sh
       expect: present
 - label: λ
-  task_id: null
+  task_id: 9109
   title: 'S18 λ: tree-sitter-generate.sh --check; the e2e readiness gate calls it'
   capabilities:
   - name: no-check-mode-today
@@ -250,7 +250,7 @@ tasks:
       - scripts/tree-sitter-generate.sh
       expect: present
 - label: μ
-  task_id: null
+  task_id: 9110
   title: 'S18 μ: verify.sh timeout/role-wall contracts leave test_occt_flock_gate.sh for test_verify_timeout_knobs.sh'
   capabilities:
   - name: wrapper-file-holds-verify-contracts
@@ -263,7 +263,7 @@ tasks:
       - tests/infra/test_verify_timeout_knobs.sh
       expect: present
 - label: ν
-  task_id: null
+  task_id: 9111
   title: 'S18 ν: gui-feature test-pass contracts move out of test_compute_trampoline_registration_wired.sh'
   capabilities:
   - name: part-b-is-a-verify-contract
@@ -276,7 +276,7 @@ tasks:
       - tests/infra/test_verify_gui_feature_test_pass.sh
       expect: present
 - label: ζ
-  task_id: null
+  task_id: 9112
   title: 'S18 ζ: cutover — scripts/verify.sh becomes the exec shim; bash body, parity members and guard source clauses deleted'
   capabilities:
   - name: shim-replaces-body
@@ -307,7 +307,7 @@ tasks:
       - scripts/affected-crates-lib.sh
       expect: absent
 - label: ξ
-  task_id: null
+  task_id: 9113
   title: 'S18 ξ: test_verify_scope.sh h14 partition (6) over a fixture lib; ordered scope greps become field reads'
   capabilities:
   - name: partition-record
@@ -329,7 +329,7 @@ tasks:
       - tests/infra/adoption-ratchet.manifest
       expect: present
 - label: ο
-  task_id: null
+  task_id: 9114
   title: 'S18 ο: test_verify_semaphore_e2e.sh h14 partition (4)'
   capabilities:
   - name: partition-record
@@ -342,7 +342,7 @@ tasks:
       - tests/infra/verify_semaphore_e2e_lib.sh
       expect: present
 - label: ρ
-  task_id: null
+  task_id: 9115
   title: 'S18 ρ: the # narrowing header is one line'
   capabilities:
   - name: narrowing-header-multiline-today
@@ -352,7 +352,7 @@ tasks:
       kind: manual
       reason: the fix is a render detail with no stable grep anchor; ρ's own --print-plan test (exactly one `# narrowing —` line, no bare continuation lines) is the behavioural cover.
 - label: σ
-  task_id: null
+  task_id: 9116
   title: 'S18 σ: retire lib_proc_reaper.sh Layer-A functions (no consumer after the cutover)'
   capabilities:
   - name: layer-a-only-consumer-is-verify
@@ -365,7 +365,7 @@ tasks:
       - scripts/lib_proc_reaper.sh
       expect: absent
 - label: ω
-  task_id: null
+  task_id: 9117
   title: 'S18 ω: PRD close — ID backfill, terminal stamp, freeze'
   capabilities:
   - name: terminal-stamp
@@ -378,7 +378,7 @@ tasks:
       - docs/prds/v0_6/verify-structured-plan-and-role-table.md
       expect: present
 - label: DF
-  external_task_id: null
+  external_task_id: dark_factory:7006
   title: 'dark-factory companion (after reify ζ): DF test_verify_role_integration reads --print-plan=json; sampler matches the verify entry script; DF verify.sh line cites to symbols'
   capabilities:
   - name: df-runtime-parses-no-plan-text

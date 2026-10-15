@@ -651,6 +651,7 @@ tasks:
       pattern: gui-feature pass carries no
       paths:
       - tests/infra/test_compute_trampoline_registration_wired.sh
+      - tests/infra/test_verify_gui_feature_test_pass.sh
       expect: present
   - name: reify-eval-tests-must-be-harness-submodules
     binding: 'PASS-WITH-AMENDMENT (A13), UNLISTED by the overlay rule. reify-eval
@@ -708,9 +709,10 @@ tasks:
     verdict: PASS
     delivered_check:
       kind: grep
-      pattern: _RUST_COUPLED_RI_FIXTURES
+      pattern: '_RUST_COUPLED_RI_FIXTURES|pg-drift:allow'
       paths:
       - scripts/verify.sh
+      - scripts/reify_verify/
       expect: present
   - name: bt4-capture-is-observation-only-by-construction
     binding: signal premise — BT-4 is a cheap pin, not a risk. In surface_subtree's

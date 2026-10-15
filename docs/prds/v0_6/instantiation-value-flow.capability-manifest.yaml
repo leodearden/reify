@@ -141,6 +141,9 @@ tasks:
       pattern: instantiation_value_flow_probe.ri
       paths:
       - scripts/verify.sh
+      - gui/src/__tests__/reifyGrammarCorpus.test.ts
+      - gui/src/__tests__/reifyGrammarCorpus.expected-clean.json
+      - crates/reify-cli/tests/
       expect: present
   - name: oracle-harness-premise
     binding: 'signal premise — the Shape-A oracle (instance ≡ hand-specialized twin)

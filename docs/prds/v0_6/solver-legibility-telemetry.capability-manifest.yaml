@@ -417,6 +417,7 @@ tasks:
       pattern: test:e2e|test:visual|REIFY_DEBUG
       paths:
       - scripts/verify.sh
+      - scripts/reify_verify/
       expect: absent
 - label: ξ
   task_id: 6733
