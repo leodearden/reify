@@ -123,7 +123,7 @@ fn scope_is_excluded_crate(scope: &str) -> bool {
 /// teeth despite reusing the spawn's own sanitizer: it independently catches
 /// an incomplete [`crate::git_env::REPO_REDIRECT_VARS`] list, a `.git` file
 /// pointing at another checkout, a symlinked or embedded checkout, or a
-/// `CARGO_MANIFEST_DIR` `.parent()` walk that lands on the wrong level — any
+/// workspace-root resolution that lands on the wrong level — any
 /// of which would make the real script silently scan a different tree than
 /// the one the caller specified.
 ///
@@ -356,33 +356,22 @@ pub fn run_orphan_audit(scope: &str) -> Option<serde_json::Value> {
 }
 
 /// Resolve the on-disk path to `scripts/audit-orphan-producers.sh` and the
-/// repo root it lives under, via two `.parent()` walks up from
-/// `CARGO_MANIFEST_DIR` evaluated inside **this** crate
-/// (`reify-test-support`), which always sits at
-/// `<repo>/crates/reify-test-support/` regardless of which downstream crate
-/// calls the public API.
+/// repo root it lives under. The root is resolved at run time by
+/// [`crate::workspace_root::workspace_root`], whichever downstream crate calls
+/// the public API.
 ///
 /// Single-sourced for [`run_orphan_audit_detailed`] and this module's own
 /// tests (which need the same two paths to construct decoy/mismatch
 /// scenarios), so the production and test-time resolution can never drift
 /// apart. Before the task 5698 amendment pass, the tests module carried an
-/// independent copy of this exact walk (`resolve_real_script_and_root`),
+/// independent copy of this resolution (`resolve_real_script_and_root`),
 /// which this replaces.
 fn resolve_script_and_root() -> (PathBuf, PathBuf) {
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let script = Path::new(manifest_dir)
-        .parent()
-        .expect("crates/reify-test-support has a parent (crates/)")
-        .parent()
-        .expect("crates/ has a parent (repo root)")
-        .join("scripts/audit-orphan-producers.sh");
-    let repo_root = script
-        .parent()
-        .expect("scripts/ dir exists")
-        .parent()
-        .expect("repo root exists")
-        .to_path_buf();
-    (script, repo_root)
+    let repo_root = crate::workspace_root::workspace_root().to_path_buf();
+    (
+        repo_root.join("scripts/audit-orphan-producers.sh"),
+        repo_root,
+    )
 }
 
 /// The unexecuted [`Command`] [`run_orphan_audit`] spawns for `scope`:
@@ -473,10 +462,9 @@ pub fn audit_command(scope: &str) -> Command {
 ///
 /// # Repo-root resolution
 ///
-/// The repo root is resolved at compile time via `env!("CARGO_MANIFEST_DIR")`
-/// evaluated inside **this** crate (`reify-test-support`), which always sits at
-/// `<repo>/crates/reify-test-support/`.  Two `.parent()` walks reach the repo
-/// root regardless of which downstream crate calls this function.
+/// The repo root is resolved at run time by
+/// [`crate::workspace_root::workspace_root`], whichever downstream crate calls
+/// this function.
 fn run_orphan_audit_detailed(scope: &str) -> OrphanAudit {
     let (script, repo_root) = resolve_script_and_root();
 
@@ -609,8 +597,7 @@ mod tests {
     /// 5656's original one-line design unreachable. Passing a real
     /// subdirectory as `repo_root` creates a genuine expected-vs-resolved
     /// disagreement with no environment manipulation at all, and models a
-    /// real bug class: a `CARGO_MANIFEST_DIR` `.parent()` walk landing on the
-    /// wrong level.
+    /// real bug class: a workspace-root resolution landing on the wrong level.
     #[test]
     fn child_repo_root_mismatch_panics() {
         if Command::new("git").arg("--version").output().is_err() {
@@ -647,11 +634,12 @@ mod tests {
     /// becoming a false positive under this project's warm-lane topology.
     ///
     /// Measured at this branch base: sanitized `git rev-parse
-    /// --show-toplevel` from the manifest-derived root returns EXACTLY that
-    /// root, even inside a linked git worktree whose `.git` is a gitdir FILE
-    /// (this project's normal topology, `worktrees/_lane-NN`) — so the probe
-    /// agrees with the `CARGO_MANIFEST_DIR` two-`.parent()` walk and this
-    /// call must NOT panic.
+    /// --show-toplevel` from the [`crate::workspace_root::workspace_root`]
+    /// root returns EXACTLY that root, even inside a linked git worktree whose
+    /// `.git` is a gitdir FILE (this project's normal topology,
+    /// `worktrees/_lane-NN`) — so git's view agrees with the filesystem-marker
+    /// resolver and this call must NOT panic. The cross-check has teeth only
+    /// because that resolver never consults git itself.
     ///
     /// Calls [`child_repo_root`] directly rather than going through
     /// [`run_orphan_audit_detailed`] (review finding #7, task 5698 amendment
@@ -665,11 +653,11 @@ mod tests {
     /// `EnvUnavailable`-shaped skip unreachable except on a genuinely
     /// git-less image (checked up front, same as every other test here).
     #[test]
-    fn child_repo_root_agrees_with_manifest_walk() {
+    fn child_repo_root_agrees_with_runtime_workspace_root() {
         if Command::new("git").arg("--version").output().is_err() {
             eprintln!(
-                "orphan_audit: skipping child_repo_root_agrees_with_manifest_walk — git \
-                 not available"
+                "orphan_audit: skipping child_repo_root_agrees_with_runtime_workspace_root \
+                 — git not available"
             );
             return;
         }
@@ -686,14 +674,14 @@ mod tests {
                 assert_eq!(
                     resolved_canon, repo_root_canon,
                     "child_repo_root({repo_root:?}) resolved {resolved:?}, which does \
-                     not canonicalize to the same path as the CARGO_MANIFEST_DIR walk \
+                     not canonicalize to the same path as workspace_root() \
                      — the mismatch probe in run_orphan_audit_at would incorrectly \
                      panic on every real invocation in this environment"
                 );
             }
             Err(ChildRepoRootFailure::NoRepository) => eprintln!(
-                "orphan_audit: skipping child_repo_root_agrees_with_manifest_walk — \
-                 repo root is not inside a git work tree"
+                "orphan_audit: skipping child_repo_root_agrees_with_runtime_workspace_root \
+                 — repo root is not inside a git work tree"
             ),
             Err(ChildRepoRootFailure::Other(detail)) => panic!(
                 "child_repo_root({repo_root:?}) failed for a reason other than \"no \
@@ -1267,8 +1255,8 @@ mod tests {
     /// One substantive upgrade over the assertions this replaces: those could
     /// only RECONSTRUCT this crate's root from `reify-audit`'s own walk and
     /// compare, which does not distinguish this repo from a byte-identical
-    /// vendored copy laid out the same way. Here there is only ONE walk, so
-    /// that reconstruction — and its blind spot — is gone.
+    /// vendored copy laid out the same way. Here there is only ONE resolution,
+    /// so that reconstruction — and its blind spot — is gone.
     ///
     /// The `crates/reify-audit/Cargo.toml` check is kept anyway, even though
     /// nothing about THIS crate's own resolution needs it: it is what makes
