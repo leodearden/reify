@@ -2504,25 +2504,63 @@ select_pdoccover_ratchet() {
 select_pdoccover_ratchet
 
 # ---------------------------------------------------------------------------
-# Cheap cited-test-path gate on the hook-gated --scope staged path (task #7785).
+# select_staged_whole_tree_gate <leaf> — under --scope staged, add <leaf> to
+# SELECTED_INFRA_GLOBS iff anything at all is staged. The one home of the
+# trigger shared by the landing-path-parity gates below; the ruling that every
+# in-charter whole-tree gate gets one is landing-contract §3 R3
+# (docs/legibility/landing-contract.md).
+#
+# A whole-tree gate otherwise ran ONLY in the merge-tier run_all.sh pool.
+# hooks/pre-commit -> hooks/project-checks is the sole --scope staged caller
+# and invokes it with no DF_VERIFY_ROLE set, so the role defaults to `task` and
+# that pool never fires; a docs-only stage also classifies inert (RUN_RUST=0),
+# which is the pool block's other precondition. That is a PATH ASYMMETRY, not
+# just a latency gap: a writer whose only landing path is a hook-gated
+# `git commit` on `main` can mint content that passes its OWN gate and then
+# fails the whole-tree gate for everyone else.
+#
+# Hence NO per-file loop: "any staged change at all, in any tracked file" IS
+# `[ -n "$CHANGED_FILES_RAW" ]`, and writing it as a loop would only offer
+# someone a `case` to put inside. Why no filter over the staged set is sound
+# for a given leaf, and what that leaf costs, is that leaf's own header.
+#
+# Appends into the SAME SELECTED_INFRA_GLOBS as select_cheap_ptodo_gate, so
+# every leaf inherits the four properties that selector's header enumerates BY
+# MECHANISM rather than by restatement: (a) merge/background suppression — the
+# selective emission block is suppressed under those roles, where run_all.sh
+# runs the file wholesale, so it still runs exactly once (INV-5); (b) the
+# REIFY_INFRA_SUITE_ACTIVE re-entrancy guard; (c) fail-fast ordering ahead of
+# the cargo poles; (d) add_tool's LD_LIBRARY_PATH scrub.
+#
+# RESIDUAL, shared with select_cheap_ptodo_gate and NOT introduced here: a
+# decide_scope C5 fail-wide leaves SCOPE=staged with CHANGED_FILES_RAW="" and
+# RUN_RUST=1, so this selector returns without adding while the role is still
+# `task` and no run_all.sh pool runs. Such a commit gets the full cargo
+# workspace but not these gates. Closing it needs a fail-wide signal
+# decide_scope does not expose today; the merge tier remains the wholesale
+# authority.
+# ---------------------------------------------------------------------------
+select_staged_whole_tree_gate() {
+    [ "$SCOPE" = "staged" ] || return 0
+    [ -n "$CHANGED_FILES_RAW" ] || return 0
+    add_selected_infra_glob "$1"
+}
+
+# ---------------------------------------------------------------------------
+# Cheap cited-test-path gate on the hook-gated --scope staged path (task #7831).
 #
 # tests/infra/test_cited_test_paths_resolve.sh — prose that names a
 # `crates/<crate>/tests/**/*.rs` file must name a path that still resolves —
-# ran ONLY in the merge-tier run_all.sh pool. hooks/pre-commit ->
-# hooks/project-checks invokes `--scope staged` with no DF_VERIFY_ROLE set, so
-# the role defaults to `task` and that pool never fires; a docs-only stage also
-# classifies inert (RUN_RUST=0), which is the pool block's other precondition.
-# That is a PATH ASYMMETRY, not just a latency gap: a writer whose only landing
-# path is a hook-gated `git commit` on `main` can mint content that passes its
-# OWN gate and then fails the whole-tree gate for everyone else. Commit
-# f7b607527e (an unattended nightly trickle) landed a stale citation at
-# 03:20:36 having passed its own hook, and every merge for the next 8 hours
-# failed on it. This selector makes that commit fail at ITS OWN commit.
+# ran ONLY in the merge-tier run_all.sh pool, so it carried the path asymmetry
+# that select_staged_whole_tree_gate (above) describes. Commit f7b607527e (an
+# unattended nightly trickle) landed a stale citation at 03:20:36 having passed
+# its own hook, and every merge for the next 8 hours failed on it. This
+# selector makes that commit fail at ITS OWN commit.
 #
 # NO EXTENSION FILTER. That is the deliberate difference from
-# select_cheap_ptodo_gate directly above, which DOES filter, and it is the one
-# thing a later reader must not "helpfully" add. Three independent reasons,
-# any one of them sufficient:
+# select_cheap_ptodo_gate (earlier in this file), which DOES filter, and it is
+# the one thing a later reader must not "helpfully" add. Three independent
+# reasons, any one of them sufficient:
 #
 #   (1) The scan is extension-agnostic BY CONSTRUCTION, and says so:
 #       cited_test_path_citations in tests/infra/cited-test-path-lib.sh (cited
@@ -2554,32 +2592,36 @@ select_pdoccover_ratchet
 # three runs. No cargo, no npm. On a path taken only by a hook-gated commit on
 # `main`, against an 8-hour fleet-wide merge outage, a cleverer filter would be
 # trading a coverage hole for a latency saving that does not matter.
-#
-# Hence NO per-file loop: "any staged change at all, in any tracked file" IS
-# `[ -n "$CHANGED_FILES_RAW" ]`, and writing it as a loop would only offer
-# someone a `case` to put inside.
-#
-# Appends into the SAME SELECTED_INFRA_GLOBS as select_cheap_ptodo_gate, so it
-# inherits the four properties that selector's header enumerates BY MECHANISM
-# rather than by restatement: (a) merge/background suppression — the selective
-# emission block is suppressed under those roles, where run_all.sh runs this
-# file wholesale, so it still runs exactly once (INV-5); (b) the
-# REIFY_INFRA_SUITE_ACTIVE re-entrancy guard; (c) fail-fast ordering ahead of
-# the cargo poles; (d) add_tool's LD_LIBRARY_PATH scrub.
-#
-# RESIDUAL, shared with select_cheap_ptodo_gate and NOT introduced here: a
-# decide_scope C5 fail-wide leaves SCOPE=staged with CHANGED_FILES_RAW="" and
-# RUN_RUST=1, so this selector returns without adding while the role is still
-# `task` and no run_all.sh pool runs. Such a commit gets the full cargo
-# workspace but not this gate. Closing it needs a fail-wide signal decide_scope
-# does not expose today; the merge tier remains the wholesale authority.
 # ---------------------------------------------------------------------------
 select_cited_test_path_gate() {
-    [ "$SCOPE" = "staged" ] || return 0
-    [ -n "$CHANGED_FILES_RAW" ] || return 0
-    add_selected_infra_glob "tests/infra/test_cited_test_paths_resolve.sh"
+    select_staged_whole_tree_gate tests/infra/test_cited_test_paths_resolve.sh
 }
 select_cited_test_path_gate
+
+# ---------------------------------------------------------------------------
+# Canonical-config-path gate on the hook-gated --scope staged path (task #7797):
+# landing-contract §3 R3's canonical-path instance.
+#
+# tests/infra/test_orchestrator_config_canonical_path.sh (task 5242): (B) is a
+# repo-wide absence invariant with NO grandfather baseline, and (A) parses
+# dark-factory-orchestrator.yaml, which is itself classified inert and whose
+# only infra-map row (knob parity) reads it with awk. Neither ran on a
+# hook-gated commit on `main`.
+#
+# ANY staged change, no filter: the verdict is a function of the whole tree,
+# the test's own legacy_config_ref_exclusions, and that file's existence and
+# parse. A staged DELETE or a YAML-breaking edit of it carries no legacy-name
+# content, so no predicate over the staged set is sound — and a content
+# predicate would copy the test's PCRE (SPOT).
+#
+# COST: 0.56s-1.98s for the whole leaf over two runs, 2026-10-15; no cargo, no
+# npm. No selected_infra_leaf_env arm: (D) already FAILS a scan that cannot
+# run, and (A)'s PyYAML SKIP leaves (B) running, so there is no skip to forbid.
+# ---------------------------------------------------------------------------
+select_canonical_config_path_gate() {
+    select_staged_whole_tree_gate tests/infra/test_orchestrator_config_canonical_path.sh
+}
+select_canonical_config_path_gate
 
 # ---------------------------------------------------------------------------
 # Phase-2 narrowing: map changed files → affected crate set → -p flag strings.
