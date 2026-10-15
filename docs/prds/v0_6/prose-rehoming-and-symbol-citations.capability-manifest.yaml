@@ -5,7 +5,7 @@ prd: docs/prds/v0_6/prose-rehoming-and-symbol-citations.md
 schema_version: 1
 tasks:
 - label: α₁
-  task_id: null
+  task_id: 9123
   title: 'S23 α₁: jcodemunch scripts and tests — symbol cites and the external-package pointer form'
   capabilities:
   - name: jcodemunch-cites-exist-today
@@ -18,7 +18,7 @@ tasks:
       - tests/infra/test_jcodemunch_index_units.sh
       expect: absent
 - label: α₂
-  task_id: null
+  task_id: 9124
   title: 'S23 α₂: seed and gc script prose — rehome measurements and amendments; symbol cites; Greek-letter comment aliases'
   capabilities:
   - name: seed-reviewer-prose-present
@@ -31,7 +31,7 @@ tasks:
       - scripts/seed-warm-lane.sh
       expect: absent
 - label: α₃
-  task_id: null
+  task_id: 9125
   title: 'S23 α₃: warm-lane infra tests — symbol and Block cites, header indexes dropped, esc pointers rehomed'
   capabilities:
   - name: seed-test-cites-stale-today
@@ -44,7 +44,7 @@ tasks:
       - tests/infra
       expect: absent
 - label: α₄
-  task_id: null
+  task_id: 9126
   title: 'S23 α₄: infra tests citing verify.sh — retarget at scripts/reify_verify symbols after the S18 cutover'
   capabilities:
   - name: verify-sh-cites-outside-verify-sh
@@ -61,14 +61,14 @@ tasks:
     binding: 'G3 — scripts/reify_verify/ is produced by S18 (gamma1 #9098 .. zeta #9112); alpha4 depends on zeta, so the targets exist when it dispatches. Not present on main today (by design).'
     verdict: PASS
 - label: α₅
-  task_id: null
+  task_id: 9127
   title: 'S23 α₅: infra and scripts long tail — remaining ledger rows under tests/infra and scripts'
   capabilities:
   - name: long-tail-population
     binding: 'signal premise — after alpha1..alpha4 and the exclusions (#8540, #7682, S18 nu/theta2/lambda, S19 eta/theta), the tail includes compute-trampoline Part A (13 crate cites), check-compute-trampoline-registration.sh (6), reify-audit-freshness.sh (4), flake-density-report.py docstring cites, test_sandbox_cache_writability_seam.sh (13 dark-factory roles.py) (2026-10-15). Prereq S19 Ω #8729 (σ/π/ρ/γ partition files in the tail).'
     verdict: PASS
 - label: β₁
-  task_id: null
+  task_id: 9128
   title: 'S23 β₁: reify-solver-elastic — plan.json pointers, symbol cites, reviewer prose, two_tet_fan_mesh volume fix'
   capabilities:
   - name: plan-json-pointers-present
@@ -90,7 +90,7 @@ tasks:
       - crates/reify-solver-elastic
       expect: absent
 - label: β₂
-  task_id: null
+  task_id: 9129
   title: 'S23 β₂: eval/analysis trampolines — elastic_static and modal_ops drift, engine_compute residue'
   capabilities:
   - name: elastic-static-drift-present
@@ -103,7 +103,7 @@ tasks:
       - crates
       expect: absent
 - label: β₃
-  task_id: null
+  task_id: 9130
   title: 'S23 β₃: stdlib FEA and dynamics, shell-extract medial, mesh-morph module doc'
   capabilities:
   - name: analysis-stdlib-cites-stale
@@ -116,7 +116,7 @@ tasks:
       - crates/reify-shell-extract/src/medial.rs
       expect: absent
 - label: γ₁
-  task_id: null
+  task_id: 9131
   title: 'S23 γ₁: kinematics residue — loop-closure, solver, snapshot, joints and mechanism prose'
   capabilities:
   - name: kinematics-residue-present
@@ -137,7 +137,7 @@ tasks:
       - crates/reify-stdlib/src/mechanism.rs
       expect: absent
 - label: γ₂
-  task_id: null
+  task_id: 9132
   title: 'S23 γ₂: reify-gcode — drop the colliding plan-decision numbers; inline contracts'
   capabilities:
   - name: gcode-plan-pointers-present
@@ -150,7 +150,7 @@ tasks:
       - crates/reify-gcode
       expect: absent
 - label: δ₁
-  task_id: null
+  task_id: 9133
   title: 'S23 δ₁: reify-constraints solver tree and cpsat — history prose rehomed, symbol cites'
   capabilities:
   - name: solver-history-prose-present
@@ -163,7 +163,7 @@ tasks:
       - crates/reify-constraints/src
       expect: absent
 - label: δ₂
-  task_id: null
+  task_id: 9134
   title: 'S23 δ₂: SolverRegistry::solve_inner — rehome the 150-line block and review/history prose (prose only; refactor → #6903, OQ-2 (b))'
   capabilities:
   - name: solve-inner-prose-present
@@ -189,7 +189,7 @@ tasks:
       - crates/reify-audit/plinecite-baseline.txt
       expect: absent
 - label: δ₄
-  task_id: null
+  task_id: 9135
   title: 'S23 δ₄: kernel crates — manifold, gmsh, openvdb cites into OCCT and sibling crates'
   capabilities:
   - name: kernel-cross-cites-stale
@@ -218,14 +218,14 @@ tasks:
     binding: signal premise — structural_classifier 0.79 (classify_cell 181 doc / 23 code), sweep_classifier 0.59, warm_pool 0.53, reify-eval relate_solve 0.48; quotes "verified 2026-06-27", "Measured, not assumed, by", "Do NOT \"fix\" the extra level" present (2026-10-15).
     verdict: PASS
 - label: δ₆
-  task_id: null
+  task_id: 9137
   title: 'S23 δ₆: check-surface remainder — tolerance_combine, representation_within, output_spec, two engine_constraints cites'
   capabilities:
   - name: check-surface-residue
     binding: signal premise — engine_constraints.rs lib.rs:163 (-> SimpleConstraintChecker::check) and engine_constraints.rs:42-62 (-> RepresentationWithin ordering invariant doc) stale; unenforced_representation_bound_diagnostic 84/21, compute_representation_bounds 75/21 doc/code (2026-10-15). S12 lambda splits tolerance_combine.rs.
     verdict: PASS
 - label: ε₁
-  task_id: null
+  task_id: 9138
   title: 'S23 ε₁: DiagnosticCode — one line per variant, one strum round-trip test, ratchet rows'
   capabilities:
   - name: strum-available-in-reify-core
@@ -266,7 +266,7 @@ tasks:
     binding: G3 — p2_substitution_diagnostic is at engine_build.rs today; S2 beta2 (unfiled) moves it to volume_mesh_assembly.rs (S2 draft §5.8). epsilon2 depends on that leaf; id at S2 filing (else x_seam_wait S2).
     verdict: PASS
 - label: ε₃
-  task_id: null
+  task_id: 9140
   title: 'S23 ε₃: reify-ir geometry — the five false comments, PRD-line cites, symbol cites'
   capabilities:
   - name: geometry-false-comments-present
@@ -292,7 +292,7 @@ tasks:
       - crates/reify-eval/src
       expect: absent
 - label: ε₅
-  task_id: null
+  task_id: 9142
   title: 'S23 ε₅: reify-eval lib.rs, results.rs and engine_eval residue'
   capabilities:
   - name: lib-and-engine-eval-drift
@@ -305,7 +305,7 @@ tasks:
       - crates/reify-eval/src/lib.rs
       expect: absent
 - label: ε₆
-  task_id: null
+  task_id: 9143
   title: 'S23 ε₆: ty.rs — quantity-slot rule to a docs/decisions record; short //!'
   capabilities:
   - name: ty-module-doc-and-home
@@ -318,7 +318,7 @@ tasks:
       - crates/reify-core/src/ty.rs
       expect: absent
 - label: ε₇
-  task_id: null
+  task_id: 9144
   title: 'S23 ε₇: reify-expr — stack-budget rule stated once; pin lists and self-cites gone'
   capabilities:
   - name: stack-budget-repeated
@@ -328,7 +328,7 @@ tasks:
       kind: manual
       reason: the post-split home of MAX_RECURSION_DEPTH is chosen by S8 tau; the leaf records git grep -c "3 MiB" -- crates/reify-expr/src = 1 in its commit.
 - label: ζ₁
-  task_id: null
+  task_id: 9145
   title: 'S23 ζ₁: reify-audit — correct the ten false statements; rehome measurement and rejected-alternative prose'
   capabilities:
   - name: audit-false-statements-present
@@ -341,7 +341,7 @@ tasks:
       - crates/reify-audit/src
       expect: absent
 - label: ζ₂
-  task_id: null
+  task_id: 9146
   title: 'S23 ζ₂: reify-lsp and reify-cli front-end prose'
   capabilities:
   - name: lsp-cites-stale
@@ -374,7 +374,7 @@ tasks:
       - gui/src/__tests__/reifyGrammarCorpus.test.ts
       expect: absent
 - label: ζ₅
-  task_id: null
+  task_id: 9147
   title: 'S23 ζ₅: GUI residual — gui-ts and gui-rs cites; unitLadder display-helper residue'
   capabilities:
   - name: gui-residual-population
@@ -388,7 +388,7 @@ tasks:
       - gui/src-tauri/src
       expect: absent
 - label: η
-  task_id: null
+  task_id: 9152
   title: 'S23 η: docs naming retired mechanisms — architecture §3.5, freshness PRD, invariants closing paragraph'
   capabilities:
   - name: retired-mechanism-docs
@@ -401,7 +401,7 @@ tasks:
       - docs/invariants.md
       expect: absent
 - label: θ₁
-  task_id: null
+  task_id: 9148
   title: 'S23 θ₁: residual ledger sweep — reify-compiler'
   capabilities:
   - name: compiler-residual
@@ -427,21 +427,21 @@ tasks:
       - crates/reify-audit/plinecite-baseline.txt
       expect: absent
 - label: θ₃
-  task_id: null
+  task_id: 9150
   title: 'S23 θ₃: residual ledger sweep — language and tooling crates'
   capabilities:
   - name: language-residual
     binding: signal premise — reify-expr tests 153, reify-core 37, reify-ir 25, reify-test-support 39, reify-builtins 14, reify-syntax 13, reify-ast 6, reify-doc 4+, reify-cli 30 cite occurrences at 9bdef68093. Scope adds reify-lsp tests.
     verdict: PASS
 - label: θ₄
-  task_id: null
+  task_id: 9151
   title: 'S23 θ₄: residual ledger sweep — analysis and geometry crates'
   capabilities:
   - name: analysis-residual
     binding: 'signal premise — reify-stdlib 77, reify-shell-extract 30, reify-constraints tests 34, kernel crates ~60, reify-mesh-morph 21 cite occurrences at 9bdef68093. Scope adds kernel src residue (26 rows), mesh-morph src residue (9), reify-constraints dual_jacobian.rs (1), reify-kernel-conformance (incl. build.rs) and reify-mesh-morph build.rs. Prereqs add S8 ω #8914, S21 ω #8663.'
     verdict: PASS
 - label: ω
-  task_id: null
+  task_id: 9153
   title: 'S23 ω: PRD close — id backfill, terminal stamp, AS-AUTHORED freeze, INV-DOC-1 ledger remainder'
   capabilities:
   - name: close-header

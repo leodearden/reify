@@ -1,6 +1,6 @@
 # PRD — prose rehoming and symbol citations (review-all S23)
 
-**Milestone:** v0_6 · **Status:** pass 1.5 (authored 2026-10-15; the lead's rulings on all eight open questions and an opus/high critic pass are folded, §12; ready to decompose) · **Approach:** bare B (prose and pointer edits in place, plus one table-driven test and one helper relocation; no new mechanism, no new seam).
+**Milestone:** v0_6 · **Status:** decomposed (pass 2, 2026-10-15): 34 leaves, ids in §9; ε₂, ε₄, δ₅ and θ₂ are HELD on S2 (`x_seam_wait`). Authored 2026-10-15; the lead's rulings on all eight open questions and an opus/high critic pass are folded (§12) · **Approach:** bare B (prose and pointer edits in place, plus one table-driven test and one helper relocation; no new mechanism, no new seam).
 
 **Program:** `plans/review-all-program-reify-20261012.md`, stream **S23** (wave 4, the program's last stream; agent mode, size L, risk low). Ruling: §Resolved decisions → "S23 Prose rehoming and symbol citations", read with §Invariant candidates (candidate 3), §Contradictions ("one reify-audit PCITE lane owned by S24 instead of four line-cite lints"), the §Lead amendments (notably **one home per invariant id**, Leo S12 R7, and reify's four-site lockstep definition) and the §Shared conventions (S24 same-diff obligations). This PRD does not reopen any of them.
 
@@ -375,6 +375,8 @@ Each row: file (current path; it may move) | prose S23 does **not** re-touch | o
 
 ## 9. Decomposition plan
 
+Task ids backfilled at decompose (pass 2, 2026-10-15): α₁ #9123, α₂ #9124, α₃ #9125, α₄ #9126, α₅ #9127, β₁ #9128, β₂ #9129, β₃ #9130, γ₁ #9131, γ₂ #9132, δ₁ #9133, δ₂ #9134, δ₃ #8531 (adopted), δ₄ #9135, δ₅ #9136 (HELD, x_seam_wait S2), δ₆ #9137, ε₁ #9138, ε₂ #9139 (HELD, x_seam_wait S2), ε₃ #9140, ε₄ #9141 (HELD, x_seam_wait S2), ε₅ #9142, ε₆ #9143, ε₇ #9144, ζ₁ #9145, ζ₂ #9146, ζ₃ #8542 (adopted), ζ₄ #8316 (adopted), ζ₅ #9147, η #9152, θ₁ #9148, θ₂ #9149 (HELD, x_seam_wait S2), θ₃ #9150, θ₄ #9151, ω #9153. Subsumed and cancelled (x_subsumed_by): #8311 → α₁ #9123, #8337 → α₃ #9125, #7583 → β₁ #9128. No leaf is high, so there are no #8612 gate dependencies.
+
 Labels only; task ids at decompose. Every leaf:
 - carries `metadata.x_finding_run = "review-all-reify-20261010"` and `metadata.source = "review-all"`;
 - cites INV-DOC-1 where it burns ledger rows;
@@ -622,6 +624,102 @@ A leaf that moves a file under PLINECITE scope runs `--rename` in the same diff.
 Each θ leaf burns the remaining ledger rows under its crates. They are mostly test-file cites (962 occurrences in `crates/*/tests`), plus src rows no finding leaf owns. The dangling untracked-plan pointers in those paths are also cleared (D5). Each depends on the **close leaf** of every program stream that edits its crates (D4's "after the movers"; §12 OQ-7 (a)), on the S23 finding leaves whose paths it borders (path-set disjointness), and on #8822.
 
 **The close-leaf lists below are a floor, not the final list.** At pass 2 they are derived mechanically for θ₁–θ₄ and ζ₅: take the union of crates and paths in every program stream's filed leaf `metadata.files` plus its PRD's leaf Files lists. Any stream that touches a θ leaf's paths gets its close leaf added as a prerequisite. The edges written here are the ones the critic and the measurement seats proved.
+
+**Mechanical derivation (pass 2, 2026-10-15).** For each of the 24 streams in the program doc's §FILED table:
+- Take the union of every filed leaf's `metadata.files` (read with `get_task` over the FILED-row ids, S27's id ranges expanded) and the paths on its PRD's `Files`/`Modules:` lines.
+- A θ/ζ₅ leaf depends on that stream's close leaf when the union intersects the leaf's path prefixes.
+- The list below is the union of the derived set and the authoring floor; † marks a floor-only edge.
+- S2 has not filed, so its close is θ₂'s held seam (§10).
+- S19 θ #8700 is subsumed by S19 Ω #8729, which is derived for θ₁ and θ₂.
+
+Format: stream close id (one matched path, as an example).
+
+- **θ₁** (15 streams):
+  - S1 ω #9052 (`crates/reify-compiler/Cargo.toml`)
+  - S3 μ #8710 (`crates/reify-compiler/src/entity.rs`)
+  - S5 σ #9010 (`crates/reify-compiler/stdlib/tensegrity.ri`)
+  - S6 ω₂ #8856 (`crates/reify-compiler/src/joint_signatures.rs`)
+  - S7 ω #8665 (`crates/reify-compiler/Cargo.toml`)
+  - S8 ω #8914 (`crates/reify-compiler/Cargo.toml`)
+  - S9 π #8746 (`crates/reify-compiler/src/compile_builder/entities_phase.rs`)
+  - S10 ω #9000 (`crates/reify-compiler/src/compile_builder/ctx.rs`)
+  - S12 ω #9032 †
+  - S15 σ #8724 (`crates/reify-compiler/stdlib/solver_elastic.ri`)
+  - S16 ω #9122 (`crates/reify-compiler/stdlib/fea_multi_case.ri`)
+  - S19 Ω #8729 (`crates/reify-compiler/tests/harness_builtin_registry.rs`)
+  - S20 L11 #8715 (`crates/reify-compiler/src/compile_builder/auto_type_param_phase.rs`)
+  - S25 ω #8956 (`crates/reify-compiler/src/types.rs`)
+  - S27 Ω #8779 (`crates/reify-compiler/Cargo.toml`)
+- **θ₂** (17 streams):
+  - S1 ω #9052 (`crates/reify-eval-fea-tests/tests/modal_compute_node.rs`)
+  - S3 μ #8710 (`crates/reify-eval/src/cache.rs`)
+  - S4 ω #8878 (`crates/reify-eval/src/cache.rs`)
+  - S5 σ #9010 (`crates/reify-eval/Cargo.toml`)
+  - S6 ω₂ #8856 (`crates/reify-eval/src/engine_eval.rs`)
+  - S7 ω #8665 (`crates/reify-eval-fea-tests/Cargo.toml`)
+  - S8 ω #8914 (`crates/reify-eval-fea-tests/tests/von_mises_sampled_stress_reduction_e2e.rs`)
+  - S9 π #8746 (`crates/reify-eval/src/engine_edit.rs`)
+  - S10 ω #9000 (`crates/reify-eval/build.rs`)
+  - S12 ω #9032 (`crates/reify-eval/src/bom_report.rs`)
+  - S13 ι #8754 (`crates/reify-eval/src/compute_targets/bc_resolve.rs`)
+  - S14 ρ #8660 (`crates/reify-eval/build.rs`)
+  - S15 σ #8724 (`crates/reify-eval/src/appearance.rs`)
+  - S16 ω #9122 (`crates/reify-eval/src/morph_producer.rs`)
+  - S19 Ω #8729 (`crates/reify-eval/tests/harness_auto_resolution.rs`)
+  - S21 ω #8663 (`crates/reify-eval/build.rs`)
+  - S27 Ω #8779 (`crates/reify-eval/src/cache.rs`)
+- **θ₃** (18 streams):
+  - S1 ω #9052 (`crates/reify-test-support/Cargo.toml`)
+  - S3 μ #8710 (`crates/reify-core/src/identity.rs`)
+  - S4 ω #8878 (`crates/reify-core/src/diagnostics.rs`)
+  - S5 σ #9010 (`crates/reify-compute-contract/Cargo.toml`)
+  - S6 ω₂ #8856 (`crates/reify-cli/tests/harness_cli.rs`)
+  - S7 ω #8665 (`crates/reify-cli/tests/harness_cli/cli_cache_concurrent_writers.rs`)
+  - S8 ω #8914 (`crates/reify-ast/src/ast.rs`)
+  - S9 π #8746 (`crates/reify-ast/src/decl.rs`)
+  - S10 ω #9000 (`crates/reify-cli/tests/harness_cli.rs`)
+  - S11 ω #8688 (`crates/reify-mcp/src/tools/chunks/geometry.md`)
+  - S12 ω #9032 (`crates/reify-core/src/diagnostics.rs`)
+  - S14 ρ #8660 (`crates/reify-compute-contract/src/elastic_result.rs`)
+  - S15 σ #8724 (`crates/reify-core/src/diagnostics.rs`)
+  - S16 ω #9122 (`crates/reify-ir/src/warm.rs`)
+  - S19 Ω #8729 (`crates/reify-cli/tests/harness_cli.rs`)
+  - S25 ω #8956 (`crates/reify-core/src/diagnostics.rs`)
+  - S26 ω #9083 (`crates/reify-core/Cargo.toml`)
+  - S27 Ω #8779 (`crates/reify-ast/src/decl.rs`)
+- **θ₄** (16 streams):
+  - S1 ω #9052 (`crates/reify-mesh-morph/Cargo.toml`)
+  - S3 μ #8710 (`crates/reify-mesh-morph/src/eligibility.rs`)
+  - S5 σ #9010 (`crates/reify-shell-extract/src/result.rs`)
+  - S6 ω₂ #8856 (`crates/reify-stdlib/src/bindings.rs`)
+  - S7 ω #8665 (`crates/reify-constraints/tests/loop_closure_diagnostics_tests.rs`)
+  - S8 ω #8914 (`crates/reify-stdlib/Cargo.toml`)
+  - S10 ω #9000 (`crates/reify-kernel-conformance/Cargo.toml`)
+  - S11 ω #8688 (`crates/reify-kernel-occt/tests/harness_occt*`)
+  - S12 ω #9032 (`crates/reify-stdlib/src/dfm.rs`)
+  - S13 ι #8754 (`crates/reify-constraints/tests/sketch_slot_table_tests.rs`)
+  - S14 ρ #8660 (`crates/reify-constraints/src/dual_jacobian.rs`)
+  - S15 σ #8724 (`crates/reify-shell-extract/src/grid.rs`)
+  - S16 ω #9122 (`crates/reify-mesh-morph/src/diagnostics.rs`)
+  - S19 Ω #8729 (`crates/reify-kernel-occt/tests/harness_occt_measurement.rs`)
+  - S21 ω #8663 (`crates/reify-kernel-conformance/build.rs`)
+  - S24 ω #8823 (`crates/reify-stdlib/src/dynamics/mass_props.rs`)
+- **ζ₅** (15 streams):
+  - S1 ω #9052 (`gui/src-tauri/src/commands.rs`)
+  - S3 μ #8710 (`gui/src-tauri/src/engine.rs`)
+  - S5 σ #9010 (`gui/src-tauri/src/engine.rs`)
+  - S6 ω₂ #8856 (`gui/src-tauri/src/engine.rs`)
+  - S8 ω #8914 (`gui/src-tauri/src/engine.rs`)
+  - S10 ω #9000 (`gui/src-tauri/src/tests/openvdb_kernel_tests.rs`)
+  - S12 ω #9032 (`gui/src-tauri/src/engine.rs`)
+  - S15 σ #8724 (`gui/src-tauri/src/engine.rs`)
+  - S16 ω #9122 (`gui/src-tauri/src/debug_server.rs`)
+  - S18 ω #9117 (`gui/src/__tests__/reifyGrammarCorpus.expected-clean.json`)
+  - S19 Ω #8729 (`gui/src-tauri/src/tests/watcher_tests.rs`)
+  - S22 λ #8667 (`gui/src-tauri/`)
+  - S25 ω #8956 (`gui/src-tauri/src/claude_bridge.rs`)
+  - S26 ω #9083 (`gui/src-tauri/src/claude_bridge.rs`)
+  - S27 Ω #8779 (`gui/src-tauri/src/lsp_bridge.rs`)
 
 - **θ₁ — reify-compiler** (src, tests; `.ri` excluded per D7). Prereqs:
   - S3 μ #8710, S6 ω₂ #8856, S7 ω #8665, S8 ω #8914, S9 π #8746, S10 ω #9000, S12 ω #9032, S27 Ω #8779; S19 θ #8700
