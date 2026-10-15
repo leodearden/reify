@@ -64,6 +64,11 @@
 #      the Python mirror of this lib's per-path attribution, agrees with it
 #      on every tracked path plus a fixed boundary-probe list, and loads with
 #      no site-packages; plus a non-vacuity check on the bash side
+#  21. (task 8662) PATH-FACTS: reify_path_attribution.py's `attribute` CLI
+#      prints one record of independent facts (is_global, inert, tree, seed
+#      and unioned crates) per input line, in order; examples/bracket.ri's
+#      seeds equal its pinned corpus row; JSON agrees with TSV; bad argv exits
+#      non-zero
 
 set -euo pipefail
 
@@ -1035,6 +1040,197 @@ _check_cold_cache_diagnostic() {
 }
 assert "cold CARGO_HOME: emits the C5 fallback diagnostic on stderr" \
     _check_cold_cache_diagnostic
+
+# ---------------------------------------------------------------------------
+# PATH-FACTS (task 8662): the attribution module's public CLI contract.
+#
+# `reify_path_attribution.py attribute` reads paths on stdin and writes one
+# record per input line, in input order, an empty line included:
+#   <is_global>\t<inert>\t<tree>\t<seed_crates>\t<unioned_crates>\t<path>
+# Booleans are 0/1; crate sets are comma-joined and sorted, `-` when empty;
+# the path is last. The facts are independent: precedence between them is each
+# consumer's (affected_crates' lives in affected-crates-lib.sh), so a
+# crate-owned *.md reports BOTH its seed and inert=1.
+#
+# Needs no cargo. Runs under `python3 -S`, the shape of the gate's
+# interpreter. One CLI run per format feeds every checker below.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- PATH-FACTS: reify_path_attribution.py attribute prints independent per-path facts ---"
+
+_PATH_FACTS_CLI="$REPO_ROOT/scripts/reify_path_attribution.py"
+_PATH_FACTS_CORPUS="$SCRIPT_DIR/affected-crates-direct-sets.tsv"
+
+# Expected TSV records, hand-derived from the contract. The empty path sits
+# mid-list so the in-order check proves an empty line keeps its slot.
+_PATH_FACTS_EXPECTED=(
+    $'0\t1\tcrates\t-\t-\tcrates/README.md'
+    $'0\t1\tcrates\treify-mcp\t-\tcrates/reify-mcp/src/tools/chunks/syntax.md'
+    $'0\t0\tgui_tauri\treify-gui\t-\tgui/src-tauri/src/main.rs'
+    $'0\t0\tgui_src\t-\t-\tgui/src/App.tsx'
+    $'0\t1\tgui_other\t-\t-\tgui/README.md'
+    $'0\t0\tgui_other\t-\t-\tgui/package.json'
+    $'0\t0\ttests_infra\t-\t-\ttests/infra/x.sh'
+    $'0\t0\texamples\t-\t-\texamples/foo.gcode'
+    $'0\t1\tother\t-\t-\tdocs/x.md'
+    $'0\t0\tother\t-\t-\t'
+    $'1\t0\tother\t-\t-\tCargo.lock'
+    $'0\t0\tcrates\treify-expr\treify-build-utils\tcrates/reify-expr/Cargo.toml'
+    $'0\t0\tother\t-\t-\tscripts/verify.sh'
+)
+_PATH_FACTS_CORPUS_PROBE="examples/bracket.ri"
+
+_PATH_FACTS_DONE=""
+_PATH_FACTS_PROBES=()
+_PATH_FACTS_TSV_RC=""
+_PATH_FACTS_JSON_RC=""
+_PATH_FACTS_ERR=""
+_PATH_FACTS_ELAPSED_MS=""
+_PATH_FACTS_TSV=()
+_PATH_FACTS_JSON_TEXT=""
+
+_path_facts_probe_once() {
+    [ -n "$_PATH_FACTS_DONE" ] && return 0
+    local dir rec t0 t1
+    dir="$(mktemp -d "${TMPDIR:-/tmp}/reify-path-facts.XXXXXX")" || return 1
+    for rec in "${_PATH_FACTS_EXPECTED[@]}"; do
+        _PATH_FACTS_PROBES+=("${rec##*$'\t'}")
+    done
+    _PATH_FACTS_PROBES+=("$_PATH_FACTS_CORPUS_PROBE")
+    printf '%s\n' "${_PATH_FACTS_PROBES[@]}" >"$dir/in"
+
+    # Elapsed is reported for legibility only; it is never asserted.
+    t0="$(date +%s%N)"
+    python3 -S "$_PATH_FACTS_CLI" attribute --format tsv <"$dir/in" >"$dir/tsv" 2>"$dir/err" \
+        && _PATH_FACTS_TSV_RC=0 || _PATH_FACTS_TSV_RC=$?
+    t1="$(date +%s%N)"
+    _PATH_FACTS_ELAPSED_MS=$(( (t1 - t0) / 1000000 ))
+    python3 -S "$_PATH_FACTS_CLI" attribute --format json <"$dir/in" >"$dir/json" 2>>"$dir/err" \
+        && _PATH_FACTS_JSON_RC=0 || _PATH_FACTS_JSON_RC=$?
+    mapfile -t _PATH_FACTS_TSV <"$dir/tsv"
+    _PATH_FACTS_JSON_TEXT="$(cat "$dir/json")"
+    _PATH_FACTS_ERR="$(tail -n 5 "$dir/err")"
+    rm -rf "$dir"
+    _PATH_FACTS_DONE=1
+    return 0
+}
+
+_path_facts_report() {
+    echo "attribute: probes=${#_PATH_FACTS_PROBES[@]} tsv records=${#_PATH_FACTS_TSV[@]} tsv rc=$_PATH_FACTS_TSV_RC json rc=$_PATH_FACTS_JSON_RC elapsed=${_PATH_FACTS_ELAPSED_MS}ms (one process, not asserted)"
+    echo "stderr (tail): $_PATH_FACTS_ERR"
+    echo "tsv records:"
+    printf '  [%s]\n' "${_PATH_FACTS_TSV[@]+"${_PATH_FACTS_TSV[@]}"}"
+}
+
+# _path_facts_record <path> — the TSV record whose path column is <path>.
+_path_facts_record() {
+    local rec
+    for rec in "${_PATH_FACTS_TSV[@]+"${_PATH_FACTS_TSV[@]}"}"; do
+        if [ "${rec##*$'\t'}" = "$1" ]; then
+            printf '%s\n' "$rec"
+            return 0
+        fi
+    done
+    return 1
+}
+
+_check_path_facts_one_record_per_line_in_order() {
+    _path_facts_probe_once || return 1
+    _path_facts_report
+    [ "$_PATH_FACTS_TSV_RC" = "0" ] || return 1
+    [ "${#_PATH_FACTS_TSV[@]}" -eq "${#_PATH_FACTS_PROBES[@]}" ] || return 1
+    local i tabs
+    for i in "${!_PATH_FACTS_PROBES[@]}"; do
+        tabs="${_PATH_FACTS_TSV[$i]//[!$'\t']/}"
+        [ "${#tabs}" -eq 5 ] || { echo "record $i has ${#tabs} tabs, want 5"; return 1; }
+        [ "${_PATH_FACTS_TSV[$i]##*$'\t'}" = "${_PATH_FACTS_PROBES[$i]}" ] \
+            || { echo "record $i is for [${_PATH_FACTS_TSV[$i]##*$'\t'}], input line $i is [${_PATH_FACTS_PROBES[$i]}]"; return 1; }
+    done
+}
+assert "attribute: N input lines (one empty) -> exactly N six-column records, in input order, from one process" \
+    _check_path_facts_one_record_per_line_in_order
+
+# _check_path_facts_record_is <expected record> — the record for the expected
+# record's path equals it exactly.
+_check_path_facts_record_is() {
+    local want="$1" got
+    _path_facts_probe_once || return 1
+    _path_facts_report
+    got="$(_path_facts_record "${want##*$'\t'}")" || { echo "no record for [${want##*$'\t'}]"; return 1; }
+    echo "want: [$want]"
+    echo "got:  [$got]"
+    [ "$got" = "$want" ]
+}
+for _pf_rec in "${_PATH_FACTS_EXPECTED[@]}"; do
+    assert "attribute facts: [${_pf_rec//$'\t'/ | }]" _check_path_facts_record_is "$_pf_rec"
+done
+unset _pf_rec
+
+# The task's signal: the corpus seeds come from the module, and agree with the
+# pinned pre-θ attribution (the corpus row), not with a list typed here.
+_check_path_facts_corpus_seeds_match_pinned_row() {
+    local rec seeds pinned
+    _path_facts_probe_once || return 1
+    _path_facts_report
+    rec="$(_path_facts_record "$_PATH_FACTS_CORPUS_PROBE")" || { echo "no record for $_PATH_FACTS_CORPUS_PROBE"; return 1; }
+    seeds="$(cut -f4 <<<"$rec")"
+    pinned="$(awk -F'\t' -v p="$_PATH_FACTS_CORPUS_PROBE" '!/^#/ && $1 == p { print $2 }' "$_PATH_FACTS_CORPUS")"
+    echo "attribute seeds: [$seeds]"
+    echo "pinned row:      [$pinned]"
+    [ -n "$pinned" ] && [ "${seeds//,/ }" = "$pinned" ]
+}
+assert "attribute: examples/bracket.ri's seeds equal its pinned row in affected-crates-direct-sets.tsv" \
+    _check_path_facts_corpus_seeds_match_pinned_row
+
+# --format json: one object per input line with the same facts as the TSV
+# record on that line (JSON booleans, sorted crate lists, the tree's value).
+_check_path_facts_json_agrees_with_tsv() {
+    _path_facts_probe_once || return 1
+    _path_facts_report
+    [ "$_PATH_FACTS_JSON_RC" = "0" ] || return 1
+    python3 -S -c '
+import json, sys
+json_text, probe, tsv_lines = sys.argv[1], sys.argv[2], sys.argv[3:]
+json_lines = json_text.split("\n") if json_text else []
+print(f"json lines={len(json_lines)} tsv lines={len(tsv_lines)}")
+if len(json_lines) != len(tsv_lines):
+    sys.exit(1)
+keys = {"path", "is_global", "inert", "tree", "seed_crates", "unioned_crates"}
+seen_probe = False
+for j, t in zip(json_lines, tsv_lines):
+    o = json.loads(j)
+    if set(o) != keys:
+        sys.exit(f"keys {sorted(o)} != {sorted(keys)}")
+    if not (isinstance(o["is_global"], bool) and isinstance(o["inert"], bool)):
+        sys.exit(f"non-boolean flag in {j}")
+    for k in ("seed_crates", "unioned_crates"):
+        if o[k] != sorted(o[k]):
+            sys.exit(f"{k} not a sorted list in {j}")
+    as_tsv = "\t".join([
+        str(int(o["is_global"])), str(int(o["inert"])), o["tree"],
+        ",".join(o["seed_crates"]) or "-", ",".join(o["unioned_crates"]) or "-",
+        o["path"],
+    ])
+    if as_tsv != t:
+        sys.exit(f"json {j!r} disagrees with tsv {t!r}")
+    seen_probe |= o["path"] == probe and len(o["seed_crates"]) > 0
+if not seen_probe:
+    sys.exit(f"no seeded json record for {probe}")
+' "$_PATH_FACTS_JSON_TEXT" "$_PATH_FACTS_CORPUS_PROBE" "${_PATH_FACTS_TSV[@]+"${_PATH_FACTS_TSV[@]}"}"
+}
+assert "attribute --format json: one object per line, each agreeing with its TSV record (examples/bracket.ri included)" \
+    _check_path_facts_json_agrees_with_tsv
+
+_check_path_facts_cli_rejects() {
+    local rc
+    python3 -S "$_PATH_FACTS_CLI" "$@" </dev/null && rc=0 || rc=$?
+    echo "argv [$*] -> rc=$rc"
+    [ "$rc" -ne 0 ]
+}
+assert "the CLI rejects an unknown verb (non-zero exit)" \
+    _check_path_facts_cli_rejects no-such-verb
+assert "attribute rejects --format xml (non-zero exit)" \
+    _check_path_facts_cli_rejects attribute --format xml
 
 # ---------------------------------------------------------------------------
 # Step 11: C5 metadata-failure fail-wide + C4 global precedes crates in list
