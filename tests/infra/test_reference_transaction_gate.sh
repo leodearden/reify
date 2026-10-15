@@ -52,6 +52,15 @@ drive() {
     DRIVE_RC=$rc
 }
 
+# Durable ENFORCE/BYPASS sources (see the durable-switch block below).
+ENFORCE_FLAG="$FIX/.git/reify-main-gate-enforce"
+BYPASS_FLAG="$FIX/.git/reify-main-gate-bypass"
+reset_durable() {
+    git -C "$FIX" config --unset reify.mainGate.enforce 2>/dev/null || true
+    git -C "$FIX" config --unset reify.mainGate.bypass  2>/dev/null || true
+    rm -f "$ENFORCE_FLAG" "$BYPASS_FLAG"
+}
+
 # -- (a) main move, no sentinel, default (warn-only) -> exit 0 + UNSANCTIONED ---
 echo ""
 echo "--- (a) unsanctioned main move, default warn-only -> exit 0, logged ---"
@@ -71,13 +80,14 @@ assert "(b) UNSANCTIONED logged before abort" bash -c "grep -q 'UNSANCTIONED mai
 # -- (c) sentinel present -> exit 0, consumed (one-shot), sanctioned logged ----
 echo ""
 echo "--- (c) sanctioned main move (sentinel present) -> exit 0, consumed ---"
-rm -f "$LOG"; : > "$SENTINEL"
+rm -f "$LOG"; printf '%s\n' "$ONE" > "$SENTINEL"
 drive prepared "$MAIN_LINE"
 assert "(c) sanctioned move allowed (exit 0)" test "$DRIVE_RC" -eq 0
 assert "(c) sentinel consumed (one-shot)" bash -c "! test -e '$SENTINEL'"
 assert "(c) sanctioned logged" bash -c "grep -q 'sanctioned main move' '$LOG'"
+assert "(c) a bound token is not logged as legacy" bash -c "! grep -qF 'legacy unbound sentinel' '$LOG'"
 # A sanctioned move passes even under ENFORCE.
-rm -f "$LOG"; : > "$SENTINEL"
+rm -f "$LOG"; printf '%s\n' "$ONE" > "$SENTINEL"
 drive prepared "$MAIN_LINE" REIFY_MAIN_GATE_ENFORCE=1
 assert "(c2) sanctioned move passes even under ENFORCE (exit 0)" test "$DRIVE_RC" -eq 0
 assert "(c2) sentinel consumed under ENFORCE" bash -c "! test -e '$SENTINEL'"
@@ -147,7 +157,7 @@ assert "(i) deletion leaves no log (pack-refs/gc churn, not a landing)" bash -c 
 # sanctioned (the filter short-circuits before the consume step).
 echo ""
 echo "--- (j) housekeeping move leaves a pending sentinel intact ---"
-rm -f "$LOG"; : > "$SENTINEL"
+rm -f "$LOG"; printf '%s\n' "$ONE" > "$SENTINEL"
 drive prepared "$ONE $ONE refs/heads/main"
 assert "(j) no-op move exits 0" test "$DRIVE_RC" -eq 0
 assert "(j) no-op move does NOT consume the sentinel" bash -c "test -e '$SENTINEL'"
@@ -157,6 +167,54 @@ assert "(j) following genuine advance consumes the sentinel" bash -c "! test -e 
 assert "(j) following genuine advance logged sanctioned" bash -c "grep -q 'sanctioned main move' '$LOG'"
 
 # ===========================================================================
+# Token table (D9): the sentinel carries the main tip it sanctions a move FROM.
+#   matched token (== the move's old oid)  -> consumed, sanctioned       (c, j)
+#   empty (legacy unbound) token           -> consumed, sanctioned+legacy (s)
+#   stale token (any other oid)            -> discarded, UNSANCTIONED     (t, t2)
+#   bypass                                 -> sentinel untouched          (u)
+# ===========================================================================
+
+# -- (s) legacy empty sentinel -> sanctioned, logged as legacy -----------------
+echo ""
+echo "--- (s) legacy empty sentinel, ENFORCE=1 -> exit 0, consumed, legacy line ---"
+reset_durable; rm -f "$SENTINEL" "$LOG"; : > "$SENTINEL"
+drive prepared "$MAIN_LINE" REIFY_MAIN_GATE_ENFORCE=1
+assert "(s) legacy empty sentinel sanctions the move (exit 0)" test "$DRIVE_RC" -eq 0
+assert "(s) legacy sentinel consumed" bash -c "! test -e '$SENTINEL'"
+assert "(s) legacy line logged" grep -qF "sanctioned (legacy unbound sentinel) main move $ONE -> $TWO" "$LOG"
+
+# -- (t) stale token under ENFORCE -> discarded, UNSANCTIONED, abort -----------
+echo ""
+echo "--- (t) stale token (bound to another tip), ENFORCE=1 -> exit 1, discarded ---"
+reset_durable; rm -f "$SENTINEL" "$LOG"; printf '%s\n' "$TWO" > "$SENTINEL"
+drive prepared "$MAIN_LINE" REIFY_MAIN_GATE_ENFORCE=1
+assert "(t) stale token does not sanction the move (exit 1)" test "$DRIVE_RC" -eq 1
+assert "(t) stale token removed" bash -c "! test -e '$SENTINEL'"
+assert "(t) stale token logged as discarded" grep -qF "stale sentinel $TWO discarded" "$LOG"
+assert "(t) move logged UNSANCTIONED" grep -qF "UNSANCTIONED main move $ONE -> $TWO" "$LOG"
+
+# -- (t2) stale token warn-only -> discarded, UNSANCTIONED, allowed ------------
+echo ""
+echo "--- (t2) stale token, default warn-only -> exit 0, discarded ---"
+reset_durable; rm -f "$SENTINEL" "$LOG"; printf '%s\n' "$TWO" > "$SENTINEL"
+drive prepared "$MAIN_LINE"
+assert "(t2) warn-only allows the move (exit 0)" test "$DRIVE_RC" -eq 0
+assert "(t2) stale token removed" bash -c "! test -e '$SENTINEL'"
+assert "(t2) stale token logged as discarded" grep -qF "stale sentinel $TWO discarded" "$LOG"
+assert "(t2) move logged UNSANCTIONED" grep -qF "UNSANCTIONED main move $ONE -> $TWO" "$LOG"
+
+# -- (u) bypass returns before the sentinel is read: it stays untouched --------
+echo ""
+echo "--- (u) stale token + BYPASS=1 + ENFORCE=1 -> exit 0, sentinel untouched ---"
+reset_durable; rm -f "$SENTINEL" "$LOG"; printf '%s\n' "$TWO" > "$SENTINEL"
+drive prepared "$MAIN_LINE" REIFY_MAIN_GATE_BYPASS=1 REIFY_MAIN_GATE_ENFORCE=1
+assert "(u) bypass allows the move (exit 0)" test "$DRIVE_RC" -eq 0
+assert "(u) bypass logged" grep -qF "bypass main move $ONE -> $TWO" "$LOG"
+assert "(u) bypass leaves the sentinel present" test -e "$SENTINEL"
+assert "(u) bypass leaves the sentinel's token unchanged" test "$(cat "$SENTINEL" 2>/dev/null)" = "$TWO"
+reset_durable; rm -f "$SENTINEL" "$LOG"
+
+# ===========================================================================
 # Durable ENFORCE/BYPASS switch (task 4367 step 2): the policy must survive
 # WITHOUT an env var — the long-lived orchestrator merge worker cannot pass one
 # to the update-ref subprocess that fires this hook. main_gate_{enforce,bypass}_on
@@ -164,13 +222,6 @@ assert "(j) following genuine advance logged sanctioned" bash -c "grep -q 'sanct
 # reify.mainGate.{enforce,bypass} -> flag file <git-common-dir>/reify-main-gate-{enforce,bypass}.
 # (Common git dir of the fixture is $FIX/.git, same place SENTINEL lives.)
 # ===========================================================================
-ENFORCE_FLAG="$FIX/.git/reify-main-gate-enforce"
-BYPASS_FLAG="$FIX/.git/reify-main-gate-bypass"
-reset_durable() {
-    git -C "$FIX" config --unset reify.mainGate.enforce 2>/dev/null || true
-    git -C "$FIX" config --unset reify.mainGate.bypass  2>/dev/null || true
-    rm -f "$ENFORCE_FLAG" "$BYPASS_FLAG"
-}
 
 # -- (k) durable enforce via git config, NO env var -> exit 1 (abort) ----------
 echo ""
@@ -246,18 +297,18 @@ git -C "$FIX" checkout -q -
 # -- (o) fast-forward main move (C0->C1) is NOT rejected by the guard ----------
 # Sentinel present so it is sanctioned and exits 0 — proves a genuine ff landing
 # still passes (the guard falls through to the existing sanction logic on rc 0).
-rm -f "$LOG"; : > "$SENTINEL"
+rm -f "$LOG"; printf '%s\n' "$C0" > "$SENTINEL"
 drive prepared "$C0 $C1 refs/heads/main"
 assert "(o) fast-forward main move allowed (exit 0)" test "$DRIVE_RC" -eq 0
 assert "(o) fast-forward move sanctioned (not flagged as rewrite)" bash -c "grep -q 'sanctioned main move' '$LOG'"
 assert "(o) fast-forward move not logged as HISTORY-REWRITE" bash -c "! grep -q 'HISTORY-REWRITE' '$LOG'"
 
-# -- (p) non-ff move (C1->C2) REJECTED even WITH the sentinel present ----------
+# -- (p) non-ff move (C1->C2) REJECTED even WITH a matched token (C1) present -
 # The core case: a verify-passing `git commit --amend` sets the sentinel
 # (pre-commit -> project-checks -> main_gate_mark), which today makes it
 # "sanctioned". The non-ff guard rejects it anyway, and BEFORE the sentinel is
 # consumed (it runs ahead of the sanction block), so the sentinel is left intact.
-rm -f "$LOG"; : > "$SENTINEL"
+rm -f "$LOG"; printf '%s\n' "$C1" > "$SENTINEL"
 drive prepared "$C1 $C2 refs/heads/main"
 assert "(p) non-ff move rejected even with sentinel present (exit 1)" test "$DRIVE_RC" -eq 1
 assert "(p) non-ff move logged HISTORY-REWRITE" bash -c "grep -q 'HISTORY-REWRITE (non-fast-forward)' '$LOG'"
