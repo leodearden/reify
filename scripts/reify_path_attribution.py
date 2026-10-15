@@ -1,4 +1,4 @@
-"""Independent per-path facts for routing a changed repo path.
+"""Per-path routing facts and the compile closure: the one home of both.
 
 ``attribute(path)`` returns a ``PathFacts``: whether the path is a C4
 workspace global, the crates it seeds, the crates it unions into a closure's
@@ -7,6 +7,13 @@ configuration), and which tree it lies in. The facts are independent;
 precedence between them belongs to each consumer. ``compile_closure`` is the
 cargo-accurate compile closure over ``cargo metadata``. Rules and rationale:
 docs/prds/verify-scope-contract.md §3.
+
+Consumers:
+  - scripts/affected-crates-lib.sh — affected_crates, direct_crates_per_path
+    and reify_is_inert_path (verify.sh's decide_scope), via ``attribute``;
+  - scripts/occt-scope-lib.sh — _reify_compile_closure (occt_touching_set and
+    affected_crates' reverse closure), via ``closure``;
+  - scripts/reify_overlap_detector.py — imports ``attribute``.
 
 CLI, run once per consumer invocation over its whole input, never once per
 path:
