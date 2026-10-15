@@ -560,53 +560,83 @@ fn extract_initial_point(
         .collect()
 }
 
-/// The raw residual of a constraint row at a candidate point, plus whether the
-/// solver ACCEPTS the row there. `accepted` is never inferred from
-/// `magnitude`: equality rows are accepted by the `==` verdict
-/// (`reify_expr::eval_eq`), inequality rows within [`FEASIBILITY_THRESHOLD`].
+/// The residual of a constraint row at a candidate point, and of the part of
+/// it the solver REJECTS there. Rejection is never inferred from `magnitude`:
+/// equality rows are judged by the `==` verdict (`reify_expr::eval_eq`),
+/// inequality rows against [`FEASIBILITY_THRESHOLD`].
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct RowResidual {
+    /// Over every row, accepted ones included: what convergence is judged on.
     magnitude: f64,
-    accepted: bool,
+    /// The worst residual among the rejected rows, `None` when every row is
+    /// accepted: what an Infeasible report quotes. A NaN here is kept, never
+    /// folded away, so a rejected row cannot report as a zero residual.
+    rejected: Option<f64>,
 }
 
 impl RowResidual {
     fn accepted(magnitude: f64) -> Self {
         Self {
             magnitude,
-            accepted: true,
+            rejected: None,
         }
     }
 
     fn rejected(magnitude: f64) -> Self {
         Self {
             magnitude,
-            accepted: false,
+            rejected: Some(magnitude),
+        }
+    }
+
+    fn judged(magnitude: f64, accepted: bool) -> Self {
+        if accepted {
+            Self::accepted(magnitude)
+        } else {
+            Self::rejected(magnitude)
         }
     }
 
     /// A NaN magnitude (from a NaN operand) is not a violation, exactly as the
     /// pre-#6653 `f64::max` fold treated it: inequality acceptance is unchanged.
     fn inequality(magnitude: f64) -> Self {
-        Self {
+        Self::judged(
             magnitude,
-            accepted: magnitude.is_nan() || magnitude <= FEASIBILITY_THRESHOLD,
-        }
+            magnitude.is_nan() || magnitude <= FEASIBILITY_THRESHOLD,
+        )
+    }
+
+    fn is_accepted(&self) -> bool {
+        self.rejected.is_none()
+    }
+
+    /// Accepted, with every row as tight as the inequality slack.
+    fn is_converged(&self) -> bool {
+        self.is_accepted() && self.magnitude <= FEASIBILITY_THRESHOLD
     }
 
     /// Both rows must hold (`And`, and every constraint of a set).
     fn all(self, other: Self) -> Self {
+        let rejected = match (self.rejected, other.rejected) {
+            (Some(a), Some(b)) if a.is_nan() || b.is_nan() => Some(f64::NAN),
+            (Some(a), Some(b)) => Some(a.max(b)),
+            (one, other) => one.or(other),
+        };
         Self {
             magnitude: self.magnitude.max(other.magnitude),
-            accepted: self.accepted && other.accepted,
+            rejected,
         }
     }
 
     /// Either row suffices (`Or`).
     fn any(self, other: Self) -> Self {
+        let rejected = match (self.rejected, other.rejected) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            _ => None,
+        };
         Self {
             magnitude: self.magnitude.min(other.magnitude),
-            accepted: self.accepted || other.accepted,
+            rejected,
         }
     }
 }
@@ -636,10 +666,10 @@ fn comparison_residual(
         BinOp::Ge => RowResidual::inequality(if l >= r { 0.0 } else { r - l }),
         BinOp::Lt => RowResidual::inequality(if l < r { 0.0 } else { l - r }),
         BinOp::Le => RowResidual::inequality(if l <= r { 0.0 } else { l - r }),
-        BinOp::Eq => RowResidual {
-            magnitude: (l - r).abs(),
-            accepted: reify_expr::eval_eq(&lv, &rv) == Value::Bool(true),
-        },
+        BinOp::Eq => RowResidual::judged(
+            (l - r).abs(),
+            reify_expr::eval_eq(&lv, &rv) == Value::Bool(true),
+        ),
         BinOp::Ne if reify_expr::eval_eq(&lv, &rv) == Value::Bool(false) => {
             RowResidual::accepted(0.0)
         }
@@ -1190,7 +1220,7 @@ fn constraints_witness(
     dispatch: Option<&dyn reify_ir::ComputeDispatch>,
 ) -> Option<ValueMap> {
     let satisfies_target = |values: &ValueMap| {
-        max_constraint_residual(target, values, &problem.functions, dispatch).accepted
+        max_constraint_residual(target, values, &problem.functions, dispatch).is_accepted()
     };
 
     // ── rung 1: a point the caller already holds (free) ──────────────────────
@@ -1273,8 +1303,9 @@ fn constraints_witness(
 /// The `RobustnessFloorInfeasible` diagnostic for a solve that failed WITH the
 /// synthesised floor applied (tasks #5618 step-10, #5714).
 ///
-/// `final_max_residual` is measured against `effective_constraints`, i.e. the
-/// user's constraints PLUS the floor.  On its own it cannot tell the three
+/// `worst_rejected_residual` is the worst residual among the rows of
+/// `effective_constraints`, i.e. the user's constraints PLUS the floor, that
+/// fail acceptance at `final_values`.  On its own it cannot tell the three
 /// situations below apart, and the message used to assert the worst of them in
 /// all cases.  For a tight-but-satisfiable bracket that is simply false, and it
 /// was the original report's sharpest complaint: the diagnostic sent the user
@@ -1318,7 +1349,7 @@ fn floor_infeasible_diagnostic(
     problem: &ResolutionProblem,
     effective_constraints: &[(ConstraintNodeId, CompiledExpr)],
     final_values: &ValueMap,
-    final_max_residual: f64,
+    worst_rejected_residual: f64,
     sd_tolerance: f64,
     dispatch: Option<&dyn reify_ir::ComputeDispatch>,
 ) -> reify_core::Diagnostic {
@@ -1335,10 +1366,10 @@ fn floor_infeasible_diagnostic(
         // BOTH halves of the claim below are proved at one concrete point — no
         // inference.  Offer NONE of class 2's remedies: nothing is
         // over-constrained and there is no cost/robustness conflict to trade
-        // off, so all three would be wrong advice.  `final_max_residual` is
+        // off, so all three would be wrong advice.  `worst_rejected_residual` is
         // reported because it describes the point the solve actually REACHED —
-        // at the witness it is 0.0, which would tell the user nothing about the
-        // failure.
+        // at the witness no row is rejected, which would tell the user nothing
+        // about the failure.
         //
         // TODO(#7632): the witness is a verified feasible point and is thrown
         // away — the user gets a hard `Infeasible` on a model this function is
@@ -1354,7 +1385,7 @@ fn floor_infeasible_diagnostic(
              absolute residual at the point it reached: {:.2e}); this is \
              a solver convergence limit, not an over-constrained design",
             REL_MARGIN * 100.0,
-            final_max_residual
+            worst_rejected_residual
         ))
         .with_code(DiagnosticCode::RobustnessFloorInfeasible);
     }
@@ -1374,7 +1405,7 @@ fn floor_infeasible_diagnostic(
             "infeasible under robustness floor: the floored feasible \
              region is empty (max absolute residual: {:.2e}); relax \
              opposing constraints or widen the tolerance margin",
-            final_max_residual
+            worst_rejected_residual
         ))
         .with_code(DiagnosticCode::RobustnessFloorInfeasible);
     };
@@ -2913,10 +2944,10 @@ fn solve_core_with_sd_tolerance(
     // floor constraint was added; used below to emit the distinct diagnostic.
     //
     // ORDERING INVARIANT (load-bearing): `effective_constraints` MUST be built
-    // BEFORE the `initially_feasible` check.  A floor-infeasible box that is
+    // BEFORE the seed is judged.  A floor-infeasible box that is
     // feasible without the floor must be seen as infeasible at the initial-point
-    // check, so the `initially_feasible` drift fallback below (in the
-    // `!final_residual.accepted` branch) does NOT mask the
+    // check, so the `seed_accepted` drift fallback below (in the
+    // rejected-final-residual branch) does NOT mask the
     // infeasibility by falling back to Solved.
     //
     // Gate on `problem.objective` money-ness AND [`SolveRegime::RobustnessFloor`]
@@ -3055,7 +3086,7 @@ fn solve_core_with_sd_tolerance(
         // `default_bounds_for(Length) = [1µm, 10m]`, so without this box nothing
         // snaps the penalty minimiser's finite undershoot past the strict bound
         // back: the strict-bound row fails acceptance, the
-        // `initially_feasible` fallback below fires, and the blend reports THE
+        // `seed_accepted` fallback below fires, and the blend reports THE
         // SEED. Pinned by
         // `gamma_anchor_lambdas_are_seed_invariant_without_explicit_bounds`.
         SolveRegime::TradeoffBlend => derived_clamp_box(StrictBound::SteppedInside),
@@ -3072,18 +3103,19 @@ fn solve_core_with_sd_tolerance(
     // immediately below, and (2) the fallback objective validation when the
     // optimizer drifts infeasible (see `eval_objective_set(&trial_values, …)`).
     // Do not inline into the feasibility check.
-    let initial_residual = max_constraint_residual(
+    let seed_residual = max_constraint_residual(
         &effective_constraints,
         &trial_values,
         &problem.functions,
         dispatch,
     );
-    // Tighter than acceptance on purpose: a seed whose equality rows are merely
-    // within tolerance is still solved, because returning it would let
+    // The early exit and the warm-start budget need a CONVERGED seed: returning
+    // one whose equality rows are merely within tolerance would let
     // `verify_uniqueness` compare it against a re-solve converged ~1e-16 away
-    // and report a false `ConstraintNonUnique`.
-    let initially_feasible =
-        initial_residual.accepted && initial_residual.magnitude <= FEASIBILITY_THRESHOLD;
+    // and report a false `ConstraintNonUnique`. The drift fallback needs only
+    // what the final gate needs of any answer, so it takes an ACCEPTED seed.
+    let seed_converged = seed_residual.is_converged();
+    let seed_accepted = seed_residual.is_accepted();
 
     // Synthesise a default centrality (Chebyshev-centre) objective when the scope has
     // inequality constraints but no explicit user objective (PRD η).  The synthetic
@@ -3109,7 +3141,7 @@ fn solve_core_with_sd_tolerance(
     // Pure feasibility + already feasible → return immediately.
     // Gate on the EFFECTIVE objective so a centrality scope optimises instead of
     // short-circuiting to the first feasible boundary point.
-    if initially_feasible && effective_objective.is_none() {
+    if seed_converged && effective_objective.is_none() {
         let n_params = problem.auto_params.len();
         tracing::debug!(
             n_params,
@@ -3128,9 +3160,9 @@ fn solve_core_with_sd_tolerance(
     // Nelder-Mead needs O(N+1) evaluations per simplex sweep, so scale
     // the budget proportionally to give higher-dimensional problems enough
     // iterations to converge.
-    // After the early-return above for `initially_feasible && effective_objective.is_none()`,
-    // reaching here with `initially_feasible=true` implies `effective_objective.is_some()`.
-    let max_iters = if initially_feasible {
+    // After the early-return above for `seed_converged && effective_objective.is_none()`,
+    // reaching here with `seed_converged=true` implies `effective_objective.is_some()`.
+    let max_iters = if seed_converged {
         debug_assert!(
             effective_objective.is_some(),
             "warm-start budget path reached without objective — early-return invariant violated"
@@ -3189,7 +3221,8 @@ fn solve_core_with_sd_tolerance(
             n_params,
             max_iters,
             has_objective,
-            initially_feasible,
+            seed_converged,
+            seed_accepted,
             iter_limited,
             "solver completed; hit iteration limit — objective may be suboptimal"
         );
@@ -3199,7 +3232,8 @@ fn solve_core_with_sd_tolerance(
             n_params,
             max_iters,
             has_objective,
-            initially_feasible,
+            seed_converged,
+            seed_accepted,
             iter_limited,
             "solver completed"
         );
@@ -3246,12 +3280,11 @@ fn solve_core_with_sd_tolerance(
         &problem.functions,
         dispatch,
     );
-    let final_max_residual = final_residual.magnitude;
-    if !final_residual.accepted {
+    if let Some(worst_rejected_residual) = final_residual.rejected {
         // If the initial point was feasible but the optimizer drifted infeasible
         // while chasing an objective, fall back to the initial feasible values
         // rather than reporting a false Infeasible.
-        if initially_feasible {
+        if seed_accepted {
             // Validate that the objective is numeric at the initial point
             // before promoting to Solved. The trial_values ValueMap was built
             // from the same initial point and is still in scope.
@@ -3278,7 +3311,7 @@ fn solve_core_with_sd_tolerance(
             let fallback = build_solved_values(&problem.auto_params, initial);
             tracing::debug!(
                 n_params,
-                final_max_residual,
+                worst_rejected_residual,
                 "optimizer drifted infeasible while chasing objective; \
                  falling back to initial feasible point"
             );
@@ -3297,14 +3330,14 @@ fn solve_core_with_sd_tolerance(
                         problem,
                         &effective_constraints,
                         &final_values,
-                        final_max_residual,
+                        worst_rejected_residual,
                         sd_tolerance,
                         dispatch,
                     )
                 } else {
                     reify_core::Diagnostic::error(format!(
                         "constraints could not be satisfied (max absolute residual: {:.2e})",
-                        final_max_residual
+                        worst_rejected_residual
                     ))
                     .with_code(DiagnosticCode::ConstraintUnsatisfiable)
                 }],
@@ -7930,6 +7963,45 @@ mod tests {
     }
 
     #[test]
+    fn max_constraint_residual_keeps_a_nan_rejected_residual() {
+        use super::max_constraint_residual;
+        use reify_core::{ConstraintNodeId, DimensionVector, Type};
+        use reify_ir::{BinOp, CompiledExpr, Value};
+
+        let length = |si_value| {
+            CompiledExpr::literal(
+                Value::Scalar {
+                    si_value,
+                    dimension: DimensionVector::LENGTH,
+                },
+                Type::length(),
+            )
+        };
+        let nan_equality = (
+            ConstraintNodeId::new("Part", 0),
+            CompiledExpr::binop(BinOp::Eq, length(f64::NAN), length(0.01), Type::Bool),
+        );
+        let false_row = (
+            ConstraintNodeId::new("Part", 1),
+            CompiledExpr::literal(Value::Bool(false), Type::Bool),
+        );
+        let values = ValueMap::new();
+        for (label, constraints) in [
+            ("NaN equality alone", vec![nan_equality.clone()]),
+            (
+                "NaN equality beside a rejected row",
+                vec![nan_equality, false_row],
+            ),
+        ] {
+            let res = max_constraint_residual(&constraints, &values, &[], None);
+            assert!(
+                res.rejected.is_some_and(f64::is_nan),
+                "{label}: the rejected residual must stay NaN, got {res:?}"
+            );
+        }
+    }
+
+    #[test]
     fn constraint_residual_bool_literals() {
         use super::constraint_residual;
         use reify_core::Type;
@@ -9117,8 +9189,8 @@ mod tests {
     /// This completes the trio with `undefined_objective_at_feasible_initial_returns_no_progress`
     /// and `undefined_objective_at_fallback_triggers_no_progress`, covering all three
     /// branches of the objective-validation tail of `solve_core_with_sd_tolerance`:
-    /// the `initially_feasible` drift fallback in the
-    /// `!final_residual.accepted` branch (its undefined-objective
+    /// the `seed_accepted` drift fallback in the
+    /// rejected-final-residual branch (its undefined-objective
     /// and Solved arms) plus the post-solve objective check at the solution point.
     #[test]
     fn defined_objective_at_fallback_returns_solved() {

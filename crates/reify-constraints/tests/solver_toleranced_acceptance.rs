@@ -1,8 +1,10 @@
-//! DimensionalSolver accepts an equality row under the same toleranced policy
-//! the `==` verdict uses (task #6653), so a point the solver returns is one
-//! the verdict checker calls Satisfied — while a genuine conflict stays
-//! Infeasible, the early exit stays tight, and no dimension's acceptance gets
-//! stricter than the pre-#6653 gate.
+//! DimensionalSolver accepts an equality row, and a `!=` row as its
+//! complement, under the same toleranced policy the `==` verdict uses (task
+//! #6653), so a point the solver returns is one the verdict checker calls
+//! Satisfied — while a genuine conflict stays Infeasible and reports its worst
+//! REJECTED row, the early exit stays tight, an accepted seed still backs the
+//! drift fallback, and no dimension's acceptance gets stricter than the
+//! pre-#6653 gate.
 
 use std::borrow::Cow;
 
@@ -10,10 +12,11 @@ use reify_constraints::{DimensionalSolver, SimpleConstraintChecker};
 use reify_core::{ConstraintNodeId, DiagnosticCode, DimensionVector, Type};
 use reify_ir::{
     AutoParam, BinOp, CompiledExpr, ConstraintChecker, ConstraintInput, ConstraintSolver,
-    ResolutionProblem, Satisfaction, SolveResult, Value, ValueMap,
+    ObjectiveSense, ObjectiveSet, ResolutionProblem, Satisfaction, SolveResult, Value, ValueMap,
 };
 use reify_test_support::{
-    and, binop, cnid, eq, ge, literal, meters, mm, or, value_ref_typed, vcid,
+    and, binop, cnid, conditional_expr, eq, ge, le, literal, meters, mm, ne, or, value_ref_typed,
+    vcid,
 };
 
 const ENTITY: &str = "Part";
@@ -311,4 +314,133 @@ fn or_of_equalities_missing_by_one_percent_stays_unsolved() {
             "{label} must not be Solved; got {result:?}"
         );
     }
+}
+
+fn unsatisfiable_message(result: &SolveResult) -> String {
+    let SolveResult::Infeasible { diagnostics } = result else {
+        panic!("expected Infeasible; got {result:?}");
+    };
+    diagnostics
+        .iter()
+        .find(|d| d.code == Some(DiagnosticCode::ConstraintUnsatisfiable))
+        .map(|d| d.message.clone())
+        .unwrap_or_else(|| {
+            panic!("expected a ConstraintUnsatisfiable diagnostic; got {diagnostics:?}")
+        })
+}
+
+/// Fixed cells `p == q` agree within the Length floor yet sit 5e-7 m apart,
+/// so this row is accepted at every point while its residual stays well above
+/// `1e-12`.
+fn accepted_near_miss(current_values: &mut ValueMap) -> CompiledExpr {
+    let length = Type::length();
+    current_values.insert(vcid(ENTITY, "p"), mm(10.0));
+    current_values.insert(vcid(ENTITY, "q"), meters(0.0100005));
+    eq(cell("p", &length), cell("q", &length))
+}
+
+#[test]
+fn drift_fallback_returns_a_seed_that_passes_acceptance() {
+    let length = Type::length();
+    let x = || cell("x", &length);
+    let mut current_values = ValueMap::new();
+    current_values.insert(vcid(ENTITY, "x"), mm(15.0));
+    let near_miss = accepted_near_miss(&mut current_values);
+    // Flat and costly wherever `x <= 20mm` holds, cheap past 22mm: the
+    // optimizer is lured out of the feasible region.
+    let lure = conditional_expr(le(x(), literal(mm(22.0))), literal(Value::Real(1e8)), x());
+    let drifting = ResolutionProblem {
+        dependent_cells: Vec::new(),
+        auto_params: vec![AutoParam {
+            id: vcid(ENTITY, "x"),
+            param_type: length.clone(),
+            bounds: Some((0.001, 0.1)),
+            free: true,
+        }],
+        constraints: numbered(vec![le(x(), literal(mm(20.0))), near_miss]),
+        current_values,
+        objective: Some(ObjectiveSet::single(ObjectiveSense::Minimize, lure)),
+        functions: vec![].into(),
+    };
+    assert_solved_near(&DimensionalSolver.solve(&drifting), "x", 0.015, 1e-10);
+}
+
+#[test]
+fn infeasible_report_names_the_worst_rejected_row_not_an_accepted_near_miss() {
+    let length = Type::length();
+    let mut current_values = ValueMap::new();
+    let near_miss = accepted_near_miss(&mut current_values);
+    current_values.insert(vcid(ENTITY, "r"), meters(0.010000001));
+    let result = DimensionalSolver.solve(&problem(
+        vec![auto("w", &length)],
+        vec![
+            eq(cell("w", &length), literal(mm(10.0))),
+            near_miss,
+            le(cell("r", &length), literal(mm(10.0))),
+        ],
+        current_values,
+    ));
+    let message = unsatisfiable_message(&result);
+    assert!(
+        message.contains("max absolute residual: 1.00e-9"),
+        "the report must quote the rejected `r <= 10mm` row (1e-9), not the accepted 5e-7 near miss; got {message:?}"
+    );
+}
+
+#[test]
+fn ne_within_tolerance_of_the_only_feasible_value_is_not_solved() {
+    let length = Type::length();
+    let w = || cell("w", &length);
+    let result = DimensionalSolver.solve(&problem(
+        vec![auto("w", &length)],
+        vec![
+            ge(w(), literal(mm(10.0))),
+            le(w(), literal(mm(10.0))),
+            ne(w(), literal(mm(10.0000005))),
+        ],
+        ValueMap::new(),
+    ));
+    assert!(
+        !matches!(result, SolveResult::Solved { .. }),
+        "w pinned to 10mm cannot satisfy w != 10.0000005mm, 5e-10 m away; got {result:?}"
+    );
+}
+
+#[test]
+fn optimizer_is_pushed_out_of_an_ne_band_around_the_centre() {
+    let length = Type::length();
+    let w = || cell("w", &length);
+    // Centrality draws `w` to 10mm, within a micrometre of the `!=` target, so
+    // only the toleranced `!=` cost can push it clear of the rejected band.
+    let banded = problem(
+        vec![AutoParam {
+            free: true,
+            ..auto("w", &length)
+        }],
+        vec![
+            ge(w(), literal(mm(9.0))),
+            le(w(), literal(mm(11.0))),
+            ne(w(), literal(mm(10.0000005))),
+        ],
+        ValueMap::new(),
+    );
+    assert_checker_satisfies_the_solved_point(&banded, "9mm <= w <= 11mm; w != 10.0000005mm");
+}
+
+#[test]
+fn ne_outside_tolerance_is_solved_and_satisfied() {
+    let length = Type::length();
+    let w = || cell("w", &length);
+    let clear_of_the_target = problem(
+        vec![auto("w", &length)],
+        vec![eq(w(), literal(mm(10.0))), ne(w(), literal(mm(10.01)))],
+        ValueMap::new(),
+    );
+    assert_solved_near(
+        &DimensionalSolver.solve(&clear_of_the_target),
+        "w",
+        0.01,
+        1e-6,
+    );
+    assert_checker_satisfies_the_solved_point(&clear_of_the_target, "w == 10mm; w != 10.01mm");
 }
