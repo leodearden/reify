@@ -158,11 +158,9 @@ fn assert_both_directions_reject(
 /// cases once is what keeps the two matrices from drifting into covering
 /// different halves of the same contract.
 ///
-/// The zero vector is C4's named case. The rest are the non-finite ones,
-/// which the predecessor variant routed here under the name
-/// `ZeroDirection`: correct routing, wrong diagnosis. The last entry is
-/// finite componentwise but has `‖d‖²` overflow to `+inf`, so it fails
-/// the same normalizability question by a different route.
+/// The zero vector is C4's named case. The rest are the non-finite ones.
+/// The last entry is finite componentwise but has `‖d‖²` overflow to `+inf`,
+/// so it fails the same normalizability question by a different route.
 fn unusable_directions() -> [[f64; 3]; 6] {
     [
         [0.0, 0.0, 0.0],
@@ -216,15 +214,6 @@ fn direction_bits(direction: &[f64; 3]) -> [u64; 3] {
 /// ball mean instead of [`QoiError::NonNormalizableDirection`] — a `NaN`
 /// the module's contract says is unrepresentable. That is why the ordering
 /// inside `resolve` is fixed and documented rather than incidental.
-///
-/// # TDD red→green
-///
-/// **RED** (step-1): `QoiError`, `QuantityOfInterest`, `P1TetMeshRef` and
-/// `LocalDisplacementQoi` do not exist, so this fails to COMPILE — the
-/// crate's established RED convention for a new type surface.
-///
-/// **GREEN** (step-2): the `src/qoi.rs` core lands with one private
-/// `resolve` chokepoint shared by both methods.
 #[test]
 fn local_displacement_qoi_returns_typed_error_from_both_directions_for_every_unresolvable_input()
 {
@@ -371,7 +360,7 @@ fn qoi_kind_has_exactly_the_two_shipped_variants_and_local_displacement_reports_
     );
 }
 
-// ── §5.1 contributing-set semantics, functional/dual algebra (step-3) ──
+// ── §5.1 contributing-set semantics, functional/dual algebra ───────────
 
 /// Node indices with any non-zero DOF entry in `g`, ascending.
 ///
@@ -510,12 +499,6 @@ fn contributing_set_is_the_centroid_ball_and_straddling_elements_are_in_or_out_w
 /// `at = (0.05, 0.05, 0.05)` is strictly inside tet0 and strictly outside
 /// tet1 (every point of tet1 has `x+y+z ≥ 1`), so the expected answer is
 /// unambiguous — both assertions the test makes as premises.
-///
-/// # TDD red→green
-///
-/// **RED** (step-3): step-2 implements the ball rule only, so an empty
-/// `E` returns `PointOutsideBody` and both calls below fail.
-/// **GREEN** (step-4): `resolve` gains the `locate_element_p1` arm.
 #[test]
 fn contributing_set_falls_back_to_the_containing_element_when_no_centroid_is_in_the_ball() {
     let coords = two_tet_fan_coords();
@@ -587,10 +570,6 @@ fn contributing_set_falls_back_to_the_containing_element_when_no_centroid_is_in_
 /// entirely — on a rescaled model, which for a coordinate-addressed QoI
 /// (C6) means the same design query answering differently in different
 /// units.
-///
-/// # TDD red→green
-///
-/// **RED** (step-3), **GREEN** (step-4) — as for the fallback test above.
 #[test]
 fn shared_face_point_falls_back_to_the_lowest_containing_element_at_a_scale_invariant_slack() {
     let d = [0.0, -1.0, 0.0];
@@ -835,24 +814,20 @@ fn evaluate_is_the_volume_weighted_mean_over_elements_of_unequal_volume() {
 /// to one standing beside healthy ones (there, the per-element guard).
 ///
 /// They do NOT make the module's "typed error, never a `NaN`" contract
-/// (C4) airtight, and two cases MEASURED in `--release` on this
-/// module's own material and displacement fixtures say so concretely,
-/// so the next reader can re-run them rather than trust the claim:
+/// (C4) airtight. Two cases stay open:
 ///
 /// * **Merely tiny `det J`.** A unit tet squashed to thickness `1e-12`
-///   has `V_K = 1.6666666666666667e-13`, strictly positive, and so
-///   passes both volume guards. `LocalNormalStressQoi::evaluate`
-///   returns `Ok(-28846153846.04615)` on it — against a fixture stress
-///   scale of `0.07`. Finite, so not a C4 violation; garbage all the
-///   same. `element_stress_p1`'s debug-only `MIN_JACOBIAN_DET` floor
-///   does not catch it either: that floor is `1e-30` and this tet's
-///   `|det J|` is `1e-12`, twelve orders above it.
-/// * **Element INVERSION.** [`tet_volume_p1`] returns `|det| / 6`, so
-///   an inverted tet reports the same `0.16666666666666666` as its good
-///   twin and is indistinguishable BY VOLUME — no volume guard can see
-///   it. Measured `Ok(0.14423076923076922)` against the good twin's
-///   `Ok(0.07884615384615386)`: finite, plausible-looking, and wrong.
-///   That is mesh validity (PRD task #21), not C4.
+///   has a strictly positive `V_K`, so it passes both volume guards, and
+///   `LocalNormalStressQoi::evaluate` returns a finite but garbage value
+///   on it. Finite, so not a C4 violation; garbage all the same.
+///   `element_stress_p1`'s debug-only `MIN_JACOBIAN_DET` floor does not
+///   catch it either: that floor is `1e-30` and this tet's `|det J|` is
+///   `1e-12`, twelve orders above it.
+/// * **Element INVERSION.** [`tet_volume_p1`] returns `|det| / 6`, so an
+///   inverted tet reports the same volume as its good twin and is
+///   indistinguishable BY VOLUME — no volume guard can see it. The value
+///   it yields is finite, plausible-looking, and wrong. That is mesh
+///   validity (PRD task #21), not C4.
 #[test]
 fn a_collapsed_element_yields_a_typed_error_rather_than_a_nan_ball_mean() {
     // Four COPLANAR nodes (every z = 0), i.e. a zero-volume "tet".
@@ -931,31 +906,22 @@ fn a_collapsed_element_yields_a_typed_error_rather_than_a_nan_ball_mean() {
 ///
 /// # `LocalNormalStressQoi` is the witnessing arm
 ///
-/// MEASURED on this exact fixture in a `--release` build, before the
-/// per-element guard existed:
-///
-/// | call | result |
-/// |---|---|
-/// | `LocalNormalStressQoi::evaluate` | `Ok(NaN)` |
-/// | `LocalNormalStressQoi::dual_load` | `Ok(g)`, 12 of 15 entries non-finite |
-/// | `LocalDisplacementQoi::evaluate` | `Ok(-0.0225)` |
-/// | `LocalDisplacementQoi::dual_load` | `Ok(g)`, 0 non-finite entries |
-///
-/// That mostly-`NaN` `g` is what [`solve_dual_cg`] hands straight to
-/// CG. The displacement ball mean inverts no Jacobian, so its
-/// `0.0 · finite` term genuinely vanishes and it never `NaN`s — which
-/// makes a displacement-only version of this test one that would have
-/// passed VACUOUSLY before the fix. It is asserted anyway, labelled as
-/// the non-witnessing direction, because the guard lives in the shared
-/// [`resolve`] and must reject uniformly across both functionals.
+/// The stress functional inverts each element's Jacobian through
+/// [`element_stress_p1`], whose guard is a `debug_assert!`. Without the
+/// per-element guard, its RELEASE `evaluate` and `dual_load` carry
+/// non-finite values into `J` and `g`, and that `g` is what
+/// [`solve_dual_cg`] hands straight to CG. The displacement ball mean
+/// inverts no Jacobian, so its `0.0 · finite` term genuinely vanishes and
+/// it never `NaN`s — which makes a displacement-only version of this test
+/// one that would pass VACUOUSLY without the guard. It is asserted anyway,
+/// labelled as the non-witnessing direction, because the guard lives in the
+/// shared [`resolve`] and must reject uniformly across both functionals.
 ///
 /// A plain `#[test]` — no `should_panic`, no reliance on a debug
 /// assertion — so the RELEASE leg of the verify pipeline is the one
 /// that pins this; release callers are exactly the ones who cannot see
-/// the `debug_assert!`. (In debug the pre-fix code panicked at
-/// `result.rs`'s guard instead of returning `Ok(NaN)`. After the fix
-/// `resolve` rejects before either primitive runs, so both profiles
-/// take the same path and this assertion holds in both.)
+/// the `debug_assert!`. `resolve` rejects before either primitive runs,
+/// so both profiles take the same path and this assertion holds in both.
 #[test]
 fn a_collapsed_element_beside_a_good_one_yields_a_typed_error() {
     // tet0 is the canonical unit tet (V = 1/6). tet1 shares its face
@@ -1047,8 +1013,7 @@ fn a_collapsed_element_beside_a_good_one_yields_a_typed_error() {
 /// [`barycentric_p1`] carries only a `debug_assert!`, so in release its
 /// `det == 0` produces non-finite barycentric coordinates, every
 /// [`point_in_tet_p1`] comparison against a `NaN` is false, and no
-/// element is selected at all. MEASURED: `Err(PointOutsideBody)` from
-/// both functionals.
+/// element is selected at all.
 ///
 /// The `cfg` is not a convenience. In DEBUG this fixture panics inside
 /// `interpolation.rs`'s guard before any `Result` exists, so no single
@@ -1174,7 +1139,7 @@ fn a_non_unit_direction_resolves_to_the_same_functional_as_its_unit_form() {
     );
 }
 
-// ── LocalNormalStressQoi (step-5) ──────────────────────────────────────
+// ── LocalNormalStressQoi ───────────────────────────────────────────────
 
 /// The 8 corners of the unit cube, indexed so corner `i + 2j + 4k` sits
 /// at `(i, j, k)`.
@@ -1282,7 +1247,7 @@ fn eval_and_dual_on_cube(
 /// on the Kuhn cube: `(at, radius, label)`.
 ///
 /// All six elements; exactly one element by the centroid rule; and one
-/// element via the step-4 fallback arm (`at` is strictly inside tet 0,
+/// element via the fallback arm (`at` is strictly inside tet 0,
 /// since `1 > 0.8 > 0.5 > 0.2 > 0`, and the nearest centroid is ≈0.071
 /// away — well outside the 0.01 ball).
 const CUBE_BALLS: [([f64; 3], f64, &str); 3] = [
@@ -1317,11 +1282,6 @@ fn lame() -> (f64, f64) {
 /// `n·σ·n` for the three axis normals reads off the diagonal directly,
 /// so this also pins that `evaluate` contracts σ with `n ⊗ n` rather
 /// than, say, taking a trace or a von Mises norm.
-///
-/// # TDD red→green
-///
-/// **RED** (step-5): `LocalNormalStressQoi` does not exist, so this fails
-/// to COMPILE. **GREEN** (step-6).
 #[test]
 fn local_normal_stress_recovers_the_lame_diagonal_on_a_uniform_strain_field() {
     let a = 0.01_f64;
