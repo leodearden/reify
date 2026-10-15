@@ -729,23 +729,25 @@ NLP_ABSENT="$NLP_FIX/absent"
 mkdir -p "$NLP_SNAP" "$NLP_DEPS_TK" "$NLP_DEPS_EMPTY"
 : > "$NLP_DEPS_TK/libTKernel.so.7.9"
 
-# The marker _nlp_run takes for "run the child with LD_LIBRARY_PATH unset",
-# and the value the prepend child prints when it is still unset afterwards.
+# The marker _nlp_exec takes for "run with LD_LIBRARY_PATH unset", and the
+# value a child prints when it is still unset (exported to every child).
 NLP_UNSET="<UNSET>"
 
 NLP_CHILD_CALL='set -euo pipefail; source "$1"; shift; "$@"'
 NLP_CHILD_PREPEND='set -euo pipefail; source "$1"; native_ld_path_prepend "$2"; printf "%s" "${LD_LIBRARY_PATH-$NLP_UNSET}"'
+NLP_PRINT_LD='printf "%s" "${LD_LIBRARY_PATH-$NLP_UNSET}"'
 
-# _nlp_run <snap-root> <deps-root> <inherited LD_LIBRARY_PATH | $NLP_UNSET>
-#          <child-script> <args...>
-# Runs the child unpiped and leaves _NLP_OUT / _NLP_ERR / _NLP_RC in this
-# shell (main-shell globals, as count_plan_lines does).
+# _nlp_exec <snap-root> <deps-root> <inherited LD_LIBRARY_PATH | $NLP_UNSET>
+#           <cmd...>
+# Runs cmd unpiped under exactly those roots and that inherited loader path,
+# leaving _NLP_OUT / _NLP_ERR / _NLP_RC in this shell (main-shell globals, as
+# count_plan_lines does).
 _NLP_OUT=""
 _NLP_ERR=""
 _NLP_RC=0
-_nlp_run() {
-    local snap="$1" deps="$2" inherited="$3" script="$4"
-    shift 4
+_nlp_exec() {
+    local snap="$1" deps="$2" inherited="$3"
+    shift 3
     local -a env_cmd=(env -u LD_LIBRARY_PATH)
     if [ "$inherited" != "$NLP_UNSET" ]; then
         env_cmd=(env LD_LIBRARY_PATH="$inherited")
@@ -753,8 +755,16 @@ _nlp_run() {
     _NLP_RC=0
     _NLP_OUT="$("${env_cmd[@]}" NLP_UNSET="$NLP_UNSET" \
         REIFY_NATIVE_LD_SNAP_DIR="$snap" REIFY_NATIVE_LD_DEPS_DIR="$deps" \
-        bash -c "$script" _ "$LIB_NATIVE_LD_PATH" "$@" 2>"$NLP_FIX/stderr")" || _NLP_RC=$?
+        "$@" 2>"$NLP_FIX/stderr")" || _NLP_RC=$?
     _NLP_ERR="$(<"$NLP_FIX/stderr")"
+}
+
+# _nlp_run <snap-root> <deps-root> <inherited> <child-script> <args...>
+# _nlp_exec of a bash child that has sourced the helper.
+_nlp_run() {
+    local snap="$1" deps="$2" inherited="$3" script="$4"
+    shift 4
+    _nlp_exec "$snap" "$deps" "$inherited" bash -c "$script" _ "$LIB_NATIVE_LD_PATH" "$@"
 }
 
 # One-line rendering of a captured multi-line value for an assert label.
@@ -810,5 +820,44 @@ assert "G7: prepend with both roots absent leaves an unset LD_LIBRARY_PATH unset
 _nlp_run "$NLP_ABSENT" "$NLP_ABSENT" "$LD_AMBIENT_SENTINEL" "$NLP_CHILD_PREPEND" cargo-target
 assert "G7: prepend with both roots absent leaves an inherited LD_LIBRARY_PATH verbatim (rc $_NLP_RC, got '$_NLP_OUT')" \
     _nlp_got "$LD_AMBIENT_SENTINEL"
+
+# ---------------------------------------------------------------------------
+# Section H: the cargo target runner .cargo/run-with-occt.sh (task 8654).
+#
+# .cargo/config.toml names it as the runner for every binary cargo/nextest
+# runs, so it is the cargo-target class's main consumer. Invoked by absolute
+# path, exactly as cargo does, over Section G's fixture roots.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Section H: the cargo target runner .cargo/run-with-occt.sh ---"
+
+OCCT_RUNNER="$REPO_ROOT/.cargo/run-with-occt.sh"
+
+_nlp_exec "$NLP_SNAP" "$NLP_DEPS_TK" "$LD_AMBIENT_SENTINEL" "$OCCT_RUNNER" bash -c "$NLP_PRINT_LD"
+assert "H1: the runner hands its command <deps>:<snap>:<inherited> — the cargo-target dirs ahead of the inherited loader path (rc $_NLP_RC, got '$_NLP_OUT')" \
+    _nlp_got "$NLP_DEPS_TK:$NLP_SNAP:$LD_AMBIENT_SENTINEL"
+
+_nlp_exec "$NLP_ABSENT" "$NLP_ABSENT" "$LD_AMBIENT_SENTINEL" "$OCCT_RUNNER" bash -c "$NLP_PRINT_LD"
+assert "H2: with both roots absent the runner prepends nothing — the inherited loader path arrives verbatim (rc $_NLP_RC, got '$_NLP_OUT')" \
+    _nlp_got "$LD_AMBIENT_SENTINEL"
+
+_nlp_exec "$NLP_ABSENT" "$NLP_ABSENT" "$LD_AMBIENT_SENTINEL" "$OCCT_RUNNER" bash -c 'exit 7'
+assert "H3: the runner execs its command, so the command's exit status is the runner's (want 7, got $_NLP_RC)" \
+    test "$_NLP_RC" -eq 7
+_nlp_exec "$NLP_ABSENT" "$NLP_ABSENT" "$LD_AMBIENT_SENTINEL" "$OCCT_RUNNER" printf '%s|' 'a b' c
+assert "H3: the runner passes argv through unsplit (rc $_NLP_RC, got '$_NLP_OUT')" \
+    _nlp_got 'a b|c|'
+
+# H4: a runner whose helper is missing must refuse, not exec a test binary on a
+# silently short loader path (which would die naming libgmsh, not the helper).
+mkdir -p "$NLP_FIX/repo/.cargo"
+cp -p "$OCCT_RUNNER" "$NLP_FIX/repo/.cargo/run-with-occt.sh"
+_nlp_runner_failed_closed() {
+    [ "$_NLP_RC" -ne 0 ] && ! contains "$_NLP_OUT" "RAN" \
+        && contains "$_NLP_ERR" "lib_native_ld_path.sh"
+}
+_nlp_exec "$NLP_ABSENT" "$NLP_ABSENT" "$LD_AMBIENT_SENTINEL" "$NLP_FIX/repo/.cargo/run-with-occt.sh" bash -c 'echo RAN'
+assert "H4: a runner copy with no scripts/lib_native_ld_path.sh beside it fails closed, naming the helper, and never runs its command (rc $_NLP_RC, stdout '$_NLP_OUT', stderr '$(_nlp_show "$_NLP_ERR")')" \
+    _nlp_runner_failed_closed
 
 test_summary
