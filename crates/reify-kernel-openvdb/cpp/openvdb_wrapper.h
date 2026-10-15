@@ -165,7 +165,8 @@ rust::Vec<float> grid_densify_to_buffer(const OpenVdbGridHandle& h);
 constexpr int64_t GRID_DENSIFY_MAX_VOXELS = 256LL * 1024LL * 1024LL;
 
 // ---------------------------------------------------------------------------
-// TBB parallelism limit (test-fixtures scope only)
+// TBB parallelism limit: compiled into every build, but the only Rust caller
+// is the test-fixtures-gated `tbb_scope` module.
 // ---------------------------------------------------------------------------
 
 /// Holds TBB to one thread for as long as it lives (tbb::global_control is

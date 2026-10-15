@@ -6,48 +6,11 @@
 //! Structure follows the `cfg(has_openvdb)` real-test / `cfg(not(has_openvdb))`
 //! skip-stub pattern of `tests/ingest_mesh_densify_tests.rs`.
 //!
-//! The fixture is an off-centre sphere on an anisotropic, padded grid with a
-//! non-zero centre, so an index-order or axis-flip error changes values. Its
-//! whole outer shell lies ≥ 3.25 mm outside the sphere and clamps to +band·h,
-//! so an ingest that deactivated background-valued voxels would shrink the
-//! active bounding box.
+//! The fixture is `test_fixtures::b5_sphere`, shared with the run-twice
+//! determinism tests so both cover the same grid.
 
 #[cfg(has_openvdb)]
-mod fixture {
-    use reify_ir::{DenseSdfGrid, ImplicitOptions};
-
-    /// Voxel size, metres.
-    pub const H: f64 = 5e-4;
-    pub const BAND: u32 = 3;
-    /// Extent the solid needs, before padding, metres.
-    pub const EXTENT: [f64; 3] = [0.012, 0.014, 0.016];
-    pub const GRID_CENTRE: [f64; 3] = [0.010, -0.020, 0.005];
-    pub const SPHERE_OFFSET: [f64; 3] = [1.0e-3, -1.5e-3, 2.0e-3];
-    pub const RADIUS: f64 = 3e-3;
-
-    /// The B5 oracle: n = ⌈E/h⌉ + 2·band per axis.
-    pub fn dims() -> [u32; 3] {
-        std::array::from_fn(|a| (EXTENT[a] / H).ceil() as u32 + 2 * BAND)
-    }
-
-    pub fn sphere_centre() -> [f64; 3] {
-        std::array::from_fn(|a| GRID_CENTRE[a] + SPHERE_OFFSET[a])
-    }
-
-    pub fn grid() -> DenseSdfGrid {
-        reify_kernel_openvdb::test_fixtures::sphere_sdf_grid(
-            GRID_CENTRE,
-            SPHERE_OFFSET,
-            RADIUS,
-            dims(),
-            H,
-        )
-    }
-
-    pub fn options() -> ImplicitOptions {
-        ImplicitOptions::new(H, BAND).expect("valid fixture options")
-    }
-}
+use reify_kernel_openvdb::test_fixtures::b5_sphere as fixture;
 
 /// B5: every voxel of the padded block is active, the voxel size is h, the
 /// bounds are centre ± (n−1)·h/2, and the densified values are exactly the

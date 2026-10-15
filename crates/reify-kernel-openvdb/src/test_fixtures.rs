@@ -105,3 +105,41 @@ pub fn sphere_sdf_grid(
     })
     .expect("sphere_sdf_grid: fixture arguments must form a valid DenseSdfGrid")
 }
+
+/// The implicit-solids B5 fixture (`docs/prds/v0_6/implicit-solids.md`): an
+/// off-centre sphere on an anisotropic, padded grid with a non-zero centre, so
+/// an index-order or axis-flip error changes values. Its whole outer shell
+/// lies ≥ 3.25 mm outside the sphere and clamps to +band·h, so an ingest that
+/// deactivated background-valued voxels would shrink the active bounding box.
+///
+/// One definition for every test that must exercise the same grid: the B5
+/// round trip and the run-twice determinism tests (B17).
+pub mod b5_sphere {
+    use reify_ir::{DenseSdfGrid, ImplicitOptions};
+
+    /// Voxel size, metres.
+    pub const H: f64 = 5e-4;
+    pub const BAND: u32 = 3;
+    /// Extent the solid needs, before padding, metres.
+    pub const EXTENT: [f64; 3] = [0.012, 0.014, 0.016];
+    pub const GRID_CENTRE: [f64; 3] = [0.010, -0.020, 0.005];
+    pub const SPHERE_OFFSET: [f64; 3] = [1.0e-3, -1.5e-3, 2.0e-3];
+    pub const RADIUS: f64 = 3e-3;
+
+    /// The B5 oracle: n = ⌈E/h⌉ + 2·band per axis.
+    pub fn dims() -> [u32; 3] {
+        std::array::from_fn(|a| (EXTENT[a] / H).ceil() as u32 + 2 * BAND)
+    }
+
+    pub fn sphere_centre() -> [f64; 3] {
+        std::array::from_fn(|a| GRID_CENTRE[a] + SPHERE_OFFSET[a])
+    }
+
+    pub fn grid() -> DenseSdfGrid {
+        super::sphere_sdf_grid(GRID_CENTRE, SPHERE_OFFSET, RADIUS, dims(), H)
+    }
+
+    pub fn options() -> ImplicitOptions {
+        ImplicitOptions::new(H, BAND).expect("valid fixture options")
+    }
+}

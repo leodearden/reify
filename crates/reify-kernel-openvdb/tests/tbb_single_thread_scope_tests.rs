@@ -39,27 +39,23 @@ fn single_thread_scope_limits_and_restores_tbb_parallelism() {
     );
 }
 
-/// The kernel-level shape of B17: two FRESH kernels (not a cache hit) ingest
-/// and tessellate the same grid under one scope, bit for bit.
+/// The kernel-level shape of B17: under one scope, two FRESH kernels (not a
+/// cache hit) ingest and tessellate the B5 grid, bit for bit. This shows the
+/// scope composes with ingest + tessellate and that the pair is reproducible
+/// inside it; it does not show the scope is NECESSARY (this grid may well be
+/// reproducible multi-threaded too). The scope's own effect is pinned by
+/// `single_thread_scope_limits_and_restores_tbb_parallelism`.
 #[cfg(has_openvdb)]
 #[test]
 fn fresh_kernels_tessellate_bitwise_identically_under_single_thread_scope() {
-    use reify_ir::{GeometryKernel, ImplicitOptions, Mesh};
+    use reify_ir::{GeometryKernel, Mesh};
     use reify_kernel_openvdb::OpenVdbKernel;
     use reify_kernel_openvdb::tbb_scope::TbbSingleThreadScope;
-    use reify_kernel_openvdb::test_fixtures::sphere_sdf_grid;
+    use reify_kernel_openvdb::test_fixtures::b5_sphere;
 
     let _serial = serial();
-    let h = 5e-4;
-    let band = 3;
-    let grid = sphere_sdf_grid(
-        [0.010, -0.020, 0.005],
-        [1.0e-3, -1.5e-3, 2.0e-3],
-        3e-3,
-        [30, 34, 38],
-        h,
-    );
-    let opts = ImplicitOptions::new(h, band).expect("valid options");
+    let grid = b5_sphere::grid();
+    let opts = b5_sphere::options();
 
     let _scope = TbbSingleThreadScope::enter();
     let tessellate_on_a_fresh_kernel = || -> Mesh {
