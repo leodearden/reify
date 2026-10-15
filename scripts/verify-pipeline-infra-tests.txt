@@ -271,6 +271,9 @@ docs/notes/cargo-incremental-persistent-lane-bench.md        tests/infra/test_ca
 # scripts/verify.sh build_plan's DF_VERIFY_ROLE=merge gate).
 scripts/occt-scope-lib.sh            tests/infra/test_verify_*.sh
 scripts/affected-crates-lib.sh       tests/infra/test_verify_*.sh
+# The path-attribution and compile-closure home both libs above read (task 8662).
+scripts/reify_path_attribution.py    tests/infra/test_affected_crates_lib.sh
+scripts/reify_path_attribution.py    tests/infra/test_verify_*.sh
 scripts/release-scope-lib.sh         tests/infra/test_verify_*.sh
 scripts/cpu-admit.sh                 tests/infra/test_verify_*.sh
 # cpu-admit.sh also gets its own dedicated integration guard (task 5125
