@@ -18,10 +18,18 @@ use reify_ir::{
 const MAX_ITERS: u64 = 5000;
 
 /// Absolute acceptance slack for INEQUALITY rows, and the bound under which
-/// the early exit treats a seed as already solved. EQUALITY rows are accepted
-/// by the `==` verdict itself (`reify_expr::eval_eq`, i.e.
+/// the early exit treats a seed as already converged. EQUALITY rows are
+/// accepted by the `==` verdict itself (`reify_expr::eval_eq`, i.e.
 /// `reify_core::scalar_tolerance`; task #6653), see [`RowResidual`].
-const FEASIBILITY_THRESHOLD: f64 = reify_core::scalar_tolerance::DEFAULT_ABSOLUTE_FLOOR;
+const FEASIBILITY_THRESHOLD: f64 = 1e-12;
+
+// `NM_SD_TOLERANCE` guarantees only that a converged residual reaches
+// `FEASIBILITY_THRESHOLD`, so an equality floor below it could reject an
+// equality the solver has converged on.
+const _: () = assert!(
+    FEASIBILITY_THRESHOLD <= reify_core::scalar_tolerance::DEFAULT_ABSOLUTE_FLOOR,
+    "every dimension's equality floor must admit the solver's reachable residual"
+);
 
 /// Penalty weight for constraint violations when optimizing an objective.
 /// Large enough to strongly enforce constraints while allowing the objective

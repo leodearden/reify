@@ -3,8 +3,7 @@
 //! Every pair below is derived from a requirement or a measured probe, never
 //! from the module's private constants: float noise left by the solver must
 //! compare equal, a 1% design drift must not, and the absolute floor must be
-//! dimension-aware without ever dropping below the solver's reachable
-//! residual.
+//! dimension-aware without any dimension dropping below the default floor.
 
 use reify_core::scalar_tolerance::{DEFAULT_ABSOLUTE_FLOOR, scalars_equal};
 use reify_core::{DimensionVector, NAMED_DIMENSIONS};
@@ -107,8 +106,11 @@ fn default_floor_applies_near_zero() {
 }
 
 #[test]
-fn no_dimension_is_stricter_than_the_solvers_reachable_residual() {
-    assert_eq!(DEFAULT_ABSOLUTE_FLOOR, 1e-12);
+fn default_floor_is_the_minimum_floor_of_every_dimension() {
+    // At 1e-6 the relative arm admits only ~1e-15, so half the default floor
+    // is accepted there by the absolute floor alone.
+    let small_magnitude = 1e-6;
+    let half_floor = 0.5 * DEFAULT_ABSOLUTE_FLOOR;
     let dimensions = NAMED_DIMENSIONS
         .iter()
         .map(|(dimension, name)| (*dimension, *name))
@@ -116,11 +118,11 @@ fn no_dimension_is_stricter_than_the_solvers_reachable_residual() {
     for (dimension, name) in dimensions {
         assert!(
             scalars_equal(0.0, DEFAULT_ABSOLUTE_FLOOR, dimension),
-            "{name}: a residual of DEFAULT_ABSOLUTE_FLOOR near zero must be accepted"
+            "{name}: a residual of DEFAULT_ABSOLUTE_FLOOR at zero must be accepted"
         );
         assert!(
-            scalars_equal(1.0, 1.0 + DEFAULT_ABSOLUTE_FLOOR, dimension),
-            "{name}: a residual of DEFAULT_ABSOLUTE_FLOOR at unit magnitude must be accepted"
+            scalars_equal(small_magnitude, small_magnitude + half_floor, dimension),
+            "{name}: half of DEFAULT_ABSOLUTE_FLOOR at {small_magnitude:e} must be accepted"
         );
     }
 }

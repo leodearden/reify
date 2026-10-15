@@ -14,8 +14,7 @@ const LENGTH_FLOOR_M: f64 = 1e-6;
 const ANGULAR_REFERENCE_RADIUS_M: f64 = 1.0;
 
 /// Absolute floor for every dimension without a curated resolution, and the
-/// minimum floor of every dimension. The solver aliases it as its inequality
-/// acceptance slack.
+/// minimum floor of every dimension.
 pub const DEFAULT_ABSOLUTE_FLOOR: f64 = 1e-12;
 
 fn absolute_floor(dimension: DimensionVector) -> f64 {
