@@ -479,6 +479,19 @@ ratchet. The row grammar lives in the manifest header. Measure with
 `docs/prds/v0_6/run-all-runner-infra-harness.md` adds its row at its
 post-extraction count.
 
+## Compiler namespace ratchet (`compiler-namespace-ratchet-baseline.txt`)
+
+`test_compiler_namespace_ratchet.sh` counts two constructs over non-test
+`crates/reify-compiler/src`: `glob_reexports`, visibility-qualified column-0
+glob re-exports minus `lib.rs`'s `pub use types::*;`, and `glob_imports`,
+unqualified column-0 glob imports. Files that a `#[cfg(test)]` `mod NAME;`
+declares are skipped, and each skip names its declaration. The baseline is
+exact: it reds on growth, naming every counted line, and on a stale row, naming
+the row to write, so a leaf that removes globs lowers its row in the same diff.
+The engine, `source_count_ratchet.py`, holds no policy, so the type-walker
+ratchet (#8638) can reuse it. Contract: PRD
+`docs/prds/v0_6/compiler-module-namespace.md` §4 C7.
+
 ## Verify event channel
 
 `REIFY_VERIFY_EVENT_LOG` names a JSON-lines file: the verify tree's structured
@@ -680,6 +693,10 @@ ignores INT and QUIT (measured `SigIgn` `…06`).
 | `adoption-ratchet.manifest` | Adoption-ratchet rows (grammar in its header) |
 | `test_infra_adoption_ratchet.sh` | Regression guard: no adoption-ratchet row exceeds its ceiling |
 | `test_infra_adoption_ratchet.py` | Its stdlib-unittest body, driving `adoption_ratchet.py` |
+| `source_count_ratchet.py` | Shared engine: counts line constructs in Rust production files against an exact baseline |
+| `compiler-namespace-ratchet-baseline.txt` | Exact counts for the compiler namespace ratchet |
+| `test_compiler_namespace_ratchet.sh` | Regression guard: reify-compiler glob re-exports and glob imports match their exact baseline |
+| `test_compiler_namespace_ratchet.py` | Its stdlib-unittest body, driving `source_count_ratchet.py` |
 | `test_helpers.sh` | Shared library: `assert()` and `test_summary()` |
 | `cited-test-path-lib.sh` | Shared library: cited-test-path scan, resolve and fingerprint derivation |
 | `cited-test-path-baseline.manifest` | Grandfather baseline for the cited-test-path ratchet |

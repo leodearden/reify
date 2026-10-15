@@ -90,6 +90,7 @@ test_cargo_incremental_lane_decision.sh pool
 test_cargo_test_tally.sh pool
 test_check_event_inventory.sh pool
 test_cited_test_paths_resolve.sh pool
+test_compiler_namespace_ratchet.sh pool
 test_compute_trampoline_registration_wired.sh pool
 test_copy_list_preflight.sh pool
 test_cpu_admit.sh pool
