@@ -1,6 +1,6 @@
 use super::*;
-use super::super::walk::entity_members;
 use crate::decl_oracle::test_fixtures::{occurrences, span_of};
+use crate::references::walk::entity_members;
 use reify_core::ModulePath;
 
 // --- κ step-1 (task 4210): single-file structure-name collector ---

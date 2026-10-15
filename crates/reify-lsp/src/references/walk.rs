@@ -193,8 +193,8 @@ pub(super) fn for_each_child_scope(member: &MemberDecl, mut visit: impl FnMut(&[
 /// single-file value-reference foundation does not model, so collecting value
 /// uses there could produce false positives (Invariant 1). The TYPE-position
 /// walk does not inherit that restriction — a signature's types are not scoped
-/// by the function's params — so `decl_uses::collect_decl_name_uses_in_members` reaches a
-/// `Fn` through its own arm instead of through this enumeration.
+/// by the function's params — so the type-position walker reaches a `Fn` through
+/// its own arm instead of through this enumeration.
 ///
 /// The visitor is `&mut dyn FnMut` rather than a generic parameter because its
 /// callers recurse through it; a generic would monomorphise without end.
@@ -323,17 +323,17 @@ fn visit_connect_exprs(c: &ConnectDecl, visit: &mut dyn FnMut(&Expr)) {
 /// Enumerate every DIRECT sub-expression of `expr`, in source order.
 ///
 /// The crate's single exhaustive `ExprKind` child enumeration, shared by the two
-/// expression walkers that need it: `local::collect_idents_in_expr` (value uses) and
-/// `decl_uses::collect_type_name_uses_in_expr` (type positions on lambda params). The
-/// match is WILDCARD-FREE, so a new `ExprKind` variant is a compile error here
-/// rather than a silently-dropped subtree in both walkers at once.
+/// expression walkers that need it: the value-use walker and the type-position
+/// walker (which reads type positions on lambda params). The match is
+/// WILDCARD-FREE, so a new `ExprKind` variant is a compile error here rather than
+/// a silently-dropped subtree in both walkers at once.
 ///
 /// Only `Expr`-typed children are yielded. The non-expression parts an
 /// expression carries — a member-access `.segment`, a qualified access's member,
 /// a match arm's patterns, a lambda's parameter list, a quantifier's binder —
 /// are not sub-expressions and are the visiting walker's own business (the
-/// lambda parameter list is exactly why `decl_uses::collect_type_name_uses_in_expr`
-/// inspects `expr` itself before delegating here).
+/// lambda parameter list is exactly why the type-position walker inspects
+/// `expr` itself before delegating here).
 ///
 /// The visitor is `&mut dyn FnMut` rather than a generic parameter because both
 /// callers recurse through it; a generic would monomorphise without end.
