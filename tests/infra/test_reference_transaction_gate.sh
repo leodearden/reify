@@ -347,6 +347,13 @@ make_fix2() {
     cp "$REPO_ROOT/hooks/reference-transaction" "$REPO_ROOT/hooks/main-gate-lib.sh" \
        "$REPO_ROOT/hooks/pre-commit" "$FIX2/hooks/"
     chmod +x "$FIX2/hooks/reference-transaction" "$FIX2/hooks/pre-commit"
+    # Plain cp, NO chmod: the committed exec bit is part of the contract, since
+    # dark-factory execs this path from `sh -c`. A missing script is left for the
+    # B8 assertions to report instead of aborting this file under set -e.
+    mkdir -p "$FIX2/scripts"
+    if [ -e "$REPO_ROOT/scripts/main-gate-mark.sh" ]; then
+        cp "$REPO_ROOT/scripts/main-gate-mark.sh" "$FIX2/scripts/"
+    fi
     git -C "$FIX2" config core.hooksPath "$FIX2/hooks"
     F2_SENTINEL="$FIX2/.git/reify-main-gate-ok"
     F2_LOG="$FIX2/.git/reify-main-gate.log"
@@ -414,5 +421,75 @@ assert "(B6) main stays at T1" test "$(fix2_main)" = "$T1"
 assert "(B6) the stale token was discarded" bash -c "! test -e '$F2_SENTINEL'"
 assert "(B6) log records the discard" grep -qF "stale sentinel $T0 discarded" "$F2_LOG"
 assert "(B6) log records the move as UNSANCTIONED" grep -qF "UNSANCTIONED main move $T1 -> $T2" "$F2_LOG"
+
+# ===========================================================================
+# B8 — the dark-factory face. advance_main / recover_red_main run
+# git.main_gate_mark_command before their CAS `git update-ref` and
+# git.main_gate_unmark_command only after a failed one, each as
+# `sh -c <cmd>` with cwd = project_root.
+# ===========================================================================
+
+# b8_seam <label> <mark-cmd> <unmark-cmd> — that call pattern in a fresh fixture:
+# mark + CAS; mark + failed CAS + unmark; foreign-tip token + unmark.
+b8_seam() {
+    local label="$1" mark_cmd="$2" unmark_cmd="$3" t0 t1 t2
+    make_fix2
+    t0="$(fix2_main)"; t1="$(fix2_child "$t0")"; t2="$(fix2_child "$t1")"
+
+    in_fix2 sh -c "$mark_cmd"
+    assert "($label) mark exits 0" test "$FIX2_RC" -eq 0
+    in_fix2 REIFY_MAIN_GATE_ENFORCE=1 git update-ref refs/heads/main "$t1" "$t0"
+    assert "($label) the CAS move after a mark succeeds under ENFORCE" test "$FIX2_RC" -eq 0
+    assert "($label) the move logs the bound sanction" grep -qF "sanctioned main move $t0 -> $t1" "$F2_LOG"
+    assert "($label) the move is not logged as legacy" bash -c "! grep -qF 'legacy unbound sentinel' '$F2_LOG'"
+    assert "($label) the token was consumed" bash -c "! test -e '$F2_SENTINEL'"
+
+    in_fix2 sh -c "$mark_cmd"
+    in_fix2 REIFY_MAIN_GATE_ENFORCE=1 git update-ref refs/heads/main "$t2" "$t0"
+    assert "($label) a CAS with the wrong expected old fails" test "$FIX2_RC" -ne 0
+    assert "($label) the failed CAS leaves main where it was" test "$(fix2_main)" = "$t1"
+    assert "($label) the failed CAS consumed nothing: the token is still present" test -e "$F2_SENTINEL"
+    in_fix2 sh -c "$unmark_cmd"
+    assert "($label) unmark exits 0" test "$FIX2_RC" -eq 0
+    assert "($label) unmark after the failed CAS removes the token" bash -c "! test -e '$F2_SENTINEL'"
+
+    printf '%s\n' "$t0" > "$F2_SENTINEL"
+    in_fix2 sh -c "$unmark_cmd"
+    assert "($label) unmark of a token bound to another tip exits 0" test "$FIX2_RC" -eq 0
+    assert "($label) unmark leaves a token bound to another tip in place" test "$(fix2_token)" = "$t0"
+}
+
+echo ""
+echo "--- (B8 script) scripts/main-gate-mark.sh mark|unmark around a CAS ---"
+b8_seam "B8 script" 'scripts/main-gate-mark.sh mark' 'scripts/main-gate-mark.sh unmark'
+
+echo ""
+echo "--- (B8 usage) scripts/main-gate-mark.sh argument handling ---"
+make_fix2
+TIP="$(fix2_main)"
+printf '%s\n' "$TIP" > "$F2_SENTINEL"
+in_fix2 scripts/main-gate-mark.sh
+assert "(B8 usage) no argument -> exit 64" test "$FIX2_RC" -eq 64
+in_fix2 scripts/main-gate-mark.sh bogus
+assert "(B8 usage) an unknown argument -> exit 64" test "$FIX2_RC" -eq 64
+assert "(B8 usage) usage errors leave the token untouched" test "$(fix2_token)" = "$TIP"
+in_fix2 scripts/main-gate-mark.sh --help
+assert "(B8 usage) --help -> exit 0" test "$FIX2_RC" -eq 0
+
+echo ""
+echo "--- (B8 yaml) dark-factory-orchestrator.yaml git.main_gate_{mark,unmark}_command ---"
+if ! python3 -c 'import yaml' 2>/dev/null; then
+    echo "SKIP: python3 'yaml' (PyYAML) not available; skipping the B8 yaml face (the script face above still asserts B8)"
+else
+    yaml_git_key() {
+        python3 -c 'import sys,yaml; print(yaml.safe_load(open(sys.argv[1]))["git"][sys.argv[2]])' \
+            "$REPO_ROOT/dark-factory-orchestrator.yaml" "$1"
+    }
+    MARK_CMD="$(yaml_git_key main_gate_mark_command)" || MARK_CMD=""
+    UNMARK_CMD="$(yaml_git_key main_gate_unmark_command)" || UNMARK_CMD=""
+    assert "(B8 yaml) git.main_gate_mark_command is set" test -n "$MARK_CMD"
+    assert "(B8 yaml) git.main_gate_unmark_command is set" test -n "$UNMARK_CMD"
+    b8_seam "B8 yaml" "$MARK_CMD" "$UNMARK_CMD"
+fi
 
 test_summary
