@@ -250,13 +250,12 @@ describe('claude invoke wrappers', () => {
     });
 
     // toHaveBeenCalledWith treats an undefined-valued key as equal to an absent one,
-    // so pin the exact key sets Tauri sees instead.
-    const args = mockInvoke.mock.calls[0][1] as { decision: Record<string, unknown> };
-    expect(Object.keys(args)).toEqual(['decision']);
-    expect(Object.keys(args.decision).sort()).toEqual(['behavior', 'request_id']);
-    expect(args.decision).not.toHaveProperty('message');
-    expect(args.decision).not.toHaveProperty('updated_input');
-    expect(args.decision).not.toHaveProperty('remember');
+    // so pin the exact key set of the `decision` argument instead.
+    const { decision } = mockInvoke.mock.calls[0][1] as { decision: Record<string, unknown> };
+    expect(Object.keys(decision).sort()).toEqual(['behavior', 'request_id']);
+    expect(decision).not.toHaveProperty('message');
+    expect(decision).not.toHaveProperty('updated_input');
+    expect(decision).not.toHaveProperty('remember');
   });
 
   it('claudePermissionDecision sends exactly one top-level argument, `decision`, matching the command parameter', async () => {
