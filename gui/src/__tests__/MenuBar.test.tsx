@@ -1,6 +1,5 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
 import { render, screen, fireEvent, cleanup } from '@solidjs/testing-library';
-import { delegateEvents } from 'solid-js/web';
 import { MenuBar } from '../panels/MenuBar';
 import { getShortcut } from '../shortcuts';
 
@@ -259,7 +258,6 @@ describe('MenuBar — interaction behaviors', () => {
     render(() => <MenuBar />);
     fireEvent.click(screen.getByText('File'));
     expect(screen.getByRole('menu')).not.toBeNull();
-    delegateEvents(['mousedown']);
     // Dispatch a mousedown where target is a non-Node (e.g. null via Object.create)
     const event = new MouseEvent('mousedown', { bubbles: true, cancelable: true });
     // configurable: solid's delegated handler redefines target while it dispatches, then restores it.
