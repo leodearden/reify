@@ -250,9 +250,11 @@ pub(crate) const FIRST_ARG_TYPED_NAMES: &[&str] = &[
 /// removing the group from this manifest is part of that task's diff, and
 /// `eval_deferred_names_are_disjoint_from_every_registered_family` is what
 /// turns a forgotten removal from a silent stale claim into a RED test.
-/// #5476 discharged the 13 `prb_*` ctors into `FLEXURE_CTOR_FN_NAMES`, so the
-/// dated "Derivation (2026-08-29)" counts above record that measurement, not
-/// this slice's current length.
+/// #5476 discharged the 13 `prb_*` ctors into `FLEXURE_CTOR_FN_NAMES`, and
+/// #8119 the two scalar trajectory intrinsics into
+/// `TRAJECTORY_SCALAR_INTRINSIC_NAMES`, so the dated "Derivation
+/// (2026-08-29)" counts above record that measurement, not this slice's
+/// current length.
 ///
 /// Case-sensitive: Reify function names are snake_case.
 pub(crate) const EVAL_DEFERRED_BUILTIN_NAMES: &[&str] = &[
@@ -327,6 +329,9 @@ pub(crate) const EVAL_DEFERRED_BUILTIN_NAMES: &[&str] = &[
     // --- owner #6007 (registry τ5) -----------------------------------------
     // The `*_lower` / `*_at` spellings are the undeclared intrinsics the typed
     // `.ri` wrappers delegate to; τ5 registers the direct-eval names only.
+    // The two scalar-valued `*_at` intrinsics (`profile_duration_at`,
+    // `peak_deviation_at`) are typed by `TRAJECTORY_SCALAR_INTRINSIC_NAMES`
+    // (#8119); the list-valued rest remain deferred here.
     // `piecewise_polynomial` is a permanent `Value::Undef` stub that τ5
     // LEDGERS rather than types.
     "world",
@@ -341,7 +346,6 @@ pub(crate) const EVAL_DEFERRED_BUILTIN_NAMES: &[&str] = &[
     "input_shape",
     "end_effector_track_at",
     "deviation_from_nominal_at",
-    "peak_deviation_at",
     "evaluate_profile",
     "evaluate_profile_at",
     "evaluate_profile_dot",
@@ -349,7 +353,6 @@ pub(crate) const EVAL_DEFERRED_BUILTIN_NAMES: &[&str] = &[
     "evaluate_profile_ddot",
     "evaluate_profile_ddot_at",
     "profile_duration",
-    "profile_duration_at",
     "piecewise_polynomial",
     // --- representation-tolerance constraint verb — owner #6010 (registry τ8) / #6944 ---
     // It lands as an `EnginePostProcess` row, per the #7035 ruling
