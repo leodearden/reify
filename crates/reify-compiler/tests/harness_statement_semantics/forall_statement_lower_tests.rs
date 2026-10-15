@@ -2602,18 +2602,15 @@ structure S {
     }
 }
 
-/// task 2717: when `resolve_port_name` returns `None` for a substituted port
-/// expression over a deferred-count collection, an `info` diagnostic is emitted
-/// before the early return so the user can discover the limitation.
+/// When a forall-connect endpoint over a deferred-count collection falls
+/// outside the connect-endpoint grammar, an `info` diagnostic is emitted before
+/// the early return so the user can discover the limitation.
 ///
-/// Fixture: `v.inner.a` (3-level dotted access) substitutes to
-/// `MemberAccess { object: MemberAccess { ... }, member: "a" }` — the outer
-/// `MemberAccess.object` is itself a `MemberAccess`, which `resolve_port_name`
-/// doesn't understand → returns `None`.
+/// Fixture: `v.inner.a` nests a member below a member, and `PortPath::parse`
+/// accepts at most one member below the root, so the left endpoint is rejected.
 ///
-/// NOTE: The fixture is intentionally synthetic — `v.inner.a` is chosen to force
-/// a doubly-nested `MemberAccess` that hits the `_ => None` arm of
-/// `resolve_port_name`, not to represent a realistic nested sub-component port
+/// NOTE: The fixture is intentionally synthetic — `v.inner.a` is the smallest
+/// nested-member endpoint, not a realistic nested sub-component port
 /// access. When nested sub-components gain full port reach, a separate realistic
 /// fixture should be added. TODO(#4684): add the nested sub-component port-reach fixture.
 ///
@@ -2642,9 +2639,8 @@ fn forall_connect_over_undef_count_collection_sub_unsupported_port_shape_emits_i
 /// right side is an unsupported port shape.
 ///
 /// Fixture: `connect air_channel -> v.inner.a` — the left side (`air_channel`) is
-/// a plain `Ident` that resolves fine; the right side (`v.inner.a` after
-/// substitution) is a doubly-nested `MemberAccess` that hits `_ => None` in
-/// `resolve_port_name`.
+/// a bare name that parses; the right side (`v.inner.a`) nests a member below a
+/// member, which `PortPath::parse` rejects.
 ///
 /// Pins:
 /// (a) No errors.
@@ -2669,16 +2665,16 @@ fn forall_connect_over_undef_count_unsupported_right_port_shape_emits_right_labe
 /// `(None, None)` arm of forall-Connect unsupported-port-shape diagnostic: both
 /// sides have unsupported port shapes.
 ///
-/// Fixture: `connect v.inner.a -> v.inner.b` — both sides are doubly-nested
-/// `MemberAccess` expressions that hit `_ => None` in `resolve_port_name`.
+/// Fixture: `connect v.inner.a -> v.inner.b` — both sides nest a member below a
+/// member, which `PortPath::parse` rejects.
 /// Distinct trailing members (`a` vs `b`) give each side a unique source span;
 /// this is required by the per-side span assertions in
 /// `assert_unsupported_port_shape_diagnostic`, which pin that each label's span
 /// equals `cd.left.expr.span` / `cd.right.expr.span` respectively.
 ///
 /// NOTE: Like the `(None, Some)` fixture, this is intentionally synthetic —
-/// `v.inner.a` / `v.inner.b` are chosen to force the doubly-nested path, not
-/// to represent realistic nested sub-component port accesses. When nested
+/// `v.inner.a` / `v.inner.b` are the smallest nested-member endpoints, not
+/// realistic nested sub-component port accesses. When nested
 /// sub-components gain full port reach, a realistic fixture should be added.
 ///
 /// Pins:

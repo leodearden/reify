@@ -121,3 +121,94 @@ fn parse_root(expr: &Expr, element_var: Option<&str>) -> Option<PortRoot> {
         _ => None,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use reify_core::SourceSpan;
+
+    fn expr(kind: ExprKind) -> Expr {
+        Expr {
+            kind,
+            span: SourceSpan::new(0, 0),
+        }
+    }
+
+    fn ident(name: &str) -> Expr {
+        expr(ExprKind::Ident(name.to_string()))
+    }
+
+    fn member(object: Expr, member: &str) -> Expr {
+        expr(ExprKind::MemberAccess {
+            object: Box::new(object),
+            member: member.to_string(),
+        })
+    }
+
+    fn indexed(object: Expr, index: Expr) -> Expr {
+        expr(ExprKind::IndexAccess {
+            object: Box::new(object),
+            index: Box::new(index),
+        })
+    }
+
+    fn position(value: f64) -> Expr {
+        expr(ExprKind::NumberLiteral {
+            value,
+            is_real: false,
+        })
+    }
+
+    #[test]
+    fn bare_bound_variable_is_the_element_with_no_members() {
+        let path = PortPath::parse(&ident("v"), Some("v")).unwrap();
+
+        assert_eq!(
+            path,
+            PortPath {
+                root: PortRoot::Element,
+                members: Vec::new(),
+            }
+        );
+        assert_eq!(path.at_element("vents", 2), "vents[2]");
+        assert_eq!(path.port_name(), None);
+    }
+
+    #[test]
+    fn ad_hoc_selector_parses_as_its_base() {
+        let selected = expr(ExprKind::AdHocSelector {
+            base: Box::new(member(ident("v"), "p")),
+            selector: "face".to_string(),
+            args: Vec::new(),
+        });
+
+        let path = PortPath::parse(&selected, Some("v")).unwrap();
+
+        assert_eq!(path.root, PortRoot::Element);
+        assert_eq!(path.at_element("vents", 1), "vents[1].p");
+    }
+
+    #[test]
+    fn literal_index_on_the_collection_is_kept_at_every_element() {
+        let endpoint = member(indexed(ident("vents"), position(0.0)), "outlet");
+
+        let path = PortPath::parse(&endpoint, Some("v")).unwrap();
+
+        assert_eq!(path.at_element("vents", 2), "vents[0].outlet");
+        assert_eq!(path.port_name().as_deref(), Some("vents[0].outlet"));
+    }
+
+    #[test]
+    fn indexed_bound_variable_is_rejected() {
+        let endpoint = member(indexed(ident("v"), position(0.0)), "x");
+
+        assert_eq!(PortPath::parse(&endpoint, Some("v")), None);
+    }
+
+    #[test]
+    fn non_literal_index_is_rejected() {
+        let endpoint = member(indexed(ident("vents"), ident("k")), "x");
+
+        assert_eq!(PortPath::parse(&endpoint, Some("v")), None);
+    }
+}
