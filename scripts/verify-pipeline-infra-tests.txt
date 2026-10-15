@@ -433,6 +433,8 @@ scripts/setup-dev.sh                    tests/infra/test_occt_deps_preflight.sh
 # ld-scope member; its launcher consumer (lib_gui_launch.sh) in run_gui_scripts.
 scripts/lib_native_ld_path.sh           tests/infra/test_verify_ld_library_path_scope.sh
 scripts/lib_native_ld_path.sh           tests/infra/test_run_gui_scripts.sh
+# The cargo runner's only behavioural guard is that member's Section H.
+.cargo/run-with-occt.sh                 tests/infra/test_verify_ld_library_path_scope.sh
 
 # Task 5888: the host-global systemd unit ExecStart pinning guard. The suite's
 # Part B EXTRACTS install_build_services() out of scripts/setup-dev.sh and runs
