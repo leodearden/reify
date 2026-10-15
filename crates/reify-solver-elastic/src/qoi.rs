@@ -81,9 +81,8 @@ pub enum QoiKind {
 pub enum QoiError {
     /// `radius` is not finite, or is not strictly positive.
     ///
-    /// §5.1 makes `radius` a required, positive payload field. A default
-    /// "small" radius was rejected at design time because it silently
-    /// reintroduces the point-delta functional whose divergence §3 measured.
+    /// §5.1 makes `radius` a required, positive payload field. There is no
+    /// default radius; §5.1 records why.
     NonPositiveRadius {
         /// The offending radius, as supplied.
         radius: f64,
@@ -99,9 +98,7 @@ pub enum QoiError {
     /// * **Non-finite, or of non-finite squared length.** A `NaN` or `±inf`
     ///   component (or a magnitude so large that `‖d‖²` overflows) makes the
     ///   normalization itself `NaN`, and a `NaN` direction is exactly the
-    ///   value this module's contract says is unrepresentable. Calling that
-    ///   "zero length" — as the predecessor variant's name and message both
-    ///   did — misdescribes the input a caller then has to debug.
+    ///   value this module's contract says is unrepresentable.
     NonNormalizableDirection {
         /// The offending direction, as supplied.
         direction: [f64; 3],
@@ -133,9 +130,8 @@ pub enum QoiError {
     /// A collapsed tet standing ALONGSIDE healthy ones leaves `Σ_K V_K`
     /// strictly positive, so the set-level arm above passes it through and
     /// the ball mean goes on to index it. [`element_stress_p1`]'s own
-    /// degenerate-Jacobian guard is a `debug_assert!`; measured in release
-    /// on a good/collapsed pair, `evaluate` returned `Ok(NaN)` and
-    /// `dual_load` a `g` with 12 of 15 entries non-finite.
+    /// degenerate-Jacobian guard is only a `debug_assert!`, so in release such
+    /// a member's stress is non-finite and would reach both `J` and `g`.
     ///
     /// Rejecting rather than SKIPPING the element is deliberate. `V_K` is
     /// the weight the functional is defined by, so dropping one would
@@ -227,7 +223,7 @@ pub trait QuantityOfInterest {
     /// The dual load `g` with `J(v) = gᵀv`, of length `3 · n_nodes`.
     ///
     /// **Not** yet zeroed at constrained DOFs — the caller owns the BC set,
-    /// and `solve_dual_cg` (step-12) is where that zeroing happens. Takes `u_h` so a
+    /// and [`solve_dual_cg`] is where that zeroing happens. Takes `u_h` so a
     /// linearized nonlinear functional fits this seam later without a
     /// signature change; both functionals shipped today ignore it, which is
     /// what lets a caller assemble `g` *before* the primal solve.
@@ -314,9 +310,7 @@ struct ContributingSet {
 /// one member would imply that member is special, while
 /// `DegenerateContributingSet` says what is actually true of the set.
 /// `DegenerateElement` is the LOCALIZING signal for the case the sum cannot
-/// see: a set viable in aggregate that still carries one broken member,
-/// which is exactly the case that used to reach [`element_stress_p1`] and
-/// return `Ok(NaN)` to a release caller.
+/// see: a set viable in aggregate that still carries one broken member.
 ///
 /// Both run over the SAME assembled `elements` vector, downstream of both
 /// selection arms, so the centroid rule and the containment fallback are
@@ -450,27 +444,20 @@ const LOCATE_BARYCENTRIC_SLACK: f64 = 1e-9;
 ///
 /// # Scanned in place, not through `locate_element_p1`
 ///
-/// That primitive takes a `&[LocatableTet]`, which this mesh representation
-/// cannot produce without materializing the whole thing: one `Vec` of owned
-/// per-element node arrays (96 B/element) for the views to borrow, plus the
-/// `Vec` of views. Calling the same [`point_in_tet_p1`] predicate at the
-/// same [`LOCATE_BARYCENTRIC_SLACK`] over the same ascending index order is
-/// the identical linear scan — `locate_element_p1` is a `for` loop around
-/// exactly this predicate — so the result is bit-identical while the two
-/// allocations disappear.
+/// That primitive takes a `&[LocatableTet]`, which this mesh view would have
+/// to materialize first. This scan runs the same [`point_in_tet_p1`]
+/// predicate at the same [`LOCATE_BARYCENTRIC_SLACK`] over the same ascending
+/// index order as `locate_element_p1`, so the result is bit-identical.
 ///
-/// That matters because this is not a rare path: the containment fallback
-/// fires whenever the QoI radius is smaller than the local element spacing
-/// (§5.1 supports that as an ordinary configuration), and `resolve` runs at
-/// least twice per adaptive iteration — once for `evaluate`, once for
-/// `dual_load`. On a 500k-element mesh the discarded form cost ~100 MB of
-/// transient allocation per refinement iteration for a query that needs
-/// none.
+/// This is not a rare path: the containment fallback fires whenever the QoI
+/// radius is smaller than the local element spacing (§5.1 supports that as an
+/// ordinary configuration), and `resolve` runs for both `evaluate` and
+/// `dual_load`.
 ///
 /// Still O(n_elements) per query. If a caller ever issues MANY queries
 /// against one mesh, the answer is
 /// [`crate::interpolation::TetSpatialIndex`] — an O(log n) BVH documented as
-/// returning bit-identical results — not a return to the allocating form.
+/// returning bit-identical results.
 fn locate_containing_element(mesh: P1TetMeshRef<'_>, at: [f64; 3]) -> Option<usize> {
     mesh.tets
         .iter()
@@ -760,8 +747,7 @@ impl QuantityOfInterest for LocalNormalStressQoi {
 /// * If any `bcs[i].dof` is beyond the dual load's last entry, i.e. the BC
 ///   SET and the mesh disagree. The operator check cannot see this one: `k`
 ///   and `mesh` can agree perfectly while `bcs` is the set carried over from
-///   a finer pre-remesh mesh, and that is exactly the case that used to
-///   reach a bare slice-index panic.
+///   a finer pre-remesh mesh.
 ///
 /// # Errors
 ///
