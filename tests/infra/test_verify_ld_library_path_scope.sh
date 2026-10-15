@@ -527,7 +527,8 @@ echo "--- Section F: verify.sh's own subprocesses run on the ambient loader path
 # PATH stays BEHIND the shim dir because apply_env() sources $HOME/.cargo/env
 # (prior art, read not sourced: tests/infra/nextest_absent_lib.sh:22-53).
 SHIM_DIR="$(mktemp -d "${TMPDIR:-/tmp}/reify-ld-shim-6392.XXXXXX")"
-trap 'rm -rf "$SHIM_DIR"' EXIT INT TERM HUP
+# The ONE exit trap for the whole file; Section G's NLP_FIX joins it once made.
+trap 'rm -rf "$SHIM_DIR" ${NLP_FIX:+"$NLP_FIX"}' EXIT INT TERM HUP
 SHIM_LOG="$SHIM_DIR/records.tsv"
 mkdir -p "$SHIM_DIR/bin" "$SHIM_DIR/real"
 : > "$SHIM_LOG"
@@ -703,5 +704,111 @@ assert "the phase-boundary export's right-hand side is a SINGLE bare variable re
     test -n "$_EXPORT_REF"
 assert "SPOT: the phase-boundary export and the ENV_LINES advertisement read the SAME variable, so what --print-plan promises is what the plan loop actually runs under — retargeting the export at any other DEFINED variable (set -u catches a typo, never a real name) would drop OCCT from every cargo plan line while every other section stayed green; export reads '\$${_EXPORT_REF:-<none>}', ENV_LINES advertises '\$${_ADVERT_REF:-<none>}'" \
     test "$_EXPORT_REF" = "$_ADVERT_REF"
+
+# ---------------------------------------------------------------------------
+# Section G: the shared loader-path helper scripts/lib_native_ld_path.sh
+# (task 8654).
+#
+# The helper decides, per consumer class, which native-dep dirs a process puts
+# on LD_LIBRARY_PATH. Its two roots are read at CALL time from
+# REIFY_NATIVE_LD_SNAP_DIR / REIFY_NATIVE_LD_DEPS_DIR, so every case points
+# them at fixture dirs and asserts by EQUALITY, whatever this host installs.
+# Each case runs in a `set -euo pipefail` child because the launchers that
+# source the lib run under those options: an absent-dir path returning
+# non-zero would abort them.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Section G: the loader-path helper scripts/lib_native_ld_path.sh ---"
+
+LIB_NATIVE_LD_PATH="$REPO_ROOT/scripts/lib_native_ld_path.sh"
+NLP_FIX="$(mktemp -d "${TMPDIR:-/tmp}/reify-native-ld-8654.XXXXXX")"
+NLP_SNAP="$NLP_FIX/snap"
+NLP_DEPS_TK="$NLP_FIX/deps-tk"
+NLP_DEPS_EMPTY="$NLP_FIX/deps-empty"
+NLP_ABSENT="$NLP_FIX/absent"
+mkdir -p "$NLP_SNAP" "$NLP_DEPS_TK" "$NLP_DEPS_EMPTY"
+: > "$NLP_DEPS_TK/libTKernel.so.7.9"
+
+# The marker _nlp_run takes for "run the child with LD_LIBRARY_PATH unset",
+# and the value the prepend child prints when it is still unset afterwards.
+NLP_UNSET="<UNSET>"
+
+NLP_CHILD_CALL='set -euo pipefail; source "$1"; shift; "$@"'
+NLP_CHILD_PREPEND='set -euo pipefail; source "$1"; native_ld_path_prepend "$2"; printf "%s" "${LD_LIBRARY_PATH-$NLP_UNSET}"'
+
+# _nlp_run <snap-root> <deps-root> <inherited LD_LIBRARY_PATH | $NLP_UNSET>
+#          <child-script> <args...>
+# Runs the child unpiped and leaves _NLP_OUT / _NLP_ERR / _NLP_RC in this
+# shell (main-shell globals, as count_plan_lines does).
+_NLP_OUT=""
+_NLP_ERR=""
+_NLP_RC=0
+_nlp_run() {
+    local snap="$1" deps="$2" inherited="$3" script="$4"
+    shift 4
+    local -a env_cmd=(env -u LD_LIBRARY_PATH)
+    if [ "$inherited" != "$NLP_UNSET" ]; then
+        env_cmd=(env LD_LIBRARY_PATH="$inherited")
+    fi
+    _NLP_RC=0
+    _NLP_OUT="$("${env_cmd[@]}" NLP_UNSET="$NLP_UNSET" \
+        REIFY_NATIVE_LD_SNAP_DIR="$snap" REIFY_NATIVE_LD_DEPS_DIR="$deps" \
+        bash -c "$script" _ "$LIB_NATIVE_LD_PATH" "$@" 2>"$NLP_FIX/stderr")" || _NLP_RC=$?
+    _NLP_ERR="$(<"$NLP_FIX/stderr")"
+}
+
+# One-line rendering of a captured multi-line value for an assert label.
+_nlp_show() { printf '%s' "${1//$'\n'/\\n}"; }
+
+_nlp_got() { [ "$_NLP_RC" -eq 0 ] && [ "$_NLP_OUT" = "$1" ]; }
+
+_nlp_rejected_bogus() {
+    [ "$_NLP_RC" -ne 0 ] && [ -z "$_NLP_OUT" ] \
+        && contains "$_NLP_ERR" "bogus" \
+        && contains "$_NLP_ERR" "cargo-target" \
+        && contains "$_NLP_ERR" "workspace-bin"
+}
+
+# G1/G2: both roots present.
+_nlp_run "$NLP_SNAP" "$NLP_DEPS_TK" "$NLP_UNSET" "$NLP_CHILD_CALL" native_ld_path_dirs cargo-target
+assert "G1: cargo-target lists the deps dir, then the snap dir, in loader search order (rc $_NLP_RC, got '$(_nlp_show "$_NLP_OUT")')" \
+    _nlp_got "$NLP_DEPS_TK"$'\n'"$NLP_SNAP"
+_nlp_run "$NLP_SNAP" "$NLP_DEPS_TK" "$NLP_UNSET" "$NLP_CHILD_CALL" native_ld_path_dirs workspace-bin
+assert "G2: workspace-bin lists the snap dir only — never the deps prefix, even when it holds libTKernel (rc $_NLP_RC, got '$(_nlp_show "$_NLP_OUT")')" \
+    _nlp_got "$NLP_SNAP"
+
+# G3: snap absent.
+_nlp_run "$NLP_ABSENT" "$NLP_DEPS_TK" "$NLP_UNSET" "$NLP_CHILD_CALL" native_ld_path_dirs cargo-target
+assert "G3: cargo-target with no snap dir lists the deps dir alone (rc $_NLP_RC, got '$(_nlp_show "$_NLP_OUT")')" \
+    _nlp_got "$NLP_DEPS_TK"
+_nlp_run "$NLP_ABSENT" "$NLP_DEPS_TK" "$NLP_UNSET" "$NLP_CHILD_CALL" native_ld_path_dirs workspace-bin
+assert "G3: workspace-bin with no snap dir lists nothing and returns 0 under set -e (rc $_NLP_RC, got '$(_nlp_show "$_NLP_OUT")')" \
+    _nlp_got ""
+
+# G4: the deps dir exists but holds no libTKernel.so*.
+_nlp_run "$NLP_ABSENT" "$NLP_DEPS_EMPTY" "$NLP_UNSET" "$NLP_CHILD_CALL" native_ld_path_dirs cargo-target
+assert "G4: cargo-target skips a deps dir with no libTKernel.so* — the library, not the dir, gates it (rc $_NLP_RC, got '$(_nlp_show "$_NLP_OUT")')" \
+    _nlp_got ""
+
+# G5: an unknown class is refused loudly.
+_nlp_run "$NLP_SNAP" "$NLP_DEPS_TK" "$NLP_UNSET" "$NLP_CHILD_CALL" native_ld_path_dirs bogus
+assert "G5: an unknown class fails with empty stdout and a stderr line naming it and both valid classes (rc $_NLP_RC, stdout '$(_nlp_show "$_NLP_OUT")', stderr '$(_nlp_show "$_NLP_ERR")')" \
+    _nlp_rejected_bogus
+
+# G6: the prepend wrapper puts the class block ahead of the inherited value.
+_nlp_run "$NLP_SNAP" "$NLP_DEPS_TK" "$LD_AMBIENT_SENTINEL" "$NLP_CHILD_PREPEND" cargo-target
+assert "G6: prepend cargo-target yields <deps>:<snap>:<inherited> (rc $_NLP_RC, got '$_NLP_OUT')" \
+    _nlp_got "$NLP_DEPS_TK:$NLP_SNAP:$LD_AMBIENT_SENTINEL"
+_nlp_run "$NLP_SNAP" "$NLP_DEPS_TK" "$NLP_UNSET" "$NLP_CHILD_PREPEND" cargo-target
+assert "G6: prepend cargo-target onto an unset LD_LIBRARY_PATH yields <deps>:<snap> with no trailing colon (rc $_NLP_RC, got '$_NLP_OUT')" \
+    _nlp_got "$NLP_DEPS_TK:$NLP_SNAP"
+
+# G7: nothing to prepend leaves LD_LIBRARY_PATH exactly as it was.
+_nlp_run "$NLP_ABSENT" "$NLP_ABSENT" "$NLP_UNSET" "$NLP_CHILD_PREPEND" cargo-target
+assert "G7: prepend with both roots absent leaves an unset LD_LIBRARY_PATH unset — no export of an empty value (rc $_NLP_RC, got '$_NLP_OUT')" \
+    _nlp_got "$NLP_UNSET"
+_nlp_run "$NLP_ABSENT" "$NLP_ABSENT" "$LD_AMBIENT_SENTINEL" "$NLP_CHILD_PREPEND" cargo-target
+assert "G7: prepend with both roots absent leaves an inherited LD_LIBRARY_PATH verbatim (rc $_NLP_RC, got '$_NLP_OUT')" \
+    _nlp_got "$LD_AMBIENT_SENTINEL"
 
 test_summary
