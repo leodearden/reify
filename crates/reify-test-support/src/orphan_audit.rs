@@ -1322,4 +1322,37 @@ mod tests {
              back (a downward reference by path, not a dependency edge)"
         );
     }
+
+    #[test]
+    fn audit_command_follows_the_runtime_workspace_root_child() {
+        crate::workspace_root::reexec::in_child(|root| {
+            let cmd = audit_command("crates/reify-audit/src");
+            assert_eq!(
+                cmd.get_current_dir(),
+                Some(root),
+                "audit_command's current_dir is not the fixture root {root:?}"
+            );
+            let expected_script = root.join("scripts/audit-orphan-producers.sh");
+            assert_eq!(
+                Path::new(cmd.get_program()),
+                expected_script,
+                "audit_command's program is not the fixture's script {expected_script:?}"
+            );
+        });
+    }
+
+    /// Re-execs with the runtime `CARGO_MANIFEST_DIR` inside a fixture tree:
+    /// in a normal build the compile-time and runtime trees coincide, so only
+    /// a different runtime tree can tell them apart.
+    #[test]
+    fn audit_command_follows_the_runtime_workspace_root() {
+        use crate::workspace_root::reexec::{Launch, fixture_workspace, run_child};
+
+        let fixture = fixture_workspace("orphan-audit-runtime-root-");
+        run_child(
+            "orphan_audit::tests::audit_command_follows_the_runtime_workspace_root_child",
+            fixture.path(),
+            Launch::ManifestDirEnv,
+        );
+    }
 }
