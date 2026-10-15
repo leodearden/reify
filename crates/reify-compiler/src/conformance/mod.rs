@@ -2689,8 +2689,10 @@ pub(crate) fn check_expr_mechanism_joint_bound(
 /// **Tests 1–2** (`check_trait_conformance_resolves_enum_typed_param_and_let`,
 /// `option_b_fix_blocks_phantom_let_entry_for_pass2_skipped_name`) hand-build
 /// `RequirementKind::Let` fixtures.  `RequirementKind::Let` is **not
-/// parser-reachable** from reify source today (see `trait_merge_tests.rs:282`
-/// and `let_type_disambiguation_tests.rs:234`), so there is no
+/// parser-reachable** from reify source today: a value-less trait `let` is a
+/// parse error (see `trait_merge_tests.rs:282` and
+/// `let_with_type_and_no_value_is_a_parse_error_and_lowers_an_empty_trait` in
+/// `let_type_disambiguation_tests.rs`), so there is no
 /// `compile_source(...)` string that produces this variant.  An integration-level
 /// rewrite is therefore impossible, not just inconvenient.
 ///
@@ -3502,8 +3504,9 @@ mod tests {
     /// Unit test for the Option B fix (task 1951).
     ///
     /// This test exercises a code path no `compile_source`-based integration test can
-    /// reach today: it hand-builds a `RequirementKind::Let` requirement (not parseable
-    /// from reify source — see `let_type_disambiguation_tests.rs:470-497` and
+    /// reach today: it hand-builds a `RequirementKind::Let` requirement (a value-less
+    /// trait `let` is a parse error — see
+    /// `let_with_type_and_no_value_is_a_parse_error_and_lowers_an_empty_trait` and
     /// esc-1951-6) and verifies that the Option B guard in `available_defaults`
     /// suppresses the phantom `(name, Let) -> Type::dimensionless_scalar()` entry for names recorded in
     /// `pass2_skipped`.
@@ -4081,9 +4084,10 @@ mod tests {
     /// and the `Some(default_type) if implicitly_converts_to(...)` satisfaction arm
     /// at conformance.rs:406-410.
     ///
-    /// `RequirementKind::Let` is not parser-reachable from reify source today
-    /// (see `let_with_type_and_no_value_parses_as_empty_trait` and
-    /// `let_type_disambiguation_tests.rs:470-497`), so only hand-built fixtures
+    /// `RequirementKind::Let` is not reachable from reify source: a value-less
+    /// trait `let` is a parse error (see
+    /// `let_with_type_and_no_value_is_a_parse_error_and_lowers_an_empty_trait`
+    /// in `let_type_disambiguation_tests.rs`), so only hand-built fixtures
     /// reach this path.
     ///
     /// ## Scenario
