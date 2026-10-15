@@ -81,7 +81,8 @@
 #   submit_task backstop — the same reify-leads shape as #5726 -> 3117, handled
 #   the same way.
 #
-#   MEASURED 2026-08-27 (#6856) — EXTENSION vector: CONVERGED again at 60.  The
+#   MEASURED 2026-08-27 (#6856), SUPERSEDED 2026-10-15 (#9058, below) —
+#   EXTENSION vector AT TIME OF WRITING: CONVERGED again at 60.  The
 #   γ mirror landed the SAME day as the α widening above (dark-factory commit
 #   9b824da7db, "Widen lock-charter extension allowlist 59 -> 60: add
 #   'tombstones'", confirmed an ancestor of dark-factory main).  Measured by
@@ -95,6 +96,16 @@
 #   window is open on this vector as of that measurement.  The window was
 #   real while it lasted, which is the point of the discipline recorded below,
 #   not a reason to relax it.
+#
+#   STATUS 2026-10-15 (#9058) — EXTENSION vector: α LEADS at 61.  α added `tsv`
+#   (reify-evidenced: tests/infra/affected-crates-direct-sets.tsv, landed by
+#   #8662) as the repair for a RED Cycle 10 corpus alarm on main.  Measured at
+#   DF main bbf3a231bb: neither γ copy named below carries `tsv`.  The γ mirror
+#   is dark_factory:6992.  CONSEQUENCE until it lands: a `.tsv` path is
+#   declarable in a lock charter at α but REJECTed at the γ submit_task
+#   backstop, and once this widening reaches reify main γ's Tier-2 drift guard
+#   (described below) reds — the live DF main-red window this block warns
+#   about, open again.
 #
 #   STATUS 2026-07-31 (#5890), SUPERSEDED 2026-08-27 (#6856, below) —
 #   EXTENSIONLESS vector AT TIME OF WRITING: α LEADS, γ LAGS.  This
@@ -187,13 +198,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # ---------------------------------------------------------------------------
 # Canonical extension allowlist (OQ#2 resolved — PRD §11 Q2).
 # Single source of truth for the α (reify) enforcement point: used by
-# _is_file_path(), classify, and --list-extensions.  60 entries, and α/γ are
-# converged there (measured 2026-08-27, #6856):
-# dark_factory:3117 landed at 58, then dark_factory 43410b3418 + #6067
-# widened both sides to 59, then #6758 added `tombstones` at α with the γ mirror
-# following the same day — see the "Cross-repo seam: γ" status notes in
-# the header above, which are also where the extensionless vector's own
-# convergence is recorded.
+# _is_file_path(), classify, and --list-extensions.  The current α/γ convergence
+# state of this vector, and of the extensionless one, is recorded in the
+# "Cross-repo seam: γ" status notes in the header above, not here.
 # PRD-explicit: rs ri toml cpp c h hpp md json yaml yml lock py sh ts tsx js txt step stl
 # Corpus-evidenced: css mjs html jsonc gcode service
 # Common source siblings: cc cxx hh mts cts cjs jsx scss svg png
@@ -219,7 +226,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # vector is converged again at 60 — see the header status note.
 # Widened 60 -> 61 on 2026-10-15 (#9058): `tsv` — reify-evidenced: #8662 landed the tracked
 # tests/infra/affected-crates-direct-sets.tsv (chosen deliberately, so not renamed), which
-# Cycle 10's live-corpus alarm flagged RED on main.  γ mirrors need `tsv` as a separate DF task.
+# Cycle 10's live-corpus alarm flagged RED on main.  The γ mirror is dark_factory:6992 — see
+# the header status note.
 # A LIVE ALARM NOW GUARDS THIS LIST: Cycle 10 of tests/infra/test_lock_charter_guard.sh
 # sweeps the tracked corpus and goes RED if a tracked reify extension is missing here —
 # the standing signal a pin inside this repo (Cycle 4's CANONICAL_EXTS) cannot give, since
@@ -395,10 +403,9 @@ case "$_subcmd" in
         # LC_ALL=C for the same reason as --list-extensionless below: γ's Tier-2
         # comparison is against Python sorted() (code-point order), so byte order
         # is the only ordering the two sides can agree on and the only one that is
-        # host-independent as C-P3 requires.  Today's 60 entries (re-measured
-        # 2026-08-27 after #6758 added `tombstones`) still sort identically under C and
-        # en_US.UTF-8 (md5-identical), so this remains a no-op on the current
-        # vector — but the list already carries
+        # host-independent as C-P3 requires.  Re-measured 2026-10-15 after #9058
+        # added `tsv`, the vector still sorts identically under C and en_US.UTF-8
+        # (md5-identical), so this was a no-op on it then — but the list already carries
         # hyphenated members (example-systemd-config, python-version) and glibc
         # collation ignores punctuation at the primary level, so one future
         # hyphen/underscore entry could silently reorder this output on a
