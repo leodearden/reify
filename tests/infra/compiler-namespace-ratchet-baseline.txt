@@ -1,0 +1,5 @@
+# Read by tests/infra/test_compiler_namespace_ratchet.py (contract: PRD
+# docs/prds/v0_6/compiler-module-namespace.md §4 C7). The counts are exact:
+# a diff that removes globs lowers its row in the same diff.
+glob_reexports 28
+glob_imports 29
