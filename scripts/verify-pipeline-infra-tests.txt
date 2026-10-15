@@ -429,6 +429,10 @@ scripts/verify-pipeline-paths.txt    tests/infra/test_verify_pipeline_guard.sh
 scripts/check-manifold-deps.sh          tests/infra/test_occt_deps_preflight.sh
 crates/reify-build-utils/src/lib.rs     tests/infra/test_occt_deps_preflight.sh
 scripts/setup-dev.sh                    tests/infra/test_occt_deps_preflight.sh
+# Task 8654: the runtime loader-path helper. Its class outputs are pinned in the
+# ld-scope member; its launcher consumer (lib_gui_launch.sh) in run_gui_scripts.
+scripts/lib_native_ld_path.sh           tests/infra/test_verify_ld_library_path_scope.sh
+scripts/lib_native_ld_path.sh           tests/infra/test_run_gui_scripts.sh
 
 # Task 5888: the host-global systemd unit ExecStart pinning guard. The suite's
 # Part B EXTRACTS install_build_services() out of scripts/setup-dev.sh and runs
