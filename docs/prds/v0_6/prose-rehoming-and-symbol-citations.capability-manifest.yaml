@@ -202,7 +202,7 @@ tasks:
       - crates/reify-audit/plinecite-baseline.txt
       expect: absent
 - label: δ₅
-  task_id: null
+  task_id: 9136
   title: 'S23 δ₅: reify-eval dispatch and classifier prose — dispatcher, warm_pool, structural_classifier, sweep_classifier, relate_solve, topology_attribute_propagation'
   capabilities:
   - name: dispatcher-variant-claim-false
@@ -250,7 +250,7 @@ tasks:
       - tests/infra/adoption-ratchet.manifest
       expect: present
 - label: ε₂
-  task_id: null
+  task_id: 9139
   title: 'S23 ε₂: HexWedgeMeshOutcome beside p2_substitution_diagnostic; re-cite to #4746'
   capabilities:
   - name: hexwedge-unwired-and-miscited
@@ -279,7 +279,7 @@ tasks:
       - crates/reify-ir/src
       expect: absent
 - label: ε₄
-  task_id: null
+  task_id: 9141
   title: 'S23 ε₄: engine_build residue — INV-BUILD pointers; reviewer and measurement prose'
   capabilities:
   - name: inv-build-claims-false
@@ -414,7 +414,7 @@ tasks:
       - crates/reify-audit/plinecite-baseline.txt
       expect: absent
 - label: θ₂
-  task_id: null
+  task_id: 9149
   title: 'S23 θ₂: residual ledger sweep — reify-eval and reify-eval-fea-tests'
   capabilities:
   - name: eval-residual
