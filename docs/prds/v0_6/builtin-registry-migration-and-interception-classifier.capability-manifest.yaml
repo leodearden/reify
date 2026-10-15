@@ -350,7 +350,7 @@ tasks:
         delivered_check:
           kind: grep
           pattern: 'crate::completion::\{BODY_KEYWORDS'
-          paths: ["crates/reify-lsp/src/references.rs"]
+          paths: ["crates/reify-lsp/src/references"]
           expect: absent
   - label: "S8-τ"
     task_id: 8911

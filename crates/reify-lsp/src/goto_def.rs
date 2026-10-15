@@ -363,7 +363,7 @@ fn find_declaration_in_source(source: &str, name: &str, uri: &Url) -> Option<Loc
 /// task 2525) and delegates.
 ///
 /// TEST-ONLY, and deliberately so. Every production caller — cross-file
-/// goto-def, and the three points in `references.rs` this once fed (the
+/// goto-def, and the three points in `references/` this once fed (the
 /// `collect_decl_name_spans` home token, `resolve_cross_file_home` step 2, the
 /// cross-file rename producer) — already holds the document's `ParsedModule`,
 /// so each of those calls was a SECOND full parse of a string the caller had
@@ -395,7 +395,7 @@ pub(crate) fn find_declaration_name_span(source: &str, name: &str) -> Option<Sou
 ///
 /// # This scan feeds REFERENCES, not just cross-file goto-def
 ///
-/// It serves CROSS-FILE go-to-definition *and* three points in `references.rs`:
+/// It serves CROSS-FILE go-to-definition *and* three points in `references/`:
 /// the `collect_decl_name_spans` home token, `resolve_cross_file_home` step 2,
 /// and — through the first — the cross-file rename producer. So **adding a kind
 /// here changes what the REFERENCE SET reports**, and a kind whose use sites are
@@ -419,8 +419,8 @@ pub(crate) fn find_declaration_name_span(source: &str, name: &str) -> Option<Sou
 /// asks what a declaration is NAMED, this one asks whether renaming it is SAFE.
 ///
 /// The full argument, the measurement behind it, and the separate allowlist
-/// that gates rename itself (`references::classify_decl_name_in`) live on the
-/// guard test `references::tests::
+/// that gates rename itself (`references::cross_file::classify_decl_name_in`) live on the
+/// guard test `references::cross_file::tests::
 /// cross_file_declaration_kind_admission_tracks_use_site_coverage`.
 ///
 /// It also DESCENDS one level into purpose bodies, via
@@ -443,7 +443,7 @@ pub(crate) fn find_declaration_name_span(source: &str, name: &str) -> Option<Sou
 /// Admitting `Unit` would hand the rename producer a reference set holding the
 /// declaration token ALONE and silently leave every suffixed literal stale.
 /// Measured and pinned by
-/// `references::tests::cross_file_declaration_kind_admission_tracks_use_site_coverage`
+/// `references::cross_file::tests::cross_file_declaration_kind_admission_tracks_use_site_coverage`
 /// and by `goto_def_unit_suffixed_literal_does_not_resolve_to_its_unit_declaration`.
 /// Tasks #6341, #6539.
 ///
@@ -453,7 +453,7 @@ pub(crate) fn find_declaration_name_span(source: &str, name: &str) -> Option<Sou
 /// A matched declaration whose span does not actually contain its own name
 /// token is REFUSED — `None`, and without resuming the scan. The previous
 /// locator instead fell back to a `name.len()`-wide span anchored at the
-/// declaration start; that bogus WIDE span flowed into the `references.rs`
+/// declaration start; that bogus WIDE span flowed into the `references/`
 /// rename write path and emitted a destructive edit over the declaration's
 /// leading keyword. Resuming the scan would be the mirror-image hazard, letting
 /// a later same-named declaration donate its token — exactly what bounding the
@@ -462,11 +462,11 @@ pub(crate) fn find_declaration_name_span(source: &str, name: &str) -> Option<Sou
 /// What a refusal costs is enumerated per consumer rather than summarised,
 /// because they do not all behave alike:
 /// - [`find_declaration_in_source`] (goto-def) is read-only: no jump. Inert.
-/// - `references.rs::resolve_cross_file_home` step 2 tests only `.is_some()`,
+/// - `references/cross_file.rs::resolve_cross_file_home` step 2 tests only `.is_some()`,
 ///   so a declaration in the primary document stops being recognised as the
 ///   home and the query falls through to the import arm — which, in the home
 ///   document itself, resolves to nothing. A wholesale `None`. Inert.
-/// - `references.rs::compute_references_cross_file` REFUSES THE WHOLE QUERY
+/// - `references/cross_file.rs::compute_references_cross_file` REFUSES THE WHOLE QUERY
 ///   (`None`) when this function declines a name the home document does
 ///   declare — the condition it checks via `classify_decl_name_in`. It used to
 ///   use the value only to drop the declaration token under
@@ -477,8 +477,8 @@ pub(crate) fn find_declaration_name_span(source: &str, name: &str) -> Option<Sou
 ///   came back as B's import token ALONE — one "reference" that is not the
 ///   declaration, with the declaration itself missing even under
 ///   `include_declaration = true`. Pinned by
-///   `references::tests::cross_file_references_refuse_a_home_whose_kind_this_oracle_declines`.
-/// - `references.rs::collect_decl_name_spans` pushes this token into the
+///   `references::cross_file::tests::cross_file_references_refuse_a_home_whose_kind_this_oracle_declines`.
+/// - `references/decl_uses.rs::collect_decl_name_spans` pushes this token into the
 ///   span set that `compute_rename_cross_file` turns into edits, so a refusal
 ///   would silently OMIT it and leave a rename driven from an importing
 ///   document rewriting every use while the declaration stayed behind. The
@@ -2258,7 +2258,7 @@ mod tests {
     ///
     /// Tree-sitter error recovery can produce a declaration node whose span is
     /// truncated short of the name. Any span this function returns reaches the
-    /// `references.rs` rename write path, so the only answer that cannot
+    /// `references/` rename write path, so the only answer that cannot
     /// corrupt a buffer is a refusal.
     ///
     /// The fixture carries TWO same-named declarations on purpose: with a
@@ -2318,7 +2318,7 @@ mod tests {
     /// `trait`, `occurrence def`), and the grammar admits one-character
     /// identifiers, so a locator that is not whole-word matches the `s` of
     /// `structure` before the `s` of `structure s`. The resulting span reaches
-    /// the `references.rs` rename write path, where it rewrites byte 0 of the
+    /// the `references/` rename write path, where it rewrites byte 0 of the
     /// user's file.
     #[test]
     fn find_declaration_name_span_short_name_is_name_token_not_keyword_prefix() {

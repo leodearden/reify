@@ -74,7 +74,7 @@ pub fn enclosing_decl_at(declarations: &[Declaration], offset: usize) -> Option<
 /// that way, after every wildcard-terminated one had silently dropped kinds as
 /// the parser grew them; #6972 finished the job, so the two rename/references
 /// oracles, `goto_def::decl_name_span_in` and
-/// `references::classify_decl_name_in`, are exhaustive too and a new variant
+/// `references::cross_file::classify_decl_name_in`, are exhaustive too and a new variant
 /// is a compile error at all three.
 ///
 /// The returned span is the whole declaration statement, NOT the name token —
@@ -88,7 +88,7 @@ pub fn enclosing_decl_at(declarations: &[Declaration], offset: usize) -> Option<
 ///
 /// The deliberate NON-consumers are the two rename/references oracles,
 /// `goto_def::decl_name_span_in` and
-/// `references::classify_decl_name_in`. They answer a stricter question, and
+/// `references::cross_file::classify_decl_name_in`. They answer a stricter question, and
 /// must keep answering it separately: they feed rename, whose edit set is the
 /// reference set, so admitting a kind whose USE SITES are not collected
 /// produces a rename that moves the declaration and leaves every use stale. A
@@ -96,7 +96,7 @@ pub fn enclosing_decl_at(declarations: &[Declaration], offset: usize) -> Option<
 /// #6539 ten of the eleven named kinds qualify; `Unit` does not, and cannot —
 /// its one use form is a literal suffix that carries no span. The argument and
 /// the measurement behind it live on the guard test
-/// `references::tests::cross_file_declaration_kind_admission_tracks_use_site_coverage`.
+/// `references::cross_file::tests::cross_file_declaration_kind_admission_tracks_use_site_coverage`.
 pub(crate) fn decl_name_and_span(decl: &Declaration) -> Option<(&str, SourceSpan)> {
     let named = match decl {
         Declaration::Structure(s) => (s.name.as_str(), s.span),
@@ -215,7 +215,7 @@ pub(crate) fn purpose_nested_decl_names(
 /// fallback, which is what makes that fallback the risky thing to change:
 /// `goto_def::decl_name_token` maps it to `None` (a zero-width jump target is
 /// useless), `name_selection_range` degrades it to the declaration start, and
-/// `references.rs` propagates it into the rename/references span set.
+/// `references/` propagates it into the rename/references span set.
 pub fn name_token_span(source: &str, member_span: SourceSpan, name: &str) -> SourceSpan {
     let mut start = (member_span.start as usize).min(source.len());
     // Snap forward to a valid UTF-8 boundary if we landed mid-character.
