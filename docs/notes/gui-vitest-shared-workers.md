@@ -10,22 +10,21 @@ Measured against vitest **3.2.4**; a vitest major upgrade (v4 reworks pools and
 
 - **Root `poolOptions.forks.isolate: false`.** Workers are reused. vitest's
   forks pool then groups files by project and environment, and recycles the
-  workers between groups (`vitest/dist/chunks/coverage.*.js`, forks pool,
-  non-isolated branch: `groupBy(project.name + environment.name …)` then
+  workers between groups (its non-isolated branch:
+  `groupBy(… project.name + environment.name …)`, then
   `pool.recycleWorkers()`). A worker therefore never serves two projects.
 - **Two projects decide whether a file also shares the worker's module graph.**
   - `shared-modules` (project `isolate: false`): an explicit `include` list of
     test files with no module-registry `vi` call. They share cached modules.
   - `fresh-modules` (project `isolate: true`): every other test file. vitest
     resets the mocker and the module cache before each file, inside the reused
-    worker (`runBaseTests.*.js`: `executor.mocker.reset();
+    worker (`runBaseTests`: `executor.mocker.reset();
     resetModules(moduleCache, true)`).
-- **The routing rule is owned by `gui/vitest-project-partition.ts`**: a file
-  goes to `shared-modules` only if its own source contains none of `vi.mock`,
-  `vi.doMock`, `vi.unmock`, `vi.doUnmock`, `vi.resetModules`, `vi.importMock`,
-  `vi.importActual`. The fail-safe direction is `fresh-modules`: a file the walk
-  misses, or a comment that merely mentions `vi.mock(`, costs speed, never
-  correctness.
+- **The routing rule is `MODULE_REGISTRY_CALL` in
+  `gui/vitest-project-partition.ts`**: a file goes to `shared-modules` only if
+  its own source matches none of the `vi` APIs listed there. The fail-safe
+  direction is `fresh-modules`: a file the walk misses, or a comment that
+  merely mentions such a call, costs speed, never correctness.
 - **Even with `isolate: false`, jsdom is fresh per file.** The pool still calls
   `runFiles([file])` per file, and each call builds a new environment.
 
@@ -34,23 +33,27 @@ Measured against vitest **3.2.4**; a vitest major upgrade (v4 reworks pools and
 A reused worker keeps externalized libraries cached, and three of them capture
 the FIRST file's `document` at import time:
 
-1. `@testing-library/dom`'s `screen` binds `document.body` at import
-   (`dist/screen.js:48`).
-2. `@solidjs/testing-library` registers `afterEach(cleanup)` at import
-   (`dist/index.js:17`), so only the first file in a worker would get it.
-3. `solid-js/web`'s `delegateEvents(...)` runs at module evaluation of every
-   compiled component and binds that file's document (`web/dist/dev.js:219`), so
-   clicks in later files would never reach their handlers.
+1. `@testing-library/dom` builds its exported `screen` from `document.body`
+   when that module is evaluated.
+2. `@solidjs/testing-library` registers `afterEach(cleanup)` when its entry
+   module is evaluated, so only the first file in a worker would get it.
+   `gui/vitest.config.ts` sets `STL_SKIP_AUTO_CLEANUP` in `test.env` to turn
+   that hook off, which leaves the setup body's registration as the only one.
+3. Every compiled component calls `solid-js/web`'s
+   `delegateEvents(eventNames, document = window.document)` at module
+   evaluation, which binds that file's document. Clicks in later files would
+   never reach their handlers.
 
 `gui/vitest.setup.ts` undoes these in its **body**, because vitest re-runs a
 setup file once per test file but keeps the setup file's imports cached
-(`vitest/dist/runners.js:109,133`: `if (source === "setup")
-moduleCache.delete(filepath)`). It calls `rebindDomCapturesTo(document)`
-(re-point `screen`, delegate every one of solid's `DelegatedEvents` on this
-document), registers `afterEach(cleanup)`, and registers
-`afterAll(restoreGlobalBaseline)` (real timers, `vi.unstubAllGlobals()`,
-`vi.unstubAllEnvs()`, `vi.restoreAllMocks()`). Both functions live in
-`gui/vitest-shared-worker.ts` and have no module-scope side effects. `restoreGlobalBaseline` runs in
+(`VitestTestRunner.importFile`: `if (source === "setup")
+moduleCache.delete(filepath)`, which drops only the setup file itself). It
+calls `rebindDomCapturesTo(document)` (re-point `screen`, delegate every one
+of solid's `DelegatedEvents` on this document), registers
+`afterEach(cleanup)`, and registers `afterAll(restoreGlobalBaseline)` (real
+timers, `vi.unstubAllGlobals()`, `vi.unstubAllEnvs()`,
+`vi.restoreAllMocks()`). Both functions live in `gui/vitest-shared-worker.ts`
+and have no module-scope side effects. `restoreGlobalBaseline` runs in
 `afterAll`, not at the next file's start: unstubbing then would write the
 previous jsdom's values over the new environment.
 
@@ -77,19 +80,27 @@ previous jsdom's values over the new environment.
 - **In watch mode**, a file that gains a `vi.mock` call is re-routed only after
   a restart: the partition is computed when the config loads.
 
-## Measured facts
+## Residual risk
 
-- Setup files are still fetched once per test file, and `fresh-modules` files
-  still re-fetch their module graphs, so the worker→host fetch-RPC count falls
-  only about 10% (2592 → 2133). The 60 s birpc bound described in
-  `docs/notes/verify-pipeline-knobs.md` (GUI worker-RPC starvation marker)
-  still applies; its exposure window shrinks.
-- The win is about 4 reused workers (verify lane, `maxForks: 4`) instead of one
-  cold fork per file. That removes most of the environment and prepare time
-  and cuts CPU about 3x. Back-to-back under the same load: isolate=true 2:07
-  wall and 287 s CPU, shared workers 0:35 wall and 89 s CPU, 190 files / 6132
-  tests either way.
-- Validation protocol used at landing: default order, five
-  `--sequence.shuffle.files` seeds, `maxForks=1` shuffled (maximal sharing),
-  and `DF_VERIFY_ROLE` unset. Any order-dependent failure is a real cross-file
-  leak: fix it at its source, never by weakening the routing rule.
+Setup files are still fetched once per test file, and `fresh-modules` files
+still re-fetch their module graphs, so worker→host fetch-RPC volume falls only
+slightly. The 60 s birpc bound described in `docs/notes/verify-pipeline-knobs.md`
+(GUI worker-RPC starvation marker) still applies; reused workers only shrink
+its exposure window.
+
+## Re-validating (after a vitest upgrade or a change to the config wiring)
+
+1. **Project wiring.** From `gui/`, run
+   `./node_modules/.bin/vitest list --filesOnly --json=<out.json>`. Each entry
+   is `{ file, projectName }`. Check that every file appears exactly once, that
+   no file under `sidecar/` or `node_modules/` appears, and that every file for
+   which `needsFreshModuleGraph` (from `gui/vitest-project-partition.ts`) is
+   true has `projectName` `fresh-modules`. Nothing in the gate checks this. A
+   change in how vitest merges a project's `include` / `exclude` with the root
+   config under `extends: true` would surface only as order-dependent flakes,
+   or as files silently dropped from both projects.
+2. **Order independence.** Run the suite in default order, with five
+   `--sequence.shuffle.files` seeds, with `maxForks=1` plus shuffling (maximal
+   sharing), and with `DF_VERIFY_ROLE` unset. Any order-dependent failure is a
+   real cross-file leak: fix it at its source, never by weakening the routing
+   rule.
