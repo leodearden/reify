@@ -937,6 +937,40 @@ mod tests {
         assert_no_unguarded_temp_dir_sites(&file.display().to_string());
     }
 
+    /// The relative path exists ONLY in the fixture tree, so returning without
+    /// a panic proves the fixture, not the compile-time tree, was read.
+    #[test]
+    fn anuts_reads_the_runtime_workspace_tree_child() {
+        crate::workspace_root::reexec::in_child(|_root| {
+            assert_no_unguarded_temp_dir_sites("crates/consumer/src/only_in_fixture.rs");
+        });
+    }
+
+    /// Re-execs with the runtime `CARGO_MANIFEST_DIR` inside a fixture tree:
+    /// in a normal build the compile-time and runtime trees coincide, so only
+    /// a different runtime tree can tell them apart.
+    #[test]
+    fn anuts_reads_the_runtime_workspace_tree() {
+        use crate::workspace_root::reexec::{
+            FIXTURE_CONSUMER, Launch, fixture_workspace, run_child,
+        };
+
+        let fixture = fixture_workspace("temp-dirs-runtime-root-");
+        let src = fixture.path().join(FIXTURE_CONSUMER).join("src");
+        std::fs::create_dir_all(&src).expect("create the fixture consumer's src/");
+        std::fs::write(
+            src.join("only_in_fixture.rs"),
+            "fn t() {\n    let d = 1;\n}\n",
+        )
+        .expect("write the clean fixture source");
+
+        run_child(
+            "temp_dirs::tests::anuts_reads_the_runtime_workspace_tree_child",
+            fixture.path(),
+            Launch::ManifestDirEnv,
+        );
+    }
+
     // ── collect_workspace_unguarded_temp_dirs ────────────────────────────────
     //
     // Mirrors ignore_hygiene's `cwsp_*` tests: a synthetic workspace exercised
