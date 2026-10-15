@@ -2680,6 +2680,15 @@ plan_for_vs_map_append scripts/release-scope-lib.sh
 assert "VS-map-release: plan contains test_verify_*.sh glob literal" \
     plan_has 'tests/infra/test_verify_\*\.sh'
 
+# The attribution and closure home both bash libs above read (task 8662).
+echo ""
+echo "--- Scenario VS-map-attribution: scripts/reify_path_attribution.py changed -> its guarding suites selected ---"
+plan_for_vs_map_append scripts/reify_path_attribution.py
+assert "VS-map-attribution: plan contains tests/infra/test_affected_crates_lib.sh" \
+    plan_has 'tests/infra/test_affected_crates_lib\.sh'
+assert "VS-map-attribution: plan contains test_verify_*.sh glob literal" \
+    plan_has 'tests/infra/test_verify_\*\.sh'
+
 echo ""
 echo "--- Scenario VS-map-cpuadmit: scripts/cpu-admit.sh changed -> test_verify_*.sh selected ---"
 plan_for_vs_map_append scripts/cpu-admit.sh
