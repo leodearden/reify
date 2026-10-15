@@ -84,6 +84,19 @@ describe('listSharedModuleTestFiles', () => {
     ])
   })
 
+  it('leaves dot-directories and names outside *.test.ts(x) to fresh-modules', () => {
+    const guiRoot = makeRoot({
+      'src/__tests__/kept.test.ts': clean,
+      '.cache/x.test.ts': clean,
+      'src/.hidden/y.test.tsx': clean,
+      'src/__tests__/a.spec.ts': clean,
+      'src/__tests__/b.test.js': clean,
+      'src/__tests__/c.test.mts': clean,
+    })
+
+    expect(listSharedModuleTestFiles(guiRoot)).toEqual(['src/__tests__/kept.test.ts'])
+  })
+
   it('is empty for an empty root', () => {
     expect(listSharedModuleTestFiles(makeRoot({}))).toEqual([])
   })

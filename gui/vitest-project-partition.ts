@@ -7,7 +7,7 @@ import { join, relative, sep } from 'node:path'
 // Rationale and test-author rules: docs/notes/gui-vitest-shared-workers.md.
 
 /** A vi call whose effect depends on modules being evaluated after it runs. */
-export const MODULE_REGISTRY_CALL =
+const MODULE_REGISTRY_CALL =
   /\bvi\s*\.\s*(mock|doMock|unmock|doUnmock|resetModules|importMock|importActual)\s*\(/
 
 export function needsFreshModuleGraph(testSource: string): boolean {
