@@ -33,6 +33,7 @@ pub mod tracing_hygiene;
 pub mod tracing_support;
 pub mod value_decompose;
 pub mod values;
+pub mod workspace_root;
 pub mod workspace_sweep;
 
 // Not every module is glob-exported below. These seven are held back
