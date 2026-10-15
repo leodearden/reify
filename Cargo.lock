@@ -4573,9 +4573,12 @@ dependencies = [
  "reify-eval",
  "reify-ir",
  "reify-kernel-conformance",
+ "reify-kernel-fidget",
  "reify-kernel-gmsh",
  "reify-kernel-manifold",
  "reify-kernel-occt",
+ "reify-kernel-openvdb",
+ "strum 0.26.3",
 ]
 
 [[package]]
