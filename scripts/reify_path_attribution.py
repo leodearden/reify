@@ -4,13 +4,15 @@
 workspace global, the crates it seeds, the crates it unions into a closure's
 result (a manifest's crate-DAG gate), whether it is inert (documentation or
 configuration), and which tree it lies in. The facts are independent;
-precedence between them belongs to each consumer. Rules and rationale:
+precedence between them belongs to each consumer. ``compile_closure`` is the
+cargo-accurate compile closure over ``cargo metadata``. Rules and rationale:
 docs/prds/verify-scope-contract.md §3.
 
-CLI, run once per consumer invocation over its whole path list, never once
-per path:
+CLI, run once per consumer invocation over its whole input, never once per
+path:
 
     attribute [--format tsv|json] < paths    one record per input line, in order
+    closure SEED... < metadata.json          affected member names, one per line
 
 Stdlib-only, so the gate's /usr/bin/python3 (no dark-factory venv) runs it,
 including under ``-S``.
@@ -135,6 +137,66 @@ def _tree(path: str) -> Tree:
 _TSV_EMPTY_SET = "-"
 
 
+def compile_closure(metadata: dict, seeds: Iterable[str]) -> frozenset[str]:
+    """The workspace members whose test compilation reaches a seed crate.
+
+    ``metadata`` is ``cargo metadata --format-version 1`` output and seeds are
+    crate NAMES; a name no package carries is skipped. A member's test
+    compilation is the normal/build closure of the member itself plus that of
+    each of its DIRECT dev-deps: cargo does not propagate dev-deps
+    transitively. No try/except: malformed metadata raises, and each caller
+    applies its own error policy.
+    """
+    seed_names = set(seeds)
+
+    members = set(metadata["workspace_members"])
+    id_to_name = {p["id"]: p["name"] for p in metadata["packages"]}
+    name_to_ids: dict[str, list[str]] = {}
+    for p in metadata["packages"]:
+        name_to_ids.setdefault(p["name"], []).append(p["id"])
+
+    # dep_kinds[].kind: null -> normal, 'build' -> build dep, 'dev' -> dev dep.
+    # They must NOT be conflated: dev-deps of a transitive dep are never
+    # compiled when testing a crate that only has a normal dep on it.
+    adj_normal: dict[str, set[str]] = {}  # null or 'build': compiled transitively
+    adj_dev: dict[str, set[str]] = {}  # 'dev': only the tested crate's DIRECT ones
+    for node in metadata["resolve"]["nodes"]:
+        adj_normal[node["id"]] = set()
+        adj_dev[node["id"]] = set()
+        for d in node["deps"]:
+            kinds = {dk.get("kind") for dk in d.get("dep_kinds", [])}
+            if None in kinds or "build" in kinds:
+                adj_normal[node["id"]].add(d["pkg"])
+            if "dev" in kinds:
+                adj_dev[node["id"]].add(d["pkg"])
+
+    def normal_closure(start: str) -> set[str]:
+        """All packages reachable via normal/build edges only."""
+        visited: set[str] = set()
+        queue = [start]
+        while queue:
+            curr = queue.pop()
+            if curr in visited:
+                continue
+            visited.add(curr)
+            queue.extend(adj_normal.get(curr, []))
+        return visited
+
+    seed_ids: set[str] = set()
+    for sn in seed_names:
+        seed_ids.update(name_to_ids.get(sn, []))
+
+    result = []
+    for pkg_id in members:
+        compiled = normal_closure(pkg_id)
+        for dev_dep_id in adj_dev.get(pkg_id, []):
+            compiled |= normal_closure(dev_dep_id)
+        if compiled & seed_ids:
+            result.append(id_to_name[pkg_id])
+
+    return frozenset(result)
+
+
 def _tsv_crates(crates: frozenset[str]) -> str:
     return ",".join(sorted(crates)) or _TSV_EMPTY_SET
 
@@ -181,6 +243,11 @@ def _write_attributions(
         out.write(record(path, attribute(path)) + "\n")
 
 
+def _write_closure(seeds: Iterable[str], metadata: TextIO, out: TextIO) -> None:
+    for name in sorted(compile_closure(json.load(metadata), seeds)):
+        out.write(name + "\n")
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="reify_path_attribution.py")
     verbs = parser.add_subparsers(dest="verb", required=True)
@@ -190,8 +257,22 @@ def main(argv: Sequence[str] | None = None) -> int:
     attribute_verb.add_argument(
         "--format", choices=sorted(_RECORD_FORMATS), default="tsv"
     )
+    attribute_verb.set_defaults(
+        run=lambda args: _write_attributions(
+            _RECORD_FORMATS[args.format], sys.stdin, sys.stdout
+        )
+    )
+    closure_verb = verbs.add_parser(
+        "closure",
+        help="workspace members whose test compilation reaches a seed, "
+        "over `cargo metadata` JSON on stdin",
+    )
+    closure_verb.add_argument("seeds", nargs="*", metavar="SEED")
+    closure_verb.set_defaults(
+        run=lambda args: _write_closure(args.seeds, sys.stdin, sys.stdout)
+    )
     args = parser.parse_args(argv)
-    _write_attributions(_RECORD_FORMATS[args.format], sys.stdin, sys.stdout)
+    args.run(args)
     return 0
 
 
