@@ -1,0 +1,22 @@
+module getar_match_over_annotated_let_panics
+
+// PRD `docs/prds/v0_6/generic-enum-type-arg-retention.md` — leaf ε RED
+// before-image (defect P-1, annotated-let form). MEASURED 2026-09-29 with
+// target/debug/reify built 2026-09-25 (main 300910857b):
+//   `reify check` EXIT 101, `reify eval` EXIT 101 — same
+//   "unrepresentable cell_type ... TypeParam("T")" panic as
+//   getar_match_over_let_construct_panics.ri; RELEASE build exit 0,
+//   `W.v = 0.005 m` (same debug-only shape, see that fixture's header:
+//   POST probes need REIFY_BIN=target/debug/reify on a rebuilt debug
+//   binary; δ alone closes this file, R5 is exercised by
+//   getar_match_err_first_arm_panics.ri).
+// The annotation does NOT help: a let's cell_type is always the initializer's
+// result type (the annotation is only an expected-type hint), so the
+// annotated let is erased exactly like the bare one. Only a `param` escapes,
+// because a param's cell_type is the declared Applied type.
+// EXPECTED after δ (debug build): `reify check` EXIT 0; `reify eval` prints `W.v = 0.005 m`.
+
+structure def W {
+    let r : Result<Length, String> = Ok { value: 5mm }
+    let v = match r { Ok { value: x } => x, Err { error: e } => 1mm }
+}

@@ -103,6 +103,7 @@ tasks:
       pattern: '"satisfied"'
       paths:
       - gui/src-tauri/src/engine.rs
+      - gui/src-tauri/src/types.rs
       expect: present
   - name: frontend-compares-lowercase
     binding: signal premise (the other half) — StatusBar and ConstraintPanel both switch on
@@ -369,9 +370,11 @@ tasks:
     verdict: PASS
     delivered_check:
       kind: grep
-      pattern: fn tool_defs
+      pattern: fn (tool_defs|debug_tools)
       paths:
       - gui/src-tauri/src/debug_server.rs
+      - gui/src-tauri/src/debug_protocol.rs
+      - gui/src-tauri/src/debug_tools.rs
       expect: present
   - name: both-allowlists-must-be-updated
     binding: anti-mismatch — a new tool must be added to PURE_ENGINE_SIDE and to KNOWN_DEBUG_TOOL_NAMES
@@ -414,6 +417,7 @@ tasks:
       pattern: test:e2e|test:visual|REIFY_DEBUG
       paths:
       - scripts/verify.sh
+      - scripts/reify_verify/
       expect: absent
 - label: ξ
   task_id: 6733

@@ -37,39 +37,21 @@
 #      Fail-closed: no swap on refusal.
 #   2. Symlink-gen staging: build <base_dir>.gen.<N>.partial via
 #      cp -a --reflink=always (fail-closed — P2), rename to <base_dir>.gen.<N>.
-#   2b.Prune superseded hash-generations: within <base_dir>.gen.<N>.partial's
-#      debug/deps, group depth-1 regular files by cargo's hashed-artefact
-#      STEM (stripping a trailing `-<16 hex>` extra-filename suffix) and
-#      rank each stem's HASHES — never its (stem, ext) files independently —
-#      newest-first by the max mtime over every extension that hash has;
-#      keep the newest _PRUNE_KEEP_GENERATIONS (=2) hashes per stem and
-#      delete every file of a losing hash, on every extension it has.
-#      Ranking by hash (not per-extension) keeps a kept "fallback
-#      generation" COMPLETE: rustc writes a hash's .rmeta (pipelining) and
-#      .rlib (end of codegen) at different times, so per-extension ranking
-#      could keep one extension of a hash while pruning another — a
-#      fallback that is only partially present is not a fallback. N=2, not
-#      N=1: N=1 reclaims more but leaves no fallback generation, so a lane
-#      whose fingerprint misses the single survivor rebuilds cold — the
-#      exact cost the warm base exists to avoid. mtime, not .fingerprint:
-#      .fingerprint is a strict superset of deps (cargo GCs neither tree),
-#      so a fingerprint-keyed filter cannot remove anything BY CONSTRUCTION
-#      — do not reinstate that rule. LOAD-BEARING PRECONDITION: mtime is
-#      only a valid ordering signal because nothing stamps artefact mtimes
-#      today (seed-warm-lane.sh's bulk stamp targets sources, not target/;
-#      this script stamps no artefacts either) — if that ever changes,
-#      re-measure the live base's mtime spread before trusting this rule
-#      again. debug/.fingerprint is NOT pruned in lockstep (116 MB against
-#      204 GiB; pruning it restores no liveness signal). Sited BEFORE the
-#      partial→gen rename below, so a failed prune costs only the
-#      .partial, which the EXIT trap already sweeps. Scope: base only
-#      (never a task lane, never _merge-verify); debug/deps only —
-#      release/ and debug/build are untouched. The logged `victim_bytes=`
-#      figure is the victims' APPARENT size, not disk actually reclaimed:
-#      this staging copy is a reflink, so the same extents stay referenced
-#      by the advancing source (and, refreshing over an existing base, by
-#      the retired gen until Step 6's reader-refcount GC) — real reclaim
-#      lags by at least one more refresh-and-reseed cycle plus that GC.
+#   2b.Prune unconsulted units from the staging copy: a depth-1 file of
+#      <base_dir>.gen.<N>.partial's debug/deps whose name, final dot-suffix
+#      stripped, ends in `-<16 lowercase hex>` belongs to that cargo unit
+#      hash. It is deleted iff the hash has a debug/.fingerprint/<pkg>-<hash>
+#      dir AND last_use < anchor - 7 days (_PRUNE_LIVENESS_WINDOW_SECS), where
+#      last_use = max(atime, mtime) over that dir's files (cargo reads them on
+#      every build whose graph holds the unit, and a rebuild rewrites them) and
+#      anchor = the newest last_use in the copied tree that is not in the
+#      future. Skipped, deleting nothing, when debug/deps or debug/.fingerprint
+#      is absent, or when the advancing dir's mount does not maintain atime
+#      (findmnt reports noatime, fails, or prints nothing). Scope: the base's
+#      staging copy only (never a task lane, never _merge-verify), debug
+#      profile only; .fingerprint is never pruned. A failed prune aborts the
+#      refresh before the partial→gen rename.
+#      Executable spec: tests/infra/test_refresh_warm_base.sh Block LIVE.
 #   3. Bootstrap (first refresh): if <base_dir> is a pre-existing real dir,
 #      rename it to a retired gen dir first (never rename-over-populated).
 #   4. Write per-gen authoritative landed-commit stamp: <base_dir>.gen.<N>.basecommit
@@ -403,159 +385,110 @@ if ! cp -a --reflink=always "$ADVANCING_DIR" "$_new_gen_partial"; then
 fi
 ok "Reflink copy complete (gen ${_next_gen})."
 
-# Step 3b: prune superseded cargo hash-generations from the staging copy.
-#
-# Groups depth-1 files under debug/deps by cargo's hashed-artefact STEM
-# (stripping a trailing `-<16 lowercase hex>` extra-filename suffix) and
-# ranks each stem's HASHES — never its (stem, ext) files independently —
-# newest-first by the max mtime over every extension that hash has; keeps
-# the newest _PRUNE_KEEP_GENERATIONS and deletes every file of a losing
-# hash, on every extension it has. Ranking per-hash (not per-extension) is
-# what keeps a kept generation COMPLETE: rustc writes a hash's .rmeta
-# (pipelining) and .rlib (end of codegen) at different times, so ranking
-# each extension independently could keep hash B's .rlib while pruning
-# hash B's .rmeta — a "fallback generation" only partially present, which
-# defeats the point of keeping one. libfoo-<hash>.rlib and
-# libfoo-<hash>.rmeta therefore rise and fall together; a split-debuginfo
-# shard like axum-<hash>.axum.<hash>-cgu.09.rcgu.dwo never matches at all
-# (its stem-before-last-dot does not end in `-<16hex>`) so it is never a
-# candidate. Reclaims the bulk of the warm base's bytes (mostly
-# extensionless test/bench binaries); N=2 rather than N=1 is a deliberate
-# ruling that keeps a fallback generation so a lane whose fingerprint misses
-# the single newest survivor does not rebuild cold — not a tunable, so no CLI
-# flag or env override.
-#
-# Sited on the .partial STAGING dir (never the live base, never the final gen
-# dir) — a failure here is covered for free by the existing EXIT trap's
-# `.gen.*.partial` sweep above, with no new cleanup code needed.
-#
-# The `victim_bytes=` figure logged below is the victims' APPARENT size, not
-# disk actually reclaimed: the staging copy is a reflink of the advancing
-# source, so the same extents stay referenced by the advancing target (and,
-# refreshing over an existing base, by the retired gen until Step 6's
-# reader-refcount GC reaps it) — real reclaim lags by at least one more
-# refresh-and-reseed cycle plus that GC. A still-uplifted cargo hardlink
-# (debug/<bin>, debug/build/<pkg>-<hash>/build-script-build) overstates it
-# further: cp -a preserves hardlinks, so unlinking the deps copy of a file
-# still linked elsewhere frees nothing at all.
-readonly _PRUNE_KEEP_GENERATIONS=2
-# _prune_deps is the ONE place the prune's reach is written (SPOT) — every
-# find/cd/rm below reads only this local, never a second path expression, so
-# the scope of the sweep is a single line to audit.
-_prune_deps="${_new_gen_partial}/debug/deps"
-if [ -d "$_prune_deps" ]; then
-    info "Pruning superseded hash-generations under $_prune_deps (keep newest ${_PRUNE_KEEP_GENERATIONS}) ..."
-    # -maxdepth 1 -type f confines the sweep to regular files directly in
-    # deps/, excluding the nested dir (e.g. deps/rustc*/), its contents, and
-    # any symlink — never descended into, never followed.
-    #
-    # The victim-count/victim-bytes summary crosses from awk back into this
-    # shell via a temp file (never stdout, which xargs below consumes as the
-    # NUL-delimited deletion list) so it can be logged through the real
-    # info() helper — reusing it rather than re-implementing its formatting
-    # a second time inside the awk program (SPOT).
-    _prune_summary_file="$(mktemp)"
-    _PRUNE_SUMMARY_FILE="$_prune_summary_file"  # let the EXIT trap reclaim it on a mid-prune failure
-    # The total order (mtime desc, then hash string desc as an explicit
-    # tiebreak) is expressed ONCE, in the hash_newer() comparator below, and
-    # is applied per HASH rather than per file — the one normative ranking
-    # for the whole stage (SPOT). No shell `sort` stage feeds this: ranking
-    # is keyed on hash, not on incoming line order, so pre-sorting the raw
-    # `find` stream would establish an order this program never reads.
-    find "$_prune_deps" -maxdepth 1 -type f -printf '%T@\t%s\t%f\n' \
-        | awk -F'\t' -v keep="$_PRUNE_KEEP_GENERATIONS" -v summary_file="$_prune_summary_file" '
-            function hash_newer(mt_a, h_a, mt_b, h_b) {
-                # True when (mt_a, h_a) ranks strictly ahead of (mt_b, h_b):
-                # mtime desc, then hash string desc as an explicit tiebreak.
-                # Numeric mtime compare (never lexical: %T@ carries
-                # sub-second precision, so "...9" must not sort before
-                # "...10"). The hash alphabet is fixed to [0-9a-f] by the
-                # grammar match below, so the string tiebreak is stable
-                # across locales without needing LC_ALL here.
-                if (mt_a != mt_b) return mt_a > mt_b
-                return h_a > h_b
-            }
-            BEGIN { ORS = "\0" }
-            {
-                fmtime = $1 + 0
-                fsize  = $2
-                fname  = $3
-                # Split on the FINAL dot only (last dot, never the first,
-                # never a greedy multi-dot extension): ext = ".<suffix>"
-                # when fname contains a dot, else "". This is the one
-                # normative copy of the hashed-artefact grammar (SPOT) —
-                # the stem must match ^(.+)-<16 lowercase hex>$ exactly,
-                # anchored both ends, so a short/long/uppercase pseudo-hash
-                # never matches. The hash is spelled out as 16 repeated
-                # [0-9a-f] classes rather than a {16} interval expression:
-                # interval expressions are unsupported by mawk < 1.3.4 and
-                # busybox awk, under which {16} is literal text, no
-                # filename would ever match, and this whole stage would
-                # silently become a no-op (files=0) — no error, no failing
-                # assertion, just a quietly disabled mechanism.
-                base_no_ext = fname
-                sub(/\.[^.]*$/, "", base_no_ext)
-                ext = substr(fname, length(base_no_ext) + 1)
-                if (base_no_ext !~ /^.+-[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]$/) next
-                stem = substr(base_no_ext, 1, length(base_no_ext) - 17)
-                hash = substr(base_no_ext, length(base_no_ext) - 15)
+# Step 3b: prune unconsulted units from the staging copy (header item 2b).
+readonly _PRUNE_LIVENESS_WINDOW_SECS=$(( 7 * 24 * 3600 ))
 
-                n++
-                rec_stem[n] = stem
-                rec_hash[n] = hash
-                rec_name[n] = fname
-                rec_size[n] = fsize
+# _mount_tracks_atime <path>: does the mount holding <path> maintain atime? The
+# option list is parsed once, here, on the exact token: nodiratime is not noatime,
+# and findmnt failing or printing nothing is "unknown", which counts as no.
+_mount_tracks_atime() {
+    local opts
+    opts="$(findmnt -n -o OPTIONS -T "$1" 2>/dev/null)" || return 1
+    [ -n "$opts" ] || return 1
+    case ",$opts," in *,noatime,*) return 1 ;; esac
+    return 0
+}
 
-                # Rank by HASH, not by (stem, ext) independently — see the
-                # comment above this pipeline for why. The rank key for a
-                # hash is the MAX mtime over every file of that hash,
-                # regardless of extension, so a losing hash loses on every
-                # extension it has, together.
-                hkey = stem SUBSEP hash
-                if (!(hkey in hash_mtime) || fmtime > hash_mtime[hkey]) hash_mtime[hkey] = fmtime
-                if (!((stem, hash) in stem_hash_seen)) {
-                    stem_hash_seen[stem, hash] = 1
-                    stem_hash_count[stem]++
-                    stem_hash_list[stem, stem_hash_count[stem]] = hash
-                }
+# _select_unconsulted_victims <fingerprint_dir> <deps_dir> <summary_file>
+# The liveness policy of header item 2b. stdout: the NUL-delimited names of the
+# <deps_dir> files to delete. <summary_file>: "files=N victim_bytes=N" for exactly
+# those files. stdout carries the list, so the summary crosses back through the
+# file; the caller logs it through the real info() rather than awk
+# re-implementing its formatting (SPOT).
+_select_unconsulted_victims() {
+    local fp="$1" deps="$2" summary="$3"
+    { find "$fp" -mindepth 2 -maxdepth 2 -type f -printf 'F\t%A@\t%T@\t%P\n'
+      find "$deps" -maxdepth 1 -type f -printf 'D\t%s\t%f\n'
+    } | awk -F'\t' -v window="$_PRUNE_LIVENESS_WINDOW_SECS" -v now="$(date +%s)" -v summary_file="$summary" '
+        BEGIN {
+            # The ONE copy of the unit-hash grammar: <stem>-<16 lowercase hex>.
+            # Spelled out as repeated [0-9a-f] classes, not {16}: mawk < 1.3.4 and
+            # busybox awk lack interval expressions, under which {16} matches
+            # nothing and this whole stage would silently become a no-op.
+            hash_len = 16
+            hash_re = "^.+-"
+            for (i = 0; i < hash_len; i++) hash_re = hash_re "[0-9a-f]"
+            hash_re = hash_re "$"
+            anchor = 0; n = 0; files = 0; bytes = 0
+        }
+        function unit_hash(stem) {
+            return (stem ~ hash_re) ? substr(stem, length(stem) - hash_len + 1) : ""
+        }
+        # F: one file of a unit dir. last_use[hash] is the newest atime-or-mtime seen.
+        $1 == "F" {
+            split($4, parts, "/")
+            h = unit_hash(parts[1])
+            if (h == "") next
+            atime = $2 + 0; mtime = $3 + 0
+            t = (atime > mtime) ? atime : mtime
+            if (!(h in last_use) || t > last_use[h]) last_use[h] = t
+            # A future-dated consult still counts for its own unit but must not
+            # become the anchor, or every live unit would age out against it.
+            if (t <= now && t > anchor) anchor = t
+            next
+        }
+        # D: one depth-1 deps file. Strip only the FINAL dot-suffix, so
+        # reify_ast-<h> and reify_ast-<h>.d resolve to the same hash.
+        $1 == "D" {
+            stem = $3
+            sub(/\.[^.]*$/, "", stem)
+            h = unit_hash(stem)
+            if (h == "") next
+            n++
+            cand_name[n] = $3; cand_size[n] = $2; cand_hash[n] = h
+        }
+        END {
+            cutoff = anchor - window
+            for (i = 1; i <= n; i++) {
+                h = cand_hash[i]
+                if (!(h in last_use) || last_use[h] >= cutoff) continue
+                # NUL via %c: ORS="\0" is dropped by busybox awk, %c 0 is not.
+                printf "%s%c", cand_name[i], 0
+                files++
+                bytes += cand_size[i]
             }
-            END {
-                # Per stem, rank its distinct hashes with hash_newer() and
-                # keep the newest `keep`. cargo hash-generation counts per
-                # unit are small (mean ~1.9, max ~30 measured on the live
-                # warm base), so a plain insertion sort is plenty — no
-                # gawk-only asort()/asorti() needed.
-                for (stem in stem_hash_count) {
-                    cnt = stem_hash_count[stem]
-                    for (i = 1; i <= cnt; i++) order[i] = stem_hash_list[stem, i]
-                    for (i = 2; i <= cnt; i++) {
-                        v = order[i]
-                        j = i - 1
-                        while (j >= 1 && hash_newer(hash_mtime[stem, v], v, hash_mtime[stem, order[j]], order[j])) {
-                            order[j + 1] = order[j]
-                            j--
-                        }
-                        order[j + 1] = v
-                    }
-                    for (i = 1; i <= cnt && i <= keep; i++) kept[stem, order[i]] = 1
-                }
-                total_files = 0
-                total_bytes = 0
-                for (i = 1; i <= n; i++) {
-                    if ((rec_stem[i], rec_hash[i]) in kept) continue
-                    print rec_name[i]
-                    total_files++
-                    total_bytes += rec_size[i]
-                }
-                printf "files=%d victim_bytes=%d\n", total_files, total_bytes > summary_file
-            }
-        ' \
-        | (cd "$_prune_deps" && xargs -r -0 rm -f --)
-    info "prune deps=$_prune_deps $(cat "$_prune_summary_file") (apparent victim size — real reclaim lags until the advancing source is reseeded and Step 6 reaps the retired gen)"
-    rm -f "$_prune_summary_file"
-else
-    info "No debug/deps under staging copy — skipping hash-generation prune (files=0)."
-fi
+            printf "files=%d victim_bytes=%.0f\n", files, bytes > summary_file
+        }
+    '
+}
+
+# _prune_unconsulted_units <profile_dir> <atime_probe_path>
+# <atime_probe_path> is the advancing target dir, the tree cargo's fingerprint
+# reads went through: the liveness evidence is only as good as its mount's atime.
+_prune_unconsulted_units() {
+    local deps="$1/deps" fp="$1/.fingerprint" summary
+    if [ ! -d "$deps" ]; then
+        info "No deps dir under $1 — skipping liveness prune (files=0)."
+        return 0
+    fi
+    if [ ! -d "$fp" ]; then
+        info "No .fingerprint under $1 — no liveness evidence; skipping liveness prune (files=0)."
+        return 0
+    fi
+    _mount_tracks_atime "$2" || {
+        info "Mount of $2 does not maintain atime (noatime, or findmnt unavailable or empty) — no liveness evidence; skipping liveness prune (files=0)."
+        return 0
+    }
+    summary="$(mktemp)"
+    _PRUNE_SUMMARY_FILE="$summary"  # let the EXIT trap reclaim it on a mid-prune failure
+    _select_unconsulted_victims "$fp" "$deps" "$summary" | (cd "$deps" && xargs -r -0 rm -f --)
+    info "prune deps=$deps $(cat "$summary") (apparent victim size — real reclaim lags until the advancing source drops the same extents)"
+    rm -f "$summary"
+    _PRUNE_SUMMARY_FILE=""
+}
+
+# Called plainly: an `if` or `||` around it would disable `set -e` inside it.
+_prune_unconsulted_units "${_new_gen_partial}/debug" "$ADVANCING_DIR"
 
 # Step 4: rename staging dir to the final gen dir (dir→new-name rename, safe).
 info "Finalizing: $_new_gen_partial -> $_new_gen_dir"

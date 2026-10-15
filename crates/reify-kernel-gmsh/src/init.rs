@@ -185,20 +185,14 @@ pub fn ensure_initialized() {
 /// [`crate::log_capture::annotated`]'s pass-through path. The read is on the
 /// failure path only — the success path returns before reaching it.
 ///
-/// Three of this function's four callers sit in exactly that position today,
-/// and the asymmetry is easier to miss from their side than from here. Only
-/// [`crate::kernel_real::GmshKernel::mesh_to_volume`] arms a
-/// [`crate::log_capture::LogCapture`], so a failure reached through
+/// None of this function's four callers is in that position. Each of
+/// [`crate::kernel_real::GmshKernel::mesh_to_volume`],
 /// `refine_volume::refine_volume_with_size_field`,
-/// `mesh_boundary::mesh_surface_to_volume_with_attribution` or
-/// `mesh_profile_2d::mesh_plane_2d` still reports nothing beyond the
-/// last-error line — and each of those silences `"General.Terminal"` just as
-/// `mesh_to_volume` does, which is precisely what leaves the capture as the
-/// only route to gmsh's diagnosis there too. Each is one
-/// `LogCapture::armed(&_guard)` after its own `"General.Terminal"` write away
-/// from parity; all three already hold the [`GmshGuard`] that call asks for.
-/// Left undone because those three files are outside task #6969's scope, not
-/// because arming them was judged wrong.
+/// `mesh_boundary::mesh_surface_to_volume_with_attribution` and
+/// `mesh_profile_2d::mesh_plane_2d` arms one
+/// [`crate::log_capture::LogCapture`] right after its own
+/// `"General.Terminal"` write. So every failure reaching this wrapper is
+/// annotated here, once, and none of those callers' seams spans this call.
 pub(crate) fn mesh_generate_with_recovery(
     _guard: &GmshGuard,
     dim: i32,

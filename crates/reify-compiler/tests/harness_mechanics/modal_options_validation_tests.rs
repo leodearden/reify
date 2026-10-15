@@ -137,6 +137,13 @@ fn judges_rayleigh_ctor_arg(d: &Diagnostic) -> bool {
             .any(|p| ctor_diagnostic_names_arg(&d.message, p))
 }
 
+/// True when `d` is a ctor-conformance diagnostic naming `ModalOptions`'
+/// `shift_frequency` slot — the [`judges_rayleigh_ctor_arg`] narrowing, for the
+/// same reasons.
+fn judges_shift_frequency_ctor_arg(d: &Diagnostic) -> bool {
+    is_ctor_conformance_code(d.code) && ctor_diagnostic_names_arg(&d.message, "shift_frequency")
+}
+
 // ─── step-1: module loads with zero error diagnostics ────────────────────────
 
 /// The std/modal/analysis module must load through the production stdlib path
@@ -900,7 +907,8 @@ fn modal_result_struct_has_correct_param_shape() {
 ///                                                        → `List<TraitObject>`)
 ///   - `damping             : DampingDescriptor`         (trait-typed
 ///                                                        → `Type::TraitObject`)
-///   - `sigma               : Real`                       (spectral shift origin)
+///   - `shift_frequency     : Frequency`                  (Hz; the trampoline
+///                                                        shifts to λ = (2π·f)²)
 ///   - `tol                 : Real`                       (convergence tolerance)
 ///   - `max_iters           : Int`                        (Lanczos iteration cap)
 ///   - `reference_direction  : Vector3<Dimensionless>`     (unit excitation
@@ -942,7 +950,7 @@ fn modal_options_struct_has_correct_param_shape() {
         params.len(),
         8,
         "ModalOptions should have exactly 8 param cells (n_modes, \
-         boundary_conditions, damping, sigma, tol, max_iters, \
+         boundary_conditions, damping, shift_frequency, tol, max_iters, \
          reference_direction, element_order), got: {:?}",
         names
     );
@@ -958,7 +966,12 @@ fn modal_options_struct_has_correct_param_shape() {
             "damping",
             Type::TraitObject("DampingDescriptor".to_string()),
         ),
-        ("sigma", Type::dimensionless_scalar()),
+        (
+            "shift_frequency",
+            Type::Scalar {
+                dimension: DimensionVector::FREQUENCY,
+            },
+        ),
         ("tol", Type::dimensionless_scalar()),
         ("max_iters", Type::Int),
         (
@@ -975,8 +988,8 @@ fn modal_options_struct_has_correct_param_shape() {
     assert_eq!(
         names, expected_names,
         "ModalOptions params must be declared in canonical order \
-         (n_modes, boundary_conditions, damping, sigma, tol, max_iters, \
-         reference_direction, element_order); got: {:?}",
+         (n_modes, boundary_conditions, damping, shift_frequency, tol, \
+         max_iters, reference_direction, element_order); got: {:?}",
         names
     );
 
@@ -1000,7 +1013,9 @@ fn modal_options_struct_has_correct_param_shape() {
 ///
 ///   - `n_modes   = 10`           (mirrors `BucklingOptions.n_modes`; the
 ///                                "first few modes" inspection workflow)
-///   - `sigma     = 0.0`          (smallest-|λ| / lowest-frequency cluster)
+///   - `shift_frequency = 0Hz`    (σ = 0: smallest-|λ| / lowest-frequency
+///                                cluster; a dimensioned FREQUENCY literal,
+///                                never a bare `Real`)
 ///   - `tol       = 0.000000001`  (= 1e-9; decimal literal because Reify's
 ///                                number grammar has no scientific notation —
 ///                                strict-equality discipline per
@@ -1030,14 +1045,25 @@ fn modal_options_param_defaults_match_spec() {
         ),
     }
 
-    // sigma = 0.0 (strict equality; IEEE-754 round-to-nearest deterministic)
-    let sigma_default = require_default(template, "sigma");
-    match &sigma_default.kind {
-        CompiledExprKind::Literal(Value::Real(v)) => {
-            assert_eq!(*v, 0.0, "sigma default should be exactly 0.0, got: {}", v)
-        }
+    // shift_frequency = 0Hz (strict equality on the SI magnitude AND dimension)
+    let shift_default = require_default(template, "shift_frequency");
+    match &shift_default.kind {
+        CompiledExprKind::Literal(Value::Scalar {
+            si_value,
+            dimension,
+        }) => assert_eq!(
+            (*si_value, *dimension),
+            (0.0, DimensionVector::FREQUENCY),
+            "shift_frequency default should be exactly 0Hz"
+        ),
+        CompiledExprKind::Literal(Value::Real(r)) => panic!(
+            "shift_frequency default is a BARE Real({}) — it must be the \
+             dimensioned FREQUENCY literal `0Hz`",
+            r
+        ),
         other => panic!(
-            "sigma default should be Literal(Value::Real(0.0)), got: {:?}",
+            "shift_frequency default should be Literal(Value::Scalar {{ 0.0, \
+             FREQUENCY }}), got: {:?}",
             other
         ),
     }
@@ -1114,10 +1140,10 @@ fn modal_options_param_defaults_match_spec() {
 /// eval test would duplicate that generic coverage without adding signal.
 ///
 /// Explicitly NOT constrained (regression-gated by the tight count==3):
-///   - `sigma`               : any spectral shift is physically valid (the
-///                              negative side of the spectrum is meaningful);
-///                              `sigma >= 0` would wrongly forbid it. Mirrors
-///                              the `BucklingOptions.sigma` discipline.
+///   - `shift_frequency`     : the trampoline squares it (λ = (2π·f)²), so a
+///                              negative value selects the same λ as its
+///                              magnitude; a `>= 0Hz` constraint would add a
+///                              failure mode with no physical content.
 ///   - `reference_direction` : the `norm() > 0` invariant is a method-call on
 ///                              Vector3, NOT a scalar predicate, so it is not
 ///                              expressible in Reify's `constraint` grammar.
@@ -1137,14 +1163,15 @@ fn modal_options_constrains_positivity_invariants() {
     let template = find_structure("ModalOptions");
 
     // Tight count: exactly 3 constraints. A weaker `>= 3` would let a bogus
-    // 4th constraint (e.g., an accidental `constraint sigma >= 0` that would
-    // silently exclude negative-side-of-spectrum shifts) pass. The .ri file's
-    // "explicitly NOT constrained" note is enforced here as a regression gate.
+    // 4th constraint (e.g., an accidental `constraint shift_frequency >= 0Hz`,
+    // a failure mode with no physical content since the conversion squares the
+    // value) pass. The .ri file's "explicitly NOT constrained" note is enforced
+    // here as a regression gate.
     assert_eq!(
         template.constraints.len(),
         3,
         "ModalOptions should declare exactly 3 constraints \
-         (n_modes > 0, tol > 0, max_iters > 0); sigma / damping / \
+         (n_modes > 0, tol > 0, max_iters > 0); shift_frequency / damping / \
          boundary_conditions / reference_direction are explicitly NOT \
          constrained per the .ri file. Got {} constraints: {:?}",
         template.constraints.len(),
@@ -1190,6 +1217,91 @@ fn modal_options_constrains_positivity_invariants() {
                 .collect::<Vec<_>>()
         );
     }
+}
+
+// ─── task-6097: shift_frequency is a dimension-checked Frequency slot ────────
+
+/// Compile one structure holding a FULL `ModalOptions` ctor whose shift arg is
+/// `shift_arg` (label and value, e.g. `"shift_frequency: 100Hz"`).
+fn compile_modal_options_with_shift(shift_arg: &str) -> CompiledModule {
+    compile_source_with_stdlib(&format!(
+        r#"
+structure ShiftFrequencyCtorProbe {{
+    let opts = ModalOptions(
+        n_modes: 2,
+        boundary_conditions: [FixedSupport(target: "x_min")],
+        damping: NoDamping(),
+        {shift_arg},
+        tol: 0.000000001,
+        max_iters: 200,
+        reference_direction: vec3(0.0, 0.0, 1.0),
+        element_order: ElementOrder.P1
+    )
+}}
+"#
+    ))
+}
+
+/// Task #6097 retyped `ModalOptions.sigma : Real` (λ-space) to
+/// `shift_frequency : Frequency` (Hz). Mirrors the task-6093 RayleighDamping
+/// pin [`bare_real_rayleigh_ctor_arg_emits_arg_type_mismatch`], plus the
+/// migration safety net for callers still spelling the old label:
+///
+///   (i)   a bare `100.0` is not a frequency → exactly one ArgTypeMismatch;
+///   (ii)  `100Hz` is accepted → no ctor-conformance diagnostic at ANY severity
+///         (`examples_smoke` gates the migrated corpus at any severity);
+///   (iii) the legacy `sigma:` label is diagnosed as CtorUnknownField, named
+///         QUOTED (see `misspelled_ctor_label_is_diagnosed_but_still_leniently_appended`
+///         for why a bare `contains("sigma")` is the wrong narrowing).
+#[test]
+fn shift_frequency_ctor_arg_is_dimension_checked() {
+    let bare = compile_modal_options_with_shift("shift_frequency: 100.0");
+    let mismatches: Vec<&str> = bare
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.code == Some(DiagnosticCode::ArgTypeMismatch) && judges_shift_frequency_ctor_arg(d)
+        })
+        .map(|d| d.message.as_str())
+        .collect();
+    assert_eq!(
+        mismatches.len(),
+        1,
+        "a bare dimensionless literal at the Frequency slot must raise exactly \
+         one ArgTypeMismatch naming `shift_frequency`; got {:?} out of module \
+         diagnostics {:#?}",
+        mismatches,
+        bare.diagnostics
+    );
+
+    let migrated = compile_modal_options_with_shift("shift_frequency: 100Hz");
+    let migrated_judged: Vec<&Diagnostic> = migrated
+        .diagnostics
+        .iter()
+        .filter(|d| judges_shift_frequency_ctor_arg(d))
+        .collect();
+    assert!(
+        migrated_judged.is_empty(),
+        "the unit-literal form must be accepted — no ctor-conformance diagnostic \
+         at ANY severity may name `shift_frequency`; got: {:#?}",
+        migrated_judged
+    );
+
+    let legacy = compile_modal_options_with_shift("sigma: 0.0");
+    let names_legacy_label = |m: &str| m.contains("'sigma'") || m.contains("`sigma`");
+    let unknown_field: Vec<&Diagnostic> = legacy
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.code == Some(DiagnosticCode::CtorUnknownField) && names_legacy_label(&d.message)
+        })
+        .collect();
+    assert!(
+        !unknown_field.is_empty(),
+        "a caller still spelling the pre-#6097 `sigma:` label must be told so \
+         with a CtorUnknownField naming it; got module diagnostics {:#?}",
+        legacy.diagnostics
+    );
 }
 
 // ─── η additions: ForcingFunction family ─────────────────────────────────────

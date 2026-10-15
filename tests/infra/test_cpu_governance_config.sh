@@ -3,8 +3,7 @@
 # Validates the cpu_governance block config contract in dark-factory-orchestrator.yaml:
 #   (A) STRUCTURE — top-level 'cpu_governance' key exists; values match the
 #       canonical shape (weights.task==100, weights.merge==300,
-#       agent_admit.threshold==50, agent_admit enabled, DF_AGENT_CPU_GOVERN
-#       present).
+#       agent_admit.threshold==50, agent_admit enabled).
 #   (A2) VALUE DRIFT — YAML default values MATCH the :-fallback defaults in the
 #       owning scripts, so a numeric drift (e.g. YAML says 200, script still
 #       defaults to 100) is caught.  Checked:
@@ -18,8 +17,8 @@
 #         REIFY_CPU_GOVERN_W_TASK   — scripts/cpu-governed-exec.sh
 #         REIFY_CPU_GOVERN_W_MERGE  — scripts/cpu-governed-exec.sh
 #         REIFY_CPU_ADMIT_AGENT_THRESHOLD — scripts/agent-bin/cargo
-#       NOT grep-checked: DF_AGENT_CPU_GOVERN (dark-factory consumed; no reify
-#       script reads it).
+#       NOT grep-checked: enabled / exec_path / shim_dir (dark-factory
+#       CpuGovernConfig fields; no reify script reads them).
 #   (C) CENSUS IGNORE-LIST STALENESS — every config_key_census.ignore entry
 #       must still fnmatch.fnmatchcase-match >=1 dotted path flattened from the
 #       WHOLE dark-factory-orchestrator.yaml tree. This mirrors dark-factory
@@ -36,8 +35,15 @@
 #       or holds a non-string entry, so the staleness check above — which
 #       stays silently green on zero entries — cannot degrade into a no-op if
 #       the block is ever deleted or emptied.
+#   (D) LIVENESS CONSISTENCY — the block cannot read ON while dark-factory
+#       governs nothing: `enabled` truthy requires an `exec_path` that resolves
+#       (against the repo root, as dark-factory resolves it against a worktree)
+#       to an executable, because an empty/unresolvable exec_path makes
+#       CpuGovernConfig skip governance silently (fail-open). And no
+#       DF_AGENT_CPU_GOVERN key: dark-factory never read it, and its presence
+#       is what made the block look wired while it was inert.
 #
-# (A), (A2), and (C) are SKIPPED if python3 + PyYAML are unavailable (mirrors
+# (A), (A2), (C) and (D) are SKIPPED if python3 + PyYAML are unavailable (mirrors
 #     the tomllib SKIP idiom in test_cargo_incremental_lane_decision.sh:25).
 # (B) always runs — plain bash grep, no python needed.
 
@@ -88,7 +94,7 @@ Checks (no <script_path>):
   weights_merge_300        — cpu_governance.weights.merge == 300
   agent_admit_threshold_50 — cpu_governance.agent_admit.threshold == 50
   agent_admit_enabled      — cpu_governance.agent_admit.enabled is truthy
-  df_agent_cpu_govern_present — 'DF_AGENT_CPU_GOVERN' key present in block
+  df_agent_cpu_govern_absent — no 'DF_AGENT_CPU_GOVERN' key in the block
   census_ignore_entries_resolve — every config_key_census.ignore entry still
                                    fnmatch.fnmatchcase-matches >=1 dotted path
                                    in a deliberately over-broad flatten of the
@@ -101,13 +107,16 @@ Checks (no <script_path>):
                                     check: catches an absent/emptied/malformed
                                     block, which the staleness check above
                                     stays silent on by design)
+Checks (with <repo_root>):
+  enabled_implies_exec_path — enabled truthy => exec_path names an executable
+                              file (relative paths resolved against <repo_root>)
 Checks (with <script_path> — value-drift cross-check):
   w_task_yaml_vs_lib_cgroup       — YAML weights.task == lib_cgroup.sh :-fallback
   w_merge_yaml_vs_lib_cgroup      — YAML weights.merge == lib_cgroup.sh :-fallback
   threshold_yaml_vs_agent_cargo   — YAML agent_admit.threshold == agent-bin/cargo :-fallback
 Exit 0 on pass, 1 on fail.
 """
-import sys, yaml, re, fnmatch
+import os, sys, yaml, re, fnmatch
 
 orch_yaml_path = sys.argv[1]
 check = sys.argv[2]
@@ -186,8 +195,29 @@ if check == "agent_admit_threshold_50":
 if check == "agent_admit_enabled":
     sys.exit(0 if cg.get("agent_admit", {}).get("enabled") else 1)
 
-if check == "df_agent_cpu_govern_present":
-    sys.exit(0 if "DF_AGENT_CPU_GOVERN" in cg else 1)
+if check == "df_agent_cpu_govern_absent":
+    if "DF_AGENT_CPU_GOVERN" in cg:
+        print("cpu_governance.DF_AGENT_CPU_GOVERN is not a dark-factory field: "
+              "dark-factory reads only enabled/exec_path/shim_dir, so this key "
+              "governs nothing while making the block look wired", file=sys.stderr)
+        sys.exit(1)
+    sys.exit(0)
+
+if check == "enabled_implies_exec_path":
+    if not cg.get("enabled"):
+        sys.exit(0)
+    exec_path = cg.get("exec_path") or ""
+    if not exec_path:
+        print("cpu_governance.enabled is true but exec_path is unset: dark-factory "
+              "skips governance fail-open, so nothing is governed", file=sys.stderr)
+        sys.exit(1)
+    resolved = exec_path if os.path.isabs(exec_path) else os.path.join(sys.argv[3], exec_path)
+    if not (os.path.isfile(resolved) and os.access(resolved, os.X_OK)):
+        print(f"cpu_governance.enabled is true but exec_path {exec_path!r} does not "
+              f"resolve to an executable file ({resolved}): dark-factory skips "
+              "governance fail-open", file=sys.stderr)
+        sys.exit(1)
+    sys.exit(0)
 
 # Value-drift checks: require sys.argv[3] = path to owning bash script.
 if check == "w_task_yaml_vs_lib_cgroup":
@@ -254,8 +284,11 @@ PYEOF
     assert "cpu_governance.agent_admit.enabled is truthy" \
         python3 "$_PARSE_PY" "$ORCH_YAML" agent_admit_enabled
 
-    assert "cpu_governance block contains DF_AGENT_CPU_GOVERN key" \
-        python3 "$_PARSE_PY" "$ORCH_YAML" df_agent_cpu_govern_present
+    assert "cpu_governance block has no DF_AGENT_CPU_GOVERN key" \
+        python3 "$_PARSE_PY" "$ORCH_YAML" df_agent_cpu_govern_absent
+
+    assert "cpu_governance.enabled implies an executable exec_path" \
+        python3 "$_PARSE_PY" "$ORCH_YAML" enabled_implies_exec_path "$REPO_ROOT"
 
     # (A2) VALUE DRIFT — YAML default values MUST match the :-fallback defaults
     # in the owning scripts.  Catches the case where YAML is updated (e.g.
@@ -397,6 +430,43 @@ PYEOF
 
     assert "non-string-entry failure names the strings requirement" \
         bash -c "python3 '$_PARSE_PY' '$_CENSUS_NONSTRING_FIXTURE' census_ignore_is_nonempty_list 2>&1 | grep -q 'must be strings'"
+
+    # -----------------------------------------------------------------------
+    # (D) LIVENESS CONSISTENCY — fixtures for the two (A) checks above that
+    # keep the block from reading ON while dark-factory governs nothing.
+    # -----------------------------------------------------------------------
+    echo "--- (D) liveness consistency ---"
+
+    _mutate_fixture 'd.setdefault("cpu_governance", {})["DF_AGENT_CPU_GOVERN"] = 1'
+    _GOV_DEAD_KEY_FIXTURE="$_LAST_FIXTURE"
+
+    assert "absent-key check FAILS when DF_AGENT_CPU_GOVERN is reintroduced" \
+        bash -c "! python3 '$_PARSE_PY' '$_GOV_DEAD_KEY_FIXTURE' df_agent_cpu_govern_absent"
+
+    _mutate_fixture 'cg = d.setdefault("cpu_governance", {}); cg["enabled"] = True; cg.pop("exec_path", None)'
+    _GOV_ON_NO_EXEC_FIXTURE="$_LAST_FIXTURE"
+
+    assert "liveness check FAILS when enabled is true and exec_path is unset" \
+        bash -c "! python3 '$_PARSE_PY' '$_GOV_ON_NO_EXEC_FIXTURE' enabled_implies_exec_path '$REPO_ROOT'"
+
+    assert "unset-exec_path failure says exec_path is unset" \
+        bash -c "python3 '$_PARSE_PY' '$_GOV_ON_NO_EXEC_FIXTURE' enabled_implies_exec_path '$REPO_ROOT' 2>&1 | grep -q 'exec_path is unset'"
+
+    _mutate_fixture 'cg = d.setdefault("cpu_governance", {}); cg["enabled"] = True; cg["exec_path"] = "scripts/__no_such_governor__.sh"'
+    _GOV_ON_BAD_EXEC_FIXTURE="$_LAST_FIXTURE"
+
+    assert "liveness check FAILS when exec_path does not resolve to an executable" \
+        bash -c "! python3 '$_PARSE_PY' '$_GOV_ON_BAD_EXEC_FIXTURE' enabled_implies_exec_path '$REPO_ROOT'"
+
+    assert "unresolvable-exec_path failure names the configured path" \
+        bash -c "python3 '$_PARSE_PY' '$_GOV_ON_BAD_EXEC_FIXTURE' enabled_implies_exec_path '$REPO_ROOT' 2>&1 | grep -q '__no_such_governor__'"
+
+    # Positive control: the check is not vacuously red for enabled=true.
+    _mutate_fixture 'cg = d.setdefault("cpu_governance", {}); cg["enabled"] = True; cg["exec_path"] = "scripts/cpu-governed-exec.sh"'
+    _GOV_ON_WIRED_FIXTURE="$_LAST_FIXTURE"
+
+    assert "liveness check PASSES when enabled is true and exec_path is the real governor" \
+        python3 "$_PARSE_PY" "$_GOV_ON_WIRED_FIXTURE" enabled_implies_exec_path "$REPO_ROOT"
 
 fi
 

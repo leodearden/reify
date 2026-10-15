@@ -35,40 +35,55 @@ use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use xxhash_rust::xxh3::xxh3_128;
 
-/// Contributor paths relative to `CARGO_MANIFEST_DIR` (i.e. `crates/reify-eval/`).
-/// Each entry is either a single file or a directory to walk recursively.
-/// Directories are walked by [`walk_contributor`] (entries sorted by file name
-/// for byte-determinism across platforms).
+/// Every workspace path crate in reify-eval's dependency closure, and whether
+/// its sources contribute to `ENGINE_VERSION_HASH`. Rows are sorted by crate
+/// name; [`contributor_paths`] flattens the [`Coverage::Hashed`] rows in that
+/// order into the hash input.
 ///
-/// # Categories
+/// # Hashing boundary
 ///
-/// 1. FEA solver implementation   — crates/reify-solver-elastic (src/ + Cargo.toml)
-/// 2. Meshing pipeline            — crates/reify-kernel-gmsh (src/ + Cargo.toml + build.rs)
-/// 3. Stdlib FEA helpers          — crates/reify-stdlib/src/{fea,loads,supports,analysis}.rs
-/// 4. Per-purpose tolerance impl  — crates/reify-eval/src/tolerance_*.rs,
-///    engine_tolerance.rs, engine_purposes.rs
-/// 5. Transitive-dep version pin  — NOT in this list. Narrowed to reify-eval's
-///    closure pins and handled by `build.rs` directly (see below).
+/// The persistent key already folds the content hash of each evaluated
+/// argument `Value` (`engine_eval.rs` `persistent_cache_key`). What it does not
+/// see is the code that turns those arguments into the persisted payload: the
+/// code that runs inside a persisted target's dispatch (its trampoline and
+/// everything that trampoline calls). That code must be hashed here (PRD:
+/// "Any change capable of affecting result values must contribute").
 ///
-/// # Transitive-dep version pin (formerly category 5 — narrowed, task 5272)
+/// A path crate's Cargo.lock version is a constant `0.1.0`, so the closure pin
+/// below never invalidates on its source change: each one is therefore either
+/// [`Coverage::Hashed`] or excluded for a [`NotHashedBecause`] reason.
+/// `src/engine_hash_tests.rs` enforces a row per path crate, and that a byte
+/// change in each file of its hand-kept `PERSISTED_TARGET_SOURCES` table moves
+/// the hash. A partially hashed crate (reify-eval, reify-stdlib) lists the
+/// files it hashes, so its soundness rests on that table naming every file of
+/// the crate a persisted dispatch runs; an unlisted callee goes undetected.
+///
+/// reify-core and reify-ir are hashed whole although the trampolines reach
+/// only part of them (Value/Diagnostic, arg_acceptance, the sampled-field
+/// helpers), so almost any edit to either flushes the persistent FEA cache.
+/// That trades hit rate for soundness, per the PRD's prefer-over-invalidation
+/// policy; a per-file narrowing would inherit the partial-crate caveat above.
+///
+/// # Transitive-dep version pin (narrowed, task 5272)
 ///
 /// A transitive dependency version bump — e.g. `nalgebra`, `faer`, or
 /// `nalgebra-sparse` — can silently change FEA semantics (different LU pivoting
 /// strategy, different eigensolver tolerances) without altering any source byte
-/// in the crates listed in categories 1-4.  The persistent FEA cache would then
-/// serve stale results across such bumps indefinitely.
+/// listed here.  The persistent FEA cache would then serve stale results across
+/// such bumps indefinitely.
 ///
-/// This used to be captured by listing the WHOLE workspace `Cargo.lock` in this
-/// array (walked byte-for-byte), which over-invalidated the cache on ANY dep
-/// bump anywhere in the ~716-package lockfile — including GUI-only deps like
-/// `tauri` that never affect FEA. That contribution is now NARROWED: `build.rs`
-/// hashes only the resolved `(name, version)` pins of reify-eval's build+normal
-/// (dev-EXCLUDED) transitive closure — the crate NAMES checked in at
-/// `crates/reify-eval/engine_hash_closure.txt` — via [`parse_closure_manifest`]
-/// and [`cargo_lock_closure_parts`].  So `../../Cargo.lock` is deliberately NOT in
-/// `CONTRIBUTORS_RELATIVE`; `build.rs` reads it directly alongside the manifest.
-/// The drift guard `tests/infra/test_engine_hash_closure.sh` keeps the manifest
-/// a superset (⊇) of the freshly-recomputed closure.
+/// This used to be captured by hashing the WHOLE workspace `Cargo.lock`
+/// byte-for-byte, which over-invalidated the cache on ANY dep bump anywhere in
+/// the ~716-package lockfile — including GUI-only deps like `tauri` that never
+/// affect FEA. That contribution is now NARROWED: [`engine_version_hash_for`]
+/// hashes only the resolved `(name, version)` pins of reify-eval's
+/// build+normal (dev-EXCLUDED) transitive closure — the crate NAMES checked in
+/// at `crates/reify-eval/engine_hash_closure.txt` — via
+/// [`parse_closure_manifest`] and [`cargo_lock_closure_parts`].  So
+/// `../../Cargo.lock` is deliberately NOT a contributor path; it is read
+/// directly alongside the manifest. The drift guard
+/// `tests/infra/test_engine_hash_closure.sh` keeps the manifest a superset (⊇)
+/// of the freshly-recomputed closure.
 ///
 /// This still prefers over-invalidation to under-invalidation (a cache miss +
 /// recompute vs. silently incorrect FEA results) — but only within reify-eval's
@@ -77,56 +92,200 @@ use xxhash_rust::xxh3::xxh3_128;
 /// `docs/prds/v0_3/persistent-fea-cache.md` §"Cache invalidation on engine
 /// version".
 ///
-/// # Soundness assumption: registry-sourced deps
+/// # Soundness of the closure pin
 ///
-/// The narrowed contribution keys ONLY on each package's resolved
-/// `(name, version)` — it deliberately drops the `source` / `checksum` lines the
-/// former whole-`Cargo.lock` walk captured.  For a **registry** crate
-/// (`source = "registry+…"`) the version fully determines the content, so this
-/// is exact (no false negatives).  It would be under-tight only for a
-/// `git`-pinned or `[patch]`-overridden dependency whose git rev / source
-/// changes WITHOUT a version bump — such a change would not perturb the hash.
-/// reify-eval's closure is currently all-registry (verified: no `git` / `[patch]`
-/// sources in it), so there is no live gap.  If a git/patch source is ever added
-/// to the closure, extend [`cargo_lock_closure_pins`] to fold in that stanza's
-/// `source`/`checksum` too.  NB: the drift guard checks closure MEMBERSHIP (⊇),
-/// not source kind, so it will NOT flag such an addition — this note is the
-/// standing reminder.
-// The non-test library build never references CONTRIBUTORS_RELATIVE — only
-// the build.rs binary (via `include!()`) and `#[cfg(test)]` code in
-// `persistent_cache.rs` do.  Without the attribute, `cargo build` of the
-// library would emit a dead_code warning, mirroring the existing
-// `#[allow(dead_code)]` on `ContributorWalk` and `walk_contributor`.
+/// The pin keys ONLY on each package's resolved `(name, version)`:
+/// - a **registry** crate (`source = "registry+…"`): the version fully
+///   determines the content, so the pin is exact;
+/// - a **path** crate (no `source` line): the version is a constant, so the pin
+///   gives no invalidation, and its source must be hashed in this table or
+///   excluded for a stated reason;
+/// - a **git** or `[patch]` source: the content can change without a version
+///   bump, so the pin would be under-tight. None is allowed in the closure —
+///   `every_non_path_closure_member_is_registry_sourced` rejects one — until
+///   [`cargo_lock_closure_pins`] folds that stanza's `source`/`checksum` in.
+// build.rs (via include!) reads crate names and Hashed paths but never a
+// NotHashedBecause payload; the non-test lib build reaches none of these items.
 #[allow(dead_code)]
-pub(crate) const CONTRIBUTORS_RELATIVE: &[&str] = &[
-    // 1. FEA solver
-    "../reify-solver-elastic/src",
-    "../reify-solver-elastic/Cargo.toml",
-    // 2. Meshing pipeline
-    "../reify-kernel-gmsh/src",
-    "../reify-kernel-gmsh/Cargo.toml",
-    "../reify-kernel-gmsh/build.rs",
-    // 3. Stdlib FEA helpers
-    "../reify-stdlib/src/fea.rs",
-    "../reify-stdlib/src/loads.rs",
-    "../reify-stdlib/src/supports.rs",
-    "../reify-stdlib/src/analysis.rs",
-    // 4. Per-purpose tolerance implementation
-    "src/tolerance_bucket.rs",
-    "src/tolerance_budget.rs",
-    "src/tolerance_combine.rs",
-    "src/tolerance_format.rs",
-    "src/tolerance_gate.rs",
-    "src/tolerance_promise.rs",
-    "src/tolerance_scope.rs",
-    "src/engine_tolerance.rs",
-    "src/engine_purposes.rs",
-    // 5. Transitive-dep version pin — NOT here (task 5272). Narrowed to
-    //    reify-eval's build+normal (dev-excluded) closure pins: build.rs reads
-    //    ../../Cargo.lock + engine_hash_closure.txt directly and hashes only the
-    //    matching (name, version) pins via cargo_lock_closure_parts. See the
-    //    CONTRIBUTORS_RELATIVE doc-comment above for the full rationale.
+pub(crate) const WORKSPACE_CRATE_COVERAGE: &[WorkspaceCrateCoverage] = &[
+    WorkspaceCrateCoverage {
+        crate_name: "reify-ast",
+        coverage: Coverage::NotHashed(NotHashedBecause::UpstreamOfPersistentKey),
+    },
+    WorkspaceCrateCoverage {
+        crate_name: "reify-build-utils",
+        coverage: Coverage::NotHashed(NotHashedBecause::NotOnAPersistedDispatchPath),
+    },
+    WorkspaceCrateCoverage {
+        crate_name: "reify-builtins",
+        coverage: Coverage::NotHashed(NotHashedBecause::UpstreamOfPersistentKey),
+    },
+    WorkspaceCrateCoverage {
+        crate_name: "reify-compiler",
+        coverage: Coverage::NotHashed(NotHashedBecause::UpstreamOfPersistentKey),
+    },
+    // The persisted ElasticResult contract types.
+    WorkspaceCrateCoverage {
+        crate_name: "reify-compute-contract",
+        coverage: Coverage::Hashed(&[
+            "../reify-compute-contract/src",
+            "../reify-compute-contract/Cargo.toml",
+        ]),
+    },
+    WorkspaceCrateCoverage {
+        crate_name: "reify-config",
+        coverage: Coverage::NotHashed(NotHashedBecause::NotOnAPersistedDispatchPath),
+    },
+    WorkspaceCrateCoverage {
+        crate_name: "reify-constraints",
+        coverage: Coverage::NotHashed(NotHashedBecause::UpstreamOfPersistentKey),
+    },
+    // Value / Diagnostic construction in every trampoline.
+    WorkspaceCrateCoverage {
+        crate_name: "reify-core",
+        coverage: Coverage::Hashed(&["../reify-core/src", "../reify-core/Cargo.toml"]),
+    },
+    // The persisted targets' trampolines (compute_targets, shell_extract_compute),
+    // their BC face resolution (topology_selectors + selector_vocabulary_v2) and
+    // the per-purpose tolerance code. Other reify-eval code evaluates the
+    // arguments (upstream of the key) or runs in the dispatch without shaping
+    // values: solver_progress (progress/cancellation), compute_cache_key (key
+    // only), persistent_cache (wire format, versioned by ENTRY_FORMAT_VERSION).
+    // Re-exported contract types live in reify-ir and reify-compute-contract.
+    WorkspaceCrateCoverage {
+        crate_name: "reify-eval",
+        coverage: Coverage::Hashed(&[
+            "src/compute_targets",
+            "src/engine_purposes.rs",
+            "src/engine_tolerance.rs",
+            "src/selector_vocabulary_v2.rs",
+            "src/shell_extract_compute.rs",
+            "src/tolerance_bucket.rs",
+            "src/tolerance_budget.rs",
+            "src/tolerance_combine.rs",
+            "src/tolerance_format.rs",
+            "src/tolerance_gate.rs",
+            "src/tolerance_promise.rs",
+            "src/tolerance_scope.rs",
+            "src/topology_selectors.rs",
+        ]),
+    },
+    WorkspaceCrateCoverage {
+        crate_name: "reify-expr",
+        coverage: Coverage::NotHashed(NotHashedBecause::UpstreamOfPersistentKey),
+    },
+    // As-printed zone classification (classify_point) inside elastic_static.
+    WorkspaceCrateCoverage {
+        crate_name: "reify-fdm",
+        coverage: Coverage::Hashed(&["../reify-fdm/src", "../reify-fdm/Cargo.toml"]),
+    },
+    WorkspaceCrateCoverage {
+        crate_name: "reify-gcode",
+        coverage: Coverage::NotHashed(NotHashedBecause::NotOnAPersistedDispatchPath),
+    },
+    // arg_acceptance and the sampled-field helpers run in every trampoline.
+    WorkspaceCrateCoverage {
+        crate_name: "reify-ir",
+        coverage: Coverage::Hashed(&["../reify-ir/src", "../reify-ir/Cargo.toml"]),
+    },
+    // The mesher reify-solver-elastic calls inside the dispatch.
+    WorkspaceCrateCoverage {
+        crate_name: "reify-kernel-gmsh",
+        coverage: Coverage::Hashed(&[
+            "../reify-kernel-gmsh/src",
+            "../reify-kernel-gmsh/Cargo.toml",
+            "../reify-kernel-gmsh/build.rs",
+        ]),
+    },
+    WorkspaceCrateCoverage {
+        crate_name: "reify-kernel-openvdb",
+        coverage: Coverage::NotHashed(NotHashedBecause::RealizationProducer),
+    },
+    WorkspaceCrateCoverage {
+        crate_name: "reify-shell-extract",
+        coverage: Coverage::Hashed(&[
+            "../reify-shell-extract/src",
+            "../reify-shell-extract/Cargo.toml",
+        ]),
+    },
+    WorkspaceCrateCoverage {
+        crate_name: "reify-solver-elastic",
+        coverage: Coverage::Hashed(&[
+            "../reify-solver-elastic/src",
+            "../reify-solver-elastic/Cargo.toml",
+        ]),
+    },
+    // Only the FEA helpers; the rest of stdlib evaluates the arguments, which
+    // is upstream of the persistent key.
+    WorkspaceCrateCoverage {
+        crate_name: "reify-stdlib",
+        coverage: Coverage::Hashed(&[
+            "../reify-stdlib/src/analysis.rs",
+            "../reify-stdlib/src/fea.rs",
+            "../reify-stdlib/src/loads.rs",
+            "../reify-stdlib/src/supports.rs",
+        ]),
+    },
+    WorkspaceCrateCoverage {
+        crate_name: "reify-syntax",
+        coverage: Coverage::NotHashed(NotHashedBecause::UpstreamOfPersistentKey),
+    },
+    WorkspaceCrateCoverage {
+        crate_name: "tree-sitter-reify",
+        coverage: Coverage::NotHashed(NotHashedBecause::UpstreamOfPersistentKey),
+    },
 ];
+
+/// One row of [`WORKSPACE_CRATE_COVERAGE`]: a workspace path crate, named as in
+/// Cargo.lock.
+#[allow(dead_code)]
+pub(crate) struct WorkspaceCrateCoverage {
+    pub crate_name: &'static str,
+    pub coverage: Coverage,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum Coverage {
+    /// Contributor paths relative to `crates/reify-eval`, each inside the row's
+    /// own crate: a file, or a directory walked recursively by
+    /// [`walk_contributor`].
+    Hashed(&'static [&'static str]),
+    NotHashed(NotHashedBecause),
+}
+
+/// Why a workspace path crate's sources can soundly stay out of the hash.
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum NotHashedBecause {
+    /// The crate only shapes a persisted target's evaluated argument `Value`s,
+    /// and `engine_eval.rs` `persistent_cache_key` folds their content hashes
+    /// into the persistent key, so a change re-keys rather than serving stale.
+    UpstreamOfPersistentKey,
+    /// The crate's output reaches a trampoline only through a
+    /// `RealizationReadHandle`, and none of its code runs inside the dispatch.
+    /// Realization inputs are recipe-keyed (`graph.rs`
+    /// `RealizationNodeData.content_hash`), so soundness for producer output
+    /// belongs to the persistent key, not to this hash.
+    RealizationProducer,
+    /// None of the crate's code runs inside a persisted dispatch or shapes its
+    /// arguments (build-time helpers, G-code parsing, `reify.toml` parsing).
+    NotOnAPersistedDispatchPath,
+}
+
+/// The [`Coverage::Hashed`] paths of [`WORKSPACE_CRATE_COVERAGE`], in table
+/// order: the contributor half of the `ENGINE_VERSION_HASH` input.
+#[allow(dead_code)]
+pub(crate) fn contributor_paths() -> impl Iterator<Item = &'static str> {
+    WORKSPACE_CRATE_COVERAGE
+        .iter()
+        .filter_map(|row| match row.coverage {
+            Coverage::Hashed(paths) => Some(paths),
+            Coverage::NotHashed(_) => None,
+        })
+        .flatten()
+        .copied()
+}
 
 /// Suffix set shared by the bare dot-prefix branch and the extension branch of
 /// [`is_editor_debris`].  Kept as a single constant so both branches always
@@ -229,8 +388,8 @@ fn is_editor_debris(file_name: &OsStr) -> bool {
 ///
 /// Returns a 32-character lowercase hexadecimal string.
 ///
-/// **Production caller**: `build.rs` calls this after accumulating all
-/// contributor walk parts (via [`walk_contributor`]). The function is `pub`
+/// **Production caller**: [`engine_version_hash_for`] calls this after
+/// accumulating all contributor walk parts (via [`walk_contributor`]). The function is `pub`
 /// so `persistent_cache::ENGINE_VERSION_HASH`'s doc comment can reference it
 /// by name, and so the algorithm-drift sentinel test
 /// (`compose_engine_version_hash_pins_fixed_input_to_exact_hex_literal`)
@@ -325,6 +484,7 @@ pub struct ContributorWalk {
 // The symmetric attributes on `walk_recursive` and `is_editor_debris` were removed in the
 // same commit.
 #[allow(dead_code)]
+// G-allow: build-script code — reached via engine_version_hash_for from crates/reify-eval/build.rs (include!, outside this audit's src scope); the lib's own callers are unit tests (see comment above)
 pub fn walk_contributor(label: &str, root: &Path) -> ContributorWalk {
     let mut walk = ContributorWalk {
         parts: Vec::new(),
@@ -427,37 +587,53 @@ fn walk_recursive(label: &str, root: &Path, path: &Path, walk: &mut ContributorW
 // ─────────────────────────────────────────────────────────────────────────────
 // Narrowed Cargo.lock contribution (task 5272)
 //
-// ENGINE_VERSION_HASH used to walk the WHOLE workspace Cargo.lock (category 5),
-// so any dep bump anywhere in the 716-package lockfile invalidated the
-// persistent FEA cache. The helpers below narrow that contribution to only the
+// ENGINE_VERSION_HASH used to walk the WHOLE workspace Cargo.lock, so any dep
+// bump anywhere in the 716-package lockfile invalidated the persistent FEA
+// cache. The helpers below narrow that contribution to only the
 // resolved (name, version) pins of reify-eval's build+normal (exclude-dev)
 // transitive closure — the crate NAMES checked in at
-// `crates/reify-eval/engine_hash_closure.txt`. build.rs reads that static
-// manifest plus Cargo.lock and hashes just the matching pins; the drift guard
-// `tests/infra/test_engine_hash_closure.sh` keeps the manifest honest against
-// the live closure. PRD: docs/prds/merge-gate-compile-cost.md §3 W4 / §5 C4.
+// `crates/reify-eval/engine_hash_closure.txt`. engine_version_hash_for reads
+// that static manifest plus Cargo.lock and hashes just the matching pins; the
+// drift guard `tests/infra/test_engine_hash_closure.sh` keeps the manifest
+// honest against the live closure. PRD: docs/prds/merge-gate-compile-cost.md
+// §3 W4 / §5 C4.
 //
 // These are pure, std-only functions (NO `toml` crate — this file is include!'d
 // into build.rs, which is constrained to std + xxhash per the module header).
-// Each is `pub` + `#[allow(dead_code)]`, mirroring CONTRIBUTORS_RELATIVE /
+// Each is `pub` + `#[allow(dead_code)]`, mirroring WORKSPACE_CRATE_COVERAGE /
 // walk_contributor: reachable from build.rs (via include!) and from
 // persistent_cache.rs `#[cfg(test)]`, but not from the non-test library build.
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Parse the `[[package]]` stanzas of a Cargo.lock file into `(name, version)`
-/// pairs, in file order.
+/// One `[[package]]` stanza of a Cargo.lock file.
+///
+/// `source` is the stanza's `source = "..."` value — `registry+…` for a
+/// crates.io dependency, `git+…` for a git dependency — and `None` for a
+/// workspace path crate, which Cargo.lock records without a source line.
+// build.rs (via include!) never reads `source`, and the non-test lib build
+// never constructs a LockPackage at all.
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LockPackage {
+    pub name: String,
+    pub version: String,
+    pub source: Option<String>,
+}
+
+/// Parse the `[[package]]` stanzas of a Cargo.lock file, in file order.
 ///
 /// Hand-rolled, std-only line scanner (deliberately NOT the `toml` crate — see
 /// the section header above). State machine: a `[[package]]` header opens a
-/// fresh stanza; the first `name = "..."` and first `version = "..."` lines
-/// within it are captured; the pair is emitted when the next `[`-prefixed table
-/// header is reached (or at EOF). Anything outside a `[[package]]` stanza — the
-/// top-level lockfile `version = N`, `[metadata]`, `[[patch.unused]]`, comments,
-/// blank lines — never yields a package. Inside a stanza, `source` / `checksum`
-/// / multi-line `dependencies = [...]` lines are ignored (only name+version are
-/// captured); array elements like `"memchr",` carry no `=` and are skipped.
+/// fresh stanza; the first `name = "..."`, first `version = "..."` and first
+/// `source = "..."` lines within it are captured; the stanza is emitted when
+/// the next `[`-prefixed table header is reached (or at EOF), and only if both
+/// a name and a version were captured. Anything outside a `[[package]]` stanza
+/// — the top-level lockfile `version = N`, `[metadata]`, `[[patch.unused]]`,
+/// comments, blank lines — never yields a package. Inside a stanza,
+/// `checksum` / multi-line `dependencies = [...]` lines are ignored; array
+/// elements like `"memchr",` carry no `=` and are skipped.
 #[allow(dead_code)]
-pub fn parse_cargo_lock_packages(lock_text: &str) -> Vec<(String, String)> {
+pub fn parse_cargo_lock_stanzas(lock_text: &str) -> Vec<LockPackage> {
     // Content of the first `"..."` in `s`, if any (values here never contain an
     // embedded quote, so first-open .. next-close is sufficient and exact).
     fn first_quoted(s: &str) -> Option<String> {
@@ -466,51 +642,77 @@ pub fn parse_cargo_lock_packages(lock_text: &str) -> Vec<(String, String)> {
         let end = rest.find('"')?;
         Some(rest[..end].to_string())
     }
+    #[derive(Default)]
+    struct PendingStanza {
+        name: Option<String>,
+        version: Option<String>,
+        source: Option<String>,
+    }
     // Emit the pending stanza iff BOTH name and version were captured. `take()`
-    // empties both Options regardless of the match, resetting for the next
-    // stanza; harmless to call when nothing is pending (both already None).
-    fn flush(
-        cur_name: &mut Option<String>,
-        cur_version: &mut Option<String>,
-        packages: &mut Vec<(String, String)>,
-    ) {
-        if let (Some(n), Some(v)) = (cur_name.take(), cur_version.take()) {
-            packages.push((n, v));
+    // resets the pending stanza regardless of the match; harmless to call when
+    // nothing is pending.
+    fn flush(pending: &mut PendingStanza, packages: &mut Vec<LockPackage>) {
+        let PendingStanza {
+            name,
+            version,
+            source,
+        } = std::mem::take(pending);
+        if let (Some(name), Some(version)) = (name, version) {
+            packages.push(LockPackage {
+                name,
+                version,
+                source,
+            });
         }
     }
 
-    let mut packages: Vec<(String, String)> = Vec::new();
+    let mut packages: Vec<LockPackage> = Vec::new();
     let mut in_package = false;
-    let mut cur_name: Option<String> = None;
-    let mut cur_version: Option<String> = None;
+    let mut pending = PendingStanza::default();
 
     for line in lock_text.lines() {
         let trimmed = line.trim();
         if trimmed.starts_with('[') {
             // Any table header closes the current stanza; only `[[package]]`
             // opens a new capturing one.
-            flush(&mut cur_name, &mut cur_version, &mut packages);
+            flush(&mut pending, &mut packages);
             in_package = trimmed == "[[package]]";
             continue;
         }
         if !in_package {
             continue;
         }
-        // Inside a [[package]] stanza: capture the first name/version. Split on
-        // the first `=`; array elements ("memchr",) and bare `]` carry no `=`.
+        // Inside a [[package]] stanza: capture the first name/version/source.
+        // Split on the first `=`; array elements ("memchr",) and bare `]`
+        // carry no `=`.
         if let Some(eq) = trimmed.find('=') {
             let key = trimmed[..eq].trim();
             let val = &trimmed[eq + 1..];
-            if key == "name" && cur_name.is_none() {
-                cur_name = first_quoted(val);
-            } else if key == "version" && cur_version.is_none() {
-                cur_version = first_quoted(val);
+            let slot = match key {
+                "name" => &mut pending.name,
+                "version" => &mut pending.version,
+                "source" => &mut pending.source,
+                _ => continue,
+            };
+            if slot.is_none() {
+                *slot = first_quoted(val);
             }
         }
     }
     // EOF: flush a trailing package stanza (no closing header follows it).
-    flush(&mut cur_name, &mut cur_version, &mut packages);
+    flush(&mut pending, &mut packages);
     packages
+}
+
+/// The `(name, version)` projection of [`parse_cargo_lock_stanzas`], in file
+/// order.
+#[allow(dead_code)]
+// G-allow: same-file caller only (cargo_lock_closure_pins, on build.rs's engine_version_hash_for path); pub for persistent_cache.rs unit tests; audit counts cross-file refs
+pub fn parse_cargo_lock_packages(lock_text: &str) -> Vec<(String, String)> {
+    parse_cargo_lock_stanzas(lock_text)
+        .into_iter()
+        .map(|package| (package.name, package.version))
+        .collect()
 }
 
 /// Parse a closure manifest (`crates/reify-eval/engine_hash_closure.txt`) into
@@ -557,8 +759,8 @@ pub fn cargo_lock_closure_pins(lock_text: &str, closure: &[&str]) -> Vec<(String
 /// Two parts per pin leverages the existing u64-LE length-prefix framing in
 /// [`compose_engine_version_hash`], which already prevents the concat-collision
 /// class — so no custom separator between the name and version is needed.
-/// `build.rs` extends its `all_parts` with the result, replacing the removed
-/// whole-file Cargo.lock walk.
+/// [`engine_version_hash_for`] extends its parts with the result, replacing the
+/// removed whole-file Cargo.lock walk.
 #[allow(dead_code)]
 pub fn cargo_lock_closure_parts(lock_text: &str, closure: &[&str]) -> Vec<Vec<u8>> {
     let mut parts: Vec<Vec<u8>> = Vec::new();
@@ -567,4 +769,89 @@ pub fn cargo_lock_closure_parts(lock_text: &str, closure: &[&str]) -> Vec<Vec<u8
         parts.push(version.into_bytes());
     }
     parts
+}
+
+/// The canonical `ENGINE_VERSION_HASH` of the reify-eval checkout rooted at
+/// `manifest_dir`, together with every path it read.
+// build.rs (via include!) reads both fields; the non-test lib build never
+// constructs one.
+#[allow(dead_code)]
+pub struct EngineVersionHash {
+    /// 32 lowercase hex chars, as returned by [`compose_engine_version_hash`].
+    pub hex: String,
+    /// Every file and directory read, for `cargo:rerun-if-changed`.
+    pub rerun_paths: Vec<PathBuf>,
+}
+
+/// Compute `ENGINE_VERSION_HASH` over `manifest_dir` (reify-eval's
+/// `CARGO_MANIFEST_DIR`): every [`contributor_paths`] entry walked by
+/// [`walk_contributor`], then reify-eval's closure pins
+/// ([`cargo_lock_closure_parts`] over `../../Cargo.lock`, filtered to the
+/// names in `engine_hash_closure.txt`), composed by
+/// [`compose_engine_version_hash`]. `build.rs` bakes the result into the
+/// library; tests run this same function over a mirror of its inputs.
+///
+/// No cargo metadata is invoked (fragile, offline-hostile, and it can deadlock
+/// on the package-cache lock): the closure is the static checked-in manifest,
+/// kept a superset (⊇) of the live closure by
+/// `tests/infra/test_engine_hash_closure.sh`.
+///
+/// # Panics
+///
+/// On a missing contributor or closure-pin input, naming it. A silent skip
+/// would shrink the hash input and bake a stale hash unnoticed
+/// (`docs/prds/merge-gate-compile-cost.md`).
+#[allow(dead_code)]
+pub fn engine_version_hash_for(manifest_dir: &Path) -> EngineVersionHash {
+    let mut parts: Vec<Vec<u8>> = Vec::new();
+    let mut rerun_paths: Vec<PathBuf> = Vec::new();
+
+    for rel in contributor_paths() {
+        let path = manifest_dir.join(rel);
+        if !path.exists() {
+            panic!(
+                "ENGINE_VERSION_HASH contributor not found: {} (resolved to {}). \
+                 If this file was renamed, moved, or deleted, update \
+                 WORKSPACE_CRATE_COVERAGE in crates/reify-eval/src/engine_hash_algo.rs in the same commit.",
+                rel,
+                path.display()
+            );
+        }
+        let walk = walk_contributor(rel, &path);
+        rerun_paths.extend(walk.rerun_paths);
+        parts.extend(walk.parts);
+    }
+
+    let lock_path = manifest_dir.join("../../Cargo.lock");
+    let closure_path = manifest_dir.join("engine_hash_closure.txt");
+    for (path, rel) in [
+        (&lock_path, "../../Cargo.lock"),
+        (&closure_path, "engine_hash_closure.txt"),
+    ] {
+        if !path.exists() {
+            panic!(
+                "ENGINE_VERSION_HASH closure-pin input not found: {} (resolved to {}). \
+                 If this file was renamed, moved, or deleted, update the closure-pin \
+                 wiring in engine_version_hash_for \
+                 (crates/reify-eval/src/engine_hash_algo.rs) in the same commit.",
+                rel,
+                path.display()
+            );
+        }
+        rerun_paths.push(path.clone());
+    }
+    let read = |path: &Path| {
+        std::fs::read_to_string(path)
+            .unwrap_or_else(|e| panic!("ENGINE_VERSION_HASH: cannot read {}: {e}", path.display()))
+    };
+    let lock_text = read(&lock_path);
+    let closure = parse_closure_manifest(&read(&closure_path));
+    let closure_refs: Vec<&str> = closure.iter().map(|s| s.as_str()).collect();
+    parts.extend(cargo_lock_closure_parts(&lock_text, &closure_refs));
+
+    let part_refs: Vec<&[u8]> = parts.iter().map(|v| v.as_slice()).collect();
+    EngineVersionHash {
+        hex: compose_engine_version_hash(&part_refs),
+        rerun_paths,
+    }
 }

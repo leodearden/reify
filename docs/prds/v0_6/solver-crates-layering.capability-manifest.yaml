@@ -1,0 +1,495 @@
+prd: docs/prds/v0_6/solver-crates-layering.md
+schema_version: 1
+tasks:
+- label: α
+  task_id: 8614
+  title: 'solver-layering α: adoption-ratchet host for reify-solver-elastic'
+  capabilities:
+  - name: ratchet-host-shape-exists-in-repo
+    binding: 'grep:crates/reify-eval/tests/version_id_discipline_gate.rs — scan_source matcher
+      plus seeded-violation self-tests plus a real-tree walk; the record''s INV candidate 5 checkable
+      form names this shape. Read at main 8e6ffcac9d.'
+    verdict: PASS
+    delivered_check:
+      kind: path
+      expect: present
+      paths:
+      - crates/reify-solver-elastic/tests/adoption_ratchets.rs
+  - name: baselines-reproduce
+    binding: 'Review counts re-measured at 8e6ffcac9d: MemberKind::Cable => 6 production, is_anchor[a]
+      = true 3 production, shell_assembly:: non-test upward imports 8, let det_bb = 2, 5.0 / 6.0 2,
+      inline shear modulus 16, td[i][j] = 5, MpcRow { literals 2, .data[ outside assembly/ 72 (per-file
+      counts in PRD §9). The implementer re-measures at α''s own tree.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'baseline numbers are committed inside the test file; their correctness is proven by the seeded self-tests and the real-tree run, not by a pattern.'
+- label: β
+  task_id: 8616
+  title: 'solver-layering β: shell primitives below assembly (elements/shell_frame.rs)'
+  capabilities:
+  - name: shell-frame-module
+    binding: 'producer:this leaf. elements/ exists with mod.rs (degenerate_shell, membrane_cst, mitc3_plus,
+      tet_p1, tet_p2, hex_p1, wedge_p1); shell_frame.rs absent at main.'
+    verdict: PASS
+    delivered_check:
+      kind: path
+      expect: present
+      paths:
+      - crates/reify-solver-elastic/src/elements/shell_frame.rs
+  - name: primitives-leave-shell-assembly
+    binding: 'grep:shell_assembly.rs `pub struct ShellFrame` present at main (moves out).'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: pub struct ShellFrame
+      expect: absent
+      paths:
+      - crates/reify-solver-elastic/src/shell_assembly.rs
+  - name: no-upward-imports-from-lower-layers
+    binding: 'grep: `use crate::shell_assembly::` present at main in elements/degenerate_shell.rs,
+      elements/membrane_cst.rs, geometric_stiffness/membrane.rs and shell_kinematics.rs (both cycles
+      run through these).'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'use crate::shell_assembly::'
+      expect: absent
+      paths:
+      - crates/reify-solver-elastic/src/elements/degenerate_shell.rs
+      - crates/reify-solver-elastic/src/elements/membrane_cst.rs
+      - crates/reify-solver-elastic/src/geometric_stiffness/membrane.rs
+      - crates/reify-solver-elastic/src/shell_kinematics.rs
+- label: γ
+  task_id: 8618
+  title: 'solver-layering γ: ShellSection, one guarded condensation, scaled/packing helpers, DegenerateFormulation'
+  capabilities:
+  - name: section-type
+    binding: 'producer:this leaf. No shell section type exists at main (git grep "struct ShellSection"
+      empty); D5 defines it crate-private, public signatures unchanged.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: struct ShellSection
+      expect: present
+      paths:
+      - crates/reify-solver-elastic/src
+  - name: shear-modulus-method
+    binding: 'IsotropicElastic (constitutive.rs) has pub youngs_modulus/poisson_ratio and no shear_modulus method at main; 16 inline E/(2(1+nu)) sites.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn shear_modulus
+      expect: present
+      paths:
+      - crates/reify-solver-elastic/src/constitutive.rs
+  - name: second-kappa-gone
+    binding: 'grep:shell_result.rs fn-local `const KAPPA: f64 = 5.0 / 6.0` present at main.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'const KAPPA: f64 = 5\.0 / 6\.0'
+      expect: absent
+      paths:
+      - crates/reify-solver-elastic/src/shell_result.rs
+  - name: scaled-blocks-gone
+    binding: 'grep:shell_assembly.rs `td[i][j] = ` 5 production sites, 0 in its test region (measured).'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'td\[i\]\[j\] = '
+      expect: absent
+      paths:
+      - crates/reify-solver-elastic/src/shell_assembly.rs
+  - name: bool-flags-gone
+    binding: 'grep:shell_assembly.rs degenerate_stiffness_core `use_ans_membrane: bool` parameter present.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'use_ans_membrane: bool'
+      expect: absent
+      paths:
+      - crates/reify-solver-elastic/src/shell_assembly.rs
+  - name: guard-numeric-premise
+    binding: 'G6: the shared guard (det_bb > 1e-14 * k00*k11, else zero correction) is the degenerate
+      copy''s, already shipping; on every current MITC3+ fixture K_BB is well-conditioned, so the guard
+      passes and the existing shell suites stay unchanged. BT6 constructs the near-singular case.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'numeric equivalence is asserted by the unchanged shell suites plus BT6, not a pattern.'
+- label: δ
+  task_id: 8619
+  title: 'solver-layering δ: AssemblyElement::new validating constructor; one release check for both entry points'
+  capabilities:
+  - name: fields-private
+    binding: 'grep:assembly/global.rs `pub connectivity: &''a [usize]` present at main (after #8373,
+      dofs_per_node() is already the one private derivation; detect_orphan_dofs still checks only under
+      debug_assert with no divisibility check).'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'pub connectivity: &''a \[usize\]'
+      expect: absent
+      paths:
+      - crates/reify-solver-elastic/src/assembly/global.rs
+  - name: callers-already-moved-by-8375
+    binding: 'producer:task-8375 (solver-performance ξ, pending) moves every assembly caller to
+      assemble_stiffness and deletes AssemblyMode; upstream dep edge. Editing the same ~95 construction
+      sites before it would collide.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'dependency ordering, enforced by the add_dependency edge on #8375.'
+- label: ε
+  task_id: 8621
+  title: 'solver-layering ε: private ElementStiffness storage; stride doc fixed'
+  capabilities:
+  - name: storage-private
+    binding: 'grep:assembly/mod.rs `pub n_dofs: usize` and `pub data: Vec<f64>` present at main; 72 `.data[` sites outside assembly/ across resample, p2_tet, mass_matrix, geometric_stiffness/*, tensegrity_load, membrane_load, shell_assembly, membrane_cst.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'pub data: Vec<f64>'
+      expect: absent
+      paths:
+      - crates/reify-solver-elastic/src/assembly/mod.rs
+  - name: no-external-data-readers
+    binding: 'git grep for `k_e.data` / `ElementStiffness {` outside crates/reify-solver-elastic finds
+      none in src or tests (measured), so the accessor migration is crate-internal.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'scope measurement; the ratchet row in α carries the gate.'
+- label: ζ
+  task_id: 8626
+  title: 'solver-layering ζ: tensegrity_load_analysis as a thin call of membrane_load_analysis'
+  capabilities:
+  - name: copied-helpers-gone
+    binding: 'grep:tensegrity_load.rs `fn member_force_delta` and `const GROUNDING_DIAGONAL` present at main, duplicated in membrane_load.rs.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn member_force_delta
+      expect: absent
+      paths:
+      - crates/reify-solver-elastic/src/tensegrity_load.rs
+  - name: thin-call
+    binding: 'tensegrity_load.rs does not call membrane_load_analysis at main.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'membrane_load_analysis\('
+      expect: present
+      paths:
+      - crates/reify-solver-elastic/src/tensegrity_load.rs
+  - name: types-alias-cleanly
+    binding: 'Read at main: TensegrityLoadOptions/MembraneLoadOptions are field-identical (max_active_set_iters,
+      cg, slack_tol; same defaults); TensegrityLoadError/MembraneLoadError are variant-identical; the
+      Solve types differ only by member_slack vs slack and the surface fields.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'type-shape reading; behavioural cover is the T3b suites.'
+  - name: empty-patch-equivalence
+    binding: 'The finding asserts that with no patches membrane_load computes what tensegrity_load computes.
+      The skeptic confirmed 132 shared lines and the orphan-grounding fork, not output equality. The
+      leaf establishes it by running both T3b suites (solver and eval harness) through the thin call
+      with no expectation edits, and picks one grounding policy (D9).'
+    verdict: OPEN
+    delivered_check:
+      kind: manual
+      reason: 'the equivalence is this leaf''s work product.'
+- label: η
+  task_id: 8628
+  title: 'solver-layering η: ForceDensityProblem, MemberKind::admits, nested input errors, one fixed-point driver'
+  capabilities:
+  - name: problem-type
+    binding: 'no validated problem type at main; anchored kernels index anchors and member endpoints unchecked (is_anchor[a] = true at three production sites).'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: struct ForceDensityProblem
+      expect: present
+      paths:
+      - crates/reify-solver-elastic/src
+  - name: sign-rule-home
+    binding: 'MemberKind (form_find.rs) has no impl at main; six production `MemberKind::Cable => qi > 0.0` sites.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'fn admits\('
+      expect: present
+      paths:
+      - crates/reify-solver-elastic/src/form_find.rs
+  - name: error-translator-gone
+    binding: 'grep:form_find.rs `fn map_ff_error` present at main.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn map_ff_error
+      expect: absent
+      paths:
+      - crates/reify-solver-elastic/src/form_find.rs
+  - name: user-surface-byte-stable
+    binding: 'The trampoline crates/reify-eval/src/compute_targets/form_find.rs maps errors to "E_FormFindInfeasible:
+      …" via describe(); goldens crates/reify-eval/tests/golden/tensegrity_t_prism.txt and cli_tensegrity_e2e.rs
+      pin the user surface.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'byte-stability is asserted by the existing goldens and e2e tests.'
+- label: θ
+  task_id: 8629
+  title: 'solver-layering θ: private MpcRow fields; delete the literal smoke test and doctest; true module docs'
+  capabilities:
+  - name: fields-private
+    binding: 'grep:mpc.rs `pub dofs: Vec<usize>` present at main; consumers apply_mpc_row_elimination, buckling_kernel MPC reduction, reify-eval engine_build/mixed_region_tests.rs.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'pub dofs: Vec<usize>'
+      expect: absent
+      paths:
+      - crates/reify-solver-elastic/src/mpc.rs
+  - name: doctest-literal-gone
+    binding: 'grep:lib.rs crate doc `let _row = MpcRow { dofs: …` present at main.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'MpcRow \{ dofs'
+      expect: absent
+      paths:
+      - crates/reify-solver-elastic/src/lib.rs
+- label: ι
+  task_id: 8630
+  title: 'solver-layering ι: one FEA harness in tests/common/fea_harness.rs; one conflict-checking dedup_bcs'
+  capabilities:
+  - name: harness-module
+    binding: 'tests/common/mod.rs exists (92 lines, tensegrity helpers); fea_harness.rs absent at main.'
+    verdict: PASS
+    delivered_check:
+      kind: path
+      expect: present
+      paths:
+      - crates/reify-solver-elastic/tests/common/fea_harness.rs
+  - name: per-file-copies-gone
+    binding: '`fn dedup_bcs` defined at top level in analytical_validation, aposteriori_validation, determinism,
+      dwr_boundary_tests, solver_gate_smoke (measured); 3 copies check conflicts, 2 do not.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '^fn dedup_bcs'
+      expect: absent
+      paths:
+      - crates/reify-solver-elastic/tests/analytical_validation.rs
+      - crates/reify-solver-elastic/tests/aposteriori_validation.rs
+      - crates/reify-solver-elastic/tests/determinism.rs
+      - crates/reify-solver-elastic/tests/dwr_boundary_tests.rs
+      - crates/reify-solver-elastic/tests/solver_gate_smoke.rs
+  - name: determinism-rebuilt-first
+    binding: 'producer:task-8375 rebuilds tests/determinism.rs and edits solver_gate_smoke.rs; upstream dep edge.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'ordering, enforced by the dependency edge.'
+  - name: conflicting-bc-fixtures
+    binding: 'Once dedup_bcs always checks conflicts, a fixture in determinism.rs or solver_gate_smoke.rs
+      that today feeds a conflicting duplicate BC silently would panic. Unmeasured; the leaf runs both
+      suites and fixes any such fixture as a real defect.'
+    verdict: OPEN
+    delivered_check:
+      kind: manual
+      reason: 'discovered by running the suites; this leaf owns the outcome.'
+- label: κ
+  task_id: 8632
+  title: 'solver-layering κ: GeometryError::BackendUnavailable; structural routing in both map_geometry_error'
+  capabilities:
+  - name: typed-variant
+    binding: 'GeometryError (crates/reify-ir/src/geometry.rs) has InvalidReference, OperationFailed,
+      InitFailed, MeshContractViolation; no exhaustive match outside its Display impl (measured).'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: BackendUnavailable
+      expect: present
+      paths:
+      - crates/reify-ir/src/geometry.rs
+  - name: substring-parsers-gone
+    binding: 'grep:mesher.rs and volume_refine.rs `msg.contains(reify_kernel_gmsh::STUB_UNAVAILABLE_MARKER)` present at main (one each, production).'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'msg\.contains\(reify_kernel_gmsh::STUB_UNAVAILABLE_MARKER\)'
+      expect: absent
+      paths:
+      - crates/reify-solver-elastic/src
+  - name: stub-arm-compilable
+    binding: 'reify-kernel-gmsh build.rs reruns on GMSH_LIB_DIR/GMSH_INCLUDE_DIR and omits cfg(has_gmsh)
+      when the lib is not found, so the stub arms compile with an empty GMSH_LIB_DIR (the mechanism
+      check-manifold-deps.sh''s behavioural loop uses).'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'a stub-build compile is run by the implementer; the gate host always has gmsh.'
+- label: λ
+  task_id: 8637
+  title: 'solver-layering λ: TetSpatialIndex<''a> owns its mesh borrow and tol; TetShape<''a> carries its mesh'
+  capabilities:
+  - name: borrowing-index
+    binding: 'interpolation.rs `pub struct TetSpatialIndex` (no lifetime) at main; only in-tree users are resample.rs (two build+locate_counted pairs).'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'pub struct TetSpatialIndex<''a>'
+      expect: present
+      paths:
+      - crates/reify-solver-elastic/src/interpolation.rs
+- label: μ
+  task_id: 8640
+  title: 'solver-layering μ: qoi.rs tests to tests/qoi.rs; reviewer prose out of production docs'
+  capabilities:
+  - name: test-file
+    binding: 'record h14_measurements: the qoi test module references only crate-root re-exports (P1TetMeshRef,
+      QoiKind, QoiError, QuantityOfInterest, LocalDisplacementQoi, LocalNormalStressQoi, IsotropicElastic,
+      point_in_tet_p1, tet_volume_p1).'
+    verdict: PASS
+    delivered_check:
+      kind: path
+      expect: present
+      paths:
+      - crates/reify-solver-elastic/tests/qoi.rs
+  - name: inline-module-gone
+    binding: 'grep:qoi.rs `#[cfg(test)]` exactly once at main (the test module).'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '^#\[cfg\(test\)\]'
+      expect: absent
+      paths:
+      - crates/reify-solver-elastic/src/qoi.rs
+- label: ν
+  task_id: 8645
+  title: 'solver-layering ν: one predicate home in reify-constraints; engine_eval mirrors deleted'
+  capabilities:
+  - name: slack-predicate-exported
+    binding: 'crates/reify-eval/Cargo.toml [dependencies] has reify-constraints.workspace = true (task
+      4386); engine_eval.rs already calls reify_constraints::objective_consumption.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: pub fn has_inequality_slack
+      expect: present
+      paths:
+      - crates/reify-constraints/src
+  - name: eval-mirrors-gone
+    binding: 'grep:engine_eval.rs top-level `fn has_inequality_slack` and `fn objective_is_money` present at main.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '^fn (has_inequality_slack|objective_is_money)\b'
+      expect: absent
+      paths:
+      - crates/reify-eval/src/engine_eval.rs
+  - name: signed-contribution-primitive
+    binding: 'weight x sigma fold written at solver.rs eval_objective_set, registry.rs fold, cpsat.rs
+      ranking score, engine_eval objective_term_contributions (measured).'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: pub fn signed_term_contribution
+      expect: present
+      paths:
+      - crates/reify-constraints/src
+  - name: constraints-ratchet-host
+    binding: 'producer:this leaf.'
+    verdict: PASS
+    delivered_check:
+      kind: path
+      expect: present
+      paths:
+      - crates/reify-constraints/tests/adoption_ratchets.rs
+- label: ξ
+  task_id: 8653
+  title: 'solver-layering ξ: solver.rs lower layers (crate::trial, residual, bounds, derive)'
+  capabilities:
+  - name: trial-module
+    binding: 'trial.rs absent at main; #8581 measured the seam (ctx_with, build_trial_values, fold_dependent_cells*,
+      build_scoring_values, dimension_of) as importing only reify_expr/reify_ir; cpsat, registry, dual_jacobian
+      import it directly.'
+    verdict: PASS
+    delivered_check:
+      kind: path
+      expect: present
+      paths:
+      - crates/reify-constraints/src/trial.rs
+  - name: derive-module
+    binding: 'effective_bounds/default_bounds_for need only dimension_of (read at main), so moving them
+      to solver/bounds below derive breaks the derive<->cost cycle.'
+    verdict: PASS
+    delivered_check:
+      kind: path
+      expect: present
+      paths:
+      - crates/reify-constraints/src/solver/derive.rs
+  - name: in-flight-edits-land-first
+    binding: 'producer:task-6655, task-7492, task-7420 (pending edits to solver.rs / dimension_of); upstream dep edges.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'ordering, enforced by the dependency edges.'
+- label: ο
+  task_id: 8656
+  title: 'solver-layering ο: solver.rs middle layers (cost, floor, core with witness); core renamed'
+  capabilities:
+  - name: core-module
+    binding: 'solver/ does not exist at main. floor_infeasible_diagnostic calls constraints_witness, which
+      calls solve_core_with_sd_tolerance, which calls floor_infeasible_diagnostic (read at main); D17
+      puts both in core.'
+    verdict: PASS
+    delivered_check:
+      kind: path
+      expect: present
+      paths:
+      - crates/reify-constraints/src/solver/core.rs
+  - name: core-renamed
+    binding: 'grep `fn solve_core_with_sd_tolerance` present at main; all 5 production callers pass NM_SD_TOLERANCE.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn solve_core_with_sd_tolerance
+      expect: absent
+      paths:
+      - crates/reify-constraints/src
+- label: π
+  task_id: 8658
+  title: 'solver-layering π: solver.rs upper layers and api; tests to layer interfaces or the ConstraintSolver seam'
+  capabilities:
+  - name: inline-test-module-gone
+    binding: 'grep:solver.rs `mod tests {` at column 0 present at main (7,046 lines).'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '^mod tests \{'
+      expect: absent
+      paths:
+      - crates/reify-constraints/src/solver.rs
+  - name: uniqueness-layer
+    binding: 'solver/ does not exist at main; the uniqueness region (within_uniqueness_tol .. rank_single)
+      imports only downward (core::solve_core, derive, cost) per the record''s partition.'
+    verdict: PASS
+    delivered_check:
+      kind: path
+      expect: present
+      paths:
+      - crates/reify-constraints/src/solver/uniqueness.rs
+- label: ρ
+  task_id: 8660
+  title: 'solver-layering ρ: PRD close'
+  capabilities:
+  - name: terminal-status
+    binding: 'overlay "PRD terminal status" freeze shape (data-carrying-enums / kernel-seam-contracts headers).'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'the deliverable is the committed header.'

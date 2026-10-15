@@ -1,0 +1,15 @@
+// compiler-declaration-passes PRD §2.2 / leaf γ: members the grammar admits inside a `where`
+// block but compile_guarded_members drops with no diagnostic.
+// Main: `reify check` exits 0, "All constraints satisfied.", no diagnostic for the port or meta.
+// After γ: exits 1 with one Error per dropped member, each naming the member kind and the context.
+module decl_passes_guarded_port_dropped
+
+trait Signal {}
+
+structure Box2 {
+    param on : Bool = true
+    where on {
+        port a : out Signal {}
+        meta { note = "inside a guard" }
+    }
+}

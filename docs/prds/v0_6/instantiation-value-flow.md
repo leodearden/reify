@@ -56,7 +56,9 @@ Groundwork clarifications (2026-08-26, agent team; all cite-checked):
 - **The geometry-plane one-level boundary is a DOCUMENTED v0.1 scope cut**, not
   an accident: `seed_cross_sub_named_steps` rustdoc ("one level of override
   depth only"), the empty `child_named_steps` map in
-  `realize_sub_override_handles`, and the pinning test
+  `realize_sub_override_handles` and in `realize_overridden_instance_into`
+  (the helper whose diagnostic the pinning test matches — 2026-10-12
+  correction), and the pinning test
   `cross_sub_nested_sub_in_override_path_produces_compile_error`
   (`crates/reify-eval/tests/cross_sub_geometry_e2e.rs`), whose own doc says to
   re-baseline it when nested overrides land. This PRD completes that cut and
@@ -82,7 +84,9 @@ The orchestrator's architect has already planned #6592 (planning spawned #6598,
 which records the value-axis approach and splits the geometry-HANDLE axis out
 as its own low-priority task) and #6586 carries routing. This PRD therefore
 ADOPTS the live tasks rather than re-filing them, adds the leaves no task owns,
-and sequences the whole set.
+and sequences the whole set. *(Delta, 2026-10-12 ruling, esc-6598-15: the
+handle-axis split is reversed — β #6592 delivers that axis and #6598 becomes
+its post-landing checkpoint; see §8 β.)*
 
 ## 3. Consumers (G1)
 
@@ -142,8 +146,10 @@ indexed subs; C inherits A's mint problems plus a two-authorities seam. B lands
 at the exact defect sites with existing precedents for every sub-mechanism:
 the phase-1.5 overlay projection (value plane, landed), a per-instance overlay
 threaded through the surfacing walk into `eval_sub_pose` (placement), a
-recursive generalization of `realize_sub_override_handles` reading
-instance-path cells with a recursively-seeded named-steps map (geometry), and
+recursive generalization of `realize_sub_override_handles` (and of its
+seed-path twin `realize_overridden_instance_into` — 2026-10-12 delta, §8 β)
+reading instance-path cells with a recursively-seeded named-steps map
+(geometry), and
 `map_value_refs`-rescoped, runtime-materialized constraint nodes (constraints —
 precedent: the forall per-element emission ledger). Value edits stay
 non-structural; entity identity stays stable. **Shape A survives as the test
@@ -170,6 +176,7 @@ mechanism the dogfood duplicates prove works end-to-end).
 | B14 | warm re-elaboration | collection count edit | edited N picks up per-instance valuations, no stale defaults |
 | B15 | verdict-pin corpus | best_practices gate | `EXPECTED_INDETERMINATE` re-baselined for any flips |
 | B16 | oracle equivalence | any override fixture | instance output ≡ hand-specialized twin (Shape-A oracle) |
+| B17 | one-level override of a child whose body names a sibling geometry let (added 2026-10-12) | `sub b = Bar(len: 600mm)`; `Bar` has `let blank = box(len, …)` and `let body = translate(blank, …)` | builds, and `body` reflects len = 600mm (2026-10-12 probe: `unresolvable GeomRef::Sub('blank')`, exit 1, while `Bar()` builds) |
 
 ## 6. Resolved design decisions
 
@@ -180,6 +187,8 @@ mechanism the dogfood duplicates prove works end-to-end).
    updated at decompose to cite this PRD; #6592's check-truthfulness acceptance
    clause moves to leaf γ). #6598 (geometry-handle axis) and #5868 (recursion
    budget) stay independent satellites — referenced, not duplicated.
+   *(Delta, 2026-10-12 ruling, esc-6598-15: #6598's axis moved into β; #6598
+   stays as β's post-landing checkpoint — §8 β.)*
 3. **Loud-failure shape** (γ): new `UndefCause` variant + new Error-severity
    `DiagnosticCode`s replacing the code-less `Diagnostic::error` on the
    per-instance re-realization failure path + `reify check` converging on the
@@ -212,6 +221,11 @@ mechanism the dogfood duplicates prove works end-to-end).
 
 ## 7. Cross-PRD relationships (G4)
 
+> **Solid-param op substitution (step-assembly-import ο #8067).** This PRD owns the recursive
+> overlay and the re-realization trigger only. Replacing a `Solid` param's default-compiled
+> realization ops with the override expression's (both arms) is owned by
+> `docs/prds/v0_6/step-assembly-import.md` η (#8061), which extends this PRD's scope there.
+
 | Other PRD / task | Direction | Seam mechanism | Owner | Status |
 |---|---|---|---|---|
 | assembly-derivation-toolbox.md (paired commit) | it consumes | merged-args elaboration + loud-failure diagnostics | this PRD | its batch dep-wires onto α/β/γ/δ |
@@ -219,7 +233,8 @@ mechanism the dogfood duplicates prove works end-to-end).
 | uniform-member-access.md (#5426) | it consumes | `elaborate_child_instance` semantics | that PRD | reference only |
 | sub-placement-and-surfacing.md | corrects | the one-level scope-cut prose + rustdoc + test claims | this PRD (leaf ε) | queued |
 | placement-relations-belt.md | boundary | per-instance `at auto` solve (out of scope here) | that PRD (joint seam, per its charter) | declared v1 boundary |
-| #6598 / #5868 | siblings | geometry-handle axis / recursion node budget | those tasks | out of scope, wired as related context |
+| #6598 | checkpoint (was: sibling) | geometry-handle axis — delivered by β since the 2026-10-12 ruling (esc-6598-15); #6598 verifies it after β lands and carries step-assembly-import ν #8065's dependency edge | β (the work) / #6598 (the verification) | dep-wired on β |
+| #5868 | sibling | recursion node budget | that task | out of scope, wired as related context |
 | solver-driver-parity.md (P1, landed 2026-08-26) | it consumes | solved-value realization at the child boundary — P1 B2's geometry half rides β #6592 + κ #6657; P1 owns whether the solve runs, this PRD owns the value flow. P1 §8 also names γ #6608 as adjacent (check exit-gate seam; #5403 ruling 2026-08-26) | this PRD (β, κ) | row added 2026-08-26; mirrors P1 §8 |
 
 ## 8. Decomposition plan (task IDs assigned at decompose, 2026-08-26)
@@ -234,8 +249,20 @@ mechanism the dogfood duplicates prove works end-to-end).
   "has args" to "effective cells differ from template cells" with
   overlay-fingerprint dedup; retire the one-level boundary INCLUDING its
   rustdoc scope-cut banner (retired in the same diff). Signals: B1–B4, B10,
-  B13, B16. (B5 — the pair fixture — is ζ's observable: the fixture does not
+  B13, B16, B17. (B5 — the pair fixture — is ζ's observable: the fixture does not
   exist until ζ builds it; D3-adversary finding, accepted.)
+  *(Delta, 2026-10-12 ruling, esc-6598-15 — β OWNS THE GEOMETRY-HANDLE AXIS.
+  "Recursively-seeded named-steps" is the `child_named_steps` map handed to an
+  overridden child's op compiler, and it is seeded in BOTH re-realization
+  helpers: `realize_sub_override_handles` (surfacing walk) and
+  `realize_overridden_instance_into` (cross-sub seed path — the one whose
+  diagnostic B13's pin matches, so generalizing only the former leaves the pin
+  erroring). Seed from PER-INSTANCE handles: a template handle is right only
+  for an arg-free sub, and for a sub with args it composes default-sized
+  geometry silently (a C2 violation). β's diff re-baselines the pin (B13) and
+  delivers B17 (the same map, one level deep). This reverses the
+  architect-era carve-out recorded in §2 and §6.2; §7 and §9 are corrected to
+  match.)*
 - **γ = #6608 — loud-failure convergence** [high, deps α, #5403]: `UndefCause` variant +
   Error-severity `DiagnosticCode`s + `reify check` severity-exit convergence;
   re-baseline the `cli_check.rs` indeterminate-exits-0 pins where the new class
@@ -249,6 +276,9 @@ mechanism the dogfood duplicates prove works end-to-end).
   specialization-arm geometry test; re-baseline the nested-override
   compile-error pin; correct `seed_cross_sub_named_steps` rustdoc and the
   sub-placement-and-surfacing prose. Signals: B11–B13 green in gate.
+  *(Delta, 2026-10-12 ruling, esc-6598-15: β re-baselines the pin and retires
+  the banner in its own diff; ε VERIFIES both and redoes neither. ε's text is
+  carried by combiner #6926.)*
 - **ζ = #6611 — integration gate** [medium, deps β γ δ ε]: commit the pair fixture,
   register both fixtures, CLI STEP-grep tests, the Shape-A oracle harness
   (hand-specialized twin equivalence). Signals: the §1 bullets, executed —
@@ -287,8 +317,12 @@ mechanism the dogfood duplicates prove works end-to-end).
 
 ## 9. Out of scope
 
-- #6598's geometry-handle axis (an overridden child's own body reading
-  `self.<innersub>.body`) — architect-ruled out of #6592; its own task.
+- *(Removed 2026-10-12, ruling esc-6598-15: the geometry-handle axis — an
+  overridden child's own body reading `self.<innersub>.body` — is IN scope and
+  delivered by β; see §8.)* What stays out: the let-bound instance path
+  (`seed_cross_let_named_steps`), which C1's site list does not name. If β
+  leaves that boundary in place its final report says so, and #6598 (β's
+  post-landing checkpoint) carries the residue.
 - #5868 recursion node budget.
 - Per-instance `at auto` relate-solve (placement-relations-belt seam; §6.6).
 - Any change to Kleene semantics or never-false-Violated.

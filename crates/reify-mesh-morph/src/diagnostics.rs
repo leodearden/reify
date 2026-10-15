@@ -309,6 +309,7 @@ pub fn reset() {
 /// (e.g. from task #2949's debug-RPC tests). Mirrors `stats::reset_for_test`.
 /// Delegates to the ungated [`reset()`] so the body stays DRY.
 #[cfg(any(test, feature = "testing"))]
+// G-allow: test-isolation hook compiled only under cfg(test) / feature "testing"; its cross-crate callers are crates/reify-eval/tests/morph_arm_e2e.rs (a tests/ file this audit excludes) and the gui/src-tauri/src/debug_server.rs tests (outside this audit's crates/reify-*/src scope)
 pub fn reset_for_test() {
     reset();
 }

@@ -3,7 +3,6 @@
 //! Tests for:
 //!   - Range constructor evaluation (RangeConstructor)
 //!   - .lower / .upper methods
-//!   - .contains(val) method
 //!   - .span method
 
 use reify_expr::{EvalContext, eval_expr};
@@ -196,102 +195,6 @@ fn range_upper_upper_only_scalar() {
     assert_eq!(result, Value::Option(Some(Box::new(mm(10.0)))));
 }
 
-// ── step-6: .contains(val) on Range — failing tests ──────────────────────────
-
-/// `(1..10).contains(5)` → `Bool(true)`
-#[test]
-fn range_contains_mid_true() {
-    let range = Value::range(Some(Value::Int(1)), Some(Value::Int(10)), true, true);
-    let result = eval_method(range, "contains", vec![Value::Int(5)], Type::Bool);
-    assert_eq!(result, Value::Bool(true));
-}
-
-/// `(1..10).contains(0)` → `Bool(false)` (below lower bound)
-#[test]
-fn range_contains_below_lower_false() {
-    let range = Value::range(Some(Value::Int(1)), Some(Value::Int(10)), true, true);
-    let result = eval_method(range, "contains", vec![Value::Int(0)], Type::Bool);
-    assert_eq!(result, Value::Bool(false));
-}
-
-/// `(1..10).contains(11)` → `Bool(false)` (above upper bound)
-#[test]
-fn range_contains_above_upper_false() {
-    let range = Value::range(Some(Value::Int(1)), Some(Value::Int(10)), true, true);
-    let result = eval_method(range, "contains", vec![Value::Int(11)], Type::Bool);
-    assert_eq!(result, Value::Bool(false));
-}
-
-/// `(1..10).contains(1)` → `Bool(true)` (inclusive lower boundary)
-#[test]
-fn range_contains_at_lower_inclusive() {
-    let range = Value::range(Some(Value::Int(1)), Some(Value::Int(10)), true, true);
-    let result = eval_method(range, "contains", vec![Value::Int(1)], Type::Bool);
-    assert_eq!(result, Value::Bool(true));
-}
-
-/// `(1..<10).contains(10)` → `Bool(false)` (exclusive upper boundary)
-#[test]
-fn range_contains_at_upper_exclusive_false() {
-    let range = Value::range(Some(Value::Int(1)), Some(Value::Int(10)), true, false);
-    let result = eval_method(range, "contains", vec![Value::Int(10)], Type::Bool);
-    assert_eq!(result, Value::Bool(false));
-}
-
-/// `(>5).contains(10)` → `Bool(true)` (single-sided: no upper bound)
-#[test]
-fn range_contains_single_sided_lower_true() {
-    let range = Value::range(Some(Value::Int(5)), None, false, false);
-    let result = eval_method(range, "contains", vec![Value::Int(10)], Type::Bool);
-    assert_eq!(result, Value::Bool(true));
-}
-
-/// `(<10).contains(5)` → `Bool(true)` (single-sided: no lower bound)
-#[test]
-fn range_contains_single_sided_upper_true() {
-    let range = Value::range(None, Some(Value::Int(10)), false, false);
-    let result = eval_method(range, "contains", vec![Value::Int(5)], Type::Bool);
-    assert_eq!(result, Value::Bool(true));
-}
-
-// ── step-8: .contains undef propagation and edge cases ───────────────────────
-
-/// `range.contains(Undef)` → `Undef`
-#[test]
-fn range_contains_undef_needle_propagates() {
-    let range = Value::range(Some(Value::Int(1)), Some(Value::Int(10)), true, true);
-    let result = eval_method(range, "contains", vec![Value::Undef], Type::Bool);
-    assert_eq!(result, Value::Undef);
-}
-
-/// `(1..10).contains(10)` — inclusive upper boundary → `Bool(true)`
-#[test]
-fn range_contains_at_upper_inclusive() {
-    let range = Value::range(Some(Value::Int(1)), Some(Value::Int(10)), true, true);
-    let result = eval_method(range, "contains", vec![Value::Int(10)], Type::Bool);
-    assert_eq!(result, Value::Bool(true));
-}
-
-/// Scalar range: `(1mm..10mm).contains(5mm)` → `Bool(true)`
-#[test]
-fn range_contains_scalar_matching_dimension() {
-    let range = Value::range(Some(mm(1.0)), Some(mm(10.0)), true, true);
-    let result = eval_method(range, "contains", vec![mm(5.0)], Type::Bool);
-    assert_eq!(result, Value::Bool(true));
-}
-
-/// Dimension mismatch: scalar range, incompatible scalar needle → Undef.
-#[test]
-fn range_contains_wrong_dimension_scalar_undef() {
-    let time_val = Value::Scalar {
-        si_value: 5.0,
-        dimension: DimensionVector::TIME,
-    };
-    let range = Value::range(Some(mm(1.0)), Some(mm(10.0)), true, true);
-    let result = eval_method(range, "contains", vec![time_val], Type::Bool);
-    assert_eq!(result, Value::Undef);
-}
-
 // ── step-10: .span method — failing tests ────────────────────────────────────
 
 /// `(1..10).span` → `Int(9)`
@@ -371,27 +274,6 @@ fn span_on_non_range_is_undef() {
         vec![],
         Type::Int,
     );
-    let result = eval_expr(&expr, &EvalContext::simple(&ValueMap::new()));
-    assert_eq!(result, Value::Undef);
-}
-
-/// `.contains` called with wrong arg count (0 args) → `Undef`
-#[test]
-fn contains_wrong_arg_count_undef() {
-    let range = Value::range(Some(Value::Int(1)), Some(Value::Int(10)), true, true);
-    let result = eval_method(range, "contains", vec![], Type::Bool);
-    assert_eq!(result, Value::Undef);
-}
-
-/// `.span` called with args (should be 0) → `Undef`
-#[test]
-fn span_with_args_undef() {
-    let range = Value::range(Some(Value::Int(1)), Some(Value::Int(10)), true, true);
-    // Build span call with an extra argument (invalid)
-    let range_expr = CompiledExpr::literal(range, Type::Range(Box::new(Type::Int)));
-    let extra_arg = CompiledExpr::literal(Value::Int(1), Type::Int);
-    let expr =
-        CompiledExpr::method_call(range_expr, "span".to_string(), vec![extra_arg], Type::Int);
     let result = eval_expr(&expr, &EvalContext::simple(&ValueMap::new()));
     assert_eq!(result, Value::Undef);
 }

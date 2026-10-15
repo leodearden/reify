@@ -29,9 +29,9 @@ use reify_ir::{GeometryHandleId, TopologyAttributeTable, ValueMap};
 ///   caller must preserve the old table before triggering the new-side
 ///   realization (same caveat as Stage B).
 /// - `faces`, `edges`, `vertices`: handle slices extracted from this side's
-///   B-rep via `kernel.extract_faces(...)` / `kernel.extract_edges(...)`.
-///   `vertices` is accepted for API forward-compatibility; not processed in
-///   v0.2.
+///   B-rep via `kernel.extract_faces(...)` / `kernel.extract_edges(...)` /
+///   `kernel.extract_vertices(...)`; Stage B matches all three into
+///   `CorrespondenceMap::{face_to_face, edge_to_edge, vertex_to_vertex}`.
 #[derive(Debug, Clone, Copy)]
 pub struct MorphSnapshot<'a> {
     pub graph: &'a EvaluationGraph,
@@ -182,7 +182,7 @@ mod tests {
     use reify_eval::graph::{EvaluationGraph, RealizationNodeData, ValueCellNode};
     use reify_core::{ContentHash, RealizationNodeId, Type, ValueCellId};
     use reify_ir::{
-        CapKind, FeatureId, KernelHandle, KernelId, ReprKind, Role, TopologyAttribute,
+        AxisSign, CapKind, FeatureId, KernelHandle, KernelId, ReprKind, Role, TopologyAttribute,
         TopologyAttributeTable, Value, ValueMap,
     };
 
@@ -330,6 +330,65 @@ mod tests {
         assert_eq!(
             morph_eligible(old_snap, new_snap),
             Eligibility::Eligible(CorrespondenceMap::default())
+        );
+    }
+
+    // ── Task 7276: vertex slices reach Stage B ────────────────────────────
+
+    #[test]
+    fn morph_eligible_forwards_vertex_slices_into_correspondence_vertex_to_vertex() {
+        let id = ValueCellId::new("Part", "width");
+        let old_graph = graph_with_cell(&id, Type::length());
+        let new_graph = old_graph.clone();
+
+        let mut old_values = ValueMap::new();
+        old_values.insert(id.clone(), Value::length(0.05));
+        let new_values = old_values.clone();
+
+        let corner = Role::CornerVertex {
+            x: AxisSign::Pos,
+            y: AxisSign::Pos,
+            z: AxisSign::Pos,
+        };
+        let mut old_table = TopologyAttributeTable::default();
+        old_table.record(
+            KernelHandle {
+                kernel: KernelId::Occt,
+                id: h(50),
+            },
+            attr(corner, 0),
+        );
+        let mut new_table = TopologyAttributeTable::default();
+        new_table.record(
+            KernelHandle {
+                kernel: KernelId::Occt,
+                id: h(60),
+            },
+            attr(corner, 0),
+        );
+
+        let old_snap = MorphSnapshot {
+            graph: &old_graph,
+            values: &old_values,
+            topology_attributes: &old_table,
+            faces: &[],
+            edges: &[],
+            vertices: &[h(50)],
+        };
+        let new_snap = MorphSnapshot {
+            graph: &new_graph,
+            values: &new_values,
+            topology_attributes: &new_table,
+            faces: &[],
+            edges: &[],
+            vertices: &[h(60)],
+        };
+
+        let mut expected = CorrespondenceMap::default();
+        expected.vertex_to_vertex.insert(h(50), h(60));
+        assert_eq!(
+            morph_eligible(old_snap, new_snap),
+            Eligibility::Eligible(expected)
         );
     }
 

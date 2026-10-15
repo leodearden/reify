@@ -1838,6 +1838,7 @@ describe('App parameter input: the reconciled unit/bare-number contract (task #5
           freshness: 'final',
           dimension: 'Volume',
           si_value: 0.00704500224,
+          declared_dimension: 'Volume',
         },
       ],
       constraints: [],
@@ -1986,6 +1987,7 @@ describe('App parameter input: the reconciled unit/bare-number contract (task #5
       freshness: 'final',
       dimension: 'Money',
       si_value: 5,
+      declared_dimension: 'Money',
     });
     vi.mocked(bridge.getInitialState).mockResolvedValue(published(state));
     vi.mocked((bridge as any).getUnitLadders).mockResolvedValue([

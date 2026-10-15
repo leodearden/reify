@@ -1,0 +1,14 @@
+// M-WASTE PRD baseline (§2.6, §4.5): a geometry query inside a user fn taking a Solid
+// does not fold after realisation; the same query inline does.
+module mwaste_fn_solid_no_fold
+
+fn ext_x(g : Solid) -> Length { dot(bbox_size(bounding_box(g)), vec3(1, 0, 0)) }
+fn vol_of(g : Solid) -> Volume { volume(g) }
+
+structure def FnSolid {
+    let body = box(40mm, 30mm, 10mm)
+    let ex : Length = ext_x(body)
+    let v_fn : Volume = vol_of(body)
+    let v_inline : Volume = volume(body)
+    let ex_inline : Length = dot(bbox_size(bounding_box(body)), vec3(1, 0, 0))
+}

@@ -290,7 +290,7 @@ export interface ValueData {
    */
   last_substantive_value?: string | null;
   /**
-   * Canonical dimension name for this cell's value (e.g. `"Volume"`,
+   * Canonical dimension name for this cell's VALUE (e.g. `"Volume"`,
    * `"Length"`), from `DimensionVector::canonical_name()`. Empty string /
    * absent for non-scalar, dimensionless, or composed-dimension values
    * (task #5199: drives the Parameters panel's per-cell unit picker — only
@@ -308,6 +308,13 @@ export interface ValueData {
    * the IPC wire (task #5199 engine_state decision: additive-only).
    */
   si_value?: number | null;
+  /**
+   * Mirrors Rust `ValueData.declared_dimension` (task #6962): the canonical
+   * dimension the cell's DECLARED type requires; `''` / absent = none. Drives
+   * the input gate, unit alphabet and edit-seed unit. `dimension` stays the
+   * value's own and drives the picker.
+   */
+  declared_dimension?: string;
 }
 
 /** One selectable display unit within a {@link DimensionLadder} (task #5199). */
@@ -346,26 +353,51 @@ export interface DimensionLadder {
 /** Canonical dimension name -> its selectable unit ladder, as returned by `get_unit_ladders`. */
 export type UnitLadderMap = Record<string, UnitOption[]>;
 
+/** The closed set of constraint verdict tokens; `ConstraintStatus` derives from it. */
+export const CONSTRAINT_STATUSES = ['satisfied', 'violated', 'indeterminate'] as const;
+export type ConstraintStatus = (typeof CONSTRAINT_STATUSES)[number];
+
 /** Status and label of a constraint node. */
 export interface ConstraintData {
   node_id: string;
   expression: string;
   /**
-   * Lower-case verdict token: `"satisfied"`, `"violated"`, or `"indeterminate"`.
-   * The contract — sole producer, consumers, closedness — is canonical on the
-   * same field in `gui/src-tauri/src/types.rs`; pinned two-way by
-   * `./__tests__/constraintVerdictParity.test.ts`.
+   * The closed lower-case verdict token. The contract (sole producer,
+   * consumers, closedness) is canonical on the same field in
+   * `gui/src-tauri/src/types.rs`. `convertRawConstraint` checks it at the wire
+   * boundary, and `./__tests__/constraintVerdictParity.test.ts` pins it two-way.
    *
-   * Deliberately typed `string` rather than a union (task 6723): narrowing
-   * ripples into ChatPanel's structurally-typed constraint array, five local
-   * `makeConstraint` factories, types.typecheck.ts and bridge.test.ts. Filed as
-   * follow-up work — a serde-derived `ConstraintStatus` enum on the Rust side
-   * plus this union is what retires the source-scraping pin in
+   * The Rust producer still emits a hand-mapped `String`; #7471 (a
+   * serde-derived enum) retires the source-scraping pin in
    * `./__tests__/constraintVerdictTokens.ts`.
    */
-  status: string;
+  status: ConstraintStatus;
   label: string | null;
   parameter_ids: string[];
+}
+
+/** Wire-format constraint as received from Tauri IPC: the verdict token is unchecked. */
+export type RawConstraintData = Omit<ConstraintData, 'status'> & { status: string };
+
+function isConstraintStatus(token: string): token is ConstraintStatus {
+  return (CONSTRAINT_STATUSES as readonly string[]).includes(token);
+}
+
+/**
+ * Check a wire-format constraint's verdict token by exact match (no case
+ * folding, no trimming). An out-of-set token can only mean the Rust contract
+ * broke, so it throws rather than being dropped or normalised.
+ */
+export function convertRawConstraint(raw: RawConstraintData): ConstraintData {
+  const { status } = raw;
+  if (!isConstraintStatus(status)) {
+    const accepted = CONSTRAINT_STATUSES.map((token) => JSON.stringify(token)).join(' | ');
+    throw new Error(
+      `ConstraintData.status must be exactly one of ${accepted}; ` +
+        `constraint ${raw.node_id} carried ${JSON.stringify(status)}`,
+    );
+  }
+  return { ...raw, status };
 }
 
 /** A diagnostic produced during compilation or tessellation. */
@@ -626,7 +658,7 @@ export interface GuiState {
 export interface RawGuiState {
   meshes: RawMeshData[];
   values: ValueData[];
-  constraints: ConstraintData[];
+  constraints: RawConstraintData[];
   files: FileData[];
   tessellation_diagnostics: DiagnosticInfo[];
   /** Compile-time diagnostics (warnings, errors) from the Reify compiler. */
@@ -670,7 +702,7 @@ export function convertRawGuiState(raw: RawGuiState): GuiState {
   return {
     meshes: raw.meshes.map(convertRawMesh),
     values: raw.values,
-    constraints: raw.constraints,
+    constraints: raw.constraints.map(convertRawConstraint),
     files: raw.files,
     tessellation_diagnostics: raw.tessellation_diagnostics,
     compile_diagnostics: raw.compile_diagnostics,
@@ -860,6 +892,11 @@ export interface EntityTreeNode {
  * `driving_param_cell_id` and `current_value_si` on `JointDescriptor`
  * are backward-compat mirrors populated only for `param_bound` joints;
  * they are `null` for `literal_bound`, `coupling_derived`, and `fixed_no_motion`.
+ *
+ * Only `param_bound` has a write target, so it alone is scrubbable. `literal_bound` is read-only:
+ * `synth_param_name` is a reserved name, not a cell id; `initial_value_si` is null when no literal
+ * value is known (unbound, or a literal the engine cannot resolve); `scrubbable` is a vestigial
+ * always-false slot the panel never reads.
  */
 export type JointBinding =
   | { kind: 'param_bound'; param_cell_id: string; current_value_si: number | null }

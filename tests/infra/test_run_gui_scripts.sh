@@ -473,6 +473,10 @@ NPM_STUB
 # must pass (exit 7 = CURLE_COULDNT_CONNECT, "no listener"), and calls 2+ are
 # the §5 readiness poll, which must succeed so the script proceeds to the
 # launch. Callers MUST reset "$_RGS_CURL_COUNTER" between script invocations.
+#
+# Opt-in: with "$_RGS_CURL_READY_FILE" set, calls 2+ report the port served
+# only once that file is non-empty — so a test observing something the stub
+# vite writes cannot lose the race to the launcher's teardown.
 _rgs_stub_curl_stateful() {
     cat > "$1/bin/curl" <<'CURL_STUB'
 #!/usr/bin/env bash
@@ -482,6 +486,7 @@ _n=0
 _n=$((_n + 1))
 printf '%s' "$_n" > "$_c"
 [ "$_n" -eq 1 ] && exit 7
+[ -z "${_RGS_CURL_READY_FILE:-}" ] || [ -s "$_RGS_CURL_READY_FILE" ] || exit 7
 exit 0
 CURL_STUB
     chmod +x "$1/bin/curl"
@@ -501,14 +506,21 @@ _rgs_stub_cargo() {
 # the sleeping process, so the cleanup trap's `kill "$VITE_PID"` terminates it
 # directly — bash defers a signal while a FOREGROUND child runs, so a plain
 # `sleep` would only die via the trap's `pkill -P` fallback.
+#
+# Opt-in: with "$_RGS_NPM_DEV_ARGS" set, `run dev` first records its full argv
+# there (one line), so a test can see the --port vite was spawned on.
 _rgs_stub_npm_serving() {
     cat > "$1/bin/npm" <<'NPM_STUB'
 #!/usr/bin/env bash
+_argv="$*"
 case "${1:-}" in
     run)
         shift
         case "${1:-}" in
-            dev) exec sleep 30 ;;
+            dev)
+                [ -n "${_RGS_NPM_DEV_ARGS:-}" ] && printf '%s\n' "$_argv" > "$_RGS_NPM_DEV_ARGS"
+                exec sleep 30
+                ;;
             *)   exit 0 ;;
         esac
         ;;
@@ -521,7 +533,8 @@ NPM_STUB
 # _rgs_stub_gui_binary <dir> <relpath> — a stand-in for the built reify-gui
 # that records the environment the launcher handed it into "$_RGS_ENV_DUMP"
 # (one KEY=VALUE per line) and exits 0. Lets the tests observe LD_LIBRARY_PATH
-# ordering without launching anything real.
+# ordering and the vite port it was told to load without launching anything
+# real.
 _rgs_stub_gui_binary() {
     mkdir -p "$(dirname "$1/$2")"
     cat > "$1/$2" <<'GUI_STUB'
@@ -529,6 +542,7 @@ _rgs_stub_gui_binary() {
 {
     printf 'LD_LIBRARY_PATH=%s\n' "${LD_LIBRARY_PATH:-}"
     printf 'WEBKIT_DISABLE_DMABUF_RENDERER=%s\n' "${WEBKIT_DISABLE_DMABUF_RENDERER:-}"
+    printf 'REIFY_VITE_PORT=%s\n' "${REIFY_VITE_PORT:-}"
 } > "${_RGS_ENV_DUMP:?_RGS_ENV_DUMP must be set by the test}"
 exit 0
 GUI_STUB
@@ -655,17 +669,13 @@ assert "run-gui-dev.sh: occupied-port error says the port is already in use" \
 assert "run-gui-dev.sh: occupied-port refusal happens BEFORE any npm invocation" \
     bash -c '! [ -e "$1" ]' _ "$_t26_tmpdir/npm-invoked"
 
-# The refusal must NOT offer REIFY_VITE_PORT as the remedy. That knob is
-# honoured by the vite spawn and the readiness poll only: reify-gui's frontend
-# URL comes from gui/src-tauri/tauri.conf.json's `"devUrl":
-# "http://localhost:1420"`, which tauri bakes in at COMPILE time, and nothing
-# under gui/src-tauri/src/ reads the variable. Taking that advice would move
-# OUR vite off :1420 while the launched binary still loads :1420 — the very
-# foreign listener this preflight refused — and the launcher would report
-# success the whole way. Freeing the port is the only remedy that works, so
-# this guards against the suggestion being reintroduced.
-assert "run-gui-dev.sh: occupied-port error does NOT advertise REIFY_VITE_PORT as a remedy" \
-    bash -c '! printf "%s\n" "$1" | grep -qF "REIFY_VITE_PORT="' _ "$_t26_out"
+# Relocating is a real remedy: reify-gui retargets tauri.conf.json's devUrl to
+# REIFY_VITE_PORT at startup (gui/src-tauri/src/dev_url.rs) and the launcher
+# exports the one port it spawned vite on (Test 33), so a launch moved off the
+# occupied port loads its own vite. The refusal offers it next to freeing the
+# listener.
+assert "run-gui-dev.sh: occupied-port error offers REIFY_VITE_PORT=<free port> as a remedy" \
+    bash -c 'printf "%s\n" "$1" | grep -qF "REIFY_VITE_PORT="' _ "$_t26_out"
 
 assert "run-gui-dev.sh: occupied-port error tells the user to free the port" \
     bash -c 'printf "%s\n" "$1" | grep -qiE "free (it|the port)"' _ "$_t26_out"
@@ -1177,6 +1187,112 @@ else
     echo "  SKIP: Test 31 needs a controlling terminal to be observable at all;"
     echo "  SKIP: the text drift-guard above still ran."
 fi
+
+# -- Test 33: behavioral — one REIFY_VITE_PORT drives vite AND reify-gui -----
+echo ""
+echo "--- Test 33: run-gui-dev.sh hands reify-gui the same REIFY_VITE_PORT it gave vite ---"
+
+# reify-gui retargets tauri.conf.json's devUrl to REIFY_VITE_PORT at startup
+# (gui/src-tauri/src/dev_url.rs), so the launcher must export the very port it
+# spawned vite on — the caller's or the :1420 default. Otherwise the window
+# loads some other vite than the one this launch started.
+
+_rgs_mktemp _t33_tmpdir
+_mk_rungui_dev_fixture "$_t33_tmpdir"
+_rgs_stub_npm_serving "$_t33_tmpdir"
+_rgs_stub_curl_stateful "$_t33_tmpdir"
+_rgs_stub_cargo "$_t33_tmpdir"
+_rgs_stub_gui_binary "$_t33_tmpdir" target/debug/reify-gui
+
+# _t33_run_dev <extra-env...> — reset the curl counter, the env dump and the
+# recorded vite argv, then run the dev launcher with REIFY_VITE_PORT scrubbed
+# so only <extra-env> decides what it sees. Readiness waits for the recorded
+# argv, so the stub vite always writes it before teardown.
+_t33_run_dev() {
+    rm -f "$_t33_tmpdir/curl-count" "$_t33_tmpdir/env-dump" "$_t33_tmpdir/npm-dev-args"
+    env -u REIFY_VITE_PORT \
+        DISPLAY=:99 \
+        _RGS_CURL_COUNTER="$_t33_tmpdir/curl-count" \
+        _RGS_CURL_READY_FILE="$_t33_tmpdir/npm-dev-args" \
+        _RGS_ENV_DUMP="$_t33_tmpdir/env-dump" \
+        _RGS_NPM_DEV_ARGS="$_t33_tmpdir/npm-dev-args" \
+        PATH="$_t33_tmpdir/bin:$PATH" \
+        "$@" \
+        bash "$_t33_tmpdir/scripts/run-gui-dev.sh" "$_t33_tmpdir/test.ri" >/dev/null 2>&1 || true
+}
+
+# --- 33a: a caller-chosen port ---
+_t33_port=$(_rgs_free_port)
+_t33_run_dev REIFY_VITE_PORT="$_t33_port"
+_t33a_seen=$(_rgs_env_dump_get "$_t33_tmpdir/env-dump" REIFY_VITE_PORT)
+_t33a_vite_argv=$(cat "$_t33_tmpdir/npm-dev-args" 2>/dev/null || true)
+
+assert "run-gui-dev.sh: vite is spawned on the caller's REIFY_VITE_PORT" \
+    bash -c 'printf "%s\n" "$1" | grep -qE -- "--port $2( |\$)"' _ "$_t33a_vite_argv" "$_t33_port"
+
+assert "run-gui-dev.sh: reify-gui is handed the caller's REIFY_VITE_PORT" \
+    bash -c '[ "$1" = "$2" ]' _ "$_t33a_seen" "$_t33_port"
+
+# --- 33b: unset, so the :1420 default (curl is stubbed: nothing real on
+# :1420 is probed or bound) ---
+_t33_run_dev
+_t33b_seen=$(_rgs_env_dump_get "$_t33_tmpdir/env-dump" REIFY_VITE_PORT)
+_t33b_vite_argv=$(cat "$_t33_tmpdir/npm-dev-args" 2>/dev/null || true)
+
+assert "run-gui-dev.sh: with REIFY_VITE_PORT unset, vite is spawned on 1420" \
+    bash -c 'printf "%s\n" "$1" | grep -qE -- "--port 1420( |\$)"' _ "$_t33b_vite_argv"
+
+assert "run-gui-dev.sh: with REIFY_VITE_PORT unset, reify-gui is handed REIFY_VITE_PORT=1420" \
+    bash -c '[ "$1" = 1420 ]' _ "$_t33b_seen"
+
+# -- Test 34: behavioral — a malformed REIFY_VITE_PORT is refused up front ----
+echo ""
+echo "--- Test 34: run-gui-dev.sh rejects a malformed REIFY_VITE_PORT before any build ---"
+
+# A typo must fail in milliseconds, not after npm install and a vite spawn.
+# This checks user input rather than the environment, so the
+# REIFY_GUI_SKIP_PREFLIGHT break-glass does not skip it.
+
+_rgs_mktemp _t34_tmpdir
+_mk_rungui_dev_fixture "$_t34_tmpdir"
+_rgs_stub_npm_marker "$_t34_tmpdir"
+_rgs_stub_curl_stateful "$_t34_tmpdir"
+_rgs_stub_cargo "$_t34_tmpdir" 1
+
+# _t34_run_dev <extra-env...> — reset the npm marker and the curl counter,
+# then run the dev launcher; prints its combined output.
+_t34_run_dev() {
+    rm -f "$_t34_tmpdir/npm-invoked" "$_t34_tmpdir/curl-count"
+    env DISPLAY=:99 \
+        _RGS_NPM_MARKER="$_t34_tmpdir/npm-invoked" \
+        _RGS_CURL_COUNTER="$_t34_tmpdir/curl-count" \
+        PATH="$_t34_tmpdir/bin:$PATH" \
+        "$@" \
+        bash "$_t34_tmpdir/scripts/run-gui-dev.sh" "$_t34_tmpdir/test.ri" 2>&1
+}
+
+for _t34_value in abc 0 65536 1420x; do
+    _t34_rc=0
+    _t34_out=$(_t34_run_dev REIFY_VITE_PORT="$_t34_value") || _t34_rc=$?
+
+    assert "run-gui-dev.sh: REIFY_VITE_PORT='$_t34_value' exits non-zero" \
+        bash -c '[ "$1" -ne 0 ]' _ "$_t34_rc"
+
+    assert "run-gui-dev.sh: REIFY_VITE_PORT='$_t34_value' error names REIFY_VITE_PORT" \
+        bash -c 'printf "%s\n" "$1" | grep -qF REIFY_VITE_PORT' _ "$_t34_out"
+
+    assert "run-gui-dev.sh: REIFY_VITE_PORT='$_t34_value' is refused BEFORE any npm invocation" \
+        bash -c '! [ -e "$1" ]' _ "$_t34_tmpdir/npm-invoked"
+done
+
+_t34_rc=0
+_t34_run_dev REIFY_VITE_PORT=abc REIFY_GUI_SKIP_PREFLIGHT=1 >/dev/null || _t34_rc=$?
+
+assert "run-gui-dev.sh: REIFY_GUI_SKIP_PREFLIGHT=1 does NOT bypass REIFY_VITE_PORT validation (rc)" \
+    bash -c '[ "$1" -ne 0 ]' _ "$_t34_rc"
+
+assert "run-gui-dev.sh: REIFY_GUI_SKIP_PREFLIGHT=1 does NOT bypass REIFY_VITE_PORT validation (no npm)" \
+    bash -c '! [ -e "$1" ]' _ "$_t34_tmpdir/npm-invoked"
 
 # -- Test 32: suite invariant — hermetic DISPLAY pin survives every test -----
 echo ""

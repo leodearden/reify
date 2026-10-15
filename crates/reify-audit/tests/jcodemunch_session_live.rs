@@ -439,38 +439,6 @@ fn initialize_payload() -> Value {
     })
 }
 
-/// A live serve answers `initialize` with `content-type: text/event-stream`,
-/// so the JSON-RPC envelope arrives on a `data:` line rather than as the whole
-/// body.
-///
-/// **This is the third copy of this decode.** The canonical one is
-/// `JcodemunchClient::post_raw` in `src/jcodemunch_client.rs`; a second lives
-/// in `src/fused_memory_client.rs`. They have already drifted — both
-/// production copies return `LoadError::Protocol` where this one panics,
-/// which is right for a test harness (a body we cannot decode is a harness
-/// fault, not a claim under test) but means a protocol fix (multi-line SSE
-/// `data:`, `event:` filtering, chunked framing) has to be applied in three
-/// places. Deduplicating it needs a shared module that both clients use, and
-/// `fused_memory_client.rs` is explicitly out of this task's scope (PRD §9),
-/// so the copy stands and the drift is at least written down. Filed as
-/// follow-up work; check `tools/list`-adjacent MCP envelope handling in all
-/// three before changing any one of them.
-fn parse_mcp_body(ctype: &str, body: &str) -> Value {
-    if ctype.contains("text/event-stream") {
-        for line in body.lines() {
-            if let Some(rest) = line.strip_prefix("data:") {
-                return serde_json::from_str(rest.trim())
-                    .unwrap_or_else(|e| panic!("parse SSE data line: {e}; body={body}"));
-            }
-        }
-        panic!("no SSE data line in response body: {body}");
-    }
-    if body.trim().is_empty() {
-        return Value::Null;
-    }
-    serde_json::from_str(body).unwrap_or_else(|e| panic!("parse JSON body: {e}; body={body}"))
-}
-
 /// POST `initialize` to `url`, attaching `mcp-session-id` only when `session`
 /// is `Some`. Returns `(status, assigned session id, parsed body)`.
 ///
@@ -506,7 +474,9 @@ fn post_initialize(
         .into_reader()
         .read_to_string(&mut body)
         .unwrap_or_else(|e| panic!("read initialize response body from {url}: {e}"));
-    Ok((status, assigned, parse_mcp_body(&ctype, &body)))
+    let decoded = reify_audit::mcp_wire::decode_body(&ctype, &body)
+        .unwrap_or_else(|e| panic!("decode `initialize` response body from {url}: {e}"));
+    Ok((status, assigned, decoded))
 }
 
 // -----------------------------------------------------------------------

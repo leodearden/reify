@@ -248,11 +248,16 @@ tasks:
       item-4 count load-bearing and re-checkable; non-zero ⇒ migrate in β before γ.'
     verdict: PASS
     delivered_check:
-      kind: grep
-      pattern: 'const CTOR_FIELD_CONFORMANCE_SEVERITY: Severity = Severity::Warning'
-      paths:
-      - crates/reify-compiler/src/conformance/mod.rs
-      expect: present
+      kind: manual
+      reason: SUPERSEDED by task 5306, which flipped
+        CTOR_FIELD_CONFORMANCE_SEVERITY from Severity::Warning to Severity::Error.
+        The binding's "Severity::Warning (unchanged at HEAD)" and its
+        claim "ctor entry PRINTS, exits 0" are as-authored history with no live
+        pattern to check. The post-flip contract is decision D4 of
+        docs/prds/struct-ctor-field-type-conformance.md, pinned by
+        g_i2_cross_dimension_arg_at_dimensioned_slot_errors and
+        delta_promotes_the_five_headline_rows_with_code_severity_content_and_span in
+        crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs.
   - name: auto-and-undef-are-not-conformance-judged
     binding: 'UNLISTED PREMISE surfaced by the Adversary, load-bearing for the corpus
       gate. `auto`, `auto(free)` and `undef` produce NO conformance judgement at EITHER

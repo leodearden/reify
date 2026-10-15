@@ -5,7 +5,8 @@
 //! threshold would be flaky and environment-sensitive, so instead we assert the
 //! *mechanism* directly: a counter incremented once per completed OCCT boolean
 //! `Build()` lets a test observe exactly how many boolean passes an operation
-//! performed.
+//! performed.  The `boolean_*_with_history` trio, which is the production
+//! realization path, is counted too.
 //!
 //! `reify_kernel_occt::reset_boolean_pass_count()` zeroes the counter and
 //! `reify_kernel_occt::boolean_pass_count()` reads it.
@@ -24,7 +25,7 @@
 
 #![cfg(has_occt)]
 
-use reify_ir::{GeometryHandleId, GeometryOp, Value};
+use reify_ir::{GeometryError, GeometryHandleId, GeometryOp, Value};
 use reify_kernel_occt::{boolean_pass_count, reset_boolean_pass_count, OcctKernel};
 
 /// Build a fresh 1 m unit cube centred at the origin; return its handle id.
@@ -52,59 +53,56 @@ fn translated_x(kernel: &mut OcctKernel, src: GeometryHandleId, dx: f64) -> Geom
         .id
 }
 
-/// A single binary boolean (Union → `boolean_fuse`) performs exactly ONE pass.
+type BinaryBoolean =
+    fn(&mut OcctKernel, GeometryHandleId, GeometryHandleId) -> Result<(), GeometryError>;
+
+/// Every binary boolean performs exactly ONE counted pass: the plain ops
+/// reached through `execute`, and the `boolean_*_with_history` trio that is the
+/// production path (Engine → `execute_with_history` → `boolean_*_with_history`).
 #[test]
-fn binary_union_is_one_boolean_pass() {
-    let mut kernel = OcctKernel::new();
-    let a = unit_box(&mut kernel);
-    let b = translated_x(&mut kernel, a, 0.5); // overlapping → a real fuse
+fn every_binary_boolean_is_one_boolean_pass() {
+    let binary_booleans: [(&str, BinaryBoolean); 6] = [
+        ("Union", |kernel, left, right| {
+            kernel.execute(&GeometryOp::Union { left, right }).map(drop)
+        }),
+        ("Difference", |kernel, left, right| {
+            kernel
+                .execute(&GeometryOp::Difference { left, right })
+                .map(drop)
+        }),
+        ("Intersection", |kernel, left, right| {
+            kernel
+                .execute(&GeometryOp::Intersection { left, right })
+                .map(drop)
+        }),
+        ("boolean_fuse_with_history", |kernel, left, right| {
+            kernel.boolean_fuse_with_history(left, right).map(drop)
+        }),
+        ("boolean_cut_with_history", |kernel, left, right| {
+            kernel.boolean_cut_with_history(left, right).map(drop)
+        }),
+        ("boolean_common_with_history", |kernel, left, right| {
+            kernel.boolean_common_with_history(left, right).map(drop)
+        }),
+    ];
 
-    reset_boolean_pass_count();
-    kernel
-        .execute(&GeometryOp::Union { left: a, right: b })
-        .expect("binary union must succeed");
-    assert_eq!(
-        boolean_pass_count(),
-        1,
-        "a single binary Union must perform exactly 1 boolean pass"
-    );
-}
+    let mut miscounts = Vec::new();
+    for (name, run) in binary_booleans {
+        let mut kernel = OcctKernel::new();
+        let a = unit_box(&mut kernel);
+        let b = translated_x(&mut kernel, a, 0.5); // overlapping → a real boolean
 
-/// A single binary boolean (Difference → `boolean_cut`) performs exactly ONE
-/// pass — the cut increment site, which no fuse-path test reaches.
-#[test]
-fn binary_difference_is_one_boolean_pass() {
-    let mut kernel = OcctKernel::new();
-    let a = unit_box(&mut kernel);
-    let b = translated_x(&mut kernel, a, 0.5); // overlapping → a real cut
-
-    reset_boolean_pass_count();
-    kernel
-        .execute(&GeometryOp::Difference { left: a, right: b })
-        .expect("binary difference must succeed");
-    assert_eq!(
-        boolean_pass_count(),
-        1,
-        "a single binary Difference must perform exactly 1 boolean pass"
-    );
-}
-
-/// A single binary boolean (Intersection → `boolean_common`) performs exactly
-/// ONE pass — the common increment site, which no fuse-path test reaches.
-#[test]
-fn binary_intersection_is_one_boolean_pass() {
-    let mut kernel = OcctKernel::new();
-    let a = unit_box(&mut kernel);
-    let b = translated_x(&mut kernel, a, 0.5); // overlapping → a real common
-
-    reset_boolean_pass_count();
-    kernel
-        .execute(&GeometryOp::Intersection { left: a, right: b })
-        .expect("binary intersection must succeed");
-    assert_eq!(
-        boolean_pass_count(),
-        1,
-        "a single binary Intersection must perform exactly 1 boolean pass"
+        reset_boolean_pass_count();
+        run(&mut kernel, a, b).unwrap_or_else(|e| panic!("{name} must succeed: {e}"));
+        let passes = boolean_pass_count();
+        if passes != 1 {
+            miscounts.push(format!("  {name}: {passes} passes"));
+        }
+    }
+    assert!(
+        miscounts.is_empty(),
+        "every binary boolean must perform exactly 1 counted boolean pass:\n{}",
+        miscounts.join("\n")
     );
 }
 

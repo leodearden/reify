@@ -17,6 +17,8 @@ const FUNCTIONS: &str = include_str!("chunks/functions.md");
 const UNITS: &str = include_str!("chunks/units.md");
 const TYPES: &str = include_str!("chunks/types.md");
 const STDLIB: &str = include_str!("chunks/stdlib.md");
+const MEASUREMENT: &str = include_str!("chunks/measurement.md");
+const TOPOLOGY: &str = include_str!("chunks/topology.md");
 
 /// All available topic names, in alphabetical order.
 pub const TOPICS: &[&str] = &[
@@ -28,12 +30,14 @@ pub const TOPICS: &[&str] = &[
     "functions",
     "geometry",
     "guards",
+    "measurement",
     "occurrences",
     "parameters",
     "purposes",
     "stdlib",
     "structures",
     "syntax",
+    "topology",
     "traits",
     "types",
     "units",
@@ -61,6 +65,8 @@ pub fn get_chunk(topic: &str) -> Option<&'static str> {
         "units" => Some(UNITS),
         "types" => Some(TYPES),
         "stdlib" => Some(STDLIB),
+        "measurement" => Some(MEASUREMENT),
+        "topology" => Some(TOPOLOGY),
         _ => None,
     }
 }
@@ -92,7 +98,34 @@ mod tests {
     }
 
     #[test]
-    fn available_topics_returns_17_entries() {
-        assert_eq!(available_topics().len(), 17);
+    fn available_topics_returns_19_entries() {
+        assert_eq!(available_topics().len(), 19);
+    }
+
+    const MAX_CHUNK_BYTES: usize = 36 * 1024;
+
+    /// `get_chunk` serves a whole file per retrieval, so every byte of a chunk is
+    /// paid on every lookup of its topic. A chunk that outgrows this ceiling
+    /// should have a section split into its own topic — the way task 7344 split
+    /// `measurement` and `topology` out of `geometry` — rather than the ceiling
+    /// raised. Raising it is a deliberate, diff-visible edit.
+    #[test]
+    fn every_topic_fits_one_retrieval_budget() {
+        let oversized: Vec<(&str, usize)> = TOPICS
+            .iter()
+            .map(|topic| {
+                let chunk = get_chunk(topic).unwrap_or_else(|| {
+                    panic!("topic `{topic}` is in TOPICS but has no get_chunk arm")
+                });
+                (*topic, chunk.len())
+            })
+            .filter(|(_, len)| *len > MAX_CHUNK_BYTES)
+            .collect();
+        assert!(
+            oversized.is_empty(),
+            "topic(s) over the {MAX_CHUNK_BYTES}-byte per-retrieval ceiling, as (topic, bytes): \
+             {oversized:?}. Split a section of each into its own topic rather than raising the \
+             ceiling."
+        );
     }
 }

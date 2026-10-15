@@ -1992,10 +1992,13 @@ run_background_verify_check_no_bypass() {
     H_ERR="$_tmpdir/background_err.txt"
     touch "$H_ERR"
 
+    H_LEDGER="$_tmpdir/sweep-ledger.jsonl"
+
     H_RC=0
     (
         apply_hermetic_env "$_stubdir" "$_lock" 30
         export REIFY_SLOT_EVENT_LOG="$_eventlog"
+        export REIFY_BACKGROUND_SWEEP_LEDGER="$H_LEDGER"
         REIFY_INFRA_SUITE_ACTIVE=1 DF_VERIFY_ROLE=background bash "$REPO_ROOT/scripts/verify.sh" test --scope all
     ) 2>"$H_ERR" || H_RC=$?
 }
@@ -2016,6 +2019,7 @@ echo "--- Section H: background non-exemption (execute mode, task 5210) ---"
 H_RC=0
 H_ERR=""
 H_EVENTLOG=""
+H_LEDGER=""
 if [ "$_TS_READY" = "1" ]; then
     run_background_verify_check_no_bypass
     assert "background-role verify.sh test succeeds with a free slot (exit 0, got ${H_RC})" \
@@ -2032,6 +2036,11 @@ if [ "$_TS_READY" = "1" ]; then
     # --- Section H structural assertion (S-technique): merge-bypass marker ABSENT ---
     assert "Section H structural: stderr LACKS the merge-bypass marker (background is non-exempt, contrast Section B)" \
         bash -c '! grep -qF "lib_test_semaphore.sh: bypass (role=merge)" "$1"' _ "$H_ERR"
+    # --- Section H ledger isolation (task 7423): the completed background run's
+    # verdict record lands in the scratch ledger, never the main checkout's.
+    H_LEDGER_COUNT=$(wc -l < "$H_LEDGER" 2>/dev/null | tr -d ' ')
+    assert "Section H ledger isolation: background verdict went to the scratch ledger (records=${H_LEDGER_COUNT:-0}, want 1)" \
+        test "${H_LEDGER_COUNT:-0}" -eq 1
 else
     assert "Section H SKIPPED: tree-sitter artifacts not ready — cannot run execute-mode e2e sections (see readiness diagnostic above)" \
         false

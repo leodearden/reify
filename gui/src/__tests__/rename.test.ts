@@ -13,7 +13,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { EditorView } from '@codemirror/view';
 import { applyWorkspaceEdit, applyTextEditsToString, applyWorkspaceEditAcrossFiles, renameCommand } from '../editor/rename';
-import type { RenameClient, RenameSkewGuard, RenameUi } from '../editor/rename';
+import type { RenameClient, RenameUi } from '../editor/rename';
+import type { VersionSkewGuard } from '../editor/versionSkew';
 import type { WorkspaceEdit } from '../editor/lspClient';
 import { flushMacrotasks } from './test-utils';
 
@@ -560,7 +561,7 @@ function makeRenameDeps() {
   const syncServer = vi.fn((_view: EditorView): Promise<void> | null => null);
   const client = { prepareRename, rename } as unknown as RenameClient;
   const ui = { promptNewName, showCannotRename, showRenameFailed } as unknown as RenameUi;
-  const guard: RenameSkewGuard = { currentVersion, syncServer };
+  const guard: VersionSkewGuard = { currentVersion, syncServer };
   return {
     client,
     ui,
@@ -983,7 +984,7 @@ describe('renameCommand', () => {
     expect(applyEdit).not.toHaveBeenCalled();
   });
   // -------------------------------------------------------------------------
-  // version-skew guard (injected RenameSkewGuard) — step-13 tests
+  // version-skew guard (injected VersionSkewGuard) — step-13 tests
   // -------------------------------------------------------------------------
 
   const GUARD_TARGET = {
@@ -1263,7 +1264,46 @@ describe('renameCommand', () => {
     expect(showRenameFailed).not.toHaveBeenCalled();
   });
 
-  it('(i) version skew: the server is synced before the first request AND before the re-issue', async () => {
+  it('version skew: an edit typed while the rename was in flight, not yet sent, re-issues the rename', async () => {
+    const { client, ui, prepareRename, rename, promptNewName, showRenameFailed, currentVersion, syncServer, guard } =
+      makeRenameDeps();
+    prepareRename.mockResolvedValue(GUARD_TARGET);
+    // The document behaves like Editor's: a keystroke inside the didChange
+    // debounce bumps the version only when syncServer sends it.
+    let version = 1;
+    let unsent = false;
+    currentVersion.mockImplementation(() => version);
+    syncServer.mockImplementation(() => {
+      if (!unsent) return null;
+      unsent = false;
+      version += 1;
+      return Promise.resolve();
+    });
+    const fresh = stampedEdit(2);
+    rename
+      .mockImplementationOnce(() => {
+        unsent = true;
+        return Promise.resolve(stampedEdit(1));
+      })
+      .mockResolvedValueOnce(fresh);
+
+    const applyEdit = vi.fn();
+    const view = guardView();
+    await submitRename(
+      renameCommand(() => URI, client, ui, applyEdit, guard),
+      view,
+      promptNewName,
+    );
+
+    // The first edit agreed with the version last SENT, but not with the text
+    // on screen: only sending the pending edit exposes the disagreement.
+    expect(rename).toHaveBeenCalledTimes(2);
+    expect(applyEdit).toHaveBeenCalledOnce();
+    expect(applyEdit).toHaveBeenCalledWith(view, fresh, URI);
+    expect(showRenameFailed).not.toHaveBeenCalled();
+  });
+
+  it('(i) version skew: the server is synced before and after every request, the re-issue included', async () => {
     const { client, ui, prepareRename, rename, promptNewName, currentVersion, syncServer, guard } =
       makeRenameDeps();
     prepareRename.mockResolvedValue(GUARD_TARGET);
@@ -1293,7 +1333,7 @@ describe('renameCommand', () => {
 
     // The version comparison only sees text the server was SENT, so the
     // re-issue must not be answered from an edit still waiting to go out.
-    expect(order).toEqual(['synced', 'rename', 'synced', 'rename']);
+    expect(order).toEqual(['synced', 'rename', 'synced', 'synced', 'rename', 'synced']);
     expect(syncServer).toHaveBeenCalledWith(view);
     expect(applyEdit).toHaveBeenCalledWith(view, fresh, URI);
   });

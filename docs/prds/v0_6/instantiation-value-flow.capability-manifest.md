@@ -146,3 +146,9 @@ by the IVF-sequencing study against main `181d1ec24c`/`62a47674fd` — memo in
 
 - No capabilities: docs stamp per overlay decompose-close obligations
   (terminal vocabulary; AS-AUTHORED freeze; ID backfill).
+
+## Amendment 2026-10-15 — delivered checks widened for the S18 verify cutover
+
+S18 (`docs/prds/v0_6/verify-structured-plan-and-role-table.md`, Leo ruling Q4) moves `scripts/verify.sh`'s logic into `scripts/reify_verify/` and replaces the coupled fixture lists with a derived set and `gui/src/__tests__/reifyGrammarCorpus.expected-clean.json`. These checks were widened so they give the same verdict today and after the move (three writes: task metadata, the `.yaml` sidecar, this note):
+
+- `fixture-registration-mechanism`: paths now `scripts/verify.sh`, `gui/src/__tests__/reifyGrammarCorpus.test.ts`, `gui/src/__tests__/reifyGrammarCorpus.expected-clean.json`, `crates/reify-cli/tests/`; pattern now `instantiation_value_flow_probe.ri`.

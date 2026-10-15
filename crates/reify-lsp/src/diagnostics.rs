@@ -8,7 +8,7 @@ use reify_core::{
 use reify_ir::{Freshness, Satisfaction};
 use tower_lsp::lsp_types::{self, Url};
 
-use crate::analysis::module_name_from_uri;
+use crate::decl_oracle::module_name_from_uri;
 use crate::convert;
 
 /// The eval/check-pass containment guard shared by all three LSP production
@@ -925,7 +925,8 @@ pub(crate) mod auto_type_param_fixtures;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tower_lsp::lsp_types::{DiagnosticSeverity, Url};
+    use crate::decl_oracle::test_fixtures::test_uri;
+    use tower_lsp::lsp_types::DiagnosticSeverity;
 
     // Shared `auto:` fixtures + anti-vacuity guards, also imported by
     // `crate::analysis::tests` so the two entry-point test families cannot
@@ -948,10 +949,6 @@ mod tests {
         Arc,
         atomic::{AtomicUsize, Ordering},
     };
-
-    fn test_uri() -> Url {
-        Url::parse("file:///test.ri").unwrap()
-    }
 
     /// Compile `parsed` exactly the way the LSP's three production compile
     /// sites do — `reify_compiler::compile_with_stdlib_checked(parsed,

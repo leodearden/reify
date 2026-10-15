@@ -47,7 +47,7 @@ fn eval_ri_file(path: &str, module_name: &str) -> reify_eval::EvalResult {
     // these fixtures parse in-process exactly as the product parses them.
     // Required once a fixture stops re-declaring the stdlib enum locally: the
     // bare `reify_syntax::parse` would degrade `MaterialCondition.RFS` to a
-    // `MemberAccess`.  Precedent: crates/reify-compiler/tests/examples_smoke.rs.
+    // `MemberAccess`.  Precedent: crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs.
     let parsed =
         reify_compiler::parse_with_stdlib(&source, reify_core::ModulePath::single(module_name));
     assert!(

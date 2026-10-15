@@ -1,0 +1,10 @@
+{
+  "probes": [
+    {
+      "capability": "POST (leaf alpha2 landed, R2(b)): a BARE generic-enum annotation `param r : Result` (no type arguments, no declared defaults) is REJECTED at compile time with the existing arity diagnostic from resolve_enum_type_with_args ('enum `Result` expects 2 type arguments, found 0'). PRE (2026-09-29): debug check/eval exit 101 (unrepresentable cell_type panic via the erased param), release exit 0 W.v = 0.005 m. Zero bare generic-enum annotations in the tracked corpus.",
+      "probe_kind": "check",
+      "fixture": "tests/prd-gate/fixtures/getar_bare_result_annotation_match_panics.ri",
+      "expected": { "observation": "present", "match": { "exit_code": 1, "stderr_contains": "expects 2 type argument" } }
+    }
+  ]
+}

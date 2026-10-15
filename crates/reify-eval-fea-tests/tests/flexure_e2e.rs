@@ -13,7 +13,9 @@
 
 use reify_core::{DiagnosticCode, Severity, ValueCellId};
 use reify_ir::Value;
-use reify_test_support::{make_simple_engine, parse_and_compile_with_stdlib};
+use reify_test_support::{
+    compile_source_with_stdlib, make_simple_engine, parse_and_compile_with_stdlib,
+};
 
 /// The cantilever worked-example source (L=20mm, b=5mm, h=0.5mm, Steel_AISI_1045 E=205GPa).
 fn cantilever_source() -> &'static str {
@@ -653,4 +655,181 @@ fn multi_ctor_session_surfaces_exactly_one_fatigue_info() {
         .filter(|d| d.severity == Severity::Error)
         .collect();
     assert!(errors.is_empty(), "no Error diagnostics; got {:?}", errors);
+}
+
+// ─── placeholder-ratchet α: BT3 corpus + §3.6 defense-in-depth (task #5476) ──
+
+/// Absolute path to `examples/flexures/`. The crate lives at
+/// `<root>/crates/reify-eval-fea-tests`, so the corpus is two levels up —
+/// the same relative shape the `include_str!` helpers at the top of this file
+/// use, resolved at runtime instead of at compile time.
+fn flexures_example_dir() -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/flexures")
+}
+
+/// BT3 (PRD docs/prds/v0_6/placeholder-type-eradication-ratchet.md §7.3): the
+/// WHOLE `examples/flexures` corpus still compiles and evals Error-clean after
+/// the α retype.
+///
+/// This is the file-level guard that changing every `prb_*` call site's type
+/// from `Scalar[LENGTH]` to `StructureRef("FlexureJoint")` does not break the
+/// downstream consumers those examples exercise — `body(...)`, `bind(...)`,
+/// `snapshot(...)`, `dim(...)`, `mechanism_modal_analysis(...)`,
+/// `flexure_compliance(...)` and field access on its result. The specific risk
+/// it retires is the #4310 compile-time `DrivingJoint` bound check on
+/// `bind`/`sweep`/`dim`: a flexure joint that stopped being a bare `Length`
+/// must not thereby stop being an acceptable joint argument. (It does not —
+/// `structure def FlexureJoint : DrivingJoint` carries the bound, which is the
+/// whole reason step-6 moved `std.flexures` after `std.kinematic`.)
+///
+/// DATA-DRIVEN ON PURPOSE: the corpus is walked at runtime rather than
+/// hand-listed, so a newly added `examples/flexures/*.ri` is covered the moment
+/// it lands. (The hand-listed `existing_flexure_examples_populate_compliance_and_stay_safe`
+/// above covers only 4 of the 6 files present today; this walker covers all of
+/// them and whatever comes next.) The floor assertion below stops a mis-resolved
+/// path from turning "found nothing" into a vacuous pass.
+///
+/// COVERAGE OVERLAP, DELIBERATE — do not delete the wrong half:
+/// - Half **(a)**, the zero-compile-Error gate, is a deliberately-redundant
+///   LOCALIZED RESTATEMENT of repo-wide coverage that already exists in
+///   `crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs::all_examples_parse_and_compile_with_stdlib`,
+///   which recursively discovers every `examples/**/*.ri` and applies the same
+///   gate (its `SKIP_SET` holds no flexures entry, so all six are covered
+///   there). It is kept because the compile is required anyway to produce
+///   `compiled` for half (b), and because the failure message here names the
+///   specific α mechanisms — first-arg-fallback retype, #4310 `DrivingJoint`
+///   bound, prelude order — which is a much faster diagnosis than the generic
+///   smoke failure. If it is ever cut, the coverage does NOT disappear.
+/// - Half **(b)**, the eval-time gate, is the genuinely NEW coverage:
+///   `examples_smoke` never evals. That half is the one that must not be lost.
+#[test]
+fn flexures_example_corpus_compiles_and_evals_green() {
+    let dir = flexures_example_dir();
+    let mut examples: Vec<std::path::PathBuf> = std::fs::read_dir(&dir)
+        .unwrap_or_else(|e| panic!("cannot read examples dir {}: {e}", dir.display()))
+        .map(|entry| entry.expect("readable dir entry").path())
+        .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("ri"))
+        .collect();
+    examples.sort();
+
+    assert!(
+        examples.len() >= 6,
+        "expected at least the 6 known flexure examples under {}; found {:?}. \
+         A count below the floor means the corpus path mis-resolved and this \
+         test would otherwise pass vacuously.",
+        dir.display(),
+        examples
+    );
+
+    for path in &examples {
+        let name = path.file_name().unwrap().to_string_lossy().into_owned();
+        let source = std::fs::read_to_string(path)
+            .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
+
+        // (a) Compile-clean. Uses compile_source_with_stdlib (not
+        // parse_and_compile_with_stdlib) so the panic message names the file.
+        let compiled = compile_source_with_stdlib(&source);
+        let compile_errors: Vec<_> = compiled
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Error)
+            .collect();
+        assert!(
+            compile_errors.is_empty(),
+            "examples/flexures/{name}: expected zero Error diagnostics after the \
+             prb_* retype to StructureRef(\"FlexureJoint\") (PRD §7.3 BT3, task \
+             #5476). A `no matching overload` here means a downstream consumer \
+             (body/bind/snapshot/dim/mechanism_modal_analysis) still expects the \
+             old first-arg-fallback type; a DrivingJoint bound complaint means \
+             the marker lost its `: DrivingJoint` clause or `std.flexures` \
+             regressed to loading before `std.kinematic`. Got: {compile_errors:?}"
+        );
+
+        // (b) Eval-clean.
+        let mut engine = make_simple_engine();
+        let eval_result = engine.eval(&compiled);
+        let eval_errors: Vec<_> = eval_result
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Error)
+            .collect();
+        assert!(
+            eval_errors.is_empty(),
+            "examples/flexures/{name}: expected zero Error diagnostics at EVAL \
+             time (PRD §7.3 BT3). Warnings/Infos are fine — yield_warning.ri \
+             deliberately emits W_FlexureYielding, and every PRB ctor emits the \
+             standing W_FlexureFatigueCheckMissing advisory. Got: {eval_errors:?}"
+        );
+    }
+}
+
+/// PRD §3.6 defense-in-depth: a FABRICATED `FlexureJoint()` is statically legal
+/// but must stay dynamically LOUD.
+///
+/// The marker is `pub` by necessity — it names the parameter type in
+/// `flexure_compliance`'s public signature, so user code must be able to spell
+/// it, which means user code can also construct it. That is the one residual
+/// hole the static ratchet cannot close, and closing it is not the goal:
+/// INV-SF-5 bans a placeholder being BOTH statically and dynamically silent, so
+/// the eval-time `W_FLEXURE_NON_JOINT_ARG` classifier (task 4547 Disposition 5,
+/// `reify-stdlib/src/flexures/diagnostics.rs`) is deliberately RETAINED rather
+/// than superseded by the type.
+///
+/// This test converts "we kept the classifier" from a commit-message claim into
+/// an executable assertion. A fabricated marker carries no `__flexure_compliance`
+/// cache entry, so the classifier still fires and the misuse is reported —
+/// just at eval time rather than compile time.
+///
+/// Note the deliberate asymmetry with BT1: `flexure_compliance(5mm)` is now a
+/// hard COMPILE Error (wrong type), while `flexure_compliance(FlexureJoint())`
+/// compiles and is caught at EVAL as a Warning (right type, wrong provenance).
+/// Both paths are loud; neither is silent.
+#[test]
+fn fabricated_flexure_joint_still_warns_non_joint_arg() {
+    let source = r#"
+module fabricated_flexure_joint
+
+structure def FabricatedFlexureJoint {
+    let c = flexure_compliance(FlexureJoint())
+}
+"#;
+
+    // (i) Fabrication is deliberately statically LEGAL — it must compile clean.
+    let compiled = compile_source_with_stdlib(source);
+    let compile_errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        compile_errors.is_empty(),
+        "`FlexureJoint()` fabrication must remain statically legal — the marker is \
+         necessarily pub, and making its construction a compile error is NOT the \
+         PRD §3.6 disposition. Got: {compile_errors:?}"
+    );
+
+    // (ii) …and must therefore stay dynamically loud.
+    let mut engine = make_simple_engine();
+    let eval_result = engine.eval(&compiled);
+    let non_joint: Vec<_> = eval_result
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::FlexureNonJointArg))
+        .collect();
+    assert_eq!(
+        non_joint.len(),
+        1,
+        "a fabricated FlexureJoint() carries no `__flexure_compliance` cache entry, \
+         so the retained eval-time W_FLEXURE_NON_JOINT_ARG classifier (task 4547 \
+         Disposition 5) must still fire — statically-silent AND dynamically-silent \
+         is exactly what INV-SF-5 bans. All diagnostics: {:?}",
+        eval_result.diagnostics
+    );
+    assert_eq!(
+        non_joint[0].severity,
+        Severity::Warning,
+        "W_FLEXURE_NON_JOINT_ARG is a Warning (the `W_*` mnemonic convention); \
+         got {:?}",
+        non_joint[0].severity
+    );
 }

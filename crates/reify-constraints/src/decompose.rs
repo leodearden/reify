@@ -4,8 +4,11 @@
 //! union-find to identify independent sub-problems.
 
 use crate::classifier::ConstraintClassifier;
+use crate::dependent_reads::{
+    DependentCellReads, collect_value_refs, dependent_cell_auto_reads, reach_of,
+};
 use reify_core::{ConstraintNodeId, ValueCellId};
-use reify_ir::{AutoParam, CompiledExpr, CompiledExprKind, ConstraintDomain};
+use reify_ir::{AutoParam, CompiledExpr, ConstraintDomain};
 use std::collections::{HashMap, HashSet};
 
 /// An independent sub-problem extracted from a larger constraint problem.
@@ -60,271 +63,42 @@ impl UnionFind {
     }
 }
 
-// --- Expression tree walk to collect ValueCellIds ---
-
-/// Collect all ValueCellIds referenced in an expression tree (public for registry).
-pub(crate) fn collect_value_refs_pub(expr: &CompiledExpr, out: &mut HashSet<ValueCellId>) {
-    collect_value_refs(expr, out);
+/// An objective's value-refs, ALREADY widened through `dependent_cells`: a ref
+/// to a derived cell also names every auto that cell transitively drives.
+///
+/// [`ExpandedObjectiveRefs::expand`] is the only constructor, so an unexpanded
+/// objective cannot reach the decomposition — the shape that split autos
+/// coupled only through a derived cell into separate components (task #5720).
+///
+/// Only FOLDABLE cells widen it, unlike the constraint side, which couples
+/// through unfoldable cells too. A cell no stored-order fold derives is never
+/// folded, so an objective reaching autos only through one governs nothing;
+/// coupling it would turn `FallbackComponentZero` into `Consumed` and silence
+/// `E_OBJECTIVE_UNCONSUMED`.
+pub(crate) struct ExpandedObjectiveRefs {
+    refs: HashSet<ValueCellId>,
 }
 
-/// Collect all ValueCellIds referenced in an expression tree.
-///
-/// Delegates child traversal to `CompiledExpr::walk` — when new
-/// `CompiledExprKind` variants are added, only `walk()` needs updating.
-fn collect_value_refs(expr: &CompiledExpr, out: &mut HashSet<ValueCellId>) {
-    expr.walk(&mut |node| {
-        if let CompiledExprKind::ValueRef(id) = &node.kind {
-            out.insert(id.clone());
-        }
-    });
-}
-
-/// For each dependent cell, the set of auto-param ids it reads TRANSITIVELY —
-/// following `ValueRef`s through OTHER dependent cells, not just its own
-/// expression.
-///
-/// # Why this exists (task #5720)
-///
-/// [`decompose_into_components`] unions the auto params an objective references
-/// SYNTACTICALLY. The canonical joint-drive shape (task #5189 β) is an objective
-/// that reads a bare DERIVED cell and no auto at all, so that union step sees an
-/// empty set and two autos coupled only through the derived cell land in
-/// SEPARATE components. `SolverRegistry::solve_inner` feeds this map back into
-/// its `obj_refs` before decomposing, so decomposition follows `dependent_cells`
-/// and the coupled autos are solved jointly. It also uses the map as the
-/// per-component fold filter: a component folds a cell only when it OWNS every
-/// auto that cell transitively reads, which is what makes a cross-component
-/// `Undef` fold structurally impossible.
-///
-/// # Why a reachability DFS, not a single forward pass
-///
-/// `dependent_cells` arrives topologically sorted (reify-eval's
-/// `build_dependent_cells`), so a single forward pass would be cheaper. Its
-/// failure mode is catastrophic and SILENT: were any cell to read a later
-/// entry, the pass would under-approximate that cell's auto set, the registry's
-/// subset filter would wrongly KEEP the cell in a component missing one of its
-/// autos, and the `Undef` fold would come straight back. A reachability DFS is
-/// order-independent, still linear, and cannot regress that way.
-///
-/// This computes REACHABILITY ONLY and never reorders `dependent_cells`, so PRD
-/// §6.3's single-authority-on-order invariant is untouched: the stored order
-/// remains the one authority, produced once upstream and consumed unchanged.
-///
-/// # INVARIANTS
-///
-/// - Cycle-safe, and FAIL-SAFE on a cycle: a cell that closes a back edge — or
-///   that transitively reads one — is OMITTED from the returned map entirely
-///   rather than published with the partial set the DFS accumulated. Publishing
-///   a partial set would be the exact under-approximation this function exists
-///   to prevent: the registry's subset filter would wrongly KEEP such a cell in
-///   a component missing one of its autos and the `Undef` fold would come
-///   straight back. ABSENCE is the safe direction — the filter drops a cell it
-///   has no entry for. reify-eval's `build_dependent_cells` already drops
-///   cycles, so this costs nothing on a well-formed problem and removes the
-///   dependency on that upstream guarantee.
-/// - Iterative (explicit stack), so a deep dependent-cell chain cannot blow the
-///   native stack.
-/// - A ref that is neither an auto nor another dependent cell is ignored: it is
-///   a plain value that carries no auto dependence.
-/// - A duplicate cell id resolves to the UNION over ALL of its occurrences —
-///   both as a child edge (a ref to that id inherits every occurrence's set)
-///   and in the returned map. First-occurrence-wins would be unsafe in this
-///   map's PRIMARY consumer: the registry filter keys on id, so every
-///   occurrence of a duplicated cell is retained or dropped TOGETHER. Were a
-///   later occurrence to read a strictly larger auto set, first-wins would keep
-///   both in a component that does not own one of those autos and the fold
-///   would read it unbound. Unioning is the drop-side-safe direction, matching
-///   how every other unknown here resolves.
-pub(crate) fn dependent_cell_auto_reads(
-    dependent_cells: &[(ValueCellId, CompiledExpr)],
-    auto_params: &[AutoParam],
-) -> HashMap<ValueCellId, HashSet<ValueCellId>> {
-    let n = dependent_cells.len();
-    if n == 0 {
-        return HashMap::new();
-    }
-
-    let auto_ids: HashSet<&ValueCellId> = auto_params.iter().map(|ap| &ap.id).collect();
-
-    // id → EVERY index carrying that id, not just the first. A ref to a
-    // duplicated cell inherits the union of all of its occurrences' auto sets:
-    // the fold overwrites the cell in stored order, so any occurrence can be
-    // the value a later reader observes.
-    let mut cell_index: HashMap<&ValueCellId, Vec<usize>> = HashMap::with_capacity(n);
-    for (i, (id, _)) in dependent_cells.iter().enumerate() {
-        cell_index.entry(id).or_default().push(i);
-    }
-
-    // Split each cell's direct refs into (a) autos it reads outright and (b)
-    // other dependent cells whose own auto sets it inherits.
-    let mut direct_autos: Vec<HashSet<ValueCellId>> = Vec::with_capacity(n);
-    let mut child_cells: Vec<Vec<usize>> = Vec::with_capacity(n);
-    for (_id, expr) in dependent_cells {
-        let mut refs = HashSet::new();
-        collect_value_refs(expr, &mut refs);
-
-        let mut autos = HashSet::new();
-        let mut children = Vec::new();
-        for r in refs {
-            if auto_ids.contains(&r) {
-                autos.insert(r);
-            } else if let Some(indices) = cell_index.get(&r) {
-                children.extend(indices.iter().copied());
-            }
-            // else: a plain value with no auto dependence → ignored.
-        }
-        direct_autos.push(autos);
-        child_cells.push(children);
-    }
-
-    // Iterative post-order DFS with memoization. `state`: 0 = unvisited,
-    // 1 = on the current stack (in progress), 2 = resolved.
-    let mut memo: Vec<Option<HashSet<ValueCellId>>> = vec![None; n];
-    // `incomplete[i]`: frame `i` closed a back edge, or inherited one from a
-    // child, so `memo[i]` is a STRICT UNDER-APPROXIMATION of that cell's auto
-    // reads. Such a cell is omitted from the returned map entirely rather than
-    // published partial — see the cycle invariant above.
-    let mut incomplete: Vec<bool> = vec![false; n];
-    let mut state: Vec<u8> = vec![0; n];
-    let mut stack: Vec<usize> = Vec::new();
-
-    for start in 0..n {
-        if state[start] == 2 {
-            continue;
-        }
-        stack.push(start);
-        while let Some(&top) = stack.last() {
-            match state[top] {
-                0 => {
-                    state[top] = 1;
-                    for &child in &child_cells[top] {
-                        // Skip children already resolved (2) or already on this
-                        // stack (1) — the latter is the cycle guard.
-                        if state[child] == 0 {
-                            stack.push(child);
-                        }
-                    }
-                }
-                1 => {
-                    // Every child has either resolved or is an in-progress
-                    // ancestor (a cycle). Union the resolved ones and RECORD
-                    // whether anything was missed, so a partial set is never
-                    // published as if it were complete.
-                    let mut set = direct_autos[top].clone();
-                    let mut partial = false;
-                    for &child in &child_cells[top] {
-                        match &memo[child] {
-                            Some(child_set) => {
-                                set.extend(child_set.iter().cloned());
-                                // A resolved-but-partial child taints us too:
-                                // our union inherits its shortfall.
-                                partial |= incomplete[child];
-                            }
-                            // Still unresolved at our own resolution point ⇒ an
-                            // in-progress ancestor ⇒ a back edge we skipped.
-                            None => partial = true,
-                        }
-                    }
-                    memo[top] = Some(set);
-                    incomplete[top] = partial;
-                    state[top] = 2;
-                    stack.pop();
-                }
-                // Already resolved — this frame is a duplicate push.
-                _ => {
-                    stack.pop();
-                }
+impl ExpandedObjectiveRefs {
+    pub(crate) fn expand(mut refs: HashSet<ValueCellId>, auto_reads: &DependentCellReads) -> Self {
+        for id in reach_of(&refs, auto_reads).foldable {
+            if !refs.contains(id) {
+                refs.insert(id.clone());
             }
         }
+        Self { refs }
     }
 
-    // Materialise. `take()` MOVES each memoised set out — every index is
-    // materialised exactly once — so the map never holds a second copy of the
-    // DFS's working sets.
-    let mut out: HashMap<ValueCellId, HashSet<ValueCellId>> = HashMap::with_capacity(n);
-    for (i, (id, _)) in dependent_cells.iter().enumerate() {
-        if incomplete[i] {
-            continue;
-        }
-        // UNION across every occurrence of a duplicated id, matching the
-        // all-occurrences child edges above.
-        out.entry(id.clone())
-            .or_default()
-            .extend(memo[i].take().unwrap_or_default());
+    /// Does the objective reach any of `autos`, directly or through a cell?
+    pub(crate) fn reaches_any(&self, autos: &HashSet<ValueCellId>) -> bool {
+        self.refs.iter().any(|r| autos.contains(r))
     }
-    // An id is only as sound as its WEAKEST occurrence: if ANY occurrence is
-    // incomplete, drop the id outright rather than publish a partial union that
-    // the registry's subset filter would read as authoritative.
-    for (i, (id, _)) in dependent_cells.iter().enumerate() {
-        if incomplete[i] {
-            out.remove(id);
-        }
-    }
-    out
 }
 
-/// Fold each ref's TRANSITIVE auto reads into `refs`, in place.
-///
-/// This is the ONE expansion body shared by the constraint side and the
-/// objective side of the decomposition, and by `SolverRegistry::solve_inner`'s
-/// `objective_component` lookup (task #5467 / PRD2 α, layer 2). A ref to a
-/// derived cell also means every auto that cell transitively drives, so a
-/// constraint reading only `let s = a + b` must be seen to reference `a` and
-/// `b`. `auto_reads` is already transitive, so ONE pass closes the set — the
-/// expansion is idempotent and may safely be applied to an already-expanded
-/// set.
-///
-/// D1/B2 IDENTITY is structural, not incidental: an empty `auto_reads` (which
-/// is exactly what `dependent_cell_auto_reads` returns for an empty
-/// `dependent_cells`) inserts nothing, so every downstream ref set, union edge
-/// and `referenced_params` list is byte-identical to the pre-α behaviour.
-///
-/// Returns the ids the expansion REACHED — i.e. exactly the autos that were
-/// invisible to the caller's own syntactic walk. The constraint side needs that
-/// delta (and not just the widened set) to widen the DOMAIN classification the
-/// same way it widens the connectivity; returning it from here keeps that a
-/// by-product of the ONE expansion body instead of a second, drifting walk (G7).
-/// The list may contain ids the caller already held — re-reaching an already
-/// present auto is a no-op for both consumers. Callers that only want the
-/// widened set may drop the return value.
-pub(crate) fn expand_refs_through_dependent_cells(
-    refs: &mut HashSet<ValueCellId>,
-    auto_reads: &HashMap<ValueCellId, HashSet<ValueCellId>>,
-) -> Vec<ValueCellId> {
-    let reached = dependent_cell_reach_delta(refs, auto_reads);
-    refs.extend(reached.iter().cloned());
-    reached
-}
-
-/// The REACH half of [`expand_refs_through_dependent_cells`], without the
-/// in-place widening: the autos `refs` reaches only THROUGH a dependent cell.
-///
-/// Split out so a caller that needs nothing but the delta — the objective-union
-/// step of [`decompose_into_components_with_reads`], which only ever maps the
-/// widened set down to auto-param INDICES — can skip cloning the whole ref set
-/// just to widen a copy of it. Both callers share this ONE body, so the two
-/// cannot drift out of lock-step (G7), which is the property the single
-/// expansion body exists to hold.
-///
-/// `auto_reads` is already transitive, so one pass closes the set, and the
-/// result may contain duplicates (and ids the caller already holds) — every
-/// consumer is duplicate-tolerant (`HashSet::extend`, `UnionFind::union`,
-/// `widen_domain`).
-pub(crate) fn dependent_cell_reach_delta(
-    refs: &HashSet<ValueCellId>,
-    auto_reads: &HashMap<ValueCellId, HashSet<ValueCellId>>,
-) -> Vec<ValueCellId> {
-    if auto_reads.is_empty() {
-        return Vec::new();
-    }
-    refs.iter()
-        .filter_map(|id| auto_reads.get(id))
-        .flat_map(|autos| autos.iter().cloned())
-        .collect()
-}
-
-/// The domain flag a bare auto param contributes when it was reached only
-/// THROUGH a derived cell.
+/// The domain flag a bare auto param contributes when the classifier never saw
+/// it: reached only THROUGH a derived cell, or coupled in by the objective
+/// alone. `constraints` is the slice of the component the auto lives in — the
+/// same slice CP-SAT builds its domain from.
 ///
 /// `None` means "contributes nothing", which is NOT the same as `Dimensional`:
 /// `Dimensional` doubles as the classifier's empty-default, so folding an auto
@@ -352,8 +126,7 @@ pub(crate) fn dependent_cell_reach_delta(
 /// point: the routing decision and the enumeration capability are now the same
 /// fact, so a new rejection in `build_variable_domain` re-routes in the same
 /// commit (the same G7 no-lockstep-duplication argument
-/// `fold_dependent_cells` and `expand_refs_through_dependent_cells` already
-/// make).
+/// `fold_dependent_cells` and `dependent_reads::reach_of` already make).
 ///
 /// # Why the non-`None` answers are the auto's OWN domain, not a blanket flag
 ///
@@ -361,7 +134,7 @@ pub(crate) fn dependent_cell_reach_delta(
 /// `Logical`, because `widen_domain(Logical, Dimensional) == CrossDomain`. It
 /// is a NO-OP against a `Dimensional` base — and `Dimensional` is also the
 /// classifier's EMPTY DEFAULT for a flagless expression (see the
-/// FLAGLESS-EXPRESSION CAVEAT at the widening site). So
+/// FLAGLESS-EXPRESSION CAVEAT on [`component_domain`]). So
 /// `let w = if fit == Fit::Tight { 1.0mm } else { 2.0mm }; constraint w == 1.0mm`
 /// over an `Enum` auto `fit` classifies `Dimensional`, reaches `fit`,
 /// contributes `Dimensional`, stays `Dimensional`, and routes the whole
@@ -418,25 +191,6 @@ pub(crate) fn dependent_cell_reach_delta(
 /// probe's true-set: no `_ if can_enumerate(..)` catch-all is needed, and
 /// having one is a live bug (it short-circuits the domain answer for the very
 /// types whose domain differs from the base's).
-///
-/// # KNOWN APPROXIMATION, accepted: `Type::Enum` sees the WHOLE problem
-///
-/// `can_enumerate`'s enum arm scans `constraints` for variant literals, and the
-/// slice passed here is the decomposition's FULL input, not the component the
-/// auto will end up in. A variant literal that lands in a DIFFERENT component
-/// therefore still counts as enumerable. Component membership is not known at
-/// this point in the loop (the union-find is still being built), so a
-/// per-component answer would need a second pass.
-///
-/// With `Type::Enum` answering its own domain rather than deferring to the
-/// probe, that imprecision no longer has an UNSAFE direction: an enum answers
-/// `Logical` when the probe says yes and `CrossDomain` when it says no, and
-/// both force the fallback against a `Dimensional`/`Geometric` base while both
-/// are absorbed by a `Logical` one. The approximation therefore costs at most
-/// exactness (`CrossDomain` where `Logical` would have sufficed, against a
-/// non-`Logical` base), never a solver that cannot represent the param —
-/// unlike the `_ if can_enumerate(..)` catch-all this replaced, where a
-/// false-positive probe left an enum auto routed at `DimensionalSolver`.
 ///
 /// # PRECONDITION on the `Logical` slot
 ///
@@ -497,15 +251,9 @@ fn domain_of_auto(
         // `Logical` is the enum's OWN domain, so the answer behaves exactly
         // like the `Bool` arm above: a no-op against a `Logical` base
         // (`widen_domain`'s `a == b` fast path) and a forcing function against
-        // a `Dimensional` or `Geometric` one.
-        //
-        // NOT hypothetical, and it needs no exotic model: `can_enumerate`'s
-        // enum arm matches variant literals on `type_name` ALONE over the
-        // decomposition's WHOLE constraint slice (see the KNOWN APPROXIMATION
-        // section above), so a DIFFERENT auto's `constraint fit2 == Fit::Tight`
-        // in an unrelated component makes `can_enumerate(fit)` true for a `fit`
-        // whose own component contains no literal at all. Pinned by
-        // `an_enumerable_enum_auto_behind_a_numeric_cell_does_not_stay_dimensional`.
+        // a `Dimensional` or `Geometric` one. Pinned by
+        // `an_enumerable_enum_auto_behind_a_numeric_cell_does_not_stay_dimensional`,
+        // whose component holds a `Fit` literal so the probe answers true.
         reify_core::Type::Enum(_) if crate::cpsat::can_enumerate(param, constraints) => {
             Some(ConstraintDomain::Logical)
         }
@@ -582,6 +330,81 @@ fn widen_domain(a: ConstraintDomain, b: ConstraintDomain) -> ConstraintDomain {
     }
 }
 
+/// One constraint's contribution to the decomposition.
+struct ConstraintInfo {
+    constraint_idx: usize,
+    /// Indices into `auto_params` of every auto the constraint reads,
+    /// syntactically or through a dependent cell: its union-find edges.
+    referenced_params: Vec<usize>,
+    /// Those reached THROUGH dependent cells, whose types the classifier never
+    /// sees.
+    reached_params: Vec<usize>,
+    /// The classifier's verdict on the syntax alone, or `CrossDomain` for a
+    /// constraint reading an unfoldable cell.
+    classified: ConstraintDomain,
+}
+
+/// The routing domain of one component. Each constraint's `classified`
+/// verdict is widened by the own domain of every auto it reaches through a
+/// dependent cell; the UNANIMITY rule combines those (mixed → `CrossDomain`);
+/// the result is widened by every `objective_only` auto. `own(pi)` is
+/// [`domain_of_auto`] over THIS component's constraints.
+///
+/// The classifier reads syntax only, so it never sees the type of an auto
+/// reached through a derived cell, nor of one the objective alone coupled in —
+/// yet connectivity puts both in the component, and routing must agree with
+/// it. `let ok = a > 5.0; constraint ok == true` over a `Real` auto classifies
+/// `Logical`; unwidened, that hands `a` to CP-SAT, whose
+/// `build_variable_domain` rejects it and fails the whole component with
+/// `NoProgress`. Widened to `CrossDomain`, it reaches `production()`'s
+/// fallback, `DiscreteFirstFallback`, which re-checks `can_enumerate` against
+/// the component and hands it to `DimensionalSolver`.
+///
+/// The probe reads the COMPONENT's constraints because CP-SAT builds an auto's
+/// domain from the sub-problem it is handed. Over the whole problem, an enum
+/// variant literal in ANOTHER component made an enum auto look enumerable and
+/// left its component `Logical`, for CP-SAT to reject.
+///
+/// A reached auto may also be referenced syntactically, and so already folded
+/// in by the classifier; re-widening it is a no-op, since `widen_domain` is
+/// idempotent on a flag already present. A syntactically referenced auto is
+/// deliberately NOT re-widened otherwise: that classifier gap is #5416/#6681.
+///
+/// FLAGLESS-EXPRESSION CAVEAT: `classify` answers `Dimensional` both for a
+/// numeric leaf and for an expression with no flag at all, so a flagless
+/// constraint reaching a `Bool` auto widens to `CrossDomain` where `Logical`
+/// would be exact. That is conservative — `CrossDomain` routes to the fallback
+/// slot, never to a solver that cannot represent a param — and making it exact
+/// needs `classify` itself to report "no flags".
+fn component_domain(
+    infos: &[&ConstraintInfo],
+    objective_only: &[usize],
+    mut own: impl FnMut(usize) -> Option<ConstraintDomain>,
+) -> ConstraintDomain {
+    let domains: Vec<ConstraintDomain> = infos
+        .iter()
+        .map(|info| {
+            info.reached_params
+                .iter()
+                .filter_map(|&pi| own(pi))
+                .fold(info.classified, widen_domain)
+        })
+        .collect();
+
+    // Determine component domain: unanimous → that domain, mixed → CrossDomain
+    let first_domain = domains[0];
+    let unanimous = if domains.iter().all(|d| *d == first_domain) {
+        first_domain
+    } else {
+        ConstraintDomain::CrossDomain
+    };
+
+    objective_only
+        .iter()
+        .filter_map(|&pi| own(pi))
+        .fold(unanimous, widen_domain)
+}
+
 /// Decompose a constraint problem into independent connected components.
 ///
 /// Each component groups constraints that share auto parameters (directly
@@ -590,6 +413,8 @@ fn widen_domain(a: ConstraintDomain, b: ConstraintDomain) -> ConstraintDomain {
 ///
 /// The domain for each component is determined by classifying each
 /// constraint's expression: unanimous domain → that domain, mixed → CrossDomain.
+/// Autos the classifier cannot see — reached through a derived cell, or coupled
+/// in by the objective alone — widen it by their own domain.
 ///
 /// Connectivity FOLLOWS `dependent_cells` (task #5467 / PRD2 α, layer 2).
 /// `collect_value_refs ∩ param_index` is ONE HOP: for
@@ -598,11 +423,12 @@ fn widen_domain(a: ConstraintDomain, b: ConstraintDomain) -> ConstraintDomain {
 /// was skipped entirely and the decomposition came back EMPTY, which
 /// `solve_inner` reads as "all auto params are unconstrained".
 ///
-/// This is a thin wrapper: it builds the transitive map and delegates. Callers
-/// that ALREADY hold the map (notably `SolverRegistry::solve_inner`, which
-/// needs it for its per-component fold filter and its `objective_component`
-/// lookup) should call [`decompose_into_components_with_reads`] directly rather
-/// than pay for a second walk on the solve hot path.
+/// This is a thin wrapper: it builds the transitive map, expands the objective
+/// through it, and delegates. Callers that ALREADY hold the map (notably
+/// `SolverRegistry::solve_inner`, which needs it for its per-component fold
+/// filter and its `objective_component` lookup) should call
+/// [`decompose_into_components_with_reads`] directly rather than pay for a
+/// second walk on the solve hot path.
 pub fn decompose_into_components(
     auto_params: &[AutoParam],
     constraints: &[(ConstraintNodeId, CompiledExpr)],
@@ -610,74 +436,29 @@ pub fn decompose_into_components(
     dependent_cells: &[(ValueCellId, CompiledExpr)],
 ) -> Vec<SubProblem> {
     let auto_reads = dependent_cell_auto_reads(dependent_cells, auto_params);
-    decompose_into_components_with_reads(
-        auto_params,
-        constraints,
-        objective_refs,
-        None,
-        &auto_reads,
-    )
+    let objective =
+        objective_refs.map(|refs| ExpandedObjectiveRefs::expand(refs.clone(), &auto_reads));
+    decompose_into_components_with_reads(auto_params, constraints, objective.as_ref(), &auto_reads)
 }
 
-/// [`decompose_into_components`] over an ALREADY-BUILT
-/// `dependent-cell id → transitive auto set` map.
+/// [`decompose_into_components`] over an ALREADY-BUILT dependent-cell reads
+/// map (see [`dependent_cell_auto_reads`]).
 ///
-/// See [`dependent_cell_auto_reads`] for the map's construction and its cycle
-/// semantics (a cell on or downstream of a back edge is OMITTED rather than
-/// published with a partial set).
+/// A constraint that reads an UNFOLDABLE cell (on or downstream of a cycle) is
+/// coupled to every auto that cell reaches and classified `CrossDomain`: no
+/// specialized solver can derive a value the registry's per-component fold
+/// filter refuses to fold. Dropping it for lack of edges instead could empty
+/// the decomposition, which `SolverRegistry` answers with
+/// `Solved { unique: true }` and every auto at its default.
 ///
-/// # That omission is fail-safe for the DROP-side consumer, NOT for this one
-///
-/// (Review round 3, suggestion 7 — recorded here rather than fixed, see the
-/// follow-up note at the end.) Omission is the safe direction for
-/// `SolverRegistry`'s subset filter, where a missing entry can only make the
-/// filter keep a constraint it might have dropped. It is the UNSAFE direction
-/// for this CONNECTIVITY consumer, and the two must not be conflated:
-///
-///   * an omitted cell contributes no `refs` and therefore no union edges;
-///   * a constraint that reads ONLY such a cell has an empty `referenced` set
-///     and is silently `continue`d out of the decomposition;
-///   * if that empties the component list entirely, `SolverRegistry` reports
-///     `Solved { unique: true }` with every auto at its default — the exact
-///     silent "all autos unconstrained" outcome LAYER 2 exists to close,
-///     re-opened for cyclic or incomplete cells.
-///
-/// Not reachable from today's callers: `reify-eval`'s `build_dependent_cells`
-/// drops cyclic cells upstream, so a cell on a back edge never reaches this
-/// map with a constraint still reading it. The masking is a property of the
-/// CALLER, though, not of anything enforced here, so a future producer that
-/// stops pre-dropping cycles re-opens it with no compile error and no test
-/// failure. Closing it properly means returning the omitted-id set alongside
-/// the map so a constraint reading an omitted cell can be routed to
-/// `CrossDomain` (or rejected with a diagnostic) instead of dropped — larger
-/// than a doc correction and outside task #5467's lock set.
-///
-/// # `objective_refs` is expanded HERE — unless the caller already did it
-///
-/// Callers may pass their RAW objective ref set and let this function widen it
-/// through `auto_reads`, so pre-expanding is never required for the
-/// decomposition's sake. `SolverRegistry::solve_inner` pre-expands anyway,
-/// because its own `objective_component` first-match lookup needs the widened
-/// set.
-///
-/// `objective_reach` is how such a caller AVOIDS PAYING TWICE (task #5467
-/// amendment): it is the reach delta `objective_refs` gets through
-/// `auto_reads`, when the caller has already computed it — typically as the
-/// return value of [`expand_refs_through_dependent_cells`], in which case it is
-/// also already folded into `objective_refs`. `None` means "not computed;
-/// compute it here". Re-deriving it instead is not the "handful of hash lookups
-/// that find nothing new" this comment used to claim: every dependent-cell id
-/// is still present in the widened `refs` (the expansion only ADDS), so the
-/// second pass re-clones the WHOLE delta — |delta| `ValueCellId` allocations,
-/// each two `String`s. Behaviourally the two are interchangeable (`UnionFind`
-/// is idempotent and the chain below tolerates duplicates), so the parameter is
-/// a pure cost knob.
+/// `objective` is already widened through the same `auto_reads` — an
+/// [`ExpandedObjectiveRefs`] cannot be built any other way — so its autos are
+/// unioned as given.
 pub(crate) fn decompose_into_components_with_reads(
     auto_params: &[AutoParam],
     constraints: &[(ConstraintNodeId, CompiledExpr)],
-    objective_refs: Option<&HashSet<ValueCellId>>,
-    objective_reach: Option<&[ValueCellId]>,
-    auto_reads: &HashMap<ValueCellId, HashSet<ValueCellId>>,
+    objective: Option<&ExpandedObjectiveRefs>,
+    auto_reads: &DependentCellReads,
 ) -> Vec<SubProblem> {
     if constraints.is_empty() {
         return vec![];
@@ -694,53 +475,27 @@ pub(crate) fn decompose_into_components_with_reads(
     let n_params = auto_params.len();
     let mut uf = UnionFind::new(n_params);
 
-    // MEMOIZED `domain_of_auto` verdict, one slot per auto param (task #5467
-    // amendment). `Some(v)` = probed, `None` = not probed yet; the inner
-    // `Option` is the verdict itself.
-    //
-    // Both of `domain_of_auto`'s arguments — `auto_params[pi]` and the whole
-    // `constraints` slice — are invariant across the loop below, so the answer
-    // is a pure function of the param INDEX. Without this cache the probe runs
-    // once per (constraint × dependent cell read × auto behind it): C × K × A
-    // calls, and `dependent_cell_reach_delta` explicitly may return DUPLICATES,
-    // so even a single constraint can probe one auto repeatedly. Each call
-    // delegates to `cpsat::can_enumerate` → `build_variable_domain`, whose
-    // `Type::Enum` arm walks EVERY expression tree in `constraints` — making
-    // the uncached form O(C² × K × A × tree_size) on the solve hot path, for a
-    // verdict that cannot change between calls. Cached, it is at most A probes
-    // per decomposition.
-    //
-    // D1/B2 IDENTITY: with an empty `auto_reads` no constraint reaches
-    // anything, so no slot is ever filled and the `vec![None; n_params]`
-    // allocation is the only cost — the same order as the `param_ids` vector
-    // already built above.
-    let mut auto_domain: Vec<Option<Option<ConstraintDomain>>> = vec![None; n_params];
-
     // For each constraint, find which auto params it references
     // and union them together. Also track the constraint→params mapping.
-    struct ConstraintInfo {
-        constraint_idx: usize,
-        referenced_params: Vec<usize>, // indices into auto_params
-        domain: ConstraintDomain,
-    }
-
     let mut constraint_infos: Vec<ConstraintInfo> = Vec::new();
 
     for (ci, (_cid, expr)) in constraints.iter().enumerate() {
         let mut refs = HashSet::new();
         collect_value_refs(expr, &mut refs);
         // LAYER 2 (task #5467 / PRD2 α): a constraint that reads a derived
-        // cell references every auto that cell transitively drives. With an
-        // empty `auto_reads` this inserts nothing and the ref set — hence the
-        // union edges and `referenced_params` below — is byte-identical to
-        // pre-α.
-        let reached = expand_refs_through_dependent_cells(&mut refs, auto_reads);
+        // cell references every auto that cell transitively drives, foldable
+        // or not. With an empty `auto_reads` nothing is reached, so the union
+        // edges and `referenced_params` below are exactly pre-α's.
+        let reach = reach_of(&refs, auto_reads);
 
         // Filter to only auto params
-        let referenced: Vec<usize> = refs
+        let mut referenced: Vec<usize> = refs
             .iter()
+            .chain(reach.all())
             .filter_map(|id| param_index.get(id).copied())
             .collect();
+        referenced.sort_unstable();
+        referenced.dedup();
 
         if referenced.is_empty() {
             // Constraint doesn't reference any auto param → skip
@@ -752,113 +507,44 @@ pub(crate) fn decompose_into_components_with_reads(
             uf.union(referenced[0], referenced[i]);
         }
 
-        // Domain classification must be widened WHEREVER connectivity was
-        // widened, or the two disagree about the same component (task #5467
-        // amendment). `ConstraintClassifier::classify` reads the SYNTACTIC
-        // expression only, and each `ValueRef` contributes its own
-        // `result_type`; an auto reached only THROUGH a derived cell has no
-        // `ValueRef` node here at all, so its type is invisible to the walk.
-        //
-        // Worked case: `let ok = a > 5.0; constraint ok == true` with a `Real`
-        // auto `a`. Post-α the union step pulls `a` into this component, but
-        // the classifier sees `{ok: Bool, literal true}` and reports `Logical`.
-        // `production()`'s `Logical` occupant, the Bool/Int/Enum-only
-        // `CpSatSolver`, would then hand a `Real` auto to
-        // `build_variable_domain`, get `Err("does not support param type …")`,
-        // and fail the WHOLE component with `NoProgress`. Widening to
-        // `CrossDomain` routes it to the fallback slot instead, which is what a
-        // component holding both a Bool cell and a Real auto actually is.
-        // There `DiscreteFirstFallback` re-checks `can_enumerate` per component
-        // and sends the `Real` auto to `DimensionalSolver`.
-        //
-        // SCOPE of the fold: only the EXPANSION'S OWN reach (`reached`), never
-        // the whole widened `refs` set. `reached` is NOT disjoint from the
-        // syntactically-visible autos, though — `expand_refs_through_dependent_cells`
-        // derives it from each derived cell's TRANSITIVE auto set, which may
-        // contain an auto the constraint also references directly and whose
-        // type the classifier therefore already folded in. That overlap is
-        // harmless rather than merely tolerated: `widen_domain` is idempotent on
-        // an already-present flag (`a == b` fast path; `Geometric` absorbs
-        // `Dimensional`; `CrossDomain` absorbs everything), so re-widening with
-        // an already-seen type is a no-op by construction.
-        //
-        // FLAGLESS-EXPRESSION CAVEAT: `ConstraintClassifier` collapses its
-        // internal `DomainFlags` to the enum before returning, and `Dimensional`
-        // is BOTH "saw a numeric leaf" and the empty default (classifier.rs
-        // `into_domain`). A constraint expression that sets no flag at all
-        // therefore arrives here as `Dimensional`, and a reached `Bool` auto
-        // widens it to `CrossDomain` where `Logical` would be exact. That is a
-        // deliberate CONSERVATIVE over-approximation: `CrossDomain` routes to
-        // the fallback slot, never to a solver that cannot represent a param.
-        // Making it exact means propagating `DomainFlags` (or an
-        // `Option<ConstraintDomain>` meaning "no flags") out of `classify`, and
-        // `classifier.rs` is outside this task's lock set.
-        //
-        // D1/B2 IDENTITY: an empty `auto_reads` returns an empty `reached`, so
-        // this loop never runs and the domain is bit-identical to pre-α.
-        let mut domain = ConstraintClassifier::classify(expr);
-        for id in &reached {
-            if let Some(&pi) = param_index.get(id) {
-                let verdict = *auto_domain[pi]
-                    .get_or_insert_with(|| domain_of_auto(&auto_params[pi], constraints));
-                if let Some(d) = verdict {
-                    domain = widen_domain(domain, d);
-                }
-            }
-        }
+        let mut reached_params: Vec<usize> = reach
+            .all()
+            .filter_map(|id| param_index.get(id).copied())
+            .collect();
+        reached_params.sort_unstable();
+        reached_params.dedup();
+
+        // A constraint reading an UNFOLDABLE cell is `CrossDomain` outright —
+        // the same top-of-lattice forcing `domain_of_auto`'s `_` arm uses —
+        // because no specialized solver can derive a value the per-component
+        // fold filter refuses to fold.
+        let classified = if reach.reads_unfoldable_cell {
+            ConstraintDomain::CrossDomain
+        } else {
+            ConstraintClassifier::classify(expr)
+        };
 
         constraint_infos.push(ConstraintInfo {
             constraint_idx: ci,
             referenced_params: referenced,
-            domain,
+            reached_params,
+            classified,
         });
     }
 
-    // If objective value-refs are provided (pre-collected from all terms),
-    // union all auto params they reference. This ensures all objective-referenced
-    // params land in the same component, even if the constraints alone don't
-    // connect them. Single-term reduces to prior single-expr behavior identically.
-    if let Some(refs) = objective_refs {
-        // The OBJECTIVE-side twin of the constraint expansion above. Leaving
-        // this direct-only while constraint refs go transitive would be a G7
-        // half-fix: the same union-find would receive transitive edges from one
-        // source and one-hop edges from the other.
-        //
-        // Consumes the reach DELTA directly instead of materialising a widened
-        // clone of `refs` (task #5467 amendment). The union step's only use for
-        // the widened set is mapping it down to auto-param INDICES, and
-        // `UnionFind::union` is idempotent, so chaining the delta onto the
-        // borrowed original is equivalent and allocates ONE `Vec<ValueCellId>`
-        // instead of a whole `HashSet` clone. The old `Cow::Borrowed` fast path
-        // was never taken from `SolverRegistry::solve_inner`, whose `auto_reads`
-        // is non-empty exactly when the clone was most expensive; an empty
-        // `auto_reads` now yields an empty delta and allocates nothing either
-        // way, so the D1/B2 path is still zero-cost.
-        //
-        // And when the caller ALREADY computed that delta — `solve_inner` does,
-        // to widen `refs` for its own `objective_component` lookup — it hands it
-        // over rather than making this side re-clone the whole thing (see
-        // `objective_reach` in the fn doc). `computed` exists only to own the
-        // fallback `Vec` for the borrow below.
-        let computed;
-        let reached: &[ValueCellId] = match objective_reach {
-            Some(delta) => delta,
-            None => {
-                computed = dependent_cell_reach_delta(refs, auto_reads);
-                &computed
-            }
-        };
-
-        let obj_param_indices: Vec<usize> = refs
+    // Union every auto param the objective reaches (its refs from all terms,
+    // already widened through `auto_reads`, the transitive twin of the
+    // constraint side above), so they all land in the same component even if
+    // the constraints alone don't connect them. Single-term reduces to prior
+    // single-expr behavior identically.
+    if let Some(objective) = objective {
+        let obj_param_indices: Vec<usize> = objective
+            .refs
             .iter()
-            .chain(reached.iter())
             .filter_map(|id| param_index.get(id).copied())
             .collect();
-
-        if !obj_param_indices.is_empty() {
-            for i in 1..obj_param_indices.len() {
-                uf.union(obj_param_indices[0], obj_param_indices[i]);
-            }
+        for i in 1..obj_param_indices.len() {
+            uf.union(obj_param_indices[0], obj_param_indices[i]);
         }
     }
 
@@ -873,19 +559,35 @@ pub(crate) fn decompose_into_components_with_reads(
         component_map.entry(root).or_default().push(info_idx);
     }
 
+    // MEMOIZED `domain_of_auto` verdict, one slot per auto param: `Some(v)` =
+    // probed, `None` = not yet; the inner `Option` is the verdict itself. Both
+    // arguments are fixed per param — the param, and the constraint slice of
+    // the ONE component it lives in — so each slot is filled at most once,
+    // always from its own component's slice. Unmemoized, an auto reached by
+    // many constraints (or repeatedly by one) would re-run
+    // `cpsat::can_enumerate`, whose `Type::Enum` arm walks every expression in
+    // the slice. A model whose constraints read every auto directly, with no
+    // auto coupled in by the objective alone, never fills a slot.
+    let mut auto_domain: Vec<Option<Option<ConstraintDomain>>> = vec![None; n_params];
+
+    // An auto in a component that NO constraint reads, syntactically or
+    // through a cell, was put there by the objective's unions alone.
+    let mut read_by_a_constraint = vec![false; n_params];
+    for info in &constraint_infos {
+        for &pi in &info.referenced_params {
+            read_by_a_constraint[pi] = true;
+        }
+    }
+
     // Build SubProblem for each component
     let mut result: Vec<SubProblem> = Vec::new();
     for (root, info_indices) in component_map {
-        let mut params = HashSet::new();
-        let mut sub_constraints = Vec::new();
-        let mut domains: Vec<ConstraintDomain> = Vec::new();
-
-        for &info_idx in &info_indices {
-            let info = &constraint_infos[info_idx];
-            let (cid, expr) = &constraints[info.constraint_idx];
-            sub_constraints.push((cid.clone(), expr.clone()));
-            domains.push(info.domain);
-        }
+        let infos: Vec<&ConstraintInfo> =
+            info_indices.iter().map(|&i| &constraint_infos[i]).collect();
+        let sub_constraints: Vec<(ConstraintNodeId, CompiledExpr)> = infos
+            .iter()
+            .map(|info| constraints[info.constraint_idx].clone())
+            .collect();
 
         // Every param in this component — which is exactly every param whose
         // union-find root IS the component's root, directly referenced or not.
@@ -910,19 +612,21 @@ pub(crate) fn decompose_into_components_with_reads(
         // single `let` over the whole model carries `R = |component|` and the
         // scan goes worst-case O(P^2 x C) — on the solve hot path, for exactly
         // the let-indirected models this feature exists to make solvable.
+        let mut params = HashSet::new();
+        let mut objective_only = Vec::new();
         for (pi, pid) in param_ids.iter().enumerate() {
             if uf.find(pi) == root {
                 params.insert(pid.clone());
+                if !read_by_a_constraint[pi] {
+                    objective_only.push(pi);
+                }
             }
         }
 
-        // Determine component domain: unanimous → that domain, mixed → CrossDomain
-        let first_domain = domains[0];
-        let domain = if domains.iter().all(|d| *d == first_domain) {
-            first_domain
-        } else {
-            ConstraintDomain::CrossDomain
-        };
+        let domain = component_domain(&infos, &objective_only, |pi| {
+            *auto_domain[pi]
+                .get_or_insert_with(|| domain_of_auto(&auto_params[pi], &sub_constraints))
+        });
 
         result.push(SubProblem {
             auto_params: params,
@@ -939,33 +643,6 @@ mod tests {
     use super::*;
     use reify_core::Type;
     use reify_ir::{BinOp, Value};
-
-    #[test]
-    fn collect_refs_from_value_ref() {
-        let expr = CompiledExpr::value_ref(ValueCellId::new("Part", "x"), Type::length());
-        let mut refs = HashSet::new();
-        collect_value_refs(&expr, &mut refs);
-        assert_eq!(refs.len(), 1);
-        assert!(refs.contains(&ValueCellId::new("Part", "x")));
-    }
-
-    #[test]
-    fn collect_refs_from_binop() {
-        let left = CompiledExpr::value_ref(ValueCellId::new("P", "a"), Type::length());
-        let right = CompiledExpr::value_ref(ValueCellId::new("P", "b"), Type::length());
-        let expr = CompiledExpr::binop(BinOp::Gt, left, right, Type::Bool);
-        let mut refs = HashSet::new();
-        collect_value_refs(&expr, &mut refs);
-        assert_eq!(refs.len(), 2);
-    }
-
-    #[test]
-    fn collect_refs_from_literal_is_empty() {
-        let expr = CompiledExpr::literal(Value::Int(42), Type::Int);
-        let mut refs = HashSet::new();
-        collect_value_refs(&expr, &mut refs);
-        assert!(refs.is_empty());
-    }
 
     #[test]
     fn union_find_basic() {
@@ -1489,9 +1166,8 @@ mod tests {
     /// constraints")`. The fixture's `let ok = fit == fit` compares the auto
     /// with ITSELF precisely so no literal appears anywhere.
     ///
-    /// This is also the case that pins the enum half of `domain_of_auto`'s
-    /// documented approximation: the answer depends on the constraint slice,
-    /// not on the type, so it cannot be reached from `param_type` alone.
+    /// It also pins that the enum answer depends on the constraint slice, not
+    /// on the type, so it cannot be reached from `param_type` alone.
     #[test]
     fn a_variantless_enum_auto_behind_a_bool_cell_goes_cross_domain() {
         let enum_ref =
@@ -1605,53 +1281,53 @@ mod tests {
     /// verdict AND its flagless empty default), while `Some(Logical)` widens to
     /// `CrossDomain`.
     ///
-    /// The fixture deliberately does NOT put a variant literal in the component
-    /// under test. `S.fit` is reached only through `let w = 1.0mm + fit` from a
-    /// numeric constraint; the `Fit::Tight` literal lives in a SEPARATE
-    /// component belonging to a different auto, `S.fit2`. That is exactly the
-    /// documented `can_enumerate` over-approximation — its enum arm scans the
-    /// decomposition's whole constraint slice and matches on `type_name` alone
-    /// — so `can_enumerate(S.fit)` is true purely because of another auto's
-    /// constraint. A `_ if can_enumerate(..)` catch-all therefore contributed
-    /// `None` for `S.fit`, the component stayed `Dimensional`, and
-    /// `solver_for(Dimensional)` handed an `Enum` auto to `DimensionalSolver`,
-    /// which maps every non-`Type::Scalar` param to `DIMENSIONLESS` and writes
-    /// a `Value::Scalar` back.
+    /// `S.fit` is reached only through `let w = 1.0mm + fit` from a numeric
+    /// constraint. A second constraint, `fit == Fit::Tight`, puts a variant
+    /// literal in the SAME component, so `can_enumerate(S.fit)` is true over
+    /// that component's own constraints. A `_ if can_enumerate(..)` catch-all
+    /// ahead of the `Enum` arm would therefore contribute `None`, and the
+    /// component would stay `Dimensional`: the literal's own constraint is
+    /// flagless too, which the integrity assertion pins so a classifier change
+    /// fails loudly instead of making this test vacuous. `solver_for` would then
+    /// hand an `Enum` auto to `DimensionalSolver`, which maps every
+    /// non-`Type::Scalar` param to `DIMENSIONLESS` and writes a `Value::Scalar`
+    /// back.
     ///
-    /// Latent in `production()` (a `CrossDomain` verdict reaches
-    /// `DiscreteFirstFallback`, whose `can_enumerate` check sees only this
-    /// component's constraints — no `Fit` literal — and so lands on
-    /// `DimensionalSolver` too) — the CLASSIFICATION is wrong either way, which
-    /// is what this pins.
+    /// In `production()` the correct `CrossDomain` verdict reaches
+    /// `DiscreteFirstFallback`, whose `can_enumerate` check sees the
+    /// in-component `Fit` literal and hands the component to `CpSatSolver`,
+    /// which can enumerate `fit`.
     #[test]
     fn an_enumerable_enum_auto_behind_a_numeric_cell_does_not_stay_dimensional() {
         let fit = ValueCellId::new("S", "fit");
-        let fit2 = ValueCellId::new("S", "fit2");
         let fit_ty = || Type::Enum("Fit".to_string());
-        let enum_auto = |id: &ValueCellId| AutoParam {
-            id: id.clone(),
+        let params = vec![AutoParam {
+            id: fit.clone(),
             param_type: fit_ty(),
             bounds: None,
             free: true,
-        };
-        let params = vec![enum_auto(&fit), enum_auto(&fit2)];
+        }];
+        let names_a_variant = CompiledExpr::binop(
+            BinOp::Eq,
+            CompiledExpr::value_ref(fit.clone(), fit_ty()),
+            CompiledExpr::literal(Value::enum_unit("Fit", "Tight"), fit_ty()),
+            Type::Bool,
+        );
+        assert_eq!(
+            ConstraintClassifier::classify(&names_a_variant),
+            ConstraintDomain::Dimensional,
+            "fixture integrity: `fit == Fit::Tight` must classify flagless on its \
+             own. A `Logical` verdict would mix with the numeric constraint into \
+             `CrossDomain` whatever the reached auto contributes, and the \
+             assertion below would pass vacuously",
+        );
         let constraints = vec![
             // Dimensional base, reaching `S.fit` only through the derived cell.
             (
                 ConstraintNodeId::new("S", 0),
                 eq_lit(alpha_vref("S", "w"), 1.0),
             ),
-            // A DIFFERENT auto, a DIFFERENT component — but the same enum type,
-            // so this literal is what makes `can_enumerate(S.fit)` answer true.
-            (
-                ConstraintNodeId::new("S", 1),
-                CompiledExpr::binop(
-                    BinOp::Eq,
-                    CompiledExpr::value_ref(fit2.clone(), fit_ty()),
-                    CompiledExpr::literal(Value::enum_unit("Fit", "Tight"), fit_ty()),
-                    Type::Bool,
-                ),
-            ),
+            (ConstraintNodeId::new("S", 1), names_a_variant),
         ];
         let dependent_cells = vec![(
             ValueCellId::new("S", "w"),
@@ -1663,26 +1339,13 @@ mod tests {
 
         let components = decompose_into_components(&params, &constraints, None, &dependent_cells);
 
-        // Fixture integrity: the two autos must land in SEPARATE components, or
-        // `S.fit2`'s own `Logical` constraint would supply the widening under
-        // test and the assertion would be vacuous.
         assert_eq!(
             components.len(),
-            2,
-            "fixture integrity: `S.fit` (reached through `let w`) and `S.fit2` \
-             (syntactically referenced) share no constraint and must decompose \
-             into two components; got {components:?}",
+            1,
+            "fixture integrity: both constraints read `S.fit`, one through \
+             `let w`, so they form one component; got {components:?}",
         );
-        let under_test = components
-            .iter()
-            .find(|c| c.auto_params.contains(&fit))
-            .expect("fixture integrity: some component must hold `S.fit`");
-        assert!(
-            !under_test.auto_params.contains(&fit2),
-            "fixture integrity: `S.fit`'s component must NOT also hold `S.fit2`, \
-             whose constraint carries the variant literal; got {:?}",
-            under_test.auto_params,
-        );
+        let under_test = &components[0];
 
         assert_eq!(
             under_test.domain,
@@ -1764,159 +1427,5 @@ mod tests {
         // CrossDomain is the top of the lattice and absorbs everything.
         assert_eq!(widen_domain(Geometric, CrossDomain), CrossDomain);
         assert_eq!(widen_domain(CrossDomain, Geometric), CrossDomain);
-    }
-
-    // --- dependent_cell_auto_reads (task #5720) ---
-
-    fn auto(name: &str) -> AutoParam {
-        AutoParam {
-            id: ValueCellId::new("P", name),
-            param_type: Type::length(),
-            bounds: Some((0.0, 1.0)),
-            free: true,
-        }
-    }
-
-    fn vref(name: &str) -> CompiledExpr {
-        CompiledExpr::value_ref(ValueCellId::new("P", name), Type::length())
-    }
-
-    #[test]
-    fn dependent_cell_auto_reads_direct_auto() {
-        let cells = vec![(ValueCellId::new("P", "total"), vref("a"))];
-        let map = dependent_cell_auto_reads(&cells, &[auto("a")]);
-        assert_eq!(
-            map.get(&ValueCellId::new("P", "total")),
-            Some(&HashSet::from([ValueCellId::new("P", "a")]))
-        );
-    }
-
-    #[test]
-    fn dependent_cell_auto_reads_two_hop_chain_is_transitive() {
-        // total = subtotal + a; subtotal = b. `total` must report BOTH autos.
-        let cells = vec![
-            (ValueCellId::new("P", "subtotal"), vref("b")),
-            (
-                ValueCellId::new("P", "total"),
-                CompiledExpr::binop(BinOp::Add, vref("subtotal"), vref("a"), Type::length()),
-            ),
-        ];
-        let map = dependent_cell_auto_reads(&cells, &[auto("a"), auto("b")]);
-        assert_eq!(
-            map.get(&ValueCellId::new("P", "total")),
-            Some(&HashSet::from([
-                ValueCellId::new("P", "a"),
-                ValueCellId::new("P", "b"),
-            ])),
-            "`total` reads `b` only through `subtotal`; a non-transitive walk \
-             would miss it and the registry's subset filter would then keep \
-             `total` in a component that does not own `b`"
-        );
-    }
-
-    #[test]
-    fn dependent_cell_auto_reads_is_order_independent() {
-        // Same graph as above but with the chain stored BACKWARDS (a cell
-        // reading a LATER entry). A single forward pass would under-approximate;
-        // the reachability DFS must not.
-        let cells = vec![
-            (
-                ValueCellId::new("P", "total"),
-                CompiledExpr::binop(BinOp::Add, vref("subtotal"), vref("a"), Type::length()),
-            ),
-            (ValueCellId::new("P", "subtotal"), vref("b")),
-        ];
-        let map = dependent_cell_auto_reads(&cells, &[auto("a"), auto("b")]);
-        assert_eq!(
-            map.get(&ValueCellId::new("P", "total")),
-            Some(&HashSet::from([
-                ValueCellId::new("P", "a"),
-                ValueCellId::new("P", "b"),
-            ]))
-        );
-    }
-
-    #[test]
-    fn dependent_cell_auto_reads_ignores_non_auto_non_dependent_refs() {
-        let cells = vec![(ValueCellId::new("P", "total"), vref("plain"))];
-        let map = dependent_cell_auto_reads(&cells, &[auto("a")]);
-        assert_eq!(
-            map.get(&ValueCellId::new("P", "total")),
-            Some(&HashSet::new()),
-            "a ref that is neither an auto nor another dependent cell carries \
-             no auto dependence"
-        );
-    }
-
-    #[test]
-    fn dependent_cell_auto_reads_terminates_on_a_cycle() {
-        // x = y + a; y = x + b. Self-reachable, so a naive recursion would hang.
-        let cells = vec![
-            (
-                ValueCellId::new("P", "x"),
-                CompiledExpr::binop(BinOp::Add, vref("y"), vref("a"), Type::length()),
-            ),
-            (
-                ValueCellId::new("P", "y"),
-                CompiledExpr::binop(BinOp::Add, vref("x"), vref("b"), Type::length()),
-            ),
-        ];
-        let map = dependent_cell_auto_reads(&cells, &[auto("a"), auto("b")]);
-
-        // Terminating at all is half the assertion. The other half is that
-        // each cycle member is COMPLETE-OR-ABSENT, never partial. `x` and `y`
-        // each transitively read {a, b}; whichever resolves FIRST can only see
-        // the children already off the stack, so a partial set is what the DFS
-        // naturally accumulates. Publishing it would let the registry's subset
-        // filter keep `y` (apparent reads {b}) in a component owning only `b`,
-        // where folding it reads the unowned auto `a` → `Undef` — precisely the
-        // failure the filter is documented to make structurally impossible.
-        let both = HashSet::from([ValueCellId::new("P", "a"), ValueCellId::new("P", "b")]);
-        for name in ["x", "y"] {
-            let id = ValueCellId::new("P", name);
-            match map.get(&id) {
-                None => {} // Fail-safe: absent, so the filter drops the cell.
-                Some(set) => assert_eq!(
-                    set, &both,
-                    "`{name}` is on a cycle and transitively reads BOTH autos. \
-                     A published set MUST be complete; got the partial {set:?}. \
-                     Omitting the id entirely is the other acceptable answer — \
-                     the registry filter drops a cell it has no entry for."
-                ),
-            }
-        }
-    }
-
-    #[test]
-    fn dependent_cell_auto_reads_unions_duplicate_ids() {
-        // The SAME id twice, the second occurrence reading a strictly larger
-        // auto set. The registry filter keys on id, so both occurrences are
-        // retained or dropped together — the map must therefore report the
-        // UNION. First-occurrence-wins would report {a}, the filter would keep
-        // BOTH occurrences in a component owning only `a`, and folding the
-        // second would read the unowned auto `b` → `Undef`.
-        let dup = ValueCellId::new("P", "total");
-        let cells = vec![
-            (dup.clone(), vref("a")),
-            (
-                dup.clone(),
-                CompiledExpr::binop(BinOp::Add, vref("a"), vref("b"), Type::length()),
-            ),
-        ];
-        let map = dependent_cell_auto_reads(&cells, &[auto("a"), auto("b")]);
-        assert_eq!(
-            map.get(&dup),
-            Some(&HashSet::from([
-                ValueCellId::new("P", "a"),
-                ValueCellId::new("P", "b"),
-            ])),
-            "a duplicated cell id must resolve to the union over ALL of its \
-             occurrences — the drop-side-safe direction"
-        );
-    }
-
-    #[test]
-    fn dependent_cell_auto_reads_empty_input_is_empty() {
-        assert!(dependent_cell_auto_reads(&[], &[auto("a")]).is_empty());
     }
 }

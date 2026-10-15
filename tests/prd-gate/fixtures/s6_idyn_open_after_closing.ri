@@ -1,0 +1,23 @@
+// S6 PRD evidence (docs/prds/v0_6/kinematics-typed-kinds-and-mechanism-record.md): open body appended after a closing body, inverse dynamics (T14)
+// Before-image measured at main e217c0f30b (2026-10-13); outputs recorded in the capability manifest.
+module s6_idyn_open_after_closing
+
+// Probe: open body appended AFTER the closing body in a closed chain.
+structure def OpenAfterClosing {
+    let mp_a = MassProperties(mass: 2kg, com: point3(0mm, 0mm, 0mm), inertia: [[0.1, 0.0, 0.0], [0.0, 0.1, 0.0], [0.0, 0.0, 0.1]], origin: Frame3(origin: vec3(0mm, 0mm, 0mm), x_axis: vec3(0, 0, 0), y_axis: vec3(0, 0, 0), z_axis: vec3(0, 0, 0)))
+    let mp_b = MassProperties(mass: 3kg, com: point3(0mm, 0mm, 0mm), inertia: [[0.2, 0.0, 0.0], [0.0, 0.2, 0.0], [0.0, 0.0, 0.2]], origin: Frame3(origin: vec3(0mm, 0mm, 0mm), x_axis: vec3(0, 0, 0), y_axis: vec3(0, 0, 0), z_axis: vec3(0, 0, 0)))
+    let mp_c = MassProperties(mass: 1kg, com: point3(0mm, 0mm, 0mm), inertia: [[0.05, 0.0, 0.0], [0.0, 0.05, 0.0], [0.0, 0.0, 0.05]], origin: Frame3(origin: vec3(0mm, 0mm, 0mm), x_axis: vec3(0, 0, 0), y_axis: vec3(0, 0, 0), z_axis: vec3(0, 0, 0)))
+    let mp_d = MassProperties(mass: 4kg, com: point3(0mm, 0mm, 0mm), inertia: [[0.3, 0.0, 0.0], [0.0, 0.3, 0.0], [0.0, 0.0, 0.3]], origin: Frame3(origin: vec3(0mm, 0mm, 0mm), x_axis: vec3(0, 0, 0), y_axis: vec3(0, 0, 0), z_axis: vec3(0, 0, 0)))
+    let axis_z = vec3(0, 0, 1)
+    let j_a = prismatic(axis_z, 0mm .. 1000mm)
+    let j_b = prismatic(axis_z, 0mm .. 2000mm)
+    let j_d = prismatic(axis_z, 0mm .. 3000mm)
+    let m0 = mechanism()
+    let m1 = body(m0, mp_a, j_a)
+    let m2 = body(m1, mp_b, j_b)
+    let m3 = body(m2, mp_c, j_b, j_a)
+    let m = body(m3, mp_d, j_d)
+    let sample = TrajectorySample(t: 0s, values: [0.3, 0.3, 0.3, 0.3], vels: [0.7, 0.7, 0.7], accels: [1.5, 1.5, 1.5])
+    let traj = MotionTrajectory(mechanism: 0.0, samples: [sample])
+    let forces = inverse_dynamics(m, traj)
+}

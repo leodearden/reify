@@ -787,6 +787,116 @@ mod tests {
         );
     }
 
+    /// A `get_changed_symbols` query that FAILED (here, a timeout) is not a
+    /// range that introduced nothing. Read as one, a task P1 never examined
+    /// would sit invisibly among the clean ones. So the failure must surface
+    /// in the findings themselves: one Low `P1TaskUnexamined` for that task,
+    /// naming its range and the failure, while the sweep goes on to report
+    /// the other task's genuine orphan.
+    #[test]
+    fn a_failed_changed_symbols_query_reports_the_task_unexamined_not_clean() {
+        let done_at = NOW - 15 * DAY;
+        let sha_a = task_sha("task_A");
+        let sha_b = task_sha("task_B");
+        const TIMEOUT: &str = "read body: timed out reading response";
+
+        let conn = Connection::open_in_memory().expect("open in-memory sqlite");
+        let git = MockGitOps::new();
+        let mut jc = MockJCodemunchOps::new();
+        jc.fail_changed_symbols(&format!("{sha_a}^1"), &sha_a, TIMEOUT);
+        jc.set_changed_symbols(
+            &format!("{sha_b}^1"),
+            &sha_b,
+            vec![changed_symbol("widget_b", "crates/reify-x/src/b.rs")],
+        );
+        jc.set_find_references("crates/reify-x/src/b.rs", "widget_b", vec![]);
+
+        let mut task_metadata = HashMap::new();
+        task_metadata.insert("task_A".to_string(), done_meta("task_A", done_at, None));
+        task_metadata.insert("task_B".to_string(), done_meta("task_B", done_at, None));
+
+        let ctx = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata,
+            target_task_id: None,
+            window: None,
+            now: Some(NOW),
+            producer_branch: None,
+        };
+
+        let findings = p1_producer_orphan::check(&ctx);
+        let unexamined: Vec<&Finding> = findings
+            .iter()
+            .filter(|f| f.pattern == Pattern::P1TaskUnexamined)
+            .collect();
+        assert_eq!(
+            unexamined.len(),
+            1,
+            "the failed query must yield exactly one P1TaskUnexamined; got {findings:?}"
+        );
+        let f = unexamined[0];
+        assert_eq!(f.task_id, "task_A", "it must name the failed task; got {f:?}");
+        assert_eq!(
+            f.severity,
+            Severity::Low,
+            "an optional substrate's failure must never move the exit code; got {f:?}"
+        );
+        assert!(
+            f.summary.contains(&sha_a),
+            "the summary must name the range that went unexamined; got {:?}",
+            f.summary
+        );
+        assert!(
+            f.summary.contains(TIMEOUT),
+            "the summary must carry the failure itself; got {:?}",
+            f.summary
+        );
+
+        assert!(
+            findings.iter().any(|f| f.pattern == Pattern::P1ProducerOrphan
+                && f.task_id == "task_B"),
+            "one failed call must not abort the sweep: task_B's orphan must still \
+             be reported; got {findings:?}"
+        );
+    }
+
+    /// The other half of the distinction: a range jcodemunch answered with no
+    /// symbol is an ordinary no-op, not an unexamined task. The mock answers
+    /// an unkeyed range with an empty `Ok`.
+    #[test]
+    fn a_range_that_introduced_nothing_yields_no_finding() {
+        let conn = Connection::open_in_memory().expect("open in-memory sqlite");
+        let git = MockGitOps::new();
+        let jc = MockJCodemunchOps::new();
+
+        let mut task_metadata = HashMap::new();
+        task_metadata.insert(
+            "task_A".to_string(),
+            done_meta("task_A", NOW - 15 * DAY, None),
+        );
+
+        let ctx = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata,
+            target_task_id: None,
+            window: None,
+            now: Some(NOW),
+            producer_branch: None,
+        };
+
+        let findings = p1_producer_orphan::check(&ctx);
+        assert!(
+            findings.is_empty(),
+            "an empty answer is not a failed one; got {findings:?}"
+        );
+    }
+
     /// Step 1 (RED→GREEN via step 2) — a consumer task with status=`review`
     /// whose `consumer_ref` matches the producer's `prd` must suppress the
     /// orphan finding, just like `pending`/`in-progress` consumers do.

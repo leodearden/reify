@@ -1,0 +1,18 @@
+module occt_internals_fillet_extruded_wire
+
+// PRD evidence fixture: docs/prds/v0_6/occt-crate-internals.md, leaf ζ (ReprPolicy;
+// subsumes task #8582). Extruding a wire profile builds a zero-volume sheet,
+// but the Extrude arm stamps it Solid, so fillet's Solid-input guard admits it
+// and OCCT fails deep inside. Measured on main 8e6ffcac9d (2026-10-12,
+// target/debug/reify): a = 0.0002 m^2, v = 0 m^3, vf = undef with "OCCT
+// make_fillet_with_history: There are no suitable edges for chamfer or
+// fillet". After ζ the guard rejects it first with "local-feature operation
+// requires a BRepKind::Solid input shape".
+structure def Probe {
+    let p = line_segment(0mm, 0mm, 0mm, 20mm, 0mm, 0mm)
+    let e = extrude(p, 10mm)
+    let a = area(e)
+    let v = volume(e)
+    let f = fillet(e, 1mm)
+    let vf = volume(f)
+}

@@ -12,6 +12,8 @@ import type {
   DisplayStyleData,
   ValueData,
   ConstraintData,
+  ConstraintStatus,
+  RawConstraintData,
   SourceLocation,
   FileData,
   GuiState,
@@ -305,6 +307,34 @@ const constraintWithLabel: ConstraintData = {
   label: 'height is 150, exceeds maximum of 100',
   parameter_ids: ['cell_003'],
 };
+
+const constraintIndeterminate: ConstraintData = {
+  node_id: 'constraint_003',
+  expression: 'depth > 0',
+  status: 'indeterminate',
+  label: null,
+  parameter_ids: [],
+};
+void constraintIndeterminate;
+
+// --- ConstraintData.status is the closed verdict union ---
+const _status: ConstraintStatus = constraint.status;
+void _status;
+
+// --- RawConstraintData.status is open on the wire (checked at runtime) ---
+const wireToken: string = 'satisfied';
+const rawConstraint: RawConstraintData = {
+  node_id: 'constraint_004',
+  expression: 'width > 0',
+  status: wireToken,
+  label: null,
+  parameter_ids: [],
+};
+void rawConstraint;
+
+// @ts-expect-error ConstraintData.status is the closed lower-case union; a PascalCase variant name is not a token
+const _pascalStatus: ConstraintData = { node_id: 'c', expression: 'e', status: 'Satisfied', label: null, parameter_ids: [] };
+void _pascalStatus;
 
 // --- SourceLocation ---
 const loc: SourceLocation = {

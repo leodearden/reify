@@ -1,10 +1,13 @@
 # Two-layer merge queue (ξ): reify CAPSTONE deploy runbook
 
-**Status (2026-06-24):** Pending restart. κ/4750 (CrateGraphOverlapDetector) is
-on main; ν/dark_factory:1897 (two-layer pipeline + startup wiring) is deployed.
-One out-of-band orchestrator restart is required to activate the detector.
+**CORRECTION (2026-10-13) — this runbook's central claim was never true; do not follow it.**
+Nothing in dark-factory calls `register_for_reify()`, and nothing ever did. `git log -S register_for_reify` over all of dark-factory is empty. ν/dark_factory:1897 shipped no startup wiring: its own deploy record says it fell back to the default path detector. `orchestrator/src/orchestrator/suffix_graph.py` calls `get_overlap_detector(None)`. So no restart could ever have activated `CrateGraphOverlapDetector`, and every reify overlap decision has used path intersection.
+The smoke test below calls `register_for_reify()` itself, so it passes whether or not an orchestrator loaded anything. Both of the detector's test scripts SKIP and report PASS in the merge gate, because `/usr/bin/python3` cannot import `orchestrator`.
+Leo decided on 2026-10-12 to retire the detector rather than wire it. #8886 deletes this runbook with it. The crate-closure idea moves to dark-factory's rebase re-verify gate (dark_factory #6943; reify #8887, held for Leo).
 
-Design: `docs/prds/two-layer-merge-queue.md` (ξ CAPSTONE)
+*Original status (2026-06-24), historical:* "Pending restart. κ/4750 (CrateGraphOverlapDetector) is on main; ν/dark_factory:1897 (two-layer pipeline + startup wiring) is deployed. One out-of-band orchestrator restart is required to activate the detector."
+
+Design: dark-factory `plans/two-layer-merge-queue-prd.md` (ξ CAPSTONE). The `docs/prds/two-layer-merge-queue.md` this line used to cite never existed in reify.
 
 ---
 

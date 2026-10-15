@@ -184,13 +184,14 @@ assert_exit() {
 #
 # WHAT IS AND IS NOT PROTECTED. assert_source_closure_copied below is a real
 # shared drift guard, but it only sees libs reached by a double-quoted `source`
-# statement. The four NON-SOURCED data files this fixture must also copy —
+# statement. The five NON-SOURCED files this fixture must also copy —
 # occt-touching-crates.txt, release-sensitive-crates.txt,
-# verify-pipeline-infra-tests.txt and .config/nextest.toml — are exactly the
+# verify-pipeline-infra-tests.txt, .config/nextest.toml and
+# reify_path_attribution.py (which occt-scope-lib.sh runs) — are exactly the
 # ones with no drift protection at all. verify-pipeline-infra-tests.txt is in
 # the list specifically because verify.sh READS it (select_infra_tests) without
 # sourcing it, so the preflight cannot discover it; if a future verify.sh reads
-# a fifth such data file, this list must be updated BY HAND and the failure
+# a sixth such file, this list must be updated BY HAND and the failure
 # will surface as an opaque --print-plan error, not as a named drift.
 #
 # The right fix is to extract the sandbox construction (mkdir + cp list + chmod
@@ -215,6 +216,7 @@ make_runnable_verify_fixture() {
     for _f in \
         verify.sh \
         occt-scope-lib.sh \
+        reify_path_attribution.py \
         occt-touching-crates.txt \
         release-scope-lib.sh \
         release-sensitive-crates.txt \
@@ -225,6 +227,7 @@ make_runnable_verify_fixture() {
         cpu-admit.sh \
         lib_proc_reaper.sh \
         lib_git_env_scrub.sh \
+        lib_main_checkout.sh \
         gen-nextest-config.sh \
         heavy-test-filter-lib.sh \
         verify-pipeline-infra-tests.txt

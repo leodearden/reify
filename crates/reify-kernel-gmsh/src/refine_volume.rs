@@ -88,15 +88,41 @@
 //! for the MMG3D bookmark (task #3003): if a refinement loop spends >30% of
 //! wallclock in remeshing, swap to MMG3D.
 
-use std::collections::HashMap;
-
-use reify_ir::{ElementOrderTag, GeometryError, Mesh, VolumeConnectivity, VolumeMesh};
+use reify_ir::{ElementOrderTag, GeometryError, Mesh, VolumeMesh};
 
 use crate::background_size_field::BackgroundSizeField;
 use crate::options::MeshingOptions;
 
 #[cfg(has_gmsh)]
+use crate::kernel_real::{ClassifyAngles, build_meshable_region, read_back_tet_mesh};
+#[cfg(has_gmsh)]
+use crate::log_capture::LogCapture;
+#[cfg(has_gmsh)]
 use crate::mesh_size_scope::{GMSH_MESH_SIZE_MIN_DEFAULT, MeshSizeScope};
+
+/// Refine's `classify_surfaces` thresholds: π/12 (15°) for both angles.
+///
+/// Tighter than `mesh_to_volume`'s `CLASSIFY_FEATURE_ANGLE` (π/4) so that
+/// virtually every mesh edge is treated as a "hard" edge. For the unit-cube
+/// test geometry (90° dihedral angles at each edge), this ensures all 12 edges
+/// become 1D curve entities and all 8 cube-corner vertices become 0D point
+/// entities. A π/2 threshold would emit no corner entities at all (gmsh's
+/// sharp-edge test is strictly-greater-than and 90° is NOT > π/2); that is
+/// what broke `mesh_to_volume` in #6200, which is why it no longer uses π/2
+/// either. Before #7447 this path also attached its size hints to those corner
+/// entities; since #7447 sizing comes from the background field, and
+/// `Mesh.MeshSizeFromPoints=0` keeps the corners out of it. π/12 stays
+/// deliberately sharper than π/4 (this path wants every edge hard, not just
+/// the feature edges), so it is NOT folded into the shared constant.
+///
+/// The curve angle is the same π/12 so that vertices at intersections of
+/// curves separated by < 15° are still classified as hard corners; this keeps
+/// the corner count stable across test geometries.
+#[cfg(has_gmsh)]
+const REFINE_CLASSIFY_ANGLES: ClassifyAngles = ClassifyAngles {
+    feature: std::f64::consts::PI / 12.0,
+    curve: std::f64::consts::PI / 12.0,
+};
 
 /// Remesh the volume enclosed by `surface`, sized by a background size field.
 ///
@@ -110,22 +136,18 @@ use crate::mesh_size_scope::{GMSH_MESH_SIZE_MIN_DEFAULT, MeshSizeScope};
 /// than incrementally refining the current volume mesh (see module-level doc
 /// for the cost/accuracy rationale).
 ///
-/// # Threading: pinned to one worker, `options` unread
+/// # Threading
 ///
-/// Every field of `options` is ignored. The background field forces
-/// `General.NumThreads = 1` — gmsh 4.15.2 deadlocks in `mesh_generate` when it
-/// evaluates a `PostView` size field from several mesher threads (the measured
-/// table lives at the option write). `threads` is contractually a pure
-/// performance hint excluded from the cache key, so narrowing it cannot change
-/// the mesh; and one worker makes this path bit-deterministic with respect to
-/// threading whether or not `deterministic` is set, which is why that flag is
-/// not read either. The parameter stays in the signature because the stub arm
-/// and every sibling entry point take it.
+/// `options.threads` and `options.deterministic` are honoured through
+/// [`MeshingOptions::resolved_num_threads`], as in the sibling entry points.
+/// `options.mesh_size` is deliberately unread; see the `Mesh.MeshSizeMax` write.
 ///
 /// # Errors
 ///
 /// `cfg(has_gmsh)`: returns `GeometryError::OperationFailed` on FFI failure
-/// or if Gmsh produces no volume elements.
+/// or if Gmsh produces no volume elements. A failure inside the capture window
+/// also carries the tail of gmsh's captured Info/Warning stream (see
+/// [`crate::log_capture`]).
 ///
 /// `cfg(not(has_gmsh))`: always returns `GeometryError::OperationFailed`
 /// containing [`crate::STUB_UNAVAILABLE_MARKER`] — downstream callers
@@ -138,13 +160,13 @@ use crate::mesh_size_scope::{GMSH_MESH_SIZE_MIN_DEFAULT, MeshSizeScope};
 ///    point a `PostView` mesh-size field at it as the background mesh.
 /// 2. Turn `Mesh.MeshSizeFromPoints` OFF, so that background field is the only
 ///    thing deciding element size.
-/// 3. Pin `General.NumThreads` to 1 instead of deriving it from `options` —
-///    gmsh deadlocks evaluating the field from several mesher threads.
+/// 3. Pre-build the view's lookup octree before meshing (see
+///    `BackgroundFieldGuard::install`).
 #[cfg(has_gmsh)]
 pub fn refine_volume_with_size_field(
     surface: &Mesh,
     size_field: &BackgroundSizeField,
-    _options: &MeshingOptions,
+    options: &MeshingOptions,
     order: ElementOrderTag,
 ) -> Result<VolumeMesh, GeometryError> {
     use crate::{ffi, init};
@@ -191,47 +213,21 @@ pub fn refine_volume_with_size_field(
     let _size_scope = MeshSizeScope::entered(_guard.size_scope_witness())?;
     ffi::clear()?;
     ffi::option_set_number("General.Terminal", 0.0)?;
+    // gmsh's diagnosis now reaches only the capture; armed and dropped exactly
+    // as at `kernel_real::GmshKernel::mesh_to_volume`'s arm site (`log_capture`).
+    // Declared before `_background_field`, so that guard's teardown — which
+    // logs into the capture after a recovery recycle — is drained here too.
+    let log_capture = LogCapture::armed(&_guard);
 
-    // --- Gmsh options (mirrors mesh_to_volume, except the thread pin) ---
+    // --- Gmsh options (mirrors mesh_to_volume) ---
     //
-    // SINGLE-THREADED, UNCONDITIONALLY. Unlike `mesh_to_volume`, this path
-    // ignores `options.threads` and `options.deterministic` and always asks
-    // gmsh for one worker, because gmsh 4.15.2 DEADLOCKS in
-    // `gmshModelMeshGenerate(3)` when a `PostView` background size field —
-    // installed unconditionally a few lines below — is evaluated from several
-    // mesher threads at once. Measured on `tests/mesher_poison_recovery.rs`,
-    // varying nothing but this value:
-    //
-    // | General.NumThreads | outcome                   |
-    // |--------------------|---------------------------|
-    // | 1                  | 5 passed, 17.58 s         |
-    // | 2                  | 5 passed, 24.37 s         |
-    // | 8                  | hang, SIGKILLed at 100 s  |
-    // | 32 (= nproc)       | hang, SIGKILLed at 100 s  |
-    //
-    // A block, not slowness: at 8+ the process sat with CPU time frozen at
-    // 00:00:40 across 2.5 minutes of wall clock, RSS flat at 33 MB, and all 35
-    // threads in `futex_do_wait`. It reproduces for a valid unit cube, so it is
-    // not confined to the mesher's failure path. `Mesh.MaxNumThreads3D = 1`
-    // with `General.NumThreads = 32` still hangs, so pinning the 3D stage alone
-    // is not a fix; only the global worker count is.
-    //
-    // The threshold above is that binary's, and it does NOT generalise — which
-    // is why this is a pin at 1 and not a cap at some measured ceiling. The
-    // same sweep on a CLEAN process (`tests/refine_volume_tests.rs`, unit cube,
-    // uniform field) passes at 8 and hangs at 16, 24 and 32. `mesher_poison_
-    // recovery` hangs at 8 because its gmsh has already been through this
-    // module's `finalize`/`initialize` recovery cycle. Two fixtures, two
-    // different safe ceilings; 1 is the only value measured safe on both.
-    //
-    // This costs the caller nothing it was promised. `MeshingOptions::threads`
-    // is documented as a pure performance hint that is deliberately excluded
-    // from the cache key because it cannot change the answer, and `None` hands
-    // the decision to the kernel outright — so clamping it narrows performance,
-    // never output. The bonus: with one worker this path is bit-deterministic
-    // with respect to threading whatever `options.deterministic` says, which is
-    // why that flag is no longer read here at all.
-    ffi::option_set_number("General.NumThreads", 1.0)?;
+    // Threads resolve exactly as in the sibling entry points. Safe only because
+    // `BackgroundFieldGuard::install` pre-builds the view's lookup octree; see
+    // docs/notes/gmsh-postview-background-field-threading.md.
+    ffi::option_set_number(
+        "General.NumThreads",
+        f64::from(options.resolved_num_threads()),
+    )?;
     let element_order_value: f64 = match order {
         ElementOrderTag::P1 => 1.0,
         ElementOrderTag::P2 => 2.0,
@@ -252,55 +248,20 @@ pub fn refine_volume_with_size_field(
     let tri_node_tags: Vec<u64> = surface.indices.iter().map(|&i| i as u64 + 1).collect();
     ffi::add_elements_2d(surf_tag, 2, &tri_tags, &tri_node_tags)?;
 
-    // --- Classify and create geometry ---
-    //
-    // Use a tighter dihedral-angle threshold (PI/12 ≈ 15°) than
-    // `mesh_to_volume`'s `CLASSIFY_FEATURE_ANGLE` (PI/4) so that virtually
-    // every mesh edge is treated as a "hard" edge.  For the unit-cube test
-    // geometry (90° dihedral angles at each edge), this ensures all 12 edges
-    // become 1D curve entities and all 8 cube-corner vertices become 0D point
-    // entities.  A PI/2 threshold would emit no corner entities at all (gmsh's
-    // sharp-edge test is strictly-greater-than and 90° is NOT > PI/2); that
-    // is what broke `mesh_to_volume` in #6200, which is why it no longer uses
-    // PI/2 either.  Before #7447 this path also attached its size hints to
-    // those corner entities; since #7447 sizing comes from the background
-    // field below, and `Mesh.MeshSizeFromPoints=0` keeps the corners out of it.
-    // PI/12 stays deliberately sharper than PI/4 (this path wants every edge
-    // hard, not just the feature edges), so it is NOT folded into the shared
-    // constant.
-    //
-    // For the `curveAngle` (4th argument) we use the same PI/12 so that
-    // vertices at intersections of curves separated by < 15° are still
-    // classified as hard corners; this keeps the corner count stable across
-    // test geometries.
-    ffi::classify_surfaces(
-        std::f64::consts::PI / 12.0,
-        1,
-        1,
-        std::f64::consts::PI / 12.0,
-        0,
-    )?;
-    ffi::create_geometry(&[])?;
-
-    let surface_tags = ffi::get_entity_tags(2)?;
-    if surface_tags.is_empty() {
-        return Err(GeometryError::OperationFailed(
-            "refine_volume_with_size_field: no dim=2 entities after classify+create_geometry; \
-             surface may be open or non-manifold"
-                .into(),
-        ));
-    }
-
-    let loop_tag = ffi::geo_add_surface_loop(&surface_tags)?;
-    let _vol_tag = ffi::geo_add_volume(&[loop_tag])?;
-    ffi::geo_synchronize()?;
+    build_meshable_region(
+        &_guard,
+        "refine_volume_with_size_field",
+        REFINE_CLASSIFY_ANGLES,
+    )
+    .map_err(|e| log_capture.annotate(e))?;
 
     // --- Background size field ---
     //
     // The whole size field, interior included. Declared after `_size_scope`,
     // so the field is torn down before the size options are restored, and
     // both land before `_guard` releases the lock.
-    let _background_field = BackgroundFieldGuard::install(_guard.size_scope_witness(), size_field)?;
+    let _background_field = BackgroundFieldGuard::install(_guard.size_scope_witness(), size_field)
+        .map_err(|e| log_capture.annotate(e))?;
 
     // --- Size sources: the background field and nothing else ---
     //
@@ -396,63 +357,17 @@ pub fn refine_volume_with_size_field(
     // --- Tet meshing ---
     // Via `init::mesh_generate_with_recovery`: the mesher is process-global, so
     // a failure here must not outlive this call. See that function.
+    //
+    // Outside every `log_capture` seam: it annotates its own failure, so a seam
+    // over it would append the tail twice — pinned by
+    // `mesher_poison_recovery::a_failed_refine_reports_gmshs_captured_log_not_just_the_last_error`.
     init::mesh_generate_with_recovery(&_guard, 3)?;
 
-    // --- Readback (mirrors mesh_to_volume verbatim) ---
-    let (out_node_tags, coord_buf) = ffi::get_nodes_all()?;
-    if coord_buf.len() != out_node_tags.len() * 3 {
-        return Err(GeometryError::OperationFailed(format!(
-            "refine_volume_with_size_field: get_nodes_all stride mismatch: \
-             node_tags.len()={}, coord_buf.len()={} (expected {})",
-            out_node_tags.len(),
-            coord_buf.len(),
-            out_node_tags.len() * 3,
-        )));
-    }
-    let elem_node_tags = init::read_tet_connectivity("refine_volume_with_size_field", order)?;
-
-    let mut paired: Vec<(u64, [f64; 3])> = out_node_tags
-        .iter()
-        .copied()
-        .zip(coord_buf.chunks_exact(3))
-        .map(|(t, c)| (t, [c[0], c[1], c[2]]))
-        .collect();
-    paired.sort_by_key(|(t, _)| *t);
-
-    let mut tag_to_idx: HashMap<u64, u32> = HashMap::with_capacity(paired.len());
-    let mut vertices: Vec<f32> = Vec::with_capacity(paired.len() * 3);
-    for (idx, (tag, xyz)) in paired.iter().enumerate() {
-        let idx_u32 = u32::try_from(idx).map_err(|_| {
-            GeometryError::OperationFailed(format!(
-                "refine_volume_with_size_field: {} nodes exceeds u32 tet_indices limit",
-                paired.len()
-            ))
-        })?;
-        tag_to_idx.insert(*tag, idx_u32);
-        vertices.extend(xyz.iter().map(|&v| v as f32));
-    }
-
-    let mut tet_indices: Vec<u32> = Vec::with_capacity(elem_node_tags.len());
-    for &tag in &elem_node_tags {
-        let idx = *tag_to_idx.get(&tag).ok_or_else(|| {
-            GeometryError::OperationFailed(format!(
-                "refine_volume_with_size_field: element references unknown node tag {tag}"
-            ))
-        })?;
-        tet_indices.push(idx);
-    }
-
+    let volume = read_back_tet_mesh(&_guard, "refine_volume_with_size_field", order)
+        .map_err(|e| log_capture.annotate(e))?
+        .mesh;
     let _ = ffi::clear();
-
-    Ok(VolumeMesh {
-        vertices,
-        connectivity: VolumeConnectivity::Tet {
-            indices: tet_indices,
-            order,
-        },
-        normals: None,
-        boundary: None,
-    })
+    Ok(volume)
 }
 
 /// Stub-build companion: always returns `GeometryError::OperationFailed`
@@ -493,9 +408,15 @@ struct BackgroundFieldGuard<'g> {
     _lock: std::marker::PhantomData<&'g std::sync::MutexGuard<'g, ()>>,
 }
 
+/// Where `BackgroundFieldGuard::install` probes its view. Any point works: a
+/// hit and a miss both build the view's lookup octree.
+#[cfg(has_gmsh)]
+const OCTREE_BUILD_PROBE_POINT: [f64; 3] = [0.0; 3];
+
 #[cfg(has_gmsh)]
 impl<'g> BackgroundFieldGuard<'g> {
-    /// Install `size_field` as the model's background mesh size field.
+    /// Install `size_field` as the model's background mesh size field, ready
+    /// to be evaluated concurrently by the multi-threaded mesher.
     ///
     /// Armed before the first fallible step that needs cleaning up, so the
     /// `?`s below unwind through this type's own `Drop` rather than through a
@@ -520,6 +441,12 @@ impl<'g> BackgroundFieldGuard<'g> {
             size_field.element_count(),
             size_field.list_data(),
         )?;
+        // gmsh 4.15.2 builds a view's lookup octree lazily behind an orphaned
+        // OpenMP barrier that deadlocks when first reached from inside the
+        // multi-threaded mesher. Probing once here, on the calling thread,
+        // builds it outside any parallel region; see
+        // docs/notes/gmsh-postview-background-field-threading.md.
+        ffi::view_probe(view_tag, OCTREE_BUILD_PROBE_POINT)?;
 
         let field_tag = ffi::field_add("PostView")?;
         installed.field_tag = Some(field_tag);

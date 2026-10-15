@@ -7,23 +7,30 @@
 //! the verbatim copies it replaced had to be edited in lockstep on every
 //! grammar change.
 //!
-//! Declared from `analysis.rs` rather than the crate root, so the path is
-//! `crate::analysis::test_fixtures`.
+//! Declared from `decl_oracle.rs` rather than the crate root, so the path is
+//! `crate::decl_oracle::test_fixtures`.
 
 use reify_ast::ParsedModule;
 use reify_core::ModulePath;
+use tower_lsp::lsp_types::Url;
+
+/// The URI a single-document test opens its source under; its module name is
+/// `test`.
+pub(crate) fn test_uri() -> Url {
+    Url::parse("file:///test.ri").unwrap()
+}
 
 /// One verified-parseable snippet per NAMED `Declaration` variant, paired with
 /// the name that variant declares — the shared fixture behind
-/// [`crate::analysis::decl_name_and_span`]'s wildcard-free match.
+/// [`crate::decl_oracle::decl_name_and_span`]'s wildcard-free match.
 ///
 /// Consumers, each a per-kind loop over this table except where noted:
-/// - `analysis::tests::decl_name_and_span_returns_name_and_span_for_every_named_kind`
-/// - `analysis::tests::named_decl_snippets_cover_every_named_kind` — also asserts
+/// - `decl_oracle::tests::decl_name_and_span_returns_name_and_span_for_every_named_kind`
+/// - `symbols::tests::named_decl_snippets_cover_every_named_kind` — also asserts
 ///   this table is row-for-row aligned with `OUTLINE_SYMBOL_KIND_BY_NAME`, so a
 ///   new row needs a per-kind `SymbolKind` verdict too
-/// - `analysis::tests::every_named_decl_snippet_yields_one_symbol_agreeing_with_decl_name_and_span`
-/// - `analysis::tests::document_symbols_map_every_named_kind_to_its_symbol_kind` — looks
+/// - `symbols::tests::every_named_decl_snippet_yields_one_symbol_agreeing_with_decl_name_and_span`
+/// - `symbols::tests::document_symbols_map_every_named_kind_to_its_symbol_kind` — looks
 ///   rows up BY NAME via `named_decl_snippet`, so renaming a row's declared name
 ///   panics there rather than silently shrinking its loop
 /// - `goto_def::tests::goto_def_cursor_on_declaration_name_resolves_for_every_kind`

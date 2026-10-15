@@ -55,6 +55,23 @@ use std::cell::RefCell;
 /// literal in expr.rs would have silently survived it (the C2(iv)
 /// severity-invariance failure mode). The same reasoning applies to any emit site
 /// added here later: read the const, never a literal.
+///
+/// # Language contract and deferred variants
+///
+/// The user-facing statement of what this knob governs is
+/// `docs/reify-language-spec.md` §4.9. Around it:
+///
+/// * **No eval-time check, by ruling.** The eval-time ctor inserts args
+///   verbatim; this compile-time surface is the single enforcement point
+///   (`docs/prds/struct-ctor-field-type-conformance.md` D7).
+/// * **Empty-collection args are skipped, not rejected.** They compile with no
+///   expected type; typed enforcement belongs to
+///   `docs/prds/expected-type-pushdown-return-field.md` (stub).
+/// * **Bare `TraitObject` fields are exempt** on the expression-position path.
+///   The exemption, its scope and its revisit condition live at
+///   `check_expr_struct_ctor_args` in `compile_builder/entities_phase.rs` (PRD D6).
+/// * **Construction-site gaps this knob does not yet reach** are listed under
+///   spec §4.9 "Known limitations", each with its owner.
 pub(crate) const CTOR_FIELD_CONFORMANCE_SEVERITY: Severity = Severity::Error;
 
 /// Build a `Diagnostic` at an explicit `severity`.
@@ -1308,10 +1325,14 @@ fn example_unit_literal(dimension: &DimensionVector) -> Option<String> {
 /// `Scalar` ctor slot.
 ///
 /// Shape: ``"pass a dimensioned <Dimension> literal such as `<example>`"``,
-/// COPIED from `ArgRejection::message` in `crates/reify-eval/src/arg_acceptance.rs`
+/// COPIED from `ArgRejection::message` in `crates/reify-ir/src/arg_acceptance.rs`
 /// so the compile-time and runtime diagnostics for the same authoring mistake
-/// read the same way. Copied and never imported: `reify-eval` depends on
-/// `reify-compiler`, so the reverse edge would be a dependency cycle (D9).
+/// read the same way. The clause itself is computed here rather than imported:
+/// the only hints `reify-ir` renders are the fixed LENGTH / Density / Angle
+/// literals it reads from `reify_core::units`, nothing that works for an
+/// arbitrary dimension — and the ctor-slot LENGTH wording deliberately differs
+/// from the shared one (pinned by
+/// `builtin_slot_and_ctor_conformance_length_hints_are_deliberately_different`).
 ///
 /// Degrades rather than disappearing, so the hint is present unconditionally at
 /// a dimensioned slot:
@@ -1360,10 +1381,10 @@ fn dimensioned_scalar_migration_hint(dimension: &DimensionVector) -> String {
 /// unknown, whereas with `ScalarParam` the FAMILY is known (it is a scalar) and
 /// only its dimension is open. Adding it here would silence genuine family-level
 /// mismatches such as `String ← Scalar<Q>` at every arm at once. Instead, the
-/// arms that already tolerate a scalar-family arg as the expression compiler's
-/// numeric-fallback placeholder (`Point`, `Matrix`/`Tensor`) accept it through
-/// [`is_numeric_placeholder_leaf`], which is where its scalar-ness — not its
-/// unknown-ness — is the load-bearing property.
+/// two arms that already tolerate a scalar-family arg (`Point`,
+/// `Matrix`/`Tensor`) accept it through [`is_numeric_placeholder_leaf`], which
+/// is where its scalar-ness — not its unknown-ness — is the load-bearing
+/// property.
 fn arg_type_is_unverifiable(arg_ty: &Type) -> bool {
     matches!(
         arg_ty,
@@ -1372,8 +1393,7 @@ fn arg_type_is_unverifiable(arg_ty: &Type) -> bool {
 }
 
 /// The NARROW numeric-leaf predicate the `Point` and `Matrix`/`Tensor` shape
-/// arms use to accept the expression compiler's numeric-fallback placeholder
-/// (task 5465).
+/// arms use to accept a scalar-family arg (task 5465).
 ///
 /// Its membership is exactly what the `matches!` below says: `Type::Int`, ANY
 /// `Type::Scalar { .. }` — dimensioned or not, the match is dimension-BLIND —
@@ -1422,9 +1442,9 @@ fn is_numeric_placeholder_leaf(ty: &Type) -> bool {
 /// Reusing it as the arg-side accept HERE would silence `Scalar<Q> ← Int` (I3)
 /// and `Scalar<Length> ← Scalar<Mass>` (I2) — precisely the two rejections γ
 /// exists to produce — leaving the promotion green, the corpus clean and the
-/// whole task functionally inert. The `Point` / `Matrix` / `Tensor` arms want its
-/// full membership set because a numeric-fallback placeholder is what they
-/// actually receive; this arm wants only the dimension-placeholder half.
+/// whole task functionally inert. The `Point` and `Matrix`/`Tensor` arms want its
+/// full membership set, each for the reason stated at its own call site; this
+/// arm wants only the dimension-placeholder half.
 ///
 /// It is a PER-ARM guard for the same reason it is not an entry in
 /// [`arg_type_is_unverifiable`]: adding it there would silence
@@ -1628,9 +1648,11 @@ where
 /// error. The guard runs before the match, making the anti-cascade contract uniform
 /// across all arms (current and future). Note: this guard is top-level only — an `Error`
 /// nested inside a wrapper (e.g. `Option<Error>`) is not detected and may produce a
-/// secondary wrapper-shape diagnostic on top of the root-cause error. Non-wrapper,
-/// non-trait param types (e.g. `Real`, `Int`) fall through silently — a fully general
-/// arg-shape pass is tracked as future work.
+/// secondary wrapper-shape diagnostic on top of the root-cause error. Since task 5302,
+/// non-wrapper, non-trait param types reach the general concrete-leaf arm, which checks
+/// the families [`general_leaf_param_family_is_validated`] admits; the dedicated
+/// shape arms (Vector, Point, Matrix/Tensor, Field, Selector) and the enum branch
+/// check theirs. Every remaining family falls through silently (owner #7958).
 fn walk_param_against_arg_type(param_type: &Type, arg_type: &Type, ctx: &mut WalkCtx<'_>) {
     // Anti-cascade: skip when either type carries the poison sentinel so no
     // wrapper-shape, leaf-conformance, or future-arm diagnostic piles on top
@@ -1871,10 +1893,24 @@ fn walk_param_against_arg_type(param_type: &Type, arg_type: &Type, ctx: &mut Wal
         //     [`list_bottoms_out_numeric`]: an unconstrained `Type::List(_)`
         //     accept also swallowed `Body(inertia: ["a", "b"])`, leaving the
         //     promoted family a hole on the very shape the accept exists for.
-        //   • `Type::Int | Type::Scalar | Type::ScalarParam` — rank-0 scalar
-        //     equivalence (Rules 2a/2b) plus matrix/tensor-builtin
-        //     numeric-fallback placeholders, via the same narrow
-        //     [`is_numeric_placeholder_leaf`] the `Point` arm uses.
+        //   • `Type::Int | Type::Scalar | Type::ScalarParam` — everything
+        //     [`is_numeric_placeholder_leaf`] matches. ANY `Type::Scalar { .. }`
+        //     arrives (dimension- AND rank-blind: a scalar-returning call such
+        //     as `trace(…)` lands here too). Only a matching scalar at a rank-0
+        //     `Tensor` param has a rule behind it (Rules 2a/2b,
+        //     `type_compat.rs`); at a `Matrix` or rank≥1 `Tensor` param it is a
+        //     bounded cost, though spec §4.9 lists "a scalar" as legal. NOT the
+        //     math builtins that build a matrix, tensor or vector (`matrix`,
+        //     `diag`, `identity`, `vec`, `transpose`, `inverse`, `outer`): they
+        //     carry a real `Type::Matrix` / `Type::Tensor` / `Type::Vector` from
+        //     `math_fn_result_type`, take the nominal branch above and are
+        //     quantity-checked, pinned by
+        //     `matrix_builtin_cross_dimension_at_inertia_param_errors_arg_type_mismatch`.
+        //     One pin per leg here:
+        //     `bare_numeric_literal_at_matrix_param_stays_clean`,
+        //     `dimensioned_scalar_at_matrix_param_stays_clean`,
+        //     `matching_scalar_at_rank0_tensor_param_stays_clean` and
+        //     `scalar_param_at_matrix_param_stays_clean`.
         //
         // Everything else (`String`, `Bool`, `Selector`/`AnySelector`, `Enum`,
         // `Applied`, `StructureRef`, `Field`, `Point`, `Frame`, `Transform`,
@@ -1902,6 +1938,7 @@ fn walk_param_against_arg_type(param_type: &Type, arg_type: &Type, ctx: &mut Wal
             let is_conforming = match arg_ty {
                 Type::Matrix { .. } | Type::Tensor { .. } | Type::Vector { .. } => true,
                 Type::List(_) => list_bottoms_out_numeric(arg_ty),
+                // Scalar-family leg; inputs, reason and pins: arm comment above.
                 other => is_numeric_placeholder_leaf(other),
             };
             if !is_conforming {
@@ -2141,7 +2178,7 @@ fn walk_param_against_arg_type(param_type: &Type, arg_type: &Type, ctx: &mut Wal
 /// * **`Geometry`** — geometry constructors compile to a dimensionless-scalar
 ///   placeholder (GHR-γ) and `type_compatible` has no `Geometry` arm at all;
 ///   geometry conformance is decided only through the literal walker's op-array
-///   inference.
+///   inference. Owner: #8101.
 /// * **`TypeParam`** — an unresolved generic param, whose real conformance is
 ///   decided when the type var is bound at instantiation (mirrors the arg-side
 ///   `TypeParam` skip inside [`reject_if_incompatible`]).
@@ -2160,7 +2197,7 @@ fn walk_param_against_arg_type(param_type: &Type, arg_type: &Type, ctx: &mut Wal
 /// `Union`, `Projection`, `ScalarParam`. Promoting any of them is the same
 /// deliberate act the four families above went through: a per-family probe pair
 /// (clean fixture + value floor) plus a green corpus gate, with no new
-/// `SKIP_SET` entry.
+/// `SKIP_SET` entry. Owner: #7958 (INV-SF-5 `placeholders-owned-and-loud`).
 ///
 /// # Enum families (task 5465, family 4) — handled by the caller, not here
 ///

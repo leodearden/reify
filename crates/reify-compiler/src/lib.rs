@@ -29,6 +29,8 @@ mod datum_projection;
 mod diagnostics;
 mod entity;
 mod expr;
+mod flexure_signatures;
+mod fn_return_check;
 mod forall_elaborate;
 mod functions;
 mod geometry;
@@ -52,6 +54,7 @@ mod member_path;
 pub mod module_dag;
 mod module_pragmas;
 mod orientation_signatures;
+mod port_path;
 pub mod prelude_context;
 pub(crate) mod recursion_guard;
 pub mod relation_signatures;
@@ -75,6 +78,7 @@ pub use annotations::materialize::{
 };
 pub use compile_builder::pre_pass::check_module_path_decl;
 pub use entity::satisfies_trait_bound;
+pub use port_path::{ElementIndex, PortPath, PortRoot};
 pub use prelude_context::PreludeContext;
 pub use type_compat::{implicitly_converts_to, type_compatible};
 pub use types::*;
@@ -86,6 +90,7 @@ pub(crate) use conformance::*;
 pub(crate) use connect::*;
 pub(crate) use entity::*;
 pub(crate) use expr::*;
+pub(crate) use flexure_signatures::*;
 #[allow(unused_imports)]
 pub(crate) use forall_elaborate::*;
 #[allow(unused_imports)]
@@ -201,7 +206,7 @@ pub fn __infer_mul_div_result_for_parity_test(
 /// `cfg(test)` for in-crate tests); not part of the released public API.
 #[cfg(any(test, feature = "test-support"))]
 #[doc(hidden)]
-// G-allow: task #6001 (registry α) — test-support-gated registry-seam shim,
+// G-allow: task #6001 (registry α, done) — test-support-gated registry-seam shim,
 // consumed by tests/harness_builtin_registry/registry_seed_result_types.rs (the §7.3(2) family-arm swap's
 // type-preservation pin).
 pub fn __registry_result_type_for_test(
@@ -221,7 +226,7 @@ pub fn __registry_result_type_for_test(
 /// implication if it can call both halves. Same `__`-prefix stability caveat.
 #[cfg(any(test, feature = "test-support"))]
 #[doc(hidden)]
-// G-allow: task #6001 (registry α) — test-support-gated registry-seam shim,
+// G-allow: task #6001 (registry α, done) — test-support-gated registry-seam shim,
 // consumed by tests/harness_builtin_registry/registry_seed_result_types.rs (the ladder
 // arm's cheap-miss guard pin).
 pub fn __registry_owns_for_test(name: &str) -> bool {

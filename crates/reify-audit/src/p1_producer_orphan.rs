@@ -32,11 +32,19 @@
 //!   ">14 days"); at exactly the boundary and anywhere inside the window it
 //!   is Low ("log only").
 //!
+//! A task whose `get_changed_symbols` query FAILS is not a task that
+//! introduced nothing: it yields one Low [`Pattern::P1TaskUnexamined`]
+//! ([`task_unexamined`]) and the sweep moves on, so the failure shows in the
+//! findings rather than hiding among the clean tasks. A run with no usable
+//! jcodemunch session at all records P1 once, run-level ([`run_unexamined`]).
+//!
 //! When the FIRST of those per-symbol guards eats a task's entire symbol list,
 //! zero findings means "examined nothing", not "corpus clean", so
 //! [`unexamined_sweep_breadcrumb`] annotates it on stderr.
 
-use crate::{AuditContext, ChangedSymbol, EvidenceRef, Finding, Pattern, Severity};
+use crate::{
+    AuditContext, ChangedSymbol, EvidenceRef, Finding, JCodemunchCallFailed, Pattern, Severity,
+};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// 14-day grace window. `f-infra-design.md` §5 P1 line 83 specifies a
@@ -123,7 +131,18 @@ pub fn check(ctx: &AuditContext) -> Vec<Finding> {
         let since_sha = format!("{commit}^1");
         let until_sha = commit;
 
-        let symbols = ctx.jcodemunch.get_changed_symbols(&since_sha, until_sha);
+        let symbols = match ctx.jcodemunch.get_changed_symbols(&since_sha, until_sha) {
+            Ok(symbols) => symbols,
+            Err(failure) => {
+                findings.push(task_unexamined(
+                    &meta.task_id,
+                    &since_sha,
+                    until_sha,
+                    &failure,
+                ));
+                continue;
+            }
+        };
         if let Some(msg) =
             unexamined_sweep_breadcrumb(&symbols, &meta.task_id, &since_sha, until_sha)
         {
@@ -198,6 +217,51 @@ pub fn check(ctx: &AuditContext) -> Vec<Finding> {
     }
 
     findings
+}
+
+/// The finding for a done task P1 could not examine because its
+/// `get_changed_symbols` query failed. Low, so it never moves the exit code,
+/// and worded so that this task's lack of producer-orphan findings cannot be
+/// read as a clean result.
+///
+/// `evidence` is empty: the failed query returned no symbol or file, and the
+/// commit subject an [`EvidenceRef::Commit`] carries is not known here.
+fn task_unexamined(
+    task_id: &str,
+    since_sha: &str,
+    until_sha: &str,
+    failure: &JCodemunchCallFailed,
+) -> Finding {
+    Finding {
+        pattern: Pattern::P1TaskUnexamined,
+        severity: Severity::Low,
+        task_id: task_id.to_string(),
+        summary: format!(
+            "task-unexamined: P1 could not examine done task {task_id}: the \
+             {since_sha}..{until_sha} query failed ({failure}); zero \
+             producer-orphan findings for this task are not a clean result \
+             — re-run once jcodemunch answers"
+        ),
+        evidence: vec![],
+    }
+}
+
+/// The finding for a run in which P1 had no usable jcodemunch session at all,
+/// so it examined no task: `reason` says why. Low, run-level (empty
+/// `task_id`, as for the corpus-level detectors), and worded so that the
+/// run's lack of producer-orphan findings cannot be read as a clean result.
+pub fn run_unexamined(reason: &str) -> Finding {
+    Finding {
+        pattern: Pattern::P1TaskUnexamined,
+        severity: Severity::Low,
+        task_id: String::new(),
+        summary: format!(
+            "task-unexamined: P1 ran without jcodemunch this run ({reason}); zero \
+             producer-orphan findings are not a clean result — re-run once \
+             jcodemunch answers"
+        ),
+        evidence: vec![],
+    }
 }
 
 /// Returns a `reify-audit:` prefixed stderr breadcrumb when every symbol this
