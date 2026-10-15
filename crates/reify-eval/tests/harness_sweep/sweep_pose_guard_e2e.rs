@@ -287,7 +287,7 @@ fn the_refusal_reaches_the_user_with_every_fact_intact() {
             "4 degrees",
             "0.000000000",
             "0.000 degrees off-plane",
-            "encloses nothing",
+            "encloses almost nothing",
             "pose the profile normal",
             "start tangent (1.000000,",
             "sweep(rotate(",

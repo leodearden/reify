@@ -470,10 +470,11 @@ fn validate_sweep_pose(
         let off_plane_deg = abs_dot.asin().to_degrees();
         let (tx, ty, tz) = t;
         return Err(GeometryError::OperationFailed(format!(
-            "sweep profile is posed in the path's plane: the path's start \
-             tangent ({tx:.6}, {ty:.6}, {tz:.6}) lies in the profile's plane, \
-             so the swept body encloses nothing. Measured \
-             |tangent . normal| = {abs_dot:.9}, i.e. {off_plane_deg:.3} \
+            "sweep profile is posed (nearly) edge-on to the path: the path's \
+             start tangent ({tx:.6}, {ty:.6}, {tz:.6}) lies within \
+             {SWEEP_DEGENERATE_POSE_DEG} degrees of the profile's plane, so the \
+             swept body encloses almost nothing (nothing at all at 0 degrees). \
+             Measured |tangent . normal| = {abs_dot:.9}, i.e. {off_plane_deg:.3} \
              degrees off-plane, where at least {SWEEP_DEGENERATE_POSE_DEG} \
              degrees is required. Fix: pose the profile normal along that \
              start tangent. The rotation depends on the tangent above; for \

@@ -21,6 +21,10 @@
 use reify_ir::{BRepKind, GeometryError, GeometryHandleId, GeometryOp, GeometryQuery, Value};
 use reify_kernel_occt::{OCCT_AVAILABLE, OcctKernel};
 
+/// The phrase that identifies the degenerate-pose refusal, as opposed to any
+/// other sweep failure.
+const POSE_REFUSAL: &str = "edge-on to the path";
+
 /// 20×20mm rect profile, in SI metres, with its own normal along +Z.
 fn pose_test_rect_profile(kernel: &mut OcctKernel) -> GeometryHandleId {
     kernel
@@ -94,7 +98,7 @@ fn execute_refuses_a_profile_posed_in_the_spine_plane() {
 
     match kernel.execute(&GeometryOp::Sweep { profile, path }) {
         Err(GeometryError::OperationFailed(msg)) => assert!(
-            msg.contains("posed in the path's plane"),
+            msg.contains(POSE_REFUSAL),
             "expected the degenerate-pose refusal, got: {msg}"
         ),
         Ok(_) => panic!(
@@ -164,7 +168,7 @@ fn an_in_plane_circle_profile_is_still_refused() {
 
     match kernel.sweep_with_history(profile_id, spine_id) {
         Err(GeometryError::OperationFailed(msg)) => assert!(
-            msg.contains("posed in the path's plane"),
+            msg.contains(POSE_REFUSAL),
             "expected the degenerate-pose refusal for a circle profile, got: {msg}"
         ),
         Ok(_) => panic!(
@@ -223,7 +227,7 @@ fn a_non_planar_face_profile_is_not_judged_on_pose() {
 
     if let Err(GeometryError::OperationFailed(msg)) = kernel.sweep_with_history(lateral, spine_id) {
         assert!(
-            !msg.contains("posed in the path's plane"),
+            !msg.contains(POSE_REFUSAL),
             "the pose guard judged a CURVED face, whose centroid normal \
              describes no plane: {msg}"
         );
@@ -299,7 +303,7 @@ fn degenerate_pose_error_carries_every_fact_the_author_needs() {
         ("the band", "4 degrees"),
         ("this call's measured dot", "0.000000000"),
         ("this call's measured angle", "0.000 degrees off-plane"),
-        ("the reason", "encloses nothing"),
+        ("the reason", "encloses almost nothing"),
         ("the corrective action", "pose the profile normal"),
         ("what to pose it against", "start tangent"),
         ("the measured tangent", "start tangent (1.000000,"),
