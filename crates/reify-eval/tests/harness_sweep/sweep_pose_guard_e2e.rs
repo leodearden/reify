@@ -305,7 +305,7 @@ fn spine_just_above_the_band_realizes() {
 }
 
 /// Rung 2c — 4.6149°, constructed to reproduce `|t̂·n̂|` = 0.080458525, the
-/// MEASURED pose of `tests/prd-gate/fixtures/pnrg_envelope_sweep.ri`. It is the
+/// MEASURED pose of `tests/prd-gate/fixtures/pnrg_envelope_sweep.ri` (pg-drift:allow — prose only; this file never reads it). It is the
 /// tightest real in-tree constraint on how wide the band may grow.
 ///
 /// This rung is load-bearing and must not be dropped as redundant with 2b. That
