@@ -1,53 +1,24 @@
 //! Acceptance ladder for `sweep`'s degenerate-pose guard (task #7248).
 //!
-//! `sweep(profile, path)` transports the profile **as posed** — it does not
-//! orient it onto the spine — so a profile lying in the spine's own plane
-//! sweeps edge-on and produces a degenerate body. Measured across five decades,
-//! the swept volume obeys
+//! `sweep(profile, path)` transports the profile **as posed**; it never orients
+//! it onto the spine, so the swept volume is
 //!
 //! ```text
 //!     V = (profile area) · (spine displacement · profile normal)
 //! ```
 //!
-//! exactly, which is why the failure is CONTINUOUS rather than a special case:
-//! OCCT reports `IsDone()` and hands back a valid sliver all the way down to
-//! 0.001°, and at exactly 0° it hands back a zero-volume body with no
-//! complaint at all. An exact-coplanarity predicate would therefore be evadable
-//! by float noise and would miss the realistic authoring mistake — a profile
-//! posed ALMOST in the spine's plane. The guard is an angular band instead,
-//! refusing when `|t̂·n̂| < sin(4°)`.
+//! As-posed transport is the intended contract (esc-7248-3). A profile posed
+//! edge-on to its spine is therefore refused with a typed error when
+//! `|t̂·n̂| < sin(4°)`, never auto-oriented.
 //!
-//! As-posed transport is the INTENDED contract, not the defect: designs pose
-//! their sweep profiles deliberately (`prj/printer_v01/dev_capstan.ri:197`).
-//! So the fix is a typed refusal of the degenerate pose, never an auto-orient —
-//! which is what rung (5) below exists to hold.
-//!
-//! **The ladder.** Seven rungs, each an independently measured number. Two are
-//! the defect; the other five are the over-reach fence that stops a too-wide
-//! band from landing:
-//!
-//! | rung | subject | `\|t̂·n̂\|` | disposition |
-//! |---|---|---|---|
-//! | 1 | in-plane spine (+X) | 0 | REFUSE — the reported defect |
-//! | 2 | 3.8° spine | 0.066273900 | REFUSE — 5.0% below the floor |
-//! | 2b | 4.2° spine | 0.073238197 | admit — 5.0% above the floor |
-//! | 2c | 4.6149° spine | 0.080458525 | admit — real-subject proxy |
-//! | 3 | 6° spine | 0.104528464 | admit — wide-margin fence |
-//! | 4 | +Z spine | 1 | admit — positive control |
-//! | 5 | 45° spine | 0.707106781 | admit — as-posed contract |
-//!
-//! Rungs 2 and 2b straddle the constant at ±0.2°, pinning it far more tightly
-//! than either alone. The straddle is numerically safe: both sit 3.48e-3 away
-//! from the floor in `|t̂·n̂|`, ~280× the ~1e-5 error introduced by rounding the
-//! spine coordinates to 7 decimal places. A 4° rung was deliberately NOT used:
-//! rounded, it reads 0.069768661 against a 0.069756474 floor — a 0.02% gap that
-//! cannot honestly be asserted on either side.
-//!
-//! Two further rungs bound the guard's scope rather than its band: rung 6 holds
-//! `pipe()`, which orients its own section and must be untouched, and rung 7
-//! pins that a CURVE profile is already refused one layer up, by the compiler.
-//! Rung 8 holds the refusal's own advice: the inline posed spelling it suggests
-//! compiles and realizes.
+//! The rungs:
+//! - 1 and 2 are refused: the in-plane spine, and 3.8° just below the band.
+//! - 2b, 2c and 3 realize: 4.2° just above the band, 4.6149° as a real-subject
+//!   proxy, and 6° as a wide-margin fence.
+//! - 4 and 5 are controls: a +Z spine, and 45° holding the as-posed volume.
+//! - 6: `pipe()` orients its own section and is untouched by the guard.
+//! - 7: a CURVE profile is refused one layer up, by the compiler.
+//! - 8: the inline posed spelling the refusal suggests realizes.
 //!
 //! Sources are embedded inline rather than read from disk, so this file adds no
 //! entry to `_RUST_COUPLED_RI_FIXTURES` (`scripts/verify.sh`).
