@@ -319,5 +319,14 @@ class Verdicts(ScratchTree):
         self.assertIn(str(self.root / COMPILER_SRC), str(caught.exception))
 
 
+class LiveTree(unittest.TestCase):
+
+    def test_compiler_tree_matches_committed_baseline(self):
+        report = namespace_ratchet(REPO_ROOT, BASELINE)
+        skipped = [f"skipped {c.path} (#[cfg(test)] mod at {c.declared_at})" for c in report.skipped]
+        print("\n" + "\n".join([*report.count_lines, *skipped]), file=sys.stderr, flush=True)
+        self.assertEqual(report.violations, (), "\n".join(report.violations))
+
+
 if __name__ == "__main__":
     unittest.main()
