@@ -139,7 +139,7 @@ pub fn mesh_plane_2d(
 /// it into the model, and apply the recombine request to that surface.
 ///
 /// The [`crate::init::GmshGuard`] is an admission ticket only, as in
-/// `kernel_real::build_meshable_region`: never touched, taken so holding
+/// `meshable_region::build_meshable_region`: never touched, taken so holding
 /// `GMSH_LOCK` is a precondition the compiler checks. Split out of
 /// [`mesh_plane_2d`] so this span's failures reach the caller's `LogCapture`
 /// at one seam.

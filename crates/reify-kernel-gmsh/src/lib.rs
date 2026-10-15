@@ -83,6 +83,12 @@ pub mod log_capture;
 #[cfg(has_gmsh)]
 pub(crate) mod tet_readback;
 
+// The region builder and tet readback shared by the three tet producers — sits
+// above `tet_readback` and below the producers (`kernel_real`, `refine_volume`,
+// `mesh_boundary`). Only compiled when has_gmsh is set.
+#[cfg(has_gmsh)]
+pub(crate) mod meshable_region;
+
 // Real kernel (FFI-backed) — only compiled when has_gmsh is set.
 #[cfg(has_gmsh)]
 pub mod kernel_real;
@@ -98,11 +104,11 @@ pub use kernel::GmshKernel;
 #[cfg(has_gmsh)]
 pub use kernel_real::GmshKernel;
 /// The `classify_surfaces` angles `mesh_to_volume` actually uses. Re-exported
-/// (single definition, in `kernel_real`) so the B-rep census guard in
+/// (single definition, in `meshable_region`) so the B-rep census guard in
 /// `tests/classify_feature_angle.rs` pins the production values rather than a
 /// copied literal that could drift away from them (#6200).
 #[cfg(has_gmsh)]
-pub use kernel_real::{CLASSIFY_CURVE_ANGLE, CLASSIFY_FEATURE_ANGLE};
+pub use meshable_region::{CLASSIFY_CURVE_ANGLE, CLASSIFY_FEATURE_ANGLE};
 
 pub use cache_key::volume_mesh_cache_key;
 // MeshSurfaceToVolumeReport is the return type of the cfg(has_gmsh)-gated
