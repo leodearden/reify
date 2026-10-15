@@ -28,3 +28,5 @@ member-spawn-site | reify_git_env_scrub (bash|env) | tests/infra/run_all.sh | 1 
 # result-fail-recorder: a member FAIL verdict is printed only by
 # _ra_record_result.
 result-fail-recorder | RESULT: FAIL | tests/infra/run_all.sh | 1 | β #8681
+# theta-embedded-normal-closure: the one closure is reify_path_attribution.py's.
+theta-embedded-normal-closure | def normal_closure[(] | scripts/*.sh | 0 | θ #8662

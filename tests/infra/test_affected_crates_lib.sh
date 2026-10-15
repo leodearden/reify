@@ -69,6 +69,13 @@
 #      and unioned crates) per input line, in order; examples/bracket.ri's
 #      seeds equal its pinned corpus row; JSON agrees with TSV; bad argv exits
 #      non-zero
+#  22. (task 8662) CLOSURE: reify_path_attribution.py's `closure` CLI over a
+#      synthetic workspace — normal/build edges propagate, a dev edge only
+#      from the tested member, non-members never reported; an unknown seed is
+#      an empty exit-0 answer, malformed metadata exits non-zero; and
+#      _reify_compile_closure prints the same
+#  23. (task 8662) GUARD: occt-scope-lib.sh refuses to source without
+#      reify_path_attribution.py next to it, naming the module
 
 set -euo pipefail
 
@@ -1231,6 +1238,137 @@ assert "the CLI rejects an unknown verb (non-zero exit)" \
     _check_path_facts_cli_rejects no-such-verb
 assert "attribute rejects --format xml (non-zero exit)" \
     _check_path_facts_cli_rejects attribute --format xml
+
+# ---------------------------------------------------------------------------
+# CLOSURE (task 8662): `reify_path_attribution.py closure SEED...` is the one
+# compile closure; occt-scope-lib.sh's _reify_compile_closure is its entry
+# point for occt_touching_set and _reverse_closure.
+#
+# Hermetic: synthetic `cargo metadata` JSON, no cargo. Workspace members A-G
+# and one NON-member X:
+#   B dev->A   C dev->B   D normal->B   E build->A   F normal->A   G dev->F
+#   X normal->A   (in packages and resolve.nodes, absent from workspace_members)
+# A member is affected by seed A iff its own normal/build closure, or that of
+# one of its DIRECT dev-deps, reaches A. So the closure of A is exactly
+# A B E F G: C is out (a dev-dep of a dev-dep does not propagate), D is out
+# (B's dev edge is not compiled when testing D), X is out (not a member).
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- CLOSURE: reify_path_attribution.py closure (normal/build vs dev edges) ---"
+
+_CLOSURE_EXPECTED=$'A\nB\nE\nF\nG'
+_CLOSURE_META=""
+_closure_meta_once() {
+    [ -n "$_CLOSURE_META" ] && return 0
+    _CLOSURE_META="$(python3 -S -c '
+import json
+def pkg_id(name):
+    return f"{name} 0.1.0 (path+file:///w/{name})"
+def node(name, *deps):
+    return {"id": pkg_id(name),
+            "deps": [{"pkg": pkg_id(d), "dep_kinds": [{"kind": k}]} for d, k in deps]}
+nodes = [node("A"), node("B", ("A", "dev")), node("C", ("B", "dev")),
+         node("D", ("B", None)), node("E", ("A", "build")), node("F", ("A", None)),
+         node("G", ("F", "dev")), node("X", ("A", None))]
+names = "ABCDEFGX"
+print(json.dumps({
+    "workspace_members": [pkg_id(n) for n in names if n != "X"],
+    "packages": [{"id": pkg_id(n), "name": n} for n in names],
+    "resolve": {"nodes": nodes},
+}))
+')"
+}
+
+# _closure_cli_run <stdin text> <arg>... — sets _CLOSURE_RUN_{RC,OUT,ERR}.
+_CLOSURE_RUN_RC=""
+_CLOSURE_RUN_OUT=""
+_CLOSURE_RUN_ERR=""
+_closure_cli_run() {
+    local input="$1" errf
+    shift
+    errf="$(mktemp "${TMPDIR:-/tmp}/reify-closure-err.XXXXXX")" || return 1
+    _CLOSURE_RUN_OUT="$(python3 -S "$_PATH_FACTS_CLI" closure "$@" <<<"$input" 2>"$errf")" \
+        && _CLOSURE_RUN_RC=0 || _CLOSURE_RUN_RC=$?
+    _CLOSURE_RUN_ERR="$(tail -n 3 "$errf")"
+    rm -f "$errf"
+    echo "closure $* -> rc=$_CLOSURE_RUN_RC out=[${_CLOSURE_RUN_OUT//$'\n'/ }] stderr(tail)=[$_CLOSURE_RUN_ERR]"
+}
+
+_check_closure_of_seed_is_exact() {
+    _closure_meta_once || return 1
+    _closure_cli_run "$_CLOSURE_META" A || return 1
+    [ "$_CLOSURE_RUN_RC" = "0" ] && [ "$_CLOSURE_RUN_OUT" = "$_CLOSURE_EXPECTED" ]
+}
+assert "closure A over the synthetic workspace prints exactly A B E F G, sorted, one per line, exit 0" \
+    _check_closure_of_seed_is_exact
+
+# _check_closure_of_seed_excludes <member> — the seed's closure is non-empty
+# and does not contain <member>.
+_check_closure_of_seed_excludes() {
+    _closure_meta_once || return 1
+    _closure_cli_run "$_CLOSURE_META" A || return 1
+    [ "$_CLOSURE_RUN_RC" = "0" ] && [ -n "$_CLOSURE_RUN_OUT" ] && ! grep -qx "$1" <<<"$_CLOSURE_RUN_OUT"
+}
+assert "closure A excludes C: a dev-dep of a dev-dep does not propagate" \
+    _check_closure_of_seed_excludes C
+assert "closure A excludes D: B's dev edge is not compiled when testing D" \
+    _check_closure_of_seed_excludes D
+assert "closure A excludes X: a non-member package is never reported" \
+    _check_closure_of_seed_excludes X
+
+_check_closure_of_unknown_seed_is_empty() {
+    _closure_meta_once || return 1
+    _closure_cli_run "$_CLOSURE_META" nope || return 1
+    [ "$_CLOSURE_RUN_RC" = "0" ] && [ -z "$_CLOSURE_RUN_OUT" ]
+}
+assert "closure of a seed naming no package prints nothing and exits 0 (affected_crates' C5 rule owns that case)" \
+    _check_closure_of_unknown_seed_is_empty
+
+# Non-zero because the METADATA is bad, not because argv was refused: an
+# argparse refusal prints `usage:`.
+_check_closure_rejects_metadata() {
+    _closure_cli_run "$1" A || return 1
+    [ "$_CLOSURE_RUN_RC" -ne 0 ] && [[ "$_CLOSURE_RUN_ERR" != *usage:* ]]
+}
+assert "closure exits non-zero on unparseable metadata ({)" \
+    _check_closure_rejects_metadata '{'
+assert "closure exits non-zero on metadata missing its keys ({})" \
+    _check_closure_rejects_metadata '{}'
+
+# occt_touching_set's entry point: the sourced shim prints what the CLI does.
+_check_sourced_compile_closure_matches() {
+    local out rc
+    _closure_meta_once || return 1
+    out="$(_reify_compile_closure A <<<"$_CLOSURE_META")" && rc=0 || rc=$?
+    echo "_reify_compile_closure A -> rc=$rc out=[${out//$'\n'/ }]"
+    [ "$rc" = "0" ] && [ "$out" = "$_CLOSURE_EXPECTED" ]
+}
+assert "occt-scope-lib.sh's _reify_compile_closure A prints the same A B E F G" \
+    _check_sourced_compile_closure_matches
+
+# ---------------------------------------------------------------------------
+# GUARD (task 8662): a lib that runs the module refuses to load without it,
+# naming it, instead of failing later inside a caller that silences stderr.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- GUARD: occt-scope-lib.sh refuses to source without reify_path_attribution.py ---"
+
+# _check_lib_refuses_without_module <lib> <file>... — copy the files, but not
+# the module, into a scratch dir; sourcing <lib> there fails naming the module.
+_check_lib_refuses_without_module() {
+    local lib="$1" dir err rc f
+    shift
+    dir="$(mktemp -d "${TMPDIR:-/tmp}/reify-lib-guard.XXXXXX")" || return 1
+    for f in "$@"; do
+        cp "$REPO_ROOT/scripts/$f" "$dir/$f"
+    done
+    err="$(bash -c 'source "$1/$2"' _ "$dir" "$lib" 2>&1 >/dev/null)" && rc=0 || rc=$?
+    rm -rf "$dir"
+    echo "source $lib without the module: rc=$rc stderr=[$err]"
+    [ "$rc" -ne 0 ] && [[ "$err" == *reify_path_attribution.py* ]]
+}
+assert "sourcing occt-scope-lib.sh without scripts/reify_path_attribution.py fails, naming the module" \
+    _check_lib_refuses_without_module occt-scope-lib.sh occt-scope-lib.sh occt-touching-crates.txt
 
 # ---------------------------------------------------------------------------
 # Step 11: C5 metadata-failure fail-wide + C4 global precedes crates in list
