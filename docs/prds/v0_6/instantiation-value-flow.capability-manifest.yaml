@@ -118,6 +118,7 @@ tasks:
       pattern: one level of override depth only
       paths:
       - crates/reify-eval/src/engine_build.rs
+      - crates/reify-eval/src/realization_seeding.rs
       expect: absent
 - label: ζ
   task_id: 6611

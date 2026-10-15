@@ -1,6 +1,6 @@
 # PRD — Realization pipeline (reify-eval): one per-template walk, a typed executor
 
-**Status:** authored pass 1, 2026-10-15 — review-all program `review-all-reify-20261010`, stream **S2** (wave 3, spawn mode, size L, risk high; `plans/review-all-program-reify-20261012.md`). Leo ruled R1–R6 in this session (§11). An adversarial critic pass (fable/high: 1 blocker, 4 majors, 6 minors, each reproduced in code) is folded, and an opus/high fold-verifier's second pass (7 majors, 10 minors) is folded on top, and a focused opus re-verify of §1, §5.5 and §8 is folded after that (§11 fold records). v0_6. Approach **B + H** (§5 contract, §6 two-way boundary tests; rationale D14).
+**Status:** decomposed 2026-10-15 (pass 2): α #4727 (adopted), β₁ #9154, β₂ #9155, γ #9156, δ #9158, ε #9157, ζ #8534 (adopted), η #9159, θ #9160, ι₁ #9161, ι₂ #9162, ι₃ #9163, ω #9164; out-of-plan follow-up #9165 (R6). Subsumed and cancelled: #4691 (→ β₁), #8333 (→ η). Out-of-batch edges: #9036 ← α; #9092 ← δ; gate #8612 ← δ, η. R5 widenings (three writes each): #6745 #6923 #6171 #6168 #6177 #6170 #6175 #8395 #8396 #8400 #6610 #6926. Authored pass 1, 2026-10-15 — review-all program `review-all-reify-20261010`, stream **S2** (wave 3, spawn mode, size L, risk high; `plans/review-all-program-reify-20261012.md`). Leo ruled R1–R6 in this session (§11). An adversarial critic pass (fable/high: 1 blocker, 4 majors, 6 minors, each reproduced in code) is folded, and an opus/high fold-verifier's second pass (7 majors, 10 minors) is folded on top, and a focused opus re-verify of §1, §5.5 and §8 is folded after that (§11 fold records). v0_6. Approach **B + H** (§5 contract, §6 two-way boundary tests; rationale D14).
 **Invariants touched:** **INV-ARCH-1** (`module-sccs-only-shrink`): γ takes `geometry_ops` out of the 24-module reify-eval SCC and lowers its baseline row in the same diff; every new module this PRD adds imports nothing in the residual engine SCC. **INV-BUILD-3** (cache-hit parity): δ moves `probe_realization_cache` into the executor and re-points the row's pointer (S24 grammar; §5.10). No registry status cell is flipped by this stream. Every leaf that extracts a construct names its row in `tests/infra/adoption-ratchet.manifest` (program invariant candidate 5, §5.9).
 **Finding keys closed (5):** fk-f7e4716af878 (η), fk-53997e96ef7c (δ), fk-17e2aa81f6d6 (θ), fk-98754d80a67e (α, the adopted #4727), fk-9e6d548589d8 (ζ, the adopted #8534). Leaves that only contribute to a key carry it as `x_finding_part` (§9).
 **Code anchors** verified against main `d4cd598fee` (2026-10-14) by six scout seats and re-checked by the lead. Since the review anchor `a030ee7528`, engine_build.rs changed by 474 lines (#6308's owner routing among them) and execute_realization_ops shrank from 2,317 to 2,304 lines; no finding's substance changed. Cite-by-symbol; re-locate lines at implementation time. Line numbers appear only in the dated §10.
@@ -21,7 +21,7 @@
 2. **Realization freshness has one home; tessellate does not write it yet (η, θ, R4, R6).** The sink writes the `NodeId::Realization` entry (`Final` on success, `Failed` on failure) on the surfaces that run the Realize post-process: Build, BuildSnapshot and distance. That write moves out of `post_process_geometry_handle_cells`; the entries are the same, from one home.
    - Tessellate surfaces record the node outcome only, so the GUI still shows no failed realization, as today.
    - The reason (R6): geometry-handle value cells derive freshness at eval time from their Realization's entry (the `realization_reads` meet), and in a GUI edit eval runs before `tessellate_snapshot`. A tessellate-written entry would leave geometry cells `Pending` after every edit.
-   - A follow-up task, filed at pass 2, owns GUI realization freshness and the GH-cell re-derivation it needs.
+   - Follow-up #9165 (filed at pass 2, ← θ #9160 and S4 γ #8861) owns GUI realization freshness and the GH-cell re-derivation it needs.
 3. **`REIFY_BUILD_SCHEDULER` is gone (α).** The one-release kill-switch from 2026-06-23 is deleted; `REIFY_BUILD_SCHEDULER=legacy` changes nothing. No script, CI file or `gui/` code sets it (§10.4).
 4. **`build_snapshot` realizes like `build` (η).** It walks the unified schedule with `HydrateCell` steps, so a curated 3-arg fillet resolves (#7270 lands the first half; η makes it structural).
 5. **`distance_between_placed` stops accumulating on the engine (η, R2).** It runs the Build walk without export and asks the owning kernel; two calls report independent dispatch attributions.
@@ -461,7 +461,7 @@ Measured with `python3 tests/infra/adoption_ratchet.py --manifest <scratch rows>
 
 ## 9. Decomposition plan
 
-Labels are Greek; task ids are assigned at decompose and backfilled. Every leaf is `task_kind="normal"`. Before editing, run `git diff d4cd598fee..main -- <files>` and re-read the symbols.
+Labels are Greek; task ids were assigned at decompose (2026-10-15) and are backfilled into each leaf heading. Every leaf is `task_kind="normal"`. Before editing, run `git diff d4cd598fee..main -- <files>` and re-read the symbols.
 
 **Shared done criteria (every leaf).**
 - §5.10's same-diff obligations.
@@ -482,22 +482,22 @@ Labels are Greek; task ids are assigned at decompose and backfilled. Every leaf 
   - **Signal.** B-α1, B-α2; rows `legacy-scheduler` and `optional-unified-pass` at 0.
   - **Keys.** fk-98754d80a67e. Medium (the key's severity; #4727 was high).
   - **Deps.** #7270 (in flight on `build_snapshot`'s walk). Out-of-batch dependent: #9036 ← α.
-- **β₁ — Executor prerequisites below engine_build: op lowering, selector presence, one tessellation default.**
+- **β₁ #9154 — Executor prerequisites below engine_build: op lowering, selector presence, one tessellation default.**
   - **Work.** Create `geometry_op_lowering.rs` and `selector_presence.rs` (§5.8). Move `DEFAULT_TESSELLATION_TOLERANCE_M` into `tolerance_budget.rs` (D13) and point the four copies at it. Subsumes #4691.
   - **Signal.** B-β1; rows `tessellation-default-copy`, `engine-free-geometry-op-lowering` and `engine-free-selector-presence` at 0.
   - **Keys.** none (`x_finding_part` fk-53997e96ef7c). Medium.
   - **Deps.** #8687.
-- **β₂ — `volume_mesh_assembly.rs`.**
+- **β₂ #9155 — `volume_mesh_assembly.rs`.**
   - **Work.** Move the P6 partition and its three test files (§5.8). `sweep_classifier` imports it.
   - **Signal.** B-β2; row `engine-free-volume-mesh-assembly` at 0.
   - **Keys.** none (`x_finding_part` fk-53997e96ef7c). Medium.
   - **Deps.** none.
-- **γ — `placed_walk.rs`; the override realizer is a parameter; geometry_ops leaves the SCC.**
+- **γ #9156 — `placed_walk.rs`; the override realizer is a parameter; geometry_ops leaves the SCC.**
   - **Work.** §5.7 and D10.
   - **Signal.** B-γ1, B-γ2; the reify-eval INV-ARCH-1 row lowered in the diff; rows `placed-walk-reach-back`, `geometry-ops-reach-back` and `engine-free-placed-walk` at 0.
   - **Keys.** none. Medium.
   - **Deps.** #8751, #9020.
-- **δ — `realization_executor/`: typed per-op outcome, terminal functions, one commit/rollback owner.**
+- **δ #9158 — `realization_executor/`: typed per-op outcome, terminal functions, one commit/rollback owner.**
   - **Work.**
     - §5.3–§5.4 and D6/D7.
     - Delete `execute_realization_ops`; the four drivers call `execute_realization`, and their `with_*` chains stay until η.
@@ -506,7 +506,7 @@ Labels are Greek; task ids are assigned at decompose and backfilled. Every leaf 
   - **Signal.** B-δ1–B-δ5; rows `engine-free-realization-executor` at 0 and `executor-call-site` at 4; the heuristic 2/14 targets of §5.4.
   - **Keys.** fk-53997e96ef7c. **High.**
   - **Deps.** β₁, β₂, γ, #8687, #8747, #8750, #8992, #8993, #8995. Out-of-batch dependent: S16 β #9092 ← δ.
-- **ε — The realized-terminal oracle (R3).**
+- **ε #9157 — The realized-terminal oracle (R3).**
   - **Work.**
     - §5.6 and D8.
     - Re-point S10 ι₅/ι₆'s owner source and S12's context entries to `RealizedTerminal`.
@@ -521,7 +521,7 @@ Labels are Greek; task ids are assigned at decompose and backfilled. Every leaf 
   - **Signal.** B-ζ1, B-ζ2; row `projection-store-reach` at 0.
   - **Keys.** fk-9e6d548589d8. Low.
   - **Deps.** ε, β₁, #8998.
-- **η — `SurfacePolicy` and the one walk; four drivers become table rows.**
+- **η #9159 — `SurfacePolicy` and the one walk; four drivers become table rows.**
   - **Work.**
     - §5.1–§5.2, §5.5 (the sink with `records_outcome`), D1–D3 and D9.
     - `tessellate_from_values` and the driver loops are deleted.
@@ -533,29 +533,29 @@ Labels are Greek; task ids are assigned at decompose and backfilled. Every leaf 
   - **Signal.** B-η1–B-η7; rows `realization-ops-knob` and `tessellate-outcome-discard` at 0, `schedule-walk-block` at 1, `executor-call-site` at 1, `node-outcome-write` at 2, `node-outcome-read` at 3, and `engine-free-surface-policy` at 0.
   - **Keys.** fk-f7e4716af878. Subsumes #8333. **High.**
   - **Deps.** α, δ, ε, #9043, #9036, #9038, #9046, #8872, #8861, #9017, #7270, #8995.
-- **θ — One sink on every surface: tessellate records the node outcome.**
+- **θ #9160 — One sink on every surface: tessellate records the node outcome.**
   - **Work.**
     - Delete `records_outcome` (D9). Every surface records its node outcome through the sink. The `NodeId::Realization` entry stays a Realize post-process write (R6).
     - Delete the #3437 symmetric-write comment.
   - **Signal.** B-θ1, B-θ2, B-θ3; B-ε1 re-run green.
   - **Keys.** fk-17e2aa81f6d6. Medium.
   - **Deps.** η, ε.
-- **ι₁ — `realization_seeding.rs`.**
+- **ι₁ #9161 — `realization_seeding.rs`.**
   - **Work.** Move the P2 partition (§5.8). γ's closure points at the moved `realize_sub_override_handles`.
   - **Signal.** B-ι1; row `engine-free-realization-seeding` at 0.
   - **Keys.** none (`x_finding_part` fk-53997e96ef7c). Medium.
   - **Deps.** η, #8872.
-- **ι₂ — `realization_demand.rs`.**
+- **ι₂ #9162 — `realization_demand.rs`.**
   - **Work.** The P3 partition as free functions over explicit arguments (§5.8). The walk's `WalkDemand` is built from it.
   - **Signal.** B-ι1; row `engine-free-realization-demand` at 0.
   - **Keys.** none (`x_finding_part` fk-53997e96ef7c). Medium.
   - **Deps.** η.
-- **ι₃ — `geometry_post_process.rs` and `build_export.rs`.**
+- **ι₃ #9163 — `geometry_post_process.rs` and `build_export.rs`.**
   - **Work.** Move P4's explicit-argument items and the export legs (§5.8). Re-point `engine_constraints`' DFM imports.
   - **Signal.** B-ι1; rows `engine-free-geometry-post-process` and `engine-free-build-export` at 0.
   - **Keys.** none (`x_finding_part` fk-53997e96ef7c). Medium.
   - **Deps.** θ, ι₁, ι₂, #8872.
-- **ω — PRD close.**
+- **ω #9164 — PRD close.**
   - **Work.**
     - Measure engine_build.rs and engine_build/tests.rs against heuristic 14 (D12). If either is still above the alarm, record the named partition and its symptoms in the commit.
     - Set this PRD's Status to `SHIPPED` with the landed leaf ids, the AS-AUTHORED freeze paragraph and the LIVE/AS-AUTHORED map, and apply the same header to the capability manifest.
@@ -623,7 +623,7 @@ Rules are inline. Six scout seats measured; the lead re-ran the decisive caller 
 - **R2 — production-orphaned drivers.** **`build_snapshot` is a policy row; `distance_between_placed` runs the Build-policy walk without export and asks the owning kernel** (D3; leaf η).
 - **R3 — write-back coherence.** **One sink writes the node outcome on every surface; the handle oracle stays build-only, and each entry carries `{KernelHandle, repr}` that every handle reader uses** (D8, D9; leaves ε, θ).
 - **R4 — realization freshness (critic F1).** **The sink owns the `NodeId::Realization` cache entry: `Final` with its trace on success, `Failed` on failure. The write moves out of `post_process_geometry_handle_cells`, which keeps only the oracle and the geometry-handle cells** (D9; leaf η). Its "every surface" half is narrowed by R6.
-- **R6 — tessellate freshness deferred (focused re-verify, N7).** Geometry-handle value cells derive freshness at eval time from their Realization's entry, and the GUI runs eval before tessellation, so a tessellate-written entry would leave geometry cells `Pending` after every edit. **θ records only the node outcome on tessellate surfaces; the entry stays a Realize post-process write; a follow-up task (filed at pass 2, ← θ and S4 γ #8861) owns GUI realization freshness and the GH-cell re-derivation it needs, and first measures whether GUI sessions after an export already show stuck-`Pending` cells** (D9; leaf θ; B-θ2, B-θ3).
+- **R6 — tessellate freshness deferred (focused re-verify, N7).** Geometry-handle value cells derive freshness at eval time from their Realization's entry, and the GUI runs eval before tessellation, so a tessellate-written entry would leave geometry cells `Pending` after every edit. **θ records only the node outcome on tessellate surfaces; the entry stays a Realize post-process write; follow-up #9165 (← θ #9160 and S4 γ #8861) owns GUI realization freshness and the GH-cell re-derivation it needs, and first measures whether GUI sessions after an export already show stuck-`Pending` cells** (D9; leaf θ; B-θ2, B-θ3).
 - **R5 — other PRDs' delivered checks.** **Pass 2 widens the §10.6 checks to S2's new module paths, with three writes each (`.yaml`, `.md` twin, task metadata),** as S13's pass 2 did.
 
 **Lead decisions (recorded, not relitigated).**

@@ -1,10 +1,12 @@
 # Capability manifest — realization-pipeline-one-walk-typed-executor
 
-PRD: `docs/prds/v0_6/realization-pipeline-one-walk-typed-executor.md`. Machine-readable twin: `realization-pipeline-one-walk-typed-executor.capability-manifest.yaml` (schema: dark-factory `shared.capability_manifest.CapabilityManifestDoc`; 13 task blocks, 46 capabilities). Leaves: α, β₁, β₂, γ, δ, ε, ζ, η, θ, ι₁, ι₂, ι₃, ω. This file is generated from the parsed YAML, so a binding the YAML truncated would show here truncated.
+PRD: `docs/prds/v0_6/realization-pipeline-one-walk-typed-executor.md`. Machine-readable twin: `realization-pipeline-one-walk-typed-executor.capability-manifest.yaml` (schema: dark-factory `shared.capability_manifest.CapabilityManifestDoc`; 13 task blocks, 46 capabilities). Leaves: α #4727, β₁ #9154, β₂ #9155, γ #9156, δ #9158, ε #9157, ζ #8534, η #9159, θ #9160, ι₁ #9161, ι₂ #9162, ι₃ #9163, ω #9164. This file is generated from the parsed YAML, so a binding the YAML truncated would show here truncated.
 
 **Code anchors** verified against main `d4cd598fee` (2026-10-14). Cite-by-symbol; re-locate lines at implementation time.
 
 Verdicts: PASS means the binding held at authoring. It was read at main this session, or a filed upstream producer is in the leaf's dependency set, or Leo ruled it (R1–R5), or the fable/high critic verified it. There are no FAIL or OPEN rows.
+
+The /prd overlay's D3 decompose-verification workflow was not run. No leaf asserts a `.ri`-probeable premise: every signal is a Rust test, GUI state or a byte-identity regression floor, which is the workflow's documented reach limit. The fable/high critic, an opus/high fold-verifier and a focused opus re-verify performed the adversarial premise checks instead (PRD §11).
 
 Every mechanical `delivered_check` was confirmed red on main at authoring: a present-check finds nothing, and an absent-check finds the construct. So each goes green only when its producer lands. `manual` checks stay sidecar-only.
 
@@ -38,7 +40,7 @@ Every mechanical `delivered_check` was confirmed red on main at authoring: a pre
 | ζ | inline-densify-tail | The Sdf/Voxel arm's inline 'densify failed:' warning bypasses degrade_projection (read at d4cd598fee). | PASS | grep `densify failed:` absent in `crates/reify-eval/src/realization_content.rs` |
 | ζ | second-store-writer | engine_build's redispatch pre-tessellation reads (.get(..).is_some()) and inserts realization_projection_store directly; S1 ε #9043 removes the third code reference (the reset destructure). Row projection-store-reach 3 -> 0. | PASS | grep `^[^/]*realization_projection_store` absent in `crates/reify-eval/src/engine_build.rs` |
 | ζ | owner-keyed-upstream | producer:task-8998 (S10 ι₆) deletes openvdb_kernel_name and keys densify on the owner; ζ depends on it and on ε. | PASS | — |
-| η | tessellate-driver | tessellate_from_values is a static fn with 23 params (read at d4cd598fee). | PASS | grep `fn tessellate_from_values` absent in `crates/reify-eval/src` |
+| η | tessellate-driver | tessellate_from_values is a static fn with 23 params (read at d4cd598fee). | PASS | grep `fn tessellate_from_values\(` absent in `crates/reify-eval/src` |
 | η | knob-chain | 68 .with_* knob calls on RealizationOpsInput, including tests (read at d4cd598fee; ratchet engine). | PASS | grep `with_module_binds_selector` absent in `crates/reify-eval/src` |
 | η | policy-table | No surface_policy.rs at d4cd598fee; η creates it per PRD §5.1. | PASS | path `crates/reify-eval/src/surface_policy.rs` present |
 | η | rename-subsumed | realize_for_check is pub at engine_build.rs (#8333's subject); other sidecars mention it in binding prose only (read at d4cd598fee). | PASS | grep `pub fn realize_for_check\(` absent in `crates/reify-eval/src` |

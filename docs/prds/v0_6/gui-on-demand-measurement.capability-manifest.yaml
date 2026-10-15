@@ -726,6 +726,7 @@ tasks:
       pattern: achieved_repr_tol\.insert\(
       paths:
       - crates/reify-eval/src/geometry_ops.rs
+      - crates/reify-eval/src/placed_walk.rs
       expect: present
   - name: bt3-no-perturbation-has-an-exact-in-tree-template
     binding: 'capability→producer (wired) — EngineSession::build_gui_state_full_scene

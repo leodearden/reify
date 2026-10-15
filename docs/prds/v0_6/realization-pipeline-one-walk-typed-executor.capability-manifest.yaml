@@ -2,7 +2,7 @@ prd: docs/prds/v0_6/realization-pipeline-one-walk-typed-executor.md
 schema_version: 1
 tasks:
 - label: α
-  task_id: null
+  task_id: 4727
   title: 'realization-pipeline α (#4727 adopted): retire LegacyMultiPass; the schedule is non-optional'
   capabilities:
   - name: legacy-arm-is-absence
@@ -34,7 +34,7 @@ tasks:
     binding: '#4727''s dependencies #4362, #4734, #5125 have landed (get_statuses at authoring); its scope is re-written to PRD §9 α at pass 2.'
     verdict: PASS
 - label: β₁
-  task_id: null
+  task_id: 9154
   title: 'realization-pipeline β₁: executor prerequisites below engine_build — op lowering, selector presence, one tessellation default'
   capabilities:
   - name: op-lowering-module
@@ -69,7 +69,7 @@ tasks:
     binding: producer:task-8687 (S3 β) moves sub_refs_in_op and compute_realization_upstream_values_hash_from_ops to realization_inputs.rs; β₁ depends on it and moves neither.
     verdict: PASS
 - label: β₂
-  task_id: null
+  task_id: 9155
   title: 'realization-pipeline β₂: volume_mesh_assembly.rs'
   capabilities:
   - name: p6-is-free
@@ -91,7 +91,7 @@ tasks:
       paths:
       - crates/reify-eval/src/engine_build.rs
 - label: γ
-  task_id: null
+  task_id: 9156
   title: 'realization-pipeline γ: placed_walk.rs; the override realizer is a parameter; geometry_ops leaves the SCC'
   capabilities:
   - name: single-cycle-edge
@@ -122,7 +122,7 @@ tasks:
       kind: manual
       reason: The lowered baseline row is the tool's own print output, asserted by module_scc_ratchet; a grep cannot express it.
 - label: δ
-  task_id: null
+  task_id: 9158
   title: 'realization-pipeline δ: realization_executor/ — typed per-op outcome, terminal functions, one commit/rollback owner'
   capabilities:
   - name: executor-is-free
@@ -169,7 +169,7 @@ tasks:
     binding: 'producer:task-8992, task-8993, task-8995 (S10 ι₃/ι₄/ι₅): KernelSet, select(Op) with the BRep fallback inside, owner routing; δ depends on all three.'
     verdict: PASS
 - label: ε
-  task_id: null
+  task_id: 9157
   title: 'realization-pipeline ε: the realized-terminal oracle (R3)'
   capabilities:
   - name: oracle-entry-type
@@ -202,7 +202,7 @@ tasks:
       kind: manual
       reason: A CLI end-to-end behaviour, asserted by B-ε1 (re-run by θ).
 - label: ζ
-  task_id: null
+  task_id: 8534
   title: 'realization-pipeline ζ (#8534 adopted): project_realization_read_handle has one home'
   capabilities:
   - name: stale-allows
@@ -237,7 +237,7 @@ tasks:
     binding: producer:task-8998 (S10 ι₆) deletes openvdb_kernel_name and keys densify on the owner; ζ depends on it and on ε.
     verdict: PASS
 - label: η
-  task_id: null
+  task_id: 9159
   title: 'realization-pipeline η: SurfacePolicy and the one walk; four drivers become table rows'
   capabilities:
   - name: tessellate-driver
@@ -245,7 +245,7 @@ tasks:
     verdict: PASS
     delivered_check:
       kind: grep
-      pattern: fn tessellate_from_values
+      pattern: fn tessellate_from_values\(
       expect: absent
       paths:
       - crates/reify-eval/src
@@ -298,7 +298,7 @@ tasks:
     binding: 'producer:task-9043, 9036, 9038, 9046 (S1 ε, α, γ₁, θ), task-8872 and task-8861 (S4 τ, γ: record_node), task-9017 (S12 ε1), task-7270, task-8995; η depends on all.'
     verdict: PASS
 - label: θ
-  task_id: null
+  task_id: 9160
   title: 'realization-pipeline θ: one sink on every surface — tessellate records the node outcome'
   capabilities:
   - name: tessellate-discards-outcome
@@ -319,7 +319,7 @@ tasks:
     binding: θ depends on η (the sink and records_outcome) and ε (the oracle owns kernel and repr, so a tessellate node write cannot mislead a handle reader).
     verdict: PASS
 - label: ι₁
-  task_id: null
+  task_id: 9161
   title: 'realization-pipeline ι₁: realization_seeding.rs'
   capabilities:
   - name: p2-is-free
@@ -341,7 +341,7 @@ tasks:
       paths:
       - crates/reify-eval/src/engine_build.rs
 - label: ι₂
-  task_id: null
+  task_id: 9162
   title: 'realization-pipeline ι₂: realization_demand.rs'
   capabilities:
   - name: p3-reads-functions-only
@@ -362,7 +362,7 @@ tasks:
       paths:
       - crates/reify-eval/src/engine_build.rs
 - label: ι₃
-  task_id: null
+  task_id: 9163
   title: 'realization-pipeline ι₃: geometry_post_process.rs and build_export.rs'
   capabilities:
   - name: p4-explicit-args
@@ -391,7 +391,7 @@ tasks:
       paths:
       - crates/reify-eval/src/engine_build.rs
 - label: ω
-  task_id: null
+  task_id: 9164
   title: 'realization-pipeline ω: PRD close'
   capabilities:
   - name: terminal-stamp

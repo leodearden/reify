@@ -115,6 +115,7 @@ tasks:
       pattern: kernel\.measure_mesh_deviation\(placed_id
       paths:
       - crates/reify-eval/src/geometry_ops.rs
+      - crates/reify-eval/src/placed_walk.rs
       expect: present
   - name: tessellate-closure-holds-kernel-placedid-mesh-entitypath
     binding: geometry_ops.rs:10935-10956 — the closure signature `&mut |kernel, placed_id,
@@ -126,6 +127,7 @@ tasks:
       pattern: kernel\.tessellate\(placed_id, budget\)
       paths:
       - crates/reify-eval/src/geometry_ops.rs
+      - crates/reify-eval/src/placed_walk.rs
       expect: present
   - name: per-realization-deflection-available-to-halve
     binding: crates/reify-eval/src/engine_build.rs:6168 compute_tessellation_budgets produces
@@ -137,6 +139,7 @@ tasks:
       pattern: fn compute_tessellation_budgets
       paths:
       - crates/reify-eval/src/engine_build.rs
+      - crates/reify-eval/src/realization_demand.rs
       expect: present
   - name: retessellating-same-handle-is-legal
     binding: RealizationCache keys KernelHandle on (entity, repr, demanded_tol); the loop
@@ -320,6 +323,7 @@ tasks:
       pattern: if capture_repr_tol
       paths:
       - crates/reify-eval/src/geometry_ops.rs
+      - crates/reify-eval/src/placed_walk.rs
       expect: present
   - name: bound-table-cannot-reach-the-site-without-an-engine-build-threading-change
     binding: 'PASS-WITH-AMENDMENT. FALSIFIES the PRD §9 δ Modules line, which names only geometry_ops.rs.
@@ -332,9 +336,10 @@ tasks:
     verdict: PASS
     delivered_check:
       kind: grep
-      pattern: 'achieved_repr_tol: &mut std::collections::BTreeMap<String, f64>'
+      pattern: 'achieved_repr_tol: &mut (std::collections::)?BTreeMap<String, f64>'
       paths:
       - crates/reify-eval/src/engine_build.rs
+      - crates/reify-eval/src/placed_walk.rs
       expect: present
   - name: negative-assertion-is-structural-not-wall-clock
     binding: 'G6 branch 4. The regression test asserts the achieved_repr_tol KEY SET equals
@@ -478,6 +483,7 @@ tasks:
       pattern: fn build_outputs_with_result
       paths:
       - crates/reify-eval/src/engine_build.rs
+      - crates/reify-eval/src/build_export.rs
       expect: present
   - name: mode-A-refusal-must-not-regress-eval-or-check
     binding: 'Engine::build (engine_build.rs:3925 -> build_with_geometry_output(.., emit=true))
@@ -490,7 +496,7 @@ tasks:
     verdict: PASS
     delivered_check:
       kind: grep
-      pattern: let _ = engine\.build\(&compiled, ExportFormat::Step\)
+      pattern: 'engine\.(realize_for_check|realize)\(&compiled\)'
       paths:
       - crates/reify-cli/src/main.rs
       expect: present
@@ -662,9 +668,10 @@ tasks:
     verdict: PASS
     delivered_check:
       kind: grep
-      pattern: unwrap_or_else\(\|\| Self::effective_tessellation_tolerance
+      pattern: 'unwrap_or_else\(\|\| ([A-Za-z_]+::)?effective_tessellation_tolerance'
       paths:
       - crates/reify-eval/src/engine_build.rs
+      - crates/reify-eval/src/realization_demand.rs
       expect: present
 - label: λ
   task_id: 6176
@@ -808,6 +815,7 @@ tasks:
       pattern: fn build_outputs_with_result
       paths:
       - crates/reify-eval/src/engine_build.rs
+      - crates/reify-eval/src/build_export.rs
       expect: present
   - name: BT-5-C-KEEP-check-is-expressible
     binding: measure_mesh_deviation is recomputable on any mesh via the trait method (crates/reify-geometry/src/lib.rs:111)

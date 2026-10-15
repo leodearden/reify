@@ -369,3 +369,18 @@ is unset on every filed task.
 | **G6** — premise validity | **PASS.** Numeric floor bound (`1.19e-7·S`, runtime-enforced); termination proved without pinning `K`; γ1's end-to-end capability set is entirely on `main` or upstream; δ/ζ/η's negative assertions each bound to an **observed** absence or an **observed-present** rejection mechanism; θ's dependency is upstream. |
 | **G7** — design invariants | **PASS**, no waiver. |
 | **Manifest** | **0 FAIL.** 2 `PASS-with-amendment` (η, δ; plus the μ/BT-7 twin of η's), each written verbatim into the filed task. |
+
+## S2 path widening (2026-10-15)
+
+The S2 realization-pipeline decompose (`docs/prds/v0_6/realization-pipeline-one-walk-typed-executor.md` §10.6, Leo ruling R5) moves this manifest's checked constructs out of engine_build.rs and geometry_ops.rs. Each affected `delivered_check` keeps its old paths and gains the destination; three writes per check: the `.yaml`, this twin, and the producer tasks' `metadata.delivered_checks` (#6168, #6170, #6171, #6175, #6177, #6923). Each check's present/absent verdict on today's tree is unchanged.
+
+| check | added path | pattern change |
+|---|---|---|
+| measure-call-is-already-boolean-gated-at-one-site | `crates/reify-eval/src/placed_walk.rs` (S2 γ #9156) | — |
+| metric-wired-on-production-path-and-takes-no-tolerance-arg | `crates/reify-eval/src/placed_walk.rs` | — (this pattern already spells `placed_id`, which the code no longer uses; that staleness predates S2) |
+| tessellate-closure-holds-kernel-placedid-mesh-entitypath | `crates/reify-eval/src/placed_walk.rs` | — (same pre-existing staleness) |
+| bound-table-cannot-reach-the-site-without-an-engine-build-threading-change | `crates/reify-eval/src/placed_walk.rs` | `std::collections::BTreeMap` → `(std::collections::)?BTreeMap` (S2 η #9159 deletes `tessellate_from_values`, the only parameter spelled with the prefix) |
+| per-realization-deflection-available-to-halve | `crates/reify-eval/src/realization_demand.rs` (S2 ι₂ #9162) | — |
+| documented-anti-pattern-is-real | `crates/reify-eval/src/realization_demand.rs` | `Self::effective_tessellation_tolerance` → `([A-Za-z_]+::)?effective_tessellation_tolerance` (it becomes a free fn) |
+| BT-7-as-written-mixes-the-two-export-modes, named-producer-does-not-cover-the-surface-the-signal-names | `crates/reify-eval/src/build_export.rs` (S2 ι₃ #9163) | — |
+| mode-A-refusal-must-not-regress-eval-or-check | — | `engine\.realize_for_check\(` → `engine\.(realize_for_check\|realize)\(` (S2 η renames the entry) |

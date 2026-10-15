@@ -87,6 +87,7 @@ B9: "OK Bar#constraint[0]", exit 0). Machine-readable twin:
   `nested_constructor_arg_threads_through_two_levels`
   (`crates/reify-eval/tests/harness_engine/nested_sub_derived_let_e2e.rs`),
   kernel-less; the geometry-plane siblings ε adds attach here. PASS.
+  (2026-10-15, S2 realization-pipeline decompose: the delivered check's paths are widened to `crates/reify-eval/src/engine_build.rs` + `crates/reify-eval/src/realization_seeding.rs`, because ι₁ #9161 moves the override realization there; .yaml, this twin and #6610/#6926's metadata changed together.)
 
 ## ζ — integration gate
 
