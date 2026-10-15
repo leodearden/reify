@@ -169,8 +169,8 @@ fn cites_on_code_lines_and_in_string_literals_are_not_reported() {
 fn untracked_and_out_of_scope_files_are_not_scanned() {
     let out_of_scope = [
         "docs/notes/n.md",
-        "examples/a.ri",
-        "tests/prd-gate/fixtures/f.ri",
+        "crates/reify-compiler/src/a.ri",
+        "crates/reify-compiler/stdlib.ri",
         "crates/reify-eval/tests/t.rs",
     ];
     let mut files: Vec<(&str, &str)> = out_of_scope.iter().map(|p| (*p, CITING)).collect();
