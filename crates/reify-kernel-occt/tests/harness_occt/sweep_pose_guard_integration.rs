@@ -38,17 +38,39 @@ fn pose_test_rect_profile(kernel: &mut OcctKernel) -> GeometryHandleId {
 
 /// A straight 200mm spine from the origin towards `(x, 0, z)`, in metres.
 fn pose_test_spine(kernel: &mut OcctKernel, x: f64, z: f64) -> GeometryHandleId {
+    spine_to(kernel, [x, 0.0, z])
+}
+
+/// A straight spine from the origin to `end`, in metres.
+fn spine_to(kernel: &mut OcctKernel, [x2, y2, z2]: [f64; 3]) -> GeometryHandleId {
     kernel
         .execute(&GeometryOp::LineSegment {
             x1: 0.0,
             y1: 0.0,
             z1: 0.0,
-            x2: x,
-            y2: 0.0,
-            z2: z,
+            x2,
+            y2,
+            z2,
         })
         .expect("LineSegment (spine) should build")
         .id
+}
+
+/// A unit vector perpendicular to the unit vector `n`: `n` crossed with the
+/// coordinate axis it is least aligned with, so the product cannot vanish.
+fn perpendicular_to(n: [f64; 3]) -> [f64; 3] {
+    let axis = (0..3)
+        .min_by(|&i, &j| n[i].abs().total_cmp(&n[j].abs()))
+        .expect("three axes");
+    let mut e = [0.0; 3];
+    e[axis] = 1.0;
+    let p = [
+        n[1] * e[2] - n[2] * e[1],
+        n[2] * e[0] - n[0] * e[2],
+        n[0] * e[1] - n[1] * e[0],
+    ];
+    let len = (p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt();
+    [p[0] / len, p[1] / len, p[2] / len]
 }
 
 /// The history-tracked entry point must refuse the degenerate pose too.
@@ -189,6 +211,11 @@ fn an_in_plane_circle_profile_is_still_refused() {
 /// inspects statically-known Surface producers: a `let`-bound opaque
 /// profile such as `faces(cyl)[0]` arrives here unexamined.
 ///
+/// The spine runs perpendicular to the very normal the guard would sample,
+/// so `|t̂·n̂|` is 0 and a guard without the planarity check MUST refuse:
+/// the fence cannot pass by an accident of where OCCT's centroid sample
+/// points.
+///
 /// Asserts only that the POSE guard stays silent, not that the sweep
 /// succeeds: what OCCT makes of a cylindrical profile is its own business
 /// and not this guard's contract.
@@ -223,7 +250,11 @@ fn a_non_planar_face_profile_is_not_judged_on_pose() {
                 .unwrap_or(false)
         })
         .expect("a cylinder has a Cylinder-surfaced lateral face");
-    let spine_id = pose_test_spine(&mut kernel, 0.200, 0.0);
+    let sampled_normal = kernel
+        .face_outward_unit_normal_for_test(lateral)
+        .expect("the lateral face has a centroid-sampled normal");
+    let [px, py, pz] = perpendicular_to(sampled_normal);
+    let spine_id = spine_to(&mut kernel, [0.200 * px, 0.200 * py, 0.200 * pz]);
 
     if let Err(GeometryError::OperationFailed(msg)) = kernel.sweep_with_history(lateral, spine_id) {
         assert!(
