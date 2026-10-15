@@ -328,4 +328,91 @@ drive prepared "$C1 $C2 refs/heads/main"
 assert "(r) non-ff rejected in default warn-only posture (exit 1)" test "$DRIVE_RC" -eq 1
 assert "(r) non-ff logged HISTORY-REWRITE (always-on)" bash -c "grep -q 'HISTORY-REWRITE (non-fast-forward)' '$LOG'"
 
+# ===========================================================================
+# Real-git boundary (D9 B5/B6): the hooks fired BY GIT through core.hooksPath,
+# not by drive() — git's own stdin shape, env reaching the hook, and the real
+# pre-commit mark site. One fresh fixture per scenario; its base commit is made
+# before core.hooksPath is set, so no scenario inherits a sentinel or a log.
+# ===========================================================================
+
+# make_fix2 — fresh repo on main (one base commit) with the real hooks wired;
+# sets FIX2, F2_SENTINEL, F2_LOG.
+make_fix2() {
+    FIX2="$(mktemp -d)"; _TMPDIRS+=("$FIX2")
+    git -C "$FIX2" init -q -b main
+    git -C "$FIX2" config user.email test@test.com
+    git -C "$FIX2" config user.name Test
+    git -C "$FIX2" commit -q --allow-empty -m base
+    mkdir -p "$FIX2/hooks"
+    cp "$REPO_ROOT/hooks/reference-transaction" "$REPO_ROOT/hooks/main-gate-lib.sh" \
+       "$REPO_ROOT/hooks/pre-commit" "$FIX2/hooks/"
+    chmod +x "$FIX2/hooks/reference-transaction" "$FIX2/hooks/pre-commit"
+    git -C "$FIX2" config core.hooksPath "$FIX2/hooks"
+    F2_SENTINEL="$FIX2/.git/reify-main-gate-ok"
+    F2_LOG="$FIX2/.git/reify-main-gate.log"
+}
+
+# fix2_child <parent> — a loose commit object on top of <parent>; moves no ref.
+fix2_child() {
+    git -C "$FIX2" commit-tree -p "$1" -m "child of $1" "$(git -C "$FIX2" rev-parse "$1^{tree}")"
+}
+
+fix2_main() { git -C "$FIX2" rev-parse refs/heads/main; }
+fix2_token() { cat "$F2_SENTINEL" 2>/dev/null; }
+
+# fix2_mark — the in-process mark: the same public lib function pre-commit calls.
+fix2_mark() { ( cd "$FIX2" && . hooks/main-gate-lib.sh && main_gate_mark ); }
+
+# in_fix2 [ENV=VAL ...] <cmd...> — run from the fixture root; sets FIX2_RC.
+in_fix2() {
+    local rc=0
+    ( cd "$FIX2" && env "$@" ) > "$FIX2/.git/in_fix2.out" 2>&1 || rc=$?
+    FIX2_RC=$rc
+}
+
+# -- (B5) the mark binds the tip; a CAS move from that tip is sanctioned --------
+echo ""
+echo "--- (B5) bound mark + real update-ref from that tip, ENFORCE=1 -> sanctioned ---"
+make_fix2
+X="$(fix2_main)"; Y="$(fix2_child "$X")"
+fix2_mark
+assert "(B5) main_gate_mark writes the main tip as the token" test "$(fix2_token)" = "$X"
+in_fix2 REIFY_MAIN_GATE_ENFORCE=1 git update-ref refs/heads/main "$Y" "$X"
+assert "(B5) the move succeeds under ENFORCE (rc 0)" test "$FIX2_RC" -eq 0
+assert "(B5) main advanced to Y" test "$(fix2_main)" = "$Y"
+assert "(B5) sentinel consumed" bash -c "! test -e '$F2_SENTINEL'"
+assert "(B5) log records the bound sanction" grep -qF "sanctioned main move $X -> $Y" "$F2_LOG"
+assert "(B5) log has no legacy line" bash -c "! grep -qF 'legacy unbound sentinel' '$F2_LOG'"
+
+# -- (B5') a docs commit on main through the real pre-commit is sanctioned ------
+echo ""
+echo "--- (B5') real pre-commit mark + commit on main, ENFORCE=1 -> sanctioned ---"
+make_fix2
+before="$(fix2_main)"
+in_fix2 REIFY_MAIN_GATE_ENFORCE=1 git commit -q --allow-empty -m docs
+after="$(fix2_main)"
+assert "(B5') the commit succeeds under ENFORCE (rc 0)" test "$FIX2_RC" -eq 0
+assert "(B5') main advanced" test "$before" != "$after"
+assert "(B5') sentinel consumed" bash -c "! test -e '$F2_SENTINEL'"
+assert "(B5') log records the bound sanction" grep -qF "sanctioned main move $before -> $after" "$F2_LOG"
+assert "(B5') log has no legacy line" bash -c "! grep -qF 'legacy unbound sentinel' '$F2_LOG'"
+
+# -- (B6) gate passed, commit aborted, main moved on: the leftover token is stale
+# A mark at T0 that nothing consumed (bypass never touches the sentinel) must
+# not sanction a later raw move from T1.
+echo ""
+echo "--- (B6) leftover token from an older tip + raw move, ENFORCE=1 -> refused ---"
+make_fix2
+T0="$(fix2_main)"; T1="$(fix2_child "$T0")"; T2="$(fix2_child "$T1")"
+fix2_mark
+in_fix2 REIFY_MAIN_GATE_BYPASS=1 git update-ref refs/heads/main "$T1" "$T0"
+assert "(B6) setup: the bypassed move reached T1" test "$(fix2_main)" = "$T1"
+assert "(B6) setup: the bypassed move left the token bound to T0" test "$(fix2_token)" = "$T0"
+in_fix2 REIFY_MAIN_GATE_ENFORCE=1 git update-ref refs/heads/main "$T2" "$T1"
+assert "(B6) the raw move is refused (rc != 0)" test "$FIX2_RC" -ne 0
+assert "(B6) main stays at T1" test "$(fix2_main)" = "$T1"
+assert "(B6) the stale token was discarded" bash -c "! test -e '$F2_SENTINEL'"
+assert "(B6) log records the discard" grep -qF "stale sentinel $T0 discarded" "$F2_LOG"
+assert "(B6) log records the move as UNSANCTIONED" grep -qF "UNSANCTIONED main move $T1 -> $T2" "$F2_LOG"
+
 test_summary
