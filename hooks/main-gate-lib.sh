@@ -29,11 +29,21 @@ main_gate_logfile() {
     echo "$(git rev-parse --git-common-dir)/reify-main-gate.log"
 }
 
-# main_gate_mark — create the sentinel. Called ONLY after a verify gate passes
-# (pre-commit / pre-merge-commit) or by scripts/land.sh just before its
-# sanctioned merge. An empty file is enough; presence is the signal.
+# main_gate_tip — print the refs/heads/main oid a token binds to (non-zero on an
+# unborn main).
+main_gate_tip() {
+    git rev-parse --verify --quiet refs/heads/main
+}
+
+# main_gate_mark — write the sentinel holding the main tip it sanctions a move
+# FROM. Called ONLY after a verify gate passes. Published by rename so a reader
+# never sees a half-written token. An unborn main writes nothing and returns 0:
+# hooks that end with this call must not fail a commit over it.
 main_gate_mark() {
-    : > "$(main_gate_sentinel)"
+    local _tip _sentinel
+    _tip="$(main_gate_tip)" || return 0
+    _sentinel="$(main_gate_sentinel)"
+    printf '%s\n' "$_tip" > "${_sentinel}.tmp.$$" && mv -f "${_sentinel}.tmp.$$" "$_sentinel"
 }
 
 # main_gate_token — print the sentinel's token: the main tip the mark was bound
