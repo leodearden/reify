@@ -69,6 +69,7 @@ make_fixture() {
     mkdir -p "$dir/scripts"
     cp "$REPO_ROOT/scripts/verify.sh" "$dir/scripts/verify.sh"
     cp "$REPO_ROOT/scripts/occt-scope-lib.sh" "$dir/scripts/occt-scope-lib.sh"
+    cp "$REPO_ROOT/scripts/reify_path_attribution.py" "$dir/scripts/reify_path_attribution.py"
     cp "$REPO_ROOT/scripts/occt-touching-crates.txt" "$dir/scripts/occt-touching-crates.txt"
     cp "$REPO_ROOT/scripts/release-scope-lib.sh" "$dir/scripts/release-scope-lib.sh"
     cp "$REPO_ROOT/scripts/release-sensitive-crates.txt" "$dir/scripts/release-sensitive-crates.txt"
@@ -944,6 +945,7 @@ make_branch_fixture() {
     mkdir -p "$dir/scripts"
     cp "$REPO_ROOT/scripts/verify.sh" "$dir/scripts/verify.sh"
     cp "$REPO_ROOT/scripts/occt-scope-lib.sh" "$dir/scripts/occt-scope-lib.sh"
+    cp "$REPO_ROOT/scripts/reify_path_attribution.py" "$dir/scripts/reify_path_attribution.py"
     cp "$REPO_ROOT/scripts/occt-touching-crates.txt" "$dir/scripts/occt-touching-crates.txt"
     cp "$REPO_ROOT/scripts/release-scope-lib.sh" "$dir/scripts/release-scope-lib.sh"
     cp "$REPO_ROOT/scripts/release-sensitive-crates.txt" "$dir/scripts/release-sensitive-crates.txt"
@@ -1931,13 +1933,14 @@ PLAN_DEL_CRATE="$(cd "$FIX_DEL_CRATE" && bash scripts/verify.sh all --profile de
 # fixture cleanup below: with REIFY_AFFECTED_CRATES_OVERRIDE set, this
 # non-global crate deletion DOES narrow (NARROW_ACTIVE=1, affected=<crate>,
 # not ALL). The override bypasses affected_crates() entirely
-# (verify.sh:845-847), so this does NOT exercise affected-crates-lib.sh's
-# `_is_global` C4 short-circuit — it exists only to prove the ALL-vs-narrowed
+# (verify.sh:845-847), so this does NOT exercise affected_crates' C4
+# short-circuit on the module's `is_global` fact (scripts/
+# reify_path_attribution.py) — it exists only to prove the ALL-vs-narrowed
 # distinction is reachable in this suite at all. Without an override, every
 # real call into affected_crates() in this workspace-less fixture fails wide
 # to ALL (`cargo metadata` has no workspace to inspect — the C5 fallback), so
 # DEL-global-branch's "affected=ALL" below can't by itself distinguish the
-# deliberate `_is_global` short-circuit from that fixture-wide fallback. This
+# deliberate `is_global` short-circuit from that fixture-wide fallback. This
 # companion shows narrowing IS achievable for the identical
 # deleted-non-OCCT-crate input, which is what makes DEL-global-branch's
 # "deleted global defeats narrowing" claim meaningful.
@@ -2676,6 +2679,15 @@ echo ""
 echo "--- Scenario VS-map-release: scripts/release-scope-lib.sh changed -> test_verify_*.sh selected ---"
 plan_for_vs_map_append scripts/release-scope-lib.sh
 assert "VS-map-release: plan contains test_verify_*.sh glob literal" \
+    plan_has 'tests/infra/test_verify_\*\.sh'
+
+# The attribution and closure home both bash libs above read (task 8662).
+echo ""
+echo "--- Scenario VS-map-attribution: scripts/reify_path_attribution.py changed -> its guarding suites selected ---"
+plan_for_vs_map_append scripts/reify_path_attribution.py
+assert "VS-map-attribution: plan contains tests/infra/test_affected_crates_lib.sh" \
+    plan_has 'tests/infra/test_affected_crates_lib\.sh'
+assert "VS-map-attribution: plan contains test_verify_*.sh glob literal" \
     plan_has 'tests/infra/test_verify_\*\.sh'
 
 echo ""

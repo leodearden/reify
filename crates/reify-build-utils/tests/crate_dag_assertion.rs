@@ -8,7 +8,7 @@
 /// This is the integration gate for task η of
 /// docs/prds/core-ast-ir-layering.md.
 ///
-/// `scripts/affected-crates-lib.sh` names this crate in `_REIFY_DAG_GATE_CRATE`
+/// `scripts/reify_path_attribution.py` names this crate in `DAG_GATE_CRATE`
 /// so a per-crate manifest diff pulls this gate into a narrowed, task-scoped
 /// verify. Moving this gate to another crate means updating that constant.
 #[test]

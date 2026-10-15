@@ -56,14 +56,29 @@
 #      crate is unioned into the closure's result, never seeded (a set
 #      equality against the crate's source-touch closure, with the premise
 #      that makes it discriminate pinned alongside); plus a drift
-#      guard pinning _REIFY_DAG_GATE_CRATE to a real workspace member that
+#      guard pinning the module's DAG_GATE_CRATE to a real workspace member that
 #      hosts the gate; and a manifest whose crate resolves to no workspace
 #      package is exactly ALL, composing with task 6268's unresolvable-seed
 #      C5 arm
-#  20. (task 7491) OVERLAP-MIRROR-PARITY: scripts/reify_path_attribution.py,
-#      the Python mirror of this lib's per-path attribution, agrees with it
-#      on every tracked path plus a fixed boundary-probe list, and loads with
-#      no site-packages; plus a non-vacuity check on the bash side
+#  20. (task 8662) B13: direct_crates_per_path reproduces the pinned per-path
+#      corpus tests/infra/affected-crates-direct-sets.tsv (every path tracked
+#      at its generation base plus boundary probes); plus a non-vacuity check
+#      on the corpus. TIE binds the public affected_crates to the same rows
+#      under an identity closure; ONCE pins one `attribute` (and at most one
+#      `closure`) per affected_crates call
+#  21. (task 8662) PATH-FACTS: reify_path_attribution.py's `attribute` CLI
+#      prints one record of independent facts (is_global, inert, tree, seed
+#      and unioned crates) per input line, in order; examples/bracket.ri's
+#      seeds equal its pinned corpus row; JSON agrees with TSV; bad argv exits
+#      non-zero
+#  22. (task 8662) CLOSURE: reify_path_attribution.py's `closure` CLI over a
+#      synthetic workspace — normal/build edges propagate, a dev edge only
+#      from the tested member, non-members never reported; an unknown seed is
+#      an empty exit-0 answer, malformed metadata exits non-zero; and
+#      _reify_compile_closure prints the same
+#  23. (task 8662) GUARD: occt-scope-lib.sh and affected-crates-lib.sh each
+#      refuse to source without reify_path_attribution.py next to them,
+#      naming the module
 
 set -euo pipefail
 
@@ -82,6 +97,10 @@ source "$REPO_ROOT/scripts/affected-crates-lib.sh"
 # same model. See the drift-guard assertion below.
 [ -f "$REPO_ROOT/scripts/occt-scope-lib.sh" ] || { echo "ERROR: occt-scope-lib.sh not found at $REPO_ROOT/scripts/occt-scope-lib.sh"; exit 1; }
 source "$REPO_ROOT/scripts/occt-scope-lib.sh"
+
+# The attribution module's CLI: the suite reads the module's values through it
+# rather than through any lib's internals.
+_ATTRIBUTION_CLI="$REPO_ROOT/scripts/reify_path_attribution.py"
 
 echo "=== affected-crates-lib drift tests ==="
 
@@ -393,7 +412,7 @@ assert "mixed tests/infra + crate diff contains reify-doc" _check_mixed_contains
 # EXAMPLES-CORPUS (task 7427): examples/**/*.ri maps to its reader crates.
 #
 # The examples/ tree is a test CORPUS: compiled Rust test targets walk it and
-# open .ri leaves by path. With no _file_to_crate rule for it, every one of the
+# open .ri leaves by path. With no seed rule for it, every one of the
 # 264 tracked .ri files was an unmappable path — so the C5 arm fired and an
 # .ri-only edit became the most expensive diff shape in the repo (a full
 # workspace verify for a corpus edit). Mapping it to the declared reader set
@@ -498,11 +517,19 @@ for d, name in sorted(rows, key=lambda r: (-len(r[0]), r[0])):
 # OVER-derivation is the safe direction: it can only force a DECLARATION, and an
 # extra declared crate merely widens — the direction of error C5 already blesses.
 #
-# A member with no §5 mapping rule of its own (tree-sitter-reify, which
-# _is_global widens to ALL on its own edits) is still swept and still has to be
-# declared if it ever reads the corpus: an examples/*.ri edit must reach the
-# tests of every crate that opens those bytes, whatever that crate's own edits do.
+# A member with no §5 mapping rule of its own (tree-sitter-reify, which the
+# module's is_global fact widens to ALL on its own edits) is still swept and
+# still has to be declared if it ever reads the corpus: an examples/*.ri edit
+# must reach the tests of every crate that opens those bytes, whatever that
+# crate's own edits do.
 _RI_CORPUS_READ_RE='examples/|"examples"'
+
+# The DECLARED reader set: the module's seeds for a corpus leaf, read through
+# its public CLI once.
+_declared_corpus_readers() {
+    printf 'examples/x.ri\n' | python3 -S "$_ATTRIBUTION_CLI" attribute | cut -f4 | tr ',' ' '
+}
+_DECLARED_CORPUS_READERS="$(_declared_corpus_readers)" || _DECLARED_CORPUS_READERS=""
 
 _derived_ri_corpus_crates() {
     local members
@@ -541,12 +568,13 @@ _check_derived_subset_of_declared() {
     local derived missing=""
     derived="$(_derived_ri_corpus_crates)"
     echo "derived:  [$(printf '%s' "$derived" | tr '\n' ' ')]"
-    echo "declared: [${_RI_CORPUS_CRATES:-<unset>}]"
+    echo "declared: [$_DECLARED_CORPUS_READERS]"
     [ -n "$derived" ] || { echo "derivation produced NOTHING — cargo metadata, the grep or the projection broke"; return 1; }
+    case "$_DECLARED_CORPUS_READERS" in ""|-) echo "the module declared NO corpus readers"; return 1 ;; esac
     local c
     while IFS= read -r c; do
         [ -n "$c" ] || continue
-        case " ${_RI_CORPUS_CRATES:-} " in
+        case " $_DECLARED_CORPUS_READERS " in
             *" $c "*) ;;
             *) missing+=" $c" ;;
         esac
@@ -554,32 +582,112 @@ _check_derived_subset_of_declared() {
     [ -z "$missing" ] || { echo "UNDECLARED corpus readers:$missing"; return 1; }
     return 0
 }
-assert "derived examples/*.ri reader crates ⊆ declared _RI_CORPUS_CRATES" \
+assert "derived examples/*.ri reader crates ⊆ the module's declared corpus seeds" \
     _check_derived_subset_of_declared
 
 # ---------------------------------------------------------------------------
-# OVERLAP-MIRROR-PARITY (task 7491): scripts/reify_path_attribution.py mirrors
-# this lib's per-path attribution for the merge-queue overlap detector
-# (scripts/reify_overlap_detector.py). Both sides classify one path set and
-# must emit identical records, one per attribute:
-#   <path>\tG          _is_global
-#   <path>\tS:<crate>  each non-empty line _file_to_crate prints (a seed)
-#   <path>\tU:<crate>  _is_crate_manifest -> _REIFY_DAG_GATE_CRATE (a union)
+# B13 (task 8662; PRD §6 B13, classifier <-> bash): direct_crates_per_path, the
+# lib's per-path view of affected_crates' precedence over the module's facts,
+# reproduces the pinned corpus tests/infra/affected-crates-direct-sets.tsv.
 #
-# The path set is every tracked path (so a new arm for a real tracked shape
-# reds here unprompted) plus probes for each arm's glob boundaries, including
-# shapes absent from the tree. Predicates are compared individually, not
-# through affected_crates(): the two closure models differ by design, and
-# precedence is the caller's business on both sides.
-#
-# The bash side stays fork-free per path: redirect + mapfile, never `$(...)`.
-# Needs no cargo. The Python side runs under `python3 -S`, so it proves the
-# mirror loads with no site-packages — the shape of the gate's interpreter.
+# Each corpus row is what the pre-θ bash rules routed that path to on its own:
+# ALL, nothing, or its seed crates plus any unioned DAG-gate crate (see the
+# corpus header). The rows cover every path tracked at the generation base plus
+# boundary probes, so a classifier change that moves any of them reds here.
+# One call over the whole corpus; needs no cargo.
 # ---------------------------------------------------------------------------
 echo ""
-echo "--- OVERLAP-MIRROR-PARITY: the Python attribution mirror agrees with this lib on every tracked path ---"
+echo "--- B13: direct_crates_per_path reproduces the pinned per-path corpus ---"
 
-_OVERLAP_MIRROR_PROBES=(
+_B13_CORPUS="$SCRIPT_DIR/affected-crates-direct-sets.tsv"
+_B13_DONE=""
+_B13_ROWS=0
+_B13_GOT_ROWS=0
+_B13_RC=""
+_B13_ERR=""
+_B13_DIFF_RC=""
+_B13_DIFF=""
+
+# _normalise_routes — `<path>\t<route>` rows on stdin, each route's tokens
+# re-sorted bytewise (LC_ALL=C order) and single-space joined.
+_normalise_routes() {
+    python3 -S -c '
+import sys
+for line in sys.stdin:
+    path, _, route = line.rstrip("\n").partition("\t")
+    print(path + "\t" + " ".join(sorted(route.split())))
+'
+}
+
+_b13_probe_once() {
+    [ -n "$_B13_DONE" ] && return 0
+    local dir
+    local -a paths
+    dir="$(mktemp -d "${TMPDIR:-/tmp}/reify-b13.XXXXXX")" || return 1
+    grep -v '^#' "$_B13_CORPUS" >"$dir/want"
+    _B13_ROWS="$(wc -l <"$dir/want")"
+    mapfile -t paths < <(cut -f1 "$dir/want")
+    direct_crates_per_path "${paths[@]}" >"$dir/got.raw" 2>"$dir/err" \
+        && _B13_RC=0 || _B13_RC=$?
+    _normalise_routes <"$dir/got.raw" >"$dir/got"
+    _B13_GOT_ROWS="$(wc -l <"$dir/got")"
+    _B13_ERR="$(tail -n 5 "$dir/err")"
+    diff "$dir/want" "$dir/got" >"$dir/diff" && _B13_DIFF_RC=0 || _B13_DIFF_RC=$?
+    _B13_DIFF="$(sed -n '1,40p' "$dir/diff")"
+    rm -rf "$dir"
+    _B13_DONE=1
+}
+
+_b13_report() {
+    echo "corpus rows=$_B13_ROWS direct_crates_per_path rows=$_B13_GOT_ROWS rc=$_B13_RC"
+    echo "stderr (tail): $_B13_ERR"
+    echo "diff corpus direct_crates_per_path (rc=$_B13_DIFF_RC, first 40 lines):"
+    printf '%s\n' "$_B13_DIFF"
+}
+
+_check_b13_matches_corpus() {
+    _b13_probe_once || return 1
+    _b13_report
+    [ "$_B13_RC" = "0" ] && [ "$_B13_DIFF_RC" = "0" ]
+}
+assert "B13: direct_crates_per_path routes every corpus path exactly as its pinned row says" \
+    _check_b13_matches_corpus
+
+# _b13_route <path> — the corpus route for <path>; fails if there is no row.
+_b13_route() {
+    awk -F'\t' -v p="$1" '!/^#/ && $1 == p { print $2; found = 1 } END { exit !found }' "$_B13_CORPUS"
+}
+
+_check_b13_corpus_not_vacuous() {
+    local rows bracket manifest_rows
+    rows="$(grep -vc '^#' "$_B13_CORPUS")"
+    bracket="$(_b13_route examples/bracket.ri)" || bracket="<no row>"
+    manifest_rows="$(awk -F'\t' '$1 ~ /^crates\/[^\/]+\/Cargo\.toml$/ && $2 ~ /(^| )reify-build-utils( |$)/' "$_B13_CORPUS" | wc -l)"
+    echo "data rows=$rows (want >= 4918)"
+    echo "Cargo.lock=[$(_b13_route Cargo.lock)] docs/x.md=[$(_b13_route docs/x.md)] gui/src-tauri/src/main.rs=[$(_b13_route gui/src-tauri/src/main.rs)]"
+    echo "examples/bracket.ri=[$bracket] crates/*/Cargo.toml rows carrying reify-build-utils=$manifest_rows"
+    [ "$rows" -ge 4918 ] \
+        && [ "$(_b13_route Cargo.lock)" = "ALL" ] \
+        && _b13_route docs/x.md >/dev/null && [ -z "$(_b13_route docs/x.md)" ] \
+        && [ "$(_b13_route gui/src-tauri/src/main.rs)" = "reify-gui" ] \
+        && [ "$(wc -w <<<"$bracket")" -eq 6 ] \
+        && [ "$manifest_rows" -ge 1 ]
+}
+assert "B13 corpus is not vacuous: >= 4918 rows with an ALL, an empty, a reify-gui, the six-crate corpus and a manifest-union row" \
+    _check_b13_corpus_not_vacuous
+
+# ---------------------------------------------------------------------------
+# TIE (task 8662): binds the public affected_crates to the same corpus. With
+# cargo stubbed to an isolated-member workspace (every crate the corpus names,
+# no edges), the reverse closure is the identity, so affected_crates <p> must
+# print exactly <p>'s corpus route. Boundary probes plus tracked
+# representatives of every route shape; the stub lives in a subshell so it
+# cannot leak into the real-cargo sections below.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- TIE: affected_crates <p> under an identity closure equals <p>'s corpus row ---"
+
+_TIE_PATHS=(
     Cargo.toml Cargo.lock .cargo/config.toml tree-sitter-reify/grammar.js
     rust-toolchain rust-toolchain.toml rust-toolchain-nightly/x
     crates/foo/src/lib.rs crates/foo/ crates/foo crates//x
@@ -589,140 +697,129 @@ _OVERLAP_MIRROR_PROBES=(
     examples/foo.gcode examples/README.md
     docs/x.md README.md dark-factory-orchestrator.yaml
     tests/infra/x.sh scripts/verify.sh some/unknown/place.zzz
+    gui/README.md gui/package.json gui/src-tauri crates/README.md
+    tests/infra/x.md tests/infrastructure/x examples/x/y.ri docs/gui-event-channels.md
+    docs/prds/verify-scope-contract.md tests/infra/test_helpers.sh
+    crates/reify-cli/src/main.rs crates/reify-mcp/src/tools/chunks/syntax.md
+    crates/reify-expr/Cargo.toml examples/bracket.ri examples/generics/.gitkeep
 )
+_TIE_DONE=""
+_TIE_RC=""
+_TIE_CHECKED=0
+_TIE_MISMATCHES=""
 
-_OVERLAP_MIRROR_DONE=""
-_OVERLAP_MIRROR_PATHS=0
-_OVERLAP_MIRROR_PY_RC=""
-_OVERLAP_MIRROR_PY_ERR=""
-_OVERLAP_MIRROR_BASH_RECORDS=0
-_OVERLAP_MIRROR_PY_RECORDS=0
-_OVERLAP_MIRROR_DIFF_RC=""
-_OVERLAP_MIRROR_DIFF=""
-_OVERLAP_MIRROR_G=0
-_OVERLAP_MIRROR_U=0
-_OVERLAP_MIRROR_CRATE_S=0
-_OVERLAP_MIRROR_TRACKED_CRATE_PATHS=0
-_OVERLAP_MIRROR_CORPUS_MISSING=""
-
-# _overlap_mirror_bash_records <path-file> <scratch-file> — the bash side's
-# records, unsorted, on stdout.
-_overlap_mirror_bash_records() {
-    local path_file="$1" scratch="$2" p c
-    local -a crates
-    while IFS= read -r p; do
-        if _is_global "$p"; then
-            printf '%s\tG\n' "$p"
-        fi
-        _file_to_crate "$p" >"$scratch"
-        mapfile -t crates <"$scratch"
-        for c in "${crates[@]}"; do
-            if [ -n "$c" ]; then
-                printf '%s\tS:%s\n' "$p" "$c"
-            fi
-        done
-        if _is_crate_manifest "$p"; then
-            printf '%s\tU:%s\n' "$p" "$_REIFY_DAG_GATE_CRATE"
-        fi
-    done <"$path_file"
-}
-
-# _overlap_mirror_python_records <path-file> — the Python side's records,
-# unsorted, on stdout.
-_overlap_mirror_python_records() {
-    python3 -S -c '
-import sys
-sys.path.insert(0, sys.argv[1])
-import reify_path_attribution as rpa
-for line in sys.stdin:
-    p = line.rstrip("\n")
-    a = rpa.attribute(p)
-    if a.is_global:
-        print(f"{p}\tG")
-    for c in sorted(a.seed_crates):
-        print(f"{p}\tS:{c}")
-    for c in sorted(a.unioned_crates):
-        print(f"{p}\tU:{c}")
-' "$REPO_ROOT/scripts" <"$1"
-}
-
-# _count_lines <pattern> <file> — grep -c, but 0 rather than exit 1 on no match.
-_count_lines() {
-    grep -cE "$1" "$2" || true
-}
-
-_overlap_mirror_probe_once() {
-    [ -n "$_OVERLAP_MIRROR_DONE" ] && return 0
+_tie_probe_once() {
+    [ -n "$_TIE_DONE" ] && return 0
     local dir
-    dir="$(mktemp -d "${TMPDIR:-/tmp}/reify-overlap-mirror.XXXXXX")" || return 1
-    git -C "$REPO_ROOT" ls-files >"$dir/tracked"
-    { cat "$dir/tracked"; printf '%s\n' "${_OVERLAP_MIRROR_PROBES[@]}"; } >"$dir/paths"
-    _OVERLAP_MIRROR_PATHS="$(wc -l <"$dir/paths")"
-
-    _overlap_mirror_bash_records "$dir/paths" "$dir/scratch" >"$dir/bash.raw"
-    LC_ALL=C sort "$dir/bash.raw" >"$dir/bash"
-    _overlap_mirror_python_records "$dir/paths" >"$dir/py.raw" 2>"$dir/py.err" \
-        && _OVERLAP_MIRROR_PY_RC=0 || _OVERLAP_MIRROR_PY_RC=$?
-    LC_ALL=C sort "$dir/py.raw" >"$dir/py"
-    _OVERLAP_MIRROR_PY_ERR="$(tail -n 5 "$dir/py.err")"
-
-    _OVERLAP_MIRROR_BASH_RECORDS="$(wc -l <"$dir/bash")"
-    _OVERLAP_MIRROR_PY_RECORDS="$(wc -l <"$dir/py")"
-    diff "$dir/bash" "$dir/py" >"$dir/diff" && _OVERLAP_MIRROR_DIFF_RC=0 || _OVERLAP_MIRROR_DIFF_RC=$?
-    _OVERLAP_MIRROR_DIFF="$(sed -n '1,40p' "$dir/diff")"
-
-    _OVERLAP_MIRROR_G="$(_count_lines $'\tG$' "$dir/bash")"
-    _OVERLAP_MIRROR_U="$(_count_lines $'\tU:' "$dir/bash")"
-    _OVERLAP_MIRROR_CRATE_S="$(_count_lines '^crates/[^/]+/.*'$'\t''S:' "$dir/bash")"
-    _OVERLAP_MIRROR_TRACKED_CRATE_PATHS="$(_count_lines '^crates/[^/]+/' "$dir/tracked")"
-    local c
-    for c in $_RI_CORPUS_CRATES; do
-        if [ "$(_count_lines "^examples/.*\.ri"$'\t'"S:$c\$" "$dir/bash")" -eq 0 ]; then
-            _OVERLAP_MIRROR_CORPUS_MISSING+=" $c"
-        fi
-    done
-
+    dir="$(mktemp -d "${TMPDIR:-/tmp}/reify-tie.XXXXXX")" || return 1
+    grep -v '^#' "$_B13_CORPUS" | cut -f2 | tr ' ' '\n' | grep -vxE 'ALL|' | LC_ALL=C sort -u >"$dir/crates" || true
+    python3 -S -c '
+import json, sys
+names = [n for n in open(sys.argv[1]).read().split() if n]
+ids = [f"{n} 0.0.0 (path+file:///stub/{n})" for n in names]
+print(json.dumps({
+    "workspace_members": ids,
+    "packages": [{"id": i, "name": n} for i, n in zip(ids, names)],
+    "resolve": {"nodes": [{"id": i, "deps": []} for i in ids]},
+}))
+' "$dir/crates" >"$dir/meta.json" || { rm -rf "$dir"; return 1; }
+    (
+        cargo() { cat "$dir/meta.json"; }
+        for p in "${_TIE_PATHS[@]}"; do
+            want="$(_b13_route "$p")" || { printf '%s\t<no corpus row>\n' "$p"; continue; }
+            got="$(affected_crates "$p" | LC_ALL=C sort | tr '\n' ' ')"
+            got="${got% }"
+            [ "$got" = "$want" ] || printf '%s\twant [%s] got [%s]\n' "$p" "$want" "$got"
+        done
+    ) >"$dir/mismatches" 2>"$dir/err" && _TIE_RC=0 || _TIE_RC=$?
+    _TIE_MISMATCHES="$(cat "$dir/mismatches")"
+    _TIE_CHECKED="${#_TIE_PATHS[@]}"
     rm -rf "$dir"
-    _OVERLAP_MIRROR_DONE=1
-    return 0
+    _TIE_DONE=1
 }
 
-# Emitted by every checker, per the _cold_cache_report convention below.
-_overlap_mirror_report() {
-    echo "paths=$_OVERLAP_MIRROR_PATHS bash records=$_OVERLAP_MIRROR_BASH_RECORDS python records=$_OVERLAP_MIRROR_PY_RECORDS python rc=$_OVERLAP_MIRROR_PY_RC"
-    echo "python stderr (tail): $_OVERLAP_MIRROR_PY_ERR"
-    echo "bash G=$_OVERLAP_MIRROR_G U=$_OVERLAP_MIRROR_U crates/<name>/ S=$_OVERLAP_MIRROR_CRATE_S tracked crates/<name>/ paths=$_OVERLAP_MIRROR_TRACKED_CRATE_PATHS corpus readers with no examples/*.ri record:[$_OVERLAP_MIRROR_CORPUS_MISSING]"
-    echo "diff bash python (rc=$_OVERLAP_MIRROR_DIFF_RC, first 40 lines):"
-    printf '%s\n' "$_OVERLAP_MIRROR_DIFF"
+_check_tie_affected_crates_matches_corpus() {
+    _tie_probe_once || return 1
+    echo "checked=$_TIE_CHECKED subshell rc=$_TIE_RC mismatches:"
+    printf '%s\n' "$_TIE_MISMATCHES"
+    [ "$_TIE_RC" = "0" ] && [ "$_TIE_CHECKED" -ge 40 ] && [ -z "$_TIE_MISMATCHES" ]
+}
+assert "TIE: affected_crates <p> equals <p>'s corpus row for every probe and tracked representative (identity closure)" \
+    _check_tie_affected_crates_matches_corpus
+
+# ---------------------------------------------------------------------------
+# ONCE (task 8662; PRD D10): affected_crates runs the module ONCE per
+# invocation over its whole path list — one `attribute`, plus one `closure`
+# only when something seeds — never once per path (#7491 measured 73 s per
+# path against 3.9 s fork-free over 4,725 paths). A python3 shim on PATH logs
+# every invocation.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- ONCE: affected_crates runs attribute once per call, closure at most once ---"
+
+_ONCE_DONE=""
+_ONCE_DOCS_N=0
+_ONCE_DOCS_OUT=""
+_ONCE_DOCS_LOG=""
+_ONCE_CLI_N=0
+_ONCE_CLI_OUT=""
+_ONCE_CLI_LOG=""
+
+# _once_run <log> <path>... — affected_crates <path>... with the python3 shim
+# on PATH; its invocations land in <log>. Prints affected_crates' output.
+_once_run() {
+    local log="$1" shim real
+    shift
+    real="$(command -v python3)" || return 1
+    shim="$(dirname "$log")/bin"
+    mkdir -p "$shim"
+    printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >>%q\nexec %q "$@"\n' "$log" "$real" >"$shim/python3"
+    chmod +x "$shim/python3"
+    : >"$log"
+    ( PATH="$shim:$PATH"; affected_crates "$@" )
 }
 
-_check_overlap_mirror_python_runs() {
-    _overlap_mirror_probe_once || return 1
-    _overlap_mirror_report
-    [ "$_OVERLAP_MIRROR_PY_RC" = "0" ] && [ "$_OVERLAP_MIRROR_PY_RECORDS" -gt 0 ]
+_once_probe_once() {
+    [ -n "$_ONCE_DONE" ] && return 0
+    local dir
+    local -a docs cli
+    dir="$(mktemp -d "${TMPDIR:-/tmp}/reify-once.XXXXXX")" || return 1
+    mapfile -t docs < <(git -C "$REPO_ROOT" ls-files 'docs/*.md')
+    mapfile -t cli < <(git -C "$REPO_ROOT" ls-files -- crates/reify-cli)
+    _ONCE_DOCS_N="${#docs[@]}"
+    _ONCE_CLI_N="${#cli[@]}"
+    _ONCE_DOCS_OUT="$(cd "$REPO_ROOT" && _once_run "$dir/docs.log" "${docs[@]}")"
+    _ONCE_DOCS_LOG="$(cat "$dir/docs.log")"
+    _ONCE_CLI_OUT="$(cd "$REPO_ROOT" && _once_run "$dir/cli.log" "${cli[@]}")"
+    _ONCE_CLI_LOG="$(cat "$dir/cli.log")"
+    rm -rf "$dir"
+    _ONCE_DONE=1
 }
-assert "reify_path_attribution imports and classifies under plain python3 (no dark-factory venv needed)" \
-    _check_overlap_mirror_python_runs
 
-_check_overlap_mirror_records_equal() {
-    _overlap_mirror_probe_once || return 1
-    _overlap_mirror_report
-    [ "$_OVERLAP_MIRROR_PY_RC" = "0" ] && [ "$_OVERLAP_MIRROR_DIFF_RC" = "0" ]
+# _once_count <log text> <verb> — invocations whose argv carries ` <verb>`.
+_once_count() {
+    grep -c -- " $2" <<<"$1" || true
 }
-assert "Python mirror attributes every tracked + probe path exactly as affected-crates-lib.sh does (global / seed crates / DAG-gate union)" \
-    _check_overlap_mirror_records_equal
 
-_check_overlap_mirror_not_vacuous() {
-    _overlap_mirror_probe_once || return 1
-    _overlap_mirror_report
-    [ "$_OVERLAP_MIRROR_G" -ge 1 ] \
-        && [ "$_OVERLAP_MIRROR_U" -ge 1 ] \
-        && [ -z "$_OVERLAP_MIRROR_CORPUS_MISSING" ] \
-        && [ "$_OVERLAP_MIRROR_TRACKED_CRATE_PATHS" -ge 1 ] \
-        && [ "$_OVERLAP_MIRROR_CRATE_S" -ge "$_OVERLAP_MIRROR_TRACKED_CRATE_PATHS" ]
+_check_once() {
+    # Usage: <docs|cli> <want attribute> <want closure>
+    local log out n
+    _once_probe_once || return 1
+    case "$1" in
+        docs) log="$_ONCE_DOCS_LOG"; out="$_ONCE_DOCS_OUT"; n="$_ONCE_DOCS_N" ;;
+        cli)  log="$_ONCE_CLI_LOG";  out="$_ONCE_CLI_OUT";  n="$_ONCE_CLI_N" ;;
+    esac
+    echo "$1: $n paths -> affected_crates [${out//$'\n'/ }]"
+    echo "python3 invocations (argv, first 160 chars):"
+    cut -c1-160 <<<"$log" | sed 's/^/  /'
+    [ "$n" -ge 2 ] \
+        && [ "$(_once_count "$log" attribute)" -eq "$2" ] \
+        && [ "$(_once_count "$log" closure)" -eq "$3" ]
 }
-assert "OVERLAP-MIRROR-PARITY guard is not vacuous: the bash side emits global, union, every corpus reader's examples/*.ri seed, and a seed per tracked crate path" \
-    _check_overlap_mirror_not_vacuous
+assert "ONCE: affected_crates over every tracked docs/**/*.md runs attribute exactly once and closure never" \
+    _check_once docs 1 0
+assert "ONCE: affected_crates over every tracked crates/reify-cli/** runs attribute exactly once and closure exactly once" \
+    _check_once cli 1 1
 
 # ---------------------------------------------------------------------------
 # GV-PREMISE (task 7427): the two crates the vitest-gate fixtures are built on.
@@ -777,6 +874,13 @@ assert "gui/src-tauri/Cargo.toml touch pulls in reify-build-utils (the second pe
 assert "a non-manifest source touch does NOT pull in reify-build-utils — the rule keys on the manifest, not on the crate" \
     _check_not_contains reify-build-utils crates/reify-expr/src/lib.rs
 
+# The crate-DAG gate's host crate: the module's unioned crates for a per-crate
+# manifest, read through its public CLI once.
+_dag_gate_crate() {
+    printf 'crates/x/Cargo.toml\n' | python3 -S "$_ATTRIBUTION_CLI" attribute | cut -f5
+}
+_DAG_GATE_CRATE="$(_dag_gate_crate)" || _DAG_GATE_CRATE=""
+
 # Unioned into the RESULT, never seeded. Compared as SETS against the public
 # seam's own answers rather than a hand-written crate list, so it cannot rot as
 # the graph moves. The fixture is reify-cli because it is a leaf (#4): its own
@@ -784,7 +888,7 @@ assert "a non-manifest source touch does NOT pull in reify-build-utils — the r
 # would drag in, cannot hide inside it.
 _reify_cli_closure_plus_gate() {
     { affected_crates crates/reify-cli/src/main.rs
-      printf '%s\n' "$_REIFY_DAG_GATE_CRATE"; } | sort -u
+      printf '%s\n' "$_DAG_GATE_CRATE"; } | sort -u
 }
 
 _check_manifest_unions_gate_into_result() {
@@ -804,7 +908,7 @@ assert "a manifest touch = its crate's source-touch closure + the DAG-gate crate
 # union, a regression to seeding would pass the equality unseen.
 _check_seeding_differs_from_union() {
     local seeded unioned
-    seeded="$(affected_crates crates/reify-cli/src/main.rs "crates/$_REIFY_DAG_GATE_CRATE/src/lib.rs")"
+    seeded="$(affected_crates crates/reify-cli/src/main.rs "crates/$_DAG_GATE_CRATE/src/lib.rs")"
     unioned="$(_reify_cli_closure_plus_gate)"
     echo "seeded (source touch of both): [$(printf '%s' "$seeded"  | tr '\n' ' ')]"
     echo "unioned:                       [$(printf '%s' "$unioned" | tr '\n' ' ')]"
@@ -827,16 +931,16 @@ _check_manifest_mixed_contains_gate() {
 assert "mixed docs + manifest diff still contains reify-build-utils (the allowlist does not short-circuit the manifest rule)" \
     _check_manifest_mixed_contains_gate
 
-# SPOT drift guard: scripts/affected-crates-lib.sh hardcodes the gate's host
-# crate name in _REIFY_DAG_GATE_CRATE, and nothing downstream validates it —
+# SPOT drift guard: scripts/reify_path_attribution.py hardcodes the gate's host
+# crate name in DAG_GATE_CRATE, and nothing downstream validates it —
 # the name is appended OUTSIDE the reverse closure, so cargo never sees it
 # until verify.sh expands it into `-p <crate>`. Both assertions below READ the
 # constant rather than restating its value, so they pin it in the direction
 # that has teeth: a stale constant (gate relocated, crate renamed) reds here
 # instead of hard-failing every branch verify that touches a manifest with
 # "package ID specification did not match any packages".
-assert "_REIFY_DAG_GATE_CRATE names the crate that hosts the DAG gate (crates/<crate>/tests/crate_dag_assertion.rs)" \
-    test -f "$REPO_ROOT/crates/$_REIFY_DAG_GATE_CRATE/tests/crate_dag_assertion.rs"
+assert "the module's DAG_GATE_CRATE names the crate that hosts the DAG gate (crates/<crate>/tests/crate_dag_assertion.rs)" \
+    test -f "$REPO_ROOT/crates/$_DAG_GATE_CRATE/tests/crate_dag_assertion.rs"
 
 # Workspace membership is a fact distinct from directory layout: the root
 # Cargo.toml lists members explicitly, and a package name need not equal its
@@ -847,7 +951,7 @@ assert "_REIFY_DAG_GATE_CRATE names the crate that hosts the DAG gate (crates/<c
 # a dependency would pass a plain grep after being dropped from `members`.
 # python3 is already a hard dependency of this suite via _reify_compile_closure.
 _check_gate_crate_is_workspace_member() {
-    echo "_REIFY_DAG_GATE_CRATE=[$_REIFY_DAG_GATE_CRATE]"
+    echo "DAG_GATE_CRATE=[$_DAG_GATE_CRATE]"
     local meta
     if ! meta="$(cd "$REPO_ROOT" && cargo metadata --format-version 1 --locked --offline --no-deps)" \
         || [ -z "$meta" ]; then
@@ -856,9 +960,9 @@ _check_gate_crate_is_workspace_member() {
     fi
     printf '%s\n' "$meta" \
         | python3 -c 'import json,sys; meta=json.load(sys.stdin); sys.exit(0 if sys.argv[1] in {p["name"] for p in meta["packages"]} else 1)' \
-            "$_REIFY_DAG_GATE_CRATE"
+            "$_DAG_GATE_CRATE"
 }
-assert "_REIFY_DAG_GATE_CRATE is a real workspace member, so the -p selector verify.sh emits for it resolves" \
+assert "the module's DAG_GATE_CRATE is a real workspace member, so the -p selector verify.sh emits for it resolves" \
     _check_gate_crate_is_workspace_member
 
 # Composition with the unresolvable-seed C5 arm (task 6268). A manifest path
@@ -1035,6 +1139,329 @@ _check_cold_cache_diagnostic() {
 }
 assert "cold CARGO_HOME: emits the C5 fallback diagnostic on stderr" \
     _check_cold_cache_diagnostic
+
+# ---------------------------------------------------------------------------
+# PATH-FACTS (task 8662): the attribution module's public CLI contract.
+#
+# `reify_path_attribution.py attribute` reads paths on stdin and writes one
+# record per input line, in input order, an empty line included:
+#   <is_global>\t<inert>\t<tree>\t<seed_crates>\t<unioned_crates>\t<path>
+# Booleans are 0/1; crate sets are comma-joined and sorted, `-` when empty;
+# the path is last. The facts are independent: precedence between them is each
+# consumer's (affected_crates' lives in affected-crates-lib.sh), so a
+# crate-owned *.md reports BOTH its seed and inert=1.
+#
+# Needs no cargo. Runs under `python3 -S`, the shape of the gate's
+# interpreter. One CLI run per format feeds every checker below.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- PATH-FACTS: reify_path_attribution.py attribute prints independent per-path facts ---"
+
+_PATH_FACTS_CORPUS="$SCRIPT_DIR/affected-crates-direct-sets.tsv"
+
+# Expected TSV records, hand-derived from the contract. The empty path sits
+# mid-list so the in-order check proves an empty line keeps its slot.
+_PATH_FACTS_EXPECTED=(
+    $'0\t1\tcrates\t-\t-\tcrates/README.md'
+    $'0\t1\tcrates\treify-mcp\t-\tcrates/reify-mcp/src/tools/chunks/syntax.md'
+    $'0\t0\tgui_tauri\treify-gui\t-\tgui/src-tauri/src/main.rs'
+    $'0\t0\tgui_src\t-\t-\tgui/src/App.tsx'
+    $'0\t1\tgui_other\t-\t-\tgui/README.md'
+    $'0\t0\tgui_other\t-\t-\tgui/package.json'
+    $'0\t0\ttests_infra\t-\t-\ttests/infra/x.sh'
+    $'0\t0\texamples\t-\t-\texamples/foo.gcode'
+    $'0\t1\tother\t-\t-\tdocs/x.md'
+    $'0\t0\tother\t-\t-\t'
+    $'1\t0\tother\t-\t-\tCargo.lock'
+    $'0\t0\tcrates\treify-expr\treify-build-utils\tcrates/reify-expr/Cargo.toml'
+    $'0\t0\tother\t-\t-\tscripts/verify.sh'
+)
+_PATH_FACTS_CORPUS_PROBE="examples/bracket.ri"
+
+_PATH_FACTS_DONE=""
+_PATH_FACTS_PROBES=()
+_PATH_FACTS_TSV_RC=""
+_PATH_FACTS_JSON_RC=""
+_PATH_FACTS_ERR=""
+_PATH_FACTS_ELAPSED_MS=""
+_PATH_FACTS_TSV=()
+_PATH_FACTS_JSON_TEXT=""
+
+_path_facts_probe_once() {
+    [ -n "$_PATH_FACTS_DONE" ] && return 0
+    local dir rec t0 t1
+    dir="$(mktemp -d "${TMPDIR:-/tmp}/reify-path-facts.XXXXXX")" || return 1
+    for rec in "${_PATH_FACTS_EXPECTED[@]}"; do
+        _PATH_FACTS_PROBES+=("${rec##*$'\t'}")
+    done
+    _PATH_FACTS_PROBES+=("$_PATH_FACTS_CORPUS_PROBE")
+    printf '%s\n' "${_PATH_FACTS_PROBES[@]}" >"$dir/in"
+
+    # Elapsed is reported for legibility only; it is never asserted.
+    t0="$(date +%s%N)"
+    python3 -S "$_ATTRIBUTION_CLI" attribute --format tsv <"$dir/in" >"$dir/tsv" 2>"$dir/err" \
+        && _PATH_FACTS_TSV_RC=0 || _PATH_FACTS_TSV_RC=$?
+    t1="$(date +%s%N)"
+    _PATH_FACTS_ELAPSED_MS=$(( (t1 - t0) / 1000000 ))
+    python3 -S "$_ATTRIBUTION_CLI" attribute --format json <"$dir/in" >"$dir/json" 2>>"$dir/err" \
+        && _PATH_FACTS_JSON_RC=0 || _PATH_FACTS_JSON_RC=$?
+    mapfile -t _PATH_FACTS_TSV <"$dir/tsv"
+    _PATH_FACTS_JSON_TEXT="$(cat "$dir/json")"
+    _PATH_FACTS_ERR="$(tail -n 5 "$dir/err")"
+    rm -rf "$dir"
+    _PATH_FACTS_DONE=1
+    return 0
+}
+
+_path_facts_report() {
+    echo "attribute: probes=${#_PATH_FACTS_PROBES[@]} tsv records=${#_PATH_FACTS_TSV[@]} tsv rc=$_PATH_FACTS_TSV_RC json rc=$_PATH_FACTS_JSON_RC elapsed=${_PATH_FACTS_ELAPSED_MS}ms (one process, not asserted)"
+    echo "stderr (tail): $_PATH_FACTS_ERR"
+    echo "tsv records:"
+    printf '  [%s]\n' "${_PATH_FACTS_TSV[@]+"${_PATH_FACTS_TSV[@]}"}"
+}
+
+# _path_facts_record <path> — the TSV record whose path column is <path>.
+_path_facts_record() {
+    local rec
+    for rec in "${_PATH_FACTS_TSV[@]+"${_PATH_FACTS_TSV[@]}"}"; do
+        if [ "${rec##*$'\t'}" = "$1" ]; then
+            printf '%s\n' "$rec"
+            return 0
+        fi
+    done
+    return 1
+}
+
+_check_path_facts_one_record_per_line_in_order() {
+    _path_facts_probe_once || return 1
+    _path_facts_report
+    [ "$_PATH_FACTS_TSV_RC" = "0" ] || return 1
+    [ "${#_PATH_FACTS_TSV[@]}" -eq "${#_PATH_FACTS_PROBES[@]}" ] || return 1
+    local i tabs
+    for i in "${!_PATH_FACTS_PROBES[@]}"; do
+        tabs="${_PATH_FACTS_TSV[$i]//[!$'\t']/}"
+        [ "${#tabs}" -eq 5 ] || { echo "record $i has ${#tabs} tabs, want 5"; return 1; }
+        [ "${_PATH_FACTS_TSV[$i]##*$'\t'}" = "${_PATH_FACTS_PROBES[$i]}" ] \
+            || { echo "record $i is for [${_PATH_FACTS_TSV[$i]##*$'\t'}], input line $i is [${_PATH_FACTS_PROBES[$i]}]"; return 1; }
+    done
+}
+assert "attribute: N input lines (one empty) -> exactly N six-column records, in input order, from one process" \
+    _check_path_facts_one_record_per_line_in_order
+
+# _check_path_facts_record_is <expected record> — the record for the expected
+# record's path equals it exactly.
+_check_path_facts_record_is() {
+    local want="$1" got
+    _path_facts_probe_once || return 1
+    _path_facts_report
+    got="$(_path_facts_record "${want##*$'\t'}")" || { echo "no record for [${want##*$'\t'}]"; return 1; }
+    echo "want: [$want]"
+    echo "got:  [$got]"
+    [ "$got" = "$want" ]
+}
+for _pf_rec in "${_PATH_FACTS_EXPECTED[@]}"; do
+    assert "attribute facts: [${_pf_rec//$'\t'/ | }]" _check_path_facts_record_is "$_pf_rec"
+done
+unset _pf_rec
+
+# The task's signal: the corpus seeds come from the module, and agree with the
+# pinned pre-θ attribution (the corpus row), not with a list typed here.
+_check_path_facts_corpus_seeds_match_pinned_row() {
+    local rec seeds pinned
+    _path_facts_probe_once || return 1
+    _path_facts_report
+    rec="$(_path_facts_record "$_PATH_FACTS_CORPUS_PROBE")" || { echo "no record for $_PATH_FACTS_CORPUS_PROBE"; return 1; }
+    seeds="$(cut -f4 <<<"$rec")"
+    pinned="$(awk -F'\t' -v p="$_PATH_FACTS_CORPUS_PROBE" '!/^#/ && $1 == p { print $2 }' "$_PATH_FACTS_CORPUS")"
+    echo "attribute seeds: [$seeds]"
+    echo "pinned row:      [$pinned]"
+    [ -n "$pinned" ] && [ "${seeds//,/ }" = "$pinned" ]
+}
+assert "attribute: examples/bracket.ri's seeds equal its pinned row in affected-crates-direct-sets.tsv" \
+    _check_path_facts_corpus_seeds_match_pinned_row
+
+# --format json: one object per input line with the same facts as the TSV
+# record on that line (JSON booleans, sorted crate lists, the tree's value).
+_check_path_facts_json_agrees_with_tsv() {
+    _path_facts_probe_once || return 1
+    _path_facts_report
+    [ "$_PATH_FACTS_JSON_RC" = "0" ] || return 1
+    python3 -S -c '
+import json, sys
+json_text, probe, tsv_lines = sys.argv[1], sys.argv[2], sys.argv[3:]
+json_lines = json_text.split("\n") if json_text else []
+print(f"json lines={len(json_lines)} tsv lines={len(tsv_lines)}")
+if len(json_lines) != len(tsv_lines):
+    sys.exit(1)
+keys = {"path", "is_global", "inert", "tree", "seed_crates", "unioned_crates"}
+seen_probe = False
+for j, t in zip(json_lines, tsv_lines):
+    o = json.loads(j)
+    if set(o) != keys:
+        sys.exit(f"keys {sorted(o)} != {sorted(keys)}")
+    if not (isinstance(o["is_global"], bool) and isinstance(o["inert"], bool)):
+        sys.exit(f"non-boolean flag in {j}")
+    for k in ("seed_crates", "unioned_crates"):
+        if o[k] != sorted(o[k]):
+            sys.exit(f"{k} not a sorted list in {j}")
+    as_tsv = "\t".join([
+        str(int(o["is_global"])), str(int(o["inert"])), o["tree"],
+        ",".join(o["seed_crates"]) or "-", ",".join(o["unioned_crates"]) or "-",
+        o["path"],
+    ])
+    if as_tsv != t:
+        sys.exit(f"json {j!r} disagrees with tsv {t!r}")
+    seen_probe |= o["path"] == probe and len(o["seed_crates"]) > 0
+if not seen_probe:
+    sys.exit(f"no seeded json record for {probe}")
+' "$_PATH_FACTS_JSON_TEXT" "$_PATH_FACTS_CORPUS_PROBE" "${_PATH_FACTS_TSV[@]+"${_PATH_FACTS_TSV[@]}"}"
+}
+assert "attribute --format json: one object per line, each agreeing with its TSV record (examples/bracket.ri included)" \
+    _check_path_facts_json_agrees_with_tsv
+
+_check_path_facts_cli_rejects() {
+    local rc
+    python3 -S "$_ATTRIBUTION_CLI" "$@" </dev/null && rc=0 || rc=$?
+    echo "argv [$*] -> rc=$rc"
+    [ "$rc" -ne 0 ]
+}
+assert "the CLI rejects an unknown verb (non-zero exit)" \
+    _check_path_facts_cli_rejects no-such-verb
+assert "attribute rejects --format xml (non-zero exit)" \
+    _check_path_facts_cli_rejects attribute --format xml
+
+# ---------------------------------------------------------------------------
+# CLOSURE (task 8662): `reify_path_attribution.py closure SEED...` is the one
+# compile closure; occt-scope-lib.sh's _reify_compile_closure is its entry
+# point for occt_touching_set and _reverse_closure.
+#
+# Hermetic: synthetic `cargo metadata` JSON, no cargo. Workspace members A-G
+# and one NON-member X:
+#   B dev->A   C dev->B   D normal->B   E build->A   F normal->A   G dev->F
+#   X normal->A   (in packages and resolve.nodes, absent from workspace_members)
+# A member is affected by seed A iff its own normal/build closure, or that of
+# one of its DIRECT dev-deps, reaches A. So the closure of A is exactly
+# A B E F G: C is out (a dev-dep of a dev-dep does not propagate), D is out
+# (B's dev edge is not compiled when testing D), X is out (not a member).
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- CLOSURE: reify_path_attribution.py closure (normal/build vs dev edges) ---"
+
+_CLOSURE_EXPECTED=$'A\nB\nE\nF\nG'
+_CLOSURE_META=""
+_closure_meta_once() {
+    [ -n "$_CLOSURE_META" ] && return 0
+    _CLOSURE_META="$(python3 -S -c '
+import json
+def pkg_id(name):
+    return f"{name} 0.1.0 (path+file:///w/{name})"
+def node(name, *deps):
+    return {"id": pkg_id(name),
+            "deps": [{"pkg": pkg_id(d), "dep_kinds": [{"kind": k}]} for d, k in deps]}
+nodes = [node("A"), node("B", ("A", "dev")), node("C", ("B", "dev")),
+         node("D", ("B", None)), node("E", ("A", "build")), node("F", ("A", None)),
+         node("G", ("F", "dev")), node("X", ("A", None))]
+names = "ABCDEFGX"
+print(json.dumps({
+    "workspace_members": [pkg_id(n) for n in names if n != "X"],
+    "packages": [{"id": pkg_id(n), "name": n} for n in names],
+    "resolve": {"nodes": nodes},
+}))
+')"
+}
+
+# _closure_cli_run <stdin text> <arg>... — sets _CLOSURE_RUN_{RC,OUT,ERR}.
+_CLOSURE_RUN_RC=""
+_CLOSURE_RUN_OUT=""
+_CLOSURE_RUN_ERR=""
+_closure_cli_run() {
+    local input="$1" errf
+    shift
+    errf="$(mktemp "${TMPDIR:-/tmp}/reify-closure-err.XXXXXX")" || return 1
+    _CLOSURE_RUN_OUT="$(python3 -S "$_ATTRIBUTION_CLI" closure "$@" <<<"$input" 2>"$errf")" \
+        && _CLOSURE_RUN_RC=0 || _CLOSURE_RUN_RC=$?
+    _CLOSURE_RUN_ERR="$(tail -n 3 "$errf")"
+    rm -f "$errf"
+    echo "closure $* -> rc=$_CLOSURE_RUN_RC out=[${_CLOSURE_RUN_OUT//$'\n'/ }] stderr(tail)=[$_CLOSURE_RUN_ERR]"
+}
+
+_check_closure_of_seed_is_exact() {
+    _closure_meta_once || return 1
+    _closure_cli_run "$_CLOSURE_META" A || return 1
+    [ "$_CLOSURE_RUN_RC" = "0" ] && [ "$_CLOSURE_RUN_OUT" = "$_CLOSURE_EXPECTED" ]
+}
+assert "closure A over the synthetic workspace prints exactly A B E F G, sorted, one per line, exit 0" \
+    _check_closure_of_seed_is_exact
+
+# _check_closure_of_seed_excludes <member> — the seed's closure is non-empty
+# and does not contain <member>.
+_check_closure_of_seed_excludes() {
+    _closure_meta_once || return 1
+    _closure_cli_run "$_CLOSURE_META" A || return 1
+    [ "$_CLOSURE_RUN_RC" = "0" ] && [ -n "$_CLOSURE_RUN_OUT" ] && ! grep -qx "$1" <<<"$_CLOSURE_RUN_OUT"
+}
+assert "closure A excludes C: a dev-dep of a dev-dep does not propagate" \
+    _check_closure_of_seed_excludes C
+assert "closure A excludes D: B's dev edge is not compiled when testing D" \
+    _check_closure_of_seed_excludes D
+assert "closure A excludes X: a non-member package is never reported" \
+    _check_closure_of_seed_excludes X
+
+_check_closure_of_unknown_seed_is_empty() {
+    _closure_meta_once || return 1
+    _closure_cli_run "$_CLOSURE_META" nope || return 1
+    [ "$_CLOSURE_RUN_RC" = "0" ] && [ -z "$_CLOSURE_RUN_OUT" ]
+}
+assert "closure of a seed naming no package prints nothing and exits 0 (affected_crates' C5 rule owns that case)" \
+    _check_closure_of_unknown_seed_is_empty
+
+# Non-zero because the METADATA is bad, not because argv was refused: an
+# argparse refusal prints `usage:`.
+_check_closure_rejects_metadata() {
+    _closure_cli_run "$1" A || return 1
+    [ "$_CLOSURE_RUN_RC" -ne 0 ] && [[ "$_CLOSURE_RUN_ERR" != *usage:* ]]
+}
+assert "closure exits non-zero on unparseable metadata ({)" \
+    _check_closure_rejects_metadata '{'
+assert "closure exits non-zero on metadata missing its keys ({})" \
+    _check_closure_rejects_metadata '{}'
+
+# occt_touching_set's entry point: the sourced shim prints what the CLI does.
+_check_sourced_compile_closure_matches() {
+    local out rc
+    _closure_meta_once || return 1
+    out="$(_reify_compile_closure A <<<"$_CLOSURE_META")" && rc=0 || rc=$?
+    echo "_reify_compile_closure A -> rc=$rc out=[${out//$'\n'/ }]"
+    [ "$rc" = "0" ] && [ "$out" = "$_CLOSURE_EXPECTED" ]
+}
+assert "occt-scope-lib.sh's _reify_compile_closure A prints the same A B E F G" \
+    _check_sourced_compile_closure_matches
+
+# ---------------------------------------------------------------------------
+# GUARD (task 8662): a lib that runs the module refuses to load without it,
+# naming it, instead of failing later inside a caller that silences stderr.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- GUARD: the libs refuse to source without reify_path_attribution.py ---"
+
+# _check_lib_refuses_without_module <lib> <file>... — copy the files, but not
+# the module, into a scratch dir; sourcing <lib> there fails naming the module.
+_check_lib_refuses_without_module() {
+    local lib="$1" dir err rc f
+    shift
+    dir="$(mktemp -d "${TMPDIR:-/tmp}/reify-lib-guard.XXXXXX")" || return 1
+    for f in "$@"; do
+        cp "$REPO_ROOT/scripts/$f" "$dir/$f"
+    done
+    err="$(bash -c 'source "$1/$2"' _ "$dir" "$lib" 2>&1 >/dev/null)" && rc=0 || rc=$?
+    rm -rf "$dir"
+    echo "source $lib without the module: rc=$rc stderr=[$err]"
+    [ "$rc" -ne 0 ] && [[ "$err" == *reify_path_attribution.py* ]]
+}
+assert "sourcing occt-scope-lib.sh without scripts/reify_path_attribution.py fails, naming the module" \
+    _check_lib_refuses_without_module occt-scope-lib.sh occt-scope-lib.sh occt-touching-crates.txt
+assert "sourcing affected-crates-lib.sh without scripts/reify_path_attribution.py fails, naming the module" \
+    _check_lib_refuses_without_module affected-crates-lib.sh affected-crates-lib.sh occt-scope-lib.sh occt-touching-crates.txt
 
 # ---------------------------------------------------------------------------
 # Step 11: C5 metadata-failure fail-wide + C4 global precedes crates in list
