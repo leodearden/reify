@@ -119,6 +119,8 @@ mod split_integration;
 mod step_document_integration;
 #[path = "harness_occt/surface_angle_integration.rs"]
 mod surface_angle_integration;
+#[path = "harness_occt/sweep_pose_guard_integration.rs"]
+mod sweep_pose_guard_integration;
 #[path = "harness_occt/sweep_with_history_integration.rs"]
 mod sweep_with_history_integration;
 #[path = "harness_occt/tessellate_sphere_nondegenerate_integration.rs"]

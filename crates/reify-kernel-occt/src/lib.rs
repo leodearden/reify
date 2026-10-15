@@ -177,6 +177,10 @@ mod queries;
 mod handle;
 #[cfg(has_occt)]
 pub use handle::OcctKernelHandle;
+#[cfg(has_occt)]
+mod sweep_pose;
+#[cfg(has_occt)]
+use sweep_pose::validate_sweep_pose;
 // `reify_mesh_morph::Projector` impl over `OcctKernel`. Gated on
 // `feature = "mesh-morph"` so adapters keep the dep-direction-inverted
 // layering (see `Cargo.toml`); also `has_occt` because the impl requires the
@@ -2411,8 +2415,14 @@ impl OcctKernel {
     /// FirstShape/LastShape cap-face indices.
     ///
     /// Mirrors the call convention of the `GeometryOp::Sweep` arm of
-    /// [`OcctKernel::execute`]: same handle resolution and result
-    /// registration with `BRepKind::Solid`. Sweep is single-parent
+    /// [`OcctKernel::execute`]: same handle resolution, the same
+    /// [`validate_sweep_pose`] degenerate-pose refusal, and the same
+    /// input-dependent `brep_kind_of_shape` stamp. Sharing both is deliberate —
+    /// this method is the entry point `OcctKernelHandle`'s worker routes
+    /// `GeometryOp::Sweep` to, so the two sites must not disagree about which
+    /// poses are legal, nor about what the result IS, the way they did while
+    /// each stamped its own unconditional `BRepKind::Solid` (#5713).
+    /// Sweep is single-parent
     /// (the profile is the operand; the path is the spine along which
     /// the profile is swept), so `parent_index` is always `0` and the
     /// existing `SweepOpHistoryRecords` struct fits verbatim.
@@ -2437,6 +2447,7 @@ impl OcctKernel {
         let (result_shape, records) = {
             let profile_shape = self.get_shape(profile_id)?;
             let path_shape = self.get_shape(path_id)?;
+            validate_sweep_pose(profile_shape, path_shape)?;
             let mut history = ffi::ffi::make_pipe_with_history(profile_shape, path_shape)
                 .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
             let face_modified =
@@ -2481,7 +2492,10 @@ impl OcctKernel {
             };
             (result_shape, records)
         };
-        let handle = self.store_with_repr(result_shape, BRepKind::Solid);
+        // Same input-dependent kind as the `GeometryOp::Sweep` arm — the one
+        // classifier, so the two entry points cannot drift apart again (#5713).
+        let repr = brep_kind_of_shape(&result_shape)?;
+        let handle = self.store_with_repr(result_shape, repr);
         Ok((handle, records))
     }
 
@@ -3318,8 +3332,14 @@ impl OcctKernel {
             GeometryOp::Sweep { profile, path } => {
                 let profile_shape = self.get_shape(*profile)?;
                 let path_shape = self.get_shape(*path)?;
-                ffi::ffi::make_pipe(profile_shape, path_shape)
-                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+                validate_sweep_pose(profile_shape, path_shape)?;
+                let shape = ffi::ffi::make_pipe(profile_shape, path_shape)
+                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+                // Input-dependent result kind, as for SweepGuided below: a wire
+                // profile sweeps to an un-capped SHELL, so the shared `store`
+                // tail's default Solid would be a lie. See `brep_kind_of_shape`.
+                let repr = brep_kind_of_shape(&shape)?;
+                return Ok(self.store_with_repr(shape, repr));
             }
             GeometryOp::Pipe { path, radius } => {
                 let r = extract_length_f64(radius, op, "radius")?;
