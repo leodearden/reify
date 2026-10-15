@@ -1,5 +1,6 @@
 //! `==` / `!=` verdicts on Scalar and Real operands are toleranced through
-//! `reify_core::scalar_tolerance` (task #6653), while Int equality, dimension
+//! `reify_core::scalar_tolerance` (task #6653), an Int meeting a Real is
+//! promoted and toleranced too, while Int-to-Int equality, dimension
 //! mismatch, Kleene propagation and ordering comparisons keep their exact
 //! semantics.
 
@@ -68,6 +69,25 @@ fn integer_equality_stays_exact() {
     assert_eq!(
         eq_verdict(Value::Int(1_000_000_000), Value::Int(1_000_000_001)),
         Value::Bool(false)
+    );
+}
+
+#[test]
+fn an_int_meeting_a_real_is_compared_toleranced() {
+    assert_eq!(
+        eq_verdict(Value::Int(3), Value::Real(0.3 / 0.1)),
+        Value::Bool(true),
+        "float noise on the Real side of an Int comparison"
+    );
+    assert_eq!(
+        eq_verdict(Value::Int(1_000_000_001), Value::Real(1e9)),
+        Value::Bool(true),
+        "the promoted Int takes the relative tolerance"
+    );
+    assert_eq!(
+        eq_verdict(Value::Int(1_000_000_001), Value::Int(1_000_000_000)),
+        Value::Bool(false),
+        "the same pair as two Ints stays exact"
     );
 }
 
