@@ -5,6 +5,8 @@ The discovered gate member is the sibling test_compiler_namespace_ratchet.sh.
 Contract: PRD docs/prds/v0_6/compiler-module-namespace.md §4 C7.
 """
 
+from __future__ import annotations
+
 import re
 import sys
 import tempfile
