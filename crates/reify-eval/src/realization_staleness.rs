@@ -1,6 +1,7 @@
-//! Which realizations an edit made stale, and which `RealizationCache`
-//! families that obliges the edit to evict (selective-realization-eviction
-//! PRD, `docs/prds/v0_6/selective-realization-eviction.md`).
+//! Which realizations a moved realization makes stale, and what that obliges
+//! the edit seam and the selective-tessellate hash gate to evict, re-run or
+//! un-stamp (selective-realization-eviction PRD,
+//! `docs/prds/v0_6/selective-realization-eviction.md`).
 //!
 //! Pure functions over the evaluation graph: no engine state is read or
 //! written here. `engine_edit` runs them at its two compare sites and applies
@@ -139,16 +140,86 @@ pub(crate) fn stale_realization_entities<'a>(
     realization_cone: &HashSet<NodeId>,
 ) -> HashSet<String> {
     let entity = |rid: &RealizationNodeId| rid.entity.clone();
-    let reached = realization_cone.iter().filter_map(|node| match node {
-        NodeId::Realization(rid) => Some(entity(rid)),
-        _ => None,
-    });
-    seeds
-        .iter()
+    realizations_in(seeds, realization_cone)
         .map(entity)
         .chain(removed.into_iter().map(entity))
-        .chain(reached)
         .collect()
+}
+
+/// The selective-tessellate hash gate's decision, applied by
+/// `Engine::refresh_and_gate_demanded_realizations`.
+#[derive(Debug)]
+pub(crate) struct HashGateVerdict {
+    /// Demanded realizations the pass may skip.
+    pub(crate) exempt: HashSet<RealizationNodeId>,
+    /// `RealizationCache` families to evict.
+    pub(crate) evict_entities: HashSet<String>,
+    /// Stale realizations this pass will not run, whose stored
+    /// `input_cone_hash` must be cleared.
+    pub(crate) unstamp: HashSet<RealizationNodeId>,
+}
+
+/// The hash gate's verdict for one selective tessellate, given the demanded
+/// realizations and those whose own input-cone fold `moved`.
+///
+/// Staleness is the edit seam's: `moved` seeds the realization dirty cone. A
+/// stale demanded realization must run along with its transitive `GeomRef::Sub`
+/// producers, which it can only resolve from this pass's steps; every other
+/// demanded realization is exempt. Sole caller:
+/// `Engine::refresh_and_gate_demanded_realizations`.
+pub(crate) fn hash_gate_verdict(
+    demanded: &HashSet<RealizationNodeId>,
+    moved: &HashSet<RealizationNodeId>,
+    index: &crate::deps::ReverseDependencyIndex,
+    graph: &EvaluationGraph,
+    traces: &HashMap<NodeId, crate::deps::DependencyTrace>,
+) -> HashGateVerdict {
+    let seeds = realization_cone_seeds(moved, false, graph);
+    let cone =
+        crate::dirty::compute_dirty_cone_with_realizations(&HashSet::new(), &seeds, index, graph);
+    let stale: HashSet<RealizationNodeId> = realizations_in(&seeds, &cone).cloned().collect();
+    let reruns: HashSet<RealizationNodeId> = stale.intersection(demanded).cloned().collect();
+    let must_run = with_sub_producers(&reruns, traces);
+    HashGateVerdict {
+        exempt: demanded.difference(&must_run).cloned().collect(),
+        evict_entities: stale_realization_entities(&seeds, [], &cone),
+        unstamp: stale.difference(demanded).cloned().collect(),
+    }
+}
+
+/// `roots` together with every realization they transitively read through a
+/// resolved `GeomRef::Sub` operand.
+fn with_sub_producers(
+    roots: &HashSet<RealizationNodeId>,
+    traces: &HashMap<NodeId, crate::deps::DependencyTrace>,
+) -> HashSet<RealizationNodeId> {
+    let mut visited = roots.clone();
+    let mut worklist: Vec<RealizationNodeId> = roots.iter().cloned().collect();
+    while let Some(rid) = worklist.pop() {
+        let producers = traces
+            .get(&NodeId::Realization(rid))
+            .map(|trace| trace.realization_reads.as_slice())
+            .unwrap_or_default();
+        for producer in producers {
+            if visited.insert(producer.clone()) {
+                worklist.push(producer.clone());
+            }
+        }
+    }
+    visited
+}
+
+/// The seeds of a realization dirty cone followed by the cone's own
+/// realization members (the walk never puts its seeds in its result).
+fn realizations_in<'a>(
+    seeds: &'a HashSet<RealizationNodeId>,
+    cone: &'a HashSet<NodeId>,
+) -> impl Iterator<Item = &'a RealizationNodeId> {
+    let reached = cone.iter().filter_map(|node| match node {
+        NodeId::Realization(rid) => Some(rid),
+        _ => None,
+    });
+    seeds.iter().chain(reached)
 }
 
 /// The realizations owning a `GeomRef::Sub` operand that the reverse
