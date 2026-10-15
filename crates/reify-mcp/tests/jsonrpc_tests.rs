@@ -23,6 +23,13 @@ fn setup_registry() -> ToolRegistry {
     registry
 }
 
+fn reply(dispatcher: &McpDispatcher<'_>, request: &str) -> serde_json::Value {
+    let response = dispatcher
+        .dispatch(request)
+        .expect("a request carrying an id must get a reply");
+    serde_json::from_str(&response).unwrap()
+}
+
 #[test]
 fn dispatch_tools_list_returns_tools() {
     let registry = setup_registry();
@@ -30,8 +37,7 @@ fn dispatch_tools_list_returns_tools() {
     let dispatcher = McpDispatcher::new(&registry, &ctx);
 
     let request = r#"{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}"#;
-    let response_str = dispatcher.dispatch(request);
-    let response: serde_json::Value = serde_json::from_str(&response_str).unwrap();
+    let response = reply(&dispatcher, request);
 
     assert_eq!(response["jsonrpc"], "2.0");
     assert_eq!(response["id"], 1);
@@ -55,8 +61,7 @@ fn dispatch_tools_call_dispatches_to_registry() {
             "arguments": {}
         }
     });
-    let response_str = dispatcher.dispatch(&request.to_string());
-    let response: serde_json::Value = serde_json::from_str(&response_str).unwrap();
+    let response = reply(&dispatcher, &request.to_string());
 
     assert_eq!(response["jsonrpc"], "2.0");
     assert_eq!(response["id"], 2);
@@ -75,8 +80,7 @@ fn dispatch_unknown_method_returns_method_not_found() {
     let dispatcher = McpDispatcher::new(&registry, &ctx);
 
     let request = r#"{"jsonrpc":"2.0","id":3,"method":"unknown/method","params":{}}"#;
-    let response_str = dispatcher.dispatch(request);
-    let response: serde_json::Value = serde_json::from_str(&response_str).unwrap();
+    let response = reply(&dispatcher, request);
 
     assert_eq!(response["jsonrpc"], "2.0");
     assert_eq!(response["id"], 3);
@@ -95,8 +99,7 @@ fn dispatch_malformed_json_returns_parse_error() {
     let ctx = MockToolContext::default();
     let dispatcher = McpDispatcher::new(&registry, &ctx);
 
-    let response_str = dispatcher.dispatch("not valid json{{{");
-    let response: serde_json::Value = serde_json::from_str(&response_str).unwrap();
+    let response = reply(&dispatcher, "not valid json{{{");
 
     assert_eq!(response["error"]["code"], -32700);
 }
@@ -116,8 +119,7 @@ fn dispatch_tools_call_unknown_tool_returns_error() {
             "arguments": {}
         }
     });
-    let response_str = dispatcher.dispatch(&request.to_string());
-    let response: serde_json::Value = serde_json::from_str(&response_str).unwrap();
+    let response = reply(&dispatcher, &request.to_string());
 
     // MCP returns tool errors as isError content, not JSON-RPC errors
     let content = response["result"]["content"].as_array().unwrap();
@@ -138,8 +140,7 @@ fn response_has_correct_jsonrpc_fields() {
 
     // Success response
     let request = r#"{"jsonrpc":"2.0","id":"abc","method":"tools/list","params":{}}"#;
-    let response_str = dispatcher.dispatch(request);
-    let response: serde_json::Value = serde_json::from_str(&response_str).unwrap();
+    let response = reply(&dispatcher, request);
 
     assert_eq!(response["jsonrpc"], "2.0");
     assert_eq!(response["id"], "abc");
@@ -156,8 +157,7 @@ fn dispatch_invalid_jsonrpc_version_returns_error() {
     let dispatcher = McpDispatcher::new(&registry, &ctx);
 
     let request = r#"{"jsonrpc":"1.0","id":1,"method":"tools/list","params":{}}"#;
-    let response_str = dispatcher.dispatch(request);
-    let response: serde_json::Value = serde_json::from_str(&response_str).unwrap();
+    let response = reply(&dispatcher, request);
 
     assert_eq!(response["error"]["code"], INVALID_REQUEST);
 }
@@ -169,10 +169,10 @@ fn dispatch_null_id_returns_invalid_request() {
     let dispatcher = McpDispatcher::new(&registry, &ctx);
 
     let request = r#"{"jsonrpc":"2.0","id":null,"method":"tools/list","params":{}}"#;
-    let response_str = dispatcher.dispatch(request);
-    let response: serde_json::Value = serde_json::from_str(&response_str).unwrap();
+    let response = reply(&dispatcher, request);
 
     assert_eq!(response["error"]["code"], INVALID_REQUEST);
+    assert!(response["id"].is_null());
 }
 
 #[test]
@@ -182,10 +182,46 @@ fn dispatch_array_id_returns_invalid_request() {
     let dispatcher = McpDispatcher::new(&registry, &ctx);
 
     let request = r#"{"jsonrpc":"2.0","id":[1,2],"method":"tools/list","params":{}}"#;
-    let response_str = dispatcher.dispatch(request);
-    let response: serde_json::Value = serde_json::from_str(&response_str).unwrap();
+    let response = reply(&dispatcher, request);
 
     assert_eq!(response["error"]["code"], INVALID_REQUEST);
+}
+
+// --- Notifications: an id-less message is never answered ---
+
+#[test]
+fn dispatch_initialized_notification_produces_no_reply() {
+    let registry = setup_registry();
+    let ctx = MockToolContext::default();
+    let dispatcher = McpDispatcher::new(&registry, &ctx);
+
+    let notification = r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#;
+
+    assert_eq!(dispatcher.dispatch(notification), None);
+}
+
+#[test]
+fn dispatch_unknown_method_notification_produces_no_reply() {
+    let registry = setup_registry();
+    let ctx = MockToolContext::default();
+    let dispatcher = McpDispatcher::new(&registry, &ctx);
+
+    let notification = r#"{"jsonrpc":"2.0","method":"bogus/notify","params":{}}"#;
+
+    assert_eq!(dispatcher.dispatch(notification), None);
+}
+
+#[test]
+fn dispatch_notification_with_wrong_jsonrpc_version_replies_invalid_request() {
+    let registry = setup_registry();
+    let ctx = MockToolContext::default();
+    let dispatcher = McpDispatcher::new(&registry, &ctx);
+
+    let request = r#"{"jsonrpc":"1.0","method":"notifications/initialized"}"#;
+    let response = reply(&dispatcher, request);
+
+    assert_eq!(response["error"]["code"], INVALID_REQUEST);
+    assert!(response["id"].is_null());
 }
 
 // --- S2+S3: tools/call input validation tests ---
@@ -204,8 +240,7 @@ fn dispatch_tools_call_missing_name_returns_invalid_params() {
             "arguments": {}
         }
     });
-    let response_str = dispatcher.dispatch(&request.to_string());
-    let response: serde_json::Value = serde_json::from_str(&response_str).unwrap();
+    let response = reply(&dispatcher, &request.to_string());
 
     // Should be an MCP isError content response
     assert_eq!(response["result"]["isError"], true);
@@ -231,8 +266,7 @@ fn dispatch_tools_call_numeric_name_returns_invalid_params() {
             "arguments": {}
         }
     });
-    let response_str = dispatcher.dispatch(&request.to_string());
-    let response: serde_json::Value = serde_json::from_str(&response_str).unwrap();
+    let response = reply(&dispatcher, &request.to_string());
 
     assert_eq!(response["result"]["isError"], true);
     let text = response["result"]["content"][0]["text"].as_str().unwrap();
@@ -257,8 +291,7 @@ fn dispatch_tools_call_array_arguments_returns_invalid_params() {
             "arguments": [1, 2]
         }
     });
-    let response_str = dispatcher.dispatch(&request.to_string());
-    let response: serde_json::Value = serde_json::from_str(&response_str).unwrap();
+    let response = reply(&dispatcher, &request.to_string());
 
     assert_eq!(response["result"]["isError"], true);
     let text = response["result"]["content"][0]["text"].as_str().unwrap();
