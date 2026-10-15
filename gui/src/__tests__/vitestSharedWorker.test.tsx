@@ -98,4 +98,14 @@ describe('restoreGlobalBaseline', () => {
 
     expect(vi.isFakeTimers()).toBe(false)
   })
+
+  it('puts back a method replaced with vi.spyOn', () => {
+    const original = () => 'original'
+    const shared = { method: original }
+    vi.spyOn(shared, 'method').mockReturnValue('spied')
+
+    restoreGlobalBaseline()
+
+    expect(shared.method).toBe(original)
+  })
 })

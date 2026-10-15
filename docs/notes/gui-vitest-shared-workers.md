@@ -49,8 +49,8 @@ moduleCache.delete(filepath)`). It calls `rebindDomCapturesTo(document)`
 (re-point `screen`, delegate every one of solid's `DelegatedEvents` on this
 document), registers `afterEach(cleanup)`, and registers
 `afterAll(restoreGlobalBaseline)` (real timers, `vi.unstubAllGlobals()`,
-`vi.unstubAllEnvs()`). Both functions live in `gui/vitest-shared-worker.ts`
-and have no module-scope side effects. `restoreGlobalBaseline` runs in
+`vi.unstubAllEnvs()`, `vi.restoreAllMocks()`). Both functions live in
+`gui/vitest-shared-worker.ts` and have no module-scope side effects. `restoreGlobalBaseline` runs in
 `afterAll`, not at the next file's start: unstubbing then would write the
 previous jsdom's values over the new environment.
 
@@ -64,7 +64,12 @@ previous jsdom's values over the new environment.
 - **Remove globals you set yourself** (`window.foo = …`, `globalThis.bar = …`)
   in teardown. Under vitest's jsdom environment `window` is Node's
   `globalThis`, so it outlives the file. `vi.stubGlobal` / `vi.stubEnv` /
-  fake timers are restored for you.
+  fake timers / `vi.spyOn` spies are restored for you.
+- **Create `vi.fn()` mocks inside a factory or a test, never at module scope
+  of a shared helper.** In vitest 3.2.4 `vi.restoreAllMocks()` resets every
+  `vi.fn()`, not only spies, to the implementation it was created with. A
+  cached helper's module-scope mock would reach the next file without the
+  `mockReturnValue` / `mockImplementation` it was configured with.
 - **A synthetic event's overridden `target` must be `configurable: true`.**
   solid's delegated document listener redefines `target` during dispatch and
   restores it afterwards; a non-configurable override throws

@@ -17,4 +17,5 @@ export function restoreGlobalBaseline(): void {
   vi.useRealTimers()
   vi.unstubAllGlobals()
   vi.unstubAllEnvs()
+  vi.restoreAllMocks()
 }
