@@ -403,6 +403,145 @@ mod tests {
         );
     }
 
+    /// Runs the gate verdict over `graph` with its own reverse index and trace map.
+    fn verdict_over(
+        graph: &EvaluationGraph,
+        demanded: &HashSet<RealizationNodeId>,
+        moved: &HashSet<RealizationNodeId>,
+    ) -> super::HashGateVerdict {
+        let index = crate::deps::ReverseDependencyIndex::build_from_graph(graph);
+        let traces = crate::deps::build_trace_map_and_fields(graph, &[]);
+        super::hash_gate_verdict(demanded, moved, &index, graph, &traces)
+    }
+
+    /// A sibling `GeomRef::Sub` consumer's own fold never moves with its producer's.
+    #[test]
+    fn a_sibling_sub_consumer_of_a_moved_producer_is_not_exempt() {
+        let graph = graph_of(&[
+            ("E", 0, "base", a_box()),
+            ("E", 1, "top", translate_of("base")),
+            ("X", 0, "body", a_box()),
+        ]);
+        let demanded = rids(&[("E", 0), ("E", 1), ("X", 0)]);
+
+        let verdict = verdict_over(&graph, &demanded, &rids(&[("E", 0)]));
+
+        assert_eq!(verdict.exempt, rids(&[("X", 0)]));
+        assert_eq!(verdict.evict_entities, entities(&["E"]));
+        assert!(verdict.unstamp.is_empty(), "{:?}", verdict.unstamp);
+    }
+
+    /// A re-running consumer resolves its `Sub` operand only from this pass's steps.
+    #[test]
+    fn an_unchanged_sub_producer_of_a_moved_consumer_is_not_exempt() {
+        let graph = graph_of(&[
+            ("E", 0, "b", a_box()),
+            ("E", 1, "f", translate_of("b")),
+            ("X", 0, "body", a_box()),
+        ]);
+        let demanded = rids(&[("E", 0), ("E", 1), ("X", 0)]);
+
+        let verdict = verdict_over(&graph, &demanded, &rids(&[("E", 1)]));
+
+        assert_eq!(verdict.exempt, rids(&[("X", 0)]));
+        assert_eq!(verdict.evict_entities, entities(&["E"]));
+    }
+
+    /// The #6449 shape: `union(a, b)` re-runs through `a` and so needs `b` too.
+    #[test]
+    fn both_producers_of_a_stale_boolean_consumer_run() {
+        let graph = graph_of(&[
+            ("E", 0, "a", a_box()),
+            ("E", 1, "b", a_box()),
+            ("E", 2, "u", union_of("a", "b")),
+        ]);
+        let demanded = rids(&[("E", 0), ("E", 1), ("E", 2)]);
+
+        let verdict = verdict_over(&graph, &demanded, &rids(&[("E", 0)]));
+
+        assert!(verdict.exempt.is_empty(), "{:?}", verdict.exempt);
+    }
+
+    #[test]
+    fn the_producer_closure_is_transitive() {
+        let graph = graph_of(&[
+            ("E", 0, "a", a_box()),
+            ("E", 1, "m", translate_of("a")),
+            ("E", 2, "t", translate_of("m")),
+            ("X", 0, "body", a_box()),
+        ]);
+        let demanded = rids(&[("E", 0), ("E", 1), ("E", 2), ("X", 0)]);
+
+        let verdict = verdict_over(&graph, &demanded, &rids(&[("E", 2)]));
+
+        assert_eq!(verdict.exempt, rids(&[("X", 0)]));
+    }
+
+    #[test]
+    fn a_sibling_sub_two_cycle_terminates() {
+        let graph = graph_of(&[
+            ("E", 0, "p", translate_of("q")),
+            ("E", 1, "q", translate_of("p")),
+        ]);
+        let demanded = rids(&[("E", 0), ("E", 1)]);
+
+        let verdict = verdict_over(&graph, &demanded, &rids(&[("E", 0)]));
+
+        assert!(verdict.exempt.is_empty(), "{:?}", verdict.exempt);
+    }
+
+    /// A hidden stale consumer is not run, so its stamp must not outlive this pass.
+    #[test]
+    fn a_stale_hidden_consumer_is_unstamped_and_forces_no_producer() {
+        let graph = graph_of(&[
+            ("E", 0, "a", a_box()),
+            ("E", 1, "x", a_box()),
+            ("E", 2, "u", union_of("a", "x")),
+        ]);
+        let demanded = rids(&[("E", 0), ("E", 1)]);
+
+        let verdict = verdict_over(&graph, &demanded, &rids(&[("E", 1)]));
+
+        assert_eq!(verdict.unstamp, rids(&[("E", 2)]));
+        assert_eq!(verdict.exempt, rids(&[("E", 0)]));
+        assert!(verdict.exempt.is_subset(&demanded));
+    }
+
+    #[test]
+    fn a_cross_entity_sub_consumer_names_its_own_family() {
+        let graph = graph_of(&[
+            ("A", 0, "body", a_box()),
+            ("C", 0, "moved", translate_of("a.body")),
+        ]);
+        let demanded = rids(&[("A", 0), ("C", 0)]);
+
+        let verdict = verdict_over(&graph, &demanded, &rids(&[("A", 0)]));
+
+        assert_eq!(verdict.evict_entities, entities(&["A", "C"]));
+        assert!(verdict.exempt.is_empty(), "{:?}", verdict.exempt);
+    }
+
+    /// The no-edit reuse branch: nothing moved, every demanded body is exempt.
+    #[test]
+    fn nothing_moved_exempts_every_demanded_realization() {
+        let graph = graph_of(&[
+            ("E", 0, "a", a_box()),
+            ("E", 1, "b", a_box()),
+            ("E", 2, "u", union_of("a", "b")),
+        ]);
+        let demanded = rids(&[("E", 0), ("E", 1), ("E", 2)]);
+
+        let verdict = verdict_over(&graph, &demanded, &HashSet::new());
+
+        assert_eq!(verdict.exempt, demanded);
+        assert!(
+            verdict.evict_entities.is_empty(),
+            "{:?}",
+            verdict.evict_entities
+        );
+        assert!(verdict.unstamp.is_empty(), "{:?}", verdict.unstamp);
+    }
+
     #[test]
     fn includes_the_entity_of_every_seed() {
         let seeds = HashSet::from([rid("PartA"), rid("PartB")]);
