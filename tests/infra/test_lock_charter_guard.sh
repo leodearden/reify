@@ -308,6 +308,7 @@ timer
 tombstones
 toml
 ts
+tsv
 tsx
 txt
 typed
