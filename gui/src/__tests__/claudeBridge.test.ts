@@ -194,42 +194,37 @@ describe('claude invoke wrappers', () => {
     await expect(claudeClearSession()).rejects.toThrow('IPC failed');
   });
 
-  it('claudePermissionDecision calls invoke with snake_case keys for minimal allow', async () => {
+  it('claudePermissionDecision sends minimal allow under the `decision` argument', async () => {
     mockInvoke.mockResolvedValue(undefined);
 
     await claudePermissionDecision({ requestId: 'r1', behavior: 'allow' });
 
     expect(mockInvoke).toHaveBeenCalledWith('claude_permission_decision', {
-      request_id: 'r1',
-      behavior: 'allow',
+      decision: { request_id: 'r1', behavior: 'allow' },
     });
   });
 
-  it('claudePermissionDecision calls invoke with snake_case keys for deny with message', async () => {
+  it('claudePermissionDecision sends deny with message under the `decision` argument', async () => {
     mockInvoke.mockResolvedValue(undefined);
 
     await claudePermissionDecision({ requestId: 'r2', behavior: 'deny', message: 'not allowed' });
 
     expect(mockInvoke).toHaveBeenCalledWith('claude_permission_decision', {
-      request_id: 'r2',
-      behavior: 'deny',
-      message: 'not allowed',
+      decision: { request_id: 'r2', behavior: 'deny', message: 'not allowed' },
     });
   });
 
-  it('claudePermissionDecision includes remember: true when set', async () => {
+  it('claudePermissionDecision includes remember: true under the `decision` argument when set', async () => {
     mockInvoke.mockResolvedValue(undefined);
 
     await claudePermissionDecision({ requestId: 'r3', behavior: 'allow', remember: true });
 
     expect(mockInvoke).toHaveBeenCalledWith('claude_permission_decision', {
-      request_id: 'r3',
-      behavior: 'allow',
-      remember: true,
+      decision: { request_id: 'r3', behavior: 'allow', remember: true },
     });
   });
 
-  it('claudePermissionDecision includes updatedInput as updated_input in snake_case', async () => {
+  it('claudePermissionDecision sends updatedInput as updated_input under the `decision` argument', async () => {
     mockInvoke.mockResolvedValue(undefined);
 
     await claudePermissionDecision({
@@ -239,13 +234,11 @@ describe('claude invoke wrappers', () => {
     });
 
     expect(mockInvoke).toHaveBeenCalledWith('claude_permission_decision', {
-      request_id: 'r4',
-      behavior: 'allow',
-      updated_input: { path: '/safe/path' },
+      decision: { request_id: 'r4', behavior: 'allow', updated_input: { path: '/safe/path' } },
     });
   });
 
-  it('claudePermissionDecision omits undefined optional fields from wire payload', async () => {
+  it('claudePermissionDecision omits undefined optional fields from the `decision` argument', async () => {
     mockInvoke.mockResolvedValue(undefined);
 
     await claudePermissionDecision({
@@ -256,11 +249,39 @@ describe('claude invoke wrappers', () => {
       remember: undefined,
     });
 
-    const payload = (mockInvoke.mock.calls[0] as [string, Record<string, unknown>])[1];
-    expect(Object.keys(payload).sort()).toEqual(['behavior', 'request_id']);
-    expect(payload).not.toHaveProperty('message');
-    expect(payload).not.toHaveProperty('updated_input');
-    expect(payload).not.toHaveProperty('remember');
+    // toHaveBeenCalledWith treats an undefined-valued key as equal to an absent one,
+    // so pin the exact key sets Tauri sees instead.
+    const args = mockInvoke.mock.calls[0][1] as { decision: Record<string, unknown> };
+    expect(Object.keys(args)).toEqual(['decision']);
+    expect(Object.keys(args.decision).sort()).toEqual(['behavior', 'request_id']);
+    expect(args.decision).not.toHaveProperty('message');
+    expect(args.decision).not.toHaveProperty('updated_input');
+    expect(args.decision).not.toHaveProperty('remember');
+  });
+
+  it('claudePermissionDecision sends exactly one top-level argument, `decision`, matching the command parameter', async () => {
+    mockInvoke.mockResolvedValue(undefined);
+
+    await claudePermissionDecision({
+      requestId: 'r7',
+      behavior: 'allow',
+      message: 'ok',
+      updatedInput: { a: 1 },
+      remember: true,
+    });
+
+    expect(mockInvoke.mock.calls[0]).toStrictEqual([
+      'claude_permission_decision',
+      {
+        decision: {
+          request_id: 'r7',
+          behavior: 'allow',
+          message: 'ok',
+          updated_input: { a: 1 },
+          remember: true,
+        },
+      },
+    ]);
   });
 
   it('claudePermissionDecision propagates invoke rejection', async () => {
