@@ -67,7 +67,7 @@ counts and ceilings are the PRD's Appendix A (one source; this manifest does not
 | ξ | produced-state-present | producer-self — 0 matches at cf59570562; subsumes #7181 | PASS | grep `fn take_produced_state` present in `gui/src-tauri/src/mcp_context.rs` |
 | ξ | delegated-job-present | producer-self — 0 matches at cf59570562 | PASS | grep `fn delegated_tool_job` present in `gui/src-tauri/src/mcp_context.rs` |
 | ο | debug-reimplementations-gone | producer-self — 22 matches in debug_server.rs at cf59570562 (debug_protocol.rs is created by #6964, a dependency); the delegation arm is named handle_delegated so it cannot match | PASS | grep `handle_reify_` absent in `gui/src-tauri/src/debug_server.rs`, `gui/src-tauri/src/debug_protocol.rs` |
-| ο | mcp-tool-call-gone | producer-self — 1 match at cf59570562 | PASS | grep `fn mcp_tool_call\(` absent in `gui/src-tauri/src/main.rs` |
+| ο | mcp-tool-call-gone | producer-self — 1 match at cf59570562 (paths widened 2026-10-15: S26 ι #9070 may move the command to tauri_commands.rs first) | PASS | grep `fn mcp_tool_call\(` absent in `gui/src-tauri/src/main.rs`, `gui/src-tauri/src/tauri_commands.rs` |
 | ο | scanner-retired | producer-self — 1 match at cf59570562 | PASS | grep `^mod debug_write_tool_routing_tests;` absent in `gui/src-tauri/src/tests/mod.rs` |
 | ο | stamped-present | producer-self — 0 matches at cf59570562 | PASS | grep `pub struct Stamped` present in `gui/src-tauri/src/eval_queue.rs` |
 | σ | mcp-constraint-status-enum | producer-self — 0 matches at cf59570562 | PASS | grep `^pub enum ConstraintStatus` present in `crates/reify-mcp/src/types.rs` |

@@ -325,7 +325,7 @@ tasks:
       - gui/src-tauri/src/debug_server.rs
       - gui/src-tauri/src/debug_protocol.rs
   - name: mcp-tool-call-gone
-    binding: producer-self — 1 match at cf59570562
+    binding: producer-self — 1 match at cf59570562 (paths widened 2026-10-15 to tauri_commands.rs — S26 ι #9070 may move the command there first)
     verdict: PASS
     delivered_check:
       kind: grep
@@ -333,6 +333,7 @@ tasks:
       expect: absent
       paths:
       - gui/src-tauri/src/main.rs
+      - gui/src-tauri/src/tauri_commands.rs
   - name: scanner-retired
     binding: producer-self — 1 match at cf59570562
     verdict: PASS
