@@ -211,6 +211,7 @@ import { SELECTIVE_DEMAND_SYNC_DEBOUNCE_MS } from '../stores/engineStore';
 import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 import { initDebugBridge } from '../debug/bridge';
+import { initDebugBridge as mockedInitDebugBridge } from '../debug';
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -2439,6 +2440,47 @@ describe('App pickSavePath error boundary', () => {
 });
 
 describe('App initApp concurrent execution guard', () => {
+  afterEach(() => {
+    vi.mocked(listen).mockResolvedValue(() => {});
+    vi.mocked(mockedInitDebugBridge).mockResolvedValue(() => {});
+  });
+
+  it('after an init failure and Retry exactly one debug-request listener is live (B7)', async () => {
+    const liveDebugListeners = new Set<object>();
+    vi.mocked(mockedInitDebugBridge).mockImplementation(initDebugBridge);
+    vi.mocked(listen).mockImplementation(async (event) => {
+      if (event !== 'debug-request') return () => {};
+      const token = {};
+      liveDebugListeners.add(token);
+      return () => {
+        liveDebugListeners.delete(token);
+      };
+    });
+    vi.mocked(bridge.isDebugEnabled).mockResolvedValue(true);
+    vi.mocked(bridge.getInitialState).mockRejectedValueOnce(new Error('fail'));
+
+    const { unmount } = render(() => <App />);
+    await waitFor(() => {
+      expect(screen.getByTestId('app-error')).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getByText('Retry'));
+    await waitFor(() => {
+      expect(screen.getByTestId('app-layout')).toBeTruthy();
+    });
+    const debugRequestRegistrations = () =>
+      vi.mocked(listen).mock.calls.filter(([event]) => event === 'debug-request');
+    await waitFor(() => {
+      expect(debugRequestRegistrations().length).toBeGreaterThanOrEqual(1);
+    });
+
+    expect(liveDebugListeners.size).toBe(1);
+    expect(debugRequestRegistrations()).toHaveLength(1);
+
+    unmount();
+    expect(liveDebugListeners.size).toBe(0);
+  });
+
   it('rapid double-click on Retry does not start two concurrent initApp flights', async () => {
     // First getInitialState rejects → error state
     vi.mocked(bridge.getInitialState).mockRejectedValueOnce(new Error('fail'));
