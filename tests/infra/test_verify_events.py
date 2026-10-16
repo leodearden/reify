@@ -28,6 +28,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import stat
 import subprocess
 import sys
@@ -52,7 +53,10 @@ DETAIL_ENTRY_MAX = 400
 
 
 def run(argv, env=None, cwd=None, timeout=600):
-    """The one spawn site: every child process this suite starts goes here."""
+    """The spawn site of every run-to-completion child this suite starts.
+
+    The SIGTERM test's Popen is the only other spawn site; both divert stderr.
+    """
     return subprocess.run(
         argv,
         env=hermetic_env() if env is None else env,
@@ -821,6 +825,21 @@ echo "${token}SLOT_TIMEOUT@@ reason=quoted_by_member slots=1 waited=0 dispositio
 exit 0
 """
 
+# Runs until the test touches $FIXTURE_STATE/release (600 x 0.2s backstop).
+HANG_MEMBER = """#!/usr/bin/env bash
+touch "$FIXTURE_STATE/hang.ready"
+for _ in $(seq 1 600); do
+    [ -e "$FIXTURE_STATE/release" ] && exit 0
+    sleep 0.2
+done
+exit 0
+"""
+
+NUKE_MEMBER = """#!/usr/bin/env bash
+rm -f "$(dirname "$0")/run_all.sh"
+exit 0
+"""
+
 B1_MEMBERS = {
     "test_fail.sh": FAIL_MEMBER,
     "test_pass.sh": PASS_MEMBER,
@@ -1041,6 +1060,87 @@ class RunAllChannelTests(unittest.TestCase):
         self.assertEqual(unset.returncode, channel_set.returncode)
         self.assertEqual(unset.stdout, channel_set.stdout)
         self.assertTrue(fx.events().channel_present)
+
+    def test_b3_the_pool_wait_deadline_is_the_one_parent_channel_timeout(self):
+        fx = RunAllFixture(self, {"test_pass.sh": PASS_MEMBER})
+        pool_lock = fx.root / "pool.lock"
+        with holding_slot(pool_lock):
+            result = fx.run(
+                manifest=fx.manifest({"test_pass.sh": "pool"}),
+                REIFY_RUN_ALL_POOL_CONCURRENCY="1",
+                REIFY_RUN_ALL_POOL_WAIT="1",
+            )
+        self.assertEqual(result.returncode, 0)
+        events = fx.events()
+        timeouts = verify_events.select(events, event="slot_timeout")
+        self.assertEqual(len(timeouts), 1)
+        self.assertEqual(
+            {k: timeouts[0][k] for k in ("disposition", "emitter", "reason", "slots", "lock")},
+            {
+                "disposition": "soft",
+                "emitter": "run_all_pool",
+                "reason": "run_all_pool_starvation",
+                "slots": 1,
+                "lock": str(pool_lock),
+            },
+        )
+        finishes = verify_events.select(events, event="member_finish")
+        self.assertEqual([(r["member"], r["verdict"]) for r in finishes], [("test_pass.sh", "PASS")])
+        self.assertEqual(sentinel_count(result.stderr, "run_all_pool_starvation"), 1)
+
+    def test_a_terminated_run_still_closes_with_an_interrupted_run_finish(self):
+        fx = RunAllFixture(self, {"test_hang.sh": HANG_MEMBER})
+        env = fx.env(fx.manifest({"test_hang.sh": "pool"}))
+        proc = subprocess.Popen(
+            fx.argv(), env=env, cwd=fx.cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, errors="surrogateescape", start_new_session=True,
+        )
+
+        def release():
+            (fx.state / "release").touch()
+            with contextlib.suppress(ProcessLookupError, PermissionError):
+                os.killpg(proc.pid, signal.SIGKILL)
+            with contextlib.suppress(subprocess.TimeoutExpired):
+                proc.communicate(timeout=30)
+
+        self.addCleanup(release)
+        self.assertTrue(verify_events.wait_for(fx.channel, event="run_start", deadline_s=120))
+        self.assertTrue(
+            verify_events.wait_for(
+                fx.channel, event="member_start", where={"member": "test_hang.sh"}, deadline_s=120
+            )
+        )
+        os.killpg(proc.pid, signal.SIGTERM)
+        output, _ = proc.communicate(timeout=120)
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("=== Summary: INTERRUPTED", output)
+        events = fx.events()
+        finishes = verify_events.select(events, event="run_finish")
+        self.assertEqual(len(finishes), 1)
+        self.assertIs(finishes[0]["interrupted"], True)
+        self.assertEqual(finishes[0]["failed"], failed_line_names(output))
+        order = [r["event"] for r in events.records if r["event"] in ("run_start", "run_finish")]
+        self.assertEqual(order, ["run_start", "run_finish"])
+
+    def test_the_worktree_gone_exit_still_closes_with_an_interrupted_run_finish(self):
+        fx = RunAllFixture(
+            self, {"test_a_nuke.sh": NUKE_MEMBER, "test_b_second.sh": PASS_MEMBER}
+        )
+        (fx.infra / "run_all.sh").write_text("# arms run_all.sh's worktree self-check\n")
+        result = fx.run(
+            manifest=fx.manifest({"test_a_nuke.sh": "pool", "test_b_second.sh": "pool"}),
+            REIFY_RUN_ALL_POOL_DISABLE="1",
+        )
+        self.assertEqual(result.returncode, 99)
+        self.assertIn("=== INTERRUPTED (worktree removed) ===", result.stdout.split("\n"))
+        events = fx.events()
+        finishes = verify_events.select(events, event="run_finish")
+        self.assertEqual(len(finishes), 1)
+        self.assertIs(finishes[0]["interrupted"], True)
+        members = verify_events.select(events, event="member_finish")
+        self.assertEqual([(r["member"], r["verdict"]) for r in members], [("test_a_nuke.sh", "PASS")])
+        started = [r["member"] for r in verify_events.select(events, event="member_start")]
+        self.assertEqual(started, ["test_a_nuke.sh"])
 
     def test_the_count_only_probe_writes_no_record(self):
         fx = RunAllFixture(self, B1_MEMBERS)

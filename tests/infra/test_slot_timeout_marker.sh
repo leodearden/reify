@@ -1554,8 +1554,9 @@ D_ROSTER=(
 #   its `.py` sibling, whose bash snippets source lib_slot_acquire.sh and run
 #   lib_test_semaphore.sh, cargo-test-occt-gated.sh and lib_lane_x_flock.sh to
 #   a REAL deadline on every green run, each against a private lock the test
-#   holds in-process. Measured CLEAN on the SITE channel: every child goes
-#   through one subprocess funnel passing capture_output=True. CLEAN on the
+#   holds in-process. Measured CLEAN on the SITE channel: G scores 2 sites /
+#   0 unredirected -- the subprocess.run funnel (capture_output=True) and the
+#   SIGTERM case's Popen (stdout=PIPE, stderr=STDOUT). CLEAN on the
 #   DESCRIPTION channel by construction: its failure messages carry counts and
 #   record fields only, never captured stderr, and it assembles the sentinel
 #   prefix at runtime. Kept static-only for the wall clock, as
@@ -3142,8 +3143,9 @@ G_MEMBERS=(
     # this file -- see G_SCAN below.
     test_verify_env_ambient_isolation.sh
     # DIRECT route via its `.py` sibling (task 8685): its bash snippets run the
-    # acquire wrappers, all spawned through one diverted subprocess funnel,
-    # which is therefore the site -- see G_SCAN below.
+    # acquire wrappers through one diverted subprocess.run funnel, and its
+    # SIGTERM case runs run_all.sh through one diverted Popen; those two spawns
+    # are therefore the sites -- see G_SCAN below.
     test_verify_events.sh
     # DECLARED, NOT DERIVABLE, and this is the member Section G exists for. Its
     # capability route is F_WAIT_RE (`export REIFY_TEST_SEMAPHORE_WAIT="$wait"`
