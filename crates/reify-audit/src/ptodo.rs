@@ -1475,11 +1475,7 @@ fn scan_file(content: &str, lang: SweptLang) -> Vec<(usize, LineClass, String)> 
             && line.trim_start().starts_with("//")
             && g_allow_marker_body(line).is_none()
         {
-            // (8) lane δ-C. Three choices a reader must not undo, for the
-            // reasons δ-B's (i)–(iv) give above: APPENDED LAST, so every
-            // earlier arm keeps its lines; CITE-ANCHORED, so it emits only
-            // `Cited` and never a structural kind; FULL-LINE `//` comments of
-            // a `//`-comment language only, with `// G-allow:` delegated.
+            // (8) lane δ-C — PRD §8.1; appended last, cite-anchored.
             let ids = promise_owner_cites(line);
             if !ids.is_empty() {
                 out.push((line_no, LineClass::Cited(ids), line.trim().to_string()));
