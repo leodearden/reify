@@ -38,13 +38,15 @@ main_gate_tip() {
 
 # main_gate_mark — write the sentinel holding the main tip it sanctions a move
 # FROM. Called ONLY after a verify gate passes. Published by rename so a reader
-# never sees a half-written token. An unborn main writes nothing and returns 0:
-# hooks that end with this call must not fail a commit over it.
+# never sees a half-written token; a failed publish removes its temp file and
+# returns 1. An unborn main writes nothing and returns 0: hooks that end with
+# this call must not fail a commit over it.
 main_gate_mark() {
-    local _tip _sentinel
+    local _tip _sentinel _tmp
     _tip="$(main_gate_tip)" || return 0
     _sentinel="$(main_gate_sentinel)"
-    printf '%s\n' "$_tip" > "${_sentinel}.tmp.$$" && mv -f "${_sentinel}.tmp.$$" "$_sentinel"
+    _tmp="${_sentinel}.tmp.$$"
+    { printf '%s\n' "$_tip" > "$_tmp" && mv -f "$_tmp" "$_sentinel"; } || { rm -f "$_tmp"; return 1; }
 }
 
 # main_gate_unmark — compare-and-delete: remove the sentinel only when it holds

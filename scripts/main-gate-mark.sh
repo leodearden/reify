@@ -7,7 +7,8 @@
 # Usage: scripts/main-gate-mark.sh mark|unmark
 #   mark     bind the main-gate sentinel to the current main tip
 #   unmark   remove the sentinel only if it is bound to the current main tip
-# Exit: 0 ok · 2 hooks/main-gate-lib.sh missing · 64 usage error
+# Exit: 0 ok · 1 the mark could not be written · 2 hooks/main-gate-lib.sh missing
+#       · 64 usage error
 
 set -uo pipefail
 
