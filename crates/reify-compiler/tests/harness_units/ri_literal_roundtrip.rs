@@ -140,6 +140,12 @@ fn ri_type_name(v: &Value) -> &'static str {
             DimensionVector::FREQUENCY => "Frequency",
             DimensionVector::SOLID_ANGLE => "SolidAngle",
             DimensionVector::MONEY => "Money",
+            DimensionVector::CURRENT => "Current",
+            DimensionVector::AMOUNT_OF_SUBSTANCE => "AmountOfSubstance",
+            DimensionVector::LUMINOUS_INTENSITY => "LuminousIntensity",
+            DimensionVector::VOLTAGE => "Voltage",
+            DimensionVector::CHARGE => "Charge",
+            DimensionVector::ILLUMINANCE => "Illuminance",
             other => panic!("no .ri type name wired for dimension {other}"),
         },
         other => panic!("no .ri type name wired for {other:?}"),
@@ -733,10 +739,9 @@ fn stdlib_unit_declarations_agree_bit_for_bit_with_the_builtin_table() {
 
         let Some(entry) = registry.lookup(sym) else {
             // Not shadowed at all — the built-in fallback wins unconditionally,
-            // which is the *strongest* form of the guarantee, not a gap. `A`,
-            // `mol` and `cd` land here: `si_units.rs` registers them only as
-            // prefix bases (`mA`, `kA`, …) and `SI_PREFIXES` has no empty
-            // prefix, so no bare declaration is ever emitted for them.
+            // which is the *strongest* form of the guarantee, not a gap.
+            // Nothing lands here today: every built-in, `A`/`mol`/`cd`
+            // included, is declared in `stdlib/units.ri`.
             builtin_only.push(sym);
             continue;
         };
@@ -780,12 +785,12 @@ fn stdlib_unit_declarations_agree_bit_for_bit_with_the_builtin_table() {
     );
     // The guard is worthless if it silently compares nothing — e.g. if
     // `load_stdlib()`'s module set changed shape and every lookup missed.
-    // mm/cm/m/deg/rad/kg/s/K/in/g are all declared today.
+    // mm/cm/m/in/deg/rad/kg/g/s/K/A/mol/cd are all declared today.
     assert!(
-        compared >= 10,
-        "expected at least the 10 stdlib-declared emittable symbols to be \
-         compared, got {compared} (built-in-only: {builtin_only:?}) — did the \
-         stdlib module set or the seeding shape change?"
+        compared >= 13,
+        "expected all 13 stdlib-declared built-in symbols to be compared, got \
+         {compared} (built-in-only: {builtin_only:?}) — did the stdlib module set \
+         or the seeding shape change?"
     );
 }
 
@@ -806,10 +811,9 @@ fn stdlib_unit_declarations_agree_bit_for_bit_with_the_builtin_table() {
 /// localises a drift to a specific symbol and factor, which a round-trip
 /// failure would only hint at.
 ///
-/// The case list covers every symbol the cross-guard actually compares — the
-/// eleven canonical ladder rungs plus `in` and `g`, which are reachable only
-/// through a caller-supplied hint — so a registry shadow on ANY of them fails
-/// here. It is hand-written rather than driven from `BUILTIN_UNITS` because
+/// The case list covers all 13 symbols the cross-guard compares — the eleven
+/// canonical ladder rungs plus `in` and `g`, which are reachable only through a
+/// caller-supplied hint — so a registry shadow on ANY of them fails here. It is hand-written rather than driven from `BUILTIN_UNITS` because
 /// each case needs a magnitude and a declared `.ri` type, not just a symbol;
 /// the cross-guard above is the table-driven half, and the two are meant to be
 /// read together.
@@ -876,6 +880,32 @@ fn emitted_literals_round_trip_under_the_stdlib_unit_registry() {
             },
         )
         .emitting("293.15K"),
+        // The three SI bases declared bare in `stdlib/units.ri` alongside the
+        // built-in fallback entries for them.
+        Case::new(
+            "stdlib A",
+            Value::Scalar {
+                si_value: 1.5,
+                dimension: DimensionVector::CURRENT,
+            },
+        )
+        .emitting("1.5A"),
+        Case::new(
+            "stdlib mol",
+            Value::Scalar {
+                si_value: 0.25,
+                dimension: DimensionVector::AMOUNT_OF_SUBSTANCE,
+            },
+        )
+        .emitting("0.25mol"),
+        Case::new(
+            "stdlib cd",
+            Value::Scalar {
+                si_value: 3.0,
+                dimension: DimensionVector::LUMINOUS_INTENSITY,
+            },
+        )
+        .emitting("3cd"),
     ];
     assert_round_trips_under(&cases, Prelude::Stdlib);
 }
@@ -919,6 +949,11 @@ fn compound_literals_round_trip_under_the_stdlib_unit_registry() {
         compound("force", -9.81, DimensionVector::FORCE).emitting("-9.81m*kg/s^2"),
         compound("density", 7850.0, DimensionVector::MASS_DENSITY).emitting("7850kg/m^3"),
         compound("energy", 1234.5, DimensionVector::ENERGY).emitting("1234.5m^2*kg/s^2"),
+        // A second division-chain ASSOCIATIVITY WITNESS: right association
+        // would read `s^3/A` as one denominator and flip A's sign.
+        compound("voltage", 230.0, DimensionVector::VOLTAGE).emitting("230m^2*kg/s^3/A"),
+        compound("charge", 2.5, DimensionVector::CHARGE).emitting("2.5s*A"),
+        compound("illuminance", 500.0, DimensionVector::ILLUMINANCE).emitting("500cd*sr/m^2"),
         // The empty-numerator form. A leading `/` is not a valid `unit_expr`,
         // so this is the one shape that MUST use signed powers — and only a
         // real parse can confirm `s^-1` lexes and folds as `Pow(s, -1)`.
@@ -957,10 +992,10 @@ fn compound_literals_round_trip_under_the_stdlib_unit_registry() {
 ///     write of that dimension silently lossy while looking right in a debug
 ///     print, and it is exactly the identity `mag * factor == si_value` rests
 ///     on;
-///   - a `None` slot MUST be absent. If the stdlib GAINS a bare `A`/`mol`/`cd`
-///     declaration, the emitter is now needlessly refusing a dimension it could
-///     write — a capability gap, not a corruption, but still a bug, and one no
-///     forward-only test can see.
+///   - a `None` slot MUST be absent. If the stdlib GAINS a bare declaration
+///     for such a slot, the emitter is now needlessly refusing a dimension it
+///     could write — a capability gap, not a corruption, but still a bug, and
+///     one no forward-only test can see.
 #[test]
 fn si_base_symbols_resolve_to_factor_one_in_the_stdlib_registry() {
     let registry = stdlib_seeded_unit_registry();
@@ -1032,9 +1067,8 @@ fn si_base_symbols_resolve_to_factor_one_in_the_stdlib_registry() {
         }
     }
 
-    // Non-vacuity floor, matching the `compared >= 10` the sibling cross-guard
-    // uses: all ten slots are decided, and at least seven are emittable today
-    // (m/kg/s/K/rad/sr/USD).
+    // Non-vacuity floor: all ten slots are decided, and all ten are emittable
+    // today (m/kg/s/A/K/mol/cd/rad/sr/USD).
     assert_eq!(
         compared, 10,
         "every BASE_UNIT_SYMBOLS slot must be decided in one direction or the other"
@@ -1044,10 +1078,10 @@ fn si_base_symbols_resolve_to_factor_one_in_the_stdlib_registry() {
         .filter(|s| s.is_some())
         .count();
     assert!(
-        emittable >= 7,
-        "expected at least the 7 registry-resolvable base symbols \
-         (m/kg/s/K/rad/sr/USD) to be emittable, got {emittable} — did the stdlib \
-         lose a unit declaration?"
+        emittable >= 10,
+        "expected all 10 registry-resolvable base symbols \
+         (m/kg/s/A/K/mol/cd/rad/sr/USD) to be emittable, got {emittable} — did \
+         the stdlib lose a unit declaration?"
     );
 }
 

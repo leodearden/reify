@@ -1081,6 +1081,7 @@ mod tests {
             (compound(7850.0, DimensionVector::MASS_DENSITY), "7850kg/m^3"),
             (compound(1.5, DimensionVector::SOLID_ANGLE), "1.5sr"),
             (compound(19.99, DimensionVector::MONEY), "19.99USD"),
+            (compound(1.5, DimensionVector::VOLTAGE), "1.5m^2*kg/s^3/A"),
         ];
         for (v, expected) in cases {
             assert_eq!(&seeded(v), expected, "compound emission drifted for {v:?}");
@@ -1182,22 +1183,6 @@ mod tests {
     /// something would produce a literal that does not re-parse.
     #[test]
     fn the_unlock_does_not_widen_to_what_still_cannot_be_written() {
-        // Current-bearing dimensions: bare `A` is never in the registry.
-        for dim in [DimensionVector::VOLTAGE, DimensionVector::CHARGE] {
-            assert!(
-                matches!(
-                    value_to_ri_literal_in_scope(
-                        &compound(1.5, dim),
-                        None,
-                        UnitScope::SiBaseUnitsSeeded
-                    ),
-                    Err(RiLiteralError::UnrepresentableDimension { .. })
-                ),
-                "{:?} names a base symbol the registry never carries",
-                dim.canonical_name()
-            );
-        }
-
         // A fractional exponent has no integral `UnitExpr::Pow` spelling.
         assert!(matches!(
             value_to_ri_literal_in_scope(

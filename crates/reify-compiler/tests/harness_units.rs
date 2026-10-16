@@ -45,6 +45,9 @@
 #[path = "common/mod.rs"]
 mod common;
 
+#[path = "harness_units/bare_si_base_unit_tests.rs"]
+mod bare_si_base_unit_tests;
+
 #[path = "harness_units/torque_unit_tests.rs"]
 mod torque_unit_tests;
 

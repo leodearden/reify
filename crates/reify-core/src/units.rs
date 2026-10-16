@@ -846,6 +846,19 @@ mod tests {
             (DimensionVector::ENERGY, "m^2*kg/s^2"),
             (DimensionVector::SOLID_ANGLE, "sr"),
             (DimensionVector::MONEY, "USD"),
+            // Dimensions touching the Current / AmountOfSubstance /
+            // LuminousIntensity slots.
+            (DimensionVector::VOLTAGE, "m^2*kg/s^3/A"),
+            (DimensionVector::CHARGE, "s*A"),
+            (DimensionVector::ILLUMINANCE, "cd*sr/m^2"),
+            (
+                DimensionVector::AMOUNT_OF_SUBSTANCE.div(&DimensionVector::VOLUME),
+                "mol/m^3",
+            ),
+            (
+                DimensionVector::CURRENT.mul(&DimensionVector::CURRENT),
+                "A^2",
+            ),
             // A single atom. The bare ladder still wins at the `reify-ir`
             // policy layer (`80mm`, never `0.08m`) — this function is pure and
             // has no opinion about that; containment lives at the call site.
@@ -897,29 +910,6 @@ mod tests {
             None,
             "an exponent outside i8 is what `resolve_unit_expr` rejects"
         );
-
-        // Current / AmountOfSubstance / LuminousIntensity: bare `A`/`mol`/`cd`
-        // are in BUILTIN_UNITS but are NEVER seeded into the compiler's
-        // `UnitRegistry` (stdlib/units.ri does not declare them, and
-        // si_units.rs registers them only as prefix bases `mA`/`kA`/…), so a
-        // compound naming one would fail to resolve. VOLTAGE and CHARGE are
-        // the witnesses; the raw slots pin the reason rather than the pair.
-        for dim in [DimensionVector::VOLTAGE, DimensionVector::CHARGE] {
-            assert_eq!(
-                ri_compound_unit_expr(&dim),
-                None,
-                "{:?} names a base symbol the registry never carries",
-                dim.canonical_name()
-            );
-        }
-        for slot in [3usize, 5, 6] {
-            assert_eq!(
-                ri_compound_unit_expr(&one_slot(slot, crate::Rational::ONE)),
-                None,
-                "slot {slot} ({}) has no registry-resolvable bare symbol",
-                BASE_UNIT_SYMBOLS[slot]
-            );
-        }
     }
 
     /// (c) STRUCTURAL guard — every alphabetic atom in an emitted string is a
@@ -941,6 +931,8 @@ mod tests {
             DimensionVector::MONEY,
             DimensionVector::LENGTH,
             DimensionVector::FREQUENCY,
+            DimensionVector::VOLTAGE,
+            DimensionVector::CHARGE,
         ];
         let mut checked = 0usize;
         for dim in dims {

@@ -2820,9 +2820,9 @@ fn example_literal_from_hint(message: &str) -> Option<String> {
 /// Whether `dim` has no clean unit-literal spelling, and so is legitimately
 /// exempt from offering an example.
 ///
-/// Exactly three reasons, each independently derivable from the vector and the
-/// stdlib's own unit table — this predicate does NOT consult the compiler's
-/// derivation, so it is a real oracle rather than a restatement of it:
+/// Each reason is independently derivable from the vector and the stdlib's own
+/// unit table — this predicate does NOT consult the compiler's derivation, so it
+/// is a real oracle rather than a restatement of it:
 ///
 /// * a FRACTIONAL exponent (`den() != 1`, e.g. `FractureToughness`'s Pa·m^0.5)
 ///   cannot be written as a unit literal at all;
@@ -2830,10 +2830,11 @@ fn example_literal_from_hint(message: &str) -> Option<String> {
 ///   numerator term to anchor the literal. Measured: `param x : Frequency = 1/s`
 ///   fails with `unresolved name: s` — reify reads the bare `1` as a number and
 ///   `/s` as a division, not as a quantity literal;
-/// * a slot whose base-unit symbol `stdlib/units.ri` does not declare as a unit.
+/// * a slot whose base-unit symbol is missing from [`SPELLABLE_BASE_UNITS`].
 ///   [`BASE_UNIT_SYMBOLS`] is the DISPLAY table; being renderable is weaker than
-///   being parseable. Measured: `param x : Voltage = 1m^2*kg/s^3/A` fails with
-///   `unknown unit: A`.
+///   being parseable. Every base symbol is spellable today, so this reason
+///   exempts no row; it stays so a symbol the stdlib stops resolving is named
+///   here rather than rediscovered as a parse failure.
 ///
 /// [`SPELLABLE_BASE_UNITS`] is this test's own reading of the stdlib, kept
 /// deliberately separate from the compiler's. Drift in EITHER direction is
@@ -2849,12 +2850,14 @@ fn has_no_clean_unit_literal(dim: &DimensionVector) -> bool {
     }) || !dim.0.iter().any(|r| r.num() > 0)
 }
 
-/// The base-unit symbols `crates/reify-compiler/stdlib/units.ri` declares as
-/// units, and which can therefore appear in a unit literal.
+/// The base-unit symbols the stdlib-seeded unit registry resolves, and which can
+/// therefore appear in a unit literal.
 ///
-/// `A`, `mol`, `cd` and `sr` are deliberately absent: they name
-/// `DimensionVector` slots but the stdlib declares no unit for them.
-const SPELLABLE_BASE_UNITS: [&str; 6] = ["m", "kg", "s", "K", "rad", "USD"];
+/// All ten `DimensionVector` slots: nine are declared bare in
+/// `crates/reify-compiler/stdlib/units.ri`, and `sr` is generated bare into
+/// `std.si_units`.
+const SPELLABLE_BASE_UNITS: [&str; 10] =
+    ["m", "kg", "s", "A", "K", "mol", "cd", "rad", "sr", "USD"];
 
 /// Assert `source`'s sole rejection carries the hint AND names the dimension
 /// `type_name` resolves to, using that dimension's own `canonical_name()`.
