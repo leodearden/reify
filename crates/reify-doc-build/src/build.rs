@@ -3,21 +3,24 @@
 //! This module provides [`build_doc_model`], which walks a [`reify_compiler::CompiledModule`]
 //! and produces a [`reify_doc::model::DocModel`] that the doc formatters can render.
 //!
-//! **Design contract** (established by plan.json step-2 decisions):
-//! - The function is total/infallible.
-//! - Annotation/expression rendering is best-effort string production.
-//! - `source: &str` is the raw source text; constraint `expr_repr` is obtained
-//!   by slicing it with `CompiledConstraint.span`; `line` is computed via
-//!   `reify_types::byte_offset_to_line_col`.
+//! **Design contract:**
+//! - The lowering is total/infallible.
+//! - Every expression-valued field takes its text from one of two helpers over
+//!   the module's `source`: `expr_text_at` slices a node's own span, and
+//!   `declared_value_text` takes the value after the first `=` of a
+//!   declaration span.  A field whose IR node is only a `CompiledExpr`, which
+//!   records no span, is `ExprText::Unavailable(UnavailableReason::NoSpan)`.
+//! - Constraint `line` numbers come from `reify_core::byte_offset_to_line_col`.
 
 use reify_compiler::{
     CompiledConstraint, CompiledConstraintDef, CompiledField, CompiledFunction, CompiledModule,
     CompiledPurpose, CompiledTrait, CompiledTypeAlias, CompiledUnit, EntityKind, RealizationDecl,
     SubComponentDecl, TopologyTemplate, ValueCellDecl, ValueCellKind, Visibility,
 };
+use reify_doc::expr_text::{ExprText, UnavailableReason};
 use reify_doc::model::{
     AnnotationDoc, ConstraintDoc, DocModel, ItemDoc, ItemHeader, ItemKind, ModuleDoc, ParamDoc,
-    PortDoc, PragmaDoc, RealizationDoc, SubComponentDoc,
+    PortDoc, PragmaDoc, RealizationDoc, SubComponentArgDoc, SubComponentDoc,
 };
 use reify_core::{SourceSpan, Type, byte_offset_to_line_col};
 use reify_ir::{AnnotationArg, AnnotationArgValue, ObjectiveSense};
@@ -30,8 +33,9 @@ use reify_ast::{Pragma, PragmaArg, PragmaValue};
 /// Lower a compiled module into a documentation model.
 ///
 /// `source` is the raw source text that was parsed and compiled into `compiled`.
-/// It is used to slice constraint expressions out as their `expr_repr` and to
-/// compute 1-indexed `line` numbers from `SourceSpan` byte offsets.
+/// Every expression-valued field's text is sliced out of it by span, and
+/// constraint `line` numbers are computed from its byte offsets.  A span that
+/// does not address `source` yields `UnavailableReason::SpanOutsideSource`.
 ///
 /// The returned `DocModel` contains a single `ModuleDoc` whose items appear in
 /// a deterministic, per-surface-grouped order:
@@ -55,17 +59,17 @@ pub fn build_doc_model(compiled: &CompiledModule, source: &str) -> DocModel {
 
     // 2. Traits.
     for t in &compiled.trait_defs {
-        items.push(lower_trait(t));
+        items.push(lower_trait(t, source));
     }
 
     // 3. Functions.
     for f in &compiled.functions {
-        items.push(lower_function(f));
+        items.push(lower_function(f, source));
     }
 
     // 4. Fields (module-level let / field declarations).
     for field in &compiled.fields {
-        items.push(lower_field(field));
+        items.push(lower_field(field, source));
     }
 
     // 5. Purposes — skip those merged from the prelude (declaration_span is the
@@ -134,7 +138,11 @@ fn lower_template(t: &TopologyTemplate, source: &str) -> ItemDoc {
 
     let sub_components: Vec<SubComponentDoc> = t.sub_components.iter().map(lower_sub).collect();
 
-    let realizations: Vec<RealizationDoc> = t.realizations.iter().map(lower_realization).collect();
+    let realizations: Vec<RealizationDoc> = t
+        .realizations
+        .iter()
+        .map(|r| lower_realization(r, source))
+        .collect();
 
     let meta: Vec<(String, String)> = t
         .meta
@@ -166,7 +174,7 @@ fn lower_template(t: &TopologyTemplate, source: &str) -> ItemDoc {
             name: t.name.clone(),
             doc: t.doc.clone(),
             is_pub: matches!(t.visibility, Visibility::Public),
-            annotations: lower_annotations(&t.annotations),
+            annotations: lower_annotations(&t.annotations, source),
             pragmas: lower_pragmas(&t.pragmas),
         },
         kind,
@@ -185,29 +193,13 @@ fn lower_param(vc: &ValueCellDecl, source: &str) -> ParamDoc {
 
     let type_repr = type_to_string(&vc.cell_type);
 
-    // Extract the default expression text from the full declaration span.
-    //
-    // `ValueCellDecl.span` covers the entire declaration statement, e.g.
-    // "param width: Length = 10mm".  `CompiledExpr` has no source span of its
-    // own, so we derive the default value text by splitting at the first '='
-    // separator and trimming the RHS.  This yields the actual default token(s)
-    // (e.g. "10mm") rather than the full declaration string.  When no '=' is
-    // found (prelude-sentinel span or other malformed span), we return the safe
-    // placeholder "<default>" to indicate presence-without-text.
-    //
-    // `default_repr` is `Some` iff `default_expr.is_some()`: the field is
-    // present when-and-only-when the param has a declared default.
+    // `CompiledExpr` has no span, but `ValueCellDecl.span` covers the whole
+    // `param width: Length = 10mm` declaration, so its value text is the
+    // default.  `Some` iff the param declares a default.
     let default_repr = vc
         .default_expr
         .as_ref()
-        .map(|_expr| {
-            let decl_text = span_text(source, vc.span);
-            if let Some(pos) = decl_text.find('=') {
-                decl_text[pos + 1..].trim().to_string()
-            } else {
-                "<default>".to_string()
-            }
-        });
+        .map(|_| declared_value_text(source, vc.span));
 
     // Annotations on value cells are not carried through CompiledModule; they are
     // consumed/validated during compilation. We leave annotations empty.
@@ -245,7 +237,7 @@ fn lower_port(p: &reify_compiler::CompiledPort) -> PortDoc {
 // ---------------------------------------------------------------------------
 
 fn lower_constraint(c: &CompiledConstraint, source: &str) -> ConstraintDoc {
-    let expr_repr = span_text(source, c.span).to_string();
+    let expr_repr = expr_text_at(source, c.span);
     // Guard both the prelude sentinel (u32::MAX) AND any non-sentinel span whose
     // start offset exceeds source.len() (e.g. a span seeded from a different
     // compilation unit).  byte_offset_to_line_col contains debug_assert!(offset
@@ -270,12 +262,14 @@ fn lower_constraint(c: &CompiledConstraint, source: &str) -> ConstraintDoc {
 // ---------------------------------------------------------------------------
 
 fn lower_sub(s: &SubComponentDecl) -> SubComponentDoc {
-    // Render arg expressions as "<name> = <value>" strings. Since CompiledExpr
-    // has no Display impl, we emit "<name> = ..." as a best-effort placeholder.
-    let args: Vec<String> = s
+    // An argument value is a `CompiledExpr`, which records no span.
+    let args: Vec<SubComponentArgDoc> = s
         .args
         .iter()
-        .map(|(name, _expr)| format!("{name} = ..."))
+        .map(|(name, _value)| SubComponentArgDoc {
+            name: name.clone(),
+            value: ExprText::Unavailable(UnavailableReason::NoSpan),
+        })
         .collect();
     SubComponentDoc {
         name: s.name.clone(),
@@ -289,21 +283,21 @@ fn lower_sub(s: &SubComponentDecl) -> SubComponentDoc {
 // RealizationDecl → RealizationDoc
 // ---------------------------------------------------------------------------
 
-fn lower_realization(r: &RealizationDecl) -> RealizationDoc {
+/// `RealizationDecl.span` is the span of the `let`/`param` declaration the
+/// realization was lowered from, so its value text is the geometry expression.
+fn lower_realization(r: &RealizationDecl, source: &str) -> RealizationDoc {
     let name = r.name.clone().unwrap_or_else(|| "<realization>".to_string());
-    let op_summaries: Vec<String> = r
-        .operations
-        .iter()
-        .map(|op| format!("{op:?}").chars().take(80).collect())
-        .collect();
-    RealizationDoc { name, op_summaries }
+    RealizationDoc {
+        name,
+        value: declared_value_text(source, r.span),
+    }
 }
 
 // ---------------------------------------------------------------------------
 // CompiledTrait → ItemKind::Trait
 // ---------------------------------------------------------------------------
 
-fn lower_trait(t: &CompiledTrait) -> ItemDoc {
+fn lower_trait(t: &CompiledTrait, source: &str) -> ItemDoc {
     let members: Vec<String> = t
         .required_members
         .iter()
@@ -333,7 +327,7 @@ fn lower_trait(t: &CompiledTrait) -> ItemDoc {
             name: t.name.clone(),
             doc: t.doc.clone(),
             is_pub: t.is_pub,
-            annotations: lower_annotations(&t.annotations),
+            annotations: lower_annotations(&t.annotations, source),
             pragmas: lower_pragmas(&t.pragmas),
         },
         kind: ItemKind::Trait {
@@ -356,7 +350,7 @@ fn lower_trait(t: &CompiledTrait) -> ItemDoc {
 /// literal churn across the doc crates.  `header.name` — the join key for
 /// anchors, TOC hrefs and split-mode filenames — stays the bare identifier,
 /// which is the same identity invariant the alias heading preserves.
-fn lower_function(f: &CompiledFunction) -> ItemDoc {
+fn lower_function(f: &CompiledFunction, source: &str) -> ItemDoc {
     let params_str: Vec<String> = f
         .params
         .iter()
@@ -381,7 +375,7 @@ fn lower_function(f: &CompiledFunction) -> ItemDoc {
             name: f.name.clone(),
             doc: f.doc.clone(),
             is_pub: f.is_pub,
-            annotations: lower_annotations(&f.annotations),
+            annotations: lower_annotations(&f.annotations, source),
             pragmas: vec![],
         },
         kind: ItemKind::Function { signature },
@@ -392,7 +386,7 @@ fn lower_function(f: &CompiledFunction) -> ItemDoc {
 // CompiledField → ItemKind::Field
 // ---------------------------------------------------------------------------
 
-fn lower_field(field: &CompiledField) -> ItemDoc {
+fn lower_field(field: &CompiledField, source: &str) -> ItemDoc {
     let type_repr = format!(
         "Field<{}, {}>",
         type_to_string(&field.domain_type),
@@ -404,7 +398,7 @@ fn lower_field(field: &CompiledField) -> ItemDoc {
             name: field.name.clone(),
             doc: None,
             is_pub: field.is_pub,
-            annotations: lower_annotations(&field.annotations),
+            annotations: lower_annotations(&field.annotations, source),
             pragmas: vec![],
         },
         kind: ItemKind::Field {
@@ -421,24 +415,27 @@ fn lower_field(field: &CompiledField) -> ItemDoc {
 fn lower_purpose(p: &CompiledPurpose, source: &str) -> ItemDoc {
     let (expr_repr, direction) = match &p.objective {
         Some(obj) => {
-            // `CompiledExpr` carries no source span, so we cannot slice the
-            // objective expression text from `source` the way constraints do.
-            // We emit a clean directive placeholder rather than the unreadable
-            // Rust Debug output that `format!("{:?}", obj)` would produce.
+            // An objective term is a `CompiledExpr`, which records no span.
             // Direction is determined by the first term's sense.
-            if obj.terms.first().map(|t| t.sense) == Some(ObjectiveSense::Maximize) {
-                ("<maximize>".to_string(), "maximize".to_string())
+            let direction = if obj.terms.first().map(|t| t.sense) == Some(ObjectiveSense::Maximize)
+            {
+                "maximize"
             } else {
-                ("<minimize>".to_string(), "minimize".to_string())
-            }
+                "minimize"
+            };
+            (
+                ExprText::Unavailable(UnavailableReason::NoSpan),
+                direction.to_string(),
+            )
         }
         None => {
             // Fall back to first constraint expression if available.
             let expr = p
                 .constraints
                 .first()
-                .map(|c| span_text(source, c.span).to_string())
-                .unwrap_or_default();
+                .map_or(ExprText::Unavailable(UnavailableReason::NoSpan), |c| {
+                    expr_text_at(source, c.span)
+                });
             (expr, "minimize".to_string())
         }
     };
@@ -448,7 +445,7 @@ fn lower_purpose(p: &CompiledPurpose, source: &str) -> ItemDoc {
             name: p.name.clone(),
             doc: None,
             is_pub: p.is_pub,
-            annotations: lower_annotations(&p.annotations),
+            annotations: lower_annotations(&p.annotations, source),
             pragmas: lower_pragmas(&p.pragmas),
         },
         kind: ItemKind::Purpose {
@@ -545,15 +542,14 @@ fn lower_type_alias(a: &CompiledTypeAlias) -> ItemDoc {
 // ---------------------------------------------------------------------------
 
 fn lower_constraint_def(cd: &CompiledConstraintDef, source: &str) -> ItemDoc {
-    // The expr_repr is derived from the constraint def's span-sliced source text.
-    let expr_repr = span_text(source, cd.span).to_string();
+    let expr_repr = expr_text_at(source, cd.span);
 
     ItemDoc {
         header: ItemHeader {
             name: cd.name.clone(),
             doc: None,
             is_pub: cd.is_pub,
-            annotations: lower_annotations(&cd.annotations),
+            annotations: lower_annotations(&cd.annotations, source),
             pragmas: lower_pragmas(&cd.pragmas),
         },
         kind: ItemKind::ConstraintDef { expr_repr },
@@ -565,23 +561,32 @@ fn lower_constraint_def(cd: &CompiledConstraintDef, source: &str) -> ItemDoc {
 // ---------------------------------------------------------------------------
 
 /// Lower a `reify_types::Annotation` to an `AnnotationDoc`.
-fn lower_annotation(ann: &reify_ir::annotation::Annotation) -> AnnotationDoc {
-    let args: Vec<String> = ann.args.iter().map(render_annotation_arg).collect();
+fn lower_annotation(ann: &reify_ir::annotation::Annotation, source: &str) -> AnnotationDoc {
+    let args: Vec<String> = ann
+        .args
+        .iter()
+        .map(|arg| render_annotation_arg(arg, source))
+        .collect();
     AnnotationDoc {
         name: ann.name.clone(),
         args,
     }
 }
 
-fn lower_annotations(anns: &[reify_ir::annotation::Annotation]) -> Vec<AnnotationDoc> {
-    anns.iter().map(lower_annotation).collect()
+fn lower_annotations(
+    anns: &[reify_ir::annotation::Annotation],
+    source: &str,
+) -> Vec<AnnotationDoc> {
+    anns.iter()
+        .map(|ann| lower_annotation(ann, source))
+        .collect()
 }
 
 /// Render a single `AnnotationArg` to a printable string.
 ///
 /// Named args render as `name = value`; positional args render the value alone.
-fn render_annotation_arg(arg: &AnnotationArg) -> String {
-    let value = render_annotation_arg_value(&arg.value);
+fn render_annotation_arg(arg: &AnnotationArg, source: &str) -> String {
+    let value = render_annotation_arg_value(&arg.value, source);
     match &arg.name {
         Some(name) => format!("{name} = {value}"),
         None => value,
@@ -589,18 +594,17 @@ fn render_annotation_arg(arg: &AnnotationArg) -> String {
 }
 
 /// Render an [`AnnotationArgValue`] to a printable string.
-fn render_annotation_arg_value(value: &AnnotationArgValue) -> String {
+fn render_annotation_arg_value(value: &AnnotationArgValue, source: &str) -> String {
     match value {
         AnnotationArgValue::String(s) => format!("\"{s}\""),
         AnnotationArgValue::Int(i) => format!("{i}"),
         AnnotationArgValue::Real(r) => format!("{r}"),
         AnnotationArgValue::Bool(b) => format!("{b}"),
         AnnotationArgValue::Ident(s) => s.clone(),
-        // Unevaluated expression (task 3555). The parsed `Expr` has no source
-        // round-trip Display, so render a placeholder until a doc-side
-        // pretty-printer lands. Expr-valued args only arise on
+        // An unevaluated expression (task 3555) renders as the source text it
+        // was written as. Expr-valued args only arise on
         // materialization-time-eval annotations (structure/occurrence hosts).
-        AnnotationArgValue::Expr(_) => "<expr>".to_string(),
+        AnnotationArgValue::Expr(expr) => expr_text_at(source, expr.span).to_string(),
     }
 }
 
@@ -683,25 +687,39 @@ fn render_type_params(params: &[reify_ir::TypeParam]) -> Vec<String> {
         .collect()
 }
 
-/// Slice `source` at the byte offsets of `span`. Returns an empty string if
-/// the span is a prelude sentinel, out of bounds, or malformed.
+/// The text of `source` at the byte offsets of `span`, or `SpanOutsideSource`
+/// when the span is a prelude sentinel, empty, starts past the end of
+/// `source`, or does not fall on char boundaries.
 ///
 /// This function is **infallible**: it never panics, even on malformed spans
-/// with `end < start` (which `SourceSpan::new` only `debug_assert!`s against),
-/// or on spans that land on a non-UTF-8 char boundary (multibyte source).
-fn span_text(source: &str, span: SourceSpan) -> &str {
+/// with `end < start` (which `SourceSpan::new` only `debug_assert!`s against).
+fn expr_text_at(source: &str, span: SourceSpan) -> ExprText {
+    let outside = ExprText::Unavailable(UnavailableReason::SpanOutsideSource);
     if span.is_prelude() {
-        return "";
+        return outside;
     }
     let start = span.start as usize;
     let end = (span.end as usize).min(source.len());
-    // Guards: start >= source.len(), malformed end < start, or zero-length span.
     if start >= end {
-        return "";
+        return outside;
     }
-    // Use str::get rather than direct indexing so that a span landing on a
-    // non-UTF-8 char boundary (multibyte source) returns "" instead of panicking.
-    source.get(start..end).unwrap_or("")
+    // `str::get`, not indexing: a span off a char boundary must not panic.
+    source
+        .get(start..end)
+        .map_or(outside, |text| ExprText::Source(text.to_string()))
+}
+
+/// The value of the declaration `decl_span` covers: the trimmed text after its
+/// first `=` (`param width: Length = 10mm` → `10mm`), or
+/// `DeclarationWithoutValue` when the declaration text has no `=`.
+fn declared_value_text(source: &str, decl_span: SourceSpan) -> ExprText {
+    match expr_text_at(source, decl_span) {
+        ExprText::Source(declaration) => match declaration.split_once('=') {
+            Some((_, value)) => ExprText::Source(value.trim().to_string()),
+            None => ExprText::Unavailable(UnavailableReason::DeclarationWithoutValue),
+        },
+        unavailable => unavailable,
+    }
 }
 
 /// Extract the local (rightmost) component of a cell id like `"Entity.param_name"`.
