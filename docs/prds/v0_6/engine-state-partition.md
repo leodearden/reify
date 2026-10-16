@@ -1,6 +1,6 @@
 # PRD — Engine state partition (reify-eval): one constructor, sub-structs by lifetime class
 
-**Status:** decomposed 2026-10-14 (pass 2): α #9036, β #9037, γ₁ #9038, γ₂ #9039, δ₁ #9040, δ₂ #9041, δ₃ #9042, ε #9043, ζ #9044, η #9045, θ #9046, ι #9047, κ₁ #9048, κ₂ #9049, λ #9050, μ #9051, ω #9052. Subsumed and cancelled: #7038 (→ ζ #9044). Released: S27 φ #8776 (← γ₁, γ₂). Out-of-batch edges: #8564 ← ζ; gate #8612 ← γ₁, γ₂, ε, λ. Authored pass 1, 2026-10-14 — review-all program `review-all-reify-20261010`, stream **S1** (wave 3, spawn mode, size L, risk high; `plans/review-all-program-reify-20261012.md`). Leo ruled R1–R4 in-session (§11). An adversarial critic pass (fable/high: 2 blockers, 6 majors, 14 minors, each verified in code or in the task record) is folded, and an opus/high fold-verifier's second pass (5 partial resolutions, 14 new defects, 2 of them blockers) is folded on top (§11 fold record). v0_6. Approach **B + H** (§5 contract, §6 two-way boundary tests; rationale D15).
+**Status:** decomposed 2026-10-14 (pass 2): α #9036, β #9037, γ₁ #9038, γ₂ #9039, δ₁ #9040, δ₂ #9041, δ₃ #9042, ε #9043, ζ #9044, η #9045, θ #9046, ι #9047, κ₁ #9048, κ₂ #9049, λ #9050, μ #9051, ω #9052. Subsumed and cancelled: #7038 (→ ζ #9044). Released: S27 φ #8776 (← γ₁, γ₂). Out-of-batch edges: #8564 ← ζ; gate #8612 ← γ₁, γ₂, ε, λ. Authored pass 1, 2026-10-14 — review-all program `review-all-reify-20261010`, stream **S1** (wave 3, spawn mode, size L, risk high; `plans/review-all-program-reify-20261012.md`). Leo ruled R1–R4 in-session (§11). An adversarial critic pass (fable/high: 2 blockers, 6 majors, 14 minors, each verified in code or in the task record) is folded, and an opus/high fold-verifier's second pass (5 partial resolutions, 14 new defects, 2 of them blockers) is folded on top (§11 fold record). v0_6. Approach **B + H** (§5 contract, §6 two-way boundary tests; rationale D15). **Amended 2026-10-16 (Leo, esc-6689-3, option A):** `EngineInputs` takes P1-α #6689's `Resolution` as a required input with no default, and γ₁ ← #6689 (R5, §11).
 **Invariants owned:** **INV-FEA-1** — `proposed` → `enforced(type+lint+test)` (leaf γ₂). Its registry row names `Engine::new_production`, which does not exist. `register_production_compute_fns` (reshaped by S5 κ₁ #8999) and this PRD's one constructor implement it. **INV-BUILD-1** — stays enforced; its mechanism is corrected from the 68-field `reset_per_build_state` destructure to `PerBuildState::reset(BuildSurface)` over PerBuildState's own fields plus a surface-sequence test (leaf ε). This stream is the single owner of both status cells (program G4). Each flip writes resolving pointers in S24's grammar (`reify-audit-typed-findings-and-registry-lanes.md` §5.7): inline in the Enforcement cell before S24 ξ #8821 lands, in the Pointer column after it (§5.11). Every leaf that extracts a construct names its row in `tests/infra/adoption-ratchet.manifest` (program invariant candidate 5). Every new module stays outside the engine module SCC (INV-ARCH-1).
 **Finding keys closed (13):** fk-800d61acd5d0, fk-ba15d44904cb, fk-d8fd9ed9be89, fk-cb6c853cb648, fk-e9536a3edbe7, fk-8250a05a9a10, fk-fb8cf3e787b9, fk-d2c64e9d3868, fk-4fa7bda0085b, fk-4db43199eda2, fk-06103e5f06eb, the prior-instrument canonical `language-pipeline|crates/reify-eval/src/lib.rs::engine|h11`, and fk-3aeb721eaaa6, which is filed as #8564 and is referenced, not re-filed. §9 assigns each key to exactly one closing leaf, or to the filed task #8564. A leaf that only contributes to a key carries it as `x_finding_part`.
 **Code anchors** verified against main `988f4522b9` (2026-10-14). Since the review anchor `a030ee7528`, #6308 (export and terminal-owner routing, `kernel_owner.rs`), S3 γ #8675 (dead `cache.rs`/`deps.rs` peers) and #8753 have landed. No S1 symbol changed in substance, and every count below was re-measured at `988f4522b9` by this session's scout seats (§10, rules inline). Cite-by-symbol; re-locate lines at implementation time. Line numbers appear only in the dated §10.
@@ -115,6 +115,7 @@
   - α #8937 splits `engine.rs` into modules (the persistent-cache sweep moves to `engine/persistent_cache.rs`).
   - θ #8944 rewrites `surface_geometry_derived_cells` to key on typed `ValueCellId`s.
 - **#6665** deletes `mcp_context.rs` and `cmd_mcp_server`. γ₁ handles both landing orders, so there is no edge (§9 γ₁).
+- **P1** (`solver-driver-parity.md`, invariant I1: solver-free is unrepresentable). α #6689 adds `reify_eval::Resolution` (`Solve(ResolutionProfile) | SolverFree`) as a required leading argument of every Engine and `EngineSession` constructor and migrates every site, production and test. γ₁ depends on it, so every site γ₁ renames and δ₁–δ₃ rewrite already names a resolution (R5).
 
 **Substrate verified at main.**
 - **Config resolution.**
@@ -152,7 +153,7 @@
 ## 4. Resolved design decisions
 
 - **D1 — One constructor for front ends and tests; tests are hermetic (R1).** `Engine::new(EngineInputs) -> Engine` is the only public constructor.
-  - **Tests.** Tests start from `EngineInputs::hermetic()` — no env or file reads, no kernels, no compute registration, `SimpleConstraintChecker`, no solver, the stdlib prelude — and override what they need.
+  - **Tests.** Tests start from `EngineInputs::hermetic(resolution)` — no env or file reads, no kernels, no compute registration, `SimpleConstraintChecker`, the `Resolution` the caller names (never a default, R5), the stdlib prelude — and override what they need.
   - **No gated test constructor survives.** The legacy two-argument names exist only between γ₁ and δ₃:
     - γ₁ renames and gates them, after enabling the feature on the three crates that lacked it (§3);
     - δ₁–δ₃ migrate every test, crate by crate;
@@ -162,8 +163,9 @@
     - hermeticity, because 1,124 test engines today read the developer's shell env;
     - one discoverable way to write a test engine;
     - a production-posture test is one input value away.
-- **D2 — `EngineInputs` names every input; none defaults silently.** The fields are `config`, `kernels`, `registration`, `constraints` (checker plus fallback solver) and `prelude`.
+- **D2 — `EngineInputs` names every input; none defaults silently.** The fields are `config`, `kernels`, `registration`, `constraints` (checker plus the required `Resolution`, P1-α #6689) and `prelude`.
   - **Why five, not three.** The ruling lists config, kernel set and posture. The checker, solver and prelude are the three other inputs tests inject today (279 `MockConstraintChecker` sites, `with_solver`, 38 explicit-prelude sites), and production fixes each one.
+  - **The resolution has no default (R5).** `ConstraintStack::simple` and `EngineInputs::hermetic` take a `Resolution`. A solver-free engine is one whose caller wrote `Resolution::SolverFree`. S1 carries P1's I1; it never relaxes it.
   - **Presets live in the front ends.** Front-end presets live in their front-end crates, one function per front end (§5.1 table), never in reify-eval: at the end state reify-eval cannot name `reify_analysis::PRODUCTION_TARGETS` (S5 D2/π).
 - **D3 — Ten owned sub-structs by lifetime class.**
   - The ten: `EngineConfig`, `Registrations`, `KernelSet` (S10), `EngineLineage`, `HostInputs`, `EvalArtifacts`, `PurposeState`, `PerBuildState`, `EngineCaches`, `Instrumentation`.
@@ -251,23 +253,29 @@ pub struct EngineInputs {
     pub prelude: Prelude,                   // Stdlib | Explicit(&'static [CompiledModule])
 }
 impl EngineInputs {
-    pub fn hermetic() -> Self;              // EngineConfig::hermetic(), KernelSet empty, Registration::None(Hermetic),
-                                            // ConstraintStack::simple(), Prelude::Stdlib; reads no env, no file
+    pub fn hermetic(resolution: Resolution) -> Self;   // EngineConfig::hermetic(), KernelSet empty, Registration::None(Hermetic),
+                                            // ConstraintStack::simple(resolution), Prelude::Stdlib; reads no env, no file;
+                                            // no default resolution (R5)
     pub fn with_checker(self, c: Box<dyn ConstraintChecker>) -> Self;
     pub fn with_kernel(self, k: Box<dyn GeometryKernel>) -> Self;   // S10's injected-kernel entry (L8)
     pub fn with_kernels(self, k: KernelSet) -> Self;
-    pub fn with_solver(self, s: Box<dyn ConstraintSolver>) -> Self;
+    pub fn with_solver(self, s: Box<dyn ConstraintSolver>) -> Self; // the solver object a `Solve` resolution runs (test
+                                            // doubles); never decides whether one runs; semantics as #6689's `with_solver`
     pub fn with_prelude(self, p: &'static [CompiledModule]) -> Self;
     pub fn with_registration(self, r: Registration) -> Self;
     pub fn with_config(self, f: impl FnOnce(&mut EngineConfig)) -> Self;
 }
-pub struct ConstraintStack { pub checker: Box<dyn ConstraintChecker>, pub solver: Option<Box<dyn ConstraintSolver>> }
-impl ConstraintStack { pub fn simple() -> Self; pub fn production() -> Self; } // production = Simple + SolverRegistry::production()
+// Resolution = Solve(ResolutionProfile) | SolverFree — P1-α #6689 owns it (solver-driver-parity I1); S1 carries it (R5)
+pub struct ConstraintStack { pub checker: Box<dyn ConstraintChecker>, pub resolution: Resolution,   // required
+    solver_double: Option<Box<dyn ConstraintSolver>> }                                               // set only by with_solver
+impl ConstraintStack { pub fn simple(resolution: Resolution) -> Self; }  // SimpleConstraintChecker + the stated resolution
+// No `production()`: a front end writes `simple(Resolution::Solve(profile))` with its own profile. Engine::new wires
+// the solver from `resolution` as #6689's constructor does (P1 I2: Solve → SolverRegistry::production()).
 
 impl Engine {
     pub fn new(inputs: EngineInputs) -> Engine;   // the only constructor; registers per `inputs.registration`
     pub fn posture(&self) -> EnginePosture;       // Debug + Display + Eq: config, kernel ids + primary,
-                                                  // registration kind / reason / target count, solver present
+                                                  // registration kind / reason / target count, resolution
 }
 ```
 
@@ -275,22 +283,24 @@ impl Engine {
 - `Engine::new` is the only `pub fn` returning `Engine`, and it reads no process environment.
 - `register_production_compute_fns` becomes `pub(crate)` and is called only from `Engine::new`.
 - `with_registered_kernel`, `with_registered_kernels`, `with_registered_kernels_and_manifest`, `with_test_kernels_and_registry`, `with_prelude`, `Engine::with_solver` (and their `legacy_test_*` renames), `pick_lexmin_brep_kernel(_in)` and `test_registry_override` do not exist.
+- **No construction path is solver-free by omission (P1 I1, R5).** `EngineInputs` and `ConstraintStack` have no `Default` and no constructor without a `Resolution`.
 
 **Front-end presets.** One function per front end, in its own crate. The table reproduces each site's posture at `988f4522b9` except the marked changes.
 
-| site (today) | registration | kernels | constraints | config overrides |
+| site (today) | registration | kernels | resolution (as #6689 names it; R5) | config overrides |
 |---|---|---|---|---|
-| CLI `cmd_check` (one site after S12 ζ1 #9022 / ζ2 #9023) | `None(CheckWithoutTrampolines)` | from `CheckEnginePlan.kernel`: empty, or occt primary + openvdb on demand | simple | — (repr-tol capture and OpenVDB are S12's `MeasureRequest`) |
-| CLI `cmd_build` | `Targets(PRODUCTION_TARGETS, Enabled(register_morph_producer))` | occt primary, openvdb on demand | simple (solver-free posture kept) | persistent cache off, as today |
-| CLI `cmd_eval` geometry arm | as build | occt primary, openvdb on demand (**declared change**) | production | persistent cache from sources (+ `--cache-dir`); `capture_undef_causes` |
-| CLI `cmd_eval` plain arm, `cmd_report`, `cmd_explain` | as build | empty | production | persistent cache from sources; `capture_undef_causes` on eval |
-| `reify test` (`test_runner::build_test_engine`) | `Targets(<caller's table>, Unavailable{..})` | empty | simple | — |
-| CLI MCP `ensure_engine` (only if #6665 has not landed) | `None(McpContext)` | empty | simple | persistent cache off (its comment's claim is false; corrected) |
-| LSP ×4 (`AnalysisContext::from_parsed`, `EvalState::new`, `compute_diagnostics_with_state` cold rebuild, `compute_diagnostics`) | `None(LspAnalysis)` | empty | simple | `capture_undef_causes` (analysis) |
-| GUI session (`main.rs` → `EngineSession`) | `Targets(PRODUCTION_TARGETS, Enabled)` under feature `gui`, `Unavailable` otherwise | occt primary, openvdb | production | persistent cache from sources (**R3**); `capture_undef_causes` |
-| GUI `get_def_preview` | `None(DefinitionPreview)` | empty | simple | — |
+| CLI `cmd_check` (one site after S12 ζ1 #9022 / ζ2 #9023) | `None(CheckWithoutTrampolines)` | from `CheckEnginePlan.kernel`: empty, or occt primary + openvdb on demand | `SolverFree` | — (repr-tol capture and OpenVDB are S12's `MeasureRequest`) |
+| CLI `cmd_build` | `Targets(PRODUCTION_TARGETS, Enabled(register_morph_producer))` | occt primary, openvdb on demand | `SolverFree` | persistent cache off, as today |
+| CLI `cmd_eval` geometry arm | as build | occt primary, openvdb on demand (**declared change**) | `Solve(profile)` | persistent cache from sources (+ `--cache-dir`); `capture_undef_causes` |
+| CLI `cmd_eval` plain arm, `cmd_report`, `cmd_explain` | as build | empty | `Solve(profile)` | persistent cache from sources; `capture_undef_causes` on eval |
+| `reify test` (`test_runner::build_test_engine`) | `Targets(<caller's table>, Unavailable{..})` | empty | `SolverFree` | — |
+| CLI MCP `ensure_engine` (only if #6665 has not landed) | `None(McpContext)` | empty | `SolverFree` | persistent cache off (its comment's claim is false; corrected) |
+| LSP ×4 (`AnalysisContext::from_parsed`, `EvalState::new`, `compute_diagnostics_with_state` cold rebuild, `compute_diagnostics`) | `None(LspAnalysis)` | empty | `SolverFree` | `capture_undef_causes` (analysis) |
+| GUI session (`main.rs` → `EngineSession`) | `Targets(PRODUCTION_TARGETS, Enabled)` under feature `gui`, `Unavailable` otherwise | occt primary, openvdb | `Solve(profile)` | persistent cache from sources (**R3**); `capture_undef_causes` |
+| GUI `get_def_preview` | `None(DefinitionPreview)` | empty | `SolverFree` | — |
 
 **Notes on the table.**
+- **Resolution (R5).** Every preset's checker is `SimpleConstraintChecker`. A resolution cell is the value its site names after P1-α #6689: `SolverFree` reproduces today's solver-free posture, and `Solve(profile)` today's `SolverRegistry::production()`. P1 owns every cell. δ #6693 flips `cmd_build` and `cmd_check`, ζ #6694 flips `reify test`, η #6695 the LSP and ι #6696 `get_def_preview`. A preset carries whatever its site names when γ₁ lands, flipped or not. S1 never chooses a site's resolution.
 - **"On demand."** The member-only `KernelSet::ensure` (D6) instantiates a declared kernel on first request, as `ensure_openvdb_kernel` does today.
 - **`cmd_check` ordering.** γ₁ depends on #9022 and #9023, so it migrates the single plan-driven check site rather than today's four.
 - **`EngineSession`.** It gains the same shape: `EngineSession::new(EngineInputs)` is its one constructor, and its posture setters in `from_engine` move into the GUI preset.
@@ -616,7 +626,7 @@ The `\|` in this table escapes the markdown pipe; the ERE in the manifest uses a
 | B-β1 | consumer (CLI) | deliberate opt-out stays a Warning | `reify check` on an FEA-bearing fixture | the existing `check_downgrades_unregistered_trampoline_fallback_to_warning_while_eval_and_build_keep_erroring` stays green; the Warning names `CheckWithoutTrampolines` | β |
 | B-β2 | producer | registered engine missing a target errors | a `Targets` engine whose table lacks one stdlib `@optimized` target | `NoRegisteredComputeTrampoline` at Error severity, whatever else the table holds | β |
 | B-γ1 | lint | undeclared production site | a scratch production file in reify-cli that calls `Engine::new(` without a `KNOWN_SITES` row | the lint exits 1 naming the file; with the row it exits 0 | γ₂ |
-| B-γ2 | consumers (each front end) | posture table | the presets of §5.1 | one test per front-end crate asserts its `EnginePosture` row (registration kind/reason, kernel ids, solver present, persistent cache on/off) | γ₁ |
+| B-γ2 | consumers (each front end) | posture table | the presets of §5.1 | one test per front-end crate asserts its `EnginePosture` row (registration kind/reason, kernel ids, resolution, persistent cache on/off) | γ₁ |
 | B-γ3 | consumer (CLI) | eval declares OpenVDB | the isosurface fixture `build_voxel_to_mesh_writes_the_whole_isosurface` uses; γ₁ first records today's `reify eval` output on it | the eval geometry preset's posture lists openvdb; `reify eval` on the fixture exits 0 with no missing-kernel diagnostic. If the pre-γ₁ run already showed none (the eval arm never reached the isosurface), this row is a regression pin only and §1's claim is dropped in γ₁'s commit | γ₁ |
 | B-δ1 | producer (tests) | hermetic suites | `REIFY_BUILD_SCHEDULER=legacy REIFY_MESH_CONTRACT=warn REIFY_WARM_STATE_BUDGET_BYTES=1` in the shell | `cargo nextest run -p reify-eval` gives the same pass/fail set as without them | δ₁ |
 | B-ε1 | both | surface-sequence matrix (`crates/reify-eval/tests/harness_engine/per_build_surface_sequence.rs`) | one fixture with geometry, a `RepresentationWithin` bound, a DFM rule and a relate block | for every ordered pair of surfaces A→B followed by `check`: Conforms/DFM/RepresentationWithin verdicts and the relate-consumption record equal the single-surface baselines; the CLI combined arm `build → tessellate → check` is byte-identical to today; `realize_for_check → tessellate → check` still sees the relate facts (#5415) | ε |
@@ -663,6 +673,7 @@ The `\|` in this table escapes the markdown pipe; the ERE in the manifest uses a
 | S27 τ #8758, υ #8775 | sibling | `main.rs` partitions | S27 | file lock, symbol-cited; no edge |
 | S2 (wave 3, unfiled) | downstream | `PerBuildState::reset(BuildSurface)`, `BuildSurface` home, `EngineConfig` | S1 produces; S2 consumes | cross-reference: S2 leaves depend on ε and α |
 | S24 ξ #8821, ο #8822 | consumes | owner map; pointer grammar; PLINECITE rename | S24 | owner map recorded at pass 2 |
+| P1 `solver-driver-parity.md` α #6689 (I1; I2) | upstream | `reify_eval::Resolution` (`Solve(ResolutionProfile) \| SolverFree`), a required leading argument at every construction site; its solver wiring (`Solve` → `SolverRegistry::production()`) | P1 α #6689 (solver-driver-parity I1) owns the type, its spelling, its home and its wiring; S1 carries it as the required `ConstraintStack.resolution` | γ₁ ← #6689 (R5, esc-6689-3); P1 δ #6693, ζ #6694, η #6695, ι #6696 own the presets' resolution cells |
 | #6665 | sibling | deletes `mcp_context.rs` | #6665 | γ₁ handles both orders; a note on #6665 asks it to delete the `McpContext` `KNOWN_SITES` row |
 | S4 ρ #8876 | upstream | h14 partition of `persistent_cache.rs` | S4 | μ ← #8876 (μ moves `sweep_persistent_cache_at_startup` into the post-ρ module) |
 | #6671 (solver-unification δ) | downstream | typed-cause upgrade of the `SolveFailed` channel | #6671 | builds on ζ's wiring; a note on #6671 |
@@ -701,34 +712,35 @@ Labels are Greek; task ids were assigned at decompose (2026-10-14) and are backf
   - **Deps.** α, #8999.
 - **γ₁ #9038 — The one constructor; every production front end; explicit kernels.**
   - **The constructor.** Add `engine_inputs.rs`, `Engine::new(EngineInputs)` and `Engine::config(&self) -> &EngineConfig` per §5.1 (α already adds `config()`). Every production site moves to its preset: the CLI (with `cmd_check`'s single plan-driven site after #9022/#9023), the LSP, the GUI and `test_runner`. `EngineSession::new(EngineInputs)` replaces the GUI's constructor pair.
+  - **The resolution (R5).** Each preset passes the `Resolution` its site names after #6689 into `ConstraintStack.resolution`, unchanged. If #6689 homes `Resolution` in a module inside the engine SCC as baselined, γ₁ moves the type below it (a pure move, D13) before `engine_inputs.rs` names it (D5).
   - **Kernels.**
     - Each kernel crate exports its registration item.
     - Add `KernelSet::from_registrations` and the member-only `ensure` (D6); the front ends build `KernelSet` from those items.
     - Delete: the CLI and GUI anchors; the registry constructors; `pick_lexmin_brep_kernel(_in)`; `with_test_kernels_and_registry`; `test_registry_override` (and its cfg pairs in engine_build).
   - **Legacy test constructors.**
     - Make the feature reachable from every test that constructs an engine (§3): add it to reify-compiler's existing reify-eval dev-dependency; add a `[dev-dependencies] reify-eval = { workspace = true, features = ["test-instrumentation"] }` entry to reify-cli and reify-mesh-morph; add `reify-eval/test-instrumentation` to reify-test-support's `eval-helpers` feature.
-    - Then rename three Engine items with a scripted token rename, and gate them `cfg(any(test, feature = "test-instrumentation"))`: the old `Engine::new(checker, kernel)` → `Engine::legacy_test_new`; `with_prelude` → `legacy_test_with_prelude`; the `Engine::with_solver` builder (about 165 chained test calls) → `legacy_test_with_solver`.
+    - Then rename three Engine items with a scripted token rename, and gate them `cfg(any(test, feature = "test-instrumentation"))`: the old `Engine::new(resolution, checker, kernel)` (#6689's shape: the resolution leads) → `Engine::legacy_test_new`; `with_prelude` → `legacy_test_with_prelude`; the `Engine::with_solver` builder (about 165 chained test calls) → `legacy_test_with_solver`.
     - The rename covers test files and `crates/reify-test-support/src`.
-    - The GUI's test constructor `EngineSession::new(checker, kernel)` (304 test calls) is renamed the same way to a `cfg(test)` `EngineSession::legacy_test_new`, so the workspace test build stays green until δ₂.
+    - The GUI's test constructor `EngineSession::new(resolution, checker, kernel)` (304 test calls) is renamed the same way to a `cfg(test)` `EngineSession::legacy_test_new`, so the workspace test build stays green until δ₂.
     - The registry-constructor test sites (≈ 47) and the `with_test_kernels_and_registry` sites move to explicit `KernelSet`s here, since their constructors are deleted.
   - **The MCP context.** If `mcp_context.rs` still exists, give it `None(McpContext)` and delete its false persistent-cache comment.
   - **Signal.** B-γ2, B-γ3; B-β1 still green; rows `engine-legacy-ctor`, `engine-global-registry-read`, `kernel-link-anchor-cli`/`-gui` and `engine-free-engine-inputs` at target; the workspace test build is green.
   - **Keys.** fk-4db43199eda2. **High.**
-  - **Deps.** α, β, #8992, #8993, #8957, #8937, #9022, #9023.
+  - **Deps.** α, β, #8992, #8993, #8957, #8937, #9022, #9023, #6689 (R5).
 - **γ₂ #9039 — The registration lint declares every production site; INV-FEA-1.**
   - **Work.** Rewrite the lint's positive pass and its infra test per §5.12. Add the infra-test map rows, and the `path|EngineInputs::hermetic` rows for the test-support files γ₁ converted (`realization_read_test_support.rs`). Flip INV-FEA-1 (§5.11).
   - **Signal.** B-γ1; `test_compute_trampoline_registration_wired.sh` green with its new red cases; INV-FEA-1 reads `enforced(type+lint+test)` with resolving pointers.
   - **Keys.** fk-06103e5f06eb. INV: INV-FEA-1. **High.**
   - **Deps.** γ₁. Full gate (verify-pipeline files).
 - **δ₁ #9040 — reify-eval tests build through `EngineInputs::hermetic()` (R1).**
-  - **Work.** A script quoted in the commit message, and re-run on any rebase, rewrites reify-eval's `Engine::legacy_test_new(c, k)` / `legacy_test_with_prelude(c, k, p)` calls (≈ 1,095 sites, src test modules and `tests/`) into `Engine::new(EngineInputs::hermetic()…)` with `.with_checker` / `.with_kernel` / `.with_prelude` / `.with_solver`.
+  - **Work.** A script quoted in the commit message, and re-run on any rebase, rewrites reify-eval's `Engine::legacy_test_new(r, c, k)` / `legacy_test_with_prelude(r, c, k, p)` calls (≈ 1,095 sites, src test modules and `tests/`) into `Engine::new(EngineInputs::hermetic(r)…)` with `.with_checker` / `.with_kernel` / `.with_prelude` / `.with_solver`. #6689's leading resolution argument `r` maps verbatim onto the required resolution input; the script never drops or defaults it (R5).
   - **Hand-migrated.** Construction-adjacent `set_build_scheduler` / `set_mesh_contract_mode` / `set_max_unfold_*` / `set_persistent_cache_dir` / `set_warm_state_budget` calls become `.with_config` overrides. Files converted outside the engine modules (`geometry_ops/tests.rs` and any other reify-eval test-support file) get their `KNOWN_SITES` hermetic rows.
   - **Deleted.** The 17 reify-eval test anchors and the reify-eval `Cargo.toml` dead-strip prose.
   - **Signal.** B-δ1; reify-eval suites green; rows `engine-legacy-test-ctor-eval` and `kernel-link-anchor-eval-tests` at 0.
   - **Keys.** none (ruling R1). Medium.
   - **Deps.** γ₁.
 - **δ₂ #9041 — GUI tests build through the hermetic preset.**
-  - **Work.** The same script migrates gui/src-tauri's ≈ 304 `EngineSession::legacy_test_new` test calls and the GUI's `legacy_test_*` engine calls to `EngineSession::new(EngineInputs::hermetic()…)`, then deletes `EngineSession::legacy_test_new`.
+  - **Work.** The same script migrates gui/src-tauri's ≈ 304 `EngineSession::legacy_test_new` test calls and the GUI's `legacy_test_*` engine calls to `EngineSession::new(EngineInputs::hermetic(r)…)`, mapping #6689's leading resolution argument as δ₁ does, then deletes `EngineSession::legacy_test_new`.
   - **Signal.** GUI suites green; row `engine-legacy-test-ctor-gui` at 0.
   - **Keys.** none. Medium.
   - **Deps.** γ₁.
@@ -737,7 +749,8 @@ Labels are Greek; task ids were assigned at decompose (2026-10-14) and are backf
     - Migrate reify-lsp, reify-eval-fea-tests, reify-compiler, reify-cli, reify-mesh-morph and reify-test-support (library helpers in `helpers.rs` and `fixtures.rs`).
     - Delete `legacy_test_new`, `legacy_test_with_prelude`, `legacy_test_with_solver` and the gated `set_persistent_cache_dir` / `set_max_unfold_*` / `set_warm_state_budget`.
     - Delete the dev-dependency feature lines that γ₁ added and that become unused.
-    - Each file converted to `EngineInputs::hermetic()` outside reify-eval's engine modules gets its `KNOWN_SITES` `path|EngineInputs::hermetic` row (§5.12).
+    - Each file converted to `EngineInputs::hermetic(r)` outside reify-eval's engine modules gets its `KNOWN_SITES` `path|EngineInputs::hermetic` row (§5.12).
+    - The rewrite maps #6689's leading resolution argument as δ₁ does. No construction path at R1's end state is solver-free by omission, so P1's I1 holds for tests too (R5).
   - **Signal.** workspace suites green; row `engine-legacy-test-ctor-rest` at 0; `git grep -n 'fn legacy_test_' -- crates` empty.
   - **Keys.** none. Medium.
   - **Deps.** δ₁, δ₂.
@@ -818,6 +831,7 @@ Labels are Greek; task ids were assigned at decompose (2026-10-14) and are backf
 - #8564 ← ζ.
 - #7038 is cancelled as subsumed by ζ.
 - The gate #8612 depends on γ₁, γ₂, ε and λ.
+- γ₁ #9038 ← P1-α #6689 (R5, esc-6689-3, 2026-10-16).
 
 **DAG summary.** α → β → γ₁ → {γ₂, δ₁, δ₂, ε, ζ, θ}; {δ₁, δ₂} → δ₃; ζ → η; {θ, δ₃} → ι → κ₁ → κ₂; {ε, ζ, η, θ, ι, κ₂} → λ → μ; every leaf → ω.
 
@@ -875,6 +889,14 @@ Labels are Greek; task ids were assigned at decompose (2026-10-14) and are backf
 - **R2 — test seams.** **`EngineProbe` (read) plus raw mutators to 0** in this PRD (D11; leaves ι, κ₁, κ₂).
 - **R3 — GUI persistent cache.** **The GUI uses it, through the CLI's layered resolver moved into reify-config** (D8; leaf α).
 - **R4 — undef causes after an edit.** **Re-classify the re-evaluated cone, carry the rest, tag the map with its snapshot; subsumes #7038** (D9; leaf ζ).
+
+**Amended 2026-10-16 (Leo, esc-6689-3, option A).**
+- **R5 — the resolution is a required input.**
+  - **Why.** S1 was authored without sight of P1 `solver-driver-parity.md` α #6689. That leaf gives every Engine constructor a required resolution argument (I1: solver-free is unrepresentable unless named). As committed, D1's `hermetic()` defaulted to no solver, so δ₃ would have reintroduced solver-free-by-omission construction and undone I1.
+  - **Ruled.** `ConstraintStack`, and so `EngineInputs`, takes `reify_eval::Resolution` (`Solve(ResolutionProfile) | SolverFree`) as a required input with no default, `hermetic` included. Callers write `Resolution::SolverFree` or `Solve(profile)`. γ₁ ← #6689, so S1 builds on #6689's type and its migrated sites.
+  - **Ownership.** P1 owns the type, its spelling and home (P1 §13 Q1–Q2), its solver wiring (I2) and every preset's resolution value. If #6689 lands a different spelling, S1 takes it unchanged: the rule is "required, no default", not a name.
+  - **Edited.** Status line, §3, D1, D2, §5.1 (code, invariants, preset table and notes), B-γ2, §8, §9 γ₁/δ₁/δ₂/δ₃ and the out-of-batch edges.
+  - **Task records.** #9038 and #9040–#9042 carry matching AMENDED notes. The δ₂ and δ₃ `delivered_checks` (and the capability manifest's twin rows) match `EngineInputs::hermetic\(`, because a call with a required argument never matches `hermetic\(\)`.
 
 **Critic fold record** (fable/high critic, 2026-10-14; verdict "ship-after-fold"):
 - **Blockers folded.**

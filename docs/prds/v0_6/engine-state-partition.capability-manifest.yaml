@@ -160,7 +160,7 @@ tasks:
     verdict: PASS
     delivered_check:
       kind: grep
-      pattern: EngineInputs::hermetic\(\)
+      pattern: EngineInputs::hermetic\(
       expect: present
       paths:
       - gui/src-tauri/src/tests
@@ -174,7 +174,7 @@ tasks:
     verdict: PASS
     delivered_check:
       kind: grep
-      pattern: EngineInputs::hermetic\(\)
+      pattern: EngineInputs::hermetic\(
       expect: present
       paths:
       - crates/reify-compiler
