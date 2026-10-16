@@ -149,7 +149,7 @@ Note: `member_finish` is written once, by `_ra_record_result`, after the verdict
 4. Channel present ⇒ SEMAPHORE_TIMEOUT is decided only by `slot_timeout` records with `disposition == "fatal"` (plus the existing soft-only semantics). The sentinel regex and the basename allowlist are **not consulted** for that verify. This rule is what makes D–G deletable.
 5. Writers never block or fail on the channel (D3).
 
-**C4 — isolation.** No `REIFY_VERIFY_EVENT_LOG` is ever present in a member's environment (D4). The parent channel receives `slot_timeout` records only from processes that are not run_all members.
+**C4 — isolation.** No `REIFY_VERIFY_EVENT_LOG` is ever present in a member's environment (D4, D5). The parent channel receives `slot_timeout` records only from processes that are not `tests/infra` members, whether run_all spawned the member or `scripts/verify.sh`'s selective-infra leaf did.
 
 ### 4.1 Boundary-test sketch (both sides)
 

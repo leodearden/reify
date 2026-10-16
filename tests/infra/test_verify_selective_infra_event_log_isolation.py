@@ -83,9 +83,15 @@ class SelectiveInfraEventLogIsolationTests(unittest.TestCase):
         probe.parent.mkdir(parents=True, exist_ok=True)
         probe.write_text(PROBE_BODY, encoding="utf-8")
 
+    def single_leaf(self):
+        self.assertEqual(
+            len(self.leaves), 1, f"expected one '{LEAF_GLOB}' leaf, got {self.leaves}"
+        )
+        return self.leaves[0]
+
     def run_leaf(self, *, with_channel, **overrides):
         """Run the leaf; returns (proc, probe_dir, channel_path)."""
-        (leaf,) = self.leaves
+        leaf = self.single_leaf()
         scratch = Path(tempfile.mkdtemp(prefix="vsi-evlog-run-"))
         self.addCleanup(shutil.rmtree, scratch, True)
         probe_dir = scratch / "probe"
@@ -119,19 +125,13 @@ class SelectiveInfraEventLogIsolationTests(unittest.TestCase):
         return path.read_text(encoding="utf-8")
 
     def test_plan_emits_selective_leaf_for_probe_glob(self):
-        self.assertEqual(
-            len(self.leaves), 1, f"expected one '{LEAF_GLOB}' leaf, got {self.leaves}"
-        )
+        self.single_leaf()
 
-    def test_member_does_not_inherit_parent_event_log(self):
+    def test_member_loses_only_the_parent_event_log(self):
         proc, probe_dir, channel = self.run_leaf(with_channel=True, EVLOG_PROBE_MARK="kept")
         self.assert_rc(proc, 0)
         self.assertEqual(self.probe_read(probe_dir, "event_log"), "<unset>")
         self.assertFalse(channel.exists(), "a member wrote into the parent event channel")
-
-    def test_member_keeps_the_rest_of_its_environment(self):
-        proc, probe_dir, _ = self.run_leaf(with_channel=True, EVLOG_PROBE_MARK="kept")
-        self.assert_rc(proc, 0)
         self.assertEqual(self.probe_read(probe_dir, "mark"), "kept")
 
     def test_member_exit_status_still_propagates(self):
