@@ -21,6 +21,7 @@ pub mod orphan_audit;
 pub mod prd_gate_probe_set;
 pub mod ptodo_cite_marker;
 pub mod rust_fixture_scan;
+pub mod sampled_field_fixtures;
 pub mod skip_sets;
 pub mod specialization_fixtures;
 pub mod stl_bytes;
