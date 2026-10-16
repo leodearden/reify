@@ -1213,6 +1213,8 @@ _ra_partial_failed_names() {
 #   - `=== FAILED: <names> (partial) ===` (human-readable) and the bare
 #     `FAILED <names> (partial)` classifier line (matches DF's `^FAILED\s`
 #     reclassifier -- pattern #7b, checked before the tree-sitter mislabel).
+# Then closes the event channel's run with an interrupted run_finish whose
+# failed list is those same names (task 8685).
 #
 # Name attribution is best-effort and fail-open: the sorted-unique union of
 # _ra_partial_failed_names (the .rc-file scan) and the existing failed_names
@@ -1246,15 +1248,20 @@ _ra_on_term() {
     echo ""
     echo "=== Summary: INTERRUPTED (outer timeout; partial results) ==="
 
-    local _names
-    _names="$(
+    # One array feeds both the text lines and the run_finish record, so the
+    # record's failed names equal the classifier line's by construction.
+    local -a _names=()
+    mapfile -t _names < <(
         { _ra_partial_failed_names; printf '%s\n' "${failed_names[@]:-}"; } 2>/dev/null \
-            | sed '/^$/d' | sort -u | tr '\n' ' ' | sed 's/ $//'
-    )"
+            | sed '/^$/d' | sort -u
+    )
 
     # Unconditional even when $_names is empty -- see "DELIBERATE" above.
-    echo "=== FAILED: ${_names} (partial) ==="
-    printf 'FAILED %s(partial)\n' "${_names:+$_names }"
+    echo "=== FAILED: ${_names[*]} (partial) ==="
+    printf 'FAILED %s(partial)\n' "${_names[*]:+${_names[*]} }"
+
+    # After the classifier lines, so the record can never pre-empt them.
+    _ra_emit_run_finish true "${#_names[@]}" "${_names[@]+"${_names[@]}"}"
 
     trap - TERM
     kill -TERM $$
@@ -1271,7 +1278,8 @@ _ra_on_term() {
 #
 # _ra_interrupt_if_worktree_gone: no-op unless _ra_worktree_gone; otherwise
 # emits a line-anchored "=== INTERRUPTED (worktree removed) ===" marker to
-# STDOUT (the same stream dark-factory's classifier reads) and exits
+# STDOUT (the same stream dark-factory's classifier reads), closes the event
+# channel's run with an interrupted run_finish (task 8685) and exits
 # _RA_INTERRUPTED_EXIT_CODE (99), bypassing the normal Summary/FAILED block
 # entirely. _ra_on_exit still runs on this exit, cleaning up /tmp state and
 # stopping the progress printer.
@@ -1290,6 +1298,7 @@ _ra_interrupt_if_worktree_gone() {
     _ra_worktree_gone || return 0
     echo ""
     echo "=== INTERRUPTED (worktree removed) ==="
+    _ra_emit_run_finish true "$failures" "${failed_names[@]+"${failed_names[@]}"}"
     exit "${_RA_INTERRUPTED_EXIT_CODE:-99}"
 }
 
@@ -1981,6 +1990,14 @@ elif [ "$_H2_POOL_ACTIVE" -eq 1 ]; then
     # "Slot-acquisition-timeout sentinel".
     _H2_POOL_TIMEOUT_DISPOSITION="soft"
 
+    # Slot-timeout record EMITTER for the same wait (slot_acquire's optional
+    # 7th arg, task 8685): C2's token for this one finite-WAIT path outside
+    # dark-factory's basename allowlist. The derived default would say
+    # `run_all.sh`, which hides that this is the pool wait. The worker
+    # subshell runs before the member spawn and keeps run_all's env, so the
+    # record goes to the PARENT channel (PRD D4).
+    _H2_POOL_TIMEOUT_EMITTER="run_all_pool"
+
     # Phase-1 single-writer progress-heartbeat cadence (task #5130). Pure
     # observability / strictly additive (INV-4): unlike the load-bearing
     # knobs above, a malformed value fails OPEN to 30 instead of exiting --
@@ -2215,7 +2232,7 @@ elif [ "$_H2_POOL_ACTIVE" -eq 1 ]; then
             # test, never hang. slot_acquire itself already closes FD 9 on
             # every failed attempt, so no held-slot cleanup is needed here.
             _ra_mark "$_H2_WORKDIR/${_h2_i}.tq"
-            slot_acquire "$_H2_POOL_LOCK" "$_H2_POOL_N" "$_H2_POOL_WAIT" "$_H2_POOL_CLOCK_REASON" "$_H2_POOL_TIMEOUT_REASON" "$_H2_POOL_TIMEOUT_DISPOSITION" || _h2_slot_rc=$?
+            slot_acquire "$_H2_POOL_LOCK" "$_H2_POOL_N" "$_H2_POOL_WAIT" "$_H2_POOL_CLOCK_REASON" "$_H2_POOL_TIMEOUT_REASON" "$_H2_POOL_TIMEOUT_DISPOSITION" "$_H2_POOL_TIMEOUT_EMITTER" || _h2_slot_rc=$?
             _ra_mark "$_H2_WORKDIR/${_h2_i}.ts"
             _ra_run_member "$_h2_name" "$_H2_WORKDIR/${_h2_i}.out" "$_H2_WORKDIR/${_h2_i}.rc" capture 1
             _ra_mark "$_H2_WORKDIR/${_h2_i}.te"
