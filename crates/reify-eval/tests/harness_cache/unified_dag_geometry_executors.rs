@@ -31,7 +31,7 @@
 #![allow(dead_code)]
 
 use reify_constraints::SimpleConstraintChecker;
-use reify_core::Severity;
+use reify_core::{DiagnosticCode, Severity};
 use reify_eval::{BuildResult, BuildScheduler, Engine};
 use reify_ir::{ExportFormat, GeometryHandleId, GeometryKernel, GeometryOp, Satisfaction, Value};
 use reify_test_support::{MockGeometryKernel, compile_source, compile_source_with_stdlib, errors_only};
@@ -1728,6 +1728,13 @@ const FLAT_MAP_TOP_EDGES: [u64; 4] = [60, 61, 62, 63];
 /// 50..=55 with the `+Z` face 55 at index 5, whose side neighbours (indices
 /// 0..4) each share edge `60 + i` with it.
 fn flat_map_topology_kernel() -> MockGeometryKernel {
+    box_walk_kernel(&[0, 1, 2, 3], None)
+}
+
+/// [`flat_map_topology_kernel`]'s box, except that `adjacent_faces` of the `+Z`
+/// face answers only `sides`, and `orphan_face` (if any) has no recorded owner
+/// body, so a `shared_edges` over it fails.
+fn box_walk_kernel(sides: &[usize], orphan_face: Option<GeometryHandleId>) -> MockGeometryKernel {
     let parent = GeometryHandleId(1);
     let faces: Vec<GeometryHandleId> = (50..=55).map(GeometryHandleId).collect();
     let normals: [[f64; 3]; 6] = [
@@ -1738,17 +1745,19 @@ fn flat_map_topology_kernel() -> MockGeometryKernel {
         [0.0, 0.0, -1.0],
         [0.0, 0.0, 1.0],
     ];
+    let side_indices = sides.iter().map(|&side| Value::Int(side as i64)).collect();
     let mut kernel = MockGeometryKernel::new()
         .with_extracted_faces(parent, faces.clone())
         .with_extracted_edges(parent, (60..=71).map(GeometryHandleId).collect())
-        .with_adjacent_faces_result(parent, 5, Value::List((0..4).map(Value::Int).collect()));
+        .with_adjacent_faces_result(parent, 5, Value::List(side_indices));
     for (face, [x, y, z]) in faces.into_iter().zip(normals) {
         let normal = format!("{{\"x\":{x:?},\"y\":{y:?},\"z\":{z:?}}}");
-        kernel = kernel
-            .with_face_normal_result(face, Value::String(normal))
-            .with_owner_body_result(face, parent);
+        kernel = kernel.with_face_normal_result(face, Value::String(normal));
+        if Some(face) != orphan_face {
+            kernel = kernel.with_owner_body_result(face, parent);
+        }
     }
-    for side in 0..4 {
+    for &side in sides {
         let shared = Value::List(vec![Value::Int(side as i64)]);
         kernel = kernel.with_shared_edges_result(parent, 5, side, shared);
     }
@@ -1906,4 +1915,133 @@ fn build_snapshot_resolves_flat_map_lambda_curated_selector_under_unified_dag() 
         .map(|r| r.op.clone())
         .collect();
     assert_flat_map_fillet_dispatched(&result, &ops);
+}
+
+/// The `flat_map` list arg may name another selector cell: under UnifiedDag the
+/// `sides` cell is hydrated at its scheduled slot, before `top_edges` reads it.
+#[test]
+fn unified_dag_curated_fillet_over_flat_map_of_a_list_cell_resolves_edges() {
+    let source = r#"pub structure S {
+    let b = box(10mm, 10mm, 10mm)
+    let top = single(faces_by_normal(b, vec3(0.0, 0.0, 1.0), 1deg))
+    let sides = adjacent_faces(b, top)
+    let top_edges = flat_map(sides, |f| shared_edges(top, f))
+    let f = fillet(b, top_edges, 1mm)
+}"#;
+    let kernel = flat_map_topology_kernel();
+    let ops_ref = kernel.operations_ref();
+
+    let result = build_with_kernel_stdlib(source, BuildScheduler::UnifiedDag, Box::new(kernel));
+
+    let ops: Vec<GeometryOp> = ops_ref
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|r| r.op.clone())
+        .collect();
+    assert_flat_map_fillet_dispatched(&result, &ops);
+}
+
+/// A `flat_map` whose lambda body is a list-returning builtin call that is not a
+/// topology selector (`generate`) is not a topology walk: the build keeps its
+/// pure-eval list rather than overwriting it.
+#[test]
+fn unified_dag_flat_map_over_a_non_selector_body_keeps_its_pure_eval_list() {
+    let source = r#"pub structure S {
+    let b = box(10mm, 10mm, 10mm)
+    let xs = [1.0, 2.0, 3.0]
+    let doubled = flat_map(xs, |x| generate(2, |i| x))
+}"#;
+
+    let result = build_with_kernel_stdlib(
+        source,
+        BuildScheduler::UnifiedDag,
+        Box::new(MockGeometryKernel::new()),
+    );
+
+    let cell = |name: &str| result.values.get(&reify_core::ValueCellId::new("S", name));
+    let Some(Value::List(xs)) = cell("xs") else {
+        panic!("S.xs must evaluate to a list, got {:?}", cell("xs"));
+    };
+    let expected = Value::List(xs.iter().flat_map(|x| [x.clone(), x.clone()]).collect());
+    assert_eq!(
+        cell("doubled"),
+        Some(&expected),
+        "S.doubled must keep its pure-eval value; diagnostics={:#?}",
+        result.diagnostics
+    );
+}
+
+/// The shipped example's walk with no fillet consuming it, so each test below
+/// observes only how the `flat_map` cell itself resolves.
+const FLAT_MAP_WALK_SOURCE: &str = r#"pub structure S {
+    let b = box(10mm, 10mm, 10mm)
+    let top = single(faces_by_normal(b, vec3(0.0, 0.0, 1.0), 1deg))
+    let top_edges = flat_map(adjacent_faces(b, top), |f| shared_edges(top, f))
+}"#;
+
+fn top_edges_of(result: &BuildResult) -> Option<&Value> {
+    result
+        .values
+        .get(&reify_core::ValueCellId::new("S", "top_edges"))
+}
+
+/// A face with no neighbours walks to no edges: an empty list, not a value
+/// left unresolved.
+#[test]
+fn unified_dag_flat_map_over_an_empty_walk_resolves_to_an_empty_list() {
+    let result = build_with_kernel_stdlib(
+        FLAT_MAP_WALK_SOURCE,
+        BuildScheduler::UnifiedDag,
+        Box::new(box_walk_kernel(&[], None)),
+    );
+
+    assert_eq!(
+        top_edges_of(&result),
+        Some(&Value::List(Vec::new())),
+        "diagnostics={:#?}",
+        result.diagnostics
+    );
+}
+
+/// One failing element makes the whole walk Undef, never a partial edge list,
+/// and the failure is the one the nested `shared_edges` reported.
+#[test]
+fn unified_dag_flat_map_with_a_failing_element_is_undef_not_a_partial_list() {
+    let kernel = box_walk_kernel(&[0, 1, 2, 3], Some(GeometryHandleId(52)));
+
+    let result = build_with_kernel_stdlib(
+        FLAT_MAP_WALK_SOURCE,
+        BuildScheduler::UnifiedDag,
+        Box::new(kernel),
+    );
+
+    assert_eq!(top_edges_of(&result), Some(&Value::Undef));
+    assert!(
+        result
+            .diagnostics
+            .iter()
+            .any(|d| d.message.starts_with("shared_edges OwnerBody(")),
+        "the shared_edges failure must be reported; diagnostics={:#?}",
+        result.diagnostics
+    );
+}
+
+/// `Engine::build_snapshot` reports the UnifiedDag scheduler's cycle diagnostic
+/// itself, so a snapshot taken straight after `eval()` still surfaces it.
+#[test]
+fn build_snapshot_reports_eval_cycle_under_unified_dag() {
+    let source = "structure S {\n    let a = b + 1.0\n    let b = a + 1.0\n}";
+
+    let result = build_snapshot_under_unified_dag(source, Box::new(MockGeometryKernel::new()));
+
+    assert!(
+        result
+            .diagnostics
+            .iter()
+            .any(|d| d.code == Some(DiagnosticCode::EvalCycle)),
+        "build_snapshot under UnifiedDag must emit DiagnosticCode::EvalCycle on a cyclic \
+         module; diagnostics={:#?}",
+        result.diagnostics
+    );
 }

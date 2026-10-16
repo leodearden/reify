@@ -8656,6 +8656,11 @@ fn resolve_index_usize(
 /// `faces(b)` is not supported. `Some(Undef)` only propagates a kernel failure
 /// the nested helper already reported.
 ///
+/// A `ValueRef` list arg reads another selector cell's resolved `List`, so its
+/// result depends on that cell being hydrated first: UnifiedDag's HydrateCell
+/// walk guarantees it; the whole-template post-process sees it only when that
+/// cell is declared first (see `Engine::post_process_topology_selectors`).
+///
 /// It is reached from inside `try_eval_topology_selector` so both hydration
 /// ladders, a nested `flat_map` and the `single(...)` fallback share one entry.
 fn try_eval_topology_flat_map(
