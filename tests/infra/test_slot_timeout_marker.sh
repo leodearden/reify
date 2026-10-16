@@ -1421,6 +1421,7 @@ D_ROSTER=(
     test_slot_event_log.sh
     test_test_run_semaphore.sh
     test_verify_env_ambient_isolation.sh
+    test_verify_events.sh
     test_verify_semaphore_e2e.sh
 )
 
@@ -1549,6 +1550,16 @@ D_ROSTER=(
 #   key on, which E1's own preamble names as out of its grammar. Same
 #   disposition as the entry above: measured, recorded, filed, not fixed
 #   here.
+#   test_verify_events.sh (task 8685) -- bucket pool; direct route through
+#   its `.py` sibling, whose bash snippets source lib_slot_acquire.sh and run
+#   lib_test_semaphore.sh, cargo-test-occt-gated.sh and lib_lane_x_flock.sh to
+#   a REAL deadline on every green run, each against a private lock the test
+#   holds in-process. Measured CLEAN on the SITE channel: every child goes
+#   through one subprocess funnel passing capture_output=True. CLEAN on the
+#   DESCRIPTION channel by construction: its failure messages carry counts and
+#   record fields only, never captured stderr, and it assembles the sentinel
+#   prefix at runtime. Kept static-only for the wall clock, as
+#   test_run_all_timing.sh is.
 #   test_verify_semaphore_e2e.sh -- bucket intra-run-serial (run-all-
 #   classification.manifest:56 -- mutates the invoking lane's own shared
 #   state: CoW target/, working-tree parser.c). Section D forks its members
@@ -3130,6 +3141,10 @@ G_MEMBERS=(
     # PORTED TO PYTHON (task 7626): the site that must divert is no longer in
     # this file -- see G_SCAN below.
     test_verify_env_ambient_isolation.sh
+    # DIRECT route via its `.py` sibling (task 8685): its bash snippets run the
+    # acquire wrappers, all spawned through one diverted subprocess funnel,
+    # which is therefore the site -- see G_SCAN below.
+    test_verify_events.sh
     # DECLARED, NOT DERIVABLE, and this is the member Section G exists for. Its
     # capability route is F_WAIT_RE (`export REIFY_TEST_SEMAPHORE_WAIT="$wait"`
     # :528), but its deadline-capable INVOCATION is scripts/verify.sh -- and
@@ -3152,6 +3167,7 @@ G_SITE=(
     'subprocess\.run\('
     '"\$(SEM|OCCT|LIB)"'
     'subprocess\.Popen\('
+    'subprocess\.(run|Popen)\('
     '"\$REPO_ROOT/scripts/verify\.sh"'
 )
 # Index-aligned with G_MEMBERS: the file whose SOURCE actually holds that
@@ -3204,6 +3220,7 @@ G_SCAN=(
     test_run_all_timing.py
     ''
     test_verify_env_ambient_isolation.py
+    test_verify_events.py
     ''
 )
 

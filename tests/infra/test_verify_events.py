@@ -6,13 +6,23 @@ test_verify_events.py — the REIFY_VERIFY_EVENT_LOG verify event channel
 ReaderTests drive tests/infra/verify_events.py, the stdlib reader and CLI,
 over channel files written by hand. EncoderTests drive the writer,
 scripts/lib_event_log.sh, from bash and read its output back with that reader.
+SlotTimeoutRecordTests force real finite-WAIT deadlines through
+scripts/lib_slot_acquire.sh and every wrapper that calls it (PRD §9 R-1).
+
+SELF-POLLUTION: a forced deadline prints a live slot-timeout sentinel on the
+child's stderr, and this suite's own output is re-emitted into the merge-gate
+log. Failure messages here therefore carry counts and field values only,
+never captured stderr, and the sentinel prefix is assembled at runtime (SP).
 
 run_all.sh discovers `test_*.sh` only; the gate runs this file through its
 thin wrapper tests/infra/test_verify_events.sh. Schema: tests/infra/README.md
 "Verify event channel".
 """
 
+import contextlib
+import fcntl
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -616,6 +626,161 @@ class EncoderTests(unittest.TestCase):
         self.assertEqual(events.skipped_lines, 0)
         self.assertEqual(len(events.records), 400)
         self.assertEqual(len({r["member"] for r in events.records}), 400)
+
+
+SP = "@@REIFY_" + "SLOT_"
+
+# Ambient knobs of the acquire wrappers. The gate hands its members its own
+# DISABLE/WAIT/LOCK settings; none of them may decide these runs.
+_ACQUIRE_KNOB_PREFIXES = (
+    "REIFY_TEST_SEMAPHORE_",
+    "REIFY_LANE_X_FLOCK_",
+    "REIFY_OCCT_",
+    "REIFY_RUN_ALL_",
+    "REIFY_SLOT_EVENT_LOG",
+)
+
+
+def acquire_env(channel=None, **overrides):
+    env = {
+        k: v
+        for k, v in channel_env(channel).items()
+        if not k.startswith(_ACQUIRE_KNOB_PREFIXES)
+    }
+    env.update(overrides)
+    return env
+
+
+@contextlib.contextmanager
+def holding_slot(lock_base, slot=1):
+    """Hold `<lock_base>.slot-<slot>` in THIS process for the block.
+
+    flock(2) on a descriptor that is non-inheritable (PEP 446), so the child
+    under test can never be the holder.
+    """
+    fd = os.open(f"{lock_base}.slot-{slot}", os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(fd)
+
+
+def sentinel_count(text, reason):
+    prefix = f"{SP}TIMEOUT@@ reason={reason} "
+    return sum(1 for line in text.split("\n") if line.startswith(prefix))
+
+
+# Every finite-WAIT caller of slot_acquire in the verify tree, forced to its
+# deadline: (label, argv after "bash", knobs given the private lock, emitter,
+# reason). The lib_test_semaphore.sh row is PRD §4.1 B7.
+WRAPPER_CALLERS = [
+    (
+        "lib_test_semaphore.sh",
+        [str(SCRIPTS / "lib_test_semaphore.sh"), "true"],
+        lambda lock: {
+            "REIFY_TEST_SEMAPHORE_LOCK": lock,
+            "REIFY_TEST_SEMAPHORE_WAIT": "1",
+            "REIFY_TEST_SEMAPHORE_CONCURRENCY": "1",
+        },
+        "test_slot_starvation",
+    ),
+    (
+        "cargo-test-occt-gated.sh",
+        [str(SCRIPTS / "cargo-test-occt-gated.sh"), "true"],
+        lambda lock: {
+            "REIFY_OCCT_LOCK": lock,
+            "REIFY_OCCT_LOCK_WAIT": "1",
+            "REIFY_OCCT_CONCURRENCY": "1",
+        },
+        "occt_slot_starvation",
+    ),
+    (
+        "lib_lane_x_flock.sh",
+        ["-c", 'source "$1/lib_lane_x_flock.sh"; lane_x_flock_acquire', "_", str(SCRIPTS)],
+        lambda lock: {"REIFY_LANE_X_FLOCK_LOCK": lock, "REIFY_LANE_X_FLOCK_WAIT": "1"},
+        "lane_x_slot_starvation",
+    ),
+]
+
+SLOT_ACQUIRE_DIRECT = (
+    'source "$1/lib_slot_acquire.sh"; shift; slot_acquire "$@"; echo "rc=$?"'
+)
+
+
+class SlotTimeoutRecordTests(unittest.TestCase):
+    def setUp(self):
+        self.files = ChannelFiles(self)
+        self.channel = self.files.dir / "channel.jsonl"
+        self.locks = self.files.dir / "locks"
+        self.locks.mkdir()
+
+    def timeouts(self):
+        return verify_events.select(verify_events.read_events(self.channel), event="slot_timeout")
+
+    def assert_one_timeout(self, lock, **fields):
+        records = self.timeouts()
+        self.assertEqual(len(records), 1)
+        (rec,) = records
+        self.assertEqual(rec["lock"], str(lock))
+        self.assertTrue(is_int(rec["waited"]) and rec["waited"] >= 0, rec["waited"])
+        self.assertEqual({k: rec[k] for k in fields}, fields)
+
+    def slot_acquire_direct(self, lock, *args):
+        with holding_slot(lock):
+            return run(
+                ["bash", "-c", SLOT_ACQUIRE_DIRECT, "_", str(SCRIPTS), str(lock), *args],
+                env=acquire_env(self.channel),
+            )
+
+    def test_b4_an_awkward_lock_base_round_trips_and_the_text_line_is_unchanged(self):
+        lock_dir = self.locks / "lock dir"
+        lock_dir.mkdir()
+        lock = lock_dir / 'b4 "quoted" back\\slash\nnewline'
+        result = self.slot_acquire_direct(lock, "1", "1", "", "b4_probe_starvation")
+        self.assertEqual(result.stdout, "rc=75\n")
+        self.assert_one_timeout(
+            lock,
+            reason="b4_probe_starvation",
+            slots=1,
+            disposition="fatal",
+            emitter="unknown",
+        )
+        self.assertEqual(sentinel_count(result.stderr, "b4_probe_starvation"), 1)
+
+    def test_the_seventh_argument_names_the_emitter(self):
+        lock = self.locks / "override.lock"
+        result = self.slot_acquire_direct(lock, "1", "1", "", "override_probe", "soft", "my_emitter")
+        self.assertEqual(result.stdout, "rc=75\n")
+        self.assert_one_timeout(
+            lock, reason="override_probe", disposition="soft", emitter="my_emitter"
+        )
+
+    def test_every_wrapper_caller_writes_one_fatal_record_naming_itself(self):
+        for label, argv, knobs, reason in WRAPPER_CALLERS:
+            with self.subTest(caller=label):
+                self.channel.unlink(missing_ok=True)
+                lock = self.locks / f"{label}.lock"
+                with holding_slot(lock):
+                    result = run(["bash", *argv], env=acquire_env(self.channel, **knobs(str(lock))))
+                self.assertEqual(result.returncode, 75)
+                self.assert_one_timeout(
+                    lock, reason=reason, slots=1, disposition="fatal", emitter=label
+                )
+                self.assertEqual(sentinel_count(result.stderr, reason), 1)
+
+    def test_b7_with_the_channel_unset_writes_nothing_and_keeps_the_text_line(self):
+        label, argv, knobs, reason = WRAPPER_CALLERS[0]
+        scratch = self.files.dir / "scratch"
+        scratch.mkdir()
+        lock = self.locks / "unset.lock"
+        env = acquire_env(None, TMPDIR=str(scratch), **knobs(str(lock)))
+        assert_channel_unset(self, env)
+        with holding_slot(lock):
+            result = run(["bash", *argv], env=env, cwd=scratch)
+        self.assertEqual(result.returncode, 75)
+        self.assertEqual(list(scratch.iterdir()), [])
+        self.assertEqual(sentinel_count(result.stderr, reason), 1)
 
 
 if __name__ == "__main__":
