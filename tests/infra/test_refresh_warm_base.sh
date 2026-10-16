@@ -32,7 +32,7 @@
 #   G — basecommit provenance: per-gen .basecommit stamp == --landed-commit, reaped with its gen
 #   H — buildroot provenance: per-gen .buildroot stamp == realpath(advancing worktree root)
 #   I — WIP refusal: advancing worktree with tracked WIP is refused; wording advises committing, never stashing
-#   LAND — landed-ness guard: a --landed-commit that is not an ancestor of refs/heads/main (or a repo without it) is refused before any copy; main's tip and its strict ancestors are accepted
+#   LAND — landed-ness guard: a --landed-commit that is not an ancestor of refs/heads/main (or a repo without it, or an ancestry check git cannot evaluate) is refused before any copy; main's tip and its strict ancestors are accepted
 #   DEPS — debug/deps faithful copy: every hash variant in the advancing debug/deps reaches the new gen, incl. same-mtime registry variants (#8366)
 #   LIVE — liveness prune: debug/deps units whose fingerprint was not consulted within 7 days of the tree's newest consult are pruned from the base gen; live variants, non-candidates and other dirs survive
 #
@@ -922,7 +922,8 @@ REIFY_TEST_REFLINK_OK=1 run_helper "$LAND4_LANE/advancing" "$LAND4_BASE" \
 assert "LAND4: absent refs/heads/main is refused (non-zero)" test "$RC" -ne 0
 assert "LAND4: refusal names refs/heads/main" \
     bash -c 'printf "%s\n" "$1" | grep -qF "refs/heads/main"' _ "$ERR_OUT"
-assert "LAND4: <base> not created" test ! -e "$LAND4_BASE"
+assert "LAND4: <base> not created" \
+    bash -c '[ ! -e "$1" ] && [ ! -L "$1" ]' _ "$LAND4_BASE"
 assert "LAND4: no staging cp ran" \
     bash -c '! grep -q "^cp " "$1"' _ "$CALLS_FILE"
 
@@ -937,6 +938,43 @@ REIFY_TEST_REFLINK_OK=1 run_helper "$LAND5_LANE/advancing" "$LAND5_TMP/base"
 assert "LAND5: missing --landed-commit is refused (non-zero)" test "$RC" -ne 0
 assert "LAND5: missing-flag hint names refs/heads/main" \
     bash -c 'printf "%s\n" "$1" | grep -qF "refs/heads/main"' _ "$ERR_OUT"
+
+# LAND6: an ancestry check git cannot evaluate is refused, and not misreported
+# as "has not landed". A git wrapper fails every `merge-base` with rc 128 (as a
+# corrupt object store would) and execs the real git for everything else.
+LAND6_TMP="$(mktemp -d /tmp/test-refresh-warm-base-land6-XXXXXX)"
+_TMPDIRS+=("$LAND6_TMP")
+LAND6_LANE="$(mk_git_advancing "$LAND6_TMP")"
+echo "content" > "$LAND6_LANE/advancing/file.txt"
+LAND6_BASE="$LAND6_TMP/base"
+LAND6_GIT_STUB_DIR="$LAND6_TMP/git-stub"
+mkdir -p "$LAND6_GIT_STUB_DIR"
+_REAL_GIT="$(command -v git)"
+cat > "$LAND6_GIT_STUB_DIR/git" << STUB_EOF
+#!/usr/bin/env bash
+for _a in "\$@"; do
+    if [ "\$_a" = "merge-base" ]; then
+        echo "fatal: SIMULATED merge-base failure" >&2
+        exit 128
+    fi
+done
+exec "${_REAL_GIT}" "\$@"
+STUB_EOF
+chmod +x "$LAND6_GIT_STUB_DIR/git"
+
+reset_calls
+PATH="$LAND6_GIT_STUB_DIR:$PATH" REIFY_TEST_REFLINK_OK=1 \
+    run_helper "$LAND6_LANE/advancing" "$LAND6_BASE" \
+    --landed-commit "$(git -C "$LAND6_LANE" rev-parse HEAD)"
+assert "LAND6: unevaluable ancestry is refused (non-zero)" test "$RC" -ne 0
+assert "LAND6: refusal reports git's exit code" \
+    bash -c 'printf "%s\n" "$1" | grep -qF "rc=128"' _ "$ERR_OUT"
+assert "LAND6: refusal does not claim the commit has not landed" \
+    bash -c '! printf "%s\n" "$1" | grep -qF "has not landed"' _ "$ERR_OUT"
+assert "LAND6: <base> not created" \
+    bash -c '[ ! -e "$1" ] && [ ! -L "$1" ]' _ "$LAND6_BASE"
+assert "LAND6: no staging cp ran" \
+    bash -c '! grep -q "^cp " "$1"' _ "$CALLS_FILE"
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Block DEPS — debug/deps faithful copy (task 8366)

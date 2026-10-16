@@ -315,7 +315,17 @@ if [ -z "$_prov_main" ]; then
     err "Landed-ness of --landed-commit cannot be verified. Refusing to swap (fail-closed)."
     exit 1
 fi
-if ! git -C "$_prov_wt" merge-base --is-ancestor "$LANDED_COMMIT" "$_prov_main"; then
+_prov_ancestry_rc=0
+git -C "$_prov_wt" merge-base --is-ancestor "$LANDED_COMMIT" "$_prov_main" || _prov_ancestry_rc=$?
+if [ "$_prov_ancestry_rc" -gt 1 ]; then
+    err "Provenance guard: could not evaluate whether --landed-commit is an ancestor of $LANDED_REF (git rc=$_prov_ancestry_rc)."
+    err "  --landed-commit: $LANDED_COMMIT"
+    err "  $LANDED_REF: $_prov_main"
+    err "  Worktree: $_prov_wt"
+    err "Landed-ness of --landed-commit cannot be verified. Refusing to swap (fail-closed)."
+    exit 1
+fi
+if [ "$_prov_ancestry_rc" -eq 1 ]; then
     err "Provenance guard: --landed-commit has not landed: it is not an ancestor of $LANDED_REF (inv.9)."
     err "  --landed-commit: $LANDED_COMMIT"
     err "  $LANDED_REF: $_prov_main"
