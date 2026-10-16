@@ -12,9 +12,11 @@
 #
 # Options:
 #   --landed-commit SHA      (Required for normal refresh) Assert that the
-#                            advancing target's git worktree HEAD == SHA.
+#                            advancing target's git worktree HEAD == SHA AND
+#                            that SHA is an ancestor of refs/heads/main.
 #                            Provenance guard (inv.9): refuses WIP lanes
-#                            (uncommitted tracked changes) and mismatched HEADs.
+#                            (uncommitted tracked changes), mismatched HEADs
+#                            and unlanded commits.
 #                            Not used by --check-frag.
 #   --check-frag             Read-only defrag check: print verdict token (ok |
 #                            reseed-due) + max per-file extent count to stdout;
@@ -33,7 +35,8 @@
 #
 # Refresh mechanics:
 #   1. Provenance guard (inv.9): refuse if advancing worktree is dirty (uncommitted
-#      tracked changes) or --landed-commit <sha> is absent / mismatched vs HEAD.
+#      tracked changes), --landed-commit <sha> is absent / mismatched vs HEAD,
+#      or <sha> is not an ancestor of refs/heads/main.
 #      Fail-closed: no swap on refusal.
 #   2. Symlink-gen staging: build <base_dir>.gen.<N>.partial via
 #      cp -a --reflink=always (fail-closed — P2), rename to <base_dir>.gen.<N>.
@@ -115,8 +118,10 @@ Usage: $(basename "$0") <advancing_target_dir> <base_dir> [OPTIONS]
 
   Options:
     --landed-commit SHA      (Required for refresh) Assert advancing worktree
-                             HEAD == SHA; refuses WIP lanes (uncommitted tracked
-                             changes) and head mismatches. Not used by --check-frag.
+                             HEAD == SHA and that SHA has landed (is an ancestor
+                             of ${LANDED_REF}); refuses WIP lanes (uncommitted
+                             tracked changes), head mismatches and unlanded
+                             commits. Not used by --check-frag.
     --check-frag             Read-only: print "ok N" or "reseed-due N" (extent count).
     --frag-threshold N       Extent threshold for --check-frag (default: 64).
     --rustflags VALUE        RUSTFLAGS stamp written after swap (default: \${RUSTFLAGS:-}).
@@ -136,6 +141,7 @@ FRAG_THRESHOLD=64
 RUSTFLAGS_VAL="${RUSTFLAGS:-}"
 INVOCATION_VAL=""
 LANDED_COMMIT=""
+readonly LANDED_REF="refs/heads/main"
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -255,6 +261,8 @@ BASE_DIR="$(cd "$(dirname "$BASE_DIR")" && pwd)/$(basename "$BASE_DIR")"
 #      orchestrator dirty-start semantics from CLAUDE.md)
 #   4. Refuse if --landed-commit is absent
 #   5. Refuse if git rev-parse HEAD != the asserted sha (head mismatch)
+#   6. Refuse if $LANDED_REF does not resolve, or the asserted sha is not an
+#      ancestor of it (committed-but-unlanded work)
 _prov_wt="$(dirname "$ADVANCING_DIR")"
 if ! git -C "$_prov_wt" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     err "Provenance guard: <advancing_target_dir> is not inside a git worktree: $ADVANCING_DIR"
@@ -285,10 +293,10 @@ if [ -n "$_prov_status" ]; then
 fi
 if [ -z "$LANDED_COMMIT" ]; then
     err "Provenance guard: --landed-commit <sha> is required (provenance assertion missing)."
-    err "  Pass the confirmed landed HEAD sha:"
-    err "    --landed-commit \$(git -C <lane_worktree> rev-parse HEAD)"
+    err "  Pass the sha of a commit already on $LANDED_REF that is also the advancing worktree's HEAD:"
+    err "    --landed-commit <sha>    (check: git merge-base --is-ancestor <sha> $LANDED_REF)"
     err "This assertion prevents task-lane WIP and ensures the advancing HEAD is known."
-    err "Only the merge lane (at confirmed landed HEAD) may advance the base."
+    err "Only a clean worktree at a commit already landed on $LANDED_REF may advance the base."
     exit 1
 fi
 _prov_head="$(git -C "$_prov_wt" rev-parse HEAD 2>/dev/null)"
@@ -300,7 +308,23 @@ if [ "$_prov_head" != "$LANDED_COMMIT" ]; then
     err "HEAD mismatch: pass the correct landed commit sha via --landed-commit."
     exit 1
 fi
-info "Provenance guard: OK (worktree clean, HEAD=$_prov_head)"
+_prov_main="$(git -C "$_prov_wt" rev-parse --verify --quiet "${LANDED_REF}^{commit}" 2>/dev/null || true)"
+if [ -z "$_prov_main" ]; then
+    err "Provenance guard: $LANDED_REF does not resolve in the advancing worktree's repository."
+    err "  Worktree: $_prov_wt"
+    err "Landed-ness of --landed-commit cannot be verified. Refusing to swap (fail-closed)."
+    exit 1
+fi
+if ! git -C "$_prov_wt" merge-base --is-ancestor "$LANDED_COMMIT" "$_prov_main"; then
+    err "Provenance guard: --landed-commit has not landed: it is not an ancestor of $LANDED_REF (inv.9)."
+    err "  --landed-commit: $LANDED_COMMIT"
+    err "  $LANDED_REF: $_prov_main"
+    err "  Worktree: $_prov_wt"
+    err "Only a commit already landed on $LANDED_REF may advance the base;"
+    err "committed-but-unlanded lane work must not. Refusing to swap."
+    exit 1
+fi
+info "Provenance guard: OK (worktree clean, HEAD=$_prov_head, landed on $LANDED_REF)"
 
 # ── EXIT trap: clean up .gen.*.partial + restore prior base on failure ────────
 # State variables set during the swap; used by the trap for targeted recovery.
