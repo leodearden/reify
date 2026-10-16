@@ -323,9 +323,10 @@ impl GeometryKernel for RecordingKernel {
     }
 }
 
-/// Defaults-only reference kernel: its four required methods return exactly
-/// the holder's no-kernel errors, so every inherited default is what an empty
-/// holder must return.
+/// Defaults-only reference kernel. The four required methods have no trait
+/// default, so they pin the holder's chosen no-kernel errors (`NO_KERNEL`)
+/// rather than derive them; every other method is the trait default, which is
+/// exactly what an empty holder must return.
 struct Unregistered;
 
 const NO_KERNEL: &str = "no geometry kernel registered";
