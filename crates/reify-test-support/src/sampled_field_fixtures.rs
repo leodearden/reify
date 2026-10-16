@@ -1,8 +1,83 @@
+//! Sampled-field values for exercising field reductions (`max`, `argmin`, ...)
+//! without an elaborated model.
+
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+
+use reify_core::Type;
+use reify_ir::{FieldSourceKind, InterpolationKind, SampledField, SampledGridKind, Value};
+
+/// A dimensionless, linearly interpolated 1-D sampled field named `name`, with one
+/// `data` sample per node of the uniformly spaced, increasing `axis`.
+pub fn sampled_field_1d(name: &str, axis: Vec<f64>, data: Vec<f64>) -> Value {
+    assert_eq!(
+        axis.len(),
+        data.len(),
+        "sampled_field_1d needs one sample per axis node: axis {axis:?}, data {data:?}"
+    );
+    assert!(
+        axis.len() >= 2,
+        "sampled_field_1d needs at least two axis nodes to define a spacing: axis {axis:?}"
+    );
+    let spacing = axis[1] - axis[0];
+    assert!(
+        spacing > 0.0
+            && axis
+                .windows(2)
+                .all(|w| ((w[1] - w[0]) - spacing).abs() <= 1e-12 * spacing.abs()),
+        "sampled_field_1d needs a uniformly spaced, increasing axis: axis {axis:?}"
+    );
+
+    let sf = SampledField {
+        name: name.to_string(),
+        kind: SampledGridKind::Regular1D,
+        bounds_min: vec![axis[0]],
+        bounds_max: vec![axis[axis.len() - 1]],
+        spacing: vec![spacing],
+        axis_grids: vec![axis],
+        interpolation: InterpolationKind::Linear,
+        data,
+        oob_emitted: AtomicBool::new(false),
+    };
+    Value::Field {
+        domain_type: Type::dimensionless_scalar(),
+        codomain_type: Type::dimensionless_scalar(),
+        source: FieldSourceKind::Sampled,
+        lambda: Arc::new(Value::SampledField(sf)),
+    }
+}
+
+/// A 1-D sampled field over x ∈ {0, 1, 2, 3} with data {5, 9, 2, 7}.
+///
+/// Global max 9 at x = 1, global min 2 at x = 2.  Restricted to x ∈ [2, 3] the
+/// max MOVES to 7 at x = 3 (the min stays 2 at x = 2).  The global maximiser is
+/// deliberately outside that box, so a bounded result is distinguishable from
+/// an unbounded one by value alone, and the bounded and global winners are
+/// different grid nodes by construction.
+pub fn extremum_probe_field() -> Value {
+    sampled_field_1d("probe", vec![0.0, 1.0, 2.0, 3.0], vec![5.0, 9.0, 2.0, 7.0])
+}
+
+/// The canonical `bounding_box(solid)` shape: two 3-component `Value::Point`
+/// corners (lo, 0, 0) and (hi, 0, 0).  A 1-D field consults only the x span.
+pub fn x_span_bbox(lo: f64, hi: f64) -> Value {
+    Value::BoundingBox {
+        min: Box::new(Value::Point(vec![
+            Value::Real(lo),
+            Value::Real(0.0),
+            Value::Real(0.0),
+        ])),
+        max: Box::new(Value::Point(vec![
+            Value::Real(hi),
+            Value::Real(0.0),
+            Value::Real(0.0),
+        ])),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reify_core::Type;
-    use reify_ir::{FieldSourceKind, InterpolationKind, SampledField, SampledGridKind, Value};
     use std::sync::atomic::Ordering;
 
     /// The axis and data behind a `sampled_field_1d` value, panicking on any other shape.
