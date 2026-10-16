@@ -106,12 +106,6 @@ pub fn build_shell_frame(nodes: &[[f64; 3]; 3]) -> ShellFrame {
     }
 }
 
-/// Shear-correction factor κ = 5/6 (Reissner standard for rectangular cross-section).
-///
-/// Baked in as a crate-private constant — it is a property of the through-thickness
-/// shape function, not of the material. See design decision in `plan.json`.
-pub(crate) const KAPPA: f64 = 5.0 / 6.0;
-
 /// Plane-stress 3×3 constitutive matrix for membrane and bending.
 ///
 /// Voigt order: `[ε_xx, ε_yy, γ_xy]` (engineering shear strain).
@@ -141,7 +135,7 @@ pub fn plane_stress_d(material: &IsotropicElastic) -> [[f64; 3]; 3] {
 
 /// Inline 3×3 matrix multiply: C = A · B.
 #[inline]
-pub(crate) fn mat3_mul(a: &[[f64; 3]; 3], b: &[[f64; 3]; 3]) -> [[f64; 3]; 3] {
+fn mat3_mul(a: &[[f64; 3]; 3], b: &[[f64; 3]; 3]) -> [[f64; 3]; 3] {
     let mut c = [[0.0_f64; 3]; 3];
     for i in 0..3 {
         for j in 0..3 {
@@ -238,7 +232,10 @@ pub(crate) fn rotate_blockdiag<const N: usize>(
 
 #[cfg(test)]
 pub(crate) mod test_support {
-    use super::mat3_mul;
+    /// Test-only entry to the module-private 3×3 multiply.
+    pub(crate) fn mat3_mul(a: &[[f64; 3]; 3], b: &[[f64; 3]; 3]) -> [[f64; 3]; 3] {
+        super::mat3_mul(a, b)
+    }
 
     /// Rotation Q = Ry(45°) · Rz(30°), the generic tilted frame shared by the
     /// shell unit-test modules.

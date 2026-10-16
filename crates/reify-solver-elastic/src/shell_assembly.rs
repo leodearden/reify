@@ -60,8 +60,14 @@
 use crate::assembly::ElementStiffness;
 use crate::constitutive::IsotropicElastic;
 use crate::elements::shell_frame::{
-    KAPPA, build_shell_frame, membrane_node_pair_block, plane_stress_d, rotate_blockdiag,
+    build_shell_frame, membrane_node_pair_block, plane_stress_d, rotate_blockdiag,
 };
+
+/// Shear-correction factor κ = 5/6 (Reissner standard for rectangular cross-section).
+///
+/// Baked in as a private constant — it is a property of the through-thickness
+/// shape function, not of the material.
+const KAPPA: f64 = 5.0 / 6.0;
 
 // --- Element-size constants (full-path initializers; no `use`, so the shared
 // helpers below can size their array signatures without a redundant import). ---
@@ -1066,7 +1072,7 @@ mod tests {
     use super::*;
     use crate::constitutive::IsotropicElastic;
     use crate::elements::mitc3_plus::Mitc3Plus;
-    use crate::elements::shell_frame::{mat3_mul, test_support::tilted_q_for_shell_tests};
+    use crate::elements::shell_frame::test_support::{mat3_mul, tilted_q_for_shell_tests};
 
     fn steel_like() -> IsotropicElastic {
         IsotropicElastic {
