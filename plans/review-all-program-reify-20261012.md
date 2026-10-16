@@ -469,6 +469,23 @@ Wave 1 (pass 2 completed 2026-10-12) and waves 2–4 plus the spawn streams S24/
 
 Not yet filed: none — the FILED table is complete.
 
+## Close-out (2026-10-16)
+
+- **All 26 streams filed.** The FILED table above is complete. Every held leaf was released: #8741, #8718, #8776, #8777, #8851, #8821, and S23's #9136, #9139, #9141 and #9149.
+- **Trigger-chain gate #8612 committed** (deferred → pending) by the successor lead on 2026-10-16, under Leo's explicit authorisation of 2026-10-13. It depends on every non-terminal high-priority program leaf (61 tasks, re-verified by a full-store scan) plus dark_factory:6856. It also carries the two gap-fill runs' high tasks: #9207, and #6504 (raised to high). The delayed-milestone settling window is 3 days.
+- **Instrument debt paid** (§Triage briefing), by two attended fable gap-fill runs at the same pinned tree 0e60fa138d:
+  - **/hotspot-survey:** docs/notes/bug-hotspot-survey-2026-10-15.md (bea5038499). 74 new findings (15 high). Filed #9169 and #9170, with gate #9171. No high tasks.
+  - **/review --since none:** review/reports/review-reify-20261015.{md,json} (6a9168e5d1). 114 new findings (3 high). Filed #9175–#9241, with gate #9242.
+- **Open for a deliberation sitting with Leo, not adopted by this program:**
+  - the survey's 8 ranked remedies: 3 proposed new streams and 5 amendments to existing streams;
+  - the survey's 8 contradictions with this program's rulings;
+  - the review's 39 structural findings;
+  - an attended /audit to route 44 PPRDSTATUS High rows and 14 PCITE rows.
+- **Post-program candidates, recorded and not filed:**
+  - typed ValueCellId / InstancePath (S3 OQ-2 b);
+  - S8's three follow-up candidates (in its result);
+  - S6's follow-ups #8879–#8885 (filed by S6).
+
 ## Pass-2 cross-reference lines (wave 1; applied or carried to the named stream's PRD by the lead)
 
 - **S3** → INV candidate 7 → INV-ARCH-1 (α 8673); prd overlay G1 seam row §3.6 retired after 8699; S23 (architecture doc §3.5, freshness-4-variant PRD); S7 ξ (baseline excluded map, after κ and 8673); every cycle-breaking stream lowers its baseline row in the same diff; S8 (expr_classify.rs after 8687); S4 (depends on 8687, 8691, 8695); S25 (set_observed_demand after 8680); S5 (direct compute-contract imports after 8687); optional edge #8338 → 8701 (not added).
