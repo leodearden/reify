@@ -887,7 +887,7 @@ const RATCHETS: &[Ratchet] = &[
     Ratchet {
         name: "cable-sign-rule-arms",
         home: "MemberKind::admits (solver-crates-layering D1, leaf η)",
-        baseline: 4,
+        baseline: 1,
         measure: Measure::Occurrences(production_pattern(
             "MemberKind::Cable =>",
             SRC,

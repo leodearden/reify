@@ -323,11 +323,7 @@ pub fn form_find_free_surfaces(
                     return Err(FreeFormError::DimensionMismatch);
                 }
                 for (&kind, &qi) in kinds.iter().zip(q.iter()) {
-                    let sign_ok = match kind {
-                        MemberKind::Cable => qi > 0.0,
-                        MemberKind::Strut => qi < 0.0,
-                    };
-                    if !sign_ok {
+                    if !kind.admits(qi) {
                         return Err(FreeFormError::SignViolation);
                     }
                 }
@@ -661,11 +657,7 @@ fn form_find_explicit_combined_relaxed(
     }
     // Sign contract: cables q>0, struts q<0.
     for (&kind, &qi) in kinds.iter().zip(q.iter()) {
-        let sign_ok = match kind {
-            MemberKind::Cable => qi > 0.0,
-            MemberKind::Strut => qi < 0.0,
-        };
-        if !sign_ok {
+        if !kind.admits(qi) {
             return Err(FreeFormError::SignViolation);
         }
     }
@@ -1503,11 +1495,7 @@ fn validate_explicit(
     //    self-stress it encodes would be sign-inconsistent — so surface a clean
     //    diagnostic rather than a silently-wrong form.
     for (&kind, &qi) in kinds.iter().zip(q.iter()) {
-        let sign_ok = match kind {
-            MemberKind::Cable => qi > 0.0,
-            MemberKind::Strut => qi < 0.0,
-        };
-        if !sign_ok {
+        if !kind.admits(qi) {
             return Err(FreeFormError::SignViolation);
         }
     }

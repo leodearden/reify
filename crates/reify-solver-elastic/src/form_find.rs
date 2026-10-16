@@ -49,6 +49,17 @@ pub enum MemberKind {
     Cable,
 }
 
+impl MemberKind {
+    /// Whether force density `q` carries this kind's sense: cables tension
+    /// (`q > 0`), struts compression (`q < 0`); NaN is never admitted.
+    pub fn admits(self, q: f64) -> bool {
+        match self {
+            MemberKind::Cable => q > 0.0,
+            MemberKind::Strut => q < 0.0,
+        }
+    }
+}
+
 /// Reason an anchored form-find solve is infeasible. Surfaced by the trampoline
 /// as an `E_FormFindInfeasible` diagnostic (PRD §8.1 contract).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -360,11 +371,7 @@ fn validate_members(
     // eigenvalue/ratio search, which *solves for* a feasible q (and the
     // self-stress mode) rather than taking q as given here.
     for (&kind, &qi) in kinds.iter().zip(q.iter()) {
-        let sign_ok = match kind {
-            MemberKind::Cable => qi > 0.0,
-            MemberKind::Strut => qi < 0.0,
-        };
-        if !sign_ok {
+        if !kind.admits(qi) {
             return Err(FormFindError::SignViolation);
         }
     }
