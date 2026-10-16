@@ -296,6 +296,17 @@ hooks/main-gate-lib.sh               tests/infra/test_reference_transaction_gate
 # select_infra_tests() dedups globs by whole token, so both suites are selected.
 hooks/reference-transaction          tests/infra/test_stash_guard.sh
 hooks/main-gate-lib.sh               tests/infra/test_stash_guard.sh
+# Task 8671: dark-factory's mark/unmark CLI and the yaml commands that name it
+# (test_reference_transaction_gate.sh's B8 runs both faces).
+scripts/main-gate-mark.sh            tests/infra/test_reference_transaction_gate.sh
+scripts/main-gate-mark.sh            tests/infra/test_land_*.sh
+dark-factory-orchestrator.yaml       tests/infra/test_reference_transaction_gate.sh
+# Task 8671: test_land_script.sh runs the real lib and reference-transaction
+# and asserts their bound-sanction log lines; test_reference_transaction_gate.sh
+# (B5') runs the real pre-commit as a mark site.
+hooks/main-gate-lib.sh               tests/infra/test_land_*.sh
+hooks/reference-transaction          tests/infra/test_land_*.sh
+hooks/pre-commit                     tests/infra/test_reference_transaction_gate.sh
 
 # Task 5259 (W4c): the ambient-isolation lib's hostile+baseline disambiguation
 # is guarded by BOTH the consumer (test_run_all_ambient_isolation.sh) and the
