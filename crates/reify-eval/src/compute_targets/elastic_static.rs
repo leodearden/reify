@@ -234,7 +234,7 @@ use super::fea_inputs::{
 use super::fea_loads::{
     gravity_magnitude, load_items, material_density, point_load_force, pressure_load_magnitude,
 };
-use super::fea_value_shape::{FeaValueShapeError, failed_outcome};
+use super::fea_value_shape::{FeaValueShapeError, failed_outcome, rejected_field_outcome};
 use reify_solver_elastic::{
     DegenerateTet, FeaFailure, classify_convergence, find_degenerate_tet, thin_body_advisory,
 };
@@ -528,11 +528,22 @@ pub fn solve_elastic_static_trampoline(
     // CONSTRUCTION and correctly sit outside the Result-ified gate; pinned by
     // `validate_all_inputs_gate_does_not_panic_on_malformed_options_field`
     // and `..._malformed_supports_field` in the test module below.
+    //
+    // A reader that can only refuse a field returns a bare `FieldRejection`,
+    // which names its own `<Struct>.<field>`, so its arm takes no arg label.
     macro_rules! gate_or_fail {
         ($result:expr, $arg:literal) => {
             match $result {
                 Ok(v) => v,
                 Err(e) => return failed_outcome("solve_elastic_static_trampoline", $arg, &e),
+            }
+        };
+        ($result:expr) => {
+            match $result {
+                Ok(v) => v,
+                Err(rejection) => {
+                    return rejected_field_outcome("solve_elastic_static_trampoline", &rejection);
+                }
             }
         };
     }
@@ -568,7 +579,7 @@ pub fn solve_elastic_static_trampoline(
     // Both accumulate into disjoint targets and compose: a scene may mix
     // PointLoad and PressureLoad in the same LoadCase. Every magnitude is read
     // by `fea_loads`, which rejects a wrong-dimension Scalar.
-    let density = gate_or_fail!(material_density(&value_inputs[0]), "material.density");
+    let density = gate_or_fail!(material_density(&value_inputs[0]));
     let (tip_force, pressures, body_force) =
         gate_or_fail!(extract_loads(&value_inputs[4], density), "loads");
 
@@ -9970,63 +9981,6 @@ mod tests {
         );
     }
 
-    /// Pins the non-panicking fallback of `extract_density`:
-    ///
-    /// - A `StructureInstance` with a well-formed `Scalar density` field returns
-    ///   the SI value.
-    /// - A `StructureInstance` missing the `density` field returns `0.0`.
-    /// - A non-`StructureInstance` value (e.g. `Value::Real`) returns `0.0`.
-    ///
-    /// This test makes the defensive fallback explicit so it is distinguishable
-    /// from a latent bug.  Every `ElasticMaterial` conformer declares `density`,
-    /// so the fallback paths arise only from malformed or absent material values.
-    #[test]
-    fn extract_density_fallback_returns_zero_when_field_absent() {
-        use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId};
-
-        // (a) Well-formed material → correct SI density
-        let fields_a: PersistentMap<String, Value> = [(
-            "density".to_string(),
-            Value::Scalar {
-                si_value: 7850.0,
-                dimension: DimensionVector::MASS_DENSITY,
-            },
-        )]
-        .into_iter()
-        .collect();
-        let material_a = Value::StructureInstance(Box::new(StructureInstanceData {
-            type_name: "Steel_AISI_1045".to_string(),
-            type_id: StructureTypeId(u32::MAX),
-            version: 0,
-            fields: fields_a,
-        }));
-        assert!(
-            (material_density(&material_a).unwrap() - 7850.0).abs() < 1e-9,
-            "(a) well-formed material → density 7850.0"
-        );
-
-        // (b) StructureInstance with no density field → 0.0 (intentional silent fallback)
-        let fields_b: PersistentMap<String, Value> = [].into_iter().collect();
-        let material_b = Value::StructureInstance(Box::new(StructureInstanceData {
-            type_name: "NoFieldMaterial".to_string(),
-            type_id: StructureTypeId(u32::MAX),
-            version: 0,
-            fields: fields_b,
-        }));
-        assert_eq!(
-            material_density(&material_b),
-            Ok(0.0),
-            "(b) absent density field → 0.0"
-        );
-
-        // (c) Non-StructureInstance value → 0.0
-        assert_eq!(
-            material_density(&Value::Real(42.0)),
-            Ok(0.0),
-            "(c) non-StructureInstance → 0.0"
-        );
-    }
-
     /// Pins the density=0 + Gravity-present fallback: when `density` resolves to
     /// `0.0`, `extract_loads` silently returns a zero body-force vector.
     ///
@@ -10150,19 +10104,6 @@ mod tests {
             bare,
             "a FORCE Scalar must apply exactly the force the bare spelling does"
         );
-        assert_eq!(point_load_tip_force(Value::Int(1000)), bare);
-    }
-
-    /// An `Option`-typed magnitude reads like any other struct field: `none`
-    /// is absent, `Some` is unwrapped.
-    #[test]
-    fn extract_loads_unwraps_an_option_wrapped_force() {
-        let some = |v: Value| Value::Option(Some(Box::new(v)));
-        assert_eq!(
-            point_load_tip_force(some(scalar(1000.0, DimensionVector::FORCE))),
-            [0.0, 0.0, -1000.0]
-        );
-        assert_eq!(point_load_tip_force(Value::Option(None)), [0.0, 0.0, 0.0]);
     }
 
     #[test]
@@ -10185,24 +10126,16 @@ mod tests {
         assert_eq!(body, [0.0, 0.0, -9800.0]);
     }
 
+    /// Each load kind reads its magnitude at its own site in `extract_loads`;
+    /// every site must surface the `fea_loads` rejection, never skip the load.
     #[test]
-    fn extract_loads_rejects_a_wrong_dimension_magnitude_at_each_load_position() {
+    fn extract_loads_surfaces_a_magnitude_rejection_at_each_load_position() {
         let cases = [
-            ("PointLoad", "force", DimensionVector::LENGTH, "Force"),
-            (
-                "PressureLoad",
-                "magnitude",
-                DimensionVector::FORCE,
-                "Pressure",
-            ),
-            (
-                "Gravity",
-                "magnitude",
-                DimensionVector::FORCE,
-                "Acceleration",
-            ),
+            ("PointLoad", "force", DimensionVector::LENGTH),
+            ("PressureLoad", "magnitude", DimensionVector::FORCE),
+            ("Gravity", "magnitude", DimensionVector::FORCE),
         ];
-        for (type_name, field, wrong, expected_name) in cases {
+        for (type_name, field, wrong) in cases {
             let mut fields = vec![(field, scalar(2.0, wrong))];
             if type_name == "PressureLoad" {
                 fields.push(("face", Value::String("x_max".to_string())));
@@ -10212,12 +10145,11 @@ mod tests {
             assert!(
                 matches!(
                     &res,
-                    Err(FeaValueShapeError::Rejected(FieldRejection { path, rejection }))
+                    Err(FeaValueShapeError::Rejected(FieldRejection { path, .. }))
                         if *path == format!("{type_name}.{field}")
-                            && rejection.expected == expected_name
                 ),
-                "{type_name}.{field}: a wrong-dimension Scalar must be \
-                 Err(Rejected) expecting {expected_name:?}, got {res:?}"
+                "{type_name}.{field}: a wrong-dimension Scalar must fail \
+                 extract_loads with Err(Rejected), got {res:?}"
             );
         }
     }
@@ -10227,40 +10159,6 @@ mod tests {
         assert_eq!(point_load_tip_force(Value::Undef), [0.0, 0.0, 0.0]);
         let no_force = Value::List(vec![structure("PointLoad", vec![])]);
         assert_eq!(extract_loads(&no_force, 0.0).unwrap().0, [0.0, 0.0, 0.0]);
-    }
-
-    #[test]
-    fn material_density_gates_the_density_dimension() {
-        let material = |density: Value| structure("Steel_AISI_1045", vec![("density", density)]);
-        assert_eq!(
-            material_density(&material(scalar(7850.0, DimensionVector::MASS_DENSITY))),
-            Ok(7850.0)
-        );
-        assert_eq!(material_density(&material(Value::Real(7850.0))), Ok(7850.0));
-        assert_eq!(material_density(&material(Value::Undef)), Ok(0.0));
-        let res = material_density(&material(scalar(7850.0, DimensionVector::PRESSURE)));
-        assert!(
-            matches!(
-                &res,
-                Err(FeaValueShapeError::Rejected(FieldRejection { path, rejection }))
-                    if path == "Steel_AISI_1045.density" && rejection.expected == "Density"
-            ),
-            "a PRESSURE density must be Err(Rejected) naming the density, got {res:?}"
-        );
-    }
-
-    /// A bare `Real` density is read as kg·m⁻³, so it drives the gravity body
-    /// force rather than reading as zero.
-    #[test]
-    fn a_bare_real_density_drives_the_gravity_body_force() {
-        let material = structure("Steel_AISI_1045", vec![("density", Value::Real(7850.0))]);
-        let gravity = structure(
-            "Gravity",
-            vec![("magnitude", scalar(9.8, DimensionVector::ACCELERATION))],
-        );
-        let density = material_density(&material).unwrap();
-        let (_, _, body) = extract_loads(&Value::List(vec![gravity]), density).unwrap();
-        assert_eq!(body, [0.0, 0.0, -7850.0 * 9.8]);
     }
 
     #[test]

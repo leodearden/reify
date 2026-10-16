@@ -15,11 +15,7 @@ pub(super) fn scalar_si_field(
 ) -> Result<f64, FeaValueShapeError> {
     match data.fields.get(key) {
         Some(Value::Scalar { si_value, .. }) => Ok(*si_value),
-        // `context` stays the fixed function-name label per the PRD §C3
-        // contract (`ExpectedScalar { context: &'static str, got: String }`,
-        // shared with D3/D5/D7/D8/D9); `got`'s wording is unpinned (open
-        // question 2), so the offending field key rides along in `got`
-        // instead so a `panic!("{e}")`/eventual D9 diagnostic can name it.
+        // `context` is a fixed label, so `got` carries the field key.
         Some(other) => Err(FeaValueShapeError::ExpectedScalar {
             context: "scalar_si_field",
             got: format!("{other:?} (field {key:?})"),
@@ -38,9 +34,7 @@ pub(super) fn real_field(
 ) -> Result<f64, FeaValueShapeError> {
     match data.fields.get(key) {
         Some(Value::Real(r)) => Ok(*r),
-        // See `scalar_si_field`'s comment above: `context` stays the fixed
-        // function-name label; the field key rides in `got` instead so it
-        // isn't lost for the eventual D9 diagnostic.
+        // `context` is a fixed label, so `got` carries the field key.
         Some(other) => Err(FeaValueShapeError::ExpectedReal {
             context: "real_field",
             got: format!("{other:?} (field {key:?})"),
