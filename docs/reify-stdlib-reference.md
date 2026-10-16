@@ -219,7 +219,7 @@ The spec names for `abs` and `arg` are *modulus* and *argument* respectively.
 
 ### 2.2 `std.units.si`
 
-Complete SI base units (`m`, `kg`, `s`, `A`, `K`, `rad`, `mol`, `cd`) with all SI prefixes (quecto through quetta). Derived units include: `N`, `J`, `W`, `Pa`, `V`, `ohm`, `S`, `F`, `H`, `Wb`, `T`, `Hz`, `rpm`, `rad_per_s`, `Pa_s`, `lm`, `lx`, `Bq`, `Gy`, `Sv`, `eV`, `bar`, `mbar`, with all common prefixes. The bare, un-prefixed `A`, `mol`, and `cd` resolve as unit literals (e.g. `1A`, `1mol`, `1cd`); previously only their prefixed forms (`mA`/`kA`, `mmol`, `mcd`) were available.
+Complete SI base units (`m`, `kg`, `s`, `A`, `K`, `rad`, `mol`, `cd`) with all SI prefixes (quecto through quetta). Derived units include: `N`, `J`, `W`, `Pa`, `V`, `ohm`, `S`, `F`, `H`, `Wb`, `T`, `Hz`, `rpm`, `rad_per_s`, `Pa_s`, `lm`, `lx`, `Bq`, `Gy`, `Sv`, `eV`, `bar`, `mbar`, with all common prefixes. The bare, un-prefixed `A`, `mol`, and `cd` resolve as unit literals (e.g. `1A`, `1mol`, `1cd`); previously only their prefixed forms (`mA`/`kA`, `mmol`, `mcd`) were available. They are declared in `std.units`, so they also compose in compound units (`1A^2`, `2mol/m^3`, `5cd/m^2`).
 
 Temperature offset: `degC : Temperature offset 273.15K`
 

@@ -263,47 +263,33 @@ pub fn ri_emittable_units(dim: &DimensionVector) -> &'static [&'static str] {
 /// dimension then breaks BOTH tables at compile time rather than silently
 /// mis-labelling a slot.
 ///
-/// # Why slots 3 / 5 / 6 are `None`
-///
-/// `A` (Current), `mol` (AmountOfSubstance) and `cd` (LuminousIntensity) are in
-/// [`BUILTIN_UNITS`], but they are NEVER seeded into the compiler's
-/// `UnitRegistry` — not even under the full stdlib. `stdlib/units.ri` does not
-/// declare them, and `si_units.rs` registers them only as prefix BASES (`mA`,
-/// `kA`, …) with `SI_PREFIXES` carrying no empty prefix, so no bare declaration
-/// is ever generated. A compound naming one would therefore resolve to
-/// `UnitResolveError::UnknownUnit` at parse time: a broken round-trip, which is
-/// the exact failure this table exists to prevent. Refusing is the correct
-/// behaviour, not a gap.
+/// A compound `UnitExpr` resolves against the compiler's `UnitRegistry` alone,
+/// so a slot is `Some` only if its bare symbol is seeded there at factor exactly
+/// `1.0` — see [`ri_compound_unit_expr`] for what that identity buys. All ten
+/// slots are today: nine bases are declared in `stdlib/units.ri`, and `sr` is
+/// generated bare by `si_units.rs`.
 ///
 /// That is an empirical fact about the stdlib, so it is not left to trust:
 /// `ri_literal_roundtrip.rs`'s
 /// `si_base_symbols_resolve_to_factor_one_in_the_stdlib_registry` cross-guards
 /// this table against the actually-seeded registry BIDIRECTIONALLY — a `Some`
 /// slot must be present at factor exactly 1.0, and a `None` slot must be
-/// absent — so a stdlib change in EITHER direction fires and names the slot to
-/// fix.
+/// absent — so a stdlib change in EITHER direction fires and names the slot.
+/// Should the stdlib ever drop a declaration, `None` is the response: the
+/// emitter then refuses every dimension touching that slot rather than writing
+/// a literal that cannot re-parse.
 ///
-/// Every `Some` symbol resolves to factor exactly `1.0`, and that is the whole
-/// point: see [`ri_compound_unit_expr`] for what the identity buys.
-///
-/// # What the guard actually measured
-///
-/// All seven `Some` slots are present in the stdlib-seeded registry at factor
-/// exactly `1.0` with no offset, and all three `None` slots are absent —
-/// observed, not inferred. `sr` in particular is worth naming: it is generated
-/// bare from `si_units.rs`'s `SI_DERIVED_UNITS` rather than declared in
-/// `stdlib/units.ri`, so its presence was a real open question when this table
-/// was written. It IS generated, so SolidAngle is emittable. Had it not been,
-/// the fix would have been slot 8 → `None`; the structured refusal is the
-/// correct behaviour in that case, not a defect.
+/// Read by `ri_compound_unit_expr` and by reify-compiler's conformance
+/// migration hint, which offers an example literal only for dimensions whose
+/// every slot is `Some`.
 pub const RI_COMPOUND_BASE_SYMBOLS: [Option<&'static str>; 10] = [
     Some("m"),   // 0 Length
     Some("kg"),  // 1 Mass
     Some("s"),   // 2 Time
-    None,        // 3 Current — bare `A` is never in the registry
+    Some("A"),   // 3 Current
     Some("K"),   // 4 Temperature
-    None,        // 5 AmountOfSubstance — bare `mol` is never in the registry
-    None,        // 6 LuminousIntensity — bare `cd` is never in the registry
+    Some("mol"), // 5 AmountOfSubstance
+    Some("cd"),  // 6 LuminousIntensity
     Some("rad"), // 7 Angle
     Some("sr"),  // 8 SolidAngle
     Some("USD"), // 9 Money
@@ -385,8 +371,7 @@ fn ri_unit_factor(symbol: &str, exponent: i8) -> String {
 ///   acceptance set cannot drift from the compiler's by construction;
 /// - a negative exponent whose ABSOLUTE value is outside `i8` — a tighter bound
 ///   than `as_i8` alone, because the denominator form writes `|n|`;
-/// - any non-zero exponent on a slot [`RI_COMPOUND_BASE_SYMBOLS`] marks `None`
-///   (Current / AmountOfSubstance / LuminousIntensity).
+/// - any non-zero exponent on a slot [`RI_COMPOUND_BASE_SYMBOLS`] marks `None`.
 pub fn ri_compound_unit_expr(dim: &DimensionVector) -> Option<String> {
     // Collect first, decide the form second: whether the numerator is empty is
     // a property of the WHOLE vector, and the two forms accept different

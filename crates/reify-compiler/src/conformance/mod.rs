@@ -9,7 +9,6 @@ use crate::ambient_defaults::AmbientDefaults;
 use crate::geometry_traits_inference::{
     GeometryTrait, InferredTraits, LetBindingEnv, infer_traits_for_expr_in_env, infer_traits_for_op,
 };
-use reify_core::BASE_UNIT_SYMBOLS;
 use std::cell::RefCell;
 
 /// Severity of struct-constructor field-conformance diagnostics: **`Error`**.
@@ -1218,40 +1217,14 @@ fn emit_arg_type_mismatch(param_type: &Type, arg_ty: &Type, ctx: &mut WalkCtx<'_
     );
 }
 
-/// Whether each [`BASE_UNIT_SYMBOLS`] slot is spellable as a unit LITERAL, in
-/// the same slot order.
-///
-/// `BASE_UNIT_SYMBOLS` is the DISPLAY table: it names every slot so a
-/// `DimensionVector` can be rendered. That is a weaker property than being
-/// parseable — `stdlib/units.ri` declares `m`, `kg`, `s`, `K`, `rad` and `USD`
-/// as units, but NOT `A`, `mol`, `cd` or `sr`, so a composed `…/A` literal fails
-/// with `unknown unit: A`. Measured, not assumed: the round-trip guard in
-/// `struct_ctor_field_conformance_tests.rs` caught exactly this on `Voltage`
-/// (`1m^2*kg/s^3/A`).
-///
-/// `[bool; 10]`, same as the symbol table, so an 11th base dimension breaks at
-/// compile time here too. Registering one of the missing symbols in the stdlib
-/// is a one-flag change, and the round-trip guard proves it immediately.
-const BASE_UNIT_SYMBOL_IS_SPELLABLE: [bool; 10] = [
-    true,  // m
-    true,  // kg
-    true,  // s
-    false, // A
-    true,  // K
-    false, // mol
-    false, // cd
-    true,  // rad
-    false, // sr
-    true,  // USD
-];
-
 /// An example unit literal for `dimension`, spelled in reify's compound-unit
 /// grammar — `"1m"`, `"1m/s^2"`, `"1kg/m^3"`, `"1kg*m^2/s^2"`.
 ///
-/// Composed from [`BASE_UNIT_SYMBOLS`] rather than looked up in a per-dimension
-/// table, which is what makes the hint unable to rot: every present and future
-/// `NAMED_DIMENSIONS` row is covered uniformly, with no second list to keep in
-/// step. (`si_units.rs`'s `SI_DERIVED_UNITS` was the obvious table and is not
+/// Composed from [`reify_core::RI_COMPOUND_BASE_SYMBOLS`] — the base symbols
+/// the stdlib-seeded unit registry resolves — rather than looked up in a
+/// per-dimension table, which is what makes the hint unable to rot: every
+/// present and future `NAMED_DIMENSIONS` row is covered uniformly, with no
+/// second list to keep in step. (`si_units.rs`'s `SI_DERIVED_UNITS` was the obvious table and is not
 /// usable: it covers ~25 derived units and misses Length, Mass, Time, Area,
 /// Volume, Density — and Velocity and Acceleration, the two dimensions in this
 /// task's own signal.)
@@ -1268,8 +1241,9 @@ const BASE_UNIT_SYMBOL_IS_SPELLABLE: [bool; 10] = [
 ///   has no unit-literal spelling at all;
 /// * an EMPTY numerator (e.g. `Frequency`, s⁻¹) would need a bare `1/s`, which
 ///   reify's grammar reads as a division rather than as a quantity literal;
-/// * a slot whose symbol the stdlib does not register as a unit (see
-///   [`BASE_UNIT_SYMBOL_IS_SPELLABLE`]), e.g. `Voltage`'s ampere term.
+/// * a slot [`reify_core::RI_COMPOUND_BASE_SYMBOLS`] marks `None`, i.e. one
+///   whose bare symbol the stdlib does not register as a unit. No slot is
+///   `None` today.
 ///
 /// Declining is deliberate: an example that does not parse is worse than none,
 /// because the reader would paste it. The round-trip guard in
@@ -1287,10 +1261,7 @@ fn example_unit_literal(dimension: &DimensionVector) -> Option<String> {
         if exponent.den() != 1 {
             return None;
         }
-        if !BASE_UNIT_SYMBOL_IS_SPELLABLE[slot] {
-            return None;
-        }
-        let symbol = BASE_UNIT_SYMBOLS[slot];
+        let symbol = reify_core::RI_COMPOUND_BASE_SYMBOLS[slot]?;
         let power = exponent.num();
         let magnitude = power.abs();
         let term = if magnitude == 1 {

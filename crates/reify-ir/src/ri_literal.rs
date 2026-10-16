@@ -253,11 +253,11 @@ pub enum UnitScope {
     /// `or_else` fallback behind the registry. Nothing about this arm is
     /// contingent on what the target file imports.
     BareBuiltinsOnly,
-    /// The caller ASSERTS that the target module resolves the SI base symbols
-    /// (`m`/`kg`/`s`/`K`/`rad`/`sr`/`USD`) to factor exactly `1.0`. Unlocks
+    /// The caller ASSERTS that the target module resolves every symbol of
+    /// [`reify_core::RI_COMPOUND_BASE_SYMBOLS`] to factor exactly `1.0`. Unlocks
     /// compound emission, and with it every dimension that has no bare symbol
     /// at all — Area, Volume, Force, Pressure, Density, Energy, SolidAngle,
-    /// Money.
+    /// Money, and Current-bearing ones such as Voltage and Charge.
     ///
     /// True for any module compiled with the stdlib prelude (`compile_with_stdlib`
     /// seeds all stdlib modules unconditionally), and for one that imports
