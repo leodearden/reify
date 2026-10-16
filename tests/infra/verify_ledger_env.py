@@ -9,9 +9,9 @@ and the suites import it via the sys.path idiom.
 A nesting verify, and run_all.sh, hand every member state that changes what a
 run under test does. The role and release-skip knobs change the plan.
 REIFY_INFRA_SUITE_ACTIVE drops the infra pool. An inherited REIFY_VERIFY_RUN_ID
-marks the run nested, so it records nothing. The ledger, lane, timing and
-/proc paths point it at the outer run's files. A new ledger knob belongs in
-AMBIENT_VERIFY_ENV, and every suite then scrubs it.
+marks the run nested, so it records nothing. The ledger, lane, timing,
+event-channel and /proc paths point it at the outer run's files. A new ledger
+knob belongs in AMBIENT_VERIFY_ENV, and every suite then scrubs it.
 """
 
 import os
@@ -23,6 +23,7 @@ AMBIENT_VERIFY_ENV = frozenset(
         "REIFY_RELEASE_DELTA_SKIP",
         "REIFY_VERIFY_RUN_ID",
         "REIFY_RUN_ALL_TIMING_OUT",
+        "REIFY_VERIFY_EVENT_LOG",
         "REIFY_VERIFY_LEDGER_DIR",
         "REIFY_VERIFY_LEDGER_LANE_DIR",
         "REIFY_VERIFY_LEDGER_PROC_ROOT",

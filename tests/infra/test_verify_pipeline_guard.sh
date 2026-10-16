@@ -406,6 +406,16 @@ assert "--list includes scripts/lib_slot_acquire.sh (transitive dep; must be in 
     bash -c 'bash "$1" --list | grep -qxF "scripts/lib_slot_acquire.sh"' \
     _ "$GUARD_SH"
 
+# scripts/lib_event_log.sh (task 8685) is one level deeper still
+# (lib_slot_acquire.sh → lib_event_log.sh), and tests/infra/run_all.sh sources
+# it too — the same non-derivable property, so the same manifest-row pin.
+assert_exit "POSITIVE: scripts/lib_event_log.sh is load-bearing (transitive; exit 0)" 0 \
+    run_guard requires-full-gate scripts/lib_event_log.sh
+
+assert "--list includes scripts/lib_event_log.sh (transitive dep; must be in manifest)" \
+    bash -c 'bash "$1" --list | grep -qxF "scripts/lib_event_log.sh"' \
+    _ "$GUARD_SH"
+
 # SYNTHETIC self-healing: build a throwaway verify.sh copy with a fake source
 # line appended, prove the classifier auto-covers the new lib via
 # REIFY_VERIFY_PIPELINE_GUARD_VERIFY_SH — no manifest edit needed.

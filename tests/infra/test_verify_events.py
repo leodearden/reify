@@ -4,7 +4,8 @@ test_verify_events.py — the REIFY_VERIFY_EVENT_LOG verify event channel
 (PRD docs/prds/v0_6/run-all-runner-infra-harness.md §4, task 8685).
 
 ReaderTests drive tests/infra/verify_events.py, the stdlib reader and CLI,
-over channel files written by hand.
+over channel files written by hand. EncoderTests drive the writer,
+scripts/lib_event_log.sh, from bash and read its output back with that reader.
 
 run_all.sh discovers `test_*.sh` only; the gate runs this file through its
 thin wrapper tests/infra/test_verify_events.sh. Schema: tests/infra/README.md
@@ -27,6 +28,11 @@ from verify_ledger_env import hermetic_env  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 READER = INFRA_DIR / "verify_events.py"
+SCRIPTS = REPO_ROOT / "scripts"
+LIB = SCRIPTS / "lib_event_log.sh"
+CHANNEL_VAR = "REIFY_VERIFY_EVENT_LOG"
+LINE_MAX = 4000
+DETAIL_ENTRY_MAX = 400
 
 
 def run(argv, env=None, cwd=None, timeout=600):
@@ -44,6 +50,33 @@ def run(argv, env=None, cwd=None, timeout=600):
 
 def reader_cli(*args, timeout=600):
     return run([sys.executable, "-I", str(READER), *map(str, args)], timeout=timeout)
+
+
+def channel_env(channel=None, **overrides):
+    """hermetic_env() with the channel pointed at `channel`, or unset when None."""
+    env = hermetic_env(**overrides)
+    if channel is not None:
+        env[CHANNEL_VAR] = str(channel)
+    return env
+
+
+def assert_channel_unset(test, env):
+    """Keeps an "unset" case non-vacuous when the developer's shell exports the var."""
+    test.assertNotIn(CHANNEL_VAR, env)
+
+
+def lib_bash(snippet, *args, env, cwd=None, strict=False):
+    """Run `snippet` in bash with lib_event_log.sh sourced; `args` are its $1.."""
+    prologue = "set -euo pipefail; " if strict else ""
+    return run(
+        ["bash", "-c", prologue + 'source "$1"; shift; ' + snippet, "_", str(LIB), *args],
+        env=env,
+        cwd=cwd,
+    )
+
+
+def emit(emitter, *args, env, cwd=None):
+    return lib_bash('"$@"', f"event_log_emit_{emitter}", *map(str, args), env=env, cwd=cwd)
 
 
 def record(event, **fields):
@@ -311,6 +344,273 @@ class ReaderCliTests(unittest.TestCase):
         for argv in (("frobnicate", self.path), ("query", self.path, "--where", "no-equals")):
             with self.subTest(argv=argv):
                 self.assertEqual(reader_cli(*argv).returncode, 2)
+
+
+# One call per record type (PRD D3 positional signatures) and the fields the
+# C2 table says it carries, beyond the v/ts_ns/pid/event head.
+EMITTER_SHAPES = [
+    (
+        "run_start",
+        ["run-1", "all", "pool", "3"],
+        {"run_id": "run-1", "scope": "all", "branch": "pool", "discovered": 3},
+    ),
+    (
+        "member_start",
+        ["test_a.sh", "1", "capture"],
+        {"member": "test_a.sh", "attempt": 1, "mode": "capture"},
+    ),
+    (
+        "member_finish",
+        ["test_a.sh", "2", "1", "FAIL", "17", "3", "  FAIL: x", "  FAIL: y"],
+        {
+            "member": "test_a.sh",
+            "attempt": 2,
+            "rc": 1,
+            "verdict": "FAIL",
+            "duration_ms": 17,
+            "fail_detail": ["  FAIL: x", "  FAIL: y"],
+            "fail_detail_omitted": 3,
+        },
+    ),
+    (
+        "slot_timeout",
+        ["probe_starvation", "2", "5", "soft", "/tmp/a lock", "lib_x.sh"],
+        {
+            "reason": "probe_starvation",
+            "slots": 2,
+            "waited": 5,
+            "disposition": "soft",
+            "lock": "/tmp/a lock",
+            "emitter": "lib_x.sh",
+        },
+    ),
+    (
+        "run_finish",
+        ["5", "2", "false", "2", "a.sh", "b.sh", "1", "c.sh", "0"],
+        {
+            "discovered": 5,
+            "failures": 2,
+            "failed": ["a.sh", "b.sh"],
+            "flaky": ["c.sh"],
+            "skipped": [],
+            "interrupted": False,
+            "names_omitted": 0,
+        },
+    ),
+]
+
+ALL_EMITTERS_ONCE = (
+    "event_log_emit_run_start r all pool 1; "
+    "event_log_emit_member_start m 1 capture; "
+    "event_log_emit_member_finish m 1 0 PASS 1 0; "
+    "event_log_emit_slot_timeout r 1 1 fatal /l e; "
+    "event_log_emit_run_finish 1 0 false 0 0 0"
+)
+
+AWKWARD = 'sp ace "quote" back\\slash\nnew\rline\ttab\x01ctl\x1fus été del\x7f'
+
+
+def is_int(value):
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def strace_usable(scratch):
+    if shutil.which("strace") is None:
+        return "strace is not on PATH"
+    probe = run(["strace", "-f", "-qq", "-o", str(scratch / "probe.strace"), "true"])
+    if probe.returncode != 0:
+        return f"strace cannot trace here (rc={probe.returncode})"
+    return None
+
+
+class EncoderTests(unittest.TestCase):
+    def setUp(self):
+        self.files = ChannelFiles(self)
+        self.channel = self.files.dir / "channel.jsonl"
+        self.env = channel_env(self.channel)
+
+    def read(self):
+        return verify_events.read_events(self.channel)
+
+    def physical_lines(self):
+        return self.channel.read_bytes().split(b"\n")[:-1]
+
+    def test_each_emitter_writes_one_record_of_its_c2_shape(self):
+        for emitter, args, fields in EMITTER_SHAPES:
+            with self.subTest(emitter=emitter):
+                self.channel.unlink(missing_ok=True)
+                result = emit(emitter, *args, env=self.env)
+                self.assertEqual((result.returncode, result.stderr), (0, ""))
+                events = self.read()
+                self.assertEqual((len(events.records), events.skipped_lines), (1, 0))
+                (rec,) = events.records
+                self.assertEqual(rec["v"], 1)
+                self.assertEqual(rec["event"], emitter)
+                self.assertTrue(is_int(rec["ts_ns"]) and rec["ts_ns"] > 0, rec["ts_ns"])
+                self.assertTrue(is_int(rec["pid"]) and rec["pid"] > 0, rec["pid"])
+                body = {k: v for k, v in rec.items() if k not in ("v", "ts_ns", "pid", "event")}
+                self.assertEqual(body, fields)
+                for field in fields:
+                    if is_int(fields[field]):
+                        self.assertTrue(is_int(body[field]), field)
+
+    def test_every_string_field_round_trips_through_the_one_escaper(self):
+        calls = [
+            ("slot_timeout", ["r", "1", "0", "fatal", AWKWARD, "e"], lambda r: r["lock"]),
+            ("member_start", [AWKWARD, "1", "stream"], lambda r: r["member"]),
+            ("member_finish", ["m", "1", "1", "FAIL", "1", "0", AWKWARD], lambda r: r["fail_detail"][0]),
+            ("run_finish", ["1", "1", "false", "1", AWKWARD, "0", "0"], lambda r: r["failed"][0]),
+        ]
+        for emitter, args, field in calls:
+            with self.subTest(emitter=emitter):
+                self.channel.unlink(missing_ok=True)
+                result = emit(emitter, *args, env=self.env)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(len(self.physical_lines()), 1)
+                (rec,) = self.read().records
+                self.assertEqual(field(rec), AWKWARD)
+
+    def test_a_non_integer_in_an_int_position_encodes_null(self):
+        calls = [
+            ("run_start", ["r", "all", "pool", ""], {"discovered": None}),
+            ("member_start", ["m", "two", "capture"], {"attempt": None}),
+            (
+                "member_finish",
+                ["m", "0", "", "SKIP", "", "0"],
+                {"attempt": 0, "rc": None, "duration_ms": None, "fail_detail": []},
+            ),
+            ("member_finish", ["m", "1", "abc", "FAIL", "1.5", "x"], {"rc": None, "duration_ms": None, "fail_detail_omitted": None}),
+            ("slot_timeout", ["r", "12x", "-3", "fatal", "/l", "e"], {"slots": None, "waited": -3}),
+            ("run_finish", ["007", "-0", "maybe", "0", "0", "0"], {"discovered": 7, "failures": 0, "interrupted": None}),
+        ]
+        for emitter, args, expected in calls:
+            with self.subTest(emitter=emitter, args=args):
+                self.channel.unlink(missing_ok=True)
+                result = emit(emitter, *args, env=self.env)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                events = self.read()
+                self.assertEqual((len(events.records), events.skipped_lines), (1, 0))
+                (rec,) = events.records
+                self.assertEqual({k: rec[k] for k in expected}, expected)
+
+    def test_member_finish_keeps_the_newest_detail_within_the_line_cap(self):
+        detail = [f"{i:02d}" + "x" * 898 for i in range(30)]
+        result = emit("member_finish", "m", "1", "1", "FAIL", "9", "4", *detail, env=self.env)
+        self.assertEqual((result.returncode, result.stderr), (0, ""))
+        (line,) = self.physical_lines()
+        self.assertLessEqual(len(line) + 1, LINE_MAX)
+        (rec,) = self.read().records
+        kept = rec["fail_detail"]
+        self.assertGreater(len(kept), 0)
+        self.assertTrue(all(len(entry) <= DETAIL_ENTRY_MAX for entry in kept))
+        truncated = [entry[:DETAIL_ENTRY_MAX] for entry in detail]
+        self.assertEqual(kept, truncated[len(truncated) - len(kept):])
+        self.assertEqual(rec["fail_detail_omitted"], 4 + len(detail) - len(kept))
+
+    def test_run_finish_fits_names_in_order_and_counts_the_rest(self):
+        def names(prefix, count):
+            return [f"test_{prefix}_{i:03d}".ljust(40, "z") for i in range(count)]
+
+        cases = {
+            "failed overflows": (names("f", 300), names("k", 5), names("s", 5)),
+            "flaky overflows": (names("f", 50), names("k", 100), names("s", 100)),
+        }
+        for label, (failed, flaky, skipped) in cases.items():
+            with self.subTest(label):
+                self.channel.unlink(missing_ok=True)
+                args = [str(len(failed) + 1), str(len(failed)), "false"]
+                for group in (failed, flaky, skipped):
+                    args += [str(len(group)), *group]
+                result = emit("run_finish", *args, env=self.env)
+                self.assertEqual((result.returncode, result.stderr), (0, ""))
+                (line,) = self.physical_lines()
+                self.assertLessEqual(len(line) + 1, LINE_MAX)
+                (rec,) = self.read().records
+                self.assertEqual(rec["failures"], len(failed))
+                total = len(failed) + len(flaky) + len(skipped)
+                kept = len(rec["failed"]) + len(rec["flaky"]) + len(rec["skipped"])
+                self.assertEqual(kept + rec["names_omitted"], total)
+                self.assertGreater(rec["names_omitted"], 0)
+                self.assertEqual(rec["failed"], failed[: len(rec["failed"])])
+                self.assertEqual(rec["flaky"], flaky[: len(rec["flaky"])])
+                self.assertEqual(rec["skipped"], skipped[: len(rec["skipped"])])
+                if len(rec["failed"]) < len(failed):
+                    self.assertEqual(rec["flaky"], [])
+                if len(rec["flaky"]) < len(flaky):
+                    self.assertEqual(rec["failed"], failed)
+                    self.assertGreater(len(rec["flaky"]), 0)
+                    self.assertEqual(rec["skipped"], [])
+
+    def test_an_unwritable_channel_is_silent_and_never_changes_control_flow(self):
+        regular = self.files.dir / "regular-file"
+        regular.write_text("not a dir\n")
+        unwritable = {
+            "parent is a regular file": regular / "channel.jsonl",
+            "path is a directory": self.files.dir,
+            "parent dir is missing": self.files.dir / "missing" / "channel.jsonl",
+        }
+        for label, path in unwritable.items():
+            for emitter, args, _ in EMITTER_SHAPES:
+                with self.subTest(label, emitter=emitter):
+                    result = emit(emitter, *args, env=channel_env(path))
+                    self.assertEqual((result.returncode, result.stderr), (0, ""))
+            with self.subTest(label, shell="set -euo pipefail"):
+                result = lib_bash(
+                    ALL_EMITTERS_ONCE + "; echo next-command-ran",
+                    env=channel_env(path),
+                    strict=True,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout, "next-command-ran\n")
+                self.assertEqual(result.stderr, "")
+        self.assertEqual(regular.read_text(), "not a dir\n")
+
+    def test_unset_channel_creates_nothing_and_prints_nothing(self):
+        cwd = self.files.dir / "cwd"
+        tmp = self.files.dir / "tmp"
+        cwd.mkdir()
+        tmp.mkdir()
+        env = channel_env(None, TMPDIR=str(tmp))
+        assert_channel_unset(self, env)
+        result = lib_bash(ALL_EMITTERS_ONCE, env=env, cwd=cwd, strict=True)
+        self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "", ""))
+        self.assertEqual((list(cwd.iterdir()), list(tmp.iterdir())), ([], []))
+
+    def test_unset_channel_costs_no_fork_and_no_open_per_call(self):
+        reason = strace_usable(self.files.dir)
+        if reason:
+            self.skipTest(reason)
+        env = channel_env(None)
+        assert_channel_unset(self, env)
+        loop = 'for ((i = 0; i < $1; i++)); do ' + ALL_EMITTERS_ONCE + "; done"
+        counts = {}
+        for calls in (0, 25):
+            log = self.files.dir / f"calls-{calls}.strace"
+            result = run(
+                [
+                    "strace", "-f", "-qq", "-e", "trace=process,openat,open,creat",
+                    "-o", str(log),
+                    "bash", "-c", 'source "$1"; shift; ' + loop, "_", str(LIB), str(calls),
+                ],
+                env=env,
+            )
+            self.assertEqual((result.returncode, result.stderr), (0, ""))
+            counts[calls] = len(log.read_text().splitlines())
+        self.assertGreater(counts[0], 0)
+        self.assertEqual(counts[25], counts[0])
+
+    def test_concurrent_writers_never_tear_a_line(self):
+        writers = (
+            'for w in 1 2 3 4 5 6 7 8; do '
+            '( for ((i = 0; i < 50; i++)); do event_log_emit_member_start "w$w-$i" 1 capture; done ) & '
+            "done; wait"
+        )
+        result = lib_bash(writers, env=self.env)
+        self.assertEqual((result.returncode, result.stderr), (0, ""))
+        events = self.read()
+        self.assertEqual(events.skipped_lines, 0)
+        self.assertEqual(len(events.records), 400)
+        self.assertEqual(len({r["member"] for r in events.records}), 400)
 
 
 if __name__ == "__main__":
