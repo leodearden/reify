@@ -26,10 +26,10 @@ mod reexport_contract_tests {
     //! via the `crate::builders` module path after submodule extraction.
     use crate::builders::{
         CompiledFieldBuilder, CompiledModuleBuilder, CompiledPurposeBuilder, CompiledTraitBuilder,
-        TopologyTemplateBuilder, TraitDefBuilder, binop, conditional_expr, eq, equality_constraint,
-        fn_call, ge, gt, lambda_expr, le, list_expr, literal, lt, map_expr, method_call_expr, ne,
-        neg, not, range_constraint, sample_call, set_expr, std_call, user_fn_call, value_ref,
-        value_ref_typed,
+        TopologyTemplateBuilder, TraitDefBuilder, binop, compiled_function, conditional_expr, eq,
+        equality_constraint, fn_call, ge, gt, lambda_expr, le, list_expr, literal, lt, map_expr,
+        method_call_expr, ne, neg, not, range_constraint, sample_call, set_expr, std_call,
+        user_fn_call, value_ref, value_ref_typed,
     };
     use reify_core::Type;
     use reify_ir::{BinOp, Value};
@@ -64,6 +64,7 @@ mod reexport_contract_tests {
         );
         let _ = fn_call("f", "q::f", vec![], Type::dimensionless_scalar());
         let _ = std_call("f", vec![], Type::dimensionless_scalar());
+        let _ = compiled_function("f", &[], vec![], literal(Value::Real(1.0)));
         let _ = user_fn_call("f", vec![], Type::dimensionless_scalar());
         let _ = method_call_expr(literal(Value::Int(1)), "m", vec![], Type::Int);
         let _ = sample_call(

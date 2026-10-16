@@ -1,9 +1,46 @@
+//! Builders for `CompiledFunction`.
+//!
+//! Variants (`is_pub`, `optimized_target`, ...) are spelled with struct-update
+//! syntax: `CompiledFunction { is_pub: true, ..compiled_function(..) }`.
+
+use reify_core::{ContentHash, Type};
+use reify_ir::{CompiledExpr, CompiledFnBody, CompiledFunction};
+
+/// Create a `CompiledFunction` whose params carry no defaults and whose return
+/// type is the body's result type.
+pub fn compiled_function(
+    name: &str,
+    params: &[(&str, Type)],
+    let_bindings: Vec<(String, CompiledExpr)>,
+    result_expr: CompiledExpr,
+) -> CompiledFunction {
+    let params: Vec<(String, Type)> = params
+        .iter()
+        .map(|(p, ty)| ((*p).to_string(), ty.clone()))
+        .collect();
+    CompiledFunction {
+        name: name.to_string(),
+        doc: None,
+        is_pub: false,
+        param_defaults: CompiledFunction::no_defaults_for(&params),
+        params,
+        return_type: result_expr.result_type.clone(),
+        body: CompiledFnBody {
+            let_bindings,
+            result_expr,
+        },
+        content_hash: ContentHash::of(name.as_bytes()),
+        annotations: vec![],
+        optimized_target: None,
+        type_params: vec![],
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::builders::{literal, value_ref};
-    use reify_core::{ContentHash, Type};
-    use reify_ir::{CompiledExpr, Value};
+    use reify_ir::Value;
 
     fn real(v: f64) -> CompiledExpr {
         literal(Value::Real(v))
@@ -51,7 +88,12 @@ mod tests {
             real(0.0),
         );
 
-        let names: Vec<&str> = f.body.let_bindings.iter().map(|(n, _)| n.as_str()).collect();
+        let names: Vec<&str> = f
+            .body
+            .let_bindings
+            .iter()
+            .map(|(n, _)| n.as_str())
+            .collect();
         assert_eq!(names, ["s", "t"]);
         assert_eq!(f.body.let_bindings[0].1.content_hash, e1.content_hash);
         assert_eq!(f.body.let_bindings[1].1.content_hash, e2.content_hash);
@@ -60,8 +102,13 @@ mod tests {
     #[test]
     fn compiled_functions_with_different_names_get_different_content_hashes() {
         let hash_of = |name: &str| -> ContentHash {
-            compiled_function(name, &[("a", Type::dimensionless_scalar())], vec![], real(1.0))
-                .content_hash
+            compiled_function(
+                name,
+                &[("a", Type::dimensionless_scalar())],
+                vec![],
+                real(1.0),
+            )
+            .content_hash
         };
 
         assert_ne!(hash_of("f"), hash_of("g"));
