@@ -807,8 +807,10 @@ mod tests {
         DimensionVector(exps)
     }
 
-    /// (a) SHAPES — the exact string emitted, in `BASE_UNIT_SYMBOLS` index
-    /// order (0:m 1:kg 2:s 3:A 4:K 5:mol 6:cd 7:rad 8:sr 9:USD).
+    /// (a) SHAPES — the exact string emitted. A dimension with a named
+    /// factor-1.0 symbol is that one atom; any other is built in
+    /// `BASE_UNIT_SYMBOLS` index order (0:m 1:kg 2:s 3:A 4:K 5:mol 6:cd 7:rad
+    /// 8:sr 9:USD).
     ///
     /// Positive-exponent factors come first joined by `*`, then each
     /// negative-exponent factor is introduced by its own `/` carrying the
@@ -825,10 +827,14 @@ mod tests {
         let cases: &[(DimensionVector, &str)] = &[
             (DimensionVector::AREA, "m^2"),
             (DimensionVector::VOLUME, "m^3"),
-            (DimensionVector::FORCE, "m*kg/s^2"),
-            (DimensionVector::PRESSURE, "kg/m/s^2"),
+            // Named factor-1.0 derived symbols win whole-dimension matches.
+            (DimensionVector::FORCE, "N"),
+            (DimensionVector::PRESSURE, "Pa"),
+            (DimensionVector::ENERGY, "J"),
+            (DimensionVector::POWER, "W"),
+            // No named symbol: the base-symbol builder writes these.
             (DimensionVector::MASS_DENSITY, "kg/m^3"),
-            (DimensionVector::ENERGY, "m^2*kg/s^2"),
+            (DimensionVector::DYNAMIC_VISCOSITY, "kg/m/s"),
             (DimensionVector::SOLID_ANGLE, "sr"),
             (DimensionVector::MONEY, "USD"),
             // Dimensions touching the Current / AmountOfSubstance /
@@ -898,13 +904,14 @@ mod tests {
     }
 
     /// (c) STRUCTURAL guard — every alphabetic atom in an emitted string is a
-    /// member of [`BASE_UNIT_SYMBOLS`].
+    /// symbol of [`RI_COMPOUND_BASE_SYMBOLS`] or [`RI_NAMED_DERIVED_SYMBOLS`],
+    /// the two tables the compiler tier cross-guards at factor exactly 1.0.
     ///
-    /// Fires if the builder ever reaches for a symbol outside the base table
-    /// (a prefixed `mm`, a named derived `Pa`), which would abandon the
-    /// factor-1.0 identity the whole exactness argument rests on.
+    /// Fires if the emitter ever reaches for any other symbol (a prefixed `mm`,
+    /// an untabled `Hz`), which would abandon the factor-1.0 identity the whole
+    /// exactness argument rests on.
     #[test]
-    fn ri_compound_unit_expr_only_ever_names_base_unit_symbols() {
+    fn ri_compound_unit_expr_only_ever_names_cross_guarded_factor_one_symbols() {
         let dims = [
             DimensionVector::AREA,
             DimensionVector::VOLUME,
@@ -918,7 +925,13 @@ mod tests {
             DimensionVector::FREQUENCY,
             DimensionVector::VOLTAGE,
             DimensionVector::CHARGE,
+            DimensionVector::POWER,
+            DimensionVector::DYNAMIC_VISCOSITY,
         ];
+        let is_cross_guarded = |atom: &str| {
+            RI_COMPOUND_BASE_SYMBOLS.contains(&Some(atom))
+                || RI_NAMED_DERIVED_SYMBOLS.iter().any(|&(sym, _)| sym == atom)
+        };
         let mut checked = 0usize;
         for dim in dims {
             let expr = ri_compound_unit_expr(&dim)
@@ -928,11 +941,12 @@ mod tests {
                     continue;
                 }
                 assert!(
-                    BASE_UNIT_SYMBOLS.contains(&atom),
+                    is_cross_guarded(atom),
                     "emitted expression {expr:?} for {:?} names {atom:?}, which is \
-                     not an SI base symbol — only base symbols resolve to factor \
-                     exactly 1.0, and that identity is what makes the emitted \
-                     magnitude the SI value verbatim",
+                     in neither RI_COMPOUND_BASE_SYMBOLS nor RI_NAMED_DERIVED_SYMBOLS \
+                     — only those symbols are cross-guarded at factor exactly 1.0, \
+                     and that identity is what makes the emitted magnitude the SI \
+                     value verbatim",
                     dim.canonical_name()
                 );
                 checked += 1;
@@ -943,6 +957,60 @@ mod tests {
             "expected to sweep at least 10 atoms, saw {checked} — did the shape \
              table lose entries?"
         );
+    }
+
+    /// (d) TABLE invariants of [`RI_NAMED_DERIVED_SYMBOLS`]: every row is a
+    /// compound-only dimension with one unambiguous symbol, and the emitter
+    /// actually consults it.
+    ///
+    /// The compiler tier checks the other half — that each symbol is seeded at
+    /// factor exactly 1.0 — in `ri_literal_roundtrip.rs`'s
+    /// `named_derived_symbols_resolve_to_factor_one_in_the_stdlib_registry`.
+    #[test]
+    fn ri_named_derived_symbols_are_unambiguous_and_consulted() {
+        assert!(
+            !RI_NAMED_DERIVED_SYMBOLS.is_empty(),
+            "the named-symbol table is empty, so every check below is vacuous"
+        );
+        for (i, &(sym, dim)) in RI_NAMED_DERIVED_SYMBOLS.iter().enumerate() {
+            assert!(
+                !BASE_UNIT_SYMBOLS.contains(&sym),
+                "{sym:?} is an SI base symbol; base symbols belong in \
+                 RI_COMPOUND_BASE_SYMBOLS"
+            );
+            assert!(
+                unit_symbol_to_si(sym).is_none(),
+                "{sym:?} is a bare built-in, so it already resolves without the \
+                 registry and does not belong in the compound table"
+            );
+            assert!(
+                ri_emittable_units(&dim).is_empty(),
+                "{sym:?} names {:?}, which has a bare ladder — reify-ir never takes \
+                 the compound path for it, so this row is dead",
+                dim.canonical_name()
+            );
+            assert!(
+                !dim.is_dimensionless(),
+                "{sym:?} names the dimensionless vector"
+            );
+            for &(other_sym, other_dim) in &RI_NAMED_DERIVED_SYMBOLS[i + 1..] {
+                assert_ne!(
+                    other_dim,
+                    dim,
+                    "{sym:?} and {other_sym:?} share {:?}; a first-match lookup \
+                     would shadow the later row",
+                    dim.canonical_name()
+                );
+                assert_ne!(other_sym, sym, "{sym:?} appears twice");
+            }
+            assert_eq!(
+                ri_compound_unit_expr(&dim).as_deref(),
+                Some(sym),
+                "ri_compound_unit_expr does not write {sym:?} for {:?} — the table \
+                 is not consulted",
+                dim.canonical_name()
+            );
+        }
     }
 
 }

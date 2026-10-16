@@ -47,7 +47,7 @@
 //! the seeding order or the literal lowering; a round-trip cannot say which
 //! table entry moved.
 
-use reify_compiler::{CompiledModule, UnitRegistry, seed_prelude_units, stdlib_loader};
+use reify_compiler::{CompiledModule, UnitEntry, UnitRegistry, seed_prelude_units, stdlib_loader};
 use reify_core::DimensionVector;
 use reify_ir::Value;
 use reify_ir::ri_literal::{
@@ -146,6 +146,8 @@ fn ri_type_name(v: &Value) -> &'static str {
             DimensionVector::VOLTAGE => "Voltage",
             DimensionVector::CHARGE => "Charge",
             DimensionVector::ILLUMINANCE => "Illuminance",
+            DimensionVector::POWER => "Power",
+            DimensionVector::DYNAMIC_VISCOSITY => "DynamicViscosity",
             other => panic!("no .ri type name wired for dimension {other}"),
         },
         other => panic!("no .ri type name wired for {other:?}"),
@@ -919,7 +921,7 @@ fn emitted_literals_round_trip_under_the_stdlib_unit_registry() {
 /// only one that runs the real parser and `resolve_unit_expr` against a real
 /// seeded registry. `reify-core` can pin the emitted STRING and `reify-ir` can
 /// pin the emitted MAGNITUDE, but neither can see whether `m^2` resolves, what
-/// factor it folds to, or whether `kg/m/s^2` even parses.
+/// factor it folds to, or whether `kg/m/s` even parses.
 ///
 /// The awkward-bits cases are the point, not padding. A naive implementation
 /// that scaled the magnitude — or reproduced `resolve_unit_expr`'s fold by hand
@@ -938,17 +940,29 @@ fn compound_literals_round_trip_under_the_stdlib_unit_registry() {
         // One per compound dimension, each pinning its exact literal.
         compound("area", 2.5, DimensionVector::AREA).emitting("2.5m^2"),
         compound("volume", 1e-6, DimensionVector::VOLUME).emitting("1e-6m^3"),
-        // ASSOCIATIVITY WITNESS. `unit_expr` is `prec.left(1)` for `*` and `/`,
-        // so this must fold as `Div(Div(kg, m), Pow(s, 2))`. Under RIGHT
-        // association it would be `Div(kg, Div(m, Pow(s, 2)))` — dimension
-        // `kg·m^-1·s^+2`, with the Time exponent's SIGN flipped — which
-        // `assert_identical`'s dimension check catches. So this case confirms
-        // the association against the real parse rather than assuming it, and
-        // it is the reason a division CHAIN is safe to emit at all.
-        compound("pressure", 101_325.0, DimensionVector::PRESSURE).emitting("101325kg/m/s^2"),
-        compound("force", -9.81, DimensionVector::FORCE).emitting("-9.81m*kg/s^2"),
+        // Named factor-1.0 derived symbols: a single atom, resolved through the
+        // BARE path rather than `resolve_unit_expr`.
+        compound("pressure", 101_325.0, DimensionVector::PRESSURE).emitting("101325Pa"),
+        compound("force", -9.81, DimensionVector::FORCE).emitting("-9.81N"),
+        compound("energy", 1234.5, DimensionVector::ENERGY).emitting("1234.5J"),
+        compound("power", 750.0, DimensionVector::POWER).emitting("750W"),
+        // NEGATIVE ZERO on a named atom: the bare path computes
+        // `v * factor + offset`, so the sign must ride the unary minus.
+        compound("negative-zero pressure", -0.0, DimensionVector::PRESSURE).emitting("-0Pa"),
         compound("density", 7850.0, DimensionVector::MASS_DENSITY).emitting("7850kg/m^3"),
-        compound("energy", 1234.5, DimensionVector::ENERGY).emitting("1234.5m^2*kg/s^2"),
+        // ASSOCIATIVITY WITNESS. `unit_expr` is `prec.left(1)` for `*` and `/`,
+        // so this must fold as `Div(Div(kg, m), s)`. Under RIGHT association it
+        // would be `Div(kg, Div(m, s))` — dimension `kg·m^-1·s^+1`, with the
+        // Time exponent's SIGN flipped — which `assert_identical`'s dimension
+        // check catches. So this case confirms the association against the
+        // real parse rather than assuming it, and it is the reason a division
+        // CHAIN is safe to emit at all.
+        compound(
+            "dynamic viscosity",
+            0.001,
+            DimensionVector::DYNAMIC_VISCOSITY,
+        )
+        .emitting("0.001kg/m/s"),
         // A second division-chain ASSOCIATIVITY WITNESS: right association
         // would read `s^3/A` as one denominator and flip A's sign.
         compound("voltage", 230.0, DimensionVector::VOLTAGE).emitting("230m^2*kg/s^3/A"),
@@ -1021,35 +1035,7 @@ fn si_base_symbols_resolve_to_factor_one_in_the_stdlib_registry() {
                          {i} to `None` and drop that dimension's cases."
                     )
                 });
-                assert!(
-                    entry.offset.is_none(),
-                    "slot {i}: {sym:?} is AFFINE in the registry (offset {:?}). \
-                     `si = mag * factor + offset` is not the arithmetic the compound \
-                     path proves against — its whole exactness argument is that the \
-                     fold is the IEEE identity.",
-                    entry.offset
-                );
-                assert_eq!(
-                    entry.factor.to_bits(),
-                    1.0f64.to_bits(),
-                    "slot {i}: {sym:?} resolves at factor {:?} (bits {:#018x}), not \
-                     exactly 1.0 (bits {:#018x}) — declared in {}. The compound path \
-                     writes the SI value VERBATIM as the magnitude precisely because \
-                     the fold is exactly 1.0 for any tree shape; at any other factor \
-                     every compound write of a dimension touching this slot is \
-                     silently lossy.",
-                    entry.factor,
-                    entry.factor.to_bits(),
-                    1.0f64.to_bits(),
-                    entry.source_module.as_deref().unwrap_or("?")
-                );
-                assert_eq!(
-                    entry.dimension,
-                    basis_dimension(i),
-                    "slot {i}: {sym:?} resolves to dimension {:?}, not the base \
-                     dimension of its own slot",
-                    entry.dimension.canonical_name()
-                );
+                assert_factor_one_entry(entry, sym, basis_dimension(i), &format!("slot {i}"));
                 compared += 1;
             }
             None => {
@@ -1082,6 +1068,74 @@ fn si_base_symbols_resolve_to_factor_one_in_the_stdlib_registry() {
         "expected all 10 registry-resolvable base symbols \
          (m/kg/s/A/K/mol/cd/rad/sr/USD) to be emittable, got {emittable} — did \
          the stdlib lose a unit declaration?"
+    );
+}
+
+/// FORWARD CROSS-GUARD for `RI_NAMED_DERIVED_SYMBOLS`: every named derived
+/// symbol the emitter may write is seeded in the stdlib registry at factor
+/// exactly 1.0, with no offset and the row's dimension.
+///
+/// Forward-only by design. The reverse — "every factor-1.0 registry unit is
+/// tabled" — is false by construction: `Hz`/`Bq` share Frequency and `Gy`/`Sv`
+/// share AbsorbedDose, so a whole-dimension table can hold at most one of each
+/// pair, and other factor-1.0 symbols are deliberately untabled. The reverse
+/// coupling that matters — the emitter actually reads the table — is a pure
+/// reify-core property, pinned by its
+/// `ri_named_derived_symbols_are_unambiguous_and_consulted`.
+#[test]
+fn named_derived_symbols_resolve_to_factor_one_in_the_stdlib_registry() {
+    let registry = stdlib_seeded_unit_registry();
+    for &(sym, dim) in reify_core::RI_NAMED_DERIVED_SYMBOLS {
+        let entry = registry.lookup(sym).unwrap_or_else(|| {
+            panic!(
+                "RI_NAMED_DERIVED_SYMBOLS names {sym:?}, but it is NOT in the \
+                 stdlib-seeded UnitRegistry, so every literal written with it fails \
+                 to resolve. Restore its si_units.rs declaration or drop the row."
+            )
+        });
+        assert_factor_one_entry(entry, sym, dim, "RI_NAMED_DERIVED_SYMBOLS");
+    }
+    assert!(
+        reify_core::RI_NAMED_DERIVED_SYMBOLS.len() >= 4,
+        "expected at least N/Pa/J/W in RI_NAMED_DERIVED_SYMBOLS, got {} rows",
+        reify_core::RI_NAMED_DERIVED_SYMBOLS.len()
+    );
+}
+
+/// The factor-one invariant both registry guards enforce: `entry` (for `sym`)
+/// has no offset, factor bits exactly `1.0`, and dimension `expected`.
+///
+/// `.to_bits()`, not a tolerance: a factor of `0.9999999999999999` would make
+/// every write naming `sym` silently lossy while looking right in a debug
+/// print, and `mag * factor == si_value` is exactly the identity the emitter
+/// rests on. `context` prefixes every message so a failure names its table row.
+fn assert_factor_one_entry(entry: &UnitEntry, sym: &str, expected: DimensionVector, context: &str) {
+    let module = entry.source_module.as_deref().unwrap_or("?");
+    assert!(
+        entry.offset.is_none(),
+        "{context}: {sym:?} is AFFINE in the registry (offset {:?}, declared in \
+         {module}). `si = mag * factor + offset` is not the arithmetic the emitter \
+         proves against — its whole exactness argument is that the fold is the \
+         IEEE identity.",
+        entry.offset
+    );
+    assert_eq!(
+        entry.factor.to_bits(),
+        1.0f64.to_bits(),
+        "{context}: {sym:?} resolves at factor {:?} (bits {:#018x}), not exactly 1.0 \
+         (bits {:#018x}) — declared in {module}. The emitter writes the SI value \
+         VERBATIM as the magnitude precisely because the fold is exactly 1.0; at \
+         any other factor every write naming {sym:?} is silently lossy.",
+        entry.factor,
+        entry.factor.to_bits(),
+        1.0f64.to_bits()
+    );
+    assert_eq!(
+        entry.dimension,
+        expected,
+        "{context}: {sym:?} resolves to dimension {:?} (declared in {module}), not {:?}",
+        entry.dimension.canonical_name(),
+        expected.canonical_name()
     );
 }
 

@@ -1076,8 +1076,10 @@ mod tests {
         let cases: &[(Value, &str)] = &[
             (compound(2.5, DimensionVector::AREA), "2.5m^2"),
             (compound(1e-6, DimensionVector::VOLUME), "1e-6m^3"),
-            (compound(101325.0, DimensionVector::PRESSURE), "101325kg/m/s^2"),
-            (compound(-9.81, DimensionVector::FORCE), "-9.81m*kg/s^2"),
+            (compound(101325.0, DimensionVector::PRESSURE), "101325Pa"),
+            (compound(-9.81, DimensionVector::FORCE), "-9.81N"),
+            (compound(1234.5, DimensionVector::ENERGY), "1234.5J"),
+            (compound(750.0, DimensionVector::POWER), "750W"),
             (compound(7850.0, DimensionVector::MASS_DENSITY), "7850kg/m^3"),
             (compound(1.5, DimensionVector::SOLID_ANGLE), "1.5sr"),
             (compound(19.99, DimensionVector::MONEY), "19.99USD"),
