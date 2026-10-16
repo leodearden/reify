@@ -78,7 +78,7 @@
 //! positively by the non-unit constant-shear patch test, NOT a regression.
 
 use crate::elements::mitc3_plus::{Mitc3Plus, ShellReferenceCoord};
-use crate::shell_assembly::build_shell_frame;
+use crate::elements::shell_frame::build_shell_frame;
 
 /// A 3D degenerate-shell reference coordinate `(ξ, η, ζ)`.
 ///

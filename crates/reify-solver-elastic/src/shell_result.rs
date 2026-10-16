@@ -7,7 +7,7 @@
 // `ShellStress` structure (std/solver/elastic).
 
 use crate::constitutive::IsotropicElastic;
-use crate::shell_assembly::{ShellFrame, build_shell_frame, plane_stress_d};
+use crate::elements::shell_frame::{ShellFrame, build_shell_frame, plane_stress_d};
 
 /// Per-element Cauchy stress tensors in the local mid-surface frame for a
 /// MITC3 shell element.
@@ -261,7 +261,8 @@ pub fn flatten_shell_channels(
 mod tests {
     use super::*;
     use crate::assembly::ElementStiffness;
-    use crate::shell_assembly::{ShellFrame, shell_element_stiffness};
+    use crate::elements::shell_frame::ShellFrame;
+    use crate::shell_assembly::shell_element_stiffness;
 
     /// Compute K · u for an 18-DOF stiffness matrix.
     fn matvec(k: &ElementStiffness, u: &[f64; 18]) -> [f64; 18] {

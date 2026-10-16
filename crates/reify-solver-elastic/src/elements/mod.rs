@@ -34,6 +34,8 @@ pub mod hex_p1;
 // Task 4417/ζ: dedicated 3-DOF/node CST membrane element (K_e).
 pub mod membrane_cst;
 pub mod mitc3_plus;
+// Task 8616/β: element-level shell primitives (frame, plane-stress D, membrane block, block rotation).
+pub mod shell_frame;
 pub mod tet_p1;
 pub mod tet_p2;
 pub mod wedge_p1;
