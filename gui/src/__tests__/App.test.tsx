@@ -10,6 +10,7 @@ import {
 } from '../editor/messages';
 import { flushMacrotasks, deferred, withSuppressedRejections, withSuppressedRejectionsAndErrorSpy, expectNoUnhandledRejections, makeNode } from './test-utils';
 import { published } from './test_utils/publishedState';
+import { splitGridTracks } from './test_utils/gridTracks';
 // Real (unmocked) formatter, shared with BucklingPanel.test.tsx case (g), so the
 // App-level buckling assertions pin the rendered payload rather than a literal.
 import { formatEigenvalue } from '../panels/BucklingPanel';
@@ -5584,6 +5585,21 @@ describe('App persistence wiring — flush on file switch', () => {
 
 // ── MechanismPanel integration (step-21) ─────────────────────────────────────
 
+/** One prismatic-joint mechanism: enough to mount MechanismPanel in the side panel. */
+function singleJointMechanism() {
+  return [
+    {
+      cell_id: 'Kinematic.m', entity_path: 'Kinematic', name: 'm', bodies_count: 2,
+      joints: [{
+        joint_index: 0, kind: 'prismatic', dimension: 'length',
+        range_lower_si: 0, range_upper_si: 0.8, axis: [0, 1, 0],
+        driving_param_cell_id: 'Kinematic.y', current_value_si: 0.1,
+        binding: { kind: 'param_bound' as const, param_cell_id: 'Kinematic.y', current_value_si: 0.1 },
+      }],
+    },
+  ];
+}
+
 describe('App MechanismPanel integration', () => {
   it('renders mechanism-panel inside the side panel', async () => {
     // Provide a mechanism descriptor so the panel is visible
@@ -5647,40 +5663,20 @@ describe('App MechanismPanel integration', () => {
   // container into a 4px slot and clipping its content under overflow:hidden.
   // Assert track count == direct-child count for the affected configurations.
   it('side-panel grid track count matches child count with mechanism + chat', async () => {
-    vi.mocked((bridge as any).getMechanismDescriptors).mockResolvedValue([
-      {
-        cell_id: 'Kinematic.m', entity_path: 'Kinematic', name: 'm', bodies_count: 2,
-        joints: [{
-          joint_index: 0, kind: 'prismatic', dimension: 'length',
-          range_lower_si: 0, range_upper_si: 0.8, axis: [0, 1, 0],
-          driving_param_cell_id: 'Kinematic.y', current_value_si: 0.1,
-          binding: { kind: 'param_bound' as const, param_cell_id: 'Kinematic.y', current_value_si: 0.1 },
-        }],
-      },
-    ]);
+    vi.mocked((bridge as any).getMechanismDescriptors).mockResolvedValue(singleJointMechanism());
 
     await renderAndWaitForReady();
     await waitFor(() => expect(screen.getByTestId('mechanism-panel')).toBeTruthy());
     await waitFor(() => expect(screen.getByTestId('chat-panel')).toBeTruthy());
 
     const sidePanel = screen.getByTestId('side-panel') as HTMLElement;
-    const tracks = countGridTracks(sidePanel.style.gridTemplateRows);
+    const tracks = splitGridTracks(sidePanel.style.gridTemplateRows).length;
     const children = sidePanel.children.length;
     expect(tracks).toBe(children);
   });
 
   it('side-panel grid track count matches child count with mechanism + no chat', async () => {
-    vi.mocked((bridge as any).getMechanismDescriptors).mockResolvedValue([
-      {
-        cell_id: 'Kinematic.m', entity_path: 'Kinematic', name: 'm', bodies_count: 2,
-        joints: [{
-          joint_index: 0, kind: 'prismatic', dimension: 'length',
-          range_lower_si: 0, range_upper_si: 0.8, axis: [0, 1, 0],
-          driving_param_cell_id: 'Kinematic.y', current_value_si: 0.1,
-          binding: { kind: 'param_bound' as const, param_cell_id: 'Kinematic.y', current_value_si: 0.1 },
-        }],
-      },
-    ]);
+    vi.mocked((bridge as any).getMechanismDescriptors).mockResolvedValue(singleJointMechanism());
 
     await renderAndWaitForReady();
     await waitFor(() => expect(screen.getByTestId('mechanism-panel')).toBeTruthy());
@@ -5695,9 +5691,106 @@ describe('App MechanismPanel integration', () => {
 
     await waitFor(() => expect(screen.queryByTestId('chat-panel')).toBeNull());
 
-    const tracks = countGridTracks(sidePanel.style.gridTemplateRows);
+    const tracks = splitGridTracks(sidePanel.style.gridTemplateRows).length;
     const children = sidePanel.children.length;
     expect(tracks).toBe(children);
+  });
+});
+
+// ─── Side-panel entry list: every child owns its own track (β #9063) ─────────
+
+describe('App side-panel entry list (β #9063)', () => {
+  /** The track of the side-panel child that is, or contains, the element with `testId`. */
+  function trackHolding(sidePanel: HTMLElement, testId: string): string {
+    const el = screen.getByTestId(testId);
+    const children = Array.from(sidePanel.children);
+    const index = children.findIndex((child) => child === el || child.contains(el));
+    expect(index).toBeGreaterThanOrEqual(0);
+    return splitGridTracks(sidePanel.style.gridTemplateRows)[index];
+  }
+
+  async function closeChat(): Promise<void> {
+    screen.getByTestId('claude-status').click();
+    await waitFor(() => expect(screen.queryByTestId('chat-panel')).toBeNull());
+  }
+
+  it('buckling + FEA + chat mounted: one track per child, chat in its minmax(160px, 1fr) track', async () => {
+    vi.mocked(bridge.getInitialState).mockResolvedValue(published({
+      ...emptyState,
+      fea_diagnostics: [{ kind: 'Unconstrained', rigid_body_modes: ['TranslationX', 'RotationZ'] }],
+    }));
+    let modeShapeCallback: ((f: any) => void) | undefined;
+    vi.mocked((bridge as any).onModeShapeFrame).mockImplementation(async (cb: (f: any) => void) => {
+      modeShapeCallback = cb;
+      return vi.fn();
+    });
+    // BucklingPanel probes getContext on mount; jsdom has no canvas backend.
+    const getContextSpy = vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(null);
+    try {
+      await renderAndWaitForReady();
+      await waitFor(() => expect(modeShapeCallback).toBeDefined());
+      modeShapeCallback!({ mode_index: 0, phase: 0.0, displaced_positions: [0, 0, 0, 1, 0, 0, 0, 1, 0] });
+      modeShapeCallback!({
+        mode_index: 0,
+        phase: 1.0,
+        displaced_positions: [0.1, 0, 0, 1.1, 0, 0, 0.1, 1, 0],
+        eigenvalue: 1000,
+      });
+      await waitFor(() => {
+        expect(screen.getByTestId('buckling-panel')).toBeTruthy();
+        expect(screen.getByTestId('fea-diagnostics-panel')).toBeTruthy();
+        expect(screen.getByTestId('chat-panel')).toBeTruthy();
+      });
+
+      const sidePanel = screen.getByTestId('side-panel');
+      expect(splitGridTracks(sidePanel.style.gridTemplateRows)).toHaveLength(sidePanel.children.length);
+      expect(trackHolding(sidePanel, 'chat-panel')).toBe('minmax(160px, 1fr)');
+      expect(trackHolding(sidePanel, 'splitter-constraint')).toBe('4px');
+      expect(trackHolding(sidePanel, 'buckling-panel')).toBe('auto');
+      expect(trackHolding(sidePanel, 'fea-diagnostics-panel')).toBe('auto');
+    } finally {
+      getContextSpy.mockRestore();
+    }
+  });
+
+  it('solver progress overlay renders outside the side-panel grid', async () => {
+    let progressCb: ((p: any) => void) | undefined;
+    vi.mocked((bridge as any).onSolverProgress).mockImplementation(async (cb: (p: any) => void) => {
+      progressCb = cb;
+      return () => {};
+    });
+    await renderAndWaitForReady();
+    await waitFor(() => expect(progressCb).toBeDefined());
+
+    vi.useFakeTimers();
+    try {
+      progressCb!({ solver_kind: 'cg', iter: 1, residual: 0.5 });
+      await vi.advanceTimersByTimeAsync(1000);
+
+      const overlay = screen.getByTestId('solver-progress-overlay');
+      const sidePanel = screen.getByTestId('side-panel');
+      expect(sidePanel.contains(overlay)).toBe(false);
+      expect(screen.getByTestId('app-layout').contains(overlay)).toBe(true);
+      expect(splitGridTracks(sidePanel.style.gridTemplateRows)).toHaveLength(sidePanel.children.length);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('chat closed with no optional panel: the constraint panel absorbs the remaining height', async () => {
+    await renderAndWaitForReady();
+    await closeChat();
+
+    expect(screen.getByTestId('side-panel').style.gridTemplateRows).toMatch(/^\d+px 4px \d+px 4px 1fr$/);
+  });
+
+  it('chat closed with a mechanism mounted: no track absorbs the remaining height', async () => {
+    vi.mocked((bridge as any).getMechanismDescriptors).mockResolvedValue(singleJointMechanism());
+    await renderAndWaitForReady();
+    await waitFor(() => expect(screen.getByTestId('mechanism-panel')).toBeTruthy());
+    await closeChat();
+
+    expect(screen.getByTestId('side-panel').style.gridTemplateRows).toMatch(/^\d+px 4px \d+px 4px \d+px auto$/);
   });
 });
 
@@ -6707,26 +6800,6 @@ describe('App save-conflict resolution clears the reload-prompt banner', () => {
   });
 });
 
-// Counts CSS grid tracks in a `grid-template-rows` value.
-// Whitespace separates tracks at depth 0; parens (e.g. minmax(160px, 1fr))
-// keep their internal whitespace from being mistaken for a track boundary.
-function countGridTracks(template: string): number {
-  let depth = 0;
-  let inTrack = false;
-  let count = 0;
-  for (const ch of template) {
-    if (ch === '(') { depth++; inTrack = true; }
-    else if (ch === ')') { depth--; inTrack = true; }
-    else if (depth === 0 && /\s/.test(ch)) {
-      if (inTrack) { count++; inTrack = false; }
-    } else {
-      inTrack = true;
-    }
-  }
-  if (inTrack) count++;
-  return count;
-}
-
 // ── AutoResolvePanel integration (step-13) ────────────────────────────────────
 
 describe('App AutoResolvePanel integration', () => {
@@ -6792,7 +6865,7 @@ describe('App AutoResolvePanel integration', () => {
     // (5) While the panel is mounted, the side-panel grid must still have one
     // track per child — a desync collapses the chat pane into a 4px strip.
     const sidePanel = screen.getByTestId('side-panel');
-    expect(countGridTracks(sidePanel.style.gridTemplateRows)).toBe(sidePanel.children.length);
+    expect(splitGridTracks(sidePanel.style.gridTemplateRows).length).toBe(sidePanel.children.length);
   });
 });
 
@@ -7725,7 +7798,7 @@ describe('App warm-pool debug panel placement (task 4279)', () => {
     expect(sidePanel.contains(screen.getByTestId('warm-pool-debug-panel'))).toBe(false);
 
     // Side-panel grid invariant: tracked children == template tracks (no 8px strip)
-    expect(countGridTracks(sidePanel.style.gridTemplateRows)).toBe(sidePanel.children.length);
+    expect(splitGridTracks(sidePanel.style.gridTemplateRows).length).toBe(sidePanel.children.length);
   });
 
   it('DEBUG OFF: neither panel nor overlay renders in the layout', async () => {

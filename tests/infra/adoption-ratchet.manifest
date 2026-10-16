@@ -34,3 +34,6 @@ theta-embedded-normal-closure | def normal_closure[(] | scripts/*.sh | 0 | θ #8
 # reify_path_attribution.py, so neither lib carries a crate-path case arm.
 theta-crate-path-case-arm-affected | ^ *["']?(crates|gui/src-tauri|examples|tree-sitter-reify)/[^)]*[)] | scripts/affected-crates-lib.sh | 0 | θ #8662
 theta-crate-path-case-arm-occt | ^ *["']?(crates|gui/src-tauri|examples|tree-sitter-reify)/[^)]*[)] | scripts/occt-scope-lib.sh | 0 | θ #8662
+# side-panel-track-iife: side-panel tracks derive from the one entry list in
+# gui/src/app/sidePanel.ts, so App.tsx builds no grid-template-rows IIFE.
+side-panel-track-iife | grid-template-rows': \(\(\) => | gui/src/App.tsx | 0 | β #9063
