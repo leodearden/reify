@@ -2584,6 +2584,12 @@ entries:
     origin_phase: ops
     manifested_phase: ops
     note: After 14x watcher-rearm.sh CEILING attempts, agent resorts to 5x manual diagnostic polling loop (lease-heartbeat, pgrep watcher check, reap-decisions, list-pending L2); clear causal chain showing CEILING outcome forcing manual workaround
+  - date: '2026-10-15'
+    project: reify
+    session: 9ce833a4-a42e-4239-838d-1424c861e1d7
+    origin_phase: ops
+    manifested_phase: ops
+    note: After each CEILING outcome the session fell back to computing remaining rotation seconds with repeated Bash calls (x4) rather than a different wait strategy, which is the redundant manual-polling pattern this entry describes.
 - id: entry-cand-20260730-5
   title: Cross-repo escalation adjudicated together but attribution diverged, needing later correction
   severity: medium
@@ -4308,6 +4314,12 @@ entries:
     origin_phase: ops
     manifested_phase: ops
     note: 'Bounded rearm (watcher-rearm.sh --level 1) hit its own CEILING (exit 124, WATCHER_REARM_OUTCOME: CEILING) and was re-issued with the same command shape at turns 134, 143 and 168. Only the timeout value changed.'
+  - date: '2026-10-15'
+    project: reify
+    session: 9ce833a4-a42e-4239-838d-1424c861e1d7
+    origin_phase: ops
+    manifested_phase: ops
+    note: 'The watcher-rearm command hit its own 3600s ceiling (exit 124, WATCHER_REARM_OUTCOME: CEILING) and was re-issued with the identical command and timeout in three designed-outcome cycles (turns 110, 117, 162), with no change in approach.'
 - id: entry-cand-20260726-8
   title: Warm-lane .task/plan.json symlink resolves to empty/unreadable target with no error surfaced
   severity: medium
@@ -8174,6 +8186,24 @@ entries:
     origin_phase: unknown
     manifested_phase: verify
     note: The agent tailed .task/iterations.jsonl during the post-merge verify block. The ls output shows the file is absent from .task, and the tool returned exit 1, matching the missing-iterations-file-at-expected-path pattern. The origin phase is not supported by the digest.
+  - date: '2026-10-15'
+    project: reify
+    session: e0f76229-e97d-4478-995a-d3df9baf65ad
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: Agent ran `tail -c 1500 .task/iterations.jsonl` and got exit 2 (no such file). The expected per-lane iterations log was absent at the path the agent assumed, matching the missing-at-expected-path pattern.
+  - date: '2026-10-15'
+    project: reify
+    session: 7284a448-e8b4-44cc-ab76-f740a395289b
+    origin_phase: unknown
+    manifested_phase: verify
+    note: Agent ran `tail -c 3000 .task/iterations.jsonl` during post-merge verification failure investigation and got 'No such file or directory' (exit 1). The file is absent at the expected per-lane path, matching the codebook entry's missing iterations.jsonl pattern. The path here is `.task/` rather than `.task-meta/`, so the match is partial. Origin phase is not supported by the digest.
+  - date: '2026-10-15'
+    project: reify
+    session: c6ebd953-a897-41ac-971f-3bb179b39d81
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: 'Error Neighborhoods show `tail: cannot open ''.task/iterations.jsonl''` and Not Found shows no such file at turn 26, so the per-lane iterations.jsonl is missing at the expected path. The `.task` directory listing holds only plan.json and a claude-config directory.'
 - id: entry-cand-20260727-8
   title: No cross-session visibility into which concurrent sessions own which blocked tasks
   severity: medium
@@ -8327,6 +8357,12 @@ entries:
     origin_phase: unknown
     manifested_phase: unknown
     note: Bash `sleep 240; ls .../tasks/ | head` to wait for scout subagents was blocked by the anti-chaining sleep guard (turn 281). The guard message directs use of Monitor or run_in_background instead. Phase is not supported by the digest evidence.
+  - date: '2026-10-15'
+    project: reify
+    session: e0f76229-e97d-4478-995a-d3df9baf65ad
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: Agent chained `sleep 240` with grep/cat to poll background verification output. The sandbox guard blocked the chain and directed use of Monitor or run_in_background instead.
 - id: entry-cand-20260719-7
   title: Warm-lane task bootstrap missing plan.json
   severity: medium
@@ -8613,6 +8649,12 @@ entries:
     origin_phase: unknown
     manifested_phase: unknown
     note: plan.json file not present at expected warm-lane task bootstrap location (symlink target missing at .task-meta/_lane-37/plan.json).
+  - date: '2026-10-15'
+    project: reify
+    session: 7d183bfa-0734-4dae-9bb1-46b7724800b6
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: Warm-lane worktree (_lane-1) session reads .task/plan.json, which is absent (wc and json.load both report No such file or directory at turn 48, and the file is still missing at turn 250). This matches the warm-lane missing plan.json pattern. Phase cannot be determined from the digest.
 - id: entry-cand-20260719-8
   title: Sandbox blocks naive sleep+check polling chains
   severity: medium
@@ -9711,6 +9753,18 @@ entries:
     origin_phase: unknown
     manifested_phase: unknown
     note: 'Same class of digest mislabel: a non-user-authored item (a slash-command invocation, <command-message>escalation-watcher) is listed under User Corrections. The source differs from the escalation notification in the entry, so this is an analogous match rather than an identical one.'
+  - date: '2026-10-15'
+    project: reify
+    session: b0ff05e0-926c-4d8c-9cfd-a62716462615
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: Loose match. The digest's User Corrections section lists a /team command-message wrapper with delegated-task briefing args as a user correction, which is the same digest mislabeling of injected or non-correction content that this entry describes. The user did issue the command, so the label is debatable. Phases are not supportable from the digest.
+  - date: '2026-10-15'
+    project: reify
+    session: 74c4e83c-62e7-40ba-8dd1-067b0e4a654a
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: The digest files an injected escalation notification (Task 7642 re-escalation, esc-7642-13) under '## User Corrections' at turn 3, which mislabels a system-injected notification as a user correction.
 - id: entry-cand-20260813-11
   title: Agent assumes earlier &&-chained command executed despite the whole chain being rejected upfront by an eval syntax error
   severity: medium
@@ -9967,6 +10021,12 @@ entries:
     origin_phase: unknown
     manifested_phase: unknown
     note: Turn 71 chains a shell pipeline whose step exits 1 with diff-style output (a difference-found result, not a failure). The digest logs it as tool_error. The entry is git-specific and this step is diff, so the match is partial.
+  - date: '2026-10-15'
+    project: reify
+    session: d01ac9b7-3a44-4c21-859c-13b49e866c56
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: Turn 23 chains `git merge-base --is-ancestor e4322607e0 main && echo ON_MAIN`. The predicate exits 1 (not an ancestor), and the digest records it as a tool_error with exit code 1. This matches the codebook entry's boolean-predicate-exit-code-via-&& misreading. The digest does not show whether the agent misread it, so phases are unknown.
 - id: entry-cand-20260916-19
   title: get_memories_by_metadata re-issued identically 3x on the same topic filter instead of adapting retrieval strategy
   severity: medium
@@ -26918,3 +26978,55 @@ candidates:
     origin_phase: unknown
     manifested_phase: verify
     evidence_quote: 'FAIL: F1: the DERIVED roster of deadline-capable suites over tests/infra/ (direct wrapper call sites plus their invocation closure) equals the DECLARED one (unlisted: test_run_all_timing.sh test_verify_ledger_cli.sh) (stale: <none>)'
+- id: cand-20261015-1
+  title: Delegated-task briefing prose copied verbatim into an executable Node script, causing SyntaxError
+  cause: The agent pasted instruction prose from its task briefing (e.g. 'Check the code, not the prose... Return the path::symbol ... as `anchor`') directly into a JavaScript script body, so the prose was parsed as code and failed with SyntaxError. The agent did not separate instruction text from executable code.
+  area: agent-tooling
+  first_seen: '2026-10-15'
+  disposition: pending
+  sightings:
+  - date: '2026-10-15'
+    project: reify
+    session: b0ff05e0-926c-4d8c-9cfd-a62716462615
+    origin_phase: unknown
+    manifested_phase: unknown
+    evidence_quote: 'SyntaxError: Unexpected identifier ''anchor'''
+- id: cand-20261015-2
+  title: Verify block reports only 'tests failed [unknown_test_failure]' without naming the failing test
+  cause: The post-merge verification block reason gives a generic category and the verify.sh command echo rather than the failing test identity. The agent must dig through archived logs and truncated test output to find what broke, which raises the cost of the next fix.
+  area: verify-diagnostics
+  first_seen: '2026-10-15'
+  disposition: pending
+  sightings:
+  - date: '2026-10-15'
+    project: reify
+    session: e0f76229-e97d-4478-995a-d3df9baf65ad
+    origin_phase: verify
+    manifested_phase: verify
+    evidence_quote: 'Block reason: Post-merge verification failed: Failures: tests failed [category: unknown_test_failure]'
+- id: cand-20261015-3
+  title: Trait-body malformed sub line silently dropped with no diagnostic, so conformance fixtures can pass vacuously
+  cause: A malformed `sub hole = Hole` line inside a trait body is silently dropped with rc 0 and no diagnostic, while the same line in a structure body is rejected with a parse error. Conformance tests written against trait bodies can therefore pass without checking anything, and the next agent has no signal that the fixture is vacuous unless it already knows to add parentheses.
+  area: reify-syntax trait-member lowering (ts_parser.rs)
+  first_seen: '2026-10-15'
+  disposition: pending
+  sightings:
+  - date: '2026-10-15'
+    project: reify
+    session: 71f06d4c-bf38-43b0-8961-23d300652e26
+    origin_phase: unknown
+    manifested_phase: unknown
+    evidence_quote: '`trait T { sub hole = Hole }` + `structure def S : T {}` -> rc 0 "All constraints satisfied", no diagnostic (sub requirement silently dropped); ... Impact on #8736: conformance fixtures must use parens or pass vacuously.'
+- id: cand-20261015-4
+  title: MCP add_plan_step parameter names guessed across retries instead of consulting the tool schema
+  cause: The agent called add_plan_step with a guessed argument set (task_id, no step_id/step_type), received a Pydantic validation error, then retried with a different guessed set (step_id, type) instead of reading the tool's required-argument schema. Each attempt failed on a different missing or unexpected argument, so the step was never added.
+  area: agent-tooling
+  first_seen: '2026-10-15'
+  disposition: pending
+  sightings:
+  - date: '2026-10-15'
+    project: reify
+    session: 0432f508-acff-4e75-bdce-869ab2037a92
+    origin_phase: unknown
+    manifested_phase: unknown
+    evidence_quote: '(turn 74) mcp__plan-tools__add_plan_step({"description": "Add tsv to _EXTS and both test-side pins", "step_type": "impl", "task_id": "9058"}) -> 2 validation errors ... step_id Missing required argument ... task_id Unexpected keyword argument; (turn 80) mcp__plan-tools__add_plan_step({"description": "Add tsv to _EXTS and both test-side pins", "step_id": "impl-1", "type": "impl"}) -> 2 validation errors ... step_type Missing required argument ... type Unexpected keyword argument'
