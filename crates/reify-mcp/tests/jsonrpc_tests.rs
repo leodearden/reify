@@ -1,5 +1,5 @@
 use reify_mcp::context::MockToolContext;
-use reify_mcp::jsonrpc::{INVALID_REQUEST, McpDispatcher};
+use reify_mcp::jsonrpc::{INVALID_PARAMS, INVALID_REQUEST, JsonRpcResponse, McpDispatcher};
 use reify_mcp::registry::ToolRegistry;
 use reify_mcp::types::ToolError;
 
@@ -298,5 +298,31 @@ fn dispatch_tools_call_array_arguments_returns_invalid_params() {
     assert!(
         text.to_lowercase().contains("arguments"),
         "Error should mention 'arguments', got: {text}"
+    );
+}
+
+// --- Response envelope: result XOR error ---
+
+#[test]
+fn response_ok_serializes_result_without_error() {
+    let response = JsonRpcResponse::ok(serde_json::json!(7), serde_json::json!({"k": 1}));
+
+    assert_eq!(
+        serde_json::to_value(response).unwrap(),
+        serde_json::json!({"jsonrpc": "2.0", "id": 7, "result": {"k": 1}})
+    );
+}
+
+#[test]
+fn response_err_serializes_error_without_result() {
+    let response = JsonRpcResponse::err(serde_json::json!("a"), INVALID_PARAMS, "bad");
+
+    assert_eq!(
+        serde_json::to_value(response).unwrap(),
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": "a",
+            "error": {"code": -32602, "message": "bad"}
+        })
     );
 }
