@@ -57,8 +57,7 @@ pub use sketch::{
 // reify-expr; `JacobianModel` keeps its `Seeds` private, so no seed type
 // crosses this boundary.
 pub use dual_jacobian::{Jacobian, JacobianError, JacobianModel, residual_jacobian};
-pub use solver::DimensionalSolver;
-pub use solver::TrialModel;
+pub use solver::{DimensionalSolver, TrialModel};
 // γ cost_robustness_tradeoff (task #4791): re-exported so integration tests can
 // compute the λ=0 Chebyshev-centre reference independently of the tradeoff blend
 // dispatch under test (see `cost_robustness_tradeoff_blend.rs`).
