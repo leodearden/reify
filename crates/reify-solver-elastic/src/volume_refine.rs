@@ -809,7 +809,8 @@ mod tests {
     /// Two-tet bipyramid: vertices [0,1,2,3] in tet A (size 0.5), vertices
     /// [0,1,2,4] in tet B (size 1.0). Shared vertices 0..=2 take
     /// `min(0.5, 1.0) = 0.5`. Vertex 3 (only in A) stays 0.5. Vertex 4 (only
-    /// in B) stays 1.0.
+    /// in B) stays 1.0. The projector receives only the shape, so the shape
+    /// itself must carry the topology the projection walks.
     ///
     /// Relocated from `tests/volume_refine_tests.rs` after step-12 restricted
     /// the projector to `pub(crate)` visibility.
@@ -819,7 +820,7 @@ mod tests {
         let per_elem = [0.5_f64, 1.0_f64];
         let shape = super::tet_shape(&vm).expect("bipyramid is a well-formed P1 tet mesh");
 
-        let result = super::project_per_element_sizes_to_vertices(&vm, shape, &per_elem);
+        let result = super::project_per_element_sizes_to_vertices(shape, &per_elem);
 
         assert_eq!(
             result.len(),
@@ -850,7 +851,7 @@ mod tests {
         let shape = super::tet_shape(&vm).expect("bipyramid is a well-formed P1 tet mesh");
 
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            super::project_per_element_sizes_to_vertices(&vm, shape, &too_short)
+            super::project_per_element_sizes_to_vertices(shape, &too_short)
         }));
         assert!(
             result.is_err(),
