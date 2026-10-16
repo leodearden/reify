@@ -29,6 +29,7 @@ import { WarmPoolDebugPanel } from './debug/WarmPoolDebugPanel';
 import { registerDebugPanel } from './debug/types';
 import { Splitter } from './components/Splitter';
 import { alwaysMounted, mountedEntries, sidePanelTracks, type SidePanelEntry } from './app/sidePanel';
+import { createSubscriptionSet, type SubscriptionRow } from './app/subscriptionSet';
 import { KeyboardHelp } from './components/KeyboardHelp';
 import { CommandPalette } from './components/CommandPalette';
 import { useKeyboardShortcuts, paletteCommands, runCommand } from './hooks/useKeyboardShortcuts';
@@ -1410,41 +1411,146 @@ const App: Component = () => {
   }
 
   let alive = true;
-  let unsub: (() => void) | undefined;
-  let fileChangedUnsub: (() => void) | undefined;
-  let fileRemovedUnsub: (() => void) | undefined;
-  let serializationErrorUnsub: (() => void) | undefined;
-  let focusEntityUnsub: (() => void) | undefined;
-  let navigateToSourceUnsub: (() => void) | undefined;
-  let claudeEventUnsub: (() => void) | undefined;
-  let sidecarCrashedUnsub: (() => void) | undefined;
-  let debugBridgeUnsub: (() => void) | undefined;
-  let kernelStatusUnsub: (() => void) | undefined;
-  let bucklingFrameUnsub: (() => void) | undefined;
+  const subscriptions = createSubscriptionSet();
+
+  // Wrapped in try/catch (not .catch) so that if the bridge import is mocked
+  // without getKernelStatus, the synchronous `undefined()` TypeError is
+  // captured rather than escaping the async context.
+  async function fetchKernelStatus(): Promise<void> {
+    try {
+      const status = await getKernelStatus();
+      if (!alive) return;
+      engineStore.setKernelStatus(status);
+    } catch (err) {
+      console.warn('[kernel-status] fetch failed:', err);
+    }
+  }
+
+  const subscriptionRows: readonly SubscriptionRow[] = [
+    {
+      subscribe: () => engineStore.subscribeToEvents(),
+      onFailure: () => showToast('Event subscription failed — some updates may not appear', 'error'),
+    },
+    {
+      subscribe: () =>
+        onFileChanged((data: FileData) => {
+          // Only act when the file is currently open.
+          // isSameFile handles file:// URI vs bare-path mismatches that the bridge
+          // layer emits inconsistently (LSP uses URIs, Tauri commands use bare paths).
+          // We pass match.path (the tab's key) to store mutations so the store
+          // key stays stable — never accidentally renamed to the URI form.
+          const match = editorStore.state.openFiles.find((f) => isSameFile(f.path, data.path));
+          if (!match) return;
+
+          if (editorStore.state.dirtyFiles.includes(match.path)) {
+            // Dirty path: user has unsaved edits — surface the conflict so they
+            // can choose between Reload or Overwrite.
+            setChangedFiles((prev) => new Set([...prev, match.path]));
+            editorStore.markExternallyChanged(match.path);
+          } else {
+            // Non-dirty path: no local edits to protect — silently update the
+            // buffer so the view stays in sync with disk without any prompt.
+            editorStore.updateFileContent(match.path, data.content);
+            editorStore.markClean(match.path);
+            // Also clear this path from changedFiles in case a stale entry survived
+            // (e.g. a previous markExternallyChanged that was then resolved outside
+            // the normal conflict flow). Keeps the banner from outliving the conflict.
+            removeFromChangedFiles(match.path);
+          }
+        }),
+      onFailure: () =>
+        showToast('File change monitoring unavailable — external edits may not be detected', 'error'),
+    },
+    {
+      subscribe: () =>
+        onFileRemoved((data) => {
+          // Only act when the file is currently open — ignore deletions for files
+          // we don't have a tab for (avoids spurious missingFiles entries).
+          const isOpen = editorStore.state.openFiles.some((f) => isSameFile(f.path, data.path));
+          if (!isOpen) return;
+          editorStore.markMissing(data.path);
+        }),
+      onFailure: () =>
+        showToast('File removal monitoring unavailable — deleted files may not be indicated', 'error'),
+    },
+    {
+      subscribe: () => onSerializationError((data) => serializationErrorCoalescer.add(data)),
+      onFailure: () => showToast('Serialization error monitoring unavailable', 'error'),
+    },
+    // Focus-entity events (from focus_entity Tauri command and MCP tool).
+    //
+    // OWNERSHIP: This handler is the sole terminal dispatcher for focus navigation
+    // regardless of origin:
+    //   • MCP-originated: Claude calls reify_focus_entity → backend emits the event →
+    //     this listener fires. No other handler runs.
+    //   • User-initiated: handleGroupDoubleClick → navigateToEntity → bridgeFocusEntity
+    //     (Tauri command) → backend emits the event → this listener fires.
+    //     navigateToEntity's only side effect is triggering the backend command;
+    //     flyToEntity and selectEntity run exclusively here.
+    {
+      subscribe: () =>
+        onFocusEntity((entity) => {
+          flyToEntityFn?.(entity);
+          selectionStore.selectEntity(entity);
+        }),
+      onFailure: (err) => console.warn('Failed to subscribe to focus-entity events:', err),
+    },
+    // Kernel status: fetch the current value, then subscribe to kernel-status
+    // events, so late-binding kernel-availability changes — e.g. future dynamic
+    // dylib loading — propagate to the banner. The fetch sits in this row, not
+    // ahead of the table, so it delays none of the subscriptions above it. A
+    // failed fetch only warns; the subscription still runs.
+    {
+      subscribe: async () => {
+        await fetchKernelStatus();
+        return onKernelStatus((s) => engineStore.setKernelStatus(s));
+      },
+      onFailure: (err) => console.warn('Failed to subscribe to kernel-status events:', err),
+    },
+    // Navigate-to-source events (from MCP navigate_to_source tool).
+    {
+      subscribe: () =>
+        onNavigateToSource(({ file, line, column, end_line, end_column }) => {
+          setScrollToLocation({ file_path: file, line, column, end_line, end_column });
+        }),
+      onFailure: (err) => console.warn('Failed to subscribe to navigate-to-source events:', err),
+    },
+    {
+      subscribe: () => subscribeToClaudeEvents(claudeStore.handleOutboundMessage),
+      onFailure: (err) => {
+        console.error('[claude] subscribeToClaudeEvents failed:', err);
+        showToast('Claude assistant unavailable — chat features may not work', 'error');
+      },
+    },
+    {
+      subscribe: () => subscribeToSidecarCrashed((reason) => claudeStore.handleSidecarCrashed(reason)),
+      onFailure: (err) => console.error('[claude] subscribeToSidecarCrashed failed:', err),
+    },
+    {
+      subscribe: () => subscribeModeShapeFrames(bucklingStore),
+      onFailure: (err) => console.error('[buckling] subscribeModeShapeFrames failed:', err),
+    },
+    // Debug bridge when REIFY_DEBUG=1 (dynamic import for tree-shaking).
+    {
+      subscribe: async () => {
+        if (!(await isDebugEnabled())) return () => {};
+        setDebugEnabled(true);
+        const { initDebugBridge } = await import('./debug');
+        return initDebugBridge({
+          engine: engineStore,
+          editor: editorStore,
+          selection: selectionStore,
+          claude: claudeStore,
+          viewState: viewStateStore,
+          layout: layoutStore,
+        });
+      },
+      onFailure: (err) => console.error('[debug-bridge] init failed:', err),
+    },
+  ];
 
   async function initApp() {
-    // Clean up existing subscriptions before proceeding (defensive against
-    // concurrent or re-entrant initApp calls, e.g. rapid retry)
-    unsub?.();
-    unsub = undefined;
-    fileChangedUnsub?.();
-    fileChangedUnsub = undefined;
-    fileRemovedUnsub?.();
-    fileRemovedUnsub = undefined;
-    serializationErrorUnsub?.();
-    serializationErrorUnsub = undefined;
-    focusEntityUnsub?.();
-    focusEntityUnsub = undefined;
-    navigateToSourceUnsub?.();
-    navigateToSourceUnsub = undefined;
-    claudeEventUnsub?.();
-    claudeEventUnsub = undefined;
-    sidecarCrashedUnsub?.();
-    sidecarCrashedUnsub = undefined;
-    kernelStatusUnsub?.();
-    kernelStatusUnsub = undefined;
-    bucklingFrameUnsub?.();
-    bucklingFrameUnsub = undefined;
+    subscriptions.disposeAll();
 
     setInitPhase('loading');
 
@@ -1507,210 +1613,8 @@ const App: Component = () => {
 
     // Subscribe to events before showing ready state — "ready" means
     // fully initialized including live update subscriptions
-    try {
-      const u = await engineStore.subscribeToEvents();
-      if (!alive) {
-        u();
-        return;
-      }
-      unsub = u;
-    } catch (err) {
-      showToast('Event subscription failed — some updates may not appear', 'error');
-    }
-
-    // Subscribe to file-changed events
-    try {
-      const unlistenFileChanged = await onFileChanged((data: FileData) => {
-        // Only act when the file is currently open.
-        // isSameFile handles file:// URI vs bare-path mismatches that the bridge
-        // layer emits inconsistently (LSP uses URIs, Tauri commands use bare paths).
-        // We pass match.path (the tab's key) to store mutations so the store
-        // key stays stable — never accidentally renamed to the URI form.
-        const match = editorStore.state.openFiles.find((f) => isSameFile(f.path, data.path));
-        if (!match) return;
-
-        if (editorStore.state.dirtyFiles.includes(match.path)) {
-          // Dirty path: user has unsaved edits — surface the conflict so they
-          // can choose between Reload or Overwrite.
-          setChangedFiles((prev) => new Set([...prev, match.path]));
-          editorStore.markExternallyChanged(match.path);
-        } else {
-          // Non-dirty path: no local edits to protect — silently update the
-          // buffer so the view stays in sync with disk without any prompt.
-          editorStore.updateFileContent(match.path, data.content);
-          editorStore.markClean(match.path);
-          // Also clear this path from changedFiles in case a stale entry survived
-          // (e.g. a previous markExternallyChanged that was then resolved outside
-          // the normal conflict flow). Keeps the banner from outliving the conflict.
-          removeFromChangedFiles(match.path);
-        }
-      });
-      if (!alive) {
-        unlistenFileChanged();
-        return;
-      }
-      fileChangedUnsub = unlistenFileChanged;
-    } catch (_err) {
-      showToast('File change monitoring unavailable — external edits may not be detected', 'error');
-    }
-
-    // Subscribe to file-removed events
-    try {
-      const unlistenFileRemoved = await onFileRemoved((data) => {
-        // Only act when the file is currently open — ignore deletions for files
-        // we don't have a tab for (avoids spurious missingFiles entries).
-        const isOpen = editorStore.state.openFiles.some((f) => isSameFile(f.path, data.path));
-        if (!isOpen) return;
-        editorStore.markMissing(data.path);
-      });
-      if (!alive) {
-        unlistenFileRemoved();
-        return;
-      }
-      fileRemovedUnsub = unlistenFileRemoved;
-    } catch (_err) {
-      showToast('File removal monitoring unavailable — deleted files may not be indicated', 'error');
-    }
-
-    // Subscribe to serialization error events
-    try {
-      const unlistenSerializationError = await onSerializationError((data) => {
-        serializationErrorCoalescer.add(data);
-      });
-      if (!alive) {
-        unlistenSerializationError();
-        return;
-      }
-      serializationErrorUnsub = unlistenSerializationError;
-    } catch (_err) {
-      showToast('Serialization error monitoring unavailable', 'error');
-    }
-
-    // Subscribe to focus-entity events (from focus_entity Tauri command and MCP tool).
-    //
-    // OWNERSHIP: This handler is the sole terminal dispatcher for focus navigation
-    // regardless of origin:
-    //   • MCP-originated: Claude calls reify_focus_entity → backend emits the event →
-    //     this listener fires. No other handler runs.
-    //   • User-initiated: handleGroupDoubleClick → navigateToEntity → bridgeFocusEntity
-    //     (Tauri command) → backend emits the event → this listener fires.
-    //     navigateToEntity's only side effect is triggering the backend command;
-    //     flyToEntity and selectEntity run exclusively here.
-    try {
-      const unlisten = await onFocusEntity((entity) => {
-        flyToEntityFn?.(entity);
-        selectionStore.selectEntity(entity);
-      });
-      if (!alive) {
-        unlisten();
-        return;
-      }
-      focusEntityUnsub = unlisten;
-    } catch (_err) {
-      console.warn('Failed to subscribe to focus-entity events:', _err);
-    }
-
-    // Fetch initial kernel status. Wrapped in try/catch (not .catch) so that if
-    // the bridge import is mocked without getKernelStatus, the synchronous
-    // `undefined()` TypeError is captured rather than escaping the async context.
-    try {
-      const status = await getKernelStatus();
-      if (!alive) return;
-      engineStore.setKernelStatus(status);
-    } catch (err) {
-      console.warn('[kernel-status] fetch failed:', err);
-    }
-
-    // Subscribe to kernel-status events (so late-binding kernel-availability
-    // changes — e.g. future dynamic dylib loading — propagate to the banner).
-    try {
-      const unlisten = await onKernelStatus((s) => engineStore.setKernelStatus(s));
-      if (!alive) {
-        unlisten();
-        return;
-      }
-      kernelStatusUnsub = unlisten;
-    } catch (_err) {
-      console.warn('Failed to subscribe to kernel-status events:', _err);
-    }
-
-    // Subscribe to navigate-to-source events (from MCP navigate_to_source tool)
-    try {
-      const unlisten = await onNavigateToSource(({ file, line, column, end_line, end_column }) => {
-        setScrollToLocation({ file_path: file, line, column, end_line, end_column });
-      });
-      if (!alive) {
-        unlisten();
-        return;
-      }
-      navigateToSourceUnsub = unlisten;
-    } catch (_err) {
-      console.warn('Failed to subscribe to navigate-to-source events:', _err);
-    }
-
-    // Subscribe to Claude sidecar events
-    try {
-      const unlistenClaude = await subscribeToClaudeEvents(claudeStore.handleOutboundMessage);
-      if (!alive) {
-        unlistenClaude();
-        return;
-      }
-      claudeEventUnsub = unlistenClaude;
-    } catch (err) {
-      console.error('[claude] subscribeToClaudeEvents failed:', err);
-      showToast('Claude assistant unavailable — chat features may not work', 'error');
-    }
-
-    // Subscribe to sidecar-crashed events (unexpected process exit)
-    try {
-      const unlistenSidecarCrashed = await subscribeToSidecarCrashed((reason) =>
-        claudeStore.handleSidecarCrashed(reason),
-      );
-      if (!alive) {
-        unlistenSidecarCrashed();
-        return;
-      }
-      sidecarCrashedUnsub = unlistenSidecarCrashed;
-    } catch (err) {
-      console.error('[claude] subscribeToSidecarCrashed failed:', err);
-    }
-
-    // Subscribe to mode-shape-frame IPC events for the buckling animator
-    try {
-      const unlistenBuckling = await subscribeModeShapeFrames(bucklingStore);
-      if (!alive) {
-        unlistenBuckling();
-        return;
-      }
-      bucklingFrameUnsub = unlistenBuckling;
-    } catch (err) {
-      console.error('[buckling] subscribeModeShapeFrames failed:', err);
-    }
-
-    // Initialize debug bridge if REIFY_DEBUG=1 (dynamic import for tree-shaking)
-    try {
-      if (await isDebugEnabled()) {
-        setDebugEnabled(true);
-        const { initDebugBridge } = await import('./debug');
-        const unsub = await initDebugBridge({
-          engine: engineStore,
-          editor: editorStore,
-          selection: selectionStore,
-          claude: claudeStore,
-          viewState: viewStateStore,
-          layout: layoutStore,
-        });
-        if (!alive) {
-          unsub();
-          return;
-        }
-        debugBridgeUnsub = unsub;
-      }
-    } catch (err) {
-      console.error('[debug-bridge] init failed:', err);
-    }
-
-    if (!alive) return;
+    const completed = await subscriptions.subscribeAll(subscriptionRows);
+    if (!completed || !alive) return;
     setInitPhase('ready');
   }
 
@@ -1765,18 +1669,8 @@ const App: Component = () => {
 
   onCleanup(() => {
     alive = false;
-    unsub?.();
-    fileChangedUnsub?.();
-    fileRemovedUnsub?.();
-    serializationErrorUnsub?.();
-    focusEntityUnsub?.();
-    navigateToSourceUnsub?.();
+    subscriptions.disposeAll();
     serializationErrorCoalescer.cleanup();
-    claudeEventUnsub?.();
-    sidecarCrashedUnsub?.();
-    debugBridgeUnsub?.();
-    kernelStatusUnsub?.();
-    bucklingFrameUnsub?.();
     sidePanelObserver?.disconnect();
     editorPanelObserver?.disconnect();
     delete window.__REIFY_DEBUG__;

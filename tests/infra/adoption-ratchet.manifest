@@ -37,3 +37,6 @@ theta-crate-path-case-arm-occt | ^ *["']?(crates|gui/src-tauri|examples|tree-sit
 # side-panel-track-iife: side-panel tracks derive from the one entry list in
 # gui/src/app/sidePanel.ts, so App.tsx builds no grid-template-rows IIFE.
 side-panel-track-iife | grid-template-rows': \(\(\) => | gui/src/App.tsx | 0 | β #9063
+# app-unsub-slot: initApp's subscriptions live in one SubscriptionSet
+# (gui/src/app/subscriptionSet.ts), so App.tsx holds no per-subscription unsub slot.
+app-unsub-slot | let [a-zA-Z]*[uU]nsub[:;= ] | gui/src/App.tsx | 0 | γ #9064
