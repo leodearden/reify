@@ -8,6 +8,9 @@ over channel files written by hand. EncoderTests drive the writer,
 scripts/lib_event_log.sh, from bash and read its output back with that reader.
 SlotTimeoutRecordTests force real finite-WAIT deadlines through
 scripts/lib_slot_acquire.sh and every wrapper that calls it (PRD §9 R-1).
+RunAllChannelTests EXECUTE the real tests/infra/run_all.sh on tempdir fixture
+INFRA_DIRs (private manifest, pool lock, Lane-X lock, flaky ledger and TMPDIR)
+in each of its four branches.
 
 SELF-POLLUTION: a forced deadline prints a live slot-timeout sentinel on the
 child's stderr, and this suite's own output is re-emitted into the merge-gate
@@ -23,7 +26,9 @@ import contextlib
 import fcntl
 import json
 import os
+import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -39,6 +44,7 @@ from verify_ledger_env import hermetic_env  # noqa: E402
 REPO_ROOT = Path(__file__).resolve().parents[2]
 READER = INFRA_DIR / "verify_events.py"
 SCRIPTS = REPO_ROOT / "scripts"
+RUN_ALL = REPO_ROOT / "tests" / "infra" / "run_all.sh"
 LIB = SCRIPTS / "lib_event_log.sh"
 CHANNEL_VAR = "REIFY_VERIFY_EVENT_LOG"
 LINE_MAX = 4000
@@ -781,6 +787,271 @@ class SlotTimeoutRecordTests(unittest.TestCase):
         self.assertEqual(result.returncode, 75)
         self.assertEqual(list(scratch.iterdir()), [])
         self.assertEqual(sentinel_count(result.stderr, reason), 1)
+
+
+PASS_MEMBER = """#!/usr/bin/env bash
+echo "member $(basename "$0") ok"
+exit 0
+"""
+
+FAIL_MEMBER = """#!/usr/bin/env bash
+echo "  FAIL: x"
+exit 1
+"""
+
+TWELVE_FAILS_MEMBER = """#!/usr/bin/env bash
+for i in 1 2 3 4 5 6 7 8 9 10 11 12; do echo "  FAIL: $i"; done
+exit 1
+"""
+
+# Forces a REAL fatal slot_acquire deadline inside a member (it holds the
+# slot itself: a second open file description conflicts under flock(2)), then
+# prints a quoted sentinel assembled from fragments. Records what it saw of
+# the channel variable and the deadline's rc.
+DEADLINE_MEMBER = """#!/usr/bin/env bash
+printf '%s\\n' "${REIFY_VERIFY_EVENT_LOG-<unset>}" > "$FIXTURE_STATE/channel-env"
+source "$REPO_SCRIPTS/lib_slot_acquire.sh"
+exec 8>>"$FIXTURE_STATE/m.lock.slot-1"
+flock -x 8
+rc=0
+slot_acquire "$FIXTURE_STATE/m.lock" 1 1 "" member_probe_starvation || rc=$?
+echo "$rc" > "$FIXTURE_STATE/deadline-rc"
+token='@@REIFY_'
+echo "${token}SLOT_TIMEOUT@@ reason=quoted_by_member slots=1 waited=0 disposition=fatal lock=/quoted"
+exit 0
+"""
+
+B1_MEMBERS = {
+    "test_fail.sh": FAIL_MEMBER,
+    "test_pass.sh": PASS_MEMBER,
+    "test_skippable.sh": PASS_MEMBER,
+}
+B1_ROWS = {name: "pool" for name in B1_MEMBERS}
+
+
+def write_executable(path, text):
+    path.write_text(text)
+    path.chmod(path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+
+
+def summary_counts(stdout):
+    """(discovered, failed) from run_all's `=== Summary: N discovered, M failed` line."""
+    match = re.search(r"^=== Summary: (\d+) discovered, (\d+) failed", stdout, re.M)
+    return (int(match.group(1)), int(match.group(2))) if match else None
+
+
+def failed_line_names(stdout):
+    """The names on run_all's bare `FAILED <names>` classifier line ([] if none)."""
+    for line in stdout.split("\n"):
+        if line.startswith("FAILED "):
+            names = line[len("FAILED "):].split()
+            return [n for n in names if n != "(partial)"]
+    return []
+
+
+def by_member(records):
+    return {r["member"]: r for r in records}
+
+
+class RunAllFixture:
+    """A tempdir INFRA_DIR of members plus every private path run_all.sh needs."""
+
+    def __init__(self, test, members):
+        self.root = Path(tempfile.mkdtemp(prefix="ra-events-"))
+        test.addCleanup(shutil.rmtree, self.root, True)
+        self.infra = self.root / "infra"
+        self.state = self.root / "state"
+        self.tmp = self.root / "tmp"
+        self.cwd = self.root / "cwd"
+        for directory in (self.infra, self.state, self.tmp, self.cwd):
+            directory.mkdir()
+        for name, body in members.items():
+            write_executable(self.infra / name, body)
+        self.channel = self.root / "channel.jsonl"
+        self._manifests = 0
+
+    def manifest(self, rows):
+        self._manifests += 1
+        path = self.root / f"classification-{self._manifests}.manifest"
+        path.write_text("".join(f"{name} {bucket}\n" for name, bucket in rows.items()))
+        return path
+
+    def env(self, manifest, channel=True, **overrides):
+        env = acquire_env(self.channel if channel else None)
+        env.update(
+            RUN_ALL_CLASSIFICATION_MANIFEST=str(manifest),
+            REIFY_RUN_ALL_POOL_LOCK=str(self.root / "pool.lock"),
+            REIFY_RUN_ALL_POOL_CONCURRENCY="2",
+            REIFY_RUN_ALL_POOL_PSI_DISABLE="1",
+            REIFY_RUN_ALL_FLAKY_LEDGER=str(self.root / "flaky-ledger.jsonl"),
+            REIFY_LANE_X_FLOCK_LOCK=str(self.root / "lane-x.lock"),
+            TMPDIR=str(self.tmp),
+            FIXTURE_STATE=str(self.state),
+            REPO_SCRIPTS=str(SCRIPTS),
+        )
+        env.update(overrides)
+        return env
+
+    def argv(self, *flags):
+        return ["bash", str(RUN_ALL), str(self.infra), *flags]
+
+    def run(self, *flags, manifest, channel=True, **overrides):
+        return run(self.argv(*flags), env=self.env(manifest, channel, **overrides), cwd=self.cwd)
+
+    def events(self):
+        return verify_events.read_events(self.channel)
+
+
+# (run_start.branch, extra run_all flags, knobs) for the B1 member set.
+B1_BRANCHES = [
+    ("pool", {}),
+    ("serial", {"REIFY_RUN_ALL_POOL_DISABLE": "1"}),
+]
+
+
+class RunAllChannelTests(unittest.TestCase):
+    def assert_one_run(self, result, events, branch):
+        starts = verify_events.select(events, event="run_start")
+        finishes = verify_events.select(events, event="run_finish")
+        self.assertEqual((len(starts), len(finishes)), (1, 1))
+        start, finish = starts[0], finishes[0]
+        self.assertEqual((start["scope"], start["branch"]), ("all", branch))
+        discovered, failed = summary_counts(result.stdout)
+        self.assertEqual(
+            (start["discovered"], finish["discovered"], finish["failures"]),
+            (discovered, discovered, failed),
+        )
+        self.assertEqual(finish["failed"], failed_line_names(result.stdout))
+        self.assertIs(finish["interrupted"], False)
+        return finish
+
+    def test_b1_pool_and_serial_write_one_run_and_one_finish_per_member(self):
+        for branch, knobs in B1_BRANCHES:
+            with self.subTest(branch=branch):
+                fx = RunAllFixture(self, B1_MEMBERS)
+                result = fx.run(manifest=fx.manifest(B1_ROWS), **knobs)
+                self.assertEqual(result.returncode, 1)
+                events = fx.events()
+                self.assertEqual(events.skipped_lines, 0)
+                finish = self.assert_one_run(result, events, branch)
+                self.assertEqual(finish["failed"], ["test_fail.sh"])
+                finishes = verify_events.select(events, event="member_finish")
+                self.assertEqual(sorted(r["member"] for r in finishes), sorted(B1_MEMBERS))
+                records = by_member(finishes)
+                fail = records["test_fail.sh"]
+                self.assertEqual(
+                    (fail["verdict"], fail["rc"], fail["fail_detail"], fail["fail_detail_omitted"]),
+                    ("FAIL", 1, ["  FAIL: x"], 0),
+                )
+                self.assertEqual(fail["attempt"], 2 if branch == "pool" else 1)
+                for name in ("test_pass.sh", "test_skippable.sh"):
+                    record = records[name]
+                    self.assertEqual(
+                        (record["verdict"], record["rc"], record["attempt"], record["fail_detail"]),
+                        ("PASS", 0, 1, []),
+                    )
+                for record in finishes:
+                    self.assertTrue(is_int(record["duration_ms"]) and record["duration_ms"] >= 0)
+                starts = verify_events.select(events, event="member_start")
+                expected_mode = "capture" if branch == "pool" else "stream"
+                self.assertEqual({r["mode"] for r in starts}, {expected_mode})
+                fail_attempts = [r["attempt"] for r in starts if r["member"] == "test_fail.sh"]
+                self.assertEqual(fail_attempts, [1, 2] if branch == "pool" else [1])
+
+    def test_b1_subset_branch_records_the_skipped_member(self):
+        fx = RunAllFixture(self, B1_MEMBERS)
+        result = fx.run(
+            manifest=fx.manifest(B1_ROWS),
+            REIFY_RUN_ALL_MEMBER_SUBSET="test_pass.sh test_fail.sh",
+        )
+        self.assertEqual(result.returncode, 1)
+        events = fx.events()
+        finish = self.assert_one_run(result, events, "subset")
+        self.assertEqual(finish["skipped"], ["test_skippable.sh"])
+        records = by_member(verify_events.select(events, event="member_finish"))
+        self.assertEqual(sorted(records), sorted(B1_MEMBERS))
+        skip = records["test_skippable.sh"]
+        self.assertEqual(
+            (skip["verdict"], skip["attempt"], skip["rc"], skip["duration_ms"]),
+            ("SKIP", 0, None, None),
+        )
+        started = {r["member"] for r in verify_events.select(events, event="member_start")}
+        self.assertEqual(started, {"test_pass.sh", "test_fail.sh"})
+
+    def test_fail_detail_text_block_and_record_share_one_bound(self):
+        fx = RunAllFixture(self, {"test_many.sh": TWELVE_FAILS_MEMBER})
+        result = fx.run(
+            manifest=fx.manifest({"test_many.sh": "pool"}),
+            REIFY_RUN_ALL_POOL_DISABLE="1",
+            REIFY_RUN_ALL_FAIL_DETAIL_MAX="10",
+        )
+        self.assertEqual(result.returncode, 1)
+        kept = [f"  FAIL: {i}" for i in range(3, 13)]
+        lines = result.stdout.split("\n")
+        opener = "--- FAILED-DETAIL: test_many.sh ---"
+        closer = "--- END FAILED-DETAIL: test_many.sh ---"
+        self.assertEqual((lines.count(opener), lines.count(closer)), (1, 1))
+        block = lines[lines.index(opener) + 1 : lines.index(closer)]
+        self.assertEqual(
+            block,
+            ["... (2 earlier FAIL line(s) omitted; see per-test output above) ...", *kept],
+        )
+        records = verify_events.select(
+            fx.events(), event="member_finish", where={"member": "test_many.sh"}
+        )
+        self.assertEqual(len(records), 1)
+        self.assertEqual(
+            (records[0]["fail_detail"], records[0]["fail_detail_omitted"]), (kept, 2)
+        )
+
+    def test_c4_b2_a_member_never_sees_or_writes_the_parent_channel(self):
+        branches = [
+            ("pool", "pool", (), {}),
+            ("serial", "pool", (), {"REIFY_RUN_ALL_POOL_DISABLE": "1"}),
+            ("subset", "pool", (), {"REIFY_RUN_ALL_MEMBER_SUBSET": "test_deadline.sh"}),
+            ("host-infra", "host-exclusive", ("--scope", "host-infra"), {}),
+        ]
+        for branch, bucket, flags, knobs in branches:
+            with self.subTest(branch=branch):
+                fx = RunAllFixture(self, {"test_deadline.sh": DEADLINE_MEMBER})
+                result = fx.run(*flags, manifest=fx.manifest({"test_deadline.sh": bucket}), **knobs)
+                self.assertEqual(result.returncode, 0)
+                self.assertEqual((fx.state / "deadline-rc").read_text(), "75\n")
+                events = fx.events()
+                self.assertEqual(
+                    (
+                        (fx.state / "channel-env").read_text(),
+                        len(verify_events.select(events, event="slot_timeout")),
+                    ),
+                    ("<unset>\n", 0),
+                )
+                self.assertEqual(len(verify_events.select(events, event="run_start")), 1)
+                self.assertEqual(len(verify_events.select(events, event="member_finish")), 1)
+                self.assertEqual((result.stdout + result.stderr).count(SP), 0)
+
+    def test_b5_an_unset_channel_leaves_no_file_and_the_same_text(self):
+        fx = RunAllFixture(self, B1_MEMBERS)
+        manifest = fx.manifest(B1_ROWS)
+        env = fx.env(manifest, channel=False)
+        assert_channel_unset(self, env)
+        unset = run(fx.argv(), env=env, cwd=fx.cwd)
+        self.assertEqual((list(fx.tmp.iterdir()), list(fx.cwd.iterdir())), ([], []))
+        self.assertFalse(fx.channel.exists())
+        channel_set = fx.run(manifest=manifest)
+        self.assertEqual(unset.returncode, channel_set.returncode)
+        self.assertEqual(unset.stdout, channel_set.stdout)
+        self.assertTrue(fx.events().channel_present)
+
+    def test_the_count_only_probe_writes_no_record(self):
+        fx = RunAllFixture(self, B1_MEMBERS)
+        result = fx.run(
+            manifest=fx.manifest(B1_ROWS),
+            REIFY_RUN_ALL_SUBSET_COUNT_ONLY="1",
+            REIFY_RUN_ALL_MEMBER_SUBSET="test_pass.sh",
+        )
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("@@REIFY_RUN_ALL_SUBSET_MATCHED=1@@", result.stdout.split("\n"))
+        self.assertEqual(fx.channel.read_bytes() if fx.channel.exists() else b"", b"")
 
 
 if __name__ == "__main__":
