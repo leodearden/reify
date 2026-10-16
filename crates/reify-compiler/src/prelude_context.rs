@@ -36,7 +36,7 @@
 //!
 //! | Phase | Call site | Policy | Diagnostic |
 //! |-------|-----------|--------|------------|
-//! | **units** | `compile_builder::units_phase::phase_units` | last-wins | `Severity::Warning` "declared in both X and Y; last-wins" |
+//! | **units** | `compile_builder::units_phase::seed_prelude_units` | last-wins | `Severity::Warning` "declared in both X and Y; last-wins" |
 //! | **aliases** | `compile_builder::aliases_phase::phase_aliases` (emission in `compile_with_prelude_context`) | first-wins | `Severity::Warning` "declared in both X and Y; first-wins" |
 //! | **functions** | `merge_prelude_functions` | first-wins | none (silent) |
 //!
@@ -50,10 +50,10 @@
 //!   slice and is idempotent.
 //!
 //! - *Units* are **not** cached on `PreludeContext` (there is no `pub_units`
-//!   field). The seed loop in `phase_units` iterates raw `prelude_module.units`
-//!   on every compile call; overwrite-on-collision is the natural
-//!   register-as-you-go flow, and emitting the warning at the overwrite site is
-//!   the natural emission point.
+//!   field). The seed loop in `compile_builder::units_phase::seed_prelude_units`
+//!   iterates raw `prelude_module.units` on every compile call;
+//!   overwrite-on-collision is the natural register-as-you-go flow, and
+//!   emitting the warning at the overwrite site is the natural emission point.
 //!
 //! - *Functions* go through the separate `merge_prelude_functions` helper
 //!   (used by `compile_with_prelude_refs` to build the overload-resolution
