@@ -151,7 +151,7 @@ pub fn resample_nodal_to_grid_instrumented(
                 let p = [axis_grids[0][ix], axis_grids[1][iy], axis_grids[2][iz]];
 
                 // BVH locate: returns (min-index containing element, point_in_tet_p1 count).
-                let (elem_opt, tests) = idx.locate_counted(nodes, elems, p, tol);
+                let (elem_opt, tests) = idx.locate_counted(p);
                 total_tests += tests as u64;
 
                 match elem_opt {
@@ -282,7 +282,7 @@ pub fn resample_multi_nodal_to_grid_instrumented(
             for iz in 0..nz1 {
                 let p = [axis_grids[0][ix], axis_grids[1][iy], axis_grids[2][iz]];
 
-                let (elem_opt, tests) = idx.locate_counted(nodes, elems, p, tol);
+                let (elem_opt, tests) = idx.locate_counted(p);
                 total_tests += tests as u64;
 
                 match elem_opt {
