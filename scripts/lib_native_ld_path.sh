@@ -2,8 +2,8 @@
 # The one place that decides which native-dep dirs a process puts on
 # LD_LIBRARY_PATH, by consumer class. Designed to be sourced, not executed.
 #
-#   cargo-target   any binary cargo/nextest runs: the snap OCCT lib dir if
-#                  present, then the deps dir if it holds libTKernel.so*.
+#   cargo-target   any binary cargo/nextest runs: the deps dir if it holds
+#                  libTKernel.so*, then the snap OCCT lib dir if present.
 #   workspace-bin  reify / reify-gui: the snap dir only, never the deps conda
 #                  prefix.
 #
@@ -73,4 +73,22 @@ native_ld_path_prepend() {
     fi
     local IFS=:
     export LD_LIBRARY_PATH="${dirs[*]}${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+}
+
+# native_ld_path_leads <class> <value>
+#
+# True when <value> already begins with the class's dirs, in order, each as a
+# whole colon-delimited component (so <dir>-old is not <dir>). A class with no
+# dirs leads every value. Lets a caller make its own mutation a fixed point.
+native_ld_path_leads() {
+    local -a dirs
+    _native_ld_path_collect dirs "$1" || return
+    if [ "${#dirs[@]}" -eq 0 ]; then
+        return 0
+    fi
+    local IFS=:
+    case "$2:" in
+        "${dirs[*]}:"*) return 0 ;;
+        *) return 1 ;;
+    esac
 }

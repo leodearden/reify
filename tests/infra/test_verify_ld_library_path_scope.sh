@@ -821,6 +821,25 @@ _nlp_run "$NLP_ABSENT" "$NLP_ABSENT" "$LD_AMBIENT_SENTINEL" "$NLP_CHILD_PREPEND"
 assert "G7: prepend with both roots absent leaves an inherited LD_LIBRARY_PATH verbatim (rc $_NLP_RC, got '$_NLP_OUT')" \
     _nlp_got "$LD_AMBIENT_SENTINEL"
 
+# G8: the leads predicate (a launcher's fixed-point test) matches the class's
+# dirs in order, each as a whole colon-delimited component.
+NLP_CHILD_LEADS='set -euo pipefail; source "$1"; if native_ld_path_leads "$2" "$3"; then printf yes; else printf no; fi'
+# _nlp_leads_is <snap-root> <class> <value> <yes|no>
+_nlp_leads_is() {
+    _nlp_run "$1" "$NLP_DEPS_TK" "$NLP_UNSET" "$NLP_CHILD_LEADS" "$2" "$3"
+    _nlp_got "$4"
+}
+assert "G8: cargo-target leads '<deps>:<snap>:<rest>'" \
+    _nlp_leads_is "$NLP_SNAP" cargo-target "$NLP_DEPS_TK:$NLP_SNAP:/usr/lib" yes
+assert "G8: cargo-target leads exactly '<deps>:<snap>'" \
+    _nlp_leads_is "$NLP_SNAP" cargo-target "$NLP_DEPS_TK:$NLP_SNAP" yes
+assert "G8: cargo-target does not lead '<snap>:<deps>' — order matters" \
+    _nlp_leads_is "$NLP_SNAP" cargo-target "$NLP_SNAP:$NLP_DEPS_TK" no
+assert "G8: cargo-target does not lead '<deps>:<snap>-old' — a sibling dir is not the snap dir" \
+    _nlp_leads_is "$NLP_SNAP" cargo-target "$NLP_DEPS_TK:$NLP_SNAP-old" no
+assert "G8: a class with no dirs leads every value, even an empty one" \
+    _nlp_leads_is "$NLP_ABSENT" workspace-bin "" yes
+
 # ---------------------------------------------------------------------------
 # Section H: the cargo target runner .cargo/run-with-occt.sh (task 8654).
 #

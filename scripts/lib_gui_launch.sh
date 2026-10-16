@@ -84,16 +84,22 @@ gui_launch_preflight_display() {
     return 1
 }
 
-# _gui_launch_pin_leads_ld_library_path
+# _gui_launch_env_already_pinned
 #
-# True when LD_LIBRARY_PATH's FIRST entry is exactly the tbb pin dir. Compared
-# as a whole colon-delimited component, so a sibling such as
-# /opt/reify-deps/tbb-pin-old does not count as the pin.
-_gui_launch_pin_leads_ld_library_path() {
-    case ":${LD_LIBRARY_PATH:-}:" in
-        ":$GUI_LAUNCH_TBB_PIN_DIR:"*) return 0 ;;
-        *) return 1 ;;
-    esac
+# True when LD_LIBRARY_PATH already leads with exactly what gui_launch_env_pin
+# puts there: the tbb pin dir (when it exists), then the workspace-bin dirs.
+# Every entry is compared as a whole colon-delimited component, so a sibling
+# such as /opt/reify-deps/tbb-pin-old does not count as the pin.
+_gui_launch_env_already_pinned() {
+    local rest="${LD_LIBRARY_PATH:-}"
+    if [ -d "$GUI_LAUNCH_TBB_PIN_DIR" ]; then
+        case "$rest:" in
+            "$GUI_LAUNCH_TBB_PIN_DIR:"*) rest="${rest#"$GUI_LAUNCH_TBB_PIN_DIR"}" ;;
+            *) return 1 ;;
+        esac
+        rest="${rest#:}"
+    fi
+    native_ld_path_leads workspace-bin "$rest"
 }
 
 # gui_launch_env_pin
@@ -105,11 +111,12 @@ _gui_launch_pin_leads_ld_library_path() {
 # pin LAST so it leads. Anything that prepended after it would land ahead of
 # the pin and defeat it.
 #
-# IDEMPOTENT: when LD_LIBRARY_PATH already leads with the pin dir, neither
-# prepend runs and no notice is printed. That is the normal state of a launcher
-# run as a CHILD of one that already pinned (lib_e2e_smoke.sh pins, then runs
-# scripts/run-gui-dev.sh, which sources this lib afresh); a second pass there
-# would only duplicate the entries and repeat the notice.
+# IDEMPOTENT: when LD_LIBRARY_PATH already leads with the pin dir and then the
+# workspace-bin dirs, neither prepend runs and no notice is printed. That is the
+# normal state of a launcher run as a CHILD of one that already pinned
+# (lib_e2e_smoke.sh pins, then runs scripts/run-gui-dev.sh, which sources this
+# lib afresh); a second pass there would only duplicate the entries and repeat
+# the notice. A caller that leads with the pin ALONE still gets both prepends.
 gui_launch_env_pin() {
     # Disable WebKit's GBM/DMABuf renderer by default. On systems where the
     # NVIDIA driver exposes DRI fds but the Mesa EGL GBM backend cannot create
@@ -120,7 +127,7 @@ gui_launch_env_pin() {
     # restore the DMABUF path on a host where it works.
     export WEBKIT_DISABLE_DMABUF_RENDERER="${WEBKIT_DISABLE_DMABUF_RENDERER:-1}"
 
-    if _gui_launch_pin_leads_ld_library_path; then
+    if _gui_launch_env_already_pinned; then
         return 0
     fi
 

@@ -1374,6 +1374,23 @@ printf "%s\n%s" "$first" "$LD_LIBRARY_PATH"'
 
     assert "gui_launch_env_pin: with no snap dir, one call yields exactly <pin>:<inherited> (rc $_t35_rc, got '$_t35_first')" \
         test "$_t35_rc:$_t35_first" = "0:/opt/reify-deps/tbb-pin:/usr/lib/x86_64-linux-gnu"
+
+    # A caller that already leads with the pin but lacks the snap dir (a
+    # profile that pinned by hand) must still get the snap dir: the fixed point
+    # is the whole <pin>:<workspace-bin dirs> block, not the pin alone.
+    _t35_rc=0
+    _t35_out=$(env LD_LIBRARY_PATH=/opt/reify-deps/tbb-pin:/usr/lib/x86_64-linux-gnu \
+        REIFY_NATIVE_LD_SNAP_DIR="$_t35_snap" \
+        REIFY_NATIVE_LD_DEPS_DIR="$_t35_roots/fixture-deps" \
+        bash -c "$_t35_child" _ "$LIB_GUI_LAUNCH" 2>&1) || _t35_rc=$?
+    _t35_first="${_t35_out%%$'\n'*}"
+    _t35_second="${_t35_out#*$'\n'}"
+
+    assert "gui_launch_env_pin: an inherited <pin>:<rest> without the snap dir yields <pin>:<fixture snap>:<inherited>, caller's entries untouched (rc $_t35_rc, got '$_t35_first')" \
+        test "$_t35_rc:$_t35_first" = "0:/opt/reify-deps/tbb-pin:$_t35_snap:/opt/reify-deps/tbb-pin:/usr/lib/x86_64-linux-gnu"
+
+    assert "gui_launch_env_pin: that result is a fixed point too (first '$_t35_first', second '$_t35_second')" \
+        test "$_t35_second" = "$_t35_first"
 else
     echo "  SKIP: /opt/reify-deps/tbb-pin absent on this host — Test 35"
 fi
