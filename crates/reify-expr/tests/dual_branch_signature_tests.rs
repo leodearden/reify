@@ -536,8 +536,8 @@ fn mod_as_an_int_builtin_records_its_own_quotient_cell() {
     // NOTHING with each other — each pins one spelling's own quotient cell.
     // The genuine cross-spelling check, on operands both spellings accept, is
     // `mod_at_a_negative_dividend_records_the_truncated_quotient_and_matches_its_tangent`
-    // in `dual_number_ad_tests.rs`, which is also where trunc and floor part
-    // company.  7 mod 3 = 1 with quotient cell 2.
+    // in `dual_number_ad_tests/active_branch_tangents.rs`, which is also where
+    // trunc and floor part company.  7 mod 3 = 1 with quotient cell 2.
     let expr = call("mod", vec![vref("n"), literal(Value::Int(3))]);
     let (v, t, rec) = run(&expr, &[("n", Value::Int(7))], &["n"]);
     assert_eq!(v, Value::Int(1));
