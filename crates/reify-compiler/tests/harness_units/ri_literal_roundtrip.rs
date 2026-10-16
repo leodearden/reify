@@ -47,7 +47,7 @@
 //! the seeding order or the literal lowering; a round-trip cannot say which
 //! table entry moved.
 
-use reify_compiler::{UnitEntry, UnitRegistry, stdlib_loader};
+use reify_compiler::{CompiledModule, UnitRegistry, seed_prelude_units, stdlib_loader};
 use reify_core::DimensionVector;
 use reify_ir::Value;
 use reify_ir::ri_literal::{
@@ -658,33 +658,26 @@ fn a_dimensionless_scalar_downgrades_to_real_with_identical_bits() {
 
 // ─── (d) the registry precondition ───────────────────────────────────────────
 
-/// Rebuild the stdlib-seeded `UnitRegistry` the way the compiler does.
+/// Build the stdlib-seeded `UnitRegistry` the way the compiler does.
 ///
-/// There is no public accessor for it — `CompilationCtx.unit_registry` and
-/// `phase_units` are both `pub(crate)`, and the seeded registry is never
-/// surfaced across the compile boundary. So this replays the body of
-/// `compile_builder/units_phase.rs`'s prelude loop verbatim from public parts.
+/// The seeded registry is never surfaced across the compile boundary, so this
+/// calls `seed_prelude_units` — the one implementation `phase_units` seeds
+/// with — over the stdlib modules, and asserts that seeding them reports no
+/// collision.
 ///
 /// Iterating EVERY stdlib module matters: `mm` is not declared in
 /// `stdlib/units.ri` at all — it is generated into `std.si_units` from the
 /// milli prefix — so a `std/units`-only scan would miss the single most
-/// frequently emitted symbol in the whole ladder. Last-write-wins is
-/// semantically inert here because `stdlib_loader`'s
-/// `assert_no_cross_module_name_collisions` panics on a duplicate unit name
-/// across stdlib modules.
+/// frequently emitted symbol in the whole ladder.
 fn stdlib_seeded_unit_registry() -> UnitRegistry {
+    let modules: Vec<&CompiledModule> = stdlib_loader::load_stdlib().iter().collect();
     let mut registry = UnitRegistry::new();
-    for module in stdlib_loader::load_stdlib() {
-        let module_display = module.path.to_string();
-        for cu in &module.units {
-            if cu.is_pub {
-                registry.seed_prelude_unit(UnitEntry::from_compiled_for_prelude(
-                    cu,
-                    module_display.clone(),
-                ));
-            }
-        }
-    }
+    let diags = seed_prelude_units(&mut registry, &modules);
+    assert!(
+        diags.is_empty(),
+        "seeding the stdlib must report no cross-module unit collision: {:?}",
+        diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
     registry
 }
 
