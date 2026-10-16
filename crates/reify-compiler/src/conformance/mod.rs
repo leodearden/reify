@@ -2703,11 +2703,11 @@ mod tests {
         structure_def: &reify_ast::StructureDef,
         enum_defs: &[reify_ir::EnumDef],
         structure_names: &HashSet<String>,
+        trait_names: &HashSet<String>,
     ) -> ConformanceRun {
         let entity_ref = EntityDefRef::from(structure_def);
         let trait_registry: HashMap<String, &CompiledTrait> =
             traits.iter().map(|t| (t.name.clone(), t)).collect();
-        let trait_names: HashSet<String> = trait_registry.keys().cloned().collect();
         let mut scope = CompilationScope::new(&structure_def.name);
         let mut value_cells: Vec<ValueCellDecl> = vec![];
         let mut constraints: Vec<CompiledConstraint> = vec![];
@@ -2722,7 +2722,7 @@ mod tests {
             &entity_ref,
             &trait_registry,
             structure_names,
-            &trait_names,
+            trait_names,
             &mut scope,
             &mut value_cells,
             &mut constraints,
@@ -2730,9 +2730,8 @@ mod tests {
             enum_defs,
             functions,
             &alias_registry,
-            // task 4497: empty placeholder table — these conformance unit tests
-            // exercise trait-default behavior, not ambient injection (the real
-            // file-level table is threaded from entities_phase in step-10).
+            // task 4497: empty table — these conformance unit tests exercise
+            // trait-default behavior, not ambient injection.
             &AmbientDefaults::default(),
             // task 4639: file scope (no enclosing purpose) for unit tests.
             None,
@@ -2750,7 +2749,7 @@ mod tests {
     }
 
     /// Run `check_trait_conformance` for a hand-built `structure_def` against `traits`,
-    /// with no structure names in scope.
+    /// with no structure names in scope and `traits` as the only trait names.
     ///
     /// For fixtures that need a hand-built AST or hand-compiled trait; reach for
     /// [`conform_source`] when the fixture can be written as `.ri` source.
@@ -2759,19 +2758,28 @@ mod tests {
         structure_def: &reify_ast::StructureDef,
         enum_defs: &[reify_ir::EnumDef],
     ) -> ConformanceRun {
-        conform(traits, structure_def, enum_defs, &HashSet::new())
+        let trait_names: HashSet<String> = traits.iter().map(|t| t.name.clone()).collect();
+        conform(
+            traits,
+            structure_def,
+            enum_defs,
+            &HashSet::new(),
+            &trait_names,
+        )
     }
 
     /// Parse `source`, compile its traits with the same `compile_trait` call
     /// `traits_phase` makes (minus its refinement-deprecation pass), and run
     /// `check_trait_conformance` for its one conformer.
     ///
-    /// Declarations are scanned by `collect_decl_refs`, the pre-pass a full compile
-    /// starts with, so the fixture's enums arrive with their declared variants and type
-    /// parameters. Variant payload fields stay unresolved (`enums_phase` resolves them
-    /// later in a full compile), so keep fixtures to unit variants. The world is
-    /// otherwise one module with no prelude: only builtin types such as `Real` and
-    /// `Bool` and the fixture's own declarations resolve.
+    /// Declarations are scanned by `collect_decl_refs` and the trait and structure name
+    /// sets come from `build_resolution_names`: the two steps a full compile runs before
+    /// `phase_traits`. So the fixture's enums arrive with their declared variants and type
+    /// parameters, and its names resolve as they do in a real compile. Variant payload
+    /// fields stay unresolved (`enums_phase` resolves them later in a full compile), so
+    /// keep fixtures to unit variants. The world is otherwise one module with no prelude:
+    /// only builtin types such as `Real` and `Bool` and the fixture's own declarations
+    /// resolve.
     ///
     /// The conformer is the single `structure def` that declares trait bounds;
     /// `source` must contain exactly one. Diagnostics from compiling the traits come
@@ -2832,17 +2840,15 @@ mod tests {
             "declaration errors in conformance fixture: {:?}\n{source}",
             scan_ctx.diagnostics
         );
+        crate::compile_builder::names_phase::build_resolution_names(
+            &mut scan_ctx,
+            &[],
+            &decl_refs.trait_refs,
+            &decl_refs.fn_refs,
+        );
         let enum_defs = scan_ctx.enum_defs;
-        let trait_names: HashSet<String> = decl_refs
-            .trait_refs
-            .iter()
-            .map(|t| t.name.clone())
-            .collect();
-        let structure_names: HashSet<String> = decl_refs
-            .structure_refs
-            .iter()
-            .map(|s| s.name.clone())
-            .collect();
+        let trait_names = scan_ctx.resolution_trait_names;
+        let structure_names = scan_ctx.resolution_structure_names;
         let alias_registry = TypeAliasRegistry::new();
 
         let mut trait_diagnostics: Vec<Diagnostic> = vec![];
@@ -2873,7 +2879,13 @@ mod tests {
             "conformance fixture must declare exactly one structure with trait bounds:\n{source}"
         );
 
-        let mut run = conform(&traits, conformer, &enum_defs, &structure_names);
+        let mut run = conform(
+            &traits,
+            conformer,
+            &enum_defs,
+            &structure_names,
+            &trait_names,
+        );
         run.diagnostics.splice(0..0, trait_diagnostics);
         run
     }
@@ -3465,18 +3477,10 @@ mod tests {
         );
     }
 
-    /// RED (task 3939 δ, step-3): a required associated function that the
-    /// conforming structure does not provide must surface an
-    /// `E_TRAIT_FN_NOT_SATISFIED` (`DiagnosticCode::TraitFnNotSatisfied`)
-    /// diagnostic naming the declaring trait and the missing fn.
-    ///
-    /// Lives here (not in `checker.rs`) because the `run_conformance` harness
-    /// and the `pub(crate) check_trait_conformance` entry point are in this
-    /// module — integration-test crates can only see `pub` items.
-    ///
-    /// Fails until step-4 wires the phase-5 `RequirementKind::Fn` satisfaction
-    /// check (today `collect_all_requirements` drops Fn requirements and the
-    /// phase-5 arm is a placeholder `continue`, so zero diagnostics fire).
+    /// A required associated function that the conforming structure does not
+    /// provide must surface an `E_TRAIT_FN_NOT_SATISFIED`
+    /// (`DiagnosticCode::TraitFnNotSatisfied`) diagnostic naming the declaring
+    /// trait and the missing fn.
     #[test]
     fn required_assoc_fn_not_provided_emits_trait_fn_not_satisfied() {
         // Trait `Shape` requires a bodyless `fn req(self) -> Real`.
@@ -3546,7 +3550,7 @@ mod tests {
         );
     }
 
-    // --- task 3939 δ step-5/6 fixtures: assoc-fn signature exact-match ---
+    // --- assoc-fn signature exact-match fixtures (task 3939 δ) ---
 
     /// The implicit `self` receiver: `is_self == true` with the sentinel `self`
     /// named type (per decl.rs:818-823). Excluded from the derived signature's
@@ -3668,14 +3672,10 @@ mod tests {
         }
     }
 
-    /// RED (task 3939 δ, step-5): a provided assoc fn whose RETURN TYPE differs
-    /// from the trait requirement must surface `TraitFnSignatureMismatch`
-    /// (§8.8 same-name-different-type) and must NOT also surface
-    /// `TraitFnNotSatisfied` — the fn IS present, it is just mis-typed.
-    ///
-    /// Fails until step-6 adds exact-match signature comparison (today the
-    /// phase-5 Fn arm checks the fn NAME only, so a wrong-typed `area` is
-    /// silently treated as satisfying the requirement).
+    /// A provided assoc fn whose RETURN TYPE differs from the trait requirement
+    /// must surface `TraitFnSignatureMismatch` (§8.8 same-name-different-type)
+    /// and must NOT also surface `TraitFnNotSatisfied` — the fn IS present, it
+    /// is just mis-typed.
     #[test]
     fn provided_assoc_fn_with_wrong_return_type_emits_signature_mismatch() {
         let shape = shape_requiring_fn("area");
@@ -3717,9 +3717,8 @@ mod tests {
         );
     }
 
-    /// RED (task 3939 δ, step-5): a provided assoc fn with the wrong ARITY (an
-    /// extra non-self param) is also a signature mismatch. Same assertions as
-    /// the return-type case. Fails until step-6.
+    /// A provided assoc fn with the wrong ARITY (an extra non-self param) is also
+    /// a signature mismatch. Same assertions as the return-type case.
     #[test]
     fn provided_assoc_fn_with_wrong_arity_emits_signature_mismatch() {
         let shape = shape_requiring_fn("area");
@@ -3762,7 +3761,7 @@ mod tests {
         );
     }
 
-    // --- task 3939 δ step-7/8 fixtures: assoc-fn table population ---
+    // --- assoc-fn table population fixtures (task 3939 δ) ---
 
     /// Build a body-carrying `fn <name>(<params>) -> <return_type_name> { <value> }`
     /// `FnDef`. The distinct `value` lets the override/default tests assert that
@@ -3828,9 +3827,9 @@ mod tests {
         }
     }
 
-    /// RED (task 3939 δ, step-7a): a trait's default-providing assoc fn is
-    /// injected into the conformer's assoc-fn table when the structure does NOT
-    /// override it — `is_override == false`, keyed by `(trait, fn)`.
+    /// A trait's default-providing assoc fn is injected into the conformer's
+    /// assoc-fn table when the structure does NOT override it —
+    /// `is_override == false`, keyed by `(trait, fn)`.
     #[test]
     fn default_assoc_fn_injected_into_table_when_not_overridden() {
         let shape = shape_with_default_fn("area", 1.0);
@@ -3879,11 +3878,10 @@ mod tests {
         );
     }
 
-    /// RED (task 3939 δ, step-7b): when the structure overrides a trait's
-    /// default-providing assoc fn, the table entry is the OVERRIDE
-    /// (`is_override == true`) and its compiled `function.content_hash` differs
-    /// from the injected-default's (distinct body ⇒ distinct hash). Fails until
-    /// step-8.
+    /// When the structure overrides a trait's default-providing assoc fn, the
+    /// table entry is the OVERRIDE (`is_override == true`) and its compiled
+    /// `function.content_hash` differs from the injected-default's (distinct
+    /// body ⇒ distinct hash).
     #[test]
     fn override_assoc_fn_beats_default_in_table() {
         // Reference run: no override → the injected default body (1.0).
@@ -4037,9 +4035,7 @@ mod tests {
         );
     }
 
-    // ── task 1914 step-5: unit tests for resolve_let_advertised_type helper ──
-    // These tests are compile-tripwires: they fail to compile until step-6 defines
-    // `pub(super) fn resolve_let_advertised_type` in checker.rs.
+    // ── unit tests for the resolve_let_advertised_type helper (task 1914) ──
 
     /// Pins the annotation-wins branch of `resolve_let_advertised_type`.
     ///

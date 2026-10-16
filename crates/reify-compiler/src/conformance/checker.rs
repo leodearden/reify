@@ -802,8 +802,9 @@ pub(super) fn check_phase_build_available_defaults_map(
                     // (task 1951 Option B, narrowed to unannotated Lets). Pass 2 populates
                     // pass2_skipped exclusively from `cell_type: None` entries; the
                     // `cell_type.is_none()` conjunction restricts suppression to that case.
-                    // Regression cover (debug builds only, via the debug_assert! below):
-                    // super::tests::unannotated_trait_let_losing_to_same_name_param_is_not_injected
+                    // Removing this guard is observable only in debug builds, through the
+                    // debug_assert! below: a Let-keyed advertisement is read only by a `let`
+                    // requirement, which the parser cannot express.
                     if cell_type.is_none() && pass2_skipped.contains(name) {
                         return None;
                     }
