@@ -139,6 +139,15 @@ scripts/confirm-failed-manifest.sh
 #   next Rust task (the #4618/#4624→#4288 class; see CLAUDE.md).
 scripts/lib_slot_acquire.sh
 #
+# scripts/lib_event_log.sh: the REIFY_VERIFY_EVENT_LOG JSON-lines encoder
+#   (task 8685), sourced TRANSITIVELY (verify.sh → lib_test_semaphore.sh →
+#   lib_slot_acquire.sh → lib_event_log.sh) and by tests/infra/run_all.sh.
+#   Not derivable from verify.sh's direct 'source "$SCRIPT_DIR/..."' lines, so
+#   verify-pipeline-guard.sh's auto-derivation misses it.  An edit to this lib
+#   alone would otherwise take the merge-worker config fast-path and ambush the
+#   next Rust task (the #4618/#4624→#4288 class; see CLAUDE.md).
+scripts/lib_event_log.sh
+#
 # scripts/lib_lane_x_flock.sh: sibling lock-acquire lib sourced TRANSITIVELY
 #   by tests/infra/run_all.sh (--scope host-infra), same non-derivable
 #   property as scripts/lib_slot_acquire.sh above. Not derivable from

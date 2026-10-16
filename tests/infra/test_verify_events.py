@@ -511,11 +511,13 @@ class EncoderTests(unittest.TestCase):
         def names(prefix, count):
             return [f"test_{prefix}_{i:03d}".ljust(40, "z") for i in range(count)]
 
+        # Per case: the input lists, and which list is cut (the lists before
+        # it are kept whole, the lists after it are empty).
         cases = {
-            "failed overflows": (names("f", 300), names("k", 5), names("s", 5)),
-            "flaky overflows": (names("f", 50), names("k", 100), names("s", 100)),
+            "failed overflows": ((names("f", 300), names("k", 5), names("s", 5)), 0),
+            "flaky overflows": ((names("f", 50), names("k", 100), names("s", 100)), 1),
         }
-        for label, (failed, flaky, skipped) in cases.items():
+        for label, ((failed, flaky, skipped), cut) in cases.items():
             with self.subTest(label):
                 self.channel.unlink(missing_ok=True)
                 args = [str(len(failed) + 1), str(len(failed)), "false"]
@@ -531,15 +533,18 @@ class EncoderTests(unittest.TestCase):
                 kept = len(rec["failed"]) + len(rec["flaky"]) + len(rec["skipped"])
                 self.assertEqual(kept + rec["names_omitted"], total)
                 self.assertGreater(rec["names_omitted"], 0)
-                self.assertEqual(rec["failed"], failed[: len(rec["failed"])])
-                self.assertEqual(rec["flaky"], flaky[: len(rec["flaky"])])
-                self.assertEqual(rec["skipped"], skipped[: len(rec["skipped"])])
-                if len(rec["failed"]) < len(failed):
-                    self.assertEqual(rec["flaky"], [])
-                if len(rec["flaky"]) < len(flaky):
-                    self.assertEqual(rec["failed"], failed)
-                    self.assertGreater(len(rec["flaky"]), 0)
-                    self.assertEqual(rec["skipped"], [])
+                for index, (field, given) in enumerate(
+                    (("failed", failed), ("flaky", flaky), ("skipped", skipped))
+                ):
+                    kept_names = rec[field]
+                    if index < cut:
+                        self.assertEqual(kept_names, given, field)
+                    elif index == cut:
+                        self.assertGreater(len(kept_names), 0, field)
+                        self.assertLess(len(kept_names), len(given), field)
+                        self.assertEqual(kept_names, given[: len(kept_names)], field)
+                    else:
+                        self.assertEqual(kept_names, [], field)
 
     def test_an_unwritable_channel_is_silent_and_never_changes_control_flow(self):
         regular = self.files.dir / "regular-file"
