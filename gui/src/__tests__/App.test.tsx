@@ -1047,6 +1047,27 @@ describe('App initialization loading state', () => {
     expect(screen.queryByTestId('app-loading')).toBeNull();
   });
 
+  it('a pending kernel-status fetch delays none of the subscriptions ahead of the kernel-status row', async () => {
+    const kernelStatus = deferred<bridge.KernelStatus>();
+    vi.mocked(bridge.getKernelStatus).mockReturnValueOnce(kernelStatus.promise);
+
+    render(() => <App />);
+
+    await waitFor(() => expect(bridge.onFocusEntity).toHaveBeenCalledTimes(1));
+    expect(bridge.onMeshUpdate).toHaveBeenCalledTimes(1);
+    expect(bridge.onFileChanged).toHaveBeenCalledTimes(1);
+    expect(bridge.onFileRemoved).toHaveBeenCalledTimes(1);
+    expect(bridge.onSerializationError).toHaveBeenCalledTimes(1);
+    expect(bridge.onKernelStatus).not.toHaveBeenCalled();
+    expect(screen.getByTestId('app-loading')).toBeTruthy();
+
+    kernelStatus.resolve({ available: true, message: null });
+    await waitFor(() => {
+      expect(screen.getByTestId('app-layout')).toBeTruthy();
+    });
+    expect(bridge.onKernelStatus).toHaveBeenCalledTimes(1);
+  });
+
   it('shows app-error with retry button when getInitialState rejects', async () => {
     vi.mocked(bridge.getInitialState).mockRejectedValue(new Error('network error'));
 

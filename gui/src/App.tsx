@@ -1413,6 +1413,19 @@ const App: Component = () => {
   let alive = true;
   const subscriptions = createSubscriptionSet();
 
+  // Wrapped in try/catch (not .catch) so that if the bridge import is mocked
+  // without getKernelStatus, the synchronous `undefined()` TypeError is
+  // captured rather than escaping the async context.
+  async function fetchKernelStatus(): Promise<void> {
+    try {
+      const status = await getKernelStatus();
+      if (!alive) return;
+      engineStore.setKernelStatus(status);
+    } catch (err) {
+      console.warn('[kernel-status] fetch failed:', err);
+    }
+  }
+
   const subscriptionRows: readonly SubscriptionRow[] = [
     {
       subscribe: () => engineStore.subscribeToEvents(),
@@ -1482,10 +1495,16 @@ const App: Component = () => {
         }),
       onFailure: (err) => console.warn('Failed to subscribe to focus-entity events:', err),
     },
-    // Kernel-status events, so late-binding kernel-availability changes — e.g.
-    // future dynamic dylib loading — propagate to the banner.
+    // Kernel status: fetch the current value, then subscribe to kernel-status
+    // events, so late-binding kernel-availability changes — e.g. future dynamic
+    // dylib loading — propagate to the banner. The fetch sits in this row, not
+    // ahead of the table, so it delays none of the subscriptions above it. A
+    // failed fetch only warns; the subscription still runs.
     {
-      subscribe: () => onKernelStatus((s) => engineStore.setKernelStatus(s)),
+      subscribe: async () => {
+        await fetchKernelStatus();
+        return onKernelStatus((s) => engineStore.setKernelStatus(s));
+      },
       onFailure: (err) => console.warn('Failed to subscribe to kernel-status events:', err),
     },
     // Navigate-to-source events (from MCP navigate_to_source tool).
@@ -1591,17 +1610,6 @@ const App: Component = () => {
         console.warn('[unit-ladders] fetch failed:', err);
         showToast('Unit ladders unavailable — parameters will show default units only', 'info');
       });
-
-    // Fetch initial kernel status. Wrapped in try/catch (not .catch) so that if
-    // the bridge import is mocked without getKernelStatus, the synchronous
-    // `undefined()` TypeError is captured rather than escaping the async context.
-    try {
-      const status = await getKernelStatus();
-      if (!alive) return;
-      engineStore.setKernelStatus(status);
-    } catch (err) {
-      console.warn('[kernel-status] fetch failed:', err);
-    }
 
     // Subscribe to events before showing ready state — "ready" means
     // fully initialized including live update subscriptions
