@@ -384,33 +384,11 @@ fn an_undef_primal_yields_tangent_none_never_a_plausible_looking_zero() {
 // dual traversal and the value evaluator ever disagree about what a builtin
 // does, this suite says so.
 //
-// The step shape is the one already in `crates/reify-expr/src/calculus.rs:714`
-//
-//     h = 1e-6 * |x_j|.max(1e-3),   f'(x) ≈ (f(x+h) − f(x−h)) / (2h)
-//
-// reused rather than invented, so this suite is calibrated against the
-// finite-difference machinery reify already ships.
-//
-// TOLERANCE, DERIVED — `|ad − cd| <= 1e-6·|cd| + 1e-8`:
-//
-//   * truncation error of central differences is h²·|f'''|/6; at |x| ≈ 1,
-//     h = 1e-6 gives h²/6 ≈ 1.7e-13, and for this corpus (polynomials and
-//     sin/cos/exp/sqrt/log/atan2 at well-conditioned points) |f'''| ≲ 10,
-//     so ≲ 2e-12;
-//   * cancellation error is ε_mach·|f|/h ≈ 2.2e-16·|f|/1e-6 = 2.2e-10·|f|;
-//     for |f| ≲ 10 that is ≲ 2.2e-9.
-//
-// Total reference error ≲ 3e-9 absolute, i.e. ≲ 3e-8 relative against a
-// derivative of magnitude ≥ 0.1.  The asserted 1e-6 relative bound clears the
-// reference's own floor by ~1.5 orders; asserting anything tighter would be
-// testing the reference rather than the subject.
-//
-// Every probe point is chosen so |∂r/∂x_j| >= 0.1 in SI units, which makes the
-// RELATIVE arm binding and leaves the 1e-8 absolute floor guarding exact-zero
-// columns only.  That precondition is itself asserted, so the suite cannot
-// quietly decay into comparing two numbers that are both ~0.
+// The step shape, the tolerance `|ad − cd| <= 1e-6·|cd| + 1e-8`, its derivation and
+// the 0.1 probe-slope floor live in `reify_test_support::finite_difference`.
 
-use reify_test_support::builders::expr::fn_call;
+use reify_test_support::builders::expr::std_call;
+use reify_test_support::finite_difference::{self, assert_column_matches_central_difference};
 
 /// Build a fixture of dimensionless `Real` cells, all seeded, in order.
 fn probe(cells: &[(&str, f64)]) -> (ValueMap, Vec<ValueCellId>) {
@@ -428,9 +406,7 @@ fn pref(member: &str) -> CompiledExpr {
 }
 
 fn calln(name: &str, args: Vec<CompiledExpr>) -> CompiledExpr {
-    fn_call(name, &format!("std::{name}"), args, Type::Scalar {
-        dimension: DimensionVector::DIMENSIONLESS,
-    })
+    std_call(name, args, dl())
 }
 
 /// Central-difference reference for `∂expr/∂cell`, computed only through
@@ -449,17 +425,12 @@ fn central_difference(
     let base = values.get(target).cloned().expect("probe cell must exist");
     let x = base.as_f64().expect("probe cell must be numeric");
     let dim = base.dimension();
-    // The step shape from calculus.rs:714 — relative for large |x|, with an
-    // absolute floor so the step does not collapse to zero near the origin.
-    let h = 1e-6_f64 * x.abs().max(1e-3);
-
-    let at = |v: f64| -> f64 {
+    finite_difference::central_difference(x, |v| {
         let mut perturbed = values.clone();
         perturbed.insert(target.clone(), Value::from_real_scalar(v, dim));
         let ctx = EvalContext::new(&perturbed, functions);
         eval_expr(expr, &ctx).as_f64().expect("perturbed evaluation must stay numeric")
-    };
-    (at(x + h) - at(x - h)) / (2.0 * h)
+    })
 }
 
 /// The suite's single assertion shape: one dual traversal produces the whole
@@ -504,18 +475,7 @@ fn assert_ad_matches_cd_with_fns(
 
     for (j, target) in seed_cells.iter().enumerate() {
         let cd = central_difference(expr, values, target, functions);
-        assert!(
-            cd.abs() >= 0.1,
-            "{label} column {j}: probe point must have |∂r/∂x_j| >= 0.1 in SI units so the \
-             RELATIVE arm of the tolerance binds; got {cd:?}. Fix the probe point, not the \
-             tolerance."
-        );
-        let tol = 1e-6 * cd.abs() + 1e-8;
-        assert!(
-            (ad[j] - cd).abs() <= tol,
-            "{label} column {j}: ad={:?} vs central-difference {cd:?} (tol {tol:?})",
-            ad[j]
-        );
+        assert_column_matches_central_difference(label, j, ad[j], cd);
     }
 }
 
@@ -705,49 +665,25 @@ fn nested_sqrt_and_tanh_composite_gradient_agrees_with_central_differences() {
 
 use std::sync::Arc;
 
-use reify_core::ContentHash;
-use reify_core::ValueCellId as VCell;
-use reify_ir::{CompiledFnBody, CompiledFunction, FieldSourceKind};
+use reify_ir::{CompiledFunction, FieldSourceKind};
 use reify_test_support::builders::expr::{conditional_expr, user_fn_call};
+use reify_test_support::builders::function::compiled_function;
 
 fn dl() -> Type {
-    Type::Scalar { dimension: DimensionVector::DIMENSIONLESS }
+    Type::dimensionless_scalar()
 }
 
 /// A cell inside function `fname`'s own scope — the shape
 /// `eval_compiled_function_with_values` binds params under.
 fn param_ref(fname: &str, pname: &str) -> CompiledExpr {
-    CompiledExpr::value_ref(VCell::new(fname, pname), dl())
-}
-
-fn user_fn(
-    name: &str,
-    param_names: &[&str],
-    let_bindings: Vec<(String, CompiledExpr)>,
-    result_expr: CompiledExpr,
-) -> CompiledFunction {
-    let params: Vec<(String, Type)> =
-        param_names.iter().map(|p| ((*p).to_string(), dl())).collect();
-    CompiledFunction {
-        name: name.to_string(),
-        doc: None,
-        is_pub: false,
-        param_defaults: CompiledFunction::no_defaults_for(&params),
-        params,
-        return_type: dl(),
-        body: CompiledFnBody { let_bindings, result_expr },
-        content_hash: ContentHash::of(name.as_bytes()),
-        annotations: vec![],
-        optimized_target: None,
-        type_params: vec![],
-    }
+    CompiledExpr::value_ref(ValueCellId::new(fname, pname), dl())
 }
 
 /// `fn hyp(a, b) = sqrt(a*a + b*b)`
 fn hyp_fn() -> CompiledFunction {
-    user_fn(
+    compiled_function(
         "hyp",
-        &["a", "b"],
+        &[("a", dl()), ("b", dl())],
         vec![],
         calln("sqrt", vec![binop(
             BinOp::Add,
@@ -791,9 +727,9 @@ fn a_user_function_call_keeps_the_primal_invariant_exactly() {
 #[test]
 fn a_user_function_let_binding_carries_its_tangent_into_the_result_expression() {
     // fn norm2(a, b) { let s = a*a + b*b; sqrt(s) }
-    let f = user_fn(
+    let f = compiled_function(
         "norm2",
-        &["a", "b"],
+        &[("a", dl()), ("b", dl())],
         vec![(
             "s".to_string(),
             binop(
@@ -802,7 +738,7 @@ fn a_user_function_let_binding_carries_its_tangent_into_the_result_expression() 
                 binop(BinOp::Mul, param_ref("norm2", "b"), param_ref("norm2", "b")),
             ),
         )],
-        calln("sqrt", vec![CompiledExpr::value_ref(VCell::new("norm2", "s"), dl())]),
+        calln("sqrt", vec![CompiledExpr::value_ref(ValueCellId::new("norm2", "s"), dl())]),
     );
     let (values, seed_cells) = probe(&[("x", 3.0), ("y", 4.0)]);
     let expr = user_fn_call("norm2", vec![pref("x"), pref("y")], dl());
@@ -827,7 +763,7 @@ fn a_user_function_let_binding_carries_its_tangent_into_the_result_expression() 
 /// The tangent a read of `cell` would see: an unbound cell and a cell bound
 /// flat are the same answer at the read site, so this asserts what the
 /// evaluator observes rather than which of the two the binder chose.
-fn visible_tangent(env: &DualEnv, cell: &VCell, width: usize) -> Option<Vec<f64>> {
+fn visible_tangent(env: &DualEnv, cell: &ValueCellId, width: usize) -> Option<Vec<f64>> {
     match env.get(cell) {
         None => Some(vec![0.0; width]),
         Some(t) => t.materialize(width),
@@ -837,7 +773,7 @@ fn visible_tangent(env: &DualEnv, cell: &VCell, width: usize) -> Option<Vec<f64>
 #[test]
 fn rebinding_a_cell_to_a_flat_tangent_displaces_the_earlier_one() {
     let mut env = DualEnv::new();
-    let c = VCell::new("f", "a");
+    let c = ValueCellId::new("f", "a");
     env.bind(c.clone(), Tangent::from_row(vec![1.0, 2.0]));
     env.bind(c.clone(), Tangent::Zero);
     assert_eq!(
@@ -850,7 +786,7 @@ fn rebinding_a_cell_to_a_flat_tangent_displaces_the_earlier_one() {
 #[test]
 fn rebinding_a_refused_cell_to_a_real_tangent_retires_the_refusal() {
     let mut env = DualEnv::new();
-    let c = VCell::new("f", "a");
+    let c = ValueCellId::new("f", "a");
     env.bind(c.clone(), Tangent::None);
     env.bind(c.clone(), Tangent::from_row(vec![1.0]));
     assert_eq!(
@@ -864,9 +800,9 @@ fn rebinding_a_refused_cell_to_a_real_tangent_retires_the_refusal() {
 fn a_let_shadowing_a_parameter_flattens_that_parameters_tangent() {
     // fn shadow(a) { let a = 5.0; a * 2.0 } — the body never reads the
     // argument, so the result is 10.0 for every x and ∂/∂x is exactly 0.
-    let f = user_fn(
+    let f = compiled_function(
         "shadow",
-        &["a"],
+        &[("a", dl())],
         vec![("a".to_string(), literal(Value::Real(5.0)))],
         binop(BinOp::Mul, param_ref("shadow", "a"), literal(Value::Real(2.0))),
     );
@@ -891,9 +827,9 @@ fn the_later_of_two_same_named_lets_displaces_the_earlier_ones_tangent() {
     // fn two_lets(a) { let s = a * 3.0; let s = 7.0; s + 1.0 }.  Two lets of
     // one name emit NO diagnostic, so this shape reaches the evaluator with
     // nothing upstream having flagged it.
-    let f = user_fn(
+    let f = compiled_function(
         "two_lets",
-        &["a"],
+        &[("a", dl())],
         vec![
             (
                 "s".to_string(),
@@ -924,9 +860,9 @@ fn a_let_shadowing_a_parameter_leaves_the_rest_of_the_residual_differentiable() 
     // The contrast that makes the flat column meaningful: the shadowed
     // parameter must go to zero WITHOUT the row collapsing or refusing, so
     // the sibling term's real derivative still arrives.  r = shadow(x) + x*x.
-    let f = user_fn(
+    let f = compiled_function(
         "shadow",
-        &["a"],
+        &[("a", dl())],
         vec![("a".to_string(), literal(Value::Real(5.0)))],
         binop(BinOp::Mul, param_ref("shadow", "a"), literal(Value::Real(2.0))),
     );
@@ -958,9 +894,9 @@ fn a_let_shadowing_a_parameter_leaves_the_rest_of_the_residual_differentiable() 
 #[test]
 fn a_user_function_calling_another_user_function_propagates_the_chain_rule() {
     // fn twice_hyp(a, b) = hyp(a, b) * 2
-    let outer = user_fn(
+    let outer = compiled_function(
         "twice_hyp",
-        &["a", "b"],
+        &[("a", dl()), ("b", dl())],
         vec![],
         binop(
             BinOp::Mul,
@@ -982,7 +918,7 @@ fn a_user_function_calling_another_user_function_propagates_the_chain_rule() {
 /// expression resolve to `apply_lambda`, which is the reachable scalar-in
 /// scalar-out lambda-application route in a residual.
 fn cube_field_cell() -> (ValueCellId, Value) {
-    let p = VCell::new("$lambda_cube", "p");
+    let p = ValueCellId::new("$lambda_cube", "p");
     let body = binop(
         BinOp::Mul,
         CompiledExpr::value_ref(p.clone(), dl()),
@@ -1023,9 +959,9 @@ fn a_lambda_applied_inside_a_residual_propagates_its_argument_tangent() {
 #[test]
 fn a_kink_inside_a_user_function_body_is_recorded_at_a_site_that_includes_the_call_site() {
     // fn clip(a) = if a > 1 then a*a else a
-    let f = user_fn(
+    let f = compiled_function(
         "clip",
-        &["a"],
+        &[("a", dl())],
         vec![],
         conditional_expr(
             binop(BinOp::Gt, param_ref("clip", "a"), literal(Value::Real(1.0))),
@@ -1126,7 +1062,7 @@ fn unbounded_user_function_recursion_yields_undef_and_no_tangent_rather_than_a_s
     let handle = std::thread::Builder::new()
         .stack_size(3 * 1024 * 1024)
         .spawn(|| {
-            let f = user_fn("recur", &["a"], vec![], user_fn_call(
+            let f = compiled_function("recur", &[("a", dl())], vec![], user_fn_call(
                 "recur",
                 vec![param_ref("recur", "a")],
                 dl(),
@@ -1178,21 +1114,6 @@ fn jrow(
     let seeds = Seeds::new(seed_cells);
     let mut record = BranchRecord::new();
     jacobian_row(expr, &ctx, &seeds, &mut record)
-}
-
-/// `[literal, expr][index]` — an `IndexAccess` node, a kind this task does not
-/// differentiate.
-fn index_access(object: CompiledExpr, index: CompiledExpr) -> CompiledExpr {
-    let content_hash =
-        ContentHash::of(b"index_access").combine(object.content_hash).combine(index.content_hash);
-    CompiledExpr {
-        kind: reify_ir::CompiledExprKind::IndexAccess {
-            object: Box::new(object),
-            index: Box::new(index),
-        },
-        result_type: dl(),
-        content_hash,
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1275,9 +1196,10 @@ fn a_seed_dependent_unsupported_kind_is_named_in_the_refusal() {
     let (values, seed_cells) = probe(&[("x", 3.0)]);
     // [x, 1.0][0] — IndexAccess is not differentiated, and the list depends on
     // the seed, so the derivative is genuinely unknown here.
-    let expr = index_access(
+    let expr = CompiledExpr::index_access(
         reify_test_support::builders::expr::list_expr(vec![pref("x"), literal(Value::Real(1.0))]),
         literal(Value::Int(0)),
+        dl(),
     );
     match jrow(&expr, &values, &seed_cells) {
         Err(NonDifferentiable::UnsupportedKind { kind, .. }) => {
@@ -1300,12 +1222,13 @@ fn the_same_unsupported_kind_is_an_honest_zero_row_when_it_is_seed_independent()
     // would make every residual containing any unsupported construct
     // undifferentiable, however irrelevant that construct is.
     let (values, seed_cells) = probe(&[("x", 3.0)]);
-    let constant_index = index_access(
+    let constant_index = CompiledExpr::index_access(
         reify_test_support::builders::expr::list_expr(vec![
             literal(Value::Real(2.0)),
             literal(Value::Real(1.0)),
         ]),
         literal(Value::Int(0)),
+        dl(),
     );
     // r = x + [2.0, 1.0][0]
     let expr = binop(BinOp::Add, pref("x"), constant_index);
@@ -1424,48 +1347,11 @@ fn every_non_differentiable_variant_display_names_the_offending_construct() {
 // This block asserts the VALUE-semantics half of the contract; the branch
 // record half lives in `dual_branch_signature_tests.rs`.
 
-use std::sync::atomic::AtomicBool;
-
 use reify_expr::{DualEnv, jacobian_row_with_env};
-use reify_ir::{InterpolationKind, SampledField, SampledGridKind};
-
-/// A 1-D sampled field over x ∈ {0, 1, 2, 3} with data {5, 9, 2, 7}.
-///
-/// Global max 9 at x = 1, global min 2 at x = 2.  Restricted to x ∈ [2, 3] the
-/// answers all MOVE: max 7 at x = 3, min 2 at x = 2.  The global maximiser is
-/// deliberately outside the box, so a bounded result is distinguishable from
-/// an unbounded one by value alone.
-fn bounded_probe_field() -> Value {
-    let sf = SampledField {
-        name: "probe".into(),
-        kind: SampledGridKind::Regular1D,
-        bounds_min: vec![0.0],
-        bounds_max: vec![3.0],
-        spacing: vec![1.0],
-        axis_grids: vec![vec![0.0, 1.0, 2.0, 3.0]],
-        interpolation: InterpolationKind::Linear,
-        data: vec![5.0, 9.0, 2.0, 7.0],
-        oob_emitted: AtomicBool::new(false),
-    };
-    Value::Field {
-        domain_type: dl(),
-        codomain_type: dl(),
-        source: FieldSourceKind::Sampled,
-        lambda: Arc::new(Value::SampledField(sf)),
-    }
-}
-
-/// The canonical `bounding_box(solid)` shape: two 3-component `Value::Point`
-/// corners.  The field above has one axis, so only the x span is consulted.
-fn bbox_x(lo: f64, hi: f64) -> Value {
-    Value::BoundingBox {
-        min: Box::new(Value::Point(vec![Value::Real(lo), Value::Real(0.0), Value::Real(0.0)])),
-        max: Box::new(Value::Point(vec![Value::Real(hi), Value::Real(0.0), Value::Real(0.0)])),
-    }
-}
+use reify_test_support::sampled_field_fixtures::{extremum_probe_field, x_span_bbox};
 
 /// `(label, expected bounded answer)` for the four bounded reductions over
-/// `bounded_probe_field()` restricted to x ∈ [2, 3].
+/// `extremum_probe_field()` restricted to x ∈ [2, 3].
 const BOUNDED_CASES: [(&str, f64); 4] =
     [("max", 7.0), ("min", 2.0), ("argmax", 3.0), ("argmin", 2.0)];
 
@@ -1493,7 +1379,7 @@ fn bounded_field_reductions_keep_the_primal_invariant_and_are_not_undef() {
     let (values, seed_cells) = probe(&[("x", 2.0)]);
     for (name, expected) in BOUNDED_CASES {
         let expr =
-            calln(name, vec![literal(bounded_probe_field()), literal(bbox_x(2.0, 3.0))]);
+            calln(name, vec![literal(extremum_probe_field()), literal(x_span_bbox(2.0, 3.0))]);
         let (dual_v, _, plain) = dual_and_plain(&expr, &values, &seed_cells);
 
         // The invariant itself.
@@ -1531,7 +1417,7 @@ fn a_seed_independent_bounded_reduction_is_flat_rather_than_a_refusal() {
     let (values, seed_cells) = probe(&[("x", 2.0)]);
     for (name, _) in BOUNDED_CASES {
         let expr =
-            calln(name, vec![literal(bounded_probe_field()), literal(bbox_x(2.0, 3.0))]);
+            calln(name, vec![literal(extremum_probe_field()), literal(x_span_bbox(2.0, 3.0))]);
         let (_, tangent, _) = dual_and_plain(&expr, &values, &seed_cells);
         assert_eq!(
             tangent,
@@ -1549,7 +1435,7 @@ fn a_bounded_reduction_inside_a_residual_contributes_a_zero_column_not_a_refusal
     let expr = binop(
         BinOp::Sub,
         pref("x"),
-        calln("max", vec![literal(bounded_probe_field()), literal(bbox_x(2.0, 3.0))]),
+        calln("max", vec![literal(extremum_probe_field()), literal(x_span_bbox(2.0, 3.0))]),
     );
     let (primal, row) =
         jrow(&expr, &values, &seed_cells).expect("a frozen bounded reduction is differentiable");
@@ -1568,11 +1454,11 @@ fn a_bounded_reduction_over_a_seed_dependent_field_refuses_a_tangent() {
     // only honest answer is `Tangent::None` — matching the arity-1 rule.
     for (name, _) in BOUNDED_CASES {
         let mut values = ValueMap::new();
-        values.insert(cell("fld"), bounded_probe_field());
+        values.insert(cell("fld"), extremum_probe_field());
         let seed_cells = vec![cell("fld")];
         let expr = calln(name, vec![
             value_ref_typed(ENT, "fld", dl()),
-            literal(bbox_x(2.0, 3.0)),
+            literal(x_span_bbox(2.0, 3.0)),
         ]);
         let (_, tangent, plain) = dual_and_plain(&expr, &values, &seed_cells);
         assert_ne!(plain, Value::Undef, "{name}: the reference primal is still a real number");
@@ -1598,10 +1484,10 @@ fn a_bounded_reduction_whose_bounds_move_with_the_seeds_refuses_a_tangent() {
     // variable that in fact selects its value.
     for (name, _) in BOUNDED_CASES {
         let mut values = ValueMap::new();
-        values.insert(cell("bb"), bbox_x(2.0, 3.0));
+        values.insert(cell("bb"), x_span_bbox(2.0, 3.0));
         let seed_cells = vec![cell("bb")];
         let expr = calln(name, vec![
-            literal(bounded_probe_field()),
+            literal(extremum_probe_field()),
             value_ref_typed(ENT, "bb", Type::BoundingBox),
         ]);
         let (_, tangent, plain) = dual_and_plain(&expr, &values, &seed_cells);
@@ -1627,13 +1513,13 @@ fn the_refusal_from_a_moving_bounded_reduction_names_the_field_reduction_itself(
     // level earlier, at "a seeded cell holding a non-scalar value"; that is
     // the arity-1 behaviour too, and is asserted by the tangent tests above.)
     let mut values = ValueMap::new();
-    values.insert(cell("fld"), bounded_probe_field());
+    values.insert(cell("fld"), extremum_probe_field());
     let ctx = EvalContext::simple(&values);
     let seeds = Seeds::new(&[cell("x")]);
     let mut env = DualEnv::new();
     env.bind(cell("fld"), Tangent::Scalar(vec![1.0]));
     let expr =
-        calln("max", vec![value_ref_typed(ENT, "fld", dl()), literal(bbox_x(2.0, 3.0))]);
+        calln("max", vec![value_ref_typed(ENT, "fld", dl()), literal(x_span_bbox(2.0, 3.0))]);
     let mut record = BranchRecord::new();
     match jacobian_row_with_env(&expr, &ctx, &seeds, &env, &mut record) {
         Err(NonDifferentiable::UnsupportedKind { kind, .. }) => {
@@ -1677,19 +1563,19 @@ fn malformed_two_argument_reduction_shapes_still_agree_with_eval_expr_on_undef()
     let cases: [(&str, CompiledExpr); 4] = [
         (
             "max(field, 3.0)",
-            calln("max", vec![literal(bounded_probe_field()), literal(Value::Real(3.0))]),
+            calln("max", vec![literal(extremum_probe_field()), literal(Value::Real(3.0))]),
         ),
         (
             "min(field, 3.0)",
-            calln("min", vec![literal(bounded_probe_field()), literal(Value::Real(3.0))]),
+            calln("min", vec![literal(extremum_probe_field()), literal(Value::Real(3.0))]),
         ),
         ("max(2.0, bbox)", calln("max", vec![
             literal(Value::Real(2.0)),
-            literal(bbox_x(2.0, 3.0)),
+            literal(x_span_bbox(2.0, 3.0)),
         ])),
         ("argmax(2.0, bbox)", calln("argmax", vec![
             literal(Value::Real(2.0)),
-            literal(bbox_x(2.0, 3.0)),
+            literal(x_span_bbox(2.0, 3.0)),
         ])),
     ];
     for (label, expr) in cases {
@@ -2125,7 +2011,7 @@ fn every_other_all_constant_kink_already_yields_a_full_row() {
 /// non-builtin name `cube`, so it resolves identically under both orderings
 /// and is blind to exactly the distinction these tests draw.
 fn shadow_cell(name: &str) -> (ValueCellId, Value) {
-    let p = VCell::new("$lambda_shadow", "p");
+    let p = ValueCellId::new("$lambda_shadow", "p");
     let body =
         binop(BinOp::Add, CompiledExpr::value_ref(p.clone(), dl()), literal(Value::Real(1000.0)));
     let lambda = Value::Lambda {
@@ -2158,7 +2044,7 @@ fn a_shadow_cell_does_not_outrank_a_whole_field_reduction_on_the_dual_path() {
         let (cell_id, field) = shadow_cell(name);
         values.insert(cell_id, field);
 
-        let expr = calln(name, vec![literal(bounded_probe_field())]);
+        let expr = calln(name, vec![literal(extremum_probe_field())]);
         let (dual_v, _, plain) = dual_and_plain(&expr, &values, &seed_cells);
 
         // The invariant itself: `eval_expr` takes the named reduction arm, so
@@ -2312,11 +2198,7 @@ fn a_clamped_residual_outside_its_bounds_carries_the_bounds_own_derivative() {
         // column is a true zero, which `assert_ad_matches_cd` deliberately
         // refuses to accept as a probe point, so only `p` is differenced.
         let cd = central_difference(&expr, &values, &seed_cells[1], &[]);
-        assert!(
-            (row[1] - cd).abs() <= 1e-6 * cd.abs() + 1e-8,
-            "{label}: ad={:?} vs central-difference {cd:?}",
-            row[1]
-        );
+        assert_column_matches_central_difference(label, 1, row[1], cd);
     }
 }
 
@@ -2539,7 +2421,7 @@ fn a_callee_parameter_cell_colliding_with_a_seed_column_uses_the_call_site_tange
     // Resolving the body's `ValueRef` through the SEED column instead of the
     // overlay yields the unit row and reports 2 — the derivative of the
     // function, with the argument's chain rule dropped on the floor.
-    let f = user_fn("part", &["x"], vec![], binop(
+    let f = compiled_function("part", &[("x", dl())], vec![], binop(
         BinOp::Mul,
         param_ref("part", "x"),
         literal(Value::Real(2.0)),
@@ -2580,9 +2462,9 @@ fn a_kink_inside_a_seed_independent_callee_body_is_still_recorded() {
     // wholesale to `eval_expr`, contributing zero entries while a branch
     // really was selected.  That is the "we did not look" vs "there is no
     // kink" confusion λ (#6679) may never be handed.
-    let jump = user_fn(
+    let jump = compiled_function(
         "jump",
-        &["q"],
+        &[("q", dl())],
         vec![],
         conditional_expr(
             binop(BinOp::Gt, param_ref("jump", "q"), literal(Value::Real(5.0))),
@@ -2631,7 +2513,7 @@ fn a_match_over_a_discriminant_that_refused_a_tangent_refuses_the_row() {
     // Reachable here through a SEEDED cell holding a `Value::Enum`: the value
     // is a legitimate discriminant, and `as_f64()` is `None`, so the read
     // refuses exactly as a non-scalar seeded cell must.
-    use reify_ir::{CompiledExprKind, CompiledMatchArm, CompiledPattern};
+    use reify_ir::{CompiledMatchArm, CompiledPattern};
 
     let mut values = ValueMap::new();
     values.insert(cell("tag"), Value::Enum {
@@ -2645,12 +2527,7 @@ fn a_match_over_a_discriminant_that_refused_a_tangent_refuses_the_row() {
         body: literal(Value::Real(7.0)),
     }];
     let discriminant = pref("tag");
-    let content_hash = ContentHash::of(b"match").combine(discriminant.content_hash);
-    let expr = CompiledExpr {
-        kind: CompiledExprKind::Match { discriminant: Box::new(discriminant), arms },
-        result_type: dl(),
-        content_hash,
-    };
+    let expr = CompiledExpr::match_expr(discriminant, arms, dl());
 
     let err = jrow(&expr, &values, &seed_cells).expect_err(
         "a discriminant with no tangent cannot yield a confident row for the arm body",
@@ -2677,7 +2554,7 @@ fn an_undifferentiated_builtin_that_eval_expr_intercepts_by_name_keeps_its_prima
     // that the arm still routes through the interception rather than straight
     // to `reify_stdlib::eval_builtin` — which answers `Undef` for a Field.
     let mut values = ValueMap::new();
-    values.insert(cell("f"), bounded_probe_field());
+    values.insert(cell("f"), extremum_probe_field());
     let seed_cells = vec![cell("w")];
     values.insert(cell("w"), Value::Real(1.0));
     let expr = calln("gradient", vec![pref("f")]);
@@ -2826,12 +2703,10 @@ fn a_seeded_exponent_over_a_negative_base_refuses_in_both_spellings() {
 
 use std::collections::BTreeMap;
 
+use reify_test_support::mm;
+
 fn opt_len() -> Type {
     Type::Option(Box::new(Type::length()))
-}
-
-fn mm(v: f64) -> Value {
-    Value::Scalar { si_value: v / 1000.0, dimension: DimensionVector::LENGTH }
 }
 
 fn result_ok(v: Value) -> Value {
@@ -2848,23 +2723,14 @@ fn result_ok(v: Value) -> Value {
 /// defect: the intercept exists precisely because the `.ri` body route is
 /// blocked.
 fn placeholder_unwrap_or() -> CompiledFunction {
-    let params =
-        vec![("subject".to_string(), opt_len()), ("dflt".to_string(), Type::length())];
     CompiledFunction {
-        name: "unwrap_or".to_string(),
-        doc: None,
         is_pub: true,
-        param_defaults: CompiledFunction::no_defaults_for(&params),
-        params,
-        return_type: Type::length(),
-        body: CompiledFnBody {
-            let_bindings: vec![],
-            result_expr: CompiledExpr::literal(mm(999.0), Type::length()),
-        },
-        content_hash: ContentHash::of(b"placeholder unwrap_or"),
-        annotations: vec![],
-        optimized_target: None,
-        type_params: vec![],
+        ..compiled_function(
+            "unwrap_or",
+            &[("subject", opt_len()), ("dflt", Type::length())],
+            vec![],
+            CompiledExpr::literal(mm(999.0), Type::length()),
+        )
     }
 }
 
