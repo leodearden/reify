@@ -233,6 +233,7 @@ ScopeDecision(run_rust, run_gui, run_occt_gate, run_gui_vitest, gui_path_signal,
   - The same git commands run under the hook's own `GIT_*` env, never scrubbed (consumer C18).
   - The branch diff is against `merge-base main HEAD`.
   - A staged primary-diff failure is still fail-open. A rename-source failure still fails wide.
+  - *Lead amendment 2026-10-15 (program review-all-reify-20261010; hotspot-survey finding fk-39f88c1738b6, task #9170):* the staged primary diff **fails wide** on a non-zero git status like its three siblings (verify-scope contract C5); #9170 implements it in `gather_changed` after β #9097. The "still fail-open" clause above is superseded.
   - The `.task/` filter stays.
 - **`decide_scope(changed, rename_sources, facts)` is pure.**
   - It reads `reify_path_attribution.attribute` over the whole list in one in-process batch (S22 R2; consumer of #8662).
