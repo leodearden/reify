@@ -2676,7 +2676,7 @@ pub(crate) fn check_expr_mechanism_joint_bound(
 }
 
 #[cfg(test)]
-/// Conformance behaviour is pinned through `check_trait_conformance` (inline .ri via `conform_source`); rationale: docs/prds/v0_6/compiler-declaration-passes.md §2.4 / B10.
+/// Trait-conformance cases go through `check_trait_conformance` (inline .ri via `conform_source`); rationale: docs/prds/v0_6/compiler-declaration-passes.md §2.4 / B10.
 mod tests {
     use super::*;
 
@@ -2762,7 +2762,8 @@ mod tests {
         conform(traits, structure_def, enum_defs, &HashSet::new())
     }
 
-    /// Parse `source`, compile its traits as `traits_phase` does, and run
+    /// Parse `source`, compile its traits with the same `compile_trait` call
+    /// `traits_phase` makes (minus its refinement-deprecation pass), and run
     /// `check_trait_conformance` for its one conformer.
     ///
     /// Declarations are scanned by `collect_decl_refs`, the pre-pass a full compile
@@ -2784,13 +2785,45 @@ mod tests {
     /// - A trait sub requirement carries parens (`sub mount = Hole()`); without them
     ///   the member is silently dropped from the trait body.
     fn conform_source(source: &str) -> ConformanceRun {
-        let parsed =
+        conform_source_editing_ast(source, |_| {})
+    }
+
+    /// [`conform_source`] for a fixture whose every `constraint`, in the traits and in
+    /// the conformer alike, carries `label`.
+    ///
+    /// The grammar has no constraint-label syntax yet, so the fixture is written
+    /// unlabeled and the label is set on the parsed AST before the traits compile.
+    fn conform_source_with_labeled_constraints(source: &str, label: &str) -> ConformanceRun {
+        conform_source_editing_ast(source, |parsed| {
+            for declaration in &mut parsed.declarations {
+                let members = match declaration {
+                    reify_ast::Declaration::Trait(trait_decl) => &mut trait_decl.members,
+                    reify_ast::Declaration::Structure(structure) => &mut structure.members,
+                    _ => continue,
+                };
+                for member in members {
+                    if let reify_ast::MemberDecl::Constraint(constraint) = member {
+                        constraint.label = Some(label.to_string());
+                    }
+                }
+            }
+        })
+    }
+
+    /// [`conform_source`] with `edit_ast` applied to the parsed module before its
+    /// declarations are scanned: for fixtures the grammar cannot spell.
+    fn conform_source_editing_ast(
+        source: &str,
+        edit_ast: impl FnOnce(&mut reify_ast::ParsedModule),
+    ) -> ConformanceRun {
+        let mut parsed =
             reify_syntax::parse(source, reify_core::ModulePath::single("conformance_test"));
         assert!(
             parsed.errors.is_empty(),
             "parse errors in conformance fixture: {:?}\n{source}",
             parsed.errors
         );
+        edit_ast(&mut parsed);
 
         let mut scan_ctx = crate::compile_builder::ctx::CompilationCtx::new();
         let decl_refs = crate::compile_builder::pre_pass::collect_decl_refs(&mut scan_ctx, &parsed);
@@ -3275,6 +3308,63 @@ mod tests {
             "the unlabeled constraint default must be injected; got: {:?}",
             run.injected_constraints
         );
+    }
+
+    /// A conformer constraint with the same label as a trait's constraint default
+    /// replaces it: the trait's is not injected. The control is
+    /// [`labeled_trait_constraint_default_is_injected_when_the_conformer_lacks_that_label`].
+    #[test]
+    fn conformer_constraint_with_the_trait_constraints_label_suppresses_the_default() {
+        let run = conform_source_with_labeled_constraints(
+            r"
+            trait T {
+                param x : Real = 1.0
+                constraint x > 0.0
+            }
+            structure def S : T { constraint x > 1.0 }
+            ",
+            "pos",
+        );
+
+        assert!(
+            run.diagnostics.is_empty(),
+            "expected no diagnostics; got: {:?}",
+            run.diagnostics
+        );
+        assert!(
+            run.injected_constraints.is_empty(),
+            "the conformer's own `pos` constraint must stand in for the trait's; got: {:?}",
+            run.injected_constraints
+        );
+    }
+
+    /// A trait's labeled constraint default is injected, label intact, when the
+    /// conformer declares no constraint with that label.
+    #[test]
+    fn labeled_trait_constraint_default_is_injected_when_the_conformer_lacks_that_label() {
+        let run = conform_source_with_labeled_constraints(
+            r"
+            trait T {
+                param x : Real = 1.0
+                constraint x > 0.0
+            }
+            structure def S : T {}
+            ",
+            "pos",
+        );
+
+        assert!(
+            run.diagnostics.is_empty(),
+            "expected no diagnostics; got: {:?}",
+            run.diagnostics
+        );
+        assert_eq!(
+            run.injected_constraints.len(),
+            1,
+            "the labeled constraint default must be injected; got: {:?}",
+            run.injected_constraints
+        );
+        assert_eq!(run.injected_constraints[0].label.as_deref(), Some("pos"));
     }
 
     /// A trait `param` whose default names an enum variant is injected as an enum-typed
