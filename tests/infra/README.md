@@ -540,7 +540,9 @@ This leaf refines C2 in three places, and the refinements are contract:
 
 - A `SKIP` record carries `attempt` 0, `rc` null and `duration_ms` null.
 - `fail_detail` keeps the newest `_RA_FAIL_DETAIL_MAX` sanitized FAIL lines,
-  each cut to 400 characters, and newer entries win when the line cap bites.
+  each cut to 400 characters (to 400 bytes under a C/POSIX locale, less any
+  multibyte character that cut splits, so the line stays valid UTF-8), and
+  newer entries win when the line cap bites.
   `fail_detail_omitted` counts every line left out. The text FAILED-DETAIL
   block comes from the same bound, so no reader parses its omitted-count
   indicator line.

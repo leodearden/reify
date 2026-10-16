@@ -35,7 +35,8 @@ _REIFY_LIB_EVENT_LOG_SH_SOURCED=1
 # Bytes in one appended line, newline included. Below PIPE_BUF (4096), so one
 # printf is one write(2) and concurrent appenders never interleave.
 EVENT_LOG_LINE_MAX=4000
-# Characters kept of each member_finish fail_detail entry.
+# Characters kept of each member_finish fail_detail entry; bytes under a
+# C/POSIX caller locale, less any multibyte character the cut splits.
 EVENT_LOG_DETAIL_ENTRY_MAX=400
 # Bytes reserved for a count written after its list is fitted.
 _EVENT_LOG_COUNT_RESERVE=20
@@ -109,6 +110,21 @@ _event_log_head() {
     fi
     _event_json_int _elh_ts "$_elh_ts"
     printf -v "$1" '{"v":1,"ts_ns":%s,"pid":%s,"event":"%s"' "$_elh_ts" "$BASHPID" "$2"
+}
+
+# _event_log_drop_split_char OUT_VAR VALUE — VALUE without a trailing
+# incomplete UTF-8 sequence (a lead byte followed by fewer continuation bytes
+# than it announces), so a byte-wise cut never leaves invalid UTF-8.
+_event_log_drop_split_char() {
+    local LC_ALL=C
+    local _eds_v="$2" _eds_cont=$'[\x80-\xbf]'
+    local _eds_lead=$'[\xc0-\xff]' _eds_lead3=$'[\xe0-\xff]' _eds_lead4=$'[\xf0-\xff]'
+    case $_eds_v in
+        *$_eds_lead) _eds_v="${_eds_v%?}" ;;
+        *$_eds_lead3$_eds_cont) _eds_v="${_eds_v%??}" ;;
+        *$_eds_lead4$_eds_cont$_eds_cont) _eds_v="${_eds_v%???}" ;;
+    esac
+    printf -v "$1" '%s' "$_eds_v"
 }
 
 # _event_log_budget OUT_VAR RECORD_SO_FAR FIXED_REST — the bytes a record's
@@ -199,13 +215,18 @@ event_log_emit_member_start() {
 
 event_log_emit_member_finish() {
     [ -n "${REIFY_VERIFY_EVENT_LOG:-}" ] || return 0
-    # Truncate in the caller's locale, so an entry is cut at a character.
+    # Cut in the caller's locale: at a character under UTF-8, at a byte under
+    # C, where a character the cut splits is then dropped whole.
     local -a _entries=()
     local _entry
     for _entry in "${@:7}"; do
         _entries+=("${_entry:0:EVENT_LOG_DETAIL_ENTRY_MAX}")
     done
     local LC_ALL=C
+    local _i
+    for _i in "${!_entries[@]}"; do
+        _event_log_drop_split_char "_entries[$_i]" "${_entries[_i]}"
+    done
     local _line _pre _budget _detail _dropped _used _omitted=null
     _event_log_head _line member_finish
     _event_log_add _line str member "${1-}"

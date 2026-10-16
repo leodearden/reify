@@ -527,6 +527,21 @@ class EncoderTests(unittest.TestCase):
         self.assertEqual(kept, truncated[len(truncated) - len(kept):])
         self.assertEqual(rec["fail_detail_omitted"], 4 + len(detail) - len(kept))
 
+    def test_a_byte_cut_under_lc_all_c_drops_a_split_character_whole(self):
+        env = dict(self.env, LC_ALL="C")
+        for char in ("é", "—", "\U0001f600"):
+            width = len(char.encode())
+            for prefix in range(DETAIL_ENTRY_MAX - width, DETAIL_ENTRY_MAX):
+                with self.subTest(char=ascii(char), prefix=prefix):
+                    self.channel.unlink(missing_ok=True)
+                    entry = "x" * prefix + char + "tail"
+                    result = emit("member_finish", "m", "1", "1", "FAIL", "1", "0", entry, env=env)
+                    self.assertEqual((result.returncode, result.stderr), (0, ""))
+                    (line,) = self.physical_lines()
+                    rec = json.loads(line.decode("utf-8"))
+                    fits = prefix + width <= DETAIL_ENTRY_MAX
+                    self.assertEqual(rec["fail_detail"], ["x" * prefix + (char if fits else "")])
+
     def test_run_finish_fits_names_in_order_and_counts_the_rest(self):
         def names(prefix, count):
             return [f"test_{prefix}_{i:03d}".ljust(40, "z") for i in range(count)]
