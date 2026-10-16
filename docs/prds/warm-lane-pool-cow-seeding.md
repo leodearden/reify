@@ -174,13 +174,14 @@ seed-warm-lane.sh <base_target_dir> <lane_dir> (--fresh-checkout | --reset-in-pl
 
 ### 9.3 Base-refresh + defrag-signal — `scripts/refresh-warm-base.sh`
 
-*(Updated 2026-06-18 — D10 amendment. The pre-D10 prose described a `<base_dir>.new` atomic rename; the landed implementation uses generation-dir staging + atomic symlink-flip + reader-refcount GC as described below. Updated 2026-06-25 — esc-3468-75 fix: now also stamps the authoritative per-gen landed-commit (step 4b) and reaps it in GC. Updated 2026-07-03 — task 4983: now also stamps the per-gen build-worktree root (step 2b) and reaps it in GC. Updated 2026-07-07 — task 5126: the step 2b `.buildroot` stamp gains a second consumer — seed-warm-lane.sh now also relocates (rewrites, not just relinks) foreign-prefix links-metadata/OUT_DIR baked into build-script `output`/`root-output` replay files; no change to refresh-warm-base.sh itself.)*
+*(Updated 2026-06-18 — D10 amendment. The pre-D10 prose described a `<base_dir>.new` atomic rename; the landed implementation uses generation-dir staging + atomic symlink-flip + reader-refcount GC as described below. Updated 2026-06-25 — esc-3468-75 fix: now also stamps the authoritative per-gen landed-commit (step 4b) and reaps it in GC. Updated 2026-07-03 — task 4983: now also stamps the per-gen build-worktree root (step 2b) and reaps it in GC. Updated 2026-07-07 — task 5126: the step 2b `.buildroot` stamp gains a second consumer — seed-warm-lane.sh now also relocates (rewrites, not just relinks) foreign-prefix links-metadata/OUT_DIR baked into build-script `output`/`root-output` replay files; no change to refresh-warm-base.sh itself. Updated 2026-10-16 — task 9180: the guard now verifies that `<sha>` has landed (ancestor of `refs/heads/main`) instead of inferring it from HEAD == `<sha>`.)*
 
 ```
 refresh-warm-base.sh --advancing-dir <dir> --base-dir <base> --landed-commit <sha> [--check-frag [--frag-threshold <N>]]
   --landed-commit <sha>  REQUIRED. Fail-closed provenance guard (inv.9):
-    refuse if the advancing worktree has uncommitted tracked changes (--untracked-files=no)
-    or if HEAD ≠ <sha>. Only a clean landed-commit target may advance the base.
+    refuse if the advancing worktree has uncommitted tracked changes (--untracked-files=no),
+    if HEAD ≠ <sha>, or if <sha> is not an ancestor of refs/heads/main (not landed).
+    Only a clean landed-commit target may advance the base.
   on main advance (quiescent moment — base target/ consistent, never mid-build):
     1. generation-dir staging:
          cp -a --reflink=always <advancing_target_dir>  <base>.gen.<N>.partial
