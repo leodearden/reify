@@ -223,6 +223,7 @@ make_runnable_verify_fixture() {
         affected-crates-lib.sh \
         lib_test_semaphore.sh \
         lib_slot_acquire.sh \
+        lib_event_log.sh \
         lib_clock_stop.sh \
         cpu-admit.sh \
         lib_proc_reaper.sh \
