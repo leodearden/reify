@@ -44,8 +44,8 @@ impl ShellFrame {
     ///
     /// # Relation to `ElasticResult.frame`
     ///
-    /// Matches the `ElasticResult.frame` local-to-global convention documented in
-    /// `crates/reify-compiler/stdlib/solver_elastic.ri:276–294`.  The future
+    /// Matches the local-to-global convention documented on the `frame` field of
+    /// `ElasticResult` in `crates/reify-compiler/stdlib/solver_elastic.ri`.  The future
     /// `to_global(stress, frame)` helper (T18-T20) can use this directly as
     /// `σ_global = frame · σ_local · frameᵀ` without any transpose step at the call site.
     ///

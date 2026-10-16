@@ -672,7 +672,6 @@ crates/reify-solver-elastic/src/result.rs :: assembly/tet.rs:182
 crates/reify-solver-elastic/src/result.rs :: assembly/tet.rs:208
 crates/reify-solver-elastic/src/result.rs :: assembly/tet.rs:244
 crates/reify-solver-elastic/src/result.rs :: result.rs:78
-crates/reify-solver-elastic/src/shell_assembly.rs :: crates/reify-compiler/stdlib/solver_elastic.ri:276
 crates/reify-solver-elastic/src/shell_boundary.rs :: crates/reify-eval/src/kernel_registry.rs:915
 crates/reify-solver-elastic/src/sweep.rs :: crates/reify-eval/src/kernel_registry.rs:915
 crates/reify-solver-elastic/src/sweep.rs :: mesher.rs:46

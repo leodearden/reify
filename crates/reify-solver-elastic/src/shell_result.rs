@@ -32,7 +32,7 @@ use crate::elements::shell_frame::{ShellFrame, build_shell_frame, plane_stress_d
 ///
 /// # To-global transform (T18-T20)
 ///
-/// Use [`crate::shell_assembly::ShellFrame::local_to_global`] to obtain the
+/// Use [`ShellFrame::local_to_global`] to obtain the
 /// local-to-global rotation matrix F, then `σ_global = F · σ_local · Fᵀ` for each layer.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ShellElementStress {

@@ -6,7 +6,7 @@
 //! `docs/prds/v0_6/tensegrity-membrane.md` §5 + D2, task ζ.
 //!
 //! The elastic stiffness `K_e` reuses the shell's patch-test-validated CST
-//! membrane block (`shell_assembly::membrane_node_pair_block`), so the membrane
+//! membrane block (`shell_frame::membrane_node_pair_block`), so the membrane
 //! `K_e` is the *same* validated `Bₘᵀ(t·D_pl)Bₘ` triple-product as the MITC3
 //! shell — a structural guarantee, not two copies kept in lockstep. The element
 //! is assembled in the local mid-surface frame (`build_shell_frame` +
@@ -120,7 +120,7 @@ pub(crate) fn element_stiffness_membrane_cst_with_frame(
 /// maps as `K_glob = Tᵀ K_loc T` with `T = blockdiag(R)`, so `u_globᵀ K_glob u_glob
 /// = u_locᵀ K_loc u_loc` — the strain-energy invariance the objectivity test pins.
 ///
-/// Thin wrapper over [`crate::shell_assembly::rotate_blockdiag`] at `N = 9`; the
+/// Thin wrapper over [`rotate_blockdiag`] at `N = 9`; the
 /// block-rotation arithmetic is shared with the MITC3 shell path. Kept
 /// `pub(crate)` so the membrane K_g kernel
 /// ([`crate::geometric_stiffness::membrane`]) reuses the identical rotation.

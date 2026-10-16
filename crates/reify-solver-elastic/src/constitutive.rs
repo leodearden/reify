@@ -110,7 +110,7 @@ impl IsotropicElastic {
     /// Assert the contract `E > 0` and `-1 < ν < 0.5` in debug builds.
     ///
     /// This is the single source of truth for Poisson-ratio validation in this
-    /// crate. Both [`Self::d_matrix`] and [`crate::shell_assembly::plane_stress_d`]
+    /// crate. Both [`Self::d_matrix`] and [`crate::elements::shell_frame::plane_stress_d`]
     /// delegate here rather than carrying inline checks. A future hardening pass
     /// (PRD task #21 diagnostics) may promote these to a fallible
     /// `IsotropicElastic::new(e, nu) -> Result<Self, ConstitutiveError>`.
@@ -542,7 +542,7 @@ impl ConstitutiveLaw for TransverseIsotropicMaterial {
 /// global basis vectors expressed in local coordinates.)
 ///
 /// ⚠ This is the **transpose** of the `ShellFrame.r` convention in
-/// `shell_assembly.rs` (which stores rows = local basis in global coords,
+/// `elements/shell_frame.rs` (which stores rows = local basis in global coords,
 /// i.e. `v_local = ShellFrame.r · v_global`, the global → local map).
 /// Callers holding a `ShellFrame` must pass `transpose(frame.r)` here.
 ///

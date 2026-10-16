@@ -39,7 +39,7 @@ use crate::solver::{CgSolverOptions, SolverMode, solve_cg};
 /// solve. Neutral solver-elastic types only — reify-eval wraps these into the
 /// DSL `ShellChannels` / `ShellStress` value (no dependency cycle).
 ///
-/// No `derive`s: `ShellFrame` (shell_assembly.rs) implements none of
+/// No `derive`s: `ShellFrame` (elements/shell_frame.rs) implements none of
 /// `Debug`/`Clone`/`PartialEq`, and the consumers (the inline test + the
 /// reify-eval `solve_shell_static` glue) only read the fields by move/borrow.
 pub struct FlatPlateShellSolve {

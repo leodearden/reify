@@ -253,7 +253,7 @@ fn jinv_t_mul(j_inv: &[[f64; 3]; 3], g_ref: &[f64; 3]) -> [f64; 3] {
 /// - `e2 = e3 × e1`.
 ///
 /// On a flat facet (directors ∥ facet normal, `g1` in-plane) this reduces
-/// exactly to [`crate::shell_assembly::build_shell_frame`], so `plane_stress_d`
+/// exactly to [`build_shell_frame`], so `plane_stress_d`
 /// — expressed in this lamina frame — applies and the flat reduction is exact.
 fn lamina_frame(j: &[[f64; 3]; 3], n: &[f64; 3], directors: &[Director; 3]) -> [[f64; 3]; 3] {
     // e3 = normalized interpolated director.
@@ -793,7 +793,7 @@ fn degenerate_exact_covariant_shear_b(
 /// # Flat reduction
 ///
 /// On a flat facet `J` is `ζ`-invariant, `q` reduces to
-/// [`crate::shell_assembly::build_shell_frame`], `s₃ = 2/t = 1/|g_ζ|`, and the
+/// [`build_shell_frame`], `s₃ = 2/t = 1/|g_ζ|`, and the
 /// exact covariant samples × `s₃·m2` reduce to task 3392's
 /// `jac2_inv_t · covariant_shear_b_nodal` flat map at every `ζ`.
 pub fn degenerate_transverse_shear_b(
