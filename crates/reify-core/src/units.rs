@@ -206,8 +206,8 @@ pub fn unit_symbol_to_si(unit: &str) -> Option<(f64, DimensionVector)> {
 /// answers "which BARE symbols may be written, most-preferred first" — an
 /// ORDERED ladder the caller WALKS for bit-exactness, whose factor-1.0
 /// TERMINATOR contract is meaningless for a compound expression — while that
-/// one answers "which `UnitExpr`-shaped string spells this dimension out of SI
-/// base symbols", and is unordered and total.
+/// one answers "which `UnitExpr`-shaped string spells this dimension out of
+/// factor-1.0 symbols", and is unordered and total.
 ///
 /// The preconditions differ too, which is the half that actually matters: a
 /// bare symbol round-trips in ANY module because the built-in table is an
@@ -295,6 +295,26 @@ pub const RI_COMPOUND_BASE_SYMBOLS: [Option<&'static str>; 10] = [
     Some("USD"), // 9 Money
 ];
 
+/// Named SI derived symbols that [`ri_compound_unit_expr`] writes for a WHOLE
+/// dimension, symbol first as in [`BUILTIN_UNITS`].
+///
+/// - These are symbols reify-compiler's `si_units.rs` generates BARE at factor
+///   exactly `1.0`, mirrored here because reify-core cannot depend on
+///   reify-compiler.
+/// - Factor 1.0 ONLY. A prefixed form (`kN`, `MPa`) would scale the magnitude
+///   and break the verbatim-SI-value identity, so it never belongs here.
+/// - Cross-guarded against the actually-seeded registry by
+///   `ri_literal_roundtrip.rs`'s
+///   `named_derived_symbols_resolve_to_factor_one_in_the_stdlib_registry`.
+/// - Matched against the whole dimension only, never used as a factor inside a
+///   larger compound (`Pa*s`, `N*m`).
+pub const RI_NAMED_DERIVED_SYMBOLS: &[(&str, DimensionVector)] = &[
+    ("N", DimensionVector::FORCE),
+    ("Pa", DimensionVector::PRESSURE),
+    ("J", DimensionVector::ENERGY),
+    ("W", DimensionVector::POWER),
+];
+
 /// Render one factor of a compound unit expression, omitting `^1`.
 fn ri_unit_factor(symbol: &str, exponent: i8) -> String {
     if exponent == 1 {
@@ -304,12 +324,13 @@ fn ri_unit_factor(symbol: &str, exponent: i8) -> String {
     }
 }
 
-/// A `UnitExpr`-shaped `.ri` string spelling `dim` out of SI base symbols, or
-/// `None` when it cannot be written exactly (task #6400).
+/// A `UnitExpr`-shaped `.ri` string for `dim` — a named factor-1.0 derived
+/// symbol when one exists, else SI base symbols — or `None` when it cannot be
+/// written exactly (task #6400).
 ///
 /// The COMPOUND sibling of [`ri_emittable_units`], used by
 /// `reify_ir::ri_literal` under `UnitScope::SiBaseUnitsSeeded` to write values
-/// whose dimension has no bare symbol at all: `2.5m^2`, `101325kg/m/s^2`,
+/// whose dimension has no bare symbol at all: `2.5m^2`, `101325Pa`,
 /// `7850kg/m^3`.
 ///
 /// # Why this is not a widening of [`ri_emittable_units`]
@@ -347,14 +368,21 @@ fn ri_unit_factor(symbol: &str, exponent: i8) -> String {
 /// would fold `0.001.powi(2)` and reintroduce exactly the fold-order hazard
 /// this structurally avoids.
 ///
+/// A single named atom (`Pa`) is a bare `UnitExpr::Unit`, which the compiler
+/// resolves by its bare path (`v * factor + offset.unwrap_or(0.0)`): exact for
+/// factor 1.0, no offset and a non-negative magnitude, the sign riding a unary
+/// minus — exactly as for `sr` and `USD`.
+///
 /// # Shape
 ///
-/// Factors appear in [`crate::dimension::BASE_UNIT_SYMBOLS`] index order:
-/// positive exponents first joined by `*`, then each negative exponent
-/// introduced by its own `/` carrying the ABSOLUTE exponent (`m*kg/s^2`,
-/// `kg/m/s^2`, `kg/m^3`); `^n` is omitted when `n == 1`. That is the same
-/// partition and ordering `impl Display for DimensionVector` uses, so the two
-/// renderers share one convention.
+/// Named first: a dimension equal to a [`RI_NAMED_DERIVED_SYMBOLS`] row is that
+/// one symbol (`Pa`, never `kg/m/s^2`). Otherwise factors appear in
+/// [`crate::dimension::BASE_UNIT_SYMBOLS`] index order: positive exponents
+/// first joined by `*`, then each negative exponent introduced by its own `/`
+/// carrying the ABSOLUTE exponent (`kg/m/s`, `kg/m^3`, `m^2*kg/s^3/A`); `^n` is
+/// omitted when `n == 1`. That is the same partition and ordering
+/// `impl Display for DimensionVector` uses, so the two renderers share one
+/// convention.
 ///
 /// When EVERY non-zero exponent is negative the numerator would be empty, and a
 /// leading `/` is not a valid `unit_expr` at all — the rule must start with an
@@ -373,6 +401,16 @@ fn ri_unit_factor(symbol: &str, exponent: i8) -> String {
 ///   than `as_i8` alone, because the denominator form writes `|n|`;
 /// - any non-zero exponent on a slot [`RI_COMPOUND_BASE_SYMBOLS`] marks `None`.
 pub fn ri_compound_unit_expr(dim: &DimensionVector) -> Option<String> {
+    RI_NAMED_DERIVED_SYMBOLS
+        .iter()
+        .find(|&&(_, named)| named == *dim)
+        .map(|&(sym, _)| sym.to_owned())
+        .or_else(|| ri_base_symbol_unit_expr(dim))
+}
+
+/// [`ri_compound_unit_expr`]'s fallback: `dim` spelled out of
+/// [`RI_COMPOUND_BASE_SYMBOLS`].
+fn ri_base_symbol_unit_expr(dim: &DimensionVector) -> Option<String> {
     // Collect first, decide the form second: whether the numerator is empty is
     // a property of the WHOLE vector, and the two forms accept different
     // exponents (the signed form can write `s^-128`, the denominator form
