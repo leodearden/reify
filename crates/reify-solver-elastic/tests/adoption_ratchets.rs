@@ -905,6 +905,36 @@ const RATCHETS: &[Ratchet] = &[
         )),
     },
     Ratchet {
+        name: "member-force-loops",
+        home: "member_axial_forces in form_find.rs (solver-crates-layering D3, leaf η)",
+        baseline: 1,
+        measure: Measure::Occurrences(production_pattern(
+            "qi * len",
+            SRC,
+            "let n_i = qi * len;",
+        )),
+    },
+    Ratchet {
+        name: "surface-stencil-scatters",
+        home: "scatter_surface_stencils in form_find.rs (solver-crates-layering D3, leaf η)",
+        baseline: 1,
+        measure: Measure::Occurrences(production_pattern(
+            "(idx[a], idx[b])] +=",
+            SRC,
+            "d[(idx[a], idx[b])] += l[a][b];",
+        )),
+    },
+    Ratchet {
+        name: "line-rank1-scatters",
+        home: "scatter_line_members in form_find.rs (solver-crates-layering D3, leaf η)",
+        baseline: 1,
+        measure: Measure::Occurrences(production_pattern(
+            "[(j, k)] -= qi",
+            SRC,
+            "d[(j, k)] -= qi;",
+        )),
+    },
+    Ratchet {
         name: "mpc-row-literals",
         home: "MpcRow::new (solver-crates-layering D10, leaf θ)",
         baseline: 2,
