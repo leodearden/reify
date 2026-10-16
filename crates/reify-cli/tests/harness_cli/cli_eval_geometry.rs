@@ -432,10 +432,12 @@ fn fillet_top_edges_example_check_eval_build_exit_clean() {
     let top_edges_rhs = eval_stdout
         .lines()
         .find_map(|l| l.strip_prefix("FilletTopEdges.top_edges ="))
-        .unwrap_or_else(|| panic!("no FilletTopEdges.top_edges line.\nstdout: {eval_stdout}"));
+        .unwrap_or_else(|| panic!("no FilletTopEdges.top_edges line.\nstdout: {eval_stdout}"))
+        .trim();
     assert!(
-        !top_edges_rhs.trim().starts_with("undef"),
-        "FilletTopEdges.top_edges must resolve to edge handles, got {top_edges_rhs:?}"
+        top_edges_rhs.starts_with('[') && top_edges_rhs.matches("<Geometry:").count() == 4,
+        "FilletTopEdges.top_edges must resolve to a list of the box's four top-perimeter \
+         edge handles, got {top_edges_rhs:?}"
     );
 
     let built = common::run_build_at(&path);
