@@ -1,14 +1,21 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import { createSubscriptionSet, type SubscriptionRow, type Unsubscribe } from '../../app/subscriptionSet';
 import { deferred } from '../test-utils';
 
-describe('SubscriptionSet.track / disposeAll', () => {
-  it('disposeAll calls every held handle exactly once, and a second disposeAll calls none again', async () => {
+function resolvedRow(handle: Unsubscribe): SubscriptionRow {
+  return { subscribe: async () => handle, onFailure: vi.fn() };
+}
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
+
+describe('SubscriptionSet.disposeAll', () => {
+  it('calls every held handle exactly once, and a second disposeAll calls none again', async () => {
     const set = createSubscriptionSet();
     const a = vi.fn();
     const b = vi.fn();
-    await set.track(Promise.resolve(a));
-    await set.track(Promise.resolve(b));
+    await set.subscribeAll([resolvedRow(a), resolvedRow(b)]);
 
     set.disposeAll();
     expect(a).toHaveBeenCalledTimes(1);
@@ -19,44 +26,24 @@ describe('SubscriptionSet.track / disposeAll', () => {
     expect(b).toHaveBeenCalledTimes(1);
   });
 
-  it('a handle that arrives after a disposeAll is disposed on arrival and never held', async () => {
+  it('a handle that throws while disposing is logged and does not stop the handles after it', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
     const set = createSubscriptionSet();
-    const pending = deferred<Unsubscribe>();
-    const handle = vi.fn();
-    const tracked = set.track(pending.promise);
+    const boom = new Error('unsubscribe failed');
+    const throwing = vi.fn(() => {
+      throw boom;
+    });
+    const after = vi.fn();
+    await set.subscribeAll([resolvedRow(throwing), resolvedRow(after)]);
 
-    set.disposeAll();
-    expect(handle).not.toHaveBeenCalled();
-
-    pending.resolve(handle);
-    await tracked;
-    expect(handle).toHaveBeenCalledTimes(1);
-
-    set.disposeAll();
-    expect(handle).toHaveBeenCalledTimes(1);
-  });
-
-  it('re-entry: after disposeAll then a fresh track, only the fresh generation is live', async () => {
-    const set = createSubscriptionSet();
-    const a = vi.fn();
-    const b = vi.fn();
-    await set.track(Promise.resolve(a));
-    set.disposeAll();
-
-    await set.track(Promise.resolve(b));
-    expect(b).not.toHaveBeenCalled();
-
-    set.disposeAll();
-    expect(b).toHaveBeenCalledTimes(1);
-    expect(a).toHaveBeenCalledTimes(1);
-  });
-
-  it('track rejects with the pending rejection and holds nothing', async () => {
-    const set = createSubscriptionSet();
-    const err = new Error('subscribe failed');
-
-    await expect(set.track(Promise.reject(err))).rejects.toBe(err);
     expect(() => set.disposeAll()).not.toThrow();
+    expect(throwing).toHaveBeenCalledTimes(1);
+    expect(after).toHaveBeenCalledTimes(1);
+    expect(consoleError).toHaveBeenCalledWith(expect.any(String), boom);
+
+    set.disposeAll();
+    expect(throwing).toHaveBeenCalledTimes(1);
+    expect(after).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -118,7 +105,7 @@ describe('SubscriptionSet.subscribeAll', () => {
     const pendingSubscribe = vi.fn(() => pending.promise);
     const laterSubscribe = vi.fn(async () => vi.fn());
     const rows: SubscriptionRow[] = [
-      { subscribe: async () => firstHandle, onFailure: vi.fn() },
+      resolvedRow(firstHandle),
       { subscribe: pendingSubscribe, onFailure: vi.fn() },
       { subscribe: laterSubscribe, onFailure: vi.fn() },
     ];
@@ -138,5 +125,56 @@ describe('SubscriptionSet.subscribeAll', () => {
     set.disposeAll();
     expect(firstHandle).toHaveBeenCalledTimes(1);
     expect(lateHandle).toHaveBeenCalledTimes(1);
+  });
+
+  it('a late handle that throws while disposing on arrival is logged, not reported as its row failing', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const set = createSubscriptionSet();
+    const boom = new Error('unsubscribe failed');
+    const lateHandle = vi.fn(() => {
+      throw boom;
+    });
+    const pending = deferred<Unsubscribe>();
+    const onFailure = vi.fn();
+    const pendingSubscribe = vi.fn(() => pending.promise);
+
+    const result = set.subscribeAll([{ subscribe: pendingSubscribe, onFailure }]);
+    await vi.waitFor(() => expect(pendingSubscribe).toHaveBeenCalledTimes(1));
+    set.disposeAll();
+    pending.resolve(lateHandle);
+
+    expect(await result).toBe(false);
+    expect(lateHandle).toHaveBeenCalledTimes(1);
+    expect(onFailure).not.toHaveBeenCalled();
+    expect(consoleError).toHaveBeenCalledWith(expect.any(String), boom);
+  });
+
+  it('re-entry: a pass overlapping a disposeAll and a fresh pass leaves only the fresh pass live', async () => {
+    const set = createSubscriptionSet();
+    const staleHeld = vi.fn();
+    const staleLate = vi.fn();
+    const fresh = vi.fn();
+    const pending = deferred<Unsubscribe>();
+    const pendingSubscribe = vi.fn(() => pending.promise);
+
+    const stalePass = set.subscribeAll([
+      resolvedRow(staleHeld),
+      { subscribe: pendingSubscribe, onFailure: vi.fn() },
+    ]);
+    await vi.waitFor(() => expect(pendingSubscribe).toHaveBeenCalledTimes(1));
+
+    set.disposeAll();
+    expect(await set.subscribeAll([resolvedRow(fresh)])).toBe(true);
+
+    pending.resolve(staleLate);
+    expect(await stalePass).toBe(false);
+    expect(staleHeld).toHaveBeenCalledTimes(1);
+    expect(staleLate).toHaveBeenCalledTimes(1);
+    expect(fresh).not.toHaveBeenCalled();
+
+    set.disposeAll();
+    expect(fresh).toHaveBeenCalledTimes(1);
+    expect(staleHeld).toHaveBeenCalledTimes(1);
+    expect(staleLate).toHaveBeenCalledTimes(1);
   });
 });

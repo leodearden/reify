@@ -2,6 +2,7 @@
  * One owner for a group of event-subscription handles. Every held handle is
  * disposed exactly once, by the next `disposeAll`; a handle that arrives after
  * a `disposeAll` it was pending across is disposed on arrival and never held.
+ * A handle that throws while disposing is logged and does not stop the rest.
  */
 export type Unsubscribe = () => void;
 
@@ -11,9 +12,16 @@ export interface SubscriptionRow {
 }
 
 export interface SubscriptionSet {
-  track(pending: Promise<Unsubscribe>): Promise<void>;
   subscribeAll(rows: readonly SubscriptionRow[]): Promise<boolean>;
   disposeAll(): void;
+}
+
+function dispose(unsubscribe: Unsubscribe): void {
+  try {
+    unsubscribe();
+  } catch (err) {
+    console.error('[subscriptions] unsubscribe failed:', err);
+  }
 }
 
 export function createSubscriptionSet(): SubscriptionSet {
@@ -24,7 +32,7 @@ export function createSubscriptionSet(): SubscriptionSet {
     const startedIn = generation;
     const unsubscribe = await pending;
     if (generation !== startedIn) {
-      unsubscribe();
+      dispose(unsubscribe);
       return;
     }
     held.push(unsubscribe);
@@ -47,8 +55,8 @@ export function createSubscriptionSet(): SubscriptionSet {
     generation++;
     const disposing = held;
     held = [];
-    for (const unsubscribe of disposing) unsubscribe();
+    for (const unsubscribe of disposing) dispose(unsubscribe);
   }
 
-  return { track, subscribeAll, disposeAll };
+  return { subscribeAll, disposeAll };
 }
