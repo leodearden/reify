@@ -62,6 +62,8 @@ mod engine_eval_commit_migration;
 mod joint_drive_cluster_formation;
 #[path = "harness_engine/reset_per_build_state_classification.rs"]
 mod reset_per_build_state_classification;
+#[path = "harness_engine/toleranced_equality_verdicts.rs"]
+mod toleranced_equality_verdicts;
 // Task #5196's capstone acceptance e2e lands here for the same reason #5056's
 // did: a NEW top-level `tests/*.rs` in a consolidatable crate would be an
 // anti-re-accretion violation (scripts/check-harness-baseline-registration.sh,

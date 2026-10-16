@@ -17,8 +17,19 @@ use reify_ir::{
 /// Maximum iterations for Nelder-Mead.
 const MAX_ITERS: u64 = 5000;
 
-/// Residual threshold below which we consider constraints satisfied.
+/// Absolute acceptance slack for INEQUALITY rows, and the bound under which
+/// the early exit treats a seed as already converged. EQUALITY rows are
+/// accepted by the `==` verdict itself (`reify_expr::eval_eq`, i.e.
+/// `reify_core::scalar_tolerance`; task #6653), see [`RowResidual`].
 const FEASIBILITY_THRESHOLD: f64 = 1e-12;
+
+// `NM_SD_TOLERANCE` guarantees only that a converged residual reaches
+// `FEASIBILITY_THRESHOLD`, so an equality floor below it could reject an
+// equality the solver has converged on.
+const _: () = assert!(
+    FEASIBILITY_THRESHOLD <= reify_core::scalar_tolerance::DEFAULT_ABSOLUTE_FLOOR,
+    "every dimension's equality floor must admit the solver's reachable residual"
+);
 
 /// Penalty weight for constraint violations when optimizing an objective.
 /// Large enough to strongly enforce constraints while allowing the objective
@@ -49,8 +60,8 @@ const FEASIBLE_OPT_ITERS_PER_DIM: u64 = 500;
 /// Because the cost is quadratic in the linear residual `d`, a cost-SD floor of `S`
 /// corresponds to a **linear residual floor** of approximately `√S`. To guarantee
 /// that the linear residual (`max_constraint_residual`, compared against
-/// `FEASIBILITY_THRESHOLD = 1e-12` at the final feasibility check) can actually reach
-/// the threshold, we need:
+/// `FEASIBILITY_THRESHOLD = 1e-12` for inequality rows and at the early exit) can
+/// actually reach the threshold, we need:
 ///
 /// ```text
 ///   √(NM_SD_TOLERANCE) ≲ FEASIBILITY_THRESHOLD   →   NM_SD_TOLERANCE ≲ 1e-24
@@ -549,10 +560,91 @@ fn extract_initial_point(
         .collect()
 }
 
+/// The residual of a constraint row at a candidate point, and of the part of
+/// it the solver REJECTS there. Rejection is never inferred from `magnitude`:
+/// equality rows are judged by the `==` verdict (`reify_expr::eval_eq`),
+/// inequality rows against [`FEASIBILITY_THRESHOLD`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct RowResidual {
+    /// Over every row, accepted ones included: what convergence is judged on.
+    magnitude: f64,
+    /// The worst residual among the rejected rows, `None` when every row is
+    /// accepted: what an Infeasible report quotes. A NaN here is kept, never
+    /// folded away, so a rejected row cannot report as a zero residual.
+    rejected: Option<f64>,
+}
+
+impl RowResidual {
+    fn accepted(magnitude: f64) -> Self {
+        Self {
+            magnitude,
+            rejected: None,
+        }
+    }
+
+    fn rejected(magnitude: f64) -> Self {
+        Self {
+            magnitude,
+            rejected: Some(magnitude),
+        }
+    }
+
+    fn judged(magnitude: f64, accepted: bool) -> Self {
+        if accepted {
+            Self::accepted(magnitude)
+        } else {
+            Self::rejected(magnitude)
+        }
+    }
+
+    /// A NaN magnitude (from a NaN operand) is not a violation, exactly as the
+    /// pre-#6653 `f64::max` fold treated it: inequality acceptance is unchanged.
+    fn inequality(magnitude: f64) -> Self {
+        Self::judged(
+            magnitude,
+            magnitude.is_nan() || magnitude <= FEASIBILITY_THRESHOLD,
+        )
+    }
+
+    fn is_accepted(&self) -> bool {
+        self.rejected.is_none()
+    }
+
+    /// Accepted, with every row as tight as the inequality slack.
+    fn is_converged(&self) -> bool {
+        self.is_accepted() && self.magnitude <= FEASIBILITY_THRESHOLD
+    }
+
+    /// Both rows must hold (`And`, and every constraint of a set).
+    fn all(self, other: Self) -> Self {
+        let rejected = match (self.rejected, other.rejected) {
+            (Some(a), Some(b)) if a.is_nan() || b.is_nan() => Some(f64::NAN),
+            (Some(a), Some(b)) => Some(a.max(b)),
+            (one, other) => one.or(other),
+        };
+        Self {
+            magnitude: self.magnitude.max(other.magnitude),
+            rejected,
+        }
+    }
+
+    /// Either row suffices (`Or`).
+    fn any(self, other: Self) -> Self {
+        let rejected = match (self.rejected, other.rejected) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            _ => None,
+        };
+        Self {
+            magnitude: self.magnitude.min(other.magnitude),
+            rejected,
+        }
+    }
+}
+
 /// Compute the absolute (L1) residual for a single comparison expression.
 ///
-/// Returns the absolute distance by which the constraint is violated,
-/// or 0.0 if satisfied. No squaring, no epsilon offset. Used for
+/// The magnitude is the absolute distance by which the comparison misses, or
+/// 0.0 for a satisfied inequality. No squaring, no epsilon offset. Used for
 /// accurate feasibility checking (not for optimization cost).
 fn comparison_residual(
     op: BinOp,
@@ -561,48 +653,27 @@ fn comparison_residual(
     values: &ValueMap,
     functions: &[CompiledFunction],
     dispatch: Option<&dyn reify_ir::ComputeDispatch>,
-) -> f64 {
-    let lhs = reify_expr::eval_expr(left, &ctx_with(values, functions, dispatch)).as_f64();
-    let rhs = reify_expr::eval_expr(right, &ctx_with(values, functions, dispatch)).as_f64();
+) -> RowResidual {
+    let ctx = ctx_with(values, functions, dispatch);
+    let lv = reify_expr::eval_expr(left, &ctx);
+    let rv = reify_expr::eval_expr(right, &ctx);
+    let (Some(l), Some(r)) = (lv.as_f64(), rv.as_f64()) else {
+        return RowResidual::rejected(1.0);
+    };
 
-    match (lhs, rhs) {
-        (Some(l), Some(r)) => match op {
-            BinOp::Gt => {
-                if l > r {
-                    0.0
-                } else {
-                    r - l
-                }
-            }
-            BinOp::Ge => {
-                if l >= r {
-                    0.0
-                } else {
-                    r - l
-                }
-            }
-            BinOp::Lt => {
-                if l < r {
-                    0.0
-                } else {
-                    l - r
-                }
-            }
-            BinOp::Le => {
-                if l <= r {
-                    0.0
-                } else {
-                    l - r
-                }
-            }
-            BinOp::Eq => {
-                let d = (l - r).abs();
-                if d < 1e-15 { 0.0 } else { d }
-            }
-            BinOp::Ne if (l - r).abs() > 1e-15 => 0.0,
-            _ => 1.0,
-        },
-        _ => 1.0,
+    match op {
+        BinOp::Gt => RowResidual::inequality(if l > r { 0.0 } else { r - l }),
+        BinOp::Ge => RowResidual::inequality(if l >= r { 0.0 } else { r - l }),
+        BinOp::Lt => RowResidual::inequality(if l < r { 0.0 } else { l - r }),
+        BinOp::Le => RowResidual::inequality(if l <= r { 0.0 } else { l - r }),
+        BinOp::Eq => RowResidual::judged(
+            (l - r).abs(),
+            reify_expr::eval_eq(&lv, &rv) == Value::Bool(true),
+        ),
+        BinOp::Ne if reify_expr::eval_eq(&lv, &rv) == Value::Bool(false) => {
+            RowResidual::accepted(0.0)
+        }
+        _ => RowResidual::rejected(1.0),
     }
 }
 
@@ -620,10 +691,11 @@ fn comparison_violation(
     functions: &[CompiledFunction],
     dispatch: Option<&dyn reify_ir::ComputeDispatch>,
 ) -> f64 {
-    let lhs = reify_expr::eval_expr(left, &ctx_with(values, functions, dispatch)).as_f64();
-    let rhs = reify_expr::eval_expr(right, &ctx_with(values, functions, dispatch)).as_f64();
+    let ctx = ctx_with(values, functions, dispatch);
+    let lv = reify_expr::eval_expr(left, &ctx);
+    let rv = reify_expr::eval_expr(right, &ctx);
 
-    match (lhs, rhs) {
+    match (lv.as_f64(), rv.as_f64()) {
         (Some(l), Some(r)) => match op {
             // For l > r: violation when l <= r, magnitude = (r - l)
             BinOp::Gt => {
@@ -662,7 +734,7 @@ fn comparison_violation(
                 let d = l - r;
                 if d.abs() < 1e-15 { 0.0 } else { d.powi(2) }
             }
-            BinOp::Ne if (l - r).abs() > 1e-15 => 0.0,
+            BinOp::Ne if reify_expr::eval_eq(&lv, &rv) == Value::Bool(false) => 0.0,
             // Not a comparison
             _ => 1.0,
         },
@@ -674,46 +746,42 @@ fn comparison_violation(
 /// Compute the absolute (L1) residual for a single constraint expression.
 ///
 /// Same decomposition structure as `constraint_violation` but returns
-/// absolute residual values. For And composites, returns the max of
-/// sub-residuals (both must hold). For Or, returns the min (one suffices).
+/// absolute residual values. An And composite needs both sub-rows
+/// ([`RowResidual::all`]); an Or composite needs one ([`RowResidual::any`]).
 fn constraint_residual(
     expr: &CompiledExpr,
     values: &ValueMap,
     functions: &[CompiledFunction],
     dispatch: Option<&dyn reify_ir::ComputeDispatch>,
-) -> f64 {
+) -> RowResidual {
     match &expr.kind {
-        CompiledExprKind::BinOp { op, left, right } => {
-            match op {
-                BinOp::Gt | BinOp::Ge | BinOp::Lt | BinOp::Le | BinOp::Eq | BinOp::Ne => {
-                    comparison_residual(*op, left, right, values, functions, dispatch)
-                }
-                BinOp::And => {
-                    // AND: worst case (max) of sub-residuals
-                    let lr = constraint_residual(left, values, functions, dispatch);
-                    let rr = constraint_residual(right, values, functions, dispatch);
-                    lr.max(rr)
-                }
-                BinOp::Or => {
-                    // OR: best case (min) of sub-residuals
-                    let lr = constraint_residual(left, values, functions, dispatch);
-                    let rr = constraint_residual(right, values, functions, dispatch);
-                    lr.min(rr)
-                }
-                _ => match reify_expr::eval_expr(expr, &ctx_with(values, functions, dispatch)) {
-                    Value::Bool(true) => 0.0,
-                    Value::Bool(false) => 1.0,
-                    Value::Undef => 10.0,
-                    _ => 1.0,
-                },
+        CompiledExprKind::BinOp { op, left, right } => match op {
+            BinOp::Gt | BinOp::Ge | BinOp::Lt | BinOp::Le | BinOp::Eq | BinOp::Ne => {
+                comparison_residual(*op, left, right, values, functions, dispatch)
             }
-        }
-        _ => match reify_expr::eval_expr(expr, &ctx_with(values, functions, dispatch)) {
-            Value::Bool(true) => 0.0,
-            Value::Bool(false) => 1.0,
-            Value::Undef => 10.0,
-            _ => 1.0,
+            BinOp::And => constraint_residual(left, values, functions, dispatch)
+                .all(constraint_residual(right, values, functions, dispatch)),
+            BinOp::Or => constraint_residual(left, values, functions, dispatch)
+                .any(constraint_residual(right, values, functions, dispatch)),
+            _ => boolean_row_residual(expr, values, functions, dispatch),
         },
+        _ => boolean_row_residual(expr, values, functions, dispatch),
+    }
+}
+
+/// Residual of a row the solver cannot decompose into a comparison: its
+/// evaluated truth value, with an undefined row weighted heaviest.
+fn boolean_row_residual(
+    expr: &CompiledExpr,
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+    dispatch: Option<&dyn reify_ir::ComputeDispatch>,
+) -> RowResidual {
+    match reify_expr::eval_expr(expr, &ctx_with(values, functions, dispatch)) {
+        Value::Bool(true) => RowResidual::accepted(0.0),
+        Value::Bool(false) => RowResidual::rejected(1.0),
+        Value::Undef => RowResidual::rejected(10.0),
+        _ => RowResidual::rejected(1.0),
     }
 }
 
@@ -770,19 +838,19 @@ fn constraint_violation(
 
 /// Compute the maximum absolute residual across all constraints (L1 feasibility).
 ///
-/// Returns the worst-case per-constraint absolute residual. Zero means
-/// all constraints are satisfied. Used for binary feasibility decisions
+/// The magnitude is the worst-case per-constraint absolute residual; the set
+/// is accepted only when every row is. Used for binary feasibility decisions
 /// instead of sum-of-squares (which can mask small violations).
 fn max_constraint_residual(
     constraints: &[(ConstraintNodeId, CompiledExpr)],
     values: &ValueMap,
     functions: &[CompiledFunction],
     dispatch: Option<&dyn reify_ir::ComputeDispatch>,
-) -> f64 {
+) -> RowResidual {
     constraints
         .iter()
         .map(|(_, expr)| constraint_residual(expr, values, functions, dispatch))
-        .fold(0.0_f64, f64::max)
+        .fold(RowResidual::accepted(0.0), RowResidual::all)
 }
 
 /// Compute the total violation across all constraints.
@@ -1119,7 +1187,7 @@ fn worst_unmet_floor_term(
 ///      evaluation to be told so again.  That is why rung 1 is live for the
 ///      ORIGINALS target only: the floored call comes from an emit site reached
 ///      exactly when the residual against `effective_constraints` ALREADY
-///      exceeds `FEASIBILITY_THRESHOLD`, so offering it that same point would be
+///      fails acceptance, so offering it that same point would be
 ///      a guaranteed-false re-computation of a value in hand.
 ///   2. one bounded FEASIBILITY-ONLY re-solve — floor off, objective dropped.
 ///      A Money objective steep relative to `PENALTY_WEIGHT` parks the floored
@@ -1152,8 +1220,7 @@ fn constraints_witness(
     dispatch: Option<&dyn reify_ir::ComputeDispatch>,
 ) -> Option<ValueMap> {
     let satisfies_target = |values: &ValueMap| {
-        max_constraint_residual(target, values, &problem.functions, dispatch)
-            <= FEASIBILITY_THRESHOLD
+        max_constraint_residual(target, values, &problem.functions, dispatch).is_accepted()
     };
 
     // ── rung 1: a point the caller already holds (free) ──────────────────────
@@ -1236,8 +1303,9 @@ fn constraints_witness(
 /// The `RobustnessFloorInfeasible` diagnostic for a solve that failed WITH the
 /// synthesised floor applied (tasks #5618 step-10, #5714).
 ///
-/// `final_max_residual` is measured against `effective_constraints`, i.e. the
-/// user's constraints PLUS the floor.  On its own it cannot tell the three
+/// `worst_rejected_residual` is the worst residual among the rows of
+/// `effective_constraints`, i.e. the user's constraints PLUS the floor, that
+/// fail acceptance at `final_values`.  On its own it cannot tell the three
 /// situations below apart, and the message used to assert the worst of them in
 /// all cases.  For a tight-but-satisfiable bracket that is simply false, and it
 /// was the original report's sharpest complaint: the diagnostic sent the user
@@ -1281,12 +1349,12 @@ fn floor_infeasible_diagnostic(
     problem: &ResolutionProblem,
     effective_constraints: &[(ConstraintNodeId, CompiledExpr)],
     final_values: &ValueMap,
-    final_max_residual: f64,
+    worst_rejected_residual: f64,
     sd_tolerance: f64,
     dispatch: Option<&dyn reify_ir::ComputeDispatch>,
 ) -> reify_core::Diagnostic {
-    // `converged: None` — this function is reached only when `final_max_residual`
-    // against `effective_constraints` already exceeds `FEASIBILITY_THRESHOLD`, so
+    // `converged: None` — this function is reached only when the final residual
+    // against `effective_constraints` already fails acceptance, so
     // offering `final_values` as a floored candidate would re-derive a value
     // already in hand and known to fail.  Rung 1 is live for the ORIGINALS search
     // below, where the answer is genuinely unknown.
@@ -1298,10 +1366,10 @@ fn floor_infeasible_diagnostic(
         // BOTH halves of the claim below are proved at one concrete point — no
         // inference.  Offer NONE of class 2's remedies: nothing is
         // over-constrained and there is no cost/robustness conflict to trade
-        // off, so all three would be wrong advice.  `final_max_residual` is
+        // off, so all three would be wrong advice.  `worst_rejected_residual` is
         // reported because it describes the point the solve actually REACHED —
-        // at the witness it is 0.0, which would tell the user nothing about the
-        // failure.
+        // at the witness no row is rejected, which would tell the user nothing
+        // about the failure.
         //
         // TODO(#7632): the witness is a verified feasible point and is thrown
         // away — the user gets a hard `Infeasible` on a model this function is
@@ -1317,7 +1385,7 @@ fn floor_infeasible_diagnostic(
              absolute residual at the point it reached: {:.2e}); this is \
              a solver convergence limit, not an over-constrained design",
             REL_MARGIN * 100.0,
-            final_max_residual
+            worst_rejected_residual
         ))
         .with_code(DiagnosticCode::RobustnessFloorInfeasible);
     }
@@ -1337,7 +1405,7 @@ fn floor_infeasible_diagnostic(
             "infeasible under robustness floor: the floored feasible \
              region is empty (max absolute residual: {:.2e}); relax \
              opposing constraints or widen the tolerance margin",
-            final_max_residual
+            worst_rejected_residual
         ))
         .with_code(DiagnosticCode::RobustnessFloorInfeasible);
     };
@@ -2876,10 +2944,10 @@ fn solve_core_with_sd_tolerance(
     // floor constraint was added; used below to emit the distinct diagnostic.
     //
     // ORDERING INVARIANT (load-bearing): `effective_constraints` MUST be built
-    // BEFORE the `initially_feasible` check.  A floor-infeasible box that is
+    // BEFORE the seed is judged.  A floor-infeasible box that is
     // feasible without the floor must be seen as infeasible at the initial-point
-    // check, so the `initially_feasible` drift fallback below (in the
-    // `final_max_residual > FEASIBILITY_THRESHOLD` branch) does NOT mask the
+    // check, so the `seed_accepted` drift fallback below (in the
+    // rejected-final-residual branch) does NOT mask the
     // infeasibility by falling back to Solved.
     //
     // Gate on `problem.objective` money-ness AND [`SolveRegime::RobustnessFloor`]
@@ -3017,8 +3085,8 @@ fn solve_core_with_sd_tolerance(
         // `bounds: None` shape `effective_bounds` is only
         // `default_bounds_for(Length) = [1µm, 10m]`, so without this box nothing
         // snaps the penalty minimiser's finite undershoot past the strict bound
-        // back: `final_max_residual` exceeds `FEASIBILITY_THRESHOLD`, the
-        // `initially_feasible` fallback below fires, and the blend reports THE
+        // back: the strict-bound row fails acceptance, the
+        // `seed_accepted` fallback below fires, and the blend reports THE
         // SEED. Pinned by
         // `gamma_anchor_lambdas_are_seed_invariant_without_explicit_bounds`.
         SolveRegime::TradeoffBlend => derived_clamp_box(StrictBound::SteppedInside),
@@ -3035,12 +3103,19 @@ fn solve_core_with_sd_tolerance(
     // immediately below, and (2) the fallback objective validation when the
     // optimizer drifts infeasible (see `eval_objective_set(&trial_values, …)`).
     // Do not inline into the feasibility check.
-    let initially_feasible = max_constraint_residual(
+    let seed_residual = max_constraint_residual(
         &effective_constraints,
         &trial_values,
         &problem.functions,
         dispatch,
-    ) <= FEASIBILITY_THRESHOLD;
+    );
+    // The early exit and the warm-start budget need a CONVERGED seed: returning
+    // one whose equality rows are merely within tolerance would let
+    // `verify_uniqueness` compare it against a re-solve converged ~1e-16 away
+    // and report a false `ConstraintNonUnique`. The drift fallback needs only
+    // what the final gate needs of any answer, so it takes an ACCEPTED seed.
+    let seed_converged = seed_residual.is_converged();
+    let seed_accepted = seed_residual.is_accepted();
 
     // Synthesise a default centrality (Chebyshev-centre) objective when the scope has
     // inequality constraints but no explicit user objective (PRD η).  The synthetic
@@ -3066,7 +3141,7 @@ fn solve_core_with_sd_tolerance(
     // Pure feasibility + already feasible → return immediately.
     // Gate on the EFFECTIVE objective so a centrality scope optimises instead of
     // short-circuiting to the first feasible boundary point.
-    if initially_feasible && effective_objective.is_none() {
+    if seed_converged && effective_objective.is_none() {
         let n_params = problem.auto_params.len();
         tracing::debug!(
             n_params,
@@ -3085,9 +3160,9 @@ fn solve_core_with_sd_tolerance(
     // Nelder-Mead needs O(N+1) evaluations per simplex sweep, so scale
     // the budget proportionally to give higher-dimensional problems enough
     // iterations to converge.
-    // After the early-return above for `initially_feasible && effective_objective.is_none()`,
-    // reaching here with `initially_feasible=true` implies `effective_objective.is_some()`.
-    let max_iters = if initially_feasible {
+    // After the early-return above for `seed_converged && effective_objective.is_none()`,
+    // reaching here with `seed_converged=true` implies `effective_objective.is_some()`.
+    let max_iters = if seed_converged {
         debug_assert!(
             effective_objective.is_some(),
             "warm-start budget path reached without objective — early-return invariant violated"
@@ -3146,7 +3221,8 @@ fn solve_core_with_sd_tolerance(
             n_params,
             max_iters,
             has_objective,
-            initially_feasible,
+            seed_converged,
+            seed_accepted,
             iter_limited,
             "solver completed; hit iteration limit — objective may be suboptimal"
         );
@@ -3156,7 +3232,8 @@ fn solve_core_with_sd_tolerance(
             n_params,
             max_iters,
             has_objective,
-            initially_feasible,
+            seed_converged,
+            seed_accepted,
             iter_limited,
             "solver completed"
         );
@@ -3197,17 +3274,17 @@ fn solve_core_with_sd_tolerance(
         &problem.functions,
         dispatch,
     );
-    let final_max_residual = max_constraint_residual(
+    let final_residual = max_constraint_residual(
         &effective_constraints,
         &final_values,
         &problem.functions,
         dispatch,
     );
-    if final_max_residual > FEASIBILITY_THRESHOLD {
+    if let Some(worst_rejected_residual) = final_residual.rejected {
         // If the initial point was feasible but the optimizer drifted infeasible
         // while chasing an objective, fall back to the initial feasible values
         // rather than reporting a false Infeasible.
-        if initially_feasible {
+        if seed_accepted {
             // Validate that the objective is numeric at the initial point
             // before promoting to Solved. The trial_values ValueMap was built
             // from the same initial point and is still in scope.
@@ -3234,7 +3311,7 @@ fn solve_core_with_sd_tolerance(
             let fallback = build_solved_values(&problem.auto_params, initial);
             tracing::debug!(
                 n_params,
-                final_max_residual,
+                worst_rejected_residual,
                 "optimizer drifted infeasible while chasing objective; \
                  falling back to initial feasible point"
             );
@@ -3253,14 +3330,14 @@ fn solve_core_with_sd_tolerance(
                         problem,
                         &effective_constraints,
                         &final_values,
-                        final_max_residual,
+                        worst_rejected_residual,
                         sd_tolerance,
                         dispatch,
                     )
                 } else {
                     reify_core::Diagnostic::error(format!(
                         "constraints could not be satisfied (max absolute residual: {:.2e})",
-                        final_max_residual
+                        worst_rejected_residual
                     ))
                     .with_code(DiagnosticCode::ConstraintUnsatisfiable)
                 }],
@@ -7529,7 +7606,7 @@ mod tests {
             Type::length(),
         );
         let values = ValueMap::new();
-        let res = comparison_residual(BinOp::Gt, &l_expr, &r_expr, &values, &[], None);
+        let res = comparison_residual(BinOp::Gt, &l_expr, &r_expr, &values, &[], None).magnitude;
         assert!(
             (res - 1e-7).abs() < 1e-12,
             "Gt violated by 1e-7 should have residual ~1e-7, got {:.2e}",
@@ -7558,7 +7635,7 @@ mod tests {
             Type::length(),
         );
         let values = ValueMap::new();
-        let res = comparison_residual(BinOp::Ge, &l_expr, &r_expr, &values, &[], None);
+        let res = comparison_residual(BinOp::Ge, &l_expr, &r_expr, &values, &[], None).magnitude;
         assert_eq!(res, 0.0, "Ge with l==r should be satisfied (residual=0)");
     }
 
@@ -7584,7 +7661,7 @@ mod tests {
             Type::length(),
         );
         let values = ValueMap::new();
-        let res = comparison_residual(BinOp::Lt, &l_expr, &r_expr, &values, &[], None);
+        let res = comparison_residual(BinOp::Lt, &l_expr, &r_expr, &values, &[], None).magnitude;
         assert!(
             (res - 0.005).abs() < 1e-15,
             "Lt violated by 0.005 should have residual 0.005, got {}",
@@ -7613,7 +7690,7 @@ mod tests {
             Type::length(),
         );
         let values = ValueMap::new();
-        let res = comparison_residual(BinOp::Le, &l_expr, &r_expr, &values, &[], None);
+        let res = comparison_residual(BinOp::Le, &l_expr, &r_expr, &values, &[], None).magnitude;
         assert_eq!(res, 0.0, "Le with l<r should be satisfied");
     }
 
@@ -7638,7 +7715,7 @@ mod tests {
             Type::length(),
         );
         let values = ValueMap::new();
-        let res = comparison_residual(BinOp::Eq, &l_expr, &r_expr, &values, &[], None);
+        let res = comparison_residual(BinOp::Eq, &l_expr, &r_expr, &values, &[], None).magnitude;
         assert!(
             (res - 1e-6).abs() < 1e-12,
             "Eq with difference 1e-6 should have residual 1e-6, got {:.2e}",
@@ -7672,7 +7749,7 @@ mod tests {
             },
         );
 
-        let res = constraint_residual(&expr, &values, &[], None);
+        let res = constraint_residual(&expr, &values, &[], None).magnitude;
         assert!(
             (res - 1e-7).abs() < 1e-12,
             "single Gt constraint_residual should delegate correctly, got {:.2e}",
@@ -7725,7 +7802,7 @@ mod tests {
             },
         );
 
-        let res = constraint_residual(&and_expr, &values, &[], None);
+        let res = constraint_residual(&and_expr, &values, &[], None).magnitude;
         // max(1e-7, 1e-5) = 1e-5
         assert!(
             (res - 1e-5).abs() < 1e-10,
@@ -7779,7 +7856,7 @@ mod tests {
             },
         );
 
-        let res = constraint_residual(&or_expr, &values, &[], None);
+        let res = constraint_residual(&or_expr, &values, &[], None).magnitude;
         assert_eq!(res, 0.0, "Or with one satisfied should return 0.0");
     }
 
@@ -7836,7 +7913,7 @@ mod tests {
             },
         );
 
-        let res = max_constraint_residual(&constraints, &values, &[], None);
+        let res = max_constraint_residual(&constraints, &values, &[], None).magnitude;
         assert!(
             (res - 1e-5).abs() < 1e-10,
             "should return worst violation ~1e-5, got {:.2e}",
@@ -7871,7 +7948,7 @@ mod tests {
             },
         );
 
-        let res = max_constraint_residual(&constraints, &values, &[], None);
+        let res = max_constraint_residual(&constraints, &values, &[], None).magnitude;
         assert_eq!(res, 0.0, "all satisfied should return 0.0");
     }
 
@@ -7881,8 +7958,47 @@ mod tests {
 
         let constraints = vec![];
         let values = ValueMap::new();
-        let res = max_constraint_residual(&constraints, &values, &[], None);
+        let res = max_constraint_residual(&constraints, &values, &[], None).magnitude;
         assert_eq!(res, 0.0, "empty constraints should return 0.0");
+    }
+
+    #[test]
+    fn max_constraint_residual_keeps_a_nan_rejected_residual() {
+        use super::max_constraint_residual;
+        use reify_core::{ConstraintNodeId, DimensionVector, Type};
+        use reify_ir::{BinOp, CompiledExpr, Value};
+
+        let length = |si_value| {
+            CompiledExpr::literal(
+                Value::Scalar {
+                    si_value,
+                    dimension: DimensionVector::LENGTH,
+                },
+                Type::length(),
+            )
+        };
+        let nan_equality = (
+            ConstraintNodeId::new("Part", 0),
+            CompiledExpr::binop(BinOp::Eq, length(f64::NAN), length(0.01), Type::Bool),
+        );
+        let false_row = (
+            ConstraintNodeId::new("Part", 1),
+            CompiledExpr::literal(Value::Bool(false), Type::Bool),
+        );
+        let values = ValueMap::new();
+        for (label, constraints) in [
+            ("NaN equality alone", vec![nan_equality.clone()]),
+            (
+                "NaN equality beside a rejected row",
+                vec![nan_equality, false_row],
+            ),
+        ] {
+            let res = max_constraint_residual(&constraints, &values, &[], None);
+            assert!(
+                res.rejected.is_some_and(f64::is_nan),
+                "{label}: the rejected residual must stay NaN, got {res:?}"
+            );
+        }
     }
 
     #[test]
@@ -7894,13 +8010,13 @@ mod tests {
         let values = ValueMap::new();
 
         let t = CompiledExpr::literal(Value::Bool(true), Type::Bool);
-        assert_eq!(constraint_residual(&t, &values, &[], None,), 0.0);
+        assert_eq!(constraint_residual(&t, &values, &[], None,).magnitude, 0.0);
 
         let f = CompiledExpr::literal(Value::Bool(false), Type::Bool);
-        assert_eq!(constraint_residual(&f, &values, &[], None,), 1.0);
+        assert_eq!(constraint_residual(&f, &values, &[], None,).magnitude, 1.0);
 
         let u = CompiledExpr::literal(Value::Undef, Type::Bool);
-        assert_eq!(constraint_residual(&u, &values, &[], None,), 10.0);
+        assert_eq!(constraint_residual(&u, &values, &[], None,).magnitude, 10.0);
     }
 
     #[test]
@@ -7913,7 +8029,7 @@ mod tests {
         let l_expr = CompiledExpr::literal(Value::Undef, Type::Bool);
         let r_expr = CompiledExpr::literal(Value::Undef, Type::Bool);
         let values = ValueMap::new();
-        let res = comparison_residual(BinOp::Gt, &l_expr, &r_expr, &values, &[], None);
+        let res = comparison_residual(BinOp::Gt, &l_expr, &r_expr, &values, &[], None).magnitude;
         assert_eq!(res, 1.0, "Non-numeric inputs should give residual 1.0");
     }
 
@@ -9073,8 +9189,8 @@ mod tests {
     /// This completes the trio with `undefined_objective_at_feasible_initial_returns_no_progress`
     /// and `undefined_objective_at_fallback_triggers_no_progress`, covering all three
     /// branches of the objective-validation tail of `solve_core_with_sd_tolerance`:
-    /// the `initially_feasible` drift fallback in the
-    /// `final_max_residual > FEASIBILITY_THRESHOLD` branch (its undefined-objective
+    /// the `seed_accepted` drift fallback in the
+    /// rejected-final-residual branch (its undefined-objective
     /// and Solved arms) plus the post-solve objective check at the solution point.
     #[test]
     fn defined_objective_at_fallback_returns_solved() {
