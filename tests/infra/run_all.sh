@@ -897,13 +897,19 @@ _ra_record_subset_skip() {
 # run_finish record. discovered, flaky_names and member_subset_skipped are
 # read as LIVE state, as _ra_on_term reads them: this also closes the run
 # from the interrupted exits, where no caller holds them.
+# The first exit path to get here closes the run and every later call is a
+# no-op, so a TERM landing between a written run_finish and the exit adds no
+# second one. The flag is set after the write, so no TERM can cost the run
+# its only run_finish.
 _ra_emit_run_finish() {
+    [ "$_RA_RUN_FINISH_WRITTEN" = 0 ] || return 0
     local _interrupted="$1" _failures="$2"
     shift 2
     event_log_emit_run_finish "$discovered" "$_failures" "$_interrupted" \
         "$#" "$@" \
         "${#flaky_names[@]}" "${flaky_names[@]+"${flaky_names[@]}"}" \
         "${#member_subset_skipped[@]}" "${member_subset_skipped[@]+"${member_subset_skipped[@]}"}"
+    _RA_RUN_FINISH_WRITTEN=1
 }
 
 # _ra_on_exit -- the one EXIT handler: stops the pool's progress printer,
@@ -1308,6 +1314,7 @@ failed_names=()
 declare -A _ra_fail_detail=()   # failed member name -> bounded FAIL-detail lines (task #5329)
 flaky_names=()
 member_subset_skipped=()
+_RA_RUN_FINISH_WRITTEN=0
 
 # Install the TERM trap BEFORE any phase work (pool or legacy), so a
 # mid-run outer-timeout SIGTERM is reclassified regardless of which path is

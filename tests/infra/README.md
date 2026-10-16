@@ -534,7 +534,7 @@ argument that is not an integer encodes `null`.
 | `member_start` | `member` (basename), `attempt` (1/2), `mode` (`capture`/`stream`) | `_ra_run_member` |
 | `member_finish` | `member`, `attempt`, `rc`, `verdict` (`PASS`/`FAIL`/`FLAKY_PASS`/`SKIP`), `duration_ms`, `fail_detail` (list), `fail_detail_omitted` | `_ra_record_result`, once per member; `_ra_record_subset_skip` for `SKIP` |
 | `slot_timeout` | `reason`, `slots`, `waited`, `disposition` (`fatal`/`soft`), `lock`, `emitter` | `slot_emit_timeout` |
-| `run_finish` | `discovered`, `failures`, `failed`, `flaky`, `skipped` (lists), `interrupted`, `names_omitted` | `run_all.sh`: the normal path, `_ra_on_term`, and the worktree-gone exit 99 |
+| `run_finish` | `discovered`, `failures`, `failed`, `flaky`, `skipped` (lists), `interrupted`, `names_omitted` | `run_all.sh`, once per run: whichever of the normal path, `_ra_on_term` and the worktree-gone exit 99 comes first |
 
 This leaf refines C2 in three places, and the refinements are contract:
 

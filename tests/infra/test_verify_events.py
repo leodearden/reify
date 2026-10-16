@@ -55,7 +55,7 @@ DETAIL_ENTRY_MAX = 400
 def run(argv, env=None, cwd=None, timeout=600):
     """The spawn site of every run-to-completion child this suite starts.
 
-    The SIGTERM test's Popen is the only other spawn site; both divert stderr.
+    RunAllFixture.start's Popen is the only other spawn site; both divert stderr.
     """
     return subprocess.run(
         argv,
@@ -677,18 +677,23 @@ def acquire_env(channel=None, **overrides):
 
 
 @contextlib.contextmanager
-def holding_slot(lock_base, slot=1):
-    """Hold `<lock_base>.slot-<slot>` in THIS process for the block.
+def holding_lock(path):
+    """Hold the flock(2) on `path` in THIS process for the block.
 
-    flock(2) on a descriptor that is non-inheritable (PEP 446), so the child
-    under test can never be the holder.
+    The descriptor is non-inheritable (PEP 446), so the child under test can
+    never be the holder.
     """
-    fd = os.open(f"{lock_base}.slot-{slot}", os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
     try:
         fcntl.flock(fd, fcntl.LOCK_EX)
         yield
     finally:
         os.close(fd)
+
+
+def holding_slot(lock_base, slot=1):
+    """Hold `<lock_base>.slot-<slot>` for the block."""
+    return holding_lock(f"{lock_base}.slot-{slot}")
 
 
 def sentinel_count(text, reason):
@@ -932,6 +937,36 @@ class RunAllFixture:
     def run(self, *flags, manifest, channel=True, **overrides):
         return run(self.argv(*flags), env=self.env(manifest, channel, **overrides), cwd=self.cwd)
 
+    def start(self, test, env):
+        """Start run_all.sh in its own session, stderr merged into the stdout pipe.
+
+        The cleanup releases HANG_MEMBER, then kills whatever is left of the group.
+        """
+        proc = subprocess.Popen(
+            self.argv(), env=env, cwd=self.cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, errors="surrogateescape", start_new_session=True,
+        )
+
+        def stop():
+            (self.state / "release").touch()
+            with contextlib.suppress(ProcessLookupError, PermissionError):
+                os.killpg(proc.pid, signal.SIGKILL)
+            with contextlib.suppress(subprocess.TimeoutExpired):
+                proc.communicate(timeout=30)
+
+        test.addCleanup(stop)
+        return proc
+
+    def make_infra_a_git_toplevel(self, test):
+        """Give INFRA_DIR its own repo and one empty commit, so HEAD resolves."""
+        git = [
+            "git", "-C", str(self.infra), "-c", "core.hooksPath=/dev/null",
+            "-c", "commit.gpgsign=false", "-c", "user.name=fixture",
+            "-c", "user.email=fixture@fixture.invalid",
+        ]
+        for args in (["init", "-q"], ["commit", "-q", "--allow-empty", "-m", "fixture"]):
+            test.assertEqual(run([*git, *args]).returncode, 0, args)
+
     def events(self):
         return verify_events.read_events(self.channel)
 
@@ -1105,20 +1140,7 @@ class RunAllChannelTests(unittest.TestCase):
 
     def test_a_terminated_run_still_closes_with_an_interrupted_run_finish(self):
         fx = RunAllFixture(self, {"test_hang.sh": HANG_MEMBER})
-        env = fx.env(fx.manifest({"test_hang.sh": "pool"}))
-        proc = subprocess.Popen(
-            fx.argv(), env=env, cwd=fx.cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            text=True, errors="surrogateescape", start_new_session=True,
-        )
-
-        def release():
-            (fx.state / "release").touch()
-            with contextlib.suppress(ProcessLookupError, PermissionError):
-                os.killpg(proc.pid, signal.SIGKILL)
-            with contextlib.suppress(subprocess.TimeoutExpired):
-                proc.communicate(timeout=30)
-
-        self.addCleanup(release)
+        proc = fx.start(self, fx.env(fx.manifest({"test_hang.sh": "pool"})))
         self.assertTrue(verify_events.wait_for(fx.channel, event="run_start", deadline_s=120))
         self.assertTrue(
             verify_events.wait_for(
@@ -1136,6 +1158,31 @@ class RunAllChannelTests(unittest.TestCase):
         self.assertEqual(finishes[0]["failed"], failed_line_names(output))
         order = [r["event"] for r in events.records if r["event"] in ("run_start", "run_finish")]
         self.assertEqual(order, ["run_start", "run_finish"])
+
+    def test_a_term_after_the_normal_run_finish_writes_no_second_one(self):
+        fx = RunAllFixture(self, {"test_pass.sh": PASS_MEMBER})
+        fx.make_infra_a_git_toplevel(self)
+        skip_state = fx.root / "skip-state"
+        closures = fx.root / "skip-closures.manifest"
+        closures.write_text("")
+        env = fx.env(
+            fx.manifest({"test_pass.sh": "pool"}),
+            DF_VERIFY_ROLE="merge",
+            REIFY_RUN_ALL_CONTENT_SKIP="1",
+            REIFY_RUN_ALL_SKIP_STATE=str(skip_state),
+            RUN_ALL_SKIP_CLOSURES_MANIFEST=str(closures),
+        )
+        # The held ledger lock parks run_all's post-run content-skip write,
+        # which runs after the normal run_finish and before the exit.
+        with holding_lock(f"{skip_state}.lock"):
+            proc = fx.start(self, env)
+            self.assertTrue(verify_events.wait_for(fx.channel, event="run_finish", deadline_s=120))
+            os.killpg(proc.pid, signal.SIGTERM)
+            output, _ = proc.communicate(timeout=120)
+        self.assertIn("=== Summary: INTERRUPTED", output)
+        finishes = verify_events.select(fx.events(), event="run_finish")
+        self.assertEqual(len(finishes), 1)
+        self.assertIs(finishes[0]["interrupted"], False)
 
     def test_the_worktree_gone_exit_still_closes_with_an_interrupted_run_finish(self):
         fx = RunAllFixture(
