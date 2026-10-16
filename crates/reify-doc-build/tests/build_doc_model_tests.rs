@@ -14,7 +14,7 @@ use reify_doc::model::{
     ConstraintDoc, DocModel, ItemKind, ParamDoc, RealizationDoc, SubComponentArgDoc,
     SubComponentDoc,
 };
-use reify_doc_build::build_doc_model;
+use reify_doc_build::{build_doc_model, build_stdlib_doc_model};
 use reify_ir::{CompiledExpr, Value};
 use reify_test_support::{
     CompiledModuleBuilder, TopologyTemplateBuilder, compile_source_with_stdlib,
@@ -1242,4 +1242,81 @@ fn alias_with_no_body_renders_unresolved_not_parameterized() {
         }
         other => panic!("expected ItemKind::TypeAlias for 'Bodyless', got {other:?}"),
     }
+}
+
+// ---------------------------------------------------------------------------
+// task #8767 B12: the stdlib doc model is lowered against its real sources
+// ---------------------------------------------------------------------------
+
+fn stdlib_module<'m>(model: &'m DocModel, dotted: &str) -> &'m reify_doc::model::ModuleDoc {
+    let path = ModulePath::from_dotted(dotted)
+        .unwrap_or_else(|e| panic!("{dotted:?} is not a module path: {e:?}"))
+        .to_string();
+    model
+        .modules
+        .iter()
+        .find(|m| m.path == path)
+        .unwrap_or_else(|| panic!("stdlib doc model has no module {path:?}"))
+}
+
+/// Every defaulted stdlib param documents its default's source text, and
+/// stdlib constraints carry their source text and line.
+#[test]
+fn stdlib_param_defaults_carry_their_source_text() {
+    let model = build_stdlib_doc_model();
+
+    let mut defaulted = 0usize;
+    let mut without_source = Vec::new();
+    for module in &model.modules {
+        for item in &module.items {
+            if !matches!(
+                item.kind,
+                ItemKind::Structure { .. } | ItemKind::Occurrence { .. }
+            ) {
+                continue;
+            }
+            for param in template_body(item).params {
+                let Some(default) = &param.default_repr else {
+                    continue;
+                };
+                defaulted += 1;
+                if !matches!(default, ExprText::Source(text) if !text.is_empty()) {
+                    without_source.push((
+                        module.path.as_str(),
+                        item.header.name.as_str(),
+                        param.name.as_str(),
+                        default,
+                    ));
+                }
+            }
+        }
+    }
+    assert!(defaulted > 0, "the stdlib declares defaulted params");
+    assert!(
+        without_source.is_empty(),
+        "{} of {defaulted} defaulted stdlib params have no default source text \
+         (module, item, param, default): {without_source:#?}",
+        without_source.len()
+    );
+
+    let fea = stdlib_module(&model, "std.materials.fea");
+    let steel = template_body(find_item(fea, "Steel_AISI_1045"));
+    let youngs_modulus = steel
+        .params
+        .iter()
+        .find(|p| p.name == "youngs_modulus")
+        .expect("Steel_AISI_1045 declares youngs_modulus");
+    assert_eq!(
+        youngs_modulus.default_repr,
+        Some(ExprText::Source("205GPa".into()))
+    );
+
+    let appearance_module = stdlib_module(&model, "std.materials.appearance");
+    let appearance = template_body(find_item(appearance_module, "Appearance"));
+    assert!(
+        appearance.constraints.iter().any(|c| c.line.is_some()
+            && matches!(&c.expr_repr, ExprText::Source(text) if text.contains("metalness"))),
+        "Appearance must document its metalness constraint with source and line: {:#?}",
+        appearance.constraints
+    );
 }
