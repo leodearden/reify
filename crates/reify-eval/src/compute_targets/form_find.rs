@@ -321,6 +321,11 @@ fn build_result(solve: &FormFindSolve) -> Value {
     }))
 }
 
+/// The cause shared by [`describe`] and [`describe_free`] for a node index past
+/// the node list — unreachable through the crackers, which range-check first.
+const INDEX_OUT_OF_RANGE: &str = "index out of range — a member endpoint, anchor or \
+     surface corner indexes past the node list";
+
 /// Human-readable cause for a kernel [`FormFindError`] (appended after the
 /// `E_FormFindInfeasible:` prefix).
 fn describe(e: FormFindError) -> &'static str {
@@ -338,10 +343,7 @@ fn describe(e: FormFindError) -> &'static str {
         FormFindError::Input(ForceDensityInputError::DimensionMismatch) => {
             "force_densities length does not match the member count (struts + cables)"
         }
-        FormFindError::Input(ForceDensityInputError::IndexOutOfRange { .. }) => {
-            "index out of range — a member endpoint, anchor or surface corner indexes \
-             past the node list"
-        }
+        FormFindError::Input(ForceDensityInputError::IndexOutOfRange { .. }) => INDEX_OUT_OF_RANGE,
         FormFindError::DegenerateTriangle
         | FormFindError::Input(ForceDensityInputError::DegenerateTriangle { .. }) => {
             "degenerate surface triangle — collinear or zero-area corners make the \
@@ -525,7 +527,7 @@ fn build_result_free(
 /// `E_FormFindInfeasible:` prefix).
 fn describe_free(e: FreeFormError) -> &'static str {
     match e {
-        FreeFormError::SignViolation => {
+        FreeFormError::Input(ForceDensityInputError::SignViolation { .. }) => {
             "sign violation — cable groups require positive seed ratios (q > 0) \
              and strut groups require negative seed ratios (q < 0)"
         }
@@ -534,7 +536,7 @@ fn describe_free(e: FreeFormError) -> &'static str {
              exactly d+1 = 4 for a valid 3-D free-standing form; the supplied q does not \
              achieve this"
         }
-        FreeFormError::DimensionMismatch => {
+        FreeFormError::Input(ForceDensityInputError::DimensionMismatch) => {
             "dimension mismatch — group_ids, seed_ratios, or reference_group length \
              disagrees with the member count or contains out-of-range ids"
         }
@@ -547,16 +549,18 @@ fn describe_free(e: FreeFormError) -> &'static str {
             "singular recovery — null-space coordinate recovery failed to produce a \
              3-D realisation; try a less degenerate initial node placement"
         }
-        FreeFormError::DegenerateTriangle => {
+        FreeFormError::Input(ForceDensityInputError::IndexOutOfRange { .. }) => INDEX_OUT_OF_RANGE,
+        FreeFormError::DegenerateTriangle
+        | FreeFormError::Input(ForceDensityInputError::DegenerateTriangle { .. }) => {
             "degenerate surface triangle — collinear or zero-area corners make the \
              cotangent weights diverge (2·Area → 0); check the surfaces connectivity \
              and node coordinates"
         }
-        FreeFormError::NonTensionSurfaceStress => {
+        FreeFormError::Input(ForceDensityInputError::NonTensionSurfaceStress { .. }) => {
             "non-tension surface stress — every membrane surface requires σ > 0 \
              (tension); a slack or compressed surface (σ ≤ 0) is infeasible prestress"
         }
-        FreeFormError::SurfaceCountMismatch => {
+        FreeFormError::Input(ForceDensityInputError::SurfaceCountMismatch) => {
             "surface_stresses length does not match the surface count — each triangle \
              in `surfaces` needs exactly one isotropic σ"
         }

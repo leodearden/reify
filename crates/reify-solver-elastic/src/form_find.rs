@@ -197,6 +197,7 @@ impl TriangleStencil for AnisotropicStencil {
 pub(crate) struct ForceDensityProblem<'a, S: TriangleStencil = IsotropicStencil> {
     nodes: &'a [[f64; 3]],
     members: &'a [(usize, usize)],
+    kinds: &'a [MemberKind],
     q: &'a [f64],
     anchors: &'a [usize],
     surfaces: &'a [(usize, usize, usize)],
@@ -251,11 +252,43 @@ impl<'a, S: TriangleStencil> ForceDensityProblem<'a, S> {
         Ok(Self {
             nodes,
             members,
+            kinds,
             q,
             anchors,
             surfaces,
             surface_stresses,
         })
+    }
+
+    /// The same problem at force densities `q`, checked by the same contract.
+    pub(crate) fn with_densities<'b>(
+        &self,
+        q: &'b [f64],
+    ) -> Result<ForceDensityProblem<'b, S>, ForceDensityInputError>
+    where
+        'a: 'b,
+    {
+        ForceDensityProblem::new(
+            self.nodes,
+            self.members,
+            self.kinds,
+            q,
+            self.anchors,
+            self.surfaces,
+            self.surface_stresses,
+        )
+    }
+
+    pub(crate) fn nodes(&self) -> &'a [[f64; 3]] {
+        self.nodes
+    }
+
+    pub(crate) fn members(&self) -> &'a [(usize, usize)] {
+        self.members
+    }
+
+    pub(crate) fn q(&self) -> &'a [f64] {
+        self.q
     }
 
     /// Node indices split into `(free, anchored)`, both ascending; an
@@ -547,17 +580,6 @@ pub fn form_find_anchored_surfaces(
         surface_stresses: surface_stresses.to_vec(),
         converged,
     })
-}
-
-/// True when every surface triangle corner indexes a real node (`< n`).
-///
-/// [`assemble_d`], [`assemble_d_aniso`] and `form_find_free`'s
-/// `assemble_surface_matrix` all index `nodes[i]` directly, so an out-of-range
-/// corner would panic. The three surface-aware entries call this up front and
-/// map `false` to their own `DimensionMismatch`, mirroring the member-index
-/// guard in `form_find_free::validate_explicit`.
-pub(crate) fn surface_indices_in_range(surfaces: &[(usize, usize, usize)], n: usize) -> bool {
-    surfaces.iter().all(|&(i, j, k)| i < n && j < n && k < n)
 }
 
 /// Scatter the line-member rank-1 FDM updates into `d`: for each member `(j, k)`

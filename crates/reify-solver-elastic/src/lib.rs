@@ -415,7 +415,10 @@
 //!     &[reify_solver_elastic::MemberKind::Cable],
 //!     &ForceDensitySpec::Explicit(vec![1.0, 2.0]), // 2 densities for 1 member
 //! );
-//! assert_eq!(dim_err.unwrap_err(), FreeFormError::DimensionMismatch);
+//! assert_eq!(
+//!     dim_err.unwrap_err(),
+//!     FreeFormError::Input(reify_solver_elastic::ForceDensityInputError::DimensionMismatch),
+//! );
 //!
 //! // Task 3796: Tensegrity T2 self-stress & prestress-stability — crate-root
 //! // surface pin. Behaviour is covered by `prestress_stability::tests` and the
