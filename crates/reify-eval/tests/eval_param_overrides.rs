@@ -3,8 +3,7 @@
 //! Task 2017: teach `Engine::eval()` to consult `self.param_overrides` for
 //! Param cells (with the same validation `edit_param` performs) so the CLI
 //! can drop its shadow `user_overrides` Vec and `reapply_user_overrides()`
-//! helper. These tests drive the engine-side refactor; the value-level CLI
-//! tests in `crates/reify-cli/src/mcp_context.rs` lock the outward behavior.
+//! helper. These tests drive the engine-side refactor.
 
 use reify_compiler::CompiledModule;
 use reify_core::{DimensionVector, Severity, ValueCellId};

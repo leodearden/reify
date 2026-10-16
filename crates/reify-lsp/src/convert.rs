@@ -92,7 +92,7 @@ pub fn position_to_offset(source: &str, position: Position) -> usize {
 /// member-access expression (e.g. `diameter` in `h.diameter`). Callers that
 /// must distinguish a `.field` segment from a local value binding —
 /// specifically rename / document-highlight / find-references — layer an
-/// AST-aware guard in [`references::collect_references_at`]
+/// AST-aware guard in `references::local::collect_references_at`
 /// (`cursor_on_member_segment`) immediately after the entity's member list is
 /// obtained. The byte-based callers (`hover`, `goto_def`) are unaffected by
 /// this seam.

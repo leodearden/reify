@@ -322,16 +322,18 @@ echo "--- A6: what run_all.sh's re-emission sanitizer does to this family (drift
 # definition is then parsed for the same names). run_all.sh currently uses the
 # hoisted form; the inline form is what it used when this guard was written.
 #
-# AND BOTH SITES, not one. run_all sanitizes in TWO places -- the per-member
-# replay (_ra_emit_sanitized) and the Summary FAILED region
-# (_ra_collect_fail_detail, which is what verify.sh / DF's merge-gate block
-# reason quote verbatim). Reading only the first left exactly the false green
-# this assertion is otherwise designed to catch: a fourth rule wired into
-# _ra_emit_sanitized and forgotten at the collector would satisfy an
-# emit-only arity check while the collector shipped a gap, and Section H
+# AND BOTH CAPTURED-OUTPUT SITES, not one. run_all sanitizes captured output
+# in TWO places -- the per-member replay (_ra_emit_sanitized) and the Summary
+# FAILED region (_ra_collect_fail_detail, which is what verify.sh / DF's
+# merge-gate block reason quote verbatim). Reading only the first left exactly
+# the false green this assertion is otherwise designed to catch: a fourth rule
+# wired into _ra_emit_sanitized and forgotten at the collector would satisfy
+# an emit-only arity check while the collector shipped a gap, and Section H
 # asserts only the two SLOT rules' effects. A6e compares the two derived
 # lists directly, which is what makes "the two paths cannot drift" a
-# machine-checked property rather than a claim in a comment.
+# machine-checked property rather than a claim in a comment. The serial
+# branches' live stream is held to every rule behaviourally, on real run_all
+# output, by test_run_all.sh T33f/T33g.
 #
 # WHY THAT MATTERS, historically: this assertion used to extract exactly one
 # name, _RA_CLOCK_SANITIZE, and assert the sentinel survived it. Its comment
@@ -1415,6 +1417,7 @@ D_ROSTER=(
     test_run_all_content_skip.sh
     test_run_all_pool_lock_host_global.sh
     test_run_all.sh
+    test_run_all_timing.sh
     test_slot_event_log.sh
     test_test_run_semaphore.sh
     test_verify_env_ambient_isolation.sh
@@ -1531,6 +1534,13 @@ D_ROSTER=(
 #   on it, scanning the lib); what leaks is the DESCRIPTION channel one step
 #   later, which stays out of scope here and is filed separately (ticket
 #   tkt_0RSN3SGERQF3E3KD04D71G6W8R, esc-6291-1).
+#   test_run_all_timing.sh (task 7424) -- bucket pool; route run_all.sh
+#   through its `.py` sibling (RUN_ALL bound at module level, exec'd as
+#   `["bash", str(RUN_ALL), ...]` in Fixture.run). Measured CLEAN on the SITE
+#   channel: that one subprocess.run funnel passes capture_output=True, and
+#   the fixture INFRA_DIR's members never reach a pool deadline (private pool
+#   lock, concurrency 2). Kept static-only for the same wall-clock reason as
+#   test_run_all.sh: each class runs a nested run_all.sh.
 #   test_verify_env_ambient_isolation.sh -- bucket pool; route
 #   test_occt_flock_gate.sh (`bash "$SCRIPT_DIR/test_occt_flock_gate.sh"
 #   2>&1` :177). The capture at the site is correct (into $amb_out,
@@ -3108,6 +3118,10 @@ G_MEMBERS=(
     # Route run_all.sh: RUN_ALL bound :19; Test 24 forces a real pool deadline
     # every green run (30s holder on slot-1 vs REIFY_RUN_ALL_POOL_WAIT=2).
     test_run_all.sh
+    # Route run_all.sh via its `.py` sibling (task 7424): RUN_ALL bound at
+    # module level, exec'd by Fixture.run's single subprocess.run funnel, which
+    # is therefore the site -- see G_SCAN below.
+    test_run_all_timing.sh
     # DIRECT route: it execs the acquire wrappers themselves, bound at :17-19
     # (LIB=lib_slot_acquire.sh, SEM=lib_test_semaphore.sh,
     # OCCT=cargo-test-occt-gated.sh), whose WAIT defaults are finite.
@@ -3135,6 +3149,7 @@ G_SITE=(
     '"\$RUN_ALL"'
     '"\$REAL_RUN_ALL"'
     '"\$RUN_ALL"'
+    'subprocess\.run\('
     '"\$(SEM|OCCT|LIB)"'
     'subprocess\.Popen\('
     '"\$REPO_ROOT/scripts/verify\.sh"'
@@ -3185,7 +3200,9 @@ G_SITE=(
 G_SCAN=(
     ''
     run_all_ambient_isolation_lib.sh
-    '' '' '' '' ''
+    '' '' '' ''
+    test_run_all_timing.py
+    ''
     test_verify_env_ambient_isolation.py
     ''
 )
@@ -4143,9 +4160,8 @@ echo "=== H: run_all.sh neutralises the SLOT family in re-emitted member output 
 #
 # Shape mirrors tests/infra/test_run_all_clock_marker_sanitize.sh (the same pin
 # for the clock family): temp fixture dir + PRIVATE classification manifest +
-# the pool env knobs, with pool-path/fixture-ran preconditions asserted FIRST so
-# nothing here can pass vacuously via the legacy serial fallback (which this
-# sanitizer deliberately does not cover).
+# the pool env knobs, with pool-path/fixture-ran preconditions asserted FIRST,
+# because H drives the deferred-replay site specifically.
 #
 # RECURSION NOTE: run_all.sh is driven against a TEMP fixture dir only, never
 # the real tests/infra/ (this file is itself auto-discovered by the outer
@@ -4225,8 +4241,8 @@ RUN_ALL_CLASSIFICATION_MANIFEST="$TMPH/classification.manifest" \
     REIFY_RUN_ALL_POOL_PSI_DISABLE=1 \
     timeout 300 bash "$RUN_ALL" "$TMPH" > "$H_OUT" 2>&1 || true
 
-# H0 FIRST: without both of these, H1 could pass vacuously via the legacy
-# serial fallback (no pool re-emission at all, hence nothing to rewrite).
+# H0 FIRST: without both of these, H1 could pass on the legacy serial
+# fallback's live stream and never touch the deferred-replay site H pins.
 assert "H0a: the pool path was actually taken (INFO: run_all.sh pool: N= present)" \
     _has_text "$H_OUT" "INFO: run_all.sh pool: N="
 assert "H0b: the fixture member actually ran (the normal re-emit site)" \

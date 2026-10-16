@@ -560,7 +560,11 @@ where
 ///
 /// `chain_a` / `vals_a` is the reference side (held fixed for the solve).
 /// `chain_b` / `vals_b_initial` is the free side; the indices in `free_b`
-/// select which entries of `vals_b_initial` the solver moves.  `strategy`
+/// select which entries of `vals_b_initial` the solver moves.  A `chain_b`
+/// coupling whose parent occupies a free slot is re-derived from that slot
+/// every iterate (`loop_closure::propagate_to_couplings`).  A `chain_a`
+/// coupling is not: it keeps its `vals_a` seed even when its parent is free
+/// on `chain_b` (both-chain unknowns are #8837).  `strategy`
 /// picks the initial guess: [`StartStrategy::WarmStart`] uses the supplied
 /// vector directly (must match `free_b.len()`); [`StartStrategy::Midpoint`]
 /// queries each free joint's `joint_range_midpoint` from `chain_b`.
@@ -571,6 +575,8 @@ where
 /// - any `free_b` index ≥ `chain_b.len()` (index addresses a non-existent joint);
 /// - any `free_b` index ≥ `vals_b_initial.len()` (index addresses a
 ///   non-existent initial value);
+/// - any `free_b` index addressing a non-driving joint (`fixed` or
+///   `coupling`), which has no free motion variable of its own;
 /// - [`StartStrategy::WarmStart`] vector length ≠ `free_b.len()`.
 ///
 /// Internally builds a residual+jacobian closure that calls
@@ -726,6 +732,7 @@ pub fn solve_loop_closure(
             .ok()?;
             cursor += width;
             vals_b_scratch[i] = jv;
+            crate::loop_closure::propagate_to_couplings(&chain_b_vec, &mut vals_b_scratch, i);
         }
         let twist = crate::loop_closure::loop_residual_twist(
             &chain_a_vec,
@@ -819,25 +826,29 @@ fn free_joint_shapes(
     Some(out)
 }
 
-/// Manifold DOF count per joint kind, used by the over/under-constrained
-/// pre-check in `solve_loop_closure_with_diagnostics`.  Differs from
-/// `JointKind::flat_len` (storage width) for `Spherical` (3 manifold DOF
-/// vs 4 quaternion storage components) and `Fixed` (0 DOF vs 1-element
-/// sentinel slot).
-///
-/// Returns 1 for Prismatic / Revolute / Coupling, 0 for Fixed, 2 for
-/// Cylindrical, 3 for Planar, 3 for Spherical.  Sum across `free_b`
-/// gives the kinematic free-DOF count that balances against the
-/// 6-component loop residual: `< 6` = over-constrained, `== 6` =
-/// well-posed, `> 6` = under-constrained.
+/// Free DOF a `free_b` joint of `kind` contributes to the over/under-constrained
+/// pre-check in `solve_loop_closure_with_diagnostics`: its [`motion_dof`] when
+/// it is a driving joint, none otherwise (a coupling's motion is its parent's).
+/// Summed across `free_b` it balances against the 6-component loop residual:
+/// `< 6` = over-constrained, `== 6` = well-posed, `> 6` = under-constrained.
 fn dof_count_for_balance(kind: crate::loop_closure_value::JointKind) -> usize {
+    if crate::loop_closure::is_driving_kind(kind) {
+        motion_dof(kind)
+    } else {
+        0
+    }
+}
+
+/// Manifold DOF of a joint's motion.  Differs from `JointKind::flat_len`
+/// (storage width) for `Spherical` (3 manifold DOF vs 4 quaternion storage
+/// components) and `Fixed` (0 DOF vs a 1-element sentinel slot).
+fn motion_dof(kind: crate::loop_closure_value::JointKind) -> usize {
     use crate::loop_closure_value::JointKind;
     match kind {
         JointKind::Prismatic | JointKind::Revolute | JointKind::Coupling => 1,
         JointKind::Fixed => 0,
         JointKind::Cylindrical => 2,
-        JointKind::Planar => 3,
-        JointKind::Spherical => 3,
+        JointKind::Planar | JointKind::Spherical => 3,
     }
 }
 
@@ -853,7 +864,7 @@ fn dof_count_for_balance(kind: crate::loop_closure_value::JointKind) -> usize {
 ///   `{ kind: "fixed", origin: <pose> }` rigid link — the transform of the
 ///   closing edge's rigid TIE `parent --pose--> at` (task 7186). It
 ///   contributes its transform to the residual but NO free variable
-///   (`is_zero_dof_joint` keeps it out of `free_b`), so callers must not
+///   (non-driving joints never enter `free_b`), so callers must not
 ///   assume `chain_b.len()` equals the free-variable count. `chain_a` never
 ///   carries such a link.
 ///   `chain_b` is also guaranteed NON-EMPTY for a builder-produced record:
@@ -1197,9 +1208,9 @@ pub fn solve_loop_closure_with_diagnostics(
 
     // KCC-γ step-12: count manifold DOF (`dof_count`) rather than free_b
     // slots so a 3-DOF planar joint balances correctly against the 6-component
-    // loop residual.  `dof_count_for_balance` returns 1/1/1/0/2/3/3 for
-    // prismatic/revolute/coupling/fixed/cylindrical/planar/spherical (manifold
-    // DOF; fixed is 0-DOF and does not contribute to free DOFs).
+    // loop residual.  `dof_count_for_balance` returns 1/1/2/3/3 for
+    // prismatic/revolute/cylindrical/planar/spherical (manifold DOF); the
+    // non-driving coupling and fixed contribute no free DOF.
     //
     // The "any multi-DOF joint present" discriminator distinguishes:
     //   - 1 prismatic vs 6 (1 < 6, single-DOF only) → over-constrained
@@ -1338,7 +1349,8 @@ pub fn solve_loop_closure_with_diagnostics(
 /// the first failed check, or `None` if every input is well-formed.
 ///
 /// Checks: every `free_b` index addresses a valid joint in `chain_b` AND a
-/// valid initial value in `vals_b_initial`, the `WarmStart` vector length
+/// valid initial value in `vals_b_initial`, that joint is not a recognised
+/// non-driving kind (`loop_closure::is_driving_kind`), the `WarmStart` vector length
 /// matches `free_b.len()`, and `Midpoint`'s joint-range lookup succeeds for
 /// each free joint.  The diagnostic wrapper short-circuits on DOF balance only
 /// AFTER this validation passes, so a structurally over-constrained AND
@@ -1363,6 +1375,14 @@ fn validate_loop_closure_inputs(
                 "free_b index {} out of range (vals_b_initial len {})",
                 i,
                 vals_b_initial.len()
+            ));
+        }
+        if let Some(kind) = crate::loop_closure::joint_kind(&chain_b[i])
+            && !crate::loop_closure::is_driving_kind(kind)
+        {
+            return Some(format!(
+                "free_b index {i} addresses a non-driving joint (kind {kind:?}) — fixed and \
+                 coupling joints have no free motion variable"
             ));
         }
     }

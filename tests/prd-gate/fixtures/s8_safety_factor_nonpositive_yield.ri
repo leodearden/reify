@@ -1,0 +1,14 @@
+module s8_safety_factor_nonpositive_yield
+
+// S8 PRD: docs/prds/v0_6/builtin-registry-migration-and-interception-classifier.md
+// Leaf: kappa (safety_factor rejects a non-positive yield).
+// Pins: the stdlib builtin safety_factor(tensor, yield) with a uniaxial
+// stress tensor of 100.0 and a negative yield, a zero yield, and a positive
+// control (250.0 -> 2.5).
+
+structure def S8SafetyFactorNonpositiveYield {
+    let sigma = 100.0 * outer(vec3(1.0, 0.0, 0.0), vec3(1.0, 0.0, 0.0))
+    let sf_pos = safety_factor(sigma, 250.0)
+    let sf_neg = safety_factor(sigma, -250.0)
+    let sf_zero = safety_factor(sigma, 0.0)
+}

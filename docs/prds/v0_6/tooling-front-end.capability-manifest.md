@@ -1,10 +1,12 @@
 # Capability manifest — tooling-front-end.md
 
 Authored 2026-10-12 with the PRD (pass 1 of the `review-all-reify-20261010` program, stream
-S27), before decomposition. Machine-readable twin:
+S27); amended 2026-10-12 at decomposition (pass 2) for the lead's rulings OQ1–OQ4
+(PRD §7). Machine-readable twin:
 `tooling-front-end.capability-manifest.yaml` (task ids stamped at `commit_planning`). Binds
 each leaf's signal to substrate evidence (G3 + G6 mechanized). Leaves γ and δ carry `OPEN`
-rows until the lead rules OQ1/OQ2 (PRD §7); λ and φ are held leaves.
+rows were resolved by the rulings: γ consumes `compile_program` (#5516) and δ is not
+filed (#6665 deletes the MCP context). λ and φ are held leaves.
 
 **Code anchors** verified against main `8e6ffcac9d` (2026-10-12). Cite-by-symbol; re-locate
 lines at implementation time.
@@ -43,12 +45,12 @@ rows carry no delivered check: the fixtures land with the PRD and would be green
 | χ | decl-oracle module | producer-self; record h14 unit list | PASS | path `crates/reify-lsp/src/decl_oracle.rs` present |
 | ψ | walk leaf module | producer-self; record h14 unit list | PASS | path `crates/reify-lsp/src/references/walk.rs` present |
 | τ | check-verdict module | producer-self; record h14 unit list | PASS | path `crates/reify-cli/src/check_verdict.rs` present |
-| υ | cmd modules | producer-self; after τ and OQ1 | PASS | path `crates/reify-cli/src/cmd/check.rs` present |
+| υ | cmd modules | producer-self; after τ and #6665 | PASS | path `crates/reify-cli/src/cmd/check.rs` present |
 | φ | engine-config module (HELD S1) | `KNOWN_SITES` in `scripts/check-compute-trampoline-registration.sh` pins `crates/reify-cli/src/main.rs` (S1-owned) | PASS | path `crates/reify-cli/src/engine_config.rs` present |
 | ε | result carries `check_result` | `DiagnosticsResult` has three fields at main | PASS | grep `pub check_result: Option<` in `crates/reify-lsp/src` present |
 | ε | wrapper, not a second pipeline | behavioural, PRD §5 B6 | PASS | manual |
 | ω | tests module | producer-self; after ε | PASS | path `crates/reify-lsp/src/diagnostics/tests.rs` present |
-| ζ | accessor substrate | producer: S9's `all_value_cells()` leaf, upstream, same wave; absent at main | PASS | grep `\.all_value_cells\(\)` in `crates/reify-lsp/src` present |
+| ζ | accessor substrate | producer #8743 (S9 ν), upstream edge; absent at main; ζ lowers S9 R4's reify-lsp/reify-cli rows (#8730 member) | PASS | grep `\.all_value_cells\(\)` in `crates/reify-lsp/src` present |
 | ζ | guarded FEA-hint fixture | ζ's own deliverable; D3 probes the premise at decompose | OPEN | manual |
 | η | `member_scopes` on `Declaration` | absent at main; `PurposeDef.structures` exists | PASS | grep `fn member_scopes` in `crates/reify-ast/src` present |
 | η | purpose-nested fixture | `tooling_fe_purpose_nested_members.ri` parses, checks clean | PASS | — |
@@ -60,11 +62,12 @@ rows carry no delivered check: the fixtures land with the PRD and would be green
 | ι | hover placed | hover/completion inline at main; run label `"hover"` | PASS | grep `\.run\("hover"` in `crates/reify-lsp/src/server.rs` present |
 | μ | `dev_stdlib_root` home | literal 3× server.rs, 1× main.rs, 1× gui engine.rs | PASS | grep `fn dev_stdlib_root` in `crates/reify-compiler/src` present |
 | π | family predicate | no `impl DiagnosticCode` at main; 9 `AutoTypeParam*` variants | PASS | grep `fn is_auto_type_param` in `crates/reify-core/src` present |
+| π | parse-error code adopted | producer #8742 (S9 μ), upstream edge | PASS | grep `diagnostic_code\(\)` in `crates/reify-lsp/src/convert.rs` present |
 | β | predicate in reify-eval | private to `reify-lsp` `diagnostics::eval_guard` at main | PASS | grep `pub fn first_unrepresentable_cell` in `crates/reify-eval/src` present |
 | β | shape-two fixture | probe: exit 101 panic, zero compile diagnostics | PASS | — |
-| γ | front-end shape | ruling OQ1/OQ2 | OPEN | manual |
+| γ | AnalysisContext on `compile_program` | producer #5516 (upstream edge); `compile_with_stdlib_checked` at main | PASS | grep `compile_program\(` in `crates/reify-lsp/src/analysis.rs` present |
+| γ | module-name derivation gone | `pub fn module_name_from_uri` at main | PASS | grep `pub fn module_name_from_uri\(` in `crates/reify-lsp/src` absent |
 | γ | stdlib-enum divergence | probe: check clean, MCP unresolved | PASS | — |
-| δ | MCP context disposition (CONDITIONAL) | ruling OQ1 | OPEN | manual |
 | ν | chunk table | three in-file lists; reify-mcp depends only on reify-core | PASS | grep `pub const CHUNKS` in `crates/reify-mcp/src` present |
 | ν | no source-text scan | `TOPICS_ANCHOR` in `fence_gate.rs` at main | PASS | grep `TOPICS_ANCHOR` in `crates/reify-compiler/tests/harness_doc_chunks/fence_gate.rs` absent |
 | ξ | false consumer claim gone | reify-config rustdoc; five dependent crates | PASS | grep `no other workspace crate consumes it` in `crates/reify-config/src` absent |

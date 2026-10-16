@@ -1,0 +1,429 @@
+prd: docs/prds/v0_6/gui-frontend-wire-bindings-bridge-port.md
+schema_version: 1
+tasks:
+- label: α
+  task_id: 9062
+  title: 'gui-frontend α: claude permission decisions reach the sidecar (args under `decision`)'
+  capabilities:
+  - name: permission-envelope
+    binding: 'producer-self — main.rs::claude_permission_decision takes `decision: PermissionDecisionArgs`; bridge.ts sends the fields flat (PRD §2.1); 0 matches at 1b06f93151; bindings.ts included so the check survives ξ moving the call into the generated layer'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '\{ ?decision[ :}]'
+      expect: present
+      paths:
+      - gui/src/bridge.ts
+      - gui/src/bridge
+      - gui/src/bindings.ts
+- label: β
+  task_id: 9063
+  title: 'gui-frontend β: one ordered side-panel entry list derives children and grid tracks'
+  capabilities:
+  - name: side-panel-track-builder
+    binding: producer-self — pure builder in gui/src/app (PRD §4.5); 0 matches at 1b06f93151; survives π's partition wherever the module lands
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: export function sidePanelTracks
+      expect: present
+      paths:
+      - gui/src/app
+  - name: track-iife-gone
+    binding: producer-self — 1 match in App.tsx at 1b06f93151 (the inline grid-template-rows IIFE)
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: "grid-template-rows': \\(\\(\\) =>"
+      expect: absent
+      paths:
+      - gui/src/App.tsx
+- label: γ
+  task_id: 9064
+  title: 'gui-frontend γ: initApp subscriptions in one SubscriptionSet'
+  capabilities:
+  - name: unsub-slots-gone
+    binding: producer-self — 1 match (the slot the entry teardown omits) at 1b06f93151
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: let debugBridgeUnsub
+      expect: absent
+      paths:
+      - gui/src/App.tsx
+- label: δ
+  task_id: 9065
+  title: 'gui-frontend δ: viewStateStore owns tree reactivity (treeVersion); treeGeneration threading deleted'
+  capabilities:
+  - name: store-owned-version
+    binding: producer-self — 0 matches at 1b06f93151
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: treeVersion
+      expect: present
+      paths:
+      - gui/src/stores/viewStateStore.ts
+  - name: demand-sync-param-gone
+    binding: producer-self — 1 match (createSelectiveDemandSync's third parameter) at 1b06f93151
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'treeGeneration: \(\) => unknown'
+      expect: absent
+      paths:
+      - gui/src/stores/engineStore.ts
+- label: ε
+  task_id: 9066
+  title: 'gui-frontend ε: one layout dimension table with reset(); DebugStores.layout is LayoutStore'
+  capabilities:
+  - name: layout-table
+    binding: producer-self — 0 matches at 1b06f93151
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: LAYOUT_DIMENSIONS
+      expect: present
+      paths:
+      - gui/src/stores/layoutStore.ts
+  - name: reset-app-state-calls-reset
+    binding: producer-self — 0 matches at 1b06f93151 (reset_app_state calls five setters)
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'layout\.reset\(\)'
+      expect: present
+      paths:
+      - gui/src/debug
+- label: ζ
+  task_id: 9067
+  title: 'gui-frontend ζ: sidecar invokeSdk split into buildClaudeArgs / mapStreamEvent; catch narrowed to JSON.parse'
+  capabilities:
+  - name: pure-stream-reducer
+    binding: producer-self — 0 matches at 1b06f93151
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: export function mapStreamEvent
+      expect: present
+      paths:
+      - gui/sidecar/src
+  - name: pure-args-builder
+    binding: producer-self — 0 matches at 1b06f93151
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: export function buildClaudeArgs
+      expect: present
+      paths:
+      - gui/sidecar/src
+- label: η
+  task_id: 9068
+  title: 'gui-frontend η: EntityTreeNode.is_geometry_value from the compiled cell type; no regex over Type Display'
+  capabilities:
+  - name: backend-geometry-fact
+    binding: 'producer-self — is_geometry_valued(&Type) exists in engine.rs (moves to engine/entity_tree.rs with S25 γ #8939, upstream); field absent at 1b06f93151'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: is_geometry_value
+      expect: present
+      paths:
+      - gui/src-tauri/src/types.rs
+  - name: geometry-regex-gone
+    binding: producer-self — 1 match at 1b06f93151
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: const GEOMETRY_TYPE_NAME_RE
+      expect: absent
+      paths:
+      - gui/src/stores/autoViewGenerator.ts
+- label: θ
+  task_id: 9069
+  title: 'gui-frontend θ: validate_parameter_value command; the property editor holds no quantity grammar'
+  capabilities:
+  - name: validate-command
+    binding: 'producer-self — parse_cell_id, resolve_known_cell_type, parse_value_string_for_cell exist (engine.rs; units.rs after S25 α #8937, upstream); command absent at 1b06f93151'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn validate_parameter_value
+      expect: present
+      paths:
+      - gui/src-tauri/src
+  - name: ts-grammar-gone
+    binding: producer-self — 1 match at 1b06f93151
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: export function buildQuantityRe
+      expect: absent
+      paths:
+      - gui/src/stores/unitLadder.ts
+  - name: requires-unit-fact
+    binding: 'producer-self — dimension_requires_unit exists in engine.rs (units.rs after S25 α #8937); field absent at 1b06f93151; Leo OQ7'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'pub requires_unit: bool'
+      expect: present
+      paths:
+      - gui/src-tauri/src/types.rs
+- label: ι
+  task_id: 9070
+  title: 'gui-frontend ι: commands into the library, one specta Builder, committed bindings.ts, bindings_ts_is_current'
+  capabilities:
+  - name: committed-bindings
+    binding: 'producer-self — specta/tauri-specta rc.25 export probed against tauri 2.11.2 (PRD §2.9); upstream S25 θ #8944, σ #8952 and S26 η, θ (not S25 ο: Leo OQ5)'
+    verdict: PASS
+    delivered_check:
+      kind: path
+      paths:
+      - gui/src/bindings.ts
+      expect: present
+  - name: gate-test
+    binding: producer-self — 0 matches at 1b06f93151
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn bindings_ts_is_current
+      expect: present
+      paths:
+      - gui/src-tauri/src
+  - name: one-command-list
+    binding: producer-self — 1 match (tauri::generate_handler! in main.rs) at 1b06f93151
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'tauri::generate_handler!'
+      expect: absent
+      paths:
+      - gui/src-tauri/src/main.rs
+- label: κ
+  task_id: 9071
+  title: 'gui-frontend κ: every event a named tauri_specta::Event registered once; emit_typed deleted'
+  capabilities:
+  - name: typed-events
+    binding: 'producer-self — event_name override and macro literal fragment probed (PRD §2.9); upstream ι, S25 λ #8947, μ #8948'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'tauri_specta\(event_name'
+      expect: present
+      paths:
+      - gui/src-tauri/src
+  - name: string-emit-helper-gone
+    binding: producer-self — 1 match at 1b06f93151
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: pub fn emit_typed
+      expect: absent
+      paths:
+      - gui/src-tauri/src
+- label: λ
+  task_id: 9072
+  title: 'gui-frontend λ: the TS side imports wire types from bindings.ts; hand mirrors deleted (subsumes #8562, #6843)'
+  capabilities:
+  - name: hand-verdict-validator-gone
+    binding: producer-self — 1 match (#7465's convertRawConstraint) at 1b06f93151
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: export function convertRawConstraint
+      expect: absent
+      paths:
+      - gui/src
+  - name: inline-store-import-gone
+    binding: producer-self — 1 match (types.ts PersistentViewState) at 1b06f93151
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: "import\\('\\./stores/autoViewGenerator'\\)"
+      expect: absent
+      paths:
+      - gui/src/types.ts
+- label: μ
+  task_id: 9073
+  title: 'gui-frontend μ: remaining closed-set wire fields as enums; one isActivePhase'
+  capabilities:
+  - name: one-active-predicate
+    binding: producer-self — 0 matches at 1b06f93151
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: export function isActivePhase
+      expect: present
+      paths:
+      - gui/src
+  - name: phase-enum
+    binding: 'producer-self — EvalActivity {Evaluating, Idle} in eval_queue.rs is the source; Leo OQ3 drops resolving'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: pub enum EvalPhase
+      expect: present
+      paths:
+      - gui/src-tauri/src
+- label: χ
+  task_id: 9074
+  title: 'gui-frontend χ: JointDescriptor.kind and .dimension as wire enums from JointKind'
+  capabilities:
+  - name: joint-dimension-enum
+    binding: 'producer:S25 κ #8946 (descriptor read through S6 JointKind), upstream'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: pub enum JointDimension
+      expect: present
+      paths:
+      - gui/src-tauri/src
+- label: ν
+  task_id: 9075
+  title: 'gui-frontend ν: LspMethod exported in bindings.ts (releases S27 λ #8777)'
+  capabilities:
+  - name: lsp-method-union
+    binding: 'producer:S27 κ #8760 (LspMethod), upstream; Builder::typ::<T>() of an unreferenced renamed enum probed (PRD §2.9)'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: LspMethod
+      expect: present
+      paths:
+      - gui/src/bindings.ts
+- label: ξ
+  task_id: 9076
+  title: 'gui-frontend ξ: gui/src/bridge/ port modules over the generated bindings; BridgePort; one fake'
+  capabilities:
+  - name: port-type
+    binding: producer-self — 0 matches at 1b06f93151
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: export type BridgePort
+      expect: present
+      paths:
+      - gui/src
+- label: ο
+  task_id: 9077
+  title: 'gui-frontend ο: App, engineStore and IPC-touching descendants take the port; wholesale bridge mocks and the mock guard deleted'
+  capabilities:
+  - name: wholesale-mocks-gone
+    binding: producer-self — 27 matching lines across the 8 files at 1b06f93151 (comments included)
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: "vi\\.mock\\(['\"](\\.\\./)+bridge['\"]"
+      expect: absent
+      paths:
+      - gui/src/__tests__
+  - name: source-parsing-guard-gone
+    binding: producer-self — 1 match at 1b06f93151
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: export function extractBridgeFactoryKeys
+      expect: absent
+      paths:
+      - gui/src/__tests__
+- label: π
+  task_id: 9078
+  title: 'gui-frontend π: App.tsx partitioned into gui/src/app/ modules'
+  capabilities:
+  - name: scene-module
+    binding: producer-self — new module (PRD §4.5)
+    verdict: PASS
+    delivered_check:
+      kind: path
+      paths:
+      - gui/src/app/scene.ts
+      expect: present
+- label: ρ
+  task_id: 9079
+  title: 'gui-frontend ρ: frontend-routed rows of the debug tool table — strengthened schemas, advertised:false rows'
+  capabilities:
+  - name: unadvertised-rows
+    binding: 'producer:S25 τ #8955 (debug_tools.rs + committed debug-tools.json), upstream; Leo OQ1'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '"advertised": false'
+      expect: present
+      paths:
+      - gui/src-tauri
+  - name: strengthened-schemas
+    binding: 'producer:S25 τ #8955, upstream; 0 minLength keywords in the tool schemas at 1b06f93151'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '"minLength"'
+      expect: present
+      paths:
+      - gui/src-tauri
+- label: σ
+  task_id: 9080
+  title: 'gui-frontend σ: one dispatch-time param validator; BOUNDARY RULE guards and casts gone'
+  capabilities:
+  - name: validator-module
+    binding: producer-self — 0 matches at 1b06f93151
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: export function validate
+      expect: present
+      paths:
+      - gui/src/debug
+  - name: guard-census-gone
+    binding: producer-self — 1 match at 1b06f93151
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: export const TYPE_GUARDED_RESOLVER_TOOLS
+      expect: absent
+      paths:
+      - gui/src/debug
+- label: τ
+  task_id: 9081
+  title: 'gui-frontend τ: buildHandlers split into family modules over resolve.ts (move-only; subsumes #8184, #7858)'
+  capabilities:
+  - name: resolve-leaf
+    binding: producer-self — new module (PRD §4.6)
+    verdict: PASS
+    delivered_check:
+      kind: path
+      paths:
+      - gui/src/debug/resolve.ts
+      expect: present
+- label: υ
+  task_id: 9082
+  title: 'gui-frontend υ: tool-name and fixture tables derived from debug-tools.json; tauriSource.ts deleted'
+  capabilities:
+  - name: hand-tool-name-literal-gone
+    binding: 'producer:S25 τ #8955 + ρ, upstream; 1 match at 1b06f93151'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'export const KNOWN_DEBUG_TOOL_NAMES: ReadonlySet<string> = new Set\(\['
+      expect: absent
+      paths:
+      - gui/test/visual/assertions.ts
+  - name: rust-source-reader-gone
+    binding: producer-self — 1 match at 1b06f93151 (readers retired by S25 θ and τ, upstream)
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: export function readTauriSrc
+      expect: absent
+      paths:
+      - gui/src/__tests__
+- label: ω
+  task_id: 9083
+  title: 'gui-frontend ω: PRD close stamp'
+  capabilities:
+  - name: terminal-status
+    binding: producer-self — the committed header
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: the close stamp is a docs edit verified by reading the header

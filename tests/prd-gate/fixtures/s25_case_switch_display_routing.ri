@@ -1,0 +1,57 @@
+module s25_case_switch_display_routing
+
+// S25 (docs/prds/v0_6/gui-backend-engine-modules-events-tool-contract.md) — the
+// GuiState-builder leaf's case-switch fixture. One design carries all three
+// things a case switch must keep: a multi-case FEA result (three named cases),
+// a DisplayOutput routing the body to pane 1 with a styled appearance, and a
+// material-bearing body whose mesh gets a resolved material appearance.
+// Switching the active FEA case must change the stress channels and nothing
+// else: display_panes, display_appearance and every mesh's appearance survive.
+// Composed from examples/fea_multi_case_bracket.ri and
+// examples/appearance_viewport_egress.ri; no novel syntax.
+
+structure def CaseSwitchDisplayRouting {
+    param length : Length = 1000mm
+    param width  : Length = 100mm
+    param height : Length = 100mm
+
+    param geometry : Solid = box(length, width, height)
+    let material   = Steel_AISI_1045()
+
+    let mount = FixedSupport(target: "root")
+
+    let lc_operating = LoadCase(
+        name:     "operating",
+        loads:    [PointLoad(point: "tip", force: 1000.0)],
+        supports: [mount],
+    )
+
+    let lc_overload = LoadCase(
+        name:     "overload",
+        loads:    [PointLoad(point: "tip", force: 2000.0)],
+        supports: [mount],
+    )
+
+    let lc_transport = LoadCase(
+        name:     "transport",
+        loads:    [PointLoad(point: "tip", force: 3000.0)],
+        supports: [mount],
+    )
+
+    let result = solve_load_cases(
+        material, length, width, height,
+        [lc_operating, lc_overload, lc_transport],
+        ElasticOptions()
+    )
+
+    sub display = DisplayOutput(
+        subject: geometry,
+        pane: 1,
+        style: DisplayStyle(
+            color: Color(named: "RAL9001", r: 0.96, g: 0.95, b: 0.88),
+            finish: Finish.Gloss,
+            opacity: 0.5,
+            wireframe: false
+        )
+    )
+}

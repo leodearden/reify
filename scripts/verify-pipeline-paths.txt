@@ -25,6 +25,9 @@
 #     content; changing it changes the nextest config used by all test passes.
 #   - .config/nextest.toml: nextest configuration; profile changes alter which
 #     tests are run and how.
+#   - scripts/verify-ledger.py: invoked (not sourced) by verify.sh's executor
+#     at run-begin, cargo step boundaries and _verify_cleanup, so neither the
+#     source-line nor the emitted-gate auto-derivation covers it.
 #
 # NOTE: The sourced libs (occt-scope-lib.sh, release-scope-lib.sh,
 # affected-crates-lib.sh, lib_test_semaphore.sh, cpu-admit.sh) are NOT listed
@@ -112,6 +115,7 @@ scripts/occt-touching-crates.txt
 scripts/release-sensitive-crates.txt
 scripts/verify-pipeline-infra-tests.txt
 scripts/gen-nextest-config.sh
+scripts/verify-ledger.py
 #
 # scripts/confirm-failed-manifest.sh (task 7423): the ONE JUnit-report reader
 #   behind `--confirm-failed`. Both callers are inside the verify pipeline —
@@ -183,6 +187,18 @@ tests/infra/run_all.sh
 #   guard actually re-runs against the change, mirroring the run_all.sh
 #   entry immediately above.
 tests/infra/run-all-ambient-vars.manifest
+#
+# tests/infra/adoption-ratchet.manifest: the adoption-ratchet rows (task
+#   #8678, PRD run-all-runner-infra-harness §3 D9) read only by
+#   tests/infra/adoption_ratchet.py. A .manifest falls outside the
+#   tests/infra/*.{sh,py} glob, so without this entry a manifest-only diff (a
+#   raised ceiling, a widened path, a dropped row) could take the merge-worker
+#   config fast-path, so a weakened ratchet would land without being gated
+#   against the whole tree. The verify-pipeline-infra-tests.txt rows that
+#   select test_infra_adoption_ratchet.sh serve a scoped branch verify only
+#   and do not close that fast-path. The engine needs no entry here: the
+#   glob already routes adoption_ratchet.py to the full gate.
+tests/infra/adoption-ratchet.manifest
 #
 # scripts/check-nan-safe-ordering.sh / scripts/check-compute-trampoline-
 #   registration.sh (task 6243): the two INV-FEA lint gates, hand-registered

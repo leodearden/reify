@@ -202,7 +202,8 @@ constructor from the resolved child template) and one for a match-arm cluster (t
 fold rules for port directions and declared member names live in that one method) — and read
 through query methods. Every reader in `expr.rs`, `connect.rs`, `member_path.rs` and the
 scope.rs tests moves to the queries. The geometry-list pair and the match-arm key parity named
-by the same finding are **not** in the ruled remedy (see lead question 3).
+by the same finding are **not** in the ruled remedy (lead ruling 3: recorded as a follow-up
+candidate in §11).
 
 **D9 — `pub use types::*` stays.** It is the crate's public type surface for other crates, not
 the internal namespace mesh. Internal modules import from `crate::types` explicitly like any
@@ -267,7 +268,7 @@ params then return; Map: key then value; Field: domain then codomain); `Type::an
 as D11. Exhaustive (no `_`). A completeness test over `TypeDiscriminants` (strum `EnumIter`,
 already derived) fails when a variant is added without classification.
 
-**C7 — Ratchet members** (Python stdlib `unittest`, each with a thin `test_<name>.sh` wrapper
+**C7 — Ratchet members** (baselines `tests/infra/compiler-namespace-ratchet-baseline.txt` and `tests/infra/type-walker-ratchet-baseline.txt`; Python stdlib `unittest`, each with a thin `test_<name>.sh` wrapper
 and a `run-all-classification.manifest` row `pool`, per reify `CLAUDE.md` §Infra tests):
 - `tests/infra/test_compiler_namespace_ratchet.{py,sh}` — counts over non-test
   `crates/reify-compiler/src` code: (a) visibility-qualified glob re-exports
@@ -318,7 +319,7 @@ visible.
 | S12 check surface | consumes | `reify_compiler::satisfies_trait_bound` root path + signature (C3) | **S7** | stable from now; no S7 leaf blocks S12 |
 | S8 builtin registry (wave 2) | consumes | `builtin_families.rs` (C2), explicit imports in `expr.rs`, `operator_typing.rs`; performs the FunctionCall-arm partition of `expr.rs` (D4) | S7 produces; S8 owns later edits | S8 leaves touching these files depend on ε / θ / δ |
 | S9 declaration passes (wave 1, after S7) | consumes | explicit imports in `entity.rs`, `traits.rs`, `forall_elaborate.rs`, `guards.rs`; `member_cell_decls.rs` | S7 | S9 leaves on those files depend on β / θ |
-| S3 dependency stratum (wave 1) | co-owns | INV-ARCH-1 module-SCC ratchet (candidate 7) | **unresolved — lead question 1** (recommended: S3 builds the tool and promotes INV-ARCH-1; S7 adds the reify-compiler rows, ξ) | — |
+| S3 dependency stratum (wave 1) | co-owns | INV-ARCH-1 module-SCC ratchet (candidate 7) | **S3 α** builds the tool and promotes INV-ARCH-1 (lead ruling 1); S7 ξ adds the reify-compiler rows | ξ held on S3 α |
 | S27 tooling front end | adjacent | μ edits the body of `compile_with_prelude_context_checked_with_config` (the shadow-scope install becomes a context construction); no signature change | S27 owns the compile entry signatures | coordinate by dependency if both are in flight |
 | S6 kinematics | adjacent | #8560 repoints 5 tests from `reify_constraints::{JointValue, …}` to `reify_stdlib::loop_closure_value` / `loop_closure_solver` | S6 owns the JointKind/JointValue home | #8560 lands first; S6 re-touches those imports if it moves JointValue |
 | S5 analysis stratum | adjacent | #8551 repoints to `reify_compute_contract::{ElasticResult, …}` | S5 owns reify-compute-contract | #8551 lands first |
@@ -330,7 +331,7 @@ visible.
 
 None for α–λ: no novel substrate (no grammar, no new crate dependency — strum is already a
 reify-core and reify-compiler dependency; clippy runs in the gate). μ waits on #6955 and
-#5493 (§6). ξ waits on the INV-ARCH-1 tool's owner (lead question 1).
+#5493 (§6). ξ waits on S3 α (INV-ARCH-1 tool and baseline; held leaf).
 
 ## §8 — Decomposition plan
 
@@ -417,18 +418,17 @@ see; "ratchet line" means the C7 member's printed counts in `run_all.sh` output.
   in `scope.rs`; one constructor call per pre-pass site; §5 row 9; §5 row 1. Consumer: the next
   per-sub fact. Prereqs: κ, ι. **Keys: fk-a9fb39978c17. Subsumes tasks #8006 and #7986.**
 - **ξ — reify-compiler rows on the INV-ARCH-1 module-SCC ratchet (C8).** Modules: the SCC
-  tool's baseline (and, if lead question 1 rules S7 the owner, the tool itself, its infra
-  member, and the INV-ARCH-1 rows in `docs/invariants.md` and
-  `docs/legibility/design-invariants.md`). Signal: the gate's SCC member lists reify-compiler
+  tool's baseline (built by S3 α; S7 adds only the reify-compiler rows and the one-time
+  exception note in its commit). Signal: the gate's SCC member lists reify-compiler
   with its residual SCCs; `entity` and `guards` are in different SCCs; adding a
   `crate::entity` import to `guards.rs` reds it. Consumer: every later compiler change; S3.
-  Prereqs: κ, β, and the tool leaf (S3's under the recommended ruling). **INV: INV-ARCH-1
+  Prereqs: κ, β, and S3 α (held until S3 α is filed and released by the lead). **INV: INV-ARCH-1
   (candidate 7).**
-- **π — (conditional on lead question 2) derive `strum::EnumCount` on the nine geometry-kind
+- **π — derive `strum::EnumCount` on the nine geometry-kind
   enums.** Modules: `crates/reify-compiler/src/types.rs`. Signal: no `const ALL: [Self;` and
   no "Maintenance contract" paragraph in `types.rs`; `VARIANT_COUNT` reads `COUNT`; the
   `geometry_modify` CASES assert and reify-eval `compile_geometry_op_registry_completeness`
-  still compile; §5 row 1. Prereqs: none. Keys: fk-bb1ba38a6a46 *only if assigned to S7*.
+  still compile; §5 row 1. Prereqs: none. **Keys: fk-bb1ba38a6a46** (lead ruling 2).
 - **ω — PRD close.** Stamp this PRD and its manifest `SHIPPED` with the landed leaf ids, the
   AS-AUTHORED freeze paragraph and the LIVE/AS-AUTHORED map (overlay §PRD terminal status).
   Prereqs: every leaf above and the adopted tasks below. Signal: the committed header.
@@ -443,6 +443,12 @@ see; "ratchet line" means the C7 member's printed counts in `run_all.sh` output.
 
 **DAG**: α → {β, γ, δ, ε, ζ, η}; {β, δ, ε} → θ → ι; {β, γ, δ, ε, ζ, η, θ} → κ; {α, δ} → λ;
 {κ, η, #6955, #5493} → μ; {κ, ι} → ν; {κ, β, SCC tool} → ξ; π independent; everything → ω.
+
+**Filed task ids (pass 2, 2026-10-12):** α #8613 · β #8615 · γ #8617 · δ #8620 · ε #8622 ·
+ζ #8623 · η #8625 · θ #8627 · ι #8631 · κ #8636 · λ #8638 · μ #8643 · ν #8650 ·
+ξ #8657 (held: `x_seam_wait` S3 α = #8673; edge wired) · π #8661 · ω #8665. Adopted: #8552,
+#8551, #8560. Superseded and cancelled: #7338 (by δ), #8321 (by ι), #8006 and #7986 (by ν).
+Upstream edges: #6955, #5493 → μ.
 
 ## §9 — Out of scope
 
@@ -478,28 +484,24 @@ see; "ratchet line" means the C7 member's printed counts in `run_all.sh` output.
   `EnumIter`/`EnumCount`; the two new fixtures parse (`tree-sitter parse --quiet`, 0 ERROR) and
   produce the §5 outputs with `target/debug/reify` built 2026-10-11, after the last
   reify-compiler source commit (`3bfae4d2e0`, 2026-10-10).
-- **G4** §6; one open owner (lead question 1).
+- **G4** §6; every seam has an owner (lead ruling 1).
 - **G5** blast radius ≥ 3 crates → B + H-lite (§4, §5).
 - **G6** no numeric or exactness claim beyond byte-identical diagnostics, which each fixture
   row records from a real run; no rejection is asserted that is not already observed (row 6).
 - **G7** (reify INV-SF/INV-AD/INV-PD families, advisory in author mode): no new `Undef`, no
   new diagnostic, no placeholder; μ removes a silent-resolution-by-omission hazard (INV-SF-3
   shape) rather than adding one. No waiver.
-- **META** yes, conditional on the three lead questions, none of which changes the shape of
-  any other leaf.
+- **META** yes (lead rulings 1–5 applied).
 
-### Lead questions (returned to the lead, not decided here)
+### Lead rulings on the pass-1 questions (2026-10-12; program doc §Resolved decisions — pass 1 open questions)
 
-1. **INV-ARCH-1 tool owner.** S3's ruled remedy and this stream both name the module-SCC
-   ratchet. Options: (a, recommended) S3 builds the tool and promotes INV-ARCH-1, shipping with
-   reify-compiler excluded; S7 ξ adds the reify-compiler rows after κ; (b) S7 builds it (ξ
-   grows to tool + infra member + registry rows) and S3 adds reify-eval/reify-ir rows;
-   (c) a separate one-leaf tool task both depend on.
-2. **fk-bb1ba38a6a46** (types.rs ALL arrays, 9 "Maintenance contract" paragraphs) is named in
-   S7's *deletable* list but its key is in no stream and was not filed (weakened). Options:
-   (a) assign it to S7 as π; (b) leave it unrouted and drop π and the deletable item.
-3. **fk-a9fb39978c17 scope.** The ruling names the `sub_*` maps; the finding also names the
-   geometry-list pair (`geometry_list_elements` / `geometry_list_rejected` disjointness) and
-   the `match_arm_groups` key parity asserted in `compile_entity`. Options: (a) ν does the
-   `sub_*` record only (as written); (b) ν also folds the geometry-list pair into one
-   enum-valued map and the match-arm pair into one record.
+1. **INV-ARCH-1 tool owner → (a).** S3 α builds the only tool, baseline and INV-ARCH-1 row,
+   with reify-compiler excluded until S7 κ; S7 ξ adds the reify-compiler rows (consistent with
+   S3 OQ-3). ξ is filed as a held leaf waiting on S3 α.
+2. **fk-bb1ba38a6a46 → (a).** Assigned to S7 as π (program doc stream table amended).
+3. **fk-a9fb39978c17 reach → (a).** ν does the `sub_*` record only. Follow-up candidate (not
+   filed): fold `geometry_list_elements` / `geometry_list_rejected` into one enum-valued map
+   and the `match_arm_groups` / `match_arm_group_arm_member_types` pair into one record, so
+   the disjointness and key-parity invariants live in the type.
+4. κ files at **medium** (Contradictions ruling).
+5. The glob-import baseline is **29** (25 top-level + 4 in `conformance/`).

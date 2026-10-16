@@ -2,7 +2,7 @@ prd: docs/prds/v0_6/prd-probe-gate-typed-outcomes.md
 schema_version: 1
 tasks:
 - label: α
-  task_id: null
+  task_id: 8633
   title: 'S22 α: partition scripts/test_prd_capability_check.py along its measured 6-way partition'
   note: h14 measurement (no finding key); record h14_measurements row for the path.
   capabilities:
@@ -16,7 +16,7 @@ tasks:
       - scripts/_pcc_test_support.py
       expect: present
 - label: β
-  task_id: null
+  task_id: 8639
   title: 'S22 β: partition scripts/test_prd_decompose_verify.py 4-way; .mjs tests to their own file'
   note: h14 measurement (no finding key); record h14_measurements row for the path.
   capabilities:
@@ -30,7 +30,7 @@ tasks:
       - scripts/test_prd_decompose_verify_mjs.py
       expect: present
 - label: γ
-  task_id: null
+  task_id: 8642
   title: 'S22 γ: typed probe outcome — harness_failure and fixture_present on ProbeRun; pdv classifies from fields'
   note: closes fk-d75787147427; subsumes #8122.
   capabilities:
@@ -68,7 +68,7 @@ tasks:
       kind: manual
       reason: behaviour proven by γ's CLI tests against the real reify binary and the grammar substrate; not greppable
 - label: δ
-  task_id: null
+  task_id: 8644
   title: 'S22 δ: each binding row carries its required match; α refuses a vacuous check probe'
   note: closes fk-1922380bc3aa.
   capabilities:
@@ -97,7 +97,7 @@ tasks:
       kind: manual
       reason: a rejection mechanism is judged by its own fixtures (B6-B8), not by a grep
 - label: ε
-  task_id: null
+  task_id: 8649
   title: 'S22 ε: ProbeContext and a runner seam — one repo root, one argv, tests on public seams'
   note: closes fk-f34f07d2dde4.
   capabilities:
@@ -129,7 +129,7 @@ tasks:
       - scripts/
       expect: absent
 - label: ζ
-  task_id: null
+  task_id: 8651
   title: 'S22 ζ: one published vocabulary — α enums + --print-schema, pdv enums + print-schema, .mjs checked against them'
   note: closes fk-bf4e8bbb7dda; PRD §11 R3 rules where pdv's vocabularies are published.
   capabilities:
@@ -158,7 +158,7 @@ tasks:
       kind: manual
       reason: parity is a behavioural test over captured agent() opts, not a grep
 - label: η
-  task_id: null
+  task_id: 8655
   title: 'S22 η: pdv aggregate — the .mjs relays dispositions computed in Python; no test slices .mjs source'
   note: closes fk-6a006c36a78d.
   capabilities:
@@ -191,9 +191,9 @@ tasks:
       - scripts/test_prd_decompose_verify_mjs.py
       expect: absent
 - label: θ
-  task_id: null
-  title: 'S22 θ: one path classifier and one compile closure — affected-crates-lib.sh and the overlap detector read reify_path_attribution.py'
-  note: supplies the module for fk-21c29ddc104d (closed by ι); depends on in-flight #7491.
+  task_id: 8662
+  title: 'S22 θ: one path classifier and one compile closure — affected-crates-lib.sh and occt-scope-lib.sh read reify_path_attribution.py'
+  note: closes fk-21c29ddc104d minus the verify.sh home (S18, ruling R2); depends on in-flight #7491. Amended 2026-10-13 (R1 reversed by Leo 2026-10-12) — the detector is retired by #8886, so its capability is removed here, from the .md twin and from #8662's metadata.
   capabilities:
   - name: closure-lifted-into-module
     binding: producer:task-7491 supplies the module; θ adds compile_closure (PRD D10)
@@ -222,46 +222,8 @@ tasks:
       paths:
       - scripts/affected-crates-lib.sh
       expect: absent
-  - name: detector-second-closure-deleted
-    binding: the detector uses compile_closure
-    verdict: PASS
-    delivered_check:
-      kind: grep
-      pattern: def _reverse_closure
-      paths:
-      - scripts/reify_overlap_detector.py
-      expect: absent
-  - name: module-registered-verify-pipeline
-    binding: verify-pipeline-paths.txt row (S18's artefact; PRD §11 R2)
-    verdict: PASS
-    delivered_check:
-      kind: grep
-      pattern: '^scripts/reify_path_attribution\.py'
-      paths:
-      - scripts/verify-pipeline-paths.txt
-      expect: present
-- label: ι
-  task_id: null
-  title: 'S22 ι: verify.sh decide_scope reads the classifier''s facts in one batched call'
-  note: closes fk-21c29ddc104d; PRD §11 R2 may move this leaf to S18.
-  capabilities:
-  - name: decide-scope-glob-ladder-deleted
-    binding: 'PRD §5.6 decide_scope consumer — its path-root case arms (verify.sh lines today matching only inside decide_scope) are replaced by the fact map; scoped to the three root arms, so verify.sh''s unrelated crates/*/tests/*.rs filter is not matched. Accepted gap: does not prove the batched call itself; B14 plan parity is the behavioural cover.'
-    verdict: PASS
-    delivered_check:
-      kind: grep
-      pattern: '^\s+(crates/\*|gui/src-tauri/\*|examples/\*\.ri)\)'
-      paths:
-      - scripts/verify.sh
-      expect: absent
-  - name: plan-parity
-    binding: B14 over tests/infra/test_verify_scope.sh fixtures
-    verdict: PASS
-    delivered_check:
-      kind: manual
-      reason: byte-identical --print-plan before/after is a behavioural comparison
 - label: κ
-  task_id: null
+  task_id: 8664
   title: 'S22 κ: escalation_mcp.py is the one MCP client; await-merge-landing uses it'
   note: closes fk-0497ab17e729; subsumes #8178.
   capabilities:
@@ -293,7 +255,7 @@ tasks:
       - scripts/escalation_mcp.py
       expect: present
 - label: λ
-  task_id: null
+  task_id: 8667
   title: 'S22 λ: PRD close — id backfill, terminal stamp, AS-AUTHORED freeze'
   capabilities:
   - name: terminal-stamp

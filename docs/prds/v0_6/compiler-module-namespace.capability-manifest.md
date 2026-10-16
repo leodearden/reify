@@ -117,10 +117,10 @@ Machine-readable twin: `docs/prds/v0_6/compiler-module-namespace.capability-mani
 ### ξ — INV-ARCH-1 reify-compiler rows
 | Capability | Evidence | Verdict |
 |---|---|---|
-| SCC tool exists | none on main (`git grep -il 'tarjan\|modgraph'` over scripts/tests/docs/notes: empty) — owner pending lead question 1 | OPEN |
+| SCC tool exists | none on main (`git grep -il 'tarjan\|modgraph'` over scripts/tests/docs/notes: empty) — S3 α builds it (lead ruling 1); ξ is held on S3 α | OPEN |
 | delivered | manual until the tool's baseline path is fixed by its owner | — |
 
-### π — (conditional) EnumCount on the geometry-kind enums
+### π — EnumCount on the geometry-kind enums (fk-bb1ba38a6a46, lead ruling 2)
 | Capability | Evidence | Verdict |
 |---|---|---|
 | 9 ALL arrays used only for `.len()` | `const ALL: [Self;` ×9 in `types.rs`; `Self::ALL` appears only in `VARIANT_COUNT` | PASS |

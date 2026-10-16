@@ -1,7 +1,8 @@
 # PRD: Compiler declaration passes — one classification per member, one acceptance relation
 
 **Status:** active — authored 2026-10-12 (pass 1 of the `/prd` program for stream **S9** of
-`plans/review-all-program-reify-20261012.md`); not yet decomposed. Shape: **B+H** (contract §5,
+`plans/review-all-program-reify-20261012.md`); decomposed 2026-10-12 (pass 2): α #8730 … π #8746,
+λ #8741 held on S6. Shape: **B+H** (contract §5,
 boundary-test sketch §6). Milestone: v0_6.
 
 **Code anchors** verified against main `8e6ffcac9d` (2026-10-12); the review record's anchors were
@@ -319,11 +320,17 @@ owns both gradualism gates and the verdict. The pieces become private, and tests
 point.
 
 **D9. One `RelationSig` row per relation kind (λ).** A static table holds
-`{ kind: RelationKind, arity: Arity, operands: OperandPolicy, metric_slot, codim: Codim }`, where
-`Codim` is `Fixed { rot, trans }`, `ByDatum(fn)` or `CountOnly` (tangent). It is keyed by S6's
-`RelationKind`. `RELATION_FN_NAMES`, `is_relation_typed_fn`, `relation_delta_dof(_kinds)`,
-`relation_metric_slot`, `relation_operand_datum` and the arity-3 policy all derive from it, and the
-tests iterate it.
+`{ kind: RelationKind, arity: Arity, operands: OperandPolicy, metric_slot }`. It is keyed by S6's
+`RelationKind`. `RELATION_FN_NAMES`, `is_relation_typed_fn`, `relation_metric_slot`,
+`relation_operand_datum` and the arity-3 policy all derive from it, and the tests iterate it.
+
+*Lead amendment 2026-10-13 (codim seam, raised by S6's session):* the codimension has ONE home,
+geometry-algebra-solver-unification β #6669's `LoweringTable` (`Row.codim`, keyed by
+(RelationKind, DatumKind, DatumKind)), which that earlier PRD already owns together with the measured
+`individual_rank` half. `RelationSig` therefore carries no `codim` field. λ leaves
+`relation_delta_dof(_kinds)` computing as they do today, keyed on `RelationKind`; #6669 derives them
+from `Row.codim`. B13's rot + trans == ΔDOF clause moves to #6669's B4 ("the compiler's published
+codim and the solver's codim are the SAME FIELD").
 
 Builtin result typing and arity are also S8's reify-builtins row facts. λ keeps them in the row only
 as relation semantics ("which overload is a relation"), and S8's rows read `RelationSig` rather than
@@ -400,7 +407,7 @@ same files, which contract §8 step 2 exists to prevent.
 | B10 | phantom-default cases via source | each of the four same-name-loser shapes behind the skip sets, as `.ri` through `check_trait_conformance` | Same advertised and injected sets as main; no `check_phase_*` call in the test region. | η (pins), θ (stays green) |
 | B11 | acceptance sites agree | each deliberate divergence row, at a fn-call, a struct-ctor and a param-default site | Same accept/reject verdict at all three sites. | ι |
 | B12 | DOF gates | a joint with a `Type::Error` DOF; a joint with a non-kind DOF type; a joint whose body has `tangent` | No `E_JOINT_DOF_MISMATCH`; the non-kind case gets exactly one `E_ARG_TYPE_MISMATCH`. | κ |
-| B13 | relation table | iterate the `RelationSig` table | For every row, rot + trans == ΔDOF; the names derive from the table; the doc count matches. | λ |
+| B13 | relation table | iterate the `RelationSig` table | The names derive from the table; the doc count matches; R3 = 0. (The rot + trans == ΔDOF clause moved to #6669 B4 — lead amendment, D9.) | λ |
 | B14 | parse-error kind | a member-continuation source through `compile_project` (module_dag) | Diagnostic carries the mapped code and the original span; CLI `render_errors` text unchanged. | μ |
 | B15 | value-cell union | a template with guarded `where`/`else` members | `all_value_cells()` yields value_cells, then each group's members, then else_members. | ν |
 
@@ -412,7 +419,7 @@ same files, which contract §8 step 2 exists to prevent.
 | S27 tooling front end | produces → | `ParseErrorKind::diagnostic_code()` for `compile_user_module` and LSP `convert_parse_error` | S9 produces; S27 adopts | μ |
 | reify-ast `MemberDecl` variant additions and their dispatch sites | owns | `member_support` table | **S9** (program G4 table) | γ |
 | S7 compiler module namespace (`docs/prds/v0_6/compiler-module-namespace.md`) | consumes ← | S7 β (`member_cell_decls.rs`; guards.rs explicit imports), S7 θ (entity.rs explicit imports), S7 ζ (conformance/ explicit imports); lib.rs `mod` lines for `let_kind`, `member_support`, `type_acceptance` follow S7 D3 (top-level siblings importing downward) | S7 | ξ depends on S7 β and θ; ο on S7 ζ; every S9 leaf lands after S7 per the program's compiler order |
-| S6 kinematics | consumes ← | `RelationKind` in reify-ir | S6 | λ depends on S6's RelationKind leaf |
+| S6 kinematics | consumes ← | `RelationKind` in reify-ir | S6 | λ #8741 HELD (`x_seam_wait`) until S6's RelationKind leaf is filed and wired |
 | S8 builtin registry | produces → | `RelationSig` relation facts that reify-builtins rows read | S9 (relation semantics); S8 (row schema) | λ first (wave order) |
 | S4 cell-eval closure | produces → | engine_edit.rs per-element connect materialisation via `PortPath::at_element`; engine_eval.rs connector recognisers on `SubOrigin` | S9 edits first; S4 partitions those files in wave 2 | ε, ζ |
 | uniform-member-access (`docs/prds/v0_6/uniform-member-access.md`) | consumes ← | #5425 post-acceptance `is_geometry_let`; #5430 owns member_path consumption | that PRD | β depends on #5425 |
@@ -426,77 +433,77 @@ Each leaf carries `metadata.x_finding_key` (list), `x_finding_run = "review-all-
 New gate-resident tests carry their drift-guard registrations in the same diff (overlay
 "Gate-test drift-guard registration").
 
-- **α — Construct-ratchet member for the declaration passes** *(intermediate → β, ζ, λ, ν)*.
+- **α #8730 — Construct-ratchet member for the declaration passes** *(intermediate → β, ζ, λ, ν)*.
   Modules: `tests/infra/test_compiler_decl_pass_ratchets.{py,sh}`,
   `tests/infra/run-all-classification.manifest`. Ships R1–R3 at today's baselines (17 / 4 / 10),
   with hermetic flag/clear fixtures. Signal: the member runs under `run_all.sh`, its fixture cases
   red on an over-baseline file and green on the clean twin, and it is green on main. Priority
   medium. Keys: none (infrastructure for INV candidate 5).
-- **β — Classify each let once: `LetKind` / `MemberKinds`** *(leaf)*. Modules: reify-compiler
+- **β #8731 — Classify each let once: `LetKind` / `MemberKinds`** *(leaf)*. Modules: reify-compiler
   `let_kind.rs` (new), entity.rs, guards.rs, geometry_list.rs as needed. D1. Signal: B1, B1b; R1 at
   1; `compile_entity`'s four prologue sets gone; the function doc no longer says "Two-pass".
   Deps: α, #5425. Priority **high**. Keys: fk-0bdf9598b402.
-- **γ — One member-support table; no silent member drops; purpose-body parse errors reported**
+- **γ #8732 — One member-support table; no silent member drops; purpose-body parse errors reported**
   *(leaf)*. Modules: reify-compiler `member_support.rs` (new), entity.rs, guards.rs, traits.rs,
   compile_builder/sketch_unsupported.rs; reify-syntax ts_parser.rs (`lower_purpose_members`);
   reify-ast decl.rs (`MemberDecl::tag`). D2. Signal: B2, B3, B4; the 11 duplicate strings and
   `unsupported_purpose_member_info` gone. G7: establishes INV-SF-3 for member positions. Priority
   medium. Keys: fk-196deab564e7.
-- **δ — `ReflectiveQueryKind` end to end** *(leaf)*. Modules: reify-ir expr.rs; reify-compiler
+- **δ #8733 — `ReflectiveQueryKind` end to end** *(leaf)*. Modules: reify-ir expr.rs; reify-compiler
   types.rs, traits.rs, expr.rs; reify-eval engine_purposes.rs; reify-test-support. D3. Signal: B5,
   B6; no `query_kind: String`. Priority medium. Keys: fk-30505ec518b4, fk-ee1be91862ca.
-- **ε — Typed `PortPath` for deferred forall-connect endpoints** *(leaf)*. Modules: reify-compiler
+- **ε #8734 — Typed `PortPath` for deferred forall-connect endpoints** *(leaf)*. Modules: reify-compiler
   types.rs, forall_elaborate.rs, connect.rs (`resolve_port_name` callers); reify-eval engine_edit.rs.
   D4. Signal: B7 (RED first on main: the literal endpoint is rewritten); `rewrite_port_placeholder`
   deleted; no Info string cites a task number; the module doc states that Connect is materialised
   at runtime. Priority medium. Keys: fk-27489259525d.
-- **ζ — `SubOrigin` on `SubComponentDecl`** *(leaf)*. Modules: reify-compiler types.rs, connect.rs
+- **ζ #8735 — `SubOrigin` on `SubComponentDecl`** *(leaf)*. Modules: reify-compiler types.rs, connect.rs
   and the `SubComponentDecl` construction sites; reify-eval engine_eval.rs, resolve_order.rs;
   reify-test-support builders. D5. Signal: B8, B9; R2 at 1. Deps: α. Priority medium. Keys:
   fk-76bdd62534fe.
-- **η — Conformance tests through the conformance entry, not the phases** *(leaf)*. Modules:
+- **η #8736 — Conformance tests through the conformance entry, not the phases** *(leaf)*. Modules:
   reify-compiler conformance/mod.rs tests, plus a `.ri` fixture home per overlay tier
   (`crates/reify-compiler/tests/fixtures/`, or inline sources via the existing `run_conformance`
   harness). Signal: zero `check_phase_` calls in the test region (19 today); the tests that pin the
   parser-unreachable `RequirementKind::Let` are deleted, or their state is made unrepresentable; the
   module doc is replaced by a one-line pointer to this PRD; B10 cases green on main before θ.
   Priority medium. Keys: fk-254bc351a8ab.
-- **θ — `DefaultDisposition` replaces the four skip sets** *(leaf)*. Modules: conformance/checker.rs,
+- **θ #8738 — `DefaultDisposition` replaces the four skip sets** *(leaf)*. Modules: conformance/checker.rs,
   conformance/mod.rs. D6. Signal: B10 green unchanged; the four `&HashSet<String>` parameters are
   gone from both phases; the prose table is deleted. Deps: η. Priority medium. Keys: fk-cf6356374fa1.
-- **ι — `conformance_accepts` beside `type_compatible`** *(leaf)*. Modules: reify-compiler
+- **ι #8739 — `conformance_accepts` beside `type_compatible`** *(leaf)*. Modules: reify-compiler
   `type_acceptance.rs` (new), conformance/mod.rs. D7. Signal: B11; the walker's own-rule arms
   delegate; its divergence prose is deleted, with a one-line pointer per named arm. Deps: η.
   Priority medium. Keys: fk-37775e022693.
-- **κ — One gated DOF entry point** *(leaf)*. Modules: joint_self_check.rs,
+- **κ #8740 — One gated DOF entry point** *(leaf)*. Modules: joint_self_check.rs,
   compile_builder/entities_phase.rs. D8. Signal: B12; one `pub(crate)` item in the module; the
   entities_phase §(4) block is one call. Priority medium. Keys: fk-cc676a29f5d9.
-- **λ — `RelationSig` table keyed by `RelationKind`** *(leaf)*. Modules: relation_signatures.rs (and
+- **λ #8741 — `RelationSig` table keyed by `RelationKind`** *(leaf; was HELD on S6; released 2026-10-13 by S6's session with dependency S6 γ #8830 — RelationKind parsed at reify-eval relate_solve::relation_instance (S6 R4); λ keys on `RelationKind::from_name`)*. Modules: relation_signatures.rs (and
   its LSP callers' imports, if signatures move). D9. Signal: B13; R3 at 0; the tests iterate the
-  table. Deps: α, κ, S6 RelationKind leaf (id from the lead). Priority medium. Keys:
+  table. Deps: α, κ, S6 γ #8830. Priority medium. Keys:
   fk-cb941b3d058e.
-- **μ — `ParseErrorKind` on `ParseError`** *(leaf)*. Modules: reify-ast decl.rs; reify-syntax
+- **μ #8742 — `ParseErrorKind` on `ParseError`** *(leaf)*. Modules: reify-ast decl.rs; reify-syntax
   ts_parser.rs, member_continuation.rs; reify-compiler module_dag.rs; reify-core diagnostics.rs (new
   codes); the four consumer test files. D10. Signal: B14; `is_member_continuation_message` gone.
   Priority low. Keys: fk-ddfdce77efbc.
-- **ν — `TopologyTemplate::all_value_cells()` (seam for S27)** *(leaf)*. Modules: reify-compiler
+- **ν #8743 — `TopologyTemplate::all_value_cells()` (seam for S27)** *(leaf)*. Modules: reify-compiler
   types.rs plus the reify-compiler chain sites; α's member (adds R4). D11. Signal: B15; R4 baseline
   committed, with reify-compiler at 0. Deps: α. Priority medium. Keys: none of S9's (the G4 seam for
   S27's fk-b420a7695f68).
-- **ξ — h14 partition of entity.rs** *(leaf)*. Modules: entity.rs plus new sibling files per the
+- **ξ #8744 — h14 partition of entity.rs** *(leaf)*. Modules: entity.rs plus new sibling files per the
   §2.6 row (AST walkers; the cell and bound helpers that remain after S7 β moves the five
   guards.rs-facing cell builders to `member_cell_decls.rs`; objective and annotation checks;
   match-arm grouping once S7 θ removes the `use super::*` reach-back; tests out of line). The
   skeleton group is not moved (#5494 deletes it). `compile_entity` stays whole as a file move; its h4 cost is out of scope (§10).
   Signal: each new file passes h13 (no upward import, no reach-back) and entity.rs is below the
   2,000-line alarm or the commit message records why the residual stays; the commit message carries
-  the measurement. Deps: β, γ, S7 β (`member_cell_decls.rs`), S7 θ (entity.rs explicit imports). Priority medium.
+  the measurement. Deps: β, γ, S7 β #8615 (`member_cell_decls.rs`), S7 θ #8627 (entity.rs explicit imports). Priority medium.
   Keys: none (h14 measurement).
-- **ο — h14 partition of conformance/mod.rs** *(leaf)*. Modules: conformance/ (ctx module for
+- **ο #8745 — h14 partition of conformance/mod.rs** *(leaf)*. Modules: conformance/ (ctx module for
   `WalkCtx`/`diag_at`, walker, geometry leaf, arg conformance, joint bound; tests out of line).
   Signal: as ξ; the walker ↔ geometry-leaf cycle is broken by the downward ctx module. Deps: η, θ,
-  ι, S7 ζ (conformance/ explicit imports, including the sibling `use checker::*;`). Priority medium. Keys: none (h14 measurement).
-- **π — PRD close** *(leaf; overlay decompose-close obligation)*. Deps: every leaf above. Signal:
+  ι, S7 ζ #8623 (conformance/ explicit imports, including the sibling `use checker::*;`). Priority medium. Keys: none (h14 measurement).
+- **π #8746 — PRD close** *(leaf; overlay decompose-close obligation)*. Deps: every leaf above, plus #5499 and #5430 (lead ruling: S9 cannot close before the two adopted owners land). Signal:
   the committed SHIPPED header with landed leaf ids, the AS-AUTHORED freeze paragraph and the
   LIVE/AS-AUTHORED map, applied to the `.capability-manifest.md` too. Priority low.
 
@@ -518,8 +525,8 @@ Counts: 16 leaves; high 1 (β), medium 13 (α γ δ ε ζ η θ ι κ λ ν ξ �
 | fk-cc676a29f5d9 | κ |
 | fk-cb941b3d058e | λ |
 | fk-ddfdce77efbc | μ |
-| fk-60053402aba5 | not addressed here because #5499 (stdlib-namespace ζ) owns it: declared `import` headers for every stdlib module, order derived, ordering comments deleted, identity test replaced by a determinism test. Disposition `filed:5499` (stamp the key on #5499 in pass 2). |
-| fk-6621fbaa0058 | not addressed here because #5425 lands `resolve_member_path`'s first production consumer and #5430 retires the expr.rs parallel authorities. Disposition `filed:5430` (stamp on #5430; #5425 is its dependency). |
+| fk-60053402aba5 | not addressed here because #5499 (stdlib-namespace ζ) owns it: declared `import` headers for every stdlib module, order derived, ordering comments deleted, identity test replaced by a determinism test. Disposition `filed:5499`: key stamped on #5499 at decompose; π #8746 depends on #5499. |
+| fk-6621fbaa0058 | not addressed here because #5425 lands `resolve_member_path`'s first production consumer and #5430 retires the expr.rs parallel authorities. Disposition `filed:5430`: key stamped on #5430 at decompose; π #8746 depends on #5430; #5425 is a hard dependency of β #8731. |
 | fk-75d9313c6ee6 | not addressed here because it is mechanical and already filed as #8556; no leaf subsumes it. Disposition `filed:8556`. |
 
 ## §10 Out of scope

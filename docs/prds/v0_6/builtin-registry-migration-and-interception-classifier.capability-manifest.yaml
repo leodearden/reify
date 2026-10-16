@@ -1,0 +1,397 @@
+# Machine-readable twin of builtin-registry-migration-and-interception-classifier.capability-manifest.md
+# Every delivered_check below was confirmed red at main a4a8862bcc (2026-10-13).
+prd: docs/prds/v0_6/builtin-registry-migration-and-interception-classifier.md
+schema_version: 1
+tasks:
+  - label: "S8-α1"
+    task_id: 8888
+    title: "Typed builtin outcome; one settle point; every eval_builtin caller"
+    capabilities:
+      - name: "rejection-type-exists"
+        binding: "producer:S8-α1 — reify_core::Rejection; UndefCause::OpContractFailed sink exists today"
+        verdict: PASS
+        delivered_check:
+          kind: grep
+          pattern: 'pub struct Rejection'
+          paths: ["crates/reify-core/src/diagnostics.rs"]
+          expect: present
+      - name: "eval-builtin-returns-outcome"
+        binding: "producer:S8-α1 — eval_builtin(name, args) -> Value today"
+        verdict: PASS
+        delivered_check:
+          kind: grep
+          pattern: 'fn eval_builtin\(.*\) -> BuiltinOutcome'
+          paths: ["crates/reify-stdlib/src/lib.rs"]
+          expect: present
+  - label: "S8-α2"
+    task_id: 8889
+    title: "Success-path advisories for dfm, flexure and snapshot; three emit fns deleted"
+    capabilities:
+      - name: "both-path-emit-fns-deleted"
+        binding: "grep: emit_{dfm,flexure,snapshot}_diagnostics defined in reify-expr lib.rs at main"
+        verdict: PASS
+        delivered_check:
+          kind: grep
+          pattern: 'fn emit_(dfm|flexure|snapshot)_diagnostics'
+          paths: ["crates/reify-expr/src"]
+          expect: absent
+  - label: "S8-β1"
+    task_id: 8890
+    title: "Geometry family: the 19 diagnosed names become typed rejections"
+    capabilities:
+      - name: "geometry-diagnose-helpers-deleted"
+        binding: "grep: datum_fault_diagnostic and diagnose_bbox_corners defined in stdlib geometry.rs at main"
+        verdict: PASS
+        delivered_check:
+          kind: grep
+          pattern: 'fn (datum_fault_diagnostic|diagnose_bbox_corners)'
+          paths: ["crates/reify-stdlib/src"]
+          expect: absent
+  - label: "S8-β2"
+    task_id: 8891
+    title: "Geometry family: the 28 undiagnosed names gain coded rejections"
+    capabilities:
+      - name: "undiagnosed-geometry-names-coded"
+        binding: "fixture: tests/prd-gate/fixtures/s8_geometry_builtin_silent_undef.ri evaluates undef with only the generic note at main"
+        verdict: PASS
+        delivered_check:
+          kind: manual
+          reason: one coded Error per call on the fixture is the assertion; no stable single-line grep expresses that every rejecting arm is coded
+  - label: "S8-β3"
+    task_id: 8892
+    title: "Stdlib geometry.rs partition (3); tests to crates/reify-stdlib/tests"
+    capabilities:
+      - name: "inline-test-module-moved-out"
+        binding: "grep: stdlib geometry.rs carries a column-0 `mod tests {` at main"
+        verdict: PASS
+        delivered_check:
+          kind: grep
+          pattern: '^mod tests \{'
+          paths: ["crates/reify-stdlib/src/geometry.rs"]
+          expect: absent
+  - label: "S8-γ"
+    task_id: 8893
+    title: "FEA, dynamics and analysis rejections; their diagnose hooks deleted"
+    capabilities:
+      - name: "fea-dynamics-hook-reexports-deleted"
+        binding: "grep: `as fea_diagnose` and `as dynamics_diagnose` re-exports in reify-stdlib lib.rs at main"
+        verdict: PASS
+        delivered_check:
+          kind: grep
+          pattern: 'as (fea|dynamics)_diagnose'
+          paths: ["crates/reify-stdlib/src/lib.rs"]
+          expect: absent
+  - label: "S8-δ1"
+    task_id: 8894
+    title: "Stackup, tolerancing and orientation rejections; the post-hoc diagnose axis deleted"
+    capabilities:
+      - name: "post-undef-emit-fn-deleted"
+        binding: "grep: emit_undef_builtin_diagnostics defined in reify-expr at main"
+        verdict: PASS
+        delivered_check:
+          kind: grep
+          pattern: 'fn emit_undef_builtin_diagnostics'
+          paths: ["crates/reify-expr/src"]
+          expect: absent
+      - name: "remaining-hook-reexports-deleted"
+        binding: "grep: stackup/tolerancing/orientation/geometry diagnose re-exports in reify-stdlib lib.rs at main"
+        verdict: PASS
+        delivered_check:
+          kind: grep
+          pattern: 'as (stackup|tolerancing|orientation|geometry)_diagnose'
+          paths: ["crates/reify-stdlib/src/lib.rs"]
+          expect: absent
+  - label: "S8-δ2"
+    task_id: 8895
+    title: "Sweep rejections for the remaining silent exits"
+    note: "Accepted gap: the grep proves the type is used in sweep.rs, not that every exit is coded; the fixture is the behavioural cover."
+    capabilities:
+      - name: "sweep-returns-rejections"
+        binding: "fixture: tests/prd-gate/fixtures/s8_sweep_malformed.ri — eight undef with only the generic note at main"
+        verdict: PASS
+        delivered_check:
+          kind: grep
+          pattern: 'Rejection'
+          paths: ["crates/reify-stdlib/src/sweep.rs"]
+          expect: present
+  - label: "S8-ε"
+    task_id: 8896
+    title: "Intercept column on reify-builtins rows; classify_call read by eval_expr and dual_eval"
+    capabilities:
+      - name: "dual-eval-reduction-mirror-deleted"
+        binding: "grep: reduction_kind_of and field_reduction_kind defined in dual_eval.rs at main"
+        verdict: PASS
+        delivered_check:
+          kind: grep
+          pattern: 'fn (reduction_kind_of|field_reduction_kind)\('
+          paths: ["crates/reify-expr/src/dual_eval.rs"]
+          expect: absent
+      - name: "classify-call-exported"
+        binding: "producer:S8-ε; upstream producer registry β #6002 (BuiltinId in CompiledExpr)"
+        verdict: PASS
+        delivered_check:
+          kind: grep
+          pattern: 'pub fn classify_call\('
+          paths: ["crates/reify-expr/src"]
+          expect: present
+  - label: "S8-ζ"
+    task_id: 8897
+    title: "Stdlib intrinsics stamped at compile time; one shadowing rule (W_UserFnShadowsBuiltin)"
+    capabilities:
+      - name: "user-call-mirror-deleted"
+        binding: "grep: is_intercepted_user_fn defined in dual_eval.rs at main"
+        verdict: PASS
+        delivered_check:
+          kind: grep
+          pattern: 'fn is_intercepted_user_fn\('
+          paths: ["crates/reify-expr/src/dual_eval.rs"]
+          expect: absent
+      - name: "ad-hoc-shadow-checks-deleted"
+        binding: "grep: three `!functions.iter().any(|f| f.name == ..)` checks in compiler expr.rs at main"
+        verdict: PASS
+        delivered_check:
+          kind: grep
+          pattern: '\.any\(.f. f\.name =='
+          paths: ["crates/reify-compiler/src/expr.rs"]
+          expect: absent
+      - name: "shadow-warning-code-exists"
+        binding: "producer:S8-ζ; fixture tests/prd-gate/fixtures/s8_user_fn_shadows_builtin.ri is silent at main"
+        verdict: PASS
+        delivered_check:
+          kind: grep
+          pattern: 'UserFnShadowsBuiltin'
+          paths: ["crates/reify-core/src/diagnostics.rs"]
+          expect: present
+  - label: "S8-η"
+    task_id: 8898
+    title: "Geometry calls typed by kind; geometry passed where lowering does not reach is a coded error"
+    capabilities:
+      - name: "geometry-result-type-fn-exists"
+        binding: "producer:S8-η — ladder arm 9 assigns Type::dimensionless_scalar() at main"
+        verdict: PASS
+        delivered_check:
+          kind: grep
+          pattern: 'fn geometry_fn_result_type\('
+          paths: ["crates/reify-compiler/src"]
+          expect: present
+      - name: "value-position-error-code-exists"
+        binding: "fixtures tests/prd-gate/fixtures/s8_geometry_{value_position,inline_overload_error,ctor_conformance,ctor_conformance_inline,annotations,arith_cmp}.ri record the pre-state"
+        verdict: PASS
+        delivered_check:
+          kind: grep
+          pattern: 'GeometryCallInValuePosition'
+          paths: ["crates/reify-core/src/diagnostics.rs"]
+          expect: present
+  - label: "S8-μ"
+    task_id: 8899
+    title: "Geometry lowering keyed by the descriptor discriminant; exhaustive satellites"
+    capabilities:
+      - name: "satellite-unreachable-arms-deleted"
+        binding: "grep: four `_ => unreachable!(` name arms in the geometry satellites at main"
+        verdict: PASS
+        delivered_check:
+          kind: grep
+          pattern: '=> unreachable!\('
+          paths: ["crates/reify-compiler/src/geometry_boolean.rs", "crates/reify-compiler/src/geometry_curve.rs", "crates/reify-compiler/src/geometry_transform.rs", "crates/reify-compiler/src/geometry_modify.rs"]
+          expect: absent
+  - label: "S8-ν1"
+    task_id: 8900
+    title: "Arg indices, profile preconditions and trait-inference arms from the descriptor"
+    capabilities:
+      - name: "trait-inference-keyed-by-builtin"
+        binding: "producer:S8-ν1 (GeometryBuiltin from S8-μ upstream)"
+        verdict: PASS
+        delivered_check:
+          kind: grep
+          pattern: 'GeometryBuiltin'
+          paths: ["crates/reify-compiler/src/geometry_traits_inference.rs"]
+          expect: present
+  - label: "S8-ν2"
+    task_id: 8901
+    title: "Compiler geometry.rs partition (7); one exhaustive match over GeometryBuiltin"
+    capabilities:
+      - name: "per-family-lowering"
+        binding: "record h14 groups for crates/reify-compiler/src/geometry.rs"
+        verdict: PASS
+        delivered_check:
+          kind: manual
+          reason: structural (one exhaustive match calling per-family lowering functions); no single-line grep expresses it
+  - label: "S8-ξ"
+    task_id: 8902
+    title: "Typed Modify arguments (ModifyArgs) across compiler and eval"
+    capabilities:
+      - name: "modify-args-enum-exists"
+        binding: "producer:S8-ξ — Modify carries Vec<(String, CompiledExpr)> at main; S13 δ #8750 upstream"
+        verdict: PASS
+        delivered_check:
+          kind: grep
+          pattern: 'pub enum ModifyArgs'
+          paths: ["crates/reify-compiler/src/types.rs"]
+          expect: present
+  - label: "S8-ο"
+    task_id: 8903
+    title: "One parameterized-builtin-type table; substitution as a parameter"
+    capabilities:
+      - name: "subst-twins-deleted"
+        binding: "grep: two _with_subst twin resolvers in type_resolution.rs at main"
+        verdict: PASS
+        delivered_check:
+          kind: grep
+          pattern: 'fn (resolve_parameterized_builtin_type_with_subst|resolve_type_alias_expr_to_dim_with_subst)\('
+          paths: ["crates/reify-compiler/src/type_resolution.rs"]
+          expect: absent
+  - label: "S8-π"
+    task_id: 8904
+    title: "Operators parsed to BinOp/UnOp at the syntax boundary"
+    capabilities:
+      - name: "ast-operator-is-typed"
+        binding: "grep: ExprKind::BinOp/UnOp carry `op: String` in reify-ast at main"
+        verdict: PASS
+        delivered_check:
+          kind: grep
+          pattern: 'op: String'
+          paths: ["crates/reify-ast/src/ast.rs"]
+          expect: absent
+  - label: "S8-ρ"
+    task_id: 8905
+    title: "Curvature face overload classifies faces by Selector(Face) type"
+    capabilities:
+      - name: "curvature-face-by-type"
+        binding: "11 selectors typed Selector(Face); FACE_PRODUCING_SELECTOR_NAMES lists 4 at main"
+        verdict: PASS
+        delivered_check:
+          kind: manual
+          reason: the leaf's own fixture (curvature over an indexed face selector types the matrix form) is the assertion
+  - label: "S8-θ"
+    task_id: 8906
+    title: "One datum-projection table in reify-ir read by compiler, reify-expr and reify-eval"
+    capabilities:
+      - name: "datum-table-module-exists"
+        binding: "producer:S8-θ; reify-ir is a direct dependency of all three consumers"
+        verdict: PASS
+        delivered_check:
+          kind: path
+          paths: ["crates/reify-ir/src/datum_projection.rs"]
+          expect: present
+      - name: "eval-side-member-list-deleted"
+        binding: "grep: SELF_DATUM_PROJECTION_MEMBERS defined in reify-eval at main"
+        verdict: PASS
+        delivered_check:
+          kind: grep
+          pattern: 'const SELF_DATUM_PROJECTION_MEMBERS'
+          paths: ["crates/reify-eval/src"]
+          expect: absent
+  - label: "S8-ι"
+    task_id: 8907
+    title: "FieldPayload typed variants replace (source, lambda)"
+    capabilities:
+      - name: "field-payload-enum-exists"
+        binding: "producer:S8-ι — Value::Field carries lambda: Arc<Value> at main"
+        verdict: PASS
+        delivered_check:
+          kind: grep
+          pattern: 'pub enum FieldPayload'
+          paths: ["crates/reify-ir/src/value.rs"]
+          expect: present
+      - name: "positional-zone-decode-deleted"
+        binding: "grep: `items.len() == 7` positional decode in reify-expr lib.rs at main"
+        verdict: PASS
+        delivered_check:
+          kind: grep
+          pattern: 'items\.len\(\) == 7'
+          paths: ["crates/reify-expr/src/lib.rs"]
+          expect: absent
+  - label: "S8-κ"
+    task_id: 8908
+    title: "One tensor-kernel table; non-positive yield rejected on every path"
+    capabilities:
+      - name: "hand-rolled-safety-factor-reduction-deleted"
+        binding: "grep: project_safety_factor_sampled defined in field_reductions.rs at main"
+        verdict: PASS
+        delivered_check:
+          kind: grep
+          pattern: 'fn project_safety_factor_sampled\('
+          paths: ["crates/reify-expr/src/field_reductions.rs"]
+          expect: absent
+      - name: "yield-rejection-code-exists"
+        binding: "fixture tests/prd-gate/fixtures/s8_safety_factor_nonpositive_yield.ri prints -2.5 and 0 at main"
+        verdict: PASS
+        delivered_check:
+          kind: grep
+          pattern: 'SafetyFactorNonPositiveYield'
+          paths: ["crates/reify-core/src/diagnostics.rs"]
+          expect: present
+  - label: "S8-λ"
+    task_id: 8909
+    title: "One solve_load_cases home: the reify-expr re-implementation deleted"
+    capabilities:
+      - name: "reify-expr-multi-case-copy-deleted"
+        binding: "grep: eval_solve_load_cases and invoke_solve_elastic_static defined in reify-expr at main; try_compute_dispatch exists"
+        verdict: PASS
+        delivered_check:
+          kind: grep
+          pattern: 'fn (eval_solve_load_cases|invoke_solve_elastic_static)\('
+          paths: ["crates/reify-expr/src"]
+          expect: absent
+  - label: "S8-σ"
+    task_id: 8910
+    title: "One keyword table in reify-syntax read by the LSP rename gate and reify-audit"
+    capabilities:
+      - name: "keyword-table-module-exists"
+        binding: "producer:S8-σ — reify-syntax exports no keyword list at main"
+        verdict: PASS
+        delivered_check:
+          kind: path
+          paths: ["crates/reify-syntax/src/keywords.rs"]
+          expect: present
+      - name: "rename-gate-off-completion-lists"
+        binding: "grep: references.rs imports the three completion keyword lists at main"
+        verdict: PASS
+        delivered_check:
+          kind: grep
+          pattern: 'crate::completion::\{BODY_KEYWORDS'
+          paths: ["crates/reify-lsp/src/references"]
+          expect: absent
+  - label: "S8-τ"
+    task_id: 8911
+    title: "reify-expr lib.rs partition (8) along the h14 groups"
+    capabilities:
+      - name: "context-module-exists"
+        binding: "record h14 groups for crates/reify-expr/src/lib.rs"
+        verdict: PASS
+        delivered_check:
+          kind: path
+          paths: ["crates/reify-expr/src/context.rs"]
+          expect: present
+  - label: "S8-υ"
+    task_id: 8912
+    title: "Docs-truth: chunks, exemplar, cheatsheet index, discoverability"
+    capabilities:
+      - name: "docs-truth-delivered"
+        binding: "overlay docs-truth gate; prereqs are the language-surface leaves"
+        verdict: PASS
+        delivered_check:
+          kind: manual
+          reason: chunk text and the exemplar's compile are asserted by the leaf and examples_smoke
+  - label: "S8-φ"
+    task_id: 8913
+    title: "[MILESTONE] PRD: hoist value-position geometry calls"
+    capabilities:
+      - name: "hoisting-prd-authored"
+        binding: "session ruling Q4; human /prd session"
+        verdict: PASS
+        delivered_check:
+          kind: manual
+          reason: a human-attended /prd session; no code deliverable
+  - label: "S8-ω"
+    task_id: 8914
+    title: "PRD close: terminal stamp on this PRD, its manifest and the registry PRD"
+    capabilities:
+      - name: "prd-stamped-shipped"
+        binding: "overlay decompose-close obligation"
+        verdict: PASS
+        delivered_check:
+          kind: grep
+          pattern: '^Status: \*\*SHIPPED'
+          paths: ["docs/prds/v0_6/builtin-registry-migration-and-interception-classifier.md"]
+          expect: present

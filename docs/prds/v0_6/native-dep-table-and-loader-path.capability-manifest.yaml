@@ -2,7 +2,7 @@ prd: docs/prds/v0_6/native-dep-table-and-loader-path.md
 schema_version: 1
 tasks:
 - label: α
-  task_id: null
+  task_id: 8634
   title: 'native-dep table α: native-deps.toml as the single declaration (lib.rs + check-manifold-deps.sh read it; parity parsers deleted)'
   capabilities:
   - name: toml-decodable-in-build-graph
@@ -21,7 +21,7 @@ tasks:
     binding: 'G6 — the silent-vacuity check compares per-crate passed counts from one captured run (scripts/cargo-test-tally.py) against main; has_occt/has_gmsh/has_openvdb all resolve on the dev host today (check-manifold-deps.sh [ok] lines). The floor is "equal to main and non-zero", not a literal number.'
     verdict: PASS
 - label: β
-  task_id: null
+  task_id: 8646
   title: 'native-dep table β: reify_build_utils::detect(dep) owns rerun, check-cfg and has_<dep>; find() private; 8 build.rs migrated'
   capabilities:
   - name: hand-written-cfg-sites-baseline
@@ -47,7 +47,7 @@ tasks:
     binding: 'G6 — every crate gaining rerun-if-env-changed already emits a rerun-if-* directive (emit_rpath_* or its own rerun-if-changed), so cargo''s default package-scan heuristic is already off for each; gui/src-tauri without feature gui is re-checked at implementation (tauri_build) — named in PRD §3 item 7.'
     verdict: PASS
 - label: γ
-  task_id: null
+  task_id: 8654
   title: 'native-dep table γ: scripts/lib_native_ld_path.sh; lib_gui_launch.sh owns the OCCT dir prepend (pin last); runner + launchers + e2e smoke adopt it; loader-path note'
   capabilities:
   - name: workspace-bins-need-no-ld-library-path
@@ -70,18 +70,8 @@ tasks:
   - name: no-snap-on-dev-host
     binding: 'G3 — /snap/freecad is absent on the dev host (ls 2026-10-12), so every snap-branch assertion is fixture-driven through the helper''s defaulted root variables; none relies on a live snap.'
     verdict: PASS
-- label: δ
-  task_id: null
-  title: 'native-dep table δ: verify.sh apply_env derives its plan loader path from the cargo-target class'
-  capabilities:
-  - name: apply-env-computation-is-separable
-    binding: 'signal premise — scripts/verify.sh apply_env computes _PLAN_LD_LIBRARY_PATH from snap_lib/deps_lib after capturing REIFY_AMBIENT_LD_LIBRARY_PATH; the capture/export/add_tool scrub are separate statements guarded by tests/infra/test_verify_ld_library_path_scope.sh (read 2026-10-12). Only the two prepend lines change.'
-    verdict: PASS
-  - name: full-gate-route
-    binding: 'G3 — `scripts/verify-pipeline-guard.sh requires-full-gate scripts/verify.sh` exits 0 (2026-10-12): δ lands on the full gate by construction.'
-    verdict: PASS
 - label: ω
-  task_id: null
+  task_id: 8663
   title: 'native-dep table ω: PRD close — ID backfill + terminal stamp + freeze'
   capabilities:
   - name: terminal-stamp
@@ -89,7 +79,7 @@ tasks:
     verdict: PASS
     delivered_check:
       kind: grep
-      pattern: Status.*SHIPPED
+      pattern: '^\*\*Status:\*\*[[:space:]]*\**SHIPPED'
       paths:
       - docs/prds/v0_6/native-dep-table-and-loader-path.md
       expect: present

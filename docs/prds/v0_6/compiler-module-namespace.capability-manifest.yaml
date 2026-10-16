@@ -4,7 +4,7 @@ prd: docs/prds/v0_6/compiler-module-namespace.md
 schema_version: 1
 tasks:
   - label: "α"
-    task_id: null
+    task_id: 8613
     title: "Namespace ratchet member (glob re-exports and glob imports, exact baseline)"
     capabilities:
       - name: "namespace-ratchet-member-exists"
@@ -15,7 +15,7 @@ tasks:
           paths: ["tests/infra/test_compiler_namespace_ratchet.sh"]
           expect: present
   - label: "β"
-    task_id: null
+    task_id: 8615
     title: "Explicit imports for guards/traits/forall_elaborate/geometry_list; break entity-guards cycle"
     capabilities:
       - name: "guards-glob-import-gone"
@@ -35,7 +35,7 @@ tasks:
           paths: ["crates/reify-compiler/src/lib.rs"]
           expect: present
   - label: "γ"
-    task_id: null
+    task_id: 8617
     title: "Explicit imports for the eight-file slice; privatise termination helpers"
     capabilities:
       - name: "slice-glob-imports-gone"
@@ -47,7 +47,7 @@ tasks:
           paths: ["crates/reify-compiler/src/coerce.rs", "crates/reify-compiler/src/datum_projection.rs", "crates/reify-compiler/src/diagnostics.rs", "crates/reify-compiler/src/geometry_boolean.rs", "crates/reify-compiler/src/geometry_curve.rs", "crates/reify-compiler/src/geometry_transform.rs", "crates/reify-compiler/src/ice.rs", "crates/reify-compiler/src/termination.rs"]
           expect: absent
   - label: "δ"
-    task_id: null
+    task_id: 8620
     title: "type_compat.rs: explicit imports, delete overload facade, four-way split"
     capabilities:
       - name: "overload-facade-deleted"
@@ -74,7 +74,7 @@ tasks:
           paths: ["crates/reify-compiler/src/overload_resolution.rs"]
           expect: present
   - label: "ε"
-    task_id: null
+    task_id: 8622
     title: "Move the builtin catalogue from units.rs to builtin_families.rs"
     capabilities:
       - name: "builtin-families-module-exists"
@@ -93,7 +93,7 @@ tasks:
           paths: ["crates/reify-compiler/src/units.rs"]
           expect: absent
   - label: "ζ"
-    task_id: null
+    task_id: 8623
     title: "Explicit imports for the remaining shared modules and conformance/"
     capabilities:
       - name: "shared-module-glob-imports-gone"
@@ -105,7 +105,7 @@ tasks:
           paths: ["crates/reify-compiler/src/annotations.rs", "crates/reify-compiler/src/connect.rs", "crates/reify-compiler/src/member_path.rs", "crates/reify-compiler/src/trait_requirements.rs", "crates/reify-compiler/src/functions.rs", "crates/reify-compiler/src/scope.rs", "crates/reify-compiler/src/geometry_modify.rs", "crates/reify-compiler/src/geometry.rs", "crates/reify-compiler/src/conformance/mod.rs", "crates/reify-compiler/src/conformance/sub_component_validation.rs", "crates/reify-compiler/src/conformance/checker.rs"]
           expect: absent
   - label: "η"
-    task_id: null
+    task_id: 8625
     title: "Explicit imports for type_resolution.rs"
     capabilities:
       - name: "type-resolution-glob-import-gone"
@@ -117,7 +117,7 @@ tasks:
           paths: ["crates/reify-compiler/src/type_resolution.rs"]
           expect: absent
   - label: "θ"
-    task_id: null
+    task_id: 8627
     title: "Explicit imports for expr.rs and entity.rs"
     capabilities:
       - name: "expr-entity-glob-imports-gone"
@@ -129,7 +129,7 @@ tasks:
           paths: ["crates/reify-compiler/src/expr.rs", "crates/reify-compiler/src/entity.rs"]
           expect: absent
   - label: "ι"
-    task_id: null
+    task_id: 8631
     title: "expr.rs heuristic-14 partition, five of six (FunctionCall arm left to S8)"
     capabilities:
       - name: "member-access-module-exists"
@@ -148,7 +148,7 @@ tasks:
           paths: ["crates/reify-compiler/src/expr.rs"]
           expect: absent
   - label: "κ"
-    task_id: null
+    task_id: 8636
     title: "Delete the 28 crate-root glob re-exports; deny clippy::wildcard_imports"
     capabilities:
       - name: "root-glob-reexports-deleted"
@@ -174,7 +174,7 @@ tasks:
           kind: manual
           reason: "lint behaviour on pub use types::* is confirmed by kappa's clippy run, not a grep"
   - label: "λ"
-    task_id: null
+    task_id: 8638
     title: "Type::children / any_descendant in reify-core; adoption ratchet member"
     capabilities:
       - name: "any-descendant-defined"
@@ -201,7 +201,7 @@ tasks:
           paths: ["tests/infra/test_type_walker_adoption_ratchet.sh"]
           expect: present
   - label: "μ"
-    task_id: null
+    task_id: 8643
     title: "ResolutionCtx replaces the three thread-local resolution scopes"
     capabilities:
       - name: "thread-locals-gone"
@@ -227,7 +227,7 @@ tasks:
           kind: manual
           reason: "byte-identical reify check output is judged by the gate's suites and the leaf's own run, not a grep"
   - label: "ν"
-    task_id: null
+    task_id: 8650
     title: "CompilationScope sub_* maps become one SubFacts record behind query methods"
     capabilities:
       - name: "sub-fields-private"
@@ -239,19 +239,19 @@ tasks:
           paths: ["crates/reify-compiler/src/scope.rs"]
           expect: absent
   - label: "ξ"
-    task_id: null
+    task_id: 8657  # hand-stamped: held leaf, excluded from commit_planning (x_seam_wait S3 alpha)
     title: "reify-compiler rows on the INV-ARCH-1 module-SCC ratchet"
     capabilities:
       - name: "scc-tool-owner"
-        binding: "no SCC tool on main; owner pending lead question 1 (recommended S3)"
+        binding: "no SCC tool on main; S3 alpha builds it (lead ruling 1); xi is held on S3 alpha"
         verdict: OPEN
         delivered_check:
           kind: manual
           reason: "baseline path is fixed by the tool's owner; bind a grep for reify-compiler in that baseline at decompose"
   - label: "π"
-    task_id: null
-    title: "(conditional) strum::EnumCount on the nine geometry-kind enums"
-    note: "Filed only if the lead assigns fk-bb1ba38a6a46 to S7 (lead question 2)."
+    task_id: 8661
+    title: "strum::EnumCount on the nine geometry-kind enums (fk-bb1ba38a6a46)"
+    note: "fk-bb1ba38a6a46 assigned to S7 by lead ruling 2."
     capabilities:
       - name: "all-arrays-gone"
         binding: "grep: nine const ALL arrays in types.rs at main"
@@ -262,7 +262,7 @@ tasks:
           paths: ["crates/reify-compiler/src/types.rs"]
           expect: absent
   - label: "ω"
-    task_id: null
+    task_id: 8665
     title: "PRD close: stamp SHIPPED with leaf ids and the AS-AUTHORED freeze"
     capabilities:
       - name: "terminal-status-stamped"

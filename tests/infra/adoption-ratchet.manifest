@@ -1,0 +1,36 @@
+# tests/infra/adoption-ratchet.manifest — adoption-ratchet rows (PRD
+# docs/prds/v0_6/run-all-runner-infra-harness.md §3 D9), evaluated by
+# tests/infra/adoption_ratchet.py and gated by test_infra_adoption_ratchet.sh.
+#
+# Row: pattern-id | ERE | path | ceiling | owner leaf
+#   - columns are separated by ' | ' (space, pipe, space); the ERE is every
+#     column between the pattern-id and the last three, taken verbatim, so it
+#     may itself contain '|';
+#   - the engine reads the ERE with Python re, and it must read the same as a
+#     POSIX ERE so `git grep -E` can locate a hit: the engine rejects an
+#     escape before a letter or digit (\d, \b, a backreference), a backslash
+#     inside [...], a [:class:] / [.coll.] / [=equiv=] bracket, a (?...)
+#     group and a lazy or possessive quantifier;
+#   - only code lines count: a line whose first non-blank character is '#'
+#     never counts;
+#   - path is a repo-root-relative glob and must match at least one file;
+#   - the ratchet reds only when a count EXCEEDS its ceiling;
+#   - a leaf that extracts a construct adds its row at the post-extraction
+#     count and names the row in its done-criteria.
+# Measure: python3 tests/infra/adoption_ratchet.py
+# inline-discovery-loop: discovery's one home is classification_discovered_set,
+# so no run_all.sh code line spells a test_* glob -- a for loop, compgen -G,
+# find -name or ls alike.
+inline-discovery-loop | test_["']?[*] | tests/infra/run_all.sh | 0 | α #8678
+# member-spawn-site: every run_all member spawn goes through _ra_spawn_member,
+# the one line carrying the git-env scrub, env isolation and FD hygiene.
+member-spawn-site | reify_git_env_scrub (bash|env) | tests/infra/run_all.sh | 1 | β #8681
+# result-fail-recorder: a member FAIL verdict is printed only by
+# _ra_record_result.
+result-fail-recorder | RESULT: FAIL | tests/infra/run_all.sh | 1 | β #8681
+# theta-embedded-normal-closure: the one closure is reify_path_attribution.py's.
+theta-embedded-normal-closure | def normal_closure[(] | scripts/*.sh | 0 | θ #8662
+# theta-crate-path-case-arm-{affected,occt}: path attribution lives in
+# reify_path_attribution.py, so neither lib carries a crate-path case arm.
+theta-crate-path-case-arm-affected | ^ *["']?(crates|gui/src-tauri|examples|tree-sitter-reify)/[^)]*[)] | scripts/affected-crates-lib.sh | 0 | θ #8662
+theta-crate-path-case-arm-occt | ^ *["']?(crates|gui/src-tauri|examples|tree-sitter-reify)/[^)]*[)] | scripts/occt-scope-lib.sh | 0 | θ #8662

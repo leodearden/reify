@@ -2,7 +2,7 @@ prd: docs/prds/v0_6/compiler-declaration-passes.md
 schema_version: 1
 tasks:
 - label: α
-  task_id: null
+  task_id: 8730
   title: 'Construct-ratchet member for the declaration passes (R1-R3 at today''s baselines)'
   capabilities:
   - name: infra-member-discovered-via-wrapper
@@ -21,7 +21,7 @@ tasks:
       kind: manual
       reason: 'the member''s own hermetic flag/clear fixtures and its committed baselines are the evidence; a grep cannot assert a count.'
 - label: β
-  task_id: null
+  task_id: 8731
   title: 'Classify each let once — LetKind / MemberKinds, order-free'
   capabilities:
   - name: forward-alias-divergence-on-main
@@ -55,7 +55,7 @@ tasks:
     binding: 'producer:task-5425 upstream (uniform-member-access β, pending) — reworks "geometry.rs geometry-let allowlist + wildcard"; β builds on its result. Wired as a real dependency.'
     verdict: PASS
 - label: γ
-  task_id: null
+  task_id: 8732
   title: 'One member-support table; no silent member drops; purpose-body parse errors reported'
   capabilities:
   - name: guarded-silent-drop-on-main
@@ -92,7 +92,7 @@ tasks:
       paths:
       - crates/reify-compiler/src
 - label: δ
-  task_id: null
+  task_id: 8733
   title: 'ReflectiveQueryKind end to end'
   capabilities:
   - name: string-kind-on-main
@@ -127,7 +127,7 @@ tasks:
       kind: manual
       reason: 'B5 asserts byte-identical output against this capture.'
 - label: ε
-  task_id: null
+  task_id: 8734
   title: 'Typed PortPath for deferred forall-connect endpoints'
   capabilities:
   - name: literal-index-rewrite-on-main
@@ -158,7 +158,7 @@ tasks:
     binding: 'fused-memory get_statuses 2026-10-12 — #2629, #2690, #2717 all done; forall_elaborate.rs Diagnostic::info strings cite them as future scope.'
     verdict: PASS
 - label: ζ
-  task_id: null
+  task_id: 8735
   title: 'SubOrigin on SubComponentDecl'
   capabilities:
   - name: prefix-recognisers-on-main
@@ -186,7 +186,7 @@ tasks:
       paths:
       - crates/reify-eval/src/engine_eval.rs
 - label: η
-  task_id: null
+  task_id: 8736
   title: 'Conformance tests through the conformance entry, not the phases'
   capabilities:
   - name: phase-pinned-tests-on-main
@@ -202,7 +202,7 @@ tasks:
       paths:
       - crates/reify-compiler/src/conformance
 - label: θ
-  task_id: null
+  task_id: 8738
   title: 'DefaultDisposition replaces the four skip sets'
   capabilities:
   - name: skip-sets-on-main
@@ -221,7 +221,7 @@ tasks:
     binding: 'producer:η upstream (in-batch) — B10''s source-driven cases exist and are green before θ restructures.'
     verdict: PASS
 - label: ι
-  task_id: null
+  task_id: 8739
   title: 'conformance_accepts beside type_compatible'
   capabilities:
   - name: divergence-on-main
@@ -237,7 +237,7 @@ tasks:
       paths:
       - crates/reify-compiler/src
 - label: κ
-  task_id: null
+  task_id: 8740
   title: 'One gated DOF entry point'
   capabilities:
   - name: gate-outside-module-on-main
@@ -253,15 +253,15 @@ tasks:
       paths:
       - crates/reify-compiler/src/compile_builder
 - label: λ
-  task_id: null
+  task_id: 8741
   title: 'RelationSig table keyed by RelationKind'
   capabilities:
   - name: tables-on-main
     binding: 'measured — RELATION_FN_NAMES doc "**9 names**" over a 10-entry slice; 10 `args.len() == 3` guards above #[cfg(test)]; the ΔDOF-sum test iterates its own curated list.'
     verdict: PASS
   - name: relation-kind-enum
-    binding: 'producer: S6 RelationKind leaf (stream S6, wave 1; id assigned by the lead in pass 2). Not on main (no RelationKind in crates/reify-ir/src today); the binding stays OPEN until that id is wired as a real dependency.'
-    verdict: OPEN
+    binding: 'producer:#8830 (S6 γ: RelationKind in reify-ir, RelationInstance.kind set at reify-eval relate_solve::relation_instance per S6 ruling R4; λ keys RelationSig on the same RelationKind::from_name). Wired as a real dependency of #8741 and λ released by the S6 session on 2026-10-13.'
+    verdict: PASS
   - name: table-present
     binding: 'producer-self — one RelationSig static table.'
     verdict: PASS
@@ -272,7 +272,7 @@ tasks:
       paths:
       - crates/reify-compiler/src
 - label: μ
-  task_id: null
+  task_id: 8742
   title: 'ParseErrorKind on ParseError'
   capabilities:
   - name: textual-discriminator-on-main
@@ -297,7 +297,7 @@ tasks:
       paths:
       - crates/reify-syntax/src
 - label: ν
-  task_id: null
+  task_id: 8743
   title: 'TopologyTemplate::all_value_cells() (G4 seam for S27)'
   capabilities:
   - name: no-accessor-on-main
@@ -313,27 +313,27 @@ tasks:
       paths:
       - crates/reify-compiler/src/types.rs
 - label: ξ
-  task_id: null
+  task_id: 8744
   title: 'h14 partition of entity.rs'
   capabilities:
   - name: partition-measured
     binding: 'record h14_measurements entity.rs — stays_whole false, 7 named partitions; the match-arm group''s symptom is the `use super::*` reach-back that S7 removes.'
     verdict: PASS
   - name: s7-explicit-imports
-    binding: 'producer: S7 β (member_cell_decls.rs) and S7 θ (entity.rs explicit imports) in docs/prds/v0_6/compiler-module-namespace.md (stream S7, wave 1; ids from the lead). OPEN until wired.'
-    verdict: OPEN
+    binding: 'producer:task-8615 (S7 β, member_cell_decls.rs) and producer:task-8627 (S7 θ, entity.rs explicit imports), docs/prds/v0_6/compiler-module-namespace.md; wired as real dependencies of ξ at decompose 2026-10-12.'
+    verdict: PASS
 - label: ο
-  task_id: null
+  task_id: 8745
   title: 'h14 partition of conformance/mod.rs'
   capabilities:
   - name: partition-measured
     binding: 'record h14_measurements conformance/mod.rs — stays_whole false, 6 partitions; walker <-> geometry-leaf cycle broken by moving WalkCtx/diag_at to a lower module.'
     verdict: PASS
   - name: s7-explicit-imports
-    binding: 'producer: S7 ζ (conformance/ explicit imports) in docs/prds/v0_6/compiler-module-namespace.md (stream S7; id from the lead). OPEN until wired.'
-    verdict: OPEN
+    binding: 'producer:task-8623 (S7 ζ, conformance/ explicit imports), docs/prds/v0_6/compiler-module-namespace.md; wired as a real dependency of ο at decompose 2026-10-12.'
+    verdict: PASS
 - label: π
-  task_id: null
+  task_id: 8746
   title: 'PRD close — SHIPPED header, landed ids, freeze map'
   capabilities:
   - name: terminal-stamp

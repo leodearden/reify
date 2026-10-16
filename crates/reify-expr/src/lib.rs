@@ -42,6 +42,7 @@ use std::sync::Arc;
 use reify_ast::QuantifierKind;
 use reify_core::{Diagnostic, DiagnosticCode, DimensionVector, FIELD_ENTITY_PREFIX, SourceSpan, Type, ValueCellId};
 use reify_core::overload::{slot_matches_head_tier, slot_matches_wildcard_tier};
+use reify_core::scalar_tolerance::scalars_equal;
 use reify_ir::{BinOp, CompiledExpr, CompiledExprKind, CompiledFunction, CompiledPattern, DeterminacyPredicateKind, DeterminacyState, FieldSourceKind, InterpolationKind, PersistentMap, SampledField, SampledGridKind, SelectorKind, StructureInstanceData, StructureTypeId, UnOp, UndefCause, Value, ValueMap, quaternion_is_finite};
 
 /// Maximum recursion depth for user-defined function calls.
@@ -4728,7 +4729,11 @@ pub(crate) fn eval_pow(lv: &Value, rv: &Value) -> Value {
     sanitize::sanitize_value(result)
 }
 
-pub(crate) fn eval_eq(lv: &Value, rv: &Value) -> Value {
+/// The language's `==` verdict on two evaluated operands. Scalar and Real
+/// operands compare through [`reify_core::scalar_tolerance`]; public so the
+/// DimensionalSolver's equality-row acceptance calls this same function
+/// (#6653) instead of re-deriving the dimension and Int dispatch.
+pub fn eval_eq(lv: &Value, rv: &Value) -> Value {
     match (lv, rv) {
         (Value::Bool(a), Value::Bool(b)) => Value::Bool(a == b),
         (Value::Int(a), Value::Int(b)) => Value::Bool(a == b),
@@ -4747,7 +4752,7 @@ pub(crate) fn eval_eq(lv: &Value, rv: &Value) -> Value {
             if da != db {
                 Value::Bool(false)
             } else {
-                Value::Bool(a == b)
+                Value::Bool(scalars_equal(*a, *b, *da))
             }
         }
         // Enum-vs-Enum equality: same type → compare variant, different type → false
@@ -4789,7 +4794,9 @@ pub(crate) fn eval_eq(lv: &Value, rv: &Value) -> Value {
         _ => {
             // Int / Real / dimensionless Scalar numeric comparison via as_f64.
             match (lv.as_f64(), rv.as_f64()) {
-                (Some(a), Some(b)) => Value::Bool(a == b),
+                (Some(a), Some(b)) => {
+                    Value::Bool(scalars_equal(a, b, DimensionVector::DIMENSIONLESS))
+                }
                 _ => Value::Undef,
             }
         }

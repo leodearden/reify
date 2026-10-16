@@ -71,25 +71,15 @@ Evidence vocabulary: `grep:<file> <symbol>` (present on main) · `run:` (a comma
 | the 13-key top-level return the overlay documents | `grep:.claude/skills/prd/project.md Reading the result`; `grep:scripts/prd-decompose-verify.mjs function batchVerdict` | PASS |
 | producer of the published dispositions / schemas | `producer:ζ` (upstream) | PASS |
 
-## θ — One path classifier and one compile closure *(intermediate → ι; supplies f125's module)*
+## θ — One path classifier and one compile closure *(leaf; fk-21c29ddc104d minus the verify.sh home, which S18 carries — ruling R2)*
 
 | Capability | Evidence | Verdict |
 |---|---|---|
 | the stdlib attribution module exists | `producer:task-7491` (upstream, in flight on `task/7491`: `scripts/reify_path_attribution.py`, `attribute`, `PathAttribution`, stdlib-only, `/usr/bin/python3`-importable per its commit `7a519f2cf9`) | PASS (producer upstream; not yet on main) |
 | the closure θ lifts exists in one heredoc | `grep:scripts/occt-scope-lib.sh _REIFY_COMPILE_CLOSURE_PY=$(cat <<'PYEOF'` | PASS |
 | the bash ladder θ deletes exists (6 arms) | `grep:scripts/affected-crates-lib.sh _file_to_crate()`, `_is_global()`, `_is_crate_manifest()`, `_is_noncrate()` | PASS |
-| the detector's second closure exists | `grep:scripts/reify_overlap_detector.py def _reverse_closure` | PASS |
-| a module invoked from a sourced lib is NOT auto-registered as verify-pipeline | `grep:scripts/verify-pipeline-paths.txt NON-source-derivable` (only `source` lines and `add()`/`add_tool()` `*.sh` paths are derived) → θ adds the row | PASS |
+| a module invoked from a sourced lib is NOT auto-registered as verify-pipeline | `grep:scripts/verify-pipeline-paths.txt NON-source-derivable` (only `source` lines and `add()`/`add_tool()` `*.sh` paths are derived). The row is S18's (ruling R2); θ's own diff touches `affected-crates-lib.sh`, so θ itself takes the full gate | PASS |
 | per-path forking is too slow | #7491 commit `be5edd1239`: 73 s per-path vs 3.9 s fork-free over 4,725 paths | PASS |
-
-## ι — `decide_scope` reads the facts *(leaf; fk-21c29ddc104d)*
-
-| Capability | Evidence | Verdict |
-|---|---|---|
-| the third ladder exists | `grep:scripts/verify.sh decide_scope()` arms `crates/*)`, `gui/src-tauri/*)`, `tree-sitter-reify/*)`, `examples/*.ri)` | PASS |
-| verify.sh policy arms that stay | `grep:scripts/verify.sh case "$_RUST_COUPLED_RI_FIXTURES" in`, `docs/gui-event-channels.md)` | PASS |
-| plan-parity instrument exists | `grep:tests/infra/test_verify_scope.sh` scope cases; `verify.sh --print-plan` | PASS |
-| producer of the batched `attribute` CLI | `producer:θ` (upstream) | PASS |
 
 ## κ — One MCP client *(leaf; fk-0497ab17e729; subsumes #8178)*
 
@@ -106,8 +96,8 @@ Evidence vocabulary: `grep:<file> <symbol>` (present on main) · `run:` (a comma
 | Capability | Evidence | Verdict |
 |---|---|---|
 | terminal-status vocabulary and freeze shape | `.claude/skills/prd/project.md` "PRD terminal status — closed vocabulary + decompose-close stamp" | PASS |
-| producers | `producer:α…κ` (all upstream) | PASS |
+| producers | `producer:α…κ` (all upstream; no ι) | PASS |
 
 ---
 
-**FAIL bindings:** none. **Open seams that change bindings:** PRD §11 R1 (θ's detector half and the program's DF seam row), R2 (ι's owner), R3 (where ζ's schemas live).
+**FAIL bindings:** none. **Rulings applied (pass 2):** R1 keep the detector importing the module (REVERSED by Leo 2026-10-12: the detector is retired by #8886, so θ's detector capability row was removed 2026-10-13, here, in the `.yaml` sidecar and in #8662's metadata); R2 the former ι and the paths row moved to S18; R3 layered schemas.

@@ -1,0 +1,25 @@
+// S6 PRD evidence (docs/prds/v0_6/kinematics-typed-kinds-and-mechanism-record.md): non-converged TOTS solve (T19)
+// Before-image measured at main e217c0f30b (2026-10-13); outputs recorded in the capability manifest.
+module s6_tots_nonconvergence
+
+// Probe: a feasible TOTS move capped at one SQP iteration (NonConvergence).
+structure def TotsNonConv {
+    let wp0 = Waypoint(t: 0.0s, values: [0.0], vels: none, accels: none)
+    let wp1 = Waypoint(t: 1.0s, values: [0.1], vels: none, accels: none)
+    let profile = PiecewisePolynomialProfile(
+        mechanism: 1.0,
+        waypoints: [wp0, wp1],
+        boundary: NaturalSpline(),
+        spline_kind: SplineKind.CubicSpline
+    )
+    let jl = JointLimit(joint: 0.0, max_force: 1000N)
+    let shaper = TOTSShaper(
+        modes: [],
+        actuator_limits: [jl],
+        velocity_limit: 300mm/s,
+        acceleration_limit: 5000mm/s^2,
+        vibration_tolerance: 0.02,
+        max_iters: 1
+    )
+    let optimal = input_shape(profile, shaper)
+}

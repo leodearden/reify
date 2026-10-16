@@ -64,6 +64,7 @@ make_branch_fixture() {
     mkdir -p "$dir/scripts"
     cp "$REPO_ROOT/scripts/verify.sh"                    "$dir/scripts/verify.sh"
     cp "$REPO_ROOT/scripts/occt-scope-lib.sh"            "$dir/scripts/occt-scope-lib.sh"
+    cp "$REPO_ROOT/scripts/reify_path_attribution.py"    "$dir/scripts/reify_path_attribution.py"
     cp "$REPO_ROOT/scripts/occt-touching-crates.txt"     "$dir/scripts/occt-touching-crates.txt"
     cp "$REPO_ROOT/scripts/release-scope-lib.sh"         "$dir/scripts/release-scope-lib.sh"
     cp "$REPO_ROOT/scripts/release-sensitive-crates.txt" "$dir/scripts/release-sensitive-crates.txt"

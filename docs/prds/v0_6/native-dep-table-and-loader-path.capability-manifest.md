@@ -52,11 +52,8 @@ Machine-readable twin: `native-dep-table-and-loader-path.capability-manifest.yam
 - `four-copies-exist-today` (signal premise): the D8 prepend pattern returns 7 lines outside `lib_gui_launch.sh`. Delivered check: grep, `SNAP_OCCT_LIB` absent from `run-gui.sh`, `run-gui-dev.sh` and `.cargo/run-with-occt.sh`. PASS.
 - `no-snap-on-dev-host` (G3): `/snap/freecad` is absent on the dev host, so every snap assertion is fixture-driven. PASS.
 
-## δ — verify.sh derives from the helper
-
-- `apply-env-computation-is-separable`: only the two prepend lines in `apply_env` change. The ambient capture, the phase-boundary export and the `add_tool` scrub are separate statements under `tests/infra/test_verify_ld_library_path_scope.sh`. PASS.
-- `full-gate-route` (G3): `verify-pipeline-guard.sh requires-full-gate scripts/verify.sh` exits 0. PASS.
+δ (verify.sh derives from the helper) was dropped by the lead's pass-1 ruling: the verify.sh share moved to S18 as a cross-reference.
 
 ## ω — PRD close
 
-- `terminal-stamp`: a process capability under the overlay's decompose-close obligations. Delivered check: grep, `Status.*SHIPPED` present. PASS.
+- `terminal-stamp`: a process capability under the overlay's decompose-close obligations. Delivered check: grep, anchored header pattern `^\*\*Status:\*\*[[:space:]]*\**SHIPPED` present. It is absent at the authoring tree, so the check is non-vacuous; the unanchored `Status.*SHIPPED` was refused at stamping as self-referential. PASS.

@@ -1,6 +1,6 @@
 # Selector resolution factoring — one compose over `SelectorNode`, a layered `geometry_ops`, typed sketch operands, a cost-safe warm pool
 
-**Status:** authored 2026-10-12 (pass 1 of the review-all program `review-all-reify-20261010`, stream **S13**). Not yet decomposed.
+**Status:** authored 2026-10-12 (pass 1 of the review-all program `review-all-reify-20261010`, stream **S13**); lead rulings applied and decomposed 2026-10-12 (pass 2). The leaf rows carry real task ids.
 **Milestone:** v0_6.
 **Approach:** bare B, regression-oracled by the two-way boundary tests that already exist (rationale: §6 D1).
 **Code anchors** verified against main `8e6ffcac9d` (2026-10-12). The finding anchors were taken at `a030ee7528` (2026-10-10). `git diff a030ee7528..8e6ffcac9d` over every file named below is **empty**. Main moves fast: cite by symbol, and re-locate lines at implementation time.
@@ -43,7 +43,7 @@ Each carries its own `Union`/`Intersect`/`Difference` arms: 54 and 52 stripped l
 
 `resolve_leaf`'s `ByRole`, `CreatedByFeature` and `SplitByFeature` arms repeat one collect → filter → `sort_unstable` → map table walk three times; the shared walk is the `(attr.local_index, kernel_handle.id)` map.
 
-The resolver also closes the 3-module SCC `{compute_targets, selector_vocabulary_v2, topology_selectors}`, which the S3 skeptic's Tarjan run reproduced. Three edges close it:
+The resolver also sits inside a reify-eval module SCC. The S3 skeptic's Tarjan run reproduced `{compute_targets, selector_vocabulary_v2, topology_selectors}`. S3 α's ratchet (#8673) expects its baseline row to be the wider `{compute_targets, dynamics_ops, modal_ops, selector_vocabulary_v2, topology_selectors}`, and that tool's output is authoritative. Three edges tie the selector modules in:
 - `resolve_leaf` makes 12 `crate::selector_vocabulary_v2::` references;
 - `selector_vocabulary_v2`'s `use crate::topology_selectors::{…}` imports 7 names back;
 - `topology_selectors` imports `crate::compute_targets::result_topology::CarriedTopology` (for the carried resolver and `nodes_for_faces`), while `compute_targets::bc_resolve` calls `topology_selectors::resolve`.
@@ -210,10 +210,9 @@ A count above its ceiling fails red, naming the file, line and pattern. A count 
 | Seam | Owner | This PRD's role | Contract |
 |---|---|---|---|
 | `geometry_ops/tests.rs` rewrite boundary vs S2's placed_walk extraction | **S13** (program G4 table) | owner | After ε: `geometry_ops.rs` = the `pub(crate) mod` declarations + the placed_walk partition (`walk_placed_realizations`, `PlacedPreFilter`, `ExportBody`, `root_template_indices`, `reachable_template_indices`, `non_final_realization_indices`, `surface_export_bodies`, `surface_subtree`, `realization_is_aux`) and nothing else. No geometry_ops test module references a placed_walk symbol (zero today; ε keeps it zero). placed_walk imports `pose` downward only. S2 moves the partition verbatim to `geometry_ops/placed_walk.rs`, or to a crate-level module, with `realize_sub_override_handles` passed in; S2 touches no S13 test module. |
-| `registry_drift_tests.rs` pins on geometry_ops predicates | S3 | consumer | S3's predicate move lands first. β and γ re-point the remaining `crate::geometry_ops::` paths in `registry_drift_tests.rs` as **path-only** edits; no assertion changes (OPEN Q4 asks the lead to sanction this). |
-| intra-crate module-SCC ratchet (INV candidate 7) | S3 (+S7) | consumer | α dissolves `{compute_targets, selector_vocabulary_v2, topology_selectors}`. If S3's Tarjan baseline exists when α lands, α lowers it in the same diff; if not, S3's first baseline records the post-α state. |
+| `registry_drift_tests.rs` pins on geometry_ops predicates | S3 | consumer | S3 β #8687 moves the nine predicates (into `expr_classify.rs`, `realization_inputs.rs` and `structural_query.rs`, and adds `SymbolicSelectorCtor` in `expr_classify.rs`, while geometry_ops keeps `TopologySelectorHelper` with an exhaustive map). S13-β depends on #8687. β and γ re-point the remaining `crate::geometry_ops::` paths in `registry_drift_tests.rs` as **path-only** edits, with no assertion changes (lead ruling Q4: sanctioned). |
+| intra-crate module-SCC ratchet (INV-ARCH-1, INV candidate 7) | S3 (+S7) | consumer | S3 α #8673 builds `scripts/assert-module-scc.py` and `scripts/module-scc-baseline.json`. S13-α depends on #8673 and, in its own diff, lowers the reify-eval row with `print`: `selector_vocabulary_v2` and `topology_selectors` leave it. Any residual `{compute_targets, dynamics_ops, modal_ops}` cycle the tool reports is recorded in α's commit message, not broken by α. |
 | `run-all-classification.manifest` rows for a new wrapper | S19 | consumer | α adds one `pool` row in the format S19 owns. |
-| reify-builtins row schema (typed selector dispatch) | S8 | consumer, **held** | θ is held: `x_seam_wait = {stream: S8, contract: reify-builtins row schema with a typed selector intercept-kind column}`. OPEN Q1 asks whether θ belongs to S8 outright. |
 | `eval_ctx_with_meta` → `cell_eval_ctx` | S4 | upstream of S4 (S4 is wave 2) | The 12 geometry_ops `eval_ctx_with_meta` call sites move into the children unchanged. S4 edits them in their new homes. |
 | `edit_source` / `PendingWarmSeedsGuard` deletion | S4 | upstream of S4 | η leaves `drain_into_cache_or_repool` calling `donate_preserving_lru_with_cost`. S4's `edit_source` deletion takes the guard and its tests with it. |
 | typed `GeometryQuery` replies (`parse_*` deletion) | S10 | upstream of S10 | `parse_xyz_value`, `parse_bbox_*` and `parse_flat_number_object` stay in `topology_selectors.rs`. The `dispatch_*` reply decoders move to `geometry_ops/query.rs`, where S10 replaces them. |
@@ -221,7 +220,7 @@ A count above its ceiling fails red, naming the file, line and pattern. A count 
 | compute targets → new analysis crate | S5 | upstream of S5 | `CarriedTopology::nodes_for_faces` moves with `result_topology.rs`, and `bc_resolve` calls `crate::selector_resolve::resolve`; S5 decides the crate edge. |
 | `value-eval-geometry-addressing.md` §7.2 two-way parity | that PRD (shipped R3b) | preserved | The parity becomes structural (one predicate). The `r3b_*` test is the oracle. |
 | `topology-selector-value-type.md` "single executor" (`resolve`, task 4118) | that PRD | preserved | `resolve` moves to `selector_resolve`; it is still the single executor. |
-| meshing-service ε #8288 (pending): `nodes_for_faces` reads `face_closure_nodes` | meshing-service PRD | coordinate | α moves `nodes_for_faces` to `CarriedTopology::nodes_for_faces`. α₀ widens #8288's `topology-selectors-read-face-closure` check to include `compute_targets/result_topology.rs`; a cross-reference amends #8288's item 7. |
+| meshing-service ε #8288 (pending): `nodes_for_faces` reads `face_closure_nodes` | meshing-service PRD | coordinate | α moves `nodes_for_faces` to `CarriedTopology::nodes_for_faces`. #8288's `topology-selectors-read-face-closure` check was widened to include `compute_targets/result_topology.rs` at pass 2 (three writes, §7 note). A cross-reference amends #8288's item 7. |
 | solver-unification ξ #6682 (pending): retire the 3D path in `solvespace.rs`, KEEP the sketch half | geometry-algebra-solver-unification PRD | coordinate | ζ rewrites the sketch half #6682 lists as "KEEP, UNTOUCHED". The two edit disjoint halves of one file, so the file lock serialises them and neither depends on the other. Whichever lands second reads the other's shape; #6682's KEEP list must stop naming `EmittedEntity`/`unresolved_*` once ζ lands (cross-reference). ζ preserves `pub fn solve_sketch`, which #6682's `sketch-path-survives` check greps. |
 | constrained-2d-sketch δ #5509 / η #5512 (pending) | constrained-2d-sketch PRD | upstream, signature-preserving | They consume `solve_sketch(&SketchSystem) -> SketchSolveResult`, which is unchanged. |
 
@@ -238,7 +237,7 @@ Measured at `8e6ffcac9d` across `docs/prds/**/*.capability-manifest.yaml`, each 
 
 Not affected: gui-on-demand-measurement ζ #6745 and precision-nominal γ1 #6171 ×2 and δ #6168. Their matches sit in `surface_subtree`, in the placed_walk region, which stays in the parent. Every `modal_ops.rs`, `engine_edit.rs` and `solvespace.rs` check also keeps its pattern.
 
-Pre-existing and not caused here: units-length-gate-completion #5658's check `fn eval_all_args_to_f64` already matches nothing on main, since the fn is now `eval_all_args_to_values` (cross-reference). Leaf α₀ widens the 11 affected checks **before** any move.
+Pre-existing and not caused here: units-length-gate-completion #5658's check `fn eval_all_args_to_f64` already matches nothing on main, since the fn is now `eval_all_args_to_values` (cross-reference). **Done at pass 2 (2026-10-12, lead ruling Q2, so no leaf):** the decompose session widened all 11 checks with the three writes (sidecar `.yaml`, `.md` twin section "Delivered-check path correction", and producer `metadata.delivered_checks` on #6179, #5779, #5780, #5781, #8401, #5439, #5745, #5747 and #8288). #5623 and #5658 carry no metadata copy, so only their sidecar rows changed. #5658's stale pattern was corrected to `fn eval_all_args_to_values`. Every widened check replays with its verdict unchanged at main `54222c4dcd`. #5781's two `absent` checks exclude `geometry_ops/**/tests.rs` and `geometry_ops/**/tests/**`, because a negative-assertion test quotes the banned string.
 
 ## 8. Decomposition plan
 
@@ -249,41 +248,36 @@ Leaf labels are `S13-<greek>`; task ids are assigned at decompose. Every leaf's 
 
 The acceptance for each leaf below includes: O1–O3 stdout and stderr byte-identical before and after the leaf's diff on the same host. Diffs are within one run session, never against a committed golden. `cargo test -p reify-eval -p reify-constraints` must also be green.
 
-- **S13-α₀: widen delivered-check paths on files this PRD moves** *(planning artefact; executor: OPEN Q2)*. Applies to the 11 checks in §7. For each, it adds `crates/reify-eval/src/geometry_ops/` (or `crates/reify-eval/src/compute_targets/result_topology.rs` for #8288) to `paths`, as the three writes the overlay requires:
-  - the `.yaml` descriptor;
-  - the `.md` twin row;
-  - the producer task's complete `metadata.delivered_checks` list, read with `get_task` first.
-  
-  Widening is true both before and after the moves, so there is no timing race. Accepted gap: the widened path includes test files under `geometry_ops/`, so a pattern that survives only in a test passes. Each producer's behavioural test is the cover. *Signal:* every affected check evaluates PASS at `8e6ffcac9d` (`git grep -E <pattern> -- <paths>` exit 0 for `present`, exit 1 for `absent`). *Prereqs:* none. *Keys:* none.
-- **S13-α: `selector_resolve` module: one `compose`, `NormalCone`, one attribute-table walk; SCC dissolved** (§4.1, §5 rows 1–3). Edits `topology_selectors.rs`, the new `selector_resolve.rs`, `selector_vocabulary_v2.rs` (doc links only), `compute_targets/result_topology.rs`, `compute_targets/bc_resolve.rs`, `modal_ops.rs`, `geometry_ops.rs` (call-site paths only), `lib.rs` (`pub mod selector_resolve`), integration-test import paths, and the ratchet member, its wrapper and its manifest row.
+- **S13-α₀ (not a leaf; done at pass 2).** The delivered-check path widening for the 11 checks of §7 was performed by the decompose session before filing (lead ruling Q2). Its record is the §7 note and the "Delivered-check path correction" section in each affected `.md` twin.
+- **S13-α #8747: `selector_resolve` module: one `compose`, `NormalCone`, one attribute-table walk; SCC dissolved** (§4.1, §5 rows 1–3). Edits `topology_selectors.rs`, the new `selector_resolve.rs`, `selector_vocabulary_v2.rs` (doc links only), `compute_targets/result_topology.rs`, `compute_targets/bc_resolve.rs`, `modal_ops.rs`, `geometry_ops.rs` (call-site paths only), `lib.rs` (`pub mod selector_resolve`), integration-test import paths, and the ratchet member, its wrapper and its manifest row.
   - *Signal:* O1–O3 identical, plus `r3b_carried_topology_selector_resolution.rs::two_way_kernel_vs_carried_parity` green with unchanged assertions.
   - *Structural signal:* `topology_selectors.rs`'s production region contains no `selector_vocabulary_v2` and no `compute_targets` reference. The three ratchet counts equal 1.
-  - *Prereqs:* α₀. *Keys:* fk-25474a437b00. *INV:* candidate 5 (ratchet member `test_selector_resolution_ratchet`); candidate 7 consumer (S3 baseline lowered if present).
-- **S13-β: geometry_ops lower layers: `args`, `pose`, `query`, `kinematic` children** (§4.2 children 1–4, D4 re-homing, helper tests moved per D6). *Signal (intermediate):* O1–O3 identical, plus `dispatch_table_uniqueness` and `registry_drift_tests` green (path-only edits). It unlocks γ. *Prereqs:* α₀, α (both edit `geometry_ops.rs`, so the chain avoids lock thrash), and **S3's predicate-move leaf** (cross-stream, wave 1; the lead supplies the id in pass 2). *Keys:* none (intermediate to ε).
-- **S13-γ: geometry_ops `selector_eval/` child** (§4.2 child 5, D5). Calls `crate::selector_resolve` (from α). *Signal (intermediate):* O1–O3 identical, plus the `harness_topology_selector` suite green with unchanged assertions. It unlocks δ. *Prereqs:* β. *Keys:* none.
-- **S13-δ: geometry_ops `compile/` child, one family per file with its dispatch table** (§4.2 child 6, D5). *Signal (intermediate):* O1–O3 identical, plus `compile_geometry_op_characterization.rs` (through `geometry_op_characterization_probe`) and `dispatch_table_uniqueness` green. It unlocks ε. *Prereqs:* γ. *Keys:* none.
-- **S13-ε: seam tests that can only see seams; `geometry_ops/tests.rs` deleted; `pub(crate)` ratchet** (§4.3, D6, §5 row 4, §7 S2 contract).
+  - *Structural signal (INV-ARCH-1):* `cargo test -p reify-build-utils --test module_scc_ratchet` is green, with the reify-eval row of `scripts/module-scc-baseline.json` lowered in α's own diff (`assert-module-scc.py print`): `selector_vocabulary_v2` and `topology_selectors` are no longer members, and any residual `{compute_targets, dynamics_ops, modal_ops}` cycle the tool reports is recorded in the commit message.
+  - *Prereqs:* #8673 (S3 α: the INV-ARCH-1 tool and baseline). *Keys:* fk-25474a437b00. *INV:* candidate 5 (ratchet member `test_selector_resolution_ratchet`, with a `pool` row added to `tests/infra/run-all-classification.manifest` in today's format); INV-ARCH-1 (lowers its baseline row).
+- **S13-β #8748: geometry_ops lower layers: `args`, `pose`, `query`, `kinematic` children** (§4.2 children 1–4, D4 re-homing, helper tests moved per D6). *Signal (intermediate):* O1–O3 identical, plus `dispatch_table_uniqueness` and `registry_drift_tests` green (path-only edits). It unlocks γ. *Prereqs:* α (both edit `geometry_ops.rs`, so the chain avoids lock thrash) and **#8687** (S3 β: the nine predicates move below the SCC; geometry_ops keeps `TopologySelectorHelper` behind an exhaustive `SymbolicSelectorCtor` map). *Keys:* none (intermediate to ε).
+- **S13-γ #8749: geometry_ops `selector_eval/` child** (§4.2 child 5, D5). Calls `crate::selector_resolve` (from α). *Signal (intermediate):* O1–O3 identical, plus the `harness_topology_selector` suite green with unchanged assertions. It unlocks δ. *Prereqs:* β. *Keys:* none.
+- **S13-δ #8750: geometry_ops `compile/` child, one family per file with its dispatch table** (§4.2 child 6, D5). It subsumes pending #7381 ("split geometry_ops.rs into per-op-family modules"), which was cancelled at pass 2 with `x_superseded_by` = [#8748, #8749, #8750, #8751]. *Signal (intermediate):* O1–O3 identical, plus `compile_geometry_op_characterization.rs` (through `geometry_op_characterization_probe`) and `dispatch_table_uniqueness` green. It unlocks ε. *Prereqs:* γ. *Keys:* none.
+- **S13-ε #8751: seam tests that can only see seams; `geometry_ops/tests.rs` deleted; `pub(crate)` ratchet** (§4.3, D6, §5 row 4, §7 S2 contract).
   - *Signal:* `crates/reify-eval/src/geometry_ops/tests.rs` does not exist. `geometry_ops_seam_tests` compiles with no `use super::*` reach into `geometry_ops` internals; that is structural, since it sits outside the subtree.
   - The total `#[test]` count across the geometry_ops child test modules plus `geometry_ops_seam_tests` is ≥ 542, minus any duplicates the commit message names one by one.
   - O1–O3 identical. The ratchet's fourth count is pinned.
   - *Prereqs:* δ. *Keys:* fk-e984283444b1. *INV:* candidate 5 (fourth count of the same member).
-- **S13-ζ: `ValidatedSketch`: typed operands, emitter matches on types, drift guards deleted** (§4.4, D8).
+- **S13-ζ #8752: `ValidatedSketch`: typed operands, emitter matches on types, drift guards deleted** (§4.4, D8).
   - *Signal (intermediate; the user-facing sketch surface is #5508/#5509, still pending):* `crates/reify-constraints/tests/sketch_solve_tests.rs` (46 tests) green with unchanged assertions. For every corpus system, the `SketchSolveResult` and the `Malformed(SketchBuildError)` variants and fields are `==` before and after (closed-form, data-in path, so equality is the right regime, as in #6682's B14).
   - `fn unresolved_constraint_ref` and `fn unresolved_entity_ref` are absent from `solvespace.rs`.
   - *Consumer:* #5509, #5512. *Prereqs:* none. *Keys:* fk-b4af214cc9fe (weakened; kept at weakened weight per ruling).
-- **S13-η: `WarmStatePool`: no public path drops cost; cfg(test) field becomes a constructor parameter** (§4.5, D9). *Signal:* `crates/reify-eval/tests/warm_state_donation.rs` green with unchanged assertions. `pub fn donate_preserving_lru(`, `pub fn checkout_with_lru_stamp(` and `#[cfg(test)]` on a `WarmStatePool` field are all absent. `contains()`'s doc names no `retrieve`. *Consumer:* S4's warm-edit path. *Prereqs:* none. *Keys:* fk-bef6f2b4851c (weakened).
-- **S13-θ (HELD): `TopologySelectorHelper::from_name` over S8's registry rows.** It replaces `symbolic_eval_helper_for_name` and `try_eval_topology_selector`'s string arms with one name → variant derivation read from S8's rows. *Signal:* one string → `TopologySelectorHelper` map remains; `registry_drift_tests`' selector-union test green. `x_seam_wait = {stream: S8, contract: reify-builtins rows with typed selector intercept-kind}`. It is excluded from S13's `commit_planning`, and the S8 session wires and commits it. *Prereqs:* γ, plus S8's registry leaf. *Keys:* none of S13's (it advances S8-owned fk-07c78c4ca710). See OPEN Q1.
-- **S13-ι: PRD close.** It stamps the Status `SHIPPED` with the landed leaf ids, adds the AS-AUTHORED freeze paragraph and the LIVE/AS-AUTHORED map, and applies the same header to the `.capability-manifest.md`. *Signal:* the committed header. *Prereqs:* every other S13 leaf (a cancelled one counts as satisfied).
+- **S13-η #8753: `WarmStatePool`: no public path drops cost; cfg(test) field becomes a constructor parameter** (§4.5, D9). *Signal:* `crates/reify-eval/tests/warm_state_donation.rs` green with unchanged assertions. `pub fn donate_preserving_lru(`, `pub fn checkout_with_lru_stamp(` and `#[cfg(test)]` on a `WarmStatePool` field are all absent. `contains()`'s doc names no `retrieve`. *Consumer:* S4's warm-edit path. *Prereqs:* none. *Keys:* fk-bef6f2b4851c (weakened).
+- **S13-ι #8754: PRD close.** It stamps the Status `SHIPPED` with the landed leaf ids, adds the AS-AUTHORED freeze paragraph and the LIVE/AS-AUTHORED map, and applies the same header to the `.capability-manifest.md`. *Signal:* the committed header. *Prereqs:* every other S13 leaf (a cancelled one counts as satisfied).
 
-Dependency summary: α₀ → α → β → γ → δ → ε; S3 predicate leaf → β; ζ and η are independent; γ → θ (held on S8); everything → ι.
+Dependency summary: #8673 → α → β → γ → δ → ε; #8687 → β; ζ and η are independent; everything → ι. θ (`TopologySelectorHelper::from_name`) was dropped by lead ruling Q1; S8 and #6010 own it.
 
 ## 9. Out of scope
 
 - `donate()`'s cost-0.0 default (production callers; documented semantics), the 7 `WarmStatePool` constructors, and the `_and_cost` naming (D9).
-- `try_eval_topology_selector`'s body and the two selector name maps: S8 / #6010 (held θ at most).
+- `try_eval_topology_selector`'s body and the two selector name maps: S8 / #6010 (lead ruling Q1: θ dropped from S13).
 - Splitting `solvespace.rs`, recorded as h14 `stays_whole:false` with 4 partitions. #6682 deletes its 3D half first; the remainder is then re-measured.
 - `topology_selectors.rs`'s in-file test module size, and the `parse_*` decoders (S10).
-- The three "first leaf" walks: `region_query_capability::first_leaf_query`, `region_selector_display_name::first_leaf_with_kind`, and `geometry_ops::first_leaf_target`. All three move with this PRD; they are not merged (OPEN Q3).
+- The three "first leaf" walks: `region_query_capability::first_leaf_query`, `region_selector_display_name::first_leaf_with_kind`, and `geometry_ops::first_leaf_target`. All three move with this PRD; they are not merged (lead ruling Q5: leave).
 - Any `.ri` language surface. The docs-truth gate is not triggered: no grammar, builtin, diagnostic or CLI behaviour changes.
 
 ## 10. Open questions (tactical)
@@ -291,17 +285,10 @@ Dependency summary: α₀ → α → β → γ → δ → ε; S3 predicate leaf 
 1. **Residual-edge recording.** If β–δ's re-measurement finds an edge D4 did not predict, the implementer moves the symbol down a layer when it is a pure helper. Otherwise they record the edge in the commit message and the task record. *Decide during:* β/γ/δ.
 2. **selector_eval's child names.** These are chosen by the implementer's heuristic 13 measurement (D5). *Decide during:* γ.
 
-## 11. Questions returned to the lead (pass 1; to be ruled before decompose)
+## 11. Lead rulings on the pass-1 questions (2026-10-12; program doc §"Resolved decisions — pass 1 open questions")
 
-- **OPEN Q1: θ's owner.** `TopologySelectorHelper::from_name` is in S13's ruled remedy, with "S8 supplies the registry". But its finding, fk-07c78c4ca710 (f62), is S8's key. S8's ruling derives "the selector maps" from the registry rows, and #6010 (registry τ8, deferred) already swaps geometry_ops' selector helper map to BuiltinId-keyed exhaustive dispatch. Options:
-  - (a) drop θ from S13 and leave it to S8/#6010 (recommended: one owner per layer);
-  - (b) keep θ as an S13 leaf held on S8, as written.
-- **OPEN Q2: who executes α₀.** It is a correction to other PRDs' sidecars, `.md` twins and producer task metadata, and it lands before any code move. Options:
-  - (a) the pass-2 decompose session performs it directly (sanctioned API writes plus one docs commit on main), and it is not filed as a dispatched task (recommended);
-  - (b) file it as a `task_kind="normal"`, `complexity="simple"` leaf, which needs an agent holding `update_task`.
-- **OPEN Q3: the three first-leaf walks** (§9). `region_query_capability`, `region_selector_display_name` and `geometry_ops::first_leaf_target` each re-walk `SelectorNode` to its left-most leaf. Options:
-  - (a) fold one `first_leaf` fold into α beside `compose`, as a fourth ratchet count (a small widening of scope);
-  - (b) leave it as recorded (recommended for this pass).
-- **OPEN Q4: `registry_drift_tests.rs` path edits.** That file's pins are S3's artefact (G4). β and γ need path-only re-points of the remaining `crate::geometry_ops::` imports after S3's predicate move. Options:
-  - (a) sanction path-only edits by S13 (recommended);
-  - (b) S3's PRD carries a follow-up leaf that depends on S13-δ.
+- **Q1** → (a): θ is dropped. fk-07c78c4ca710 is S8's key, and deferred #6010 already moves the helper map. S13 files no held leaf.
+- **Q2** → (a): the pass-2 decompose session performed the delivered-check path widening (the three writes per check) before filing. It is not a leaf; see the §7 note.
+- **Q3** → (a): D4/D5 accepted. Code wins over the record's "none" (4 cycles measured).
+- **Q4** → (a): path-only edits to `registry_drift_tests.rs` by β/γ are sanctioned.
+- **Q5** → (b): the three first-leaf walks stay as recorded in §9.

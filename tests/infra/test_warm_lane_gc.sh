@@ -371,8 +371,7 @@ assert "A7: empty worktrees-dir exits 0" test "$RC" -eq 0
 
 # A8: --status-cmd is now an UNKNOWN flag (Tier-3 machinery removed, task 5326).
 # Locks the flag removal: reclaim --worktrees-dir … --base-target … --status-cmd X
-# must exit 2 (usage error, unknown flag), not accept it. RED against the current
-# gc.sh, which still parses --status-cmd; GREEN once step-2 deletes the flag.
+# must exit 2 (usage error, unknown flag), not accept it.
 run_helper reclaim \
     --worktrees-dir "$A7_WORKTREES" \
     --base-target "$A7_BASE/target" \
@@ -1432,8 +1431,8 @@ assert "N-override: summary shows removed=1" \
 #   _lane-9      — reclaimable, passed via --extra-protect-glob → preserved
 #   _mainsweep-x — default-protected (_mainsweep-*) → preserved (default set on)
 # Sub-case O-env drives the SAME protection through the env var instead of the
-# flag. RED today: --extra-protect-glob is an unknown flag (exit 2) and the env
-# var is ignored (so _lane-9 is reset instead of preserved).
+# flag. A gc that rejects the flag (exit 2) or ignores the env var resets
+# _lane-9 instead of preserving it, and this block reds.
 # ──────────────────────────────────────────────────────────────────────────────
 echo ""
 echo "--- Block O: --extra-protect-glob adds to the default protect set ---"

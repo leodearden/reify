@@ -122,6 +122,7 @@ test_heavy_filter_atoms.sh pool
 test_hooks_armed_guard.sh pool
 test_hooks_call_verify.sh pool
 test_host_global_unit_pinning.sh pool
+test_infra_adoption_ratchet.sh pool
 test_infra_classification_manifest_gate.sh pool
 test_infra_git_env_isolation.sh intra-run-serial
 test_jcodemunch_index_reify.sh pool
@@ -218,6 +219,7 @@ test_run_all_clock_marker_sanitize.sh pool
 test_run_all_content_skip.sh pool
 test_run_all_pool_lock_host_global.sh pool
 test_run_all_tiering.sh pool
+test_run_all_timing.sh pool
 test_run_gui_scripts.sh pool
 test_run_offline_deep.sh pool
 test_rust_production_view_lib.sh pool
@@ -255,6 +257,9 @@ test_verify_gate_exclude_heavy.sh pool
 test_verify_gui_feature_check.sh pool
 test_verify_gui_retry_specs.sh pool
 test_verify_ld_library_path_scope.sh pool
+test_verify_ledger_cli.sh pool
+test_verify_ledger_e2e.sh pool
+test_verify_ledger_lane_seed.sh pool
 test_verify_nextest_probe.sh pool
 test_verify_offline_partition.sh pool
 test_verify_pipeline_guard.sh pool

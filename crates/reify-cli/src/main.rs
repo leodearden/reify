@@ -1,5 +1,4 @@
 use std::process::ExitCode;
-use std::sync::Arc;
 
 use reify_compiler::cfg::CfgSet;
 use reify_constraints::SimpleConstraintChecker;
@@ -32,7 +31,6 @@ extern crate reify_kernel_openvdb as _;
 
 mod cache;
 mod dev;
-mod mcp_context;
 mod sigpipe;
 use reify_core::{DiagnosticCode, ModulePath, Severity};
 use reify_ir::{ExportFormat, Satisfaction, UndefCause};
@@ -72,10 +70,6 @@ fn print_usage(out: &mut dyn std::io::Write) {
     let _ = writeln!(
         out,
         "  gui-debug <file>           Open file in GUI with debug MCP listener (alias for `gui --debug`)"
-    );
-    let _ = writeln!(
-        out,
-        "  mcp-server [file] [--project-dir <dir>]  Start MCP server (stdin/stdout)"
     );
     let _ = writeln!(
         out,
@@ -162,7 +156,6 @@ fn main() -> ExitCode {
         }
         "explain" => cmd_explain(&args[2..]),
         "dev" => dev::cmd_dev(&args[2..]),
-        "mcp-server" => cmd_mcp_server(&args[2..]),
         "cache" => cache::cmd_cache(&args[2..]),
         other => {
             eprintln!("Unknown command: {}", other);
@@ -3765,59 +3758,6 @@ fn report_eval_output(
         let _ = writeln!(err, "{}: {}", diag.severity, diag.message);
     }
     outcome
-}
-
-fn cmd_mcp_server(args: &[String]) -> ExitCode {
-    // Parse optional file argument and --project-dir flag
-    let mut file_path: Option<String> = None;
-    let mut project_dir: Option<String> = None;
-    let mut i = 0;
-    while i < args.len() {
-        if args[i] == "--project-dir" {
-            if i + 1 < args.len() {
-                project_dir = Some(args[i + 1].clone());
-                i += 2;
-                continue;
-            } else {
-                eprintln!("--project-dir requires a value");
-                return ExitCode::FAILURE;
-            }
-        } else if file_path.is_none() {
-            file_path = Some(args[i].clone());
-        }
-        i += 1;
-    }
-
-    let project_dir = project_dir
-        .map(std::path::PathBuf::from)
-        .or_else(|| {
-            file_path
-                .as_ref()
-                .and_then(|f| std::path::Path::new(f).parent().map(|p| p.to_path_buf()))
-        })
-        .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
-
-    let context = mcp_context::CliToolContext::new(project_dir);
-
-    if let Some(ref path) = file_path
-        && let Err(e) = context.load_file(path)
-    {
-        eprintln!("Error loading {}: {}", path, e);
-        return ExitCode::FAILURE;
-    }
-
-    let server = reify_mcp::McpServer::new(Arc::new(context));
-
-    match tokio::runtime::Runtime::new() {
-        Ok(rt) => {
-            rt.block_on(server.run_stdio());
-            ExitCode::SUCCESS
-        }
-        Err(e) => {
-            eprintln!("Failed to create async runtime: {}", e);
-            ExitCode::FAILURE
-        }
-    }
 }
 
 #[cfg(test)]
