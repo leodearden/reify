@@ -398,8 +398,9 @@ fn prd_relative_cite(bytes: &[u8], cite_start: usize, id: u32) -> bool {
 }
 
 /// §8.2 cite occurrences — the SINGLE `#`+digit-run scanner. Yields
-/// `(byte_offset_of_the_hash, id)` for every numerically well-formed cite on
-/// the line, in source order.
+/// `(head, end, id)` for every numerically well-formed cite on the line, in
+/// source order: `head` the byte offset of the `#`, `end` one past the last
+/// digit — the same span shape as [`legacy_task_cite_occurrences`].
 ///
 /// [`has_canonical_cite`], [`extract_cites`] (both via
 /// [`canonical_cite_occurrences`]) and [`has_malformed_cite`]'s `#N` pass are
@@ -416,7 +417,7 @@ fn prd_relative_cite(bytes: &[u8], cite_start: usize, id: u32) -> bool {
 ///
 /// The G-allow owner-cite lane deliberately does NOT scan through here — see
 /// [`extract_g_allow_owner_cites`], which carries its own exemption grammar.
-fn cite_occurrences(line: &str) -> impl Iterator<Item = (usize, u32)> + '_ {
+fn cite_occurrences(line: &str) -> impl Iterator<Item = (usize, usize, u32)> + '_ {
     let bytes = line.as_bytes();
     let mut i = 0;
     std::iter::from_fn(move || {
@@ -441,25 +442,32 @@ fn cite_occurrences(line: &str) -> impl Iterator<Item = (usize, u32)> + '_ {
             if let Ok(id) = line[at + 1..j].parse::<u32>()
                 && id >= 1
             {
-                return Some((at, id));
+                return Some((at, j, id));
             }
         }
         None
     })
 }
 
-/// §8.2 canonical cite occurrences: every [`cite_occurrences`] cite (`#` +
-/// 1..=5 digits, value ≥1) that is NOT a PRD-relative index, yielded as
-/// `(byte_offset_of_the_hash, id)` in source order.
+/// §8.2 canonical cite spans: every [`cite_occurrences`] cite (`#` + 1..=5
+/// digits, value ≥1) that is NOT a PRD-relative index, yielded as
+/// `(head, end, id)` in source order.
 ///
 /// A `#N` that [`prd_relative_cite`] recognises names a position inside a PRD
 /// document, not a task, so it cannot anchor tracking. The filter is applied
 /// per-OCCURRENCE, so a line carrying both idioms still yields the genuine
 /// cite. This is the ONE definition of a canonical task cite, shared by
+/// [`canonical_cite_occurrences`] and lane δ-C's [`promise_owner_cites`],
+/// which needs the whole span to read the text on both sides of the cite.
+fn canonical_cite_spans(line: &str) -> impl Iterator<Item = (usize, usize, u32)> + '_ {
+    cite_occurrences(line).filter(|&(head, _, id)| !prd_relative_cite(line.as_bytes(), head, id))
+}
+
+/// [`canonical_cite_spans`] as `(byte_offset_of_the_hash, id)`, for
 /// [`has_canonical_cite`], [`extract_cites`] and PPRDSTATUS's cite lane, which
 /// needs the offset to find the cite's adjacent status parenthetical.
 pub(crate) fn canonical_cite_occurrences(line: &str) -> impl Iterator<Item = (usize, u32)> + '_ {
-    cite_occurrences(line).filter(|&(at, id)| !prd_relative_cite(line.as_bytes(), at, id))
+    canonical_cite_spans(line).map(|(head, _, id)| (head, id))
 }
 
 /// §8.2 canonical citation: `true` when the line carries at least one
@@ -536,7 +544,7 @@ fn has_malformed_cite(line: &str) -> bool {
     // fn's rustdoc and [`PrdCiteFamily`].
     let bytes = line.as_bytes();
     if cite_occurrences(line)
-        .any(|(at, id)| prd_relative_cite_family(bytes, at, id) == Some(PrdCiteFamily::TaskCite))
+        .any(|(at, _, id)| prd_relative_cite_family(bytes, at, id) == Some(PrdCiteFamily::TaskCite))
         && !has_canonical_cite(line)
     {
         return true;
@@ -1495,20 +1503,12 @@ fn on_line_cites(line: &str) -> Vec<u32> {
 
 /// Lane δ-C's payload: the cites on `line` in owner position
 /// ([`is_owner_position`]), each id once, in source order. A cite is canonical
-/// ([`canonical_cite_occurrences`]) or the legacy `task N` spelling
+/// ([`canonical_cite_spans`]) or the legacy `task N` spelling
 /// ([`legacy_task_cite_occurrences`]) above the same [`PRD_RELATIVE_MAX_ID`]
 /// bound, so one definition of "cite" serves every lane.
 fn promise_owner_cites(line: &str) -> Vec<u32> {
-    let bytes = line.as_bytes();
-    let canonical = canonical_cite_occurrences(line).map(|(at, id)| {
-        let digits = bytes[at + 1..]
-            .iter()
-            .take_while(|b| b.is_ascii_digit())
-            .count();
-        (at, at + 1 + digits, id)
-    });
     let legacy = legacy_task_cite_occurrences(line).filter(|&(_, _, id)| id > PRD_RELATIVE_MAX_ID);
-    let mut spans: Vec<(usize, usize, u32)> = canonical.chain(legacy).collect();
+    let mut spans: Vec<(usize, usize, u32)> = canonical_cite_spans(line).chain(legacy).collect();
     spans.sort_by_key(|&(head, _, _)| head);
     let mut ids: Vec<u32> = spans
         .into_iter()
@@ -2692,6 +2692,17 @@ mod tests {
         // `#0` falls through to the structural `untracked` classification.
         assert_eq!(extract_cites("#0"), Vec::<u32>::new());
         assert_eq!(extract_cites("// TODO(#00): x"), Vec::<u32>::new());
+    }
+
+    #[test]
+    fn canonical_cite_spans_run_from_hash_through_last_digit() {
+        let line = "// see #4553, #007 and #123456; PRD task #10";
+        let (h1, e1) = span_of(line, "#4553");
+        let (h2, e2) = span_of(line, "#007");
+        assert_eq!(
+            canonical_cite_spans(line).collect::<Vec<_>>(),
+            vec![(h1, e1, 4553), (h2, e2, 7)]
+        );
     }
 
     // -------------------------------------------------------------------
