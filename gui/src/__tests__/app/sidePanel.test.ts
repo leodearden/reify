@@ -50,19 +50,16 @@ function fixtureEntries(mounts: Mounts, calls: TrackCall[] = []): SidePanelEntry
 
 describe('sidePanelTracks (B6: one track per mounted entry)', () => {
   it.each(ALL_COMBINATIONS.map((mounts) => [describeMounts(mounts), mounts] as const))(
-    '%s: the k-th track is the k-th mounted entry\'s track',
+    '%s: one track per mounted entry, at that entry\'s position',
     (_label, mounts) => {
-      const entries = fixtureEntries(mounts);
-      const mounted = mountedEntries(entries);
-      const tracks = splitGridTracks(sidePanelTracks(entries));
+      const mounted = mountedEntries(fixtureEntries(mounts));
+      const tracks = splitGridTracks(sidePanelTracks(mounted));
 
       expect(tracks).toHaveLength(mounted.length);
-      const lastIndex = mounted.length - 1;
-      mounted.forEach((e, k) => {
-        expect(tracks[k]).toBe(e.track(k === lastIndex));
-      });
 
       const trackOf = (id: string) => tracks[mounted.findIndex((e) => e.id === id)];
+      const anyOptionalMounted = OPTIONAL_AXES.some((axis) => mounts[axis]);
+      expect(trackOf('constraint-panel')).toBe(anyOptionalMounted ? '140px' : '1fr');
       if (mounts.chat) expect(trackOf('chat')).toBe('minmax(160px, 1fr)');
       if (mounts.buckling) expect(trackOf('buckling')).toBe('auto');
       if (mounts.feaDiagnostics) expect(trackOf('fea-diagnostics')).toBe('auto');
@@ -73,10 +70,10 @@ describe('sidePanelTracks (B6: one track per mounted entry)', () => {
     '%s: only the last mounted entry is told it is last',
     (_label, mounts) => {
       const calls: TrackCall[] = [];
-      const entries = fixtureEntries(mounts, calls);
-      const mountedIds = entries.filter((e) => e.mounted()).map((e) => e.id);
+      const mounted = mountedEntries(fixtureEntries(mounts, calls));
+      const mountedIds = mounted.map((e) => e.id);
 
-      sidePanelTracks(entries);
+      sidePanelTracks(mounted);
 
       expect(calls.map((c) => c.id)).toEqual(mountedIds);
       const lastCalls = calls.filter((c) => c.isLast);
@@ -101,7 +98,7 @@ describe('sidePanelTracks (B6: one track per mounted entry)', () => {
     const mounts = { ...Object.fromEntries(OPTIONAL_AXES.map((a) => [a, false])), ...partial } as Mounts;
     return [describeMounts(mounts), mounts, expected] as const;
   }))('%s: reproduces the established track string', (_label, mounts, expected) => {
-    expect(sidePanelTracks(fixtureEntries(mounts))).toBe(expected);
+    expect(sidePanelTracks(mountedEntries(fixtureEntries(mounts)))).toBe(expected);
   });
 });
 
