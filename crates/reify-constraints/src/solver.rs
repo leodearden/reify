@@ -11276,9 +11276,10 @@ mod tests {
         );
     }
 
-    /// `TrialModel::from_problem` must wire ALL of the problem's solve-invariant
-    /// inputs, `dependent_cells` included: a model that dropped them would hand
-    /// back `line_cost`'s stale base value (999.0) at every trial point.
+    /// `TrialModel::from_problem` must wire the problem's autos, current values
+    /// and `dependent_cells`: a model that dropped the cells would hand back
+    /// `line_cost`'s stale base value (999.0) at every trial point. The other two
+    /// inputs, `functions` and `dispatch`, are pinned by the next test.
     #[test]
     fn trial_model_from_problem_folds_the_problems_dependent_cells_at_the_trial_point() {
         use super::{TrialModel, build_trial_values};
@@ -11344,6 +11345,59 @@ mod tests {
             line_costs[0], line_costs[1],
             "the dependent cell must differ between the two trial points"
         );
+    }
+
+    /// `TrialModel::from_problem` must also wire the problem's `functions` and
+    /// the caller's `dispatch`. The dependent cell here is `stress(t)`, an
+    /// `@optimized` stub whose body is `Undef`: it folds to `K / t` only when the
+    /// call finds `stress` among the functions AND the dispatcher answers its
+    /// target. A model that dropped either input folds `Undef` instead.
+    #[test]
+    fn trial_model_from_problem_evaluates_dependent_cells_with_the_problems_functions_and_dispatch()
+    {
+        use super::{TrialModel, build_trial_values};
+        use reify_core::{DimensionVector, Type, ValueCellId};
+        use reify_ir::{CompiledExpr, Value};
+        use std::sync::atomic::AtomicUsize;
+
+        let (t_id, mut problem) = fea_binding_problem();
+        let stress_id = ValueCellId::new("Bracket", "stress");
+        problem.current_values.insert(
+            stress_id.clone(),
+            Value::Scalar {
+                si_value: 999.0,
+                dimension: DimensionVector::DIMENSIONLESS,
+            },
+        );
+        problem.dependent_cells = vec![(
+            stress_id.clone(),
+            CompiledExpr::user_function_call(
+                "stress".to_string(),
+                vec![CompiledExpr::value_ref(t_id, Type::length())],
+                Type::dimensionless_scalar(),
+            ),
+        )];
+        let dispatch = CountingDispatch {
+            calls: AtomicUsize::new(0),
+            k: 1.0,
+        };
+        let model = TrialModel::from_problem(&problem, Some(&dispatch));
+
+        for t in [0.25_f64, 0.5_f64] {
+            let want = 1.0 / t;
+            match build_trial_values(&model, &[t]).get(&stress_id) {
+                Some(&Value::Scalar { si_value, .. }) => assert!(
+                    (si_value - want).abs() < 1e-12,
+                    "stress at t={t} must fold to K/t = {want}, got {si_value} \
+                     (999.0 means `from_problem` dropped the dependent cells)"
+                ),
+                other => panic!(
+                    "stress at t={t} must fold to the dispatched Scalar {want}, got \
+                     {other:?} (Undef means `from_problem` dropped `functions` or \
+                     `dispatch`)"
+                ),
+            }
+        }
     }
 
     /// The x ↔ auto_params mapping is positional, so an `x` of the wrong
