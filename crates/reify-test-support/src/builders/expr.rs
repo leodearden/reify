@@ -196,6 +196,11 @@ pub fn fn_call(
     }
 }
 
+/// Create a call to the stdlib builtin `name`, qualified as `std::<name>`.
+pub fn std_call(name: &str, args: Vec<CompiledExpr>, result_type: Type) -> CompiledExpr {
+    fn_call(name, &format!("std::{name}"), args, result_type)
+}
+
 /// Create a user-defined function call expression.
 pub fn user_fn_call(
     function_name: &str,

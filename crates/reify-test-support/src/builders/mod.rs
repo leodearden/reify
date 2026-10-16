@@ -26,7 +26,7 @@ mod reexport_contract_tests {
         CompiledFieldBuilder, CompiledModuleBuilder, CompiledPurposeBuilder, CompiledTraitBuilder,
         TopologyTemplateBuilder, TraitDefBuilder, binop, conditional_expr, eq, equality_constraint,
         fn_call, ge, gt, lambda_expr, le, list_expr, literal, lt, map_expr, method_call_expr, ne,
-        neg, not, range_constraint, sample_call, set_expr, user_fn_call, value_ref,
+        neg, not, range_constraint, sample_call, set_expr, std_call, user_fn_call, value_ref,
         value_ref_typed,
     };
     use reify_core::Type;
@@ -61,6 +61,7 @@ mod reexport_contract_tests {
             literal(Value::Int(2)),
         );
         let _ = fn_call("f", "q::f", vec![], Type::dimensionless_scalar());
+        let _ = std_call("f", vec![], Type::dimensionless_scalar());
         let _ = user_fn_call("f", vec![], Type::dimensionless_scalar());
         let _ = method_call_expr(literal(Value::Int(1)), "m", vec![], Type::Int);
         let _ = sample_call(
