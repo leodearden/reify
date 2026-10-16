@@ -8,6 +8,7 @@ pub mod builders;
 pub mod ctor_conformance;
 pub mod ctor_conformance_debt;
 pub mod examples_corpus;
+pub mod finite_difference;
 pub mod fixtures;
 pub mod git_env;
 pub mod helpers;
