@@ -67,8 +67,8 @@
 use reify_core::{Diagnostic, DimensionVector};
 use reify_ir::{OpaqueState, PersistentMap, StructureInstanceData, StructureTypeId, Value};
 use reify_solver_elastic::{
-    ForceDensitySpec, FormFindError, FormFindSolve, FreeFormError, MemberKind,
-    form_find_anchored_surfaces, form_find_free, form_find_free_surfaces,
+    ForceDensityInputError, ForceDensitySpec, FormFindError, FormFindSolve, FreeFormError,
+    MemberKind, form_find_anchored_surfaces, form_find_free, form_find_free_surfaces,
 };
 
 use super::tensegrity_crack::{
@@ -325,7 +325,7 @@ fn build_result(solve: &FormFindSolve) -> Value {
 /// `E_FormFindInfeasible:` prefix).
 fn describe(e: FormFindError) -> &'static str {
     match e {
-        FormFindError::SignViolation => {
+        FormFindError::Input(ForceDensityInputError::SignViolation { .. }) => {
             "sign violation — every cable requires q > 0 (tension) and every strut requires q < 0 (compression)"
         }
         FormFindError::SingularReducedStiffness => {
@@ -335,19 +335,24 @@ fn describe(e: FormFindError) -> &'static str {
         FormFindError::EmptyFreeSet => {
             "every node is anchored — there is no free node to solve for"
         }
-        FormFindError::DimensionMismatch => {
+        FormFindError::Input(ForceDensityInputError::DimensionMismatch) => {
             "force_densities length does not match the member count (struts + cables)"
         }
-        FormFindError::DegenerateTriangle => {
+        FormFindError::Input(ForceDensityInputError::IndexOutOfRange { .. }) => {
+            "index out of range — a member endpoint, anchor or surface corner indexes \
+             past the node list"
+        }
+        FormFindError::DegenerateTriangle
+        | FormFindError::Input(ForceDensityInputError::DegenerateTriangle { .. }) => {
             "degenerate surface triangle — collinear or zero-area corners make the \
              cotangent weights diverge (2·Area → 0); check the surfaces connectivity \
              and node coordinates"
         }
-        FormFindError::NonTensionSurfaceStress => {
+        FormFindError::Input(ForceDensityInputError::NonTensionSurfaceStress { .. }) => {
             "non-tension surface stress — every membrane surface requires σ > 0 \
              (tension); a slack or compressed surface (σ ≤ 0) is infeasible prestress"
         }
-        FormFindError::SurfaceCountMismatch => {
+        FormFindError::Input(ForceDensityInputError::SurfaceCountMismatch) => {
             "surface_stresses length does not match the surface count — each triangle \
              in `surfaces` needs exactly one isotropic σ"
         }

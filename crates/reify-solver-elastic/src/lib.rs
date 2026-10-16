@@ -446,8 +446,8 @@
 //! // and the integration golden `tests/tensegrity_epsilon_anisotropic_membrane.rs`;
 //! // this block only pins that the ε public surface is reachable and callable.
 //! use reify_solver_elastic::{
-//!     AnisoFormFindError, AnisoFormFindSolve, AnisotropicSurfaceStress, PrincipalStress,
-//!     form_find_anchored_surfaces_aniso,
+//!     AnisoFormFindError, AnisoFormFindSolve, AnisotropicSurfaceStress, ForceDensityInputError,
+//!     PrincipalStress, form_find_anchored_surfaces_aniso,
 //! };
 //! // Function-item signature pin: renamed/removed re-export or changed signature
 //! // trips this at doctest-compile time.
@@ -475,7 +475,10 @@
 //!     &[],          // 0 prestress specs — mismatch
 //!     &[0, 1, 2],
 //! );
-//! assert_eq!(mismatch_4416.unwrap_err(), AnisoFormFindError::SurfaceCountMismatch);
+//! assert_eq!(
+//!     mismatch_4416.unwrap_err(),
+//!     AnisoFormFindError::Input(ForceDensityInputError::SurfaceCountMismatch),
+//! );
 //!
 //! // Task 2929: FEA diagnostic mapping — neutral FeaFailure classifier smoke.
 //! // Pins the public surface of FeaFailure, thin_body_advisory,
@@ -826,13 +829,14 @@ pub use joint_stiffness::{JointStiffness, add_joint_stiffness};
 // NFDM surface (membrane) cotangent-Laplacian contributions into the SAME global D
 // (PRD docs/prds/v0_6/tensegrity-membrane.md §4, D1/D3).
 // Task 4416: Tensegrity-membrane ε — anisotropic warp/weft NFDM extension.
-// Per-triangle S=diag(σ_w,σ_f) in a per-triangle material frame; separate
-// AnisoFormFindError enum per plan D1 (avoids breaking the exhaustive match in
-// reify-eval/src/compute_targets/form_find.rs:308).
+// Per-triangle S=diag(σ_w,σ_f) in a per-triangle material frame; its own
+// AnisoFormFindError carries the stencil's DegenerateMaterialFrame.
+// Task 8628 (solver-crates-layering η): ForceDensityInputError / IndexedInput are
+// the one input vocabulary, nested as `Input(..)` in every form-find error enum.
 pub use form_find::{
-    AnisoFormFindError, AnisoFormFindSolve, AnisotropicSurfaceStress, FormFindError,
-    FormFindSolve, MemberKind, PrincipalStress, form_find_anchored, form_find_anchored_surfaces,
-    form_find_anchored_surfaces_aniso,
+    AnisoFormFindError, AnisoFormFindSolve, AnisotropicSurfaceStress, ForceDensityInputError,
+    FormFindError, FormFindSolve, IndexedInput, MemberKind, PrincipalStress, form_find_anchored,
+    form_find_anchored_surfaces, form_find_anchored_surfaces_aniso,
 };
 // Task 3795: Tensegrity T1b — free-standing Force-Density form-finding kernel.
 // PRD: docs/prds/v0_6/tensegrity-structures.md Tier-1 leaf T1b. Eigenvalue /

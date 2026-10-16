@@ -47,7 +47,12 @@ impl FdAnchoredCase {
     /// triangle spanning the anchors.
     fn valid() -> Self {
         Self {
-            nodes: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.3, 0.3, 0.5]],
+            nodes: vec![
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [0.3, 0.3, 0.5],
+            ],
             members: vec![(3, 0), (3, 1), (3, 2)],
             kinds: vec![MemberKind::Cable; 3],
             q: vec![1.0; 3],
@@ -63,8 +68,14 @@ impl FdAnchoredCase {
     }
 
     fn line_only(&self) -> Result<(), FormFindError> {
-        form_find_anchored(&self.nodes, &self.members, &self.kinds, &self.q, &self.anchors)
-            .map(|_| ())
+        form_find_anchored(
+            &self.nodes,
+            &self.members,
+            &self.kinds,
+            &self.q,
+            &self.anchors,
+        )
+        .map(|_| ())
     }
 
     fn isotropic(&self) -> Result<(), FormFindError> {
@@ -95,19 +106,35 @@ impl FdAnchoredCase {
 
     /// Both surface-aware entries reject this input with the same `expected`.
     fn assert_surface_entries_reject(&self, expected: ForceDensityInputError) {
-        assert_eq!(self.isotropic(), Err(FormFindError::Input(expected)), "isotropic");
-        assert_eq!(self.anisotropic(), Err(AnisoFormFindError::Input(expected)), "anisotropic");
+        assert_eq!(
+            self.isotropic(),
+            Err(FormFindError::Input(expected)),
+            "isotropic"
+        );
+        assert_eq!(
+            self.anisotropic(),
+            Err(AnisoFormFindError::Input(expected)),
+            "anisotropic"
+        );
     }
 
     /// All three anchored entries reject this input with the same `expected`.
     fn assert_every_entry_rejects(&self, expected: ForceDensityInputError) {
-        assert_eq!(self.line_only(), Err(FormFindError::Input(expected)), "line-only");
+        assert_eq!(
+            self.line_only(),
+            Err(FormFindError::Input(expected)),
+            "line-only"
+        );
         self.assert_surface_entries_reject(expected);
     }
 }
 
 fn fd_aniso_stress(sigma_warp: f64, sigma_weft: f64) -> AnisotropicSurfaceStress {
-    AnisotropicSurfaceStress { warp_dir: [1.0, 0.0, 0.0], sigma_warp, sigma_weft }
+    AnisotropicSurfaceStress {
+        warp_dir: [1.0, 0.0, 0.0],
+        sigma_warp,
+        sigma_weft,
+    }
 }
 
 #[test]
@@ -193,12 +220,19 @@ fn a_surface_stress_that_is_not_tension_is_rejected_including_nan() {
     for sigma in [0.0, -1.0, f64::NAN] {
         let mut case = FdAnchoredCase::valid();
         case.sigma = vec![sigma];
-        assert_eq!(case.isotropic(), Err(FormFindError::Input(non_tension)), "σ = {sigma}");
+        assert_eq!(
+            case.isotropic(),
+            Err(FormFindError::Input(non_tension)),
+            "σ = {sigma}"
+        );
     }
     for stress in [fd_aniso_stress(0.0, 1.0), fd_aniso_stress(1.0, f64::NAN)] {
         let mut case = FdAnchoredCase::valid();
         case.aniso = vec![stress];
-        assert_eq!(case.anisotropic(), Err(AnisoFormFindError::Input(non_tension)));
+        assert_eq!(
+            case.anisotropic(),
+            Err(AnisoFormFindError::Input(non_tension))
+        );
     }
 }
 
@@ -224,5 +258,8 @@ fn a_triangle_that_degenerates_during_the_fixed_point_is_a_solver_error() {
         anchors: vec![0, 1],
     };
     assert_eq!(case.isotropic(), Err(FormFindError::DegenerateTriangle));
-    assert_eq!(case.anisotropic(), Err(AnisoFormFindError::DegenerateTriangle));
+    assert_eq!(
+        case.anisotropic(),
+        Err(AnisoFormFindError::DegenerateTriangle)
+    );
 }
