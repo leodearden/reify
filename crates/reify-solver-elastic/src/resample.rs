@@ -839,7 +839,9 @@ mod bvh_tests {
         GridSpec, resample_multi_nodal_to_grid_instrumented,
         resample_nodal_to_grid_instrumented,
     };
-    use crate::interpolation::barycentric_p1;
+    use crate::interpolation::{
+        LocatableTet, TetSpatialIndex, barycentric_p1, locate_element_p1, point_in_tet_p1,
+    };
 
     // ── Fixtures ─────────────────────────────────────────────────────────────
 
@@ -904,6 +906,26 @@ mod bvh_tests {
         }
     }
 
+    /// Every point of `grid`, on the same per-axis `linspace_inclusive` axes the
+    /// production resamplers build, x outermost and z innermost.
+    fn grid_points(grid: &GridSpec) -> Vec<[f64; 3]> {
+        let axis = |i: usize| {
+            let spacing = (grid.bounds_max[i] - grid.bounds_min[i]) / grid.counts[i].max(1) as f64;
+            reify_ir::sampled::linspace_inclusive(grid.bounds_min[i], grid.bounds_max[i], spacing)
+                .unwrap()
+        };
+        let (ax, ay, az) = (axis(0), axis(1), axis(2));
+        let mut points = Vec::with_capacity(ax.len() * ay.len() * az.len());
+        for &x in &ax {
+            for &y in &ay {
+                for &z in &az {
+                    points.push([x, y, z]);
+                }
+            }
+        }
+        points
+    }
+
     /// Linear-scan oracle mirroring the old `resample_nodal_to_grid` loop
     /// byte-for-byte (same barycentric check + same weight arithmetic +
     /// same break-on-first-hit = lowest-index hit).
@@ -918,50 +940,35 @@ mod bvh_tests {
         grid: &GridSpec,
         tol: f64,
     ) -> (Vec<f64>, u64) {
-        let [nx, ny, nz] = grid.counts;
-        let sx = (grid.bounds_max[0] - grid.bounds_min[0]) / nx.max(1) as f64;
-        let sy = (grid.bounds_max[1] - grid.bounds_min[1]) / ny.max(1) as f64;
-        let sz = (grid.bounds_max[2] - grid.bounds_min[2]) / nz.max(1) as f64;
-        let ax = reify_ir::sampled::linspace_inclusive(grid.bounds_min[0], grid.bounds_max[0], sx)
-            .unwrap();
-        let ay = reify_ir::sampled::linspace_inclusive(grid.bounds_min[1], grid.bounds_max[1], sy)
-            .unwrap();
-        let az = reify_ir::sampled::linspace_inclusive(grid.bounds_min[2], grid.bounds_max[2], sz)
-            .unwrap();
-        let n_grid = ax.len() * ay.len() * az.len();
-        let mut data = Vec::with_capacity(n_grid * stride);
+        let points = grid_points(grid);
+        let mut data = Vec::with_capacity(points.len() * stride);
         let mut count = 0u64;
-        for &x in &ax {
-            for &y in &ay {
-                for &z in &az {
-                    let p = [x, y, z];
-                    let mut found = false;
-                    'scan: for conn in elems {
-                        let phys4: [[f64; 3]; 4] = [
-                            nodes[conn[0]],
-                            nodes[conn[1]],
-                            nodes[conn[2]],
-                            nodes[conn[3]],
-                        ];
-                        let bary = barycentric_p1(&phys4, p);
-                        count += 1;
-                        if bary.iter().all(|&b| b >= -tol && b <= 1.0 + tol) {
-                            for c in 0..stride {
-                                let val = bary[0] * nodal_values[conn[0] * stride + c]
-                                    + bary[1] * nodal_values[conn[1] * stride + c]
-                                    + bary[2] * nodal_values[conn[2] * stride + c]
-                                    + bary[3] * nodal_values[conn[3] * stride + c];
-                                data.push(val);
-                            }
-                            found = true;
-                            break 'scan;
-                        }
+        for p in points {
+            let mut found = false;
+            'scan: for conn in elems {
+                let phys4: [[f64; 3]; 4] = [
+                    nodes[conn[0]],
+                    nodes[conn[1]],
+                    nodes[conn[2]],
+                    nodes[conn[3]],
+                ];
+                let bary = barycentric_p1(&phys4, p);
+                count += 1;
+                if bary.iter().all(|&b| b >= -tol && b <= 1.0 + tol) {
+                    for c in 0..stride {
+                        let val = bary[0] * nodal_values[conn[0] * stride + c]
+                            + bary[1] * nodal_values[conn[1] * stride + c]
+                            + bary[2] * nodal_values[conn[2] * stride + c]
+                            + bary[3] * nodal_values[conn[3] * stride + c];
+                        data.push(val);
                     }
-                    if !found {
-                        for _ in 0..stride {
-                            data.push(f64::NAN);
-                        }
-                    }
+                    found = true;
+                    break 'scan;
+                }
+            }
+            if !found {
+                for _ in 0..stride {
+                    data.push(f64::NAN);
                 }
             }
         }
@@ -1144,6 +1151,83 @@ mod bvh_tests {
             c8 = stats_s3_m8.point_in_tet_tests,
             c4 = stats_s3.point_in_tet_tests,
         );
+    }
+
+    /// BT11: an index built over a mesh with a given `tol` answers every query
+    /// point exactly as the linear scan does at that same `tol`.
+    ///
+    /// Sweeps `make_box_of_tets(4|8)` × {`test_grid`, a vertex-aligned grid} ×
+    /// tol ∈ {0, 1e-9, 1e-6}. The vertex-aligned grid's spacing (1/4 or 1/8) is
+    /// exact, so its points equal mesh vertices bit-for-bit and most of them lie
+    /// in several tets at once, which exercises the min-index tie-break.
+    #[test]
+    fn tet_spatial_index_locate_is_bit_identical_to_locate_element_p1_over_resample_fixtures() {
+        for m in [4, 8] {
+            let (nodes, elems) = make_box_of_tets(m);
+            let phys: Vec<[[f64; 3]; 4]> = elems
+                .iter()
+                .map(|c| [nodes[c[0]], nodes[c[1]], nodes[c[2]], nodes[c[3]]])
+                .collect();
+            let locatable: Vec<LocatableTet> = phys
+                .iter()
+                .map(|pn| LocatableTet { phys_nodes: pn })
+                .collect();
+
+            let mixed_points = grid_points(&test_grid());
+            let vertex_points = grid_points(&GridSpec {
+                bounds_min: [0.0; 3],
+                bounds_max: [1.0; 3],
+                counts: [m; 3],
+            });
+
+            for tol in [0.0, 1e-9, 1e-6] {
+                let idx = TetSpatialIndex::build(&nodes, &elems, tol);
+                for &p in mixed_points.iter().chain(&vertex_points) {
+                    let indexed = idx.locate(p);
+                    let scanned = locate_element_p1(&locatable, p, tol);
+                    assert_eq!(
+                        indexed, scanned,
+                        "m={m} tol={tol:e} p={p:?}: index located {indexed:?}, linear scan {scanned:?}",
+                    );
+                    assert_eq!(
+                        idx.locate_counted(p).0,
+                        indexed,
+                        "m={m} tol={tol:e} p={p:?}: locate_counted disagrees with locate",
+                    );
+                }
+            }
+
+            if m == 4 {
+                let tol = 1e-9;
+                let hits: Vec<Option<usize>> = mixed_points
+                    .iter()
+                    .map(|&p| locate_element_p1(&locatable, p, tol))
+                    .collect();
+                assert!(
+                    hits.iter().any(Option::is_some),
+                    "test_grid must contain interior hits"
+                );
+                assert!(
+                    hits.iter().any(Option::is_none),
+                    "test_grid must contain out-of-solid misses"
+                );
+
+                let tie_points = vertex_points
+                    .iter()
+                    .filter(|&&p| {
+                        locatable
+                            .iter()
+                            .filter(|t| point_in_tet_p1(t.phys_nodes, p, tol))
+                            .count()
+                            >= 2
+                    })
+                    .count();
+                assert!(
+                    tie_points > 0,
+                    "vertex-aligned grid must hit points shared by ≥2 tets"
+                );
+            }
+        }
     }
 }
 
