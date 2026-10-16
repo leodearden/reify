@@ -28,6 +28,7 @@ import type { ReferenceResult } from './editor/references';
 import { WarmPoolDebugPanel } from './debug/WarmPoolDebugPanel';
 import { registerDebugPanel } from './debug/types';
 import { Splitter } from './components/Splitter';
+import { alwaysMounted, mountedEntries, sidePanelTracks, type SidePanelEntry } from './app/sidePanel';
 import { KeyboardHelp } from './components/KeyboardHelp';
 import { CommandPalette } from './components/CommandPalette';
 import { useKeyboardShortcuts, paletteCommands, runCommand } from './hooks/useKeyboardShortcuts';
@@ -783,16 +784,6 @@ const App: Component = () => {
   // True when at least one design mesh is loaded. Memoized so DualViewport's
   // designViewportActive prop does not allocate a new array on every reactive pulse.
   const hasMeshes = createMemo(() => Object.keys(engineStore.state.meshes).length > 0);
-
-  // AutoResolvePanel mount predicate — DATA-gated, not `autoResolve.active`-gated,
-  // so a completed loop stays readable instead of vanishing when it lands.
-  //
-  // Deliberately a SINGLE accessor with TWO consumers: the side-panel
-  // `grid-template-rows` builder (which sizes this panel's track) and the
-  // `<Show>` that mounts it. Those two must agree exactly — a track/child
-  // mismatch shifts every subsequent child up a track and collapses chat into a
-  // 4px strip — so they share the expression rather than each restating it.
-  const hasAutoResolvePanel = createMemo(() => engineStore.state.autoResolve.iterations.length > 0);
 
   // Effective visibility memo: re-evaluates whenever explicit overrides or treeGeneration
   // changes.  treeGeneration is incremented by the effect above after setTree runs, which
@@ -2101,6 +2092,132 @@ const App: Component = () => {
     clampToContainer();
   }
 
+  // The side panel, top to bottom: each entry is one grid child with its own track.
+  const sidePanelEntries: readonly SidePanelEntry[] = [
+    {
+      id: 'design-tree',
+      mounted: alwaysMounted,
+      track: () => `${layoutStore.state.designTreeHeight}px`,
+      render: () => (
+        <DesignTree
+          tree={entityTree()}
+          viewStateStore={viewStateStore}
+          selectedEntity={selectionStore.state.selectedEntity}
+          selectedEntities={selectionStore.state.selectedEntities}
+          anchorEntity={selectionStore.state.anchorEntity}
+          onSelect={handleDesignTreeSelect}
+          onRangeSelect={selectionStore.rangeSelect}
+          onSelectAll={selectionStore.selectAll}
+          onOpenManage={() => setViewManageOpen(true)}
+          onSaveViews={handleSaveViews}
+          onHover={(path) => selectionStore.hoverEntity(path)}
+          hoveredEntity={selectionStore.state.hoveredEntity}
+        />
+      ),
+    },
+    {
+      id: 'splitter-design-tree',
+      mounted: alwaysMounted,
+      track: () => `${SPLITTER_THICKNESS}px`,
+      render: () => <Splitter orientation="horizontal" onResize={handleDesignTreeResize} data-testid="splitter-design-tree" />,
+    },
+    {
+      id: 'property-editor',
+      mounted: alwaysMounted,
+      track: () => `${layoutStore.state.propertyHeight}px`,
+      render: () => (
+        <PropertyEditor
+          values={engineStore.state.values}
+          selectedEntity={selectionStore.state.selectedEntity}
+          onSetParameter={handleSetParameter}
+          onGroupDoubleClick={handleGroupDoubleClick}
+          highlightedParams={selectionStore.state.highlightedParams}
+          unitLadders={unitLadders()}
+        />
+      ),
+    },
+    {
+      id: 'splitter-side',
+      mounted: alwaysMounted,
+      track: () => `${SPLITTER_THICKNESS}px`,
+      render: () => <Splitter orientation="horizontal" onResize={handleSideResize} data-testid="splitter-side" />,
+    },
+    {
+      id: 'constraint-panel',
+      mounted: alwaysMounted,
+      track: (isLast) => (isLast ? '1fr' : `${layoutStore.state.constraintHeight}px`),
+      render: () => (
+        <ConstraintPanel
+          constraints={engineStore.state.constraints}
+          values={engineStore.state.values}
+          onConstraintSelect={handleConstraintSelect}
+          onAskClaude={handleAskClaude}
+        />
+      ),
+    },
+    {
+      id: 'auto-resolve',
+      // Data-gated, not active-gated, so a finished loop stays readable.
+      mounted: () => engineStore.state.autoResolve.iterations.length > 0,
+      track: () => 'auto',
+      render: () => <AutoResolvePanel state={engineStore.state.autoResolve} />,
+    },
+    {
+      id: 'buckling',
+      mounted: () => bucklingStore.state.base !== null || bucklingStore.modes().length > 0,
+      track: () => 'auto',
+      render: () => <BucklingPanel store={bucklingStore} />,
+    },
+    {
+      id: 'fea-diagnostics',
+      mounted: () => engineStore.state.feaDiagnostics.length > 0,
+      track: () => 'auto',
+      // v1 focus fits the whole scene: FeaDiagnosticInfo carries no entity-path join key.
+      render: () => (
+        <FeaDiagnosticsPanel
+          diagnostics={engineStore.state.feaDiagnostics}
+          onFocusDiagnostic={(_d) => fitToViewFn?.()}
+        />
+      ),
+    },
+    {
+      id: 'mechanism',
+      mounted: () => mechanismStore.state.descriptors.length > 0,
+      track: () => 'auto',
+      render: () => (
+        <MechanismPanel
+          descriptors={mechanismStore.state.descriptors}
+          onSetParameter={handleSetParameter}
+          onPreviewParameter={handlePreviewParameter}
+          onScrubLocal={(cellId, jointIndex, valueSi) =>
+            mechanismStore.setOptimistic(cellId ?? '', jointIndex, valueSi)
+          }
+          getEffectiveValueSi={mechanismStore.getEffectiveValueSi}
+        />
+      ),
+    },
+    {
+      id: 'splitter-constraint',
+      mounted: chatOpen,
+      track: () => `${SPLITTER_THICKNESS}px`,
+      render: () => <Splitter orientation="horizontal" onResize={handleConstraintResize} data-testid="splitter-constraint" />,
+    },
+    {
+      id: 'chat',
+      mounted: chatOpen,
+      track: () => `minmax(${CHAT_MIN_HEIGHT}px, 1fr)`,
+      render: () => (
+        <ChatPanel
+          store={claudeStore}
+          selectedEntity={selectionStore.state.selectedEntity ?? undefined}
+          engineConstraints={Object.values(engineStore.state.constraints)}
+          activeFile={editorStore.state.activeFile ?? undefined}
+        />
+      ),
+    },
+  ];
+  const mountedSidePanelEntries = createMemo(() => mountedEntries(sidePanelEntries));
+
   return (
     <>
       <Show when={showHelp()}>
@@ -2218,112 +2335,9 @@ const App: Component = () => {
               ref={sidePanelRef}
               data-testid="side-panel"
               class={styles.sidePanel}
-              style={{ 'grid-template-rows': (() => {
-                const hasMech = mechanismStore.state.descriptors.length > 0;
-                const hasAR = hasAutoResolvePanel();
-                const hasChat = chatOpen();
-                const base = `${layoutStore.state.designTreeHeight}px 4px ${layoutStore.state.propertyHeight}px 4px`;
-                // Middle tracks: one `auto` per optional panel present (autoResolve then
-                // mechanism). No splitter between cons and the first optional panel — adding
-                // one would shift subsequent children up a track and collapse chat into 4px.
-                const midTracks = [
-                  ...(hasAR ? ['auto'] : []),
-                  ...(hasMech ? ['auto'] : []),
-                ];
-                const midStr = midTracks.length > 0
-                  ? `${layoutStore.state.constraintHeight}px ${midTracks.join(' ')}`
-                  : null;
-                if (hasChat) {
-                  return `${base} ${midStr ?? `${layoutStore.state.constraintHeight}px`} 4px minmax(${CHAT_MIN_HEIGHT}px, 1fr)`;
-                }
-                return midStr
-                  ? `${base} ${midStr}`
-                  : `${base} 1fr`;
-              })() }}
+              style={{ 'grid-template-rows': sidePanelTracks(mountedSidePanelEntries()) }}
             >
-              <DesignTree
-                tree={entityTree()}
-                viewStateStore={viewStateStore}
-                selectedEntity={selectionStore.state.selectedEntity}
-                selectedEntities={selectionStore.state.selectedEntities}
-                anchorEntity={selectionStore.state.anchorEntity}
-                onSelect={handleDesignTreeSelect}
-                onRangeSelect={selectionStore.rangeSelect}
-                onSelectAll={selectionStore.selectAll}
-                onOpenManage={() => setViewManageOpen(true)}
-                onSaveViews={handleSaveViews}
-                onHover={(path) => selectionStore.hoverEntity(path)}
-                hoveredEntity={selectionStore.state.hoveredEntity}
-              />
-              <Splitter orientation="horizontal" onResize={handleDesignTreeResize} data-testid="splitter-design-tree" />
-              <PropertyEditor
-                values={engineStore.state.values}
-                selectedEntity={selectionStore.state.selectedEntity}
-                onSetParameter={handleSetParameter}
-                onGroupDoubleClick={handleGroupDoubleClick}
-                highlightedParams={selectionStore.state.highlightedParams}
-                unitLadders={unitLadders()}
-              />
-              <Splitter orientation="horizontal" onResize={handleSideResize} data-testid="splitter-side" />
-              <ConstraintPanel
-                constraints={engineStore.state.constraints}
-                values={engineStore.state.values}
-                onConstraintSelect={handleConstraintSelect}
-                onAskClaude={handleAskClaude}
-              />
-              {/* AutoResolvePanel: promotes once a param=auto loop reports its
-                  FIRST iteration, and stays readable after the loop completes —
-                  a finished loop's result is exactly what the user wants to
-                  read. Cleared by the next loop's first iteration or by a
-                  full-state reload. Shares `hasAutoResolvePanel` with the
-                  grid-track builder above, which sizes this panel's track. */}
-              <Show when={hasAutoResolvePanel()}>
-                <AutoResolvePanel state={engineStore.state.autoResolve} />
-              </Show>
-              {/* SolverProgressOverlay: shows after >1s of in-flight CG solver
-                  progress ticks; hidden (debounce) for sub-second solves. */}
-              <Show when={engineStore.state.solverProgress.visible}>
-                <SolverProgressOverlay
-                  progress={engineStore.state.solverProgress.latest}
-                  trace={engineStore.state.solverProgress.trace}
-                  coarseReached={engineStore.state.solverProgress.coarseReached}
-                  onCancel={engineStore.cancelSolve}
-                />
-              </Show>
-              {/* BucklingPanel: shown when the buckling solver has emitted mode-shape data */}
-              <Show when={(bucklingStore.state.base !== null) || bucklingStore.modes().length > 0}>
-                <BucklingPanel store={bucklingStore} />
-              </Show>
-              {/* FeaDiagnosticsPanel: shown when fea_diagnostics is non-empty (failure-mode overlay, #2966).
-                  v1 focus: fits the whole scene to view because FeaDiagnosticInfo variants carry no
-                  entity-path join key.  Per-diagnostic camera focus requires a new backend join key
-                  or per-variant mesh-bounds query on the engine side (future work). */}
-              <Show when={engineStore.state.feaDiagnostics.length > 0}>
-                <FeaDiagnosticsPanel
-                  diagnostics={engineStore.state.feaDiagnostics}
-                  onFocusDiagnostic={(_d) => fitToViewFn?.()}
-                />
-              </Show>
-              <Show when={mechanismStore.state.descriptors.length > 0}>
-                <MechanismPanel
-                  descriptors={mechanismStore.state.descriptors}
-                  onSetParameter={handleSetParameter}
-                  onPreviewParameter={handlePreviewParameter}
-                  onScrubLocal={(cellId, jointIndex, valueSi) =>
-                    mechanismStore.setOptimistic(cellId ?? '', jointIndex, valueSi)
-                  }
-                  getEffectiveValueSi={mechanismStore.getEffectiveValueSi}
-                />
-              </Show>
-              <Show when={chatOpen()}>
-                <Splitter orientation="horizontal" onResize={handleConstraintResize} data-testid="splitter-constraint" />
-                <ChatPanel
-                  store={claudeStore}
-                  selectedEntity={selectionStore.state.selectedEntity ?? undefined}
-                  engineConstraints={Object.values(engineStore.state.constraints)}
-                  activeFile={editorStore.state.activeFile ?? undefined}
-                />
-              </Show>
+              <For each={mountedSidePanelEntries()}>{(entry) => entry.render()}</For>
             </div>
           </div>
           <StatusBar
@@ -2368,6 +2382,16 @@ const App: Component = () => {
             store={viewStateStore}
             onClose={() => setViewManageOpen(false)}
           />
+          {/* SolverProgressOverlay: shows after >1s of in-flight CG solver
+              progress ticks; hidden (debounce) for sub-second solves. */}
+          <Show when={engineStore.state.solverProgress.visible}>
+            <SolverProgressOverlay
+              progress={engineStore.state.solverProgress.latest}
+              trace={engineStore.state.solverProgress.trace}
+              coarseReached={engineStore.state.solverProgress.coarseReached}
+              onCancel={engineStore.cancelSolve}
+            />
+          </Show>
           {/* WarmPoolDebugPanel: REIFY_DEBUG=1 only — floating overlay, task 4279 */}
           <Show when={debugEnabled()}>
             <div class={styles.warmPoolDebugOverlay} data-testid="warm-pool-debug-overlay">
