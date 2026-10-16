@@ -110,14 +110,15 @@ git config --worktree core.hooksPath hooks \
 export DF_VERIFY_ROLE=merge
 export REIFY_GATE_EXCLUDE_HEAVY="${REIFY_GATE_EXCLUDE_HEAVY:-1}"
 echo "land.sh: merging '$BRANCH' into main (--no-ff; pre-merge-commit runs the full gate)..." >&2
-if git merge --no-ff "$BRANCH"; then
+rc=0
+git merge --no-ff "$BRANCH" || rc=$?
+if [ "$rc" -eq 0 ]; then
     landed="$(git rev-parse HEAD)"
     echo "land.sh: landed '$BRANCH' on main as $landed" >&2
     echo "$landed"
     exit 0
 fi
 
-rc=$?
 echo "land.sh: ERROR — merge failed (exit $rc). Aborting; main is left unchanged." >&2
 git merge --abort 2>/dev/null || true
 exit "$rc"
