@@ -5,14 +5,22 @@ use serde::{Deserialize, Serialize};
 use crate::context::ReifyToolContext;
 use crate::registry::ToolRegistry;
 
-/// A JSON-RPC 2.0 request.
+/// A JSON-RPC 2.0 request, or a notification when `id` is absent.
 #[derive(Debug, Deserialize)]
 pub struct JsonRpcRequest {
     pub jsonrpc: String,
     pub method: String,
     #[serde(default)]
     pub params: serde_json::Value,
-    pub id: serde_json::Value,
+    /// `None` only when the member is absent; an explicit `null` is `Some(Null)`.
+    #[serde(default, deserialize_with = "deserialize_present")]
+    pub id: Option<serde_json::Value>,
+}
+
+fn deserialize_present<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<serde_json::Value>, D::Error> {
+    serde_json::Value::deserialize(deserializer).map(Some)
 }
 
 /// A JSON-RPC 2.0 response.
@@ -57,40 +65,49 @@ impl<'a> McpDispatcher<'a> {
         Self { registry, context }
     }
 
-    /// Dispatch a JSON-RPC request string, returning a JSON-RPC response string.
-    pub fn dispatch(&self, json_str: &str) -> String {
+    /// Dispatch a JSON-RPC message string, returning the JSON-RPC response string.
+    ///
+    /// Returns `None` for a notification (a valid message without an `id`),
+    /// which JSON-RPC 2.0 forbids answering.
+    pub fn dispatch(&self, json_str: &str) -> Option<String> {
         let request: JsonRpcRequest = match serde_json::from_str(json_str) {
             Ok(req) => req,
             Err(_) => {
-                return self.error_response(serde_json::Value::Null, PARSE_ERROR, "Parse error");
+                return Some(self.error_response(
+                    serde_json::Value::Null,
+                    PARSE_ERROR,
+                    "Parse error",
+                ));
             }
         };
 
         // Validate jsonrpc version
         if request.jsonrpc != "2.0" {
-            return self.error_response(
-                request.id,
+            return Some(self.error_response(
+                request.id.unwrap_or(serde_json::Value::Null),
                 INVALID_REQUEST,
                 "Invalid Request: jsonrpc must be '2.0'",
-            );
+            ));
         }
 
+        let id = request.id?;
+
         // Validate id is string or number (reject null, array, object, bool)
-        if !request.id.is_string() && !request.id.is_number() {
-            return self.error_response(
+        if !id.is_string() && !id.is_number() {
+            return Some(self.error_response(
                 serde_json::Value::Null,
                 INVALID_REQUEST,
                 "Invalid Request: id must be a string or number",
-            );
+            ));
         }
 
         let response = match request.method.as_str() {
-            "initialize" => self.handle_initialize(&request),
-            "tools/list" => self.handle_tools_list(&request),
-            "tools/call" => self.handle_tools_call(&request),
+            "initialize" => Self::handle_initialize(id),
+            "tools/list" => self.handle_tools_list(id),
+            "tools/call" => self.handle_tools_call(id, &request.params),
             _ => JsonRpcResponse {
                 jsonrpc: "2.0".to_string(),
-                id: request.id,
+                id,
                 result: None,
                 error: Some(JsonRpcError {
                     code: METHOD_NOT_FOUND,
@@ -100,19 +117,19 @@ impl<'a> McpDispatcher<'a> {
             },
         };
 
-        serde_json::to_string(&response).unwrap_or_else(|e| {
+        Some(serde_json::to_string(&response).unwrap_or_else(|e| {
             self.error_response(
                 serde_json::Value::Null,
                 -32603,
                 &format!("Internal error: {e}"),
             )
-        })
+        }))
     }
 
-    fn handle_initialize(&self, request: &JsonRpcRequest) -> JsonRpcResponse {
+    fn handle_initialize(id: serde_json::Value) -> JsonRpcResponse {
         JsonRpcResponse {
             jsonrpc: "2.0".to_string(),
-            id: request.id.clone(),
+            id,
             result: Some(serde_json::json!({
                 "protocolVersion": "2024-11-05",
                 "capabilities": {
@@ -129,37 +146,39 @@ impl<'a> McpDispatcher<'a> {
         }
     }
 
-    fn handle_tools_list(&self, request: &JsonRpcRequest) -> JsonRpcResponse {
+    fn handle_tools_list(&self, id: serde_json::Value) -> JsonRpcResponse {
         let tools = self.registry.list_tools();
         JsonRpcResponse {
             jsonrpc: "2.0".to_string(),
-            id: request.id.clone(),
+            id,
             result: Some(serde_json::json!({ "tools": tools })),
             error: None,
         }
     }
 
-    fn handle_tools_call(&self, request: &JsonRpcRequest) -> JsonRpcResponse {
+    fn handle_tools_call(
+        &self,
+        id: serde_json::Value,
+        params: &serde_json::Value,
+    ) -> JsonRpcResponse {
         // Validate name is a string
-        let name = match request.params["name"].as_str() {
+        let name = match params["name"].as_str() {
             Some(s) => s.to_string(),
             None => {
                 return self.mcp_error_response(
-                    &request.id,
+                    &id,
                     "missing or invalid tool name: 'name' must be a string",
                 );
             }
         };
 
         // Validate arguments: if present and not null, must be an object
-        let arguments = match &request.params["arguments"] {
+        let arguments = match &params["arguments"] {
             v if v.is_null() => serde_json::json!({}),
             v if v.is_object() => v.clone(),
             _ => {
-                return self.mcp_error_response(
-                    &request.id,
-                    "invalid arguments: 'arguments' must be an object",
-                );
+                return self
+                    .mcp_error_response(&id, "invalid arguments: 'arguments' must be an object");
             }
         };
 
@@ -170,7 +189,7 @@ impl<'a> McpDispatcher<'a> {
                     Err(e) => {
                         return JsonRpcResponse {
                             jsonrpc: "2.0".to_string(),
-                            id: request.id.clone(),
+                            id,
                             result: None,
                             error: Some(JsonRpcError {
                                 code: INTERNAL_ERROR,
@@ -182,7 +201,7 @@ impl<'a> McpDispatcher<'a> {
                 };
                 JsonRpcResponse {
                     jsonrpc: "2.0".to_string(),
-                    id: request.id.clone(),
+                    id,
                     result: Some(serde_json::json!({
                         "content": [{"type": "text", "text": text}],
                         "isError": false
@@ -194,7 +213,7 @@ impl<'a> McpDispatcher<'a> {
                 let error_text = tool_err.to_string();
                 JsonRpcResponse {
                     jsonrpc: "2.0".to_string(),
-                    id: request.id.clone(),
+                    id,
                     result: Some(serde_json::json!({
                         "content": [{"type": "text", "text": error_text}],
                         "isError": true
