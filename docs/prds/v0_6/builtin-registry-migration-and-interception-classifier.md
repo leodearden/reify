@@ -420,11 +420,15 @@ BinOp, .. }`; reify-syntax `lower_binary_expr`/`lower_unary_expr` parse the toke
 is recoverable from the span if a consumer ever needs it.
 
 **D15 — One keyword table in reify-syntax (session ruling Q2).** `reify_syntax::KEYWORDS:
-&[Keyword { word, kind: Reserved | Contextual }]`, pinned by a parse-behaviour test (each
-`Reserved` word fails to parse as a binding name, each `Contextual` word parses) and by a
-parity test against the spec §2.10 table. The spec table lists words, not kinds, so the parity
-test compares word membership; a word's kind comes from the parse test alone. The LSP rename
-gate rejects `Reserved` words; the completion lists stay UX tables over the same words;
+&[Keyword { word, kind: Reserved | Contextual { rename: Refused | Accepted } }]`, pinned by a
+parse-behaviour test (each `Reserved` word fails to parse as a binding name, each `Contextual`
+word parses) and by a parity test against the spec §2.10 table. The spec table lists words, not
+kinds, so the parity test compares word membership; a word's kind comes from the parse test
+alone. Each row also carries an explicit **rename-refused** property, which is the only thing
+the LSP rename gate reads. `Reserved` implies refused, so a `Reserved` row has no rename field
+and cannot be marked accepted. Every `Contextual` row must state its `rename` value; there is
+no default (the refused `Contextual` words are listed in the second amendment below). The
+completion lists stay UX tables over the same words;
 reify-audit's `RI_KEYWORDS` consumers read `KEYWORDS` (reify-audit gains a direct reify-syntax
 dependency; it already has one transitively through reify-test-support, #6356). The table is
 grammar vocabulary, not a builtin fact, so it is not a reify-builtins row.
@@ -436,6 +440,24 @@ control `chain` does. A spec §2.10 "Declaration keyword" such as `unit` is a ke
 grammar sense, not `Reserved`. Measured `Reserved` set over the 47 `RI_KEYWORDS` (architect,
 2026-10-16; the parse test is the authority): `auto`, `exists`, `forall`, `if`, `map`, `match`,
 `not`, `set`, `true`, `false`, `undef`.
+
+*Amended 2026-10-16 (Leo, esc-8910-2 follow-up): declaration keywords stay rename-refused for
+usability.* A `Contextual` word re-parses safely as a binding name, but that does not make it a
+good one. The rename gate therefore does not refuse only `Reserved` words. It refuses
+`Reserved` ∪ the **rename-refused `Contextual` list**. That list lives on its `KEYWORDS` rows as
+`Contextual { rename: Refused }`, and those rows are its one home. reify-lsp keeps no second
+copy, and rename.rs stops importing completion's lists (delivered check
+`rename-gate-off-completion-lists`). The list is today's gate's refusal set (completion.rs's
+`TOP_LEVEL_KEYWORDS`, `BODY_KEYWORDS` and `EXPR_KEYWORDS`, 26 words), minus the five of them
+that are `Reserved` (`auto`, `if`, `not`, `true`, `false`), plus `def`, which Leo named and
+today's gate accepts. It has 22 words: `and`, `connect`, `constraint`, `def`, `else`, `enum`,
+`fn`, `import`, `let`, `maximize`, `minimize`, `occurrence`, `or`, `param`, `port`, `purpose`,
+`structure`, `sub`, `then`, `trait`, `type`, `where`. The refused set is the 11 `Reserved` words
+plus those 22, i.e. 33 words. The other 14 of the 47 `RI_KEYWORDS` words stay accepted, as they
+are today. `unit` and `chain` are pinned; the rest are `as`, `field`, `implies`, `in`, `joint`,
+`meta`, `module`, `none`, `out`, `pub`, `self`, `some`. Compared with today's gate, `exists`,
+`forall`, `map`, `match`, `set`, `undef` and `def` become refused, and no word becomes accepted.
+The completion lists still decide only which words the editor offers, and where.
 
 **D16 — Curvature classifies faces by type.** `is_surface_producing_arg` reads
 `Type::Selector(SelectorKind::Face)` on the `ResolveSelector` arm; only `adjacent_faces`
@@ -555,7 +577,7 @@ repo-root glob.
 | 12 | `tests/prd-gate/fixtures/s8_frame_datum_planes.ri` | `i_yz`, `i_zx`, `g_yz`, `g_zx` = `undef`; every `f_*` (from `self.x`/`self.z`) = `undef` | all planes and members evaluate on identity, `fi.*`-built and `self.*`-built frames (by #6100); the C3 parity test pins it once the tables are one | #6100, S8-θ |
 | 13 | `tests/prd-gate/fixtures/s8_safety_factor_nonpositive_yield.ri` | `sf_neg = -2.5`, `sf_zero = 0` | coded `SafetyFactorNonPositiveYield` Error + `undef` for both; `sf_pos = 2.5`; field `sample` and `max` agree | S8-κ |
 | 14 | `examples/fea_multi_case_bracket.ri`; `solve_load_cases` nested in a constraint (dispatcher attached) | reify-expr copy runs; diagnostics duplicated across homes | `reify eval` output byte-identical; nested call returns the trampoline's result; `eval_solve_load_cases` absent | S8-λ |
-| 15 | LSP rename of a binding to `match`, `forall`, `if`, `auto`; to `unit`, `chain` | `match`, `forall` accepted; `if`, `auto` refused; `unit`, `chain` accepted | `match`, `forall`, `if`, `auto` refused (Reserved); `unit`, `chain` accepted (Contextual, D15 amendment); every other word follows the parse test | S8-σ |
+| 15 | LSP rename of a binding to `match`, `forall`, `if`, `auto`; to `let`, `param`, `def`; to `unit`, `chain` | `match`, `forall`, `def`, `unit`, `chain` accepted; `if`, `auto`, `let`, `param` refused | refused = `Reserved` ∪ D15's rename-refused `Contextual` list: `match`, `forall`, `if`, `auto` refused (Reserved); `let`, `param`, `def` refused (Contextual declaration keywords, refused for usability, D15 follow-up); `unit`, `chain` accepted (Contextual, not on the list); every other word follows its `KEYWORDS` row's rename property | S8-σ |
 | 16 | `curvature(extremal_by_bbox(b)[0], p)` | `Scalar<Curvature>` | the face overload's matrix type | S8-ρ |
 | 17 | Every leaf | — | workspace suite, examples_smoke and the prd-gate corpus green with unchanged expectations except the enumerated corrections in that leaf's text | all |
 
@@ -786,10 +808,12 @@ rule). Prereqs use the `←` convention.
   Prereqs ← #8717. **Keys: fk-a72f4510f36b.**
 - **S8-σ #8910 — One keyword table in reify-syntax.** Modules: reify-syntax (new `keywords.rs` +
   parse test + spec-parity test), reify-lsp `references/mod.rs`, `references/rename.rs` (the
-  rename gate), `completion.rs`, reify-audit `pdoccover.rs` and `Cargo.toml`. Signal: §5 row 15
-  (rename to `match`, `forall`, `if` or `auto` refused, to `unit` or `chain` accepted, observed
-  through the LSP rename harness on a real document); `reify-audit --pattern PDOCCOVER` output
-  unchanged.
+  rename gate), `completion.rs`, reify-audit `pdoccover.rs` and `Cargo.toml`. Signal: §5 row 15,
+  observed through the LSP rename harness on a real document. Rename to `match`, `forall`, `if`
+  or `auto` (Reserved) is refused. Rename to `let`, `param` or `def` (rename-refused Contextual,
+  D15 follow-up) is refused. Rename to `unit` or `chain` is accepted. The refused set is
+  `Reserved` ∪ D15's 22-word list, read from `KEYWORDS`' rename property. Also:
+  `reify-audit --pattern PDOCCOVER` output unchanged.
   Prereqs: none. **Keys: fk-81f949615552. Subsumes #8583.**
 
 **Phase 5 — partition, docs, milestone, close.**
