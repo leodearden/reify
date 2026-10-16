@@ -2,18 +2,19 @@
 # hooks/main-gate-lib.sh — shared helpers for the main-branch landing gate.
 #
 # Sourced by hooks/pre-commit, hooks/pre-merge-commit, hooks/reference-transaction
-# and scripts/land.sh. Implements a tiny file-sentinel handshake so the
+# and scripts/main-gate-mark.sh. Implements a tiny file-sentinel handshake so the
 # reference-transaction tripwire can tell a *sanctioned* move of refs/heads/main
-# (one made right after a verify gate passed, or via scripts/land.sh) from an
-# *unsanctioned* one (a raw `git update-ref` / `git reset` / fast-forward that
-# skips the pre-commit / pre-merge-commit verify gates entirely — the exact gap
-# through which an unverified GUI-typecheck break reached main).
+# (one made right after a verify gate passed) from an *unsanctioned* one (a raw
+# `git update-ref` / `git reset` / fast-forward that skips the pre-commit /
+# pre-merge-commit verify gates entirely — the exact gap through which an
+# unverified GUI-typecheck break reached main).
 #
 # Why a file and not an env var: git fires sibling hook processes that do not
 # share an environment, so the sanctioning step (pre-commit / pre-merge-commit /
-# land.sh) and the consuming step (reference-transaction) cannot hand off a flag
-# in memory. The sentinel lives in the *common* git dir (git rev-parse
-# --git-common-dir) so it is one shared location across every linked worktree.
+# scripts/main-gate-mark.sh) and the consuming step (reference-transaction)
+# cannot hand off a flag in memory. The sentinel lives in the *common* git dir
+# (git rev-parse --git-common-dir) so it is one shared location across every
+# linked worktree.
 
 # main_gate_sentinel — path to the one-shot "this main move is sanctioned" marker.
 main_gate_sentinel() {
