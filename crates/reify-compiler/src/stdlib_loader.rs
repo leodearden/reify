@@ -59,7 +59,10 @@ static STDLIB_CONTEXT_CACHE: OnceLock<PreludeContext<'static>> = OnceLock::new()
 /// is what is *resolvable* during the sequential prelude build (the footgun
 /// above), not what a resolvable name *means*.  That inertness is the §5
 /// precondition the ζ task consumes.
-pub(crate) fn stdlib_sources() -> Vec<(&'static str, String)> {
+///
+/// Public for `reify_doc_build::build_stdlib_doc_model`, which pairs each
+/// compiled stdlib module with its source by module path.
+pub fn stdlib_sources() -> Vec<(&'static str, String)> {
     let si_units_source = si_units::build_si_units_source();
     vec![
         ("std.units", include_str!("../stdlib/units.ri").to_owned()),

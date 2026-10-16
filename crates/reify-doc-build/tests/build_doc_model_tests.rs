@@ -1220,9 +1220,7 @@ fn alias_with_no_body_renders_unresolved_not_parameterized() {
         .type_alias(alias)
         .build();
 
-    // "" as source deliberately mirrors the `build_doc_model(compiled, "")`
-    // call inside `reify_doc_build::build_stdlib_doc_model`: proves the
-    // renderer never depends on source text.
+    // "" as source proves the alias renderer never depends on source text.
     let model: DocModel = build_doc_model(&compiled, "");
     let module = &model.modules[0];
 

@@ -22,7 +22,7 @@ use reify_doc::model::{
     AnnotationDoc, ConstraintDoc, DocModel, ItemDoc, ItemHeader, ItemKind, ModuleDoc, ParamDoc,
     PortDoc, PragmaDoc, RealizationDoc, SubComponentArgDoc, SubComponentDoc,
 };
-use reify_core::{SourceSpan, Type, byte_offset_to_line_col};
+use reify_core::{ModulePath, SourceSpan, Type, byte_offset_to_line_col};
 use reify_ir::{AnnotationArg, AnnotationArgValue, ObjectiveSense};
 use reify_ast::{Pragma, PragmaArg, PragmaValue};
 
@@ -39,16 +39,16 @@ use reify_ast::{Pragma, PragmaArg, PragmaValue};
 ///
 /// The returned `DocModel` contains a single `ModuleDoc` whose items appear in
 /// a deterministic, per-surface-grouped order:
-/// 1. Structures (in declaration order)
-/// 2. Occurrences (in declaration order)
-/// 3. Traits
-/// 4. Functions
-/// 5. Fields
-/// 6. Purposes
-/// 7. Enums
-/// 8. Units
-/// 9. Type aliases
-/// 10. Constraint definitions
+/// 1. Structures and Occurrences, interleaved in declaration order (one pass
+///    over `compiled.templates`)
+/// 2. Traits
+/// 3. Functions
+/// 4. Fields
+/// 5. Purposes
+/// 6. Enums
+/// 7. Units
+/// 8. Type aliases
+/// 9. Constraint definitions
 pub fn build_doc_model(compiled: &CompiledModule, source: &str) -> DocModel {
     let mut items: Vec<ItemDoc> = Vec::new();
 
@@ -506,10 +506,8 @@ fn lower_type_alias(a: &CompiledTypeAlias) -> ItemDoc {
         // A `None` resolved_type means the alias is parametric (its body is
         // instantiated per use site) or its body names an entity/unresolvable
         // type — in both cases the carried `type_expr` is the author's actual
-        // spelling, so render that instead of a sentinel. `Display` is used
-        // rather than span-slicing because `build_stdlib_doc_model` (below)
-        // passes `""` as source, so a span-slicing strategy would render
-        // every stdlib alias as the empty string.
+        // spelling, so render that instead of a sentinel. Its `Display` is
+        // that spelling already, so it needs no span.
         (None, Some(te)) => te.to_string(),
         // Reachable only via a synthetic fixture (e.g. a hand-built
         // CompiledTypeAlias in a test): a real alias carries neither a
@@ -737,27 +735,46 @@ fn cell_local_name(id_str: &str) -> String {
 
 /// Build a combined [`DocModel`] for the entire standard library.
 ///
-/// Iterates [`reify_compiler::stdlib_loader::load_stdlib()`], calls
-/// [`build_doc_model`] on each [`CompiledModule`] with an empty source string
-/// (the stdlib retains no per-module source text at runtime), and concatenates
-/// all the resulting single-module `ModuleDoc`s into one `DocModel`.
-///
-/// An empty source string is safe because:
-/// - Symbol names, signatures, and trait members come from the compiled types,
-///   not from source slices.
-/// - `span_text` / `byte_offset_to_line_col` are guarded against empty /
-///   out-of-range inputs, yielding empty `expr_repr` strings and `line: None`
-///   for constraints rather than panicking.
+/// Lowers each [`reify_compiler::stdlib_loader::load_stdlib()`] module through
+/// [`build_doc_model`] against its own source from
+/// [`reify_compiler::stdlib_loader::stdlib_sources()`], so stdlib documentation
+/// takes the same path as a user module's.  Modules are paired by path, not by
+/// position: `load_stdlib` returns them in topological order, which need not
+/// match the source list once a stdlib module imports another.
 ///
 /// The order of modules in the returned `DocModel` matches the order that
 /// `load_stdlib()` returns them.
+///
+/// # Panics
+///
+/// If a compiled module has no source entry, which would break the invariant
+/// that `load_stdlib` compiles exactly `stdlib_sources()`.
 pub fn build_stdlib_doc_model() -> DocModel {
-    use reify_compiler::stdlib_loader::load_stdlib;
+    use reify_compiler::stdlib_loader::{load_stdlib, stdlib_sources};
+    let sources: Vec<(ModulePath, String)> = stdlib_sources()
+        .into_iter()
+        .map(|(name, source)| {
+            let path = ModulePath::from_dotted(name).unwrap_or_else(|e| {
+                panic!("stdlib source name {name:?} is not a module path: {e}")
+            });
+            (path, source)
+        })
+        .collect();
     let mut modules = Vec::new();
     for compiled in load_stdlib() {
-        let single_model = build_doc_model(compiled, "");
+        let source = sources
+            .iter()
+            .find(|(path, _)| *path == compiled.path)
+            .map(|(_, source)| source.as_str())
+            .unwrap_or_else(|| {
+                panic!(
+                    "stdlib module {} has no entry in stdlib_sources(), but load_stdlib \
+                     compiles exactly stdlib_sources()",
+                    compiled.path
+                )
+            });
         // build_doc_model always returns exactly one ModuleDoc.
-        modules.extend(single_model.modules);
+        modules.extend(build_doc_model(compiled, source).modules);
     }
     DocModel { modules }
 }
