@@ -1389,8 +1389,13 @@ git:
   # Main-gate sanction handshake: advance_main / recover_red_main run the mark before their CAS
   # update-ref and the unmark after a failed one (`sh -c`, cwd=project_root). Token format and
   # consume rules: hooks/main-gate-lib.sh, PRD docs/prds/v0_6/warm-lane-scripts-one-lock-one-env-one-oracle.md D9.
-  # Restart-only: applies at the next scripts/orchestrator-redeploy-restart.sh; until then the old
-  # `touch` writes an empty token, which the hook's legacy arm still sanctions (removed by #8713).
+  # Restart-only: applies at the next scripts/orchestrator-redeploy-restart.sh, so restart right
+  # after landing. Until then the old `touch` runs, and it writes an empty token (which the
+  # hook's legacy arm still sanctions; removed by #8713) only when it creates the sentinel. An
+  # existing sentinel keeps its token, so a bound token that a main move left unconsumed (a
+  # bypassed rollback, a clobbered core.hooksPath) is stale and, under ENFORCE, aborts one
+  # merge-queue CAS. The hook discards the stale token and the old `rm -f` unmark runs, so the
+  # retry lands.
   main_gate_mark_command: 'scripts/main-gate-mark.sh mark'
   main_gate_unmark_command: 'scripts/main-gate-mark.sh unmark'
   # Warm-lane base location (DA3/DA4, task 4696 R3).
