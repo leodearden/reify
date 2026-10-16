@@ -223,6 +223,7 @@ RF=""; make_repo RF
 echo foreign-mark-then-fail > "$RF/.git/gate-mode"
 tip_f="$(git -C "$RF" rev-parse main)"
 land "$RF" task/foo
+assert "B7 foreign token: the failed land exits non-zero" test "$LAND_RC" -ne 0
 assert "B7 foreign token: main unchanged" \
     test "$(git -C "$RF" rev-parse main)" = "$tip_f"
 assert "B7 foreign token: the sentinel survives the failed land" \
@@ -242,6 +243,38 @@ assert "B7 interrupted: main unchanged" \
     test "$(git -C "$RK" rev-parse main)" = "$tip_k"
 assert "B7 interrupted: no sentinel remains" \
     bash -c "! test -e '$RK/.git/reify-main-gate-ok'"
+
+# -- a failed merge reports failure: gate failure ------------------------------
+echo ""
+echo "--- failed gate: land.sh exits non-zero and aborts the merge ---"
+RG=""; make_repo RG
+echo fail > "$RG/.git/gate-mode"
+tip_g="$(git -C "$RG" rev-parse main)"
+land "$RG" task/foo
+assert "failed gate: exits non-zero" test "$LAND_RC" -ne 0
+assert "failed gate: reports the merge's own exit status" \
+    bash -c "printf '%s\n' \"\$1\" | grep -qF 'merge failed (exit 1)'" _ "$LAND_OUT"
+assert "failed gate: main unchanged" \
+    test "$(git -C "$RG" rev-parse main)" = "$tip_g"
+assert "failed gate: the merge was aborted (no MERGE_HEAD left)" \
+    bash -c "! test -e '$RG/.git/MERGE_HEAD'"
+assert "failed gate: no sentinel" \
+    bash -c "! test -e '$RG/.git/reify-main-gate-ok'"
+
+# -- a failed merge reports failure: conflict ----------------------------------
+echo ""
+echo "--- conflict: land.sh exits non-zero and aborts the merge ---"
+RX=""; make_repo RX
+printf 'other\n' > "$RX/feature.txt"
+git -C "$RX" add feature.txt
+git -C "$RX" commit -q -m "conflicting main work" 2>/dev/null
+tip_x="$(git -C "$RX" rev-parse main)"
+land "$RX" task/foo
+assert "conflict: exits non-zero" test "$LAND_RC" -ne 0
+assert "conflict: main unchanged" \
+    test "$(git -C "$RX" rev-parse main)" = "$tip_x"
+assert "conflict: the merge was aborted (no MERGE_HEAD left)" \
+    bash -c "! test -e '$RX/.git/MERGE_HEAD'"
 
 # -- non-vacuity control: the recorded gate-env can only come from land.sh -----
 # WHY THIS EXISTS. The two propagation assertions above were MEASURED vacuous:
