@@ -477,6 +477,17 @@ in_fix2 scripts/main-gate-mark.sh --help
 assert "(B8 usage) --help -> exit 0" test "$FIX2_RC" -eq 0
 
 echo ""
+echo "--- (B8 publish) a mark whose rename fails reports it and leaves no temp file ---"
+make_fix2
+MV_FAILS="$(mktemp -d)"; _TMPDIRS+=("$MV_FAILS")
+printf '#!/bin/sh\nexit 1\n' > "$MV_FAILS/mv"; chmod +x "$MV_FAILS/mv"
+in_fix2 PATH="$MV_FAILS:$PATH" scripts/main-gate-mark.sh mark
+assert "(B8 publish) mark exits non-zero" test "$FIX2_RC" -ne 0
+assert "(B8 publish) no sentinel was published" bash -c "! test -e '$F2_SENTINEL'"
+assert "(B8 publish) no temp file is left in the common git dir" \
+    bash -c "! compgen -G '$F2_SENTINEL.tmp.*' >/dev/null"
+
+echo ""
 echo "--- (B8 yaml) dark-factory-orchestrator.yaml git.main_gate_{mark,unmark}_command ---"
 if ! python3 -c 'import yaml' 2>/dev/null; then
     echo "SKIP: python3 'yaml' (PyYAML) not available; skipping the B8 yaml face (the script face above still asserts B8)"
