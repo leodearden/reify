@@ -1,7 +1,8 @@
 // /prd S27 tooling-front-end evidence: a clean stdlib-using module.
-// `reify check` resolves the stdlib enum; the `reify mcp-server`
-// get_diagnostics path (no-prelude `reify_compiler::compile`) reports
-// "unresolved type: InfillPattern" on the same file.
+// `reify check` resolves the stdlib enum; the since-deleted (#6665)
+// `reify mcp-server` get_diagnostics path (no-prelude
+// `reify_compiler::compile`) reported "unresolved type: InfillPattern" on
+// the same file.
 module tooling_fe_stdlib_enum
 
 structure def Print {

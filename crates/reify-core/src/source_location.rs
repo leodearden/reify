@@ -101,7 +101,8 @@ pub fn byte_offset_to_line_col(source: &str, offset: usize) -> (usize, usize) {
     // (u32::MAX as usize) is used by SourceSpan::prelude() to mark spans that
     // have no meaningful byte-offset in the current compilation unit (e.g.
     // cross-prelude collision warnings).  Return (1, 1) — the same "no
-    // user-file location" fallback used by mcp_context when labels is empty —
+    // user-file location" fallback the GUI's diagnostics_to_info uses when
+    // labels is empty —
     // in BOTH debug and release builds.  This must come before the debug_assert
     // so debug builds don't panic on the sentinel.
     if offset == crate::SourceSpan::PRELUDE_SENTINEL_OFFSET {

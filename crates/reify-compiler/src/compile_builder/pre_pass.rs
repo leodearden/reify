@@ -38,7 +38,7 @@ use crate::type_resolution::convert_type_params;
 ///
 /// It changes no in-tree PRODUCTION behaviour. The surfaces that PUBLISH these diagnostics
 /// all gate on `parsed.errors` and return BEFORE compiling — `reify-cli`'s two entry points,
-/// `mcp_context.rs`'s three, `gui/src-tauri/src/engine.rs`, and the only `reify-lsp` entry the
+/// `gui/src-tauri/src/engine.rs`, and the only `reify-lsp` entry the
 /// running server publishes from, `diagnostics.rs::compute_diagnostics_with_state` (called at
 /// `server.rs:196`/`238`). Those gates are LOAD-BEARING, not made redundant by this severity:
 /// each converts the parse errors itself, so removing one would start showing an editor user
