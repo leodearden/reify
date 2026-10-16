@@ -823,6 +823,17 @@ echo "  FAIL: x"
 exit 1
 """
 
+# Fails its first run and passes every later one, so the pool's serial retry
+# turns it into a flaky pass.
+FLAKY_MEMBER = """#!/usr/bin/env bash
+if [ -e "$FIXTURE_STATE/flaky.failed-once" ]; then
+    exit 0
+fi
+touch "$FIXTURE_STATE/flaky.failed-once"
+echo "  FAIL: first attempt"
+exit 1
+"""
+
 TWELVE_FAILS_MEMBER = """#!/usr/bin/env bash
 for i in 1 2 3 4 5 6 7 8 9 10 11 12; do echo "  FAIL: $i"; done
 exit 1
@@ -1026,6 +1037,25 @@ class RunAllChannelTests(unittest.TestCase):
                 self.assertEqual({r["mode"] for r in starts}, {expected_mode})
                 fail_attempts = [r["attempt"] for r in starts if r["member"] == "test_fail.sh"]
                 self.assertEqual(fail_attempts, [1, 2] if branch == "pool" else [1])
+
+    def test_b1_a_pool_member_that_passes_its_retry_is_one_flaky_pass(self):
+        fx = RunAllFixture(self, {"test_flaky.sh": FLAKY_MEMBER, "test_pass.sh": PASS_MEMBER})
+        result = fx.run(manifest=fx.manifest({"test_flaky.sh": "pool", "test_pass.sh": "pool"}))
+        self.assertEqual(result.returncode, 0)
+        events = fx.events()
+        finish = self.assert_one_run(result, events, "pool")
+        flaky_retried = re.search(r"^=== Summary: .*, (\d+) flaky-retried ===$", result.stdout, re.M)
+        self.assertIsNotNone(flaky_retried)
+        self.assertEqual(finish["flaky"], ["test_flaky.sh"])
+        self.assertEqual(len(finish["flaky"]), int(flaky_retried.group(1)))
+        flaky = verify_events.select(events, event="member_finish", where={"member": "test_flaky.sh"})
+        self.assertEqual(len(flaky), 1)
+        self.assertEqual(
+            (flaky[0]["verdict"], flaky[0]["attempt"], flaky[0]["rc"], flaky[0]["fail_detail"]),
+            ("FLAKY_PASS", 2, 0, []),
+        )
+        starts = verify_events.select(events, event="member_start", where={"member": "test_flaky.sh"})
+        self.assertEqual([r["attempt"] for r in starts], [1, 2])
 
     def test_b1_subset_branch_records_the_skipped_member(self):
         fx = RunAllFixture(self, B1_MEMBERS)
