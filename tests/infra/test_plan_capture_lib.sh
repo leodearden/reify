@@ -145,9 +145,9 @@ assert "plan_capture_complete: markers present with nothing after the commands m
     refute plan_capture_complete "$_MARKER_ONLY_DUMP"
 
 # (f) Regression pin for (e)'s fix, stated adjacent to it: the docs-only dump is
-# NOT the truncation in (e) — verify.sh:3663 unconditionally emits either real
-# command lines or the comment "# (no commands — nothing to verify for this
-# action/scope)" after the marker, so a COMMENT line after the marker is a
+# NOT the truncation in (e) — verify.sh's --print-plan printer unconditionally
+# emits either real command lines or the comment "# (no commands — nothing to
+# verify for this action/scope)" after the marker, so a COMMENT line after the marker is a
 # complete plan. A fix that demanded a non-comment command line would red this.
 assert "plan_capture_complete: a comment-only line after the commands marker still returns 0" \
     plan_capture_complete "$_EMPTY_PLAN_DUMP"
@@ -373,14 +373,14 @@ assert "plan_count_noncomment_lines: single command line -> 1" \
 # Every case below is a VERBATIM line shape captured from `verify.sh --print-plan`
 # (merge-gate `--profile both --scope all` and narrowing-active `--profile both
 # --scope branch` runs of the same fixture) — not invented. The `cargo test`
-# twin in (g) is the NEXTEST=0 fallback built at scripts/verify.sh:1944+1950.
+# twin in (g) is emit_nextest_pass's NEXTEST=0 `cargo test` fallback.
 # ---------------------------------------------------------------------------
 echo ""
 echo "--- plan_is_narrowing_axis_line: narrowing-axis classification ---"
 
 # --- ON-AXIS: one case per AFFECTED_ALL_FLAGS consumption site --------------
 
-# (a) clippy site (verify.sh:2563), non-narrowed twin — scope=all -> --workspace.
+# (a) clippy site (build_plan's lint add), non-narrowed twin — scope=all -> --workspace.
 assert "plan_is_narrowing_axis_line (a): clippy --workspace is ON-axis" \
     plan_is_narrowing_axis_line "timeout --kill-after=60 45m nice -n 5 cargo clippy --workspace --all-targets -- -D warnings"
 
@@ -388,7 +388,7 @@ assert "plan_is_narrowing_axis_line (a): clippy --workspace is ON-axis" \
 assert "plan_is_narrowing_axis_line (b): clippy -p <affected> is ON-axis" \
     plan_is_narrowing_axis_line "timeout --kill-after=60 45m nice -n 15 ionice -c 2 -n 7 cargo clippy -p reify-doc -p reify-ir --all-targets -- -D warnings"
 
-# (c) DEBUG nextest site (verify.sh:2133), non-narrowed twin.
+# (c) DEBUG nextest site (add_test_passes's debug arm), non-narrowed twin.
 assert "plan_is_narrowing_axis_line (c): nextest --workspace (debug) is ON-axis" \
     plan_is_narrowing_axis_line "timeout --kill-after=60 60m nice -n 5 cargo nextest run --workspace --config-file /tmp/reify-nextest-occt.<print-plan-placeholder> 9<&-"
 
@@ -396,7 +396,7 @@ assert "plan_is_narrowing_axis_line (c): nextest --workspace (debug) is ON-axis"
 assert "plan_is_narrowing_axis_line (d): nextest -p <affected> (debug) is ON-axis" \
     plan_is_narrowing_axis_line "timeout --kill-after=60 60m nice -n 15 ionice -c 2 -n 7 cargo nextest run -p reify-doc -p reify-ir --config-file /tmp/reify-nextest-occt.<print-plan-placeholder> 9<&-"
 
-# (e) typecheck site (verify.sh:2414), narrowed.
+# (e) typecheck site (build_plan's typecheck add), narrowed.
 assert "plan_is_narrowing_axis_line (e): cargo check -p <affected> --tests is ON-axis" \
     plan_is_narrowing_axis_line "timeout --kill-after=60 20m cargo check -p reify-doc -p reify-ir --tests"
 
@@ -404,15 +404,15 @@ assert "plan_is_narrowing_axis_line (e): cargo check -p <affected> --tests is ON
 assert "plan_is_narrowing_axis_line (f): cargo check --workspace --tests is ON-axis" \
     plan_is_narrowing_axis_line "timeout --kill-after=60 20m cargo check --workspace --tests"
 
-# (g) DEBUG nextest site, NEXTEST=0 `cargo test` fallback twin (verify.sh:1944).
+# (g) DEBUG nextest site, emit_nextest_pass's NEXTEST=0 `cargo test` fallback twin.
 assert "plan_is_narrowing_axis_line (g): cargo test -p <affected> fallback is ON-axis" \
     plan_is_narrowing_axis_line "timeout --kill-after=60 60m nice -n 15 ionice -c 2 -n 7 cargo test -p reify-doc -p reify-ir -- --test-threads=1 9<&-"
 
 # --- OFF-AXIS: one case per non-narrowed ` -p `-bearing axis ----------------
 
-# (h) THE load-bearing case. The release-sensitivity pass (verify.sh:2098-2128)
-# is scoped by scripts/release-sensitive-crates.txt and is deliberately NOT
-# narrowed. Its ` -p reify-ir` is exactly what a blanket whole-plan
+# (h) THE load-bearing case. The release-sensitivity pass (add_test_passes's
+# release arm) is scoped by scripts/release-sensitive-crates.txt and is
+# deliberately NOT narrowed. Its ` -p reify-ir` is exactly what a blanket whole-plan
 # `! grep -qE " -p reify-ir"` conflated with a narrowing leak — the conflation
 # that stalled task 5166 (2026-07-20 -> 2026-08-20).
 assert "plan_is_narrowing_axis_line (h): release-sensitivity nextest pass is OFF-axis" \
@@ -452,8 +452,9 @@ assert "plan_is_narrowing_axis_line (o): empty line is OFF-axis" \
 # runs BEFORE the cargo-subcommand allowlist, so a narrowable subcommand that
 # ALSO carries ` --release` classifies OFF-axis. That is correct for verify.sh as
 # it stands — $AFFECTED_ALL_FLAGS reaches nextest only in the DEBUG branch
-# (verify.sh:2133, rel=""), and the check/clippy sites never take --release — but
-# it is an assumption about verify.sh, not a property of the line, and it is
+# (add_test_passes's debug arm, rel=""), and the check/clippy sites never take
+# --release — but it is an assumption about verify.sh, not a property of the
+# line, and it is
 # fragile in exactly one direction: a future --release-bearing narrowing site
 # would be silently misclassified as off-axis, quietly emptying the axis subset
 # that MG-B5/MG-B6a assert an absence over.
@@ -563,11 +564,12 @@ assert "plan_narrowing_axis_count (j): comment-only dump -> 0" \
 # assertion failure.  The two operations only compose one way round: certify
 # completeness on the RAW dump first, THEN reduce to command lines.  This helper
 # is the second half, kept fork-free for the same esc-4574-42 reason as the rest
-# of the lib (plan_capture_lib.sh:8-14).
+# of the lib (see the fork-free rationale in plan_capture_lib.sh's header).
 #
 # Comment stripping is load-bearing for the migration, not cosmetic: several occt
-# assertions (test_occt_flock_gate.sh:131,148,296,299,302) assert a pattern is
-# ABSENT, and a retained comment line could satisfy the pattern and flip them.
+# assertions (test_occt_flock_gate.sh's comment-stripped absence checks) assert a
+# pattern is ABSENT, and a retained comment line could satisfy the pattern and
+# flip them.
 # ---------------------------------------------------------------------------
 echo ""
 echo "--- plan_strip_comments: fork-free comment stripping ---"

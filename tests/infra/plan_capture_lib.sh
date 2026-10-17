@@ -13,6 +13,11 @@
 # bash [[ ]] does no fork and no pipe, so predicates become pure functions
 # of the captured string, eliminating this failure surface entirely.
 #
+# Header fields and step order have one parser each: plan_header_field reads a
+# header field by line kind and exact name, and plan_step_index locates a step in
+# the commands block. Read the plan through them rather than through ordered
+# substrings or byte offsets, which a reordered or extended plan silently breaks.
+#
 # Usage:
 #   [ -f "$SCRIPT_DIR/plan_capture_lib.sh" ] || { echo "ERROR: plan_capture_lib.sh not found"; exit 1; }
 #   source "$SCRIPT_DIR/plan_capture_lib.sh"
@@ -55,10 +60,11 @@ export -f plan_match
 # plan_capture_complete <dump>
 #
 # Returns 0 iff <dump> is structurally whole, which takes THREE conditions —
-# both of the markers verify.sh unconditionally emits in every --print-plan
-# invocation, AND at least one non-empty line after the second one:
-#   "# verify.sh plan"   — header (verify.sh:3636)
-#   "# --- commands"     — commands-block marker (verify.sh:3661)
+# both of the markers verify.sh's --print-plan printer (the
+# `if [ "$PRINT_PLAN" -eq 1 ]` block after `build_plan`) unconditionally emits,
+# AND at least one non-empty line after the second one:
+#   "# verify.sh plan"   — header
+#   "# --- commands"     — commands-block marker
 #   <a non-empty line after the commands marker>
 #
 # WHY THE MARKER PAIR ALONE IS INSUFFICIENT: both markers sit in the plan
@@ -68,9 +74,9 @@ export -f plan_match
 # so capture_print_plan returns without retrying and the missing line surfaces
 # as a spurious assertion FAIL rather than as the incomplete capture it is.
 #
-# The rule is deliberately "a non-empty line", not "a command line": verify.sh
+# The rule is deliberately "a non-empty line", not "a command line": the printer
 # emits either real command lines or the comment
-# "# (no commands — nothing to verify for this action/scope)" (verify.sh:3663),
+# "# (no commands — nothing to verify for this action/scope)",
 # so a docs-only scope has a legitimately command-free but complete plan.
 # Demanding a non-comment line would make every such plan retry to exhaustion.
 #
@@ -92,8 +98,8 @@ plan_capture_complete() {
 
 # plan_narrow_active <dump>
 #
-# Extracts the NARROW_ACTIVE value from the --print-plan narrowing header
-# emitted by verify.sh:3658:
+# Extracts the NARROW_ACTIVE value from the narrowing header emitted by
+# verify.sh's --print-plan printer:
 #   # narrowing — NARROW_ACTIVE=N affected=...
 #
 # Prints the numeric value (0 or 1) to stdout; prints nothing if the line
@@ -205,15 +211,17 @@ plan_step_index() {
 # move. Returns non-zero for every other line.
 #
 # THE NARROWING AXIS IS EXACTLY THREE verify.sh CONSTRUCTION SITES (#6391):
-#   verify.sh:2133 — the DEBUG nextest pass (via emit_nextest_pass, rel="")
-#   verify.sh:2414 — `cargo check $AFFECTED_ALL_FLAGS --tests` (typecheck action)
-#   verify.sh:2563 — `cargo clippy $AFFECTED_ALL_FLAGS --all-targets`
+#   add_test_passes's debug arm — the DEBUG nextest pass
+#     (`emit_nextest_pass "$AFFECTED_ALL_FLAGS" …`, rel="")
+#   build_plan's typecheck add — `cargo check $AFFECTED_ALL_FLAGS --tests`
+#   build_plan's lint add — `cargo clippy $AFFECTED_ALL_FLAGS --all-targets`
 # Each emits `--workspace` when NARROW_ACTIVE=0 and ` -p <crate>...` when it is 1,
 # so BOTH shapes are on-axis; "no ` -p ` on the axis" is what proves no narrowing.
 #
 # EVERY OTHER ` -p `-bearing plan line is a fixed-crate or independently-scoped
 # axis that this function must classify as OFF-axis:
-#   - the release-sensitivity nextest pass (verify.sh:2098-2128) — scoped by
+#   - the release-sensitivity nextest pass (add_test_passes's release arm,
+#     `emit_nextest_pass "$_RELEASE_ALL_FLAGS" " --release" …`) — scoped by
 #     scripts/release-sensitive-crates.txt, and deliberately NOT narrowed
 #     ("NARROW_ACTIVE is intentionally not applied to the release pass");
 #   - the fixed `-p reify-gui --features gui` compile-check and nextest pass;
@@ -232,8 +240,8 @@ plan_step_index() {
 # ORDER MATTERS, and is a KNOWN LIMITATION: the flag exclusions are applied
 # BEFORE the allowlist, so a narrowable subcommand that also carried ` --release`
 # would classify OFF-axis. Sound today (AFFECTED_ALL_FLAGS reaches nextest only in
-# the DEBUG branch at verify.sh:2133, and the check/clippy sites never take
-# --release), but it is an assumption about verify.sh. Pinned as unit case (p) in
+# add_test_passes's debug arm, and the check/clippy sites never take --release),
+# but it is an assumption about verify.sh. Pinned as unit case (p) in
 # test_plan_capture_lib.sh; the behavioural backstop is the drift guard named in
 # the next paragraph.
 #
@@ -346,7 +354,9 @@ plan_narrowing_axis_count() {
 #
 # plan_capture_complete is retained as the cheap structural cross-check for
 # the case rc alone would miss: verify.sh exits non-zero with no plan at all
-# when the nextest availability probe hard-fails (verify.sh:2314), and a
+# when its top-level nextest availability probe (`cargo nextest --version`,
+# retried under REIFY_NEXTEST_PROBE_RETRY_SLEEP) hard-fails with "cargo-nextest
+# is present on PATH but the availability probe … failed persistently", and a
 # caller's assertion reads far better against a capture certified empty than
 # against a silent one.
 #
