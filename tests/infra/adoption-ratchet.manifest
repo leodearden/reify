@@ -45,3 +45,6 @@ app-unsub-slot | let [a-zA-Z]*[uU]nsub[:;= ] | gui/src/App.tsx | 0 | γ #9064
 # threads a tree counter.
 tree-generation-app | [tT]reeGeneration | gui/src/App.tsx | 0 | δ #9065
 tree-generation-stores | [tT]reeGeneration | gui/src/stores/*.ts | 0 | δ #9065
+# layout-default-import-debug: layout defaults live in LAYOUT_DIMENSIONS
+# (gui/src/stores/layoutStore.ts); the debug bridge resets through layout.reset().
+layout-default-import-debug | DEFAULT_[A-Z_]+(WIDTH|HEIGHT|COLLAPSED) | gui/src/debug/*.ts | 0 | ε #9066
