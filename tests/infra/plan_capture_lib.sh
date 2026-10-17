@@ -162,6 +162,41 @@ plan_header_field() {
     printf '%s' "$_value"
 }
 
+# plan_step_index <dump> <ERE> [<from>]
+#
+# The plan's steps are the non-empty, non-'#' lines after the first
+# `# --- commands` line (the marker plan_capture_complete certifies), numbered
+# from 0. Lines above the marker (a preamble, the retry marker, a narrowing
+# continuation line, the environment block) are never steps, and comment lines
+# inside the block do not advance the index.
+#
+# Prints the index of the first step at index >= <from> (default 0) that <ERE>
+# matches, per line as in plan_match, and returns 0. Prints -1, rc 0, when there
+# is no such step, so `[ -lt ]` comparisons stay well-formed. A <from> that is not
+# a non-negative integer prints nothing on stdout, names it on stderr, rc 2.
+#
+# "X after every Y" is `plan_step_index "$dump" Y "$i_X"` == -1: no Y at or after X.
+plan_step_index() {
+    local dump="$1" ere="$2" from="${3-0}" _from_re='^[0-9]+$' _line _step=0 _in_commands=0
+    if ! [[ "$from" =~ $_from_re ]]; then
+        printf "plan_step_index: <from> must be a non-negative integer, got '%s'\n" "$from" >&2
+        return 2
+    fi
+    while IFS= read -r _line; do
+        if (( ! _in_commands )); then
+            [[ "$_line" == "# --- commands"* ]] && _in_commands=1
+            continue
+        fi
+        case "$_line" in '#'* | '') continue ;; esac
+        if (( _step >= 10#$from )) && [[ "$_line" =~ $ere ]]; then
+            printf '%s' "$_step"
+            return 0
+        fi
+        (( ++_step ))
+    done <<< "$dump"
+    printf '%s' -1
+}
+
 # plan_is_narrowing_axis_line <line>
 #
 # Returns 0 iff <line> sits on the NARROWING AXIS — the set of plan lines whose
