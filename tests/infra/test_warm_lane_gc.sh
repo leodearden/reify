@@ -158,7 +158,6 @@ run_helper() {
 
 # ── git repo factory ───────────────────────────────────────────────────────────
 # make_repo DIR  — create a bare-minimum git repo at DIR with one initial commit.
-# Sets global REPO_DIR to the created path.
 # Always creates the 'main' branch (requires git >= 2.28; -b flag).
 make_repo() {
     local dir="$1"
@@ -168,6 +167,22 @@ make_repo() {
     touch "$dir/README.md"
     git -C "$dir" add README.md
     git -C "$dir" commit -q -m "initial"
+}
+
+# make_gc_fixture ROOT — build the layout every gc block starts from:
+#   ROOT/repo       a one-commit repo on main (make_repo)
+#   ROOT/worktrees  the empty mount gc scans for lanes and orphans
+#   ROOT/base       refresh-warm-base.sh's generation layout: target -> target.gen.1,
+#                   plus that generation's sibling reader lock, target.gen.1.lock
+# base sits BESIDE worktrees because that is where `reclaim --mount` derives the
+# base from ($(dirname MOUNT)/base/target — Block H), so callers read the three
+# paths off ROOT rather than receiving them back.
+make_gc_fixture() {
+    local root="$1"
+    mkdir -p "$root/worktrees" "$root/base/target.gen.1"
+    make_repo "$root/repo"
+    touch "$root/base/target.gen.1.lock"
+    ln -sfn "$root/base/target.gen.1" "$root/base/target"
 }
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -358,14 +373,11 @@ run_helper reclaim --worktrees-dir /tmp/some-dir
 assert "A6: reclaim without --base-target exits 2" test "$RC" -eq 2
 
 # A7: reclaim with both required flags exits 0 (empty worktrees-dir is valid)
-A7_WORKTREES="$(mktemp -d /tmp/test-gc-a7-XXXXXX)"
-_TMPDIRS+=("$A7_WORKTREES")
-A7_BASE="$(mktemp -d /tmp/test-gc-a7-base-XXXXXX)"
-_TMPDIRS+=("$A7_BASE")
-# Create a gen dir so the base-target resolution works
-mkdir -p "$A7_BASE/target.gen.1"
-touch "$A7_BASE/target.gen.1.lock"
-ln -sfn "$A7_BASE/target.gen.1" "$A7_BASE/target"
+A7_ROOT="$(mktemp -d /tmp/test-gc-a7-XXXXXX)"
+_TMPDIRS+=("$A7_ROOT")
+make_gc_fixture "$A7_ROOT"
+A7_WORKTREES="$A7_ROOT/worktrees"
+A7_BASE="$A7_ROOT/base"
 run_helper reclaim --worktrees-dir "$A7_WORKTREES" --base-target "$A7_BASE/target"
 assert "A7: empty worktrees-dir exits 0" test "$RC" -eq 0
 
@@ -407,18 +419,10 @@ echo "--- Block B: reset a divergent FREE lane ---"
 B_ROOT="$(mktemp -d /tmp/test-gc-b-XXXXXX)"
 _TMPDIRS+=("$B_ROOT")
 
+make_gc_fixture "$B_ROOT"
 B_REPO="$B_ROOT/repo"
 B_WORKTREES="$B_ROOT/worktrees"
 B_BASE="$B_ROOT/base"
-mkdir -p "$B_WORKTREES" "$B_BASE"
-
-# Set up primary git repo
-make_repo "$B_REPO"
-
-# Create base gen directory (simulates the warm base)
-mkdir -p "$B_BASE/target.gen.1"
-touch "$B_BASE/target.gen.1.lock"
-ln -sfn "$B_BASE/target.gen.1" "$B_BASE/target"
 
 # Create _lane-1 as a git worktree (clean, HEAD == main, i.e. landed)
 git -C "$B_REPO" worktree add -q "$B_WORKTREES/_lane-1"
@@ -471,16 +475,10 @@ echo "--- Block C: remove an orphaned-landed clean worktree ---"
 C_ROOT="$(mktemp -d /tmp/test-gc-c-XXXXXX)"
 _TMPDIRS+=("$C_ROOT")
 
+make_gc_fixture "$C_ROOT"
 C_REPO="$C_ROOT/repo"
 C_WORKTREES="$C_ROOT/worktrees"
 C_BASE="$C_ROOT/base"
-mkdir -p "$C_WORKTREES" "$C_BASE"
-
-make_repo "$C_REPO"
-
-mkdir -p "$C_BASE/target.gen.1"
-touch "$C_BASE/target.gen.1.lock"
-ln -sfn "$C_BASE/target.gen.1" "$C_BASE/target"
 
 # Create _lane-1 (pool lane, reclaimable)
 git -C "$C_REPO" worktree add -q "$C_WORKTREES/_lane-1"
@@ -541,16 +539,10 @@ echo "--- Block D: always-reclaim (dirty pool lane reset, dirty orphan preserved
 D_ROOT="$(mktemp -d /tmp/test-gc-d-XXXXXX)"
 _TMPDIRS+=("$D_ROOT")
 
+make_gc_fixture "$D_ROOT"
 D_REPO="$D_ROOT/repo"
 D_WORKTREES="$D_ROOT/worktrees"
 D_BASE="$D_ROOT/base"
-mkdir -p "$D_WORKTREES" "$D_BASE"
-
-make_repo "$D_REPO"
-
-mkdir -p "$D_BASE/target.gen.1"
-touch "$D_BASE/target.gen.1.lock"
-ln -sfn "$D_BASE/target.gen.1" "$D_BASE/target"
 
 # _lane-2: dirty POOL LANE (tracked file modified but not committed) — now RECLAIMED.
 git -C "$D_REPO" worktree add -q "$D_WORKTREES/_lane-2"
@@ -608,16 +600,10 @@ echo "--- Block E: always-reclaim (ahead pool lane reset, ahead orphan preserved
 E_ROOT="$(mktemp -d /tmp/test-gc-e-XXXXXX)"
 _TMPDIRS+=("$E_ROOT")
 
+make_gc_fixture "$E_ROOT"
 E_REPO="$E_ROOT/repo"
 E_WORKTREES="$E_ROOT/worktrees"
 E_BASE="$E_ROOT/base"
-mkdir -p "$E_WORKTREES" "$E_BASE"
-
-make_repo "$E_REPO"
-
-mkdir -p "$E_BASE/target.gen.1"
-touch "$E_BASE/target.gen.1.lock"
-ln -sfn "$E_BASE/target.gen.1" "$E_BASE/target"
 
 # _lane-3: clean POOL LANE with a committed change NOT in main (ahead-of-main) —
 # now RECLAIMED via always-reclaim (no --status-cmd wired).
@@ -680,16 +666,10 @@ echo "--- Block F: live-consumer flock is the sole Pass-1 preserve gate ---"
 F_ROOT="$(mktemp -d /tmp/test-gc-f-XXXXXX)"
 _TMPDIRS+=("$F_ROOT")
 
+make_gc_fixture "$F_ROOT"
 F_REPO="$F_ROOT/repo"
 F_WORKTREES="$F_ROOT/worktrees"
 F_BASE="$F_ROOT/base"
-mkdir -p "$F_WORKTREES" "$F_BASE"
-
-make_repo "$F_REPO"
-
-mkdir -p "$F_BASE/target.gen.1"
-touch "$F_BASE/target.gen.1.lock"
-ln -sfn "$F_BASE/target.gen.1" "$F_BASE/target"
 
 # _lane-4: clean, landed, with a live consumer holding the exclusive lock.
 git -C "$F_REPO" worktree add -q "$F_WORKTREES/_lane-4"
@@ -771,16 +751,10 @@ echo "--- Block G: combined PRD delta signal (always-reclaim) ---"
 G_ROOT="$(mktemp -d /tmp/test-gc-g-XXXXXX)"
 _TMPDIRS+=("$G_ROOT")
 
+make_gc_fixture "$G_ROOT"
 G_REPO="$G_ROOT/repo"
 G_WORKTREES="$G_ROOT/worktrees"
 G_BASE="$G_ROOT/base"
-mkdir -p "$G_WORKTREES" "$G_BASE"
-
-make_repo "$G_REPO"
-
-mkdir -p "$G_BASE/target.gen.1"
-touch "$G_BASE/target.gen.1.lock"
-ln -sfn "$G_BASE/target.gen.1" "$G_BASE/target"
 
 # Fixture 1: reclaimable FREE lane (_lane-free)
 git -C "$G_REPO" worktree add -q "$G_WORKTREES/_lane-free"
@@ -891,19 +865,11 @@ echo "--- Block H: --mount derivation (DF consumer contract) ---"
 H_ROOT="$(mktemp -d /tmp/test-gc-h-XXXXXX)"
 _TMPDIRS+=("$H_ROOT")
 
+# <root>/worktrees is the mount; <root>/base is its sibling, where --mount derives the base.
+make_gc_fixture "$H_ROOT"
 H_REPO="$H_ROOT/repo"
 H_WORKTREES="$H_ROOT/worktrees"
 H_BASE="$H_ROOT/base"
-mkdir -p "$H_WORKTREES" "$H_BASE"
-
-# Set up primary git repo
-make_repo "$H_REPO"
-
-# Create base gen directory (simulates the warm base)
-# Layout: <root>/worktrees/ (mount) + <root>/base/target.gen.1 (sibling)
-mkdir -p "$H_BASE/target.gen.1"
-touch "$H_BASE/target.gen.1.lock"
-ln -sfn "$H_BASE/target.gen.1" "$H_BASE/target"
 
 # Create _lane-1 as a git worktree (clean, HEAD == main, i.e. landed)
 git -C "$H_REPO" worktree add -q "$H_WORKTREES/_lane-1"
@@ -991,14 +957,11 @@ K_ROOT="$(mktemp -d /tmp/test-gc-k-XXXXXX)"
 _TMPDIRS+=("$K_ROOT")
 
 # ── K1: --disk-pressure deletes target/ outright, no seed-script invocation ────
-K1_REPO="$K_ROOT/k1-repo"
-K1_WORKTREES="$K_ROOT/k1-worktrees"
-K1_BASE="$K_ROOT/k1-base"
-mkdir -p "$K1_WORKTREES" "$K1_BASE"
-make_repo "$K1_REPO"
-mkdir -p "$K1_BASE/target.gen.1"
-touch "$K1_BASE/target.gen.1.lock"
-ln -sfn "$K1_BASE/target.gen.1" "$K1_BASE/target"
+K1_ROOT="$K_ROOT/k1"
+make_gc_fixture "$K1_ROOT"
+K1_REPO="$K1_ROOT/repo"
+K1_WORKTREES="$K1_ROOT/worktrees"
+K1_BASE="$K1_ROOT/base"
 
 make_task_lane "$K1_REPO" "$K1_WORKTREES" "_lane-1" "task/4827" "ahead"
 
@@ -1025,14 +988,11 @@ assert "K1: summary shows reset=1 (disk-pressure delete still counts as reset)" 
     bash -c 'printf "%s\n" "$1" | grep -qE "reset=1"' _ "$OUT"
 
 # ── K2: control — same fixture WITHOUT --disk-pressure resets via alpha ────────
-K2_REPO="$K_ROOT/k2-repo"
-K2_WORKTREES="$K_ROOT/k2-worktrees"
-K2_BASE="$K_ROOT/k2-base"
-mkdir -p "$K2_WORKTREES" "$K2_BASE"
-make_repo "$K2_REPO"
-mkdir -p "$K2_BASE/target.gen.1"
-touch "$K2_BASE/target.gen.1.lock"
-ln -sfn "$K2_BASE/target.gen.1" "$K2_BASE/target"
+K2_ROOT="$K_ROOT/k2"
+make_gc_fixture "$K2_ROOT"
+K2_REPO="$K2_ROOT/repo"
+K2_WORKTREES="$K2_ROOT/worktrees"
+K2_BASE="$K2_ROOT/base"
 
 make_task_lane "$K2_REPO" "$K2_WORKTREES" "_lane-1" "task/4827" "ahead"
 
@@ -1060,14 +1020,11 @@ assert "K2: summary shows reset=1" \
 # reclaimable Pass-1 lane. This locks that pool-wide scope: an ordinary
 # landed/clean lane (no task/NNNN branch) also gets its target/ deleted
 # outright under --disk-pressure rather than alpha-reseeded.
-K3_REPO="$K_ROOT/k3-repo"
-K3_WORKTREES="$K_ROOT/k3-worktrees"
-K3_BASE="$K_ROOT/k3-base"
-mkdir -p "$K3_WORKTREES" "$K3_BASE"
-make_repo "$K3_REPO"
-mkdir -p "$K3_BASE/target.gen.1"
-touch "$K3_BASE/target.gen.1.lock"
-ln -sfn "$K3_BASE/target.gen.1" "$K3_BASE/target"
+K3_ROOT="$K_ROOT/k3"
+make_gc_fixture "$K3_ROOT"
+K3_REPO="$K3_ROOT/repo"
+K3_WORKTREES="$K3_ROOT/worktrees"
+K3_BASE="$K3_ROOT/base"
 
 # Landed, clean, non-task-branch lane (mirrors Block B's fixture).
 git -C "$K3_REPO" worktree add -q "$K3_WORKTREES/_lane-1"
@@ -1102,14 +1059,11 @@ assert "K3: summary shows reset=1" \
 # deterministically: unlike a chmod-0-parent-dir permission trick, this is
 # root-safe (permission bits are bypassed when the test process runs as
 # root, which a filesystem-based trick cannot guarantee against).
-K4_REPO="$K_ROOT/k4-repo"
-K4_WORKTREES="$K_ROOT/k4-worktrees"
-K4_BASE="$K_ROOT/k4-base"
-mkdir -p "$K4_WORKTREES" "$K4_BASE"
-make_repo "$K4_REPO"
-mkdir -p "$K4_BASE/target.gen.1"
-touch "$K4_BASE/target.gen.1.lock"
-ln -sfn "$K4_BASE/target.gen.1" "$K4_BASE/target"
+K4_ROOT="$K_ROOT/k4"
+make_gc_fixture "$K4_ROOT"
+K4_REPO="$K4_ROOT/repo"
+K4_WORKTREES="$K4_ROOT/worktrees"
+K4_BASE="$K4_ROOT/base"
 
 make_task_lane "$K4_REPO" "$K4_WORKTREES" "_lane-1" "task/4827" "ahead"
 
@@ -1160,14 +1114,11 @@ assert "K4: stderr captures the rm failure detail (not swallowed)" \
 # make the mistake visible. This is also the emergency path (ENOSPC response),
 # i.e. exactly when an operator is least able to notice a corrupted build
 # (task 5572 review).
-K5_REPO="$K_ROOT/k5-repo"
-K5_WORKTREES="$K_ROOT/k5-worktrees"
-K5_BASE="$K_ROOT/k5-base"
-mkdir -p "$K5_WORKTREES" "$K5_BASE"
-make_repo "$K5_REPO"
-mkdir -p "$K5_BASE/target.gen.1"
-touch "$K5_BASE/target.gen.1.lock"
-ln -sfn "$K5_BASE/target.gen.1" "$K5_BASE/target"
+K5_ROOT="$K_ROOT/k5"
+make_gc_fixture "$K5_ROOT"
+K5_REPO="$K5_ROOT/repo"
+K5_WORKTREES="$K5_ROOT/worktrees"
+K5_BASE="$K5_ROOT/base"
 
 # _lane-1 live (cwd holder), _lane-2 free — same discrimination shape as P-basic,
 # but under --disk-pressure and with a FREE flock on both.
@@ -1231,16 +1182,10 @@ echo "--- Block M: ephemeral verify/sweep worktrees protected by default ---"
 M_ROOT="$(mktemp -d /tmp/test-gc-m-XXXXXX)"
 _TMPDIRS+=("$M_ROOT")
 
+make_gc_fixture "$M_ROOT"
 M_REPO="$M_ROOT/repo"
 M_WORKTREES="$M_ROOT/worktrees"
 M_BASE="$M_ROOT/base"
-mkdir -p "$M_WORKTREES" "$M_BASE"
-
-make_repo "$M_REPO"
-
-mkdir -p "$M_BASE/target.gen.1"
-touch "$M_BASE/target.gen.1.lock"
-ln -sfn "$M_BASE/target.gen.1" "$M_BASE/target"
 
 # Fixture 1: _mainsweep-abcd1234 — DF's background main-tip integrity-sweep
 # worktree (clean, landed — as it is immediately after DF mints it at main_sha).
@@ -1315,16 +1260,10 @@ echo "--- Block N: full managed-worktree protect set + explicit override intact 
 N_ROOT="$(mktemp -d /tmp/test-gc-n-XXXXXX)"
 _TMPDIRS+=("$N_ROOT")
 
+make_gc_fixture "$N_ROOT"
 N_REPO="$N_ROOT/repo"
 N_WORKTREES="$N_ROOT/worktrees"
 N_BASE="$N_ROOT/base"
-mkdir -p "$N_WORKTREES" "$N_BASE"
-
-make_repo "$N_REPO"
-
-mkdir -p "$N_BASE/target.gen.1"
-touch "$N_BASE/target.gen.1.lock"
-ln -sfn "$N_BASE/target.gen.1" "$N_BASE/target"
 
 # Four remaining orchestrator-managed non-pool worktree kinds, each clean/landed.
 for _n_name in _solo-1234 _substrate-gate-1234 _offline-deep _iact-demo; do
@@ -1377,16 +1316,10 @@ assert "N-default: summary shows removed=1 (control orphan)" \
 NOV_ROOT="$(mktemp -d /tmp/test-gc-nov-XXXXXX)"
 _TMPDIRS+=("$NOV_ROOT")
 
+make_gc_fixture "$NOV_ROOT"
 NOV_REPO="$NOV_ROOT/repo"
 NOV_WORKTREES="$NOV_ROOT/worktrees"
 NOV_BASE="$NOV_ROOT/base"
-mkdir -p "$NOV_WORKTREES" "$NOV_BASE"
-
-make_repo "$NOV_REPO"
-
-mkdir -p "$NOV_BASE/target.gen.1"
-touch "$NOV_BASE/target.gen.1.lock"
-ln -sfn "$NOV_BASE/target.gen.1" "$NOV_BASE/target"
 
 git -C "$NOV_REPO" worktree add -q "$NOV_WORKTREES/_mainsweep-abcd1234"
 touch "$NOV_WORKTREES/_mainsweep-abcd1234/PROTECTED_MARKER"
@@ -1441,16 +1374,10 @@ echo "--- Block O: --extra-protect-glob adds to the default protect set ---"
 O_ROOT="$(mktemp -d /tmp/test-gc-o-XXXXXX)"
 _TMPDIRS+=("$O_ROOT")
 
+make_gc_fixture "$O_ROOT"
 O_REPO="$O_ROOT/repo"
 O_WORKTREES="$O_ROOT/worktrees"
 O_BASE="$O_ROOT/base"
-mkdir -p "$O_WORKTREES" "$O_BASE"
-
-make_repo "$O_REPO"
-
-mkdir -p "$O_BASE/target.gen.1"
-touch "$O_BASE/target.gen.1.lock"
-ln -sfn "$O_BASE/target.gen.1" "$O_BASE/target"
 
 # Three clean+landed (HEAD==main) lanes, each with a divergent target marker.
 for _o_name in _lane-1 _lane-9 _mainsweep-x; do
@@ -1507,16 +1434,10 @@ assert "O9: summary preserved count includes BOTH protected entries (preserved=2
 OE_ROOT="$(mktemp -d /tmp/test-gc-oe-XXXXXX)"
 _TMPDIRS+=("$OE_ROOT")
 
+make_gc_fixture "$OE_ROOT"
 OE_REPO="$OE_ROOT/repo"
 OE_WORKTREES="$OE_ROOT/worktrees"
 OE_BASE="$OE_ROOT/base"
-mkdir -p "$OE_WORKTREES" "$OE_BASE"
-
-make_repo "$OE_REPO"
-
-mkdir -p "$OE_BASE/target.gen.1"
-touch "$OE_BASE/target.gen.1.lock"
-ln -sfn "$OE_BASE/target.gen.1" "$OE_BASE/target"
 
 for _oe_name in _lane-1 _lane-9 _mainsweep-x; do
     git -C "$OE_REPO" worktree add -q "$OE_WORKTREES/$_oe_name"
@@ -1582,16 +1503,10 @@ echo "--- Block P: per-lane live-consumer check inside the primitive (task 5572)
 P_ROOT="$(mktemp -d /tmp/test-gc-p-XXXXXX)"
 _TMPDIRS+=("$P_ROOT")
 
+make_gc_fixture "$P_ROOT"
 P_REPO="$P_ROOT/repo"
 P_WORKTREES="$P_ROOT/worktrees"
 P_BASE="$P_ROOT/base"
-mkdir -p "$P_WORKTREES" "$P_BASE"
-
-make_repo "$P_REPO"
-
-mkdir -p "$P_BASE/target.gen.1"
-touch "$P_BASE/target.gen.1.lock"
-ln -sfn "$P_BASE/target.gen.1" "$P_BASE/target"
 
 # Two clean+landed (HEAD==main) reclaimable pool lanes, each with a divergent
 # marker and a FREE flock (no holder started anywhere in this block).
@@ -1678,16 +1593,10 @@ assert "P11: _lane-1 reset once its live cwd reference is gone (preserve is temp
 PF_ROOT="$(mktemp -d /tmp/test-gc-pfd-XXXXXX)"
 _TMPDIRS+=("$PF_ROOT")
 
+make_gc_fixture "$PF_ROOT"
 PF_REPO="$PF_ROOT/repo"
 PF_WORKTREES="$PF_ROOT/worktrees"
 PF_BASE="$PF_ROOT/base"
-mkdir -p "$PF_WORKTREES" "$PF_BASE"
-
-make_repo "$PF_REPO"
-
-mkdir -p "$PF_BASE/target.gen.1"
-touch "$PF_BASE/target.gen.1.lock"
-ln -sfn "$PF_BASE/target.gen.1" "$PF_BASE/target"
 
 for _pf_name in _lane-1 _lane-2; do
     git -C "$PF_REPO" worktree add -q "$PF_WORKTREES/$_pf_name"
@@ -1756,16 +1665,10 @@ _BGPIDS=()  # clear so EXIT cleanup does not re-kill a possibly-reused PID
 PT_ROOT="$(mktemp -d /tmp/test-gc-pt-XXXXXX)"
 _TMPDIRS+=("$PT_ROOT")
 
+make_gc_fixture "$PT_ROOT"
 PT_REPO="$PT_ROOT/repo"
 PT_WORKTREES="$PT_ROOT/worktrees"
 PT_BASE="$PT_ROOT/base"
-mkdir -p "$PT_WORKTREES" "$PT_BASE"
-
-make_repo "$PT_REPO"
-
-mkdir -p "$PT_BASE/target.gen.1"
-touch "$PT_BASE/target.gen.1.lock"
-ln -sfn "$PT_BASE/target.gen.1" "$PT_BASE/target"
 
 for _pt_name in _lane-1 _lane-2; do
     git -C "$PT_REPO" worktree add -q "$PT_WORKTREES/$_pt_name"
@@ -1864,16 +1767,10 @@ echo "--- Block Q: Pass-2 orphan removal honours a live process reference (task 
 Q_ROOT="$(mktemp -d /tmp/test-gc-q-XXXXXX)"
 _TMPDIRS+=("$Q_ROOT")
 
+make_gc_fixture "$Q_ROOT"
 Q_REPO="$Q_ROOT/repo"
 Q_WORKTREES="$Q_ROOT/worktrees"
 Q_BASE="$Q_ROOT/base"
-mkdir -p "$Q_WORKTREES" "$Q_BASE"
-
-make_repo "$Q_REPO"
-
-mkdir -p "$Q_BASE/target.gen.1"
-touch "$Q_BASE/target.gen.1.lock"
-ln -sfn "$Q_BASE/target.gen.1" "$Q_BASE/target"
 
 # Two ORPHAN worktrees: names matching neither --lane-glob nor --protect-glob,
 # both clean and landed (HEAD == main) so _is_reclaimable returns 0 and Pass 2
@@ -1962,16 +1859,11 @@ echo "--- Block R: mmap substring-boundary regression against gc.sh (esc-5378, m
 R_ROOT="$(mktemp -d /tmp/test-gc-r-XXXXXX)"
 _TMPDIRS+=("$R_ROOT")
 
+make_gc_fixture "$R_ROOT"
 R_REPO="$R_ROOT/repo"
 R_WORKTREES="$R_ROOT/worktrees"
 R_BASE="$R_ROOT/base"
-mkdir -p "$R_WORKTREES" "$R_BASE" "$R_ROOT/stage"
-
-make_repo "$R_REPO"
-
-mkdir -p "$R_BASE/target.gen.1"
-touch "$R_BASE/target.gen.1.lock"
-ln -sfn "$R_BASE/target.gen.1" "$R_BASE/target"
+mkdir -p "$R_ROOT/stage"
 
 # _lane-1 and _lane-10: both clean+landed pool lanes with divergent markers and
 # FREE flocks. _lane-1's basename is a NAME-PREFIX of _lane-10's.
@@ -2048,14 +1940,11 @@ S_ROOT="$(mktemp -d /tmp/test-gc-s-XXXXXX)"
 _TMPDIRS+=("$S_ROOT")
 
 # ── S1: a POST-CLONE α abort ⇒ the clone is discarded and counted reset ────────
-S1_REPO="$S_ROOT/s1-repo"
-S1_WORKTREES="$S_ROOT/s1-worktrees"
-S1_BASE="$S_ROOT/s1-base"
-mkdir -p "$S1_WORKTREES" "$S1_BASE"
-make_repo "$S1_REPO"
-mkdir -p "$S1_BASE/target.gen.1"
-touch "$S1_BASE/target.gen.1.lock"
-ln -sfn "$S1_BASE/target.gen.1" "$S1_BASE/target"
+S1_ROOT="$S_ROOT/s1"
+make_gc_fixture "$S1_ROOT"
+S1_REPO="$S1_ROOT/repo"
+S1_WORKTREES="$S1_ROOT/worktrees"
+S1_BASE="$S1_ROOT/base"
 
 make_task_lane "$S1_REPO" "$S1_WORKTREES" "_lane-1" "task/5635" "ahead"
 
@@ -2108,14 +1997,11 @@ assert "S1: summary carries the appended reset_cold=1 sub-count" \
 # rather than to an EMPTY STDOUT: _seed_stub_body exits 0 and prints NOTHING to
 # stdout, so an empty-stdout rule would destroy this lane's target/ too (the same
 # premise K2 already relies on).
-S2_REPO="$S_ROOT/s2-repo"
-S2_WORKTREES="$S_ROOT/s2-worktrees"
-S2_BASE="$S_ROOT/s2-base"
-mkdir -p "$S2_WORKTREES" "$S2_BASE"
-make_repo "$S2_REPO"
-mkdir -p "$S2_BASE/target.gen.1"
-touch "$S2_BASE/target.gen.1.lock"
-ln -sfn "$S2_BASE/target.gen.1" "$S2_BASE/target"
+S2_ROOT="$S_ROOT/s2"
+make_gc_fixture "$S2_ROOT"
+S2_REPO="$S2_ROOT/repo"
+S2_WORKTREES="$S2_ROOT/worktrees"
+S2_BASE="$S2_ROOT/base"
 
 make_task_lane "$S2_REPO" "$S2_WORKTREES" "_lane-1" "task/5635" "ahead"
 
@@ -2143,14 +2029,11 @@ assert "S2: summary shows reset_cold=0 (the lane was reset WARM, not discarded c
 # "rm failed, lane left untouched" accounting on the other reset branch.
 # Technique + root-skip rationale: _discard_fail_seed_stub_body above.
 if [ "$(id -u)" -ne 0 ]; then
-    S3_REPO="$S_ROOT/s3-repo"
-    S3_WORKTREES="$S_ROOT/s3-worktrees"
-    S3_BASE="$S_ROOT/s3-base"
-    mkdir -p "$S3_WORKTREES" "$S3_BASE"
-    make_repo "$S3_REPO"
-    mkdir -p "$S3_BASE/target.gen.1"
-    touch "$S3_BASE/target.gen.1.lock"
-    ln -sfn "$S3_BASE/target.gen.1" "$S3_BASE/target"
+    S3_ROOT="$S_ROOT/s3"
+    make_gc_fixture "$S3_ROOT"
+    S3_REPO="$S3_ROOT/repo"
+    S3_WORKTREES="$S3_ROOT/worktrees"
+    S3_BASE="$S3_ROOT/base"
 
     # TWO reclaimable lanes in ONE fixture: _lane-1 aborts and its discard fails,
     # _lane-2 seeds cleanly. A per-candidate failure must not abort the pass, so
@@ -2212,14 +2095,11 @@ fi
 # refusing seed either way, which is exactly what reset_cold names — and such a
 # refusal is if anything MORE likely to be the pool-wide degradation inv.12
 # predicts, so excluding it would hide the very signal the sub-count exists for.
-S4_REPO="$S_ROOT/s4-repo"
-S4_WORKTREES="$S_ROOT/s4-worktrees"
-S4_BASE="$S_ROOT/s4-base"
-mkdir -p "$S4_WORKTREES" "$S4_BASE"
-make_repo "$S4_REPO"
-mkdir -p "$S4_BASE/target.gen.1"
-touch "$S4_BASE/target.gen.1.lock"
-ln -sfn "$S4_BASE/target.gen.1" "$S4_BASE/target"
+S4_ROOT="$S_ROOT/s4"
+make_gc_fixture "$S4_ROOT"
+S4_REPO="$S4_ROOT/repo"
+S4_WORKTREES="$S4_ROOT/worktrees"
+S4_BASE="$S4_ROOT/base"
 
 make_task_lane "$S4_REPO" "$S4_WORKTREES" "_lane-1" "task/5635" "ahead"
 
@@ -2293,14 +2173,11 @@ _TMPDIRS+=("$T_ROOT")
 # per lane. _lane-1's seed stub performs the rotation as its last act, and bash's
 # `*/` glob expansion is LC_COLLATE-sorted, so _lane-1 is always visited before
 # _lane-2. No --disk-pressure: the alpha branch is the one that resolves a gen.
-T1_REPO="$T_ROOT/t1-repo"
-T1_WORKTREES="$T_ROOT/t1-worktrees"
-T1_BASE="$T_ROOT/t1-base"
-mkdir -p "$T1_WORKTREES" "$T1_BASE"
-make_repo "$T1_REPO"
-mkdir -p "$T1_BASE/target.gen.1"
-touch "$T1_BASE/target.gen.1.lock"
-ln -sfn "$T1_BASE/target.gen.1" "$T1_BASE/target"
+T1_ROOT="$T_ROOT/t1"
+make_gc_fixture "$T1_ROOT"
+T1_REPO="$T1_ROOT/repo"
+T1_WORKTREES="$T1_ROOT/worktrees"
+T1_BASE="$T1_ROOT/base"
 
 for _t1_name in _lane-1 _lane-2; do
     git -C "$T1_REPO" worktree add -q "$T1_WORKTREES/$_t1_name"
@@ -2354,16 +2231,13 @@ assert "T1e: reset_cold=0 — the rotation degraded no lane to cold" \
 # The `7>>` is a subshell-level redirect, deliberately not an `exec 7>`: a
 # depth-0 exec open would make this file an offender candidate for
 # test_flock_detached_fork_guard.sh.
-T2_REPO="$T_ROOT/t2-repo"
-T2_WORKTREES="$T_ROOT/t2-worktrees"
-T2_BASE="$T_ROOT/t2-base"
+T2_ROOT="$T_ROOT/t2"
+make_gc_fixture "$T2_ROOT"
+T2_REPO="$T2_ROOT/repo"
+T2_WORKTREES="$T2_ROOT/worktrees"
+T2_BASE="$T2_ROOT/base"
 T2_READY="$T_ROOT/t2-reaper.ready"
 T2_REAPED="$T_ROOT/t2-reaper.reaped"
-mkdir -p "$T2_WORKTREES" "$T2_BASE"
-make_repo "$T2_REPO"
-mkdir -p "$T2_BASE/target.gen.1"
-touch "$T2_BASE/target.gen.1.lock"
-ln -sfn "$T2_BASE/target.gen.1" "$T2_BASE/target"
 
 git -C "$T2_REPO" worktree add -q "$T2_WORKTREES/_lane-1"
 mkdir -p "$T2_WORKTREES/_lane-1/target"
