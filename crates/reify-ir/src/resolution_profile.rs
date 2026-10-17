@@ -1,3 +1,62 @@
+//! How a solving driver may spend and reuse resolution work.
+//!
+//! A [`ResolutionProfile`] varies along exactly two axes: the solver
+//! [`IterationBudget`] and the [`StalenessPolicy`] for previously computed
+//! results. It has no way to decline a stage. Rationale:
+//! `docs/prds/v0_6/solver-driver-parity.md` §4.5 (I5).
+
+/// How many iterations a solve may spend.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum IterationBudget {
+    /// The solver's own built-in iteration limits, the only budget any driver
+    /// uses today.
+    SolverDefault,
+}
+
+/// Whether a driver may serve a previously computed result instead of
+/// recomputing it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum StalenessPolicy {
+    /// Every result is computed in this session.
+    Fresh,
+    /// Results persisted by an earlier session may be served.
+    MayServePersisted,
+}
+
+impl StalenessPolicy {
+    pub const fn permits_persisted_results(self) -> bool {
+        matches!(self, Self::MayServePersisted)
+    }
+}
+
+/// A solving driver's resolution profile: an iteration budget and a
+/// staleness policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ResolutionProfile {
+    iteration_budget: IterationBudget,
+    staleness: StalenessPolicy,
+}
+
+impl ResolutionProfile {
+    /// The solver's default budget, serving nothing persisted.
+    pub const FRESH: Self = Self::new(IterationBudget::SolverDefault, StalenessPolicy::Fresh);
+
+    pub const fn new(iteration_budget: IterationBudget, staleness: StalenessPolicy) -> Self {
+        Self {
+            iteration_budget,
+            staleness,
+        }
+    }
+
+    pub const fn iteration_budget(self) -> IterationBudget {
+        self.iteration_budget
+    }
+
+    pub const fn staleness(self) -> StalenessPolicy {
+        self.staleness
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
