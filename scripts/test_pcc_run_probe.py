@@ -255,6 +255,25 @@ class TestRunProbe(unittest.TestCase):
         )
 
 
+def _write_file_exists_stub(tmpdir, name):
+    """Write a stub binary that exits 0 iff any argv entry is an existing file."""
+    path = os.path.join(tmpdir, name)
+    script = textwrap.dedent("""\
+        #!/bin/sh
+        # Exit 0 if any argument names an existing regular file; else exit 1.
+        for arg in "$@"; do
+            if [ -f "$arg" ]; then
+                exit 0
+            fi
+        done
+        exit 1
+    """)
+    with open(path, "w") as f:
+        f.write(script)
+    os.chmod(path, 0o755)
+    return path
+
+
 # ---------------------------------------------------------------------------
 # step-15 (RED): regression — grammar-probe fixture must be absolute in build_command
 # ---------------------------------------------------------------------------
@@ -355,21 +374,7 @@ class TestBuildCommandAbsoluteFixture(unittest.TestCase):
     def _make_file_exists_stub(self):
         """Create a stub TREE_SITTER_BIN that exits 0 iff any argv entry is an existing file."""
         self._stub_idx += 1
-        path = os.path.join(self._tmpdir, f"ts_stub{self._stub_idx}")
-        script = textwrap.dedent("""\
-            #!/bin/sh
-            # Exit 0 if any argument names an existing regular file; else exit 1.
-            for arg in "$@"; do
-                if [ -f "$arg" ]; then
-                    exit 0
-                fi
-            done
-            exit 1
-        """)
-        with open(path, "w") as f:
-            f.write(script)
-        os.chmod(path, 0o755)
-        return path
+        return _write_file_exists_stub(self._tmpdir, f"ts_stub{self._stub_idx}")
 
     def test_grammar_run_probe_locates_fixture(self):
         """Grammar run_probe() passes an absolute fixture path so the stub locates it.
@@ -404,6 +409,81 @@ class TestBuildCommandAbsoluteFixture(unittest.TestCase):
             "(exit 0 = file found; exit 1 = file not found, i.e. build_command returned "
             "a relative path that does not resolve under CWD=tree-sitter-reify/)",
         )
+
+
+# ---------------------------------------------------------------------------
+# run_probe() measures whether the fixture exists when the probe launches
+# ---------------------------------------------------------------------------
+
+class TestRunProbeFixturePresence(unittest.TestCase):
+    """fixture_present is measured on the very path the launched argv carries.
+
+    The probe still launches when the fixture is absent, so the record keeps
+    its executed evidence; what the absence means is observe()'s business.
+    """
+
+    _PRESENT = "tests/prd-gate/fixtures/arrow_type.ri"
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="prd_gate_presence_")
+
+    def tearDown(self):
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    @staticmethod
+    def _probe(kind, fixture):
+        return pcc.Probe(
+            capability="presence",
+            probe_kind=kind,
+            fixture=fixture,
+            expected={"observation": "present", "match": {}},
+        )
+
+    def _never_written_fixtures(self):
+        absolute = os.path.join(self._tmpdir, "never_written.ri")
+        relative = os.path.join(
+            "tests", "prd-gate", "fixtures",
+            f"s22_never_written_{os.path.basename(self._tmpdir)}.ri",
+        )
+        for fixture in (absolute, relative):
+            self.assertFalse(
+                os.path.exists(os.path.join(_REPO_ROOT, fixture)),
+                f"precondition: {fixture} must not exist",
+            )
+        return {"absolute": absolute, "repo-relative": relative}
+
+    def test_committed_fixture_is_present_and_the_tool_agrees(self):
+        stub = _write_file_exists_stub(self._tmpdir, "ts_file_exists")
+        with unittest.mock.patch.dict(os.environ, {"TREE_SITTER_BIN": stub}):
+            run = pcc.run_probe(self._probe("grammar", self._PRESENT))
+        self.assertIs(run.fixture_present, True)
+        self.assertEqual(
+            run.exit_code, 0,
+            "the stub found the fixture on the argv path, so the measured path "
+            "and the launched path agree",
+        )
+
+    def test_never_written_fixture_is_absent_and_the_tool_agrees(self):
+        stub = _write_file_exists_stub(self._tmpdir, "ts_file_exists")
+        for label, fixture in self._never_written_fixtures().items():
+            with self.subTest(fixture=label):
+                with unittest.mock.patch.dict(os.environ, {"TREE_SITTER_BIN": stub}):
+                    run = pcc.run_probe(self._probe("grammar", fixture))
+                self.assertIs(run.fixture_present, False)
+                self.assertEqual(run.exit_code, 1, "the stub found no file either")
+
+    def test_absent_fixture_still_launches_the_probe(self):
+        stub = os.path.join(self._tmpdir, "reify_says_ran")
+        with open(stub, "w") as f:
+            f.write("#!/bin/sh\necho ran\nexit 3\n")
+        os.chmod(stub, 0o755)
+        for label, fixture in self._never_written_fixtures().items():
+            with self.subTest(fixture=label):
+                with unittest.mock.patch.dict(os.environ, {"REIFY_BIN": stub}):
+                    run = pcc.run_probe(self._probe("check", fixture))
+                self.assertIs(run.fixture_present, False)
+                self.assertIn("ran", run.stdout, "the probe must still have run")
+                self.assertEqual(run.exit_code, 3, "its own exit code is captured")
 
 
 # ---------------------------------------------------------------------------

@@ -465,6 +465,70 @@ class TestValueObservation(unittest.TestCase):
         )
 
 
+class TestAbsentFixtureIsIndeterminate(unittest.TestCase):
+    """A probe with no target cannot prove anything (PRD D3).
+
+    Each case is a run that WOULD have been PRESENT or ABSENT had its fixture
+    existed, so nothing but fixture_present can be deciding the answer.
+    """
+
+    _DAMPING = {"pattern": r"damping_ratio = ([-+0-9.eE]+)", "min": 0.01, "max": 0.03}
+
+    # (kind, run fields, match): each an otherwise-decisive observation.
+    _DECISIVE_RUNS = (
+        ("grammar", (0, "", ""), {}),
+        ("check", (1, "", "Error reading x.ri"), {"exit_code": 1}),
+        ("ir", (0, "a = 0.01 m", ""), {"stderr_contains": "EvalError"}),
+        ("value", (0, "damping_ratio = 0.018\n", ""), {"stdout_value": _DAMPING}),
+    )
+
+    def test_absent_fixture_is_indeterminate_for_every_kind(self):
+        for kind, (exit_code, stdout, stderr), match in self._DECISIVE_RUNS:
+            with self.subTest(kind=kind):
+                present = pcc.ProbeRun(exit_code, stdout, stderr)
+                self.assertIn(
+                    pcc.observe(kind, present, match), (pcc.PRESENT, pcc.ABSENT),
+                    "precondition: with its fixture present the run is decisive",
+                )
+                absent = pcc.ProbeRun(exit_code, stdout, stderr, fixture_present=False)
+                self.assertEqual(
+                    pcc.observe_with_evidence(kind, absent, match),
+                    (pcc.INDETERMINATE, None),
+                    "no value reading is taken from a run with no target",
+                )
+
+    def test_absent_fixture_evaluates_unprovable_and_exits_2(self):
+        for kind, (exit_code, stdout, stderr), match in self._DECISIVE_RUNS:
+            with self.subTest(kind=kind):
+                probe = pcc.Probe(
+                    capability=f"{kind} on a missing fixture",
+                    probe_kind=kind,
+                    fixture="tests/prd-gate/fixtures/never_written.ri",
+                    expected={"observation": "present", "match": match},
+                )
+                result = pcc.evaluate(
+                    probe,
+                    runner=lambda _p: pcc.ProbeRun(
+                        exit_code, stdout, stderr, fixture_present=False
+                    ),
+                )
+                self.assertEqual(result.verdict, pcc.UNPROVABLE)
+                self.assertEqual(pcc.harness_exit_code([result]), 2)
+
+    def test_a_harness_failure_outranks_an_absent_fixture(self):
+        """The machinery failing is the louder fact."""
+        run = pcc.ProbeRun(
+            127, "", "",
+            harness_failure=pcc.HarnessFailure(
+                pcc.HarnessFailureKind.LAUNCH, "[Errno 2] No such file or directory"
+            ),
+            fixture_present=False,
+        )
+        for kind, _, match in self._DECISIVE_RUNS:
+            with self.subTest(kind=kind):
+                self.assertEqual(pcc.observe(kind, run, match), pcc._HARNESS_ERROR)
+
+
 class TestEvaluate(unittest.TestCase):
     """Tests for evaluate() over injected synthetic ProbeRun fixtures.
 

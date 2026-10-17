@@ -96,6 +96,9 @@ class _MainHarness:
         A key that is not a probe kind is a typo, and a silent one would be the
         worst kind: the steer would go nowhere and the test would assert against
         an all-PASSing run while believing it had forced a failure.
+
+        A value is either an (exit_code, stdout, stderr) triple or a ready
+        ProbeRun, returned verbatim, for a test that steers its typed fields.
         """
         unknown = sorted(set(by_kind) - set(self._PASSING_RUNS))
         if unknown:
@@ -106,7 +109,10 @@ class _MainHarness:
         runs = dict(self._PASSING_RUNS, **by_kind)
 
         def runner(probe: Any) -> Any:
-            exit_code, stdout, stderr = runs[probe.probe_kind]
+            run = runs[probe.probe_kind]
+            if isinstance(run, pcc.ProbeRun):
+                return run
+            exit_code, stdout, stderr = run
             return pcc.ProbeRun(exit_code=exit_code, stdout=stdout, stderr=stderr)
         return runner
 
@@ -641,8 +647,56 @@ class TestMain(_MainHarness, unittest.TestCase):
         self.assertGreater(len(items), 0, "--json must include at least one result")
         first = items[0]
         for fld in ("capability", "probe_kind", "verdict", "command",
-                    "exit_code", "stdout", "stderr"):
+                    "exit_code", "stdout", "stderr",
+                    "fixture", "fixture_present", "harness_failure"):
             self.assertIn(fld, first, f"--json result must include '{fld}'")
+
+    # ── the typed probe outcome on the record (PRD §5.1) ─────────────────────
+
+    def _absent_check_fixture_runner(self):
+        """The check probe ran — exit 1 satisfies its match — on no fixture."""
+        return self._make_runner({
+            "check": pcc.ProbeRun(1, "", "Error reading x.ri", fixture_present=False),
+        })
+
+    def test_json_record_names_the_fixture_as_written(self):
+        rc, out, _ = self._run_main_capturing(
+            ["--json", str(_EXAMPLE_PROBE_SET)], runner=self._all_pass_runner()
+        )
+        self.assertEqual(rc, 0)
+        with open(_EXAMPLE_PROBE_SET) as fh:
+            written = [p["fixture"] for p in json.load(fh)["probes"]]
+        records = json.loads(out)["results"]
+        self.assertEqual([r["fixture"] for r in records], written)
+        for record in records:
+            with self.subTest(capability=record["capability"]):
+                self.assertIs(record["fixture_present"], True)
+                self.assertIsNone(record["harness_failure"])
+
+    def test_json_record_of_an_absent_fixture_is_unprovable(self):
+        rc, out, _ = self._run_main_capturing(
+            ["--json", str(_EXAMPLE_PROBE_SET)],
+            runner=self._absent_check_fixture_runner(),
+        )
+        self.assertEqual(rc, 2, "a probe set naming a missing fixture never exits 0")
+        check = [r for r in json.loads(out)["results"] if r["probe_kind"] == "check"][0]
+        self.assertIs(check["fixture_present"], False)
+        self.assertEqual(check["verdict"], pcc.UNPROVABLE)
+
+    def test_text_renderer_marks_an_absent_fixture(self):
+        rc, out, _ = self._run_main_capturing(
+            [str(_EXAMPLE_PROBE_SET)], runner=self._absent_check_fixture_runner()
+        )
+        self.assertEqual(rc, 2)
+        for row in re.split(r"\n(?=\[)", out.strip()):
+            fixture_line = [
+                line for line in row.splitlines() if line.strip().startswith("fixture:")
+            ][0]
+            with self.subTest(row=row.splitlines()[0]):
+                self.assertEqual(
+                    "not present" in fixture_line, "kind:      check" in row,
+                    fixture_line,
+                )
 
     def test_main_json_verdict_is_string(self):
         """--json result.verdict is a string."""
