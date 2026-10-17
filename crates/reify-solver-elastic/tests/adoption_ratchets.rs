@@ -931,6 +931,17 @@ const RATCHETS: &[Ratchet] = &[
         )),
     },
     Ratchet {
+        name: "anchored-fixed-point-drivers",
+        home: "the stencil-parameterised anchored fixed-point driver in form_find.rs \
+               (solver-crates-layering D3, leaf η)",
+        baseline: 1,
+        measure: Measure::Occurrences(production_pattern(
+            "solve_reduced(&",
+            SRC,
+            "let solved = solve_reduced(&d, &x, &f, &a);",
+        )),
+    },
+    Ratchet {
         name: "mpc-row-literals",
         home: "MpcRow::new (solver-crates-layering D10, leaf θ)",
         baseline: 2,
