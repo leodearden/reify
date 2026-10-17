@@ -1396,22 +1396,44 @@ describe('SidecarSession stale-state lifecycle', () => {
     vi.mocked(spawn).mockReset();
   });
 
-  it('invokeSdk start clears stale maps from a previous turn', async () => {
-    // Pre-populate stale state from a hypothetical prior turn that left data behind
-    (session as any).pendingToolUseIds.set('reify_old', ['toolu_stale']);
-    (session as any).toolNameById.set('toolu_stale', 'reify_old');
-
-    // Configure spawn mock to return a process that emits no tool_use (just text + result)
+  it('a tool_use left unanswered by a previous invocation is unknown to the next one', async () => {
+    // Invocation 1 registers toolu_stale and completes without the host ever answering it.
     vi.mocked(spawn).mockImplementation((() => createMockProcess([
-      { type: 'assistant', message: { content: [{ type: 'text', text: 'OK' }] } },
-      { type: 'result', session_id: 'sess-clean' },
+      {
+        type: 'assistant',
+        message: { content: [{ type: 'tool_use', id: 'toolu_stale', name: 'reify_old', input: {} }] },
+      },
+      { type: 'result', session_id: 'sess-1' },
     ])) as any);
+    await session.handleMessage({ type: 'send_message', id: 'msg-old', text: 'Hi' });
 
-    await session.handleMessage({ type: 'send_message', id: 'msg-fresh', text: 'Hi' });
+    // Invocation 2 stays in flight so a tool_result has a live stdin to reach.
+    const { mockProc, stdout, stdinLines } = makeMockProc([{ type: 'text', text: 'OK' }]);
+    const textDeltaWait = waitForOutput(session, (m) => m.type === 'text_delta');
+    const msgPromise = session.handleMessage({ type: 'send_message', id: 'msg-fresh', text: 'Hi again' });
+    await textDeltaWait;
+    await waitForStdinLines(mockProc.stdin, stdinLines, 1);
+    outputs.length = 0;
 
-    // After the invocation completes, the stale entries must have been cleared at start
-    expect((session as any).pendingToolUseIds.has('reify_old')).toBe(false);
-    expect((session as any).toolNameById.has('toolu_stale')).toBe(false);
+    await session.handleMessage({
+      type: 'tool_result',
+      id: 'tr-stale',
+      tool_use_id: 'toolu_stale',
+      tool_name: 'reify_old',
+      result: 'x',
+    });
+
+    const errors = outputs.filter((o) => o.type === 'error');
+    expect(errors).toHaveLength(1);
+    expect((errors[0] as any).id).toBe('tr-stale');
+    expect((errors[0] as any).message).toMatch(/unknown tool_use_id=toolu_stale/);
+    expect(stdinLines).toHaveLength(1);
+
+    stdout.push(JSON.stringify({ type: 'result', session_id: 'sess-1' }) + '\n');
+    stdout.push(null);
+    mockProc.exitCode = 0;
+    mockProc.emit('close', 0);
+    await msgPromise;
   });
 
   it('destroy() clears toolNameById and pendingToolUseIds maps', () => {
@@ -1425,22 +1447,38 @@ describe('SidecarSession stale-state lifecycle', () => {
     expect((session as any).pendingToolUseIds.size).toBe(0);
   });
 
-  it('clear_session clears toolNameById and pendingToolUseIds maps', async () => {
-    // Pre-populate both maps
-    (session as any).pendingToolUseIds.set('reify_old', ['toolu_stale']);
-    (session as any).toolNameById.set('toolu_stale', 'reify_old');
-
-    await session.init();
+  it('clear_session mid-flight forgets pending tool_uses', async () => {
+    const { mockProc, stdout, stdinLines } = makeMockProc([
+      { type: 'tool_use', id: 'toolu_cs', name: 'reify_x', input: {} },
+    ]);
+    const toolCallWait = waitForOutput(session, (m) => m.type === 'tool_call');
+    const msgPromise = session.handleMessage({ type: 'send_message', id: 'msg-cs', text: 'Hi' });
+    await toolCallWait;
+    await waitForStdinLines(mockProc.stdin, stdinLines, 1);
     outputs.length = 0;
 
     await session.handleMessage({ type: 'clear_session' });
+    expect(outputs).toEqual([{ type: 'ready' }]);
 
-    expect((session as any).toolNameById.size).toBe(0);
-    expect((session as any).pendingToolUseIds.size).toBe(0);
+    await session.handleMessage({
+      type: 'tool_result',
+      id: 'tr-cs',
+      tool_use_id: 'toolu_cs',
+      tool_name: 'reify_x',
+      result: 'x',
+    });
 
-    // Verify the existing handleClearSession contract is preserved: ready is still emitted
-    expect(outputs).toHaveLength(1);
-    expect(outputs[0]).toEqual({ type: 'ready' });
+    const errors = outputs.filter((o) => o.type === 'error');
+    expect(errors).toHaveLength(1);
+    expect((errors[0] as any).id).toBe('tr-cs');
+    expect((errors[0] as any).message).toMatch(/unknown tool_use_id=toolu_cs/);
+    expect(stdinLines).toHaveLength(1);
+
+    stdout.push(JSON.stringify({ type: 'result', session_id: 'sess-cs' }) + '\n');
+    stdout.push(null);
+    mockProc.exitCode = 0;
+    mockProc.emit('close', 0);
+    await msgPromise;
   });
 });
 
