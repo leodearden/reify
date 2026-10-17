@@ -3809,11 +3809,19 @@ fn scale_components(
     }
 }
 
+/// Int arithmetic's overflow rule: a checked `i64` result that overflowed
+/// (`None`) is `Undef`, never a panic or a wrapped value. Every
+/// `(Value::Int, Value::Int)` operator arm and Int negation go through here.
+#[inline]
+fn int_or_undef(checked: Option<i64>) -> Value {
+    checked.map_or(Value::Undef, Value::Int)
+}
+
 /// Negate a scalar (leaf) value: Int, Real, Scalar, or Complex.
 /// Returns `Value::Undef` for non-negatable types or Int overflow.
 fn neg_scalar(v: Value) -> Value {
     match v {
-        Value::Int(i) => i.checked_neg().map(Value::Int).unwrap_or(Value::Undef),
+        Value::Int(i) => int_or_undef(i.checked_neg()),
         Value::Real(r) => Value::Real(-r),
         Value::Scalar {
             si_value,
@@ -3962,7 +3970,7 @@ fn guard_dimensionless_complex(re: f64, im: f64, dimension: DimensionVector) -> 
 
 pub(crate) fn eval_add(lv: &Value, rv: &Value) -> Value {
     match (lv, rv) {
-        (Value::Int(a), Value::Int(b)) => Value::Int(a + b),
+        (Value::Int(a), Value::Int(b)) => int_or_undef(a.checked_add(*b)),
         (Value::Real(a), Value::Real(b)) => Value::Real(a + b),
         (Value::Int(a), Value::Real(b)) | (Value::Real(b), Value::Int(a)) => {
             Value::Real(*a as f64 + b)
@@ -4066,7 +4074,7 @@ pub(crate) fn eval_add(lv: &Value, rv: &Value) -> Value {
 
 pub(crate) fn eval_sub(lv: &Value, rv: &Value) -> Value {
     match (lv, rv) {
-        (Value::Int(a), Value::Int(b)) => Value::Int(a - b),
+        (Value::Int(a), Value::Int(b)) => int_or_undef(a.checked_sub(*b)),
         (Value::Real(a), Value::Real(b)) => Value::Real(a - b),
         (Value::Int(a), Value::Real(b)) => Value::Real(*a as f64 - b),
         (Value::Real(a), Value::Int(b)) => Value::Real(a - *b as f64),
@@ -4248,7 +4256,7 @@ fn make_components_3(x: f64, y: f64, z: f64, dim: DimensionVector) -> Vec<Value>
 
 pub(crate) fn eval_mul(lv: &Value, rv: &Value) -> Value {
     match (lv, rv) {
-        (Value::Int(a), Value::Int(b)) => Value::Int(a * b),
+        (Value::Int(a), Value::Int(b)) => int_or_undef(a.checked_mul(*b)),
         (Value::Real(a), Value::Real(b)) => Value::Real(a * b),
         (Value::Int(a), Value::Real(b)) | (Value::Real(b), Value::Int(a)) => {
             Value::Real(*a as f64 * b)
