@@ -232,11 +232,6 @@ pub(crate) fn rotate_blockdiag<const N: usize>(
 
 #[cfg(test)]
 pub(crate) mod test_support {
-    /// Test-only entry to the module-private 3×3 multiply.
-    pub(crate) fn mat3_mul(a: &[[f64; 3]; 3], b: &[[f64; 3]; 3]) -> [[f64; 3]; 3] {
-        super::mat3_mul(a, b)
-    }
-
     /// Rotation Q = Ry(45°) · Rz(30°), the generic tilted frame shared by the
     /// shell unit-test modules.
     ///
@@ -255,7 +250,7 @@ pub(crate) mod test_support {
         let sin45 = (45.0_f64.to_radians()).sin();
         let rz: [[f64; 3]; 3] = [[cos30, -sin30, 0.0], [sin30, cos30, 0.0], [0.0, 0.0, 1.0]];
         let ry: [[f64; 3]; 3] = [[cos45, 0.0, sin45], [0.0, 1.0, 0.0], [-sin45, 0.0, cos45]];
-        mat3_mul(&ry, &rz)
+        super::mat3_mul(&ry, &rz)
     }
 }
 

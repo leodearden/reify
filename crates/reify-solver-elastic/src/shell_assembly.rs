@@ -1072,7 +1072,7 @@ mod tests {
     use super::*;
     use crate::constitutive::IsotropicElastic;
     use crate::elements::mitc3_plus::Mitc3Plus;
-    use crate::elements::shell_frame::test_support::{mat3_mul, tilted_q_for_shell_tests};
+    use crate::elements::shell_frame::test_support::tilted_q_for_shell_tests;
 
     fn steel_like() -> IsotropicElastic {
         IsotropicElastic {
@@ -1915,7 +1915,18 @@ mod tests {
         // --- Step 4: stiffness for tilted triangle ---
         let k_tilted = shell_element_stiffness(&tilted_nodes, t, &mat);
 
-        // --- Step 5: pre-compute Qᵀ ---
+        // --- Step 5: pre-compute Qᵀ and the test's own 3×3 product (C = A · B) ---
+        fn mat3_mul(a: &[[f64; 3]; 3], b: &[[f64; 3]; 3]) -> [[f64; 3]; 3] {
+            let mut c = [[0.0_f64; 3]; 3];
+            for i in 0..3 {
+                for j in 0..3 {
+                    for k in 0..3 {
+                        c[i][j] += a[i][k] * b[k][j];
+                    }
+                }
+            }
+            c
+        }
         let qt = [
             [q[0][0], q[1][0], q[2][0]],
             [q[0][1], q[1][1], q[2][1]],
