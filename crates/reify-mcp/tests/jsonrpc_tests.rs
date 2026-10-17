@@ -1,3 +1,6 @@
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
 use reify_mcp::context::MockToolContext;
 use reify_mcp::jsonrpc::{INVALID_PARAMS, INVALID_REQUEST, JsonRpcResponse, McpDispatcher};
 use reify_mcp::registry::ToolRegistry;
@@ -209,6 +212,53 @@ fn dispatch_unknown_method_notification_produces_no_reply() {
     let notification = r#"{"jsonrpc":"2.0","method":"bogus/notify","params":{}}"#;
 
     assert_eq!(dispatcher.dispatch(notification), None);
+}
+
+#[test]
+fn dispatch_tools_call_notification_neither_replies_nor_runs_the_tool() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let mut registry = ToolRegistry::new();
+    let recorded = Arc::clone(&calls);
+    registry.register(
+        "reify_record_call",
+        "Count invocations",
+        serde_json::json!({"type": "object", "properties": {}}),
+        move |_params, _ctx| {
+            recorded.fetch_add(1, Ordering::SeqCst);
+            Ok(serde_json::json!({}))
+        },
+    );
+    let ctx = MockToolContext::default();
+    let dispatcher = McpDispatcher::new(&registry, &ctx);
+    let call = |id: Option<i64>| {
+        let mut message = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "tools/call",
+            "params": {"name": "reify_record_call", "arguments": {}}
+        });
+        if let Some(id) = id {
+            message["id"] = serde_json::json!(id);
+        }
+        dispatcher.dispatch(&message.to_string())
+    };
+
+    assert_eq!(call(None), None);
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+
+    assert!(call(Some(1)).is_some());
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn dispatch_id_less_message_without_method_replies_parse_error() {
+    let registry = setup_registry();
+    let ctx = MockToolContext::default();
+    let dispatcher = McpDispatcher::new(&registry, &ctx);
+
+    let response = reply(&dispatcher, r#"{"jsonrpc":"2.0"}"#);
+
+    assert_eq!(response["error"]["code"], -32700);
+    assert!(response["id"].is_null());
 }
 
 #[test]

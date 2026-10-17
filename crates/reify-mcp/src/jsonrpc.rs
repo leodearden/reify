@@ -15,11 +15,11 @@ pub struct JsonRpcRequest {
     #[serde(default)]
     pub params: serde_json::Value,
     /// `None` only when the member is absent; an explicit `null` is `Some(Null)`.
-    #[serde(default, deserialize_with = "deserialize_present")]
+    #[serde(default, deserialize_with = "present_even_if_null")]
     pub id: Option<serde_json::Value>,
 }
 
-fn deserialize_present<'de, D: serde::Deserializer<'de>>(
+fn present_even_if_null<'de, D: serde::Deserializer<'de>>(
     deserializer: D,
 ) -> Result<Option<serde_json::Value>, D::Error> {
     serde_json::Value::deserialize(deserializer).map(Some)
@@ -96,7 +96,8 @@ impl<'a> McpDispatcher<'a> {
     /// Dispatch a JSON-RPC message string, returning the JSON-RPC response string.
     ///
     /// Returns `None` for a notification (a valid message without an `id`),
-    /// which JSON-RPC 2.0 forbids answering.
+    /// which JSON-RPC 2.0 forbids answering. A notification is acknowledged
+    /// without effect: no method handler runs for it, `tools/call` included.
     pub fn dispatch(&self, json_str: &str) -> Option<String> {
         self.respond(json_str).map(|response| encode(&response))
     }
