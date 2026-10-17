@@ -135,23 +135,13 @@ impl std::fmt::Display for JacobianError {
 // useful than the `&dyn Error` a `source()` could hand back.
 impl std::error::Error for JacobianError {}
 
-/// One solve's Jacobian inputs: the [`TrialModel`] every trial point is built
-/// from, and the seed set the residuals are differentiated against.
+/// One solve's Jacobian inputs: a [`TrialModel`] and the seed set its
+/// residuals are differentiated against.
 ///
-/// Built ONCE per solve and reused at every trial point.  The seed set is built
-/// here, from `trial.auto_params` in order, behind private fields, so the
-/// column contract — column `j` IS `auto_params[j]` — holds by construction: no
-/// caller can pair a trial model with a seed set for some other variable order.
+/// Built once per solve and reused at every trial point.  Column `j` of every
+/// Jacobian it produces is `auto_params[j]`.
 ///
-/// Reuse is sound because the `depends_on_seed` / `subtree_has_kink` memos a
-/// [`Seeds`] owns are pure functions of `(subtree, seed set)` — structural
-/// only, with no dependence on the trial VALUES — so one seed set is valid at
-/// every point of a solve, and rebuilding it per point would throw away exactly
-/// the memos that stop a cold descent re-walking each node's subtree.  Its
-/// refusal slot is per TRAVERSAL and drained by each one, so nothing a call
-/// leaves behind reaches the next.
-///
-/// Not `Sync` (the memos are `RefCell`s): one model per solving thread.
+/// Not `Sync`: one model per solving thread.
 pub struct JacobianModel<'a> {
     trial: TrialModel<'a>,
     seeds: Seeds,
@@ -162,16 +152,8 @@ impl<'a> JacobianModel<'a> {
     ///
     /// # Panics
     ///
-    /// If an `auto_params` id repeats.  A repeated id has no single column to
-    /// be, and the failure is silent rather than loud — [`Seeds`] keeps a
-    /// duplicate's FIRST column while `build_trial_values` keeps its LAST
-    /// value, so the derivative would be attributed to one column and taken at
-    /// the other point.  The ids are solve-invariant, so this is checked once,
-    /// here, rather than at every trial point.
+    /// If an `auto_params` id repeats: a repeated id has no single column.
     pub fn new(trial: TrialModel<'a>) -> Self {
-        // A hard assert, unlike the value fold's drift backstop: there is no
-        // value-path sibling to stay quieter than, and the damage lands in
-        // release, where η runs.
         if let Some(id) = repeated_auto_id(trial.auto_params) {
             panic!(
                 "auto_params names {id:?} twice — column j IS auto_params[j], so a repeated id has \
@@ -179,7 +161,6 @@ impl<'a> JacobianModel<'a> {
                  while `build_trial_values` stands the solve at the LAST one's value"
             );
         }
-        // Seed columns in `auto_params` order — this IS the column order.
         let columns: Vec<ValueCellId> = trial.auto_params.iter().map(|p| p.id.clone()).collect();
         Self {
             trial,
