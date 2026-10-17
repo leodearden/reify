@@ -20,7 +20,8 @@ fn dimensionless_steel_like() -> IsotropicElastic {
 }
 
 /// f64 node coordinates of the standard 5-node, 2-tet fan fixture shared
-/// with `crate::error_estimator`'s `two_tet_fan_mesh`.
+/// with `two_tet_fan_mesh` in `reify_solver_elastic`'s
+/// `src/error_estimator.rs`.
 ///
 /// Topology: tet0 = [0,1,2,3] (the canonical unit tet), tet1 = [1,2,3,4]
 /// (shares face {1,2,3} with tet0).
@@ -398,7 +399,7 @@ fn eval_and_dual_on_fan(qoi: &dyn QuantityOfInterest, case: &str) -> (f64, Vec<f
 }
 
 /// `d · ū_K` over an explicit node list — the closed form, derived from
-/// the fixture arrays alone and sharing no code with `super`.
+/// the fixture arrays alone and sharing no code with the crate under test.
 fn direction_dot_nodal_mean(nodes: &[usize], u: &[f64], d: [f64; 3]) -> f64 {
     let mut q = 0.0_f64;
     for &n in nodes {
@@ -914,8 +915,9 @@ fn a_collapsed_element_yields_a_typed_error_rather_than_a_nan_ball_mean() {
 /// inverts no Jacobian, so its `0.0 · finite` term genuinely vanishes and
 /// it never `NaN`s — which makes a displacement-only version of this test
 /// one that would pass VACUOUSLY without the guard. It is asserted anyway,
-/// labelled as the non-witnessing direction, because the guard lives in the
-/// shared [`resolve`] and must reject uniformly across both functionals.
+/// labelled as the non-witnessing direction, because the guard lives in
+/// the shared `resolve` step in `src/qoi.rs` and must reject uniformly
+/// across both functionals.
 ///
 /// A plain `#[test]` — no `should_panic`, no reliance on a debug
 /// assertion — so the RELEASE leg of the verify pipeline is the one
