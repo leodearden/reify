@@ -5622,6 +5622,34 @@ describe('App persistence wiring — fuzzy-rebind notification (step-35)', () =>
     expect(screen.getAllByTestId('toast').length).toBe(1);
     expect(vi.mocked(bridge.syncDemand).mock.calls.length).toBe(before + 1);
   });
+
+  // A prompt closed without an answer waits for the next tree update; an
+  // explicit change alone (an unrelated eye toggle) must not bring it back.
+  it('(i) a prompt closed with X re-surfaces on the next tree update, not on an eye toggle', async () => {
+    const evalRef = captureEvalStatus();
+    vi.mocked(bridge.getEntityTree).mockResolvedValue([
+      makeNode('Assembly.flange.geometry'),
+      makeNode('Assembly.shaft'),
+    ]);
+
+    await renderAndWaitForReady();
+    await waitFor(() => expect(evalRef.get()).toBeDefined());
+    await waitFor(() => screen.getByTestId('eye-icon-Assembly.flange.geometry'));
+    fireEvent.click(screen.getByTestId('eye-icon-Assembly.flange.geometry'));
+
+    const renamedTree = () => [makeNode('Assembly.bolt_flange.geometry'), makeNode('Assembly.shaft')];
+    await triggerTreeUpdate(evalRef.get()!, renamedTree(), 2);
+    await waitFor(() => screen.getByTestId('toast'));
+    fireEvent.click(within(screen.getByTestId('toast')).getByRole('button', { name: /^close$/i }));
+    await waitFor(() => expect(screen.queryByTestId('toast')).toBeNull());
+
+    fireEvent.click(screen.getByTestId('eye-icon-Assembly.shaft'));
+    await new Promise((r) => setTimeout(r, 50));
+    expect(screen.queryByTestId('toast')).toBeNull();
+
+    await triggerTreeUpdate(evalRef.get()!, renamedTree(), 3);
+    await waitFor(() => expect(screen.getAllByTestId('toast').length).toBe(1));
+  });
 });
 
 // ---------------------------------------------------------------------------

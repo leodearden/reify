@@ -509,7 +509,7 @@ const App: Component = () => {
   // back to its static unit badge.
   const [unitLadders, setUnitLadders] = createSignal<UnitLadderMap>({});
 
-  // Fuzzy-rebind toast bookkeeping (see the rebind effect block below).
+  // Fuzzy-rebind toast bookkeeping (see promptFuzzyRebinds below).
   //
   // `rebindShownPairs` tracks stale→candidate pairs currently represented by
   // a visible toast. Without this, every re-evaluation that still shows the
@@ -682,9 +682,82 @@ const App: Component = () => {
       .catch((err) => console.error('[entity-tree] refresh failed:', err));
   }
 
+  // Fuzzy-rebind notification: after each tree update, check for stale paths
+  // that have a single unambiguous suffix-match candidate and surface a
+  // non-blocking toast with [Yes][No][Ignore] actions.
+  // Per PRD §8.5: never auto-applies — user must confirm explicitly.
+  //
+  // Session-scoped set of ignored stale→candidate pairs.
+  // Keyed by "${stalePath}→${newPath}" to suppress re-prompts after [No]/[Ignore].
+  const ignoredPairs = new Set<string>();
+
+  function promptFuzzyRebinds(tree: EntityTreeNode[]): void {
+    for (const stalePath of viewStateStore.getStalePaths()) {
+      const candidate = findFuzzyCandidate(stalePath, null, tree);
+      if (!candidate) continue;
+
+      const pairKey = `${stalePath}→${candidate.path}`;
+      if (ignoredPairs.has(pairKey)) continue;
+      // Reviewer fix: skip when an outstanding toast already represents
+      // this pair.  Without this guard, any subsequent tree update that
+      // leaves the stale path stale (e.g. an unrelated edit) enqueues a
+      // duplicate toast, producing a growing stack for users who do not
+      // respond immediately.
+      if (rebindShownPairs.has(pairKey)) continue;
+
+      // Snapshot the stale path's explicit visibility before the closure captures it.
+      const staleVisibility = viewStateStore.state.explicit[stalePath];
+
+      const candidatePath = candidate.path;
+      rebindShownPairs.add(pairKey);
+      const toastId = showToast(
+        `"${stalePath}" may have been renamed to "${candidatePath}". Rebind?`,
+        'info',
+        [
+          {
+            label: 'Yes',
+            onClick: () => {
+              // Transfer the stale path's visibility to the new path.
+              if (staleVisibility) {
+                viewStateStore.setVisibility(candidatePath, staleVisibility);
+              }
+              // Remove the stale explicit entry.
+              viewStateStore.resetToInherit(stalePath);
+              // rebindShownPairs is cleared in handleDismissToast (via the
+              // toast-id → pairKey map) when the button's onDismiss fires.
+            },
+          },
+          {
+            label: 'No',
+            onClick: () => {
+              // Dismiss and suppress this specific pair for the session —
+              // the stale entry stays so the user can still rebind manually
+              // or undo. This matches [Ignore] scoping: the same stale→candidate
+              // pair will not re-fire on the next tree update.
+              ignoredPairs.add(pairKey);
+            },
+          },
+          {
+            label: 'Ignore',
+            onClick: () => {
+              // Suppress this pair for the rest of the session.
+              ignoredPairs.add(pairKey);
+            },
+          },
+        ],
+      );
+      // Remember which pair this toast represents so handleDismissToast
+      // can clean up rebindShownPairs when the toast goes away for ANY
+      // reason (button, close-X, or auto-dismiss timeout).
+      rebindToastPairs.set(toastId, pairKey);
+    }
+  }
+
   // Keep viewStateStore in sync with the latest entity tree.
   // regenerateAutoViews handles both the nodeByPath rebuild (equivalent to
-  // setTree) AND auto-view generation in one reactive notification.
+  // setTree) AND auto-view generation in one reactive notification. The rebind
+  // prompts follow untracked, so they fire once per tree update and never on an
+  // explicit change alone (see handleDismissToast).
   createEffect(() => {
     // DisplayOutput subjects route the auto:default view (#5195), ADDITIVELY:
     // named subjects are forced visible; every other realization keeps its own
@@ -695,85 +768,10 @@ const App: Component = () => {
     // effect so adding or removing a DisplayOutput re-runs this and re-routes
     // the view. Same subject strings computePaneGroups keys panes on (see :199).
     const displaySubjects = new Set(engineStore.state.displayPanes.map((d) => d.subject));
-    viewStateStore.regenerateAutoViews(entityTree(), [], displaySubjects);
+    const tree = entityTree();
+    viewStateStore.regenerateAutoViews(tree, [], displaySubjects);
+    untrack(() => promptFuzzyRebinds(tree));
   });
-
-  // Fuzzy-rebind notification: after each tree update, check for stale paths
-  // that have a single unambiguous suffix-match candidate and surface a
-  // non-blocking toast with [Yes][No][Ignore] actions.
-  // Per PRD §8.5: never auto-applies — user must confirm explicitly.
-  {
-    // Session-scoped set of ignored stale→candidate pairs.
-    // Keyed by "${stalePath}→${newPath}" to suppress re-prompts after [No]/[Ignore].
-    const ignoredPairs = new Set<string>();
-
-    // Re-runs whenever the store's stale-path set can change (a tree swap or an
-    // explicit change); rebindShownPairs / ignoredPairs keep repeats idempotent.
-    createEffect(() => {
-      const stalePaths = viewStateStore.getStalePaths();
-      const tree = untrack(() => entityTree());
-
-      for (const stalePath of stalePaths) {
-        const candidate = findFuzzyCandidate(stalePath, null, tree);
-        if (!candidate) continue;
-
-        const pairKey = `${stalePath}→${candidate.path}`;
-        if (ignoredPairs.has(pairKey)) continue;
-        // Reviewer fix: skip when an outstanding toast already represents
-        // this pair.  Without this guard, any subsequent tree update that
-        // leaves the stale path stale (e.g. an unrelated edit) enqueues a
-        // duplicate toast, producing a growing stack for users who do not
-        // respond immediately.
-        if (rebindShownPairs.has(pairKey)) continue;
-
-        // Snapshot the stale path's explicit visibility before the closure captures it.
-        const staleVisibility = untrack(() => viewStateStore.state.explicit[stalePath]);
-
-        const candidatePath = candidate.path;
-        rebindShownPairs.add(pairKey);
-        const toastId = showToast(
-          `"${stalePath}" may have been renamed to "${candidatePath}". Rebind?`,
-          'info',
-          [
-            {
-              label: 'Yes',
-              onClick: () => {
-                // Transfer the stale path's visibility to the new path.
-                if (staleVisibility) {
-                  viewStateStore.setVisibility(candidatePath, staleVisibility);
-                }
-                // Remove the stale explicit entry.
-                viewStateStore.resetToInherit(stalePath);
-                // rebindShownPairs is cleared in handleDismissToast (via the
-                // toast-id → pairKey map) when the button's onDismiss fires.
-              },
-            },
-            {
-              label: 'No',
-              onClick: () => {
-                // Dismiss and suppress this specific pair for the session —
-                // the stale entry stays so the user can still rebind manually
-                // or undo. This matches [Ignore] scoping: the same stale→candidate
-                // pair will not re-fire on the next tree update.
-                ignoredPairs.add(pairKey);
-              },
-            },
-            {
-              label: 'Ignore',
-              onClick: () => {
-                // Suppress this pair for the rest of the session.
-                ignoredPairs.add(pairKey);
-              },
-            },
-          ],
-        );
-        // Remember which pair this toast represents so handleDismissToast
-        // can clean up rebindShownPairs when the toast goes away for ANY
-        // reason (button, close-X, or auto-dismiss timeout).
-        rebindToastPairs.set(toastId, pairKey);
-      }
-    });
-  }
 
   // True when at least one design mesh is loaded. Memoized so DualViewport's
   // designViewportActive prop does not allocate a new array on every reactive pulse.
