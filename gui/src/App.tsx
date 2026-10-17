@@ -682,16 +682,9 @@ const App: Component = () => {
       .catch((err) => console.error('[entity-tree] refresh failed:', err));
   }
 
-  // Reactive counter incremented each time viewStateStore.setTree is called.
-  // This lets the effectiveVisibility memo re-evaluate AFTER nodeByPath is rebuilt,
-  // avoiding a race where the memo re-runs before the createEffect below has executed.
-  const [treeGeneration, setTreeGeneration] = createSignal(0);
-
   // Keep viewStateStore in sync with the latest entity tree.
   // regenerateAutoViews handles both the nodeByPath rebuild (equivalent to
   // setTree) AND auto-view generation in one reactive notification.
-  // Increment treeGeneration AFTER regenerateAutoViews so that effectiveVisibility
-  // always evaluates getAllEffective() with an up-to-date nodeByPath.
   createEffect(() => {
     // DisplayOutput subjects route the auto:default view (#5195), ADDITIVELY:
     // named subjects are forced visible; every other realization keeps its own
@@ -703,7 +696,6 @@ const App: Component = () => {
     // the view. Same subject strings computePaneGroups keys panes on (see :199).
     const displaySubjects = new Set(engineStore.state.displayPanes.map((d) => d.subject));
     viewStateStore.regenerateAutoViews(entityTree(), [], displaySubjects);
-    setTreeGeneration((v) => v + 1);
   });
 
   // Fuzzy-rebind notification: after each tree update, check for stale paths
@@ -715,10 +707,11 @@ const App: Component = () => {
     // Keyed by "${stalePath}→${newPath}" to suppress re-prompts after [No]/[Ignore].
     const ignoredPairs = new Set<string>();
 
+    // Re-runs whenever the store's stale-path set can change (a tree swap or an
+    // explicit change); rebindShownPairs / ignoredPairs keep repeats idempotent.
     createEffect(() => {
-      void treeGeneration(); // re-run after each tree update
+      const stalePaths = viewStateStore.getStalePaths();
       const tree = untrack(() => entityTree());
-      const stalePaths = untrack(() => viewStateStore.getStalePaths());
 
       for (const stalePath of stalePaths) {
         const candidate = findFuzzyCandidate(stalePath, null, tree);
@@ -786,13 +779,8 @@ const App: Component = () => {
   // designViewportActive prop does not allocate a new array on every reactive pulse.
   const hasMeshes = createMemo(() => Object.keys(engineStore.state.meshes).length > 0);
 
-  // Effective visibility memo: re-evaluates whenever explicit overrides or treeGeneration
-  // changes.  treeGeneration is incremented by the effect above after setTree runs, which
-  // guarantees that getAllEffective() sees the up-to-date nodeByPath on every call.
-  const effectiveVisibility = createMemo(() => {
-    void treeGeneration(); // track treeGeneration so the memo re-runs after setTree
-    return viewStateStore.getAllEffective();
-  });
+  // Re-evaluates on explicit changes and on the view store's tree version.
+  const effectiveVisibility = createMemo(() => viewStateStore.getAllEffective());
 
   // N-pane join: display_panes directives + realized meshes → per-pane groups.
   // Recomputed reactively; display_panes follows the full-snapshot lifecycle
