@@ -16,6 +16,7 @@
 #                         — dump-level axis predicates (#6391)
 #   plan_strip_comments   — fork-free comment stripper (#6247)
 #   plan_header_field     — typed, order-independent plan header field reader
+#   plan_step_index       — 0-based index of a matching step in the commands block
 
 set -euo pipefail
 
@@ -895,5 +896,117 @@ assert "plan_header_field (l1): invokes no external filter (grep/sed/awk shadowe
 rm -f "$_HDR_FILTER_CALLS"
 assert "plan_header_field (l2): body contains no command substitution" \
     _defined_without plan_header_field '$('
+
+# ---------------------------------------------------------------------------
+# Section 11: plan_step_index — step order without byte offsets
+#
+# Ordering claims ("generate runs before the first cargo leaf", "the freshness
+# check runs after every cargo leaf") used to compare byte offsets into a slice
+# of the dump. plan_step_index names the unit those claims are about: the plan's
+# steps, i.e. the non-empty, non-comment lines after the commands marker.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- plan_step_index: step order ---"
+
+# _step_is <dump> <ERE> <from-or-empty> <want> — rc 0 and the index reads <want>.
+_step_is() {
+    local _got _rc=0
+    if [ -n "$3" ]; then
+        _got="$(plan_step_index "$1" "$2" "$3")" || _rc=$?
+    else
+        _got="$(plan_step_index "$1" "$2")" || _rc=$?
+    fi
+    printf 'got [%s] rc=%s, want [%s] rc=0\n' "$_got" "$_rc" "$4"
+    [ "$_rc" -eq 0 ] && [ "$_got" = "$4" ]
+}
+
+# Above the commands marker sit a preamble line and a defect-7 narrowing
+# continuation line, neither a step though both are non-comment lines. Inside the
+# block, a comment line and an empty line must not advance the index.
+_STEP_DUMP="warning: cargo nextest availability probe retried once
+# verify.sh plan — action=all profile=debug scope=branch include_infra=0 nextest=1 role=task
+# narrowing — NARROW_ACTIVE=1 affected=reify-doc
+reify-ir closure=reify-doc
+reify-ir from_diff=1
+# --- commands (executed in order; '&&' semantics — stop on first failure) ---
+./scripts/tree-sitter-generate.sh
+./scripts/tree-sitter-freshness.sh ensure
+# ---- test region: cargo nextest run -p reify-ir runs below ----
+
+timeout --kill-after=60 45m cargo clippy -p reify-doc -p reify-ir --all-targets -- -D warnings
+timeout --kill-after=60 60m cargo nextest run -p reify-doc -p reify-ir 9<&-
+./scripts/tree-sitter-freshness.sh check"
+
+assert "plan_step_index (a): tree-sitter-generate -> step 0" \
+    _step_is "$_STEP_DUMP" 'tree-sitter-generate' '' 0
+assert "plan_step_index (b): tree-sitter-freshness -> step 1 (the first of two)" \
+    _step_is "$_STEP_DUMP" 'tree-sitter-freshness' '' 1
+assert "plan_step_index (c): 'cargo ' -> step 2 (the in-block comment and the blank line are not steps)" \
+    _step_is "$_STEP_DUMP" 'cargo ' '' 2
+assert "plan_step_index (d): cargo nextest run -> step 3" \
+    _step_is "$_STEP_DUMP" 'cargo nextest run' '' 3
+assert "plan_step_index (e): an absent ERE -> -1" \
+    _step_is "$_STEP_DUMP" 'cargo build --release' '' -1
+
+# (f) Lines above the commands marker are never steps.
+assert "plan_step_index (f1): a narrowing continuation line is not a step -> -1" \
+    _step_is "$_STEP_DUMP" '^reify-ir closure=' '' -1
+assert "plan_step_index (f2): the preamble's 'cargo nextest' is not a step -> step 3" \
+    _step_is "$_STEP_DUMP" 'cargo nextest' '' 3
+
+# (g) <from> asks for the first match at or after a step index. "X after every Y"
+# is (Y, i_X) -> -1: no Y at or after X.
+assert "plan_step_index (g1): ('cargo ', from 3) -> step 3 (from is inclusive)" \
+    _step_is "$_STEP_DUMP" 'cargo ' 3 3
+assert "plan_step_index (g2): ('cargo ', from 4) -> -1 (no cargo step at or after the check)" \
+    _step_is "$_STEP_DUMP" 'cargo ' 4 -1
+assert "plan_step_index (g3): ('tree-sitter-freshness', from 2) -> step 4 (the check, not the ensure)" \
+    _step_is "$_STEP_DUMP" 'tree-sitter-freshness' 2 4
+
+# (h) Per-line matching, like plan_match: '.' never crosses a line.
+assert "plan_step_index (h): 'clippy.*nextest' spans two steps -> -1" \
+    _step_is "$_STEP_DUMP" 'clippy.*nextest' '' -1
+
+# (i) No commands marker means no steps, whatever the lines say.
+_STEP_NO_MARKER="# verify.sh plan — action=all profile=debug scope=all include_infra=0 nextest=1 role=task
+./scripts/tree-sitter-generate.sh
+timeout --kill-after=60 45m cargo clippy --workspace --all-targets -- -D warnings"
+assert "plan_step_index (i1): a dump with no commands marker -> -1 although its lines match" \
+    _step_is "$_STEP_NO_MARKER" 'cargo ' '' -1
+assert "plan_step_index (i2): an empty dump -> -1 even for the match-anything ERE" \
+    _step_is "" '' '' -1
+
+# (j) An invalid <from> is refused, naming the function and the bad value.
+assert "plan_step_index (j1): from 'x' -> rc 2, empty stdout, stderr naming it" \
+    _refused_naming plan_step_index "'x'" -- plan_step_index "$_STEP_DUMP" 'cargo ' x
+assert "plan_step_index (j2): from '-1' -> rc 2, empty stdout, stderr naming it" \
+    _refused_naming plan_step_index "'-1'" -- plan_step_index "$_STEP_DUMP" 'cargo ' -1
+
+# (k) REAL-PRINTER CONTROL on Section 9's certified `verify.sh lint` capture.
+# That plan has no retry marker and no narrowing continuation line, so every
+# non-comment line is a step and plan_count_noncomment_lines counts the steps.
+_REAL_STEPS="$(plan_count_noncomment_lines "$_REAL_DUMP")"
+assert "plan_step_index (k1): the real plan's first step -> 0" \
+    _step_is "$_REAL_DUMP" '' '' 0
+assert "plan_step_index (k2): the real plan's last step -> plan_count_noncomment_lines - 1" \
+    _step_is "$_REAL_DUMP" '' "$((_REAL_STEPS - 1))" "$((_REAL_STEPS - 1))"
+assert "plan_step_index (k3): from the real plan's step count -> -1 (no step past the last)" \
+    _step_is "$_REAL_DUMP" '' "$_REAL_STEPS" -1
+
+# (l) FORK-FREEDOM, by Section 9's (f1)/(f2) technique.
+assert "plan_step_index (l0): is defined (precondition for l1/l2)" \
+    declare -F plan_step_index
+_STEP_FILTER_CALLS="$(mktemp)"
+(
+    grep() { printf 'grep\n' >> "$_STEP_FILTER_CALLS"; }
+    sed()  { printf 'sed\n'  >> "$_STEP_FILTER_CALLS"; }
+    awk()  { printf 'awk\n'  >> "$_STEP_FILTER_CALLS"; }
+    plan_step_index "$_STEP_DUMP" 'tree-sitter-freshness' 2 >/dev/null
+) || true
+assert "plan_step_index (l1): invokes no external filter (grep/sed/awk shadowed and never called)" \
+    _ran_fork_free plan_step_index "$_STEP_FILTER_CALLS"
+rm -f "$_STEP_FILTER_CALLS"
+assert "plan_step_index (l2): body contains no command substitution" \
+    _defined_without plan_step_index '$('
 
 test_summary
