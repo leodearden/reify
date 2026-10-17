@@ -11,6 +11,7 @@ import unittest
 from typing import Any
 
 from _pcc_test_support import (
+    _CACHE_DENIED_STDERR,
     pcc,
 )
 
@@ -475,8 +476,8 @@ class TestValueObservation(unittest.TestCase):
     def test_grammar_arm_reads_the_field_not_the_text(self):
         """The load-failure TEXT alone is ABSENT: stderr is parsed at the boundary.
 
-        run_probe() turns tree-sitter's signature into harness_failure exactly
-        once; observe() must not re-derive it from stderr a second time.
+        run_probe() and evaluate() turn tree-sitter's signature into
+        harness_failure; observe() reads only that field, never stderr.
         """
         run = self._run(1, stderr="Error: Failed to load language for path \"x.ri\"\n")
         self.assertEqual(pcc.observe("grammar", run, {}), pcc.ABSENT)
@@ -628,7 +629,7 @@ class TestEvaluate(unittest.TestCase):
         """Result must carry the exit_code from the captured run."""
         probe = self._make_grammar_probe("present")
         result = pcc.evaluate(probe, runner=self._stub_runner(0))
-        self.assertEqual(result.exit_code, 0)
+        self.assertEqual(result.run.exit_code, 0)
 
     def test_result_has_stdout(self):
         """Result must carry the stdout from the captured run."""
@@ -637,7 +638,7 @@ class TestEvaluate(unittest.TestCase):
             probe,
             runner=self._stub_runner(0, stdout="All constraints satisfied."),
         )
-        self.assertEqual(result.stdout, "All constraints satisfied.")
+        self.assertEqual(result.run.stdout, "All constraints satisfied.")
 
     def test_result_has_stderr(self):
         """Result must carry the stderr from the captured run."""
@@ -646,7 +647,7 @@ class TestEvaluate(unittest.TestCase):
             probe,
             runner=self._stub_runner(1, stderr="error: unresolved type: Transform3"),
         )
-        self.assertIn("unresolved type", result.stderr)
+        self.assertIn("unresolved type", result.run.stderr)
 
     def test_result_carries_probe(self):
         """Result must carry the original Probe object."""
@@ -659,6 +660,78 @@ class TestEvaluate(unittest.TestCase):
         probe = self._make_grammar_probe("present")
         result = pcc.evaluate(probe, runner=self._stub_runner(0))
         self.assertEqual(result.observation, pcc.PRESENT)
+
+
+class TestEvaluateTypesAGrammarLoadFailure(unittest.TestCase):
+    """evaluate() types a load failure whatever runner produced the run.
+
+    A runner that hands back a bare ProbeRun of tree-sitter's output, with no
+    harness_failure, must not turn a grammar that never loaded into ABSENT: for
+    a rejection probe (expected absent) that is a false PASS.
+    """
+
+    _LOAD_FAILURE = 'Error: Failed to load language for path "x.ri"\n'
+
+    def _evaluate_grammar(self, expected_obs, exit_code, stderr):
+        probe = pcc.Probe(
+            capability="a grammar rejection",
+            probe_kind="grammar",
+            fixture="tests/prd-gate/fixtures/arrow_type.ri",
+            expected={"observation": expected_obs, "match": {}},
+        )
+        return pcc.evaluate(
+            probe, runner=lambda _p: pcc.ProbeRun(exit_code, "", stderr)
+        )
+
+    def test_a_bare_load_failure_is_a_harness_error_not_a_pass(self):
+        result = self._evaluate_grammar("absent", 1, self._LOAD_FAILURE)
+        self.assertEqual(result.verdict, pcc._HARNESS_ERROR)
+        self.assertEqual(pcc.harness_exit_code([result]), 70)
+        self.assertEqual(
+            result.run.harness_failure.kind, pcc.HarnessFailureKind.GRAMMAR_LOAD,
+            "the record names the failure, so it is not an un-attributable row",
+        )
+        self.assertFalse(result.run.harness_failure.cache_denied)
+
+    def test_a_bare_cache_denial_is_typed_as_one(self):
+        result = self._evaluate_grammar("present", 1, _CACHE_DENIED_STDERR)
+        self.assertEqual(result.verdict, pcc._HARNESS_ERROR)
+        self.assertTrue(result.run.harness_failure.cache_denied)
+
+    def test_a_parse_error_still_answers_absent(self):
+        """Narrowness: exit 1 with no load-failure signature is the grammar's answer."""
+        result = self._evaluate_grammar("absent", 1, "")
+        self.assertEqual(result.verdict, pcc.PASS)
+        self.assertIsNone(result.run.harness_failure)
+
+    def test_a_runners_own_failure_is_kept(self):
+        launch = pcc.HarnessFailure(pcc.HarnessFailureKind.LAUNCH, "[Errno 2] x")
+        probe = pcc.Probe(
+            capability="a grammar rejection",
+            probe_kind="grammar",
+            fixture="tests/prd-gate/fixtures/arrow_type.ri",
+            expected={"observation": "absent", "match": {}},
+        )
+        result = pcc.evaluate(
+            probe,
+            runner=lambda _p: pcc.ProbeRun(
+                127, "", self._LOAD_FAILURE, harness_failure=launch
+            ),
+        )
+        self.assertIs(result.run.harness_failure, launch)
+
+    def test_only_a_grammar_run_can_be_a_load_failure(self):
+        probe = pcc.Probe(
+            capability="a check whose own stderr quotes tree-sitter",
+            probe_kind="check",
+            fixture="tests/prd-gate/fixtures/revolute_silent_accept.ri",
+            expected={"observation": "present", "match": {"exit_code": 1}},
+        )
+        result = pcc.evaluate(
+            probe, runner=lambda _p: pcc.ProbeRun(1, "", self._LOAD_FAILURE)
+        )
+        self.assertEqual(result.verdict, pcc.PASS)
+        self.assertIsNone(result.run.harness_failure)
 
 
 # ---------------------------------------------------------------------------
@@ -682,9 +755,7 @@ class TestHarnessExitCode(unittest.TestCase):
         return pcc.Result(
             probe=probe,
             command=["reify", "check", "some/fixture.ri"],
-            exit_code=0,
-            stdout="",
-            stderr="",
+            run=pcc.ProbeRun(0, "", ""),
             observation=pcc.PRESENT,
             verdict=verdict,
         )

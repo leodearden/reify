@@ -96,7 +96,7 @@ import stat
 import subprocess
 import sys
 import tempfile
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from typing import Any, Dict, FrozenSet, List, Optional, Tuple
 
@@ -853,10 +853,10 @@ _CACHE_DENIAL_NEXT_STEP = (
 def grammar_load_failure(stderr: str) -> Optional[HarnessFailure]:
     """Parse tree-sitter's stderr into a GRAMMAR_LOAD failure, or None.
 
-    The one reader of tree-sitter's load-failure signature, applied by
-    run_probe() to a grammar run that exited non-zero.  None means the grammar
-    loaded (a parse error, or a clean run); otherwise the failure's detail is
-    the stderr from the load-failure marker onwards.
+    The one reader of tree-sitter's load-failure signature, applied through
+    _with_grammar_load_failure() to a grammar run that exited non-zero.  None
+    means the grammar loaded (a parse error, or a clean run); otherwise the
+    failure's detail is the stderr from the load-failure marker onwards.
 
     cache_denied marks the signature a sandboxed role produces when its landlock
     write set does not grant ``~/.cache/tree-sitter/`` — CLI and grammar both
@@ -889,6 +889,25 @@ def grammar_load_failure(stderr: str) -> Optional[HarnessFailure]:
         detail=stderr[load_failure_at:].strip(),
         cache_denied=_PERMISSION_DENIAL_RE.search(stderr, load_failure_at) is not None,
     )
+
+
+def _with_grammar_load_failure(probe_kind: str, run: ProbeRun) -> ProbeRun:
+    """run, with a grammar load failure in its stderr typed as harness_failure.
+
+    The one rule for when a run IS a load failure, applied twice: by run_probe()
+    to what it launched, and by evaluate() to whatever its runner returned.  The
+    second application is the guard: a runner that builds a bare ProbeRun of
+    tree-sitter's output would otherwise reach observe() as ABSENT, which is a
+    false PASS for a rejection probe.  A run that is not grammar, exited 0, or
+    already carries a failure is returned unchanged, so applying it twice is a
+    no-op.
+    """
+    if probe_kind != "grammar" or run.exit_code == 0 or run.harness_failure is not None:
+        return run
+    failure = grammar_load_failure(run.stderr)
+    if failure is None:
+        return run
+    return replace(run, harness_failure=failure)
 
 
 def match_predicate(run: ProbeRun, match: Dict[str, Any]) -> bool:
@@ -1045,8 +1064,9 @@ def observe_with_evidence(
         exit 1 → ABSENT
             (NOTE: tree-sitter with --quiet may suppress the "(ERROR …)" tree
              output entirely, so any exit 1 is classified as ABSENT, regardless
-             of whether "(ERROR" appears.  A grammar LOAD failure never reaches
-             this arm: run_probe() records it as harness_failure.)
+             of whether "(ERROR" appears.  A grammar LOAD failure that came
+             through run_probe() or evaluate() never reaches this arm: both
+             record it as harness_failure.)
         any other exit → _HARNESS_ERROR
 
     check:
@@ -1130,35 +1150,29 @@ def observe_with_evidence(
 # Result — evaluation output with mandatory captured evidence
 # ---------------------------------------------------------------------------
 
-@dataclass
+@dataclass(frozen=True)
 class Result:
     """Output of evaluating a single probe, with mandatory captured evidence.
 
     Fields:
         probe       — the original Probe object
         command     — exact command argv that was run (list of strings)
-        exit_code   — process exit code
-        stdout      — captured stdout text
-        stderr      — captured stderr text
+        run         — the captured ProbeRun itself, held whole rather than
+                      copied field by field, so whatever a run records reaches
+                      the --json record and the text renderer
         observation — PRESENT / ABSENT / INDETERMINATE / HARNESS_ERROR
         verdict     — PASS / FAIL / UNPROVABLE / HARNESS_ERROR (tool errors → exit 70)
         value_observation — value probes only: which token was captured and which
                     constraint it failed.  None on every other kind, and on a
                     value probe that never produced a value (non-zero exit), so
                     the existing kinds' record shape is unchanged.
-        fixture_present — whether the fixture existed when the probe launched
-        harness_failure — how the machinery failed, or None
     """
     probe: Probe
     command: List[str]
-    exit_code: int
-    stdout: str
-    stderr: str
+    run: ProbeRun
     observation: str
     verdict: str
     value_observation: Optional[ValueObservation] = None
-    fixture_present: bool = True
-    harness_failure: Optional[HarnessFailure] = None
 
 
 # ---------------------------------------------------------------------------
@@ -1331,16 +1345,12 @@ def run_probe(probe: Probe, timeout: Optional[float] = None) -> ProbeRun:
     except OSError as exc:
         return harness_failed(HarnessFailureKind.LAUNCH, 127, exc)
 
-    load_failure = None
-    if probe.probe_kind == "grammar" and proc.returncode != 0:
-        load_failure = grammar_load_failure(proc.stderr)
-    return ProbeRun(
+    return _with_grammar_load_failure(probe.probe_kind, ProbeRun(
         exit_code=proc.returncode,
         stdout=proc.stdout,
         stderr=proc.stderr,
-        harness_failure=load_failure,
         fixture_present=fixture_present,
-    )
+    ))
 
 
 # Bound on the post-kill drain.  Only reachable if something escaped the killed
@@ -1575,8 +1585,8 @@ def evaluate(probe: Probe, runner: Any = None) -> Result:
                 Tests pass synthetic runners for hermeticity.
 
     Returns:
-        A Result carrying the exact command, captured exit/stdout/stderr,
-        observation, and verdict.
+        A Result carrying the exact command, the captured run, the
+        observation, and the verdict.
     """
     if runner is None:
         runner = run_probe
@@ -1586,8 +1596,9 @@ def evaluate(probe: Probe, runner: Any = None) -> Result:
     repo_root = _find_repo_root()
     cmd = build_command(probe, repo_root=repo_root)
 
-    # Run the probe and capture output.
-    run = runner(probe)
+    # Run the probe and capture output.  Re-typed here because a runner need not
+    # be run_probe(): a bare ProbeRun of a load failure must still not observe.
+    run = _with_grammar_load_failure(probe.probe_kind, runner(probe))
 
     # Determine observation, and — for a value probe that produced output — the
     # reading of stdout behind it.  One call, so the verdict and the evidence
@@ -1607,14 +1618,10 @@ def evaluate(probe: Probe, runner: Any = None) -> Result:
     return Result(
         probe=probe,
         command=cmd,
-        exit_code=run.exit_code,
-        stdout=run.stdout,
-        stderr=run.stderr,
+        run=run,
         observation=obs,
         verdict=verd,
         value_observation=value_obs,
-        fixture_present=run.fixture_present,
-        harness_failure=run.harness_failure,
     )
 
 
@@ -1698,17 +1705,18 @@ def _json_record(r: Result) -> Dict[str, Any]:
     contract.  value_observation is OMITTED rather than set to null on the
     other kinds, so their record shape is unchanged.
     """
-    failure = r.harness_failure
+    run = r.run
+    failure = run.harness_failure
     record = {
         "capability": r.probe.capability,
         "probe_kind": r.probe.probe_kind,
         "verdict": r.verdict,
         "command": r.command,
-        "exit_code": r.exit_code,
-        "stdout": r.stdout,
-        "stderr": r.stderr,
+        "exit_code": run.exit_code,
+        "stdout": run.stdout,
+        "stderr": run.stderr,
         "fixture": r.probe.fixture,
-        "fixture_present": r.fixture_present,
+        "fixture_present": run.fixture_present,
         "harness_failure": None if failure is None else {
             "kind": failure.kind.value,
             "detail": failure.detail,
@@ -1852,32 +1860,32 @@ def main(argv: List[str]) -> int:
         sys.stdout.write("\n")
     else:
         for r in results:
+            run = r.run
+            failure = run.harness_failure
             cmd_str = " ".join(r.command)
-            stdout_preview = r.stdout[:200] if r.stdout else "(empty)"
+            stdout_preview = run.stdout[:200] if run.stdout else "(empty)"
             # A HARNESS_ERROR means the probe could not run, so the tool's own
             # message is the operator's only lead — and the 200-char preview cuts
             # the measured 253-char cache denial mid-path, naming no file at all.
             harness_error = r.verdict == _HARNESS_ERROR
-            if r.stderr and harness_error:
-                stderr_text = r.stderr[:_HARNESS_ERROR_STDERR_CAP]
+            if run.stderr and harness_error:
+                stderr_text = run.stderr[:_HARNESS_ERROR_STDERR_CAP]
             else:
-                stderr_text = r.stderr[:200] if r.stderr else "(empty)"
+                stderr_text = run.stderr[:200] if run.stderr else "(empty)"
             sys.stdout.write(f"[{r.verdict}] {r.probe.capability}\n")
             sys.stdout.write(f"  kind:      {r.probe.probe_kind}\n")
-            absent = "" if r.fixture_present else "  (not present when probed)"
+            absent = "" if run.fixture_present else "  (not present when probed)"
             sys.stdout.write(f"  fixture:   {r.probe.fixture}{absent}\n")
             sys.stdout.write(f"  command:   {cmd_str}\n")
-            sys.stdout.write(f"  exit_code: {r.exit_code}\n")
+            sys.stdout.write(f"  exit_code: {run.exit_code}\n")
             sys.stdout.write(f"  stdout:    {stdout_preview}\n")
             sys.stdout.write(f"  stderr:    {stderr_text}\n")
             # The errno or tool text of a harness failure is data on the run,
             # not stderr, so it gets its own line: a bare HARNESS_ERROR with
             # empty stderr would be the un-attributable row #5894 removed.
-            if r.harness_failure is not None:
-                detail = r.harness_failure.detail[:_HARNESS_ERROR_STDERR_CAP]
-                sys.stdout.write(
-                    f"  harness:   {r.harness_failure.kind.value}: {detail}\n"
-                )
+            if failure is not None:
+                detail = failure.detail[:_HARNESS_ERROR_STDERR_CAP]
+                sys.stdout.write(f"  harness:   {failure.kind.value}: {detail}\n")
             # Scoped to value rows for the same reason the hint below is scoped
             # to HARNESS_ERROR: it answers a question only this kind raises —
             # which token was read, and which constraint it failed.
@@ -1890,7 +1898,7 @@ def main(argv: List[str]) -> int:
             # failure can be a cache denial, and it is always a HARNESS_ERROR,
             # so a check/ir probe whose own stderr happens to quote a load
             # failure and a denial cannot print this hint under a PASS or FAIL.
-            if r.harness_failure is not None and r.harness_failure.cache_denied:
+            if failure is not None and failure.cache_denied:
                 sys.stdout.write(
                     f"  hint:      {_CACHE_DENIAL_EXPLANATION}.  "
                     f"{_CACHE_DENIAL_NEXT_STEP}\n"
