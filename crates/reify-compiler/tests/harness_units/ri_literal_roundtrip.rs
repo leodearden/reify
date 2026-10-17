@@ -787,12 +787,13 @@ fn stdlib_unit_declarations_agree_bit_for_bit_with_the_builtin_table() {
     );
     // The guard is worthless if it silently compares nothing — e.g. if
     // `load_stdlib()`'s module set changed shape and every lookup missed.
-    // mm/cm/m/in/deg/rad/kg/g/s/K/A/mol/cd are all declared today.
-    assert!(
-        compared >= 13,
-        "expected all 13 stdlib-declared built-in symbols to be compared, got \
-         {compared} (built-in-only: {builtin_only:?}) — did the stdlib module set \
-         or the seeding shape change?"
+    // `stdlib/units.ri` declares exactly these 13: mm/cm/m/in/deg/rad/kg/g/s/K/
+    // A/mol/cd.
+    assert_eq!(
+        compared, 13,
+        "expected exactly the 13 stdlib-declared built-in symbols to be compared \
+         (built-in-only: {builtin_only:?}) — did the stdlib module set or the \
+         seeding shape change?"
     );
 }
 
@@ -1053,8 +1054,8 @@ fn si_base_symbols_resolve_to_factor_one_in_the_stdlib_registry() {
         }
     }
 
-    // Non-vacuity floor: all ten slots are decided, and all ten are emittable
-    // today (m/kg/s/A/K/mol/cd/rad/sr/USD).
+    // Non-vacuity: all ten slots are decided, and all ten are emittable
+    // (m/kg/s/A/K/mol/cd/rad/sr/USD).
     assert_eq!(
         compared, 10,
         "every BASE_UNIT_SYMBOLS slot must be decided in one direction or the other"
@@ -1063,11 +1064,11 @@ fn si_base_symbols_resolve_to_factor_one_in_the_stdlib_registry() {
         .iter()
         .filter(|s| s.is_some())
         .count();
-    assert!(
-        emittable >= 10,
+    assert_eq!(
+        emittable, 10,
         "expected all 10 registry-resolvable base symbols \
-         (m/kg/s/A/K/mol/cd/rad/sr/USD) to be emittable, got {emittable} — did \
-         the stdlib lose a unit declaration?"
+         (m/kg/s/A/K/mol/cd/rad/sr/USD) to be emittable — did the stdlib lose a \
+         unit declaration?"
     );
 }
 

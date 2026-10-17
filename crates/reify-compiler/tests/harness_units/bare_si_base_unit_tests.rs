@@ -7,8 +7,6 @@
 //! resolved against the unit registry alone, so `1A^2`, `2mol/m^3` and
 //! `5cd/m^2` failed with `unknown unit`. These tests pin the declarations and
 //! the compound resolution they unlock.
-//!
-//! Cross-file references here name SYMBOLS, never line numbers.
 
 use crate::common::{
     assert_eq_rel, assert_simple_unit, stdlib_let_si_value, stdlib_param_si_value,

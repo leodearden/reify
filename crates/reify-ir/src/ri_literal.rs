@@ -394,24 +394,11 @@ pub fn value_to_ri_literal_in_scope(
                 // shipped, and no value that is `Ok` today can change its
                 // literal.
                 //
-                // The magnitude is the SI value VERBATIM — no `exact_magnitude`
-                // call and no ladder search on this path. Every atom
-                // `ri_compound_unit_expr` writes — an SI base symbol, or a
-                // whole-dimension `RI_NAMED_DERIVED_SYMBOLS` entry such as `Pa`
-                // — has registry factor exactly 1.0, so a single named atom
-                // resolves as `v * 1.0 + 0.0` and `resolve_unit_expr` folds a
-                // compound expression to exactly 1.0 for ANY tree shape
-                // (`Unit → 1.0`; `Pow: 1.0.powi(n) == 1.0`;
-                // `Mul: 1.0 * 1.0 == 1.0`; `Div: 1.0 / 1.0 == 1.0`), and
-                // `expr.rs`'s single
-                // `si_value = value * factor` multiply is the IEEE identity.
-                // Bit-exactness here is therefore INDEPENDENT of the compiler's
-                // fold order rather than a mirror of it that could drift out of
-                // step with a future re-association.
-                //
-                // `preferred_unit` is deliberately not consulted: a hinted
-                // `mm^2` would fold `0.001.powi(2)` and reintroduce exactly the
-                // fold-order hazard this avoids.
+                // The magnitude is the SI value VERBATIM: no `exact_magnitude`
+                // call, no ladder search, and `preferred_unit` deliberately not
+                // consulted. Why that is bit-exact, and why a hint must never
+                // reach this path, is `reify_core::ri_compound_unit_expr`'s
+                // "Exactness is structural, not measured".
                 //
                 // The finiteness guard above has already run, so a non-finite
                 // compound value returns `NonFiniteNumber` before anything here
