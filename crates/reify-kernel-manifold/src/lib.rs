@@ -39,13 +39,12 @@
 //! `crates/reify-kernel-occt/src/register.rs` — OCCT's registration pattern.
 //! `crates/reify-test-support/src/mocks.rs:889` — `FailingMockGeometryKernel`.
 //!
-//! # Manifold-face = mesh triangle (semantic gap)
+//! # Manifold faces are coalesced planar faces
 //!
-//! Topology selectors enumerate **mesh triangles/edges**, not BRep patches:
-//! `faces(mesh_box)` yields 12 sub-handles vs a BRep box's 6, and
-//! `adjacent_faces` / `shared_edges` index triangles. See the "Manifold
-//! mesh-face vs BRep-face semantic gap" section of the [`queries`] module doc
-//! (and PRD Open Question §10.5).
+//! `extract_faces` yields one sub-handle per coalesced planar face (6 for a
+//! box, matching a BRep box), and `AdjacentFaces` / `SharedEdges` index those
+//! faces and `extract_edges`' canonical mesh edges. See the "Manifold face
+//! semantics" section of the [`queries`] module doc.
 
 pub mod kernel;
 pub mod provenance;
