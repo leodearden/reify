@@ -3004,9 +3004,9 @@ fn solve_core_with_sd_tolerance(
             synthesise_floor_constraints(
                 &problem.constraints,
                 &trial_values, // reuse — no redundant build_trial_values call
-                trial_model.functions,
+                &problem.functions,
                 &mut effective_constraints,
-                trial_model.dispatch,
+                dispatch,
             )
         } else {
             false
@@ -3074,8 +3074,8 @@ fn solve_core_with_sd_tolerance(
                 &effective_constraints,
                 &problem.dependent_cells,
                 &trial_values,
-                trial_model.functions,
-                trial_model.dispatch,
+                &problem.functions,
+                dispatch,
             ),
             policy,
         )
@@ -3126,8 +3126,8 @@ fn solve_core_with_sd_tolerance(
     let seed_residual = max_constraint_residual(
         &effective_constraints,
         &trial_values,
-        trial_model.functions,
-        trial_model.dispatch,
+        &problem.functions,
+        dispatch,
     );
     // The early exit and the warm-start budget need a CONVERGED seed: returning
     // one whose equality rows are merely within tolerance would let
@@ -3286,8 +3286,8 @@ fn solve_core_with_sd_tolerance(
     let final_residual = max_constraint_residual(
         &effective_constraints,
         &final_values,
-        trial_model.functions,
-        trial_model.dispatch,
+        &problem.functions,
+        dispatch,
     );
     if let Some(worst_rejected_residual) = final_residual.rejected {
         // If the initial point was feasible but the optimizer drifted infeasible
@@ -3304,12 +3304,8 @@ fn solve_core_with_sd_tolerance(
             // user to different fixes. The last is a deliberate
             // reclassification; see `eval_objective_set`'s guard.
             if let Some(obj) = effective_objective
-                && let Err(cause) = eval_objective_set(
-                    obj,
-                    &trial_values,
-                    trial_model.functions,
-                    trial_model.dispatch,
-                )
+                && let Err(cause) =
+                    eval_objective_set(obj, &trial_values, &problem.functions, dispatch)
             {
                 return (
                     SolveResult::NoProgress {
@@ -3345,7 +3341,7 @@ fn solve_core_with_sd_tolerance(
                         &final_values,
                         worst_rejected_residual,
                         sd_tolerance,
-                        trial_model.dispatch,
+                        dispatch,
                     )
                 } else {
                     reify_core::Diagnostic::error(format!(
@@ -3363,12 +3359,7 @@ fn solve_core_with_sd_tolerance(
     // the solution point, report NoProgress rather than Solved. Same causes, and
     // the same #6377 reclassification, as the fallback-point site above.
     if let Some(obj) = effective_objective
-        && let Err(cause) = eval_objective_set(
-            obj,
-            &final_values,
-            trial_model.functions,
-            trial_model.dispatch,
-        )
+        && let Err(cause) = eval_objective_set(obj, &final_values, &problem.functions, dispatch)
     {
         return (
             SolveResult::NoProgress {
