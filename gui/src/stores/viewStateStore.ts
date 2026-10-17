@@ -51,8 +51,52 @@ function buildMaps(
   }
 }
 
+/** The tree's lookup maps, rebuilt wholesale on every tree change. */
+interface TreeIndex {
+  readonly nodeByPath: ReadonlyMap<string, EntityTreeNode>;
+  readonly parentByPath: ReadonlyMap<string, string | null>;
+}
+
+function indexTree(nodes: EntityTreeNode[]): TreeIndex {
+  const nodeByPath = new Map<string, EntityTreeNode>();
+  const parentByPath = new Map<string, string | null>();
+  buildMaps(nodes, nodeByPath, parentByPath, null);
+  return { nodeByPath, parentByPath };
+}
+
+/**
+ * The current TreeIndex behind a private treeVersion signal
+ * (PRD gui-frontend-wire-bindings-bridge-port §4.5). A query reads the index
+ * through `tracked()`, which subscribes its caller to tree changes even before
+ * the first tree loads; a mutation reads it through `untracked()`. `commit` is
+ * the one place the tree changes: it swaps the index, applies the caller's store
+ * write (if any), then bumps treeVersion LAST — all in one batch, so no observer
+ * runs between the swap and the write, and each observer re-runs once per tree
+ * change.
+ */
+function createReactiveTreeIndex() {
+  let index = indexTree([]);
+  const [treeVersion, setTreeVersion] = createSignal(0);
+  return {
+    tracked(): TreeIndex {
+      treeVersion();
+      return index;
+    },
+    untracked(): TreeIndex {
+      return index;
+    },
+    commit(nodes: EntityTreeNode[], storeWrite?: () => void): void {
+      batch(() => {
+        index = indexTree(nodes);
+        storeWrite?.();
+        setTreeVersion((v) => v + 1);
+      });
+    },
+  };
+}
+
 /** Collect all descendant paths of a given path (not including the path itself). */
-function walkDescendants(path: string, nodeByPath: Map<string, EntityTreeNode>): string[] {
+function walkDescendants(path: string, nodeByPath: ReadonlyMap<string, EntityTreeNode>): string[] {
   const result: string[] = [];
   const node = nodeByPath.get(path);
   if (!node) return result;
@@ -85,39 +129,14 @@ export function createViewStateStore() {
     userViewOrder: [],
   });
 
-  // The tree maps are plain Maps; treeVersion is their reactive stand-in. Every
-  // map-reading query reads it first and every map swap bumps it last
-  // (PRD gui-frontend-wire-bindings-bridge-port §4.5).
-  let nodeByPath = new Map<string, EntityTreeNode>();
-  let parentByPath = new Map<string, string | null>();
-  const [treeVersion, setTreeVersion] = createSignal(0);
+  const treeIndex = createReactiveTreeIndex();
 
   // ---------------------------------------------------------------------------
   // Tree registration
   // ---------------------------------------------------------------------------
 
-  function rebuildTreeMaps(nodes: EntityTreeNode[]): void {
-    nodeByPath = new Map();
-    parentByPath = new Map();
-    buildMaps(nodes, nodeByPath, parentByPath, null);
-  }
-
-  /**
-   * The one place the tree changes: swap the maps, apply the caller's store
-   * write (if any), then bump treeVersion LAST — all in one batch, so no
-   * observer runs between the swap and the write, and each observer re-runs
-   * once per tree change.
-   */
-  function commitTree(nodes: EntityTreeNode[], storeWrite?: () => void): void {
-    batch(() => {
-      rebuildTreeMaps(nodes);
-      storeWrite?.();
-      setTreeVersion((v) => v + 1);
-    });
-  }
-
   function setTree(nodes: EntityTreeNode[]): void {
-    commitTree(nodes);
+    treeIndex.commit(nodes);
     // Stale explicit entries (paths no longer in the tree) are intentionally
     // preserved so that undo / branch-switch can restore them automatically.
     // PRD §8.2: "stale entries must survive tree changes".
@@ -130,12 +149,11 @@ export function createViewStateStore() {
   // ---------------------------------------------------------------------------
 
   function getEffectiveVisibility(path: string): VisibilityState {
-    treeVersion();
-    return resolveEffective(path);
+    return resolveEffective(path, treeIndex.tracked());
   }
 
-  /** The walk-up resolution behind getEffectiveVisibility, without its treeVersion read. */
-  function resolveEffective(path: string): VisibilityState {
+  /** The walk-up resolution behind getEffectiveVisibility, over an index the caller already read. */
+  function resolveEffective(path: string, { nodeByPath, parentByPath }: TreeIndex): VisibilityState {
     if (nodeByPath.size === 0) return 'show';
 
     // Walk up the ancestor chain looking for the first non-null explicit state.
@@ -157,11 +175,11 @@ export function createViewStateStore() {
   // ---------------------------------------------------------------------------
 
   function getAllEffective(): Record<string, VisibilityState> {
-    treeVersion();
-    if (nodeByPath.size === 0) return {};
+    const index = treeIndex.tracked();
+    if (index.nodeByPath.size === 0) return {};
     const result: Record<string, VisibilityState> = {};
-    for (const path of nodeByPath.keys()) {
-      result[path] = resolveEffective(path);
+    for (const path of index.nodeByPath.keys()) {
+      result[path] = resolveEffective(path, index);
     }
     return result;
   }
@@ -255,7 +273,7 @@ export function createViewStateStore() {
         cowIfAuto(s);
         s.explicit[path] = vs;
         if (cascade) {
-          for (const desc of walkDescendants(path, nodeByPath)) {
+          for (const desc of walkDescendants(path, treeIndex.untracked().nodeByPath)) {
             delete s.explicit[desc];
           }
         }
@@ -281,7 +299,7 @@ export function createViewStateStore() {
       produce((s) => {
         cowIfAuto(s);
         delete s.explicit[path];
-        for (const desc of walkDescendants(path, nodeByPath)) {
+        for (const desc of walkDescendants(path, treeIndex.untracked().nodeByPath)) {
           delete s.explicit[desc];
         }
         mirrorExplicitToActiveUserView(s);
@@ -290,6 +308,7 @@ export function createViewStateStore() {
   }
 
   function showOnly(path: string, cascade = true): void {
+    const { nodeByPath, parentByPath } = treeIndex.untracked();
     // Compute ancestor chain of `path`
     const ancestors = new Set<string>();
     let cur = parentByPath.get(path) ?? null;
@@ -324,7 +343,7 @@ export function createViewStateStore() {
   }
 
   function cycleCascading(path: string): void {
-    const effective = resolveEffective(path);
+    const effective = resolveEffective(path, treeIndex.untracked());
     const next: VisibilityState =
       effective === 'show' ? 'ghost' : effective === 'ghost' ? 'hidden' : 'show';
     setVisibility(path, next, true);
@@ -619,14 +638,14 @@ export function createViewStateStore() {
    *   then mirror the pruned explicit back into the user view's stored visibility.
    * - active references a missing view → fall back to `auto:default`.
    *
-   * This function keeps the internal nodeByPath / parentByPath maps in sync with
-   * the provided tree so callers do not need a separate `setTree` call.
+   * This function keeps the internal tree index in sync with the provided tree so
+   * callers do not need a separate `setTree` call.
    *
    * NOTE: This function performs exactly one `setState` — all work (stale-explicit
    * prune, auto-view replacement, active-view reconciliation, user-view mirror) —
-   * and `commitTree` runs it in one batch with the map swap and the treeVersion
-   * bump, so observers see a single notification.  Do NOT call `setTree(tree)`
-   * here; its own batch would notify observers a second time.
+   * and `treeIndex.commit` runs it in one batch with the index swap and the
+   * treeVersion bump, so observers see a single notification.  Do NOT call
+   * `setTree(tree)` here; its own batch would notify observers a second time.
    *
    * NOTE on stale-explicit pruning: the prune loop runs only for the `user:*`
    * branch (the only branch that preserves `s.explicit` rather than replacing it
@@ -655,7 +674,7 @@ export function createViewStateStore() {
     // Build set of all paths in the new tree — used by the user:* prune loop.
     const treePathSet = new Set(Object.keys(freshDefault.visibility));
 
-    commitTree(tree, () => setState(produce((s) => {
+    treeIndex.commit(tree, () => setState(produce((s) => {
       // ------------------------------------------------------------------
       // 1. Replace all auto:* views with fresh ones.
       // ------------------------------------------------------------------
@@ -725,7 +744,7 @@ export function createViewStateStore() {
    * fuzzy-rebind logic.
    */
   function getStalePaths(): string[] {
-    treeVersion();
+    const { nodeByPath } = treeIndex.tracked();
     // When no tree has been loaded yet, there are no "stale" paths — every
     // explicit entry is simply a pre-tree seed and should not be treated as
     // stale.  A path is only stale when a tree was previously loaded and the
@@ -735,17 +754,17 @@ export function createViewStateStore() {
   }
 
   function hasOverride(path: string): boolean {
-    treeVersion();
+    const index = treeIndex.tracked();
     const exp = state.explicit[path];
     if (exp == null) return false;
     // Compute what the node would inherit if it had no explicit state.
-    const parent = parentByPath.get(path) ?? null;
+    const parent = index.parentByPath.get(path) ?? null;
     let wouldInherit: VisibilityState;
     if (parent !== null) {
       // Temporarily read parent effective without considering this node
-      wouldInherit = resolveEffective(parent);
+      wouldInherit = resolveEffective(parent, index);
     } else {
-      const node = nodeByPath.get(path);
+      const node = index.nodeByPath.get(path);
       wouldInherit = node ? defaultRuleFor(node) : 'show';
     }
     return exp !== wouldInherit;
