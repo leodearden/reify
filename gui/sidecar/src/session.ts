@@ -6,7 +6,8 @@ import { createLineReader } from './ipc.js';
 import type { InboundMessage, OutboundMessage, SendMessage } from './types.js';
 import type { PermissionServer } from './permission-server.js';
 import { wrapClaudeArgs } from './sandbox.js';
-import { allowedTools, sidecarMcpServers } from './tool-surface.js';
+import { sidecarMcpServers } from './tool-surface.js';
+import { buildClaudeArgs } from './claudeArgs.js';
 
 export interface SessionConfig {
   model: string;
@@ -16,7 +17,8 @@ export interface SessionConfig {
   timeoutMs?: number;
   /**
    * Optional permission-prompt MCP server to wire Claude CLI's --permission-prompt-tool.
-   * When provided, invokeSdk appends --mcp-config and --permission-prompt-tool args.
+   * When provided, buildClaudeArgs adds --permission-prompt-tool and the MCP config
+   * gains a reify-permission entry.
    */
   permissionMcp?: {
     /** The MCP endpoint URL (e.g. http://127.0.0.1:<port>/mcp) */
@@ -63,8 +65,8 @@ export const SPAWN_ERROR_LOG_PREFIX = '[sidecar] spawned claude error:';
  * Manages a Claude Code SDK session, dispatching inbound messages
  * and emitting outbound messages via the onOutput callback.
  *
- * Uses `claude --print --output-format stream-json` for streaming
- * responses, and `--resume <session_id>` for conversation continuity.
+ * Spawns the claude CLI in stream-json print mode (argv: claudeArgs.ts::buildClaudeArgs)
+ * and resumes with the CLI session id for conversation continuity.
  */
 export class SidecarSession {
   private config: SessionConfig;
@@ -282,82 +284,8 @@ export class SidecarSession {
     this.toolNameById.clear();
     this.pendingToolUseIds.clear();
 
-    const args = [
-      '--print',
-      '--verbose',
-      '--output-format', 'stream-json',
-      '--include-partial-messages',
-      '--input-format', 'stream-json',
-      '--model', this.config.model,
-      '--system-prompt', this.config.systemPrompt,
-    ];
-
-    if (this.sessionId) {
-      args.push('--resume', this.sessionId);
-    }
-
-    // Write the MCP config file lazily on the first invokeSdk call and cache it for the
-    // session lifetime (mcpConfigTmpFile / mcpConfigTmpDir fields), so subsequent turns
-    // avoid repeated mkdtemp+writeFile I/O. Cleanup happens in destroy().
-    // The reify-debug entry is present only when the host's server is live, and the
-    // reify-permission entry only when a permission server is configured.
-    if (!this.mcpConfigTmpFile) {
-      this.mcpConfigTmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'reify-mcp-'));
-      this.mcpConfigTmpFile = path.join(this.mcpConfigTmpDir, 'mcp-config.json');
-      const mcpConfig = {
-        mcpServers: sidecarMcpServers({
-          reifyDebugMcpUrl: this.config.reifyDebugMcpUrl,
-          permissionUrl: this.config.permissionMcp?.url,
-        }),
-      };
-      fs.writeFileSync(this.mcpConfigTmpFile, JSON.stringify(mcpConfig));
-    }
-    // --strict-mcp-config: load ONLY this file, never ~/.claude.json or a project
-    // .mcp.json, which can define a foreign reify-debug server (the reify repo's does).
-    args.push('--mcp-config', this.mcpConfigTmpFile, '--strict-mcp-config');
-    if (this.config.permissionMcp) {
-      args.push('--permission-prompt-tool', 'mcp__reify-permission__approve_tool');
-    }
-
-    // Always bypass per-call permission prompts using an explicit allowlist.
-    // This prevents the GUI from silently stalling on missing permission-UI (see task #3206).
-    // The allowlist is strictly tighter than --dangerously-skip-permissions (which allows all tools).
-    //
-    // Precedence note: --permission-mode bypassPermissions auto-approves ALL tool calls without
-    // asking — so --permission-prompt-tool (reify-permission) is NOT consulted for any tool in
-    // bypassPermissions mode. The two flags are complementary in purpose but operate on different
-    // axes: --allowed-tools restricts which tools Claude is permitted to invoke (anything outside
-    // the list is rejected outright); --permission-mode bypassPermissions means approved tool
-    // calls need no further confirmation prompt. The permission MCP (reify-permission) would only
-    // become active if a future configuration uses a non-bypass permission mode.
-    args.push('--permission-mode', 'bypassPermissions');
-    args.push('--allowed-tools', allowedTools(this.config.reifyDebugMcpUrl));
-
-    // Read the landlock probe result that was settled at sidecar startup by
-    // probeLandlockAsync() in index.ts. Defaults to false when the field is absent
-    // (e.g. unit-test invocations that do not set landlockAvailable in config).
-    const landlockOk = this.config.landlockAvailable ?? false;
-
-    // When a sandbox was requested (landlockExec set) but the kernel can't deliver it,
-    // emit a one-shot notice so the frontend can surface a toast. The !sandboxNoticeEmitted
-    // guard prevents spamming the notice on every subsequent turn of the same session.
-    if (this.config.landlockExec && !landlockOk && !this.sandboxNoticeEmitted) {
-      this.sandboxNoticeEmitted = true;
-      this.onOutput({
-        type: 'notice',
-        id,
-        code: 'sandbox_unavailable',
-        message: 'Sandbox unavailable; Claude will run unrestricted.',
-      });
-      console.warn('[sidecar] sandbox unavailable; claude will run unrestricted');
-    }
-
-    // Wrap the claude args with the landlock sandbox when available.
-    // effectiveLandlockExec is set to undefined if the probe failed so wrapClaudeArgs
-    // returns {cmd:'claude', args:[...args]} (passthrough, no python3 wrap).
-    const effectiveLandlockExec = landlockOk ? this.config.landlockExec : undefined;
-    const workspaceDir = this.config.workspace ?? this.config.workingDirectory;
-    const { cmd, args: wrappedArgs } = wrapClaudeArgs(args, workspaceDir, effectiveLandlockExec);
+    const args = buildClaudeArgs(this.config, this.sessionId, this.mcpConfigPath());
+    const { cmd, args: wrappedArgs } = this.sandboxedCommand(id, args);
 
     const proc = spawn(cmd, wrappedArgs, {
       cwd: this.config.workingDirectory,
@@ -549,6 +477,51 @@ export class SidecarSession {
     if (exitCode !== 0 && exitCode !== null) {
       throw new Error(stderr || `Claude CLI exited with code ${exitCode}`);
     }
+  }
+
+  /**
+   * The MCP config file handed to the claude CLI, written on first use and cached for
+   * the session lifetime (cleaned up in destroy()) so later turns skip the
+   * mkdtemp+writeFile I/O. The reify-debug entry is present only when the host's server
+   * is live, and the reify-permission entry only when a permission server is configured.
+   */
+  private mcpConfigPath(): string {
+    if (!this.mcpConfigTmpFile) {
+      this.mcpConfigTmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'reify-mcp-'));
+      this.mcpConfigTmpFile = path.join(this.mcpConfigTmpDir, 'mcp-config.json');
+      const mcpConfig = {
+        mcpServers: sidecarMcpServers({
+          reifyDebugMcpUrl: this.config.reifyDebugMcpUrl,
+          permissionUrl: this.config.permissionMcp?.url,
+        }),
+      };
+      fs.writeFileSync(this.mcpConfigTmpFile, JSON.stringify(mcpConfig));
+    }
+    return this.mcpConfigTmpFile;
+  }
+
+  /**
+   * The command that runs `claude <args>`: wrapped in the landlock sandbox when the
+   * startup probe (config.landlockAvailable, settled by probeLandlockAsync() in index.ts)
+   * says the kernel supports it, otherwise a direct spawn. When a sandbox was requested
+   * but is unavailable, emits a one-shot sandbox_unavailable notice for invocation `id`
+   * so the frontend can surface a toast once per session rather than every turn.
+   */
+  private sandboxedCommand(id: string, args: string[]): { cmd: string; args: string[] } {
+    const landlockOk = this.config.landlockAvailable ?? false;
+    if (this.config.landlockExec && !landlockOk && !this.sandboxNoticeEmitted) {
+      this.sandboxNoticeEmitted = true;
+      this.onOutput({
+        type: 'notice',
+        id,
+        code: 'sandbox_unavailable',
+        message: 'Sandbox unavailable; Claude will run unrestricted.',
+      });
+      console.warn('[sidecar] sandbox unavailable; claude will run unrestricted');
+    }
+    const effectiveLandlockExec = landlockOk ? this.config.landlockExec : undefined;
+    const workspaceDir = this.config.workspace ?? this.config.workingDirectory;
+    return wrapClaudeArgs(args, workspaceDir, effectiveLandlockExec);
   }
 
   /**

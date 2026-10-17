@@ -48,6 +48,9 @@ tree-generation-stores | [tT]reeGeneration | gui/src/stores/*.ts | 0 | δ #9065
 # layout-default-import-debug: layout defaults live in LAYOUT_DIMENSIONS
 # (gui/src/stores/layoutStore.ts); the debug bridge resets through layout.reset().
 layout-default-import-debug | DEFAULT_[A-Z_]+(WIDTH|HEIGHT|COLLAPSED) | gui/src/debug/*.ts | 0 | ε #9066
+# sidecar-args-literal: the claude CLI argv is built only by buildClaudeArgs
+# (gui/sidecar/src/claudeArgs.ts); the ceiling is that file's one argv literal.
+sidecar-args-literal | --output-format | gui/sidecar/src/*.ts | 1 | ζ #9067
 # gc-inline-gen-layout: test_warm_lane_gc.sh builds refresh-warm-base.sh's
 # base-generation layout (target -> target.gen.1 plus target.gen.1.lock) only in
 # make_gc_fixture, whose own touch is the one allowed hit.
