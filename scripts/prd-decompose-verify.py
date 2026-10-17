@@ -40,6 +40,8 @@ Design decisions:
       rather than tabulated as a premise falsification.  HARNESS_ERROR is
       exempt and always blocks: it is the verdict that reports "nothing could
       be run at all", so absent evidence is its message, not a defect in it.
+      A record α measured as having no fixture (`fixture_present: false`) is
+      set aside as fixture-absent rather than blocking; see classify_record.
   D3: reuse α's exact output shape via importlib — no re-implementation.
 """
 
@@ -49,7 +51,6 @@ import argparse
 import importlib.util
 import json
 import os
-import re
 import sys
 from dataclasses import dataclass, field
 from types import MappingProxyType
@@ -338,158 +339,28 @@ def has_probe_evidence(rec: Dict[str, Any]) -> bool:
     return rec.get("exit_code") is not None
 
 
-# ENOENT signatures, matched case-insensitively.  Both spellings occur: Rust's
-# io::Error renders ENOENT as "(os error 2)", while Python/CLI wrappers render
-# the strerror text.  A signature counts only on a stderr line that also names
-# the probe's own fixture (pcc.fixture_argument), because an ENOENT about any
-# other path is not evidence that the probe's target was absent.
-#
-# The two are deliberately NOT the same kind of pattern.  The strerror text is a
-# complete phrase, so a plain substring test carries no prefix hazard.  The
-# errno rendering does: `"os error 2"` as a bare substring is a PREFIX test, not
-# an errno test, and swallows ENOTDIR(20) / EISDIR(21) / EINVAL(22) /
-# EMFILE(24) / ENOSPC(28) and the whole 2XX range.  The negative lookahead is
-# what makes it mean ENOENT specifically.  It must be a lookahead rather than a
-# required closing paren, because a bare trailing `os error 2` at end-of-string
-# is a spelling that occurs in the wild and must still match.
-_FIXTURE_ABSENT_PHRASE = "no such file or directory"
-_FIXTURE_ABSENT_ERRNO_RE = re.compile(r"os error 2(?![0-9])")
-
-
-def _reports_enoent(line: str) -> bool:
-    lowered = line.lower()
-    return (_FIXTURE_ABSENT_PHRASE in lowered
-            or bool(_FIXTURE_ABSENT_ERRNO_RE.search(lowered)))
-
-
-def _path_token_re(path: str) -> "re.Pattern[str]":
-    """Match `path` as a whole path token, never as the tail of a longer path.
-
-    `/` is deliberately not a left delimiter, so `leaf.ri` does not match
-    inside `/other/leaf.ri` or `fixtures/subleaf.ri`.
-    """
-    return re.compile(r"(?:^|[\s'\"`])" + re.escape(path) + r"(?=[\s'\"`:]|$)")
-
-
-def fixture_absent_evidence(rec: Dict[str, Any]) -> bool:
-    """True iff the record's captured stderr says the probe's fixture did not exist.
-
-    Detection is STDERR-SIGNATURE based, not filesystem based, deliberately.
-    Re-stat-ing the fixture here would be a time-of-check/time-of-run split: the
-    synthesize step runs after the probes, potentially in a different working
-    directory, a different worktree, or after the leaf's own deliverable has
-    since been written.  A filesystem answer at synthesize time is therefore an
-    answer to a different question than "could this probe find its target when
-    it ran".  The captured stderr IS the record of what happened at run time,
-    and PRD §6 decision 4 exists precisely so this is answerable from the
-    record alone.
-
-    Carve-out for α's binary-not-found sentinel: a missing `reify` binary makes
-    the OS emit the SAME ENOENT text (α wraps it as
-    `f"{_BINARY_NOT_FOUND_SENTINEL}: {exc}"`), but nothing was probed at all, so
-    it is a real harness failure that must keep blocking.  The sentinel is read
-    from α rather than re-declared as a literal so the two cannot drift.  α
-    itself always classifies that case HARNESS_ERROR (observe() checks the
-    sentinel before any kind-specific logic), and classify_record now short-
-    circuits HARNESS_ERROR to BLOCKING before calling this function at all — so
-    for α-produced records this carve-out is belt-and-braces.  It is kept
-    because these records reach the harness via a relay agent, which can
-    mislabel a launch failure as a bare FAIL; then this is the only thing
-    standing between "the binary is missing" and "the fixture is the leaf's own
-    deliverable".
-
-    The errno signature is ANCHORED (`os error 2(?![0-9])`).  ENOENT is errno 2,
-    and an unanchored `"os error 2"` substring is a prefix test that also fires
-    on ENOTDIR(20), EISDIR(21), EINVAL(22), EMFILE(24), ENOSPC(28) and every
-    3-digit 2XX errno — each a genuine, executed falsification that would
-    silently stop blocking, inverting the carve-out into a hole that swallows
-    real findings.  The lookahead (rather than a required closing paren) is
-    load-bearing: a bare trailing `os error 2` at end-of-string is a real
-    spelling and must still match.
-
-    The signature is ANCHORED TO THE TARGET: it must sit on a stderr line that
-    also names the probe's own fixture as a whole path token, read from the
-    record's argv by pcc.fixture_argument (reify renders `Error reading
-    <fixture>: ...`).  That excludes ENOENT text quoted on a line that does not
-    name the fixture, an ENOENT about some other path (an imported module, a
-    data file, the α script itself, or a longer path that merely ends in the
-    fixture's name), and a signature on a line that does not name the fixture.
-    An argv naming no fixture never qualifies.
-
-    RESIDUAL LIMITATION: the anchor narrows the quoting hazard but does not
-    close it.  A genuine FAIL whose diagnostic line both names the fixture and
-    quotes the ENOENT text (`<fixture>:3: expected "No such file or
-    directory"`) is still mis-routed to FIXTURE_ABSENT, which downgrades BLOCKS
-    to INCOMPLETE and never reaches PASS.  The principled fix is for α to tag
-    the record structurally at probe time; follow-up ticket
-    tkt_0RVA2VQZR806G3PZTQVH0JCDXG.
-
-    GRAMMAR PROBES ARE NOT COVERED: tree-sitter reports a missing file as
-    `Error: No files were found at or matched by the provided pathname/glob`,
-    which names neither the path nor ENOENT.  A never-written grammar fixture
-    therefore still blocks, failing closed.  Tracked by #8122.
-
-    Args:
-        rec: An α --json result record.
-
-    Returns:
-        True when a stderr line names the probe's fixture and carries an ENOENT
-        signature, and the stderr is not α's binary-not-found sentinel.
-    """
-    stderr = str(rec.get("stderr", ""))
-    if pcc._BINARY_NOT_FOUND_SENTINEL in stderr:
-        return False
-    fixture = pcc.fixture_argument(normalize_command(rec.get("command")))
-    if not fixture:
-        return False
-    names_fixture = _path_token_re(fixture)
-    return any(names_fixture.search(line) and _reports_enoent(line)
-               for line in stderr.splitlines())
-
-
 def classify_record(rec: Dict[str, Any]) -> str:
     """Classify a result record into one of the CAT_* categories.
 
-    Precedence (first match wins):
+    PRD docs/prds/v0_6/prd-probe-gate-typed-outcomes.md §5.2, first match wins:
 
-      1. NON_BLOCKING   — the verdict is not one of FAIL / UNPROVABLE /
-                          HARNESS_ERROR.  This covers PASS and also
-                          premise-shaped records that carry no `verdict` key at
-                          all (RESULTS_SCHEMA is loose enough today that a
-                          premise validates as a result).  The evidence gate
-                          deliberately does NOT re-litigate a non-blocking
-                          record: it exists to stop unexecuted promises from
-                          being tabulated as falsifications.
-      2. BLOCKING (HARNESS_ERROR) — see the carve-out below; checked before
-                          BOTH downgrade branches.
-      3. MALFORMED      — a FAIL/UNPROVABLE with no executed-probe evidence.
-                          A harness defect, not a premise falsification.
-      4. FIXTURE_ABSENT — a FAIL/UNPROVABLE whose probe ran but whose target
-                          file did not exist.  Ordered AFTER malformed so an
-                          evidence-free record is never reclassified on the
-                          strength of a stderr string no process produced.
+      1. NON_BLOCKING   — the verdict is not FAIL / UNPROVABLE / HARNESS_ERROR
+                          and the fixture was not absent.  Covers PASS and
+                          premise-shaped records with no `verdict` key; the
+                          evidence gate does not re-litigate them.
+      2. BLOCKING       — HARNESS_ERROR: the machinery could not run, so absent
+                          evidence is its message rather than a defect in it
+                          (the Prover's no-process fallback carries none).
+      3. MALFORMED      — no executed-probe evidence: an unexecuted promise.
+      4. FIXTURE_ABSENT — α measured the fixture absent when the probe launched,
+                          whatever the remaining verdict, including a relayed
+                          PASS that rule 1's guard let through.
       5. BLOCKING       — an evidence-backed falsification.
 
-    HARNESS_ERROR CARVE-OUT (task #7257 amendment).  Both downgrade branches
-    exist to stop a *premise falsification* being claimed on no evidence.
-    HARNESS_ERROR does not make that claim — it says "the probe machinery
-    itself could not run", which is the one verdict for which absent evidence
-    is the message rather than a defect in the message.  Routing it through
-    either downgrade inverts its meaning:
-
-      - MALFORMED: the Prover prompt's documented fallback for "I could not run
-        anything at all" is literally `{verdict: "HARNESS_ERROR", command: [],
-        exit_code: -1}`.  Under a blanket evidence gate that record stops
-        blocking, so the one path meaning "python3 missing / α script path
-        wrong / the shell step died" silently downgrades the batch to
-        INCOMPLETE.
-      - FIXTURE_ABSENT: a harness-level ENOENT (e.g. `python3: can't open file
-        'scripts/prd-capability-check.py': [Errno 2] No such file or
-        directory`, or a mis-resolved repo root) can carry the fixture-absent
-        signature and would be reported as "the fixture is the leaf's own deliverable" — the
-        opposite diagnosis, and it stops blocking.  The carve-out's rationale
-        (a not-yet-written `.ri` deliverable) is about a PROBE verdict; it has
-        no purchase on a harness error.
+    Only α's boolean `fixture_present: false` is an absent fixture (PRD D3).  A
+    missing or null field, or any non-bool value, reads as present: this is the
+    one branch that can stop a block, so it fires only on α's own unambiguous
+    answer.  No stderr text is consulted.
 
     Args:
         rec: An α --json result record.
@@ -499,13 +370,14 @@ def classify_record(rec: Dict[str, Any]) -> str:
         CAT_BLOCKING.
     """
     verdict = rec.get("verdict", "")
-    if verdict not in _BLOCKING_VERDICTS:
+    fixture_absent = rec.get("fixture_present") is False
+    if verdict not in _BLOCKING_VERDICTS and not fixture_absent:
         return CAT_NON_BLOCKING
     if verdict == "HARNESS_ERROR":
         return CAT_BLOCKING
     if not has_probe_evidence(rec):
         return CAT_MALFORMED
-    if fixture_absent_evidence(rec):
+    if fixture_absent:
         return CAT_FIXTURE_ABSENT
     return CAT_BLOCKING
 
@@ -529,8 +401,9 @@ class BatchVerdict:
                          they mean the batch was not actually verified.
                          HARNESS_ERROR is never routed here — it always blocks
                          (see classify_record).
-        fixture_absent — capability strings whose probe could not run because
-                         the fixture does not exist (populated from step-06).
+        fixture_absent — capability strings whose probe ran without its
+                         fixture: α measured it absent at launch.  Not a
+                         falsification, so these do NOT set `blocks`.
         executed       — number of records carrying executed-probe evidence
         total          — total number of records synthesized
 
@@ -597,7 +470,8 @@ def synthesize_batch(role_results: Dict[str, List[Dict[str, Any]]]) -> BatchVerd
     """Synthesize Prover + Adversary α result records into a BatchVerdict.
 
     Consumes α's --json result records (shape:
-        {capability, probe_kind, verdict, command, exit_code, stdout, stderr}
+        {capability, probe_kind, verdict, command, exit_code, stdout, stderr,
+         fixture, fixture_present, harness_failure}
     ) keyed by role ("prover" / "adversary").
 
     Union semantics (PRD decision 5):
@@ -617,17 +491,14 @@ def synthesize_batch(role_results: Dict[str, List[Dict[str, Any]]]) -> BatchVerd
         the verdict that *reports* "nothing could be run", so absent evidence is
         its message rather than a defect in its message.  See classify_record.
 
-    Fixture-absent carve-out (task #7257 ARM 1):
-        A FAIL/UNPROVABLE probe that ran but could not find its target file has
-        falsified nothing — during decompose the fixture is very often the
-        leaf's own deliverable.  Such records are routed to `fixture_absent`,
-        reported under their own label, and do NOT set `blocks`.  Detection is
-        stderr-signature based rather than filesystem based; see
-        fixture_absent_evidence for the time-of-check/time-of-run rationale and
-        for the binary-not-found carve-out that keeps a missing `reify` binary
-        blocking.  A HARNESS_ERROR is never routed here either: a harness-level
-        ENOENT means the machinery is broken, not that a deliverable is
-        unwritten.
+    Fixture-absent carve-out (PRD §5.2 / D3):
+        A probe whose fixture did not exist has falsified nothing — during
+        decompose the fixture is very often the leaf's own deliverable.  α
+        measures that when the probe launches; a record it marks
+        `fixture_present: false` is routed to `fixture_absent`, reported under
+        its own label, and does NOT set `blocks`.  A HARNESS_ERROR is never
+        routed here: the machinery failing is the louder fact.  See
+        classify_record for the full precedence.
 
     Args:
         role_results: dict with "prover" and "adversary" keys, each mapping to
@@ -713,8 +584,8 @@ def synthesize_batch(role_results: Dict[str, List[Dict[str, Any]]]) -> BatchVerd
         )
     if fixture_absent_parts:
         sections.append(
-            "FIXTURE ABSENT (probe could not run — the fixture is the leaf's own "
-            "deliverable; not a falsification):\n\n"
+            "FIXTURE ABSENT (the probe ran, but its fixture did not exist — "
+            "typically the leaf's own deliverable; not a falsification):\n\n"
             + "\n\n".join(fixture_absent_parts)
         )
     report = "\n\n".join(sections)
