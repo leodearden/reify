@@ -908,11 +908,7 @@ const RATCHETS: &[Ratchet] = &[
         name: "member-force-loops",
         home: "member_axial_forces in form_find.rs (solver-crates-layering D3, leaf η)",
         baseline: 1,
-        measure: Measure::Occurrences(production_pattern(
-            "qi * len",
-            SRC,
-            "let n_i = qi * len;",
-        )),
+        measure: Measure::Occurrences(production_pattern("qi * len", SRC, "let n_i = qi * len;")),
     },
     Ratchet {
         name: "surface-stencil-scatters",

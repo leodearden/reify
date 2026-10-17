@@ -40,7 +40,10 @@
 //! `form_find` signature, or the reify-eval trampoline (those remain anchored-T1a
 //! wired). See `plan.json` design_decisions for the scoping rationale.
 
-use crate::form_find::{ForceDensityInputError, ForceDensityProblem, MemberKind};
+use crate::form_find::{
+    ForceDensityInputError, ForceDensityProblem, IsotropicStencil, MemberKind, ZeroAreaTriangle,
+    member_axial_forces, scatter_line_members, scatter_surface_stencils,
+};
 use faer::{Mat, Side};
 use std::borrow::Cow;
 
@@ -124,6 +127,12 @@ pub enum FreeFormError {
 impl From<ForceDensityInputError> for FreeFormError {
     fn from(input: ForceDensityInputError) -> Self {
         FreeFormError::Input(input)
+    }
+}
+
+impl From<ZeroAreaTriangle> for FreeFormError {
+    fn from(_: ZeroAreaTriangle) -> Self {
+        FreeFormError::DegenerateTriangle
     }
 }
 
@@ -551,27 +560,17 @@ const GEO_STALL_RESID_THRESHOLD: f64 = 1e-4;
 const GEO_STALL_ITERS: usize = 5;
 
 /// Assemble the surface cotangent-Laplacian contribution `Σ_T σ_T·L_T` at the
-/// given node geometry, producing an `n×n` additive matrix. Reuses the
-/// [`crate::form_find::triangle_cotangent_laplacian`] stencil (now `pub(crate)`)
-/// and maps its `DegenerateTriangle` into [`FreeFormError::DegenerateTriangle`].
+/// given node geometry, producing an `n×n` additive matrix via the anchored
+/// kernel's [`scatter_surface_stencils`]; a zero-area triangle is
+/// [`FreeFormError::DegenerateTriangle`].
 fn assemble_surface_matrix(
     n: usize,
     surfaces: &[(usize, usize, usize)],
     surface_stresses: &[f64],
     nodes: &[[f64; 3]],
 ) -> Result<Mat<f64>, FreeFormError> {
-    use crate::form_find::triangle_cotangent_laplacian;
     let mut s = Mat::<f64>::zeros(n, n);
-    for (&(gi, gj, gk), &sigma) in surfaces.iter().zip(surface_stresses.iter()) {
-        let l = triangle_cotangent_laplacian(nodes[gi], nodes[gj], nodes[gk], sigma)
-            .map_err(|_| FreeFormError::DegenerateTriangle)?;
-        let idx = [gi, gj, gk];
-        for a in 0..3 {
-            for b in 0..3 {
-                s[(idx[a], idx[b])] += l[a][b];
-            }
-        }
-    }
+    scatter_surface_stencils::<IsotropicStencil>(&mut s, surfaces, surface_stresses, nodes)?;
     Ok(s)
 }
 
@@ -674,19 +673,7 @@ fn form_find_explicit_combined_relaxed(
 
     let nodes = recover_coordinates(nodes_guess, &spectrum)?;
 
-    let member_forces: Vec<f64> = members
-        .iter()
-        .zip(q.iter())
-        .map(|(&(j, k), &qi)| {
-            let pj = nodes[j];
-            let pk = nodes[k];
-            let len = ((pj[0] - pk[0]).powi(2)
-                + (pj[1] - pk[1]).powi(2)
-                + (pj[2] - pk[2]).powi(2))
-            .sqrt();
-            qi * len
-        })
-        .collect();
+    let member_forces = member_axial_forces(members, q, &nodes);
 
     Ok(FreeFormResult {
         nodes,
@@ -835,19 +822,7 @@ fn form_find_group_ratios_combined(
         surface_mat,
     )?;
 
-    let member_forces: Vec<f64> = members
-        .iter()
-        .zip(q.iter())
-        .map(|(&(j, k), &qi)| {
-            let pj = geo.nodes[j];
-            let pk = geo.nodes[k];
-            let len = ((pj[0] - pk[0]).powi(2)
-                + (pj[1] - pk[1]).powi(2)
-                + (pj[2] - pk[2]).powi(2))
-            .sqrt();
-            qi * len
-        })
-        .collect();
+    let member_forces = member_axial_forces(members, &q, &geo.nodes);
     Ok(FreeFormResult {
         nodes: geo.nodes,
         member_forces,
@@ -990,19 +965,7 @@ fn combined_result_at(
     q: &[f64],
     geom: &[[f64; 3]],
 ) -> FreeFormResult {
-    let member_forces: Vec<f64> = members
-        .iter()
-        .zip(q.iter())
-        .map(|(&(j, k), &qi)| {
-            let pj = geom[j];
-            let pk = geom[k];
-            let len = ((pj[0] - pk[0]).powi(2)
-                + (pj[1] - pk[1]).powi(2)
-                + (pj[2] - pk[2]).powi(2))
-            .sqrt();
-            qi * len
-        })
-        .collect();
+    let member_forces = member_axial_forces(members, q, geom);
     FreeFormResult {
         nodes: geom.to_vec(),
         member_forces,
@@ -1029,19 +992,7 @@ fn form_find_explicit(problem: &ForceDensityProblem<'_>) -> Result<FreeFormResul
 
     // Per-member axial force Nᵢ = qᵢ · Lᵢ on the recovered geometry, in
     // struts-then-cables (input) order — mirrors the anchored kernel's force pass.
-    let member_forces: Vec<f64> = members
-        .iter()
-        .zip(q.iter())
-        .map(|(&(j, k), &qi)| {
-            let pj = nodes[j];
-            let pk = nodes[k];
-            let len = ((pj[0] - pk[0]).powi(2)
-                + (pj[1] - pk[1]).powi(2)
-                + (pj[2] - pk[2]).powi(2))
-            .sqrt();
-            qi * len
-        })
-        .collect();
+    let member_forces = member_axial_forces(members, q, &nodes);
 
     Ok(FreeFormResult {
         nodes,
@@ -1320,10 +1271,10 @@ struct SpectrumClassification {
 /// (unanchored) structure.
 ///
 /// Reuses the anchored kernel's rank-1 per-member accumulation
-/// (`crate::form_find::form_find_anchored`): for a member `(j, k)` with force
-/// density `qᵢ`, add `qᵢ` to `D[j,j]` and `D[k,k]` and `−qᵢ` to `D[j,k]` and
-/// `D[k,j]`. Unlike the anchored case there is no free/anchor partition — the
-/// full `D` is what the eigenvalue / null-space form-finding operates on.
+/// ([`scatter_line_members`]): for a member `(j, k)` with force density `qᵢ`,
+/// add `qᵢ` to `D[j,j]` and `D[k,k]` and `−qᵢ` to `D[j,k]` and `D[k,j]`. Unlike
+/// the anchored case there is no free/anchor partition — the full `D` is what
+/// the eigenvalue / null-space form-finding operates on.
 ///
 /// `pub(crate)` so the layer-3 prestress-stability kernel
 /// ([`crate::prestress_stability`], Task 3796) can reuse this exact assembly:
@@ -1336,12 +1287,7 @@ pub(crate) fn assemble_force_density_matrix(
     q: &[f64],
 ) -> Mat<f64> {
     let mut d = Mat::<f64>::zeros(n, n);
-    for (&(j, k), &qi) in members.iter().zip(q.iter()) {
-        d[(j, j)] += qi;
-        d[(k, k)] += qi;
-        d[(j, k)] -= qi;
-        d[(k, j)] -= qi;
-    }
+    scatter_line_members(&mut d, members, q);
     d
 }
 

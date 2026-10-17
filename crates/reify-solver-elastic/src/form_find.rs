@@ -162,12 +162,23 @@ pub struct FormFindSolve {
 
 // ── The validated force-density problem (solver-crates-layering D1, leaf η) ──
 
-/// A per-triangle membrane stencil: the prestress it takes and its tension rule.
+/// A per-triangle membrane stencil: the prestress it takes, its tension rule
+/// and its local force-density matrix.
 pub(crate) trait TriangleStencil {
     /// Per-triangle prestress.
     type Stress;
+    /// Why no local matrix exists at a geometry.
+    type Error;
     /// Whether `stress` is tension; NaN never is.
     fn is_tension(stress: &Self::Stress) -> bool;
+    /// The triangle's symmetric, zero-row-sum local 3×3 at corners
+    /// `pi, pj, pk`, rows/cols in corner order.
+    fn local_matrix(
+        pi: [f64; 3],
+        pj: [f64; 3],
+        pk: [f64; 3],
+        stress: &Self::Stress,
+    ) -> Result<[[f64; 3]; 3], Self::Error>;
 }
 
 /// The isotropic cotangent-Laplacian stencil: one surface stress `σ > 0`.
@@ -175,8 +186,17 @@ pub(crate) enum IsotropicStencil {}
 
 impl TriangleStencil for IsotropicStencil {
     type Stress = f64;
+    type Error = ZeroAreaTriangle;
     fn is_tension(stress: &f64) -> bool {
         *stress > 0.0
+    }
+    fn local_matrix(
+        pi: [f64; 3],
+        pj: [f64; 3],
+        pk: [f64; 3],
+        sigma: &f64,
+    ) -> Result<[[f64; 3]; 3], ZeroAreaTriangle> {
+        triangle_cotangent_laplacian(pi, pj, pk, *sigma)
     }
 }
 
@@ -185,8 +205,34 @@ pub(crate) enum AnisotropicStencil {}
 
 impl TriangleStencil for AnisotropicStencil {
     type Stress = AnisotropicSurfaceStress;
+    type Error = AnisoFormFindError;
     fn is_tension(stress: &AnisotropicSurfaceStress) -> bool {
         stress.sigma_warp > 0.0 && stress.sigma_weft > 0.0
+    }
+    fn local_matrix(
+        pi: [f64; 3],
+        pj: [f64; 3],
+        pk: [f64; 3],
+        stress: &AnisotropicSurfaceStress,
+    ) -> Result<[[f64; 3]; 3], AnisoFormFindError> {
+        triangle_anisotropic_laplacian(pi, pj, pk, stress)
+    }
+}
+
+/// A triangle whose corners are collinear or coincident, so it has no stencil:
+/// the verdict of [`triangle_area_vector`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ZeroAreaTriangle;
+
+impl From<ZeroAreaTriangle> for FormFindError {
+    fn from(_: ZeroAreaTriangle) -> Self {
+        FormFindError::DegenerateTriangle
+    }
+}
+
+impl From<ZeroAreaTriangle> for AnisoFormFindError {
+    fn from(_: ZeroAreaTriangle) -> Self {
+        AnisoFormFindError::DegenerateTriangle
     }
 }
 
@@ -245,7 +291,7 @@ impl<'a, S: TriangleStencil> ForceDensityProblem<'a, S> {
         }
         if let Some(surface) = surfaces
             .iter()
-            .position(|&(i, j, k)| triangle_area_vector(nodes[i], nodes[j], nodes[k]).is_none())
+            .position(|&(i, j, k)| triangle_area_vector(nodes[i], nodes[j], nodes[k]).is_err())
         {
             return Err(ForceDensityInputError::DegenerateTriangle { surface });
         }
@@ -378,7 +424,7 @@ pub fn form_find_anchored(
     // Force-density Laplacian D = CᵀQC for the line members (no surfaces on
     // this entry). Assembled by the shared `assemble_d` so the surface-aware
     // entry adds Σ_T σ_T·L_T into the identical matrix before the same solve.
-    let d = assemble_d(
+    let d = assemble_d::<IsotropicStencil>(
         nodes.len(),
         problem.members,
         problem.q,
@@ -395,19 +441,7 @@ pub fn form_find_anchored(
 
     // Per-member axial force Nᵢ = qᵢ · Lᵢ on the solved geometry, in
     // struts-then-cables member order (the input ordering).
-    let member_forces: Vec<f64> = members
-        .iter()
-        .zip(q.iter())
-        .map(|(&(j, k), &qi)| {
-            let pj = out_nodes[j];
-            let pk = out_nodes[k];
-            let len = ((pj[0] - pk[0]).powi(2)
-                + (pj[1] - pk[1]).powi(2)
-                + (pj[2] - pk[2]).powi(2))
-            .sqrt();
-            qi * len
-        })
-        .collect();
+    let member_forces = member_axial_forces(members, q, &out_nodes);
 
     Ok(FormFindSolve {
         nodes: out_nodes,
@@ -522,7 +556,7 @@ pub fn form_find_anchored_surfaces(
     // across iterations (clear-and-refill instead of `zeros()`) and move to a
     // sparse assembly + factor-reuse strategy for large meshes.
     for _ in 0..max_iters {
-        let d = assemble_d(
+        let d = assemble_d::<IsotropicStencil>(
             n,
             problem.members,
             problem.q,
@@ -559,19 +593,7 @@ pub fn form_find_anchored_surfaces(
     let out_nodes = current;
 
     // Per-member axial force Nᵢ = qᵢ · Lᵢ on the solved geometry.
-    let member_forces: Vec<f64> = members
-        .iter()
-        .zip(q.iter())
-        .map(|(&(j, k), &qi)| {
-            let pj = out_nodes[j];
-            let pk = out_nodes[k];
-            let len = ((pj[0] - pk[0]).powi(2)
-                + (pj[1] - pk[1]).powi(2)
-                + (pj[2] - pk[2]).powi(2))
-            .sqrt();
-            qi * len
-        })
-        .collect();
+    let member_forces = member_axial_forces(members, q, &out_nodes);
 
     Ok(FormFindSolve {
         nodes: out_nodes,
@@ -586,13 +608,12 @@ pub fn form_find_anchored_surfaces(
 /// with force density `qᵢ`, adds `+qᵢ` to the diagonal entries `D[j,j]`,
 /// `D[k,k]` and `−qᵢ` to the off-diagonal pairs `D[j,k]`, `D[k,j]`.
 ///
-/// Shared by [`assemble_d`] and [`assemble_d_aniso`] so a future change to the
-/// FDM rank-1 update propagates to both surface and anisotropic paths
-/// automatically.
+/// The one rank-1 FDM update, shared by [`assemble_d`] and `form_find_free`'s
+/// `assemble_force_density_matrix`.
 ///
 /// Endpoints must index real nodes: callers build a [`ForceDensityProblem`]
 /// first, and debug builds assert it here, naming the offending member.
-fn scatter_line_members(d: &mut Mat<f64>, members: &[(usize, usize)], q: &[f64]) {
+pub(crate) fn scatter_line_members(d: &mut Mat<f64>, members: &[(usize, usize)], q: &[f64]) {
     let n = d.nrows();
     for (&(j, k), &qi) in members.iter().zip(q.iter()) {
         debug_assert!(
@@ -607,27 +628,17 @@ fn scatter_line_members(d: &mut Mat<f64>, members: &[(usize, usize)], q: &[f64])
     }
 }
 
-/// Assemble the global force-density matrix `D = CᵀQC` (line members) `+ Σ_T
-/// σ_T·L_T` (surface cotangent-Laplacians, at the given geometry) into a dense
-/// `n×n` faer matrix. Shared by both anchored entries; the line loop is the
-/// landed FDM rank-1 update (via [`scatter_line_members`]), the surface loop
-/// scatters each per-triangle local 3×3 into the triangle's global node
-/// indices. Propagates [`FormFindError::DegenerateTriangle`] from a zero-area
-/// triangle.
-fn assemble_d(
-    n: usize,
-    members: &[(usize, usize)],
-    q: &[f64],
+/// Scatter each surface triangle's local stencil `L_T` (at `nodes`) into `d` at
+/// the triangle's global node indices — the one surface-stencil scatter,
+/// shared by [`assemble_d`] and `form_find_free`'s surface matrix.
+pub(crate) fn scatter_surface_stencils<S: TriangleStencil>(
+    d: &mut Mat<f64>,
     surfaces: &[(usize, usize, usize)],
-    surface_stresses: &[f64],
+    surface_stresses: &[S::Stress],
     nodes: &[[f64; 3]],
-) -> Result<Mat<f64>, FormFindError> {
-    let mut d = Mat::<f64>::zeros(n, n);
-    // Line members: rank-1 FDM update.
-    scatter_line_members(&mut d, members, q);
-    // Surface triangles: add σ_T·L_T into the SAME matrix.
-    for (&(i, j, k), &sigma) in surfaces.iter().zip(surface_stresses.iter()) {
-        let l = triangle_cotangent_laplacian(nodes[i], nodes[j], nodes[k], sigma)?;
+) -> Result<(), S::Error> {
+    for (&(i, j, k), stress) in surfaces.iter().zip(surface_stresses.iter()) {
+        let l = S::local_matrix(nodes[i], nodes[j], nodes[k], stress)?;
         let idx = [i, j, k];
         for a in 0..3 {
             for b in 0..3 {
@@ -635,7 +646,45 @@ fn assemble_d(
             }
         }
     }
+    Ok(())
+}
+
+/// Assemble the global force-density matrix `D = CᵀQC` (line members) `+ Σ_T
+/// L_T` (surface stencils `S`, at the given geometry) into a dense `n×n` faer
+/// matrix: zeros, then [`scatter_line_members`], then
+/// [`scatter_surface_stencils`]. Propagates the stencil's error.
+fn assemble_d<S: TriangleStencil>(
+    n: usize,
+    members: &[(usize, usize)],
+    q: &[f64],
+    surfaces: &[(usize, usize, usize)],
+    surface_stresses: &[S::Stress],
+    nodes: &[[f64; 3]],
+) -> Result<Mat<f64>, S::Error> {
+    let mut d = Mat::<f64>::zeros(n, n);
+    scatter_line_members(&mut d, members, q);
+    scatter_surface_stencils::<S>(&mut d, surfaces, surface_stresses, nodes)?;
     Ok(d)
+}
+
+/// Per-member axial force `Nᵢ = qᵢ · Lᵢ` at `nodes`, in member order — the one
+/// member-force pass every form-finding entry reports.
+pub(crate) fn member_axial_forces(
+    members: &[(usize, usize)],
+    q: &[f64],
+    nodes: &[[f64; 3]],
+) -> Vec<f64> {
+    members
+        .iter()
+        .zip(q.iter())
+        .map(|(&(j, k), &qi)| {
+            let pj = nodes[j];
+            let pk = nodes[k];
+            let len = ((pj[0] - pk[0]).powi(2) + (pj[1] - pk[1]).powi(2) + (pj[2] - pk[2]).powi(2))
+                .sqrt();
+            qi * len
+        })
+        .collect()
 }
 
 /// Solve the reduced anchored system `D_ff X_f = −D_fa X_a` once for the given
@@ -788,9 +837,13 @@ fn max_abs_coordinate<'a>(points: impl IntoIterator<Item = &'a [f64; 3]>) -> f64
 const DEGENERATE_AREA_EPS: f64 = 1e-10;
 
 /// The corner cross product `(pj − pi) × (pk − pi)`, whose length is `2·Area`,
-/// or `None` when `2·Area ≤ DEGENERATE_AREA_EPS · max|e|²` — the one
-/// degeneracy predicate shared by both stencils and the input contract.
-fn triangle_area_vector(pi: [f64; 3], pj: [f64; 3], pk: [f64; 3]) -> Option<[f64; 3]> {
+/// or [`ZeroAreaTriangle`] when `2·Area ≤ DEGENERATE_AREA_EPS · max|e|²` — the
+/// one degeneracy predicate shared by both stencils and the input contract.
+fn triangle_area_vector(
+    pi: [f64; 3],
+    pj: [f64; 3],
+    pk: [f64; 3],
+) -> Result<[f64; 3], ZeroAreaTriangle> {
     let eij = v_sub(pj, pi);
     let eik = v_sub(pk, pi);
     let ejk = v_sub(pk, pj);
@@ -798,9 +851,9 @@ fn triangle_area_vector(pi: [f64; 3], pj: [f64; 3], pk: [f64; 3]) -> Option<[f64
     let two_area = v_dot(cross, cross).sqrt();
     let scale = v_dot(eij, eij).max(v_dot(eik, eik)).max(v_dot(ejk, ejk));
     if two_area <= DEGENERATE_AREA_EPS * scale {
-        None
+        Err(ZeroAreaTriangle)
     } else {
-        Some(cross)
+        Ok(cross)
     }
 }
 
@@ -879,32 +932,6 @@ pub struct AnisoFormFindSolve {
     pub converged: bool,
 }
 
-/// Assemble `D = CᵀQC` (line members) `+ Σ_T L_T(aniso)` (anisotropic surface
-/// stencils) into a dense `n×n` faer matrix. Parallels `assemble_d` but
-/// scatters `triangle_anisotropic_laplacian` instead of the cotangent stencil.
-/// Line-member contributions share [`scatter_line_members`] with `assemble_d`.
-fn assemble_d_aniso(
-    n: usize,
-    members: &[(usize, usize)],
-    q: &[f64],
-    surfaces: &[(usize, usize, usize)],
-    surface_prestress: &[AnisotropicSurfaceStress],
-    nodes: &[[f64; 3]],
-) -> Result<Mat<f64>, AnisoFormFindError> {
-    let mut d = Mat::<f64>::zeros(n, n);
-    scatter_line_members(&mut d, members, q);
-    for (&(i, j, k), spec) in surfaces.iter().zip(surface_prestress.iter()) {
-        let l = triangle_anisotropic_laplacian(nodes[i], nodes[j], nodes[k], spec)?;
-        let idx = [i, j, k];
-        for a in 0..3 {
-            for b in 0..3 {
-                d[(idx[a], idx[b])] += l[a][b];
-            }
-        }
-    }
-    Ok(d)
-}
-
 /// Solve the anchored Force-Density form-finding problem with ANISOTROPIC NFDM
 /// surface contributions (ε / task 4416).
 ///
@@ -950,7 +977,7 @@ pub fn form_find_anchored_surfaces_aniso(
     let mut converged = false;
     let max_iters = if surfaces.is_empty() { 1 } else { MAX_SURFACE_ITERS };
     for _ in 0..max_iters {
-        let d = assemble_d_aniso(
+        let d = assemble_d::<AnisotropicStencil>(
             n,
             problem.members,
             problem.q,
@@ -979,19 +1006,7 @@ pub fn form_find_anchored_surfaces_aniso(
     }
     let out_nodes = current;
 
-    let member_forces: Vec<f64> = members
-        .iter()
-        .zip(q.iter())
-        .map(|(&(j, k), &qi)| {
-            let pj = out_nodes[j];
-            let pk = out_nodes[k];
-            let len = ((pj[0] - pk[0]).powi(2)
-                + (pj[1] - pk[1]).powi(2)
-                + (pj[2] - pk[2]).powi(2))
-            .sqrt();
-            qi * len
-        })
-        .collect();
+    let member_forces = member_axial_forces(members, q, &out_nodes);
 
     // Populate principal stresses per triangle on the solved geometry (declaration
     // order). Since S = diag(σ_w, σ_f) is diagonal in the material frame, recovery
@@ -1030,7 +1045,7 @@ fn build_material_frame(
     warp_dir: [f64; 3],
 ) -> Result<([f64; 3], [f64; 3], [f64; 3]), AnisoFormFindError> {
     // Unit normal and 2·Area.
-    let cross = triangle_area_vector(pi, pj, pk).ok_or(AnisoFormFindError::DegenerateTriangle)?;
+    let cross = triangle_area_vector(pi, pj, pk)?;
     let two_area = v_dot(cross, cross).sqrt();
     let n = [cross[0] / two_area, cross[1] / two_area, cross[2] / two_area];
 
@@ -1199,7 +1214,7 @@ fn v_cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
 /// caller scatters `L[a][b]` into the global `D` at the triangle's global node
 /// indices, exactly as the line loop scatters its member rank-1 update.
 ///
-/// Returns `Err(FormFindError::DegenerateTriangle)` when `2·Area` is negligible
+/// Returns `Err(ZeroAreaTriangle)` when `2·Area` is negligible
 /// relative to the triangle's edge scale (collinear / zero-area corners), where
 /// the cotangents would diverge — a clean diagnostic rather than a NaN/∞ stencil
 /// that would silently poison the assembled system.
@@ -1208,7 +1223,7 @@ pub(crate) fn triangle_cotangent_laplacian(
     pj: [f64; 3],
     pk: [f64; 3],
     sigma: f64,
-) -> Result<[[f64; 3]; 3], FormFindError> {
+) -> Result<[[f64; 3]; 3], ZeroAreaTriangle> {
     // The six directed edge vectors (two out of each vertex).
     let eij = v_sub(pj, pi); // i → j
     let eik = v_sub(pk, pi); // i → k
@@ -1219,7 +1234,7 @@ pub(crate) fn triangle_cotangent_laplacian(
 
     // 2·Area = |e_a × e_b| is invariant to which vertex's edge pair we cross.
     // Degenerate guard (relative): reject before the divisions below blow up.
-    let cross = triangle_area_vector(pi, pj, pk).ok_or(FormFindError::DegenerateTriangle)?;
+    let cross = triangle_area_vector(pi, pj, pk)?;
     let two_area = v_dot(cross, cross).sqrt();
 
     // cot(θ_v) = (e_a · e_b) / (2·Area), e_a/e_b the two edges out of v.
@@ -1718,7 +1733,7 @@ mod tests {
 
         assert_eq!(
             triangle_cotangent_laplacian(a, b, c, 1.0).unwrap_err(),
-            FormFindError::DegenerateTriangle,
+            ZeroAreaTriangle,
         );
     }
 
@@ -2118,14 +2133,14 @@ mod tests {
         }
         let free_indices: Vec<usize> = (0..nodes.len()).filter(|&i| !is_anchor[i]).collect();
 
-        let d_base = assemble_d(nodes.len(), &members, &q, &surfaces, &sigmas, &nodes)
+        let d_base = assemble_d::<IsotropicStencil>(nodes.len(), &members, &q, &surfaces, &sigmas, &nodes)
             .expect("non-degenerate fixture");
         let resid_base = free_equilibrium_residual_relative(&d_base, &nodes, &free_indices);
 
         let q_scaled: Vec<f64> = q.iter().map(|v| v * LAMBDA).collect();
         let sigmas_scaled: Vec<f64> = sigmas.iter().map(|v| v * LAMBDA).collect();
         let d_scaled =
-            assemble_d(nodes.len(), &members, &q_scaled, &surfaces, &sigmas_scaled, &nodes)
+            assemble_d::<IsotropicStencil>(nodes.len(), &members, &q_scaled, &surfaces, &sigmas_scaled, &nodes)
                 .expect("non-degenerate fixture");
         let resid_scaled = free_equilibrium_residual_relative(&d_scaled, &nodes, &free_indices);
 
@@ -2222,7 +2237,7 @@ mod tests {
 
         for lambda in [1.0, TWO_POW_20, 1.0 / TWO_POW_20] {
             let q = [BASE_Q * lambda; 3];
-            let d = assemble_d(4, &members, &q, &[], &[], &exact).expect("line-only D");
+            let d = assemble_d::<IsotropicStencil>(4, &members, &q, &[], &[], &exact).expect("line-only D");
             assert!(
                 !is_singular_reduced_solve(&d, &exact, &free_indices, &anchor_indices),
                 "λ={lambda:e}: the exact chain solution must be accepted",
