@@ -1792,19 +1792,26 @@ impl Engine {
 
     /// Replace the constraint solver that resolves auto parameters, keeping
     /// the engine's resolution profile. This is the solver-double seam.
+    ///
+    /// # Panics
+    /// Panics if the engine was constructed `SolverPosture::SolverFree`.
     pub fn with_solver(mut self, solver: Box<dyn ConstraintSolver>) -> Self {
-        match self.solve_stage.as_mut() {
-            Some(stage) => stage.replace_solver(solver),
-            None => {
-                let mut stage = SolveStage::for_posture(SolverPosture::Solve(
-                    reify_ir::ResolutionProfile::FRESH,
-                ))
-                .expect("a Solve posture always has a stage");
-                stage.replace_solver(solver);
-                self.solve_stage = Some(stage);
-            }
-        }
+        self.solve_stage_or_refuse("Engine::with_solver").replace_solver(solver);
         self
+    }
+
+    /// The solve stage a solver-injection `op` writes into. A solver installed
+    /// on a `SolverFree` engine would make its named posture untrue, so that is
+    /// refused rather than silently re-arming the engine.
+    fn solve_stage_or_refuse(&mut self, op: &str) -> &mut SolveStage {
+        self.solve_stage.as_mut().unwrap_or_else(|| {
+            panic!(
+                "{op} on an engine constructed SolverPosture::SolverFree: installing a \
+                 solver would make its named solver-free posture untrue \
+                 (solver-driver-parity I1); construct with SolverPosture::Solve(..) to \
+                 inject a solver double"
+            )
+        })
     }
 
     /// Return the set of scope names that received a synthetic Chebyshev-centre
@@ -1834,7 +1841,11 @@ impl Engine {
     /// and the previous solver is dropped. Mirrors `register_optimized_impl`'s
     /// `HashMap::insert` semantics; intentional to support hot-reload and test
     /// fixture scenarios where callers swap impls between runs.
+    ///
+    /// # Panics
+    /// Panics if the engine was constructed `SolverPosture::SolverFree`.
     pub fn register_solver(&mut self, name: impl Into<String>, solver: Box<dyn ConstraintSolver>) {
+        self.solve_stage_or_refuse("Engine::register_solver");
         self.solvers.insert(name.into(), solver);
     }
 
@@ -2684,7 +2695,25 @@ impl Engine {
     /// **Counter reset**: both `persistent_hit_count` and
     /// `persistent_miss_count` are reset to 0 on every call so callers
     /// receive per-session statistics.
+    ///
+    /// # Panics
+    /// Panics on `Some(dir)` when the engine's posture is `Solve(profile)` with
+    /// a `StalenessPolicy::Fresh` profile: a persistent cache serves results
+    /// from an earlier session, which that profile does not permit. `None` is
+    /// always accepted, and so is a `SolverFree` engine, which carries no
+    /// resolution profile.
     pub fn set_persistent_cache_dir(&mut self, dir: Option<std::path::PathBuf>) {
+        if dir.is_some()
+            && let SolverPosture::Solve(profile) = self.solver_posture()
+            && !profile.staleness().permits_persisted_results()
+        {
+            panic!(
+                "Engine::set_persistent_cache_dir(Some(..)) on an engine whose resolution \
+                 profile is StalenessPolicy::Fresh: a persistent cache may serve results \
+                 from an earlier session (solver-driver-parity I5, staleness axis); \
+                 construct with a StalenessPolicy::MayServePersisted profile ({profile:?})"
+            );
+        }
         self.persistent_cache_dir = dir;
         self.persistent_hit_count = 0;
         self.persistent_miss_count = 0;

@@ -40,7 +40,7 @@ pub fn collect_value_ref_members(expr: &CompiledExpr) -> Vec<String> {
 
 /// Create a new `Engine` backed by a fresh `MockConstraintChecker` and no
 /// geometry kernel. Suitable for tests that only need to evaluate logic
-/// expressions and constraints without real geometry.
+/// expressions and constraints without real geometry. Solver-free by contract.
 #[cfg(feature = "eval-helpers")]
 pub fn make_engine() -> reify_eval::Engine {
     let checker = MockConstraintChecker::new();
@@ -50,7 +50,7 @@ pub fn make_engine() -> reify_eval::Engine {
 /// Create a new `Engine` backed by the real `SimpleConstraintChecker` and no
 /// geometry kernel. Suitable for integration tests that need the real
 /// constraint semantics (Satisfied/Violated/Indeterminate) rather than the
-/// mock's tracking-only stub.
+/// mock's tracking-only stub. Solver-free by contract.
 #[cfg(feature = "eval-helpers")]
 pub fn make_simple_engine() -> reify_eval::Engine {
     reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(reify_constraints::SimpleConstraintChecker), None)
@@ -61,7 +61,7 @@ pub fn make_simple_engine() -> reify_eval::Engine {
 /// structural surfacing tests; the mock's `tessellate` returns a canned mesh,
 /// so it pins surface shape but cannot validate placement. Construct the
 /// engine inline instead when a test needs the kernel's `operations_ref()`,
-/// since this factory moves the kernel into the engine.
+/// since this factory moves the kernel into the engine. Solver-free by contract.
 #[cfg(feature = "eval-helpers")]
 pub fn make_engine_with_mock_kernel() -> reify_eval::Engine {
     reify_eval::Engine::new(

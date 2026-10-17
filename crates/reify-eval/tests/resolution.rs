@@ -10,7 +10,7 @@ use reify_ir::{DeterminacyState, ObjectiveSense, ObjectiveSet, SnapshotProvenanc
 use reify_test_support::{
     CompiledModuleBuilder, MockConstraintChecker, MockConstraintSolver,
     MultiCallSpyConstraintSolver, SpyConstraintSolver, TopologyTemplateBuilder, binop, gt, literal,
-    lt, make_simple_engine, mm, value_ref,
+    lt, mm, value_ref,
 };
 
 #[test]
@@ -210,7 +210,12 @@ fn check_reports_satisfied_after_resolution() {
         .template(template)
         .build();
 
-    let mut engine = make_simple_engine().with_solver(Box::new(solver));
+    let mut engine = Engine::new(
+        reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH),
+        Box::new(reify_constraints::SimpleConstraintChecker),
+        None,
+    )
+    .with_solver(Box::new(solver));
 
     let result = engine.check(&module);
 
