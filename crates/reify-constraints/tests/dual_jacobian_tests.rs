@@ -197,8 +197,8 @@ fn two_auto_model() -> (Vec<AutoParam>, Vec<CompiledExpr>, ValueMap, Vec<f64>) {
 
 /// A trial model with no dependent cells, no user functions and no compute
 /// dispatch — the common case.  The richer shapes spell the difference:
-/// `TrialModel { dependent_cells: …, ..model(…) }`.
-fn model<'a>(params: &'a [AutoParam], base: &'a ValueMap) -> TrialModel<'a> {
+/// `TrialModel { dependent_cells: …, ..trial_model(…) }`.
+fn trial_model<'a>(params: &'a [AutoParam], base: &'a ValueMap) -> TrialModel<'a> {
     TrialModel {
         auto_params: params,
         base_values: base,
@@ -214,7 +214,7 @@ fn jac(
     base: &ValueMap,
     x: &[f64],
 ) -> reify_constraints::Jacobian {
-    residual_jacobian(&JacobianModel::new(model(params, base)), residuals, x)
+    residual_jacobian(&JacobianModel::new(trial_model(params, base)), residuals, x)
         .expect("this model is differentiable at this point")
 }
 
@@ -362,7 +362,7 @@ fn a_residual_with_an_unsupported_seed_dependent_construct_refuses_by_row() {
     let base = ValueMap::new();
     let x = vec![3.0, 4.0];
 
-    let err = residual_jacobian(&JacobianModel::new(model(&params, &base)), &[good, bad], &x)
+    let err = residual_jacobian(&JacobianModel::new(trial_model(&params, &base)), &[good, bad], &x)
         .expect_err("an undifferentiable residual must refuse, not return zeros");
     assert_eq!(err.row, 1, "the refusal names WHICH residual could not be differentiated");
     assert!(
@@ -400,7 +400,7 @@ fn a_repeated_auto_param_panics_rather_than_attributing_one_variable_to_two_colu
         auto("q", DimensionVector::DIMENSIONLESS),
         auto("q", DimensionVector::DIMENSIONLESS),
     ];
-    let _ = JacobianModel::new(model(&params, &ValueMap::new()));
+    let _ = JacobianModel::new(trial_model(&params, &ValueMap::new()));
 }
 
 #[test]
@@ -410,7 +410,7 @@ fn an_x_shorter_than_auto_params_panics_rather_than_dropping_a_column() {
     // trial vector never set.  The check lives one hop down, in the solver's
     // own trial-point builder, and the Jacobian seam must still reach it.
     let (params, residuals, base, _) = two_auto_model();
-    let _ = residual_jacobian(&JacobianModel::new(model(&params, &base)), &residuals, &[3.0]);
+    let _ = residual_jacobian(&JacobianModel::new(trial_model(&params, &base)), &residuals, &[3.0]);
 }
 
 // ---------------------------------------------------------------------------
@@ -426,7 +426,7 @@ fn one_jacobian_model_reused_across_trial_points_gives_exactly_what_a_fresh_one_
     // cold one does at a DIFFERENT point.  A memo that had captured anything
     // about the point it was filled at would surface here as a stale row.
     let (params, residuals, base, _) = two_auto_model();
-    let jm = JacobianModel::new(model(&params, &base));
+    let jm = JacobianModel::new(trial_model(&params, &base));
     for x in [vec![3.0, 4.0], vec![0.5, 9.0], vec![3.0, 4.0]] {
         let reused = residual_jacobian(&jm, &residuals, &x)
             .expect("this model is differentiable at every one of these points");
@@ -445,7 +445,7 @@ fn a_refused_row_leaves_nothing_behind_for_the_next_call_through_the_same_model(
     // to carry across a boundary it should not.  A refusal at one trial point
     // must not reach the next call as a phantom `JacobianError`.
     let (params, residuals, base, x) = two_auto_model();
-    let jm = JacobianModel::new(model(&params, &base));
+    let jm = JacobianModel::new(trial_model(&params, &base));
     // `[w, h][0]` — the same undifferentiable construct section (6) refuses on.
     let bad = index_access(
         reify_test_support::builders::expr::list_expr(vec![
@@ -511,7 +511,7 @@ fn a_residual_reading_a_derived_cell_gets_a_nonzero_column_for_the_auto_behind_i
 
     let jm = JacobianModel::new(TrialModel {
         dependent_cells: &dependent,
-        ..model(&params, &base)
+        ..trial_model(&params, &base)
     });
     let j = residual_jacobian(&jm, std::slice::from_ref(&residual), &x)
         .expect("differentiable through the fold");
@@ -547,7 +547,7 @@ fn a_chain_of_dependent_cells_propagates_through_every_hop_in_stored_order() {
 
     let jm = JacobianModel::new(TrialModel {
         dependent_cells: &dependent,
-        ..model(&params, &base)
+        ..trial_model(&params, &base)
     });
     let j = residual_jacobian(&jm, std::slice::from_ref(&residual), &x)
         .expect("differentiable through both hops");
@@ -592,7 +592,7 @@ fn a_direct_and_a_derived_read_of_the_same_auto_sum_in_one_row() {
 
     let jm = JacobianModel::new(TrialModel {
         dependent_cells: &dependent,
-        ..model(&params, &base)
+        ..trial_model(&params, &base)
     });
     let j = residual_jacobian(&jm, std::slice::from_ref(&residual), &x)
         .expect("differentiable");
@@ -613,8 +613,12 @@ fn an_empty_dependent_cells_list_leaves_the_non_clustered_path_bit_identical() {
     // fold against `jac(..)` would be comparing one call to the same call with
     // the same arguments, which can only fail under nondeterminism.
     let (params, residuals, base, x) = two_auto_model();
-    let empty =
-        residual_jacobian(&JacobianModel::new(model(&params, &base)), &residuals, &x).unwrap();
+    let empty = residual_jacobian(
+        &JacobianModel::new(trial_model(&params, &base)),
+        &residuals,
+        &x,
+    )
+    .unwrap();
 
     assert_eq!(empty.residuals, vec![0.0, 6.0], "sqrt(3²+4²)−5 = 0 and 3·4−6 = 6");
     assert!((empty.rows[0][0] - 0.6).abs() < 1e-12, "∂r0/∂w, got {:?}", empty.rows[0]);
@@ -634,7 +638,7 @@ fn an_empty_dependent_cells_list_leaves_the_non_clustered_path_bit_identical() {
             DimensionVector::LENGTH),
     )];
     let folded = residual_jacobian(
-        &JacobianModel::new(TrialModel { dependent_cells: &unread, ..model(&params, &base) }),
+        &JacobianModel::new(TrialModel { dependent_cells: &unread, ..trial_model(&params, &base) }),
         &residuals,
         &x,
     )
@@ -672,7 +676,7 @@ fn a_non_differentiable_dependent_cell_refuses_only_the_rows_that_read_it() {
 
     let jm = JacobianModel::new(TrialModel {
         dependent_cells: &dependent,
-        ..model(&params, &base)
+        ..trial_model(&params, &base)
     });
 
     // The clean residual alone is fine.
@@ -728,7 +732,7 @@ fn a_poisoned_dependent_cell_does_not_leak_a_refusal_into_a_later_row() {
 
     let jm = JacobianModel::new(TrialModel {
         dependent_cells: &dependent,
-        ..model(&params, &base)
+        ..trial_model(&params, &base)
     });
     let j = residual_jacobian(&jm, &[first, second], &[5.0])
         .expect("neither residual reads the poisoned cell, so neither may refuse");
@@ -763,8 +767,9 @@ fn clamped_model() -> (Vec<AutoParam>, CompiledExpr) {
 
 fn clamp_jac(x: f64) -> reify_constraints::Jacobian {
     let (params, residual) = clamped_model();
-    residual_jacobian(&JacobianModel::new(model(&params, &ValueMap::new())), &[residual], &[x])
-        .expect("clamp is differentiable away from its bounds")
+    let base = ValueMap::new();
+    let jm = JacobianModel::new(trial_model(&params, &base));
+    residual_jacobian(&jm, &[residual], &[x]).expect("clamp is differentiable away from its bounds")
 }
 
 #[test]
@@ -893,7 +898,7 @@ fn clamped_dependent_jac(x: f64) -> reify_constraints::Jacobian {
     let base = ValueMap::new();
     let jm = JacobianModel::new(TrialModel {
         dependent_cells: &dependent,
-        ..model(&params, &base)
+        ..trial_model(&params, &base)
     });
     residual_jacobian(&jm, &[residual], &[x])
         .expect("a clamped derived cell is differentiable on either side of its bounds")
@@ -973,7 +978,7 @@ fn flat_flip_jac(x: f64) -> reify_constraints::Jacobian {
     let base = ValueMap::new();
     let jm = JacobianModel::new(TrialModel {
         dependent_cells: &dependent,
-        ..model(&params, &base)
+        ..trial_model(&params, &base)
     });
     residual_jacobian(&jm, &[residual], &[x])
         .expect("a piecewise-constant derived cell has an honest zero row")
@@ -1024,7 +1029,7 @@ fn each_dependent_cells_kinks_sit_at_distinct_sites_in_stored_order() {
     let base = ValueMap::new();
     let jm = JacobianModel::new(TrialModel {
         dependent_cells: &dependent,
-        ..model(&params, &base)
+        ..trial_model(&params, &base)
     });
     let j = residual_jacobian(&jm, &[residual], &[2.5])
         .expect("differentiable at an interior point of every bound");
@@ -1162,7 +1167,7 @@ fn a_user_function_residual_reaches_the_callee_body_through_the_adapter() {
     let x = vec![3.0, 4.0];
 
     let j = residual_jacobian(
-        &JacobianModel::new(TrialModel { functions: &functions, ..model(&params, &base) }),
+        &JacobianModel::new(TrialModel { functions: &functions, ..trial_model(&params, &base) }),
         std::slice::from_ref(&residual),
         &x,
     )
@@ -1174,7 +1179,12 @@ fn a_user_function_residual_reaches_the_callee_body_through_the_adapter() {
     // The premise, asserted rather than assumed: drop the slice and the seam
     // genuinely stops working.
     assert!(
-        residual_jacobian(&JacobianModel::new(model(&params, &base)), &[residual], &x).is_err(),
+        residual_jacobian(
+            &JacobianModel::new(trial_model(&params, &base)),
+            &[residual],
+            &x
+        )
+        .is_err(),
         "without `functions` the callee cannot be resolved — so the passing case above \
          really is the adapter threading it"
     );
@@ -1213,7 +1223,7 @@ fn an_optimized_compute_dispatched_call_is_refused_by_row_not_silently_flattened
     let jm = JacobianModel::new(TrialModel {
         functions: &functions,
         dispatch: Some(&FixedDispatch),
-        ..model(&params, &base)
+        ..trial_model(&params, &base)
     });
     let err = residual_jacobian(&jm, &[residual], &x)
         .expect_err("a compute-dispatched call carries no derivative");

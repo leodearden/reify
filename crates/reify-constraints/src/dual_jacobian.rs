@@ -430,7 +430,7 @@ mod tests {
     /// base.  No functions, no dispatch.  `JacobianModel::new` checks only for a
     /// repeated auto id, so a dependent cell colliding with an auto still builds
     /// — that collision is the fold's to report.
-    fn model<'a>(
+    fn jacobian_model<'a>(
         params: &'a [AutoParam],
         values: &'a ValueMap,
         dependent: &'a [(ValueCellId, CompiledExpr)],
@@ -472,7 +472,7 @@ mod tests {
         let values = values_with(&[("q", 5.0)]);
 
         let (env, _prelude, collisions) =
-            fold_dependent_duals(&values, &model(&params, &values, &dependent));
+            fold_dependent_duals(&values, &jacobian_model(&params, &values, &dependent));
 
         assert_eq!(collisions, vec![cell("q")], "the colliding id is reported, in stored order");
         assert!(
@@ -497,9 +497,9 @@ mod tests {
         let without = vec![(cell("other"), twice("a")), (cell("d"), twice("a"))];
 
         let (_e1, prelude_collided, collisions) =
-            fold_dependent_duals(&values, &model(&params, &values, &with_collision));
+            fold_dependent_duals(&values, &jacobian_model(&params, &values, &with_collision));
         let (_e2, prelude_clean, none) =
-            fold_dependent_duals(&values, &model(&params, &values, &without));
+            fold_dependent_duals(&values, &jacobian_model(&params, &values, &without));
 
         assert_eq!(collisions, vec![cell("q")]);
         assert!(none.is_empty());
@@ -519,7 +519,7 @@ mod tests {
         let values = values_with(&[("q", 5.0), ("b", 10.0)]);
 
         let (env, _prelude, collisions) =
-            fold_dependent_duals(&values, &model(&params, &values, &dependent));
+            fold_dependent_duals(&values, &jacobian_model(&params, &values, &dependent));
 
         assert!(collisions.is_empty(), "the steady state reports nothing");
         assert_eq!(
