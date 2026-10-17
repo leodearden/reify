@@ -138,7 +138,7 @@ class SelectiveInfraEventLogIsolationTests(unittest.TestCase):
         proc, _, _ = self.run_leaf(with_channel=True, EVLOG_PROBE_EXIT="3")
         self.assert_rc(proc, 3)
 
-    def test_parent_without_channel_runs_member_unchanged(self):
+    def test_leaf_runs_member_without_parent_channel(self):
         proc, probe_dir, _ = self.run_leaf(with_channel=False)
         self.assert_rc(proc, 0)
         self.assertEqual(self.probe_read(probe_dir, "event_log"), "<unset>")
