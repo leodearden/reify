@@ -39,7 +39,8 @@ import { toPng } from 'html-to-image';
 import { initDebugBridge, RESOLVE_BY_TESTID_ERRORS } from '../debug/bridge';
 import { makeLayoutStore, makeViewStateStoreMock } from './debugBridgeTestHelpers';
 import type { DebugStores } from '../debug/types';
-import { LAYOUT_DIMENSIONS, type LayoutStore } from '../stores/layoutStore';
+import { LAYOUT_DIMENSIONS, defaultLayout, type LayoutStore } from '../stores/layoutStore';
+import { STORAGE_KEY } from '../hooks/useLayoutPersistence';
 
 type DebugRequestHandler = (event: {
   payload: { id: number; command: string; params: Record<string, unknown> };
@@ -277,7 +278,6 @@ describe('reset_app_state: bridge handler', () => {
   let capturedHandler: DebugRequestHandler | undefined;
   let stores: DebugStores;
   let layout: LayoutStore;
-  const defaults = Object.fromEntries(LAYOUT_DIMENSIONS.map((d) => [d.key, d.default]));
 
   beforeEach(async () => {
     vi.clearAllMocks();
@@ -303,7 +303,6 @@ describe('reset_app_state: bridge handler', () => {
   });
 
   afterEach(() => {
-    vi.useRealTimers();
     delete window.__REIFY_DEBUG__;
   });
 
@@ -345,37 +344,66 @@ describe('reset_app_state: bridge handler', () => {
       if (row.kind === 'px') layout.set(row.key, row.default + 37);
       else layout.set(row.key, !row.default);
     }
-    expect({ ...layout.state }).not.toEqual(defaults);
+    expect({ ...layout.state }).not.toEqual(defaultLayout());
 
     const result = await dispatchAndGetResult(capturedHandler!, 5, 'reset_app_state') as any;
 
     expect(result.ok).toBe(true);
-    expect({ ...layout.state }).toEqual(defaults);
+    expect({ ...layout.state }).toEqual(defaultLayout());
+  });
+});
+
+// Fake timers are installed before the only live layout store is built, so its
+// debounced write is the only one that can reach the storage key.
+describe('reset_app_state: B9 persisted layout', () => {
+  let capturedHandler: DebugRequestHandler | undefined;
+  let layout: LayoutStore;
+
+  beforeEach(async () => {
+    vi.useFakeTimers();
+    vi.clearAllMocks();
+    localStorage.clear();
+    capturedHandler = undefined;
+
+    vi.mocked(listen).mockImplementation(async (_event, handler) => {
+      capturedHandler = handler as DebugRequestHandler;
+      return () => {};
+    });
+
+    layout = makeLayoutStore();
+    await initDebugBridge(makeStores(layout));
+    expect(capturedHandler).toBeDefined();
   });
 
-  it('B9: after resize_panes {problemsHeight: 400} and a collapse toggle, the persisted layout holds the default problems pair', async () => {
-    vi.useFakeTimers();
-    const b9Layout = makeLayoutStore();
-    await initDebugBridge(makeStores(b9Layout));
-    const handler = capturedHandler!;
+  afterEach(() => {
+    vi.useRealTimers();
+    delete window.__REIFY_DEBUG__;
+  });
 
-    const resized = await dispatchAndGetResult(handler, 10, 'resize_panes', { problemsHeight: 400 }) as any;
-    expect(resized.ok).toBe(true);
-    // The store call App's handleToggleDiagnostics makes.
-    b9Layout.setProblemsCollapsed((c) => !c);
-    expect(b9Layout.state.problemsCollapsed).toBe(false);
-
-    await dispatchAndGetResult(handler, 11, 'reset_app_state');
+  async function persistedLayoutAfterDebounce(id: number): Promise<unknown> {
     await Promise.resolve();
     vi.advanceTimersByTime(300);
-
-    const stored = await dispatchAndGetResult(handler, 12, 'get_local_storage', {
-      key: 'reify-panel-layout',
+    const stored = await dispatchAndGetResult(capturedHandler!, id, 'get_local_storage', {
+      key: STORAGE_KEY,
     }) as any;
     expect(stored.present).toBe(true);
-    const persisted = JSON.parse(stored.value);
-    expect(persisted.problemsHeight).toBe(160);
-    expect(persisted.problemsCollapsed).toBe(true);
+    return JSON.parse(stored.value);
+  }
+
+  it('B9: after resize_panes {problemsHeight: 400} and a collapse toggle, the persisted layout holds the default problems pair', async () => {
+    const resized = await dispatchAndGetResult(capturedHandler!, 10, 'resize_panes', { problemsHeight: 400 }) as any;
+    expect(resized.ok).toBe(true);
+    // The store call App's handleToggleDiagnostics makes.
+    layout.setProblemsCollapsed((c) => !c);
+    expect(layout.state.problemsCollapsed).toBe(false);
+    expect(await persistedLayoutAfterDebounce(11)).toMatchObject({
+      problemsHeight: 400,
+      problemsCollapsed: false,
+    });
+
+    await dispatchAndGetResult(capturedHandler!, 12, 'reset_app_state');
+
+    expect(await persistedLayoutAfterDebounce(13)).toEqual(defaultLayout());
   });
 });
 

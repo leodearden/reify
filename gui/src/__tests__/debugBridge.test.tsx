@@ -41,7 +41,7 @@ import {
 } from '../debug/bridge';
 import { setTestMode } from '../debug/testMode';
 import type { DebugStores } from '../debug/types';
-import { LAYOUT_DIMENSIONS } from '../stores/layoutStore';
+import { defaultLayout } from '../stores/layoutStore';
 import {
   makeCmdDispatcher,
   makeDebugStores,
@@ -2398,7 +2398,7 @@ describe('debug bridge resize_panes', () => {
     return JSON.parse(payload.result);
   }
 
-  const defaults = Object.fromEntries(LAYOUT_DIMENSIONS.map((d) => [d.key, d.default]));
+  const defaults = defaultLayout();
 
   it('(a) single dimension: editorWidth 450 changes only that row and returns { ok:true }', async () => {
     const stores = makeStores();

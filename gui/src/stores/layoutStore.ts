@@ -60,7 +60,7 @@ export function loadPanelLayout(): Partial<PanelLayout> | null {
   return layout as Partial<PanelLayout>;
 }
 
-function defaultLayout(): PanelLayout {
+export function defaultLayout(): PanelLayout {
   return Object.fromEntries(LAYOUT_DIMENSIONS.map((row) => [row.key, row.default])) as PanelLayout;
 }
 
