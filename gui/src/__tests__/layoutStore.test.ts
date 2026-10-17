@@ -9,11 +9,12 @@ import { createRoot } from 'solid-js';
 import {
   LAYOUT_DIMENSIONS,
   createLayoutStore,
+  defaultLayout,
   loadPanelLayout,
 } from '../stores/layoutStore';
 import { STORAGE_KEY } from '../hooks/useLayoutPersistence';
 
-const defaults = Object.fromEntries(LAYOUT_DIMENSIONS.map((d) => [d.key, d.default]));
+const defaults = defaultLayout();
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -234,6 +235,28 @@ describe('createLayoutStore — setters + debounced persistence', () => {
       dispose();
     });
   });
+});
+
+// ---------------------------------------------------------------------------
+// Named setters: one per table row
+// ---------------------------------------------------------------------------
+
+describe('createLayoutStore — a named set<Key> setter for every table row', () => {
+  for (const row of LAYOUT_DIMENSIONS) {
+    const setterName = `set${row.key[0].toUpperCase()}${row.key.slice(1)}`;
+
+    it(`${setterName} writes ${row.key} and no other row`, () => {
+      withRoot(() => {
+        const store = createLayoutStore();
+        const setter = store[setterName as keyof typeof store];
+        expect(setter).toBeTypeOf('function');
+
+        const perturbed = row.kind === 'px' ? row.default + 37 : !row.default;
+        (setter as (v: number | boolean) => void)(perturbed);
+        expect({ ...store.state }).toEqual({ ...defaults, [row.key]: perturbed });
+      });
+    });
+  }
 });
 
 // ---------------------------------------------------------------------------
