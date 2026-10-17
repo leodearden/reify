@@ -4540,15 +4540,11 @@ pub(crate) fn eval_div(lv: &Value, rv: &Value) -> Value {
     }
 
     match (lv, rv) {
-        (Value::Int(a), Value::Int(b)) => {
-            if *b == 0 {
-                Value::Undef
-            } else if a % b == 0 {
-                Value::Int(a / b)
-            } else {
-                Value::Real(*a as f64 / *b as f64)
-            }
-        }
+        (Value::Int(a), Value::Int(b)) => match a.checked_rem(*b) {
+            Some(0) => int_or_undef(a.checked_div(*b)),
+            Some(_) => Value::Real(*a as f64 / *b as f64),
+            None => Value::Undef,
+        },
         (Value::Real(a), Value::Real(b)) => Value::Real(a / b),
         (Value::Int(a), Value::Real(b)) => Value::Real(*a as f64 / b),
         (Value::Real(a), Value::Int(b)) => Value::Real(a / *b as f64),
@@ -4684,13 +4680,7 @@ pub(crate) fn eval_div(lv: &Value, rv: &Value) -> Value {
 
 pub(crate) fn eval_mod(lv: &Value, rv: &Value) -> Value {
     match (lv, rv) {
-        (Value::Int(a), Value::Int(b)) => {
-            if *b == 0 {
-                Value::Undef
-            } else {
-                Value::Int(a % b)
-            }
-        }
+        (Value::Int(a), Value::Int(b)) => int_or_undef(a.checked_rem(*b)),
         (Value::Real(a), Value::Real(b)) => {
             if *b == 0.0 {
                 Value::Undef
@@ -8377,8 +8367,8 @@ mod tests {
 
     /// `7 % 0` must evaluate to `Undef` (division by zero).
     ///
-    /// GREEN on arrival: `eval_mod(Int(7), Int(0))` hits the `b == 0` branch
-    /// in `eval_mod` and returns `Value::Undef`.
+    /// GREEN on arrival: in `eval_mod(Int(7), Int(0))` a zero divisor makes
+    /// `checked_rem` return `None`, which `int_or_undef` maps to `Value::Undef`.
     #[test]
     fn eval_mod_int_zero_returns_undef() {
         let expr = CompiledExpr::binop(
