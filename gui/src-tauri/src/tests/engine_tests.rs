@@ -10181,6 +10181,26 @@ fn with_registered_kernel_production_session_resolves_auto_param() {
     );
 }
 
+/// Task #6689 (solver-driver-parity I1): the GUI's production session names
+/// its solver posture, and `EngineSession::new` holds the posture it is given.
+#[test]
+fn with_registered_kernel_session_names_a_fresh_solve_posture() {
+    use reify_eval::SolverPosture;
+    use reify_ir::ResolutionProfile;
+
+    let production = EngineSession::with_registered_kernel(Box::new(SimpleConstraintChecker));
+    assert_eq!(
+        production.core_state_for_test().engine().solver_posture(),
+        SolverPosture::Solve(ResolutionProfile::FRESH),
+    );
+    let solver_free =
+        EngineSession::new(SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), None);
+    assert_eq!(
+        solver_free.core_state_for_test().engine().solver_posture(),
+        SolverPosture::SolverFree,
+    );
+}
+
 // ── Structural lock-in test ──────────────────────────────────────────────────
 
 /// Structural lock-in test: verifies that `EngineSession` exposes `CoreState`
