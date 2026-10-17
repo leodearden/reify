@@ -20,11 +20,13 @@ use crate::tet_readback;
 /// Dihedral-angle threshold (radians) above which `classify_surfaces` treats a
 /// mesh edge as a sharp feature separating two B-rep surfaces.
 ///
-/// **Must stay strictly below π/2.** gmsh's sharp-edge test is
+/// **Must stay strictly below π/2** (#6200). gmsh's sharp-edge test is
 /// strictly-greater-than and a box's dihedral angle is exactly π/2, so a π/2
-/// threshold registers none of a box's own edges — see the comment at the
-/// `classify_surfaces` call site in `build_meshable_region` for the full
-/// measured failure mode (#6200).
+/// threshold registers none of a box's own edges, and HXT fills a B-rep region
+/// smaller than the box even though the shell is closed and watertight. The
+/// measured failure lives with its two guards: `tests/classify_feature_angle.rs`
+/// (the mechanism: gmsh's B-rep census and log) and
+/// `tests/volume_fill_fraction.rs` (the symptom: fill fraction).
 ///
 /// FRAC_PI_4 (45°) is the value the sibling attributed producer in
 /// `mesh_boundary.rs` has shipped against real OCCT geometry all along, rather
@@ -50,7 +52,7 @@ pub const CLASSIFY_CURVE_ANGLE: f64 = std::f64::consts::FRAC_PI_4;
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct ClassifyAngles {
     /// Dihedral angle above which a mesh edge separates two B-rep surfaces.
-    /// Must stay strictly below π/2 (#6200; see `build_meshable_region`).
+    /// Must stay strictly below π/2 (#6200; see [`CLASSIFY_FEATURE_ANGLE`]).
     pub(crate) feature: f64,
     /// Bend angle above which a curve–curve junction becomes a B-rep vertex.
     pub(crate) curve: f64,
@@ -86,39 +88,8 @@ pub(crate) fn build_meshable_region(
     angles: ClassifyAngles,
 ) -> Result<(), GeometryError> {
     // Reclassify the discrete surface and build geometry so 3D meshing has
-    // a parametric region to fill.
-    //
-    // The feature angle MUST stay strictly below π/2 (#6200). gmsh's
-    // sharp-edge test is strictly-greater-than, and a box's dihedral angle
-    // is EXACTLY π/2, so a π/2 threshold registers none of the box's own
-    // edges as sharp. `mesh_to_volume` used to pass FRAC_PI_2 here with a
-    // comment claiming it "splits cube faces into separate B-rep surface
-    // entities"; that claim was false, and nothing tested it. Measured with
-    // the gmsh logger armed (the caller's `General.Terminal = 0` otherwise
-    // hides all of this), on a welded 8-vertex unit cube at FRAC_PI_2:
-    //
-    //     Classifying surfaces (angle: 90)...
-    //      - Level 0 partition with 12 triangles split in 2 parts because
-    //        poincare characteristic 2 is not 0
-    //     Found 2 model surfaces
-    //     Found 1 model curves
-    //
-    // i.e. the only split that happened was TOPOLOGICAL (a parametrizability
-    // necessity), not a feature split. `create_geometry` then reparametrizes
-    // 2 non-planar patches instead of 6 planar faces, so the region
-    // `geo_add_volume` hands HXT is not the full box: HXT built 206 tets
-    // while the model retained only 91. Fill fraction 0.74–0.86 with ZERO
-    // interior nodes, scale-invariantly, and refinement does not rescue it
-    // (4x resolution only reaches 0.926). Downstream, #6154 measured the
-    // same pathology as 0.8429 on the realized fixture.
-    //
-    // Every caller passes a feature angle below π/2: `mesh_to_volume` and the
-    // attributed producer pass [`FEATURE_EDGE_CLASSIFY_ANGLES`] (π/4), and
-    // `refine_volume_with_size_field` its own sharper π/12, whose rationale is
-    // at its constant. A closed watertight surface is not enough to tolerate
-    // 90°: HXT fills the B-rep region, not the shell.
-    // See `tests/classify_feature_angle.rs` (B-rep census, importing the
-    // shared constants) and `tests/volume_fill_fraction.rs` (fill fraction).
+    // a parametric region to fill. `angles.feature` must stay below π/2;
+    // why is at `CLASSIFY_FEATURE_ANGLE` (#6200).
     //
     // Note: this affects only the B-rep classification. `create_geometry`
     // and `mesh_generate(3)` below re-mesh from the resulting parametric
