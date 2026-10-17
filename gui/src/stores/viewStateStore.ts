@@ -1,3 +1,4 @@
+import { batch, createSignal } from 'solid-js';
 import { createStore, produce } from 'solid-js/store';
 import type { EntityTreeNode, ExplicitVisibility, PersistentViewState, VisibilityState } from '../types';
 import {
@@ -84,28 +85,39 @@ export function createViewStateStore() {
     userViewOrder: [],
   });
 
-  // Internal non-reactive maps (rebuilt on setTree / rebuildTreeMaps).
+  // The tree maps are plain Maps; treeVersion is their reactive stand-in. Every
+  // map-reading query reads it first and every map swap bumps it last
+  // (PRD gui-frontend-wire-bindings-bridge-port §4.5).
   let nodeByPath = new Map<string, EntityTreeNode>();
   let parentByPath = new Map<string, string | null>();
+  const [treeVersion, setTreeVersion] = createSignal(0);
 
   // ---------------------------------------------------------------------------
   // Tree registration
   // ---------------------------------------------------------------------------
 
-  /**
-   * Internal helper: refresh nodeByPath / parentByPath without touching reactive
-   * state.  Used by regenerateAutoViews so the map rebuild does not produce a
-   * separate setState call; the stale-explicit prune is instead folded into the
-   * same produce block as the view replacement.
-   */
   function rebuildTreeMaps(nodes: EntityTreeNode[]): void {
     nodeByPath = new Map();
     parentByPath = new Map();
     buildMaps(nodes, nodeByPath, parentByPath, null);
   }
 
+  /**
+   * The one place the tree changes: swap the maps, apply the caller's store
+   * write (if any), then bump treeVersion LAST — all in one batch, so no
+   * observer runs between the swap and the write, and each observer re-runs
+   * once per tree change.
+   */
+  function commitTree(nodes: EntityTreeNode[], storeWrite?: () => void): void {
+    batch(() => {
+      rebuildTreeMaps(nodes);
+      storeWrite?.();
+      setTreeVersion((v) => v + 1);
+    });
+  }
+
   function setTree(nodes: EntityTreeNode[]): void {
-    rebuildTreeMaps(nodes);
+    commitTree(nodes);
     // Stale explicit entries (paths no longer in the tree) are intentionally
     // preserved so that undo / branch-switch can restore them automatically.
     // PRD §8.2: "stale entries must survive tree changes".
@@ -118,6 +130,12 @@ export function createViewStateStore() {
   // ---------------------------------------------------------------------------
 
   function getEffectiveVisibility(path: string): VisibilityState {
+    treeVersion();
+    return resolveEffective(path);
+  }
+
+  /** The walk-up resolution behind getEffectiveVisibility, without its treeVersion read. */
+  function resolveEffective(path: string): VisibilityState {
     if (nodeByPath.size === 0) return 'show';
 
     // Walk up the ancestor chain looking for the first non-null explicit state.
@@ -139,10 +157,11 @@ export function createViewStateStore() {
   // ---------------------------------------------------------------------------
 
   function getAllEffective(): Record<string, VisibilityState> {
+    treeVersion();
     if (nodeByPath.size === 0) return {};
     const result: Record<string, VisibilityState> = {};
     for (const path of nodeByPath.keys()) {
-      result[path] = getEffectiveVisibility(path);
+      result[path] = resolveEffective(path);
     }
     return result;
   }
@@ -305,7 +324,7 @@ export function createViewStateStore() {
   }
 
   function cycleCascading(path: string): void {
-    const effective = getEffectiveVisibility(path);
+    const effective = resolveEffective(path);
     const next: VisibilityState =
       effective === 'show' ? 'ghost' : effective === 'ghost' ? 'hidden' : 'show';
     setVisibility(path, next, true);
@@ -604,9 +623,10 @@ export function createViewStateStore() {
    * the provided tree so callers do not need a separate `setTree` call.
    *
    * NOTE: This function performs exactly one `setState` — all work (stale-explicit
-   * prune, auto-view replacement, active-view reconciliation, user-view mirror) is
-   * batched into a single reactive notification.  Do NOT add a `setTree(tree)` call
-   * here; use `rebuildTreeMaps` instead to keep the map refresh non-reactive.
+   * prune, auto-view replacement, active-view reconciliation, user-view mirror) —
+   * and `commitTree` runs it in one batch with the map swap and the treeVersion
+   * bump, so observers see a single notification.  Do NOT call `setTree(tree)`
+   * here; its own batch would notify observers a second time.
    *
    * NOTE on stale-explicit pruning: the prune loop runs only for the `user:*`
    * branch (the only branch that preserves `s.explicit` rather than replacing it
@@ -628,11 +648,6 @@ export function createViewStateStore() {
     activePurposes: string[] = [],
     displaySubjects?: Set<string>,
   ): void {
-    // Rebuild the internal maps without triggering a reactive setState so that
-    // the stale-explicit prune below can be folded into the same produce block
-    // as the view replacement — one reactive notification total.
-    rebuildTreeMaps(tree);
-
     const freshDefault = generateDefaultView(tree, displaySubjects);
     const freshAllGeo = generateAllGeometryView(tree);
     const freshPurpose = generatePurposeViews(tree, activePurposes);
@@ -640,7 +655,7 @@ export function createViewStateStore() {
     // Build set of all paths in the new tree — used by the user:* prune loop.
     const treePathSet = new Set(Object.keys(freshDefault.visibility));
 
-    setState(produce((s) => {
+    commitTree(tree, () => setState(produce((s) => {
       // ------------------------------------------------------------------
       // 1. Replace all auto:* views with fresh ones.
       // ------------------------------------------------------------------
@@ -696,7 +711,7 @@ export function createViewStateStore() {
       //    Early-returns for auto:* and unknown active views.
       // ------------------------------------------------------------------
       mirrorExplicitToActiveUserView(s);
-    }));
+    })));
   }
 
   /**
@@ -710,6 +725,7 @@ export function createViewStateStore() {
    * fuzzy-rebind logic.
    */
   function getStalePaths(): string[] {
+    treeVersion();
     // When no tree has been loaded yet, there are no "stale" paths — every
     // explicit entry is simply a pre-tree seed and should not be treated as
     // stale.  A path is only stale when a tree was previously loaded and the
@@ -719,6 +735,7 @@ export function createViewStateStore() {
   }
 
   function hasOverride(path: string): boolean {
+    treeVersion();
     const exp = state.explicit[path];
     if (exp == null) return false;
     // Compute what the node would inherit if it had no explicit state.
@@ -726,7 +743,7 @@ export function createViewStateStore() {
     let wouldInherit: VisibilityState;
     if (parent !== null) {
       // Temporarily read parent effective without considering this node
-      wouldInherit = getEffectiveVisibility(parent);
+      wouldInherit = resolveEffective(parent);
     } else {
       const node = nodeByPath.get(path);
       wouldInherit = node ? defaultRuleFor(node) : 'show';
