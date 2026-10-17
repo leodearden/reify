@@ -1,15 +1,15 @@
 //! Central-difference reference for checking automatic-differentiation tangents,
 //! and the tolerance an AD column is held to against it.
 //!
-//! The step shape is the one `reify_expr`'s
-//! `calculus::compute_numerical_gradient_at_point` already ships
+//! The step shape mirrors that of `reify_expr`'s
+//! `calculus::compute_numerical_gradient_at_point`
 //!
 //! ```text
 //! h = 1e-6 * |x_j|.max(1e-3),   f'(x) ≈ (f(x+h) − f(x−h)) / (2h)
 //! ```
 //!
-//! reused rather than invented, so an AD suite is calibrated against the
-//! finite-difference machinery reify already ships.
+//! as an independent copy of its constants, not a call into it, so the
+//! reference an AD suite is checked against shares no code with production.
 //!
 //! TOLERANCE, DERIVED — `|ad − cd| <= 1e-6·|cd| + 1e-8`:
 //!

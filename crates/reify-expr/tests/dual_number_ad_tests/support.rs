@@ -2,7 +2,7 @@
 //! under entity `part`, the `jacobian_row` driver, and the closed-form and
 //! central-difference assertions.
 
-use reify_core::{DimensionVector, Type, ValueCellId};
+use reify_core::{Type, ValueCellId};
 use reify_expr::{
     BranchRecord, EvalContext, NonDifferentiable, Seeds, eval_dual, eval_expr, jacobian_row,
 };
@@ -32,7 +32,7 @@ pub(crate) fn probe(cells: &[(&str, f64)]) -> (ValueMap, Vec<ValueCellId>) {
 }
 
 pub(crate) fn pref(member: &str) -> CompiledExpr {
-    value_ref_typed(ENT, member, Type::Scalar { dimension: DimensionVector::DIMENSIONLESS })
+    value_ref_typed(ENT, member, dl())
 }
 
 pub(crate) fn calln(name: &str, args: Vec<CompiledExpr>) -> CompiledExpr {
