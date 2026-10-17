@@ -9951,6 +9951,12 @@ entries:
     origin_phase: unknown
     manifested_phase: unknown
     note: The session cwd is nested under worktrees/_lane-0, and the agent probed a guessed repo-relative source path (crates/reify-eval/src/sub_dep_order.rs) that does not exist. The digest records 8 not-found results, which fits repeated path guesses that 404. The digest does not show the assumed repo root explicitly, so this match is tentative.
+  - date: '2026-10-16'
+    project: reify
+    session: 15bdeecc-5e6a-45ba-b02b-0687fafc43cd
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: Weak match. The session runs in a warm-lane worktree (cwd .../worktrees/_lane-1), and the agent probed repo-root-relative paths (scripts/lib_event_log.sh, tests/infra/verify_events.py) that do not exist, producing repeated not-found and exit-2 errors. The digest does not show the cause directly, so this is a partial match.
 - id: entry-cand-20260909-14
   title: Agent invokes hallucinated 'read_file' tool with generic-agent param names instead of the harness's actual Read tool
   severity: medium
@@ -27030,3 +27036,29 @@ candidates:
     origin_phase: unknown
     manifested_phase: unknown
     evidence_quote: '(turn 74) mcp__plan-tools__add_plan_step({"description": "Add tsv to _EXTS and both test-side pins", "step_type": "impl", "task_id": "9058"}) -> 2 validation errors ... step_id Missing required argument ... task_id Unexpected keyword argument; (turn 80) mcp__plan-tools__add_plan_step({"description": "Add tsv to _EXTS and both test-side pins", "step_id": "impl-1", "type": "impl"}) -> 2 validation errors ... step_type Missing required argument ... type Unexpected keyword argument'
+- id: cand-20261016-1
+  title: Flake classifier names no suite, so the wrapper re-runs the full invocation identically
+  cause: The GUI flake wrapper classifies a failure as worker-to-host RPC starvation but cannot narrow the scope, so it re-runs the original full test invocation unchanged. This repeats the full-run cost and can mask a real regression behind a flake label.
+  area: verify-harness
+  first_seen: '2026-10-16'
+  disposition: pending
+  sightings:
+  - date: '2026-10-16'
+    project: reify
+    session: 8a7d1868-f597-40d4-b3f1-34fc944dbb75
+    origin_phase: verify
+    manifested_phase: verify
+    evidence_quote: 'classified as worker->host RPC starvation; re-running the original invocation (the classifier named no suite to narrow to): npm test'
+- id: cand-20261016-2
+  title: PRD convergence spec asserts scale-invariant iteration count while its stop test is scale-dependent
+  cause: A PRD §7.3 scaling table claims the iteration count is invariant across physical scales, but its convergence test max|r̃| <= 1 is not scale-invariant. Scaling the geometry by k makes the test equivalent to stopping at max|r̃| <= 1/k at scale 1, so the stated invariant is false and the RED test built on it has an unsatisfiable premise.
+  area: solver-convergence-spec
+  first_seen: '2026-10-16'
+  disposition: pending
+  sightings:
+  - date: '2026-10-16'
+    project: reify
+    session: 7cf96735-3eaa-40c3-aff4-222924d1155b
+    origin_phase: prd
+    manifested_phase: architect
+    evidence_quote: 'The stop test max|r̃| <= 1 is NOT invariant: at scale k it is equivalent to stopping at max|r̃₁| <= 1/k.'
