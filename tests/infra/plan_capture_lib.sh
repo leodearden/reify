@@ -106,6 +106,62 @@ plan_narrow_active() {
     fi
 }
 
+# plan_header_field <dump> <line-kind> <NAME>
+#
+# Reads field NAME of one --print-plan header line, found by its label, never by
+# position. <line-kind> is a closed set: plan, scope, narrowing, heavy (labels in
+# the case below, exactly as verify.sh's --print-plan printer emits them). The
+# first line starting with the label is the header; the non-empty, non-'#' lines
+# right after it continue it (today only the narrowing header, whose crate lists
+# are newline-separated: PRD §2.4 defect 7, made single-line by ρ #9115).
+#
+# A `KEY=` token starts a field and any other token extends the current field's
+# value, single-space joined. NAME matches exactly and its first occurrence wins,
+# so a reordered or extended header reads the same: this replaces ordered
+# `RUN_RUST=… RUN_GUI=…` substring greps over the whole dump (PRD fk-d47473e4d8d8).
+#
+# rc 0: prints the value, possibly empty (`closure=`), with no trailing newline.
+# rc 1: the header line or NAME is absent; prints nothing.
+# rc 2: unknown line-kind; prints nothing on stdout, the accepted set on stderr.
+plan_header_field() {
+    local dump="$1" kind="$2" name="$3" label
+    case "$kind" in
+        plan)      label='# verify.sh plan — ' ;;
+        scope)     label='# scope decision — ' ;;
+        narrowing) label='# narrowing — ' ;;
+        heavy)     label='# heavy partition — ' ;;
+        *)
+            printf "plan_header_field: unknown line-kind '%s' (expected plan, scope, narrowing or heavy)\n" "$kind" >&2
+            return 2 ;;
+    esac
+    local _line _header="" _found=0
+    while IFS= read -r _line; do
+        if (( _found )); then
+            case "$_line" in '#'* | '') break ;; esac
+            _header+=" $_line"
+        elif [[ "$_line" == "$label"* ]]; then
+            _header="${_line#"$label"}"
+            _found=1
+        fi
+    done <<< "$dump"
+    (( _found )) || return 1
+    local -a _tokens=()
+    IFS=$' \t' read -r -a _tokens <<< "$_header"
+    local _field_re='^([A-Za-z_][A-Za-z0-9_]*)=(.*)$' _tok _value="" _matched=0
+    for _tok in ${_tokens[@]+"${_tokens[@]}"}; do
+        if [[ "$_tok" =~ $_field_re ]]; then
+            (( _matched )) && break
+            [ "${BASH_REMATCH[1]}" = "$name" ] || continue
+            _matched=1
+            _value="${BASH_REMATCH[2]}"
+        elif (( _matched )); then
+            _value+="${_value:+ }$_tok"
+        fi
+    done
+    (( _matched )) || return 1
+    printf '%s' "$_value"
+}
+
 # plan_is_narrowing_axis_line <line>
 #
 # Returns 0 iff <line> sits on the NARROWING AXIS — the set of plan lines whose
