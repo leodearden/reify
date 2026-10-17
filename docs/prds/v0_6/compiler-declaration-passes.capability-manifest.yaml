@@ -345,3 +345,84 @@ tasks:
       expect: present
       paths:
       - docs/prds/v0_6/compiler-declaration-passes.md
+- label: ρ
+  task_id: 9321
+  title: 'reify-ast child enumeration: Expr::for_each_child(_mut), MemberDecl::for_each_direct_expr, MemberDecl::child_scopes; walk_members over child_scopes; ratchet row (gap-fill 2026-10-16, K2-D2)'
+  capabilities:
+  - name: hand-rolled-enumerations-on-main
+    binding: 'existing-substrate — at main 04be9302ea reify-ast has walk_members over MemberRecursionSet but no Expr child enumeration (git grep "fn for_each_child" in crates/reify-ast/src: 0). Eight independent child enumerations in three crates: reify-lsp references/walk.rs for_each_direct_subexpr, for_each_member_direct_expr, for_each_child_scope (with a `_ => {}` arm); references/local.rs expr_member_segment_hit and cursor_on_member_segment; reify-compiler entity.rs for_each_child/_mut, dot_chain_lint.rs and shadow_lint.rs walk_expr_depth. walk.rs binds `derivation: _`, so SubDerivation operands, overrides, using_plane and derivation.members are visited by no walker.'
+    verdict: PASS
+  - name: expr-child-enumeration
+    binding: 'producer-self — Expr::for_each_child (+ _mut) in reify-ast, wildcard-free over ExprKind.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn for_each_child\b
+      expect: present
+      paths:
+      - crates/reify-ast/src
+  - name: member-child-scopes
+    binding: 'producer-self — MemberDecl::child_scopes (including derivation.members) and MemberDecl::for_each_direct_expr (including derivation operands, override values/guards, using_plane); walk_members re-expressed over child_scopes.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn child_scopes\b
+      expect: present
+      paths:
+      - crates/reify-ast/src
+  - name: hand-rolled-match-ratchet
+    binding: 'producer-self — an adoption-ratchet row counting hand-rolled ExprKind/MemberDecl child matches outside reify-ast (INV candidate 5), at today''s count, lowered by the consumers (S27 ψ₂, #7860).'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'a grep cannot assert a count; the ratchet member''s own hermetic fixtures are the evidence.'
+- label: σ
+  task_id: 9322
+  title: 'SpannedIdent for declared and referenced names, field by field; name_token_span and the empty-span conventions deleted (gap-fill 2026-10-16, K2-D2)'
+  capabilities:
+  - name: names-rescanned-on-main
+    binding: 'existing-substrate — SubDecl.name and structure_name are String (reify-ast decl.rs); SpannedIdent already exists in reify-core and is used by SubDerivation and index_binder; reify-lsp decl_oracle.rs::name_token_span rescans source text (49 references across 7 reify-lsp files, tests included). ExprKind::FunctionCall callee and TypeParamDecl.bounds carry no span (#7683, #7684).'
+    verdict: PASS
+  - name: lowering-populates-spans
+    binding: 'producer: syntax-lowering-contract stream (K2-D1) populates each new SpannedIdent at its lowering site in reify-syntax ts_parser.rs; that stream is not filed at 2026-10-16, so its /prd session wires the edge σ ← its lowering leaf. Until then σ populates the field groups it converts at the existing lowering call sites.'
+    verdict: OPEN
+  - name: name-rescan-deleted
+    binding: 'producer-self — name_token_span and the three empty-span conventions are deleted once every declared and referenced name carries its span (structure_name, type_name, ConstraintInst name first, then declaration names, FunctionCall callee, TypeParamDecl.bounds).'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn name_token_span\b
+      expect: absent
+      paths:
+      - crates/reify-lsp/src
+- label: ε₂
+  task_id: 9323
+  title: 'compile_connection keeps the typed PortPath; own vs sub-member endpoint classified from PortRoot (gap-fill 2026-10-16, K9-D1)'
+  capabilities:
+  - name: string-reclassification-on-main
+    binding: 'existing-substrate — at main aabecfe241 connect.rs::resolve_port_name is `PortPath::parse(expr, None)?.port_name()`: the endpoint is parsed into the typed PortPath and flattened back to a String; own_port_name and sub_member_endpoint then re-classify that String with strip_prefix("self.") / contains(''.'') / contains(''['') / rsplit_once / split_once to decide own-port vs sub-member, direction lookup, the undefined-port error and auto-match. ε #8734 typed only the deferred forall-connect path.'
+    verdict: PASS
+  - name: own-port-string-classifier-gone
+    binding: 'producer-self.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn own_port_name\b
+      expect: absent
+      paths:
+      - crates/reify-compiler/src/connect.rs
+  - name: sub-member-string-classifier-gone
+    binding: 'producer-self.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn sub_member_endpoint\b
+      expect: absent
+      paths:
+      - crates/reify-compiler/src/connect.rs
+  - name: unindexed-collection-endpoint-diagnosed
+    binding: 'ported from #7659 (subsumed) — `sub vents : List<Vent>` with `connect vents.outlet -> hub.feed` compiles clean today and reports a phantom Satisfied compat constraint; after ε₂ a Named root naming a collection or keyed sub with non-empty members is diagnosed, pointing at the per-element form.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'behavioural; the connect_compile_tests.rs case and the boundary rows in the PRD gap-fill section are the cover.'

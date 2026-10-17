@@ -60,6 +60,7 @@ Evidence vocabulary: `grep:<file> <symbol>` (present on main) · `run:` (a comma
 | the unexamined-finding precedent exists | `grep:crates/reify-audit/src/bin/reify-audit.rs enum JcodemunchUse` (`unexamined` builders, #8441) | PASS |
 | P5's High path uses infallible calls | `grep:crates/reify-audit/src/p5_phantom_done.rs task_referencing_commits(` / `all_files_tracked_on_main(` / `path_tracked_on(MAIN_BASE` inside `check_one`; `task_referencing_commits` is a `try_…().unwrap_or_default()` wrapper that δ deletes (C3) | PASS |
 | PLINECITE and the baseline generators call `ls_files` (C27) | `run:` `git show task/6935:crates/reify-audit/src/bin/plinecite-baseline-gen.rs` builds an AuditContext | PASS |
+| *(gap-fill 2026-10-16, §K9-D8 B)* `ptodo-baseline-gen --help` exits 0 with empty stdout, so `ptodo-baseline-gen --help > crates/reify-audit/ptodo-baseline.txt` empties the merge-gate ledger and reports success; `pdiag-baseline-gen` already exits 2 — new check `ptodo-gen-help-exits-2` (test `ptodo_baseline_gen_help_exits_2_with_empty_stdout`) | `grep:crates/reify-audit/src/bin/ptodo-baseline-gen.rs "-h" \| "--help"` branch ends in `return;`; `grep:crates/reify-audit/src/bin/pdiag-baseline-gen.rs std::process::exit(2)` in its help branch | PASS |
 
 ## ε — tasks.db handle *(leaf; fk-bdc845122da0; subsumes #8516)*
 
@@ -71,6 +72,17 @@ Evidence vocabulary: `grep:<file> <symbol>` (present on main) · `run:` (a comma
 | PDCHECK refused by `--require-tasks-db` today (B8 premise) | `grep:crates/reify-audit/src/bin/reify-audit.rs this run set does not include PTODO` | PASS |
 | exit 255 is the DB-absent code | `grep:crates/reify-audit/src/bin/reify-audit.rs TASKS_DB_ABSENT_EXIT` | PASS |
 | cite grammar peer import | `grep:crates/reify-audit/src/pprdstatus.rs use crate::ptodo::canonical_cite_occurrences` | PASS |
+| *(gap-fill 2026-10-16, §K9-D9 B — supersedes the schema-probe rows above)* statuses can be read through the task API | `grep:crates/reify-audit/src/fused_memory_client.rs pub struct FusedMemoryClient` (`get_task`, `get_tasks`; ε adds `get_statuses`, one call per run); checks `tasks-db-handle-in-task-rows` → `status-source-handle-in-task-rows` (`pub (enum\|struct) StatusSource` in task_rows.rs) and `schema-probed-open` → `no-direct-tasks-db-read` (`REIFY_PTODO_TASKS_DB\|fn open_tasks_db\|fn tasks_db_path` absent in crates/reify-audit/src; 12 hits at main c7bbfe2519) | PASS |
+
+## ε₂ (#9266) — runs.db handle *(leaf; fk-923f53493f57, review-reify-20261015; gap-fill 2026-10-16 §K9-D8 B)*
+
+| Capability | Evidence | Verdict |
+|---|---|---|
+| runs.db is opened read-write against the CWD | `grep:crates/reify-audit/src/bin/reify-audit.rs rusqlite::Connection::open(&args.runs_db)` (creates a missing file); default `"data/orchestrator/runs.db"` not joined to `--project-root` | PASS |
+| one bad input yields N per-task Mediums (signal premise) | `grep:crates/reify-audit/src/p5_phantom_done.rs runs.db unreadable — cannot corroborate merged provenance for task` in `check_one`'s Err arm; pinned by `tests/p5.rs fn runs_db_unreadable_emits_medium_breadcrumb` | PASS |
+| a read-only, fallback-aware open exists to copy | `grep:crates/reify-audit/src/jcodemunch_index.rs rusqlite::Connection::open_with_flags` (read-only, first-query probe) | PASS |
+| the degradation rule to mirror | `producer:ε` (status-source handle with `Unavailable` / `DbUse`) | PASS |
+| delivered checks fail at main | `run:` at c7bbfe2519: `pub (enum\|struct) RunsDb` in task_rows.rs → 0; `Connection::open\(&args\.runs_db\)` → 1; `cannot corroborate merged provenance for task` → 1 | PASS |
 
 ## ζ — source_shape *(leaf; fk-ec468bfa673a; subsumes #7066)*
 
@@ -153,3 +165,10 @@ Evidence vocabulary: `grep:<file> <symbol>` (present on main) · `run:` (a comma
 | Capability | Evidence | Verdict |
 |---|---|---|
 | terminal vocabulary | `.claude/skills/prd/project.md` "PRD terminal status — closed vocabulary" | PASS |
+
+---
+
+## Gap-fill amendments (2026-10-16)
+
+- §K9-D9 B (`plans/gap-fill-deliberation-reify-20261016.md` §K9-D9): ε #8811's two tasks.db checks are rewritten (three writes): `tasks-db-handle-in-task-rows` → `status-source-handle-in-task-rows`, `schema-probed-open` → `no-direct-tasks-db-read`.
+- §K9-D8 B (§K9-D8): new leaf ε₂ #9266 (runs.db handle) — 19 blocks now; δ #8810 gains `ptodo-gen-help-exits-2`.

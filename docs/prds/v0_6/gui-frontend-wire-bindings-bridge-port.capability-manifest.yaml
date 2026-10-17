@@ -305,6 +305,15 @@ tasks:
       expect: present
       paths:
       - gui/src
+  - name: rust-turn-minter-gone
+    binding: 'producer-self — 2 matches (the static and its fetch_add) at c7bbfe2519; gap-fill 2026-10-16 K7-D4 (Leo B): the store is the single turn-id minter, claude_send_message forwards its id (fk-67feaf8cc7e2)'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: MSG_COUNTER
+      expect: absent
+      paths:
+      - gui/src-tauri/src/claude_bridge.rs
 - label: ο
   task_id: 9077
   title: 'gui-frontend ο: App, engineStore and IPC-touching descendants take the port; wholesale bridge mocks and the mock guard deleted'
@@ -327,6 +336,15 @@ tasks:
       expect: absent
       paths:
       - gui/src/__tests__
+  - name: turn-id-forwarded
+    binding: 'producer-self — 1 match (App.tsx onSend discards the store id) at c7bbfe2519; gap-fill 2026-10-16 K7-D4 (Leo B; fk-67feaf8cc7e2)'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'onSend: \(_id'
+      expect: absent
+      paths:
+      - gui/src/App.tsx
 - label: π
   task_id: 9078
   title: 'gui-frontend π: App.tsx partitioned into gui/src/app/ modules'
@@ -395,6 +413,29 @@ tasks:
       paths:
       - gui/src/debug/resolve.ts
       expect: present
+- label: τ₂
+  task_id: 9276
+  title: 'gui-frontend τ₂: one camera-pose module (gui/src/viewport/cameraPose.ts) for Viewport restore, persistCamera and the debug camera handlers'
+  capabilities:
+  - name: debug-orbit-sync-gone
+    binding: 'producer-self — 2 matches in gui/src/debug/bridge.ts at c7bbfe2519 (import + set_camera call), 0 in Viewport.tsx (the restore copy lacks it: the #6497 defect); after τ #9081 the call sits in a gui/src/debug family module, still under the path; gap-fill 2026-10-16 K7-D6'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: syncOrbitUpAxis
+      expect: absent
+      paths:
+      - gui/src/debug
+      - gui/src/viewport/Viewport.tsx
+  - name: camera-pose-module
+    binding: producer-self — 0 matches at c7bbfe2519 (cameraPose.ts is created by the leaf); gap-fill 2026-10-16 K7-D6
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: export function applyCameraState
+      expect: present
+      paths:
+      - gui/src/viewport
 - label: υ
   task_id: 9082
   title: 'gui-frontend υ: tool-name and fixture tables derived from debug-tools.json; tauriSource.ts deleted'

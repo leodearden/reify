@@ -112,6 +112,8 @@ Further properties:
 | υ | stand-in-solve-gone | grep: input_shape.rs::run_tots (canonical stand-in model) at main; fixture tests/prd-gate/fixtures/s6_tots_infeasible.ri: eval optimal = undef, check 'All constraints satisfied' (exit 0) | PASS | grep absent `fn run_tots\(` in `crates/reify-stdlib/src/trajectory` |
 | φ | codes-exist | grep: no TrajectoryConstraintInfeasible in reify-core DiagnosticCode at main; infeasible becomes ComputeOutcome::Failed with the coded Error | PASS | grep present `TrajectoryConstraintInfeasible` in `crates/reify-core/src/diagnostics.rs` |
 | φ | code-str-gone | grep: TotsOutcome::code_str, 0 production callers | PASS | grep absent `fn code_str\(` in `crates/reify-stdlib/src/trajectory/tots.rs` |
+| φ₂ | gcode-parse-error-code | grep: no GcodeParseError in reify-core DiagnosticCode at main; the parse error is dropped by eval_gcode_import (silent Undef) | PASS | grep present `GcodeParseError` in `crates/reify-core/src/diagnostics.rs` |
+| φ₂ | gcode-dead-code-allow-gone | grep: module-wide `#![allow(dead_code)]` in gcode_import.rs (warnings never read outside tests) | PASS | grep absent `#!\[allow\(dead_code\)\]` in `crates/reify-stdlib/src/trajectory/gcode_import.rs` |
 | χ | s8-typed-diagnose-column | producer: S8 typed diagnose-hook column (wave 2, not yet authored); held via x_seam_wait | OPEN | manual (held leaf; released by S8's session) |
 | ψ₁ | joint-kinds-const-gone | grep: joints.rs pub(crate) const JOINT_KINDS at main | PASS | grep absent `const JOINT_KINDS` in `crates/reify-stdlib/src` |
 | ψ₁ | driving-kinds-const-gone | grep: joints.rs pub(crate) const DRIVING_JOINT_KINDS at main | PASS | grep absent `const DRIVING_JOINT_KINDS` in `crates/reify-stdlib/src` |
@@ -121,3 +123,7 @@ Further properties:
 | ψ₃ | track-access-module | h14: trampoline.rs location/deviation accessor group | PASS | grep present `mod track_access` in `crates/reify-stdlib/src/trajectory` |
 | ω₁ | docs-truth-four-items | overlay docs-truth gate: chunk, exemplar + INDEX line, reify-design index line, discoverability | PASS | manual (docs-truth acceptance is a smoke compile plus findability review) |
 | ω₂ | terminal-stamp | overlay decompose-close obligation | PASS | manual (committed header; prose is not grepped) |
+
+## Gap-fill amendments (2026-10-16)
+
+From `plans/gap-fill-deliberation-reify-20261016.md` §K6-D5: new leaf φ₂ #9281 with the two `φ₂` rows above, confirmed red at main `c7bbfe2519` with `git grep -E` (the author-time count of 39 grep checks is now 41). The §K6-D6 honesty task #9283 is standalone; its check lives on the task, not here.

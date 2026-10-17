@@ -263,6 +263,121 @@ tasks:
     delivered_check:
       kind: manual
       reason: 'the golden file name is the implementer''s.'
+- label: κ
+  task_id: 9300
+  title: 'occt-internals κ: typed shape kind across the FFI (FfiShapeKind) and one ShapeStore entry {shape, repr}'
+  capabilities:
+  - name: typed-shape-kind-enum
+    binding: 'gap-fill 2026-10-16 (plans/gap-fill-deliberation-reify-20261016.md §K4-D5; fk-d09e31d2ef9d) — brep_kind_of_shape decodes the String from ffi shape_type_name at main c7bbfe2519; no FfiShapeKind exists'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'enum FfiShapeKind'
+      paths:
+      - crates/reify-kernel-occt/src
+      expect: present
+  - name: string-kind-decoder-retired
+    binding: 'fn shape_type_name(shape: &OcctShape) -> Result<String> declared in ffi.rs today (1 match)'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'fn shape_type_name'
+      paths:
+      - crates/reify-kernel-occt/src/ffi.rs
+      expect: absent
+  - name: repr-absent-unrepresentable
+    binding: 'gap-fill 2026-10-16 (plans/gap-fill-deliberation-reify-20261016.md §K4-D5; fk-2281cf9afc51) — unwrap_or(BRepKind::Solid) at fuse_all, apply_transform_to_handle and the warm-state fallback (3 matches; ε deletes the warm-state one)'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'unwrap_or\(BRepKind::Solid\)'
+      paths:
+      - crates/reify-kernel-occt/src
+      expect: absent
+  - name: shape-store-upstream
+    binding: 'producer: ε #8682 (ShapeStore) upstream; κ refines its interior'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'an upstream task dependency, wired by add_dependency.'
+- label: λ1
+  task_id: 9304
+  title: 'occt-internals λ1: one typed C++ fault envelope (FfiFault) encoded in wrap_occt_call, decoded once in Rust; one live_topology accessor'
+  capabilities:
+  - name: fault-envelope-type
+    binding: 'gap-fill 2026-10-16 (plans/gap-fill-deliberation-reify-20261016.md §K4-D6; fk-4fdd3e5ffbc1) — wrap_occt_call rethrows Standard_Failure / ContractViolation / std::exception / unknown as one runtime_error(String) at main c7bbfe2519; no FfiFault exists'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'struct FfiFault'
+      paths:
+      - crates/reify-kernel-occt/src
+      expect: present
+  - name: one-live-topology-accessor
+    binding: 'gap-fill 2026-10-16 (plans/gap-fill-deliberation-reify-20261016.md §K4-D6; fk-11b120086a30) — 14 DEFENSE-IN-DEPTH IsNull lines with two exception types; no live_topology accessor today'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'live_topology'
+      paths:
+      - crates/reify-kernel-occt/cpp
+      expect: present
+- label: λ2
+  task_id: 9306
+  title: 'occt-internals λ2: production map_err(to_string) sites become ?; ShapeStore::get and the actor return typed GeometryError variants; RUST_GUARD_MARKER deleted'
+  capabilities:
+  - name: stringly-map-err-retired
+    binding: 'gap-fill 2026-10-16 (plans/gap-fill-deliberation-reify-20261016.md §K4-D6; fk-4fdd3e5ffbc1) — 75 OperationFailed(e.to_string()) matches in lib.rs at main c7bbfe2519 (74 production, 1 in the in-file test module)'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'OperationFailed\(e\.to_string\(\)\)'
+      paths:
+      - crates/reify-kernel-occt/src
+      expect: absent
+  - name: guard-marker-deleted
+    binding: 'RUST_GUARD_MARKER in floor_constants.rs, lib.rs and two harness tests (28 matches); fault class becomes the variant, tests match! on it'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'RUST_GUARD_MARKER'
+      paths:
+      - crates/reify-kernel-occt
+      expect: absent
+  - name: typed-variants-upstream
+    binding: 'producers: ι #8684 (lib.rs partition), S10 α₆ (GeometryError::{CorruptHandle, ContractViolation, KernelFailure}), λ1 (FfiFault decoder), μ (chan_died)'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'upstream task dependencies, wired by add_dependency.'
+- label: μ
+  task_id: 9305
+  title: 'occt-internals μ: OCCT actor death modelled — ActorState cell, catch_unwind per request, one chan_died(op)'
+  capabilities:
+  - name: actor-state-cell
+    binding: 'gap-fill 2026-10-16 (plans/gap-fill-deliberation-reify-20261016.md §K4-D6; fk-4325229a297a) — no ActorState and no catch_unwind in crates/reify-kernel-occt/src at main c7bbfe2519; 35 kernel thread died literals in handle.rs'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'enum ActorState'
+      paths:
+      - crates/reify-kernel-occt/src
+      expect: present
+  - name: panic-captured-per-request
+    binding: 'catch_unwind appears only in a harness test today (boolean_parallel_determinism.rs)'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'catch_unwind'
+      paths:
+      - crates/reify-kernel-occt/src
+      expect: present
+  - name: call-primitive-upstream
+    binding: 'producer: θ #8672 (call<R>, the one send/recv site) upstream; θ is not widened (G1)'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'an upstream task dependency, wired by add_dependency.'
 - label: ω
   task_id: 8688
   title: 'occt-internals ω: PRD close — SHIPPED stamp with landed leaf ids'

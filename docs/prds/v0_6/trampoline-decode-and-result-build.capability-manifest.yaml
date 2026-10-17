@@ -141,6 +141,14 @@ tasks:
         delivered_check:
           kind: "manual"
           reason: "rejection must be observed firing by the D3 workflow, not grepped"
+      - name: "support-unknown-variant-no-fallback"
+        binding: "grep: modal_ops DeclaredSupport maps FixedSupport and every unrecognized support type name to Fixed at main (gap-fill 2026-10-16 K5-3: an unknown Support type_name decodes to InputDecodeError UnknownVariant; added after commit_planning, three writes)"
+        verdict: PASS
+        delivered_check:
+          kind: "grep"
+          pattern: "every unrecognized support type name"
+          paths: ["crates/reify-eval/src"]
+          expect: "absent"
   - label: "δ"
     task_id: 8686
     title: "StructureInstanceData::registry_free + REGISTRY_FREE; consts and Rust StructureTypeId(0) producers migrated; registry reads re-stamp by name"
@@ -443,3 +451,121 @@ tasks:
         delivered_check:
           kind: "manual"
           reason: "committed header is the signal"
+  - label: "ζ₀"
+    task_id: 9287
+    title: "Modal error paths return ComputeOutcome::Failed; degenerate_modal_result / degenerate_displacement_history deleted; ComputeOutcome::completed debug-asserts no Error (gap-fill 2026-10-16 K5-1)"
+    capabilities:
+      - name: "degenerate-modal-builder-gone"
+        binding: "grep: fn degenerate_modal_result in modal_ops.rs at main (fabricated norms 0.0, boundary_conditions [], modes [] on the 9 E_ error paths, returned as Completed)"
+        verdict: PASS
+        delivered_check:
+          kind: "grep"
+          pattern: "fn degenerate_modal_result"
+          paths: ["crates"]
+          expect: "absent"
+      - name: "degenerate-history-builder-gone"
+        binding: "grep: fn degenerate_displacement_history in modal_ops.rs at main (transient error paths returned as Completed)"
+        verdict: PASS
+        delivered_check:
+          kind: "grep"
+          pattern: "fn degenerate_displacement_history"
+          paths: ["crates"]
+          expect: "absent"
+      - name: "completed-constructor"
+        binding: "producer:ζ₀ — reify-compute-contract has no ComputeOutcome constructor at main (S5 owns the crate per G4: cross-reference)"
+        verdict: PASS
+        delivered_check:
+          kind: "grep"
+          pattern: "pub fn completed\\("
+          paths: ["crates/reify-compute-contract/src"]
+          expect: "present"
+      - name: "modal-error-paths-failed"
+        binding: "behavioural: each of the nine modal E_ mnemonics' scenarios yields ComputeOutcome::Failed (cell Undef via mark_failed), never Completed beside a value"
+        verdict: PASS
+        delivered_check:
+          kind: "manual"
+          reason: "behavioural tests in the existing modal binaries are the enforcement"
+  - label: "τ"
+    task_id: 9291
+    title: "MultiCaseResult / MultiCaseBucklingResult builders with C4 parity; MultiCaseKind replaces the detect_multi_case_result key-sniff (gap-fill 2026-10-16 K5-5)"
+    capabilities:
+      - name: "multi-case-builder"
+        binding: "producer:τ — solve_multi_case_trampoline returns Value::Map{cases} at main; no builder for the declared MultiCaseResult"
+        verdict: PASS
+        delivered_check:
+          kind: "grep"
+          pattern: "fn build_multi_case_result\\("
+          paths: ["crates"]
+          expect: "present"
+      - name: "multi-case-buckling-builder"
+        binding: "producer:τ — solve_buckling_multi_case_trampoline returns Value::Map{cases} at main; no builder for the declared MultiCaseBucklingResult"
+        verdict: PASS
+        delivered_check:
+          kind: "grep"
+          pattern: "fn build_multi_case_buckling_result\\("
+          paths: ["crates"]
+          expect: "present"
+      - name: "multi-case-kind"
+        binding: "producer:τ — detect_multi_case_result matches any Map whose cases value is a non-empty Map at main"
+        verdict: PASS
+        delivered_check:
+          kind: "grep"
+          pattern: "enum MultiCaseKind"
+          paths: ["crates"]
+          expect: "present"
+      - name: "upstream-multi-case"
+        binding: "producer:#8999 #8686 #8690 #9219 #8943 upstream (G1 follow-on after S5 κ₁)"
+        verdict: PASS
+        delivered_check:
+          kind: "manual"
+          reason: "dependency edges are the enforcement"
+  - label: "υ"
+    task_id: 9293
+    title: "FDM input decoders (FDMProcess, AsPrintedOptions, FDMCouponOverride); missing field into_failed; read_slice_settings decodes once with no default literals; degenerate build_direction a coded Error (gap-fill 2026-10-16 K5-6)"
+    capabilities:
+      - name: "slice-settings-default-literals-gone"
+        binding: "grep: fdm_slice::read_slice_settings restates FDMProcess .ri defaults with unwrap_or literals at main (layer height 0.2 mm and others)"
+        verdict: PASS
+        delivered_check:
+          kind: "grep"
+          pattern: "unwrap_or\\(0\\.2\\)"
+          paths: ["crates/reify-eval/src/compute_targets/fdm_slice.rs"]
+          expect: "absent"
+      - name: "decoded-param-read-fdm"
+        binding: "behavioural: C6 decoded-param-read rows for FDMProcess, AsPrintedOptions and FDMCouponOverride at 0; both rungs Failed with a coded diagnostic on a missing declared field"
+        verdict: PASS
+        delivered_check:
+          kind: "manual"
+          reason: "the C6 ratchet rows and behavioural tests are the enforcement"
+      - name: "upstream-6922"
+        binding: "producer:#6922 #8674 upstream (#6922 in progress on task/6922 rewrites the three FDM files; re-measure after it lands)"
+        verdict: PASS
+        delivered_check:
+          kind: "manual"
+          reason: "dependency edges are the enforcement"
+  - label: "φ"
+    task_id: 9295
+    title: "Tensegrity input decoder TensegrityTopology::from_value, one parse with failure policy per consumer (gap-fill 2026-10-16 K6-D4)"
+    capabilities:
+      - name: "stdlib-tuple-decoder-gone"
+        binding: "grep: reify-stdlib tensegrity.rs extract_index_tuples is a second Tensegrity decoder (Option, silent Undef) at main"
+        verdict: PASS
+        delivered_check:
+          kind: "grep"
+          pattern: "fn extract_index_tuples"
+          paths: ["crates/reify-stdlib/src/tensegrity.rs"]
+          expect: "absent"
+      - name: "tensegrity-topology-decoder"
+        binding: "producer:φ — no shared Tensegrity topology decoder at main"
+        verdict: PASS
+        delivered_check:
+          kind: "grep"
+          pattern: "struct TensegrityTopology"
+          paths: ["crates"]
+          expect: "present"
+      - name: "one-parse-two-policies"
+        binding: "behavioural: a malformed member index gives the located E_FormFindInfeasible on solve and Undef in the viewport, from the same decoder; tensegrity golden and viewport e2e unchanged"
+        verdict: PASS
+        delivered_check:
+          kind: "manual"
+          reason: "behavioural tests are the enforcement"

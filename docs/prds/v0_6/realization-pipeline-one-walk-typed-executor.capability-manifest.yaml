@@ -390,6 +390,135 @@ tasks:
       expect: absent
       paths:
       - crates/reify-eval/src/engine_build.rs
+- label: κ
+  task_id: 9263
+  title: 'realization-pipeline κ: one realized-step value — RealizedStep, CachedRealization with one apply_realized, KernelHandle-keyed SweptKindTable'
+  capabilities:
+  - name: named-step-pair-split
+    binding: 'RealizationOutputs carries named_steps plus a sibling named_step_reprs and seed_cross_sub_named_steps writes only handles (read at 04be9302ea; survey fk-9d5be5dd1b72); κ makes RealizedStep the one element (gap-fill §K4-D1).'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: named_step_reprs
+      expect: absent
+      paths:
+      - crates/reify-eval/src
+  - name: side-map-deleted
+    binding: 'Engine.volume_mesh_sources patches the cache-hit egress body and is never evicted by RealizationCache::evict_family (lib.rs, engine_build.rs; read at 04be9302ea; fk-a1dbdb4e699e). S1 λ #9050 moves it into EngineCaches as filed; κ deletes it (contradiction 5).'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: volume_mesh_sources
+      expect: absent
+      paths:
+      - crates/reify-eval/src
+  - name: one-cache-value
+    binding: 'Engine.realization_cache is RealizationCache<KernelHandle>; probe_realization_cache hand-rebuilds the repr and drops egress body, swept kind and topology attributes (read at 04be9302ea). κ adds CachedRealization written by one apply_realized on hit and miss.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: struct CachedRealization
+      expect: present
+      paths:
+      - crates/reify-eval/src
+  - name: swept-kind-keyed-by-kernel-handle
+    binding: 'SweptKindTable is HashMap<GeometryHandleId, SweptKind> (sweep_classifier.rs; read at 04be9302ea; fk-da0908f1437e), breaching INV-GEO-2; κ re-keys it by KernelHandle.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: HashMap<[^,>]*KernelHandle, *SweptKind>
+      expect: present
+      paths:
+      - crates/reify-eval/src
+  - name: hit-miss-parity-behaviour
+    binding: 'B-κ1: the same module built twice, the cache-served terminal reads its swept kind (no FeatureDatumAmbiguous); B-κ2: two kernels with the same GeometryHandleId keep distinct swept kinds; INV-BUILD-3 re-registered type-enforced.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: Engine-level behaviour tests (B-κ1, B-κ2) and a registry status cell whose wording S1 ε also edits; not a sound grep.
+  - name: upstream-homes
+    binding: 'producer:task-9158 (δ: realization_executor/ and probe.rs), task-9157 (ε: RealizedTerminal), task-9159 (η: the one walk and seeding), task-9043 (S1 ε: swept_kind_table in PerBuildState); κ depends on all four.'
+    verdict: PASS
+- label: λ
+  task_id: 9264
+  title: 'realization-pipeline λ: geometry-consuming compute dispatch is a scheduled BuildStep::DispatchCompute with a walk-owned RedispatchStatus'
+  capabilities:
+  - name: dispatch-step
+    binding: 'BuildStep has only Realize and HydrateCell (engine_build.rs; read at 04be9302ea; fk-67a469b5e339), so no schedule step orders a compute dispatch after its realizations; λ adds DispatchCompute (gap-fill §K4-D2).'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: DispatchCompute\(
+      expect: present
+      paths:
+      - crates/reify-eval/src
+  - name: typed-status
+    binding: 'Redispatch state is the emptiness of realization_inputs plus RedispatchPassState sets (read at 04be9302ea); λ adds the walk-owned RedispatchStatus.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: enum RedispatchStatus
+      expect: present
+      paths:
+      - crates/reify-eval/src
+  - name: per-template-scan-gone
+    binding: 'redispatch_geometry_consuming_compute_nodes runs inside each per-template loop, cloning the graph and scanning every compute node (read at 04be9302ea).'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn redispatch_geometry_consuming_compute_nodes
+      expect: absent
+      paths:
+      - crates/reify-eval/src
+  - name: latch-sets-gone
+    binding: 'RedispatchPassState.failed_pretessellations is one of the latch guards the status map replaces (read at 04be9302ea).'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: failed_pretessellations
+      expect: absent
+      paths:
+      - crates/reify-eval/src
+  - name: dispatch-behaviour
+    binding: 'B-λ1: a dispatch failure after its inputs realize is a coded Error and a failed cell; B-λ2: a successful as-printed cascade dispatches its consumer once for 0 and 2 trailing templates (#8329 absorbed); B-λ3: regression floor byte-identical.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: Engine behaviour tests (counting trampoline) and a byte-identity floor, not a grep.
+  - name: upstream-walk-and-diagnostics
+    binding: 'producer:task-9159 (η: the one walk, PostProcessSet), task-7781 (the redispatch Failed diagnostic path λ reuses); λ depends on both.'
+    verdict: PASS
+- label: μ
+  task_id: 9265
+  title: 'realization-pipeline μ: GeometryOp::parents() / parents_mut() — one exhaustive accessor pair'
+  capabilities:
+  - name: accessor-pair
+    binding: 'Parent fields are encoded as a descriptor parent_role column plus duplicated OR-matches in parent_handles_for_op and substitute_op_parents, each ending in unreachable! (engine_build.rs; read at 04be9302ea; fk-abfd068e9631, weakened); μ adds the exhaustive pair in reify-ir (gap-fill §K4-D3).'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn parents_mut\(
+      expect: present
+      paths:
+      - crates/reify-ir/src
+  - name: false-drift-claims
+    binding: 'Two doc claims say the compiler flags/enforces drift although drift is caught only by test-time coverage tests (engine_build.rs, 2 hits at 04be9302ea).'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: compiler (flags|enforces) drift
+      expect: absent
+      paths:
+      - crates/reify-eval/src
+  - name: behaviour-tests
+    binding: 'The three private-fn coverage tests (parent_handles_for_op_…, substitute_op_parents_…, geometry_op_to_operation_maps_every_variant_family) become per-role behaviour tests through execute_realization.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: A test-shape change asserted by the leaf's review, not a grep.
+  - name: upstream-op-home
+    binding: 'producer:task-9158 (δ moves the parent fns), task-8932 (S10 α₃ creates crates/reify-ir/src/geometry/op.rs); μ depends on both. θ₂ #8981 edits op.rs too (seam note, §8).'
+    verdict: PASS
 - label: ω
   task_id: 9164
   title: 'realization-pipeline ω: PRD close'

@@ -39,5 +39,17 @@ Delivered checks were evaluated against main at authoring time. Premise rows hol
 | δ | typed-record-struct | D8 names `FfiHistoryRecord` | PASS | grep `struct FfiHistoryRecord` present in `src/ffi.rs` |
 | δ | golden-parity-boundary-test | contract C1 BT-δ1/δ2; serde_json is a dev-dep | PASS | manual |
 | ω | terminal-stamp | overlay decompose-close obligation | PASS | manual |
+| κ | typed-shape-kind-enum | gap-fill 2026-10-16 §K4-D5 (fk-d09e31d2ef9d): `brep_kind_of_shape` decodes the `String` from `shape_type_name` at main `c7bbfe2519`; no `FfiShapeKind` | PASS | grep `enum FfiShapeKind` present in `src` |
+| κ | string-kind-decoder-retired | `fn shape_type_name(shape: &OcctShape) -> Result<String>` declared in `ffi.rs` (1 match) | PASS | grep `fn shape_type_name` absent in `src/ffi.rs` |
+| κ | repr-absent-unrepresentable | §K4-D5 (fk-2281cf9afc51): `unwrap_or(BRepKind::Solid)` ×3 (fuse_all, apply_transform_to_handle, warm-state fallback; ε deletes the last) | PASS | grep `unwrap_or\(BRepKind::Solid\)` absent in `src` |
+| κ | shape-store-upstream | producer: ε #8682 | PASS | manual (add_dependency) |
+| λ1 | fault-envelope-type | §K4-D6 (fk-4fdd3e5ffbc1): `wrap_occt_call` rethrows every C++ class as one `runtime_error(String)`; no `FfiFault` | PASS | grep `struct FfiFault` present in `src` |
+| λ1 | one-live-topology-accessor | §K4-D6 (fk-11b120086a30): 14 `DEFENSE-IN-DEPTH` IsNull lines, two exception types; no `live_topology` | PASS | grep `live_topology` present in `cpp` |
+| λ2 | stringly-map-err-retired | §K4-D6 (fk-4fdd3e5ffbc1): 75 `OperationFailed(e.to_string())` in `lib.rs` (74 production, 1 in-file test) | PASS | grep `OperationFailed\(e\.to_string\(\)\)` absent in `src` |
+| λ2 | guard-marker-deleted | `RUST_GUARD_MARKER` ×28 (floor_constants.rs, lib.rs, two harness tests) | PASS | grep `RUST_GUARD_MARKER` absent in `crates/reify-kernel-occt` |
+| λ2 | typed-variants-upstream | producers: ι #8684, S10 α₆, λ1, μ | PASS | manual (add_dependency) |
+| μ | actor-state-cell | §K4-D6 (fk-4325229a297a): no `ActorState`, no `catch_unwind` in `src`; 35 `kernel thread died` literals in `handle.rs` | PASS | grep `enum ActorState` present in `src` |
+| μ | panic-captured-per-request | `catch_unwind` only in a harness test today | PASS | grep `catch_unwind` present in `src` |
+| μ | call-primitive-upstream | producer: θ #8672 (not widened, G1) | PASS | manual (add_dependency) |
 
 **Not bound here:** fk-030602c2fd62 (reassigned to S10 by the Q1 ruling) and fk-baae0532b743 (filed #7379, referenced as ε's upstream producer, not re-filed).

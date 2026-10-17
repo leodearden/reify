@@ -1,6 +1,6 @@
 # PRD — Catalog membership: `constraint x in C`, a hard domain, with `discrete_set` as its sugar
 
-> **Status:** active — authored 2026-10-07 via `/prd` (Leo + Claude, agent team), from Leo's
+> **Status:** active (gap-fill 2026-10-16: β #8356 note) — authored 2026-10-07 via `/prd` (Leo + Claude, agent team), from Leo's
 > rulings on esc-5470-5 (2026-10-06/07; recorded in task #5470 `metadata.x_ruling`) and four more
 > on this draft (Q-S–Q-V, 2026-10-08; §10). An adversarial review of the draft is folded in.
 > Decomposed 2026-10-08: leaf ids are in §9; the capability manifest and its stamped sidecar sit
@@ -512,3 +512,13 @@ Tactical — decided in the named leaf:
 2. **Code names (α/β/γ).** D11's names follow `reify-core` convention; final names are the
    implementer's.
 3. **The shared solve-invariance module's name and home (α).**
+
+## Gap-fill amendments (2026-10-16)
+
+- **`plans/gap-fill-deliberation-reify-20261016.md` §K3-D3** (Leo, 2026-10-16). The domain
+  channel this PRD builds on moves home: discrete-cost δ #5470's `AutoParam.domain` becomes
+  `ParamDomain.finite` in reify-constraints' `DomainTable` (carrier: `docs/prds/v0_6/solver-crates-layering.md`
+  ξ₂ #9267). β #8356's extractor writes its membership domains into that table's `finite` slot
+  before decompose (same intersection rules, still in the solver layer, still hard); read §4 D5–D8
+  and β's "write the domains into AutoParam.domain" through this note. Note recorded on #8356; no
+  leaf scope or delivered check changes.

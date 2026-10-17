@@ -2,7 +2,7 @@
 
 **Status:** active — authored 2026-10-12 (pass 1 of the `/prd` program for stream **S9** of
 `plans/review-all-program-reify-20261012.md`); decomposed 2026-10-12 (pass 2): α #8730 … π #8746,
-λ #8741 held on S6. Shape: **B+H** (contract §5,
+λ #8741 held on S6; gap-fill 2026-10-16: ρ #9321, σ #9322, ε₂ #9323. Shape: **B+H** (contract §5,
 boundary-test sketch §6). Milestone: v0_6.
 
 **Code anchors** verified against main `8e6ffcac9d` (2026-10-12); the review record's anchors were
@@ -555,3 +555,13 @@ Counts: 16 leaves; high 1 (β), medium 13 (α γ δ ε ζ η θ ι κ λ ν ξ �
    `crates/reify-compiler/tests/fixtures/`. Either keeps the overlay's fixture tiers. Decide in η.
 4. **ParseErrorKind breadth.** Two kinds suffice for the finding. Add further kinds only where a
    consumer distinguishes them today. Decide in μ.
+
+## Gap-fill amendments (2026-10-16)
+
+Rulings from the attended gap-fill sitting, `plans/gap-fill-deliberation-reify-20261016.md`. They add leaves and amend one; the sections above are unchanged except the status line.
+
+- **ρ #9321 — reify-ast child enumeration** (§K2-D2; high, gate #9171; fk-8d86383441a3, plus the derivation-walk half of fk-406a3917737c). `Expr::for_each_child` (+ `_mut`), `MemberDecl::for_each_direct_expr` (including derivation operands, override values/guards, `using_plane`) and `MemberDecl::child_scopes` (including `derivation.members`) in reify-ast; `walk_members` re-expressed over `child_scopes`; an adoption-ratchet row counting hand-rolled `ExprKind`/`MemberDecl` child matches outside reify-ast in α #8730's member (ρ depends on #8730). Consumers: S27 ψ₂ #9324 and ψ₃ #9325 (`docs/prds/v0_6/tooling-front-end.md`), #7860 (moved to its option (b) and extended to delete the shadow_lint / dot_chain_lint / entity.rs copies; depends on ρ). `child_scopes` is member-level and disjoint from S27 η #8772's declaration-level `Declaration::member_scopes`. New G4 row (program doc): `reify-ast Expr/MemberDecl child enumeration | S9 ρ | S27, #7860, compiler lints`.
+- **σ #9322 — `SpannedIdent` for declared and referenced names** (§K2-D2; high, gate #9171; fk-c008cdb5b456). Field by field: `structure_name`, `type_name`, `ConstraintInst` name first, then declaration names, `FunctionCall` callee and `TypeParamDecl.bounds`; reify-lsp's `name_token_span` and the three empty-span conventions deleted. The spans are populated at the lowering site by the syntax-lowering-contract stream (K2-D1, not yet filed; its /prd session wires σ ← its lowering leaf). #7541, #7683, #7684, #8610 and #7549 are re-pointed onto σ (each depends on it). New G4 row: `SpannedIdent on declared/referenced names | S9 σ (fields) + syntax-lowering-contract (lowering) | reify-lsp decl_oracle, #7541/#7683/#7684/#8610`.
+- **ε₂ #9323 — `compile_connection` keeps the typed `PortPath`** (§Uncontested block K9-D1; medium; fk-98a6b0d91a7f, review-reify-20261015). Under D4 beside ε #8734: own vs sub-member endpoint comes from `PortRoot`, `Named("self")` folds into the own-port case at parse, direction and member lookup are keyed by (root sub, members), and the String is rendered only where `CompiledConnection` and labels need it; `own_port_name`'s and `sub_member_endpoint`'s string parsing deleted. #7659 is subsumed (its fixture and per-element hint ported into ε₂; cancelled). #7162 (assembly-modal α) and #7881 depend on ε₂; `docs/prds/v0_6/assembly-modal-connection-graph.md` now says α extends `PortPath` members rather than `resolve_port_name`. Boundary rows: `connect self.p -> sub.q` and `connect p -> sub.q` classify identically; `connect vents.outlet -> hub.feed` with `sub vents : List<Vent>` is diagnosed with the per-element form suggested; a nested `a.b.p` endpoint naming an undeclared sub is an undefined-port error, never Satisfied.
+- **γ #8732 amended** (§K2-D1). The program's pass-1 Q5 premise ("no other stream owns `ts_parser::lower_purpose_members`") no longer holds: the new syntax-lowering-contract stream owns reify-syntax's lowering dispatch, body loops and fault policy. γ's parser-side hunk (`lower_purpose_members` reporting an ERROR child) is ceded to that stream's member-list leaf, or lands first as an interim fix the stream subsumes. γ's compiler-side member-support table, §5 rows, B2–B4 and delivered checks are unchanged.
+- **Close leaf.** π #8746 depends on every leaf above in §8; adding ρ, σ and ε₂ to π's dependencies is left to the S9 lead (this sitting's applier did not write #8746).

@@ -69,3 +69,30 @@ blocks queueing.
 
 The adopted task #8528 (ShellStress, fk-824124d1e74e) is not a batch block: it was filed by the
 run and carries no manifest block of its own.
+
+## Gap-fill leaves (2026-10-16)
+
+Rulings: `plans/gap-fill-deliberation-reify-20261016.md` §K3-D3, §K6-D1 (uncontested block), §K6-D2,
+§K6-D3. Every mechanical check below was run with `git grep -E` against main `c7bbfe2519`
+(2026-10-17): each `present` check has no match and each `absent` check matches.
+
+| leaf | capability | evidence | verdict | delivered check |
+|---|---|---|---|---|
+| ξ₂ #9267 | `ParamDomain` carrier | no `ParamDomain`/`DomainTable` in crates/; `AutoParam.bounds` written `None` by all three production builders | PASS | grep present `struct ParamDomain` in `crates/reify-constraints/src` |
+| ξ₂ #9267 | `AutoParam.bounds` gone | grep: `pub bounds: Option<(f64, f64)>` on `AutoParam` in `reify-ir/src/constraint.rs` | PASS | grep absent `pub bounds: Option<` |
+| ξ₂ #9267 | HC4 and ξ land first | producers: #6655, #8653 (dep edges; G1, neither widened) | PASS | manual |
+| ξ₃ #9268 | `leaf_verdicts` | no `fn leaf_verdicts`; inequality acceptance is `magnitude <= FEASIBILITY_THRESHOLD`, `Gt` scores 0 at l == r | PASS | grep present `fn leaf_verdicts` |
+| ξ₃ #9268 | NaN-accepted arm gone | grep: `magnitude.is_nan() \|\|` in `RowResidual::inequality` (only match) | PASS | grep absent |
+| η₂ #9271 | `GroupSpec` | no `GroupSpec`; the group guard is copied in two kernels | PASS | grep present `struct GroupSpec` |
+| η₂ #9271 | `NonFinite { what, index }` | no `NonFinite {` variant in `reify-solver-elastic/src` | PASS | grep present `NonFinite \{` |
+| η₂ #9271 | warp_dir guard replaced | grep: `wip_norm_sq < 1e-16 * wd_norm_sq` (`form_find.rs:887`) | PASS | grep absent `wip_norm_sq < 1e-16` |
+| η₃ #9272 | gauge measured | the 2^±20 suite is Explicit-only; outcome conditional (StiffnessScale if red, lock if green) | PASS | manual |
+| φ-ff #9273 | `SymmetricSpectrum` | no spectrum type; `NULLITY_REL_TOL` defined twice | PASS | grep present `struct SymmetricSpectrum` |
+| φ-ff #9273 | eigen calls leave the solvers | grep: `.self_adjoint_eigen(` in `form_find_free.rs` (1) and `prestress_stability.rs` (3) | PASS | grep absent `self_adjoint_eigen` in those two files |
+| χ-ff #9274 | `QSource` | no `QSource`; 3 inline spec branches in `form_find_free_surfaces` | PASS | grep present `(enum\|trait) QSource` |
+| ψ-ff #9275 | test assembler gone | grep: `fn reassemble_d(` in `form_find.rs` tests | PASS | grep absent `fn reassemble_d\b` |
+| ψ-ff #9275 | test residual gone | grep: `fn equilibrium_residual_scaled` in `form_find.rs` tests | PASS | grep absent |
+
+#7801 is adopted into this stream (K6-D2) but keeps its own record: it has no block here, and its
+delivered check (`fn certify` present in `crates/reify-solver-elastic/src`) lives in its task
+metadata only.

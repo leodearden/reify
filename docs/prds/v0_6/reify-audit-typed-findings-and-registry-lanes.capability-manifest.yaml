@@ -198,17 +198,26 @@ tasks:
       paths:
       - crates/reify-audit/src/bin/reify-audit.rs
       expect: present
-- label: ε
-  task_id: 8811
-  title: 'S24 ε: one tasks.db handle (task_rows::TasksDb), derived DB degradation, cite_grammar module'
-  note: closes fk-bdc845122da0; subsumes #8516.
-  capabilities:
-  - name: tasks-db-handle-in-task-rows
-    binding: tasks_db_path/open_tasks_db leave ptodo for task_rows (PRD D10)
+  - name: ptodo-gen-help-exits-2
+    binding: 'ptodo-baseline-gen --help exits 2 with nothing on stdout, as pdiag-baseline-gen already does, so the documented redirect can never truncate the merge-gate baseline and report success (gap-fill K9-D8 B, fk-954243388ee9)'
     verdict: PASS
     delivered_check:
       kind: grep
-      pattern: 'pub (enum|struct) TasksDb\b'
+      pattern: 'fn ptodo_baseline_gen_help_exits_2_with_empty_stdout\b'
+      paths:
+      - crates/reify-audit/tests
+      expect: present
+- label: ε
+  task_id: 8811
+  title: 'S24 ε: one status-source handle over the task API (task_rows::StatusSource), derived DB degradation, cite_grammar module'
+  note: closes fk-bdc845122da0; subsumes #8516.
+  capabilities:
+  - name: status-source-handle-in-task-rows
+    binding: 'task_rows holds one status-source handle over the bin''s fused-memory client (get_statuses), replacing the sqlite TasksDb (PRD D10 as amended 2026-10-16, gap-fill K9-D9 B; replaces check tasks-db-handle-in-task-rows)'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'pub (enum|struct) StatusSource\b'
       paths:
       - crates/reify-audit/src/task_rows.rs
       expect: present
@@ -221,15 +230,15 @@ tasks:
       paths:
       - crates/reify-audit/src/bin/reify-audit.rs
       expect: absent
-  - name: schema-probed-open
-    binding: TasksDb::open probes the schema so a non-tasks file is Unavailable (PRD D10, critic C2)
+  - name: no-direct-tasks-db-read
+    binding: 'the sqlite tasks.db open, ptodo::tasks_db_path/open_tasks_db and REIFY_PTODO_TASKS_DB are deleted; statuses come only through the task API (gap-fill K9-D9 B; replaces check schema-probed-open)'
     verdict: PASS
     delivered_check:
       kind: grep
-      pattern: 'SELECT 1 FROM tasks'
+      pattern: 'REIFY_PTODO_TASKS_DB|fn open_tasks_db\b|fn tasks_db_path\b'
       paths:
-      - crates/reify-audit/src/task_rows.rs
-      expect: present
+      - crates/reify-audit/src
+      expect: absent
   - name: cite-grammar-module
     binding: the §8.2 cite grammar is a lower module imported by PTODO and PPRDSTATUS
     verdict: PASS
@@ -239,6 +248,38 @@ tasks:
       paths:
       - crates/reify-audit/src/cite_grammar.rs
       expect: present
+- label: ε₂
+  task_id: 9266
+  title: 'S24 ε₂: one read-only, schema-probed runs.db handle (task_rows::RunsDb); one run-level degraded P5 outcome'
+  note: 'gap-fill 2026-10-16 (plans/gap-fill-deliberation-reify-20261016.md §K9-D8, option B (i)); closes fk-923f53493f57 (review-reify-20261015, medium). After ε #8811.'
+  capabilities:
+  - name: runs-db-handle-in-task-rows
+    binding: runs.db gets the same handle shape as the task-status source (D10's degradation rule applied to the second DB seam)
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'pub (enum|struct) RunsDb\b'
+      paths:
+      - crates/reify-audit/src/task_rows.rs
+      expect: present
+  - name: no-read-write-runs-db-open
+    binding: the bin no longer opens runs.db read-write with Connection::open (which creates a missing file) against the CWD
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'Connection::open\(&args\.runs_db\)'
+      paths:
+      - crates/reify-audit/src/bin/reify-audit.rs
+      expect: absent
+  - name: no-per-task-runs-db-unreadable-finding
+    binding: a runs.db query failure is one run-level degraded outcome, never one Medium P5PhantomDone per merged done task
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'cannot corroborate merged provenance for task'
+      paths:
+      - crates/reify-audit/src
+      expect: absent
 - label: ζ
   task_id: 8812
   title: 'S24 ζ: source_shape — one recogniser vocabulary with named policies; jcodemunch suppression and the orphan script adopt it'

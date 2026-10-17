@@ -130,6 +130,7 @@ Every `kind: grep` check below was run with `git grep -E` against `HEAD` and is 
 - **lumped-damping-plan** — producer:ξ — mechanism path calls classify_damping directly at main. **PASS**. Check: grep `fn plan_lumped_damping\(` present in `crates`.
 - **modal-reused-flags-gone** — grep: reused_assembly / reused_setup test-only fields at main. **PASS**. Check: grep `reused_assembly: bool|reused_setup: bool` absent in `crates`.
 - **seam-tests** — behavioural: BT7. **PASS**. Check: manual — BT7.
+- **boundary-conditions-echo-from-realization** — grep: run_modal_analysis echoes ModalResult.boundary_conditions from the options list via field_or at main, not from what was applied (gap-fill 2026-10-16 K5-4; three writes). **PASS**. Check: grep `field_or\(options, "boundary_conditions"` absent in `crates`.
 
 ## ο #9121 — Structured box mesh and BoxFace vocabulary in reify-solver-elastic; adopted by modal, elastic and tests
 

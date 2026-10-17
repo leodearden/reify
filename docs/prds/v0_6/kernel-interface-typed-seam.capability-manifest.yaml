@@ -140,6 +140,34 @@ tasks:
       expect: absent
       paths:
       - crates/reify-ir/src
+- label: α₆
+  task_id: 9301
+  title: 'kernel-interface α₆: GeometryError gains CorruptHandle, ContractViolation and KernelFailure{op, detail}, with producers'
+  capabilities:
+  - name: kernel-failure-variant
+    binding: 'gap-fill 2026-10-16 (plans/gap-fill-deliberation-reify-20261016.md §K4-D6; fk-4fdd3e5ffbc1): GeometryError has no corrupt-handle, contract-violation or kernel-failure variant at main c7bbfe2519; fault class is carried by message prose.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'KernelFailure \{'
+      expect: present
+      paths:
+      - crates/reify-ir/src
+  - name: corrupt-handle-variant
+    binding: no CorruptHandle( in crates/reify-ir/src at main c7bbfe2519; producer is OCCT ShapeStore::get (S11 λ2)
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'CorruptHandle\('
+      expect: present
+      paths:
+      - crates/reify-ir/src
+  - name: error-module-upstream
+    binding: 'producer: α₂ #8931 creates geometry/error.rs (the variants live there).'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: an upstream task dependency, wired by add_dependency.
 - label: β₁
   task_id: 8935
   title: 'kernel-interface β₁: native deps fail closed; the OCCT/gmsh/OpenVDB stub arms are deleted (R5); subsumes #8532'

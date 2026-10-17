@@ -77,12 +77,13 @@ _Note:_ Filed in dark-factory's registry (dark_factory:6856); reify η (8694), �
 |---|---|---|---|
 | partition-record | h14_measurements[tests/infra/test_run_all.sh] — 6 groups; LOAD_TOLERANCE_LIB_T9 and the REIFY_RUN_ALL_FLAKY_LEDGER isolation export go to a shared preamble. Hostile ambient loop in test_run_all_ambient_isolation.sh drives the real test_run_all.sh (run_all_ambient_isolation_lib.sh header) — coverage must follow the split. | PASS | grep `LOAD_TOLERANCE_LIB` present in `tests/infra/run_all_test_preamble_lib.sh` |
 
-## θ (#8700) — harness-layout guard lib; test_harness_kloc_cap.sh h14 partition (4); contract to docs
+## θ (#8700) — harness-layout contract to docs, 35 header repoints, kLOC WARN ratchet deleted (shrunk 2026-10-16)
+
+_Gap-fill 2026-10-16 (plans/gap-fill-deliberation-reify-20261016.md §D-K8-1/§D-K8-2):_ `rules-live-in-test-today` and `diff-gate-sources-guard-lib` are removed, because they asserted the dropped guard-lib relocation. `kloc-warn-ratchet-deleted` is added. Polarity was checked at main `c7bbfe2519`: `_KLOC_WARN_KNOWN` has 16 hits in `test_harness_kloc_cap.sh`, and `harness-layout-contract` has 0.
 
 | capability | binding | verdict | delivered_check |
 |---|---|---|---|
-| rules-live-in-test-today | test_harness_kloc_cap.sh defines harness_layout_violations … harness_warn_ratchet_violations (re-read at 8e6ffcac9d; only comment-cite edits since a030ee7528). scripts/check-harness-baseline-registration.sh sources only harness-layout-lib.sh. | PASS | grep `^harness_layout_violations\(\)` present in `tests/infra/harness-layout-guard-lib.sh` |
-| diff-gate-sources-guard-lib | deliverable. | OPEN | grep `harness-layout-guard-lib\.sh` present in `scripts/check-harness-baseline-registration.sh` |
+| kloc-warn-ratchet-deleted | gap-fill §D-K8-2: `_KLOC_WARN_KNOWN` is assigned and read in test_harness_kloc_cap.sh at c7bbfe2519. Delivered when the WARN ratchet machinery is deleted and the WARN tier only prints. | OPEN | grep `_KLOC_WARN_KNOWN` absent in `tests/infra/test_harness_kloc_cap.sh` |
 | contract-doc-home | deliverable; docs/contributor/ exists. | OPEN | grep `harness-layout-contract` present in `tests/infra/test_harness_kloc_cap.sh` |
 
 ## ι (#8703) — wallclock_rust_guard_lib.sh; test_no_new_wallclock_rust_deadlines.sh h14 partition (3)
@@ -158,6 +159,23 @@ _Note:_ Filed in dark-factory's registry (dark_factory:6856); reify η (8694), �
 | capability | binding | verdict | delivered_check |
 |---|---|---|---|
 | lib-already-sourced | test_with_jcodemunch_serve.sh already sources tests/infra/jcodemunch_pin_guard_lib.sh (h14 record). | PASS | grep `^require_nonempty\(\)` present in `tests/infra/jcodemunch_pin_guard_lib.sh` |
+
+## υ (#9303) — run-all bucket declared in the test (`# run-all-bucket:` pragma); manifest retired
+
+_Gap-fill 2026-10-16, plans/gap-fill-deliberation-reify-20261016.md §D-K8-4._
+
+| capability | binding | verdict | delivered_check |
+|---|---|---|---|
+| manifest-is-the-bucket-home-today | `tests/infra/run-all-classification.manifest` is tracked at c7bbfe2519 (203 data rows) and read by `classification_bucket` / `classification_discovered_set`; the pragma has 0 hits. | PASS | path `tests/infra/run-all-classification.manifest` absent |
+| lib-reads-the-pragma | deliverable; the lib reads the pragma and fails closed on a missing or unknown bucket. | OPEN | grep `run-all-bucket:` present in `tests/infra/run-all-classification-lib.sh` |
+
+## φ (#9309) — one per-member timing emitter on the γ event channel
+
+_Gap-fill 2026-10-16, plans/gap-fill-deliberation-reify-20261016.md §D-K8-9._
+
+| capability | binding | verdict | delivered_check |
+|---|---|---|---|
+| pool-only-timing-ledger-today | `run_all.sh` defines `_ra_timing_member` / `_ra_timing_pool_lines` at c7bbfe2519; `_ra_run_serial_member` records no timing. | PASS | grep `^_ra_timing_pool_lines\(\)` absent in `tests/infra/run_all.sh` |
 
 ## Ω (#8729) — PRD close — terminal stamp and freeze header
 

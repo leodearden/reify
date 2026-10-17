@@ -1,6 +1,6 @@
 # Analysis stratum: compute targets in `reify-analysis`, one descriptor per target, the contract below the solver
 
-**Milestone:** v0_6 · **Status:** active (authored 2026-10-13; decomposed 2026-10-14). The leaf ids are in §10 and the sidecar: α #8984, β #8986, γ #8991, δ #8988 (high), ε #8994, ζ #8996, ι #8990, η #8997, κ₁ #8999, κ₂ #9001, λ #9002, μ #9003, ν #9004, ξ #9006, ο #9007, π #9008, ρ #9009, σ #9010 (close). Adopted: #8525. Subsumed and cancelled: #4935. · **Date:** 2026-10-13 · **Approach:** B + H (contract and two-way boundary tests). FEA and ComputeNode dispatch are overlay-listed load-bearing seams, and the blast radius is 9 crates plus gui.
+**Milestone:** v0_6 · **Status:** active (authored 2026-10-13; decomposed 2026-10-14). The leaf ids are in §10 and the sidecar: α #8984, β #8986, γ #8991, δ #8988 (high), ε #8994, ζ #8996, ι #8990, η #8997, κ₁ #8999, κ₂ #9001, λ #9002, μ #9003, ν #9004, ξ #9006, ο #9007, π #9008, ρ #9009, σ #9010 (close). Adopted: #8525. Subsumed and cancelled: #4935. gap-fill 2026-10-16: τ #9288. · **Date:** 2026-10-13 · **Approach:** B + H (contract and two-way boundary tests). FEA and ComputeNode dispatch are overlay-listed load-bearing seams, and the blast radius is 9 crates plus gui.
 
 **Program:** `plans/review-all-program-reify-20261012.md`, stream **S5** (wave 2, spawn, size L, risk medium). The stream's remedy, its deletable list and its seams were ruled in that document's "S5 Analysis stratum" decision, and this PRD does not reopen them. This session raised design questions, and Leo ruled on them on 2026-10-13 (§13). An adversarial critic seat reviewed the draft (1 blocker, 6 majors, 8 minors). A fold-verifier and DAG checker then reviewed the folded draft (4 FAILs, 12 WARNs). Every finding from both is folded in below.
 
@@ -631,3 +631,13 @@ No new contested-ownership pair is introduced (`phase-3-breadcrumb-map.md` §3).
    - κ₁ moves the shared foundation first.
    - The `eval-imports-analysis` row only falls.
    - π deletes the edge, restoring R1's end state.
+
+## Gap-fill amendments (2026-10-16)
+
+Rulings from the attended gap-fill sitting, `plans/gap-fill-deliberation-reify-20261016.md` (Leo, 2026-10-16).
+
+- **τ #9288 — the outcome-coherence boundary** (`§K5-1` part (2), high, gate #9171; fk-12a252c97119, survey contradiction 7). A follow-on leaf after #8525, which is in #8612's closure and is not widened (G1). It runs a census of Completed-with-Error across every registered target first, then adds a release-mode conversion in `call_compute_fn_guarded`: a `Completed` carrying a `Severity::Error` becomes `Failed` with a coded `ComputeOutcomeIncoherent` Error naming the target. It also depends on S15 ζ₀ #9287 (`docs/prds/v0_6/trampoline-decode-and-result-build.md`), which converts the modal family at the producer and adds the debug-asserting `ComputeOutcome::completed` constructor in reify-compute-contract (S5 owns the crate per G4; ζ₀ cross-references it). Sidecar entry: label τ.
+- **#8525 unchanged** (note only): its scope stays as filed; τ is the conversion.
+- **ρ #9009** (note only): the C1/C6 amendments to `docs/prds/v0_3/compute-node-contract.md` also state the invariant "a `Completed` carries no Error diagnostic; enforced by `ComputeOutcome::completed` (debug) and `call_compute_fn_guarded` (release)", replacing the "should include" prose — with a pointer, as ρ's job.
+- σ #9010 (PRD close) does not yet depend on τ; wiring that edge was outside this applier's task list and is left to the lead.
+

@@ -2834,7 +2834,14 @@
     "8662"
    ],
    "reviewer_anchor": "scripts/reify_path_attribution.py::RI_CORPUS_CRATES",
-   "carried": false
+   "carried": false,
+   "corrections": [
+    {
+     "date": "2026-10-16",
+     "ruling": "plans/gap-fill-deliberation-reify-20261016.md §Uncontested block, Covered and hygiene (D-K8-6 yaml-copy claim)",
+     "note": "The statement's 'copied a third time into dark-factory-orchestrator.yaml -p/--exclude flags' does not hold: dark-factory-orchestrator.yaml lines 215-216 are a comment pointing at scripts/occt-touching-crates.txt (via scripts/occt-scope-lib.sh), not a third copy of the OCCT crate set. The OCCT set has two homes (the txt and its cargo-metadata derivation), not three; the proposal's 'or generate the yaml flags from it' clause has nothing to act on."
+    }
+   ]
   },
   {
    "key": "fk-39f88c1738b6",
@@ -3796,7 +3803,7 @@
    "id": "lsp-walkers.4",
    "area": "tooling",
    "sub_area": "lsp-walkers",
-   "anchor": "crates/reify-lsp/src/diagnostics.rs::compute_diagnostics_with_state",
+   "anchor": "crates/reify-lsp/src/completion.rs::determine_context",
    "tags": [
     "h9",
     "h11",
@@ -3823,7 +3830,7 @@
    "effort": "high",
    "route": "structural",
    "verdict": "confirmed",
-   "verdict_notes": "The function starts at line 212 and the next top-level item is at about 873, so its length is consistent with the claim. It mixes compile, the skip_reason early return and EvalState mutation. I did not verify the exact string-literal counts or the server.rs count of 21.",
+   "verdict_notes": "determine_context reads the text of the current line only. It checks ends_with('.') for DotAccess. For TypePosition it requires starts_with_decl_keyword, an rfind(':') and no '=' in the text after that colon. For `sub bolt = Bolt(length: ` this returns TypePosition because it is checked before the Expression branch. The determine_context tests cover only `param x:` and `let x:`, not named arguments.",
    "disposition": "open",
    "first_seen": "hotspot-survey-reify-20261015",
    "last_seen": [
@@ -3835,14 +3842,21 @@
     "7607"
    ],
    "reviewer_anchor": "crates/reify-lsp/src/references.rs::collect_references_at",
-   "carried": false
+   "carried": false,
+   "corrections": [
+    {
+     "date": "2026-10-16",
+     "ruling": "plans/gap-fill-deliberation-reify-20261016.md §K2-D3 precondition (critic C6)",
+     "note": "The anchor and verdict_notes fields of lsp-walkers.4 (fk-dd82750298e2) and lsp-walkers.5 (fk-ce2e01ebfe43) were swapped relative to their title, tags, statement, proposal, anchors, covering_tasks and reviewer_anchor; the two misplaced fields are swapped back here. The keys are kept as identities, as the gap-fill ruling stamps them: fk-dd82750298e2 = the cursor-resolution finding (K2-D3), fk-ce2e01ebfe43 = the compute_diagnostics_with_state finding (K2-D4). Each key was minted (contract §2: area|anchor|tags[0]) from the misplaced anchor with its own finding's primary tag (fk-dd82750298e2 = tooling|diagnostics.rs::compute_diagnostics_with_state|h9; fk-ce2e01ebfe43 = tooling|completion.rs::determine_context|h12), so neither key recomputes from its corrected anchor; a later run that re-derives these findings mints new keys and records these under supersedes. The misplacement is a one-place shift across lsp-walkers.4-.7, not a pure two-way swap: completion.rs::determine_context and the verdict notes now on fk-dd82750298e2 verify lsp-walkers.6's statement (fk-406a3917737c, whose own anchor field sub_direct_exprs is the merged lsp-walkers.7's); the cursor finding's own minted anchor and verifier notes were not preserved (its reviewer_anchor references.rs::collect_references_at and its anchors list stand)."
+    }
+   ]
   },
   {
    "key": "fk-ce2e01ebfe43",
    "id": "lsp-walkers.5",
    "area": "tooling",
    "sub_area": "lsp-walkers",
-   "anchor": "crates/reify-lsp/src/completion.rs::determine_context",
+   "anchor": "crates/reify-lsp/src/diagnostics.rs::compute_diagnostics_with_state",
    "tags": [
     "h12",
     "h4",
@@ -3867,7 +3881,7 @@
    "effort": "medium",
    "route": "structural",
    "verdict": "confirmed",
-   "verdict_notes": "determine_context reads the text of the current line only. It checks ends_with('.') for DotAccess. For TypePosition it requires starts_with_decl_keyword, an rfind(':') and no '=' in the text after that colon. For `sub bolt = Bolt(length: ` this returns TypePosition because it is checked before the Expression branch. The determine_context tests cover only `param x:` and `let x:`, not named arguments.",
+   "verdict_notes": "The function starts at line 212 and the next top-level item is at about 873, so its length is consistent with the claim. It mixes compile, the skip_reason early return and EvalState mutation. I did not verify the exact string-literal counts or the server.rs count of 21.",
    "disposition": "open",
    "first_seen": "hotspot-survey-reify-20261015",
    "last_seen": [
@@ -3881,7 +3895,14 @@
     "8770"
    ],
    "reviewer_anchor": "crates/reify-lsp/src/diagnostics.rs::compute_diagnostics_with_state",
-   "carried": false
+   "carried": false,
+   "corrections": [
+    {
+     "date": "2026-10-16",
+     "ruling": "plans/gap-fill-deliberation-reify-20261016.md §K2-D3 precondition (critic C6)",
+     "note": "The anchor and verdict_notes fields of lsp-walkers.4 (fk-dd82750298e2) and lsp-walkers.5 (fk-ce2e01ebfe43) were swapped relative to their title, tags, statement, proposal, anchors, covering_tasks and reviewer_anchor; the two misplaced fields are swapped back here. The keys are kept as identities, as the gap-fill ruling stamps them: fk-dd82750298e2 = the cursor-resolution finding (K2-D3), fk-ce2e01ebfe43 = the compute_diagnostics_with_state finding (K2-D4). Each key was minted (contract §2: area|anchor|tags[0]) from the misplaced anchor with its own finding's primary tag (fk-dd82750298e2 = tooling|diagnostics.rs::compute_diagnostics_with_state|h9; fk-ce2e01ebfe43 = tooling|completion.rs::determine_context|h12), so neither key recomputes from its corrected anchor; a later run that re-derives these findings mints new keys and records these under supersedes. The misplacement is a one-place shift across lsp-walkers.4-.7, not a pure two-way swap: completion.rs::determine_context and the verdict notes now on fk-dd82750298e2 verify lsp-walkers.6's statement (fk-406a3917737c, whose own anchor field sub_direct_exprs is the merged lsp-walkers.7's); the cursor finding's own minted anchor and verifier notes were not preserved (its reviewer_anchor references.rs::collect_references_at and its anchors list stand)."
+    }
+   ]
   },
   {
    "key": "fk-406a3917737c",

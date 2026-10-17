@@ -77,6 +77,16 @@ rows carry no delivered check: the fixtures land with the PRD and would be green
 | σ | `NodeId: FromStr` | `Display` only at main | PASS | grep `FromStr for NodeId` in `crates/reify-eval/src` present |
 | σ | hand parser deleted | `parse_node_id` in `dev.rs` | PASS | grep `fn parse_node_id` in `crates/reify-cli/src/dev.rs` absent |
 | Ω | terminal stamp | docs-only | PASS | manual |
+| ψ₂ (#9324, gap-fill 2026-10-16) | shared enumeration substrate | producer S9 ρ (#9321), upstream edge; ψ #8757 done | PASS | — |
+| ψ₂ | walk.rs helpers deleted | `for_each_direct_subexpr` and four siblings in references/walk.rs; local.rs hand-matches at main | PASS | grep `fn for_each_direct_subexpr\b` in `crates/reify-lsp/src` absent |
+| ψ₃ (#9325, gap-fill 2026-10-16) | per-feature cursor seams | `find_word_at_offset` seam; member-segment guard only in references; goto_def Phase C lexical (#7607, subsumed); no cursor.rs at main | PASS | — |
+| ψ₃ | cursor module | producer-self | PASS | path `crates/reify-lsp/src/cursor.rs` present |
+| ψ₃ | `CursorTarget` enum | producer-self | PASS | grep `enum CursorTarget\b` in `crates/reify-lsp/src` present |
+| γ₂ (#9326, gap-fill 2026-10-16) | compile+check spelled thrice | from_parsed, compute_diagnostics_with_state, compute_diagnostics; per-request compile on hover/completion | PASS | — |
+| γ₂ | `compile_program` entry | producer #8778 (γ), upstream edge | PASS | — |
+| γ₂ | `analyse` constructor | producer-self | PASS | grep `fn analyse\(` in `crates/reify-lsp/src/analysis.rs` present |
+| ε₂ (#9327, gap-fill 2026-10-16) | monolithic pipeline | ~495-line `compute_diagnostics_with_state`; prose EvalState ordering rule; string codes | PASS | — |
+| ε₂ | typed LSP codes | producer-self | PASS | grep `enum LspDiagnosticCode\b` in `crates/reify-lsp/src` present |
 
 **Accepted gaps.** `\.run\("hover"` binds ι to that label; the behavioural cover is §5 B5's
 placement rig. `Declaration::Joint` proves θ's arm exists, not its content; B1 is the cover.

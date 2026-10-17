@@ -1,6 +1,6 @@
 # PRD: Builtin registry migration and one interception classifier — typed builtin outcomes, one call classifier, geometry calls typed Geometry
 
-Status: **active (decomposed 2026-10-13)**. Leaves: S8-α1 #8888, S8-α2 #8889, S8-β1 #8890, S8-β2 #8891, S8-β3 #8892, S8-γ #8893, S8-δ1 #8894, S8-δ2 #8895, S8-ε #8896, S8-ζ #8897, S8-η #8898, S8-μ #8899, S8-ν1 #8900, S8-ν2 #8901, S8-ξ #8902, S8-ο #8903, S8-π #8904, S8-ρ #8905, S8-θ #8906, S8-ι #8907, S8-κ #8908, S8-λ #8909, S8-σ #8910, S8-τ #8911, S8-υ #8912, S8-φ #8913, S8-ω #8914. Adopted registry legs: β #6002, #6943, #6944, #6945, τ2 #6004, τ4 #6006, τ5 #6007, π #6012, ω #6014, λ #6015, ρ #6016. Authored 2026-10-13 by the S8 `/prd` session of program
+Status: **active (decomposed 2026-10-13)**. Leaves: S8-α1 #8888, S8-α2 #8889, S8-β1 #8890, S8-β2 #8891, S8-β3 #8892, S8-γ #8893, S8-δ1 #8894, S8-δ2 #8895, S8-ε #8896, S8-ζ #8897, S8-η #8898, S8-μ #8899, S8-ν1 #8900, S8-ν2 #8901, S8-ξ #8902, S8-ο #8903, S8-π #8904, S8-ρ #8905, S8-θ #8906, S8-ι #8907, S8-κ #8908, S8-λ #8909, S8-σ #8910, S8-τ #8911, S8-υ #8912, S8-φ #8913, S8-ω #8914; gap-fill 2026-10-16: S8-χ #9289, S8-α2 #8889 widened. Adopted registry legs: β #6002, #6943, #6944, #6945, τ2 #6004, τ4 #6006, τ5 #6007, π #6012, ω #6014, λ #6015, ρ #6016. Authored 2026-10-13 by the S8 `/prd` session of program
 `review-all-reify-20261010` (program doc `plans/review-all-program-reify-20261012.md`, stream
 **S8 Builtin registry migration and one interception classifier**, wave 2, mode spawn, size L,
 risk medium). Shape: **B + H** (contracts §4, boundary-test sketch §5). Milestone: v0_6.
@@ -648,6 +648,12 @@ rule). Prereqs use the `←` convention.
   `tests/prd-gate/fixtures/`, ratchet rows `stdlib-post-hoc-diagnose-hook`,
   `expr-emit-diagnostics-fn`. Signal: §5 rows 1–3 byte-identical. Consumer: δ1. Prereqs ← S8-α1,
   #8846. Keys: none.
+  *Widened 2026-10-16 (gap-fill §K6-D5, fk-5e611b84370d):* the flexure `parse_*_inputs` return
+  `Result<_, FlexureInputError>` naming the field and value, the constructor arm returns a coded
+  `Rejection`, and `classify_geometry_invalid` with its 13-name layout table is deleted. §5 rows 1–2
+  stay byte-identical; the formerly silent classes (missing E, non-positive width or E, non-unit
+  axis, wrong arity) gain codes, enumerated in the capability manifest. New check:
+  `fn classify_geometry_invalid` absent in `crates/reify-stdlib/src/flexures`.
 - **S8-β1 #8890 — Geometry family: the 19 diagnosed names become rejections.** Modules: reify-stdlib
   `geometry.rs` (`diagnose`, `datum_fault_diagnostic`, `diagnose_bbox_corners` deleted; the
   rejecting arms return coded `Rejection`s built from the existing `DatumFault`/`AffineMapFault`
@@ -715,6 +721,13 @@ rule). Prereqs use the `←` convention.
   ratchets `compiler-user-shadow-check 0`, `dual-eval-intercept-mirror 0`. Consumer: τ.
   Prereqs ← S8-ε, S8-λ, #6002, #8627, #8631. Keys: none (contributes to fk-be87290e126e and
   fk-935b6eca2b50). **Subsumes #8578.**
+- **S8-χ #9289 — Smoothness column on reify-builtins rows** *(added 2026-10-16, gap-fill §K9-D4)*.
+  Each reify-builtins row carries `smoothness: Smooth | Kink | NonDifferentiable`; derivative
+  closures are keyed by `BuiltinId`; `dual_eval` reads the column and its name-keyed tables
+  (`is_kink_builtin`, `is_differentiable_builtin`, `builtin_partials`) are deleted. Signal: renaming
+  a smooth builtin's row without its derivative fails to compile; a dual solve over the 13 smooth
+  builtins matches today's primals and gradients. Prereqs ← S8-ε #8896, #8480 (file locks).
+  Priority low. **Keys: fk-819257c68b82.**
 
 **Phase 3 — compiler typing and dispatch.**
 
@@ -877,6 +890,9 @@ Gate #8612 ← S8-ε, S8-η, S8-θ.
   rejections (joints, numeric, complex, matrix, construct, loads, supports, mechanism,
   tensegrity, trajectory, list, trig, linalg) — follow-up candidate; the
   `stdlib-legacy-outcome` ratchet keeps the count visible.
+  *Gap-fill 2026-10-16:* `gcode_import`'s arm of the trajectory family converts under S6 φ₂
+  #9281 (§K6-D5); the rest of trajectory stays `legacy`. Tensegrity stays `legacy` here; its
+  input decoder is S15's new Tensegrity decoder leaf (§K6-D4).
 - Typed argument records for the other string-keyed `CompiledGeometryOp` variants (Transform,
   Pattern, Sweep, Curve, Profile, Surface, Primitive) — follow-up candidate after S8-ξ proves
   the shape.
@@ -933,3 +949,13 @@ cmp-map, inventory, fixtures, critic), summarised in §2 and the capability mani
 - **G7** (advisory): INV-SF-1 strengthened (S8-α1: specific `UndefCause` codes); INV-SF-5 (S8-η
   retires a misstated placeholder type); every `Rejection` coded (INV-SF-6, S12's row); no waiver.
 - **META**: yes — the remaining choices in §10 are local to one leaf each.
+
+## Gap-fill amendments (2026-10-16)
+
+Rulings from `plans/gap-fill-deliberation-reify-20261016.md` (Leo, 2026-10-16). Finding keys are from `/review` run review-reify-20261015.
+
+- **§K6-D5** — S8-α2 #8889 widened (§8 row amended in place): flexure `Result` parsers, coded constructor `Rejection`, `classify_geometry_invalid` and its layout table deleted; enumerated corrections and the new delivered check are in the capability manifest (fk-5e611b84370d). §9 note: `gcode_import` converts under S6 φ₂ #9281.
+- **§K6-D4** — §9 note: tensegrity stays a legacy family here; S15's Tensegrity decoder leaf owns its input decode (fk-976f1c613e93).
+- **§K9-D4** — new leaf S8-χ #9289 (smoothness column; §8, after S8-ζ) after S8-ε #8896 and #8480 (fk-819257c68b82). Registry λ #6015 is amended to delete `__registry_result_type_for_test`, `__registry_owns_for_test` and the `pub use units::{...}` widening; a standalone low task #9290 drives the `validate_annotations` / `infer_mul_div_result` parity tests through `compile_source` and deletes those two shims and reify-syntax `visit_structure_member_root_exprs` (fk-400e69bbca2c).
+- **§K6-D7** — standalone medium task #9286 after S8-δ1 #8894 and τ2 #6004 (file contention on `orientation.rs`): typed `EulerConvention` and one generic Euler derivation (fk-e348f06cce2e).
+- **§K1-D1** — S8-ο #8903 and S8-ζ #8897 gain cross-reference notes for the new generic-instantiation-and-call-binding stream (its α/δ held behind #8903, γ behind #8897); no scope change.

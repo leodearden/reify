@@ -609,3 +609,27 @@ tasks:
         delivered_check:
           kind: "manual"
           reason: "committed header is the signal"
+  - label: "τ"
+    task_id: 9288
+    title: "Completed-with-Error census, then call_compute_fn_guarded converts a Completed carrying an Error into Failed with a coded ComputeOutcomeIncoherent naming the target (gap-fill 2026-10-16 K5-1 part 2; follow-on after #8525)"
+    capabilities:
+      - name: "incoherent-outcome-code"
+        binding: "producer:τ — no DiagnosticCode names an incoherent ComputeOutcome at main; Completed.diagnostics is documented 'Non-fatal' and nothing enforces it"
+        verdict: PASS
+        delivered_check:
+          kind: "grep"
+          pattern: "ComputeOutcomeIncoherent"
+          paths: ["crates/reify-core/src"]
+          expect: "present"
+      - name: "census-first"
+        binding: "behavioural: a census test enumerates every registered target and records which return Completed carrying a Severity::Error before the release conversion lands; a scratch trampoline returning Completed with an Error is asserted Failed with ComputeOutcomeIncoherent"
+        verdict: PASS
+        delivered_check:
+          kind: "manual"
+          reason: "census and scratch-trampoline tests are the enforcement"
+      - name: "upstream-8525"
+        binding: "producer:#8525 (call_compute_fn_guarded) and S15 ζ₀ (modal error paths already Failed) upstream"
+        verdict: PASS
+        delivered_check:
+          kind: "manual"
+          reason: "dependency edges are the enforcement"

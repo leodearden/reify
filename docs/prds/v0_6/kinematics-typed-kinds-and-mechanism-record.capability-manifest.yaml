@@ -508,6 +508,29 @@ tasks:
       paths:
       - crates/reify-stdlib/src/trajectory/tots.rs
       expect: absent
+- label: φ₂
+  task_id: 9281
+  title: gcode_import outcomes coded (gap-fill 2026-10-16 §K6-D5)
+  note: 'Added by gap-fill 2026-10-16 (plans/gap-fill-deliberation-reify-20261016.md §K6-D5; fk-5d64b909dfdf). Both checks confirmed red at main c7bbfe2519.'
+  capabilities:
+  - name: gcode-parse-error-code
+    binding: 'grep: no GcodeParseError in reify-core DiagnosticCode at main; E_GcodeParseError exists only as a reify_gcode::ParseError carried in GcodeImportResult and dropped by eval_gcode_import (silent Undef)'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: GcodeParseError
+      paths:
+      - crates/reify-core/src/diagnostics.rs
+      expect: present
+  - name: gcode-dead-code-allow-gone
+    binding: 'grep: gcode_import.rs carries a module-wide #![allow(dead_code)] because its warnings are never read outside tests'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '#!\[allow\(dead_code\)\]'
+      paths:
+      - crates/reify-stdlib/src/trajectory/gcode_import.rs
+      expect: absent
 - label: χ
   task_id: 8851
   title: 'HELD on S8: TOTS diagnostics on check/LSP'

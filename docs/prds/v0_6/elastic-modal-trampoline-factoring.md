@@ -1,6 +1,6 @@
 # Elastic-static and modal trampoline factoring; mesh-morph observability
 
-**Milestone:** v0_6 · **Status:** active (authored 2026-10-14; decomposed 2026-10-15). The leaf ids are in §10 and the sidecar: α #9085, β #9092, γ #9086, δ #9087, ε #9088, ζ #9089, η #9090, θ #9093, ι #9094, κ #9102, λ #9118, μ #9119, ν #9091, ξ #9120, ο #9121, ω #9122. Subsumed and cancelled: #7835 (→ α #9085), #8423 (→ ζ #9089), #8427 (→ θ #9093), #7760 (→ ν #9091). Gate #8612 ← κ #9102, λ #9118 · **Date:** 2026-10-14 · **Approach:** B + H (contract and two-way boundary tests). FEA and ComputeNode dispatch are overlay-listed load-bearing seams; the blast radius is reify-analysis (after S5), reify-eval, reify-solver-elastic, reify-ir, reify-mesh-morph, reify-compiler's stdlib, reify-cli and gui.
+**Milestone:** v0_6 · **Status:** active (authored 2026-10-14; decomposed 2026-10-15). The leaf ids are in §10 and the sidecar: α #9085, β #9092, γ #9086, δ #9087, ε #9088, ζ #9089, η #9090, θ #9093, ι #9094, κ #9102, λ #9118, μ #9119, ν #9091, ξ #9120, ο #9121, ω #9122. Subsumed and cancelled: #7835 (→ α #9085), #8423 (→ ζ #9089), #8427 (→ θ #9093), #7760 (→ ν #9091). Gate #8612 ← κ #9102, λ #9118 · gap-fill 2026-10-16: K5-1 (C6 result_value row, §2 cycle hazard), K5-3 (§12 OQ2; ξ #9120, ο #9121), K5-4 (ξ #9120 check `boundary-conditions-echo-from-realization`), K5-2 notes (support-realization-policy stream) · **Date:** 2026-10-14 · **Approach:** B + H (contract and two-way boundary tests). FEA and ComputeNode dispatch are overlay-listed load-bearing seams; the blast radius is reify-analysis (after S5), reify-eval, reify-solver-elastic, reify-ir, reify-mesh-morph, reify-compiler's stdlib, reify-cli and gui.
 
 **Program:** `plans/review-all-program-reify-20261012.md`, stream **S16** (wave 3, spawn, size L, risk medium). The stream's remedy, deletable list and seams were ruled in that document's "S16 elastic_static and modal trampoline factoring; mesh-morph observability" decision, and this PRD does not reopen them. Leo ruled this session's three design questions on 2026-10-14/15 (§13).
 
@@ -139,7 +139,7 @@ Five read-only scout seats re-measured every finding in `plans/review-all-reify-
   | transient | 742 |
   | supports | 733 |
 
-- **Cycle hazard:** the damping ↔ free_vibration cycle exists only if `degenerate_modal_result`, which has three consumers, stays in free_vibration.
+- **Cycle hazard (dropped 2026-10-16, gap-fill K5-1):** the damping ↔ free_vibration cycle existed only while `degenerate_modal_result` stayed in free_vibration. S15 ζ₀ #9287 deletes `degenerate_modal_result` and `degenerate_displacement_history` (modal error paths return `ComputeOutcome::Failed`), so the cycle and this rationale go with them.
 - **Test imports:** the test module imports 47 names, 30 of them private. About 16 tests call supports internals directly (`face_company`, `face_realization`, `nearest_node`, and `build_dirichlet_bcs` through `BcFixture`), and 4 call damping internals.
 - **Existing split task:** #7760 (low) plans a behaviour-preserving extraction.
 
@@ -398,7 +398,7 @@ The elastic module becomes a directory, along the h14 partition as adjusted by S
 | File | Contents |
 |---|---|
 | `core.rs` | Assembly, eigensolve, the mesh enum. |
-| `result_value.rs` | Placeholders and degenerate results; below damping, which breaks the cycle. |
+| `result_value.rs` | Placeholders only (`placeholder_part` until #7097). The degenerate results are deleted by S15 ζ₀ #9287 (gap-fill 2026-10-16, K5-1), so this file no longer breaks a cycle; if nothing remains it is dropped under the empty-partition rule above. |
 | `options.rs` | What remains after S15. |
 | `damping.rs` | The damping planners. |
 | `supports.rs` | Support realization. |
@@ -721,7 +721,7 @@ No waiver is needed.
 ## 12. Open questions (tactical)
 
 1. **Folding #8251's pair.** If #8251 has landed its two codes, μ either renames them to the neutral pair or keeps them as deprecated aliases for one release. *Suggested:* rename; neither code has shipped in a release. Decide in μ.
-2. **Root-face spelling.** Decided: `"root"` and `"x_min"` both name the dims model's root face (BT5d). Once ο's `BoxFace` exists, `"root"` parses as `BoxFace::XMin` at the elastic dims entry only.
+2. **Root-face spelling.** Decided: `"root"` and `"x_min"` both name the dims model's root face (BT5d). Once ο's `BoxFace` exists, `"root"` parses as `BoxFace::XMin` for every box-mesh consumer, modal included (amended 2026-10-16, gap-fill K5-3: modal's silent skip turned `FixedSupport(target: "root")` into a free-free solve; was "at the elastic dims entry only").
 3. **`ElasticSolution::Shell`'s exact fields.** They follow S15 ε's `ElasticResultParts`. Decide in λ.
 4. **Where `MorphTally::summary_line` formats.** In reify-eval beside the tally, or in the CLI. *Suggested:* beside the tally, so the GUI could reuse it. Decide in β.
 5. **The modal damping test at `mechanism_modal_warns_on_unsupported_damping_descriptor`** pins `classify_damping` as "the single extension point". Under C6 the extension point is the two plans. Its Case C blocks are rewritten to them. Decide the exact assertions in ξ.
@@ -741,3 +741,13 @@ No waiver is needed.
    - The empty-list advisory stays a Warning.
    - The in-plane tip-force component joins the shell refusal reasons (Auto: tet with a Warning; On: Error), because tet realizes it.
    - Rejected: a Warning with the route unchanged (the v2 draft), and re-routing non-root supports to tet (tet ignores them too).
+
+## Gap-fill amendments (2026-10-16)
+
+Rulings from the attended gap-fill sitting, `plans/gap-fill-deliberation-reify-20261016.md`. Task records carry the same notes.
+
+- **K5-1** (`§K5-1`): S15 ζ₀ #9287 deletes `degenerate_modal_result` / `degenerate_displacement_history`, so the §2 "cycle hazard" bullet and C6's `result_value.rs` cycle rationale are dropped (amended in place above). ν #9091 builds `result_value.rs` only if something remains (`placeholder_part` until #7097).
+- **K5-3** (`§K5-3`, uncontested block): modal support realization is total. ξ #9120's `realize_supports` emits one coded refusal Error per support that names no box face or uses a target form modal cannot realize (selector, `PointSupport.at`) until its owner wires it, and the entry returns `Failed` (INV-SF-2); the pinning test `build_dirichlet_bcs_ignores_supports_that_name_no_face` is rewritten to assert the code. ο #9121's `BoxFace::parse("root")` → `XMin` for every box-mesh consumer; §12 OQ2 amended in place above. Code naming (a modal refusal code, or μ #9119 minting a general one) is decided at ξ.
+- **K5-4** (`§K5-4`, uncontested block): ModalResult echo fields come from what was applied. `DirichletRealization` gains `applied: Vec<SupportSpec>`, and `plan_modal_damping` / `plan_lumped_damping` return the applied descriptor (or none); the free_vibration and mechanism builders take those, not options. New ξ #9120 capability `boundary-conditions-echo-from-realization` (grep `field_or\(options, "boundary_conditions"` absent in `crates`; three writes). S15 ζ #8693 carries a doc note on the hand-off.
+- **K5-2** (`§K5-2`, notes only): the new stream `support-realization-policy` (its PRD is authored separately from `~/.claude/spawn-briefs/`) follows S15 γ #8683 and ο #9121 and absorbs ξ #9120's `realize_supports` (it becomes a call), turns μ #9119's dims refusal into a capability row (R1's "root clamp only" capability and R3's `FeaDimsSupportNotRealized` behaviour kept), makes #7081 a call rather than a port, and gives #8256 a consumer seam. K5-3's refusal and K5-4's applied echo fold into its refusal and realization types when it lands. No S16 leaf is re-scoped by K5-2.
+

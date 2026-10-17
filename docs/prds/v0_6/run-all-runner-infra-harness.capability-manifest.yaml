@@ -186,26 +186,19 @@ tasks:
       expect: present
 - label: θ
   task_id: 8700
-  title: 'run-all-runner θ: harness-layout guard lib; test_harness_kloc_cap.sh h14 partition (4); contract to docs'
+  title: 'run-all-runner θ: harness-layout contract to docs, 35 header repoints, kLOC WARN ratchet deleted (shrunk 2026-10-16)'
+  # gap-fill 2026-10-16 (plans/gap-fill-deliberation-reify-20261016.md §D-K8-1/§D-K8-2): rules-live-in-test-today and
+  # diff-gate-sources-guard-lib removed (they asserted the dropped guard-lib relocation); kloc-warn-ratchet-deleted added.
   capabilities:
-  - name: rules-live-in-test-today
-    binding: test_harness_kloc_cap.sh defines harness_layout_violations … harness_warn_ratchet_violations (re-read at 8e6ffcac9d; only comment-cite edits since a030ee7528). scripts/check-harness-baseline-registration.sh sources only harness-layout-lib.sh.
-    verdict: PASS
-    delivered_check:
-      kind: grep
-      pattern: ^harness_layout_violations\(\)
-      paths:
-      - tests/infra/harness-layout-guard-lib.sh
-      expect: present
-  - name: diff-gate-sources-guard-lib
-    binding: deliverable.
+  - name: kloc-warn-ratchet-deleted
+    binding: 'gap-fill 2026-10-16 §D-K8-2 — _KLOC_WARN_KNOWN is assigned and read in tests/infra/test_harness_kloc_cap.sh at main c7bbfe2519 (16 hits); delivered when the WARN ratchet machinery (harness_warn_ratchet_violations, _warn_ratchet_rows, _KLOC_WARN_KNOWN, Sections 4c/5d) is deleted and the WARN tier only prints.'
     verdict: OPEN
     delivered_check:
       kind: grep
-      pattern: harness-layout-guard-lib\.sh
+      pattern: _KLOC_WARN_KNOWN
       paths:
-      - scripts/check-harness-baseline-registration.sh
-      expect: present
+      - tests/infra/test_harness_kloc_cap.sh
+      expect: absent
   - name: contract-doc-home
     binding: deliverable; docs/contributor/ exists.
     verdict: OPEN
@@ -428,6 +421,40 @@ tasks:
       paths:
       - tests/infra/jcodemunch_pin_guard_lib.sh
       expect: present
+- label: υ
+  task_id: 9303
+  title: 'run-all-runner υ: run-all bucket declared in the test (# run-all-bucket: pragma); run-all-classification.manifest retired'
+  capabilities:
+  - name: manifest-is-the-bucket-home-today
+    binding: 'gap-fill 2026-10-16 §D-K8-4 — tests/infra/run-all-classification.manifest is tracked at main c7bbfe2519 (203 data rows) and read by run-all-classification-lib.sh::classification_bucket / classification_discovered_set; no run-all-bucket pragma exists anywhere (git grep: 0 hits). Delivered when the file is deleted.'
+    verdict: PASS
+    delivered_check:
+      kind: path
+      paths:
+      - tests/infra/run-all-classification.manifest
+      expect: absent
+  - name: lib-reads-the-pragma
+    binding: 'deliverable — classification_discovered_set / classification_bucket read the `# run-all-bucket:` pragma and fail closed on a missing or unknown bucket; 0 hits for run-all-bucket: in the lib at main.'
+    verdict: OPEN
+    delivered_check:
+      kind: grep
+      pattern: 'run-all-bucket:'
+      paths:
+      - tests/infra/run-all-classification-lib.sh
+      expect: present
+- label: φ
+  task_id: 9309
+  title: 'run-all-runner φ: one per-member timing emitter on the γ event channel; _ra_timing_* deleted'
+  capabilities:
+  - name: pool-only-timing-ledger-today
+    binding: 'gap-fill 2026-10-16 §D-K8-9 — tests/infra/run_all.sh defines _ra_timing_member and _ra_timing_pool_lines at main c7bbfe2519; _ra_mark tq/ts/te sit only at the pool call sites and _ra_run_serial_member records none. Delivered when the pool-only ledger writer is gone and timing rides member_finish.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^_ra_timing_pool_lines\(\)
+      paths:
+      - tests/infra/run_all.sh
+      expect: absent
 - label: Ω
   task_id: 8729
   title: 'run-all-runner Ω: PRD close — terminal stamp and freeze header'

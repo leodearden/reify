@@ -87,6 +87,18 @@ Performed by the pass-2 decompose session (2026-10-12) as three writes per check
 | the cost-carrying pair exists | grep: `pub fn checkout_with_lru_stamp_and_cost`, `pub fn donate_preserving_lru_with_cost` | PASS |
 | behavioural oracle | grep: `crates/reify-eval/tests/warm_state_donation.rs` | PASS |
 
+## κ (#9297) — op-kind dispatch total by type (gap-fill 2026-10-16, K4-D4)
+
+Added by the gap-fill applier (`plans/gap-fill-deliberation-reify-20261016.md` §K4-D4, finding fk-fe5ac99ce241). Evidence at main `c7bbfe2519`; every check below is RED there in the non-vacuous direction.
+
+| Capability | Evidence | Verdict | delivered_check |
+|---|---|---|---|
+| dispatch-lock-macro-deleted | grep: `macro_rules! lock_dispatch_table` plus 7 lock lines in `geometry_ops.rs` (8 matches in `crates/reify-eval`) | PASS | grep `lock_dispatch_table` absent in `crates/reify-eval` |
+| uniqueness-guard-deleted | grep: `mod dispatch_table_uniqueness;` in `geometry_ops.rs` (δ re-points it as a move) | PASS | grep `mod dispatch_table_uniqueness` absent in `crates/reify-eval/src` |
+| census-literal-deleted | grep: `DOCUMENTED_KIND_FAMILY_CENSUS` (2 matches) in `tests/compile_geometry_op_characterization.rs` | PASS | grep `DOCUMENTED_KIND_FAMILY_CENSUS` absent in `crates/reify-eval` |
+| lookup-is-total | grep: 7 `no registered compiler for` runtime errors in `geometry_ops.rs` | PASS | grep `no registered compiler for` absent in `crates/reify-eval/src` |
+| EnumCount upstream | producer: S7 π #8661 (in progress) derives `strum::EnumCount`; κ derives `strum::EnumIter` itself | PASS | manual (add_dependency) |
+
 ## θ — dropped (lead ruling Q1; S8 / #6010 own `from_name`)
 
 ## ι — PRD close

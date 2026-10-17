@@ -26,6 +26,9 @@ Premise rows hold now. Deliverable rows are "not yet" by construction, and each 
 | α₅ | overlay-keys-today | MATERIALIZED_ANNOTATIONS_KEY and SOURCE_SPAN_KEY live in StructureInstanceData.fields; user_fields() filters at 9 value.rs sites; no production code outside value.rs names either key (seat G 1.4). | PASS | manual |
 | α₅ | registry-free-upstream | producer: task 8686 (S15 δ, pending) adds StructureInstanceData::registry_free; task 7867 (pending) removes type_id from the same literals; α₅ depends on both. | PASS | manual |
 | α₅ | overlay-keys-gone | the @@ overlay key literal is deleted | PASS | grep `@@materialized_annotations` absent in `crates/reify-ir/src` |
+| α₆ | kernel-failure-variant | gap-fill 2026-10-16 §K4-D6 (fk-4fdd3e5ffbc1): `GeometryError` has no corrupt-handle, contract-violation or kernel-failure variant at main `c7bbfe2519` | PASS | grep `KernelFailure \{` present in `crates/reify-ir/src` |
+| α₆ | corrupt-handle-variant | no `CorruptHandle(` in `crates/reify-ir/src` at `c7bbfe2519`; producer is OCCT `ShapeStore::get` (S11 λ2) | PASS | grep `CorruptHandle\(` present in `crates/reify-ir/src` |
+| α₆ | error-module-upstream | producer: α₂ #8931 (geometry/error.rs) | PASS | manual |
 | β₁ | no-live-consumer | R5 (Leo 2026-10-13): no wasm crate or cfg (git grep wasm32 over crates/ = 0), check-manifold-deps.sh already fails every verify without the deps; no gate compiles any not(has_*) arm. | PASS | manual |
 | β₁ | override-taken-on-trust | reify_build_utils::find_dir_with_override returns a non-empty override verbatim and lets an empty one fall through to the candidates, so the stub arm is unreachable on a provisioned host (premise correction 5). | PASS | manual |
 | β₁ | require-helper | one build-time decision with a unit-tested message | PASS | grep `pub fn require\(` present in `crates/reify-build-utils/src/lib.rs` |

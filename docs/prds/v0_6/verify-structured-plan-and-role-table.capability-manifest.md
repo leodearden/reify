@@ -92,6 +92,15 @@ Machine-readable twin: `verify-structured-plan-and-role-table.capability-manifes
 - ξ `ordered-scope-greps-gone`. There are 92 ordered greps today (a real bracket class). Delivered check: the `ordered-scope-grep` ratchet row with ceiling 0, present in `tests/infra/adoption-ratchet.manifest`. PASS.
 - ο `partition-record`. The file is a D_ROSTER member until #8694, which is covered by a hard edge. Delivered check: `^make_stub_bin\(\)` present in `tests/infra/verify_semaphore_e2e_lib.sh`. PASS.
 
+## τ / υ / φ / χ — gap-fill leaves (2026-10-16, plans/gap-fill-deliberation-reify-20261016.md)
+
+Polarity was checked at main `c7bbfe2519`. Each `absent` check has hits today; each `present` check, or `path present` check, has none.
+
+- τ #9312 (§D-K8-5) `hand-map-is-the-selection-home-today`. `scripts/verify-pipeline-infra-tests.txt` is tracked (177 rows). Delivered check: path `scripts/verify-pipeline-infra-tests.txt` absent. PASS. `one-header-parser-in-selection`: grep `^def parse_guards_header\(` present in `scripts/reify_verify/selection.py`. OPEN.
+- υ #9313 (§D-K8-6) `corpus-set-hand-declared-today`. Delivered check: grep `^RI_CORPUS_CRATES` absent in `scripts/reify_path_attribution.py`. PASS. `one-metadata-reader`: grep `^def crate_scope_classes\(` present in the same file. OPEN.
+- φ #9314 (§D-K8-10 (1)) `predicates-copied-today`. Delivered check: path `crates/reify-audit/scope-predicates.toml` present. PASS.
+- χ #9315 (§D-K8-10 (2)) `rationale-has-no-home-today`. Delivered check: path `docs/notes/verify-pipeline-design.md` present. PASS.
+
 ## ρ / σ / ω
 
 - ρ `narrowing-header-multiline-today`: manual. The behavioural cover is ρ's own one-line-header test.

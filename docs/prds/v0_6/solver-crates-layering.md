@@ -1,6 +1,6 @@
 # PRD — Solver crates: layering, shared element primitives, one predicate home
 
-> **Status:** decomposed 2026-10-12 — α #8614, β #8616, γ #8618, δ #8619, ε #8621, ζ #8626, η #8628, θ #8629, ι #8630, κ #8632, λ #8637, μ #8640, ν #8645, ξ #8653, ο #8656, π #8658, ρ #8660 (PRD close); adopted #8528. Authored 2026-10-12 (pass 1). Stream **S14** of the review-all
+> **Status:** decomposed 2026-10-12 — α #8614, β #8616, γ #8618, δ #8619, ε #8621, ζ #8626, η #8628, θ #8629, ι #8630, κ #8632, λ #8637, μ #8640, ν #8645, ξ #8653, ο #8656, π #8658, ρ #8660 (PRD close); adopted #8528; gap-fill 2026-10-16: ξ₂ #9267, ξ₃ #9268, η₂ #9271, η₃ #9272, φ-ff #9273, χ-ff #9274, ψ-ff #9275, adopted #7801. Authored 2026-10-12 (pass 1). Stream **S14** of the review-all
 > program `plans/review-all-program-reify-20261012.md` (run `review-all-reify-20261010`), ruled in
 > that doc's "Uncontested block" decision. Authored via `/prd` by a wave-1 seat; the lead commits it.
 >
@@ -322,3 +322,41 @@ Lead rulings (2026-10-12, program doc "Resolved decisions — pass 1 open questi
 5. *(tactical, ι)* Dead-code lints in test binaries that `mod common;` without using every helper.
    Default: `#![allow(dead_code)]` at the top of `tests/common/mod.rs`, matching the
    `assembly/test_support.rs` precedent.
+
+## Gap-fill amendments (2026-10-16)
+
+Rulings by Leo in the gap-fill sitting of 2026-10-16 (`plans/gap-fill-deliberation-reify-20261016.md`).
+Every new leaf follows an #8612-closure leaf (η #8628, ξ #8653, #6655) rather than widening it (§G1).
+Manifest blocks: `solver-crates-layering.capability-manifest.yaml` / `.md`, "Gap-fill leaves".
+
+- **§K3-D3** (ParamDomain carrier; re-homes #5470's discrete domain field). New high leaf
+  **ξ₂ #9267**, after #6655 and ξ #8653: `reify_constraints::domain::{ParamDomain, Endpoint,
+  DomainTable}` with `derive_domains` once per component after decomposition, `lo > hi` a typed
+  Refuted, readers as projections (seed_box, clamp_box, int_range, default_bounded_sides),
+  `AutoParam.bounds` and its three `None` writers deleted. It sits at crate level below
+  `solver/derive`; ξ stays behaviour-preserving (the carrier's behaviour change is ξ₂'s, not ξ's).
+  New medium leaf **ξ₃ #9268** (`leaf_verdicts`, after ξ, in `solver/residual`): acceptance calls
+  the checker's comparison semantics (with #6653's equality policy), NaN/Undef are Undecidable,
+  StrictBound::Dropped/SteppedInside become search hints; absorbs #9012. #5470 now depends on ξ₂
+  and its delivered check is re-pointed to `crates/reify-constraints/src`
+  (`discrete-cost-minimisation` amendment of the same date).
+- **§Uncontested block → K6-D1.** New medium leaf **η₂ #9271** after η #8628: `FreeSpec {
+  Explicit(q) | GroupRatios(GroupSpec) }` with `GroupSpec::new` the only group-check home;
+  finiteness in `admits` and the σ test; `AnisotropicSurfaceStress::new` rejecting zero/NaN
+  warp_dir as `DegenerateMaterialFrame`; node finiteness at construction;
+  `ForceDensityInputError::NonFinite { what, index }`; new boundary cases for NaN σ, +inf q,
+  zero/NaN warp_dir and an out-of-range group id, each through the free entry. Extends C1's
+  invariant to "every form-find input is finite, in range and sign-admissible". #7800 is folded in
+  and cancelled as subsumed. η #8628 gets a note only.
+- **§K6-D2.** #7801 is adopted into the stream and widened (low → medium):
+  `FreeStandingForm::certify(d, x)` is the single nullity-(d+1) check, after η #8628. New medium
+  leaf **η₃ #9272** after #7801: the GroupRatios gauge covariance at λ = 2^±20 is measured first;
+  `fd_criteria::StiffnessScale` replaces the normalisers only if that test reds. #7571 gets a pointer.
+- **§K6-D3.** Three leaves after η #8628: **φ-ff #9273** (low; `fd_matrix`/spectrum module owning
+  `assemble_d` and `SymmetricSpectrum::of`, typed `SpectrumError`; ratchet row
+  `.self_adjoint_eigen(` outside the module → 0), **χ-ff #9274** (medium; free-loop split:
+  `CombinedIterate`, `QSource { FixedQ, SearchedQ }`, `StallGuard`, relax step; after φ-ff and
+  #7801; #7613 depends on it), **ψ-ff #9275** (low, last; behaviour tests at the new seams,
+  `reassemble_d` and `equilibrium_residual_scaled` deleted, aniso split only if the heuristic-13
+  check passes; after χ-ff and η₃).
+- ρ #8660 (PRD close) now also depends on η₂, η₃, φ-ff, χ-ff and ψ-ff.

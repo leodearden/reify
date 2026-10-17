@@ -1,6 +1,6 @@
 # Trampoline decode and result build: one decoder per stdlib input structure, one builder per result structure
 
-**Milestone:** v0_6 · **Status:** active (decomposed 2026-10-12; leaf ids in §10 and the sidecar) · **Date:** 2026-10-12 · **Approach:** B + H (contract + two-way boundary tests; FEA and ComputeNode dispatch are overlay-listed load-bearing seams, blast radius is 6 crates)
+**Milestone:** v0_6 · **Status:** active (decomposed 2026-10-12; leaf ids in §10 and the sidecar; gap-fill 2026-10-16: ζ₀ #9287, τ #9291, υ #9293, φ #9295, γ #8683 check `support-unknown-variant-no-fallback`) · **Date:** 2026-10-12 · **Approach:** B + H (contract + two-way boundary tests; FEA and ComputeNode dispatch are overlay-listed load-bearing seams, blast radius is 6 crates)
 
 **Program:** `plans/review-all-program-reify-20261012.md`, stream **S15** (wave 1, agent, size M, risk medium). The stream's remedy, deletable list and seams were ruled in the "Uncontested block" decision of that document's §Resolved decisions. This PRD does not reopen them.
 
@@ -361,3 +361,16 @@ No waiver is needed.
 3. **#7079's C3 default source.** #7079 derives declared defaults from the `load_stdlib()` templates. A note was appended to #7079, and D1 stands.
 4. **Shell-route user supports.** S16 owns the wiring (per-route solvers). γ only makes the drop loud.
 5. **fk-a28b1b57ed64.** δ stays in S15. It fixes the two registry reads and leaves the compiler placeholder unchanged.
+
+## Gap-fill amendments (2026-10-16)
+
+Rulings from the attended gap-fill sitting, `plans/gap-fill-deliberation-reify-20261016.md` (Leo, 2026-10-16). §10's table is unchanged; the four new leaves below are in the sidecar (`.capability-manifest.yaml` / `.md`) and σ #8724 depends on each of them. G1 (#8612 closure guard) applies: none of them is a prerequisite of a closure leaf except ζ₀, the named exception.
+
+- **ζ₀ #9287 — modal error paths return `Failed`** (`§K5-1`, high, gate #9171; fk-12a252c97119, survey contradiction 7). The nine modal E_ mnemonics' outcomes become `ComputeOutcome::Failed`; `degenerate_modal_result` and `degenerate_displacement_history` are deleted; `ComputeOutcome::completed(result, diagnostics)` in reify-compute-contract debug-asserts no `Severity::Error` (S5 owns the crate per G4: cross-reference). After α #8674; ζ #8693 and ι #8702 depend on it (the record's named G1 exception: otherwise ζ builds a third, throwaway ModalResult producer). C2's single-`Failed` rule now covers the modal family: §4 C2 reads "a decode error becomes `Failed` only in `into_failed`", and ζ₀ adds that an Error-severity diagnostic implies `Failed` on every modal path. The release-mode conversion at `call_compute_fn_guarded` is S5's follow-on leaf τ #9288 (analysis-stratum.md).
+- **ζ #8693 amended** (`§K5-1`, `§K5-4`): its producer list drops `degenerate_modal_result` (two ModalResult producers remain: free_vibration and mechanism); `ModalResultParts.boundary_conditions` / `.damping` are documented as "applied, from the realization / damping plan" and are sourced from options only until S16 ξ #9120 lands (hand-off note on the task).
+- **γ #8683 amended** (`§K5-3`, sentence-sized): an unknown Support `type_name` decodes to `InputDecodeError` `UnknownVariant` — never the "every unrecognized support type name → Fixed" fallback. New capability `support-unknown-variant-no-fallback` (grep `every unrecognized support type name` absent in `crates/reify-eval/src`; three writes).
+- **τ #9291 — multi-case result builders** (`§K5-5`; fk-d8caa5953e44). `build_multi_case_result` / `build_multi_case_buckling_result` (C3 shape, C4 parity tests) for the declared `MultiCaseResult` / `MultiCaseBucklingResult`; `MultiCaseKind` replaces the `detect_multi_case_result` key-sniff; S25 η #8943's FEA-case code consumes it. G1 follow-on after S5 κ₁ #8999, δ #8686, ε #8690, #9219 and #8943. Adds two structures to C3's builder list.
+- **υ #9293 — FDM decoders** (`§K5-6`; fk-b683dbb8c87b). `FDMProcess`, `AsPrintedOptions`, `FDMCouponOverride` join §1's decoder list: a missing declared field → `into_failed`; `read_slice_settings` decodes once with no default literals (D1); a degenerate `build_direction` is a coded Error; both rungs covered. After #6922 and α #8674; S5 κ₂ #9001 depends on it (#9001 is not in #8612's closure). The wire-or-delete of `target_fidelity` and the R0 rung stays #7087's ruling.
+- **φ #9295 — Tensegrity input decoder** (`§K6-D4`; fk-976f1c613e93, low). `TensegrityTopology::from_value`, one parse with the failure policy chosen per consumer (located `E_FormFindInfeasible` in tensegrity_crack, `Undef` in the reify-stdlib accessors). After α #8674 and S14 η #8628. Tensegrity is a stdlib input structure §1 did not enumerate; it is legacy in S8 (§9 note).
+- **Not S15:** K5-7 R7 (coded Warning for a Selector location with no carried topology) is the standalone task #9296 after ι #8702 and S16 ν #9091.
+

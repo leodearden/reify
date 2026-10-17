@@ -1,6 +1,6 @@
 # PRD: GUI frontend — generated wire bindings, a typed bridge port, schema-validated debug handlers
 
-**Milestone:** v0_6 · **Status:** active — authored 2026-10-14/15 (pass 1, `23390a9d75`); decomposed 2026-10-15 (pass 2): α #9062, β #9063, γ #9064, δ #9065, ε #9066, ζ #9067, η #9068, θ #9069, ι #9070, κ #9071, λ #9072, μ #9073, χ #9074, ν #9075, ξ #9076, ο #9077, π #9078, ρ #9079, σ #9080, τ #9081, υ #9082, ω #9083 (ω close); rulings OQ1–OQ7 (§7) · **Approach:** B + H
+**Milestone:** v0_6 · **Status:** active — authored 2026-10-14/15 (pass 1, `23390a9d75`); decomposed 2026-10-15 (pass 2): α #9062, β #9063, γ #9064, δ #9065, ε #9066, ζ #9067, η #9068, θ #9069, ι #9070, κ #9071, λ #9072, μ #9073, χ #9074, ν #9075, ξ #9076, ο #9077, π #9078, ρ #9079, σ #9080, τ #9081, υ #9082, ω #9083 (ω close); rulings OQ1–OQ7 (§7); gap-fill 2026-10-16: τ₂ #9276, ξ #9076 / ο #9077 amended · **Approach:** B + H
 
 Authored 2026-10-14 by the S26 `/team /prd` session of program `review-all-reify-20261010`
 (`plans/review-all-program-reify-20261012.md`, stream **S26 GUI frontend**, wave 3, mode spawn,
@@ -1034,3 +1034,24 @@ recorded in its task; the ceiling binds.
 bare `|`. `untyped-emit` counts single-line two-argument `.emit(` calls — the string-name Emitter
 form — and misses a call split across lines; κ's registered-names test is the behavioural cover.
 The LSP editor modules' direct `invoke` is S27 λ's, outside these globs.)
+
+## Gap-fill amendments (2026-10-16)
+
+Applied from Leo's 2026-10-16 gap-fill sitting (`plans/gap-fill-deliberation-reify-20261016.md`). The
+capability-manifest pair carries the new and changed delivered checks.
+
+- **K7-D4** (`§K7-D4`, Leo B — his explicit override of G1's follow-on default for these two #8612-closure
+  leaves): ξ #9076 and ο #9077 carry the chat turn id end to end. The store is the single minter;
+  `claude_send_message` accepts and forwards the store's id; `MSG_COUNTER` and the Rust minting are
+  deleted; `onSend` passes the id; one test drives the real outbound-event mapping with a producer-shaped
+  id; the masking idiom in ChatPanel.test.tsx / claudeIntegration.test.ts (feeding `currentMessageId` back
+  as the event id) is removed. New delivered checks: ξ `rust-turn-minter-gone` (`MSG_COUNTER` absent in
+  `gui/src-tauri/src/claude_bridge.rs`), ο `turn-id-forwarded` (`onSend: \(_id` absent in `gui/src/App.tsx`).
+  Both leaves carry fk-67feaf8cc7e2 (review-reify-20261015, R1, high); review gate #9242 gains #9077.
+- **K7-D6** (`§Uncontested block → K7-D6`): new leaf **τ₂ #9276** after τ #9081 —
+  `gui/src/viewport/cameraPose.ts` (`applyCameraState` / `readCameraState`) used by Viewport restore,
+  persistCamera and the debug camera handlers; DebugViewport narrowed; RED test restoring an up≠Z camera
+  (fk-e77ad6ebdb23, medium). Checks `debug-orbit-sync-gone`, `camera-pose-module`.
+- Cross-references (standalone tasks on this stream's files, not leaves): K7-D10 (2) **#9284** deletes the
+  dead inbound sidecar `tool_result` arm after ζ #9067; K7-D9 **#9282** extracts
+  `gui/src/editor/lspDocumentSession.ts`; K7-D7 **#9280** wires the FEA probe chain into Viewport.

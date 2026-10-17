@@ -364,6 +364,73 @@ tasks:
       paths:
       - scripts/lib_proc_reaper.sh
       expect: absent
+- label: τ
+  task_id: 9312
+  title: 'S18 τ: tests declare what they guard — # guards: header read by reify_verify.selection; verify-pipeline-infra-tests.txt and the is-registered sweep deleted'
+  capabilities:
+  - name: hand-map-is-the-selection-home-today
+    binding: 'gap-fill 2026-10-16 §D-K8-5 — scripts/verify-pipeline-infra-tests.txt is tracked at main c7bbfe2519 (177 non-comment rows) and read by bash select_infra_tests until ζ; no tests/infra member carries a `# guards:` header (git grep). Delivered when the map file is deleted.'
+    verdict: PASS
+    delivered_check:
+      kind: path
+      paths:
+      - scripts/verify-pipeline-infra-tests.txt
+      expect: absent
+  - name: one-header-parser-in-selection
+    binding: 'deliverable — one parser in reify_verify.selection reads the `# guards:` / GUARDS header at plan time (scripts/reify_verify/ does not exist at c7bbfe2519; β creates selection.py).'
+    verdict: OPEN
+    delivered_check:
+      kind: grep
+      pattern: '^def parse_guards_header\('
+      paths:
+      - scripts/reify_verify/selection.py
+      expect: present
+- label: υ
+  task_id: 9313
+  title: 'S18 υ: crate scope classes declared in the crate — [package.metadata.reify-scope] read once from cargo metadata'
+  capabilities:
+  - name: corpus-set-hand-declared-today
+    binding: 'gap-fill 2026-10-16 §D-K8-6 — RI_CORPUS_CRATES is a hand-declared frozenset at module level in scripts/reify_path_attribution.py at main c7bbfe2519; no crates/*/Cargo.toml has a [package.metadata] table. Delivered when the frozenset is deleted.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '^RI_CORPUS_CRATES'
+      paths:
+      - scripts/reify_path_attribution.py
+      expect: absent
+  - name: one-metadata-reader
+    binding: 'deliverable — crate_scope_classes(cargo_metadata) in reify_path_attribution.py; 0 hits at c7bbfe2519.'
+    verdict: OPEN
+    delivered_check:
+      kind: grep
+      pattern: '^def crate_scope_classes\('
+      paths:
+      - scripts/reify_path_attribution.py
+      expect: present
+- label: φ
+  task_id: 9314
+  title: 'S18 φ: reify-audit scope predicates as one data file (crates/reify-audit/scope-predicates.toml)'
+  capabilities:
+  - name: predicates-copied-today
+    binding: 'gap-fill 2026-10-16 §D-K8-10 (1) — verify.sh pdiag_swept_path / pdoccover_input_path / select_cheap_ptodo_gate re-implement reify-audit predicates (β ports them as guarded copies); no scope-predicates data file exists at main c7bbfe2519.'
+    verdict: PASS
+    delivered_check:
+      kind: path
+      paths:
+      - crates/reify-audit/scope-predicates.toml
+      expect: present
+- label: χ
+  task_id: 9315
+  title: 'S18 χ: verify-pipeline persistent rationale moved to docs/notes/verify-pipeline-design.md (after ζ)'
+  capabilities:
+  - name: rationale-has-no-home-today
+    binding: 'gap-fill 2026-10-16 §D-K8-10 (2) — scripts/verify.sh carries 3,275 #-lines; docs/notes/verify-pipeline-design.md does not exist at main c7bbfe2519; ζ records each long block''s classification in its commit message.'
+    verdict: PASS
+    delivered_check:
+      kind: path
+      paths:
+      - docs/notes/verify-pipeline-design.md
+      expect: present
 - label: ω
   task_id: 9117
   title: 'S18 ω: PRD close — ID backfill, terminal stamp, freeze'

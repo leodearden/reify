@@ -173,3 +173,35 @@ PRD close — SHIPPED header, landed ids, freeze map
 | Capability | Evidence / binding | Verdict | Delivered check |
 |---|---|---|---|
 | `terminal-stamp` | overlay "PRD terminal status" — closed vocabulary; the close leaf depends on every sibling. | **PASS** | grep `^\*\*Status:\*\* \*\*SHIPPED` present in `docs/prds/v0_6/compiler-declaration-passes.md` |
+
+## ρ — #9321 (gap-fill 2026-10-16, K2-D2)
+
+reify-ast child enumeration: Expr::for_each_child(_mut), MemberDecl::for_each_direct_expr, MemberDecl::child_scopes; walk_members over child_scopes; ratchet row
+
+| Capability | Evidence / binding | Verdict | Delivered check |
+|---|---|---|---|
+| `hand-rolled-enumerations-on-main` | existing-substrate — at main 04be9302ea reify-ast has walk_members over MemberRecursionSet but no Expr child enumeration; eight independent child enumerations in reify-lsp (references/walk.rs ×3, references/local.rs ×2) and reify-compiler (entity.rs for_each_child/_mut, dot_chain_lint.rs and shadow_lint.rs walk_expr_depth); walk.rs binds `derivation: _`. | **PASS** | — |
+| `expr-child-enumeration` | producer-self — Expr::for_each_child (+ _mut), wildcard-free over ExprKind. | **PASS** | grep `fn for_each_child\b` present in `crates/reify-ast/src` |
+| `member-child-scopes` | producer-self — MemberDecl::child_scopes (incl. derivation.members) and MemberDecl::for_each_direct_expr (incl. derivation operands, override values/guards, using_plane); walk_members over child_scopes. | **PASS** | grep `fn child_scopes\b` present in `crates/reify-ast/src` |
+| `hand-rolled-match-ratchet` | producer-self — ratchet row counting hand-rolled ExprKind/MemberDecl child matches outside reify-ast (INV candidate 5). | **PASS** | manual: a grep cannot assert a count; the ratchet member's hermetic fixtures are the evidence. |
+
+## σ — #9322 (gap-fill 2026-10-16, K2-D2)
+
+SpannedIdent for declared and referenced names, field by field; name_token_span and the empty-span conventions deleted
+
+| Capability | Evidence / binding | Verdict | Delivered check |
+|---|---|---|---|
+| `names-rescanned-on-main` | existing-substrate — SubDecl.name / structure_name are String; SpannedIdent exists in reify-core (SubDerivation, index_binder); decl_oracle.rs::name_token_span rescans source (49 references in 7 reify-lsp files); FunctionCall callee and TypeParamDecl.bounds carry no span. | **PASS** | — |
+| `lowering-populates-spans` | producer: syntax-lowering-contract stream (K2-D1) populates each SpannedIdent at its ts_parser.rs lowering site; not filed at 2026-10-16 — its /prd session wires σ ← its lowering leaf; until then σ populates the field groups it converts at the existing call sites. | **OPEN** | — |
+| `name-rescan-deleted` | producer-self — name_token_span and the three empty-span conventions deleted once every declared and referenced name carries its span. | **PASS** | grep `fn name_token_span\b` absent in `crates/reify-lsp/src` |
+
+## ε₂ — #9323 (gap-fill 2026-10-16, K9-D1)
+
+compile_connection keeps the typed PortPath; own vs sub-member endpoint classified from PortRoot
+
+| Capability | Evidence / binding | Verdict | Delivered check |
+|---|---|---|---|
+| `string-reclassification-on-main` | existing-substrate — at main aabecfe241 connect.rs::resolve_port_name flattens the parsed PortPath to a String; own_port_name and sub_member_endpoint re-classify it with strip_prefix/contains/rsplit_once/split_once; ε #8734 typed only the deferred forall-connect path. | **PASS** | — |
+| `own-port-string-classifier-gone` | producer-self. | **PASS** | grep `fn own_port_name\b` absent in `crates/reify-compiler/src/connect.rs` |
+| `sub-member-string-classifier-gone` | producer-self. | **PASS** | grep `fn sub_member_endpoint\b` absent in `crates/reify-compiler/src/connect.rs` |
+| `unindexed-collection-endpoint-diagnosed` | ported from #7659 (subsumed) — `connect vents.outlet -> hub.feed` with `sub vents : List<Vent>` compiles clean today with a phantom Satisfied compat constraint; after ε₂ it is diagnosed with the per-element form suggested. | **PASS** | manual: behavioural; connect_compile_tests.rs and the PRD's gap-fill boundary rows are the cover. |

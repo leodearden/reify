@@ -1,6 +1,6 @@
 # PRD — Engine state partition (reify-eval): one constructor, sub-structs by lifetime class
 
-**Status:** decomposed 2026-10-14 (pass 2): α #9036, β #9037, γ₁ #9038, γ₂ #9039, δ₁ #9040, δ₂ #9041, δ₃ #9042, ε #9043, ζ #9044, η #9045, θ #9046, ι #9047, κ₁ #9048, κ₂ #9049, λ #9050, μ #9051, ω #9052. Subsumed and cancelled: #7038 (→ ζ #9044). Released: S27 φ #8776 (← γ₁, γ₂). Out-of-batch edges: #8564 ← ζ; gate #8612 ← γ₁, γ₂, ε, λ. Authored pass 1, 2026-10-14 — review-all program `review-all-reify-20261010`, stream **S1** (wave 3, spawn mode, size L, risk high; `plans/review-all-program-reify-20261012.md`). Leo ruled R1–R4 in-session (§11). An adversarial critic pass (fable/high: 2 blockers, 6 majors, 14 minors, each verified in code or in the task record) is folded, and an opus/high fold-verifier's second pass (5 partial resolutions, 14 new defects, 2 of them blockers) is folded on top (§11 fold record). v0_6. Approach **B + H** (§5 contract, §6 two-way boundary tests; rationale D15). **Amended 2026-10-16 (Leo, esc-6689-3, option A):** `EngineInputs` takes P1-α #6689's `Resolution` as a required input with no default, and γ₁ ← #6689 (R5, §11).
+**Status:** decomposed 2026-10-14 (pass 2): α #9036, β #9037, γ₁ #9038, γ₂ #9039, δ₁ #9040, δ₂ #9041, δ₃ #9042, ε #9043, ζ #9044, η #9045, θ #9046, ι #9047, κ₁ #9048, κ₂ #9049, λ #9050, μ #9051, ω #9052. Subsumed and cancelled: #7038 (→ ζ #9044). Released: S27 φ #8776 (← γ₁, γ₂). Out-of-batch edges: #8564 ← ζ; gate #8612 ← γ₁, γ₂, ε, λ. gap-fill 2026-10-16: α #9036 and ζ #9044 amended (K9-D6, K3-D1); out-of-batch edge #8464 ← α #9036. Authored pass 1, 2026-10-14 — review-all program `review-all-reify-20261010`, stream **S1** (wave 3, spawn mode, size L, risk high; `plans/review-all-program-reify-20261012.md`). Leo ruled R1–R4 in-session (§11). An adversarial critic pass (fable/high: 2 blockers, 6 majors, 14 minors, each verified in code or in the task record) is folded, and an opus/high fold-verifier's second pass (5 partial resolutions, 14 new defects, 2 of them blockers) is folded on top (§11 fold record). v0_6. Approach **B + H** (§5 contract, §6 two-way boundary tests; rationale D15). **Amended 2026-10-16 (Leo, esc-6689-3, option A):** `EngineInputs` takes P1-α #6689's `Resolution` as a required input with no default, and γ₁ ← #6689 (R5, §11).
 **Invariants owned:** **INV-FEA-1** — `proposed` → `enforced(type+lint+test)` (leaf γ₂). Its registry row names `Engine::new_production`, which does not exist. `register_production_compute_fns` (reshaped by S5 κ₁ #8999) and this PRD's one constructor implement it. **INV-BUILD-1** — stays enforced; its mechanism is corrected from the 68-field `reset_per_build_state` destructure to `PerBuildState::reset(BuildSurface)` over PerBuildState's own fields plus a surface-sequence test (leaf ε). This stream is the single owner of both status cells (program G4). Each flip writes resolving pointers in S24's grammar (`reify-audit-typed-findings-and-registry-lanes.md` §5.7): inline in the Enforcement cell before S24 ξ #8821 lands, in the Pointer column after it (§5.11). Every leaf that extracts a construct names its row in `tests/infra/adoption-ratchet.manifest` (program invariant candidate 5). Every new module stays outside the engine module SCC (INV-ARCH-1).
 **Finding keys closed (13):** fk-800d61acd5d0, fk-ba15d44904cb, fk-d8fd9ed9be89, fk-cb6c853cb648, fk-e9536a3edbe7, fk-8250a05a9a10, fk-fb8cf3e787b9, fk-d2c64e9d3868, fk-4fa7bda0085b, fk-4db43199eda2, fk-06103e5f06eb, the prior-instrument canonical `language-pipeline|crates/reify-eval/src/lib.rs::engine|h11`, and fk-3aeb721eaaa6, which is filed as #8564 and is referenced, not re-filed. §9 assigns each key to exactly one closing leaf, or to the filed task #8564. A leaf that only contributes to a key carries it as `x_finding_part`.
 **Code anchors** verified against main `988f4522b9` (2026-10-14). Since the review anchor `a030ee7528`, #6308 (export and terminal-owner routing, `kernel_owner.rs`), S3 γ #8675 (dead `cache.rs`/`deps.rs` peers) and #8753 have landed. No S1 symbol changed in substance, and every count below was re-measured at `988f4522b9` by this session's scout seats (§10, rules inline). Cite-by-symbol; re-locate lines at implementation time. Line numbers appear only in the dated §10.
@@ -348,6 +348,7 @@ pub fn resolve_cache_layered(sources: &ConfigSources, cli_dir: Option<&Path>)
 - `BuildScheduler` moves into `engine_config.rs` (D5).
 - An unrecognized knob value keeps today's fallback and adds one coded Warning (`DiagnosticCode::EngineKnobIgnored`) to `ResolvedConfig.diagnostics`. Front ends print these diagnostics as they print others (INV-SF-3, INV-SF-6).
 - A `REIFY_CACHE_MAX_BYTES` resolver error keeps today's behaviour: persistent cache off, logged at DEBUG.
+- A config-file resolver error — `CacheError::EmptyDir`, or a TOML parse failure in the user or project config — becomes one coded Warning on `ResolvedConfig.diagnostics`, which front ends print; evaluation proceeds without a persistent cache. A TOML file entry is always intentional, so it is never dropped silently. The stale "Config-file layers are deliberately not plumbed in" doc on reify-cli's `resolve_cache_root` is deleted with the move (B-α4). *(Added 2026-10-16, gap-fill K9-D6.)*
 - `kernel_pin_diagnostics` moves to `engine_config.rs` and runs when `ConfigSources` carries a manifest.
 - CLI and GUI call the same `ConfigSources::from_process` with the same project-directory rule (§11 Q2), so they resolve one cache directory. The GUI's startup sweep and its engine use that resolution.
 
@@ -455,15 +456,15 @@ impl EvalArtifacts { pub(crate) fn install(&mut self, state: EvaluationState); /
 
 **Rules** (when `config.capture_undef_causes`):
 - **`eval` classifies every cell**, as today.
-- **`eval_cached` and `edit_param` re-classify only the cells they re-evaluated.**
+- **`edit_param` re-classifies only the cells it re-evaluated.** *(Amended 2026-10-16, gap-fill K3-D1: `eval_cached` is not wired. Its only production caller re-evaluates nothing, so re-classifying there would do nothing, and S4 φ deletes it in favour of `replay_last_eval`.)*
   - The classifier reads the snapshot graph's `ValueCellNode.default_expr`, filtered by `declared`, plus op-contract failures as today.
   - `declared` maps each template-declared cell to its declaration span. The span is needed because `UndefCause::UserUndef { span }` and `Unbound { span }` carry it and `ValueCellNode` has none.
-  - `eval` and `eval_cached` capture `declared` from the module they were given. `eval_cached` refreshes the spans of carried entries from its module. Only `edit_param`, which has no module, carries `declared` over unchanged.
+  - `eval` captures `declared` from the module it was given. Only `edit_param`, which has no module, carries `declared` over unchanged. *(Amended 2026-10-16, gap-fill K3-D1.)*
   - Every other entry is carried.
   - Synthetic guard, list and sub cells are never classified, on any path.
 - **The tag always matches.** The map's `classified_for` equals its snapshot's id at every install.
 - **`trace_undef_causes` never answers across snapshots.** For a mismatched id it returns "no recorded cause", never a cause from another snapshot.
-- **#7038.** `record_failed_autos` is called on `eval_cached`, `dispatch_merged_cluster_solve_cached` and `edit_param`. (`edit_source` is gone after S4 δ.)
+- **#7038.** `record_failed_autos` is called on `edit_param` as well as the cold paths. (`edit_source` is gone after S4 δ; `eval_cached` and `dispatch_merged_cluster_solve_cached` are deleted by S4 φ, gap-fill K3-D1 2026-10-16.)
 - **The setter goes.** `set_capture_undef_causes` is deleted; front ends set the flag in their preset.
 - **Snapshot docs are corrected.** The type and field docs describe a persistent-map value mutated on the working clone, with revalidation opt-in through `read_value_revalidated`.
 
@@ -623,6 +624,7 @@ The `\|` in this table escapes the markdown pipe; the ERE in the manifest uses a
 | B-α1 | consumer (GUI) | GUI and CLI resolve one cache dir | a user config at `$XDG_CONFIG_HOME/reify/config.toml` sets `[cache] dir`; same project dir | the GUI production session's `config().persistent_cache` equals what `reify eval` resolves; the startup sweep sweeps that dir | α |
 | B-α2 | consumer (GUI) | GUI FEA result persists | two GUI sessions in sequence on one cache dir load an FEA example | the second session reports a persistent hit (`persistent_hit_count > 0`) and identical values | α |
 | B-α3 | producer | hermetic config ignores the process | `REIFY_BUILD_SCHEDULER=legacy`, `REIFY_MESH_CONTRACT=warn`, `REIFY_WARM_STATE_BUDGET_BYTES=1` set | `EngineConfig::hermetic()` equals its defaults; `resolve(from_process)` reflects all three; an unrecognized value yields one `EngineKnobIgnored` Warning and today's fallback | α |
+| B-α4 | consumer (CLI, GUI) | malformed config is visible | the user config at `$XDG_CONFIG_HOME/reify/config.toml` sets `[cache] dir = ""` | `reify eval` and the GUI each print one coded config Warning on `ResolvedConfig.diagnostics`, and evaluation proceeds without a persistent cache (today: a DEBUG log line, cache silently off; gap-fill K9-D6, 2026-10-16) | α |
 | B-β1 | consumer (CLI) | deliberate opt-out stays a Warning | `reify check` on an FEA-bearing fixture | the existing `check_downgrades_unregistered_trampoline_fallback_to_warning_while_eval_and_build_keep_erroring` stays green; the Warning names `CheckWithoutTrampolines` | β |
 | B-β2 | producer | registered engine missing a target errors | a `Targets` engine whose table lacks one stdlib `@optimized` target | `NoRegisteredComputeTrampoline` at Error severity, whatever else the table holds | β |
 | B-γ1 | lint | undeclared production site | a scratch production file in reify-cli that calls `Engine::new(` without a `KNOWN_SITES` row | the lint exits 1 naming the file; with the row it exits 0 | γ₂ |
@@ -632,7 +634,7 @@ The `\|` in this table escapes the markdown pipe; the ERE in the manifest uses a
 | B-ε1 | both | surface-sequence matrix (`crates/reify-eval/tests/harness_engine/per_build_surface_sequence.rs`) | one fixture with geometry, a `RepresentationWithin` bound, a DFM rule and a relate block | for every ordered pair of surfaces A→B followed by `check`: Conforms/DFM/RepresentationWithin verdicts and the relate-consumption record equal the single-surface baselines; the CLI combined arm `build → tessellate → check` is byte-identical to today; `realize_for_check → tessellate → check` still sees the relate facts (#5415) | ε |
 | B-ζ1 | consumer (GUI) | hover after a slider tick | a param whose preview value makes a downstream cell Undef | after `preview_parameter`, `build_values`' cause for that cell names the edited state's origin; before ζ it names the pre-edit cause or none | ζ |
 | B-ζ2 | producer | edit-path classification equivalence | ≥ 5 fixtures × edit sequences, capture on | after each edit the cause map equals a cold `eval` of the edited values' map | ζ |
-| B-ζ3 | producer (#7038) | failed solve on cached/edit paths | an auto whose solve fails | `SolveFailed { detail }` on `eval_cached` and `edit_param`, never `AwaitingSolve` | ζ |
+| B-ζ3 | producer (#7038) | failed solve on cached/edit paths | an auto whose solve fails | `SolveFailed { detail }` on `edit_param`, never `AwaitingSolve` (no `eval_cached` arm: gap-fill K3-D1, 2026-10-16) | ζ |
 | B-η1 | both | vanished purpose | activate a let-bearing purpose; re-eval a source without it; deactivate | values and diagnostics equal a never-activated engine's; no orphan entry | η |
 | B-η2 | consumer (CLI) | purpose regression floor | the `reify check --purpose` CLI tests | unchanged output | η |
 | B-θ1 | consumer (GUI) | no stale prune record | slider edit, then whole-file reload | `build_gui_state` and the debug engine state carry no demand-prune record | θ |
@@ -702,8 +704,9 @@ Labels are Greek; task ids were assigned at decompose (2026-10-14) and are backf
     - The engine holds `config`, exposed read-only as `Engine::config(&self) -> &EngineConfig`, and the transitional constructors resolve from `ConfigSources::from_process(None)`.
     - The GUI (post-#8937 `engine/persistent_cache.rs`; the preset in the src-tauri library) resolves through the same call, sets its engine's persistent cache (R3) and sweeps that directory.
     - Add `EngineKnobIgnored`.
-  - **Signal.** B-α1, B-α2, B-α3; the existing `configured_eval_engine_wires_cache_dir` and `cache_dir_cli_override_replaces_configured_dir` green; row `engine-env-read` at 1; `engine-free-engine-config` at 0.
-  - **Keys.** fk-4fa7bda0085b. Medium.
+    - A config-file resolver error (`CacheError::EmptyDir`, a user/project config TOML parse failure) becomes one coded Warning on `ResolvedConfig.diagnostics` (§5.2); delete the stale "Config-file layers are deliberately not plumbed in" doc on `resolve_cache_root` with the move. *(Added 2026-10-16, gap-fill K9-D6.)*
+  - **Signal.** B-α1, B-α2, B-α3, B-α4; the existing `configured_eval_engine_wires_cache_dir` and `cache_dir_cli_override_replaces_configured_dir` green; row `engine-env-read` at 1; `engine-free-engine-config` at 0.
+  - **Keys.** fk-4fa7bda0085b, fk-7199821bfd6b (gap-fill K9-D6). Medium.
   - **Deps.** #8687, #8862, #8869, #8872, #8937.
 - **β #9037 — Registration posture; `Registrations`; severity reads the posture.**
   - **Work.** Add `registrations.rs` per §5.4; the collaborators, registries and hooks move into `Registrations`; `soft_no_trampoline_diagnostic` reads the posture; `Engine::posture()`.
@@ -765,7 +768,7 @@ Labels are Greek; task ids were assigned at decompose (2026-10-14) and are backf
   - **Keys.** none (`x_finding_part` fk-800d61acd5d0, closed by λ). INV: INV-BUILD-1. **High.**
   - **Deps.** γ₁, #8862, #8869, #8872, #9017, #9021.
 - **ζ #9044 — Undef causes beside the snapshot; `EvalArtifacts`; Snapshot docs (R4).**
-  - **Work.** Add `eval_artifacts.rs` per §5.6, with the declared-cell set captured at eval. Re-classify on `eval_cached` and `edit_param`. Wire #7038's capture. Delete `set_capture_undef_causes`. Correct the Snapshot docs.
+  - **Work.** Add `eval_artifacts.rs` per §5.6, with the declared-cell set captured at eval. Re-classify on `edit_param` (not on `eval_cached`: gap-fill K3-D1, 2026-10-16). Wire #7038's capture on `edit_param`. Delete `set_capture_undef_causes`. Correct the Snapshot docs.
   - **Signal.** B-ζ1, B-ζ2, B-ζ3; rows `undef-cause-field`, `undef-capture-setter`(-gui) and `engine-free-eval-artifacts` at 0.
   - **Keys.** fk-8250a05a9a10, fk-d2c64e9d3868. Subsumes #7038. INV: INV-SF-1 (correct provenance, not a status flip). Medium.
   - **Deps.** γ₁, #8691, #8862.
@@ -929,3 +932,19 @@ Labels are Greek; task ids were assigned at decompose (2026-10-14) and are backf
 2. **Project-directory rule** for `ConfigSources::from_process` (α). The CLI uses the process cwd. The GUI could use the cwd or the opened file's directory. Suggested: the process cwd for both, so B-α1 compares like with like. A per-file project config is a follow-up.
 3. **`EngineKnobIgnored` wording and severity** (α). Suggested: Warning, naming the variable and the value it fell back to.
 4. **`DispatchAttribution` ordering** (θ). Suggested: `BTreeMap` for deterministic debug JSON; key names unchanged.
+
+## Gap-fill amendments (2026-10-16)
+
+Rulings from Leo's attended gap-fill sitting (`plans/gap-fill-deliberation-reify-20261016.md`). Earlier lines changed in place carry an inline *(Amended/Added 2026-10-16 …)* marker.
+
+- **K9-D6 — persistent-cache resolution: one error channel, and #8464 re-sequenced behind α** (§K9-D6; human ruling B, re-rules the 2026-10-10 #8464 decoupling; key fk-7199821bfd6b, review-reify-20261015).
+  - **§5.2 Rules:** new bullet — a config-file resolver error (`CacheError::EmptyDir`, a TOML parse failure in the user or project config) becomes one coded Warning on `ResolvedConfig.diagnostics`, printed by front ends. `REIFY_CACHE_MAX_BYTES` errors keep the DEBUG rule. The stale "Config-file layers are deliberately not plumbed in" doc on `resolve_cache_root` is deleted with the move.
+  - **§6:** new boundary row **B-α4** — `[cache] dir = ""` in the user config prints the warning on `reify eval` and in the GUI, and evaluation proceeds without a cache.
+  - **§9 α #9036:** the work list gains the config-file Warning, the signal gains B-α4, and the keys gain fk-7199821bfd6b. α's delivered checks are unchanged.
+  - **Out-of-batch edge:** DC-ρ′ #8464 now depends on α #9036, so the GUI installs its persistent cache only through the one layered resolver (B-α1/B-α2). Whatever α does not deliver stays #8464's. If nothing remains when α lands, #8464 is cancelled with `x_subsumed_by` #9036. The false premise in #8464 and DC-ρ #6799 ("the GUI already calls the shared config-crate resolver, which is the same pipeline") is corrected in both: the GUI builds `CacheResolverInputs` with `user_config: None, project_config: None`.
+- **K3-D1 — `eval_cached` reduced to `replay_last_eval`** (§K3-D1; key fk-2bec945fda6e). S4's new leaf φ (`cell-eval-transaction-closure.md` §Gap-fill amendments) deletes `eval_cached` and `dispatch_merged_cluster_solve_cached`. In this PRD:
+  - **§5.6:** only `edit_param` re-classifies; `eval_cached` is not wired; `declared` is captured by `eval` only; #7038's `record_failed_autos` wiring is on `edit_param`.
+  - **B-ζ3:** asserts `SolveFailed` on `edit_param` only.
+  - **§9 ζ #9044:** text amended likewise.
+  - Not amended (the record does not order it): §5.8's `EngineLineage` sentence on `eval_cached`'s snapshot-only re-stamp allowlist entry. That entry becomes dead when φ lands.
+

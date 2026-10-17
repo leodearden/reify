@@ -163,6 +163,42 @@ tasks:
           pattern: "fn with_limits\\("
           paths: ["crates/reify-eval/src/warm_pool.rs"]
           expect: present
+  - label: "S13-κ"
+    task_id: 9297
+    title: "Op-kind dispatch total by type: exhaustive match fns replace the locked (Kind, fn) tables"
+    capabilities:
+      - name: "dispatch-lock-macro-deleted"
+        binding: "grep at main c7bbfe2519 — macro_rules! lock_dispatch_table in geometry_ops.rs plus 7 lock lines (8 matches in crates/reify-eval); gap-fill K4-D4 (plans/gap-fill-deliberation-reify-20261016.md), fk-fe5ac99ce241"
+        verdict: PASS
+        delivered_check:
+          kind: grep
+          pattern: "lock_dispatch_table"
+          paths: ["crates/reify-eval"]
+          expect: absent
+      - name: "uniqueness-guard-deleted"
+        binding: "grep — mod dispatch_table_uniqueness; declared in geometry_ops.rs today (δ re-points it as a move)"
+        verdict: PASS
+        delivered_check:
+          kind: grep
+          pattern: "mod dispatch_table_uniqueness"
+          paths: ["crates/reify-eval/src"]
+          expect: absent
+      - name: "census-literal-deleted"
+        binding: "grep — DOCUMENTED_KIND_FAMILY_CENSUS = 53 in compile_geometry_op_characterization.rs (2 matches)"
+        verdict: PASS
+        delivered_check:
+          kind: grep
+          pattern: "DOCUMENTED_KIND_FAMILY_CENSUS"
+          paths: ["crates/reify-eval"]
+          expect: absent
+      - name: "lookup-is-total"
+        binding: "grep — 7 'no registered compiler for' runtime errors in geometry_ops.rs today; a total match leaves no lookup miss"
+        verdict: PASS
+        delivered_check:
+          kind: grep
+          pattern: "no registered compiler for"
+          paths: ["crates/reify-eval/src"]
+          expect: absent
   - label: "S13-ι"
     task_id: 8754
     title: "PRD close: stamp SHIPPED, freeze header, LIVE/AS-AUTHORED map"
