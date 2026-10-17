@@ -170,7 +170,9 @@ pub(crate) fn ctx_with<'a>(
 }
 
 /// The solve-invariant inputs that turn a trial vector `x` into the
-/// [`ValueMap`] the solver evaluates at — see [`build_trial_values`].
+/// [`ValueMap`] the solver evaluates at.  The solver's own trial-point builder
+/// and [`JacobianModel`](crate::JacobianModel) both read it, so a Jacobian is
+/// taken at the point the solver stands on.
 #[derive(Clone, Copy)]
 pub struct TrialModel<'a> {
     /// The autos `x` binds, positionally: `x[i]` is `auto_params[i]`.
@@ -186,7 +188,7 @@ pub struct TrialModel<'a> {
     /// trial point.
     pub functions: &'a [CompiledFunction],
     /// `@optimized` compute-dispatch hook (task #4880). `None` on every legacy
-    /// path, which makes [`ctx_with`] degenerate to `EvalContext::new`. `Some(d)`
+    /// path, which evaluates in a plain `EvalContext::new`. `Some(d)`
     /// lets an `@optimized` call (e.g. `solve_elastic_static(..)`) resolve to a
     /// REAL value at every trial point instead of body-evaluating to
     /// `Value::Undef`.
