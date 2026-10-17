@@ -54,5 +54,6 @@ layout-default-import-debug | DEFAULT_[A-Z_]+(WIDTH|HEIGHT|COLLAPSED) | gui/src/
 gc-inline-gen-layout | touch .*target\.gen\.1\.lock | tests/infra/test_warm_lane_gc.sh | 1 | ν #8721
 # gc-inline-seed-stub: every test_warm_lane_gc.sh seed stub is printed by a
 # named *_seed_stub_body emitter and redirected by its block, so no line writes
-# a heredoc straight into a *SEED_STUB file.
-gc-inline-seed-stub | > *"?[$][{]?[A-Z0-9_]*SEED_STUB[}]?"? *<< | tests/infra/test_warm_lane_gc.sh | 0 | ν #8721
+# a heredoc straight into a *SEED_STUB file, whichever of the redirect and the
+# heredoc comes first.
+gc-inline-seed-stub | > *"?[$][{]?[A-Z0-9_]*SEED_STUB[}]?"? *<<|<<.*> *"?[$][{]?[A-Z0-9_]*SEED_STUB | tests/infra/test_warm_lane_gc.sh | 0 | ν #8721
