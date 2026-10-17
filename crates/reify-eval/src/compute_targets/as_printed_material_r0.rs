@@ -61,9 +61,12 @@ use crate::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
 /// Returns [`ComputeOutcome::Completed`] with a `Value::Field { source:
 /// AsPrintedZones }`. Malformed G-code or a missing / malformed FDMProcess
 /// degrades honestly to a `Value::Undef`-lambda field (every sample returns
-/// `Undef`) rather than panicking — mirroring the R-fast `degraded_field`. A
-/// numeric FDMProcess field of the wrong dimension is
-/// [`ComputeOutcome::Failed`], exactly as on the R-fast rung.
+/// `Undef`) rather than panicking — mirroring the R-fast `degraded_field`; a
+/// mistyped `walls`, `top_bottom_layers` or `build_direction` degrades the
+/// same way. A present numeric FDMProcess field the reader refuses — a number
+/// of the wrong dimension or a value that is not a number at all — is
+/// [`ComputeOutcome::Failed`] with that field's `DimensionedArgRejected` Error,
+/// exactly as on the R-fast rung.
 pub fn as_printed_material_r0_trampoline(
     value_inputs: &[Value],
     _realization_inputs: &[RealizationReadHandle],
@@ -85,7 +88,8 @@ pub fn as_printed_material_r0_trampoline(
 
 /// Build the R0 `AsPrintedZones` material field: `Ok(None)` if any required
 /// input is missing / malformed (caller degrades to [`degraded_field`]), `Err`
-/// if a numeric FDMProcess field has the wrong dimension.
+/// if a present numeric FDMProcess field is refused — a number of the wrong
+/// dimension or a value that is not a number at all.
 fn build_r0_field(value_inputs: &[Value]) -> Result<Option<Value>, FieldRejection> {
     // value_inputs = [gcode String, FDMProcess, AsPrintedOptions].
     let Some(process) = value_inputs.get(1).and_then(struct_data) else {
