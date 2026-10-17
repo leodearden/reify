@@ -456,8 +456,8 @@ fn digit_run_id(bytes: &[u8], start: usize) -> Option<(usize, u32)> {
     (id >= 1).then_some((end, id))
 }
 
-/// §8.2 canonical cite spans: every [`cite_occurrences`] cite (`#` + 1..=5
-/// digits, value ≥1) that is NOT a PRD-relative index, yielded as
+/// §8.2 canonical cite spans: every [`cite_occurrences`] cite (`#` + a
+/// [`digit_run_id`]) that is NOT a PRD-relative index, yielded as
 /// `(head, end, id)` in source order.
 ///
 /// A `#N` that [`prd_relative_cite`] recognises names a position inside a PRD
@@ -642,19 +642,8 @@ fn legacy_task_cite_at(bytes: &[u8], head: usize) -> Option<(usize, u32)> {
     if !matches!(bytes.get(sep), Some(b' ' | b'-' | b'_')) {
         return None;
     }
-    let digits = sep + 1;
-    let end = digits
-        + bytes[digits..]
-            .iter()
-            .take_while(|b| b.is_ascii_digit())
-            .count();
-    if !(1..=5).contains(&(end - digits)) || bytes.get(end).is_some_and(|&b| is_word_byte(b)) {
-        return None;
-    }
-    let id = bytes[digits..end]
-        .iter()
-        .fold(0u32, |acc, &d| acc * 10 + u32::from(d - b'0'));
-    (id >= 1).then_some((end, id))
+    let (end, id) = digit_run_id(bytes, sep + 1)?;
+    (!bytes.get(end).is_some_and(|&b| is_word_byte(b))).then_some((end, id))
 }
 
 // -----------------------------------------------------------------------
@@ -3141,9 +3130,10 @@ mod tests {
             let canonical: Vec<u32> = cite_occurrences(&format!("// see #{digits} here"))
                 .map(|(_, _, id)| id)
                 .collect();
-            let legacy: Vec<u32> = legacy_task_cite_occurrences(&format!("// see task {digits} here"))
-                .map(|(_, _, id)| id)
-                .collect();
+            let legacy: Vec<u32> =
+                legacy_task_cite_occurrences(&format!("// see task {digits} here"))
+                    .map(|(_, _, id)| id)
+                    .collect();
             assert_eq!(canonical, Vec::from_iter(want), "#{digits}");
             assert_eq!(legacy, canonical, "task {digits}");
         }
