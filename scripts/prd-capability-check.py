@@ -34,7 +34,9 @@ refuses any probe that would run yet could prove nothing.  Those rules are
 stated once, in tests/prd-gate/README.md, and each is one validator that
 load_probe_set() calls.
 
-Probe kinds and dispatch:
+Probe kinds and dispatch (whatever the kind, a fixture that does not exist when
+the probe launches makes the observation INDETERMINATE → UNPROVABLE; the probe
+still runs, so its evidence is still recorded):
     grammar  — `tree-sitter parse --quiet <fixture>` (CWD = tree-sitter-reify/)
                exit 0 → PRESENT (no parse errors); exit 1 with ERROR node → ABSENT
                exit 1 with "Failed to load language" → HARNESS ERROR (not a real absent)
@@ -59,7 +61,8 @@ Probe kinds and dispatch:
 Verdicts:
     PASS          — observed matches expected
     FAIL          — observed contradicts expected
-    UNPROVABLE    — observation is INDETERMINATE (only possible for ir and value)
+    UNPROVABLE    — observation is INDETERMINATE (ir and value, or any kind whose
+                    fixture did not exist when the probe launched)
     HARNESS_ERROR — probe tool error: missing binary, grammar load failure, etc.
                     Emitted verbatim in both text and --json output; always triggers exit 70.
 
@@ -90,7 +93,7 @@ import stat
 import subprocess
 import sys
 import tempfile
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from typing import Any, Dict, FrozenSet, List, Optional, Tuple
 
@@ -1051,6 +1054,10 @@ def observe_with_evidence(
 ) -> Tuple[str, Optional[ValueObservation]]:
     """Determine observation (PRESENT/ABSENT/INDETERMINATE or _HARNESS_ERROR).
 
+    Every kind, before its own rules:
+        run.harness_failure set → _HARNESS_ERROR
+        fixture absent at launch (run.fixture_present False) → INDETERMINATE
+
     grammar:
         exit 0 → PRESENT (no parse errors)
         exit 1 without "Failed to load language" in stderr → ABSENT
@@ -1103,6 +1110,14 @@ def observe_with_evidence(
         return _HARNESS_ERROR, None
     if _PROBE_TIMEOUT_SENTINEL in run.stderr:
         return _HARNESS_ERROR, None
+
+    # Ahead of any kind dispatch, and in this order: the machinery failing is
+    # the louder fact, and a probe with no target cannot prove anything, so an
+    # absent fixture is INDETERMINATE whatever the tool printed or returned.
+    if run.harness_failure is not None:
+        return _HARNESS_ERROR, None
+    if not run.fixture_present:
+        return INDETERMINATE, None
 
     if probe_kind == "grammar":
         if run.exit_code == 0:
@@ -1166,6 +1181,8 @@ class Result:
                     constraint it failed.  None on every other kind, and on a
                     value probe that never produced a value (non-zero exit), so
                     the existing kinds' record shape is unchanged.
+        fixture_present — whether the fixture existed when the probe launched
+        harness_failure — how the machinery failed, or None
     """
     probe: Probe
     command: List[str]
@@ -1175,6 +1192,8 @@ class Result:
     observation: str
     verdict: str
     value_observation: Optional[ValueObservation] = None
+    fixture_present: bool = True
+    harness_failure: Optional[HarnessFailure] = None
 
     def as_probe_run(self) -> ProbeRun:
         """The captured evidence, viewed again as the ProbeRun that produced it.
@@ -1194,6 +1213,13 @@ class Result:
 # build_command() — construct probe argv from probe kind and fixture
 # ---------------------------------------------------------------------------
 
+def _absolute_fixture(probe: Probe, repo_root: str) -> str:
+    """probe.fixture verbatim if absolute, else joined onto repo_root."""
+    if os.path.isabs(probe.fixture):
+        return probe.fixture
+    return os.path.join(repo_root, probe.fixture)
+
+
 def build_command(probe: Probe, repo_root: Optional[str] = None) -> List[str]:
     """Construct the exact command argv for a probe.
 
@@ -1209,7 +1235,7 @@ def build_command(probe: Probe, repo_root: Optional[str] = None) -> List[str]:
     The fixture is always the final argv token; fixture_argument() reads it back.
 
     Fixture-path resolution: build_command() resolves probe.fixture to an
-    absolute path via os.path.join(repo_root, probe.fixture) so that the path
+    absolute path via _absolute_fixture() so that the path
     survives any CWD change — in particular, grammar probes run with
     CWD=<repo_root>/tree-sitter-reify/ and a relative fixture would resolve
     incorrectly under that directory.  If probe.fixture is already absolute it
@@ -1231,9 +1257,7 @@ def build_command(probe: Probe, repo_root: Optional[str] = None) -> List[str]:
     root = repo_root if repo_root is not None else _find_repo_root()
 
     # Resolve fixture to absolute path so it survives CWD changes.
-    fixture = probe.fixture
-    if not os.path.isabs(fixture):
-        fixture = os.path.join(root, fixture)
+    fixture = _absolute_fixture(probe, root)
 
     if probe.probe_kind == "grammar":
         ts_bin = _resolve_tree_sitter_bin()
@@ -1317,7 +1341,8 @@ def run_probe(probe: Probe, timeout: Optional[float] = None) -> ProbeRun:
         timeout: Seconds to wait before killing the probe, or None for no bound.
 
     Returns:
-        A ProbeRun with exit_code, stdout, and stderr from the subprocess.
+        A ProbeRun with exit_code, stdout, and stderr from the subprocess, and
+        fixture_present measured on the argv's fixture just before launch.
         If the probe could not be launched or exceeded `timeout`, the matching
         sentinel is embedded in stderr so that observe() can classify it as a
         harness error.
@@ -1332,6 +1357,10 @@ def run_probe(probe: Probe, timeout: Optional[float] = None) -> ProbeRun:
     env: Optional[Dict[str, str]] = None
     if probe.probe_kind == "grammar":
         cwd = os.path.join(repo_root, "tree-sitter-reify")
+
+    # Measured on the very path the argv carries, immediately before launch.
+    # The probe launches regardless, so its evidence is recorded either way.
+    fixture_present = os.path.isfile(_absolute_fixture(probe, repo_root))
 
     try:
         if probe.probe_kind == "grammar":
@@ -1353,8 +1382,10 @@ def run_probe(probe: Probe, timeout: Optional[float] = None) -> ProbeRun:
                 exit_code=proc.returncode,
                 stdout=proc.stdout,
                 stderr=proc.stderr,
+                fixture_present=fixture_present,
             )
-        return _run_bounded(cmd, cwd=cwd, timeout=timeout, env=env)
+        bounded = _run_bounded(cmd, cwd=cwd, timeout=timeout, env=env)
+        return replace(bounded, fixture_present=fixture_present)
     except OSError as exc:
         # Represent rather than propagate: callers run this at import time in the
         # test harness, where a raise costs the whole suite instead of one skip.
@@ -1362,6 +1393,7 @@ def run_probe(probe: Probe, timeout: Optional[float] = None) -> ProbeRun:
             exit_code=127,
             stdout="",
             stderr=f"{_BINARY_NOT_FOUND_SENTINEL}: {exc}",
+            fixture_present=fixture_present,
         )
 
 
@@ -1629,6 +1661,8 @@ def evaluate(probe: Probe, runner: Any = None) -> Result:
         observation=obs,
         verdict=verd,
         value_observation=value_obs,
+        fixture_present=run.fixture_present,
+        harness_failure=run.harness_failure,
     )
 
 
@@ -1705,9 +1739,13 @@ _HARNESS_ERROR_STDERR_CAP = 4000
 def _json_record(r: Result) -> Dict[str, Any]:
     """Project a Result into the --json record shape.
 
-    value_observation is OMITTED rather than set to null on the other kinds, so
-    existing consumers see exactly the record they always saw.
+    fixture is probe.fixture as written in the probe set; fixture_present and
+    harness_failure (null, or {kind, detail, cache_denied}) are the typed probe
+    outcome.  docs/prds/v0_6/prd-probe-gate-typed-outcomes.md §5.1 is the
+    contract.  value_observation is OMITTED rather than set to null on the
+    other kinds, so their record shape is unchanged.
     """
+    failure = r.harness_failure
     record = {
         "capability": r.probe.capability,
         "probe_kind": r.probe.probe_kind,
@@ -1716,6 +1754,13 @@ def _json_record(r: Result) -> Dict[str, Any]:
         "exit_code": r.exit_code,
         "stdout": r.stdout,
         "stderr": r.stderr,
+        "fixture": r.probe.fixture,
+        "fixture_present": r.fixture_present,
+        "harness_failure": None if failure is None else {
+            "kind": failure.kind.value,
+            "detail": failure.detail,
+            "cache_denied": failure.cache_denied,
+        },
     }
     if r.value_observation is not None:
         record["value_observation"] = {
@@ -1866,7 +1911,8 @@ def main(argv: List[str]) -> int:
                 stderr_text = r.stderr[:200] if r.stderr else "(empty)"
             sys.stdout.write(f"[{r.verdict}] {r.probe.capability}\n")
             sys.stdout.write(f"  kind:      {r.probe.probe_kind}\n")
-            sys.stdout.write(f"  fixture:   {r.probe.fixture}\n")
+            absent = "" if r.fixture_present else "  (not present when probed)"
+            sys.stdout.write(f"  fixture:   {r.probe.fixture}{absent}\n")
             sys.stdout.write(f"  command:   {cmd_str}\n")
             sys.stdout.write(f"  exit_code: {r.exit_code}\n")
             sys.stdout.write(f"  stdout:    {stdout_preview}\n")
