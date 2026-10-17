@@ -404,16 +404,15 @@ fn prd_relative_cite(bytes: &[u8], cite_start: usize, id: u32) -> bool {
 ///
 /// [`has_canonical_cite`], [`extract_cites`] (both via
 /// [`canonical_cite_occurrences`]) and [`has_malformed_cite`]'s `#N` pass are
-/// all expressed over this one iterator, so the grammar they share —
-/// a run of 1..=5 ASCII digits (a 6-digit number is *not* matched on its
-/// 5-digit prefix) whose value is ≥1 (`#0`/`#00` is not a task id) — holds by
-/// CONSTRUCTION. It was previously three hand-rolled copies required to stay
-/// lock-step by three doc comments, which is a promise rather than a guarantee.
-/// The three callers now differ in exactly one thing: what each does with a
-/// [`prd_relative_cite`] occurrence — skip it, drop it, or report it.
+/// all expressed over this one iterator, and the id after the `#` is read by
+/// [`digit_run_id`], so the grammar they share holds by CONSTRUCTION. It was
+/// previously three hand-rolled copies required to stay lock-step by three doc
+/// comments, which is a promise rather than a guarantee. The three callers now
+/// differ in exactly one thing: what each does with a [`prd_relative_cite`]
+/// occurrence — skip it, drop it, or report it.
 ///
-/// A consumed digit run is skipped whole; a malformed run (a bare `#`, `#abc`,
-/// `#123456`) advances one byte, so a `#N` immediately after it is still seen.
+/// A malformed run (a bare `#`, `#abc`, `#123456`) advances one byte, so a
+/// `#N` immediately after it is still seen.
 ///
 /// The G-allow owner-cite lane deliberately does NOT scan through here — see
 /// [`extract_g_allow_owner_cites`], which carries its own exemption grammar.
@@ -422,31 +421,39 @@ fn cite_occurrences(line: &str) -> impl Iterator<Item = (usize, usize, u32)> + '
     let mut i = 0;
     std::iter::from_fn(move || {
         while i < bytes.len() {
-            if bytes[i] != b'#' {
-                i += 1;
-                continue;
-            }
-            let mut j = i + 1;
-            while j < bytes.len() && bytes[j].is_ascii_digit() {
-                j += 1;
-            }
-            if !(1..=5).contains(&(j - (i + 1))) {
-                i += 1;
-                continue;
-            }
-            let at = i;
-            i = j; // skip past the consumed digit run
-            // A 1..=5-digit ASCII run always fits in u32 (max 99999), so the
-            // parse cannot fail. `#0`/`#00` parses to 0 — task ids start at 1,
-            // so it is not a cite and is dropped here for every caller.
-            if let Ok(id) = line[at + 1..j].parse::<u32>()
-                && id >= 1
+            let head = i;
+            i += 1;
+            if bytes[head] == b'#'
+                && let Some((end, id)) = digit_run_id(bytes, head + 1)
             {
-                return Some((at, j, id));
+                i = end;
+                return Some((head, end, id));
             }
         }
         None
     })
+}
+
+/// §8.2 task-id digit run — the ONE id grammar behind both cite spellings
+/// ([`cite_occurrences`]' `#N`, [`legacy_task_cite_at`]'s `task N`). The
+/// maximal ASCII digit run starting at `start`, as `(end, id)`, when it is
+/// 1..=5 digits long and its value is ≥1: a 6-digit number is *not* matched on
+/// its 5-digit prefix, and `0`/`00` is not a task id (ids start at 1). Each
+/// spelling adds its own boundary rules around the run, never inside it.
+fn digit_run_id(bytes: &[u8], start: usize) -> Option<(usize, u32)> {
+    let len = bytes
+        .get(start..)?
+        .iter()
+        .take_while(|b| b.is_ascii_digit())
+        .count();
+    if !(1..=5).contains(&len) {
+        return None;
+    }
+    let end = start + len;
+    let id = bytes[start..end]
+        .iter()
+        .fold(0u32, |acc, &d| acc * 10 + u32::from(d - b'0'));
+    (id >= 1).then_some((end, id))
 }
 
 /// §8.2 canonical cite spans: every [`cite_occurrences`] cite (`#` + 1..=5
@@ -591,7 +598,7 @@ fn has_malformed_cite(line: &str) -> bool {
 
 /// §8.2 legacy `task NNNN` spelling as a RESOLVABLE cite: every `task N`,
 /// `task-N`, `task_N` or `tasks N` (case-insensitive, word-bounded on both
-/// sides, 1..=5 digits, id ≥ 1), yielded as `(head, end, id)` in source order —
+/// sides, `N` per [`digit_run_id`]), yielded as `(head, end, id)` in source order —
 /// `head` the byte offset of the `t`, `end` one past the last digit. Consumed
 /// only by lane δ-C (PRD §8.2, §20).
 ///
@@ -3119,6 +3126,27 @@ mod tests {
         let (h1, e1) = span_of(line, "task 3477");
         let (h2, e2) = span_of(line, "task-3558");
         assert_eq!(legacy_cites(line), vec![(h1, e1, 3477), (h2, e2, 3558)]);
+    }
+
+    #[test]
+    fn canonical_and_legacy_cites_share_one_id_grammar() {
+        for (digits, want) in [
+            ("1", Some(1)),
+            ("007", Some(7)),
+            ("99999", Some(99_999)),
+            ("0", None),
+            ("00", None),
+            ("123456", None),
+        ] {
+            let canonical: Vec<u32> = cite_occurrences(&format!("// see #{digits} here"))
+                .map(|(_, _, id)| id)
+                .collect();
+            let legacy: Vec<u32> = legacy_task_cite_occurrences(&format!("// see task {digits} here"))
+                .map(|(_, _, id)| id)
+                .collect();
+            assert_eq!(canonical, Vec::from_iter(want), "#{digits}");
+            assert_eq!(legacy, canonical, "task {digits}");
+        }
     }
 
     #[test]
