@@ -1217,33 +1217,17 @@ fn emit_arg_type_mismatch(param_type: &Type, arg_ty: &Type, ctx: &mut WalkCtx<'_
     );
 }
 
-/// An example unit literal for `dimension`, spelled in reify's compound-unit
-/// grammar — `"1m"`, `"1m/s^2"`, `"1kg/m^3"`, `"1kg*m^2/s^2"`.
+/// An example unit literal for `dimension`: `"1m"`, `"1m/s^2"`, `"1kg/m^3"`,
+/// `"1Pa"`.
 ///
-/// Composed from [`reify_core::RI_COMPOUND_BASE_SYMBOLS`] — the base symbols
-/// the stdlib-seeded unit registry resolves — rather than looked up in a
-/// per-dimension table, which is what makes the hint unable to rot: every
-/// present and future `NAMED_DIMENSIONS` row is covered uniformly, with no
-/// second list to keep in step. (`si_units.rs`'s `SI_DERIVED_UNITS` was the obvious table and is not
-/// usable: it covers ~25 derived units and misses Length, Mass, Time, Area,
-/// Volume, Density — and Velocity and Acceleration, the two dimensions in this
-/// task's own signal.)
+/// The unit is [`reify_core::ri_compound_unit_expr`]'s, the spelling `.ri`
+/// value emission writes, so the hint and the emitter cannot disagree and every
+/// `NAMED_DIMENSIONS` row is covered with no per-dimension table.
 ///
-/// NOT built from [`DimensionVector`]'s `Display`, which joins with `·` and
-/// emits `^-1`; neither is reify syntax. Positive exponents go to a `*`-joined
-/// numerator and negative ones to `/`-prefixed denominator terms, the shape
-/// `compound_unit_resolution_tests.rs` pins as accepted (`5kN*m`, `9.81m/s^2`,
-/// `7850kg/m^3`, `0.001kg/m/s`).
-///
-/// `None` when no clean literal exists — three cases, all measured against the
-/// round-trip guard rather than guessed:
-/// * a FRACTIONAL exponent (`den() != 1`, e.g. `FractureToughness`'s Pa·m^0.5)
-///   has no unit-literal spelling at all;
-/// * an EMPTY numerator (e.g. `Frequency`, s⁻¹) would need a bare `1/s`, which
-///   reify's grammar reads as a division rather than as a quantity literal;
-/// * a slot [`reify_core::RI_COMPOUND_BASE_SYMBOLS`] marks `None`, i.e. one
-///   whose bare symbol the stdlib does not register as a unit. No slot is
-///   `None` today.
+/// `None` where that emitter declines (see its doc). Also `None` for a
+/// dimension with no positive exponent (`Frequency`, s⁻¹), which the emitter
+/// writes as signed powers (`s^-1`): the hint offers an example only in the
+/// numerator/denominator form.
 ///
 /// Declining is deliberate: an example that does not parse is worse than none,
 /// because the reader would paste it. The round-trip guard in
@@ -1251,45 +1235,10 @@ fn emit_arg_type_mismatch(param_type: &Type, arg_ty: &Type, ctx: &mut WalkCtx<'_
 /// and fails the build if any offered example stops resolving to its own
 /// dimension.
 fn example_unit_literal(dimension: &DimensionVector) -> Option<String> {
-    let mut numerator: Vec<String> = Vec::new();
-    let mut denominator: Vec<String> = Vec::new();
-
-    for (slot, exponent) in dimension.0.iter().enumerate() {
-        if exponent.num() == 0 {
-            continue;
-        }
-        if exponent.den() != 1 {
-            return None;
-        }
-        let symbol = reify_core::RI_COMPOUND_BASE_SYMBOLS[slot]?;
-        let power = exponent.num();
-        let magnitude = power.abs();
-        let term = if magnitude == 1 {
-            symbol.to_owned()
-        } else {
-            format!("{symbol}^{magnitude}")
-        };
-        if power > 0 {
-            numerator.push(term);
-        } else {
-            denominator.push(term);
-        }
-    }
-
-    // MEASURED, not assumed: `structure def S { param x : Frequency = 1/s }`
-    // fails to compile with `unresolved name: s` — with no numerator term to
-    // anchor it, the leading `1` is parsed as a plain number and `/s` as a
-    // division by an identifier, never as a quantity literal.
-    if numerator.is_empty() {
+    if !dimension.0.iter().any(|exponent| exponent.num() > 0) {
         return None;
     }
-
-    let mut literal = format!("1{}", numerator.join("*"));
-    for term in &denominator {
-        literal.push('/');
-        literal.push_str(term);
-    }
-    Some(literal)
+    reify_core::ri_compound_unit_expr(dimension).map(|unit| format!("1{unit}"))
 }
 
 /// The D4-6 migration hint clause appended to a rejection at a DIMENSIONED

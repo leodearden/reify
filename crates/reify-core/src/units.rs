@@ -279,9 +279,8 @@ pub fn ri_emittable_units(dim: &DimensionVector) -> &'static [&'static str] {
 /// emitter then refuses every dimension touching that slot rather than writing
 /// a literal that cannot re-parse.
 ///
-/// Read by `ri_compound_unit_expr` and by reify-compiler's conformance
-/// migration hint, which offers an example literal only for dimensions whose
-/// every slot is `Some`.
+/// Read by `ri_compound_unit_expr`, and through it by reify-compiler's
+/// conformance migration hint.
 pub const RI_COMPOUND_BASE_SYMBOLS: [Option<&'static str>; 10] = [
     Some("m"),   // 0 Length
     Some("kg"),  // 1 Mass

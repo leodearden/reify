@@ -2832,9 +2832,7 @@ fn example_literal_from_hint(message: &str) -> Option<String> {
 ///   `/s` as a division, not as a quantity literal;
 /// * a slot whose base-unit symbol is missing from [`SPELLABLE_BASE_UNITS`].
 ///   [`BASE_UNIT_SYMBOLS`] is the DISPLAY table; being renderable is weaker than
-///   being parseable. Every base symbol is spellable today, so this reason
-///   exempts no row; it stays so a symbol the stdlib stops resolving is named
-///   here rather than rediscovered as a parse failure.
+///   being parseable.
 ///
 /// [`SPELLABLE_BASE_UNITS`] is this test's own reading of the stdlib, kept
 /// deliberately separate from the compiler's. Drift in EITHER direction is
