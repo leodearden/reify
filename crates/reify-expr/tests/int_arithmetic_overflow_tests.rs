@@ -98,6 +98,43 @@ fn int_mul_at_boundary_stays_int() {
     );
 }
 
+// ── Division ─────────────────────────────────────────────────────────────────
+
+#[test]
+fn int_div_overflow_is_undef() {
+    assert_int_binop(BinOp::Div, MIN, -1, Value::Undef);
+}
+
+#[test]
+fn int_div_at_boundary_keeps_semantics() {
+    assert_int_binop(BinOp::Div, 6, 3, Value::Int(2));
+    assert_int_binop(BinOp::Div, 7, 2, Value::Real(3.5));
+    assert_int_binop(BinOp::Div, -7, 2, Value::Real(-3.5));
+    assert_int_binop(BinOp::Div, MIN, 1, Value::Int(MIN));
+    assert_int_binop(BinOp::Div, MIN, 2, Value::Int(-4_611_686_018_427_387_904));
+    assert_int_binop(BinOp::Div, MIN, -2, Value::Int(4_611_686_018_427_387_904));
+    assert_int_binop(BinOp::Div, MAX, -1, Value::Int(-MAX));
+    assert_int_binop(BinOp::Div, 7, 0, Value::Undef);
+}
+
+// ── Remainder ────────────────────────────────────────────────────────────────
+
+#[test]
+fn int_rem_overflow_is_undef() {
+    assert_int_binop(BinOp::Mod, MIN, -1, Value::Undef);
+}
+
+#[test]
+fn int_rem_at_boundary_keeps_semantics() {
+    assert_int_binop(BinOp::Mod, 7, 3, Value::Int(1));
+    assert_int_binop(BinOp::Mod, -7, 3, Value::Int(-1));
+    assert_int_binop(BinOp::Mod, 7, -3, Value::Int(1));
+    assert_int_binop(BinOp::Mod, MAX, -1, Value::Int(0));
+    assert_int_binop(BinOp::Mod, MIN, 1, Value::Int(0));
+    assert_int_binop(BinOp::Mod, MIN, 2, Value::Int(0));
+    assert_int_binop(BinOp::Mod, 7, 0, Value::Undef);
+}
+
 // ── Reaching the Int arm through composite values and the op sink ────────────
 
 #[test]
@@ -108,6 +145,16 @@ fn int_overflow_inside_vector_add_is_undef() {
         eval_binop(BinOp::Add, lhs, rhs),
         Value::Undef,
         "[MAX, 1] + [1, 1] overflows its first component"
+    );
+}
+
+#[test]
+fn int_div_overflow_inside_vector_is_undef() {
+    let numerators = Value::Vector(vec![Value::Int(MIN), Value::Int(2)]);
+    assert_eq!(
+        eval_binop(BinOp::Div, numerators, Value::Int(-1)),
+        Value::Undef,
+        "[MIN, 2] / -1 overflows its first component"
     );
 }
 
