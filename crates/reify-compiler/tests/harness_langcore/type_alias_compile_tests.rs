@@ -1043,6 +1043,24 @@ fn self_recursive_parameterized_alias_does_not_stack_overflow() {
     );
 }
 
+#[test]
+fn nested_parametric_alias_arity_mismatch_names_inner_alias() {
+    let source = r#"
+        type P<T> = List<T>
+        type Q<X> = P<X, X>
+        structure def S {
+            param q : Q<Int> = [1]
+        }
+    "#;
+    let module = compile_source(source);
+    let errs = errors_only(&module);
+    assert!(
+        errs.iter().any(|d| d.message.contains("'P'")
+            && d.message.contains("expects 1 type argument(s), got 2")),
+        "expected an arity error naming P; got: {errs:?}"
+    );
+}
+
 // ─── step-33: module boundary separation — CompiledTypeAlias ───────────────
 
 #[test]

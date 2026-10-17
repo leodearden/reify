@@ -2518,6 +2518,43 @@ pub(crate) fn unresolved_alias_body_name(name: &str, reg: &TypeAliasRegistry) ->
 /// Prevents stack overflow from recursive type aliases like `type A<T> = List<A<T>>`.
 const MAX_ALIAS_INSTANTIATION_DEPTH: usize = 64;
 
+/// Check that `got` type arguments satisfy `alias_entry`'s arity (required
+/// params without defaults up to total params); on violation push the one
+/// arity diagnostic every alias-instantiation path shares, labelled at
+/// `anchor`, and return `false`.
+fn alias_arity_accepts(
+    alias_entry: &TypeAliasEntry,
+    got: usize,
+    anchor: SourceSpan,
+    label: &str,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> bool {
+    let total_params = alias_entry.type_params.len();
+    let required_params = alias_entry
+        .type_params
+        .iter()
+        .take_while(|p| p.default.is_none())
+        .count();
+    if (required_params..=total_params).contains(&got) {
+        return true;
+    }
+    diagnostics.push(
+        Diagnostic::error(format!(
+            "type alias '{}' expects {}{} type argument(s), got {}",
+            alias_entry.name,
+            if required_params < total_params {
+                format!("{}-", required_params)
+            } else {
+                String::new()
+            },
+            total_params,
+            got
+        ))
+        .with_label(DiagnosticLabel::new(anchor, label)),
+    );
+    false
+}
+
 /// Instantiate a parameterized alias by substituting type arguments.
 ///
 /// Builds a substitution map from param names to concrete types, then
@@ -2549,29 +2586,8 @@ pub(crate) fn resolve_parameterized_alias(
         );
         return None;
     }
-    let total_params = alias_entry.type_params.len();
     let got = type_args.len();
-    let required_params = alias_entry
-        .type_params
-        .iter()
-        .take_while(|p| p.default.is_none())
-        .count();
-
-    if got < required_params || got > total_params {
-        diagnostics.push(
-            Diagnostic::error(format!(
-                "type alias '{}' expects {}{} type argument(s), got {}",
-                alias_entry.name,
-                if required_params < total_params {
-                    format!("{}-", required_params)
-                } else {
-                    String::new()
-                },
-                total_params,
-                got
-            ))
-            .with_label(DiagnosticLabel::new(alias_entry.span, "defined here")),
-        );
+    if !alias_arity_accepts(alias_entry, got, alias_entry.span, "defined here", diagnostics) {
         return None;
     }
 
@@ -3546,18 +3562,18 @@ pub(crate) fn resolve_type_alias_expr_with_subst(
                 && let Some(alias_entry) = alias_registry.lookup(name)
                 && !alias_entry.type_params.is_empty()
             {
-                // Resolve type args with current substitutions applied,
-                // then build inner substitution for the target alias body
-                let total_params = alias_entry.type_params.len();
                 let got = type_args.len();
-                let required_params = alias_entry
-                    .type_params
-                    .iter()
-                    .take_while(|p| p.default.is_none())
-                    .count();
-                if got < required_params || got > total_params {
+                if !alias_arity_accepts(
+                    alias_entry,
+                    got,
+                    use_site.span,
+                    "in this alias body's use",
+                    diagnostics,
+                ) {
                     return None;
                 }
+                // Resolve type args with current substitutions applied,
+                // then build inner substitution for the target alias body
                 let mut inner_subst: HashMap<String, Type> = HashMap::new();
                 for (param, arg_expr) in alias_entry.type_params.iter().zip(type_args.iter()) {
                     let resolved = resolve_type_alias_expr_with_subst(
