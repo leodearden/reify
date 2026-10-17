@@ -17,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from verify_ledger_env import hermetic_env  # noqa: E402  (imported after sys.path manipulation)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+EVENT_LOG_VAR = "REIFY_VERIFY_EVENT_LOG"
 LEAF_GLOB = "for _vt in tests/infra/test_verify_*.sh"
 PROBE_NAME = "test_verify_zz_event_log_probe.sh"
 PROBE_BODY = """\
@@ -27,6 +28,14 @@ if [ -n "${REIFY_VERIFY_EVENT_LOG:-}" ]; then
 fi
 exit "${EVLOG_PROBE_EXIT:-0}"
 """
+
+
+def channelless_env(**overrides):
+    """hermetic_env(), also without an ambient REIFY_VERIFY_EVENT_LOG:
+    AMBIENT_VERIFY_ENV does not list the channel yet."""
+    env = hermetic_env(**overrides)
+    env.pop(EVENT_LOG_VAR, None)
+    return env
 
 
 def git(cwd, *args):
@@ -56,7 +65,7 @@ def selective_leaves(fixture):
     proc = subprocess.run(
         ["bash", "scripts/verify.sh", "test", "--scope", "branch", "--print-plan"],
         cwd=str(fixture),
-        env=hermetic_env(DF_VERIFY_ROLE="task", REIFY_RELEASE_DELTA_SKIP="0"),
+        env=channelless_env(DF_VERIFY_ROLE="task", REIFY_RELEASE_DELTA_SKIP="0"),
         capture_output=True,
         text=True,
         timeout=300,
@@ -97,11 +106,9 @@ class SelectiveInfraEventLogIsolationTests(unittest.TestCase):
         probe_dir = scratch / "probe"
         probe_dir.mkdir()
         channel = scratch / "channel.jsonl"
-        env = hermetic_env(EVLOG_PROBE_DIR=str(probe_dir), **overrides)
+        env = channelless_env(EVLOG_PROBE_DIR=str(probe_dir), **overrides)
         if with_channel:
-            env["REIFY_VERIFY_EVENT_LOG"] = str(channel)
-        else:
-            env.pop("REIFY_VERIFY_EVENT_LOG", None)
+            env[EVENT_LOG_VAR] = str(channel)
         proc = subprocess.run(
             ["bash", "-c", leaf],
             cwd=str(self.fixture),
