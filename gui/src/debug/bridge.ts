@@ -26,7 +26,7 @@ import { describePlacement } from './elementPlacement';
 // ascii base64 data URLs are 1 char ≈ 1 byte, so string length is a valid proxy.
 const MAX_SCREENSHOT_CHARS = 16 * 1024 * 1024;
 
-// resize_panes sets exactly the layout's px rows (its advertised schema's properties).
+// resize_panes sets exactly the layout's px rows.
 const PX_LAYOUT_DIMENSIONS = LAYOUT_DIMENSIONS.filter((d) => d.kind === 'px');
 type PxLayoutKey = (typeof PX_LAYOUT_DIMENSIONS)[number]['key'];
 
