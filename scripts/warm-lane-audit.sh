@@ -43,22 +43,25 @@
 #              state_unknown=… reclaimable=… leaked=… leak_unknown=…
 #              divergent_gib=… free_gib=… budget_gib=… plan_stranded=…
 #              plan_unknown=… plan_rewritten=… plan_mismatch=… stash_entries=…
+#              stash_unknown=…
 #     PINNED   total=… pending=… infra-hold=… blocked=… terminal=… other=…
 #              unknown=…
-#     STASH    total=…
+#     STASH    total=… unknown=…
 #     STASH    entry ref=… branch=… message=…      (one line per entry)
 #
 # HEADROOM's occupancy figures are an ORDERED, mutually exclusive PARTITION --
 # `resident = live + pinned + quarantined + free`, with `free` the residue --
-# while `assigned`, `state_unknown`, the four `plan_*` fields and
-# `stash_entries` are CROSS-CUTS never added into it (see
+# while `assigned`, `state_unknown`, the four `plan_*` fields,
+# `stash_entries` and `stash_unknown` are CROSS-CUTS never added into it (see
 # the counter block at the resident walk, which is where that identity is
 # enforced). PINNED breaks `pinned` down by WHY each pin is held: a fixed,
 # closed bucket vocabulary in a fixed order, always emitted, zeros included
 # (JSON: a sibling "pinned_by_status" object whose total is headroom.pinned).
 # STASH is the shared stash stack -- HOST-scoped, not per-lane, since refs/stash
 # is one ref in the shared common git dir -- always emitted, zeros included
-# (JSON: headroom.stash_entries plus a sibling "stash_stack" array). Read-only
+# (JSON: headroom.stash_entries / headroom.stash_unknown plus a sibling
+# "stash_stack" array). stash_unknown=1 marks a stack that could not be
+# measured, so its stash_entries=0 is not an all-clear. Read-only
 # and NON-GATING, like everything else here; see the emit block for why.
 #
 # Why the columns are split this way, the two pool misreads that motivated it,
@@ -97,9 +100,11 @@
 #                                         stack (default: the first resident
 #                                         lane that resolves as a git worktree
 #                                         -- refs/stash is shared, so one query
-#                                         answers for the pool). Unresolvable or
-#                                         a failed query => stash_entries=0
-#                                         plus a stderr note; still exit 0.
+#                                         answers for the pool). Unresolvable,
+#                                         not a git worktree, or a failed query
+#                                         => stash_entries=0 with
+#                                         stash_unknown=1, plus a stderr note
+#                                         naming the cause; still exit 0.
 #   REIFY_WARM_LANE_AUDIT_RESIDUE_GLOB   Glob (or comma-separated globs)
 #                                         matching "residue" dirty paths that
 #                                         don't count as unrecoverable WIP
@@ -265,6 +270,7 @@ Usage: $(basename "$0") [--mount DIR] [--format table|json] [--status-cmd CMD]
               \`assigned\`, \`state_unknown\` and \`plan_stranded\` /
               \`plan_unknown\` / \`plan_rewritten\` / \`plan_mismatch\` are
               cross-cuts, not partition members: they may overlap any bucket.
+              So are \`stash_entries\` / \`stash_unknown\` (1 = not measured).
               plan_rewritten
               counts routine rebases and is expected to DOMINATE a healthy
               pool — it is emitted so the stranded figure is readable in
