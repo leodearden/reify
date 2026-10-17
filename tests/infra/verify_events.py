@@ -57,7 +57,7 @@ def _parse_line(raw):
         record = json.loads(raw.decode("utf-8", "surrogateescape"))
     except ValueError:
         return None
-    if isinstance(record, dict) and record.get("v") == SCHEMA_VERSION:
+    if isinstance(record, dict) and type(record.get("v")) is int and record["v"] == SCHEMA_VERSION:
         return record
     return None
 

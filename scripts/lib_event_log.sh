@@ -261,9 +261,10 @@ event_log_emit_slot_timeout() {
 
 # run_finish fills failed, then flaky, then skipped from ONE budget; once a
 # list drops a name every later name is dropped too, so the kept names are a
-# prefix of failed‖flaky‖skipped and names_omitted counts the rest. A count
-# that is not an integer, or exceeds the arguments left, encodes that list and
-# every later one as [] rather than mis-slicing.
+# prefix of failed‖flaky‖skipped and names_omitted counts the rest. A count is
+# read as every int argument is, so a leading zero is decimal, never octal. A
+# count that is not a non-negative integer, or exceeds the arguments left,
+# encodes that list and every later one as [] rather than mis-slicing.
 event_log_emit_run_finish() {
     [ -n "${REIFY_VERIFY_EVENT_LOG:-}" ] || return 0
     local LC_ALL=C
@@ -279,8 +280,8 @@ event_log_emit_run_finish() {
         ",\"failed\":[],\"flaky\":[],\"skipped\":[],\"interrupted\":$_interrupted,\"names_omitted\":}"
     for _list in failed flaky skipped; do
         _names=()
-        _count="${1-}"
-        if [ "$_malformed" -eq 0 ] && [[ $_count == [0-9]* && $_count != *[!0-9]* ]] \
+        _event_json_int _count "${1-}"
+        if [ "$_malformed" -eq 0 ] && [[ $_count == [0-9]* ]] \
             && [ "${#_count}" -le 9 ] && [ "$_count" -lt $# ]; then
             _names=("${@:2:_count}")
             shift $(( _count + 1 ))

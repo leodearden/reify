@@ -190,7 +190,13 @@ class ReaderTests(unittest.TestCase):
         path = self.files.write(
             "mixed.jsonl",
             ONE_RUN[:2]
-            + ["this is not json", "[1, 2]", json.dumps({"v": 2, "event": "run_start"})]
+            + [
+                "this is not json",
+                "[1, 2]",
+                json.dumps({"v": 2, "event": "run_start"}),
+                json.dumps({"v": True, "event": "run_start"}),
+                json.dumps({"v": 1.0, "event": "run_start"}),
+            ]
             + ONE_RUN[2:],
             tail=b'{"v":1,"ts_ns":1,"pid":1,"event":"run_fin',
         )
@@ -199,7 +205,7 @@ class ReaderTests(unittest.TestCase):
             [r["event"] for r in events.records],
             ["run_start", "member_start", "member_finish", "slot_timeout", "run_finish"],
         )
-        self.assertEqual(events.skipped_lines, 4)
+        self.assertEqual(events.skipped_lines, 6)
         self.assertTrue(events.channel_present)
 
     def test_records_without_run_start_are_channel_absent(self):
@@ -580,6 +586,41 @@ class EncoderTests(unittest.TestCase):
                         self.assertEqual(kept_names, given[: len(kept_names)], field)
                     else:
                         self.assertEqual(kept_names, [], field)
+
+    def emit_run_finish_strictly(self, *args):
+        result = lib_bash(
+            'event_log_emit_run_finish "$@"; echo next-command-ran',
+            *args,
+            env=self.env,
+            strict=True,
+        )
+        self.assertEqual((result.returncode, result.stdout), (0, "next-command-ran\n"), result.stderr)
+        (rec,) = self.read().records
+        return rec
+
+    def test_run_finish_reads_a_leading_zero_count_as_decimal(self):
+        failed = [f"f{i}" for i in range(10)]
+        flaky = [f"k{i}" for i in range(9)]
+        skipped = [f"s{i}" for i in range(8)]
+        rec = self.emit_run_finish_strictly(
+            "27", "10", "false", "010", *failed, "09", *flaky, "008", *skipped
+        )
+        self.assertEqual(
+            (rec["failed"], rec["flaky"], rec["skipped"], rec["names_omitted"]),
+            (failed, flaky, skipped, 0),
+        )
+
+    def test_a_malformed_run_finish_count_empties_that_list_and_every_later_one(self):
+        cases = {
+            "not an integer": ["1", "a", "x", "b", "1", "c"],
+            "negative": ["1", "a", "-1", "b", "1", "c"],
+            "exceeds the arguments left": ["1", "a", "5", "b", "1", "c"],
+        }
+        for label, lists in cases.items():
+            with self.subTest(label):
+                self.channel.unlink(missing_ok=True)
+                rec = self.emit_run_finish_strictly("3", "1", "false", *lists)
+                self.assertEqual((rec["failed"], rec["flaky"], rec["skipped"]), (["a"], [], []))
 
     def test_an_unwritable_channel_is_silent_and_never_changes_control_flow(self):
         regular = self.files.dir / "regular-file"
