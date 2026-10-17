@@ -4711,11 +4711,16 @@ pub(crate) fn eval_pow(lv: &Value, rv: &Value) -> Value {
     // so the wrapping is zero-cost for the common case.
     // (task-4106 step-6)
     let result = match (lv, rv) {
+        // Exponent domain is [i32::MIN, u32::MAX]: a non-negative exponent stays
+        // Int (exact, or Undef on overflow), a negative one is a Real reciprocal
+        // power, and anything wider is Undef rather than silently truncated.
         (Value::Int(base), Value::Int(exp)) => {
-            if *exp >= 0 && *exp <= i32::MAX as i64 {
-                Value::Int(base.pow(*exp as u32))
+            if let Ok(e) = u32::try_from(*exp) {
+                int_or_undef(base.checked_pow(e))
+            } else if let Ok(e) = i32::try_from(*exp) {
+                Value::Real((*base as f64).powi(e))
             } else {
-                Value::Real((*base as f64).powi(*exp as i32))
+                Value::Undef
             }
         }
         (Value::Real(base), Value::Int(exp)) => Value::Real(base.powi(*exp as i32)),
