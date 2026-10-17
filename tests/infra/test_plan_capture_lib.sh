@@ -15,6 +15,7 @@
 #   plan_narrowing_axis_match / plan_offaxis_match / plan_narrowing_axis_count
 #                         — dump-level axis predicates (#6391)
 #   plan_strip_comments   — fork-free comment stripper (#6247)
+#   plan_header_field     — typed, order-independent plan header field reader
 
 set -euo pipefail
 
@@ -677,5 +678,222 @@ _body_has() { declare -f "$1" | grep -qF -- "$2"; }
 
 assert "plan_strip_comments (f2): body contains no command substitution" \
     refute _body_has plan_strip_comments '$('
+
+# ---------------------------------------------------------------------------
+# Section 10: plan_header_field — typed plan header field reader
+#
+# Callers used to classify the header with ordered substrings over the whole
+# dump, which a reordering or a newly inserted field silently breaks and which a
+# lookalike token on any other line satisfies. plan_header_field locates the one
+# header line of a kind by its label and reads a field by exact name, so every
+# case below is about that contract: order-independence, exact names, content
+# keying, and an absent field that reads differently from an empty one.
+#
+# Every header fixture line starts its physical line with '#', and none of the
+# case labels repeats the ordered scope adjacency: the ordered-scope-grep
+# ratchet counts code lines only.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- plan_header_field: typed header field reader ---"
+
+# _field_is <dump> <kind> <NAME> <want> — the field is present (rc 0) and reads
+# exactly <want>.
+_field_is() {
+    local _got _rc=0
+    _got="$(plan_header_field "$1" "$2" "$3")" || _rc=$?
+    printf 'got [%s] rc=%s, want [%s] rc=0\n' "$_got" "$_rc" "$4"
+    [ "$_rc" -eq 0 ] && [ "$_got" = "$4" ]
+}
+
+# _field_absent <dump> <kind> <NAME> — rc is exactly 1 and stdout is empty.
+_field_absent() {
+    local _got _rc=0
+    _got="$(plan_header_field "$1" "$2" "$3")" || _rc=$?
+    printf 'got [%s] rc=%s, want [] rc=1\n' "$_got" "$_rc"
+    [ "$_rc" -eq 1 ] && [ -z "$_got" ]
+}
+
+# _field_is_bit <dump> <kind> <NAME> — the field is present and reads 0 or 1.
+_field_is_bit() {
+    local _got _rc=0
+    _got="$(plan_header_field "$1" "$2" "$3")" || _rc=$?
+    printf 'got [%s] rc=%s, want [0|1] rc=0\n' "$_got" "$_rc"
+    [ "$_rc" -eq 0 ] && [[ "$_got" == [01] ]]
+}
+
+# _refused_naming <needle>... -- <cmd...> — <cmd> returns exactly 2, prints
+# nothing on stdout, and its stderr contains every needle.
+_refused_naming() {
+    local -a _needles=()
+    while [ "$#" -gt 0 ] && [ "$1" != "--" ]; do _needles+=("$1"); shift; done
+    shift
+    local _out _err _rc=0 _n
+    _err="$("$@" 2>&1 >/dev/null)" || true
+    _out="$("$@" 2>/dev/null)" || _rc=$?
+    printf 'rc=%s stdout [%s] stderr [%s]\n' "$_rc" "$_out" "$_err"
+    [ "$_rc" -eq 2 ] && [ -z "$_out" ] || return 1
+    for _n in "${_needles[@]}"; do
+        [[ "$_err" == *"$_n"* ]] || { printf 'stderr lacks [%s]\n' "$_n"; return 1; }
+    done
+}
+
+# _ran_fork_free <fn> <calls-file> — <fn> is defined AND the shadowed filters
+# recorded no call, so an undefined function cannot pass by recording nothing.
+_ran_fork_free() { declare -F "$1" >/dev/null && [ ! -s "$2" ]; }
+
+# _defined_without <fn> <needle> — <fn> is defined AND its body lacks <needle>.
+_defined_without() { declare -F "$1" >/dev/null && refute _body_has "$1" "$2"; }
+
+# A realistic dump in today's field order, with a lookalike on every line that
+# is not the header being read: the preamble, the retry marker printed BEFORE
+# the header (nextest_debug=), a NOTE carrying role=, and a command line that
+# repeats RUN_RUST=, HEAVY= and nextest= with other values. The narrowing header
+# spans three physical lines: its affected/closure lists are newline-separated
+# today (PRD §2.4 defect 7).
+_HDR_DUMP="warning: apply_env — REIFY_TEST_SEMAPHORE_WAIT unset, using the default
+@@REIFY_RETRY_SCOPE=failed_only@@ nextest_debug=0 nextest_release=0 run_all=0 gui=0
+# verify.sh plan — action=all profile=both scope=branch include_infra=1 nextest=1 role=merge
+# NOTE: include_infra=1 under role=task gets the selective per-artifact infra subset only
+# scope decision — RUN_RUST=1 RUN_GUI=0 RUN_OCCT_GATE=1 RUN_GUI_VITEST=0
+# narrowing — NARROW_ACTIVE=1 affected=reify-doc
+reify-ir closure=reify-doc
+reify-ir from_diff=1
+# heavy partition — HEAVY=excluded
+# --- environment (process-level; inherited by every command below) ---
+# CARGO_INCREMENTAL=0
+# --- commands (executed in order; '&&' semantics — stop on first failure) ---
+echo RUN_RUST=0 HEAVY=only nextest=0"
+
+# (a) plan header: first field, last field, and a name another line shadows.
+assert "plan_header_field (a1): plan action -> all" \
+    _field_is "$_HDR_DUMP" plan action all
+assert "plan_header_field (a2): plan role -> merge (the line's last token; the NOTE's role= is not the header)" \
+    _field_is "$_HDR_DUMP" plan role merge
+assert "plan_header_field (a3): plan nextest -> 1 (not the retry marker's nextest_debug, not the command line's nextest=0)" \
+    _field_is "$_HDR_DUMP" plan nextest 1
+
+# (b) scope decision header.
+assert "plan_header_field (b1): scope RUN_RUST -> 1 (not the command line's RUN_RUST=0)" \
+    _field_is "$_HDR_DUMP" scope RUN_RUST 1
+assert "plan_header_field (b2): scope RUN_GUI -> 0" \
+    _field_is "$_HDR_DUMP" scope RUN_GUI 0
+assert "plan_header_field (b3): scope RUN_GUI_VITEST -> 0" \
+    _field_is "$_HDR_DUMP" scope RUN_GUI_VITEST 0
+
+# (c) heavy partition header.
+assert "plan_header_field (c): heavy HEAVY -> excluded (not the command line's HEAVY=only)" \
+    _field_is "$_HDR_DUMP" heavy HEAVY excluded
+
+# (d) narrowing header, including its continuation lines.
+assert "plan_header_field (d1): narrowing NARROW_ACTIVE -> 1" \
+    _field_is "$_HDR_DUMP" narrowing NARROW_ACTIVE 1
+assert "plan_header_field (d2): narrowing from_diff -> 1 (the field on the last continuation line)" \
+    _field_is "$_HDR_DUMP" narrowing from_diff 1
+assert "plan_header_field (d3): narrowing affected -> the whole crate list, single-space joined" \
+    _field_is "$_HDR_DUMP" narrowing affected "reify-doc reify-ir"
+assert "plan_header_field (d4): narrowing closure -> the whole crate list, single-space joined" \
+    _field_is "$_HDR_DUMP" narrowing closure "reify-doc reify-ir"
+
+# (e) PRESENT BUT EMPTY is not ABSENT: verify.sh prints `closure=` with nothing
+# after it when no closure was computed, and a caller asserting on "" must not
+# pass against a plan that lacks the field altogether.
+_HDR_EMPTY_FIELDS="# verify.sh plan — action=lint profile=debug scope=all include_infra=0 nextest=1 role=task
+# narrowing — NARROW_ACTIVE=0 affected= closure= from_diff=0
+# --- commands (executed in order; '&&' semantics — stop on first failure) ---
+cargo clippy --workspace --all-targets"
+assert "plan_header_field (e1): narrowing closure= -> present and empty (rc 0)" \
+    _field_is "$_HDR_EMPTY_FIELDS" narrowing closure ""
+assert "plan_header_field (e2): narrowing affected= -> present and empty (rc 0)" \
+    _field_is "$_HDR_EMPTY_FIELDS" narrowing affected ""
+assert "plan_header_field (e3): an empty field does not swallow the next one (from_diff -> 0)" \
+    _field_is "$_HDR_EMPTY_FIELDS" narrowing from_diff 0
+
+# (f) ABSENT: rc 1 and nothing on stdout.
+assert "plan_header_field (f1): an unknown NAME on a present header line is absent" \
+    _field_absent "$_HDR_DUMP" scope RUN_MISSING
+assert "plan_header_field (f2): a NAME that is only a prefix of real fields (RUN) is absent" \
+    _field_absent "$_HDR_DUMP" scope RUN
+assert "plan_header_field (f3): heavy on a dump with no heavy partition line is absent" \
+    _field_absent "$_HDR_EMPTY_FIELDS" heavy HEAVY
+assert "plan_header_field (f4): any field of an empty dump is absent" \
+    _field_absent "" plan action
+
+# (g) REORDERED scope header. The values are chosen so that a positional reader
+# and a prefix-matching reader each read a different, wrong value.
+_HDR_REORDERED="# verify.sh plan — action=all profile=debug scope=all include_infra=0 nextest=1 role=task
+# scope decision — RUN_GUI_VITEST=1 RUN_OCCT_GATE=1 RUN_GUI=0 RUN_RUST=0
+# --- commands (executed in order; '&&' semantics — stop on first failure) ---
+cargo clippy --workspace --all-targets"
+assert "plan_header_field (g1): reordered scope RUN_RUST -> 0" \
+    _field_is "$_HDR_REORDERED" scope RUN_RUST 0
+assert "plan_header_field (g2): reordered scope RUN_GUI -> 0 (exact name: not RUN_GUI_VITEST)" \
+    _field_is "$_HDR_REORDERED" scope RUN_GUI 0
+assert "plan_header_field (g3): reordered scope RUN_GUI_VITEST -> 1" \
+    _field_is "$_HDR_REORDERED" scope RUN_GUI_VITEST 1
+
+# (h) THE USER-OBSERVABLE SIGNAL: a field added to the scope decision — at the
+# front, or between two existing fields — leaves every existing read unchanged.
+_HDR_FRONT_INSERT="# verify.sh plan — action=all profile=debug scope=all include_infra=0 nextest=1 role=task
+# scope decision — RUN_NEW_AXIS=1 RUN_RUST=0 RUN_GUI=1 RUN_OCCT_GATE=0 RUN_GUI_VITEST=0
+# --- commands (executed in order; '&&' semantics — stop on first failure) ---
+cargo clippy --workspace --all-targets"
+_HDR_MID_INSERT="# verify.sh plan — action=all profile=debug scope=all include_infra=0 nextest=1 role=task
+# scope decision — RUN_RUST=0 RUN_NEW_AXIS=0 RUN_GUI=1 RUN_OCCT_GATE=0 RUN_GUI_VITEST=0
+# --- commands (executed in order; '&&' semantics — stop on first failure) ---
+cargo clippy --workspace --all-targets"
+assert "plan_header_field (h1): a field inserted at the front leaves RUN_RUST -> 0" \
+    _field_is "$_HDR_FRONT_INSERT" scope RUN_RUST 0
+assert "plan_header_field (h2): a field inserted at the front leaves RUN_GUI -> 1" \
+    _field_is "$_HDR_FRONT_INSERT" scope RUN_GUI 1
+assert "plan_header_field (h3): a field inserted between two fields leaves RUN_RUST -> 0" \
+    _field_is "$_HDR_MID_INSERT" scope RUN_RUST 0
+assert "plan_header_field (h4): a field inserted between two fields leaves RUN_GUI -> 1" \
+    _field_is "$_HDR_MID_INSERT" scope RUN_GUI 1
+
+# (i) CONTENT-KEYED, NOT POSITIONAL: the header is found by its label wherever it
+# sits — (a) already reads it from under a preamble and a retry marker — and
+# when a kind's label starts two lines, the first one is the header.
+_HDR_TWO_SCOPE="# verify.sh plan — action=all profile=debug scope=all include_infra=0 nextest=1 role=task
+# scope decision — RUN_RUST=1
+# scope decision — RUN_RUST=0
+# --- commands (executed in order; '&&' semantics — stop on first failure) ---
+cargo clippy --workspace --all-targets"
+assert "plan_header_field (i): the first line carrying a kind's label wins" \
+    _field_is "$_HDR_TWO_SCOPE" scope RUN_RUST 1
+
+# (j) An unknown line-kind is refused, naming the kind and the accepted set.
+assert "plan_header_field (j): unknown line-kind -> rc 2, empty stdout, stderr naming it and the accepted kinds" \
+    _refused_naming plan_header_field "'bogus'" plan scope narrowing heavy -- \
+        plan_header_field "$_HDR_DUMP" bogus action
+
+# (k) REAL-PRINTER CONTROL on Section 9's certified `verify.sh lint` capture: the
+# labels the reader keys on are pinned against verify.sh's actual output, not
+# only against fixtures written by the reader's author.
+assert "plan_header_field (k1): real plan header action -> lint" \
+    _field_is "$_REAL_DUMP" plan action lint
+for _scope_field in RUN_RUST RUN_GUI RUN_OCCT_GATE RUN_GUI_VITEST; do
+    assert "plan_header_field (k2): real scope decision $_scope_field is present and reads 0 or 1" \
+        _field_is_bit "$_REAL_DUMP" scope "$_scope_field"
+done
+for _narrowing_field in NARROW_ACTIVE from_diff; do
+    assert "plan_header_field (k3): real narrowing header $_narrowing_field is present and reads 0 or 1" \
+        _field_is_bit "$_REAL_DUMP" narrowing "$_narrowing_field"
+done
+
+# (l) FORK-FREEDOM, by Section 9's (f1)/(f2) technique.
+assert "plan_header_field (l0): is defined (precondition for l1/l2)" \
+    declare -F plan_header_field
+_HDR_FILTER_CALLS="$(mktemp)"
+(
+    grep() { printf 'grep\n' >> "$_HDR_FILTER_CALLS"; }
+    sed()  { printf 'sed\n'  >> "$_HDR_FILTER_CALLS"; }
+    awk()  { printf 'awk\n'  >> "$_HDR_FILTER_CALLS"; }
+    plan_header_field "$_HDR_DUMP" narrowing closure >/dev/null
+) || true
+assert "plan_header_field (l1): invokes no external filter (grep/sed/awk shadowed and never called)" \
+    _ran_fork_free plan_header_field "$_HDR_FILTER_CALLS"
+rm -f "$_HDR_FILTER_CALLS"
+assert "plan_header_field (l2): body contains no command substitution" \
+    _defined_without plan_header_field '$('
 
 test_summary
