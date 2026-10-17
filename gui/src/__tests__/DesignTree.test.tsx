@@ -968,9 +968,22 @@ describe('DesignTree — stale path rendering', () => {
 // The rows' memos read the store's queries; the store, not a re-render of the
 // `tree` prop, must tell them that its tree changed (PRD §4.5 B8).
 describe('DesignTree — store-owned tree reactivity (B8)', () => {
+  let disposeStore: (() => void) | undefined;
+  afterEach(() => {
+    disposeStore?.();
+    disposeStore = undefined;
+  });
+
+  function makeOwnedStore() {
+    return createRoot((dispose) => {
+      disposeStore = dispose;
+      return createViewStateStore();
+    });
+  }
+
   it('(i) an eye rendered before the store has a tree follows toggles once the tree arrives', () => {
     const nodes = [makeNode({ entity_path: 'Root.A' })];
-    const store = createRoot(() => createViewStateStore());
+    const store = makeOwnedStore();
     render(() => <DesignTree tree={nodes} viewStateStore={store} />);
     const eyeBtn = screen.getByTestId('eye-icon-Root.A');
     expect(eyeBtn.getAttribute('aria-label')).toBe('show');
@@ -986,7 +999,7 @@ describe('DesignTree — store-owned tree reactivity (B8)', () => {
   it('(ii) a row turns stale when the store swaps its tree, with no tree-prop change', () => {
     const nodeA = makeNode({ entity_path: 'Root.A' });
     const nodeB = makeNode({ entity_path: 'Root.B' });
-    const store = createRoot(() => createViewStateStore());
+    const store = makeOwnedStore();
     store.setTree([nodeA, nodeB]);
     store.setVisibility('Root.A', 'hidden', false);
     render(() => <DesignTree tree={[nodeA, nodeB]} viewStateStore={store} />);
