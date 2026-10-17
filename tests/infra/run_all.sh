@@ -277,7 +277,7 @@ source "$_RA_GIT_ENV_SCRUB_LIB"
 # ---------------------------------------------------------------------------
 # Verify event channel encoder (task 8685): this run's run_start,
 # member_start, member_finish and run_finish records go to
-# REIFY_VERIFY_EVENT_LOG through it, and are inert when the var is unset.
+# REIFY_VERIFY_EVENT_LOG through it.
 # Hard-required and unconditional for the scrub's reason above: every branch
 # writes records, legacy included, which never sources lib_slot_acquire.sh.
 # The lib's own source guard makes the pool path's transitive source a no-op.

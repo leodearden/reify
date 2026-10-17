@@ -489,22 +489,15 @@ caller. The contract and its consumer rules are PRD
 `docs/prds/v0_6/run-all-runner-infra-harness.md` §4 (C1–C4). This section is
 reify's working reference for it.
 
-**Inert when unset.** Every emitter's first statement returns when the
-variable is unset or empty, so no file is created and no byte, fork or open is
-spent. The text output is byte-identical with and without the channel.
+**Inert when unset**: no file is created, and the text output is
+byte-identical with and without the channel.
 
 ### Writers
 
-`scripts/lib_event_log.sh` is the one encoder (sourced-only). Its emitters take
-positional arguments:
-
-| Emitter | Arguments |
-|---|---|
-| `event_log_emit_run_start` | `RUN_ID SCOPE BRANCH DISCOVERED` |
-| `event_log_emit_member_start` | `MEMBER ATTEMPT MODE` |
-| `event_log_emit_member_finish` | `MEMBER ATTEMPT RC VERDICT DURATION_MS PRE_OMITTED [DETAIL_LINE...]` |
-| `event_log_emit_slot_timeout` | `REASON SLOTS WAITED DISPOSITION LOCK EMITTER` |
-| `event_log_emit_run_finish` | `DISCOVERED FAILURES INTERRUPTED N_FAILED [name...] N_FLAKY [name...] N_SKIPPED [name...]` |
+`scripts/lib_event_log.sh` is the one encoder (sourced-only). Its header is
+the single home of the emitters' positional signatures and of the writer
+contract: inert when unset, one line per record within `EVENT_LOG_LINE_MAX`
+bytes, list fields fitted to that cap, never fatal.
 
 - `run_all.sh` writes `run_start`, `member_start`, `member_finish` and
   `run_finish`, on every branch (pool, serial, member subset, `--scope
@@ -517,16 +510,10 @@ positional arguments:
   `lib_lane_x_flock.sh`), and to `unknown` when there is no caller file (a
   `bash -c` body). `run_all.sh`'s pool worker passes `run_all_pool`.
 
-Each record is one line, appended with one O_APPEND `printf`, at most 4,000
-bytes including its newline. That is below `PIPE_BUF`, so concurrent appenders
-never interleave. Writers never block or fail on the channel: an unwritable
-path is silent, and a record that still exceeds the cap after its lists are
-fitted is dropped with one stderr diagnostic.
-
 ### Schema (v1)
 
-Every record carries `"v":1`, `"ts_ns"`, `"pid"` and `"event"`. An integer
-argument that is not an integer encodes `null`.
+Every record carries `"v":1`, `"ts_ns"`, `"pid"` and `"event"`. Any integer
+or boolean field may be `null`; the lib header says when.
 
 | `event` | Fields | Written by |
 |---|---|---|
@@ -540,9 +527,8 @@ This leaf refines C2 in three places, and the refinements are contract:
 
 - A `SKIP` record carries `attempt` 0, `rc` null and `duration_ms` null.
 - `fail_detail` keeps the newest `_RA_FAIL_DETAIL_MAX` sanitized FAIL lines,
-  each cut to 400 characters (to 400 bytes under a C/POSIX locale, less any
-  multibyte character that cut splits, so the line stays valid UTF-8), and
-  newer entries win when the line cap bites.
+  each cut to the lib's `EVENT_LOG_DETAIL_ENTRY_MAX` and always valid UTF-8,
+  and newer entries win when the line cap bites.
   `fail_detail_omitted` counts every line left out. The text FAILED-DETAIL
   block comes from the same bound, so no reader parses its omitted-count
   indicator line.
@@ -566,8 +552,9 @@ python3 -I tests/infra/verify_events.py wait PATH [--event E] [--where K=V ...] 
 lines, and `wait` exits 0 once enough records match or 1 when the timeout
 passes. Imported, the module offers `read_events(path)` (a frozen `Events`
 with `records`, `skipped_lines` and `channel_present`), `select`, `summarize`
-and `wait_for`. It applies C3 rule 1: a line that fails `json.loads` is
-skipped and counted, and a file with no `run_start` is "channel absent".
+and `wait_for`. It applies C3 rule 1: a line that is not a v1 JSON object (it
+fails `json.loads`, or its `v` is not the integer 1) is skipped and counted,
+and a file with no `run_start` is "channel absent".
 
 ### Isolation (C4)
 
