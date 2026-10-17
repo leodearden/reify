@@ -48,3 +48,12 @@ tree-generation-stores | [tT]reeGeneration | gui/src/stores/*.ts | 0 | δ #9065
 # layout-default-import-debug: layout defaults live in LAYOUT_DIMENSIONS
 # (gui/src/stores/layoutStore.ts); the debug bridge resets through layout.reset().
 layout-default-import-debug | DEFAULT_[A-Z_]+(WIDTH|HEIGHT|COLLAPSED) | gui/src/debug/*.ts | 0 | ε #9066
+# gc-inline-gen-layout: test_warm_lane_gc.sh builds refresh-warm-base.sh's
+# base-generation layout (target -> target.gen.1 plus target.gen.1.lock) only in
+# make_gc_fixture, whose own touch is the one allowed hit.
+gc-inline-gen-layout | touch .*target\.gen\.1\.lock | tests/infra/test_warm_lane_gc.sh | 1 | ν #8721
+# gc-inline-seed-stub: every test_warm_lane_gc.sh seed stub is printed by a
+# named *_seed_stub_body emitter and redirected by its block, so no line writes
+# a heredoc straight into a *SEED_STUB file, whichever of the redirect and the
+# heredoc comes first.
+gc-inline-seed-stub | > *"?[$][{]?[A-Z0-9_]*SEED_STUB[}]?"? *<<|<<.*> *"?[$][{]?[A-Z0-9_]*SEED_STUB | tests/infra/test_warm_lane_gc.sh | 0 | ν #8721
