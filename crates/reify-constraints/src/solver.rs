@@ -11,7 +11,7 @@ use reify_core::{
 use reify_ir::{
     AutoParam, BinOp, CompiledExpr, CompiledExprKind, CompiledFunction, ConstraintSolver,
     ObjectiveCombination, ObjectiveSense, ObjectiveSet, ResolutionProblem, SolveResult,
-    TAG_CONDITIONAL, Value, ValueMap,
+    TAG_CONDITIONAL, Value, ValueMap, dimension_of,
 };
 
 /// Maximum iterations for Nelder-Mead.
@@ -112,14 +112,6 @@ struct SolveMeta {
 /// the cost is the sum of squared constraint violations. For optimization,
 /// the cost combines the objective value with a weighted penalty term.
 pub struct DimensionalSolver;
-
-/// Extract the DimensionVector from a Type, defaulting to DIMENSIONLESS.
-fn dimension_of(ty: &Type) -> DimensionVector {
-    match ty {
-        Type::Scalar { dimension } => *dimension,
-        _ => DimensionVector::DIMENSIONLESS,
-    }
-}
 
 /// Build the solved-values HashMap from auto params and their f64 solutions.
 ///

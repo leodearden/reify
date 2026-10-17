@@ -18,7 +18,8 @@
 use reify_core::{DimensionVector, Type, ValueCellId};
 use reify_expr::{EvalContext, NonDifferentiable, eval_expr};
 use reify_ir::{AutoParam, BinOp, CompiledExpr, CompiledFunction, Value, ValueMap};
-use reify_test_support::builders::expr::{binop, fn_call, literal, value_ref_typed};
+use reify_test_support::builders::expr::{binop, literal, std_call, value_ref_typed};
+use reify_test_support::finite_difference::{self, assert_column_matches_central_difference};
 
 use reify_constraints::{residual_jacobian, residual_jacobian_with_seeds};
 
@@ -45,23 +46,7 @@ fn len_lit(v: f64) -> CompiledExpr {
 }
 
 fn call(name: &str, args: Vec<CompiledExpr>, dim: DimensionVector) -> CompiledExpr {
-    fn_call(name, &format!("std::{name}"), args, scalar_ty(dim))
-}
-
-/// `object[index]`.  Built here rather than in `reify-test-support` because
-/// this task's scope does not extend to that crate.
-fn index_access(object: CompiledExpr, index: CompiledExpr) -> CompiledExpr {
-    let content_hash = reify_core::ContentHash::of(b"index_access")
-        .combine(object.content_hash)
-        .combine(index.content_hash);
-    CompiledExpr {
-        kind: reify_ir::CompiledExprKind::IndexAccess {
-            object: Box::new(object),
-            index: Box::new(index),
-        },
-        result_type: scalar_ty(DimensionVector::LENGTH),
-        content_hash,
-    }
+    std_call(name, args, scalar_ty(dim))
 }
 
 /// The probe point an AD row is checked against: the model's base values, its
@@ -97,10 +82,7 @@ impl<'a> Probe<'a> {
         assert_eq!(self.params.len(), x.len());
         let mut values = self.base.clone();
         for (param, &val) in self.params.iter().zip(x.iter()) {
-            let dimension = match &param.param_type {
-                Type::Scalar { dimension } => *dimension,
-                _ => DimensionVector::DIMENSIONLESS,
-            };
+            let dimension = reify_ir::dimension_of(&param.param_type);
             values.insert(param.id.clone(), Value::Scalar { si_value: val, dimension });
         }
         // Fold in STORED ORDER against the RUNNING map, so an earlier dependent
@@ -129,15 +111,13 @@ impl<'a> Probe<'a> {
         self.eval_at(expr, self.x)
     }
 
-    /// `∂expr/∂x_j` by central differences at the same step shape the rest of
-    /// the codebase uses (`calculus.rs:714`).
+    /// `∂expr/∂x_j` by central differences ([`finite_difference::central_difference`]).
     fn central_difference(&self, expr: &CompiledExpr, j: usize) -> f64 {
-        let h = 1e-6_f64 * self.x[j].abs().max(1e-3);
-        let mut plus = self.x.to_vec();
-        plus[j] += h;
-        let mut minus = self.x.to_vec();
-        minus[j] -= h;
-        (self.eval_at(expr, &plus) - self.eval_at(expr, &minus)) / (2.0 * h)
+        finite_difference::central_difference(self.x[j], |xj| {
+            let mut p = self.x.to_vec();
+            p[j] = xj;
+            self.eval_at(expr, &p)
+        })
     }
 
     fn assert_row_matches_cd(&self, label: &str, row: &[f64], expr: &CompiledExpr) {
@@ -148,16 +128,7 @@ impl<'a> Probe<'a> {
         );
         for (j, &ad) in row.iter().enumerate() {
             let cd = self.central_difference(expr, j);
-            assert!(
-                cd.abs() >= 0.1,
-                "{label} column {j}: probe point must have |∂r/∂x_j| >= 0.1 in SI units so the \
-                 relative arm of the tolerance binds; got {cd:?}"
-            );
-            let tol = 1e-6 * cd.abs() + 1e-8;
-            assert!(
-                (ad - cd).abs() <= tol,
-                "{label} column {j}: ad={ad:?} vs central difference {cd:?} (tol {tol:?})"
-            );
+            assert_column_matches_central_difference(label, j, ad, cd);
         }
     }
 }
@@ -339,12 +310,13 @@ fn a_residual_with_an_unsupported_seed_dependent_construct_refuses_by_row() {
         }),
     );
     // `[w, h][0]` — an IndexAccess whose list depends on the autos.
-    let bad = index_access(
+    let bad = CompiledExpr::index_access(
         reify_test_support::builders::expr::list_expr(vec![
             aref("w", DimensionVector::LENGTH),
             aref("h", DimensionVector::LENGTH),
         ]),
         literal(Value::Int(0)),
+        scalar_ty(DimensionVector::LENGTH),
     );
     let base = ValueMap::new();
     let x = vec![3.0, 4.0];
@@ -445,12 +417,13 @@ fn a_refused_row_leaves_nothing_behind_for_the_next_call_through_the_same_seeds(
     let (params, residuals, base, x) = two_auto_model();
     let seeds = reify_expr::Seeds::new(&[cell("w"), cell("h")]);
     // `[w, h][0]` — the same undifferentiable construct section (6) refuses on.
-    let bad = index_access(
+    let bad = CompiledExpr::index_access(
         reify_test_support::builders::expr::list_expr(vec![
             aref("w", DimensionVector::LENGTH),
             aref("h", DimensionVector::LENGTH),
         ]),
         literal(Value::Int(0)),
+        scalar_ty(DimensionVector::LENGTH),
     );
 
     residual_jacobian_with_seeds(&seeds, &params, &[bad], &base, &x, &[], &[], None)
@@ -644,9 +617,10 @@ fn a_non_differentiable_dependent_cell_refuses_only_the_rows_that_read_it() {
     let base = ValueMap::new();
     let dependent = vec![(
         cell("bad"),
-        index_access(
+        CompiledExpr::index_access(
             reify_test_support::builders::expr::list_expr(vec![dref("q"), num(1.0)]),
             literal(Value::Int(0)),
+            scalar_ty(DimensionVector::LENGTH),
         ),
     )];
     let clean = binop(BinOp::Sub, binop(BinOp::Mul, num(2.0), dref("q")), num(4.0));
@@ -704,9 +678,10 @@ fn a_poisoned_dependent_cell_does_not_leak_a_refusal_into_a_later_row() {
     let base = ValueMap::new();
     let dependent = vec![(
         cell("bad"),
-        index_access(
+        CompiledExpr::index_access(
             reify_test_support::builders::expr::list_expr(vec![dref("q"), num(1.0)]),
             literal(Value::Int(0)),
+            scalar_ty(DimensionVector::LENGTH),
         ),
     )];
     let first = binop(BinOp::Sub, binop(BinOp::Mul, num(2.0), dref("q")), num(4.0));
@@ -1058,8 +1033,8 @@ fn no_dependent_cells_leaves_the_records_exactly_as_the_non_clustered_path_produ
 // wiring regression would have been caught one layer below the seam, in
 // reify-expr, or not at all.
 
-use reify_core::ContentHash;
-use reify_ir::{CompiledFnBody, ComputeDispatch};
+use reify_ir::ComputeDispatch;
+use reify_test_support::builders::function::compiled_function;
 
 
 /// A reference to parameter `pname` inside function `fname`'s own scope — the
@@ -1068,35 +1043,13 @@ fn param_ref(fname: &str, pname: &str) -> CompiledExpr {
     CompiledExpr::value_ref(ValueCellId::new(fname, pname), scalar_ty(dl()))
 }
 
-fn user_fn(
-    name: &str,
-    param_names: &[&str],
-    result_expr: CompiledExpr,
-    optimized_target: Option<&str>,
-) -> CompiledFunction {
-    let params: Vec<(String, Type)> =
-        param_names.iter().map(|p| ((*p).to_string(), scalar_ty(dl()))).collect();
-    CompiledFunction {
-        name: name.to_string(),
-        doc: None,
-        is_pub: false,
-        param_defaults: CompiledFunction::no_defaults_for(&params),
-        params,
-        return_type: scalar_ty(dl()),
-        body: CompiledFnBody { let_bindings: vec![], result_expr },
-        content_hash: ContentHash::of(name.as_bytes()),
-        annotations: vec![],
-        optimized_target: optimized_target.map(str::to_string),
-        type_params: vec![],
-    }
-}
-
 /// `fn hyp(a, b) = sqrt(a*a + b*b)`
 fn hyp_fn() -> CompiledFunction {
     let p = |n: &str| param_ref("hyp", n);
-    user_fn(
+    compiled_function(
         "hyp",
-        &["a", "b"],
+        &[("a", scalar_ty(dl())), ("b", scalar_ty(dl()))],
+        vec![],
         call(
             "sqrt",
             vec![binop(
@@ -1106,7 +1059,6 @@ fn hyp_fn() -> CompiledFunction {
             )],
             DimensionVector::DIMENSIONLESS,
         ),
-        None,
     )
 }
 
@@ -1171,12 +1123,15 @@ fn an_optimized_compute_dispatched_call_is_refused_by_row_not_silently_flattened
     // The body is a perfectly differentiable `a * 20`, so a refusal can only
     // come from the dispatch having fired and made the body unreachable — not
     // from the body itself being undifferentiable.
-    let functions = vec![user_fn(
-        "fixed",
-        &["a"],
-        binop(BinOp::Mul, param_ref("fixed", "a"), literal(Value::Real(20.0))),
-        Some("solver::fixed"),
-    )];
+    let functions = vec![CompiledFunction {
+        optimized_target: Some("solver::fixed".to_string()),
+        ..compiled_function(
+            "fixed",
+            &[("a", scalar_ty(dl()))],
+            vec![],
+            binop(BinOp::Mul, param_ref("fixed", "a"), literal(Value::Real(20.0))),
+        )
+    }];
     let residual = user_call("fixed", vec![aref("w", DimensionVector::DIMENSIONLESS)]);
     let base = ValueMap::new();
     let x = vec![2.0];
