@@ -37,8 +37,9 @@ import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 import { toPng } from 'html-to-image';
 import { initDebugBridge, RESOLVE_BY_TESTID_ERRORS } from '../debug/bridge';
-import { makeViewStateStoreMock } from './debugBridgeTestHelpers';
+import { makeLayoutStore, makeViewStateStoreMock } from './debugBridgeTestHelpers';
 import type { DebugStores } from '../debug/types';
+import { LAYOUT_DIMENSIONS, type LayoutStore } from '../stores/layoutStore';
 
 type DebugRequestHandler = (event: {
   payload: { id: number; command: string; params: Record<string, unknown> };
@@ -46,7 +47,7 @@ type DebugRequestHandler = (event: {
 
 // ─── makeStores ───────────────────────────────────────────────────────────────
 
-function makeStores(): DebugStores {
+function makeStores(layout: LayoutStore = makeLayoutStore()): DebugStores {
   return {
     engine: {
       state: {
@@ -93,20 +94,7 @@ function makeStores(): DebugStores {
       },
     },
     viewState: makeViewStateStoreMock(),
-    layout: {
-      state: {
-        editorWidth: 300,
-        sideWidth: 300,
-        designTreeHeight: 160,
-        propertyHeight: 200,
-        constraintHeight: 140,
-      },
-      setEditorWidth: vi.fn(),
-      setSideWidth: vi.fn(),
-      setDesignTreeHeight: vi.fn(),
-      setPropertyHeight: vi.fn(),
-      setConstraintHeight: vi.fn(),
-    },
+    layout,
   };
 }
 
@@ -288,9 +276,12 @@ describe('inject_diagnostics: bridge handler', () => {
 describe('reset_app_state: bridge handler', () => {
   let capturedHandler: DebugRequestHandler | undefined;
   let stores: DebugStores;
+  let layout: LayoutStore;
+  const defaults = Object.fromEntries(LAYOUT_DIMENSIONS.map((d) => [d.key, d.default]));
 
   beforeEach(async () => {
     vi.clearAllMocks();
+    localStorage.clear();
     capturedHandler = undefined;
 
     vi.mocked(listen).mockImplementation(async (_event, handler) => {
@@ -299,7 +290,8 @@ describe('reset_app_state: bridge handler', () => {
     });
 
     // Stub with two open files and a selected entity
-    stores = makeStores();
+    layout = makeLayoutStore();
+    stores = makeStores(layout);
     (stores.editor.state as any).openFiles = [
       { path: 'a.ri', content: '' },
       { path: 'b.ri', content: '' },
@@ -311,6 +303,7 @@ describe('reset_app_state: bridge handler', () => {
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     delete window.__REIFY_DEBUG__;
   });
 
@@ -347,22 +340,42 @@ describe('reset_app_state: bridge handler', () => {
     expect(vi.mocked(stores.engine.setTessellationDiagnostics)).toHaveBeenCalledWith([]);
   });
 
-  it('resets each layout dimension to DEFAULT_* value', async () => {
+  it('restores every LAYOUT_DIMENSIONS row to its default', async () => {
+    for (const row of LAYOUT_DIMENSIONS) {
+      if (row.kind === 'px') layout.set(row.key, row.default + 37);
+      else layout.set(row.key, !row.default);
+    }
+    expect({ ...layout.state }).not.toEqual(defaults);
+
     const result = await dispatchAndGetResult(capturedHandler!, 5, 'reset_app_state') as any;
 
     expect(result.ok).toBe(true);
-    // DEFAULT_EDITOR_WIDTH=300, DEFAULT_SIDE_WIDTH=300, DEFAULT_DESIGN_TREE_HEIGHT=160,
-    // DEFAULT_PROPERTY_HEIGHT=200, DEFAULT_CONSTRAINT_HEIGHT=140
-    expect(vi.mocked(stores.layout.setEditorWidth)).toHaveBeenCalledTimes(1);
-    expect(vi.mocked(stores.layout.setEditorWidth)).toHaveBeenCalledWith(300);
-    expect(vi.mocked(stores.layout.setSideWidth)).toHaveBeenCalledTimes(1);
-    expect(vi.mocked(stores.layout.setSideWidth)).toHaveBeenCalledWith(300);
-    expect(vi.mocked(stores.layout.setDesignTreeHeight)).toHaveBeenCalledTimes(1);
-    expect(vi.mocked(stores.layout.setDesignTreeHeight)).toHaveBeenCalledWith(160);
-    expect(vi.mocked(stores.layout.setPropertyHeight)).toHaveBeenCalledTimes(1);
-    expect(vi.mocked(stores.layout.setPropertyHeight)).toHaveBeenCalledWith(200);
-    expect(vi.mocked(stores.layout.setConstraintHeight)).toHaveBeenCalledTimes(1);
-    expect(vi.mocked(stores.layout.setConstraintHeight)).toHaveBeenCalledWith(140);
+    expect({ ...layout.state }).toEqual(defaults);
+  });
+
+  it('B9: after resize_panes {problemsHeight: 400} and a collapse toggle, the persisted layout holds the default problems pair', async () => {
+    vi.useFakeTimers();
+    const b9Layout = makeLayoutStore();
+    await initDebugBridge(makeStores(b9Layout));
+    const handler = capturedHandler!;
+
+    const resized = await dispatchAndGetResult(handler, 10, 'resize_panes', { problemsHeight: 400 }) as any;
+    expect(resized.ok).toBe(true);
+    // The store call App's handleToggleDiagnostics makes.
+    b9Layout.setProblemsCollapsed((c) => !c);
+    expect(b9Layout.state.problemsCollapsed).toBe(false);
+
+    await dispatchAndGetResult(handler, 11, 'reset_app_state');
+    await Promise.resolve();
+    vi.advanceTimersByTime(300);
+
+    const stored = await dispatchAndGetResult(handler, 12, 'get_local_storage', {
+      key: 'reify-panel-layout',
+    }) as any;
+    expect(stored.present).toBe(true);
+    const persisted = JSON.parse(stored.value);
+    expect(persisted.problemsHeight).toBe(160);
+    expect(persisted.problemsCollapsed).toBe(true);
   });
 });
 
