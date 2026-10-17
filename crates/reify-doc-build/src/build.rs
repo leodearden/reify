@@ -8,8 +8,12 @@
 //! - Every expression-valued field takes its text from one of two helpers over
 //!   the module's `source`: `expr_text_at` slices a node's own span, and
 //!   `declared_value_text` takes the value after the first `=` of a
-//!   declaration span.  A field whose IR node is only a `CompiledExpr`, which
-//!   records no span, is `ExprText::Unavailable(UnavailableReason::NoSpan)`.
+//!   declaration span.  A field whose IR node records no span of its own (a
+//!   `CompiledExpr`, or one element of a geometry-list `let`) is
+//!   `ExprText::Unavailable(UnavailableReason::NoSpan)`.
+//! - Annotation arguments are not expression-valued fields: `AnnotationDoc.args`
+//!   holds rendered strings, so an expression argument's `ExprText` is
+//!   flattened through its `Display`, placeholder included.
 //! - Constraint `line` numbers come from `reify_core::byte_offset_to_line_col`.
 
 use reify_compiler::{
@@ -283,14 +287,21 @@ fn lower_sub(s: &SubComponentDecl) -> SubComponentDoc {
 // RealizationDecl → RealizationDoc
 // ---------------------------------------------------------------------------
 
-/// `RealizationDecl.span` is the span of the `let`/`param` declaration the
-/// realization was lowered from, so its value text is the geometry expression.
+/// What `RealizationDecl.span` covers depends on what the realization was
+/// lowered from: a hoisted geometry-query argument's span is the argument
+/// expression itself; a geometry-list element carries its whole list's
+/// declaration span, so it has no text of its own; any other realization's
+/// span is its `let`/`param` declaration, whose value is the geometry.
 fn lower_realization(r: &RealizationDecl, source: &str) -> RealizationDoc {
     let name = r.name.clone().unwrap_or_else(|| "<realization>".to_string());
-    RealizationDoc {
-        name,
-        value: declared_value_text(source, r.span),
-    }
+    let value = if r.is_query_only {
+        expr_text_at(source, r.span)
+    } else if r.list_binding.is_some() {
+        ExprText::Unavailable(UnavailableReason::NoSpan)
+    } else {
+        declared_value_text(source, r.span)
+    };
+    RealizationDoc { name, value }
 }
 
 // ---------------------------------------------------------------------------
@@ -424,18 +435,14 @@ fn lower_purpose(p: &CompiledPurpose, source: &str) -> ItemDoc {
                 "minimize"
             };
             (
-                ExprText::Unavailable(UnavailableReason::NoSpan),
+                Some(ExprText::Unavailable(UnavailableReason::NoSpan)),
                 direction.to_string(),
             )
         }
         None => {
-            // Fall back to first constraint expression if available.
-            let expr = p
-                .constraints
-                .first()
-                .map_or(ExprText::Unavailable(UnavailableReason::NoSpan), |c| {
-                    expr_text_at(source, c.span)
-                });
+            // Fall back to the first constraint expression; a purpose that
+            // declares neither an objective nor a constraint has no expression.
+            let expr = p.constraints.first().map(|c| expr_text_at(source, c.span));
             (expr, "minimize".to_string())
         }
     };
