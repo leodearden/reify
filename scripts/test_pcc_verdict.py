@@ -6,6 +6,7 @@ harness_exit_code(), driven by synthetic ProbeRuns.  Shared loader and helpers:
 scripts/_pcc_test_support.py; runner: tests/infra/test_prd_capability_check.sh.
 """
 
+import dataclasses
 import unittest
 from typing import Any
 
@@ -89,6 +90,45 @@ class TestVerdictTruthTable(unittest.TestCase):
         self.assertNotEqual(pcc.PASS, pcc.FAIL)
         self.assertNotEqual(pcc.PASS, pcc.UNPROVABLE)
         self.assertNotEqual(pcc.FAIL, pcc.UNPROVABLE)
+
+
+# ---------------------------------------------------------------------------
+# The typed probe outcome: HarnessFailureKind, HarnessFailure, ProbeRun
+# ---------------------------------------------------------------------------
+
+class TestTypedProbeOutcome(unittest.TestCase):
+    """How the machinery failed is a typed value, enforced where it is built."""
+
+    def test_harness_failure_kinds_are_exactly_the_four_json_values(self):
+        values = {kind.value for kind in pcc.HarnessFailureKind}
+        self.assertEqual(values, {"launch", "setup", "timeout", "grammar_load"})
+        for kind in pcc.HarnessFailureKind:
+            with self.subTest(kind=kind):
+                self.assertIsInstance(kind, str)
+
+    def test_cache_denied_is_refused_on_any_kind_but_grammar_load(self):
+        with self.assertRaises(ValueError) as ctx:
+            pcc.HarnessFailure(pcc.HarnessFailureKind.LAUNCH, "x", cache_denied=True)
+        message = str(ctx.exception)
+        self.assertIn("launch", message)
+        self.assertIn("cache_denied", message)
+
+    def test_a_plain_string_kind_is_refused(self):
+        with self.assertRaises(TypeError):
+            pcc.HarnessFailure("launch", "x")
+
+    def test_harness_failure_and_probe_run_are_frozen(self):
+        failure = pcc.HarnessFailure(pcc.HarnessFailureKind.TIMEOUT, "slow")
+        with self.assertRaises(dataclasses.FrozenInstanceError):
+            failure.detail = "changed"
+        run = pcc.ProbeRun(0, "", "")
+        with self.assertRaises(dataclasses.FrozenInstanceError):
+            run.exit_code = 1
+
+    def test_probe_run_defaults_to_no_failure_and_a_present_fixture(self):
+        run = pcc.ProbeRun(0, "", "")
+        self.assertIsNone(run.harness_failure)
+        self.assertIs(run.fixture_present, True)
 
 
 # ---------------------------------------------------------------------------
