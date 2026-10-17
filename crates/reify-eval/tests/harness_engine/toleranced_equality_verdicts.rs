@@ -25,7 +25,7 @@ fn check_with_production_solver(source: &str) -> CheckResult {
         compile_errors.is_empty(),
         "fixture must be compile-clean; got {compile_errors:?}"
     );
-    let mut engine = Engine::new(Box::new(SimpleConstraintChecker), None)
+    let mut engine = Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(SimpleConstraintChecker), None)
         .with_solver(Box::new(SolverRegistry::production()));
     engine.check(&compiled)
 }

@@ -60,7 +60,7 @@ pub fn eval_through_production_registry(src: &str, what: &str) -> EvalResult {
         "the {what} source must compile without errors; got {errors:#?}",
     );
 
-    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
+    let mut engine = Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None)
         .with_solver(Box::new(reify_constraints::SolverRegistry::production()));
     let result = engine.eval(&compiled);
 

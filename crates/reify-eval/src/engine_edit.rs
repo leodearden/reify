@@ -694,7 +694,7 @@ fn invalidate_realization_dirty_cone(
 ///
 /// The guard holds `&'a mut WarmStatePool` but no other `Engine` field.  Rust's
 /// disjoint-field borrow rules therefore allow the caller to hold simultaneous
-/// `&mut self.cache`, `&mut self.solver`, etc. while the guard is live.  Step (9)'s
+/// `&mut self.cache`, `&mut self.solve_stage`, etc. while the guard is live.  Step (9)'s
 /// `donate_warm_state_and_invalidate` calls use [`pool_mut`](Self::pool_mut) to obtain a
 /// re-borrow of the pool through the guard rather than accessing `self.warm_pool`
 /// directly.
@@ -1674,10 +1674,10 @@ impl Engine {
         // holds `&mut self.warm_pool` across this region via `PendingWarmSeedsGuard`, so
         // a whole-`&self` reborrow is rejected while a disjoint field borrow is accepted.
         // That borrow ends at the `;` and the dispatcher owns a cloned fn-pointer map,
-        // so it aliases neither the warm-pool borrow nor the `self.solver` borrow below.
+        // so it aliases neither the warm-pool borrow nor the `self.solve_stage` borrow below.
         let dispatcher = OptimizedComputeDispatcher::from_registry(&self.compute_registry);
 
-        if let Some(ref solver) = self.solver {
+        if let Some(solver) = self.solve_stage.as_ref().map(|stage| stage.solver()) {
             // Group auto params by entity (template) name.
             //
             // Warm-resolution sync note (task #4710): connector-instance auto cells
@@ -4000,10 +4000,10 @@ impl Engine {
         // holds `&mut self.warm_pool` across this region via `PendingWarmSeedsGuard`, so
         // a whole-`&self` reborrow is rejected while a disjoint field borrow is accepted.
         // That borrow ends at the `;` and the dispatcher owns a cloned fn-pointer map,
-        // so it aliases neither the warm-pool borrow nor the `self.solver` borrow below.
+        // so it aliases neither the warm-pool borrow nor the `self.solve_stage` borrow below.
         let dispatcher = OptimizedComputeDispatcher::from_registry(&self.compute_registry);
 
-        if let Some(ref solver) = self.solver {
+        if let Some(solver) = self.solve_stage.as_ref().map(|stage| stage.solver()) {
             // Group auto params by entity (template) name.
             //
             // Warm-resolution sync note (task #4710): connector-instance auto cells
@@ -6605,7 +6605,7 @@ mod tests {
 }"#;
 
         let compiled = compile_source(SRC);
-        let mut engine = crate::Engine::new(Box::new(SimpleConstraintChecker), None)
+        let mut engine = crate::Engine::new(crate::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(SimpleConstraintChecker), None)
             .with_solver(Box::new(DimensionalSolver));
         // Cold eval — populates eval_state; solver resolves x = 10mm = 0.01 m.
         engine.eval(&compiled);
@@ -6699,7 +6699,7 @@ mod tests {
 }"#;
 
         let compiled = compile_source(SRC);
-        let mut engine = crate::Engine::new(Box::new(SimpleConstraintChecker), None)
+        let mut engine = crate::Engine::new(crate::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(SimpleConstraintChecker), None)
             .with_solver(Box::new(DimensionalSolver));
         // Cold eval — populates eval_state; solver resolves x = 10mm = 0.01 m.
         engine.eval(&compiled);
@@ -6857,7 +6857,7 @@ mod tests {
         // Capture the shared call-counter handle BEFORE moving spy into the engine.
         let captured = spy.captured_problems();
 
-        let mut engine = crate::Engine::new(Box::new(MockConstraintChecker::new()), None)
+        let mut engine = crate::Engine::new(crate::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None)
             .with_solver(Box::new(spy));
 
         // Cold eval: solver call 1 → x = mm(5.0)
@@ -6935,7 +6935,7 @@ mod tests {
 }"#;
 
         let compiled = compile_source(SRC);
-        let mut engine = crate::Engine::new(Box::new(SimpleConstraintChecker), None);
+        let mut engine = crate::Engine::new(crate::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), None);
         engine.eval(&compiled);
 
         let p_id = ValueCellId::new("S", "p");
@@ -7096,7 +7096,7 @@ mod tests {
 }"#;
 
         let compiled_a = compile_source(SRC_A);
-        let mut engine = crate::Engine::new(Box::new(SimpleConstraintChecker), None)
+        let mut engine = crate::Engine::new(crate::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(SimpleConstraintChecker), None)
             .with_solver(Box::new(DimensionalSolver));
         // Cold eval — populates eval_state; solver resolves x = 20mm = 0.02 m.
         engine.eval(&compiled_a);
@@ -7265,7 +7265,7 @@ mod tests {
 }"#;
 
         let compiled_a = compile_source(SRC_A);
-        let mut engine = crate::Engine::new(Box::new(SimpleConstraintChecker), None);
+        let mut engine = crate::Engine::new(crate::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), None);
         // Cold eval — solver-free, so no auto resolution is involved.
         engine.eval(&compiled_a);
 
@@ -7494,7 +7494,7 @@ mod tests {
 }"#;
 
         let compiled = compile_source(SRC);
-        let mut engine = crate::Engine::new(Box::new(SimpleConstraintChecker), None)
+        let mut engine = crate::Engine::new(crate::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(SimpleConstraintChecker), None)
             .with_solver(Box::new(DimensionalSolver));
         engine.eval(&compiled);
 
@@ -7562,7 +7562,7 @@ structure GrowColl {
 }"#;
 
         let compiled = compile_source(SRC);
-        let mut engine = crate::Engine::new(Box::new(SimpleConstraintChecker), None);
+        let mut engine = crate::Engine::new(crate::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), None);
         engine.eval(&compiled);
 
         let n_id = ValueCellId::new("GrowColl", "n");
@@ -7663,7 +7663,7 @@ structure GrowColl {
 }"#;
 
         let compiled = compile_source(SRC);
-        let mut engine = crate::Engine::new(Box::new(SimpleConstraintChecker), None);
+        let mut engine = crate::Engine::new(crate::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), None);
         engine.eval(&compiled);
 
         let cond_id = ValueCellId::new("GuardU1", "cond");
@@ -7760,7 +7760,7 @@ structure GrowColl {
 }"#;
 
         let compiled = compile_source(SRC);
-        let mut engine = crate::Engine::new(Box::new(SimpleConstraintChecker), None);
+        let mut engine = crate::Engine::new(crate::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), None);
         engine.eval(&compiled);
 
         let n_id = ValueCellId::new("GrowColl", "n");
@@ -7864,7 +7864,7 @@ structure GrowColl {
 }"#;
 
         let compiled = compile_source(SRC);
-        let mut engine = crate::Engine::new(Box::new(SimpleConstraintChecker), None);
+        let mut engine = crate::Engine::new(crate::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), None);
         engine.eval(&compiled);
 
         let n_id = ValueCellId::new("GrowColl", "n");
@@ -7929,7 +7929,7 @@ structure GrowColl {
         let sentinel = reify_core::RealizationNodeId::new("Stale", 0);
 
         // ── Rejection 1: NotInitialized (no eval() has run) ─────────────
-        let mut engine = crate::Engine::new(Box::new(SimpleConstraintChecker), None);
+        let mut engine = crate::Engine::new(crate::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), None);
         engine.last_changed_realizations.insert(sentinel.clone());
         let err = engine
             .edit_param(ValueCellId::new("Nope", "x"), Value::Int(1))
@@ -7950,7 +7950,7 @@ structure GrowColl {
     param w : Length = 5mm
 }"#;
         let compiled = compile_source(SRC);
-        let mut engine = crate::Engine::new(Box::new(SimpleConstraintChecker), None);
+        let mut engine = crate::Engine::new(crate::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), None);
         engine.eval(&compiled);
         engine.last_changed_realizations.insert(sentinel.clone());
         let err = engine

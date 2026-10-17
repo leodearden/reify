@@ -13,7 +13,7 @@ use crate::types::GuiState;
 fn make_engine() -> Arc<Mutex<EngineSession>> {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("initial load");
@@ -41,6 +41,7 @@ fn make_engine_on_disk() -> (
     std::fs::write(&path, bracket_source()).expect("write bracket.ri should succeed");
 
     let mut session = EngineSession::new(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(SimpleConstraintChecker),
         Some(Box::new(MockGeometryKernel::new())),
     );

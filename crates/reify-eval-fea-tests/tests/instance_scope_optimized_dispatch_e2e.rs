@@ -303,7 +303,7 @@ fn solver_visible_instance_scope_fea_cell_is_not_clobbered() {
     // the ONLY difference is the attached solver, without which the `auto`
     // below is never resolved and this guard is vacuous. See the doc comment.
     let mut engine =
-        reify_eval::Engine::new(Box::new(reify_constraints::SimpleConstraintChecker), None)
+        reify_eval::Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(reify_constraints::SimpleConstraintChecker), None)
             .with_solver(Box::new(reify_constraints::SolverRegistry::production()));
     reify_eval::compute_targets::register_compute_fns(&mut engine);
 

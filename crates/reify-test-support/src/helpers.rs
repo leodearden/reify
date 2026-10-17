@@ -44,7 +44,7 @@ pub fn collect_value_ref_members(expr: &CompiledExpr) -> Vec<String> {
 #[cfg(feature = "eval-helpers")]
 pub fn make_engine() -> reify_eval::Engine {
     let checker = MockConstraintChecker::new();
-    reify_eval::Engine::new(Box::new(checker), None)
+    reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None)
 }
 
 /// Create a new `Engine` backed by the real `SimpleConstraintChecker` and no
@@ -53,7 +53,7 @@ pub fn make_engine() -> reify_eval::Engine {
 /// mock's tracking-only stub.
 #[cfg(feature = "eval-helpers")]
 pub fn make_simple_engine() -> reify_eval::Engine {
-    reify_eval::Engine::new(Box::new(reify_constraints::SimpleConstraintChecker), None)
+    reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(reify_constraints::SimpleConstraintChecker), None)
 }
 
 /// Create a new `Engine` backed by a fresh `MockConstraintChecker` and a fresh
@@ -65,6 +65,7 @@ pub fn make_simple_engine() -> reify_eval::Engine {
 #[cfg(feature = "eval-helpers")]
 pub fn make_engine_with_mock_kernel() -> reify_eval::Engine {
     reify_eval::Engine::new(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(MockConstraintChecker::new()),
         Some(Box::new(MockGeometryKernel::new())),
     )
@@ -754,7 +755,7 @@ pub fn run_modify_pipeline(
     let kernel = MockGeometryKernel::new();
     let ops_ref = kernel.operations_ref();
 
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&module, ExportFormat::Step);
 
     assert_no_error_diagnostics(&result.diagnostics, "run_modify_pipeline");
@@ -841,6 +842,7 @@ pub fn build_against_mock_kernel(
     let kernel = MockGeometryKernel::new();
     let ops_ref = kernel.operations_ref();
     let mut engine = reify_eval::Engine::new(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(MockConstraintChecker::new()),
         Some(Box::new(kernel)),
     );

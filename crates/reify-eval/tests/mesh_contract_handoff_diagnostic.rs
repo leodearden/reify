@@ -302,6 +302,7 @@ fn tessellate_handoff_warn_mode_warns_without_aborting() {
     );
     let checker = MockConstraintChecker::new();
     let mut engine = Engine::with_test_kernels_and_registry(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(checker),
         kernels,
         registry(),
@@ -367,6 +368,7 @@ fn tessellate_handoff_warn_mode_warns_without_aborting() {
     );
     let valid_checker = MockConstraintChecker::new();
     let mut valid_engine = Engine::with_test_kernels_and_registry(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(valid_checker),
         valid_kernels,
         registry(),
@@ -450,6 +452,7 @@ fn tessellate_handoff_enforce_mode_aborts_the_build() {
     );
     let checker = MockConstraintChecker::new();
     let mut engine = Engine::with_test_kernels_and_registry(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(checker),
         kernels,
         registry(),
@@ -523,6 +526,7 @@ fn tessellate_handoff_enforce_mode_aborts_the_build() {
     );
     let valid_checker = MockConstraintChecker::new();
     let mut valid_engine = Engine::with_test_kernels_and_registry(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(valid_checker),
         valid_kernels,
         registry(),

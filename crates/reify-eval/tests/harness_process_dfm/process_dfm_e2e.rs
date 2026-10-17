@@ -306,7 +306,7 @@ fn std_process_dfm_build_volume_flip_pinned() {
     let checker = SimpleConstraintChecker;
     let kernel: Box<dyn reify_ir::GeometryKernel> =
         Box::new(reify_kernel_occt::OcctKernelHandle::spawn());
-    let mut engine = Engine::new(Box::new(checker), Some(kernel));
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(kernel));
     let result = engine.build(&compiled, ExportFormat::Step);
 
     // Constraint flip — the primary deliverable of the Stage-4 default cutover.
@@ -400,7 +400,7 @@ fn std_process_dfm_build_volume_flip_and_severity_diagnostics() {
     let checker = SimpleConstraintChecker;
     let kernel: Box<dyn reify_ir::GeometryKernel> =
         Box::new(reify_kernel_occt::OcctKernelHandle::spawn());
-    let mut engine = Engine::new(Box::new(checker), Some(kernel));
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(kernel));
     let result = engine.build(&compiled, ExportFormat::Step);
 
     // FittingPart: 100×100×150 mm fits the 220×220×250 mm FDM build envelope.
@@ -549,7 +549,7 @@ fn std_process_dfm_build_volume_constraint_routing_w_dfm() {
     let checker = SimpleConstraintChecker;
     let kernel: Box<dyn reify_ir::GeometryKernel> =
         Box::new(reify_kernel_occt::OcctKernelHandle::spawn());
-    let mut engine = Engine::new(Box::new(checker), Some(kernel));
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(kernel));
     let result = engine.build(&compiled, ExportFormat::Step);
 
     // W_DFM_BUILD_VOLUME — from OversizedPart 2-arg FitsBuildVolume (default Warning).

@@ -1260,7 +1260,7 @@ mod tests {
             let kernel = ShiftingKernel;
 
             // The seam under test: register_morph_producer installs the producer.
-            let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+            let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
             crate::register_morph_producer(&mut engine);
 
             let producer = engine

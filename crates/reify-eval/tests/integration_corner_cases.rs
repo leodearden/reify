@@ -73,7 +73,7 @@ fn compiled() -> reify_compiler::CompiledModule {
 fn eval_ri_file() -> reify_eval::EvalResult {
     let compiled = compiled();
     let checker = SimpleConstraintChecker;
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result = engine.eval(&compiled);
     let eval_errors: Vec<_> = result
         .diagnostics
@@ -95,7 +95,7 @@ fn eval_ri_file() -> reify_eval::EvalResult {
 fn eval_and_check_ri() -> reify_eval::CheckResult {
     let compiled = compiled();
     let checker = SimpleConstraintChecker;
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result = engine.check(&compiled);
     assert_no_errors(
         &result.diagnostics,
@@ -196,7 +196,7 @@ fn trait_all_member_kinds() {
 
     // ── single engine: check() gives values + constraint_results in one eval pass ──
     let checker = SimpleConstraintChecker;
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let check_result = engine.check(&compiled);
 
     // Assert no eval-severity errors from the single CheckResult.

@@ -29,7 +29,7 @@ fn engine_with_solver_accepts_solver() {
         .build();
 
     let mut engine =
-        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(solver));
+        Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(solver));
 
     let result = engine.eval(&module);
     // No panic, x is in values (may still be Undef until resolution phase is added)
@@ -68,7 +68,7 @@ fn resolve_single_auto_param() {
         .build();
 
     let mut engine =
-        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(solver));
+        Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(solver));
 
     let result = engine.eval(&module);
 
@@ -109,7 +109,7 @@ fn resolved_param_determinacy_and_provenance() {
         .build();
 
     let mut engine =
-        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(solver));
+        Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(solver));
 
     let _result = engine.eval(&module);
     let snap = engine.snapshot().expect("snapshot should exist");
@@ -171,7 +171,7 @@ fn let_binding_re_evaluated_after_resolution() {
         .build();
 
     let mut engine =
-        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(solver));
+        Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(solver));
 
     let result = engine.eval(&module);
 
@@ -247,7 +247,7 @@ fn resolve_multiple_auto_params() {
         .build();
 
     let mut engine =
-        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(solver));
+        Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(solver));
 
     let result = engine.eval(&module);
 
@@ -294,7 +294,7 @@ fn solver_infeasible_produces_diagnostics() {
         .build();
 
     let mut engine =
-        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(solver));
+        Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(solver));
 
     let result = engine.eval(&module);
 
@@ -344,7 +344,7 @@ fn solver_no_progress_produces_warning() {
         .build();
 
     let mut engine =
-        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(solver));
+        Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(solver));
 
     let result = engine.eval(&module);
 
@@ -387,7 +387,7 @@ fn no_solver_backward_compatible() {
         .build();
 
     // Engine WITHOUT with_solver() — solver is None
-    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
 
     let result = engine.eval(&module);
 
@@ -436,7 +436,7 @@ fn eval_result_tracks_resolved_params() {
         .build();
 
     // Test eval() resolved_params
-    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(
+    let mut engine = Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None).with_solver(
         Box::new(MockConstraintSolver::new_solved({
             let mut m = HashMap::new();
             m.insert(thickness_id.clone(), mm(5.0));
@@ -448,7 +448,7 @@ fn eval_result_tracks_resolved_params() {
     assert!(eval_result.resolved_params.contains_key(&thickness_id));
 
     // Test check() resolved_params
-    let mut engine2 = Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(
+    let mut engine2 = Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None).with_solver(
         Box::new(MockConstraintSolver::new_solved({
             let mut m = HashMap::new();
             m.insert(thickness_id.clone(), mm(5.0));
@@ -461,6 +461,7 @@ fn eval_result_tracks_resolved_params() {
 
     // Test build() resolved_params
     let mut engine3 = Engine::new(
+        reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH),
         Box::new(MockConstraintChecker::new()),
         Some(Box::new(MockGeometryKernel::new())),
     )
@@ -505,7 +506,7 @@ fn resolution_cache_version_matches_snapshot() {
         .build();
 
     let mut engine =
-        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(solver));
+        Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(solver));
 
     let _result = engine.eval(&module);
 
@@ -589,7 +590,7 @@ fn incremental_fast_path_works_after_resolution() {
         .build();
 
     let mut engine =
-        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(solver));
+        Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(solver));
 
     // Cold-start eval: x resolved to mm(5.0), y = 0.01, z = mm(1.0), w = 0.003
     let result = engine.eval(&module);
@@ -673,7 +674,7 @@ fn objective_forwarded_to_solver_in_eval() {
         .build();
 
     let mut engine =
-        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
+        Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
 
     engine.eval(&module);
 
@@ -731,7 +732,7 @@ fn objective_forwarded_in_edit_param() {
         .build();
 
     let mut engine =
-        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
+        Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
 
     // Initial eval: solver called with objective=Some(Minimize(...))
     engine.eval(&module);
@@ -787,7 +788,7 @@ fn no_objective_backward_compatible() {
         .build();
 
     let mut engine =
-        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
+        Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
 
     // eval() with no objective: spy should capture problem with objective=None
     engine.eval(&module);
@@ -851,7 +852,7 @@ fn e2e_minimize_through_real_solver() {
         .template(template)
         .build();
 
-    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
+    let mut engine = Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None)
         .with_solver(Box::new(DimensionalSolver));
 
     let result = engine.eval(&module);
@@ -948,7 +949,7 @@ fn eval_resolves_per_template_independently() {
         .build();
 
     let mut engine =
-        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
+        Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
 
     let result = engine.eval(&module);
 
@@ -1104,7 +1105,7 @@ fn edit_param_resolves_per_template_not_cross_template() {
         .build();
 
     let mut engine =
-        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
+        Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
 
     // Cold eval: two solver calls (one per template)
     engine.eval(&module);
@@ -1226,7 +1227,7 @@ fn edit_param_matches_eval_for_multi_template_module() {
         .build();
 
     let mut engine1 =
-        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(solver1));
+        Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(solver1));
     let eval_result = engine1.eval(&module);
 
     // Record baseline resolved params from eval
@@ -1267,7 +1268,7 @@ fn edit_param_matches_eval_for_multi_template_module() {
         .build();
 
     let mut engine2 =
-        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(solver2));
+        Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(solver2));
     engine2.eval(&module2);
 
     // Edit Bracket.limit to trigger Bracket's constraint re-resolution
@@ -1387,7 +1388,7 @@ fn scope_name_deterministic_for_multi_template() {
         .build();
 
     let mut engine =
-        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
+        Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
     engine.eval(&module);
 
     // Edit 1: Bracket.limit → triggers Bracket re-resolution
@@ -1553,7 +1554,7 @@ fn edit_param_no_cross_group_value_contamination() {
         .build();
 
     let mut engine =
-        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
+        Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
 
     // Cold eval: two solver calls (one per template)
     engine.eval(&module);
@@ -1633,7 +1634,7 @@ fn auto_free_threads_to_solver_and_warns() {
         .build();
 
     let mut engine =
-        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
+        Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
 
     let result = engine.eval(&module);
 
@@ -1682,7 +1683,7 @@ fn auto_free_emits_warning_diagnostic() {
         .build();
 
     let mut engine =
-        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(solver));
+        Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(solver));
 
     let result = engine.eval(&module);
 
@@ -1745,7 +1746,7 @@ fn strict_auto_non_unique_emits_error_diagnostic() {
         .template(template)
         .build();
 
-    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
+    let mut engine = Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None)
         .with_solver(Box::new(DimensionalSolver));
 
     let result = engine.eval(&module);

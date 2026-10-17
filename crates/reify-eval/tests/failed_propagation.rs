@@ -64,7 +64,7 @@ fn one_cell_module() -> reify_compiler::CompiledModule {
 fn forced_panic_on_let_binding_marks_failed_and_emits_one_failed_event() {
     let module = one_cell_module();
     let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
     let b_id = ValueCellId::new("T", "b");
     engine.set_panic_on_eval(b_id.clone());
@@ -154,7 +154,7 @@ fn forced_panic_on_let_binding_marks_failed_and_emits_one_failed_event() {
 fn forced_panic_recovers_after_remove_panic_on_eval() {
     let module = one_cell_module();
     let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
     let b_id = ValueCellId::new("T", "b");
     let b_node = NodeId::Value(b_id.clone());
@@ -282,7 +282,7 @@ fn three_cell_chain_module() -> reify_compiler::CompiledModule {
 fn panic_in_leaf_propagates_pending_with_chain_to_mid_and_quiets_downstream() {
     let module = three_cell_chain_module();
     let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
     let e = "T";
     let a_id = ValueCellId::new(e, "a");
@@ -491,7 +491,7 @@ fn always_false_constraint_module() -> reify_compiler::CompiledModule {
 fn constraint_violation_does_not_produce_failed_freshness_or_error_event() {
     let module = always_false_constraint_module();
     let checker = SimpleConstraintChecker;
-    let mut engine = Engine::new(Box::new(checker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
     let check_result = engine.check(&module);
 
@@ -700,7 +700,7 @@ fn kernel_execute_error_marks_realization_failed_and_emits_one_error_event() {
     let module = one_realization_box_module();
     let checker = MockConstraintChecker::new();
     let kernel = FailingMockGeometryKernel;
-    let mut engine = Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let e = "KernelFail";
     let rnid = RealizationNodeId::new(e, 0);
@@ -789,7 +789,7 @@ fn kernel_execute_error_in_build_snapshot_tags_failed_event_with_snapshot_versio
     let module = one_realization_box_module();
     let checker = MockConstraintChecker::new();
     let kernel = FailingMockGeometryKernel;
-    let mut engine = Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let e = "KernelFail";
     let rnid = RealizationNodeId::new(e, 0);
@@ -858,7 +858,7 @@ fn failed_realization_stub_handle_is_distinct_from_zero_and_invalid() {
     let module = one_realization_box_module();
     let checker = MockConstraintChecker::new();
     let kernel = FailingMockGeometryKernel;
-    let mut engine = Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let e = "KernelFail";
     let rnid = RealizationNodeId::new(e, 0);

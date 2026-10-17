@@ -80,7 +80,7 @@ fn eval_with_solver_keeping_engine(source: &str) -> (Engine, reify_eval::EvalRes
          test; got {compile_errors:?}"
     );
 
-    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
+    let mut engine = Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None)
         .with_solver(Box::new(SolverRegistry::production()));
     let result = engine.eval(&compiled);
     (engine, result)

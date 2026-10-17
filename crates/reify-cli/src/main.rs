@@ -901,7 +901,7 @@ fn cmd_check(args: &[String]) -> ExitCode {
             || has_dfm_rule
             || has_geometry
         {
-            let mut engine = reify_eval::Engine::with_registered_kernel(Box::new(checker));
+            let mut engine = reify_eval::Engine::with_registered_kernel(reify_eval::SolverPosture::SolverFree, Box::new(checker));
             if has_representation_within {
                 // Record deviation during tessellation.
                 engine.set_capture_repr_tol(true);
@@ -990,7 +990,7 @@ fn cmd_check(args: &[String]) -> ExitCode {
             engine.check(&compiled)
         } else {
             // Existing lightweight path: no kernel, no tessellation (C2).
-            let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+            let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
             engine.check(&compiled)
         };
 
@@ -1102,14 +1102,14 @@ fn cmd_check(args: &[String]) -> ExitCode {
         // called on it below.
         let used_build = module_has_geometry(&compiled);
         let (values, front_end_diagnostics, mut engine) = if used_build {
-            let mut engine = reify_eval::Engine::with_registered_kernel(Box::new(checker));
+            let mut engine = reify_eval::Engine::with_registered_kernel(reify_eval::SolverPosture::SolverFree, Box::new(checker));
             // `realize_for_check`, not `build()` — same esc-5748-6 reason as
             // sub-path (b) above: `check` writes no artifact, so the Phase-B
             // export walk's diagnostics would be user-visible false errors.
             let r = engine.realize_for_check(&compiled);
             (r.values, r.diagnostics, engine)
         } else {
-            let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+            let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
             let r = engine.eval(&compiled);
             (r.values, r.diagnostics, engine)
         };
@@ -1453,7 +1453,7 @@ fn cmd_build(args: &[String]) -> ExitCode {
     // genuine defect and stays `Severity::Error`, which `reify build` gates on.
     //
     // NOTE: cmd_build intentionally does NOT call `configured_eval_engine` (which
-    // also adds `.with_solver(production())`).  The DimensionalSolver resolves
+    // constructs under a `Solve` posture, wiring the production registry).  The DimensionalSolver resolves
     // `auto` params via a synthetic Chebyshev-centre objective even when no explicit
     // `minimize`/`maximize` directive is present; wiring it here would change the
     // observable behaviour of existing `auto`-param fixtures (bracket_indeterminate,
@@ -1461,9 +1461,12 @@ fn cmd_build(args: &[String]) -> ExitCode {
     // solver-free posture is intentional; cmd_eval wires the full solver via
     // `configured_eval_engine` because it explicitly models the full evaluation path.
     // The FEA trampoline is pure-Rust and independent of the DimensionalSolver, so
-    // the solve runs correctly here without `.with_solver`.  See `build_is_success`
-    // for the (c) exit-code gate.
-    let mut engine = reify_eval::Engine::with_registered_kernel(Box::new(checker));
+    // the solve runs correctly here under `SolverPosture::SolverFree`.  See
+    // `build_is_success` for the (c) exit-code gate.
+    let mut engine = reify_eval::Engine::with_registered_kernel(
+        reify_eval::SolverPosture::SolverFree,
+        Box::new(checker),
+    );
     register_compute_trampolines(&mut engine);
     // Lazily acquire the OpenVDB kernel when the module contains an
     // `isosurface(...)` realization op (task δ/5002). Without OpenVDB
@@ -1844,9 +1847,19 @@ fn register_compute_trampolines(engine: &mut reify_eval::Engine) {
     ));
 }
 
-/// Configure a freshly-constructed [`reify_eval::Engine`] for use in `cmd_eval`:
-/// wire the production [`reify_constraints::SolverRegistry`] and register all
-/// compute trampolines so `@optimized` targets dispatch correctly.
+/// The eval family's (`cmd_eval`, `cmd_report`, `cmd_explain`) solver posture:
+/// the solver's default budget, and results persisted by an earlier session may
+/// be served, because [`configured_eval_engine`] attaches the persistent cache.
+const EVAL_FAMILY_POSTURE: reify_eval::SolverPosture =
+    reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::new(
+        reify_ir::IterationBudget::SolverDefault,
+        reify_ir::StalenessPolicy::MayServePersisted,
+    ));
+
+/// Construct and configure a [`reify_eval::Engine`] for use in `cmd_eval`:
+/// `construct` is called with [`EVAL_FAMILY_POSTURE`], whose `Solve` posture
+/// wires the production [`reify_constraints::SolverRegistry`]; all compute
+/// trampolines are then registered so `@optimized` targets dispatch correctly.
 ///
 /// The production registry installs `DimensionalSolver` (dimensional constraints)
 /// and `SolveSpaceSolver` (geometric constraints: `std::distance`,
@@ -1857,8 +1870,9 @@ fn register_compute_trampolines(engine: &mut reify_eval::Engine) {
 /// Both the geometry branch (`with_registered_kernel + build()`) and the plain
 /// branch (`Engine::new(None) + eval()`) share this setup; only the constructor
 /// and the terminal `build()`/`eval()` call differ.  Factoring the shared setup
-/// here eliminates the duplicated `.with_solver` + [`register_compute_trampolines`]
-/// block that would otherwise appear verbatim in each branch.
+/// here keeps the posture, [`register_compute_trampolines`] and the
+/// persistent-cache attach together, so no caller can pair the cache with a
+/// different posture.
 ///
 /// Both the FEA/buckling/modal trampolines and the shell-extract trampoline are
 /// registered here via [`register_compute_trampolines`], mirroring the GUI's call
@@ -1869,11 +1883,13 @@ fn register_compute_trampolines(engine: &mut reify_eval::Engine) {
 /// re-classifies and runs the correct shell solve.
 ///
 /// NOTE: `cmd_build` intentionally does NOT use this helper — it calls
-/// [`register_compute_trampolines`] directly (without `.with_solver`) to preserve
-/// cmd_build's solver-free posture for `auto`-param fixtures.  See the comment in
+/// [`register_compute_trampolines`] directly (constructs `SolverPosture::SolverFree`)
+/// to preserve cmd_build's solver-free posture for `auto`-param fixtures.  See the comment in
 /// `cmd_build` for rationale.
-fn configured_eval_engine(engine: reify_eval::Engine) -> reify_eval::Engine {
-    let mut engine = engine.with_solver(Box::new(reify_constraints::SolverRegistry::production()));
+fn configured_eval_engine(
+    construct: impl FnOnce(reify_eval::SolverPosture) -> reify_eval::Engine,
+) -> reify_eval::Engine {
+    let mut engine = construct(EVAL_FAMILY_POSTURE);
     register_compute_trampolines(&mut engine);
     // Resolve the persistent FEA cache dir from env/config/defaults and wire it
     // into the engine.  Best-effort: a resolver error (e.g. bad
@@ -1989,10 +2005,9 @@ fn cmd_report(args: &[String]) -> ExitCode {
 
     // Lightweight kernel-free eval path (mirrors cmd_eval's non-geometry branch):
     // the lifecycle rollup needs cost/waste/provenance cells, not geometry.
-    let mut engine = configured_eval_engine(reify_eval::Engine::new(
-        Box::new(SimpleConstraintChecker),
-        None,
-    ));
+    let mut engine = configured_eval_engine(|posture| {
+        reify_eval::Engine::new(posture, Box::new(SimpleConstraintChecker), None)
+    });
     let result = engine.eval(&compiled);
 
     // Check eval-level errors BEFORE rendering. stdout is the parseable BOM
@@ -2131,10 +2146,9 @@ fn cmd_eval(args: &[String]) -> ExitCode {
         // `cli_gdt_integration_gate::b5_oracle_inside_oracles_agree`, which
         // asserts the `dev` and `pokeout` oracle CELLS parsed from this
         // command's stdout rather than merely its exit code.
-        let mut engine =
-            configured_eval_engine(reify_eval::Engine::with_registered_kernel(Box::new(
-                SimpleConstraintChecker,
-            )));
+        let mut engine = configured_eval_engine(|posture| {
+            reify_eval::Engine::with_registered_kernel(posture, Box::new(SimpleConstraintChecker))
+        });
         // Apply --cache-dir flag override (highest precedence over env/defaults set
         // by configured_eval_engine).
         if let Some(ref override_dir) = cache_dir_override {
@@ -2149,10 +2163,9 @@ fn cmd_eval(args: &[String]) -> ExitCode {
         // cli_integration_smoke) remain on the exact unchanged code path.
         // Note: register_compute_fns is still required so `@optimized` targets
         // dispatch to their solver kernels (task 3794 / esc-3794-183).
-        let mut engine = configured_eval_engine(reify_eval::Engine::new(
-            Box::new(SimpleConstraintChecker),
-            None,
-        ));
+        let mut engine = configured_eval_engine(|posture| {
+            reify_eval::Engine::new(posture, Box::new(SimpleConstraintChecker), None)
+        });
         // Apply --cache-dir flag override (highest precedence over env/defaults set
         // by configured_eval_engine).
         if let Some(ref override_dir) = cache_dir_override {
@@ -2309,10 +2322,9 @@ fn cmd_explain(args: &[String]) -> ExitCode {
     }
 
     // Always use plain eval() with the production solver so provenance is recorded.
-    let mut engine = configured_eval_engine(reify_eval::Engine::new(
-        Box::new(SimpleConstraintChecker),
-        None,
-    ));
+    let mut engine = configured_eval_engine(|posture| {
+        reify_eval::Engine::new(posture, Box::new(SimpleConstraintChecker), None)
+    });
     let result = engine.eval(&compiled);
 
     // Collect and sort for deterministic output (HashMap has non-deterministic order).
@@ -7315,10 +7327,13 @@ mod persistent_cache_cli_wiring_tests {
     /// skip the assertion in that rare case to avoid false CI failures.
     #[test]
     fn configured_eval_engine_wires_cache_dir() {
-        let engine = configured_eval_engine(reify_eval::Engine::new(
-            Box::new(reify_constraints::SimpleConstraintChecker),
-            None,
-        ));
+        let engine = configured_eval_engine(|posture| {
+            reify_eval::Engine::new(
+                posture,
+                Box::new(reify_constraints::SimpleConstraintChecker),
+                None,
+            )
+        });
         // The resolver always produces *some* path when HOME or XDG_CACHE_HOME
         // is set; only pathological envs (neither set) fall through to a
         // relative-path default that still resolves.
@@ -7337,10 +7352,13 @@ mod persistent_cache_cli_wiring_tests {
     #[test]
     fn cache_dir_cli_override_replaces_configured_dir() {
         let tmp = tempfile::TempDir::new().expect("tmp dir must be creatable for --cache-dir test");
-        let mut engine = configured_eval_engine(reify_eval::Engine::new(
-            Box::new(reify_constraints::SimpleConstraintChecker),
-            None,
-        ));
+        let mut engine = configured_eval_engine(|posture| {
+            reify_eval::Engine::new(
+                posture,
+                Box::new(reify_constraints::SimpleConstraintChecker),
+                None,
+            )
+        });
         // Simulate the cmd_eval --cache-dir flag: override after configuration.
         engine.set_persistent_cache_dir(Some(tmp.path().to_path_buf()));
         assert_eq!(
@@ -7372,7 +7390,7 @@ mod compute_trampoline_registration_tests {
     /// own suite's job (`compute_targets/mod.rs`).
     #[test]
     fn cli_trampolines_install_full_production_bundle() {
-        let mut engine = reify_eval::Engine::new(Box::new(SimpleConstraintChecker), None);
+        let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), None);
         register_compute_trampolines(&mut engine);
 
         assert!(

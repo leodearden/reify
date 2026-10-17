@@ -37,7 +37,7 @@ fn ensure_openvdb_kernel_adds_openvdb_and_leaves_default_unchanged() {
     use reify_kernel_openvdb::register::OPENVDB_KERNEL_NAME;
 
     let checker = SimpleConstraintChecker;
-    let mut engine = reify_eval::Engine::with_registered_kernel(Box::new(checker));
+    let mut engine = reify_eval::Engine::with_registered_kernel(reify_eval::SolverPosture::SolverFree, Box::new(checker));
 
     // Baseline: `with_registered_kernel` is single-pick (OCCT only).
     // The OpenVDB adapter must NOT be in the engine yet.
@@ -122,7 +122,7 @@ fn ensure_openvdb_kernel_returns_false_without_openvdb() {
     );
 
     let checker = SimpleConstraintChecker;
-    let mut engine = reify_eval::Engine::with_registered_kernel(Box::new(checker));
+    let mut engine = reify_eval::Engine::with_registered_kernel(reify_eval::SolverPosture::SolverFree, Box::new(checker));
     let result = engine.ensure_openvdb_kernel();
     assert!(
         !result,

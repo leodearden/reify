@@ -143,6 +143,7 @@ fn ok_fixture_source() -> &'static str {
 fn occt_engine() -> reify_eval::Engine {
     let kernel = reify_kernel_occt::OcctKernelHandle::spawn();
     reify_eval::Engine::new(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(reify_test_support::MockConstraintChecker::new()),
         Some(Box::new(kernel)),
     )

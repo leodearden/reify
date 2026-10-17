@@ -94,7 +94,7 @@ impl AnalysisContext {
         let compiled =
             reify_compiler::compile_with_stdlib_checked(&parsed, &SimpleConstraintChecker);
         let checker = SimpleConstraintChecker;
-        let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+        let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
         // Enable undef-cause capture BEFORE `check` so the post-eval snapshot
         // and last_undef_causes side-map are populated by the eval pass that
         // `check` calls internally.  Capture is additive (PRD A1 transparency):
