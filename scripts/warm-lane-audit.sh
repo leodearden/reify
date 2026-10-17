@@ -1540,20 +1540,32 @@ fi
 # whole fleet on a warning nobody reads. (dark-factory learned this in the
 # adjacent subsystem: merge_gates.py halts the whole merge queue on
 # 'stash_failed' rather than bouncing N tasks one at a time.)
+#
+# COULD-NOT-MEASURE is a cause, not a count: every degrade path below sets
+# STASH_UNKNOWN_CAUSE (no-repo-resolved | not-a-git-worktree |
+# stash-list-failed:exit=<rc>) and nothing else, so the stash_unknown flag and
+# its one stderr note (after the block) both derive from that single variable.
 STASH_ENTRIES=0
+STASH_UNKNOWN_CAUSE=""
 STASH_TEXT_LINES=()
 STASH_JSON_OBJS=()
 _stash_repo="$STASH_REPO"
 [ -n "$_stash_repo" ] || _stash_repo="$FIRST_GIT_LANE"
+_stash_out=""
 if [ -z "$_stash_repo" ]; then
-    warn "no repo resolved for the shared stash query (no resident lane is a git worktree; set REIFY_WARM_LANE_AUDIT_STASH_REPO); stash_entries degraded to 0."
+    STASH_UNKNOWN_CAUSE="no-repo-resolved"
 elif ! _is_git_worktree "$_stash_repo"; then
-    warn "stash query repo '$_stash_repo' is not a git worktree; stash_entries degraded to 0."
+    STASH_UNKNOWN_CAUSE="not-a-git-worktree"
 else
     # ONE query, US-separated (\x1f) so a message containing spaces or colons
-    # cannot corrupt the split. A failure degrades to 0 with a note rather than
-    # aborting — this script must never abort (PRD §9.5 inv.12).
-    _stash_out="$(git -C "$_stash_repo" stash list --format='%gd%x1f%gs' 2>/dev/null)" || _stash_out=""
+    # cannot corrupt the split. git's stderr is discarded, not merged: a
+    # success-path warning ("ignoring broken ref") would otherwise be parsed as
+    # an entry. A failed query is a cause, never an empty stack.
+    _stash_rc=0
+    _stash_out="$(git -C "$_stash_repo" stash list --format='%gd%x1f%gs' 2>/dev/null)" || _stash_rc=$?
+    [ "$_stash_rc" -eq 0 ] || STASH_UNKNOWN_CAUSE="stash-list-failed:exit=$_stash_rc"
+fi
+if [ -z "$STASH_UNKNOWN_CAUSE" ]; then
     while IFS= read -r _sline; do
         [ -n "$_sline" ] || continue
         _sref="${_sline%%$'\x1f'*}"
@@ -1589,6 +1601,11 @@ else
 $_stash_out
 STASH_EOF
 fi
+STASH_UNKNOWN=0
+if [ -n "$STASH_UNKNOWN_CAUSE" ]; then
+    STASH_UNKNOWN=1
+    warn "shared stash stack could not be measured ($STASH_UNKNOWN_CAUSE) at repo '${_stash_repo:-<none>}'; stash_entries reported 0 with stash_unknown=1 -- an unmeasured stack, not an empty one. REIFY_WARM_LANE_AUDIT_STASH_REPO selects the repo queried. See HEADROOM stash_unknown."
+fi
 
 # ── emit: table (default) or json ─────────────────────────────────────────────
 # The machine report goes to stdout; all diagnostics above went to stderr
@@ -1619,8 +1636,8 @@ if [ "$FORMAT" = "json" ]; then
         stash_json="${STASH_JSON_OBJS[*]}"
         unset IFS
     fi
-    printf '{"lanes":[%s],"headroom":{"resident":%d,"live":%d,"pinned":%d,"quarantined":%d,"free":%d,"assigned":%d,"state_unknown":%d,"reclaimable":%d,"leaked":%d,"leak_unknown":%d,"divergent_gib":%d,"free_gib":%d,"budget_gib":%d,"plan_stranded":%d,"plan_unknown":%d,"plan_rewritten":%d,"plan_mismatch":%d,"stash_entries":%d},"pinned_by_status":{"pending":%d,"infra-hold":%d,"blocked":%d,"terminal":%d,"other":%d,"unknown":%d},"stash_stack":[%s]}\n' \
-        "$lanes_json" "$RESIDENT" "$LIVE_COUNT" "$PINNED_COUNT" "$QUARANTINED_COUNT" "$FREE_COUNT" "$ASSIGNED_COUNT" "$STATE_UNKNOWN_COUNT" "$RECLAIMABLE_COUNT" "$LEAKED_COUNT" "$LEAK_UNKNOWN_COUNT" "$DIVERGENT_TOTAL_GIB" "$FREE_GIB" "$BUDGET_GIB" "$PLAN_STRANDED_COUNT" "$PLAN_UNKNOWN_COUNT" "$PLAN_REWRITTEN_COUNT" "$PLAN_MISMATCH_COUNT" "$STASH_ENTRIES" \
+    printf '{"lanes":[%s],"headroom":{"resident":%d,"live":%d,"pinned":%d,"quarantined":%d,"free":%d,"assigned":%d,"state_unknown":%d,"reclaimable":%d,"leaked":%d,"leak_unknown":%d,"divergent_gib":%d,"free_gib":%d,"budget_gib":%d,"plan_stranded":%d,"plan_unknown":%d,"plan_rewritten":%d,"plan_mismatch":%d,"stash_entries":%d,"stash_unknown":%d},"pinned_by_status":{"pending":%d,"infra-hold":%d,"blocked":%d,"terminal":%d,"other":%d,"unknown":%d},"stash_stack":[%s]}\n' \
+        "$lanes_json" "$RESIDENT" "$LIVE_COUNT" "$PINNED_COUNT" "$QUARANTINED_COUNT" "$FREE_COUNT" "$ASSIGNED_COUNT" "$STATE_UNKNOWN_COUNT" "$RECLAIMABLE_COUNT" "$LEAKED_COUNT" "$LEAK_UNKNOWN_COUNT" "$DIVERGENT_TOTAL_GIB" "$FREE_GIB" "$BUDGET_GIB" "$PLAN_STRANDED_COUNT" "$PLAN_UNKNOWN_COUNT" "$PLAN_REWRITTEN_COUNT" "$PLAN_MISMATCH_COUNT" "$STASH_ENTRIES" "$STASH_UNKNOWN" \
         "$PIN_PENDING_COUNT" "$PIN_INFRA_HOLD_COUNT" "$PIN_BLOCKED_COUNT" "$PIN_TERMINAL_COUNT" "$PIN_OTHER_COUNT" "$PIN_UNKNOWN_COUNT" "$stash_json"
 else
     printf '%s' "$TABLE_OUT"
@@ -1628,16 +1645,17 @@ else
     # existing field's position untouched, so a consumer matching a prefix or a
     # fixed field order keeps working (the runbook's append-never-interpose
     # convention).
-    printf 'HEADROOM resident=%d live=%d pinned=%d quarantined=%d free=%d assigned=%d state_unknown=%d reclaimable=%d leaked=%d leak_unknown=%d divergent_gib=%d free_gib=%d budget_gib=%d plan_stranded=%d plan_unknown=%d plan_rewritten=%d plan_mismatch=%d stash_entries=%d\n' \
-        "$RESIDENT" "$LIVE_COUNT" "$PINNED_COUNT" "$QUARANTINED_COUNT" "$FREE_COUNT" "$ASSIGNED_COUNT" "$STATE_UNKNOWN_COUNT" "$RECLAIMABLE_COUNT" "$LEAKED_COUNT" "$LEAK_UNKNOWN_COUNT" "$DIVERGENT_TOTAL_GIB" "$FREE_GIB" "$BUDGET_GIB" "$PLAN_STRANDED_COUNT" "$PLAN_UNKNOWN_COUNT" "$PLAN_REWRITTEN_COUNT" "$PLAN_MISMATCH_COUNT" "$STASH_ENTRIES"
+    printf 'HEADROOM resident=%d live=%d pinned=%d quarantined=%d free=%d assigned=%d state_unknown=%d reclaimable=%d leaked=%d leak_unknown=%d divergent_gib=%d free_gib=%d budget_gib=%d plan_stranded=%d plan_unknown=%d plan_rewritten=%d plan_mismatch=%d stash_entries=%d stash_unknown=%d\n' \
+        "$RESIDENT" "$LIVE_COUNT" "$PINNED_COUNT" "$QUARANTINED_COUNT" "$FREE_COUNT" "$ASSIGNED_COUNT" "$STATE_UNKNOWN_COUNT" "$RECLAIMABLE_COUNT" "$LEAKED_COUNT" "$LEAK_UNKNOWN_COUNT" "$DIVERGENT_TOTAL_GIB" "$FREE_GIB" "$BUDGET_GIB" "$PLAN_STRANDED_COUNT" "$PLAN_UNKNOWN_COUNT" "$PLAN_REWRITTEN_COUNT" "$PLAN_MISMATCH_COUNT" "$STASH_ENTRIES" "$STASH_UNKNOWN"
     # Always emitted, zeros included: a stable grep shape means "no pins" reads
     # as a value an operator can see, never as an absent line.
     printf 'PINNED total=%d pending=%d infra-hold=%d blocked=%d terminal=%d other=%d unknown=%d\n' \
         "$PINNED_COUNT" "$PIN_PENDING_COUNT" "$PIN_INFRA_HOLD_COUNT" "$PIN_BLOCKED_COUNT" "$PIN_TERMINAL_COUNT" "$PIN_OTHER_COUNT" "$PIN_UNKNOWN_COUNT"
     # Same always-emitted, zeros-included rule: an empty shared stack must read
-    # as a value an operator can see, never as an absent line. One detail line
-    # per entry, message LAST so its spaces are unambiguous.
-    printf 'STASH total=%d\n' "$STASH_ENTRIES"
+    # as a value an operator can see, never as an absent line -- and `unknown=`
+    # keeps an unmeasured one from reading as empty. One detail line per entry,
+    # message LAST so its spaces are unambiguous.
+    printf 'STASH total=%d unknown=%d\n' "$STASH_ENTRIES" "$STASH_UNKNOWN"
     for _sl in "${STASH_TEXT_LINES[@]+${STASH_TEXT_LINES[@]}}"; do
         printf '%s\n' "$_sl"
     done
