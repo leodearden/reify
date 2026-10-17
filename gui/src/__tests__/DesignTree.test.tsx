@@ -965,6 +965,39 @@ describe('DesignTree — stale path rendering', () => {
   });
 });
 
+// The rows' memos read the store's queries; the store, not a re-render of the
+// `tree` prop, must tell them that its tree changed (PRD §4.5 B8).
+describe('DesignTree — store-owned tree reactivity (B8)', () => {
+  it('(i) an eye rendered before the store has a tree follows toggles once the tree arrives', () => {
+    const nodes = [makeNode({ entity_path: 'Root.A' })];
+    const store = createRoot(() => createViewStateStore());
+    render(() => <DesignTree tree={nodes} viewStateStore={store} />);
+    const eyeBtn = screen.getByTestId('eye-icon-Root.A');
+    expect(eyeBtn.getAttribute('aria-label')).toBe('show');
+
+    store.regenerateAutoViews(nodes);
+    fireEvent.click(eyeBtn);
+    fireEvent.click(eyeBtn);
+
+    expect(eyeBtn.getAttribute('aria-label')).toBe('hidden');
+    expect(eyeBtn.textContent).toContain('○');
+  });
+
+  it('(ii) a row turns stale when the store swaps its tree, with no tree-prop change', () => {
+    const nodeA = makeNode({ entity_path: 'Root.A' });
+    const nodeB = makeNode({ entity_path: 'Root.B' });
+    const store = createRoot(() => createViewStateStore());
+    store.setTree([nodeA, nodeB]);
+    store.setVisibility('Root.A', 'hidden', false);
+    render(() => <DesignTree tree={[nodeA, nodeB]} viewStateStore={store} />);
+    expect(screen.getByTestId('tree-row-Root.A').getAttribute('data-stale')).toBeNull();
+
+    store.setTree([nodeB]);
+
+    expect(screen.getByTestId('tree-row-Root.A').getAttribute('data-stale')).toBe('true');
+  });
+});
+
 describe('DesignTree — freshness badge', () => {
   it('final freshness renders no freshness badge on the row', () => {
     const nodes = [makeNode({ entity_path: 'Root.A', freshness: 'final' })];

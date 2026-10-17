@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor, cleanup, within } from '@solidjs/testing-library';
 import { createRoot } from 'solid-js';
-import type { GuiState, MeshData, AppearanceDirective, DisplayStyleData, DisplayDirective, PublishedState, ValueData } from '../types';
+import type { EntityTreeNode, GuiState, MeshData, AppearanceDirective, DisplayStyleData, DisplayDirective, PublishedState, ValueData } from '../types';
 import type { DiagnosticEntry } from '../panels';
 import {
   EXTERNALLY_CHANGED_SAVE_CONFLICT_PROMPT_MSG,
@@ -7455,6 +7455,50 @@ describe('App selective-demand enforcement sync (task 6045)', () => {
         expect(payload).not.toContain('Bracket#realization[0]');
         // Non-vacuity anchor: an implementation that pushed an EMPTY demand set
         // would satisfy the exclusion above on its own.
+        expect(payload).toContain('Bracket#realization[1]');
+      },
+      { timeout: DEMAND_SYNC_WAIT_TIMEOUT_MS },
+    );
+  });
+
+  // Unlike (b), the tree resolves only AFTER the layout has mounted, so the
+  // DesignTree rows and their eye memos exist before the store has a tree:
+  // the production slow-backend ordering (PRD §4.5 B8).
+  it('(c) B8: with the entity tree arriving after mount, the first eye toggle reaches the DesignTree eye and bridge.syncDemand', async () => {
+    vi.mocked(bridge.getInitialState).mockResolvedValue(published({
+      ...emptyState,
+      meshes: [makeMesh('Bracket#realization[0]'), makeMesh('Bracket#realization[1]')],
+    }));
+    const tree = deferred<EntityTreeNode[]>();
+    vi.mocked(bridge.getEntityTree).mockImplementation(() => tree.promise);
+
+    await renderAndWaitForReady();
+    expect(screen.queryByTestId('eye-icon-Bracket#realization[0]')).toBeNull();
+
+    tree.resolve([
+      makeNode({ entity_path: 'Bracket#realization[0]', kind: 'realization', has_mesh: true }),
+      makeNode({ entity_path: 'Bracket#realization[1]', kind: 'realization', has_mesh: true }),
+    ]);
+    await waitFor(() => expect(screen.getByTestId('eye-icon-Bracket#realization[0]')).toBeTruthy());
+    await waitFor(
+      () => expect(vi.mocked(bridge.syncDemand)).toHaveBeenCalled(),
+      { timeout: DEMAND_SYNC_WAIT_TIMEOUT_MS },
+    );
+    // Quiescence before the baseline, for the same reason as (b).
+    await flushMacrotasks(SELECTIVE_DEMAND_SYNC_DEBOUNCE_MS + 50);
+    const before = vi.mocked(bridge.syncDemand).mock.calls.length;
+
+    fireEvent.click(screen.getByTestId('eye-icon-Bracket#realization[0]'));
+    fireEvent.click(screen.getByTestId('eye-icon-Bracket#realization[0]'));
+    expect(
+      screen.getByTestId('eye-icon-Bracket#realization[0]').getAttribute('aria-label'),
+    ).toBe('hidden');
+
+    await waitFor(
+      () => {
+        expect(vi.mocked(bridge.syncDemand).mock.calls.length).toBeGreaterThan(before);
+        const payload = vi.mocked(bridge.syncDemand).mock.calls.at(-1)![0];
+        expect(payload).not.toContain('Bracket#realization[0]');
         expect(payload).toContain('Bracket#realization[1]');
       },
       { timeout: DEMAND_SYNC_WAIT_TIMEOUT_MS },
