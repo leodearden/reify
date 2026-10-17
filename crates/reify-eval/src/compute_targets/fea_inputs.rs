@@ -7,6 +7,9 @@ use reify_ir::{StructureInstanceData, Value};
 use reify_solver_elastic::IsotropicElastic;
 
 use super::fea_value_shape::FeaValueShapeError;
+use crate::arg_acceptance::{
+    ArgSpec, FieldAcceptance, FieldRejection, accept_field, dimensionless_spec, pressure_spec,
+};
 
 /// Read a `Value::Scalar { si_value, .. }` field from a StructureInstance.
 pub(super) fn scalar_si_field(
@@ -53,21 +56,41 @@ pub(super) fn real_field(
 /// than a second `&Value` means no caller can pass a pair describing two
 /// different instances.
 ///
-/// `youngs_modulus` is read DIMENSION-BLIND: `scalar_si_field` takes the
-/// `si_value` of a `Value::Scalar` of any dimension, so a LENGTH scalar is
-/// read as pascals. This reader is outside the reader table of
-/// `docs/prds/v0_6/dimension-checked-readers.md`; gating it is follow-up
-/// ticket `tkt_0RVSW4XAXWVR0RAHCG3QTCRYM8`. `poisson_ratio` accepts only a
-/// bare `Value::Real`.
+/// Each field reads under the spec the as-printed reader
+/// (`as_printed_material::read_base_elastic`) applies to the same
+/// `ElasticMaterial` field, so the field accepts the same values whichever
+/// trampoline reads it: `youngs_modulus` a Pressure `Scalar` only,
+/// `poisson_ratio` a dimensionless number. Only absence differs, by trampoline:
+/// here it is an error.
 pub(super) fn isotropic_from_data(
     data: &StructureInstanceData,
 ) -> Result<IsotropicElastic, FeaValueShapeError> {
-    let youngs_modulus = scalar_si_field(data, "youngs_modulus")?;
-    let poisson_ratio = real_field(data, "poisson_ratio")?;
     Ok(IsotropicElastic {
-        youngs_modulus,
-        poisson_ratio,
+        youngs_modulus: isotropic_field(data, "youngs_modulus", &pressure_spec())?,
+        poisson_ratio: isotropic_field(data, "poisson_ratio", &dimensionless_spec())?,
     })
+}
+
+/// Read the isotropic material's required field `key` through `spec`: a field
+/// that is absent, `none` or unresolved is `MissingField`, and a present value
+/// the spec refuses is `Rejected`, naming `<Struct>.<key>`.
+fn isotropic_field(
+    data: &StructureInstanceData,
+    key: &'static str,
+    spec: &ArgSpec,
+) -> Result<f64, FeaValueShapeError> {
+    match accept_field(data, key, spec) {
+        FieldAcceptance::Accepted(si) => Ok(si),
+        FieldAcceptance::Absent | FieldAcceptance::Undefined => {
+            Err(FeaValueShapeError::MissingField {
+                context: "isotropic_from_data",
+                field: key,
+            })
+        }
+        FieldAcceptance::Rejected(rejection) => {
+            Err(FieldRejection::new(&data.type_name, key, rejection).into())
+        }
+    }
 }
 
 /// Extract `IsotropicElastic` from a `Value::StructureInstance` carrying

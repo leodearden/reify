@@ -35,17 +35,19 @@ pub(super) enum FeaValueShapeError {
     /// `expected` names the spec's `type_name`.
     ///
     /// Transitional: it is the same rejection reason as [`Self::Rejected`] in
-    /// a second wording. `Rejected` is the target shape; once those readers
-    /// move onto it, this variant goes.
+    /// a second wording. A component has no `<Struct>.<field>` path for a
+    /// `FieldRejection` to name; #8674 folds both into one decode error whose
+    /// field is optional, and this variant goes with it.
     WrongDimension {
         context: &'static str,
         expected: &'static str,
         got: String,
     },
     /// A present field value its reader's `ArgSpec` refuses, a non-number
-    /// included: a `fea_loads` magnitude, lifted by `?` through the `From`
-    /// impl below. Rendered through [`FieldRejection::to_error`], the wording
-    /// every dimension-checked reader shares.
+    /// included: a `fea_loads` magnitude or an isotropic material field,
+    /// lifted by `?` through the `From` impl below. Rendered through
+    /// [`FieldRejection::to_error`], the wording every dimension-checked
+    /// reader shares.
     Rejected(FieldRejection),
 }
 

@@ -12121,33 +12121,38 @@ mod tests {
         )
     }
 
-    /// step-3: `extract_material` must reject a present-but-wrong-typed
-    /// `youngs_modulus` field with `Err(FeaValueShapeError::ExpectedScalar {
-    /// .. })`, routed through the reused `scalar_si_field` helper.
+    /// `extract_material` reads `youngs_modulus` under `pressure_spec`, the
+    /// as-printed reader's spec for the same field: a bare `Real` and a
+    /// `Scalar` of another dimension are both `Rejected`, naming the field. A
+    /// LENGTH modulus is refused rather than read as pascals.
     #[test]
     fn extract_material_rejects_wrong_typed_youngs_modulus() {
-        let fields: PersistentMap<String, Value> =
-            [("youngs_modulus".to_string(), Value::Real(1.0))]
-                .into_iter()
-                .collect();
+        for youngs_modulus in [Value::Real(1.0), scalar(1.0, DimensionVector::LENGTH)] {
+            let fields: PersistentMap<String, Value> = [
+                ("youngs_modulus".to_string(), youngs_modulus.clone()),
+                ("poisson_ratio".to_string(), Value::Real(0.3)),
+            ]
+            .into_iter()
+            .collect();
 
-        let res = extract_material(&isotropic_material(fields));
-        assert!(
-            matches!(res, Err(FeaValueShapeError::ExpectedScalar { .. })),
-            "expected Err(ExpectedScalar) for a present-but-wrong-type \
-             youngs_modulus field, got: {:?}",
-            res
-        );
+            let res = extract_material(&isotropic_material(fields));
+            assert!(
+                matches!(
+                    &res,
+                    Err(FeaValueShapeError::Rejected(FieldRejection { path, rejection }))
+                        if path == "IsotropicMaterial.youngs_modulus"
+                            && rejection.expected == "Pressure"
+                ),
+                "youngs_modulus {youngs_modulus:?} must be Err(Rejected) naming \
+                 IsotropicMaterial.youngs_modulus, got {res:?}"
+            );
+        }
     }
 
     /// Amendment (task #5081 review, suggestion 2): `extract_material` must
     /// route an absent `youngs_modulus` field to
-    /// `Err(FeaValueShapeError::MissingField { .. })` via the reused
-    /// `scalar_si_field` helper, rather than silently falling through.
-    /// `scalar_si_field`/`real_field` already have their own missing-field
-    /// tests; this pins that `extract_material` propagates the delegation
-    /// unchanged, directly locking the case noted by the review as only
-    /// transitively covered.
+    /// `Err(FeaValueShapeError::MissingField { .. })` rather than silently
+    /// falling through, and an unresolved (`Undef`) one likewise.
     #[test]
     fn extract_material_rejects_missing_youngs_modulus() {
         let res = extract_material(&isotropic_material(PersistentMap::new()));
@@ -12156,22 +12161,34 @@ mod tests {
             "expected Err(MissingField) for an absent youngs_modulus field, got: {:?}",
             res
         );
+        let unresolved: PersistentMap<String, Value> =
+            [("youngs_modulus".to_string(), Value::Undef)]
+                .into_iter()
+                .collect();
+        let res = extract_material(&isotropic_material(unresolved));
+        assert!(
+            matches!(
+                res,
+                Err(FeaValueShapeError::MissingField {
+                    field: "youngs_modulus",
+                    ..
+                })
+            ),
+            "an unresolved youngs_modulus has no value to read, got: {res:?}"
+        );
     }
 
-    /// step-4: `extract_material` must reject a present-but-wrong-typed
-    /// `poisson_ratio` field with `Err(FeaValueShapeError::ExpectedReal {
-    /// .. })`, routed through the reused `real_field` helper. `youngs_modulus`
-    /// is well-formed so control reaches the `poisson_ratio` read.
+    /// `extract_material` reads `poisson_ratio` under `dimensionless_spec`, the
+    /// as-printed reader's spec for the same field: a dimensioned `Scalar` is
+    /// `Rejected`, naming the field. `youngs_modulus` is well-formed so
+    /// control reaches the `poisson_ratio` read.
     #[test]
     fn extract_material_rejects_wrong_typed_poisson_ratio() {
         let fields: PersistentMap<String, Value> = [
             valid_youngs_modulus_field(),
             (
                 "poisson_ratio".to_string(),
-                Value::Scalar {
-                    si_value: 0.3,
-                    dimension: DimensionVector::DIMENSIONLESS,
-                },
+                scalar(0.3, DimensionVector::PRESSURE),
             ),
         ]
         .into_iter()
@@ -12179,22 +12196,48 @@ mod tests {
 
         let res = extract_material(&isotropic_material(fields));
         assert!(
-            matches!(res, Err(FeaValueShapeError::ExpectedReal { .. })),
-            "expected Err(ExpectedReal) for a present-but-wrong-type \
-             poisson_ratio field, got: {:?}",
-            res
+            matches!(
+                &res,
+                Err(FeaValueShapeError::Rejected(FieldRejection { path, rejection }))
+                    if path == "IsotropicMaterial.poisson_ratio" && rejection.expected == "Real"
+            ),
+            "a PRESSURE poisson_ratio must be Err(Rejected) naming \
+             IsotropicMaterial.poisson_ratio, got {res:?}"
         );
+    }
+
+    /// Every dimensionless spelling of `poisson_ratio` reads, as it does in the
+    /// as-printed reader: a `Real`, an `Int` and a dimensionless `Scalar`.
+    #[test]
+    fn extract_material_reads_every_dimensionless_poisson_ratio_spelling() {
+        for poisson_ratio in [
+            Value::Real(0.0),
+            Value::Int(0),
+            scalar(0.0, DimensionVector::DIMENSIONLESS),
+        ] {
+            let fields: PersistentMap<String, Value> = [
+                valid_youngs_modulus_field(),
+                ("poisson_ratio".to_string(), poisson_ratio.clone()),
+            ]
+            .into_iter()
+            .collect();
+
+            assert_eq!(
+                extract_material(&isotropic_material(fields)),
+                Ok(IsotropicElastic {
+                    youngs_modulus: 2.0e9,
+                    poisson_ratio: 0.0,
+                }),
+                "poisson_ratio {poisson_ratio:?} must read as 0.0"
+            );
+        }
     }
 
     /// Amendment (task #5081 review, amendment round 2): `extract_material`
     /// must route an absent `poisson_ratio` field to
-    /// `Err(FeaValueShapeError::MissingField { .. })` via the reused
-    /// `real_field` helper, rather than silently falling through.
-    /// Mirrors `extract_material_rejects_missing_youngs_modulus`, restoring
-    /// the symmetry the review noted was missing: `youngs_modulus` already
-    /// had direct wrong-typed AND absent coverage, while `poisson_ratio` only
-    /// had a wrong-typed test (the absent case was only transitively covered
-    /// by `real_field`'s own test).
+    /// `Err(FeaValueShapeError::MissingField { .. })` rather than silently
+    /// falling through. Mirrors `extract_material_rejects_missing_youngs_modulus`,
+    /// so each field has direct wrong-typed AND absent coverage.
     #[test]
     fn extract_material_rejects_missing_poisson_ratio() {
         let fields: PersistentMap<String, Value> =
