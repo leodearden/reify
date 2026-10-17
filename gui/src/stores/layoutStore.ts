@@ -38,15 +38,6 @@ export type LayoutStore = {
   reset(): void;
 } & LayoutSetters;
 
-// TRANSITIONAL (#9066 step-4 deletes these): the debug bridge still imports them.
-export const DEFAULT_EDITOR_WIDTH = 300;
-export const DEFAULT_SIDE_WIDTH = 300;
-export const DEFAULT_DESIGN_TREE_HEIGHT = 160;
-export const DEFAULT_PROPERTY_HEIGHT = 200;
-export const DEFAULT_CONSTRAINT_HEIGHT = 140;
-export const DEFAULT_PROBLEMS_HEIGHT = 160;
-export const DEFAULT_PROBLEMS_COLLAPSED = true;
-
 const SAVED_TYPEOF = { px: 'number', flag: 'boolean' } as const;
 
 const isRequiredInSaved = (row: LayoutDimension) => row.requiredInSaved === true;

@@ -3780,9 +3780,7 @@ describe('debug bridge apply_gui_state', () => {
 });
 
 // ---------------------------------------------------------------------------
-// debug bridge resize_panes problemsHeight + get_local_storage (task-4404 step-3 RED)
-// RED: (a) problemsHeight is not in resize_panes DIMS so setProblemsHeight is never called;
-//      (b-d) get_local_storage has no handler (returns "unknown command").
+// debug bridge resize_panes problemsHeight + get_local_storage (task-4404)
 // ---------------------------------------------------------------------------
 
 describe('debug bridge resize_panes problemsHeight + get_local_storage', () => {
