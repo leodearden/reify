@@ -39,7 +39,8 @@ the probe launches makes the observation INDETERMINATE → UNPROVABLE; the probe
 still runs, so its evidence is still recorded):
     grammar  — `tree-sitter parse --quiet <fixture>` (CWD = tree-sitter-reify/)
                exit 0 → PRESENT (no parse errors); exit 1 with ERROR node → ABSENT
-               exit 1 with "Failed to load language" → HARNESS ERROR (not a real absent)
+               a grammar load failure → HARNESS_ERROR (not a real absent): parsed
+               once, at the runner boundary, into harness_failure (grammar_load)
     check    — `reify check <fixture>`
                match predicate satisfied → PRESENT; not satisfied → ABSENT
     ir       — `reify eval <fixture>` (eval-error proxy for IR shape)
@@ -63,8 +64,10 @@ Verdicts:
     FAIL          — observed contradicts expected
     UNPROVABLE    — observation is INDETERMINATE (ir and value, or any kind whose
                     fixture did not exist when the probe launched)
-    HARNESS_ERROR — probe tool error: missing binary, grammar load failure, etc.
-                    Emitted verbatim in both text and --json output; always triggers exit 70.
+    HARNESS_ERROR — the probe machinery failed (harness_failure: launch, setup,
+                    timeout or grammar_load), or a grammar probe exited outside
+                    {0, 1}.  Emitted verbatim in both text and --json output;
+                    always triggers exit 70.
 
 Harness exit codes:
     0   all PASS
@@ -93,7 +96,7 @@ import stat
 import subprocess
 import sys
 import tempfile
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any, Dict, FrozenSet, List, Optional, Tuple
 
@@ -161,21 +164,6 @@ _VALID_PROBE_KINDS = frozenset(_MATCH_KEYS_BY_KIND)
 # printed value.  One arm builds both, so the shared argv cannot drift into two
 # spellings of one question.
 _EVAL_PROBE_KINDS = frozenset({"ir", "value"})
-
-# Sentinel injected into stderr by run_probe() when the probe could not be
-# launched at all — any launch failure (ENOENT missing, EACCES not executable,
-# ENOTDIR bad path component), i.e. the whole OSError family, not FileNotFoundError
-# alone.  observe() checks for this sentinel before kind-specific logic so all
-# probe kinds classify an unlaunchable binary as _HARNESS_ERROR.
-_BINARY_NOT_FOUND_SENTINEL = "[HARNESS ERROR: binary not found]"
-
-# Sentinel injected into stderr by run_probe() when a probe was given a timeout
-# and exceeded it.  Kept distinct from the not-found sentinel because the two
-# call for opposite operator responses ("install/expose the tool" vs "the tool is
-# wedged"), and only callers that pass a timeout can ever see it — a probe-set
-# run passes none, so its verdicts are untouched.
-_PROBE_TIMEOUT_SENTINEL = "[HARNESS ERROR: probe timed out]"
-
 
 # ---------------------------------------------------------------------------
 # Binary resolution helpers
@@ -312,10 +300,9 @@ def _assert_cache_dir_trustworthy(path: str) -> None:
     operator's deliberate choice of dir — possibly a shared one — and is left
     alone; the operator owns that decision.
 
-    Raises OSError, which run_probe() already represents as exit 127 +
-    _BINARY_NOT_FOUND_SENTINEL: the same fail-closed, loud outcome as the
-    uncreatable-derived-dir case, and never a silent degradation to the ambient
-    host-global cache.
+    Raises OSError, which run_probe() represents as a SETUP harness failure
+    (exit 127): the same fail-closed, loud outcome as the uncreatable-derived-dir
+    case, and never a silent degradation to the ambient host-global cache.
     """
     st = os.lstat(path)
     if not stat.S_ISDIR(st.st_mode):
@@ -394,8 +381,8 @@ def _grammar_cache_home(repo_root: str) -> str:
         is a file) DEGRADES to the derived dir.  Isolation — the property this
         function exists to guarantee — is preserved; only the operator's
         custom-dir intent is lost, which is the cheap half to lose.
-      * an uncreatable DERIVED dir RAISES, and run_probe() represents it as
-        exit 127 + _BINARY_NOT_FOUND_SENTINEL.  Fail-closed and loud.  This is
+      * an uncreatable DERIVED dir RAISES, and run_probe() represents it as a
+        SETUP harness failure (exit 127).  Fail-closed and loud.  This is
         unprivileged-reachable rather than an operator mistake: /tmp is
         world-writable, so any other uid on the host can pre-create
         reify-ts-cache-<key> as a plain file and wedge this lane's gate.  A
@@ -425,7 +412,7 @@ def _grammar_cache_home(repo_root: str) -> str:
     ).hexdigest()[:16]
     path = os.path.join(tempfile.gettempdir(), f"reify-ts-cache-{key}")
     # TIER 2 — an uncreatable or UNTRUSTWORTHY derived dir is left to RAISE, and
-    # run_probe() represents it as exit 127 + _BINARY_NOT_FOUND_SENTINEL.
+    # run_probe() represents it as a SETUP harness failure (exit 127).
     # Deliberately not an ambient fallback: a silent run against the shared cache
     # is exactly the cross-lane false PASS this module exists to prevent.
     # mode=0o700 so a dir we create here is private from the start; the check
@@ -866,9 +853,10 @@ _CACHE_DENIAL_NEXT_STEP = (
 def grammar_load_failure(stderr: str) -> Optional[HarnessFailure]:
     """Parse tree-sitter's stderr into a GRAMMAR_LOAD failure, or None.
 
-    The one reader of tree-sitter's load-failure signature.  None means the
-    grammar loaded (a parse error, or a clean run); otherwise the failure's
-    detail is the stderr from the load-failure marker onwards.
+    The one reader of tree-sitter's load-failure signature, applied by
+    run_probe() to a grammar run that exited non-zero.  None means the grammar
+    loaded (a parse error, or a clean run); otherwise the failure's detail is
+    the stderr from the load-failure marker onwards.
 
     cache_denied marks the signature a sandboxed role produces when its landlock
     write set does not grant ``~/.cache/tree-sitter/`` — CLI and grammar both
@@ -901,12 +889,6 @@ def grammar_load_failure(stderr: str) -> Optional[HarnessFailure]:
         detail=stderr[load_failure_at:].strip(),
         cache_denied=_PERMISSION_DENIAL_RE.search(stderr, load_failure_at) is not None,
     )
-
-
-def grammar_cache_denied(run: ProbeRun) -> bool:
-    """True iff `run`'s stderr is a tree-sitter cache denial (grammar_load_failure)."""
-    failure = grammar_load_failure(run.stderr)
-    return failure is not None and failure.cache_denied
 
 
 def match_predicate(run: ProbeRun, match: Dict[str, Any]) -> bool:
@@ -1060,11 +1042,11 @@ def observe_with_evidence(
 
     grammar:
         exit 0 → PRESENT (no parse errors)
-        exit 1 without "Failed to load language" in stderr → ABSENT
+        exit 1 → ABSENT
             (NOTE: tree-sitter with --quiet may suppress the "(ERROR …)" tree
-             output entirely, so any exit 1 that is not a load-failure is
-             classified as ABSENT, regardless of whether "(ERROR" appears)
-        exit 1 with "Failed to load language" in stderr → _HARNESS_ERROR
+             output entirely, so any exit 1 is classified as ABSENT, regardless
+             of whether "(ERROR" appears.  A grammar LOAD failure never reaches
+             this arm: run_probe() records it as harness_failure.)
         any other exit → _HARNESS_ERROR
 
     check:
@@ -1102,15 +1084,6 @@ def observe_with_evidence(
         the evidence printed beside it one reading of one run rather than two
         searches that happen to agree.
     """
-    # Universal harness-error checks: the probe never ran to completion (any probe
-    # kind).  run_probe() injects _BINARY_NOT_FOUND_SENTINEL on a launch failure
-    # and _PROBE_TIMEOUT_SENTINEL when a caller-supplied timeout elapsed, so all
-    # kinds surface "could not run" as _HARNESS_ERROR, not as ABSENT/FAIL.
-    if _BINARY_NOT_FOUND_SENTINEL in run.stderr:
-        return _HARNESS_ERROR, None
-    if _PROBE_TIMEOUT_SENTINEL in run.stderr:
-        return _HARNESS_ERROR, None
-
     # Ahead of any kind dispatch, and in this order: the machinery failing is
     # the louder fact, and a probe with no target cannot prove anything, so an
     # absent fixture is INDETERMINATE whatever the tool printed or returned.
@@ -1122,19 +1095,11 @@ def observe_with_evidence(
     if probe_kind == "grammar":
         if run.exit_code == 0:
             return PRESENT, None
-        # Shares _GRAMMAR_LOAD_FAILURE_MARKER with grammar_cache_denied() on
-        # purpose: two independent spellings of the same tree-sitter signature
-        # would drift, and the drift is silent-and-dangerous in exactly one
-        # direction — if only the constant tracked a reworded tree-sitter, this
-        # branch would reclassify a load failure as ABSENT, i.e. promote a
-        # harness error to a real PASS/FAIL verdict.
-        if _GRAMMAR_LOAD_FAILURE_MARKER in run.stderr:
-            return _HARNESS_ERROR, None
         if run.exit_code == 1:
             # Parse error (the grammar produced ERROR nodes).  tree-sitter with
             # --quiet may suppress the "(ERROR ...)" tree output entirely, so we
-            # classify any exit 1 without a load-failure stderr as ABSENT rather
-            # than requiring "(ERROR" to appear in the combined output.
+            # classify any exit 1 as ABSENT rather than requiring "(ERROR" to
+            # appear in the combined output.
             return ABSENT, None
         # exit ≠ {0, 1} — unexpected; treat as harness error
         return _HARNESS_ERROR, None
@@ -1194,19 +1159,6 @@ class Result:
     value_observation: Optional[ValueObservation] = None
     fixture_present: bool = True
     harness_failure: Optional[HarnessFailure] = None
-
-    def as_probe_run(self) -> ProbeRun:
-        """The captured evidence, viewed again as the ProbeRun that produced it.
-
-        Lets a ProbeRun predicate (grammar_cache_denied) be applied to a finished
-        Result without the caller rebuilding one field by field — a copy that
-        drifts silently if Result ever carries more of the run.
-        """
-        return ProbeRun(
-            exit_code=self.exit_code,
-            stdout=self.stdout,
-            stderr=self.stderr,
-        )
 
 
 # ---------------------------------------------------------------------------
@@ -1302,41 +1254,52 @@ def run_probe(probe: Probe, timeout: Optional[float] = None) -> ProbeRun:
     the CLI cache, so overriding their environment would be blast radius on the
     gate's two highest-volume probe kinds for no correctness gain.
 
-    Any OSError from the launch — missing binary (ENOENT), not executable
-    (EACCES), bad path component in the command or the cwd (ENOENT/ENOTDIR) — is
-    represented as a ProbeRun carrying _BINARY_NOT_FOUND_SENTINEL and
-    exit_code=127 rather than raised, so observe() can classify it
-    _HARNESS_ERROR.  One representation covers the family because they all mean
-    "the probe could not be launched"; the errno text is appended after the
-    sentinel so a caller that must distinguish them can.
-
-    Building the grammar env sits INSIDE that try on purpose, not as an
-    accident of layout: _grammar_probe_env() CREATES the private cache dir, and
-    an uncreatable one (a world-writable /tmp lets any uid pre-create the path
-    as a file) is a setup failure that must be represented the same way — not
-    propagated, and emphatically not degraded into an ambient-cache run.  Do
-    not "tidy" it back out above the try.
+    This is the one place a HarnessFailure is built, and none is ever raised:
+    callers run this at import time in the test harness, where a raise costs the
+    whole suite instead of one skip.  stdout/stderr then stay "" and the errno
+    or tool text is the failure's detail.
+      * SETUP (exit 127) — building the grammar env failed.  It CREATES the
+        private cache dir, and an uncreatable one (a world-writable /tmp lets
+        any uid pre-create the path as a file) must be represented, and
+        emphatically not degraded into an ambient-cache run.
+      * LAUNCH (exit 127) — any OSError from the launch: a missing binary
+        (ENOENT), one that is not executable (EACCES), a bad path component in
+        the command or the cwd (ENOENT/ENOTDIR).
+      * TIMEOUT (exit 124, timeout(1)'s) — `timeout` elapsed.
+      * GRAMMAR_LOAD — a grammar run that exited non-zero with tree-sitter's
+        load-failure signature (grammar_load_failure).  The tool did run, so
+        its stdout/stderr are kept.  A run that exited 0 did not fail to load.
 
     `timeout` defaults to None — unbounded, which is what a gate probe wants:
     `reify eval` on a heavy fixture may legitimately run long, and a bound there
-    would manufacture a HARNESS_ERROR out of a slow machine.  An elapsed timeout
-    needs its own catch and sentinel because subprocess.TimeoutExpired derives
-    from SubprocessError, NOT from OSError; a bounded run is handed to
-    _run_bounded(), which owns that catch and the cleanup it implies.
+    would manufacture a HARNESS_ERROR out of a slow machine.  A bounded run is
+    handed to _run_bounded(), which owns the process-tree cleanup a timeout
+    implies; subprocess.TimeoutExpired derives from SubprocessError, NOT from
+    OSError, so it has its own catch here.
 
     Args:
         probe:   The Probe to run.
         timeout: Seconds to wait before killing the probe, or None for no bound.
 
     Returns:
-        A ProbeRun with exit_code, stdout, and stderr from the subprocess, and
-        fixture_present measured on the argv's fixture just before launch.
-        If the probe could not be launched or exceeded `timeout`, the matching
-        sentinel is embedded in stderr so that observe() can classify it as a
-        harness error.
+        A ProbeRun with exit_code, stdout, and stderr from the subprocess, its
+        harness_failure (or None), and fixture_present measured on the argv's
+        fixture just before launch.
     """
     repo_root = _find_repo_root()
     cmd = build_command(probe, repo_root=repo_root)
+
+    # Measured on the very path the argv carries, immediately before launch.
+    # The probe launches regardless, so its evidence is recorded either way.
+    fixture_present = os.path.isfile(_absolute_fixture(probe, repo_root))
+
+    def harness_failed(kind: HarnessFailureKind, exit_code: int,
+                       exc: Exception) -> ProbeRun:
+        return ProbeRun(
+            exit_code, "", "",
+            harness_failure=HarnessFailure(kind, str(exc)),
+            fixture_present=fixture_present,
+        )
 
     # Grammar probes must run with CWD inside tree-sitter-reify/ so that
     # `tree-sitter parse` can resolve the reify grammar (the grammar dir
@@ -1345,18 +1308,13 @@ def run_probe(probe: Probe, timeout: Optional[float] = None) -> ProbeRun:
     env: Optional[Dict[str, str]] = None
     if probe.probe_kind == "grammar":
         cwd = os.path.join(repo_root, "tree-sitter-reify")
-
-    # Measured on the very path the argv carries, immediately before launch.
-    # The probe launches regardless, so its evidence is recorded either way.
-    fixture_present = os.path.isfile(_absolute_fixture(probe, repo_root))
-
-    try:
-        if probe.probe_kind == "grammar":
-            # INSIDE the try on purpose, not tidiness: building this env CREATES
-            # the private cache dir, so an OSError from that setup must reach the
-            # handler below and be represented, exactly like a launch failure.
+        try:
             # ONE expression feeds both launch arms below, so they cannot drift.
             env = _grammar_probe_env(repo_root)
+        except OSError as exc:
+            return harness_failed(HarnessFailureKind.SETUP, 127, exc)
+
+    try:
         if timeout is None:
             proc = subprocess.run(
                 cmd,
@@ -1366,23 +1324,23 @@ def run_probe(probe: Probe, timeout: Optional[float] = None) -> ProbeRun:
                 env=env,
                 timeout=None,
             )
-            return ProbeRun(
-                exit_code=proc.returncode,
-                stdout=proc.stdout,
-                stderr=proc.stderr,
-                fixture_present=fixture_present,
-            )
-        bounded = _run_bounded(cmd, cwd=cwd, timeout=timeout, env=env)
-        return replace(bounded, fixture_present=fixture_present)
+        else:
+            proc = _run_bounded(cmd, cwd=cwd, timeout=timeout, env=env)
+    except subprocess.TimeoutExpired as exc:
+        return harness_failed(HarnessFailureKind.TIMEOUT, 124, exc)
     except OSError as exc:
-        # Represent rather than propagate: callers run this at import time in the
-        # test harness, where a raise costs the whole suite instead of one skip.
-        return ProbeRun(
-            exit_code=127,
-            stdout="",
-            stderr=f"{_BINARY_NOT_FOUND_SENTINEL}: {exc}",
-            fixture_present=fixture_present,
-        )
+        return harness_failed(HarnessFailureKind.LAUNCH, 127, exc)
+
+    load_failure = None
+    if probe.probe_kind == "grammar" and proc.returncode != 0:
+        load_failure = grammar_load_failure(proc.stderr)
+    return ProbeRun(
+        exit_code=proc.returncode,
+        stdout=proc.stdout,
+        stderr=proc.stderr,
+        harness_failure=load_failure,
+        fixture_present=fixture_present,
+    )
 
 
 # Bound on the post-kill drain.  Only reachable if something escaped the killed
@@ -1397,7 +1355,7 @@ def _run_bounded(
     cwd: Optional[str],
     timeout: float,
     env: Optional[Dict[str, str]] = None,
-) -> ProbeRun:
+) -> subprocess.CompletedProcess:
     """Run `cmd` under a wall-clock bound, killing its whole process tree on timeout.
 
     Split out so the unbounded gate path keeps plain subprocess.run().  A bounded
@@ -1419,10 +1377,15 @@ def _run_bounded(
     takes, so dropping it here would leave the gate's FIRST real
     `tree-sitter parse` on the host-global cache.
 
+    Returns the same CompletedProcess shape as the unbounded arm, so run_probe()
+    reads both identically.
+
     Raises:
-        OSError: if the command cannot be launched — run_probe()'s handler turns
-            that into the _BINARY_NOT_FOUND_SENTINEL representation, so the two
-            paths report a launch failure identically.
+        OSError: if the command cannot be launched.
+        subprocess.TimeoutExpired: if `timeout` elapsed, re-raised only after the
+            whole process tree has been killed and its pipes drained.
+        run_probe() types the two as LAUNCH and TIMEOUT harness failures, so both
+        arms report a failure identically.
     """
     with subprocess.Popen(
         cmd,
@@ -1435,7 +1398,7 @@ def _run_bounded(
     ) as proc:
         try:
             stdout, stderr = proc.communicate(timeout=timeout)
-        except subprocess.TimeoutExpired as exc:
+        except subprocess.TimeoutExpired as timed_out:
             _kill_process_tree(proc)
             try:
                 # Safe to drain now: the group is dead, so every inherited write
@@ -1447,14 +1410,8 @@ def _run_bounded(
                 # Stop reading rather than trade a process leak for a hang; the
                 # with-block still closes them and reaps the direct child.
                 proc.kill()
-            # A separate sentinel from the launch failure: "the tool is wedged"
-            # and "the tool is missing" are different operator problems.
-            return ProbeRun(
-                exit_code=124,  # conventional timeout(1) exit code
-                stdout="",
-                stderr=f"{_PROBE_TIMEOUT_SENTINEL}: {exc}",
-            )
-    return ProbeRun(exit_code=proc.returncode, stdout=stdout, stderr=stderr)
+            raise timed_out
+    return subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
 
 
 def _kill_process_tree(proc: subprocess.Popen) -> None:
@@ -1528,8 +1485,10 @@ def grammar_substrate_usable() -> tuple:
     path — so fixture resolution and the CWD=<repo_root>/tree-sitter-reify
     requirement are honoured without being duplicated — and reports the substrate
     unusable when the probe could not run *as a probe*: the cache/lock directory
-    is unwritable, the probe could not be launched, or it did not finish within
-    _SUBSTRATE_PROBE_TIMEOUT_S.
+    is unwritable, the private grammar cache could not be set up, the probe
+    could not be launched, or it did not finish within
+    _SUBSTRATE_PROBE_TIMEOUT_S.  Each is one harness_failure kind, so each gets
+    its own reason.
 
     A BEHAVIOURAL check, deliberately not a path-existence one:
     ``isfile(tree-sitter-reify/src/parser.c)`` says the grammar was generated but
@@ -1561,9 +1520,11 @@ def grammar_substrate_usable() -> tuple:
         expected={"observation": "present", "match": {}},
     )
 
-    run = run_probe(probe, timeout=_SUBSTRATE_PROBE_TIMEOUT_S)
+    failure = run_probe(probe, timeout=_SUBSTRATE_PROBE_TIMEOUT_S).harness_failure
+    if failure is None:
+        return (True, "")
 
-    if _PROBE_TIMEOUT_SENTINEL in run.stderr:
+    if failure.kind is HarnessFailureKind.TIMEOUT:
         return (
             False,
             f"tree-sitter did not respond within {_SUBSTRATE_PROBE_TIMEOUT_S:g}s, "
@@ -1572,28 +1533,31 @@ def grammar_substrate_usable() -> tuple:
             "usual cause",
         )
 
-    if _BINARY_NOT_FOUND_SENTINEL in run.stderr:
-        # Deliberately hedged.  run_probe() represents EVERY launch OSError with
-        # this one sentinel, and THREE distinct subsystems arrive through it: a
-        # missing cwd (<repo_root>/tree-sitter-reify was never generated) raises
-        # the same FileNotFoundError as a missing CLI, and an uncreatable private
-        # grammar cache dir raises its own OSError from the same try.  Naming any
-        # one of them here would confidently print the wrong subsystem.  The
-        # errno text run_probe() appends names the offending path, which is what
-        # actually distinguishes the three.
-        detail = run.stderr.split(_BINARY_NOT_FOUND_SENTINEL, 1)[1].strip(": \n")
+    if failure.kind is HarnessFailureKind.LAUNCH:
+        # A missing cwd (<repo_root>/tree-sitter-reify was never generated)
+        # raises the same FileNotFoundError as a missing CLI, so the reason names
+        # both; the errno detail names the path that actually failed.
         return (
             False,
-            "the tree-sitter grammar probe could not be launched "
-            f"({detail or 'no further detail'}); either the tree-sitter CLI "
-            f"({_resolve_tree_sitter_bin()!r}) is missing or not executable, "
-            "the grammar directory <repo_root>/tree-sitter-reify/ does not "
-            "exist, or the private grammar cache directory could not be created",
+            f"the tree-sitter grammar probe could not be launched "
+            f"({failure.detail}); either the tree-sitter CLI "
+            f"({_resolve_tree_sitter_bin()!r}) is missing or not executable, or "
+            "the grammar directory <repo_root>/tree-sitter-reify/ does not exist",
         )
 
-    if grammar_cache_denied(run):
+    if failure.kind is HarnessFailureKind.SETUP:
+        return (
+            False,
+            "the private grammar cache directory for tree-sitter could not be "
+            f"set up ({failure.detail}), and a grammar probe never falls back to "
+            "the shared host-global cache",
+        )
+
+    if failure.cache_denied:
         return (False, _CACHE_DENIAL_EXPLANATION)
 
+    # A load failure with no denial is a missing or corrupt grammar: loud at
+    # HARNESS_ERROR, never a skip (grammar_load_failure's narrowness contract).
     return (True, "")
 
 
@@ -1717,10 +1681,11 @@ def verdict(observation: str, expected_observation: str) -> str:
     return FAIL
 
 
-# Byte budget for a HARNESS_ERROR's stderr in the text renderer.  Sized ~16x the
-# measured cache-denial signature (253 chars) so realistic tool messages arrive
-# whole, while still capping a `reify eval` backtrace that would bury the gate
-# log.  Other verdicts keep the tight 200-char preview; --json is unaffected.
+# Byte budget for a HARNESS_ERROR's stderr, and for its harness_failure detail,
+# in the text renderer.  Sized ~16x the measured cache-denial signature (253
+# chars) so realistic tool messages arrive whole, while still capping a `reify
+# eval` backtrace that would bury the gate log.  Other verdicts keep the tight
+# 200-char preview; --json is unaffected.
 _HARNESS_ERROR_STDERR_CAP = 4000
 
 
@@ -1905,6 +1870,14 @@ def main(argv: List[str]) -> int:
             sys.stdout.write(f"  exit_code: {r.exit_code}\n")
             sys.stdout.write(f"  stdout:    {stdout_preview}\n")
             sys.stdout.write(f"  stderr:    {stderr_text}\n")
+            # The errno or tool text of a harness failure is data on the run,
+            # not stderr, so it gets its own line: a bare HARNESS_ERROR with
+            # empty stderr would be the un-attributable row #5894 removed.
+            if r.harness_failure is not None:
+                detail = r.harness_failure.detail[:_HARNESS_ERROR_STDERR_CAP]
+                sys.stdout.write(
+                    f"  harness:   {r.harness_failure.kind.value}: {detail}\n"
+                )
             # Scoped to value rows for the same reason the hint below is scoped
             # to HARNESS_ERROR: it answers a question only this kind raises —
             # which token was read, and which constraint it failed.
@@ -1913,12 +1886,11 @@ def main(argv: List[str]) -> int:
                 sys.stdout.write(
                     f"  value:     {r.value_observation.describe(spec)}\n"
                 )
-            # Scoped to HARNESS_ERROR for the same reason as the cap above: the
-            # hint explains why a probe could not RUN.  A check/ir probe whose
-            # own stderr happened to quote both a load failure and a denial
-            # would otherwise print a tree-sitter cache/landlock hint under a
-            # PASS or FAIL line — the mis-attribution the hint exists to prevent.
-            if harness_error and grammar_cache_denied(r.as_probe_run()):
+            # Read off the typed failure, never off stderr: only a grammar load
+            # failure can be a cache denial, and it is always a HARNESS_ERROR,
+            # so a check/ir probe whose own stderr happens to quote a load
+            # failure and a denial cannot print this hint under a PASS or FAIL.
+            if r.harness_failure is not None and r.harness_failure.cache_denied:
                 sys.stdout.write(
                     f"  hint:      {_CACHE_DENIAL_EXPLANATION}.  "
                     f"{_CACHE_DENIAL_NEXT_STEP}\n"

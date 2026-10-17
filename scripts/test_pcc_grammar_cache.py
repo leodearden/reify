@@ -950,13 +950,16 @@ class TestGrammarCacheSetupFailure(unittest.TestCase):
         """
         stub = _ts_stub_echo_cache(self._tmpdir)
         probe = self._make_probe()
-        for label, kwargs in (("unbounded", {}), ("bounded", {"timeout": 10.0})):
+        with unittest.mock.patch.object(tempfile, "tempdir", self._tmpdir), \
+             unittest.mock.patch.dict(os.environ, {"TREE_SITTER_BIN": stub}):
+            os.environ.pop(pcc._CACHE_HOME_OVERRIDE_ENV, None)
+            wedged = self._wedge_derived_dir()
+            runs = {
+                "unbounded": pcc.run_probe(probe),
+                "bounded": pcc.run_probe(probe, timeout=10.0),
+            }
+        for label, run in runs.items():
             with self.subTest(arm=label):
-                with unittest.mock.patch.object(tempfile, "tempdir", self._tmpdir):
-                    with unittest.mock.patch.dict(os.environ, {"TREE_SITTER_BIN": stub}):
-                        os.environ.pop(pcc._CACHE_HOME_OVERRIDE_ENV, None)
-                        wedged = self._wedge_derived_dir()
-                        run = pcc.run_probe(probe, **kwargs)
                 self.assertEqual(run.exit_code, 127, f"got {run!r}")
                 self.assertEqual(run.harness_failure.kind, pcc.HarnessFailureKind.SETUP)
                 self.assertIn(wedged, run.harness_failure.detail)
