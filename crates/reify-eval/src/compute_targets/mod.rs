@@ -74,7 +74,9 @@ pub mod membrane_load;
 use std::sync::Arc;
 
 use reify_core::DimensionVector;
-use reify_ir::{FieldSourceKind, SampledField, Value};
+use reify_ir::{
+    FieldSourceKind, PersistentMap, SampledField, StructureInstanceData, StructureTypeId, Value,
+};
 
 /// Flatten per-node 3×3 tensors `[[f64;3];3]` into a stride-9 row-major
 /// `Vec<f64>`.
@@ -434,6 +436,36 @@ pub(crate) fn rejected_input_outcome(error: reify_core::Diagnostic) -> crate::Co
     crate::ComputeOutcome::Failed {
         diagnostics: vec![error],
         structured_detail: vec![],
+    }
+}
+
+// ── Registry-free StructureInstance helpers ─────────────────────────────────
+
+/// Registry-free placeholder type id for the StructureInstances the compute
+/// trampolines mint Rust-side (mirrors `dynamics_ops::REGISTRY_FREE_TYPE_ID`).
+/// They are never re-resolved against the stdlib `StructureRegistry`, so the
+/// opaque id is unused.
+const REGISTRY_FREE_TYPE_ID: StructureTypeId = StructureTypeId(u32::MAX);
+
+/// A registry-free `Value::StructureInstance` of `type_name` carrying `fields`.
+fn structure(type_name: &str, fields: Vec<(&str, Value)>) -> Value {
+    let fields: PersistentMap<String, Value> = fields
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v))
+        .collect();
+    Value::StructureInstance(Box::new(StructureInstanceData {
+        type_id: REGISTRY_FREE_TYPE_ID,
+        type_name: type_name.to_string(),
+        version: 1,
+        fields,
+    }))
+}
+
+/// The instance data of a `Value::StructureInstance`; `None` for any other value.
+fn struct_data(v: &Value) -> Option<&StructureInstanceData> {
+    match v {
+        Value::StructureInstance(d) => Some(d),
+        _ => None,
     }
 }
 

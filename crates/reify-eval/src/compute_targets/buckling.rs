@@ -1396,9 +1396,8 @@ mod tests {
     // ── task 6922 γ1: loads read through fea_loads; malformed inputs fail ─────
 
     use crate::arg_acceptance::FieldRejection;
-    use crate::compute_targets::as_printed_material::structure;
     use crate::compute_targets::fea_value_shape::FeaValueShapeError;
-    use crate::compute_targets::scalar;
+    use crate::compute_targets::{scalar, structure};
     use crate::{CancellationHandle, ComputeOutcome};
 
     fn point_load(force: Value) -> Value {

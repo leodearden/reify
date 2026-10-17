@@ -28,8 +28,8 @@ use reify_fdm::{
 };
 use reify_ir::{OpaqueState, Value};
 
-use super::as_printed_material::{field_int, field_real, field_scalar, struct_data, structure};
-use super::rejected_input_outcome;
+use super::as_printed_material::{field_int, field_real, field_scalar};
+use super::{rejected_input_outcome, struct_data, structure};
 use crate::arg_acceptance::{FieldRejection, length_spec};
 use crate::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
 

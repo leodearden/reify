@@ -10087,8 +10087,7 @@ mod tests {
     // ── task 6922 γ1: load magnitudes are dimension-checked, bare still read ──
 
     use crate::arg_acceptance::{FieldRejection, density_spec, force_spec, read_field_or_bare};
-    use crate::compute_targets::as_printed_material::structure;
-    use crate::compute_targets::scalar;
+    use crate::compute_targets::{scalar, structure};
 
     fn point_load_tip_force(force: Value) -> [f64; 3] {
         let loads = Value::List(vec![structure("PointLoad", vec![("force", force)])]);

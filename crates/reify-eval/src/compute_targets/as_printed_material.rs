@@ -45,22 +45,14 @@ use reify_fdm::{
     OrthotropicConstants, TransverseIsoConstants, Zone, effective_orthotropic,
     effective_transverse_isotropic, zone_solid_fraction,
 };
-use reify_ir::{
-    FieldSourceKind, OpaqueState, PersistentMap, StructureInstanceData, StructureTypeId, Value,
-};
+use reify_ir::{FieldSourceKind, OpaqueState, StructureInstanceData, Value};
 
-use super::rejected_input_outcome;
+use super::{rejected_input_outcome, struct_data, structure};
 use crate::arg_acceptance::{
     ArgSpec, FieldAcceptance, FieldRejection, accept_field, density_spec, dimensionless_spec,
     length_spec, pressure_spec,
 };
 use crate::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
-
-/// Registry-free placeholder type id for the Rust-constructed StructureInstances
-/// this trampoline mints (mirrors `dynamics_ops::REGISTRY_FREE_TYPE_ID`). These
-/// values are produced and sampled entirely Rust-side, never re-resolved against
-/// the stdlib [`StructureRegistry`], so the opaque id is unused.
-const REGISTRY_FREE_TYPE_ID: StructureTypeId = StructureTypeId(u32::MAX);
 
 /// `@optimized("fdm::as_printed_material_r_fast")` ComputeNode trampoline.
 ///
@@ -264,13 +256,6 @@ fn aabb_from_vertices(vertices: &[f32]) -> Option<AxisAlignedBox> {
 
 // ── FDMProcess / AsPrintedOptions field marshalling ─────────────────────────
 
-pub(crate) fn struct_data(v: &Value) -> Option<&StructureInstanceData> {
-    match v {
-        Value::StructureInstance(d) => Some(d),
-        _ => None,
-    }
-}
-
 /// Read a numeric field's SI value through `spec`: `Ok(None)` when it is
 /// absent, `none` or unresolved; `Err` naming `<Struct>.<key>` for any present
 /// value the spec refuses — a number of the wrong dimension, or not a number at
@@ -467,17 +452,6 @@ fn empty_provenance() -> Value {
 
 // ── small value/geometry helpers ────────────────────────────────────────────
 
-pub(crate) fn structure(type_name: &str, fields: Vec<(&str, Value)>) -> Value {
-    let fields: PersistentMap<String, Value> =
-        fields.into_iter().map(|(k, v)| (k.to_string(), v)).collect();
-    Value::StructureInstance(Box::new(StructureInstanceData {
-        type_id: REGISTRY_FREE_TYPE_ID,
-        type_name: type_name.to_string(),
-        version: 1,
-        fields,
-    }))
-}
-
 fn pressure(si: f64) -> Value {
     Value::Scalar {
         si_value: si,
@@ -595,6 +569,8 @@ mod iota_tests {
 
 #[cfg(test)]
 mod tests {
+    use reify_ir::StructureTypeId;
+
     use super::*;
 
     /// Task 5848 retypes `FDMProcess.build_direction` from `Vec3<Length>` to a

@@ -50,9 +50,9 @@ use reify_ir::{OpaqueState, Value};
 
 use super::as_printed_material::{
     AS_PRINTED_MATERIAL, as_printed_field_value, field_int, field_real, field_scalar, field_vec3,
-    orthotropic_material, read_base_elastic, struct_data, structure,
+    orthotropic_material, read_base_elastic,
 };
-use super::{MM_TO_M, rejected_input_outcome};
+use super::{MM_TO_M, rejected_input_outcome, struct_data, structure};
 use crate::arg_acceptance::{FieldRejection, length_spec};
 use crate::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
 

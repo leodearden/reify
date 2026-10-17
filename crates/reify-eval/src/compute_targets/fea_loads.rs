@@ -80,10 +80,9 @@ mod tests {
     use reify_core::DimensionVector;
 
     use super::*;
-    use crate::compute_targets::as_printed_material::structure;
-    use crate::compute_targets::scalar;
+    use crate::compute_targets::{scalar, structure};
 
-    fn struct_data(type_name: &str, fields: Vec<(&str, Value)>) -> StructureInstanceData {
+    fn instance_data(type_name: &str, fields: Vec<(&str, Value)>) -> StructureInstanceData {
         match structure(type_name, fields) {
             Value::StructureInstance(data) => *data,
             other => unreachable!("`structure` builds a StructureInstance, got {other:?}"),
@@ -91,7 +90,7 @@ mod tests {
     }
 
     fn point_load(force: Value) -> StructureInstanceData {
-        struct_data("PointLoad", vec![("force", force)])
+        instance_data("PointLoad", vec![("force", force)])
     }
 
     fn material(density: Value) -> Value {
@@ -121,19 +120,19 @@ mod tests {
         assert_eq!(point_load_force(&point_load(Value::Option(None))), Ok(None));
         assert_eq!(point_load_force(&point_load(Value::Undef)), Ok(None));
         assert_eq!(
-            point_load_force(&struct_data("PointLoad", vec![])),
+            point_load_force(&instance_data("PointLoad", vec![])),
             Ok(None)
         );
     }
 
     #[test]
     fn pressure_and_gravity_magnitudes_read_their_own_dimension() {
-        let pressure = struct_data(
+        let pressure = instance_data(
             "PressureLoad",
             vec![("magnitude", scalar(5.0e6, DimensionVector::PRESSURE))],
         );
         assert_eq!(pressure_load_magnitude(&pressure), Ok(Some(5.0e6)));
-        let gravity = struct_data(
+        let gravity = instance_data(
             "Gravity",
             vec![("magnitude", scalar(9.8, DimensionVector::ACCELERATION))],
         );
@@ -167,7 +166,7 @@ mod tests {
             ),
         ];
         for (type_name, field, read, wrong, expected_name) in cases {
-            let res = read(&struct_data(type_name, vec![(field, scalar(2.0, wrong))]));
+            let res = read(&instance_data(type_name, vec![(field, scalar(2.0, wrong))]));
             assert!(
                 matches!(
                     &res,
