@@ -5593,6 +5593,35 @@ describe('App persistence wiring — fuzzy-rebind notification (step-35)', () =>
     // Exactly one toast for this pair — no duplicate stacked.
     expect(screen.getAllByTestId('toast').length).toBe(1);
   });
+
+  // No-over-firing pin for the store-owned tree version (PRD §4.5 B8′): one
+  // idle refetch is one regeneration, so one demand push and one prompt.
+  it('(h) B8′: an idle refetch fires exactly one syncDemand and one rebind prompt per stale path', async () => {
+    const evalRef = captureEvalStatus();
+    vi.mocked(bridge.getEntityTree).mockResolvedValue([makeNode('Assembly.flange.geometry')]);
+
+    await renderAndWaitForReady();
+    await waitFor(() => expect(evalRef.get()).toBeDefined());
+    await waitFor(() => screen.getByTestId('eye-icon-Assembly.flange.geometry'));
+
+    // show → ghost COWs into a user view: the regeneration's user:* branch
+    // leaves `explicit` untouched, so only the tree version can re-fire the
+    // demand sync.
+    fireEvent.click(screen.getByTestId('eye-icon-Assembly.flange.geometry'));
+    await flushMacrotasks(SELECTIVE_DEMAND_SYNC_DEBOUNCE_MS + 50);
+    const before = vi.mocked(bridge.syncDemand).mock.calls.length;
+
+    await triggerTreeUpdate(
+      evalRef.get()!,
+      [makeNode('Assembly.bolt_flange.geometry')],
+      2,
+    );
+    await waitFor(() => screen.getByTestId('toast'));
+    await flushMacrotasks(SELECTIVE_DEMAND_SYNC_DEBOUNCE_MS + 50);
+
+    expect(screen.getAllByTestId('toast').length).toBe(1);
+    expect(vi.mocked(bridge.syncDemand).mock.calls.length).toBe(before + 1);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -7402,9 +7431,9 @@ describe('App selective-demand enforcement sync (task 6045)', () => {
   // out-of-scope there: it failed for a live-code reason, not a mock-factory
   // one — the demand-sync selector took its first tracked read before the entity
   // tree loaded, hitting the same empty-tree short-circuit case (a) relies on,
-  // and so subscribed to nothing (esc-6045-1). Restored and re-attributed to task
-  // #6052, which threads tree-readiness into the selector; the full rationale is
-  // the `treeGeneration` @param on `createSelectiveDemandSync`.
+  // and so subscribed to nothing (esc-6045-1). Restored under task #6052; the
+  // selector now re-subscribes through viewStateStore's treeVersion, which every
+  // query reads before that short-circuit (PRD §4.5).
   it('(b) hiding a realization via the eye icon prunes it from the next payload while a sibling realization survives', async () => {
     vi.mocked(bridge.getInitialState).mockResolvedValue(published({
       ...emptyState,
@@ -7440,8 +7469,8 @@ describe('App selective-demand enforcement sync (task 6045)', () => {
     // viewStateStore's `cycleCascading`: show -> ghost -> hidden.
     fireEvent.click(screen.getByTestId('eye-icon-Bracket#realization[0]'));
     fireEvent.click(screen.getByTestId('eye-icon-Bracket#realization[0]'));
-    // DesignTree renders aria-label from App's `effectiveVisibility` memo, so
-    // this also proves the click actually reached the view-state store.
+    // DesignTree renders aria-label from its row's getEffectiveVisibility memo,
+    // so this also proves the click actually reached the view-state store.
     expect(
       screen.getByTestId('eye-icon-Bracket#realization[0]').getAttribute('aria-label'),
     ).toBe('hidden');

@@ -40,3 +40,8 @@ side-panel-track-iife | grid-template-rows': \(\(\) => | gui/src/App.tsx | 0 | �
 # app-unsub-slot: initApp's subscriptions live in one SubscriptionSet
 # (gui/src/app/subscriptionSet.ts), so App.tsx holds no per-subscription unsub slot.
 app-unsub-slot | let [a-zA-Z]*[uU]nsub[:;= ] | gui/src/App.tsx | 0 | γ #9064
+# tree-generation-{app,stores}: tree reactivity is viewStateStore's treeVersion
+# (PRD gui-frontend-wire-bindings-bridge-port §4.5), so neither App nor a store
+# threads a tree counter.
+tree-generation-app | [tT]reeGeneration | gui/src/App.tsx | 0 | δ #9065
+tree-generation-stores | [tT]reeGeneration | gui/src/stores/*.ts | 0 | δ #9065
