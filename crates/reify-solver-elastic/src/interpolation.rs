@@ -512,8 +512,61 @@ impl<'a> TetSpatialIndex<'a> {
     }
 }
 
+/// Tet tilings shared by this module's index tests and by `resample`'s tests.
+#[cfg(test)]
+pub(crate) mod test_meshes {
+    /// Build a Freudenthal box-of-tets: M³ hexes → 6·M³ tets tiling [0,1]³.
+    ///
+    /// Node index: `ix*(M+1)²+iy*(M+1)+iz`; physical coords: `(ix/M, iy/M, iz/M)`.
+    /// Each hex is split along its (1,1,1)-corner diagonal n6 into the same six
+    /// tets, under the same corner labels n0..n7, as `bvh_tests::box_elems`.
+    ///
+    /// Hexes are emitted x-outer/z-inner, 6 consecutive tets each, so hex
+    /// `(cx,cy,cz)` owns `elems[6*((cx*M + cy)*M + cz) .. +6]`; `resample`'s
+    /// grid-miss tests rely on that to punch a coverage hole in one specific hex.
+    pub(crate) fn make_box_of_tets(m: usize) -> (Vec<[f64; 3]>, Vec<[usize; 4]>) {
+        let m1 = m + 1;
+        let mut nodes = Vec::with_capacity(m1 * m1 * m1);
+        for ix in 0..=m {
+            for iy in 0..=m {
+                for iz in 0..=m {
+                    nodes.push([
+                        ix as f64 / m as f64,
+                        iy as f64 / m as f64,
+                        iz as f64 / m as f64,
+                    ]);
+                }
+            }
+        }
+        let node = |ix: usize, iy: usize, iz: usize| ix * m1 * m1 + iy * m1 + iz;
+        let mut elems = Vec::with_capacity(6 * m * m * m);
+        for cx in 0..m {
+            for cy in 0..m {
+                for cz in 0..m {
+                    let n0 = node(cx, cy, cz);
+                    let n1 = node(cx + 1, cy, cz);
+                    let n2 = node(cx + 1, cy + 1, cz);
+                    let n3 = node(cx, cy + 1, cz);
+                    let n4 = node(cx, cy, cz + 1);
+                    let n5 = node(cx + 1, cy, cz + 1);
+                    let n6 = node(cx + 1, cy + 1, cz + 1);
+                    let n7 = node(cx, cy + 1, cz + 1);
+                    elems.push([n0, n1, n2, n6]);
+                    elems.push([n0, n2, n3, n6]);
+                    elems.push([n0, n5, n1, n6]);
+                    elems.push([n0, n3, n7, n6]);
+                    elems.push([n0, n4, n5, n6]);
+                    elems.push([n0, n7, n4, n6]);
+                }
+            }
+        }
+        (nodes, elems)
+    }
+}
+
 #[cfg(test)]
 mod bvh_tests {
+    use super::test_meshes::make_box_of_tets;
     use super::*;
 
     // ── Shared fixture: 6-tet Freudenthal box tiling [0,1]³ ─────────────────
@@ -679,6 +732,91 @@ mod bvh_tests {
 
         // (d) Far-outside point → None in both BVH and oracle.
         check("far outside", [10.0, 10.0, 10.0]);
+    }
+
+    /// Every point of the cube lattice `axis × axis × axis`.
+    fn cube_lattice(axis: &[f64]) -> Vec<[f64; 3]> {
+        let mut points = Vec::with_capacity(axis.len().pow(3));
+        for &x in axis {
+            for &y in axis {
+                for &z in axis {
+                    points.push([x, y, z]);
+                }
+            }
+        }
+        points
+    }
+
+    /// BT11: an index built over a mesh with a given `tol` answers every query
+    /// point exactly as the linear scan does at that same `tol`.
+    ///
+    /// `make_box_of_tets(4|8)` holds 384 and 3072 tets, so unlike the 6-tet box
+    /// (one leaf) the index is a multi-level tree. Sweeps tol ∈ {0, 1e-9, 1e-6}
+    /// over two lattices: one spanning [-0.1, 1.1]³, with interior hits and
+    /// out-of-solid misses, and the mesh's own vertex lattice, computed as the
+    /// fixture computes its nodes so its points equal mesh vertices bit-for-bit.
+    /// Most of those lie in several tets at once, which exercises the min-index
+    /// tie-break.
+    #[test]
+    fn tet_spatial_index_locate_is_bit_identical_to_locate_element_p1_over_box_tilings() {
+        let spanning_axis: Vec<f64> = (0..=5).map(|i| -0.1 + 0.24 * i as f64).collect();
+        let spanning_points = cube_lattice(&spanning_axis);
+        for m in [4, 8] {
+            let (nodes, elems) = make_box_of_tets(m);
+            let mut phys = Vec::new();
+            let locatable = make_locatable(&nodes, &elems, &mut phys);
+
+            let vertex_axis: Vec<f64> = (0..=m).map(|i| i as f64 / m as f64).collect();
+            let vertex_points = cube_lattice(&vertex_axis);
+
+            for tol in [0.0, 1e-9, 1e-6] {
+                let idx = TetSpatialIndex::build(&nodes, &elems, tol);
+                for &p in spanning_points.iter().chain(&vertex_points) {
+                    let indexed = idx.locate(p);
+                    let scanned = locate_element_p1(&locatable, p, tol);
+                    assert_eq!(
+                        indexed, scanned,
+                        "m={m} tol={tol:e} p={p:?}: index located {indexed:?}, linear scan {scanned:?}",
+                    );
+                    assert_eq!(
+                        idx.locate_counted(p).0,
+                        indexed,
+                        "m={m} tol={tol:e} p={p:?}: locate_counted disagrees with locate",
+                    );
+                }
+            }
+
+            if m == 4 {
+                let tol = 1e-9;
+                let hits: Vec<Option<usize>> = spanning_points
+                    .iter()
+                    .map(|&p| locate_element_p1(&locatable, p, tol))
+                    .collect();
+                assert!(
+                    hits.iter().any(Option::is_some),
+                    "spanning lattice must contain interior hits"
+                );
+                assert!(
+                    hits.iter().any(Option::is_none),
+                    "spanning lattice must contain out-of-solid misses"
+                );
+
+                let tie_points = vertex_points
+                    .iter()
+                    .filter(|&&p| {
+                        locatable
+                            .iter()
+                            .filter(|t| point_in_tet_p1(t.phys_nodes, p, tol))
+                            .count()
+                            >= 2
+                    })
+                    .count();
+                assert!(
+                    tie_points > 0,
+                    "vertex lattice must hit points shared by ≥2 tets"
+                );
+            }
+        }
     }
 
     /// Smoke test (task #5090, PRD compute-fea-hardening.md task E3 /
