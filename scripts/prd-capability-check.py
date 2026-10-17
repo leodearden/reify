@@ -91,6 +91,7 @@ import subprocess
 import sys
 import tempfile
 from dataclasses import dataclass, field
+from enum import StrEnum
 from typing import Any, Dict, FrozenSet, List, Optional, Tuple
 
 
@@ -768,12 +769,57 @@ def dump_probe_set(probes: List[Probe]) -> str:
 # ProbeRun — captured subprocess output
 # ---------------------------------------------------------------------------
 
-@dataclass
+class HarnessFailureKind(StrEnum):
+    """How the probe machinery failed, as opposed to what the tool observed.
+
+    The values are the --json record's `harness_failure.kind` spellings.
+    """
+    LAUNCH = "launch"              # an OSError launching the probe process
+    SETUP = "setup"                # an OSError building the grammar env / cache dir
+    TIMEOUT = "timeout"            # a caller-supplied bound elapsed
+    GRAMMAR_LOAD = "grammar_load"  # tree-sitter reported a grammar load failure
+
+
+@dataclass(frozen=True)
+class HarnessFailure:
+    """A probe that could not run as a probe.  `detail` is the errno/tool text.
+
+    cache_denied is meaningful only for GRAMMAR_LOAD: it marks the load failure
+    a sandboxed role's unwritable tree-sitter cache produces (see
+    grammar_load_failure).
+    """
+    kind: HarnessFailureKind
+    detail: str
+    cache_denied: bool = False
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.kind, HarnessFailureKind):
+            raise TypeError(
+                f"HarnessFailure.kind must be a HarnessFailureKind, got "
+                f"{type(self.kind).__name__} {self.kind!r}"
+            )
+        if self.cache_denied and self.kind is not HarnessFailureKind.GRAMMAR_LOAD:
+            raise ValueError(
+                f"HarnessFailure(kind={self.kind.value!r}) cannot carry "
+                f"cache_denied=True; only {HarnessFailureKind.GRAMMAR_LOAD.value!r} "
+                "can be a cache denial"
+            )
+
+
+@dataclass(frozen=True)
 class ProbeRun:
-    """Captured output from running a probe command."""
+    """Captured output from running a probe command.
+
+    stdout/stderr carry only what the tool printed.  harness_failure is set
+    when the machinery failed; fixture_present records whether the probe's
+    fixture existed when it was launched.  Both default to the fail-closed
+    reading: no failure, and a fixture that was there.
+    """
     exit_code: int
     stdout: str
     stderr: str
+    harness_failure: Optional[HarnessFailure] = None
+    fixture_present: bool = True
 
 
 # ---------------------------------------------------------------------------
@@ -814,40 +860,50 @@ _CACHE_DENIAL_NEXT_STEP = (
 )
 
 
-def grammar_cache_denied(run: ProbeRun) -> bool:
-    """Return True iff `run` shows tree-sitter denied write access to its cache.
+def grammar_load_failure(stderr: str) -> Optional[HarnessFailure]:
+    """Parse tree-sitter's stderr into a GRAMMAR_LOAD failure, or None.
 
-    The signature a sandboxed role produces when its landlock write set does not
-    grant ``~/.cache/tree-sitter/`` — CLI and grammar both present, but the lock
-    directory needed to *load* the grammar is unwritable::
+    The one reader of tree-sitter's load-failure signature.  None means the
+    grammar loaded (a parse error, or a clean run); otherwise the failure's
+    detail is the stderr from the load-failure marker onwards.
+
+    cache_denied marks the signature a sandboxed role produces when its landlock
+    write set does not grant ``~/.cache/tree-sitter/`` — CLI and grammar both
+    present, but the lock directory needed to *load* the grammar is unwritable::
 
         Error: Failed to load language for path "…"
         Caused by: Failed to load language in current directory:
         Permission denied (os error 13) (~/.cache/tree-sitter/lock/reify-….lock)
 
-    NARROWNESS CONTRACT — BOTH a grammar *load* failure AND a permission denial
-    are required, because neither half alone is safe to skip on: a genuine
-    grammar regression is a *parse* error (exit 1, no load failure), and a load
-    failure with no permission indicator is a missing or corrupt grammar.  Both
-    keep reaching _HARNESS_ERROR / exit 70.  The denial is searched for only at
-    or after the load-failure marker, since tree-sitter renders the cause chain
-    after the top-level error, so an EACCES on some other file that precedes the
-    marker does not count.  Nothing narrower is enforced: a denial anywhere after
-    the marker counts, not only one inside its `Caused by:` block.  The errno is
-    matched whole.
+    NARROWNESS CONTRACT — a denial needs BOTH a grammar *load* failure AND a
+    permission denial, because neither half alone is safe to skip on: a genuine
+    grammar regression is a *parse* error (no load failure, so None), and a load
+    failure with no permission indicator is a missing or corrupt grammar
+    (cache_denied False).  Both keep reaching _HARNESS_ERROR / exit 70.  The
+    denial is searched for only at or after the load-failure marker, since
+    tree-sitter renders the cause chain after the top-level error, so an EACCES
+    on some other file that precedes the marker does not count.  Nothing
+    narrower is enforced: a denial anywhere after the marker counts, not only
+    one inside its `Caused by:` block.  The errno is matched whole.
 
     Keys on stderr rather than ``os.access(dir, os.W_OK)``, which consults DAC
     only and reports the directory writable under a landlock hook (measured: the
     lock dir is ``drwxrwxr-x`` owned by the invoking user, yet ``touch`` fails).
-
-    Pure observation: does NOT influence observe(), verdict() or
-    harness_exit_code(), so a denied probe still yields HARNESS_ERROR / exit 70.
     """
-    stderr = run.stderr
     load_failure_at = stderr.find(_GRAMMAR_LOAD_FAILURE_MARKER)
     if load_failure_at < 0:
-        return False
-    return _PERMISSION_DENIAL_RE.search(stderr, load_failure_at) is not None
+        return None
+    return HarnessFailure(
+        kind=HarnessFailureKind.GRAMMAR_LOAD,
+        detail=stderr[load_failure_at:].strip(),
+        cache_denied=_PERMISSION_DENIAL_RE.search(stderr, load_failure_at) is not None,
+    )
+
+
+def grammar_cache_denied(run: ProbeRun) -> bool:
+    """True iff `run`'s stderr is a tree-sitter cache denial (grammar_load_failure)."""
+    failure = grammar_load_failure(run.stderr)
+    return failure is not None and failure.cache_denied
 
 
 def match_predicate(run: ProbeRun, match: Dict[str, Any]) -> bool:
