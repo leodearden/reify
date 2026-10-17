@@ -7346,6 +7346,41 @@ mod persistent_cache_cli_wiring_tests {
         }
     }
 
+    /// The eval family attaches a persistent cache, so its posture must say it
+    /// may serve persisted results; a `Fresh` profile refuses that cache.
+    #[test]
+    fn configured_eval_engine_declares_it_may_serve_persisted_results() {
+        let engine = configured_eval_engine(|posture| {
+            reify_eval::Engine::new(
+                posture,
+                Box::new(reify_constraints::SimpleConstraintChecker),
+                None,
+            )
+        });
+        match engine.solver_posture() {
+            reify_eval::SolverPosture::Solve(profile) => assert!(
+                profile.staleness().permits_persisted_results(),
+                "the eval family's profile must permit persisted results, got {profile:?}",
+            ),
+            reify_eval::SolverPosture::SolverFree => {
+                panic!("the eval family must construct a Solve posture, got SolverFree")
+            }
+        }
+
+        let refused = std::panic::catch_unwind(|| {
+            let mut fresh = reify_eval::Engine::new(
+                reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH),
+                Box::new(reify_constraints::SimpleConstraintChecker),
+                None,
+            );
+            fresh.set_persistent_cache_dir(Some(std::env::temp_dir().join("reify-6689-cli")));
+        });
+        assert!(
+            refused.is_err(),
+            "a Fresh-profile engine must refuse a persistent cache",
+        );
+    }
+
     /// The `--cache-dir` flag override (modelled by calling
     /// `engine.set_persistent_cache_dir` after `configured_eval_engine`)
     /// must replace whatever dir was set by the env/default resolver.

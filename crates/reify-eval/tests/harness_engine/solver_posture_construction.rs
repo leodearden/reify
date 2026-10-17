@@ -7,12 +7,16 @@
 //! the unconstrained `orphan` unresolved with only a warning; a bare
 //! `DimensionalSolver` leaves both unresolved and emits a strict-resolution
 //! error; no solver leaves both unresolved.
+//!
+//! The guards that keep a named posture true are pinned too: a `SolverFree`
+//! engine refuses a solver, and a `Fresh` profile refuses a persistent cache.
 
 use std::collections::{BTreeMap, HashMap};
+use std::path::PathBuf;
 
 use reify_core::{Diagnostic, Severity, ValueCellId};
 use reify_eval::{Engine, SolverPosture};
-use reify_ir::{ConstraintChecker, ResolutionProfile, Value};
+use reify_ir::{ConstraintChecker, IterationBudget, ResolutionProfile, StalenessPolicy, Value};
 use reify_test_support::{
     MockConstraintChecker, MockConstraintSolver, collect_errors, compile_source_with_stdlib, mm,
 };
@@ -182,4 +186,67 @@ fn with_solver_replaces_the_solver_but_keeps_the_profile() {
         "with_solver must route the solve through the injected double, not the \
          production registry (which would give the centre, 10mm)",
     );
+}
+
+fn solved_double() -> Box<MockConstraintSolver> {
+    Box::new(MockConstraintSolver::new_solved(HashMap::from([(
+        probe_a(),
+        mm(7.0),
+    )])))
+}
+
+fn may_serve_persisted() -> SolverPosture {
+    SolverPosture::Solve(ResolutionProfile::new(
+        IterationBudget::SolverDefault,
+        StalenessPolicy::MayServePersisted,
+    ))
+}
+
+fn scratch_cache_dir() -> PathBuf {
+    std::env::temp_dir().join("reify-6689-solver-posture-cache")
+}
+
+#[test]
+#[should_panic(expected = "SolverFree")]
+fn with_solver_refuses_a_solver_free_engine() {
+    let _ = Engine::new(SolverPosture::SolverFree, checker(), None).with_solver(solved_double());
+}
+
+#[test]
+#[should_panic(expected = "SolverFree")]
+fn register_solver_refuses_a_solver_free_engine() {
+    let mut engine = Engine::new(SolverPosture::SolverFree, checker(), None);
+    engine.register_solver("libslvs", solved_double());
+}
+
+#[test]
+#[should_panic(expected = "MayServePersisted")]
+fn persistent_cache_refused_under_a_fresh_profile() {
+    let mut engine = Engine::new(SOLVE_FRESH, checker(), None);
+    engine.set_persistent_cache_dir(Some(scratch_cache_dir()));
+}
+
+#[test]
+fn persistent_cache_accepted_when_the_profile_permits_it() {
+    let mut engine = Engine::new(may_serve_persisted(), checker(), None);
+    let dir = scratch_cache_dir();
+    engine.set_persistent_cache_dir(Some(dir.clone()));
+    assert_eq!(engine.persistent_cache_dir(), Some(dir.as_path()));
+}
+
+#[test]
+fn persistent_cache_detach_is_always_accepted() {
+    for posture in [SOLVE_FRESH, SolverPosture::SolverFree] {
+        let mut engine = Engine::new(posture, checker(), None);
+        engine.set_persistent_cache_dir(None);
+        assert_eq!(engine.persistent_cache_dir(), None);
+    }
+}
+
+#[test]
+fn solver_free_engine_may_carry_a_persistent_cache() {
+    let mut engine = Engine::new(SolverPosture::SolverFree, checker(), None);
+    let dir = scratch_cache_dir();
+    engine.set_persistent_cache_dir(Some(dir.clone()));
+    assert_eq!(engine.persistent_cache_dir(), Some(dir.as_path()));
 }
