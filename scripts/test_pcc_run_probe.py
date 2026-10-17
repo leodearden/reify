@@ -190,6 +190,28 @@ class TestRunProbe(unittest.TestCase):
 
     # ── harness-error cases: missing binary, grammar load failure ─────────────
 
+    def test_missing_reify_binary_is_a_typed_launch_failure(self):
+        """The errno detail is data on the run; stderr carries only tool output."""
+        missing = os.path.join(self._tmpdir, "nonexistent-reify-xyz")
+        with unittest.mock.patch.dict(os.environ, {"REIFY_BIN": missing}):
+            run = pcc.run_probe(self._make_probe("check"))
+        self.assertEqual(run.harness_failure.kind, pcc.HarnessFailureKind.LAUNCH)
+        self.assertIn(missing, run.harness_failure.detail)
+        self.assertEqual(run.exit_code, 127)
+        self.assertEqual(run.stderr, "", "no tool ran, so nothing was printed")
+
+    def test_grammar_run_that_loaded_has_no_harness_failure(self):
+        """A parse error and a clean parse are observations, not machinery failures."""
+        for label, stub in (
+            ("parse error", self._make_stub(
+                stderr_text="x.ri\t0 ms\t(ERROR [0, 0] - [3, 0])", exit_code=1)),
+            ("clean", self._make_stub(exit_code=0)),
+        ):
+            with self.subTest(run=label):
+                with unittest.mock.patch.dict(os.environ, {"TREE_SITTER_BIN": stub}):
+                    run = pcc.run_probe(self._make_probe("grammar"))
+                self.assertIsNone(run.harness_failure)
+
     def test_missing_reify_binary_produces_harness_error(self):
         """REIFY_BIN=/nonexistent → evaluate() verdict is not PASS/FAIL/UNPROVABLE."""
         probe = pcc.Probe(
@@ -207,7 +229,7 @@ class TestRunProbe(unittest.TestCase):
         )
 
     def test_non_executable_tree_sitter_binary_produces_harness_error(self):
-        """A tree-sitter CLI that EXISTS but cannot be LAUNCHED → sentinel, not a raise.
+        """A tree-sitter CLI that EXISTS but cannot be LAUNCHED → LAUNCH, not a raise.
 
         EACCES raises PermissionError, which `except FileNotFoundError` did not
         catch; run_probe() must represent it as "could not be launched" like
@@ -228,15 +250,14 @@ class TestRunProbe(unittest.TestCase):
         probe = self._make_probe("grammar", "tests/prd-gate/fixtures/arrow_type.ri")
         with unittest.mock.patch.dict(os.environ, {"TREE_SITTER_BIN": stub}):
             run = pcc.run_probe(probe)
-        self.assertIn(
-            pcc._BINARY_NOT_FOUND_SENTINEL, run.stderr,
-            "an unlaunchable binary must reach observe() through the same "
-            "sentinel channel as a missing one",
+        self.assertEqual(
+            run.harness_failure.kind, pcc.HarnessFailureKind.LAUNCH,
+            "an unlaunchable binary is the same launch failure as a missing one",
         )
         self.assertEqual(run.exit_code, 127)
 
     def test_grammar_load_failure_produces_harness_error(self):
-        """Grammar 'Failed to load language' → harness-error verdict from evaluate()."""
+        """Grammar 'Failed to load language' → GRAMMAR_LOAD, and HARNESS_ERROR."""
         stub = self._make_stub(
             stderr_text="Failed to load language: reify",
             exit_code=1,
@@ -248,7 +269,11 @@ class TestRunProbe(unittest.TestCase):
             expected={"observation": "absent", "match": {}},
         )
         with unittest.mock.patch.dict(os.environ, {"TREE_SITTER_BIN": stub}):
+            run = pcc.run_probe(probe)
             result = pcc.evaluate(probe)  # uses the real run_probe default
+        self.assertEqual(run.harness_failure.kind, pcc.HarnessFailureKind.GRAMMAR_LOAD)
+        self.assertFalse(run.harness_failure.cache_denied)
+        self.assertEqual(result.verdict, pcc._HARNESS_ERROR)
         self.assertNotIn(
             result.verdict,
             (pcc.PASS, pcc.FAIL, pcc.UNPROVABLE),

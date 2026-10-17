@@ -208,8 +208,9 @@ class TestObservation(unittest.TestCase):
         self.assertEqual(obs, pcc.ABSENT)
 
     def test_grammar_exit1_with_failed_to_load_language_is_harness_error(self):
-        """grammar: 'Failed to load language' in stderr → harness-error sentinel."""
-        run = self._run(1, stderr="Failed to load language: reify")
+        """grammar: the boundary's GRAMMAR_LOAD failure → harness-error observation."""
+        stderr = "Failed to load language: reify"
+        run = pcc.ProbeRun(1, "", stderr, harness_failure=pcc.grammar_load_failure(stderr))
         obs = pcc.observe("grammar", run, {})
         # Must not be PRESENT or ABSENT — it must be a harness-error signal
         self.assertNotEqual(obs, pcc.PRESENT)
@@ -370,17 +371,22 @@ class TestValueObservation(unittest.TestCase):
             pcc.INDETERMINATE,
         )
 
-    # ── the universal sentinels still beat the kind dispatch ──────────────────
+    # ── a harness failure still beats the kind dispatch ───────────────────────
 
-    def test_binary_not_found_is_harness_error_not_indeterminate(self):
-        run = self._run(127, stderr=pcc._BINARY_NOT_FOUND_SENTINEL)
+    def _failed(self, exit_code, kind, detail):
+        return pcc.ProbeRun(
+            exit_code, "", "", harness_failure=pcc.HarnessFailure(kind, detail)
+        )
+
+    def test_launch_failure_is_harness_error_not_indeterminate(self):
+        run = self._failed(127, pcc.HarnessFailureKind.LAUNCH, "[Errno 2] reify")
         self.assertEqual(
             pcc.observe("value", run, self._value(self._DAMPING)),
             pcc._HARNESS_ERROR,
         )
 
     def test_timeout_is_harness_error_not_indeterminate(self):
-        run = self._run(124, stderr=pcc._PROBE_TIMEOUT_SENTINEL)
+        run = self._failed(124, pcc.HarnessFailureKind.TIMEOUT, "timed out after 30s")
         self.assertEqual(
             pcc.observe("value", run, self._value(self._DAMPING)),
             pcc._HARNESS_ERROR,
@@ -457,12 +463,23 @@ class TestValueObservation(unittest.TestCase):
 
         self.assertEqual(pcc.observe("grammar", self._run(0), {}), pcc.PRESENT)
         self.assertEqual(pcc.observe("grammar", self._run(1), {}), pcc.ABSENT)
-        load_failure = self._run(
-            1, stderr=f"{pcc._GRAMMAR_LOAD_FAILURE_MARKER}: reify\n"
+        load_failure = pcc.ProbeRun(
+            1, "", "", harness_failure=pcc.HarnessFailure(
+                pcc.HarnessFailureKind.GRAMMAR_LOAD, "Failed to load language: reify"
+            ),
         )
         self.assertEqual(
             pcc.observe("grammar", load_failure, {}), pcc._HARNESS_ERROR
         )
+
+    def test_grammar_arm_reads_the_field_not_the_text(self):
+        """The load-failure TEXT alone is ABSENT: stderr is parsed at the boundary.
+
+        run_probe() turns tree-sitter's signature into harness_failure exactly
+        once; observe() must not re-derive it from stderr a second time.
+        """
+        run = self._run(1, stderr="Error: Failed to load language for path \"x.ri\"\n")
+        self.assertEqual(pcc.observe("grammar", run, {}), pcc.ABSENT)
 
 
 class TestAbsentFixtureIsIndeterminate(unittest.TestCase):
@@ -795,23 +812,26 @@ class TestHarnessExitCode(unittest.TestCase):
         ]
         self.assertEqual(pcc.harness_exit_code(results), 70)
 
-    def test_binary_not_found_sentinel_flows_to_exit_70(self):
-        """_BINARY_NOT_FOUND_SENTINEL in stderr → observe → HARNESS_ERROR verdict → exit 70."""
+    def test_launch_failure_flows_to_exit_70(self):
+        """harness_failure LAUNCH → observe → HARNESS_ERROR verdict → exit 70."""
         probe = pcc.Probe(
-            capability="sentinel-flow-test",
+            capability="launch-failure-flow-test",
             probe_kind="check",
             fixture="some/fixture.ri",
             expected={"observation": "present", "match": {}},
         )
 
-        def sentinel_runner(p):
+        def launch_failure_runner(p):
             return pcc.ProbeRun(
                 exit_code=127,
                 stdout="",
-                stderr=pcc._BINARY_NOT_FOUND_SENTINEL + ": [Errno 2] No such file or directory",
+                stderr="",
+                harness_failure=pcc.HarnessFailure(
+                    pcc.HarnessFailureKind.LAUNCH, "[Errno 2] No such file or directory"
+                ),
             )
 
-        result = pcc.evaluate(probe, runner=sentinel_runner)
+        result = pcc.evaluate(probe, runner=launch_failure_runner)
         self.assertEqual(result.verdict, pcc._HARNESS_ERROR)
         self.assertEqual(pcc.harness_exit_code([result]), 70)
 

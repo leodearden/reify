@@ -30,6 +30,7 @@ from _pcc_test_support import (
     _require_grammar_substrate,
     _ts_stub_cache_denied,
     _ts_stub_clean,
+    _ts_stub_hangs,
     _ts_stub_not_executable,
 )
 
@@ -115,6 +116,11 @@ class _MainHarness:
             exit_code, stdout, stderr = run
             return pcc.ProbeRun(exit_code=exit_code, stdout=stdout, stderr=stderr)
         return runner
+
+    @staticmethod
+    def _grammar_run(stderr):
+        """A grammar run as run_probe() reports it: stderr parsed at the boundary."""
+        return pcc.ProbeRun(1, "", stderr, harness_failure=pcc.grammar_load_failure(stderr))
 
     def _all_pass_runner(self):
         """Runner that causes every probe kind in example-probe-set.json to PASS."""
@@ -470,11 +476,11 @@ class TestMain(_MainHarness, unittest.TestCase):
     def _cache_denial_runner(self):
         """Runner whose grammar probe reproduces the measured cache denial.
 
-        exit 1 + "Failed to load language" is what observe() classifies as
-        _HARNESS_ERROR, so this exercises the real rendering path.
+        The run carries the boundary parser's GRAMMAR_LOAD answer, as run_probe()
+        would report it, so this exercises the real rendering path.
         """
         return self._make_runner({
-            "grammar": (1, "", _CACHE_DENIED_STDERR),
+            "grammar": self._grammar_run(_CACHE_DENIED_STDERR),
         })
 
     def test_harness_error_stderr_shows_the_denied_path(self):
@@ -524,12 +530,31 @@ class TestMain(_MainHarness, unittest.TestCase):
         dropped — leaving the renderer calling a missing CLI a landlock denial.
         """
         runner = self._make_runner({
-            "grammar": (127, "", pcc._BINARY_NOT_FOUND_SENTINEL +
-                        ": [Errno 2] No such file or directory: 'tree-sitter'"),
+            "grammar": pcc.ProbeRun(127, "", "", harness_failure=pcc.HarnessFailure(
+                pcc.HarnessFailureKind.LAUNCH,
+                "[Errno 2] No such file or directory: 'tree-sitter'",
+            )),
         })
         rc, out, _ = self._run_main_capturing([str(_EXAMPLE_PROBE_SET)], runner=runner)
         self.assertEqual(rc, 70, "precondition: the grammar probe is a HARNESS_ERROR")
         self._assert_no_cache_denial_hint(out)
+
+    def test_harness_error_row_names_its_failure_kind_and_detail(self):
+        """The errno detail no longer rides in stderr, so it gets its own line."""
+        detail = "[Errno 2] No such file or directory: 'tree-sitter'"
+        runner = self._make_runner({
+            "grammar": pcc.ProbeRun(127, "", "", harness_failure=pcc.HarnessFailure(
+                pcc.HarnessFailureKind.LAUNCH, detail,
+            )),
+        })
+        rc, out, _ = self._run_main_capturing([str(_EXAMPLE_PROBE_SET)], runner=runner)
+        self.assertEqual(rc, 70)
+        harness_lines = [
+            line for line in out.splitlines() if line.strip().startswith("harness:")
+        ]
+        self.assertEqual(len(harness_lines), 1, out)
+        self.assertIn("launch", harness_lines[0])
+        self.assertIn(detail, harness_lines[0])
 
     def test_non_permission_load_failure_emits_no_cache_denial_hint(self):
         """A load failure with no permission indicator gets no cache hint either.
@@ -538,8 +563,9 @@ class TestMain(_MainHarness, unittest.TestCase):
         corrupt grammar must not be written off as an environmental skip.
         """
         runner = self._make_runner({
-            "grammar": (1, "", "Error: Failed to load language for path \"x.ri\"\n"
-                               "Caused by: No language found for path\n"),
+            "grammar": self._grammar_run(
+                "Error: Failed to load language for path \"x.ri\"\n"
+                "Caused by: No language found for path\n"),
         })
         rc, out, _ = self._run_main_capturing([str(_EXAMPLE_PROBE_SET)], runner=runner)
         self.assertEqual(rc, 70, "precondition: the grammar probe is a HARNESS_ERROR")
@@ -572,7 +598,7 @@ class TestMain(_MainHarness, unittest.TestCase):
         tail = "TAIL_BEYOND_THE_HARNESS_ERROR_CAP"
         flood = _CACHE_DENIED_STDERR + ("z" * pcc._HARNESS_ERROR_STDERR_CAP) + tail
         runner = self._make_runner({
-            "grammar": (1, "", flood),
+            "grammar": self._grammar_run(flood),
         })
         rc, out, _ = self._run_main_capturing([str(_EXAMPLE_PROBE_SET)], runner=runner)
         self.assertEqual(rc, 70, "precondition: the grammar probe is a HARNESS_ERROR")
@@ -594,7 +620,7 @@ class TestMain(_MainHarness, unittest.TestCase):
         tail = "TAIL_BEYOND_THE_HARNESS_ERROR_CAP"
         flood = _CACHE_DENIED_STDERR + ("z" * pcc._HARNESS_ERROR_STDERR_CAP) + tail
         runner = self._make_runner({
-            "grammar": (1, "", flood),
+            "grammar": self._grammar_run(flood),
         })
         rc, out, _ = self._run_main_capturing(
             ["--json", str(_EXAMPLE_PROBE_SET)], runner=runner
@@ -754,6 +780,79 @@ class TestMain(_MainHarness, unittest.TestCase):
         # expected present → FAIL
         self.assertEqual(rc, 1, "arrow_type.ri with expected present → FAIL (exit 1)")
         self.assertIn(pcc.FAIL, out)
+
+
+class TestHarnessFailureRecord(_MainHarness, unittest.TestCase):
+    """B4: each harness failure reaches the --json record as a typed field.
+
+    Driven through main() with the REAL run_probe, so the record is what α
+    emits, and no '[HARNESS ERROR' text appears anywhere in its output.
+    """
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="prd_gate_harness_failure_")
+        self.addCleanup(shutil.rmtree, self._tmpdir, ignore_errors=True)
+        env = unittest.mock.patch.dict(os.environ, {})
+        env.start()
+        self.addCleanup(env.stop)
+        os.environ.pop(pcc._CACHE_HOME_OVERRIDE_ENV, None)
+
+    def _probe_set(self, kind, fixture):
+        path = os.path.join(self._tmpdir, f"{kind}-probe-set.json")
+        with open(path, "w") as fh:
+            json.dump({"probes": [{
+                "capability": f"{kind} harness failure",
+                "probe_kind": kind,
+                "fixture": fixture,
+                "expected": {"observation": "present", "match": {"exit_code": 1}
+                             if kind == "check" else {}},
+            }]}, fh)
+        return path
+
+    def _assert_typed_failure(self, kind, fixture, expected_kind):
+        rc, out, err = self._run_main_capturing(["--json", self._probe_set(kind, fixture)])
+        self.assertEqual(rc, 70, out + err)
+        [record] = json.loads(out)["results"]
+        self.assertEqual(record["verdict"], pcc._HARNESS_ERROR)
+        self.assertEqual(record["harness_failure"]["kind"], expected_kind)
+        for label, text in (("record stderr", record["stderr"]),
+                            ("stdout", out), ("stderr", err)):
+            with self.subTest(channel=label):
+                self.assertNotIn("[HARNESS ERROR", text)
+        return record
+
+    def test_missing_reify_binary_is_launch(self):
+        os.environ["REIFY_BIN"] = os.path.join(self._tmpdir, "nonexistent-reify")
+        self._assert_typed_failure(
+            "check", "tests/prd-gate/fixtures/revolute_silent_accept.ri", "launch"
+        )
+
+    def test_wedged_grammar_cache_is_setup(self):
+        os.environ["TREE_SITTER_BIN"] = _ts_stub_clean(self._tmpdir)
+        with unittest.mock.patch.object(tempfile, "tempdir", self._tmpdir):
+            wedged = pcc._grammar_cache_home(pcc._find_repo_root())
+            shutil.rmtree(wedged, ignore_errors=True)
+            with open(wedged, "w") as fh:
+                fh.write("x")
+            record = self._assert_typed_failure(
+                "grammar", "tests/prd-gate/fixtures/arrow_type.ri", "setup"
+            )
+        self.assertIn(wedged, record["harness_failure"]["detail"])
+
+    def test_cache_denied_tree_sitter_is_grammar_load(self):
+        os.environ["TREE_SITTER_BIN"] = _ts_stub_cache_denied(self._tmpdir)
+        record = self._assert_typed_failure(
+            "grammar", "tests/prd-gate/fixtures/arrow_type.ri", "grammar_load"
+        )
+        self.assertIs(record["harness_failure"]["cache_denied"], True)
+
+    def test_hanging_tree_sitter_under_substrate_status_is_75(self):
+        os.environ["TREE_SITTER_BIN"] = _ts_stub_hangs(self._tmpdir)
+        with unittest.mock.patch.object(pcc, "_SUBSTRATE_PROBE_TIMEOUT_S", 0.4), \
+             _patch_parser_c(True):
+            rc, out, err = self._run_main_capturing(["--grammar-substrate-status"])
+        self.assertEqual(rc, 75, out + err)
+        self.assertNotIn("[HARNESS ERROR", out + err)
 
 
 # ---------------------------------------------------------------------------

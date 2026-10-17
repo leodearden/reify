@@ -472,8 +472,8 @@ class TestGrammarSubstrateUsable(unittest.TestCase):
     def test_missing_cli_is_unusable_with_reason(self):
         """TREE_SITTER_BIN pointing at nothing → (False, reason) naming the CLI.
 
-        run_probe() turns the FileNotFoundError into _BINARY_NOT_FOUND_SENTINEL,
-        so this arrives through the same channel as the denial and must be
+        run_probe() types the FileNotFoundError as a LAUNCH harness failure, so
+        this arrives as the same (False, reason) as the denial and must be
         distinguished by the reason text, not by the boolean.
         """
         missing = os.path.join(self._tmpdir, "definitely-not-here")
@@ -486,9 +486,9 @@ class TestGrammarSubstrateUsable(unittest.TestCase):
     def test_launch_failure_reason_carries_the_offending_path(self):
         """The launch-failure reason must name WHAT could not be launched.
 
-        One sentinel covers every launch OSError, so a missing grammar cwd raises
-        the same FileNotFoundError as a missing CLI.  Only the errno detail
-        distinguishes them, and it must survive into the SKIP line.
+        A missing grammar cwd raises the same FileNotFoundError as a missing CLI,
+        so both are LAUNCH failures.  Only the errno detail distinguishes them,
+        and it must survive into the SKIP line.
         """
         missing = os.path.join(self._tmpdir, "definitely-not-here")
         _, cli_reason = self._call(missing)
@@ -497,8 +497,8 @@ class TestGrammarSubstrateUsable(unittest.TestCase):
             "the errno detail naming the missing CLI must reach the reason",
         )
 
-        # Same sentinel, different subsystem: an absent grammar directory.  The
-        # CLI here is a perfectly good stub, so only the cwd can fail.
+        # Same failure kind, different subsystem: an absent grammar directory.
+        # The CLI here is a perfectly good stub, so only the cwd can fail.
         bad_root = os.path.join(self._tmpdir, "no-repo")
         with unittest.mock.patch.object(
             pcc, "_find_repo_root", return_value=bad_root
@@ -519,10 +519,10 @@ class TestGrammarSubstrateUsable(unittest.TestCase):
     def test_cache_setup_failure_reason_names_cache(self):
         """A cache-setup failure must be attributable from the reason text.
 
-        run_probe() represents an uncreatable private cache dir through the SAME
-        _BINARY_NOT_FOUND_SENTINEL as a missing CLI and a missing grammar dir, so
-        the reason's static sentence — which today enumerates only that pair —
-        would confidently print the wrong subsystem for this third cause.
+        run_probe() types an uncreatable private cache dir as a SETUP failure,
+        distinct from the LAUNCH failure of a missing CLI or grammar dir, so the
+        reason must name the cache rather than print the launch sentence for
+        this third cause.
 
         Asserted on the reason with the offending path REDACTED, because that
         path is literally named `reify-ts-cache-<key>`: a bare "cache" substring
@@ -614,9 +614,9 @@ class TestGrammarSubstrateUsable(unittest.TestCase):
         """A timed-out probe must never read as a real observation.
 
         subprocess.TimeoutExpired derives from SubprocessError, not OSError, so
-        run_probe()'s launch-failure catch cannot cover it; if the sentinel it
-        substitutes were not classified, an exit 124 would fall through
-        observe()'s grammar branch as an ordinary non-zero exit.
+        run_probe()'s launch-failure catch cannot cover it; if the TIMEOUT it
+        records were not classified, an exit 124 would fall through observe()'s
+        grammar branch as an ordinary non-zero exit.
         """
         with unittest.mock.patch.dict(
             os.environ, {"TREE_SITTER_BIN": _ts_stub_hangs(self._tmpdir)}
@@ -630,7 +630,7 @@ class TestGrammarSubstrateUsable(unittest.TestCase):
                 ),
                 timeout=0.4,
             )
-        self.assertIn(pcc._PROBE_TIMEOUT_SENTINEL, run.stderr)
+        self.assertEqual(run.harness_failure.kind, pcc.HarnessFailureKind.TIMEOUT)
         self.assertEqual(
             pcc.observe("grammar", run, {}), pcc._HARNESS_ERROR,
             "a probe that never finished cannot be trusted as PRESENT/ABSENT",
@@ -656,8 +656,8 @@ class TestGrammarSubstrateUsable(unittest.TestCase):
         )
         with unittest.mock.patch.dict(os.environ, {"TREE_SITTER_BIN": stub}):
             run = pcc.run_probe(probe, timeout=0.6)
-        self.assertIn(
-            pcc._PROBE_TIMEOUT_SENTINEL, run.stderr,
+        self.assertEqual(
+            run.harness_failure.kind, pcc.HarnessFailureKind.TIMEOUT,
             "precondition: the stub must have outlasted the bound",
         )
         self.assertTrue(
