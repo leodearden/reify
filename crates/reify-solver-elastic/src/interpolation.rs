@@ -756,37 +756,46 @@ mod bvh_tests {
     /// out-of-solid misses, and the mesh's own vertex lattice, computed as the
     /// fixture computes its nodes so its points equal mesh vertices bit-for-bit.
     /// Most of those lie in several tets at once, which exercises the min-index
-    /// tie-break.
+    /// tie-break. Each tiling is also swept with its tets numbered in reverse:
+    /// under the fixture's own x-major numbering, a traversal that skips the
+    /// right subtree once the left one hits still returns the minimum index.
     #[test]
     fn tet_spatial_index_locate_is_bit_identical_to_locate_element_p1_over_box_tilings() {
         let spanning_axis: Vec<f64> = (0..=5).map(|i| -0.1 + 0.24 * i as f64).collect();
         let spanning_points = cube_lattice(&spanning_axis);
         for m in [4, 8] {
-            let (nodes, elems) = make_box_of_tets(m);
-            let mut phys = Vec::new();
-            let locatable = make_locatable(&nodes, &elems, &mut phys);
+            let (nodes, ascending) = make_box_of_tets(m);
+            let reversed: Vec<[usize; 4]> = ascending.iter().rev().copied().collect();
 
             let vertex_axis: Vec<f64> = (0..=m).map(|i| i as f64 / m as f64).collect();
             let vertex_points = cube_lattice(&vertex_axis);
 
-            for tol in [0.0, 1e-9, 1e-6] {
-                let idx = TetSpatialIndex::build(&nodes, &elems, tol);
-                for &p in spanning_points.iter().chain(&vertex_points) {
-                    let indexed = idx.locate(p);
-                    let scanned = locate_element_p1(&locatable, p, tol);
-                    assert_eq!(
-                        indexed, scanned,
-                        "m={m} tol={tol:e} p={p:?}: index located {indexed:?}, linear scan {scanned:?}",
-                    );
-                    assert_eq!(
-                        idx.locate_counted(p).0,
-                        indexed,
-                        "m={m} tol={tol:e} p={p:?}: locate_counted disagrees with locate",
-                    );
+            for (numbering, elems) in [("ascending", &ascending), ("reversed", &reversed)] {
+                let mut phys = Vec::new();
+                let locatable = make_locatable(&nodes, elems, &mut phys);
+                for tol in [0.0, 1e-9, 1e-6] {
+                    let idx = TetSpatialIndex::build(&nodes, elems, tol);
+                    for &p in spanning_points.iter().chain(&vertex_points) {
+                        let indexed = idx.locate(p);
+                        let scanned = locate_element_p1(&locatable, p, tol);
+                        assert_eq!(
+                            indexed, scanned,
+                            "m={m} {numbering} tol={tol:e} p={p:?}: index located {indexed:?}, \
+                             linear scan {scanned:?}",
+                        );
+                        assert_eq!(
+                            idx.locate_counted(p).0,
+                            indexed,
+                            "m={m} {numbering} tol={tol:e} p={p:?}: locate_counted disagrees \
+                             with locate",
+                        );
+                    }
                 }
             }
 
             if m == 4 {
+                let mut phys = Vec::new();
+                let locatable = make_locatable(&nodes, &ascending, &mut phys);
                 let tol = 1e-9;
                 let hits: Vec<Option<usize>> = spanning_points
                     .iter()
