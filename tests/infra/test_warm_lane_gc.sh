@@ -186,7 +186,7 @@ make_gc_fixture() {
 }
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Shared scaffolding: task-lane factory + causal live-consumer-lock handshake
+# Shared scaffolding: task-lane factory, seed-stub emitters + causal handshake
 # ──────────────────────────────────────────────────────────────────────────────
 # The Tier-3 status-oracle stubs (gc-status-oracle{,-fail,-counting}.sh) were
 # removed with the Tier-3 machinery in task 5326 (always-reclaim collapses the
@@ -215,9 +215,11 @@ make_task_lane() {
 }
 
 # _seed_stub_body — printed to stdout; redirect into a seed-script stub file.
-# Logs its argv to $SEED_LOG and removes the lane's divergent marker (simulates
-# the α reflink-reseed's thinning effect). Shared by the make_task_lane-based
-# fixtures (Block K).
+# The stub for any block whose seed should succeed and thin: it logs its argv to
+# $SEED_LOG and removes the lane's divergent marker (simulates the α
+# reflink-reseed's thinning effect). gc calls the seed as
+# `<seed> <gen> <lane_dir> --fresh-checkout …`, so "$2" is the lane dir — the
+# positional contract every *_seed_stub_body emitter in this file shares.
 _seed_stub_body() {
     cat << 'STUB_EOF'
 #!/usr/bin/env bash
@@ -225,6 +227,70 @@ echo "$*" >> "$SEED_LOG"
 LANE_DIR="$2"
 rm -rf "$LANE_DIR/target/DIVERGENT_MARKER" 2>/dev/null || true
 exit 0
+STUB_EOF
+}
+
+# _toctou_trigger_seed_stub_body — printed to stdout; redirect into a --seed-script
+# stub file (Block P-toctou). Thins like _seed_stub_body for every lane and,
+# ADDITIONALLY, when invoked for _lane-1, makes _lane-2 live before returning.
+# Reads three variables the block exports: $TOCTOU_LANE2 (the lane to make live),
+# $TOCTOU_READY2 (the marker the holder touches once its cwd is established) and
+# $TOCTOU_PIDFILE (where the holder's PID is written).
+#   - stdio MUST go to /dev/null: gc.sh runs the seed under
+#     `( ... ) 2>&1 | while IFS= read -r line; ...`, and an inherited pipe write
+#     end would keep that `while read` open for the holder's whole 300s life,
+#     hanging the pass.
+#   - the PID is written to a file because the holder reparents to init when the
+#     stub exits, so the TEST cannot learn it any other way.
+#   - the poll for READY2 is causal ordering (technique R), not a wall-clock
+#     sleep: the stub returns only once the cwd provably exists.
+_toctou_trigger_seed_stub_body() {
+    cat << 'STUB_EOF'
+#!/usr/bin/env bash
+echo "$*" >> "$SEED_LOG"
+LANE_DIR="$2"
+rm -rf "$LANE_DIR/target/DIVERGENT_MARKER" 2>/dev/null || true
+if [ "${LANE_DIR##*/}" = "_lane-1" ]; then
+    ( cd "$TOCTOU_LANE2/target" && touch "$TOCTOU_READY2" && exec sleep 300 ) \
+        </dev/null >/dev/null 2>&1 &
+    echo "$!" > "$TOCTOU_PIDFILE"
+    _tick=0
+    while [ "$_tick" -lt 600 ]; do
+        [ -f "$TOCTOU_READY2" ] && break
+        sleep 0.05
+        _tick=$(( _tick + 1 ))
+    done
+fi
+exit 0
+STUB_EOF
+}
+
+# _post_clone_abort_seed_stub_body — printed to stdout; redirect into a
+# --seed-script stub file (Block S1). RECREATES <lane>/target with a HAZARD marker
+# and exits 1: it models the clone an aborting seed leaves behind, without needing
+# a reflink-capable filesystem. No chmod here; S3's _discard_fail_seed_stub_body
+# adds that.
+_post_clone_abort_seed_stub_body() {
+    cat << 'STUB_EOF'
+#!/usr/bin/env bash
+echo "$*" >> "$SEED_LOG"
+LANE_DIR="$2"
+mkdir -p "$LANE_DIR/target"
+touch "$LANE_DIR/target/HAZARD"
+exit 1
+STUB_EOF
+}
+
+# _empty_refusal_seed_stub_body — printed to stdout; redirect into a --seed-script
+# stub file (Block S4). Removes <lane>/target and exits 1: a refusal that left
+# nothing behind to discard.
+_empty_refusal_seed_stub_body() {
+    cat << 'STUB_EOF'
+#!/usr/bin/env bash
+echo "$*" >> "$SEED_LOG"
+LANE_DIR="$2"
+rm -rf "$LANE_DIR/target"
+exit 1
 STUB_EOF
 }
 
@@ -430,18 +496,9 @@ git -C "$B_REPO" worktree add -q "$B_WORKTREES/_lane-1"
 mkdir -p "$B_WORKTREES/_lane-1/target"
 touch "$B_WORKTREES/_lane-1/target/DIVERGENT_MARKER"
 
-# Seed-script stub: records argv to a log file and simulates thinning
 B_SEED_LOG="$B_ROOT/seed_calls.log"
 B_SEED_STUB="$B_ROOT/seed_stub.sh"
-cat > "$B_SEED_STUB" << 'STUB_EOF'
-#!/usr/bin/env bash
-# Seed-script stub: log all argv, simulate thinning
-echo "$*" >> "$SEED_LOG"
-# Simulate thinning: remove any DIVERGENT_MARKER in the lane's target/
-LANE_DIR="$2"
-rm -rf "$LANE_DIR/target/DIVERGENT_MARKER" 2>/dev/null || true
-exit 0
-STUB_EOF
+_seed_stub_body > "$B_SEED_STUB"
 chmod +x "$B_SEED_STUB"
 export SEED_LOG="$B_SEED_LOG"
 
@@ -494,13 +551,7 @@ touch "$C_WORKTREES/_merge-verify/PROTECTED_MARKER"
 
 C_SEED_LOG="$C_ROOT/seed_calls.log"
 C_SEED_STUB="$C_ROOT/seed_stub.sh"
-cat > "$C_SEED_STUB" << 'STUB_EOF'
-#!/usr/bin/env bash
-echo "$*" >> "$SEED_LOG"
-LANE_DIR="$2"
-rm -rf "$LANE_DIR/target/DIVERGENT_MARKER" 2>/dev/null || true
-exit 0
-STUB_EOF
+_seed_stub_body > "$C_SEED_STUB"
 chmod +x "$C_SEED_STUB"
 export SEED_LOG="$C_SEED_LOG"
 
@@ -554,17 +605,10 @@ touch "$D_WORKTREES/_lane-2/target/DIVERGENT_MARKER"
 git -C "$D_REPO" worktree add -q "$D_WORKTREES/task-8888"
 echo "dirty" >> "$D_WORKTREES/task-8888/README.md"
 
-# Thinning seed stub: logs argv AND removes the lane's DIVERGENT_MARKER, so a
-# reset is observable both by the seed log and by the marker's disappearance.
+# A reset is observable both by the seed log and by the marker's disappearance.
 D_SEED_LOG="$D_ROOT/seed_calls.log"
 D_SEED_STUB="$D_ROOT/seed_stub.sh"
-cat > "$D_SEED_STUB" << 'STUB_EOF'
-#!/usr/bin/env bash
-echo "$*" >> "$SEED_LOG"
-LANE_DIR="$2"
-rm -rf "$LANE_DIR/target/DIVERGENT_MARKER" 2>/dev/null || true
-exit 0
-STUB_EOF
+_seed_stub_body > "$D_SEED_STUB"
 chmod +x "$D_SEED_STUB"
 export SEED_LOG="$D_SEED_LOG"
 
@@ -620,16 +664,9 @@ echo "ahead" >> "$E_WORKTREES/task-7777/README.md"
 git -C "$E_WORKTREES/task-7777" add README.md
 git -C "$E_WORKTREES/task-7777" commit -q -m "ahead-of-main commit"
 
-# Thinning seed stub: logs argv AND removes the lane's DIVERGENT_MARKER.
 E_SEED_LOG="$E_ROOT/seed_calls.log"
 E_SEED_STUB="$E_ROOT/seed_stub.sh"
-cat > "$E_SEED_STUB" << 'STUB_EOF'
-#!/usr/bin/env bash
-echo "$*" >> "$SEED_LOG"
-LANE_DIR="$2"
-rm -rf "$LANE_DIR/target/DIVERGENT_MARKER" 2>/dev/null || true
-exit 0
-STUB_EOF
+_seed_stub_body > "$E_SEED_STUB"
 chmod +x "$E_SEED_STUB"
 export SEED_LOG="$E_SEED_LOG"
 
@@ -704,13 +741,7 @@ holder_wait_for_marker "$F5_READY" 150
 
 F_SEED_LOG="$F_ROOT/seed_calls.log"
 F_SEED_STUB="$F_ROOT/seed_stub.sh"
-cat > "$F_SEED_STUB" << 'STUB_EOF'
-#!/usr/bin/env bash
-echo "$*" >> "$SEED_LOG"
-LANE_DIR="$2"
-rm -rf "$LANE_DIR/target/DIVERGENT_MARKER" 2>/dev/null || true
-exit 0
-STUB_EOF
+_seed_stub_body > "$F_SEED_STUB"
 chmod +x "$F_SEED_STUB"
 export SEED_LOG="$F_SEED_LOG"
 
@@ -800,13 +831,7 @@ touch "$G_WORKTREES/_merge-verify/PROTECTED_MARKER"
 
 G_SEED_LOG="$G_ROOT/seed_calls.log"
 G_SEED_STUB="$G_ROOT/seed_stub.sh"
-cat > "$G_SEED_STUB" << 'STUB_EOF'
-#!/usr/bin/env bash
-echo "$*" >> "$SEED_LOG"
-LANE_DIR="$2"
-rm -rf "$LANE_DIR/target/DIVERGENT_MARKER" 2>/dev/null || true
-exit 0
-STUB_EOF
+_seed_stub_body > "$G_SEED_STUB"
 chmod +x "$G_SEED_STUB"
 export SEED_LOG="$G_SEED_LOG"
 
@@ -877,18 +902,9 @@ git -C "$H_REPO" worktree add -q "$H_WORKTREES/_lane-1"
 mkdir -p "$H_WORKTREES/_lane-1/target"
 touch "$H_WORKTREES/_lane-1/target/DIVERGENT_MARKER"
 
-# Seed-script stub: records argv to a log file and simulates thinning
 H_SEED_LOG="$H_ROOT/seed_calls.log"
 H_SEED_STUB="$H_ROOT/seed_stub.sh"
-cat > "$H_SEED_STUB" << 'STUB_EOF'
-#!/usr/bin/env bash
-# Seed-script stub: log all argv, simulate thinning
-echo "$*" >> "$SEED_LOG"
-# Simulate thinning: remove any DIVERGENT_MARKER in the lane's target/
-LANE_DIR="$2"
-rm -rf "$LANE_DIR/target/DIVERGENT_MARKER" 2>/dev/null || true
-exit 0
-STUB_EOF
+_seed_stub_body > "$H_SEED_STUB"
 chmod +x "$H_SEED_STUB"
 export SEED_LOG="$H_SEED_LOG"
 
@@ -925,13 +941,7 @@ touch "$H6_WORKTREES/_lane-1/target/DIVERGENT_MARKER"
 
 H6_SEED_LOG="$H6_ROOT/seed_calls.log"
 H6_SEED_STUB="$H6_ROOT/seed_stub.sh"
-cat > "$H6_SEED_STUB" << 'STUB_EOF'
-#!/usr/bin/env bash
-echo "$*" >> "$SEED_LOG"
-LANE_DIR="$2"
-rm -rf "$LANE_DIR/target/DIVERGENT_MARKER" 2>/dev/null || true
-exit 0
-STUB_EOF
+_seed_stub_body > "$H6_SEED_STUB"
 chmod +x "$H6_SEED_STUB"
 export SEED_LOG="$H6_SEED_LOG"
 
@@ -1206,13 +1216,7 @@ git -C "$M_REPO" worktree add -q "$M_WORKTREES/task-9999"
 
 M_SEED_LOG="$M_ROOT/seed_calls.log"
 M_SEED_STUB="$M_ROOT/seed_stub.sh"
-cat > "$M_SEED_STUB" << 'STUB_EOF'
-#!/usr/bin/env bash
-echo "$*" >> "$SEED_LOG"
-LANE_DIR="$2"
-rm -rf "$LANE_DIR/target/DIVERGENT_MARKER" 2>/dev/null || true
-exit 0
-STUB_EOF
+_seed_stub_body > "$M_SEED_STUB"
 chmod +x "$M_SEED_STUB"
 export SEED_LOG="$M_SEED_LOG"
 
@@ -1276,13 +1280,7 @@ git -C "$N_REPO" worktree add -q "$N_WORKTREES/task-8888"
 
 N_SEED_LOG="$N_ROOT/seed_calls.log"
 N_SEED_STUB="$N_ROOT/seed_stub.sh"
-cat > "$N_SEED_STUB" << 'STUB_EOF'
-#!/usr/bin/env bash
-echo "$*" >> "$SEED_LOG"
-LANE_DIR="$2"
-rm -rf "$LANE_DIR/target/DIVERGENT_MARKER" 2>/dev/null || true
-exit 0
-STUB_EOF
+_seed_stub_body > "$N_SEED_STUB"
 chmod +x "$N_SEED_STUB"
 export SEED_LOG="$N_SEED_LOG"
 
@@ -1326,11 +1324,7 @@ touch "$NOV_WORKTREES/_mainsweep-abcd1234/PROTECTED_MARKER"
 
 NOV_SEED_LOG="$NOV_ROOT/seed_calls.log"
 NOV_SEED_STUB="$NOV_ROOT/seed_stub.sh"
-cat > "$NOV_SEED_STUB" << 'STUB_EOF'
-#!/usr/bin/env bash
-echo "$*" >> "$SEED_LOG"
-exit 0
-STUB_EOF
+_seed_stub_body > "$NOV_SEED_STUB"
 chmod +x "$NOV_SEED_STUB"
 export SEED_LOG="$NOV_SEED_LOG"
 
@@ -1388,13 +1382,7 @@ done
 
 O_SEED_LOG="$O_ROOT/seed_calls.log"
 O_SEED_STUB="$O_ROOT/seed_stub.sh"
-cat > "$O_SEED_STUB" << 'STUB_EOF'
-#!/usr/bin/env bash
-echo "$*" >> "$SEED_LOG"
-LANE_DIR="$2"
-rm -rf "$LANE_DIR/target/DIVERGENT_MARKER" 2>/dev/null || true
-exit 0
-STUB_EOF
+_seed_stub_body > "$O_SEED_STUB"
 chmod +x "$O_SEED_STUB"
 export SEED_LOG="$O_SEED_LOG"
 
@@ -1447,13 +1435,7 @@ done
 
 OE_SEED_LOG="$OE_ROOT/seed_calls.log"
 OE_SEED_STUB="$OE_ROOT/seed_stub.sh"
-cat > "$OE_SEED_STUB" << 'STUB_EOF'
-#!/usr/bin/env bash
-echo "$*" >> "$SEED_LOG"
-LANE_DIR="$2"
-rm -rf "$LANE_DIR/target/DIVERGENT_MARKER" 2>/dev/null || true
-exit 0
-STUB_EOF
+_seed_stub_body > "$OE_SEED_STUB"
 chmod +x "$OE_SEED_STUB"
 export SEED_LOG="$OE_SEED_LOG"
 
@@ -1681,34 +1663,7 @@ PT_SEED_STUB="$PT_ROOT/seed_stub.sh"
 PT_READY2="$PT_ROOT/lane2-holder.ready"
 PT_PIDFILE="$PT_ROOT/lane2-holder.pid"
 
-# The trigger stub: behaves like _seed_stub_body for every lane, and
-# ADDITIONALLY, when invoked for _lane-1, makes _lane-2 live before returning.
-#   - stdio MUST go to /dev/null: gc.sh runs the seed under
-#     `( ... ) 2>&1 | while IFS= read -r line; ...`, and an inherited pipe write
-#     end would keep that `while read` open for the holder's whole 300s life,
-#     hanging the pass.
-#   - the PID is written to a file because the holder reparents to init when the
-#     stub exits, so the TEST cannot learn it any other way.
-#   - the poll for READY2 is causal ordering (technique R), not a wall-clock
-#     sleep: the stub returns only once the cwd provably exists.
-cat > "$PT_SEED_STUB" << 'STUB_EOF'
-#!/usr/bin/env bash
-echo "$*" >> "$SEED_LOG"
-LANE_DIR="$2"
-rm -rf "$LANE_DIR/target/DIVERGENT_MARKER" 2>/dev/null || true
-if [ "${LANE_DIR##*/}" = "_lane-1" ]; then
-    ( cd "$TOCTOU_LANE2/target" && touch "$TOCTOU_READY2" && exec sleep 300 ) \
-        </dev/null >/dev/null 2>&1 &
-    echo "$!" > "$TOCTOU_PIDFILE"
-    _tick=0
-    while [ "$_tick" -lt 600 ]; do
-        [ -f "$TOCTOU_READY2" ] && break
-        sleep 0.05
-        _tick=$(( _tick + 1 ))
-    done
-fi
-exit 0
-STUB_EOF
+_toctou_trigger_seed_stub_body > "$PT_SEED_STUB"
 chmod +x "$PT_SEED_STUB"
 
 export SEED_LOG="$PT_SEED_LOG"
@@ -1948,20 +1903,9 @@ S1_BASE="$S1_ROOT/base"
 
 make_task_lane "$S1_REPO" "$S1_WORKTREES" "_lane-1" "task/5635" "ahead"
 
-# Post-clone abort stub: same argv-logging and "$2"-is-the-lane conventions as
-# _seed_stub_body, but it RECREATES <lane>/target with a HAZARD marker before
-# exiting non-zero — modelling the clone an aborting seed leaves behind, without
-# needing a reflink-capable filesystem. (No chmod here; S3 adds that.)
 S1_SEED_LOG="$S_ROOT/s1-seed-calls.log"
 S1_SEED_STUB="$S_ROOT/s1-seed-stub.sh"
-cat > "$S1_SEED_STUB" << 'STUB_EOF'
-#!/usr/bin/env bash
-echo "$*" >> "$SEED_LOG"
-LANE_DIR="$2"
-mkdir -p "$LANE_DIR/target"
-touch "$LANE_DIR/target/HAZARD"
-exit 1
-STUB_EOF
+_post_clone_abort_seed_stub_body > "$S1_SEED_STUB"
 chmod +x "$S1_SEED_STUB"
 export SEED_LOG="$S1_SEED_LOG"
 
@@ -2105,13 +2049,7 @@ make_task_lane "$S4_REPO" "$S4_WORKTREES" "_lane-1" "task/5635" "ahead"
 
 S4_SEED_LOG="$S_ROOT/s4-seed-calls.log"
 S4_SEED_STUB="$S_ROOT/s4-seed-stub.sh"
-cat > "$S4_SEED_STUB" << 'STUB_EOF'
-#!/usr/bin/env bash
-echo "$*" >> "$SEED_LOG"
-LANE_DIR="$2"
-rm -rf "$LANE_DIR/target"
-exit 1
-STUB_EOF
+_empty_refusal_seed_stub_body > "$S4_SEED_STUB"
 chmod +x "$S4_SEED_STUB"
 export SEED_LOG="$S4_SEED_LOG"
 
