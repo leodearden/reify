@@ -1547,10 +1547,7 @@ fi
 # adjacent subsystem: merge_gates.py halts the whole merge queue on
 # 'stash_failed' rather than bouncing N tasks one at a time.)
 #
-# COULD-NOT-MEASURE is a cause, not a count: every degrade path below sets
-# STASH_UNKNOWN_CAUSE (no-repo-resolved | not-a-git-worktree |
-# stash-list-failed:exit=<rc>) and nothing else, so the stash_unknown flag and
-# its one stderr note (after the block) both derive from that single variable.
+# STASH_UNKNOWN_CAUSE: no-repo-resolved | not-a-git-worktree | stash-list-failed:exit=<rc>
 STASH_ENTRIES=0
 STASH_UNKNOWN_CAUSE=""
 STASH_TEXT_LINES=()
