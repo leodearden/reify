@@ -135,6 +135,42 @@ fn int_rem_at_boundary_keeps_semantics() {
     assert_int_binop(BinOp::Mod, 7, 0, Value::Undef);
 }
 
+// ── Exponentiation ───────────────────────────────────────────────────────────
+
+#[test]
+fn int_pow_overflow_is_undef() {
+    assert_int_binop(BinOp::Pow, 2, 63, Value::Undef);
+    assert_int_binop(BinOp::Pow, 10, 19, Value::Undef);
+    assert_int_binop(BinOp::Pow, -3, 40, Value::Undef);
+}
+
+#[test]
+fn int_pow_at_boundary_stays_int() {
+    assert_int_binop(BinOp::Pow, 2, 62, Value::Int(4_611_686_018_427_387_904));
+    assert_int_binop(BinOp::Pow, -2, 63, Value::Int(MIN));
+    assert_int_binop(BinOp::Pow, 10, 18, Value::Int(1_000_000_000_000_000_000));
+    assert_int_binop(BinOp::Pow, 3, 0, Value::Int(1));
+    assert_int_binop(BinOp::Pow, 0, 0, Value::Int(1));
+}
+
+#[test]
+fn int_pow_negative_exponent_keeps_real_semantics() {
+    assert_int_binop(BinOp::Pow, 2, -1, Value::Real(0.5));
+    assert_int_binop(BinOp::Pow, 2, -2, Value::Real(0.25));
+    assert_int_binop(BinOp::Pow, 0, -1, Value::Undef);
+}
+
+#[test]
+fn int_pow_exponent_beyond_i32_is_exact_or_undef() {
+    assert_int_binop(BinOp::Pow, 1, 4_294_967_295, Value::Int(1));
+    assert_int_binop(BinOp::Pow, -1, 4_294_967_295, Value::Int(-1));
+    assert_int_binop(BinOp::Pow, -1, 4_294_967_294, Value::Int(1));
+    assert_int_binop(BinOp::Pow, 0, 3_000_000_000, Value::Int(0));
+    assert_int_binop(BinOp::Pow, 2, 3_000_000_000, Value::Undef);
+    assert_int_binop(BinOp::Pow, 2, 4_294_967_296, Value::Undef);
+    assert_int_binop(BinOp::Pow, 2, -4_294_967_296, Value::Undef);
+}
+
 // ── Reaching the Int arm through composite values and the op sink ────────────
 
 #[test]
