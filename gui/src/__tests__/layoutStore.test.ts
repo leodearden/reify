@@ -1,21 +1,19 @@
 /**
- * Unit tests for createLayoutStore().
- * Covers: initial state (defaults + localStorage restore), setters, debounced persistence.
+ * Unit tests for createLayoutStore() and the LAYOUT_DIMENSIONS-derived
+ * loadPanelLayout(): initial state (defaults + localStorage restore), setters,
+ * debounced persistence, reset().
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { createRoot } from 'solid-js';
 
 import {
+  LAYOUT_DIMENSIONS,
   createLayoutStore,
-  DEFAULT_EDITOR_WIDTH,
-  DEFAULT_SIDE_WIDTH,
-  DEFAULT_DESIGN_TREE_HEIGHT,
-  DEFAULT_PROPERTY_HEIGHT,
-  DEFAULT_CONSTRAINT_HEIGHT,
-  DEFAULT_PROBLEMS_HEIGHT,
-  DEFAULT_PROBLEMS_COLLAPSED,
+  loadPanelLayout,
 } from '../stores/layoutStore';
-import { STORAGE_KEY, loadPanelLayout } from '../hooks/useLayoutPersistence';
+import { STORAGE_KEY } from '../hooks/useLayoutPersistence';
+
+const defaults = Object.fromEntries(LAYOUT_DIMENSIONS.map((d) => [d.key, d.default]));
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -44,16 +42,10 @@ beforeEach(() => {
 // ---------------------------------------------------------------------------
 
 describe('createLayoutStore — initial state', () => {
-  it('(a) uses DEFAULT_* when localStorage is empty', () => {
+  it('(a) uses every table default when localStorage is empty', () => {
     withRoot(() => {
       const store = createLayoutStore();
-      expect(store.state.editorWidth).toBe(DEFAULT_EDITOR_WIDTH);
-      expect(store.state.sideWidth).toBe(DEFAULT_SIDE_WIDTH);
-      expect(store.state.designTreeHeight).toBe(DEFAULT_DESIGN_TREE_HEIGHT);
-      expect(store.state.propertyHeight).toBe(DEFAULT_PROPERTY_HEIGHT);
-      expect(store.state.constraintHeight).toBe(DEFAULT_CONSTRAINT_HEIGHT);
-      expect(store.state.problemsHeight).toBe(DEFAULT_PROBLEMS_HEIGHT);
-      expect(store.state.problemsCollapsed).toBe(DEFAULT_PROBLEMS_COLLAPSED);
+      expect({ ...store.state }).toEqual(defaults);
     });
   });
 
@@ -82,7 +74,7 @@ describe('createLayoutStore — initial state', () => {
     });
   });
 
-  it('(c) forward-compat: missing sub-panel heights fall back to DEFAULT_*', () => {
+  it('(c) forward-compat: rows missing from the saved layout fall back to their table default', () => {
     // Seed only the two required fields (older save format)
     localStorage.setItem(
       STORAGE_KEY,
@@ -90,13 +82,7 @@ describe('createLayoutStore — initial state', () => {
     );
     withRoot(() => {
       const store = createLayoutStore();
-      expect(store.state.editorWidth).toBe(400);
-      expect(store.state.sideWidth).toBe(350);
-      expect(store.state.designTreeHeight).toBe(DEFAULT_DESIGN_TREE_HEIGHT);
-      expect(store.state.propertyHeight).toBe(DEFAULT_PROPERTY_HEIGHT);
-      expect(store.state.constraintHeight).toBe(DEFAULT_CONSTRAINT_HEIGHT);
-      expect(store.state.problemsHeight).toBe(DEFAULT_PROBLEMS_HEIGHT);
-      expect(store.state.problemsCollapsed).toBe(DEFAULT_PROBLEMS_COLLAPSED);
+      expect({ ...store.state }).toEqual({ ...defaults, editorWidth: 400, sideWidth: 350 });
     });
   });
 
@@ -247,5 +233,124 @@ describe('createLayoutStore — setters + debounced persistence', () => {
       expect(saved?.problemsCollapsed).toBe(false);
       dispose();
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// reset()
+// ---------------------------------------------------------------------------
+
+describe('createLayoutStore — reset()', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('(r1) restores every table row after each row was perturbed through set()', () => {
+    withRoot(() => {
+      const store = createLayoutStore();
+      for (const row of LAYOUT_DIMENSIONS) {
+        if (row.kind === 'px') store.set(row.key, row.default + 37);
+        else store.set(row.key, !row.default);
+      }
+      for (const row of LAYOUT_DIMENSIONS) {
+        expect(store.state[row.key]).not.toBe(row.default);
+      }
+      store.reset();
+      expect({ ...store.state }).toEqual(defaults);
+    });
+  });
+
+  it('(r2) the reset layout reaches localStorage through the debounced persistence', async () => {
+    vi.useFakeTimers();
+    await createRoot(async (dispose) => {
+      try {
+        const store = createLayoutStore();
+        store.setProblemsHeight(400);
+        store.setProblemsCollapsed((c) => !c);
+        await Promise.resolve();
+        vi.advanceTimersByTime(300);
+        expect(JSON.parse(localStorage.getItem(STORAGE_KEY)!)).toMatchObject({
+          problemsHeight: 400,
+          problemsCollapsed: false,
+        });
+
+        store.reset();
+        await Promise.resolve();
+        vi.advanceTimersByTime(300);
+        expect(JSON.parse(localStorage.getItem(STORAGE_KEY)!)).toEqual(defaults);
+      } finally {
+        dispose();
+      }
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// loadPanelLayout — validation derived from LAYOUT_DIMENSIONS
+// ---------------------------------------------------------------------------
+
+describe('loadPanelLayout (derived from LAYOUT_DIMENSIONS)', () => {
+  const fullLayout = {
+    editorWidth: 400,
+    sideWidth: 350,
+    designTreeHeight: 180,
+    propertyHeight: 250,
+    constraintHeight: 150,
+    problemsHeight: 200,
+    problemsCollapsed: false,
+  };
+
+  const store = (value: unknown) => localStorage.setItem(STORAGE_KEY, JSON.stringify(value));
+
+  it('returns null when nothing is stored', () => {
+    expect(loadPanelLayout()).toBeNull();
+  });
+
+  it('returns null when the stored JSON is corrupt', () => {
+    localStorage.setItem(STORAGE_KEY, '{not valid json!!!');
+    expect(loadPanelLayout()).toBeNull();
+  });
+
+  it('round-trips a full layout', () => {
+    store(fullLayout);
+    expect(loadPanelLayout()).toEqual(fullLayout);
+  });
+
+  const requiredRows = LAYOUT_DIMENSIONS.filter((d) => 'requiredInSaved' in d && d.requiredInSaved);
+
+  it('the table marks at least one row requiredInSaved', () => {
+    expect(requiredRows.length).toBeGreaterThan(0);
+  });
+
+  for (const row of requiredRows) {
+    it(`returns null when required row ${row.key} is absent`, () => {
+      const { [row.key]: _dropped, ...rest } = fullLayout;
+      store(rest);
+      expect(loadPanelLayout()).toBeNull();
+    });
+
+    it(`returns null when required row ${row.key} has the wrong type`, () => {
+      store({ ...fullLayout, [row.key]: row.kind === 'px' ? 'wide' : 1 });
+      expect(loadPanelLayout()).toBeNull();
+    });
+  }
+
+  it('omits optional rows absent from the saved JSON: the result is exactly the saved subset', () => {
+    const requiredOnly = Object.fromEntries(
+      requiredRows.map((row) => [row.key, fullLayout[row.key]]),
+    );
+    store(requiredOnly);
+    expect(loadPanelLayout()).toEqual(requiredOnly);
+
+    // A layout saved before the docked problems panel existed.
+    const { problemsHeight: _h, problemsCollapsed: _c, ...oldLayout } = fullLayout;
+    store(oldLayout);
+    expect(loadPanelLayout()).toEqual(oldLayout);
+  });
+
+  it('omits a px row stored as a string and a flag row stored as a number, keeping the rest', () => {
+    store({ ...fullLayout, designTreeHeight: '180', problemsCollapsed: 1 });
+    const { designTreeHeight: _d, problemsCollapsed: _c, ...rest } = fullLayout;
+    expect(loadPanelLayout()).toEqual(rest);
   });
 });
