@@ -194,37 +194,10 @@ impl std::error::Error for RefineError {
 /// The validated shape of a tet [`VolumeMesh`], as established by
 /// [`tet_shape`], together with the mesh it was validated for.
 ///
-/// Carrying the mesh, its validated index buffer, the order and the stride is
-/// what lets the post-gate pipeline avoid re-deriving them. Each part has a
-/// live consumer:
-///
-/// * `mesh` — the vertex buffer [`project_per_element_sizes_to_vertices`]
-///   sizes its output by, and the mesh [`refine_with_size_field_validated`]
-///   hands to the background size field.
-/// * `tet_indices` — the index buffer the gate validated, walked by the
-///   projector and by [`boundary_surface_mesh`]. Both used to re-look it up
-///   with `volume_mesh.tet_indices()`, behind an `.expect` or an
-///   `.ok_or(RefineError::UnsupportedConnectivity)?` arm the gate had already
-///   proved unreachable.
-/// * [`TetShape::n_elements`] — the expected `size_hints` / `current_sizes`
-///   length in [`refine_with_size_field`] and
-///   [`crate::adaptive::refine_marked_elements`], and the exclusive upper
-///   bound on the latter's marked indices. Computed from `tet_indices` and
-///   `stride`, so it has no second stored copy to drift from.
-/// * `stride` — the chunk width
-///   [`project_per_element_sizes_to_vertices`] walks the index buffer with, so
-///   the projector chunks by the very stride the divisibility check proved the
-///   buffer to be a whole multiple of, rather than re-deriving one that could
-///   drift from it.
-/// * `order` — handed to the kernel-gmsh remesher. Before this struct existed,
-///   [`refine_with_size_field`] followed the gate with a second
-///   `volume_mesh.element_order().ok_or(RefineError::UnsupportedConnectivity)?`
-///   whose error arm the gate had already proved unreachable — untestable dead
-///   code that nonetheless read as a live error path.
-///
 /// Its fields are private to this module, so [`tet_shape`] is its only
-/// constructor and a `TetShape` carries the very mesh it validated: no
-/// function takes a mesh and a shape separately.
+/// constructor and a `TetShape` carries the very mesh it validated. Code past
+/// the gate reads the mesh, its index buffer, stride and order through the
+/// shape rather than from a separately passed mesh.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct TetShape<'a> {
     /// The mesh the gate validated.
@@ -536,9 +509,9 @@ pub fn boundary_surface_mesh(volume_mesh: &VolumeMesh) -> Result<Mesh, RefineErr
     // `tet_shape`'s index-range check uses a truncating `vertices.len() / 3`,
     // so a trailing partial vertex slips past it. Reject rather than truncate,
     // mirroring `volume_mesh_to_solver_mesh`'s `is_multiple_of(3)` guard.
-    if !volume_mesh.vertices.len().is_multiple_of(3) {
+    if !shape.mesh.vertices.len().is_multiple_of(3) {
         return Err(RefineError::MalformedVertexBuffer {
-            len: volume_mesh.vertices.len(),
+            len: shape.mesh.vertices.len(),
         });
     }
 
@@ -557,7 +530,7 @@ pub fn boundary_surface_mesh(volume_mesh: &VolumeMesh) -> Result<Mesh, RefineErr
     let mut faces: Vec<[u32; 3]> = Vec::with_capacity(shape.n_elements() * 4);
     let mut face_counts: HashMap<[u32; 3], u32> = HashMap::new();
     for tet in shape.tet_indices.chunks_exact(shape.stride) {
-        for face in outward_tet_faces(volume_mesh, tet[0], tet[1], tet[2], tet[3]) {
+        for face in outward_tet_faces(shape.mesh, tet[0], tet[1], tet[2], tet[3]) {
             *face_counts.entry(sorted_face_key(face)).or_insert(0) += 1;
             faces.push(face);
         }
@@ -602,7 +575,7 @@ pub fn boundary_surface_mesh(volume_mesh: &VolumeMesh) -> Result<Mesh, RefineErr
     // a subset of volume vertices" property the size transfer relies on.
     // Surviving vertices are pushed in ascending ORIGINAL index order, so the
     // remap is stable across runs.
-    let vertex_count = volume_mesh.vertices.len() / 3;
+    let vertex_count = shape.mesh.vertices.len() / 3;
     let mut referenced = vec![false; vertex_count];
     for face in &kept {
         for &v in face {
@@ -614,7 +587,7 @@ pub fn boundary_surface_mesh(volume_mesh: &VolumeMesh) -> Result<Mesh, RefineErr
     for (old, &is_referenced) in referenced.iter().enumerate() {
         if is_referenced {
             remap[old] = (vertices.len() / 3) as u32;
-            vertices.extend_from_slice(&volume_mesh.vertices[old * 3..old * 3 + 3]);
+            vertices.extend_from_slice(&shape.mesh.vertices[old * 3..old * 3 + 3]);
         }
     }
 
