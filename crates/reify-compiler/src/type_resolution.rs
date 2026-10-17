@@ -2587,7 +2587,13 @@ pub(crate) fn resolve_parameterized_alias(
         return None;
     }
     let got = type_args.len();
-    if !alias_arity_accepts(alias_entry, got, alias_entry.span, "defined here", diagnostics) {
+    if !alias_arity_accepts(
+        alias_entry,
+        got,
+        alias_entry.span,
+        "defined here",
+        diagnostics,
+    ) {
         return None;
     }
 
