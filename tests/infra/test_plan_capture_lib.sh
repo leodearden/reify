@@ -883,7 +883,9 @@ for _narrowing_field in NARROW_ACTIVE from_diff; do
         _field_is_bit "$_REAL_DUMP" narrowing "$_narrowing_field"
 done
 
-# (l) FORK-FREEDOM, by Section 9's (f1)/(f2) technique.
+# (l) FORK-FREEDOM, by Section 9's (f1)/(f2) technique. Neither check subsumes the
+# other: (l1) alone sees an uncaptured `printf … | grep …` pipeline, (l2) alone
+# sees a `$( … )` that calls no filter.
 assert "plan_header_field (l0): is defined (precondition for l1/l2)" \
     declare -F plan_header_field
 _HDR_FILTER_CALLS="$(mktemp)"
@@ -983,6 +985,14 @@ assert "plan_step_index (j1): from 'x' -> rc 2, empty stdout, stderr naming it" 
     _refused_naming plan_step_index "'x'" -- plan_step_index "$_STEP_DUMP" 'cargo ' x
 assert "plan_step_index (j2): from '-1' -> rc 2, empty stdout, stderr naming it" \
     _refused_naming plan_step_index "'-1'" -- plan_step_index "$_STEP_DUMP" 'cargo ' -1
+
+# A malformed ERE is refused, not read as "no such step": -1 is the passing answer
+# of "X after every Y", so a typo in Y would otherwise pass vacuously. (j4) is that
+# idiom's own shape, a <from> past the last step, where no step is ever matched.
+assert "plan_step_index (j3): ERE 'cargo (' -> rc 2, empty stdout, stderr naming it" \
+    _refused_naming plan_step_index "'cargo ('" -- plan_step_index "$_STEP_DUMP" 'cargo ('
+assert "plan_step_index (j4): ERE 'cargo (' from past the last step -> still rc 2" \
+    _refused_naming plan_step_index "'cargo ('" -- plan_step_index "$_STEP_DUMP" 'cargo (' 5
 
 # (k) REAL-PRINTER CONTROL on Section 9's certified `verify.sh lint` capture.
 # That plan has no retry marker and no narrowing continuation line, so every

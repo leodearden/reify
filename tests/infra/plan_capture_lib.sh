@@ -179,13 +179,21 @@ plan_header_field() {
 # Prints the index of the first step at index >= <from> (default 0) that <ERE>
 # matches, per line as in plan_match, and returns 0. Prints -1, rc 0, when there
 # is no such step, so `[ -lt ]` comparisons stay well-formed. A <from> that is not
-# a non-negative integer prints nothing on stdout, names it on stderr, rc 2.
+# a non-negative integer, or an <ERE> that does not compile, prints nothing on
+# stdout, names it on stderr, rc 2.
 #
 # "X after every Y" is `plan_step_index "$dump" Y "$i_X"` == -1: no Y at or after X.
+# -1 is that idiom's passing answer, so <ERE> is compiled before any step is read:
+# a malformed Y must refuse, not read as "no such step".
 plan_step_index() {
-    local dump="$1" ere="$2" from="${3-0}" _from_re='^[0-9]+$' _line _step=0 _in_commands=0
+    local dump="$1" ere="$2" from="${3-0}" _from_re='^[0-9]+$' _line _step=0 _in_commands=0 _ere_rc=0
     if ! [[ "$from" =~ $_from_re ]]; then
         printf "plan_step_index: <from> must be a non-negative integer, got '%s'\n" "$from" >&2
+        return 2
+    fi
+    [[ '' =~ $ere ]] || _ere_rc=$?
+    if (( _ere_rc == 2 )); then
+        printf "plan_step_index: <ERE> does not compile, got '%s'\n" "$ere" >&2
         return 2
     fi
     while IFS= read -r _line; do
