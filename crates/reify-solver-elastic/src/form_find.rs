@@ -407,7 +407,8 @@ impl From<ReducedSolveFailure> for AnisoFormFindError {
 ///
 /// Returns the solved [`FormFindSolve`] on success, or a [`FormFindError`]
 /// describing why the input is infeasible (e.g. a member endpoint or anchor
-/// index past `nodes`).
+/// index past `nodes`). The surface-free case of [`form_find_anchored_surfaces`]:
+/// `D = CᵀQC` is geometry-independent, so one reduced solve is exact.
 pub fn form_find_anchored(
     nodes: &[[f64; 3]],
     members: &[(usize, usize)],
@@ -415,42 +416,7 @@ pub fn form_find_anchored(
     q: &[f64],
     anchors: &[usize],
 ) -> Result<FormFindSolve, FormFindError> {
-    // PRD §8.1: infeasible input must yield a clean diagnostic, never a silent
-    // wrong answer or a panic.
-    let problem =
-        ForceDensityProblem::<IsotropicStencil>::new(nodes, members, kinds, q, anchors, &[], &[])?;
-    let (free_indices, anchor_indices) = problem.anchor_partition()?;
-
-    // Force-density Laplacian D = CᵀQC for the line members (no surfaces on
-    // this entry). Assembled by the shared `assemble_d` so the surface-aware
-    // entry adds Σ_T σ_T·L_T into the identical matrix before the same solve.
-    let d = assemble_d::<IsotropicStencil>(
-        nodes.len(),
-        problem.members,
-        problem.q,
-        &[],
-        &[],
-        problem.nodes,
-    )?;
-
-    // Reduced free-node system D_ff X_f = −D_fa X_a (prestress-only: no external
-    // load term), solved once via the shared `solve_reduced` core (partition →
-    // faer partial-pivot LU → non-finite + scaled-residual guard). The
-    // surface-aware entry reuses the identical core per fixed-point iteration.
-    let out_nodes = solve_reduced(&d, nodes, &free_indices, &anchor_indices)?;
-
-    // Per-member axial force Nᵢ = qᵢ · Lᵢ on the solved geometry, in
-    // struts-then-cables member order (the input ordering).
-    let member_forces = member_axial_forces(members, q, &out_nodes);
-
-    Ok(FormFindSolve {
-        nodes: out_nodes,
-        member_forces,
-        force_densities: q.to_vec(),
-        // Line-only path carries no surfaces.
-        surface_stresses: Vec::new(),
-        converged: true,
-    })
+    form_find_anchored_surfaces(nodes, members, kinds, q, &[], &[], anchors)
 }
 
 // ── NFDM surface assembly (γ / task 4414) ─────────────────────────────────────
@@ -535,15 +501,50 @@ pub fn form_find_anchored_surfaces(
         surfaces,
         surface_stresses,
     )?;
-    let (free_indices, anchor_indices) = problem.anchor_partition()?;
-    let n = nodes.len();
+    let equilibrium = anchored_fixed_point::<_, FormFindError>(&problem)?;
 
-    // Iterate the cotangent fixed point. With no surfaces `D` is
-    // geometry-independent, so a single solve is exact (the line-only case);
-    // with surfaces the cotangent weights depend on geometry, so re-assemble and
-    // re-solve until the free-node net force ‖(D·x)_free‖ settles to ~0
-    // (prestress-only equilibrium).
-    let mut current = nodes.to_vec();
+    // Per-member axial force Nᵢ = qᵢ · Lᵢ on the solved geometry, in
+    // struts-then-cables member order (the input ordering).
+    let member_forces = member_axial_forces(members, q, &equilibrium.nodes);
+
+    Ok(FormFindSolve {
+        nodes: equilibrium.nodes,
+        member_forces,
+        force_densities: q.to_vec(),
+        surface_stresses: surface_stresses.to_vec(),
+        converged: equilibrium.converged,
+    })
+}
+
+/// Where the anchored fixed point stopped.
+struct AnchoredEquilibrium {
+    /// Node coordinates in input order, anchors unchanged.
+    nodes: Vec<[f64; 3]>,
+    /// Whether the free rows reached equilibrium within the iteration cap.
+    converged: bool,
+}
+
+/// The one anchored force-density fixed point, for any surface stencil `S`.
+///
+/// Assemble `D` at the current geometry, stop once the free rows are in
+/// equilibrium, otherwise solve the reduced anchored system
+/// `D_ff X_f = −D_fa X_a` for the free nodes and repeat. With no surfaces `D`
+/// is geometry-independent, so a single solve is exact (the line-only case);
+/// with surfaces the stencil weights depend on geometry, so it re-assembles and
+/// re-solves until the free-node net force ‖(D·x)_free‖ settles to ~0
+/// (prestress-only equilibrium).
+fn anchored_fixed_point<S, E>(
+    problem: &ForceDensityProblem<'_, S>,
+) -> Result<AnchoredEquilibrium, E>
+where
+    S: TriangleStencil,
+    E: From<S::Error> + From<ReducedSolveFailure>,
+{
+    let (free_indices, anchor_indices) = problem.anchor_partition()?;
+    let n = problem.nodes.len();
+    let surfaces = problem.surfaces;
+
+    let mut current = problem.nodes.to_vec();
     let mut converged = false;
     let max_iters = if surfaces.is_empty() { 1 } else { MAX_SURFACE_ITERS };
     // TODO(perf, scalability ceiling): each iteration re-allocates a fresh dense // ptodo:allow permanent perf note, no live owner task
@@ -556,11 +557,11 @@ pub fn form_find_anchored_surfaces(
     // across iterations (clear-and-refill instead of `zeros()`) and move to a
     // sparse assembly + factor-reuse strategy for large meshes.
     for _ in 0..max_iters {
-        let d = assemble_d::<IsotropicStencil>(
+        let d = assemble_d::<S>(
             n,
             problem.members,
             problem.q,
-            problem.surfaces,
+            surfaces,
             problem.surface_stresses,
             &current,
         )?;
@@ -590,16 +591,8 @@ pub fn form_find_anchored_surfaces(
             break;
         }
     }
-    let out_nodes = current;
-
-    // Per-member axial force Nᵢ = qᵢ · Lᵢ on the solved geometry.
-    let member_forces = member_axial_forces(members, q, &out_nodes);
-
-    Ok(FormFindSolve {
-        nodes: out_nodes,
-        member_forces,
-        force_densities: q.to_vec(),
-        surface_stresses: surface_stresses.to_vec(),
+    Ok(AnchoredEquilibrium {
+        nodes: current,
         converged,
     })
 }
@@ -691,8 +684,7 @@ pub(crate) fn member_axial_forces(
 /// (already-assembled) `D` and geometry, scattering the solved free rows back
 /// into a full node vector. The partition → faer partial-pivot LU → non-finite +
 /// scaled-residual guard ([`is_singular_reduced_solve`]) is the landed
-/// line-solve core, extracted so the line and surface entries share it (the
-/// surface entry calls it once per fixed-point iteration). Returns
+/// line-solve core, called once per iteration by [`anchored_fixed_point`]. Returns
 /// [`ReducedSolveFailure::SingularReducedStiffness`] when the reduced system is
 /// rank-deficient.
 fn solve_reduced(
@@ -871,7 +863,8 @@ fn triangle_area_vector(
 // When σ_w = σ_f = σ, S = σI and L_T collapses EXACTLY to the cotangent
 // Laplacian — a frame-independent mathematical identity (step-1 RED test).
 //
-// API: additive sibling entry points; isotropic γ/δ code paths UNTOUCHED.
+// API: an additive sibling entry point; it shares the isotropic entries' anchored
+// fixed point (`anchored_fixed_point`), parameterised by the stencil.
 
 /// Per-triangle anisotropic surface stress specification (ε / task 4416).
 ///
@@ -937,8 +930,8 @@ pub struct AnisoFormFindSolve {
 ///
 /// Mirrors [`form_find_anchored_surfaces`] but accepts an
 /// [`AnisotropicSurfaceStress`] per triangle (warp direction + `σ_w`, `σ_f`)
-/// instead of a single isotropic `σ`. The fixed-point loop, convergence
-/// criterion, and all line-member machinery are reused unchanged.
+/// instead of a single isotropic `σ`; it runs the same anchored fixed point
+/// ([`anchored_fixed_point`]) with the anisotropic stencil.
 ///
 /// `principal_stresses` on the returned [`AnisoFormFindSolve`] is populated
 /// per triangle on the solved geometry by [`recover_principal_stress`].
@@ -970,41 +963,8 @@ pub fn form_find_anchored_surfaces_aniso(
         surfaces,
         surface_prestress,
     )?;
-    let (free_indices, anchor_indices) = problem.anchor_partition()?;
-    let n = nodes.len();
-
-    let mut current = nodes.to_vec();
-    let mut converged = false;
-    let max_iters = if surfaces.is_empty() { 1 } else { MAX_SURFACE_ITERS };
-    for _ in 0..max_iters {
-        let d = assemble_d::<AnisotropicStencil>(
-            n,
-            problem.members,
-            problem.q,
-            problem.surfaces,
-            problem.surface_stresses,
-            &current,
-        )?;
-
-        // Same gauge-relative criterion as form_find_anchored_surfaces (task
-        // 6119) — shared function, so both entry points inherit the fix.
-        if !surfaces.is_empty()
-            && free_equilibrium_residual_relative(&d, &current, &free_indices)
-                <= SURFACE_EQUILIBRIUM_REL_TOL
-        {
-            converged = true;
-            break;
-        }
-
-        let solved = solve_reduced(&d, &current, &free_indices, &anchor_indices)?;
-        current = solved;
-
-        if surfaces.is_empty() {
-            converged = true;
-            break;
-        }
-    }
-    let out_nodes = current;
+    let equilibrium = anchored_fixed_point::<_, AnisoFormFindError>(&problem)?;
+    let out_nodes = equilibrium.nodes;
 
     let member_forces = member_axial_forces(members, q, &out_nodes);
 
@@ -1030,7 +990,7 @@ pub fn form_find_anchored_surfaces_aniso(
         member_forces,
         force_densities: q.to_vec(),
         principal_stresses,
-        converged,
+        converged: equilibrium.converged,
     })
 }
 
@@ -2621,7 +2581,7 @@ mod tests {
     }
 
     // (a2) A surface triangle corner that indexes past `nodes` is infeasible
-    // input — `assemble_d_aniso` would panic on its `nodes[i]` index. Mirrors
+    // input — the stencil scatter would panic on its `nodes[i]` index. Mirrors
     // the isotropic entry's guard.
     #[test]
     fn aniso_solve_out_of_range_surface_index_is_index_out_of_range() {

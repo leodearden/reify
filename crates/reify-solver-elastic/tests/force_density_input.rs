@@ -456,24 +456,29 @@ fn explicit_densities_shorter_than_the_members_are_a_dimension_mismatch() {
 
 #[test]
 fn a_malformed_group_spec_is_a_dimension_mismatch() {
-    let perturbations: [fn(&mut Vec<usize>, &mut Vec<f64>, &mut usize); 4] = [
-        |group_ids, _, _| {
-            group_ids.pop();
-        },
-        |group_ids, seeds, _| group_ids[11] = seeds.len(),
-        |_, seeds, reference_group| *reference_group = seeds.len(),
-        |_, seeds, _| seeds[2] = 0.0,
+    let ids = FD_TRIPLEX_GROUP_IDS.to_vec();
+    let seeds = TRIPLEX_SEEDS.to_vec();
+    let unseeded_group = seeds.len();
+    let short_ids = ids[..ids.len() - 1].to_vec();
+    let mut ids_naming_an_unseeded_group = ids.clone();
+    ids_naming_an_unseeded_group[11] = unseeded_group;
+    let mut zero_seed = seeds.clone();
+    zero_seed[2] = 0.0;
+    let malformed = [
+        (short_ids, seeds.clone(), 1),
+        (ids_naming_an_unseeded_group, seeds.clone(), 1),
+        (ids.clone(), seeds, unseeded_group),
+        (ids, zero_seed, 1),
     ];
-    for perturb in perturbations {
-        let mut case = FdFreeCase::group_ratios();
-        if let ForceDensitySpec::GroupRatios {
-            group_ids,
-            seed_ratios,
-            reference_group,
-        } = &mut case.spec
-        {
-            perturb(group_ids, seed_ratios, reference_group);
-        }
+    for (group_ids, seed_ratios, reference_group) in malformed {
+        let case = FdFreeCase {
+            spec: ForceDensitySpec::GroupRatios {
+                group_ids,
+                seed_ratios,
+                reference_group,
+            },
+            ..FdFreeCase::explicit()
+        };
         case.assert_both_entries_reject(ForceDensityInputError::DimensionMismatch);
     }
 }
