@@ -12,13 +12,13 @@
 //! engine refuses a solver, and a `Fresh` profile refuses a persistent cache.
 
 use std::collections::{BTreeMap, HashMap};
-use std::path::PathBuf;
 
 use reify_core::{Diagnostic, Severity, ValueCellId};
 use reify_eval::{Engine, SolverPosture};
 use reify_ir::{ConstraintChecker, IterationBudget, ResolutionProfile, StalenessPolicy, Value};
 use reify_test_support::{
     MockConstraintChecker, MockConstraintSolver, collect_errors, compile_source_with_stdlib, mm,
+    prefixed_tempdir,
 };
 
 const PROBE_SRC: &str = r#"module solver_posture_probe
@@ -202,10 +202,6 @@ fn may_serve_persisted() -> SolverPosture {
     ))
 }
 
-fn scratch_cache_dir() -> PathBuf {
-    std::env::temp_dir().join("reify-6689-solver-posture-cache")
-}
-
 #[test]
 #[should_panic(expected = "SolverFree")]
 fn with_solver_refuses_a_solver_free_engine() {
@@ -222,16 +218,17 @@ fn register_solver_refuses_a_solver_free_engine() {
 #[test]
 #[should_panic(expected = "MayServePersisted")]
 fn persistent_cache_refused_under_a_fresh_profile() {
+    let guard = prefixed_tempdir("reify-6689-posture-");
     let mut engine = Engine::new(SOLVE_FRESH, checker(), None);
-    engine.set_persistent_cache_dir(Some(scratch_cache_dir()));
+    engine.set_persistent_cache_dir(Some(guard.path().to_path_buf()));
 }
 
 #[test]
 fn persistent_cache_accepted_when_the_profile_permits_it() {
     let mut engine = Engine::new(may_serve_persisted(), checker(), None);
-    let dir = scratch_cache_dir();
-    engine.set_persistent_cache_dir(Some(dir.clone()));
-    assert_eq!(engine.persistent_cache_dir(), Some(dir.as_path()));
+    let guard = prefixed_tempdir("reify-6689-posture-");
+    engine.set_persistent_cache_dir(Some(guard.path().to_path_buf()));
+    assert_eq!(engine.persistent_cache_dir(), Some(guard.path()));
 }
 
 #[test]
@@ -246,7 +243,7 @@ fn persistent_cache_detach_is_always_accepted() {
 #[test]
 fn solver_free_engine_may_carry_a_persistent_cache() {
     let mut engine = Engine::new(SolverPosture::SolverFree, checker(), None);
-    let dir = scratch_cache_dir();
-    engine.set_persistent_cache_dir(Some(dir.clone()));
-    assert_eq!(engine.persistent_cache_dir(), Some(dir.as_path()));
+    let guard = prefixed_tempdir("reify-6689-posture-");
+    engine.set_persistent_cache_dir(Some(guard.path().to_path_buf()));
+    assert_eq!(engine.persistent_cache_dir(), Some(guard.path()));
 }

@@ -7367,13 +7367,14 @@ mod persistent_cache_cli_wiring_tests {
             }
         }
 
+        let tmp = tempfile::TempDir::new().expect("tmp dir must be creatable");
         let refused = std::panic::catch_unwind(|| {
             let mut fresh = reify_eval::Engine::new(
                 reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH),
                 Box::new(reify_constraints::SimpleConstraintChecker),
                 None,
             );
-            fresh.set_persistent_cache_dir(Some(std::env::temp_dir().join("reify-6689-cli")));
+            fresh.set_persistent_cache_dir(Some(tmp.path().to_path_buf()));
         });
         assert!(
             refused.is_err(),

@@ -4500,7 +4500,11 @@ mod tests {
     fn register_solver_stores_named_solver_and_unregister_returns_true_when_present() {
         use reify_test_support::mocks::{MockConstraintChecker, SpyConstraintSolver};
         use std::collections::HashMap;
-        let mut engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
+        let mut engine = Engine::new(
+            crate::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH),
+            Box::new(MockConstraintChecker::new()),
+            None,
+        );
         engine.register_solver(
             "libslvs",
             Box::new(SpyConstraintSolver::new_solved(HashMap::new())),
