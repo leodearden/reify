@@ -357,6 +357,7 @@ pub fn read_soname_version(lib_dir: &Path, lib_name: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeSet;
     use std::fs;
     use std::os::unix::fs::symlink;
 
@@ -394,6 +395,129 @@ mod tests {
         assert_eq!(read_soname_version(tmp, "TKernel"), Some("7.9.3".to_string()));
     }
 
+    /// Every variant, for the row-set test below. Stable Rust cannot enumerate
+    /// an enum, so [`is_listed`]'s exhaustive match is what stops compiling
+    /// when a variant is added — grow this list in the same edit.
+    const EVERY_VARIANT: [NativeDep; 3] = [NativeDep::Occt, NativeDep::Gmsh, NativeDep::OpenVdb];
+
+    fn is_listed(dep: NativeDep) -> bool {
+        match dep {
+            NativeDep::Occt | NativeDep::Gmsh | NativeDep::OpenVdb => EVERY_VARIANT.contains(&dep),
+        }
+    }
+
+    #[test]
+    fn variant_set_equals_table_row_set() {
+        assert!(EVERY_VARIANT.iter().all(|dep| is_listed(*dep)));
+
+        let table_rows: BTreeSet<&str> =
+            parse_table(TABLE_TOML).keys().map(String::as_str).collect();
+        let variant_rows: BTreeSet<&str> = EVERY_VARIANT.iter().map(|dep| dep.row_key()).collect();
+        assert_eq!(table_rows, variant_rows);
+
+        for dep in EVERY_VARIANT {
+            dep.row(); // panics naming the file if the row is missing
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "native-deps.toml")]
+    fn malformed_table_panics_naming_the_file() {
+        parse_table("[occt");
+    }
+
+    #[test]
+    #[should_panic(expected = "native-deps.toml")]
+    fn row_missing_a_column_panics_naming_the_file() {
+        parse_table(&minimal_row_toml("occt").replace("lib_sentinel = \"liboc.so\"\n", ""));
+    }
+
+    #[test]
+    #[should_panic(expected = "native-deps.toml")]
+    fn unknown_column_panics_naming_the_file() {
+        parse_table(&format!("{}snapp = 1\n", minimal_row_toml("occt")));
+    }
+
+    #[test]
+    #[should_panic(expected = "native-deps.toml")]
+    fn missing_row_panics_naming_the_file() {
+        lookup(&Table::new(), NativeDep::Occt.row_key());
+    }
+
+    #[test]
+    fn minimal_row_toml_is_itself_valid() {
+        let table = parse_table(&minimal_row_toml("occt"));
+        assert_eq!(table["occt"].lib_sentinel, "liboc.so");
+    }
+
+    /// The real occt row, with candidates that cannot resolve on any host, so
+    /// a system OCCT cannot short-circuit the snap scan, and its snap root moved
+    /// to `snap_root`. Lays out `<snap_root>/4242/<subdir>/<sentinel>` for both
+    /// kinds.
+    fn occt_row_with_fixture_snap(snap_root: &Path) -> DepRow {
+        let mut row = NativeDep::Occt.row().clone();
+        row.include_candidates = vec!["/definitely/does/not/exist/include".to_string()];
+        row.lib_candidates = vec!["/definitely/does/not/exist/lib".to_string()];
+        row.snap.as_mut().expect("the occt row carries a snap table").root =
+            snap_root.to_string_lossy().into_owned();
+        let snap = row.snap.as_ref().unwrap();
+        for kind in [DirKind::Include, DirKind::Lib] {
+            let sentinel = snap_root.join("4242").join(snap.subdir(kind)).join(row.sentinel(kind));
+            fs::create_dir_all(sentinel.parent().unwrap()).unwrap();
+            fs::write(&sentinel, b"").unwrap();
+        }
+        row
+    }
+
+    #[test]
+    fn snap_fallback_resolves_fixture_root_for_occt() {
+        let guard = tempdir();
+        let root = guard.path();
+        let row = occt_row_with_fixture_snap(root);
+        let snap = row.snap.as_ref().unwrap();
+
+        for kind in [DirKind::Include, DirKind::Lib] {
+            assert_eq!(
+                resolve_dir(None, &row, kind),
+                Some(root.join("4242").join(snap.subdir(kind)))
+            );
+        }
+    }
+
+    #[test]
+    fn row_without_snap_does_not_scan() {
+        let guard = tempdir();
+        let mut row = occt_row_with_fixture_snap(guard.path());
+        row.snap = None;
+
+        for kind in [DirKind::Include, DirKind::Lib] {
+            assert_eq!(resolve_dir(None, &row, kind), None);
+        }
+    }
+
+    /// A `[<key>]` row with every required column and no optional one.
+    fn minimal_row_toml(key: &str) -> String {
+        format!(
+            "[{key}]\n\
+             include_env = \"REIFY_BUILD_UTILS_TEST_UNSET_INCLUDE\"\n\
+             lib_env = \"REIFY_BUILD_UTILS_TEST_UNSET_VAR\"\n\
+             cfg = \"has_{key}\"\n\
+             include_candidates = []\n\
+             lib_candidates = []\n\
+             include_sentinel = \"oc.h\"\n\
+             lib_sentinel = \"liboc.so\"\n"
+        )
+    }
+
+    /// A row whose lib half probes `lib_candidates` for `libgmsh.so`, with its
+    /// override env var named so that nothing sets it.
+    fn fixture_row(lib_candidates: &[&str]) -> DepRow {
+        let mut row = parse_table(&minimal_row_toml("fixture")).remove("fixture").unwrap();
+        row.lib_candidates = lib_candidates.iter().map(|c| c.to_string()).collect();
+        row.lib_sentinel = "libgmsh.so".to_string();
+        row
+    }
+
     /// A non-empty override outranks a candidate that would otherwise match,
     /// and is taken on trust — it is returned even without the sentinel present,
     /// which is what lets an operator point a build at a lib dir we do not
@@ -411,21 +535,15 @@ mod tests {
 
         let override_str = override_dir.to_string_lossy().into_owned();
         let candidate_str = candidate_dir.to_string_lossy().into_owned();
-        let found = find_dir_with_override(
-            Some(override_str.as_str()),
-            &[candidate_str.as_str()],
-            "libgmsh.so",
-        );
+        let row = fixture_row(&[candidate_str.as_str()]);
+        let found = resolve_dir(Some(override_str.as_str()), &row, DirKind::Lib);
 
         assert_eq!(found.as_deref(), Some(override_dir));
     }
 
-    /// An exported-but-EMPTY override counts as unset here, matching the
-    /// `[ -n "$override" ]` half of the mirror in
-    /// `scripts/check-manifold-deps.sh`'s `dep_find_dir`. Without the filter
-    /// this resolved to the empty path and set `has_occt` while the preflight,
-    /// reading the same environment, went green — exactly the guard/build
-    /// disagreement that arm exists to prevent.
+    /// An exported-but-EMPTY override counts as unset. Taken on trust, it
+    /// would resolve to the empty path and set `has_<dep>` over a link
+    /// against nothing.
     #[test]
     fn find_dir_ignores_exported_but_empty_override() {
         let guard = tempdir();
@@ -433,7 +551,8 @@ mod tests {
         fs::write(tmp.join("libgmsh.so"), b"").unwrap();
 
         let tmp_str = tmp.to_string_lossy().into_owned();
-        let found = find_dir_with_override(Some(""), &[tmp_str.as_str()], "libgmsh.so");
+        let row = fixture_row(&[tmp_str.as_str()]);
+        let found = resolve_dir(Some(""), &row, DirKind::Lib);
 
         assert_eq!(
             found.as_deref(),
@@ -450,8 +569,8 @@ mod tests {
         fs::write(&sentinel, b"").unwrap();
 
         let tmp_str = tmp.to_string_lossy().into_owned();
-        let candidates: Vec<&str> = vec!["/definitely/does/not/exist", tmp_str.as_str()];
-        let found = find_dir("REIFY_BUILD_UTILS_TEST_UNSET_VAR", &candidates, "libgmsh.so");
+        let row = fixture_row(&["/definitely/does/not/exist", tmp_str.as_str()]);
+        let found = find_dir(&row, DirKind::Lib);
         assert_eq!(found.as_deref(), Some(tmp));
     }
 
