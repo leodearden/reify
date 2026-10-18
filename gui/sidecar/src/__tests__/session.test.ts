@@ -1508,12 +1508,12 @@ describe('SidecarSession stream failures surface as error', () => {
 
     try {
       await session.handleMessage({ type: 'send_message', id: 'msg-skip', text: 'Hi' });
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn.mock.calls[0]?.join(' ')).toMatch(/unparseable/);
     } finally {
       warn.mockRestore();
     }
 
-    expect(warn).toHaveBeenCalledTimes(1);
-    expect(warn.mock.calls[0]?.join(' ')).toMatch(/unparseable/);
     expect(outputs).toContainEqual({ type: 'text_delta', id: 'msg-skip', content: 'Hi' });
     expect(outputs).toContainEqual({ type: 'done', id: 'msg-skip' });
     expect(outputs.filter((o) => o.type === 'error')).toHaveLength(0);
