@@ -299,6 +299,22 @@ impl SubShapeKind {
             Self::Vertex => BRepKind::Vertex,
         }
     }
+
+    fn noun(self) -> &'static str {
+        match self {
+            Self::Edge => "edge",
+            Self::Face => "face",
+            Self::Vertex => "vertex",
+        }
+    }
+
+    fn plural(self) -> &'static str {
+        match self {
+            Self::Edge => "edges",
+            Self::Face => "faces",
+            Self::Vertex => "vertices",
+        }
+    }
 }
 
 #[cfg(has_occt)]
@@ -699,6 +715,46 @@ impl OcctKernel {
         }
         self.subshape_cache(kind).insert(parent.0, ids.clone());
         Ok(ids)
+    }
+
+    /// The 0-based positions of `selection` in `parent`'s canonical `kind`
+    /// enumeration, in selection order; `None` selects every sub-shape.
+    ///
+    /// `extract_subshapes`, the `get_edges`/`get_faces` getters and the
+    /// `OcctShape` edge/face maps share one `TopExp::MapShapes` order, so a
+    /// position is exactly the index the kernel-side FFI expects.
+    fn map_selection_to_indices(
+        &mut self,
+        parent: GeometryHandleId,
+        selection: Option<&[GeometryHandleId]>,
+        kind: SubShapeKind,
+        label: &str,
+    ) -> Result<Vec<u32>, GeometryError> {
+        let parent_subshapes = self.extract_subshapes(parent, kind).map_err(|e| {
+            GeometryError::OperationFailed(format!(
+                "{label}: failed to enumerate parent {} of {parent:?}: {e:?}",
+                kind.plural()
+            ))
+        })?;
+        let Some(selection) = selection else {
+            return Ok((0..parent_subshapes.len() as u32).collect());
+        };
+        let index_of: HashMap<GeometryHandleId, u32> = parent_subshapes
+            .iter()
+            .enumerate()
+            .map(|(i, h)| (*h, i as u32))
+            .collect();
+        selection
+            .iter()
+            .map(|h| {
+                index_of.get(h).copied().ok_or_else(|| {
+                    GeometryError::OperationFailed(format!(
+                        "{label}: {} {h:?} does not belong to solid {parent:?}",
+                        kind.noun()
+                    ))
+                })
+            })
+            .collect()
     }
 
     /// Extract every unique edge of `handle` as a handle with
@@ -1594,27 +1650,12 @@ impl OcctKernel {
                     .into(),
             ));
         }
-        // Map each selected edge handle → its 0-based position in the parent's
-        // canonical edge enumeration. `extract_edges`, `get_edges`, and
-        // `OcctShape::edge_map()` all share one `TopExp::MapShapes(EDGE)` order,
-        // so the position is exactly the index the kernel-side FFI expects.
-        // Warm the cache if cold (idempotent per parent).
-        let parent_edges = self.extract_edges(shape_id).map_err(|e| {
-            GeometryError::OperationFailed(format!(
-                "fillet_edges_with_history: failed to enumerate parent edges of \
-                 {shape_id:?}: {e:?}"
-            ))
-        })?;
-        let mut edge_indices: Vec<u32> = Vec::with_capacity(edges.len());
-        for e in edges {
-            let pos = parent_edges.iter().position(|h| h == e).ok_or_else(|| {
-                GeometryError::OperationFailed(format!(
-                    "fillet_edges_with_history: edge {e:?} does not belong to \
-                     solid {shape_id:?}"
-                ))
-            })?;
-            edge_indices.push(pos as u32);
-        }
+        let edge_indices = self.map_selection_to_indices(
+            shape_id,
+            Some(edges),
+            SubShapeKind::Edge,
+            "fillet_edges_with_history",
+        )?;
         self.run_local_feature_with_history(shape_id, |shape| {
             ffi::ffi::make_fillet_edges_with_history(shape, radius, &edge_indices)
         })
@@ -1645,31 +1686,8 @@ impl OcctKernel {
                     .into(),
             ));
         }
-        // Map each selected face handle → its 0-based position in the
-        // parent's canonical face enumeration. `extract_faces` and
-        // `draft_faces_shape` both use TopExp::MapShapes(TopAbs_FACE)
-        // order, so the index is exactly what the kernel-side FFI expects.
-        let parent_faces = self.extract_faces(target).map_err(|e| {
-            GeometryError::OperationFailed(format!(
-                "draft_faces: failed to enumerate parent faces of {target:?}: {e:?}"
-            ))
-        })?;
-        // Build a reverse map (handle → 0-based index) once so each lookup is
-        // O(1) rather than scanning the whole parent list per selected face.
-        let face_index_map: std::collections::HashMap<GeometryHandleId, u32> = parent_faces
-            .iter()
-            .enumerate()
-            .map(|(i, h)| (*h, i as u32))
-            .collect();
-        let mut face_indices: Vec<u32> = Vec::with_capacity(faces.len());
-        for f in faces {
-            let pos = face_index_map.get(f).copied().ok_or_else(|| {
-                GeometryError::OperationFailed(format!(
-                    "draft_faces: face {f:?} does not belong to solid {target:?}"
-                ))
-            })?;
-            face_indices.push(pos);
-        }
+        let face_indices =
+            self.map_selection_to_indices(target, Some(faces), SubShapeKind::Face, "draft_faces")?;
         let shape = self.get_shape(target)?;
         let plane_shape = self.get_shape(plane)?;
         let result_shape =
@@ -1693,9 +1711,6 @@ impl OcctKernel {
     /// - `OperationFailed` if any handle in `faces` is not a member of
     ///   `target`'s canonical face enumeration (foreign-face guard).
     /// - `OperationFailed` if the underlying OCCT operation fails.
-    ///
-    /// Structural copy of `draft_faces` (lib.rs:1597); mirrors its
-    /// empty-selection + non-member error semantics exactly.
     pub fn shell_solid_faces(
         &mut self,
         target: GeometryHandleId,
@@ -1709,33 +1724,12 @@ impl OcctKernel {
                     .into(),
             ));
         }
-        // Map each selected face handle → its 0-based position in the
-        // parent's canonical face enumeration. `extract_faces` and
-        // `shell_shape` both use TopExp::MapShapes(TopAbs_FACE) order
-        // (after the step-8 cpp switch), so the index is exactly what
-        // the kernel-side FFI expects.
-        let parent_faces = self.extract_faces(target).map_err(|e| {
-            GeometryError::OperationFailed(format!(
-                "shell_solid_faces: failed to enumerate parent faces of {target:?}: {e:?}"
-            ))
-        })?;
-        // Build a reverse map (handle → 0-based index) once so each
-        // lookup is O(1) rather than scanning the whole parent list per
-        // selected face.
-        let face_index_map: std::collections::HashMap<GeometryHandleId, u32> = parent_faces
-            .iter()
-            .enumerate()
-            .map(|(i, h)| (*h, i as u32))
-            .collect();
-        let mut face_indices: Vec<u32> = Vec::with_capacity(faces.len());
-        for f in faces {
-            let pos = face_index_map.get(f).copied().ok_or_else(|| {
-                GeometryError::OperationFailed(format!(
-                    "shell_solid_faces: face {f:?} does not belong to solid {target:?}"
-                ))
-            })?;
-            face_indices.push(pos);
-        }
+        let face_indices = self.map_selection_to_indices(
+            target,
+            Some(faces),
+            SubShapeKind::Face,
+            "shell_solid_faces",
+        )?;
         let shape = self.get_shape(target)?;
         let result_shape = ffi::ffi::shell_shape(shape, thickness, &face_indices)
             .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
@@ -1787,26 +1781,12 @@ impl OcctKernel {
                     .into(),
             ));
         }
-        // Map each selected edge handle → its 0-based position in the parent's
-        // canonical edge enumeration. `extract_edges`, `get_edges`, and
-        // `OcctShape::edge_map()` all share one `TopExp::MapShapes(EDGE)` order,
-        // so the position is exactly the index the kernel-side FFI expects.
-        let parent_edges = self.extract_edges(shape_id).map_err(|e| {
-            GeometryError::OperationFailed(format!(
-                "chamfer_edges_with_history: failed to enumerate parent edges of \
-                 {shape_id:?}: {e:?}"
-            ))
-        })?;
-        let mut edge_indices: Vec<u32> = Vec::with_capacity(edges.len());
-        for e in edges {
-            let pos = parent_edges.iter().position(|h| h == e).ok_or_else(|| {
-                GeometryError::OperationFailed(format!(
-                    "chamfer_edges_with_history: edge {e:?} does not belong to \
-                     solid {shape_id:?}"
-                ))
-            })?;
-            edge_indices.push(pos as u32);
-        }
+        let edge_indices = self.map_selection_to_indices(
+            shape_id,
+            Some(edges),
+            SubShapeKind::Edge,
+            "chamfer_edges_with_history",
+        )?;
         self.run_local_feature_with_history(shape_id, |shape| {
             ffi::ffi::make_chamfer_edges_with_history(shape, distance, &edge_indices)
         })
@@ -1838,33 +1818,15 @@ impl OcctKernel {
     ) -> Result<(GeometryHandle, LocalFeatureOpHistoryRecords), GeometryError> {
         validate_positive_finite(d1, "chamfer d1")?;
         validate_positive_finite(d2, "chamfer d2")?;
-        // Map each selected edge handle → its 0-based position in the parent's
-        // canonical edge enumeration. `extract_edges`, `get_edges`, and
-        // `OcctShape::edge_map()` all share one `TopExp::MapShapes(EDGE)` order,
-        // so the position is exactly the index the kernel-side FFI expects.
-        let parent_edges = self.extract_edges(shape_id).map_err(|e| {
-            GeometryError::OperationFailed(format!(
-                "chamfer_asymmetric_edges_with_history: failed to enumerate parent \
-                 edges of {shape_id:?}: {e:?}"
-            ))
-        })?;
-        // Empty selection = all edges: enumerate every parent edge index so the
-        // empty=all-edges back-compat holds without a dedicated all-edges FFI.
-        let edge_indices: Vec<u32> = if edges.is_empty() {
-            (0..parent_edges.len() as u32).collect()
-        } else {
-            let mut indices: Vec<u32> = Vec::with_capacity(edges.len());
-            for e in edges {
-                let pos = parent_edges.iter().position(|h| h == e).ok_or_else(|| {
-                    GeometryError::OperationFailed(format!(
-                        "chamfer_asymmetric_edges_with_history: edge {e:?} does not \
-                         belong to solid {shape_id:?}"
-                    ))
-                })?;
-                indices.push(pos as u32);
-            }
-            indices
-        };
+        // Empty selection = all edges, enumerated so the back-compat holds
+        // without a dedicated all-edges FFI.
+        let selection = (!edges.is_empty()).then_some(edges);
+        let edge_indices = self.map_selection_to_indices(
+            shape_id,
+            selection,
+            SubShapeKind::Edge,
+            "chamfer_asymmetric_edges_with_history",
+        )?;
         self.run_local_feature_with_history(shape_id, |shape| {
             ffi::ffi::make_chamfer_asymmetric_edges_with_history(shape, d1, d2, &edge_indices)
         })
