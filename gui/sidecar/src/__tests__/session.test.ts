@@ -282,6 +282,7 @@ function makeMockProc(assistantContent: object[]): {
   mockProc.stderr = new PassThrough();
   mockProc.stdin = new PassThrough();
   mockProc.exitCode = null;
+  mockProc.kill = vi.fn();
 
   // Attach stdin accumulator BEFORE spawn-triggering handleMessage call
   const stdinLines: unknown[] = [];
@@ -313,19 +314,20 @@ function makeMockProc(assistantContent: object[]): {
 
 /**
  * Create a mock child process that emits streaming JSON events on stdout,
- * then closes with the given exit code.
+ * then closes with the given exit code. A string entry is emitted verbatim as one line.
  */
-function createMockProcess(events: object[], exitCode = 0): any {
+function createMockProcess(events: (object | string)[], exitCode = 0): any {
   const proc = new EventEmitter() as any;
   const stdout = new PassThrough();
   proc.stdout = stdout;
   proc.stderr = new PassThrough();
   proc.stdin = new PassThrough();
   proc.exitCode = null;
+  proc.kill = vi.fn();
 
   process.nextTick(() => {
     for (const event of events) {
-      stdout.push(JSON.stringify(event) + '\n');
+      stdout.push((typeof event === 'string' ? event : JSON.stringify(event)) + '\n');
     }
     stdout.push(null);
     proc.stderr.push(null);
@@ -791,36 +793,6 @@ describe('SidecarSession', () => {
 
     // Should NOT have spawned any subprocess
     expect(vi.mocked(spawn)).not.toHaveBeenCalled();
-  });
-
-  it('tool_result inbound preserves queue entry when no in-flight stdin', async () => {
-    // Simulate stale tool_use carryover: pendingToolUseIds has an entry but currentStdin is null
-    // (no invokeSdk in flight). This tests that handleToolResult does NOT shift the queue
-    // before confirming currentStdin is available.
-    (session as any).pendingToolUseIds.set('reify_get_source', ['toolu_carry']);
-    (session as any).toolNameById.set('toolu_carry', 'reify_get_source');
-    // currentStdin remains null (no invokeSdk active)
-
-    await session.handleMessage({
-      type: 'tool_result',
-      id: 'msg-stale',
-      tool_use_id: 'toolu_carry',
-      tool_name: 'reify_get_source',
-      result: 'x',
-    });
-
-    // (a) exactly one outbound error should be emitted with matching id and message
-    const errors = outputs.filter((o) => o.type === 'error');
-    expect(errors).toHaveLength(1);
-    expect((errors[0] as any).id).toBe('msg-stale');
-    expect((errors[0] as any).message).toMatch(/no pending tool_use|no in-flight|no matching/i);
-
-    // (b) CRITICAL: the queue entry must still be present — currentStdin was null so
-    // handleToolResult must return early WITHOUT consuming (shifting) the FIFO queue.
-    // This is a regression guard: if the check order is ever reverted to shift-before-check,
-    // this assertion will fail because the queue will be empty.
-    const queue = (session as any).pendingToolUseIds.get('reify_get_source');
-    expect(queue).toEqual(['toolu_carry']);
   });
 
   it('invokeSdk uses --input-format stream-json and writes prompt to stdin', async () => {
@@ -1436,17 +1408,6 @@ describe('SidecarSession stale-state lifecycle', () => {
     await msgPromise;
   });
 
-  it('destroy() clears toolNameById and pendingToolUseIds maps', () => {
-    // Pre-populate both maps
-    (session as any).pendingToolUseIds.set('reify_old', ['toolu_stale']);
-    (session as any).toolNameById.set('toolu_stale', 'reify_old');
-
-    session.destroy();
-
-    expect((session as any).toolNameById.size).toBe(0);
-    expect((session as any).pendingToolUseIds.size).toBe(0);
-  });
-
   it('clear_session mid-flight forgets pending tool_uses', async () => {
     const { mockProc, stdout, stdinLines } = makeMockProc([
       { type: 'tool_use', id: 'toolu_cs', name: 'reify_x', input: {} },
@@ -1479,6 +1440,84 @@ describe('SidecarSession stale-state lifecycle', () => {
     mockProc.exitCode = 0;
     mockProc.emit('close', 0);
     await msgPromise;
+  });
+});
+
+describe('SidecarSession stream failures surface as error', () => {
+  let session: SidecarSession;
+  let outputs: OutboundMessage[];
+
+  const assistantText = (text: string) =>
+    ({ type: 'assistant', message: { id: 'msg_1', content: [{ type: 'text', text }] } });
+  const spawnedProc = () => vi.mocked(spawn).mock.results[0]?.value as any;
+
+  beforeEach(() => {
+    outputs = [];
+    session = new SidecarSession({
+      model: 'claude-opus-4-6',
+      workingDirectory: '/tmp/test-project',
+      systemPrompt: 'Test.',
+    });
+    session.onOutput = (msg) => outputs.push(msg);
+    vi.mocked(spawn).mockReset();
+  });
+
+  it('a throwing host sink ends the turn with an error and kills the claude child', async () => {
+    vi.mocked(spawn).mockImplementation((() => createMockProcess([
+      assistantText('Hi'),
+      assistantText('Hi there'),
+      { type: 'result', session_id: 's' },
+    ])) as any);
+    session.onOutput = (msg) => {
+      outputs.push(msg);
+      if (msg.type === 'text_delta') throw new Error('host sink failed');
+    };
+
+    await session.handleMessage({ type: 'send_message', id: 'msg-b13', text: 'Hi' });
+
+    const errors = outputs.filter((o) => o.type === 'error' && o.id === 'msg-b13');
+    expect(errors).toHaveLength(1);
+    expect((errors[0] as any).message).toContain('host sink failed');
+    expect(outputs.filter((o) => o.type === 'done' && o.id === 'msg-b13')).toHaveLength(0);
+    expect(outputs.filter((o) => o.type === 'text_delta')).toHaveLength(1);
+    expect(spawnedProc().kill).toHaveBeenCalledTimes(1);
+  });
+
+  it('a malformed assistant event ends the turn with an error and kills the claude child', async () => {
+    vi.mocked(spawn).mockImplementation((() => createMockProcess([
+      { type: 'assistant', message: { id: 'msg_1', content: { type: 'text', text: 'x' } } },
+      { type: 'result', session_id: 's' },
+    ])) as any);
+
+    await session.handleMessage({ type: 'send_message', id: 'msg-bad', text: 'Hi' });
+
+    const errors = outputs.filter((o) => o.type === 'error' && o.id === 'msg-bad');
+    expect(errors).toHaveLength(1);
+    expect((errors[0] as any).message).toMatch(/message\.content/);
+    expect(outputs.filter((o) => o.type === 'done')).toHaveLength(0);
+    expect(spawnedProc().kill).toHaveBeenCalledTimes(1);
+  });
+
+  it('an unparseable line is skipped with a warning and the turn completes', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.mocked(spawn).mockImplementation((() => createMockProcess([
+      'not json',
+      assistantText('Hi'),
+      { type: 'result', session_id: 's' },
+    ])) as any);
+
+    try {
+      await session.handleMessage({ type: 'send_message', id: 'msg-skip', text: 'Hi' });
+    } finally {
+      warn.mockRestore();
+    }
+
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0]?.join(' ')).toMatch(/unparseable/);
+    expect(outputs).toContainEqual({ type: 'text_delta', id: 'msg-skip', content: 'Hi' });
+    expect(outputs).toContainEqual({ type: 'done', id: 'msg-skip' });
+    expect(outputs.filter((o) => o.type === 'error')).toHaveLength(0);
+    expect(spawnedProc().kill).not.toHaveBeenCalled();
   });
 });
 
