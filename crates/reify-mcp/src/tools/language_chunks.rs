@@ -1,79 +1,55 @@
 // Language reference chunks — embedded markdown topic files
 
-const SYNTAX: &str = include_str!("chunks/syntax.md");
-const STRUCTURES: &str = include_str!("chunks/structures.md");
-const PARAMETERS: &str = include_str!("chunks/parameters.md");
-const CONSTRAINTS: &str = include_str!("chunks/constraints.md");
-const GEOMETRY: &str = include_str!("chunks/geometry.md");
-const TRAITS: &str = include_str!("chunks/traits.md");
-const COLLECTIONS: &str = include_str!("chunks/collections.md");
-const FIELDS: &str = include_str!("chunks/fields.md");
-const PURPOSES: &str = include_str!("chunks/purposes.md");
-const OCCURRENCES: &str = include_str!("chunks/occurrences.md");
-const CONNECT: &str = include_str!("chunks/connect.md");
-const ENUMS: &str = include_str!("chunks/enums.md");
-const GUARDS: &str = include_str!("chunks/guards.md");
-const FUNCTIONS: &str = include_str!("chunks/functions.md");
-const UNITS: &str = include_str!("chunks/units.md");
-const TYPES: &str = include_str!("chunks/types.md");
-const STDLIB: &str = include_str!("chunks/stdlib.md");
-const MEASUREMENT: &str = include_str!("chunks/measurement.md");
-const TOPOLOGY: &str = include_str!("chunks/topology.md");
-
-/// All available topic names, in alphabetical order.
-pub const TOPICS: &[&str] = &[
-    "collections",
-    "connect",
-    "constraints",
-    "enums",
-    "fields",
-    "functions",
-    "geometry",
-    "guards",
-    "measurement",
-    "occurrences",
-    "parameters",
-    "purposes",
-    "stdlib",
-    "structures",
-    "syntax",
-    "topology",
-    "traits",
-    "types",
-    "units",
+/// The one table of the language reference: each topic paired with the chunk
+/// file named after it, topics strictly ascending. `available_topics()` and
+/// `get_chunk` both derive from it.
+pub const CHUNKS: &[(&str, &str)] = &[
+    ("collections", include_str!("chunks/collections.md")),
+    ("connect", include_str!("chunks/connect.md")),
+    ("constraints", include_str!("chunks/constraints.md")),
+    ("enums", include_str!("chunks/enums.md")),
+    ("fields", include_str!("chunks/fields.md")),
+    ("functions", include_str!("chunks/functions.md")),
+    ("geometry", include_str!("chunks/geometry.md")),
+    ("guards", include_str!("chunks/guards.md")),
+    ("measurement", include_str!("chunks/measurement.md")),
+    ("occurrences", include_str!("chunks/occurrences.md")),
+    ("parameters", include_str!("chunks/parameters.md")),
+    ("purposes", include_str!("chunks/purposes.md")),
+    ("stdlib", include_str!("chunks/stdlib.md")),
+    ("structures", include_str!("chunks/structures.md")),
+    ("syntax", include_str!("chunks/syntax.md")),
+    ("topology", include_str!("chunks/topology.md")),
+    ("traits", include_str!("chunks/traits.md")),
+    ("types", include_str!("chunks/types.md")),
+    ("units", include_str!("chunks/units.md")),
 ];
+
+static TOPICS: [&str; CHUNKS.len()] = topic_names();
+
+const fn topic_names() -> [&'static str; CHUNKS.len()] {
+    let mut names = [""; CHUNKS.len()];
+    let mut i = 0;
+    while i < CHUNKS.len() {
+        names[i] = CHUNKS[i].0;
+        i += 1;
+    }
+    names
+}
 
 /// Look up a language reference chunk by topic name.
 ///
 /// Returns `None` if the topic is not recognized.
 pub fn get_chunk(topic: &str) -> Option<&'static str> {
-    match topic {
-        "syntax" => Some(SYNTAX),
-        "structures" => Some(STRUCTURES),
-        "parameters" => Some(PARAMETERS),
-        "constraints" => Some(CONSTRAINTS),
-        "geometry" => Some(GEOMETRY),
-        "traits" => Some(TRAITS),
-        "collections" => Some(COLLECTIONS),
-        "fields" => Some(FIELDS),
-        "purposes" => Some(PURPOSES),
-        "occurrences" => Some(OCCURRENCES),
-        "connect" => Some(CONNECT),
-        "enums" => Some(ENUMS),
-        "guards" => Some(GUARDS),
-        "functions" => Some(FUNCTIONS),
-        "units" => Some(UNITS),
-        "types" => Some(TYPES),
-        "stdlib" => Some(STDLIB),
-        "measurement" => Some(MEASUREMENT),
-        "topology" => Some(TOPOLOGY),
-        _ => None,
-    }
+    CHUNKS
+        .iter()
+        .find(|(name, _)| *name == topic)
+        .map(|(_, chunk)| *chunk)
 }
 
-/// Return the list of all available topic names.
+/// Return the list of all available topic names, in alphabetical order.
 pub fn available_topics() -> &'static [&'static str] {
-    TOPICS
+    &TOPICS
 }
 
 #[cfg(test)]
