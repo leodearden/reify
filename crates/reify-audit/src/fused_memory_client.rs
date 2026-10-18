@@ -630,6 +630,51 @@ mod tests {
     }
 
     #[test]
+    fn wire_adapter_unusable_done_at_and_garbage_updated_at_keeps_row_without_done_at() {
+        let stamps = [
+            ("string", Some(json!("2026-01-01T00:00:00Z"))),
+            ("float", Some(json!(1700000000.5))),
+            ("absent", None),
+        ];
+        let updated_ats = [json!("garbage"), json!(12345)];
+        for (stamp_label, stamp) in &stamps {
+            for updated_at in &updated_ats {
+                let mut metadata = json!({"files": ["a.rs"]});
+                if let Some(stamp) = stamp {
+                    metadata["done_at"] = stamp.clone();
+                }
+                let case = format!("stamp = {stamp_label}, updatedAt = {updated_at}");
+                let tm = task_metadata_from_wire(&done_task_wire(updated_at.clone(), metadata))
+                    .unwrap_or_else(|| panic!("row dropped ({case})"));
+                assert_eq!(tm.task_id, "7233", "{case}");
+                assert_eq!(tm.status, "done", "{case}");
+                assert_eq!(tm.files, vec!["a.rs".to_string()], "{case}");
+                assert_eq!(tm.done_at, None, "{case}");
+            }
+        }
+    }
+
+    #[test]
+    fn corpus_one_malformed_row_does_not_cost_its_neighbour() {
+        let mut malformed =
+            done_task_wire(json!("garbage"), json!({"done_at": "2026-01-01T00:00:00Z"}));
+        malformed["id"] = json!("8076");
+        let neighbour = done_task_wire(json!("2026-05-16T07:39:04Z"), json!({}));
+        let mut out = Vec::new();
+        for row in [&malformed, &neighbour] {
+            collect_tasks_recursive(row, &mut out);
+        }
+        let done_at_by_id: Vec<(&str, Option<i64>)> = out
+            .iter()
+            .map(|tm| (tm.task_id.as_str(), tm.done_at))
+            .collect();
+        assert_eq!(
+            done_at_by_id,
+            vec![("8076", None), ("7233", Some(1778917144))]
+        );
+    }
+
+    #[test]
     fn wire_adapter_pending_task_ignores_metadata_done_at() {
         let v = json!({
             "id": "7233",
