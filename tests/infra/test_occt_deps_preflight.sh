@@ -30,6 +30,14 @@
 #      EMITS evidence, and that a match emits nothing (the green output shape
 #      is byte-parsed by run_all.sh's cause_hint and dark-factory's
 #      classifier).
+#   R. READER: scripts/native_deps_table.py, driven only through its CLI. On
+#      the real crates/reify-build-utils/native-deps.toml it exits 0, and its
+#      eval'd output declares every row's columns as <ROW^^>_<COLUMN^^>. A
+#      missing file, malformed TOML, a missing required column, an unknown
+#      column and a non-identifier row key each exit non-zero naming the
+#      offender. Values survive eval literally (no expansion, no word
+#      splitting), and absent optional columns are emitted EMPTY, so a
+#      same-named variable in the caller's environment cannot leak through.
 #   1. scripts/check-manifold-deps.sh exists and is executable.
 #   2. OCCT ABSENCE: both override dirs empty => non-zero, output names OCCT.
 #   3. OCCT LIB-ONLY MISSING: headers present, libs absent => non-zero, output
@@ -156,6 +164,8 @@ GUARD="$REPO_ROOT/scripts/check-manifold-deps.sh"
 RUST_SRC="$REPO_ROOT/crates/reify-build-utils/src/lib.rs"
 OCCT_BUILD_RS="$REPO_ROOT/crates/reify-kernel-occt/build.rs"
 SETUP_DEV="$REPO_ROOT/scripts/setup-dev.sh"
+READER="$REPO_ROOT/scripts/native_deps_table.py"
+NATIVE_DEPS_TABLE="$REPO_ROOT/crates/reify-build-utils/native-deps.toml"
 
 _TMPDIR="$(mktemp -d)"
 trap 'rm -rf "$_TMPDIR"' EXIT
@@ -896,6 +906,204 @@ _no_emission_on_match() {
 
 assert "_guard_output_names emits NOTHING when every needle matches (green shape unchanged)" \
     _no_emission_on_match
+
+# ---------------------------------------------------------------------------
+# R. READER — scripts/native_deps_table.py, through its CLI only.
+#
+# The guard evals this reader's stdout, so the reader is where the table's
+# invariants are enforced: a malformed or hostile table must exit non-zero
+# rather than emit declarations, and anything it does emit must be inert
+# under eval. Every eval below runs in a SUBSHELL checker (`f() ( ... )`), so
+# no declaration leaks into this file's own namespace.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- R: reader — native_deps_table.py declares every row, rejects bad tables ---"
+
+# _toml_min_row <key> [<omitted-column>] — a minimal VALID row for reader
+# fixtures, every required column present (minus <omitted-column>, if given)
+# and no optional one. Env and cfg names derive from <key>.
+_toml_min_row() {
+    local key="$1" omit="${2:-}" upper="${1^^}" col
+    local -A cols=(
+        [include_env]="\"${upper}_INCLUDE_DIR\""
+        [lib_env]="\"${upper}_LIB_DIR\""
+        [cfg]="\"has_${key}\""
+        [include_candidates]='["/nonexistent/include"]'
+        [lib_candidates]='["/nonexistent/lib"]'
+        [include_sentinel]="\"${key}.h\""
+        [lib_sentinel]="\"lib${key}.so\""
+    )
+    printf '[%s]\n' "$key"
+    for col in include_env lib_env cfg include_candidates lib_candidates include_sentinel lib_sentinel; do
+        [ "$col" = "$omit" ] && continue
+        printf '%s = %s\n' "$col" "${cols[$col]}"
+    done
+}
+
+# _reader_rejects <table> <needle>... — the reader exits NON-zero on <table>
+# and its combined output names every needle. Guarded on the reader existing
+# first: a missing reader also exits non-zero, which would false-pass every
+# rejection below. On a miss it echoes the evidence, as _guard_env_output_names
+# does.
+_reader_rejects() {
+    local table="$1" out rc=0 needle
+    shift
+    [ -f "$READER" ] || { echo "  | reader not found: $READER"; return 1; }
+    out="$(python3 -I "$READER" "$table" 2>&1)" || rc=$?
+    if [ "$rc" -eq 0 ]; then
+        echo "  | reader exited 0 on a table it must reject: $table"
+        echo "  | ---- reader output ----"
+        printf '  | %s\n' "$out"
+        return 1
+    fi
+    for needle in "$@"; do
+        if ! _out_contains "$out" "$needle"; then
+            echo "  | needle NOT FOUND in the reader output: $needle (exit $rc)"
+            echo "  | ---- reader output ----"
+            printf '  | %s\n' "$out"
+            return 1
+        fi
+    done
+}
+
+# --- (a) the real table ----------------------------------------------------
+_READER_REAL_RC=0
+_READER_REAL_DECLS="$(python3 -I "$READER" "$NATIVE_DEPS_TABLE" 2>&1)" || _READER_REAL_RC=$?
+
+assert "reader exits 0 on the real native-deps.toml" \
+    test "$_READER_REAL_RC" -eq 0
+
+# _reader_real_declares_row <row> — after eval, NATIVE_DEP_ROWS holds <row>.
+_reader_real_declares_row() (
+    eval "$_READER_REAL_DECLS" || exit 1
+    local r
+    for r in "${NATIVE_DEP_ROWS[@]}"; do
+        [ "$r" = "$1" ] && exit 0
+    done
+    echo "  | NATIVE_DEP_ROWS lacks '$1': (${NATIVE_DEP_ROWS[*]})"
+    exit 1
+)
+
+for _row in occt gmsh openvdb; do
+    assert "reader's NATIVE_DEP_ROWS on the real table contains '$_row'" \
+        _reader_real_declares_row "$_row"
+done
+
+# _reader_real_rows_complete — every row the real table declares carries every
+# required column, non-empty: the scalars, and both candidate arrays.
+_reader_real_rows_complete() (
+    eval "$_READER_REAL_DECLS" || exit 1
+    local row up col name bad=0
+    [ "${#NATIVE_DEP_ROWS[@]}" -gt 0 ] || { echo "  | NATIVE_DEP_ROWS is empty"; exit 1; }
+    for row in "${NATIVE_DEP_ROWS[@]}"; do
+        up="${row^^}"
+        for col in INCLUDE_SENTINEL LIB_SENTINEL INCLUDE_ENV LIB_ENV CFG; do
+            name="${up}_${col}"
+            if [ -z "${!name:-}" ]; then
+                echo "  | $name is empty or undeclared"
+                bad=1
+            fi
+        done
+        for col in INCLUDE_CANDIDATES LIB_CANDIDATES; do
+            name="${up}_${col}"
+            local -n arr="$name"
+            if ! declare -p "$name" >/dev/null 2>&1 || [ "${#arr[@]}" -eq 0 ]; then
+                echo "  | $name is an empty or undeclared array"
+                bad=1
+            fi
+            unset -n arr
+        done
+    done
+    exit "$bad"
+)
+
+assert "reader declares every row's sentinels, env names, cfg and both candidate arrays non-empty" \
+    _reader_real_rows_complete
+
+# --- (b)-(f) rejections -----------------------------------------------------
+_READER_MISSING="$_TMPDIR/reader-no-such-table.toml"
+assert "reader exits non-zero on a missing table file, naming the path" \
+    _reader_rejects "$_READER_MISSING" "$_READER_MISSING"
+
+_READER_MALFORMED="$_TMPDIR/reader-malformed.toml"
+printf '[occt\n' > "$_READER_MALFORMED"
+assert "reader exits non-zero on malformed TOML, naming the path" \
+    _reader_rejects "$_READER_MALFORMED" "$_READER_MALFORMED"
+
+_READER_NO_SENT="$_TMPDIR/reader-missing-column.toml"
+_toml_min_row occt lib_sentinel > "$_READER_NO_SENT"
+assert "reader exits non-zero on a row missing a required column, naming the row and 'lib_sentinel'" \
+    _reader_rejects "$_READER_NO_SENT" "occt" "lib_sentinel"
+
+_READER_UNKNOWN_COL="$_TMPDIR/reader-unknown-column.toml"
+{ _toml_min_row occt; printf 'snapp = 1\n'; } > "$_READER_UNKNOWN_COL"
+assert "reader exits non-zero on an unknown column, naming it ('snapp')" \
+    _reader_rejects "$_READER_UNKNOWN_COL" "snapp"
+
+_READER_BAD_KEY="$_TMPDIR/reader-bad-key.toml"
+_toml_min_row open-vdb > "$_READER_BAD_KEY"
+assert "reader exits non-zero on a row key that is not [a-z][a-z0-9]* ('open-vdb')" \
+    _reader_rejects "$_READER_BAD_KEY" "open-vdb"
+
+# --- (g) values survive eval literally -------------------------------------
+_READER_QUOTE_MARKER="$_TMPDIR/reader-quote-marker"
+_READER_QUOTE_CAND="/tmp/a b/\$(touch $_READER_QUOTE_MARKER)/it's"
+_READER_QUOTE="$_TMPDIR/reader-quoting.toml"
+{
+    _toml_min_row quote include_candidates
+    printf 'include_candidates = ["%s"]\n' "$_READER_QUOTE_CAND"
+} > "$_READER_QUOTE"
+
+# _reader_value_is_literal — the hostile candidate comes back as ONE element
+# equal to the literal string, and the command substitution inside it never
+# ran.
+_reader_value_is_literal() (
+    local decls
+    decls="$(python3 -I "$READER" "$_READER_QUOTE")" || exit 1
+    eval "$decls" || exit 1
+    if [ "${#QUOTE_INCLUDE_CANDIDATES[@]}" -ne 1 ] \
+        || [ "${QUOTE_INCLUDE_CANDIDATES[0]}" != "$_READER_QUOTE_CAND" ]; then
+        echo "  | QUOTE_INCLUDE_CANDIDATES after eval: $(declare -p QUOTE_INCLUDE_CANDIDATES)"
+        exit 1
+    fi
+    if [ -e "$_READER_QUOTE_MARKER" ]; then
+        echo "  | eval EXECUTED the embedded \$(touch ...): $_READER_QUOTE_MARKER exists"
+        exit 1
+    fi
+)
+
+assert "a candidate holding a space, \$(...) and a single quote survives eval as one literal element, unexecuted" \
+    _reader_value_is_literal
+
+# --- (h) absent optional columns are emitted EMPTY -------------------------
+_READER_NO_OPT="$_TMPDIR/reader-no-optional.toml"
+_toml_min_row gmsh > "$_READER_NO_OPT"
+
+# _reader_absent_optionals_are_empty — with same-named variables EXPORTED in
+# the caller's environment, the eval still leaves the snap scalars empty and
+# the XDE toolkit list an empty array: the reader declared them, so nothing
+# ambient leaks into what the guard reads.
+_reader_absent_optionals_are_empty() (
+    export GMSH_SNAP_ROOT=/leak GMSH_SNAP_INCLUDE_SUBDIR=/leak \
+        GMSH_SNAP_LIB_SUBDIR=/leak GMSH_XDE_TOOLKITS=/leak
+    local decls name bad=0
+    decls="$(python3 -I "$READER" "$_READER_NO_OPT")" || exit 1
+    eval "$decls" || exit 1
+    for name in GMSH_SNAP_ROOT GMSH_SNAP_INCLUDE_SUBDIR GMSH_SNAP_LIB_SUBDIR; do
+        if [ -n "${!name}" ]; then
+            echo "  | $name leaked through: '${!name}'"
+            bad=1
+        fi
+    done
+    if [ "${#GMSH_XDE_TOOLKITS[@]}" -ne 0 ] || [ -n "${GMSH_XDE_TOOLKITS[0]:-}" ]; then
+        echo "  | GMSH_XDE_TOOLKITS is not an empty array: $(declare -p GMSH_XDE_TOOLKITS)"
+        bad=1
+    fi
+    exit "$bad"
+)
+
+assert "a row with no snap / xde_toolkits emits them EMPTY, overriding same-named exported variables" \
+    _reader_absent_optionals_are_empty
 
 # ---------------------------------------------------------------------------
 # 1. Guard script exists and is executable
