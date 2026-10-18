@@ -1,6 +1,8 @@
 //! The reify language's one keyword table: each word's grammar kind and its LSP rename policy
 //! (PRD docs/prds/v0_6/builtin-registry-migration-and-interception-classifier.md D15).
 
+use RenamePolicy::{Accepted, Refused};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Keyword {
     pub word: &'static str,
@@ -54,7 +56,55 @@ const fn contextual(word: &'static str, rename: RenamePolicy) -> Keyword {
     }
 }
 
-pub const KEYWORDS: &[Keyword] = &[];
+pub const KEYWORDS: &[Keyword] = &[
+    contextual("and", Refused),
+    contextual("as", Accepted),
+    reserved("auto"),
+    contextual("chain", Accepted),
+    contextual("connect", Refused),
+    contextual("constraint", Refused),
+    contextual("def", Refused),
+    contextual("else", Refused),
+    contextual("enum", Refused),
+    reserved("exists"),
+    reserved("false"),
+    contextual("field", Accepted),
+    contextual("fn", Refused),
+    reserved("forall"),
+    reserved("if"),
+    contextual("implies", Accepted),
+    contextual("import", Refused),
+    contextual("in", Accepted),
+    contextual("let", Refused),
+    reserved("map"),
+    reserved("match"),
+    contextual("maximize", Refused),
+    contextual("meta", Accepted),
+    contextual("minimize", Refused),
+    contextual("module", Accepted),
+    contextual("none", Accepted),
+    reserved("not"),
+    contextual("occurrence", Refused),
+    contextual("or", Refused),
+    contextual("out", Accepted),
+    contextual("param", Refused),
+    contextual("port", Refused),
+    contextual("pub", Accepted),
+    contextual("purpose", Refused),
+    contextual("self", Accepted),
+    reserved("set"),
+    contextual("some", Accepted),
+    contextual("structure", Refused),
+    contextual("sub", Refused),
+    contextual("then", Refused),
+    contextual("trait", Refused),
+    reserved("true"),
+    contextual("type", Refused),
+    reserved("undef"),
+    contextual("unit", Accepted),
+    contextual("where", Refused),
+    contextual("joint", Accepted),
+];
 
 #[cfg(test)]
 mod tests {
@@ -161,9 +211,14 @@ mod tests {
     fn keyword_words_match_spec_section_2_10() {
         const START: &str = "### 2.10 Keywords";
         const END: &str = "**Removed keywords";
-        let spec_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/reify-language-spec.md");
-        let spec = std::fs::read_to_string(&spec_path)
-            .unwrap_or_else(|e| panic!("cannot read the language spec at {}: {e}", spec_path.display()));
+        let spec_path =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/reify-language-spec.md");
+        let spec = std::fs::read_to_string(&spec_path).unwrap_or_else(|e| {
+            panic!(
+                "cannot read the language spec at {}: {e}",
+                spec_path.display()
+            )
+        });
         let section = spec
             .split_once(START)
             .and_then(|(_, rest)| rest.split_once(END))
@@ -209,10 +264,7 @@ mod tests {
             .map(|k| k.word)
             .filter(|w| !seen.insert(*w))
             .collect();
-        assert!(
-            duplicates.is_empty(),
-            "KEYWORDS repeats {duplicates:?}"
-        );
+        assert!(duplicates.is_empty(), "KEYWORDS repeats {duplicates:?}");
     }
 
     #[test]
