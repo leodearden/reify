@@ -439,22 +439,79 @@ fn compute_rename_rejects_invalid_identifiers() {
         "underscore-leading alphanumeric identifier is legal"
     );
 
-    // Illegal new_names: whitespace, punctuation, digit-leading, and reserved
-    // keywords all fail the identifier grammar and must return None.
+    // Illegal new_names: whitespace, punctuation, digit-leading, and rename-refused
+    // keywords (reify_syntax::KEYWORDS) all fail the gate and must return None.
     for bad in [
-        "",         // empty
-        "   ",      // whitespace only
-        "foo bar",  // embedded whitespace
-        "foo-bar",  // punctuation
-        "2x",       // leading digit
-        "let",      // reserved keyword (body)
-        "param",    // reserved keyword (body)
-        "structure", // reserved keyword (top-level)
-        "if",       // reserved keyword (expression)
+        "",          // empty
+        "   ",       // whitespace only
+        "foo bar",   // embedded whitespace
+        "foo-bar",   // punctuation
+        "2x",        // leading digit
+        "let",       // rename-refused Contextual
+        "param",     // rename-refused Contextual
+        "def",       // rename-refused Contextual
+        "structure", // rename-refused Contextual
+        "if",        // Reserved
+        "match",     // Reserved
+        "forall",    // Reserved
+        "auto",      // Reserved
     ] {
         assert!(
             compute_rename(source, &parsed, &uri, pos, bad).is_none(),
             "illegal/keyword new_name {bad:?} must be refused"
+        );
+    }
+}
+
+/// Splice `edits` into `source` in descending start order, so earlier byte
+/// offsets stay valid as later ones are replaced.
+fn apply_edits(source: &str, edits: &[TextEdit]) -> String {
+    let mut to_apply: Vec<(usize, usize, &str)> = edits
+        .iter()
+        .map(|e| {
+            (
+                position_to_offset(source, e.range.start),
+                position_to_offset(source, e.range.end),
+                e.new_text.as_str(),
+            )
+        })
+        .collect();
+    to_apply.sort_by_key(|e| std::cmp::Reverse(e.0));
+    let mut buffer = source.to_string();
+    for (start, end, text) in &to_apply {
+        buffer.replace_range(*start..*end, text);
+    }
+    buffer
+}
+
+#[test]
+fn compute_rename_accepts_contextual_keywords_not_rename_refused() {
+    let source = reify_test_support::bracket_source();
+    let parsed = reify_syntax::parse(source, ModulePath::single("bracket"));
+    let uri = Url::parse("file:///bracket.ri").unwrap();
+    let width = occurrences(source, "width");
+    let pos = offset_to_position(source, width[1] as u32);
+
+    for new_name in ["unit", "chain"] {
+        let edit = compute_rename(source, &parsed, &uri, pos, new_name).unwrap_or_else(|| {
+            panic!("rename to the rename-accepted Contextual keyword {new_name:?} must be accepted")
+        });
+        let edits = edit
+            .changes
+            .expect("changes present")
+            .remove(&uri)
+            .expect("edits for uri");
+        assert!(
+            edits.iter().all(|e| e.new_text == new_name),
+            "every TextEdit applies {new_name:?}: {edits:?}"
+        );
+
+        let buffer = apply_edits(source, &edits);
+        let reparsed = reify_syntax::parse(&buffer, ModulePath::single("bracket"));
+        assert!(
+            reparsed.errors.is_empty(),
+            "renaming width to {new_name:?} must re-parse clean: {:?}\n--- buffer ---\n{buffer}",
+            reparsed.errors
         );
     }
 }
