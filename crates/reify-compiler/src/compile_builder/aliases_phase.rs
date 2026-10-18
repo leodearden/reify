@@ -169,12 +169,12 @@ pub(crate) fn phase_aliases(
 /// already-built `trait_registry` (prelude + local), which contains the same
 /// complete set of names.
 ///
-/// **Note on enum names:** there is no `ctx.resolution_enum_names` field to
-/// read — the name set is derived here from `ctx.resolution_enums`, the
-/// prelude ++ local `Vec<EnumDef>` that `enums_phase::build_resolution_enums_
-/// from_cache` populates well before this phase's `lib.rs` call site.  Without
-/// this fourth namespace the guard rejects `pub type G<T> = Option<SomeEnum>`
-/// at its own definition site for a plainly declared name (#6477).
+/// **Note on enums:** `ctx.resolution_enums`, the prelude ++ local
+/// `Vec<EnumDef>` that `enums_phase::build_resolution_enums_from_cache`
+/// populates well before this phase's `lib.rs` call site, is passed to the
+/// guard directly.  Without this fourth namespace the guard rejects
+/// `pub type G<T> = Option<SomeEnum>` at its own definition site for a plainly
+/// declared name (#6477).
 ///
 /// Builds the template registry (prelude structures + local templates) and
 /// trait registry (same composition as `phase_pending_bound_checks`) so the
@@ -192,8 +192,8 @@ pub(crate) fn phase_validate_pub_parametric_alias_defs(
     // iter()` skips prelude-seeded entries, so this holds only the module's own
     // `pub` PARAMETRIC aliases — a population the repo-wide survey behind
     // `parametric_alias_population_regression` puts at two across all of
-    // stdlib. Returning here retires four sets of String clones over the full
-    // prelude alias/trait/enum population per module compile.
+    // stdlib. Returning here retires three sets of String clones over the full
+    // prelude structure/trait population per module compile.
     let entries_to_validate: Vec<_> = ctx
         .alias_registry
         .iter()
@@ -223,22 +223,13 @@ pub(crate) fn phase_validate_pub_parametric_alias_defs(
     // trait_registry already contains the same complete prelude + local set.
     let trait_names_for_guard: HashSet<String> = trait_registry.keys().cloned().collect();
 
-    // Derive the set of known enum names the same way, from ctx.resolution_enums
-    // (prelude ++ local) — the only enum-name source available here, as there is
-    // no ctx.resolution_enum_names field.
-    let enum_names_for_guard: HashSet<String> = ctx
-        .resolution_enums
-        .iter()
-        .map(|e| e.name.clone())
-        .collect();
-
     for entry in &entries_to_validate {
         validate_pub_parametric_alias_def_site(
             entry,
             &ctx.alias_registry,
             &ctx.resolution_structure_names,
             &trait_names_for_guard,
-            &enum_names_for_guard,
+            &ctx.resolution_enums,
             &template_registry,
             &trait_registry,
             &mut ctx.diagnostics,

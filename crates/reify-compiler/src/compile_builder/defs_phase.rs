@@ -206,10 +206,11 @@ pub(crate) fn phase_constraint_defs(
     //
     // Built here, once for the whole loop, rather than inside
     // `compile_constraint_def`: the set is the same for every def in the module,
-    // and constructing it clones every name in `ctx.resolution_enums` (prelude
-    // ++ local — 38 enums from stdlib alone). Lazily, on the same
-    // first-`Declaration::Constraint` trigger as `structure_names` above, so a
-    // module with zero constraint defs still allocates nothing.
+    // and constructing it clones every name and type-param list in
+    // `ctx.resolution_enums` (prelude ++ local — 38 enums from stdlib alone).
+    // Lazily, on the same first-`Declaration::Constraint` trigger as
+    // `structure_names` above, so a module with zero constraint defs still
+    // allocates nothing.
     //
     // Widening its reach from one def to the whole loop is behaviour-preserving:
     // the only thing that reads `RESOLUTION_ENUM_NAMES` is type resolution, and
@@ -223,14 +224,7 @@ pub(crate) fn phase_constraint_defs(
             // Install on first use; the returned reference is not needed — the
             // guard acts through the thread-local, and `compile_constraint_def`
             // documents the precondition it satisfies.
-            enum_scope.get_or_insert_with(|| {
-                EnumNameScope::new(
-                    ctx.resolution_enums
-                        .iter()
-                        .map(|e| e.name.clone())
-                        .collect(),
-                )
-            });
+            enum_scope.get_or_insert_with(|| EnumNameScope::new(&ctx.resolution_enums));
             let names = structure_names.get_or_insert_with(|| {
                 ctx.seen_entity_names
                     .iter()
