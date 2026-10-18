@@ -41,10 +41,16 @@ struct ProductionView {
     literals: Vec<StrLit>,
 }
 
-fn production_view(src: &str) -> ProductionView {
-    let (mut code, literals) = lex(src);
-    mask_test_gated_items(&mut code, &literals);
+/// One source file as the lexer reads it, before any item is masked.
+fn lexed_view(src: &str) -> ProductionView {
+    let (code, literals) = lex(src);
     ProductionView { code, literals }
+}
+
+fn production_view(src: &str) -> ProductionView {
+    let mut view = lexed_view(src);
+    mask_test_gated_items(&mut view.code, &view.literals);
+    view
 }
 
 impl ProductionView {
@@ -687,27 +693,61 @@ fn row_i_open_coded_finite_positive_checks_within_baseline() {
     );
 }
 
+fn unit_test_attributes(view: &ProductionView) -> usize {
+    view.skeleton_lines()
+        .iter()
+        .map(|line| line.matches("#[test]").count())
+        .sum()
+}
+
+/// `{` count minus `}` count, string-literal contents excluded.
+fn brace_imbalance(view: &ProductionView) -> isize {
+    view.skeleton_lines()
+        .iter()
+        .flat_map(|line| line.bytes())
+        .map(|byte| match byte {
+            b'{' => 1,
+            b'}' => -1,
+            _ => 0,
+        })
+        .sum()
+}
+
+/// The scanner over the real sources, by property rather than by name. A
+/// comment, string or char literal read as code would unbalance the braces
+/// the lexer sees, which moves where a masked item ends; a masked item that
+/// ends early leaks a `#[test]` into the production view.
 #[test]
-fn production_view_of_lib_rs_keeps_execute_and_masks_mod_tests() {
-    const MOD_TESTS_PROBE: &str = "occt_armed_bare_length_panics_naming_the_op_kind";
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/lib.rs");
-    let src = std::fs::read_to_string(&path).expect("read src/lib.rs");
+fn production_views_of_the_crate_sources_are_balanced_and_free_of_unit_tests() {
+    let sources = crate_sources();
+    let lexed_unit_tests: usize = sources
+        .iter()
+        .map(|(_, src)| unit_test_attributes(&lexed_view(src)))
+        .sum();
     assert!(
-        src.contains(&format!("fn {MOD_TESTS_PROBE}(")),
-        "probe {MOD_TESTS_PROBE} no longer exists in lib.rs's mod tests; pick another test fn"
+        lexed_unit_tests > 0,
+        "src/ carries no #[test] attribute, so the leak check below reads nothing"
     );
-    let view = production_view(&src);
-    assert!(
-        view.skeleton_lines()
-            .iter()
-            .any(|line| line.trim_start().starts_with("pub fn execute(")),
-        "the production view of lib.rs lost OcctKernel::execute's signature line"
-    );
-    assert!(
-        !String::from_utf8_lossy(&view.code).contains(MOD_TESTS_PROBE),
-        "the production view of lib.rs still shows {MOD_TESTS_PROBE}: the \
-         `#[cfg(all(test, has_occt))] mod tests` mask ended early"
-    );
+    for (label, src) in &sources {
+        assert_eq!(
+            brace_imbalance(&lexed_view(src)),
+            0,
+            "{label}: the lexer reads unbalanced braces, so it mis-reads a comment, \
+             string or char literal"
+        );
+        let view = production_view(src);
+        assert_eq!(
+            brace_imbalance(&view),
+            0,
+            "{label}: the production view is unbalanced, so a masked item ended \
+             inside another block"
+        );
+        assert_eq!(
+            unit_test_attributes(&view),
+            0,
+            "{label}: a #[test] survives the mask, so a cfg(test)-gated item ended early"
+        );
+    }
 }
 
 // ── row (ii): numeric decode in the handle ──────────────────────────────────
