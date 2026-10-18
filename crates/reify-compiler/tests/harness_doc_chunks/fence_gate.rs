@@ -14,8 +14,10 @@
 //!    compile. The inverse of 1, over the one exempt tag that makes a
 //!    falsifiable claim.
 //! 4. Every `chunks/*.md` file on disk is reachable through the
-//!    `reify_language_reference` MCP tool — i.e. both `include_str!`-ed AND
-//!    listed in `TOPICS`.
+//!    `reify_language_reference` MCP tool — i.e. its exact content is what
+//!    `get_chunk` serves for some topic `available_topics()` enumerates. The
+//!    gate reads that through `reify_mcp::tools::language_chunks`'s public
+//!    registry, never by parsing `language_chunks.rs`.
 //!
 //! # Tag vocabulary
 //!
@@ -143,8 +145,10 @@
 //! pinning test is a synthetic fixture rather than a reference to a chunk that
 //! can be fixed out from under it.
 
+use reify_mcp::tools::language_chunks::{available_topics, get_chunk};
+
 use crate::chunk_io::{
-    CHUNK_FILE_COUNT, CHUNKS_DIR, chunk_label, discover_chunk_stems, read_chunk_file, repo_root,
+    CHUNK_FILE_COUNT, CHUNKS_DIR, all_chunks, chunk_label, discover_chunk_stems, read_chunk_file,
     report,
 };
 use crate::chunk_markdown::{Fence, parse_fences};
@@ -328,80 +332,37 @@ fn check_markdown(path: &str, content: &str, check: FenceCheck) -> Vec<String> {
 // Check 4 — every chunk is reachable through the MCP tool
 // ---------------------------------------------------------------------------
 
-/// Where the MCP tool wires each chunk in, repo-relative.
-const LANGUAGE_CHUNKS_RS: &str = "crates/reify-mcp/src/tools/language_chunks.rs";
-
-/// The exact prefix of the `TOPICS` slice literal in `language_chunks.rs`.
-const TOPICS_ANCHOR: &str = "pub const TOPICS: &[&str] = &[";
-
-/// The body of the `TOPICS` slice literal, or `None` if it cannot be located.
-fn topics_literal(src: &str) -> Option<&str> {
-    let start = src.find(TOPICS_ANCHOR)? + TOPICS_ANCHOR.len();
-    let rest = &src[start..];
-    let end = rest.find("];")?;
-    Some(&rest[..end])
+/// Every on-disk chunk whose exact content is not among the `served` chunks,
+/// one message each naming the file.
+///
+/// Reachability is decided by CONTENT, through the same public registry calls
+/// the `reify_language_reference` tool makes, so a file is reachable exactly
+/// when the tool can hand its bytes to a caller. Equality is exact: a served
+/// chunk that merely contains the file, or a stale copy of it, is not the file.
+/// Each file is checked against the registry rather than the other way round,
+/// so an empty registry reports the whole corpus instead of nothing.
+fn reachability_violations(on_disk: &[(String, String)], served: &[&str]) -> Vec<String> {
+    on_disk
+        .iter()
+        .filter(|(_, content)| !served.contains(&content.as_str()))
+        .map(|(stem, _)| {
+            format!(
+                "{} is on disk but UNREACHABLE: no topic in `available_topics()` \
+                 serves its content, so `reify_language_reference` hands it to \
+                 nobody — add a `(\"{stem}\", include_str!(\"chunks/{stem}.md\"))` \
+                 row to `reify_mcp::tools::language_chunks::CHUNKS`",
+                chunk_label(stem)
+            )
+        })
+        .collect()
 }
 
-/// Every chunk stem on disk that is not reachable through the
-/// `reify_language_reference` MCP tool.
-///
-/// Reachability needs BOTH halves and they fail differently:
-///
-/// - no `include_str!("chunks/<stem>.md")` — the file is not compiled into the
-///   binary at all. Whole-file omission drift: it ships in the repo and is
-///   served to nobody.
-/// - not in the `TOPICS` slice literal — subtler, and the reason the TOPICS
-///   half is scoped to that literal rather than scanned file-wide. Such a
-///   chunk compiles in and even answers `get_chunk`, but `TOPICS` is what the
-///   MCP tool ENUMERATES, so no caller can discover it. A whole-file scan
-///   would be satisfied by the `"<stem>" => Some(CONST)` match arm and miss
-///   this entirely.
-///
-/// Both scans are ANCHORED — `include_str!("chunks/<stem>.md")` in full, and
-/// the QUOTED `"<stem>"` for the topic entry — so a stem can never be satisfied
-/// by a coincidental substring of a longer one (`types` inside `prototypes`).
-/// An unanchored scan would report the corpus clean while a chunk was served to
-/// nobody, which is the exact silent failure this check exists to prevent.
-fn reachability_violations(stems: &[String], src: &str) -> Vec<String> {
-    let Some(topics) = topics_literal(src) else {
-        return vec![format!(
-            "could not locate the `{TOPICS_ANCHOR}` slice literal in \
-             language_chunks.rs — the reachability scan is anchored on it, so a \
-             move or rename must fail LOUDLY here rather than silently \
-             reporting the whole corpus clean (or the whole corpus broken)"
-        )];
-    };
-
-    stems
+/// Every chunk the `reify_language_reference` tool can serve: what `get_chunk`
+/// returns for each topic `available_topics()` enumerates.
+fn served_chunks() -> Vec<&'static str> {
+    available_topics()
         .iter()
-        .filter_map(|stem| {
-            let include = format!("include_str!(\"chunks/{stem}.md\")");
-            let topic_entry = format!("\"{stem}\"");
-
-            let mut missing: Vec<String> = Vec::new();
-            if !src.contains(&include) {
-                missing.push(format!(
-                    "no `{include}` in language_chunks.rs, so the file is not \
-                     compiled into the binary at all"
-                ));
-            }
-            if !topics.contains(&topic_entry) {
-                missing.push(format!(
-                    "no `{topic_entry}` entry in the `TOPICS` slice literal, so \
-                     the `reify_language_reference` MCP tool cannot enumerate it \
-                     even if it compiles in"
-                ));
-            }
-            if missing.is_empty() {
-                return None;
-            }
-
-            Some(format!(
-                "{} is on disk but UNREACHABLE: {}",
-                chunk_label(stem),
-                missing.join("; and ")
-            ))
-        })
+        .filter_map(|topic| get_chunk(topic))
         .collect()
 }
 
@@ -1042,7 +1003,10 @@ fn a_corpus_whose_every_file_is_served_is_clean() {
 
     let violations = reachability_violations(&disk, &["U", "S"]);
 
-    assert!(violations.is_empty(), "a fully served corpus must be clean, got {violations:#?}");
+    assert!(
+        violations.is_empty(),
+        "a fully served corpus must be clean, got {violations:#?}"
+    );
 }
 
 /// Reachability is EXACT equality: a served chunk that merely contains the
@@ -1051,7 +1015,8 @@ fn a_corpus_whose_every_file_is_served_is_clean() {
 /// corpus clean while the file itself was served to nobody.
 #[test]
 fn reachability_is_exact_equality_not_containment() {
-    let contained = reachability_violations(&on_disk(&[("types", "types")]), &["prototypes and types"]);
+    let contained =
+        reachability_violations(&on_disk(&[("types", "types")]), &["prototypes and types"]);
     assert_eq!(
         contained.len(),
         1,
@@ -1074,7 +1039,11 @@ fn an_empty_registry_reports_every_file_rather_than_none() {
 
     let violations = reachability_violations(&disk, &[]);
 
-    assert_eq!(violations.len(), 2, "one violation per unserved file; got {violations:#?}");
+    assert_eq!(
+        violations.len(),
+        2,
+        "one violation per unserved file; got {violations:#?}"
+    );
     assert!(
         violations[0].contains(&chunk_label("a")) && violations[1].contains(&chunk_label("b")),
         "each violation must name its own file, got {violations:#?}"
@@ -1402,24 +1371,13 @@ fn every_reify_invalid_fence_actually_errors() {
 /// CHECK 4 — every chunk on disk is reachable through the MCP tool.
 #[test]
 fn every_chunk_is_reachable_through_the_mcp_tool() {
-    let stems = discover_chunk_stems();
-    assert!(
-        stems.len() >= CHUNK_FILE_COUNT,
-        "the chunk-dir scan found only {} `.md` file(s), expected {CHUNK_FILE_COUNT} — the \
-         reachability check is vacuous",
-        stems.len()
-    );
-
-    let src = std::fs::read_to_string(repo_root().join(LANGUAGE_CHUNKS_RS)).unwrap_or_else(|e| {
-        panic!("{LANGUAGE_CHUNKS_RS} must be readable ({e}) — update LANGUAGE_CHUNKS_RS if it moved")
-    });
+    let on_disk = all_chunks("the reachability check");
 
     report(
         "chunk files that are unreachable through `reify_language_reference`. A \
-         chunk wired in neither place ships to nobody; one missing only from \
-         TOPICS compiles in and answers `get_chunk` yet cannot be enumerated, \
-         which is the drift a reader never sees",
-        &reachability_violations(&stems, &src),
+         chunk whose exact bytes no enumerated topic serves ships in the repo to \
+         nobody, which is the drift a reader never sees",
+        &reachability_violations(&on_disk, &served_chunks()),
     );
 }
 

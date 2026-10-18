@@ -38,6 +38,11 @@ reify-test-support = { workspace = true, features = ["eval-helpers"] }
 reify-eval.workspace = true
 reify-expr.workspace = true
 tempfile.workspace = true
+# Test-only: the doc-chunk fence gate (tests/harness_doc_chunks/fence_gate.rs
+# check 4) proves every chunks/*.md is served by
+# `reify_mcp::tools::language_chunks`. reify-mcp depends only on reify-core, so
+# no cycle.
+reify-mcp.workspace = true
 # Self-pull with the test-support feature so the integration test in
 # tests/harness_result_annotation/annotation_schema_registry_parity.rs can call
 # `__validate_annotations_for_parity_test`. Standard Rust pattern for
