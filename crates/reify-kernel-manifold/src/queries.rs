@@ -490,9 +490,14 @@ fn tri_edges(t: &[u64; 3]) -> [(u64, u64); 3] {
 /// triangles' edges, i.e. positions in [`canonical_edges`] (= the
 /// `extract_edges` order). Two faces are adjacent iff their edge sets
 /// intersect, and the intersection is their shared boundary. A face's set
-/// also holds its interior triangulation edges (a cube face's diagonal), but
-/// on a closed 2-manifold both triangles of such an edge lie in that one
-/// face, so it never appears in another face's set.
+/// also holds its interior triangulation edges (a cube face's diagonal),
+/// which stay out of every other face's set only while the grouping is
+/// exact: on a closed 2-manifold whose planar faces each land in ONE group,
+/// both triangles of an interior edge lie in that one face. The grouping's
+/// known limitations (see [`coplanar_face_triangle_groups`]) break this — a
+/// face split across quantisation buckets yields two mutually adjacent pieces
+/// sharing its interior diagonal, and merged disjoint coplanar patches answer
+/// as one face — so OCCT parity holds only where coalescing is exact.
 pub(crate) struct PlanarFaceTopology {
     face_edges: Vec<Vec<usize>>,
 }
