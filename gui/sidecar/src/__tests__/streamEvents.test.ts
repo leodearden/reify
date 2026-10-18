@@ -1,5 +1,12 @@
 import { describe, it, expect } from 'vitest';
-import { initialStreamState, mapStreamEvent, type StreamState } from '../streamEvents.js';
+import {
+  claimToolUse,
+  forgetToolUses,
+  initialStreamState,
+  mapStreamEvent,
+  type StreamState,
+  type ToolUseClaim,
+} from '../streamEvents.js';
 import type { OutboundMessage } from '../types.js';
 
 function fold(events: unknown[], start: StreamState = initialStreamState('inv-1')) {
@@ -167,5 +174,92 @@ describe('mapStreamEvent: purity', () => {
       expect(registered).toEqual(snapshot);
       expect(step.state).not.toBe(registered);
     }
+  });
+});
+
+function claimedState(claim: ToolUseClaim): StreamState {
+  if (!claim.ok) throw new Error(`expected a successful claim, got: ${claim.error}`);
+  return claim.state;
+}
+
+const announced = (...blocks: unknown[]) => fold([assistant(blocks)]).state;
+
+describe('claimToolUse: echoed tool_use_id', () => {
+  it('claims a registered id under its own name exactly once', () => {
+    const claim = claimToolUse(announced(toolUse('toolu_1', 'reify_x')), 'reify_x', 'toolu_1');
+    expect(claim).toMatchObject({ ok: true, toolUseId: 'toolu_1' });
+
+    const again = claimToolUse(claimedState(claim), 'reify_x', 'toolu_1');
+    expect(again).toEqual({
+      ok: false,
+      error: expect.stringMatching(/unknown tool_use_id=toolu_1 for tool_name=reify_x/),
+    });
+  });
+
+  it('refuses a registered id claimed under a different name', () => {
+    const claim = claimToolUse(announced(toolUse('toolu_1', 'reify_x')), 'reify_y', 'toolu_1');
+    expect(claim).toEqual({
+      ok: false,
+      error: expect.stringMatching(/tool_use_id=toolu_1 does not match tool_name=reify_y \(registered as reify_x\)/),
+    });
+  });
+
+  it('drains the claimed id from the per-name queue', () => {
+    const state = announced(toolUse('toolu_1', 'reify_x'), toolUse('toolu_2', 'reify_x'));
+    const afterEcho = claimedState(claimToolUse(state, 'reify_x', 'toolu_1'));
+    expect(claimToolUse(afterEcho, 'reify_x')).toMatchObject({ ok: true, toolUseId: 'toolu_2' });
+  });
+});
+
+describe('claimToolUse: per-name queue without an echoed id', () => {
+  it('claims same-name tool_uses oldest first, then reports none pending', () => {
+    const state = announced(toolUse('toolu_1', 'reify_x'), toolUse('toolu_2', 'reify_x'));
+
+    const first = claimToolUse(state, 'reify_x');
+    expect(first).toMatchObject({ ok: true, toolUseId: 'toolu_1' });
+    const second = claimToolUse(claimedState(first), 'reify_x');
+    expect(second).toMatchObject({ ok: true, toolUseId: 'toolu_2' });
+    expect(claimToolUse(claimedState(second), 'reify_x')).toEqual({
+      ok: false,
+      error: expect.stringMatching(/no pending tool_use for tool_name=reify_x/),
+    });
+  });
+});
+
+describe('claimToolUse: lifetime and purity', () => {
+  it('keeps a tool_use claimable across a turn boundary', () => {
+    const { state } = fold([
+      assistant([toolUse('toolu_1', 'reify_x')], 'msg_1'),
+      assistant([text('next turn')], 'msg_2'),
+    ]);
+    expect(claimToolUse(state, 'reify_x', 'toolu_1')).toMatchObject({ ok: true, toolUseId: 'toolu_1' });
+  });
+
+  it('never consumes the tool_use from the state it was given', () => {
+    const state = announced(toolUse('toolu_1', 'reify_x'));
+    claimToolUse(state, 'reify_x', 'toolu_1');
+    claimToolUse(state, 'reify_y', 'toolu_1');
+    claimToolUse(state, 'reify_x');
+    expect(claimToolUse(state, 'reify_x', 'toolu_1')).toMatchObject({ ok: true, toolUseId: 'toolu_1' });
+  });
+});
+
+describe('forgetToolUses', () => {
+  it('makes every announced tool_use unknown', () => {
+    const forgotten = forgetToolUses(announced(toolUse('toolu_1', 'reify_x'), toolUse('toolu_2', 'reify_x')));
+    expect(claimToolUse(forgotten, 'reify_x', 'toolu_1')).toEqual({
+      ok: false,
+      error: expect.stringMatching(/unknown tool_use_id=toolu_1 for tool_name=reify_x/),
+    });
+    expect(claimToolUse(forgotten, 'reify_x')).toEqual({
+      ok: false,
+      error: expect.stringMatching(/no pending tool_use for tool_name=reify_x/),
+    });
+  });
+
+  it('keeps the text offset, so the next delta is only the new suffix', () => {
+    const forgotten = forgetToolUses(announced(text('Hello'), toolUse('toolu_1', 'reify_x')));
+    const { outputs } = fold([assistant([text('Hello world')])], forgotten);
+    expect(outputs).toEqual([textDelta(' world')]);
   });
 });
