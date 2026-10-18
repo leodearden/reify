@@ -868,7 +868,7 @@ fn homed_scan(row: &HomedRow, label: &str, src: &str) -> HomedScan {
         let line = text[..at].matches('\n').count() + 1;
         let home = scopes[line - 1]
             .as_deref()
-            .filter(|&f| row.homes.iter().any(|&home| home == (base, f)));
+            .filter(|&f| row.homes.contains(&(base, f)));
         match home {
             Some(f) => {
                 let seen = (base.to_owned(), f.to_owned());
