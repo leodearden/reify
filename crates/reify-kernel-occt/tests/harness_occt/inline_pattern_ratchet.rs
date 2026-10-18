@@ -944,6 +944,22 @@ fn row_iv_sweep_history_decode_within_baseline() {
     assert_homed_row(&ROW_IV);
 }
 
+// ── row (vi): topology getters ──────────────────────────────────────────────
+
+const ROW_VI: HomedRow = HomedRow {
+    id: "vi",
+    idents: &["get_edges", "get_faces", "get_vertices"],
+    receiver: None,
+    homes: &[("lib.rs", "extract_subshapes")],
+    baseline: 0,
+    remedy: "enumerate sub-shapes through OcctKernel::extract_subshapes",
+};
+
+#[test]
+fn row_vi_topology_getters_only_in_extract_subshapes() {
+    assert_homed_row(&ROW_VI);
+}
+
 // ── self-tests: scanner ─────────────────────────────────────────────────────
 
 /// A synthetic source written as an indented raw string, minus its leading
@@ -1512,5 +1528,67 @@ pub(crate) fn decode_sweep_history(history: UniquePtr<SweepOpHistory>) -> R {
     assert_eq!(
         unseen_homes(&ROW_IV, &scan.homes_seen),
         vec!["history_decode.rs::decode_sweep_history".to_owned()]
+    );
+}
+
+// ── self-tests: row (vi) ────────────────────────────────────────────────────
+
+#[test]
+fn row_vi_flags_three_extract_bodies_and_clears_behind_extract_subshapes() {
+    let three_bodies = snippet(
+        r#"
+fn get_edges(shape: &OcctShape) -> Result<UniquePtr<OcctShapeVec>>;
+pub fn extract_edges(&mut self, handle: GeometryHandleId) -> R {
+    let vec = ffi::ffi::get_edges(shape).map_err(q)?;
+}
+pub fn extract_faces(&mut self, handle: GeometryHandleId) -> R {
+    let vec = ffi::ffi::get_faces(shape).map_err(q)?;
+}
+pub fn extract_vertices(&mut self, handle: GeometryHandleId) -> R {
+    let vec = ffi::ffi::get_vertices(shape)
+        .map_err(q)?;
+}
+"#,
+    );
+    let scan = homed_scan(&ROW_VI, "src/lib.rs", three_bodies);
+    assert_eq!(
+        scan.live.iter().map(|f| f.line).collect::<Vec<_>>(),
+        vec![3, 6, 9]
+    );
+    assert_eq!(
+        unseen_homes(&ROW_VI, &scan.homes_seen),
+        vec!["lib.rs::extract_subshapes".to_owned()]
+    );
+
+    let one_body = snippet(
+        r#"
+fn extract_subshapes(
+    &mut self,
+    parent: GeometryHandleId,
+    kind: SubShapeKind,
+) -> Result<Vec<GeometryHandleId>, QueryError> {
+    let vec = match kind {
+        SubShapeKind::Edge => ffi::ffi::get_edges(shape),
+        SubShapeKind::Face => ffi::ffi::get_faces(shape),
+        SubShapeKind::Vertex => ffi::ffi::get_vertices(shape),
+    }
+    .map_err(q)?;
+}
+pub fn extract_edges(&mut self, handle: GeometryHandleId) -> R {
+    self.extract_subshapes(handle, SubShapeKind::Edge)
+}
+pub fn extract_faces(&mut self, handle: GeometryHandleId) -> R {
+    self.extract_subshapes(handle, SubShapeKind::Face)
+}
+pub fn extract_vertices(&mut self, handle: GeometryHandleId) -> R {
+    self.extract_subshapes(handle, SubShapeKind::Vertex)
+}
+"#,
+    );
+    let scan = homed_scan(&ROW_VI, "src/lib.rs", one_body);
+    assert!(scan.live.is_empty(), "{scan:?}");
+    assert_eq!(
+        unseen_homes(&ROW_VI, &scan.homes_seen),
+        Vec::<String>::new()
     );
 }
