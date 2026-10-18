@@ -172,6 +172,8 @@ mod types;
 pub use types::Curvature;
 pub use types::Transform3;
 #[cfg(has_occt)]
+mod op_args;
+#[cfg(has_occt)]
 mod queries;
 #[cfg(has_occt)]
 mod handle;
@@ -210,6 +212,13 @@ pub use stubs::{OcctKernel, OcctKernelHandle, TopologyCacheBuildCounts};
 use std::collections::HashMap;
 
 #[cfg(has_occt)]
+use op_args::{
+    AXIS_MAG_SQ_MIN, extract_f64, extract_length_f64, validate_all_positive_finite,
+    validate_extrude_distance, validate_loft_profile_count, validate_pipe_start_tangent,
+    validate_positive_finite, validate_revolve_params, validate_uv_finite,
+};
+
+#[cfg(has_occt)]
 use reify_ir::{BOX_DIMENSIONS_MUST_BE_FINITE_POSITIVE, BRepKind, ExportError, ExportFormat, ExportOptions, ExportWarning, GeometryError, GeometryHandle, GeometryHandleId, GeometryOp, GeometryQuery, Mesh, OpaqueState, QueryError, SPHERE_RADIUS_MUST_BE_FINITE_POSITIVE, StepSchema, TessError, ThreeMfOptions, Value, WarmStartable, write_3mf, write_stl_binary};
 
 #[cfg(has_occt)]
@@ -233,158 +242,6 @@ struct OcctWarmState {
     reprs: HashMap<u64, BRepKind>,
     /// The next handle ID to assign (preserves ID namespace across warm-start).
     next_id: u64,
-}
-
-#[cfg(has_occt)]
-/// Minimum squared magnitude for axis/direction vectors.
-///
-/// Vectors with mag² below this threshold are treated as zero-length and rejected.
-/// This catches physically meaningless axes (e.g. sub-micrometer) while allowing
-/// any vector representable in normal CAD geometry.
-///
-/// Value: 1e-12 → minimum magnitude ~1e-6 → ~1 micrometer.
-const AXIS_MAG_SQ_MIN: f64 = 1e-12;
-
-/// Minimum absolute angle (radians) for revolve operations.
-/// Angles below this are treated as effectively zero.
-/// Matches the C++ ANGLE_ABS_MIN threshold (1e-30).
-/// Value: 1e-30 radians ≈ 5.7e-29 degrees — far below any physical relevance.
-#[cfg(has_occt)]
-const ANGLE_ABS_MIN: f64 = 1e-30;
-
-#[cfg(has_occt)]
-/// Extract an f64 from a Value (Int, Real, or Scalar → SI value).
-///
-/// Length-semantic fields go through [`extract_length_f64`] instead. This
-/// context-free form survives for the FIVE deliberately ungated OCCT fields —
-/// `HalfSpace`'s `nx`/`ny`/`nz` (dimensionless unit-normal components) and
-/// `CircularPattern.angle` / `Draft.angle` (ANGLE, PRD 3's surface) — each
-/// marked at its call site with a `// not length-semantic:` comment.
-fn extract_f64(v: &Value) -> Result<f64, GeometryError> {
-    v.as_f64()
-        .ok_or_else(|| GeometryError::OperationFailed("expected numeric value".into()))
-}
-
-#[cfg(has_occt)]
-/// Length-semantic numeric extraction + the C4 kernel LENGTH tripwire.
-///
-/// Identical accept/reject disposition and `Ok` payload to [`extract_f64`];
-/// the only differences are (a) a `tracing::warn!` naming op kind and field
-/// when a non-LENGTH value arrives, (b) the opt-in debug assertion, and (c) an
-/// `Err` string that names op kind and field instead of the bare
-/// `"expected numeric value"`.
-///
-/// **A tripwire, not a gate** (PRD D5 / ratified decision 4): a violation is
-/// *reported* and execution proceeds exactly as before. A fired tripwire means
-/// a hole in the eval-layer gate (`required_length_value` /
-/// `required_length_values`, `crates/reify-eval/src/geometry_ops.rs:482`/`:523`),
-/// not a kernel bug. Canonical rationale, plus the C2 corollary about
-/// `GeometryOp` construction routes, lives with the shared classifier in
-/// `crates/reify-ir/src/kernel_validation.rs`. Contract:
-/// `docs/prds/v0_6/units-length-gate-completion.md` C4/D5, boundary rows 13-14.
-///
-/// It is the SECOND, INDEPENDENT detection layer: the first is the closure
-/// guard (leaf ι), which is not yet landed. The closure guard reasons about
-/// where a value came from; this observes what actually arrived at the kernel
-/// boundary. Neither subsumes the other, so this one keeps working if the
-/// first is bypassed or has a hole.
-///
-/// `OcctKernel::execute`'s 47 numeric-extraction sites split 47 = 42 + 3 + 2:
-/// the 42 LENGTH-semantic ones come here, while `HalfSpace`'s `nx`/`ny`/`nz`
-/// (dimensionless unit-normal components) and `CircularPattern.angle` /
-/// `Draft.angle` (ANGLE — PRD 3's surface) stay on the context-free
-/// [`extract_f64`], each marked at its call site with a
-/// `// not length-semantic:` comment.
-///
-/// The warn is emitted HERE rather than from `reify-ir` because the house
-/// pattern for a kernel diagnostic is a `tracing::warn!` whose `target:` names
-/// the emitting crate (`reify_kernel_gmsh::repair`,
-/// `reify_kernel_manifold::kernel`), and because it keeps `reify-ir` — a
-/// dependency of 13+ crates — free of a `tracing` edge. The message string
-/// still comes from the single `kernel_validation.rs` formatter, so the two
-/// kernels cannot drift.
-fn extract_length_f64(
-    v: &Value,
-    op: &GeometryOp,
-    field: &'static str,
-) -> Result<f64, GeometryError> {
-    let op_kind = op.kind_name();
-    if let Some(msg) = reify_ir::check_length_field(op_kind, field, v) {
-        tracing::warn!(
-            target: "reify_kernel_occt::length_tripwire",
-            reason = "non_length_field",
-            op_kind = op_kind,
-            field = field,
-            "{msg}"
-        );
-    }
-    v.as_f64().ok_or_else(|| {
-        GeometryError::OperationFailed(reify_ir::non_numeric_kernel_field_message(op_kind, field))
-    })
-}
-
-#[cfg(has_occt)]
-/// Validate that `value` is a finite, strictly positive number.
-///
-/// Returns an `OperationFailed` error with the message
-/// `"{label} must be a finite positive value"` if the check fails. `label`
-/// is intended to be a specific dimension name (e.g. `"tube outer radius"`,
-/// `"pipe radius"`) so the caller does not need to construct bespoke error
-/// strings for each dimension.
-fn validate_positive_finite(value: f64, label: &str) -> Result<(), GeometryError> {
-    if !(value.is_finite() && value > 0.0) {
-        return Err(GeometryError::OperationFailed(format!(
-            "{label} must be a finite positive value"
-        )));
-    }
-    Ok(())
-}
-
-#[cfg(has_occt)]
-/// Validate that `u` and `v` are both finite (not NaN and not ±Inf).
-///
-/// This is the shared NaN/Inf rejection idiom for surface differential FFI
-/// primitives (`surface_normal_at`, `curvature_at`). The check runs at the
-/// Rust FFI boundary so the C++ wrapper never receives non-finite parametric
-/// inputs — OCCT may silently produce nonsensical output for NaN/Inf inputs
-/// rather than reporting a structured error, so we reject upfront.
-///
-/// Returns `QueryError::NonFiniteParameter { u, v }` if either component
-/// is non-finite (NaN or ±Infinity). The variant echoes the bad inputs
-/// so callers can surface structured diagnostics without inspecting a
-/// message string.
-fn validate_uv_finite(u: f64, v: f64) -> Result<(), QueryError> {
-    if !u.is_finite() || !v.is_finite() {
-        return Err(QueryError::NonFiniteParameter { u, v });
-    }
-    Ok(())
-}
-
-#[cfg(has_occt)]
-/// Validate that a pipe start-tangent is all-finite (defense-in-depth for `gp_Dir`).
-///
-/// Returns `OperationFailed` if any component is non-finite (NaN or ±Infinity).
-///
-/// # Rationale
-///
-/// The tangent is fed into OCCT's `gp_Dir` (via the oriented-circle profile
-/// construction) to align the circular profile with the path's start frame, and
-/// `gp_Dir` requires a finite, non-degenerate vector. `BRepAdaptor_CompCurve::D1`
-/// already yields a normalized tangent, so a non-finite component here signals a
-/// malformed wire or an FFI contract violation; this Rust-side guard rejects it
-/// explicitly rather than passing NaN/∞ across the FFI boundary.
-///
-/// Any finite orientation is accepted: `gp_Ax2(point, dir)` builds a valid
-/// orthonormal frame for ANY unit normal (including −Z), so pipes are no longer
-/// restricted to a +Z start-tangent.
-fn validate_pipe_start_tangent(t: ffi::ffi::Point3) -> Result<(), GeometryError> {
-    if !t.x.is_finite() || !t.y.is_finite() || !t.z.is_finite() {
-        return Err(GeometryError::OperationFailed(format!(
-            "pipe start-tangent has non-finite component (got ({:.3}, {:.3}, {:.3}))",
-            t.x, t.y, t.z
-        )));
-    }
-    Ok(())
 }
 
 #[cfg(has_occt)]
@@ -1857,10 +1714,23 @@ impl OcctKernel {
     }
 
     /// Apply `BRepFilletAPI_MakeFillet` to every edge of `shape_id` with the
+    /// given `radius`, recording no history. `radius` must be a finite,
+    /// strictly positive number.
+    fn fillet_all_edges(
+        &mut self,
+        shape_id: GeometryHandleId,
+        radius: f64,
+    ) -> Result<GeometryHandle, GeometryError> {
+        validate_positive_finite(radius, "fillet radius")?;
+        let filleted = ffi::ffi::fillet_all_edges(self.get_shape(shape_id)?, radius)
+            .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+        Ok(self.store(filleted))
+    }
+
+    /// Apply `BRepFilletAPI_MakeFillet` to every edge of `shape_id` with the
     /// given `radius`, returning the modified-result handle alongside the
     /// per-parent face/edge Modified/Generated/Deleted history records.
     ///
-    /// Mirrors the defense-in-depth validation of the `GeometryOp::Fillet` arm:
     /// `radius` must be a finite, strictly positive number. Result handle is
     /// registered with `BRepKind::Solid`.
     ///
@@ -1872,8 +1742,6 @@ impl OcctKernel {
         shape_id: GeometryHandleId,
         radius: f64,
     ) -> Result<(GeometryHandle, LocalFeatureOpHistoryRecords), GeometryError> {
-        // DEFENSE-IN-DEPTH: mirror the GeometryOp::Fillet validation in `execute`
-        // so direct callers get the same descriptive errors.
         validate_positive_finite(radius, "fillet radius")?;
         self.run_local_feature_with_history(shape_id, |shape| {
             ffi::ffi::make_fillet_with_history(shape, radius)
@@ -2063,10 +1931,23 @@ impl OcctKernel {
     }
 
     /// Apply `BRepFilletAPI_MakeChamfer` to every edge of `shape_id` with the
+    /// given `distance`, recording no history. `distance` must be a finite,
+    /// strictly positive number.
+    fn chamfer_all_edges(
+        &mut self,
+        shape_id: GeometryHandleId,
+        distance: f64,
+    ) -> Result<GeometryHandle, GeometryError> {
+        validate_positive_finite(distance, "chamfer distance")?;
+        let chamfered = ffi::ffi::chamfer_all_edges(self.get_shape(shape_id)?, distance)
+            .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+        Ok(self.store(chamfered))
+    }
+
+    /// Apply `BRepFilletAPI_MakeChamfer` to every edge of `shape_id` with the
     /// given `distance`, returning the modified-result handle alongside the
     /// per-parent face/edge Modified/Generated/Deleted history records.
     ///
-    /// Mirrors the defense-in-depth validation of the `GeometryOp::Chamfer` arm:
     /// `distance` must be a finite, strictly positive number. Result handle is
     /// registered with `BRepKind::Solid`.
     ///
@@ -2078,8 +1959,6 @@ impl OcctKernel {
         shape_id: GeometryHandleId,
         distance: f64,
     ) -> Result<(GeometryHandle, LocalFeatureOpHistoryRecords), GeometryError> {
-        // DEFENSE-IN-DEPTH: mirror the GeometryOp::Chamfer validation in `execute`
-        // so direct callers get the same descriptive errors.
         validate_positive_finite(distance, "chamfer distance")?;
         self.run_local_feature_with_history(shape_id, |shape| {
             ffi::ffi::make_chamfer_with_history(shape, distance)
@@ -2217,19 +2096,7 @@ impl OcctKernel {
         profile_id: GeometryHandleId,
         distance: f64,
     ) -> Result<(GeometryHandle, SweepOpHistoryRecords), GeometryError> {
-        // DEFENSE-IN-DEPTH: mirror the GeometryOp::Extrude validation in
-        // `execute` so direct callers (integration tests, future inherent
-        // dispatchers) get the same descriptive errors.
-        if !distance.is_finite() {
-            return Err(GeometryError::OperationFailed(
-                "extrude distance must be finite".into(),
-            ));
-        }
-        if distance == 0.0 {
-            return Err(GeometryError::OperationFailed(
-                "extrude distance must not be zero".into(),
-            ));
-        }
+        validate_extrude_distance(distance, "extrude")?;
         let (result_shape, records) = {
             let profile_shape = self.get_shape(profile_id)?;
             let mut history = ffi::ffi::make_prism_with_history(profile_shape, 0.0, 0.0, distance)
@@ -2312,42 +2179,7 @@ impl OcctKernel {
         axis_dir: [f64; 3],
         angle_rad: f64,
     ) -> Result<(GeometryHandle, SweepOpHistoryRecords), GeometryError> {
-        // DEFENSE-IN-DEPTH: mirror the GeometryOp::Revolve validation in
-        // `execute` so direct callers (integration tests, future inherent
-        // dispatchers) get the same descriptive errors with stricter
-        // thresholds than the C++ FFI safety net.
-        if !axis_origin[0].is_finite() || !axis_origin[1].is_finite() || !axis_origin[2].is_finite()
-        {
-            return Err(GeometryError::OperationFailed(format!(
-                "revolve axis_origin must be finite: [{}, {}, {}]",
-                axis_origin[0], axis_origin[1], axis_origin[2]
-            )));
-        }
-        if !axis_dir[0].is_finite() || !axis_dir[1].is_finite() || !axis_dir[2].is_finite() {
-            return Err(GeometryError::OperationFailed(format!(
-                "revolve axis_dir must be finite: [{}, {}, {}]",
-                axis_dir[0], axis_dir[1], axis_dir[2]
-            )));
-        }
-        if !angle_rad.is_finite() {
-            return Err(GeometryError::OperationFailed(format!(
-                "revolve angle must be finite: {}",
-                angle_rad
-            )));
-        }
-        if angle_rad.abs() < ANGLE_ABS_MIN {
-            return Err(GeometryError::OperationFailed(format!(
-                "revolve angle must not be zero, got {}",
-                angle_rad
-            )));
-        }
-        let mag_sq = axis_dir[0].powi(2) + axis_dir[1].powi(2) + axis_dir[2].powi(2);
-        if mag_sq < AXIS_MAG_SQ_MIN {
-            return Err(GeometryError::OperationFailed(format!(
-                "revolve axis_dir must not be zero-length: [{}, {}, {}]",
-                axis_dir[0], axis_dir[1], axis_dir[2]
-            )));
-        }
+        validate_revolve_params(axis_origin, axis_dir, angle_rad)?;
         let (result_shape, records) = {
             let profile_shape = self.get_shape(profile_id)?;
             let mut history = ffi::ffi::make_revolve_with_history(
@@ -2527,14 +2359,7 @@ impl OcctKernel {
         &mut self,
         profile_ids: &[GeometryHandleId],
     ) -> Result<(GeometryHandle, LoftOpHistoryRecords), GeometryError> {
-        // DEFENSE-IN-DEPTH: mirror the GeometryOp::Loft validation in
-        // `execute` so direct callers (integration tests, future inherent
-        // dispatchers) get the same descriptive error before the FFI call.
-        if profile_ids.len() < 2 {
-            return Err(GeometryError::OperationFailed(
-                "Loft requires at least 2 profiles".into(),
-            ));
-        }
+        validate_loft_profile_count(profile_ids.len())?;
         let (result_shape, records) = {
             // Build an OcctShapeVec from the profile handles. Reuses the
             // same `new_shape_vec` / `shape_vec_push` builder pattern as
@@ -2607,43 +2432,21 @@ impl OcctKernel {
                 let w = extract_length_f64(width, op, "width")?;
                 let h = extract_length_f64(height, op, "height")?;
                 let d = extract_length_f64(depth, op, "depth")?;
-                if !(w.is_finite()
-                    && w > 0.0
-                    && h.is_finite()
-                    && h > 0.0
-                    && d.is_finite()
-                    && d > 0.0)
-                {
-                    return Err(GeometryError::OperationFailed(
-                        BOX_DIMENSIONS_MUST_BE_FINITE_POSITIVE.into(),
-                    ));
-                }
+                validate_all_positive_finite(&[w, h, d], BOX_DIMENSIONS_MUST_BE_FINITE_POSITIVE)?;
                 ffi::ffi::make_box(w, h, d)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
             }
             GeometryOp::Cylinder { radius, height } => {
                 let r = extract_length_f64(radius, op, "radius")?;
                 let h = extract_length_f64(height, op, "height")?;
-                if !(r.is_finite() && r > 0.0) {
-                    return Err(GeometryError::OperationFailed(
-                        "cylinder radius must be a finite positive value".into(),
-                    ));
-                }
-                if !(h.is_finite() && h > 0.0) {
-                    return Err(GeometryError::OperationFailed(
-                        "cylinder height must be a finite positive value".into(),
-                    ));
-                }
+                validate_positive_finite(r, "cylinder radius")?;
+                validate_positive_finite(h, "cylinder height")?;
                 ffi::ffi::make_cylinder(r, h)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
             }
             GeometryOp::Sphere { radius } => {
                 let r = extract_length_f64(radius, op, "radius")?;
-                if !(r.is_finite() && r > 0.0) {
-                    return Err(GeometryError::OperationFailed(
-                        SPHERE_RADIUS_MUST_BE_FINITE_POSITIVE.into(),
-                    ));
-                }
+                validate_all_positive_finite(&[r], SPHERE_RADIUS_MUST_BE_FINITE_POSITIVE)?;
                 ffi::ffi::make_sphere(r)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
             }
@@ -2698,11 +2501,7 @@ impl OcctKernel {
                         "cone both radii are zero — degenerate line, at least one radius must be positive".into(),
                     ));
                 }
-                if !(h.is_finite() && h > 0.0) {
-                    return Err(GeometryError::OperationFailed(
-                        "cone height must be a finite positive value".into(),
-                    ));
-                }
+                validate_positive_finite(h, "cone height")?;
                 ffi::ffi::make_cone(bottom_r, top_r, h)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
             }
@@ -2810,27 +2609,14 @@ impl OcctKernel {
                 radius,
             } => {
                 let r = extract_length_f64(radius, op, "radius")?;
-                if !(r.is_finite() && r > 0.0) {
-                    return Err(GeometryError::OperationFailed(
-                        "fillet radius must be a finite positive value".into(),
-                    ));
-                }
-                if edges.is_empty() {
-                    // 2-arg / empty-selection back-compat: fillet ALL edges
-                    // (unchanged path). Yields a shape stored after the match.
-                    let shape = self.get_shape(*target)?;
-                    ffi::ffi::fillet_all_edges(shape, r)
-                        .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+                // Empty `edges` = all edges (2-arg back-compat). The curated
+                // primitive's history is not surfaced through execute().
+                return if edges.is_empty() {
+                    self.fillet_all_edges(*target, r)
                 } else {
-                    // Curated per-edge selection: fillet only the chosen edges.
-                    // `fillet_edges_with_history` stores the Solid result and
-                    // returns its handle (mirroring the Wire/Face early-return
-                    // arms below); the history is captured for the
-                    // persistent-naming seam but not surfaced through execute().
-                    let (handle, _history) =
-                        self.fillet_edges_with_history(*target, r, edges)?;
-                    return Ok(handle);
-                }
+                    self.fillet_edges_with_history(*target, r, edges)
+                        .map(|(handle, _history)| handle)
+                };
             }
             GeometryOp::Chamfer {
                 target,
@@ -2838,27 +2624,14 @@ impl OcctKernel {
                 distance,
             } => {
                 let d = extract_length_f64(distance, op, "distance")?;
-                if !(d.is_finite() && d > 0.0) {
-                    return Err(GeometryError::OperationFailed(
-                        "chamfer distance must be a finite positive value".into(),
-                    ));
-                }
-                if edges.is_empty() {
-                    // 2-arg / empty-selection back-compat: chamfer ALL edges
-                    // (unchanged path). Yields a shape stored after the match.
-                    let shape = self.get_shape(*target)?;
-                    ffi::ffi::chamfer_all_edges(shape, d)
-                        .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+                // Empty `edges` = all edges (2-arg back-compat). The curated
+                // primitive's history is not surfaced through execute().
+                return if edges.is_empty() {
+                    self.chamfer_all_edges(*target, d)
                 } else {
-                    // Curated per-edge selection: chamfer only the chosen edges.
-                    // `chamfer_edges_with_history` stores the Solid result and
-                    // returns its handle (mirroring the Fillet arm); the history
-                    // is captured for the persistent-naming seam but not surfaced
-                    // through execute().
-                    let (handle, _history) =
-                        self.chamfer_edges_with_history(*target, d, edges)?;
-                    return Ok(handle);
-                }
+                    self.chamfer_edges_with_history(*target, d, edges)
+                        .map(|(handle, _history)| handle)
+                };
             }
             GeometryOp::ChamferAsymmetric {
                 target,
@@ -2868,11 +2641,6 @@ impl OcctKernel {
             } => {
                 let d1 = extract_length_f64(d1, op, "d1")?;
                 let d2 = extract_length_f64(d2, op, "d2")?;
-                if !(d1.is_finite() && d1 > 0.0 && d2.is_finite() && d2 > 0.0) {
-                    return Err(GeometryError::OperationFailed(
-                        "asymmetric chamfer distances must be finite positive values".into(),
-                    ));
-                }
                 // Asymmetric chamfer always routes to the per-edge primitive
                 // (empty `edges` = all-edges, enumerated inside the kernel
                 // wrapper). `chamfer_asymmetric_edges_with_history` stores the
@@ -3003,11 +2771,7 @@ impl OcctKernel {
                 .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
             }
             GeometryOp::Loft { profiles } => {
-                if profiles.len() < 2 {
-                    return Err(GeometryError::OperationFailed(
-                        "Loft requires at least 2 profiles".into(),
-                    ));
-                }
+                validate_loft_profile_count(profiles.len())?;
                 let mut vec = ffi::ffi::new_shape_vec();
                 for &pid in profiles {
                     let shape = self.get_shape(pid)?;
@@ -3255,16 +3019,7 @@ impl OcctKernel {
             }
             GeometryOp::Extrude { profile, distance } => {
                 let dist = extract_length_f64(distance, op, "distance")?;
-                if !dist.is_finite() {
-                    return Err(GeometryError::OperationFailed(
-                        "extrude distance must be finite".into(),
-                    ));
-                }
-                if dist == 0.0 {
-                    return Err(GeometryError::OperationFailed(
-                        "extrude distance must not be zero".into(),
-                    ));
-                }
+                validate_extrude_distance(dist, "extrude")?;
                 let profile_shape = self.get_shape(*profile)?;
                 ffi::ffi::make_prism(profile_shape, 0.0, 0.0, dist)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
@@ -3275,47 +3030,7 @@ impl OcctKernel {
                 axis_dir,
                 angle_rad,
             } => {
-                // Revolve validation (Rust layer — DEFENSE-IN-DEPTH)
-                // This Rust layer validates inputs with stricter thresholds (AXIS_MAG_SQ_MIN=1e-12,
-                // ANGLE_ABS_MIN=1e-30) and produces descriptive error messages including parameter
-                // names and values. The C++ FFI layer (occt_wrapper.cpp) has its own validation
-                // with relaxed thresholds (1e-30 for mag_sq) as a safety net for any future code
-                // paths that may call FFI directly, bypassing this Rust layer.
-                if !axis_origin[0].is_finite()
-                    || !axis_origin[1].is_finite()
-                    || !axis_origin[2].is_finite()
-                {
-                    return Err(GeometryError::OperationFailed(format!(
-                        "revolve axis_origin must be finite: [{}, {}, {}]",
-                        axis_origin[0], axis_origin[1], axis_origin[2]
-                    )));
-                }
-                if !axis_dir[0].is_finite() || !axis_dir[1].is_finite() || !axis_dir[2].is_finite()
-                {
-                    return Err(GeometryError::OperationFailed(format!(
-                        "revolve axis_dir must be finite: [{}, {}, {}]",
-                        axis_dir[0], axis_dir[1], axis_dir[2]
-                    )));
-                }
-                if !angle_rad.is_finite() {
-                    return Err(GeometryError::OperationFailed(format!(
-                        "revolve angle must be finite: {}",
-                        angle_rad
-                    )));
-                }
-                if angle_rad.abs() < ANGLE_ABS_MIN {
-                    return Err(GeometryError::OperationFailed(format!(
-                        "revolve angle must not be zero, got {}",
-                        angle_rad
-                    )));
-                }
-                let mag_sq = axis_dir[0].powi(2) + axis_dir[1].powi(2) + axis_dir[2].powi(2);
-                if mag_sq < AXIS_MAG_SQ_MIN {
-                    return Err(GeometryError::OperationFailed(format!(
-                        "revolve axis_dir must not be zero-length: [{}, {}, {}]",
-                        axis_dir[0], axis_dir[1], axis_dir[2]
-                    )));
-                }
+                validate_revolve_params(*axis_origin, *axis_dir, *angle_rad)?;
                 let profile_shape = self.get_shape(*profile)?;
                 ffi::ffi::make_revolve(
                     profile_shape,
@@ -3365,16 +3080,7 @@ impl OcctKernel {
             }
             GeometryOp::ExtrudeSymmetric { profile, distance } => {
                 let dist = extract_length_f64(distance, op, "distance")?;
-                if !dist.is_finite() {
-                    return Err(GeometryError::OperationFailed(
-                        "extrude_symmetric distance must be finite".into(),
-                    ));
-                }
-                if dist == 0.0 {
-                    return Err(GeometryError::OperationFailed(
-                        "extrude_symmetric distance must not be zero".into(),
-                    ));
-                }
+                validate_extrude_distance(dist, "extrude_symmetric")?;
                 // Compose: prism the profile by the full distance, then
                 // translate by -distance/2 along the extrusion axis so the
                 // resulting solid's centroid (in z) aligns with the
@@ -3483,11 +3189,7 @@ impl OcctKernel {
                 end_angle,
                 axis,
             } => {
-                if !radius.is_finite() || *radius <= 0.0 {
-                    return Err(GeometryError::OperationFailed(
-                        "arc radius must be finite and positive".into(),
-                    ));
-                }
+                validate_positive_finite(*radius, "arc radius")?;
                 let mag_sq = axis[0] * axis[0] + axis[1] * axis[1] + axis[2] * axis[2];
                 if mag_sq < AXIS_MAG_SQ_MIN {
                     return Err(GeometryError::OperationFailed(
@@ -3513,21 +3215,9 @@ impl OcctKernel {
                 pitch,
                 height,
             } => {
-                if !radius.is_finite() || *radius <= 0.0 {
-                    return Err(GeometryError::OperationFailed(
-                        "helix radius must be finite and positive".into(),
-                    ));
-                }
-                if !pitch.is_finite() || *pitch <= 0.0 {
-                    return Err(GeometryError::OperationFailed(
-                        "helix pitch must be finite and positive".into(),
-                    ));
-                }
-                if !height.is_finite() || *height <= 0.0 {
-                    return Err(GeometryError::OperationFailed(
-                        "helix height must be finite and positive".into(),
-                    ));
-                }
+                validate_positive_finite(*radius, "helix radius")?;
+                validate_positive_finite(*pitch, "helix pitch")?;
+                validate_positive_finite(*height, "helix height")?;
                 let shape = ffi::ffi::make_helix_wire(*radius, *pitch, *height)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
                 return Ok(self.store_with_repr(shape, BRepKind::Wire));
@@ -3692,27 +3382,15 @@ impl OcctKernel {
             GeometryOp::RectangleProfile { width, height } => {
                 let w = extract_length_f64(width, op, "width")?;
                 let h = extract_length_f64(height, op, "height")?;
-                if !(w.is_finite() && w > 0.0) {
-                    return Err(GeometryError::OperationFailed(
-                        "rectangle_profile width must be a finite positive value".into(),
-                    ));
-                }
-                if !(h.is_finite() && h > 0.0) {
-                    return Err(GeometryError::OperationFailed(
-                        "rectangle_profile height must be a finite positive value".into(),
-                    ));
-                }
+                validate_positive_finite(w, "rectangle_profile width")?;
+                validate_positive_finite(h, "rectangle_profile height")?;
                 let shape = ffi::ffi::make_rectangle_face(w, h, 0.0)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
                 return Ok(self.store_with_repr(shape, BRepKind::Face));
             }
             GeometryOp::CircleProfile { radius } => {
                 let r = extract_length_f64(radius, op, "radius")?;
-                if !(r.is_finite() && r > 0.0) {
-                    return Err(GeometryError::OperationFailed(
-                        "circle_profile radius must be a finite positive value".into(),
-                    ));
-                }
+                validate_positive_finite(r, "circle_profile radius")?;
                 let shape = ffi::ffi::make_circle_face(r, 0.0)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
                 return Ok(self.store_with_repr(shape, BRepKind::Face));
@@ -3732,16 +3410,8 @@ impl OcctKernel {
             GeometryOp::EllipseProfile { semi_major, semi_minor } => {
                 let a = extract_length_f64(semi_major, op, "semi_major")?;
                 let b = extract_length_f64(semi_minor, op, "semi_minor")?;
-                if !(a.is_finite() && a > 0.0) {
-                    return Err(GeometryError::OperationFailed(
-                        "ellipse_profile semi_major must be a finite positive value".into(),
-                    ));
-                }
-                if !(b.is_finite() && b > 0.0) {
-                    return Err(GeometryError::OperationFailed(
-                        "ellipse_profile semi_minor must be a finite positive value".into(),
-                    ));
-                }
+                validate_positive_finite(a, "ellipse_profile semi_major")?;
+                validate_positive_finite(b, "ellipse_profile semi_minor")?;
                 let shape = ffi::ffi::make_ellipse_face(a, b, 0.0)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
                 return Ok(self.store_with_repr(shape, BRepKind::Face));
@@ -3876,6 +3546,90 @@ impl OcctKernel {
             }
         };
         Ok(self.store(shape))
+    }
+
+    /// The one op-to-history lowering: execute `op` and return the attribute
+    /// history its OCCT builder recorded.
+    ///
+    /// Extrude, Revolve, Sweep, Loft, Union, Difference, Intersection, Fillet,
+    /// Chamfer and ChamferAsymmetric route to their `*_with_history` primitives
+    /// (Fillet and Chamfer to the all-edges or curated-edges form by
+    /// `edges.is_empty()`; ChamferAsymmetric's one primitive reads an empty
+    /// selection as all edges), decoding length fields exactly as
+    /// [`Self::execute`] does. Every other op runs through [`Self::execute`]
+    /// with [`AttributeHistory::None`].
+    pub fn execute_with_history(
+        &mut self,
+        op: &GeometryOp,
+    ) -> Result<(GeometryHandle, AttributeHistory), GeometryError> {
+        match op {
+            GeometryOp::Extrude { profile, distance } => {
+                let d = extract_length_f64(distance, op, "distance")?;
+                self.extrude_with_history(*profile, d)
+                    .map(|(h, recs)| (h, AttributeHistory::Extrude(recs)))
+            }
+            GeometryOp::Revolve {
+                profile,
+                axis_origin,
+                axis_dir,
+                angle_rad,
+            } => self
+                .revolve_with_history(*profile, *axis_origin, *axis_dir, *angle_rad)
+                .map(|(h, recs)| (h, AttributeHistory::Revolve(recs))),
+            GeometryOp::Sweep { profile, path } => self
+                .sweep_with_history(*profile, *path)
+                .map(|(h, recs)| (h, AttributeHistory::Sweep(recs))),
+            GeometryOp::Loft { profiles } => self
+                .loft_with_history(profiles)
+                .map(|(h, recs)| (h, AttributeHistory::Loft(recs))),
+            GeometryOp::Union { left, right } => self
+                .boolean_fuse_with_history(*left, *right)
+                .map(|(h, recs)| (h, AttributeHistory::Boolean(recs))),
+            GeometryOp::Difference { left, right } => self
+                .boolean_cut_with_history(*left, *right)
+                .map(|(h, recs)| (h, AttributeHistory::Boolean(recs))),
+            GeometryOp::Intersection { left, right } => self
+                .boolean_common_with_history(*left, *right)
+                .map(|(h, recs)| (h, AttributeHistory::Boolean(recs))),
+            GeometryOp::Fillet {
+                target,
+                edges,
+                radius,
+            } => {
+                let r = extract_length_f64(radius, op, "radius")?;
+                let lowered = if edges.is_empty() {
+                    self.fillet_with_history(*target, r)
+                } else {
+                    self.fillet_edges_with_history(*target, r, edges)
+                };
+                lowered.map(|(h, recs)| (h, AttributeHistory::LocalFeature(recs)))
+            }
+            GeometryOp::Chamfer {
+                target,
+                edges,
+                distance,
+            } => {
+                let d = extract_length_f64(distance, op, "distance")?;
+                let lowered = if edges.is_empty() {
+                    self.chamfer_with_history(*target, d)
+                } else {
+                    self.chamfer_edges_with_history(*target, d, edges)
+                };
+                lowered.map(|(h, recs)| (h, AttributeHistory::LocalFeature(recs)))
+            }
+            GeometryOp::ChamferAsymmetric {
+                target,
+                edges,
+                d1,
+                d2,
+            } => {
+                let d1 = extract_length_f64(d1, op, "d1")?;
+                let d2 = extract_length_f64(d2, op, "d2")?;
+                self.chamfer_asymmetric_edges_with_history(*target, d1, d2, edges)
+                    .map(|(h, recs)| (h, AttributeHistory::LocalFeature(recs)))
+            }
+            _ => self.execute(op).map(|h| (h, AttributeHistory::None)),
+        }
     }
 
     /// A shape's volume together with which arm produced it.
