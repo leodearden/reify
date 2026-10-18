@@ -35,15 +35,10 @@ export function buildClaudeArgs(
     // .mcp.json, which can define a foreign reify-debug server (the reify repo's does).
     '--mcp-config', mcpConfigPath, '--strict-mcp-config',
     ...(config.permissionMcp !== undefined ? ['--permission-prompt-tool', PERMISSION_PROMPT_TOOL] : []),
-    // Always bypass per-call permission prompts using an explicit allowlist, so the GUI
-    // never stalls silently on a missing permission UI (task #3206). The allowlist is
-    // strictly tighter than --dangerously-skip-permissions (which allows all tools).
-    //
-    // Precedence: bypassPermissions auto-approves every allowed call, so the
-    // reify-permission prompt tool is NOT consulted in this mode. The flags act on
-    // different axes: --allowed-tools rejects any tool outside the list outright;
-    // bypassPermissions means an allowed call needs no confirmation. The permission MCP
-    // would only become active under a future non-bypass permission mode.
+    // No per-call prompts, so the GUI never stalls on a missing permission UI (#3206):
+    // --allowed-tools rejects anything off the list (strictly tighter than
+    // --dangerously-skip-permissions), and bypassPermissions approves what is on it
+    // without consulting the prompt tool above, which only a non-bypass mode would use.
     '--permission-mode', 'bypassPermissions',
     '--allowed-tools', allowedTools(config.reifyDebugMcpUrl),
   ];
