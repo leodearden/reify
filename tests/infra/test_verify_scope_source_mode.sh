@@ -3,7 +3,8 @@
 #
 # This wrapper is the member run_all.sh actually discovers (it globs
 # test_*.sh only); the assertions live in the sibling .py. Guards that
-# sourcing test_verify_scope.sh defines every helper and runs no scenario.
+# sourcing test_verify_scope.sh defines every helper and runs no scenario, and
+# that running it directly still reclaims its fixtures on exit.
 
 set -euo pipefail
 

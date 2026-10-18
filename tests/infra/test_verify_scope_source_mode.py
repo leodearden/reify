@@ -6,10 +6,11 @@ tests/infra/test_verify_scope.sh.
 Discovered through the thin wrapper tests/infra/test_verify_scope_source_mode.sh
 (run_all.sh globs `test_*.sh` only). Sourcing the suite must define every
 function it declares and return before the first scenario: no banner, no
-fixture, no EXIT trap. The suite is driven as a black box through
-`bash -c 'source ...'`; every value reaches bash through the environment,
-never by interpolation into the -c text (a sourced file also inherits the
-caller's positionals, so they are no channel either).
+fixture, no EXIT trap. Run directly, it must still install the EXIT trap that
+reclaims its fixtures. The suite is driven as a black box through
+`bash -c 'source ...'` or `bash <suite>`; every value reaches bash through the
+environment, never by interpolation into the -c text (a sourced file also
+inherits the caller's positionals, so they are no channel either).
 """
 
 import os
@@ -46,15 +47,10 @@ def run_sourced(target, snippet, *, cwd, tmpdir, extra_env=None):
         ["bash", "-c", 'source "$_SM_TARGET"\n' + snippet],
         cwd=cwd,
         env=child_env(tmpdir, target, extra_env),
+        stdin=subprocess.DEVNULL,
         capture_output=True,
         text=True,
     )
-
-
-def unreachable_after_source(target, cwd, tmpdir):
-    proc = run_sourced(target, "declare -F", cwd=cwd, tmpdir=tmpdir)
-    defined = {line.split()[-1] for line in proc.stdout.splitlines() if line.strip()}
-    return declared_functions(target) - defined
 
 
 def fixture_path(stdout):
@@ -81,6 +77,16 @@ class SourcedSuiteTestCase(unittest.TestCase):
 
     def describe(self, proc):
         return f"rc={proc.returncode}\nstdout: {proc.stdout!r}\nstderr: {proc.stderr!r}"
+
+    def unreachable_after_source(self, target):
+        proc = run_sourced(target, "declare -F", cwd=self.cwd, tmpdir=self.tmpdir)
+        self.assertEqual(
+            proc.returncode,
+            0,
+            f"sourcing {target} aborted before `declare -F` ran\n{self.describe(proc)}",
+        )
+        defined = {line.split()[-1] for line in proc.stdout.splitlines() if line.strip()}
+        return declared_functions(target) - defined
 
 
 class SourceModeContractTest(SourcedSuiteTestCase):
@@ -128,7 +134,7 @@ class SourceModeContractTest(SourcedSuiteTestCase):
         declared = declared_functions(SUITE)
         self.assertIn("make_fixture", declared)
         self.assertIn("plan_for_branch", declared)
-        unreachable = unreachable_after_source(SUITE, self.cwd, self.tmpdir)
+        unreachable = self.unreachable_after_source(SUITE)
         self.assertEqual(
             unreachable,
             set(),
@@ -139,16 +145,81 @@ class SourceModeContractTest(SourcedSuiteTestCase):
     def test_unreachable_check_flags_a_function_defined_after_the_return(self):
         fixture = self.make_tmpdir() / "fixture.sh"
         fixture.write_text("early() { :; }\n" + SOURCE_MODE_RETURN + "late() { :; }\n")
-        self.assertEqual(unreachable_after_source(fixture, self.cwd, self.tmpdir), {"late"})
+        self.assertEqual(self.unreachable_after_source(fixture), {"late"})
 
         fixture.write_text("early() { :; }\n" + SOURCE_MODE_RETURN)
-        self.assertEqual(unreachable_after_source(fixture, self.cwd, self.tmpdir), set())
+        self.assertEqual(self.unreachable_after_source(fixture), set())
+
+    def test_unreachable_check_reports_a_source_that_aborts(self):
+        fixture = self.make_tmpdir() / "fixture.sh"
+        fixture.write_text(
+            "set -e\nearly() { :; }\necho 'probe: source aborted' >&2\nfalse\n"
+            + SOURCE_MODE_RETURN
+            + "late() { :; }\n"
+        )
+        with self.assertRaises(AssertionError) as caught:
+            self.unreachable_after_source(fixture)
+        self.assertIn("probe: source aborted", str(caught.exception))
+
+
+class ExecutedModeTest(SourcedSuiteTestCase):
+    """Run directly, the suite must still reclaim its fixtures through its EXIT trap."""
+
+    def test_executed_suite_reclaims_its_first_fixture_on_exit(self):
+        shim_dir = self.make_tmpdir()
+        git_log = shim_dir / "git.log"
+        failing_git = shim_dir / "git"
+        failing_git.write_text('#!/bin/sh\nprintf \'%s\\n\' "$@" >> "$_SM_GIT_LOG"\nexit 1\n')
+        failing_git.chmod(0o755)
+        env = child_env(
+            self.tmpdir,
+            extra_env={"PATH": f"{shim_dir}:{os.environ['PATH']}", "_SM_GIT_LOG": str(git_log)},
+        )
+
+        proc = subprocess.run(
+            ["bash", str(SUITE)],
+            cwd=self.cwd,
+            env=env,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertNotEqual(proc.returncode, 0, self.describe(proc))
+        self.assertTrue(git_log.is_file(), f"the suite never reached git\n{self.describe(proc)}")
+        git_args = git_log.read_text().splitlines()
+        self.assertIn("-C", git_args, self.describe(proc))
+        fixture = Path(git_args[git_args.index("-C") + 1])
+        self.assertEqual(fixture.parent, self.tmpdir, self.describe(proc))
+        self.assertEqual(
+            sorted(p.name for p in self.tmpdir.iterdir()),
+            [],
+            "the executed suite exited without reclaiming its fixture: no EXIT trap ran cleanup",
+        )
 
 
 class FixtureRefusalTest(SourcedSuiteTestCase):
     """A helper handed a directory no constructor built must refuse and touch nothing."""
 
     FIXTURE_VARS = "FIX FIX_B FIX_MOD FIX_VS FIX_PGR FIX_GECR _FW_SHIM_DIR"
+
+    # Every declared function outside this set is held to the refusal contract.
+    FIXTURE_FREE = frozenset(
+        {
+            "cleanup",
+            "_require_fixture",
+            "make_fixture",
+            "make_branch_fixture",
+            "make_rename_diff_fail_shim",
+            "plan_has",
+            "plan_lacks",
+            "plan_cmdcount",
+            "refute",
+            "_pg_derive",
+            "_check_scope_header",
+            "verify_pipeline_map_globs_resolve",
+        }
+    )
 
     def git(self, repo, *args):
         return subprocess.run(
@@ -184,12 +255,14 @@ class FixtureRefusalTest(SourcedSuiteTestCase):
             files,
         )
 
-    def test_every_plan_for_helper_refuses_a_directory_no_constructor_built(self):
-        helpers = sorted(
-            name
-            for name in declared_functions(SUITE)
-            if name.startswith(("plan_for", "_plan_for"))
+    def test_every_fixture_consumer_refuses_a_directory_no_constructor_built(self):
+        declared = declared_functions(SUITE)
+        self.assertEqual(
+            self.FIXTURE_FREE - declared,
+            set(),
+            f"FIXTURE_FREE names functions {SUITE.name} no longer declares",
         )
+        helpers = sorted(declared - self.FIXTURE_FREE)
         for expected in ("plan_for", "plan_for_branch", "_plan_for_staged_shimmed"):
             self.assertIn(expected, helpers)
         snippet = (
@@ -203,9 +276,13 @@ class FixtureRefusalTest(SourcedSuiteTestCase):
                 proc = self.source_suite(
                     snippet, cwd=repo, extra_env={"_SM_HELPER": helper}
                 )
-                self.assertNotEqual(proc.returncode, 0, self.describe(proc))
-                self.assertIn(helper, proc.stderr, self.describe(proc))
-                self.assertEqual(self.snapshot(repo), before, self.describe(proc))
+                failure = (
+                    f"{helper} did not refuse through _require_fixture; if it touches "
+                    f"no fixture, list it in FIXTURE_FREE\n{self.describe(proc)}"
+                )
+                self.assertNotEqual(proc.returncode, 0, failure)
+                self.assertIn(helper, proc.stderr, failure)
+                self.assertEqual(self.snapshot(repo), before, failure)
 
     def test_refusal_names_the_variable_and_its_constructor(self):
         cases = {
