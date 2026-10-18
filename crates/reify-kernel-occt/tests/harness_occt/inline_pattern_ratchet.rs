@@ -944,6 +944,37 @@ fn row_iv_sweep_history_decode_within_baseline() {
     assert_homed_row(&ROW_IV);
 }
 
+// ── row (v): curated-selection membership mapping ───────────────────────────
+
+/// The construct is the in-kernel parent enumeration every membership loop
+/// needs: a `self.extract_*` call outside the extraction facades and the one
+/// mapper. The "does not belong to" message is not counted, as that would pin
+/// wording (γ1, 70628489ca); `curated_selection_membership.rs` holds the
+/// messages equal across entry points.
+const ROW_V: HomedRow = HomedRow {
+    id: "v",
+    idents: &[
+        "extract_edges",
+        "extract_faces",
+        "extract_vertices",
+        "extract_subshapes",
+    ],
+    receiver: Some("self."),
+    homes: &[
+        ("lib.rs", "extract_edges"),
+        ("lib.rs", "extract_faces"),
+        ("lib.rs", "extract_vertices"),
+        ("lib.rs", "map_selection_to_indices"),
+    ],
+    baseline: 0,
+    remedy: "map a curated selection through OcctKernel::map_selection_to_indices",
+};
+
+#[test]
+fn row_v_selection_membership_mapping_within_baseline() {
+    assert_homed_row(&ROW_V);
+}
+
 // ── row (vi): topology getters ──────────────────────────────────────────────
 
 const ROW_VI: HomedRow = HomedRow {
@@ -1591,4 +1622,94 @@ pub fn extract_vertices(&mut self, handle: GeometryHandleId) -> R {
         unseen_homes(&ROW_VI, &scan.homes_seen),
         Vec::<String>::new()
     );
+}
+
+// ── self-tests: row (v) ─────────────────────────────────────────────────────
+
+#[test]
+fn row_v_counts_self_enumerations_only() {
+    let kernel_side = snippet(
+        r#"
+pub fn draft_faces(&mut self, target: GeometryHandleId) -> R {
+    let parent_faces = self.extract_faces(target).map_err(fail)?;
+}
+"#,
+    );
+    assert_eq!(homed_live_lines(&ROW_V, "src/lib.rs", kernel_side), vec![2]);
+
+    let handle_forwards = snippet(
+        r#"
+fn spawn() -> OcctKernelHandle {
+    std::thread::spawn(move || {
+        let _ = reply.send(kernel.extract_faces(h));
+    });
+}
+impl GeometryKernel for OcctKernelHandle {
+    fn extract_faces(&mut self, h: GeometryHandleId) -> R {
+        OcctKernelHandle::extract_faces(self, h)
+    }
+}
+"#,
+    );
+    assert_eq!(
+        homed_live_lines(&ROW_V, "src/handle.rs", handle_forwards),
+        Vec::<usize>::new()
+    );
+}
+
+#[test]
+fn row_v_flags_five_membership_copies_and_clears_behind_the_mapper() {
+    let five_copies = snippet(
+        r#"
+pub fn fillet_edges_with_history(&mut self, shape_id: GeometryHandleId) -> R {
+    let parent_edges = self.extract_edges(shape_id).map_err(fail)?;
+}
+pub fn draft_faces(&mut self, target: GeometryHandleId) -> R {
+    let parent_faces = self.extract_faces(target).map_err(fail)?;
+}
+pub fn shell_solid_faces(&mut self, target: GeometryHandleId) -> R {
+    let parent_faces = self.extract_faces(target).map_err(fail)?;
+}
+pub fn chamfer_edges_with_history(&mut self, shape_id: GeometryHandleId) -> R {
+    let parent_edges = self.extract_edges(shape_id).map_err(fail)?;
+}
+pub fn chamfer_asymmetric_edges_with_history(&mut self, shape_id: GeometryHandleId) -> R {
+    let parent_edges = self.extract_edges(shape_id).map_err(fail)?;
+}
+"#,
+    );
+    let scan = homed_scan(&ROW_V, "src/lib.rs", five_copies);
+    assert_eq!(
+        scan.live.iter().map(|f| f.line).collect::<Vec<_>>(),
+        vec![2, 5, 8, 11, 14]
+    );
+
+    let one_mapper = snippet(
+        r#"
+fn map_selection_to_indices(
+    &mut self,
+    parent: GeometryHandleId,
+    selection: Option<&[GeometryHandleId]>,
+    kind: SubShapeKind,
+    label: &str,
+) -> Result<Vec<u32>, GeometryError> {
+    let parent_subshapes = self.extract_subshapes(parent, kind).map_err(fail)?;
+}
+pub fn extract_edges(&mut self, handle: GeometryHandleId) -> R {
+    self.extract_subshapes(handle, SubShapeKind::Edge)
+}
+pub fn extract_faces(&mut self, handle: GeometryHandleId) -> R {
+    self.extract_subshapes(handle, SubShapeKind::Face)
+}
+pub fn extract_vertices(&mut self, handle: GeometryHandleId) -> R {
+    self.extract_subshapes(handle, SubShapeKind::Vertex)
+}
+pub fn draft_faces(&mut self, target: GeometryHandleId) -> R {
+    let face_indices = self.map_selection_to_indices(target, Some(faces), FACE, "draft_faces")?;
+}
+"#,
+    );
+    let scan = homed_scan(&ROW_V, "src/lib.rs", one_mapper);
+    assert!(scan.live.is_empty(), "{scan:?}");
+    assert_eq!(unseen_homes(&ROW_V, &scan.homes_seen), Vec::<String>::new());
 }
