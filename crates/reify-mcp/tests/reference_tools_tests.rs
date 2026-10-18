@@ -1,5 +1,6 @@
 use reify_mcp::context::MockToolContext;
 use reify_mcp::registry::ToolRegistry;
+use reify_mcp::tools::language_chunks::{available_topics, get_chunk};
 use reify_mcp::tools::register_all_tools;
 // ToolError not used directly — reference tool returns Ok for all cases
 
@@ -10,28 +11,6 @@ fn setup_registry() -> ToolRegistry {
 }
 
 // === reify_language_reference ===
-
-const ALL_TOPICS: &[&str] = &[
-    "collections",
-    "connect",
-    "constraints",
-    "enums",
-    "fields",
-    "functions",
-    "geometry",
-    "guards",
-    "measurement",
-    "occurrences",
-    "parameters",
-    "purposes",
-    "stdlib",
-    "structures",
-    "syntax",
-    "topology",
-    "traits",
-    "types",
-    "units",
-];
 
 #[test]
 fn language_reference_syntax_returns_content() {
@@ -73,7 +52,13 @@ fn language_reference_all_topics_return_non_empty_content() {
         .as_str()
         .expect("help content should be a string");
 
-    for topic in ALL_TOPICS {
+    let topics = available_topics();
+    assert!(
+        !topics.is_empty(),
+        "available_topics() is empty, so this loop would pass vacuously"
+    );
+
+    for topic in topics {
         let result = registry
             .call_tool(
                 "reify_language_reference",
@@ -97,6 +82,11 @@ fn language_reference_all_topics_return_non_empty_content() {
         assert_ne!(
             content, help_content,
             "topic '{topic}' served the unknown-topic help instead of a chunk"
+        );
+        assert_eq!(
+            Some(content),
+            get_chunk(topic),
+            "the tool must serve topic '{topic}' verbatim from the registry"
         );
     }
 }

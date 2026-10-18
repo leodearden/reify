@@ -79,10 +79,11 @@ pub fn available_topics() -> &'static [&'static str] {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
 
     #[test]
     fn all_topics_return_non_empty_content() {
-        for topic in TOPICS {
+        for topic in available_topics() {
             let content = get_chunk(topic);
             assert!(content.is_some(), "Topic '{topic}' returned None");
             assert!(
@@ -98,8 +99,39 @@ mod tests {
     }
 
     #[test]
-    fn available_topics_returns_19_entries() {
-        assert_eq!(available_topics().len(), 19);
+    fn chunk_topics_are_strictly_ascending() {
+        let out_of_order: Vec<(&str, &str)> = CHUNKS
+            .windows(2)
+            .filter(|w| w[0].0 >= w[1].0)
+            .map(|w| (w[0].0, w[1].0))
+            .collect();
+        assert!(
+            out_of_order.is_empty(),
+            "CHUNKS topics must be strictly ascending; offending adjacent (left, right) pairs: \
+             {out_of_order:?}. Sorted keeps the `reify_language_reference` help listing (which \
+             joins `available_topics()` in order) byte-identical; strict rules out a duplicate \
+             topic whose second row `get_chunk` would never serve."
+        );
+    }
+
+    #[test]
+    fn every_topic_serves_the_chunk_file_named_after_it() {
+        let chunks_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/tools/chunks");
+        let mismatched: Vec<&str> = CHUNKS
+            .iter()
+            .filter(|(topic, chunk)| {
+                let path = chunks_dir.join(format!("{topic}.md"));
+                let on_disk = std::fs::read_to_string(&path)
+                    .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
+                on_disk != *chunk || get_chunk(topic) != Some(on_disk.as_str())
+            })
+            .map(|(topic, _)| *topic)
+            .collect();
+        assert!(
+            mismatched.is_empty(),
+            "topic(s) whose served chunk is not byte-identical to src/tools/chunks/<topic>.md: \
+             {mismatched:?}. Each CHUNKS row must pair a topic with the file named after it."
+        );
     }
 
     const MAX_CHUNK_BYTES: usize = 36 * 1024;
@@ -111,14 +143,9 @@ mod tests {
     /// raised. Raising it is a deliberate, diff-visible edit.
     #[test]
     fn every_topic_fits_one_retrieval_budget() {
-        let oversized: Vec<(&str, usize)> = TOPICS
+        let oversized: Vec<(&str, usize)> = CHUNKS
             .iter()
-            .map(|topic| {
-                let chunk = get_chunk(topic).unwrap_or_else(|| {
-                    panic!("topic `{topic}` is in TOPICS but has no get_chunk arm")
-                });
-                (*topic, chunk.len())
-            })
+            .map(|(topic, chunk)| (*topic, chunk.len()))
             .filter(|(_, len)| *len > MAX_CHUNK_BYTES)
             .collect();
         assert!(
