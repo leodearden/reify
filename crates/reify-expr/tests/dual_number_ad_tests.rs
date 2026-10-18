@@ -15,8 +15,8 @@
 //! no evaluation reaches is a rule nothing depends on.
 //!
 //! One module per subject: `traversal`, `central_differences`, `user_functions`,
-//! `refusals`, `field_reductions`, `contribution_masking`, `active_branch_tangents`
-//! and `call_intercepts`; `support` holds the probe vocabulary they share.
+//! `refusals`, `field_reductions`, `contribution_masking`, `active_branch_tangents`,
+//! `call_intercepts` and `seed_set`; `support` holds the probe vocabulary they share.
 
 #[path = "dual_number_ad_tests/support.rs"]
 mod support;
@@ -44,3 +44,6 @@ mod active_branch_tangents;
 
 #[path = "dual_number_ad_tests/call_intercepts.rs"]
 mod call_intercepts;
+
+#[path = "dual_number_ad_tests/seed_set.rs"]
+mod seed_set;
