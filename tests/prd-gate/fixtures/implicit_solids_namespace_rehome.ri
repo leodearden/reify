@@ -1,0 +1,8 @@
+// rho: qualified sdf re-home under std.implicit (waits on #5505 and #5500).
+import std.implicit as sdf
+
+structure def NamespacedSdf {
+    let b = sdf.box(10mm, 10mm, 10mm)
+    let s = sdf.sphere(5mm)
+    let u = sdf.union(b, s)
+}

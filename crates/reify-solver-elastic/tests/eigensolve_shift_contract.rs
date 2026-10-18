@@ -54,6 +54,12 @@
 //!   real Cholesky fill, so a σ=0 solve wrongly routed through the shifted
 //!   assembly is observable.
 //!
+//! - **Non-identity B** (#7602) — `graded_diagonal_b_pencil(80)` (SPD B) and
+//!   `indefinite_b_pencil(136)` from the shared test-support seam, plus an
+//!   80-DOF Neumann (singular) K with the graded B. All take **Lanczos**, and
+//!   all run the Cholesky-symmetrized operator: C1's pre-PRD identity is waived
+//!   for B ≠ cI (PRD §6 2026-09-29 amendment), while C2–C6 hold.
+//!
 //! Fixtures A and C and the 1e-12 / 1e-8 tolerances are ported from the landed
 //! `crates/reify-solver-elastic/tests/eigensolve_synthetic.rs`, where they are
 //! already measured against this same `gevd_real` / `partial_self_adjoint_eigen`
@@ -73,31 +79,33 @@
 //! entries, and would put the two halves of one contract on different gates.
 //!
 //! It needs no `.config/nextest.toml` override, and that is MEASURED rather
-//! than assumed — re-measured by β after adding five tests, rather than
-//! presumed to survive on α's margin. Under the repo nextest config the slowest
-//! single test is **2.449 s debug** (`dense_and_lanczos_agree_at_nonzero_sigma`,
-//! four 80-DOF solves), whole binary **2.461 s over 15 tests**, against the
-//! `[profile.default]` per-test ceiling of
-//! `slow-timeout = { period = "120s", terminate-after = 10 }` = 1200 s. No
-//! `[[profile.default.overrides]]` block matches `binary(eigensolve_shift_contract)`,
-//! so that default ceiling is what applies, leaving a **~490x margin** on the
-//! debug figure — taken under ordinary lane contention, and ample against the
-//! worst contention multiplier this repo has recorded. No override is added.
+//! than assumed — re-measured after each batch of new arms, rather than
+//! presumed to survive on an earlier margin. Under the repo nextest config, after
+//! #7602's six non-identity-B arms, the slowest single test is **6.415 s debug**
+//! (`dense_and_lanczos_agree_on_a_non_identity_b`, four 80-DOF solves), whole
+//! binary **6.434 s over 21 tests**, against the `[profile.default]` per-test
+//! ceiling of `slow-timeout = { period = "120s", terminate-after = 10 }` =
+//! 1200 s. No `[[profile.default.overrides]]` block matches
+//! `binary(eigensolve_shift_contract)`, so that default ceiling is what applies,
+//! leaving a **~187x margin** on the debug figure — taken under heavy host
+//! contention (load average ≈ 93 on 32 cores), and ample against the worst
+//! contention multiplier this repo has recorded. No override is added.
 //!
-//! (α's figure for comparison, same conditions: 1.495 s slowest / 1.513 s over
-//! 10 tests. β's five new arms roughly double the wall clock and leave the
-//! order of magnitude of the margin unchanged.)
+//! (Earlier figures, ordinary lane contention: α 1.495 s slowest / 1.513 s over
+//! 10 tests; β 2.449 s / 2.461 s over 15 tests.)
 
 use faer::Side;
 use faer::Mat;
 use faer::sparse::{SparseRowMat, Triplet};
+use reify_solver_elastic::SplitCholesky;
 use reify_solver_elastic::eigensolve::test_support::{
-    laplacian_lambda, laplacian_lambdas, laplacian_pencil,
+    graded_diagonal_b_pencil, identity, indefinite_b_pencil, laplacian_lambda, laplacian_lambdas,
+    laplacian_pencil,
 };
 use reify_solver_elastic::eigensolve::{
-    EigenSolverOptions, EigenSolverResult, ShiftInvertFailure, SparseFactorRef, SparseMetricOp,
-    SparseStiffnessOp, lanczos_shift_invert, solve_eigen_dense, solve_eigen_shift_invert,
-    try_solve_eigen_shift_invert,
+    EigenSolverOptions, EigenSolverResult, LanczosMetric, ShiftInvertFailure, SparseFactorRef,
+    SparseMetricOp, SparseStiffnessOp, lanczos_shift_invert, lanczos_shift_invert_in_metric,
+    solve_eigen_dense, solve_eigen_shift_invert, try_solve_eigen_shift_invert,
 };
 
 // ---------------------------------------------------------------------------
@@ -999,12 +1007,22 @@ fn equidistant_shift_selects_deterministically() {
 /// modal goldens) by an amount no tolerance here would catch.
 ///
 /// So the assertion is BIT-IDENTITY against a reference route the test builds
-/// itself out of `k.sp_cholesky(Side::Lower)` on the row-major K. No baseline
-/// constants are hardcoded anywhere — the reference is constructed, not recorded
-/// — and the claim is the narrow one the `SparseStiffnessOp` adapter already
-/// makes in the source: the same faer calls, with the same arguments, in the
-/// same order, produce the same bits. It is NOT a claim that iterative
-/// convergence is byte-reproducible in general.
+/// itself out of `SplitCholesky::try_new(&k)` on the row-major K, driving
+/// `lanczos_shift_invert_in_metric`. No baseline constants are hardcoded
+/// anywhere — the reference is constructed, not recorded — and the claim is the
+/// narrow one: the same faer calls, with the same arguments, in the same order,
+/// produce the same bits. It is NOT a claim that iterative convergence is
+/// byte-reproducible in general.
+///
+/// # The reference moved with #7602
+///
+/// Fixture E's B is I plus corner entries, so B ≠ cI, and under the PRD §6
+/// 2026-09-29 amendment such a pencil runs the Cholesky-symmetrized operator at
+/// every σ: C1's pre-PRD identity is waived for B ≠ cI, so the reference is the
+/// metric core rather than the Euclidean one. The INTENT is unchanged — σ=0
+/// factors K ITSELF, never a `K − 0·B` union assembly whose explicit zeros
+/// change the fill — and "fix the guard, do not re-baseline" still governs the
+/// σ=0 branch.
 ///
 /// # This test is GREEN the day it lands, deliberately
 ///
@@ -1019,7 +1037,6 @@ fn equidistant_shift_selects_deterministically() {
 #[test]
 fn sigma_zero_factors_k_itself_not_k_minus_zero_b() {
     let (k, b) = fixture_e();
-    let n = k.nrows();
     let opts = EigenSolverOptions {
         n_modes: 4,
         tol: 1e-10,
@@ -1039,16 +1056,12 @@ fn sigma_zero_factors_k_itself_not_k_minus_zero_b() {
     );
 
     // The reference route, built here rather than recorded: factor the ROW-MAJOR
-    // K directly and drive the generic core with it.
-    let llt = k
-        .sp_cholesky(Side::Lower)
+    // K directly and drive the metric core with it.
+    let g = SplitCholesky::try_new(&k)
         .expect("fixture E's K is SPD, so its Cholesky must succeed");
-    let k_op = SparseStiffnessOp {
-        factor: SparseFactorRef::Cholesky(&llt),
-        n,
-    };
     let m_op = SparseMetricOp { m: b.as_ref() };
-    let reference = lanczos_shift_invert(&k_op, &m_op, opts);
+    let reference =
+        lanczos_shift_invert_in_metric(LanczosMetric::ShiftedPencil(&g), &m_op, opts);
 
     assert_eq!(
         via_entry_point.eigenvalues, reference.eigenvalues,
@@ -1563,6 +1576,225 @@ fn structurally_singular_shifted_pencil_is_a_typed_shift_failure() {
         Ok(result) => panic!(
             "a structurally rank-deficient K − σB has no shift-invert operator to \
              apply, so a spectrum is not an answer to give; got {:?}",
+            result.eigenvalues,
+        ),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Operator selection (#7602): Euclidean iff B = cI, else Cholesky-symmetrized
+// ---------------------------------------------------------------------------
+
+fn non_identity_opts(n_modes: usize, sigma: f64) -> EigenSolverOptions {
+    EigenSolverOptions {
+        n_modes,
+        tol: 1e-10,
+        max_iters: 1000,
+        sigma,
+    }
+}
+
+/// Shift-invert accuracy scales with `|λ − σ|` (λ = σ + 1/μ), and a pure
+/// relative bound is ill-posed where a pencil has λ = 0 exactly, so the
+/// non-identity-B arms compare to `1e-9·max(|a|, |b|, |a − σ|, 1e-12)`.
+fn within_mixed_bound(a: f64, b: f64, sigma: f64) -> bool {
+    (a - b).abs() <= 1e-9 * a.abs().max(b.abs()).max((a - sigma).abs()).max(1e-12)
+}
+
+fn assert_multiset_within_mixed_bound(got: &[f64], want: &[f64], sigma: f64, ctx: &str) {
+    assert_eq!(got.len(), want.len(), "{ctx}: mode counts differ — {got:?} vs {want:?}");
+    let sorted = |v: &[f64]| -> Vec<f64> {
+        let mut s = v.to_vec();
+        s.sort_by(f64::total_cmp);
+        s
+    };
+    for (&g, &w) in sorted(got).iter().zip(sorted(want).iter()) {
+        assert!(
+            within_mixed_bound(g, w, sigma),
+            "{ctx}: λ = {g:.15} vs dense {w:.15} at σ = {sigma} is outside the mixed \
+             bound; got {got:?}, dense {want:?}",
+        );
+    }
+}
+
+/// **C1 STANDS for B = cI.** For a scalar multiple of the identity,
+/// `(K − σB)⁻¹B` is Euclidean-symmetric and the sparse entry point must keep
+/// TODAY's operator, bit for bit: the result at σ=0 is identical to driving the
+/// Euclidean core with a Cholesky of the row-major K.
+///
+/// The tripwire that the #7602 dispatch leaves B = cI alone: green before it,
+/// and it must stay green after it.
+#[test]
+fn scalar_identity_b_keeps_the_euclidean_operator() {
+    let (k, b_identity) = fixture_c();
+    let n = k.nrows();
+    let two_trips: Vec<Triplet<usize, usize, f64>> =
+        (0..n).map(|i| Triplet::new(i, i, 2.0)).collect();
+    let b_two = SparseRowMat::try_new_from_triplets(n, n, &two_trips).unwrap();
+    assert_eq!(b_identity.to_dense(), identity(n).to_dense());
+
+    for (b, label) in [(&b_identity, "B = I"), (&b_two, "B = 2I")] {
+        let opts = non_identity_opts(4, 0.0);
+        let via_entry_point = try_solve_eigen_shift_invert(&k, b, opts.clone())
+            .unwrap_or_else(|e| panic!("{label}: K is SPD, σ=0 must succeed; got {e:?}"));
+        assert!(
+            via_entry_point.n_converged > 0,
+            "{label}: must exercise Lanczos (n_converged > 0)",
+        );
+
+        let llt = k.sp_cholesky(Side::Lower).expect("K is SPD");
+        let reference = lanczos_shift_invert(
+            &SparseStiffnessOp {
+                factor: SparseFactorRef::Cholesky(&llt),
+                n,
+            },
+            &SparseMetricOp { m: b.as_ref() },
+            opts,
+        );
+
+        assert_eq!(
+            via_entry_point.eigenvalues, reference.eigenvalues,
+            "{label}: C1 violated — B = cI must keep the Euclidean operator bit for bit",
+        );
+        assert_eq!(
+            via_entry_point.eigenvectors.ncols(),
+            reference.eigenvectors.ncols(),
+            "{label}: eigenvector column counts differ",
+        );
+        for col in 0..reference.eigenvectors.ncols() {
+            for row in 0..reference.eigenvectors.nrows() {
+                let (got, want) = (
+                    via_entry_point.eigenvectors[(row, col)],
+                    reference.eigenvectors[(row, col)],
+                );
+                assert_eq!(
+                    got.to_bits(),
+                    want.to_bits(),
+                    "{label}: C1 violated — eigenvector[{row}][{col}] is {got:.17e} from the \
+                     entry point but {want:.17e} from the Euclidean core",
+                );
+            }
+        }
+    }
+}
+
+/// **BT2, non-identity B.** Dense and Lanczos agree on an SPD B ≠ cI, below λ₁
+/// (σ = 5e-4, λ₁ ≈ 1.002e-3) and inside the spectrum (σ = 0.5).
+///
+/// At σ = 0.5 with n_modes = 2 the window {0.462, 0.502} leaves absent modes
+/// below it on both paths, so the dense (absence) and Lanczos (Sylvester) C5
+/// predicates agree. The eigenvalues are ≤ 0.51, so the absolute 1e-9 here is a
+/// relative bound of at least 2e-9.
+#[test]
+fn dense_and_lanczos_agree_on_a_non_identity_b() {
+    let (k, b) = graded_diagonal_b_pencil(80);
+    for sigma in [5e-4, 0.5] {
+        let opts = non_identity_opts(2, sigma);
+        let dense = solve_eigen_dense(&k, &b, opts.clone());
+        let lanczos = solve_eigen_shift_invert(&k, &b, opts);
+        assert!(
+            lanczos.n_converged > 0,
+            "BT2 graded σ = {sigma}: must exercise Lanczos (n_converged > 0)",
+        );
+        assert_implementations_agree(
+            &dense,
+            &lanczos,
+            1e-9,
+            &format!("BT2 dense vs Lanczos, graded B, σ = {sigma}"),
+        );
+    }
+}
+
+/// **BT4, non-identity B.** A σ below the first mode skips nothing (the shifted
+/// Cholesky succeeds) and leaves the first mode intact, on both an SPD and an
+/// indefinite B.
+///
+/// Indefinite pencil at σ = 3e-4: its smallest positive λ ≈ 6.46e-4 and its
+/// nearest negative λ ≈ −0.0176, so `K − σB` is SPD.
+#[test]
+fn lanczos_provenance_below_the_first_mode_on_non_identity_b() {
+    let graded = graded_diagonal_b_pencil(80);
+    let indefinite = indefinite_b_pencil(136);
+    for ((k, b), n_modes, sigma, label) in [
+        (&graded, 2, 5e-4, "graded"),
+        (&indefinite, 3, 3e-4, "indefinite"),
+    ] {
+        let unshifted = solve_eigen_shift_invert(k, b, non_identity_opts(n_modes, 0.0));
+        let below = solve_eigen_shift_invert(k, b, non_identity_opts(n_modes, sigma));
+        assert!(
+            below.n_converged > 0,
+            "BT4 {label}: must exercise Lanczos (n_converged > 0)",
+        );
+        assert!(
+            !below.shift_skipped_modes,
+            "BT4 {label}: σ = {sigma} lies below the first mode, so nothing was skipped",
+        );
+        assert!(
+            within_mixed_bound(below.eigenvalues[0], unshifted.eigenvalues[0], sigma),
+            "BT4 {label}: modes[0] at σ = {sigma} is {:.15} but at σ = 0 it is {:.15}",
+            below.eigenvalues[0],
+            unshifted.eigenvalues[0],
+        );
+    }
+}
+
+/// The 1-D Neumann Laplacian: diagonal 1 at both ends and 2 inside, off-diagonal
+/// −1. SINGULAR — its null vector is the constant, so λ = 0 is an exact
+/// eigenvalue of any pencil it heads.
+fn neumann_laplacian(n: usize) -> SparseRowMat<usize, f64> {
+    let mut trips = Vec::with_capacity(3 * n - 2);
+    for i in 0..n {
+        let diagonal = if i == 0 || i + 1 == n { 1.0 } else { 2.0 };
+        trips.push(Triplet::new(i, i, diagonal));
+        if i > 0 {
+            trips.push(Triplet::new(i, i - 1, -1.0));
+        }
+        if i + 1 < n {
+            trips.push(Triplet::new(i, i + 1, -1.0));
+        }
+    }
+    SparseRowMat::try_new_from_triplets(n, n, &trips).unwrap()
+}
+
+/// A shift below every mode makes `K − σB` SPD, and that arm needs NO factor of
+/// K: a singular K (free-free modal with a negative shift) still solves, λ = 0
+/// included.
+#[test]
+fn a_definite_shift_needs_no_factor_of_a_singular_k() {
+    let k = neumann_laplacian(80);
+    let (_, b) = graded_diagonal_b_pencil(80);
+    let sigma = -0.1;
+    let opts = non_identity_opts(2, sigma);
+    let lanczos = match try_solve_eigen_shift_invert(&k, &b, opts.clone()) {
+        Ok(result) => result,
+        Err(e) => panic!("K − σB is SPD at σ = {sigma}, so the solve must succeed; got {e:?}"),
+    };
+    assert!(
+        lanczos.n_converged > 0,
+        "singular K, σ = {sigma}: must exercise Lanczos (n_converged > 0)",
+    );
+    let dense = solve_eigen_dense(&k, &b, opts);
+    assert_multiset_within_mixed_bound(
+        &lanczos.eigenvalues,
+        &dense.eigenvalues,
+        sigma,
+        "singular K, σ = -0.1",
+    );
+}
+
+/// A shift above a mode makes `K − σB` indefinite, and for B ≠ cI that arm runs
+/// in the K inner product, which needs K SPD: a singular K is reported as
+/// `KNotSpd` at σ ≠ 0.
+#[test]
+fn an_indefinite_shift_on_a_singular_k_is_k_not_spd() {
+    let k = neumann_laplacian(80);
+    let (_, b) = graded_diagonal_b_pencil(80);
+    match try_solve_eigen_shift_invert(&k, &b, non_identity_opts(2, 0.05)) {
+        Err(ShiftInvertFailure::KNotSpd) => {}
+        Err(e) => panic!("expected KNotSpd, got {e:?}"),
+        Ok(result) => panic!(
+            "K − σB is indefinite and K is singular, so there is no SPD metric to run \
+             in; expected KNotSpd, got the spectrum {:?}",
             result.eigenvalues,
         ),
     }

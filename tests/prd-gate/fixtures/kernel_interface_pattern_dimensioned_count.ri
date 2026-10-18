@@ -1,0 +1,11 @@
+module kernel_interface_pattern_dimensioned_count
+
+// S10 leaf θ₆ evidence. A LENGTH-dimensioned pattern count is read as a bare
+// number. Main 274a212e0a: exit 0, vp = 0.0000029999999999999997 m^3 (count
+// 3000mm read as 3). After θ₆: `p` is rejected with a DimensionedArgRejected
+// error naming `linear_pattern` and the count argument.
+structure def Pat {
+    param base : Solid = box(10mm, 10mm, 10mm)
+    param p : Solid = linear_pattern(base, 1, 0, 0, 3000mm, 20mm)
+    param vp : Volume = volume(p)
+}

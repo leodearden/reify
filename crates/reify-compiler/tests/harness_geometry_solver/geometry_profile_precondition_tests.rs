@@ -328,3 +328,95 @@ fn pipe_of_ellipse_is_rejected() {
         "pipe(ellipse(...)) must be rejected (Surface≠Curve path), got {n}"
     );
 }
+
+// ─── task #6188: transformed profiles keep their kind ────────────────────────
+//
+// A transform (translate/rotate/...) of a direct-call profile must carry the
+// operand's dimension through to the consumer slot, so a posed profile is
+// accepted where the bare profile is, and a posed solid is still rejected.
+
+/// `loft(circle, translate(circle))` — both operands are Surface profiles.
+#[test]
+fn loft_of_circle_and_translated_circle_is_accepted() {
+    let n = profile_required_count(
+        "structure def S { let r = loft(circle(500mm), translate(circle(250mm), 0mm, 0mm, 800mm)) }",
+    );
+    assert_eq!(
+        n, 0,
+        "loft(circle, translate(circle)) must be accepted, got {n} GeometryProfileRequired"
+    );
+}
+
+/// `extrude(translate(rectangle))` — a translated Surface profile is accepted.
+#[test]
+fn extrude_of_translated_rectangle_is_accepted() {
+    let n = profile_required_count(
+        "structure def S { let r = extrude(translate(rectangle(20mm, 10mm), 0mm, 0mm, 5mm), 3mm) }",
+    );
+    assert_eq!(
+        n, 0,
+        "extrude(translate(rectangle)) must be accepted, got {n} GeometryProfileRequired"
+    );
+}
+
+/// `sweep(translate(rotate(circle)), helix)` — the posed groove-cutter spelling.
+#[test]
+fn sweep_of_posed_circle_along_helix_is_accepted() {
+    let n = profile_required_count(
+        "structure def S { let r = sweep(\
+            translate(rotate(circle(3mm), 1.0, 0.0, 0.0, 0deg - 90deg), 24mm, 0mm, 0mm), \
+            helix(24mm, 7mm, 63mm)) }",
+    );
+    assert_eq!(
+        n, 0,
+        "sweep(translate(rotate(circle)), helix) must be accepted, got {n} GeometryProfileRequired"
+    );
+}
+
+/// `pipe(translate(line_segment))` — a translated Curve stays a Curve path.
+#[test]
+fn pipe_of_translated_curve_is_accepted() {
+    let n = profile_required_count(
+        "structure def S { let r = pipe(translate(line_segment(0mm, 0mm, 0mm, 10mm, 0mm, 0mm), 0mm, 0mm, 5mm), 2mm) }",
+    );
+    assert_eq!(
+        n, 0,
+        "pipe(translate(line_segment)) must be accepted, got {n} GeometryProfileRequired"
+    );
+}
+
+/// NEGATIVE CONTROL: a translated Solid is still not a Surface profile.
+#[test]
+fn extrude_of_translated_box_is_rejected() {
+    let n = profile_required_count(
+        "structure def S { let r = extrude(translate(box(10mm, 10mm, 10mm), 0mm, 0mm, 5mm), 3mm) }",
+    );
+    assert!(
+        n >= 1,
+        "extrude(translate(box)) must be rejected, got {n} GeometryProfileRequired"
+    );
+}
+
+/// NEGATIVE CONTROL: only the translated box operand is flagged; the circle passes.
+#[test]
+fn loft_rejects_only_the_translated_box_operand() {
+    let n = profile_required_count(
+        "structure def S { let r = loft(circle(500mm), translate(box(10mm, 10mm, 10mm), 0mm, 0mm, 800mm)) }",
+    );
+    assert_eq!(
+        n, 1,
+        "loft(circle, translate(box)) must flag exactly the box operand, got {n} GeometryProfileRequired"
+    );
+}
+
+/// NEGATIVE CONTROL: a translated Surface is not a Curve path.
+#[test]
+fn pipe_of_translated_circle_is_rejected() {
+    let n = profile_required_count(
+        "structure def S { let r = pipe(translate(circle(8mm), 0mm, 0mm, 5mm), 2mm) }",
+    );
+    assert!(
+        n >= 1,
+        "pipe(translate(circle)) must be rejected (Surface≠Curve path), got {n}"
+    );
+}

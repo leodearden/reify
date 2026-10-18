@@ -604,8 +604,9 @@ impl OcctKernelHandle {
     /// records (Modified / Generated / Deleted) emitted by the algorithm.
     ///
     /// Mirrors [`OcctKernel::boolean_fuse_with_history`] across the
-    /// kernel-thread channel. Result handle is registered with
-    /// `BRepKind::Solid`.
+    /// kernel-thread channel, including how that method classifies the
+    /// result handle's `BRepKind` (not a fixed `Solid`: a multi-body or
+    /// empty result is `Compound`).
     ///
     /// # Panics
     ///
@@ -629,8 +630,9 @@ impl OcctKernelHandle {
     /// records (Modified / Generated / Deleted) emitted by the algorithm.
     ///
     /// Mirrors [`OcctKernel::boolean_cut_with_history`] across the
-    /// kernel-thread channel. Result handle is registered with
-    /// `BRepKind::Solid`.
+    /// kernel-thread channel, including how that method classifies the
+    /// result handle's `BRepKind` (not a fixed `Solid`: a multi-body or
+    /// empty result is `Compound`).
     ///
     /// # Panics
     ///
@@ -654,8 +656,9 @@ impl OcctKernelHandle {
     /// history records (Modified / Generated / Deleted) emitted by the algorithm.
     ///
     /// Mirrors [`OcctKernel::boolean_common_with_history`] across the
-    /// kernel-thread channel. Result handle is registered with
-    /// `BRepKind::Solid`.
+    /// kernel-thread channel, including how that method classifies the
+    /// result handle's `BRepKind` (not a fixed `Solid`: a multi-body or
+    /// empty result is `Compound`).
     ///
     /// # Panics
     ///
@@ -3001,6 +3004,27 @@ mod tests {
                 assert_eq!(id, GeometryHandleId(999));
             }
             other => panic!("expected InvalidHandle, got {:?}", other),
+        }
+    }
+
+    /// Through the `GeometryKernel` seam production builds export from, an
+    /// unknown handle is `InvalidHandle` whatever the format.
+    #[test]
+    fn export_with_options_of_an_unknown_handle_reports_invalid_handle_for_every_format() {
+        use reify_ir::{ExportError, ExportFormat, ExportOptions, GeometryKernel};
+        let handle = super::OcctKernelHandle::spawn();
+        let kernel: &dyn GeometryKernel = &handle;
+        for format in [ExportFormat::Step, ExportFormat::Stl, ExportFormat::ThreeMF] {
+            let mut buf = Vec::new();
+            match kernel.export_with_options(
+                GeometryHandleId(999),
+                format,
+                &ExportOptions::default(),
+                &mut buf,
+            ) {
+                Err(ExportError::InvalidHandle(id)) => assert_eq!(id, GeometryHandleId(999)),
+                other => panic!("{format:?}: expected InvalidHandle(999), got {other:?}"),
+            }
         }
     }
 

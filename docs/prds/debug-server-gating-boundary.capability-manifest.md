@@ -61,3 +61,9 @@ Signal: a **seeded violation is caught, and only while seeded**. Adding a `#[tes
 - **No merge-gate wall-clock saving.** PRD §1.1 forbids it and no leaf signal asserts it. The gui pass is unfiltered ((b8)) and `affected_crates()` is a reverse closure, so neither leaf makes the gate cheaper. A leaf that claimed otherwise would be the `bound≤floor`-shaped failure this manifest exists to catch — asserted here as an explicit non-claim so a later reader cannot mistake its absence for an oversight.
 - **No absolute post-move test count.** PRD §7 D8. reify-gui gains tests weekly; `885`/`900`/`911` are cited as 2026-08-19 provenance (`review/briefing.yaml:561`, `data/verify-logs/6200/attempt-1.test-20260819T035137Z.log`), never as an acceptance target.
 - **No claim about the residual gui-only set's size.** PRD §2 records a `6` structural count against a `911 − 850 = 61` arithmetic implying ~11, and states the discrepancy is unresolved and not load-bearing. Neither leaf signal depends on it. Labelled rather than papered over.
+
+## Amendment 2026-10-15 — delivered checks widened for the S18 verify cutover
+
+S18 (`docs/prds/v0_6/verify-structured-plan-and-role-table.md`, Leo ruling Q4) moves `scripts/verify.sh`'s logic into `scripts/reify_verify/` and replaces the coupled fixture lists with a derived set and `gui/src/__tests__/reifyGrammarCorpus.expected-clean.json`. These checks were widened so they give the same verdict today and after the move (three writes: task metadata, the `.yaml` sidecar, this note):
+
+- `stale-verify-comment-corrected`: paths now `scripts/verify.sh`, `scripts/reify_verify/`; pattern now `debug_server / event_bus modules`.

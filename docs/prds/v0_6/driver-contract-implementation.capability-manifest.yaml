@@ -393,6 +393,7 @@ tasks:
       expect: present
       paths:
       - gui/src-tauri/src/engine.rs
+      - gui/src-tauri/src/engine/projection.rs
   - name: code-is-available-upstream
     binding: 'observed — the source Diagnostic carries code: Option<DiagnosticCode>, and the
       same projection reads severity, message and labels off that very value. A lossy projection,

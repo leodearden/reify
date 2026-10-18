@@ -2970,74 +2970,30 @@ pub(crate) fn compile_entity(
                 // reusing the same M3 resolution path as `param m : Length = auto` (§4.4 invariant).
                 // An untyped `let m = auto` is rejected: a solver cell needs a declared type.
                 if let Some(free) = extract_auto_free(&let_decl.value) {
-                    let mut cell_type = match &let_decl.type_expr {
-                        None => {
-                            diagnostics.push(
-                                Diagnostic::error(
-                                    "auto let binding requires a type annotation: \
-                                     use `let <name> : <Type> = auto`",
-                                )
-                                .with_label(DiagnosticLabel::new(
-                                    let_decl.span,
-                                    "missing type annotation for auto let",
-                                )),
-                            );
-                            continue;
-                        }
-                        Some(type_expr) => {
-                            match resolve_type_expr_with_aliases(
-                                type_expr,
-                                &type_param_names,
-                                alias_registry,
-                                diagnostics,
-                                structure_names,
-                                trait_names,
-                            ) {
-                                Some(t) => t,
-                                None => continue, // error already emitted by resolver
-                            }
-                        }
-                    };
-
-                    // Reject `Keyed<T>` in a let value position (esc-3930-295, task 3931 γ):
-                    // poisoned to `Type::Error` so no Keyed value cell reaches the eval graph.
-                    reject_keyed_value_position(
-                        &mut cell_type,
+                    let Some(cell_type) = resolve_auto_let_cell_type(
                         &let_decl.name,
+                        let_decl.type_expr.as_ref(),
                         let_decl.span,
+                        &type_param_names,
+                        alias_registry,
+                        structure_names,
+                        trait_names,
                         diagnostics,
-                    );
-
-                    let id = ValueCellId::new(entity_name, &let_decl.name);
-                    let visibility = if let_decl.is_pub {
-                        Visibility::Public
-                    } else {
-                        Visibility::Private
+                    ) else {
+                        continue;
                     };
-
-                    let lowered_annotations = lower_annotations(&let_decl.annotations, diagnostics);
-                    validate_annotations(&lowered_annotations, "let", diagnostics);
-                    crate::annotations::display::validate_display_dimension(
-                        &lowered_annotations,
-                        &cell_type,
+                    let decl = build_auto_let_value_cell_decl(
+                        entity_name,
+                        let_decl,
+                        free,
+                        cell_type,
+                        &scope,
+                        functions,
                         diagnostics,
                     );
-                    let solver_hints = extract_solver_hints(&lowered_annotations, diagnostics);
-                    validate_solver_hint_collections(&solver_hints, &scope, functions, diagnostics);
 
                     // Register in scope so subsequent constraints referencing this name type-check.
-                    scope.register(&let_decl.name, cell_type.clone());
-
-                    let decl = ValueCellDecl {
-                        id,
-                        kind: ValueCellKind::Auto { free },
-                        visibility,
-                        is_aux: let_decl.is_aux,
-                        cell_type,
-                        default_expr: None,
-                        solver_hints,
-                        span: let_decl.span,
-                    };
+                    scope.register(&let_decl.name, decl.cell_type.clone());
 
                     if let Some(wc) = &let_decl.where_clause {
                         compile_per_decl_guard(
@@ -5452,50 +5408,13 @@ fn compile_match_arm_decl_group(
     // `compiled_templates` in every `find_template_with_prelude` call.
     prelude: &PreludeRegistries<'_, '_>,
 ) {
-    // Resolve the discriminant's enum type.  Only simple `Ident` discriminants
-    // are supported in this task; complex expressions are deferred to task 2373.
-    let (discriminant_cell_id, enum_type_name) = match &m.discriminant.kind {
-        reify_ast::ExprKind::Ident(name) => match scope.resolve(name) {
-            Some((cell_id, Type::Enum(enum_name))) => (cell_id.clone(), enum_name.clone()),
-            Some((_, other_ty)) => {
-                diagnostics.push(
-                    Diagnostic::error(format!(
-                        "match-arm discriminant '{}' has type {}, expected an enum",
-                        name, other_ty
-                    ))
-                    .with_label(DiagnosticLabel::new(
-                        m.discriminant.span,
-                        "discriminant must be an enum-typed param or let",
-                    )),
-                );
-                return;
-            }
-            None => {
-                diagnostics.push(
-                    Diagnostic::error(format!(
-                        "match-arm discriminant '{}' not found in scope",
-                        name
-                    ))
-                    .with_label(DiagnosticLabel::new(
-                        m.discriminant.span,
-                        "unresolved identifier",
-                    )),
-                );
-                return;
-            }
-        },
-        _ => {
-            diagnostics.push(
-                Diagnostic::error(
-                    "match-arm discriminant must be a simple identifier in this version",
-                )
-                .with_label(DiagnosticLabel::new(
-                    m.discriminant.span,
-                    "only identifier discriminants are supported (task 2373 extends this)",
-                )),
-            );
-            return;
-        }
+    let Some(MatchArmDiscriminant {
+        cell_id: discriminant_cell_id,
+        enum_name: enum_type_name,
+        ty: discriminant_ty,
+    }) = resolve_match_arm_discriminant(&m.discriminant, scope, enum_defs, diagnostics)
+    else {
+        return;
     };
 
     // Extract the shared logical name from the first arm's member.
@@ -5571,8 +5490,7 @@ fn compile_match_arm_decl_group(
         return;
     }
 
-    let discriminant_ref =
-        CompiledExpr::value_ref(discriminant_cell_id, Type::Enum(enum_type_name.clone()));
+    let discriminant_ref = CompiledExpr::value_ref(discriminant_cell_id, discriminant_ty);
 
     // Validate every arm's pattern against the discriminant enum's variants
     // before compiling guards. A typo like `Hexx` would otherwise compile to a
@@ -5891,6 +5809,82 @@ fn compile_match_arm_decl_group(
     }
 }
 
+/// The enum a decl-form `match` dispatches on: the discriminant cell, the base
+/// enum's name, and the cell's own declared type (a bare `Type::Enum`, or a
+/// `Type::Applied` that keeps a generic enum's type args).
+struct MatchArmDiscriminant {
+    cell_id: ValueCellId,
+    enum_name: String,
+    ty: Type,
+}
+
+/// Resolve a decl-form `match` discriminant to the enum it dispatches on, or
+/// push a diagnostic and return `None`.  Only simple `Ident` discriminants are
+/// supported in this task; complex expressions are deferred to task 2373.
+///
+/// Enum identity comes from [`base_enum_name`], the crate's single bare-vs-applied
+/// enum oracle (type_compat.rs): an annotated generic-enum param (`Type::Applied`)
+/// is accepted, a generic STRUCTURE's `Type::Applied` — spelled the same way — is
+/// not.  Task #6020 plans one discriminant-to-`EnumDef` resolver,
+/// `match_discriminant_enum` in expr.rs, shared with the expression-form match;
+/// this helper should route through it once it lands.
+fn resolve_match_arm_discriminant(
+    discriminant: &reify_ast::Expr,
+    scope: &CompilationScope,
+    enum_defs: &[reify_ir::EnumDef],
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<MatchArmDiscriminant> {
+    match &discriminant.kind {
+        reify_ast::ExprKind::Ident(name) => match scope.resolve(name) {
+            Some((cell_id, ty)) => match base_enum_name(ty, enum_defs) {
+                Some(enum_name) => Some(MatchArmDiscriminant {
+                    cell_id: cell_id.clone(),
+                    enum_name: enum_name.to_string(),
+                    ty: ty.clone(),
+                }),
+                None => {
+                    diagnostics.push(
+                        Diagnostic::error(format!(
+                            "match-arm discriminant '{}' has type {}, expected an enum",
+                            name, ty
+                        ))
+                        .with_label(DiagnosticLabel::new(
+                            discriminant.span,
+                            "discriminant must be an enum-typed param or let",
+                        )),
+                    );
+                    None
+                }
+            },
+            None => {
+                diagnostics.push(
+                    Diagnostic::error(format!(
+                        "match-arm discriminant '{}' not found in scope",
+                        name
+                    ))
+                    .with_label(DiagnosticLabel::new(
+                        discriminant.span,
+                        "unresolved identifier",
+                    )),
+                );
+                None
+            }
+        },
+        _ => {
+            diagnostics.push(
+                Diagnostic::error(
+                    "match-arm discriminant must be a simple identifier in this version",
+                )
+                .with_label(DiagnosticLabel::new(
+                    discriminant.span,
+                    "only identifier discriminants are supported (task 2373 extends this)",
+                )),
+            );
+            None
+        }
+    }
+}
+
 /// Type-check the members of a `relate {}` block (member-level
 /// `MemberDecl::Relate`) or its inline `sub … at … where {}` twin
 /// (`SubDecl.relate_relations`): every member must type to `Type::Relation`
@@ -6060,7 +6054,7 @@ fn build_arm_guard_expr(
     for variant in patterns {
         let variant_literal = CompiledExpr::literal(
             Value::enum_unit(enum_type_name.to_string(), variant.clone()),
-            Type::Enum(enum_type_name.to_string()),
+            discriminant_ref.result_type.clone(),
         );
         let eq = CompiledExpr::binop(
             BinOp::Eq,
@@ -6718,6 +6712,106 @@ pub(crate) fn build_param_value_cell_decl(
             solver_hints,
             span,
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Auto-let value-cell lowering, shared by every `let x = auto` binding site:
+// the top-level `MemberDecl::Let` auto branch in this file and the guarded one
+// in guards.rs. Type resolution is its own step because guards.rs's
+// name-registration prepass needs the declared type without the decl.
+// ---------------------------------------------------------------------------
+
+/// Resolve the declared type of an `auto` let binding.
+///
+/// An auto let is a solver cell, so its type must come from the declared
+/// annotation — there is no initializer to infer one from. `None` means no
+/// cell should be minted: either there is no annotation (the
+/// mandatory-annotation error is emitted here) or the resolver could not
+/// resolve it.
+///
+/// A `Keyed<T>` annotation is poisoned to `Type::Error` rather than suppressed,
+/// so the cell is still minted and no Keyed value reaches the eval graph.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn resolve_auto_let_cell_type(
+    name: &str,
+    type_expr: Option<&reify_ast::TypeExpr>,
+    span: SourceSpan,
+    type_param_names: &HashSet<String>,
+    alias_registry: &TypeAliasRegistry,
+    structure_names: &HashSet<String>,
+    trait_names: &HashSet<String>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<Type> {
+    let Some(type_expr) = type_expr else {
+        diagnostics.push(
+            Diagnostic::error(
+                "auto let binding requires a type annotation: \
+                 use `let <name> : <Type> = auto`",
+            )
+            .with_label(DiagnosticLabel::new(
+                span,
+                "missing type annotation for auto let",
+            )),
+        );
+        return None;
+    };
+
+    let mut cell_type = resolve_type_expr_with_aliases(
+        type_expr,
+        type_param_names,
+        alias_registry,
+        diagnostics,
+        structure_names,
+        trait_names,
+    )?;
+
+    // Reject `Keyed<T>` in a let value position (esc-3930-295, task 3931 γ):
+    // poisoned to `Type::Error` so no Keyed value cell reaches the eval graph.
+    reject_keyed_value_position(&mut cell_type, name, span, diagnostics);
+
+    Some(cell_type)
+}
+
+/// Build the `ValueCellDecl` for an `auto` let whose type
+/// `resolve_auto_let_cell_type` has already resolved: an `Auto { free }`
+/// solver cell with no default expression, carrying the let's visibility,
+/// `aux` flag and validated solver hints. Where the decl goes is the caller's
+/// decision.
+pub(crate) fn build_auto_let_value_cell_decl(
+    entity_name: &str,
+    let_decl: &reify_ast::LetDecl,
+    free: bool,
+    cell_type: Type,
+    scope: &CompilationScope,
+    functions: &[CompiledFunction],
+    diagnostics: &mut Vec<Diagnostic>,
+) -> ValueCellDecl {
+    let visibility = if let_decl.is_pub {
+        Visibility::Public
+    } else {
+        Visibility::Private
+    };
+
+    let lowered_annotations = lower_annotations(&let_decl.annotations, diagnostics);
+    validate_annotations(&lowered_annotations, "let", diagnostics);
+    crate::annotations::display::validate_display_dimension(
+        &lowered_annotations,
+        &cell_type,
+        diagnostics,
+    );
+    let solver_hints = extract_solver_hints(&lowered_annotations, diagnostics);
+    validate_solver_hint_collections(&solver_hints, scope, functions, diagnostics);
+
+    ValueCellDecl {
+        id: ValueCellId::new(entity_name, &let_decl.name),
+        kind: ValueCellKind::Auto { free },
+        visibility,
+        is_aux: let_decl.is_aux,
+        cell_type,
+        default_expr: None,
+        solver_hints,
+        span: let_decl.span,
     }
 }
 

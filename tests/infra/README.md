@@ -5,7 +5,17 @@ Shell meta-tests for reify's infrastructure scripts (`scripts/lib_portable.sh`,
 
 ## Auto-discovery
 
-`run_all.sh` discovers and runs every file matching `test_*.sh` in this directory.
+`run_all.sh` discovers through ONE predicate, `classification_discovered_set` in
+[`run-all-classification-lib.sh`](run-all-classification-lib.sh): regular files
+(symlinks followed) matching `test_*.sh` in this directory, minus
+`test_helpers.sh`, sorted with `LC_ALL=C`. Every branch consumes it — the pool,
+legacy `REIFY_RUN_ALL_POOL_DISABLE=1`, `REIFY_RUN_ALL_MEMBER_SUBSET` and
+`--scope host-infra` — and so does the `REIFY_RUN_ALL_SUBSET_COUNT_ONLY` probe.
+The member subset, the H3 exclusion and the host-exclusive bucket are filters
+over its output, so native `test_*.py` discovery (#7445) is a change to that
+one function. The adoption-ratchet row `inline-discovery-loop` holds
+`run_all.sh` at zero code lines spelling a `test_*` glob (see "Adoption
+ratchet" below).
 To add a new meta-test, create `test_<name>.sh` — it will be picked up automatically
 on the next `run_all.sh` invocation and in CI.
 
@@ -59,6 +69,13 @@ task #7445. The deadline-capable-suite derivation
 two together, so a ported member keeps its roster place and its
 non-vacuity check. Making `test_*.py` discovery native — which would retire
 this wrapper idiom — is task #7445.
+
+**Moves are not authorship (D7).** New *assertions* are Python (stdlib
+`unittest` + `.sh` wrapper + manifest row). A satellite that *receives*
+existing bash blocks from an h14 partition stays bash: that is a
+behaviour-preserving move, not new authorship, consistent with the policy's
+"no scheduled mass migration". See PRD
+`docs/prds/v0_6/run-all-runner-infra-harness.md` §3 D7 and the migration policy.
 
 ## Shared test helpers
 
@@ -163,8 +180,10 @@ and the assertions about contention pass vacuously or fail for the wrong reason.
 Where the holder is itself self-timed it can also be **overrun**: the grace eats
 into the hold, so the contention window shrinks below what the assertions need.
 `slot_holder_handshake_lib.sh` closes the first side with a causal barrier
-(`holder_wait_until_held`, `holder_wait_for_marker`) and the second with a
-test-released holder (`holder_spawn_gated` / `holder_release`).
+(`holder_wait_until_held`, `holder_wait_for_marker`, or
+`holder_wait_until_waiter_queued` when the contended party is a blocked
+*waiter* rather than the holder) and the second with a test-released holder
+(`holder_spawn_gated` / `holder_release`).
 
 A `sleep <number>` statement is flagged iff it carries no `holder-sleep:allow`
 token and either:
@@ -197,17 +216,11 @@ sleep 0.3  # holder-sleep:allow — one-sided: the check below can only
 The reason should say why the fixed interval cannot produce a false PASS, so
 the exemption is auditable.
 
-**Current blessed survivors** (as of task #6247):
+**Current blessed survivors** (as of task #7359):
 - `test_jobserver_balancer.sh` Block 19b: a kernel-reap grace after `kill -9`,
   not a holder handshake at all — nothing holds a lock across it.  It matches
   clause 1 on the lone word *grace*, which is exactly the lexeme over-reach the
   escape exists for.
-- `test_seed_warm_lane.sh` H5d and H9: the settle before each "not done yet"
-  check.  Those checks are one-sided — the holder genuinely holds the lane lock
-  until the test kills it, so an outrun settle can only false-FAIL, never
-  false-pass.  Converting them to a real `holder_wait_until_held` barrier is the
-  better fix, but it is a behavioural change rather than an annotation and is
-  filed as a follow-up.
 
 **Nothing enforces this list**, for the same reason as `wallclock:allow` above:
 `grep -rn 'holder-sleep:allow' tests/infra/*.sh` is the authority, and this
@@ -246,8 +259,8 @@ the `LANE-LOCK RELEASE CONTRACT` block at the flock acquire in
 and a copy in this file would be one more site to update in lockstep.
 
 The permanent regression guards are hermetic and live in
-`test_seed_warm_lane.sh` — `H4b`/`H4e` (structural release marker) and `H7b`
-(an inherited FD 9 is never unlocked), plus **`H4c`**, which forks a live
+`test_seed_warm_lane.sh` — `Q4b`/`Q4e` (structural release marker) and `Q7b`
+(an inherited FD 9 is never unlocked), plus **`Q4c`**, which forks a live
 holder of a dup of seed's lane-lock FD and asserts the lock reads back free
 anyway; that last one is the only guard that fails if the release runs but has
 no effect.  This soak is the instrument for re-measuring the rate if the
@@ -284,7 +297,7 @@ allow-listed**, because flagging either would be actively harmful:
   requires a *local* open, so a file that merely inherits the descriptor is
   never considered and the guard is incapable of advising a release it has no
   right to advise.  (Whence `scripts/seed-warm-lane.sh` installs its release
-  trap *inside* the branch that opened the FD; `test_seed_warm_lane.sh`'s `H7b`
+  trap *inside* the branch that opened the FD; `test_seed_warm_lane.sh`'s `Q7b`
   pins that.)
 
 The all-clear is only worth as much as the instrument, so three liveness
@@ -456,6 +469,22 @@ the findings and never the baseline, and fails if the scan collapses toward
 zero.  Its bounds are conservative lower bounds on *the instrument working*,
 not targets for the tree.
 
+## Adoption ratchet (`adoption-ratchet.manifest`)
+
+`test_infra_adoption_ratchet.sh` counts the code lines matching each row's ERE
+in [`adoption-ratchet.manifest`](adoption-ratchet.manifest) and reds only when
+a count EXCEEDS its ceiling — one-directional, like the cited-test-path
+ratchet. The row grammar lives in the manifest header. Measure with
+`python3 tests/infra/adoption_ratchet.py`. Each extraction leaf of PRD
+`docs/prds/v0_6/run-all-runner-infra-harness.md` adds its row at its
+post-extraction count.
+
+## Verify event channel
+
+`REIFY_VERIFY_EVENT_LOG` is the planned JSON-lines verify event channel. Its
+contract is PRD `docs/prds/v0_6/run-all-runner-infra-harness.md` §4 (C1–C4);
+leaf γ (#8685) fills this section in. Nothing reads or writes it yet.
+
 ## Assert behaviour, not source prose
 
 An infra assertion's subject is something the code **does**: an exit code,
@@ -503,11 +532,44 @@ selector.  Why, and the existing instances:
 [`docs/legibility/landing-contract.md`](../../docs/legibility/landing-contract.md)
 §3; when to re-check them: §5.
 
+## Signals ignored on entry (nohup, bare `&`)
+
+A non-interactive bash cannot trap or reset a signal that was `SIG_IGN` when it
+started: `trap '…' SIG` returns 0 and installs nothing, and `trap -p SIG` keeps
+printing `trap -- '' SIG<SIG>`. The disposition is inherited by every
+descendant. `nohup` ignores HUP, and a bare `cmd &` from a shell without job
+control ignores INT and QUIT. `run_all.sh`'s own pool form `( … ) &` was
+measured NOT to leak it (child `SigIgn` 0), so the gate is unaffected. An
+operator or agent who backgrounds a sweep with `nohup` or a bare `&` is
+affected. Diagnose with `grep SigIgn /proc/self/status`, where bit (sig−1) is
+set per ignored signal: `…01` under nohup, `…06` under a bare `&`.
+
+A suite that probes trap behaviour owns two jobs:
+
+- **Construct** the disposition its probe child needs with
+  `env --default-signal=SIG child` (GNU coreutils ≥ 8.31). Scope it to that
+  child, never to the suite: a suite with HUP reset is killable by the very
+  hangup it was nohup'd against.
+- **Detect** the residual case in the probe itself (no reset on this host, or a
+  wrapper that re-ignores it) and report a loud `SKIP`, never a contract `FAIL`.
+
+Worked example: `test_nextest_absent_lib.sh` arm 10c, pinned hermetically by
+arms 10i–10l. `set -m` (`test_with_jcodemunch_serve.sh`) is a narrower tool:
+it avoids bash's OWN async-INT ignore for a child the suite launches, but
+cannot undo a disposition the suite inherited. To background a sweep, use the
+harness's own backgrounding or `( setsid cmd ) &`; a bare `setsid cmd &` still
+ignores INT and QUIT (measured `SigIgn` `…06`).
+
 ## Files
 
 | File | Purpose |
 |------|---------|
-| `run_all.sh` | Discovery runner — runs all `test_*.sh` files |
+| `run_all.sh` | Discovery runner — runs every member `classification_discovered_set` returns |
+| `run-all-classification-lib.sh` | Shared library: the discovery predicate (`classification_discovered_set`) and the manifest bucket accessors |
+| `adoption_ratchet.py` | Adoption-ratchet engine and report CLI |
+| `adoption-ratchet.manifest` | Adoption-ratchet rows (grammar in its header) |
+| `test_infra_adoption_ratchet.sh` | Regression guard: no adoption-ratchet row exceeds its ceiling |
+| `test_infra_adoption_ratchet.py` | Its stdlib-unittest body, driving `adoption_ratchet.py` |
 | `test_helpers.sh` | Shared library: `assert()` and `test_summary()` |
 | `cited-test-path-lib.sh` | Shared library: cited-test-path scan, resolve and fingerprint derivation |
 | `cited-test-path-baseline.manifest` | Grandfather baseline for the cited-test-path ratchet |

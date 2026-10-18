@@ -1,0 +1,18 @@
+// S6 PRD evidence (docs/prds/v0_6/kinematics-typed-kinds-and-mechanism-record.md): a RING closure (cycle branch: j_a unmounted when the closing body is added) through snapshot (T3)
+// Before-image measured at main e217c0f30b (2026-10-13); outputs recorded in the capability manifest.
+module s6_ring_through_snapshot
+
+// Probe (seat L, S6): a CYCLE-class loop_closure record with FREE chain_b joints,
+// driven through snapshot(). Shape = snapshot_cycle_body_keeps_its_own_frame_after_later_tree_registration
+// but with j_c left unbound.
+structure def Kinematic {
+    let j_a = prismatic(vec3(1, 0, 0), 0mm .. 1000mm)
+    let j_c = prismatic(vec3(1, 0, 0), 0mm .. 2000mm)
+    let m0 = mechanism()
+    let m1 = body(m0, "solidX", j_c, j_a)      // j_c -> j_a (j_a unregistered)
+    let m2 = body(m1, "solidY", j_a, j_c)      // cycle branch: j_a on j_c's ancestor walk
+    let m3 = body(m2, "solidZ", j_a, world())  // later tree registration of j_a
+    let lcs = m3.loop_closures
+    let s_a_bound   = snapshot(m3, [bind(j_a, 300mm)])
+    let s_unbound   = snapshot(m3, [])
+}

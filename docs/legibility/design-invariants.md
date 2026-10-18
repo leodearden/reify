@@ -26,8 +26,11 @@ decision D6). A third family, the **declared-surface family**
 (INV-PD-1..2), plus the umbrella principle below, was appended
 2026-08-31 from the trampoline param-drop and result-field vacancy
 censuses (PRDs `docs/prds/v0_6/trampoline-param-drop-closure.md` and
-`docs/prds/v0_6/result-field-vacuity-closure.md`). Other invariant
-families may be appended later; keep slugs stable.
+`docs/prds/v0_6/result-field-vacuity-closure.md`). A fourth family, the
+**architecture family** (INV-ARCH-1), was appended 2026-10-12 from
+review-all program `review-all-reify-20261010`, stream S3 (PRD
+`docs/prds/v0_6/dependency-invalidation-stratum.md`, D11). Other
+invariant families may be appended later; keep slugs stable.
 
 ## The umbrella principle — `nothing-vacuous-and-unowned`
 
@@ -73,6 +76,7 @@ requires a census row in the same change.**
 | doc-chunk ↔ registry truth | PDOCCOVER | shipped |
 | `dimensionless_scalar()` reintroduction | PDSSENTINEL | shipped |
 | layer-rule imports | PLAYER | shipped |
+| intra-crate module import cycles | module_scc_ratchet (INV-ARCH-1; reify-compiler excluded until S7 κ) | shipped |
 | code-less `Diagnostic::error`/`warning` sites | PDIAG | shipped |
 | PRD terminal-status markers | PPRDSTATUS (#6346) | chartered |
 | prose task-promises in doc comments | convention-only — PTODO-grammar-extension bookmark #7098 (filed by `result-field-vacuity-closure.md` ζ) | unenforced |
@@ -144,12 +148,20 @@ never take effect, do they find out at compile time?
 
 **Evidence**: `relate` on a scope with no `at auto` sub returns
 `RelateSolution::default()` — relations neither solved nor verified
-(`crates/reify-eval/src/relate_solve.rs`, zero-auto early return); Bool
-autos fall back to the continuous DimensionalSolver because
-`SolverRegistry::production()` leaves the Logical slot None while
-`cpsat.rs` sits unregistered (`crates/reify-constraints/src/registry.rs`);
-minimize over Bool autos builds zero objective components and never
-solves; DFM rules with unrealized handles are "silently skipped".
+(`crates/reify-eval/src/relate_solve.rs`, zero-auto early return); DFM
+rules with unrealized handles are "silently skipped". The 2026-07-24
+census also found Bool autos falling back to the continuous
+DimensionalSolver (CP-SAT unregistered) and minimize over Bool autos
+never consulted — both discharged: #5468 (PRD2 β) gave `CpSatSolver`
+its `solve_ranked` argmin override, and #5469 (PRD2 γ) made
+`SolverRegistry::production()` install `CpSatSolver` (Logical slot)
+and `DiscreteFirstFallback` (CrossDomain fallback), so an all-discrete
+component is enumerated by CP-SAT in both shipped binaries and its
+objective picks the configuration. The live successor on that seam: a
+STRICT `auto` over a multi-model all-discrete component resolves
+silently — CP-SAT reports `unique: false` but no diagnostic reaches
+the user (#6554; see `verdict_from_enumeration` in
+`crates/reify-constraints/src/cpsat.rs`).
 
 **House pattern**: the #5014 collateral-observability diagnostic (names a
 whole unresolved cluster when a merged solve is skipped); the relate
@@ -595,13 +607,56 @@ populated by `placeholder_part()` (a well-formed zero-field fake) with
 zero readers and its growth promise citing done #4578; the undeclared
 engine-attached `ModalResult.topology`, always `Undef` on the dims
 path; `mechanism_modal`'s `shape = []` / `participation_mass = 0`
-(#7012 owns the degraded reason). Normative contract, census and
-decomposition: `docs/prds/v0_6/result-field-vacuity-closure.md`
-(C1′–C4′ there; not restated here).
+(flipped to honest `Undef` by #7012; reason recorded at the
+producer). Normative contract, census and decomposition:
+`docs/prds/v0_6/result-field-vacuity-closure.md` (C1′–C4′ there; not
+restated here).
 
 **House pattern**: the tet-result `Undef`-for-unpopulated convention —
 buckling `pre_stress`, `degenerate_modal_result`'s `damping` — is C2′
 promoted to contract.
+
+## Architecture family (INV-ARCH-1)
+
+Layering inside a crate, the intra-crate twin of the crate-DAG gate
+(`scripts/assert-crate-dag.sh`): a crate's top-level modules may depend
+on one another, but no import cycle among them may appear or grow
+silently.
+
+## INV-ARCH-1 `module-sccs-only-shrink`
+
+**Rule**: Within a workspace crate, no strongly connected component of
+the top-level-module import graph (`crate::` paths, and `super::` chains
+that reach the crate root) appears or grows. A shrink
+or dissolution lowers the committed baseline in the same diff, so it is
+recorded, not silent. Universe, edges and production text: PRD
+`docs/prds/v0_6/dependency-invalidation-stratum.md` §5.1 (not restated
+here). reify-compiler is excluded until S7 κ: its glob imports hide
+edges from the rule.
+
+**Checkable design question(s)**: Does this change add a `crate::<m>`
+reference to `<m>` from a module that `<m>` already reaches, so that an
+SCC appears, grows or merges? Does
+`python3 scripts/assert-module-scc.py check` print `GREW`? The ratchet
+tracks SCC membership, not edges. An import between two modules already
+in one baselined SCC is not flagged: `use crate::engine_eval::…` in
+`deps.rs` stays green, because both modules are in reify-eval's
+24-module SCC. To see the gate fire, add the edge from outside the SCC:
+the same line in `structural_query.rs`, a module the SCC reaches, reds
+as `GREW` naming `structural_query -> engine_eval`. If a change breaks
+a cycle, does the same diff lower the row with `print`? Does a
+predicate or type that a lower module needs live in an engine-phase
+module, forcing an upward import?
+
+**Evidence**: the 2026-10-12 landing measurement, which reproduces the
+PRD's dated workspace measurement — reify-eval holds a 24-module SCC
+and a 5-module one. The other crates' rows live in
+`scripts/module-scc-baseline.json`, not here.
+
+**Enforcement**: `crates/reify-build-utils/tests/module_scc_ratchet.rs`
+over `scripts/module-scc-baseline.json`. The merge gate always runs it;
+a per-task lane runs it only when reify-build-utils is affected (PRD
+D11).
 
 ## Census seam
 

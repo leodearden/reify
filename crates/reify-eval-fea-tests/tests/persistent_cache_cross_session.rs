@@ -58,7 +58,7 @@
 //!   hand-tuned >= 10x score separation and had already been observed at
 //!   9.99993x.
 //! * `cache_gc_evicts_when_forced_over_cap`
-//!   (`crates/reify-cli/tests/harness_cli/cli_cache.rs:1391`) for the composed
+//!   (in `crates/reify-cli/tests/harness_cli_surface/cli_cache.rs`) for the composed
 //!   pin, at the one surface that actually reaches eviction in production:
 //!   `reify cache gc`.
 //!
@@ -183,7 +183,8 @@ fn slab_bits(result: &Value, field: &str) -> Vec<u64> {
 /// Build a tetrahedral-only (no shell elements) `ElasticResult` fixture.
 ///
 /// The v3 field set is copied from
-/// `crates/reify-cli/tests/harness_cli/cli_cache.rs:26-45`, the established
+/// `make_elastic_result_fixture` in
+/// `crates/reify-cli/tests/harness_cli_surface/cli_cache.rs`, the established
 /// shape for cache round-trip fixtures. `shell_channels: None` signals
 /// tetrahedral-only (no per-element shell stress or local frames), and
 /// `aposteriori: None` likewise — both round-trip through the encoder's
@@ -470,7 +471,8 @@ fn cross_session_hit_returns_byte_identical_entry_and_does_not_rewrite_it() {
 ///
 /// `cache_key_to_ascii_32` validates LENGTH only (hex-ness is unchecked), which
 /// is what makes a fabricated version usable as a directory name. The same
-/// idiom is used at `crates/reify-cli/tests/harness_cli/cli_cache.rs:1065` and
+/// idiom is used by `cache_stats_aggregates_across_engine_versions` in
+/// `crates/reify-cli/tests/harness_cli_surface/cli_cache.rs` and
 /// inside `persistent_cache.rs`'s own `mod tests`.
 const FAKE_EVH: &str = "beef0000000000000000000000000eef";
 
@@ -710,6 +712,7 @@ fn crashed_writer_leftovers_read_as_miss_and_are_swept_without_harming_live_entr
     // this fixture models a real entry rather than a shape no writer produces.
     let seed = WithDiagnostics {
         diagnostics: Vec::new(),
+        structured_detail: Vec::new(),
         value: fixture.clone(),
     };
     write_entry(root, ENGINE_VERSION_HASH, &good_hash, &seed)

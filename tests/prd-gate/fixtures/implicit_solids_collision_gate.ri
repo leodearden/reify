@@ -1,0 +1,16 @@
+// lambda gate sketch: sdf_from_solid + sdf_sweep + sdf_penetration in an unnamed constraint.
+structure def CollisionGate {
+    let j_x = prismatic(vec3(1, 0, 0), 0mm .. 500mm)
+    let head_solid = box(20mm, 20mm, 20mm)
+    let dock_solid = translate(box(400mm, 20mm, 20mm), 490mm, 0mm, 0mm)
+    let m0 = mechanism()
+    let m1 = body(m0, "head_solid", j_x)
+    let m2 = body(m1, "dock_solid", fixed())
+    let id_head = body_id_of(m2, "head_solid")
+    let snaps = sweep(m2, j_x, 0mm .. 500mm, 11)
+    let head_f = sdf_from_solid(head_solid, 1mm)
+    let dock_f = sdf_offset(sdf_from_solid(dock_solid, 1mm), 2mm)
+    let swept = sdf_sweep(head_f, snaps, id_head)
+    let pen = sdf_penetration(swept, dock_f, vec3(800mm, 100mm, 100mm), 1mm, point3(300mm, 0mm, 0mm))
+    constraint sdf_penetration(swept, dock_f, vec3(800mm, 100mm, 100mm), 1mm, point3(300mm, 0mm, 0mm)) <= 0mm
+}

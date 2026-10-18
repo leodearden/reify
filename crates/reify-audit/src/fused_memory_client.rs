@@ -34,6 +34,7 @@ use std::time::Duration;
 
 use serde_json::{json, Value};
 
+use crate::mcp_handshake::check_initialize_response;
 use crate::{DoneProvenance, TaskMetadata};
 
 const PROTOCOL_VERSION: &str = "2024-11-05";
@@ -107,8 +108,10 @@ impl FusedMemoryClient {
         // `post()` checks every JSON-RPC response for the `error` field, so
         // a server that 200-OKs `initialize` with a `{"error":{...}}` body
         // surfaces here instead of being silently accepted and masked as a
-        // confusing `get_task` failure later.
-        let _ = self.post(&json!({
+        // confusing `get_task` failure later. A reply that is not an
+        // `InitializeResult` at all (a 202, an empty body, a bare `{}`) is
+        // refused by `check_initialize_response` for the same reason.
+        let response = self.post(&json!({
             "jsonrpc": "2.0",
             "id": self.next_id(),
             "method": "initialize",
@@ -121,6 +124,8 @@ impl FusedMemoryClient {
                 "capabilities": {},
             },
         }))?;
+        check_initialize_response(&response)
+            .map_err(|rejection| LoadError::Protocol(rejection.to_string()))?;
         let _ = self.post(&json!({
             "jsonrpc": "2.0",
             "method": "notifications/initialized",
@@ -160,7 +165,7 @@ impl FusedMemoryClient {
         // Use into_reader() instead of into_string() to avoid ureq's
         // 10 MiB into_string cap — the live task corpus now exceeds
         // that limit. Reading to a String (not serde_json::from_reader)
-        // keeps the SSE/JSON dual-path intact: the SSE branch must scan
+        // is what `mcp_wire::decode_body` takes: its SSE branch must scan
         // the body text for the `data:` line, which from_reader cannot
         // do. For a one-shot CLI, buffering the corpus in memory is fine.
         let mut body = String::new();
@@ -169,28 +174,8 @@ impl FusedMemoryClient {
             .read_to_string(&mut body)
             .map_err(|e| LoadError::Http(format!("read body: {e}")))?;
 
-        let value = if ctype.contains("text/event-stream") {
-            let mut parsed: Option<Value> = None;
-            for line in body.lines() {
-                if let Some(rest) = line.strip_prefix("data:") {
-                    parsed = Some(serde_json::from_str(rest.trim()).map_err(|e| {
-                        LoadError::Protocol(format!(
-                            "SSE data parse: {e}; body={body}"
-                        ))
-                    })?);
-                    break;
-                }
-            }
-            parsed.ok_or_else(|| {
-                LoadError::Protocol(format!("no SSE data line in response: {body}"))
-            })?
-        } else if body.is_empty() {
-            return Ok(Value::Null);
-        } else {
-            serde_json::from_str(&body).map_err(|e| {
-                LoadError::Protocol(format!("body parse: {e}; body={body}"))
-            })?
-        };
+        let value = crate::mcp_wire::decode_body(&ctype, &body)
+            .map_err(|e| LoadError::Protocol(e.to_string()))?;
 
         // Centralised JSON-RPC error-envelope check. Every response that
         // goes through `post()` (initialize, notifications/initialized,

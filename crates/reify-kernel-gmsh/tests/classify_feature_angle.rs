@@ -35,19 +35,20 @@
 #![cfg(has_gmsh)]
 
 use reify_kernel_gmsh::CLASSIFY_FEATURE_ANGLE;
+use reify_test_support::mesh_fixtures::prismatic_box_mesh;
 
 // The box fixture is shared with `tests/fill_metrics_tests.rs` and
-// `tests/volume_fill_fraction.rs` through `tests/common/mod.rs`: this guard and
-// the symptom guard must agree on what "a box" is, or one can go green against
-// geometry the other never meshes.
+// `tests/volume_fill_fraction.rs` through `reify_test_support::mesh_fixtures`:
+// this guard and the symptom guard must agree on what "a box" is, or one can go
+// green against geometry the other never meshes.
 //
-// `entity_census` is shared through the same module with
+// `entity_census` is shared through `tests/common/mod.rs` with
 // `tests/node_attachment_producer.rs` (#6830) — same reason, one dimension up:
 // the two files replayed the identical raw-FFI classify prelude and had to be
 // updated in lockstep. Only the prelude is shared; the assertions below are
 // this guard's own contract and stay here.
 mod common;
-use common::{entity_census, prismatic_box_mesh};
+use common::entity_census;
 
 /// The production feature angle must be strictly BELOW a box's 90° dihedral.
 ///

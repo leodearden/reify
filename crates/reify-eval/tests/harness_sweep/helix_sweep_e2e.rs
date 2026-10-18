@@ -12,28 +12,21 @@
 //! additionally covers the compile → eval geometry-error diagnostic channel
 //! and the mesh / STEP output path.
 //!
-//! Profile choice — why a bare `circle(3mm)` rather than a posed
-//! `translate(rotate(circle(3mm), …), …)`: the compiler's profile-precondition
-//! check (`GeometryProfileRequired`, crates/reify-compiler/src/geometry.rs)
-//! requires a `sweep` profile operand that is a statically-known Surface
-//! producer to be Closed ∧ Planar. An *inline* `translate(rotate(circle(…)))`
-//! operand is a known-combinator `FunctionCall` whose nested profile is opaque
-//! to the static inference, so it is rejected at compile time — that guard is
-//! independent of this task. A bare `circle(3mm)` is a direct Surface producer
-//! that passes the check and still sweeps cleanly along the helix (OCCT
-//! `MakePipe` transports the section along the spine frame), producing exactly
-//! one non-empty solid. The posed, volume-accurate case (π·r²·L within 5%) is
-//! covered by the kernel integration test; here we only need the full-pipeline
-//! no-error + non-empty-geometry acceptance.
+//! Profile choice: the circle is posed normal to the helix start tangent,
+//! because `sweep` transports the profile as posed. A bare `circle(3mm)` sits
+//! only 2.66° off that tangent (|t̂·n̂| = 0.046370259), which #7248's 4° pose
+//! guard refuses. The volume-accurate case (π·r²·L within 5%) stays covered by
+//! the kernel integration test.
 //!
 //! Modeled on the full-pipeline section of `tube_pipe_e2e.rs`.
 
 use reify_core::{ModulePath, Severity};
 use reify_ir::ExportFormat;
 
-/// Full-pipeline e2e: `sweep(circle(3mm), helix(24mm, 7mm, 63mm))` must flow
-/// through parse → compile → tessellate → STEP export with no Error
-/// diagnostics and non-empty mesh / STEP output.
+/// Full-pipeline e2e: a circle posed normal to the helix start tangent, swept
+/// along `helix(24mm, 7mm, 63mm)`, must flow through parse → compile →
+/// tessellate → STEP export with no Error diagnostics and non-empty mesh /
+/// STEP output.
 #[test]
 fn helix_sweep_through_full_pipeline_succeeds() {
     if !reify_kernel_occt::OCCT_AVAILABLE {
@@ -42,7 +35,7 @@ fn helix_sweep_through_full_pipeline_succeeds() {
     }
 
     let source = r#"structure S {
-    let groove = sweep(circle(3mm), helix(24mm, 7mm, 63mm))
+    let groove = sweep(translate(rotate(circle(3mm), 1.0, 0.0, 0.0, -90deg), 24mm, 0mm, 0mm), helix(24mm, 7mm, 63mm))
 }"#;
 
     // ---- Parse ----

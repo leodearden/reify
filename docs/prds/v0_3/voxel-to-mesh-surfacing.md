@@ -25,7 +25,7 @@ structure VoxelToMesh {
 ```
 $ reify build examples/multi_kernel/voxel_to_mesh.ri /tmp/shell.stl
 …
-Triangles: 50700           # with task 6308's fix; pristine HEAD prints 2 — see #6308
+Triangles: 50700           # measured; not a stable contract — see below
 Wrote /tmp/shell.stl
 ```
 

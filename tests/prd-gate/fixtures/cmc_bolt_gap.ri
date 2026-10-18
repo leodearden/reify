@@ -1,0 +1,16 @@
+module cmc_bolt_gap
+
+// docs/prds/v0_6/catalog-membership-constraint.md §6 B6 (leaf β).
+// Window [22.5mm, 24.5mm]; no member of standard_bolt_lengths fits (…, 20mm, 25mm, …).
+// After β: NoCatalogMemberFeasible naming the catalog, 20mm with the lower-bound constraint and
+// 25mm with the upper-bound constraint; exit 1.
+// Baseline (main 2026-10-08): parse error. The @solver_hint form resolves to 0.0235 m, silently.
+structure BoltedJointGap {
+    param bolt_length : Length = auto
+    param plate_a : Length = 6mm
+    param plate_b : Length = 8mm
+    param nut_h   : Length = 6.5mm
+    constraint bolt_length in standard_bolt_lengths()
+    constraint bolt_length >= plate_a + plate_b + nut_h + 2mm
+    constraint bolt_length <= plate_a + plate_b + nut_h + 4mm
+}

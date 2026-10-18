@@ -98,6 +98,7 @@ export const SHARED_ESM_MODULES = [
   "meshCountParity.mjs",
   "smokeDriverGuards.mjs",
   "railLengtheningGate.mjs",
+  "sliderWriteBackGate.mjs",
 ];
 
 /**

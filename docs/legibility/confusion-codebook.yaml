@@ -2,7 +2,7 @@
 # version 2. MERGER-OWNED FILE: written solely by scripts/legibility/codebook.py
 # (plans/confusion-reduction-prd.md §7.1/§7.3). Append-only, never hand-edited:
 # entries are never deleted (retire via status: retired); sightings/candidates
-# are appended by the deterministic merger's apply_coding_record(). Hand edits
+# are appended by the deterministic merger's apply_coding_records(). Hand edits
 # will be normalized/overwritten on the next merge.
 version: 2
 entries:
@@ -466,6 +466,12 @@ entries:
     origin_phase: verify
     manifested_phase: verify
     note: 'Turn 26: grep -rn ... --include=*.rs . returned exit 2 (path/IO error). Turn 288 repeats with different search string, demonstrating retry pattern.'
+  - date: '2026-10-02'
+    project: reify
+    session: fdccd758-80ce-45c9-86dc-630163b5bdf0
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: 'turn 165: grep -n ... /tmp/7274-amend-vitest.log | head -30 exits 2; exit code 2 from grep signals path/IO error (not pattern-not-found=1)'
 - id: entry-cand-20260725-1
   title: Escalation-watcher script location unknown for non-dark-factory target projects
   severity: medium
@@ -540,6 +546,12 @@ entries:
     origin_phase: ops
     manifested_phase: ops
     note: Interactive session in /home/leo/src/reify (a non-dark-factory target project) opens with an injected supervisor briefing establishing the agent as an autonomous escalation watcher (ROTATION_ESCALATIONS=50, ROTATION_HOURS=4.0, queue at /home/leo/src/reify/data/escalations). The session then racks up 4 generic not-found signals ('does not exist' / 'no such file or directory' x3) spread across turns 46-86, consistent with the watcher failing to locate its own dark-factory tooling from the target project's context.
+  - date: '2026-10-05'
+    project: reify
+    session: fa108f3b-4f6e-4b50-aded-4784fd0a3cd1
+    origin_phase: architect
+    manifested_phase: ops
+    note: Escalation-watcher invoked on non-dark-factory target /home/leo/src/reify; watcher-rearm.sh requires explicit cd into /home/leo/src/dark-factory to locate tooling; manifests as cross-project escalation infrastructure mismatch
 - id: entry-cand-20260728-1
   title: Gitignored-file deliverable can never satisfy confirm_plan / TDD pipeline
   severity: medium
@@ -822,6 +834,12 @@ entries:
     origin_phase: implement
     manifested_phase: implement
     note: TaskOutput called with block:true and a 600000ms timeout three times in a row for the same background task_id ('berajlhv5') — a foreground polling loop that appears to hit its own timeout and get reissued rather than switching strategy (e.g. Monitor) after the first stall.
+  - date: '2026-10-08'
+    project: reify
+    session: 02d6e881-4dfa-4b8e-9c9e-ba1c47d37c4a
+    origin_phase: unknown
+    manifested_phase: verify
+    note: A foreground `until grep -q` polling loop waits on an async completion marker (`^rc=`) in a test log. The harness killed it with exit 137 before the wait finished, matching the 'foreground polling loop hits hard timeout, discarding the wait' pattern.
 - id: entry-cand-20260719-1
   title: Leak-status oracle unset silently downgrades leaked=0 into a false 'no leaks' signal
   severity: medium
@@ -1216,6 +1234,18 @@ entries:
     origin_phase: unknown
     manifested_phase: unknown
     note: 'Retry loop: Read invoked 3x identically on /tmp/.../b1wjx8m2f.output, polling for background task output without Monitor/run_in_background'
+  - date: '2026-10-03'
+    project: reify
+    session: 212da129-baad-4cfa-9340-265b59c8d542
+    origin_phase: verify
+    manifested_phase: verify
+    note: Agent retried Read 3x on /tmp/t5991-list.err after test failure (turn 65, exit 1), consistent with polling/retry fallback on error log file during verification investigation
+  - date: '2026-09-29'
+    project: reify
+    session: 095151d0-019a-4ae3-81a4-fee2a87305e6
+    origin_phase: unknown
+    manifested_phase: implement
+    note: Guard blocked at turn 38, and the agent then repeated Read x5 on the same background task output file (tasks/bgggc3fv4.output). This matches the blocked-poll-fallback-into-repeated-Read pattern. The digest does not show the exact blocked command, so the sleep+tail link is inferred; the not-found hits (does not exist) are consistent with the output file not yet existing.
 - id: entry-cand-20260729-3
   title: Warm-lane task-meta iteration state assumed present but absent
   severity: medium
@@ -1465,6 +1495,42 @@ entries:
     origin_phase: ops
     manifested_phase: implement
     note: tail on .task-meta/_lane-1/iterations.jsonl assumed the per-lane iteration state file exists at the probed path; it doesn't, surfaced as a 'not found' at turn 164.
+  - date: '2026-10-03'
+    project: reify
+    session: 6f792727-706e-454d-a723-a6084ef4fb93
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: Warm-lane orchestrated-task (_lane-44) reports not_found for missing turn 44, consistent with iteration state assumed present but absent during task resumption or checkpoint access.
+  - date: '2026-10-03'
+    project: reify
+    session: edbc0f7a-825a-42b8-a6a6-4c662d7de6aa
+    origin_phase: unknown
+    manifested_phase: merge
+    note: Warm-lane task-meta iteration state assumed present but absent; diagnostic probe of .task/iterations.jsonl fails with exit code 2 during merge-phase thrash investigation
+  - date: '2026-10-04'
+    project: reify
+    session: b1caeab8-5105-4447-9231-24191d56a70c
+    origin_phase: unknown
+    manifested_phase: verify
+    note: Warm-lane task-meta file (.task/metadata.json) assumed present but missing from worktree _lane-24 during post-merge verification read attempt
+  - date: '2026-10-05'
+    project: reify
+    session: d0c98efb-ff42-4a80-91ee-af938642d57b
+    origin_phase: unknown
+    manifested_phase: verify
+    note: Agent assumes warm-lane task-meta iteration state (iterations.jsonl) present but file is absent
+  - date: '2026-10-05'
+    project: reify
+    session: 403c5ab0-499d-40ef-8291-7f060a3a6226
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: Session in warm-lane worktree (_lane-28) exhibits not_found signal; message '(turn 144) does not exist' consistent with iteration state assumed present but absent
+  - date: '2026-10-12'
+    project: reify
+    session: c10910ed-5ada-4dc0-a186-ddae64dd448a
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: Agent read .task/metadata.json and tailed .task/iterations.jsonl in a warm-lane worktree, assuming task-meta iteration state existed. Both files were absent (No such file or directory), surfacing as the not_found and tool_error signals.
 - id: entry-cand-20260720-3
   title: Sleep-chain polling of background task output blocked by guard
   severity: medium
@@ -1743,6 +1809,12 @@ entries:
     origin_phase: verify
     manifested_phase: verify
     note: 'Turn 288: grep with 2>/dev/null redirected stderr, conflating exit 2 path/IO error with pattern-not-found by suppressing diagnostic output'
+  - date: '2026-10-02'
+    project: reify
+    session: fdccd758-80ce-45c9-86dc-630163b5bdf0
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: 'turn 165: ls gui/test/visual/tsconfig* gui/test/tsconfig* 2>/dev/null masks path/argument errors via stderr redirection'
 - id: entry-cand-20260730-4
   title: watcher-rearm.sh CEILING timeout retried 5x with only cosmetic changes, ending in user interrupt
   severity: medium
@@ -2207,6 +2279,24 @@ entries:
     origin_phase: unknown
     manifested_phase: ops
     note: 6 Bash retries of watcher-rearm.sh with 2 explicit CEILING (exit 124) outcomes; only cosmetic timeout-value changes between retries
+  - date: '2026-10-05'
+    project: reify
+    session: fa108f3b-4f6e-4b50-aded-4784fd0a3cd1
+    origin_phase: ops
+    manifested_phase: ops
+    note: 'watcher-rearm.sh retried 14 times (more severe than codebook''s 5x) with identical command and 3600-second timeout; run_in_background: true; no cosmetic variations visible across retries'
+  - date: '2026-10-08'
+    project: reify
+    session: 16ffd98f-72bb-4eea-83df-3a4ede488aa0
+    origin_phase: ops
+    manifested_phase: ops
+    note: watcher-rearm.sh with --timeout 3600 was retried many times with near-identical arguments and no change in approach, matching the CEILING retry pattern. The session did not end in a user interrupt (interrupt count is 0).
+  - date: '2026-10-14'
+    project: reify
+    session: 3f337ce5-c4a0-43a3-a196-e71d94c6accd
+    origin_phase: ops
+    manifested_phase: ops
+    note: Partial fit. watcher-rearm.sh CEILING timeouts were retried three times with near-identical commands. The session did not end in a user interrupt, so the outcome differs from the entry's description.
 - id: entry-cand-20260720-5
   title: watcher-rearm.sh CEILING outcome forces redundant manual polling
   severity: medium
@@ -2488,6 +2578,18 @@ entries:
     origin_phase: unknown
     manifested_phase: ops
     note: After CEILING outcomes, session continues with 3x mcp__escalation__get_pending_escalations retries, suggesting forced polling fallback
+  - date: '2026-10-05'
+    project: reify
+    session: fa108f3b-4f6e-4b50-aded-4784fd0a3cd1
+    origin_phase: ops
+    manifested_phase: ops
+    note: After 14x watcher-rearm.sh CEILING attempts, agent resorts to 5x manual diagnostic polling loop (lease-heartbeat, pgrep watcher check, reap-decisions, list-pending L2); clear causal chain showing CEILING outcome forcing manual workaround
+  - date: '2026-10-15'
+    project: reify
+    session: 9ce833a4-a42e-4239-838d-1424c861e1d7
+    origin_phase: ops
+    manifested_phase: ops
+    note: After each CEILING outcome the session fell back to computing remaining rotation seconds with repeated Bash calls (x4) rather than a different wait strategy, which is the redundant manual-polling pattern this entry describes.
 - id: entry-cand-20260730-5
   title: Cross-repo escalation adjudicated together but attribution diverged, needing later correction
   severity: medium
@@ -2958,6 +3060,12 @@ entries:
     origin_phase: implement
     manifested_phase: implement
     note: Orchestrated-task session in warm-lane worktree _lane-13 chained `sleep 100; cat <task-id>.output 2>/dev/null | tail -20` to poll a background task's output file; blocked by the anti-chaining guard, which named Monitor/run_in_background as the correct primitive.
+  - date: '2026-10-06'
+    project: reify
+    session: 9cd84bd6-606e-48f4-b54f-c40908696926
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: 'Turn 406: async task output polled with head -c piped to python3 JSON parsing; JSONDecodeError on empty content (line 1 column 1 / char 0) indicates premature polling before task completion or missing output file. Consistent with chained polling pattern instead of Monitor/run_in_background.'
 - id: entry-cand-20260725-2
   title: Heredoc commit message with literal parentheses breaks under eval-wrapped bash execution
   severity: medium
@@ -4164,6 +4272,54 @@ entries:
     origin_phase: unknown
     manifested_phase: ops
     note: 'Rearm re-issued identically after first CEILING: turn 174 (3600s) and turn 189 (1172s timeout only change), both hit CEILING'
+  - date: '2026-10-08'
+    project: reify
+    session: 16ffd98f-72bb-4eea-83df-3a4ede488aa0
+    origin_phase: ops
+    manifested_phase: ops
+    note: A watcher-rearm Bash call with a 3600s ceiling and run_in_background was re-issued identically about 80 times, so the bounded-rearm wait was repeated unchanged after its own ceiling.
+  - date: '2026-10-08'
+    project: reify
+    session: 227bc601-4b73-48de-98ac-f077f7a598ee
+    origin_phase: unknown
+    manifested_phase: ops
+    note: Bash x16 re-issues the identical watcher-rearm command (--level 2 --timeout 3600, run_in_background) across repeated 1h slices. The digest does not show the ceiling being hit, so this is a partial match on the identical-re-issue pattern.
+  - date: '2026-10-09'
+    project: reify
+    session: 15c7ad90-db13-4e8d-9881-762c852a6aa1
+    origin_phase: unknown
+    manifested_phase: ops
+    note: The same bounded-wait watcher-rearm Bash command (timeout 3660000) was re-issued five times verbatim in the Retry Loops section, with no change between attempts.
+  - date: '2026-10-10'
+    project: reify
+    session: 0036b8db-1e99-4fda-aba7-f87a596f998a
+    origin_phase: unknown
+    manifested_phase: ops
+    note: Bash watcher-rearm.sh (--timeout 3600, run_in_background) is re-issued identically about 65 times. The digest shows the identical re-issue but does not explicitly show the ceiling being hit.
+  - date: '2026-10-12'
+    project: reify
+    session: d57db0b8-02c7-47be-a586-6058925880c2
+    origin_phase: unknown
+    manifested_phase: ops
+    note: 'The agent re-issued the identical watcher-rearm.sh bounded-wait command (--level 1 --timeout 3600) after it hit its own CEILING (exit 124, WATCHER_REARM_OUTCOME: CEILING) at turns 113 and 121, with no change in arguments.'
+  - date: '2026-10-14'
+    project: reify
+    session: b1685e84-65f6-4f95-ba07-f2f9bb49991c
+    origin_phase: ops
+    manifested_phase: ops
+    note: The watcher-rearm.sh Bash command (timeout 3600) was re-issued 21 times with identical arguments. The digest does not show the ceiling being hit, so this is a partial match on the identical-reissue pattern.
+  - date: '2026-10-14'
+    project: reify
+    session: 3f337ce5-c4a0-43a3-a196-e71d94c6accd
+    origin_phase: ops
+    manifested_phase: ops
+    note: 'Bounded rearm (watcher-rearm.sh --level 1) hit its own CEILING (exit 124, WATCHER_REARM_OUTCOME: CEILING) and was re-issued with the same command shape at turns 134, 143 and 168. Only the timeout value changed.'
+  - date: '2026-10-15'
+    project: reify
+    session: 9ce833a4-a42e-4239-838d-1424c861e1d7
+    origin_phase: ops
+    manifested_phase: ops
+    note: 'The watcher-rearm command hit its own 3600s ceiling (exit 124, WATCHER_REARM_OUTCOME: CEILING) and was re-issued with the identical command and timeout in three designed-outcome cycles (turns 110, 117, 162), with no change in approach.'
 - id: entry-cand-20260726-8
   title: Warm-lane .task/plan.json symlink resolves to empty/unreadable target with no error surfaced
   severity: medium
@@ -4374,6 +4530,12 @@ entries:
     origin_phase: unknown
     manifested_phase: unknown
     note: 'turn 70: .task/plan.json exists in ls output but cat fails with os error 2 (ENOENT), diagnostic of broken symlink to inaccessible target'
+  - date: '2026-10-11'
+    project: reify
+    session: 49c59438-7945-4854-bcd8-6f9711f8953c
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: Warm-lane .task/plan.json is a symlink whose target (.task-meta/_lane-15/plan.json) does not exist. The read fails with a bare 'No such file or directory' (exit 1), so the symlink indirection is the cause. Closest codebook entry; the digest does not show the phase.
 - id: entry-cand-20260722-4
   title: Escalation watcher re-attempts a path-scope-guarded cross-project operation after the guard already fired
   severity: medium
@@ -5280,6 +5442,12 @@ entries:
     origin_phase: unknown
     manifested_phase: unknown
     note: Orchestrated-task agent in warm-lanes worktree (_lane-50) encountered 5 not_found errors; consistent with .task-meta path assumption at warm-lanes root instead of under worktrees/
+  - date: '2026-10-05'
+    project: reify
+    session: d0c98efb-ff42-4a80-91ee-af938642d57b
+    origin_phase: unknown
+    manifested_phase: verify
+    note: Agent accesses .task-meta at warm-lanes root (via ..) instead of under worktrees/ hierarchy
 - id: entry-cand-20260728-8
   title: Warm-lane task-meta path ambiguity (sibling vs nested-under-worktrees)
   severity: medium
@@ -5797,6 +5965,12 @@ entries:
     origin_phase: unknown
     manifested_phase: verify
     note: 'Warm-lane task-meta path ambiguity: orchestrated agent probing wrong location for task-meta structure (sibling vs nested-under-worktrees)'
+  - date: '2026-10-05'
+    project: reify
+    session: d0c98efb-ff42-4a80-91ee-af938642d57b
+    origin_phase: unknown
+    manifested_phase: verify
+    note: Agent probes sibling-path .task-meta/_lane-32/; file may be at nested worktrees/ location instead
 - id: entry-cand-20260714-3
   title: Watcher rearm invoked without DARK_FACTORY_ROOT despite explicit project-root injection
   severity: medium
@@ -6308,6 +6482,12 @@ entries:
     origin_phase: unknown
     manifested_phase: verify
     note: 'Sed failed with ''unknown command: `,'''' — fragile line-range construction via grep output piped to sed with backtick substitution; shell metacharacters in sed string not escaped.'
+  - date: '2026-10-06'
+    project: reify
+    session: bd4e18dd-55c4-449c-9512-c9259e93e13f
+    origin_phase: unknown
+    manifested_phase: verify
+    note: 'Sed line-range construction with escaped special characters in eval-wrapped bash: sed -n ''/^verify_pipeline_map_globs_resolve() {\$/,/^}\$/p'' attempted to extract test function code for dynamic execution; fragile pattern matching the ''grep-into-sed'' anti-pattern'
 - id: entry-cand-20260703-4
   title: Autonomous watcher conflates interactive auto-memory (Write-tool markdown files) with project fused-memory MCP writes
   severity: medium
@@ -7194,6 +7374,24 @@ entries:
     origin_phase: unknown
     manifested_phase: implement
     note: Autonomous warm-lane worktree session with 4 'not found' signals across turns; agent likely probing undocumented .task-meta or bootstrap paths; insufficient digest detail to confirm specific missing file
+  - date: '2026-10-04'
+    project: reify
+    session: 6f94701c-d01a-4c1d-9f77-6dcbd76c49aa
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: Session in lane-specific worktree; not_found signals align with probing undocumented .task-meta/<lane>/iterations.jsonl path returning exit code 2
+  - date: '2026-10-06'
+    project: reify
+    session: 6c5de58a-90d0-4d8b-8f68-02da7abfdfba
+    origin_phase: unknown
+    manifested_phase: implement
+    note: 'Orchestrated-task in warm-lane encounters five path-not-found errors (exit code 2: ''does not exist'', ''no such file or directory'', ''command not found'') across turns 24, 34, 123, 219, 252, consistent with undocumented .task-meta probing attempts in warm-lane context'
+  - date: '2026-10-12'
+    project: reify
+    session: e168d1f5-7d8e-48ad-a09e-7b93ec2fc824
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: Agent probes .task-meta/_lane-35/iterations.jsonl, a path the warm-lane layout does not document, and the wc call fails with 'No such file or directory' (exit 1 from the compound ls/wc command).
 - id: entry-cand-20260725-5
   title: Read tool offset param called with slice-range syntax
   severity: medium
@@ -7207,6 +7405,12 @@ entries:
     origin_phase: implement
     manifested_phase: implement
     evidence_quote: 'Read({"__unparsedToolInput": {"raw": "{\"file_path\": \".../ty.rs\", \"offset\": 185, 210, \"limit\": 25}\"}}) -> InputValidationError: Read was called with input that could not be parsed as JSON.'
+  - date: '2026-10-09'
+    project: reify
+    session: 503d058a-2cc9-4687-8917-1ee456557ca1
+    origin_phase: unknown
+    manifested_phase: verify
+    note: Read was called with an invented `from` parameter alongside `offset` and `limit`, which the tool rejected with InputValidationError. This is the same family as misusing Read's range parameters. The agent was verifying a completed task's claim when it happened.
 - id: entry-cand-20260725-6
   title: Per-lane task-meta iterations.jsonl missing at expected path
   severity: medium
@@ -7934,6 +8138,84 @@ entries:
     origin_phase: unknown
     manifested_phase: verify
     note: Per-lane task-meta iterations.jsonl missing from expected path, causing repeated not_found failures across multiple turns
+  - date: '2026-10-03'
+    project: reify
+    session: edbc0f7a-825a-42b8-a6a6-4c662d7de6aa
+    origin_phase: unknown
+    manifested_phase: merge
+    note: Per-lane task-meta files missing at expected paths; .task/metadata.json and .task/iterations.jsonl both absent from worktree, only plan.json and claude-config-7316-unblock present in .task/
+  - date: '2026-10-05'
+    project: reify
+    session: d0c98efb-ff42-4a80-91ee-af938642d57b
+    origin_phase: unknown
+    manifested_phase: verify
+    note: Per-lane iterations.jsonl missing at expected path ../.task-meta/_lane-32/iterations.jsonl
+  - date: '2026-10-05'
+    project: reify
+    session: 403c5ab0-499d-40ef-8291-7f060a3a6226
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: Per-lane task-meta context in warm-lane worktree; not_found signal aligns with iterations.jsonl missing at expected path, manifested as turn/iteration record absent
+  - date: '2026-10-09'
+    project: reify
+    session: 7f4cddd8-a34f-40d2-9c2d-e31efcb19342
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: Turn 34 probed the per-lane .task-meta/_lane-49/iterations.jsonl path; wc returned 'No such file or directory' while the sibling ls succeeded, so the expected per-lane iterations file is absent at that path.
+  - date: '2026-10-12'
+    project: reify
+    session: e168d1f5-7d8e-48ad-a09e-7b93ec2fc824
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: Per-lane iterations.jsonl is absent at the expected task-meta path for _lane-35, as seen in the wc error and the ls listing that contains no iterations.jsonl.
+  - date: '2026-10-12'
+    project: reify
+    session: e212688a-6923-4d05-b250-26b948b896ac
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: A tail call on the per-lane iterations.jsonl failed with 'No such file or directory' (path .task/iterations.jsonl, not the .task-meta/<lane>/ form in the entry). Phases are not supported by the digest.
+  - date: '2026-10-14'
+    project: reify
+    session: a935fbf1-a4e6-4d1f-a2e0-b44a2e887d35
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: Turn 37 probes /home/leo/src/warm-lanes/worktrees/.task-meta/_lane-30/iterations.jsonl; wc reports 'No such file or directory' while the directory listing shows no iterations.jsonl.
+  - date: '2026-10-14'
+    project: reify
+    session: da9b3212-9f4c-42cc-a4ab-956eaa12d808
+    origin_phase: unknown
+    manifested_phase: verify
+    note: The agent tailed .task/iterations.jsonl during the post-merge verify block. The ls output shows the file is absent from .task, and the tool returned exit 1, matching the missing-iterations-file-at-expected-path pattern. The origin phase is not supported by the digest.
+  - date: '2026-10-15'
+    project: reify
+    session: e0f76229-e97d-4478-995a-d3df9baf65ad
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: Agent ran `tail -c 1500 .task/iterations.jsonl` and got exit 2 (no such file). The expected per-lane iterations log was absent at the path the agent assumed, matching the missing-at-expected-path pattern.
+  - date: '2026-10-15'
+    project: reify
+    session: 7284a448-e8b4-44cc-ab76-f740a395289b
+    origin_phase: unknown
+    manifested_phase: verify
+    note: Agent ran `tail -c 3000 .task/iterations.jsonl` during post-merge verification failure investigation and got 'No such file or directory' (exit 1). The file is absent at the expected per-lane path, matching the codebook entry's missing iterations.jsonl pattern. The path here is `.task/` rather than `.task-meta/`, so the match is partial. Origin phase is not supported by the digest.
+  - date: '2026-10-15'
+    project: reify
+    session: c6ebd953-a897-41ac-971f-3bb179b39d81
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: 'Error Neighborhoods show `tail: cannot open ''.task/iterations.jsonl''` and Not Found shows no such file at turn 26, so the per-lane iterations.jsonl is missing at the expected path. The `.task` directory listing holds only plan.json and a claude-config directory.'
+  - date: '2026-10-17'
+    project: reify
+    session: 6018dbe0-7f59-4246-86f7-124534cf92a9
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: A `tail -c 3000 .task/iterations.jsonl` call returned 'No such file or directory' (exit 2) because the per-lane iterations file was absent at the expected path, matching this entry's missing-iterations-file symptom.
+  - date: '2026-10-17'
+    project: reify
+    session: fc3bb4c5-3327-4104-961b-cdc8a2f415ac
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: 'Partial match: the session''s tail of .task/iterations.jsonl fails with ''No such file or directory'' in a warm-lane worktree, the same missing per-lane iterations.jsonl pattern. The digest does not show the expected path or the phase, so both phases are unknown.'
 - id: entry-cand-20260727-8
   title: No cross-session visibility into which concurrent sessions own which blocked tasks
   severity: medium
@@ -8069,6 +8351,30 @@ entries:
     origin_phase: implement
     manifested_phase: implement
     note: Chained sleep+poll (sleep 120 -> tail -> grep -c) against a background task's output file, tripped by the anti-chaining guard on first attempt.
+  - date: '2026-10-05'
+    project: reify
+    session: 58af20ca-bf80-479b-b34f-b40882447b18
+    origin_phase: implement
+    manifested_phase: unknown
+    note: Guard trip 'blocked:' at turn 167 consistent with anti-chaining guard detecting attempted sleep+poll chain in orchestrated-task context
+  - date: '2026-10-05'
+    project: reify
+    session: 0a523b73-a458-45ef-8d57-23395ed767fe
+    origin_phase: unknown
+    manifested_phase: ops
+    note: At turn 1458 a 'sleep 30; ls ...' chain was blocked by the guard, which said to use Monitor with an until-loop or run_in_background.
+  - date: '2026-10-13'
+    project: reify
+    session: 5a2937d3-5044-4036-b7d5-6f253035bfcc
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: Bash `sleep 240; ls .../tasks/ | head` to wait for scout subagents was blocked by the anti-chaining sleep guard (turn 281). The guard message directs use of Monitor or run_in_background instead. Phase is not supported by the digest evidence.
+  - date: '2026-10-15'
+    project: reify
+    session: e0f76229-e97d-4478-995a-d3df9baf65ad
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: Agent chained `sleep 240` with grep/cat to poll background verification output. The sandbox guard blocked the chain and directed use of Monitor or run_in_background instead.
 - id: entry-cand-20260719-7
   title: Warm-lane task bootstrap missing plan.json
   severity: medium
@@ -8355,6 +8661,18 @@ entries:
     origin_phase: unknown
     manifested_phase: unknown
     note: plan.json file not present at expected warm-lane task bootstrap location (symlink target missing at .task-meta/_lane-37/plan.json).
+  - date: '2026-10-15'
+    project: reify
+    session: 7d183bfa-0734-4dae-9bb1-46b7724800b6
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: Warm-lane worktree (_lane-1) session reads .task/plan.json, which is absent (wc and json.load both report No such file or directory at turn 48, and the file is still missing at turn 250). This matches the warm-lane missing plan.json pattern. Phase cannot be determined from the digest.
+  - date: '2026-10-17'
+    project: reify
+    session: 9b491883-73ed-461f-8daf-c6d2cce64a39
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: Read of /home/leo/src/warm-lanes/worktrees/_lane-30/.task/plan.json returned 'File does not exist' at turn 166, in a warm-lane worktree cwd. This matches the codebook entry for a warm-lane task bootstrap missing plan.json. The digest does not show the phase of the work, so both phases are unknown.
 - id: entry-cand-20260719-8
   title: Sandbox blocks naive sleep+check polling chains
   severity: medium
@@ -8404,6 +8722,12 @@ entries:
     origin_phase: recon
     manifested_phase: recon
     note: 'Turn 188: Bash(''sleep 90; echo waited'') blocked by the anti-chaining sandbox guard during agent-team escalation exploration for esc-5495-3; guard message explicitly redirects to Monitor/run_in_background, matching the generic sleep+check polling-chain block pattern rather than a background-task-output-tail variant.'
+  - date: '2026-10-08'
+    project: reify
+    session: 16ffd98f-72bb-4eea-83df-3a4ede488aa0
+    origin_phase: ops
+    manifested_phase: ops
+    note: A Bash call chaining sleep 25 with ls/grep/reap commands was blocked by the sandbox, and the guard message directed the agent to Monitor or run_in_background instead of shorter sleeps.
 - id: entry-cand-20260801-5
   title: Bash `rg` invocation fails — ripgrep binary absent from worktree environment
   severity: medium
@@ -8554,6 +8878,12 @@ entries:
     origin_phase: unknown
     manifested_phase: unknown
     note: Grep call against reify-compiler/tests used a JS/PCRE-style pattern with negative lookahead `(?!structure|"#)`; ripgrep's default regex engine rejected it with 'look-around, including look-ahead and look-behind, is not supported', confirming the agent assumed full PCRE support from the Grep tool.
+  - date: '2026-10-08'
+    project: reify
+    session: 9b63ab36-e909-4eb5-a74e-355508a150c9
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: At turn 208 the Grep tool rejected a look-behind pattern (?!\.) with 'look-around ... not supported'. At turn 212 the agent acknowledged the assumption of PCRE support as its own mistake and switched to a broader match. Phase is not supported by the digest, so both phases are unknown.
 - id: entry-cand-20260724-6
   title: Foreground build reproduction killed by harness timeout before yielding the real error
   severity: medium
@@ -8629,6 +8959,18 @@ entries:
     origin_phase: unknown
     manifested_phase: verify
     note: Agent running build-directory diagnostics (pkill/ls target/debug/) in warm-lanes worktree killed by signal 16 (exit 144) before completing. Process termination by harness prevented collection of diagnostic output needed for troubleshooting.
+  - date: '2026-10-14'
+    project: reify
+    session: a935fbf1-a4e6-4d1f-a2e0-b44a2e887d35
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: Turn 419 foreground cargo test run exits 137 (killed), so the real build error is not surfaced in the captured output.
+  - date: '2026-10-14'
+    project: reify
+    session: d952ac38-37f3-4990-b515-aaa07c6682b2
+    origin_phase: unknown
+    manifested_phase: verify
+    note: Turn 115 runs cargo clippy and cargo test with timeout 1700 inside an 1800000 ms harness timeout, and the output is piped through tail. The command exits 137 (SIGKILL) and no real error is visible. The digest does not confirm whether the kill came from the harness, OOM, or another source, so the match is tentative.
 - id: entry-cand-20260807-1
   title: Dependency edge added 'for bookkeeping' renders the new task self-blocking by construction
   severity: medium
@@ -8667,6 +9009,12 @@ entries:
     origin_phase: unknown
     manifested_phase: architect
     note: Cross-repo fused-memory get_task() timeout from reify task to dark-factory MCP server. Generic 'The operation timed out' message with no server-side diagnostic context caused architect to misattribute the issue, requiring task rerouting. Evidence explicitly cites this entry from session c455234a; current session demonstrates the same codebook pattern manifesting in wrong-repo misidentification and task refiling.
+  - date: '2026-10-04'
+    project: reify
+    session: beb280d5-dc25-4451-9d0a-49fd18150d21
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: mcp__fused-memory__get_task was called three times with identical arguments (id 7890, project_root /home/leo/src/reify) in an /unblock session. This fits the fused-memory get_task failure and identical-retry pattern. The digest does not show the error text, so a timeout is inferred and not confirmed.
 - id: entry-cand-20260823-13
   title: Redundant duplicate full-suite test invocation to extract two derived metrics
   severity: medium
@@ -8716,6 +9064,12 @@ entries:
     origin_phase: unknown
     manifested_phase: verify
     note: Read tool rejected 1500-token chunk request (offset 680) from 32262-token file; hard cap at 25000 tokens applies even with limit parameter. Agent followed documented workaround (offset/limit) but error still occurred.
+  - date: '2026-10-02'
+    project: reify
+    session: fdccd758-80ce-45c9-86dc-630163b5bdf0
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: 'turn 227: Read tool on tasks/b92ezr2xd.output (455.2KB) hits 256KB cap; forces fallback to offset/limit or search'
 - id: entry-cand-20260910-15
   title: Agent's own free-text tool-call field (design-decision rationale) contains literal MCP envelope closing tags, rejected by mcp_markup_detected guard, and recurs later in the same session
   severity: medium
@@ -8755,6 +9109,54 @@ entries:
     origin_phase: unknown
     manifested_phase: verify
     evidence_quote: 'read_file({"max_lines": "250", "path": "prj/printer_v01/printer.ri"}) -> <tool_use_error>Error: No such tool available: read_file</tool_use_error>'
+  - date: '2026-10-02'
+    project: reify
+    session: 7f1d2e80-56f0-4c0d-87ee-6a7cd1720e5a
+    origin_phase: unknown
+    manifested_phase: verify
+    note: Agent invoked grep_search (turns 17, 19, 21) instead of actual Grep tool; all failed with 'No such tool available'
+  - date: '2026-10-02'
+    project: reify
+    session: 7029cc93-61db-43c9-87ba-0506bc0ba33c
+    origin_phase: verify
+    manifested_phase: verify
+    note: 'Turn 17: grep_search({path: ''crates'', pattern: ''SetRunParallel|RunParallel''}) → ''Error: No such tool available: grep_search'''
+  - date: '2026-10-03'
+    project: reify
+    session: 8077e4f0-8bbd-4e66-b6f6-58ed343972c1
+    origin_phase: unknown
+    manifested_phase: verify
+    note: Agent calls grep_search (turns 17, 19, 21) and verification_complete (turn 118); hallucinated tool names not in actual harness
+  - date: '2026-10-03'
+    project: reify
+    session: d695d94b-9cc1-4ce3-afa3-e8ac2dd91985
+    origin_phase: unknown
+    manifested_phase: verify
+    note: 'Agent invokes grep_search in turns 17 and 19, receiving ''Error: No such tool available: grep_search'' in both error neighborhoods. Actual tool is Grep. Hallucinated tool name manifests during interactive verification of test coverage claims.'
+  - date: '2026-10-04'
+    project: reify
+    session: 8b495cc1-9b2d-49cd-8013-d71bd5c6329d
+    origin_phase: unknown
+    manifested_phase: verify
+    note: Agent called grep_search at turn 19, which is hallucinated; harness provides only Read/Grep tools
+  - date: '2026-10-04'
+    project: reify
+    session: fbe78184-f820-4c82-817c-f05abf91aa44
+    origin_phase: unknown
+    manifested_phase: verify
+    note: Agent invoked grep_search (turns 17, 19, 21, 23) — non-existent tool; harness has Grep, not grep_search
+  - date: '2026-10-04'
+    project: reify
+    session: 58acb476-d48e-4c9a-930c-206dd5405c4f
+    origin_phase: unknown
+    manifested_phase: verify
+    note: Agent called grep_search three times (turns 17, 19, 21), each returning 'No such tool available', instead of using the harness's Grep tool.
+  - date: '2026-10-06'
+    project: reify
+    session: 96ed8312-4abc-4e45-a6af-7e1993092a27
+    origin_phase: unknown
+    manifested_phase: implement
+    note: Agent called grep_search, glob_search and git_log, none of which exist in the harness. Each call returned 'No such tool available'. These are the same hallucinated generic tool names the entry describes (grep_search), plus glob_search and git_log.
 - id: entry-cand-20260918-12
   title: add_memory MCP call times out and is retried with an identical payload, risking a duplicate write
   severity: medium
@@ -8768,6 +9170,18 @@ entries:
     origin_phase: implement
     manifested_phase: implement
     evidence_quote: (turn 276) mcp__fused-memory__add_memory(...) -> The operation timed out. / (turn 281) mcp__fused-memory__add_memory(... same content ...) -> The operation timed out.
+  - date: '2026-09-30'
+    project: reify
+    session: e37ea66a-b2a1-4874-b3c6-81fdbcdb7085
+    origin_phase: unknown
+    manifested_phase: architect
+    note: A fused-memory MCP write call (submit_task) timed out and was re-issued with an apparently identical payload, which risks a duplicate task submission. This is the same retry-on-timeout pattern as the add_memory case.
+  - date: '2026-10-05'
+    project: reify
+    session: 08740c00-9f63-4916-9ed9-2692e3fecdbc
+    origin_phase: unknown
+    manifested_phase: architect
+    note: submit_task MCP call times out at turns 262 and 267 with identical agent_id and description; retried without intermediate root-cause diagnosis, creating risk of duplicate task submission when filing escalation follow-up
 - id: entry-cand-20260901-15
   title: add_memory content rejected because the model's own tool-call envelope markup leaked into the payload string
   severity: medium
@@ -8807,6 +9221,12 @@ entries:
     origin_phase: implement
     manifested_phase: implement
     evidence_quote: '{"file_path": "/home/leo/src/warm-lanes/worktrees/_lane-1/scripts/seed-warm-lane.sh", "offset": 1, 200}'
+  - date: '2026-10-04'
+    project: reify
+    session: dcdc65b0-2654-4fa6-8584-db3411c35293
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: 'The Read call''s JSON arguments were malformed. A stray empty element (`"offset": 1, , "limit": 130`) made the input unparseable, so the harness returned an InputValidationError. This is the same class as the existing entry, malformed Read arguments, though the defect here is a doubled comma rather than a trailing positional value. The digest does not show which task phase this was.'
 - id: entry-cand-20260827-16
   title: Multi-line python3 -c script flattened to one line inside a compound Bash command, producing a misleading IndentationError
   severity: medium
@@ -8826,6 +9246,18 @@ entries:
     origin_phase: verify
     manifested_phase: verify
     note: Turn 106 invokes 'find / -iname confusion-reduction-prd.md' searching from filesystem root — exactly the anti-pattern this entry warns against. No timeout observed in digest, but matches the search strategy.
+  - date: '2026-09-29'
+    project: reify
+    session: 166d378d-daf5-4b1d-94f0-13d32717358e
+    origin_phase: implement
+    manifested_phase: implement
+    note: Multi-line python3 -c script for inspecting .task/plan.json was flattened to one line, producing IndentationError (turn 24).
+  - date: '2026-09-25'
+    project: reify
+    session: 12e7f95c-01b9-4cde-8812-3cef24f93f6d
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: The python3 -c script was flattened to a single line inside a Bash command, which causes the misleading IndentationError. Same mechanism as the entry above, so it is a weaker secondary match.
 - id: entry-cand-20260821-14
   title: Async task-notification (background agent failure) miscategorized as a User Correction in session digest
   severity: medium
@@ -8843,6 +9275,24 @@ entries:
       - (turn 196) <task-notification>
 
       <task-id>a1ab810a169bbb353</task-id>...<summary>Agent "Find .ri fixture test harness patterns" failed: Agent terminated early due to an API error: You''ve hit your weekly limit · resets Aug 26, 11am (Europe/London)</summary>'
+  - date: '2026-09-25'
+    project: reify
+    session: 10a4d071-3a85-4203-9aa4-67e8a91f1778
+    origin_phase: unknown
+    manifested_phase: review
+    note: A machine-generated message (the adjudication task prompt) is categorized as a User Correction. The session has only 1 user turn and zero tool errors, self-corrections or interrupts, which supports this being an instrument-labeling artifact.
+  - date: '2026-09-25'
+    project: reify
+    session: c3868134-4c93-487e-b0ab-049916e62b82
+    origin_phase: unknown
+    manifested_phase: review
+    note: The digest labels an injected adjudication prompt (turn 3) as a User Correction, although it is not a human correction. This is the same digest-mislabeling pattern as entries for async notifications and injected context.
+  - date: '2026-10-14'
+    project: reify
+    session: 2f934d0e-b936-4080-a5cc-6bcc3e4ad496
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: Weak fit. The digest lists two slash-command invocations (/team, /prd) with session-brief text under User Corrections, the same kind of digest mislabeling this entry describes. The digest shows no agent confusion, and the not_found items lack the context needed to support a candidate.
 - id: entry-cand-20260830-13
   title: Invalid `head` flag in a pipeline triggers a downstream Rust broken-pipe panic that masks the real error
   severity: medium
@@ -8912,6 +9362,12 @@ entries:
     origin_phase: review
     manifested_phase: review
     evidence_quote: "File \"<string>\", line 1\n    import json for line in open('iterations.jsonl'): line=line.strip() if not line: continue d=json.loads(line) print('---', d.get('iteration'), d.get('role'), d.get('timestamp'), d.get('outcome','')) s=d.get('summary') or '' print(s[:400].replace('\\n',' ')) \nIndentationError: unexpected indent"
+  - date: '2026-09-25'
+    project: reify
+    session: 12e7f95c-01b9-4cde-8812-3cef24f93f6d
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: The multi-line python3 -c jsonl parser (for-loop, if-continue, prints) was flattened to one line with no statement separators. The digest's Bash calls at turns 37 and 41 show this, and the cluster quoted in the user turn is this same entry's pattern.
 - id: entry-cand-20260914-17
   title: Python heredoc embedding raw Rust source text triggers unicodeescape SyntaxError
   severity: medium
@@ -8957,6 +9413,12 @@ entries:
     origin_phase: unknown
     manifested_phase: implement
     note: Census verification session confirms this entry is still active. Cluster describes ad-hoc diagnostic scripts assuming plan.json steps carry 'step_type' field universally. This session's error neighborhoods (turns 29-160) show failed verification attempts with jq type errors and parse failures attempting to inspect the same schema heterogeneity.
+  - date: '2026-10-08'
+    project: reify
+    session: 50231b7d-9144-4672-a543-69be5659c139
+    origin_phase: unknown
+    manifested_phase: verify
+    note: 'Related schema-assumption error: the StructuredOutput batch at turn 41 omitted the required ''input'' property on tool_calls/3, so it was rejected by schema validation.'
 - id: entry-cand-20260909-13
   title: Agent invokes hallucinated generic tool names (read_file, git_log) absent from its actual toolset
   severity: medium
@@ -8970,6 +9432,42 @@ entries:
     origin_phase: verify
     manifested_phase: verify
     evidence_quote: 'read_file({"max_lines": "50", "path": "crates/reify-compiler/src/type_resolution.rs"}) -> <tool_use_error>Error: No such tool available: read_file</tool_use_error>'
+  - date: '2026-10-02'
+    project: reify
+    session: 7f1d2e80-56f0-4c0d-87ee-6a7cd1720e5a
+    origin_phase: unknown
+    manifested_phase: verify
+    note: Agent invoked git_log (turn 23) instead of actual git tool; failed with 'No such tool available'
+  - date: '2026-10-02'
+    project: reify
+    session: 7029cc93-61db-43c9-87ba-0506bc0ba33c
+    origin_phase: verify
+    manifested_phase: verify
+    note: 'Turn 19: git_log({max_entries: ''15'', path: ''...''}) → ''Error: No such tool available: git_log'''
+  - date: '2026-10-03'
+    project: reify
+    session: f040e17a-3663-4f29-b5b6-1c5c569b2997
+    origin_phase: unknown
+    manifested_phase: verify
+    note: Agent called read_file, grep_search and git_log, none of which exist in the toolset (turns 17, 19, 21), and later called verification_complete (turn 70), which also does not exist. All four returned 'No such tool available'.
+  - date: '2026-10-04'
+    project: reify
+    session: 8b495cc1-9b2d-49cd-8013-d71bd5c6329d
+    origin_phase: unknown
+    manifested_phase: verify
+    note: Agent called git_log at turn 21, which is hallucinated; not in actual toolset
+  - date: '2026-10-04'
+    project: reify
+    session: fbe78184-f820-4c82-817c-f05abf91aa44
+    origin_phase: unknown
+    manifested_phase: verify
+    note: Agent invoked git_log (turn 25) — non-existent tool absent from harness toolset
+  - date: '2026-10-04'
+    project: reify
+    session: de158ad2-77b9-417a-b592-eb5246b9a90f
+    origin_phase: unknown
+    manifested_phase: verify
+    note: Agent called hallucinated tool names grep_search, glob_search and git_log, which are absent from the toolset; the errors read 'No such tool available'.
 - id: entry-cand-20260914-18
   title: Safety justification for a timeout ceiling bump assumes a guard env var applies uniformly across roles, missing role-scoped gating logic
   severity: medium
@@ -8996,6 +9494,12 @@ entries:
     origin_phase: unknown
     manifested_phase: merge
     evidence_quote: "1 validation error for call[merge_request]\nworktree\n  Missing required argument [type=missing_argument, input_value={'task_id': '5099', 'bran...'verified_green': False}, input_type=dict]"
+  - date: '2026-10-02'
+    project: reify
+    session: 3836510d-c204-4ac9-b025-369e0f41aaf7
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: 'Similar core pattern: MCP tool called with required argument missing (step_id) and unexpected keyword argument (task_id), both surfacing as Pydantic validation errors. Tool differs (add_plan_step vs merge_request) and error includes unexpected-argument in addition to missing-argument.'
 - id: entry-cand-20260913-1
   title: add_design_decision rationale field polluted with self-serialized MCP envelope markup
   severity: medium
@@ -9022,6 +9526,12 @@ entries:
     origin_phase: implement
     manifested_phase: implement
     evidence_quote: 'TypeError: ''NoneType'' object is not subscriptable ... print(f"  {s[''id'']:8s} {s[''type'']:4s} {s[''status'']:7s} {s.get(''commit'','''')[:12]:12s} {s[''description''][:60]}")'
+  - date: '2026-10-17'
+    project: reify
+    session: 96d7f786-14c5-4061-b659-a6ce6da11b13
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: Ad-hoc inline python3 -c script parsed a findings file and crashed with TypeError on a bool value where a subscriptable value was assumed. The same class of failure as the ad-hoc inspection script crashing on an unexpected field value, but the data source and the value type differ (bool, not None, from PPRDSTATUS findings rather than plan.json). Phases are not supported by the evidence.
 - id: entry-cand-20260911-20
   title: Review-round adjudication conflates DEFERRED (still-open) prior suggestions with RESOLVED ones
   severity: medium
@@ -9041,6 +9551,24 @@ entries:
     origin_phase: review
     manifested_phase: review
     note: 'Amendment-round adjudication conflates DEFERRED (still-open) prior suggestions with RESOLVED ones. User correction explicitly states: distinguish only ''genuinely resolved earlier'' from merely ''DEFERRED and still OPEN and unaddressed''. The PRIOR-ROUND block acknowledges this distinction is non-obvious, warning that ''some were acted on, but others were merely DEFERRED''.'
+  - date: '2026-09-25'
+    project: reify
+    session: 352a81b8-8ded-4dbd-b60a-bb163c71037e
+    origin_phase: review
+    manifested_phase: review
+    note: 'The census-verifier prompt in the digest describes the same cluster: a prior-round suggestion list with no structured field separating resolved items from deferred, still-open ones. An agent adjudicating a current suggestion can therefore wrongly treat a deferred item as settled.'
+  - date: '2026-09-25'
+    project: reify
+    session: c3868134-4c93-487e-b0ab-049916e62b82
+    origin_phase: review
+    manifested_phase: review
+    note: The digest's 'User Correction' is the review-round adjudication prompt, which warns that the prior-round list mixes RESOLVED and DEFERRED (still-open) suggestions. This is the same conflation risk the entry describes. The truncated digest shows no outcome, so only the risk is evidenced.
+  - date: '2026-10-08'
+    project: reify
+    session: 34b8fc58-9bec-45b6-bfd0-d1bda896a861
+    origin_phase: review
+    manifested_phase: review
+    note: Review-round adjudication prompt explicitly warns that PRIOR-ROUND suggestions include DEFERRED, still-open items that must not be classed as settled. This matches the codebook pattern of conflating DEFERRED (still-open) prior suggestions with RESOLVED ones. The digest is truncated, so the adjudication outcome itself is not visible.
 - id: entry-cand-20260819-19
   title: Deferred tool (Monitor) invoked before its schema is loaded via ToolSearch, causing wrong-parameter InputValidationError
   severity: medium
@@ -9125,6 +9653,24 @@ entries:
     origin_phase: unknown
     manifested_phase: unknown
     evidence_quote: 'wc: .../crates/reify-cli/tests/harness_cli/cli_lsp_protocol.rs: No such file or directory ... Path does not exist ... (turn 90) Correction: the CLI file is NOT in `harness_cli/`'
+  - date: '2026-10-04'
+    project: reify
+    session: de6f047c-b535-43b0-9b63-66a6df913b3b
+    origin_phase: unknown
+    manifested_phase: verify
+    note: Two consecutive not-found errors (turns 98, 335) while navigating test-file paths in crates/reify-cli/tests/harness_cli/; agent pattern consistent with wrong assumed test-file subdirectory persisting across multiple attempts
+  - date: '2026-10-05'
+    project: reify
+    session: a6dfcab9-e306-4d65-8168-6e4a2148719d
+    origin_phase: verify
+    manifested_phase: verify
+    note: Agent assumes test file money_arithmetic_tests.rs exists in crates/reify-compiler/tests/, but actual tests are in crates/reify-syntax/tests/ after prior reorganization (#7040); two separate not-found errors (turns 24, 36) indicate persistence of wrong directory assumption
+  - date: '2026-10-10'
+    project: reify
+    session: 4a44aa3b-f656-4a82-9951-70381b71585f
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: A Grep at turn 29 targeted an assumed test-file path under crates/reify-compiler/tests/ that does not exist. The turn-346 self-correction places the file under tests/harness_type_checking/, so the wrong assumed subdirectory was corrected much later. The entry describes two consecutive not-found errors, but this digest shows only one, so the match is partial. The digest has no phase cues, so both phases are unknown.
 - id: entry-cand-20260915-21
   title: Multi-file wc/count command's missing-argument failure is easy to overlook amid emitted partial output
   severity: medium
@@ -9157,6 +9703,12 @@ entries:
     origin_phase: unknown
     manifested_phase: unknown
     note: Agent escalates from scoped search (~/.claude/projects, exit 1) to filesystem-wide find / when session transcript not located, hits timeout (exit 143)
+  - date: '2026-10-05'
+    project: reify
+    session: ff65c872-aa2f-49fa-a0f5-1059ca0cd12f
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: Multi-line python3 -c script embedded in Bash command with incomplete second for loop ('for s in p.get...') causes exit code 1 SyntaxError; first for loop successfully read and printed design_decisions before truncation error
 - id: entry-cand-20260911-22
   title: add_memory content field carries a leaked tool-call envelope closing tag, rejected by mcp_markup_detected guard
   severity: medium
@@ -9189,6 +9741,60 @@ entries:
     origin_phase: unknown
     manifested_phase: implement
     evidence_quote: '# New Escalation for Task 5099 — ai-native-editing η: user GUI slider/edit-box durable source write-back (INV-GUI-3) ... Handle this escalation, then call `resolve_issue` with a summary.'
+  - date: '2026-09-25'
+    project: reify
+    session: ec7c6030-2088-4e70-8ab9-586d57701adf
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: The digest's only 'User Correction' (turn 3) is an automated census-verifier prompt injected by the orchestrator, not human feedback. It is the same injected-automation-as-User-Correction mislabel as this entry. The injected payload here is the census prompt, which quotes an escalation notification, rather than a bare escalation notification, and the digest shows no tool errors, so the phase cannot be supported beyond unknown.
+  - date: '2026-09-25'
+    project: reify
+    session: 10a4d071-3a85-4203-9aa4-67e8a91f1778
+    origin_phase: unknown
+    manifested_phase: review
+    note: The orchestrator-injected review-adjudication prompt (turn 3, 'You are adjudicating whether each CURRENT review suggestion...') is not a human correction, but the digest lists it under 'User Corrections'. This is the same mislabeling of injected system content as a user correction.
+  - date: '2026-10-08'
+    project: reify
+    session: b15fe42d-d46f-4908-bc13-1993a32926c5
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: The digest's User Corrections section lists the turn-7 /team command invocation, which is the initial task prompt rather than a user correction. This is the same digest-mislabeling pattern as the injected-notification case.
+  - date: '2026-10-08'
+    project: reify
+    session: 057b4b75-b1ba-4857-ae86-67a20f74ac7a
+    origin_phase: unknown
+    manifested_phase: recon
+    note: 'The digest''s ''User Corrections'' section contains a ''Task ID: 7435 ... Block reason: Architect reported task unactionable'' block, which is an injected task-block notification rather than a user correction. This matches the mislabeling pattern in this entry. Origin phase is not supported by the digest, so it is unknown.'
+  - date: '2026-10-07'
+    project: reify
+    session: eca22d92-0d0b-43f6-ad58-94f745d27379
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: The only 'User Correction' (turn 63) is an injected 'New Escalation for Task 7423' notification (esc-7423-14, post_merge_verify), not a human correction. The digest mislabels it.
+  - date: '2026-10-14'
+    project: reify
+    session: b1685e84-65f6-4f95-ba07-f2f9bb49991c
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: 'Same class of digest mislabel: a non-user-authored item (a slash-command invocation, <command-message>escalation-watcher) is listed under User Corrections. The source differs from the escalation notification in the entry, so this is an analogous match rather than an identical one.'
+  - date: '2026-10-15'
+    project: reify
+    session: b0ff05e0-926c-4d8c-9cfd-a62716462615
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: Loose match. The digest's User Corrections section lists a /team command-message wrapper with delegated-task briefing args as a user correction, which is the same digest mislabeling of injected or non-correction content that this entry describes. The user did issue the command, so the label is debatable. Phases are not supportable from the digest.
+  - date: '2026-10-15'
+    project: reify
+    session: 74c4e83c-62e7-40ba-8dd1-067b0e4a654a
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: The digest files an injected escalation notification (Task 7642 re-escalation, esc-7642-13) under '## User Corrections' at turn 3, which mislabels a system-injected notification as a user correction.
+  - date: '2026-10-17'
+    project: reify
+    session: 6018dbe0-7f59-4246-86f7-124534cf92a9
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: The User Corrections section records the escalation notification (esc-7420-14, 'Steward re-escalated to human') as a user turn, which is the digest mislabel this entry describes.
 - id: entry-cand-20260813-11
   title: Agent assumes earlier &&-chained command executed despite the whole chain being rejected upfront by an eval syntax error
   severity: medium
@@ -9291,6 +9897,96 @@ entries:
     origin_phase: unknown
     manifested_phase: unknown
     note: Worktree cwd nested at worktrees/_lane-50 below expected repo root; 5 not_found errors consistent with repo-root-relative path resolution failures
+  - date: '2026-10-02'
+    project: reify
+    session: b79cde74-b54c-40c0-8ceb-e60ca59b0134
+    origin_phase: architect
+    manifested_phase: verify
+    note: Nested warm-lane worktree cwd (_lane-30) causes path resolution failure; sed exit 2 on relative path crates/reify-eval/tests/result_fallback_e2e.rs across 8 not_found signals. File exists at repo root, not under worktree subdirectory.
+  - date: '2026-10-02'
+    project: reify
+    session: 2960c205-b7b9-4bf0-8946-89b547094b7a
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: Nested warm-lane worktree session (_lane-41) with two 'not found' errors at turns 38 and 305 aligns with pattern of repeated path resolution failures when worktree CWD is below expected repo root
+  - date: '2026-10-03'
+    project: reify
+    session: ab3892ae-13e7-4a04-9773-84ea50775386
+    origin_phase: architect
+    manifested_phase: ops
+    note: Four not-found signals at turns 40,85,206,213 in warm-lanes worktree _lane-32, consistent with repeated path resolution failures due to worktree nesting below expected repo root
+  - date: '2026-10-04'
+    project: reify
+    session: 5435434a-54e0-47ba-b07e-5b1936d9a835
+    origin_phase: architect
+    manifested_phase: verify
+    note: Nested warm-lane worktree cwd (/home/leo/src/warm-lanes/worktrees/_lane-9) paired with 7 sequential 'does not exist' errors across turns 38, 62, 72, 137, 145, 221, 310 matches the pattern of repeated repo-root-relative path guesses failing against the actual nested directory structure
+  - date: '2026-10-04'
+    project: reify
+    session: a9e21ee7-a075-4666-94bb-fa97068ec50c
+    origin_phase: unknown
+    manifested_phase: implement
+    note: 5 'does not exist'/'no such file or directory' errors distributed across multiple turns (36, 263, 427, 563, 677) in warm-lanes worktree _lane-22; pattern consistent with repeated repo-root-relative path guesses during implementation
+  - date: '2026-10-04'
+    project: reify
+    session: de6f047c-b535-43b0-9b63-66a6df913b3b
+    origin_phase: unknown
+    manifested_phase: verify
+    note: Interactive agent in warm-lane nested worktree cwd (/worktrees/_lane-0) attempting relative-path access to crates/reify-cli/tests/*; repeated not-found errors align with repo-root-nested cwd path resolution issue
+  - date: '2026-10-04'
+    project: reify
+    session: 6f94701c-d01a-4c1d-9f77-6dcbd76c49aa
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: Nested warm-lane worktree cwd (_lane-27) with two not_found signals consistent with repo-root-relative path guesses
+  - date: '2026-10-05'
+    project: reify
+    session: ed89dca0-3d56-437b-b014-cd11399cc450
+    origin_phase: architect
+    manifested_phase: implement
+    note: Six not_found signals in warm-lane worktree context; cwd nested at worktrees/_lane-52 indicates repeated repo-root-relative path resolution failures during task execution
+  - date: '2026-10-05'
+    project: reify
+    session: 973f34ad-5494-4a67-8bb4-fdde24b1dcdf
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: Nine sequential 'does not exist' / 'no such file or directory' errors spanning turns 31–374 in warm-lanes worktree cwd (_lane-52) match pattern of repeated repo-root-relative path guesses failing due to nested worktree directory structure
+  - date: '2026-10-05'
+    project: reify
+    session: 58af20ca-bf80-479b-b34f-b40882447b18
+    origin_phase: decompose
+    manifested_phase: unknown
+    note: Nested warm-lane worktree cwd (/worktrees/_lane-49) with 4 repeated not-found errors (turns 32, 73, 182, 328) consistent with repo-root-relative path guess failures in nested structure
+  - date: '2026-10-06'
+    project: reify
+    session: 0de8249e-e872-49f2-8c80-f8560073f903
+    origin_phase: architect
+    manifested_phase: unknown
+    note: Session runs from nested warm-lane worktree cwd (_lane-9) and emits 3 repeated file-not-found errors at turns 44, 68, 129, matching the pattern of repo-root-relative path guesses failing when worktree is nested under /worktrees/
+  - date: '2026-10-10'
+    project: reify
+    session: 137cea8f-7de5-4b90-8e9f-31a6bb079ab7
+    origin_phase: unknown
+    manifested_phase: verify
+    note: After `cd crates/reify-audit`, a later command used repo-relative paths (`crates/reify-audit/tests/...`, `crates/reify-audit/crates/reify-audit/`), which failed with 'did not match any files' and 'No such file or directory' (turn 689). This is a partial match to the nested-cwd path-guessing pattern. The digest does not show the origin phase, so it is set to unknown.
+  - date: '2026-10-12'
+    project: reify
+    session: 0c3c088c-8705-4cc7-adec-e22ce34973fb
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: Weak match. Session cwd is a nested warm-lane worktree (worktrees/_lane-3), and there are five not_found signals with 'no such file or directory' / 'does not exist' results. The digest does not show the attempted paths, so repeated repo-root-relative guessing is plausible but not confirmed. Phases are unknown because no phase-specific evidence is present.
+  - date: '2026-10-14'
+    project: reify
+    session: e0f10957-5ade-487b-acb0-eeea8a38a067
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: The session cwd is nested under worktrees/_lane-0, and the agent probed a guessed repo-relative source path (crates/reify-eval/src/sub_dep_order.rs) that does not exist. The digest records 8 not-found results, which fits repeated path guesses that 404. The digest does not show the assumed repo root explicitly, so this match is tentative.
+  - date: '2026-10-16'
+    project: reify
+    session: 15bdeecc-5e6a-45ba-b02b-0687fafc43cd
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: Weak match. The session runs in a warm-lane worktree (cwd .../worktrees/_lane-1), and the agent probed repo-root-relative paths (scripts/lib_event_log.sh, tests/infra/verify_events.py) that do not exist, producing repeated not-found and exit-2 errors. The digest does not show the cause directly, so this is a partial match.
 - id: entry-cand-20260909-14
   title: Agent invokes hallucinated 'read_file' tool with generic-agent param names instead of the harness's actual Read tool
   severity: medium
@@ -9330,6 +10026,12 @@ entries:
     origin_phase: unknown
     manifested_phase: prd
     evidence_quote: 'mcp__fused-memory__add_memory({"agent_id": "claude-interactive-prd-5429-residuals", "category": "observations_and_summaries", "content": "Session 2026-08-20 (enum-shadow-coherence PRD authoring): the #5429 \"local enum shadows pre...) -> The operation timed out.'
+  - date: '2026-10-05'
+    project: reify
+    session: 678e9e7c-2559-4716-98b4-a1dfd78d762f
+    origin_phase: unknown
+    manifested_phase: ops
+    note: fused-memory add_memory call timed out (turn 535, 'The operation timed out.'); the digest shows no diagnostic detail or retry evidence beyond the timeout itself.
 - id: entry-cand-20260918-15
   title: git boolean-predicate exit code chained via && misread as tool_error
   severity: medium
@@ -9349,6 +10051,18 @@ entries:
     origin_phase: merge
     manifested_phase: merge
     note: git merge-base --is-ancestor main HEAD legitimately returns 1 to report branch diverged; when chained as final && stage in diagnostic one-liner, that meaningful 1 becomes the whole Bash tool call's exit code, logged as tool_error despite all diagnostics succeeding
+  - date: '2026-10-14'
+    project: reify
+    session: d952ac38-37f3-4990-b515-aaa07c6682b2
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: Turn 71 chains a shell pipeline whose step exits 1 with diff-style output (a difference-found result, not a failure). The digest logs it as tool_error. The entry is git-specific and this step is diff, so the match is partial.
+  - date: '2026-10-15'
+    project: reify
+    session: d01ac9b7-3a44-4c21-859c-13b49e866c56
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: Turn 23 chains `git merge-base --is-ancestor e4322607e0 main && echo ON_MAIN`. The predicate exits 1 (not an ancestor), and the digest records it as a tool_error with exit code 1. This matches the codebook entry's boolean-predicate-exit-code-via-&& misreading. The digest does not show whether the agent misread it, so phases are unknown.
 - id: entry-cand-20260916-19
   title: get_memories_by_metadata re-issued identically 3x on the same topic filter instead of adapting retrieval strategy
   severity: medium
@@ -9362,6 +10076,12 @@ entries:
     origin_phase: recon
     manifested_phase: recon
     evidence_quote: 'mcp__fused-memory__get_memories_by_metadata x3: {"filters": {"topic": "harness-kloc-cap-split-remedy"}, "project_id": "reify"}'
+  - date: '2026-10-10'
+    project: reify
+    session: 0036b8db-1e99-4fda-aba7-f87a596f998a
+    origin_phase: unknown
+    manifested_phase: ops
+    note: 'Same identical argument set re-issued repeatedly without adapting: mcp__escalation__get_pending_escalations x21 with {compact: true, level: 2}, plus merge_status x5 and get_statuses x3 with identical args.'
 - id: entry-cand-20260916-20
   title: Consolidation procedure has no built-in rule for pending-task-widen-vs-file-new or peer re-staleness-check, forcing mid-task user disambiguation
   severity: medium
@@ -9388,6 +10108,24 @@ entries:
     origin_phase: unknown
     manifested_phase: implement
     evidence_quote: 'Bash({"command": "which gmsh 2>/dev/null; ls /opt/reify-deps/bin/gmsh 2>/dev/null; find /opt/reify-deps -maxdepth 3 -name \"gmsh\" -type f 2>/dev/null | head -5; echo \"---python module?---\"; ls -d /opt/r...) -> [exit 2] Exit code 2\n/opt/reify-deps/bin/gmsh\n/opt/reify-deps/bin/gmsh\n---python module?---\n/opt/reify-deps/lib/gmsh-4.15.2.dist-info'
+  - date: '2026-09-25'
+    project: reify
+    session: 736c9bd3-e23c-43fe-885b-6357a9725445
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: A for-loop over .ri files printed auto_count=0 for each file, yet the Bash call exited 1. The exit status comes from grep -c returning 1 on zero matches, not from a real failure. Turns 127 and 136 then probe rc separately.
+  - date: '2026-10-04'
+    project: reify
+    session: ec5077fb-2d01-4cd0-a78e-4ac101f39339
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: Diagnostic command chain with ; separators reports exit code 1 from final git check-ignore subcommand, masking that earlier diagnostics (cat, python) succeeded
+  - date: '2026-10-04'
+    project: reify
+    session: 0a3c2225-030d-428a-abc4-0e465bd52eb9
+    origin_phase: verify
+    manifested_phase: verify
+    note: 'Turn 63: Chained command ''ls|grep|head; for d in...cat'' exits 1 from final cat subcommand, masking earlier successful grep/ls probe of reify-gui build artifacts'
 - id: entry-cand-20260826-33
   title: Reify .ri module declaration must exactly match file basename or eval rejects it
   severity: medium
@@ -9558,6 +10296,36 @@ entries:
     origin_phase: verify
     manifested_phase: verify
     evidence_quote: 'read_file({"max_lines": "260", "path": "crates/reify-lsp/src/server.rs"}) -> <tool_use_error>Error: No such tool available: read_file</tool_use_error>'
+  - date: '2026-10-02'
+    project: reify
+    session: 7029cc93-61db-43c9-87ba-0506bc0ba33c
+    origin_phase: verify
+    manifested_phase: verify
+    note: 'Turn 17: grep_search invocation matches hallucinated tool-name pattern alongside session''s git_log error'
+  - date: '2026-10-03'
+    project: reify
+    session: 8077e4f0-8bbd-4e66-b6f6-58ed343972c1
+    origin_phase: unknown
+    manifested_phase: verify
+    note: Agent invokes grep_search at turns 17, 19, 21 instead of Grep tool; matches explicitly-listed hallucinated tool name in entry
+  - date: '2026-10-04'
+    project: reify
+    session: 8b495cc1-9b2d-49cd-8013-d71bd5c6329d
+    origin_phase: unknown
+    manifested_phase: verify
+    note: Agent called grep_search at turn 19, which is hallucinated; harness provides only Read/Grep tools
+  - date: '2026-10-04'
+    project: reify
+    session: 58acb476-d48e-4c9a-930c-206dd5405c4f
+    origin_phase: unknown
+    manifested_phase: verify
+    note: Same pattern of non-existent tool name (grep_search) used instead of the actual Grep tool; the identical call recurred across multiple turns.
+  - date: '2026-10-08'
+    project: reify
+    session: 50231b7d-9144-4672-a543-69be5659c139
+    origin_phase: unknown
+    manifested_phase: verify
+    note: Agent called non-existent grep_search and git_log tools (turns 17, 19, 21) instead of the harness's Read/Grep tools.
 - id: entry-cand-20260812-11
   title: fused-memory resolve_ticket times out repeatedly, retried with varying ticket IDs instead of diagnosing a systemic failure
   severity: medium
@@ -9577,6 +10345,24 @@ entries:
     origin_phase: unknown
     manifested_phase: verify
     note: 'fused-memory resolve_ticket calls timeout on different tickets (turns 385, 407: tkt_0RV2922SJFMA3K53ZGD1AAJQZQ and tkt_0RV2947Y4NYBHY45VT5BNTSNGK). Agent does not show diagnosis of systemic timeout; instead tries different ticket IDs.'
+  - date: '2026-09-30'
+    project: reify
+    session: e37ea66a-b2a1-4874-b3c6-81fdbcdb7085
+    origin_phase: unknown
+    manifested_phase: architect
+    note: A fused-memory MCP call (submit_task) timed out twice in a row at turns 336 and 342 with what appears to be an identical payload, instead of diagnosing a systemic failure. This is similar to the resolve_ticket repeated-timeout pattern, though the tool and the retry variation differ.
+  - date: '2026-10-05'
+    project: reify
+    session: 0a523b73-a458-45ef-8d57-23395ed767fe
+    origin_phase: unknown
+    manifested_phase: ops
+    note: fused-memory resolve_ticket timed out three times with different ticket IDs (turns 736, 1005, 1236), with no diagnosis of a systemic failure.
+  - date: '2026-10-10'
+    project: reify
+    session: 9f81e3db-19a9-4ede-ac48-0cdf013f3bb5
+    origin_phase: unknown
+    manifested_phase: ops
+    note: 'mcp__escalation__get_pending_escalations({"compact": true, "level": 2}) timed out and was re-issued 9 times with identical arguments. Timeouts at turns 204 and 496 are shown. The agent kept retrying instead of diagnosing a systemic MCP timeout or switching approach.'
 - id: entry-cand-20260906-9
   title: add_memory content payload leaks raw MCP tool-call envelope markup, triggering rejection
   severity: medium
@@ -9603,6 +10389,58 @@ entries:
     origin_phase: unknown
     manifested_phase: implement
     evidence_quote: pkill -f 'while pgrep -f .cargo-clippy clippy -p reify-compiler' 2>/dev/null; sleep 1; if pgrep -f 'while pgrep -f .cargo-clippy' >/dev/null 2>&1; then echo "STILL ALIVE"... -> [exit 144]
+- id: entry-cand-20260926-5
+  title: Guessed scripts subdirectory probed with stderr suppressed, so a nonexistent path surfaces only as a bare exit 2
+  severity: medium
+  status: open
+  origin_phase: unknown
+  manifested_phase: unknown
+  filing: filed
+  sightings:
+  - date: '2026-09-26'
+    project: reify
+    session: b91ec332-5092-4a0b-9a92-51cf37f2ae1d
+    origin_phase: unknown
+    manifested_phase: unknown
+    evidence_quote: ls scripts | head -200 | tr '\n' ' '; echo; ls scripts/legibility 2>/dev/null -> [exit 2] Exit code 2
+  - date: '2026-10-04'
+    project: reify
+    session: ec5077fb-2d01-4cd0-a78e-4ac101f39339
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: Agent probes data directory (ls data 2>/dev/null) and git check-ignore with stderr suppressed; path-not-found errors surface only as bare exit codes without diagnostic context
+  - date: '2026-10-04'
+    project: reify
+    session: 0a3c2225-030d-428a-abc4-0e465bd52eb9
+    origin_phase: verify
+    manifested_phase: verify
+    note: 'Turn 163: Probed path ''gui/src-tauri/sidecar/'' surfaces only as bare exit 2 with stderr redirected (2>&1), concealing ''No such file or directory'' diagnostic detail from the exit code alone'
+  - date: '2026-10-08'
+    project: reify
+    session: 16ffd98f-72bb-4eea-83df-3a4ede488aa0
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: A guessed docs path was probed with stderr suppressed, and the nonexistent path surfaced only as a bare exit 2 from ls after a 2>/dev/null grep.
+  - date: '2026-10-11'
+    project: reify
+    session: e5c9921f-2b19-4e4b-a7c8-8bf138052369
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: Digest cites a probe of a guessed path (`ls scripts/legibility 2>/dev/null`) with stderr discarded, so the nonexistent path surfaced only as a bare exit code. The Not Found signal (turn 32, 'does not exist') fits the same shape. The session does not establish which phase produced the probe, so both phases are unknown.
+- id: entry-cand-20261006-7
+  title: Extracting a shell function from a test file via sed and eval inside bash -c trips the dangerous-removal approval check
+  severity: low
+  severity_reason: The extraction is only a convenience for running one helper. The whole script still runs normally, so the cost is contained.
+  status: open
+  origin_phase: unknown
+  manifested_phase: unknown
+  sightings:
+  - date: '2026-10-06'
+    project: reify
+    session: bd4e18dd-55c4-449c-9512-c9259e93e13f
+    origin_phase: unknown
+    manifested_phase: unknown
+    evidence_quote: This command passes a shell -c script that runs rm, and Claude Code could not check the script for dangerous removals. Approve only if you have read the script.
 candidates:
 - id: cand-20260715-1
   title: Autonomous escalation watcher in non-DF project loses script context and env setup
@@ -25384,3 +26222,899 @@ candidates:
     origin_phase: implement
     manifested_phase: review
     evidence_quote: Every heterogeneous literal the new tests pin as 'stays_clean' fails to evaluate. The language cannot represent any such literal, and the removed compile-time rejection was a correct early diagnostic for a program that is guaranteed undef at runtime. The branch converts it into compile-time silence plus a runtime undef.
+- id: cand-20261002-1
+  title: Agent invokes hallucinated verification_complete tool absent from toolset
+  cause: Agent assumes a tool named 'verification_complete' exists to report task verification status and evidence, but tool is not available in the actual toolset
+  area: Tool interface contract / agent expectations
+  first_seen: '2026-10-02'
+  disposition: pending
+  sightings:
+  - date: '2026-10-02'
+    project: reify
+    session: 7f1d2e80-56f0-4c0d-87ee-6a7cd1720e5a
+    origin_phase: unknown
+    manifested_phase: verify
+    evidence_quote: '(turn 76) verification_complete({"confidence": "0.8", "evidence": [...]}) -> <tool_use_error>Error: No such tool available: verification_complete</tool_use_error>'
+- id: cand-20261002-2
+  title: add_plan_step called with task_id instead of step_id
+  cause: Agent assumes add_plan_step accepts task_id to specify parent task; unaware that step_id is the required primary identifier for the step object
+  area: plan-tools MCP integration / step planning
+  first_seen: '2026-10-02'
+  disposition: pending
+  sightings:
+  - date: '2026-10-02'
+    project: reify
+    session: 3836510d-c204-4ac9-b025-369e0f41aaf7
+    origin_phase: unknown
+    manifested_phase: implement
+    evidence_quote: 'mcp__plan-tools__add_plan_step({''description'': ''Replace assert_has_code call sites with assert_error_code_present and delete local fns'', ''step_type'': ''impl'', ''task_id'': ''7205''}) -> step_id Missing required argument [type=missing_argument], task_id Unexpected keyword argument [type=unexpected_keyword_argument]'
+- id: cand-20261002-3
+  title: add_plan_step called with task-parameter names instead of step-specific schema
+  cause: Agent uses task-level parameters (task_id, type) instead of step-level parameters (step_id, step_type); conflation of task vs. step API schemas or outdated/incorrect tool schema knowledge
+  area: plan-tools API
+  first_seen: '2026-10-02'
+  disposition: pending
+  sightings:
+  - date: '2026-10-02'
+    project: reify
+    session: bc08f1a5-471e-4305-b2e6-368332c19d91
+    origin_phase: unknown
+    manifested_phase: implement
+    evidence_quote: 'add_plan_step({...,''task_id'': ''6288'',''type'': ''impl''}) -> Missing required arguments: step_id, step_type; Unexpected keyword arguments: task_id, type'
+- id: cand-20261003-1
+  title: Incomplete blast-radius census in plan scope missed downstream test fixtures with strict type requirements
+  cause: Plan's scope enumerated only reify-compiler, reify-eval, reify-cli, reify-lsp; omitted reify-test-support. Test fixtures in that crate use strict `diagnostics.is_empty()` assertions. When type system changes (atan2 return type) were applied, missed fixtures became invalid, discovered only at verify time, forcing scope extension and fixture correction outside the original plan
+  area: planning/verification
+  first_seen: '2026-10-03'
+  disposition: pending
+  sightings:
+  - date: '2026-10-03'
+    project: reify
+    session: 212da129-baad-4cfa-9340-265b59c8d542
+    origin_phase: prd
+    manifested_phase: verify
+    evidence_quote: The plan's blast-radius census covered only reify-compiler, reify-eval, reify-cli and reify-lsp. It missed reify-test-support, whose hash-agreement tests use strict `diagnostics.is_empty()`. ... The fixture file is outside the plan's `files` list, so I am requesting scope before editing.
+- id: cand-20261003-2
+  title: git grep with pathspec negation syntax produces exit code 2 in warm-lane worktree
+  cause: Exit code 2 (path/IO error) from git grep command using ':!' negative pathspec patterns in a piped grep -v filter; the pathspec negation syntax, warm-lane context, or pipe signal loss may not be properly handled
+  area: warm-lane worktree; git grep pathspec syntax; piped command error masking
+  first_seen: '2026-10-03'
+  disposition: pending
+  sightings:
+  - date: '2026-10-03'
+    project: reify
+    session: 32ba9aa5-d59e-483e-bac0-9cab8e93dd6e
+    origin_phase: implement
+    manifested_phase: implement
+    evidence_quote: '(turn 125) Bash({"command": "git grep -n \"return_type\" -- tree-sitter-reify '':!tree-sitter-reify/src/parser.c'' '':!tree-sitter-reify/src/grammar.json'' '':!tree-sitter-reify/src/node-types.json'' | grep -v \"^tree-sitt...) -> [exit 2]'
+- id: cand-20261003-3
+  title: Verify phase searches for test-suite artifacts in wrong path on nextest-absent runs
+  cause: Test verification infrastructure assumes test artifact layout that differs when nextest is absent; verification probe attempts wrong subdirectories repeatedly before adapting
+  area: verify
+  first_seen: '2026-10-03'
+  disposition: pending
+  sightings:
+  - date: '2026-10-03'
+    project: reify
+    session: 1d732fac-9eaa-4ff6-af73-89f627f8b0d1
+    origin_phase: verify
+    manifested_phase: verify
+    evidence_quote: 'test_verify_nextest_absent_suites.sh FAILED; signal_counts: not_found=3 (turns 22, 32, 53)'
+- id: cand-20261003-4
+  title: Nextest-absent test suite assertion fails due to exit-code or test-count mismatch
+  cause: Test harness or verification runner doesn't correctly interpret test results when nextest is absent; test assertion expects specific exit code and passed-test count that don't match actual behavior
+  area: verify
+  first_seen: '2026-10-03'
+  disposition: pending
+  sightings:
+  - date: '2026-10-03'
+    project: reify
+    session: 1d732fac-9eaa-4ff6-af73-89f627f8b0d1
+    origin_phase: verify
+    manifested_phase: verify
+    evidence_quote: 'FAIL: S7: test_occt_gated_scope.sh reaches test_summary with rc=0 / 0 FAIL / >= 60 passed on a nextest-less host'
+- id: cand-20261003-5
+  title: add_plan_step called with wrong parameter names across retries
+  cause: Agent's knowledge of add_plan_step MCP tool signature is incomplete or incorrect; successive calls use wrong parameter names (task_id vs step_id in turn 58; type vs step_type in turn 64), causing Pydantic validation failures
+  area: MCP tool invocation, parameter naming
+  first_seen: '2026-10-03'
+  disposition: pending
+  sightings:
+  - date: '2026-10-03'
+    project: reify
+    session: b5ba728c-ef2a-4674-97b3-fddbb01e705c
+    origin_phase: unknown
+    manifested_phase: implement
+    evidence_quote: 'Turn 58: task_id Unexpected keyword argument, step_id Missing required argument. Turn 64: type Unexpected keyword argument, step_type Missing required argument.'
+- id: cand-20261003-6
+  title: add_plan_step called with incorrect parameter names
+  cause: Agent invokes mcp__plan-tools__add_plan_step with parameter names (task_id, type) that don't match the tool's actual Pydantic schema; tool requires step_type and rejects task_id and type as unexpected keyword arguments
+  area: tool-call parameter validation (plan-tools MCP)
+  first_seen: '2026-10-03'
+  disposition: pending
+  sightings:
+  - date: '2026-10-03'
+    project: reify
+    session: 0389e94e-4135-45cd-b9f1-5b77a2081f65
+    origin_phase: implement
+    manifested_phase: implement
+    evidence_quote: 'Pydantic validation errors on add_plan_step: ''step_type Missing required argument'', ''task_id Unexpected keyword argument [type=unexpected_keyword_argument, input_value=''7306'']'', ''type Unexpected keyword argument [type=unexpected_keyword_argument, input_value=''impl'']'''
+- id: cand-20261003-7
+  title: Hand-written coverage list incomplete; transitive code dependency missing from persistent-cache-key guard
+  cause: PERSISTED_TARGET_SOURCES is a hand-written list controlling which source files contribute to the persistent-cache key. When a file is reachable in the call graph but omitted from the list, modifications to that file don't affect the cache key, serving stale results and violating the enforced PRD invariant that all value-affecting changes must contribute to the key.
+  area: persistent-cache / PRD-invariant-enforcement
+  first_seen: '2026-10-03'
+  disposition: pending
+  sightings:
+  - date: '2026-10-03'
+    project: reify
+    session: dc51b38f-40c4-45c0-8e53-8dc7eb620125
+    origin_phase: implement
+    manifested_phase: review
+    evidence_quote: Guard G1 misses it because PERSISTED_TARGET_SOURCES is a hand-written list and does not name this file [src/selector_vocabulary_v2.rs]... Changing one of those predicates changes the persisted ElasticResult. ENGINE_VERSION_HASH stays the same, so the persistent cache serves the stale result. That breaks the PRD invariant this task exists to enforce.
+- id: cand-20260929-1
+  title: Python edit helper asserts unique match but target string occurs twice in source file
+  cause: Ad-hoc replace script assumes the 'old' snippet (a bare `use std::collections::BTreeSet;` line) is unique in the file, but it appears twice, so the exact-count assertion fails and the edit aborts.
+  area: implement
+  first_seen: '2026-09-29'
+  disposition: rejected
+  sightings:
+  - date: '2026-09-29'
+    project: reify
+    session: 166d378d-daf5-4b1d-94f0-13d32717358e
+    origin_phase: implement
+    manifested_phase: implement
+    evidence_quote: 'AssertionError: (2, ''use std::collections::BTreeSet;\n'')'
+- id: cand-20260929-2
+  title: Tool call emitted with empty JSON value for a field, producing unparseable input
+  cause: 'The agent generated an mcp__escalation__get_task_escalations call with an empty value for the `status` key (`"status": ,`), which is invalid JSON. The harness rejected it as unparseable before any validation of field semantics. This looks like a generation slip when the agent had no concrete status filter to supply, rather than omitting the optional field.'
+  area: escalation MCP tool-call construction
+  first_seen: '2026-09-29'
+  disposition: rejected
+  sightings:
+  - date: '2026-09-29'
+    project: reify
+    session: 14d3158a-8952-4e8f-a33e-e30a2d8afd72
+    origin_phase: ops
+    manifested_phase: ops
+    evidence_quote: 'mcp__escalation__get_task_escalations was called with input that could not be parsed as JSON. You sent (first 60 of 60 bytes): {"task_id": "7947", "level": 2, "status": , "compact": true}'
+- id: cand-20260925-14
+  title: Repeated find invocations over the target tree blocked by an approval requirement and retried with only cosmetic variation
+  cause: In a non-interactive census-verifier role, Bash `find` commands over /home/leo/src/reify return 'This command requires approval' (and a compound find reports 'multiple operations ... require approval'). The agent re-issued near-identical finds with a narrowed path, a changed -iname pattern, a split compound command, and dangerouslyDisableSandbox, instead of switching to the Glob/Grep/Read tools that need no approval. The role has no guidance on which file-location tools are pre-approved.
+  area: census-verifier / Bash permission gating
+  first_seen: '2026-09-25'
+  disposition: rejected
+  sightings:
+  - date: '2026-09-25'
+    project: reify
+    session: 3412f81d-ded7-43a8-bccc-e7bc08f6f515
+    origin_phase: ops
+    manifested_phase: recon
+    evidence_quote: 'Bash({"command": "find /home/leo/src/reify -iname \"watcher-rearm*\" 2>/dev/null", "dangerouslyDisableSandbox": true, ...}) -> This command requires approval'
+- id: cand-20260929-3
+  title: git grep invoked with -A context flag placed after the pathspec separator, so git parses it as a revision
+  cause: The agent wrote `git grep -n 'pattern' -- <path> -A6`, putting the -A context option after the `--` pathspec separator (or after the pattern in a way git does not accept). Git therefore tries to resolve `-A6` as a revision and exits 128 with 'unable to resolve revision'. Options must precede `--`. The same mistake repeated across three chained git grep calls in one command, and the error is unlike the usual grep no-match exit 1, so it is easy to misread as a missing pattern.
+  area: tooling/shell-usage
+  first_seen: '2026-09-29'
+  disposition: rejected
+  sightings:
+  - date: '2026-09-29'
+    project: reify
+    session: 63b5bb4d-4963-427f-a7e3-a1c0cc2f2617
+    origin_phase: implement
+    manifested_phase: implement
+    evidence_quote: 'fatal: unable to resolve revision: -A6
+
+      fatal: unable to resolve revision: -A8
+
+      fatal: unable to resolve revision: -A5'
+- id: cand-20260926-5
+  title: Guessed scripts subdirectory probed with stderr suppressed, so a nonexistent path surfaces only as a bare exit 2
+  cause: The agent chained a directory listing with a guessed subdirectory (scripts/legibility) and redirected stderr to /dev/null. The path does not exist, so the call returned exit 2 with no error message. The failure showed up as a tool_error with no explanation, and the same kind of missing-path error recurred later in the session (not-found signals at turns 50 and 111).
+  area: tool-use / path discovery
+  first_seen: '2026-09-26'
+  disposition: promoted
+  sightings:
+  - date: '2026-09-26'
+    project: reify
+    session: b91ec332-5092-4a0b-9a92-51cf37f2ae1d
+    origin_phase: unknown
+    manifested_phase: unknown
+    evidence_quote: ls scripts | head -200 | tr '\n' ' '; echo; ls scripts/legibility 2>/dev/null -> [exit 2] Exit code 2
+  promoted_to: entry-cand-20260926-5
+- id: cand-20260926-6
+  title: Auth-probe subprocess of claude CLI fails with 'Not logged in' / 401 invalid OAuth token in isolated temp dir, repeated with a different token variable
+  cause: Agent builds a throwaway hook-probe directory and launches a nested `claude --print` with an OAuth token from an env var. First run has no login at all and the second gets a 401 invalid token. Credentials for a nested claude session in an ad-hoc cwd are not available or valid, and the probe's expected hook log is never produced, so the experiment cannot yield evidence.
+  area: tooling/auth
+  first_seen: '2026-09-26'
+  disposition: rejected
+  sightings:
+  - date: '2026-09-26'
+    project: reify
+    session: 20a561b6-9bd4-4b1d-ac31-66316aa1b348
+    origin_phase: unknown
+    manifested_phase: implement
+    evidence_quote: 'Failed to authenticate. API Error: 401 OAuth access token is invalid.'
+- id: cand-20260925-15
+  title: Permission-gated find/compound Bash commands retried with cosmetic variations instead of switching approach
+  cause: 'Bash commands were blocked with ''requires approval'' or ''contains multiple operations''. The agent reissued the same find for fdm_bracket.ri five times: relative path, combined -o, single, absolute path, and with dangerouslyDisableSandbox. Only syntax and scope changed, and none of the retries addressed the permission gate. A targeted Read/Glob/Grep, or splitting the command into approved single operations, was not tried.'
+  area: tool-permissions
+  first_seen: '2026-09-25'
+  disposition: rejected
+  sightings:
+  - date: '2026-09-25'
+    project: reify
+    session: 736c9bd3-e23c-43fe-885b-6357a9725445
+    origin_phase: unknown
+    manifested_phase: unknown
+    evidence_quote: find /home/leo/src/reify -iname "fdm_bracket.ri" 2>&1 -> This command requires approval
+- id: cand-20260929-4
+  title: 'Tool-call JSON emitted with an empty value for a field ("status": ,) fails parsing in escalation MCP call'
+  cause: The agent built a get_task_escalations call with an omitted/empty value for the optional 'status' argument, producing syntactically invalid JSON that the harness rejected with InputValidationError before any server-side validation. The agent should have dropped the optional key rather than leaving a dangling key with no value.
+  area: escalation-watcher tool-call construction
+  first_seen: '2026-09-29'
+  disposition: rejected
+  sightings:
+  - date: '2026-09-29'
+    project: reify
+    session: 7d6b49ac-3506-471f-8416-9ff700a0c534
+    origin_phase: ops
+    manifested_phase: ops
+    evidence_quote: 'mcp__escalation__get_task_escalations({"__unparsedToolInput": {"len": 60, "raw": "{\"task_id\": \"7948\", \"level\": 2, \"status\": , \"compact\": true}"}}) -> <tool_use_error>InputValidationError: mcp__escalation__get_task_escalations was called with input that could not be parsed as JSON.'
+- id: cand-20261004-1
+  title: Agent calls hallucinated glob_search tool
+  cause: Agent model assumes glob_search exists as a pattern-matching tool, conflating generic agent tool names with harness-specific availability
+  area: tool invocation / harness API surface
+  first_seen: '2026-10-04'
+  disposition: pending
+  sightings:
+  - date: '2026-10-04'
+    project: reify
+    session: 8b495cc1-9b2d-49cd-8013-d71bd5c6329d
+    origin_phase: unknown
+    manifested_phase: verify
+    evidence_quote: '(turn 17) glob_search({"pattern": "crates/reify-audit/**/pprdstatus*"}) -> Error: No such tool available: glob_search'
+- id: cand-20261004-2
+  title: Agent calls hallucinated verification_complete tool
+  cause: Agent assumes a built-in task-completion signaling tool exists to conclude verification, inventing a non-existent harness method
+  area: task completion workflow / harness API surface
+  first_seen: '2026-10-04'
+  disposition: pending
+  sightings:
+  - date: '2026-10-04'
+    project: reify
+    session: 8b495cc1-9b2d-49cd-8013-d71bd5c6329d
+    origin_phase: unknown
+    manifested_phase: verify
+    evidence_quote: '(turn 104) verification_complete({"confidence": "0.85", "evidence": "[...]"}) -> Error: No such tool available: verification_complete'
+- id: cand-20261004-3
+  title: Plan scope excludes documentation files containing cited diagnostic examples
+  cause: Task modifies error messages or diagnostics; plan scope omits documentation/example files that transcribe those diagnostics. Verify-phase tests checking that doc comments match actual behavior then fail, revealing an undocumented scope dependency.
+  area: planning
+  first_seen: '2026-10-04'
+  disposition: pending
+  sightings:
+  - date: '2026-10-04'
+    project: reify
+    session: 6efbf625-97dd-4250-b24b-3da915c6d40e
+    origin_phase: decompose
+    manifested_phase: verify
+    evidence_quote: 'Both files [examples/best_practices/angle_crossings.ri and crates/reify-mcp/src/tools/chunks/units.md] are outside the plan''s 3 assigned files. Test harness_doc_chunks::transcribed_parse_diagnostic_matches_the_real_parser panicked: CANONICAL COPY transcribes old diagnostic, but parser produced new diagnostic with remedy hint.'
+- id: cand-20261004-4
+  title: Tail command with numeric flag in invalid position during multi-file diagnostic output inspection
+  cause: Agent constructs a tail command with line-count option (-5) that triggers 'option used in invalid context' error, indicating malformed syntax or shell context where the flag cannot be parsed
+  area: shell-command-construction
+  first_seen: '2026-10-04'
+  disposition: pending
+  sightings:
+  - date: '2026-10-04'
+    project: reify
+    session: 83c4753b-9298-46df-8872-b06f4547ed7a
+    origin_phase: unknown
+    manifested_phase: verify
+    evidence_quote: 'tail: option used in invalid context -- 5'
+- id: cand-20261005-1
+  title: Temp directory parent invalidated by git diagnostic, cascading pwd errors
+  cause: Git configuration test sequence in temp directory modifies or deletes parent, making getcwd() fail and cascade to downstream path lookups
+  area: warm-lane git operations / temp file handling
+  first_seen: '2026-10-05'
+  disposition: pending
+  sightings:
+  - date: '2026-10-05'
+    project: reify
+    session: ed89dca0-3d56-437b-b014-cd11399cc450
+    origin_phase: architect
+    manifested_phase: implement
+    evidence_quote: 'pwd: error retrieving current directory: getcwd: cannot access parent directories: No such file or directory'
+- id: cand-20261005-2
+  title: Declared test deliverables replaced by prior work, blocking task attribution
+  cause: Task declares specific test function names as deliverables; those exact function names were removed and replaced in a prior commit; architect-phase effect verification fails because declared signatures no longer exist in their original form, triggering effect_absent block
+  area: task-architecture/verification
+  first_seen: '2026-10-05'
+  disposition: pending
+  sightings:
+  - date: '2026-10-05'
+    project: reify
+    session: a6dfcab9-e306-4d65-8168-6e4a2148719d
+    origin_phase: unknown
+    manifested_phase: architect
+    evidence_quote: The two tests the task named (unrecognized_unit_operator_drops_the_member_loudly / _names_the_offending_slice) no longer exist anywhere. They were replaced by comment_between_unit_operands_lowers_like_its_comment_free_twin [...] Architect reported task already done at d91a16d12c but the claim could not be attributed to this task (effect_absent)
+- id: cand-20261005-3
+  title: Documentation incorrectly describes field type constraint, contradicting actual code behavior
+  cause: Documentation assertion about type shape differs from actual runtime type constraints and validation; prose description not synchronized with code implementation
+  area: code-documentation-synchronization
+  first_seen: '2026-10-05'
+  disposition: pending
+  sightings:
+  - date: '2026-10-05'
+    project: reify
+    session: 7a0745a2-ea4e-435c-817f-1e8362ddbb85
+    origin_phase: unknown
+    manifested_phase: review
+    evidence_quote: 'The `Axis` note, §13: it says the axis is ''a plain `Vector3<Length>`-shaped value today''. That''s wrong: `Revolute.axis` is dimensionless, and `revolute()` rejects an axis with units.'
+- id: cand-20261005-4
+  title: Test fixture with RUN_RUST coupling not registered in verify.sh's _RUST_COUPLED_RI_FIXTURES
+  cause: A test fixture file (.ri) with RUN_RUST=1 runtime coupling requirement was added to the test suite without registering the fixture name in verify.sh's _RUST_COUPLED_RI_FIXTURES allowlist, causing PG-DRIFT detection failure
+  area: Test fixture configuration registration / verification script consistency
+  first_seen: '2026-10-05'
+  disposition: pending
+  sightings:
+  - date: '2026-10-05'
+    project: reify
+    session: 84e919be-b5e8-4f98-88bc-31f0574e6d53
+    origin_phase: decompose
+    manifested_phase: verify
+    evidence_quote: 'FAIL: PG-DRIFT: tests/prd-gate/fixtures/getar_wildcard_headed_arg_silent.ri -> RUN_RUST=1 (read by a compiled test target; must be in verify.sh''s _RUST_COUPLED_RI_FIXTURES)'
+- id: cand-20261006-1
+  title: Workflow script generation produces JavaScript syntax error
+  cause: Agent generates workflow JavaScript code with invalid syntax; Unexpected token at position 486:31 suggests possible TypeScript syntax contamination, unescaped special characters in template interpolation, or embedded MCP markup leaking into the generated code.
+  area: workflow/scripting
+  first_seen: '2026-10-06'
+  disposition: pending
+  sightings:
+  - date: '2026-10-06'
+    project: reify
+    session: 9cd84bd6-606e-48f4-b54f-c40908696926
+    origin_phase: unknown
+    manifested_phase: unknown
+    evidence_quote: 'Turn 282: Invalid workflow script: Script parse error: Unexpected token (486:31)'
+- id: cand-20261006-2
+  title: fused-memory submit_task times out on large task description
+  cause: Escalation follow-up task description (3560+ line file mentioned) exceeds fused-memory submit_task timeout or payload processing limits
+  area: fused-memory MCP integration, escalation task submission
+  first_seen: '2026-10-06'
+  disposition: pending
+  sightings:
+  - date: '2026-10-06'
+    project: reify
+    session: b0b79c12-f42d-41f3-8ff9-4daf20fd7d82
+    origin_phase: unknown
+    manifested_phase: implement
+    evidence_quote: '(turn 355) mcp__fused-memory__submit_task({"description": "Follow-up from task 7356 (escalation_id agent-followup-7356). tests/infra/test_run_all.sh is ~3,560 lines (33 `Test N` blocks), well past the 2,000-line alarm of code-quality heuristi..."}) -> The operation timed out.'
+- id: cand-20261006-3
+  title: Command substitution in rm -rf bypasses path-validation guard
+  cause: Agent constructs destructive rm command with $(cat ...) command substitution as path argument, deferring path validation until runtime and preventing pre-execution verification
+  area: bash tool parameter safety, command substitution validation
+  first_seen: '2026-10-06'
+  disposition: pending
+  sightings:
+  - date: '2026-10-06'
+    project: reify
+    session: b0b79c12-f42d-41f3-8ff9-4daf20fd7d82
+    origin_phase: implement
+    manifested_phase: implement
+    evidence_quote: '(turn 542) Bash({"command": "rm -rf \"$(cat /tmp/7356-priv1.path)\" \"$(cat /tmp/7356-priv2.path)\" && git show..."}) -> Dangerous rm operation detected: the target is the output of a command substitution (`$(...)` or backticks) and cannot be checked before the command runs.'
+- id: cand-20261006-4
+  title: Single-line pattern assumption misses tool-induced multiline structures; review assertion compounds false negatives
+  cause: Search/grep pattern assumes structural invariant (attributes fit single lines); formatting tool (rustfmt) violates invariant by breaking long attributes across lines; line-by-line pattern-based search produces false negatives; review assertion then incorrectly claims non-existence based on these false negatives, persisting until self-correction
+  area: Pattern matching, structural assumptions, search logic
+  first_seen: '2026-10-06'
+  disposition: pending
+  sightings:
+  - date: '2026-10-06'
+    project: reify
+    session: 93eb8792-8374-484c-822b-df5dbfe43310
+    origin_phase: architect
+    manifested_phase: review
+    evidence_quote: 'The reviewer said no split attribute exists in the tree. That''s wrong: when an attribute is too long, rustfmt breaks it across lines, and the old line-by-line patterns missed four real files'
+- id: cand-20261006-5
+  title: Plan-tools MCP parameter name mismatch
+  cause: Agent calls plan-tools MCP with incorrect parameter names—add_plan_step uses {task_id, type} instead of expected {step_id, step_type}; mark_step_committed uses {commit_sha} instead of expected {sha}—indicating schema unavailability or outdated parameter mapping
+  area: plan-tools MCP interface
+  first_seen: '2026-10-06'
+  disposition: pending
+  sightings:
+  - date: '2026-10-06'
+    project: reify
+    session: d5d5ddb2-9caa-426f-8746-df95ba3a8762
+    origin_phase: unknown
+    manifested_phase: implement
+    evidence_quote: 'add_plan_step(task_id=''7103'', type=''impl'', description=''...'') validation errors: step_id missing, step_type missing, task_id unexpected, type unexpected; mark_step_committed(commit_sha=''b663fa28e0'', step_id=''step-1'') validation errors: sha missing, commit_sha unexpected'
+- id: cand-20261006-6
+  title: Escalation MCP get_escalation call times out without retry context
+  cause: Escalation MCP server unavailable, timeout, or systematic connectivity failure preventing escalation lookups for valid IDs
+  area: escalation MCP, cross-project coordination, warm-lane escalation watcher
+  first_seen: '2026-10-06'
+  disposition: pending
+  sightings:
+  - date: '2026-10-06'
+    project: reify
+    session: c2017700-6698-4a3c-a9ed-348ff2fe709a
+    origin_phase: unknown
+    manifested_phase: unknown
+    evidence_quote: 'mcp__escalation__get_escalation({"escalation_id": "esc-6499-9"}) -> The operation timed out.'
+- id: cand-20261007-1
+  title: Edit issued with identical old_string and new_string, rejected as a no-op
+  cause: The agent issued an Edit whose replacement text was identical to the text it was replacing, so the tool rejected it with 'No changes to make'. The digest shows no evidence of why the agent chose a no-op replacement.
+  area: tooling
+  first_seen: '2026-10-07'
+  disposition: pending
+  sightings:
+  - date: '2026-10-07'
+    project: reify
+    session: 5675197b-17d6-4866-8eb9-726b5291cf0d
+    origin_phase: unknown
+    manifested_phase: unknown
+    evidence_quote: '(turn 470) Edit({"file_path": "/home/leo/src/warm-lanes/worktrees/_lane-11/tests/infra/test_warm_lane_pool.sh", "new_string": "# fd 205: 200 and 201 are already in use elsewhere in this file.", "old_string": "# fd 20...) -> <tool_use_error>No changes to make: old_string and new_string are exactly the same.</tool_use_error>'
+- id: cand-20261007-2
+  title: add_plan_step called with parameter names that don't match its schema (task_id/type passed; step_type required)
+  cause: The agent invoked the mcp__plan-tools__add_plan_step tool with keyword arguments task_id and type, which the schema rejects as unexpected, while omitting the required step_type argument. The tool's actual parameter names were not checked before the call.
+  area: mcp-tool-schema
+  first_seen: '2026-10-07'
+  disposition: pending
+  sightings:
+  - date: '2026-10-07'
+    project: reify
+    session: a2cf36cb-3064-4097-89da-e02d04a7bcb5
+    origin_phase: unknown
+    manifested_phase: unknown
+    evidence_quote: 'mcp__plan-tools__add_plan_step({"description": "Route auto-match and LocatedPort warning through own_port_name; add tests", "step_id": "impl-1", "task_id": "7387", "type": "impl"}) -> 3 validation errors for call[add_plan_step] step_type Missing required argument ... task_id Unexpected keyword argument ... type Unexpected keyword argument'
+- id: cand-20261007-3
+  title: MCP add_plan_step called with task_id where the schema requires step_id, causing a pydantic validation failure
+  cause: The agent invoked mcp__plan-tools__add_plan_step with a task_id argument and no step_id. The tool's schema requires step_id and does not accept task_id, so the call was rejected with missing_argument and unexpected_keyword_argument errors. The agent did not reconcile its argument names with the tool's actual parameter schema.
+  area: tool-invocation / MCP argument schema
+  first_seen: '2026-10-07'
+  disposition: pending
+  sightings:
+  - date: '2026-10-07'
+    project: reify
+    session: 6861e589-65a8-4258-9c8e-71e3519f592b
+    origin_phase: unknown
+    manifested_phase: unknown
+    evidence_quote: '(turn 86) mcp__plan-tools__add_plan_step({"description": "Re-point the polygon docstring cite in geometry_length_args_units_e2e.rs at the fence gate", "step_type": "impl", "task_id": "7056"}) -> 2 validation errors for call[add_plan_step] step_id Missing required argument [type=missing_argument ... task_id Unexpected keyword argument [type=unexpected_keyword_argument'
+- id: cand-20261007-4
+  title: Task scope assumes a dependency delivers a capability that its merged deliverables do not contain
+  cause: A task's description states that a completed dependency creates a specific detector, seam, and marker that the task will widen and reuse. The dependency's merged diff touches only unrelated files, and the capability was never present in any ref. The architect discovers the false premise only after the task is picked up, so the RED-test plan rests on a nonexistent prerequisite.
+  area: dependency-premise-verification
+  first_seen: '2026-10-07'
+  disposition: pending
+  sightings:
+  - date: '2026-10-07'
+    project: reify
+    session: 3d8c92c6-ec4d-4d11-9c89-eb31720c3851
+    origin_phase: unknown
+    manifested_phase: architect
+    evidence_quote: 'Task #7121 says its dependency #6526 ''creates the detector, the `is_in_scope` seam, and the `srccite:allow` marker this task widens and reuses''. ... #6526 is status=done ... That merge changes 20 files, all examples/*.ri (+79/-65), and nothing under crates/reify-audit/.'
+- id: cand-20261008-1
+  title: Info-level escalation park does not hold against the scheduler's stranded-task sweep
+  cause: Parking an info-level escalation is assumed to keep its task out of the scheduler's stranded-task sweep. The sweep re-pends the task regardless, so the park silently fails to hold and the task can dispatch or be re-pended unexpectedly until it is set to deferred.
+  area: escalation / orchestrator scheduling
+  first_seen: '2026-10-08'
+  disposition: pending
+  sightings:
+  - date: '2026-10-08'
+    project: reify
+    session: 16ffd98f-72bb-4eea-83df-3a4ede488aa0
+    origin_phase: ops
+    manifested_phase: ops
+    evidence_quote: Parking an info-level escalation doesn't stop the scheduler's stranded-task sweep, which re-pended it. That's a known trap with a memory entry, and I missed it.
+- id: cand-20261008-2
+  title: Generated ESM script contains top-level return, failing node syntax check
+  cause: A script generated for PRD decomposition verification places a bare `return` at module top level in a .mjs file. Node's ES module parser rejects this with 'Illegal return statement', so the script must be rewritten before it can run.
+  area: prd-decompose tooling / generated workflow scripts
+  first_seen: '2026-10-08'
+  disposition: pending
+  sightings:
+  - date: '2026-10-08'
+    project: reify
+    session: b15fe42d-d46f-4908-bc13-1993a32926c5
+    origin_phase: decompose
+    manifested_phase: decompose
+    evidence_quote: '/tmp/claude-1000/-home-leo-src-reify/b15fe42d-d46f-4908-bc13-1993a32926c5/scratchpad/prd-decompose-verify-isol.mjs:718 return _wfResult; ^^^^^^ SyntaxError: Illegal return statement'
+- id: cand-20261008-3
+  title: Workflow launched with unfilled placeholder argument, discarding a full agent run
+  cause: A decompose workflow was launched with a placeholder argument still in place instead of the real value. The run consumed a full agent's token budget before the mistake was noticed and the run was discarded.
+  area: prd-decompose workflow launch / argument handling
+  first_seen: '2026-10-08'
+  disposition: pending
+  sightings:
+  - date: '2026-10-08'
+    project: reify
+    session: b15fe42d-d46f-4908-bc13-1993a32926c5
+    origin_phase: decompose
+    manifested_phase: decompose
+    evidence_quote: One D3 launch went out with a placeholder argument by my mistake. It ran a single agent (~69k tokens) and was discarded.
+- id: cand-20261009-1
+  title: Parser error from a grammar join misread as a deliberate language restriction and codified into a PRD scope limit
+  cause: A pre-existing parse error caused by an ambiguous grammar join (an annotation token after a value-ended member parsed as an ad-hoc port selector) was interpreted as a compile-time rejection rule for local-let discrete_set catalogs. The misreading was written into a PRD as a scope restriction and was not corrected until a later verification request.
+  area: grammar/parser diagnostics
+  first_seen: '2026-10-09'
+  disposition: pending
+  sightings:
+  - date: '2026-10-09'
+    project: reify
+    session: 6840317b-9da2-4841-8105-3e0b05135b98
+    origin_phase: unknown
+    manifested_phase: unknown
+    evidence_quote: That pre-#7094 error was misread on 2026-07-24 as "local-let discrete_set catalogs are compile-rejected" (docs/prds/v0_6/discrete-cost-minimisation.md §2.3, line ~81, and §9). The misreading became a scope restriction that Leo has now ruled lifted.
+- id: cand-20261009-2
+  title: Ruled numeric cadence bound assumes a timer governs alongside an ORed count trigger, so the timer never fires
+  cause: A task prescribed a configuration to meet a stated cadence bound without checking how the two trigger legs combine. The legs are ORed, so the count leg fires far more often and the timer never governs, leaving the stated bound unreachable and the configuration wrong for the next change.
+  area: orchestrator config / merge-verify shadow scheduling
+  first_seen: '2026-10-09'
+  disposition: pending
+  sightings:
+  - date: '2026-10-09'
+    project: reify
+    session: 2f946eda-216c-4e92-aa53-e25cd2b3b539
+    origin_phase: unknown
+    manifested_phase: implement
+    evidence_quote: The two legs are ORed. dark-factory merge_lane/shadow.py::_shadow_compare_due returns `count_due or timer_due`
+- id: cand-20261010-1
+  title: add_plan_step arguments guessed by trial and error, with each retry swapping in different wrong field names
+  cause: The agent called mcp__plan-tools__add_plan_step without first reading its argument schema. The first call used task_id and step_type, which failed validation (step_id missing, task_id unexpected). The retry used step_id and type, which failed again (step_type missing, type unexpected). Each attempt guessed a new field set instead of consulting the tool's required parameters, so each failed call costs a turn and risks a malformed plan step.
+  area: tooling/mcp-schema
+  first_seen: '2026-10-10'
+  disposition: pending
+  sightings:
+  - date: '2026-10-10'
+    project: reify
+    session: e67246ca-7256-43af-89ca-2b65af2ac15d
+    origin_phase: unknown
+    manifested_phase: unknown
+    evidence_quote: '(turn 108) mcp__plan-tools__add_plan_step({"description": "Remove duplicate test and repoint citations by path", "step_type": "impl", "task_id": "7464"}) -> 2 validation errors for call[add_plan_step] ... (turn 112) mcp__plan-tools__add_plan_step({"description": "Remove duplicate test and repoint citations by path", "step_id": "step-1", "type": "impl"}) -> 2 validation errors for call[add_plan_step]'
+- id: cand-20261005-5
+  title: Branch-existence check uses a task/<id> ref that does not exist locally, so the landed-check gives a misleading 'not landed'
+  cause: The agent ran `git merge-base --is-ancestor task/8241 main && echo LANDED || echo not landed`. The ref task/8241 did not exist (the branch was likely deleted or never created locally). The resulting exit 128 fell through to the `||` branch and printed '8241 not landed', which conflates an invalid ref with a real not-ancestor answer. The same command's `git log` output showed commit 0fd82a812f '(#8241)' on main, which contradicts the printed verdict.
+  area: git landing-status checks via ancestry on task branch refs
+  first_seen: '2026-10-05'
+  disposition: rejected
+  sightings:
+  - date: '2026-10-05'
+    project: reify
+    session: 0a523b73-a458-45ef-8d57-23395ed767fe
+    origin_phase: unknown
+    manifested_phase: merge
+    evidence_quote: 'fatal: Not a valid object name task/8241
+
+      8241 not landed'
+- id: cand-20261004-5
+  title: Glob tool's ripgrep search times out at 20s when rooted at a whole warm-lane worktree
+  cause: A Glob with a narrow pattern (docs/prds/v0_6/*silent*) was rooted at the warm-lane worktree root, and the underlying ripgrep walk did not finish within 20 seconds. The error text says the search may have matched files, so a timeout cannot be told apart from 'no matches'. The agent has to guess whether the file is absent or the search was incomplete, and may wrongly conclude a PRD file does not exist. A narrower path such as docs/prds/v0_6 would avoid the walk, but the agent did not scope the search to it.
+  area: agent tooling / warm-lane worktree file discovery
+  first_seen: '2026-10-04'
+  disposition: rejected
+  sightings:
+  - date: '2026-10-04'
+    project: reify
+    session: ee329127-a72b-4d42-b4e2-197a24ee900d
+    origin_phase: unknown
+    manifested_phase: unknown
+    evidence_quote: 'Glob({"path": "/home/leo/src/warm-lanes/worktrees/_lane-5", "pattern": "docs/prds/v0_6/*silent*"}) -> Ripgrep search timed out after 20 seconds. The search may have matched files but did not complete in time.'
+- id: cand-20261008-4
+  title: git grep invoked with context flag (-A30) placed after the pattern and path, rejected with exit 128
+  cause: The agent assumed git grep accepts options after positional arguments, the way GNU grep permits interleaved flags. git grep requires all options before the pattern and path, so the call fails with 'option must come before non-option arguments'. The error costs a turn and delays the code inspection.
+  area: tooling/git-grep-argument-order
+  first_seen: '2026-10-08'
+  disposition: rejected
+  sightings:
+  - date: '2026-10-08'
+    project: reify
+    session: 00292940-6219-4f80-a578-131322ce6df3
+    origin_phase: unknown
+    manifested_phase: unknown
+    evidence_quote: 'git grep -n "pub fn decode_body" -A30 crates/reify-audit/src/mcp_wire.rs -> [exit 128] fatal: option ''-A30'' must come before non-option arguments'
+- id: cand-20261008-5
+  title: Warm-lane seed note advises --base-commit <main-HEAD>, which silently reuses stale build output when the base is behind main
+  cause: A note on seeding a warm lane tells the agent to pass --base-commit <main-HEAD>. When the base lags main, this keeps the old timestamps on changed sources, so cargo reuses stale build output and the GUI dev build can silently run outdated code. Only the agent's own reasoning caught the error. Neither the note nor the seed tooling flags the flag as unsafe.
+  area: warm-lane seeding (scripts/seed-warm-lane.sh) operational notes
+  first_seen: '2026-10-08'
+  disposition: rejected
+  sightings:
+  - date: '2026-10-08'
+    project: reify
+    session: c330430b-242e-4ddf-8050-1ead631318e3
+    origin_phase: ops
+    manifested_phase: ops
+    evidence_quote: 'The note said to pass `--base-commit <main-HEAD>` when seeding. That''s wrong when the base is behind main: changed sources would keep their old timestamps and cargo would reuse stale build output. I left the flag off, so the seed used the base''s own recorded commit.'
+- id: cand-20261010-2
+  title: Background task output file parsed with json.load assumes a single JSON document but contains extra data
+  cause: The agent read a background task's .output file with a one-shot python json.load, assuming the file holds exactly one JSON document. The file held extra trailing content, so parsing failed with JSONDecodeError 'Extra data'. The output-file format (single JSON versus appended or multi-part output) is undocumented, so the ad-hoc parser guesses at it. This costs the next agent a failed diagnostic step.
+  area: tooling/background-task-output
+  first_seen: '2026-10-10'
+  disposition: rejected
+  sightings:
+  - date: '2026-10-10'
+    project: reify
+    session: 9f81e3db-19a9-4ede-ac48-0cdf013f3bb5
+    origin_phase: unknown
+    manifested_phase: ops
+    evidence_quote: 'json.decoder.JSONDecodeError: Extra data: line 59 column 1 (char 3113)'
+- id: cand-20261007-5
+  title: Obsolete `tail -N` form with multiple file arguments errors out after both clippy runs had passed
+  cause: The agent chained several clippy invocations and then ran `tail -3` on more than one log file. GNU tail rejects the obsolete `-N` form in that context with 'option used in invalid context', so the compound command exited 1 even though both clippy runs returned rc=0. The nonzero exit makes a green result look like a failure and costs a retry turn, and it could hide a real clippy failure behind noise.
+  area: bash tool usage / log-tail idiom in verify commands
+  first_seen: '2026-10-07'
+  disposition: rejected
+  sightings:
+  - date: '2026-10-07'
+    project: reify
+    session: 69820923-6831-491e-a9e2-21e0659374de
+    origin_phase: implement
+    manifested_phase: implement
+    evidence_quote: 'clippy ts rc=0
+
+      clippy ht rc=0
+
+      tail: option used in invalid context -- 3'
+- id: cand-20261008-6
+  title: git grep context flag (-A6) placed after the pathspec separator, rejected with exit 128
+  cause: 'The agent appended a second `git grep` to a `;`-chained command and put the context option `-A6` after the `--` pathspec arguments. git requires options before non-option arguments, so it aborted with `fatal: option ''-A6'' must come before non-option arguments` and exit 128. The first grep''s output still printed, so the failure is easy to read as a partial result.'
+  area: 'agent shell tooling: git grep option ordering'
+  first_seen: '2026-10-08'
+  disposition: rejected
+  sightings:
+  - date: '2026-10-08'
+    project: reify
+    session: d0a29927-7fc3-459f-8d66-cc73149aeba0
+    origin_phase: unknown
+    manifested_phase: unknown
+    evidence_quote: 'fatal: option ''-A6'' must come before non-option arguments'
+- id: cand-20261004-6
+  title: Agent calls non-existent verification_complete tool to report verification verdict
+  cause: In a verification-request task the agent attempted to submit its result through a tool named verification_complete that is not in its toolset. The task prompt implies a structured result-submission mechanism, but no such tool is exposed, so the verdict cannot be delivered and the agent has no fallback path.
+  area: verification-request tooling / tool availability
+  first_seen: '2026-10-04'
+  disposition: rejected
+  sightings:
+  - date: '2026-10-04'
+    project: reify
+    session: 58acb476-d48e-4c9a-930c-206dd5405c4f
+    origin_phase: unknown
+    manifested_phase: verify
+    evidence_quote: 'verification_complete({"confidence": "0.93", "evidence": "[{\"file_path\":\"crates/reify-eval/tests/harness_mechanism/mechanism_modal_damping_e2e.rs\",\"line_range\":\"10-14\"...) -> <tool_use_error>Error: No such tool available: verification_complete</tool_use_error>'
+- id: cand-20261006-7
+  title: Extracting a shell function from a test file via sed and eval inside bash -c trips the dangerous-removal approval check
+  cause: The agent ran a function from tests/infra/test_verify_scope.sh by pulling it out with a sed range and eval-ing it inside a nested `bash -c`. The function body contains rm, so Claude Code could not statically vet the script and held the command for manual approval. A non-interactive agent cannot grant that approval, so the call stalls or errors. The test file exposes no directly invocable entry point for a single function, which pushes agents into this fragile sed/eval extraction.
+  area: tests/infra shell test harness invocability
+  first_seen: '2026-10-06'
+  disposition: promoted
+  sightings:
+  - date: '2026-10-06'
+    project: reify
+    session: bd4e18dd-55c4-449c-9512-c9259e93e13f
+    origin_phase: unknown
+    manifested_phase: unknown
+    evidence_quote: This command passes a shell -c script that runs rm, and Claude Code could not check the script for dangerous removals. Approve only if you have read the script.
+  promoted_to: entry-cand-20261006-7
+- id: cand-20261011-1
+  title: Plan file list omits a test that pins a refusal-ordering behavior a planned step changes, surfacing only at gated verify
+  cause: A planned step changes which check fires first in a shared export path. A gated test in a file outside the plan's file list asserts on the now-preempted error prefix, so the agent working from the plan cannot see the coupling and the break appears only in the full gated run.
+  area: tests
+  first_seen: '2026-10-11'
+  disposition: pending
+  sightings:
+  - date: '2026-10-11'
+    project: reify
+    session: 4869ad57-2f73-407b-888d-33b6e4feb087
+    origin_phase: unknown
+    manifested_phase: verify
+    evidence_quote: The plan's file list does not include gui/src-tauri/src/tests/commands_tests.rs, but that file has a gated test
+- id: cand-20261011-2
+  title: Stale test comment cites a completed future task, and hard-coded name checks miss a sibling list helper
+  cause: A test comment described names as pending addition by a task that had already finished, and the test hard-coded two of three members of LIST_HELPER_NAMES, so the omitted helper went unchecked and the comment misdirected readers about the code's state.
+  area: compiler tests (reify-compiler units.rs)
+  first_seen: '2026-10-11'
+  disposition: pending
+  sightings:
+  - date: '2026-10-11'
+    project: reify
+    session: a252cffe-ba05-4970-8d09-aecb8bad8064
+    origin_phase: unknown
+    manifested_phase: unknown
+    evidence_quote: 'the test comment says `single` and `flat_map` are "names that will be added by task 2699 but are not in scope for any other recognised family." That''s wrong twice over: #2699 is done, and both names are list helpers, listed in `LIST_HELPER_NAMES` in `list_helpers.rs`.'
+- id: cand-20261012-1
+  title: Index-axis ordering mismatch between Rust reader and OpenVDB output (x-fastest vs X-outermost)
+  cause: 'The reader looks up the OpenVDB box centre using an x-fastest index, but OpenVDB writes X-outermost. The error is latent: it is harmless only because the box is symmetric, so an asymmetric input would silently read wrong values. The self-correction calls this the seventh reader-side instance of the same convention confusion.'
+  area: realization_read_api.rs / OpenVDB index ordering
+  first_seen: '2026-10-12'
+  disposition: pending
+  sightings:
+  - date: '2026-10-12'
+    project: reify
+    session: 2aeba867-80e7-491f-ae4f-699eb0c4e5d7
+    origin_phase: unknown
+    manifested_phase: unknown
+    evidence_quote: A seventh, reader-side instance. `realization_read_api.rs` looks up the OpenVDB box centre with an x-fastest index. That's wrong for OpenVDB's X-outermost output, but harmless today because the box is symmetric.
+- id: cand-20261012-2
+  title: rm of an unvalidated shell-variable path trips the dangerous-removal check and the removal is denied
+  cause: A cleanup command used `rm -f $S/$f.step` with unquoted, unguarded shell variables. If either variable is unset or empty, the path can expand toward the filesystem root, so the safety check denied the command. The agent could not complete its cleanup and had to fall back to a rewrite such as `"${S:?}"/"${f:?}".step`.
+  area: agent-tooling/shell-safety
+  first_seen: '2026-10-12'
+  disposition: pending
+  sightings:
+  - date: '2026-10-12'
+    project: reify
+    session: 0cc1aaa5-17f0-497f-abc2-2e371f6c75bb
+    origin_phase: unknown
+    manifested_phase: unknown
+    evidence_quote: 'Dangerous rm operation detected in `rm -f $S/$f.step`. The target ''$S/$f.step'' is a shell variable expansion: when $S or $f is unset or empty it becomes `/`, `/*` or a top-level path.'
+- id: cand-20261012-3
+  title: Verify failure labeled as lint/unknown_test_failure while the actual cause is a cargo dependency download failure
+  cause: 'The post-merge verify block reports ''lint issues [category: unknown_test_failure]'', but the underlying error is ''failed to download glam v0.14.0 / unable to get packages from source''. The category and the failure cause point at different problems, so a downstream agent can chase lint or test fixes instead of the registry or network fetch.'
+  area: verify
+  first_seen: '2026-10-12'
+  disposition: pending
+  sightings:
+  - date: '2026-10-12'
+    project: reify
+    session: e212688a-6923-4d05-b250-26b948b896ac
+    origin_phase: verify
+    manifested_phase: verify
+    evidence_quote: 'Failures: lint issues [category: unknown_test_failure] ... error: failed to download `glam v0.14.0` ... Caused by: unable to get packages from source'
+- id: cand-20261013-1
+  title: Agent guesses MCP add_plan_step argument names and retries with a different wrong schema
+  cause: The agent called mcp__plan-tools__add_plan_step with guessed argument names (task_id, type, files) instead of the tool's required schema (step_id, step_type). Each attempt produced pydantic missing_argument and unexpected_keyword_argument errors, and the retry changed the argument set without first checking the schema.
+  area: mcp-tooling
+  first_seen: '2026-10-13'
+  disposition: pending
+  sightings:
+  - date: '2026-10-13'
+    project: reify
+    session: f98e7531-109c-43de-8837-70021da34c64
+    origin_phase: unknown
+    manifested_phase: unknown
+    evidence_quote: 'mcp__plan-tools__add_plan_step({"description": "Add verify_admission_order: arrival to dark-factory-orchestrator.yaml", "files": "[\"dark-factory-orchestrator.yaml\"]", "step_id": "step-1", "type": "impl"}) -> 3 validation errors for call[add_plan_step] ... step_type Missing required argument ... type Unexpected keyword argument ... files Unexpected keyword argument'
+- id: cand-20261014-1
+  title: Config-existence probe run on the local host for a file that exists only on a remote host
+  cause: The agent checked a config file over SSH on the remote host and then ran a local ls on the same path. The local check failed, so the session shows the file both present and absent, with no indication of which host each result came from.
+  area: escalation-watcher / cross-host probing
+  first_seen: '2026-10-14'
+  disposition: pending
+  sightings:
+  - date: '2026-10-14'
+    project: reify
+    session: b1685e84-65f6-4f95-ba07-f2f9bb49991c
+    origin_phase: unknown
+    manifested_phase: unknown
+    evidence_quote: 'ls: cannot access ''/home/leo/.config/orchestrator/reify-laptop.yaml'': No such file or directory'
+- id: cand-20261014-2
+  title: Escalation queue poll tool times out and is retried with only parameter variation
+  cause: mcp__escalation__get_pending_escalations returned a timeout with no diagnostic detail. The agent then retried it three times with level 2 and three times with level 1, varying only the parameters, and did not diagnose the failure or record that the queue state was unknown.
+  area: escalation-watcher
+  first_seen: '2026-10-14'
+  disposition: pending
+  sightings:
+  - date: '2026-10-14'
+    project: reify
+    session: 3f337ce5-c4a0-43a3-a196-e71d94c6accd
+    origin_phase: ops
+    manifested_phase: ops
+    evidence_quote: 'mcp__escalation__get_pending_escalations({"level": 1}) -> The operation timed out.'
+- id: cand-20261014-3
+  title: Hand-maintained declared suite roster drifts from derived roster, failing post-merge verification
+  cause: A test-infrastructure check requires a hand-maintained declared list of deadline-capable suites to match the roster derived from tests/infra/ wrapper call sites. Suites added without updating the declared list fail only at post-merge verification, so the next change that adds a suite carries a late, easy-to-miss gate failure.
+  area: tests/infra (deadline-capable suite roster check, F1)
+  first_seen: '2026-10-14'
+  disposition: pending
+  sightings:
+  - date: '2026-10-14'
+    project: reify
+    session: da9b3212-9f4c-42cc-a4ab-956eaa12d808
+    origin_phase: unknown
+    manifested_phase: verify
+    evidence_quote: 'FAIL: F1: the DERIVED roster of deadline-capable suites over tests/infra/ (direct wrapper call sites plus their invocation closure) equals the DECLARED one (unlisted: test_run_all_timing.sh test_verify_ledger_cli.sh) (stale: <none>)'
+- id: cand-20261015-1
+  title: Delegated-task briefing prose copied verbatim into an executable Node script, causing SyntaxError
+  cause: The agent pasted instruction prose from its task briefing (e.g. 'Check the code, not the prose... Return the path::symbol ... as `anchor`') directly into a JavaScript script body, so the prose was parsed as code and failed with SyntaxError. The agent did not separate instruction text from executable code.
+  area: agent-tooling
+  first_seen: '2026-10-15'
+  disposition: pending
+  sightings:
+  - date: '2026-10-15'
+    project: reify
+    session: b0ff05e0-926c-4d8c-9cfd-a62716462615
+    origin_phase: unknown
+    manifested_phase: unknown
+    evidence_quote: 'SyntaxError: Unexpected identifier ''anchor'''
+- id: cand-20261015-2
+  title: Verify block reports only 'tests failed [unknown_test_failure]' without naming the failing test
+  cause: The post-merge verification block reason gives a generic category and the verify.sh command echo rather than the failing test identity. The agent must dig through archived logs and truncated test output to find what broke, which raises the cost of the next fix.
+  area: verify-diagnostics
+  first_seen: '2026-10-15'
+  disposition: pending
+  sightings:
+  - date: '2026-10-15'
+    project: reify
+    session: e0f76229-e97d-4478-995a-d3df9baf65ad
+    origin_phase: verify
+    manifested_phase: verify
+    evidence_quote: 'Block reason: Post-merge verification failed: Failures: tests failed [category: unknown_test_failure]'
+- id: cand-20261015-3
+  title: Trait-body malformed sub line silently dropped with no diagnostic, so conformance fixtures can pass vacuously
+  cause: A malformed `sub hole = Hole` line inside a trait body is silently dropped with rc 0 and no diagnostic, while the same line in a structure body is rejected with a parse error. Conformance tests written against trait bodies can therefore pass without checking anything, and the next agent has no signal that the fixture is vacuous unless it already knows to add parentheses.
+  area: reify-syntax trait-member lowering (ts_parser.rs)
+  first_seen: '2026-10-15'
+  disposition: pending
+  sightings:
+  - date: '2026-10-15'
+    project: reify
+    session: 71f06d4c-bf38-43b0-8961-23d300652e26
+    origin_phase: unknown
+    manifested_phase: unknown
+    evidence_quote: '`trait T { sub hole = Hole }` + `structure def S : T {}` -> rc 0 "All constraints satisfied", no diagnostic (sub requirement silently dropped); ... Impact on #8736: conformance fixtures must use parens or pass vacuously.'
+- id: cand-20261015-4
+  title: MCP add_plan_step parameter names guessed across retries instead of consulting the tool schema
+  cause: The agent called add_plan_step with a guessed argument set (task_id, no step_id/step_type), received a Pydantic validation error, then retried with a different guessed set (step_id, type) instead of reading the tool's required-argument schema. Each attempt failed on a different missing or unexpected argument, so the step was never added.
+  area: agent-tooling
+  first_seen: '2026-10-15'
+  disposition: pending
+  sightings:
+  - date: '2026-10-15'
+    project: reify
+    session: 0432f508-acff-4e75-bdce-869ab2037a92
+    origin_phase: unknown
+    manifested_phase: unknown
+    evidence_quote: '(turn 74) mcp__plan-tools__add_plan_step({"description": "Add tsv to _EXTS and both test-side pins", "step_type": "impl", "task_id": "9058"}) -> 2 validation errors ... step_id Missing required argument ... task_id Unexpected keyword argument; (turn 80) mcp__plan-tools__add_plan_step({"description": "Add tsv to _EXTS and both test-side pins", "step_id": "impl-1", "type": "impl"}) -> 2 validation errors ... step_type Missing required argument ... type Unexpected keyword argument'
+- id: cand-20261016-1
+  title: Flake classifier names no suite, so the wrapper re-runs the full invocation identically
+  cause: The GUI flake wrapper classifies a failure as worker-to-host RPC starvation but cannot narrow the scope, so it re-runs the original full test invocation unchanged. This repeats the full-run cost and can mask a real regression behind a flake label.
+  area: verify-harness
+  first_seen: '2026-10-16'
+  disposition: pending
+  sightings:
+  - date: '2026-10-16'
+    project: reify
+    session: 8a7d1868-f597-40d4-b3f1-34fc944dbb75
+    origin_phase: verify
+    manifested_phase: verify
+    evidence_quote: 'classified as worker->host RPC starvation; re-running the original invocation (the classifier named no suite to narrow to): npm test'
+- id: cand-20261016-2
+  title: PRD convergence spec asserts scale-invariant iteration count while its stop test is scale-dependent
+  cause: A PRD §7.3 scaling table claims the iteration count is invariant across physical scales, but its convergence test max|r̃| <= 1 is not scale-invariant. Scaling the geometry by k makes the test equivalent to stopping at max|r̃| <= 1/k at scale 1, so the stated invariant is false and the RED test built on it has an unsatisfiable premise.
+  area: solver-convergence-spec
+  first_seen: '2026-10-16'
+  disposition: pending
+  sightings:
+  - date: '2026-10-16'
+    project: reify
+    session: 7cf96735-3eaa-40c3-aff4-222924d1155b
+    origin_phase: prd
+    manifested_phase: architect
+    evidence_quote: 'The stop test max|r̃| <= 1 is NOT invariant: at scale k it is equivalent to stopping at max|r̃₁| <= 1/k.'
+- id: cand-20261017-1
+  title: Verify outer timeout under host load produces a red verdict indistinguishable from a test failure
+  cause: The verify gate's outer `timeout 60m` fired on cargo nextest under host load (loadavg ~184 on 32 cores), killing the run. The 24 'failed' lines were all SIGTERM with no FAIL lines, so the red result looked like a test failure. The task was left pending and needed manual triage and an escalation to tell infra from code failure.
+  area: verify
+  first_seen: '2026-10-17'
+  disposition: pending
+  sightings:
+  - date: '2026-10-17'
+    project: reify
+    session: 6018dbe0-7f59-4246-86f7-124534cf92a9
+    origin_phase: verify
+    manifested_phase: verify
+    evidence_quote: Task 7420 verify attempt-1 red was the outer `timeout 60m` on cargo nextest firing under host load, not a test failure
+- id: cand-20261017-2
+  title: SingleKernelHolder INVARIANT comment overclaims parity-test coverage, leaving 9 trait methods silently forwarded to trait defaults
+  cause: 'A code comment states that SingleKernelHolder must delegate every GeometryKernel method and that a named parity test invokes every method through the holder. Neither holds: 9 of 27 trait methods fall through to trait defaults, and the parity test calls only the 18 forwarded ones. An agent relying on the comment would believe the guard catches missing forwarding, so a test that routes through the holder can receive a trait-default answer (''not supported'' or None) instead of the real kernel''s answer and fail confusingly or pass for the wrong reason.'
+  area: reify-ir GeometryKernel trait / reify-eval SingleKernelHolder parity test
+  first_seen: '2026-10-17'
+  disposition: pending
+  sightings:
+  - date: '2026-10-17'
+    project: reify
+    session: 36023c4f-e6f4-4eb6-bd22-792559d4ad35
+    origin_phase: unknown
+    manifested_phase: unknown
+    evidence_quote: The parity test calls only the 18 forwarded ones. ... The comment tells the reader the parity test would have caught it, which it would not.

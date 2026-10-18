@@ -83,7 +83,6 @@ reify eval   <file>                      Evaluate and print every top-level valu
 reify gui    [--debug] <file>            Open file in GUI
 reify gui-debug <file>                   Alias for `gui --debug`
 reify lsp                                Start language server (stdin/stdout)
-reify mcp-server [file] [--project-dir <dir>]   Start MCP server (stdin/stdout)
 reify doc    <file> [-o <path>]          Generate documentation
 reify cache  <subcmd>                    stats / clear / gc / export / import (FEA cache)
 reify --version                          Print version

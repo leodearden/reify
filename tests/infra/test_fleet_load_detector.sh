@@ -422,8 +422,8 @@ assert "K6: check --help advertises neither --avg10-threshold nor --psi-path" \
 # NOT enlarge tests/infra/test_cpu_governance_config.sh): mirrors that test's
 # (A2) PyYAML-guarded value-drift check + (B) always-run plain-grep knob-name
 # check, scoped to the cpu_governance.fleet_load_detector sub-block.
-# `enabled` is DF-consumed (not grep-checked against a reify script, exactly
-# like DF_AGENT_CPU_GOVERN) — only its presence/truthiness is asserted here.
+# `enabled` is DF-consumed (not grep-checked against a reify script) — only
+# its presence/truthiness is asserted here.
 #
 # Since task 5985 the sub-block declares exactly ONE grep-checked knob
 # (ratio_threshold); the avg10_threshold assertions were inverted into NEGATIVE

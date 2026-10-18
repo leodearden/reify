@@ -120,6 +120,10 @@ fn main() {
         "TKShHealing",
         "TKBool",
         "TKOffset",
+        // BEGIN occt-xde-toolkits
+        "TKXCAF",
+        "TKLCAF",
+        // END occt-xde-toolkits
     ];
 
     // Pin OCCT linkage to the exact SONAME filename in `lib_dir` instead of
@@ -129,7 +133,8 @@ fn main() {
     // `/opt/reify-deps/lib` to the link search path. The conda env ships OCCT
     // 7.9 there as a transitive of gmsh=4.15.2, so ld would otherwise resolve
     // OCCT against 7.9 and the resulting binary would NEED `libTKernel.so.7.9`
-    // — which only exists under `/etc/ld.so.conf.d/reify-deps.conf`. Pinning
+    // — whose SONAME lives only in the `/opt/reify-deps/lib` conda prefix, on
+    // no default loader path (docs/notes/native-dep-loader-path.md). Pinning
     // to the OCCT-detected lib_dir's exact filename (e.g. `:libTKernel.so.7.8`
     // on the system path) makes the link impervious to the gmsh-induced `-L`.
     //

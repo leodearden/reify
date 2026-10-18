@@ -1,0 +1,318 @@
+prd: docs/prds/v0_6/dependency-invalidation-stratum.md
+schema_version: 1
+tasks:
+- label: α
+  task_id: 8673
+  title: 'dependency-invalidation-stratum α: module-SCC ratchet (INV-ARCH-1)'
+  capabilities:
+  - name: crate-dag-gate-precedent-exists
+    binding: 'grep:crates/reify-build-utils/tests/crate_dag_assertion.rs fn workspace_dag_invariant_via_assert_script invokes scripts/assert-crate-dag.sh from CARGO_MANIFEST_DIR''s workspace root (read at 8e6ffcac9d). α copies this shape for scripts/assert-module-scc.py.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: GREW
+      paths:
+      - crates/reify-build-utils/tests/module_scc_ratchet.rs
+      expect: present
+  - name: stdlib-python-can-read-workspace-members
+    binding: '/usr/bin/python3 is 3.12.3 (tomllib in stdlib); root Cargo.toml carries a [workspace] members list of 37 entries including gui/src-tauri (read at 8e6ffcac9d).'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: import tomllib
+      paths:
+      - scripts/assert-module-scc.py
+      expect: present
+  - name: rule-reproduces-review-measurement
+    binding: 'scratchpad reproduction of the modgraph rule over crates/reify-eval/src at 8e6ffcac9d gives 84 modules and one 24-module SCC of 95,192 raw lines, identical to the review record. With brace-matched cfg(test) exclusion the second SCC is 5 modules (compute_targets, dynamics_ops, modal_ops, selector_vocabulary_v2, topology_selectors), so the baseline must come from the committed tool, not the review numbers.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '"reify-eval"'
+      paths:
+      - scripts/module-scc-baseline.json
+      expect: present
+  - name: inv-arch-1-row
+    binding: 'docs/invariants.md has no INV-ARCH-* row today (grep at 8e6ffcac9d); α adds it in the S24-owned row format with status flipped in the same change (INV-META-1).'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '^\| INV-ARCH-1 \|'
+      paths:
+      - docs/invariants.md
+      expect: present
+  - name: reify-compiler-excluded-until-s7
+    binding: 'OQ-3 ruling 2026-10-12: α measures every workspace crate except reify-compiler, recorded in the baseline excluded map; S7 ξ removes the exclusion and adds the compiler rows.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '"excluded"'
+      paths:
+      - scripts/module-scc-baseline.json
+      expect: present
+  - name: lockstep-design-invariants-entry
+    binding: 'OQ-4 ruling 2026-10-12: INV-ARCH-1 also gets an entry in docs/legibility/design-invariants.md (read by G7 and /review) and one CLAUDE.md Pointers line.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: INV-ARCH-1
+      paths:
+      - docs/legibility/design-invariants.md
+      expect: present
+- label: β
+  task_id: 8687
+  title: 'dependency-invalidation-stratum β: move the nine predicates below the engine SCC'
+  capabilities:
+  - name: nine-predicates-exist-at-cited-homes
+    binding: 'git grep ''fn <name>'' at 8e6ffcac9d — geometry_ops is_geometry_query_call, is_geometry_consumer_call, is_symbolic_eval_wired_selector_ctor, consumes_geometry_or_selector, is_feature_datum_projection_call; engine_eval expand_solver_position_expr, is_optimized_userfn_cell; engine_build sub_refs_in_op, compute_realization_upstream_values_hash_from_ops (+ private arg_contains_cross_sub_geometry_ref).'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: crate::(geometry_ops::(is_|consumes_)|engine_eval::(expand_solver_position_expr|is_optimized_userfn_cell)|engine_build::(sub_refs_in_op|compute_realization_upstream_values_hash_from_ops))
+      paths:
+      - crates/reify-eval/src
+      expect: absent
+  - name: reify-ir-core-only-imports-premise
+    binding: 'RULED OQ-1 -> B (three homes; no import into the measured SCC, only crates below reify-eval). Original premise FALSE for 4 of 9 at 8e6ffcac9d: sub_refs_in_op / compute_realization_upstream_values_hash_from_ops
+      need reify_compiler::CompiledGeometryOp and reify_expr::eval_expr; expand_solver_position_expr needs
+      reify_compiler::{TopologyTemplate, CompiledTrait} and crate::structural_query; is_optimized_userfn_cell
+      needs reify_expr::find_matching_compiled_function. Decision homed in β under OQ-1 (homes per D1).'
+    verdict: PASS
+  - name: structural-query-is-below-the-scc
+    binding: 'modgraph over crates/reify-eval/src shows structural_query with zero crate:: edges (imports only reify_compiler, reify_core, reify_ir), so moving expand_solver_position_expr there adds no upward edge.'
+    verdict: PASS
+  - name: residual-after-move
+    binding: 'edge-deletion simulation on the measured graph (rule §5.1) leaves {engine_admin, engine_build, engine_edit, engine_eval, geometry_ops} and {cache, deps}; matches the calibration skeptic''s ~5.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'the residual is whatever assert-module-scc.py measures at β''s landing; the baseline diff in β''s commit is the evidence.'
+  - name: symbolic-selector-map-single-home
+    binding: 'geometry_ops symbolic_eval_helper_for_name maps 24 ctor names to the private TopologySelectorHelper and is shared by try_eval_symbolic_topology_selector and is_symbolic_eval_wired_selector_ctor (its doc calls it the single source of truth); D2 keeps one name map via SymbolicSelectorCtor.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: enum SymbolicSelectorCtor
+      paths:
+      - crates/reify-eval/src/expr_classify.rs
+      expect: present
+- label: γ
+  task_id: 8675
+  title: 'dependency-invalidation-stratum γ: delete dead invalidation peers in cache.rs'
+  capabilities:
+  - name: peers-have-no-production-caller
+    binding: 'git grep at 8e6ffcac9d: dirty_set 0 callers; check_early_cutoff, compute_input_hash and free
+      derive_output_freshness called only from cache.rs tests; DependencyMap::topological_order called only
+      by dirty_set and deps.rs tests.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn (dirty_set|check_early_cutoff|compute_input_hash|topological_order)\b
+      paths:
+      - crates/reify-eval/src
+      expect: absent
+- label: δ
+  task_id: 8691
+  title: 'dependency-invalidation-stratum δ: one dependency walk (DependencyGraph)'
+  capabilities:
+  - name: three-walks-and-paired-sites
+    binding: 'deps.rs ReverseDependencyIndex::build_from_graph_and_fields, build_trace_map_and_fields, DependencyMap::from_graph; paired production sites engine_eval 1, engine_edit 2, engine_purposes 2, plus the reverse-only rebuild in invalidate_realization_dirty_cone (git grep at 8e6ffcac9d).'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn build_from_graph_and_fields|fn build_trace_map_and_fields|struct DependencyMap\b
+      paths:
+      - crates/reify-eval/src
+      expect: absent
+  - name: compute-asymmetry-is-deliberate
+    binding: 'build_from_graph_and_fields registers edges #6/#10 for graph.compute_nodes; build_trace_map_and_fields has no compute_nodes loop; #4958 records that compute nodes are dispatched inline outside the planner''s worklist — hence schedulable_traces() excludes NodeId::Compute (D3).'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn schedulable_traces
+      paths:
+      - crates/reify-eval/src/deps.rs
+      expect: present
+  - name: explain-undef-is-the-user-surface
+    binding: 'reify-cli main.rs calls engine.trace_undef_causes(id) and prints "note: {id} is undef (because: ...)" on stderr; Engine::trace_undef_causes builds DependencyMap::from_graph per call (engine_admin).'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: DependencyGraph
+      paths:
+      - crates/reify-eval/src/undef_tracer.rs
+      expect: present
+- label: ε
+  task_id: 8695
+  title: 'dependency-invalidation-stratum ε: one dirty-cone walker'
+  capabilities:
+  - name: callers-and-bodies
+    binding: 'compute_dirty_cone has 8 production callers (engine_edit 5, engine_eval 3); compute_dirty_cone_with_realizations 1 (invalidate_realization_dirty_cone, seeded with &HashSet::new()); the ValueCell BFS is duplicated, and only the realization frontier uses an exhaustive match (read at 8e6ffcac9d).'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ConePolicy::ThroughRealizations
+      paths:
+      - crates/reify-eval/src/dirty.rs
+      expect: present
+  - name: old-bodies-gone
+    binding: 'post-delivery check.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn compute_dirty_cone(_with_realizations)?\b
+      paths:
+      - crates/reify-eval/src
+      expect: absent
+- label: ζ
+  task_id: 8699
+  title: 'dependency-invalidation-stratum ζ: delete the freshness-only walk and gating (ruled)'
+  capabilities:
+  - name: walk-has-no-production-caller
+    binding: 'git grep at 8e6ffcac9d: propagate_freshness_only callers are tests only (harness_cache x2,
+      harness_geometry, harness_topology_selector, only_run_on_final_inputs_gating, progressive_emission)
+      plus gating.rs tests; the production completion site carries TODO(#5023) naming it.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: propagate_freshness_only|mod freshness_walk|mod gating
+      paths:
+      - crates/reify-eval/src
+      expect: absent
+  - name: no-async-completion-path-exists
+    binding: '#5023 (pending human MILESTONE) and #4958 record that the concurrent executor was deleted by
+      #5065 and that propagate_freshness_only and gating.rs are caller-less; ζ therefore records the §5.4
+      contract and wires nothing.'
+    verdict: PASS
+  - name: runtime-policy-has-own-consumer
+    binding: 'reify-runtime commitment.rs consumes NodeCommitmentOverride::OnlyRunOnFinalInputs with its own has_intermediate_inputs check; no gating:: call outside reify-eval tests (git grep at 8e6ffcac9d).'
+    verdict: PASS
+  - name: inv-eval-6-row-repointed
+    binding: 'docs/invariants.md INV-EVAL-6 reads "type+test (completion transaction + panic boundary)", status proposed, owner async-recalc Phase A (bookmark).'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: INV-EVAL-6.*dirty_cone
+      paths:
+      - docs/invariants.md
+      expect: present
+- label: η
+  task_id: 8677
+  title: 'dependency-invalidation-stratum η: node constructors own the content hash'
+  capabilities:
+  - name: inline-hash-sites
+    binding: 'git grep ''id_hash.combine(expr_hash)'' at 8e6ffcac9d: graph.rs 6, engine_edit.rs 2, plus a
+      structural_classifier doc restatement; ValueCellNode has only pub fields and no constructor.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: id_hash\.combine\(expr_hash\)
+      paths:
+      - crates/reify-eval/src
+      expect: absent
+  - name: constructor-present
+    binding: 'post-delivery check.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'pub fn new\(\s*id: ValueCellId'
+      paths:
+      - crates/reify-eval/src/graph.rs
+      expect: present
+  - name: no-parity-test-today
+    binding: 'review measurement (0 tests compare edit-path nodes with from_templates nodes); η adds the first.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'the parity test''s file name is the implementer''s choice; λ''s differential rows re-cover it.'
+- label: θ
+  task_id: 8701
+  title: 'dependency-invalidation-stratum θ: one Sub-operand resolver'
+  capabilities:
+  - name: mirror-and-resolver-exist
+    binding: 'realization_staleness sub_consumers_the_reverse_index_drops builds its own exporters map and split_once(''.'') rule; deps resolve_geom_sub_edge / resolve_sub_ref / resolve_sibling_ref and member_realization_index are module-private; semantics agree (read at 8e6ffcac9d).'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn sub_operand_resolves
+      paths:
+      - crates/reify-eval/src/deps.rs
+      expect: present
+  - name: mirror-test-gone
+    binding: 'post-delivery check.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: the_dropped_operand_rule_agrees_with_the_reverse_index
+      paths:
+      - crates/reify-eval/src
+      expect: absent
+- label: ι
+  task_id: 8704
+  title: 'dependency-invalidation-stratum ι: InstancePath, one grammar for instance paths'
+  capabilities:
+  - name: keyed-paths-land-in-entity
+    binding: 'EvaluationGraph::from_templates''s keyed-sub loop and reify-compiler expr.rs keyed member access build format!("{}.{}", parent, key.path_segment(sub)) as the ValueCellId entity, so dotted keys reach entity strings (counter to the skeptic''s weakening, which looked only at keyed_member_cell).'
+    verdict: PASS
+  - name: dotted-key-scalar-eval-works-today
+    binding: 'probe 2026-10-12: target/debug/reify eval on examples/keyed_vents.ri with "intake" renamed
+      "in.take" prints Manifold.a = 0.005 m and Manifold.vents["in.take"].area = 0.005 m — no user-visible
+      failure reproduced, so ι''s signal asserts the grammar property, not a fixed failure.'
+    verdict: PASS
+  - name: valuecellid-storage-scope
+    binding: 'RULED OQ-2 -> c: grammar home now, ValueCellId keeps String storage; carrying InstancePath inside ValueCellId touches ~2,066 ValueCellId::new sites across 16 crates; scope decided by the lead (OQ-2).'
+    verdict: PASS
+  - name: grammar-home-present
+    binding: 'post-delivery check.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: pub struct InstancePath
+      paths:
+      - crates/reify-core/src/identity.rs
+      expect: present
+- label: κ
+  task_id: 8680
+  title: 'dependency-invalidation-stratum κ: one demand registry handle'
+  capabilities:
+  - name: dead-and-coupled-surface
+    binding: 'Engine::add_demand / remove_demand 0 callers anywhere; inspection pass-throughs test-only; gui/src-tauri/src/engine.rs sync_observed_demand runs reset_observed_demand -> add_observed_demand x3 -> rebuild_observed_cone (read at 8e6ffcac9d).'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: \.(add_observed_demand|rebuild_observed_cone|reset_observed_demand)\(
+      paths:
+      - gui/src-tauri/src/engine.rs
+      expect: absent
+  - name: from-roots-present
+    binding: 'post-delivery check.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: pub fn from_roots
+      paths:
+      - crates/reify-eval/src/demand.rs
+      expect: present
+- label: λ
+  task_id: 8708
+  title: 'dependency-invalidation-stratum λ: integration gate — warm==cold differential over the stratum'
+  capabilities:
+  - name: differential-harness-exists
+    binding: 'crates/reify-eval/tests/common/differential.rs is #[path]-included by harness_cache binaries (unified_dag_differential_corpus, unified_dag_boundary_cases, unified_dag_warm_path) and drives warm==cold comparisons (read at 8e6ffcac9d).'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'the new rows'' names are the implementer''s; the signal is green rows plus the seeded-regression red recorded in the task.'
+- label: μ
+  task_id: 8710
+  title: 'dependency-invalidation-stratum μ: PRD-close stamp'
+  capabilities:
+  - name: terminal-status-stamped
+    binding: 'overlay "PRD terminal status" — closed vocabulary; the close leaf stamps SHIPPED.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '^\*\*Status:\*\* SHIPPED'
+      paths:
+      - docs/prds/v0_6/dependency-invalidation-stratum.md
+      expect: present

@@ -69,8 +69,8 @@ trait Cylindrical {
 > realized solid, so it stops describing the part as soon as a feature changes it. The `length` in
 > that expression is `param length`, not the `length(curve)` geometry query — same word, and the
 > parameter wins inside the trait body. To measure realized geometry, call `volume(solid)`,
-> `centroid(solid)` or `center_of_mass(solid, density)`; the `geometry` chunk's "Measurement &
-> Mass-Property Queries" section documents the family and its arg-shape rule.
+> `centroid(solid)` or `center_of_mass(solid, density)`; the `measurement` chunk (topic
+> `measurement` of `reify_language_reference`) documents the family and its arg-shape rule.
 
 ## Associated Functions
 

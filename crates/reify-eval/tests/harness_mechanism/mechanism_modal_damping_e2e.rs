@@ -11,7 +11,7 @@
 //! `RayleighDamping(alpha, beta)` was never read, so the declared damping
 //! intent was silently dropped (an INV-SF-3 silent-failure shape).  The FEA
 //! sibling `modal_analysis` has always honored it via
-//! `extract_damping` → `rayleigh_damping_ratio`.
+//! `classify_damping` → `rayleigh_damping_ratio`.
 //!
 //! This test drives the exact author surface an engineer touches: a `.ri`
 //! source that configures `RayleighDamping(alpha: 0.0Hz, beta: 0.0001s)` and
@@ -70,7 +70,7 @@ structure def MechanismDampingProbe {
         n_modes: 1,
         boundary_conditions: [],
         damping: RayleighDamping(alpha: 0.0Hz, beta: 0.0001s),
-        sigma: 0.0,
+        shift_frequency: 0Hz,
         tol: 0.000000001,
         max_iters: 200,
         reference_direction: vec3(0.0, 0.0, 1.0),

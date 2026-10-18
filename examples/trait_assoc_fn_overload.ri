@@ -16,7 +16,7 @@
 //     body to invoke: `obj.(Spinning::rate)()` vs `obj.(Sliding::rate)()`.
 //
 // This file is auto-discovered by
-//   crates/reify-compiler/tests/examples_smoke.rs (clean-compile gate)
+//   crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs (clean-compile gate)
 //   crates/reify-cli/tests/cli_trait_assoc_fn_overload.rs (reify-check gate)
 
 // ── (A) Intra-trait overload: two `fn f` overloads in one trait ──────────────

@@ -14,7 +14,7 @@
 // numeric signal asserted end-to-end in
 // crates/reify-eval/tests/rounded_primitives_e2e.rs).
 //
-// This file is auto-covered by crates/reify-compiler/tests/examples_smoke.rs
+// This file is auto-covered by crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs
 // (recursive examples/*.ri compile-clean walk; zero Error diagnostics).
 
 structure def LitterTray {

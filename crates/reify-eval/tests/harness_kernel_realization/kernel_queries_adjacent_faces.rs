@@ -47,7 +47,8 @@
 //! Modelled on `kernel_queries_directional_selectors.rs`.
 
 use reify_ir::{GeometryOp, GeometryQuery, Value};
-use reify_test_support::{errors_only, parse_and_compile_with_stdlib};
+
+use super::fixture_scaffolding::read_and_compile_fixture;
 
 const FIXTURE_PATH: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -67,13 +68,9 @@ const FIXTURE_PATH: &str = concat!(
 fn adjacent_faces_and_shared_edges_compile_and_return_correct_semantics() {
     // ── assertion 1: fixture exists and compiles cleanly (unconditional) ──────
 
-    let source = std::fs::read_to_string(FIXTURE_PATH)
-        .expect("examples/kernel_queries/adjacent_faces.ri should exist (task 3619 pre-1)");
-    let compiled = parse_and_compile_with_stdlib(&source);
-    assert!(
-        errors_only(&compiled).is_empty(),
-        "adjacent_faces.ri should compile with no error diagnostics, got:\n{:#?}",
-        errors_only(&compiled)
+    read_and_compile_fixture(
+        FIXTURE_PATH,
+        "examples/kernel_queries/adjacent_faces.ri (task 3619 pre-1)",
     );
 
     // ── assertion 2: OCCT-backed semantics (gated) ────────────────────────────

@@ -35,6 +35,7 @@ fn sample_value(cell_id: &str, value: &str) -> ValueData {
         last_substantive_value: None,
         dimension: String::new(),
         si_value: None,
+        declared_dimension: String::new(),
     }
 }
 

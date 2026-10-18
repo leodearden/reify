@@ -6,9 +6,9 @@
 //!
 //! ## Wire protocol
 //!
-//! MCP streamable-HTTP, protocol version `2024-11-05`. Same SSE/JSON
-//! dual-path and same `into_reader()` no-10 MiB cap discipline as
-//! `fused_memory_client.rs`.
+//! MCP streamable-HTTP, protocol version `2024-11-05`. The SSE/JSON body
+//! decode is shared via [`crate::mcp_wire::decode_body`]; same
+//! `into_reader()` no-10 MiB cap discipline as `fused_memory_client.rs`.
 //!
 //! ## Session lifecycle
 //!
@@ -23,7 +23,7 @@
 //!
 //! A client-minted id is not merely redundant: a live jcodemunch serve
 //! answers such an `initialize` with `404 Invalid or expired session ID`,
-//! which [`post`](JcodemunchClient::post) maps to [`LoadError::Http`] and
+//! which [`post`](JcodemunchClient::post) maps to [`LoadError::Status`] and
 //! `reify-audit` then fail-softs into a no-op detector — silently.
 //!
 //! `fused_memory_client.rs` still mints its own id. That divergence is
@@ -52,9 +52,10 @@ use std::time::Duration;
 
 use serde_json::{json, Value};
 
+use crate::mcp_handshake::check_initialize_response;
 use crate::{
-    ChangedSymbol, DeadSymbol, DeclSuppression, JCodemunchOps, LayerViolation, SymbolReference,
-    UntestedSymbol,
+    ChangedSymbol, DeadSymbol, DeclSuppression, JCodemunchCallFailed, JCodemunchOps,
+    LayerViolation, SymbolReference, UntestedSymbol,
 };
 
 const PROTOCOL_VERSION: &str = "2024-11-05";
@@ -70,9 +71,16 @@ const HTTP_TIMEOUT_SECS: u64 = 60;
 /// a down serve must not crash the sweep).
 #[derive(Debug)]
 pub enum LoadError {
-    /// Transport-level failure: connection refused, timeout, non-2xx status,
-    /// body read failure.
+    /// Transport-level failure — the endpoint never answered: connection
+    /// refused or reset, or a timeout, before any status line arrived.
     Http(String),
+    /// The endpoint answered with a non-2xx HTTP status: reachable, but it
+    /// refused the request (a live serve's `404 Invalid or expired session
+    /// ID`, or a foreign HTTP service on the port).
+    Status(String),
+    /// The endpoint answered with a 2xx status, but its body could not be
+    /// read whole: it broke off, timed out, or was not UTF-8.
+    Body(String),
     /// Protocol-level failure: malformed JSON-RPC envelope, missing expected
     /// fields, server-returned `error` payload, MUNCH decode failure.
     Protocol(String),
@@ -82,6 +90,8 @@ impl std::fmt::Display for LoadError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             LoadError::Http(m) => write!(f, "jcodemunch HTTP error: {m}"),
+            LoadError::Status(m) => write!(f, "jcodemunch HTTP status error: {m}"),
+            LoadError::Body(m) => write!(f, "jcodemunch HTTP body error: {m}"),
             LoadError::Protocol(m) => write!(f, "jcodemunch protocol error: {m}"),
         }
     }
@@ -1216,31 +1226,6 @@ fn extract_g_allow(line: &str) -> Option<String> {
 }
 
 // -----------------------------------------------------------------------
-// filter_refs_to_file
-// -----------------------------------------------------------------------
-
-/// Retain only references whose `.file == file`. Input order is preserved.
-///
-/// This is the key client-side scoping step: jcodemunch's `find_references`
-/// API has no server-side file-scope parameter, so filtering is done here.
-///
-/// KNOWN LIMITATION: this discards every cross-file reference, not only
-/// same-named symbols declared in other files. A symbol consumed ONLY from
-/// another file — arguably the strongest evidence that it is NOT an
-/// orphan — ends up with an empty reference list after this filter runs.
-/// `p1_producer_orphan.rs`'s non-test-caller check therefore only ever sees
-/// same-file callers, even though its own condition does not spell out a
-/// same-file conjunct. Loosening this (e.g. if jcodemunch ever grows a
-/// server-side file-scope parameter — see the
-/// [`JCodemunchOps::find_references`](crate::JCodemunchOps::find_references)
-/// doc, which is what states the MUST — or having P1 treat cross-file refs
-/// as their own signal) is tracked as a follow-up (#6504) rather than
-/// fixed here.
-fn filter_refs_to_file(refs: Vec<SymbolReference>, file: &str) -> Vec<SymbolReference> {
-    refs.into_iter().filter(|r| r.file == file).collect()
-}
-
-// -----------------------------------------------------------------------
 // HTTP transport
 // -----------------------------------------------------------------------
 
@@ -1289,13 +1274,16 @@ impl JcodemunchClient {
     /// An `initialize` response that assigns no session id is a hard
     /// failure, not an empty session: without an id every later POST is
     /// answered `400 Missing session ID`, so an `Ok` here would hand back
-    /// a client that cannot make a single successful call.
+    /// a client that cannot make a single successful call. So is one whose
+    /// body is not an MCP `InitializeResult`
+    /// ([`check_initialize_response`]): a session id alone does not make a
+    /// responder a live seam.
     ///
     /// Gotcha, observed against a live serve: a jcodemunch **404**
     /// response also carries a fresh `mcp-session-id` header, so the id
     /// must only ever be read off a *success* response. `ureq` returns
     /// `Err(Error::Status(..))` for 4xx and [`Self::post_raw`] maps that to
-    /// [`LoadError::Http`] before the header is read, so the confusion is
+    /// [`LoadError::Status`] before the header is read, so the confusion is
     /// unreachable today — this note exists so a future refactor (e.g. one
     /// that inspects error responses) does not quietly make it reachable.
     fn initialize(&mut self) -> Result<(), LoadError> {
@@ -1313,14 +1301,17 @@ impl JcodemunchClient {
             },
         });
         // No session header on `initialize`: the server assigns it.
-        let (assigned, _) = self.post_raw(&payload, None)?;
-        self.session_id = assigned.ok_or_else(|| {
+        let (assigned, response) = self.post_raw(&payload, None)?;
+        let session_id = assigned.ok_or_else(|| {
             LoadError::Protocol(
                 "initialize response carried no Mcp-Session-Id header — the \
                  server did not assign a session; not a live jcodemunch seam"
                     .into(),
             )
         })?;
+        check_initialize_response(&response)
+            .map_err(|rejection| LoadError::Protocol(rejection.to_string()))?;
+        self.session_id = session_id;
 
         let ack = json!({
             "jsonrpc": "2.0",
@@ -1359,9 +1350,13 @@ impl JcodemunchClient {
         if let Some(session) = session {
             request = request.set("mcp-session-id", session);
         }
-        let response = request
-            .send_json(payload.clone())
-            .map_err(|e| LoadError::Http(format!("POST {}: {e}", self.url)))?;
+        let response = request.send_json(payload.clone()).map_err(|e| {
+            let msg = format!("POST {}: {e}", self.url);
+            match e {
+                ureq::Error::Status(..) => LoadError::Status(msg),
+                ureq::Error::Transport(..) => LoadError::Http(msg),
+            }
+        })?;
 
         let assigned = response.header("mcp-session-id").map(|s| s.to_string());
 
@@ -1378,30 +1373,10 @@ impl JcodemunchClient {
         response
             .into_reader()
             .read_to_string(&mut body)
-            .map_err(|e| LoadError::Http(format!("read body: {e}")))?;
+            .map_err(|e| LoadError::Body(format!("read body: {e}")))?;
 
-        let value = if ctype.contains("text/event-stream") {
-            let mut parsed: Option<Value> = None;
-            for line in body.lines() {
-                if let Some(rest) = line.strip_prefix("data:") {
-                    parsed = Some(serde_json::from_str(rest.trim()).map_err(|e| {
-                        LoadError::Protocol(format!(
-                            "SSE data parse: {e}; body={body}"
-                        ))
-                    })?);
-                    break;
-                }
-            }
-            parsed.ok_or_else(|| {
-                LoadError::Protocol(format!("no SSE data line in response: {body}"))
-            })?
-        } else if body.is_empty() {
-            return Ok((assigned, Value::Null));
-        } else {
-            serde_json::from_str(&body).map_err(|e| {
-                LoadError::Protocol(format!("body parse: {e}; body={body}"))
-            })?
-        };
+        let value = crate::mcp_wire::decode_body(&ctype, &body)
+            .map_err(|e| LoadError::Protocol(e.to_string()))?;
 
         if let Some(err) = value.get("error") {
             return Err(LoadError::Protocol(format!("JSON-RPC error: {err}")));
@@ -1540,7 +1515,11 @@ impl RealJCodemunchOps {
 }
 
 impl JCodemunchOps for RealJCodemunchOps {
-    fn get_changed_symbols(&self, since_sha: &str, until_sha: &str) -> Vec<ChangedSymbol> {
+    fn get_changed_symbols(
+        &self,
+        since_sha: &str,
+        until_sha: &str,
+    ) -> Result<Vec<ChangedSymbol>, JCodemunchCallFailed> {
         let decoded = match self.client.call_tool(
             "get_changed_symbols",
             json!({
@@ -1552,7 +1531,10 @@ impl JCodemunchOps for RealJCodemunchOps {
             Ok(v) => v,
             Err(e) => {
                 eprintln!("jcodemunch get_changed_symbols: {e}");
-                return Vec::new();
+                return Err(JCodemunchCallFailed {
+                    tool: "get_changed_symbols",
+                    detail: e.to_string(),
+                });
             }
         };
         let mut symbols = changed_symbols_from_wire(&decoded);
@@ -1570,7 +1552,7 @@ impl JCodemunchOps for RealJCodemunchOps {
         if let Some(msg) = enrich_suppression_flags(&mut symbols, &self.project_root) {
             eprintln!("{msg}");
         }
-        symbols
+        Ok(symbols)
     }
 
     fn find_references(&self, symbol: &ChangedSymbol) -> Vec<SymbolReference> {
@@ -1589,13 +1571,10 @@ impl JCodemunchOps for RealJCodemunchOps {
         };
         // Diagnosed against the table the decoder ACTUALLY read, which is
         // why it travels back with the rows: `__rows__` today, any other
-        // table on the fallback scan. Counted BEFORE `filter_refs_to_file`,
-        // since scoping to the declaring file is a deliberate narrowing,
-        // not a decode failure. What must be loud is rows the decoder could
-        // not read at all — an empty result there is indistinguishable
-        // from the genuine zero-reference answer P1 reads as a producer
-        // orphan.
-        let refs = match find_references_from_wire(&decoded) {
+        // table on the fallback scan. Rows the decoder could not read must
+        // be loud, because an empty answer is indistinguishable from the
+        // genuine zero-reference answer P1 reads as a producer orphan.
+        match find_references_from_wire(&decoded) {
             Some(DecodedReferences { table, refs }) => {
                 if let Some(msg) =
                     dropped_rows_diagnostic("find_references", &decoded, table, refs.len())
@@ -1607,8 +1586,7 @@ impl JCodemunchOps for RealJCodemunchOps {
             // No table carried references at all, so there were no rows to
             // drop and nothing to report.
             None => Vec::new(),
-        };
-        filter_refs_to_file(refs, &symbol.file)
+        }
     }
 
     fn get_dead_code(&self, min_confidence: f64) -> Vec<DeadSymbol> {
@@ -1808,7 +1786,7 @@ mod tests {
                 );
             }
             Ok(_) => panic!("expected Protocol error for 2-segment table spec, got Ok"),
-            Err(LoadError::Http(_)) => panic!("expected Protocol error, got Http error"),
+            Err(other) => panic!("expected Protocol error, got {other}"),
         }
     }
 
@@ -1849,7 +1827,7 @@ mod tests {
         match decode_tool_result(&result) {
             Err(LoadError::Protocol(_)) => {} // expected
             Ok(_) => panic!("expected Protocol error for garbage MUNCH, got Ok"),
-            Err(LoadError::Http(_)) => panic!("expected Protocol error, got Http error"),
+            Err(other) => panic!("expected Protocol error, got {other}"),
         }
     }
 
@@ -2456,30 +2434,6 @@ mod tests {
     }
 
     // ------------------------------------------------------------------
-    // step-15 / step-16: filter_refs_to_file
-    // ------------------------------------------------------------------
-
-    #[test]
-    fn filter_refs_to_file_keeps_matching() {
-        let refs = vec![
-            SymbolReference { file: "a.rs".to_string(), line: 1 },
-            SymbolReference { file: "b.rs".to_string(), line: 2 },
-            SymbolReference { file: "a.rs".to_string(), line: 3 },
-            SymbolReference { file: "c.rs".to_string(), line: 4 },
-        ];
-        let filtered = filter_refs_to_file(refs, "a.rs");
-        assert_eq!(filtered.len(), 2);
-        assert_eq!(filtered[0].line, 1);
-        assert_eq!(filtered[1].line, 3);
-    }
-
-    #[test]
-    fn filter_refs_to_file_empty_input() {
-        let filtered = filter_refs_to_file(Vec::new(), "a.rs");
-        assert!(filtered.is_empty());
-    }
-
-    // ------------------------------------------------------------------
     // step-17 / step-18: find_references_from_wire (inline MUNCH)
     // ------------------------------------------------------------------
 
@@ -2583,9 +2537,10 @@ mod tests {
     /// storm, the opposite direction to the decoy-table hazard the
     /// selector's doc reasons about.
     ///
-    /// Dropping the rows stays correct (a reference with no file is not
-    /// something `filter_refs_to_file` can scope). Dropping them SILENTLY
-    /// is not, so this pins the diagnostic rather than the empty vec alone.
+    /// Dropping the rows stays correct: a reference with no file cannot be
+    /// classified test/non-test by P1's `has_non_test_caller`. Dropping
+    /// them SILENTLY is not, so this pins the diagnostic rather than the
+    /// empty vec alone.
     #[test]
     fn find_references_from_wire_is_loud_when_rows_carry_no_file_column() {
         let decoded = json!({
@@ -2600,8 +2555,8 @@ mod tests {
         let refs = selected.refs;
         assert!(
             refs.is_empty(),
-            "a reference with no `file` cannot be scoped by filter_refs_to_file; \
-             got {refs:?}"
+            "a reference with no `file` cannot be classified test/non-test by \
+             P1's has_non_test_caller; got {refs:?}"
         );
         let msg = dropped_rows_diagnostic("find_references", &decoded, selected.table, refs.len())
             .expect(
@@ -2750,7 +2705,7 @@ mod tests {
                 );
             }
             Ok(_) => panic!("expected Protocol error for field-count mismatch, got Ok"),
-            Err(LoadError::Http(_)) => panic!("expected Protocol error, got Http"),
+            Err(other) => panic!("expected Protocol error, got {other}"),
         }
     }
 
@@ -3376,13 +3331,13 @@ mod tests {
     // streamable-HTTP session lifecycle: the server assigns the session id,
     // the client never mints one.
     //
-    // The stub copies `tests/cli.rs`'s `spawn_mock_mcp_on` discipline —
-    // one request per connection (`Connection: close`, so `ureq` reconnects
-    // predictably) and a stop-flag + non-blocking accept poll teardown, so
-    // a failing assertion cannot leak the accept thread. The one addition
-    // is that it records each request's HEADERS alongside its body, which
-    // is exactly what `tests/cli.rs`'s version discards and what these
-    // contract assertions need.
+    // The stub follows the shared integration-test mock's discipline
+    // (`tests/common/mcp_mock.rs`), which a `#[cfg(test)]` module in `src/`
+    // cannot import — one request per connection (`Connection: close`, so
+    // `ureq` reconnects predictably) and a stop-flag + non-blocking accept
+    // poll teardown, so a failing assertion cannot leak the accept thread.
+    // Unlike that mock, it records each request's full BODY alongside its
+    // headers, which these contract assertions need.
     mod session_contract {
         use super::*;
 
@@ -3804,7 +3759,7 @@ mod tests {
         /// In MCP streamable-HTTP the session is assigned by the server on
         /// `initialize`. A client-minted id makes a real jcodemunch serve
         /// answer `404 Invalid or expired session ID`, which `post` maps to
-        /// `LoadError::Http` and `reify-audit` fail-softs into a no-op —
+        /// `LoadError::Status` and `reify-audit` fail-softs into a no-op —
         /// silently, which is how the seam stayed dead for ten weeks.
         #[test]
         fn initialize_carries_no_client_minted_session_header() {
@@ -3872,9 +3827,9 @@ mod tests {
         /// which is exactly the PASS-shaped nothing this task exists to
         /// remove.
         ///
-        /// The residual hole — a response that DOES carry a session id but
-        /// whose body is 202/empty/not an initialize result — belongs to
-        /// task #5832 and is deliberately not asserted here.
+        /// The other half — a response that DOES carry a session id but
+        /// whose body is 202/empty/not an initialize result — is pinned
+        /// for both clients by `tests/mcp_handshake.rs`.
         #[test]
         fn initialize_without_an_assigned_session_id_is_a_protocol_error() {
             let stub = RecordingStub::start_with(InitializeReply::NoSessionHeader);
@@ -3886,9 +3841,9 @@ mod tests {
                      carries no Mcp-Session-Id header, got Ok — a client with \
                      no session id fails every later call",
                 ),
-                Err(LoadError::Http(e)) => panic!(
+                Err(other) => panic!(
                     "expected Protocol error for the missing session id, got \
-                     Http error: {e}",
+                     {other}",
                 ),
             }
         }
@@ -3906,9 +3861,9 @@ mod tests {
                     "expected Protocol error when initialize is answered 202 \
                      with no Mcp-Session-Id header, got Ok",
                 ),
-                Err(LoadError::Http(e)) => panic!(
+                Err(other) => panic!(
                     "expected Protocol error for the 202-without-session-id \
-                     handshake, got Http error: {e}",
+                     handshake, got {other}",
                 ),
             }
         }
@@ -3952,7 +3907,8 @@ mod tests {
         /// exactly the PASS-shaped nothing this client's session handling
         /// exists to remove — a caller would read it as "the serve offers
         /// no such tool" rather than "the serve answered nonsense". Never
-        /// `Http` either: the transport succeeded, the payload did not.
+        /// `Http`, `Status` or `Body` either: the transport succeeded, the
+        /// payload did not.
         fn assert_list_tools_is_a_protocol_error(reply: ToolsListReply, what: &str) {
             let stub = RecordingStub::start_with_tools(reply);
             let client = JcodemunchClient::new(stub.url()).expect("handshake");
@@ -3964,9 +3920,7 @@ mod tests {
                      malformed tool list must never be reported as a (possibly \
                      empty or shortened) set of tools",
                 ),
-                Err(LoadError::Http(e)) => panic!(
-                    "expected a Protocol error for {what}; got Http error: {e}",
-                ),
+                Err(other) => panic!("expected a Protocol error for {what}; got {other}"),
             }
         }
 
@@ -4041,7 +3995,9 @@ mod tests {
                 .expect("handshake against the recording stub must succeed");
 
             // Must return, not panic.
-            let mut symbols = ops.get_changed_symbols("s^1", "s");
+            let mut symbols = ops
+                .get_changed_symbols("s^1", "s")
+                .expect("the stub answers get_changed_symbols");
 
             assert_eq!(symbols.len(), 1, "expected exactly the one declared symbol");
             let sym = &symbols[0];
@@ -4118,7 +4074,9 @@ mod tests {
             let ops = RealJCodemunchOps::new(stub.url(), "test-repo", tmp.path())
                 .expect("handshake against the recording stub must succeed");
 
-            let symbols = ops.get_changed_symbols("s^1", "s");
+            let symbols = ops
+                .get_changed_symbols("s^1", "s")
+                .expect("the stub answers get_changed_symbols");
 
             assert_eq!(symbols.len(), 1, "expected exactly the one declared symbol");
             let sym = &symbols[0];
@@ -4146,48 +4104,65 @@ mod tests {
             );
         }
 
-        /// Pins today's `RealJCodemunchOps::find_references` scoping
-        /// contract ([`JCodemunchOps::find_references`](crate::JCodemunchOps::find_references):
-        /// production impls MUST scope to `symbol.file`) through the
-        /// production route, over the live 3-segment `__rows__` payload.
-        /// Only the first row's file matches `symbol.file`, so exactly one
-        /// reference must survive `filter_refs_to_file`.
-        #[test]
-        fn find_references_decodes_the_real_wire_through_real_ops() {
-            const MUNCH_REAL_WIRE: &str = concat!(
-                "#MUNCH/1 tool=find_references enc=gen1\n",
-                "\n",
-                "@1=crates/reify-audit/\n",
-                "\n",
-                "x=1 __stypes= __tables=r:__rows__:file|specifier|match_type\n",
-                "r,@1src/jcodemunch_client.rs,crate,named\n",
-                "r,@1tests/p1.rs,reify_audit,named\n",
-            );
+        // --------------------------------------------------------------
+        // #6504: cross-file references survive the production seam
+        // --------------------------------------------------------------
 
+        /// The measured live `find_references` answer for identifier
+        /// `JCodemunchOps` (esc-6447-1, jcodemunch 1.108.54): one row per
+        /// file that IMPORTS it. The declaring file,
+        /// `crates/reify-audit/src/lib.rs`, is not among them, because a
+        /// Rust file never `use`s its own item.
+        const MUNCH_JCODEMUNCHOPS_IMPORTERS: &str = concat!(
+            "#MUNCH/1 tool=find_references enc=gen1\n",
+            "\n",
+            "@1=crates/reify-audit/\n",
+            "\n",
+            "x=1 __stypes= __tables=r:__rows__:file|specifier|match_type\n",
+            "r,@1src/bin/ptodo-baseline-gen.rs,reify_audit,named\n",
+            "r,@1src/bin/reify-audit.rs,reify_audit,named\n",
+            "r,@1src/jcodemunch_client.rs,crate,named\n",
+            "r,@1tests/p1.rs,reify_audit,named\n",
+        );
+
+        /// `RealJCodemunchOps::find_references` hands back every importer
+        /// the wire reports, through the production decode route.
+        #[test]
+        fn find_references_returns_cross_file_importers_through_real_ops() {
             let tmp = tempfile::TempDir::new().expect("create tempdir");
             let stub = RecordingStub::start_with_tool_calls(ToolCallReply::Munch(&[(
                 "find_references",
-                MUNCH_REAL_WIRE,
+                MUNCH_JCODEMUNCHOPS_IMPORTERS,
             )]));
             let ops = RealJCodemunchOps::new(stub.url(), "test-repo", tmp.path())
                 .expect("handshake against the recording stub must succeed");
 
             let symbol = ChangedSymbol {
                 name: "JCodemunchOps".to_string(),
-                file: "crates/reify-audit/src/jcodemunch_client.rs".to_string(),
+                file: "crates/reify-audit/src/lib.rs".to_string(),
                 line: 1,
                 suppression: None,
             };
             let refs = ops.find_references(&symbol);
 
+            let files: Vec<&str> = refs.iter().map(|r| r.file.as_str()).collect();
             assert_eq!(
-                refs.len(),
-                1,
-                "find_references must scope to symbol.file per the \
-                 JCodemunchOps::find_references doc in lib.rs; got {refs:?}",
+                files,
+                vec![
+                    "crates/reify-audit/src/bin/ptodo-baseline-gen.rs",
+                    "crates/reify-audit/src/bin/reify-audit.rs",
+                    "crates/reify-audit/src/jcodemunch_client.rs",
+                    "crates/reify-audit/tests/p1.rs",
+                ],
+                "an import-based lookup never lists the declaring file ({}), so \
+                 narrowing the answer to it empties it; every importer must come \
+                 back, in wire order",
+                symbol.file,
             );
-            assert_eq!(refs[0].file, symbol.file);
-            assert_eq!(refs[0].line, 0, "the real wire reports no line");
+            assert!(
+                refs.iter().all(|r| r.line == 0),
+                "the real wire reports no line; got {refs:?}",
+            );
         }
     }
 }

@@ -740,15 +740,20 @@ pub fn resolve_workspace_dir(
     fallback_cwd.to_path_buf()
 }
 
+/// The reify-debug MCP endpoint URL, set for the sidecar ONLY when the host
+/// bound its reify-debug server; the sidecar registers reify-debug iff present.
+pub const SIDECAR_DEBUG_MCP_URL_ENV: &str = "REIFY_DEBUG_MCP_URL";
+
 /// Build the environment variable list to inject into the spawned sidecar process.
 ///
-/// Always includes `REIFY_WORKSPACE` (the landlock-writable workspace dir) and
-/// `REIFY_DEBUG_PORT` (the resolved debug server port, default 3939).
-/// Includes `REIFY_LANDLOCK_EXEC` only when `landlock_exec` is `Some`.
-/// Ordering is deterministic: workspace first, then landlock_exec if present, then debug port.
+/// Always includes `REIFY_WORKSPACE` (the landlock-writable workspace dir).
+/// Includes `REIFY_LANDLOCK_EXEC` only when `landlock_exec` is `Some`, and
+/// [`SIDECAR_DEBUG_MCP_URL_ENV`] only when `debug_mcp_url` is `Some` (the host's
+/// reify-debug server is live). Ordering is deterministic in that order.
 pub fn compute_sidecar_env(
     workspace: &std::path::Path,
     landlock_exec: Option<&std::path::Path>,
+    debug_mcp_url: Option<&str>,
 ) -> Vec<(String, String)> {
     let mut envs = vec![(
         "REIFY_WORKSPACE".to_string(),
@@ -760,24 +765,24 @@ pub fn compute_sidecar_env(
             le.to_string_lossy().into_owned(),
         ));
     }
-    #[cfg(feature = "gui")]
-    envs.push((
-        "REIFY_DEBUG_PORT".to_string(),
-        crate::debug_server::resolve_debug_port().to_string(),
-    ));
+    if let Some(url) = debug_mcp_url {
+        envs.push((SIDECAR_DEBUG_MCP_URL_ENV.to_string(), url.to_string()));
+    }
     envs
 }
 
-/// Apply workspace + landlock env vars to a [`tokio::process::Command`].
+/// Apply the [`compute_sidecar_env`] list to a [`tokio::process::Command`].
 ///
-/// Calls [`compute_sidecar_env`] and sets each key-value pair on the command
-/// via [`tokio::process::Command::env`].
+/// Removes [`SIDECAR_DEBUG_MCP_URL_ENV`] first, so a value inherited from the
+/// host's own environment can never signal a reify-debug server that is not live.
 pub fn apply_sidecar_env(
     cmd: &mut tokio::process::Command,
     workspace: &std::path::Path,
     landlock_exec: Option<&std::path::Path>,
+    debug_mcp_url: Option<&str>,
 ) {
-    for (k, v) in compute_sidecar_env(workspace, landlock_exec) {
+    cmd.env_remove(SIDECAR_DEBUG_MCP_URL_ENV);
+    for (k, v) in compute_sidecar_env(workspace, landlock_exec, debug_mcp_url) {
         cmd.env(k, v);
     }
 }
@@ -792,7 +797,8 @@ pub fn apply_sidecar_env(
 ///
 /// `workspace` is the landlock-writable directory injected as `REIFY_WORKSPACE`.
 /// `landlock_exec` is the path to the vendored `landlock_exec.py` helper,
-/// injected as `REIFY_LANDLOCK_EXEC` when `Some`.
+/// injected as `REIFY_LANDLOCK_EXEC` when `Some`. `debug_mcp_url` is the host's
+/// LIVE reify-debug endpoint, injected as [`SIDECAR_DEBUG_MCP_URL_ENV`] when `Some`.
 ///
 /// Returns `Err` if the process cannot be spawned or if stdin/stdout are unavailable.
 pub async fn spawn_sidecar_impl<F>(
@@ -800,6 +806,7 @@ pub async fn spawn_sidecar_impl<F>(
     event_emitter: F,
     workspace: &std::path::Path,
     landlock_exec: Option<&std::path::Path>,
+    debug_mcp_url: Option<&str>,
 ) -> Result<SidecarHandle, String>
 where
     F: Fn(String, Value) + Send + Sync + 'static,
@@ -809,7 +816,7 @@ where
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::inherit());
-    apply_sidecar_env(&mut command, workspace, landlock_exec);
+    apply_sidecar_env(&mut command, workspace, landlock_exec, debug_mcp_url);
     let mut proc = command
         .spawn()
         .map_err(|e| format!("Failed to spawn sidecar {:?}: {}", path, e))?;
@@ -1165,32 +1172,6 @@ mod tests {
             process_is_dead_or_zombie,
             "sleep process (pid {}) should have been killed by Drop but is still running after 2 s",
             pid
-        );
-    }
-
-    #[cfg(feature = "gui")]
-    #[test]
-    fn compute_sidecar_env_includes_debug_port_and_workspace() {
-        let workspace = std::path::Path::new("/tmp/test-workspace");
-        let env = compute_sidecar_env(workspace, None);
-
-        // Regression guard: REIFY_WORKSPACE must still be present.
-        assert!(
-            env.iter().any(|(k, _)| k == "REIFY_WORKSPACE"),
-            "REIFY_WORKSPACE must be present in compute_sidecar_env output"
-        );
-
-        // New: REIFY_DEBUG_PORT must be present and consistent with the resolver.
-        let port_entry = env.iter().find(|(k, _)| k == "REIFY_DEBUG_PORT");
-        assert!(
-            port_entry.is_some(),
-            "REIFY_DEBUG_PORT must be present in compute_sidecar_env output"
-        );
-        let expected = crate::debug_server::resolve_debug_port().to_string();
-        assert_eq!(
-            port_entry.unwrap().1,
-            expected,
-            "REIFY_DEBUG_PORT value must match resolve_debug_port()"
         );
     }
 }

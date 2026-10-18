@@ -23,6 +23,12 @@
       "probe_kind": "value",
       "fixture": "tests/prd-gate/fixtures/getar_fn_param_rejects_construct.ri",
       "expected": { "observation": "present", "match": { "stdout_value": { "pattern": "W\\.v = ([0-9.]+) m", "min": 0.001, "max": 0.001 } } }
+    },
+    {
+      "capability": "POST (leaves beta+delta landed, S-4 binder form): an Err binder typed with the R1 placeholder is not a universal wildcard — hb(e) against hb(b: Bool) is rejected. PRE: check exit 0, eval W.v = false.",
+      "probe_kind": "check",
+      "fixture": "tests/prd-gate/fixtures/getar_wildcard_placeholder_binder_silent.ri",
+      "expected": { "observation": "present", "match": { "exit_code": 1, "stderr_contains": "no matching overload for hb(" } }
     }
   ]
 }

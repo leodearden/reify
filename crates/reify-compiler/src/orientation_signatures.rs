@@ -189,8 +189,9 @@ pub(crate) fn orientation_typed_fn_result_type(name: &str) -> Type {
 /// The **decomposer** names the compiler types via
 /// [`orientation_decomposer_result_type`]: the builtins that return a rigid
 /// motion's COORDINATES rather than the motion itself. Single source of truth
-/// for this family's membership and its result-type rulings, imported into the
-/// `units.rs` test module to pin disjointness from every sibling family,
+/// for this family's membership and its result-type rulings, registered as a
+/// `BUILTIN_NAME_FAMILIES` row in `unresolved_function.rs`, whose all-pairs
+/// test pins it disjoint from every sibling family,
 /// [`ORIENTATION_TYPED_FN_NAMES`] included.
 ///
 /// **4 names**, each with its eval source and ruling:
@@ -238,8 +239,8 @@ pub(crate) fn orientation_typed_fn_result_type(name: &str) -> Type {
 ///   decomposers.
 ///
 /// Claiming `orient_euler` here too would double-classify it across two
-/// resolvers in this same file and break the reciprocal disjointness the
-/// `units.rs` tests pin in both directions.
+/// resolvers in this same file and break the pairwise disjointness the
+/// `BUILTIN_NAME_FAMILIES` sweep pins.
 ///
 /// Case-sensitive: Reify function names are snake_case.
 pub const ORIENTATION_DECOMPOSER_FN_NAMES: &[&str] = &[

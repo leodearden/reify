@@ -305,20 +305,9 @@ fn format_si_conversion(unit: &reify_compiler::CompiledUnit) -> Option<String> {
 /// Render a type-parameter list as `<T, U: Numeric, V: A + B = Int>`, or the empty
 /// string when there are none (so a zero-param alias never emits a bare `<>`).
 ///
-/// `reify_ast::TypeParamDecl` has no `Display` impl, so each entry is formatted by
-/// hand: bounds are joined with `" + "` (matching the trait-refinement join in the
-/// Trait hover arm) and a default is appended via `TypeExpr`'s `Display`. Task #6341.
-///
-/// **MIRRORED GRAMMAR — keep in sync.** `render_type_params` in
-/// `crates/reify-doc-build/src/build.rs` (task #6342) renders this same
-/// user-visible grammar (`name`, `": "` + bounds joined with `" + "`, `" = "` +
-/// default) for generated docs. The two exist separately only because they
-/// consume different shapes — `reify_ast::TypeParamDecl` here,
-/// `reify_ir::TypeParam` there — and the crates have no shared home for an
-/// AST/IR-agnostic renderer. Change one and the other must change too, or hover
-/// and the generated docs will disagree about the same declaration; if a shared
-/// crate ever becomes available, hoist a single renderer parameterized over the
-/// bound-name iterator.
+/// Each entry comes from [`reify_ast::render_type_param`]. The default goes in as
+/// the author's `TypeExpr`, so it renders as written (see
+/// [`format_type_alias_signature`]). Task #6341.
 fn format_type_params(params: &[reify_ast::TypeParamDecl]) -> String {
     if params.is_empty() {
         return String::new();
@@ -326,15 +315,11 @@ fn format_type_params(params: &[reify_ast::TypeParamDecl]) -> String {
     let entries: Vec<String> = params
         .iter()
         .map(|p| {
-            let mut entry = p.name.clone();
-            if !p.bounds.is_empty() {
-                entry.push_str(": ");
-                entry.push_str(&p.bounds.join(" + "));
-            }
-            if let Some(default) = &p.default {
-                entry.push_str(&format!(" = {default}"));
-            }
-            entry
+            reify_ast::render_type_param(
+                &p.name,
+                p.bounds.iter().map(String::as_str),
+                p.default.as_ref(),
+            )
         })
         .collect();
     format!("<{}>", entries.join(", "))
@@ -1418,7 +1403,7 @@ structure Bolt {
 
     /// `format_type_params` advertises `<T, U: Numeric, V: A + B = Int>`, but only
     /// the single-bound single-param shape (`<Q: Dimension>`, above) and the empty
-    /// shape were pinned. The `bounds.join(" + ")` and ` = {default}` branches are
+    /// shape were pinned. The multi-bound ` + ` join and the ` = default` suffix are
     /// both live — `lower_type_params_inner` (crates/reify-syntax/src/ts_parser.rs)
     /// fills `bounds` from a trait-bound list and `default` from the `default`
     /// field — and the same string is reused as the completion `detail`, so a

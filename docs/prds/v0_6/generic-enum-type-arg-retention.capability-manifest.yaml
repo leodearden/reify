@@ -17,17 +17,6 @@ tasks:
       paths:
       - docs/prds/v0_6/generic-data-carrying-enums.md
       expect: present
-  - name: probe-sets-landed-with-readme-rows
-    binding: The six per-leaf probe sets exist on main with README rows; they could
-      not ride the docs commit (tests/prd-gate/*.json is the C5 fail-wide catch-all
-      in decide_scope, pinned by test_verify_scope.sh PG-3).
-    verdict: PASS
-    delivered_check:
-      kind: grep
-      pattern: generic-enum-type-arg-retention-delta-probe-set\.json
-      paths:
-      - tests/prd-gate/README.md
-      expect: present
 - label: α2
   task_id: 8013
   title: 'generic-enum-type-arg-retention α2: bare generic-enum annotation rejected
@@ -136,8 +125,9 @@ tasks:
   capabilities:
   - name: s1-s3-4031-u1-flip
     binding: 'Probe set delta: S-1 exit 1 E_FALLBACK_TYPE; S-3 exit 1 "expects type";
-      4031 exit 1 "bound to both"; U-1 exit 0 W.v = 0.001 m. All red today (3 FAIL
-      + 1 UNPROVABLE).'
+      4031 exit 1 "bound to both"; U-1 exit 0 W.v = 0.001 m; S-4 binder form exit 1
+      "no matching overload for hb(" (moved from the beta set, esc-8014-3). All red
+      today (4 FAIL + 1 UNPROVABLE).'
     verdict: PASS
     delivered_check:
       kind: script

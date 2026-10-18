@@ -5,11 +5,17 @@ Why this file exists: the e2e
 (`crates/reify-eval/tests/solve_elastic_static_body_e2e.rs`) used to assert a
 terminal `BudgetReason` of `MaxIterations` specifically, and reddened the shared
 merge-verify intermittently with `Stalled`. Task 7414 relocated that
-discrimination to a deterministic unit pin
-(`crates/reify-solver-elastic/tests/adaptive_refinement_tests.rs::stall_pre_empts_the_iteration_cap`).
+discrimination to a deterministic unit pin, since replaced by
+`crates/reify-solver-elastic/tests/adaptive_refinement_tests.rs::the_iteration_cap_outranks_a_simultaneous_stall`
+(task 7449).
 The numbers below are what justified moving it rather than retuning it. They are
 a **point-in-time log**, not a contract: they date to one host, one gmsh build
 and one fixture, and nothing checks them.
+
+- **Superseded 2026-10 (task 7449):** the iteration cap now outranks a
+  simultaneous stall, so the e2e asserts `MaxIterations` exactly again; the unit
+  pin `stall_pre_empts_the_iteration_cap` was replaced by
+  `the_iteration_cap_outranks_a_simultaneous_stall`.
 
 ## Provenance
 
@@ -36,6 +42,11 @@ binary built once, idle host, `nproc=32`.
   refined tetrahedralization). The post-refine peak is 1002 dofs, against the
   fixture's 2_000_000 `max_dofs` cap.
 - **Flake rate, post-fix.** 25 of 25 consecutive runs passed in the same lane.
+- **Load model (added 2026-09-30).** Every number above was measured with the
+  pre-7448 tip load, an equal split of the resultant over the tip nodes; task
+  7448 replaced it with the consistent uniform traction
+  (`apply_patch_resultant`), and nothing here was re-measured, so do not compare
+  post-7448 measurements to these like-for-like.
 
 ## Hypothesis (NOT established fact) — RESOLVED by task 7411, see below
 

@@ -1107,7 +1107,10 @@ pub enum GeometryOp {
     /// - both `None` → planar 2-D offset (BRepOffsetAPI_MakeOffset on the wire);
     /// - `reference: Some(face)` → offset on a reference Surface (a `faces()`
     ///   sub-handle, resolved to an OCCT face via `get_shape` at execute time);
-    /// - `direction: Some([dx,dy,dz])` → offset in the given direction Vector3.
+    /// - `direction: Some([dx,dy,dz])` → planar offset, then displaced by
+    ///   `distance` along this dimensionless UNIT vector. Its magnitude never
+    ///   scales the displacement, and a zero-magnitude vector is rejected, so
+    ///   `vec3(0,0,2)` and `vec3(0,0,1)` lower to identical IR.
     ///
     /// A positive `distance` grows the curve outward (e.g. radius 10mm → 12mm).
     /// Produces fresh `BRepKind::Wire` geometry via the normal single-output
@@ -4283,6 +4286,44 @@ impl fmt::Display for QueryError {
 }
 
 impl std::error::Error for QueryError {}
+
+// `InvalidReference` is the only invalid-handle case; every other
+// `GeometryError` is a failure carrying its cause.
+impl GeometryError {
+    fn into_failure_text(self) -> String {
+        match self {
+            GeometryError::OperationFailed(msg) => msg,
+            other => other.to_string(),
+        }
+    }
+}
+
+impl From<GeometryError> for QueryError {
+    fn from(e: GeometryError) -> Self {
+        match e {
+            GeometryError::InvalidReference(id) => QueryError::InvalidHandle(id),
+            other => QueryError::QueryFailed(other.into_failure_text()),
+        }
+    }
+}
+
+impl From<GeometryError> for ExportError {
+    fn from(e: GeometryError) -> Self {
+        match e {
+            GeometryError::InvalidReference(id) => ExportError::InvalidHandle(id),
+            other => ExportError::FormatError(other.into_failure_text()),
+        }
+    }
+}
+
+impl From<GeometryError> for TessError {
+    fn from(e: GeometryError) -> Self {
+        match e {
+            GeometryError::InvalidReference(id) => TessError::InvalidHandle(id),
+            other => TessError::TessellationFailed(other.into_failure_text()),
+        }
+    }
+}
 
 /// Errors from constructing a [`BooleanOpParents`] value with mismatched
 /// slice lengths.
@@ -11454,6 +11495,10 @@ mod tests {
     // ── 3MF serializer tests ─────────────────────────────────────────────────
 
     /// Helper: build a 12-triangle unit cube mesh (8 vertices, 36 indices).
+    ///
+    /// Judgment call (task #7137): a deliberate local copy of the canonical
+    /// `reify_test_support::mesh_fixtures::unit_cube_mesh`, kept in step by
+    /// `crates/reify-ir/tests/cube_fixture_agreement.rs`, which also says why.
     fn unit_cube_mesh() -> Mesh {
         // 8 corners of a unit cube [0,1]^3
         #[rustfmt::skip]
@@ -11477,7 +11522,7 @@ mod tests {
             // -Y face
             0, 1, 5,  0, 5, 4,
             // +Y face
-            3, 6, 2,  3, 7, 6,
+            3, 7, 6,  3, 6, 2,
             // -X face
             0, 4, 7,  0, 7, 3,
             // +X face

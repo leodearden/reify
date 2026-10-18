@@ -62,6 +62,8 @@ mod engine_eval_commit_migration;
 mod joint_drive_cluster_formation;
 #[path = "harness_engine/reset_per_build_state_classification.rs"]
 mod reset_per_build_state_classification;
+#[path = "harness_engine/toleranced_equality_verdicts.rs"]
+mod toleranced_equality_verdicts;
 // Task #5196's capstone acceptance e2e lands here for the same reason #5056's
 // did: a NEW top-level `tests/*.rs` in a consolidatable crate would be an
 // anti-re-accretion violation (scripts/check-harness-baseline-registration.sh,
@@ -152,3 +154,7 @@ mod relate_static_verification_e2e;
 // as #5196's and #5360's above.
 #[path = "harness_engine/discrete_default_on_e2e.rs"]
 mod discrete_default_on_e2e;
+// Task #5418's DIC δ carrier e2e lands here for the same anti-re-accretion
+// reason as #5417's and #5415's above.
+#[path = "harness_engine/indeterminate_reason_carrier_e2e.rs"]
+mod indeterminate_reason_carrier_e2e;

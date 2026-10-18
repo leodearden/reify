@@ -9,47 +9,11 @@ use reify_kernel_gmsh::MeshingOptions;
 use reify_solver_elastic::refine_marked_elements;
 use reify_solver_elastic::volume_refine::{RefineError, refine_with_size_field};
 use reify_ir::{ElementOrderTag, Mesh, VolumeConnectivity, VolumeMesh};
+use reify_test_support::mesh_fixtures::unit_cube_mesh;
 
 // ---------------------------------------------------------------------------
 // Test fixture helpers
 // ---------------------------------------------------------------------------
-
-/// Minimal closed-surface unit cube (8 vertices, 12 outward-winding triangles).
-///
-/// Inline copy of `crates/reify-kernel-gmsh/tests/mesh_to_volume_tests.rs:19-48`.
-/// Duplicated rather than dev-dep'ing on `reify-kernel-manifold` to avoid an
-/// awkward layering. When B-rep test fixtures consolidate into a shared crate,
-/// this helper can move there.
-fn unit_cube_mesh() -> Mesh {
-    Mesh {
-        vertices: vec![
-            0.0_f32, 0.0, 0.0, // 0
-            1.0, 0.0, 0.0, // 1
-            1.0, 1.0, 0.0, // 2
-            0.0, 1.0, 0.0, // 3
-            0.0, 0.0, 1.0, // 4
-            1.0, 0.0, 1.0, // 5
-            1.0, 1.0, 1.0, // 6
-            0.0, 1.0, 1.0, // 7
-        ],
-        #[rustfmt::skip]
-        indices: vec![
-            // -Z bottom (outward = -Z, CW from +Z view)
-            0, 2, 1,  0, 3, 2,
-            // +Z top
-            4, 5, 6,  4, 6, 7,
-            // -Y front
-            0, 1, 5,  0, 5, 4,
-            // +Y back
-            3, 7, 6,  3, 6, 2,
-            // -X left
-            0, 4, 7,  0, 7, 3,
-            // +X right
-            1, 2, 6,  1, 6, 5,
-        ],
-        normals: None,
-    }
-}
 
 // ---------------------------------------------------------------------------
 // step-3: refine_with_size_field validation tests

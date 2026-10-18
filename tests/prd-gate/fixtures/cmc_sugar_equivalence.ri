@@ -1,0 +1,20 @@
+module cmc_sugar_equivalence
+
+// docs/prds/v0_6/catalog-membership-constraint.md §6 B11 (leaf γ).
+// The same model twice: the @solver_hint shorthand and the `in` constraint.
+// The annotated member comes first in its body (parse defect #8300).
+// After γ: HintForm.bolt_length and ConstraintForm.bolt_length both print 0.025 m, exit 0.
+// Baseline (main 2026-10-08): parse error (ConstraintForm); HintForm alone resolves to 0.024 m.
+structure HintForm {
+    @solver_hint("discrete_set", standard_bolt_lengths)
+    param bolt_length : Length = auto
+    constraint bolt_length >= 22.5mm
+    constraint bolt_length <= 25.5mm
+}
+
+structure ConstraintForm {
+    param bolt_length : Length = auto
+    constraint bolt_length in standard_bolt_lengths()
+    constraint bolt_length >= 22.5mm
+    constraint bolt_length <= 25.5mm
+}

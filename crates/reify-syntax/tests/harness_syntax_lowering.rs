@@ -65,10 +65,14 @@
 //!
 //! Module order: alphabetical by stem. No module here is used by another and none carries a
 //! rationale comment whose ordering matters, so there is no accretion order to preserve.
+#[path = "harness_syntax_lowering/annotation_after_member_lowering_tests.rs"]
+mod annotation_after_member_lowering_tests;
 #[path = "harness_syntax_lowering/auto_binding_sites_lowering_tests.rs"]
 mod auto_binding_sites_lowering_tests;
 #[path = "harness_syntax_lowering/aux_at_lowering_tests.rs"]
 mod aux_at_lowering_tests;
+#[path = "harness_syntax_lowering/binder_body_precedence_lowering_tests.rs"]
+mod binder_body_precedence_lowering_tests;
 #[path = "harness_syntax_lowering/enum_named_field_lowering_tests.rs"]
 mod enum_named_field_lowering_tests;
 #[path = "harness_syntax_lowering/enum_type_param_lowering_tests.rs"]
@@ -77,6 +81,8 @@ mod enum_type_param_lowering_tests;
 mod imaginary_literal_lowering_tests;
 #[path = "harness_syntax_lowering/joint_with_lowering_tests.rs"]
 mod joint_with_lowering_tests;
+#[path = "harness_syntax_lowering/method_call_rejection_lowering_tests.rs"]
+mod method_call_rejection_lowering_tests;
 #[path = "harness_syntax_lowering/namespaced_ref_lowering_tests.rs"]
 mod namespaced_ref_lowering_tests;
 #[path = "harness_syntax_lowering/numeric_separators_lowering_tests.rs"]

@@ -509,10 +509,10 @@ assert "regression pin: refuse mode STILL exits 125 for the same binary warn-ope
 #
 # NOTE for future editors: do NOT add REIFY_AUDIT_FRESHNESS_STRICT to
 # tests/infra/run-all-ambient-vars.manifest. That ledger records only vars
-# ambiently INJECTED into the run_all.sh pool (from verify.sh's plan line or
-# dark-factory-orchestrator.yaml's verify_env); this var is injected by
-# neither, and test_run_all_ambient_isolation.sh asserts SET EQUALITY, so an
-# unwarranted row would RED the gate.
+# ambiently INJECTED into the run_all.sh pool (its header lists the injection
+# sources); this var is injected by none of them, and
+# test_run_all_ambient_isolation.sh asserts SET EQUALITY, so an unwarranted
+# row would RED the gate.
 # ==============================================================================
 echo ""
 echo "--- Check 18: REIFY_AUDIT_FRESHNESS_STRICT=1 restores fail-closed under warn-open ---"

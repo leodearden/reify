@@ -31,7 +31,7 @@ module dcr_material_dimension_silent
 //   compile, so prb_cantilever_beam and material_field_si never run and no
 //   spring_rate is produced. Machine pin: the gate-resident
 //   `ctor_conformance_corpus_residual_entries_are_all_live` (reify-compiler,
-//   harness_compilation_surface/ctor_conformance_corpus_survey.rs).
+//   harness_ctor_conformance_survey/disposition.rs).
 //   The positive twin `dcr_material_dimension_correct.ri` re-measured EXIT 0,
 //   spring_rate 1.3802083333333335, unchanged.
 //   How β (#6941) reads B4 instead: docs/notes/ctor-conformance-flip-leaf-signals.md.

@@ -353,6 +353,7 @@ tasks:
       pattern: reify-language-spec
       paths:
       - scripts/verify.sh
+      - scripts/reify_verify/
       expect: present
   - name: infra-test-keying-file-exists-and-is-live
     binding: 'G3: scripts/verify-pipeline-infra-tests.txt is present at HEAD (314

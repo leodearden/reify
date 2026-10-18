@@ -34,8 +34,8 @@ use crate::underdetermined_support::{
 /// `c(a,b) = (a+b−10)² + (a−b−2)²` — positive definite, unique global minimum
 /// `c = 0` at (6,4), with `∇²c = 4·I`, i.e. `c ≈ 2(δa² + δb²)` near the root.
 /// A `Solved` verdict requires `c ≤ FEASIBILITY_THRESHOLD = 1e-12`
-/// (`crates/reify-constraints/src/solver.rs:14`), which forces
-/// `|δa|, |δb| ≤ √(5e-13) ≈ 7.07e-7`. So 1e-6 is IMPLIED BY THE SOLVE
+/// (`const FEASIBILITY_THRESHOLD` in `crates/reify-constraints/src/solver.rs`),
+/// which forces `|δa|, |δb| ≤ √(5e-13) ≈ 7.07e-7`. So 1e-6 is IMPLIED BY THE SOLVE
 /// SUCCEEDING AT ALL, with ~30% headroom — it is not a threshold chosen to fit
 /// an observed run.
 ///
