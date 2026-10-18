@@ -525,7 +525,7 @@ that reintroduces guard 1's class wholesale and walks back into the §14 regime.
   (`mark_pending #N`, `self.pending #N`, `"blocked on #N"`).
 
   The grammar lives in `crates/reify-audit/src/ptodo_promise.rs`. Measurements, false-positive
-  sites and the declined widenings are in §20.
+  sites and the declined widenings are in §21.
 
 ### 8.2 Citation resolution
 
@@ -636,7 +636,7 @@ ptodo.rs`'s `prd_relative_cite` rustdoc points here rather than restating it.
   `has_malformed_cite`'s pass 2, byte-unchanged.
 - *Why δ-C resolves it.* In ordinary prose no such mandate applies. The defect δ-C hunts, a
   terminal owner, does not depend on the spelling: 37 of the 53 lines δ-C's live run would
-  report spell their owner this way (§20).
+  report spell their owner this way (§21).
 - *The bound is shared.* δ-C reads the spelling through its own span recogniser,
   `legacy_task_cite_occurrences`, under the SAME `N ≤ 99` bound as the PRD-relative
   register. So `deferred to task 10` is no cite, just as `task #10` is not.
@@ -694,7 +694,7 @@ looks green locally and goes red on `main`.
 `STRUCTURAL_KINDS`, the §6.6 fingerprint grammar, `ptodo-baseline-gen` and the §8.4 severity
 map are all untouched. Under §19(a) the per-merge ratchet runs DB-absent, where the lane
 contributes nothing. It therefore adds **zero** baseline entries and cannot red a commit
-gate. Its real-tree findings are §19(b) sweep candidates (§20).
+gate. Its real-tree findings are §19(b) sweep candidates (§21).
 
 **A discharged phantom-tracking line adds NO new kind (task #6816).** A `phantom-tracking`
 phrase on a line that ALSO carries a canonical `#NNNN` cite is discharged: it emits no
@@ -1649,7 +1649,7 @@ Under (a) the baseline diff is empty; the six lines simply become sweep candidat
   - The `*_live` on-demand checks (`g_allow_repo_wide_hard_gate_live`, `engine_seam_g_allow_owner_cites_resolve_live_real_db`) read statuses the same way.
   - CLAUDE.md §Memory & tasks is unchanged; the rule ("never reach around that API to tasks.db") now holds without exception.
 
-## 20. Assessment 2026-10-11 (task #7098): lane δ-C — owner-position prose cites ADOPTED
+## 21. Assessment 2026-10-11 (task #7098): lane δ-C — owner-position prose cites ADOPTED
 
 **Premise.** A prose promise outside the marker grammar escaped every gate. The worked case
 is `modal_analysis.ri`'s `Part` block, which promised growth while citing #4578 for about

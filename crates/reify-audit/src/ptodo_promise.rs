@@ -1,14 +1,14 @@
 //! PTODO lane δ-C grammar: decides whether a task cite in a comment line
 //! names the OWNER of work still to be done, as opposed to mentioning it as
 //! provenance. Normative grammar and measurements:
-//! `docs/prds/reify-audit-ptodo-detector.md` §8.1 (δ-C), §20.
+//! `docs/prds/reify-audit-ptodo-detector.md` §8.1 (δ-C), §21.
 
 use crate::scan_util::{contains_word, is_word_byte};
 
 /// Rule (L): a phrase that, ending immediately before a cite, makes the cited
 /// task the owner of the work. Closed: widening it is gated by PRD §16's
 /// standing rule, and the measured-and-declined candidates (`until`, `owns`,
-/// …) are recorded in §20.
+/// …) are recorded in §21.
 const OWNER_PHRASES: &[&str] = &[
     "owned by",
     "tracked by",
@@ -23,7 +23,7 @@ const OWNER_PHRASES: &[&str] = &[
 ];
 
 /// Rule (S): the words that make a `#N lands` clause a condition on the
-/// future rather than narration (PRD §20).
+/// future rather than narration (PRD §21).
 const SUBORDINATORS: &[&str] = &["until", "when", "once", "after", "before"];
 
 /// `true` when the cite spanning `line[head..end]` is in owner position.

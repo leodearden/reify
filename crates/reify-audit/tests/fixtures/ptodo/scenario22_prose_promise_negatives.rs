@@ -3,7 +3,7 @@
 // findings, which is what makes it an over-fire guard rather than a smoke test.
 //
 // δ-C fires on a cite in OWNER position. Each block below is one measured
-// false-positive class (PRD §20) whose cite is provenance or not a task at
+// false-positive class (PRD §21) whose cite is provenance or not a task at
 // all. tests/ptodo.rs and tests/infra/test_reify_audit_ptodo.sh seed every
 // cited id TERMINAL, the worst case: a terminal owner is precisely what turns
 // a `Cited` entry into a High `orphaned` finding, so silence proves the

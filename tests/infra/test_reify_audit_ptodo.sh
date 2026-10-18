@@ -1576,7 +1576,7 @@ INSERT INTO tasks (tag, id, status) VALUES ('master', 8888, 'done');
     # (h) LANE δ-C HARD GATE (task #7098): an ordinary `//` comment that names
     #     a TERMINAL task as the OWNER of future work (`owned by #N`,
     #     `deferred to task N`, `#N will …`, `until #N lands`) is classified
-    #     orphaned→High → reify-audit exits NON-ZERO.  Grammar: PRD §8.1, §20.
+    #     orphaned→High → reify-audit exits NON-ZERO.  Grammar: PRD §8.1, §21.
     #
     #     A direct transposition of scenario (g), inheriting its fixes and its
     #     orphan/control/benign triple, with two differences:

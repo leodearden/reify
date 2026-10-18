@@ -22,7 +22,7 @@
 //!   naming a task as the owner of future work (`owned by #N`, `deferred to
 //!   task N`, `#N will …`, `until #N lands`) feeds that cite to β, while a
 //!   provenance mention (`introduced by #N`) stays silent. Grammar:
-//!   [`crate::ptodo_promise`]; PRD §8.1, §20.
+//!   [`crate::ptodo_promise`]; PRD §8.1, §21.
 //!
 //! A single precedence-correct `scan_file` pass feeds both lanes so they
 //! never drift. Only file enumeration (`GitOps::ls_files`), content reads
@@ -600,7 +600,7 @@ fn has_malformed_cite(line: &str) -> bool {
 /// `task-N`, `task_N` or `tasks N` (case-insensitive, word-bounded on both
 /// sides, `N` per [`digit_run_id`]), yielded as `(head, end, id)` in source order —
 /// `head` the byte offset of the `t`, `end` one past the last digit. Consumed
-/// only by lane δ-C (PRD §8.2, §20).
+/// only by lane δ-C (PRD §8.2, §21).
 ///
 /// [`has_malformed_cite`]'s pass 2 is the deliberately BROADER recogniser of a
 /// citation ATTEMPT (any digit, no right boundary, no length cap) and stays
@@ -1292,7 +1292,7 @@ enum LineClass {
 ///    uncited deferral comment produces no entry.
 /// 8. lane δ-C (`//`-comment languages): an ordinary full-line `//` comment,
 ///    not a `// G-allow:` marker → `Cited(owner-position cites)`, via
-///    [`promise_owner_cites`]; no entry when it has none. PRD §8.1, §20.
+///    [`promise_owner_cites`]; no entry when it has none. PRD §8.1, §21.
 fn scan_file(content: &str, lang: SweptLang) -> Vec<(usize, LineClass, String)> {
     let mut out = Vec::new();
     let mut prev: Option<&str> = None;
