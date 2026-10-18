@@ -1446,10 +1446,11 @@ mod cli {
     /// Duplicate flags follow last-wins semantics.
     ///
     /// The pre-done hook wrapper (`scripts/reify-audit-predone-wrapper.sh`)
-    /// passes `--tasks-file <snapshot> --runs-db <db> --project-root <root>`
+    /// passes `--fused-memory-url <url> --runs-db <db> --project-root <root>`
     /// *before* forwarding `$@`. Callers can override any of those defaults by
-    /// appending their own flags. This test locks that the last `--tasks-file`
-    /// occurrence wins, so the wrapper's assumption never silently breaks.
+    /// appending their own flags. This test observes last-wins through
+    /// `--tasks-file`, the one flag a hermetic fixture can observe, so the
+    /// wrapper's assumption never silently breaks.
     ///
     /// See the `parse_args` doc-comment in `src/bin/reify-audit.rs` for the
     /// authoritative description of the last-wins contract.

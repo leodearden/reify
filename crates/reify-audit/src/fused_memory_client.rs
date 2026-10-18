@@ -1,9 +1,12 @@
 //! Minimal sync MCP HTTP client for loading [`TaskMetadata`] from
 //! fused-memory.
 //!
-//! Used by the `reify-audit` binary's production loader path (T-4). The
-//! JSON-file loader (`--tasks-file <path>`) remains for tests and one-off
-//! offline runs; see `bin/reify-audit.rs`.
+//! This is the `reify-audit` binary's production loader (T-4), and
+//! [`task_metadata_from_wire`] is the only fused-memory-wire → [`TaskMetadata`]
+//! adapter. Its production callers are `scripts/reify-audit-predone-wrapper.sh`
+//! (pre-done: one `get_task`) and the `/audit` skill (sweep: one `get_tasks`).
+//! `--tasks-file <path>` reads already-`TaskMetadata`-shaped test fixtures
+//! only; see `bin/reify-audit.rs`.
 //!
 //! ## Wire protocol
 //!
@@ -74,9 +77,7 @@ impl std::error::Error for LoadError {}
 ///
 /// [`TaskMetadata::done_at`] is the done-flip stamp when fused-memory supplies
 /// `metadata.done_at`, otherwise it is approximated from `updatedAt` (last-edit
-/// time), derived like the wire→snapshot jq filter feeding `--tasks-file`. See
-/// `docs/architecture-audit/f-infra-design.md` §11.2 (residual divergences:
-/// §11.2.1).
+/// time). See `docs/architecture-audit/f-infra-design.md` §11.2.
 pub struct FusedMemoryClient {
     url: String,
     session_id: String,
@@ -352,11 +353,11 @@ fn task_metadata_from_wire(v: &Value) -> Option<TaskMetadata> {
     })
 }
 
-/// `done_at` of a `done` task, mirroring the precedence in
-/// `scripts/reify-audit-snapshot-filter.jq`: an explicit epoch-seconds
-/// `metadata.done_at` wins, else the `updatedAt` proxy. Why, and the residual
-/// non-integer-stamp divergence from the jq path:
-/// `docs/architecture-audit/f-infra-design.md` §11.2.1.
+/// `done_at` of a `done` task. An integer epoch-seconds `metadata.done_at`
+/// wins. Any other stamp (string, float, null, false, absent) falls back to
+/// the `updatedAt` proxy for THAT row, and an unparseable `updatedAt` yields
+/// `None` for that row only, so one malformed row never fails the corpus.
+/// Why: `docs/architecture-audit/f-infra-design.md` §11.2.
 fn done_flip_epoch(task: &Value, metadata: &Value) -> Option<i64> {
     metadata.get("done_at").and_then(Value::as_i64).or_else(|| {
         task.get("updatedAt")

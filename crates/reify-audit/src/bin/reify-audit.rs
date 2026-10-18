@@ -92,7 +92,7 @@ fn print_usage(out: &mut dyn Write) {
         pattern_flag::TOKENS.join("|")
     );
     let _ = writeln!(out, "                           PDIAG: INV-SF-6 codes-mandatory ratchet (opt-in; see docs/notes/diagnostic-severity-policy.md)");
-    let _ = writeln!(out, "  --tasks-file <path>      JSON array of TaskMetadata (overrides live loader; for tests)");
+    let _ = writeln!(out, "  --tasks-file <path>      TaskMetadata JSON-array test fixture; overrides the live loader (fixtures only)");
     let _ = writeln!(out, "  --fused-memory-url <url> MCP endpoint (default: $FUSED_MEMORY_URL or http://localhost:8002/mcp)");
     let _ = writeln!(out, "  --runs-db <path>         SQLite runs.db path (default: data/orchestrator/runs.db)");
     let _ = writeln!(out, "  --project-root <path>    Repo root for git ops + fused-memory project key (default: .)");
@@ -126,9 +126,10 @@ fn print_usage(out: &mut dyn Write) {
     let _ = writeln!(out, "                                   Soak by running this binary directly.");
     let _ = writeln!(out);
     let _ = writeln!(out, "Tasks source:");
-    let _ = writeln!(out, "  By default, tasks are loaded live from the fused-memory MCP server.");
-    let _ = writeln!(out, "  Pass --tasks-file <path> to load from a JSON array fixture instead");
-    let _ = writeln!(out, "  (used by the integration test suite).");
+    let _ = writeln!(out, "  Tasks are loaded live from the fused-memory MCP server (--pre-done: one");
+    let _ = writeln!(out, "  get_task; otherwise one get_tasks). Every production caller (the pre-done");
+    let _ = writeln!(out, "  wrapper, the /audit skill) uses this live loader. --tasks-file <path> is");
+    let _ = writeln!(out, "  for test fixtures only.");
     let _ = writeln!(out);
     let _ = writeln!(out, "Output:");
     let _ = writeln!(out, "  stderr: JSON array of Finding objects");
@@ -389,7 +390,7 @@ fn parse_args(argv: &[String]) -> Result<Args, String> {
 
     // NOTE: Last-wins semantics for duplicate flags.
     // When a flag appears more than once (e.g. the pre-done hook wrapper passes
-    // its own --tasks-file, --runs-db, and --project-root before forwarding $@
+    // its own --fused-memory-url, --runs-db, and --project-root before forwarding $@
     // which may include caller-supplied overrides), the last occurrence wins.
     // The wrapper relies on this contract: it prepends its defaults so that
     // any flag in the caller's $@ implicitly overrides the wrapper-supplied
