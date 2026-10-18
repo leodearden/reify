@@ -9,6 +9,7 @@ mod branch_signature;
 mod calculus;
 mod complex;
 mod dual;
+mod dual_builtin_rules;
 mod dual_eval;
 mod field_reductions;
 pub mod interp;
