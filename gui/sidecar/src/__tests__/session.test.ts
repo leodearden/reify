@@ -773,7 +773,7 @@ describe('SidecarSession', () => {
   });
 
   it('tool_result inbound with no matching tool_use emits error outbound', async () => {
-    // No send_message dispatched — pendingToolUseIds is empty
+    // No send_message dispatched — no invocation is in flight, so nothing can be claimed
     await session.init();
     outputs.length = 0;
 
@@ -895,13 +895,9 @@ describe('SidecarSession multi-turn streaming', () => {
   });
 
   it('text_delta events emitted for both turns in a multi-turn invocation', async () => {
-    // Simulate two assistant turns within a single SDK invocation:
-    // Turn 1: thinking + text + tool_use (message.id = 'msg_t1')
-    // Turn 2: new text, shorter than turn-1 accumulated length (message.id = 'msg_t2')
-    //
-    // The new-turn boundary is detected by the message.id change: when event.message.id
-    // switches from 'msg_t1' to 'msg_t2', both lastTextLen and lastThinkingLen reset to 0,
-    // so turn-2's first delta emits from offset 0 regardless of relative length.
+    // Two assistant turns (message.id msg_t1, then msg_t2) in one invocation. The
+    // turn-boundary and delta cases are pinned on the reducer in streamEvents.test.ts;
+    // this is the end-to-end smoke through the spawned child's stdout.
     vi.mocked(spawn).mockImplementation((() => createMockProcess([
       // Turn 1 partial events (message.id = 'msg_t1')
       { type: 'assistant', message: { id: 'msg_t1', content: [{ type: 'thinking', thinking: 'Let' }] } },
@@ -948,239 +944,30 @@ describe('SidecarSession multi-turn streaming', () => {
     expect(deltaContents).toContain(' there!');
   });
 
-  it('text_delta counters reset on new message.id even when turn-2 text is longer than turn-1', async () => {
-    // Turn 1: short text 'Hi' (len 2) + tool_use, under message.id='msg_t1'
-    // Turn 2: longer text (len 46) under message.id='msg_t2'
-    //
-    // Bug (shrink heuristic only): turn-2 text is LONGER than turn-1 accumulated length,
-    // so `block.text.length < lastTextLen` never fires. lastTextLen stays at 2 from turn-1.
-    // Turn-2 first delta = text.slice(2) = 'llo world this is a much longer turn-2 reply'
-    // Fix (id-based reset): message.id change from 'msg_t1' → 'msg_t2' resets lastTextLen=0.
-    // Turn-2 first delta = full turn-2 text.
+  it('forwards the missing-message.id notice once, correlated to the turn, and mirrors it to stderr', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     vi.mocked(spawn).mockImplementation((() => createMockProcess([
-      // Turn 1: short text + tool_use under msg_t1
-      { type: 'assistant', message: { id: 'msg_t1', content: [{ type: 'text', text: 'Hi' }] } },
-      { type: 'assistant', message: { id: 'msg_t1', content: [
-        { type: 'text', text: 'Hi' },
-        { type: 'tool_use', id: 'toolu_longer1', name: 'reify_get_source', input: { file: 'f.ri' } },
-      ] } },
-      // Turn 2: longer text under msg_t2 — no length shrink, only id changes
-      { type: 'assistant', message: { id: 'msg_t2', content: [
-        { type: 'text', text: 'Hello world this is a much longer turn-2 reply' },
-      ] } },
-      { type: 'result', session_id: 'sess-longer-text' },
-    ])) as any);
-
-    await session.init();
-    outputs.length = 0;
-
-    await session.handleMessage({ type: 'send_message', id: 'msg-longer-text', text: 'Test longer turn-2' });
-
-    const textDeltas = outputs.filter((o) => o.type === 'text_delta');
-    const deltaContents = textDeltas.map((o) => (o as any).content);
-
-    // Turn 1 delta present
-    expect(deltaContents).toContain('Hi');
-
-    // Turn 2 first delta must be the FULL text — not a slice from offset 2
-    // Broken: 'llo world this is a much longer turn-2 reply'
-    // Fixed:  'Hello world this is a much longer turn-2 reply'
-    expect(deltaContents).toContain('Hello world this is a much longer turn-2 reply');
-  });
-
-  it('thinking_delta counters reset on new message.id even when turn-2 thinking is longer than turn-1', async () => {
-    // Turn 1: short thinking 'Hm' (len 2) + tool_use, under message.id='msg_t1'
-    // Turn 2: longer thinking (len 63) under message.id='msg_t2'
-    //
-    // Bug (shrink heuristic only): turn-2 thinking is LONGER than turn-1 accumulated length,
-    // so `block.thinking.length < lastThinkingLen` never fires. lastThinkingLen stays at 2.
-    // Turn-2 first delta = thinking.slice(2) = 'et me carefully reason about a much longer-form chain of thought'
-    // Fix (id-based reset): message.id change from 'msg_t1' → 'msg_t2' resets lastThinkingLen=0.
-    // Turn-2 first delta = full turn-2 thinking string.
-    vi.mocked(spawn).mockImplementation((() => createMockProcess([
-      // Turn 1: short thinking + tool_use under msg_t1
-      { type: 'assistant', message: { id: 'msg_t1', content: [{ type: 'thinking', thinking: 'Hm' }] } },
-      { type: 'assistant', message: { id: 'msg_t1', content: [
-        { type: 'thinking', thinking: 'Hm' },
-        { type: 'tool_use', id: 'toolu_think_longer1', name: 'reify_get_source', input: { file: 'f.ri' } },
-      ] } },
-      // Turn 2: longer thinking under msg_t2 — no length shrink, only id changes
-      { type: 'assistant', message: { id: 'msg_t2', content: [
-        { type: 'thinking', thinking: 'Let me carefully reason about a much longer-form chain of thought' },
-      ] } },
-      { type: 'result', session_id: 'sess-longer-thinking' },
-    ])) as any);
-
-    await session.init();
-    outputs.length = 0;
-
-    await session.handleMessage({ type: 'send_message', id: 'msg-longer-thinking', text: 'Test longer turn-2 thinking' });
-
-    const thinkingDeltas = outputs.filter((o) => o.type === 'thinking_delta');
-    const deltaContents = thinkingDeltas.map((o) => (o as any).content);
-
-    // Turn 1 delta present
-    expect(deltaContents).toContain('Hm');
-
-    // Turn 2 first delta must be the FULL thinking string — not a slice from offset 2
-    // Broken: 'et me carefully reason about a much longer-form chain of thought'
-    // Fixed:  'Let me carefully reason about a much longer-form chain of thought'
-    expect(deltaContents).toContain('Let me carefully reason about a much longer-form chain of thought');
-  });
-
-  it('handles assistant event without message.id gracefully — no crash, deltas emit correctly', async () => {
-    // Suppress console.error noise from the no-id warning branch
-    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
-
-    // Verify the fallback branch (event.message.id absent):
-    // (a) No exception thrown — session completes normally.
-    // (b) Deltas emit correctly for monotonically growing text within a single turn.
-    // (c) Counters do not reset spuriously between partial updates.
-    //
-    // Without message.id the `typeof event.message.id === 'string'` guard never fires,
-    // so lastTextLen accumulates normally (no reset) and only incremental deltas emit.
-    vi.mocked(spawn).mockImplementation((() => createMockProcess([
-      // No message.id on any event — exercises the fallback path
-      { type: 'assistant', message: { content: [{ type: 'text', text: 'Hello' }] } },
-      { type: 'assistant', message: { content: [{ type: 'text', text: 'Hello world' }] } },
+      { type: 'assistant', message: { content: [{ type: 'text', text: 'a' }] } },
+      { type: 'assistant', message: { content: [{ type: 'text', text: 'ab' }] } },
       { type: 'result', session_id: 'sess-no-id' },
     ])) as any);
 
-    await session.init();
-    outputs.length = 0;
+    try {
+      await session.handleMessage({ type: 'send_message', id: 'msg-no-id', text: 'Test no id' });
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn.mock.calls[0]?.join(' ')).toMatch(/degraded_turn_boundary.*missing message\.id/);
+    } finally {
+      warn.mockRestore();
+    }
 
-    // (a) Must complete without throwing
-    await expect(
-      session.handleMessage({ type: 'send_message', id: 'msg-no-id', text: 'Test no id' }),
-    ).resolves.toBeUndefined();
-
-    const textDeltas = outputs.filter((o) => o.type === 'text_delta');
-    const deltaContents = textDeltas.map((o) => (o as any).content);
-
-    // (b) Deltas emit correctly: first partial → 'Hello', second partial → ' world' (incremental only)
-    expect(deltaContents).toContain('Hello');
-    expect(deltaContents).toContain(' world');
-
-    // (c) No spurious reset: the full 'Hello world' must NOT appear as a single delta,
-    // proving lastTextLen was NOT zeroed between the two partial events.
-    expect(deltaContents).not.toContain('Hello world');
-
-    // (d) Notice event emitted to host via onOutput — one-shot, first no-id event triggers it.
-    // Acceptance criterion #3: existing test must assert the new notice-event surface.
-    const noticeEvents = outputs.filter((o) => o.type === 'notice');
-    expect(noticeEvents).toHaveLength(1);
-    expect((noticeEvents[0] as any).code).toBe('degraded_turn_boundary');
-    expect((noticeEvents[0] as any).message).toContain('message.id');
-    expect((noticeEvents[0] as any).id).toBe('msg-no-id');
-
-    // (e) console.error fires exactly once across two no-id events (one-shot guard),
-    // and the warning text references 'missing message.id' — the sole human-debugging
-    // signal that turn-boundary detection has degraded.
-    expect(consoleSpy).toHaveBeenCalledTimes(1);
-    expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('missing message.id'));
-
-    consoleSpy.mockRestore();
-  });
-
-  it('emits onOutput error event exactly once when assistant events lack message.id (one-shot semantics)', async () => {
-    // Verify one-shot guard: across multiple no-id events in a single invokeSdk call,
-    // exactly one error event is emitted (the guard must not fire on subsequent no-id events).
-    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
-
-    vi.mocked(spawn).mockImplementation((() => createMockProcess([
-      // Three assistant events, all lacking message.id — exercises the one-shot guard
-      { type: 'assistant', message: { content: [{ type: 'text', text: 'a' }] } },
-      { type: 'assistant', message: { content: [{ type: 'text', text: 'ab' }] } },
-      { type: 'assistant', message: { content: [{ type: 'text', text: 'abc' }] } },
-      { type: 'result', session_id: 'sess-no-id-oneshot' },
-    ])) as any);
-
-    await session.init();
-    outputs.length = 0;
-
-    await session.handleMessage({ type: 'send_message', id: 'msg-oneshot', text: 'Test' });
-
-    consoleSpy.mockRestore();
-
-    // Exactly one notice emission across three no-id events (one-shot guard fires only once)
-    const noticeEvents = outputs.filter((o) => o.type === 'notice');
-    expect(noticeEvents).toHaveLength(1);
-
-    // Notice correlates to the in-flight send_message id
-    expect((noticeEvents[0] as any).id).toBe('msg-oneshot');
-
-    // Structured discriminator via code field; message references message.id for human readability
-    expect((noticeEvents[0] as any).code).toBe('degraded_turn_boundary');
-    expect((noticeEvents[0] as any).message).toContain('message.id');
-
-    // Sanity: text deltas still emit — notice event must NOT short-circuit normal streaming
-    expect(outputs.some((o) => o.type === 'text_delta')).toBe(true);
-
-    // NOTE: Host-side non-terminal contract is verified by the claudeIntegration test
-    // 'claude-notice event preserves in-flight turn (non-terminal)' in
-    // gui/src/__tests__/claudeIntegration.test.ts. The 'notice' variant is handled by a
-    // dedicated non-terminal case in claudeStore.ts — no cancelAndFlush, no sessionStatus
-    // change, no in-flight assistant message mutation.
-  });
-
-  it('mixed id-presence within a single invocation: warning fires exactly once, no-id event does not reset, msg_t2 reset emits full delta', async () => {
-    // Verify mixed id-presence semantics across a 3-event sequence:
-    //   event 1: id='msg_t1'  → id-change reset, currentAssistantMessageId='msg_t1', delta='Hello'
-    //   event 2: no id        → one-shot warning fires (console.error + notice), NO reset,
-    //                           lastTextLen stays at 5, delta=' world' (continuation)
-    //   event 3: id='msg_t2'  → id-change reset (msg_t2 != msg_t1), delta='Goodbye' (full)
-    //
-    // Key invariants:
-    //  - console.error fires exactly once (one-shot across the whole invocation)
-    //  - no-id event does NOT reset lastTextLen (delta is ' world', not 'Hello world')
-    //  - id-change reset on msg_t2 produces the full 'Goodbye' from offset 0
-    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
-
-    vi.mocked(spawn).mockImplementation((() => createMockProcess([
-      // event 1: id-bearing, triggers turn-1 reset; text 'Hello' (len=5)
-      { type: 'assistant', message: { id: 'msg_t1', content: [{ type: 'text', text: 'Hello' }] } },
-      // event 2: no message.id, triggers one-shot warning; text 'Hello world' (len=11, delta=' world')
-      { type: 'assistant', message: { content: [{ type: 'text', text: 'Hello world' }] } },
-      // event 3: new id 'msg_t2', triggers id-change reset; text 'Goodbye' (delta='Goodbye' from offset 0)
-      { type: 'assistant', message: { id: 'msg_t2', content: [{ type: 'text', text: 'Goodbye' }] } },
-      { type: 'result', session_id: 'sess-mixed-id' },
-    ])) as any);
-
-    await session.init();
-    outputs.length = 0;
-
-    await session.handleMessage({ type: 'send_message', id: 'msg-mixed', text: 'Mixed id test' });
-
-    // 1. console.error fires exactly once across the entire invocation (one-shot guard spans
-    //    both the no-id event and the subsequent id-bearing event without re-triggering).
-    expect(consoleSpy).toHaveBeenCalledTimes(1);
-    expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('missing message.id'));
-
-    // 2. Exactly one notice event, correlating to the in-flight send_message id.
-    const noticeEvents = outputs.filter((o) => o.type === 'notice');
-    expect(noticeEvents).toHaveLength(1);
-    expect((noticeEvents[0] as any).code).toBe('degraded_turn_boundary');
-    expect((noticeEvents[0] as any).message).toContain('message.id');
-    expect((noticeEvents[0] as any).id).toBe('msg-mixed');
-
-    // 3. Text delta assertions — verify all three externally observable deltas.
-    const textDeltas = outputs.filter((o) => o.type === 'text_delta');
-    const deltaContents = textDeltas.map((o) => (o as any).content);
-
-    // event 1 (msg_t1): id-change reset → lastTextLen=0 → full 'Hello' emits as delta
-    expect(deltaContents).toContain('Hello');
-
-    // event 2 (no id): no reset → lastTextLen stays at 5 → only ' world' slice emits
-    expect(deltaContents).toContain(' world');
-
-    // Absence check: 'Hello world' as a single delta would indicate a spurious reset on the
-    // no-id event (i.e. lastTextLen wrongly zeroed), producing a full-string delta from offset 0.
-    expect(deltaContents).not.toContain('Hello world');
-
-    // event 3 (msg_t2): id-change reset (msg_t2 !== msg_t1) → lastTextLen=0 → 'Goodbye' from offset 0
-    expect(deltaContents).toContain('Goodbye');
-
-    consoleSpy.mockRestore();
+    expect(outputs.filter((o) => o.type === 'notice')).toEqual([{
+      type: 'notice',
+      id: 'msg-no-id',
+      code: 'degraded_turn_boundary',
+      message: expect.stringContaining('message.id'),
+    }]);
+    expect(outputs.filter((o) => o.type === 'text_delta').map((o) => (o as any).content)).toEqual(['a', 'b']);
+    expect(outputs.at(-1)).toEqual({ type: 'done', id: 'msg-no-id' });
   });
 });
 
@@ -1199,11 +986,11 @@ describe('SidecarSession reset-boundary tool correlation preservation', () => {
     vi.mocked(spawn).mockReset();
   });
 
-  it('new-turn reset-boundary preserves pending tool_use for subsequent tool_result (text channel)', async () => {
-    // Turn 1: long text + tool_use (registers toolu_pending in toolNameById).
-    // Turn 2: new message.id triggers id-change reset (length counters only).
-    // Invariant: the id-change reset must NOT clear toolNameById/pendingToolUseIds,
-    // so a subsequent tool_result for toolu_pending forwards correctly.
+  it('a tool_use announced before a new turn can still be answered after it', async () => {
+    // Turn 1 announces toolu_pending; turn 2 (a new message.id) restarts the delta offsets
+    // only. The session must keep the announced tool_use claimable across that event, so
+    // a later tool_result for it forwards. The reducer half is pinned in
+    // streamEvents.test.ts ('keeps a tool_use claimable across a turn boundary').
     const { mockProc, stdout, stdinLines } = makeMockProc([
       { type: 'text', text: 'Hello world!' },
       { type: 'tool_use', id: 'toolu_pending', name: 'reify_x', input: {} },
@@ -1218,7 +1005,7 @@ describe('SidecarSession reset-boundary tool correlation preservation', () => {
       text: 'Reset boundary text test',
     });
 
-    // Wait for tool_call outbound — guarantees tool_use is registered in toolNameById
+    // Wait for tool_call outbound — the tool_use is now announced and claimable
     await toolCallWait;
 
     // Set up wait for text_delta 'Hi' BEFORE pushing the turn-2 event
@@ -1227,16 +1014,15 @@ describe('SidecarSession reset-boundary tool correlation preservation', () => {
       (m) => m.type === 'text_delta' && (m as any).content === 'Hi',
     );
 
-    // Push turn 2: new message.id triggers id-change reset (lastTextLen=0, lastThinkingLen=0)
+    // Push turn 2: a new message.id starts a new turn
     stdout.push(
       JSON.stringify({ type: 'assistant', message: { id: 'msg_t2', content: [{ type: 'text', text: 'Hi' }] } }) + '\n',
     );
 
-    // Wait for text_delta 'Hi' — guarantees the id-change reset has been processed
+    // Wait for text_delta 'Hi' — guarantees the turn-2 event has been processed
     await textDeltaHiWait;
 
-    // Now dispatch tool_result for the pending tool_use. On buggy code this fails because
-    // toolNameById was cleared by the shrink branch; on fixed code it forwards correctly.
+    // Now dispatch tool_result for the pending tool_use; it must still be claimable.
     session.handleMessage({
       type: 'tool_result',
       id: 'tr-pending',
@@ -1246,9 +1032,8 @@ describe('SidecarSession reset-boundary tool correlation preservation', () => {
     });
 
     // Race: if the unknown-id error fires before stdin line 2, fail immediately with a
-    // clear message rather than waiting for vitest's default timeout.  On buggy code
-    // (maps cleared at reset boundary) the error fires first; on fixed code the stdin
-    // line arrives first.
+    // clear message rather than waiting for vitest's default timeout. If the turn boundary
+    // dropped the announced tool_use, the error fires first; otherwise the stdin line does.
     const unexpectedErrorWait = waitForOutput(
       session,
       (m) => m.type === 'error' && /unknown.*tool_use_id/i.test((m as any).message ?? ''),
@@ -1257,7 +1042,7 @@ describe('SidecarSession reset-boundary tool correlation preservation', () => {
       waitForStdinLines(mockProc.stdin, stdinLines, 2).then(() => 'stdin' as const),
       unexpectedErrorWait.then(() => 'error' as const),
     ]);
-    expect(winner).toBe('stdin'); // fails fast with a clear message if maps were cleared
+    expect(winner).toBe('stdin'); // fails fast with a clear message if the tool_use was dropped
     unexpectedErrorWait.cancel(); // release session.onOutput immediately; don't wait for the 5s default timeout
 
     // Assert the tool_result was forwarded with the correct tool_use_id
@@ -1272,84 +1057,6 @@ describe('SidecarSession reset-boundary tool correlation preservation', () => {
     // Pin the contract over the full output stream: exactly one text_delta 'Hi' across the
     // entire turn (guards against duplicate emissions if the streaming loop restarts).
     expect(outputs.filter((m) => m.type === 'text_delta' && (m as any).content === 'Hi').length).toBe(1);
-  });
-
-  it('new-turn reset-boundary preserves pending tool_use for subsequent tool_result (thinking channel)', async () => {
-    // Turn 1: long thinking + tool_use (registers toolu_th_pending in toolNameById).
-    // Turn 2: new message.id triggers id-change reset (length counters only).
-    // Invariant: the id-change reset must NOT clear toolNameById/pendingToolUseIds,
-    // so a subsequent tool_result for toolu_th_pending forwards correctly.
-    const { mockProc, stdout, stdinLines } = makeMockProc([
-      { type: 'thinking', thinking: 'Let me reason about this for a while' },
-      { type: 'tool_use', id: 'toolu_th_pending', name: 'reify_x', input: {} },
-    ]);
-
-    // Set up wait for tool_call BEFORE dispatching so we don't miss the event
-    const toolCallWait = waitForOutput(session, (m) => m.type === 'tool_call');
-
-    const msgPromise = session.handleMessage({
-      type: 'send_message',
-      id: 'send-rb-think',
-      text: 'Reset boundary thinking test',
-    });
-
-    // Wait for tool_call outbound — guarantees tool_use is registered in toolNameById
-    await toolCallWait;
-
-    // Set up wait for thinking_delta 'Hm' BEFORE pushing the turn-2 event
-    const thinkingDeltaHmWait = waitForOutput(
-      session,
-      (m) => m.type === 'thinking_delta' && (m as any).content === 'Hm',
-    );
-
-    // Push turn 2: new message.id triggers id-change reset (lastTextLen=0, lastThinkingLen=0)
-    stdout.push(
-      JSON.stringify({
-        type: 'assistant',
-        message: { id: 'msg_t2', content: [{ type: 'thinking', thinking: 'Hm' }] },
-      }) + '\n',
-    );
-
-    // Wait for thinking_delta 'Hm' — guarantees the id-change reset has been processed
-    await thinkingDeltaHmWait;
-
-    // Now dispatch tool_result for the pending tool_use. On buggy code this fails because
-    // toolNameById was cleared by the thinking-shrink branch; on fixed code it forwards correctly.
-    session.handleMessage({
-      type: 'tool_result',
-      id: 'tr-th-pending',
-      tool_name: 'reify_x',
-      result: 'result-ok',
-      tool_use_id: 'toolu_th_pending',
-    });
-
-    // Race: if the unknown-id error fires before stdin line 2, fail immediately with a
-    // clear message rather than waiting for vitest's default timeout.  On buggy code
-    // (maps cleared at reset boundary) the error fires first; on fixed code the stdin
-    // line arrives first.
-    const unexpectedErrorWait = waitForOutput(
-      session,
-      (m) => m.type === 'error' && /unknown.*tool_use_id/i.test((m as any).message ?? ''),
-    );
-    const winner = await Promise.race([
-      waitForStdinLines(mockProc.stdin, stdinLines, 2).then(() => 'stdin' as const),
-      unexpectedErrorWait.then(() => 'error' as const),
-    ]);
-    expect(winner).toBe('stdin'); // fails fast with a clear message if maps were cleared
-    unexpectedErrorWait.cancel(); // release session.onOutput immediately; don't wait for the 5s default timeout
-
-    // Assert the tool_result was forwarded with the correct tool_use_id
-    expect((stdinLines[1] as any).message.content[0].tool_use_id).toBe('toolu_th_pending');
-
-    // Cleanup: close stdout so msgPromise can resolve
-    stdout.push(JSON.stringify({ type: 'result', session_id: 'sess-rb-think' }) + '\n');
-    stdout.push(null);
-    mockProc.exitCode = 0;
-    mockProc.emit('close', 0);
-    await msgPromise;
-    // Pin the contract over the full output stream: exactly one thinking_delta 'Hm' across
-    // the entire turn (guards against duplicate emissions if the streaming loop restarts).
-    expect(outputs.filter((m) => m.type === 'thinking_delta' && (m as any).content === 'Hm').length).toBe(1);
   });
 });
 
@@ -2094,7 +1801,7 @@ describe('entrypoint wiring', () => {
     // Send a send_message through the entrypoint input
     input.write(JSON.stringify({ type: 'send_message', id: 'e2e-tr-1', text: 'Check diagnostics' }) + '\n');
 
-    // Wait for tool_call outbound to arrive (signals tool_use was parsed and pendingToolUseIds populated)
+    // Wait for tool_call outbound to arrive (signals the tool_use was parsed and is claimable)
     const toolCallDeadline = Date.now() + 500;
     while (Date.now() < toolCallDeadline) {
       if (receivedMsgs.some((m) => m.type === 'tool_call')) break;
@@ -2446,20 +2153,21 @@ describe('stdin orphan-error diagnostic', () => {
 
   it('orphan stdin error one-shot guard fires console.warn exactly once across multiple emits', async () => {
     const { mockProc, warnSpy, finish } = await setupOrphanStdinErrorScenario(session);
+    // Guard fires, identified by the synthetic error message they carry (robust to prefix
+    // changes and to unrelated warns such as notices).
+    const guardWarns = () =>
+      warnSpy.mock.calls.filter((args) => args.join(' ').includes('synthetic orphan EPIPE'));
 
     // First orphan EPIPE — wait until the warn fires before dispatching the second emit,
     // so the ordering invariant holds even if the handler ever becomes async.
     mockProc.stdin.emit('error', new Error('synthetic orphan EPIPE 1'));
-    await vi.waitFor(() => expect(warnSpy).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(guardWarns()).toHaveLength(1));
 
     // Second orphan EPIPE with a distinct message — one-shot guard must suppress this
     mockProc.stdin.emit('error', new Error('synthetic orphan EPIPE 2 distinct'));
     await new Promise(setImmediate);
 
-    // Filter to guard fires (identified by the synthetic error message they carry; robust to prefix changes)
-    const stdinErrorWarns = warnSpy.mock.calls.filter((args) =>
-      args.join(' ').includes('synthetic orphan EPIPE')
-    );
+    const stdinErrorWarns = guardWarns();
 
     // One-shot guard: exactly one warn fired despite two error emits
     expect(stdinErrorWarns).toHaveLength(1);
@@ -2521,7 +2229,7 @@ describe('echoed tool_use_id validation', () => {
     // Set up wait for error outbound BEFORE dispatching the bad tool_result
     const errorWait = waitForOutput(session, (m) => m.type === 'error');
 
-    // Dispatch tool_result with a BOGUS tool_use_id (not in toolNameById)
+    // Dispatch tool_result with a BOGUS tool_use_id (never announced)
     session.handleMessage({
       type: 'tool_result',
       id: 'tool-bogus',
@@ -2594,14 +2302,12 @@ describe('echoed tool_use_id validation', () => {
   });
 
   it('stale tool_use_id re-dispatch emits structured error and does not forward a second stdin line', async () => {
-    // This test covers the "toolNameById drain" property through observable behavior:
-    // once a tool_result has been successfully forwarded for a given tool_use_id, the id is
-    // deleted from toolNameById (the toolNameById.delete after the FIFO splice/shift).
-    // Re-dispatching a tool_result with the same id must hit the unknown-id guard in
-    // handleToolResult and emit a structured error — not forward a second stdin line.
+    // Each announced tool_use can be claimed once: after a tool_result has been forwarded
+    // for a tool_use_id, re-dispatching a tool_result with the same id must hit the
+    // unknown-id guard and emit a structured error — not forward a second stdin line.
     const { mockProc, stdout, stdinLines, msgPromise, toolCallWait } = setupValidationTest();
 
-    // (1) Wait for tool_call outbound — tool_use is now registered in toolNameById
+    // (1) Wait for tool_call outbound — the tool_use is now announced and claimable
     await toolCallWait;
 
     // (2) Dispatch first tool_result — this is a valid forward
@@ -2667,7 +2373,7 @@ describe('FIFO consumption on echoed-id path', () => {
     vi.mocked(spawn).mockReset();
   });
 
-  it('echoed-id forward drains its id from both maps; subsequent fallback uses correct remaining id', async () => {
+  it('echoed-id forward consumes its tool_use; a later fallback claims the remaining one', async () => {
     // Two tool_use blocks with same name, different ids — makeMockProc wires up stdin
     // accumulator before spawn and leaves stdout open.
     const { mockProc, stdout, stdinLines } = makeMockProc([
@@ -2732,10 +2438,10 @@ describe('FIFO consumption on echoed-id path', () => {
     const line3 = stdinLines[2] as any;
     expect(line3.message.content[0].tool_use_id).toBe('toolu_2');
 
-    // --- Step (c): Prove toolNameById was drained for toolu_2 on the fallback path ---
+    // --- Step (c): Prove the fallback path consumed toolu_2 too ---
     // Re-dispatch an echoed-id tool_result for toolu_2 (already consumed by the FIFO
-    // fallback above). If toolNameById was correctly drained it must hit the unknown-id
-    // guard and emit a structured error with no extra stdin write.
+    // fallback above). It must hit the unknown-id guard and emit a structured error with
+    // no extra stdin write.
     const staleIdErrorWait = waitForOutput(
       session,
       (m) => m.type === 'error' && /unknown.*tool_use_id/i.test((m as any).message ?? ''),

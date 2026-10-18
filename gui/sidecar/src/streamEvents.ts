@@ -20,13 +20,13 @@ export interface StreamState {
    * not echo tool_use_id; correct only when same-name results arrive in that order.
    */
   readonly pendingToolUseIds: ReadonlyMap<string, readonly string[]>;
-  /** The CLI session id carried by the result event, once it has arrived. */
-  readonly resultSessionId: string | null;
 }
 
 export interface StreamStep {
   readonly outputs: OutboundMessage[];
   readonly state: StreamState;
+  /** Present when the event was the result that ends the turn: the CLI session id it carries. */
+  readonly finished?: { readonly sessionId: string };
 }
 
 const DEGRADED_TURN_BOUNDARY_DETAIL =
@@ -44,7 +44,6 @@ export function initialStreamState(invocationId: string): StreamState {
     missingMessageIdNoticed: false,
     toolNameById: new Map(),
     pendingToolUseIds: new Map(),
-    resultSessionId: null,
   };
 }
 
@@ -168,7 +167,7 @@ function mapToolResultBlock(block: JsonObject, state: StreamState): StreamStep {
 
 function mapResult(sessionId: unknown, state: StreamState): StreamStep {
   if (typeof sessionId !== 'string' || sessionId === '') return withoutOutputs(state);
-  return withoutOutputs({ ...state, resultSessionId: sessionId });
+  return { outputs: [], state, finished: { sessionId } };
 }
 
 export type ToolUseClaim =

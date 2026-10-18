@@ -48,20 +48,20 @@ describe('mapStreamEvent: deltas within a turn', () => {
 });
 
 describe('mapStreamEvent: turn boundary', () => {
-  it('restarts the text offset when message.id changes', () => {
+  it('restarts the text offset when message.id changes, even for a longer new turn', () => {
     const { outputs } = fold([
-      assistant([text('Hello world')], 'msg_1'),
-      assistant([text('Hi')], 'msg_2'),
+      assistant([text('Hi')], 'msg_1'),
+      assistant([text('Hello, a much longer second turn')], 'msg_2'),
     ]);
-    expect(outputs).toEqual([textDelta('Hello world'), textDelta('Hi')]);
+    expect(outputs).toEqual([textDelta('Hi'), textDelta('Hello, a much longer second turn')]);
   });
 
-  it('restarts the thinking offset when message.id changes', () => {
+  it('restarts the thinking offset when message.id changes, even for a longer new turn', () => {
     const { outputs } = fold([
-      assistant([thinking('Pondering deeply')], 'msg_1'),
-      assistant([thinking('Hmm')], 'msg_2'),
+      assistant([thinking('Hm')], 'msg_1'),
+      assistant([thinking('Let me reason about this at length')], 'msg_2'),
     ]);
-    expect(outputs).toEqual([thinkingDelta('Pondering deeply'), thinkingDelta('Hmm')]);
+    expect(outputs).toEqual([thinkingDelta('Hm'), thinkingDelta('Let me reason about this at length')]);
   });
 
   it('notices a missing message.id exactly once, first, without resetting offsets', () => {
@@ -74,6 +74,20 @@ describe('mapStreamEvent: turn boundary', () => {
     expect(outputs[0]).toMatchObject({ type: 'notice', id: 'inv-1', code: 'degraded_turn_boundary' });
     expect(outputs[0]).toHaveProperty('message', expect.stringMatching(/message\.id/));
     expect(outputs.slice(1)).toEqual([textDelta('Hello'), textDelta(' world')]);
+  });
+
+  it('keeps the offset across an event missing message.id, then restarts at the next new id', () => {
+    const { outputs } = fold([
+      assistant([text('Hello')], 'msg_1'),
+      assistant([text('Hello world')], null),
+      assistant([text('Goodbye')], 'msg_2'),
+    ]);
+    expect(outputs.filter((o) => o.type === 'notice')).toHaveLength(1);
+    expect(outputs.filter((o) => o.type !== 'notice')).toEqual([
+      textDelta('Hello'),
+      textDelta(' world'),
+      textDelta('Goodbye'),
+    ]);
   });
 });
 
@@ -108,20 +122,26 @@ describe('mapStreamEvent: tool blocks', () => {
 });
 
 describe('mapStreamEvent: result event', () => {
-  it('starts with no result session id', () => {
-    expect(initialStreamState('inv-1').resultSessionId).toBeNull();
+  it('reports the turn finished with the result session id, emitting nothing', () => {
+    const { state: registered } = fold([assistant([toolUse('toolu_1', 'reify_x')])]);
+    const step = mapStreamEvent({ type: 'result', session_id: 'sess-1' }, registered);
+    expect(step.outputs).toEqual([]);
+    expect(step.finished).toEqual({ sessionId: 'sess-1' });
+    expect(step.state).toBe(registered);
   });
 
-  it('records the result session id without emitting anything', () => {
-    const { outputs, state } = fold([{ type: 'result', session_id: 'sess-1' }]);
-    expect(outputs).toEqual([]);
-    expect(state.resultSessionId).toBe('sess-1');
+  it.each([
+    ['no session id', { type: 'result' }],
+    ['an empty session id', { type: 'result', session_id: '' }],
+  ])('does not report the turn finished for a result carrying %s', (_label, event) => {
+    const step = mapStreamEvent(event, initialStreamState('inv-1'));
+    expect(step.outputs).toEqual([]);
+    expect(step.finished).toBeUndefined();
   });
 
-  it('leaves the result session id unset when the result carries none', () => {
-    const { outputs, state } = fold([{ type: 'result' }]);
-    expect(outputs).toEqual([]);
-    expect(state.resultSessionId).toBeNull();
+  it('never reports an assistant event as finishing the turn', () => {
+    const step = mapStreamEvent(assistant([text('Hi')]), initialStreamState('inv-1'));
+    expect(step.finished).toBeUndefined();
   });
 });
 
@@ -139,6 +159,7 @@ describe('mapStreamEvent: unrecognised input', () => {
     const step = mapStreamEvent(event, state);
     expect(step.outputs).toEqual([]);
     expect(step.state).toBe(state);
+    expect(step.finished).toBeUndefined();
   });
 
   it('skips unrecognised block kinds but still maps their siblings', () => {
@@ -166,7 +187,6 @@ describe('mapStreamEvent: purity', () => {
       assistant([text('Hello'), toolUse('toolu_1', 'reify_x'), toolUse('toolu_2', 'reify_x')]),
       assistant([text('Hi')], 'msg_2'),
       assistant([text('No id')], null),
-      { type: 'result', session_id: 'sess-1' },
     ];
     for (const event of events) {
       const snapshot = structuredClone(registered);

@@ -3,7 +3,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
 import { createLineReader } from './ipc.js';
-import type { InboundMessage, OutboundMessage, SendMessage } from './types.js';
+import type { InboundMessage, NoticeMessage, OutboundMessage, SendMessage } from './types.js';
 import type { PermissionServer } from './permission-server.js';
 import { wrapClaudeArgs } from './sandbox.js';
 import { sidecarMcpServers } from './tool-surface.js';
@@ -139,7 +139,7 @@ export class SidecarSession {
         // since there is no decision lifecycle to track.
         if (this.currentInvocationId === null) {
           config.permissionMcp!.server.decide(req.request_id, { behavior: 'deny' });
-          this.onOutput({
+          this.emitNotice({
             type: 'notice',
             id: '',
             code: 'permission_request_orphaned',
@@ -415,18 +415,17 @@ export class SidecarSession {
    * tool_call synchronously finds its tool_use.
    */
   private applyStreamEvent(event: unknown, proc: ChildProcess): void {
-    const before = this.stream;
-    if (before === null) throw new Error('stream event received with no in-flight invocation state');
-    const step = mapStreamEvent(event, before);
+    if (this.stream === null) throw new Error('stream event received with no in-flight invocation state');
+    const step = mapStreamEvent(event, this.stream);
     this.stream = step.state;
     for (const msg of step.outputs) {
-      if (msg.type === 'notice') console.error(`[sidecar] ${msg.message}`);
-      this.onOutput(msg);
+      if (msg.type === 'notice') {
+        this.emitNotice(msg);
+      } else {
+        this.onOutput(msg);
+      }
     }
-    const resultSessionId = step.state.resultSessionId;
-    if (resultSessionId !== null && resultSessionId !== before.resultSessionId) {
-      this.finishTurn(resultSessionId, proc);
-    }
+    if (step.finished !== undefined) this.finishTurn(step.finished.sessionId, proc);
   }
 
   /**
@@ -473,17 +472,26 @@ export class SidecarSession {
     const landlockOk = this.config.landlockAvailable ?? false;
     if (this.config.landlockExec && !landlockOk && !this.sandboxNoticeEmitted) {
       this.sandboxNoticeEmitted = true;
-      this.onOutput({
+      this.emitNotice({
         type: 'notice',
         id,
         code: 'sandbox_unavailable',
         message: 'Sandbox unavailable; Claude will run unrestricted.',
       });
-      console.warn('[sidecar] sandbox unavailable; claude will run unrestricted');
     }
     const effectiveLandlockExec = landlockOk ? this.config.landlockExec : undefined;
     const workspaceDir = this.config.workspace ?? this.config.workingDirectory;
     return wrapClaudeArgs(args, workspaceDir, effectiveLandlockExec);
+  }
+
+  /**
+   * The one rule for notices: every notice goes to the host AND to stderr (the GUI
+   * process's log, which the sidecar inherits), so a degraded mode stays diagnosable
+   * when the chat never renders it.
+   */
+  private emitNotice(notice: NoticeMessage): void {
+    console.warn(`[sidecar] notice ${notice.code}: ${notice.message}`);
+    this.onOutput(notice);
   }
 
   /**
