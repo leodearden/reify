@@ -36,6 +36,10 @@ compile_error!(
 use reify_ir::{GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, QueryError, Value};
 use reify_kernel_manifold::{kernel::ManifoldKernel, test_fixtures::unit_cube_mesh};
 
+#[path = "support/query_wire.rs"]
+mod query_wire;
+use query_wire::parse_bbox;
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -680,37 +684,6 @@ fn query_sub_face_surface_area_and_normal_unit_cube() {
     );
 }
 
-/// Parse the OCCT-compatible `{"xmin":_,...,"zmax":_}` BoundingBox JSON wire
-/// format into `[xmin, ymin, zmin, xmax, ymax, zmax]`.
-fn parse_bbox(s: &str) -> [f64; 6] {
-    let mut out = [f64::NAN; 6];
-    let trimmed = s.trim().trim_start_matches('{').trim_end_matches('}');
-    for field in trimmed.split(',') {
-        let (key, val) = field
-            .split_once(':')
-            .unwrap_or_else(|| panic!("malformed bbox field {field:?} in {s:?}"));
-        let key = key.trim().trim_matches('"');
-        let val: f64 = val
-            .trim()
-            .parse()
-            .unwrap_or_else(|_| panic!("non-numeric value in field {field:?} of {s:?}"));
-        let idx = match key {
-            "xmin" => 0,
-            "ymin" => 1,
-            "zmin" => 2,
-            "xmax" => 3,
-            "ymax" => 4,
-            "zmax" => 5,
-            other => panic!("unexpected key {other:?} in bbox JSON {s:?}"),
-        };
-        out[idx] = val;
-    }
-    for (i, c) in out.iter().enumerate() {
-        assert!(!c.is_nan(), "bbox JSON {s:?} missing component {i}");
-    }
-    out
-}
-
 /// Sub-edge `EdgeTangent` and `BoundingBox` over the unit cube's 18 edges.
 ///
 /// The closed cube mesh's 18 unique edges partition exactly into **12
@@ -809,20 +782,13 @@ fn query_sub_edge_tangent_and_bbox_unit_cube() {
 // Topology adjacency: AdjacentFaces (steps 9 + 10), SharedEdges (steps 11 + 12)
 // ---------------------------------------------------------------------------
 
-/// Decode an `Ok(Value::List)` of `Value::Int` into `Vec<i64>`, panicking with
-/// a descriptive message on any other shape. Shared by the `AdjacentFaces` and
-/// `SharedEdges` tests (both mirror OCCT's `Value::List<Value::Int>` wire
-/// format: `crates/reify-kernel-occt/src/lib.rs`).
-fn query_int_list(kernel: &ManifoldKernel, q: &GeometryQuery) -> Vec<i64> {
+/// The indices an `AdjacentFaces` / `SharedEdges` query replies with,
+/// panicking unless the reply is OCCT's `Value::List<Value::Int>` wire format
+/// (`crates/reify-kernel-occt/src/lib.rs`).
+fn query_index_list(kernel: &ManifoldKernel, q: &GeometryQuery) -> Vec<usize> {
     match kernel.query(q) {
-        Ok(Value::List(items)) => items
-            .iter()
-            .map(|v| match v {
-                Value::Int(i) => *i,
-                other => panic!("AdjacentFaces/SharedEdges list must hold Value::Int; got {other:?}"),
-            })
-            .collect(),
-        other => panic!("query({q:?}) must return Ok(Value::List(_)); got {other:?}"),
+        Ok(value) => query_wire::index_list(&value),
+        Err(e) => panic!("query({q:?}) must succeed; got {e:?}"),
     }
 }
 
@@ -836,11 +802,7 @@ fn adjacent_face_indices(
     face_index: usize,
     face_count: usize,
 ) -> Vec<usize> {
-    let raw = query_int_list(kernel, &GeometryQuery::AdjacentFaces { shape, face_index });
-    let neighbours: Vec<usize> = raw
-        .iter()
-        .map(|&n| usize::try_from(n).expect("AdjacentFaces entries must be non-negative"))
-        .collect();
+    let neighbours = query_index_list(kernel, &GeometryQuery::AdjacentFaces { shape, face_index });
     assert!(
         neighbours.windows(2).all(|w| w[0] < w[1]),
         "AdjacentFaces({face_index}) must be ascending and distinct; got {neighbours:?}",
@@ -865,7 +827,7 @@ fn shared_edge_indices(
     face_a: usize,
     face_b: usize,
 ) -> Vec<usize> {
-    query_int_list(
+    query_index_list(
         kernel,
         &GeometryQuery::SharedEdges {
             shape,
@@ -873,9 +835,6 @@ fn shared_edge_indices(
             face_b,
         },
     )
-    .into_iter()
-    .map(|e| usize::try_from(e).expect("SharedEdges entries must be non-negative"))
-    .collect()
 }
 
 /// Assert `query` is rejected with `QueryError::QueryFailed`.

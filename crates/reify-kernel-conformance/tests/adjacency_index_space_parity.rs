@@ -12,6 +12,8 @@
 #![cfg(has_occt)]
 
 mod common;
+#[path = "../../reify-kernel-manifold/tests/support/query_wire.rs"]
+mod query_wire;
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -47,7 +49,7 @@ struct BoxView<'k> {
 impl BoxView<'_> {
     fn bbox(&self, handle: GeometryHandleId) -> [f64; 6] {
         match (self.query)(&GeometryQuery::BoundingBox(handle)) {
-            Ok(Value::String(s)) => parse_bbox(&s),
+            Ok(Value::String(s)) => query_wire::parse_bbox(&s),
             other => panic!(
                 "[{}] BoundingBox({handle:?}) must return Ok(Value::String(_)); got {other:?}",
                 self.kernel
@@ -64,9 +66,9 @@ impl BoxView<'_> {
             .collect()
     }
 
-    fn int_list(&self, query: &GeometryQuery) -> Vec<usize> {
+    fn index_list(&self, query: &GeometryQuery) -> Vec<usize> {
         match (self.query)(query) {
-            Ok(value) => int_list(&value),
+            Ok(value) => query_wire::index_list(&value),
             Err(e) => panic!("[{}] query({query:?}) must succeed; got {e:?}", self.kernel),
         }
     }
@@ -74,7 +76,7 @@ impl BoxView<'_> {
     /// `AdjacentFaces` of `face`, checked against the reply contract:
     /// ascending, distinct, self excluded, inside the face enumeration.
     fn adjacent(&self, face: usize) -> Vec<usize> {
-        let neighbours = self.int_list(&GeometryQuery::AdjacentFaces {
+        let neighbours = self.index_list(&GeometryQuery::AdjacentFaces {
             shape: self.body,
             face_index: face,
         });
@@ -91,7 +93,7 @@ impl BoxView<'_> {
     }
 
     fn shared(&self, face_a: usize, face_b: usize) -> Vec<usize> {
-        self.int_list(&GeometryQuery::SharedEdges {
+        self.index_list(&GeometryQuery::SharedEdges {
             shape: self.body,
             face_a,
             face_b,
@@ -174,49 +176,6 @@ fn expected_neighbour_labels() -> BTreeMap<Outward, BTreeSet<Outward>> {
 
 fn all_outward() -> impl Iterator<Item = Outward> {
     (0..3).flat_map(|axis| [(axis, -1), (axis, 1)])
-}
-
-/// Parse the `{"xmin":_,…,"zmax":_}` BoundingBox wire string both kernels
-/// emit into `[xmin, ymin, zmin, xmax, ymax, zmax]`.
-fn parse_bbox(s: &str) -> [f64; 6] {
-    const KEYS: [&str; 6] = ["xmin", "ymin", "zmin", "xmax", "ymax", "zmax"];
-    let mut out = [f64::NAN; 6];
-    for field in s
-        .trim()
-        .trim_start_matches('{')
-        .trim_end_matches('}')
-        .split(',')
-    {
-        let (key, val) = field
-            .split_once(':')
-            .unwrap_or_else(|| panic!("malformed bbox field {field:?} in {s:?}"));
-        let idx = KEYS
-            .iter()
-            .position(|k| *k == key.trim().trim_matches('"'))
-            .unwrap_or_else(|| panic!("unexpected bbox key {key:?} in {s:?}"));
-        out[idx] = val
-            .trim()
-            .parse()
-            .unwrap_or_else(|_| panic!("non-numeric bbox value {val:?} in {s:?}"));
-    }
-    assert!(
-        out.iter().all(|c| !c.is_nan()),
-        "bbox JSON {s:?} is missing a key"
-    );
-    out
-}
-
-fn int_list(value: &Value) -> Vec<usize> {
-    match value {
-        Value::List(items) => items
-            .iter()
-            .map(|item| match item {
-                Value::Int(i) => usize::try_from(*i).expect("indices are non-negative"),
-                other => panic!("index list must hold Value::Int; got {other:?}"),
-            })
-            .collect(),
-        other => panic!("expected Value::List of indices; got {other:?}"),
-    }
 }
 
 /// Build the box in both kernels, extract faces and edges, and hand the two
