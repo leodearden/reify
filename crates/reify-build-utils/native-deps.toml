@@ -1,0 +1,75 @@
+# Native-dep discovery data: one row per native library reify links.
+#
+# Read by:
+#   - reify_build_utils (src/lib.rs): include_str!, decoded once.
+#   - scripts/check-manifold-deps.sh, through scripts/native_deps_table.py.
+#
+# Row order carries no meaning. List order does: candidates are probed in
+# priority order, per dep, and no list is shared between rows.
+# `snap` and `xde_toolkits` are optional columns only the occt row uses.
+#
+# occt lists system paths and never /opt/reify-deps: that conda prefix ships
+#   OCCT 7.9 (a transitive dep of gmsh) while reify links system OCCT 7.8.
+# gmsh and openvdb lead with /opt/reify-deps, where their conda-forge installs
+#   live (apt's copies are stale).
+# openvdb's lib order is not gmsh's: /usr/local/lib comes ahead of
+#   /usr/lib/x86_64-linux-gnu.
+#
+# Data only one reader uses stays with that reader: the accepted OCCT SONAMEs
+# and the install hints (check-manifold-deps.sh), and the base OCCT link list
+# (crates/reify-kernel-occt/build.rs).
+
+[occt]
+include_env = "OCCT_INCLUDE_DIR"
+lib_env = "OCCT_LIB_DIR"
+cfg = "has_occt"
+include_candidates = [
+    "/usr/include/opencascade",
+    "/usr/local/include/opencascade",
+    "/snap/freecad/current/usr/include/opencascade",
+]
+lib_candidates = [
+    "/usr/lib/x86_64-linux-gnu",
+    "/usr/lib",
+    "/usr/local/lib",
+    "/snap/freecad/current/usr/lib",
+]
+include_sentinel = "Standard_Failure.hxx"
+lib_sentinel = "libTKernel.so"
+# Linked by reify-kernel-occt for the STEP assembly reader, after its base list.
+xde_toolkits = ["TKXCAF", "TKLCAF"]
+
+# Numbered /snap/freecad/<rev>/ installs, scanned only when no candidate holds
+# the sentinel.
+[occt.snap]
+root = "/snap/freecad"
+include_subdir = "usr/include/opencascade"
+lib_subdir = "usr/lib"
+
+[gmsh]
+include_env = "GMSH_INCLUDE_DIR"
+lib_env = "GMSH_LIB_DIR"
+cfg = "has_gmsh"
+include_candidates = ["/opt/reify-deps/include", "/usr/include", "/usr/local/include"]
+lib_candidates = [
+    "/opt/reify-deps/lib",
+    "/usr/lib/x86_64-linux-gnu",
+    "/usr/lib",
+    "/usr/local/lib",
+]
+include_sentinel = "gmshc.h"
+lib_sentinel = "libgmsh.so"
+
+[openvdb]
+include_env = "OPENVDB_INCLUDE_DIR"
+lib_env = "OPENVDB_LIB_DIR"
+cfg = "has_openvdb"
+include_candidates = ["/opt/reify-deps/include", "/usr/local/include", "/usr/include"]
+lib_candidates = [
+    "/opt/reify-deps/lib",
+    "/usr/local/lib",
+    "/usr/lib/x86_64-linux-gnu",
+    "/usr/lib",
+]
+include_sentinel = "openvdb/openvdb.h"
+lib_sentinel = "libopenvdb.so"
