@@ -355,7 +355,7 @@ fn task_metadata_from_wire(v: &Value) -> Option<TaskMetadata> {
 /// `done_at` of a `done` task, mirroring the precedence in
 /// `scripts/reify-audit-snapshot-filter.jq`: an explicit epoch-seconds
 /// `metadata.done_at` wins, else the `updatedAt` proxy. Why, and the residual
-/// non-integer-stamp and `±HH:MM` divergences from the jq path:
+/// non-integer-stamp divergence from the jq path:
 /// `docs/architecture-audit/f-infra-design.md` §11.2.1.
 fn done_flip_epoch(task: &Value, metadata: &Value) -> Option<i64> {
     metadata.get("done_at").and_then(Value::as_i64).or_else(|| {
