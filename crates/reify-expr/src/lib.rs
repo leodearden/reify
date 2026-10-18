@@ -13,12 +13,13 @@ mod dual_eval;
 mod field_reductions;
 pub mod interp;
 pub mod kleene;
+mod non_differentiable;
 mod option_recovery;
 pub mod sampled;
 mod sampled_fd;
 mod sanitize;
 
-// Task #6672 (solver-unification ε): the forward-mode AD surface.  The three
+// Task #6672 (solver-unification ε): the forward-mode AD surface.  The AD
 // modules are PRIVATE and these flat re-exports are the only path to them, so
 // `reify_expr::Tangent` is not merely the preferred spelling over
 // `reify_expr::dual::Tangent` — it is the reachable one, and consumers (η
@@ -31,9 +32,9 @@ pub use branch_signature::{
 };
 pub use dual::{DualValue, Tangent};
 pub use dual_eval::{
-    DualEnv, NonDifferentiable, Seeds, eval_dual, eval_dual_with_env, jacobian_row,
-    jacobian_row_with_env,
+    DualEnv, Seeds, eval_dual, eval_dual_with_env, jacobian_row, jacobian_row_with_env,
 };
+pub use non_differentiable::NonDifferentiable;
 
 use std::cell::RefCell;
 use std::collections::HashMap;
