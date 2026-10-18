@@ -589,7 +589,6 @@ pub struct ElasticResult {
 ///
 /// This is the single-`ElasticResult` scalar counterpart to the
 /// `MultiCaseResult` `envelope_displacement_magnitude` builtin.
-/// The `.ri` / gate exposure is deferred to consumer task #3787.
 pub fn max_deflection_magnitude(displacement: &[f64]) -> f64 {
     displacement
         .chunks_exact(3)

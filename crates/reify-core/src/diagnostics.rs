@@ -5021,7 +5021,7 @@ pub struct DiagnosticRef {
 ///
 /// This enum and [`hex_wedge_mesh_diagnostic`] are tested but not yet wired
 /// into the dispatcher (`dispatch_volume_mesh` in `reify-eval/src/engine_build.rs`)
-/// — that wiring is blocked on VolumeMesh realization (task #2947), mirroring
+/// — that wiring is owned by #4746 (hex/wedge Phase A activation), mirroring
 /// the accepted `#[allow(dead_code)]` status of `p2_substitution_diagnostic`
 /// (task #2991).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -5076,7 +5076,7 @@ pub enum HexWedgeMeshOutcome {
 /// # Wiring note
 ///
 /// This function is `#[allow(dead_code)]` pending the live wiring of
-/// `dispatch_volume_mesh` (blocked on task #2947).  The future dispatcher will
+/// `dispatch_volume_mesh`'s hex/wedge arm (#4746).  That arm will
 /// construct a `HexWedgeMeshOutcome` from its internal state and call this fn
 /// to obtain the diagnostic to push into `BuildResult.diagnostics`.
 ///
@@ -5086,7 +5086,7 @@ pub enum HexWedgeMeshOutcome {
 /// `reify-eval/src/engine_build.rs` next to its dispatcher), this function and
 /// `HexWedgeMeshOutcome` live here in `reify-core` because their inputs are
 /// pure primitives (`usize`, `bool`, `&str`) with no `reify-eval`/`reify-solver`
-/// dependency.  The future task #2947 call site in `dispatch_volume_mesh`
+/// dependency.  The future #4746 call site in `dispatch_volume_mesh`
 /// should reach into `reify_core::diagnostics::{HexWedgeMeshOutcome,
 /// hex_wedge_mesh_diagnostic}` rather than duplicating the mapping there.
 #[allow(dead_code)]
@@ -5099,7 +5099,7 @@ pub fn hex_wedge_mesh_diagnostic(
     // exclusive by stdlib constraint.  A ForceTet outcome therefore must never
     // arrive with require_hex_wedge=true.  The guard fires only in debug builds,
     // so the production code path remains unchanged; it surfaces the violation
-    // at the call site (task #2947) rather than relying solely on the upstream
+    // at the call site (#4746) rather than relying solely on the upstream
     // stdlib enforcement that is not yet wired.
     debug_assert!(
         !(require_hex_wedge && matches!(outcome, HexWedgeMeshOutcome::ForceTet)),

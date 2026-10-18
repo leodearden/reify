@@ -2193,12 +2193,8 @@ fn conversion_slot(
 /// **No `Convert` arm.** `Operation::Convert { from }` is the only
 /// `Operation` shape that does not correspond to a `GeometryOp` variant:
 /// representation conversion (BRep→Mesh tessellation, Mesh→Sdf rasterisation,
-/// …) is *not* an op the compiler emits today. Conversion-stage execution is
-/// deferred to task ζ (#3437, Manifold execute arm) + new cross-kernel
-/// mesh-ingest trait surface. ε surfaces non-empty dispatch plans as a
-/// diagnostic rather than executing them (see PRD §8 design decision).
-// Wired into `execute_realization_ops` in step-8 (#3436).
-#[allow(dead_code)]
+/// …) is *not* an op the compiler emits today. Conversion stages run inside
+/// the dispatch plan, in `execute_realization_ops`'s conversion executor.
 fn geometry_op_to_operation(op: &GeometryOp) -> Operation {
     // Classification is pure data: look up the L1 descriptor table and read
     // `operation`. Split's row has `operation: None`, which reproduces the

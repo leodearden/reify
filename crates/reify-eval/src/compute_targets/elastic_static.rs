@@ -359,7 +359,7 @@ const SYNTHETIC_CLAMP_FACE: &str = "root";
 /// field equal to `Value::String(face)`.
 ///
 /// A lightweight `.ri`-source-level check, NOT real topology selector
-/// resolution (deferred to P2 / task #4092): reads each support's raw
+/// resolution (owned by #5313): reads each support's raw
 /// `target` field as authored. The kernel-less trampoline (no BUILD-time
 /// `bc_resolve::resolve_selector_faces` pass) observes `target` as the
 /// original `Value::String`, never a resolved handle list.
@@ -654,7 +654,7 @@ pub fn solve_elastic_static_trampoline(
     // proceed. Unlike the empty-supports branch, a PRESENT support exists to
     // reference, so the diagnostic carries the first support's `.ri`
     // construction-site span. Selector RESOLUTION against real topology
-    // stays deferred to P2 (#4092) — this is a lightweight string check
+    // is owned by #5313 — this is a lightweight string check
     // (`any_support_targets`).
     //
     // No `structured_detail` push here (unlike the empty-supports branch):
@@ -3168,9 +3168,8 @@ pub(crate) fn solve_cantilever_fea(
     // PressureLoad face tractions are accumulated into the same `f` vector.
     // An empty `pressures` slice is a no-op, preserving the existing tip-only
     // path. Box-face pressures resolve face selectors against the synthetic box's
-    // [0,L]×[0,W]×[0,H] extents, so they are SKIPPED on the realized path —
-    // general face-selector BC assembly is owned downstream (P2 = #4092; task
-    // 4091 design_dec[2]).
+    // [0,L]×[0,W]×[0,H] extents, so they are SKIPPED on the realized path
+    // (task 4091 design_dec[2]); realized-path pressure assembly is #5313's.
     if !realized {
         assemble_box_face_pressures(
             &mut f,
