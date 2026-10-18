@@ -103,7 +103,7 @@ pub fn parse_with_prelude_enums<'a>(
 /// tree-walk pattern used elsewhere in this file.
 ///
 /// Uses the same `is_error() || is_missing()` predicate as the test-only
-/// `count_errors` helper (ts_parser.rs test module) and the production guards
+/// `count_errors` helper (`ts_parser::tests`) and the production guards
 /// in struct/connect lowering — keeping the predicate shape canonical.
 ///
 /// Returns `None` only when the subtree contains no ERROR or MISSING node.
