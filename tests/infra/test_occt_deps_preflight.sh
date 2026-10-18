@@ -34,10 +34,12 @@
 #      the real crates/reify-build-utils/native-deps.toml it exits 0, and its
 #      eval'd output declares every row's columns as <ROW^^>_<COLUMN^^>. A
 #      missing file, malformed TOML, a missing required column, an unknown
-#      column and a non-identifier row key each exit non-zero naming the
-#      offender. Values survive eval literally (no expansion, no word
-#      splitting), and absent optional columns are emitted EMPTY, so a
-#      same-named variable in the caller's environment cannot leak through.
+#      column, a non-identifier row key and an empty sentinel each exit
+#      non-zero naming the offender. Values survive eval literally (no
+#      expansion, no word splitting), and absent optional columns are emitted
+#      EMPTY, so a same-named variable in the caller's environment cannot leak
+#      through. An interpreter without stdlib tomllib exits 3, not the
+#      table-defect 1.
 #   1. scripts/check-manifold-deps.sh exists and is executable.
 #   2. OCCT ABSENCE: both override dirs empty => non-zero, output names OCCT.
 #   3. OCCT LIB-ONLY MISSING: headers present, libs absent => non-zero, output
@@ -94,8 +96,10 @@
 #      fall through to the table's candidates (the bash half of the
 #      empty-override rule); a fourth row with no arm reds naming the row; an
 #      arm with no row reds naming the arm; a malformed or missing table reds
-#      as unreadable naming the path; the occt row's snap table resolves a
-#      fixture snap root, and the same layout without it does not resolve.
+#      as unreadable naming the path; a reader that cannot run (python3 exits
+#      3 or 127) reds without blaming the table; the occt row's snap table
+#      resolves a fixture snap root, and the same layout without it does not
+#      resolve.
 #
 # The accepted-SONAME value is DERIVED from the guard, and every per-dep name
 # from the reader, never hardcoded here, so a legitimate future pin bump or
@@ -871,6 +875,11 @@ _toml_min_row open-vdb > "$_READER_BAD_KEY"
 assert "reader exits non-zero on a row key that is not [a-z][a-z0-9]* ('open-vdb')" \
     _reader_rejects "$_READER_BAD_KEY" "open-vdb"
 
+_READER_EMPTY_SENT="$_TMPDIR/reader-empty-sentinel.toml"
+{ _toml_min_row occt include_sentinel; printf 'include_sentinel = ""\n'; } > "$_READER_EMPTY_SENT"
+assert "reader exits non-zero on an empty sentinel, naming the row and 'include_sentinel'" \
+    _reader_rejects "$_READER_EMPTY_SENT" "occt" "include_sentinel"
+
 # --- (g) values survive eval literally -------------------------------------
 _READER_QUOTE_MARKER="$_TMPDIR/reader-quote-marker"
 _READER_QUOTE_CAND="/tmp/a b/\$(touch $_READER_QUOTE_MARKER)/it's"
@@ -930,6 +939,27 @@ _reader_absent_optionals_are_empty() (
 
 assert "a row with no snap / xde_toolkits emits them EMPTY, overriding same-named exported variables" \
     _reader_absent_optionals_are_empty
+
+# --- (i) no stdlib tomllib => exit 3, not the table-defect 1 ---------------
+# Simulated on this interpreter: a None entry in sys.modules makes
+# `import tomllib` raise ImportError, as it does on Python < 3.11.
+_reader_without_tomllib_exits_3() {
+    local out rc=0
+    [ -f "$READER" ] || { echo "  | reader not found: $READER"; return 1; }
+    out="$(python3 -I -c 'import runpy, sys
+sys.modules["tomllib"] = None
+sys.argv = sys.argv[1:]
+runpy.run_path(sys.argv[0], run_name="__main__")' "$READER" "$NATIVE_DEPS_TABLE" 2>&1)" || rc=$?
+    if [ "$rc" -ne 3 ] || ! _out_contains "$out" "tomllib"; then
+        echo "  | expected exit 3 naming tomllib, got exit $rc"
+        echo "  | ---- reader output ----"
+        printf '  | %s\n' "$out"
+        return 1
+    fi
+}
+
+assert "reader exits 3 naming tomllib when the interpreter has none" \
+    _reader_without_tomllib_exits_3
 
 # ---------------------------------------------------------------------------
 # 1. Guard script exists and is executable
@@ -1549,6 +1579,29 @@ for _table in "$_TABLE_MALFORMED" "$_TABLE_ABSENT"; do
     assert "the unreadable-table red says 'native-deps table unreadable' and names ${_table##*/}" \
         _guard_env_output_names REIFY_NATIVE_DEPS_TABLE="$_table" "${_ALL_DEPS_OK[@]}" \
             -- "native-deps table unreadable" "$_table"
+done
+
+# --- (iv-b) a reader that cannot run is not blamed on the table ------------
+# A python3 stub first on PATH exits as a missing interpreter (127) or one
+# without tomllib (the reader's 3) would.
+_PY3_STUB_DIR="$_TMPDIR/python3-stub"
+mkdir -p "$_PY3_STUB_DIR"
+printf '#!/bin/sh\nexit "$PY3_STUB_RC"\n' > "$_PY3_STUB_DIR/python3"
+chmod +x "$_PY3_STUB_DIR/python3"
+
+for _stub_rc in 3 127; do
+    _PY3_STUB=(PATH="$_PY3_STUB_DIR:$PATH" PY3_STUB_RC="$_stub_rc")
+
+    assert "a reader that cannot run (python3 exits $_stub_rc) reds the guard" \
+        _guard_env_exits_nonzero "${_PY3_STUB[@]}" "${_ALL_DEPS_OK[@]}"
+
+    assert "...naming the reader's exit and its python3 >= 3.11 requirement" \
+        _guard_env_output_names "${_PY3_STUB[@]}" "${_ALL_DEPS_OK[@]}" \
+            -- "cannot run the native-deps reader (exit $_stub_rc)" "python3 >= 3.11"
+
+    assert "...and NOT as a table defect (no 'native-deps table unreadable')" \
+        _guard_env_output_lacks "${_PY3_STUB[@]}" "${_ALL_DEPS_OK[@]}" \
+            -- "native-deps table unreadable" "bug in the table"
 done
 
 # --- (v)/(vi) the occt row's snap table -------------------------------------

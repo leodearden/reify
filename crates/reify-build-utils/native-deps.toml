@@ -8,6 +8,10 @@
 # priority order, per dep, and no list is shared between rows.
 # `snap` and `xde_toolkits` are optional columns only the occt row uses.
 #
+# Row invariants, which both readers enforce: a row key is [a-z][a-z0-9]*;
+# include_env, lib_env and cfg are identifiers; neither sentinel is empty (an
+# empty one would let any existing candidate dir resolve).
+#
 # occt lists system paths and never /opt/reify-deps: that conda prefix ships
 #   OCCT 7.9 (a transitive dep of gmsh) while reify links system OCCT 7.8.
 # gmsh and openvdb lead with /opt/reify-deps, where their conda-forge installs

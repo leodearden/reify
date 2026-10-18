@@ -26,9 +26,11 @@ same-named variable in the caller's environment never survives the eval.
 
 Exit contract: 0 with the declarations. 1 with nothing on stdout and one
 `native_deps_table.py: <path>: <message>` line on stderr when the file is
-missing or not TOML, a row key is not [a-z][a-z0-9]*, a required column is
-missing or mistyped, an env or cfg value is not an identifier, or a column is
-unknown. 2 on a usage error.
+missing or not TOML, or breaks a row invariant the table's header states: a
+row key is not [a-z][a-z0-9]*, a required column is missing or mistyped, an
+env or cfg value is not an identifier, a sentinel is empty, or a column is
+unknown. 2 on a usage error. 3 when the interpreter has no stdlib tomllib
+(Python < 3.11), so a caller can tell a host problem from a table defect.
 
 Stdlib only: the gate reaches /usr/bin/python3, which has no third-party
 packages.
@@ -39,13 +41,23 @@ from __future__ import annotations
 import re
 import shlex
 import sys
-import tomllib
+
+try:
+    import tomllib
+except ImportError:
+    print(
+        f"native_deps_table.py: needs Python >= 3.11 for stdlib tomllib; "
+        f"{sys.executable} is {sys.version.split()[0]}",
+        file=sys.stderr,
+    )
+    sys.exit(3)
 
 ROW_KEY = re.compile(r"[a-z][a-z0-9]*")
 IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
 IDENTIFIER_COLUMNS = ("include_env", "lib_env", "cfg")
-STRING_COLUMNS = IDENTIFIER_COLUMNS + ("include_sentinel", "lib_sentinel")
+SENTINEL_COLUMNS = ("include_sentinel", "lib_sentinel")
+STRING_COLUMNS = IDENTIFIER_COLUMNS + SENTINEL_COLUMNS
 LIST_COLUMNS = ("include_candidates", "lib_candidates")
 OPTIONAL_COLUMNS = ("xde_toolkits", "snap")
 SNAP_COLUMNS = ("root", "include_subdir", "lib_subdir")
@@ -109,6 +121,9 @@ def check_row(key: str, row: object) -> list[Declaration]:
     for column in IDENTIFIER_COLUMNS:
         if not IDENTIFIER.fullmatch(row[column]):
             raise TableError(f"{where} {column} {row[column]!r} is not an identifier")
+    for column in SENTINEL_COLUMNS:
+        if not row[column]:
+            raise TableError(f"{where} {column} is empty")
     include_candidates = _string_list(where, "include_candidates", row["include_candidates"])
     lib_candidates = _string_list(where, "lib_candidates", row["lib_candidates"])
     xde_toolkits = _string_list(where, "xde_toolkits", row.get("xde_toolkits", []))

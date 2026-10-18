@@ -90,13 +90,28 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 NATIVE_DEPS_TABLE="${REIFY_NATIVE_DEPS_TABLE:-$REPO_ROOT/crates/reify-build-utils/native-deps.toml}"
 
 # Only the reader's stdout is captured; its stderr, which names the defect,
-# passes through.
-if ! native_dep_decls="$(python3 -I "$REPO_ROOT/scripts/native_deps_table.py" "$NATIVE_DEPS_TABLE")"; then
-    err "manifold-deps guard: native-deps table unreadable: $NATIVE_DEPS_TABLE"
-    err "                     The reader's message above names the defect. This is a bug in"
-    err "                     the table, NOT a missing install."
-    exit 1
-fi
+# passes through. Exit 1 is the reader's table-defect code. Any other failure
+# (127 for no python3 on PATH, the reader's 3 for no stdlib tomllib) means the
+# reader never judged the table, so it must not be blamed.
+NATIVE_DEPS_READER="$REPO_ROOT/scripts/native_deps_table.py"
+reader_rc=0
+native_dep_decls="$(python3 -I "$NATIVE_DEPS_READER" "$NATIVE_DEPS_TABLE")" || reader_rc=$?
+case "$reader_rc" in
+    0) ;;
+    1)
+        err "manifold-deps guard: native-deps table unreadable: $NATIVE_DEPS_TABLE"
+        err "                     The reader's message above names the defect. This is a bug in"
+        err "                     the table, NOT a missing install."
+        exit 1
+        ;;
+    *)
+        err "manifold-deps guard: cannot run the native-deps reader (exit $reader_rc):"
+        err "                     python3 -I $NATIVE_DEPS_READER $NATIVE_DEPS_TABLE"
+        err "                     It needs python3 >= 3.11 (stdlib tomllib) on PATH. The table"
+        err "                     was never read, so nothing here says it is at fault."
+        exit 1
+        ;;
+esac
 eval "$native_dep_decls"
 
 # Row -> arm. ONE map, checked in both directions here and read again by the

@@ -24,15 +24,40 @@ use std::sync::OnceLock;
 
 use serde::Deserialize;
 
-/// The native libraries Reify binaries may link against.
-///
-/// Each variant's discovery data is its row in `native-deps.toml`, keyed by
-/// [`NativeDep::row_key`]; that file's header names its readers.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum NativeDep {
-    Occt,
-    Gmsh,
-    OpenVdb,
+/// Declares [`NativeDep`], its variant-to-row mapping and, for the tests, its
+/// variant list, all from one list, so no variant can be left out of any of
+/// the three.
+macro_rules! native_deps {
+    ($($variant:ident => $row_key:literal,)+) => {
+        /// The native libraries Reify binaries may link against.
+        ///
+        /// Each variant's discovery data is its row in `native-deps.toml`,
+        /// keyed by [`NativeDep::row_key`]; that file's header names its
+        /// readers.
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        pub enum NativeDep {
+            $($variant,)+
+        }
+
+        impl NativeDep {
+            #[cfg(test)]
+            const ALL: &'static [NativeDep] = &[$(NativeDep::$variant,)+];
+
+            /// The variant's row key in `native-deps.toml`: the one
+            /// variant-to-row mapping.
+            fn row_key(self) -> &'static str {
+                match self {
+                    $(NativeDep::$variant => $row_key,)+
+                }
+            }
+        }
+    };
+}
+
+native_deps! {
+    Occt => "occt",
+    Gmsh => "gmsh",
+    OpenVdb => "openvdb",
 }
 
 /// Resolved location of a native library's headers and shared objects.
@@ -76,7 +101,53 @@ type Table = BTreeMap<String, DepRow>;
 /// The table is repo-owned data, so a malformed one is a bug rather than an
 /// environment: panic naming the file.
 fn parse_table(text: &str) -> Table {
-    toml::from_str(text).unwrap_or_else(|err| panic!("{TABLE_FILE}: {err}"))
+    let table: Table = toml::from_str(text).unwrap_or_else(|err| panic!("{TABLE_FILE}: {err}"));
+    for (key, row) in &table {
+        if let Err(defect) = check_row(key, row) {
+            panic!("{TABLE_FILE}: [{key}] {defect}");
+        }
+    }
+    table
+}
+
+/// The row invariants the table's header states, which
+/// `scripts/native_deps_table.py` enforces too.
+fn check_row(key: &str, row: &DepRow) -> Result<(), String> {
+    if !is_row_key(key) {
+        return Err("row key is not [a-z][a-z0-9]*".to_string());
+    }
+    for (column, value) in [
+        ("include_env", &row.include_env),
+        ("lib_env", &row.lib_env),
+        ("cfg", &row.cfg),
+    ] {
+        if !is_identifier(value) {
+            return Err(format!("{column} {value:?} is not an identifier"));
+        }
+    }
+    for (column, value) in [
+        ("include_sentinel", &row.include_sentinel),
+        ("lib_sentinel", &row.lib_sentinel),
+    ] {
+        if value.is_empty() {
+            return Err(format!("{column} is empty"));
+        }
+    }
+    Ok(())
+}
+
+fn is_row_key(text: &str) -> bool {
+    let mut chars = text.chars();
+    chars.next().is_some_and(|c| c.is_ascii_lowercase())
+        && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+}
+
+fn is_identifier(text: &str) -> bool {
+    let mut chars = text.chars();
+    chars
+        .next()
+        .is_some_and(|c| c == '_' || c.is_ascii_alphabetic())
+        && chars.all(|c| c == '_' || c.is_ascii_alphanumeric())
 }
 
 fn table() -> &'static Table {
@@ -130,16 +201,6 @@ impl SnapFallback {
 }
 
 impl NativeDep {
-    /// The variant's row key in `native-deps.toml`: the one variant-to-row
-    /// mapping.
-    fn row_key(self) -> &'static str {
-        match self {
-            NativeDep::Occt => "occt",
-            NativeDep::Gmsh => "gmsh",
-            NativeDep::OpenVdb => "openvdb",
-        }
-    }
-
     fn row(self) -> &'static DepRow {
         lookup(table(), self.row_key())
     }
@@ -148,11 +209,6 @@ impl NativeDep {
     /// after its base list: the row's `xde_toolkits`, empty when it lists none.
     pub fn xde_toolkits(self) -> &'static [String] {
         &self.row().xde_toolkits
-    }
-
-    /// The `has_<dep>` cfg a kernel sets when this dep resolves.
-    pub fn cfg(self) -> &'static str {
-        &self.row().cfg
     }
 }
 
@@ -385,29 +441,59 @@ mod tests {
         assert_eq!(read_soname_version(tmp, "TKernel"), Some("7.9.3".to_string()));
     }
 
-    /// Every variant, for the row-set test below. Stable Rust cannot enumerate
-    /// an enum, so [`is_listed`]'s exhaustive match is what stops compiling
-    /// when a variant is added — grow this list in the same edit.
-    const EVERY_VARIANT: [NativeDep; 3] = [NativeDep::Occt, NativeDep::Gmsh, NativeDep::OpenVdb];
+    #[test]
+    fn variant_set_equals_table_row_set() {
+        let table = parse_table(TABLE_TOML);
+        let table_rows: BTreeSet<&str> = table.keys().map(String::as_str).collect();
+        let variant_rows: BTreeSet<&str> = NativeDep::ALL.iter().map(|dep| dep.row_key()).collect();
+        assert_eq!(
+            variant_rows.len(),
+            NativeDep::ALL.len(),
+            "two variants share a row key"
+        );
+        assert_eq!(table_rows, variant_rows);
 
-    fn is_listed(dep: NativeDep) -> bool {
-        match dep {
-            NativeDep::Occt | NativeDep::Gmsh | NativeDep::OpenVdb => EVERY_VARIANT.contains(&dep),
+        for dep in NativeDep::ALL {
+            dep.row(); // panics naming the file if the row is missing
+        }
+    }
+
+    /// Every kernel build.rs and every `#[cfg(..)]` gate is written against
+    /// `has_<row key>`, so a `cfg` value drifting from it would name a cfg the
+    /// build never sets.
+    #[test]
+    fn every_row_cfg_is_has_row_key() {
+        for dep in NativeDep::ALL {
+            assert_eq!(dep.row().cfg, format!("has_{}", dep.row_key()));
         }
     }
 
     #[test]
-    fn variant_set_equals_table_row_set() {
-        assert!(EVERY_VARIANT.iter().all(|dep| is_listed(*dep)));
+    #[should_panic(expected = "native-deps.toml: [open-vdb] row key")]
+    fn row_key_outside_lowercase_alnum_panics_naming_the_file() {
+        parse_table(&minimal_row_toml("occt").replace("[occt]", "[open-vdb]"));
+    }
 
-        let table = parse_table(TABLE_TOML);
-        let table_rows: BTreeSet<&str> = table.keys().map(String::as_str).collect();
-        let variant_rows: BTreeSet<&str> = EVERY_VARIANT.iter().map(|dep| dep.row_key()).collect();
-        assert_eq!(table_rows, variant_rows);
+    #[test]
+    #[should_panic(expected = "native-deps.toml: [occt] lib_env \"OCCT LIB\" is not an identifier")]
+    fn non_identifier_env_panics_naming_the_file() {
+        parse_table(&minimal_row_toml("occt").replace(
+            "lib_env = \"REIFY_BUILD_UTILS_TEST_UNSET_VAR\"",
+            "lib_env = \"OCCT LIB\"",
+        ));
+    }
 
-        for dep in EVERY_VARIANT {
-            dep.row(); // panics naming the file if the row is missing
-        }
+    #[test]
+    #[should_panic(expected = "native-deps.toml: [occt] cfg \"has-occt\" is not an identifier")]
+    fn non_identifier_cfg_panics_naming_the_file() {
+        parse_table(&minimal_row_toml("occt").replace("has_occt", "has-occt"));
+    }
+
+    /// An empty sentinel would let any existing candidate dir resolve.
+    #[test]
+    #[should_panic(expected = "native-deps.toml: [occt] include_sentinel is empty")]
+    fn empty_sentinel_panics_naming_the_file() {
+        parse_table(&minimal_row_toml("occt").replace("\"oc.h\"", "\"\""));
     }
 
     #[test]
