@@ -999,149 +999,85 @@ fn check_three_never_reports_a_fence_under_any_other_tag() {
 // ---------------------------------------------------------------------------
 // Check 4 — every chunk is reachable through the MCP tool
 //
-// Hermetic: the fixtures below are a synthetic stem list plus synthetic
-// `language_chunks.rs` source text. Nothing on disk is read.
+// Hermetic: the fixtures below are a synthetic on-disk corpus of
+// (stem, content) pairs plus a synthetic served set. Nothing on disk is read.
 // ---------------------------------------------------------------------------
 
-/// A synthetic `language_chunks.rs` wired for exactly `stems`, in the same
-/// shape as the real file: `include_str!` consts, a `TOPICS` slice literal, and
-/// a `get_chunk` match — including the match, because a scan that is not scoped
-/// to the TOPICS literal would be satisfied by the match arm instead.
-fn synthetic_language_chunks_rs(include_str_stems: &[&str], topics: &[&str]) -> String {
-    let consts = include_str_stems
+/// A synthetic on-disk corpus, in the `(stem, markdown)` shape
+/// `chunk_io::all_chunks` returns.
+fn on_disk(entries: &[(&str, &str)]) -> Vec<(String, String)> {
+    entries
         .iter()
-        .map(|s| format!("const {}: &str = include_str!(\"chunks/{s}.md\");", s.to_uppercase()))
-        .collect::<Vec<_>>()
-        .join("\n");
-    let topic_entries = topics
-        .iter()
-        .map(|s| format!("    \"{s}\","))
-        .collect::<Vec<_>>()
-        .join("\n");
-    let arms = include_str_stems
-        .iter()
-        .map(|s| format!("        \"{s}\" => Some({}),", s.to_uppercase()))
-        .collect::<Vec<_>>()
-        .join("\n");
-    format!(
-        "// Language reference chunks\n\n{consts}\n\n\
-         pub const TOPICS: &[&str] = &[\n{topic_entries}\n];\n\n\
-         pub fn get_chunk(topic: &str) -> Option<&'static str> {{\n\
-         \x20   match topic {{\n{arms}\n        _ => None,\n    }}\n}}\n"
-    )
+        .map(|(stem, content)| (stem.to_string(), content.to_string()))
+        .collect()
 }
 
-/// A chunk file that is never `include_str!`-ed is whole-file omission drift:
-/// it ships in the repo, is served to nobody, and rots unread.
+/// A chunk file whose content no topic serves ships in the repo and is handed
+/// to nobody. The violation names the file by its repo-relative path and says
+/// where the missing row goes.
 #[test]
-fn a_stem_that_is_never_include_str_ed_is_reported() {
-    let src = synthetic_language_chunks_rs(&["syntax", "units"], &["syntax", "units"]);
-    let stems = vec!["syntax".to_string(), "units".to_string(), "ghost".to_string()];
+fn a_chunk_file_whose_content_no_topic_serves_is_reported_naming_the_file() {
+    let disk = on_disk(&[("syntax", "S"), ("units", "U"), ("ghost", "G")]);
 
-    let violations = reachability_violations(&stems, &src);
+    let violations = reachability_violations(&disk, &["S", "U"]);
 
     assert_eq!(violations.len(), 1, "got {violations:#?}");
     assert!(
-        violations[0].contains("ghost"),
-        "the violation must name the stem, got: {}",
+        violations[0].contains(&chunk_label("ghost")),
+        "the violation must name the file by its repo-relative path, got: {}",
         violations[0]
     );
     assert!(
-        violations[0].contains("include_str!"),
-        "the violation must say WHICH of the two references is missing, got: {}",
-        violations[0]
-    );
-}
-
-/// The subtler half: a stem that IS `include_str!`-ed and IS reachable through
-/// `get_chunk`, but is absent from `TOPICS`.
-///
-/// Such a chunk compiles into the binary and even answers a direct lookup, yet
-/// it is invisible through the `reify_language_reference` MCP tool, because
-/// `TOPICS` is what the tool enumerates. Catching it REQUIRES scoping the scan
-/// to the `TOPICS` slice literal — the fixture deliberately carries a
-/// `"ghost" => Some(GHOST)` match arm, which a whole-file quoted-stem scan
-/// would happily accept.
-#[test]
-fn a_stem_include_str_ed_but_absent_from_the_topics_literal_is_reported() {
-    let src = synthetic_language_chunks_rs(&["syntax", "ghost"], &["syntax"]);
-    let stems = vec!["syntax".to_string(), "ghost".to_string()];
-
-    let violations = reachability_violations(&stems, &src);
-
-    assert_eq!(violations.len(), 1, "got {violations:#?}");
-    assert!(
-        violations[0].contains("ghost") && violations[0].contains("TOPICS"),
-        "the violation must name the stem and say TOPICS is the missing half, \
-         got: {}",
+        violations[0].contains("CHUNKS"),
+        "the violation must name CHUNKS as where the missing row goes, got: {}",
         violations[0]
     );
 }
 
-/// A stem wired in BOTH places is clean.
+/// A corpus whose every file is served is clean, whatever order the registry
+/// serves them in.
 #[test]
-fn a_stem_wired_in_both_places_is_not_reported() {
-    let stems: Vec<String> = ["syntax", "units", "traits"]
-        .iter()
-        .map(|s| s.to_string())
-        .collect();
-    let src = synthetic_language_chunks_rs(&["syntax", "units", "traits"], &["syntax", "units", "traits"]);
+fn a_corpus_whose_every_file_is_served_is_clean() {
+    let disk = on_disk(&[("syntax", "S"), ("units", "U")]);
 
-    assert!(
-        reachability_violations(&stems, &src).is_empty(),
-        "a fully wired corpus must be clean"
-    );
+    let violations = reachability_violations(&disk, &["U", "S"]);
+
+    assert!(violations.is_empty(), "a fully served corpus must be clean, got {violations:#?}");
 }
 
-/// Matching is ANCHORED: a stem is never satisfied by a coincidental substring
-/// of a longer stem.
-///
-/// `types` inside `prototypes`, and `purposes` sharing letters with it, is the
-/// adversarial pair. An unanchored `src.contains("types")` would report the
-/// corpus clean while `types.md` was served to nobody — the exact silent
-/// failure this check exists to prevent.
+/// Reachability is EXACT equality: a served chunk that merely contains the
+/// file's text, or a copy differing only by a trailing newline, is not the
+/// file. A `contains` / `starts_with` / trimming comparison would report the
+/// corpus clean while the file itself was served to nobody.
 #[test]
-fn a_stem_is_never_satisfied_by_a_longer_stem_that_contains_it() {
-    let src = synthetic_language_chunks_rs(&["prototypes", "purposes"], &["prototypes", "purposes"]);
-    let stems = vec!["types".to_string()];
-
-    let violations = reachability_violations(&stems, &src);
-
+fn reachability_is_exact_equality_not_containment() {
+    let contained = reachability_violations(&on_disk(&[("types", "types")]), &["prototypes and types"]);
     assert_eq!(
-        violations.len(),
+        contained.len(),
         1,
-        "`types` must NOT be satisfied by `prototypes`/`purposes`; got {violations:#?}"
+        "`types` must NOT be satisfied by a served chunk containing it; got {contained:#?}"
     );
-    assert!(
-        violations[0].contains("types"),
-        "got: {}",
-        violations[0]
+
+    let trimmed = reachability_violations(&on_disk(&[("units", "U\n")]), &["U"]);
+    assert_eq!(
+        trimmed.len(),
+        1,
+        "a served chunk differing by a trailing newline is not the file; got {trimmed:#?}"
     );
 }
 
-/// If the `TOPICS` slice literal cannot be located at all, that is itself a
-/// violation — never a silent pass.
-///
-/// The check's whole TOPICS half is a text scan anchored on that literal. If a
-/// refactor moved or renamed it, an unanchored implementation would find zero
-/// entries, conclude nothing is wired, or (worse) fall back to a whole-file
-/// scan and conclude everything is. Failing loudly is the only safe answer.
+/// An empty registry reports EVERY file, never none. An implementation that
+/// iterated the served side would find nothing to check and pass vacuously.
 #[test]
-fn a_missing_topics_literal_is_itself_a_violation() {
-    let src = "const SYNTAX: &str = include_str!(\"chunks/syntax.md\");\n";
-    let stems = vec!["syntax".to_string()];
+fn an_empty_registry_reports_every_file_rather_than_none() {
+    let disk = on_disk(&[("a", "A"), ("b", "B")]);
 
-    let violations = reachability_violations(&stems, src);
+    let violations = reachability_violations(&disk, &[]);
 
+    assert_eq!(violations.len(), 2, "one violation per unserved file; got {violations:#?}");
     assert!(
-        !violations.is_empty(),
-        "a language_chunks.rs with no TOPICS literal must fail loudly, not pass \
-         vacuously"
-    );
-    assert!(
-        violations.iter().any(|v| v.contains("TOPICS")),
-        "the violation must say the TOPICS literal is what could not be found, \
-         got {violations:#?}"
+        violations[0].contains(&chunk_label("a")) && violations[1].contains(&chunk_label("b")),
+        "each violation must name its own file, got {violations:#?}"
     );
 }
 
