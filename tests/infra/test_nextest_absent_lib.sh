@@ -31,6 +31,12 @@ source "$SCRIPT_DIR/test_helpers.sh"
 # shellcheck source=tests/infra/load_tolerance_lib.sh
 source "$SCRIPT_DIR/load_tolerance_lib.sh"
 
+# plan_capture_lib.sh — supplies plan_header_field, which this file calls
+# directly to read the plan header's nextest field.
+[ -f "$SCRIPT_DIR/plan_capture_lib.sh" ] || { echo "ERROR: plan_capture_lib.sh not found at $SCRIPT_DIR/plan_capture_lib.sh"; exit 1; }
+# shellcheck source=tests/infra/plan_capture_lib.sh
+source "$SCRIPT_DIR/plan_capture_lib.sh"
+
 echo "=== nextest_absent_lib.sh unit tests (task 5602) ==="
 
 # -- Existence guard: lib must exist before sourcing ---------------------------
@@ -511,11 +517,12 @@ _t7b() {
 }
 
 # (c) nextest_available_ambient — the idiom migrating off
-# test_verify_retry_subset.sh:74-81. Must agree with the ambient plan header.
+# test_verify_retry_subset.sh's open-coded ambient plan-header probe. Must agree
+# with the ambient plan header.
 _t7c() {
     local hdr want
     hdr="$(nextest_absent_plan_header_ambient)"
-    case "$hdr" in *"nextest=1"*) want=0 ;; *) want=1 ;; esac
+    if [ "$(plan_header_field "$hdr" plan nextest)" = 1 ]; then want=0; else want=1; fi
     echo "ambient header: $hdr (expect rc=$want)"
     if nextest_available_ambient; then
         [ "$want" -eq 0 ]
@@ -534,8 +541,8 @@ assert "7c: nextest_available_ambient agrees with the ambient verify.sh plan hea
 # `sed -n '1p'`. Measured today the header IS line 1 — so the bug this test pins
 # is LATENT, and latent is exactly when it is cheap to close: the day verify.sh
 # emits anything before it (a warning, a deprecation notice, an apply_env
-# diagnostic), positional extraction returns that line instead, every
-# `case ... nextest=1` rejects it, nextest_available_ambient reports "no nextest",
+# diagnostic), positional extraction returns that line instead, the nextest
+# field read finds no header in it, nextest_available_ambient reports "no nextest",
 # test_verify_retry_subset.sh sets NEXTEST_AVAILABLE=0 — and every assert behind
 # its guards is SILENTLY DROPPED. That is a vacuous green, the failure class this
 # whole task family exists to prevent, and it would announce itself nowhere.
@@ -555,7 +562,7 @@ _nx_write_preamble_stub() {
 #!/usr/bin/env bash
 echo "warning: apply_env — /etc/reify/env not readable, continuing"
 echo "# verify.sh plan — action=test profile=debug scope=all include_infra=0 nextest=$2 role=task"
-echo "# scope decision — RUN_RUST=1 RUN_GUI=1"
+echo "# narrowing — NARROW_ACTIVE=0 affected= closure= from_diff=0"
 STUB
     chmod +x "$1"
 }
@@ -573,12 +580,12 @@ chmod +x "$NX_STUB_NOHDR"
 _t9a() {
     local hdr; hdr="$(nextest_absent_plan_header "$NX_STUB_N0")"
     printf 'header: %s\n' "$hdr"
-    case "$hdr" in "# verify.sh plan"*"nextest=0"*) return 0 ;; *) return 1 ;; esac
+    [[ "$hdr" == "# verify.sh plan"* ]] && [ "$(plan_header_field "$hdr" plan nextest)" = 0 ]
 }
 _t9b() {
     local hdr; hdr="$(nextest_absent_plan_header_ambient "$NX_STUB_N1")"
     printf 'header: %s\n' "$hdr"
-    case "$hdr" in "# verify.sh plan"*"nextest=1"*) return 0 ;; *) return 1 ;; esac
+    [[ "$hdr" == "# verify.sh plan"* ]] && [ "$(plan_header_field "$hdr" plan nextest)" = 1 ]
 }
 
 # (c) The consequence that actually matters: retry_subset's availability probe
@@ -648,7 +655,7 @@ _nx_in_plan_case() {
 _NX_PLAN_N1_BARE="$_NX_HDR_N1"
 _NX_PLAN_N1_PREAMBLE="$_NX_PREAMBLE_LINE
 $_NX_HDR_N1
-# scope decision — RUN_RUST=1 RUN_GUI=1"
+# narrowing — NARROW_ACTIVE=0 affected= closure= from_diff=0"
 _NX_PLAN_N0="$_NX_PREAMBLE_LINE
 $_NX_HDR_N0"
 

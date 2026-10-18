@@ -23,7 +23,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use reify_core::Type;
-use reify_ir::{ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, Mesh, QueryError, SampledField, TessError, Value, VoxelResolution};
+use reify_ir::{ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, Mesh, QueryError, SampledField, TessError, Value, VoxelResolution, write_stl_binary};
 
 use crate::ffi::ffi as openvdb_ffi;
 use crate::init::ensure_initialized;
@@ -719,11 +719,23 @@ impl GeometryKernel for OpenVdbKernel {
 
     fn export(
         &self,
-        _handle: GeometryHandleId,
-        _format: ExportFormat,
-        _writer: &mut dyn std::io::Write,
+        handle: GeometryHandleId,
+        format: ExportFormat,
+        writer: &mut dyn std::io::Write,
     ) -> Result<(), ExportError> {
-        Err(ExportError::FormatError(VOXEL_BOOL_STUB_MSG.into()))
+        match format {
+            ExportFormat::Stl => {
+                // `tessellate` serves mesh and grid handles alike and ignores
+                // its tolerance (marching cubes has none); pass 0.0.
+                let mesh = self
+                    .tessellate(handle, 0.0)
+                    .map_err(|e| ExportError::FormatError(e.to_string()))?;
+                write_stl_binary(&mesh, writer).map_err(|e| ExportError::IoError(e.to_string()))
+            }
+            other => Err(ExportError::FormatError(format!(
+                "OpenVDB kernel cannot export {other:?}; only Stl is supported"
+            ))),
+        }
     }
 
     /// Tessellate the registered voxel grid via marching cubes.

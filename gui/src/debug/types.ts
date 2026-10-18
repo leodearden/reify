@@ -3,6 +3,7 @@
 import type { Scene, PerspectiveCamera, WebGLRenderer } from 'three';
 import type { ViewStateStore } from '../stores/viewStateStore';
 import type { FeaModeStore } from '../stores/feaModeStore';
+import type { LayoutStore } from '../stores/layoutStore';
 import type { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import type { EditorView } from '@codemirror/view';
 import { onMount, onCleanup } from 'solid-js';
@@ -59,30 +60,8 @@ export interface DebugStores {
     };
   };
   viewState: ViewStateStore;
-  /** Pane/splitter dimensions. C2/resize_panes owns these setters (breadcrumb from L0). */
-  layout: {
-    state: {
-      editorWidth: number;
-      sideWidth: number;
-      designTreeHeight: number;
-      propertyHeight: number;
-      constraintHeight: number;
-      /** Height of the diagnostics/problems panel in pixels (task-4404 ε). */
-      problemsHeight?: number;
-      /** Whether the problems panel is collapsed (task-4404 ε). */
-      problemsCollapsed?: boolean;
-    };
-    /** Accept a plain value or a functional updater, matching the layoutStore setter signature. */
-    setEditorWidth: (v: number | ((prev: number) => number)) => void;
-    setSideWidth: (v: number | ((prev: number) => number)) => void;
-    setDesignTreeHeight: (v: number | ((prev: number) => number)) => void;
-    setPropertyHeight: (v: number | ((prev: number) => number)) => void;
-    setConstraintHeight: (v: number | ((prev: number) => number)) => void;
-    /** resize_panes: problems panel height setter (task-4404 ε). */
-    setProblemsHeight?: (v: number | ((prev: number) => number)) => void;
-    /** resize_panes: problems panel collapsed setter (task-4404 ε). */
-    setProblemsCollapsed?: (v: boolean | ((prev: boolean) => boolean)) => void;
-  };
+  /** The real panel-layout store; its rows are LAYOUT_DIMENSIONS. */
+  layout: LayoutStore;
 }
 
 /** Three.js viewport references set by Viewport.tsx onMount. */

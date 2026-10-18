@@ -104,6 +104,8 @@ _NEXTEST_ABSENT_PREV_HUP=""
 # location so a caller need not thread it through. Overridable per-call (first
 # positional arg) and per-environment (NEXTEST_ABSENT_VERIFY).
 _NEXTEST_ABSENT_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=tests/infra/plan_capture_lib.sh
+source "$_NEXTEST_ABSENT_LIB_DIR/plan_capture_lib.sh"
 _NEXTEST_ABSENT_REPO_ROOT="$(cd "$_NEXTEST_ABSENT_LIB_DIR/../.." && pwd)"
 NEXTEST_ABSENT_VERIFY="${NEXTEST_ABSENT_VERIFY:-$_NEXTEST_ABSENT_REPO_ROOT/scripts/verify.sh}"
 
@@ -547,13 +549,20 @@ _nextest_absent_h3() { nx_run tree-sitter --version; }
 _nextest_absent_h4() {
     local hdr; hdr="$(nextest_absent_plan_header "${1:-$NEXTEST_ABSENT_VERIFY}")"
     printf '%s\n' "$hdr"
-    case "$hdr" in *"nextest=0"*) return 0 ;; *) return 1 ;; esac
+    _nextest_absent_nextest_field_is "$hdr" 0
 }
 
 _nextest_absent_h5() {
     local hdr; hdr="$(nextest_absent_plan_header_ambient "${1:-$NEXTEST_ABSENT_VERIFY}")"
     printf '%s\n' "$hdr"
-    case "$hdr" in *"nextest=1"*) return 0 ;; *) return 1 ;; esac
+    _nextest_absent_nextest_field_is "$hdr" 1
+}
+
+# _nextest_absent_nextest_field_is <header-or-plan> <want> — the plan header's
+# `nextest` field, read by plan_capture_lib.sh's plan_header_field, is <want>.
+# An empty or headerless argument reads as absent, so it never equals <want>.
+_nextest_absent_nextest_field_is() {
+    [ "$(plan_header_field "$1" plan nextest)" = "$2" ]
 }
 
 nextest_absent_assert_real() {
@@ -586,7 +595,8 @@ nextest_absent_assert_real() {
 }
 
 # nextest_available_ambient — does the AMBIENT host have cargo-nextest, as
-# verify.sh sees it? Returns 0 on a `nextest=1` plan header, non-zero otherwise.
+# verify.sh sees it? Returns 0 when the plan header's nextest field reads 1
+# (_nextest_absent_nextest_field_is), non-zero otherwise.
 #
 # This DETECTS host state; it does not simulate absence. It is the idiom
 # test_verify_retry_subset.sh open-coded — that suite deliberately tests against
@@ -599,7 +609,7 @@ nextest_absent_assert_real() {
 nextest_available_ambient() {
     local hdr
     hdr="$(nextest_absent_plan_header_ambient "${1:-$NEXTEST_ABSENT_VERIFY}")"
-    case "$hdr" in *"nextest=1"*) return 0 ;; *) return 1 ;; esac
+    _nextest_absent_nextest_field_is "$hdr" 1
 }
 
 # nextest_available_in_plan <plan-text> — the same answer as
@@ -619,11 +629,11 @@ nextest_available_ambient() {
 # nextest_absent_plan_header_ambient captures is
 # `bash "$verify" test --scope all --print-plan 2>/dev/null`, byte-identical to
 # the capture retry_subset already makes, and both route the result through the
-# same content-keyed _nextest_absent_header_of.
+# same content-keyed _nextest_absent_header_of and _nextest_absent_nextest_field_is.
 nextest_available_in_plan() {
     local hdr
     hdr="$(_nextest_absent_header_of "${1:-}")"
-    case "$hdr" in *"nextest=1"*) return 0 ;; *) return 1 ;; esac
+    _nextest_absent_nextest_field_is "$hdr" 1
 }
 
 # ---------------------------------------------------------------------------
@@ -751,8 +761,8 @@ nextest_absent_home_is_small() {
 # spurious pipeline failure that has nothing to do with the header's content.
 #
 # The capture is guarded with `|| true` so a verify.sh hiccup yields an empty
-# header — which every caller's `case` rejects — rather than aborting a `set -e`
-# caller mid-suite with no Results line at all.
+# header — which every caller's classifier rejects — rather than aborting a
+# `set -e` caller mid-suite with no Results line at all.
 
 # _nextest_absent_header_of <plan> — pick the plan header out of a captured plan.
 #

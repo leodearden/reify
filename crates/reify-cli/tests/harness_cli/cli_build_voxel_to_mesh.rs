@@ -2,26 +2,27 @@ use crate::common;
 
 use std::process::Command;
 
-/// Task 5002 (δ) integration gate: `reify build examples/multi_kernel/voxel_to_mesh.ri`
-/// (a real BRep→Voxel operand feeding a Voxel→Mesh `isosurface(...)` terminal)
-/// must exit 0 and print a `Triangles: N` line with `N > 0`.
+use reify_test_support::stl_bytes::binary_stl_aabb;
+
+/// Task 5002 (δ) integration gate, strengthened by task 6308: `reify build
+/// examples/multi_kernel/voxel_to_mesh.ri -o shell.stl` (a real BRep→Voxel
+/// operand feeding a Voxel→Mesh `isosurface(...)` terminal) must exit 0 and
+/// write the WHOLE isosurface: at least 10,000 triangles, a printed
+/// `Triangles: N` that agrees with the file, and an extent in [18, 22] mm on
+/// every axis.
 ///
-/// This is the CLI-observable half of the honest signal proven at the engine
-/// level by `crates/reify-eval/tests/voxel_to_mesh_e2e.rs`: the same
-/// `tessellate_realizations` mesh egress the GUI viewport uses (PRD B5).
+/// Basis: docs/prds/v0_3/voxel-to-mesh-surfacing.md measured 50,700 triangles;
+/// with h = 20 mm / 64 the iso-0 faces sit within ~0.6 mm of ±10 mm. A
+/// single-face mesh (the pre-6308 defect: the OpenVDB-owned terminal exported
+/// through OCCT printed `Triangles: 2`) fails both the floor and the 3-axis
+/// bbox.
 ///
 /// Gated `#[cfg(has_openvdb)]` (reify-cli's build.rs emits this cfg only when
 /// OpenVDB native libraries are available) — mirrors the engine-level e2e
 /// test's gate.
-///
-/// RED (before step-4 wires `cmd_build`): `cmd_build` constructs its engine
-/// via `Engine::with_registered_kernel` alone (OCCT only, no OpenVDB), so the
-/// isosurface build's Mesh→Voxel + Voxel→Mesh stages have no kernel to
-/// dispatch to — the build degrades to an Error diagnostic and exits
-/// non-zero. `cmd_build` also does not yet print any `Triangles:` line.
 #[cfg(has_openvdb)]
 #[test]
-fn build_voxel_to_mesh_prints_positive_triangle_count() {
+fn build_voxel_to_mesh_writes_the_whole_isosurface() {
     let dir = tempfile::tempdir().expect("failed to create temp dir");
     let output_path = dir.path().join("shell.stl");
 
@@ -56,8 +57,6 @@ fn build_voxel_to_mesh_prints_positive_triangle_count() {
         "geometry file should be written on success"
     );
 
-    // Parse the `Triangles: N` line and assert N > 0 (binary — no numeric
-    // bound, per PRD's avoidance of a guessed exact count).
     let triangles_line = stdout
         .lines()
         .find(|line| line.starts_with("Triangles:"))
@@ -74,8 +73,22 @@ fn build_voxel_to_mesh_prints_positive_triangle_count() {
             )
         });
     assert!(
-        n > 0,
-        "triangle count must be > 0 (marching cubes on a closed 20mm box's \
-         narrow-band SDF must yield a non-empty mesh); got {n}\nstdout: {stdout}"
+        n >= 10_000,
+        "the 20mm box's marching-cubes isosurface must have at least 10,000 triangles \
+         (measured 50,700); got {n}\nstdout: {stdout}"
     );
+
+    let stl = std::fs::read(&output_path).expect("failed to read the written STL");
+    let aabb = binary_stl_aabb(&stl);
+    assert_eq!(
+        aabb.triangles as u64, n,
+        "the printed triangle count must agree with the written file"
+    );
+    for (axis, extent) in aabb.extent().into_iter().enumerate() {
+        assert!(
+            (18.0..=22.0).contains(&extent),
+            "axis {axis}: the 20mm box's isosurface must span 18..=22 mm, got {extent} mm \
+             ({aabb:?})"
+        );
+    }
 }

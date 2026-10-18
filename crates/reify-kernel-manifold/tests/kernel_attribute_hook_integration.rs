@@ -6,7 +6,8 @@
 //! `ManifoldKernel::new()` → `&dyn GeometryKernel::attribute_hook()` → `Some` →
 //! `KernelAttributeHook::propagate_attributes(...)` → `Ok(Discarded)` with
 //! exactly one WARN-level diagnostic at the `reify_kernel_manifold::kernel` target and
-//! no writes to `TopologyAttributeTable`.
+//! no writes to `TopologyAttributeTable` on the degenerate path: an empty kernel
+//! has no parent provenance to walk.
 //!
 //! # Why this lives in `crates/reify-kernel-manifold/tests/` (not in `kernel.rs`)
 //!
@@ -38,7 +39,8 @@ use reify_ir::{FeatureId, GeometryHandleId, GeometryKernel, GeometryOp, KernelAt
 /// accessor and the resulting hook's `propagate_attributes(...)` returns
 /// `Ok(KernelAttributeOutcome::Discarded)`, leaves `TopologyAttributeTable`
 /// empty, and emits exactly one WARN-level event at the `reify_kernel_manifold::kernel`
-/// target.
+/// target — the degenerate path, since an empty kernel has no parent
+/// provenance for the synthetic handles.
 ///
 /// This is the cross-crate plumbing pin: future Manifold FFI work that breaks
 /// any of (Some-hook accessor, Discarded outcome, empty-table invariant, WARN
@@ -87,12 +89,12 @@ fn manifold_kernel_attribute_hook_round_trip_via_geometry_kernel_trait_object() 
         Ok(KernelAttributeOutcome::Discarded) => {}
         other => panic!(
             "chained &dyn GeometryKernel → attribute_hook → propagate_attributes must reach \
-             Ok(Discarded) for the v0.2 stub; got {other:?}"
+             Ok(Discarded) when no parent provenance is available (empty kernel); got {other:?}"
         ),
     }
 
-    // (b) Table is unchanged: stub does not write spurious entries on the
-    // trait-object path either.
+    // (b) Table is unchanged: the degenerate path does not write spurious
+    // entries on the trait-object path either.
     assert!(
         table.is_empty(),
         "Manifold Discarded path must not write to TopologyAttributeTable on the \

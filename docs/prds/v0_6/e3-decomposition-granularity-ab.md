@@ -529,6 +529,40 @@ Endpoint impact: the rows were already in both constituents' text ("file a fix t
 write its ε-format baseline row"). The only new obligation is one marker line and where it
 goes. Annotate #6908 and #6909; do not censor them.
 
+**(f) Standard-arm gate leaves named (2026-10-12; Leo ruling on esc-8455-1).** (a)(ii)
+excludes "the integration-gate and PRD-close leaves" from the standard-arm count without
+naming them, and every candidate has `task_kind` `normal`, so the set has to be a protocol
+constant. It is ratified as #8455 pinned it, each gate read from the arm PRD's own text:
+- **solver-driver-parity:** gate leaves δ #6693 ("Phase 2 — the flip (integration gate)") and
+  φ #6700 ("Phase 5 — the differential harness (second integration gate)"); close leaf #6704.
+- **geometry-algebra-solver-unification:** gate leaf ι #6677 ("Integration gate."); close
+  leaf #6687.
+- **driver-contract-implementation:** gate leaf χ #6805 ("it is the integration gate for this
+  PRD"); close leaf #6808.
+
+One reading is ratified with the set: solver-driver-parity's Phase 2 heading also covers
+ε #6692, but only δ #6693 is the flip, so #6692 counts as an ordinary standard leaf.
+
+The constant is `gate_leaves` and `close_leaf` in `e3-granularity/analysis/e3_protocol.py`,
+landed by #8455. This entry changes no figure reported at 2026-10-10 (the standard arm still
+has 1 qualifying landing, #6801). It fixes which later landings count toward (a)(ii).
+
+Recorded, not ruled: the (b)4 sensitivity run, as the script implements it, drops every task
+that carries an amendment record. That is the (c) ledger's rows plus #6898 (A5-R) and
+#6908/#6909 ((e)). It is descriptive and does not enter the stop rule.
+
+### Addendum 2026-10-14 — review-all S12 amends coalesced #6898 and #6904 (Leo ruling S12 R1)
+
+**What changed.** The review-all-reify-20261010 S12 session (docs/prds/v0_6/check-surface-subject-and-measurement-context.md, commits c43fed49c5 and 891e35ae6e) was authorised by Leo (S12 R1, 2026-10-14) to edit E3 tasks. S12 now owns the measurement seam: `MeasurementContext`, `Engine::measure` / `capture_measurement` / `unmeasured_context`, and `CheckEnginePlan`. The coalesced tasks consume that seam instead of building their own:
+- #6898 (GOM-E3C1) gains upstream edges on S12 ε1 #9017, ζ1 #9022 and ε3 #9021. Two of its delivered checks were corrected, both in the task metadata and in the gui-on-demand-measurement sidecar.
+- #6904 gains an upstream edge on S12 ζ2 #9023.
+- The retired standard leaves #6740 and #6741 (§11 rollback targets) had their delivered checks aligned, so they do not go stale.
+
+**Endpoint impact — declare, do not hide.**
+- *Schedule:* #6898 and #6904 now wait on four S12 leaves that did not exist at pre-registration. Their dispatch-to-landing clock therefore includes an upstream wait the standard arm never had. Analysts should measure their implement-phase endpoints from dispatch, not from release.
+- *Scope:* part of the work they would have done (the measurement context and the check plan) now lands in S12 leaves. Their per-task size is smaller than at randomization, which biases the coarse arm toward the fine arm's granularity.
+- Treat #6898 and #6904 as amended units in §7's analysis, and report results with and without them.
+
 ## 11. Abort / rollback procedure
 
 If E3 must be aborted before coarse landings: set the 16 coarse tasks (#6898–#6913) and, if

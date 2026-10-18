@@ -55,8 +55,9 @@ impl SourceSpan {
     /// - Both `reify_types::byte_offset_to_line_col` and the GUI/LSP fast path
     ///   (`gui::engine::offset_to_line_col_fast`) short-circuit the prelude
     ///   sentinel ([`SourceSpan::PRELUDE_SENTINEL_OFFSET`]) to `(1, 1)` — the
-    ///   same "no user-file location" fallback used by `mcp_context::get_diagnostics`
-    ///   when no labels are present.  This prevents a `debug_assert` panic
+    ///   same "no user-file location" fallback the GUI's `diagnostics_to_info`
+    ///   (`gui/src-tauri/src/engine.rs`) uses when no labels are present.  This
+    ///   prevents a `debug_assert` panic
     ///   (debug builds) and a silent past-last-line mis-report (release builds).
     /// - Ad-hoc offset converters that do **not** route through one of those
     ///   helpers (e.g. `reify_lsp::convert::offset_to_position`) apply
@@ -116,8 +117,9 @@ impl Severity {
     /// (`#[cfg(feature = "serde")]`) is pinned by a unit test.
     ///
     /// Note: `Display` intentionally keeps lowercase (`"error"`, `"warning"`,
-    /// `"info"`) for CLI/human-readable output. Do not change `Display` to
-    /// PascalCase — that would silently alter the MCP CLI wire format.
+    /// `"info"`) for CLI/human-readable output (`reify check`/`build` print
+    /// `{severity}: {message}`); the MCP wire uses `as_wire_str` alone. The CLI
+    /// MCP transport that once put `Display` on the wire (#2638) was deleted by #6665.
     #[inline]
     pub fn as_wire_str(self) -> &'static str {
         match self {
@@ -5019,7 +5021,7 @@ pub struct DiagnosticRef {
 ///
 /// This enum and [`hex_wedge_mesh_diagnostic`] are tested but not yet wired
 /// into the dispatcher (`dispatch_volume_mesh` in `reify-eval/src/engine_build.rs`)
-/// — that wiring is blocked on VolumeMesh realization (task #2947), mirroring
+/// — that wiring is owned by #4746 (hex/wedge Phase A activation), mirroring
 /// the accepted `#[allow(dead_code)]` status of `p2_substitution_diagnostic`
 /// (task #2991).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -5074,7 +5076,7 @@ pub enum HexWedgeMeshOutcome {
 /// # Wiring note
 ///
 /// This function is `#[allow(dead_code)]` pending the live wiring of
-/// `dispatch_volume_mesh` (blocked on task #2947).  The future dispatcher will
+/// `dispatch_volume_mesh`'s hex/wedge arm (#4746).  That arm will
 /// construct a `HexWedgeMeshOutcome` from its internal state and call this fn
 /// to obtain the diagnostic to push into `BuildResult.diagnostics`.
 ///
@@ -5084,7 +5086,7 @@ pub enum HexWedgeMeshOutcome {
 /// `reify-eval/src/engine_build.rs` next to its dispatcher), this function and
 /// `HexWedgeMeshOutcome` live here in `reify-core` because their inputs are
 /// pure primitives (`usize`, `bool`, `&str`) with no `reify-eval`/`reify-solver`
-/// dependency.  The future task #2947 call site in `dispatch_volume_mesh`
+/// dependency.  The future #4746 call site in `dispatch_volume_mesh`
 /// should reach into `reify_core::diagnostics::{HexWedgeMeshOutcome,
 /// hex_wedge_mesh_diagnostic}` rather than duplicating the mapping there.
 #[allow(dead_code)]
@@ -5097,7 +5099,7 @@ pub fn hex_wedge_mesh_diagnostic(
     // exclusive by stdlib constraint.  A ForceTet outcome therefore must never
     // arrive with require_hex_wedge=true.  The guard fires only in debug builds,
     // so the production code path remains unchanged; it surfaces the violation
-    // at the call site (task #2947) rather than relying solely on the upstream
+    // at the call site (#4746) rather than relying solely on the upstream
     // stdlib enforcement that is not yet wired.
     debug_assert!(
         !(require_hex_wedge && matches!(outcome, HexWedgeMeshOutcome::ForceTet)),

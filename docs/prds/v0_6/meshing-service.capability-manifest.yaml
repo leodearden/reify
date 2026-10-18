@@ -69,7 +69,7 @@ tasks:
       pattern: fn tessellate_with_topology\b
       expect: present
       paths:
-      - crates/reify-ir/src/geometry.rs
+      - crates/reify-ir/src
   - name: occt-implements-side-channel
     binding: producer-self (C2) — the OCCT kernel implements it through a new OcctRequest
       variant on OcctKernelHandle.
@@ -694,6 +694,7 @@ tasks:
       expect: present
       paths:
       - crates/reify-eval/src/topology_selectors.rs
+      - crates/reify-eval/src/compute_targets/result_topology.rs
   - name: gui-morph-reason-names-2953
     binding: 'producer-self (Q-e, BT11b) — the shipping GUI passes MorphRegistration::Unavailable
       { reason } naming #2953 (gui/src-tauri/src/engine.rs mentions 2953 nowhere today).
@@ -1236,6 +1237,7 @@ tasks:
       expect: present
       paths:
       - scripts/verify.sh
+      - scripts/reify_verify/
   - name: gui-bundle-ships-the-worker
     binding: 'producer-self (C9) — the bundle step copies the worker into bundle.externalBin
       under its target-triple name. Accepted gap: an externalBin entry whose base

@@ -111,6 +111,8 @@ mod engine_purposes;
 pub(crate) mod structural_query;
 mod engine_tolerance;
 mod geometry_ops;
+pub(crate) mod kernel_owner;
+pub(crate) mod volume_mesh_sources;
 #[cfg(test)]
 mod registry_drift_tests;
 // Task 6013 (registry ψ): the executed static-vs-runtime parity harness for the
@@ -1022,6 +1024,9 @@ pub struct Engine {
     /// `anonymous_realization_does_not_populate_realization_cache_when_lookup_gate_requires_name`
     /// in `tests/tolerance_wiring_e2e.rs`.
     realization_cache: crate::realization_cache::RealizationCache<KernelHandle>,
+    /// The body each VolumeMesh was meshed from, for Phase-B egress; see
+    /// [`crate::volume_mesh_sources`].
+    volume_mesh_sources: crate::volume_mesh_sources::VolumeMeshSources,
     /// Running totals of the per-call eval-cache counters, folded in at the end
     /// of every [`Engine::eval_cached`] call (task 4152).
     ///

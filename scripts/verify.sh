@@ -364,6 +364,22 @@
 #                                  observation channel must never gate the
 #                                  integrity gate it observes.
 #
+# Verify instrumentation ledger (task 7424). Schema, activation rules and
+# consumer rules: docs/notes/verify-instrumentation-ledger.md.
+#   REIFY_VERIFY_LEDGER_DIR      — where a top-level EXECUTED run appends its
+#                                  one JSON record, to verify-runs.jsonl
+#                                  (default: <main checkout>/data/verify-logs,
+#                                  resolved like REIFY_BACKGROUND_SWEEP_LEDGER;
+#                                  the default refuses a run beneath a
+#                                  tests/infra suite or run_all.sh).
+#   REIFY_VERIFY_LEDGER_LANE_DIR — the lane whose seed stamp the record reads
+#                                  (default: this checkout).
+#   REIFY_VERIFY_RUN_ID          — exported by a recording run to its whole
+#                                  process tree; a run that INHERITS it is
+#                                  nested and records nothing.
+#   REIFY_RUN_ALL_TIMING_OUT     — exported around each plan step; run_all.sh
+#                                  consumes it and writes its pool timing there.
+#
 # OCCT safety (task 4451):
 #   OCCT C++ globals are PER-PROCESS; cross-process isolation is already provided by
 #   cargo's per-test-binary process model (nextest). Intra-run concurrency is bounded
@@ -374,6 +390,7 @@
 
 set -euo pipefail
 
+_VL_STARTED_AT="${EPOCHREALTIME/,/.}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
@@ -876,6 +893,7 @@ _die_nextest_config() {
     echo "verify.sh: ERROR — gen-nextest-config.sh refused to generate the nextest config (exit $1); its diagnostic is immediately above" >&2
     exit "$1"
 }
+_VERIFY_ROLE_RAW="${DF_VERIFY_ROLE-}"
 export DF_VERIFY_ROLE="${DF_VERIFY_ROLE:-task}"  # exported: gui/vitest.config.ts reads it from the child env (task 7630)
 # Role-based PROFILE default: when no explicit --profile was given and the
 # orchestrator merge path stamps DF_VERIFY_ROLE=merge, default to 'both' so
@@ -3142,6 +3160,18 @@ _NEXTEST_CONFIG_FILE=""
 # docs/notes/main-tip-sweep-observation.md, not silently replaced by this.
 # ---------------------------------------------------------------------------
 
+# The MAIN checkout's path, never this worktree's. Prints nothing and returns
+# non-zero when unresolvable.
+_main_checkout_dir() {
+    [ -f "$SCRIPT_DIR/lib_main_checkout.sh" ] || return 1
+    # shellcheck source=/dev/null
+    source "$SCRIPT_DIR/lib_main_checkout.sh" 2>/dev/null || return 1
+    local _main=""
+    _main="$(reify_main_checkout 2>/dev/null)" || return 1
+    [ -n "$_main" ] || return 1
+    printf '%s' "$_main"
+}
+
 # Where the record goes. An explicit knob wins; otherwise the MAIN checkout,
 # never this worktree — see the knob's header note for why that distinction is
 # the whole design. Prints nothing and returns non-zero when unresolvable.
@@ -3150,12 +3180,8 @@ _sweep_ledger_path() {
         printf '%s' "$REIFY_BACKGROUND_SWEEP_LEDGER"
         return 0
     fi
-    [ -f "$SCRIPT_DIR/lib_main_checkout.sh" ] || return 1
-    # shellcheck source=/dev/null
-    source "$SCRIPT_DIR/lib_main_checkout.sh" 2>/dev/null || return 1
     local _main=""
-    _main="$(reify_main_checkout 2>/dev/null)" || return 1
-    [ -n "$_main" ] || return 1
+    _main="$(_main_checkout_dir)" || return 1
     printf '%s' "$_main/data/orchestrator/verify-background-sweeps.jsonl"
 }
 
@@ -3197,11 +3223,119 @@ _record_background_verdict() {
     return 0
 }
 
+# ---------------------------------------------------------------------------
+# Verify instrumentation ledger (task 7424). scripts/verify-ledger.py owns the
+# phase taxonomy, the observations and the record; this group only writes
+# numeric step events and calls it. Every _vl_* function is a no-op unless
+# _vl_init activated the run, and none can change the plan, stdout or the exit
+# code; a failed finalize reports on stderr. Schema and activation rules:
+# docs/notes/verify-instrumentation-ledger.md.
+# ---------------------------------------------------------------------------
+_VL_ACTIVE=0
+_VL_DIR=""
+_VL_LEDGER_DIR=""
+_VL_EXIT_RC=""
+declare -A _VL_SNAPSHOT=()
+
+# _vl_tool: stderr is the caller's. _vl_py: stderr goes to the run's journal.
+_vl_tool() {
+    LD_LIBRARY_PATH="${REIFY_AMBIENT_LD_LIBRARY_PATH-}" python3 "$SCRIPT_DIR/verify-ledger.py" "$@" || true
+}
+
+_vl_py() {
+    _vl_tool "$@" 2>>"$_VL_DIR/errors.log" || true
+}
+
+# The production ledger refuses a run beneath reify's infra harness, however
+# the suite was launched. An explicit REIFY_VERIFY_LEDGER_DIR is a deliberate
+# private ledger and still records.
+_vl_ledger_dir() {
+    if [ -n "${REIFY_VERIFY_LEDGER_DIR:-}" ]; then
+        printf '%s' "$REIFY_VERIFY_LEDGER_DIR"
+        return 0
+    fi
+    local _harness="" _main=""
+    _harness="$(_vl_tool harness-ancestor --self-pid "$$" 2>/dev/null)"
+    [ -z "$_harness" ] || return 1
+    _main="$(_main_checkout_dir)" || return 1
+    printf '%s' "$_main/data/verify-logs"
+}
+
+_vl_append_event() {
+    { printf '%s\n' "$1" >>"$_VL_DIR/journal.jsonl"; } 2>/dev/null || true
+}
+
+_vl_init() {
+    [ "${#PLAN[@]}" -gt 0 ] || return 0
+    [ "${PRINT_PLAN:-0}" -eq 0 ] || return 0
+    [ -z "${REIFY_VERIFY_RUN_ID:-}" ] || return 0
+    command -v python3 >/dev/null 2>&1 || return 0
+    [ -f "$SCRIPT_DIR/verify-ledger.py" ] || return 0
+    _VL_LEDGER_DIR="$(_vl_ledger_dir)" || return 0
+    [ -n "$_VL_LEDGER_DIR" ] || return 0
+    _VL_DIR="$(mktemp -d "${TMPDIR:-/tmp}/reify-verify-journal.XXXXXX" 2>/dev/null)" || return 0
+    { printf '%s\0' "${PLAN[@]}" >"$_VL_DIR/plan.nul"; } 2>/dev/null || { rm -rf "$_VL_DIR"; return 0; }
+    export REIFY_VERIFY_RUN_ID="${EPOCHSECONDS}-$$-${RANDOM}${RANDOM}"
+    local _idx
+    while IFS= read -r _idx; do
+        [[ "$_idx" =~ ^[0-9]+$ ]] && _VL_SNAPSHOT[$_idx]=1
+    done < <(_vl_py run-begin --journal "$_VL_DIR" --run-id "$REIFY_VERIFY_RUN_ID" \
+        --role "$DF_VERIFY_ROLE" --role-raw "$_VERIFY_ROLE_RAW" --action "$ACTION" \
+        --profile "$PROFILE" --scope "$SCOPE" --repo-root "$REPO_ROOT" \
+        --lane-dir "${REIFY_VERIFY_LEDGER_LANE_DIR:-$REPO_ROOT}" \
+        --release-delta-skip "$_RELEASE_DELTA_SKIP" --started-at "$_VL_STARTED_AT")
+    _VL_ACTIVE=1
+}
+
+_vl_step_begin() {
+    [ "$_VL_ACTIVE" -eq 1 ] || return 0
+    local _i="$1"
+    if [ -n "${_VL_SNAPSHOT[$_i]:-}" ]; then
+        _vl_py boundary --journal "$_VL_DIR" --index "$_i" --edge before \
+            --at "${EPOCHREALTIME/,/.}" --self-pid "$$" >/dev/null
+    fi
+    _vl_append_event "{\"ev\":\"step_begin\",\"index\":$_i,\"at\":${EPOCHREALTIME/,/.}}"
+    export REIFY_RUN_ALL_TIMING_OUT="$_VL_DIR/step-$_i.run-all.jsonl"
+    return 0
+}
+
+_vl_step_end() {
+    [ "$_VL_ACTIVE" -eq 1 ] || return 0
+    local _i="$1" _rc="$2"
+    _vl_append_event "{\"ev\":\"step_end\",\"index\":$_i,\"at\":${EPOCHREALTIME/,/.},\"rc\":$_rc}"
+    unset REIFY_RUN_ALL_TIMING_OUT
+    _VL_EXIT_RC="$_rc"
+    if [ -n "${_VL_SNAPSHOT[$_i]:-}" ]; then
+        _vl_py boundary --journal "$_VL_DIR" --index "$_i" --edge after \
+            --at "${EPOCHREALTIME/,/.}" --self-pid "$$" --junit "$_CONFIRM_JUNIT_PATH" >/dev/null
+    fi
+    return 0
+}
+
+# _vl_finalize <exit-code> [INT|TERM|HUP]. The last step's rc wins over the
+# trap's $?, which the Node-lane EXIT trap resets before calling _verify_cleanup.
+_vl_finalize() {
+    [ "$_VL_ACTIVE" -eq 1 ] || return 0
+    _VL_ACTIVE=0
+    local _rc="${_VL_EXIT_RC:-$1}" _signal="${2:-}"
+    case "$_signal" in
+        INT) _rc=130 ;;
+        TERM) _rc=143 ;;
+        HUP) _rc=129 ;;
+    esac
+    # stderr stays verify.sh's: the journal, errors.log included, is deleted next.
+    _vl_tool finalize --journal "$_VL_DIR" --ledger-dir "$_VL_LEDGER_DIR" --exit-code "$_rc" \
+        --ended-at "${EPOCHREALTIME/,/.}" --signal "$_signal" >/dev/null
+    rm -rf "$_VL_DIR" 2>/dev/null || true
+    return 0
+}
+
 _verify_cleanup() {
     # FIRST statement: $? is still the status the shell is exiting with. Any
     # command before this one would overwrite it.
     local _exit_rc=$?
     _record_background_verdict "$_exit_rc" || true
+    _vl_finalize "$_exit_rc" "${1:-}" || true
     reaper_teardown || true
     if [ -n "$_NEXTEST_CONFIG_FILE" ] && [ -f "$_NEXTEST_CONFIG_FILE" ]; then
         rm -f "$_NEXTEST_CONFIG_FILE"
@@ -3216,9 +3350,9 @@ _verify_cleanup() {
 # ONE EXIT trap, extended in place: bash EXIT traps do NOT stack, so a second
 # `trap … EXIT` here would silently displace the reaper/config cleanup above.
 trap '_verify_cleanup' EXIT
-trap '_verify_cleanup; exit 130' INT
-trap '_verify_cleanup; exit 143' TERM
-trap '_verify_cleanup; exit 129' HUP
+trap '_verify_cleanup INT; exit 130' INT
+trap '_verify_cleanup TERM; exit 143' TERM
+trap '_verify_cleanup HUP; exit 129' HUP
 
 # emit_nextest_pass <selector> <rel> <outer_timeout>
 # Emit a single nextest (or cargo-test fallback) pass.
@@ -4629,30 +4763,23 @@ if [ "${#PLAN[@]}" -eq 0 ]; then
     exit 0
 fi
 
-# The phase boundary the SCOPE CONTRACT in apply_env() names. ONE export for
-# the whole loop is a deliberate choice, not a forced one: a per-line prefix
-# (LD_LIBRARY_PATH=… eval "$_cmd") does work in bash's default mode — the eval
-# arm still sets _VERIFY_NODE_BG_PID in this shell — but `eval` is a POSIX
-# SPECIAL BUILTIN, so under `set -o posix` the prefix PERSISTS after the
-# command (measured, bash 5.2.21) and would leak the OCCT path into every later
-# line. One export keeps both dispatch arms uniform; its cost is that
-# test_semaphore_acquire/release and reaper_teardown, which interleave with the
-# loop, also run on the OCCT path.
-export LD_LIBRARY_PATH="$_PLAN_LD_LIBRARY_PATH"
-
-for _cmd in "${PLAN[@]}"; do
+# _run_plan_step <cmd> — dispatch ONE plan entry and return its exit code.
+# Called only in an `||` context, so errexit is suspended inside it exactly as
+# it is for the `eval … ||` / `reaper_run_in_pgroup … ||` arms themselves.
+_run_plan_step() {
+    local _cmd="$1" _rc=0
     case "$_cmd" in
         '@@SEMAPHORE_ACQUIRE@@')
             test_semaphore_acquire || {
                 _rc=$?
                 echo "verify.sh: FAILED (exit $_rc): test-run semaphore acquire" >&2
-                exit "$_rc"
+                return "$_rc"
             }
-            continue
+            return 0
             ;;
         '@@SEMAPHORE_RELEASE@@')
             test_semaphore_release || true
-            continue
+            return 0
             ;;
     esac
     echo "verify.sh: + $_cmd" >&2
@@ -4664,7 +4791,7 @@ for _cmd in "${PLAN[@]}"; do
             eval "$_cmd" || {
                 _rc=$?
                 echo "verify.sh: FAILED (exit $_rc): $_cmd" >&2
-                exit "$_rc"
+                return "$_rc"
             }
             ;;
         *)
@@ -4674,9 +4801,33 @@ for _cmd in "${PLAN[@]}"; do
             reaper_run_in_pgroup "$_cmd" || {
                 _rc=$?
                 echo "verify.sh: FAILED (exit $_rc): $_cmd" >&2
-                exit "$_rc"
+                return "$_rc"
             }
             ;;
     esac
+    return 0
+}
+
+_vl_init
+
+# The phase boundary the SCOPE CONTRACT in apply_env() names. ONE export for
+# the whole loop is a deliberate choice, not a forced one: a per-line prefix
+# (LD_LIBRARY_PATH=… eval "$_cmd") does work in bash's default mode — the eval
+# arm still sets _VERIFY_NODE_BG_PID in this shell — but `eval` is a POSIX
+# SPECIAL BUILTIN, so under `set -o posix` the prefix PERSISTS after the
+# command (measured, bash 5.2.21) and would leak the OCCT path into every later
+# line. One export keeps both dispatch arms uniform; its cost is that
+# test_semaphore_acquire/release and reaper_teardown, which interleave with the
+# loop, also run on the OCCT path.
+export LD_LIBRARY_PATH="$_PLAN_LD_LIBRARY_PATH"
+
+_vl_i=0
+for _cmd in "${PLAN[@]}"; do
+    _vl_step_begin "$_vl_i"
+    _rc=0
+    _run_plan_step "$_cmd" || _rc=$?
+    _vl_step_end "$_vl_i" "$_rc"
+    [ "$_rc" -eq 0 ] || exit "$_rc"
+    _vl_i=$((_vl_i + 1))
 done
 echo "verify.sh: all checks passed (action=$ACTION profile=$PROFILE scope=$SCOPE)." >&2

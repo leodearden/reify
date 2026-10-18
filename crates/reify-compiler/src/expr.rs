@@ -3426,6 +3426,7 @@ fn compile_expr_guarded_with_expected_inner(
                     // `is_analysis_typed_fn` and `is_parse_typed_fn` arms) →
                     // `fea_envelope_result_type` (#4629 W2) →
                     // `is_field_op` → `is_orientation_typed_fn` (task 5344) →
+                    // `is_orientation_decomposer_fn` (tasks #6082/#6306) →
                     // first-arg fallback. The five geometry-name families plus the
                     // RBD-β `is_dynamics_query` family (task 3829), the task-4278
                     // `is_dynamics_constructor` family, the std.fields α
@@ -3928,26 +3929,30 @@ fn compile_expr_guarded_with_expected_inner(
                         // units.rs disjointness test, so this arm's position in
                         // the ladder is unobservable.
                         orientation_typed_fn_result_type(name)
-                    } else if is_orientation_euler_fn(name) {
-                        // Euler DECOMPOSER (task #6082):
-                        // orient_to_euler(Orientation<3>, EulerConvention)
-                        //   → List<Angle>, the 3-element Value::List of ANGLE
-                        //   scalars eval actually returns. Typing it so is what
-                        //   lets the result flow into a `List<Angle>` parameter.
+                    } else if is_orientation_decomposer_fn(name) {
+                        // Orientation/transform DECOMPOSERS (tasks #6082,
+                        // #6306): orient_log, orient_to_euler,
+                        // orient_to_axis_angle, transform_log. The same two
+                        // eval dispatchers as the producer arm above, but these
+                        // return a rigid motion's COORDINATES (Vector3<Angle>,
+                        // List<Angle>, and two nominal StructureRefs over a
+                        // Value::Map) rather than the motion itself.
                         //
-                        // Its CONSTRUCTOR counterpart orient_euler is NOT in
-                        // this family — it is a fixed-nominal-type producer
-                        // already typed Orientation(3) by the #5344 arm above,
-                        // so that arm wins and this one never sees it. The two
-                        // slices are pinned disjoint in units.rs
-                        // (`builtin_name_families_are_pairwise_disjoint`),
-                        // which also makes this arm's ladder position
-                        // unobservable.
+                        // This REPLACES the first-arg fallback below, whose
+                        // mistyping here was SILENT: all four take arguments,
+                        // so the zero-arg warning never fired. Task 5344
+                        // sharpened it, since orient_log(q) then inherited q's
+                        // Orientation(3). The two Map members rely on the joint
+                        // arm's StructureRef cell-typing safety argument
+                        // (esc-3845-91).
                         //
-                        // Rationale for the module split, and why neither name
-                        // may be declared as a bodied `.ri pub fn` instead:
-                        // see orientation_signatures.rs.
-                        orientation_euler_result_type(name)
+                        // Membership and every result-type ruling live ONCE, on
+                        // ORIENTATION_DECOMPOSER_FN_NAMES. The family is pinned
+                        // disjoint from every sibling (constructor family
+                        // included) by
+                        // `unresolved_function.rs::builtin_name_families_are_pairwise_disjoint`,
+                        // so this arm's ladder position is unobservable.
+                        orientation_decomposer_result_type(name)
                     } else {
                         // TERMINAL FIRST-ARG FALLBACK — the open end of the
                         // ladder. Any callee no arm above claimed is typed as

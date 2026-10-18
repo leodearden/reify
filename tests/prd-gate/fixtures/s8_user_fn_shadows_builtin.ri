@@ -1,0 +1,20 @@
+module s8_user_fn_shadows_builtin
+
+// S8 PRD: docs/prds/v0_6/builtin-registry-migration-and-interception-classifier.md
+// Leaf: zeta (one shadowing rule).
+// Pins: user fns named after builtins (clamp, floor) and a user fn named map_or
+// with 3 params (map_or/3 is intercepted by name in the evaluator). Each user
+// body returns a marker value that differs from the builtin / intercept result,
+// so the output shows which one wins. m_option calls map_or with Option-shaped
+// arguments (the intercept shape).
+
+fn clamp(x: Real) -> Real { 111.0 }
+fn floor(x: Real) -> Real { 333.0 }
+fn map_or(a: Real, b: Real, c: Real) -> Real { 222.0 }
+
+structure def S8UserFnShadowsBuiltin {
+    let c = clamp(5.0)
+    let fl = floor(2.5)
+    let m = map_or(1.0, 2.0, 3.0)
+    let m_option = map_or(some(1.0), 2.0, |v| v + 10.0)
+}

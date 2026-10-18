@@ -317,3 +317,14 @@ would block. **No binding in this manifest resolves to a blocking value.**
   is a downstream sibling and none is ordered by prose. Batch accepted on this axis.
 - **metadata.files** — `scripts/lock-charter-guard.sh check` run per leaf before filing; all ACCEPT.
   ο is `[]` (unknown extent, deferred to the architect) per the tight-or-empty rule.
+
+## Delivered-check path correction (2026-10-12, review-all S13 pass 2)
+
+PRD `docs/prds/v0_6/selector-resolution-factoring.md` splits `crates/reify-eval/src/geometry_ops.rs` into child modules under `crates/reify-eval/src/geometry_ops/` and moves `nodes_for_faces` onto `CarriedTopology` (`compute_targets/result_topology.rs`). The checks below had `paths` pinned to the pre-split file, so their match would leave the scanned path. Each `paths` list was widened in the `.yaml` twin and in the producer task's `metadata.delivered_checks` (the three writes). Every verdict at main `54222c4dcd` is unchanged.
+
+| leaf | check | path change |
+|---|---|---|
+| δ #5745 | `point3-components-ungated` (present) | + `crates/reify-eval/src/geometry_ops/` |
+| ζ #5747 | `r8-dimensionless-admission-exists` (present) | + `crates/reify-eval/src/geometry_ops/` |
+| 5623 | `helper-and-chokepoint-exist` (`fn required_length_arg`, present) | + `crates/reify-eval/src/geometry_ops/`. The sidecar is the only copy; #5623 carries no `metadata.delivered_checks`. |
+| 5658 | `variadic-helper-exists` | pattern corrected `fn eval_all_args_to_f64` → `fn eval_all_args_to_values`: the old fn no longer exists on main, so the check had been failing since the rename. Also + `crates/reify-eval/src/geometry_ops/`. The sidecar is the only copy; #5658 carries no `metadata.delivered_checks`. |

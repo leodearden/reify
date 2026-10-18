@@ -1,0 +1,1087 @@
+# Machine-readable twin of kernel-interface-typed-seam.capability-manifest.md
+# Every mechanical delivered_check below was RED at main 274a212e0a (2026-10-13); see the .md header.
+prd: docs/prds/v0_6/kernel-interface-typed-seam.md
+schema_version: 1
+tasks:
+- label: α₁
+  task_id: 8930
+  title: 'kernel-interface α₁: geometry_id.rs breaks the reify-ir value<->geometry SCC'
+  capabilities:
+  - name: scc-reproduces
+    binding: 'scripts/assert-module-scc.py print at main 274a212e0a (2026-10-13): reify-ir row [[boundary_attachment, expr, geometry, value], [completeness, ranked]]; value.rs imports geometry::{Role, FeatureId,
+      GeometryHandleId, FaceSurfaceKind, EdgeCurveKind}; geometry.rs imports value::{SampledField, Value}.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: authoring-time premise verified at main 274a212e0a (2026-10-13); a mechanical check would be vacuous and gate nothing.
+  - name: residual-simulated
+    binding: 'seat G simulated the move with the real tool on a scratch copy (--root): the row becomes [[completeness, ranked], [expr, value]]; {expr, value} is a type recursion via Value::Closure{body:
+      CompiledExpr} (L10).'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: authoring-time premise verified at main 274a212e0a (2026-10-13); a mechanical check would be vacuous and gate nothing.
+  - name: id-module-exists
+    binding: new top-level module importing only reify_core
+    verdict: PASS
+    delivered_check:
+      kind: path
+      expect: present
+      paths:
+      - crates/reify-ir/src/geometry_id.rs
+- label: α₂
+  task_id: 8931
+  title: 'kernel-interface α₂: geometry.rs becomes geometry/ (mesh, error, export, volume_mesh) with a path-preserving facade'
+  capabilities:
+  - name: mesh-error-cycle
+    binding: MeshContractViolation::into_geometry_error(self, kernel) builds GeometryError while GeometryError::MeshContractViolation holds MeshInvariant/MeshViolationCounts/MeshWitness; From cannot carry
+      the kernel arg, so GeometryError::from_mesh_violation(kernel, v) replaces it (premise correction 10).
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: authoring-time premise verified at main 274a212e0a (2026-10-13); a mechanical check would be vacuous and gate nothing.
+  - name: facade-needed
+    binding: '11 names used through reify_ir::geometry:: are not re-exported at the crate root (ParentRole, GEOMETRY_OP_DESCRIPTORS, GeometryOpDiscriminants, descriptor_for, MeshContractMode, MeshInvariant,
+      MeshViolationCounts, MeshWitness, MeshContractViolation, WeldRemap, WeldednessReport); 23 outside files use the path.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: authoring-time premise verified at main 274a212e0a (2026-10-13); a mechanical check would be vacuous and gate nothing.
+  - name: include-str-pin
+    binding: 'producer: task 8533 (in progress) adds crates/reify-geometry/tests/forwards_every_kernel_method.rs with include_str!("../../reify-ir/src/geometry.rs"); α₂ depends on #8533, #8284 and #7379
+      (each edits geometry.rs) and repoints the include. #8284''s delivered check is widened to crates/reify-ir/src by the decompose session (L9).'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: authoring-time premise verified at main 274a212e0a (2026-10-13); a mechanical check would be vacuous and gate nothing.
+  - name: bridge-deleted
+    binding: the mesh->error upward call is deleted
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn into_geometry_error
+      expect: absent
+      paths:
+      - crates/reify-ir/src
+  - name: mesh-child-exists
+    binding: lower-strata child module
+    verdict: PASS
+    delivered_check:
+      kind: path
+      expect: present
+      paths:
+      - crates/reify-ir/src/geometry/mesh.rs
+- label: α₃
+  task_id: 8932
+  title: 'kernel-interface α₃: geometry/ upper strata (handle, capability, op, query, naming, kernel)'
+  capabilities:
+  - name: registration-placement
+    binding: KernelRegistration's factory returns Box<dyn GeometryKernel>; placing it beside CapabilityDescriptor would close capability -> kernel -> op -> capability, so it lives in kernel.rs.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: authoring-time premise verified at main 274a212e0a (2026-10-13); a mechanical check would be vacuous and gate nothing.
+  - name: kernel-child-exists
+    binding: the trait's new home
+    verdict: PASS
+    delivered_check:
+      kind: path
+      expect: present
+      paths:
+      - crates/reify-ir/src/geometry/kernel.rs
+- label: α₄
+  task_id: 8933
+  title: 'kernel-interface α₄: value.rs becomes value/ (sampled_field, selector, display_number, eval_status); subsumes #8790'
+  capabilities:
+  - name: selector-cycle
+    binding: 'GeometryHandleRef::from_geometry_handle(v: &Value) (value.rs) takes Value, so selector.rs would import from value while value imports selector; it becomes Value::as_geometry_handle_ref (23
+      sites).'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: authoring-time premise verified at main 274a212e0a (2026-10-13); a mechanical check would be vacuous and gate nothing.
+  - name: value-delivered-checks-pinned
+    binding: 'trampoline-decode-and-result-build.capability-manifest.yaml pins pub fn registry_free / flat_index_3d / same_grid to crates/reify-ir/src/value.rs; α₄ does the three-write repoint for #8686/#8711/#8717.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: authoring-time premise verified at main 274a212e0a (2026-10-13); a mechanical check would be vacuous and gate nothing.
+  - name: value-dir-exists
+    binding: facade module
+    verdict: PASS
+    delivered_check:
+      kind: path
+      expect: present
+      paths:
+      - crates/reify-ir/src/value/mod.rs
+- label: α₅
+  task_id: 8934
+  title: 'kernel-interface α₅: typed StructureInstanceData overlays (annotations, source_span)'
+  capabilities:
+  - name: overlay-keys-today
+    binding: MATERIALIZED_ANNOTATIONS_KEY and SOURCE_SPAN_KEY live in StructureInstanceData.fields; user_fields() filters at 9 value.rs sites; no production code outside value.rs names either key (seat
+      G 1.4).
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: authoring-time premise verified at main 274a212e0a (2026-10-13); a mechanical check would be vacuous and gate nothing.
+  - name: registry-free-upstream
+    binding: 'producer: task 8686 (S15 δ, pending) adds StructureInstanceData::registry_free; task 7867 (pending) removes type_id from the same literals; α₅ depends on both.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: authoring-time premise verified at main 274a212e0a (2026-10-13); a mechanical check would be vacuous and gate nothing.
+  - name: overlay-keys-gone
+    binding: the @@ overlay key literal is deleted
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '@@materialized_annotations'
+      expect: absent
+      paths:
+      - crates/reify-ir/src
+- label: α₆
+  task_id: 9301
+  title: 'kernel-interface α₆: GeometryError gains CorruptHandle, ContractViolation and KernelFailure{op, detail}, with producers'
+  capabilities:
+  - name: kernel-failure-variant
+    binding: 'gap-fill 2026-10-16 (plans/gap-fill-deliberation-reify-20261016.md §K4-D6; fk-4fdd3e5ffbc1): GeometryError has no corrupt-handle, contract-violation or kernel-failure variant at main c7bbfe2519; fault class is carried by message prose.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'KernelFailure \{'
+      expect: present
+      paths:
+      - crates/reify-ir/src
+  - name: corrupt-handle-variant
+    binding: no CorruptHandle( in crates/reify-ir/src at main c7bbfe2519; producer is OCCT ShapeStore::get (S11 λ2)
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'CorruptHandle\('
+      expect: present
+      paths:
+      - crates/reify-ir/src
+  - name: error-module-upstream
+    binding: 'producer: α₂ #8931 creates geometry/error.rs (the variants live there).'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: an upstream task dependency, wired by add_dependency.
+- label: β₁
+  task_id: 8935
+  title: 'kernel-interface β₁: native deps fail closed; the OCCT/gmsh/OpenVDB stub arms are deleted (R5); subsumes #8532'
+  capabilities:
+  - name: no-live-consumer
+    binding: 'R5 (Leo 2026-10-13): no wasm crate or cfg (git grep wasm32 over crates/ = 0), check-manifold-deps.sh already fails every verify without the deps; no gate compiles any not(has_*) arm.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: authoring-time premise verified at main 274a212e0a (2026-10-13); a mechanical check would be vacuous and gate nothing.
+  - name: override-taken-on-trust
+    binding: reify_build_utils::find_dir_with_override returns a non-empty override verbatim and lets an empty one fall through to the candidates, so the stub arm is unreachable on a provisioned host (premise
+      correction 5).
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: authoring-time premise verified at main 274a212e0a (2026-10-13); a mechanical check would be vacuous and gate nothing.
+  - name: require-helper
+    binding: one build-time decision with a unit-tested message
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: pub fn require\(
+      expect: present
+      paths:
+      - crates/reify-build-utils/src/lib.rs
+  - name: occt-stub-deleted
+    binding: the OCCT stub module is gone
+    verdict: PASS
+    delivered_check:
+      kind: path
+      expect: absent
+      paths:
+      - crates/reify-kernel-occt/src/stubs.rs
+  - name: kappa-subsumed
+    binding: 'S14 κ #8632 (pending) adds GeometryError::BackendUnavailable whose only producer is the gmsh stub arm R5 deletes; the decompose session cancels κ naming β₁ and moves fk-c497935d4b8a onto β₁
+      (L13).'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: authoring-time premise verified at main 274a212e0a (2026-10-13); a mechanical check would be vacuous and gate nothing.
+  - name: every-detector-requires
+    binding: nine build scripts detect a native dep today (five kernels incl. conformance, plus reify-cli, reify-eval, reify-mesh-morph, gui) via reify_build_utils::find(..).is_some()/match; all switch
+      to require
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: reify_build_utils::find\(
+      expect: absent
+      paths:
+      - crates/reify-kernel-occt/build.rs
+      - crates/reify-kernel-gmsh/build.rs
+      - crates/reify-kernel-openvdb/build.rs
+      - crates/reify-kernel-conformance/build.rs
+      - crates/reify-cli/build.rs
+      - crates/reify-eval/build.rs
+      - crates/reify-mesh-morph/build.rs
+      - gui/src-tauri/build.rs
+- label: β₂
+  task_id: 8936
+  title: 'kernel-interface β₂: sweep always-true native cfg gates and *_AVAILABLE guards (kernel and support crates)'
+  capabilities:
+  - name: counts
+    binding: has_occt 381 lines/124 files, has_gmsh 357/56, has_openvdb 364/45, *_AVAILABLE 652 references workspace-wide (git grep -c at main 274a212e0a (2026-10-13)).
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: authoring-time premise verified at main 274a212e0a (2026-10-13); a mechanical check would be vacuous and gate nothing.
+  - name: kernel-cfgs-gone
+    binding: no cfg(has_*) gate in the kernel crates
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: cfg\(has_(occt|gmsh|openvdb)
+      expect: absent
+      paths:
+      - crates/reify-kernel-occt/src
+      - crates/reify-kernel-gmsh/src
+      - crates/reify-kernel-openvdb/src
+  - name: stub-register-gone
+    binding: the dead stub_register features are deleted
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: stub_register
+      expect: absent
+      paths:
+      - crates/reify-kernel-gmsh/Cargo.toml
+      - crates/reify-kernel-openvdb/Cargo.toml
+- label: β₃
+  task_id: 8957
+  title: 'kernel-interface β₃: sweep always-true native cfg gates and *_AVAILABLE guards (reify-eval, front ends, the rest); the constants go'
+  capabilities:
+  - name: readers-today
+    binding: 'OCCT_AVAILABLE readers: 110 files in reify-eval, 15 reify-cli, 4 gui/src-tauri, 1 solver-elastic; GMSH_AVAILABLE: 2 reify-eval, 1 mesh-morph, 6 solver-elastic (fold-check N1, git grep -l at
+      2c0c57d71c).'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: authoring-time premise verified at main 274a212e0a (2026-10-13); a mechanical check would be vacuous and gate nothing.
+  - name: eval-cfgs-gone
+    binding: no cfg(has_*) gate in reify-eval sources
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: cfg\(has_(occt|gmsh|openvdb)
+      expect: absent
+      paths:
+      - crates/reify-eval/src
+  - name: occt-available-gone
+    binding: the constant itself is deleted
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: pub const OCCT_AVAILABLE
+      expect: absent
+      paths:
+      - crates/reify-kernel-occt/src
+- label: γ
+  task_id: 8958
+  title: 'kernel-interface γ: crate strata assertion over every workspace package'
+  capabilities:
+  - name: coverage-today
+    binding: assert-crate-dag.sh B1-B6 constrain 4 of 37 packages (cargo metadata --no-deps); not a verify-pipeline file (verify-pipeline-guard.sh requires-full-gate exits 1).
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: authoring-time premise verified at main 274a212e0a (2026-10-13); a mechanical check would be vacuous and gate nothing.
+  - name: strata-table
+    binding: the authority table
+    verdict: PASS
+    delivered_check:
+      kind: path
+      expect: present
+      paths:
+      - scripts/crate-strata.json
+- label: δ₁
+  task_id: 8959
+  title: 'kernel-interface δ₁: split assert_kernel_contract! into core, taxonomy modes and a B-rep extension'
+  capabilities:
+  - name: arms-today
+    binding: assert_kernel_contract! has stub; (5 tests) and real; (7 tests); real; needs valid_op executable on a fresh kernel and extract_* success, which Manifold, OpenVDB and Gmsh cannot satisfy (seat
+      F 1.1).
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: authoring-time premise verified at main 274a212e0a (2026-10-13); a mechanical check would be vacuous and gate nothing.
+  - name: core-module
+    binding: the neutral core module
+    verdict: PASS
+    delivered_check:
+      kind: path
+      expect: present
+      paths:
+      - crates/reify-test-support/src/kernel_assertions/core.rs
+- label: δ₂
+  task_id: 8960
+  title: 'kernel-interface δ₂: the contract core instantiated on Fidget, Manifold, OpenVDB and Gmsh'
+  capabilities:
+  - name: instantiations-today
+    binding: occt 2 (real gate-run, stub not), fidget/manifold 0, gmsh/openvdb only assert_stub_kernel_errors! under not(has_*) (git grep at main 274a212e0a (2026-10-13)).
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: authoring-time premise verified at main 274a212e0a (2026-10-13); a mechanical check would be vacuous and gate nothing.
+  - name: manifold-upstream
+    binding: 'producer: task 8529 (in progress) rewrites manifold''s catch-all messages in the same kernel.rs; δ₂ depends on it.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: authoring-time premise verified at main 274a212e0a (2026-10-13); a mechanical check would be vacuous and gate nothing.
+  - name: fidget-contract
+    binding: Fidget instantiation file
+    verdict: PASS
+    delivered_check:
+      kind: path
+      expect: present
+      paths:
+      - crates/reify-kernel-fidget/tests/kernel_contract.rs
+  - name: manifold-contract
+    binding: Manifold instantiation file
+    verdict: PASS
+    delivered_check:
+      kind: path
+      expect: present
+      paths:
+      - crates/reify-kernel-manifold/tests/kernel_contract.rs
+- label: δ₃
+  task_id: 8961
+  title: 'kernel-interface δ₃: strict dangling-handle taxonomy (GeometryQuery::primary_handle; Fidget, Manifold, OpenVDB)'
+  capabilities:
+  - name: divergences-today
+    binding: Fidget query QueryFailed for any handle; Manifold Distance/Contains/GeoEquiv map InvalidReference to QueryFailed and export wraps TessError into FormatError; OpenVDB execute OperationFailed
+      and tessellate TessellationFailed for a dangling handle (seat F 1.3).
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: authoring-time premise verified at main 274a212e0a (2026-10-13); a mechanical check would be vacuous and gate nothing.
+  - name: primary-handle-lifted
+    binding: one exhaustive home for 'which handle does this query name'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: pub fn primary_handle
+      expect: present
+      paths:
+      - crates/reify-ir/src
+- label: δ₄
+  task_id: 8962
+  title: 'kernel-interface δ₄: MockGeometryKernel strict_handles() under the contract; INV-GEO-4 flips'
+  capabilities:
+  - name: mock-accepts-dangling
+    binding: MockGeometryKernel execute returns Ok for any op, export writes MOCK_EXPORT_DATA and tessellate returns a mesh for any handle (seat F 1.5); 1270 non-comment lines in 135 files reference it,
+      so strictness is opt-in.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: authoring-time premise verified at main 274a212e0a (2026-10-13); a mechanical check would be vacuous and gate nothing.
+  - name: mock-contract
+    binding: the mock's contract binary
+    verdict: PASS
+    delivered_check:
+      kind: path
+      expect: present
+      paths:
+      - crates/reify-test-support/tests/mock_kernel_contract.rs
+- label: δ₆
+  task_id: 8963
+  title: 'kernel-interface δ₆: shared test-double building blocks (AllErrorKernel, ObservingKernel<K>)'
+  capabilities:
+  - name: doubles-census
+    binding: '79 concrete impls: 5 real, 3 stub, 1 holder, 70 test doubles; 52 bespoke outside kernel crates, reify-ir and test-support (census_f.py at main 274a212e0a (2026-10-13)).'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: authoring-time premise verified at main 274a212e0a (2026-10-13); a mechanical check would be vacuous and gate nothing.
+  - name: doubles-module
+    binding: the shared building blocks
+    verdict: PASS
+    delivered_check:
+      kind: path
+      expect: present
+      paths:
+      - crates/reify-test-support/src/kernel_doubles.rs
+- label: δ₇
+  task_id: 8964
+  title: 'kernel-interface δ₇: migrate the bespoke GeometryKernel test doubles onto the shared blocks'
+  capabilities:
+  - name: replaceable-rule
+    binding: replaceable iff each override is all-error, a Mock configuration, or ObservingKernel with at most four hooks; estimate 35-40 of 52 (seat F 3.5); the ledger is the leaf's first deliverable.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: the adoption-ratchet rows δ₆ lands are the mechanical cover; ceilings are the ledger's measured residual
+- label: ε₁
+  task_id: 8965
+  title: 'kernel-interface ε₁: capability sub-traits and accessors beside the flat GeometryKernel methods'
+  capabilities:
+  - name: override-pattern
+    binding: 27 methods (4 required, 23 defaulted), each defaulted method overridden by at least one real kernel; attribute_hook is already an Option accessor (seat A 1.1).
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: authoring-time premise verified at main 274a212e0a (2026-10-13); a mechanical check would be vacuous and gate nothing.
+  - name: handle-upstream
+    binding: 'producer: task 8672 (S11 θ, pending) collapses OcctKernelHandle to call<R>; R1 orders ε₁ after it.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: authoring-time premise verified at main 274a212e0a (2026-10-13); a mechanical check would be vacuous and gate nothing.
+  - name: tessellate-with-topology-first
+    binding: '#8672 depends on #8284 (get_task 8672), and #8284 adds a defaulted GeometryKernel::tessellate_with_topology, so ε₁ always sees 28 methods and moves the 28th into TopologyTessellation (premise
+      correction 11).'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: authoring-time premise verified at main 274a212e0a (2026-10-13); a mechanical check would be vacuous and gate nothing.
+  - name: sub-trait-defined
+    binding: the first capability sub-trait
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: trait TopologyExtraction
+      expect: present
+      paths:
+      - crates/reify-ir/src
+  - name: topology-tessellation-sub-trait
+    binding: '#8284''s method in its own sub-trait'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: trait TopologyTessellation
+      expect: present
+      paths:
+      - crates/reify-ir/src
+- label: ε₂
+  task_id: 8966
+  title: 'kernel-interface ε₂: required core methods and accessors, forwarding macros and the delegation lint (INV-GEO-5 partial)'
+  capabilities:
+  - name: masking-proxies
+    binding: rounded_primitives_e2e.rs::RecordingKernel, unified_dag_geometry_executors.rs::OcctOpRecorder and fillet_curated_edges_e2e.rs::RecordingKernel each claim to forward all calls and override 16
+      of 27 (seat A 1.3).
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: authoring-time premise verified at main 274a212e0a (2026-10-13); a mechanical check would be vacuous and gate nothing.
+  - name: forward-macro
+    binding: the one forwarding list beside the trait
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: macro_rules! forward_kernel_capabilities
+      expect: present
+      paths:
+      - crates/reify-ir/src
+  - name: delegation-lint
+    binding: the workspace lint
+    verdict: PASS
+    delivered_check:
+      kind: path
+      expect: present
+      paths:
+      - crates/reify-geometry/tests/kernel_wrappers_forward_every_capability.rs
+- label: ε₃
+  task_id: 8967
+  title: 'kernel-interface ε₃: topology extraction and multi-body leave the flat trait; the kernel_calls facade'
+  capabilities:
+  - name: call-sites
+    binding: 'extract_* production call sites through a GeometryKernel receiver: 60 in reify-eval (seat A 1.2 rule).'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: authoring-time premise verified at main 274a212e0a (2026-10-13); a mechanical check would be vacuous and gate nothing.
+  - name: facade
+    binding: the reify-ir call facade
+    verdict: PASS
+    delivered_check:
+      kind: path
+      expect: present
+      paths:
+      - crates/reify-ir/src/kernel_calls.rs
+- label: ε₄
+  task_id: 8968
+  title: 'kernel-interface ε₄: mesh, voxel and volume-mesh capabilities leave the flat trait'
+  capabilities:
+  - name: receivers
+    binding: realize_mesh_from_voxel/surface_options_content_hash and the gmsh methods are reached through kernels.get (shared borrow); densify/ingest_mesh_at_resolution through get_mut, which is why the
+      voxel group splits (seat A 3.1).
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: behaviour-neutral move; the ε₂ lint and the BT-ε1 harness are the cover
+- label: ε₅
+  task_id: 8969
+  title: 'kernel-interface ε₅: probe, history, batch query, optioned export and topology tessellation leave the flat trait (INV-GEO-5 complete)'
+  capabilities:
+  - name: closest-point-duplicate
+    binding: GeometryQuery::ClosestPointOnShape exists and OCCT's query() answers it via the inherent closest_point_on_shape (seat A 1.1); typed by η₂.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: authoring-time premise verified at main 274a212e0a (2026-10-13); a mechanical check would be vacuous and gate nothing.
+  - name: closest-point-trait-method-gone
+    binding: the duplicate trait method is deleted
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn closest_point_on_shape
+      expect: absent
+      paths:
+      - crates/reify-ir/src
+- label: ζ₁
+  task_id: 8970
+  title: 'kernel-interface ζ₁: ValidatedMesh carries tol, weld and waiver; two entry points; one function per obligation'
+  capabilities:
+  - name: entry-points-today
+    binding: validate (clones; 2 production callers discard the witness), into_validated (0), check_mesh_contract (0), check_mesh_contract_welded (1, manifold); check_contract 343 lines (seat E 1.1-1.2).
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: authoring-time premise verified at main 274a212e0a (2026-10-13); a mechanical check would be vacuous and gate nothing.
+  - name: validate-gone
+    binding: the cloning entry point is deleted
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: pub fn validate\(&self, tol
+      expect: absent
+      paths:
+      - crates/reify-ir/src
+- label: ζ₂
+  task_id: 8971
+  title: 'kernel-interface ζ₂: the five mesh-consuming capability methods take &ValidatedMesh; one front door; posture in the witness (R3)'
+  capabilities:
+  - name: six-raw-mesh-methods
+    binding: ingest_mesh, ingest_mesh_at_resolution, register_mesh_handle, measure_mesh_deviation, mesh_surface_to_volume, mesh_surface_to_volume_attributed take &Mesh; ValidatedMesh appears in 0 signatures
+      outside geometry.rs (seat E 1.3).
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: authoring-time premise verified at main 274a212e0a (2026-10-13); a mechanical check would be vacuous and gate nothing.
+  - name: export-routing-upstream
+    binding: 'producer: task 6308 (in progress) fixes the export path that made isosurface(box) export 2 triangles; ζ₂''s MarchingCubes premise check runs after it (premise correction 1).'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: authoring-time premise verified at main 274a212e0a (2026-10-13); a mechanical check would be vacuous and gate nothing.
+  - name: manifold-oncelock-gone
+    binding: the kernel-local posture is deleted
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: static MODE
+      expect: absent
+      paths:
+      - crates/reify-kernel-manifold/src/kernel.rs
+  - name: front-door
+    binding: the one mint site in reify-eval
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn admit_mesh
+      expect: present
+      paths:
+      - crates/reify-eval/src
+- label: ζ₃
+  task_id: 8972
+  title: 'kernel-interface ζ₃: ElementOrderTag owns the element-order degree and tet-stride tables'
+  capabilities:
+  - name: copies-today
+    binding: 'ElementOrderTag::P1 => occurs on 7 lines in 7 gmsh files: cache_key.rs (frozen discriminant), three Mesh.ElementOrder option values, three tet strides (seat E 1.6).'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: authoring-time premise verified at main 274a212e0a (2026-10-13); a mechanical check would be vacuous and gate nothing.
+  - name: relocation-upstream
+    binding: 'producer: task 7636 (pending) moves tet_element_spec into tet_readback.rs.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: authoring-time premise verified at main 274a212e0a (2026-10-13); a mechanical check would be vacuous and gate nothing.
+  - name: real-surface-pin
+    binding: crates/reify-eval/tests/volume_mesh_realization_e2e.rs exercises real gmsh P1/P2 volume meshes; its node/element counts are the behaviour pin.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: authoring-time premise verified at main 274a212e0a (2026-10-13); a mechanical check would be vacuous and gate nothing.
+  - name: tables-on-tag
+    binding: the reify-ir home
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn nodes_per_tet
+      expect: present
+      paths:
+      - crates/reify-ir/src
+- label: ζ₄
+  task_id: 8973
+  title: 'kernel-interface ζ₄: MarchingCubes output passes the mesh front door (measured first)'
+  capabilities:
+  - name: mc-unmeasured
+    binding: 'the only e2e on the MarchingCubes path asserts non-empty; #6308''s branch asserts triangle counts and bbox, not closedness; seat E''s open-mesh readings came through #6308''s misrouted export
+      (premise correction 1). ζ₄ measures check_mesh_contract(0.0) first and escalates on failure.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: authoring-time premise verified at main 274a212e0a (2026-10-13); a mechanical check would be vacuous and gate nothing.
+  - name: exemption-gone
+    binding: the MarchingCubes exemption at the handoff is deleted
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '!from_marching_cubes'
+      expect: absent
+      paths:
+      - crates/reify-eval/src
+- label: η₁
+  task_id: 8974
+  title: 'kernel-interface η₁: GeometryKernel::query returns QueryReply (transitional Untyped)'
+  capabilities:
+  - name: untyped-today
+    binding: 'fn query(&self, q: &GeometryQuery) -> Result<Value, QueryError> over 35 variants; 99 fn query/query_many definitions; 51 reify-eval production call sites (seat B 1.6-1.7).'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: authoring-time premise verified at main 274a212e0a (2026-10-13); a mechanical check would be vacuous and gate nothing.
+  - name: query-rs-upstream
+    binding: 'producer: task 8684 (S11 ι) moves OCCT query() into query.rs; task 8751 (S13 ε) completes the geometry_ops partition; η₁ depends on both.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: authoring-time premise verified at main 274a212e0a (2026-10-13); a mechanical check would be vacuous and gate nothing.
+  - name: reply-type
+    binding: the typed reply
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: pub enum QueryReply
+      expect: present
+      paths:
+      - crates/reify-ir/src
+- label: η₂
+  task_id: 8975
+  title: 'kernel-interface η₂: point and direction replies typed'
+  capabilities:
+  - name: xyz-parsers-today
+    binding: parse_xyz_value/parse_xyz_json (15 production call sites), parse_normal_z, OCCT centroid_json + 4 inline format! sites, Manifold json_xyz (seat B 1.4-1.5).
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: authoring-time premise verified at main 274a212e0a (2026-10-13); a mechanical check would be vacuous and gate nothing.
+  - name: xyz-parser-gone
+    binding: the xyz wrapper is deleted
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn parse_xyz_value
+      expect: absent
+      paths:
+      - crates/reify-eval/src
+- label: η₃
+  task_id: 8976
+  title: 'kernel-interface η₃: bounding-box reply typed; the JSON tokenizers and the axis byte tag go'
+  capabilities:
+  - name: tokenizers-today
+    binding: parse_flat_number_object, parse_bbox_all_extents, parse_normal_z, parse_bbox_xyz_min in reify-eval plus Aabb::from_kernel_json in reify-test-support (5 tokenizers); Axis::as_byte passes b'x'/b'y'/b'z'
+      (seat B 1.5).
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: authoring-time premise verified at main 274a212e0a (2026-10-13); a mechanical check would be vacuous and gate nothing.
+  - name: oracle-captured
+    binding: reify eval tests/prd-gate/fixtures/kernel_interface_query_reply_oracle.ri at main 274a212e0a (2026-10-13) exits 0 printing Probe.bb = bbox(point(-0.0040001 m, ...)) and Probe.c / Probe.cp points;
+      the capture is the byte-identity oracle for η₁-η₆.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: authoring-time premise verified at main 274a212e0a (2026-10-13); a mechanical check would be vacuous and gate nothing.
+  - name: flat-tokenizer-gone
+    binding: the shared tokenizer is deleted
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn parse_flat_number_object
+      expect: absent
+      paths:
+      - crates/reify-eval/src
+  - name: mock-json-parser-gone
+    binding: the test-support JSON parser is deleted
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn from_kernel_json
+      expect: absent
+      paths:
+      - crates/reify-test-support/src
+- label: η₄
+  task_id: 8977
+  title: 'kernel-interface η₄: surface/curve kind replies typed; the kind enums name themselves'
+  capabilities:
+  - name: kind-copies
+    binding: 'FaceSurfaceKind/EdgeCurveKind names: occt_wrapper.cpp switch, try_from_str (geometry.rs), geometry_ops expected-one-of literals; OCCT returns Value::String from the FFI (seat B 1.3); #8661
+      does not cover these enums.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: authoring-time premise verified at main 274a212e0a (2026-10-13); a mechanical check would be vacuous and gate nothing.
+  - name: args-upstream
+    binding: 'producer: task 8748 (S13 β) moves resolve_*_kind_arg into geometry_ops/args.rs.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: authoring-time premise verified at main 274a212e0a (2026-10-13); a mechanical check would be vacuous and gate nothing.
+  - name: hand-parser-gone
+    binding: the hand-written name parsers are deleted
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn try_from_str
+      expect: absent
+      paths:
+      - crates/reify-ir/src
+- label: η₅
+  task_id: 8978
+  title: 'kernel-interface η₅: the remaining query replies typed'
+  capabilities:
+  - name: dual-shape-drift
+    binding: ShapeLocalTolerance doc says Real, OCCT returns Value::length (Scalar); eval scalar consumers accept both shapes (seat B 1.3).
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: the η₆ reply-kind contract and the oracle are the cover
+- label: η₆
+  task_id: 8979
+  title: 'kernel-interface η₆: delete QueryReply::Untyped; the reply-kind contract in the core suite'
+  capabilities:
+  - name: reply-kind-contract
+    binding: the contract core asserts reply.kind() == query.reply_kind()
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: reply_kind\(\)
+      expect: present
+      paths:
+      - crates/reify-test-support/src
+- label: θ₁
+  task_id: 8980
+  title: 'kernel-interface θ₁: Length and Angle newtypes; the primitives family typed'
+  capabilities:
+  - name: no-newtype-today
+    binding: git grep 'pub struct \w+\((pub )?f64\)' over crates = 0; Value::as_f64 accepts any-dimension Scalar (seat C 1.4).
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: authoring-time premise verified at main 274a212e0a (2026-10-13); a mechanical check would be vacuous and gate nothing.
+  - name: halfspace-probe
+    binding: 'reify eval tests/prd-gate/fixtures/kernel_interface_halfspace_nonnumeric_normal.ri at main 274a212e0a (2026-10-13): exit 1, ''error: geometry error: geometry operation failed: expected numeric
+      value'' with no op, argument or span.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: authoring-time premise verified at main 274a212e0a (2026-10-13); a mechanical check would be vacuous and gate nothing.
+  - name: op-args-upstream
+    binding: 'producer: task 8652 (S11 γ1, in progress) owns op_args.rs; task 8669 (S11 ζ) rewrites every execute arm; θ₁ depends on both.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: authoring-time premise verified at main 274a212e0a (2026-10-13); a mechanical check would be vacuous and gate nothing.
+  - name: quantity-module
+    binding: the newtype home
+    verdict: PASS
+    delivered_check:
+      kind: path
+      expect: present
+      paths:
+      - crates/reify-ir/src/quantity.rs
+- label: θ₂
+  task_id: 8981
+  title: 'kernel-interface θ₂: modify, sweep and profile families typed; SweptKind'
+  capabilities:
+  - name: sweep-classifier-decodes
+    binding: sweep_classifier.rs decodes Extrude.distance (:350) and profile extents (:628) via as_f64 with no tripwire (seat C 1.3).
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: authoring-time premise verified at main 274a212e0a (2026-10-13); a mechanical check would be vacuous and gate nothing.
+  - name: as-f64-gone
+    binding: the untyped decodes are deleted
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: as_f64\(\)
+      expect: absent
+      paths:
+      - crates/reify-eval/src/sweep_classifier.rs
+- label: θ₃
+  task_id: 8982
+  title: 'kernel-interface θ₃: pattern family typed; the length tripwire and second classifier are retired; subsumes #8795'
+  capabilities:
+  - name: false-rationale
+    binding: 'kernel_validation.rs says arg_acceptance ''lives in reify-eval ... cannot be shared''; arg_acceptance moved into reify-ir under #5791 (done); stale geometry_ops.rs:482/:523 pointers (seat
+      C 2).'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: authoring-time premise verified at main 274a212e0a (2026-10-13); a mechanical check would be vacuous and gate nothing.
+  - name: macro-gone
+    binding: the zero-invocation macro and its kin are deleted
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: define_kernel_length_extract
+      expect: absent
+      paths:
+      - crates/reify-ir/src
+      - crates/reify-kernel-occt/src
+      - crates/reify-kernel-fidget/src
+- label: θ₄
+  task_id: 8983
+  title: 'kernel-interface θ₄: bare-f64 length/angle GeometryOp fields typed; the justification guard'
+  capabilities:
+  - name: f64-surface
+    binding: under the finding's own rule the split is 23 Value-only / 21 f64-family / 4 mixed / 7 none (55 variants); 14 scalar + 14 point-like LENGTH f64 fields, 5 ANGLE (seat C 1.1).
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: authoring-time premise verified at main 274a212e0a (2026-10-13); a mechanical check would be vacuous and gate nothing.
+  - name: justification-guard
+    binding: the closed taxonomy for bare numeric fields
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: enum Justification
+      expect: present
+      paths:
+      - crates/reify-ir/tests
+- label: θ₅
+  task_id: 8985
+  title: 'kernel-interface θ₅: dimensionless positions are dimension-checked (scale factor, pattern counts, directions)'
+  capabilities:
+  - name: scale-probe
+    binding: 'reify eval tests/prd-gate/fixtures/kernel_interface_scale_dimensioned_factor.ri at main 274a212e0a (2026-10-13): exit 0, ScaledBlock.v_bad = 0.000000000008 m^3 (rejection-absent today; G6
+      branch 4 observed).'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: authoring-time premise verified at main 274a212e0a (2026-10-13); a mechanical check would be vacuous and gate nothing.
+  - name: count-probe
+    binding: 'reify eval tests/prd-gate/fixtures/kernel_interface_pattern_dimensioned_count.ri at main 274a212e0a (2026-10-13): exit 0, Pat.vp = 0.0000029999999999999997 m^3 (3000mm read as 3).'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: authoring-time premise verified at main 274a212e0a (2026-10-13); a mechanical check would be vacuous and gate nothing.
+  - name: rejection-code-exists
+    binding: DiagnosticCode::DimensionedArgRejected exists in reify-core diagnostics.rs; dimensionless_spec exists in reify_ir::arg_acceptance (S15-owned, consumed unchanged).
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: authoring-time premise verified at main 274a212e0a (2026-10-13); a mechanical check would be vacuous and gate nothing.
+  - name: docs-truth-four-surfaces
+    binding: examples/best_practices/dimensioned_arguments.ri ('the gate runs in ONE direction only'), INDEX.md:61, .claude/skills/reify-design/SKILL.md:105 and chunks/geometry.md:236 ('scale(g, 2mm) is
+      accepted') document today's posture; θ₅ rewrites all four (overlay docs-truth gate).
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: authoring-time premise verified at main 274a212e0a (2026-10-13); a mechanical check would be vacuous and gate nothing.
+  - name: chunk-claim-rewritten
+    binding: the chunk's acceptance claim is replaced
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: authoring rule you uphold
+      expect: absent
+      paths:
+      - crates/reify-mcp/src/tools/chunks/geometry.md
+      - crates/reify-mcp/src/tools/chunks/units.md
+      - examples/best_practices/dimensioned_arguments.ri
+  - name: dimensionless-reader
+    binding: the dimension-checked reader
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn required_dimensionless_arg
+      expect: present
+      paths:
+      - crates/reify-eval/src
+- label: ι₁
+  task_id: 8987
+  title: 'kernel-interface ι₁: KNOWN_V02_KERNELS derived from KernelId; typed kernel pragma'
+  capabilities:
+  - name: pragma-probe
+    binding: '#kernel(gmsh) prints "unknown kernel ''gmsh''; v0.2 supports {fidget, manifold, occt, openvdb}" (seat D 1.5); reify-compiler already depends on reify-core.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: authoring-time premise verified at main 274a212e0a (2026-10-13); a mechanical check would be vacuous and gate nothing.
+  - name: pragma-predicate
+    binding: the one statement of the gmsh exclusion
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn is_pragma_target
+      expect: present
+      paths:
+      - crates/reify-core/src/kernel.rs
+- label: ι₂
+  task_id: 8989
+  title: 'kernel-interface ι₂: OCCT declares the ops it executes; descriptor completeness test'
+  capabilities:
+  - name: undeclared-ops
+    binding: git grep 'TransformAffineApply|SurfaceNurbs' crates/reify-kernel-*/src/register.rs = 0 at main 274a212e0a (2026-10-13); affine_tapered_spacer.ri builds only via the sentinel None-arm (premise
+      correction 3).
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: authoring-time premise verified at main 274a212e0a (2026-10-13); a mechanical check would be vacuous and gate nothing.
+  - name: affine-declared
+    binding: OCCT's descriptor names AffineApply
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: TransformAffineApply
+      expect: present
+      paths:
+      - crates/reify-kernel-occt/src/register.rs
+  - name: completeness-test
+    binding: the completeness test, beside all five kernel dev-deps
+    verdict: PASS
+    delivered_check:
+      kind: path
+      expect: present
+      paths:
+      - crates/reify-kernel-conformance/tests/descriptor_completeness.rs
+- label: ι₃
+  task_id: 8992
+  title: 'kernel-interface ι₃: KernelSet keyed by KernelId; the default-kernel sentinel goes'
+  capabilities:
+  - name: sentinel-mode
+    binding: 'every production front end (CLI cmd_check/build/eval, GUI EngineSession) calls with_registered_kernel, giving {__reify_eval_default_kernel: occt} (+ openvdb via ensure_openvdb_kernel) (seat
+      D 1.2).'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: authoring-time premise verified at main 274a212e0a (2026-10-13); a mechanical check would be vacuous and gate nothing.
+  - name: owner-routing-upstream
+    binding: 'producer: task 6308 (in progress) adds kernel_owner.rs and rewrites the export paths; ι₃ depends on it.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: authoring-time premise verified at main 274a212e0a (2026-10-13); a mechanical check would be vacuous and gate nothing.
+  - name: kernel-set
+    binding: the typed map
+    verdict: PASS
+    delivered_check:
+      kind: path
+      expect: present
+      paths:
+      - crates/reify-eval/src/kernel_set.rs
+  - name: sentinel-gone
+    binding: the synthetic key is deleted
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: DEFAULT_KERNEL_NAME
+      expect: absent
+      paths:
+      - crates/reify-eval/src
+- label: ι₄
+  task_id: 8993
+  title: 'kernel-interface ι₄: dispatcher::select for ops over the set''s own descriptors'
+  capabilities:
+  - name: boolean-stl-probe
+    binding: 'reify build tests/prd-gate/fixtures/kernel_interface_boolean_stl_export.ri -o x.stl at main 274a212e0a (2026-10-13): exit 1, ''internal error: dispatcher named target kernel ''manifold'' not
+      present'', STL of 12 triangles spanning x in [0, 10] mm (box_b only).'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: authoring-time premise verified at main 274a212e0a (2026-10-13); a mechanical check would be vacuous and gate nothing.
+  - name: cli-test-ownership
+    binding: '#6104 (pending, dep #6308) prescribes the same harness_cli test file; at decomposition #6104 gets a dependency on ι₄, which creates the file (L15).'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: authoring-time premise verified at main 274a212e0a (2026-10-13); a mechanical check would be vacuous and gate nothing.
+  - name: select-fn
+    binding: the one selection function
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: pub fn select\(
+      expect: present
+      paths:
+      - crates/reify-eval/src/dispatcher.rs
+- label: ι₅
+  task_id: 8995
+  title: 'kernel-interface ι₅: handle-served requests go to the owning kernel (INV-GEO-2 consumer clause)'
+  capabilities:
+  - name: silent-fallback
+    binding: 7 handle-provenance lookups fall back to the default kernel silently; 9 minted provenance tags are always KernelId::Occt (seat D 1.1).
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: authoring-time premise verified at main 274a212e0a (2026-10-13); a mechanical check would be vacuous and gate nothing.
+  - name: owner-routing-upstream
+    binding: 'producer: implicit-solids γ #8391 (pending, high) owns owner-routed-or-rejected queries with QueryKernelMismatch/QueryKernelUnserved and five delivered checks; ι₅ depends on it and keeps those
+      constructs (L14). #6366 keeps its three sites.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: authoring-time premise verified at main 274a212e0a (2026-10-13); a mechanical check would be vacuous and gate nothing.
+  - name: default-query-kernel-gone
+    binding: the default-kernel query accessor is deleted
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn default_query_kernel
+      expect: absent
+      paths:
+      - crates/reify-eval/src
+- label: ι₆
+  task_id: 8998
+  title: 'kernel-interface ι₆: CapabilityDescriptor declares queries, exports and projections; the hard-coded kernel arms become rows'
+  capabilities:
+  - name: conversions-already-rows
+    binding: gmsh (Convert{Mesh}, VolumeMesh) and openvdb (Convert{Mesh}, Voxel) are declared rows; the 7 hard-coded KernelId::Gmsh/OpenVdb lookups bypass them (premise correction 2).
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: authoring-time premise verified at main 274a212e0a (2026-10-13); a mechanical check would be vacuous and gate nothing.
+  - name: projections-row
+    binding: the new descriptor field
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'pub projections:'
+      expect: present
+      paths:
+      - crates/reify-ir/src
+  - name: openvdb-name-helper-gone
+    binding: the hard-coded OpenVDB selection helper and its 14 call sites go
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn openvdb_kernel_name
+      expect: absent
+      paths:
+      - crates/reify-eval/src
+- label: ω
+  task_id: 9000
+  title: 'kernel-interface ω: PRD close (SHIPPED stamp, freeze header, manifest header)'
+  capabilities:
+  - name: terminal-stamp
+    binding: overlay decompose-close obligation
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: the committed header is the signal

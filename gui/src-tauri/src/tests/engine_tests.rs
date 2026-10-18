@@ -4268,6 +4268,11 @@ fn engine_get_diagnostics_labelless_diagnostic_returns_default_span() {
 /// the returned severity strings match the centralized helper. This ensures
 /// the step-4 refactor (replacing the hand-rolled match with as_wire_str())
 /// cannot silently diverge.
+///
+/// This is now the sole transport pin of #2638's cross-transport
+/// severity-casing guard: its CLI half
+/// (`get_diagnostics_severity_is_pascal_case_wire_format` in reify-cli's
+/// `mcp_context.rs`) was retired with `reify mcp-server` by #6665.
 #[test]
 fn get_diagnostics_severity_strings_match_as_wire_str() {
     use reify_core::{Diagnostic, Severity};

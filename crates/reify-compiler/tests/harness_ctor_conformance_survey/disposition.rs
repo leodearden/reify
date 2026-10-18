@@ -340,7 +340,7 @@ pub(crate) const CTOR_CONFORMANCE_SITE_SEVERITY: &str = "Error";
 /// `a_ctor_path_required_by_param_site_is_scoped_out_known_blind_spot` pins the
 /// current classification so the gap is visible rather than silent. The cure is
 /// a structured ctor-vs-fn-call discriminator on the diagnostic itself, not more
-/// prose matching — tracked as a follow-up to #5306.
+/// prose matching — owned by #7870.
 ///
 /// Both prefixes are already this survey's, read here rather than re-spelled:
 /// `epsilon_and_required_by_param_prose_extractors_hold_against_the_live_emitters`

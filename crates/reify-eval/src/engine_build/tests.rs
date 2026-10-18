@@ -8406,6 +8406,7 @@ structure Assembly {
             &mut topology_attribute_table,
             &mut swept_kind_table,
             &mut realization_cache,
+            &mut VolumeMeshSources::default(),
             &[],               // ← OOB: empty demanded_tols
             &[vec![1e-4_f64]], // correctly shaped tessellation_budgets
             &mut 0usize,
@@ -8471,6 +8472,7 @@ structure Assembly {
             &mut topology_attribute_table,
             &mut swept_kind_table,
             &mut realization_cache,
+            &mut VolumeMeshSources::default(),
             &[vec![None]], // correctly shaped demanded_tols
             &[],           // ← OOB: empty tessellation_budgets
             &mut 0usize,

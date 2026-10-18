@@ -129,6 +129,30 @@ fn assert_no_forall_connect_emissions(template: &reify_compiler::TopologyTemplat
     );
 }
 
+/// Assert that no `Severity::Info` diagnostic cites a task (`task <digit>` or
+/// `#<digit>`): an info diagnostic states what happens to the user's model,
+/// not which task owns the limitation.
+fn assert_no_task_citation(module: &reify_compiler::CompiledModule) {
+    fn cites_task(message: &str) -> bool {
+        let digit_after = |end: usize| message.as_bytes().get(end).is_some_and(u8::is_ascii_digit);
+        message
+            .match_indices("task ")
+            .any(|(i, m)| digit_after(i + m.len()))
+            || message.match_indices('#').any(|(i, _)| digit_after(i + 1))
+    }
+    for d in module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == reify_core::Severity::Info)
+    {
+        assert!(
+            !cites_task(&d.message),
+            "info diagnostic must state current behaviour without citing a task, got: {:?}",
+            d.message
+        );
+    }
+}
+
 /// Build the boilerplate source fixture for the three unsupported-port-shape
 /// tests, interpolating `left` and `right` into the connect line.
 ///
@@ -201,6 +225,7 @@ fn assert_unsupported_port_shape_diagnostic(source: &str, structure_name: &str, 
     use reify_core::Severity;
 
     let module = compile_source(source);
+    assert_no_task_citation(&module);
 
     // (a) No errors.
     let errors = errors_only(&module);
@@ -777,7 +802,7 @@ structure S {
 /// it is discoverable.
 ///
 /// The reviewer's preferred Option (a) treatment: deferred + where-clause is
-/// in the same "future scope" bucket as Instantiation and Chain.
+/// alongside Instantiation and Chain: not re-elaborated at runtime.
 ///
 /// Pins:
 /// (a) `errors_only(&module).is_empty()` — info diagnostics are not errors.
@@ -816,6 +841,7 @@ structure S {
 }
 "#;
     let module = compile_source(source);
+    assert_no_task_citation(&module);
 
     // (a) No errors — info diagnostics must not surface as errors.
     let errors = errors_only(&module);
@@ -888,9 +914,9 @@ structure S {
 /// (a) `errors_only(&module).is_empty()` — info diagnostics are not errors.
 /// (b) Zero `forall@*`-labelled CompiledConstraints in `template.constraints`.
 /// (c) `template.forall_templates.is_empty()` — the Instantiation body
-///     must NOT push a runtime template (task 2690 / future scope).
-/// (d) Exactly one `Diagnostic::info` mentioning the limitation, with a
-///     stable substring tying it to the future-scope task.
+///     must NOT push a runtime template.
+/// (d) Exactly one `Diagnostic::info` stating the body is "not re-elaborated
+///     at runtime", naming the construct.
 #[test]
 fn forall_constraint_inst_body_over_undef_count_collection_sub_skips_capture_with_info_diagnostic()
 {
@@ -912,6 +938,7 @@ structure S {
 }
 "#;
     let module = compile_source(source);
+    assert_no_task_citation(&module);
 
     // (a) No errors.
     let errors = errors_only(&module);
@@ -949,23 +976,23 @@ structure S {
     assert!(
         template.forall_templates.is_empty(),
         "expected zero CompiledForallTemplates for deferred-count forall \
-         with constraint-inst body (Instantiation is task 2690 future scope), \
+         with constraint-inst body (Instantiation is not re-elaborated at runtime), \
          got {} entries",
         template.forall_templates.len()
     );
 
-    // (d) Exactly one info diagnostic with stable substring "future scope".
+    // (d) Exactly one info diagnostic with stable substring "not re-elaborated at runtime".
     let info_diags: Vec<&reify_core::Diagnostic> = module
         .diagnostics
         .iter()
         .filter(|d| d.severity == Severity::Info)
-        .filter(|d| d.message.contains("future scope"))
+        .filter(|d| d.message.contains("not re-elaborated at runtime"))
         .filter(|d| d.message.contains("constraint-instantiation"))
         .collect();
     assert_eq!(
         info_diags.len(),
         1,
-        "expected exactly 1 info diagnostic mentioning 'future scope' and \
+        "expected exactly 1 info diagnostic mentioning 'not re-elaborated at runtime' and \
          'constraint-instantiation' for the deferred-count forall with inst \
          body, got {}: {:?}",
         info_diags.len(),
@@ -999,18 +1026,18 @@ structure S {
 ///     `collection_sub_name == "vents"`, and
 ///     `count_cell == ValueCellId::new("S","__count_vents")`.
 /// (e) Captured entry's body is `CompiledForallBody::Connect` with
-///     `left_port_template == "vents[0].inlet"`,
-///     `right_port_template == "air_channel"`,
+///     `left == PortPath { root: Element, members: ["inlet"] }`,
+///     `right == PortPath { root: Named("air_channel"), members: [] }`,
 ///     `operator == ConnectOp::Forward`,
 ///     `connector_type.is_none()`,
 ///     `params.is_empty()`,
 ///     `port_mappings.is_empty()`.
-/// (f) The OLD info diagnostic ("task 2690 future scope" + "forall connect")
-///     is GONE.
+/// (f) No "not re-elaborated at runtime" info diagnostic for the forall
+///     connect — it is captured.
 #[test]
 fn forall_connect_over_undef_count_collection_sub_captures_runtime_template() {
     use reify_ast::ConnectOp;
-    use reify_compiler::CompiledForallBody;
+    use reify_compiler::{CompiledForallBody, PortPath, PortRoot};
     use reify_core::{Severity, ValueCellId};
 
     let source = r#"
@@ -1062,7 +1089,7 @@ structure def S {
     assert_eq!(ft.collection_sub_name, "vents");
     assert_eq!(ft.count_cell, ValueCellId::new("S", "__count_vents"));
 
-    // (e) Body shape: Connect with substituted port-name templates.
+    // (e) Body shape: Connect with typed endpoints.
     //
     // The fixture deliberately uses the simple form (no `via T(args...)`,
     // no explicit port-mappings) so this single test pins:
@@ -1074,20 +1101,28 @@ structure def S {
     // resolved (non-deferred) Connect arm, which is already tested.
     match &ft.body {
         CompiledForallBody::Connect {
-            left_port_template,
+            left,
             operator,
-            right_port_template,
+            right,
             connector_type,
             params,
             port_mappings,
         } => {
             assert_eq!(
-                left_port_template, "vents[0].inlet",
-                "expected left port template to be 'vents[0].inlet'"
+                *left,
+                PortPath {
+                    root: PortRoot::Element,
+                    members: vec!["inlet".into()],
+                },
+                "expected the left endpoint to be the element's `inlet` port"
             );
             assert_eq!(
-                right_port_template, "air_channel",
-                "expected right port template to be 'air_channel'"
+                *right,
+                PortPath {
+                    root: PortRoot::Named("air_channel".into()),
+                    members: vec![],
+                },
+                "expected the right endpoint to be the own port `air_channel`"
             );
             assert_eq!(
                 *operator,
@@ -1118,13 +1153,13 @@ structure def S {
         .diagnostics
         .iter()
         .filter(|d| d.severity == Severity::Info)
-        .filter(|d| d.message.contains("future scope"))
+        .filter(|d| d.message.contains("not re-elaborated at runtime"))
         .filter(|d| d.message.contains("forall connect"))
         .collect();
     assert_eq!(
         info_diags.len(),
         0,
-        "expected zero 'task 2690 future scope' info diagnostics for forall \
+        "expected zero 'not re-elaborated at runtime' info diagnostics for forall \
          connect (now captured), got {}: {:?}",
         info_diags.len(),
         module
@@ -1133,6 +1168,116 @@ structure def S {
             .map(|d| (d.severity, &d.message))
             .collect::<Vec<_>>()
     );
+}
+
+/// Compile `source`, assert it is error-free and captures exactly one forall
+/// template on `S`, and return that template's Connect endpoints.
+fn captured_connect_endpoints(
+    source: &str,
+) -> (reify_compiler::PortPath, reify_compiler::PortPath) {
+    let module = compile_source(source);
+    let errors = errors_only(&module);
+    assert!(
+        errors.is_empty(),
+        "expected no errors for deferred-count forall connect, got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("template S not found");
+    assert_eq!(
+        template.forall_templates.len(),
+        1,
+        "expected exactly 1 captured CompiledForallTemplate, got {}",
+        template.forall_templates.len()
+    );
+    match &template.forall_templates[0].body {
+        reify_compiler::CompiledForallBody::Connect { left, right, .. } => {
+            (left.clone(), right.clone())
+        }
+        other => panic!("expected CompiledForallBody::Connect, got {:?}", other),
+    }
+}
+
+/// A source-written literal index (`vents[0]`) is captured as a `Literal`
+/// root, distinct from the bound element, so materialising element `i` never
+/// rewrites it.
+#[test]
+fn forall_connect_over_undef_count_captures_literal_index_endpoint_as_literal_root() {
+    use reify_compiler::{ElementIndex, PortPath, PortRoot};
+
+    let source = r#"
+trait Air { param d : Length }
+structure def Vent {
+    port outlet : out Air { param d : Length = 5mm }
+    port inlet : in Air { param d : Length = 5mm }
+}
+structure def S {
+    sub vents : List<Vent>
+    param n : Int
+    constraint vents.count == n
+    forall v in vents: connect vents[0].outlet -> v.inlet
+}
+"#;
+    let (left, right) = captured_connect_endpoints(source);
+
+    assert_eq!(
+        left,
+        PortPath {
+            root: PortRoot::Literal {
+                sub: "vents".into(),
+                index: ElementIndex::Position(0),
+            },
+            members: vec!["outlet".into()],
+        }
+    );
+    assert_eq!(
+        right,
+        PortPath {
+            root: PortRoot::Element,
+            members: vec!["inlet".into()],
+        }
+    );
+    assert_eq!(left.at_element("vents", 2), "vents[0].outlet");
+    assert_eq!(right.at_element("vents", 2), "vents[2].inlet");
+}
+
+/// A keyed literal endpoint (`bays["intake"]`) is captured as a `Literal`
+/// root carrying the `MemberKey`, and renders with the keyed NodeId segment.
+#[test]
+fn forall_connect_over_undef_count_captures_keyed_literal_endpoint() {
+    use reify_compiler::{ElementIndex, PortPath, PortRoot};
+
+    let source = r#"
+trait Air { param d : Length }
+structure def Vent {
+    param area : Length = 1mm
+    port outlet : out Air { param d : Length = 5mm }
+    port inlet : in Air { param d : Length = 5mm }
+}
+structure def S {
+    sub vents : List<Vent>
+    sub bays : Keyed<Vent> { "intake" => { area = 5mm } }
+    param n : Int
+    constraint vents.count == n
+    forall v in vents: connect bays["intake"].outlet -> v.inlet
+}
+"#;
+    let (left, _right) = captured_connect_endpoints(source);
+
+    assert_eq!(
+        left,
+        PortPath {
+            root: PortRoot::Literal {
+                sub: "bays".into(),
+                index: ElementIndex::Key(reify_ir::MemberKey::new("intake")),
+            },
+            members: vec!["outlet".into()],
+        }
+    );
+    assert_eq!(left.at_element("vents", 1), "bays[\"intake\"].outlet");
 }
 
 /// task 2690 amendment (reviewer suggestion 2): pin the connector-spec drop
@@ -1175,6 +1320,7 @@ structure def S {
 }
 "#;
     let module = compile_source(source);
+    assert_no_task_citation(&module);
 
     // (a) No errors.
     let errors = errors_only(&module);
@@ -1295,7 +1441,8 @@ structure def S {
 /// (b) Zero CompiledConnections (deferred-count → silent-skip).
 /// (c) `template.forall_templates.is_empty()` — Chain body never
 ///     captures a runtime template.
-/// (d) Exactly one `Diagnostic::info` mentioning the future-scope task.
+/// (d) Exactly one `Diagnostic::info` stating the chain is "not re-elaborated
+///     at runtime".
 #[test]
 fn forall_chain_over_undef_count_collection_sub_skips_capture_with_info_diagnostic() {
     use reify_core::Severity;
@@ -1315,6 +1462,7 @@ structure def S {
 }
 "#;
     let module = compile_source(source);
+    assert_no_task_citation(&module);
 
     // (a) No errors.
     let errors = errors_only(&module);
@@ -1337,22 +1485,22 @@ structure def S {
     assert!(
         template.forall_templates.is_empty(),
         "expected zero CompiledForallTemplates for deferred-count forall \
-         chain (future scope), got {} entries",
+         chain (not re-elaborated at runtime), got {} entries",
         template.forall_templates.len()
     );
 
-    // (d) Exactly one info diagnostic mentioning future scope and chain.
+    // (d) Exactly one info diagnostic stating the chain is not re-elaborated.
     let info_diags: Vec<&reify_core::Diagnostic> = module
         .diagnostics
         .iter()
         .filter(|d| d.severity == Severity::Info)
-        .filter(|d| d.message.contains("future scope"))
+        .filter(|d| d.message.contains("not re-elaborated at runtime"))
         .filter(|d| d.message.contains("forall chain"))
         .collect();
     assert_eq!(
         info_diags.len(),
         1,
-        "expected exactly 1 info diagnostic mentioning 'future scope' and \
+        "expected exactly 1 info diagnostic mentioning 'not re-elaborated at runtime' and \
          'forall chain' for the deferred-count forall chain, got {}: {:?}",
         info_diags.len(),
         module
@@ -2454,18 +2602,15 @@ structure S {
     }
 }
 
-/// task 2717: when `resolve_port_name` returns `None` for a substituted port
-/// expression over a deferred-count collection, an `info` diagnostic is emitted
-/// before the early return so the user can discover the limitation.
+/// When a forall-connect endpoint over a deferred-count collection falls
+/// outside the connect-endpoint grammar, an `info` diagnostic is emitted before
+/// the early return so the user can discover the limitation.
 ///
-/// Fixture: `v.inner.a` (3-level dotted access) substitutes to
-/// `MemberAccess { object: MemberAccess { ... }, member: "a" }` — the outer
-/// `MemberAccess.object` is itself a `MemberAccess`, which `resolve_port_name`
-/// doesn't understand → returns `None`.
+/// Fixture: `v.inner.a` nests a member below a member, and `PortPath::parse`
+/// accepts at most one member below the root, so the left endpoint is rejected.
 ///
-/// NOTE: The fixture is intentionally synthetic — `v.inner.a` is chosen to force
-/// a doubly-nested `MemberAccess` that hits the `_ => None` arm of
-/// `resolve_port_name`, not to represent a realistic nested sub-component port
+/// NOTE: The fixture is intentionally synthetic — `v.inner.a` is the smallest
+/// nested-member endpoint, not a realistic nested sub-component port
 /// access. When nested sub-components gain full port reach, a separate realistic
 /// fixture should be added. TODO(#4684): add the nested sub-component port-reach fixture.
 ///
@@ -2494,9 +2639,8 @@ fn forall_connect_over_undef_count_collection_sub_unsupported_port_shape_emits_i
 /// right side is an unsupported port shape.
 ///
 /// Fixture: `connect air_channel -> v.inner.a` — the left side (`air_channel`) is
-/// a plain `Ident` that resolves fine; the right side (`v.inner.a` after
-/// substitution) is a doubly-nested `MemberAccess` that hits `_ => None` in
-/// `resolve_port_name`.
+/// a bare name that parses; the right side (`v.inner.a`) nests a member below a
+/// member, which `PortPath::parse` rejects.
 ///
 /// Pins:
 /// (a) No errors.
@@ -2521,16 +2665,16 @@ fn forall_connect_over_undef_count_unsupported_right_port_shape_emits_right_labe
 /// `(None, None)` arm of forall-Connect unsupported-port-shape diagnostic: both
 /// sides have unsupported port shapes.
 ///
-/// Fixture: `connect v.inner.a -> v.inner.b` — both sides are doubly-nested
-/// `MemberAccess` expressions that hit `_ => None` in `resolve_port_name`.
+/// Fixture: `connect v.inner.a -> v.inner.b` — both sides nest a member below a
+/// member, which `PortPath::parse` rejects.
 /// Distinct trailing members (`a` vs `b`) give each side a unique source span;
 /// this is required by the per-side span assertions in
 /// `assert_unsupported_port_shape_diagnostic`, which pin that each label's span
 /// equals `cd.left.expr.span` / `cd.right.expr.span` respectively.
 ///
 /// NOTE: Like the `(None, Some)` fixture, this is intentionally synthetic —
-/// `v.inner.a` / `v.inner.b` are chosen to force the doubly-nested path, not
-/// to represent realistic nested sub-component port accesses. When nested
+/// `v.inner.a` / `v.inner.b` are the smallest nested-member endpoints, not
+/// realistic nested sub-component port accesses. When nested
 /// sub-components gain full port reach, a realistic fixture should be added.
 ///
 /// Pins:

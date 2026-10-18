@@ -1,6 +1,6 @@
 # Capability Manifest — `materials-parameter-surface-completion`
 
-Binds each leaf task's asserted capabilities to evidence (mechanizes gates
+**AS-AUTHORED GATE ARTIFACT (2026-06-02) — do not refresh.** This manifest records the pre-decomposition evidence check that cleared this PRD's leaves to queue; its verdicts are statements about binding quality at author time, not about landed state. All leaves have since landed (α #4239 … ε #4243) — see the parent PRD's SHIPPED header (`docs/prds/v0_6/materials-parameter-surface-completion.md`). Its forward-looking phrasings and hard `file:line` anchors are 2026-06-02 provenance and may have drifted; rewriting them would destroy the record of what was actually gated. Binds each leaf task's asserted capabilities to evidence (mechanizes gates
 G3 + G6). All probes run 2026-06-02 against `target/debug/reify` (the real
 binary; tree-sitter CLI is stale per project G3 note). Fixtures under
 `/tmp/prd-gate-fixtures/`. Any **FAIL** binding blocks queueing — none are FAIL.

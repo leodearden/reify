@@ -1,0 +1,680 @@
+# Machine-readable twin of elastic-modal-trampoline-factoring.capability-manifest.md (generated)
+# Every grep delivered_check below was confirmed RED at main 1b06f93151 (2026-10-14).
+prd: docs/prds/v0_6/elastic-modal-trampoline-factoring.md
+schema_version: 1
+tasks:
+- label: α
+  task_id: 9085
+  title: Retire stats.rs, the morph_stats RPC and eligible(); compose_morph the single public entry; eighth telemetry bucket
+  capabilities:
+  - name: stats-module-gone
+    binding: producer:α — `pub mod stats` declared in reify-mesh-morph lib.rs at main
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: pub mod stats
+      paths:
+      - crates/reify-mesh-morph/src
+      expect: absent
+  - name: morph-stats-rpc-gone
+    binding: producer:α — handle_morph_stats serves stats::snapshot (always zero) at main
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn handle_morph_stats\(
+      paths:
+      - gui/src-tauri/src
+      expect: absent
+  - name: eligible-wrapper-gone
+    binding: producer:α — bool wrapper with no production caller at main
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: pub fn eligible\(
+      paths:
+      - crates/reify-mesh-morph/src
+      expect: absent
+  - name: solver-error-bucket
+    binding: producer:α — compose_morph records nothing for Unsupported / non-panic SolverError at main (#7835 part 2)
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: remeshed_solver_error
+      paths:
+      - crates/reify-mesh-morph/src
+      expect: present
+  - name: recorders-crate-private
+    binding: producer:α — record_* are pub and re-exported at the crate root at main
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: pub fn record_morphed
+      paths:
+      - crates/reify-mesh-morph/src
+      expect: absent
+  - name: seed-for-test-entry
+    binding: producer:α — gui handler tests seed the counters with the pub record_morphed() at main
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: pub fn seed_for_test
+      paths:
+      - crates/reify-mesh-morph/src
+      expect: present
+  - name: morph-deleted-upstream
+    binding: producer:#8527 upstream — morph() and its stub test deleted on task/8527 (unmerged)
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'hard edge α ← #8527; #8527''s own delivered checks enforce it'
+- label: β
+  task_id: 9092
+  title: Per-build morph tally on BuildResult; typed engine-side morph outcome; CLI and e2e read the result
+  capabilities:
+  - name: build-result-tally
+    binding: producer:β — BuildResult has no telemetry field at main
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'pub morph_tally:'
+      paths:
+      - crates/reify-eval/src
+      expect: present
+  - name: typed-morph-outcome
+    binding: producer:β — MorphResult carries reason strings at main (heuristic 12)
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: Ineligible\(String\)
+      paths:
+      - crates/reify-eval/src
+      expect: absent
+  - name: one-outcome-enum
+    binding: producer:β — reify-mesh-morph keeps a private MorphOutcome beside the engine seam at main
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: enum MorphOutcome
+      paths:
+      - crates/reify-mesh-morph/src
+      expect: absent
+  - name: e2e-lock-gone
+    binding: producer:β — morph_arm_e2e serialises on MORPH_DIAG_LOCK at main
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: MORPH_DIAG_LOCK
+      paths:
+      - crates/reify-eval/tests
+      expect: absent
+  - name: cli-reads-result
+    binding: producer:β — reify-cli prints the process-global snapshot after builds at main
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '&reify_mesh_morph::diagnostics::snapshot\(\)'
+      paths:
+      - crates/reify-cli/src
+      expect: absent
+  - name: no-testing-dev-dep
+    binding: producer:β — reify-eval dev-depends on reify-mesh-morph with features = ["testing"] for morph_arm_e2e's reset_for_test at main
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: features = \[\"testing\"\]
+      paths:
+      - crates/reify-eval/Cargo.toml
+      expect: absent
+  - name: s1-accumulator-upstream
+    binding: producer:#9046 upstream (S1 θ per-call outputs accumulator)
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'hard edge β ← #9046'
+  - name: two-engines-independent
+    binding: 'behavioural: BT8'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: BT8 (two engines, independent tallies) is the behavioural cover
+- label: γ
+  task_id: 9086
+  title: One value_size_estimate in reify_ir::warm; three copies deleted; ratchet row
+  capabilities:
+  - name: warm-estimator
+    binding: producer:γ — reify_ir::warm holds OpaqueState only at main
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: pub fn value_size_estimate
+      paths:
+      - crates/reify-ir/src
+      expect: present
+  - name: private-copies-gone
+    binding: 'grep: three private copies at main (trajectory_ops, dynamics_ops, fdm_slice)'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^\s*fn value_size_estimate\(
+      paths:
+      - crates
+      expect: absent
+  - name: moves-upstream
+    binding: 'producer:#9001, #9002 upstream (S5 κ₂, λ move the three copies'' files)'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'hard edges γ ← #9001, #9002'
+  - name: ratchet-member-upstream
+    binding: producer:#8984 upstream (S5 α creates tests/infra/test_analysis_stratum_ratchet.py)
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'hard edge γ ← #8984'
+  - name: ratchet-row
+    binding: 'producer:γ on S5 α #8984''s member'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: a bare row token over tests/infra is satisfiable by a docstring; the ratchet member enforces its own rows
+- label: δ
+  task_id: 9087
+  title: Delete worst_case_residual_fraction, its tests and audit pin; correct every false wiring claim
+  capabilities:
+  - name: helper-gone
+    binding: 'grep: pub fn with 0 production callers at main'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn worst_case_residual_fraction
+      paths:
+      - crates
+      expect: absent
+  - name: audit-pin-gone
+    binding: 'grep: new_orphans_2026_06_02_g_allow.rs pins it at main'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: \"worst_case_residual_fraction\"
+      paths:
+      - crates/reify-audit
+      expect: absent
+  - name: move-upstream
+    binding: producer:#9002 upstream (S5 λ moves trajectory_ops)
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'hard edge δ ← #9002'
+  - name: trajectory-outputs-unchanged
+    binding: 'behavioural: trajectory e2e and examples/trajectory/*.ri print unchanged'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: regression floor; no value changes by construction (no production caller)
+- label: ε
+  task_id: 9088
+  title: Delete InverseDynamicsRun.reused; poisoned-prior cache-hit test
+  capabilities:
+  - name: reused-field-gone
+    binding: 'grep: test-only field with #[allow(dead_code)] at main'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '^\s*(pub(\(crate\))? )?reused: bool'
+      paths:
+      - crates
+      expect: absent
+  - name: dynamics-moved-upstream
+    binding: producer:#9002 upstream — S5 λ moves the trampoline half into reify-analysis
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'hard edge ε ← #9002'
+  - name: poisoned-prior-probe
+    binding: 'behavioural: BT11'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: BT11 is the behavioural cover
+- label: ζ
+  task_id: 9089
+  title: P2 promotion production home in reify_solver_elastic::p2_tet; test_support fixtures only; ratchet row
+  capabilities:
+  - name: p2-promotion-production
+    binding: producer:ζ — p2_tet.rs holds the P2 element kernel only at main
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: pub fn promote_tets_to_p2
+      paths:
+      - crates/reify-solver-elastic/src/p2_tet.rs
+      expect: present
+  - name: test-support-promotion-gone
+    binding: 'grep: defined in assembly/test_support.rs at main'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: pub fn promote_tets_to_p2
+      paths:
+      - crates/reify-solver-elastic/src/assembly
+      expect: absent
+  - name: no-test-support-promotion-import
+    binding: 'grep: 8 test_support::promote_tets_to_p2 paths at main (2 production)'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: test_support::promote_tets_to_p2
+      paths:
+      - crates
+      expect: absent
+  - name: moves-upstream
+    binding: 'producer:#9003, #9004 upstream (S5 μ, ν move the two callers)'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'hard edges ζ ← #9003, #9004'
+  - name: ratchet-member-upstream
+    binding: producer:#8984 upstream (S5 α ratchet member)
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'hard edge ζ ← #8984'
+  - name: ratchet-row
+    binding: 'producer:ζ on S5 α #8984''s member'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: the ratchet member enforces its own rows
+- label: η
+  task_id: 9090
+  title: sampled_channels.rs leaf in the FEA family
+  capabilities:
+  - name: sampled-channels-module
+    binding: producer:η — helpers live in compute_targets/mod.rs at main
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: mod sampled_channels;
+      paths:
+      - crates
+      expect: present
+  - name: fea-core-moved-upstream
+    binding: producer:#9004 upstream — S5 ν moves the FEA core
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'hard edge η ← #9004'
+- label: θ
+  task_id: 9093
+  title: Elastic partition (directory module), AdaptiveSummary seam, shared test fixtures, stale allows removed
+  capabilities:
+  - name: adaptive-summary
+    binding: producer:θ — the trampoline reads private adaptive fields at main
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: struct AdaptiveSummary
+      paths:
+      - crates
+      expect: present
+  - name: no-private-adaptive-read
+    binding: 'grep: three `= problem.grid;` / `= problem.iterates;` reads in the trampoline at main (tests use other forms)'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: = problem\.(grid|iterates);
+      paths:
+      - crates
+      expect: absent
+  - name: dead-realized-mesh-gone
+    binding: 'grep: realized_solver_mesh has no caller at main'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn realized_solver_mesh\(
+      paths:
+      - crates
+      expect: absent
+  - name: no-module-scc
+    binding: 'INV-ARCH-1: S3''s assert-module-scc.py reds a new SCC'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: the S3 module-SCC tool is the enforcement
+  - name: reshapers-upstream
+    binding: 'producer:#8374, #8248 upstream (§13 R2)'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'hard edges θ ← #8374, #8248'
+- label: ι
+  task_id: 9094
+  title: CantileverSolveRequest replaces the 14 positional parameters
+  capabilities:
+  - name: request-struct
+    binding: producer:ι
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: struct CantileverSolveRequest
+      paths:
+      - crates
+      expect: present
+  - name: stale-ten-args-comment-gone
+    binding: 'grep: the ''10 args'' justification at main'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '// 10 args: the helper threads'
+      paths:
+      - crates
+      expect: absent
+  - name: single-arg-calls
+    binding: 'behavioural: BT6'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: BT6; every call passes one request
+- label: κ
+  task_id: 9102
+  title: 'Explicit overload entries: five descriptor rows, three decoders, multi_case per-case typed requests'
+  capabilities:
+  - name: body-row
+    binding: producer:κ — all three overloads share solver::elastic_static at main
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '@optimized\(\"solver::elastic_static_body\"\)'
+      paths:
+      - crates/reify-compiler/stdlib
+      expect: present
+  - name: field-row
+    binding: producer:κ
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '@optimized\(\"solver::elastic_static_field\"\)'
+      paths:
+      - crates/reify-compiler/stdlib
+      expect: present
+  - name: multi-case-body-row
+    binding: producer:κ — both multi_case overloads share solver::multi_case at main
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '@optimized\(\"solver::multi_case_body\"\)'
+      paths:
+      - crates/reify-compiler/stdlib
+      expect: present
+  - name: body-path-sniff-gone
+    binding: 'grep: two `let body_path = matches!` sites at main (elastic_static, multi_case)'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: let body_path = matches!
+      paths:
+      - crates
+      expect: absent
+  - name: decoders-upstream
+    binding: 'producer:#8679, #8683 upstream (S15 β options decoders, γ loads/supports decoders)'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'hard edges κ ← #8679, #8683; κ ← θ, ι intra-batch'
+  - name: identity-parity
+    binding: 'S5 η #8997''s identity parity test (reached transitively through ν #9004) covers the new rows'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: BT1
+- label: λ
+  task_id: 9118
+  title: Route enum, one planner, per-route solvers, one build site
+  capabilities:
+  - name: route-planner
+    binding: producer:λ
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn plan_elastic_route
+      paths:
+      - crates
+      expect: present
+  - name: route-enum
+    binding: producer:λ
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: enum ElasticRoute
+      paths:
+      - crates
+      expect: present
+  - name: planner-agreement
+    binding: 'behavioural: BT2 (red at main for a non-isotropic thin scene under Auto)'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: BT2
+  - name: one-builder
+    binding: producer:#8690 upstream (S15 ε build_elastic_result)
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'hard edge λ ← #8690; S15''s result-type-literal row'
+- label: μ
+  task_id: 9119
+  title: Capability routing on the shell route; dims-support policy; FEA chunk
+  capabilities:
+  - name: shell-fallback-code
+    binding: producer:μ — no input-neutral shell-capability code at main
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: FeaShellRouteInputFallback
+      paths:
+      - crates/reify-core/src
+      expect: present
+  - name: shell-requires-tet-code
+    binding: producer:μ
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: FeaShellRouteInputRequiresTet
+      paths:
+      - crates/reify-core/src
+      expect: present
+  - name: dims-support-code
+    binding: producer:μ — dims supports other than the root clamp are silent on tet at main
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: FeaDimsSupportNotRealized
+      paths:
+      - crates/reify-core/src
+      expect: present
+  - name: supports-present-arm-gone
+    binding: 'grep: FeaUnderConstrained''s supports-present-none-root arm at main (elastic_static trampoline)'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '!any_support_targets\(supports, SYNTHETIC_CLAMP_FACE\)'
+      paths:
+      - crates
+      expect: absent
+  - name: multi-load-bracket-root
+    binding: producer:μ (R3) — the example's dims support targets "mount_face" at main
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: FixedSupport\(\"mount_face\"\)
+      paths:
+      - examples/multi_load_bracket.ri
+      expect: absent
+  - name: supports-decoder-upstream
+    binding: producer:#8683 upstream (S15 γ SupportSpec / LoadSpec)
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'hard edge μ ← #8683; μ ← λ intra-batch'
+  - name: bt4-bt5-fixtures
+    binding: 'grammar-fixture + behavioural: tests/prd-gate/fixtures/{shell_route_gravity_thin_plate,shell_route_pressure_thin_plate,dims_support_root_plus_xmax,dims_support_root_plus_xmax_thick,dims_support_xmax_only}.ri committed with this PRD; reify eval exits 0 on each at main, and none names its extra input (thin: max_vm 2.143e9 Pa as the tip-only solve; thick twin: 2.518e6 Pa as root-only) — the red premise of BT4/BT5a; after μ BT5a/b exit 1 (R3); BT5b: FeaUnderConstrained''s supports-present arm replaced; BT5c: empty-list arm unchanged'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: BT4, BT5
+  - name: docs-truth
+    binding: 'docs-truth items 1 and 4: FEA chunk routing and support paragraphs'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: chunk fence gate + intent findability
+- label: ν
+  task_id: 9091
+  title: Modal partition (directory module) along the measured partition
+  capabilities:
+  - name: modal-damping-module
+    binding: producer:ν — modal_ops.rs is one 12,835-line file at main; damping is a partition S15 does not empty
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: mod damping;
+      paths:
+      - crates
+      expect: present
+  - name: modal-moved-upstream
+    binding: producer:#9003 upstream — S5 μ moves modal
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'hard edge ν ← #9003'
+  - name: s15-modal-upstream
+    binding: 'producer:#8693, #8702 upstream (S15 ζ modal builders, ι modal codes)'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'hard edges ν ← #8693, #8702'
+  - name: no-module-scc
+    binding: INV-ARCH-1
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: S3's module-SCC tool
+- label: ξ
+  task_id: 9120
+  title: Modal supports and damping seams; tests onto seams; modal reused_* flags deleted
+  capabilities:
+  - name: supports-seam
+    binding: producer:ξ — build_dirichlet_bcs takes the options Value at main
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn realize_supports\(
+      paths:
+      - crates
+      expect: present
+  - name: lumped-damping-plan
+    binding: producer:ξ — mechanism path calls classify_damping directly at main
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn plan_lumped_damping\(
+      paths:
+      - crates
+      expect: present
+  - name: modal-reused-flags-gone
+    binding: 'grep: reused_assembly / reused_setup test-only fields at main'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'reused_assembly: bool|reused_setup: bool'
+      paths:
+      - crates
+      expect: absent
+  - name: seam-tests
+    binding: 'behavioural: BT7'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: BT7
+  - name: boundary-conditions-echo-from-realization
+    binding: 'grep: run_modal_analysis echoes ModalResult.boundary_conditions from the options list via field_or at main, not from what was applied (gap-fill 2026-10-16 K5-4; added after commit_planning, three writes)'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: field_or\(options, "boundary_conditions"
+      paths:
+      - crates
+      expect: absent
+- label: ο
+  task_id: 9121
+  title: Structured box mesh and BoxFace vocabulary in reify-solver-elastic; adopted by modal, elastic and tests
+  capabilities:
+  - name: structured-box-mesh
+    binding: producer:ο — no production structured mesh generator at main
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: pub struct StructuredBoxMesh
+      paths:
+      - crates/reify-solver-elastic/src
+      expect: present
+  - name: box-face-enum
+    binding: producer:ο — face names written twice (face_bound, box_face_plane) at main
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: pub enum BoxFace
+      paths:
+      - crates/reify-solver-elastic/src
+      expect: present
+  - name: s14-ratchet-host
+    binding: 'producer:#8614 upstream (S14 α: crates/reify-solver-elastic/tests/adoption_ratchets.rs hosts freudenthal-table-copy)'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'hard edge ο ← #8614; the ratchet binary enforces its own rows'
+  - name: counts-from-caller
+    binding: 'D7: StructuredBoxMesh takes counts; #8252''s synthetic_grid adapts second'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: BT9 byte-identity is the cover
+  - name: solver-test-copies-gone
+    binding: 'grep: the six-tet literal in three reify-solver-elastic test sites at main'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: \[c\[0\], c\[5\], c\[1\], c\[6\]\]
+      paths:
+      - crates/reify-solver-elastic/tests
+      - crates/reify-solver-elastic/src/boundary/patch_load.rs
+      - crates/reify-solver-elastic/src/diagnostics.rs
+      expect: absent
+  - name: modal-split-upstream
+    binding: producer:ξ (intra-batch; ξ rewrites the supports partition ο converts); θ and ν (intra-batch, the partitioned files)
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: hard edges ο ← θ, ν, ξ
+  - name: ratchet-member-upstream
+    binding: producer:#8984 upstream (S5 α ratchet member hosts freudenthal-table-consumer and box-face-literal)
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'hard edge ο ← #8984'
+  - name: byte-identical-meshes
+    binding: 'behavioural: BT9'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: BT9; the freudenthal-table-copy and box-face-literal ratchet rows
+- label: ω
+  task_id: 9122
+  title: 'PRD close: terminal stamp'
+  capabilities:
+  - name: terminal-stamp
+    binding: producer:ω
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: committed SHIPPED header with landed leaf ids, AS-AUTHORED freeze, LIVE/AS-AUTHORED map

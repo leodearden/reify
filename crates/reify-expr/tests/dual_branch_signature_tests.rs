@@ -32,20 +32,19 @@
 #![allow(clippy::mutable_key_type)]
 
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
 
-use reify_core::{ContentHash, DimensionVector, Type, ValueCellId};
+use reify_core::{DimensionVector, Type, ValueCellId};
 use reify_expr::{
     BranchChoice, BranchRecord, EvalContext, KinkKind, ReductionKind, Seeds, Tangent, eval_dual,
     eval_expr,
 };
 use reify_ir::{
-    BinOp, CompiledExpr, CompiledExprKind, CompiledMatchArm, CompiledPattern, FieldSourceKind,
-    InterpolationKind, SampledField, SampledGridKind, Value, ValueMap,
+    BinOp, CompiledExpr, CompiledMatchArm, CompiledPattern, FieldSourceKind, Value, ValueMap,
 };
 use reify_test_support::builders::expr::{
-    binop, conditional_expr, fn_call, literal, neg, value_ref_typed,
+    binop, conditional_expr, literal, neg, std_call, value_ref_typed,
 };
+use reify_test_support::sampled_field_fixtures::{extremum_probe_field, x_span_bbox};
 
 const ENT: &str = "part";
 
@@ -54,7 +53,7 @@ fn cell(member: &str) -> ValueCellId {
 }
 
 fn dimensionless() -> Type {
-    Type::Scalar { dimension: DimensionVector::DIMENSIONLESS }
+    Type::dimensionless_scalar()
 }
 
 fn vref(member: &str) -> CompiledExpr {
@@ -62,7 +61,7 @@ fn vref(member: &str) -> CompiledExpr {
 }
 
 fn call(name: &str, args: Vec<CompiledExpr>) -> CompiledExpr {
-    fn_call(name, &format!("std::{name}"), args, dimensionless())
+    std_call(name, args, dimensionless())
 }
 
 /// Evaluate `expr` with the given cells, seeding `seed_names` in order.
@@ -170,26 +169,13 @@ fn conditional_records_the_else_branch_and_takes_its_derivative() {
 // Match
 // ---------------------------------------------------------------------------
 
-fn match_expr(discriminant: CompiledExpr, arms: Vec<CompiledMatchArm>) -> CompiledExpr {
-    let result_type = arms[0].body.result_type.clone();
-    let mut content_hash = ContentHash::of(b"match").combine(discriminant.content_hash);
-    for arm in &arms {
-        content_hash = content_hash.combine(arm.body.content_hash);
-    }
-    CompiledExpr {
-        kind: CompiledExprKind::Match { discriminant: Box::new(discriminant), arms },
-        result_type,
-        content_hash,
-    }
-}
-
 fn enum_value(variant: &str, payload: Vec<(String, Value)>) -> Value {
     Value::Enum { type_name: "Mode".into(), variant: variant.into(), payload }
 }
 
 #[test]
 fn match_records_the_index_of_the_selected_arm() {
-    let expr = match_expr(vref("mode"), vec![
+    let expr = CompiledExpr::match_expr(vref("mode"), vec![
         CompiledMatchArm {
             patterns: vec![CompiledPattern::variant("Slow")],
             body: call("abs", vec![vref("y")]),
@@ -202,7 +188,7 @@ fn match_records_the_index_of_the_selected_arm() {
             patterns: vec![CompiledPattern::wildcard()],
             body: literal(Value::Real(0.0)),
         },
-    ]);
+    ], dimensionless());
     let cells = [
         ("mode", enum_value("Fast", vec![])),
         ("x", Value::Real(2.0)),
@@ -218,13 +204,13 @@ fn match_records_the_index_of_the_selected_arm() {
 #[test]
 fn match_variant_bind_arm_binds_the_payload_into_the_body_scope() {
     let bound = cell("bound");
-    let expr = match_expr(vref("mode"), vec![CompiledMatchArm {
+    let expr = CompiledExpr::match_expr(vref("mode"), vec![CompiledMatchArm {
         patterns: vec![CompiledPattern::VariantBind {
             name: "Some".into(),
             binders: vec![("v".into(), bound.clone())],
         }],
         body: binop(BinOp::Mul, vref("x"), value_ref_typed(ENT, "bound", dimensionless())),
-    }]);
+    }], dimensionless());
     let cells = [
         ("mode", enum_value("Some", vec![("v".into(), Value::Real(5.0))])),
         ("x", Value::Real(2.0)),
@@ -550,8 +536,8 @@ fn mod_as_an_int_builtin_records_its_own_quotient_cell() {
     // NOTHING with each other — each pins one spelling's own quotient cell.
     // The genuine cross-spelling check, on operands both spellings accept, is
     // `mod_at_a_negative_dividend_records_the_truncated_quotient_and_matches_its_tangent`
-    // in `dual_number_ad_tests.rs`, which is also where trunc and floor part
-    // company.  7 mod 3 = 1 with quotient cell 2.
+    // in `dual_number_ad_tests/active_branch_tangents.rs`, which is also where
+    // trunc and floor part company.  7 mod 3 = 1 with quotient cell 2.
     let expr = call("mod", vec![vref("n"), literal(Value::Int(3))]);
     let (v, t, rec) = run(&expr, &[("n", Value::Int(7))], &["n"]);
     assert_eq!(v, Value::Int(1));
@@ -562,29 +548,6 @@ fn mod_as_an_int_builtin_records_its_own_quotient_cell() {
 // ---------------------------------------------------------------------------
 // Field reductions
 // ---------------------------------------------------------------------------
-
-/// A 1-D sampled field over x ∈ {0, 1, 2, 3} with data {5, 9, 2, 7}:
-/// max = 9 at x = 1, min = 2 at x = 2.
-fn sampled_field() -> Value {
-    let axis = vec![0.0, 1.0, 2.0, 3.0];
-    let sf = SampledField {
-        name: "probe".into(),
-        kind: SampledGridKind::Regular1D,
-        bounds_min: vec![0.0],
-        bounds_max: vec![3.0],
-        spacing: vec![1.0],
-        axis_grids: vec![axis],
-        interpolation: InterpolationKind::Linear,
-        data: vec![5.0, 9.0, 2.0, 7.0],
-        oob_emitted: AtomicBool::new(false),
-    };
-    Value::Field {
-        domain_type: dimensionless(),
-        codomain_type: dimensionless(),
-        source: FieldSourceKind::Sampled,
-        lambda: Arc::new(Value::SampledField(sf)),
-    }
-}
 
 #[test]
 fn field_reductions_record_the_selected_argument_and_stay_flat_when_seed_independent() {
@@ -598,7 +561,7 @@ fn field_reductions_record_the_selected_argument_and_stay_flat_when_seed_indepen
         ("argmin", KinkKind::FieldReduction(ReductionKind::ArgMin), 2.0),
     ];
     for (name, kind, arg_coord) in cases {
-        let expr = call(name, vec![literal(sampled_field())]);
+        let expr = call(name, vec![literal(extremum_probe_field())]);
         let (_, t, rec) = run(&expr, &[("x", Value::Real(2.0))], &["x"]);
         assert_eq!(rec.len(), 1, "{name}: one entry per reduction");
         let e = &rec.entries()[0];
@@ -626,7 +589,7 @@ fn a_seed_dependent_field_reduction_refuses_a_tangent_but_still_records_its_bran
     // answer is Tangent::None; a zero row here would tell the solver the
     // residual is flat in a variable it genuinely depends on.
     let expr = call("max", vec![value_ref_typed(ENT, "fld", dimensionless())]);
-    let (_, t, rec) = run(&expr, &[("fld", sampled_field())], &["fld"]);
+    let (_, t, rec) = run(&expr, &[("fld", extremum_probe_field())], &["fld"]);
     assert_eq!(rec.len(), 1, "the branch entry is emitted even when the tangent is refused");
     assert_eq!(rec.entries()[0].kind, KinkKind::FieldReduction(ReductionKind::Max));
     assert_eq!(t, Tangent::None);
@@ -926,22 +889,11 @@ fn two_structurally_identical_sibling_kinks_get_distinct_sites() {
 // winner did not — and, worse, MISS a real flip when the bounded winner moves
 // while the global one did not.
 //
-// `sampled_field()` above is built for exactly this: its global max (9 at
-// x = 1) lies outside the x ∈ [2, 3] box used throughout this block, so the
-// bounded winner (7 at x = 3) and the global one are different grid nodes by
-// construction.
-
-/// The canonical `bounding_box(solid)` shape: two 3-component `Value::Point`
-/// corners.  `sampled_field()` has one axis, so only the x span is consulted.
-fn bbox_x(lo: f64, hi: f64) -> Value {
-    Value::BoundingBox {
-        min: Box::new(Value::Point(vec![Value::Real(lo), Value::Real(0.0), Value::Real(0.0)])),
-        max: Box::new(Value::Point(vec![Value::Real(hi), Value::Real(0.0), Value::Real(0.0)])),
-    }
-}
+// This block probes `extremum_probe_field()` over the x ∈ [2, 3] box
+// throughout, which is the case its documented property is built for.
 
 fn bounded_call(name: &str, lo: f64, hi: f64) -> CompiledExpr {
-    call(name, vec![literal(sampled_field()), literal(bbox_x(lo, hi))])
+    call(name, vec![literal(extremum_probe_field()), literal(x_span_bbox(lo, hi))])
 }
 
 /// `(builtin name, kink kind, bounded argextremum coord over x ∈ [2, 3])`.
@@ -1083,7 +1035,7 @@ fn an_unresolvable_bounded_reduction_records_unresolved_rather_than_vanishing() 
     for (name, kind, _) in BOUNDED_REDUCTIONS {
         let expr = call(name, vec![
             literal(unresolvable_analytical_field()),
-            literal(bbox_x(2.0, 3.0)),
+            literal(x_span_bbox(2.0, 3.0)),
         ]);
         let (value, _, rec) = run(&expr, &[("x", Value::Real(2.0))], &["x"]);
         assert_eq!(value, Value::Undef, "{name}: the fixture must really be unresolvable");
@@ -1208,10 +1160,10 @@ fn a_conditional_on_an_undef_condition_is_undef_and_records_unresolved() {
 fn a_match_over_an_undef_discriminant_short_circuits_before_any_arm() {
     // §9.2.5 — an undef discriminant is refused before a pattern is tried, so
     // the arm bodies' kinks must not appear in the record.
-    let expr = match_expr(vref("u"), vec![CompiledMatchArm {
+    let expr = CompiledExpr::match_expr(vref("u"), vec![CompiledMatchArm {
         patterns: vec![CompiledPattern::wildcard()],
         body: call("abs", vec![vref("x")]),
-    }]);
+    }], dimensionless());
     let (v, t, rec) = run(&expr, &[("x", Value::Real(2.0))], &["x"]);
     assert_eq!(v, Value::Undef);
     assert!(t.is_none());
@@ -1223,10 +1175,10 @@ fn a_match_over_a_non_enum_discriminant_is_undef_and_records_unresolved() {
     // A `Real` discriminant has no variant tag to select on — a distinct arm
     // from the undef one above, and one that must not fall through to the
     // wildcard and answer confidently.
-    let expr = match_expr(vref("x"), vec![CompiledMatchArm {
+    let expr = CompiledExpr::match_expr(vref("x"), vec![CompiledMatchArm {
         patterns: vec![CompiledPattern::wildcard()],
         body: literal(Value::Real(7.0)),
-    }]);
+    }], dimensionless());
     let (v, t, rec) = run(&expr, &[("x", Value::Real(2.0))], &["x"]);
     assert_eq!(v, Value::Undef, "a wildcard does not rescue a non-Enum discriminant");
     assert!(t.is_none());
@@ -1237,10 +1189,10 @@ fn a_match_over_a_non_enum_discriminant_is_undef_and_records_unresolved() {
 fn a_match_whose_arms_all_miss_the_variant_is_undef_and_records_unresolved() {
     // The fallthrough past the arm loop: a real `Value::Enum`, no pattern that
     // selects it, and no wildcard.
-    let expr = match_expr(vref("m"), vec![CompiledMatchArm {
+    let expr = CompiledExpr::match_expr(vref("m"), vec![CompiledMatchArm {
         patterns: vec![CompiledPattern::variant("Slow")],
         body: literal(Value::Real(1.0)),
-    }]);
+    }], dimensionless());
     let cells = [("m", enum_value("Fast", vec![])), ("x", Value::Real(2.0))];
     let (v, t, rec) = run(&expr, &cells, &["x"]);
     assert_eq!(v, Value::Undef, "no arm selects `Fast`, so there is no value to report");

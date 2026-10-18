@@ -690,7 +690,7 @@ impl LanguageServer for ReifyLanguageServer {
         // Reuse the per-document cached parse (one parse per edit).
         let text = doc.text.clone();
         let parsed = doc.parsed_module();
-        let symbols = crate::analysis::compute_document_symbols_from_parsed(&parsed, &text);
+        let symbols = crate::symbols::compute_document_symbols_from_parsed(&parsed, &text);
         Ok(Some(DocumentSymbolResponse::Nested(symbols)))
     }
 
@@ -1209,11 +1209,8 @@ fn version_stamped_workspace_edit(
 mod tests {
     use super::test_support::RecordingSink;
     use super::*;
+    use crate::decl_oracle::test_fixtures::test_uri;
     use tower_lsp::LspService;
-
-    fn test_uri() -> Url {
-        Url::parse("file:///test.ri").unwrap()
-    }
 
     /// Create a test LspService with NoOpSink (reduces boilerplate across tests).
     fn test_service() -> (LspService<ReifyLanguageServer>, tower_lsp::ClientSocket) {

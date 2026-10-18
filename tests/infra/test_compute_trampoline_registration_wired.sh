@@ -1632,15 +1632,17 @@ source "$SCRIPT_DIR/copy_list_preflight_lib.sh"
 # TOP of this base, which stays at each call site. SPOT: the `.sh` half of the
 # copy list is drift-guarded by assert_source_closure_copied, but the DATA
 # dependencies (occt-touching-crates.txt, release-sensitive-crates.txt,
-# .config/nextest.toml) are not, so a new one added to verify.sh in three places
-# would fail opaquely in whichever copy was missed.
+# .config/nextest.toml) and the Python module occt-scope-lib.sh runs
+# (reify_path_attribution.py) are not, so a new one added to verify.sh in three
+# places would fail opaquely in whichever copy was missed.
 _make_plan_fixture() {
     local _dir="$1" _f
     mkdir -p "$_dir/scripts" "$_dir/.config"
     for _f in verify.sh occt-scope-lib.sh occt-touching-crates.txt release-scope-lib.sh \
               release-sensitive-crates.txt affected-crates-lib.sh lib_test_semaphore.sh \
-              lib_slot_acquire.sh lib_clock_stop.sh cpu-admit.sh lib_proc_reaper.sh \
-              lib_git_env_scrub.sh lib_main_checkout.sh \
+              lib_slot_acquire.sh lib_event_log.sh lib_clock_stop.sh cpu-admit.sh \
+              lib_proc_reaper.sh \
+              lib_git_env_scrub.sh lib_main_checkout.sh reify_path_attribution.py \
               gen-nextest-config.sh heavy-test-filter-lib.sh; do
         cp "$REPO_ROOT/scripts/$_f" "$_dir/scripts/$_f"
     done

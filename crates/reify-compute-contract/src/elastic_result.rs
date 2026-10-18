@@ -550,9 +550,9 @@ pub struct ElasticResult {
     /// Optional shell-element channels. `None` for tet-only bodies (the
     /// historical / v1 case); `Some(_)` for shell-classified bodies whose
     /// trampoline populates per-element top/bottom stress + local frames.
-    /// Tet-only consumers ignore this field; the `result.stress` alias
-    /// contract at stdlib `solver_elastic.ri:325-328`
-    /// (`ShellStress.homogeneous(field).mid`) is unchanged.
+    /// Tet-only consumers ignore this field; for shell results `stress` equals
+    /// the `ShellStress.mid` channel by construction (I-2; see the
+    /// `ShellStress` block in stdlib solver_elastic.ri).
     pub shell_channels: Option<ShellChannels>,
     // ── v3 additions (task #3428 step-4) ─────────────────────────────────────
     /// Grid lower bounds per axis (SI units). Matches `GridSpec::bounds_min`.
@@ -589,7 +589,6 @@ pub struct ElasticResult {
 ///
 /// This is the single-`ElasticResult` scalar counterpart to the
 /// `MultiCaseResult` `envelope_displacement_magnitude` builtin.
-/// The `.ri` / gate exposure is deferred to consumer task #3787.
 pub fn max_deflection_magnitude(displacement: &[f64]) -> f64 {
     displacement
         .chunks_exact(3)
