@@ -3551,11 +3551,13 @@ impl OcctKernel {
     /// The one op-to-history lowering: execute `op` and return the attribute
     /// history its OCCT builder recorded.
     ///
-    /// Extrude, Revolve, Sweep, Loft, Union, Difference, Intersection, Fillet
-    /// and Chamfer route to their `*_with_history` primitives (Fillet and
-    /// Chamfer to the all-edges or curated-edges form by `edges.is_empty()`),
-    /// decoding length fields exactly as [`Self::execute`] does. Every other op
-    /// runs through [`Self::execute`] with [`AttributeHistory::None`].
+    /// Extrude, Revolve, Sweep, Loft, Union, Difference, Intersection, Fillet,
+    /// Chamfer and ChamferAsymmetric route to their `*_with_history` primitives
+    /// (Fillet and Chamfer to the all-edges or curated-edges form by
+    /// `edges.is_empty()`; ChamferAsymmetric's one primitive reads an empty
+    /// selection as all edges), decoding length fields exactly as
+    /// [`Self::execute`] does. Every other op runs through [`Self::execute`]
+    /// with [`AttributeHistory::None`].
     pub fn execute_with_history(
         &mut self,
         op: &GeometryOp,
@@ -3614,6 +3616,17 @@ impl OcctKernel {
                     self.chamfer_edges_with_history(*target, d, edges)
                 };
                 lowered.map(|(h, recs)| (h, AttributeHistory::LocalFeature(recs)))
+            }
+            GeometryOp::ChamferAsymmetric {
+                target,
+                edges,
+                d1,
+                d2,
+            } => {
+                let d1 = extract_length_f64(d1, op, "d1")?;
+                let d2 = extract_length_f64(d2, op, "d2")?;
+                self.chamfer_asymmetric_edges_with_history(*target, d1, d2, edges)
+                    .map(|(h, recs)| (h, AttributeHistory::LocalFeature(recs)))
             }
             _ => self.execute(op).map(|h| (h, AttributeHistory::None)),
         }

@@ -151,6 +151,24 @@ fn history_lowering_routes_each_op_to_its_record_kind() {
             |h| matches!(h, AttributeHistory::LocalFeature(_)),
         ),
         (
+            GeometryOp::ChamferAsymmetric {
+                target: a,
+                edges: vec![],
+                d1: Value::length(MM),
+                d2: Value::length(2.0 * MM),
+            },
+            |h| matches!(h, AttributeHistory::LocalFeature(_)),
+        ),
+        (
+            GeometryOp::ChamferAsymmetric {
+                target: a,
+                edges: vec![edge],
+                d1: Value::length(MM),
+                d2: Value::length(2.0 * MM),
+            },
+            |h| matches!(h, AttributeHistory::LocalFeature(_)),
+        ),
+        (
             GeometryOp::Box {
                 width: Value::length(10.0 * MM),
                 height: Value::length(10.0 * MM),
@@ -168,7 +186,7 @@ fn history_lowering_routes_each_op_to_its_record_kind() {
 }
 
 /// Each history op's length field, holding `value`, with an unissued target.
-fn length_field_cases(value: Value) -> [(GeometryOp, &'static str); 3] {
+fn length_field_cases(value: Value) -> [(GeometryOp, &'static str); 5] {
     [
         (
             GeometryOp::Extrude {
@@ -189,9 +207,27 @@ fn length_field_cases(value: Value) -> [(GeometryOp, &'static str); 3] {
             GeometryOp::Chamfer {
                 target: UNISSUED,
                 edges: vec![],
-                distance: value,
+                distance: value.clone(),
             },
             "distance",
+        ),
+        (
+            GeometryOp::ChamferAsymmetric {
+                target: UNISSUED,
+                edges: vec![],
+                d1: value.clone(),
+                d2: Value::length(MM),
+            },
+            "d1",
+        ),
+        (
+            GeometryOp::ChamferAsymmetric {
+                target: UNISSUED,
+                edges: vec![],
+                d1: Value::length(MM),
+                d2: value,
+            },
+            "d2",
         ),
     ]
 }
