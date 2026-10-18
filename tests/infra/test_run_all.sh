@@ -1403,14 +1403,13 @@ chmod +x "$TMPDIR_T19/test_pool_1.sh"
 PSI_HOT_T19="$TMPDIR_T19/psi_hot"
 printf 'some avg10=95.00 avg60=90.00 avg300=80.00 total=1\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n' > "$PSI_HOT_T19"
 
-# Poisoned TMPDIR: a NONEXISTENT NESTED path (never mkdir'd). Discovery
-# and partition (pure in-memory) are unaffected; the block's workdir
-# `mktemp -d "${TMPDIR}/reify-run-all-pool.XXXXXX"` is the ONLY
-# TMPDIR-dependent command in the guarded block, so it fails
-# deterministically while everything upstream of it succeeds.
-# REIFY_RUN_ALL_POOL_LOCK is pinned to a GOOD path so the pre-block
-# `_H2_POOL_LOCK` default (which also falls back to TMPDIR) is
-# untouched -- the poisoning must reach exactly one command.
+# Poisoned TMPDIR: a NONEXISTENT NESTED path (never mkdir'd). It fails
+# run_all's pool scratch-workdir setup, which sits inside the guarded
+# partition -> workdir-setup span (run_all.sh header, "Partition diagnostic
+# guard"). 19g (the marker comes after the INFO line that opens the span) and
+# 19i (no run_start, the record written right after the span) bound the death
+# to that span from run_all's declared outputs.
+# REIFY_RUN_ALL_POOL_LOCK is the private lock every pool fixture here uses.
 TMPDIR_T19_POISON="$TMPDIR_T19/nope/deeper"
 
 t19_rc=0
