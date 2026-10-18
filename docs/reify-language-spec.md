@@ -675,6 +675,8 @@ A type annotation pins every type argument positionally and overrides payload-dr
 param r : Result<Length, String> = Ok { value: 5mm }
 ```
 
+An annotation must supply every type argument: a bare generic enum name such as `param r : Result` is the arity error "enum `Result` expects 2 type arguments, found 0", the same diagnostic a wrong-length argument list gets. The one exception is an enum whose every declared type parameter has a default (`enum Wrapper<T = Length>`): there the bare name means the defaults, so `param w : Wrapper` is `Wrapper<Length>`. A partially defaulted enum written bare is still an arity error. Defaults fill annotations only; construction inference never consults them.
+
 Once type arguments are known (pinned or inferred), each supplied field's value is checked against its declared field type with the type parameters substituted; a mismatch is an error (`E_VARIANT_PAYLOAD_TYPE`, the same payload-type check §4.5 describes for non-generic enums), e.g. constructing `Ok { value: "x" }` against `Result<Length, String>` expects `Length`, not `String`.
 
 **Match binders:** A `match` arm's field binder over a resolved generic-enum discriminant (`Type::Applied`) is typed at the corresponding payload field type with the enum's type arguments substituted in, not at the bare type parameter. `match r { Ok { value: v } => v + 1mm, Err { error: m } => 0mm }` over `r : Result<Length, String>` types `v` as `Length`, so `v + 1mm` is clean and `v + 1N` is a dimension-mismatch error. Exhaustiveness (§3.8) is unaffected by genericity — a non-exhaustive match over a `Type::Applied` discriminant still requires all variants or `_`.
