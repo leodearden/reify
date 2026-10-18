@@ -1059,6 +1059,13 @@ fn nested_parametric_alias_arity_mismatch_names_inner_alias() {
             && d.message.contains("expects 1 type argument(s), got 2")),
         "expected an arity error naming P; got: {errs:?}"
     );
+    assert_eq!(
+        errs.iter()
+            .filter(|d| d.message.contains("type argument(s)"))
+            .count(),
+        1,
+        "expected exactly one arity diagnostic; got: {errs:?}"
+    );
 }
 
 // ─── step-33: module boundary separation — CompiledTypeAlias ───────────────
