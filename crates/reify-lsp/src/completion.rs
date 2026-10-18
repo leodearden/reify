@@ -255,9 +255,7 @@ const DIMENSIONLESS_NORMAL_NOTE: &str =
 /// gated families named in task 6450's own description — patterns,
 /// translate/rotate_around, revolve, line_segment, arc, helix, interp,
 /// bezier, nurbs poles, ... — have no entry here at all, so naming them
-/// would invent a residual with no surface). The full "deliberately NOT
-/// gated" enumeration lives in `arg_acceptance`'s module doc — cited, not
-/// restated here (G7).
+/// would invent a residual with no surface).
 ///
 /// Which positions are gated, and which are deliberately left bare, is pinned
 /// by reify-eval's units-length closure guard
