@@ -231,7 +231,7 @@ assert "wrapper uses idiomatic non-set-e-aborting exit-code pattern" \
     bash -c 'grep -qE '"'"'(\|\| rc=|set \+e)'"'"' "$1"' \
     -- "$REPO_ROOT/scripts/reify-audit-predone-wrapper.sh"
 
-# 6b+6c setup: fake curl + fake reify-audit shims in a behavioural tmpdir.
+# 6b+6c setup: a fake reify-audit shim in a behavioural tmpdir.
 BEHAVIORAL_TMPDIR=$(mktemp -d /tmp/test-wrapper-rc-XXXXXX)
 # Update the EXIT trap to cover both tmpdirs.
 trap 'rm -rf "$LIVE_TMPDIR" "$BEHAVIORAL_TMPDIR"' EXIT
@@ -242,14 +242,6 @@ trap 'rm -rf "$LIVE_TMPDIR" "$BEHAVIORAL_TMPDIR"' EXIT
 # host-wide default path — making a real operator sweep report a stale fleet
 # because a test ran. Cleaned up with BEHAVIORAL_TMPDIR by the trap above.
 export REIFY_AUDIT_ADVISORY_SENTINEL="$BEHAVIORAL_TMPDIR/advisory-sentinel"
-
-# Fake curl: ignores all args, emits a valid empty-tasks JSON-RPC envelope.
-# The sidecar filter expects .result.content[0].text | fromjson | .tasks → []
-cat > "$BEHAVIORAL_TMPDIR/curl" <<'FAKE_CURL_EOF'
-#!/usr/bin/env bash
-printf '%s\n' '{"result":{"content":[{"type":"text","text":"{\"tasks\":[]}"}]}}'
-FAKE_CURL_EOF
-chmod +x "$BEHAVIORAL_TMPDIR/curl"
 
 # Fake reify-audit: ignores all args, exits with $FAKE_RC (default 0).
 cat > "$BEHAVIORAL_TMPDIR/reify-audit" <<'FAKE_AUDIT_EOF'
@@ -320,9 +312,9 @@ assert "wrapper has an actual 'source' line for reify-audit-freshness.sh" \
 # caused the outage), and 7d below is entirely new — it pins that fail-open did
 # not become fail-SILENT.
 #
-# Reuses the existing BEHAVIORAL_TMPDIR shim harness (fake curl +
-# REIFY_AUDIT_BIN override) from Check 6's setup. The shim is already `chmod +x`
-# at :231, which now matters: the guard splits on `[ -x "$bin" ]`.
+# Reuses the existing BEHAVIORAL_TMPDIR shim harness (fake reify-audit +
+# REIFY_AUDIT_BIN override) from Check 6's setup. The shim is already
+# `chmod +x` there, which now matters: the guard splits on `[ -x "$bin" ]`.
 # Touch it to year 2000 (definitely before any crate commit) so the guard fires.
 touch -t 200001010000 "$BEHAVIORAL_TMPDIR/reify-audit"
 
