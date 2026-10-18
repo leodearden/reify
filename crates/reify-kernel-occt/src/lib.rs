@@ -282,6 +282,26 @@ fn centroid_json(p: ffi::ffi::Point3) -> String {
 pub use reify_ir::{AttributeHistory, BooleanOpHistoryRecords, DeletedRecord, HistoryRecord, LocalFeatureOpHistoryRecords, LoftOpHistoryRecords, SweepOpHistoryRecords};
 
 #[cfg(has_occt)]
+/// The sub-shape kinds [`OcctKernel::extract_subshapes`] enumerates.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SubShapeKind {
+    Edge,
+    Face,
+    Vertex,
+}
+
+#[cfg(has_occt)]
+impl SubShapeKind {
+    fn repr(self) -> BRepKind {
+        match self {
+            Self::Edge => BRepKind::Edge,
+            Self::Face => BRepKind::Face,
+            Self::Vertex => BRepKind::Vertex,
+        }
+    }
+}
+
+#[cfg(has_occt)]
 /// OpenCASCADE geometry kernel (raw, `!Send + !Sync`).
 ///
 /// Contains `cxx::UniquePtr<OcctShape>` handles which are `!Send`, so the
@@ -561,9 +581,9 @@ impl OcctKernel {
         Ok(self.store_with_repr(shape, repr))
     }
 
-    /// Debug-only invariant guard shared by `extract_edges`/`extract_faces`/
-    /// `extract_vertices`: asserts that `h`, just returned from
-    /// `store_with_repr`, really did get a strictly fresh id (never reused).
+    /// Debug-only invariant guard for [`Self::extract_subshapes`]: asserts
+    /// that `h`, just returned from `store_with_repr`, really did get a
+    /// strictly fresh id (never reused).
     ///
     /// This protects `warm_state()`'s bounded-payload filter (see its
     /// "Bounded payload" note): the filter treats every `parent_handle` key
@@ -627,6 +647,60 @@ impl OcctKernel {
         Ok(ffi::ffi::topology_cache_build_counts(shape))
     }
 
+    /// The idempotency cache holding `kind`'s extractions.
+    fn subshape_cache(&mut self, kind: SubShapeKind) -> &mut HashMap<u64, Vec<GeometryHandleId>> {
+        match kind {
+            SubShapeKind::Edge => &mut self.extracted_edges,
+            SubShapeKind::Face => &mut self.extracted_faces,
+            SubShapeKind::Vertex => &mut self.extracted_vertices,
+        }
+    }
+
+    /// Extract every unique `kind` sub-shape of `parent` in canonical
+    /// `TopExp::MapShapes` order, each stamped `kind.repr()` with `parent`
+    /// recorded as its owner. Idempotent per (parent, kind): see
+    /// [`Self::extract_edges`].
+    fn extract_subshapes(
+        &mut self,
+        parent: GeometryHandleId,
+        kind: SubShapeKind,
+    ) -> Result<Vec<GeometryHandleId>, QueryError> {
+        if let Some(cached) = self.subshape_cache(kind).get(&parent.0) {
+            return Ok(cached.clone());
+        }
+        // Collect into a Vec<UniquePtr<OcctShape>> in a scope where the
+        // immutable borrow of `self` (via get_shape) drops before we mutate
+        // self via store_with_repr.
+        let materialized: Vec<cxx::UniquePtr<ffi::ffi::OcctShape>> = {
+            let shape = self.get_shape(parent)?;
+            let vec = match kind {
+                SubShapeKind::Edge => ffi::ffi::get_edges(shape),
+                SubShapeKind::Face => ffi::ffi::get_faces(shape),
+                SubShapeKind::Vertex => ffi::ffi::get_vertices(shape),
+            }
+            .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
+            let len = ffi::ffi::shape_vec_len(&vec);
+            let mut buf = Vec::with_capacity(len);
+            for i in 0..len {
+                let sub = ffi::ffi::shape_vec_at(&vec, i)
+                    .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
+                buf.push(sub);
+            }
+            buf
+        };
+
+        let mut ids = Vec::with_capacity(materialized.len());
+        for sub in materialized {
+            let h = self.store_with_repr(sub, kind.repr());
+            self.debug_assert_fresh_id(&h);
+            // Provenance, so `OwnerBody(child)` answers without re-extraction.
+            self.parent_handle.insert(h.id.0, parent);
+            ids.push(h.id);
+        }
+        self.subshape_cache(kind).insert(parent.0, ids.clone());
+        Ok(ids)
+    }
+
     /// Extract every unique edge of `handle` as a handle with
     /// `BRepKind::Edge`. Order follows the canonical
     /// `TopExp::MapShapes(.., TopAbs_EDGE, ..)` enumeration.
@@ -647,40 +721,7 @@ impl OcctKernel {
         &mut self,
         handle: GeometryHandleId,
     ) -> Result<Vec<GeometryHandleId>, QueryError> {
-        if let Some(cached) = self.extracted_edges.get(&handle.0) {
-            return Ok(cached.clone());
-        }
-        // Collect into a Vec<UniquePtr<OcctShape>> in a scope where the
-        // immutable borrow of `self` (via get_shape) drops before we mutate
-        // self via store_with_repr.
-        let materialized: Vec<cxx::UniquePtr<ffi::ffi::OcctShape>> = {
-            let shape = self.get_shape(handle)?;
-            let vec =
-                ffi::ffi::get_edges(shape).map_err(|e| QueryError::QueryFailed(e.to_string()))?;
-            let len = ffi::ffi::shape_vec_len(&vec);
-            let mut buf = Vec::with_capacity(len);
-            for i in 0..len {
-                let sub = ffi::ffi::shape_vec_at(&vec, i)
-                    .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
-                buf.push(sub);
-            }
-            buf
-        };
-
-        let mut ids = Vec::with_capacity(materialized.len());
-        for sub in materialized {
-            let h = self.store_with_repr(sub, BRepKind::Edge);
-            // Defensive invariant guard; see `debug_assert_fresh_id` doc for
-            // rationale (protects warm_state()'s parent_handle-keyed
-            // bounded-payload filter).
-            self.debug_assert_fresh_id(&h);
-            // Record provenance so `OwnerBody(child)` can answer
-            // "what body did this edge come from?" without re-extraction.
-            self.parent_handle.insert(h.id.0, handle);
-            ids.push(h.id);
-        }
-        self.extracted_edges.insert(handle.0, ids.clone());
-        Ok(ids)
+        self.extract_subshapes(handle, SubShapeKind::Edge)
     }
 
     /// Extract every unique face of `handle` as a handle with
@@ -695,37 +736,7 @@ impl OcctKernel {
         &mut self,
         handle: GeometryHandleId,
     ) -> Result<Vec<GeometryHandleId>, QueryError> {
-        if let Some(cached) = self.extracted_faces.get(&handle.0) {
-            return Ok(cached.clone());
-        }
-        let materialized: Vec<cxx::UniquePtr<ffi::ffi::OcctShape>> = {
-            let shape = self.get_shape(handle)?;
-            let vec =
-                ffi::ffi::get_faces(shape).map_err(|e| QueryError::QueryFailed(e.to_string()))?;
-            let len = ffi::ffi::shape_vec_len(&vec);
-            let mut buf = Vec::with_capacity(len);
-            for i in 0..len {
-                let sub = ffi::ffi::shape_vec_at(&vec, i)
-                    .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
-                buf.push(sub);
-            }
-            buf
-        };
-
-        let mut ids = Vec::with_capacity(materialized.len());
-        for sub in materialized {
-            let h = self.store_with_repr(sub, BRepKind::Face);
-            // Defensive invariant guard; see `debug_assert_fresh_id` doc for
-            // rationale (protects warm_state()'s parent_handle-keyed
-            // bounded-payload filter).
-            self.debug_assert_fresh_id(&h);
-            // Record provenance — sister to `extract_edges`. See
-            // `parent_handle` field doc for the design contract.
-            self.parent_handle.insert(h.id.0, handle);
-            ids.push(h.id);
-        }
-        self.extracted_faces.insert(handle.0, ids.clone());
-        Ok(ids)
+        self.extract_subshapes(handle, SubShapeKind::Face)
     }
 
     /// Extract every unique vertex of `handle` as a handle with
@@ -752,37 +763,7 @@ impl OcctKernel {
         &mut self,
         handle: GeometryHandleId,
     ) -> Result<Vec<GeometryHandleId>, QueryError> {
-        if let Some(cached) = self.extracted_vertices.get(&handle.0) {
-            return Ok(cached.clone());
-        }
-        let materialized: Vec<cxx::UniquePtr<ffi::ffi::OcctShape>> = {
-            let shape = self.get_shape(handle)?;
-            let vec = ffi::ffi::get_vertices(shape)
-                .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
-            let len = ffi::ffi::shape_vec_len(&vec);
-            let mut buf = Vec::with_capacity(len);
-            for i in 0..len {
-                let sub = ffi::ffi::shape_vec_at(&vec, i)
-                    .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
-                buf.push(sub);
-            }
-            buf
-        };
-
-        let mut ids = Vec::with_capacity(materialized.len());
-        for sub in materialized {
-            let h = self.store_with_repr(sub, BRepKind::Vertex);
-            // Defensive invariant guard; see `debug_assert_fresh_id` doc for
-            // rationale (protects warm_state()'s parent_handle-keyed
-            // bounded-payload filter).
-            self.debug_assert_fresh_id(&h);
-            // Record provenance so `OwnerBody(child)` can answer
-            // "what body did this vertex come from?" without re-extraction.
-            self.parent_handle.insert(h.id.0, handle);
-            ids.push(h.id);
-        }
-        self.extracted_vertices.insert(handle.0, ids.clone());
-        Ok(ids)
+        self.extract_subshapes(handle, SubShapeKind::Vertex)
     }
 
     /// Split `target` with an unbounded cutting plane defined by
