@@ -92,7 +92,7 @@ use reify_solver_elastic::{
     resample_multi_nodal_to_grid, solve_buckling_kernel, solve_buckling_kernel_p2, tet_volume_p1,
 };
 
-use super::fea_inputs::{extract_material, extract_scalar_si};
+use super::fea_inputs::{extract_length_si, extract_material};
 use super::fea_loads::{load_items, point_load_force};
 use super::fea_value_shape::{FeaValueShapeError, failed_outcome};
 use crate::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
@@ -687,9 +687,9 @@ fn read_buckling_inputs(
     let at = |arg: &'static str| move |err: FeaValueShapeError| (arg, err);
     Ok(BucklingInputs {
         mat: extract_material(&value_inputs[0]).map_err(at("material"))?,
-        length: extract_scalar_si(&value_inputs[1]).map_err(at("length"))?,
-        width: extract_scalar_si(&value_inputs[2]).map_err(at("width"))?,
-        height: extract_scalar_si(&value_inputs[3]).map_err(at("height"))?,
+        length: extract_length_si(&value_inputs[1]).map_err(at("length"))?,
+        width: extract_length_si(&value_inputs[2]).map_err(at("width"))?,
+        height: extract_length_si(&value_inputs[3]).map_err(at("height"))?,
         total_load: total_point_load(&value_inputs[4]).map_err(at("loads"))?,
     })
 }
@@ -1504,6 +1504,36 @@ mod tests {
                     d.severity == reify_core::Severity::Error && d.message.starts_with(&prefix)
                 }),
                 "a malformed {arg} must yield an Error starting {prefix:?}, got {diagnostics:?}"
+            );
+        }
+    }
+
+    /// A column size of another dimension is refused, never read as metres.
+    #[test]
+    fn solve_buckling_trampoline_rejects_a_wrong_dimension_column_size() {
+        for (index, arg) in [(1, "length"), (2, "width"), (3, "height")] {
+            let mut inputs = buckling_inputs();
+            inputs[index] = scalar(0.8, DimensionVector::MASS);
+            let outcome = super::solve_buckling_trampoline(
+                &inputs,
+                &[],
+                &Value::Undef,
+                None,
+                &CancellationHandle::new(),
+            );
+            let ComputeOutcome::Failed { diagnostics, .. } = &outcome else {
+                unreachable!("a MASS {arg} must yield Failed, got {outcome:?}");
+            };
+            let prefix = format!("solve_buckling_trampoline: {arg}:");
+            assert!(
+                diagnostics.iter().any(|d| {
+                    d.severity == reify_core::Severity::Error
+                        && d.code == Some(reify_core::DiagnosticCode::DimensionedArgRejected)
+                        && d.message.starts_with(&prefix)
+                        && d.message.contains("Length")
+                }),
+                "a MASS {arg} must yield a DimensionedArgRejected Error starting \
+                 {prefix:?} and expecting a Length, got {diagnostics:?}"
             );
         }
     }

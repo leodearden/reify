@@ -260,6 +260,11 @@ fn aabb_from_vertices(vertices: &[f32]) -> Option<AxisAlignedBox> {
 /// absent, `none` or unresolved; `Err` naming `<Struct>.<key>` for any present
 /// value the spec refuses — a number of the wrong dimension, or not a number at
 /// all.
+///
+/// The one strict field reader: the FEA trampolines read their
+/// `ElasticMaterial` fields through it too (`fea_inputs::isotropic_from_data`,
+/// `fea_loads::material_density`), so a material field accepts the same values
+/// whichever trampoline reads it.
 pub(crate) fn field_scalar(
     data: &StructureInstanceData,
     key: &str,

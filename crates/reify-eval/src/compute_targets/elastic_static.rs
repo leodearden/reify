@@ -229,7 +229,8 @@ use super::shell_solve::{
 // Task 2929: FEA diagnostic mapping glue.
 use super::fea_diagnostics::fea_diagnostic_to_core;
 use super::fea_inputs::{
-    extract_material, extract_scalar_si, isotropic_from_data, real_field, scalar_si_field,
+    ComponentRead, extract_length_si, extract_material, isotropic_from_data, real_field,
+    scalar_si_field, spec_component,
 };
 use super::fea_loads::{
     gravity_magnitude, load_items, material_density, point_load_force, pressure_load_magnitude,
@@ -557,9 +558,9 @@ pub fn solve_elastic_static_trampoline(
     let model = gate_or_fail!(classify_material(&value_inputs[0]), "material");
 
     // ── (2) Extract geometry scalars (SI: metres) ─────────────────────────────
-    let length = gate_or_fail!(extract_scalar_si(&value_inputs[1]), "length");
-    let width = gate_or_fail!(extract_scalar_si(&value_inputs[2]), "width");
-    let height = gate_or_fail!(extract_scalar_si(&value_inputs[3]), "height");
+    let length = gate_or_fail!(extract_length_si(&value_inputs[1]), "length");
+    let width = gate_or_fail!(extract_length_si(&value_inputs[2]), "width");
+    let height = gate_or_fail!(extract_length_si(&value_inputs[3]), "height");
 
     // ── (3) Extract loads from value_inputs[4] (List of StructureInstances) ──
     //
@@ -4473,84 +4474,6 @@ fn extract_scalar_triple(
     Ok([comp(&comps[0])?, comp(&comps[1])?, comp(&comps[2])?])
 }
 
-/// The outcome of reading ONE component of a triple. Mirrors
-/// `reify_ir::arg_acceptance::Acceptance` 1:1, carrying this module's
-/// [`FeaValueShapeError`] in place of `ArgRejection`.
-///
-/// `Undefined` is surfaced rather than folded into `Rejected` because the
-/// right response to an unresolved value is the CALLER's to choose, not
-/// [`spec_component`]'s (task #7019 review [reviewer_comprehensive], fixing a
-/// regression where folding the two together made `read_direction_or_neg_z`
-/// hard-fail the whole solve on transient solver state instead of degrading
-/// quietly). `extract_scalar_triple`'s `comp` closure treats `Undefined` as a
-/// shape error — today's pre-existing behaviour, preserved out of this
-/// task's charter (follow-up #7793 is filed to decide, deliberately and with
-/// its own test coverage, whether to widen it) — while
-/// `read_direction_or_neg_z` degrades it quietly to `0.0`, per PRD
-/// `dimension-checked-readers.md` decision 2 ("`Undef` in => `Undef` out,
-/// quietly"). Dimension EXPECTATION (what `spec_component` classifies) and
-/// undef POLICY (what the caller decides) are orthogonal axes; this enum is
-/// what keeps a catch-all arm from fusing them back together.
-enum ComponentRead {
-    /// The value has the expected dimension; carries the SI f64.
-    Accepted(f64),
-    /// The value is `Value::Undef` — an unresolved cell, not a mistake. The
-    /// caller decides what that means at this position.
-    Undefined,
-    /// The value is defined but the wrong shape/dimension.
-    Rejected(FeaValueShapeError),
-}
-
-/// Shared spec-driven per-component classifier (task #7019): classifies `v`
-/// against `spec` via the canonical `reify_ir::arg_acceptance::accept_arg`,
-/// so [`dimensioned_component`]/[`dimensionless_component`] differ only in
-/// which `ArgSpec` they pass, not in a hand-written `match` over `Value`.
-///
-/// Returns [`ComponentRead`], not a `Result`: this function's job is to
-/// CLASSIFY `v` against `spec`, not to decide what an `Acceptance::Undefined`
-/// result means to its caller — see `ComponentRead`'s doc. The match below
-/// names all three `Acceptance` variants explicitly, with no catch-all, so a
-/// future fourth variant is a compile error here rather than a silent
-/// miscategorisation.
-///
-/// The `matches!(v, Value::Scalar { .. })` discriminator applies to the
-/// `Rejected` arms ONLY, and distinguishes two genuinely different faults: a
-/// `Value::Scalar` whose `dimension` is wrong
-/// ([`FeaValueShapeError::WrongDimension`]) vs. a value that is not a
-/// `Value::Scalar` at all (`ExpectedScalar`) — which is what keeps every
-/// non-Scalar, DEFINED value on today's exact `ExpectedScalar` path. Both
-/// arms reuse the `ArgRejection` that `accept_arg` already built (task #7019
-/// review [reviewer_comprehensive]) instead of re-deriving a second wording
-/// from `format!("{v:?}")`: `rej.got` is `value_short_label`'s rendering
-/// (e.g. `"Length Scalar"`) and `rej.expected` is `spec.type_name`, so a
-/// `WrongDimension` at a `dimensionless_spec` position reads "expected Real
-/// … got Length Scalar" instead of a raw `Value::Scalar { .. }` `Debug` dump
-/// that names the dimension but not in the same words the `expected` side
-/// uses.
-fn spec_component(
-    v: &Value,
-    spec: &crate::arg_acceptance::ArgSpec,
-    context: &'static str,
-) -> ComponentRead {
-    use crate::arg_acceptance::{Acceptance, accept_arg};
-
-    match accept_arg(v, spec) {
-        Acceptance::Accepted(x) => ComponentRead::Accepted(x),
-        Acceptance::Undefined => ComponentRead::Undefined,
-        Acceptance::Rejected(rej) if matches!(v, Value::Scalar { .. }) => {
-            ComponentRead::Rejected(FeaValueShapeError::WrongDimension {
-                context,
-                expected: rej.expected,
-                got: rej.got,
-            })
-        }
-        Acceptance::Rejected(rej) => ComponentRead::Rejected(FeaValueShapeError::ExpectedScalar {
-            context,
-            got: rej.got,
-        }),
-    }
-}
-
 /// Per-component reader for a DIMENSIONED triple — `aabb_min`/`aabb_max`'s
 /// `Point3<Length>`. A bare `Value::Real`/`Value::Int` component there is a
 /// genuinely missing dimension, so it must fail (task #5080's contract, pinned
@@ -6607,7 +6530,7 @@ mod tests {
     /// the resampled §7a bounds_max reveal which mesh drove the solve:
     ///   - body path (correct)  → `bounds_max ≈ [2.0, 0.5, 0.5]`
     ///   - misread-as-dims path → the GeometryHandle read as `length` via
-    ///     `extract_scalar_si` and the loads/supports `List`s read as
+    ///     `extract_length_si` and the loads/supports `List`s read as
     ///     width/height, which never reaches a well-formed solve on this mesh.
     ///
     /// RED today: the trampoline reads `value_inputs[1]` (the GeometryHandle) as
@@ -10086,7 +10009,9 @@ mod tests {
 
     // ── task 6922 γ1: load magnitudes are dimension-checked, bare still read ──
 
-    use crate::arg_acceptance::{FieldRejection, density_spec, force_spec, read_field_or_bare};
+    use crate::arg_acceptance::{
+        Acceptance, FieldRejection, accept_arg, density_spec, force_spec, read_field_or_bare,
+    };
     use crate::compute_targets::{scalar, structure};
 
     fn point_load_tip_force(force: Value) -> [f64; 3] {
@@ -10191,6 +10116,36 @@ mod tests {
         );
     }
 
+    /// A box size of another dimension is refused, never read as metres.
+    #[test]
+    fn trampoline_fails_a_wrong_dimension_box_size_with_the_dimensioned_arg_code() {
+        for (index, arg) in [(1, "length"), (2, "width"), (3, "height")] {
+            let mut value_inputs = shell9_valid_inputs();
+            value_inputs[index] = scalar(0.1, DimensionVector::MASS);
+            let outcome = solve_elastic_static_trampoline(
+                &value_inputs,
+                &[],
+                &Value::Undef,
+                None,
+                &CancellationHandle::new(),
+            );
+            let ComputeOutcome::Failed { diagnostics, .. } = &outcome else {
+                unreachable!("a MASS {arg} must fail the input gate, got {outcome:?}");
+            };
+            let prefix = format!("solve_elastic_static_trampoline: {arg}:");
+            assert!(
+                diagnostics.iter().any(|d| {
+                    d.severity == reify_core::Severity::Error
+                        && d.code == Some(DiagnosticCode::DimensionedArgRejected)
+                        && d.message.starts_with(&prefix)
+                        && d.message.contains("Length")
+                }),
+                "a MASS {arg} must yield a DimensionedArgRejected Error starting \
+                 {prefix:?} and expecting a Length, got {diagnostics:?}"
+            );
+        }
+    }
+
     /// A refused `density` fails the solve even when no `Gravity` load would
     /// read it: a present value the reader refuses is never read as absent.
     #[test]
@@ -10223,11 +10178,11 @@ mod tests {
         let ComputeOutcome::Failed { diagnostics, .. } = &outcome else {
             unreachable!("a PRESSURE density must fail the input gate, got {outcome:?}");
         };
-        let rejection = read_field_or_bare(
-            Some(&scalar(7850.0, DimensionVector::PRESSURE)),
-            &density_spec(),
-        )
-        .unwrap_err();
+        let Acceptance::Rejected(rejection) =
+            accept_arg(&scalar(7850.0, DimensionVector::PRESSURE), &density_spec())
+        else {
+            unreachable!("the strict density spec refuses a PRESSURE Scalar");
+        };
         let expected = rejection.message(
             "solve_elastic_static_trampoline",
             "IsotropicElastic.density",
@@ -11439,32 +11394,49 @@ mod tests {
     // 5087) later replaced every production call site with the
     // validate-all-inputs gate and removed the shim. ───────────────────────
 
-    /// step-1 RED: `extract_scalar_si` must reject a non-Scalar `Value` with
-    /// `Err(FeaValueShapeError::ExpectedScalar { .. })` instead of panicking.
-    ///
-    /// RED: `extract_scalar_si` currently returns a bare `f64`, so matching
-    /// `Err(..)` fails to type-check until step-2 converts it to
-    /// `Result<f64, FeaValueShapeError>`.
+    /// step-1 RED (task #5080, on the reader `extract_length_si` replaced):
+    /// a non-Scalar `Value`, `Undef` included, is
+    /// `Err(FeaValueShapeError::ExpectedScalar { .. })`, never a panic.
     #[test]
-    fn extract_scalar_si_rejects_non_scalar() {
-        let res = extract_scalar_si(&Value::Real(3.0));
-        assert!(
-            matches!(res, Err(FeaValueShapeError::ExpectedScalar { .. })),
-            "expected Err(ExpectedScalar) for a non-Scalar Value, got: {:?}",
-            res
+    fn extract_length_si_rejects_non_scalar() {
+        for value in [Value::Real(3.0), Value::Undef] {
+            let res = extract_length_si(&value);
+            assert!(
+                matches!(res, Err(FeaValueShapeError::ExpectedScalar { .. })),
+                "expected Err(ExpectedScalar) for {value:?}, got: {res:?}"
+            );
+        }
+    }
+
+    /// Amendment (task #5080 review round 2, suggestion 1): a well-formed
+    /// `Scalar<Length>` reads as its SI value, locking the success path
+    /// alongside the error paths around it.
+    #[test]
+    fn extract_length_si_accepts_a_length_scalar() {
+        assert_eq!(
+            extract_length_si(&scalar(2.5, DimensionVector::LENGTH)),
+            Ok(2.5)
         );
     }
 
-    /// Amendment (task #5080 review round 2, suggestion 1): `extract_scalar_si`
-    /// must return `Ok` with the SI value for a well-formed `Value::Scalar`,
-    /// locking the success path alongside the error path above.
+    /// A `Scalar` of any other dimension, dimensionless included, is refused
+    /// as `WrongDimension` rather than read as metres.
     #[test]
-    fn extract_scalar_si_accepts_scalar() {
-        let val = Value::Scalar {
-            si_value: 2.5,
-            dimension: DimensionVector::DIMENSIONLESS,
-        };
-        assert_eq!(extract_scalar_si(&val), Ok(2.5));
+    fn extract_length_si_rejects_a_scalar_of_another_dimension() {
+        for dimension in [DimensionVector::DIMENSIONLESS, DimensionVector::MASS] {
+            let res = extract_length_si(&scalar(2.5, dimension));
+            assert!(
+                matches!(
+                    res,
+                    Err(FeaValueShapeError::WrongDimension {
+                        expected: "Length",
+                        ..
+                    })
+                ),
+                "expected Err(WrongDimension {{ expected: \"Length\", .. }}) for a \
+                 {dimension:?} Scalar, got: {res:?}"
+            );
+        }
     }
 
     /// step-3 RED: `scalar_si_field` must reject a present-but-wrong-type
@@ -13235,7 +13207,7 @@ mod tests {
         assert_gate_rejects(value_inputs, "length");
     }
 
-    /// `width` and `height` share `length`'s `extract_scalar_si` call (only
+    /// `width` and `height` share `length`'s `extract_length_si` call (only
     /// the index/label literal differ), so a copy-pasted label swap between
     /// the two arms would go uncaught without a dedicated pin. [1] and [3]
     /// stay well-formed scalars (from `shell9_valid_inputs()`) so only the

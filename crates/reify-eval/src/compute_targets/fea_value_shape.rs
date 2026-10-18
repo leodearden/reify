@@ -30,14 +30,17 @@ pub(super) enum FeaValueShapeError {
         context: &'static str,
         field: &'static str,
     },
-    /// A `Value::Scalar` component of the wrong dimension, raised by task
-    /// #7019's component readers (any other value is their `ExpectedScalar`).
-    /// `expected` names the spec's `type_name`.
+    /// A `Value::Scalar` component or positional input of the wrong
+    /// dimension, raised through `fea_inputs::spec_component` by task #7019's
+    /// component readers and by `fea_inputs::extract_length_si` (any other
+    /// value is their `ExpectedScalar`). `expected` names the spec's
+    /// `type_name`.
     ///
     /// Transitional: it is the same rejection reason as [`Self::Rejected`] in
-    /// a second wording. A component has no `<Struct>.<field>` path for a
-    /// `FieldRejection` to name; #8674 folds both into one decode error whose
-    /// field is optional, and this variant goes with it.
+    /// a second wording. A component or a positional input has no
+    /// `<Struct>.<field>` path for a `FieldRejection` to name; #8674 folds
+    /// both into one decode error whose field is optional, and this variant
+    /// goes with it.
     WrongDimension {
         context: &'static str,
         expected: &'static str,

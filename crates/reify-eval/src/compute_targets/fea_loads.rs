@@ -1,18 +1,22 @@
 //! The ONE reader of a magnitude off an FEA load struct (PRD
 //! `dimension-checked-readers.md` §7 I7), shared by the elastic-static and
-//! buckling trampolines.
+//! buckling trampolines, and of the material density a `Gravity` load scales.
 //!
-//! Every magnitude reads through `read_field_or_bare`: a `Scalar` must carry
-//! its position's dimension, while a bare `Real`/`Int` is still read as the
-//! legacy undimensioned spelling until γ3 #5802 narrows it. An absent, `none`
-//! or `Undef` magnitude contributes nothing, quietly (PRD decision 2). Any
-//! value it refuses — a `Scalar` of another dimension or not a number at all —
-//! is a [`FieldRejection`] naming `<Struct>.<field>`, coded
-//! `DimensionedArgRejected`. A field reader can fail no other way, so it
-//! returns the bare rejection; `?` lifts it into a [`FeaValueShapeError`].
+//! Every load magnitude reads through `read_field_or_bare`: a `Scalar` must
+//! carry its position's dimension, while a bare `Real`/`Int` is still read as
+//! the legacy undimensioned spelling until γ3 #5802 narrows it. The material
+//! density is no load magnitude and has no legacy spelling, so it reads through
+//! the strict `field_scalar`, the reader the as-printed trampoline gives the
+//! same `ElasticMaterial.density`. An absent, `none` or `Undef` value
+//! contributes nothing, quietly (PRD decision 2). Any value refused — a
+//! `Scalar` of another dimension or not a number at all — is a
+//! [`FieldRejection`] naming `<Struct>.<field>`, coded `DimensionedArgRejected`.
+//! A field reader can fail no other way, so it returns the bare rejection; `?`
+//! lifts it into a [`FeaValueShapeError`].
 
 use reify_ir::{StructureInstanceData, Value};
 
+use super::as_printed_material::field_scalar;
 use super::fea_value_shape::FeaValueShapeError;
 use crate::arg_acceptance::{
     ArgSpec, FieldRejection, acceleration_spec, density_spec, force_spec, pressure_spec,
@@ -54,16 +58,16 @@ pub(super) fn gravity_magnitude(
     magnitude(load, "magnitude", &acceleration_spec())
 }
 
-/// The material's `density`, in kg·m⁻³. A bare `Real`/`Int` density is read
-/// as kg·m⁻³ like every other magnitude here, so it drives a `Gravity` body
-/// force. A material that is not a struct, or whose `density` is absent or
-/// `Undef`, reads `0.0` (the default γ3 #5802 owns), so a `Gravity` load on it
+/// The material's `density`, in kg·m⁻³: a `Scalar<Density>` only, exactly as
+/// the as-printed reader accepts it, so a bare `Real`/`Int` is refused. A
+/// material that is not a struct, or whose `density` is absent or `Undef`,
+/// reads `0.0` (the default γ3 #5802 owns), so a `Gravity` load on it
 /// contributes no body force.
 pub(super) fn material_density(material: &Value) -> Result<f64, FieldRejection> {
     let Value::StructureInstance(data) = material else {
         return Ok(0.0);
     };
-    Ok(magnitude(data, "density", &density_spec())?.unwrap_or(0.0))
+    Ok(field_scalar(data, "density", &density_spec())?.unwrap_or(0.0))
 }
 
 fn magnitude(
@@ -196,7 +200,6 @@ mod tests {
             material_density(&material(scalar(7850.0, DimensionVector::MASS_DENSITY))),
             Ok(7850.0)
         );
-        assert_eq!(material_density(&material(Value::Real(7850.0))), Ok(7850.0));
         assert_eq!(material_density(&material(Value::Undef)), Ok(0.0));
         let res = material_density(&material(scalar(7850.0, DimensionVector::PRESSURE)));
         assert!(
@@ -207,6 +210,23 @@ mod tests {
             ),
             "a PRESSURE density must be a rejection naming the density, got {res:?}"
         );
+    }
+
+    /// The material density is not a load magnitude: it takes no legacy bare
+    /// spelling, so it accepts exactly what the as-printed reader accepts.
+    #[test]
+    fn material_density_refuses_a_bare_density_like_the_as_printed_reader() {
+        for bare in [Value::Real(7850.0), Value::Int(7850)] {
+            let res = material_density(&material(bare.clone()));
+            assert!(
+                matches!(
+                    &res,
+                    Err(FieldRejection { path, rejection })
+                        if path == "Steel_AISI_1045.density" && rejection.expected == "Density"
+                ),
+                "a bare {bare:?} density must be a rejection naming the density, got {res:?}"
+            );
+        }
     }
 
     /// The defensive fallback, made explicit so it is distinguishable from a
