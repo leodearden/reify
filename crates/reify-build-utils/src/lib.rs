@@ -3,9 +3,9 @@
 //! Two responsibilities, consolidated here to prevent drift:
 //!
 //! 1. **Discovery** — locate the include/lib dirs for OCCT, Gmsh, and OpenVDB,
-//!    honouring environment overrides and falling back to a canonical search
-//!    list. Previously duplicated 3× across `reify-kernel-{occt,gmsh,openvdb}/
-//!    build.rs`.
+//!    honouring environment overrides and falling back to each dep's ordered
+//!    candidate list. Each dep's discovery data is its row in
+//!    `native-deps.toml`, decoded once.
 //!
 //! 2. **RPATH propagation to binary packages** — Cargo's `rustc-link-arg`
 //!    directive only applies to bins/tests in the *same* package emitting it,
@@ -17,36 +17,22 @@
 //! See `crates/reify-cli/build.rs` and `gui/src-tauri/build.rs` for the
 //! binary-side usage.
 
+use std::collections::BTreeMap;
 use std::env;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
+
+use serde::Deserialize;
 
 /// The native libraries Reify binaries may link against.
 ///
-/// INVARIANT: every variant listed here MUST have a corresponding gate arm in
-/// `scripts/check-manifold-deps.sh` (a `# BEGIN <dep>-candidates` marker block
-/// plus the presence check that consumes it). A variant WITHOUT one ships a
-/// SILENT stub kernel — that script's header states the rule under
-/// "THE SILENT-VACUITY RULE".
-///
-/// `tests/infra/test_occt_deps_preflight.sh` pins that invariant in two parts,
-/// because a DECLARED arm and a GATING arm are not the same thing. The lexical
-/// half compares this variant list against that script's marker-block names as
-/// SETS. The behavioural half then drives the guard once per derived dep with
-/// that dep's lib dir (then its include dir) pointed at an EMPTY fixture and
-/// every other dep healthy, and asserts the guard REDS naming that dep's own
-/// declared sentinel — so a marker block that no presence check consumes fails
-/// there rather than passing the set comparison and shipping ungated.
-///
-/// The BEGIN/END marker comments below exist only to make this body
-/// machine-readable for that check — the enum stays the single source of
-/// truth, and nothing is duplicated anywhere.
+/// Each variant's discovery data is its row in `native-deps.toml`, keyed by
+/// [`NativeDep::row_key`]; that file's header names its readers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NativeDep {
-    // BEGIN native-dep-variants
     Occt,
     Gmsh,
     OpenVdb,
-    // END native-dep-variants
 }
 
 /// Resolved location of a native library's headers and shared objects.
@@ -56,103 +42,117 @@ pub struct LibLoc {
     pub include_dir: PathBuf,
 }
 
+/// Repo-relative path of the table, for panic messages.
+const TABLE_FILE: &str = "crates/reify-build-utils/native-deps.toml";
+const TABLE_TOML: &str = include_str!("../native-deps.toml");
+
+/// One `native-deps.toml` row.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DepRow {
+    include_env: String,
+    lib_env: String,
+    cfg: String,
+    include_candidates: Vec<String>,
+    lib_candidates: Vec<String>,
+    include_sentinel: String,
+    lib_sentinel: String,
+    snap: Option<SnapFallback>,
+    #[serde(default)]
+    xde_toolkits: Vec<String>,
+}
+
+/// Numbered `<root>/<rev>/<subdir>` installs, scanned after the candidates.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SnapFallback {
+    root: String,
+    include_subdir: String,
+    lib_subdir: String,
+}
+
+type Table = BTreeMap<String, DepRow>;
+
+/// The table is repo-owned data, so a malformed one is a bug rather than an
+/// environment: panic naming the file.
+fn parse_table(text: &str) -> Table {
+    toml::from_str(text).unwrap_or_else(|err| panic!("{TABLE_FILE}: {err}"))
+}
+
+fn table() -> &'static Table {
+    static TABLE: OnceLock<Table> = OnceLock::new();
+    TABLE.get_or_init(|| parse_table(TABLE_TOML))
+}
+
+fn lookup<'t>(table: &'t Table, key: &str) -> &'t DepRow {
+    table
+        .get(key)
+        .unwrap_or_else(|| panic!("{TABLE_FILE}: no [{key}] row"))
+}
+
+/// Which half of a dep a lookup is about.
+#[derive(Clone, Copy)]
+enum DirKind {
+    Include,
+    Lib,
+}
+
+impl DepRow {
+    fn env(&self, kind: DirKind) -> &str {
+        match kind {
+            DirKind::Include => &self.include_env,
+            DirKind::Lib => &self.lib_env,
+        }
+    }
+
+    fn candidates(&self, kind: DirKind) -> &[String] {
+        match kind {
+            DirKind::Include => &self.include_candidates,
+            DirKind::Lib => &self.lib_candidates,
+        }
+    }
+
+    fn sentinel(&self, kind: DirKind) -> &str {
+        match kind {
+            DirKind::Include => &self.include_sentinel,
+            DirKind::Lib => &self.lib_sentinel,
+        }
+    }
+}
+
+impl SnapFallback {
+    fn subdir(&self, kind: DirKind) -> &str {
+        match kind {
+            DirKind::Include => &self.include_subdir,
+            DirKind::Lib => &self.lib_subdir,
+        }
+    }
+}
+
 impl NativeDep {
-    /// Env var that overrides the include search list, if set.
-    fn include_env(self) -> &'static str {
+    /// The variant's row key in `native-deps.toml`: the one variant-to-row
+    /// mapping.
+    fn row_key(self) -> &'static str {
         match self {
-            NativeDep::Occt => "OCCT_INCLUDE_DIR",
-            NativeDep::Gmsh => "GMSH_INCLUDE_DIR",
-            NativeDep::OpenVdb => "OPENVDB_INCLUDE_DIR",
+            NativeDep::Occt => "occt",
+            NativeDep::Gmsh => "gmsh",
+            NativeDep::OpenVdb => "openvdb",
         }
     }
 
-    /// Env var that overrides the lib search list, if set.
-    fn lib_env(self) -> &'static str {
-        match self {
-            NativeDep::Occt => "OCCT_LIB_DIR",
-            NativeDep::Gmsh => "GMSH_LIB_DIR",
-            NativeDep::OpenVdb => "OPENVDB_LIB_DIR",
-        }
+    fn row(self) -> &'static DepRow {
+        lookup(table(), self.row_key())
     }
 
-    /// Canonical include-dir candidates in priority order.
-    ///
-    /// ALL THREE arms below are MIRRORED verbatim — order included — in the
-    /// `occt-candidates`, `gmsh-candidates` and `openvdb-candidates` marker
-    /// blocks of `scripts/check-manifold-deps.sh`, whose preflight has to
-    /// reach the same verdict this function feeds into `has_occt` /
-    /// `has_gmsh` / `has_openvdb`. This side stays the single source of truth;
-    /// parity is pinned per-dep by `tests/infra/test_occt_deps_preflight.sh`,
-    /// so an edit here without the matching bash edit fails that guard rather
-    /// than silently leaving the gate and the build disagreeing.
-    fn include_candidates(self) -> &'static [&'static str] {
-        match self {
-            NativeDep::Occt => &[
-                "/usr/include/opencascade",
-                "/usr/local/include/opencascade",
-                "/snap/freecad/current/usr/include/opencascade",
-            ],
-            NativeDep::Gmsh => &["/opt/reify-deps/include", "/usr/include", "/usr/local/include"],
-            NativeDep::OpenVdb => {
-                &["/opt/reify-deps/include", "/usr/local/include", "/usr/include"]
-            }
-        }
+    /// The toolkits `reify-kernel-occt` links for the STEP assembly reader
+    /// after its base list: the row's `xde_toolkits`, empty when it lists none.
+    pub fn xde_toolkits(self) -> &'static [String] {
+        &self.row().xde_toolkits
     }
 
-    /// Canonical lib-dir candidates in priority order.
-    ///
-    /// OCCT's list intentionally lists system paths *before* `/opt/reify-deps/lib`
-    /// because the conda env ships OCCT 7.9 (a transitive dep of gmsh=4.15.2)
-    /// while we want to link the system OCCT 7.8 — and gmsh/openvdb list
-    /// `/opt/reify-deps/lib` first because that's where their canonical install
-    /// lives via `scripts/setup-dev.sh`.
-    ///
-    /// Those orderings are precisely what the bash mirrors in
-    /// `scripts/check-manifold-deps.sh`'s `occt-candidates`,
-    /// `gmsh-candidates` and `openvdb-candidates` blocks must preserve, which
-    /// is why `tests/infra/test_occt_deps_preflight.sh` compares each pair of
-    /// lists order-sensitively. Note OpenVdb's order is not Gmsh's either
-    /// (`/usr/local/lib` ahead of `/usr/lib/x86_64-linux-gnu`, where Gmsh has
-    /// the reverse), so the mirrors are per-dep copies and must not be
-    /// collapsed into one shared list. See the note on the include-dir
-    /// candidates above.
-    fn lib_candidates(self) -> &'static [&'static str] {
-        match self {
-            NativeDep::Occt => &[
-                "/usr/lib/x86_64-linux-gnu",
-                "/usr/lib",
-                "/usr/local/lib",
-                "/snap/freecad/current/usr/lib",
-            ],
-            NativeDep::Gmsh => &[
-                "/opt/reify-deps/lib",
-                "/usr/lib/x86_64-linux-gnu",
-                "/usr/lib",
-                "/usr/local/lib",
-            ],
-            NativeDep::OpenVdb => {
-                &["/opt/reify-deps/lib", "/usr/local/lib", "/usr/lib/x86_64-linux-gnu", "/usr/lib"]
-            }
-        }
-    }
-
-    /// Sentinel header used to confirm an include-dir candidate.
-    fn include_sentinel(self) -> &'static str {
-        match self {
-            NativeDep::Occt => "Standard_Failure.hxx",
-            NativeDep::Gmsh => "gmshc.h",
-            NativeDep::OpenVdb => "openvdb/openvdb.h",
-        }
-    }
-
-    /// Sentinel shared-object name (canonical symlink) used to confirm a
-    /// lib-dir candidate.
-    fn lib_sentinel(self) -> &'static str {
-        match self {
-            NativeDep::Occt => "libTKernel.so",
-            NativeDep::Gmsh => "libgmsh.so",
-            NativeDep::OpenVdb => "libopenvdb.so",
-        }
+    /// The `has_<dep>` cfg a kernel sets when this dep resolves.
+    pub fn cfg(self) -> &'static str {
+        &self.row().cfg
     }
 }
 
@@ -162,60 +162,48 @@ impl NativeDep {
 /// Returns `None` if neither is found — kernel adapters use this to enter
 /// stub-only mode without failing the build.
 pub fn find(dep: NativeDep) -> Option<LibLoc> {
-    let include_dir = find_dir(dep.include_env(), dep.include_candidates(), dep.include_sentinel());
-    let lib_dir = find_dir(dep.lib_env(), dep.lib_candidates(), dep.lib_sentinel());
+    let row = dep.row();
+    let include_dir = find_dir(row, DirKind::Include);
+    let lib_dir = find_dir(row, DirKind::Lib);
     match (include_dir, lib_dir) {
         (Some(include_dir), Some(lib_dir)) => Some(LibLoc { lib_dir, include_dir }),
         _ => None,
     }
 }
 
-fn find_dir(env_var: &str, candidates: &[&str], sentinel: &str) -> Option<PathBuf> {
-    find_dir_with_override(env::var(env_var).ok().as_deref(), candidates, sentinel)
+fn find_dir(row: &DepRow, kind: DirKind) -> Option<PathBuf> {
+    resolve_dir(env::var(row.env(kind)).ok().as_deref(), row, kind)
 }
 
 /// Resolution core of [`find_dir`] with the override passed in as a value, so
 /// precedence is testable without `env::set_var` racing libtest's threads.
 ///
-/// An EMPTY override counts as UNSET. `env::var(..).ok()` hands back
-/// `Some("")` for an exported-but-empty var, and taking that on trust would
-/// resolve the dir to the empty path, still set `has_occt`, and link against
-/// nothing — while `scripts/check-manifold-deps.sh`'s OCCT preflight, reading
-/// the same environment, fell through to the candidate list and went green
-/// describing a resolution this function would not perform. Both halves of
-/// that mirror now agree; the bash half is the `[ -n "$override" ]` test in
-/// that script's `dep_find_dir`.
-fn find_dir_with_override(
-    override_dir: Option<&str>,
-    candidates: &[&str],
-    sentinel: &str,
-) -> Option<PathBuf> {
+/// A non-empty override wins, taken on trust. An EMPTY one counts as UNSET:
+/// `env::var(..).ok()` hands back `Some("")` for an exported-but-empty var,
+/// and trusting it would resolve the dir to the empty path, still set
+/// `has_<dep>`, and link against nothing. Otherwise the first candidate
+/// holding the sentinel wins, then — only for a row with a snap table — the
+/// first `<root>/<entry>/<subdir>` holding it.
+fn resolve_dir(override_dir: Option<&str>, row: &DepRow, kind: DirKind) -> Option<PathBuf> {
     if let Some(dir) = override_dir.filter(|d| !d.is_empty()) {
         return Some(PathBuf::from(dir));
     }
-    for p in candidates {
-        let path = PathBuf::from(p);
-        if path.join(sentinel).exists() {
-            return Some(path);
-        }
-    }
-    // OCCT's snap fallback: numbered /snap/freecad/<rev>/ directories.
-    let snap_subdir = match sentinel {
-        "Standard_Failure.hxx" => Some("usr/include/opencascade"),
-        "libTKernel.so" => Some("usr/lib"),
-        _ => None,
-    };
-    if let Some(subdir) = snap_subdir
-        && let Ok(entries) = std::fs::read_dir("/snap/freecad")
+    let sentinel = row.sentinel(kind);
+    let holds_sentinel = |dir: &Path| dir.join(sentinel).exists();
+    if let Some(dir) = row
+        .candidates(kind)
+        .iter()
+        .map(PathBuf::from)
+        .find(|dir| holds_sentinel(dir))
     {
-        for entry in entries.flatten() {
-            let candidate = entry.path().join(subdir);
-            if candidate.join(sentinel).exists() {
-                return Some(candidate);
-            }
-        }
+        return Some(dir);
     }
-    None
+    let snap = row.snap.as_ref()?;
+    std::fs::read_dir(&snap.root)
+        .ok()?
+        .flatten()
+        .map(|entry| entry.path().join(snap.subdir(kind)))
+        .find(|dir| holds_sentinel(dir))
 }
 
 /// Probe for `dep`; if its lib_dir is found, emit
@@ -229,8 +217,9 @@ fn find_dir_with_override(
 /// across package boundaries, so workspace binaries (`reify`, `reify-gui`)
 /// would otherwise launch without RUNPATH and rely on the system ld.so cache.
 pub fn emit_rpath_for_bins(dep: NativeDep) -> bool {
-    println!("cargo:rerun-if-env-changed={}", dep.lib_env());
-    if let Some(lib_dir) = find_dir(dep.lib_env(), dep.lib_candidates(), dep.lib_sentinel()) {
+    let row = dep.row();
+    println!("cargo:rerun-if-env-changed={}", row.lib_env);
+    if let Some(lib_dir) = find_dir(row, DirKind::Lib) {
         println!("cargo:rustc-link-arg-bins=-Wl,-rpath,{}", lib_dir.display());
         true
     } else {
@@ -254,8 +243,9 @@ pub fn emit_rpath_for_bins(dep: NativeDep) -> bool {
 /// also applies to those bins; that's identical in effect to
 /// [`emit_rpath_for_bins`] and harmless when both are called.
 pub fn emit_rpath_for_tests(dep: NativeDep) -> bool {
-    println!("cargo:rerun-if-env-changed={}", dep.lib_env());
-    if let Some(lib_dir) = find_dir(dep.lib_env(), dep.lib_candidates(), dep.lib_sentinel()) {
+    let row = dep.row();
+    println!("cargo:rerun-if-env-changed={}", row.lib_env);
+    if let Some(lib_dir) = find_dir(row, DirKind::Lib) {
         println!("cargo:rustc-link-arg=-Wl,-rpath,{}", lib_dir.display());
         true
     } else {
@@ -276,8 +266,8 @@ fn tbb_pin_lib() -> PathBuf {
 /// Probe for the tbb-pin dir; if present, emit directives so the calling
 /// package's bin targets carry a DIRECT `NEEDED libtbb.so.12`, resolved via
 /// [`TBB_PIN_DIR`] prepended FIRST in RUNPATH. Fail-soft: no-op (returns
-/// `false`, mirroring [`find_dir`]'s posture) when the pin dir is absent,
-/// so stub-only builds (no `/opt/reify-deps` host) still compile.
+/// `false`, the same posture as [`find`] returning `None`) when the pin dir
+/// is absent, so stub-only builds (no `/opt/reify-deps` host) still compile.
 ///
 /// Mechanism A″ (task #5192): a workspace binary's own RUNPATH can never
 /// redirect the *transitive* NEEDED `libtbb.so.12` pulled in by system
@@ -299,7 +289,7 @@ pub fn emit_tbb_pin_for_bins() -> bool {
 
 /// Same as [`emit_tbb_pin_for_bins`] but emits the unscoped
 /// `cargo:rustc-link-arg` form so test/example/lib-unittest bins are
-/// covered too — mirrors [`emit_rpath_for_tests`].
+/// covered too, as [`emit_rpath_for_tests`] does for the lib dir.
 ///
 /// For packages with bins of their own (`reify-cli`, `reify-gui`) that call
 /// both this and [`emit_tbb_pin_for_bins`], the bin target receives the
@@ -410,8 +400,8 @@ mod tests {
     fn variant_set_equals_table_row_set() {
         assert!(EVERY_VARIANT.iter().all(|dep| is_listed(*dep)));
 
-        let table_rows: BTreeSet<&str> =
-            parse_table(TABLE_TOML).keys().map(String::as_str).collect();
+        let table = parse_table(TABLE_TOML);
+        let table_rows: BTreeSet<&str> = table.keys().map(String::as_str).collect();
         let variant_rows: BTreeSet<&str> = EVERY_VARIANT.iter().map(|dep| dep.row_key()).collect();
         assert_eq!(table_rows, variant_rows);
 
@@ -458,11 +448,16 @@ mod tests {
         let mut row = NativeDep::Occt.row().clone();
         row.include_candidates = vec!["/definitely/does/not/exist/include".to_string()];
         row.lib_candidates = vec!["/definitely/does/not/exist/lib".to_string()];
-        row.snap.as_mut().expect("the occt row carries a snap table").root =
-            snap_root.to_string_lossy().into_owned();
+        row.snap
+            .as_mut()
+            .expect("the occt row carries a snap table")
+            .root = snap_root.to_string_lossy().into_owned();
         let snap = row.snap.as_ref().unwrap();
         for kind in [DirKind::Include, DirKind::Lib] {
-            let sentinel = snap_root.join("4242").join(snap.subdir(kind)).join(row.sentinel(kind));
+            let sentinel = snap_root
+                .join("4242")
+                .join(snap.subdir(kind))
+                .join(row.sentinel(kind));
             fs::create_dir_all(sentinel.parent().unwrap()).unwrap();
             fs::write(&sentinel, b"").unwrap();
         }
@@ -512,7 +507,9 @@ mod tests {
     /// A row whose lib half probes `lib_candidates` for `libgmsh.so`, with its
     /// override env var named so that nothing sets it.
     fn fixture_row(lib_candidates: &[&str]) -> DepRow {
-        let mut row = parse_table(&minimal_row_toml("fixture")).remove("fixture").unwrap();
+        let mut row = parse_table(&minimal_row_toml("fixture"))
+            .remove("fixture")
+            .unwrap();
         row.lib_candidates = lib_candidates.iter().map(|c| c.to_string()).collect();
         row.lib_sentinel = "libgmsh.so".to_string();
         row

@@ -120,10 +120,6 @@ fn main() {
         "TKShHealing",
         "TKBool",
         "TKOffset",
-        // BEGIN occt-xde-toolkits
-        "TKXCAF",
-        "TKLCAF",
-        // END occt-xde-toolkits
     ];
 
     // Pin OCCT linkage to the exact SONAME filename in `lib_dir` instead of
@@ -159,7 +155,8 @@ fn main() {
         );
         "7.8".to_string()
     });
-    for lib in &occt_libs {
+    let xde_toolkits = NativeDep::Occt.xde_toolkits().iter().map(String::as_str);
+    for lib in occt_libs.into_iter().chain(xde_toolkits) {
         // `dylib:+verbatim` passes the literal name to the linker without the
         // usual `lib<NAME>` / `.so` rewrites — ld then accepts the exact
         // filename match. Without `+verbatim`, rustc rejects the leading `:`
