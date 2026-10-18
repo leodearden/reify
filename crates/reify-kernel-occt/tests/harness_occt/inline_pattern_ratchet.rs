@@ -7,7 +7,8 @@
 //! edit in the same diff; there is no allow-comment escape hatch. Later leaves
 //! (γ2, ε, θ, δ) add rows here. Equal validation messages across entry points
 //! are a behavioural property, guarded by `op_args_entry_point_parity.rs`, not
-//! a row here.
+//! a row here. γ2's rows (iv)–(vi) share one homed-uses mechanism: named
+//! identifiers used only inside their home fns, every home seen using one.
 //!
 //! The production view comes from a whole-file lexer modelled on
 //! `crates/reify-builtins/tests/common/seed_name_scan.rs` (test-private to that
@@ -577,10 +578,16 @@ fn is_open_coded_finite_positive(window: &str) -> bool {
 }
 
 fn has_ident(text: &str, ident: &str) -> bool {
+    ident_offsets(text, ident).next().is_some()
+}
+
+/// Byte offsets where `ident` occurs as a whole token.
+fn ident_offsets<'t>(text: &'t str, ident: &'t str) -> impl Iterator<Item = usize> + 't {
     let bytes = text.as_bytes();
-    text.match_indices(ident).any(|(at, _)| {
+    text.match_indices(ident).filter_map(move |(at, _)| {
         let end = at + ident.len();
-        starts_token(bytes, at) && bytes.get(end).is_none_or(|&b| !is_ident_byte(b))
+        let whole = starts_token(bytes, at) && bytes.get(end).is_none_or(|&b| !is_ident_byte(b));
+        whole.then_some(at)
     })
 }
 
@@ -797,6 +804,144 @@ fn row_ii_handle_as_f64_within_baseline() {
         live.len(),
         render(&live)
     );
+}
+
+// ── homed uses: rows (iv)–(vi) ──────────────────────────────────────────────
+
+/// A row whose identifiers may be used only inside their home fns. A use is a
+/// whole-token occurrence in the production view that does not name a `fn`
+/// declaration, so a call and a bare path (a fn-pointer table entry) both
+/// count. Every home must be seen using one: a moved home or a reshaped FFI
+/// reds the row instead of leaving it matching nothing.
+struct HomedRow {
+    id: &'static str,
+    idents: &'static [&'static str],
+    /// When set, only a use immediately preceded by this text counts.
+    receiver: Option<&'static str>,
+    /// `(file basename, fn)` pairs where a use is at home.
+    homes: &'static [(&'static str, &'static str)],
+    baseline: usize,
+    remedy: &'static str,
+}
+
+#[derive(Debug, Default)]
+struct HomedScan {
+    live: Vec<Finding>,
+    homes_seen: Vec<(String, String)>,
+}
+
+/// Is the token at `at` the name a `fn` keyword declares?
+fn is_declared_name(text: &str, at: usize) -> bool {
+    let before = text[..at].trim_end();
+    before
+        .strip_suffix("fn")
+        .is_some_and(|rest| starts_token(before.as_bytes(), rest.len()))
+}
+
+fn has_receiver(text: &str, at: usize, receiver: &str) -> bool {
+    text[..at]
+        .strip_suffix(receiver)
+        .is_some_and(|rest| starts_token(text.as_bytes(), rest.len()))
+}
+
+/// Byte offsets of every use of the row's identifiers in `text`, in order.
+fn use_offsets(row: &HomedRow, text: &str) -> Vec<usize> {
+    let mut offsets: Vec<usize> = row
+        .idents
+        .iter()
+        .flat_map(|ident| ident_offsets(text, ident))
+        .filter(|&at| !is_declared_name(text, at))
+        .filter(|&at| row.receiver.is_none_or(|r| has_receiver(text, at, r)))
+        .collect();
+    offsets.sort_unstable();
+    offsets
+}
+
+fn homed_scan(row: &HomedRow, label: &str, src: &str) -> HomedScan {
+    let skeleton = production_view(src).skeleton_lines();
+    let scopes = enclosing_fns(&skeleton);
+    let text = skeleton.join("\n");
+    let source_lines: Vec<&str> = src.lines().collect();
+    let base = basename(label);
+    let mut scan = HomedScan::default();
+    for at in use_offsets(row, &text) {
+        let line = text[..at].matches('\n').count() + 1;
+        let home = scopes[line - 1]
+            .as_deref()
+            .filter(|&f| row.homes.iter().any(|&home| home == (base, f)));
+        match home {
+            Some(f) => {
+                let seen = (base.to_owned(), f.to_owned());
+                if !scan.homes_seen.contains(&seen) {
+                    scan.homes_seen.push(seen);
+                }
+            }
+            None => scan.live.push(Finding {
+                file: label.to_owned(),
+                line,
+                text: source_lines[line - 1].trim().to_owned(),
+            }),
+        }
+    }
+    scan
+}
+
+/// The row's homes absent from `seen`, as `file::fn`.
+fn unseen_homes(row: &HomedRow, seen: &[(String, String)]) -> Vec<String> {
+    row.homes
+        .iter()
+        .filter(|&&(file, f)| {
+            !seen
+                .iter()
+                .any(|(s_file, s_fn)| s_file == file && s_fn == f)
+        })
+        .map(|(file, f)| format!("{file}::{f}"))
+        .collect()
+}
+
+fn assert_homed_row(row: &HomedRow) {
+    let mut scan = HomedScan::default();
+    for (label, src) in crate_sources() {
+        let file_scan = homed_scan(row, &label, &src);
+        scan.live.extend(file_scan.live);
+        scan.homes_seen.extend(file_scan.homes_seen);
+    }
+    assert!(
+        within_baseline(scan.live.len(), row.baseline),
+        "row ({}): {} use(s) of {:?} outside their home(s) > baseline {}. Instead, {}; a new \
+         instance needs a visible baseline edit:\n{}",
+        row.id,
+        scan.live.len(),
+        row.idents,
+        row.baseline,
+        row.remedy,
+        render(&scan.live)
+    );
+    let unseen = unseen_homes(row, &scan.homes_seen);
+    assert!(
+        unseen.is_empty(),
+        "row ({}): home(s) {} no longer use any of {:?}, so the row may be matching nothing; \
+         move or retire the row in the same diff that moves the home or reshapes the FFI",
+        row.id,
+        unseen.join(", "),
+        row.idents
+    );
+}
+
+// ── row (iv): sweep-history decode ──────────────────────────────────────────
+
+const ROW_IV: HomedRow = HomedRow {
+    id: "iv",
+    idents: &["sweep_op_history_face_modified"],
+    receiver: None,
+    homes: &[("history_decode.rs", "decode_sweep_history")],
+    baseline: 0,
+    remedy: "decode through history_decode::decode_sweep_history",
+};
+
+#[test]
+fn row_iv_sweep_history_decode_within_baseline() {
+    assert_homed_row(&ROW_IV);
 }
 
 // ── self-tests: scanner ─────────────────────────────────────────────────────
@@ -1216,4 +1361,156 @@ fn row_ii_is_scoped_to_handle_rs() {
     let src = "fn decode(v: &Value) -> Option<f64> {\n    v.as_f64()\n}\n";
     assert_eq!(row_ii_count("src/handle.rs", src), 1);
     assert_eq!(row_ii_count("src/lib.rs", src), 0);
+}
+
+// ── self-tests: homed uses and row (iv) ─────────────────────────────────────
+
+fn homed_live_lines(row: &HomedRow, label: &str, src: &str) -> Vec<usize> {
+    homed_scan(row, label, src)
+        .live
+        .iter()
+        .map(|f| f.line)
+        .collect()
+}
+
+#[test]
+fn row_iv_flags_a_decode_outside_its_home_and_clears_at_home() {
+    let copied = snippet(
+        r#"
+fn extrude_with_history(&mut self) -> R {
+    let face_modified =
+        decode_history_records(ffi::ffi::sweep_op_history_face_modified(&history));
+}
+"#,
+    );
+    let scan = homed_scan(&ROW_IV, "src/lib.rs", copied);
+    assert_eq!(
+        scan.live.iter().map(|f| f.line).collect::<Vec<_>>(),
+        vec![3]
+    );
+    assert!(scan.homes_seen.is_empty(), "{scan:?}");
+
+    let homed = snippet(
+        r#"
+pub(crate) fn decode_sweep_history(
+    mut history: cxx::UniquePtr<ffi::SweepOpHistory>,
+) -> (cxx::UniquePtr<ffi::OcctShape>, SweepOpHistoryRecords) {
+    let face_modified = decode_history_records(ffi::sweep_op_history_face_modified(&history));
+}
+"#,
+    );
+    let scan = homed_scan(&ROW_IV, "src/history_decode.rs", homed);
+    assert!(scan.live.is_empty(), "{scan:?}");
+    assert_eq!(
+        unseen_homes(&ROW_IV, &scan.homes_seen),
+        Vec::<String>::new()
+    );
+}
+
+#[test]
+fn row_iv_does_not_count_the_ffi_declaration() {
+    let src = snippet(
+        r#"
+#[cxx::bridge]
+mod ffi {
+    unsafe extern "C++" {
+        fn sweep_op_history_face_modified(history: &SweepOpHistory) -> Vec<u32>;
+        pub(crate) fn
+            sweep_op_history_face_modified(history: &SweepOpHistory) -> Vec<u32>;
+    }
+}
+"#,
+    );
+    assert_eq!(
+        homed_live_lines(&ROW_IV, "src/ffi.rs", src),
+        Vec::<usize>::new()
+    );
+}
+
+#[test]
+fn row_iv_counts_a_fn_pointer_path_even_in_the_home_file() {
+    let src = snippet(
+        r#"
+const SWEEP_OP_ACCESSORS: Accessors<ffi::SweepOpHistory> = Accessors {
+    face_modified: ffi::sweep_op_history_face_modified,
+};
+"#,
+    );
+    assert_eq!(
+        homed_live_lines(&ROW_IV, "src/history_decode.rs", src),
+        vec![2]
+    );
+}
+
+#[test]
+fn row_iv_ignores_comments_strings_and_test_code() {
+    let src = snippet(
+        r#"
+/// Reads `sweep_op_history_face_modified` first.
+fn extrude_with_history() {
+    // ffi::ffi::sweep_op_history_face_modified(&history)
+    let _hint = "sweep_op_history_face_modified";
+}
+#[cfg(all(test, has_occt))]
+mod tests {
+    fn t(h: &SweepOpHistory) -> Vec<u32> {
+        ffi::ffi::sweep_op_history_face_modified(h)
+    }
+}
+"#,
+    );
+    assert_eq!(
+        homed_live_lines(&ROW_IV, "src/lib.rs", src),
+        Vec::<usize>::new()
+    );
+}
+
+#[test]
+fn row_iv_counts_whole_tokens_only() {
+    let src = snippet(
+        r#"
+fn extrude_with_history() {
+    let _n = ffi::ffi::sweep_op_history_face_modified_count(&history);
+    let _m = my_sweep_op_history_face_modified(&history);
+}
+"#,
+    );
+    assert_eq!(
+        homed_live_lines(&ROW_IV, "src/lib.rs", src),
+        Vec::<usize>::new()
+    );
+}
+
+#[test]
+fn row_iv_home_is_the_fn_in_history_decode_rs_only() {
+    let src = snippet(
+        r#"
+fn decode_sweep_history(history: UniquePtr<SweepOpHistory>) -> R {
+    decode_history_records(ffi::ffi::sweep_op_history_face_modified(&history))
+}
+"#,
+    );
+    let scan = homed_scan(&ROW_IV, "src/lib.rs", src);
+    assert_eq!(scan.live.len(), 1, "{scan:?}");
+    assert_eq!(
+        unseen_homes(&ROW_IV, &scan.homes_seen),
+        vec!["history_decode.rs::decode_sweep_history".to_owned()]
+    );
+}
+
+#[test]
+fn row_iv_reports_a_home_that_uses_none_of_its_idents_as_unseen() {
+    let src = snippet(
+        r#"
+pub(crate) fn decode_sweep_history(history: UniquePtr<SweepOpHistory>) -> R {
+    decode_with(&SWEEP_OP_ACCESSORS, history)
+}
+"#,
+    );
+    let scan = homed_scan(&ROW_IV, "src/history_decode.rs", src);
+    assert!(scan.live.is_empty(), "{scan:?}");
+    assert_eq!(
+        unseen_homes(&ROW_IV, &scan.homes_seen),
+        vec!["history_decode.rs::decode_sweep_history".to_owned()]
+    );
 }
