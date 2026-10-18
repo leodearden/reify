@@ -173,6 +173,62 @@ fn annotation_generic_enum_too_many_args_errors() {
     );
 }
 
+/// Error-severity diagnostic messages from compiling `source` against the stdlib.
+fn error_messages(source: &str) -> Vec<String> {
+    compile_with_stdlib_helper(source)
+        .diagnostics
+        .into_iter()
+        .filter(|d| d.severity == Severity::Error)
+        .map(|d| d.message)
+        .collect()
+}
+
+fn assert_some_error_contains(source: &str, needle: &str, context: &str) {
+    let errors = error_messages(source);
+    assert!(
+        errors.iter().any(|m| m.contains(needle)),
+        "{context}: expected an error containing {needle:?}; got: {errors:?}"
+    );
+}
+
+fn assert_no_errors(source: &str, context: &str) {
+    let errors = error_messages(source);
+    assert!(
+        errors.is_empty(),
+        "{context}: expected no errors; got: {errors:?}"
+    );
+}
+
+/// R2(b): a bare generic enum in a trait-member annotation is an arity error.
+#[test]
+fn trait_member_bare_generic_enum_errors() {
+    let source = format!("{RESULT_ENUM_SOURCE}\ntrait HasR {{ param r : Result }}");
+    assert_some_error_contains(
+        &source,
+        "enum `Result` expects 2 type arguments, found 0",
+        "trait member `param r : Result`",
+    );
+}
+
+/// R3: defaults fill a bare annotation only when EVERY type parameter has one.
+#[test]
+fn trait_member_bare_enum_with_partial_defaults_errors() {
+    let source = "enum Duo<A, B = String> { Both { a: A, b: B } }\ntrait HasD { param d : Duo }";
+    assert_some_error_contains(
+        source,
+        "enum `Duo` expects 2 type arguments, found 0",
+        "trait member `param d : Duo` with only `B` defaulted",
+    );
+}
+
+/// R3: a bare enum whose every type parameter is defaulted is accepted.
+#[test]
+fn trait_member_bare_enum_with_all_defaults_is_accepted() {
+    let source =
+        "enum Wrapper<T = Length> { Item { value: T }, Empty }\ntrait HasW { param w : Wrapper }";
+    assert_no_errors(source, "trait member `param w : Wrapper` with `T = Length`");
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // S3 — RED: binder substitution (S4 makes these GREEN)
 // ═══════════════════════════════════════════════════════════════════════════════
