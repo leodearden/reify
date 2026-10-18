@@ -4,11 +4,10 @@ Five invocation modes. All modes write a per-run JSON artifact; `--format markdo
 
 > All argv paths use `$REPO_ROOT/` — see `references/cli-invocation.md` §1 for the pre-flight that resolves it.
 >
-> Every invocation below assumes `$SNAPSHOT` has already been materialized
-> per `references/cli-invocation.md` §2 (an MCP-tool call from the LLM
-> followed by a `jq` filter step — **not** a single shell pipeline). The
-> per-mode `reify-audit` argvs below are the bash-side invocation only; do
-> not re-inline the snapshot setup here. Single point of truth: §2.
+> `reify-audit` loads the task corpus itself, live from fused-memory, so
+> there is no setup step before these argvs. The stderr capture, cleanup and
+> optional `--fused-memory-url` live in `references/cli-invocation.md` §2;
+> the per-mode argvs below show only what differs between modes.
 
 ---
 
@@ -16,12 +15,11 @@ Five invocation modes. All modes write a per-run JSON artifact; `--format markdo
 
 **When to use:** Routine periodic sweep — no specific task or date in mind.
 
-**Argv produced** (after `$SNAPSHOT` is materialized per `cli-invocation.md` §2):
+**Argv produced** (stderr captured per `cli-invocation.md` §2):
 
 ```bash
 reify-audit \
   --since <14d-ago-iso> \
-  --tasks-file "$SNAPSHOT" \
   --runs-db    "$REPO_ROOT/data/orchestrator/runs.db" \
   --project-root "$REPO_ROOT"
 ```
@@ -42,12 +40,11 @@ reify-audit \
 
 **When to use:** User says `/audit --task 3242` or wants to audit a specific task.
 
-**Argv produced** (after `$SNAPSHOT` is materialized per `cli-invocation.md` §2):
+**Argv produced** (stderr captured per `cli-invocation.md` §2):
 
 ```bash
 reify-audit \
   --task <id> \
-  --tasks-file "$SNAPSHOT" \
   --runs-db    "$REPO_ROOT/data/orchestrator/runs.db" \
   --project-root "$REPO_ROOT"
 ```
@@ -70,12 +67,11 @@ reify-audit \
 
 **When to use:** User wants to sweep a custom date range, e.g. `/audit --since 2026-04-01`.
 
-**Argv produced** (after `$SNAPSHOT` is materialized per `cli-invocation.md` §2):
+**Argv produced** (stderr captured per `cli-invocation.md` §2):
 
 ```bash
 reify-audit \
   --since <iso-date> \
-  --tasks-file "$SNAPSHOT" \
   --runs-db    "$REPO_ROOT/data/orchestrator/runs.db" \
   --project-root "$REPO_ROOT"
 ```
@@ -96,13 +92,12 @@ reify-audit \
 
 **When to use:** User wants to run only one detector, e.g. `/audit --pattern P5`, `/audit --pattern PTODO`, `/audit --pattern PDEAD`, or `/audit --pattern PDOCCOVER`.
 
-**Argv produced** (after `$SNAPSHOT` is materialized per `cli-invocation.md` §2):
+**Argv produced** (stderr captured per `cli-invocation.md` §2):
 
 ```bash
 reify-audit \
   --since <14d-ago-iso> \
   --pattern <P1|P2|P5|PTODO|PDSSENTINEL|PDEAD|PUNTESTED|PLAYER|PDIAG|PDOCCOVER|PDCHECK|PCITE|PPRDSTATUS|PLINECITE> \
-  --tasks-file "$SNAPSHOT" \
   --runs-db    "$REPO_ROOT/data/orchestrator/runs.db" \
   --project-root "$REPO_ROOT"
 ```
@@ -173,7 +168,7 @@ PPRDSTATUS (`--pattern PPRDSTATUS`) detects PRD status-prose drift: a PRD's own 
 - `cite-status-contradiction:` — in a PRD whose header is not terminal, a canonical `#NNNN` cite is immediately followed by a status parenthetical (`` #4876 (`deferred`, high) ``) whose class (live, done or cancelled) contradicts the cited task. Dated parentheticals (an ISO date, `as of`, `at freeze`), unknown ids and live-vs-live differences are silent.
 
 - **Scope:** tracked `docs/prds/**.md`, minus `*.capability-manifest.md`. `task_id` is the PRD's repo path, so the lane ignores `--task` and `--since`.
-- **Task source:** the loaded task corpus (`--tasks-file` snapshot, or the fused-memory live loader), never `tasks.db`. An unreachable fused-memory therefore exits 125 like every sweep. An empty corpus leaves nothing to check: `--pattern PPRDSTATUS` alone refuses it with exit 125 and no JSON array, while a mixed run prints `reify-audit: PPRDSTATUS skipped — the task corpus is empty; this is NOT a clean bill of health`, and its zero PPRDSTATUS findings mean "not checked" (`references/cli-invocation.md` §4.1).
+- **Task source:** the task corpus the fused-memory live loader returns, never `tasks.db`. An unreachable fused-memory therefore exits 125 like every sweep. An empty corpus leaves nothing to check: `--pattern PPRDSTATUS` alone refuses it with exit 125 and no JSON array, while a mixed run prints `reify-audit: PPRDSTATUS skipped — the task corpus is empty; this is NOT a clean bill of health`, and its zero PPRDSTATUS findings mean "not checked" (`references/cli-invocation.md` §4.1).
 - **Vocabulary authority:** `.claude/skills/prd/project.md` → "PRD terminal status — closed vocabulary + decompose-close stamp". The detector consumes that list and does not define it. Under its case-insensitive first-token rule, six PRDs were already terminal when the detector landed (2026-09-30), and it is silent on all of them: `v0_6/data-carrying-enums.md`, `v0_6/generic-data-carrying-enums.md`, `v0_6/result-and-fallback.md`, `kernel-seam-contracts.md`, `v0_6/process-dfm-geometry-metrology.md`, and the Title-Case `auto-type-param-resolution.md`.
 - **Routing:** one batched escalation per run through `scripts/pprdstatus-escalate.py`, never per finding and never follow-up tasks (`references/severity-routing.md` §2).
 - **No jcodemunch:** like the structural lanes above, adding it to a jcodemunch-backed pattern set makes that set *mixed*.
