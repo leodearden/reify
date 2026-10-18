@@ -18,6 +18,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 RUN_ALL="$SCRIPT_DIR/run_all.sh"
 LOAD_TOLERANCE_LIB="$SCRIPT_DIR/load_tolerance_lib.sh"
+VERIFY_EVENTS="$SCRIPT_DIR/verify_events.py"
 ORCHESTRATOR_YAML="$REPO_ROOT/dark-factory-orchestrator.yaml"
 
 # Harness-global default (task #5142 review remediation): isolate the ENTIRE
@@ -1363,6 +1364,19 @@ else
     assert "T18c: all-pass run Summary carries NO flaky-retried clause (got: ${t11b_out:-<unset>})" false
 fi
 
+# _events_count <channel> <event> [FIELD=VALUE...] -- prints how many <event>
+# records of the REIFY_VERIFY_EVENT_LOG file <channel> carry every FIELD=VALUE
+# (tests/infra/README.md "Verify event channel").
+_events_count() {
+    local _channel="$1" _event="$2" _where=() _clause
+    shift 2
+    for _clause in "$@"; do
+        _where+=(--where "$_clause")
+    done
+    python3 -I "$VERIFY_EVENTS" query "$_channel" --event "$_event" \
+        ${_where[@]+"${_where[@]}"} --count
+}
+
 # -- Test 19: pool discovery/partition-stage death emits a root-cause diagnostic
 # (task #5123, esc-5080-9): under fleet-wide host overload, run_all.sh's pool
 # path was observed to die IMMEDIATELY after the "INFO: run_all.sh pool: N="
@@ -1404,6 +1418,7 @@ t19_out="$(TMPDIR="$TMPDIR_T19_POISON" \
     RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T19" \
     REIFY_RUN_ALL_POOL_LOCK="$TMPDIR_T19/pool.lock" \
     REIFY_RUN_ALL_POOL_PSI_PROC_PATH="$PSI_HOT_T19" \
+    REIFY_VERIFY_EVENT_LOG="$TMPDIR_T19/events-poisoned.jsonl" \
     bash "$RUN_ALL" "$TMPDIR_T19" 2>&1)" || t19_rc=$?
 
 # 19a: re-raise preserved -- run_all.sh still exits nonzero (regression
@@ -1467,6 +1482,7 @@ t19h_out="$(TMPDIR="$TMPDIR_T19_GOOD" \
     RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T19" \
     REIFY_RUN_ALL_POOL_LOCK="$TMPDIR_T19/pool-good.lock" \
     REIFY_RUN_ALL_POOL_PSI_PROC_PATH="$PSI_HOT_T19" \
+    REIFY_VERIFY_EVENT_LOG="$TMPDIR_T19/events-good.jsonl" \
     bash "$RUN_ALL" "$TMPDIR_T19" 2>&1)" || t19h_rc=$?
 
 if ! grep -qE 'ERROR: run_all\.sh pool: discovery/partition' <<<"$t19h_out"; then
@@ -1477,6 +1493,25 @@ fi
 
 assert "T19h: normal pool run exits 0" \
     test "$t19h_rc" -eq 0
+
+# 19i-19k: the same two runs, read from the event channel each one wrote (a
+# file per run). run_start is written right after the guarded span ends, so a
+# run that dies inside the span leaves none; with 19g (the marker comes after
+# the INFO line that opens the span) that bounds the death to the span.
+# 19j anchors 19i against vacuity (the same env-passing shape does write
+# records once a run starts); 19k shows the normal run really ran its member,
+# which 19h's exit 0 alone would also report with no member run.
+t19i_starts="$(_events_count "$TMPDIR_T19/events-poisoned.jsonl" run_start)" || t19i_starts=reader-failed
+assert "T19i: the poisoned run wrote no run_start record -- it died in its setup span, before the run began (got $t19i_starts)" \
+    test "$t19i_starts" = 0
+
+t19j_starts="$(_events_count "$TMPDIR_T19/events-good.jsonl" run_start branch=pool)" || t19j_starts=reader-failed
+assert "T19j: the normal pool run wrote exactly one run_start record, branch=pool (got $t19j_starts)" \
+    test "$t19j_starts" = 1
+
+t19k_passes="$(_events_count "$TMPDIR_T19/events-good.jsonl" member_finish member=test_pool_1.sh verdict=PASS)" || t19k_passes=reader-failed
+assert "T19k: the normal pool run wrote exactly one PASS member_finish record for test_pool_1.sh (got $t19k_passes)" \
+    test "$t19k_passes" = 1
 
 # -- Test 20: H2 Phase-1 bounded worker-pool throttle (wait -n) -----------------
 # Task #5129 (PRD docs/prds/run-all-pool-contention-tiering-fix.md §9 L1):
