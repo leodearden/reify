@@ -8204,6 +8204,18 @@ entries:
     origin_phase: unknown
     manifested_phase: unknown
     note: 'Error Neighborhoods show `tail: cannot open ''.task/iterations.jsonl''` and Not Found shows no such file at turn 26, so the per-lane iterations.jsonl is missing at the expected path. The `.task` directory listing holds only plan.json and a claude-config directory.'
+  - date: '2026-10-17'
+    project: reify
+    session: 6018dbe0-7f59-4246-86f7-124534cf92a9
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: A `tail -c 3000 .task/iterations.jsonl` call returned 'No such file or directory' (exit 2) because the per-lane iterations file was absent at the expected path, matching this entry's missing-iterations-file symptom.
+  - date: '2026-10-17'
+    project: reify
+    session: fc3bb4c5-3327-4104-961b-cdc8a2f415ac
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: 'Partial match: the session''s tail of .task/iterations.jsonl fails with ''No such file or directory'' in a warm-lane worktree, the same missing per-lane iterations.jsonl pattern. The digest does not show the expected path or the phase, so both phases are unknown.'
 - id: entry-cand-20260727-8
   title: No cross-session visibility into which concurrent sessions own which blocked tasks
   severity: medium
@@ -8655,6 +8667,12 @@ entries:
     origin_phase: unknown
     manifested_phase: unknown
     note: Warm-lane worktree (_lane-1) session reads .task/plan.json, which is absent (wc and json.load both report No such file or directory at turn 48, and the file is still missing at turn 250). This matches the warm-lane missing plan.json pattern. Phase cannot be determined from the digest.
+  - date: '2026-10-17'
+    project: reify
+    session: 9b491883-73ed-461f-8daf-c6d2cce64a39
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: Read of /home/leo/src/warm-lanes/worktrees/_lane-30/.task/plan.json returned 'File does not exist' at turn 166, in a warm-lane worktree cwd. This matches the codebook entry for a warm-lane task bootstrap missing plan.json. The digest does not show the phase of the work, so both phases are unknown.
 - id: entry-cand-20260719-8
   title: Sandbox blocks naive sleep+check polling chains
   severity: medium
@@ -9508,6 +9526,12 @@ entries:
     origin_phase: implement
     manifested_phase: implement
     evidence_quote: 'TypeError: ''NoneType'' object is not subscriptable ... print(f"  {s[''id'']:8s} {s[''type'']:4s} {s[''status'']:7s} {s.get(''commit'','''')[:12]:12s} {s[''description''][:60]}")'
+  - date: '2026-10-17'
+    project: reify
+    session: 96d7f786-14c5-4061-b659-a6ce6da11b13
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: Ad-hoc inline python3 -c script parsed a findings file and crashed with TypeError on a bool value where a subscriptable value was assumed. The same class of failure as the ad-hoc inspection script crashing on an unexpected field value, but the data source and the value type differ (bool, not None, from PPRDSTATUS findings rather than plan.json). Phases are not supported by the evidence.
 - id: entry-cand-20260911-20
   title: Review-round adjudication conflates DEFERRED (still-open) prior suggestions with RESOLVED ones
   severity: medium
@@ -9765,6 +9789,12 @@ entries:
     origin_phase: unknown
     manifested_phase: unknown
     note: The digest files an injected escalation notification (Task 7642 re-escalation, esc-7642-13) under '## User Corrections' at turn 3, which mislabels a system-injected notification as a user correction.
+  - date: '2026-10-17'
+    project: reify
+    session: 6018dbe0-7f59-4246-86f7-124534cf92a9
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: The User Corrections section records the escalation notification (esc-7420-14, 'Steward re-escalated to human') as a user turn, which is the digest mislabel this entry describes.
 - id: entry-cand-20260813-11
   title: Agent assumes earlier &&-chained command executed despite the whole chain being rejected upfront by an eval syntax error
   severity: medium
@@ -27062,3 +27092,29 @@ candidates:
     origin_phase: prd
     manifested_phase: architect
     evidence_quote: 'The stop test max|r̃| <= 1 is NOT invariant: at scale k it is equivalent to stopping at max|r̃₁| <= 1/k.'
+- id: cand-20261017-1
+  title: Verify outer timeout under host load produces a red verdict indistinguishable from a test failure
+  cause: The verify gate's outer `timeout 60m` fired on cargo nextest under host load (loadavg ~184 on 32 cores), killing the run. The 24 'failed' lines were all SIGTERM with no FAIL lines, so the red result looked like a test failure. The task was left pending and needed manual triage and an escalation to tell infra from code failure.
+  area: verify
+  first_seen: '2026-10-17'
+  disposition: pending
+  sightings:
+  - date: '2026-10-17'
+    project: reify
+    session: 6018dbe0-7f59-4246-86f7-124534cf92a9
+    origin_phase: verify
+    manifested_phase: verify
+    evidence_quote: Task 7420 verify attempt-1 red was the outer `timeout 60m` on cargo nextest firing under host load, not a test failure
+- id: cand-20261017-2
+  title: SingleKernelHolder INVARIANT comment overclaims parity-test coverage, leaving 9 trait methods silently forwarded to trait defaults
+  cause: 'A code comment states that SingleKernelHolder must delegate every GeometryKernel method and that a named parity test invokes every method through the holder. Neither holds: 9 of 27 trait methods fall through to trait defaults, and the parity test calls only the 18 forwarded ones. An agent relying on the comment would believe the guard catches missing forwarding, so a test that routes through the holder can receive a trait-default answer (''not supported'' or None) instead of the real kernel''s answer and fail confusingly or pass for the wrong reason.'
+  area: reify-ir GeometryKernel trait / reify-eval SingleKernelHolder parity test
+  first_seen: '2026-10-17'
+  disposition: pending
+  sightings:
+  - date: '2026-10-17'
+    project: reify
+    session: 36023c4f-e6f4-4eb6-bd22-792559d4ad35
+    origin_phase: unknown
+    manifested_phase: unknown
+    evidence_quote: The parity test calls only the 18 forwarded ones. ... The comment tells the reader the parity test would have caught it, which it would not.
