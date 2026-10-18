@@ -1562,7 +1562,7 @@ if [ -n "$FRESH_CHECKOUT" ]; then
     # integration/bench test binaries (each is its own compilation-unit root —
     # no lib rlib cascade).  src/ env!() usage, lib or unit-test, is
     # deliberately NOT relinked: touching a src/ file forces a lib recompile
-    # that cascades to every dependent.  The gap is real (esc-8633-1: a Fresh
+    # that cascades to every dependent.  The gap is real (task #8927: a Fresh
     # reify-test-support rlib kept _merge-verify's path), so src/ code that
     # needs a workspace path must resolve it at run time, e.g.
     # crates/reify-test-support/src/workspace_root.rs, never via env!().

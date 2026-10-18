@@ -4,6 +4,9 @@
 //! compile-time bake in this LIB is not relinked by a warm-lane seed, so a
 //! seeded lane would keep the base worktree's path. See the
 //! "env!()-baked-path test/bench relink" block in `scripts/seed-warm-lane.sh`.
+//!
+//! `cargo test` and nextest always set `CARGO_MANIFEST_DIR` at run time, so the
+//! current-directory fallback only matters for a test binary run by hand.
 
 use std::fmt;
 use std::path::{Path, PathBuf};
