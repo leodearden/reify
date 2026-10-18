@@ -37,6 +37,8 @@ const SOLVER_TOL: f64 = 1e-9;
 
 const SOLVE_FRESH: SolverPosture = SolverPosture::Solve(ResolutionProfile::FRESH);
 
+type NamedConstructor = (&'static str, fn(SolverPosture) -> Engine);
+
 fn probe_a() -> ValueCellId {
     ValueCellId::new("Probe", "a")
 }
@@ -125,7 +127,7 @@ fn solver_free_posture_resolves_nothing() {
 
 #[test]
 fn every_constructor_honours_its_posture() {
-    let constructors: [(&str, fn(SolverPosture) -> Engine); 6] = [
+    let constructors: [NamedConstructor; 6] = [
         ("new", |p| Engine::new(p, checker(), None)),
         ("with_prelude", |p| {
             Engine::with_prelude(
