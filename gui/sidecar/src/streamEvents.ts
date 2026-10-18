@@ -171,6 +171,55 @@ function mapResult(sessionId: unknown, state: StreamState): StreamStep {
   return withoutOutputs({ ...state, resultSessionId: sessionId });
 }
 
+export type ToolUseClaim =
+  | { readonly ok: true; readonly toolUseId: string; readonly state: StreamState }
+  | { readonly ok: false; readonly error: string };
+
+/**
+ * Consume the announced tool_use a host tool_result for `toolName` answers: the echoed
+ * `toolUseId` when the host sent one, otherwise the oldest queued tool_use of that name.
+ * Each tool_use can be claimed once.
+ */
+export function claimToolUse(state: StreamState, toolName: string, toolUseId?: string): ToolUseClaim {
+  if (toolUseId === undefined) return claimOldest(state, toolName);
+  const registeredName = state.toolNameById.get(toolUseId);
+  if (registeredName === undefined) {
+    return refused(`unknown tool_use_id=${toolUseId} for tool_name=${toolName}`);
+  }
+  if (registeredName !== toolName) {
+    return refused(`tool_use_id=${toolUseId} does not match tool_name=${toolName} (registered as ${registeredName})`);
+  }
+  return claimed(state, toolName, toolUseId);
+}
+
+/** The state with no tool_use left to claim; delta offsets and the turn are kept. */
+export function forgetToolUses(state: StreamState): StreamState {
+  return { ...state, toolNameById: new Map(), pendingToolUseIds: new Map() };
+}
+
+function claimOldest(state: StreamState, toolName: string): ToolUseClaim {
+  const oldest = state.pendingToolUseIds.get(toolName)?.[0];
+  if (oldest === undefined) return refused(`no pending tool_use for tool_name=${toolName}`);
+  return claimed(state, toolName, oldest);
+}
+
+function claimed(state: StreamState, toolName: string, toolUseId: string): ToolUseClaim {
+  const toolNameById = new Map(state.toolNameById);
+  toolNameById.delete(toolUseId);
+  const pendingToolUseIds = new Map(state.pendingToolUseIds);
+  const stillPending = (state.pendingToolUseIds.get(toolName) ?? []).filter((id) => id !== toolUseId);
+  if (stillPending.length === 0) {
+    pendingToolUseIds.delete(toolName);
+  } else {
+    pendingToolUseIds.set(toolName, stillPending);
+  }
+  return { ok: true, toolUseId, state: { ...state, toolNameById, pendingToolUseIds } };
+}
+
+function refused(error: string): ToolUseClaim {
+  return { ok: false, error };
+}
+
 function unseenSuffix(full: unknown, emittedLen: number): string | null {
   return typeof full === 'string' && full.length > emittedLen ? full.slice(emittedLen) : null;
 }
