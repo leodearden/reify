@@ -2101,7 +2101,7 @@ _HOLDER_T24=$!
 # slot-1 before invoking run_all.sh: under host load the holder's own
 # `flock -x` might not land within a fixed 0.2s window, letting the pool
 # worker acquire the uncontended slot with no wait and emit no marker --
-# a false T24a (the same class of race Test 25's state poll avoids).
+# a false T24a.
 # A non-blocking acquire attempt on the same slot file that FAILS is proof
 # the holder holds it. That barrier is now stated once, in
 # tests/infra/slot_holder_handshake_lib.sh, together with its self-healing
@@ -2161,22 +2161,20 @@ assert "T24e: run_all.sh exits 0 (soft-admit past the wait deadline, member pass
 # line and dark-factory's classifier falls through to a tree_sitter_generate_error
 # mislabel instead of test_failure. RED sub-case: a fast-failing pool member
 # ("boom") plus a pool member ("hang") that is held until the test releases it,
-# under REIFY_RUN_ALL_POOL_CONCURRENCY=2
-# (both admitted concurrently, no lock contention -- keeps this test's markers
-# independent of Test 24's). The harness polls (bounded, not a fixed sleep)
-# for boom's ACTUAL `.rc` bookkeeping write inside the real _H2_WORKDIR
-# (discovered via a private TMPDIR override -- the same authoritative state
-# _ra_partial_failed_names itself scans), then waits for hang's READY
-# announcement, confirming the failure landed and the run is still mid-flight
-# before firing SIGTERM itself -- decoupling the signal's timing from
-# absolute wall-clock guesswork under host load -- while the parent is
-# blocked in the Phase-1 `wait` for hang, into the new trap. Output is
-# captured to a FILE, not `$(...)`: the
-# orphaned hang-worker subshell (reparented on run_all.sh's death, still holding
-# an inherited copy of the original pipe's write end until the test releases
-# it) would otherwise hold a command-substitution pipe open long past
-# run_all.sh's own death. GREEN regression sub-case: an all-pass run with NO
-# timeout must stay byte-identical (no INTERRUPTED/(partial), byte-exact
+# under REIFY_RUN_ALL_POOL_CONCURRENCY=1 (one member admitted at a time on a
+# private lock, so no lock contention -- keeps this test's markers independent
+# of Test 24's). The harness waits (bounded, not a fixed sleep) on the run's
+# verify event channel for the second member_start: under a bound of 1 that
+# means boom's attempt is over, and its failure is on record. It then waits for
+# hang's READY announcement, confirming the run is still mid-flight, before
+# firing SIGTERM itself -- decoupling the signal's timing from absolute
+# wall-clock guesswork under host load -- while the parent is blocked in the
+# Phase-1 `wait` for hang, into the new trap. Output is captured to a FILE, not
+# `$(...)`: the orphaned hang-worker subshell (reparented on run_all.sh's
+# death, still holding an inherited copy of the original pipe's write end until
+# the test releases it) would otherwise hold a command-substitution pipe open
+# long past run_all.sh's own death. GREEN regression sub-case: an all-pass run
+# with NO timeout must stay byte-identical (no INTERRUPTED/(partial), byte-exact
 # Summary) -- proves the trap is signal-only and never fires on the normal path.
 echo ""
 echo "--- Test 25: partial FAILED/INTERRUPTED marker on outer-timeout SIGTERM ---"
@@ -2217,81 +2215,29 @@ T25_OUT="$TMPDIR_T25/out.txt"
 T25_CHANNEL="$TMPDIR_T25/events.jsonl"
 t25_rc=0
 
-# run_all.sh's pool workdir (_H2_WORKDIR) is created via
-# `mktemp -d "${TMPDIR:-/tmp}/reify-run-all-pool.XXXXXX"` -- the pool
-# path's ONLY use of TMPDIR (Test 19 relies on the same contract). Pointing
-# TMPDIR at a private, empty directory lets the harness below discover
-# the real workdir and poll for boom's ACTUAL `.rc` bookkeeping write --
-# the same authoritative state _ra_partial_failed_names itself scans --
-# before firing SIGTERM. A child-side signal (e.g. boom touching its own
-# "done" marker) would still race the *parent* pool-worker subshell's
-# separate `.rc` write; polling the `.rc` file itself removes that race
-# entirely rather than trading one fixed wall-clock guess for another.
-H2WD_PARENT_T25="$TMPDIR_T25/h2wd"
-mkdir -p "$H2WD_PARENT_T25"
-
 # Launch run_all.sh directly (rather than under a fixed `timeout N`) so
-# the SIGTERM can be fired once boom's `.rc` write confirms its failure
-# landed and hang has announced READY. The bounded poll below reacts as
-# soon as the write lands rather than always waiting the full window. A
-# background SIGKILL fallback mirrors `timeout`'s -k grace period, in case
-# the TERM trap somehow doesn't reap it.
+# the SIGTERM can be fired once the run's event channel shows boom's
+# attempt is over and hang has announced READY. The bounded wait below
+# reacts as soon as the record lands rather than always waiting the full
+# window. A background SIGKILL fallback mirrors `timeout`'s -k grace
+# period, in case the TERM trap somehow doesn't reap it.
 env -u REIFY_RUN_ALL_EXCLUDE_HOST_INFRA \
     RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T25" \
     REIFY_RUN_ALL_POOL_LOCK="$LOCK_T25" \
-    REIFY_RUN_ALL_POOL_CONCURRENCY=2 \
+    REIFY_RUN_ALL_POOL_CONCURRENCY=1 \
     REIFY_RUN_ALL_POOL_PSI_DISABLE=1 \
     REIFY_VERIFY_EVENT_LOG="$T25_CHANNEL" \
-    TMPDIR="$H2WD_PARENT_T25" \
     bash "$RUN_ALL" "$TMPDIR_T25" >"$T25_OUT" 2>&1 &
 t25_pid=$!
 
-# Poll bound: a broken-infra backstop only. hang is held until the test
-# releases it, so it always outlives this poll. Worst case
-# 100 x 0.1s x CAP 8 = 80s < hang's own backstop, 600 x 0.2s = 120s.
+# Under the pool bound of 1, the second member_start means the first
+# member's attempt has closed. hang is held until released, so the closed
+# one is boom, and its failure is recorded before SIGTERM. The timeout is a
+# broken-infra backstop only: 10s x the load factor (at most 80s), under
+# hang's own backstop, 600 x 0.2s = 120s.
 source "$LOAD_TOLERANCE_LIB"
-t25_poll_attempts=$(load_tolerant_attempts 100)
-
-t25_wd=""
-t25_rc_file=""
-t25_i=0
-while [ "$t25_i" -lt "$t25_poll_attempts" ]; do
-    if [ -z "$t25_wd" ]; then
-        for _d in "$H2WD_PARENT_T25"/reify-run-all-pool.*; do
-            [ -d "$_d" ] && t25_wd="$_d"
-            break
-        done
-    fi
-    if [ -n "$t25_wd" ]; then
-        for _f in "$t25_wd"/*.rc; do
-            case "$_f" in
-                *.retry.rc) continue ;;
-            esac
-            # Gate on nonzero CONTENT, not mere existence. run_all.sh
-            # writes each `.rc` atomically (tmp+mv), so a visible file is
-            # never empty and this gate is belt-and-braces; it mirrors
-            # _ra_partial_failed_names, which treats an empty/unreadable
-            # read as rc=0 ("not failed"), so the poll can never hand off
-            # to SIGTERM on a file T25c's attribution would not count.
-            if [ -s "$_f" ] && [ "$(cat "$_f" 2>/dev/null)" != 0 ]; then
-                t25_rc_file="$_f"
-            fi
-            break
-        done
-    fi
-    [ -n "$t25_rc_file" ] && break
-    sleep 0.1
-    t25_i=$((t25_i + 1))
-done
-
-# Confirm the poll actually observed boom's failure before firing
-# SIGTERM. A timeout here (host severely overloaded) would otherwise
-# surface downstream as an ambiguous T25b/T25c failure (empty partial-name
-# attribution) that reads like an attribution bug rather than a timing
-# miss -- say so plainly instead.
-if [ -z "$t25_rc_file" ]; then
-    echo "T25 WARNING: poll timed out after $t25_i/$t25_poll_attempts attempts waiting for boom's .rc write under $H2WD_PARENT_T25 -- firing SIGTERM anyway; T25b/T25c may fail with an empty partial-name attribution" >&2
-fi
+t25_wait_secs="$(load_tolerant_attempts 10)"
+if python3 -I "$VERIFY_EVENTS" wait "$T25_CHANNEL" --event member_start --where attempt=1 --count 2 --timeout "$t25_wait_secs"; then t25_both_started=1; else t25_both_started=0; fi
 
 # SIGTERM must land on a run still mid-flight: wait for hang's READY
 # rather than assuming it from timing.
@@ -2337,6 +2283,9 @@ assert "T25i: the event channel closes the interrupted run with failed=[test_poo
 
 assert "T25d: run_all.sh did NOT exit 0 (interrupted mid-run)" \
     test "$t25_rc" -ne 0
+
+assert "T25 control: both pool members had started under a pool bound of 1 before SIGTERM fired (two member_start records) -- boom's attempt was over" \
+    test "$t25_both_started" -eq 1
 
 assert "T25 control: the hang member had started before SIGTERM fired (READY observed) -- the signal landed on a run still mid-flight" \
     test "$t25_hang_started" -eq 1
