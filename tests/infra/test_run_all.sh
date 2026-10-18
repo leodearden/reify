@@ -2214,6 +2214,7 @@ chmod +x "$TMPDIR_T25/test_pool_boom.sh" "$TMPDIR_T25/test_pool_hang.sh"
 
 LOCK_T25="$TMPDIR_T25/pool-t25.lock"
 T25_OUT="$TMPDIR_T25/out.txt"
+T25_CHANNEL="$TMPDIR_T25/events.jsonl"
 t25_rc=0
 
 # run_all.sh's pool workdir (_H2_WORKDIR) is created via
@@ -2240,6 +2241,7 @@ env -u REIFY_RUN_ALL_EXCLUDE_HOST_INFRA \
     REIFY_RUN_ALL_POOL_LOCK="$LOCK_T25" \
     REIFY_RUN_ALL_POOL_CONCURRENCY=2 \
     REIFY_RUN_ALL_POOL_PSI_DISABLE=1 \
+    REIFY_VERIFY_EVENT_LOG="$T25_CHANNEL" \
     TMPDIR="$H2WD_PARENT_T25" \
     bash "$RUN_ALL" "$TMPDIR_T25" >"$T25_OUT" 2>&1 &
 t25_pid=$!
@@ -2327,6 +2329,12 @@ else
     assert "T25c: the partial FAILED line names test_pool_boom.sh (got: $(sed 's/^/  | /' "$T25_OUT"))" false
 fi
 
+# 25i: the channel closes the interrupted run with the same names T25c reads
+# off the text line. A list field matches by its JSON spelling.
+t25i_closes="$(_events_count "$T25_CHANNEL" run_finish interrupted=true 'failed=["test_pool_boom.sh"]')" || t25i_closes=reader-failed
+assert "T25i: the event channel closes the interrupted run with failed=[test_pool_boom.sh] (got $t25i_closes matching run_finish records)" \
+    test "$t25i_closes" = 1
+
 assert "T25d: run_all.sh did NOT exit 0 (interrupted mid-run)" \
     test "$t25_rc" -ne 0
 
@@ -2354,6 +2362,7 @@ t25b_out="$(env -u REIFY_RUN_ALL_EXCLUDE_HOST_INFRA \
     RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T25B" \
     REIFY_RUN_ALL_POOL_LOCK="$TMPDIR_T25B/pool.lock" \
     REIFY_RUN_ALL_POOL_PSI_DISABLE=1 \
+    REIFY_VERIFY_EVENT_LOG="$TMPDIR_T25B/events.jsonl" \
     bash "$RUN_ALL" "$TMPDIR_T25B" 2>&1)" || t25b_rc=$?
 
 if [[ "$t25b_out" == *"=== Summary: 1 discovered, 0 failed ==="* ]]; then
@@ -2376,6 +2385,16 @@ fi
 
 assert "T25h: GREEN regression -- normal path exits 0" \
     test "$t25b_rc" -eq 0
+
+# 25j/25k: the same normal run, read from its own channel. 25j shows the member
+# really ran and passed; 25k is the channel twin of 25f -- the trap never fired.
+t25j_passes="$(_events_count "$TMPDIR_T25B/events.jsonl" member_finish member=test_pool_1.sh verdict=PASS)" || t25j_passes=reader-failed
+assert "T25j: GREEN regression -- the event channel records exactly one PASS member_finish for test_pool_1.sh (got $t25j_passes)" \
+    test "$t25j_passes" = 1
+
+t25k_clean_ends="$(_events_count "$TMPDIR_T25B/events.jsonl" run_finish interrupted=false)" || t25k_clean_ends=reader-failed
+assert "T25k: GREEN regression -- the event channel records exactly one run_finish, not interrupted (got $t25k_clean_ends)" \
+    test "$t25k_clean_ends" = 1
 
 # -- Test 26: INTERRUPTED-worktree marker (task #5261, PRD merge-gate-health.md W4e) --
 # Proves run_all.sh detects its OWN worktree (INFRA_DIR) being removed out
