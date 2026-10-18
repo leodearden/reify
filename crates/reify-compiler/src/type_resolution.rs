@@ -1373,11 +1373,52 @@ pub(crate) fn resolve_enum_type(name: &str, enum_defs: &[reify_ir::EnumDef]) -> 
     }
 }
 
+fn enum_type_arity_error(
+    name: &str,
+    expected: usize,
+    found: usize,
+    span: SourceSpan,
+) -> Diagnostic {
+    let plural = if expected == 1 { "" } else { "s" };
+    Diagnostic::error(format!(
+        "enum `{name}` expects {expected} type argument{plural}, found {found}"
+    ))
+    .with_label(DiagnosticLabel::new(span, "wrong number of type arguments"))
+}
+
+/// Resolve an enum annotation written with no type arguments.
+///
+/// A non-generic enum is `Type::Enum(name)`. A generic enum is filled from its
+/// declared defaults when every type parameter has one, and is otherwise an arity
+/// error (docs/prds/v0_6/generic-enum-type-arg-retention.md §6 R2(b), R3).
+pub(crate) fn resolve_argless_enum_annotation(
+    name: &str,
+    type_params: &[reify_ir::TypeParam],
+    diagnostics: &mut Vec<Diagnostic>,
+    span: SourceSpan,
+) -> Type {
+    if type_params.is_empty() {
+        return Type::Enum(name.to_string());
+    }
+    let defaults: Option<Vec<Type>> = type_params.iter().map(|tp| tp.default.clone()).collect();
+    match defaults {
+        Some(args) => Type::Applied {
+            name: name.to_string(),
+            args,
+        },
+        None => {
+            diagnostics.push(enum_type_arity_error(name, type_params.len(), 0, span));
+            Type::Enum(name.to_string())
+        }
+    }
+}
+
 /// Resolve an enum name with optional type arguments to a `Type`.
 ///
-/// Three cases:
+/// Four cases:
 /// 1. `name` is not a known enum → `None` (caller falls through to other resolution).
-/// 2. `type_args` is empty → `Some(Type::Enum(name))` (plain enum, unchanged).
+/// 2. `type_args` is empty → `resolve_argless_enum_annotation` (plain enum
+///    unchanged; generic: defaults fill or arity error).
 /// 3. Enum is GENERIC (non-empty `EnumDef.type_params`) AND `type_args` non-empty
 ///    → resolve each arg via `resolve_type_expr_with_aliases`, return
 ///    `Some(Type::Applied { name, args })` (reuses the 4603 γ carrier).
@@ -1398,24 +1439,21 @@ pub(crate) fn resolve_enum_type_with_args(
 ) -> Option<Type> {
     let enum_def = enum_defs.iter().find(|e| e.name == name)?;
     if type_args.is_empty() {
-        return Some(Type::Enum(name.to_string()));
+        return Some(resolve_argless_enum_annotation(
+            name,
+            &enum_def.type_params,
+            diagnostics,
+            span,
+        ));
     }
     if !enum_def.type_params.is_empty() {
         if type_args.len() != enum_def.type_params.len() {
-            diagnostics.push(
-                Diagnostic::error(format!(
-                    "enum `{}` expects {} type argument{}, found {}",
-                    name,
-                    enum_def.type_params.len(),
-                    if enum_def.type_params.len() == 1 {
-                        ""
-                    } else {
-                        "s"
-                    },
-                    type_args.len()
-                ))
-                .with_label(DiagnosticLabel::new(span, "wrong number of type arguments")),
-            );
+            diagnostics.push(enum_type_arity_error(
+                name,
+                enum_def.type_params.len(),
+                type_args.len(),
+                span,
+            ));
             return Some(Type::Enum(name.to_string()));
         }
         let args: Vec<Type> = type_args
