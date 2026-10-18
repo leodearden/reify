@@ -229,6 +229,136 @@ fn trait_member_bare_enum_with_all_defaults_is_accepted() {
     assert_no_errors(source, "trait member `param w : Wrapper` with `T = Length`");
 }
 
+/// R2(b): a bare generic enum as a structure param is an arity error
+/// (mirrors tests/prd-gate/fixtures/getar_bare_result_annotation_match_panics.ri).
+#[test]
+fn annotation_generic_enum_zero_args_errors() {
+    let source = format!("{RESULT_ENUM_SOURCE}\nstructure def D {{ param r : Result }}");
+    assert_some_error_contains(
+        &source,
+        "enum `Result` expects 2 type arguments, found 0",
+        "structure param `param r : Result`",
+    );
+}
+
+/// R2(b) holds in every annotation position that resolves a bare enum name
+/// through the ambient enum scope, and through the local-enum shadow arm.
+#[test]
+fn bare_generic_enum_rejected_in_every_ambient_annotation_position() {
+    const RESULT_ZERO_ARGS: &str = "enum `Result` expects 2 type arguments, found 0";
+    let with_result = |body: &str| format!("{RESULT_ENUM_SOURCE}\n{body}");
+    let rows: Vec<(&str, String, &str)> = vec![
+        (
+            "fn param",
+            with_result("fn f(r: Result) -> Bool { true }"),
+            RESULT_ZERO_ARGS,
+        ),
+        (
+            "fn return",
+            with_result("fn g() -> Result { Ok { value: 1mm } }"),
+            RESULT_ZERO_ARGS,
+        ),
+        (
+            "constraint-def param",
+            with_result("constraint def K {\n    param r : Result\n    true\n}"),
+            RESULT_ZERO_ARGS,
+        ),
+        (
+            "inner builtin arg",
+            with_result("structure def D { param o : Option<Result> }"),
+            RESULT_ZERO_ARGS,
+        ),
+        (
+            "non-parametric alias body",
+            with_result("type AR = Result\nstructure def D { param r : AR }"),
+            RESULT_ZERO_ARGS,
+        ),
+        (
+            "local generic enum shadowing prelude `structure def Fit`",
+            "enum Fit<T> { A { v: T } }\nstructure def D { param f : Fit }".to_string(),
+            "enum `Fit` expects 1 type argument, found 0",
+        ),
+    ];
+    let failures: Vec<String> = rows
+        .iter()
+        .filter_map(|(label, source, needle)| {
+            let errors = error_messages(source);
+            (!errors.iter().any(|m| m.contains(needle)))
+                .then(|| format!("{label}: expected {needle:?}; got: {errors:?}"))
+        })
+        .collect();
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// R3: a bare enum whose every type parameter is defaulted means the defaults.
+#[test]
+fn annotation_bare_enum_with_all_defaults_fills_from_defaults() {
+    let source = "\
+enum Wrapper<T = Length> { Item { value: T }, Empty }
+structure def D {
+    param a : Wrapper
+    param b : Wrapper<Length>
+}";
+    let module = compile_with_stdlib_helper(source);
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .map(|d| &d.message)
+        .collect();
+    assert!(errors.is_empty(), "expected no errors; got: {errors:?}");
+
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "D")
+        .expect("D template must exist");
+    let cell_type = |member: &str| {
+        template
+            .value_cells
+            .iter()
+            .find(|vc| vc.id.member == member)
+            .unwrap_or_else(|| panic!("D must have a value cell named '{member}'"))
+            .cell_type
+            .clone()
+    };
+
+    let expected = Type::Applied {
+        name: "Wrapper".to_string(),
+        args: vec![Type::length()],
+    };
+    assert_eq!(
+        cell_type("a"),
+        expected,
+        "bare `Wrapper` must fill from `T = Length`"
+    );
+    assert_eq!(
+        cell_type("a"),
+        cell_type("b"),
+        "bare `Wrapper` must equal `Wrapper<Length>`"
+    );
+}
+
+/// R3: a partially defaulted enum written bare is still an arity error.
+#[test]
+fn annotation_bare_enum_with_partial_defaults_errors() {
+    let source =
+        "enum Duo<A, B = String> { Both { a: A, b: B } }\nstructure def D { param d : Duo }";
+    assert_some_error_contains(
+        source,
+        "enum `Duo` expects 2 type arguments, found 0",
+        "structure param `param d : Duo` with only `B` defaulted",
+    );
+}
+
+/// The `pub` parametric-alias def-site guard probes the bare name `Result`; the
+/// arity diagnostic for that bare probe must not leak into (or panic) the compile.
+#[test]
+fn pub_parametric_alias_naming_generic_enum_compiles_clean() {
+    let source = format!("{RESULT_ENUM_SOURCE}\npub type Res<T> = Result<T, String>");
+    assert_no_errors(&source, "`pub type Res<T> = Result<T, String>`");
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // S3 — RED: binder substitution (S4 makes these GREEN)
 // ═══════════════════════════════════════════════════════════════════════════════
