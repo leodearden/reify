@@ -363,3 +363,52 @@ Each new stream's spawned /prd session appends its row here (append-only) in its
 | syntax-lowering-contract | ~/.claude/spawn-briefs/gapfill-syntax-lowering-contract-brief.md | docs/prds/v0_6/syntax-lowering-contract.md | α #9343, β #9344 (high), γ #9346, δ #9347, ε #9348, ζ #9349, η #9350, ω₁ #9351, ω₂ #9352, Ω #9353; out-of-plan decision milestone #9354 (pragmas in guards / annotations in spec bodies; ← #8612, #9347) | 9171 ← 9344 | held: none. Subsumed and cancelled (content ported first): #8080 → 9347, #8081 → 9346, #8275 → 9344, #7810 → 9344, #7676 → 9348 (R3). Interim kept: #7809 (9343 and 9347 depend on it). Edges on other streams' tasks: #9150 ← 9352 (S23 OQ-7 (a)). This stream's leaves also depend on #8182, #8742 (9350), and #8904 and #9322 (9352). Record writes: #8742 details (R8 UnattributedFault request), #9322 details (R4: σ populates its own fields; no lowering leaf). Key stamps: fk-3553b78476b5 9344 (parts 9343, 9346); fk-653f242d7f93 9350; fk-7173c189d7ea 9347; fk-cff74023db39 9348; fk-50ed9b0483bf 9349; fk-258131627845 9352 (parts 9351, #8182); fk-cdf6477a3b3d 9352. Session rulings R1–R8 and R7′ are in the PRD §4. |
 | auto-reach-relation | ~/.claude/spawn-briefs/gapfill-auto-reach-relation-brief.md | docs/prds/v0_6/auto-reach-relation.md | α #9368, β1 #9369 (high), β2 #9370 (high), β3 #9371 (high), γ #9372 (high), δ #9374 (dep-gated [MILESTONE] decision gate, born-at-L2 after γ: R3's "drivable later via whole-model-objective-coupling"), ω #9373 (close) | 9171 ← 9369, 9370, 9371, 9372 | held: none. Subsumed and cancelled (content ported first: 18 committed tests/prd-gate/fixtures/auto_reach_*.ri, the #6307 verdict table in the manifest, dated details on 9369/9370): #6307 → 9369, #7069 → 9369 (premise false: its disjunct never reached main; defect live), #6649 → 9370. Interim kept: none. Edges on other streams' tasks: none (this stream's leaves depend on #8691, #8704, #8860 — closure members, depended on only — and #6690, #8868). New invariant INV-EVAL-7 (docs/invariants.md row added by β1, enforced by γ). Key stamps: fk-a5a65ab8428c on 9369, 9370, 9371, 9372; fk-a5237570b374 on 9368, 9369, 9371. Session rulings R1–R10 are in the PRD §4 (R9 turned δ into a decision milestone after the critic pass; R10 ratified EvaluationState as the retention home). |
 | generic-instantiation-and-call-binding | ~/.claude/spawn-briefs/gapfill-generic-instantiation-and-call-binding-brief.md | docs/prds/v0_6/generic-instantiation-and-call-binding.md | α₁ #9358 (high), α₂ #9359 (high), β₁ #9360 (high), β₂ #9361 (high; follow-on after #8761/#8860, G1), γ₁ #9362 (high), γ₂ #9363 (high), δ #9364, ε #9365 (docs truth), ω #9366 (close) | 9171 ← 9358, 9359, 9360, 9361, 9362, 9363 | held: none (plain edges, R3): α₁ ← #8643, #8903, #8638, #9169, #8013; α₂ ← #8018; β₁ ← #8638, #8743, #8704; β₂ ← #8761, #8860; γ₁ ← #8897; γ₂ ← #5992; δ ← #8643, #8903 (#8704/#8761/#8860 are closure members, depended on only). Subsumed and cancelled (content ported first): #7337, #8098, #9329 (the K1-D3 interim), #8214 (R14) → 9358; #8229 → 9359; #6853, #7225 → 9360; #7573 → 9364. Interim kept: #6851 (C14, R2), #9169 (lands first), #5992 (lands first, R1; γ₂ deletes its parity test). Edges on other tasks: #7882 ← 9360 (added before #6853/#7225 were cancelled), #8586 ← 9363. Cross-reference notes written on #8903, #8643, #6851, #8013, #8018, #5992, #9169, #7882, #8586, #8233, #8426. New invariant INV-COMP-4 (docs/invariants.md row by β₁). Key stamps: fk-4bd738a79576 9359 (part 9358); fk-7bf9e6299eca 9360 (part 9361); fk-1b3f91469997 9363 (part 9362); fk-7eb49b30a889 9364; fk-0e4c27b21db7, fk-6b74a4f8fcfc 9358. Session rulings R1–R14 are in the PRD §4 (R13 re-ruled R12 (3) after the critic pass; R14 absorbed #8214 after decompose-verify). |
+
+## Cross-reference lines — gap-fill streams (applied by the gap-fill lead)
+
+Append-only, by the gap-fill lead. Each stream session returns these in its result. A G4 line here adds to or supersedes the matching row in the program doc's §Gap-fill deliberation "G4 rows added". Task-record writes are named with their target ids, and each was read back.
+
+### syntax-lowering-contract (cfc86e10ad; `docs/prds/v0_6/syntax-lowering-contract.md`)
+- **G4 supersedes:** `SpannedIdent on declared/referenced names | S9 σ #9322 (fields and lowering-site population; session ruling R4) | reify-lsp decl_oracle`. No lowering leaf exists for it.
+- **G4 amends:** `crates/reify-syntax/src/ts_parser.rs lowering dispatch, body loops and fault policy | syntax-lowering-contract | S9 γ/μ #8732/#8742, S9 σ #9322, S8 π #8904 (one-hunk edits)`. Close leaf ω₂ #9352 waits on #8904 (→ #8620 → #8613) and on #9322.
+- **S9** (`docs/prds/v0_6/compiler-declaration-passes.md`; task-record writes by the session):
+  - μ #8742 carries the R8 request for UnattributedFault, and η #9350 depends on it;
+  - σ #9322 carries the R4 note;
+  - γ #8732's B4 splits: β #9344 delivers the safety half and δ #9347 the message half, with no edge (R5);
+  - ε #9348's public `reify_syntax::grammar_contract` is available to γ's B2 matrix.
+- **S23:** #9150 depends on ω₂ #9352 (wired by the session; OQ-7 (a)).
+- **S22** (closure leaves; small widenings by the lead, as details notes; evidence workflow wf_0066c884-b8a):
+  - δ #8644: α `load_probe_set` refuses a match key outside the known set;
+  - ε #8649: `ProbeContext.from_environment()` resolves the newer of target/release/reify and target/debug/reify by mtime.
+- **#6567** (deferred) closes as subsumed by ζ #9349 once ζ lands (notes on #6567 and #9349).
+- **#9354**'s gate on #8612 as "the review-all work capstone" was confirmed by Leo (2026-10-18).
+
+### auto-reach-relation (449d4aae22; `docs/prds/v0_6/auto-reach-relation.md`)
+- **G4 rows added** (session ruling R6):
+  - `AutoReach relation + ReachEdges policy (crates/reify-eval/src/auto_reach.rs) | auto-reach-relation | single builder (#6690), S4 detectors.rs, resolve_order::compute_clusters, engine_fixpoint decline gate, check_constraints_post_geometry`;
+  - `DependencyGraph::template_reads() / TemplateReads + ScopeMap (crates/reify-eval/src/instance_scope.rs) | auto-reach-relation (on S3's type) | AutoReach, the pinned-connector writers`;
+  - `resolve_order cluster-formation reach query | auto-reach-relation | —`.
+- **S3** (δ #8691; note on #8691): α #9368 adds `DependencyGraph::template_reads(&ScopeMap) -> TemplateReads` in deps.rs, and deps.rs imports the new instance_scope module. Alias edges live only in TemplateReads, so §5.2's inversion law and B5 are untouched.
+- **S4** (cell-eval-transaction-closure D7, κ #8868; note on #8868): after β1 #9369, ColdArtifacts carries `&AutoReach` in place of CellReadIndex, and detectors.rs imports `crate::auto_reach::AutoReach` instead of `solver_problem::CellReadIndex`. κ stays a pure move. S4's E11 row and auto-reach's two `Engine` adoption-ratchet rows are one rule on two vehicles; whichever lands second folds them.
+- **S1** (engine-state-partition §5.6, ζ #9044; note on #9044): EvaluationState gains `auto_reach: AutoReach`, rebuilt by eval and edit_param, and `scope_map: ScopeMap`, built by eval from templates alone and kept across edits. Classify both in the Engine-state partition.
+- **#6690** (note on #6690): the single builder takes `&AutoReach` as a parameter in β1 #9369. A constraint whose only reach into a scope's autos is cross-scope is NOT admitted unless both scopes are co-solved in one merged cluster. The edit path's raw-match admission of it is the divergence R3 resolves; do not preserve it.
+- **whole-model-objective-coupling / whole-model-joint-drive-seam:** R3 (2026-10-18) rules cross-scope constraints on template-keyed child autos undrivable now and drivable later via whole-model-objective-coupling. δ milestone #9374 brings the INV-2 / BT-10 / joint-drive decision 7 re-rule to Leo after γ. No task write: #9374 carries it.
+
+### generic-instantiation-and-call-binding (3a9fe15b08; `docs/prds/v0_6/generic-instantiation-and-call-binding.md`)
+- **G4 rows added:**
+  - `crates/reify-compiler/src/type_args.rs (bind_type_args / Sigma / TypeArity; the one TypeArgArity diagnostic) | generic-instantiation-and-call-binding (α₁ #9358) | S8 ο #8903 (ParamBuiltin.arity reader), #5024 (generic traits)`;
+  - `compile_builder/monomorph.rs + instantiate_phase.rs + the reify-eval hydration concreteness check (INV-COMP-4) | generic-instantiation-and-call-binding (β₁ #9360, β₂ #9361) | S27 β #8761 (first_unrepresentable_cell), #6851`;
+  - `CompiledExprKind::UserFunctionCall shape + reify-ir fn_ref.rs (FnRef/FnTable), after S8 ζ #8897 | generic-instantiation-and-call-binding (γ₁ #9362, γ₂ #9363) | S8 ζ hands over the variant; ζ's intrinsic field becomes a projection of callee origin`;
+  - `ValueCellId monomorph re-keying (through S3 ι InstancePath) | generic-instantiation-and-call-binding (β₁) | S3 keeps OQ-2 b's typed ValueCellId; S3 ι #8704`;
+  - `Type::has_value_representation (reify-core; moved from reify-eval is_representable_cell_type) | generic-instantiation-and-call-binding (β₁) | S4 ν #8860, S27 β #8761`.
+- **Closure tasks** (notes by the lead; the session left them unwritten on purpose):
+  - S3 η #8677: γ₁ #9362 folds FnRef into the UserFunctionCall content_hash (R6). The node-hash formula is unchanged; one input moves once.
+  - S3 ι #8704: β₁ #9360 depends on it and re-keys monomorph ValueCellIds through InstancePath.
+  - S27 β #8761: β₂ #9361 depends on it. β₁ flips the LSP compile-clean generic cases, and whichever lands second adapts eval_guard.rs.
+  - S4 ν #8860: β₁ moves is_representable_cell_type to reify-core; β₂ deletes assert_value_cell_types_representable after ν's partition.
+- **generic-enum-type-arg-retention PRD** (#8013, #8018; notes by the session): α₁ follows #8013 and routes its bare-enum rule through bind_type_args; α₂ follows #8018. That PRD's R2 quotes the old arity text, which α₁ unifies to `E_TYPE_ARG_ARITY`.
+- **docs/prds/v0_3/auto-type-param-resolution-completion.md** §4.2 invariant 2 and §4.3 are superseded by a dated addendum in β₁'s diff (R8).
+- **D3 tooling:**
+  - a list-valued `stderr_contains` crashed prd-capability-check.py: filed as #9376, after S22 δ #8644 (follow-on form);
+  - the run also needed REIFY_BIN=target/debug/reify, since target/release/reify dates from 2026-09-01. That is the same trap as the S22 ε #8649 widening above.
+- **Interim tasks that land first:** #5992 (14-commit finished branch; γ₂ #9363 depends on it and deletes its parity test), #9169 (in progress) and #6851 (C14).
