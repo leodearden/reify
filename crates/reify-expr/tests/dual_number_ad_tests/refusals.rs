@@ -230,6 +230,49 @@ fn every_non_differentiable_variant_display_names_the_offending_construct() {
 }
 
 // ---------------------------------------------------------------------------
+// (7) prefixed
+// ---------------------------------------------------------------------------
+
+#[test]
+fn prefixed_re_roots_a_sited_refusal_and_leaves_a_siteless_one_unchanged() {
+    // The solver's dependent-cell fold reports a refusal raised inside a
+    // SUBSIDIARY expression against the residual that read it, so the prefix
+    // must come first: it names the path down to where that expression hangs.
+    use reify_expr::KinkSite;
+
+    assert_eq!(
+        NonDifferentiable::UndefPrimal { site: KinkSite::new(vec![1, 2]) }.prefixed(&[9, 0]),
+        NonDifferentiable::UndefPrimal { site: KinkSite::new(vec![9, 0, 1, 2]) },
+    );
+
+    match (NonDifferentiable::UnsupportedKind { kind: "probe", site: KinkSite::new(vec![3]) })
+        .prefixed(&[5])
+    {
+        NonDifferentiable::UnsupportedKind { kind, site } => {
+            assert_eq!(kind, "probe", "re-rooting must not rename the construct");
+            assert_eq!(site, KinkSite::new(vec![5, 3]));
+        }
+        other => panic!("prefixed changed the variant: {other:?}"),
+    }
+
+    assert_eq!(
+        NonDifferentiable::UndefPrimal { site: KinkSite::root() }.prefixed(&[4]),
+        NonDifferentiable::UndefPrimal { site: KinkSite::new(vec![4]) },
+        "a root-sited refusal lands exactly at the prefix",
+    );
+
+    let sited = NonDifferentiable::UnsupportedKind { kind: "probe", site: KinkSite::new(vec![6, 1]) };
+    assert_eq!(sited.prefixed(&[]), sited, "an empty prefix is the identity");
+
+    for siteless in [
+        NonDifferentiable::NonScalarResult { got: "Point" },
+        NonDifferentiable::NonFiniteTangent { column: 2 },
+    ] {
+        assert_eq!(siteless.prefixed(&[8, 8]), siteless, "{siteless:?} carries no site to move");
+    }
+}
+
+// ---------------------------------------------------------------------------
 // A `match` whose discriminant refused a tangent must not answer confidently.
 // ---------------------------------------------------------------------------
 
