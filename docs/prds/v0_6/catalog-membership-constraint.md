@@ -408,7 +408,7 @@ e2e tests extend `crates/reify-eval/tests/harness_engine.rs`, not a new test bin
   on it; priority inheritance lifts it.
 - **#8300** (in progress, high): the `@` annotation parse defect; α depends on it (both edit
   `grammar.js`/`scanner.c`, and realistic examples need it).
-- **#6653** (pending): toleranced Scalar equality — a seam (§8), not a dependency.
+- **#6653**: toleranced Scalar equality — a seam (§8), not a dependency.
 
 ## 8. Cross-PRD relationship (G4)
 

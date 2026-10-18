@@ -94,8 +94,8 @@ skeptic's 25.
 
 ### §2.1 The CLI MCP host is ruled for deletion (#6665)
 
-The ruling says "CLI and Tauri hosts implement the trait only". Task **#6665** (pending, high;
-Leo 2026-08-26, reconfirmed by S27's OQ1-A on 2026-10-12) deletes `reify mcp-server` and
+The ruling says "CLI and Tauri hosts implement the trait only". Task **#6665**
+(Leo 2026-08-26, reconfirmed by S27's OQ1-A on 2026-10-12) deletes `reify mcp-server` and
 `crates/reify-cli/src/mcp_context.rs` (`CliToolContext`) and keeps the reify-mcp crate and the
 GUI's `TauriToolContext`. After it, `TauriToolContext` is the one `ReifyToolContext` host. The
 ruling's substance — one implementation per tool, written over the host trait — is unchanged;
@@ -159,7 +159,7 @@ not touch the literal; a cross-reference asks #5519 to use `dev_stdlib_root` (#8
 
 ### §2.6 Overlapping filed work
 
-- **#7854** (pending, low) is the debug-server→EvalQueue task; subsumed (its `wait_for_idle`
+- **#7854** is the debug-server→EvalQueue task; subsumed (its `wait_for_idle`
   note is stale — #6752 landed `7e0d366f3e` and the inline `with_engine_lock` is gone).
 - **#6964** (pending, medium; #6338 done, so dispatchable) lands debug-server-gating-boundary α
   (`docs/prds/debug-server-gating-boundary.md`, Leo-ruled D3/D5 2026-08-19 and esc-7240-11

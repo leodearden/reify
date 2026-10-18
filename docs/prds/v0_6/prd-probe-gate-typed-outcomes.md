@@ -174,8 +174,8 @@ Semantics are today's `.mjs` semantics, moved: `leaves_probed` counts `executed 
 | `.claude/skills/prd/project.md` "Decompose mode — run the substrate-verification workflow" | consumes | "the `.mjs` only drives agents and aggregates" prose + "Reading the result" table | this PRD (η edits the prose; the table's keys are unchanged, D8) | queued in η |
 | Enumerator / Synthesize / Prover / Adversary prompts | produces | vocabulary interpolated from schema constants | S22 (program G4 row) | queued in ζ/η |
 | task #7491 (in flight, `task/7491`) | consumes | `scripts/reify_path_attribution.py`, `OVERLAP-MIRROR-PARITY` | #7491 | θ depends on it |
-| task #8122 (pending) | subsumes | structural fixture presence | this PRD γ | cancel #8122 at decompose, reason "subsumed by S22 γ" |
-| task #8178 (pending) | subsumes | await → escalation_mcp | this PRD κ | cancel #8178 at decompose, reason "subsumed by S22 κ" |
+| task #8122 | subsumes | structural fixture presence | this PRD γ | cancel #8122 at decompose, reason "subsumed by S22 γ" |
+| task #8178 | subsumes | await → escalation_mcp | this PRD κ | cancel #8178 at decompose, reason "subsumed by S22 κ" |
 | S18 verify.sh (wave 2) | produces for | `decide_scope` reads `attribute`; `scripts/verify-pipeline-paths.txt` row for the module | S18 (ruling R2): its Python planner imports the module rather than porting the bash ladder, and S18 adds the paths row; S22 edits no verify.sh line | cross-reference to S18 |
 | dark-factory merge queue (rebase re-verify gate) | reify supplies | a merge-independence command named by `merge_rebase_independence_cmd` (exit 0 independent / 1 dependent / other = error) | dark_factory #6943 (hook) + #8887 (command, held for Leo) | R1 reversed 2026-10-12; the never-wired detector is retired by #8886, dark-factory's registry half by dark_factory #6944 |
 | S19 run_all / manifest | none | no new wrapper (D12) | — | — |

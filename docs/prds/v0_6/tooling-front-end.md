@@ -93,7 +93,7 @@ reify-compiler, reify-eval, reify-runtime, gui/src-tauri); ξ uses five.
 
 ### §2.1 The CLI MCP context is ruled for deletion (task #6665)
 
-The S27 ruling names "MCP context" as a front-end consumer. Task **#6665** (pending, high)
+The S27 ruling names "MCP context" as a front-end consumer. Task **#6665**
 carries Leo's 2026-08-26 ruling: *delete `reify mcp-server` and `CliToolContext` outright —
 dangerous cruft, zero consumers*, deleting `crates/reify-cli/src/mcp_context.rs` wholesale
 and **keeping** the `reify-mcp` crate (registry, stdio and in-process transports, chunk

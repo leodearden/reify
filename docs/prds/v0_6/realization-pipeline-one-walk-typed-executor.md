@@ -71,7 +71,7 @@
 - The shared resolver returns `&dyn GeometryKernel`, but `densify_grid_to_sampled` takes `&mut self`, so the arm cannot route through the helper as it stands.
 - A second writer of the projection store exists in engine_build (`redispatch_geometry_consuming_compute_nodes` pre-tessellates BRep bodies and inserts directly). An absent-node arm has a third inline degrade tail.
 - Three `#[allow(dead_code)]` sit on live items, and the module header and `degrade_projection`'s doc describe states that have since landed.
-- **Four homes of one tolerance.** `Engine::DEFAULT_TESSELLATION_TOLERANCE`, `MESH_PROJECTION_SENTINEL_TOL` (realization_content), `MAX_DEVIATION_TESSELLATION_TOLERANCE_M` (geometry_ops) and `GDT_CONFORMANCE_TESSELLATION_TOLERANCE_M` (engine_constraints) each hold `0.0001` and say they "mirror" the first. #4691 (pending, polish) tracks two of them.
+- **Four homes of one tolerance.** `Engine::DEFAULT_TESSELLATION_TOLERANCE`, `MESH_PROJECTION_SENTINEL_TOL` (realization_content), `MAX_DEVIATION_TESSELLATION_TOLERANCE_M` (geometry_ops) and `GDT_CONFORMANCE_TESSELLATION_TOLERANCE_M` (engine_constraints) each hold `0.0001` and say they "mirror" the first. #4691 (polish) tracks two of them.
 
 ### 2.6 The file and the cycle (h14)
 - engine_build.rs is 14,468 lines (14,030 production). The record's seven-partition measurement holds at main (§10.5), with two corrections:

@@ -486,7 +486,7 @@ Existing tasks dispositioned at decompose:
 | Task | What it does | Leaves that depend on it |
 |---|---|---|
 | **#8545** (in progress) | `flat_width` (the width defect) | β, κ |
-| **#7497** (pending, branch `task/7497`, no claimant) | coupled joints in `chain_b` re-derived inside Newton | κ, which rebases onto whichever route #7497 lands |
+| **#7497** | coupled joints in `chain_b` re-derived inside Newton | κ, which rebases onto whichever route #7497 lands |
 | **#6922** (pending; branch `task/6922` active) | rewrites the `dynamics/eval.rs` readers | κ, ρ |
 | **#8560** | drops reify-constraints' re-export shim | κ, ξ |
 | **#6941** (pending, high) | four workstreams; δ rewrites `jointvalue_from_bound_value` and `joints` `length_input` | ι, μ, τ |
