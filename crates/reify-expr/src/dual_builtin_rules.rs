@@ -27,12 +27,11 @@ pub(crate) fn is_kink_builtin(name: &str, arity: usize) -> bool {
 /// never "we did not look".
 ///
 /// Being a static walk, this answers CONSERVATIVELY: it only suppresses the
-/// fast path.  [`field_reduction_kind`] makes the real decision once the
+/// fast path.  `field_reduction_kind` makes the real decision once the
 /// operand values exist, and a call that turns out not to be a field reduction
 /// falls through to the ordinary refusal path exactly as before.
 ///
 /// [`BranchRecord`]: crate::BranchRecord
-/// [`field_reduction_kind`]: crate::dual_eval::field_reduction_kind
 pub(crate) fn is_bounded_reduction_shaped(name: &str, arity: usize) -> bool {
     matches!((name, arity), ("argmax" | "argmin", 2))
 }

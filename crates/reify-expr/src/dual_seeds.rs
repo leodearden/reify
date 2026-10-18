@@ -146,13 +146,11 @@ impl Seeds {
     /// A `true` here keeps the node off the fast path, and every kind the
     /// traversal DIFFERENTIATES then records its own kinks.  The kinds it does
     /// not — `IndexAccess`, `ListLiteral`, the rest of
-    /// [`refuse_or_constant`]'s clients — hand the whole node to
+    /// `refuse_or_constant`'s clients — hand the whole node to
     /// [`crate::eval_expr`], so a kink nested inside one of those is evaluated
     /// without being recorded even though this predicate saw it.  That is the
     /// ONLY shape for which an empty record still under-reports, and
-    /// [`refuse_or_constant`] states it at the point it happens.
-    ///
-    /// [`refuse_or_constant`]: crate::dual_eval::refuse_or_constant
+    /// `refuse_or_constant` states it at the point it happens.
     pub fn subtree_has_kink(&self, expr: &CompiledExpr) -> bool {
         if let Some(hit) = self.kinky.borrow().get(&expr.content_hash) {
             return *hit;

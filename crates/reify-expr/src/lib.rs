@@ -10,6 +10,7 @@ mod calculus;
 mod complex;
 mod dual;
 mod dual_builtin_rules;
+mod dual_env;
 mod dual_eval;
 mod dual_seeds;
 mod field_reductions;
@@ -33,9 +34,8 @@ pub use branch_signature::{
     RESERVED_PATH_SEGMENTS, KinkKind, KinkSite, ReductionKind, first_divergence,
 };
 pub use dual::{DualValue, Tangent};
-pub use dual_eval::{
-    DualEnv, eval_dual, eval_dual_with_env, jacobian_row, jacobian_row_with_env,
-};
+pub use dual_env::DualEnv;
+pub use dual_eval::{eval_dual, eval_dual_with_env, jacobian_row, jacobian_row_with_env};
 pub use dual_seeds::Seeds;
 pub use non_differentiable::NonDifferentiable;
 
